@@ -112,12 +112,13 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 The item shape produced by the issues-only reshape:
 
 ```json
-{"id":"ISSUE_105","content":{"number":105,"title":"…","type":"Issue"},"status":"Ready","component":"Ingest"}
+{"id":"ISSUE_105","content":{"number":105,"title":"…","type":"Issue"},"status":"Ready","component":"Ingest","labels":["fnd:status:ready","spike"]}
 ```
 
 — identical keys to the Projects-v2 shape (`id`, `content.number/title/type`,
-flattened field values), so every existing jq-based reader of
-`BOARD_ITEMS_JSON` works without modification.
+flattened field values, **and `labels`** — see § Funnel integration below),
+so every existing jq-based reader of `BOARD_ITEMS_JSON` works without
+modification.
 
 ## What split 1/3 (#799) intentionally did not do
 
@@ -243,6 +244,47 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
   Done, by the jq reshape's own precedence (`if $state == "closed" then
   {status:"Done"}` is checked FIRST, before any label).
 
+## Funnel integration (foundation #801, split 3/3)
+
+The final split: wiring `funnel-tick.sh` to drive an issues-only repo, and
+proving it via a dual-adapter test suite. `funnel-tick.sh` itself needed
+**zero backend branching** — it already only ever touches `BOARD_ITEMS_JSON`
+through `board.sh`'s public accessors — but its Ready-item classification
+(`classify_item`, `needs_clarification`, `funnel_escalated`, `pending_merge`)
+reads a Ready item's **raw GitHub labels** directly (`spike`, `Foundational`,
+`needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — every one
+of them a PLAIN label, never `fnd:`-namespaced). That is the "D3 seam": the
+funnel's Ready-item read depends on `BOARD_ITEMS_JSON` carrying a `labels`
+key, not just `status`/`component`.
+
+**The gap split 1/3 left (now fixed).** The Projects-v2 path always had this
+for free — `gh project item-list --format json`'s own default output already
+carries a top-level `labels` array for Issue content, and `board_item_list` /
+`_board_item_list_fresh` pass it through completely unreshaped (they only
+strip PR cards and control characters). The issues-only `issue_item()` jq
+def, by contrast, extracted ONLY the `fnd:`-prefixed labels into
+`status`/`component`/`host/Session` and silently dropped every other label —
+so a live funnel-tick against an issues-only board could never see `spike` /
+`Foundational` / `needs-clarification`, and every Ready item would
+misclassify as a fresh Operational `kind:code` drive (worse: probing for an
+open PR via `gh pr list`, a step that must never fire in a SAFE-tier-only
+scenario). Fixed by adding a `labels: $labels` passthrough to `issue_item()`
+— the raw, UNFILTERED label list (the `fnd:` bookkeeping labels stay in it
+too; harmless, since an equality check like `. == "spike"` never matches
+`"fnd:status:ready"`). This makes the issues-only item shape a structural
+match for the Projects-v2 one on this key, the same way it already was for
+`status`/`component`/`host/Session`.
+
+**What "SAFE-TIER" means here.** funnel-drive.sh's rung-5b executor
+auto-runs only route-*/drain-*/a `kind:spike` drive — never a merge
+(foundation #604's SAFE/MERGING tier split). A full safe-tier tick therefore
+never needs to open a PR, so proving it against an issues-only repo needs no
+merge-capable adapter surface at all — only the read path (`board_resolve` /
+`board_item_list`) plus the plain-REST reads `funnel-tick.sh` already made
+directly (`gh issue list --search …`, `gh issue view --json assignees`),
+which were already backend-agnostic (per-issue/per-search REST, no Projects
+call either way).
+
 ## Testing
 
 `workflows/scripts/board/tests/test_issues_backend.sh` (run via `make
@@ -250,7 +292,8 @@ test-board`) is the fixture-replay suite for the split-1/3 (#799) surface:
 zero network, sources `lib/board.sh`, overrides its `_board_gh` seam. It also
 carries the **config-selection proof** — an unconfigured board's `gh project
 …` argv is byte-identical to `test_board_replay.sh`'s pinned Projects-v2 call
-sequence, demonstrating the seam is additive-only.
+sequence, demonstrating the seam is additive-only. Its case 3 also pins the
+`labels` passthrough (#801).
 
 `workflows/scripts/board/tests/test_issues_claim_edges.sh` (also run via
 `make test-board`) is the split-2/3 (#800) suite: `board_stamp` on `ISSUE_*`
@@ -259,3 +302,15 @@ sequence, demonstrating the seam is additive-only.
 unclaimed / Projects-v2-always-safe cases), `board_sub_issues`, and
 `claim.sh`'s end-to-end contention refusal against a fake issues-only repo
 (mirrors `test_claim.sh`'s replay style, but for the `ISSUE_*` path).
+
+`workflows/scripts/board/tests/test_board_dual_adapter.sh` (registered as its
+own `make test-board-dual-adapter` gate — see `scripts/quality-gates.sh`) is
+the split-3/3 (#801) suite: it runs `funnel-tick.sh` LIVE (not
+`--dry-run --fixture`, which bypasses `board.sh` entirely and so can never
+catch a reshape gap like the one above) against the SAME scenario twice — once
+with the board configured `backend=projects`, once `backend=issues` — and
+asserts both the full SAFE-TIER action set (drain-answer, drain-clarification,
+a `kind:spike` drive-ready, route-foundational, route-already-assigned) and
+byte-for-byte cross-arm parity of the resulting tick plan. It also asserts,
+directly against the recorded `gh` call log, that no PR/merge/write-capable
+call ever fires in either arm — the structural proof of "no merges."

@@ -64,6 +64,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # entries). Each entry is a full command line (a `make` target).
 KERNEL_GATES=(
   "make test-board"
+  # Dual-adapter SAFE-TIER funnel integration suite (foundation #801, split
+  # 3/3 of the issues-only tracker adapter, Epic B #763): runs funnel-tick.sh
+  # LIVE against both the Projects-v2 and issues-only backends and proves
+  # parity + zero merge-capable gh calls. A new kernel-side test_*.sh file is
+  # auto-covered by kernel CI's own glob-based `test-board` recipe (F#836);
+  # this line is the explicit registration in FOUNDATION's own gate set (the
+  # one scripts/quality-gates.sh actually runs — see
+  # workflows/scripts/board/ISSUES-ONLY-BACKEND.md § Funnel integration).
+  "make test-board-dual-adapter"
   "make test-build"
   "make test-build-workflow"
   "make test-hooks"

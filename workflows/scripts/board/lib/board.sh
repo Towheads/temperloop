@@ -605,6 +605,25 @@ _board_issues_label_prefix() {
 #     unslugging (which lowercases) would corrupt a mixed-case hostname and
 #     silently break the foreign-host comparison board_claim_contended /
 #     reconcile.sh rely on. The stamp is stored and read back VERBATIM.
+#   labels: the RAW label-name array (foundation #801, split 3/3 — the funnel-
+#     integration "D3 seam" fix). A caller like funnel-tick.sh reads a Ready
+#     item's ordinary GitHub labels directly (`spike`, `Foundational`,
+#     `needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — none
+#     of them `fnd:`-namespaced) to classify/gate it; the Projects-v2 path
+#     already exposes this for free, because board_item_list/_board_item_list_fresh
+#     pass `gh project item-list`'s own raw JSON straight through (gh's default
+#     item-list output carries a top-level `labels` array for Issue content —
+#     see board_item_list's header comment), and board.sh reshapes NONE of it.
+#     Before this fix the issues-only reshape below extracted only the
+#     `fnd:`-prefixed labels into status/component/host-session and DROPPED
+#     every other label — so a live funnel-tick against an issues-only board
+#     could never see `spike`/`Foundational`/etc. and every Ready item
+#     silently misclassified as a fresh Operational kind:code drive. Emitting
+#     the full, unfiltered label-name list here (fnd: ones included — harmless,
+#     since a `. == "spike"` equality check never matches `"fnd:status:ready"`)
+#     makes the issues-only item shape a byte-for-byte structural match for the
+#     Projects-v2 one on this key too. See ISSUES-ONLY-BACKEND.md § Funnel
+#     integration and tests/test_board_dual_adapter.sh (the parity proof).
 read -r -d '' _BOARD_ISSUES_JQ_DEFS <<'JQ_DEFS' || true
 def unslug: split("-") | map((.[0:1] | ascii_upcase) + .[1:]) | join(" ");
 def issue_item($n):
@@ -617,7 +636,8 @@ def issue_item($n):
   | ( ($labels | map(select(test("^fnd:host/session:")))) as $hl
       | if ($hl | length) > 0 then ($hl[0] | sub("^fnd:host/session:"; "")) else "" end ) as $host_session
   | { id: ("ISSUE_" + ($n | tostring)),
-      content: { number: $n, title: (.title // ""), type: "Issue" } }
+      content: { number: $n, title: (.title // ""), type: "Issue" },
+      labels: $labels }
     + ( if $state == "closed" then { status: "Done" }
         elif $status_slug != "" then { status: ($status_slug | unslug) }
         else {} end )
