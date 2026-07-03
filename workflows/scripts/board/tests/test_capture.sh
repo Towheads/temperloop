@@ -132,7 +132,7 @@ echo "ALL capture.sh --rework tests passed"
 #
 # Board 7's REAL repo value lives only in lib/board.sh's board_repo() built-in
 # case map (see that function's own comment + ISSUES-ONLY-BACKEND.md § "The
-# foundation-kernel tracker" for why: it's a sanctioned, denylist:allow'd
+# temperloop tracker" for why: it's a sanctioned, denylist:allow'd
 # exception, and this test file carries no such exception). So here we
 # override board 7's `repo` to a placeholder via a scoped `boards.conf` — the
 # SAME override mechanism a real consumer would use (test_boards_conf.sh § 7

@@ -11,7 +11,7 @@
 # kernel/. Editing through either the physical path or a compat symlink
 # mutates the vendored subtree directly — but the ONLY sanctioned way to
 # change kernel/ content is upstream-first: land the change in the
-# foundation-kernel repo, then `make update-kernel` pulls it down and bumps
+# temperloop (kernel) repo, then `make update-kernel` pulls it down and bumps
 # `.kernel-pin` atomically (see CUTOVER-RUNBOOK.md). A stray Edit/Write
 # through a symlink is easy to miss (a worker editing
 # `workflows/scripts/board/lib/board.sh` may not notice it resolves into
@@ -180,11 +180,11 @@ done
 
 if [ -n "$bypass_reason" ]; then
   log "BYPASS ($bypass_reason) :: $hit"
-  echo "subtree-edit-guard: kernel/ edit at '$hit' permitted without an interactive ask — bypass: $bypass_reason. Reminder: this content is vendored from foundation-kernel; the PR must carry a bare 'Upstream: <kernel-PR-url>' line (or ride an operator-approved batched waiver — see CUTOVER-RUNBOOK.md), or Guard #2 (scripts/kernel-drift-check.sh) will flag it at merge time." >&2
+  echo "subtree-edit-guard: kernel/ edit at '$hit' permitted without an interactive ask — bypass: $bypass_reason. Reminder: this content is vendored from temperloop; the PR must carry a bare 'Upstream: <kernel-PR-url>' line (or ride an operator-approved batched waiver — see CUTOVER-RUNBOOK.md), or Guard #2 (scripts/kernel-drift-check.sh) will flag it at merge time." >&2
   exit 0
 fi
 
-reason="This Edit/Write/MultiEdit targets '$hit', which is INSIDE the vendored kernel/ subtree (pinned by .kernel-pin at $root) — either a direct kernel/... path or a pre-split compat symlink that resolves into it. Kernel content is upstream-first: land this change in the foundation-kernel repo and pull it down via 'make update-kernel' (bumps .kernel-pin atomically), rather than editing the vendored copy here. If this is a deliberate, operator-approved exception (a batched waiver — see CUTOVER-RUNBOOK.md), proceed and make sure the PR body carries a bare 'Upstream: <kernel-PR-url>' line; scripts/kernel-drift-check.sh (Guard #2) enforces that at merge time."
+reason="This Edit/Write/MultiEdit targets '$hit', which is INSIDE the vendored kernel/ subtree (pinned by .kernel-pin at $root) — either a direct kernel/... path or a pre-split compat symlink that resolves into it. Kernel content is upstream-first: land this change in the temperloop repo and pull it down via 'make update-kernel' (bumps .kernel-pin atomically), rather than editing the vendored copy here. If this is a deliberate, operator-approved exception (a batched waiver — see CUTOVER-RUNBOOK.md), proceed and make sure the PR body carries a bare 'Upstream: <kernel-PR-url>' line; scripts/kernel-drift-check.sh (Guard #2) enforces that at merge time."
 log "ASK :: $hit"
 jq -cn --arg r "$reason" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}' \

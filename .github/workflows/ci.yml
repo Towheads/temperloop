@@ -1,6 +1,6 @@
 name: CI
 
-# foundation-kernel's CI: a single job named `checks` (the required status
+# temperloop's CI: a single job named `checks` (the required status
 # check for branch protection), run on ubuntu-latest AND macos-latest so
 # "protected + green" holds on both OSes a stranger's clone might run on.
 # The job runs ONE command, scripts/quality-gates.sh — the single source of

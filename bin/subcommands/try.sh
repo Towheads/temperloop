@@ -444,7 +444,7 @@ PROMPT_EOF
   body_file="$scratch/pr-body.md"
   {
     echo "Fix for \`$demo_repo\` issue #$issue_num, opened by \`foundation try --demo\`"
-    echo "(foundation-kernel's newcomer demo tick — one real, safe-tier issue -> PR"
+    echo "(temperloop's newcomer demo tick — one real, safe-tier issue -> PR"
     echo "pass; the fix content came from a live \`claude -p\` call run with"
     echo "\`--tools \"\"\` — structurally zero tool access — so this script, not the"
     echo "model, applied/committed/pushed it)."

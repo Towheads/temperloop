@@ -113,7 +113,7 @@ board_repo() {
     4) echo "Towheads/foundation" ;;  # migrated into the org (#330)  # denylist:allow — see comment above board_repo()
     5) echo "Towheads/ssmobile" ;;    # migrated into the org (#330)  # denylist:allow — see comment above board_repo()
     6) echo "Towheads/subsetwiki" ;;  # onboarded in the org  # denylist:allow — see comment above board_repo()
-    7) echo "Towheads/foundation-kernel" ;;  # the kernel tracker itself (F#808, issues-only — see board_backend below)  # denylist:allow — see comment above board_repo()
+    7) echo "Towheads/temperloop" ;;  # the kernel tracker itself (F#808, issues-only — see board_backend below); formerly Towheads/foundation-kernel  # denylist:allow — see comment above board_repo()
     *) return 1 ;;
   esac
 }
@@ -169,7 +169,7 @@ board_project_number() {
 # label vocabulary + status-mapping contract the issues-only path implements.
 #
 # ONE deliberate, permanent, singular exception (F#808, Guard #3 of the
-# kernel-vs-overlay routing rule): board 7 IS the foundation-kernel tracker
+# kernel-vs-overlay routing rule): board 7 IS the temperloop tracker
 # itself — its issues-only-ness is a structural fact of what board 7 means,
 # not a per-deployment configuration choice a boards.conf should carry (and a
 # real boards.conf committed inside kernel/ would embed this org's name in a

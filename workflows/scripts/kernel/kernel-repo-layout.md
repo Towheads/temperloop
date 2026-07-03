@@ -1,7 +1,7 @@
 # Kernel repo layout + release-tag convention
 
 Companion doc to `seed-kernel-repo.sh` (foundation F#803, epic #762 "kernel
-split"). Read this before consuming the seeded `foundation-kernel` repo — in
+split"). Read this before consuming the seeded `temperloop` repo — in
 particular before the sibling **overlay-subtree-cutover** item vendors it
 back into a private overlay repo via `git subtree`.
 
@@ -76,11 +76,11 @@ kind of drift-prone mechanism the kernel/overlay split is trying to avoid.
 
 ```sh
 # 1. Materialize into a scratch clone of the (already-created, empty) repo.
-git clone <kernel-repo-url> /tmp/foundation-kernel-seed
-bash workflows/scripts/kernel/seed-kernel-repo.sh --dest /tmp/foundation-kernel-seed
+git clone <kernel-repo-url> /tmp/temperloop-seed
+bash workflows/scripts/kernel/seed-kernel-repo.sh --dest /tmp/temperloop-seed
 
 # 2. One seed commit + tag.
-cd /tmp/foundation-kernel-seed
+cd /tmp/temperloop-seed
 git add -A
 git commit -m "Initial fresh-history seed of the kernel file set"
 git tag -a v0.1.0 -m "v0.1.0 — initial kernel seed"

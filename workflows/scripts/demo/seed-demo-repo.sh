@@ -136,7 +136,7 @@ ensure_repo() {
   fi
   echo "==> Creating $REPO (private)"
   run_gh repo create "$REPO" --private \
-    --description "Scratch demo repo, script-generated and resettable by seed-demo-repo.sh (foundation-kernel). No custom automation. Reset baseline, not a real project."
+    --description "Scratch demo repo, script-generated and resettable by seed-demo-repo.sh (temperloop). No custom automation. Reset baseline, not a real project."
 }
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ and reset on demand — contributions here are for demo/testing purposes
 only, not a real open-source project.
 
 If you'd like to recieve updates about the real project this demo
-supports, see the foundation-kernel repository instead.
+supports, see the temperloop repository instead.
 EOF
       ;;
     README.md)
@@ -190,7 +190,7 @@ EOF
 
 This is a **scratch demo repository**, script-generated and reset on
 demand by `seed-demo-repo.sh` in the
-[foundation-kernel](https://github.com/Towheads/foundation-kernel) repo.  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+[temperloop](https://github.com/Towheads/temperloop) repo.  # denylist:allow — the kernel repo's own public URL (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 
 It exists so the `foundation` CLI's `try --demo` command has a real,
 disposable repo to run one safe-tier issue -> PR tick against. Nothing

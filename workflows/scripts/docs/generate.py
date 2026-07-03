@@ -147,7 +147,7 @@ def _write_site(pages: list[Page], out_dir: Path) -> None:
     )
     index_page = Page(
         slug="index",
-        title="Foundation docs",
+        title="TemperLoop docs",
         body_html=f"<ul>{index_links}</ul>",
         nav_group="",
     )
