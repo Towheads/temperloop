@@ -63,3 +63,11 @@ workflows/scripts/drain/tests/fixtures/command_expansion_stub.md
 # documentary reason — both self-match every time they're scanned otherwise.
 workflows/scripts/kernel/personal-token-denylist.tsv
 workflows/scripts/kernel/personal-token-denylist-exempt-files.txt
+
+# Demo-repo seeder (Epic D): the org name is the --repo DEFAULT (this repo's
+# own real companion demo repo, overridable per run) plus README/usage heredoc
+# template lines that cannot carry the per-line marker without corrupting the
+# emitted payload — the same heredoc carve-out as the fixture files above.
+# Retiring this exemption (derive the default from the authenticated gh
+# owner, or require --repo) is tracked as a follow-up.
+workflows/scripts/demo/seed-demo-repo.sh
