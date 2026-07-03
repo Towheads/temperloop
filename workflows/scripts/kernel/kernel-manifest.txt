@@ -279,3 +279,10 @@ kernel LICENSE
 kernel NOTICE
 kernel SECURITY.md
 kernel CHANGELOG.md
+
+# Epic D stranger-onramp machinery (foundation #851 et al.) — arrived via the
+# v0.1.4 batched sync; classified kernel: a stranger's checkout needs the demo
+# seeder, conventions probe, and proposal-pr flow for `try`/onboarding to work.
+kernel workflows/scripts/demo/*
+kernel workflows/scripts/probe/*
+kernel workflows/scripts/proposal/*
