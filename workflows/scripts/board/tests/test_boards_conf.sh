@@ -117,4 +117,42 @@ unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
 _board_conf_file >/dev/null 2>&1 || true   # rc 1 is fine (no real conf in this test env); must not error out
 echo "PASS: default discovery paths (unset overrides) evaluate without error"
 
+# --- 6: board 7 = the foundation-kernel tracker (F#808), conf-absent -------
+# Board 7 is registered directly in board_repo()/board_backend()'s BUILT-IN
+# maps (not a committed boards.conf — see ISSUES-ONLY-BACKEND.md § "The
+# foundation-kernel tracker" for why: a real org-qualified repo value is
+# exactly the class of literal this checkout's personal-token-denylist
+# forbids inside the kernel-vendored tree outside board_repo()'s own
+# sanctioned case map). So this mirrors § 1's conf-absent fallback proof,
+# just for board 7 specifically — the "boards.conf kernel entry present and
+# adapter-resolvable" acceptance proof (F#808).
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-3"
+export BOARDS_CONF_REPO_LOCAL="$WORK/no-such-repo-local-conf-3"
+
+[ "$(board_repo 7)" = "Towheads/foundation-kernel" ] \
+  || fail "board_repo 7 should resolve the built-in kernel-tracker default, got: $(board_repo 7)"
+[ "$(board_backend 7)" = "issues" ] \
+  || fail "board_backend 7 should resolve 'issues' from the built-in map, got: $(board_backend 7)"
+_board_is_issues_only 7 || fail "_board_is_issues_only 7 should be true (built-in map)"
+
+# Boards 3-6 are unaffected by board 7's new built-in entries.
+[ "$(board_repo 3)" = "Towheads/stageFind" ]  || fail "board_repo 3 should still resolve its own built-in default"
+[ "$(board_backend 4)" = "projects" ]         || fail "board_backend 4 should still default to 'projects'"
+echo "PASS: board 7 (kernel tracker) resolves from board_repo/board_backend's built-in maps, conf-absent (F#808)"
+
+# --- 7: a boards.conf CAN still override board 7, exactly like any board ---
+cat > "$WORK/board7-override.conf" <<'EOF'
+board.7.repo=Acme/kernel-fork
+EOF
+export BOARDS_CONF_REPO_LOCAL="$WORK/board7-override.conf"
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-4"
+
+[ "$(board_repo 7)" = "Acme/kernel-fork" ] \
+  || fail "board_repo 7 should be overridable via boards.conf like any other board, got: $(board_repo 7)"
+# backend isn't in this override conf -> still falls through to the built-in
+# map's board-7 case (issues), NOT the general "projects" default.
+[ "$(board_backend 7)" = "issues" ] \
+  || fail "board_backend 7 (repo overridden, backend not) should still resolve 'issues' from the built-in map, got: $(board_backend 7)"
+echo "PASS: a boards.conf entry overrides board 7's repo exactly like any other board; backend still falls back to the built-in kernel default"
+
 echo "ALL PASS: test_boards_conf.sh"
