@@ -33,6 +33,17 @@ workflows/scripts/build/tests/test_archive_plan.sh
 workflows/scripts/build/tests/test_workflow.sh
 scripts/tests/test_stranger_config.sh
 
+# The CLI's newcomer-facing install doc (foundation #765 Epic D, item
+# cli-entrypoint-bootstrap). Its ONLY denylisted content is the kernel repo's
+# own public clone/raw URL inside the copy-paste curl|sh code fences — the
+# repo's identity, the same category-1 "this repo's own real value" rationale
+# as bootstrap.sh's per-line markers (and board.sh's board-7 entry). The
+# per-line marker can't be used here without shipping lint jargon to readers:
+# sources/cli.py renders this file VERBATIM into the public getting-started
+# docs page, so an in-fence trailing `# denylist:allow` comment would appear
+# inside the newcomer's first copy-paste command.
+bin/README.md
+
 # test_install_settings.sh deliberately feeds a literal personal path
 # (/Users/travis/...) as INPUT fixture data to assert install-settings.sh's
 # CANONICAL_USER-sed correctly strips it at install time (the test would be

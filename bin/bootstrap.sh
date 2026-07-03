@@ -9,13 +9,13 @@
 #
 # INSPECT FIRST (recommended) — read it before you run it:
 #
-#   curl -fsSL https://raw.githubusercontent.com/Towheads/foundation-kernel/main/bin/bootstrap.sh -o foundation-bootstrap.sh
+#   curl -fsSL https://raw.githubusercontent.com/Towheads/foundation-kernel/main/bin/bootstrap.sh -o foundation-bootstrap.sh  # denylist:allow — the kernel repo's own public URL (its identity, like board.sh's board 7 entry)
 #   less foundation-bootstrap.sh   # read what it actually does
 #   sh foundation-bootstrap.sh
 #
 # ONE-LINE, once you trust the source:
 #
-#   curl -fsSL https://raw.githubusercontent.com/Towheads/foundation-kernel/main/bin/bootstrap.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Towheads/foundation-kernel/main/bin/bootstrap.sh | sh  # denylist:allow — same rationale as above
 #
 # WHAT THIS SCRIPT DOES, IN ORDER — nothing else. No shell-rc edits, no
 # sudo, no writes outside the two paths below:
@@ -37,7 +37,7 @@
 # ever changes.
 set -eu
 
-FOUNDATION_KERNEL_REPO="${FOUNDATION_KERNEL_REPO:-https://github.com/Towheads/foundation-kernel.git}"
+FOUNDATION_KERNEL_REPO="${FOUNDATION_KERNEL_REPO:-https://github.com/Towheads/foundation-kernel.git}"  # denylist:allow — the kernel repo's own clone URL is this script's load-bearing default (override via FOUNDATION_KERNEL_REPO); the repo's identity, not a personal-token leak
 FOUNDATION_HOME="${FOUNDATION_HOME:-$HOME/.local/share/foundation-kernel}"
 FOUNDATION_BIN_DIR="${FOUNDATION_BIN_DIR:-$HOME/.local/bin}"
 
