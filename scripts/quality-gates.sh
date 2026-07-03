@@ -90,6 +90,10 @@ KERNEL_GATES=(
   # for kernel/workflows/scripts/demo/seed-demo-repo.sh, fake `gh` on PATH,
   # zero network — mirrors test-board's glob-based kernel coverage (F#836).
   "make test-demo"
+  # Proposal-PR generator tests (foundation #853, Epic D): subprocess suite
+  # for kernel/workflows/scripts/proposal/proposal-pr.sh, fake `gh` on PATH,
+  # zero network — mirrors test-board's glob-based kernel coverage (F#836).
+  "make test-proposal-pr"
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
