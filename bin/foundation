@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# foundation — the kernel's newcomer/adoption-surface CLI entrypoint
+# (foundation #765 Epic D "newcomer experience", item cli-entrypoint-
+# bootstrap / #849).
+#
+# SCOPE (read before adding a subcommand): this CLI is the surface a
+# STRANGER meets before they have a working checkout — install, look around
+# read-only, try a demo, opt in, eject. It is NOT a second front door onto
+# an existing checkout's day-to-day work: every in-checkout operation (the
+# board toolkit, the build/sweep pipeline, the quality gates) stays on
+# `make` — see the repo's Makefile. Do not grow this dispatcher into a
+# shadow copy of Makefile targets; if a subcommand's job is "wrap an
+# existing make target", it belongs in the Makefile instead, not here.
+#
+# DISPATCH MODEL (load-bearing — read before adding a subcommand file):
+#   Subcommands are DISCOVERED FILES, never a hand-edited case statement:
+#   any kernel/bin/subcommands/<name>.sh file IS `foundation <name>`,
+#   automatically, the moment the file exists. This is what lets
+#   independent items (foundation-try, foundation-init, foundation-eject,
+#   ...) land their own subcommand file in parallel with zero coordination
+#   and zero merge conflict in this dispatcher — see the epic's plan note,
+#   "## Sequencing notes".
+#
+#   Each subcommand is EXECUTED IN ITS OWN PROCESS (`bash "$file" "$@"`),
+#   never `source`d into this script's shell — so a subcommand can set its
+#   own `set -e`, define its own functions/variables, and `exit` on its own
+#   terms without ever touching this dispatcher's namespace or accidentally
+#   terminating it. A subcommand file sourcing kernel/bin/lib/*.sh for
+#   shared helpers/constants INSIDE ITS OWN process is a normal library
+#   import, not a violation of this rule — the rule is about how THIS
+#   dispatcher invokes a subcommand, not what a subcommand does internally.
+#
+#   Built-in verbs (help/-h/--help, version/-v/--version) are NOT discovered
+#   files — they are the fixed CLI framework surface, exactly like `git
+#   help` / `git --version` sit outside git's own plugin (`git-<verb>`)
+#   mechanism. A new FEATURE belongs in subcommands/, never as a new verb
+#   handled here.
+#
+# Every subcommand dispatch (anything past help/version) runs a prereq
+# check first — Claude Code CLI on PATH + gh authenticated — with an honest,
+# specific failure message per missing piece (see lib/common.sh). This is
+# centralized here so no individual subcommand item has to reimplement it.
+set -uo pipefail
+
+# --- resolve this script's real location, following symlinks. Portable
+# (no GNU readlink -f) — the exact idiom already used by
+# workflows/scripts/board/claim.sh et al., so a `foundation` invoked through
+# the curl-bootstrap's ~/.local/bin/foundation symlink still finds its real
+# sibling subcommands/ and lib/ directories. ---
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+FOUNDATION_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+unset _src _dir
+
+SUBCOMMANDS_DIR="$FOUNDATION_BIN_DIR/subcommands"
+LIB_DIR="$FOUNDATION_BIN_DIR/lib"
+
+# shellcheck source=lib/common.sh
+source "$LIB_DIR/common.sh"
+
+FOUNDATION_VERSION="${FOUNDATION_VERSION:-dev}"
+
+# _foundation_subcommand_description <file>
+#   Prints the file's `# description: ...` header line — a documented,
+#   lightweight convention every subcommand file follows (see
+#   kernel/workflows/scripts/docs/sources/cli.py, which renders the same
+#   convention into the docs site's subcommand-reference table) — or a
+#   placeholder if the file doesn't have one.
+_foundation_subcommand_description() {
+  local file="$1" line
+  line="$(grep -m1 '^# description: ' "$file" 2>/dev/null || true)"
+  if [[ -n "$line" ]]; then
+    printf '%s\n' "${line#\# description: }"
+  else
+    printf '%s\n' "(no description)"
+  fi
+}
+
+_foundation_print_help() {
+  cat <<EOF
+foundation — kernel newcomer/adoption-surface CLI
+
+Usage:
+  foundation <subcommand> [args...]
+  foundation help
+  foundation --version
+
+Subcommands:
+EOF
+  local found=0 file name
+  for file in "$SUBCOMMANDS_DIR"/*.sh; do
+    [[ -e "$file" ]] || continue
+    found=1
+    name="$(basename "$file" .sh)"
+    printf '  %-16s %s\n' "$name" "$(_foundation_subcommand_description "$file")"
+  done
+  if [[ "$found" -eq 0 ]]; then
+    echo "  (none installed yet)"
+  fi
+  cat <<EOF
+
+In-checkout operations (board, build, quality gates) stay on 'make' — this
+CLI is the pre-checkout newcomer surface only.
+
+Running from: ${FOUNDATION_BIN_DIR%/bin}
+Default install location: $FOUNDATION_CLI_HOME_DEFAULT
+  (symlinked onto PATH at $FOUNDATION_CLI_BIN_DEFAULT by bin/bootstrap.sh)
+EOF
+}
+
+cmd="${1:-help}"
+
+if [[ "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" ]]; then
+  _foundation_print_help
+  exit 0
+fi
+
+if [[ "$cmd" == "--version" || "$cmd" == "-v" || "$cmd" == "version" ]]; then
+  echo "foundation $FOUNDATION_VERSION"
+  exit 0
+fi
+
+subcommand_file="$SUBCOMMANDS_DIR/$cmd.sh"
+if [[ ! -f "$subcommand_file" ]]; then
+  echo "foundation: unknown subcommand '$cmd'" >&2
+  echo "Run 'foundation help' to list installed subcommands." >&2
+  exit 1
+fi
+
+if ! foundation_check_prereqs; then
+  echo "" >&2
+  echo "foundation: fix the above, then re-run: foundation $cmd" >&2
+  exit 1
+fi
+
+shift
+bash "$subcommand_file" "$@"
+exit $?

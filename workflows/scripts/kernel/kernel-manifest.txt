@@ -76,6 +76,20 @@ overlay meta/*
 overlay Plans-archive/*
 
 # ---------------------------------------------------------------------------
+# bin/ — the POSIX CLI entrypoint + curl bootstrap (foundation #765 Epic D
+# "newcomer experience", item cli-entrypoint-bootstrap / #849): a stranger's
+# pre-checkout newcomer/adoption surface, distinct from the board/build
+# machinery under workflows/scripts/. Subcommands are DISCOVERED FILES
+# (bin/subcommands/<name>.sh) — the glob below covers every subcommand item
+# that lands here later with zero new manifest lines per file.
+# ---------------------------------------------------------------------------
+kernel bin/foundation
+kernel bin/bootstrap.sh
+kernel bin/README.md
+kernel bin/subcommands/*
+kernel bin/lib/*
+
+# ---------------------------------------------------------------------------
 # claude/ — Claude Code config, source of truth for ~/.claude/
 # ---------------------------------------------------------------------------
 kernel claude/.gitkeep

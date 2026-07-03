@@ -72,15 +72,17 @@ if str(DOCS_DIR) not in sys.path:
 
 from lib.kernel_manifest import load_manifest  # noqa: E402
 from lib.page import Page, render_page  # noqa: E402
-from sources import adapter_contracts, chapters, commands, gates, plan_schema  # noqa: E402
+from sources import adapter_contracts, chapters, cli, commands, gates, plan_schema  # noqa: E402
 
 KERNEL_MANIFEST_PATH = REPO_ROOT / "workflows" / "scripts" / "kernel" / "kernel-manifest.txt"
 OVERLAY_DROPIN_DIR = REPO_ROOT / "workflows" / "scripts" / "docs.d"
 DEFAULT_OUT_DIR = DOCS_DIR / "_site"
 
 # Kernel source modules, in nav/build order. Each exposes
-# build_pages(repo_root, manifest_entries) -> list[Page].
-_SOURCE_MODULES = [commands, plan_schema, gates, adapter_contracts, chapters]
+# build_pages(repo_root, manifest_entries) -> list[Page]. `cli` leads the
+# list — the bootstrap + subcommand reference is the newcomer's first read
+# (foundation #765 Epic D, item cli-entrypoint-bootstrap / #849).
+_SOURCE_MODULES = [cli, commands, plan_schema, gates, adapter_contracts, chapters]
 
 
 def _load_overlay_pages(repo_root: Path, dropin_dir: Path = OVERLAY_DROPIN_DIR) -> list[Page]:
