@@ -11,20 +11,15 @@ You are running the **drain-mind** command. Goal: turn raw session transcripts i
 
 ## Live/Drain pairings
 
-Every step in this command has a real-time counterpart that runs during the live session — the drain is the backstop, not the primary defense. **This table is the single source of truth for the live/drain pairings**: `[[Patterns/Live-Drain pairing]]` and `claude/CLAUDE.md` § Live/Drain pairing point here, and `workflows/scripts/validate-live-drain.sh` parses it in CI (the `checks` gate) — it fails the build if any pair is **half-present** (a live anchor present without its drain anchor, or vice versa). When you add a pair, add a row here in the same change as the rule.
+Every step in this command has a real-time counterpart that runs during the live session — the drain is the backstop, not the primary defense. **This table is the single source of truth for KERNEL live/drain pairings** — pairs generic enough that a stranger's kernel-only checkout needs them backstopped too. A composed (overlay) checkout carries a second table, the **overlay extension**, at `claude/live-drain-registry.overlay.md`, for pairs that reference Travis-personal (vault-backed) rules and have no meaning in a standalone kernel checkout; `workflows/scripts/validate-live-drain.sh` unions the two when the overlay file is present, and validates this kernel table alone otherwise. `[[Patterns/Live-Drain pairing]]` and `claude/CLAUDE.md` § Live/Drain pairing point here. The validator parses both tables in CI (the `checks` gate) — it fails the build if any pair, in either table, is **half-present** (a live anchor present without its drain anchor, or vice versa). When you add a pair: kernel machinery (board/build/funnel/harness-generic) → a row here, in the same change as the rule; a personal/vault-backed rule → a row in the overlay extension table instead.
 
-**Cell grammar** (so the validator can parse it): every checkable token is `backticked`. The **Live location** cell is `` `<source>` § `<anchor>`… `` where `<source>` is a file (`claude/CLAUDE.md` = global config, `foundation/CLAUDE.md` = this repo's root CLAUDE.md, `stageFind/CLAUDE.md` = the consuming repo) or the literal `` `system-prompt` `` (unverifiable — the validator checks only the drain half); each `` `<anchor>` `` is the exact heading or bold-label text to find in that source. The **Drain backstop** cell lists the exact `### <heading>` anchors in this file's Step 3.
+**Cell grammar** (so the validator can parse it): every checkable token is `backticked`. The **Live location** cell is `` `<source>` § `<anchor>`… `` where `<source>` is a file (`claude/CLAUDE.md` = global config, `foundation/CLAUDE.md` = this repo's root CLAUDE.md, `stageFind/CLAUDE.md` = the consuming repo) or the literal `` `system-prompt` `` (unverifiable — the validator checks only the drain half); each `` `<anchor>` `` is the exact heading or bold-label text to find in that source. The **Drain backstop** cell lists the exact `### <heading>` anchors in this file's Step 3. Same grammar in the overlay extension table.
 
 | Live rule | Live location | Drain backstop |
 |---|---|---|
-| Decision capture | `claude/CLAUDE.md` § `Decision capture` | `Decisions` |
-| Pattern / Mistake / Context capture | `claude/CLAUDE.md` § `Decision capture` | `Patterns`, `Mistakes` |
 | Feedback / project / user memory | `system-prompt` § auto memory | `Feedback memories`, `Project memories`, `User memories` |
-| Session optimization tracking | `claude/CLAUDE.md` § `Session optimization tracking` | `Session optimization tools` |
 | Defect capture-at-source | `claude/CLAUDE.md` § `Capture at source` | `Unfiled defects` |
-| Tooling friction (fewer-steps) | `claude/CLAUDE.md` § `Tooling friction capture` | `Tooling friction` |
 | Stale board-claim sweep | `claude/CLAUDE.md` § `Board hygiene is part of the gate` | `Stale board claims` |
-| Unattended pending decisions | `claude/CLAUDE.md` § `Unattended pending-decisions surface` | `Pending decisions surface` |
 | Answered decision issues | `system-prompt` § `decision_sink_ask` | `Answered decisions` |
 | Kernel-vs-overlay classification | `claude/CLAUDE.md` § `Kernel vs overlay routing rule` | `Kernel-candidate learnings` |
 
