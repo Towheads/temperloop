@@ -36,9 +36,36 @@
 #     every call it sees, plus a before/after file-tree diff of the target
 #     repo).
 #
+# --demo — THE ONE MUTATING EXCEPTION (foundation #765 Epic D, item
+# foundation-try-demo). Passing --demo replaces everything above with a
+# SEPARATE mode: the "aha moment" tick. It scratch-clones a disposable,
+# already-seeded demo repo (kernel/workflows/scripts/demo/seed-demo-repo.sh
+# maintains it; falsifiable one-file defects, `demo-seed`-labeled issues)
+# and drives ONE real safe-tier funnel tick — issue -> PR — against it:
+#   1. claims one open demo-seed issue via the issues-only tracker adapter
+#      (kernel/workflows/scripts/board/lib/board.sh, board_backend=issues;
+#      NO Projects-v2 board is ever provisioned — a throwaway scratch
+#      boards.conf scoped to this run's own temp dir is all that exists);
+#   2. gets a REAL, but still structurally zero-tool (--tools ""), live
+#      `claude -p` judgment call to produce the ONE fixed file's corrected
+#      content — the model never holds write access; this SCRIPT applies,
+#      commits, and pushes the result;
+#   3. opens the PR via kernel/workflows/scripts/proposal/proposal-pr.sh
+#      (never a direct push — branch==base is structurally refused there).
+# It stops at an OPENED pull request — never a merge (the safe/merging
+# tier split, foundation #604's SAFE rung never merges).
+# SPEND GUARD: prints a DIRECTIONAL cost estimate, requires an explicit y/N
+# confirmation (or --yes — refused outright on a non-tty stdin with no
+# --yes, so a curious stranger cannot silently burn spend), and enforces a
+# hard cap via --demo-cap-usd (default $2.00 — DIRECTIONAL, an
+# approval-time decision; tighten when real calibration exists) passed
+# straight to the live call's --max-budget-usd. See run_demo()'s own
+# header comment below for the full flow and the --demo-only flags.
+#
 # Usage:
 #   try.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network]
 #          [--timeout SECS] [--max-issues N]
+#   try.sh --demo [--demo-repo OWNER/REPO] [--demo-cap-usd N] [--yes]
 #
 #   --dir DIR            Git checkout to try. Default: current directory.
 #   --gh-repo OWNER/REPO GitHub slug. Default: inferred by the probe from
@@ -60,6 +87,18 @@
 #                        shadow-triage prompt (the cost ESTIMATE always
 #                        covers the full open-issue count regardless of
 #                        this cap — see step 2). Default: 20.
+#   --demo               Enable --demo mode (see above); mutually exclusive
+#                        in effect with every flag above (they're simply
+#                        ignored once --demo is set — see run_demo()).
+#   --demo-repo OWNER/REPO
+#                        The scratch demo repo to clone + tick against.
+#                        Default: the org's own pre-seeded scratch demo
+#                        repo (see seed-demo-repo.sh's identical default).
+#   --demo-cap-usd N     Hard mechanical spend cap (USD) for the demo
+#                        tick's live judgment call. Default: 2.00.
+#   --yes                Skip the interactive y/N confirmation (still
+#                        prints the estimate + cap first). REQUIRED when
+#                        stdin is not a tty.
 #
 # Exit codes:
 #   0   ran to completion (even if the shadow triage or issue listing was
@@ -71,7 +110,9 @@
 # Dependencies: bash (3.2+), git, jq (both required by the probe this
 # script always invokes). `gh` and `claude` are each independently
 # optional — their absence degrades only the sections that need them (see
-# the skip-reason messages below), never the whole run.
+# the skip-reason messages below), never the whole run. --demo mode
+# REQUIRES both `gh` (authenticated) and `claude` — there is no degraded
+# path for a mutating tick with a missing dependency.
 #
 # shellcheck shell=bash
 
@@ -136,15 +177,314 @@ fi
 : "${TRY_COST_PER_ISSUE_LOW_USD:?cost-estimates.conf did not set TRY_COST_PER_ISSUE_LOW_USD}"
 : "${TRY_COST_PER_ISSUE_HIGH_USD:?cost-estimates.conf did not set TRY_COST_PER_ISSUE_HIGH_USD}"
 : "${TRY_CLAUDE_MAX_BUDGET_USD:?cost-estimates.conf did not set TRY_CLAUDE_MAX_BUDGET_USD}"
+: "${TRY_DEMO_TICK_LOW_USD:?cost-estimates.conf did not set TRY_DEMO_TICK_LOW_USD}"
+: "${TRY_DEMO_TICK_HIGH_USD:?cost-estimates.conf did not set TRY_DEMO_TICK_HIGH_USD}"
 
 # Non-flag-configurable — an LLM turn's natural latency is a different order
 # of magnitude from a REST call's; see the --timeout doc comment above.
 TRY_CLAUDE_TIMEOUT_SECS=180
 
+# --demo's live judgment call gets its own, longer watchdog: it reads every
+# tracked file in the (tiny) demo repo plus the issue body and emits a full
+# corrected file, materially more work than the shadow-triage classification
+# call above. Non-flag-configurable, same rationale as TRY_CLAUDE_TIMEOUT_SECS.
+TRY_DEMO_CLAUDE_TIMEOUT_SECS=300
+
 # Test-double seams (mirror funnel-drive.sh's CLAUDE_BIN / FUNNEL_GH_BIN
 # convention) — never overridden in production use.
 : "${CLAUDE_BIN:=claude}"
 : "${TRY_GH_BIN:=gh}"
+
+# ---------------------------------------------------------------------------
+# run_demo — the --demo mode implementation (see the header comment above
+# for the full flow/rationale). Defined here, ahead of CLI parsing, purely
+# so the dispatch call right after argument parsing (below) can reach it —
+# every variable it reads (demo_repo_flag / demo_cap_usd / demo_yes) is
+# resolved at CALL time, once CLI parsing has actually run.
+#
+# Test-double seams (never overridden in production use):
+#   TRY_DEMO_CLONE_URL   — the scratch clone's source URL. Default:
+#                          https://github.com/<--demo-repo>.git (a plain
+#                          HTTPS URL, not `gh repo clone` — this script runs
+#                          `gh auth setup-git` first so gh's own credential
+#                          helper backs a plain `git clone` regardless of
+#                          the caller's global git_protocol setting; a
+#                          curious stranger who authenticated `gh` but has
+#                          no SSH key configured must not be stuck here).
+#   TRY_DEMO_BOARD_NUM   — the throwaway internal board NUMBER used only as
+#                          a scratch boards.conf key for this run's own temp
+#                          dir. Default: 900. No real board of this (or any)
+#                          number is ever read or written — see
+#                          ISSUES-ONLY-BACKEND.md for the backend=issues axis.
+#
+# Return code is the function's own exit status (never `exit` inside this
+# function — every path uses `return`, which is what lets the `trap ...
+# RETURN` scratch-dir cleanup below fire on every path, success or failure).
+run_demo() {
+  local demo_repo board_lib proposal_pr scratch clone_dir conf issue_num item_id \
+        title body host sess stamp foreign fix_json fix_path fix_content \
+        manifest_file body_file branch pr_out outcome low high demo_reply \
+        clone_out files_json prompt fix_rc BOARDS_CONF_REPO_LOCAL BOARDS_CONF_MACHINE
+
+  demo_repo="${demo_repo_flag:-Towheads/foundation-kernel-demo}"  # denylist:allow — this repo's own scratch demo-repo default (mirrors seed-demo-repo.sh's identical default); a stranger overrides via --demo-repo
+  : "${TRY_DEMO_CLONE_URL:=https://github.com/$demo_repo.git}"
+  : "${TRY_DEMO_BOARD_NUM:=900}"
+
+  case "$demo_cap_usd" in
+    '' | *[!0-9.]*)
+      echo "try --demo: --demo-cap-usd '$demo_cap_usd' is not a plain number" >&2
+      return 1
+      ;;
+  esac
+
+  board_lib="$KERNEL_ROOT/workflows/scripts/board/lib/board.sh"
+  proposal_pr="$KERNEL_ROOT/workflows/scripts/proposal/proposal-pr.sh"
+  if [ ! -f "$board_lib" ]; then
+    echo "try --demo: board.sh not found at $board_lib (broken kernel checkout)" >&2
+    return 1
+  fi
+  if [ ! -f "$proposal_pr" ]; then
+    echo "try --demo: proposal-pr.sh not found at $proposal_pr (broken kernel checkout)" >&2
+    return 1
+  fi
+
+  for bin in git "$TRY_GH_BIN" "$CLAUDE_BIN"; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      echo "try --demo: required tool '$bin' not found on PATH" >&2
+      return 1
+    fi
+  done
+  if ! "$TRY_GH_BIN" auth status >/dev/null 2>&1; then
+    echo "try --demo: gh is installed but not authenticated (run: gh auth login)" >&2
+    return 1
+  fi
+
+  echo "== foundation try --demo =="
+  echo
+  echo "!! MUTATING MODE: unlike the default zero-write taste above, --demo"
+  echo "   clones $demo_repo to a scratch dir and opens a REAL pull request"
+  echo "   against it (never a merge — see this file's --demo header comment)."
+  echo
+
+  echo "-- Spend guard --"
+  low="$TRY_DEMO_TICK_LOW_USD"
+  high="$TRY_DEMO_TICK_HIGH_USD"
+  echo "Cost estimate (DIRECTIONAL — hardcoded constants, not a live pricing lookup;"
+  echo "  see kernel/bin/lib/cost-estimates.conf): \$$low - \$$high for ONE real"
+  echo "  safe-tier funnel tick (issue -> PR) against $demo_repo."
+  echo "Hard spend cap for this run: \$$demo_cap_usd (--demo-cap-usd; enforced on the"
+  echo "  live judgment call via --max-budget-usd — DIRECTIONAL, an approval-time"
+  echo "  decision; tighten when real calibration exists)."
+  echo
+
+  if [ "$demo_yes" -ne 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "try --demo: refusing to run non-interactively without --yes — a curious" >&2
+      echo "  stranger must not silently burn API spend. Re-run with --yes to confirm." >&2
+      return 1
+    fi
+    printf 'Proceed and spend up to $%s? [y/N] ' "$demo_cap_usd"
+    read -r demo_reply
+    case "$demo_reply" in
+      y | Y | yes | YES) ;;
+      *)
+        echo "try --demo: aborted (no confirmation given)"
+        return 0
+        ;;
+    esac
+    echo
+  fi
+
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/foundation-try-demo.XXXXXX")" || {
+    echo "try --demo: could not create a scratch dir" >&2
+    return 1
+  }
+  # EXIT, not RETURN: sourcing board.sh below (`. "$board_lib"`) is ITSELF a
+  # RETURN event in bash (a `source`/`.` completing fires RETURN exactly
+  # like a function returning) — a RETURN trap here would fire the instant
+  # board.sh finishes loading and delete the scratch dir (boards.conf and
+  # all) before it's ever read. run_demo is always immediately followed by
+  # `exit $?` at its one call site, so EXIT fires at the same real moment
+  # RETURN was meant to, without the false-positive on sourcing.
+  # shellcheck disable=SC2064  # $scratch is this run's own value; must expand now, not at trap-fire time
+  trap "rm -rf '$scratch'" EXIT
+  clone_dir="$scratch/repo"
+  conf="$scratch/boards.conf"
+
+  echo "-- 1. Scratch clone --"
+  echo "Cloning $demo_repo -> $clone_dir"
+  "$TRY_GH_BIN" auth setup-git >/dev/null 2>&1 || true
+  if ! clone_out="$(git clone -q "$TRY_DEMO_CLONE_URL" "$clone_dir" 2>&1)"; then
+    echo "try --demo: could not clone $demo_repo: $clone_out" >&2
+    return 1
+  fi
+  echo
+
+  cat > "$conf" <<EOF
+board.$TRY_DEMO_BOARD_NUM.repo=$demo_repo
+board.$TRY_DEMO_BOARD_NUM.backend=issues
+EOF
+
+  # shellcheck disable=SC2034  # read across the source boundary below by board.sh's _board_conf_file
+  BOARDS_CONF_REPO_LOCAL="$conf"
+  # shellcheck disable=SC2034  # read across the source boundary below by board.sh's _board_conf_file
+  BOARDS_CONF_MACHINE="$scratch/no-such-machine-conf.never"
+  # shellcheck source=../../workflows/scripts/board/lib/board.sh
+  . "$board_lib"
+
+  echo "-- 2. Claim one demo-seed issue (issues-only tracker adapter) --"
+  if ! board_resolve "$TRY_DEMO_BOARD_NUM"; then
+    echo "try --demo: could not read open issues on $demo_repo" >&2
+    return 1
+  fi
+  issue_num="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '
+    [.items[] | select(.labels != null and (.labels | index("demo-seed")) != null
+                        and ((has("host/Session")) | not))]
+    | sort_by(.content.number) | .[0].content.number // empty')"
+
+  if [ -z "$issue_num" ]; then
+    echo "skipped — no available demo-seed issue on $demo_repo (every seeded issue is"
+    echo "  either claimed or closed). Restore the fixed set with:"
+    echo "  seed-demo-repo.sh --repo $demo_repo --reset"
+    echo
+    echo "foundation try --demo: done (no tick run)"
+    return 0
+  fi
+
+  item_id="$(board_item_id "$issue_num")"
+  title="$(board_item_title "$issue_num")"
+  host="$(hostname -s 2>/dev/null || echo host)"
+  sess="${CLAUDE_CODE_SESSION_ID:-}"
+  if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:demo"; fi
+
+  if foreign="$(board_claim_contended "$TRY_DEMO_BOARD_NUM" "$issue_num" "$stamp")"; then
+    echo "try --demo: #$issue_num is already claimed by [$foreign] — try again" >&2
+    return 1
+  fi
+
+  if ! board_stamp "$item_id" "$BOARD_FIELD_HOSTSESSION" "$stamp"; then
+    echo "try --demo: could not stamp #$issue_num" >&2
+    return 1
+  fi
+  if ! board_set_status "$item_id" "$BOARD_OPT_INPROGRESS"; then
+    echo "try --demo: could not claim #$issue_num" >&2
+    return 1
+  fi
+  echo "Claimed #$issue_num — $title  [$stamp]"
+  echo
+
+  body="$("$TRY_GH_BIN" issue view "$issue_num" -R "$demo_repo" --json body -q '.body' 2>/dev/null || true)"
+
+  echo "-- 3. Live judgment call (real claude -p, --tools \"\" — zero tool access;"
+  echo "      this script applies the output, the model never writes anything) --"
+  files_json="$(
+    cd "$clone_dir" && git ls-files | while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      jq -n --arg p "$f" --arg c "$(cat "$f")" '{path:$p, content:$c}'
+    done | jq -s '.'
+  )"
+
+  prompt="$(cat <<PROMPT_EOF
+You are producing a SAFE-TIER, single-issue code fix for the scratch demo
+repo $demo_repo. You have NO tools (--tools ""); you cannot write anything
+yourself — your ONLY output is the corrected file content, applied by the
+calling script, never by you.
+
+Issue #$issue_num: $title
+
+$body
+
+Below is every tracked file in the repo (path + full current content). Fix
+ONLY what the issue above describes, in the ONE file it names, with the
+SMALLEST correct change — every other line (and every other file) must
+stay byte-identical.
+
+$(printf '%s' "$files_json" | jq -r '.[] | "--- path: \(.path) ---\n\(.content)\n"')
+
+Output ONLY a single JSON object on stdout, nothing else — no markdown
+fences, no commentary:
+{"path": "<repo-relative path of the ONE file you fixed>", "content": "<its full corrected content>"}
+PROMPT_EOF
+)"
+
+  # No `set -e` toggle here (unlike step 3's shadow-triage call above): this
+  # script's top-level mode is `-uo pipefail` only (`-e` was never on), and
+  # turning it on here would abort the function uncontrolled the moment a
+  # later command substitution (e.g. `jq` on a malformed judgment-call
+  # response) returns non-zero — exactly the case the explicit `fix_rc` /
+  # `fix_path` checks below exist to handle gracefully.
+  fix_json="$(_try_run_with_timeout "$TRY_DEMO_CLAUDE_TIMEOUT_SECS" \
+    "$CLAUDE_BIN" -p "$prompt" \
+    --tools "" \
+    --output-format text \
+    --no-session-persistence \
+    --max-budget-usd "$demo_cap_usd" \
+    2>/dev/null)"
+  fix_rc=$?
+
+  if [ "$fix_rc" -ne 0 ]; then
+    echo "try --demo: live judgment call failed (exit $fix_rc) — #$issue_num left claimed" >&2
+    return 1
+  fi
+
+  fix_path="$(printf '%s' "$fix_json" | jq -r '.path // empty' 2>/dev/null)"
+  fix_content="$(printf '%s' "$fix_json" | jq -r 'if has("content") then .content else empty end' 2>/dev/null)"
+  if [ -z "$fix_path" ]; then
+    echo "try --demo: could not parse a fix from the judgment call's output — #$issue_num left claimed" >&2
+    echo "  raw output: $fix_json" >&2
+    return 1
+  fi
+  echo "Fix: $fix_path"
+  echo
+
+  echo "-- 4. Open the PR (proposal-pr.sh — never a direct push) --"
+  manifest_file="$scratch/manifest.json"
+  jq -n --arg p "$fix_path" --arg c "$fix_content" '[{path:$p, content:$c}]' > "$manifest_file"
+
+  body_file="$scratch/pr-body.md"
+  {
+    echo "Fix for \`$demo_repo\` issue #$issue_num, opened by \`foundation try --demo\`"
+    echo "(foundation-kernel's newcomer demo tick — one real, safe-tier issue -> PR"
+    echo "pass; the fix content came from a live \`claude -p\` call run with"
+    echo "\`--tools \"\"\` — structurally zero tool access — so this script, not the"
+    echo "model, applied/committed/pushed it)."
+    echo
+    echo "$body"
+    echo
+    echo "Closes #$issue_num"
+  } > "$body_file"
+
+  branch="demo/issue-$issue_num"
+  if ! pr_out="$(bash "$proposal_pr" open --repo-dir "$clone_dir" --branch "$branch" \
+      --title "fix: $title" --body-file "$body_file" \
+      --files-manifest "$manifest_file" 2>&1)"; then
+    echo "try --demo: proposal-pr.sh failed: $pr_out" >&2
+    return 1
+  fi
+
+  outcome="$(printf '%s' "$pr_out" | jq -r '.outcome // "ERROR"' 2>/dev/null)"
+  case "$outcome" in
+    PR_OPENED | EXISTS)
+      echo "PR: $(printf '%s' "$pr_out" | jq -r '.url')"
+      ;;
+    NO_CHANGES)
+      echo "try --demo: the judgment call's fix produced no diff against $demo_repo's"
+      echo "  base — nothing to propose. #$issue_num left claimed; try again."
+      return 1
+      ;;
+    *)
+      echo "try --demo: proposal-pr.sh reported $outcome: $pr_out" >&2
+      return 1
+      ;;
+  esac
+
+  echo
+  echo "foundation try --demo: done — #$issue_num -> $outcome"
+  echo "  (safe-tier boundary: PR opened, never merged. Issue left In Progress on"
+  echo "  the scratch tracker — no board was provisioned. Restore the fixed seed"
+  echo "  set any time with: seed-demo-repo.sh --repo $demo_repo --reset)"
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # CLI parsing
@@ -153,6 +493,7 @@ usage() {
   cat <<'EOF'
 usage: try.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network]
               [--timeout SECS] [--max-issues N]
+       try.sh --demo [--demo-repo OWNER/REPO] [--demo-cap-usd N] [--yes]
 EOF
 }
 
@@ -161,6 +502,10 @@ gh_repo_flag=""
 no_network=0
 try_timeout=10
 max_issues=20
+demo_mode=0
+demo_repo_flag=""
+demo_cap_usd="2.00"
+demo_yes=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -169,6 +514,10 @@ while [ $# -gt 0 ]; do
     --no-network) no_network=1; shift ;;
     --timeout) try_timeout="${2:?--timeout needs a value}"; shift 2 ;;
     --max-issues) max_issues="${2:?--max-issues needs a value}"; shift 2 ;;
+    --demo) demo_mode=1; shift ;;
+    --demo-repo) demo_repo_flag="${2:?--demo-repo needs a value}"; shift 2 ;;
+    --demo-cap-usd) demo_cap_usd="${2:?--demo-cap-usd needs a value}"; shift 2 ;;
+    --yes) demo_yes=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "try.sh: unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -177,6 +526,11 @@ done
 if ! command -v jq >/dev/null 2>&1; then
   echo "try.sh: jq not found on PATH" >&2
   exit 1
+fi
+
+if [ "$demo_mode" -eq 1 ]; then
+  run_demo
+  exit $?
 fi
 
 # ---------------------------------------------------------------------------
