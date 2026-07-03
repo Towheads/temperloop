@@ -90,6 +90,10 @@ KERNEL_GATES=(
   # for kernel/workflows/scripts/demo/seed-demo-repo.sh, fake `gh` on PATH,
   # zero network — mirrors test-board's glob-based kernel coverage (F#836).
   "make test-demo"
+  # Proposal-PR generator tests (foundation #853, Epic D): subprocess suite
+  # for kernel/workflows/scripts/proposal/proposal-pr.sh, fake `gh` on PATH,
+  # zero network — mirrors test-board's glob-based kernel coverage (F#836).
+  "make test-proposal-pr"
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
@@ -97,6 +101,12 @@ KERNEL_GATES=(
   # fixture-repo tests, plus a live PATH-trimmed case proving the `gh`-absent
   # degrade path (see workflows/scripts/probe/tests/test_conventions_probe.sh).
   "make test-conventions-probe"
+  # `foundation try` — zero-config, zero-write taste (foundation #765 Epic D,
+  # item foundation-try / #852): fake `gh`/`claude` on PATH (the
+  # write-intercepting-wrapper proof), zero network, plus PATH-trimmed
+  # gh-absent/claude-absent degrade-path cases (see
+  # bin/subcommands/tests/test_try.sh).
+  "make test-try"
   # Docs-build gate (F#764, Epic A): runs the docs-site generator
   # (workflows/scripts/docs/generate.py) BUILD ONLY, no publish step — a
   # doc-source break (e.g. a malformed workflows/scripts/kernel/kernel-

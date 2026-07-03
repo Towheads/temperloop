@@ -10,6 +10,8 @@ BOARD_SRC := $(FOUNDATION)/workflows/scripts/board
 BUILD_SRC := $(FOUNDATION)/workflows/scripts/build
 PROBE_SRC := $(FOUNDATION)/workflows/scripts/probe
 DEMO_SRC := $(FOUNDATION)/workflows/scripts/demo
+PROPOSAL_SRC := $(FOUNDATION)/workflows/scripts/proposal
+BIN_SRC := $(FOUNDATION)/bin
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
 .PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
@@ -17,7 +19,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 	test-prune-branches validate-live-drain validate-command-run-emit \
 	validate-lexicon test-scan-stub lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks docs \
-	test-docs-generator test-conventions-probe test-demo guard-install-worktree
+	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
 
 help:
 	@echo "Targets:"
@@ -44,6 +46,8 @@ help:
 	@echo "  test-docs-generator     Docs generator unit tests"
 	@echo "  test-conventions-probe  Conventions-probe (read-only repo-convention detector) tests"
 	@echo "  test-demo               Demo-repo seed script tests"
+	@echo "  test-proposal-pr        Proposal-PR generator (tree-diff -> reviewable PR) tests"
+	@echo "  test-try                foundation try (zero-config, zero-write taste) tests"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -105,6 +109,23 @@ test-conventions-probe:
 test-demo:
 	@echo "==> Running demo-repo seed script tests..."
 	@for t in $(DEMO_SRC)/tests/test_*.sh; do \
+		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+	done
+
+# Glob-based, mirroring test-board (F#836) — kernel coverage tracks whatever
+# proposal-pr tests are actually vendored.
+test-proposal-pr:
+	@echo "==> Running proposal-PR generator tests..."
+	@for t in $(PROPOSAL_SRC)/tests/test_*.sh; do \
+		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+	done
+
+# Glob-based, same rationale as test-board/test-conventions-probe above
+# (F#836): kernel coverage can never trail whichever tests/test_*.sh files
+# are actually vendored.
+test-try:
+	@echo "==> Running foundation try tests..."
+	@for t in $(BIN_SRC)/subcommands/tests/test_*.sh; do \
 		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
 	done
 
