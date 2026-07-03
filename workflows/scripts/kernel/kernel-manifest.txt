@@ -1,0 +1,255 @@
+# kernel-manifest.txt — classifies every git-tracked path in foundation as
+# KERNEL (ships in the public open-source kernel repo) or OVERLAY (stays in
+# Travis's private foundation-overlay repo, consuming the kernel via git
+# subtree). foundation #781, epic #762 "kernel split" follow-on.
+#
+# Definitions (from the epic contract):
+#   kernel  — anything a stranger needs for the process layer to work against
+#             their own org/values: board toolkit, build spine, funnel,
+#             quality gates, commands/skills, generic hooks, plan schema.
+#   overlay — anything personal or machine-specific: vault-specific content,
+#             mini/launchd deploy bits, personal dotfiles, telemetry data,
+#             session archives, dashboard data, iterm profiles.
+#   split   — this path is itself a MIX of kernel and overlay content that
+#             cannot be separated by a path glob alone (e.g. one prose file
+#             with both generic and personal sections). It is covered here
+#             (the coverage checker passes) but is NOT a final answer — a
+#             sibling epic item (named per entry) does the actual content
+#             split before extraction. Never introduce a NEW `split` entry
+#             to dodge a real kernel/overlay call; it is only for cases
+#             already tracked by a named follow-up item.
+#
+# FORMAT: one entry per line, `<class> <glob>`, class in {kernel, overlay,
+# split}. `#` starts a comment (rest of line, or a whole-line comment).
+# Globs use bash `[[ path == pattern ]]` matching — `*` matches any string
+# INCLUDING `/`, so `dir/*` means "dir/ itself and everything under it,
+# recursively" (there is no separate `**` globstar form here — plain `*`
+# already spans path separators in this matching context).
+#
+# MATCH RULE: the checker (check-kernel-manifest.sh) matches a tracked file
+# against every entry whose glob matches it, then takes the entry with the
+# LONGEST pattern string (most specific wins) — not first-listed-wins. This
+# lets a single-file override (e.g. one overlay hook living inside an
+# otherwise-kernel directory) sit anywhere in the file relative to the
+# broader directory glob it overrides, without fragile ordering.
+#
+# LICENSE / NOTICE / SECURITY.md: none of these three files exist in this
+# repo yet — they are seeded fresh into the kernel repo by the sibling
+# `kernel-repo-seed` item, not carried over from here. They belong to the
+# kernel repo. (No manifest line needed until they exist as tracked paths;
+# recorded here to satisfy this item's acceptance criterion 3.)
+#
+# CLAUDE.md layer split: `CLAUDE.md` (repo root) remains `split`. The former
+# `claude/CLAUDE.md` was divided by the sibling `claude-md-layer-split` item
+# into `claude/CLAUDE.kernel.md` (kernel) + `claude/CLAUDE.overlay.md`
+# (overlay), composed into ~/.claude/CLAUDE.md at install time by
+# `workflows/scripts/install-claude-md.sh` (kernel, alongside
+# install-settings.sh). Same split-pending treatment extended here to
+# `claude/settings.json` (mixes kernel hook-wiring with Travis's personal
+# permission allowlist/model choice in one committed file) and `Makefile`
+# (kernel build-spine/board/install targets interleaved with overlay
+# telemetry/sessions/crash-convergence targets in one file, mirroring the
+# quality-gates.sh KERNEL_GATES/OVERLAY_GATES split but not yet itself split
+# the same way) — both need a real file-level split before physical
+# extraction; not this item's job to perform it.
+
+# ---------------------------------------------------------------------------
+# Repo root
+# ---------------------------------------------------------------------------
+split CLAUDE.md
+kernel README.md
+split Makefile
+kernel .gitignore
+kernel .github/*
+overlay .claude/*
+
+kernel scripts/quality-gates.sh
+kernel scripts/prune-merged-branches.sh
+kernel scripts/tests/*
+overlay scripts/quality-gates.d/*
+
+overlay env/*
+overlay dashboard/*
+overlay infra/*
+overlay iterm/*
+overlay meta/*
+overlay Plans-archive/*
+
+# ---------------------------------------------------------------------------
+# claude/ — Claude Code config, source of truth for ~/.claude/
+# ---------------------------------------------------------------------------
+kernel claude/.gitkeep
+kernel claude/CLAUDE.kernel.md
+overlay claude/CLAUDE.overlay.md
+split claude/settings.json
+kernel claude/status-line.sh
+kernel claude/plan-schema.md
+kernel claude/decision-queue-contract.md
+kernel claude/work-class-policy.md
+kernel claude/agents/*
+kernel claude/workflows/*
+
+# claude/commands/ — pipeline skills. Generic bug->PR pipeline + funnel
+# driver are kernel; Travis's personal daily-planning rituals, his telemetry
+# brief, and the Sentry-backed crash-convergence intake are overlay (they
+# name overlay-only subject matter even though the *shape* is a slash
+# command like any other).
+kernel claude/commands/assess.md
+kernel claude/commands/build.md
+kernel claude/commands/drain-mind.md
+kernel claude/commands/init.md
+kernel claude/commands/next.md
+kernel claude/commands/sweep.md
+kernel claude/commands/triage.md
+kernel claude/commands/funnel-drive.md
+kernel claude/commands/funnel-drive-merge.md
+overlay claude/commands/plan-morning.md
+overlay claude/commands/plan-evening.md
+overlay claude/commands/telemetry.md
+overlay claude/commands/signal-intake.md
+
+# claude/hooks/ — generic guards/tripwires are kernel; anything hardcoded to
+# Travis's mini machine, his personal telemetry stream, or a not-yet-ported
+# direct Obsidian REST call (rather than the knowledge_store seam) is
+# overlay.
+kernel claude/hooks/*
+overlay claude/hooks/log-askuserquestion.sh
+# session-end-seq-cleanup.sh calls the Obsidian Local REST API directly
+# (Sequencing/<id8>.md) instead of going through the knowledge_store seam the
+# way session-start-drain.sh was migrated to in #777 — that migration gap,
+# not a deliberate boundary, is why this one hook is overlay today. Promote
+# it to kernel once it is routed through knowledge_store.
+overlay claude/hooks/session-end-seq-cleanup.sh
+overlay claude/hooks/session-start-deploy-mini.sh
+overlay claude/hooks/session-start-reconcile.sh
+
+# ---------------------------------------------------------------------------
+# workflows/ — evals corpus is overlay; workflows/scripts/ splits further
+# ---------------------------------------------------------------------------
+overlay workflows/evals/*
+
+kernel workflows/scripts/.gitkeep
+kernel workflows/scripts/board/*
+# migrate-to-org.sh is a ONE-TIME, already-executed org-migration tool tied to
+# this org's specific #330 migration event (hardcodes the old owner login, the
+# target org login/node-id, and the exact boards migrated) — not reusable
+# kernel machinery a stranger's fresh install would run. Single-file override
+# narrows the board/* catch-all above (longest-pattern-wins). foundation #798.
+overlay workflows/scripts/board/migrate-to-org.sh
+kernel workflows/scripts/build/*
+# test_rework_snapshot.sh tests workflows/scripts/rework-snapshot.sh, which is
+# overlay (personal telemetry pipeline, see the flat-files block below) — a
+# kernel-only checkout has nothing for this test to exercise. Single-file
+# override narrows the build/* catch-all above (longest-pattern-wins),
+# mirroring the migrate-to-org.sh precedent just above. foundation #803
+# (kernel-repo-seed build found this while wiring the standalone Makefile's
+# test-build target).
+overlay workflows/scripts/build/tests/test_rework_snapshot.sh
+kernel workflows/scripts/lib/*
+kernel workflows/scripts/drain/*
+kernel workflows/scripts/install/*
+# The manifest + coverage checker classify THEMSELVES kernel: a stranger's
+# repo needs the coverage gate itself, not just the classifications it holds.
+kernel workflows/scripts/kernel/*
+
+# docs generator (F#764, Epic C "docs generated from source in CI"): renders
+# the command reference / plan-note contract / gate list from their own
+# kernel source files. The generator ships in the kernel repo (a stranger
+# needs generated docs against their own commands/gates too); its rendered
+# _site/ output is gitignored (never committed, no dashboard/-style
+# precedent for HTML output) except a tracked .gitkeep so the dir exists in
+# a fresh clone.
+kernel workflows/scripts/docs/*
+# Overlay renderer drop-in convention (analogous to scripts/quality-gates.d/,
+# a sibling `.d` dir next to the script it extends): a private overlay repo
+# drops extra page-producing modules here. Prospective — this directory
+# does not exist in this (today: still-unsplit) checkout; the entry
+# documents the pinned classification for when the kernel/overlay split
+# physically separates the two repos.
+overlay workflows/scripts/docs.d/*
+# Pinned chapters-ingestion glob (see workflows/scripts/docs/sources/
+# chapters.py): scrubbed failure-mode chapters are curated straight into the
+# public kernel docs site, so the glob's target is kernel even though its
+# harvest source (kernel-candidate-tagged Decisions/Mistakes vault notes) is
+# private overlay content. Prospective — docs/failure-modes/ does not exist
+# yet; a separate item (the chapters harvester) populates it.
+kernel docs/failure-modes/*
+overlay workflows/scripts/crash-convergence/*
+overlay workflows/scripts/sessions/*
+overlay workflows/scripts/validators/*
+overlay workflows/scripts/evals/*
+
+# workflows/scripts/tests/ — mostly the kernel install/PR-hygiene test
+# suite; the session-start-reconcile test pairs with an overlay hook (see
+# above) and rides the OVERLAY_GATES `test-session-start-reconcile` gate.
+kernel workflows/scripts/tests/*
+overlay workflows/scripts/tests/test_session_start_reconcile.sh
+
+# workflows/scripts/*.{sh,py} flat files — mixed. Kernel: PR-hygiene, board
+# GraphQL-budget attribution, install, and the drain-mind findings-stream
+# helper (drain-mind is a kernel pipeline skill; that its instance DATA lands
+# in the overlay-owned meta/data/raw/ at runtime doesn't reclassify the tool
+# that writes it). Overlay: the whole telemetry/rollup/dashboard/session-
+# archive/crash-convergence pipeline that reads and writes meta/data/ and
+# meta/sessions/ — personal subject matter per the epic contract, matching
+# today's OVERLAY_GATES registration (corpus-lint, validator-ci,
+# validate-issue-meta-snapshot, telemetry-test, sessions-test) in
+# scripts/quality-gates.d/foundation-overlay.sh.
+kernel workflows/scripts/board-sync-drift-check.sh
+kernel workflows/scripts/emit-command-run.sh
+kernel workflows/scripts/gh-call-logger.sh
+kernel workflows/scripts/install-settings.sh
+kernel workflows/scripts/install-claude-md.sh
+kernel workflows/scripts/lint-pr-body.sh
+kernel workflows/scripts/validate-command-run-emit.sh
+kernel workflows/scripts/validate-live-drain.sh
+kernel workflows/scripts/test_findings.py
+
+overlay workflows/scripts/aggregate_sessions.py
+overlay workflows/scripts/test_aggregate_sessions.py
+overlay workflows/scripts/askuserquestion_tally.py
+overlay workflows/scripts/test_askuserquestion_tally.py
+overlay workflows/scripts/build_cost_attribution.py
+overlay workflows/scripts/test_build_cost_attribution.py
+overlay workflows/scripts/build_dashboard.py
+overlay workflows/scripts/test_build_dashboard.py
+overlay workflows/scripts/build_eval_rollup.py
+overlay workflows/scripts/build_findings_rollup.py
+overlay workflows/scripts/test_build_findings_rollup.py
+overlay workflows/scripts/build_funnel_rollup.py
+overlay workflows/scripts/test_build_funnel_rollup.py
+overlay workflows/scripts/build_rework_rollup.py
+overlay workflows/scripts/test_build_rework_rollup.py
+overlay workflows/scripts/build_rollups.py
+overlay workflows/scripts/test_build_rollups.py
+overlay workflows/scripts/build_source_sink_join.py
+overlay workflows/scripts/test_build_source_sink_join.py
+overlay workflows/scripts/build_spend_improvement_join.py
+overlay workflows/scripts/build_telemetry_brief.py
+overlay workflows/scripts/test_build_telemetry_brief.py
+overlay workflows/scripts/corpus-lint.sh
+overlay workflows/scripts/eval_compare.py
+overlay workflows/scripts/test_eval_compare.py
+overlay workflows/scripts/install-obsidian-mcp.sh
+overlay workflows/scripts/issue-meta-snapshot.sh
+overlay workflows/scripts/validate-issue-meta-snapshot.sh
+overlay workflows/scripts/mind_snapshot.sh
+overlay workflows/scripts/parse_run_status.py
+overlay workflows/scripts/test_parse_run_status.py
+overlay workflows/scripts/parse_transcripts.py
+overlay workflows/scripts/test_parse_transcripts.py
+overlay workflows/scripts/reconcile_otel.py
+overlay workflows/scripts/test_reconcile_otel.py
+overlay workflows/scripts/rework-snapshot.sh
+overlay workflows/scripts/validate_telemetry.py
+overlay workflows/scripts/test_validate_telemetry.py
+overlay workflows/scripts/validator-ci.sh
+overlay workflows/scripts/test_validators.py
+
+# --- appended by seed-kernel-repo.sh (F#803): these paths are generated by
+# the seeder directly into the kernel repo and never exist in the foundation
+# source tree, so they have no entry in the manifest copied from there. ---
+kernel LICENSE
+kernel NOTICE
+kernel SECURITY.md
+kernel CHANGELOG.md

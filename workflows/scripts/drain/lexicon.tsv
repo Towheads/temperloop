@@ -1,0 +1,106 @@
+# drain-mind tell lexicon — single source of truth for insight-bearing session phrases.
+#
+# Format: <pattern> TAB <category> TAB <match_type>
+#   pattern     — the tell phrase; interpreted case-insensitively.
+#   category    — one of the valid categories below.
+#   match_type  — "literal" (substring match, case-insensitive) or
+#                 "regex"   (ERE, case-insensitive; must compile under `grep -E`).
+#
+# Valid categories:
+#   friction-slug       friction-ledger slug; near-zero false-positives.
+#   filed-at-source     defect/capture-at-source acknowledgement.
+#   self-critique       lesson/mistake language; insight about what went wrong.
+#   trust-rupture       user pushback or expressed doubt.
+#   failure-report      "didn't fire / hasn't moved / never registered" tense family.
+#   flagging            "worth flagging/knowing/naming/noting" family.
+#   state-collision     stale context, dirty state, conflicting data.
+#   filing-decision     explicit decision to file, supersede, or close an issue.
+#   deferral            explicit deferral of work or decision.
+#   self-correction     assistant catching itself mid-task ("I'm thinking about
+#                       this wrong" / "that didn't go right"); assistant-turn only,
+#                       lives in lexicon-assistant.tsv (foundation #501).
+#
+# Matching rules:
+#   - All patterns are matched CASE-INSENSITIVELY against transcript text.
+#   - literal rows: matched as plain substrings (grep -Fi).
+#   - regex  rows: matched as extended regexes (grep -Ei); every regex in this file
+#     must compile under `grep -E` (validated by workflows/scripts/drain/validate-lexicon.sh).
+#
+# This file is consumed by the (future) tell-scanner (#371).
+# Referenced by: claude/commands/drain-mind.md § Step 3 extraction tells.
+# Validated by: make validate-lexicon (wired into CI `checks` job).
+
+# --- friction-slug (near-zero false-positive; exact category slug names) ---
+probe-after-not-before	friction-slug	literal
+stale-context-rework	friction-slug	literal
+redundant-status-check	friction-slug	literal
+reverification-backtrack	friction-slug	literal
+tool-misuse	friction-slug	literal
+search-thrash	friction-slug	literal
+
+# --- filed-at-source ---
+Captured as #	filed-at-source	literal
+
+# --- self-critique / mistake ---
+Lesson:	self-critique	literal
+latent defect	self-critique	literal
+before verifying	self-critique	literal
+false positive	self-critique	literal
+invalidated my read	self-critique	literal
+the wrong layer	self-critique	literal
+version mismatch	self-critique	literal
+silently failed	self-critique	literal
+
+# --- trust-rupture / feedback (user pushback) ---
+wrong again	trust-rupture	literal
+may have been premature	trust-rupture	literal
+thinking about this wrong	trust-rupture	literal
+are you sure	trust-rupture	literal
+never a (fixable|real) root|that'?s a work[ -]?around	trust-rupture	regex
+auto[- ]?mode classifier	trust-rupture	regex
+
+# --- failure-report tense family (regex) ---
+(doesn't|didn't|hasn't) (fire|take|move|persist|register)	failure-report	regex
+
+# --- flagging family (regex) ---
+worth (flagging|knowing|naming|noting)	flagging	regex
+licensing is too expensive|path .* that doesn'?t require (it|the api)	flagging	regex
+move quickly vs\.? carefully	flagging	regex
+reinvent .* logic|avoid duplicat|reuse .* (vetted|existing)	flagging	regex
+disciplined about .* measur|before and after (changes|each change)	flagging	regex
+
+# --- state-collision / stale-context ---
+CONFLICTING	state-collision	literal
+DIRTY	state-collision	literal
+Merge queue is enabled	state-collision	literal
+No commits between	state-collision	literal
+does not exist in the project	state-collision	literal
+already closed	state-collision	literal
+stale cache	state-collision	literal
+commits behind	state-collision	literal
+now-stale	state-collision	literal
+stale\s+(local\s+)?main\b	state-collision	regex
+reset --hard origin/main	state-collision	literal
+
+# --- filing / decision ---
+file a bug	filing-decision	literal
+issue to track	filing-decision	literal
+want me to file	filing-decision	literal
+resolved by verification	filing-decision	literal
+supersedes	filing-decision	literal
+collapses into	filing-decision	literal
+behavior-preserving	filing-decision	literal
+heuristic recorded	filing-decision	literal
+rule change warranted	filing-decision	literal
+chicken-and-egg	filing-decision	literal
+should( actually)? be an issue|should be on the board	filing-decision	regex
+
+# --- deferral ---
+Park to Backlog	deferral	literal
+deferred to the	deferral	literal
+left it open	deferral	literal
+left as-is	deferral	literal
+left unchecked	deferral	literal
+deliberate deferral	deferral	literal
+stopping point	deferral	literal
+don'?t want to (set|arm|enable) .* until|confident it'?s working	deferral	regex

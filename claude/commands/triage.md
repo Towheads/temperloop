@@ -1,0 +1,207 @@
+---
+description: Logical-judgment front door of the bug→PR pipeline. Sweeps a board's Backlog (and optionally ingests analysis docs) and runs the logical decision tree — cull → root-cause collapse → group-by-meaning → value/priority → route decision-only items off-board — then materialises survivors as board-native epics (parent issue + native sub-issues), labels spikes, sets Seq, and flips grouped survivors Backlog→Ready (= triaged). Hands each epic to `/assess --epic N`. Infers the board from the local repo when `--board` is omitted; exits only if the repo is unmapped.
+argument-hint: "[--board <N> | --project <name>] [<analysis-doc-paths>...] [--dry-run]"
+---
+
+You are running the **triage** command. Goal: take everything sitting in a board's **Backlog** (plus, optionally, analysis docs that haven't been filed yet) and make the **logical** decisions about it — *what survives* and *what belongs together* — then record those decisions as durable board state: one **epic** per logical group, survivors linked as native GitHub **sub-issues**, grouped survivors flipped **Backlog → Ready** (= triaged). This is the front door of the funnel in [[Decisions/foundation - Triage stage and the logical-technical pipeline split]]:
+
+```
+capture.sh (bugs) ┐
+sweeps / audits   ┼─► /triage   cull → collapse → group → epic + sub-issues (Backlog→Ready)
+loose Backlog     ┘
+        └─► /assess --epic N   (technical: seams, depends-on/after edges, levels → Plans/ note)
+                └─► /build        (execution lifecycle; claims, merges, closes the epic on last child)
+```
+
+**Triage is logical judgment only.** It decides survival and meaning-grouping. It does **not** decide *how* anything builds — contract/seam scoping, `depends-on` (merge-safety) and `after:` (logical-order) edges, dependency levels, and spike-wiring all belong to `/assess` (companion **#22** adds its `--epic N` source mode). Epic *death* belongs to `/build` (companion **#23** adds epic auto-close). Triage owns epic **birth** and membership; that's the whole job.
+
+**Triage births epics from loose findings — it does NOT decompose a pre-designed epic (foundation #526).** Triage materialises sub-issues only when it culls/groups **loose findings** (Backlog items, sweep docs) into a *new* epic. It has **no** path to take an *already-existing*, fully-specified epic and expand it into sub-issues — so running `/triage` on a tier-N>1 epic that was authored with a rich `## Contract` body but **zero sub-issues by design** (the per-tier *"sub-issues authored when the tier approaches"* pattern) does nothing useful. **That decomposition is `/assess`'s job** — its **epic-decomposition mode** reads the epic's `## Contract` and authors the seam-scoped items (`/build` then mints the sub-issues under the existing epic). If you land here trying to decompose a designed epic, run `/assess --epic N`, not `/triage`. See [[Decisions/foundation - Assess epic-decomposition mode (who authors sub-issues for a designed epic)]].
+
+## Inputs
+
+- `--board <N>` / `--project <name>` (**optional — at most one**) — which board's Backlog to sweep (`3` = stageFind, `4` = foundation, `5` = ssmobile, `6` = subsetwiki; every governed board is migrated onto GitHub's built-in `Status` field per [[Decisions/foundation - Migrate board #4 onto Status field|GH #340]]). Explicit `--board`/`--project` is **preferred**; if omitted, the board is **inferred from the local repo** (see Step 0.3). Inference is bounded to the repo you're standing in — it can only resolve to that repo's registered board, so it cannot silently act on an *unintended* board. The prior stageFind-`3` arbitrary default is still gone; this is context-derived inference, a different thing. (See [[Decisions/foundation - Triage requires an explicit board (no default)]] — superseded by foundation#547's inference rule.)
+- `$1...$N` (optional) — vault paths to analysis docs (`Sweeps/…`, `Issues/…`, audits) to ingest as a **second intake adapter** alongside the board Backlog. Findings from a doc that survive triage get a GitHub issue created (front-loading the creation `/build` would otherwise do late).
+- `--dry-run` (optional) — rehearsal: validate + intake + run the decision tree, then **print** the planned board mutations with **zero** writes. See Step 3.5.
+
+## Operating principles
+
+- **Logical, not technical.** Group by **meaning / shared root cause**, never by "these touch the same file" — that is a *physical* fact and a `/assess` merge edge, explicitly **not** a triage grouping reason. Never compute or store edges/levels here; they churn every assess run and live in the plan note, not on the board.
+- **Membership is durable board state.** The epic↔child link is a native GitHub **sub-issue** relationship — status-orthogonal, GitHub-maintained, and surviving renames/board-moves. It is the one durable record triage produces. Reuse the REST sub-issues API exactly as `/build` Step 2.6 does (see [[Decisions/foundation - build board integration]]).
+- **One epic = one logical group.** A lone survivor gets **no** epic — it is routed at Step 4 per its phase (active phase → Backlog→Ready; inactive phase → stays Backlog and defers), exactly as a grouped survivor is (see Step 2.7 / Step 4.7). Only ≥2 grouped survivors warrant a parent.
+- **Default to culling.** Better five sharp survivors than twelve mushy ones. A Backlog item that is a dupe, won't-fix, stale, or already-fixed should leave the Backlog, not get grouped.
+- **Stay in the orchestrator for judgment.** The decision tree is the cognitive core — keep it in the parent context. Subagents are read-only and only for the Step 3 sanity pass.
+- **Capture-don't-ask board governance, but gate outward writes once.** Per [[Decisions/stageFind - Task workflow (board + WIP-3 gate)]], don't pepper the user with per-item questions. But issue/epic *creation* and culls that *close* issues are real outward writes — surface the full set once, in batch, at Step 4's gate before they fire.
+- **The board carries all state — no sentinel file.** Triage reads only `Backlog` items, so already-triaged items (`Ready`+) are naturally excluded on re-run. **Deferral to a future release phase is now an intake *filter*, not a `Parked` Status bucket** ([[Decisions/foundation - Active-milestone intake filter (supersedes Parked-status parking)]], foundation #208, superseding the `Parked`-status parking of foundation #97): a milestone carries one bit — active vs inactive (default **inactive**), stored as a machine-owned `<!-- triage:active -->` marker in its GitHub description and read via `board_active_milestones <board>`. A Backlog item whose milestone is **inactive** is invisible to intake (Step 1, Adapter A) and defers implicitly — it stays in `Backlog` and re-enters the next sweep automatically when its phase is activated (`milestone activate "<phase>"` stamps the marker active), with **no `Parked` move, label, comment, or status dance**. There is no `Parked` Status bucket any more. **A second naturally-excluded bucket: a Backlog item with an open GitHub native `blocked_by` dependency** (Step 1, Adapter A) — it stays in Backlog but is skipped from intake until its blocker closes, at which point it re-enters the next sweep automatically (the dependency graph is the gate; foundation #137). Epic and doc-issue creation are **probe-before-create**, so a re-run adopts existing artifacts rather than duplicating. Triage is idempotent without an in-band ledger. The flip side of Backlog-only intake: **the one way to re-queue a `Ready`+ item for re-triage is to flip its `Status` back to `Backlog`** — a label or comment does not re-enter the funnel. That is the contract `/assess` routes persistent re-triage signals through (#44).
+- **Post-triage, every survivor belongs to a release phase (milestone).** Triage *assigns* a phase to any **unmilestoned** survivor (per-item judgment, surfaced at the Step-4 write gate, written via `board_set_milestone`). The phase is a free, **concurrent** grouping label — there is no single designated "current/default" phase; pick the right phase for each survivor on its merits. Whether a survivor then *proceeds now* or *defers* turns on whether its phase is active (Step 4 routing), not on a separate status.
+
+## Step 0 — Validate
+
+Run in parallel:
+
+1. Confirm `mcp__obsidian__*` tools are loaded (needed for doc intake and decision-route notes). If no docs are passed and no routes are written, this is non-fatal — but warn.
+2. `gh auth status` — must list the **`project`** scope (board edits need it). If missing, stop with: "run `gh auth refresh -s project`".
+3. **Locate the board adapter, resolve the board.** All board reads/writes route through the shared adapter `lib/board.sh` — never a raw `gh project` call or a hand-resolved field/option id, the same contract `/build` follows ([[Decisions/foundation - build board integration]]). Set `BOARD_LIB` = the first of `scripts/lib/board.sh` (a consuming repo like stageFind, which vendors the toolkit) or `workflows/scripts/board/lib/board.sh` (foundation, the toolkit's home) that exists; if neither exists, stop with "board adapter not found — run /triage from the foundation or a board-consuming checkout". Resolve the board number from `--board`/`--project`. **If neither was given, infer the board from the local repo:** run `source "$BOARD_LIB"; repo=$(gh repo view --json nameWithOwner -q .nameWithOwner); BOARD=""; for b in 3 4 5 6; do [ "$(board_repo "$b")" = "$repo" ] && BOARD="$b"; done` — the same reverse-lookup pattern `/build` Step 0 uses. If a match is found, print `inferred board $BOARD (repo $repo)` before any board read and continue; the existing Step-4 write gate (`Apply all / subset / Cancel`) is what guards silent mutation, so no additional confirm is needed here. If **no** candidate board matches (an unmapped repo), STOP with: `/triage: cannot infer board — pass --board <N> (3=stageFind, 4=foundation, 5=ssmobile, 6=subsetwiki) or --project <name>, or run from a board-mapped repo`. **`source "$BOARD_LIB"` at the top of every board bash block** to get the accessors (`board_resolve` / `board_item_id` / `board_item_title` / `board_set_status` / `board_set_number` / `board_create_many` / `board_create_on_board` / `board_stamp`), the option constants (`BOARD_OPT_BACKLOG` / `BOARD_OPT_READY` / `BOARD_OPT_DONE`), and `board_repo "$BOARD"` → the `owner/repo` for `gh issue create -R` / `gh api` (don't hardcode `<org>/<repo>`).
+4. **Resolve board state once via the adapter.** `source "$BOARD_LIB"; board_resolve "$BOARD"` issues a SINGLE `project view` + `field-list` + `item-list --limit 200` and caches them in the shell (`BOARD_PROJECT_ID`, `BOARD_FIELDS_JSON`, `BOARD_ITEMS_JSON`) — so nothing re-lists per item, and the `--limit 200` footgun + Projects-v2 GraphQL-budget pressure (GH #396) live in one place. The governance field is the built-in **`Status`** field (`BOARD_FIELD_STATUS`); every governed board keys on it since foundation #4's migration ([[Decisions/foundation - Migrate board #4 onto Status field]]), so the adapter owns the field choice — no per-board special-casing here. `board_set_status`/`board_option_id` resolve `Backlog`/`Ready`/`Done` by name from the cache; `board_field_id "Seq"` resolves the Seq number field for `board_set_number`.
+5. For each analysis-doc path in `$1..$N`: `mcp__obsidian__get_vault_file` to confirm it exists; note word count (≥10k → chunked reads in Step 1).
+
+If any check fails, surface in one line and stop.
+
+## Step 0.6 — AskUserQuestion recurring-class intake (attention → candidate defaults)
+
+**Every `AskUserQuestion` is an attention datum** — an interruption that signals a *missing default or contract* (see `~/dev/mind/Context/foundation - AskUserQuestion severity taxonomy.md`). They are logged by the PostToolUse hook `claude/hooks/log-askuserquestion.sh` to the append-only stream `meta/data/raw/askuserquestion-events.jsonl` (schema: `meta/data/raw/README.md`). This step turns a **recurring** high-interrupt class into a triage **candidate** — a candidate for a *new default/contract* that would stop the interruption.
+
+This is a real intake step, not aspirational: run the weekly tally and ingest its recurring classes as Step-1 candidates alongside the board Backlog.
+
+1. **Run the tally** over the last week, recurring classes only:
+   ```bash
+   python3 "$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo .)/workflows/scripts/askuserquestion_tally.py" --days 7 --min-count 3 --json
+   ```
+   (From a board-consuming checkout that vendors foundation, resolve the foundation checkout's path to the script instead; if the script or stream is absent — e.g. on a board without the hook installed — note `AskUserQuestion intake skipped — no event stream` and continue. Never fail triage over a missing telemetry stream.)
+2. **Each recurring class becomes a candidate** with `provenance: askuserquestion`, `title = "Add a default/contract for repeated interruption: <class>"`, body = the class `site_hint`/`header`, its 7-day `count`, and the per-project breakdown, plus a one-line scope: *"This AskUserQuestion site interrupted N times this week — decide whether it warrants a new default (a `batch-at-gate`/`batch-at-ritual` default per the severity taxonomy) so it stops asking."* `source_ref = meta/data/raw/askuserquestion-events.jsonl#<class>`.
+3. **These candidates run the normal Step-2 decision tree** like any other:
+   - Most will **route off-board as a *decision*** (Step 2.5) — "decide whether site X gets a default" is a decision, not build work — written to a `Decisions/` stub. If the decision *does* spawn build work (wire the default into the command), that build re-enters the pipeline as its own item.
+   - A class that is already a known design seam may **collapse** (Step 2.2) into an existing survivor.
+   - **Cull** a class whose interruptions are all legitimately `blocking-now` (no safe default exists — see the taxonomy): a `blocking-now` site has no default *by design*, so a recurring count there is not a defect and gets no candidate.
+   The `--min-count 3` threshold is the recurrence gate — a one-off interruption is noise, not a missing contract.
+
+## Step 1 — Intake (the one fork)
+
+This is the only place the funnel forks, and it is cheap and mechanical. Normalise both sources into a single list of **candidates**, each `{ provenance, issue#?, title, body, labels, source_ref }`:
+
+- **Adapter A — board Backlog.** From the resolved state (Step 0.4), read `BOARD_ITEMS_JSON` — keep items whose `.status` is `Backlog` (`BOARD_OPT_BACKLOG`). These already have issue numbers (`provenance: board`). **Then apply the active-milestone intake filter** (foundation #208, [[Decisions/foundation - Active-milestone intake filter (supersedes Parked-status parking)]]): resolve the active set once with `active=$(board_active_milestones "$BOARD")` (this snapshot is the one carried forward to Step 2's `phase_active` derivation and Step 4 — do not re-call it later). **Guard the empty case (distinguish REST failure from "no active phases"):** if `$active` is empty, check whether open milestones actually exist — `gh api "repos/$(board_repo "$BOARD")/milestones" --jq 'length'` (or equivalent). If milestones **exist** but `$active` is empty, that is most likely a transient REST failure in `board_active_milestones`, not a real "everything inactive" state — **warn and STOP** rather than silently treating every milestoned item as inactive and deferring them all (which would print a plausible deferred count masking the failure). If **no** open milestones exist at all, the empty `$active` is valid: every Backlog item is unmilestoned and all intake normally. Then, for the survivors, for each Backlog candidate read its milestone via `board_item_milestone <n>` and **intake it IFF it is unmilestoned OR its milestone is in `$active`**. A Backlog item whose milestone is **inactive** (set, but not in `$active`) is **excluded from intake** — set it aside into a `deferred[]` list (`{issue#, milestone}`) and leave it untouched in `Backlog`; it re-enters the next sweep automatically once `milestone activate "<phase>"` marks its phase active. (There is no `Parked` move — the filter *is* the deferral.) **Then drop any survivor with an open GitHub native dependency:** for each still-intook Backlog candidate, if `board_blocked_by_open "$BOARD" <n>` prints anything, it is genuinely `blocked_by` an open issue — set it aside into a `blocked[]` skip list (`{issue#, open-blocker numbers}`) instead of intaking it (don't re-triage work that can't start). Gate on the Backlog slice only — `board_item_milestone`/`board_blocked_by_open` are live REST calls per Backlog item, never the whole board. Pull title, body, and labels for the survivors with `gh issue view <n> -R "$(board_repo "$BOARD")" --json …`.
+- **Adapter B — analysis docs** (only if `$1..$N` given). Read each doc (small <10k words: whole; large: headings outline then targeted section reads, never >50% of context — same as `/assess` Step 1). Extract actionable findings — skip methodology/preamble. Each finding is a candidate with `provenance: doc`, no issue yet, carrying `source_ref = [[<path>#<heading>]]`. Dedupe findings that overlap across docs (cite each source).
+
+## Step 2 — The logical decision tree
+
+Work the full candidate set in the orchestrator. Apply, in order:
+
+1. **Cull.** Drop candidates that are **dupe / won't-fix / stale / already-fixed**.
+   - **Re-verify "already-fixed" against current `origin/main`** before culling — a dated Backlog item is often already resolved (don't act on stale findings).
+   - *Board-sourced* cull → mark for **close with a one-line reason comment** + move off Backlog → `Done` (or close the issue, which the board reflects). *Doc-sourced* cull → simply drop (no issue was ever created).
+2. **Root-cause collapse.** N symptoms tracing to **one** fix → collapse into a single survivor (note the absorbed symptoms in its body). This is a *logical* merge (same underlying cause), distinct from a *physical* merge edge.
+   - If the collapsed survivor is itself **rework** of prior completed work, file/re-file it with `scripts/capture.sh ... --rework <regression|spec-miss|flake>` so the cause is captured at filing time (F#730) — a human-filing convention for whoever runs triage, not an automated real-time rule, so it deliberately carries no Live/Drain registry-table pair.
+3. **Group-by-meaning.** Cluster the survivors by **theme / shared root cause**. Each cluster of ≥2 is a candidate epic. Resist grouping by "same file/module" — that is a `/assess` edge, not a group.
+4. **Value / priority.** Order survivors and groups by value; assign integer `Seq` values (lower = sooner). This is the *logical* ordering; *dependency* ordering (levels) is `/assess`'s job.
+5. **Route decision-only items off-board.** A candidate that is "**decide** X" rather than "**build** X" is not epic material. Write a short vault stub — `Decisions/` if it needs a rationale capture, else `Context/` — link it, and close/move its board issue off Backlog (doc-sourced: just record the route). It re-enters the build pipeline later only if the decision spawns build work.
+6. **Assign a release phase to every unmilestoned survivor** (foundation #208). A survivor that arrived **unmilestoned** must leave triage with a phase — pick the right milestone for it on its merits (per-item judgment; phases are free, concurrent grouping labels, so there is **no single default phase** to fall back on). A survivor that already carried a milestone keeps it (don't reassign). Record the chosen `<phase>` per unmilestoned survivor; the actual write (`board_set_milestone`) is surfaced at and fires from the Step-4 batched write gate. **Invariant: post-triage every survivor carries a phase.**
+7. **Singleton vs grouped.** A survivor in no cluster is a **singleton**: no epic, route it at Step 4 per its phase (see Step 4.6). A cluster of ≥2 becomes an **epic** with those survivors as members.
+
+Carry forward, per group: a short **group summary** (the shared meaning), its members, and any member flagged `kind: spike` (a verdict-only item — a note + routed issue, not a PR; gets a `spike` label so `/assess --epic` can prefill `kind`). Carry forward, per survivor: its **phase** (existing or newly assigned) and a per-survivor **`phase_active`** flag — set it once here by testing the survivor's phase against the **Step-1 `$active` snapshot** (`board_active_milestones "$BOARD"` captured at Step 1, *not* a fresh call). An unmilestoned survivor's `phase_active` follows the phase you assign it at Step 2.6 (test that phase against the same `$active` snapshot). This `phase_active` flag is what drives the Step-4 Backlog→Ready-vs-defer routing — Step 4.7 reads the flag, it does **not** re-call `board_active_milestones`, so what the Step-3.5 preview gates is exactly what executes (no preview/execute TOCTOU on the active set).
+
+Also carry forward, per survivor, a **`needs_clarification`** flag — set true when the survivor is **underspecified**: the fix's intended behavior, a choice between two designs, or a missing decision is genuinely ambiguous (*not* merely a fact a worker could look up) — plus the one-line **clarifying question** it raises. This is a **logical readiness** judgment (is this survivor well-enough specified to be worked?), distinct from the technical/how calls `/assess` owns. Triage only **flags** it (Step 4's `needs-clarification` sub-step drops a `needs-clarification` label + records the question at source); it does **not answer** it — answering belongs to the downstream consumer (`/sweep` Phase 1 for a singleton, `/assess` for an epic'd member), per [[Decisions/foundation - Triage stage and the logical-technical pipeline split]].
+
+Also carry forward, per survivor, a **`work_class`** — either `Operational` or `Foundational` — per `claude/work-class-policy.md`. The deciding question: **does this work follow an established pattern, or does it establish a new one?**
+
+- **Operational (default):** bug fixes, follow-ups, issue splits, defects found mid-work, established-axis expansion. Follows a known, fully-specified pattern — the driver is fully autonomous (triage → assess → build → auto-merge once CI green).
+- **Foundational:** new features, new kinds of task, architectural decisions, highly disruptive or environment-altering changes. Establishes a new pattern — the driver routes design decisions + plan approval to the operator's decision queue before building.
+
+**Default rule: if in doubt, classify `Operational`.** The misclassification safety net is `/build`'s design-fork halt — an Operational item that turns out to require architectural judgment halts there regardless of its label. That net makes the binary safe to apply early. `Foundational` is the deliberate exception: mark it only when the work clearly changes the system's shape or requires operator judgment up front to determine *what* and *how*.
+
+## Step 3 — Sanity-check pass (read-only, advisory)
+
+Spawn `Agent { subagent_type: "requirements-auditor" }` with the proposed groups (group summaries + member titles + cull list + decision-routes). Prompt it to surface:
+
+- Survivors that are secretly the **same** item (missed dupe / collapse).
+- Groupings that are actually a **physical** edge masquerading as a logical group (should be one epic's `/assess` edge, or separate epics — not one group).
+- Candidates that are really **decisions** (should route off-board) or are **invalid / out of scope** (should cull).
+- A group with only one real survivor (should be a singleton, no epic).
+
+Read-only and advisory. Apply clear wins; surface contested suggestions via `AskUserQuestion` before Step 4. **Graceful skip:** if the agent isn't available, note "sanity pass skipped — agent unavailable" in the Step 5 summary and continue.
+
+## Step 3.5 — Preview before mutation
+
+Print the planned board mutations so a bad grouping is caught before any write:
+
+- **Epics to create** → each with its member slugs/issue#s and one-line summary.
+- **Singletons** → list (no epic).
+- **Phase assignments** → each unmilestoned survivor → its newly-assigned `<phase>` (the `board_set_milestone` writes that fire at the gate).
+- **Routing** → per survivor/epic, **active phase → Backlog→Ready** vs **inactive phase → stays Backlog (defers)**.
+- **Deferred at intake** → the `deferred[]` items skipped in Step 1 (issue# → inactive milestone), summarised as the one-line deferred notice (see Step 5).
+- **Culls** → list with reasons (and which close issues).
+- **Decision-routes** → list with target note paths.
+- **Spikes** → which members get the `spike` label.
+- **Needs-clarification flags** → which survivors get the `needs-clarification` label + their recorded question (Step 4's sub-step).
+- **Work-class labels** → each survivor's `Operational` or `Foundational` assignment (default `Operational`); note any survivors classified `Foundational` and the reason.
+- **Seq** assignments.
+
+If `--dry-run`, **STOP here** — zero mutation, no issue/epic creation, no field flips. End with: "Re-run without `--dry-run` to execute." This is the authoring-time mirror of `/build --dry-run`.
+
+## Step 4 — Materialise on the board
+
+Gate the outward writes once: print the Step 3.5 preview and ask via `AskUserQuestion` — **Apply all** (default) / **Pick a subset of groups** / **Cancel**. Then, for the approved set (idempotent throughout — the board is the state):
+
+All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$(board_repo "$BOARD")"`. Issue *creation* is repo-level (`gh issue create -R "$repo"` / `gh api repos/$repo/...`), not board state, so it stays direct; every *board* read/write goes through the adapter.
+
+1. **Ensure each survivor has an issue.** *Board-sourced* already do (and are already on the board). *Doc-sourced* survivors → **probe-before-create**: `gh issue list -R "$repo" --search "<unique back-link string> in:body" --state all` for an issue a prior run created (match the exact `Triaged from: <source_ref>` back-link, not the title); adopt if found, else `gh issue create -R "$repo"` with a body = the finding's one-line scope + `Triaged from: <source_ref>`. **Collect** each newly-created issue's `<url> <n>` for the single batch board-add in step 5 — do **not** add them one at a time (`board_create_on_board` per item re-resolves the whole board each call, draining the Projects-v2 GraphQL budget; GH #40).
+2. **Create the epic per group** — **probe-before-create** first: `gh issue list -R "$repo" --search "<epic marker> in:body" --state all` for a stable marker string this command writes into every epic body (e.g. `Triage epic: <kebab-group-key>`); adopt if found. Else `gh issue create -R "$repo" --title "Epic: <group title>" --body "<body>"`, where `<body>` = the group summary, a member task-list (`- [ ] <title> (#<n>)`), and the `Triage epic: <key>` marker. Apply an `epic` label if the repo defines one. **Collect** the epic's `<epic-url> <epic#>` for the batch board-add in step 5; its Ready flip + Seq follow in 5–6.
+3. **Link members as native sub-issues** — for each member issue not already a child: resolve its db id (`gh api repos/$repo/issues/<n> --jq '.id'`) → `gh api -X POST repos/$repo/issues/<epic>/sub_issues -F sub_issue_id=<db-id>`. **Linkage failure warns-and-continues** (the typed link is cosmetic relative to membership intent). **Fallback** if the API is unavailable: append `- [ ] #<child>` to the epic body and prepend `Part of #<epic>` to each child body — GitHub renders that as a tracked relationship.
+4. **Label spikes** — add the `spike` label to each member flagged `kind: spike` (`gh issue edit <n> -R "$repo" --add-label spike`). **Then, the `needs-clarification` sub-step:** for each survivor (singleton *or* member) carried forward with `needs_clarification` (Step 2), flag the open question **at source** — **comment FIRST, then label+assign**: `gh issue comment <n> -R "$repo" --body "needs-clarification: <the question>"$'\n\n'"Once answered: on the autonomous funnel board, unassign yourself to release it straight back to the driver; on other boards leave it as-is — the next /sweep or /assess clears the label. Either way your answer is consumed."` **and only after it succeeds** `gh issue edit <n> -R "$repo" --add-label needs-clarification --add-assignee @me`. The closing line is **board-safe**: on a funnel-enabled board (stageFind today) unassigning is the operator's baton-return gesture — the funnel autonomously drains an *unassigned* `needs-clarification` item, clearing the label so it drives again (foundation #657). On a board with **no** funnel consumer (e.g. foundation), it deliberately tells the operator to **leave the assignment** (so the item stays in their assigned-to-me queue per #684) and relies on the label carrying it into the next `/sweep`//`/assess` — never instructing an unassign that would strand it with nothing to drain it. This ordering is deliberate (foundation #684): the label+assign are the "handled" markers, and the funnel router treats an assigned `needs-clarification` item as fully parked (`route-already-assigned`) — never re-deriving or re-posting the question the way the retired `route-needs-input` did each tick. So the question text MUST be durably recorded *before* the markers land; if the comment call fails, do **not** apply the label/assign — leave the survivor un-flagged so it re-enters the next sweep (a missing marker self-heals; a missing *question* under a "handled"-looking marker would be silently lost). With the comment in place, the `--add-label --add-assignee` **assigns the operator at source** (`@me` = the gh-authenticated operator), landing the survivor directly in the operator's assigned-to-me queue for its downstream consumer (`/sweep` Phase 1 for singletons, `/assess` for epic'd members) to *answer* — without triage answering (the logical/technical split). The funnel then merely **parks** it, never re-assigns — the assignment is owned here at source (foundation #684). Re-run safe: `--add-label`/`--add-assignee` are idempotent (skip the label add if already present per `gh issue view <n> -R "$repo" --json labels`). **Then, the work-class stamp:** for every survivor (singleton *or* epic member) and each epic issue itself, stamp exactly one work-class label (`Operational` or `Foundational`) from its carried-forward `work_class` value. Use `gh issue edit <n> -R "$repo" --add-label <work_class>`. **Idempotent:** before adding, check `gh issue view <n> -R "$repo" --json labels --jq '.labels[].name'`; if the issue already carries `Operational` or `Foundational`, skip the add (re-run safe). An unmarked issue always receives `Operational` by default — the only way a survivor leaves triage without a work-class label is a bug in this step.
+5. **Batch-land on the board, then set `Seq`.** Land every newly-created issue + epic from steps 1–2 in ONE call: `board_create_many "$BOARD" <url1> <n1> <url2> <n2> …>` — a single board resolve for the whole burst (not one per item; GH #40), each landing in Backlog. (If nothing new was created — all survivors board-sourced — `board_resolve "$BOARD"` once instead.) Either way `BOARD_ITEMS_JSON` is now fresh, so set Seq straight from it: for each survivor and epic, `board_set_number "$(board_item_id <n>)" "Seq" <value>` per Step 2.4.
+6. **Assign milestones to unmilestoned survivors** (foundation #208) — for each survivor that arrived unmilestoned, write its Step-2.6 phase: `board_set_milestone "$BOARD" <n> "<phase>"`. Skip survivors that already carried a milestone. After this step every survivor carries a phase (the post-triage invariant).
+7. **Flip Backlog → Ready *for active-phase survivors only*; leave inactive-phase survivors in Backlog** (foundation #208 routing).
+
+   **Two ordering hazards this step must avoid — read first:**
+   - **Cache-bust hazard (BLOCKER).** Step 4.6's `board_set_milestone` busts the on-disk items cache. So after 4.6, do **NOT** call `board_resolve_item`/`board_resolve` to look up an item id — they would read the busted cache and `board_item_id` would return **empty**, making `board_set_status "" …` a silent no-op (the survivor stays Backlog and re-enters next sweep with no error). Instead, for every `board_item_id <n>` lookup in this step use the **in-shell `BOARD_ITEMS_JSON` captured at Step 4.5** (it is fresh as of 4.5 and still in-shell — `board_set_milestone` busts the *on-disk* cache, not the shell variable). Do not re-resolve between 4.6 and 4.7.
+   - **Active-set TOCTOU hazard.** Do **NOT** re-call `board_active_milestones` here. Branch on each survivor's carried-forward **`phase_active`** flag (derived at Step 2 from the Step-1 `$active` snapshot), so what executes matches the Step-3.5 preview the user gated.
+
+   For every grouped survivor, surviving singleton, **and** each epic, branch on its carried `phase_active`:
+   - **active phase (`phase_active` true)** → `board_set_status "$(board_item_id <n>)" "$BOARD_OPT_READY"` — it proceeds now; this is the durable "triaged" mark that excludes it from the next sweep.
+   - **inactive phase (`phase_active` false)** → **leave it in `Backlog`** (no status write). It defers, and re-enters the next sweep automatically once the phase is activated (`milestone activate "<phase>"` stamps the `<!-- triage:active -->` marker). There is no `Parked` move.
+
+   An **epic's** Ready flip follows its members: if **any** member's `phase_active` is true the epic flips Ready; if the whole group is on inactive phases the epic stays Backlog with them. The epic's Ready flip signals only that the *group is scoped* — member readiness follows each member's **own** `phase_active`: an **inactive-phase member of an active-phase epic is NOT dragged to Ready** — it stays in `Backlog` individually (per the rule above) and is counted in the Step-5 "Left in Backlog (inactive phase)" line.
+8. **Apply culls and decision-routes** — close culled board issues with their reason comment (`gh issue close <n> -R "$repo" --comment "…"` — the built-in close→Done automation reflects it on the board; or set it explicitly with `board_set_status "$(board_item_id <n>)" "$BOARD_OPT_DONE"`). Write the decision-route vault stubs and close/move their issues off Backlog the same way.
+
+## Step 4.9 — Emit the run telemetry record
+
+`/triage` has no plan-note footer, so without an explicit emit here a whole run — or a run that silently stopped emitting — produces **no** signal at all (the June silent-failure class: a never-written stream is indistinguishable from "nothing to do"). Once Step 4's board mutations are applied, append ONE command-run record from this run's own counters (the same ones Step 5 prints) — this call is the executable emit point, not a prose reminder, and its presence is mechanically enforced by `workflows/scripts/validate-command-run-emit.sh` (wired into `scripts/quality-gates.sh`), which fails CI if this invocation is removed:
+
+```bash
+"$(git rev-parse --show-toplevel)/workflows/scripts/emit-command-run.sh" \
+  --command triage --board "$BOARD" \
+  --items-processed <K+M+Q — total candidates intook, Step 0.6/Step 1> \
+  --merged <S — survivors promoted to Ready (active phase), Step 4.7> \
+  --parked <I+N+B — left in Backlog on an inactive phase (Step 4.7) + deferred at intake (Step 1) + blocked on an open blocked_by (Step 1)>
+```
+
+`merged`/`parked` are triage's closest analogues to /build's "landed" vs. "held back": a promoted survivor is triage's terminal-success outcome (it reaches `Ready`, the next stage's intake), while everything left in `Backlog` for any reason (inactive phase, intake deferral, an open blocker) is held back exactly like a `sweep` park. Resolve the script bare repo-relative — if absent from a non-vendoring checkout, treat the failed path resolution as a no-op and continue (never let a missing/failing emit block or delay Step 5). The script itself is `|| true`-safe: a write failure warns to stderr and exits 0.
+
+## Step 5 — Summarise
+
+```
+/triage — board <N> (owner <org>)
+- Candidates intook: K board + M doc-findings + Q AskUserQuestion recurring-classes (Step 0.6)
+- Epics created/adopted: E  (#s → member count each)
+- Promoted to Ready (active phase): S  (#s)
+- Left in Backlog (inactive phase, routed at Step 4): I  (#s → phase)   ← survivors that ran the tree but defer on routing
+- Phases assigned to unmilestoned survivors: A  (#s → phase)
+- Deferred at intake (Step 1 — inactive-milestone filter): N in inactive milestones (<phase> ×k, <phase2> ×j …). Mark active to include.   ← MANDATORY #164 line (see below)
+- Blocked (skipped — open blocked_by): B  (#s → blocked_by #m)
+- Culled: C  (#s → reasons; X issues closed)
+- Decisions routed off-board: D  (→ note links)
+- Spikes labelled: P  (#s)
+- Work-class: O Operational, F Foundational  (#s each; all survivors labelled)
+- Seq assigned across N survivors
+- Sanity pass: applied K notes  (or "skipped — agent unavailable")
+```
+
+Two distinct lines report deferral — don't conflate them:
+- **"Left in Backlog (inactive phase, routed at Step 4)"** counts survivors that *passed* the Step-1 intake filter, ran the full decision tree, and then deferred at Step-4 routing because the phase they hold/were-assigned is inactive (`phase_active` false).
+- **"Deferred at intake (Step 1 — inactive-milestone filter)"** counts the Step-1 `deferred[]` items — Backlog items whose milestone was inactive, so they were *never intook* and never ran the tree.
+
+The **Step-1 intake-deferred line is the mandatory one every run** (foundation #208 / #164 silent-skip mitigation): always print `Deferred at intake (Step 1 — inactive-milestone filter): N in inactive milestones (<phase> ×k …). Mark active to include.` — `N` = the count of the Step-1 `deferred[]` items, grouped by inactive milestone with per-phase counts. If nothing was intake-deferred, print `Deferred at intake (Step 1): 0 — no inactive-milestone Backlog items`. Intake deferral is always reported, never silent. (The Step-4 "Left in Backlog" line is informational, not the #164-mandatory line.)
+
+Close with the next actions:
+1. For each new epic: **`/assess --epic <N>`** to decompose it to seams and produce a `Plans/` note (companion **#22**).
+2. Note that `/build` (companion **#23**) owns the epic's runtime + close downstream — triage does not.
+
+## Failure modes
+
+- **Unmapped repo (inference fails).** If neither `--board` nor `--project` is passed and `gh repo view` + `board_repo` reverse-lookup finds no match for the current repo, stop at Step 0.3 with `/triage: cannot infer board — pass --board <N> (3=stageFind, 4=foundation, 5=ssmobile, 6=subsetwiki) or --project <name>, or run from a board-mapped repo` before any board read or write. The arbitrary stageFind-`3` default is still gone; inference is context-derived (bounded to the local repo) and only fails when the repo genuinely isn't registered.
+- **`project` scope missing.** Stop at Step 0 with the `gh auth refresh -s project` hint — never half-write the board.
+- **Board adapter not found / board not registered.** If `BOARD_LIB` resolves to neither `scripts/lib/board.sh` nor `workflows/scripts/board/lib/board.sh`, or `board_repo "$BOARD"` is empty (the board number isn't in the adapter's registry), stop — run /triage from a foundation or board-consuming checkout and confirm the board is registered in `board.sh`'s `board_repo()`. If `board_resolve` finds no `Status` field carrying `Backlog`/`Ready`/`Done`, the board isn't set up for this pipeline (for a not-yet-migrated board, [[Decisions/foundation - Migrate board #4 onto Status field]] is the fix).
+- **Sub-issues API unavailable.** Fall back to the task-list/`Part of #` convention (Step 4.3); note it in the summary. Don't fail the run over cosmetic linkage.
+- **`board_active_milestones` returns empty (Step 1).** Two causes, opposite handling: if **no open milestones exist** (`gh api repos/$repo/milestones --jq 'length'` is 0), the empty active set is valid — everything is unmilestoned and intakes normally. If **open milestones DO exist** but the active set came back empty, treat it as a transient REST failure — **warn and STOP**, don't silently defer every milestoned Backlog item (a silent mass-defer prints a plausible count that masks the failure). Re-run once REST is healthy.
+- **No survivors after cull.** Report "Backlog/doc-set culled to zero — nothing to group" and stop. Don't manufacture an epic.
+- **Candidate is both a decision and build work.** Surface via `AskUserQuestion` (route the decision off-board *and* keep a build survivor, or treat as one) — don't guess.
+- **Doc has no actionable findings.** Report "no candidates derivable from <doc>" and continue with the board-only set.
+- **Re-run after a partial pass.** Idempotent: already-`Ready` items aren't re-intook; epics/issues are probe-before-create. Safe to re-run.

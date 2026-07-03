@@ -1,0 +1,32 @@
+name: CI
+
+# foundation-kernel's CI: a single job named `checks` (the required status
+# check for branch protection), run on ubuntu-latest AND macos-latest so
+# "protected + green" holds on both OSes a stranger's clone might run on.
+# The job runs ONE command, scripts/quality-gates.sh — the single source of
+# truth for the whole static gate set (board/build/install/hooks suites,
+# Live/Drain + PR-body-lint registries, the kernel manifest/denylist/gitleaks
+# scrub checks, and a whole-tree shellcheck). Add or change a gate THERE, not
+# here.
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+
+      - run: bash scripts/quality-gates.sh

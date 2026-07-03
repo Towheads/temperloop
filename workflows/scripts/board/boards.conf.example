@@ -1,0 +1,33 @@
+# foundation board registry override (foundation #770) — EXAMPLE, not read.
+#
+# Only a file literally named `boards.conf` (no `.example`) is consulted, at
+# one of two locations, in this order (first hit wins):
+#   1. machine-level: $XDG_CONFIG_HOME/foundation/boards.conf
+#      (default ~/.config/foundation/boards.conf)
+#   2. repo-local override: workflows/scripts/board/boards.conf (next to this
+#      file)
+# If NEITHER exists, board.sh / funnel-tick.sh / funnel-drive.sh fall back to
+# their own built-in case maps (this repo's own real values — see those
+# files' own comments) — so a consuming repo (e.g. one that gets a synced
+# copy of board.sh but never a conf file) behaves identically to today.
+#
+# Format: one `board.<N>.<axis>=<value>` per line. axis is one of:
+#   repo     "<owner>/<name>"  — repo-owner axis (gh issue create -R, REST)
+#   owner    "<login>"         — project-owner axis (gh project ... --owner)
+#   project  "<number>"        — project-number axis (gh project <number> ...)
+# These are deliberately SEPARATE axes (#330) — do not collapse them.
+# Blank lines and lines starting with # are ignored. This file is parsed with
+# grep/cut only — never sourced or eval'd — so it cannot execute code.
+#
+# The values below are a PLACEHOLDER example — replace with your own org/repo
+# registry. Board numbers are logical (arbitrary, chosen by you); onboard a
+# new board by adding its 2-3 lines here (or by extending the built-in case
+# maps directly if you're maintaining a fork rather than overriding).
+
+board.1.repo=acme/widget-app
+board.1.owner=acme
+board.1.project=1
+
+board.2.repo=acme/internal-tools
+board.2.owner=acme
+board.2.project=2

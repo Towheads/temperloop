@@ -1,0 +1,37 @@
+# personal-token-denylist.tsv — single source of truth for the personal/org
+# token classes that must not appear in the kernel file set (foundation #798,
+# epic #762 kernel extraction). Checked by check-personal-token-denylist.sh
+# against every path list-kernel-set.sh reports.
+#
+# Format: <pattern> TAB <description>
+#   pattern     — an ERE (grep -E), matched case-sensitively against each
+#                 kernel-set file's content. Keep patterns tight (word
+#                 boundaries / anchors) to avoid false positives on
+#                 unrelated substrings.
+#   description — shown in the failure report; explains WHY the token is
+#                 personal so a fix is obvious without re-deriving it here.
+#
+# A line legitimately needing one of these tokens (a structurally load-bearing
+# default documented as an intentional exception — see check-kernel-manifest.sh
+# analog "split" carve-out) may suppress a single line with a trailing
+# `# denylist:allow — <reason>` comment; check-personal-token-denylist.sh skips
+# any matched line carrying that marker. Use it SPARINGLY and only where the
+# in-file rationale for the exception already exists (never to dodge a real
+# scrub) — see check-personal-token-denylist.sh's own header for the two
+# categories in use today (board.sh/funnel-tick.sh/funnel-drive.sh's
+# boards.conf-fallback case maps, and their fixture-replay tests).
+#
+# Deliberately NOT covered here (see foundation #798 build's verification
+# doc for the scoping rationale): the app/board names themselves
+# (stageFind/foundation/ssmobile/subsetwiki) and their logical board numbers
+# (3/4/5/6) — these are illustrative multi-board-pipeline examples, not
+# identity/credential tokens, and a later item (plan-schema repo-field) is
+# the one that replaces the hardcoded board-number mapping architecture.
+Towheads	personal GitHub org name (private org)
+[Tt]owhead\b	personal GitHub handle/org-login (lowercase form; \b avoids matching inside "Towheads")
+/Users/travis\b	personal absolute filesystem path
+travnew	personal GitHub email-name / handle fragment
+TravisBook	personal machine name
+\bthe mini\b	personal machine nickname (Travis's secondary Mac)
+travnew@yahoo\.com	personal email address
+subset-xg	personal Sentry org slug (real production value, not a placeholder)

@@ -1,0 +1,10 @@
+foundation-kernel
+Copyright 2026 the foundation-kernel project contributors
+
+This product includes software developed as part of the foundation-kernel
+project: the process layer for a board-driven bug -> PR pipeline (board
+toolkit, build spine, funnel driver, quality gates, and the Claude Code
+commands/skills that drive them).
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full
+license text.

@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+#
+# Tests for workflows/scripts/build/gate.sh — the build 4a/4b/4c
+# merge-gate mechanics (epic #253, spike #245). ONE fixture system: this test
+# `source`s gate.sh (whose source guard skips the dispatch), which in turn
+# sources board.sh — and overrides the `_gate_gh` / `_gate_git` seams exactly
+# the way the board replay tests override `_board_gh` (no second mock layer, no
+# PATH shim, zero network). Each case redefines the seam, then calls the cmd_*
+# function directly and asserts on the structured JSON it prints.
+#
+# Covers:
+#   - read: stable MERGEABLE/CLEAN read; UNKNOWN/BEHIND triggers exactly one
+#     re-poll, then classifies on the second (settled) value
+#   - strict: required_status_checks.strict==true → STRICT; gh 404 → NON_STRICT
+#   - risk: RISKY on overlapping files; RISKY on a hold/risky label; RISKY on a
+#     not-CLEAN mergeStateStatus; a clean, pairwise-disjoint, unflagged set →
+#     CLEAN_DISJOINT_INDEPENDENT
+#   - queue: canonical --auto incantation → QUEUED (a real merge is never run)
+#   - nudge: BEHIND → NUDGED (update-branch called); not-BEHIND → NUDGE_NOOP
+#   - poll: ONE fixture per terminal outcome — MERGED (exit 0, the SOLE success
+#     check), CONFLICTING/DIRTY (exit 3), TIMEOUT (exit 4); a CLOSED-not-merged
+#     PR never reads MERGED (the #130 premature-close guard)
+#
+# The seams are redefined mid-file per case (the library calls them
+# indirectly), so shellcheck's "never invoked"/"unreachable" checks are false
+# positives — disabled file-wide like the sibling board replay tests.
+# shellcheck disable=SC2317,SC2329
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source the script under test. Its source-guard ([ BASH_SOURCE = $0 ]) skips
+# the CLI dispatch, exposing cmd_* and the _gate_* seams; it also sources
+# board.sh, so the shared fixture system is in scope. No re-poll wait in tests.
+export GATE_REPOLL_DELAY=0
+# shellcheck source=workflows/scripts/build/gate.sh
+source "$HERE/../gate.sh"
+
+fail() { echo "FAIL: $1" >&2; exit 1; }
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+# Confirm the shared fixture system is live: board.sh's _board_gh seam is in
+# scope (same harness gate.sh + the board tests share).
+declare -F _board_gh >/dev/null || fail "board.sh not sourced — shared fixture system missing"
+echo "PASS: gate.sh sources board.sh — one shared fixture system (_board_gh in scope)"
+
+# --- read: stable MERGEABLE/CLEAN -------------------------------------------
+_gate_gh() {
+  # $1=pr $2=view ... emit the --json payload as gh would (raw via --jq).
+  cat <<'JSON'
+{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN",
+ "statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}
+JSON
+}
+out="$(cmd_read Towheads/foundation 42)"
+[ "$(jq -r .outcome <<<"$out")" = "READ" ] || fail "read outcome (got: $out)"
+[ "$(jq -r .mergeable <<<"$out")" = "MERGEABLE" ] || fail "read mergeable (got: $out)"
+[ "$(jq -r .mergeStateStatus <<<"$out")" = "CLEAN" ] || fail "read mss (got: $out)"
+[ "$(jq -r .checks <<<"$out")" = "PASS" ] || fail "read checks digest (got: $out)"
+echo "PASS: read → mergeable/mergeStateStatus/state/checks digest on a CLEAN PR"
+
+# --- read: UNKNOWN then settled → exactly one re-poll -----------------------
+# A file-backed counter, because _gate_view runs inside a process-substitution
+# subshell — an in-memory counter would reset each call.
+echo 0 > "$TMP/reads"
+_gate_gh() {
+  local n; n=$(<"$TMP/reads"); n=$((n + 1)); echo "$n" > "$TMP/reads"
+  if [ "$n" -eq 1 ]; then
+    echo '{"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","state":"OPEN","statusCheckRollup":[]}'
+  else
+    echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}'
+  fi
+}
+out="$(cmd_read Towheads/foundation 42)"
+[ "$(jq -r .mergeable <<<"$out")" = "MERGEABLE" ] || fail "re-poll did not settle (got: $out)"
+[ "$(<"$TMP/reads")" -eq 2 ] || fail "expected exactly one re-poll (2 reads), got $(<"$TMP/reads")"
+echo "PASS: read re-polls ONCE on UNKNOWN and classifies on the settled value"
+
+# --- strict: protection strict==true → STRICT -------------------------------
+_gate_gh() { echo "true"; }
+out="$(cmd_strict Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "STRICT" ] || fail "strict-true not STRICT (got: $out)"
+echo "PASS: strict → STRICT when required_status_checks.strict == true"
+
+# --- strict: gh 404 (not protected) → NON_STRICT ----------------------------
+_gate_gh() { return 1; }   # gh non-zero == 404 / not protected
+out="$(cmd_strict Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "NON_STRICT" ] || fail "404 not NON_STRICT (got: $out)"
+echo "PASS: strict → NON_STRICT on a 404 (branch not protected)"
+
+# --- risk: CLEAN, pairwise-disjoint, unflagged set → passes -----------------
+# _gate_gh dispatches on the requested --json field; _gate_git returns each
+# PR's disjoint file set keyed off the headRef encoded as origin/main..pr-<n>.
+_gate_gh() {
+  local pr field=""; local -a a=("$@")
+  pr="${a[2]}"
+  for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+  case "$field" in
+    mergeable,mergeStateStatus,state,statusCheckRollup)
+      echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}' ;;
+    headRefName) echo "pr-$pr" ;;
+    labels)      echo "" ;;   # no labels
+    *) echo "{}" ;;
+  esac
+}
+_gate_git() {  # diff --name-only origin/main..pr-<n>
+  local spec="${*: -1}"; local pr="${spec##*pr-}"
+  echo "src/file_$pr.sh"   # one unique file per PR → disjoint
+}
+out="$(cmd_risk Towheads/foundation 10 11 12)"
+[ "$(jq -r .outcome <<<"$out")" = "CLEAN_DISJOINT_INDEPENDENT" ] \
+  || fail "clean disjoint set not CLEAN_DISJOINT_INDEPENDENT (got: $out)"
+echo "PASS: risk → CLEAN_DISJOINT_INDEPENDENT on a CLEAN, disjoint, unflagged set"
+
+# --- risk: overlapping changed files → RISKY --------------------------------
+_gate_git() { echo "src/shared.sh"; }   # every PR touches the SAME file → overlap
+out="$(cmd_risk Towheads/foundation 10 11)"
+[ "$(jq -r .outcome <<<"$out")" = "RISKY" ] || fail "overlap not RISKY (got: $out)"
+jq -e '.reasons[] | select(test("overlapping files"))' <<<"$out" >/dev/null \
+  || fail "overlap reason not surfaced (got: $out)"
+echo "PASS: risk → RISKY when changed-file sets are not pairwise disjoint"
+
+# --- risk: a hold/risky label → RISKY ---------------------------------------
+_gate_git() { local spec="${*: -1}"; local pr="${spec##*pr-}"; echo "src/file_$pr.sh"; }  # disjoint again
+_gate_gh() {
+  local pr field=""; local -a a=("$@"); pr="${a[2]}"
+  for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+  case "$field" in
+    mergeable,mergeStateStatus,state,statusCheckRollup)
+      echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}' ;;
+    headRefName) echo "pr-$pr" ;;
+    labels)      [ "$pr" = "11" ] && echo "hold" || echo "" ;;
+    *) echo "{}" ;;
+  esac
+}
+out="$(cmd_risk Towheads/foundation 10 11)"
+[ "$(jq -r .outcome <<<"$out")" = "RISKY" ] || fail "label not RISKY (got: $out)"
+jq -e '.reasons[] | select(test("hold/risky label"))' <<<"$out" >/dev/null \
+  || fail "label reason not surfaced (got: $out)"
+echo "PASS: risk → RISKY when any PR carries a hold/risky label"
+
+# --- risk: a not-CLEAN mergeStateStatus → RISKY -----------------------------
+_gate_gh() {
+  local pr field=""; local -a a=("$@"); pr="${a[2]}"
+  for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+  case "$field" in
+    mergeable,mergeStateStatus,state,statusCheckRollup)
+      if [ "$pr" = "11" ]; then
+        echo '{"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","state":"OPEN","statusCheckRollup":[]}'
+      else
+        echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}'
+      fi ;;
+    headRefName) echo "pr-$pr" ;;
+    labels)      echo "" ;;
+    *) echo "{}" ;;
+  esac
+}
+out="$(cmd_risk Towheads/foundation 10 11)"
+[ "$(jq -r .outcome <<<"$out")" = "RISKY" ] || fail "not-CLEAN mss not RISKY (got: $out)"
+jq -e '.reasons[] | select(test("not CLEAN"))' <<<"$out" >/dev/null \
+  || fail "not-CLEAN reason not surfaced (got: $out)"
+echo "PASS: risk → RISKY when any PR's mergeStateStatus is not CLEAN"
+
+# --- queue: canonical --auto incantation → QUEUED ---------------------------
+# Assert gate.sh queues via --auto --merge --delete-branch (never a bare
+# merge-now), and records the strict flag. The seam logs the argv so we can
+# prove the incantation; it never performs a real merge.
+_gate_gh() { echo "$*" > "$TMP/merge_argv"; return 0; }
+out="$(cmd_queue Towheads/foundation 42 --strict)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "queue outcome (got: $out)"
+[ "$(jq -r .strict <<<"$out")" = "true" ] || fail "queue strict flag (got: $out)"
+argv="$(<"$TMP/merge_argv")"
+grep -q -- '--auto' <<<"$argv" || fail "queue did not use --auto (argv: $argv)"
+grep -q -- '--merge' <<<"$argv" || fail "queue did not use --merge (argv: $argv)"
+grep -q -- '--delete-branch' <<<"$argv" || fail "queue did not use --delete-branch"
+echo "PASS: queue → QUEUED via the canonical --auto --merge --delete-branch (no bare merge)"
+
+# --- nudge: BEHIND → NUDGED (update-branch invoked) -------------------------
+rm -f "$TMP/nudge_called"
+_gate_gh() {
+  local -a a=("$@")
+  if [ "${a[0]}" = "pr" ] && [ "${a[1]}" = "update-branch" ]; then
+    touch "$TMP/nudge_called"; return 0
+  fi
+  echo '{"mergeable":"UNKNOWN","mergeStateStatus":"BEHIND","state":"OPEN","statusCheckRollup":[]}'
+}
+out="$(cmd_nudge Towheads/foundation 42)"
+[ "$(jq -r .outcome <<<"$out")" = "NUDGED" ] || fail "BEHIND not NUDGED (got: $out)"
+[ -f "$TMP/nudge_called" ] || fail "update-branch not invoked for a BEHIND PR"
+echo "PASS: nudge → NUDGED (gh pr update-branch) for a still-BEHIND PR (#83 nudge)"
+
+# --- nudge: not-BEHIND → NUDGE_NOOP -----------------------------------------
+_gate_gh() {
+  local -a a=("$@")
+  [ "${a[1]}" = "update-branch" ] && fail "update-branch called on a CLEAN PR (should NOOP)"
+  echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}'
+}
+out="$(cmd_nudge Towheads/foundation 42)"
+[ "$(jq -r .outcome <<<"$out")" = "NUDGE_NOOP" ] || fail "CLEAN not NUDGE_NOOP (got: $out)"
+echo "PASS: nudge → NUDGE_NOOP (no update-branch) when the PR is not BEHIND"
+
+# --- poll: MERGED is the SOLE success check (exit 0) ------------------------
+_gate_gh() { echo '{"state":"MERGED","mergedAt":"2026-06-10T12:00:00Z","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}'; }
+rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 5)" || rc=$?
+[ "$rc" -eq 0 ] || fail "MERGED did not exit 0 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGED" ] || fail "poll MERGED outcome (got: $out)"
+[ "$(jq -r .mergedAt <<<"$out")" = "2026-06-10T12:00:00Z" ] || fail "poll mergedAt (got: $out)"
+echo "PASS: poll → MERGED + exit 0 ONLY on state==MERGED with a confirmed mergedAt"
+
+# --- poll: CLOSED-without-merge NEVER reads MERGED (the #130 guard) ----------
+# A PR closed but never merged: state=CLOSED, mergedAt=null. It must NOT exit 0
+# as MERGED; here it has no conflict, so it runs to TIMEOUT (exit 4) — the point
+# is that MERGED (exit 0) is unreachable for a closed-not-merged PR.
+_gate_gh() { echo '{"state":"CLOSED","mergedAt":null,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}'; }
+rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 0)" || rc=$?
+[ "$rc" -ne 0 ] || fail "CLOSED-not-merged exited 0 (premature-close #130 regression!)"
+[ "$(jq -r .outcome <<<"$out")" != "MERGED" ] || fail "CLOSED-not-merged read as MERGED (#130!)"
+echo "PASS: poll → a CLOSED-but-unmerged PR never reads MERGED (the #130 premature-close guard)"
+
+# --- poll: CONFLICTING/DIRTY → distinct exit 3 ------------------------------
+_gate_gh() { echo '{"state":"OPEN","mergedAt":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}'; }
+rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 5)" || rc=$?
+[ "$rc" -eq 3 ] || fail "CONFLICTING/DIRTY did not exit 3 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "CONFLICTING" ] || fail "poll CONFLICTING outcome (got: $out)"
+echo "PASS: poll → CONFLICTING + distinct exit 3 on a conflicting/dirty PR"
+
+# --- poll: timeout/stall → distinct exit 4 ----------------------------------
+_gate_gh() { echo '{"state":"OPEN","mergedAt":null,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}'; }
+rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 0)" || rc=$?
+[ "$rc" -eq 4 ] || fail "stall did not exit 4 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "poll TIMEOUT outcome (got: $out)"
+echo "PASS: poll → TIMEOUT + distinct exit 4 on a stalled (never-terminal) PR"
+
+# --- error: bad inputs → structured ERROR + non-zero exit -------------------
+# die() emits on fd 3 (the script's real-stdout seam); when sourced, fd 3 is the
+# test's stdout, so capture it back into the command substitution with 3>&1.
+rc=0; out="$( (cmd_read not-a-repo 42) 3>&1 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "bad owner/repo not structured ERROR (got: $out)"
+rc=0; out="$( (cmd_read Towheads/foundation abc) 3>&1 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "bad pr not structured ERROR (got: $out)"
+echo "PASS: bad owner/repo or pr → structured ERROR + non-zero exit"
+
+echo "ALL GATE TESTS PASSED"

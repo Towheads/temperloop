@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# build.config.local.sh.example — TEMPLATE for the host-local, gitignored
+# override that build.config.sh sources LAST (foundation #709). Copy to
+# `build.config.local.sh` (same directory) on a host that needs secrets or
+# per-host env. The real file is gitignored, so credentials never commit, and
+# because it is untracked it survives the funnel cron's self-update
+# `git reset --hard origin/main` (which only resets tracked files).
+#
+# Primary use: the funnel's Sentry crash-convergence poll credentials, read by
+# /signal-intake (crash-convergence/signal-intake.sh) via funnel-tick.sh Phase 0.
+# Without them, Phase 0 has nothing to poll and logs a non-fatal failure each
+# tick — see Decisions/foundation - Crash-convergence backend (Sentry SaaS).
+#
+# Install on the deploy host (the host running com.foundation.funnel-cron):
+#   cp  workflows/scripts/build/build.config.local.sh.example \
+#       workflows/scripts/build/build.config.local.sh
+#   chmod 600 workflows/scripts/build/build.config.local.sh   # it holds a token
+#   # then edit in the real SENTRY_AUTH_TOKEN below
+#
+# Values MUST be `export`ed so they reach the signal-intake.sh subprocess that
+# funnel-tick.sh spawns (a plain assignment would not cross the process boundary).
+
+# ── Sentry crash-convergence poll (foundation #637 / #709) ───────────────────
+# Read-scoped token (org:read, project:read, event:read) from Sentry:
+#   Settings → Account → Auth Tokens, or an org Internal Integration.
+export SENTRY_AUTH_TOKEN="REPLACE_WITH_READ_SCOPED_TOKEN"
+export SENTRY_ORG="your-sentry-org-slug"
+export SENTRY_PROJECT="your-sentry-project-slug"
+# Default is https://sentry.io (US region). Override ONLY for a self-hosted
+# Sentry / GlitchTip instance (the vendor-neutral API seam).
+# export SENTRY_BASE_URL="https://sentry.io"

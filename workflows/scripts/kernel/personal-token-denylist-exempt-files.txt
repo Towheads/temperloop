@@ -1,0 +1,54 @@
+# personal-token-denylist-exempt-files.txt — files WHOLESALE exempted from
+# check-personal-token-denylist.sh (foundation #798), one git-relative path
+# per line. `#` starts a comment; blank lines ignored.
+#
+# Every entry here is a fixture-replay TEST that exercises the boards.conf
+# built-in fallback map (workflows/scripts/board/lib/board.sh,
+# workflows/scripts/build/funnel-tick.sh, workflows/scripts/build/funnel-drive.sh
+# — see those files' own `# denylist:allow` markers) with literal mock `gh`
+# JSON/CLI-call data matching that map's real values. Scrubbing the literal
+# strings in these tests would not remove anything the already-exempted
+# runtime default doesn't already disclose (it's synthetic fixture data, not
+# a live credential), and would be a large, error-prone rewrite (dozens of
+# assertions per file) for zero privacy benefit — see the #798 build's
+# verification doc for the full scoping rationale. A NEW personal-token class
+# introduced in one of these files (not just the existing board fallback
+# values) would NOT be caught by this blanket exemption today — narrow it to
+# per-line `# denylist:allow` markers if that becomes a live risk.
+
+workflows/scripts/board/tests/test_board_replay.sh
+workflows/scripts/board/tests/test_boards_conf.sh
+workflows/scripts/board/tests/test_milestone.sh
+workflows/scripts/board/tests/test_parent_issue.sh
+workflows/scripts/board/tests/fixtures/fake_gh.sh
+workflows/scripts/board/tests/fixtures/project_view.json
+workflows/scripts/build/tests/test_funnel_drive.sh
+workflows/scripts/build/tests/test_funnel_tick.sh
+workflows/scripts/build/tests/test_gate.sh
+workflows/scripts/build/tests/test_pr.sh
+workflows/scripts/build/tests/test_ci_poll.sh
+workflows/scripts/build/tests/test_rework_snapshot.sh
+workflows/scripts/build/tests/test_board_mirror.sh
+workflows/scripts/build/tests/test_archive_plan.sh
+workflows/scripts/build/tests/test_workflow.sh
+scripts/tests/test_stranger_config.sh
+
+# test_install_settings.sh deliberately feeds a literal personal path
+# (/Users/travis/...) as INPUT fixture data to assert install-settings.sh's
+# CANONICAL_USER-sed correctly strips it at install time (the test would be
+# pointless with an already-generic input). Same rationale as the exemptions
+# above: the literal is the test subject, not a leak.
+workflows/scripts/tests/test_install_settings.sh
+
+# Synthetic cwd fixtures for drain-mind's session-stub parsing tests; the
+# personal-looking path is deliberately realistic test input, never a real
+# session.
+workflows/scripts/drain/tests/fixtures/sample_stub.md
+workflows/scripts/drain/tests/fixtures/command_expansion_stub.md
+
+# The denylist tooling's OWN data files. personal-token-denylist.tsv's job is
+# to CONTAIN the pattern strings (that's the data, not a leak) and this
+# exempt-files list's own comments cite example paths/patterns for the same
+# documentary reason — both self-match every time they're scanned otherwise.
+workflows/scripts/kernel/personal-token-denylist.tsv
+workflows/scripts/kernel/personal-token-denylist-exempt-files.txt

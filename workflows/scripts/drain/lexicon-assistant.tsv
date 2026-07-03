@@ -1,0 +1,52 @@
+# drain-mind ASSISTANT-turn tell lexicon — high-precision self-worked-around-defect phrases.
+#
+# WHY a separate file (foundation #444): the main lexicon.tsv is scanned against
+# USER turns only — assistant turns are skipped because they carry friction-slug
+# terms injected from CLAUDE.md / skill prose (the self-match trap). But the
+# assistant is the one who *narrates working around a defect* mid-task ("this is
+# broken, let me route around it", "fall back to X because Y fails"), and when it
+# does and never files the bug, the defect is invisible to everyone — the exact
+# blind spot of session 58cf4b44 (the BOARD_ITEMS_JSON control-char jq error,
+# worked-around twice, never filed → foundation#443).
+#
+# This file is therefore deliberately NARROW and HIGH-PRECISION: only phrases
+# that signal the assistant narrating its own behavior — *acknowledging a defect
+# while routing around it* (worked-around-defect), or *catching itself going the
+# wrong way mid-task* (self-correction). These are action phrases the model emits
+# about its own work — they do NOT appear in injected CLAUDE.md prose, so scanning
+# them against assistant turns is safe. drain-mind Step 3 adjudicates each.
+#
+# Format: <pattern> TAB <category> TAB <match_type>   (same schema as lexicon.tsv)
+#   match_type — "literal" (substring, case-insensitive) or "regex" (ERE, case-insensitive).
+#   category   — one of:
+#     worked-around-defect — assistant routed around a defect; routes to Unfiled defects.
+#     self-correction      — assistant caught itself mid-session ("I'm thinking
+#                            about this wrong", "that didn't go right", "let me
+#                            reconsider"); routes to the self-correction pass
+#                            (Mistakes / Patterns + recurring-tell promotion).
+#
+# Validated by validate-lexicon.sh (which lints both lexicon files).
+
+# --- worked-around-defect (assistant narrates routing around a defect, #444) ---
+\b(work|working|worked|route|routing|routed)\s+around\b	worked-around-defect	regex
+\bfall(s|ing)?\s+back\s+to\b	worked-around-defect	regex
+\bis\s+broken\b	worked-around-defect	regex
+\b(is|that'?s|this\s+is)\s+a\s+bug\b	worked-around-defect	regex
+\bknown\s+(bug|issue|defect|regression)\b	worked-around-defect	regex
+\binstead\s+because\b	worked-around-defect	regex
+\bbug\s+here\b	worked-around-defect	regex
+
+# --- self-correction (assistant catches itself mid-task — "that didn't go right" /
+#     "I'm thinking about this wrong" realization; foundation #501). HIGH-PRECISION:
+#     first-person realization phrases the model emits about its OWN reasoning,
+#     which do not appear in injected CLAUDE.md/skill prose, so they are safe to
+#     scan against assistant turns without the self-match trap. ---
+thinking about this wrong	self-correction	literal
+\bI\s+(had|got)\s+(this|that|it)\s+(backwards|wrong)\b	self-correction	regex
+\b(that|this)\s+(didn'?t|did\s+not)\s+go\s+right\b	self-correction	regex
+\b(wrong|incorrect)\s+(approach|assumption|layer|mental\s+model)\b	self-correction	regex
+\blet\s+me\s+(reconsider|rethink|step\s+back|back\s+up|reconsider\s+this)\b	self-correction	regex
+\bI\s+was\s+(wrong|mistaken|over-?thinking)\b	self-correction	regex
+\b(misread|misunderstood)\s+(the|this|that)\b	self-correction	regex
+\bbarking\s+up\s+the\s+wrong\s+tree\b	self-correction	regex
+\bscratch\s+that\b	self-correction	regex

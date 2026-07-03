@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(gh pr:*)",
+      "Bash(git push:*)"
+    ],
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash",
+      "Task",
+      "mcp__obsidian__*"
+    ]
+  }
+}
