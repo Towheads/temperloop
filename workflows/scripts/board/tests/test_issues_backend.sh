@@ -118,7 +118,7 @@ echo "PASS: an unselected board's gh argv is byte-identical to the pre-#799 Proj
 
 # --- 3: issues-only board_item_list reshapes fnd: labels -------------------
 ISSUE_LIST_JSON='[
-  {"number":101,"title":"Ready item","labels":[{"name":"fnd:status:ready"}]},
+  {"number":101,"title":"Ready item","labels":[{"name":"fnd:status:ready"},{"name":"spike"}]},
   {"number":102,"title":"Unstatused item","labels":[]},
   {"number":103,"title":"In-progress + component","labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:component:ingest"}]}
 ]'
@@ -149,6 +149,21 @@ STATUS_103="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '.items[] | select(.conten
 COMP_103="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '.items[] | select(.content.number==103) | .component')"
 [ "$STATUS_103" = "In Progress" ] || fail "status for #103 wrong: $STATUS_103 (fnd:status:in-progress must unslug to 'In Progress')"
 [ "$COMP_103" = "Ingest" ] || fail "component for #103 wrong: $COMP_103 (fnd:component:ingest must unslug to 'Ingest')"
+
+# foundation #801 (split 3/3, funnel integration "D3 seam"): the reshape must
+# ALSO pass through the raw, UNFILTERED label-name list (fnd:-prefixed ones
+# included) — not just the fnd: labels it extracts into status/component. This
+# is what lets a caller like funnel-tick.sh see an ordinary work-class label
+# (`spike`, `Foundational`, `needs-clarification`, …) on an issues-only board;
+# see ISSUES-ONLY-BACKEND.md § Funnel integration and test_board_dual_adapter.sh.
+LABELS_101="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -c '.items[] | select(.content.number==101) | .labels')"
+[ "$(jq -e 'any(.[]; . == "spike")' <<<"$LABELS_101" >/dev/null 2>&1 && echo yes || echo no)" = "yes" ] \
+  || fail "labels for #101 should include the raw 'spike' label, got: $LABELS_101"
+[ "$(jq -e 'any(.[]; . == "fnd:status:ready")' <<<"$LABELS_101" >/dev/null 2>&1 && echo yes || echo no)" = "yes" ] \
+  || fail "labels for #101 should still include its own fnd:status:ready label (unfiltered passthrough), got: $LABELS_101"
+LABELS_102="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -c '.items[] | select(.content.number==102) | .labels')"
+[ "$LABELS_102" = "[]" ] || fail "labels for #102 (no labels) should be [], got: $LABELS_102"
+echo "PASS: issue_item's reshape passes through the raw, unfiltered label-name list (foundation #801)"
 echo "PASS: board_resolve/board_item_list (issues-only) reshapes fnd: labels into the shared item schema, zero gh project calls"
 
 # --- 4: board_resolve_item (issues-only) is always-live and sees closed=Done ---

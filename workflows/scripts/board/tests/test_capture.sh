@@ -68,6 +68,12 @@ grep -q -- "--rework must be one of regression, spec-miss, flake" <<<"$out" \
   || fail "invalid --rework cause not rejected (got: $out)"
 echo "PASS: capture.sh rejects an invalid --rework cause without filing an issue (F#730)"
 
+# 6) invalid --repo value → refused, exit 2, no gh (F#808)
+run 2 "Some title" --repo overlay
+grep -q -- "--repo must be 'kernel' or 'ambiguous'" <<<"$out" \
+  || fail "invalid --repo value not rejected (got: $out)"
+echo "PASS: capture.sh rejects an invalid --repo value without filing an issue (F#808)"
+
 echo "ALL capture.sh arg-parsing tests passed"
 
 # ---------------------------------------------------------------------------
@@ -113,3 +119,134 @@ cleanup_rework
 trap 'rm -rf "$BIN"' EXIT
 
 echo "ALL capture.sh --rework tests passed"
+
+# ---------------------------------------------------------------------------
+# --repo kernel / --repo ambiguous full-flow (F#808, Guard #3 of the
+# kernel-vs-overlay routing rule): drives capture.sh as a real subprocess
+# against a bespoke fake `gh` (the shared fixtures/fake_gh.sh is Projects-v2
+# shaped and doesn't understand the issues-only backend's REST verbs —
+# `gh api repos/<repo>/issues/<n>`, `gh issue edit --add-label`, `gh label
+# create` — so this is a minimal issues-only-shaped stand-in, mirroring
+# test_issues_backend.sh's in-process fakes but as a real PATH binary since
+# capture.sh runs as a subprocess, not sourced).
+#
+# Board 7's REAL repo value lives only in lib/board.sh's board_repo() built-in
+# case map (see that function's own comment + ISSUES-ONLY-BACKEND.md § "The
+# foundation-kernel tracker" for why: it's a sanctioned, denylist:allow'd
+# exception, and this test file carries no such exception). So here we
+# override board 7's `repo` to a placeholder via a scoped `boards.conf` — the
+# SAME override mechanism a real consumer would use (test_boards_conf.sh § 7
+# pins that this override path works) — proving the ROUTING logic
+# (`--repo kernel`/`--repo ambiguous` -> board 7 -> board_repo(7) -> that
+# repo) end-to-end without embedding the real org literal in a non-exempt
+# test file.
+#
+# Proves acceptance criterion 2: the gh calls a `--repo kernel` capture makes
+# hit board 7's registered repo (never a `gh project …` call — no Projects-v2
+# board exists for it) and carry `fnd:` labels (fnd:status:backlog, both the
+# `label create` that ensures it exists and the `issue edit --add-label` that
+# applies it). And criterion 3: `--repo ambiguous` takes the SAME route but
+# the issue body it files carries the documented ambiguity-default provenance
+# note, and the arg-parsing case above (case 6) proves an invalid --repo value
+# is refused before any gh call.
+# ---------------------------------------------------------------------------
+KERNEL_TEST_REPO="Acme/kernel-test"
+KCONF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/capture-kernel-conf-XXXXXX")"
+cat > "$KCONF_DIR/boards.conf" <<EOF
+board.7.repo=$KERNEL_TEST_REPO
+EOF
+export BOARDS_CONF_REPO_LOCAL="$KCONF_DIR/boards.conf"
+export BOARDS_CONF_MACHINE="$KCONF_DIR/no-such-machine-conf"
+
+KBIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-kernel-bin-XXXXXX")"
+KLOG="$(mktemp "${TMPDIR:-/tmp}/capture-kernel-log-XXXXXX")"
+KBODY="$(mktemp "${TMPDIR:-/tmp}/capture-kernel-body-XXXXXX")"
+export KLOG KBODY KERNEL_TEST_REPO
+cleanup_kernel() { rm -rf "$KBIN" "$KLOG" "$KBODY" "$KCONF_DIR"; unset BOARDS_CONF_REPO_LOCAL BOARDS_CONF_MACHINE; }
+trap 'cleanup_kernel; rm -rf "$BIN"' EXIT
+
+# NB: a QUOTED heredoc delimiter ('FAKEGH') — this script's own comments
+# contain backticks (e.g. "fake `gh`"), and an UNQUOTED heredoc treats those
+# as command substitution AT GENERATION TIME, splicing the real `gh --help`
+# output into the file and corrupting it. $KERNEL_TEST_REPO/$KLOG/$KBODY are
+# read from the fake gh's OWN environment at RUNTIME instead (all exported
+# above) — no heredoc substitution needed at all.
+cat > "$KBIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+# Minimal issues-only-backend fake `gh` for capture.sh's --repo kernel/
+# ambiguous full-flow test. Logs every call (shell-quoted, one line) to
+# $KLOG for the "which repo/label" assertions, and — for `issue create`
+# only — ALSO writes the raw (unescaped) --body value to $KBODY separately:
+# `%q` is observed to render an embedded newline (the multi-paragraph
+# --repo ambiguous body) inconsistently across invocations (a real newline
+# byte vs a literal `\n` escape, bash-version/locale dependent), which
+# makes grep-the-%q-log fragile for multi-line body content. $KBODY
+# sidesteps that — it's the exact string capture.sh passed, no shell-quoting
+# round-trip. $KERNEL_TEST_REPO is board 7's boards.conf-overridden repo
+# (set by the test, exported into this script's environment). Handles
+# exactly the verbs the flow triggers:
+#   issue create -R <repo> ...              -> prints a fake issue URL, dumps --body to $KBODY
+#   api repos/<repo>/issues/<n>             -> a fresh, unstatused open issue
+#   label create <name> -R <repo> ...       -> no-op (write, record only)
+#   issue edit <n> -R <repo> --add-label .. -> no-op (write, record only)
+# Anything else is unhandled -> fail loud so an unexpected call surfaces as a
+# test failure rather than silently no-op-ing.
+set -euo pipefail
+: "${KERNEL_TEST_REPO:?fake gh needs KERNEL_TEST_REPO}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$KLOG"
+case "$1 $2" in
+  "issue create")
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "--body" ] && printf '%s' "$a" > "$KBODY"
+      prev="$a"
+    done
+    printf 'https://github.com/%s/issues/501\n' "$KERNEL_TEST_REPO"
+    ;;
+  "api repos/$KERNEL_TEST_REPO/issues/501")
+    printf '{"number":501,"title":"t","state":"open","labels":[]}\n' ;;
+  "label create") : ;;
+  "issue edit")   : ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+FAKEGH
+chmod +x "$KBIN/gh"
+
+# --- --repo kernel: routes to board 7's registered repo, issues-only -------
+: > "$KLOG"; : > "$KBODY"
+rc=0
+out="$(PATH="$KBIN:$PATH" bash "$CAPTURE" "Board adapter caching bug" --repo kernel 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "capture.sh --repo kernel exited $rc (out: $out)"
+grep -qa '^gh issue create ' "$KLOG" || fail "--repo kernel never called gh issue create (log: $(cat "$KLOG")))"
+grep -qa -- "-R $KERNEL_TEST_REPO" "$KLOG" \
+  || fail "--repo kernel's gh issue create did not target board 7's registered repo (log: $(cat "$KLOG"))"
+grep -qa '^gh project' "$KLOG" && fail "--repo kernel must NEVER call gh project (issues-only backend, no Projects board)"
+grep -qa -- "gh label create fnd:status:backlog -R $KERNEL_TEST_REPO" "$KLOG" \
+  || fail "--repo kernel did not ensure the fnd:status:backlog label exists (log: $(cat "$KLOG"))"
+grep -qa -- "gh issue edit 501 -R $KERNEL_TEST_REPO --add-label fnd:status:backlog" "$KLOG" \
+  || fail "--repo kernel did not apply the fnd:status:backlog label (log: $(cat "$KLOG"))"
+grep -qa 'board 7 Backlog (#501)' <<<"$out" || fail "--repo kernel did not report landing on board 7 Backlog (out: $out)"
+echo "PASS: capture.sh --repo kernel files to the kernel issues-only tracker with fnd: labels, no Projects-v2 call (F#808)"
+
+# --- --repo ambiguous: SAME route, but the body carries the default's provenance
+: > "$KLOG"; : > "$KBODY"
+rc=0
+out="$(PATH="$KBIN:$PATH" bash "$CAPTURE" "Not sure if kernel or overlay" --repo ambiguous 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "capture.sh --repo ambiguous exited $rc (out: $out)"
+grep -qa '^gh issue create ' "$KLOG" || fail "--repo ambiguous never called gh issue create (log: $(cat "$KLOG"))"
+grep -qa -- "-R $KERNEL_TEST_REPO" "$KLOG" \
+  || fail "--repo ambiguous's gh issue create did not target board 7's registered repo (log: $(cat "$KLOG"))"
+# $KBODY holds the exact, unescaped --body value the fake gh received (see the
+# fake gh's own comment above on why this sidesteps %q's inconsistent
+# newline rendering for a multi-paragraph body).
+grep -q -- 'kernel-vs-overlay routing rule' "$KBODY" \
+  || fail "--repo ambiguous's issue body did not carry the documented ambiguity-default provenance note (body: $(cat "$KBODY"))"
+grep -q -- 'Ambiguous foundation-domain captures default to kernel' "$KBODY" \
+  || fail "--repo ambiguous's issue body did not cite the routing rule's ambiguity clause verbatim (body: $(cat "$KBODY"))"
+grep -qa 'board 7 Backlog' <<<"$out" || fail "--repo ambiguous did not report landing on board 7 Backlog (out: $out)"
+echo "PASS: capture.sh --repo ambiguous defaults to the kernel tracker and records the ambiguity-default provenance in the issue body (F#808)"
+
+cleanup_kernel
+trap 'rm -rf "$BIN"' EXIT
+
+echo "ALL capture.sh --repo kernel/ambiguous tests passed"

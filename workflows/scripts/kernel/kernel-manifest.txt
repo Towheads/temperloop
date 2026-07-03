@@ -81,6 +81,12 @@ overlay Plans-archive/*
 kernel claude/.gitkeep
 kernel claude/CLAUDE.kernel.md
 overlay claude/CLAUDE.overlay.md
+# Overlay extension of drain-mind.md's kernel Live/Drain pairing table
+# (foundation F#809): personal/vault-backed pairs only, unioned in by
+# workflows/scripts/validate-live-drain.sh when this file is present. Deliberately
+# NOT under claude/commands/ (a bare .md there is discovered as a slash
+# command; this is a data/registry file, not a command).
+overlay claude/live-drain-registry.overlay.md
 split claude/settings.json
 kernel claude/status-line.sh
 kernel claude/plan-schema.md

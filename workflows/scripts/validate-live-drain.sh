@@ -5,12 +5,25 @@
 # The live/drain pairing registry (see Patterns/Live-Drain pairing) is a set of
 # (live rule, drain backstop) pairs: each real-time extraction rule in a
 # CLAUDE.md is paired with a backstop step in /drain-mind, so a missed live
-# capture is caught at drain time. The SINGLE SOURCE OF TRUTH for the registry
-# is the "## Live/Drain pairings" table at the top of
-# claude/commands/drain-mind.md. This script parses that table and FAILS
-# (exit 1) if any pair is HALF-PRESENT — a live anchor present without its drain
-# anchor, or vice versa — which is the silent-loss failure mode the pairing
-# pattern exists to prevent.
+# capture is caught at drain time. The registry is split across TWO tables
+# (foundation F#809, epic B "kernel routing"):
+#   - the "## Live/Drain pairings" table at the top of
+#     claude/commands/drain-mind.md is the SINGLE SOURCE OF TRUTH for KERNEL
+#     pairs — rules generic enough that a stranger's kernel-only checkout
+#     needs them backstopped too;
+#   - claude/live-drain-registry.overlay.md (an overlay-only file, present
+#     only in a composed/overlay checkout) carries a second
+#     "## Live/Drain pairings — overlay extension" table for pairs that
+#     reference Travis-personal (vault-backed) rules and have no meaning in
+#     a standalone kernel checkout.
+# This script parses the kernel table always, and UNIONS in the overlay
+# extension table when that file is present — so a standalone kernel
+# checkout validates the kernel table alone (self-contained, zero overlay
+# references needed to pass), while a composed checkout validates the full
+# union. Either way it FAILS (exit 1) if any pair, in either table, is
+# HALF-PRESENT — a live anchor present without its drain anchor, or vice
+# versa — which is the silent-loss failure mode the pairing pattern exists
+# to prevent.
 #
 # Verifiability of the live half varies by source:
 #   - foundation-local files (claude/CLAUDE.md, the repo root CLAUDE.md) are
@@ -37,6 +50,7 @@ set -euo pipefail
 
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DRAIN="$REPO/claude/commands/drain-mind.md"
+DRAIN_OVERLAY_EXT="$REPO/claude/live-drain-registry.overlay.md"
 STAGEFIND_DIR="${STAGEFIND_DIR:-$REPO/../stageFind}"
 CLAUDE_MD_KERNEL="$REPO/claude/CLAUDE.kernel.md"
 CLAUDE_MD_OVERLAY="$REPO/claude/CLAUDE.overlay.md"
@@ -125,18 +139,48 @@ EOF
   printf 'present'
 }
 
-# Extract the pairing-table data rows (drop the header + separator rows).
-rows="$(
+# Extract the pairing-table data rows from <file> (drop the header +
+# separator rows). Matches any heading starting "## Live/Drain pairings" —
+# so it works unchanged on both the kernel table's plain heading and the
+# overlay extension's "## Live/Drain pairings — overlay extension" heading.
+extract_pairing_rows() {
   awk '
     /^## Live\/Drain pairings/ { insec = 1; next }
     insec && /^## / { insec = 0 }
     insec && /^\|/ { print }
-  ' "$DRAIN" | grep -vE '^\|[[:space:]]*Live rule|^\|[[:space:]]*-' || true
-)"
+  ' "$1" | grep -vE '^\|[[:space:]]*Live rule|^\|[[:space:]]*-' || true
+}
 
-if [ -z "$rows" ]; then
+kernel_rows="$(extract_pairing_rows "$DRAIN")"
+if [ -z "$kernel_rows" ]; then
   echo "FAIL: no '## Live/Drain pairings' table found in $DRAIN"
   exit 1
+fi
+
+# Union in the overlay extension table, only when present (a composed
+# checkout). A standalone kernel checkout (foundation-kernel, or this
+# script's own scratch-clone simulation of it) has no
+# claude/live-drain-registry.overlay.md and validates the kernel table alone.
+composed=0
+overlay_ext_rows=""
+if [ -f "$DRAIN_OVERLAY_EXT" ]; then
+  composed=1
+  overlay_ext_rows="$(extract_pairing_rows "$DRAIN_OVERLAY_EXT")"
+  if [ -z "$overlay_ext_rows" ]; then
+    echo "FAIL: $DRAIN_OVERLAY_EXT present but has no '## Live/Drain pairings' table"
+    exit 1
+  fi
+fi
+
+rows="$kernel_rows"
+if [ -n "$overlay_ext_rows" ]; then
+  rows="$(printf '%s\n%s\n' "$kernel_rows" "$overlay_ext_rows")"
+fi
+
+if [ "$composed" = "1" ]; then
+  echo "layout: composed (kernel table + overlay extension: $DRAIN_OVERLAY_EXT)"
+else
+  echo "layout: standalone kernel (no overlay extension present)"
 fi
 
 while IFS= read -r row; do

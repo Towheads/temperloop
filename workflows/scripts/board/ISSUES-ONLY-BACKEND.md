@@ -112,12 +112,13 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 The item shape produced by the issues-only reshape:
 
 ```json
-{"id":"ISSUE_105","content":{"number":105,"title":"…","type":"Issue"},"status":"Ready","component":"Ingest"}
+{"id":"ISSUE_105","content":{"number":105,"title":"…","type":"Issue"},"status":"Ready","component":"Ingest","labels":["fnd:status:ready","spike"]}
 ```
 
 — identical keys to the Projects-v2 shape (`id`, `content.number/title/type`,
-flattened field values), so every existing jq-based reader of
-`BOARD_ITEMS_JSON` works without modification.
+flattened field values, **and `labels`** — see § Funnel integration below),
+so every existing jq-based reader of `BOARD_ITEMS_JSON` works without
+modification.
 
 ## What split 1/3 (#799) intentionally did not do
 
@@ -243,6 +244,113 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
   Done, by the jq reshape's own precedence (`if $state == "closed" then
   {status:"Done"}` is checked FIRST, before any label).
 
+## Funnel integration (foundation #801, split 3/3)
+
+The final split: wiring `funnel-tick.sh` to drive an issues-only repo, and
+proving it via a dual-adapter test suite. `funnel-tick.sh` itself needed
+**zero backend branching** — it already only ever touches `BOARD_ITEMS_JSON`
+through `board.sh`'s public accessors — but its Ready-item classification
+(`classify_item`, `needs_clarification`, `funnel_escalated`, `pending_merge`)
+reads a Ready item's **raw GitHub labels** directly (`spike`, `Foundational`,
+`needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — every one
+of them a PLAIN label, never `fnd:`-namespaced). That is the "D3 seam": the
+funnel's Ready-item read depends on `BOARD_ITEMS_JSON` carrying a `labels`
+key, not just `status`/`component`.
+
+**The gap split 1/3 left (now fixed).** The Projects-v2 path always had this
+for free — `gh project item-list --format json`'s own default output already
+carries a top-level `labels` array for Issue content, and `board_item_list` /
+`_board_item_list_fresh` pass it through completely unreshaped (they only
+strip PR cards and control characters). The issues-only `issue_item()` jq
+def, by contrast, extracted ONLY the `fnd:`-prefixed labels into
+`status`/`component`/`host/Session` and silently dropped every other label —
+so a live funnel-tick against an issues-only board could never see `spike` /
+`Foundational` / `needs-clarification`, and every Ready item would
+misclassify as a fresh Operational `kind:code` drive (worse: probing for an
+open PR via `gh pr list`, a step that must never fire in a SAFE-tier-only
+scenario). Fixed by adding a `labels: $labels` passthrough to `issue_item()`
+— the raw, UNFILTERED label list (the `fnd:` bookkeeping labels stay in it
+too; harmless, since an equality check like `. == "spike"` never matches
+`"fnd:status:ready"`). This makes the issues-only item shape a structural
+match for the Projects-v2 one on this key, the same way it already was for
+`status`/`component`/`host/Session`.
+
+**What "SAFE-TIER" means here.** funnel-drive.sh's rung-5b executor
+auto-runs only route-*/drain-*/a `kind:spike` drive — never a merge
+(foundation #604's SAFE/MERGING tier split). A full safe-tier tick therefore
+never needs to open a PR, so proving it against an issues-only repo needs no
+merge-capable adapter surface at all — only the read path (`board_resolve` /
+`board_item_list`) plus the plain-REST reads `funnel-tick.sh` already made
+directly (`gh issue list --search …`, `gh issue view --json assignees`),
+which were already backend-agnostic (per-issue/per-search REST, no Projects
+call either way).
+
+## The foundation-kernel tracker (board 7, foundation #808)
+
+The kernel-vs-overlay routing rule (CLAUDE.kernel.md § Kernel vs overlay
+routing rule) needed a concrete board number before it could be *followed*
+mechanically rather than just stated in prose — the global glossary used to
+say the kernel tracker "has no `--board N` because it is issues-only today".
+Being issues-only was never actually a reason it needed no number (an
+issues-only board only needs the `repo` axis, same as any other — see above);
+this split (F#808, Guard #3 of the routing rule, epic B) gives the adapter a
+real handle: **board 7**, registered directly in `lib/board.sh`'s
+`board_repo()` and `board_backend()` built-in maps (`repo` → the
+foundation-kernel repo; `backend` → `"issues"`), the SAME place boards 3-6
+already carry their real, org-qualified repo values.
+
+Not a committed `boards.conf` entry — deliberately. A real, org-qualified
+`repo` value is exactly the class of literal this checkout's own
+personal-token-denylist (`workflows/scripts/kernel/personal-token-denylist.tsv`)
+forbids inside the kernel-vendored tree, with ONE sanctioned exception:
+`board_repo()`'s own built-in case map, already carrying boards 3-6's real
+values behind a trailing `# denylist:allow` marker for exactly this reason
+(a `boards.conf`-less consumer must still resolve a real repo — see
+§ Selecting the backend, above). Board 7 follows that SAME precedent rather
+than inventing a second one: its case line in `board_repo()` carries the
+same marker, and `board_backend()` gets one narrowly-scoped case (`7 →
+"issues"`) as the sole, deliberate, permanent exception to that function's
+general "no board defaults to issues in-code" rule — board 7's issues-only-
+ness is a structural fact of what board 7 IS, not a per-deployment config
+choice a `boards.conf` should carry. A per-machine/per-repo `boards.conf`
+can still override board 7's `repo`/`backend` (checked FIRST, same
+discovery order as any other board) exactly as it could for boards 3-6 —
+this only hard-codes the DEFAULT a `boards.conf`-less consumer sees.
+`test_boards_conf.sh`'s built-in-fallback assertions cover board 7 the same
+way they already cover boards 3-6.
+
+### `capture.sh --repo kernel` / `--repo ambiguous`
+
+`capture.sh` gained a `--repo` flag — a conscious-routing peer to `--board`,
+documented in the script's own header — rather than requiring every caller
+to memorize board 7:
+
+- `--repo kernel` — routes to board 7 outright (overrides `--board`). Use
+  when the capture IS kernel-domain machinery (board adapter, build/sweep
+  spine, install/doctor, quality gates — the "stranger test" the routing
+  rule names).
+- `--repo ambiguous` — routes to the SAME board 7, for the routing rule's
+  **ambiguity clause**: "Ambiguous foundation-domain captures default to
+  kernel. When a new rule is genuinely unclear which side it belongs on,
+  but it concerns foundation's own pipeline machinery … route it to
+  kernel" (CLAUDE.kernel.md § Kernel vs overlay routing rule). This is
+  intentionally a DISTINCT spelling from `kernel`, purely for provenance:
+  `--repo ambiguous` appends a note to the filed issue's body recording
+  that the route was a DEFAULT, not a deliberate classification, so a
+  human triaging the kernel tracker can see at a glance which issues were
+  auto-routed and re-file with `--board 4` if the default guessed wrong.
+
+No interactive TTY prompt is implemented for the ambiguous case — the issue
+contract treats a disambiguation prompt as optional; the required part
+(satisfied here) is that the DEFAULT and its rationale are documented, both
+in `capture.sh`'s own header comment and in this section, and that the
+default behavior is exercised by a test (`test_capture.sh`'s `--repo
+kernel`/`--repo ambiguous` full-flow section, see § Testing below). A
+capture with NEITHER `--board` nor `--repo` is unaffected — it still goes to
+board 3 (stageFind) exactly as before; the ambiguity default only applies
+when the caller opts into it via `--repo ambiguous`, because capture.sh has
+no way to infer "this is foundation-domain" on its own from a bare title.
+
 ## Testing
 
 `workflows/scripts/board/tests/test_issues_backend.sh` (run via `make
@@ -250,7 +358,8 @@ test-board`) is the fixture-replay suite for the split-1/3 (#799) surface:
 zero network, sources `lib/board.sh`, overrides its `_board_gh` seam. It also
 carries the **config-selection proof** — an unconfigured board's `gh project
 …` argv is byte-identical to `test_board_replay.sh`'s pinned Projects-v2 call
-sequence, demonstrating the seam is additive-only.
+sequence, demonstrating the seam is additive-only. Its case 3 also pins the
+`labels` passthrough (#801).
 
 `workflows/scripts/board/tests/test_issues_claim_edges.sh` (also run via
 `make test-board`) is the split-2/3 (#800) suite: `board_stamp` on `ISSUE_*`
@@ -259,3 +368,32 @@ sequence, demonstrating the seam is additive-only.
 unclaimed / Projects-v2-always-safe cases), `board_sub_issues`, and
 `claim.sh`'s end-to-end contention refusal against a fake issues-only repo
 (mirrors `test_claim.sh`'s replay style, but for the `ISSUE_*` path).
+
+`workflows/scripts/board/tests/test_board_dual_adapter.sh` (registered as its
+own `make test-board-dual-adapter` gate — see `scripts/quality-gates.sh`) is
+the split-3/3 (#801) suite: it runs `funnel-tick.sh` LIVE (not
+`--dry-run --fixture`, which bypasses `board.sh` entirely and so can never
+catch a reshape gap like the one above) against the SAME scenario twice — once
+with the board configured `backend=projects`, once `backend=issues` — and
+asserts both the full SAFE-TIER action set (drain-answer, drain-clarification,
+a `kind:spike` drive-ready, route-foundational, route-already-assigned) and
+byte-for-byte cross-arm parity of the resulting tick plan. It also asserts,
+directly against the recorded `gh` call log, that no PR/merge/write-capable
+call ever fires in either arm — the structural proof of "no merges."
+
+`workflows/scripts/board/tests/test_boards_conf.sh` § 6 (foundation #808)
+pins `board_repo 7` / `board_backend 7`'s built-in-map defaults (mirroring
+its existing boards-3-6 fallback assertions in § 1) and that a repo-local
+`boards.conf` can still override board 7 like any other board.
+`workflows/scripts/board/tests/test_capture.sh`'s `--repo kernel`/`--repo
+ambiguous` full-flow section drives `capture.sh` as a real subprocess against
+a bespoke fake `gh` (the shared `fixtures/fake_gh.sh` is Projects-v2 shaped
+and doesn't understand the issues-only backend's REST verbs). To keep this
+NON-exempt test file free of the real org literal (only `board_repo()`'s own
+case line — see above — is a sanctioned exception), the test overrides board
+7's `repo` to a placeholder via a scoped `boards.conf` (the same override
+mechanism a real consumer would use), then pins: `gh issue create` targets
+that repo; no `gh project …` call is ever made; the `fnd:status:backlog`
+label is both ensured (`gh label create`) and applied (`gh issue edit
+--add-label`); and `--repo ambiguous`'s filed issue body carries the
+documented ambiguity-default provenance note verbatim.
