@@ -62,9 +62,15 @@ guard-install-worktree:
 		fi \
 	'
 
+# test-board runs every tests/test_*.sh via a glob rather than mirroring
+# foundation's explicit list — a static copy of that list goes stale the
+# moment foundation registers a new board test (F#836: the pre-glob heredoc
+# silently skipped test_issues_backend.sh in kernel CI). The glob matches
+# whatever tests are actually vendored, so kernel coverage can never trail
+# the tree it ships.
 test-board:
 	@echo "==> Running board toolkit tests..."
-	@for t in $(BOARD_SRC)/tests/test_board_replay.sh $(BOARD_SRC)/tests/test_reconcile.sh $(BOARD_SRC)/tests/test_claim_marker.sh $(BOARD_SRC)/tests/test_claim.sh $(BOARD_SRC)/tests/test_board_cache.sh $(BOARD_SRC)/tests/test_milestone.sh $(BOARD_SRC)/tests/test_blocked_by.sh $(BOARD_SRC)/tests/test_parent_issue.sh $(BOARD_SRC)/tests/test_capture.sh $(BOARD_SRC)/tests/test_zsh_source.sh $(BOARD_SRC)/tests/test_deploy_mini.sh $(BOARD_SRC)/tests/test_board_sync_drift_check.sh $(BOARD_SRC)/tests/test_boards_conf.sh; do \
+	@for t in $(BOARD_SRC)/tests/test_*.sh; do \
 		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
 	done
 

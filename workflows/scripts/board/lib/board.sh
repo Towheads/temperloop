@@ -591,13 +591,20 @@ _board_issues_label_prefix() {
 # Shared jq `def`s for reshaping a raw `gh issue list`/`gh api issues/<n>`
 # response into the SAME item shape board_resolve_item / board_item_list
 # produce for the Projects-v2 path — {id, content:{number,title,type}, status,
-# component} — so every downstream accessor (board_item_id / board_item_title
-# / a caller's own `.status`/`.component` read) works UNCHANGED regardless of
-# backend. `issue_item($n)` expects `.` to be the raw issue object (labels +
-# state + title) and $n to be its issue number.
+# component, "host/Session"} — so every downstream accessor (board_item_id /
+# board_item_title / a caller's own `.status`/`.component`/`.["host/Session"]`
+# read — e.g. reconcile.sh's foreign-claim detector, worklist.sh's owner
+# column) works UNCHANGED regardless of backend. `issue_item($n)` expects `.`
+# to be the raw issue object (labels + state + title) and $n to be its issue
+# number.
 #   unslug: "in-progress" -> "In Progress" (inverse of _board_issues_slug,
 #     good enough for the closed status vocabulary + any Component slug — see
-#     ISSUES-ONLY-BACKEND.md's round-trip note).
+#     ISSUES-ONLY-BACKEND.md's round-trip note). NOT applied to the
+#     Host/Session claim stamp below — that is a free-text field (like its
+#     Projects-v2 counterpart, a --text field rather than a single-select), so
+#     unslugging (which lowercases) would corrupt a mixed-case hostname and
+#     silently break the foreign-host comparison board_claim_contended /
+#     reconcile.sh rely on. The stamp is stored and read back VERBATIM.
 read -r -d '' _BOARD_ISSUES_JQ_DEFS <<'JQ_DEFS' || true
 def unslug: split("-") | map((.[0:1] | ascii_upcase) + .[1:]) | join(" ");
 def issue_item($n):
@@ -607,12 +614,15 @@ def issue_item($n):
       | if ($sl | length) > 0 then ($sl[0] | sub("^fnd:status:"; "")) else "" end ) as $status_slug
   | ( ($labels | map(select(test("^fnd:component:")))) as $cl
       | if ($cl | length) > 0 then ($cl[0] | sub("^fnd:component:"; "")) else "" end ) as $comp_slug
+  | ( ($labels | map(select(test("^fnd:host/session:")))) as $hl
+      | if ($hl | length) > 0 then ($hl[0] | sub("^fnd:host/session:"; "")) else "" end ) as $host_session
   | { id: ("ISSUE_" + ($n | tostring)),
       content: { number: $n, title: (.title // ""), type: "Issue" } }
     + ( if $state == "closed" then { status: "Done" }
         elif $status_slug != "" then { status: ($status_slug | unslug) }
         else {} end )
-    + ( if $comp_slug != "" then { component: ($comp_slug | unslug) } else {} end );
+    + ( if $comp_slug != "" then { component: ($comp_slug | unslug) } else {} end )
+    + ( if $host_session != "" then { "host/Session": $host_session } else {} end );
 JQ_DEFS
 
 # Whole-board (active-set) read for an issues-only board: every OPEN issue,
@@ -733,6 +743,102 @@ _board_issues_set_field() {
       [ "$state" = "open" ] || { _board_gh issue reopen "$issue" -R "$repo" >/dev/null || return 1; }
     fi
   fi
+  return 0
+}
+
+# Free-text label stamp for the issues-only backend — board_stamp's ISSUE_*
+# counterpart to _board_issues_set_field's single-select emulation (foundation
+# #800, claim/edges split; board_stamp/board_set_number were explicitly left
+# "out of scope, fail loud" by the #799 split this one builds on). UNLIKE
+# status/component, a free-text value (e.g. a Host/Session claim stamp
+# "host:sess8") is stored VERBATIM as the label suffix — no slugging — because
+# slugging lowercases, which would corrupt a mixed-case hostname and silently
+# break the foreign-host comparison board_claim_contended / reconcile.sh rely
+# on. At most one `fnd:<field-slug>:*` label of this prefix is kept at a time
+# (same single-value-per-field convention as status/component, read-before-
+# write so an already-correct stamp is a no-op). An empty <text> CLEARS the
+# field (strips the label, adds nothing) mirroring board_stamp's Projects-v2
+# `--clear` semantics (foundation #259) — this is what makes build's epic
+# park-back stamp-clear actually clear on an issues-only board too.
+#
+# Label-count note: distinct stamp VALUES accumulate as distinct repo-level
+# label objects over the tracker's lifetime (there is no cheap "is this label
+# still referenced anywhere" check to safely `gh label delete` on removal —
+# doing so could yank a label still worn by a DIFFERENT issue the same
+# host/session claimed concurrently). Growth is bounded by the number of
+# distinct host:session8 stamps that have ever claimed something on this repo
+# (`_board_issues_ensure_label` already memoizes/no-ops a re-create), not by
+# the number of claims — acceptable for a tracker's realistic session volume;
+# a future cleanup pass could sweep orphaned `fnd:host/session:*` labels if it
+# ever becomes a real problem.
+#   _board_issues_stamp_field <ISSUE_n> <field-name> <text>
+_board_issues_stamp_field() {
+  local item_id="$1" field_name="$2" text="$3"
+  local issue repo prefix target_label issue_json cur l already_present=0
+
+  issue="${item_id#ISSUE_}"
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {
+    echo "board: _board_issues_stamp_field — no current board (call board_resolve_item first)" >&2
+    return 1
+  }
+  prefix="$(_board_issues_label_prefix "$field_name")"
+
+  if [ -n "$text" ]; then
+    target_label="${prefix}${text}"
+    _board_issues_ensure_label "$repo" "$target_label" || return 1
+  fi
+
+  issue_json="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null | _board_sanitize_control_chars)" || return 1
+  [ -n "$issue_json" ] || return 1
+  cur="$(printf '%s' "$issue_json" | jq -r --arg p "$prefix" '.labels[]?.name | select(startswith($p))')"
+
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    if [ -n "$text" ] && [ "$l" = "$target_label" ]; then
+      already_present=1
+      continue
+    fi
+    _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 || true
+  done <<<"$cur"
+
+  if [ -n "$text" ] && [ "$already_present" -eq 0 ]; then
+    _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
+  fi
+  return 0
+}
+
+# Detect whether <issue#> is already claimed by ANOTHER session BEFORE writing
+# a new claim over it (foundation #800) — the pre-check the issues-only
+# backend adds beyond the Projects-v2 path, which has no such check and
+# silently overwrites a foreign claim (relying entirely on reconcile.sh's
+# separate, report-only pass to surface it after the fact — see reconcile.sh's
+# "foreign claim" bucket). On a Projects-v2 board this ALWAYS reports "not
+# contended" (rc 1, zero behavior change — claim.sh's silent-overwrite stays
+# exactly as it was). On an issues-only board it is cheap: the caller
+# (claim.sh) has already resolved the item via board_resolve_item, so this is
+# a pure jq read of the already-fetched BOARD_ITEMS_JSON, no extra `gh` call.
+#
+# CONTENDED means: the issue is currently In Progress AND carries an existing
+# Host/Session stamp that is PRESENT and DIFFERENT from the stamp about to be
+# written. Two cases are deliberately NOT contended (mirroring the Projects-v2
+# adoption behavior test_claim.sh case 3 pins):
+#   - re-claiming with the SAME stamp (idempotent self-reclaim), and
+#   - an In-Progress item with NO existing stamp (adopting/repairing a
+#     half-claim, the #103 failure mode — claim writes unconditionally there).
+#   board_claim_contended <board#> <issue#> <new-stamp>
+#     -> prints the FOREIGN existing stamp + rc 0 if contended
+#        rc 1 (nothing printed) if safe to claim
+board_claim_contended() {
+  local board="$1" issue="$2" new_stamp="$3" status existing
+  _board_is_issues_only "$board" || return 1
+  status="$(printf '%s' "$BOARD_ITEMS_JSON" |
+    jq -r --argjson n "$issue" '.items[] | select(.content.number==$n) | .status // ""')"
+  [ "$status" = "$BOARD_OPT_INPROGRESS" ] || return 1
+  existing="$(printf '%s' "$BOARD_ITEMS_JSON" |
+    jq -r --argjson n "$issue" '.items[] | select(.content.number==$n) | .["host/Session"] // ""')"
+  [ -n "$existing" ] || return 1
+  [ "$existing" = "$new_stamp" ] && return 1
+  printf '%s\n' "$existing"
   return 0
 }
 
@@ -1007,6 +1113,27 @@ board_parent_issue() {
   return 0
 }
 
+# Print the CHILD (sub-issue) numbers of <issue#>, one per line (empty output
+# = no children — a singleton, or an epic with none yet). The read-side
+# counterpart to board_parent_issue, using GitHub's native sub-issues REST
+# endpoint (foundation #800, claim/edges split). Works on a PLAIN issue with
+# no Projects board provisioned — same per-issue REST shape as
+# board_parent_issue / board_blocked_by_open (ALWAYS LIVE, REST's own
+# 5,000/hr bucket, never the Projects-v2 GraphQL budget), so this is
+# backend-agnostic for free: identical behavior whether <board> is
+# Projects-v2-backed or issues-only. Callers MUST gate on candidate items
+# only, never the whole board (same caveat as its siblings). Pipes to an
+# external `jq` so the `_board_gh` seam stays replay-testable.
+#   board_sub_issues <board> <issue#>  ->  child issue numbers, one per line
+board_sub_issues() {
+  local board="$1" issue="$2" repo
+  repo="$(board_repo "$board")" || return 1
+  _board_gh api "repos/$repo/issues/$issue/sub_issues" 2>/dev/null |
+    _board_sanitize_control_chars |
+    jq -r '.[].number'
+  return 0
+}
+
 # Guard: the project item-edit writers below are keyed by a PVTI_* item-id, NOT a
 # board number or issue#. Called with the wrong arg shape (e.g. `board_set_status
 # 489 "Done"`), the underlying gh item-edit fails opaquely — and because callers
@@ -1071,9 +1198,21 @@ board_set_component() {
 # "no changes to make" (so a bare empty stamp was a silent no-op — foundation
 # #259), so route the clear through `--clear` and null the cached key instead.
 # This is what makes the build Step 5 epic park-back stamp-clear actually clear.
+#
+# ISSUE_* items (issues-only backend, foundation #800) route to
+# _board_issues_stamp_field instead — a `fnd:<field-slug>:<verbatim-text>`
+# label, single-value-per-prefix, empty text clears (same shape as the
+# Projects-v2 --clear semantics above, no ISSUES-ONLY-BACKEND.md vocabulary
+# change needed). This was the ONE function split #799 deliberately left
+# failing loud ("out of scope for this split"); it is now implemented.
 board_stamp() {
   local item_id="$1" field_name="$2" text="$3" field_id
   _board_assert_item_id "$item_id" board_stamp || return 1
+  case "$item_id" in
+    ISSUE_*)
+      _board_issues_stamp_field "$item_id" "$field_name" "$text"
+      return $? ;;
+  esac
   field_id="$(board_field_id "$field_name")"
   if [ -z "$field_id" ]; then
     return 1

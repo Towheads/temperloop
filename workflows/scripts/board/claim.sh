@@ -100,13 +100,22 @@ claim_main() {
   board_resolve_item "$PROJECT_NUMBER" "$issue"
 
   local status_field_id inprogress_opt hostsession_field_id item_id issue_title host sess stamp
-  status_field_id=$(board_field_id "$BOARD_FIELD_STATUS")
-  inprogress_opt=$(board_option_id "$BOARD_FIELD_STATUS" "$BOARD_OPT_INPROGRESS")
-  hostsession_field_id=$(board_field_id "$BOARD_FIELD_HOSTSESSION")
+  # On an issues-only board (foundation #800) there is no Projects-v2 field/
+  # option schema to resolve — BOARD_FIELDS_JSON is always {"fields":[]} there
+  # (see ISSUES-ONLY-BACKEND.md) — so board_field_id/board_option_id would
+  # always resolve empty and this pre-check would refuse EVERY claim. The
+  # issues-only backend drives status/stamp writes entirely through fnd:
+  # labels inside board_set_status/board_stamp themselves; skip the
+  # Projects-v2-only field-resolution gate for that backend.
+  if ! _board_is_issues_only "$PROJECT_NUMBER"; then
+    status_field_id=$(board_field_id "$BOARD_FIELD_STATUS")
+    inprogress_opt=$(board_option_id "$BOARD_FIELD_STATUS" "$BOARD_OPT_INPROGRESS")
+    hostsession_field_id=$(board_field_id "$BOARD_FIELD_HOSTSESSION")
 
-  if [ -z "$status_field_id" ] || [ -z "$inprogress_opt" ] || [ -z "$hostsession_field_id" ]; then
-    echo "could not resolve board fields (Status / Host/Session) on project $PROJECT_NUMBER" >&2
-    return 1
+    if [ -z "$status_field_id" ] || [ -z "$inprogress_opt" ] || [ -z "$hostsession_field_id" ]; then
+      echo "could not resolve board fields (Status / Host/Session) on project $PROJECT_NUMBER" >&2
+      return 1
+    fi
   fi
 
   # Resolve the project item id (and title, for the tmux window name) for this issue.
@@ -117,6 +126,20 @@ claim_main() {
   host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
   sess="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:manual"; fi
+
+  # Cross-session lock contention pre-check (foundation #800): on an
+  # issues-only board this refuses a claim already held by a DIFFERENT
+  # host:session stamp — the item is already resolved above, so this is one
+  # more jq read against the warm BOARD_ITEMS_JSON, no extra `gh` call. A
+  # no-op on the Projects-v2 path (board_claim_contended always reports "not
+  # contended" there — the historical silent-overwrite is unchanged). See
+  # board_claim_contended's own header comment for exactly what does/does not
+  # count as contended (self-reclaim and half-claim adoption are both safe).
+  local foreign_stamp
+  if foreign_stamp="$(board_claim_contended "$PROJECT_NUMBER" "$issue" "$stamp")"; then
+    echo "claim refused: #$issue is already In Progress, claimed by [$foreign_stamp] — verify there (or via reconcile.sh) before taking it." >&2
+    return 1
+  fi
 
   # The claim is two board writes, and their ORDER is the lock's safety property:
   # stamp the owner FIRST, flip the In-Progress status LAST. The status flip is

@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/) —
 pre-1.0, so a minor version bump (`0.x.0`) may include breaking changes.
 
+## [0.1.2] - 2026-07-03
+
+Re-seed from foundation `main` after PR #833 (foundation F#800, issues-only
+tracker split 2/3) merged, plus a CI-coverage fix to the seeder itself
+(foundation F#836).
+
+### Added
+
+- `workflows/scripts/board/tests/test_issues_claim_edges.sh` — claim-lock /
+  sub-issues-edge / cascade tests for the issues-only backend (foundation
+  F#800, merged via #833).
+
+### Changed
+
+- `workflows/scripts/board/lib/board.sh`, `workflows/scripts/board/claim.sh`,
+  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`,
+  `workflows/scripts/board/tests/test_issues_backend.sh`: issues-only
+  `board_stamp`, `board_claim_contended`, `board_sub_issues` + docs
+  (foundation #833).
+
+### Fixed
+
+- Generated `Makefile` `test-board` recipe now runs every `tests/test_*.sh`
+  via a glob instead of a stale static list — v0.1.0/v0.1.1 CI silently
+  skipped `test_issues_backend.sh` (foundation F#836); the same fix lands in
+  `workflows/scripts/kernel/seed-kernel-repo.sh`.
+
 ## [0.1.1] - 2026-07-03
 
 Re-seed of the kernel file set from current foundation `main` — the v0.1.0

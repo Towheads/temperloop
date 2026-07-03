@@ -32,9 +32,10 @@
 #      unchanged — those functions were already REST-only / backend-agnostic
 #      before this split; this suite proves that holds for an issues-only
 #      board number too.
-#   6. _board_assert_item_id accepts ISSUE_* alongside PVTI_*; board_stamp /
-#      board_set_number (Host/Session + Seq — owned by the claim/edges split,
-#      NOT this one) fail loud rather than silently misbehaving.
+#   6. _board_assert_item_id accepts ISSUE_* alongside PVTI_*; board_set_number
+#      (Seq — still out of scope) fails loud rather than silently misbehaving.
+#      board_stamp (Host/Session) is now implemented by the claim/edges split
+#      (foundation #800) — see test_issues_claim_edges.sh for its coverage.
 #
 # The `_board_gh` overrides are invoked indirectly (the library calls
 # _board_gh, which the test redefines), so shellcheck's "never invoked" check
@@ -320,19 +321,17 @@ grep -q 'gh issue edit 106 -R Acme/kernel-test --milestone Phase' "$CALLS" \
   || fail "board_set_milestone (issues-only board) wrong argv: $(cat "$CALLS")"
 echo "PASS: board_set_milestone works unchanged against an issues-only board"
 
-# --- 10: board_stamp / board_set_number fail LOUD on an issues-only board --
-# Host/Session (claim marker) + Seq (worklist order) are owned by the
-# claim/edges split, NOT this one — an issues-only board has no Projects
-# field schema for them, so these must refuse (return 1), never silently
-# no-op or crash. BOARD_FIELDS_JSON is set to {"fields":[]} by
-# board_resolve_item(20, …) above.
-if board_stamp "ISSUE_106" "Host/Session" "host:abcd" 2>/dev/null; then
-  fail "board_stamp must fail loud on an issues-only board (out of split-1 scope)"
-fi
+# --- 10: board_set_number still fails LOUD; board_stamp is now implemented --
+# Seq (worklist order) remains out of scope (no future item owns it yet) — an
+# issues-only board has no Projects field schema for it, so it must refuse
+# (return 1), never silently no-op or crash. board_stamp on ISSUE_* is now
+# IMPLEMENTED by the claim/edges split (foundation #800) — see
+# test_issues_claim_edges.sh for its full coverage (write/clear/round-trip);
+# this file just pins that board_set_number's refusal is unchanged.
 if board_set_number "ISSUE_106" "Seq" 3 2>/dev/null; then
-  fail "board_set_number must fail loud on an issues-only board (out of split-1 scope)"
+  fail "board_set_number must fail loud on an issues-only board (still out of scope)"
 fi
-echo "PASS: board_stamp/board_set_number fail loud (not silently) on an issues-only board — deferred to the claim/edges split"
+echo "PASS: board_set_number still fails loud (not silently) on an issues-only board — board_stamp is now implemented (see test_issues_claim_edges.sh)"
 
 echo
 echo "ALL PASS: test_issues_backend.sh"
