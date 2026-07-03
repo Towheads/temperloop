@@ -10,7 +10,7 @@ BOARD_SRC := $(FOUNDATION)/workflows/scripts/board
 BUILD_SRC := $(FOUNDATION)/workflows/scripts/build
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
-.PHONY: help shellcheck quality-gates test-board test-build test-build-workflow \
+.PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-live-drain validate-command-run-emit \
 	validate-lexicon test-scan-stub lint-pr-body-test test-stranger-config \
@@ -73,6 +73,10 @@ test-board:
 	@for t in $(BOARD_SRC)/tests/test_*.sh; do \
 		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
 	done
+
+test-board-dual-adapter:
+	@echo "==> Running dual-adapter SAFE-TIER funnel integration suite..."
+	@bash $(BOARD_SRC)/tests/test_board_dual_adapter.sh
 
 test-build:
 	@echo "==> Running build toolkit tests..."
