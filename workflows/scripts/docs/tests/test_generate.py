@@ -128,6 +128,36 @@ class TestBuildSite(unittest.TestCase):
 
         self.assertFalse(any(p.slug.startswith("failure-modes/") for p in pages))
 
+    def test_cli_source_absent_readme_yields_zero_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = _make_fixture_repo(tmp)  # no bin/README.md written
+            manifest_path = _make_manifest(tmp)
+            empty_dropin = tmp / "no-dropin-here"
+
+            pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
+
+        self.assertNotIn("cli/getting-started", {p.slug for p in pages})
+
+    def test_cli_source_renders_bootstrap_and_subcommand_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = _make_fixture_repo(tmp)
+            _write(repo / "bin" / "README.md", "# foundation CLI\n\nBootstrap docs here.\n")
+            _write(
+                repo / "bin" / "subcommands" / "try.sh",
+                "#!/usr/bin/env bash\n# description: zero-config taste, zero writes\necho try\n",
+            )
+            manifest_path = _make_manifest(tmp)
+            empty_dropin = tmp / "no-dropin-here"
+
+            pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
+
+        cli_page = next(p for p in pages if p.slug == "cli/getting-started")
+        self.assertIn("Bootstrap docs here", cli_page.body_html)
+        self.assertIn("try", cli_page.body_html)
+        self.assertIn("zero-config taste, zero writes", cli_page.body_html)
+
     def test_overlay_dropin_absent_directory_adds_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

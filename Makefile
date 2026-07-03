@@ -8,6 +8,8 @@ SHELL := /bin/bash
 FOUNDATION := $(shell pwd)
 BOARD_SRC := $(FOUNDATION)/workflows/scripts/board
 BUILD_SRC := $(FOUNDATION)/workflows/scripts/build
+PROBE_SRC := $(FOUNDATION)/workflows/scripts/probe
+DEMO_SRC := $(FOUNDATION)/workflows/scripts/demo
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
 .PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
@@ -15,7 +17,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 	test-prune-branches validate-live-drain validate-command-run-emit \
 	validate-lexicon test-scan-stub lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks docs \
-	test-docs-generator guard-install-worktree
+	test-docs-generator test-conventions-probe test-demo guard-install-worktree
 
 help:
 	@echo "Targets:"
@@ -40,6 +42,8 @@ help:
 	@echo "  test-kernel-gitleaks    gitleaks secret scan over the kernel set"
 	@echo "  docs                    Render the generated docs site"
 	@echo "  test-docs-generator     Docs generator unit tests"
+	@echo "  test-conventions-probe  Conventions-probe (read-only repo-convention detector) tests"
+	@echo "  test-demo               Demo-repo seed script tests"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -87,6 +91,22 @@ test-build:
 test-build-workflow:
 	@echo "==> Running build-level.mjs offline harness..."
 	@bash $(BUILD_SRC)/tests/test_workflow.sh
+
+# Glob-based, same rationale as test-board above (F#836): kernel coverage
+# can never trail whichever tests/test_*.sh files are actually vendored.
+test-conventions-probe:
+	@echo "==> Running conventions-probe tests..."
+	@for t in $(PROBE_SRC)/tests/test_*.sh; do \
+		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+	done
+
+# Glob-based, mirroring test-board (F#836) — kernel coverage tracks
+# whatever demo tests are actually vendored.
+test-demo:
+	@echo "==> Running demo-repo seed script tests..."
+	@for t in $(DEMO_SRC)/tests/test_*.sh; do \
+		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+	done
 
 test-hooks:
 	@echo "==> Running hook tests..."
