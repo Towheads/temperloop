@@ -89,6 +89,10 @@ KERNEL_GATES=(
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
+  # Read-only repo-convention detector (foundation #765): zero-network
+  # fixture-repo tests, plus a live PATH-trimmed case proving the `gh`-absent
+  # degrade path (see workflows/scripts/probe/tests/test_conventions_probe.sh).
+  "make test-conventions-probe"
   # Docs-build gate (F#764, Epic A): runs the docs-site generator
   # (workflows/scripts/docs/generate.py) BUILD ONLY, no publish step — a
   # doc-source break (e.g. a malformed workflows/scripts/kernel/kernel-
