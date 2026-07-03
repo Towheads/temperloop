@@ -180,6 +180,15 @@ kernel workflows/scripts/kernel/*
 # precedent for HTML output) except a tracked .gitkeep so the dir exists in
 # a fresh clone.
 kernel workflows/scripts/docs/*
+# Epic D newcomer-experience scripts (foundation #765): the conventions
+# probe, demo-repo seeder, and proposal-PR generator are kernel content —
+# anything a stranger needs for try/init/eject.
+kernel workflows/scripts/probe/*
+kernel workflows/scripts/probe/tests/*
+kernel workflows/scripts/demo/*
+kernel workflows/scripts/demo/tests/*
+kernel workflows/scripts/proposal/*
+kernel workflows/scripts/proposal/tests/*
 # Overlay renderer drop-in convention (analogous to scripts/quality-gates.d/,
 # a sibling `.d` dir next to the script it extends): a private overlay repo
 # drops extra page-producing modules here. Prospective — this directory

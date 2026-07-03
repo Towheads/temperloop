@@ -63,7 +63,12 @@ _probe_run_with_timeout() {
   local secs="$1"; shift
   "$@" &
   local cmd_pid=$!
-  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) &
+  # Redirect the watchdog subshell at its boundary so its `sleep` child never
+  # inherits a command substitution's pipe write-end — an inherited write-end
+  # keeps the pipe open after the fast path kills the watchdog process,
+  # stalling every fast call for the full $secs (foundation #861; same fix as
+  # try.sh's _try_run_with_timeout).
+  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
   local watchdog_pid=$!
   local status
   wait "$cmd_pid" 2>/dev/null
