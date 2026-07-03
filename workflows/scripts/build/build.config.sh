@@ -65,6 +65,16 @@
 # policy), so one default serves all boards.
 : "${FUNNEL_REQUIRED_CHECK:=checks}"
 
+# ── Funnel-overlap predicate (#864) ─────────────────────────────────────────
+# The funnel's OPERATIONAL SURFACE — space-separated path prefixes that
+# funnel-overlap.sh intersects a plan's aggregate `files:` set against at
+# /build run start (Step 1.7). A plan that rewrites this machinery while the
+# funnel is live is the Epic B interference cascade (retro #847): the default
+# names the build spine + board toolkit + pipeline commands/hooks + quality
+# gates + Makefile, under both the kernel/ vendored prefix and the compat
+# pre-split paths. Prefix match is textual, so both spellings must be listed.
+: "${FUNNEL_DRIVEN_PATHS:=kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile}"
+
 # ── Funnel rung-5b driver (#604) ────────────────────────────────────────────
 # The autonomous funnel driver's supervised auto-drive. Default OFF: the cron
 # stays pure 5a (emit + notify) until the operator opts in. Set FUNNEL_DRIVE=1
