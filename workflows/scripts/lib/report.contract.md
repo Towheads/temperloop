@@ -63,6 +63,13 @@ merged" as the headline -- an absent, failing, non-executable, or
 non-JSON-conforming `tokens` producer simply falls back to the kernel-tier
 headline, never an error.
 
+**Egress:** this seam and its own drop-ins are covered by the mechanical
+network-call lint at `kernel/workflows/scripts/kernel/check-producer-egress.sh`
+(registered as the `test-producer-egress` quality gate) alongside
+`baseline-snapshot.sh`, `report.sh` itself, and the CLI dispatcher's
+auto-offer check -- see that script's header for the documented (today:
+empty) opt-in egress surface for this whole value loop.
+
 ## Headline selection
 
 - **If** a `tokens` drop-in is present, executable, exits 0, and its stdout
