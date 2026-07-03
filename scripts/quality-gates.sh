@@ -86,6 +86,10 @@ KERNEL_GATES=(
   "make test-scan-stub"
   "make lint-pr-body-test"
   "make test-stranger-config"
+  # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite
+  # for kernel/workflows/scripts/demo/seed-demo-repo.sh, fake `gh` on PATH,
+  # zero network — mirrors test-board's glob-based kernel coverage (F#836).
+  "make test-demo"
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
