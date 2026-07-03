@@ -18,7 +18,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-live-drain validate-command-run-emit \
 	validate-lexicon test-scan-stub lint-pr-body-test test-stranger-config \
-	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks docs \
+	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
 
 help:
@@ -42,6 +42,7 @@ help:
 	@echo "  test-kernel-manifest    kernel-manifest.txt coverage check"
 	@echo "  test-kernel-denylist    Personal-token denylist check"
 	@echo "  test-kernel-gitleaks    gitleaks secret scan over the kernel set"
+	@echo "  test-producer-egress    Egress lint over the Epic E value-loop producers"
 	@echo "  docs                    Render the generated docs site"
 	@echo "  test-docs-generator     Docs generator unit tests"
 	@echo "  test-conventions-probe  Conventions-probe (read-only repo-convention detector) tests"
@@ -172,6 +173,20 @@ test-kernel-denylist:
 test-kernel-gitleaks:
 	@echo "==> Running kernel gitleaks scan..."
 	@bash $(FOUNDATION)/workflows/scripts/kernel/check-gitleaks-kernel.sh
+
+# Mechanical egress lint over Epic E's before/after value-loop producers
+# (foundation #766, privacy/egress audit item): greps the named producer
+# scripts for network-call patterns beyond the one sanctioned `gh` channel.
+# Standalone-kernel-checkout invocation — no --overlay-report-d, since a
+# kernel-only checkout has no .foundation/report.d/ of its own; see this
+# repo's own root Makefile for the composed-tree invocation that also
+# scans the overlay drop-ins. See check-producer-egress.sh's header for
+# the documented (today: empty) opt-in egress surface.
+test-producer-egress:
+	@echo "==> Running producer egress check..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/check-producer-egress.sh --kernel-root $(FOUNDATION)
+	@echo "==> Running check-producer-egress.sh fixture tests..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_producer_egress.sh
 
 test-scan-stub:
 	@echo "==> Running stub scanner tests..."

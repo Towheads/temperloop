@@ -97,6 +97,14 @@ KERNEL_GATES=(
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
+  # Mechanical egress lint over Epic E's before/after value-loop producers
+  # (foundation #766, privacy/egress audit item): greps baseline-snapshot.sh,
+  # report.sh, bin/foundation's auto-offer check, and (in the composed-tree
+  # invocation via the root Makefile) the .foundation/report.d/ overlay
+  # drop-ins for network-call patterns beyond the one sanctioned `gh`
+  # channel. See check-producer-egress.sh's header for the documented
+  # (today: empty) opt-in egress surface.
+  "make test-producer-egress"
   # Read-only repo-convention detector (foundation #765): zero-network
   # fixture-repo tests, plus a live PATH-trimmed case proving the `gh`-absent
   # degrade path (see workflows/scripts/probe/tests/test_conventions_probe.sh).
