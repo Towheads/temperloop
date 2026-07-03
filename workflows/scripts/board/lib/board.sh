@@ -113,6 +113,7 @@ board_repo() {
     4) echo "Towheads/foundation" ;;  # migrated into the org (#330)  # denylist:allow — see comment above board_repo()
     5) echo "Towheads/ssmobile" ;;    # migrated into the org (#330)  # denylist:allow — see comment above board_repo()
     6) echo "Towheads/subsetwiki" ;;  # onboarded in the org  # denylist:allow — see comment above board_repo()
+    7) echo "Towheads/foundation-kernel" ;;  # the kernel tracker itself (F#808, issues-only — see board_backend below)  # denylist:allow — see comment above board_repo()
     *) return 1 ;;
   esac
 }
@@ -158,18 +159,34 @@ board_project_number() {
 # GitHub labels on the repo's Issues instead. This is a FOURTH boards.conf
 # axis, a peer to repo/owner/project (same discovery order, same grep/cut-only
 # parsing — see boards.conf.example): `board.<N>.backend=issues`. There is
-# deliberately NO built-in case-map entry defaulting any board to "issues" —
-# every board with no explicit `backend=issues` line resolves "projects" and
-# takes the EXACT SAME Projects-v2 code path as before this seam existed (see
-# test_issues_backend.sh's config-selection proof: unmentioned/absent-conf
-# boards emit byte-identical `gh project …` argv). This is what makes the seam
-# additive-only rather than a fork of the toolkit — see
-# workflows/scripts/board/ISSUES-ONLY-BACKEND.md for the full label vocabulary
-# + status-mapping contract the issues-only path implements.
+# deliberately NO GENERAL-PURPOSE built-in case-map entry defaulting an
+# arbitrary board to "issues" — every board with no explicit `backend=issues`
+# line resolves "projects" and takes the EXACT SAME Projects-v2 code path as
+# before this seam existed (see test_issues_backend.sh's config-selection
+# proof: unmentioned/absent-conf boards emit byte-identical `gh project …`
+# argv). This is what makes the seam additive-only rather than a fork of the
+# toolkit — see workflows/scripts/board/ISSUES-ONLY-BACKEND.md for the full
+# label vocabulary + status-mapping contract the issues-only path implements.
+#
+# ONE deliberate, permanent, singular exception (F#808, Guard #3 of the
+# kernel-vs-overlay routing rule): board 7 IS the foundation-kernel tracker
+# itself — its issues-only-ness is a structural fact of what board 7 means,
+# not a per-deployment configuration choice a boards.conf should carry (and a
+# real boards.conf committed inside kernel/ would embed this org's name in a
+# file this checkout's own personal-token-denylist forbids it in — see
+# board_repo()'s own board.7 case + its trailing `denylist:allow` marker,
+# the one place a real org literal is sanctioned). A per-machine/per-repo
+# boards.conf can still override board 7's `repo`/`backend` (checked FIRST,
+# same discovery order as any other board) — this hard-codes only the
+# DEFAULT any boards.conf-less consumer sees, exactly like board_repo()'s
+# boards 3-6 already do for the `repo` axis.
 #   board_backend <board#>  ->  "issues" | "projects" (default)
 board_backend() {
   local v
   v="$(_board_conf_get "$1" backend)" && { printf '%s\n' "$v"; return 0; }
+  case "$1" in
+    7) printf '%s\n' "issues"; return 0 ;;   # the kernel tracker (F#808) — see comment above
+  esac
   printf '%s\n' "projects"
 }
 

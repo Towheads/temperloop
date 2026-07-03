@@ -17,6 +17,8 @@
 #   scripts/capture.sh "Title" --body "More detail" --label bug
 #   scripts/capture.sh "Foundation tooling bug" --board 4 --label bug
 #   scripts/capture.sh "Log rotation" --milestone "Production Live"  # tag a phase
+#   scripts/capture.sh "Board adapter caching bug" --repo kernel      # kernel tracker
+#   scripts/capture.sh "Not sure if kernel or overlay" --repo ambiguous
 #
 # --milestone is a free, concurrent grouping label, NOT a parking gate: it assigns
 # the item's native GitHub milestone and LEAVES it in Backlog. Whether a Backlog
@@ -26,6 +28,36 @@
 # --board selects which Projects-v2 board + repo:
 #   3 = "stageFind build"  -> <org>/stageFind   (default)
 #   4 = "foundation build" -> <org>/foundation
+#
+# --repo is a conscious-routing peer to --board (F#808, Guard #3 of the
+# kernel-vs-overlay routing rule — CLAUDE.kernel.md § Kernel vs overlay
+# routing rule). It overrides --board when given:
+#   --repo kernel       route to the foundation-kernel ISSUES-ONLY tracker
+#                        (logical board 7 — registered in lib/board.sh's
+#                        board_repo/board_backend built-in maps, see
+#                        ISSUES-ONLY-BACKEND.md) instead of a Projects-v2
+#                        board. Use when the capture IS kernel-domain
+#                        machinery (board adapter, build/sweep spine,
+#                        install/doctor, quality gates — the "stranger test"
+#                        from the routing rule).
+#   --repo ambiguous     the capture is foundation-domain (foundation's own
+#                        pipeline machinery) but the caller can't tell
+#                        kernel vs overlay. Per the routing rule's ambiguity
+#                        clause ("Ambiguous foundation-domain captures
+#                        default to kernel"), this ALSO routes to board 7 —
+#                        a distinct spelling from `kernel` purely for
+#                        provenance: the filed issue's body records that the
+#                        route was a DEFAULT, not a deliberate call, so a
+#                        human triaging the kernel tracker can re-route it
+#                        to --board 4 if the default guessed wrong. No TTY
+#                        prompt is implemented — an interactive
+#                        disambiguation prompt is optional per the issue
+#                        contract; the required part is that the default
+#                        (kernel) and its rationale are documented here and
+#                        in ISSUES-ONLY-BACKEND.md.
+# Neither flag changes the plain `--board 3` / `--board 4` default behavior:
+# an unambiguous capture with no --repo still goes exactly where it always
+# did.
 #
 set -euo pipefail
 
@@ -45,7 +77,7 @@ source "$SCRIPT_DIR/lib/board.sh"
 usage() {
   cat <<'EOF'
 usage: capture.sh "<title>" [--body "..."] [--label <l>] [--board 3|4] [--milestone "<m>"]
-                  [--rework <regression|spec-miss|flake>]
+                  [--rework <regression|spec-miss|flake>] [--repo kernel|ambiguous]
 
 Capture a noticed-but-not-now item as a tracked board item in one call.
   --body       longer description (defaults to a provenance line)
@@ -56,6 +88,10 @@ Capture a noticed-but-not-now item as a tracked board item in one call.
   --rework     tag the item as rework and record its cause: regression, spec-miss,
                or flake. Applies BOTH the `rework` label and the
                `rework-cause:<cause>` label (created idempotently if missing).
+  --repo       kernel = route to the foundation-kernel issues-only tracker
+               (overrides --board); ambiguous = foundation-domain capture,
+               kernel-vs-overlay unclear -> defaults to kernel per the
+               routing rule's ambiguity clause (see ISSUES-ONLY-BACKEND.md)
 EOF
 }
 
@@ -79,6 +115,7 @@ label=""
 board=3
 milestone=""
 rework=""
+repo_route=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --body)  body="${2:?--body needs a value}"; shift 2 ;;
@@ -86,12 +123,38 @@ while [ $# -gt 0 ]; do
     --board) board="${2:?--board needs a value}"; shift 2 ;;
     --milestone) milestone="${2:?--milestone needs a value}"; shift 2 ;;
     --rework) rework="${2:?--rework needs a value}"; shift 2 ;;
+    --repo)  repo_route="${2:?--repo needs a value}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
+# --repo kernel/ambiguous routing (F#808, Guard #3 of the kernel-vs-overlay
+# routing rule) — overrides --board. `ambiguous` routes to the SAME board as
+# `kernel` but records a distinct provenance note in the filed issue's body
+# (route_note, appended after the default-body block below) so the default
+# is legible to a later human triage pass, not silently indistinguishable
+# from a deliberate `--repo kernel` call. See ISSUES-ONLY-BACKEND.md.
+KERNEL_BOARD=7  # foundation-kernel issues-only tracker; see lib/board.sh's board_repo/board_backend built-in maps
+route_note=""
+if [ -n "$repo_route" ]; then
+  case "$repo_route" in
+    kernel)
+      board="$KERNEL_BOARD"
+      ;;
+    ambiguous)
+      board="$KERNEL_BOARD"
+      route_note="[capture.sh --repo ambiguous: foundation-domain capture auto-routed to the kernel tracker per the kernel-vs-overlay routing rule's ambiguity default (CLAUDE.kernel.md § Kernel vs overlay routing rule — \"Ambiguous foundation-domain captures default to kernel\"). Re-file with --board 4 if this turns out to be overlay-only material.]"
+      ;;
+    *)
+      echo "capture.sh: --repo must be 'kernel' or 'ambiguous', got: $repo_route" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if ! repo="$(board_repo "$board")"; then
-  echo "--board must be 3 (stageFind) or 4 (foundation), got: $board" >&2
+  echo "--board must be 3 (stageFind), 4 (foundation), 7 (kernel, or use --repo kernel), or a boards.conf-registered board, got: $board" >&2
   exit 2
 fi
 
@@ -126,6 +189,12 @@ fi
 if [ -z "$body" ]; then
   body="Captured via scripts/capture.sh on $(date +%Y-%m-%d) from a $repo session."
 fi
+# --repo ambiguous provenance (see routing block above) — appended regardless
+# of whether --body was given, so the auto-routing rationale is always
+# visible on the filed issue, not just when the caller took the default body.
+[ -z "$route_note" ] || body="$body
+
+$route_note"
 
 # 1) Create the issue.
 # All captures default to Operational: a defect or mid-work item follows an

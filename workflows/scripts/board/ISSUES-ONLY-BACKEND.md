@@ -285,6 +285,72 @@ directly (`gh issue list --search …`, `gh issue view --json assignees`),
 which were already backend-agnostic (per-issue/per-search REST, no Projects
 call either way).
 
+## The foundation-kernel tracker (board 7, foundation #808)
+
+The kernel-vs-overlay routing rule (CLAUDE.kernel.md § Kernel vs overlay
+routing rule) needed a concrete board number before it could be *followed*
+mechanically rather than just stated in prose — the global glossary used to
+say the kernel tracker "has no `--board N` because it is issues-only today".
+Being issues-only was never actually a reason it needed no number (an
+issues-only board only needs the `repo` axis, same as any other — see above);
+this split (F#808, Guard #3 of the routing rule, epic B) gives the adapter a
+real handle: **board 7**, registered directly in `lib/board.sh`'s
+`board_repo()` and `board_backend()` built-in maps (`repo` → the
+foundation-kernel repo; `backend` → `"issues"`), the SAME place boards 3-6
+already carry their real, org-qualified repo values.
+
+Not a committed `boards.conf` entry — deliberately. A real, org-qualified
+`repo` value is exactly the class of literal this checkout's own
+personal-token-denylist (`workflows/scripts/kernel/personal-token-denylist.tsv`)
+forbids inside the kernel-vendored tree, with ONE sanctioned exception:
+`board_repo()`'s own built-in case map, already carrying boards 3-6's real
+values behind a trailing `# denylist:allow` marker for exactly this reason
+(a `boards.conf`-less consumer must still resolve a real repo — see
+§ Selecting the backend, above). Board 7 follows that SAME precedent rather
+than inventing a second one: its case line in `board_repo()` carries the
+same marker, and `board_backend()` gets one narrowly-scoped case (`7 →
+"issues"`) as the sole, deliberate, permanent exception to that function's
+general "no board defaults to issues in-code" rule — board 7's issues-only-
+ness is a structural fact of what board 7 IS, not a per-deployment config
+choice a `boards.conf` should carry. A per-machine/per-repo `boards.conf`
+can still override board 7's `repo`/`backend` (checked FIRST, same
+discovery order as any other board) exactly as it could for boards 3-6 —
+this only hard-codes the DEFAULT a `boards.conf`-less consumer sees.
+`test_boards_conf.sh`'s built-in-fallback assertions cover board 7 the same
+way they already cover boards 3-6.
+
+### `capture.sh --repo kernel` / `--repo ambiguous`
+
+`capture.sh` gained a `--repo` flag — a conscious-routing peer to `--board`,
+documented in the script's own header — rather than requiring every caller
+to memorize board 7:
+
+- `--repo kernel` — routes to board 7 outright (overrides `--board`). Use
+  when the capture IS kernel-domain machinery (board adapter, build/sweep
+  spine, install/doctor, quality gates — the "stranger test" the routing
+  rule names).
+- `--repo ambiguous` — routes to the SAME board 7, for the routing rule's
+  **ambiguity clause**: "Ambiguous foundation-domain captures default to
+  kernel. When a new rule is genuinely unclear which side it belongs on,
+  but it concerns foundation's own pipeline machinery … route it to
+  kernel" (CLAUDE.kernel.md § Kernel vs overlay routing rule). This is
+  intentionally a DISTINCT spelling from `kernel`, purely for provenance:
+  `--repo ambiguous` appends a note to the filed issue's body recording
+  that the route was a DEFAULT, not a deliberate classification, so a
+  human triaging the kernel tracker can see at a glance which issues were
+  auto-routed and re-file with `--board 4` if the default guessed wrong.
+
+No interactive TTY prompt is implemented for the ambiguous case — the issue
+contract treats a disambiguation prompt as optional; the required part
+(satisfied here) is that the DEFAULT and its rationale are documented, both
+in `capture.sh`'s own header comment and in this section, and that the
+default behavior is exercised by a test (`test_capture.sh`'s `--repo
+kernel`/`--repo ambiguous` full-flow section, see § Testing below). A
+capture with NEITHER `--board` nor `--repo` is unaffected — it still goes to
+board 3 (stageFind) exactly as before; the ambiguity default only applies
+when the caller opts into it via `--repo ambiguous`, because capture.sh has
+no way to infer "this is foundation-domain" on its own from a bare title.
+
 ## Testing
 
 `workflows/scripts/board/tests/test_issues_backend.sh` (run via `make
@@ -314,3 +380,20 @@ a `kind:spike` drive-ready, route-foundational, route-already-assigned) and
 byte-for-byte cross-arm parity of the resulting tick plan. It also asserts,
 directly against the recorded `gh` call log, that no PR/merge/write-capable
 call ever fires in either arm — the structural proof of "no merges."
+
+`workflows/scripts/board/tests/test_boards_conf.sh` § 6 (foundation #808)
+pins `board_repo 7` / `board_backend 7`'s built-in-map defaults (mirroring
+its existing boards-3-6 fallback assertions in § 1) and that a repo-local
+`boards.conf` can still override board 7 like any other board.
+`workflows/scripts/board/tests/test_capture.sh`'s `--repo kernel`/`--repo
+ambiguous` full-flow section drives `capture.sh` as a real subprocess against
+a bespoke fake `gh` (the shared `fixtures/fake_gh.sh` is Projects-v2 shaped
+and doesn't understand the issues-only backend's REST verbs). To keep this
+NON-exempt test file free of the real org literal (only `board_repo()`'s own
+case line — see above — is a sanctioned exception), the test overrides board
+7's `repo` to a placeholder via a scoped `boards.conf` (the same override
+mechanism a real consumer would use), then pins: `gh issue create` targets
+that repo; no `gh project …` call is ever made; the `fnd:status:backlog`
+label is both ensured (`gh label create`) and applied (`gh issue edit
+--add-label`); and `--repo ambiguous`'s filed issue body carries the
+documented ambiguity-default provenance note verbatim.
