@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # seed-demo-repo.sh — idempotent, script-generated seeder for the PRIVATE
-# scratch demo repo (default: Towheads/foundation-kernel-demo) that
+# scratch demo repo (default: Towheads/foundation-kernel-demo) that  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 # `foundation try --demo` runs one real safe-tier funnel tick against
 # (foundation #765 Epic D, item `demo-repo-seed` / foundation #851).
 #
@@ -44,7 +44,7 @@
 # Usage:
 #   seed-demo-repo.sh [--repo OWNER/NAME] [--reset] [--dry-run]
 #
-# --repo OWNER/NAME   target repo (default: Towheads/foundation-kernel-demo)
+# --repo OWNER/NAME   target repo (default: Towheads/foundation-kernel-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 # --reset             close stale demo-seed issues + recreate the fixed set;
 #                      also overwrites starter files back to baseline
 # --dry-run           print every `gh` call this run would make without
@@ -55,7 +55,7 @@
 
 set -euo pipefail
 
-REPO="Towheads/foundation-kernel-demo"
+REPO="Towheads/foundation-kernel-demo"  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 RESET=0
 DRY_RUN=0
 SEED_LABEL="demo-seed"
@@ -64,7 +64,7 @@ usage() {
   cat <<'EOF'
 usage: seed-demo-repo.sh [--repo OWNER/NAME] [--reset] [--dry-run]
 
-  --repo OWNER/NAME   target repo (default: Towheads/foundation-kernel-demo)
+  --repo OWNER/NAME   target repo (default: Towheads/foundation-kernel-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
   --reset             close stale demo-seed issues + recreate the fixed set;
                        also overwrites starter files back to baseline
   --dry-run           print gh calls without executing them
@@ -190,7 +190,7 @@ EOF
 
 This is a **scratch demo repository**, script-generated and reset on
 demand by `seed-demo-repo.sh` in the
-[foundation-kernel](https://github.com/Towheads/foundation-kernel) repo.
+[foundation-kernel](https://github.com/Towheads/foundation-kernel) repo.  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 
 It exists so the `foundation` CLI's `try --demo` command has a real,
 disposable repo to run one safe-tier issue -> PR tick against. Nothing
