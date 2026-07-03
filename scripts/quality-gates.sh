@@ -80,6 +80,16 @@ KERNEL_GATES=(
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
+  # Docs-build gate (F#764, Epic A): runs the docs-site generator
+  # (workflows/scripts/docs/generate.py) BUILD ONLY, no publish step — a
+  # doc-source break (e.g. a malformed workflows/scripts/kernel/kernel-
+  # manifest.txt line, or an overlay docs.d/*.py drop-in missing
+  # build_pages()) raises inside generate.py and `make docs` exits non-zero,
+  # so it cannot merge. Stdlib-python, zero-network, zero-install on a stock
+  # runner (see generate.py's own docstring). Publishing the built site is a
+  # SEPARATE, sibling item's concern (the Pages workflow) — this gate only
+  # proves the site still builds.
+  "make docs"
   "make shellcheck"
 )
 

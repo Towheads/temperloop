@@ -26,6 +26,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Stale board-claim sweep | `claude/CLAUDE.md` § `Board hygiene is part of the gate` | `Stale board claims` |
 | Unattended pending decisions | `claude/CLAUDE.md` § `Unattended pending-decisions surface` | `Pending decisions surface` |
 | Answered decision issues | `system-prompt` § `decision_sink_ask` | `Answered decisions` |
+| Kernel-vs-overlay classification | `claude/CLAUDE.md` § `Kernel vs overlay routing rule` | `Kernel-candidate learnings` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -213,6 +214,14 @@ Reusable approaches that worked. Save to vault `Patterns/<title>.md` with the va
 
 ### Mistakes
 Pitfalls, failure modes, things that broke. Save to vault `Mistakes/<title>.md` with the vault provenance schema frontmatter (`tags: [mistake, project/<name>]`) and the `## Source` footer. Skip duplicates.
+
+### Kernel-candidate learnings
+
+**Backstop for `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule** (only when this checkout carries that file — skip this pass entirely otherwise, no note, no tag). The live rule asks whoever routes a new rule/decision to apply the **stranger test** at capture time; this pass catches a `Decisions/` / `Patterns/` / `Mistakes/` note this run **banked or amended** (the creation and provenance-audit paths above) that the live session captured without running that test.
+
+For each such note, apply the stranger test: would a stranger's kernel-only install need this for the kernel machinery (board adapter, build/sweep pipeline, install/doctor, branch/PR policy) to work correctly? If yes and the note isn't already tagged `kernel-candidate`, add that tag to its frontmatter `tags:` list via `mcp__obsidian__patch_vault_file` (a targeted `tags:` field patch, not a rewrite) — this flags it for eventual upstream contribution once the kernel repo exists as a live checkout. Never remove an existing `kernel-candidate` tag, and never tag a note the stranger test doesn't clearly pass — **default to `overlay`** (no tag), matching `/triage`'s Step 2.8 default (a missed kernel tag costs nothing; a wrongly-added one misroutes a personal/org-specific note).
+
+**Default to silence.** Skip entirely on a checkout with no `claude/CLAUDE.kernel.md`. Most notes stay untagged.
 
 ### Self-correction moments → Mistakes / Patterns + recurring-tell promotion
 

@@ -1,0 +1,71 @@
+name: Docs Pages
+
+# Builds the docs-site skeleton (`make docs`, F#764 Epic C) and publishes it
+# to GitHub Pages on every merge to main. Deliberately a SEPARATE workflow
+# from ci.yml's `checks` job — this never runs on pull_request/merge_group
+# and is never named as a required status check, so a publish failure is
+# visible in the Actions tab but structurally cannot block a PR merge (the
+# branch-protection contract only cares about `checks`, which this file
+# never touches).
+#
+# Versioning: the deployed site carries a build-metadata VERSION file (see
+# workflows/scripts/docs/lib/page.py's render_page() docstring — "is this
+# stale" is explicitly deferred to "the CI publish step (a future item)"
+# rather than baked into the generator, to keep `make docs` output
+# byte-identical/idempotent on an unchanged tree). Version = the tag exactly
+# on HEAD when one exists, else the short commit SHA — the repo carries zero
+# tags today, so the SHA fallback is the live path.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Recommended Pages concurrency: let an in-flight deploy finish rather than
+# cancel it out from under a reader, but never run two deploys at once.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history + tags, needed for `git describe --tags`
+
+      - name: Determine version
+        id: version
+        run: |
+          version="$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)"
+          echo "Resolved docs version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build docs site
+        run: make docs
+
+      - name: Stamp build version
+        env:
+          DOCS_VERSION: ${{ steps.version.outputs.version }}
+        run: echo "$DOCS_VERSION" > workflows/scripts/docs/_site/VERSION
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: workflows/scripts/docs/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

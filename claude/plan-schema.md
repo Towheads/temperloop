@@ -60,6 +60,7 @@ Build order: L0 first → Ln last; items in the same level ship together.
 
 - [ ] **<title>** `slug: short-stable-slug` — <one-line scope; becomes PR title body>
   - branch: `<type>/<slug>`           # type ∈ {feat, fix, chore, refactor, docs, test}
+  - repo: owner/repo                   # optional; target repo for this item's work, when different from the plan's home repo (the kernel-repo case). Default: the plan's home repo
   - size: S | M | L                    # L means "should probably be split"
   - kind: code | spike                 # default code; spike = verdict-only (note + routed issue, no PR)
   - model: sonnet                      # optional; advisory worker-model tier for /build 3c (sonnet | haiku); absent = inherit the session model (top tier)
@@ -110,6 +111,16 @@ Type derivation table:
 | Build / deps / config / tooling | `chore` |
 | Docs only | `docs` |
 | Test gap | `test` |
+
+### Optional `repo:` field
+
+`repo:` names the `owner/repo` this item's work actually lands in, when that differs from the plan's home repo. Default (absent) is the plan's home repo — the common case. The motivating case is the **kernel-vs-overlay split** (`claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule, the "stranger test"): a plan authored in an overlay/consumer repo can carry an item whose fix is actually kernel-classified and belongs **upstream**, in the kernel repo, not the plan's own checkout. `/triage` flags such candidates (its kernel-vs-overlay routing step) and `/assess` carries the classification into the item's `repo:` field.
+
+`/build` consumes `repo:` at two honor points:
+- **Checkout/worktree selection (Step 3b).** When `repo:` is set and differs from the plan's home repo, the orchestrator resolves a local checkout of `repo:` (rather than the plan's own checkout) and passes *that* root to `worktree.sh create` — the item's worktree, branch, and commits all land against the target repo, never the plan's. If no local checkout of `repo:` exists, this is a hard block (surface it — do not silently fall back to the plan's own repo).
+- **PR-body close line (Step 3f).** A cross-repo item's `Closes` line must use the fully-qualified `owner/repo#N` form — `Closes owner/repo#<gh_issue>` — never bare `Closes #N`, which is same-repo only and would not reach the target repo's tracker (per the global `CLAUDE.md` § Issue linkage cross-repo-closes caveat). `also_closes:` entries on a cross-repo item are qualified the same way.
+
+Format: bare `owner/repo` (no `#`, no issue number — that's what `gh_issue:` carries). Slug/kebab org and repo names only.
 
 ### Acceptance — bullet list, not prose
 
@@ -264,6 +275,7 @@ Fail fast if any of:
 9. An item's `acceptance:` block still contains the placeholder `- (no acceptance criteria derivable from source — fill in during review)`. The placeholder is a valid *authoring* signal but a *fatal* execution signal — fill it in before approving. (`epic:` absent is never a failure — it is optional and only meaningful on board-enabled projects.)
 10. An item carries **both** `gh_issue:` and `split_from:` (mutually exclusive), or a non-empty `split_from:` whose value isn't a `#<positive-integer>` issue ref. A split item must leave `gh_issue:` unset so Step 2.5 mints it a fresh per-item issue (#73). This mutual exclusion is an **always-true invariant**, including across a resume: `build` Step 2.5 **swaps `split_from:`→`gh_issue:` atomically** — the same patch that writes the minted `gh_issue:` also *removes* `split_from:`, restoring the 1:1 item↔issue end-state — so an item is never left carrying both, and a resumed run's re-validation of this rule always passes. Worked before/after of one split item across Step 2.5: `split_from: #40` / no `gh_issue:`  →  `gh_issue: #57` / no `split_from:`.
 11. An item declares an **external / cross-plan gate in `notes:`** (a prose gate of the "don't start until #N lands" form — the schema forbids a cross-plan `after:` ref, so such a gate can only ride `notes:`) but carries **no `gate_check:` predicate**. A prose-only external gate is a **validation smell**: it is unverifiable, so a gate-lift can only be *inferred* from issue-closed-state — the ELT #492 trap, where "#380 CLOSED → roster gate lifted" was wrong because #380 deferred product wiring ("issue closed" ≠ "dependency consumable exists"). Every external/cross-plan gate MUST carry a machine-checkable `gate_check:` on the **consumable** (e.g. `gate_check: "configs/artists.toml lists >=40 artists"`) that `/build` Step 3a evaluates directly instead of inferring lift from the tracker. (A `gate_check:` is **optional** on an item with no external gate — the requirement is conditional on the prose gate being present.)
+12. `repo:` (when present) must match `owner/repo` shape — a single `/` separating two non-empty segments of `[A-Za-z0-9_.-]+`, no leading `#`, no issue number. Fail otherwise; do not silently coerce or strip. (`repo:` absent is never a failure — it is optional and defaults to the plan's home repo.)
 
 > `## Problem` and the grouped `## Summary` are an **authoring standard, not a validation rule** — `/build` does not fail a plan that lacks them, so plans authored before this convention still execute on resume.
 
@@ -340,6 +352,7 @@ The cache-miss fix touches the same runner registration code as the max-items fi
 - Decision: `Decisions/foundation - Plan-note schema`
 - Decision: `Decisions/foundation - Plan schema in claude config (out of the vault)`
 - Decision: `Decisions/foundation - Approval-poll handoff for batch workflow`
+- Kernel-vs-overlay routing (the `repo:` field's motivating case): `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule
 - Convention: `Decisions/foundation - Branch naming convention`
 - Consumer command: `claude/commands/build.md` (deployed `~/.claude/commands/build.md`)
 - Producer command: `claude/commands/assess.md` (deployed `~/.claude/commands/assess.md`)

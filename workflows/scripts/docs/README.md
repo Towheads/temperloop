@@ -10,6 +10,7 @@ the code does and what the site says it does:
 | Command reference | `claude/commands/*.md` (kernel-manifest filtered) | `sources/commands.py` |
 | Plan-note contract | `claude/plan-schema.md` | `sources/plan_schema.py` |
 | Quality gates | `scripts/quality-gates.sh --list` | `sources/gates.py` |
+| Adapter contracts | `workflows/scripts/lib/*.contract.md` | `sources/adapter_contracts.py` |
 
 Run it:
 
@@ -26,12 +27,34 @@ preview locally with a static file server (root-relative links assume a
 server root, e.g. `python3 -m http.server -d workflows/scripts/docs/_site`),
 not by opening `_site/index.html` via `file://`.
 
-Explicitly **out of scope for this skeleton** (a separate L1 item per the
-epic contract): rendering adapter contracts (knowledge_store / tracker seam
-interface files) and telemetry metric definitions (rollup-producer
-docstrings). Don't add renderers for those here — add a new `sources/*.py`
-module in that item instead, following the same `build_pages(repo_root,
-manifest_entries) -> list[Page]` contract every module in `sources/` uses.
+## Adapter-contract page
+
+`sources/adapter_contracts.py` scans the pinned glob **`workflows/scripts/
+lib/*.contract.md`** (repo-root-relative) and renders one page per file
+found, sorted by filename — same pinned-glob shape as the chapters
+convention below. Today that glob matches exactly `knowledge_store.contract.md`,
+so exactly one adapter-contract page renders. There is deliberately **no
+tracker-contract page**: no stub, no hand-written prose standing in for the
+real interface file — the tracker adapter's own contract file is foundation
+#814, separate scope. Once that item lands a similarly-suffixed
+`workflows/scripts/lib/*.contract.md` file, this same glob picks it up on
+the next `make docs` run with zero code change here.
+
+## Telemetry metrics (overlay drop-in, not a kernel `sources/*.py` module)
+
+Telemetry metric-definition rendering — the four rollup producers'
+per-metric docstrings (`workflows/scripts/build_funnel_rollup.py`,
+`build_rollups.py`, `build_eval_rollup.py`, `build_findings_rollup.py`) —
+is deliberately **not** a `sources/*.py` module in this kernel directory:
+those producers are themselves `overlay`-classified in
+`kernel-manifest.txt` (Travis's personal telemetry pipeline), so a renderer
+that reads them belongs in the overlay layer too. It ships as
+`workflows/scripts/docs.d/metrics.py`, an instance of the overlay renderer
+drop-in convention documented below — see that file's own docstring for the
+`## Metrics: <output-file>` docstring convention it extracts verbatim (no
+paraphrase, no structural parsing of free-form prose: a fixed heading marker
+delimits a literal Markdown bullet block, which is handed to
+`lib/markdown_lite.py`'s existing generic renderer unchanged).
 
 ## Kernel-manifest include filter
 

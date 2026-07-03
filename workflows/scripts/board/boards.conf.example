@@ -15,6 +15,18 @@
 #   repo     "<owner>/<name>"  — repo-owner axis (gh issue create -R, REST)
 #   owner    "<login>"         — project-owner axis (gh project ... --owner)
 #   project  "<number>"        — project-number axis (gh project <number> ...)
+#   backend  "issues"          — tracker backend axis (foundation #799).
+#                                 Default (omitted, or any other value) is
+#                                 "projects" — the Projects-v2 path unchanged
+#                                 from before this axis existed. Set to
+#                                 "issues" to run that board with NO Projects
+#                                 board at all: item CRUD + Status ride plain
+#                                 `fnd:`-namespaced GitHub labels instead (see
+#                                 workflows/scripts/board/ISSUES-ONLY-BACKEND.md
+#                                 for the full label vocabulary). An
+#                                 issues-only board only needs the `repo` axis
+#                                 — `owner`/`project` are meaningless without a
+#                                 Projects board and are simply never read.
 # These are deliberately SEPARATE axes (#330) — do not collapse them.
 # Blank lines and lines starting with # are ignored. This file is parsed with
 # grep/cut only — never sourced or eval'd — so it cannot execute code.
@@ -31,3 +43,7 @@ board.1.project=1
 board.2.repo=acme/internal-tools
 board.2.owner=acme
 board.2.project=2
+
+# An issues-only board (no Projects-v2 board provisioned) — just the repo axis:
+board.3.repo=acme/kernel
+board.3.backend=issues

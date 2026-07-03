@@ -152,6 +152,35 @@ board_project_number() {
   esac
 }
 
+# --- tracker backend selector (foundation #799, "tracker seam") -----------
+# A board is Projects-v2-backed (default) or ISSUES-ONLY: no Projects board is
+# ever provisioned/queried and item CRUD + Status ride plain `fnd:`-namespaced
+# GitHub labels on the repo's Issues instead. This is a FOURTH boards.conf
+# axis, a peer to repo/owner/project (same discovery order, same grep/cut-only
+# parsing — see boards.conf.example): `board.<N>.backend=issues`. There is
+# deliberately NO built-in case-map entry defaulting any board to "issues" —
+# every board with no explicit `backend=issues` line resolves "projects" and
+# takes the EXACT SAME Projects-v2 code path as before this seam existed (see
+# test_issues_backend.sh's config-selection proof: unmentioned/absent-conf
+# boards emit byte-identical `gh project …` argv). This is what makes the seam
+# additive-only rather than a fork of the toolkit — see
+# workflows/scripts/board/ISSUES-ONLY-BACKEND.md for the full label vocabulary
+# + status-mapping contract the issues-only path implements.
+#   board_backend <board#>  ->  "issues" | "projects" (default)
+board_backend() {
+  local v
+  v="$(_board_conf_get "$1" backend)" && { printf '%s\n' "$v"; return 0; }
+  printf '%s\n' "projects"
+}
+
+# True iff <board#> is configured for the issues-only backend. The single
+# predicate every branch point below (board_resolve / board_resolve_item /
+# board_item_list / board_set_status / board_create_many / board_capture_item)
+# guards on, so onboarding a fifth branch point later is a one-line addition.
+_board_is_issues_only() {
+  [ "$(board_backend "$1")" = "issues" ]
+}
+
 # --- the ONE test-injection seam ------------------------------------------
 # Every board `gh` call goes through here. Production runs real gh; tests
 # override this after sourcing (e.g. `_board_gh() { fake_gh "$@"; }`) to replay
@@ -537,6 +566,195 @@ _board_budget_guard() {
   return 0
 }
 
+# --- issues-only backend: fnd: label vocabulary + item CRUD/status --------
+# See ISSUES-ONLY-BACKEND.md (sibling file) for the full contract. Summary:
+# item state rides `fnd:<field-slug>:<value-slug>` labels on the plain GitHub
+# issue (`fnd:status:ready`, `fnd:status:in-progress`, `fnd:component:ingest`,
+# …); "Done" is the ONE exception — it carries NO label, it is simply the
+# issue being CLOSED (closing strips any residual fnd:status:* label; a
+# read of a closed issue always reports status "Done" regardless of labels).
+# No Projects-v2 call is ever made on this path — board_backend gates every
+# branch point below before any `gh project …` argv is built.
+
+# "In Progress" -> "in-progress" (lowercase, spaces collapsed to hyphens).
+_board_issues_slug() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -s ' ' '-'
+}
+
+# "fnd:status:" for field-name "Status", "fnd:component:" for "Component" —
+# generic over ANY single-select-shaped field name via the same slugger, so a
+# future field axis (beyond Status/Component) needs no new plumbing here.
+_board_issues_label_prefix() {
+  printf 'fnd:%s:' "$(_board_issues_slug "$1")"
+}
+
+# Shared jq `def`s for reshaping a raw `gh issue list`/`gh api issues/<n>`
+# response into the SAME item shape board_resolve_item / board_item_list
+# produce for the Projects-v2 path — {id, content:{number,title,type}, status,
+# component} — so every downstream accessor (board_item_id / board_item_title
+# / a caller's own `.status`/`.component` read) works UNCHANGED regardless of
+# backend. `issue_item($n)` expects `.` to be the raw issue object (labels +
+# state + title) and $n to be its issue number.
+#   unslug: "in-progress" -> "In Progress" (inverse of _board_issues_slug,
+#     good enough for the closed status vocabulary + any Component slug — see
+#     ISSUES-ONLY-BACKEND.md's round-trip note).
+read -r -d '' _BOARD_ISSUES_JQ_DEFS <<'JQ_DEFS' || true
+def unslug: split("-") | map((.[0:1] | ascii_upcase) + .[1:]) | join(" ");
+def issue_item($n):
+  (.labels // [] | map(.name)) as $labels
+  | (.state // "open") as $state
+  | ( ($labels | map(select(test("^fnd:status:")))) as $sl
+      | if ($sl | length) > 0 then ($sl[0] | sub("^fnd:status:"; "")) else "" end ) as $status_slug
+  | ( ($labels | map(select(test("^fnd:component:")))) as $cl
+      | if ($cl | length) > 0 then ($cl[0] | sub("^fnd:component:"; "")) else "" end ) as $comp_slug
+  | { id: ("ISSUE_" + ($n | tostring)),
+      content: { number: $n, title: (.title // ""), type: "Issue" } }
+    + ( if $state == "closed" then { status: "Done" }
+        elif $status_slug != "" then { status: ($status_slug | unslug) }
+        else {} end )
+    + ( if $comp_slug != "" then { component: ($comp_slug | unslug) } else {} end );
+JQ_DEFS
+
+# Whole-board (active-set) read for an issues-only board: every OPEN issue,
+# reshaped to the shared item form. Mirrors the Projects path's `-status:Done`
+# active-set convention for free — `--state open` already excludes the Done
+# (closed) tail, no separate filter needed. Always live (no on-disk cache):
+# this path draws on REST's separate 5,000/hr bucket, not the Projects-v2
+# GraphQL budget the cache layer exists to protect, so the caching machinery
+# above is simply not needed here (a future perf pass can add it if an
+# issues-only board's issue count ever makes this the bottleneck).
+#   _board_issues_item_list <board#>  ->  {"items":[...]} JSON on stdout
+_board_issues_item_list() {
+  local board="$1" repo lim raw
+  repo="$(board_repo "$board")" || return 1
+  lim="${BOARD_ITEM_LIMIT:-500}"
+  raw="$(_board_gh issue list -R "$repo" --state open --limit "$lim" \
+        --json number,title,labels 2>/dev/null)" || {
+    echo "board: live read failed (issues, board $board) — rate limit or auth?" >&2
+    return 1
+  }
+  [ -n "$raw" ] || raw="[]"
+  printf '%s' "$raw" | _board_sanitize_control_chars | jq -c "
+    $_BOARD_ISSUES_JQ_DEFS
+    { items: [ .[] | issue_item(.number) ] }
+  "
+}
+
+# Single-issue, always-live read (the issues-only counterpart to
+# board_resolve_item's targeted GraphQL query) — used by the mutating callers
+# (claim/status-move) that must see fresh state. Unlike the whole-board read
+# this DOES observe a just-closed issue (Done), since `gh api issues/<n>`
+# doesn't filter by state.
+#   _board_issues_resolve_item <board#> <issue#>  -> sets BOARD_ITEMS_JSON
+_board_issues_resolve_item() {
+  local board="$1" issue="$2" repo raw
+  repo="$(board_repo "$board")" || return 1
+  raw="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null)" || return 1
+  [ -n "$raw" ] || return 1
+  BOARD_PROJECT_ID=""
+  BOARD_FIELDS_JSON='{"fields":[]}'
+  BOARD_ITEMS_JSON="$(
+    printf '%s' "$raw" | _board_sanitize_control_chars | jq -c --argjson n "$issue" "
+      $_BOARD_ISSUES_JQ_DEFS
+      { items: [ issue_item(\$n) ] }
+    "
+  )"
+  BOARD_CURRENT="$board"
+}
+
+# Memoize `fnd:` label creation within this process (repo|label key) so a
+# burst of status writes against the same repo pays `gh label create` at most
+# once per label, not once per call. Plain string, not an associative array —
+# board.sh must stay portable to macOS's stock bash 3.2 (no assoc arrays).
+_BOARD_ISSUES_LABELS_ENSURED=""
+_board_issues_ensure_label() {
+  local repo="$1" label="$2" key
+  key="$repo|$label"
+  case " $_BOARD_ISSUES_LABELS_ENSURED " in
+    *" $key "*) return 0 ;;
+  esac
+  _board_gh label create "$label" -R "$repo" --color fbca04 \
+    --description "fnd: tracker label (issues-only backend)" >/dev/null 2>&1 || true
+  _BOARD_ISSUES_LABELS_ENSURED="$_BOARD_ISSUES_LABELS_ENSURED $key"
+  return 0
+}
+
+# The issues-only write path board_set_status (and, via it, board_set_component)
+# delegate to for an ISSUE_* item id. Emulates a single-select: at most one
+# `fnd:<field>:*` label at a time. Status additionally drives open/closed:
+# target "Done" -> strip any fnd:status:* label + CLOSE; any other target ->
+# ensure the label + REOPEN if the issue was closed. Both the close/reopen and
+# the label add/remove are read-before-write (one `gh api issues/<n>` fetch)
+# so an already-correct state is a no-op, not a redundant/erroring gh call.
+#   _board_issues_set_field <ISSUE_n> <field-name> <option-name>
+_board_issues_set_field() {
+  local item_id="$1" field_name="$2" opt_name="$3"
+  local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0
+
+  issue="${item_id#ISSUE_}"
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {
+    echo "board: _board_issues_set_field — no current board (call board_resolve_item first)" >&2
+    return 1
+  }
+  prefix="$(_board_issues_label_prefix "$field_name")"
+
+  if [ "$field_name" = "$BOARD_FIELD_STATUS" ] && [ "$opt_name" = "$BOARD_OPT_DONE" ]; then
+    is_done=1
+  else
+    target_label="${prefix}$(_board_issues_slug "$opt_name")"
+    _board_issues_ensure_label "$repo" "$target_label" || return 1
+  fi
+
+  issue_json="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null | _board_sanitize_control_chars)" || return 1
+  [ -n "$issue_json" ] || return 1
+  state="$(printf '%s' "$issue_json" | jq -r '.state // "open"')"
+  cur="$(printf '%s' "$issue_json" | jq -r --arg p "$prefix" '.labels[]?.name | select(startswith($p))')"
+
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    if [ "$is_done" -eq 0 ] && [ "$l" = "$target_label" ]; then
+      already_present=1
+      continue
+    fi
+    _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 || true
+  done <<<"$cur"
+
+  # Skip a redundant add when the target label is already the issue's only
+  # fnd:<field>:* label (re-setting the same status/component is then a pure
+  # no-op at the gh-call level, not just idempotent at the label-set level).
+  if [ "$is_done" -eq 0 ] && [ "$already_present" -eq 0 ]; then
+    _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
+  fi
+
+  if [ "$field_name" = "$BOARD_FIELD_STATUS" ]; then
+    if [ "$is_done" -eq 1 ]; then
+      [ "$state" = "closed" ] || { _board_gh issue close "$issue" -R "$repo" >/dev/null || return 1; }
+    else
+      [ "$state" = "open" ] || { _board_gh issue reopen "$issue" -R "$repo" >/dev/null || return 1; }
+    fi
+  fi
+  return 0
+}
+
+# Issues-only counterpart to board_create_many: there is no Projects board to
+# item-add to (and so no index-lag retry to absorb — a label write is
+# synchronous REST, not an async Projects-v2 mutation), so "landing an item"
+# collapses to just labeling it Backlog. The issues already exist repo-side
+# (gh issue create is the caller's job, same as the Projects path).
+#   _board_issues_create_many <board#> <url1> <num1> [<url2> <num2> ...]
+_board_issues_create_many() {
+  local board="$1"; shift
+  local url num item_id
+  BOARD_CURRENT="$board"
+  while [ "$#" -ge 2 ]; do
+    url="$1"; num="$2"; shift 2
+    item_id="ISSUE_$num"
+    board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || \
+      echo "warning: #$num (issues-only board $board) could not be labeled Backlog" >&2
+  done
+  return 0
+}
+
 # --- resolve once, cache across processes ---------------------------------
 # A `project view`, a `field-list`, and an `item-list` active-set page, EACH served
 # from the on-disk cache when warm (GH #93) so a /triage|/build step that
@@ -553,6 +771,13 @@ _board_budget_guard() {
 # AND stays always-live for the claim lock (GH #53).
 board_resolve() {
   local board="$1" pv cache ttl
+  if _board_is_issues_only "$board"; then
+    BOARD_PROJECT_ID=""
+    BOARD_FIELDS_JSON='{"fields":[]}'
+    BOARD_ITEMS_JSON="$(board_item_list "$board")" || return 1
+    BOARD_CURRENT="$board"
+    return 0
+  fi
   pv="$(_board_cached_read "$board" project \
         project view "$(board_project_number "$board")" --owner "$(board_owner "$board")" --format json)" || return 1
   BOARD_PROJECT_ID="$(printf '%s' "$pv" | jq -r '.id')"
@@ -598,6 +823,10 @@ board_resolve() {
 # Returns non-zero (without setting state) if <board#> is not a known board.
 board_resolve_item() {
   local board="$1" issue="$2" repo owner name pv
+  if _board_is_issues_only "$board"; then
+    _board_issues_resolve_item "$board" "$issue"
+    return $?
+  fi
   repo="$(board_repo "$board")" || return 1
   owner="${repo%/*}"; name="${repo#*/}"
   # project-view + field-list are board STRUCTURE (project id, field/option schema) —
@@ -673,6 +902,10 @@ board_resolve_item() {
 # (BOARD_CACHE_TTL=90); export BOARD_CACHE_TTL=0 to force live reads.
 #   board_item_list <board#>  ->  item-list JSON on stdout
 board_item_list() {
+  if _board_is_issues_only "$1"; then
+    _board_issues_item_list "$1"
+    return $?
+  fi
   _board_item_list_argv "$1"
   # Key the cache slot on the effective query: a non-default query reads a DIFFERENT
   # dataset, so it must NOT share the default slot (else the escape hatch would serve
@@ -784,9 +1017,9 @@ board_parent_issue() {
 # swallowed. Resolve an item-id first with board_resolve_item / board_item_id.
 _board_assert_item_id() {
   case "$1" in
-    PVTI_*) return 0 ;;
+    PVTI_* | ISSUE_*) return 0 ;;
     *)
-      echo "board: ${2:-this op} needs a PVTI_* item-id as arg1 (got '$1') — resolve it first with board_resolve_item/board_item_id; a board number or issue# silently no-ops" >&2
+      echo "board: ${2:-this op} needs a PVTI_* (Projects-v2) or ISSUE_* (issues-only) item-id as arg1 (got '$1') — resolve it first with board_resolve_item/board_item_id; a board number or issue# silently no-ops" >&2
       return 1 ;;
   esac
 }
@@ -803,6 +1036,11 @@ _board_assert_item_id() {
 board_set_status() {
   local item_id="$1" opt_name="$2" field_name="${3:-$BOARD_FIELD_STATUS}" status_field opt_id
   _board_assert_item_id "$item_id" board_set_status || return 1
+  case "$item_id" in
+    ISSUE_*)
+      _board_issues_set_field "$item_id" "$field_name" "$opt_name"
+      return $? ;;
+  esac
   status_field="$(board_field_id "$field_name")"
   opt_id="$(board_option_id "$field_name" "$opt_name")"
   if [ -z "$status_field" ] || [ -z "$opt_id" ]; then
@@ -992,6 +1230,10 @@ board_add_to_board() {
 #   board_create_many <board#> <url1> <num1> [<url2> <num2> ...]
 board_create_many() {
   local board="$1"; shift
+  if _board_is_issues_only "$board"; then
+    _board_issues_create_many "$board" "$@"
+    return $?
+  fi
   local url num attempt item_id missing max_attempts
   local nums=()
   # Index-lag retry budget. Projects-v2 can take longer than a few seconds to

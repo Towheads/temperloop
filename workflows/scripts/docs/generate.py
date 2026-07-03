@@ -9,12 +9,19 @@ Renders the THREE already-structured sources this item scopes to:
   - quality-gate list   <- scripts/quality-gates.sh --list  (sources/gates.py)
 
 plus the pinned-but-currently-empty failure-mode chapters glob
-(sources/chapters.py) — see that module's docstring.
+(sources/chapters.py) — see that module's docstring — and the adapter-
+contract page(s), rendered from workflows/scripts/lib/*.contract.md
+(sources/adapter_contracts.py; F#764 follow-on, docs-adapter-metric-
+renderers item). Today that glob matches exactly one file
+(knowledge_store.contract.md) — there is deliberately no tracker-contract
+page (that seam's own contract file is foundation #814, separate scope).
 
-OUT OF SCOPE for this item (a separate L1 item per the epic contract):
-adapter-contract rendering (knowledge_store / tracker seam) and telemetry
-metric-definition rendering. Do not add renderers for those here — add a new
-sources/*.py module in that item instead.
+Telemetry metric-definition rendering is a separate, OVERLAY concern (the
+rollup producers it reads live under the overlay classification in
+kernel-manifest.txt) and is NOT a sources/*.py module here — it ships as an
+overlay drop-in at workflows/scripts/docs.d/metrics.py, picked up
+automatically by the OVERLAY RENDERER DROP-IN CONVENTION below. A kernel-
+only checkout (this repo's docs.d/ absent) never needs to know it exists.
 
 KERNEL-MANIFEST INCLUDE FILTER: every source module that scans a directory
 of candidate files (today: sources/commands.py) is handed the parsed
@@ -65,7 +72,7 @@ if str(DOCS_DIR) not in sys.path:
 
 from lib.kernel_manifest import load_manifest  # noqa: E402
 from lib.page import Page, render_page  # noqa: E402
-from sources import chapters, commands, gates, plan_schema  # noqa: E402
+from sources import adapter_contracts, chapters, commands, gates, plan_schema  # noqa: E402
 
 KERNEL_MANIFEST_PATH = REPO_ROOT / "workflows" / "scripts" / "kernel" / "kernel-manifest.txt"
 OVERLAY_DROPIN_DIR = REPO_ROOT / "workflows" / "scripts" / "docs.d"
@@ -73,7 +80,7 @@ DEFAULT_OUT_DIR = DOCS_DIR / "_site"
 
 # Kernel source modules, in nav/build order. Each exposes
 # build_pages(repo_root, manifest_entries) -> list[Page].
-_SOURCE_MODULES = [commands, plan_schema, gates, chapters]
+_SOURCE_MODULES = [commands, plan_schema, gates, adapter_contracts, chapters]
 
 
 def _load_overlay_pages(repo_root: Path, dropin_dir: Path = OVERLAY_DROPIN_DIR) -> list[Page]:

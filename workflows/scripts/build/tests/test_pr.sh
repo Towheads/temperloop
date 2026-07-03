@@ -215,6 +215,26 @@ body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
 grep -qx 'Closes #205' <<<"$body" || fail "missing 'Closes #205'"
 echo "PASS: open emits one bare Closes line per also_closes entry (comma list)"
 
+# --- open --body-only: cross-repo repo: honor point — owner/repo#N (RED/GREEN) ----
+# GREEN: a fully-qualified owner/repo#N gh_issue/also_closes ref is accepted and
+# emitted as `Closes owner/repo#N` (not bare `Closes #N` — a bare close is
+# same-repo only, plan-schema.md § Optional repo: field).
+body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
+  --gh-issue acme/foundation-kernel#42 --also-closes acme/foundation-kernel#43 --body-only)"
+grep -qxF 'Closes acme/foundation-kernel#42' <<<"$body" \
+  || fail "missing qualified 'Closes acme/foundation-kernel#42' (body: $body)"
+grep -qxF 'Closes acme/foundation-kernel#43' <<<"$body" \
+  || fail "missing qualified 'Closes acme/foundation-kernel#43' (body: $body)"
+grep -q '^Closes #' <<<"$body" && fail "qualified ref must not also emit a bare 'Closes #N' (body: $body)"
+echo "PASS: open emits Closes owner/repo#N for a qualified cross-repo gh_issue/also_closes ref"
+
+# RED: a malformed issue ref (neither plain digits nor owner/repo#N) is rejected.
+rc=0
+out="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" --gh-issue not-a-ref --body-only 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "malformed --gh-issue 'not-a-ref' did not exit non-zero (out: $out)"
+grep -qi 'invalid' <<<"$out" || fail "malformed --gh-issue error missing 'invalid' (out: $out)"
+echo "PASS: open rejects a malformed --gh-issue ref (neither digits nor owner/repo#N)"
+
 # --- open --body-only: no verification_surface → fall back to the recap ----------
 jq 'del(.verification_surface)' "$TMP/verdict.json" > "$TMP/verdict-nosurface.json"
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-nosurface.json" --gh-issue 278 --body-only)"

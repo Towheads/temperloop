@@ -51,6 +51,11 @@ def _make_fixture_repo(tmp: Path) -> Path:
     )
     (repo / "scripts" / "quality-gates.sh").chmod(0o755)
 
+    _write(
+        repo / "workflows" / "scripts" / "lib" / "knowledge_store.contract.md",
+        "# knowledge_store interface contract\n\nSome contract text.\n",
+    )
+
     return repo
 
 
@@ -80,7 +85,7 @@ class TestBuildSite(unittest.TestCase):
         self.assertIn("kernel-cmd", reference_page.body_html)
         self.assertNotIn("overlay-cmd", reference_page.body_html)
 
-    def test_three_sources_all_render(self) -> None:
+    def test_four_sources_all_render(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
             repo = _make_fixture_repo(tmp)
@@ -93,6 +98,23 @@ class TestBuildSite(unittest.TestCase):
         self.assertIn("commands/reference", slugs)
         self.assertIn("plan-schema", slugs)
         self.assertIn("quality-gates", slugs)
+        self.assertIn("adapter-contracts/knowledge_store", slugs)
+
+    def test_adapter_contracts_glob_renders_no_tracker_stub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = _make_fixture_repo(tmp)
+            manifest_path = _make_manifest(tmp)
+            empty_dropin = tmp / "no-dropin-here"
+
+            # No tracker.contract.md written anywhere under repo.
+            pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
+
+        contract_pages = [p for p in pages if p.slug.startswith("adapter-contracts/")]
+        self.assertEqual(len(contract_pages), 1)
+        self.assertEqual(contract_pages[0].slug, "adapter-contracts/knowledge_store")
+        self.assertIn("contract text", contract_pages[0].body_html)
+        self.assertFalse(any("tracker" in p.slug for p in contract_pages))
 
     def test_chapters_glob_absent_dir_yields_zero_pages_no_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -116,7 +138,7 @@ class TestBuildSite(unittest.TestCase):
 
             pages_without = build_site(repo, manifest_path=manifest_path, dropin_dir=absent_dropin)
 
-        self.assertEqual(len(pages_without), 3)  # commands + plan-schema + gates, no overlay extras
+        self.assertEqual(len(pages_without), 4)  # commands + plan-schema + gates + adapter-contract, no overlay extras
 
     def test_overlay_dropin_present_directory_adds_its_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
@@ -135,7 +157,7 @@ class TestBuildSite(unittest.TestCase):
             pages = build_site(repo, manifest_path=manifest_path, dropin_dir=dropin_dir)
 
         self.assertTrue(any(p.slug == "overlay/extra" for p in pages))
-        self.assertEqual(len(pages), 4)
+        self.assertEqual(len(pages), 5)
 
     def test_overlay_dropin_module_without_build_pages_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:

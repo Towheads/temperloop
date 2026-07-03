@@ -28,7 +28,10 @@
 # round-trips through the verdict JSON. Issue linkage lives HERE and only
 # here: one bare `Closes #N` line per gh_issue/also_closes entry, each on its
 # own line, never combined, never backticked (GitHub silently ignores
-# backticked keywords, and `Closes #1 and #2` closes only #1). `--body-only`
+# backticked keywords, and `Closes #1 and #2` closes only #1). Either flag
+# also accepts a fully-qualified `owner/repo#N` ref (the `repo:` field's
+# cross-repo case — plan-schema.md § Optional `repo:` field), emitted as
+# `Closes owner/repo#N`; a bare `Closes #N` is same-repo only. `--body-only`
 # prints the assembled body verbatim and exits — the dry mode tests assert on.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per outcome
@@ -106,10 +109,26 @@ validate_branch() {
     || die "branch '$branch' is not a valid git branch name"
 }
 
-# Issue numbers feed bare `Closes #N` lines; only digits are acceptable.
+# Issue refs feed `Closes` lines: either plain digits (bare same-repo
+# `Closes #N`) or a fully-qualified `owner/repo#N` cross-repo ref (the
+# `repo:` field case — plan-schema.md § Optional `repo:` field). A bare
+# `Closes #N` is same-repo only (CLAUDE.md § Issue linkage), so a cross-repo
+# close must carry the owner/repo# qualifier — see closes_line() below.
+_ISSUE_QUALIFIED_RE='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$'
 validate_issue() {
+  [[ "$1" =~ ^[0-9]+$ ]] && return 0
+  [[ "$1" =~ $_ISSUE_QUALIFIED_RE ]] && return 0
+  die "issue ref '$1' invalid — must be digits, or owner/repo#N for a cross-repo close"
+}
+
+# Format one issue ref as a bare `Closes` line (no trailing newline — the
+# caller appends $'\n' itself, since a $(...) capture would strip it): a
+# qualified owner/repo#N ref is emitted as-is (Closes owner/repo#N); a plain
+# number gets the leading # (Closes #N).
+closes_line() {
   case "$1" in
-    *[!0-9]*|"") die "issue number '$1' invalid — must be digits only" ;;
+    *'#'*) printf 'Closes %s' "$1" ;;
+    *)     printf 'Closes #%s' "$1" ;;
   esac
 }
 
@@ -262,9 +281,9 @@ assemble_body() {
   body="$summary"$'\n'
   if [ -n "$gh_issue" ] || [ -n "$also_closes" ]; then
     body="$body"$'\n'
-    [ -n "$gh_issue" ] && body="${body}Closes #${gh_issue}"$'\n'
+    [ -n "$gh_issue" ] && body="${body}$(closes_line "$gh_issue")"$'\n'
     for n in $also_closes; do
-      body="${body}Closes #${n}"$'\n'
+      body="${body}$(closes_line "$n")"$'\n'
     done
   fi
   if [ -n "$recap" ]; then

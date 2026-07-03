@@ -171,9 +171,14 @@ overlay workflows/scripts/docs.d/*
 # chapters.py): scrubbed failure-mode chapters are curated straight into the
 # public kernel docs site, so the glob's target is kernel even though its
 # harvest source (kernel-candidate-tagged Decisions/Mistakes vault notes) is
-# private overlay content. Prospective — docs/failure-modes/ does not exist
-# yet; a separate item (the chapters harvester) populates it.
+# private overlay content. docs/failure-modes/ now holds the first 3-4
+# curated chapters (F#819); docs/CONTRIBUTING.md is the sibling guide that
+# defines the kernel-candidate vault-tag convention and the chapter-writing
+# bar — generic contributor-facing content, kernel like the chapters
+# themselves. It sits one level above docs/failure-modes/ deliberately, so
+# it is never picked up by the chapters.py glob as a spurious chapter page.
 kernel docs/failure-modes/*
+kernel docs/CONTRIBUTING.md
 overlay workflows/scripts/crash-convergence/*
 overlay workflows/scripts/sessions/*
 overlay workflows/scripts/validators/*
@@ -215,6 +220,7 @@ overlay workflows/scripts/build_dashboard.py
 overlay workflows/scripts/test_build_dashboard.py
 overlay workflows/scripts/build_eval_rollup.py
 overlay workflows/scripts/build_findings_rollup.py
+overlay workflows/scripts/test_docs_metrics.py
 overlay workflows/scripts/test_build_findings_rollup.py
 overlay workflows/scripts/build_funnel_rollup.py
 overlay workflows/scripts/test_build_funnel_rollup.py

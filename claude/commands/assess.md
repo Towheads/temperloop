@@ -57,6 +57,7 @@ Everything after this step is source-agnostic. Read the epic and enumerate its m
 1. **Epic context.** `gh issue view <epic> -R <repo> --json title,body,number` — the epic body's group summary frames the plan's `## Summary`.
 2. **Sub-issues.** `gh api repos/<owner>/<repo>/issues/<epic>/sub_issues` — each child is one **candidate item**. From each child's full issue object (or a per-child `gh issue view <n> --json title,body,labels`), prefill:
    - `gh_issue:` ← the child's **number** (so `/build` Step 2.5 creates nothing and Step 2.6 is a no-op — the issue and epic already exist). **Exception — a split member** (one sub-issue → multiple items, see the decomposition principle below): leave `gh_issue:` unset on the split-derived items and set `split_from: <child-number>` instead, so `/build` mints a fresh issue per item and the 1:1 invariant holds.
+   - `repo:` ← if the child carries the **`kernel-candidate`** label (set by `/triage`'s Step 2.8 kernel-vs-overlay routing, per `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule), prefill `repo: <org>/foundation-kernel` (the kernel repo per the board glossary's `K` row — a placeholder until the split lands; `/build` surfaces a clear block if no local checkout of it exists yet, rather than silently building in this repo). Else leave `repo:` unset (defaults to the plan's home repo).
    - `kind: spike` ← if the child carries the **`spike`** label (else `kind: code`).
    - `needs_clarification: true` ← if the child carries the **`needs-clarification`** label (triage flagged it underspecified at source — Step 2 emits a clarifying-acceptance bullet and Step 4 routes it to `## Re-triage signals`). Else omit.
    - `title` ← the child's title (refine to an imperative PR title in Step 2 if needed).
@@ -90,6 +91,7 @@ For each sub-issue-derived candidate, draft the plan item.
 | `acceptance` | 2-5 bullets of independently checkable conditions. Derive from the sub-issue's body / recommended fix. If none is given, write `- (no acceptance criteria derivable from source — fill in during review)` so the user knows to add them. **If the item carries `needs_clarification: true`** (Step 1), one bullet MUST be the clarifying-acceptance placeholder `- (needs-clarification: <the open question> — resolve at the approval gate before this item is worked)` so the ambiguity is visible and blocks a blind build (it also routes to `## Re-triage signals` in Step 4). **If this item is one of several sequential legs sharing one gate/corpus** (see the per-leg gate-scope operating principle), one bullet MUST state the leg's **gate scope** — the fixtures/cases it owns and the exclusions owned by a later leg, *naming the owning item* — so a shared-gate failure is attributable to this leg vs a later leg's known failure |
 
 **Optional fields:**
+- `repo` — `owner/repo`, only when the item's work lands outside the plan's home repo (prefilled from the `kernel-candidate` label in Step 1). Default absent = the plan's home repo. See the **seam-straddling check** below and `~/.claude/plan-schema.md` § Optional `repo:` field.
 - `files` — only when the sub-issue names specific paths
 - `kind` — `code` (default) or `spike` (prefilled from the `spike` label in Step 1)
 - `model` — advisory worker-model tier for `/build` 3c, **stamped from size/kind** per `~/.claude/plan-schema.md` § Optional `model:` field: `size: S` or `M` **and** `kind: code` → stamp `model: sonnet`; `kind: spike` or `size: L` → leave absent (inherit the session model). Tier by verification, not difficulty — an S/M code item's output is checked by mechanical gates (CI, the 3e.5 acceptance gate, its acceptance bullets), so a cheaper worker is safe; a spike's verdict or an L item's breadth is judgment nothing downstream checks, so it inherits the top tier
@@ -122,6 +124,10 @@ For each item, search the vault for related context:
 - For each strong hit, add a `[[wikilink]]` to the item's `notes:` field with one line on relevance.
 
 Default to silence. Only add links clearly on-topic — padded notes hurt more than they help.
+
+### Seam-straddling check (only when this checkout carries `claude/CLAUDE.kernel.md`)
+
+For each item's `files:` list, classify every path via `workflows/scripts/kernel/lib.sh`'s `kernel_lib_classify <path>` (source it, `kernel_lib_load_manifest workflows/scripts/kernel/kernel-manifest.txt`, then classify each file — the same longest-match logic `check-kernel-manifest.sh` uses). An item is **seam-straddling** when its files classify to **both** `kernel` and `overlay` (a `split` classification doesn't itself straddle — it's a file already known to be a content mix, tracked by its own named follow-up). A seam-straddling item cannot honestly carry a single `repo:` — its kernel-classified files belong upstream, its overlay-classified files stay here. Do not silently pick one; flag it as a **re-triage signal** (Step 4) recommending a split into a kernel-repo item and an overlay item, each with its own `repo:` (or absent for the overlay half). Skip this check entirely on a checkout with no `claude/CLAUDE.kernel.md`.
 
 ## Step 3 — Sanity-check pass
 

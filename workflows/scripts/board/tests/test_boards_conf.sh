@@ -94,7 +94,23 @@ export BOARDS_CONF_MACHINE="$WORK/machine.conf"
 
 echo "PASS: machine-level conf takes precedence over repo-local (whole-file discovery, not per-key merge)"
 
-# --- 4: unset BOARDS_CONF_* env vars resolve the real default paths --------
+# --- 4b: backend axis (foundation #799) — a FOURTH boards.conf axis, same
+# discovery + fallback contract as repo/owner/project, defaulting to "projects"
+# for any board with no explicit `backend=issues` line (see
+# test_issues_backend.sh for the behavioral proof of the issues-only path).
+cat > "$WORK/backend.conf" <<'EOF'
+board.7.repo=Acme/issues-only-repo
+board.7.backend=issues
+EOF
+export BOARDS_CONF_REPO_LOCAL="$WORK/backend.conf"
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf"
+
+[ "$(board_backend 7)" = "issues" ]   || fail "board_backend 7 should resolve 'issues' from conf"
+[ "$(board_backend 4)" = "projects" ] || fail "board_backend 4 (not in conf) should default to 'projects'"
+[ "$(board_backend 3)" = "projects" ] || fail "board_backend 3 (no conf at all case covered above) should default to 'projects'"
+echo "PASS: the backend axis resolves from conf and defaults to 'projects' when absent"
+
+# --- 5: unset BOARDS_CONF_* env vars resolve the real default paths --------
 # (Just confirm the default-path expressions don't error under `set -u` — we
 # don't touch the real $HOME/.config or the real repo-local boards.conf here.)
 unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
