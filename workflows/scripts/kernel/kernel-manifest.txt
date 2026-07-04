@@ -209,6 +209,7 @@ overlay workflows/scripts/docs.d/*
 # it is never picked up by the chapters.py glob as a spurious chapter page.
 kernel docs/failure-modes/*
 kernel docs/CONTRIBUTING.md
+kernel docs/managed-merge-queue.md
 overlay workflows/scripts/crash-convergence/*
 overlay workflows/scripts/sessions/*
 overlay workflows/scripts/validators/*
