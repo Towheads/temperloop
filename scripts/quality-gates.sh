@@ -84,6 +84,16 @@ KERNEL_GATES=(
   "make validate-command-run-emit"
   "make validate-issue-touch-emit"
   "make validate-lexicon"
+  # zsh special-parameter-tie guard + its behavioral regression (temperloop#40,
+  # surfaced from foundation#987). These are DIRECT `bash` gates rather than
+  # `make` targets because the kernel Makefile is generator-owned (seeded from
+  # foundation — see its header); the gate loop runs each entry as a raw command
+  # line (not eval), so a bash invocation is a first-class gate. The lint greps
+  # every sourced lib for a `local path=`-style footgun (portable, no zsh
+  # needed); the regression test shells to zsh (SKIPs where zsh is absent, e.g.
+  # some CI runners) and proves the dispatch preserves PATH.
+  "bash scripts/lint-zsh-param-tie.sh"
+  "bash workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh"
   "make test-scan-stub"
   "make lint-pr-body-test"
   "make test-stranger-config"

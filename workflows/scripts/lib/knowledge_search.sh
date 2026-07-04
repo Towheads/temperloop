@@ -176,14 +176,22 @@ _ks_search_backend_basic_memory_available() {
 #   point 7 — semantic_embedding_model: bge-small-en-v1.5 (the default —
 #             pinned explicitly here so it can never drift to a non-bge
 #             model and reintroduce upstream #1023's normalization bug)
+# NOTE: no local here (or anywhere in this file) may be named `path`, `cdpath`,
+# `fpath`, or `mailpath`. Under zsh those identifiers are tied to the colon-array
+# side of the corresponding uppercase env var (`path` <-> `PATH`), so a
+# `local path=…` in a *sourced* function silently rebinds `PATH` for that scope —
+# and since these libs are sourced (not executed) and then call `uvx` via
+# `_ks_bm_run`, a clobbered `PATH` makes `uvx` unresolvable (exit 127 -> ks exit
+# 4). bash treats `path` as an ordinary variable, so this is invisible under
+# bash and under CI. Use `cfg_path`/`proj_path`/`doc_path` instead. (temperloop#40)
 _ks_bm_ensure_config() {
-  local dir path cache
+  local dir cfg_path cache
   dir="$(_ks_bm_config_dir)"
-  path="$(_ks_bm_config_path)"
+  cfg_path="$(_ks_bm_config_path)"
   cache="$(_ks_bm_cache_dir)"
-  [ -f "$path" ] && return 0
+  [ -f "$cfg_path" ] && return 0
   mkdir -p "$dir" "$cache" || return 1
-  cat > "$path" <<JSON
+  cat > "$cfg_path" <<JSON
 {
   "disable_permalinks": true,
   "ensure_frontmatter_on_sync": false,
@@ -216,8 +224,8 @@ _ks_bm_run() {
 # (confirmed against the real CLI), so this is safe to call on every
 # search/reindex without a separate "is it already registered" check.
 _ks_bm_project_add() {
-  local name="$1" path="$2"
-  _ks_bm_run project add "$name" "$path" >/dev/null 2>&1
+  local name="$1" proj_path="$2"   # NOT `path` — see the zsh PATH-tie note above (temperloop#40)
+  _ks_bm_run project add "$name" "$proj_path" >/dev/null 2>&1
 }
 
 # <query> [--limit N] -> JSONL results on stdout (see exit-code contract on

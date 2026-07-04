@@ -65,6 +65,7 @@ overlay .claude/*
 
 kernel scripts/quality-gates.sh
 kernel scripts/prune-merged-branches.sh
+kernel scripts/lint-zsh-param-tie.sh
 kernel scripts/tests/*
 overlay scripts/quality-gates.d/*
 
