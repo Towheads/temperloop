@@ -24,11 +24,17 @@
 # and stamps sub-lines (pr:, pushed_sha:, speculative:, Run-status:) on the plan
 # note. It is the SOLE sentinel-writeback path: ALL vault writes route through a
 # single `_plan_vault_write` indirection (mirrors board.sh's `_board_gh`),
-# overridable in tests. The writeback goes to the Obsidian Local REST API (the
-# same API the board adapter and session-start-drain hook use); an unreachable
-# REST API FAILS LOUD — non-zero exit + stderr — never silent success, because a
+# overridable in tests. The writeback goes through the knowledge_store seam's
+# `ks_write` (foundation #954, Epic "Obsidian → knowledge_store parallel-run
+# migration" #951, Phase 2 #948) — a direct, atomic (rename-into-place) local
+# file replace under the store root, instead of a REST PUT against the
+# Obsidian Local REST API. The store is a local folder; REST added nothing
+# (same rationale as claude/hooks/session-start-drain.sh, F#952). A failed
+# write FAILS LOUD — non-zero exit + stderr — never silent success, because a
 # sentinel write IS the resume-safety substrate and a silent loss loses resume
-# state.
+# state. The orchestrator serializes plan-note writebacks (one `plan.sh
+# writeback` call at a time); the ks layer itself ships no locking, per
+# knowledge_store.contract.md's documented "no locking" guarantee.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per outcome
 # (exception: `toposort` prints the `{"levels":…}` object directly):
@@ -58,60 +64,58 @@ usage() {
 }
 
 # --- the ONE test-injection seam ---------------------------------------------
-# Every sentinel write goes through here. Production PUTs the patched note to the
-# Obsidian Local REST API; tests override this after sourcing
-# (e.g. `_plan_vault_write() { fake_write "$@"; }`) so NO live REST call happens
-# in the suite. Mirrors board.sh's `_board_gh`.
+# Every sentinel write goes through here. Production routes the whole patched
+# note through `ks_write` (an atomic rename-into-place under the knowledge
+# store root); tests override this after sourcing
+# (e.g. `_plan_vault_write() { fake_write "$@"; }`) so NO real filesystem write
+# under the operator's real store happens in the suite unless the test wants
+# one (they point KNOWLEDGE_STORE_ROOT at a throwaway tmpdir instead — see
+# tests/test_plan.sh). Mirrors board.sh's `_board_gh`.
 #
 #   _plan_vault_write <vaultRelPath> <contentFile>
 #
-# MUST exit non-zero on an unreachable REST endpoint so the caller fails loud —
-# a sentinel write that silently no-ops loses resume state.
-# Config default resolution routes through the knowledge_store seam's obsidian
-# backend (foundation #777, Epic A #762 "kernel split") rather than a literal:
-# KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE already default to today's
-# vault path/URL in that ONE file (knowledge_store_obsidian.sh), so plan.sh no
-# longer repeats the literal here. PLAN_API_BASE / PLAN_API_KEY_FILE remain the
-# names tests/callers override (unchanged surface) — they now fall back to the
-# seam's own knobs instead of a hardcoded default.
+# MUST exit non-zero when the write fails so the caller fails loud — a
+# sentinel write that silently no-ops loses resume state.
 PLAN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 if [ -f "$PLAN_LIB_DIR/knowledge_store.sh" ]; then
   # shellcheck source=workflows/scripts/lib/knowledge_store.sh
   . "$PLAN_LIB_DIR/knowledge_store.sh"
 fi
-if [ -f "$PLAN_LIB_DIR/knowledge_store_obsidian.sh" ]; then
-  # shellcheck source=workflows/scripts/lib/knowledge_store_obsidian.sh
-  . "$PLAN_LIB_DIR/knowledge_store_obsidian.sh"
-fi
-PLAN_API_BASE="${PLAN_API_BASE:-${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}}"
-PLAN_API_KEY_FILE="${PLAN_API_KEY_FILE:-${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}}"
+# Root/backend resolution (foundation #954, Epic #951 Phase 2 #948): an
+# ENV-HONORED DEFAULT (`:-`), not an unconditional pin. This is a deliberate
+# deviation from claude/hooks/session-start-drain.sh's unconditional
+# assignment (KNOWLEDGE_STORE_ROOT="$HOME/dev/mind" with no `:-`): that hook
+# runs in a bare, untrusted SessionStart hook env with no prior override
+# contract, where an inherited bogus root must lose. plan.sh is different —
+# it already has an established test-injection convention (this file's own
+# `_plan_vault_write` seam, plus the pre-migration PLAN_API_BASE/
+# PLAN_API_KEY_FILE knobs it replaces) that callers/tests rely on to point
+# writeback at a throwaway store, and it is only ever invoked by the /build
+# orchestrator (which sources workflows/scripts/build/build.config.sh's own
+# `: "${KNOWLEDGE_STORE_ROOT:=$HOME/dev/mind}"` in-process for its OTHER
+# scripts, though not for this standalone CLI) or its own test suite — never
+# a bare/ambient shell. The default below mirrors build.config.sh's value so
+# a real /build invocation (which never sets the var) still lands on the
+# operator's actual vault; an explicit env override (tests, or a future
+# non-default store) still wins.
+KNOWLEDGE_STORE_ROOT="${KNOWLEDGE_STORE_ROOT:-$HOME/dev/mind}"
+KNOWLEDGE_STORE_BACKEND="${KNOWLEDGE_STORE_BACKEND:-plain-files}"
+export KNOWLEDGE_STORE_ROOT KNOWLEDGE_STORE_BACKEND
 _plan_vault_write() {
-  local vault_path="$1" content_file="$2" api_key http_code encoded_path
-  [ -f "$PLAN_API_KEY_FILE" ] || { echo "plan.sh: REST API key file missing: $PLAN_API_KEY_FILE" >&2; return 1; }
-  api_key="$(jq -r '.apiKey // empty' "$PLAN_API_KEY_FILE" 2>/dev/null)"
-  [ -n "$api_key" ] || { echo "plan.sh: could not read apiKey from $PLAN_API_KEY_FILE" >&2; return 1; }
-  # URL-encode each path SEGMENT (preserving the '/' separators) before the PUT.
-  # Plan filenames carry spaces per the canonical 'Plans/<date> <project> -
-  # <title>.md' convention; interpolated raw, curl rejects the URL (exit 3,
-  # http_code 000) and writeback breaks for EVERY real plan (#364). jq @uri
-  # percent-encodes per segment so 'Plans/a b.md' → 'Plans/a%20b.md'.
-  encoded_path="$(printf '%s' "$vault_path" | jq -sRr 'split("/") | map(@uri) | join("/")')" \
-    || { echo "plan.sh: failed to URL-encode vault path '$vault_path'" >&2; return 1; }
-  # Whole-file PUT (idempotent); no PATCH, so the REST-API 4.0 targetScope rule
-  # does not apply (cf. session-start-drain.sh, foundation #6).
-  http_code="$(curl -s -k -o /dev/null -w '%{http_code}' \
-    -X PUT "$PLAN_API_BASE/vault/$encoded_path" \
-    -H "Authorization: Bearer $api_key" \
-    -H "Content-Type: text/markdown" \
-    --data-binary "@$content_file" 2>/dev/null)" || {
-      echo "plan.sh: REST API unreachable at $PLAN_API_BASE (curl failed)" >&2
-      return 1
-    }
-  case "$http_code" in
-    200|204) return 0 ;;
-    000|"") echo "plan.sh: REST API unreachable at $PLAN_API_BASE (no response)" >&2; return 1 ;;
-    *) echo "plan.sh: REST API write to $vault_path failed (HTTP $http_code)" >&2; return 1 ;;
-  esac
+  local vault_path="$1" content_file="$2" err
+  declare -F ks_write >/dev/null 2>&1 \
+    || { echo "plan.sh: knowledge_store.sh not sourceable (missing $PLAN_LIB_DIR/knowledge_store.sh) — cannot write" >&2; return 1; }
+  # Whole-file replace (idempotent) — ks_write stages to a sibling temp file
+  # and renames into place, so a killed/interrupted write can never leave a
+  # half-written note at the target path (knowledge_store.sh
+  # _ks_backend_plain_files_write). No URL-encoding needed here (unlike the
+  # old REST PUT, #364's fix): ks_write treats vault_path as a plain
+  # filesystem-relative doc-id, and mkdir -p/mv handle a spaced path natively.
+  if ! err="$(ks_write "$vault_path" < "$content_file" 2>&1)"; then
+    echo "plan.sh: knowledge store write to '$vault_path' failed: ${err:-no output}" >&2
+    return 1
+  fi
+  return 0
 }
 
 # --- plan-note parsing -------------------------------------------------------
@@ -443,11 +447,11 @@ cmd_toposort() {
 }
 
 # --- writeback ---------------------------------------------------------------
-# Flip the named item's checkbox sentinel and stamp sub-lines, then PUT the
-# patched note via the _plan_vault_write seam. A vault path is derived from the
-# file path's tail under the vault root (Plans/<name>.md); the orchestrator
-# always passes a path under the configured vault root, so the REST
-# vault-relative path is the segment after the vault root.
+# Flip the named item's checkbox sentinel and stamp sub-lines, then write the
+# patched note via the _plan_vault_write seam (ks_write). A vault path is
+# derived from the file path's tail under the vault root (Plans/<name>.md);
+# the orchestrator always passes a path under the configured vault root, so
+# the doc-id handed to ks_write is the segment after the vault root.
 cmd_writeback() {
   local file="" slug="" sentinel="" pr="" pushed_sha="" speculative="" run_status="" has_run_status=0
   while [ $# -gt 0 ]; do
@@ -550,7 +554,7 @@ cmd_writeback() {
   else
     rm -f "$tmp"
     jq -cn --arg slug "$slug" \
-      '{outcome:"WRITE_FAILED", slug:$slug, error:"vault REST write failed — see stderr"}' >&3
+      '{outcome:"WRITE_FAILED", slug:$slug, error:"knowledge store write failed — see stderr"}' >&3
     exit 1
   fi
 }

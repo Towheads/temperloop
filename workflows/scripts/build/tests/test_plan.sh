@@ -3,8 +3,9 @@
 # Tests for workflows/scripts/build/plan.sh — the build Step-1 plan
 # parse/validate + dependency-level toposort and the in-band sentinel writeback
 # CLI (epic #253, spike #245). Board-toolkit fixture style: throwaway plan-note
-# files in a tmpdir, the _plan_vault_write REST seam OVERRIDDEN so ZERO live
-# REST calls happen, structured-output assertions via jq.
+# files in a tmpdir; writeback tests point KNOWLEDGE_STORE_ROOT at a disposable
+# tmpdir "store" so a real ks_write round-trip happens with ZERO touches to
+# the operator's real vault, structured-output assertions via jq.
 #
 # Covers:
 #   - validate: a valid approved plan → VALID; malformed plans → INVALID +
@@ -14,11 +15,14 @@
 #     no gate_check); a depends-on ∪ after cycle → INVALID (rule 8)
 #   - toposort: a 2-level DAG over the union of depends-on + after → the right
 #     level partition; a cycle → CYCLE outcome + non-zero exit
-#   - writeback routes EVERY vault write through _plan_vault_write (grep: no
-#     direct curl outside that function); the seam is overridden, sentinel is
-#     flipped, stamp sub-lines are written, WRITTEN is emitted
-#   - an unreachable REST API (seam returns non-zero) → WRITE_FAILED + non-zero
-#     exit + stderr; NEVER silent success
+#   - writeback routes EVERY vault write through _plan_vault_write → ks_write
+#     (foundation #954; no curl anywhere post-migration): a real round-trip
+#     against a throwaway store root flips the sentinel and stamps sub-lines,
+#     WRITTEN is emitted; a spaced plan filename round-trips with no encoding
+#     needed (#364 regression, post-migration)
+#   - a knowledge-store write failure (blocked store root) → WRITE_FAILED +
+#     non-zero exit + stderr; NEVER silent success. Same for knowledge_store.sh
+#     not being sourceable (stripped-down checkout missing the seam).
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/plan.sh"
@@ -261,110 +265,85 @@ rc=0; out="$(bash "$SCRIPT" validate "$TMP/cycle.md")" || rc=$?
   || fail "validate did not flag the cycle as rule 8 (got: $out)"
 echo "PASS: validate → INVALID (rule 8) on the same cycle"
 
-# --- writeback: ALL writes route through _plan_vault_write (source grep) ------
-# The only curl in the script must live inside the _plan_vault_write function.
-curl_lines="$(grep -nE '\bcurl\b' "$SCRIPT" || true)"
-[ -n "$curl_lines" ] || fail "expected a curl call inside _plan_vault_write"
-# Extract the body of _plan_vault_write and assert the curl line(s) fall inside it.
-awk '/^_plan_vault_write\(\)/{f=1} f{print NR": "$0} f&&/^}/{f=0}' "$SCRIPT" > "$TMP/seam.txt"
-while IFS= read -r cl; do
-  ln="${cl%%:*}"
-  grep -q "^${ln}: " "$TMP/seam.txt" || fail "a curl call (line $ln) lives OUTSIDE _plan_vault_write — not the sole write path"
-done <<<"$curl_lines"
-echo "PASS: every curl in plan.sh lives inside _plan_vault_write (sole sentinel-write path)"
+# --- writeback: no REST/curl left — ks_write is the sole write path (F#954) --
+# The old REST PUT transport is gone entirely post-migration (foundation #954,
+# Epic "Obsidian → knowledge_store parallel-run migration" #951, Phase 2
+# #948) — confirm no curl call remains anywhere in the script, and that the
+# _plan_vault_write seam routes through ks_write.
+grep -qE '\bcurl\b' "$SCRIPT" \
+  && fail "plan.sh should contain no curl calls post-migration to ks_write (F#954)"
+grep -q '_plan_vault_write' "$SCRIPT" || fail "expected the _plan_vault_write seam to still exist"
+grep -q 'ks_write "\$vault_path"' "$SCRIPT" || fail "_plan_vault_write should route through ks_write"
+echo "PASS: plan.sh contains no curl calls; _plan_vault_write routes through ks_write (F#954)"
 
-# --- writeback: seam overridden → no live REST; sentinel flipped + stamped ----
-# Source the script's functions, override the seam to capture instead of PUT.
-# shellcheck disable=SC1090
-( set +e
-  # Run plan.sh with the seam stubbed via an injected wrapper. We can't source
-  # the dispatch tail, so we exercise writeback as a subprocess with a stub
-  # _plan_vault_write installed by pointing the REST helper at a fake: override
-  # by exporting a function is not inherited by a bash subprocess, so instead we
-  # drive the seam through a writable fake key-file + a curl shim on PATH.
-  true
-)
-# Stub strategy mirroring pr.sh's gh-shim: put a fake `curl` on PATH that
-# records the PUT target + body and returns HTTP 200, and a fake key-file so the
-# seam's preconditions pass. This proves the write goes THROUGH _plan_vault_write
-# (it is the only curl) and that a 200 → WRITTEN.
-mkdir -p "$TMP/bin"
-cat > "$TMP/bin/curl" <<EOF
-#!/usr/bin/env bash
-# record args + body, emit 200 as the -w '%{http_code}' value
-printf '%s\n' "\$@" > "$TMP/curl-args"
-for a in "\$@"; do case "\$a" in @*) cp "\${a#@}" "$TMP/put-body" ;; esac; done
-printf '200'
-EOF
-chmod +x "$TMP/bin/curl"
-mkdir -p "$TMP/keydir"
-echo '{"apiKey":"test-key"}' > "$TMP/keydir/data.json"
-
+# --- writeback: real ks_write round-trip against a throwaway store root ------
+# Point KNOWLEDGE_STORE_ROOT at a disposable tmpdir (never the operator's real
+# vault) and exercise a REAL plain-files write — no REST, no shim needed; this
+# IS the transport now, so exercising it for real is more valuable than a fake.
+STORE="$TMP/store"
+mkdir -p "$STORE"
 cp "$TMP/valid.md" "$TMP/wb.md"
-out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+out="$(KNOWLEDGE_STORE_ROOT="$STORE" KNOWLEDGE_STORE_BACKEND="plain-files" \
   bash "$SCRIPT" writeback "$TMP/wb.md" --slug builds-on --sentinel '[~]' \
   --pr 142 --pushed-sha abc123 --run-status "worker active")"
 [ "$(jq -r .outcome <<<"$out")" = "WRITTEN" ] || fail "writeback not WRITTEN (got: $out)"
 [ "$(jq -r .sentinel <<<"$out")" = "[~]" ] || fail "writeback sentinel not echoed (got: $out)"
-# the PUT body must carry the flipped sentinel on the builds-on item + the stamps
-grep -q '^- \[~\] \*\*Builds on base\*\* `slug: builds-on`' "$TMP/put-body" \
-  || fail "PUT body did not flip the builds-on sentinel to [~]"
-grep -q '^  - pr: 142' "$TMP/put-body" || fail "PUT body missing stamped pr: 142"
-grep -q '^  - pushed_sha: abc123' "$TMP/put-body" || fail "PUT body missing stamped pushed_sha"
-grep -q '^  - Run-status: worker active' "$TMP/put-body" || fail "PUT body missing Run-status stamp"
+WRITTEN_FILE="$STORE/Plans/wb.md"
+[ -f "$WRITTEN_FILE" ] || fail "expected ks_write to land the note at $WRITTEN_FILE"
+grep -q '^- \[~\] \*\*Builds on base\*\* `slug: builds-on`' "$WRITTEN_FILE" \
+  || fail "written note did not flip the builds-on sentinel to [~]"
+grep -q '^  - pr: 142' "$WRITTEN_FILE" || fail "written note missing stamped pr: 142"
+grep -q '^  - pushed_sha: abc123' "$WRITTEN_FILE" || fail "written note missing stamped pushed_sha"
+grep -q '^  - Run-status: worker active' "$WRITTEN_FILE" || fail "written note missing Run-status stamp"
 # the OTHER items must be untouched (base still [ ])
-grep -q '^- \[ \] \*\*Base change\*\* `slug: base`' "$TMP/put-body" \
+grep -q '^- \[ \] \*\*Base change\*\* `slug: base`' "$WRITTEN_FILE" \
   || fail "writeback disturbed an unrelated item's sentinel"
-echo "PASS: writeback flips the target sentinel, stamps pr/pushed_sha/Run-status, leaves others untouched (→ WRITTEN)"
+echo "PASS: writeback flips the target sentinel, stamps pr/pushed_sha/Run-status, leaves others untouched (real ks_write round-trip, → WRITTEN)"
 
-# --- writeback: plan filename with spaces → URL-encoded PUT path (#364) --------
-# Every real plan filename has spaces ('Plans/<date> <project> - <title>.md'), so
-# the PUT URL MUST percent-encode the path segments — a raw space makes curl
-# reject the URL (exit 3, http_code 000) and writeback breaks for all plans.
-# Re-install the recording curl shim (the 000 shim above replaced it).
-cat > "$TMP/bin/curl" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$@" > "$TMP/curl-args"
-for a in "\$@"; do case "\$a" in @*) cp "\${a#@}" "$TMP/put-body" ;; esac; done
-printf '200'
-EOF
-chmod +x "$TMP/bin/curl"
+# --- writeback: plan filename with spaces round-trips through ks_write (#364) --
+# Every real plan filename has spaces ('Plans/<date> <project> - <title>.md').
+# The old REST transport needed percent-encoding to survive the PUT (#364);
+# ks_write treats the doc-id as a plain filesystem-relative path, so a spaced
+# name just works — prove it still lands at the right path, sentinel flipped.
 mkdir -p "$TMP/Plans"
 cp "$TMP/valid.md" "$TMP/Plans/2026-06-11 stagefind - spaces in name.md"
-out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+out="$(KNOWLEDGE_STORE_ROOT="$STORE" KNOWLEDGE_STORE_BACKEND="plain-files" \
   bash "$SCRIPT" writeback "$TMP/Plans/2026-06-11 stagefind - spaces in name.md" \
   --slug base --sentinel '[x]')"
 [ "$(jq -r .outcome <<<"$out")" = "WRITTEN" ] || fail "spaced-filename writeback not WRITTEN (got: $out)"
-# The PUT-target URL line in curl-args must carry the percent-encoded path …
-grep -q 'vault/Plans/2026-06-11%20stagefind%20-%20spaces%20in%20name\.md' "$TMP/curl-args" \
-  || fail "PUT URL not percent-encoded (got: $(grep vault/ "$TMP/curl-args"))"
-# … and must NOT contain a raw space in the vault path (the exit-3 trigger).
-grep -E '^https?://[^ ]*/vault/.* ' "$TMP/curl-args" \
-  && fail "PUT URL still contains a raw space in the path (curl would reject it)"
-echo "PASS: writeback URL-encodes a spaced plan filename before the PUT (→ no curl exit-3) (#364)"
+SPACED_FILE="$STORE/Plans/2026-06-11 stagefind - spaces in name.md"
+[ -f "$SPACED_FILE" ] || fail "expected a spaced plan filename to land at '$SPACED_FILE'"
+grep -q '^- \[x\] \*\*Base change\*\* `slug: base`' "$SPACED_FILE" \
+  || fail "spaced-filename writeback did not flip the base sentinel"
+echo "PASS: writeback round-trips a spaced plan filename through ks_write with no encoding needed (#364 regression, post-migration)"
 
-# --- writeback: unreachable REST → WRITE_FAILED + non-zero + stderr -----------
-# A curl shim that emits HTTP 000 (no response) must make the seam fail loud.
-cat > "$TMP/bin/curl" <<EOF
-#!/usr/bin/env bash
-printf '000'
-EOF
-chmod +x "$TMP/bin/curl"
+# --- writeback: a knowledge-store write failure → WRITE_FAILED + non-zero + stderr ---
+# Point KNOWLEDGE_STORE_ROOT at a path that cannot be mkdir'd into (a regular
+# file standing where a directory must go), so the plain-files backend's
+# mkdir -p fails — the local-filesystem analog of the old "unreachable REST"
+# failure. Must still fail loud, never silent.
+BLOCKED="$TMP/blocked-root"
+: > "$BLOCKED"   # a FILE, not a directory
 rc=0
-out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+out="$(KNOWLEDGE_STORE_ROOT="$BLOCKED" KNOWLEDGE_STORE_BACKEND="plain-files" \
   bash "$SCRIPT" writeback "$TMP/wb.md" --slug builds-on --sentinel '[m]' 2>"$TMP/err")" || rc=$?
-[ "$rc" -ne 0 ] || fail "unreachable REST writeback did NOT exit non-zero (silent success — the forbidden failure)"
-[ "$(jq -r .outcome <<<"$out")" = "WRITE_FAILED" ] || fail "unreachable REST not WRITE_FAILED (got: $out)"
-grep -qi 'unreachable' "$TMP/err" || fail "no fail-loud stderr message on unreachable REST (got: $(cat "$TMP/err"))"
-echo "PASS: unreachable REST → WRITE_FAILED + non-zero exit + stderr (never silent success)"
+[ "$rc" -ne 0 ] || fail "blocked store-root writeback did NOT exit non-zero (silent success — the forbidden failure)"
+[ "$(jq -r .outcome <<<"$out")" = "WRITE_FAILED" ] || fail "blocked store-root not WRITE_FAILED (got: $out)"
+[ -s "$TMP/err" ] || fail "no fail-loud stderr message on a knowledge-store write failure"
+echo "PASS: a knowledge-store write failure → WRITE_FAILED + non-zero exit + stderr (never silent success)"
 
-# --- writeback: missing key-file also fails loud -----------------------------
+# --- writeback: knowledge_store.sh not sourceable → fail loud ----------------
+# Copy plan.sh to an isolated location with NO sibling lib/knowledge_store.sh
+# (PLAN_LIB_DIR is BASH_SOURCE-relative, so this makes it unresolvable) — the
+# local analog of the old "missing REST key-file" precondition failure (a
+# stripped-down checkout missing the seam must still fail loud, not silently).
+mkdir -p "$TMP/isolated/build" "$TMP/isolated/lib"   # lib/ exists but has no knowledge_store.sh
+cp "$SCRIPT" "$TMP/isolated/build/plan.sh"
 rc=0
-out="$(PLAN_API_KEY_FILE="$TMP/nonexistent.json" \
-  bash "$SCRIPT" writeback "$TMP/wb.md" --slug base --sentinel '[x]' 2>"$TMP/err2")" || rc=$?
-[ "$rc" -ne 0 ] || fail "missing key-file writeback did not exit non-zero"
-grep -qi 'key file missing' "$TMP/err2" || fail "no fail-loud stderr on missing key file (got: $(cat "$TMP/err2"))"
-echo "PASS: missing REST key-file → fail loud (non-zero + stderr)"
+out="$(bash "$TMP/isolated/build/plan.sh" writeback "$TMP/wb.md" --slug base --sentinel '[x]' 2>"$TMP/err2")" || rc=$?
+[ "$rc" -ne 0 ] || fail "writeback with no knowledge_store.sh available did not exit non-zero"
+grep -qi 'not sourceable' "$TMP/err2" || fail "no fail-loud stderr when knowledge_store.sh is missing (got: $(cat "$TMP/err2"))"
+echo "PASS: knowledge_store.sh not sourceable → fail loud (non-zero + stderr)"
 
 # --- error: bad args → structured ERROR + non-zero ----------------------------
 rc=0; out="$(bash "$SCRIPT" validate "$TMP/nonexistent.md" 2>/dev/null)" || rc=$?
