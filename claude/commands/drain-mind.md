@@ -329,6 +329,48 @@ A **needed** verification is not friction — a status check that found real cha
 
 **Default to silence.** If a stub yielded no novel learnings (because they were captured live), that is the correct outcome — do not invent extractions to feel productive.
 
+### Knowledge-search parity misses
+
+Backstop for the live **Phase 1 parity comparison rule** in `claude/CLAUDE.overlay.md` —
+temporary, removed at Phase 3 (F#956) alongside that rule (F#946/F#947, `Plans/2026-07-04
+foundation - obsidian knowledge-store migration`). The live rule says: while Phase 1 is in
+force, every concept-level search (`mcp__obsidian__search_vault_smart`) should also run
+`ks_search` (Bash) over the same query and get one comparison line appended to
+`Context/foundation - knowledge-search parity ledger.md`. This step catches the ones that
+slipped — a `search_vault_smart` call with no corresponding ledger line for that query and day.
+
+**Skip entirely if this checkout has no `claude/CLAUDE.overlay.md`, or that file carries no
+"Phase 1 parity comparison rule" section** — a standalone kernel checkout has no such rule to
+backstop, and once Phase 3 deletes the rule this step should stop firing too (retire it in the
+same change that removes the live rule).
+
+For each stub in this drain run:
+
+1. **Find candidate concept searches.** Read the stub's raw `.jsonl` transcript (the path in the
+   stub frontmatter's `transcript:` field — the same "wider transcript access" reach as Step
+   1.4, justified here because no `report.tool_events` sub-array captures generic MCP tool
+   invocations) and grep it for `search_vault_smart` tool_use invocations; extract each call's
+   `query` argument.
+2. **Check the ledger.** Read `Context/foundation - knowledge-search parity ledger.md` via
+   `mcp__obsidian-builtin__vault_read`. For each candidate query, look under `## Entries` for a
+   line dated the same day as the stub whose query matches (exact string or an obvious
+   paraphrase). If found, the live rule fired — skip this query.
+3. **Backfill the miss.** For each query with no matching entry, append one line directly (a
+   Bash `>>` append) in the ledger's `- <date> · <query> · smart|bm|tie · <gap note>` format:
+   ```
+   - <YYYY-MM-DD> · <query> · smart · backfilled by /drain-mind — ks_search comparison missing from live capture (Sessions/<stub filename without .md>)
+   ```
+   Default the verdict to `smart` (the only side known to have run) unless the same transcript
+   window also shows a `ks_search` Bash invocation for the same query — in that case read both
+   results from the transcript context and judge `smart`/`bm`/`tie` honestly instead of
+   defaulting.
+4. **Tally.** Surface `Knowledge-search parity misses backfilled: N (queries)` in the Step 6
+   summary.
+
+**Default to silence.** Most stubs show every concept search already ledgered live (the common
+case once the live rule is in force). Do not manufacture a miss from an ambiguous transcript
+read — skip rather than guess.
+
 ### Answered decisions
 
 Delivery channel for the `decision_sink_ask` async backend — the read-back half of the decision queue sink. The async backend (in `/build`'s `decision_sink_ask` seam, operator-absent path) parks a plan item by posting a question comment, applying the `decision` label, and assigning the operator. When the operator replies and unassigns themselves, this step translates the parsed reply into **exactly one artifact** the existing 3d-esc / 4f resume machinery already reads — then stops. It does **not** transition sentinels (`[~]`/`[m]`/`[x]`), does **not** resume the item (no `build-level.mjs` invocation), and does **not** close the issue. The next `/build` tick's existing 3d-esc (`escalated: true` re-enter) or 4f (deferred `## Questions` drain) path performs resumption; this step only delivers the artifact.
