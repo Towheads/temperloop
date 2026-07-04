@@ -24,6 +24,12 @@
 #     absent) / MANAGED+probe_failed:true (gh error, the fail-safe direction);
 #     an explicit BUILD_MERGE_BACKEND=native|managed override short-circuits
 #     WITHOUT calling the probe at all
+#   - managed-merge: strict (default) → update-branch called, SHA-pinned CI
+#     re-poll green, merge, confirmed MERGED; --non-strict → update-branch
+#     NEVER called, merges directly; CI red after update-branch → EJECTED, no
+#     merge attempted; `gh pr merge` itself rejected (e.g. queue-armed repo) →
+#     MERGE_REJECTED, distinct non-silent outcome; an existing subcommand's
+#     JSON is asserted BYTE-IDENTICAL (no-behavior-change-on-native guarantee)
 #
 # The seams are redefined mid-file per case (the library calls them
 # indirectly), so shellcheck's "never invoked"/"unreachable" checks are false
@@ -282,5 +288,120 @@ out="$(BUILD_MERGE_BACKEND=managed cmd_backend Towheads/foundation)"
 [ "$(jq -r 'has("probe_failed")' <<<"$out")" = "false" ] || fail "override MANAGED should not carry probe_failed (got: $out)"
 echo "PASS: backend → MANAGED on BUILD_MERGE_BACKEND=managed, no probe call"
 unset BUILD_MERGE_BACKEND
+
+# --- managed-merge: green STRICT path ----------------------------------------
+# update-branch called → new head sha resolved → SHA-pinned CI re-poll GREEN →
+# merge → confirmed MERGED. Zero-delay poll knobs (mirrors GATE_REPOLL_DELAY).
+export GATE_CI_POLL_INTERVAL=0 GATE_CI_POLL_TIMEOUT=5
+export GATE_MERGE_POLL_INTERVAL=0 GATE_MERGE_POLL_TIMEOUT=5
+rm -f "$TMP/mm_calls"
+_gate_gh() {
+  local -a a=("$@")
+  echo "$*" >> "$TMP/mm_calls"
+  case "${a[0]:-} ${a[1]:-}" in
+    "pr update-branch") return 0 ;;
+    "pr view")
+      local field="" k
+      for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+      case "$field" in
+        headRefOid) echo "deadbeef1" ;;
+        state,mergedAt,mergeable,mergeStateStatus)
+          echo '{"state":"MERGED","mergedAt":"2026-07-04T00:00:00Z","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}' ;;
+        *) echo "{}" ;;
+      esac
+      return 0 ;;
+    "pr merge") return 0 ;;
+    "run list") echo "[]"; return 0 ;;
+    *)
+      if [ "${a[0]:-}" = "api" ]; then
+        echo '[{"status":"completed","conclusion":"success"}]'
+      fi ;;
+  esac
+}
+out="$(cmd_managed_merge Towheads/foundation 42)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGED" ] || fail "managed-merge green-strict outcome (got: $out)"
+[ "$(jq -r .mergedAt <<<"$out")" = "2026-07-04T00:00:00Z" ] || fail "managed-merge green-strict mergedAt (got: $out)"
+grep -q "^pr update-branch " "$TMP/mm_calls" || fail "managed-merge strict did not call update-branch"
+echo "PASS: managed-merge (strict, default) → update-branch + SHA-pinned CI re-poll + merge + confirmed MERGED"
+
+# --- managed-merge: green NON-STRICT path ------------------------------------
+# --non-strict must NEVER call update-branch (or the CI re-poll) — straight to
+# merge → confirmed MERGED, preserving a non-strict repo's immediate-merge
+# cost profile.
+rm -f "$TMP/mm_calls"
+_gate_gh() {
+  local -a a=("$@")
+  echo "$*" >> "$TMP/mm_calls"
+  case "${a[0]:-} ${a[1]:-}" in
+    "pr update-branch") fail "update-branch called under --non-strict (must be skipped entirely)" ;;
+    "pr view")
+      echo '{"state":"MERGED","mergedAt":"2026-07-04T01:00:00Z","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}'
+      return 0 ;;
+    "pr merge") return 0 ;;
+  esac
+  case "${a[0]:-}" in
+    api) fail "CI re-poll (gh api) called under --non-strict (must be skipped entirely)" ;;
+  esac
+}
+out="$(cmd_managed_merge Towheads/foundation 42 --non-strict)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGED" ] || fail "managed-merge green-non-strict outcome (got: $out)"
+! grep -q "update-branch" "$TMP/mm_calls" || fail "managed-merge non-strict seam saw update-branch"
+! grep -q "^api" "$TMP/mm_calls" || fail "managed-merge non-strict seam saw a CI re-poll call"
+echo "PASS: managed-merge --non-strict → NO update-branch, NO CI re-poll, straight to merge + confirmed MERGED"
+
+# --- managed-merge: CI red after update-branch → EJECTED, no merge attempted
+rm -f "$TMP/mm_calls"
+_gate_gh() {
+  local -a a=("$@")
+  echo "$*" >> "$TMP/mm_calls"
+  case "${a[0]:-} ${a[1]:-}" in
+    "pr update-branch") return 0 ;;
+    "pr view")
+      local field="" k
+      for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+      case "$field" in
+        headRefOid) echo "deadbeef2" ;;
+        *) echo "{}" ;;
+      esac
+      return 0 ;;
+    "pr merge") fail "merge attempted after CI red on the updated head (eject must not merge)" ;;
+    "run list") echo "[987]"; return 0 ;;
+  esac
+  case "${a[0]:-}" in
+    api) echo '[{"status":"completed","conclusion":"failure"}]' ;;
+  esac
+}
+rc=0; out="$(cmd_managed_merge Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 5 ] || fail "managed-merge eject did not exit 5 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "EJECTED" ] || fail "managed-merge eject outcome (got: $out)"
+[ "$(jq -c .failed_run_ids <<<"$out")" = "[987]" ] || fail "managed-merge eject failed_run_ids (got: $out)"
+! grep -q "^pr merge " "$TMP/mm_calls" || fail "managed-merge eject seam saw a merge call"
+echo "PASS: managed-merge → CI red after update-branch → EJECTED (exit 5), failed_run_ids surfaced, no merge attempted"
+
+# --- managed-merge: gh pr merge itself rejected (e.g. queue-armed repo) ------
+# --non-strict path (fewer preconditions) with the merge call itself failing —
+# a distinct, non-silent MERGE_REJECTED outcome rather than a bare ERROR.
+_gate_gh() {
+  local -a a=("$@")
+  case "${a[0]:-} ${a[1]:-}" in
+    "pr merge") echo "GraphQL: Pull request is not mergeable via the UI or API (mergePullRequest)"; return 1 ;;
+  esac
+  echo "{}"
+}
+rc=0; out="$(cmd_managed_merge Towheads/foundation 42 --non-strict)" || rc=$?
+[ "$rc" -eq 6 ] || fail "managed-merge merge-rejected did not exit 6 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGE_REJECTED" ] || fail "managed-merge merge-rejected outcome (got: $out)"
+jq -e '.error | test("not mergeable")' <<<"$out" >/dev/null \
+  || fail "managed-merge merge-rejected error message not surfaced (got: $out)"
+echo "PASS: managed-merge → a merge the platform itself rejects surfaces as MERGE_REJECTED (exit 6), not silently"
+unset GATE_CI_POLL_INTERVAL GATE_CI_POLL_TIMEOUT GATE_MERGE_POLL_INTERVAL GATE_MERGE_POLL_TIMEOUT
+
+# --- no-behavior-change-on-native guarantee: an existing subcommand's JSON is
+# BYTE-IDENTICAL after adding managed-merge (acceptance criterion 3) ---------
+_gate_gh() { echo "true"; }
+out="$(cmd_strict Towheads/foundation)"
+[ "$out" = '{"outcome":"STRICT"}' ] \
+  || fail "cmd_strict output changed byte-for-byte after adding managed-merge (got: $out)"
+echo "PASS: cmd_strict output is byte-identical after adding managed-merge (no behavior change on existing subcommands)"
 
 echo "ALL GATE TESTS PASSED"
