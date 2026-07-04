@@ -141,7 +141,7 @@ _run_section() {
     mutation_noop)
       for i in $ISSUES; do
         cur="$(board_resolve_item "$board" "$i" 2>/dev/null | jq -r '.status // empty' 2>/dev/null)"
-        [ -n "$cur" ] && board_set_status "$board" "$i" "$cur" >/dev/null 2>&1 || true
+        if [ -n "$cur" ]; then board_set_status "$board" "$i" "$cur" >/dev/null 2>&1 || true; fi
         break   # a single write is enough to time the write path
       done ;;
   esac
