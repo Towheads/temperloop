@@ -33,6 +33,15 @@
 #         vs MANAGED (no native queue available — a free personal repo can't
 #         provision one). This is detection + override ONLY; the managed-merge
 #         mechanics themselves are a separate later item.
+#   gate.sh managed-merge <owner>/<repo> <pr> [--strict|--non-strict]
+#       → per-PR MANAGED-backend merge mechanics (temperloop#13), strict by
+#         default: update-branch → SHA-pinned CI re-poll on the UPDATED head →
+#         merge → confirmed-MERGED poll; red-after-update ejects (no merge
+#         attempted). --non-strict skips the update-branch + re-poll and
+#         merges directly. PER-PR MECHANICS ONLY — the whole-set loop,
+#         processing order, and stop/continue-past-an-eject policy stay in the
+#         orchestrator (build.md); a set-loop here would move merge-order
+#         policy into the spine.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per command
 # (the orchestrator branches on `.outcome`, never parses prose):
@@ -49,11 +58,21 @@
 #            {"outcome":"TIMEOUT","pr":…,"waited":…}                  exit 4
 #   backend → {"outcome":"NATIVE"} | {"outcome":"MANAGED"} |
 #              {"outcome":"MANAGED","probe_failed":true}              exit 0
+#   managed-merge → {"outcome":"MERGED","pr":…,"mergedAt":…}                exit 0
+#                    {"outcome":"EJECTED","pr":…,"failed_run_ids":[…]}      exit 5
+#                    {"outcome":"MERGE_REJECTED","pr":…,"error":…}          exit 6
+#                    {"outcome":"CONFLICTING","pr":…,"mergeStateStatus":…}  exit 3
+#                    {"outcome":"TIMEOUT","pr":…,"waited":…}                exit 4
 #   error  → {"outcome":"ERROR","error":…}                           exit 1
 # Exit codes: 0 success; 1 ERROR (bad input / failed call); 3 CONFLICTING/DIRTY
-# terminal-bad (poll); 4 TIMEOUT/stall (poll). MERGED is the SOLE success check
-# for poll — never "closed", never "checks green" — so a PR closed-without-merge
-# can never read as merged (the #130 premature-close class).
+# terminal-bad (poll, and managed-merge's post-merge confirm poll); 4 TIMEOUT/
+# stall (poll, ditto); 5 EJECTED (managed-merge: CI red on the updated head —
+# no merge attempted); 6 MERGE_REJECTED (managed-merge: the platform itself
+# refused the `gh pr merge` call, e.g. branch protection or a queue-armed repo
+# rejecting a direct merge). MERGED is the SOLE success check for poll and for
+# managed-merge's confirm step — never "closed", never "checks green" — so a
+# PR closed-without-merge can never read as merged (the #130 premature-close
+# class).
 set -euo pipefail
 
 # --- fixture seam -------------------------------------------------------------
@@ -82,7 +101,7 @@ die() {
 }
 
 usage() {
-  die "usage: gate.sh read <owner>/<repo> <pr> | strict <owner>/<repo> | risk <owner>/<repo> <pr> [<pr> ...] | queue <owner>/<repo> <pr> [--strict|--non-strict] | nudge <owner>/<repo> <pr> | poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>] | backend <owner>/<repo>"
+  die "usage: gate.sh read <owner>/<repo> <pr> | strict <owner>/<repo> | risk <owner>/<repo> <pr> [<pr> ...] | queue <owner>/<repo> <pr> [--strict|--non-strict] | nudge <owner>/<repo> <pr> | poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>] | backend <owner>/<repo> | managed-merge <owner>/<repo> <pr> [--strict|--non-strict]"
 }
 
 # Closed-set validation shared by every command (these feed gh paths / jq).
@@ -384,6 +403,129 @@ cmd_poll() {
   done
 }
 
+# --- managed-merge: SHA-pinned CI re-poll ------------------------------------
+# Implemented INLINE via _gate_gh rather than shelling out to ci-poll.sh: this
+# keeps managed-merge on the SAME single _gate_gh fixture seam the rest of
+# gate.sh already uses (one mock, no second network-capable subprocess to
+# stand up in tests). Polls repos/<nwo>/commits/<sha>/check-runs — REST, NEVER
+# `gh pr checks --watch` (GraphQL, shared-budget concern — see ci-poll.sh's own
+# header) — until every check-run is completed, or the deadline passes; same
+# shape as ci-poll.sh's loop. Tab-separated result (mirrors _gate_view's
+# tsv-via-stdout idiom):
+#   GREEN\t[]          — every check-run concluded success/neutral/skipped
+#   FAILED\t<ids-json> — at least one concluded non-success; ids best-effort
+#   TIMEOUT\t[]        — deadline passed with checks still pending
+#   ERR\t<message>     — the check-runs query itself failed
+_gate_ci_poll() {
+  local owner_repo="$1" sha="$2" interval="$3" timeout="$4"
+  local deadline=$((SECONDS + timeout))
+  while :; do
+    local runs n pending
+    if ! runs="$(_gate_gh api "repos/$owner_repo/commits/$sha/check-runs" \
+          --jq '[.check_runs[]|{status,conclusion}]' 2>&1)"; then
+      printf 'ERR\t%s\n' "$runs"; return 0
+    fi
+    n="$(jq length <<<"$runs" 2>/dev/null || echo 0)"
+    pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$runs" 2>/dev/null || echo 0)"
+    if [ "$n" -gt 0 ] && [ "$pending" -eq 0 ]; then
+      if jq -e 'all(.[]; .conclusion|IN("success","neutral","skipped"))' <<<"$runs" >/dev/null 2>&1; then
+        printf 'GREEN\t[]\n'; return 0
+      fi
+      local failed_ids
+      failed_ids="$(_gate_gh run list -R "$owner_repo" --commit "$sha" --json databaseId,conclusion \
+          --jq '[.[]|select(.conclusion=="failure")|.databaseId]' 2>/dev/null)" || failed_ids="[]"
+      jq -e . >/dev/null 2>&1 <<<"$failed_ids" || failed_ids="[]"
+      printf 'FAILED\t%s\n' "$failed_ids"; return 0
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf 'TIMEOUT\t[]\n'; return 0
+    fi
+    sleep "$interval"
+  done
+}
+
+# --- managed-merge: per-PR MANAGED merge mechanics (temperloop#13) -----------
+# Replicates GitHub's native merge-queue semantics with existing primitives,
+# for a repo with no native queue (gate.sh backend → MANAGED). PER-PR
+# MECHANICS ONLY: fold latest main into the head, revalidate CI on the UPDATED
+# head, merge on green, confirm MERGED. The whole-SET loop — processing order,
+# and whether to stop or continue past an ejected PR — is orchestrator policy
+# (build.md), deliberately NOT built here (a set-loop inside gate.sh would move
+# merge-order policy into the spine).
+#
+# strict (default): update-branch → resolve the NEW head sha (never poll a
+# stale one — mirrors ci-poll.sh's own #254 guard) → SHA-pinned CI re-poll via
+# _gate_ci_poll → on green, fall through to merge; on red, EJECTED (exit 5),
+# NO merge attempted and NO plan-note sentinels/labels written (consent +
+# writeback stay orchestrator-side, per this file's own header contract).
+# --non-strict skips update-branch + the re-poll ENTIRELY (preserves a
+# non-strict repo's immediate-merge cost profile) and merges directly.
+#
+# Either path's merge is the same `gh pr merge --merge --delete-branch` — NOT
+# --auto (unlike cmd_queue): managed-merge has already established
+# mergeability itself (strict: via the re-poll; non-strict: by definition), so
+# it merges now rather than queuing. A merge the platform itself rejects (e.g.
+# branch protection, or a queue-armed repo refusing a direct merge) surfaces
+# as MERGE_REJECTED (exit 6) rather than dying silently. A successful merge
+# call is confirmed via the SAME poll-to-MERGED cmd_poll already implements —
+# the #130 guard applies here too: MERGED is the sole success check.
+#
+# GATE_CI_POLL_INTERVAL/GATE_CI_POLL_TIMEOUT (default 30/3600, mirroring
+# ci-poll.sh's own defaults) and GATE_MERGE_POLL_INTERVAL/
+# GATE_MERGE_POLL_TIMEOUT (default 15/600, mirroring cmd_poll's own defaults)
+# are the zero-delay test knobs for this command's two poll loops — mirrors
+# GATE_REPOLL_DELAY=0 above.
+cmd_managed_merge() {
+  local owner_repo="$1" pr="$2" strict=1 out
+  validate_owner_repo "$owner_repo"
+  validate_pr "$pr"
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --strict)     strict=1 ;;
+      --non-strict) strict="" ;;
+      *) usage ;;
+    esac
+    shift
+  done
+
+  if [ -n "$strict" ]; then
+    if ! out="$(_gate_gh pr update-branch "$pr" -R "$owner_repo" 2>&1)"; then
+      die "gh pr update-branch failed for #$pr: $out"
+    fi
+    # Resolve the NEW head sha post-update — never poll a stale head (#254).
+    local sha
+    if ! sha="$(_gate_gh pr view "$pr" -R "$owner_repo" --json headRefOid --jq '.headRefOid' 2>&1)" \
+        || [ -z "$sha" ]; then
+      die "could not resolve updated head SHA for #$pr: $sha"
+    fi
+    local ci_status ci_ids
+    IFS=$'\t' read -r ci_status ci_ids < <(_gate_ci_poll "$owner_repo" "$sha" \
+        "${GATE_CI_POLL_INTERVAL:-30}" "${GATE_CI_POLL_TIMEOUT:-3600}")
+    case "$ci_status" in
+      GREEN) ;;
+      FAILED)
+        jq -cn --argjson pr "$pr" --argjson ids "$ci_ids" \
+          '{outcome:"EJECTED", pr:$pr, failed_run_ids:$ids}'
+        return 5
+        ;;
+      TIMEOUT) die "CI re-poll timed out for #$pr on sha $sha" ;;
+      *)        die "CI re-poll failed for #$pr on sha $sha: $ci_ids" ;;
+    esac
+  fi
+
+  if ! out="$(_gate_gh pr merge "$pr" -R "$owner_repo" --merge --delete-branch 2>&1)"; then
+    jq -cn --argjson pr "$pr" --arg error "$out" '{outcome:"MERGE_REJECTED", pr:$pr, error:$error}'
+    return 6
+  fi
+
+  local confirm rc=0
+  confirm="$(cmd_poll "$owner_repo" "$pr" \
+      --interval "${GATE_MERGE_POLL_INTERVAL:-15}" --timeout "${GATE_MERGE_POLL_TIMEOUT:-600}")" || rc=$?
+  echo "$confirm"
+  return "$rc"
+}
+
 # --- dispatch (skipped when sourced for tests) -------------------------------
 # Mirrors the board-test harness: a test `source`s this file to override the
 # seams and call cmd_* directly, so the dispatch must NOT run on source. The
@@ -399,6 +541,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     nudge)  [ $# -eq 2 ] || usage; cmd_nudge "$1" "$2" ;;
     poll)   [ $# -ge 2 ] || usage; cmd_poll "$@" ;;
     backend) [ $# -eq 1 ] || usage; cmd_backend "$1" ;;
+    managed-merge) [ $# -ge 2 ] || usage; cmd_managed_merge "$@" ;;
     *) usage ;;
   esac
 fi
