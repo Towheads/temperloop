@@ -20,6 +20,10 @@
 #   - poll: ONE fixture per terminal outcome — MERGED (exit 0, the SOLE success
 #     check), CONFLICTING/DIRTY (exit 3), TIMEOUT (exit 4); a CLOSED-not-merged
 #     PR never reads MERGED (the #130 premature-close guard)
+#   - backend: auto probe → NATIVE (merge_queue rule present) / MANAGED (rule
+#     absent) / MANAGED+probe_failed:true (gh error, the fail-safe direction);
+#     an explicit BUILD_MERGE_BACKEND=native|managed override short-circuits
+#     WITHOUT calling the probe at all
 #
 # The seams are redefined mid-file per case (the library calls them
 # indirectly), so shellcheck's "never invoked"/"unreachable" checks are false
@@ -242,5 +246,41 @@ rc=0; out="$( (cmd_read Towheads/foundation abc) 3>&1 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
   || fail "bad pr not structured ERROR (got: $out)"
 echo "PASS: bad owner/repo or pr → structured ERROR + non-zero exit"
+
+# --- backend: auto probe, merge_queue rule present → NATIVE -----------------
+# _gate_gh here stands in for `gh api ... --jq '...'`, so the fixture emits the
+# ALREADY-PROJECTED boolean the real --jq would produce (same style as the
+# cmd_strict fixtures above), not the raw rules array.
+unset BUILD_MERGE_BACKEND
+_gate_gh() { echo "true"; }
+out="$(cmd_backend Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "NATIVE" ] || fail "merge_queue rule present not NATIVE (got: $out)"
+echo "PASS: backend → NATIVE when the branch ruleset carries a merge_queue rule"
+
+# --- backend: auto probe, merge_queue rule absent → MANAGED ------------------
+_gate_gh() { echo "false"; }
+out="$(cmd_backend Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "MANAGED" ] || fail "no merge_queue rule not MANAGED (got: $out)"
+[ "$(jq -r 'has("probe_failed")' <<<"$out")" = "false" ] || fail "clean MANAGED should not carry probe_failed (got: $out)"
+echo "PASS: backend → MANAGED when the branch ruleset has no merge_queue rule"
+
+# --- backend: probe error (gh non-zero / empty) → MANAGED + probe_failed:true
+_gate_gh() { return 1; }
+out="$(cmd_backend Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "MANAGED" ] || fail "probe error not MANAGED (got: $out)"
+[ "$(jq -r .probe_failed <<<"$out")" = "true" ] || fail "probe error missing probe_failed:true (got: $out)"
+echo "PASS: backend → MANAGED + probe_failed:true on a probe error (fail-safe direction)"
+
+# --- backend: explicit override wins WITHOUT probing -------------------------
+_gate_gh() { fail "gh called under an explicit BUILD_MERGE_BACKEND override (should short-circuit)"; }
+BUILD_MERGE_BACKEND=native out="$(BUILD_MERGE_BACKEND=native cmd_backend Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "NATIVE" ] || fail "override=native not NATIVE (got: $out)"
+echo "PASS: backend → NATIVE on BUILD_MERGE_BACKEND=native, no probe call"
+
+out="$(BUILD_MERGE_BACKEND=managed cmd_backend Towheads/foundation)"
+[ "$(jq -r .outcome <<<"$out")" = "MANAGED" ] || fail "override=managed not MANAGED (got: $out)"
+[ "$(jq -r 'has("probe_failed")' <<<"$out")" = "false" ] || fail "override MANAGED should not carry probe_failed (got: $out)"
+echo "PASS: backend → MANAGED on BUILD_MERGE_BACKEND=managed, no probe call"
+unset BUILD_MERGE_BACKEND
 
 echo "ALL GATE TESTS PASSED"

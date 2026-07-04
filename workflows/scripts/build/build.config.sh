@@ -36,6 +36,16 @@
 : "${BUILD_MERGE_GATE_WINDOW:=300}"   # timed merge-gate window (s); 0 = always modal
 : "${BUILD_QUEUE_TIMEOUT:=1800}"      # per-PR native-merge-queue timeout (s)
 
+# Merge-backend SELECTION (temperloop#13): a free personal repo can't always
+# provision GitHub's native merge queue, so `gate.sh backend` chooses NATIVE
+# vs MANAGED. "auto" probes the repo's branch ruleset for a `merge_queue` rule
+# and fails safe to MANAGED on an unreadable probe (see gate.sh cmd_backend's
+# header comment for the fail-safe-direction rationale); an explicit
+# `native`/`managed` override here short-circuits the probe entirely. Pure
+# string default — no network call happens at config-source time, only inside
+# the `gate.sh backend` invocation itself.
+: "${BUILD_MERGE_BACKEND:=auto}"       # auto|native|managed
+
 # Per-Bash-call bound for the FOREGROUND CI / MERGED polls /build runs on a
 # HEADLESS one-shot path (FUNNEL_OPERATOR_ABSENT=1 — the funnel `claude -p` merge
 # driver, which has no re-invoke-on-background-completion loop, so its waits must
@@ -174,6 +184,7 @@
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
+       BUILD_MERGE_BACKEND \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
