@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Regression test for the zsh special-parameter tie (temperloop#40, surfaced
-# from Towheads/foundation#987). Under zsh the lowercase array `path` is tied to
+# from <org>/foundation#987). Under zsh the lowercase array `path` is tied to
 # `PATH`, so a `local path=…` in a *sourced* function silently rebinds `PATH` for
 # that scope — which made `_ks_bm_project_add` (knowledge_search.sh) clobber
 # `PATH` to the vault root and lose `uvx` (exit 127 -> ks exit 4). bash treats

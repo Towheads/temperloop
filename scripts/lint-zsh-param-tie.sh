@@ -7,7 +7,7 @@
 # (`path` <-> `PATH`, etc.). So in any file that is *sourced* into a shell, a
 # `local path=…` (or a bare `path=…` assignment) silently rebinds `PATH` for that
 # scope — which broke `ks_search` under zsh by making `uvx` unresolvable
-# (temperloop#40, surfaced from Towheads/foundation#987). bash treats these as
+# (temperloop#40, surfaced from <org>/foundation#987). bash treats these as
 # ordinary variables, so the bash test suite and shellcheck are BLIND to it; this
 # grep is the portable, zsh-free guard that keeps the fixed renames from being
 # "corrected" back later.
