@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # SessionStart hook — drains .mind/ session stubs from all dev roots into the
-# Obsidian vault at Sessions/_inbox/<original-filename>.md via the Obsidian
-# Local REST API. Deletes each local stub on successful upload.
+# knowledge store at Sessions/_inbox/<original-filename>.md via the
+# knowledge_store interface's `plain-files` backend — a direct local file
+# copy (foundation #952, Epic "Obsidian → knowledge_store parallel-run
+# migration" #951, Phase 2 #948; previously a REST PUT against the Obsidian
+# Local REST API — the store is a local folder, so REST added nothing).
+# Deletes each local stub on successful copy.
 #
 # Stubs that land in Sessions/_inbox/ are reviewed and processed by the
 # /drain-mind slash command (extracts learnings, generates tasks, moves to
@@ -17,18 +21,30 @@
 
 set -uo pipefail
 
-# Vault-root / config resolution routes through the knowledge_store seam
-# (foundation #777, Epic A #762 "kernel split") rather than a hardcoded vault
-# path. This hook is permanently Obsidian-specific (it drains straight into
-# Sessions/_inbox via the vault's REST API — the interface's `ks_root` is
-# documented as MEANINGLESS for the obsidian backend, see
-# knowledge_store_obsidian.sh, so it is deliberately NOT used here), so the
-# config it borrows is the obsidian backend's own knobs
-# (KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE) — their defaults already
-# resolve to today's vault path/URL in that ONE file, not duplicated here. The
-# transport itself (raw curl PUT, not ks_write) is unchanged — see the header
-# comment below on why a whole-file PUT stays outside the interface's own
-# write op for this hook.
+# Store-root / config resolution routes through the knowledge_store seam
+# (foundation #777, Epic A #762 "kernel split"). This hook previously issued
+# a raw curl PUT against the Obsidian Local REST API directly (predating
+# F#952); it now goes through `ks_write` (the interface's write op) with the
+# backend hard-pinned to `plain-files` below — a direct, atomic local file
+# copy into the store, per the migration plan's explicit design ("it's a
+# local folder; REST adds nothing"). Zero REST/network dependency: this hook
+# keeps working after the Local REST API plugin is uninstalled (the
+# migration's Phase-3/L5 stack retirement). The old raw-curl path is one
+# `git revert` away.
+#
+# ROOT-RESOLUTION ARCH FINDING (F#952): this hook runs in a bare hook
+# environment that does NOT source workflows/scripts/build/build.config.sh
+# (the script that seeds `KNOWLEDGE_STORE_ROOT=$HOME/dev/mind` for every
+# script-plane caller in a normal foundation invocation) — so
+# knowledge_store.sh's own bare default (`${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge`)
+# would apply here unless this hook seeds the root itself. Both knobs are
+# therefore pinned UNCONDITIONALLY (plain assignment, not `:=`/`:-`
+# defaulting) after sourcing the seam: the hook's env cannot be trusted to
+# have sourced build.config.sh, and an *inherited* bogus
+# KNOWLEDGE_STORE_ROOT (or a leaked KNOWLEDGE_STORE_BACKEND) must NOT win —
+# a session stub silently landing in an XDG data dir or an arbitrary
+# inherited path is exactly the failure mode this pin exists to prevent.
+# The pinned root mirrors build.config.sh's own foundation-specific value.
 #
 # Absolute path (not BASH_SOURCE-relative): this hook is symlinked to
 # ~/.claude/hooks/, so a relative "../.." climb from BASH_SOURCE[0] would climb
@@ -39,22 +55,17 @@ if [ -f "$KS_LIB_DIR/knowledge_store.sh" ]; then
   # shellcheck source=/dev/null
   . "$KS_LIB_DIR/knowledge_store.sh"
 fi
-if [ -f "$KS_LIB_DIR/knowledge_store_obsidian.sh" ]; then
-  # shellcheck source=/dev/null
-  . "$KS_LIB_DIR/knowledge_store_obsidian.sh"
-fi
 
-# If the seam couldn't be sourced (e.g. a stripped-down checkout with no
-# workflows/scripts/lib/), these stay empty — the existing "API key file
-# missing" check further below (an empty path fails `[ -f "" ]`) already fails
-# open onto "skipping drain" with no separate early exit needed, and the
-# session-id emission below (which must fire regardless) is unaffected.
-API_KEY_FILE="${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}"
-API_BASE="${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}"
-# The vault's filesystem root, derived from the API key file's fixed Obsidian
-# plugin-data suffix (never a hardcoded vault path) — needed below only to
-# EXCLUDE the vault dir from the stub search, not for any vault content I/O.
-VAULT="${API_KEY_FILE%/.obsidian/plugins/obsidian-local-rest-api/data.json}"
+# See ROOT-RESOLUTION ARCH FINDING above: both knobs pinned unconditionally,
+# regardless of what ambient env this hook inherits.
+KNOWLEDGE_STORE_ROOT="$HOME/dev/mind"
+KNOWLEDGE_STORE_BACKEND="plain-files"
+export KNOWLEDGE_STORE_ROOT KNOWLEDGE_STORE_BACKEND
+
+# The store's filesystem root — needed below both as ks_write's target root
+# and to EXCLUDE the store dir from the stub search (a stub must never be
+# re-drained out of the store itself).
+VAULT="$KNOWLEDGE_STORE_ROOT"
 INBOX_DIR="Sessions/_inbox"
 XDG_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/foundation"
 mkdir -p "$XDG_STATE_DIR" 2>/dev/null || true
@@ -80,15 +91,18 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/eval-guard.sh"
 eval_guard_exit_if_eval
 
-# Read API key.
-if [ ! -f "$API_KEY_FILE" ]; then
-  log "API key file missing: $API_KEY_FILE — skipping drain"
+# Fail open (logged, exit 0 — never blocks session start) when the drain
+# cannot run at all: the seam wasn't sourceable (stripped-down checkout with
+# no workflows/scripts/lib/), or the store root doesn't exist on this machine
+# (a fresh install with no ~/dev/mind — the hook must NOT conjure a store
+# root into existence as a side effect of session start; per-file parent-dir
+# creation inside an existing root is ks_write's job, root creation is not).
+if ! declare -F ks_write >/dev/null 2>&1; then
+  log "knowledge_store.sh not sourceable from $KS_LIB_DIR — skipping drain"
   exit 0
 fi
-
-API_KEY=$(jq -r '.apiKey // empty' "$API_KEY_FILE" 2>/dev/null)
-if [ -z "$API_KEY" ]; then
-  log "Could not read apiKey from $API_KEY_FILE — skipping drain"
+if [ ! -d "$KNOWLEDGE_STORE_ROOT" ]; then
+  log "knowledge store root missing: $KNOWLEDGE_STORE_ROOT — skipping drain"
   exit 0
 fi
 
@@ -109,28 +123,21 @@ while IFS= read -r stub; do
   filename=$(basename "$stub")
   vault_path="$INBOX_DIR/$filename"
 
-  # PUT is idempotent — overwrites if a prior run partially completed.
-  # Whole-file PUT only: this hook issues NO PATCH, so the Obsidian Local REST
-  # API 4.0.0 change that made `targetScope` required on PATCH does not apply
-  # here (verified, foundation #6). If you ever add a PATCH call to this hook,
-  # it MUST carry a `Target-Type`/`targetScope` (and `createTargetIfMissing`
-  # where relevant) or it 400s on REST API >= 4.0.
-  http_code=$(curl -s -k -o /tmp/drain_response.$$ -w '%{http_code}' \
-    -X PUT "$API_BASE/vault/$vault_path" \
-    -H "Authorization: Bearer $API_KEY" \
-    -H "Content-Type: text/markdown" \
-    --data-binary "@$stub" 2>/dev/null)
-
-  if [ "$http_code" = "204" ] || [ "$http_code" = "200" ]; then
+  # ks_write is a whole-file replace, idempotent on retry (same semantics as
+  # the raw REST PUT it replaces) — overwrites if a prior run partially
+  # completed. Content travels on stdin per the knowledge_store interface
+  # contract; the plain-files backend stages to a sibling temp file and
+  # renames into place (atomic — a reader never sees a half-written stub)
+  # and creates the Sessions/_inbox/ parent dirs as needed — see
+  # knowledge_store.sh's _ks_backend_plain_files_write.
+  if ks_err=$(ks_write "$vault_path" < "$stub" 2>&1); then
     rm -f "$stub"
     moved=$((moved + 1))
     log "drained: $stub -> $vault_path"
   else
     failed=$((failed + 1))
-    response=$(cat /tmp/drain_response.$$ 2>/dev/null | head -c 200)
-    log "FAILED [$http_code]: $stub -> $vault_path | response: $response"
+    log "FAILED: $stub -> $vault_path | error: ${ks_err:0:200}"
   fi
-  rm -f /tmp/drain_response.$$
 done <<< "$STUBS"
 
 if [ "$moved" -gt 0 ] || [ "$failed" -gt 0 ]; then
