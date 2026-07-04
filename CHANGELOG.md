@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/) —
 pre-1.0, so a minor version bump (`0.x.0`) may include breaking changes.
 
+## [Unreleased]
+
+### Fixed
+
+- `claude/hooks/session-end-log.sh`: SessionEnd stub no longer loses
+  post-compact session history — a compact rollover moves the live
+  conversation into a new transcript jsonl while the hook is handed the stale
+  original path; the hook now follows the rollover chain (same first
+  top-level record timestamp, largest sibling wins) and dumps the live end,
+  stamping `transcript_given:` with the handed-in path. Repeat fires for the
+  same session id now overwrite the existing stub in place instead of
+  accumulating near-duplicates. New `claude/hooks/tests/test_session_end_log.sh`
+  covers basic dump, chain-follow, decoy rejection, dedupe, and the no-user /
+  EVAL_RUN suppressions. (foundation#984)
+
 ## [0.1.2] - 2026-07-03
 
 Re-seed from foundation `main` after PR #833 (foundation F#800, issues-only

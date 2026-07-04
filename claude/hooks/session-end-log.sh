@@ -6,6 +6,12 @@
 # Writes: <cwd>/.mind/<date>-<time>-<project>-<id8>.md
 # Also ensures: <cwd>/.mind/.gitignore (contents: "*")
 #
+# Rollover-chain following (foundation#984): a context compaction can roll the
+# conversation into a NEW transcript jsonl while SessionEnd is still handed the
+# stale original path; this hook follows the chain to the live end so the stub
+# covers the whole session, and reuses an existing stub for the same session id
+# instead of accumulating near-duplicates.
+#
 # EVAL_RUN suppression: when EVAL_RUN is set (non-empty), this hook exits
 # immediately without writing any stub.  Eval sessions must not produce
 # .mind/ files or vault drain targets.
@@ -25,6 +31,32 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 [ -z "$CWD" ] && exit 0
 [ ! -d "$CWD" ] && exit 0
 
+# --- Rollover-chain following (foundation#984) --------------------------------
+# A compact rollover copies the prior history into the new jsonl with the
+# ORIGINAL record timestamps, so chain members share the same first top-level
+# .timestamp (head-of-file preamble records — last-prompt, custom-title, mode —
+# are mutable and carry none; nested timestamps like file-history-snapshot's
+# don't count). Among sibling jsonls with a matching first timestamp, dump the
+# largest: each rollover carries a full copy plus the new tail, so the live end
+# is strictly the biggest. No match -> current behavior, unchanged.
+first_ts() {
+  jq -r 'select(.timestamp != null) | .timestamp' "$1" 2>/dev/null | head -n 1
+}
+GIVEN_TRANSCRIPT="$TRANSCRIPT"
+OWN_TS=$(first_ts "$TRANSCRIPT")
+if [ -n "$OWN_TS" ]; then
+  BEST_SIZE=$(wc -c < "$TRANSCRIPT")
+  for SIB in "$(dirname "$TRANSCRIPT")"/*.jsonl; do
+    [ -f "$SIB" ] || continue
+    [ "$SIB" = "$TRANSCRIPT" ] && continue
+    SIB_SIZE=$(wc -c < "$SIB")
+    [ "$SIB_SIZE" -gt "$BEST_SIZE" ] || continue
+    [ "$(first_ts "$SIB")" = "$OWN_TS" ] || continue
+    TRANSCRIPT="$SIB"
+    BEST_SIZE="$SIB_SIZE"
+  done
+fi
+
 DATE=$(date +%Y-%m-%d)
 TIME=$(date +%H%M)
 PROJECT=$(basename "$CWD")
@@ -42,6 +74,17 @@ MODELS=$(jq -r 'select(.type == "assistant") | .message.model // empty' "$TRANSC
 
 OUTDIR="$CWD/.mind"
 OUTFILE="$OUTDIR/${DATE}-${TIME}-${PROJECT}-${SHORT_ID}.md"
+
+# Reuse an existing stub for this session id if one is already on disk (an
+# exit/re-enter minutes apart, or a fuller post-rollover re-dump), so repeat
+# fires overwrite in place instead of accumulating near-duplicates
+# (foundation#984). The transcript only grows, so a re-dump is a superset.
+for EXISTING in "$OUTDIR"/*-"${PROJECT}-${SHORT_ID}.md"; do
+  if [ -f "$EXISTING" ]; then
+    OUTFILE="$EXISTING"
+    break
+  fi
+done
 
 mkdir -p "$OUTDIR"
 # Belt-and-suspenders: never let .mind/ get committed.
@@ -72,6 +115,7 @@ fi
   printf "session_id: %s\n" "$SESSION_ID"
   [ -n "$MODELS" ] && printf "model: %s\n" "$MODELS"
   printf "transcript: %s\n" "$TRANSCRIPT"
+  [ "$TRANSCRIPT" != "$GIVEN_TRANSCRIPT" ] && printf "transcript_given: %s\n" "$GIVEN_TRANSCRIPT"
   printf "tags:\n  - session\n  - project/%s\n" "$PROJECT"
   printf -- "---\n\n"
   printf "# Session — %s (%s %s)\n\n" "$PROJECT" "$DATE" "$TIME"
