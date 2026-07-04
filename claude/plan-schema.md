@@ -245,6 +245,26 @@ Each entry is **one line** with a checkbox sentinel plus a `## Questions`-local 
 - **Drain at gate** (Step 4): the orchestrator reads every `[ ]` entry and surfaces the batch as ONE question before merge consent is recorded — in the **timed** gate regime, an entry still `[ ]` when the window elapses takes its `default` (consistent with the timed-gate "absence of objection = consent" auto-proceed); in the **modal** regime, the entries are presented alongside the merge `AskUserQuestion`. Either way, **an unanswered entry at gate resolution takes its default — never a silent stall.**
 - **Resolve**: tick `[ ]` → `[x]` and append `→ answered: <choice>` (or `→ default taken: <value>`) when the gate resolves it, so a resumed run never re-asks a settled question.
 
+## Orchestrator-written `## Merge gate log` section (merge-consent lines)
+
+`/build` appends this section onto the plan note as it runs — authors don't author it. It is the **durable record of merge consent**, one line per level-consent event, written **at consent time** (modal approval given, timed window elapsed with no objection, or the headless immediate-merge re-poll passed) and **before the first merge call of that level**, via `vault_append` (a reliable EOF op). Like `pr:`/`pushed_sha:`, it exists so a crash leaves a recoverable pointer — here, the pointer that makes **resume-without-re-consent** mechanical on the MANAGED merge backend (`/build` 4b "Merge — MANAGED backend" resume state table): a resumed run that finds a consent line covering a still-`[m]` item's PR re-enters the managed loop without re-asking the operator; absent a covering line, the level takes a fresh gate. No PR/issue label carries this state — consent and resume ride the plan note alone, cross-checked against a live PR probe.
+
+### Shape
+
+```markdown
+## Merge gate log
+
+- consent: level 0 · 2026-07-04T18:22:05Z · mode: modal-approved · PRs: #17 #18 #19
+- consent: level 1 · 2026-07-05T02:10:44Z · mode: timed-elapsed · PRs: #21
+```
+
+One line per consent event, four fields:
+
+- **`level <k>`** — the dependency level the consent covers.
+- **Timestamp** — ISO-8601 UTC, the moment consent was recorded.
+- **`mode:`** — how consent arose: `modal-approved` (explicit operator approval at the modal gate) | `timed-elapsed` (timed window elapsed with no objection) | `headless-immediate` (`FUNNEL_OPERATOR_ABSENT=1` immediate-merge branch, re-poll passed).
+- **`PRs:`** — the **exact** consented PR list. Consent pins this list: a PR not in it (or work re-pushed under a new PR number) is **not** covered and must earn consent at a fresh gate. A level gated more than once (e.g. an EJECTED item re-parked and re-gated) appends a **new** line — lines are append-only, never edited.
+
 ## Status sentinels (in-band tracking)
 
 `/build` mutates the plan note as it goes. Six states:
