@@ -28,6 +28,11 @@
 #   gate.sh poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>]
 #       → poll until MERGED (exit 0 iff state==MERGED); distinct non-zero codes
 #         for CONFLICTING/DIRTY vs timeout/stall (guards the #130 premature-close)
+#   gate.sh backend <owner>/<repo>
+#       → merge-backend SELECTION (temperloop#13): NATIVE (GitHub merge queue)
+#         vs MANAGED (no native queue available — a free personal repo can't
+#         provision one). This is detection + override ONLY; the managed-merge
+#         mechanics themselves are a separate later item.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per command
 # (the orchestrator branches on `.outcome`, never parses prose):
@@ -42,6 +47,8 @@
 #   poll   → {"outcome":"MERGED","pr":…,"mergedAt":…}                 exit 0
 #            {"outcome":"CONFLICTING","pr":…,"mergeStateStatus":…}    exit 3
 #            {"outcome":"TIMEOUT","pr":…,"waited":…}                  exit 4
+#   backend → {"outcome":"NATIVE"} | {"outcome":"MANAGED"} |
+#              {"outcome":"MANAGED","probe_failed":true}              exit 0
 #   error  → {"outcome":"ERROR","error":…}                           exit 1
 # Exit codes: 0 success; 1 ERROR (bad input / failed call); 3 CONFLICTING/DIRTY
 # terminal-bad (poll); 4 TIMEOUT/stall (poll). MERGED is the SOLE success check
@@ -75,7 +82,7 @@ die() {
 }
 
 usage() {
-  die "usage: gate.sh read <owner>/<repo> <pr> | strict <owner>/<repo> | risk <owner>/<repo> <pr> [<pr> ...] | queue <owner>/<repo> <pr> [--strict|--non-strict] | nudge <owner>/<repo> <pr> | poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>]"
+  die "usage: gate.sh read <owner>/<repo> <pr> | strict <owner>/<repo> | risk <owner>/<repo> <pr> [<pr> ...] | queue <owner>/<repo> <pr> [--strict|--non-strict] | nudge <owner>/<repo> <pr> | poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>] | backend <owner>/<repo>"
 }
 
 # Closed-set validation shared by every command (these feed gh paths / jq).
@@ -158,6 +165,52 @@ cmd_strict() {
     jq -cn '{outcome:"STRICT"}'
   else
     jq -cn '{outcome:"NON_STRICT"}'
+  fi
+}
+
+# --- backend: merge-backend SELECTION (temperloop#13) ------------------------
+# TemperLoop's level merge gate must also work on free personal repos that
+# can't provision GitHub's native merge queue. This subcommand is the
+# SELECTION half only — NATIVE (native merge queue) vs MANAGED (no native
+# queue available). It does no merging itself; the managed-merge mechanics are
+# a separate later item.
+#
+# BUILD_MERGE_BACKEND (build.config.sh, default "auto") short-circuits an
+# explicit `native`/`managed` override WITHOUT probing at all — the config
+# value wins outright, mirroring the `:=` "explicit env always wins" idiom.
+# Under `auto` (or any other value) we probe the repo's branch ruleset for a
+# `merge_queue` rule on `main`, the same shape as
+# land__requires_pr() in workflows/scripts/lib/land-on-protected-main.sh
+# (`repos/<nwo>/rules/branches/<default>` --jq 'any(.[]; .type=="...")').
+#
+# Fail-safe direction: a probe failure (gh error, 404, empty body) resolves to
+# MANAGED, never NATIVE — the reverse (defaulting to NATIVE on an unreadable
+# probe) risks queuing a native `--auto` merge on a repo that has no queue
+# armed, which just fails loudly at branch protection; defaulting to MANAGED
+# on a queue-armed repo the probe merely failed to *see* is the safe direction
+# because MANAGED never silently arms an auto-merge nobody chose. The
+# `probe_failed:true` flag lets the orchestrator distinguish "no queue" from
+# "couldn't tell".
+cmd_backend() {
+  local owner_repo="$1" backend out
+  validate_owner_repo "$owner_repo"
+  backend="${BUILD_MERGE_BACKEND:-auto}"
+
+  case "$backend" in
+    native) jq -cn '{outcome:"NATIVE"}'; return 0 ;;
+    managed) jq -cn '{outcome:"MANAGED"}'; return 0 ;;
+  esac
+
+  # auto (or any unrecognized value) → probe.
+  if out="$(_gate_gh api "repos/$owner_repo/rules/branches/main" \
+        --jq 'any(.[]; .type=="merge_queue")' 2>/dev/null)" && [ -n "$out" ]; then
+    if [ "$out" = "true" ]; then
+      jq -cn '{outcome:"NATIVE"}'
+    else
+      jq -cn '{outcome:"MANAGED"}'
+    fi
+  else
+    jq -cn '{outcome:"MANAGED", probe_failed:true}'
   fi
 }
 
@@ -345,6 +398,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     queue)  [ $# -ge 2 ] || usage; cmd_queue "$@" ;;
     nudge)  [ $# -eq 2 ] || usage; cmd_nudge "$1" "$2" ;;
     poll)   [ $# -ge 2 ] || usage; cmd_poll "$@" ;;
+    backend) [ $# -eq 1 ] || usage; cmd_backend "$1" ;;
     *) usage ;;
   esac
 fi
