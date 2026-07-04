@@ -165,7 +165,7 @@ Filename: `Plans/<YYYY-MM-DD> <project> - <short title>.md`, where `<YYYY-MM-DD>
 - "2026-05-24 stagefind - tier-2 sweep follow-up"
 - "2026-05-24 acme - auth middleware rewrite"
 
-Write via `mcp__obsidian__create_vault_file` using exactly the `~/.claude/plan-schema.md` structure:
+Write directly with the `Write` tool *(writer migrated per F#953 — writes are direct; reads remain per the store-access rule)*, using exactly the `~/.claude/plan-schema.md` structure:
 
 - **Frontmatter:** `tags: [plan, project/<name>]`, today's date, `source_kind: claude-stamped`, `source_session: <session-id>`, `last_verified: <today>`, **`epic: <N>`** (the source epic — the durable plan↔epic link; makes `/build` Step 2.6 a no-op), `sources:` listing the epic (`#<N>`), `status: draft`.
 - **`## Problem`** — 2-4 sentences naming the problem this plan solves and **why it's happening now**: the pain or risk in user-facing terms, **not** the solution. This is the first thing the reviewer reads at the approval gate.
