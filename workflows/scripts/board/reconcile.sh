@@ -89,6 +89,12 @@
 #
 set -euo pipefail
 
+# Attribution for the gh call-logger shim (F#988): tag every gh call this command
+# makes with its outermost context. `:-` preserves an already-set (outer) value,
+# so an autonomous driver's context wins over a nested command. See
+# workflows/scripts/gh-call-logger.sh.
+export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-reconcile}"
+
 # Resolve symlinks so the script finds its real lib/ even when invoked through a
 # symlink (on PATH or from a consuming repo's scripts/ dir) — BASH_SOURCE points
 # at the symlink, not the real file. Portable (no GNU readlink -f).

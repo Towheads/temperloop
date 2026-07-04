@@ -88,6 +88,12 @@
 # (clean or crash), never by rm — a crashed run's lock is reaped by the OS.
 set -euo pipefail
 
+# Attribution for the gh call-logger shim (F#988): tag every gh call this command
+# makes with its outermost context. `:-` preserves an already-set (outer) value,
+# so an autonomous driver's context wins over a nested command. See
+# workflows/scripts/gh-call-logger.sh.
+export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-tick}"
+
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq not found"}' >&2; exit 1; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
