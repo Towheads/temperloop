@@ -285,7 +285,7 @@ directly (`gh issue list --search …`, `gh issue view --json assignees`),
 which were already backend-agnostic (per-issue/per-search REST, no Projects
 call either way).
 
-## The foundation-kernel tracker (board 7, foundation #808)
+## The temperloop tracker (board 7, foundation #808)
 
 The kernel-vs-overlay routing rule (CLAUDE.kernel.md § Kernel vs overlay
 routing rule) needed a concrete board number before it could be *followed*
@@ -296,7 +296,7 @@ issues-only board only needs the `repo` axis, same as any other — see above);
 this split (F#808, Guard #3 of the routing rule, epic B) gives the adapter a
 real handle: **board 7**, registered directly in `lib/board.sh`'s
 `board_repo()` and `board_backend()` built-in maps (`repo` → the
-foundation-kernel repo; `backend` → `"issues"`), the SAME place boards 3-6
+temperloop repo; `backend` → `"issues"`), the SAME place boards 3-6
 already carry their real, org-qualified repo values.
 
 Not a committed `boards.conf` entry — deliberately. A real, org-qualified

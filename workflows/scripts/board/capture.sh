@@ -32,7 +32,7 @@
 # --repo is a conscious-routing peer to --board (F#808, Guard #3 of the
 # kernel-vs-overlay routing rule — CLAUDE.kernel.md § Kernel vs overlay
 # routing rule). It overrides --board when given:
-#   --repo kernel       route to the foundation-kernel ISSUES-ONLY tracker
+#   --repo kernel       route to the temperloop ISSUES-ONLY tracker
 #                        (logical board 7 — registered in lib/board.sh's
 #                        board_repo/board_backend built-in maps, see
 #                        ISSUES-ONLY-BACKEND.md) instead of a Projects-v2
@@ -88,7 +88,7 @@ Capture a noticed-but-not-now item as a tracked board item in one call.
   --rework     tag the item as rework and record its cause: regression, spec-miss,
                or flake. Applies BOTH the `rework` label and the
                `rework-cause:<cause>` label (created idempotently if missing).
-  --repo       kernel = route to the foundation-kernel issues-only tracker
+  --repo       kernel = route to the temperloop issues-only tracker
                (overrides --board); ambiguous = foundation-domain capture,
                kernel-vs-overlay unclear -> defaults to kernel per the
                routing rule's ambiguity clause (see ISSUES-ONLY-BACKEND.md)
@@ -134,7 +134,7 @@ done
 # (route_note, appended after the default-body block below) so the default
 # is legible to a later human triage pass, not silently indistinguishable
 # from a deliberate `--repo kernel` call. See ISSUES-ONLY-BACKEND.md.
-KERNEL_BOARD=7  # foundation-kernel issues-only tracker; see lib/board.sh's board_repo/board_backend built-in maps
+KERNEL_BOARD=7  # temperloop issues-only tracker; see lib/board.sh's board_repo/board_backend built-in maps
 route_note=""
 if [ -n "$repo_route" ]; then
   case "$repo_route" in

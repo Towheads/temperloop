@@ -117,10 +117,10 @@ unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
 _board_conf_file >/dev/null 2>&1 || true   # rc 1 is fine (no real conf in this test env); must not error out
 echo "PASS: default discovery paths (unset overrides) evaluate without error"
 
-# --- 6: board 7 = the foundation-kernel tracker (F#808), conf-absent -------
+# --- 6: board 7 = the temperloop tracker (F#808), conf-absent -------------
 # Board 7 is registered directly in board_repo()/board_backend()'s BUILT-IN
 # maps (not a committed boards.conf — see ISSUES-ONLY-BACKEND.md § "The
-# foundation-kernel tracker" for why: a real org-qualified repo value is
+# temperloop tracker" for why: a real org-qualified repo value is
 # exactly the class of literal this checkout's personal-token-denylist
 # forbids inside the kernel-vendored tree outside board_repo()'s own
 # sanctioned case map). So this mirrors § 1's conf-absent fallback proof,
@@ -129,7 +129,7 @@ echo "PASS: default discovery paths (unset overrides) evaluate without error"
 export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-3"
 export BOARDS_CONF_REPO_LOCAL="$WORK/no-such-repo-local-conf-3"
 
-[ "$(board_repo 7)" = "Towheads/foundation-kernel" ] \
+[ "$(board_repo 7)" = "Towheads/temperloop" ] \
   || fail "board_repo 7 should resolve the built-in kernel-tracker default, got: $(board_repo 7)"
 [ "$(board_backend 7)" = "issues" ] \
   || fail "board_backend 7 should resolve 'issues' from the built-in map, got: $(board_backend 7)"

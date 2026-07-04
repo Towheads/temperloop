@@ -83,6 +83,7 @@ overlay Plans-archive/*
 # (bin/subcommands/<name>.sh) — the glob below covers every subcommand item
 # that lands here later with zero new manifest lines per file.
 # ---------------------------------------------------------------------------
+kernel bin/temperloop
 kernel bin/foundation
 kernel bin/bootstrap.sh
 kernel bin/README.md

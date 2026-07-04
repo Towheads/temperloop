@@ -44,6 +44,15 @@ scripts/tests/test_stranger_config.sh
 # inside the newcomer's first copy-paste command.
 bin/README.md
 
+# The kernel's own top-level public front page (foundation #894,
+# readme-quickstart). Same exact rationale as bin/README.md immediately
+# above: its § 3 quickstart repeats bin/README.md's install curl|sh fences
+# verbatim (so a reader following ONLY the top-level README, never scrolling
+# into bin/, still gets a copy-paste-able install step) — the kernel repo's
+# own public clone/raw URL, not a leak, and a per-line marker would again
+# land inside the newcomer's first copy-paste command.
+README.md
+
 # test_install_settings.sh deliberately feeds a literal personal path
 # (/Users/travis/...) as INPUT fixture data to assert install-settings.sh's
 # CANONICAL_USER-sed correctly strips it at install time (the test would be

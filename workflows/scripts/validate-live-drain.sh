@@ -158,7 +158,7 @@ if [ -z "$kernel_rows" ]; then
 fi
 
 # Union in the overlay extension table, only when present (a composed
-# checkout). A standalone kernel checkout (foundation-kernel, or this
+# checkout). A standalone kernel checkout (temperloop, or this
 # script's own scratch-clone simulation of it) has no
 # claude/live-drain-registry.overlay.md and validates the kernel table alone.
 composed=0
