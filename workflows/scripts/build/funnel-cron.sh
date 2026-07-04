@@ -70,6 +70,12 @@
 
 set -euo pipefail
 
+# Attribution for the gh call-logger shim (F#988): tag every gh call this command
+# makes with its outermost context. `:-` preserves an already-set (outer) value,
+# so an autonomous driver's context wins over a nested command. See
+# workflows/scripts/gh-call-logger.sh.
+export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-cron}"
+
 command -v jq >/dev/null 2>&1 || { echo '{"event":"error","reason":"jq not found"}' >&2; exit 1; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

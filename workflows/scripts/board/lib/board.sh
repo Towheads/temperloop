@@ -202,7 +202,7 @@ _board_is_issues_only() {
 # Every board `gh` call goes through here. Production runs real gh; tests
 # override this after sourcing (e.g. `_board_gh() { fake_gh "$@"; }`) to replay
 # fixtures. Mirrors lib/claim_marker.sh's `_claim_marker_tmux`.
-_board_gh() { gh "$@"; }
+_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }
 
 # --- cross-process read cache (Projects-v2 GraphQL relief) ----------------
 # Every board read is a Projects-v2 GraphQL call against a 5,000-points/hr budget
