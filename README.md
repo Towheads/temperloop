@@ -208,6 +208,49 @@ name going forward — see `claude/CLAUDE.kernel.md`'s history for how this
 repo's own kernel/overlay split works if you're extracting a similar process
 layer out of your own personal automation.
 
+## 9. Merge backend: the whole ladder on a free repo
+
+GitHub's native merge queue — what a strict-mode `/build` or `/sweep` merge
+gate would otherwise queue onto via `--auto` — is only provisionable on an
+**org-owned repo on a paid plan**. That used to be a wall: on a free
+personal repo (no org, no paid plan), the merge-gated ladder simply had
+nowhere to land a merge. `workflows/scripts/build/gate.sh` closes the gap
+with a merge-backend seam, so the full triage → assess → build/sweep →
+merged-PR ladder runs end-to-end on a free personal repo too:
+
+- **`gate.sh backend <owner>/<repo>`** selects **NATIVE** (native queue,
+  preferred wherever it's actually armed) or **MANAGED** (no native queue
+  available). `auto` (the default) probes the repo's branch ruleset for a
+  `merge_queue` rule and fails safe to MANAGED if the probe itself fails;
+  `BUILD_MERGE_BACKEND=native|managed` (`build.config.sh`) short-circuits
+  the probe as an explicit override / test seam.
+- **`gate.sh managed-merge <owner>/<repo> <pr> [--strict|--non-strict]`**
+  replicates the native queue's semantics serially, per PR, on a repo with
+  none: update the branch, re-poll CI against the *new* head SHA, merge,
+  then confirm `state=="MERGED"` before anything downstream treats it as
+  landed. A PR that goes red after the update is `EJECTED` — parked for
+  escalation — without stopping the rest of the queue.
+
+**This is not a standing server** — nothing enforces the managed queue
+between gate runs, so between ticks a human (or another tool) can merge
+straight past it. Enable plain GitHub branch protection (require PRs,
+require the same status checks) on the repo as the only-path enforcement —
+it's free on public and personal-account repos, no org or paid plan
+required, and it's what makes "merge around the managed queue" actually
+impossible rather than merely unlikely.
+
+Both the native and managed paths confirm a *landed* merge
+(`state=="MERGED"`, not just "the merge command didn't error") before the
+orchestrator closes anything — see
+[`docs/failure-modes/03-premature-status-close-on-async-merge.md`](docs/failure-modes/03-premature-status-close-on-async-merge.md).
+Resuming a parked/ejected item across sessions rides the plan note's status
+sentinels plus a fresh read of the PR's live state, never a label — the
+full mechanics are in `claude/commands/build.md`.
+
+Full backend-selection algorithm, the `managed-merge` command reference,
+and the branch-protection recommendation in detail:
+[`docs/managed-merge-queue.md`](docs/managed-merge-queue.md).
+
 ## License
 
 Apache License 2.0 — see [`LICENSE`](LICENSE). See [`SECURITY.md`](SECURITY.md)
