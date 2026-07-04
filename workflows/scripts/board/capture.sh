@@ -73,6 +73,48 @@ SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
 source "$SCRIPT_DIR/lib/board.sh"
 
+# Canonical default sink for the append-only issue-touches log (F#916/#919,
+# epic #916 issue-touch-stream) — computed ONCE as a module constant, same
+# pattern as scripts/claim.sh's CLAIMS_RAW_DIR_DEFAULT. capture.sh runs from
+# CONSUMING checkouts too (stageFind, worker cwds symlink/copy this script), so
+# the sink is pinned to the foundation checkout's own raw lake regardless of
+# cwd, exactly like claim.sh's claims log. ISSUE_TOUCHES_RAW_DIR overrides it
+# (tests only).
+# canonical sink spec: meta/data/raw/README.md (lake path + schema-version
+# convention; this stream's record shape is documented at
+# issue_touch_log_emit below).
+ISSUE_TOUCHES_RAW_DIR_DEFAULT="$HOME/dev/foundation/meta/data/raw"
+
+# Append one JSONL record of this capture to the append-only issue-touches
+# stream (F#916/#919) — the `kind:"capture"` half of the stream; `pr-open` and
+# `merge` are emitted separately by emit-issue-touch.sh from build.md's
+# orchestrator steps (3f/4d). Claim touches are DELIBERATELY NOT emitted here
+# or anywhere in this script — the existing claims-<YYYY-MM>.jsonl stream
+# (claim.sh's claim_log_emit) already covers them and is unioned at read time.
+#
+# Sink resolution, host/session derivation, and failure posture all mirror
+# scripts/claim.sh's claim_log_emit EXACTLY: `|| true`-isolated at the call
+# site, WARN (never fail) on an unwritable/missing sink dir — a telemetry
+# emit must never block a real capture already committed via `gh issue
+# create` above. See claim_log_emit's own header comment for the fuller
+# rationale (all-boards-by-design, single-host coverage caveat) — identical
+# here.
+issue_touch_log_emit() {  # $1=repo $2=issue-number $3=kind (capture|pr-open|merge)
+  local dir file ts rec host sess
+  dir="${ISSUE_TOUCHES_RAW_DIR:-$ISSUE_TOUCHES_RAW_DIR_DEFAULT}"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  file="$dir/issue-touches-${ts%-*}.jsonl"   # ts%-* strips DDThh:mm:ssZ, leaving YYYY-MM
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    echo "capture.sh: WARN issue-touches log dir unavailable: $dir (issue captured; NOT logged to the raw lake)" >&2
+    return 0
+  fi
+  host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+  sess="${CLAUDE_CODE_SESSION_ID:-}"
+  rec=$(printf '{"schema_version":"1","ts":"%s","repo":"%s","issue":%s,"session_id":"%s","host":"%s","kind":"%s"}' \
+    "$ts" "$1" "$2" "$sess" "$host" "$3")
+  printf '%s\n' "$rec" >>"$file" 2>/dev/null \
+    || echo "capture.sh: WARN failed to append issue-touches log record to $file (issue captured; not logged)" >&2
+}
 
 usage() {
   cat <<'EOF'
@@ -205,6 +247,11 @@ create_args=(-R "$repo" --title "$title" --body "$body" --label "Operational")
 [ "${#rework_labels[@]}" -eq 0 ] || create_args+=("${rework_labels[@]}")
 url=$(gh issue create "${create_args[@]}")
 num=$(basename "$url")
+
+# Append one issue-touch record (F#916/#919) now that the issue is real —
+# `|| true`-isolated so a missing/unwritable raw lake never fails a capture
+# that already succeeded. See issue_touch_log_emit's header comment above.
+issue_touch_log_emit "$repo" "$num" "capture" || true
 
 # 2+3) Land it on the board in Backlog.
 #

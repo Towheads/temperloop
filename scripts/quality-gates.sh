@@ -82,6 +82,7 @@ KERNEL_GATES=(
   "make test-prune-branches"
   "make validate-live-drain"
   "make validate-command-run-emit"
+  "make validate-issue-touch-emit"
   "make validate-lexicon"
   "make test-scan-stub"
   "make lint-pr-body-test"

@@ -18,6 +18,15 @@ CAPTURE="$SCRIPTS_DIR/capture.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
+# Keep the issue-touches emit (F#916/#919, capture.sh's own
+# issue_touch_log_emit) off the REAL raw lake (ISSUE_TOUCHES_RAW_DIR_DEFAULT
+# points at $HOME/dev/foundation/meta/data/raw — the actual checkout, not this
+# worktree) for every case below that reaches a successful `gh issue create` —
+# same rationale as test_claim.sh's CLAIMS_LOG_DIR override for claim.sh's
+# sibling claims-log emit.
+ISSUE_TOUCHES_LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/capture-touches-XXXXXX")"
+export ISSUE_TOUCHES_RAW_DIR="$ISSUE_TOUCHES_LOG_DIR"
+
 # Fake gh: if capture.sh ever reaches a real gh call in these cases, record it and
 # fail loud (the whole point is that none of these cases should).
 BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-bin-XXXXXX")"
@@ -114,6 +123,22 @@ grep -q -- "--label rework-cause:regression" <<<"$issue_create_line" \
   || fail "gh issue create was not passed --label rework-cause:regression (line: $issue_create_line)"
 
 echo "PASS: capture.sh --rework regression applies both the rework and rework-cause:regression labels (F#730)"
+
+# Issue-touches emit (F#916/#919): a successful capture appends one
+# kind:"capture" JSONL record to ISSUE_TOUCHES_RAW_DIR/issue-touches-YYYY-MM.jsonl
+# for the just-created issue (#999, per fixtures/fake_gh.sh's `issue create`
+# stub) — the capture.sh half of the issue-touch stream (pr-open/merge are
+# emitted separately by emit-issue-touch.sh from build.md).
+touches_month="$(date -u +%Y-%m)"
+touches_file="$ISSUE_TOUCHES_LOG_DIR/issue-touches-$touches_month.jsonl"
+[ -f "$touches_file" ] || fail "capture.sh --rework: expected an issue-touches log file at $touches_file"
+touch_rec="$(grep -F '"issue":999' "$touches_file" | tail -n1)"
+[ -n "$touch_rec" ] || fail "capture.sh --rework: no issue-touches record found for issue 999\n$(cat "$touches_file")"
+[ "$(printf '%s' "$touch_rec" | jq -r '.kind')" = "capture" ] \
+  || fail "capture.sh --rework: issue-touches record kind must be 'capture'\n$touch_rec"
+[ -n "$(printf '%s' "$touch_rec" | jq -r '.repo')" ] \
+  || fail "capture.sh --rework: issue-touches record repo must be non-empty\n$touch_rec"
+echo "PASS: capture.sh appends a kind:capture issue-touches record on a successful capture (F#916/#919)"
 
 cleanup_rework
 trap 'rm -rf "$BIN"' EXIT
@@ -247,6 +272,6 @@ grep -qa 'board 7 Backlog' <<<"$out" || fail "--repo ambiguous did not report la
 echo "PASS: capture.sh --repo ambiguous defaults to the kernel tracker and records the ambiguity-default provenance in the issue body (F#808)"
 
 cleanup_kernel
-trap 'rm -rf "$BIN"' EXIT
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
 
 echo "ALL capture.sh --repo kernel/ambiguous tests passed"

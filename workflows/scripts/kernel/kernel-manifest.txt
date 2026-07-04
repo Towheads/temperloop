@@ -232,11 +232,13 @@ overlay workflows/scripts/tests/test_session_start_reconcile.sh
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
 kernel workflows/scripts/emit-command-run.sh
+kernel workflows/scripts/emit-issue-touch.sh
 kernel workflows/scripts/gh-call-logger.sh
 kernel workflows/scripts/install-settings.sh
 kernel workflows/scripts/install-claude-md.sh
 kernel workflows/scripts/lint-pr-body.sh
 kernel workflows/scripts/validate-command-run-emit.sh
+kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-live-drain.sh
 kernel workflows/scripts/test_findings.py
 
