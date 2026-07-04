@@ -137,14 +137,20 @@ _ks_backend_plain_files_path() {
 
 # <doc-id> -> file content on stdout. Exit 1 (not found) if the document does
 # not exist. Exit 2 on a bad doc-id (propagated from ks__normalize_id).
+# NOTE: no local in this file may be named `path` (nor `cdpath`/`fpath`/
+# `mailpath`). Under zsh those are tied to the colon-array side of the matching
+# uppercase env var (`path` <-> `PATH`), so a `local path=…` in a *sourced*
+# function rebinds `PATH` for that scope and breaks any later subprocess lookup
+# (e.g. `uvx` in the sibling knowledge_search.sh). bash treats `path` as
+# ordinary, so it's invisible under bash/CI. Use `doc_path` instead. (temperloop#40)
 _ks_backend_plain_files_read() {
-  local path
-  path="$(_ks_backend_plain_files_path "$1")" || return $?
-  if [ ! -f "$path" ]; then
+  local doc_path
+  doc_path="$(_ks_backend_plain_files_path "$1")" || return $?
+  if [ ! -f "$doc_path" ]; then
     printf 'knowledge_store: not found: %s\n' "$1" >&2
     return 1
   fi
-  cat "$path"
+  cat "$doc_path"
 }
 
 # <doc-id> [--no-clobber]  <- content on stdin.
@@ -156,25 +162,25 @@ _ks_backend_plain_files_read() {
 # place, so a killed/interrupted write can never leave a half-written
 # document at the target path.
 _ks_backend_plain_files_write() {
-  local id="" no_clobber=0 arg path tmp
+  local id="" no_clobber=0 arg doc_path tmp   # `doc_path` not `path` — zsh PATH tie (temperloop#40)
   for arg in "$@"; do
     case "$arg" in
       --no-clobber) no_clobber=1 ;;
       *) id="$arg" ;;
     esac
   done
-  path="$(_ks_backend_plain_files_path "$id")" || return $?
-  if [ "$no_clobber" -eq 1 ] && [ -e "$path" ]; then
+  doc_path="$(_ks_backend_plain_files_path "$id")" || return $?
+  if [ "$no_clobber" -eq 1 ] && [ -e "$doc_path" ]; then
     printf 'knowledge_store: refusing to clobber existing doc (--no-clobber): %s\n' "$id" >&2
     return 3
   fi
-  mkdir -p "$(dirname "$path")" || return 1
-  tmp="$(mktemp "${path}.XXXXXX")" || return 1
+  mkdir -p "$(dirname "$doc_path")" || return 1
+  tmp="$(mktemp "${doc_path}.XXXXXX")" || return 1
   if ! cat > "$tmp"; then
     rm -f "$tmp"
     return 1
   fi
-  mv -f "$tmp" "$path"
+  mv -f "$tmp" "$doc_path"
 }
 
 # <doc-id>  <- content on stdin.
@@ -184,10 +190,10 @@ _ks_backend_plain_files_write() {
 # logs, where "atomic full-file replace" isn't the desired semantic and
 # would be needlessly expensive for repeated small appends.
 _ks_backend_plain_files_append() {
-  local id="$1" path
-  path="$(_ks_backend_plain_files_path "$id")" || return $?
-  mkdir -p "$(dirname "$path")" || return 1
-  cat >> "$path"
+  local id="$1" doc_path   # `doc_path` not `path` — zsh PATH tie (temperloop#40)
+  doc_path="$(_ks_backend_plain_files_path "$id")" || return $?
+  mkdir -p "$(dirname "$doc_path")" || return 1
+  cat >> "$doc_path"
 }
 
 # [prefix] -> one doc-id per line (relative to ks_root, '.md' included),
