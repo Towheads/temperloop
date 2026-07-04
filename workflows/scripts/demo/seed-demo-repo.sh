@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # seed-demo-repo.sh — idempotent, script-generated seeder for the PRIVATE
-# scratch demo repo (default: Towheads/foundation-kernel-demo) that  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+# scratch demo repo (default: Towheads/temperloop-demo) that  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 # `foundation try --demo` runs one real safe-tier funnel tick against
 # (foundation #765 Epic D, item `demo-repo-seed` / foundation #851).
 #
@@ -44,7 +44,7 @@
 # Usage:
 #   seed-demo-repo.sh [--repo OWNER/NAME] [--reset] [--dry-run]
 #
-# --repo OWNER/NAME   target repo (default: Towheads/foundation-kernel-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+# --repo OWNER/NAME   target repo (default: Towheads/temperloop-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 # --reset             close stale demo-seed issues + recreate the fixed set;
 #                      also overwrites starter files back to baseline
 # --dry-run           print every `gh` call this run would make without
@@ -55,7 +55,7 @@
 
 set -euo pipefail
 
-REPO="Towheads/foundation-kernel-demo"  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+REPO="Towheads/temperloop-demo"  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 RESET=0
 DRY_RUN=0
 SEED_LABEL="demo-seed"
@@ -64,7 +64,7 @@ usage() {
   cat <<'EOF'
 usage: seed-demo-repo.sh [--repo OWNER/NAME] [--reset] [--dry-run]
 
-  --repo OWNER/NAME   target repo (default: Towheads/foundation-kernel-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+  --repo OWNER/NAME   target repo (default: Towheads/temperloop-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
   --reset             close stale demo-seed issues + recreate the fixed set;
                        also overwrites starter files back to baseline
   --dry-run           print gh calls without executing them
@@ -186,13 +186,13 @@ EOF
       ;;
     README.md)
       cat <<'EOF'
-# foundation-kernel-demo
+# temperloop-demo
 
 This is a **scratch demo repository**, script-generated and reset on
 demand by `seed-demo-repo.sh` in the
 [temperloop](https://github.com/Towheads/temperloop) repo.  # denylist:allow — the kernel repo's own public URL (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
 
-It exists so the `foundation` CLI's `try --demo` command has a real,
+It exists so the `temperloop` CLI's `try --demo` command has a real,
 disposable repo to run one safe-tier issue -> PR tick against. Nothing
 here is hand-edited — every file and every seeded issue is produced by
 the seed script, and its `--reset` mode returns the repo to a known
@@ -236,6 +236,12 @@ seed_file() {
     return 0
   fi
   content="$(file_content "$path")"
+  # Strip any trailing `# denylist:allow — ...` annotation a heredoc line may
+  # carry — that marker exists solely to satisfy
+  # check-personal-token-denylist.sh's per-line exemption on THIS script's
+  # own source text; it must never leak into the payload actually pushed to
+  # the seeded repo (a stranger reading README.md should never see it).
+  content="$(printf '%s\n' "$content" | sed -E 's/[[:space:]]+# denylist:allow.*$//')"
   b64="$(printf '%s\n' "$content" | base64 | tr -d '\n')"
   if [[ -n "$sha" ]]; then
     echo "  -> resetting $path to baseline"

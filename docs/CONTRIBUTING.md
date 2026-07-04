@@ -72,3 +72,54 @@ find again.
 | `02-graphql-budget-exhaustion.md` | A polling loop backed by the wrong API silently drains a shared, points-based rate-limit budget |
 | `03-premature-status-close-on-async-merge.md` | An orchestrator marks work "done" at queue time instead of at confirmed completion, closing tracking state against code that isn't actually merged yet |
 | `04-patch-api-silent-corruption.md` | A "success" response from a partial-update API hides a structural corruption of the target document |
+
+## Contributing an adapter
+
+TemperLoop's process machinery (board adapter, build/sweep pipeline,
+install/doctor, quality gates) is generic on purpose — it stays generic by
+talking to exactly two backend seams instead of hardcoding a specific
+knowledge store or issue tracker. Adding support for a new backend means
+implementing one of these seams; it does not mean touching the pipeline
+machinery itself.
+
+The two seams:
+
+- **Knowledge adapter** — the document-I/O interface a caller uses to read,
+  write, append to, or list a project note (context, decisions, notes)
+  without hardcoding a filesystem path or a particular tool. The full
+  interface — configuration, public functions, backend-registration seam,
+  and the existing `plain-files` / `obsidian` backends as worked examples —
+  is specified in
+  [`workflows/scripts/lib/knowledge_store.contract.md`](../workflows/scripts/lib/knowledge_store.contract.md).
+  Read that file rather than this one for the actual contract; it is the
+  source of truth and this guide does not restate it.
+- **Tracker adapter** — the issue/board backend seam (label vocabulary,
+  claim lock, parent/child and dependency edges, close→Done cascade) that
+  the board toolkit talks to instead of assuming a specific tracker. The
+  current interface is documented alongside the reference `issues-only`
+  backend in
+  [`workflows/scripts/board/ISSUES-ONLY-BACKEND.md`](../workflows/scripts/board/ISSUES-ONLY-BACKEND.md).
+  There is no standalone `tracker.contract.md` yet separating the general
+  interface from that one backend's specifics — that split is tracked as a
+  follow-up, foundation#891 — so until it lands, ISSUES-ONLY-BACKEND.md is
+  the source of truth for the tracker seam's shape.
+
+Before opening an adapter PR:
+
+1. Read the relevant contract file above in full — implement to the
+   interface it specifies, not to how an existing backend happens to work
+   internally.
+2. Keep the seam's existing backends working. A new backend is additive;
+   it must not change the public interface functions callers already rely
+   on.
+3. Add tests alongside the existing backend tests in the same area, and run
+   the project's quality gates before opening a PR.
+4. If something in either contract file is unclear or looks stale relative
+   to the code, say so in the PR rather than guessing — these contracts are
+   maintained documents, not fixed specs, and a confusing passage is
+   itself a useful bug report.
+
+Community discussion, adapter questions, and show-and-tell for finished
+adapters happen in this repo's Discussions tab — see the "How to contribute
+an adapter" post there for a live version of this section plus links to the
+seam contracts above.

@@ -50,6 +50,65 @@ before doing anything:
 If either is missing, `temperloop` prints exactly what's missing and how to
 fix it — never a bare stack trace.
 
+## Quickstart: try → try --demo → init
+
+Three steps, each strictly more than the last: taste it read-only, watch it
+mutate something disposable, then opt your own repo in.
+
+### 1. `temperloop try` — zero-config, zero writes
+
+```sh
+cd your-repo
+temperloop try
+```
+
+Runs the read-only conventions probe, lists your repo's own open issues with
+a directional cost estimate printed *before* anything else happens, then
+drives a real `claude -p` shadow-triage classification pass over those
+issues — invoked with `--tools ""` (every built-in tool disabled), a
+structural guarantee of zero writes independent of the prompt or the model's
+behavior. No `gh` mutation is ever issued. Missing `gh`/network/auth degrades
+to a legible `skipped — <reason>` line per step, never a hard failure. Exit
+0 either way — a graceful skip is not an error.
+
+### 2. `temperloop try --demo` — the one mutating exception
+
+```sh
+temperloop try --demo
+```
+
+Everything above is read-only; `--demo` is the deliberate, isolated
+exception — the "aha moment" tick. It clones a disposable, already-seeded
+demo repo and drives ONE real safe-tier funnel tick (issue → PR) against it:
+claims one open demo-seed issue, gets a real (but still `--tools ""`,
+zero-tool-access) `claude -p` judgment call for the fix, and opens a PR via
+the tree-only proposal-PR generator — **never a direct push, never a
+merge**. A spend guard prints a directional cost estimate and a hard
+mechanical cap (`--demo-cap-usd`, default \$2.00) before anything runs, and
+refuses outright on a non-interactive shell with no `--yes` — a curious
+stranger cannot silently burn spend. If every seeded issue is already
+claimed or closed, it exits 0 with "no tick run" rather than failing.
+
+### 3. `temperloop init` — opt in, on your own repo
+
+```sh
+temperloop init --dry-run   # preview first: tree-only, zero API writes
+temperloop init              # for real, once you like the preview
+```
+
+Bootstraps `.foundation/config` in your repo and proposes any tree changes
+(e.g. a `boards.conf` entry) via a reviewable PR — nothing ever lands
+without review. Separately, and only with explicit per-action consent (an
+interactive `y/N` or an explicit `--yes-<action>` flag; the default is
+always "no"), it can apply API-state changes: a required `checks` status
+check, the `fnd:`/funnel label set, and — only on the further opt-in
+`--provision-board` — a new Projects-v2 board. `--dry-run` skips that
+consented-apply step entirely and previews the tree-only PR with zero API
+calls of any kind.
+
+`foundation <subcommand>` runs the identical dispatch as `temperloop
+<subcommand>` throughout this ladder (the compat shim — see above).
+
 ## Usage
 
 ```
@@ -62,6 +121,8 @@ temperloop --version         print the CLI version
 
 Subcommands are **discovered files** — anything dropped at
 `bin/subcommands/<name>.sh` becomes `temperloop <name>` automatically, with
-no dispatcher edit required. This item ships the dispatcher only; the table
-below fills in as later items (`foundation try`, `foundation init`,
-`foundation eject`, ...) land their own subcommand file.
+no dispatcher edit required. Run `temperloop help` (or, if you're reading
+this on the generated docs site, see the live table right below this
+paragraph) for the current list — both are built by scanning
+`bin/subcommands/*.sh` for each file's `# description: ...` header, so
+neither can drift from what's actually installed.

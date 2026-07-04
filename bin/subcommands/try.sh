@@ -226,7 +226,7 @@ run_demo() {
         manifest_file body_file branch pr_out outcome low high demo_reply \
         clone_out files_json prompt fix_rc BOARDS_CONF_REPO_LOCAL BOARDS_CONF_MACHINE
 
-  demo_repo="${demo_repo_flag:-Towheads/foundation-kernel-demo}"  # denylist:allow — this repo's own scratch demo-repo default (mirrors seed-demo-repo.sh's identical default); a stranger overrides via --demo-repo
+  demo_repo="${demo_repo_flag:-Towheads/temperloop-demo}"  # denylist:allow — this repo's own scratch demo-repo default (mirrors seed-demo-repo.sh's identical default); a stranger overrides via --demo-repo
   : "${TRY_DEMO_CLONE_URL:=https://github.com/$demo_repo.git}"
   : "${TRY_DEMO_BOARD_NUM:=900}"
 
