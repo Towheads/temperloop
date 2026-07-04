@@ -148,6 +148,11 @@ _ks_bm_config_path() { printf '%s/config.json\n' "$(_ks_bm_config_dir)"; }
 # point 6 (cont'd): semantic_embedding_cache_dir pinned inside the isolated
 # home, not the machine's shared HF/fastembed cache.
 _ks_bm_cache_dir()   { printf '%s/embedding-cache\n' "$(_ks_bm_home)"; }
+# .bmignore lives at basic-memory's OWN resolve_data_dir() (== our isolated
+# config dir, since HOME is pinned there — point 6), never inside ks_root /
+# the corpus itself. Safe to write even when ks_root is a read-only corpus
+# (F#946 production shadow-read on the live Obsidian vault).
+_ks_bm_ignore_path()  { printf '%s/.bmignore\n' "$(_ks_bm_config_dir)"; }
 
 # point 1: uvx/basic-memory presence is the sole availability gate — bm
 # itself is fetched on demand by uvx, so "installed" here means "uvx is on
@@ -176,11 +181,85 @@ _ks_search_backend_basic_memory_available() {
 #   point 7 — semantic_embedding_model: bge-small-en-v1.5 (the default —
 #             pinned explicitly here so it can never drift to a non-bge
 #             model and reintroduce upstream #1023's normalization bug)
+#
+# Production-only addition (F#946, spike-verdict routed follow-up,
+# Context/foundation - bm phase-0 spike verdict (vault copy).md § "Routed
+# follow-ups needed"): also writes a `.bmignore` — same "only if absent,
+# before first index" rule as config.json above — carrying basic-memory's
+# own upstream default ignore set (ignore_utils.py DEFAULT_IGNORE_PATTERNS /
+# create_default_bmignore(), reproduced verbatim so a version bump can't
+# silently change what's excluded out from under us) PLUS `Sessions/_inbox`,
+# the one gap the spike's golden-query run surfaced: transient drain-queue
+# stubs crowded bm's top ranks in several queries (Q12/28/32/40 of the
+# parity table) because nothing in the upstream default set excludes a
+# plain (non-dot) directory like `Sessions/`. This file lives at
+# _ks_bm_config_dir(), i.e. basic-memory's OWN resolve_data_dir() under our
+# pinned HOME — never inside ks_root, so it never touches the corpus.
+_ks_bm_ensure_ignore() {
+  local path
+  path="$(_ks_bm_ignore_path)"
+  [ -f "$path" ] && return 0
+  mkdir -p "$(_ks_bm_config_dir)" || return 1
+  cat > "$path" <<'BMIGNORE'
+# Basic Memory Ignore Patterns (foundation knowledge_search adapter)
+# Base set mirrors basic-memory's own upstream default (ignore_utils.py
+# DEFAULT_IGNORE_PATTERNS), pinned here rather than left to fall through to
+# the library default so a version bump can't silently change it.
+.*
+*.db
+*.db-shm
+*.db-wal
+config.json
+.git
+.svn
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+*.egg-info
+.tox
+.mypy_cache
+.ruff_cache
+.venv
+venv
+env
+.env
+node_modules
+build
+dist
+.cache
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+desktop.ini
+.obsidian
+*.tmp
+*.swp
+*.swo
+*~
+
+# foundation-specific addition (F#946): transient drain-queue stubs, not
+# durable knowledge — excluded so they stop crowding search results (spike
+# golden-query losses Q12/28/32/40). MUST be a single bare segment name:
+# upstream's recursive scan (sync_service.py scan_directory) re-bases
+# should_ignore_path on each subdirectory as it descends, so a
+# slash-containing pattern ("Sessions/_inbox" or "Sessions/_inbox/*") never
+# matches anything below the top level (verified live on 0.22.1 — both
+# slash forms indexed the stubs; the bare segment form prunes the dir the
+# same way the ".obsidian" default does).
+_inbox
+BMIGNORE
+}
+
 _ks_bm_ensure_config() {
   local dir path cache
   dir="$(_ks_bm_config_dir)"
   path="$(_ks_bm_config_path)"
   cache="$(_ks_bm_cache_dir)"
+  _ks_bm_ensure_ignore || return 1
   [ -f "$path" ] && return 0
   mkdir -p "$dir" "$cache" || return 1
   cat > "$path" <<JSON
@@ -215,9 +294,23 @@ _ks_bm_run() {
 # `projects` map are not honored in 0.22.1. `project add` is idempotent
 # (confirmed against the real CLI), so this is safe to call on every
 # search/reindex without a separate "is it already registered" check.
+#
+# Idempotency caveat (found live, F#946): the exit-0 "already exists" repeat
+# call holds only while config.json and the database AGREE the project
+# exists. After a `basic-memory reset` (DB dropped, config untouched) the
+# same repeat call prints "Error adding project: Project '<name>' already
+# exists" and exits 1 — registration-wise that is still success (the config
+# entry is what registration establishes; the DB side is rebuilt by the
+# next reindex), so treat the "already exists" answer as OK regardless of
+# exit code rather than failing every subsequent search/reindex until
+# someone hand-edits the state dir.
 _ks_bm_project_add() {
-  local name="$1" path="$2"
-  _ks_bm_run project add "$name" "$path" >/dev/null 2>&1
+  local name="$1" path="$2" out
+  out="$(_ks_bm_run project add "$name" "$path" 2>&1)" && return 0
+  case "$out" in
+    *"already exists"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # <query> [--limit N] -> JSONL results on stdout (see exit-code contract on

@@ -387,6 +387,27 @@ and model-download chatter go to stderr; `tool search-notes` stdout is pure
 JSON), and the cache-dir pinning. See `.build-verification.md` in the
 adapter's worktree for the full transcript.
 
+**Production addition (F#946, Phase 1 shadow-read on the live vault) —
+`.bmignore`.** `_ks_bm_ensure_config` also writes `.bmignore` (same
+"only-if-absent, before first index" rule as `config.json`) at
+`_ks_bm_config_dir()/.bmignore` — basic-memory's OWN `resolve_data_dir()`
+under our pinned isolated `HOME`, **never inside `ks_root`** (safe even when
+`ks_root` is a read-only corpus). Content is the upstream default ignore set
+(`ignore_utils.py`'s `DEFAULT_IGNORE_PATTERNS` / `create_default_bmignore()`,
+reproduced verbatim rather than left to fall through to the library default,
+so a version bump can't silently change what's excluded) plus one
+foundation-specific line, `_inbox` — the F#945 spike's golden-query
+run found transient drain-queue stubs crowding bm's top ranks in several
+real queries (parity-table losses Q12/28/32/40 in the spike verdict note),
+and nothing in the upstream default set excludes a plain (non-dot) directory
+like `Sessions/`. The bare-segment form is load-bearing: upstream's
+recursive scan (`sync_service.py scan_directory`) re-bases
+`should_ignore_path` on each subdirectory as it descends, so a
+slash-containing pattern (`Sessions/_inbox` or `Sessions/_inbox/*`) never
+matches anything below the top level — only a single segment name (matched
+against each path part, the way the `.obsidian` default works) reliably
+prunes a nested directory (verified live on 0.22.1).
+
 ### Legible degradation
 
 When `uvx` is not on `PATH`, `ks_search`/`ks_search_reindex`/
