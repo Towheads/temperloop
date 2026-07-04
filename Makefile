@@ -16,7 +16,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
 .PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard \
-	test-prune-branches validate-live-drain validate-command-run-emit \
+	test-prune-branches validate-live-drain validate-command-run-emit validate-issue-touch-emit \
 	validate-lexicon test-scan-stub lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
@@ -35,6 +35,7 @@ help:
 	@echo "  test-prune-branches     prune-merged-branches.sh tests"
 	@echo "  validate-live-drain     Live/Drain pairing registry lint"
 	@echo "  validate-command-run-emit  emit-command-run.sh presence/wiring lint"
+	@echo "  validate-issue-touch-emit  emit-issue-touch.sh presence/wiring lint"
 	@echo "  validate-lexicon        drain-mind tell-lexicon lint"
 	@echo "  test-scan-stub          Session-stub scanner tests"
 	@echo "  lint-pr-body-test       PR-body issue-linkage lint tests"
@@ -149,6 +150,9 @@ validate-live-drain:
 
 validate-command-run-emit:
 	@bash $(FOUNDATION)/workflows/scripts/validate-command-run-emit.sh
+
+validate-issue-touch-emit:
+	@bash $(FOUNDATION)/workflows/scripts/validate-issue-touch-emit.sh
 
 validate-lexicon:
 	@bash $(FOUNDATION)/workflows/scripts/drain/validate-lexicon.sh
