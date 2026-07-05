@@ -178,7 +178,10 @@ else
 
   MISS="$(jq -c 'first(.actions[] | select(.action=="drain-parse-miss"))' <<<"$TICK_PLAN")"
   [ -n "$MISS" ] && [ "$MISS" != "null" ] && ok "D: drain-parse-miss produced" || bad "D.miss" "no drain-parse-miss action: $TICK_PLAN"
-  [ "$(jq -r '.reassign_to' <<<"$MISS")" = "$STRANGER_OPERATOR" ] && ok "D: parse-miss reassigns the stranger FUNNEL_OPERATOR" \
+  # reassign_to is the BARE login — the leading `@` of FUNNEL_OPERATOR is stripped
+  # for the `--add-assignee` target (foundation #977); the `@` is kept only for
+  # mention/config-resolution (asserted separately below on the build.config.sh output).
+  [ "$(jq -r '.reassign_to' <<<"$MISS")" = "${STRANGER_OPERATOR#@}" ] && ok "D: parse-miss reassigns the stranger FUNNEL_OPERATOR (bared, #977)" \
     || bad "D.reassign" "got $(jq -r '.reassign_to // "MISSING"' <<<"$MISS")"
 
   DRIVE_ACT="$(jq -c 'first(.actions[] | select(.action=="drive-ready"))' <<<"$TICK_PLAN")"
