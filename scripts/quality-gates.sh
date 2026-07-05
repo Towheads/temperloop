@@ -99,6 +99,12 @@ KERNEL_GATES=(
   # .bmignore / KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES seam it now covers. Same direct-
   # `bash` form as the zsh-tie gate above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_knowledge_search.sh"
+  # Issue-corpus renderer + ks_search reindex chain (plan item
+  # "cache-search-corpus"): the first production caller of knowledge_search's
+  # dormant ks_search seam. Fake `_cache_gh` (mirrors test_cache_store.sh) +
+  # fake `uvx` (mirrors test_knowledge_search.sh) on PATH, zero network. Same
+  # direct-`bash` form as the two knowledge_search gates above.
+  "bash workflows/scripts/lib/tests/test_issue_corpus.sh"
   "make test-scan-stub"
   "make lint-pr-body-test"
   "make test-stranger-config"
