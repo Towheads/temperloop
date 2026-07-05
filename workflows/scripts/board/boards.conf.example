@@ -27,6 +27,24 @@
 #                                 issues-only board only needs the `repo` axis
 #                                 — `owner`/`project` are meaningless without a
 #                                 Projects board and are simply never read.
+#   cache    "on"               — issue-plane read-cache enable axis
+#                                 (cache-read-dispatch item, F#988 Contract).
+#                                 Meaningful ONLY for a `backend=issues` board.
+#                                 Default (omitted, or any other value) is OFF
+#                                 — the whole-board issues-only read stays the
+#                                 live `gh issue list` call it always was. Set
+#                                 to "on" to instead serve that read from
+#                                 lib/cache.sh's on-disk issue-cache store
+#                                 (workflows/scripts/board/lib/CACHE-STORE.md)
+#                                 — but ONLY takes effect if the calling
+#                                 process has ALSO sourced lib/cache.sh; if it
+#                                 hasn't, board.sh falls back to the live read
+#                                 with one stderr notice (fail-safe, never a
+#                                 silent behavior change). This axis has NO
+#                                 bearing on a `backend=projects` (or
+#                                 unconfigured) board — that path never reads
+#                                 this store; see ISSUES-ONLY-BACKEND.md § Read
+#                                 cache staleness bound.
 # These are deliberately SEPARATE axes (#330) — do not collapse them.
 # Blank lines and lines starting with # are ignored. This file is parsed with
 # grep/cut only — never sourced or eval'd — so it cannot execute code.
@@ -47,3 +65,10 @@ board.2.project=2
 # An issues-only board (no Projects-v2 board provisioned) — just the repo axis:
 board.3.repo=acme/kernel
 board.3.backend=issues
+
+# An issues-only board that also opts its whole-board read into the on-disk
+# issue-cache store (only takes effect for a caller that has sourced
+# lib/cache.sh — see the `cache` axis comment above):
+board.4.repo=acme/kernel-warm
+board.4.backend=issues
+board.4.cache=on

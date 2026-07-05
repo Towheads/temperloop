@@ -198,6 +198,28 @@ _board_is_issues_only() {
   [ "$(board_backend "$1")" = "issues" ]
 }
 
+# --- issue-plane read-cache enable axis (F#988 Contract, cache-read-dispatch
+# item) ----------------------------------------------------------------------
+# A SIXTH boards.conf axis, a peer to repo/owner/project/backend/(milestone is
+# read-side, not conf): `board.<N>.cache=on`. Default (omitted, or any value
+# other than "on") is OFF — the whole-board issues-only read stays exactly the
+# live `gh issue list` call it always was (see _board_issues_item_list below).
+# This is deliberately an ENABLE/DISABLE switch only — every TUNING knob for
+# the store itself (root dir, TTL) stays an env var on lib/cache.sh
+# (CACHE_STORE_ROOT / CACHE_STORE_TTL), never a second boards.conf axis (see
+# cache.sh's own "Tuning knobs" comment). Turning this on has NO effect unless
+# the caller has ALSO sourced lib/cache.sh in the same process — board.sh
+# itself never sources cache.sh (kept a one-way, additive-only layering; see
+# cache.sh's own header) — _board_issues_item_list checks `declare -F
+# cache_read` and falls back to the live read (with one stderr notice) when
+# the axis is on but cache.sh isn't in scope. This is what keeps reconcile.sh
+# (which never sources cache.sh) permanently on the live-read arm regardless
+# of what a boards.conf sets this axis to — see reconcile.sh's own
+# BOARD_CACHE_TTL=0 live-read-pin comment and test_reconcile.sh's Lens 3.
+_board_cache_store_enabled() {
+  [ "$(_board_conf_get "$1" cache 2>/dev/null)" = "on" ]
+}
+
 # --- the ONE test-injection seam ------------------------------------------
 # Every board `gh` call goes through here. Production runs real gh; tests
 # override this after sourcing (e.g. `_board_gh() { fake_gh "$@"; }`) to replay
@@ -665,16 +687,53 @@ JQ_DEFS
 # Whole-board (active-set) read for an issues-only board: every OPEN issue,
 # reshaped to the shared item form. Mirrors the Projects path's `-status:Done`
 # active-set convention for free — `--state open` already excludes the Done
-# (closed) tail, no separate filter needed. Always live (no on-disk cache):
-# this path draws on REST's separate 5,000/hr bucket, not the Projects-v2
-# GraphQL budget the cache layer exists to protect, so the caching machinery
-# above is simply not needed here (a future perf pass can add it if an
-# issues-only board's issue count ever makes this the bottleneck).
+# (closed) tail, no separate filter needed.
+#
+# --- PLANE MAP (F#988 Contract, cache-read-dispatch item) -------------------
+# This function serves the ISSUE PLANE: the whole corpus of a repo's GitHub
+# Issues (title/labels/state — everything this backend's item IS, since an
+# issues-only board has no item distinct from its issue). It is served either
+# LIVE (a `gh issue list` REST call, always was) or, when `board.<N>.cache=on`
+# AND lib/cache.sh has been sourced by the caller, from cache.sh's on-disk
+# issue-cache STORE (see cache.sh's header + CACHE-STORE.md). Either way this
+# draws on REST's separate 5,000/hr bucket, never the Projects-v2 GraphQL
+# budget board.sh's OWN item-plane cache above (_board_cached_read /
+# BOARD_CACHE_TTL) exists to protect — that cache is the unrelated ITEM PLANE:
+# Projects-v2 board-item field values (Status/Component/etc as GraphQL sees
+# them), unchanged by this item and still the only cache a Projects-v2-backed
+# board ever reads through. The two planes never overlap: a Projects-v2 board
+# has no issue-plane store to read (this function is never called for one —
+# board_item_list only reaches here via _board_is_issues_only), and an
+# issues-only board has no item-plane cache to read (there is no Projects
+# board to page). See cache.sh's own header for the store-side half of this
+# map.
 #   _board_issues_item_list <board#>  ->  {"items":[...]} JSON on stdout
 _board_issues_item_list() {
   local board="$1" repo lim raw
+
   repo="$(board_repo "$board")" || return 1
   lim="${BOARD_ITEM_LIMIT:-500}"
+
+  if _board_cache_store_enabled "$board"; then
+    if declare -F cache_read >/dev/null 2>&1; then
+      # cache_read serves warm-and-fresh with ZERO gh calls; on a miss/stale
+      # store it pays exactly one live refresh itself (cache.sh's own
+      # degradation contract — one stderr notice, never fabricated data) and
+      # this function does not layer a second live fallback on top of that.
+      # Snapshot rows are ALL states; filter to open here (mirrors the live
+      # arm's `--state open`) — note BOARD_ITEM_LIMIT is a live-arm-only knob:
+      # the store is not paginated/truncated (a later perf pass can add a cap
+      # if an issues-only repo's corpus ever makes this the bottleneck).
+      raw="$(cache_read "$repo")" || return 1
+      printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -c "
+        $_BOARD_ISSUES_JQ_DEFS
+        { items: [ .[] | select((.state // \"open\") == \"open\") | issue_item(.number) ] }
+      "
+      return $?
+    fi
+    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
+  fi
+
   raw="$(_board_gh issue list -R "$repo" --state open --limit "$lim" \
         --json number,title,labels 2>/dev/null)" || {
     echo "board: live read failed (issues, board $board) — rate limit or auth?" >&2
@@ -739,6 +798,20 @@ _board_issues_ensure_label() {
 # ensure the label + REOPEN if the issue was closed. Both the close/reopen and
 # the label add/remove are read-before-write (one `gh api issues/<n>` fetch)
 # so an already-correct state is a no-op, not a redundant/erroring gh call.
+# Best-effort write-through invalidation (F#988 Contract, cache-read-dispatch
+# item): dirty the canonical issue-cache store's entry for <repo> after a
+# SUCCESSFUL issues-only mutation, so a following whole-board read (when
+# board.<N>.cache=on) doesn't keep serving a pre-write snapshot for the rest
+# of the store's TTL window. A pure no-op — never fails the caller — when
+# lib/cache.sh has not been sourced in this process (board.sh has no hard
+# dependency on it, see cache.sh's own header) or when no store yet exists
+# for this repo (cache_dirty itself no-ops then; see cache.sh's cache_dirty).
+#   _board_cache_dirty_after_write <owner/repo>
+_board_cache_dirty_after_write() {
+  declare -F cache_dirty >/dev/null 2>&1 && cache_dirty "$1" >/dev/null 2>&1
+  return 0
+}
+
 #   _board_issues_set_field <ISSUE_n> <field-name> <option-name>
 _board_issues_set_field() {
   local item_id="$1" field_name="$2" opt_name="$3"
@@ -786,6 +859,7 @@ _board_issues_set_field() {
       [ "$state" = "open" ] || { _board_gh issue reopen "$issue" -R "$repo" >/dev/null || return 1; }
     fi
   fi
+  _board_cache_dirty_after_write "$repo"
   return 0
 }
 
@@ -847,6 +921,7 @@ _board_issues_stamp_field() {
   if [ -n "$text" ] && [ "$already_present" -eq 0 ]; then
     _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
   fi
+  _board_cache_dirty_after_write "$repo"
   return 0
 }
 

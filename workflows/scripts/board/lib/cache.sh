@@ -13,6 +13,20 @@
 # hitting GitHub. See CACHE-STORE.md (sibling file) for the full on-disk
 # layout, schema, and design rationale.
 #
+# PLANE MAP (cache-read-dispatch item): this store serves the ISSUE PLANE —
+# the whole GitHub-Issues corpus for a repo. board.sh's OWN cache
+# (BOARD_CACHE_TTL / _board_cached_read, mentioned above) serves the separate
+# ITEM PLANE — Projects-v2 board-item field values — and is KEPT unchanged for
+# every Projects-v2-backed board; the two never overlap (see board.sh's
+# _board_issues_item_list header comment for the read-side half of this map).
+# board.sh dispatches into THIS store from its issues-only whole-board read
+# (_board_issues_item_list) when the caller has sourced cache.sh AND the
+# board's boards.conf sets the enable axis `board.<N>.cache=on` — that axis
+# lives in board.sh (`_board_cache_store_enabled`), not here: cache.sh itself
+# stays boards.conf-agnostic, exactly as before this item (see "Standalone-
+# usable seam" below) — board.sh's dispatcher is the only thing that knows
+# this axis exists.
+#
 # Sourced, not executed — same convention as board.sh:
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   source "$SCRIPT_DIR/lib/cache.sh"
@@ -36,9 +50,11 @@
 # (no directories created, no network) — every write happens lazily inside a
 # cache_refresh*/cache_read call.
 
-# --- tuning knobs: ENV VARS only (no boards.conf axis — a later item adds
-# the per-board `board.<N>.cache` enable/disable axis; this item is the
-# mechanism, not the wiring) --------------------------------------------
+# --- tuning knobs: ENV VARS only (no boards.conf axis here — the per-board
+# `board.<N>.cache` enable/disable axis lives in board.sh, which is the sole
+# reader of boards.conf; cache.sh stays boards.conf-agnostic, only ever
+# governed by env vars and by whichever caller decides to source+call it)
+# --------------------------------------------------------------------------
 # Store root. Defaults to the XDG cache dir; override wholesale for tests or
 # a non-standard layout.
 CACHE_STORE_ROOT="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
