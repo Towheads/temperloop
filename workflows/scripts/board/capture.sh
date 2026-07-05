@@ -244,6 +244,29 @@ fi
 
 $route_note"
 
+# Work-class labels (Operational/Foundational, see claude/work-class-policy.md)
+# may not exist yet on a fresh-history kernel/adopter repo — `gh issue create
+# --label` aborts with "could not add label: '<name>' not found" if the label
+# is missing, so no issue is created at all. Ensure whichever work-class
+# label(s) are about to be applied exist first, via the existing idempotent,
+# process-memoized helper (_board_issues_ensure_label, lib/board.sh:723-732 —
+# sourced above at capture.sh:80) rather than a second label-create mechanism.
+# Where labels already exist (any composed/overlay checkout), the helper's
+# `gh label create || true` is a harmless no-op.
+#
+# NOTE: capture.sh's dual-label behavior below (an override --label
+# Foundational adds BOTH Operational and Foundational instead of substituting)
+# is a separate, already-tracked defect (#49) — out of scope here. This only
+# ensures the label(s) that end up in create_args actually exist first.
+_board_issues_ensure_label "$repo" "Operational" "0e8a16" \
+  "Work class: follows an established, fully-specifiable pattern — fully autonomous (claude/work-class-policy.md)"
+case "$label" in
+  Foundational)
+    _board_issues_ensure_label "$repo" "Foundational" "5319e7" \
+      "Work class: new capability/architecture, operator judgment required (claude/work-class-policy.md)"
+    ;;
+esac
+
 # 1) Create the issue.
 # All captures default to Operational: a defect or mid-work item follows an
 # established pattern (the Default-Operational rule from work-class-policy.md).

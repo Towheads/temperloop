@@ -713,15 +713,21 @@ _board_issues_resolve_item() {
 # burst of status writes against the same repo pays `gh label create` at most
 # once per label, not once per call. Plain string, not an associative array —
 # board.sh must stay portable to macOS's stock bash 3.2 (no assoc arrays).
+#
+# $3 (color) and $4 (description) are optional overrides for callers that
+# aren't creating an `fnd:` tracker label (e.g. capture.sh's work-class
+# labels, Operational/Foundational) — default to the original fnd: tracker
+# color/description so every existing call site (which passes only repo+label)
+# is unaffected.
 _BOARD_ISSUES_LABELS_ENSURED=""
 _board_issues_ensure_label() {
-  local repo="$1" label="$2" key
+  local repo="$1" label="$2" color="${3:-fbca04}" desc="${4:-fnd: tracker label (issues-only backend)}" key
   key="$repo|$label"
   case " $_BOARD_ISSUES_LABELS_ENSURED " in
     *" $key "*) return 0 ;;
   esac
-  _board_gh label create "$label" -R "$repo" --color fbca04 \
-    --description "fnd: tracker label (issues-only backend)" >/dev/null 2>&1 || true
+  _board_gh label create "$label" -R "$repo" --color "$color" \
+    --description "$desc" >/dev/null 2>&1 || true
   _BOARD_ISSUES_LABELS_ENSURED="$_BOARD_ISSUES_LABELS_ENSURED $key"
   return 0
 }
