@@ -133,14 +133,13 @@ claim_main() {
   sess="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:manual"; fi
 
-  # Cross-session lock contention pre-check (foundation #800): on an
-  # issues-only board this refuses a claim already held by a DIFFERENT
-  # host:session stamp — the item is already resolved above, so this is one
-  # more jq read against the warm BOARD_ITEMS_JSON, no extra `gh` call. A
-  # no-op on the Projects-v2 path (board_claim_contended always reports "not
-  # contended" there — the historical silent-overwrite is unchanged). See
-  # board_claim_contended's own header comment for exactly what does/does not
-  # count as contended (self-reclaim and half-claim adoption are both safe).
+  # Cross-session lock contention pre-check (foundation #800, extended to the
+  # Projects-v2 arm): refuses a claim already held by a DIFFERENT host:session
+  # stamp, on EITHER backend — the item is already resolved above (via
+  # board_resolve_item), so this is one more jq read against the warm
+  # BOARD_ITEMS_JSON, no extra `gh`/GraphQL call. See board_claim_contended's
+  # own header comment for exactly what does/does not count as contended
+  # (self-reclaim and half-claim adoption are both safe).
   local foreign_stamp
   if foreign_stamp="$(board_claim_contended "$PROJECT_NUMBER" "$issue" "$stamp")"; then
     echo "claim refused: #$issue is already In Progress, claimed by [$foreign_stamp] — verify there (or via reconcile.sh) before taking it." >&2

@@ -106,7 +106,7 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 | `board_blocked_by_open` / `board_parent_issue` | **Unchanged, no new code** — same reason (per-issue REST, never Projects). Backend-agnostic for free: works identically on a Projects-v2 or issues-only board. |
 | `board_sub_issues` (NEW, #800) | Read-side counterpart to `board_parent_issue` — child issue numbers via GitHub's native sub-issues REST endpoint. Same shape as its siblings: per-issue REST, always live, backend-agnostic. See § Parent/child and dependency edges. |
 | `board_stamp` (#800 — now IMPLEMENTED) | `ISSUE_n` routes to a free-text `fnd:host/session:<verbatim-text>` label (single label of that prefix kept at a time; empty text clears). See § Claim lock. |
-| `board_claim_contended` (NEW, #800) | Issues-only-only pre-check: is `<issue#>` already In Progress under a DIFFERENT Host/Session stamp? See § Claim lock. Always reports "not contended" on a Projects-v2 board (zero behavior change there). |
+| `board_claim_contended` (NEW, #800; extended to Projects-v2) | Backend-agnostic pre-check: is `<issue#>` already In Progress under a DIFFERENT Host/Session stamp? See § Claim lock. Reads the already-resolved `BOARD_ITEMS_JSON` on either backend — no extra `gh`/GraphQL call. |
 | `board_set_number` | **Still out of scope** — Seq/worklist ordering is deferred to a future worklist-ordering item, not owned by the claim/edges split. On an issues-only board this still **fails loud** (return 1, no silent no-op) because `BOARD_FIELDS_JSON` carries no field schema — intentional, not a gap to route around. |
 
 The item shape produced by the issues-only reshape:
@@ -365,7 +365,8 @@ sequence, demonstrating the seam is additive-only. Its case 3 also pins the
 `make test-board`) is the split-2/3 (#800) suite: `board_stamp` on `ISSUE_*`
 (write, clear, round-trip through the `"host/Session"` flattened key),
 `board_claim_contended` (contended / self-reclaim / half-claim-adoption /
-unclaimed / Projects-v2-always-safe cases), `board_sub_issues`, and
+unclaimed cases, plus the same contended/self-reclaim proof replayed on a
+Projects-v2 board to pin the cross-backend parity), `board_sub_issues`, and
 `claim.sh`'s end-to-end contention refusal against a fake issues-only repo
 (mirrors `test_claim.sh`'s replay style, but for the `ISSUE_*` path).
 

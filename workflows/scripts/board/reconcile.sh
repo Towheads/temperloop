@@ -112,6 +112,19 @@ source "$SCRIPT_DIR/lib/board.sh"
 # read cache (GH #93) here; a ≤90s-stale page would report phantom drift (a claim
 # made seconds ago not yet in the cached page). It does a single resolve per run,
 # so it gains nothing from the cache anyway.
+#
+# THIS LINE IS THE LIVE-READ PIN — the whole contract rests on it. Every board
+# read in this file goes through board.sh's board_resolve/board_item_list, which
+# route through _board_cached_read; BOARD_CACHE_TTL=0 is the one master
+# off-switch that forces those reads live regardless of what's sitting in
+# BOARD_CACHE_DIR (see _board_cached_read's "MASTER off-switch" comment in
+# lib/board.sh). A drift detector fed cached data is self-defeating, so this
+# export must never be removed, conditioned, or shadowed by a later cache layer
+# (e.g. a future local issue-cache store) that doesn't also respect it — if a
+# future cache-dispatch seam is added ahead of _board_cached_read, it MUST be
+# bypassed here too, not just this TTL. tests/test_reconcile.sh's "live-pin"
+# case proves this behaviorally: it seeds a FRESH, wrong on-disk cache file and
+# asserts reconcile still reports the LIVE (_board_gh) truth, not the cache.
 export BOARD_CACHE_TTL=0
 
 PROJECT_NUMBER=3

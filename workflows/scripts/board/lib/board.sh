@@ -845,15 +845,18 @@ _board_issues_stamp_field() {
 }
 
 # Detect whether <issue#> is already claimed by ANOTHER session BEFORE writing
-# a new claim over it (foundation #800) — the pre-check the issues-only
-# backend adds beyond the Projects-v2 path, which has no such check and
-# silently overwrites a foreign claim (relying entirely on reconcile.sh's
-# separate, report-only pass to surface it after the fact — see reconcile.sh's
-# "foreign claim" bucket). On a Projects-v2 board this ALWAYS reports "not
-# contended" (rc 1, zero behavior change — claim.sh's silent-overwrite stays
-# exactly as it was). On an issues-only board it is cheap: the caller
-# (claim.sh) has already resolved the item via board_resolve_item, so this is
-# a pure jq read of the already-fetched BOARD_ITEMS_JSON, no extra `gh` call.
+# a new claim over it (foundation #800, extended to the Projects-v2 arm by a
+# later fix — see below). Originally an issues-only-only pre-check; the
+# Projects-v2 path used to have no such check and silently overwrote a foreign
+# claim (relying entirely on reconcile.sh's separate, report-only pass to
+# surface it after the fact — see reconcile.sh's "foreign claim" bucket). It is
+# cheap on BOTH backends: the caller (claim.sh) has already resolved the item
+# via board_resolve_item before calling this, so this is a pure jq read of the
+# already-fetched BOARD_ITEMS_JSON, no extra `gh`/GraphQL call — board_resolve_item
+# reshapes a Projects-v2 single-item resolve into the SAME {status, "host/Session"}
+# item shape the issues-only backend produces (see board_resolve_item's field-
+# flattening jq and _board_issues_resolve_item's issue_item def), so the check
+# below is backend-agnostic and needs no `_board_is_issues_only` branch.
 #
 # CONTENDED means: the issue is currently In Progress AND carries an existing
 # Host/Session stamp that is PRESENT and DIFFERENT from the stamp about to be
@@ -866,8 +869,7 @@ _board_issues_stamp_field() {
 #     -> prints the FOREIGN existing stamp + rc 0 if contended
 #        rc 1 (nothing printed) if safe to claim
 board_claim_contended() {
-  local board="$1" issue="$2" new_stamp="$3" status existing
-  _board_is_issues_only "$board" || return 1
+  local issue="$2" new_stamp="$3" status existing
   status="$(printf '%s' "$BOARD_ITEMS_JSON" |
     jq -r --argjson n "$issue" '.items[] | select(.content.number==$n) | .status // ""')"
   [ "$status" = "$BOARD_OPT_INPROGRESS" ] || return 1
