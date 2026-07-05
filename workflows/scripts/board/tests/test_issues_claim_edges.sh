@@ -15,8 +15,9 @@
 #      lowercasing) round-trip through the "host/Session" flattened key,
 #      clear (empty text removes the label, adds nothing).
 #   2. board_claim_contended — contended / self-reclaim / half-claim-adoption
-#      / unclaimed cases on an issues-only board, and "always safe" on a
-#      Projects-v2 board (zero behavior change there).
+#      / unclaimed cases on an issues-only board, replayed again on a
+#      Projects-v2 board (BOARD_ITEMS_JSON is shaped identically by both
+#      backends, so the same jq logic applies without a backend branch).
 #   3. board_sub_issues — child issue numbers via the native sub-issues REST
 #      endpoint, empty when none.
 #   4. claim.sh end-to-end against a fake issues-only repo: happy-path claim
@@ -173,14 +174,33 @@ OUT="$(board_claim_contended 21 300 "myhost:bbbbbbbb")" || fail "expected board_
 [ "$OUT" = "otherhost:aaaaaaaa" ] || fail "expected the foreign stamp printed, got: '$OUT'"
 echo "PASS: board_claim_contended — a DIFFERENT stamp on an In-Progress item IS contended, foreign stamp printed"
 
-# 2e. Projects-v2 board (board 3, unconfigured => default backend) -> ALWAYS
-# reports not-contended, regardless of BOARD_ITEMS_JSON content — zero
-# behavior change on the historical silent-overwrite path.
+# 2e. Projects-v2 board (board 3, unconfigured => default backend) — the SAME
+# contention check now applies: a foreign stamp on an In-Progress item IS
+# contended, exactly mirroring 2d. board_claim_contended takes no backend
+# branch, so this proves the jq logic is driven purely by BOARD_ITEMS_JSON's
+# shape (identical on both backends), not by _board_is_issues_only.
 BOARD_ITEMS_JSON="$(items_json "In Progress" "otherhost:aaaaaaaa")"
+OUT="$(board_claim_contended 3 300 "myhost:bbbbbbbb")" \
+  || fail "a Projects-v2 board must ALSO detect a foreign-stamped In-Progress item as contended"
+[ "$OUT" = "otherhost:aaaaaaaa" ] || fail "expected the foreign stamp printed on a Projects-v2 board, got: '$OUT'"
+echo "PASS: board_claim_contended — a foreign stamp IS contended on a Projects-v2 board too (parity with issues-only)"
+
+# 2f. Projects-v2 board, In Progress + SAME stamp -> not contended (idempotent
+# self-reclaim, same as 2c) — proves the safe cases carry over too, not just
+# the contended one.
+BOARD_ITEMS_JSON="$(items_json "In Progress" "myhost:bbbbbbbb")"
 if board_claim_contended 3 300 "myhost:bbbbbbbb" >/dev/null; then
-  fail "a Projects-v2 board must never report contended (unchanged silent-overwrite behavior)"
+  fail "re-claiming your OWN stamp on a Projects-v2 board must not be contended"
 fi
-echo "PASS: board_claim_contended — always reports not-contended on a Projects-v2 board (no behavior change)"
+echo "PASS: board_claim_contended — self-reclaim is not contended on a Projects-v2 board (parity with issues-only)"
+
+# 2g. Projects-v2 board, In Progress + NO existing stamp -> not contended
+# (half-claim adoption, same as 2b) on a Projects-v2 board too.
+BOARD_ITEMS_JSON="$(items_json "In Progress" "")"
+if board_claim_contended 3 300 "myhost:bbbbbbbb" >/dev/null; then
+  fail "an unstamped In-Progress item on a Projects-v2 board must be adoptable, not contended"
+fi
+echo "PASS: board_claim_contended — half-claim adoption is not contended on a Projects-v2 board (parity with issues-only)"
 
 # =============================================================================
 # 3. board_sub_issues — child issue numbers (backend-agnostic, like its

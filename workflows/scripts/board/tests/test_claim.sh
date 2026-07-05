@@ -16,7 +16,11 @@
 #   2) happy path ordering      — Host/Session edit precedes the Status edit.
 #   3) adoption                 — re-claiming an unstamped In-Progress item stamps
 #                                 it and succeeds (no owner-conflict guard).
-#   4) claims log emit (F#728)  — a claim appends a JSONL record to CLAIMS_RAW_DIR
+#   4) contended refusal        — a foreign-stamped In-Progress item on a
+#                                 Projects-v2 board is refused BEFORE any write
+#                                 (the board_claim_contended pre-check, extended
+#                                 from issues-only to Projects-v2).
+#   5) claims log emit (F#728)  — a claim appends a JSONL record to CLAIMS_RAW_DIR
 #                                 whose session_id is the RAW full session UUID,
 #                                 NOT the truncated host:sess8 board stamp.
 #
@@ -140,7 +144,19 @@ grep -qx "PVTF_hostsession" "$EDITS" \
   || fail "case3: adoption must issue the Host/Session stamp\n$(cat "$EDITS")"
 echo "PASS: case 3 adoption stamps an unstamped In-Progress item"
 
-# --- case 4: claims log emit (F#728) ------------------------------------------
+# --- case 4: contended claim refused on a Projects-v2 board -------------------
+# The item is In Progress and stamped to a DIFFERENT host:session. claim_main
+# must refuse (non-zero) BEFORE issuing any item-edit — this is the
+# board_claim_contended pre-check (originally issues-only-only, foundation
+# #800) now also firing on the Projects-v2 path it used to silently skip.
+issue=127; PROJECT_NUMBER=4
+ITEM_STATUS="In Progress"; ITEM_HOSTSESSION="otherhost:aaaaaaaa"; FAIL_STAMP=0
+run_claim
+[ "$RC" -ne 0 ] || fail "case4: a contended claim on a Projects-v2 board must be refused (RC=$RC)"
+[ ! -s "$EDITS" ] || fail "case4: a contended claim must issue ZERO writes\n$(cat "$EDITS")"
+echo "PASS: case 4 contended claim refused on a Projects-v2 board, zero writes issued"
+
+# --- case 5: claims log emit (F#728) ------------------------------------------
 # A successful claim appends one JSONL record to CLAIMS_RAW_DIR/claims-YYYY-MM.jsonl
 # whose session_id is the RAW, FULL $CLAUDE_CODE_SESSION_ID UUID — NOT the
 # truncated `host:sess8` board stamp (`testhost:c33dce41`). The cost rollup joins
@@ -151,26 +167,26 @@ FAKE_SESSION="c33dce41-b7e1-48a9-8b61-c38e4202f01d"
 issue=126; PROJECT_NUMBER=4
 ITEM_STATUS="Ready"; ITEM_HOSTSESSION=""; FAIL_STAMP=0
 CLAUDE_CODE_SESSION_ID="$FAKE_SESSION" run_claim
-[ "$RC" -eq 0 ] || fail "case4: claim_main should have succeeded (RC=$RC)\n$(cat "$EDITS")"
+[ "$RC" -eq 0 ] || fail "case5: claim_main should have succeeded (RC=$RC)\n$(cat "$EDITS")"
 
 claims_month="$(date -u +%Y-%m)"
 claims_file="$CLAIMS_LOG_DIR/claims-$claims_month.jsonl"
-[ -f "$claims_file" ] || fail "case4: expected a claims log file at $claims_file"
+[ -f "$claims_file" ] || fail "case5: expected a claims log file at $claims_file"
 
 rec="$(grep -F "\"issue\":126" "$claims_file" | tail -n1)"
-[ -n "$rec" ] || fail "case4: no claims-log record found for issue 126\n$(cat "$claims_file")"
+[ -n "$rec" ] || fail "case5: no claims-log record found for issue 126\n$(cat "$claims_file")"
 
 rec_session="$(printf '%s' "$rec" | jq -r '.session_id')"
 [ "$rec_session" = "$FAKE_SESSION" ] \
-  || fail "case4: session_id must be the RAW full UUID ($FAKE_SESSION), got '$rec_session'\n$rec"
+  || fail "case5: session_id must be the RAW full UUID ($FAKE_SESSION), got '$rec_session'\n$rec"
 case "$rec_session" in
-  testhost:*) fail "case4: session_id is the truncated host:sess8 board stamp, not the raw UUID\n$rec" ;;
+  testhost:*) fail "case5: session_id is the truncated host:sess8 board stamp, not the raw UUID\n$rec" ;;
 esac
 [ "$(printf '%s' "$rec" | jq -r '.board')" = "4" ] \
-  || fail "case4: board must be the numeric PROJECT_NUMBER (4)\n$rec"
+  || fail "case5: board must be the numeric PROJECT_NUMBER (4)\n$rec"
 [ "$(printf '%s' "$rec" | jq -r '.item_id')" = "PVTI_item" ] \
-  || fail "case4: item_id must be the resolved board item id\n$rec"
-echo "PASS: case 4 claims log emits the raw session UUID (not the host:sess8 stamp)"
+  || fail "case5: item_id must be the resolved board item id\n$rec"
+echo "PASS: case 5 claims log emits the raw session UUID (not the host:sess8 stamp)"
 
 echo
 echo "PASS: all claim.sh atomicity assertions passed"

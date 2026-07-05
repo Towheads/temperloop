@@ -43,6 +43,12 @@ export SUBSET_HOST_LABEL="testhost"
 # Pretend we are inside tmux so reconcile reads markers (the value is unused —
 # _reconcile_tmux is fully overridden below).
 export TMUX="fake-socket,0,0"
+# Isolated cache dir (not the real TMPDIR) so the live-pin case below (which
+# plants a fake on-disk cache file) can never collide with another test/run's
+# cache files.
+BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-cache-test-XXXXXX")"
+export BOARD_CACHE_DIR
+trap 'rm -rf "$BOARD_CACHE_DIR"' EXIT
 
 # shellcheck source=scripts/reconcile.sh
 source "$SCRIPTS_DIR/reconcile.sh"
@@ -367,6 +373,46 @@ printf '%s' "$OUT" | grep -q "^foreign claims (STALE" \
 [ ! -s "$EDITS" ] || fail "scase8: foreign claims must NEVER be auto-edited\n$(cat "$EDITS")"
 FIX=0
 echo "PASS: status case 8 recent + missing-updatedAt foreign stay plain (no escalation), never edited"
+
+echo
+echo "=== Lens 3: the live-read pin (reconcile.sh must never read through the cache) ==="
+
+# --- live-pin case: a FRESH but WRONG on-disk items cache must be ignored -----
+# reconcile.sh's own `export BOARD_CACHE_TTL=0` (see its header comment) is the
+# ONE thing standing between "always live" and "drift detector fed stale data,
+# self-defeating". Prove it behaviorally, not just by grepping the source: seed
+# a cache file that is FRESH (age 0, well within any normal TTL) but WRONG (it
+# does not have #950 In Progress at all) — if BOARD_CACHE_TTL=0 were ever
+# dropped/shadowed, _board_cached_read would see this fresh file and serve it
+# instead of calling _board_gh, and the report below would flip from "in sync"
+# to a false marker-without-board drift.
+[ "$BOARD_CACHE_TTL" = "0" ] \
+  || fail "setup: reconcile.sh must pin BOARD_CACHE_TTL=0 (got '$BOARD_CACHE_TTL') — see reconcile.sh's live-read-pin comment"
+
+STALE_CACHE_FILE="$BOARD_CACHE_DIR/subset-board-3-items.json"
+printf '%s' '{"items":[]}' >"$STALE_CACHE_FILE"   # wrong: #950 missing entirely
+touch "$STALE_CACHE_FILE"                          # age 0 — "fresh" by any normal TTL
+
+# The LIVE truth (what _board_gh actually returns for `project item-list`):
+# #950 In Progress on THIS host, matched by a live tmux marker → should be "in
+# sync", not a marker-without-board drift.
+ITEM_LIST_JSON='{"items":[
+  {"id":"i950","content":{"number":950,"title":"Live truth item"},"status":"In Progress","host/Session":"testhost:live0001"}
+]}'
+MARKER_LINES='#950 Live truth item
+'
+run_case
+printf '%s' "$OUT" | grep -q "In sync" \
+  || fail "live-pin: expected 'in sync' from the LIVE #950 claim — got (possibly cache-served):\n$OUT"
+printf '%s' "$OUT" | grep -q "marker-without-board" \
+  && fail "live-pin: #950 flagged marker-without-board — the FRESH stale cache file was served instead of a live read:\n$OUT"
+
+# The cache file must still be untouched (BOARD_CACHE_TTL=0 also means the read
+# path never WRITES the cache — see _board_cached_read's `[ "$ttl" -gt 0 ]` write
+# guard) — confirms this run never went through the cache in either direction.
+[ "$(cat "$STALE_CACHE_FILE")" = '{"items":[]}' ] \
+  || fail "live-pin: the on-disk cache file was rewritten — a live-only read must never touch it\n$(cat "$STALE_CACHE_FILE")"
+echo "PASS: live-pin — a fresh-but-wrong on-disk cache file is ignored; reconcile always reads live"
 
 echo
 echo "PASS: all reconcile.sh drift-detection assertions passed"
