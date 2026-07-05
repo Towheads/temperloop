@@ -94,6 +94,11 @@ KERNEL_GATES=(
   # some CI runners) and proves the dispatch preserves PATH.
   "bash scripts/lint-zsh-param-tie.sh"
   "bash workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh"
+  # Main knowledge_search backend suite (interface + basic-memory adapter, mocked
+  # uvx subprocess, offline). Previously ungated — gated here alongside the F#946
+  # .bmignore / KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES seam it now covers. Same direct-
+  # `bash` form as the zsh-tie gate above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/lib/tests/test_knowledge_search.sh"
   "make test-scan-stub"
   "make lint-pr-body-test"
   "make test-stranger-config"

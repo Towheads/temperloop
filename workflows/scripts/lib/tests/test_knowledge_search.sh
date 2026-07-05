@@ -214,6 +214,29 @@ esac
 [ "$got_projects_key" = "false" ] || fail "6 point9: config.json must not carry a hand-written 'projects' map (registration is CLI-only)"
 echo "PASS: 6 config.json carries the full no-mutation posture set (points 1,2,3,5,6,7,9), written before the first index"
 
+# --- 6b. .bmignore: upstream base set written, no store-specific extras by default (F#946 seam) ---
+IGN="$BM_HOME/.basic-memory/.bmignore"
+[ -f "$IGN" ] || fail "6b: expected .bmignore to exist at $IGN after a search"
+grep -qxF '.obsidian'   "$IGN" || fail "6b: base set missing .obsidian"
+grep -qxF 'node_modules' "$IGN" || fail "6b: base set missing node_modules"
+grep -qxF 'config.json' "$IGN" || fail "6b: base set missing config.json"
+grep -qxF '_inbox' "$IGN" && fail "6b: _inbox must NOT be present by default (KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES empty for a stranger install)"
+echo "PASS: 6b .bmignore carries the upstream base set; overlay seam empty by default (no _inbox)"
+
+# --- 6c. EXTRA_IGNORES seam appends store-specific bare segments (the overlay path) ---
+rm -f "$IGN"
+KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES="_inbox scratch" _ks_bm_ensure_ignore || fail "6c: _ks_bm_ensure_ignore failed"
+grep -qxF '.obsidian' "$IGN" || fail "6c: base set still present alongside extras"
+grep -qxF '_inbox'    "$IGN" || fail "6c: _inbox extra not appended"
+grep -qxF 'scratch'   "$IGN" || fail "6c: scratch extra not appended"
+echo "PASS: 6c KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES appends store-specific bare segments (foundation sets _inbox)"
+
+# --- 6d. idempotent: an existing .bmignore is never clobbered (write-only-if-absent) ---
+KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES="should-not-appear" _ks_bm_ensure_ignore || fail "6d: repeat call failed"
+grep -qxF '_inbox' "$IGN"          || fail "6d: existing .bmignore must be preserved"
+grep -qxF 'should-not-appear' "$IGN" && fail "6d: must NOT append to a pre-existing .bmignore (write-only-if-absent)"
+echo "PASS: 6d .bmignore is write-only-if-absent (idempotent, never clobbers a prior run's file)"
+
 # --- 7. env belt-and-suspenders (point 1) + isolated HOME (point 6) reach the subprocess -
 grep -q "BASIC_MEMORY_DISABLE_PERMALINKS=true" "$FAKE_UVX_LOG" \
   || fail "7: subprocess never saw BASIC_MEMORY_DISABLE_PERMALINKS=true"

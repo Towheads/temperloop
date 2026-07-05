@@ -136,6 +136,14 @@ ks_search__dispatch() {
 
 : "${KNOWLEDGE_SEARCH_BM_PROJECT:=foundation-knowledge}"
 : "${KNOWLEDGE_SEARCH_BM_VERSION:=0.22.1}"
+# Overlay seam (foundation#946): extra `.bmignore` patterns appended to the
+# generic upstream base set that _ks_bm_ensure_ignore writes — space- or
+# newline-separated BARE segment names. EMPTY by default, so a stranger's install
+# excludes only basic-memory's own defaults; an overlay sets this to add
+# store-specific exclusions (foundation sets `_inbox` to prune its transient
+# Sessions/_inbox drain-queue stubs). Each MUST be a single bare segment (see the
+# _ks_bm_ensure_ignore header for why a slash-containing pattern never matches).
+: "${KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES:=}"
 
 # point 6: dedicated HOME for the bm subprocess, under XDG_STATE_HOME.
 _ks_bm_home() {
@@ -145,6 +153,11 @@ _ks_bm_home() {
 
 _ks_bm_config_dir()  { printf '%s/.basic-memory\n' "$(_ks_bm_home)"; }
 _ks_bm_config_path() { printf '%s/config.json\n' "$(_ks_bm_config_dir)"; }
+# .bmignore lives at basic-memory's OWN resolve_data_dir() (== our isolated config
+# dir, since HOME is pinned there — point 6), never inside ks_root / the corpus
+# itself. Safe to write even when ks_root is a read-only corpus (foundation#946
+# production shadow-read on a live Obsidian vault).
+_ks_bm_ignore_path() { printf '%s/.bmignore\n' "$(_ks_bm_config_dir)"; }
 # point 6 (cont'd): semantic_embedding_cache_dir pinned inside the isolated
 # home, not the machine's shared HF/fastembed cache.
 _ks_bm_cache_dir()   { printf '%s/embedding-cache\n' "$(_ks_bm_home)"; }
@@ -161,6 +174,80 @@ _ks_search_backend_basic_memory_available() {
   command -v uvx >/dev/null 2>&1 && return 0
   echo "skipped — knowledge_search unavailable: uvx not found on PATH" >&2
   return 3
+}
+
+# Writes .bmignore BEFORE the first index (like config.json below) and only if
+# absent. Carries basic-memory's OWN upstream default ignore set (ignore_utils.py
+# DEFAULT_IGNORE_PATTERNS / create_default_bmignore(), reproduced verbatim so a
+# version bump can't silently change what's excluded out from under us), plus any
+# store-specific patterns from KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES (the overlay seam,
+# empty by default). Lives at _ks_bm_config_dir() — basic-memory's OWN
+# resolve_data_dir() under our pinned HOME, never inside ks_root, so it never
+# touches the corpus (safe even on a read-only corpus / production shadow-read).
+#
+# EXTRA-IGNORE patterns MUST each be a single BARE segment name (e.g. `_inbox`, not
+# `Sessions/_inbox`): upstream's recursive scan (sync_service.py scan_directory)
+# re-bases should_ignore_path on each subdirectory as it descends, so a
+# slash-containing pattern never matches below the top level (verified live on
+# 0.22.1 — both slash forms indexed the target; the bare-segment form prunes the
+# dir the same way the `.obsidian` default does).
+# NOTE: no local named `path` here — see the zsh PATH-tie note below (temperloop#40).
+_ks_bm_ensure_ignore() {
+  local ignore_path pat
+  ignore_path="$(_ks_bm_ignore_path)"
+  [ -f "$ignore_path" ] && return 0
+  mkdir -p "$(_ks_bm_config_dir)" || return 1
+  cat > "$ignore_path" <<'BMIGNORE'
+# Basic Memory Ignore Patterns (knowledge_search adapter)
+# Base set mirrors basic-memory's own upstream default (ignore_utils.py
+# DEFAULT_IGNORE_PATTERNS), pinned here rather than left to fall through to
+# the library default so a version bump can't silently change it.
+.*
+*.db
+*.db-shm
+*.db-wal
+config.json
+.git
+.svn
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+*.egg-info
+.tox
+.mypy_cache
+.ruff_cache
+.venv
+venv
+env
+.env
+node_modules
+build
+dist
+.cache
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+desktop.ini
+.obsidian
+*.tmp
+*.swp
+*.swo
+*~
+BMIGNORE
+  # Append overlay-supplied store-specific patterns (space/newline-separated).
+  # Empty by default — a stranger's install carries only the upstream base above.
+  if [ -n "${KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES:-}" ]; then
+    printf '\n# Store-specific additions (KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES)\n' >> "$ignore_path"
+    # Intentional word-splitting on the space/newline-separated pattern list.
+    # shellcheck disable=SC2086
+    for pat in $KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES; do
+      printf '%s\n' "$pat" >> "$ignore_path"
+    done
+  fi
 }
 
 # Writes config.json BEFORE the first index (point 2), and only if absent —
@@ -189,6 +276,11 @@ _ks_bm_ensure_config() {
   dir="$(_ks_bm_config_dir)"
   cfg_path="$(_ks_bm_config_path)"
   cache="$(_ks_bm_cache_dir)"
+  # Ensure .bmignore first — BEFORE the config-exists early return, so a store
+  # whose config.json already exists (from a prior run) still gets its ignore
+  # file written (foundation#946). Both are "write only if absent", so this is
+  # idempotent and independent of config.json's presence.
+  _ks_bm_ensure_ignore || return 1
   [ -f "$cfg_path" ] && return 0
   mkdir -p "$dir" "$cache" || return 1
   cat > "$cfg_path" <<JSON
