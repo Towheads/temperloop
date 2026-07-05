@@ -7,7 +7,15 @@
 .mind/
 .claude/settings.local.json
 .claude/*.lock
-meta/data/
+meta/data/*
+# The raw-lake sink-spec stub (kernel #29) IS committed — it's the doc the
+# emit-site headers point at, not a generated/host-local artifact — while
+# every actual raw-lake data file (command-runs-*.jsonl, issue-touches-*.jsonl,
+# claims-*.jsonl, funnel-*.jsonl) under meta/data/raw/ stays gitignored, same
+# nested-negation shape as the docs/_site/.gitkeep precedent below.
+!meta/data/raw/
+meta/data/raw/*
+!meta/data/raw/README.md
 dashboard/index.html
 # Docs-site generator output (F#764): never committed, mirrors the
 # dashboard/index.html precedent above. .gitkeep tracked so the dir exists

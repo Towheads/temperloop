@@ -74,6 +74,15 @@ overlay dashboard/*
 overlay infra/*
 overlay iterm/*
 overlay meta/*
+# Single-file override (longest-pattern-wins, per the MATCH RULE above): the
+# raw-lake sink-spec stub (kernel #29) is the doc a bare kernel checkout's own
+# emit sites (emit-command-run.sh, emit-issue-touch.sh, funnel-cron.sh,
+# board/capture.sh, board/claim.sh) point their "canonical sink spec:" header
+# comment at — it must ship with the kernel even though the actual runtime
+# data under meta/data/raw/ (gitignored JSONL) stays overlay-owned, matching
+# the docs/CONTRIBUTING.md-under-docs.d/ override precedent elsewhere in this
+# file.
+kernel meta/data/raw/README.md
 overlay Plans-archive/*
 
 # ---------------------------------------------------------------------------
