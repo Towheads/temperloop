@@ -420,9 +420,12 @@ Delivery channel for the `decision_sink_ask` async backend — the read-back hal
           - \`/choose <option>\` with one of the above labels
           - \`/approve\` (if \"approve\" is an offered option)
           Please re-reply and unassign yourself when done."
-        gh issue edit "$N" -R "$REPO" --add-assignee "$OPERATOR"
+        # Strip a leading `@` from a real login (GitHub's replaceActorsForAssignable
+        # rejects `@example-operator`; #977) but preserve the special `@me` token gh resolves.
+        ASSIGNEE="$OPERATOR"; [ "$ASSIGNEE" = "@me" ] || ASSIGNEE="${ASSIGNEE#@}"
+        gh issue edit "$N" -R "$REPO" --add-assignee "$ASSIGNEE"
         ```
-        `OPERATOR` = `FUNNEL_OPERATOR` env var, default `@me` (operator's own handle — `gh`'s `@me` resolves to the authenticated user's real collaborator LOGIN, which can differ from the display/email-derived name shown elsewhere; verify with `gh api user -q .login` rather than assuming the two match; foundation #588).
+        `OPERATOR` = `FUNNEL_OPERATOR` env var, default `@me` (operator's own handle — `gh`'s `@me` resolves to the authenticated user's real collaborator LOGIN, which can differ from the display/email-derived name shown elsewhere; verify with `gh api user -q .login` rather than assuming the two match; foundation #588). `--add-assignee` must receive a **bare** login (`example-operator`) or the literal `@me` — an `@`-prefixed real login (`@example-operator`) fails to resolve (foundation #977), hence the `ASSIGNEE` strip above.
       - **Leave** the `decision` label in place. The item remains in the queue for the next tick. Do NOT write any artifact block.
 
 3. **Record in Step 6 summary:**

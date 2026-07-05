@@ -29,7 +29,7 @@ stage. The baton has two states:
 1. Posts a comment describing the question, the offered options, and the expected
    reply format (see § 3 below).
 2. Applies the `decision` label (see § 2).
-3. Assigns the issue to the operator via `gh issue edit <n> -R "$REPO" --add-assignee "$OPERATOR"`.
+3. Assigns the issue to the operator via `gh issue edit <n> -R "$REPO" --add-assignee "$ASSIGNEE"`, where `$ASSIGNEE` is `$OPERATOR` with a leading `@` stripped for a real login but the literal `@me` preserved (`ASSIGNEE="$OPERATOR"; [ "$ASSIGNEE" = "@me" ] || ASSIGNEE="${ASSIGNEE#@}"`). `--add-assignee` needs a **bare** login (`example-operator`) or `@me`; an `@`-prefixed real login (`@example-operator`) fails GitHub's `replaceActorsForAssignable` (foundation #977).
 4. Stops processing this item for this tick.
 
 **Handing the baton back (answering).** The operator:
