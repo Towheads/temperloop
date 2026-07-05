@@ -28,23 +28,39 @@
 #                                 — `owner`/`project` are meaningless without a
 #                                 Projects board and are simply never read.
 #   cache    "on"               — issue-plane read-cache enable axis
-#                                 (cache-read-dispatch item, F#988 Contract).
-#                                 Meaningful ONLY for a `backend=issues` board.
-#                                 Default (omitted, or any other value) is OFF
-#                                 — the whole-board issues-only read stays the
-#                                 live `gh issue list` call it always was. Set
-#                                 to "on" to instead serve that read from
-#                                 lib/cache.sh's on-disk issue-cache store
-#                                 (workflows/scripts/board/lib/CACHE-STORE.md)
-#                                 — but ONLY takes effect if the calling
-#                                 process has ALSO sourced lib/cache.sh; if it
-#                                 hasn't, board.sh falls back to the live read
-#                                 with one stderr notice (fail-safe, never a
-#                                 silent behavior change). This axis has NO
-#                                 bearing on a `backend=projects` (or
-#                                 unconfigured) board — that path never reads
-#                                 this store; see ISSUES-ONLY-BACKEND.md § Read
-#                                 cache staleness bound.
+#                                 (F#988/#1026, cache-read-dispatch item's
+#                                 Contract; workflows/scripts/board/lib/cache.sh
+#                                 + its sibling CACHE-STORE.md). install/doctor
+#                                 provision and report the on-disk store for
+#                                 ANY board with a `cache=` line, regardless of
+#                                 backend — but the read-dispatch short-circuit
+#                                 itself only fires TODAY for a `backend=issues`
+#                                 board; it has no effect yet on a
+#                                 `backend=projects` (or unconfigured) board,
+#                                 which never reads this store. Default
+#                                 (omitted, or any other value) is OFF — the
+#                                 whole-board issues-only read stays the live
+#                                 `gh issue list` call it always was. Set to
+#                                 "on" to instead serve that read from
+#                                 lib/cache.sh's on-disk issue-cache store (a
+#                                 durable, cross-session, per-repo snapshot of
+#                                 the full issue corpus) — but ONLY takes
+#                                 effect if the calling process has ALSO
+#                                 sourced lib/cache.sh; if it hasn't, board.sh
+#                                 falls back to the live read with one stderr
+#                                 notice (fail-safe, never a silent behavior
+#                                 change). See ISSUES-ONLY-BACKEND.md § Read
+#                                 cache staleness bound for more. This axis
+#                                 only ENABLES the mechanism; it is never
+#                                 written by `make install`/`make doctor` —
+#                                 they only ever PRINT the opt-in line for a
+#                                 board that lacks one, same human-owned-
+#                                 conf-file discipline as `backend`. Tuning the
+#                                 store itself (root directory, max-stale
+#                                 window) is deliberately ENV VARS, NOT a
+#                                 boards.conf axis — see `CACHE_STORE_ROOT` /
+#                                 `CACHE_STORE_TTL` in cache.sh's own header
+#                                 for the knobs and their defaults.
 # These are deliberately SEPARATE axes (#330) — do not collapse them.
 # Blank lines and lines starting with # are ignored. This file is parsed with
 # grep/cut only — never sourced or eval'd — so it cannot execute code.
@@ -57,6 +73,11 @@
 board.1.repo=acme/widget-app
 board.1.owner=acme
 board.1.project=1
+# Opted into the issue-cache store — install/doctor provision the on-disk
+# store for board 1 regardless of backend; the read-dispatch short-circuit
+# itself only fires today for a `backend=issues` board (see the `cache`
+# axis comment above):
+board.1.cache=on
 
 board.2.repo=acme/internal-tools
 board.2.owner=acme

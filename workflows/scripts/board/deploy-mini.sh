@@ -163,6 +163,12 @@ if [ "$adapter_changed" = 1 ]; then
 fi
 
 # --- 3. verify the guard is present in every board.sh a session could source -
+# Also reports (informationally only — never affects this step's pass/fail
+# below) which boards each checkout has opted into the issue-cache store
+# (F#988/#1026, `board.<N>.cache=on`) and whether that board's on-disk store
+# directory exists yet. A checkout with no boards.conf, or a board.sh stub
+# with no adjacent cache.sh (e.g. this script's own test fixtures), simply
+# reports nothing for this checkout rather than erroring.
 n=0; pass=0; missing=""
 for co in "${CHECKOUTS[@]}"; do
   bsh="$(board_sh_of "$co")"; [ -n "$bsh" ] || continue
@@ -171,6 +177,28 @@ for co in "${CHECKOUTS[@]}"; do
     pass=$((pass + 1))
   else
     missing="$missing $(tilde "$bsh")"
+  fi
+
+  cache_lib="$(dirname "$bsh")/cache.sh"
+  if [ -f "$cache_lib" ]; then
+    machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+    repo_conf="$(dirname "$bsh")/../boards.conf"
+    conf=""
+    if [ -f "$machine_conf" ]; then conf="$machine_conf"
+    elif [ -f "$repo_conf" ]; then conf="$repo_conf"
+    fi
+    if [ -n "$conf" ]; then
+      cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
+      while IFS= read -r cn; do
+        [ -n "$cn" ] || continue
+        repo="$(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
+        store_state="absent"
+        if [ -n "$repo" ] && [ -f "${cache_store_root}/issues/$(printf '%s' "$repo" | tr '/' '-')/meta.json" ]; then
+          store_state="present"
+        fi
+        printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
+      done < <(grep -oE '^board\.[0-9]+\.cache=on$' "$conf" 2>/dev/null | cut -d. -f2 | sort -un)
+    fi
   fi
 done
 if [ "$n" -eq 0 ]; then

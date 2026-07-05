@@ -12,6 +12,12 @@
 #   5. doctor classifies MISSING, DRIFT, SHADOWED, DANGLING correctly
 #      against a controlled fixture HOME, then exits non-zero
 #   6. doctor exits 0 when every entry is OK
+#   7. links_provision_cache_stores (F#988/#1026): creates the cache store
+#      root idempotently, never writes/edits boards.conf, and prints an
+#      opt-in hint only for a board missing a `cache=` line
+#   8. doctor's check_cache_state reports absent/present/stale per board and
+#      skips cleanly when board.sh/cache.sh are absent
+#   9. an absent/unwarmed cache store never flips doctor's own exit code
 #
 # No network, no real HOME mutations — every classify test uses a throwaway
 # tmpdir as a fake HOME + fake FOUNDATION.
@@ -327,6 +333,161 @@ grep -q "Non-OK: 0" <<<"$doctor_all_ok_out" || \
   fail "6: expected 'Non-OK: 0' in doctor output"
 
 pass "6: doctor exits 0 when all entries are OK"
+
+# ---------------------------------------------------------------------------
+# Test 7: links_provision_cache_stores (F#988/#1026)
+# ---------------------------------------------------------------------------
+FAKE_HOME7="${TMP}/home7"
+mkdir -p "$FAKE_HOME7"
+FAKE_FOUND7="${TMP}/foundation7"
+mkdir -p "${FAKE_FOUND7}/workflows/scripts/board"
+
+cat > "${FAKE_FOUND7}/workflows/scripts/board/boards.conf" <<'EOF'
+board.1.repo=acme/widget-app
+board.2.repo=acme/internal-tools
+board.2.cache=on
+EOF
+conf_before="$(cat "${FAKE_FOUND7}/workflows/scripts/board/boards.conf")"
+
+provision_out="$(
+  HOME="$FAKE_HOME7" XDG_CACHE_HOME="${FAKE_HOME7}/.cache" XDG_CONFIG_HOME="${FAKE_HOME7}/.config" \
+    bash -c '
+      # shellcheck source=/dev/null
+      source "'"$LINKS_SH"'"
+      links_provision_cache_stores "'"$FAKE_FOUND7"'"
+    '
+)"
+
+[[ -d "${FAKE_HOME7}/.cache/temperloop" ]] || fail "7: store root not created"
+echo "$provision_out" | grep -q "cache store root ready" || fail "7: missing store-root-ready line"
+echo "$provision_out" | grep -q "board 1 has no cache axis yet" || fail "7: expected an opt-in hint for board 1 (no cache= line)"
+echo "$provision_out" | grep -q "board.1.cache=on" || fail "7: opt-in hint should name the exact line to add"
+if echo "$provision_out" | grep -q "board 2 has no cache axis"; then
+  fail "7: board 2 already has a cache= line — must NOT be suggested"
+fi
+
+conf_after="$(cat "${FAKE_FOUND7}/workflows/scripts/board/boards.conf")"
+[[ "$conf_before" == "$conf_after" ]] || fail "7: boards.conf must never be written/edited by provisioning"
+
+# Idempotent re-run: same store root, same output shape, still no conf write.
+provision_out2="$(
+  HOME="$FAKE_HOME7" XDG_CACHE_HOME="${FAKE_HOME7}/.cache" XDG_CONFIG_HOME="${FAKE_HOME7}/.config" \
+    bash -c '
+      # shellcheck source=/dev/null
+      source "'"$LINKS_SH"'"
+      links_provision_cache_stores "'"$FAKE_FOUND7"'"
+    '
+)"
+echo "$provision_out2" | grep -q "cache store root ready" || fail "7: re-run should still report the store root ready"
+[[ "$(cat "${FAKE_FOUND7}/workflows/scripts/board/boards.conf")" == "$conf_before" ]] || \
+  fail "7: boards.conf must still be untouched after a second (idempotent) run"
+
+pass "7: links_provision_cache_stores creates the store root idempotently, suggests only the un-opted-in board, never writes boards.conf"
+
+# ---------------------------------------------------------------------------
+# Test 8: doctor's check_cache_state (F#988/#1026) — absent/present/stale,
+# never affecting doctor's own exit code.
+# ---------------------------------------------------------------------------
+FAKE_HOME8="${TMP}/home8"
+mkdir -p "${FAKE_HOME8}/.local/bin" "${FAKE_HOME8}/.claude"
+FAKE_FOUND8="${TMP}/foundation8"
+mkdir -p \
+  "${FAKE_FOUND8}/env" \
+  "${FAKE_FOUND8}/claude" \
+  "${FAKE_FOUND8}/workflows/scripts/board/lib"
+
+cp "${REPO_ROOT}/workflows/scripts/board/lib/board.sh" "${FAKE_FOUND8}/workflows/scripts/board/lib/board.sh"
+cp "${REPO_ROOT}/workflows/scripts/board/lib/cache.sh" "${FAKE_FOUND8}/workflows/scripts/board/lib/cache.sh"
+
+cat > "${FAKE_FOUND8}/workflows/scripts/board/boards.conf" <<'EOF'
+board.1.repo=acme/absent-repo
+board.2.repo=acme/warm-repo
+board.2.cache=on
+board.3.repo=acme/stale-repo
+board.3.cache=on
+EOF
+
+mkdir -p "${FAKE_HOME8}/.cache/temperloop/issues/acme-warm-repo"
+python3 -c 'import json,time;print(json.dumps({"schema_version":1,"repo":"acme/warm-repo","last_refresh":int(time.time())}))' \
+  >"${FAKE_HOME8}/.cache/temperloop/issues/acme-warm-repo/meta.json"
+
+mkdir -p "${FAKE_HOME8}/.cache/temperloop/issues/acme-stale-repo"
+python3 -c 'import json;print(json.dumps({"schema_version":1,"repo":"acme/stale-repo","last_refresh":1}))' \
+  >"${FAKE_HOME8}/.cache/temperloop/issues/acme-stale-repo/meta.json"
+
+# All the OTHER managed links are deliberately left un-created (MISSING) —
+# this test only cares that (a) the cache section reports the right 3
+# per-board states and (b) an absent/stale cache store does NOT itself flip
+# doctor's overall exit code (only the pre-existing managed-link drift does).
+doctor8_out="$(
+  FOUNDATION="$FAKE_FOUND8" HOME="$FAKE_HOME8" XDG_CACHE_HOME="${FAKE_HOME8}/.cache" \
+    XDG_CONFIG_HOME="${FAKE_HOME8}/.config-missing" \
+    bash "$DOCTOR_SH" "$FAKE_FOUND8" 2>&1
+)" || true   # other managed links are deliberately left MISSING (non-zero exit expected) — the cache section's own content is what this test checks
+
+echo "$doctor8_out" | grep -qE 'board\.1 +cache=off +store=absent' || \
+  fail "8: board 1 (no cache= line, no store) should report cache=off store=absent (got: $doctor8_out)"
+echo "$doctor8_out" | grep -qE 'board\.2 +cache=on +store=present' || \
+  fail "8: board 2 (cache=on, fresh meta.json) should report cache=on store=present (got: $doctor8_out)"
+echo "$doctor8_out" | grep -qE 'board\.3 +cache=on +store=stale' || \
+  fail "8: board 3 (cache=on, old meta.json) should report cache=on store=stale (got: $doctor8_out)"
+
+# SKIPPED path: board.sh/cache.sh absent entirely must not error.
+FAKE_FOUND8B="${TMP}/foundation8b"
+mkdir -p "${FAKE_FOUND8B}/env" "${FAKE_FOUND8B}/claude" "${FAKE_FOUND8B}/workflows/scripts/board"
+doctor8b_out="$(
+  FOUNDATION="$FAKE_FOUND8B" HOME="${TMP}/home8b" bash "$DOCTOR_SH" "$FAKE_FOUND8B" 2>&1
+)" || true   # other managed links are absent too (non-zero exit expected)
+echo "$doctor8b_out" | grep -q "SKIPPED (board.sh / cache.sh not found" || \
+  fail "8: cache section should SKIP cleanly when board.sh/cache.sh are absent (got: $doctor8b_out)"
+
+pass "8: doctor's check_cache_state reports absent/present/stale per board and skips cleanly when the libs are absent"
+
+# ---------------------------------------------------------------------------
+# Test 9: an absent/stale cache store must NOT flip doctor's own exit code —
+# only genuine managed-link drift does. Re-use test 6's fully-OK fixture and
+# layer a boards.conf (cache=on, no store on disk) on top.
+# ---------------------------------------------------------------------------
+FAKE_HOME9="${TMP}/home9"
+mkdir -p "${FAKE_HOME9}/.claude" "${FAKE_HOME9}/.local/bin"
+FAKE_FOUND9="${TMP}/foundation9"
+mkdir -p \
+  "${FAKE_FOUND9}/env" \
+  "${FAKE_FOUND9}/claude" \
+  "${FAKE_FOUND9}/workflows/scripts/board/lib"
+
+touch "${FAKE_FOUND9}/env/.zshrc"
+ln -s "${FAKE_FOUND9}/env/.zshrc" "${FAKE_HOME9}/.zshrc"
+touch "${FAKE_FOUND9}/claude/settings.json"
+echo '{"model":"test"}' >"${FAKE_HOME9}/.claude/settings.json"
+touch "${FAKE_FOUND9}/claude/CLAUDE.kernel.md" "${FAKE_FOUND9}/claude/CLAUDE.overlay.md"
+echo '# composed' >"${FAKE_HOME9}/.claude/CLAUDE.md"
+for cmd in claim release worklist reconcile capture milestone; do
+  touch "${FAKE_FOUND9}/workflows/scripts/board/${cmd}.sh"
+  ln -s "${FAKE_FOUND9}/workflows/scripts/board/${cmd}.sh" "${FAKE_HOME9}/.local/bin/${cmd}"
+done
+printf '#!/usr/bin/env bash\n# call-logger shim\nexec gh "$@"\n' >"${FAKE_HOME9}/.local/bin/gh"
+chmod +x "${FAKE_HOME9}/.local/bin/gh"
+
+cp "${REPO_ROOT}/workflows/scripts/board/lib/board.sh" "${FAKE_FOUND9}/workflows/scripts/board/lib/board.sh"
+cp "${REPO_ROOT}/workflows/scripts/board/lib/cache.sh" "${FAKE_FOUND9}/workflows/scripts/board/lib/cache.sh"
+cat > "${FAKE_FOUND9}/workflows/scripts/board/boards.conf" <<'EOF'
+board.1.repo=acme/never-warmed-repo
+board.1.cache=on
+EOF
+
+doctor9_out="$(
+  FOUNDATION="$FAKE_FOUND9" HOME="$FAKE_HOME9" XDG_CACHE_HOME="${FAKE_HOME9}/.cache" \
+    XDG_CONFIG_HOME="${FAKE_HOME9}/.config-missing" \
+    bash "$DOCTOR_SH" "$FAKE_FOUND9" 2>&1
+)" && doctor9_exit=0 || doctor9_exit=$?
+
+[[ "$doctor9_exit" -eq 0 ]] || \
+  fail "9: an absent cache store must not fail doctor (exit=${doctor9_exit}); output: ${doctor9_out}"
+echo "$doctor9_out" | grep -qE 'board\.1 +cache=on +store=absent' || \
+  fail "9: board 1 should report cache=on store=absent (got: $doctor9_out)"
+
+pass "9: an unwarmed (absent) cache store never fails doctor's overall gate"
 
 # ---------------------------------------------------------------------------
 echo

@@ -152,4 +152,40 @@ GIT -C "$WORK/prunelocal" rev-parse --verify -q unmergedlocal >/dev/null \
   || fail "unmerged local branch must be kept"
 echo "$out" | grep -q "prune: deleted 1 local" || fail "should report 'prune: deleted 1 local' (got: $out)"
 
-echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, skips dirty/feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), and single-instances via a PID-owned lock (live held, dead stolen)"
+# --- 13. F#988/#1026: cache-enabled boards are reported (store present vs absent) ---
+# A dedicated minimal board.sh (guard string + a board_repo() stub) rather than the
+# real one — this test targets deploy-mini's OWN reporting logic, not board.sh's conf
+# discovery (that's covered by test_boards_conf.sh / test_cache_store.sh).
+setup_repo cacherep yes
+cat >"$WORK/cacherep/scripts/lib/board.sh" <<'BOARDEOF'
+_board_assert_item_id() { :; }
+board_repo() {
+  case "$1" in
+    9) echo "acme/cached-thing" ;;
+    10) echo "acme/uncached-thing" ;;
+  esac
+}
+BOARDEOF
+cp "$HERE/../lib/cache.sh" "$WORK/cacherep/scripts/lib/cache.sh"
+cat >"$WORK/cacherep/scripts/boards.conf" <<'EOF'
+board.9.repo=acme/cached-thing
+board.9.cache=on
+board.10.repo=acme/uncached-thing
+EOF
+CACHE_ROOT="$WORK/cache-store-root"
+mkdir -p "$CACHE_ROOT/issues/acme-cached-thing"
+echo '{"schema_version":1,"repo":"acme/cached-thing","last_refresh":1}' \
+  >"$CACHE_ROOT/issues/acme-cached-thing/meta.json"
+out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report run should exit 0"
+echo "$out" | grep -q "board 9 (store present)" || \
+  fail "board 9 (cache=on, store on disk) should report store present (got: $out)"
+echo "$out" | grep -q "board 10" && \
+  fail "board 10 (no cache=on line) must not be reported (got: $out)"
+
+# Same checkout, no store on disk yet for board 9 → reports "store absent".
+rm -rf "$CACHE_ROOT"
+out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report (absent) run should exit 0"
+echo "$out" | grep -q "board 9 (store absent)" || \
+  fail "board 9 with no store on disk should report store absent (got: $out)"
+
+echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, skips dirty/feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
