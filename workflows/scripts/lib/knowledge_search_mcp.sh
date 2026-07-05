@@ -110,10 +110,15 @@ _ks_search_backend_basic_memory_mcp_search() {
   done
 
   local sid call raw results
-  # Any failure below falls open to the cold CLI backend.
   if sid="$(_ks_bm_mcp_open_session)" && [ -n "$sid" ]; then
+    # Daemon reachable. search_type:"hybrid" is passed EXPLICITLY to match the
+    # cold path's `--hybrid`: bm's default is only a *dynamic* hybrid (and only
+    # when the daemon's config has semantic search enabled), so pinning it keeps
+    # warm and cold from silently diverging to text-only on a differently-
+    # configured daemon — the fail-open safety argument is latency-only, not a
+    # change in search mode.
     call="$(jq -cn --arg q "$query" --argjson lim "$limit" --arg proj "$KNOWLEDGE_SEARCH_BM_PROJECT" \
-      '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"search_notes",arguments:{query:$q,output_format:"json",page_size:$lim,project:$proj}}}')"
+      '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"search_notes",arguments:{query:$q,output_format:"json",search_type:"hybrid",page_size:$lim,project:$proj}}}')"
     raw="$(curl -s \
         --connect-timeout "$KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT" \
         --max-time "$KNOWLEDGE_SEARCH_BM_MCP_MAX_TIME" \
@@ -121,20 +126,24 @@ _ks_search_backend_basic_memory_mcp_search() {
         -H 'Accept: application/json, text/event-stream' \
         -H "Mcp-Session-Id: $sid" -H "MCP-Protocol-Version: $KNOWLEDGE_SEARCH_BM_MCP_PROTO" \
         -X POST --data "$call" "$KNOWLEDGE_SEARCH_BM_MCP_URL" 2>/dev/null)"
-    # Extract the SSE data line, verify it's a non-error tool result, then
-    # reshape results[] EXACTLY as the cold backend does (knowledge_search.sh
-    # search fn) — doc_id is the file path, snippet the matched chunk.
-    if [ -n "$raw" ]; then
-      results="$(printf '%s' "$raw" | sed -n 's/^data: //p' \
-        | jq -e 'if (.result.isError == true) then error("tool error")
-                 else (.result.content[0].text | fromjson) end' 2>/dev/null)" && [ -n "$results" ] && {
-        printf '%s' "$results" | jq -c '.results[]? | {doc_id: .file_path, title: .title, score: .score, snippet: (.matched_chunk // .content // "")}'
-        return 0
-      }
+    # Extract the SSE data line, verify a non-error tool result, then reshape via
+    # the shared _ks_bm_reshape_results (one owner of the JSONL contract, so warm
+    # and cold can't drift apart).
+    results="$(printf '%s' "$raw" | sed -n 's/^data: //p' \
+      | jq -e 'if (.result.isError == true) then error("tool error")
+               else (.result.content[0].text | fromjson) end' 2>/dev/null)"
+    if [ -n "$results" ]; then
+      printf '%s' "$results" | _ks_bm_reshape_results
+      return 0
     fi
+    # Reachable but the tool returned an error / empty / unparseable body. The
+    # most common cause is a PROJECT MISMATCH — the daemon serves a single
+    # launch-time --project, but this client sent KNOWLEDGE_SEARCH_BM_PROJECT.
+    # Name it so a misconfig is visible, never misread as "daemon down".
+    echo "degraded — bm mcp daemon reached but returned no usable result (check its --project matches KNOWLEDGE_SEARCH_BM_PROJECT='$KNOWLEDGE_SEARCH_BM_PROJECT'), falling back to cold CLI path" >&2
+  else
+    echo "degraded — bm mcp daemon unreachable at $KNOWLEDGE_SEARCH_BM_MCP_URL, falling back to cold CLI path" >&2
   fi
-
-  echo "degraded — bm mcp daemon unreachable at $KNOWLEDGE_SEARCH_BM_MCP_URL, falling back to cold CLI path" >&2
   _ks_search_backend_basic_memory_search "$query" --limit "$limit"
 }
 

@@ -320,6 +320,16 @@ _ks_bm_project_add() {
   _ks_bm_run project add "$name" "$proj_path" >/dev/null 2>&1
 }
 
+# Reshape basic-memory's SearchResponse JSON ({results:[...]}) read on stdin
+# into this file's JSONL contract on stdout — one {doc_id,title,score,snippet}
+# object per line. The output-shape contract has ONE owner here: the cold
+# backend below AND the warm basic-memory-mcp backend (knowledge_search_mcp.sh)
+# both pipe through this, so a field rename in a bm version bump can't drift the
+# two backends apart (one is production, the other its fail-open fallback).
+_ks_bm_reshape_results() {
+  jq -c '.results[]? | {doc_id: .file_path, title: .title, score: .score, snippet: (.matched_chunk // .content // "")}'
+}
+
 # <query> [--limit N] -> JSONL results on stdout (see exit-code contract on
 # ks_search above).
 _ks_search_backend_basic_memory_search() {
@@ -355,7 +365,7 @@ _ks_search_backend_basic_memory_search() {
     return 4
   fi
 
-  printf '%s' "$raw" | jq -c '.results[]? | {doc_id: .file_path, title: .title, score: .score, snippet: (.matched_chunk // .content // "")}' \
+  printf '%s' "$raw" | _ks_bm_reshape_results \
     || { echo "knowledge_search: could not parse basic-memory search output" >&2; return 4; }
 }
 
