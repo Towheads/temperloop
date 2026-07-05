@@ -138,7 +138,16 @@ DOC1="issues/Acme-issue-corpus-test/1-hello-world.md"
 DOC2="issues/Acme-issue-corpus-test/2-second-issue.md"
 doc1_path() { printf '%s/%s' "$KNOWLEDGE_STORE_ROOT" "$DOC1"; }
 doc2_path() { printf '%s/%s' "$KNOWLEDGE_STORE_ROOT" "$DOC2"; }
-mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+# GNU (`-c %Y`) FIRST, BSD (`-f %m`) as the fallback — same ordering rationale
+# as board.sh's _board_cached_read: on GNU stat, `-f` means --file-system, so
+# `stat -f %m FILE` treats "%m" as a file operand (fails, rc 1) and prints the
+# real file's multi-line FILESYSTEM-status block — whose Free block/inode
+# counters drift with unrelated disk activity — and the `||` fallback then
+# APPENDS the epoch to that. BSD-first therefore made every mtime equality
+# comparison on Linux CI hostage to filesystem free-space churn (the
+# merge-queue case-5 doc2 flake). BSD stat has no `-c`, errors without stdout
+# output, and falls through cleanly, so GNU-first is safe on both.
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 
 # --- 0. never sources board.sh (static boundary check) -----------------------
 # Looks for an actual `source .../board.sh` (or `. .../board.sh`) line -- NOT
