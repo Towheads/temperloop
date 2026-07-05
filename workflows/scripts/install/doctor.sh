@@ -164,6 +164,85 @@ check_knowledge_root() {
 }
 
 # ---------------------------------------------------------------------------
+# check_cache_state — report the canonical-layer issue-cache store's state
+# per board (F#988/#1026): whether a board has opted in (`board.<N>.cache=on`
+# in boards.conf) and whether its on-disk store is present/stale/absent.
+#
+# READ-ONLY and never fails the overall `make doctor` gate — an absent store
+# or absent boards.conf is a normal, expected state (cache is opt-in), not a
+# drift condition the way a broken managed symlink is. This mirrors
+# check_knowledge_root's SKIPPED-is-fine posture for a tree that simply
+# doesn't have the pieces wired up yet.
+#
+# Board discovery is boards.conf-only (the same file board.sh's own
+# `_board_conf_file()` would resolve — machine-level, then repo-local),
+# never the built-in org-specific case map in board.sh: a stranger's fresh
+# clone has no boards.conf and this prints one informational line and
+# returns, exactly like links_provision_cache_stores's own discovery.
+# ---------------------------------------------------------------------------
+check_cache_state() {
+  local board_lib="${FOUNDATION}/workflows/scripts/board/lib/board.sh"
+  local cache_lib="${FOUNDATION}/workflows/scripts/board/lib/cache.sh"
+
+  printf '\nCache-store state (F#988/#1026):\n'
+
+  if [[ ! -f "$board_lib" || ! -f "$cache_lib" ]]; then
+    printf '  SKIPPED (board.sh / cache.sh not found under %s)\n' "$FOUNDATION"
+    return 0
+  fi
+
+  local machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  local repo_conf="${FOUNDATION}/workflows/scripts/board/boards.conf"
+  local conf=""
+  if [[ -f "$machine_conf" ]]; then
+    conf="$machine_conf"
+  elif [[ -f "$repo_conf" ]]; then
+    conf="$repo_conf"
+  fi
+
+  if [[ -z "$conf" ]]; then
+    printf '  (no boards.conf found — nothing configured; cache is OFF everywhere by default)\n'
+    return 0
+  fi
+
+  local boards
+  boards="$(grep -oE '^board\.[0-9]+\.repo=' "$conf" 2>/dev/null | cut -d. -f2 | sort -un)"
+  if [[ -z "$boards" ]]; then
+    printf '  (%s declares no board with a repo= axis — nothing to report)\n' "$conf"
+    return 0
+  fi
+
+  local n enabled state
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+
+    if grep -q "^board\.${n}\.cache=on$" "$conf" 2>/dev/null; then
+      enabled="on"
+    else
+      enabled="off"
+    fi
+
+    state="$(
+      # shellcheck source=/dev/null
+      source "$board_lib" 2>/dev/null
+      # shellcheck source=/dev/null
+      source "$cache_lib" 2>/dev/null
+      repo="$(board_repo "$n" 2>/dev/null)" || { printf 'n/a (no repo axis)'; exit 0; }
+      meta="$(cache_meta_file "$repo" 2>/dev/null)"
+      if [[ -z "$meta" || ! -f "$meta" ]]; then
+        printf 'absent'
+      elif cache_stale "$repo" 2>/dev/null; then
+        printf 'stale'
+      else
+        printf 'present'
+      fi
+    )"
+
+    printf '  board.%-3s  cache=%-3s  store=%s\n' "$n" "$enabled" "$state"
+  done <<<"$boards"
+}
+
+# ---------------------------------------------------------------------------
 # Main — enumerate and classify every managed entry.
 # ---------------------------------------------------------------------------
 ok=0
@@ -190,6 +269,8 @@ printf 'OK: %d   Non-OK: %d\n' "$ok" "$non_ok"
 
 knowledge_root_status=0
 check_knowledge_root || knowledge_root_status=$?
+
+check_cache_state || true
 
 if (( non_ok > 0 )); then
   echo

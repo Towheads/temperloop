@@ -11,6 +11,9 @@
 #   source "$(dirname "$0")/links.sh"
 #   links_enumerate                     # emits one record per managed path
 #   links_apply_symlink <target> <src>  # idempotent apply (for kind=symlink)
+#   links_provision_cache_stores [<foundation-root>]  # cache-store root
+#                                        # provisioning (F#988/#1026) — see
+#                                        # that function's own header below
 #
 # Output of links_enumerate — one record per line, 3 tab-separated fields:
 #
@@ -162,4 +165,76 @@ links_apply_symlink() {
   else
     ln -s "$src" "$target" && echo "  → linked ${name}"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# links_provision_cache_stores [<foundation-root>]
+#
+# Install-time provisioning for the canonical-layer issue-cache store
+# (F#988/#1026, workflows/scripts/board/lib/cache.sh + CACHE-STORE.md):
+#
+#   1. Creates the cache store ROOT directory (idempotent — a plain mkdir -p),
+#      so a later `cache_read`/`cache_refresh` never races an absent parent
+#      and `make doctor` has a directory to classify instead of "absent" on
+#      a machine that has never run a single cache read yet. Per-repo store
+#      sub-directories (`.../issues/<owner>-<repo>/`) are DELIBERATELY left
+#      to cache.sh's own lazy `mkdir -p` on first real refresh — this
+#      function only owns the shared root, not per-board provisioning.
+#   2. For every board boards.conf declares a `repo` axis for but has NO
+#      `cache=` line yet, prints a one-line opt-in hint naming the exact
+#      line to add. NEVER writes/edits boards.conf itself — same
+#      human-owned-conf-file discipline board_backend's `backend=issues`
+#      axis already established (boards.conf.example's own header: "This
+#      file is parsed with grep/cut only — never sourced or eval'd").
+#
+# Discovery mirrors board.sh's own `_board_conf_file()` order exactly
+# (machine-level $XDG_CONFIG_HOME/foundation/boards.conf, then repo-local
+# workflows/scripts/board/boards.conf next to board.sh) via grep/cut only —
+# no sourcing of board.sh needed, keeping links.sh's install-time posture
+# dependency-free. If neither conf exists, this only creates the store root
+# and prints one informational line — never fails (a bare `mkdir -p` on a
+# writable path does not fail; a caller on a read-only HOME sees one stderr
+# notice and a non-zero return, same idiom as links_apply_symlink's siblings).
+#
+# Safe to call from any install recipe (foundation's `install-board`, a
+# future kernel-standalone target, or directly) — no gh calls, no network,
+# purely local filesystem + conf-file reads.
+# ---------------------------------------------------------------------------
+links_provision_cache_stores() {
+  local foundation="${1:-${FOUNDATION:-}}"
+  local store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
+
+  if ! mkdir -p "$store_root" 2>/dev/null; then
+    echo "  ! could not create cache store root: ${store_root} (permissions?)" >&2
+    return 1
+  fi
+  echo "  ✓ cache store root ready: ${store_root}"
+
+  local machine_conf conf=""
+  machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  if [ -f "$machine_conf" ]; then
+    conf="$machine_conf"
+  elif [ -n "$foundation" ] && [ -f "${foundation}/workflows/scripts/board/boards.conf" ]; then
+    conf="${foundation}/workflows/scripts/board/boards.conf"
+  fi
+
+  if [ -z "$conf" ]; then
+    echo "  (no boards.conf found — nothing to suggest; cache stays off everywhere until one exists)"
+    return 0
+  fi
+
+  local boards n
+  boards="$(grep -oE '^board\.[0-9]+\.repo=' "$conf" 2>/dev/null | cut -d. -f2 | sort -un)"
+  if [ -z "$boards" ]; then
+    echo "  (${conf} declares no board with a repo= axis — nothing to suggest)"
+    return 0
+  fi
+
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if grep -q "^board\.${n}\.cache=" "$conf" 2>/dev/null; then
+      continue   # already has an explicit cache= line either way — nothing to suggest
+    fi
+    echo "  → board ${n} has no cache axis yet — add this line to $(basename "$conf") to opt in: board.${n}.cache=on"
+  done <<<"$boards"
 }
