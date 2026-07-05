@@ -99,6 +99,12 @@ KERNEL_GATES=(
   # .bmignore / KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES seam it now covers. Same direct-
   # `bash` form as the zsh-tie gate above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_knowledge_search.sh"
+  # WARM basic-memory-mcp backend suite (registration + selection + fail-open,
+  # hermetic — no daemon/network/uvx). Gated here alongside the temperloop#54
+  # operator-visible cold-fallback signal it now covers: the one-time-per-session
+  # de-dup, the raw-lake telemetry emit, and the preserved fail-open contract.
+  # Same direct-`bash` form as the two knowledge_search gates above.
+  "bash workflows/scripts/lib/tests/test_knowledge_search_mcp.sh"
   "make test-scan-stub"
   "make lint-pr-body-test"
   "make test-stranger-config"

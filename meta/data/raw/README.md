@@ -11,7 +11,7 @@ this kernel checkout emits.
 
 **Scope.** This stub documents only the streams a bare kernel checkout
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
-unioned at read time), and `funnel`. A downstream overlay checkout (e.g. the
+unioned at read time), `funnel`, and `knowledge-search-fallback`. A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
 checkout doesn't have (e.g. rework tracking, richer issue-metadata snapshots,
@@ -147,4 +147,42 @@ Example record (`skipped`):
 
 ```json
 {"event":"skipped","date":"2026-07-05","reason":"not-scheduled","ts":"2026-07-05T15:00:00Z"}
+```
+
+### `knowledge-search-fallback` — `knowledge-search-fallback-<YYYY-MM>.jsonl`
+
+Emitted by the WARM search backend
+`workflows/scripts/lib/knowledge_search_mcp.sh` (`_ks_bm_mcp_fallback_signal`,
+temperloop#54), one record each time a `KNOWLEDGE_SEARCH_BACKEND=basic-memory-mcp`
+search falls back from the warm `basic-memory mcp` daemon to the cold `uvx`
+CLI path — because the daemon was unreachable, or reachable but returned no
+usable result. This is the durable, alertable signal that a down daemon is
+degrading every `ks_search` to the slow path; without it the only trace was a
+per-query stderr line the caller usually swallows.
+
+**De-dup:** emitted at most ONCE per session (keyed by
+`$CLAUDE_CODE_SESSION_ID`, else the process id), the same gate that de-dupes
+the one-time-per-session stderr notice — so a caller looping many queries
+against a down daemon produces ONE record, not per-query spam. Fail-open: the
+emit never blocks or fails the search (still returns cold-path results, exit
+0).
+
+Record shape: `{schema_version, ts, session_id, host, backend, reason, detail, url, project}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams; `null` on a non-Claude-Code/manual run |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `hostname -s` |
+| `backend` | string | `"basic-memory-mcp"` (the warm backend that fell back) |
+| `reason` | string | `"unreachable"` (daemon not answering) \| `"degraded-result"` (reached, but no usable result — usually a `--project` mismatch) |
+| `detail` | string | human-readable one-line cause (same text as the stderr notice) |
+| `url` | string | the daemon endpoint (`KNOWLEDGE_SEARCH_BM_MCP_URL`) |
+| `project` | string | `KNOWLEDGE_SEARCH_BM_PROJECT` the client asked for |
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-07-05T15:11:04Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini","backend":"basic-memory-mcp","reason":"unreachable","detail":"bm mcp daemon unreachable at http://127.0.0.1:8766/mcp","url":"http://127.0.0.1:8766/mcp","project":"foundation-knowledge"}
 ```
