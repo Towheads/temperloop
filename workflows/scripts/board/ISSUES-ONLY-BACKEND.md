@@ -230,11 +230,13 @@ IS closed, by construction (`issue_item`'s jq reshape reports
 … Done` closes the issue directly, no automation round-trip). Concretely,
 what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
 
-- **No async lag.** A Projects-v2 close→Done is eventually-consistent (the
-  automation fires, then the cache TTL catches up); an issues-only close is
-  the SAME REST write board_set_status already made — the read-after-write is
-  synchronous, not cache-dependent (this path has no cache at all, see
-  above).
+- **No async lag for a WRITE made through this adapter.** A Projects-v2
+  close→Done is eventually-consistent (the automation fires, then the cache
+  TTL catches up); an issues-only close driven by `board_set_status … Done`
+  is the SAME REST write, and the read-after-write is synchronous for any
+  caller reading LIVE — no board.sh cache sits between the write and a live
+  read (see § Read cache staleness bound below for the one path where a
+  cache now CAN sit in between).
 - **No separate "board card" to move.** There is no project item distinct
   from the issue to keep in sync — reading `.state` (open/closed) on the
   issue itself IS reading its board Status.
@@ -243,6 +245,52 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
   closed) — a closed issue on this backend can never report anything but
   Done, by the jq reshape's own precedence (`if $state == "closed" then
   {status:"Done"}` is checked FIRST, before any label).
+
+## Read cache staleness bound (cache-read-dispatch item)
+
+The claim above — "this path has no cache at all" — was true before this
+item and remains true by DEFAULT: `board.<N>.cache` is off unless a
+`boards.conf` explicitly sets it, and even then only takes effect for a
+caller that has also sourced `lib/cache.sh` (see `boards.conf.example`'s
+`cache` axis comment and `lib/board.sh`'s `_board_cache_store_enabled`).
+When both conditions hold, `_board_issues_item_list`'s whole-board read is
+served from `lib/cache.sh`'s on-disk issue-cache store instead of a live
+`gh issue list` call — and that store DOES carry a staleness bound, which
+supersedes the Projects-v2 90s items-cache figure (foundation #589) for this
+read path specifically:
+
+- **A close/label change made THROUGH this adapter** (`board_set_status`,
+  `board_stamp`, and anything routing through them — `board_create_many`,
+  `board_capture_item`, claim/release) is synchronously reflected: the
+  mutator calls `cache_dirty` on a successful write (see `_board_issues_
+  set_field` / `_board_issues_stamp_field` in `lib/board.sh`), so the very
+  next `cache_read` in ANY process pays exactly one live refresh rather than
+  serving the pre-write snapshot — no fixed-window wait, unlike the
+  Projects-v2 90s items-cache TTL.
+- **A close made OUTSIDE this adapter** (e.g. a merged PR's own `Closes #N`
+  GitHub-native auto-close, or a manual `gh issue close`/web-UI edit) is NOT
+  synchronously reflected in the cache-store read path, because nothing
+  calls `cache_dirty` for a mutation this adapter didn't itself make. The
+  bound there is the store's own refresh cadence: `CACHE_STORE_TTL`
+  (`lib/cache.sh`, default **3600s / 1 hour**) — up to an hour staler than a
+  live read, by default, for a close this adapter never saw. This is a much
+  LOOSER bound than the Projects-v2 90s figure it supersedes for this path,
+  by deliberate design: the store trades a longer worst-case staleness
+  window for a durable, cross-session, zero-GraphQL corpus cache serving a
+  fundamentally different consumer (a corpus renderer / funnel driver reading
+  "every issue", not a single board's live Status page).
+- **The always-live paths are unaffected regardless of this axis**:
+  `board_resolve_item` (the claim lock) never reads through any cache on
+  either backend, and `reconcile.sh` never sources `lib/cache.sh` at all —
+  so setting `board.<N>.cache=on` in a `boards.conf` a reconcile run also
+  reads has NO effect on reconcile's own live-read pin (see
+  `reconcile.sh`'s `BOARD_CACHE_TTL=0` header comment and
+  `tests/test_reconcile.sh`'s Lens 3).
+
+Operationally: a consumer that wants a tighter bound than the 3600s default
+overrides `CACHE_STORE_TTL` (an env var, never a `boards.conf` key — see
+`CACHE-STORE.md`'s "Tuning knobs"), or simply doesn't source `lib/cache.sh`
+and stays on the always-synchronous live-read arm.
 
 ## Funnel integration (foundation #801, split 3/3)
 

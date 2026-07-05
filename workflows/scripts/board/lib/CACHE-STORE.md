@@ -112,15 +112,54 @@ Read (consumer-facing):
   whatever `details/<n>.json` currently holds; not staleness-aware itself
   (call `cache_refresh_details` first for a guaranteed-fresh read).
 
-## Tuning knobs (ENV VARS only — no boards.conf axis)
+## Tuning knobs (ENV VARS only — no boards.conf axis in cache.sh itself)
 
 - `CACHE_STORE_ROOT` — store root (default `${XDG_CACHE_HOME:-$HOME/.cache}/temperloop`)
 - `CACHE_STORE_TTL` — max-stale window in seconds (default `3600`)
 
-Deliberately environment-only for this item: a later item adds the
-per-board `board.<N>.cache` *enable/disable* axis to `boards.conf` (a
-different concern — whether a board uses this store at all — from these
-tuning knobs, which govern the store's own behavior once in use).
+Deliberately environment-only in `cache.sh` itself: the per-board
+`board.<N>.cache` *enable/disable* axis lives in `board.sh` (a different
+concern — whether a board's whole-board issues-only read uses this store at
+all — from these tuning knobs, which govern the store's own behavior once in
+use). See § Read dispatch (board.sh integration) below.
+
+## Read dispatch (board.sh integration, cache-read-dispatch item)
+
+`board.sh`'s `_board_issues_item_list` (the issues-only whole-board read) is
+the one read call site this store is wired into. Dispatch requires BOTH:
+
+1. `boards.conf` sets `board.<N>.cache=on` for that board (`_board_cache_
+   store_enabled` in `board.sh`; see `boards.conf.example`'s `cache` axis),
+   **and**
+2. the calling process has separately `source`d this file — `board.sh` never
+   sources `cache.sh` itself (kept one-way, per the "Design seam" section
+   above); `_board_issues_item_list` checks `declare -F cache_read` and, if
+   it's absent, falls back to the plain live `gh issue list` read with one
+   stderr notice (fail-safe: an enabled-but-unsourced axis degrades to
+   exactly today's behavior, never a silent misread).
+
+When both hold, the whole-board read becomes `cache_read <owner/repo>`
+(zero `gh` calls on a warm store) instead of a live REST list call, and every
+successful issues-only mutation (`board_set_status` / `board_stamp`, and
+anything that routes through them) calls `cache_dirty` on that same repo —
+see `_board_cache_dirty_after_write` in `board.sh`. `board_resolve_item` (the
+claim lock) and `reconcile.sh` are structurally unaffected: the former never
+reads through any cache regardless of backend, and the latter never sources
+this file, so its live-read pin (`BOARD_CACHE_TTL=0`) holds even if a
+`boards.conf` it shares sets `board.<N>.cache=on`.
+
+**Staleness bound** (supersedes the Projects-v2 90s items-cache figure,
+foundation #589, for this read path): a mutation made THROUGH `board.sh`
+(`board_set_status`/`board_stamp`/claim/release) is reflected on the very
+next `cache_read` in any process — no fixed wait, via the write-through
+`cache_dirty` call above. A mutation made OUTSIDE this adapter (a PR-merge
+auto-close, a manual `gh issue close`, a web-UI edit) is bounded only by the
+refresh cadence `CACHE_STORE_TTL` names — **default 3600s / 1 hour** — since
+nothing calls `cache_dirty` for a write this adapter never saw. See
+`ISSUES-ONLY-BACKEND.md`'s § Read cache staleness bound for the full
+rationale (this bound is deliberately looser than #589's 90s figure — a
+durable corpus cache trades staleness budget for a fundamentally cheaper,
+zero-GraphQL read).
 
 ## Degradation contract
 
