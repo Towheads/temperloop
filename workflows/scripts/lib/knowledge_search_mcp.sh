@@ -82,7 +82,8 @@
 # BASH_SOURCE; zsh leaves it unset but sets $0 to the sourced file at top level.
 # Resolved to an ABSOLUTE dir now (in a `$( )` subshell so the caller's cwd is
 # untouched) so a later chdir can't strand a relative path.
-_KS_BM_MCP_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || true)"
+_KS_BM_MCP_DIR=""  # fail-open default: empty if self-location can't resolve
+_KS_BM_MCP_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null)" || true
 
 # Raw-lake sink dir, resolved like emit-command-run.sh: explicit override first
 # (tests), else <repo>/meta/data/raw computed from this file's location
