@@ -124,25 +124,28 @@ cat > "$FX/board-3/decisions.json" <<'JSON'
   "comments":[{"createdAt":"2026-06-24T11:00:00Z","body":"do whichever, sounds good"}]}]
 JSON
 echo 0 > "$FX/board-3/assignees-501.txt"
-PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 M="$(action_for <<<"$PLAN" '.action=="drain-parse-miss"')"
 [ -n "$M" ] && ok "parse-miss produced" || bad "t5.miss" "no drain-parse-miss action"
-[ "$(jq -r '.reassign_to' <<<"$M")" = "@REPLACE_WITH_YOUR_GH_LOGIN" ] && ok "re-assigned operator on miss (kernel default, no override set)" || bad "t5.reassign" "got $(jq -r '.reassign_to' <<<"$M")"
+# Bared kernel default (the leading `@` of `@REPLACE_WITH_YOUR_GH_LOGIN` is stripped, #977).
+[ "$(jq -r '.reassign_to' <<<"$M")" = "REPLACE_WITH_YOUR_GH_LOGIN" ] && ok "re-assigned operator on miss (bared kernel default, no override set)" || bad "t5.reassign" "got $(jq -r '.reassign_to' <<<"$M")"
 # Must NOT have emitted a drain-answer (no silent default).
 [ -z "$(action_for <<<"$PLAN" '.action=="drain-answer"')" ] && ok "no drain-answer on a parse miss (no guess)" || bad "t5.no-guess" "a default was taken"
 
 # ── 5b: FUNNEL_OPERATOR override (tracker seam v0, #772) — non-default value
-# respected, proving the build.config.sh knob (not just its default) is live. ─
-echo "--- test 5b: FUNNEL_OPERATOR env override is respected (non-default value) ---"
+# respected, proving the build.config.sh knob (not just its default) is live. The
+# emitted reassign_to is a BARE login: the leading `@` is stripped (foundation #977 —
+# `--add-assignee "@someoneelse"` fails GitHub's replaceActorsForAssignable). ─
+echo "--- test 5b: FUNNEL_OPERATOR env override is respected + bared (#772, #977) ---"
 FX="$TMP/t5b"; seed_board "$FX" 3
 cat > "$FX/board-3/decisions.json" <<'JSON'
 [{"number":502,"title":"a","body":"x","assignees":[],
   "comments":[{"createdAt":"2026-06-24T11:00:00Z","body":"do whichever, sounds good"}]}]
 JSON
 echo 0 > "$FX/board-3/assignees-502.txt"
-PLAN="$(FUNNEL_OPERATOR=@someoneelse bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(FUNNEL_OPERATOR=@someoneelse BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 M="$(action_for <<<"$PLAN" '.action=="drain-parse-miss"')"
-[ "$(jq -r '.reassign_to' <<<"$M")" = "@someoneelse" ] && ok "FUNNEL_OPERATOR override respected (non-default)" || bad "t5b.override" "got $(jq -r '.reassign_to' <<<"$M")"
+[ "$(jq -r '.reassign_to' <<<"$M")" = "someoneelse" ] && ok "FUNNEL_OPERATOR override respected + bared (#772, #977)" || bad "t5b.override" "got $(jq -r '.reassign_to' <<<"$M")"
 
 # ── 6: contention pre-check — re-assigned issue skipped this tick ────────────
 echo "--- test 6: contention pre-check skips a re-assigned decision issue ---"
@@ -827,6 +830,98 @@ ERR20B="$(FUNNEL_ENABLED_BOARDS="999" \
           BOARDS_CONF_REPO_LOCAL="$TMP/no-such-boards.conf" BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
           bash "$TICK" --board 999 --dry-run --fixture "$FX" 2>&1 1>/dev/null || true)"
 [ "$ERR20B" = "funnel-tick.sh: unknown board 999" ] && ok "no conf → unmapped board still errors byte-identically to pre-#770" || bad "t20b.err" "got: $ERR20B"
+
+# ── 21: route-foundational guard correctness (epic #970) + bare-login strip (#977) ──
+# 21a/21b: the already-decision-gated re-route guard (#834/#1002/#1009). A Ready
+# Foundational item that already carries `decision` AND an operator assignee was
+# routed by a prior tick and is parked awaiting the operator's reply — re-emitting
+# route-foundational re-runs /assess and mints a duplicate plan note + gate comment
+# every tick. Park it (route-already-assigned) instead. The `decision` label ALONE
+# is not enough: an UNASSIGNED decision item is an answered one Phase A drains, so
+# the guard requires assignees>0 (21b proves it does NOT swallow the unassigned case).
+echo "--- test 21a: already-decision-gated Foundational (decision + assignee>0) → route-already-assigned, NOT route-foundational (#834/#1002/#1009) ---"
+FX="$TMP/t21a"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":7001,"title":"already-gated epic parked in the decision queue","labels":["Foundational","decision"]}]
+JSON
+echo 1 > "$FX/board-3/assignees-7001.txt"
+PLAN="$(BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ -n "$(action_for <<<"$PLAN" '.issue==7001 and .action=="route-already-assigned" and .label=="decision"')" ] \
+  && ok "assigned decision item #7001 → route-already-assigned (label:decision)" || bad "t21a.park" "no route-already-assigned(decision) for #7001"
+[ -z "$(action_for <<<"$PLAN" '.issue==7001 and .action=="route-foundational"')" ] \
+  && ok "#7001 NOT re-routed as route-foundational (no duplicate /assess/plan-note)" || bad "t21a.reroute" "re-routed an already-gated decision item"
+
+echo "--- test 21b: decision label but UNASSIGNED (assignee=0) → NOT parked by the decision guard; still routed (guard requires assignees>0) ---"
+FX="$TMP/t21b"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":7002,"title":"decision-labeled but unassigned","labels":["Foundational","decision"]}]
+JSON
+echo 0 > "$FX/board-3/assignees-7002.txt"
+PLAN="$(BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ -z "$(action_for <<<"$PLAN" '.issue==7002 and .action=="route-already-assigned"')" ] \
+  && ok "unassigned decision #7002 NOT parked by the decision guard (assignees=0)" || bad "t21b.park" "wrongly parked an unassigned decision item"
+[ -n "$(action_for <<<"$PLAN" '.issue==7002 and .action=="route-foundational"')" ] \
+  && ok "unassigned decision #7002 still route-foundational (Phase A owns the answered case)" || bad "t21b.route" "no route-foundational for unassigned decision #7002"
+
+# 21c/21d: the bare-Foundational direct-route split (#720). A bare Foundational
+# decision (0 sub-issues AND no `## Contract`) has nothing for /assess to decompose —
+# the prep step fails every tick — so route it STRAIGHT to the decision queue
+# (mode:direct). A genuine epic (sub-issues or a `## Contract`) keeps the prep path.
+echo "--- test 21c: bare Foundational (0 sub-issues, no ## Contract) → route-foundational mode:direct (#720) ---"
+FX="$TMP/t21c"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":7003,"title":"a bare foundational decision","labels":["Foundational"]}]
+JSON
+cat > "$FX/board-3/singleton-7003.json" <<'JSON'
+{"number":7003,"sub_issues_summary":{"total":0},"body":"Just a decision. Nothing to decompose."}
+JSON
+PLAN="$(BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+FND="$(action_for <<<"$PLAN" '.issue==7003 and .action=="route-foundational"')"
+[ "$(jq -r '.mode' <<<"$FND")" = "direct" ] && ok "bare Foundational #7003 → mode:direct" || bad "t21c.mode" "got mode=$(jq -r '.mode' <<<"$FND")"
+jq -e '.emit | test("STRAIGHT to the decision queue") and test("NO /assess prep")' <<<"$FND" >/dev/null \
+  && ok "direct emit routes straight to the queue, skips /assess prep" || bad "t21c.emit" "got $(jq -r '.emit' <<<"$FND")"
+
+echo "--- test 21d: epic Foundational (has sub-issues) → route-foundational mode:prep (unchanged) (#720 guard) ---"
+FX="$TMP/t21d"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":7004,"title":"a genuine foundational epic","labels":["Foundational"]}]
+JSON
+cat > "$FX/board-3/singleton-7004.json" <<'JSON'
+{"number":7004,"sub_issues_summary":{"total":2},"body":"Epic with children to decompose."}
+JSON
+PLAN="$(BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+FND="$(action_for <<<"$PLAN" '.issue==7004 and .action=="route-foundational"')"
+[ "$(jq -r '.mode' <<<"$FND")" = "prep" ] && ok "epic Foundational #7004 → mode:prep" || bad "t21d.mode" "got mode=$(jq -r '.mode' <<<"$FND")"
+jq -e '.emit | test("prep #") and test("/assess")' <<<"$FND" >/dev/null \
+  && ok "prep emit still decomposes via /assess" || bad "t21d.emit" "got $(jq -r '.emit' <<<"$FND")"
+
+# 21e/21f: the bare-login assignee strip on route-foundational's reassign_to (#977).
+# GitHub's replaceActorsForAssignable rejects an `@`-prefixed login (`@towhead`), but
+# the special `@me` token must be PRESERVED (gh resolves it to the authenticated user).
+echo "--- test 21e: route-foundational reassign_to is bared (@towhead → towhead) (#977) ---"
+FX="$TMP/t21e"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":7005,"title":"foundational needing an operator baton","labels":["Foundational"]}]
+JSON
+PLAN="$(FUNNEL_OPERATOR=@towhead BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")" = "towhead" ] \
+  && ok "route-foundational reassign_to bared to 'towhead' (#977)" || bad "t21e.bare" "got $(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")"
+
+echo "--- test 21f: the literal @me token is PRESERVED, not stripped to a non-user 'me' (#977) ---"
+FX="$TMP/t21f"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":7006,"title":"foundational under an @me operator","labels":["Foundational"]}]
+JSON
+cat > "$FX/board-3/decisions.json" <<'JSON'
+[{"number":7007,"title":"unparseable","body":"x","assignees":[],
+  "comments":[{"createdAt":"2026-06-24T11:00:00Z","body":"meh, whatever you think"}]}]
+JSON
+echo 0 > "$FX/board-3/assignees-7007.txt"
+PLAN="$(FUNNEL_OPERATOR=@me BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")" = "@me" ] \
+  && ok "route-foundational reassign_to preserves @me" || bad "t21f.route" "got $(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")"
+[ "$(jq -r 'first(.actions[]|select(.action=="drain-parse-miss")|.reassign_to)' <<<"$PLAN")" = "@me" ] \
+  && ok "drain-parse-miss reassign_to preserves @me" || bad "t21f.miss" "got $(jq -r 'first(.actions[]|select(.action=="drain-parse-miss")|.reassign_to)' <<<"$PLAN")"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo

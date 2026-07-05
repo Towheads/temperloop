@@ -694,9 +694,16 @@ tick_board() {
     chosen="$(parse_reply "$reply")"
     if [ -z "$chosen" ]; then
       # Parse miss → re-assign operator with a couldn't-parse note (no guess).
+      # reassign_to is emitted as a BARE login (strip the leading `@`) — it feeds an
+      # `--add-assignee` call (funnel-drive.md) and GitHub's replaceActorsForAssignable
+      # cannot resolve an `@`-prefixed login (foundation #977; mirrors funnel-drive.sh's
+      # `${FUNNEL_OPERATOR#@}` strip at 555/633). The `@` stays in FUNNEL_OPERATOR for
+      # mention text; only the assignee target is bared. The literal `@me` token is
+      # PRESERVED — gh special-cases it to the authenticated user, so stripping it to
+      # `me` (a non-user) would re-break the very assign this fixes.
       add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$issue" --arg op "$FUNNEL_OPERATOR" \
         '{phase:"drain",board:$b,repo:$r,issue:$n,action:"drain-parse-miss",
-          reassign_to:$op,
+          reassign_to:(if $op == "@me" then $op else ($op | ltrimstr("@")) end),
           detail:"could not parse reply as a decision block or /command — re-assigned operator (closed-enum-or-escalate)"}')"
     else
       # Parsed → EMIT the drain-apply (build.md 0a / drain-mind owns the apply:
@@ -834,6 +841,30 @@ tick_board() {
       j=$((j+1)); continue
     fi
 
+    # Decision-queue re-route guard (foundation #834/#1002/#1009, epic #970): a Ready
+    # item already routed to the async decision queue carries the `decision` label AND
+    # an operator assignee (the baton a prior route-foundational set). Re-emitting
+    # route-foundational re-runs /assess and mints a DUPLICATE plan note + gate comment
+    # every tick (8+ near-duplicates on stageFind#770 across 2026-07-01/02). PARK it
+    # (`route-already-assigned`), gated BEFORE classify_item exactly like the
+    # needs-clarification / funnel-escalated gates above. The `decision` label ALONE is
+    # not enough: an UNASSIGNED `decision` item is an ANSWERED one Phase A drains
+    # (read_answered_decisions is `no:assignee`), so require assignees>0 — an assigned
+    # `decision` item is still parked awaiting the operator's reply and must not re-route.
+    # The assignee read is cap-bounded (only `decision`-labeled Ready items reach it) and
+    # dry-run-safe (read_assignee_count reads the `assignees-<n>.txt` fixture). Mirrors
+    # drain-clarification's idempotency sentinel (#657) for the route-foundational path.
+    if jq -e 'any(.[]; . == "decision")' <<<"$labels" >/dev/null 2>&1; then
+      local dcur; dcur="$(read_assignee_count "$board" "$repo" "$num")"
+      if [ "${dcur:-0}" -gt 0 ]; then
+        add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" \
+          '{phase:"route",board:$b,repo:$r,issue:$n,title:$t,action:"route-already-assigned",label:"decision",
+            detail:"Ready item carries `decision` + an operator assignee — already routed to the async decision queue by a prior route-foundational; parked awaiting the operator reply. Re-routing would re-run /assess and mint a duplicate plan note + gate comment (foundation #834/#1002/#1009, epic #970). Phase A drains it once the operator answers + unassigns (which drops the label)."}')"
+        did_route=1
+        j=$((j+1)); continue
+      fi
+    fi
+
     cls="$(classify_item "$labels")"
 
     if [ "$cls" = "Operational" ] && [ "$did_op" -lt "$FUNNEL_DRIVE_CAP" ]; then
@@ -919,11 +950,35 @@ tick_board() {
     elif [ "$cls" = "Foundational" ] && [ "$did_found" -eq 0 ]; then
       # Phase C — route the Foundational design/approval gate to the queue.
       # build.md's decision-issue backend posts the gate; the scheduler names it.
-      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg op "$FUNNEL_OPERATOR" \
-        '{phase:"route",board:$b,repo:$r,issue:$n,title:$t,action:"route-foundational",class:"Foundational",
-          reassign_to:$op,
-          emit:("prep #"+($n|tostring)+" (decompose/draft via /assess) then route design + plan-approval to the decision queue: post gate comment, apply `decision` label, assign operator, park — via build.md decision-issue backend"),
-          detail:"prep-then-gate: operator-led, routed to the async decision backend (re-embeds no gate logic)"}')"
+      #
+      # #720: a bare Foundational item (0 sub-issues AND no `## Contract`) has nothing
+      # for /assess to decompose — the prep step ("epic has no sub-issues and no
+      # ## Contract → run /triage") FAILS every tick and the item never reaches the
+      # decision queue. Reuse the #717 bare_ready_singleton probe: a bare decision
+      # routes STRAIGHT to the queue (mode:direct, skip the /assess prep); a genuine epic
+      # (sub-issues or a `## Contract` body) keeps the prep-then-gate path. The probe
+      # fails OPEN to the epic route on any error, so an ambiguous item keeps today's
+      # prep behavior (never mis-routes an epic to the direct path).
+      #
+      # #977: emit `reassign_to` as a BARE login (strip the leading `@`) — it feeds an
+      # `--add-assignee` call (funnel-drive.md) and GitHub's replaceActorsForAssignable
+      # cannot resolve an `@`-prefixed login (`@example-operator`). Mirrors funnel-drive.sh's
+      # `${FUNNEL_OPERATOR#@}` strip (555/633); the `@` stays in FUNNEL_OPERATOR for
+      # mention text, only the assignee target is bared. The literal `@me` token is
+      # PRESERVED (gh resolves it to the authenticated user; `me` alone is a non-user).
+      local froute="prep"
+      if bare_ready_singleton "$board" "$repo" "$num"; then froute="direct"; fi
+      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg op "$FUNNEL_OPERATOR" --arg mode "$froute" \
+        '{phase:"route",board:$b,repo:$r,issue:$n,title:$t,action:"route-foundational",class:"Foundational",mode:$mode,
+          reassign_to:(if $op == "@me" then $op else ($op | ltrimstr("@")) end),
+          emit:(if $mode=="direct"
+                then "route #"+($n|tostring)+" STRAIGHT to the decision queue (NO /assess prep — 0 sub-issues, no ## Contract, nothing to decompose): post the design + plan-approval gate comment, apply `decision` label, assign operator, park — via build.md decision-issue backend"
+                else "prep #"+($n|tostring)+" (decompose/draft via /assess) then route design + plan-approval to the decision queue: post gate comment, apply `decision` label, assign operator, park — via build.md decision-issue backend"
+                end),
+          detail:(if $mode=="direct"
+                  then "bare Foundational decision (0 sub-issues, no ## Contract) — nothing for /assess to decompose (the prep step would fail every tick, #720); routed straight to the async decision backend"
+                  else "prep-then-gate: operator-led, routed to the async decision backend (re-embeds no gate logic)"
+                  end)}')"
       did_found=1
     fi
     j=$((j+1))
