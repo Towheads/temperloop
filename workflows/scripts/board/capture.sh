@@ -254,10 +254,10 @@ $route_note"
 # Where labels already exist (any composed/overlay checkout), the helper's
 # `gh label create || true` is a harmless no-op.
 #
-# NOTE: capture.sh's dual-label behavior below (an override --label
-# Foundational adds BOTH Operational and Foundational instead of substituting)
-# is a separate, already-tracked defect (#49) — out of scope here. This only
-# ensures the label(s) that end up in create_args actually exist first.
+# NOTE: --label Foundational SUBSTITUTES the default Operational work-class
+# label below (a mutually-exclusive binary — #49), so an issue carries exactly
+# one work-class label. Ensuring Operational exists here regardless is a
+# harmless no-op when it ends up unapplied.
 _board_issues_ensure_label "$repo" "Operational" "0e8a16" \
   "Work class: follows an established, fully-specifiable pattern — fully autonomous (claude/work-class-policy.md)"
 case "$label" in
@@ -271,8 +271,18 @@ esac
 # All captures default to Operational: a defect or mid-work item follows an
 # established pattern (the Default-Operational rule from work-class-policy.md).
 # Foundational is the deliberate exception — pass --label Foundational to override.
-create_args=(-R "$repo" --title "$title" --body "$body" --label "Operational")
-[ -n "$label" ] && create_args+=(--label "$label")
+#
+# Work-class labels are a mutually-exclusive binary (claude/work-class-policy.md):
+# an issue carries EXACTLY ONE of Operational/Foundational. So a --label naming a
+# recognized work-class value SUBSTITUTES the default Operational rather than
+# appending alongside it (the #49 dual-label defect). A non-work-class --label
+# (e.g. bug) still appends as an extra label on top of the default Operational.
+case "$label" in
+  Operational|Foundational) work_class="$label" ;;
+  *)                        work_class="Operational" ;;
+esac
+create_args=(-R "$repo" --title "$title" --body "$body" --label "$work_class")
+{ [ -n "$label" ] && [ "$label" != "$work_class" ]; } && create_args+=(--label "$label")
 [ "${#rework_labels[@]}" -eq 0 ] || create_args+=("${rework_labels[@]}")
 url=$(gh issue create "${create_args[@]}")
 num=$(basename "$url")
