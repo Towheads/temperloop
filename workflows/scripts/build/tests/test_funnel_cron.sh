@@ -320,7 +320,9 @@ grep -h '"event":"operator-provisioned"' "$P1ERR" | jq -e '.operator=="@provisio
   && ok "placeholder → emits operator-provisioned with the resolved @login" || bad "prov1.event" "$(cat "$P1ERR")"
 [ -f "$P1LOCAL" ] && grep -q 'export FUNNEL_OPERATOR="@provisioned-login"' "$P1LOCAL" \
   && ok "wrote build.config.local.sh with the real operator export" || bad "prov1.file" "$(cat "$P1LOCAL" 2>/dev/null || echo MISSING)"
-[ "$(stat -f '%Lp' "$P1LOCAL" 2>/dev/null || stat -c '%a' "$P1LOCAL" 2>/dev/null)" = "600" ] \
+# Portable mode read: GNU `stat -c` FIRST, BSD `stat -f` fallback (GNU's -f is a
+# different flag — --file-system — that does NOT error, so BSD-first misreads on Linux).
+[ "$(stat -c '%a' "$P1LOCAL" 2>/dev/null || stat -f '%Lp' "$P1LOCAL" 2>/dev/null)" = "600" ] \
   && ok "provisioned file is chmod 600" || bad "prov1.mode" "$(stat -f '%Lp' "$P1LOCAL" 2>/dev/null)"
 
 # PROV 2: placeholder + UNRESOLVABLE → ONE loud config-gap event, NO file written.
