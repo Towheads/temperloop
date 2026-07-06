@@ -291,6 +291,24 @@ Each run is read-only (one cached-bypassed board resolve + two flat-cost REST li
 
 The current draining session's own claims self-exclude (their transcript mtime is current), so this never releases live work — including any item this very session is holding.
 
+### Vault hygiene
+
+A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing else alarms on hygiene drift — `/drain-mind` curates *on touch* (provenance audit, contradiction detection) but never *sweeps* the vault, so a silent pile-up (162 `Sessions/_inbox` stubs / 18 MB before anyone noticed — foundation #958/#959) goes unseen until it is large. This step runs a standalone probe each drain and records any drift to a review surface for `plan-morning` to dispose of.
+
+**A drain-internal detector**, not a live/drain pair (like § Contradiction detection, § Self-correction detector, and § Recurrence → promotion): it backstops **no live extraction rule** — hygiene drift is a *state* the vault accumulates over time, not an author action a live rule captures — so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**. It **proposes**; `plan-morning`'s `## Vault hygiene review` section is the **sole mutator** that disposes (the same drain-proposes / plan-morning-disposes split as § Pending decisions surface). Drain **never** bulk-deletes vault content.
+
+**Run the probe** (a kernel script that reads the store via the script-plane `plain-files` backend — `KNOWLEDGE_STORE_ROOT`, default `~/dev/mind`; a checkout with no vault prints one line and no-ops, so this is safe to run unconditionally):
+
+```
+workflows/scripts/drain/vault_hygiene_report.sh --format entry
+```
+
+It checks: `Sessions/_inbox` stub count + oldest age (alarm > 20 stubs or oldest > 48h); closed plans (`status: done|complete|abandoned`) still resident in `Plans/` (should be archived + removed); named ledgers over their line cap; zero-byte / double-dot / stray-absolute-path garbage files; and a stale-`last_verified` tally (informational). With `--format entry` it prints a ready-to-append `### <ts> · vault hygiene · <host>` block carrying **Status: open** **iff** something alarmed, and prints **nothing** when the vault is clean.
+
+**Record the finding.** If the command printed a block (alarms present), append it verbatim to the vault-hygiene review surface `Context/foundation - vault hygiene report.md` (in the knowledge store) via `mcp__obsidian-builtin__vault_append` — it creates the note if absent. If the command printed nothing, the vault is clean: **surface nothing** and move on (default to silence).
+
+**This step does NOT** delete or move any vault file, does NOT mutate an entry's `Status` (plan-morning is the sole mutator, per its review section), and does NOT prune ledgers or archive plans. It only *reports* the drift; every disposal — deleting garbage, pruning a ledger, archiving a closed plan — happens at `plan-morning` on operator confirmation.
+
 ### Pending decisions surface
 
 Backstop for the live rule in `claude/CLAUDE.md` § Unattended pending-decisions surface. The live rule says: when a `batch-at-ritual` question (`build` Step 1.5, `build` Step 4b queue-stall, `assess` Step 6, this command's stale-claim sweep, `sweep` Step 2 leave-all-flagged) is deferred on an **unattended / mini / cron** run, the run takes its safe default AND appends an `### open` entry to the pending-decisions surface (`Context/foundation - pending decisions.md` in the knowledge store) so the next `plan-morning` reviews it. This step catches the ones that slipped — an unattended run that defaulted a deferrable decision but never wrote the entry (so `plan-morning` would never surface it).

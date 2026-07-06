@@ -17,7 +17,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 .PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-live-drain validate-command-run-emit validate-issue-touch-emit \
-	validate-lexicon test-scan-stub lint-pr-body-test test-stranger-config \
+	validate-lexicon test-scan-stub test-vault-hygiene lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
 
@@ -195,6 +195,10 @@ test-producer-egress:
 test-scan-stub:
 	@echo "==> Running stub scanner tests..."
 	@bash $(FOUNDATION)/workflows/scripts/drain/tests/test_scan_stub.sh
+
+test-vault-hygiene:
+	@echo "==> Running vault-hygiene probe tests..."
+	@bash $(FOUNDATION)/workflows/scripts/drain/tests/test_vault_hygiene_report.sh
 
 lint-pr-body-test:
 	@echo "==> Running PR-body issue-linkage lint tests..."
