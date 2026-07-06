@@ -123,6 +123,9 @@ KERNEL_GATES=(
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
   # /drain-mind runs. Hermetic (mktemp fake vaults, no real vault, no network).
   "make test-vault-hygiene"
+  # Recent-findings tally (foundation #960): the drain "Recurrence → promotion"
+  # heredoc extracted to drain/tally_recent_findings.py — fixture-seeded, hermetic.
+  "make test-tally-findings"
   "make lint-pr-body-test"
   "make test-stranger-config"
   # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite

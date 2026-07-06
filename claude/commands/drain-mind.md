@@ -178,7 +178,7 @@ Track each backfilled file and each gap separately for the summary.
 
 #### Contradiction detection (cross-session supersession proposer)
 
-**A drain-internal detector**, not a live/drain pair. The live rule in `claude/CLAUDE.md` § Decision capture asks an author to link a supersession *they already recognized* at bank time ("If a decision overturns or supersedes a prior one, link the prior note via `[[wikilink]]` and note the supersession"). This pass finds the *unrecognized* ones — a drain (or live `Decisions/` bank) lands a new/amended decision that contradicts an earlier note **without anyone noticing**, the "stale-assumption" error class no grep tell can surface, because the earlier claim only becomes wrong in light of the later one (governing spike: `Decisions/foundation - Cross-session contradiction detection (spike verdict)`). It is therefore **drain-internal** like the § Recurrence → promotion pass below — it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change** (the spike's "registry row mandatory" cost line predates classifying this as detector-internal and is superseded). It **proposes** supersessions; it never edits a banked note.
+**A drain-internal detector**, not a live/drain pair. The live rule in `claude/CLAUDE.md` § Decision capture asks an author to link a supersession *they already recognized* at bank time ("If a decision overturns or supersedes a prior one, link the prior note via `[[wikilink]]` and note the supersession"). This pass finds the *unrecognized* ones — a drain (or live `Decisions/` bank) lands a new/amended decision that contradicts an earlier note **without anyone noticing**, the "stale-assumption" error class no grep tell can surface, because the earlier claim only becomes wrong in light of the later one (governing spike: `Decisions/foundation - Cross-session contradiction detection (spike verdict)`). It is therefore **drain-internal** like the § Recurrence → promotion pass below — it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change** (rationale + the superseded "registry row mandatory" cost line: the linked spike note). It **proposes** supersessions; it never edits a banked note.
 
 **Run this for each `Decisions/<project> - *.md` note that this drain run banked new OR amended** (the creation path above, and any note the provenance audit touched). Skip notes only re-read but not changed.
 
@@ -516,41 +516,9 @@ Default to silence when no model-skim extractions were accepted — do not appen
 **How it works.** After all per-stub extractions above are complete (and findings records have been emitted), query the findings stream to count accepted extractions per `finding_type` over the trailing **14 days**:
 
 ```bash
-# Tally accepted findings by type over trailing 14 days.
-# Reads both the current month's file and the prior month's (for window overlap).
-FOUNDATION="$(git rev-parse --show-toplevel)"
-python3 - "$FOUNDATION" <<'EOF'
-import json, glob, sys
-from datetime import datetime, timezone, timedelta
-
-foundation_root = sys.argv[1]
-cutoff = datetime.now(timezone.utc) - timedelta(days=14)
-counts = {}
-for path in sorted(glob.glob(
-        f"{foundation_root}/meta/data/raw/findings-*.jsonl")):
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not r.get("accepted"):
-                continue
-            ts = r.get("ts", "")
-            try:
-                t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                continue
-            if t < cutoff:
-                continue
-            ft = r.get("finding_type", "")
-            counts[ft] = counts.get(ft, 0) + 1
-for ft, n in sorted(counts.items()):
-    print(f"{ft}\t{n}")
-EOF
+# Tally accepted findings by type over the trailing 14 days (globs every
+# findings-*.jsonl, so the window spans month boundaries). Prints `<type>\t<n>`.
+python3 workflows/scripts/drain/tally_recent_findings.py "$(git rev-parse --show-toplevel)"
 ```
 
 **Threshold rule.** For each of the following types, if the tally meets or exceeds the threshold, it is a **recurrence candidate**:
