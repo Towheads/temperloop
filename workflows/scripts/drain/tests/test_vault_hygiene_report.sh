@@ -51,7 +51,7 @@ make_dirty_vault() {
   printf -- '---\nstatus: done\n---\nold plan\n'      > "$v/Plans/closed-plan.md"
   printf -- '---\nstatus: executing\n---\nlive plan\n' > "$v/Plans/live-plan.md"
   # pending-decisions ledger over its 120-line cap (130 non-blank lines).
-  { for i in $(seq 1 130); do echo "- entry $i"; done; } > "$v/Context/foundation - pending decisions.md"
+  { for i in $(seq 1 130); do echo "- entry $i"; done; } > "$v/Context/pipeline - pending decisions.md"
   # Garbage: a zero-byte note + a double-dot typo.
   : > "$v/Context/empty.md"
   echo "typo" > "$v/Context/typo..md"

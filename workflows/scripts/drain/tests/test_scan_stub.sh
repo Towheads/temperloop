@@ -433,7 +433,7 @@ fi
 
 # Stale-local-main realization is assistant-narrated → must surface as an
 # assistant-role state-collision match (the gap that left this recurring rework
-# invisible to /drain-mind: user-only lexicon + user-only model-skim digest).
+# invisible to /tidy: user-only lexicon + user-only model-skim digest).
 TMP_STUB8C="$TMPDIR8/assistant_stale_main_stub.md"
 cat > "$TMP_STUB8C" << 'STUBEOF'
 ---

@@ -65,7 +65,7 @@ SHORT_ID=$(printf '%s' "$SESSION_ID" | cut -c1-8)
 # Distinct model ids across this session's assistant turns. Usually one; a
 # /model switch, /fast toggle, or a compaction summary can yield several, so
 # record the comma-joined set. This `model:` field is the carrier of the
-# SUBJECT model into a /drain-mind that may run days later under a different
+# SUBJECT model into a /tidy that may run days later under a different
 # model: drain stamps it as `source_model` (the model whose behavior the note
 # is about), distinct from the drain-runner's own `extracted_by_model`.
 # See ~/dev/mind/Decisions/foundation - Vault provenance schema (note-level).md.

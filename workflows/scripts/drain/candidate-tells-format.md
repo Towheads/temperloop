@@ -2,14 +2,14 @@
 
 ## Purpose
 
-When `/drain-mind` Step 3 finds an extraction via **model-skim** (`method:
+When `/tidy` Step 3 finds an extraction via **model-skim** (`method:
 "drain-model-skim"`) — i.e., the model spotted signal in `report.user_turns[]`
 that no lexicon tell covered — that finding is a measured miss. Accumulated
 misses reveal which phrase patterns the lexicon should add next.
 
 The **candidate-tells file** collects those missed phrases, one entry per
-model-skim extraction, so the lexicon can grow from its own gaps. `plan-morning`
-reviews the file at each ritual; the operator promotes promising candidates into
+model-skim extraction, so the lexicon can grow from its own gaps. `check-in`
+reviews the file at each daily check-in; the operator promotes promising candidates into
 `workflows/scripts/drain/lexicon.tsv` or discards them.
 
 ---
@@ -17,7 +17,7 @@ reviews the file at each ritual; the operator promotes promising candidates into
 ## Path
 
 ```
-~/dev/mind/Context/foundation - candidate tells.md
+~/dev/mind/Context/pipeline - candidate tells.md
 ```
 
 This is a **vault note** (not a git-tracked file) so it persists across machines
@@ -51,8 +51,8 @@ Example entry:
 
 ## Append protocol
 
-`/drain-mind` Step 3 appends candidate entries via
-`mcp__obsidian-builtin__vault_append` (path: `Context/foundation - candidate
+`/tidy` Step 3 appends candidate entries via
+`mcp__obsidian-builtin__vault_append` (path: `Context/pipeline - candidate
 tells.md`). If the file does not yet exist, create it with a header line before
 the first entry:
 
@@ -60,7 +60,7 @@ the first entry:
 # Candidate Tells
 
 Accumulated model-skim misses — phrases the model caught that the lexicon did not.
-Review at plan-morning; promote promising ones into lexicon.tsv or discard.
+Review at check-in; promote promising ones into lexicon.tsv or discard.
 
 ```
 
@@ -69,15 +69,15 @@ needed — vault_append handles newline separation).
 
 ---
 
-## Review at plan-morning
+## Review at check-in
 
-`plan-morning` reads this file and presents any entries added since the last
+`check-in` reads this file and presents any entries added since the last
 review to the operator. Operator actions per entry:
 
 - **Promote** — add the proposed tell to `lexicon.tsv` as a new row (literal or
   regex pattern, appropriate category, weight). Mark the entry `[promoted]`.
 - **Discard** — the phrase was noise or too narrow. Mark the entry `[discarded]`.
-- **Defer** — not sure yet. Leave the entry unmarked; it re-appears next morning.
+- **Defer** — not sure yet. Leave the entry unmarked; it re-appears next check-in.
 
 After review, entries older than 30 days and already marked `[promoted]` or
 `[discarded]` may be archived (move to a `## Archive` section at the bottom of

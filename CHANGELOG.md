@@ -24,6 +24,32 @@ reads that marker; a stranger greps for it before pulling.
   The CHANGELOG preamble and `kernel-repo-layout.md` § Release-tag convention
   now defer to it. (foundation temperloop#79)
 
+### Changed
+
+- Daily-ritual command restructure (temperloop epic #86): the drain/review loop
+  is split into a nightly unattended half and a daily human half, and the
+  disposition surfaces are renamed store-global.
+  - `claude/commands/drain-mind.md` → **`claude/commands/tidy.md`**: reframed to
+    run **nightly, unattended** (`claude -p "/tidy"`) — never issues an
+    interactive `AskUserQuestion`, parks anything needing human judgment on the
+    durable review surfaces, and is now the **sole `mind_snapshot.sh` runner** (a
+    new Step 8; the snapshot moved out of the SessionStart hook and the retired
+    evening ritual). A mandatory sensitivity scan parks possible secrets to a new
+    surface (stub + kind + location only — never the value).
+  - **`claude/commands/check-in.md`** (new kernel command): the daily
+    human-driver review — renders the telemetry brief (graceful-degrade: only if
+    the overlay renderer is present), disposes the six overnight surfaces, and
+    reviews/sets the `/next` priorities per project. Sole `Status` mutator of the
+    append-only surfaces.
+  - The five store-global disposition surfaces are renamed
+    `Context/foundation - <name>` → **`Context/pipeline - <name>`** (pending
+    decisions, proposed supersessions, retro review surface, candidate tells,
+    vault hygiene report) — they were never foundation-specific. Genuine
+    foundation notes (e.g. `Context/foundation - AskUserQuestion severity
+    taxonomy`) keep their prefix.
+  - Kernel-manifest, docs generator, live/drain validator, hooks, and the
+    `drain/` helpers/tests updated to the new names.
+
 ### Fixed
 
 - Unattended funnel-run silent-failure hardening (foundation epic #1041):

@@ -5,8 +5,8 @@
 # A periodic hygiene DETECTOR for the knowledge-store vault: nothing else
 # alarms on drift, so silent pile-ups (162 _inbox stubs / 18 MB before anyone
 # noticed — foundation #958) go unseen. This script only REPORTS; it never
-# deletes or mutates vault content. /drain-mind runs it and appends alarms to
-# a review surface; plan-morning disposes. Drain proposes, plan-morning
+# deletes or mutates vault content. /tidy runs it and appends alarms to
+# a review surface; check-in disposes. Drain proposes, check-in
 # disposes (foundation #959).
 #
 # Checks (over the vault root):
@@ -40,12 +40,12 @@ INBOX_MAX_STUBS=20          # alarm above this many Sessions/_inbox stubs
 INBOX_MAX_AGE_H=48          # alarm if the oldest stub is older than this (hours)
 STALE_VERIFIED_DAYS=90      # last_verified older than this counts as stale
 # Per-ledger line caps (entries ~ non-blank lines): a ledger over its cap is an
-# alarm to prune at plan-morning. Indexed arrays (bash-3.2 safe) — LEDGER_PATHS[i]
+# alarm to prune at check-in. Indexed arrays (bash-3.2 safe) — LEDGER_PATHS[i]
 # pairs with LEDGER_CAPS[i]. Paths may contain spaces, so an array (not a
 # word-split string) is required.
 LEDGER_PATHS=(
   "Context/Session friction ledger.md"
-  "Context/foundation - pending decisions.md"
+  "Context/pipeline - pending decisions.md"
   "Context/foundation - knowledge-search parity ledger.md"
 )
 LEDGER_CAPS=(250 120 400)
@@ -110,7 +110,7 @@ EOF
   fi
 fi
 if [ "$stub_count" -gt "$INBOX_MAX_STUBS" ] || [ "$oldest_age_h" -gt "$INBOX_MAX_AGE_H" ]; then
-  add "- ⚠️ _inbox: ${stub_count} stubs, oldest ${oldest_age_h}h (caps: >${INBOX_MAX_STUBS} stubs / >${INBOX_MAX_AGE_H}h) — run /drain-mind"
+  add "- ⚠️ _inbox: ${stub_count} stubs, oldest ${oldest_age_h}h (caps: >${INBOX_MAX_STUBS} stubs / >${INBOX_MAX_AGE_H}h) — run /tidy"
   inc
 else
   add "- ok _inbox: ${stub_count} stubs, oldest ${oldest_age_h}h"
@@ -154,7 +154,7 @@ while [ "$i" -lt "${#LEDGER_PATHS[@]}" ]; do
   if [ -f "$f" ]; then
     lines="$(grep -cvE '^[[:space:]]*$' "$f" 2>/dev/null || echo 0)"
     if [ "$lines" -gt "$cap" ]; then
-      add "- ⚠️ ledger over cap: ${rel} — ${lines} lines (cap ${cap}) — prune at plan-morning"
+      add "- ⚠️ ledger over cap: ${rel} — ${lines} lines (cap ${cap}) — prune at check-in"
       inc
     else
       add "- ok ledger: ${rel} — ${lines} lines (cap ${cap})"
@@ -215,7 +215,7 @@ if [ "$FORMAT" = "entry" ]; then
   ts="$(date '+%Y-%m-%d %H:%M')"
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)"
   printf '### %s · vault hygiene · %s\n' "$ts" "$host"
-  printf -- '- **Decision:** dispose of %d vault-hygiene alarm(s) below (drain proposed; plan-morning disposes).\n' "$alarms"
+  printf -- '- **Decision:** dispose of %d vault-hygiene alarm(s) below (drain proposed; check-in disposes).\n' "$alarms"
   printf -- '- **Findings:**\n'
   printf '%s' "$FINDINGS" | sed 's/^/  /'
   [ -n "$closed_list" ] && { printf -- '  - closed plans:\n'; printf '%s' "$closed_list"; }

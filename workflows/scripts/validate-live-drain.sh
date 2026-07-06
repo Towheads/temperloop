@@ -4,11 +4,11 @@
 #
 # The live/drain pairing registry (see Patterns/Live-Drain pairing) is a set of
 # (live rule, drain backstop) pairs: each real-time extraction rule in a
-# CLAUDE.md is paired with a backstop step in /drain-mind, so a missed live
+# CLAUDE.md is paired with a backstop step in /tidy, so a missed live
 # capture is caught at drain time. The registry is split across TWO tables
 # (foundation F#809, epic B "kernel routing"):
 #   - the "## Live/Drain pairings" table at the top of
-#     claude/commands/drain-mind.md is the SINGLE SOURCE OF TRUTH for KERNEL
+#     claude/commands/tidy.md is the SINGLE SOURCE OF TRUTH for KERNEL
 #     pairs — rules generic enough that a stranger's kernel-only checkout
 #     needs them backstopped too;
 #   - claude/live-drain-registry.overlay.md (an overlay-only file, present
@@ -40,7 +40,7 @@
 #   - stageFind/CLAUDE.md lives in another repo — checked when that checkout is
 #     present (STAGEFIND_DIR, default ../stageFind), soft-skipped with a warning
 #     otherwise so foundation CI needs no stageFind checkout.
-# The drain half is always in drain-mind.md and is always hard-checked.
+# The drain half is always in tidy.md and is always hard-checked.
 #
 # Usage: workflows/scripts/validate-live-drain.sh   (resolves the repo itself)
 # Kept POSIX-bash-3.2 friendly (no mapfile/associative arrays) so it runs on the
@@ -49,7 +49,7 @@
 set -euo pipefail
 
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DRAIN="$REPO/claude/commands/drain-mind.md"
+DRAIN="$REPO/claude/commands/tidy.md"
 DRAIN_OVERLAY_EXT="$REPO/claude/live-drain-registry.overlay.md"
 STAGEFIND_DIR="${STAGEFIND_DIR:-$REPO/../stageFind}"
 CLAUDE_MD_KERNEL="$REPO/claude/CLAUDE.kernel.md"

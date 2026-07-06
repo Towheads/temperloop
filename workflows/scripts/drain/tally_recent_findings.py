@@ -6,7 +6,7 @@ the glob covers window overlap) and prints one `<finding_type>\t<count>` line pe
 type, counting only records that are `accepted` truthy AND whose `ts` falls within
 the trailing N days (default 14).
 
-Extracted from /drain-mind's "Recurrence → promotion" step (foundation #960) so
+Extracted from /tidy's "Recurrence → promotion" step (foundation #960) so
 the tally is a testable script rather than an inline heredoc. Stdlib only; zero
 model tokens. Prints nothing when no accepted findings fall in the window.
 

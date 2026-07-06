@@ -10,7 +10,7 @@ from lib.kernel_manifest import classify, is_kernel, load_manifest
 FIXTURE = """
 # comment line, ignored
 kernel claude/commands/*.md
-overlay claude/commands/plan-morning.md
+overlay claude/commands/standup.md
 kernel claude/commands/very-specific-override.md
 split CLAUDE.md
 """
@@ -26,7 +26,7 @@ class TestLoadManifest(unittest.TestCase):
             entries,
             [
                 ("claude/commands/*.md", "kernel"),
-                ("claude/commands/plan-morning.md", "overlay"),
+                ("claude/commands/standup.md", "overlay"),
                 ("claude/commands/very-specific-override.md", "kernel"),
                 ("CLAUDE.md", "split"),
             ],
@@ -56,10 +56,10 @@ class TestClassify(unittest.TestCase):
         self.assertTrue(is_kernel(self.entries, "claude/commands/assess.md"))
 
     def test_specific_override_beats_broader_overlay(self) -> None:
-        # "plan-morning.md" is caught by both the broad kernel glob and the
+        # "standup.md" is caught by both the broad kernel glob and the
         # more specific overlay single-file entry; longest pattern wins.
-        self.assertEqual(classify(self.entries, "claude/commands/plan-morning.md"), "overlay")
-        self.assertFalse(is_kernel(self.entries, "claude/commands/plan-morning.md"))
+        self.assertEqual(classify(self.entries, "claude/commands/standup.md"), "overlay")
+        self.assertFalse(is_kernel(self.entries, "claude/commands/standup.md"))
 
     def test_unmatched_path_returns_none(self) -> None:
         self.assertIsNone(classify(self.entries, "some/unrelated/path.txt"))

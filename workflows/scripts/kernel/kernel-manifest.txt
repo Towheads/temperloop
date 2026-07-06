@@ -106,7 +106,7 @@ kernel bin/lib/*
 kernel claude/.gitkeep
 kernel claude/CLAUDE.kernel.md
 overlay claude/CLAUDE.overlay.md
-# Overlay extension of drain-mind.md's kernel Live/Drain pairing table
+# Overlay extension of tidy.md's kernel Live/Drain pairing table
 # (foundation F#809): personal/vault-backed pairs only, unioned in by
 # workflows/scripts/validate-live-drain.sh when this file is present. Deliberately
 # NOT under claude/commands/ (a bare .md there is discovered as a slash
@@ -127,15 +127,15 @@ kernel claude/workflows/*
 # command like any other).
 kernel claude/commands/assess.md
 kernel claude/commands/build.md
-kernel claude/commands/drain-mind.md
+kernel claude/commands/tidy.md
+kernel claude/commands/check-in.md
 kernel claude/commands/init.md
 kernel claude/commands/next.md
 kernel claude/commands/sweep.md
 kernel claude/commands/triage.md
 kernel claude/commands/funnel-drive.md
 kernel claude/commands/funnel-drive-merge.md
-overlay claude/commands/plan-morning.md
-overlay claude/commands/plan-evening.md
+overlay claude/commands/standup.md
 overlay claude/commands/telemetry.md
 overlay claude/commands/signal-intake.md
 
@@ -232,8 +232,8 @@ kernel workflows/scripts/tests/*
 overlay workflows/scripts/tests/test_session_start_reconcile.sh
 
 # workflows/scripts/*.{sh,py} flat files — mixed. Kernel: PR-hygiene, board
-# GraphQL-budget attribution, install, and the drain-mind findings-stream
-# helper (drain-mind is a kernel pipeline skill; that its instance DATA lands
+# GraphQL-budget attribution, install, and the tidy findings-stream
+# helper (tidy is a kernel pipeline skill; that its instance DATA lands
 # in the overlay-owned meta/data/raw/ at runtime doesn't reclassify the tool
 # that writes it). Overlay: the whole telemetry/rollup/dashboard/session-
 # archive/crash-convergence pipeline that reads and writes meta/data/ and
