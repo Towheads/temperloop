@@ -378,6 +378,43 @@ rc=0; out="$(cmd_managed_merge Towheads/foundation 42)" || rc=$?
 ! grep -q "^pr merge " "$TMP/mm_calls" || fail "managed-merge eject seam saw a merge call"
 echo "PASS: managed-merge → CI red after update-branch → EJECTED (exit 5), failed_run_ids surfaced, no merge attempted"
 
+# --- managed-merge: CI re-poll times out → TIMEOUT (exit 4), not die() -------
+# The SHA-pinned CI re-poll runs out its deadline with checks still pending
+# (never completing). Per gate.sh's header exit-code contract this is the
+# TIMEOUT/exit-4 outcome — NOT the ERROR/exit-1 a die() would emit — and no
+# merge is attempted (temperloop#23). GATE_CI_POLL_TIMEOUT=0 makes the deadline
+# fire on the first (still-pending) poll so the test needs no real wait.
+rm -f "$TMP/mm_calls"
+export GATE_CI_POLL_TIMEOUT=0
+_gate_gh() {
+  local -a a=("$@")
+  echo "$*" >> "$TMP/mm_calls"
+  case "${a[0]:-} ${a[1]:-}" in
+    "pr update-branch") return 0 ;;
+    "pr view")
+      local field="" k
+      for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+      case "$field" in
+        headRefOid) echo "deadbeef3" ;;
+        *) echo "{}" ;;
+      esac
+      return 0 ;;
+    "pr merge") fail "merge attempted after CI re-poll TIMEOUT (timeout must not merge)" ;;
+  esac
+  case "${a[0]:-}" in
+    # check-runs still pending → _gate_ci_poll never sees all-completed → TIMEOUT
+    api) echo '[{"status":"in_progress","conclusion":null}]' ;;
+  esac
+}
+rc=0; out="$(cmd_managed_merge Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 4 ] || fail "managed-merge CI re-poll timeout did not exit 4 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "managed-merge CI-timeout outcome (got: $out)"
+[ "$(jq -r .pr <<<"$out")" = "42" ] || fail "managed-merge CI-timeout pr field (got: $out)"
+jq -e 'has("waited")' <<<"$out" >/dev/null || fail "managed-merge CI-timeout missing waited (got: $out)"
+! grep -q "^pr merge " "$TMP/mm_calls" || fail "managed-merge CI-timeout seam saw a merge call"
+export GATE_CI_POLL_TIMEOUT=5
+echo "PASS: managed-merge → CI re-poll timeout → TIMEOUT (exit 4, not die/ERROR), no merge attempted"
+
 # --- managed-merge: gh pr merge itself rejected (e.g. queue-armed repo) ------
 # --non-strict path (fewer preconditions) with the merge call itself failing —
 # a distinct, non-silent MERGE_REJECTED outcome rather than a bare ERROR.
