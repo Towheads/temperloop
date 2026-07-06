@@ -33,6 +33,15 @@ concurrency:
 
 jobs:
   build:
+    # Gated OFF until this repo goes public and Pages is enabled (Epic F).
+    # Pages is disabled on this private repo, so `actions/configure-pages@v5`
+    # fails with "Get Pages site failed ... Not Found" on every push to main —
+    # a red run that is pure noise and has cost a false "KERNEL CI FAILED" read
+    # (#4). Skipping (neutral, not failed) removes the noise without enabling
+    # Pages or deleting this workflow. Re-arm by setting the repo variable
+    # DOCS_PAGES_ENABLED=true (Settings → Secrets and variables → Actions →
+    # Variables) once Pages is on — no code change needed.
+    if: vars.DOCS_PAGES_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -62,6 +71,9 @@ jobs:
 
   deploy:
     needs: build
+    # Same gate as `build` (a skipped `needs` job would skip this anyway;
+    # explicit here so the guard reads at a glance).
+    if: vars.DOCS_PAGES_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
