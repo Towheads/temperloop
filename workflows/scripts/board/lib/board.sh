@@ -1222,10 +1222,41 @@ board_blocked_by_open() {
 # board budget). Callers MUST gate on candidate items only, never the whole board.
 # Empty output = no parent (a directly-workable singleton). Pipes to an external
 # `jq` (like its siblings) so the `_board_gh` seam stays replay-testable.
+#
+# --- cache-relationships item (F#988 Contract) -------------------------------
+# When `board.<N>.cache=on` AND the caller has separately sourced lib/cache.sh
+# (same enable axis + `declare -F cache_read` probe as _board_issues_item_list's
+# dispatch — see that function's PLANE MAP comment), this answers by INVERTING
+# cache.sh's snapshot instead of paying a live per-issue REST call: the bulk
+# snapshot row (`gh api repos/<r>/issues?state=all` shape, cache.sh's own
+# storage format) carries the parent link as a nested `.parent.number` object —
+# NOT the string `.parent_issue_url` the single-issue endpoint uses; these are
+# two different GitHub REST shapes for the same relationship, so the cached arm
+# reads `.parent.number` directly (no basename parsing needed) while the live
+# arm below is unchanged. `cache_read` itself is the staleness-aware entrypoint
+# (CACHE-STORE.md's degradation contract): warm-and-fresh serves straight off
+# disk with ZERO gh calls; miss/stale pays exactly the ONE live refresh
+# `cache_read` already does internally (this function does not layer a second
+# live fallback on top of that — same convention as _board_issues_item_list).
+# If the axis is on but cache.sh isn't in scope, one stderr notice and fall
+# through to the always-live per-issue call, unchanged. board_blocked_by_open
+# (above) deliberately has NO cached arm — native issue *dependencies* are a
+# different relationship this item's scope excludes.
 #   board_parent_issue <board> <issue#>  ->  parent epic number, or empty
 board_parent_issue() {
-  local board="$1" issue="$2" repo url
+  local board="$1" issue="$2" repo url raw parent
   repo="$(board_repo "$board")" || return 1
+  if _board_cache_store_enabled "$board"; then
+    if declare -F cache_read >/dev/null 2>&1; then
+      raw="$(cache_read "$repo")" || return 1
+      parent="$(printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" '
+        .[] | select(.number == $n) | (.parent.number // empty)
+      ')"
+      [ -n "$parent" ] && printf '%s\n' "$parent"
+      return 0
+    fi
+    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
+  fi
   url="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null |
     _board_sanitize_control_chars |
     jq -r '.parent_issue_url // empty')"
@@ -1244,10 +1275,30 @@ board_parent_issue() {
 # Projects-v2-backed or issues-only. Callers MUST gate on candidate items
 # only, never the whole board (same caveat as its siblings). Pipes to an
 # external `jq` so the `_board_gh` seam stays replay-testable.
+#
+# --- cache-relationships item (F#988 Contract) -------------------------------
+# Same cache-enabled check, same cache.sh delegation, and same fall-through-live
+# degradation (one stderr notice) as board_parent_issue above — see its comment
+# for the full contract. Inversion here selects every snapshot row whose
+# `.parent.number` equals <issue#> and prints that row's OWN `.number`; the
+# snapshot's ALL-states corpus (open AND closed — cache.sh never filters state,
+# see CACHE-STORE.md) means a closed child is preserved here exactly as the live
+# `/sub_issues` endpoint already includes closed children — no behavior change,
+# just a cheaper read when warm.
 #   board_sub_issues <board> <issue#>  ->  child issue numbers, one per line
 board_sub_issues() {
-  local board="$1" issue="$2" repo
+  local board="$1" issue="$2" repo raw
   repo="$(board_repo "$board")" || return 1
+  if _board_cache_store_enabled "$board"; then
+    if declare -F cache_read >/dev/null 2>&1; then
+      raw="$(cache_read "$repo")" || return 1
+      printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" '
+        .[] | select((.parent.number // empty) == $n) | .number
+      '
+      return $?
+    fi
+    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
+  fi
   _board_gh api "repos/$repo/issues/$issue/sub_issues" 2>/dev/null |
     _board_sanitize_control_chars |
     jq -r '.[].number'
