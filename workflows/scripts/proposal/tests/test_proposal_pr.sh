@@ -200,6 +200,9 @@ grep -qF 'Adds config.' "$TMP/gh-args" || fail "caller body text missing from as
 grep -qF '## Files changed' "$TMP/gh-args" || fail "assembled body missing '## Files changed'"
 grep -qF '.foundation/config' "$TMP/gh-args" || fail "assembled body missing touched file listing"
 grep -qF 'proposal-PR generator' "$TMP/gh-args" || fail "assembled body missing generator footer"
+# post-TemperLoop-rename branding: footer credits the temperloop kernel, not foundation.
+grep -qF 'temperloop kernel' "$TMP/gh-args" || fail "footer must credit the temperloop kernel"
+if grep -qF 'foundation kernel' "$TMP/gh-args"; then fail "footer carries stale 'foundation kernel' branding"; fi
 echo "PASS: assembled PR body carries caller content + Files-changed + generator footer"
 
 # --- open: EXISTS outcome when gh reports a PR already exists ---------------

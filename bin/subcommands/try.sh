@@ -259,7 +259,7 @@ run_demo() {
     return 1
   fi
 
-  echo "== foundation try --demo =="
+  echo "== temperloop try --demo =="
   echo
   echo "!! MUTATING MODE: unlike the default zero-write taste above, --demo"
   echo "   clones $demo_repo to a scratch dir and opens a REAL pull request"
@@ -347,7 +347,7 @@ EOF
     echo "  either claimed or closed). Restore the fixed set with:"
     echo "  seed-demo-repo.sh --repo $demo_repo --reset"
     echo
-    echo "foundation try --demo: done (no tick run)"
+    echo "temperloop try --demo: done (no tick run)"
     return 0
   fi
 
@@ -443,7 +443,7 @@ PROMPT_EOF
 
   body_file="$scratch/pr-body.md"
   {
-    echo "Fix for \`$demo_repo\` issue #$issue_num, opened by \`foundation try --demo\`"
+    echo "Fix for \`$demo_repo\` issue #$issue_num, opened by \`temperloop try --demo\`"
     echo "(temperloop's newcomer demo tick — one real, safe-tier issue -> PR"
     echo "pass; the fix content came from a live \`claude -p\` call run with"
     echo "\`--tools \"\"\` — structurally zero tool access — so this script, not the"
@@ -479,7 +479,7 @@ PROMPT_EOF
   esac
 
   echo
-  echo "foundation try --demo: done — #$issue_num -> $outcome"
+  echo "temperloop try --demo: done — #$issue_num -> $outcome"
   echo "  (safe-tier boundary: PR opened, never merged. Issue left In Progress on"
   echo "  the scratch tracker — no board was provisioned. Restore the fixed seed"
   echo "  set any time with: seed-demo-repo.sh --repo $demo_repo --reset)"
@@ -541,7 +541,7 @@ probe_args=(--dir "$try_dir" --timeout "$try_timeout")
 [ -n "$gh_repo_flag" ] && probe_args+=(--gh-repo "$gh_repo_flag")
 [ "$no_network" -eq 1 ] && probe_args+=(--no-network)
 
-echo "== foundation try =="
+echo "== temperloop try =="
 echo
 echo "-- 1. Conventions probe (read-only) --"
 probe_out="$(bash "$PROBE" "${probe_args[@]}")"
@@ -634,7 +634,7 @@ fi
 if [ -n "$triage_reason" ]; then
   echo "skipped — $triage_reason"
   echo
-  echo "foundation try: done (zero writes)"
+  echo "temperloop try: done (zero writes)"
   exit 0
 fi
 
@@ -697,5 +697,5 @@ else
 fi
 
 echo
-echo "foundation try: done (zero writes)"
+echo "temperloop try: done (zero writes)"
 exit 0
