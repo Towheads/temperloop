@@ -111,6 +111,13 @@ KERNEL_GATES=(
   # de-dup, the raw-lake telemetry emit, and the preserved fail-open contract.
   # Same direct-`bash` form as the two knowledge_search gates above.
   "bash workflows/scripts/lib/tests/test_knowledge_search_mcp.sh"
+  # Corpus-first, gh-search-fallback exact body-marker probe (plan item
+  # "cache-search-routing", sibling of "cache-search-corpus" above): the
+  # helper triage.md/build.md route their idempotency probes through. Fake
+  # `_cache_gh` (mirrors test_cache_store.sh) + a fake `_issue_marker_probe_
+  # gh_cmd` seam (this file's own live-fallback injection point), zero
+  # network. Same direct-`bash` form as the issue-corpus gate above.
+  "bash workflows/scripts/lib/tests/test_issue_marker_probe.sh"
   "make test-scan-stub"
   "make lint-pr-body-test"
   "make test-stranger-config"
