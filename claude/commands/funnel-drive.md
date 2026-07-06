@@ -122,6 +122,20 @@ as such in its bullet below.)
 
 After each action, record `{action, issue, board, status: "executed"|"failed"|"refused", note}`.
 
+**A blocked or failed vault write is never `executed` (foundation#978).** Several
+actions above must land a durable vault artifact — a retro/verdict note, a
+pending-decisions append, an `/assess` plan-note write. If that write fails to land
+for **any** reason — a permission-denied MCP tool call (`mcp__obsidian…` /
+`mcp__obsidian-builtin…`), a write error, an unavailable backend — the action's
+artifact silently did not persist, so record it as **`failed`** (not `executed`) with
+a one-line `note` naming the blocked write, and count it under `failed` in Step 3.
+Reporting `executed` for an action whose artifact never landed is the #978
+silent-artifact-loss failure: a headless run whose retro append was permission-denied
+still returned `{"executed":2,"failed":0}`, so the drop was invisible. The ONLY
+carve-out is a write that is genuinely best-effort (its loss does not defeat the
+action's purpose): you may keep `executed` but MUST record the degraded write in
+`note` — never omit it.
+
 ## Step 3 — Emit the summary
 
 Print exactly one JSON object on stdout (this is your return value — `funnel-drive.sh`

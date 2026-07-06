@@ -208,6 +208,49 @@ if [ "$BACKFILL" -eq 1 ]; then
   exit $?
 fi
 
+# ── Step 0.6: self-provision the operator handle (foundation #1011) ───────────
+# The funnel cron runs from an ISOLATED checkout (~/dev/foundation.cron) that
+# self-updates via `git reset --hard`. build.config.local.sh — which sets the real
+# FUNNEL_OPERATOR — is gitignored, so it does NOT propagate to a fresh/wiped cron
+# checkout: FUNNEL_OPERATOR stays the @REPLACE_WITH_YOUR_GH_LOGIN placeholder and
+# every route-foundational drive silently refuses to assign, with no loud signal
+# until the funnel self-escalates hours later (F#835: ~12h of routed=0 before it
+# surfaced). Self-heal, the exact remediation F#835 did by hand: if the operator is
+# still the placeholder, resolve the real login and write it to build.config.local.sh
+# (chmod 600), AND export it for this very tick. Idempotent — the guard is the
+# resolved value, so once the file sets a real login this block is a no-op.
+# BACKSTOP: if the login can't be resolved (no `gh`, no auth), emit ONE loud
+# config-gap escalation to stderr rather than a silent 0-routed window (#1011 (2)).
+# Skipped on --dry-run: provisioning is a live side-effect; the fixture-replay tests
+# must never write a file or shell out. FUNNEL_OPERATOR_RESOLVE_BIN is the test seam
+# (mirrors the GATE/TICK/DRIVE bin seams) — a stub printing a fixed login.
+_funnel_resolve_operator_login() {
+  if [ -n "${FUNNEL_OPERATOR_RESOLVE_BIN:-}" ]; then
+    "$FUNNEL_OPERATOR_RESOLVE_BIN"
+  else
+    gh api user --jq .login
+  fi
+}
+funnel_operator_placeholder="@REPLACE_WITH_YOUR_GH_LOGIN"
+if [ "$DRY_RUN" -eq 0 ] && \
+   [ "${FUNNEL_OPERATOR:-$funnel_operator_placeholder}" = "$funnel_operator_placeholder" ]; then
+  resolved_login="$(_funnel_resolve_operator_login 2>/dev/null || true)"
+  resolved_login="${resolved_login#@}"   # tolerate a leading @ from a custom resolver
+  if [ -n "$resolved_login" ]; then
+    local_config="${BUILD_CONFIG_LOCAL:-$HERE/build.config.local.sh}"
+    # Append (create if absent). Sourced LAST by build.config.sh, so a later
+    # `export` wins; we also export into THIS process so the current tick routes.
+    printf 'export FUNNEL_OPERATOR="@%s"\n' "$resolved_login" >> "$local_config"
+    chmod 600 "$local_config" 2>/dev/null || true
+    export FUNNEL_OPERATOR="@$resolved_login"
+    jq -nc --arg op "@$resolved_login" --arg f "$local_config" \
+      '{event:"operator-provisioned",operator:$op,file:$f}' >&2 || true
+  else
+    jq -nc --arg ph "$funnel_operator_placeholder" \
+      '{event:"config-gap",reason:"FUNNEL_OPERATOR is the placeholder and the login could not be resolved (gh unavailable/unauthed)",operator:$ph,remedy:"set FUNNEL_OPERATOR in build.config.local.sh on the cron host"}' >&2 || true
+  fi
+fi
+
 # ── Log helpers ───────────────────────────────────────────────────────────────
 log_date="${FUNNEL_NOW_DATE:-$(date +%F)}"
 # One ISO-8601 timestamp for this tick's records, computed once at start (like

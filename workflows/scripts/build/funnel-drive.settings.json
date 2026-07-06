@@ -12,7 +12,8 @@
       "Grep",
       "Bash",
       "Task",
-      "mcp__obsidian__*"
+      "mcp__obsidian__*",
+      "mcp__obsidian-builtin__*"
     ]
   }
 }
