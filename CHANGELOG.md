@@ -14,6 +14,21 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- `claude/hooks/write-lane-guard.sh` — a PreToolUse guard enforcing session
+  working-tree ownership: a state-mutating tool call (Write/Edit/…; Bash
+  `git commit|checkout|merge|reset|push|…` or `make install`) whose target is the
+  canonical checkout of a repo *other* than the session's launch dir
+  (`$CLAUDE_PROJECT_DIR`) returns an `ask`, naming home vs. the foreign checkout
+  and pointing at the `git worktree add` escape hatch. Home, any linked worktree,
+  non-repo paths, `git worktree add`, and read-only ops stay silent; fails open;
+  `EVAL_RUN`-suppressed. Prevents one session from moving a concurrent peer's
+  `HEAD` by mutating its checkout in place (the epic #86 dev/foundation incident).
+  New `## Working-tree ownership` section in `CLAUDE.kernel.md` documents the rule.
+  NOTE for overlays: the hook ships here, but the `PreToolUse` matcher that wires
+  it in lives in the overlay `settings.json` — register it there on pull.
+
 ## [0.7.1] - 2026-07-06
 
 ### Fixed
