@@ -31,17 +31,13 @@ whose timed/modal merge gate is the human-supervised checkpoint**.
    order (already sliced to `cap`). Drive one code item fully before the next.
 4. **Execute each action independently.** A failure on one action is recorded and you
    continue to the next; one bad drive never aborts the batch.
-5. **Stay on the action's own board/repo — your cwd is already that checkout.** The
-   driver spawns you INSIDE the target board's local checkout (foundation #655), and
-   `/build` derives its `repoRoot` and board from that cwd — so you do **not** need to
-   (and must not) `cd` elsewhere or hunt for the repo. Every action you are handed
-   belongs to the board whose checkout you are in (the driver groups by board and
-   runs one session per checkout). Still pass `--board <board>` to pipeline commands
-   and `-R <repo>`/`--repo <repo>` to `gh` calls for the action's own `board`/`repo`,
-   and never touch another board. (If a `/build` invocation reports it cannot find the
-   target repo from here, do **not** `cd` to fix it — record the action as failed and
-   continue; a cwd/checkout mismatch is the driver's bug to fix, not yours to route
-   around.)
+5. **Stay on the action's own board/repo — your cwd is already that checkout.** Same
+   board/cwd discipline as `funnel-drive.md` HARD RULE 5 (spawned inside the target
+   board's checkout — foundation #655; pass `--board <board>` and `-R <repo>`/`--repo
+   <repo>` for the action's own board/repo; never touch another). **Merge-specific:** if
+   a `/build` invocation reports it cannot find the target repo from here, do **not**
+   `cd` to fix it — record the action as failed and continue; a cwd/checkout mismatch is
+   the driver's bug to fix, not yours to route around.
 
 `funnel-drive.sh` already pre-filtered to the merge tier and capped it; these rules are
 the second, independent guard on top of the structural pre-filter and the
