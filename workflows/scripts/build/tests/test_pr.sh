@@ -220,11 +220,11 @@ echo "PASS: open emits one bare Closes line per also_closes entry (comma list)"
 # emitted as `Closes owner/repo#N` (not bare `Closes #N` — a bare close is
 # same-repo only, plan-schema.md § Optional repo: field).
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
-  --gh-issue acme/foundation-kernel#42 --also-closes acme/foundation-kernel#43 --body-only)"
-grep -qxF 'Closes acme/foundation-kernel#42' <<<"$body" \
-  || fail "missing qualified 'Closes acme/foundation-kernel#42' (body: $body)"
-grep -qxF 'Closes acme/foundation-kernel#43' <<<"$body" \
-  || fail "missing qualified 'Closes acme/foundation-kernel#43' (body: $body)"
+  --gh-issue acme/widgets#42 --also-closes acme/widgets#43 --body-only)"
+grep -qxF 'Closes acme/widgets#42' <<<"$body" \
+  || fail "missing qualified 'Closes acme/widgets#42' (body: $body)"
+grep -qxF 'Closes acme/widgets#43' <<<"$body" \
+  || fail "missing qualified 'Closes acme/widgets#43' (body: $body)"
 grep -q '^Closes #' <<<"$body" && fail "qualified ref must not also emit a bare 'Closes #N' (body: $body)"
 echo "PASS: open emits Closes owner/repo#N for a qualified cross-repo gh_issue/also_closes ref"
 
