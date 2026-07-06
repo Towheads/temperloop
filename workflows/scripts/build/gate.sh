@@ -509,7 +509,16 @@ cmd_managed_merge() {
           '{outcome:"EJECTED", pr:$pr, failed_run_ids:$ids}'
         return 5
         ;;
-      TIMEOUT) die "CI re-poll timed out for #$pr on sha $sha" ;;
+      TIMEOUT)
+        # The SHA-pinned CI re-poll ran out its deadline with checks still
+        # pending. Per this file's header exit-code contract this is a TIMEOUT
+        # (exit 4), NOT an ERROR — a stall is a distinct, retryable outcome the
+        # orchestrator branches on, never the ERROR/exit-1 class a die() emits.
+        # `waited` reports the re-poll budget we exhausted (GATE_CI_POLL_TIMEOUT).
+        jq -cn --argjson pr "$pr" --argjson waited "${GATE_CI_POLL_TIMEOUT:-3600}" \
+          '{outcome:"TIMEOUT", pr:$pr, waited:$waited}'
+        return 4
+        ;;
       *)        die "CI re-poll failed for #$pr on sha $sha: $ci_ids" ;;
     esac
   fi
