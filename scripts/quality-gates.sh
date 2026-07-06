@@ -119,6 +119,10 @@ KERNEL_GATES=(
   # network. Same direct-`bash` form as the issue-corpus gate above.
   "bash workflows/scripts/lib/tests/test_issue_marker_probe.sh"
   "make test-scan-stub"
+  # Vault-hygiene probe (foundation #959): fixture-vault suite for
+  # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
+  # /drain-mind runs. Hermetic (mktemp fake vaults, no real vault, no network).
+  "make test-vault-hygiene"
   "make lint-pr-body-test"
   "make test-stranger-config"
   # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite
