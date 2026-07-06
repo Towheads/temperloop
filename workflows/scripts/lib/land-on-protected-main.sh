@@ -101,7 +101,7 @@ land__finish_wt() {  # <wt>
 # the diff-against-origin short-circuit converge repeated runs onto ONE PR, then
 # auto-flip to `committed (already on origin)` once it merges.
 land__via_pr() {  # <populate_fn>
-  local populate_fn="$1" branch wt rev pr
+  local populate_fn="$1" branch wt rev pr create_out
   branch="$LAND_BRANCH"
   git -C "$LAND_ROOT" worktree prune >/dev/null 2>&1 || true
   git -C "$LAND_ROOT" fetch -q origin "$LAND_DEFAULT_BRANCH" 2>/dev/null || true
@@ -131,10 +131,26 @@ land__via_pr() {  # <populate_fn>
     land__set uncommitted "" "" "push of branch '$branch' failed"
     return 0
   fi
+  # Adopt the stable branch's open PR, else open one — and CONVERGE even when the
+  # adopt-or-open step trips over its own idempotency (#27). A reused branch means a
+  # prior run's PR is the common case, so a momentary failure to see it must never
+  # strand the run as "could not find the PR":
+  #   - `gh pr list --head` is a SEARCH-index query that lags a fresh force-push, so
+  #     an empty result is not proof no PR exists.
+  #   - `gh pr create` REFUSES to make a duplicate and prints the existing PR's URL
+  #     in its "a pull request ... already exists: <url>" message — capture BOTH
+  #     streams (2>&1) so that number is recoverable instead of discarded, and match
+  #     the `/pull/<n>` URL so a stray digit in the body/title can't be mistaken for it.
+  #   - `gh pr view <branch>` resolves the branch's PR by head ref (no search index) —
+  #     the authoritative fallback that adopts a PR the list query hadn't indexed yet.
   pr="$("$LAND_GH" pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
   if [ -z "$pr" ]; then
-    pr="$("$LAND_GH" pr create --base "$LAND_DEFAULT_BRANCH" --head "$branch" \
-            --title "$LAND_PR_TITLE" --body "$LAND_PR_BODY" 2>/dev/null | grep -oE '[0-9]+$' | tail -1 || true)"
+    create_out="$("$LAND_GH" pr create --base "$LAND_DEFAULT_BRANCH" --head "$branch" \
+                    --title "$LAND_PR_TITLE" --body "$LAND_PR_BODY" 2>&1 || true)"
+    pr="$(printf '%s\n' "$create_out" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+$' | tail -1 || true)"
+  fi
+  if [ -z "$pr" ]; then
+    pr="$("$LAND_GH" pr view "$branch" --json number -q .number 2>/dev/null || true)"
   fi
   land__finish_wt "$wt"
   if [ -z "$pr" ]; then
