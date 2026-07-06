@@ -14,6 +14,28 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06 — BREAKING
+
+### BREAKING — daily-ritual command restructure (epic #86)
+
+Renames pipeline command contracts and changes the compose / kernel-manifest
+seam; an overlay that vendors this kernel MUST adapt before pulling:
+
+- `claude/commands/drain-mind.md` → `tidy.md`, plus a new `check-in.md`.
+  Recompose the overlay's per-file kernel symlinks: drop the `drain-mind.md`
+  symlink, add `tidy.md` and `check-in.md` symlinks into
+  `kernel/claude/commands/`.
+- The kernel-manifest reclassifies commands (`tidy`, `check-in` kernel). An
+  overlay's `composed-tree-manifest.txt` must follow: `drain-mind.md`→`tidy.md`,
+  add `check-in.md`.
+- The five store-global disposition surfaces are renamed
+  `Context/foundation - <name>` → `Context/pipeline - <name>` (pending decisions,
+  proposed supersessions, retro review surface, candidate tells, vault hygiene
+  report). Move the live files; anything appending to the old paths must repoint.
+- `/tidy` is now the sole `mind_snapshot.sh` runner (the snapshot left the
+  SessionStart hook), so a nightly `claude -p "/tidy"` invocation should be
+  scheduled to keep the drain + snapshot running.
+
 ### Added
 
 - `VERSIONING.md` — canonical versioning policy: bump rules defined against the
@@ -49,6 +71,8 @@ reads that marker; a stranger greps for it before pulling.
     taxonomy`) keep their prefix.
   - Kernel-manifest, docs generator, live/drain validator, hooks, and the
     `drain/` helpers/tests updated to the new names.
+
+## [0.6.2] - 2026-07-06
 
 ### Fixed
 
