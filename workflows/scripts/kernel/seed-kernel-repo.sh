@@ -336,7 +336,7 @@ temperloop
 Copyright 2026 the temperloop project contributors
 
 This product includes software developed as part of the temperloop
-project (formerly foundation-kernel): the process layer for a board-driven
+project: the process layer for a board-driven
 bug -> PR pipeline (board toolkit, build spine, funnel driver, quality
 gates, and the Claude Code commands/skills that drive them).
 
