@@ -2,7 +2,7 @@
 """
 scan_stub.py — deterministic pre-scan scanner for session stub files.
 
-Emits a JSON scan report consumed by drain-mind's extraction phase.
+Emits a JSON scan report consumed by tidy's extraction phase.
 Zero model tokens: pure Python 3 stdlib + jq/grep-equivalent logic.
 
 Usage:
@@ -498,7 +498,7 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
     # ASSISTANT turns. The "branched off a stale local main → DIRTY/redundant PR"
     # realization is almost always assistant-narrated, not user-typed, so the
     # user-only pass above misses it entirely (the gap that left this recurring
-    # rework invisible to /drain-mind). We scan only the state-collision subset
+    # rework invisible to /tidy). We scan only the state-collision subset
     # against assistant turns — NOT the whole user lexicon: the friction-slug
     # rows echo injected CLAUDE.md prose and would self-match (#444), but the
     # state-collision tells are real-world state strings ("DIRTY", "commits

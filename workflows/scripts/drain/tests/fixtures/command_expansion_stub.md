@@ -22,14 +22,14 @@ _Auto-saved by SessionEnd hook. Curated notes go above the transcript dump._
 
 ### User
 
-<command-name>/plan-morning</command-name>
-            <command-message>plan-morning</command-message>
+<command-name>/standup</command-name>
+            <command-message>standup</command-message>
             <command-args></command-args>
 
 ### User
 
 <local-command-stdout>
-This is the plan-morning skill output. It contains tell phrases embedded in
+This is the standup skill output. It contains tell phrases embedded in
 the skill prose. For example: Lesson: this is embedded skill text. Also:
 are you sure, Park to Backlog, stopping point, silently failed, wrong layer,
 version mismatch, latent defect, stale-context-rework, search-thrash,
@@ -40,14 +40,14 @@ produce lexicon matches — this is the self-match guard.
 
 ### User
 
-<command-name>/drain-mind</command-name>
-            <command-message>drain-mind</command-message>
+<command-name>/tidy</command-name>
+            <command-message>tidy</command-message>
             <command-args></command-args>
 
 ### User
 
 <local-command-stdout>
-drain-mind output also contains tell phrases:
+tidy output also contains tell phrases:
 before verifying, false positive, invalidated my read, CONFLICTING, DIRTY,
 already closed, stale cache, commits behind, now-stale, file a bug,
 issue to track, want me to file, resolved by verification, supersedes,
@@ -67,7 +67,7 @@ tool-misuse, search-thrash.
 
 ### Assistant
 
-Processing the drain-mind command.
+Processing the tidy command.
 
 ### User
 

@@ -21,7 +21,7 @@
 # gate set is two layers unioned at run time, so the coming kernel/overlay
 # repo split can't break "local gate = CI gate" in either repo.
 #
-#   KERNEL_GATES  — board / build / install / hooks / PR-hygiene / drain-mind
+#   KERNEL_GATES  — board / build / install / hooks / PR-hygiene / tidy
 #     mechanical-owner suites. Classified by "would a stranger's kernel-only
 #     install have this make target?" — yes: none of them reference
 #     foundation-private subject matter (Travis's telemetry/dashboard, the
@@ -121,7 +121,7 @@ KERNEL_GATES=(
   "make test-scan-stub"
   # Vault-hygiene probe (foundation #959): fixture-vault suite for
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
-  # /drain-mind runs. Hermetic (mktemp fake vaults, no real vault, no network).
+  # /tidy runs. Hermetic (mktemp fake vaults, no real vault, no network).
   "make test-vault-hygiene"
   # Recent-findings tally (foundation #960): the drain "Recurrence → promotion"
   # heredoc extracted to drain/tally_recent_findings.py — fixture-seeded, hermetic.

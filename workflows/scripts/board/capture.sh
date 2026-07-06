@@ -6,7 +6,7 @@
 # This is the source-side half of the dropped-bug capture net (GH #245): the
 # live "Capture at source" rule in CLAUDE.md says capture-don't-ask, and this
 # script is what makes that cheap. The drain backstop
-# (~/.claude/commands/drain-mind.md § Unfiled defects) is the other half.
+# (~/.claude/commands/tidy.md § Unfiled defects) is the other half.
 #
 # Routing (per CLAUDE.md § Task workflow "Defect vs enhancement routing"):
 #   - DEFECT / trackable work that should exist  -> use this script (board item)

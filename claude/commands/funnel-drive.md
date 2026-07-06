@@ -75,7 +75,7 @@ as such in its bullet below.)
 
 - **`drain-answer`** — the operator answered a decision issue (`.chosen` carries
   the parsed reply). Apply it via the existing drain: **build.md Step 0a /
-  `drain-mind` § Answered decisions** — translate the reply into its artifact, drop
+  `tidy` § Answered decisions** — translate the reply into its artifact, drop
   the `decision` label, and hand the baton back. Route to that backend; do not
   perform the sentinel/worktree work yourself.
 

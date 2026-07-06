@@ -18,7 +18,7 @@ Usage (CLI):
 
 The file is created on first write (no pre-creation needed).
 
-Designed to be called from drain-mind's Step 3 Findings records section —
+Designed to be called from tidy's Step 3 Findings records section —
 one call per adjudicated candidate (both accepted and rejected), so the
 false-positive rate is also measurable.
 

@@ -60,7 +60,7 @@ README.md
 # above: the literal is the test subject, not a leak.
 workflows/scripts/tests/test_install_settings.sh
 
-# Synthetic cwd fixtures for drain-mind's session-stub parsing tests; the
+# Synthetic cwd fixtures for tidy's session-stub parsing tests; the
 # personal-looking path is deliberately realistic test input, never a real
 # session.
 workflows/scripts/drain/tests/fixtures/sample_stub.md

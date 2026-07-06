@@ -5,7 +5,7 @@ This is the docs generator's INCLUDE FILTER (foundation #764, Epic C "docs
 generated from source in CI"): a source scanner (e.g. sources/commands.py
 walking claude/commands/*.md) calls classify() per candidate file and skips
 anything that isn't "kernel" — so an overlay-classified command (Travis's
-personal plan-morning/plan-evening/telemetry/signal-intake rituals) never
+personal standup/telemetry/signal-intake rituals) never
 renders into the built site, with zero per-source-module special-casing. As
 the manifest evolves (a command reclassified, a new kernel path added), the
 generator's output follows automatically.

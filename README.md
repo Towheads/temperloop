@@ -27,8 +27,9 @@ Three pieces, meant to be adopted independently or together:
    epics; `/assess` turns an epic into a dependency-ordered plan note;
    `/build` executes an approved plan (isolate a worktree, spawn an agent,
    open a PR, watch CI, batch-merge); `/sweep` drains ungrouped singleton
-   issues the same way. `/next` tells you what to run; `/drain-mind` closes
-   the loop on session learnings.
+   issues the same way. `/next` tells you what to run; `/tidy` closes
+   the loop on session learnings (nightly, unattended) and `/check-in`
+   reviews what it parked.
 3. **Install and quality-gate tooling** — a single `temperloop` CLI (below)
    for the pre-checkout adoption path (try it, demo it, opt in), plus
    `scripts/quality-gates.sh`, the one static gate set a repo's CI and its
@@ -138,7 +139,8 @@ Makefile        the in-checkout command surface (test/gate/docs targets)
 | `/build` | Executes an approved plan: isolates a worktree per item, spawns an agent, opens a PR, monitors CI, batches the merge gate. |
 | `/sweep` | Drains a board's Ready singletons (issues triage left ungrouped), reusing `/build`'s per-issue workflow. |
 | `/next` | Advisory "what do I do now" — reads the board + plan notes, recommends the next command. Never mutates anything. |
-| `/drain-mind` | Processes session-stub backlog: extracts learnings, archives transcripts. |
+| `/tidy` | Nightly unattended: processes the session-stub backlog (extracts learnings, archives transcripts, snapshots the vault) and parks anything needing human judgment on durable review surfaces. |
+| `/check-in` | Daily human review: renders the telemetry brief, disposes the surfaces `/tidy` parked overnight, and sets the `/next` priorities per project. |
 | `/init` | Bootstraps a new project's `CLAUDE.md` + context. |
 
 ### Board adapter (bare commands, source in `workflows/scripts/board/`)

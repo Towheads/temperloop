@@ -1,7 +1,7 @@
 # Scan Report Schema — v1
 
 `scan_stub.py` emits a JSON object with this stable shape.
-Downstream consumers (e.g. `drain-mind`'s extraction phase) MUST handle
+Downstream consumers (e.g. `tidy`'s extraction phase) MUST handle
 every field marked **required**; optional fields may be absent.
 
 ---

@@ -27,8 +27,8 @@ KERNEL-MANIFEST INCLUDE FILTER: every source module that scans a directory
 of candidate files (today: sources/commands.py) is handed the parsed
 kernel-manifest.txt entries and calls lib.kernel_manifest.is_kernel() per
 candidate — only "kernel"-classified paths render. This means an
-overlay-classified command (plan-morning, plan-evening, telemetry,
-signal-intake) is excluded automatically, with no per-command list to keep
+overlay-classified command (standup, telemetry, signal-intake) is
+excluded automatically, with no per-command list to keep
 in sync by hand. See lib/kernel_manifest.py.
 
 OVERLAY RENDERER DROP-IN CONVENTION: analogous to scripts/quality-gates.d/
