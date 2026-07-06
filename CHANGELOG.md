@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-06
+
 ### Added
 
 - `claude/hooks/write-lane-guard.sh` — a PreToolUse guard enforcing session
