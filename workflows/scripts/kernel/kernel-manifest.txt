@@ -252,7 +252,6 @@ kernel workflows/scripts/lint-pr-body.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-live-drain.sh
-kernel workflows/scripts/test_findings.py
 
 overlay workflows/scripts/aggregate_sessions.py
 overlay workflows/scripts/test_aggregate_sessions.py
@@ -293,6 +292,11 @@ overlay workflows/scripts/test_reconcile_otel.py
 overlay workflows/scripts/rework-snapshot.sh
 overlay workflows/scripts/validate_telemetry.py
 overlay workflows/scripts/test_validate_telemetry.py
+# test_findings.py imports overlay-only validate_telemetry (findings quality
+# coverage) so it is an overlay test, not kernel — re-marked from kernel here
+# (K#50) to keep a bare kernel checkout from shipping a test that ModuleNotFound
+# on `import validate_telemetry`.
+overlay workflows/scripts/test_findings.py
 overlay workflows/scripts/validator-ci.sh
 overlay workflows/scripts/test_validators.py
 
