@@ -222,6 +222,11 @@ assert_contains "Cost estimate"
 assert_contains "FAKE-TRIAGE-REPORT-MARKER: cull 0, group 1, priority set"
 assert_order "Cost estimate" "FAKE-TRIAGE-REPORT-MARKER"
 
+# post-TemperLoop-rename branding: banner + done line say temperloop, not foundation.
+assert_contains "== temperloop try =="
+assert_contains "temperloop try: done (zero writes)"
+assert_not_contains "foundation try"
+
 gh_log_has_only_reads
 grep -q '^issue list ' "$CALL_LOG" || fail "expected a gh issue list call, got: $(cat "$CALL_LOG")"
 

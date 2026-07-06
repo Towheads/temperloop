@@ -218,6 +218,19 @@ case "$out" in
   *"PR_OPENED"*) ;;
   *) fail "expected a PR_OPENED outcome (got: $out)" ;;
 esac
+# post-TemperLoop-rename branding: banner + done line say temperloop, not foundation.
+case "$out" in
+  *"== temperloop try --demo =="*) ;;
+  *) fail "expected the temperloop --demo banner (got: $out)" ;;
+esac
+case "$out" in
+  *"temperloop try --demo: done"*) ;;
+  *) fail "expected the temperloop --demo done line (got: $out)" ;;
+esac
+case "$out" in
+  *"foundation try"*) fail "output must not carry stale 'foundation try' branding (got: $out)" ;;
+  *) ;;
+esac
 git -C "$BARE" show-ref --verify --quiet refs/heads/demo/issue-5 \
   || fail "proposal branch was not pushed to the bare upstream"
 git -C "$BARE" show refs/heads/demo/issue-5:greet.sh 2>/dev/null | grep -q 'Hello,' \
