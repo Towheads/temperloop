@@ -75,6 +75,14 @@ The build repos (foundation, stageFind, ssmobile, subsetwiki) share one branch/P
 
 Branch-naming rationale: `[[Decisions/foundation - Branch naming convention]]`. Pre-convention branch names a repo grandfathers in are noted in that repo's own file.
 
+## Working-tree ownership
+
+**A session mutates only the working tree it was launched in.** Multiple Claude sessions share one machine's filesystem, and a git working tree has exactly one `HEAD`. Under the operating invariant **one session per repo directory**, a repo's *canonical checkout* is where a peer session lives — so reaching out of your own launch dir to mutate another repo's canonical checkout in place (a `git checkout -b`, a commit, a merge, `make install`) moves that peer's `HEAD`/branch pointer underneath it and leaves its on-disk state inconsistent with what it thinks it has. Branch-per-issue (§ Branch & PR policy) protects `main`; it does **not** address this — two sessions sharing one tree still contend for the single `HEAD`.
+
+Your **lane** is your launch dir (`$CLAUDE_PROJECT_DIR`) **plus any linked git worktree** (a linked worktree is ephemeral task scratch with its own `HEAD` — never a session's launch dir, so writing one steps on nobody). Cross-repo work is therefore done in an **isolated worktree off the foreign repo** — `git -C <foreign-repo> worktree add <path> -b <branch>`, worked under `<path>` — never that repo's canonical checkout directly. The vault, `/tmp`, and scratchpads are not git repos and are always in-lane. Note also that `make install` writes global `~/.claude`, a shared side effect regardless of worktree — run it deliberately (operator-run or serialized), not mid-task from an arbitrary session.
+
+This is mechanically backstopped by the **`write-lane-guard.sh`** PreToolUse hook (kernel `claude/hooks/`): a state-mutating tool call (Write/Edit/…; Bash `git commit|checkout|switch|merge|reset|push|…` or `make install`) whose target resolves to the main working tree of a repo other than home returns an `ask`, naming home vs. the foreign checkout and pointing at the worktree escape hatch. Home, any linked worktree, non-repo paths, `git worktree add`, and all read-only ops stay silent; the hook fails open. Same guard family as `git-stale-branch-guard.sh` / `subtree-edit-guard.sh`. Rationale: `[[Decisions/temperloop - Session write-lane guard]]`.
+
 ## Issue linkage
 
 Applies to **PR/issue workflows**: any time a PR resolves a GitHub issue. When it does, the PR body MUST carry a `Closes #N` (or `Fixes #N`) line so GitHub auto-links the PR and auto-closes the issue on merge. Omit it entirely for refactors, chores, or features with no pre-existing tracker — don't invent issue references.
