@@ -57,8 +57,11 @@ kind of drift-prone mechanism the kernel/overlay split is trying to avoid.
 
 ## Release-tag convention
 
-- Tags are `v0.x.y` (SemVer, pre-1.0 — a minor bump may include breaking
-  changes) on the commit that produced them, annotated (`git tag -a`).
+- Tags are `v0.x.y` (SemVer, pre-1.0) on the commit that produced them,
+  annotated (`git tag -a`). See [`VERSIONING.md`](../../../VERSIONING.md) for
+  the canonical bump rules — when a bump is breaking vs additive vs a fix, and
+  the `BREAKING` CHANGELOG-marker convention that carries the breaking signal
+  pre-1.0.
 - `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/):
   one `## [x.y.z] - YYYY-MM-DD` section per release, `### Added` /
   `### Changed` / `### Fixed` / `### Removed` subsections as needed.

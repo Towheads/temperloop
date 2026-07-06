@@ -3,10 +3,26 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/) —
-pre-1.0, so a minor version bump (`0.x.0`) may include breaking changes.
+and this project adheres to [Semantic Versioning](https://semver.org/). See
+[`VERSIONING.md`](VERSIONING.md) for the canonical bump rules and what each
+tier signals.
+
+Pre-1.0, the breaking signal rides the CHANGELOG, not the version number: a
+release that changes the contract surface in a way an overlay must adapt to
+**tags its section `BREAKING`** and includes a migration note. `update-kernel`
+reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
+
+### Added
+
+- `VERSIONING.md` — canonical versioning policy: bump rules defined against the
+  kernel's contract surface (board adapter, pipeline commands, hooks, `checks`
+  gate, CLI, compose/pin seam), the pre-1.0 `BREAKING` CHANGELOG-marker
+  convention, the `update-kernel` breaking-delta gate (routed follow-up), and a
+  1.0 criterion (three consecutive minor releases with no `BREAKING` marker).
+  The CHANGELOG preamble and `kernel-repo-layout.md` § Release-tag convention
+  now defer to it. (foundation temperloop#79)
 
 ### Fixed
 
