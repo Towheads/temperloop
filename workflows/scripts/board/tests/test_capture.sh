@@ -146,6 +146,61 @@ trap 'rm -rf "$BIN"' EXIT
 echo "ALL capture.sh --rework tests passed"
 
 # ---------------------------------------------------------------------------
+# Work-class label substitution (#49): a --label naming a recognized work-class
+# value (Operational/Foundational) SUBSTITUTES the default Operational label so
+# the issue carries EXACTLY ONE work-class label (work-class-policy.md's
+# mutually-exclusive binary) — it must NOT emit both. A non-work-class --label
+# still APPENDS on top of the default Operational. Same full-flow fake_gh.sh
+# harness as the --rework happy path above; we inspect the `gh issue create`
+# line's --label flags.
+# ---------------------------------------------------------------------------
+WC_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-wc-bin-XXXXXX")"
+cp "$FIX/fake_gh.sh" "$WC_BIN/gh"; chmod +x "$WC_BIN/gh"
+cleanup_wc() { rm -rf "$WC_BIN"; }
+trap 'cleanup_wc; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+wc_issue_create_line() {  # $1=label-arg... ; runs capture, echoes the issue create log line
+  local wlog wcache
+  wlog="$(mktemp "${TMPDIR:-/tmp}/capture-wc-log-XXXXXX")"
+  wcache="$(mktemp -d "${TMPDIR:-/tmp}/capture-wc-cache-XXXXXX")"
+  local rc=0 o
+  o="$(PATH="$WC_BIN:$PATH" GH_LOG="$wlog" GH_FIXTURES="$FIX" \
+       BOARD_CACHE_TTL=0 BOARD_CACHE_DIR="$wcache" \
+       bash "$CAPTURE" "$@" 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || { rm -rf "$wcache"; fail "capture.sh [$*] exited $rc (out: $o)"; }
+  grep '^gh issue create ' "$wlog" || true
+  rm -f "$wlog"; rm -rf "$wcache"
+}
+
+# 1) --label Foundational SUBSTITUTES: one work-class label, and it's Foundational
+line="$(wc_issue_create_line "New capability" --label Foundational)"
+[ -n "$line" ] || fail "--label Foundational never reached gh issue create"
+grep -q -- "--label Foundational" <<<"$line" \
+  || fail "--label Foundational was not applied (line: $line)"
+grep -q -- "--label Operational" <<<"$line" \
+  && fail "#49: --label Foundational must NOT also apply Operational (line: $line)"
+echo "PASS: capture.sh --label Foundational substitutes the work-class label (exactly one, no dual Operational) (#49)"
+
+# 2) --label Operational (the default, passed explicitly) still yields exactly one
+line="$(wc_issue_create_line "Explicit operational" --label Operational)"
+[ "$(grep -o -- '--label Operational' <<<"$line" | wc -l | tr -d ' ')" = "1" ] \
+  || fail "#49: --label Operational must yield exactly one Operational label (line: $line)"
+echo "PASS: capture.sh --label Operational yields exactly one work-class label (no duplicate) (#49)"
+
+# 3) a non-work-class --label still APPENDS on top of the default Operational
+line="$(wc_issue_create_line "A bug" --label bug)"
+grep -q -- "--label Operational" <<<"$line" \
+  || fail "#49: a non-work-class --label must keep the default Operational (line: $line)"
+grep -q -- "--label bug" <<<"$line" \
+  || fail "#49: a non-work-class --label must still append (line: $line)"
+echo "PASS: capture.sh --label bug still appends on top of the default Operational (#49)"
+
+cleanup_wc
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+echo "ALL capture.sh work-class label substitution tests passed"
+
+# ---------------------------------------------------------------------------
 # --repo kernel / --repo ambiguous full-flow (F#808, Guard #3 of the
 # kernel-vs-overlay routing rule): drives capture.sh as a real subprocess
 # against a bespoke fake `gh` (the shared fixtures/fake_gh.sh is Projects-v2
