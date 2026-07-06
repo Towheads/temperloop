@@ -9,6 +9,7 @@
       "Bash",
       "Task",
       "mcp__obsidian__*",
+      "mcp__obsidian-builtin__*",
       "Bash(gh pr:*)",
       "Bash(gh pr merge:*)",
       "Bash(git push:*)"

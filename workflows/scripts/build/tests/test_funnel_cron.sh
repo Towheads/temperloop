@@ -294,6 +294,64 @@ SU4OUT="$(env FUNNEL_NOW_HOUR=14 FUNNEL_NOW_DATE=2026-06-25 FUNNEL_SCHEDULE_FILE
 grep -h '"event":"self-update"' "$SU4ERR" | jq -e 'select(.status=="failed")' >/dev/null 2>&1 \
   && ok "fetch failure logged a self-update:failed record to stderr" || bad "su4.log" "$(cat "$SU4ERR")"
 
+# ── OPERATOR SELF-PROVISION (foundation #1011) ───────────────────────────────
+# On an isolated cron checkout the gitignored build.config.local.sh does not
+# propagate, so FUNNEL_OPERATOR stays the placeholder and routing silently no-ops.
+# The wrapper self-heals: placeholder + resolvable login → write build.config.local.sh
+# (chmod 600) + export for this tick; placeholder + unresolvable → ONE loud config-gap
+# escalation. All runs below use an UNSCHEDULED hour so the gate skips (exit 0) BEFORE
+# any tick/gh — provisioning runs earlier (Step 0.6), so a skip still exercises it.
+PSCHED="$TMP/prov-sched.md"
+printf '%s\n' '# funnel schedule' '' '```funnel-schedule' 'enabled: yes' 'hours: 14' '```' > "$PSCHED"
+# resolver stub: prints a fixed login (mirrors `gh api user --jq .login`).
+PRESOLVE="$TMP/resolve-login.sh"
+printf '#!/usr/bin/env bash\necho provisioned-login\n' > "$PRESOLVE"; chmod +x "$PRESOLVE"
+# resolver stub that FAILS (empty output, non-zero) — models gh unavailable/unauthed.
+PRESOLVE_FAIL="$TMP/resolve-fail.sh"
+printf '#!/usr/bin/env bash\nexit 3\n' > "$PRESOLVE_FAIL"; chmod +x "$PRESOLVE_FAIL"
+
+# PROV 1: placeholder + resolvable → provisions the file + exports + emits event.
+echo "--- provision 1: placeholder + resolvable login → self-provision ---"
+mkdir -p "$TMP/prov1"; P1LOCAL="$TMP/prov1/build.config.local.sh"; P1ERR="$TMP/prov1.err"
+env FUNNEL_NOW_HOUR=3 FUNNEL_SCHEDULE_FILE="$PSCHED" FUNNEL_LOG_DIR="$TMP/provlog1" \
+  FUNNEL_NOTIFY_CMD="true" FUNNEL_OPERATOR_RESOLVE_BIN="$PRESOLVE" BUILD_CONFIG_LOCAL="$P1LOCAL" \
+  bash "$CRON" >/dev/null 2>"$P1ERR" || true
+grep -h '"event":"operator-provisioned"' "$P1ERR" | jq -e '.operator=="@provisioned-login"' >/dev/null 2>&1 \
+  && ok "placeholder → emits operator-provisioned with the resolved @login" || bad "prov1.event" "$(cat "$P1ERR")"
+[ -f "$P1LOCAL" ] && grep -q 'export FUNNEL_OPERATOR="@provisioned-login"' "$P1LOCAL" \
+  && ok "wrote build.config.local.sh with the real operator export" || bad "prov1.file" "$(cat "$P1LOCAL" 2>/dev/null || echo MISSING)"
+[ "$(stat -f '%Lp' "$P1LOCAL" 2>/dev/null || stat -c '%a' "$P1LOCAL" 2>/dev/null)" = "600" ] \
+  && ok "provisioned file is chmod 600" || bad "prov1.mode" "$(stat -f '%Lp' "$P1LOCAL" 2>/dev/null)"
+
+# PROV 2: placeholder + UNRESOLVABLE → ONE loud config-gap event, NO file written.
+echo "--- provision 2: placeholder + unresolvable → loud config-gap, no file ---"
+mkdir -p "$TMP/prov2"; P2LOCAL="$TMP/prov2/build.config.local.sh"; P2ERR="$TMP/prov2.err"
+env FUNNEL_NOW_HOUR=3 FUNNEL_SCHEDULE_FILE="$PSCHED" FUNNEL_LOG_DIR="$TMP/provlog2" \
+  FUNNEL_NOTIFY_CMD="true" FUNNEL_OPERATOR_RESOLVE_BIN="$PRESOLVE_FAIL" BUILD_CONFIG_LOCAL="$P2LOCAL" \
+  bash "$CRON" >/dev/null 2>"$P2ERR" || true
+[ "$(grep -hc '"event":"config-gap"' "$P2ERR")" = "1" ] \
+  && ok "unresolvable → exactly ONE config-gap escalation (not a silent no-op)" || bad "prov2.gap" "$(cat "$P2ERR")"
+[ ! -f "$P2LOCAL" ] && ok "unresolvable → no build.config.local.sh written" || bad "prov2.file" "unexpected file $(cat "$P2LOCAL")"
+
+# PROV 3: operator ALREADY real → no provisioning (idempotent no-op), no file, no event.
+echo "--- provision 3: operator already set → no-op (idempotent) ---"
+mkdir -p "$TMP/prov3"; P3LOCAL="$TMP/prov3/build.config.local.sh"; P3ERR="$TMP/prov3.err"
+env FUNNEL_NOW_HOUR=3 FUNNEL_SCHEDULE_FILE="$PSCHED" FUNNEL_LOG_DIR="$TMP/provlog3" \
+  FUNNEL_NOTIFY_CMD="true" FUNNEL_OPERATOR="@realops" FUNNEL_OPERATOR_RESOLVE_BIN="$PRESOLVE" \
+  BUILD_CONFIG_LOCAL="$P3LOCAL" bash "$CRON" >/dev/null 2>"$P3ERR" || true
+{ ! grep -q '"event":"operator-provisioned"' "$P3ERR" && ! grep -q '"event":"config-gap"' "$P3ERR"; } \
+  && ok "real operator → no provisioning event" || bad "prov3.event" "$(cat "$P3ERR")"
+[ ! -f "$P3LOCAL" ] && ok "real operator → no file written (no-op)" || bad "prov3.file" "unexpected file"
+
+# PROV 4: --dry-run NEVER provisions, even with the placeholder (live side-effect only).
+echo "--- provision 4: --dry-run → never provisions (offline invariant) ---"
+mkdir -p "$TMP/prov4"; P4LOCAL="$TMP/prov4/build.config.local.sh"; P4ERR="$TMP/prov4.err"
+env FUNNEL_NOW_HOUR=3 FUNNEL_SCHEDULE_FILE="$PSCHED" FUNNEL_LOG_DIR="$TMP/provlog4" \
+  FUNNEL_NOTIFY_CMD="true" FUNNEL_OPERATOR_RESOLVE_BIN="$PRESOLVE" BUILD_CONFIG_LOCAL="$P4LOCAL" \
+  bash "$CRON" --dry-run --fixture "$FXS" >/dev/null 2>"$P4ERR" || true
+{ [ ! -f "$P4LOCAL" ] && ! grep -q '"event":"operator-provisioned"' "$P4ERR"; } \
+  && ok "--dry-run: no provisioning file or event" || bad "prov4" "file=$([ -f "$P4LOCAL" ] && echo yes) $(cat "$P4ERR")"
+
 # ── RUNG-5b drive step (#604) ────────────────────────────────────────────────
 # Step 4 is OPT-IN (FUNNEL_DRIVE). A cron --dry-run passes --dry-run THROUGH to
 # funnel-drive.sh, so these stay offline — no claude is ever spawned. A marker
@@ -601,6 +659,7 @@ LOGD21="$TMP/wlog18"
 SENT21="$TMP/rework21.txt"
 env FUNNEL_NOW_HOUR=14 FUNNEL_NOW_DATE=2026-06-25 FUNNEL_SCHEDULE_FILE="$F6" \
   FUNNEL_TICK_BIN="$TICK_NOOP" FUNNEL_LOG_DIR="$LOGD21" FUNNEL_NOTIFY_CMD="true" \
+  FUNNEL_OPERATOR="@testops" \
   REWORK_SNAPSHOT_BIN="$REWORK_STUB" REWORK_SENTINEL="$SENT21" \
   bash "$CRON" >/dev/null
 [ -f "$SENT21" ] && ok "rework-snapshot.sh invoked on a live (non-dry-run) run" || bad "w21.invoked" "no invocation recorded"
@@ -614,6 +673,7 @@ LOGD22="$TMP/wlog19"
 SENT22="$TMP/rework22.txt"
 OUT22="$(env FUNNEL_NOW_HOUR=14 FUNNEL_NOW_DATE=2026-06-25 FUNNEL_SCHEDULE_FILE="$F" \
   FUNNEL_TICK_BIN="$TICK_NOOP" FUNNEL_LOG_DIR="$LOGD22" FUNNEL_NOTIFY_CMD="true" \
+  FUNNEL_OPERATOR="@testops" \
   REWORK_SNAPSHOT_BIN="$REWORK_STUB" REWORK_SENTINEL="$SENT22" REWORK_STUB_EXIT=1 \
   bash "$CRON")"
 RC22=$?

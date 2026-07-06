@@ -10,6 +10,29 @@ pre-1.0, so a minor version bump (`0.x.0`) may include breaking changes.
 
 ### Fixed
 
+- Unattended funnel-run silent-failure hardening (foundation epic #1041):
+  - `workflows/scripts/build/funnel-drive.settings.json` +
+    `funnel-drive-merge.settings.json`: grant `mcp__obsidian-builtin__*` in the
+    headless permission overlays. The overlays previously allowed only
+    `mcp__obsidian__*` (the mcp-tools *semantic-search* server) while every vault
+    read/write/append routes through the *built-in* REST server — so every
+    unattended `/funnel-drive` / `/assess` / retro session was permission-denied on
+    `vault_read`/`vault_write`/`vault_append`. (foundation#973)
+  - `claude/commands/funnel-drive.md`: a blocked or failed vault write is now
+    recorded `failed` (never `executed`) in the Step-3 JSON summary. A headless 5b
+    run whose retro append was permission-denied previously still returned
+    `{"executed":2,"failed":0}`, silently losing the artifact. (foundation#978)
+  - `workflows/scripts/build/funnel-cron.sh`: self-provision `FUNNEL_OPERATOR` on
+    an isolated cron checkout. The gitignored `build.config.local.sh` does not
+    propagate to `~/dev/foundation.cron` on self-update, so `FUNNEL_OPERATOR`
+    stayed the `@REPLACE_WITH_YOUR_GH_LOGIN` placeholder and every route-foundational
+    drive silently refused to assign (F#835: ~12h of `routed=0`). A live tick now
+    resolves the real login (injectable `FUNNEL_OPERATOR_RESOLVE_BIN`, default
+    `gh api user --jq .login`), writes `build.config.local.sh` (chmod 600) and
+    exports it for the tick; if the login can't be resolved it emits ONE loud
+    `config-gap` escalation instead of a silent 0-routed window. Skipped on
+    `--dry-run`. New provisioning tests in `tests/test_funnel_cron.sh`. (foundation#1011)
+
 - `claude/hooks/session-end-log.sh`: SessionEnd stub no longer loses
   post-compact session history — a compact rollover moves the live
   conversation into a new transcript jsonl while the hook is handed the stale
