@@ -14,6 +14,17 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-06
+
+### Fixed
+
+- `tidy.md`: restore the `### Knowledge-search parity misses` drain step that the
+  v0.7.0 daily-ritual rewrite accidentally dropped — the kernel-resident backstop
+  for the overlay's temporary Phase-1 parity comparison rule. A composed overlay
+  checkout's `validate-live-drain` flagged the Live/Drain pair HALF-PRESENT; the
+  kernel-only check never saw it (the overlay extension table is absent there).
+  The step already self-skips in a standalone kernel checkout. (epic #86 follow-up)
+
 ## [0.7.0] - 2026-07-06 — BREAKING
 
 ### BREAKING — daily-ritual command restructure (epic #86)
