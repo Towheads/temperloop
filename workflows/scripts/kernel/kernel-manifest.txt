@@ -307,3 +307,4 @@ kernel LICENSE
 kernel NOTICE
 kernel SECURITY.md
 kernel CHANGELOG.md
+kernel VERSIONING.md
