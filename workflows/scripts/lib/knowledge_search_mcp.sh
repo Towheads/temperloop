@@ -26,9 +26,18 @@
 # ── Fail-open ─────────────────────────────────────────────────────────────
 # If the daemon is unreachable / errors / returns an unparseable body, this
 # backend DELEGATES to the cold "basic-memory" backend (a fresh uvx CLI
-# subprocess) after printing a one-line "degraded —" notice to stderr. A slow
-# answer, never a silent empty result — the adapter's legible-degradation
-# posture (knowledge_search.sh exit-code contract) is preserved.
+# subprocess). A slow answer, never a silent empty result — the adapter's
+# legible-degradation posture (knowledge_search.sh exit-code contract) is
+# preserved.
+#
+# The fallback is SURFACED to the operator, not just whispered to a swallowed
+# stderr (temperloop#54). On each fallback the backend fires
+# `_ks_bm_mcp_fallback_signal`, which — at most ONCE per session — emits a
+# durable raw-lake telemetry record (stream `knowledge-search-fallback`, so a
+# down daemon is observable/alertable by the same rollups that read the other
+# kernel streams) AND prints a one-time-per-session "degraded —" stderr notice
+# (no per-query spam). Every step is fail-open: any error there is swallowed, the
+# cold path still runs, and the caller still gets results with exit 0.
 #
 # ── AGPL boundary ─────────────────────────────────────────────────────────
 # basic-memory (AGPL-3.0) is reached ONLY as a separate process over the MCP
@@ -54,6 +63,104 @@
 : "${KNOWLEDGE_SEARCH_BM_MCP_PROTO:=2025-03-26}"
 : "${KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT:=2}"
 : "${KNOWLEDGE_SEARCH_BM_MCP_MAX_TIME:=30}"
+
+# ── Operator-visible cold-fallback signal (temperloop#54) ──────────────────
+# The ONLY prior signal that the warm path fell back to the (much slower) cold
+# CLI was a per-query stderr line — invisible whenever the caller swallows
+# stderr (the common case in foundation's normal invocation path), and spammy
+# when it ISN'T swallowed. This section adds a durable, de-duped signal that
+# survives a swallowed stderr, without changing the fail-open contract.
+#
+# Config knobs (tests only):
+#   KS_SEARCH_FALLBACK_RAW_DIR    override the raw-lake dir (default: the
+#                                 <repo>/meta/data/raw resolved from this file).
+#   KS_SEARCH_FALLBACK_STATE_DIR  override the de-dup marker dir (default:
+#                                 ${TMPDIR:-/tmp}).
+#
+# Self-location captured at SOURCE time, portably across bash and zsh — both
+# libs here are sourced under zsh too (temperloop#40). bash populates
+# BASH_SOURCE; zsh leaves it unset but sets $0 to the sourced file at top level.
+# Resolved to an ABSOLUTE dir now (in a `$( )` subshell so the caller's cwd is
+# untouched) so a later chdir can't strand a relative path.
+_KS_BM_MCP_DIR=""  # fail-open default: empty if self-location can't resolve
+_KS_BM_MCP_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null)" || true
+
+# Raw-lake sink dir, resolved like emit-command-run.sh: explicit override first
+# (tests), else <repo>/meta/data/raw computed from this file's location
+# (workflows/scripts/lib/ -> repo root is ../../..).
+_ks_bm_mcp_raw_dir() {
+  if [ -n "${KS_SEARCH_FALLBACK_RAW_DIR:-}" ]; then
+    printf '%s\n' "$KS_SEARCH_FALLBACK_RAW_DIR"; return 0
+  fi
+  local root
+  [ -n "${_KS_BM_MCP_DIR:-}" ] || return 1
+  root="$(cd -P "$_KS_BM_MCP_DIR/../../.." 2>/dev/null && pwd)" || return 1
+  printf '%s/meta/data/raw\n' "$root"
+}
+
+# Session-keyed de-dup marker path. Keyed by the raw CLAUDE_CODE_SESSION_ID when
+# present (the same join key the raw/ streams use), else `pid-$$` so a manual
+# shell still de-dups within its process. The marker is a real on-disk file, so
+# it survives the command-substitution subshells callers wrap ks_search in.
+# Sanitized to filename-safe characters.
+_ks_bm_mcp_fallback_marker() {
+  local dir key
+  dir="${KS_SEARCH_FALLBACK_STATE_DIR:-${TMPDIR:-/tmp}}"
+  key="${CLAUDE_CODE_SESSION_ID:-pid-$$}"
+  key="$(printf '%s' "$key" | tr -c 'A-Za-z0-9._-' '_')"
+  printf '%s/knowledge-search-mcp-fallback.%s\n' "$dir" "$key"
+}
+
+# Append one raw-lake telemetry record for a cold-fallback event. Fail-open:
+# missing jq / unwritable sink / a jq error all return 0 silently — a telemetry
+# emit must never break the caller (same contract as emit-command-run.sh).
+# Record shape (schema_version "1"), canonical sink spec meta/data/raw/README.md:
+#   {schema_version, ts, session_id, host, backend, reason, detail, url, project}
+_ks_bm_mcp_emit_fallback_telemetry() {
+  local reason="$1" detail="$2"
+  command -v jq >/dev/null 2>&1 || return 0
+  local raw_dir ts month host sid raw_file record
+  raw_dir="$(_ks_bm_mcp_raw_dir)" || return 0
+  [ -n "$raw_dir" ] || return 0
+  mkdir -p "$raw_dir" 2>/dev/null || return 0
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  month="$(date -u +%Y-%m)"
+  host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
+  sid="${CLAUDE_CODE_SESSION_ID:-}"
+  raw_file="$raw_dir/knowledge-search-fallback-${month}.jsonl"
+  record="$(jq -nc \
+    --arg ts "$ts" \
+    --arg session_id "$sid" \
+    --arg host "$host" \
+    --arg backend "basic-memory-mcp" \
+    --arg reason "$reason" \
+    --arg detail "$detail" \
+    --arg url "${KNOWLEDGE_SEARCH_BM_MCP_URL:-}" \
+    --arg project "${KNOWLEDGE_SEARCH_BM_PROJECT:-}" \
+    '{schema_version:"1", ts:$ts,
+      session_id:(if $session_id=="" then null else $session_id end),
+      host:$host, backend:$backend, reason:$reason, detail:$detail,
+      url:$url, project:$project}' 2>/dev/null)" || return 0
+  [ -n "$record" ] || return 0
+  printf '%s\n' "$record" >> "$raw_file" 2>/dev/null || return 0
+}
+
+# THE operator-visible fallback signal. Called on every cold-fallback event but
+# fires at most ONCE per session (marker-gated): emits the durable telemetry
+# record AND a single "degraded —" stderr notice, then stays silent for the rest
+# of the session. Fail-open throughout — always returns 0.
+_ks_bm_mcp_fallback_signal() {
+  local reason="$1" detail="$2" marker
+  marker="$(_ks_bm_mcp_fallback_marker)"
+  # Already signalled this session — stay silent (no per-query spam).
+  [ -n "$marker" ] && [ -e "$marker" ] && return 0
+  # Claim the marker FIRST so a re-entrant / looping caller de-dups even if the
+  # telemetry write below is slow or fails.
+  [ -n "$marker" ] && { : > "$marker" 2>/dev/null || true; }
+  _ks_bm_mcp_emit_fallback_telemetry "$reason" "$detail" || true
+  printf 'degraded — %s (warm bm-mcp search fell back to the cold CLI path; one-time-per-session notice, telemetry recorded for alerting)\n' "$detail" >&2
+  return 0
+}
 
 # ── low-level MCP-over-HTTP helpers ───────────────────────────────────────
 # streamable-http responses are SSE ("event: message\n data: {json}\n\n"); the
@@ -140,9 +247,11 @@ _ks_search_backend_basic_memory_mcp_search() {
     # most common cause is a PROJECT MISMATCH — the daemon serves a single
     # launch-time --project, but this client sent KNOWLEDGE_SEARCH_BM_PROJECT.
     # Name it so a misconfig is visible, never misread as "daemon down".
-    echo "degraded — bm mcp daemon reached but returned no usable result (check its --project matches KNOWLEDGE_SEARCH_BM_PROJECT='$KNOWLEDGE_SEARCH_BM_PROJECT'), falling back to cold CLI path" >&2
+    _ks_bm_mcp_fallback_signal "degraded-result" \
+      "bm mcp daemon reached but returned no usable result (check its --project matches KNOWLEDGE_SEARCH_BM_PROJECT='$KNOWLEDGE_SEARCH_BM_PROJECT')"
   else
-    echo "degraded — bm mcp daemon unreachable at $KNOWLEDGE_SEARCH_BM_MCP_URL, falling back to cold CLI path" >&2
+    _ks_bm_mcp_fallback_signal "unreachable" \
+      "bm mcp daemon unreachable at $KNOWLEDGE_SEARCH_BM_MCP_URL"
   fi
   _ks_search_backend_basic_memory_search "$query" --limit "$limit"
 }

@@ -22,7 +22,7 @@ command -v curl >/dev/null 2>&1 || { echo "SKIP: curl not installed"; exit 0; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ks-search-mcp-test-XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/store"
+mkdir -p "$TMP/store" "$TMP/raw" "$TMP/state"
 
 # Point the backend at a definitely-closed port so the warm path fails FAST
 # (connection refused) into the fail-open branch — no daemon required.
@@ -30,6 +30,11 @@ export KNOWLEDGE_STORE_ROOT="$TMP/store"
 export KNOWLEDGE_SEARCH_BM_MCP_URL="http://127.0.0.1:1/mcp"
 export KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT="1"
 export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
+# Keep the fallback telemetry + de-dup marker HERMETIC (temperloop#54): land the
+# raw-lake record and the session marker inside TMP, never the real repo tree /
+# system TMPDIR.
+export KS_SEARCH_FALLBACK_RAW_DIR="$TMP/raw"
+export KS_SEARCH_FALLBACK_STATE_DIR="$TMP/state"
 
 # shellcheck source=/dev/null
 source "$LIB_DIR/knowledge_store.sh"
@@ -65,6 +70,28 @@ notice="$(cat "$TMP/err.txt")"
 case "$notice" in *"degraded —"*) : ;; *) fail "expected 'degraded —' fail-open notice, got: [$notice]" ;; esac
 case "$err" in *"COLD_SEARCH_MARKER limit=5"*) : ;; *) fail "search did not delegate to cold backend (with --limit), got: [$err]" ;; esac
 echo "PASS: 3a search fail-open: notice on stderr + delegates to cold path (limit preserved)"
+
+# 3d. DURABLE SIGNAL: the fallback emitted exactly one raw-lake telemetry record
+# — the surface that survives a swallowed stderr (temperloop#54).
+month="$(date -u +%Y-%m)"
+tfile="$TMP/raw/knowledge-search-fallback-${month}.jsonl"
+[ -f "$tfile" ] || fail "no fallback telemetry record written to $tfile"
+n="$(wc -l < "$tfile" | tr -d ' ')"
+[ "$n" = "1" ] || fail "expected exactly 1 fallback telemetry record, got $n"
+jq -e '.schema_version=="1" and .backend=="basic-memory-mcp" and .reason=="unreachable"' \
+  < "$tfile" >/dev/null || fail "telemetry record shape/reason invalid: $(cat "$tfile")"
+echo "PASS: 3d fallback emits one raw-lake telemetry record (reason=unreachable, schema_version=1)"
+
+# 3e. DE-DUPED one-time-per-session: a SECOND fallback in the same session emits
+# NEITHER a second 'degraded —' stderr line NOR a second telemetry record — but
+# still fails open to the cold path.
+err2="$(_ks_search_backend_basic_memory_mcp_search "another query" --limit 3 2>"$TMP/err2.txt")"
+notice2="$(cat "$TMP/err2.txt")"
+case "$notice2" in *"degraded —"*) fail "second fallback re-emitted the stderr notice (not de-duped): [$notice2]" ;; esac
+case "$err2" in *"COLD_SEARCH_MARKER limit=3"*) : ;; *) fail "second fallback did not still delegate to cold path: [$err2]" ;; esac
+n2="$(wc -l < "$tfile" | tr -d ' ')"
+[ "$n2" = "1" ] || fail "second fallback wrote another telemetry record (expected still 1, got $n2)"
+echo "PASS: 3e fallback signal de-duped one-time-per-session (no notice/telemetry spam; still fails open)"
 
 # 3b. available: unreachable daemon returns the cold backend's verdict (7).
 rc=0; _ks_search_backend_basic_memory_mcp_available || rc=$?
