@@ -15,7 +15,7 @@
 #                        a failure is caught, logged, and never blocks the tick.
 #   A. drain-answered  — find decision issues the operator answered+unassigned,
 #                        classify each typed reply, and EMIT the drain action
-#                        (build.md Step 0a / drain-mind.md § Answered decisions
+#                        (build.md Step 0a / tidy.md § Answered decisions
 #                        own the apply; this script routes, it does not apply).
 #   A2. drain-clarification — the clarification counterpart (foundation #657): find
 #                        `needs-clarification` issues the operator answered+unassigned
@@ -142,7 +142,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FUNNEL_LOCK_DIR:=/tmp/funnel-tick}"
 : "${FUNNEL_LOCK_FILE:=$FUNNEL_LOCK_DIR/tick.lock}"
 
-# Idempotency marker (foundation #587). The drain applier (drain-mind.md
+# Idempotency marker (foundation #587). The drain applier (tidy.md
 # § Answered decisions step f) posts a confirmation comment when it applies an
 # answered decision and drops the `decision` label. Search-index lag can re-list
 # a just-drained issue on the NEXT tick (the label drop hasn't propagated); its
@@ -706,12 +706,12 @@ tick_board() {
           reassign_to:(if $op == "@me" then $op else ($op | ltrimstr("@")) end),
           detail:"could not parse reply as a decision block or /command — re-assigned operator (closed-enum-or-escalate)"}')"
     else
-      # Parsed → EMIT the drain-apply (build.md 0a / drain-mind owns the apply:
+      # Parsed → EMIT the drain-apply (build.md 0a / tidy owns the apply:
       # translate reply → artifact, drop the decision label, hand baton back).
       # The scheduler ROUTES; it does not perform the sentinel/worktree work.
       add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$issue" --arg c "$chosen" \
         '{phase:"drain",board:$b,repo:$r,issue:$n,action:"drain-answer",chosen:$c,
-          emit:("apply answered decision #"+($n|tostring)+" (chosen="+$c+") → drop `decision` label, hand baton back; resume via build.md Step 0a / drain-mind § Answered decisions"),
+          emit:("apply answered decision #"+($n|tostring)+" (chosen="+$c+") → drop `decision` label, hand baton back; resume via build.md Step 0a / tidy § Answered decisions"),
           detail:"parsed typed reply; routed to the existing drain (no re-implementation)"}')"
     fi
     i=$((i+1))

@@ -462,7 +462,7 @@ help:
 	@echo "  test-prune-branches     prune-merged-branches.sh tests"
 	@echo "  validate-live-drain     Live/Drain pairing registry lint"
 	@echo "  validate-command-run-emit  emit-command-run.sh presence/wiring lint"
-	@echo "  validate-lexicon        drain-mind tell-lexicon lint"
+	@echo "  validate-lexicon        tidy tell-lexicon lint"
 	@echo "  test-scan-stub          Session-stub scanner tests"
 	@echo "  lint-pr-body-test       PR-body issue-linkage lint tests"
 	@echo "  test-stranger-config    Kernel-portability seam integration test"

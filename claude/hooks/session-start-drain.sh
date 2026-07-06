@@ -4,7 +4,7 @@
 # Local REST API. Deletes each local stub on successful upload.
 #
 # Stubs that land in Sessions/_inbox/ are reviewed and processed by the
-# /drain-mind slash command (extracts learnings, generates tasks, moves to
+# /tidy slash command (extracts learnings, generates tasks, moves to
 # Sessions/<filename>.md).
 #
 # Failures are logged to the XDG state dir (foundation #773):
@@ -32,8 +32,8 @@ set -uo pipefail
 #
 # Absolute path (not BASH_SOURCE-relative): this hook is symlinked to
 # ~/.claude/hooks/, so a relative "../.." climb from BASH_SOURCE[0] would climb
-# out of ~/.claude, not out of the foundation checkout (same reasoning as the
-# pre-existing $HOME/dev/foundation/.../mind_snapshot.sh reference below).
+# out of ~/.claude, not out of the foundation checkout — hence the absolute
+# $HOME/dev/foundation anchor.
 KS_LIB_DIR="${KS_LIB_DIR:-$HOME/dev/foundation/workflows/scripts/lib}"
 if [ -f "$KS_LIB_DIR/knowledge_store.sh" ]; then
   # shellcheck source=/dev/null
@@ -74,7 +74,7 @@ if [ -n "$SHORT_ID" ]; then
   printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<session-id>%s</session-id>"}}\n' "$SHORT_ID"
 fi
 
-# EVAL_RUN suppression: skip all vault writes (drain + snapshot).
+# EVAL_RUN suppression: skip all vault writes (the stub drain below).
 # Session-id was already emitted above so eval runs can trace their session.
 # shellcheck source=eval-guard.sh
 . "$(dirname "${BASH_SOURCE[0]}")/eval-guard.sh"
@@ -137,15 +137,9 @@ if [ "$moved" -gt 0 ] || [ "$failed" -gt 0 ]; then
   log "summary: $moved moved, $failed failed"
 fi
 
-# Snapshot the vault if it has been more than 20h since the last snapshot.
-# Fails open: snapshot errors must never block session start.
-SNAPSHOT_SCRIPT="$HOME/dev/foundation/workflows/scripts/mind_snapshot.sh"
-if [ -x "$SNAPSHOT_SCRIPT" ]; then
-  if ! snap_out=$("$SNAPSHOT_SCRIPT" --if-stale 20 2>&1); then
-    log "snapshot FAILED: $snap_out"
-  elif [ -n "$snap_out" ]; then
-    log "snapshot: $snap_out"
-  fi
-fi
+# Vault snapshotting is NOT done here — the nightly /tidy command is the sole
+# `mind_snapshot.sh` runner (its Step 8, temperloop K86). The session-start hook
+# only drains SessionEnd stubs into _inbox; snapshotting the vault's state is
+# /tidy's job so the whole nightly run's writes land in one snapshot.
 
 exit 0

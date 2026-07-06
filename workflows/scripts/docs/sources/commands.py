@@ -1,9 +1,9 @@
 """sources/commands.py - command reference, rendered from claude/commands/*.md.
 
 Kernel-manifest filtered: only commands the manifest classifies "kernel"
-(assess, build, drain-mind, init, next, sweep, triage, funnel-drive,
+(assess, build, tidy, check-in, init, next, sweep, triage, funnel-drive,
 funnel-drive-merge, as of this writing) render. Travis's personal rituals
-(plan-morning, plan-evening, telemetry, signal-intake) are "overlay" in
+(standup, telemetry, signal-intake) are "overlay" in
 kernel-manifest.txt and are skipped with zero special-casing here — the
 filter is the manifest, not a hardcoded list in this file.
 """

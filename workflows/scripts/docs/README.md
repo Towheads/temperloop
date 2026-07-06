@@ -62,9 +62,9 @@ delimits a literal Markdown bullet block, which is handed to
 `workflows/scripts/kernel/kernel-manifest.txt` entries and calls
 `lib.kernel_manifest.is_kernel()` per candidate file — only paths the
 manifest classifies `kernel` render. This is why the command reference shows
-`assess` / `build` / `drain-mind` / `init` / `next` / `sweep` / `triage` /
-`funnel-drive` / `funnel-drive-merge` but never `plan-morning` /
-`plan-evening` / `telemetry` / `signal-intake` (all `overlay` in the
+`assess` / `build` / `tidy` / `check-in` / `init` / `next` / `sweep` / `triage` /
+`funnel-drive` / `funnel-drive-merge` but never `standup` /
+`telemetry` / `signal-intake` (all `overlay` in the
 manifest, Travis's personal rituals). The filter is the manifest itself, not
 a hardcoded list in this generator — reclassify a command in
 `kernel-manifest.txt` and the site follows on the next `make docs`, no code
@@ -93,7 +93,7 @@ skip a broken drop-in).
 does not exist in this (still-unsplit) checkout today, so a kernel-only
 build produces exactly the three kernel pages above. A private overlay repo
 (post kernel/overlay split) drops its own renderer modules there — e.g. a
-page rendering Travis's personal `plan-morning` / `plan-evening` /
+page rendering Travis's personal `standup` /
 `telemetry` / `signal-intake` commands, or anything else overlay-only — with
 zero changes to this generator.
 

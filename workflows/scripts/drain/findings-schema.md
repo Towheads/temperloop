@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A **findings record** is one row emitted per extraction that `/drain-mind` produces
+A **findings record** is one row emitted per extraction that `/tidy` produces
 during Step 3. Every extraction — whether it came from a lexicon tell or from the
 model skimming `report.user_turns[]` — writes one record here so the full
 extraction history is queryable and the lexicon's measured miss-rate is visible.
@@ -27,7 +27,7 @@ schema evolves, bump `schema_version` and add a migration note below.
 | `finding_ref`    | string                                  | required | Durable artifact reference. For vault notes: path relative to vault root (e.g. `"Decisions/foundation - Foo.md"`). For GitHub issues/PRs: `"#N"` or `"owner/repo#N"`. For auto-memory files: the memory filename (e.g. `"feedback_topic.md"`). For Things tasks: `"things:<title>"`. |
 | `accepted`       | boolean                                 | required | `true` if the extraction became a real tracked artifact. `false` if adjudicated as noise, duplicate, or already-captured-live and skipped. |
 | `subject_model`  | string \| null                          | required (v2) | **The analyzed-session model** — the model whose behavior the extraction is about, taken from the stub's `model:` field (`report.stub.model`). This is the same value a curated note stamps as `source_model`. `null` when the stub carried no `model:` line or it is otherwise unknown. |
-| `analyst_model`  | string \| null                          | required (v2) | **The drain-runner model** — the model that ran `/drain-mind` and produced this record (the curated-note `extracted_by_model`). On a live capture these two are the same model; in `/drain-mind` they differ when the drain runs under a different model than the analyzed session. `null` when unknown. |
+| `analyst_model`  | string \| null                          | required (v2) | **The drain-runner model** — the model that ran `/tidy` and produced this record (the curated-note `extracted_by_model`). On a live capture these two are the same model; in `/tidy` they differ when the drain runs under a different model than the analyzed session. `null` when unknown. |
 
 ### `finding_type` values
 
@@ -70,7 +70,7 @@ Example record:
 Records with `method: "drain-model-skim"` and `accepted: true` are the lexicon's
 **measured misses** — the model caught something the lexicon did not. These flow
 into the candidate-tells file (see `candidate-tells-format.md` in this directory)
-so the lexicon can grow from its own misses. `plan-morning` reviews the
+so the lexicon can grow from its own misses. `check-in` reviews the
 candidate-tells file and the operator promotes or discards each candidate.
 
 Because v2 records also carry `subject_model`, tell firings and miss rates are

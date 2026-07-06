@@ -1,10 +1,12 @@
 ---
-description: Process session-stub backlog in Sessions/_inbox/ — extract learnings to vault + auto-memory, generate tasks in Things inbox, archive processed stubs to the git store at foundation/meta/sessions/archive/
+description: Nightly unattended tidy pass — drain the session-stub backlog in Sessions/_inbox/ (extract learnings to vault + auto-memory, generate tasks in Things inbox, archive processed stubs to foundation/meta/sessions/archive/), snapshot the vault, and park anything needing human judgment to the pipeline surfaces /check-in disposes.
 ---
 
-You are running the **drain-mind** command. Goal: turn raw session transcripts in `Sessions/_inbox/` into durable artifacts (decisions, memories, patterns, tasks) and archive the stub.
+You are running the **tidy** command. Goal: turn raw session transcripts in `Sessions/_inbox/` into durable artifacts (decisions, memories, patterns, tasks), archive the stub, and snapshot the vault.
 
-**Operating principles** (honor the knowledge store's `Projects/foundation/workflows/daily-planning/README.md` note — document paths throughout this file, e.g. `Sessions/_inbox/`, `Decisions/`, `Context/foundation - pending decisions.md`, are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`):
+**This command runs nightly, unattended** (a launchd/cron `claude -p "/tidy"` invocation, or on demand). It has **no live operator**, so it **never** blocks on an `AskUserQuestion` and never asks a clarifying question: it extracts liberally and **parks anything needing human judgment on a durable surface** that `/check-in` disposes at the next daily review. Those are the pipeline surfaces under `Context/pipeline - *` (pending-decisions, proposed-supersessions, candidate-tells, vault-hygiene) plus the **sensitivity flags** surface (Step 2). `/tidy` is the **drain-proposes** half; `/check-in` is the **operator-disposes** half — this command writes surfaces, never mutates their `Status`.
+
+**Operating principles** (honor the knowledge store's `Projects/foundation/workflows/daily-planning/README.md` note — document paths throughout this file, e.g. `Sessions/_inbox/`, `Decisions/`, `Context/pipeline - pending decisions.md`, are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`):
 - Write small, write in parallel — batch independent vault writes and Things writes.
 - Use the Obsidian MCP for vault reads/writes (the agent-plane transport stays on Obsidian per the contract's Obsidian-mode note — `search_vault_smart` below is that same path); use the Things MCP for task creation.
 - Never duplicate work the live session already captured — check existence before writing.
@@ -25,9 +27,9 @@ Every step in this command has a real-time counterpart that runs during the live
 
 ## Step 0 — Verify environment and acquire the drain lock
 
-1. Confirm `mcp__obsidian__*` and `mcp__things__*` tools are loaded. If either is missing, surface that and stop.
+1. Confirm `mcp__obsidian__*` is loaded — it is **required** (the vault is the whole point); if missing, surface that and stop. Confirm `mcp__things__*` is loaded too, but treat it as **optional under unattended operation**: on a headless nightly host the Things app may not be running, and its absence must **not** abort the vault extraction + archive + snapshot. If Things is missing, **degrade** — skip Step 4 (task generation) and any Things dedup/search, note `Things unavailable — task generation skipped` in the Step 6 summary, and continue.
 2. List `Sessions/_inbox/` via `mcp__obsidian__list_vault_files`. **Only `*.md` files are stubs** — ignore any `.drain.lock.*` entries here and everywhere below. If there are no `*.md` stubs, say so in one line and exit (don't acquire the lock — there's nothing to race over).
-3. **Acquire the cross-machine drain lock.** Multiple machines share `Sessions/_inbox/` via Obsidian Sync, so two `/drain-mind` runs (e.g. evening rituals on two machines within a minute of each other) can process the same backlog at once and double-create Things tasks (the Step 4 dedup is search-then-add, not atomic across concurrent runs). Sync is eventually-consistent (~seconds to a minute), so a plain lockfile is racy — the protocol is **acquire → wait for Sync → elect**, earliest timestamp wins:
+3. **Acquire the cross-machine drain lock.** Multiple machines share `Sessions/_inbox/` via Obsidian Sync, so two `/tidy` runs (e.g. evening rituals on two machines within a minute of each other) can process the same backlog at once and double-create Things tasks (the Step 4 dedup is search-then-add, not atomic across concurrent runs). Sync is eventually-consistent (~seconds to a minute), so a plain lockfile is racy — the protocol is **acquire → wait for Sync → elect**, earliest timestamp wins:
    a. Get identity (Bash): `EPOCH=$(date +%s)`, `HOST=$(hostname -s)`.
    b. Write `Sessions/_inbox/.drain.lock.<HOST>` containing one line `<EPOCH> <HOST> <this session-id>` (via `mcp__obsidian-builtin__vault_write`). **One file per host** — never a single shared lock file (concurrent writers would clobber it).
    c. Wait ~90s to let Sync propagate every host's lock in both directions. **Do not run a foreground `sleep 90` (Bash) — the harness blocks foreground sleeps.** Instead wait via a backgrounded sleep: run `sleep 90` with `run_in_background: true` and let it re-invoke you on exit (or, equivalently, poll with `Monitor` on an until-loop with a 90s deadline). *(Override: if the user passed `--force-now`, skip the wait + election and proceed — a single-machine escape hatch for when you know no other host is draining.)*
@@ -59,7 +61,7 @@ Before extracting anything, scan each stub for:
 - Plaintext passwords
 - Personal info that doesn't belong in a vault (SSN, full credit card numbers)
 
-If found: **do not** copy the secret into any extracted artifact. Note its presence in the summary so the user can decide whether to redact the source stub. Continue processing the rest.
+If found: **do not** copy the secret into any extracted artifact. Because this run is unattended, the Step 6 summary alone would never reach the operator — so **append one `### open` entry to the sensitivity-flags surface** (`Context/pipeline - sensitivity flags.md` in the knowledge store) via `mcp__obsidian-builtin__vault_append`, recording the stub filename, the *kind* of secret (never the secret value itself), and its approximate location, with `Status: open`. Create the note with a one-line header if it doesn't exist. Also note the count in the Step 6 summary. `/check-in`'s `## Sensitivity flags review` section disposes it (redact the source stub, or dismiss as a false positive). Continue processing the rest.
 
 ## Step 3 — Extract learnings
 
@@ -187,9 +189,9 @@ For each such note `D_new` (project `P`):
 1. **Retrieve the near-neighbours — do not scan the corpus.** Run `mcp__obsidian__search_vault_smart` on `D_new`'s claim text (its `what was decided` / `## Source` body, not the frontmatter), with `folders: ["Decisions"]` and a small `limit` (~5). This returns the semantically-nearest prior decisions — the only set a contradiction could plausibly live in. (`Decisions/` is curated vault content, which Smart Connections **does** embed — the "no semantic search" rule is scoped to raw transcripts in `meta/sessions/archive/`, so no new index is needed.)
 2. **Constrain scope to the same project.** Drop any neighbour not tagged `project/<P>` — cross-project neighbours are noise. Also drop `D_new` itself and any note `D_new` already `[[wikilinks]]` as superseded (it was handled live).
 3. **One bounded judgment per surviving neighbour `D_prior`** (≤5 total). Ask yourself a single yes/no: *does `D_new` assert something that **empirically contradicts or supersedes** `D_prior`?* Demand a genuine X-vs-not-X about the **same referent** (one note says the cascade handles it, the other empirically disproves that). **Reject mere refinement/elaboration** — most new decisions narrow or extend a prior one without contradicting it; those are not supersessions. Apply a similarity floor: if a neighbour is only loosely related (different referent), skip the judgment entirely.
-4. **Surface a "yes" — never auto-edit.** For each judged contradiction, append one `### open` entry to the proposed-supersessions surface (`Context/foundation - proposed supersessions.md` in the knowledge store) via `mcp__obsidian-builtin__vault_append` (entry format defined in that note's header). Record: `D_new`, `D_prior`, the supersession **direction** (which note wins), and a one-line statement of the empirical contradiction. This is a **companion** to the unattended pending-decisions surface — a separate file so its append stream never interleaves with that file's five `batch-at-ritual` EOF writers — read by the same `plan-morning` ritual (no new review ritual). `plan-morning` reads these and, on the operator's confirm, hand-adds the `[[wikilink]]` + supersession line to the notes — the convention stays human-owned.
+4. **Surface a "yes" — never auto-edit.** For each judged contradiction, append one `### open` entry to the proposed-supersessions surface (`Context/pipeline - proposed supersessions.md` in the knowledge store) via `mcp__obsidian-builtin__vault_append` (entry format defined in that note's header). Record: `D_new`, `D_prior`, the supersession **direction** (which note wins), and a one-line statement of the empirical contradiction. This is a **companion** to the unattended pending-decisions surface — a separate file so its append stream never interleaves with that file's five `batch-at-ritual` EOF writers — read by the same `check-in` ritual (no new review ritual). `check-in` reads these and, on the operator's confirm, hand-adds the `[[wikilink]]` + supersession line to the notes — the convention stays human-owned.
 
-**Default to silence + liberal judge.** Most drains bank no decision, and most banked decisions contradict nothing — surface nothing in that case. Because the output is **proposal-only** (a false positive costs the operator one glance at `plan-morning` and a dismiss; it never mutates a note), bias the judge toward flagging when genuinely uncertain — the asymmetry (cheap FP, expensive missed contradiction) is the same logic as the dropped-bug capture net. If `search_vault_smart` is unavailable, skip this pass with a one-line note in the summary (do not fall back to a corpus scan).
+**Default to silence + liberal judge.** Most drains bank no decision, and most banked decisions contradict nothing — surface nothing in that case. Because the output is **proposal-only** (a false positive costs the operator one glance at `check-in` and a dismiss; it never mutates a note), bias the judge toward flagging when genuinely uncertain — the asymmetry (cheap FP, expensive missed contradiction) is the same logic as the dropped-bug capture net. If `search_vault_smart` is unavailable, skip this pass with a one-line note in the summary (do not fall back to a corpus scan).
 
 ### Feedback memories
 User corrections OR user confirmations of non-obvious approaches. (Both directions matter — see auto-memory rules.)
@@ -233,7 +235,7 @@ For each such note, apply the stranger test: would a stranger's kernel-only inst
 
 **Feeding recurring ones into the lexicon — the promotion path.** This pass deliberately reuses the existing growth machinery rather than adding a new one (subtraction over mechanism):
 
-- **Model-skim self-corrections** (the lexicon missed them) append to `Context/foundation - candidate tells.md` via § Candidate-tells accumulation — each proposes a concrete new `self-correction` tell for `lexicon-assistant.tsv`, reviewed and promoted at `plan-morning`. This is how a **recurring** self-correction phrasing the lexicon doesn't yet catch becomes a permanent tell so future sessions detect it.
+- **Model-skim self-corrections** (the lexicon missed them) append to `Context/pipeline - candidate tells.md` via § Candidate-tells accumulation — each proposes a concrete new `self-correction` tell for `lexicon-assistant.tsv`, reviewed and promoted at `check-in`. This is how a **recurring** self-correction phrasing the lexicon doesn't yet catch becomes a permanent tell so future sessions detect it.
 - **Recurring self-corrections as a class** are picked up by § Recurrence → promotion: because each accepted self-correction is a `mistake`/`pattern` findings record, the trailing-14-day tally already counts them, and crossing the ≥5 threshold raises a promotion task (tighten a guard rule or elevate a pattern). No new tally is needed.
 
 **Default to silence.** Most stubs surface no genuine self-correction. Do not manufacture one from routine "let me check X" narration — only a real reasoning reversal qualifies.
@@ -275,27 +277,23 @@ Each run is read-only (one cached-bypassed board resolve + two flat-cost REST li
 - **`orphaned In-Progress`** — In Progress with an **empty** owner stamp (a half-landed claim, GH #103). Also release candidates.
 - **`foreign claims`** — In Progress on **another host**, whose liveness can't be checked from here. **Report-only, never released from this machine** — the owning host catches them on its own next drain.
 
-**Report-first, release-on-confirm — never auto-release.** This mirrors reconcile's own report-only stance (it surfaces stale/orphan/foreign and never moves them itself):
-
-- **Interactive run:** if any same-host `stale`/`orphan` candidates exist, present the full set once via one `AskUserQuestion` (**Return all to Ready** / **Pick a subset** / **Leave all**). To park a confirmed item, locate and source the adapter (`workflows/scripts/board/lib/board.sh` in a foundation checkout, or `scripts/lib/board.sh` in a consuming repo) and, for each item `<n>` on its board `<N>` (let `repo="$(board_repo <N>)"`): `board_resolve_item <N> <n>; board_set_status "$(board_item_id <n>)" "$BOARD_OPT_READY"`, then `gh issue comment <n> -R "$repo" --body "Parked from a stale claim by /drain-mind — was In Progress under dead session <stamp>; next step: re-triage/re-claim."` Ready returns it to the workable pool (mirrors the manual fix the motivating session did by hand).
-- **Unattended / `--force-now` run:** **report only** — list every candidate in the Step 6 summary and park nothing (default = **leave all**). A claim left In Progress is a harmless lock; a wrongly-released active claim is not. **This is a `batch-at-ritual` deferral** ([[Context/foundation - AskUserQuestion severity taxonomy]]) — no live operator, a safe default — so don't *silently* default: when any same-host stale/orphan candidate exists, record the auto-taken default to the **pending-decisions surface** (`claude/CLAUDE.md` § Unattended pending-decisions surface) so the next `plan-morning` reviews it. Append one `### open` entry to the pending-decisions surface (`Context/foundation - pending decisions.md` in the knowledge store) via `mcp__obsidian-builtin__vault_append`:
+**Report-only, never auto-release.** This command is unattended — there is no operator to confirm a release — so it mirrors `reconcile`'s own report-only stance (surface stale/orphan/foreign claims; move none). **Report only** — list every candidate in the Step 6 summary and park nothing (default = **leave all**). A claim left In Progress is a harmless lock; a wrongly-released active claim is not. **This is a `batch-at-ritual` deferral** ([[Context/foundation - AskUserQuestion severity taxonomy]]) — no live operator, a safe default — so don't *silently* default: when any same-host stale/orphan candidate exists, record the auto-taken default to the **pending-decisions surface** (`claude/CLAUDE.md` § Unattended pending-decisions surface) so the next `check-in` reviews it. Append one `### open` entry to the pending-decisions surface (`Context/pipeline - pending decisions.md` in the knowledge store) via `mcp__obsidian-builtin__vault_append`:
   ```markdown
-  ### <YYYY-MM-DD HH:MM> · drain-mind stale-claim sweep · <host>:<sess8>
+  ### <YYYY-MM-DD HH:MM> · tidy stale-claim sweep · <host>:<sess8>
   - **Decision:** return same-host stale/orphan claims to Ready (board <N>: #<n>, …)
   - **Default taken:** leave all (report-only; parked nothing)
   - **Disposition:** auto-taken (unattended/--force-now; no live operator)
   - **Status:** open
   ```
-  (The interactive arm above asks the `AskUserQuestion` instead and never writes here.)
 - **Foreign claims** are *always* report-only — list them in the summary as "verify on `<host>`".
 
 The current draining session's own claims self-exclude (their transcript mtime is current), so this never releases live work — including any item this very session is holding.
 
 ### Vault hygiene
 
-A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing else alarms on hygiene drift — `/drain-mind` curates *on touch* (provenance audit, contradiction detection) but never *sweeps* the vault, so a silent pile-up (162 `Sessions/_inbox` stubs / 18 MB before anyone noticed — foundation #958/#959) goes unseen until it is large. This step runs a standalone probe each drain and records any drift to a review surface for `plan-morning` to dispose of.
+A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing else alarms on hygiene drift — `/tidy` curates *on touch* (provenance audit, contradiction detection) but never *sweeps* the vault, so a silent pile-up (162 `Sessions/_inbox` stubs / 18 MB before anyone noticed — foundation #958/#959) goes unseen until it is large. This step runs a standalone probe each drain and records any drift to a review surface for `check-in` to dispose of.
 
-**A drain-internal detector**, not a live/drain pair (like § Contradiction detection, § Self-correction detector, and § Recurrence → promotion): it backstops **no live extraction rule** — hygiene drift is a *state* the vault accumulates over time, not an author action a live rule captures — so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**. It **proposes**; `plan-morning`'s `## Vault hygiene review` section is the **sole mutator** that disposes (the same drain-proposes / plan-morning-disposes split as § Pending decisions surface). Drain **never** bulk-deletes vault content.
+**A drain-internal detector**, not a live/drain pair (like § Contradiction detection, § Self-correction detector, and § Recurrence → promotion): it backstops **no live extraction rule** — hygiene drift is a *state* the vault accumulates over time, not an author action a live rule captures — so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**. It **proposes**; `check-in`'s `## Vault hygiene review` section is the **sole mutator** that disposes (the same drain-proposes / check-in-disposes split as § Pending decisions surface). Drain **never** bulk-deletes vault content.
 
 **Run the probe** (a kernel script that reads the store via the script-plane `plain-files` backend — `KNOWLEDGE_STORE_ROOT`, default `~/dev/mind`; a checkout with no vault prints one line and no-ops, so this is safe to run unconditionally):
 
@@ -305,20 +303,20 @@ workflows/scripts/drain/vault_hygiene_report.sh --format entry
 
 It checks: `Sessions/_inbox` stub count + oldest age (alarm > 20 stubs or oldest > 48h); closed plans (`status: done|complete|abandoned`) still resident in `Plans/` (should be archived + removed); named ledgers over their line cap; zero-byte / double-dot / stray-absolute-path garbage files; and a stale-`last_verified` tally (informational). With `--format entry` it prints a ready-to-append `### <ts> · vault hygiene · <host>` block carrying **Status: open** **iff** something alarmed, and prints **nothing** when the vault is clean.
 
-**Record the finding.** If the command printed a block (alarms present), append it verbatim to the vault-hygiene review surface `Context/foundation - vault hygiene report.md` (in the knowledge store) via `mcp__obsidian-builtin__vault_append` — it creates the note if absent. If the command printed nothing, the vault is clean: **surface nothing** and move on (default to silence).
+**Record the finding.** If the command printed a block (alarms present), append it verbatim to the vault-hygiene review surface `Context/pipeline - vault hygiene report.md` (in the knowledge store) via `mcp__obsidian-builtin__vault_append` — it creates the note if absent. If the command printed nothing, the vault is clean: **surface nothing** and move on (default to silence).
 
-**This step does NOT** delete or move any vault file, does NOT mutate an entry's `Status` (plan-morning is the sole mutator, per its review section), and does NOT prune ledgers or archive plans. It only *reports* the drift; every disposal — deleting garbage, pruning a ledger, archiving a closed plan — happens at `plan-morning` on operator confirmation.
+**This step does NOT** delete or move any vault file, does NOT mutate an entry's `Status` (check-in is the sole mutator, per its review section), and does NOT prune ledgers or archive plans. It only *reports* the drift; every disposal — deleting garbage, pruning a ledger, archiving a closed plan — happens at `check-in` on operator confirmation.
 
 ### Pending decisions surface
 
-Backstop for the live rule in `claude/CLAUDE.md` § Unattended pending-decisions surface. The live rule says: when a `batch-at-ritual` question (`build` Step 1.5, `build` Step 4b queue-stall, `assess` Step 6, this command's stale-claim sweep, `sweep` Step 2 leave-all-flagged) is deferred on an **unattended / mini / cron** run, the run takes its safe default AND appends an `### open` entry to the pending-decisions surface (`Context/foundation - pending decisions.md` in the knowledge store) so the next `plan-morning` reviews it. This step catches the ones that slipped — an unattended run that defaulted a deferrable decision but never wrote the entry (so `plan-morning` would never surface it).
+Backstop for the live rule in `claude/CLAUDE.md` § Unattended pending-decisions surface. The live rule says: when a `batch-at-ritual` question (`build` Step 1.5, `build` Step 4b queue-stall, `assess` Step 6, this command's stale-claim sweep, `sweep` Step 2 leave-all-flagged) is deferred on an **unattended / mini / cron** run, the run takes its safe default AND appends an `### open` entry to the pending-decisions surface (`Context/pipeline - pending decisions.md` in the knowledge store) so the next `check-in` reviews it. This step catches the ones that slipped — an unattended run that defaulted a deferrable decision but never wrote the entry (so `check-in` would never surface it).
 
 Check `report.lexicon_matches[]` for pending-decision tells (categories such as `batch-at-ritual`, `deferral`, or similar) and skim `report.user_turns[]` for an **unattended/`--force-now`/cron** batch-pipeline run that hit one of the five `batch-at-ritual` sites and took its default. Also check `report.tool_events.ask_user_questions[]` — unanswered questions (`answer: null`) in a run that was unattended are the clearest signal. High-signal tells: an assistant turn running `build … --unattended` (skipped the Step 1.5 prompt, "work all"), a `build` native-merge-queue stall that dequeued-and-fell-back without surfacing (Step 4b, unattended), `assess` arming or declining the approval poll under `--unattended`, a `sweep` unattended run that left clarifying questions flagged-and-skipped (Step 2), or this command's own `--force-now` stale-claim sweep reporting candidates without parking.
 
 For each such defaulted decision:
 
-1. **Check the surface.** Read `Context/foundation - pending decisions.md` via `mcp__obsidian-builtin__vault_read`. If an entry already covers this run's decision (match on site + run-id / date), skip — live capture worked.
-2. **Backfill the missing entry.** If absent, append one `### open` entry in the note's format (Decision + Default taken + Disposition + Status: open) via `mcp__obsidian-builtin__vault_append`, with Disposition noting it was backfilled by `/drain-mind` from `Sessions/<stub>`. This re-arms the `plan-morning` review the live write would have triggered.
+1. **Check the surface.** Read `Context/pipeline - pending decisions.md` via `mcp__obsidian-builtin__vault_read`. If an entry already covers this run's decision (match on site + run-id / date), skip — live capture worked.
+2. **Backfill the missing entry.** If absent, append one `### open` entry in the note's format (Decision + Default taken + Disposition + Status: open) via `mcp__obsidian-builtin__vault_append`, with Disposition noting it was backfilled by `/tidy` from `Sessions/<stub>`. This re-arms the `check-in` review the live write would have triggered.
 3. **Default to silence.** If every unattended run's deferrals were recorded live (the common case), surface nothing.
 
 Distinct from **Stale board claims** above (which reconciles board *state*): this reconciles the *decision audit trail* — that a defaulted batch-at-ritual choice is visible to the operator at the next ritual rather than silently standing.
@@ -484,7 +482,7 @@ Emit records for every adjudicated candidate — both accepted and rejected — 
 
 ### Candidate-tells accumulation
 
-**For every accepted extraction with `method: "drain-model-skim"`** (the model caught it, the lexicon didn't), append one entry to the candidate-tells file at `Context/foundation - candidate tells.md` in the vault via `mcp__obsidian-builtin__vault_append`.
+**For every accepted extraction with `method: "drain-model-skim"`** (the model caught it, the lexicon didn't), append one entry to the candidate-tells file at `Context/pipeline - candidate tells.md` in the vault via `mcp__obsidian-builtin__vault_append`.
 
 Entry format (one line per extraction):
 
@@ -503,7 +501,7 @@ If the vault file does not yet exist, create it first via `mcp__obsidian-builtin
 # Candidate Tells
 
 Accumulated model-skim misses — phrases the model caught that the lexicon did not.
-Review at plan-morning; promote promising ones into lexicon.tsv or discard.
+Review at check-in; promote promising ones into lexicon.tsv or discard.
 
 ```
 
@@ -544,7 +542,7 @@ python3 workflows/scripts/drain/tally_recent_findings.py "$(git rev-parse --show
      Review the relevant notes/memories and draft a concrete amendment.
 
      ---
-     Generated by /drain-mind recurrence→promotion pass on <YYYY-MM-DD>.
+     Generated by /tidy recurrence→promotion pass on <YYYY-MM-DD>.
      Source: meta/data/raw/findings-<YYYY-MM>.jsonl
      ```
    - `tags`: `["drain", "Foundation", "est:30m"]`
@@ -572,7 +570,7 @@ For each candidate:
 
 3. **Create task** via `mcp__things__add_todo` with:
    - `title`: short imperative ("Decide deployment target," "Review burrito-task triage")
-   - `notes`: `<one-line context from the stub>\n\n---\nGenerated by /drain-mind from Sessions/<filename>.md on <YYYY-MM-DD>.\nSource: <project> session <date> <time>.`
+   - `notes`: `<one-line context from the stub>\n\n---\nGenerated by /tidy from Sessions/<filename>.md on <YYYY-MM-DD>.\nSource: <project> session <date> <time>.`
    - `tags`: `["drain"]` plus the relevant theme tag (`Foundation` / `Community` / `Business`) when obvious from the stub, plus an `est:<duration>` tag using standard buckets (`est:5m`, `est:15m`, `est:30m`, `est:1h`, `est:2h`, `est:4h`, `est:8h`). Determine from stub context when scope is clear; if ambiguous, tag `est:?` and surface in Step 6 as `Tasks needing estimate refinement: M (titles)`.
    - `when`: omit (lands in Inbox by default)
 
@@ -609,11 +607,11 @@ Archive only stubs whose Steps 1–4 completed without unhandled errors (step 1 
 One-block summary:
 
 ```
-/drain-mind — N stubs processed
+/tidy — N stubs processed
 - Decisions captured: M (titles)
 - Provenance backfilled: M (titles)
 - Provenance gaps (ambiguous authorship): M (titles)
-- Proposed supersessions: M (D_new → D_prior; surfaced to proposed-supersessions surface for plan-morning)
+- Proposed supersessions: M (D_new → D_prior; surfaced to proposed-supersessions surface for check-in)
 - Memories saved: M (types)
 - Patterns/Mistakes: M
 - Optimization tools captured: M (titles)
@@ -629,8 +627,12 @@ One-block summary:
 - Skipped/failed: M (with reasons)
 ```
 
-If running silently (invoked from another workflow), output only the summary block. If invoked interactively and a candidate task was ambiguous, you MAY ask one clarifying question per stub before adding — but default to "extract liberally and let morning planning triage."
+Always output only the summary block — this run is unattended (see the intro). The summary is written to the run log, not shown to a live operator; anything needing a human decision has already been parked to a `Context/pipeline - *` surface (or the sensitivity-flags surface) for `/check-in` to dispose. **Never** ask a clarifying question — extract liberally and let `/check-in` and morning planning triage.
 
 ## Step 7 — Release the drain lock
 
 Delete your own `Sessions/_inbox/.drain.lock.<HOST>` via `mcp__obsidian__delete_vault_file`. Do this **unconditionally** at the end of the run — even if some stubs were left in `_inbox/` for the next run — so the lock never blocks a later drain. (A crash that skips this is backstopped by Step 0.3d's 30-min staleness cutoff.) Skip if you took the `--force-now` path and never wrote a lock.
+
+## Step 8 — Snapshot the vault (silent)
+
+Run `~/dev/foundation/workflows/scripts/mind_snapshot.sh` (no flags) to capture the vault's final state into the nested git history at `foundation/mind_snapshot/`. This runs **last** — after every extraction, surface append, archive, and lock release — so the whole run's writes land in one snapshot. The script is idempotent: if nothing changed since the last snapshot, no commit is created. Log any error in one line and continue — **never fail the run over the snapshot**. This absorbs what the retired evening ritual's snapshot step used to do (`/tidy` is now the sole `mind_snapshot.sh` runner; K86). If `~/dev/foundation` is absent on this host, skip with a one-line note.
