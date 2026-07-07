@@ -168,7 +168,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --body)  body="${2:?--body needs a value}"; shift 2 ;;
     --label) label="${2:?--label needs a value}"; shift 2 ;;
-    --board) board="${2:?--board needs a value}"; shift 2 ;;
+    --board) board="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
     --milestone) milestone="${2:?--milestone needs a value}"; shift 2 ;;
     --rework) rework="${2:?--rework needs a value}"; shift 2 ;;
     --repo)  repo_route="${2:?--repo needs a value}"; shift 2 ;;

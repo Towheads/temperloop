@@ -198,6 +198,96 @@ _board_is_issues_only() {
   [ "$(board_backend "$1")" = "issues" ]
 }
 
+# --- board NAME aliases for --board (temperloop #95) ----------------------
+# Every --board switch accepts a board NAME as well as its logical number, so a
+# human never has to touch the private number space (the number stays the SOLE
+# internal key; names resolve to a number at the CLI/entrypoint boundary and
+# nothing downstream is name-aware). Two name sources, checked in this order —
+# same first-hit-wins discovery as every other axis:
+#   1. a `board.<N>.name=<slug>` line in boards.conf (a SEVENTH axis, peer to
+#      repo/owner/project/backend/cache — same grep-only, never-sourced parsing;
+#      see boards.conf.example). This is how a stranger's fork names its own
+#      boards without editing this lib.
+#   2. the built-in name map below — this repo's OWN board names, kept here for
+#      the boards.conf-less consumer (a synced board.sh with no conf must accept
+#      `--board foundation` exactly as it accepts `--board 4`). These are app
+#      names, NOT identity/credential tokens, so they are deliberately NOT on
+#      the personal-token denylist (see personal-token-denylist.tsv's header).
+# Matching is case-insensitive on the name; a bare integer is a NUMBER and
+# passes straight through untouched (the cheap, dominant internal path — no conf
+# read). An unknown name errors to stderr WITH the known-names list, rc 2.
+
+# Built-in name -> logical number. Lowercased input; rc 1 on miss.
+# A stranger's fork edits this map (or ships boards.conf board.<N>.name= lines).
+_board_builtin_name_to_number() {
+  case "$1" in
+    stagefind)         echo 3 ;;
+    foundation)        echo 4 ;;
+    ssmobile)          echo 5 ;;
+    subsetwiki)        echo 6 ;;
+    kernel|temperloop) echo 7 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The names the built-in map answers to (for the unknown-name error list).
+_BOARD_BUILTIN_NAMES="stagefind foundation ssmobile subsetwiki kernel temperloop"
+
+# boards.conf name -> number lookup (case-insensitive on the value). Parsed with
+# a pure shell split, never eval/grep-with-user-regex, so a name with regex
+# metacharacters can't misfire. rc 1 on no-conf / no-match.
+_board_conf_name_to_number() {
+  local want line n nm file
+  want="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  file="$(_board_conf_file)" || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      board.*.name=*)
+        n="${line#board.}"; n="${n%%.name=*}"
+        nm="${line#*.name=}"
+        nm="$(printf '%s' "$nm" | tr '[:upper:]' '[:lower:]')"
+        [ "$nm" = "$want" ] && { printf '%s' "$n"; return 0; }
+        ;;
+    esac
+  done < "$file"
+  return 1
+}
+
+# The full known-names list (built-in + every boards.conf board.<N>.name=),
+# space-separated, for the unknown-name error message.
+_board_known_names() {
+  local names="$_BOARD_BUILTIN_NAMES" file line
+  if file="$(_board_conf_file)"; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        board.*.name=*) names="$names ${line#*.name=}" ;;
+      esac
+    done < "$file"
+  fi
+  printf '%s' "$names"
+}
+
+# board_resolve_name <name-or-number> -> canonical logical NUMBER on stdout.
+# The ONE shared resolver every --board switch and every lib entrypoint routes a
+# board argument through. A bare integer passes through unchanged (backward
+# compatible — the sole internal key is still the number). A name resolves via
+# boards.conf then the built-in map. An unknown name prints an error + the known
+# names to stderr and returns 2; an empty argument returns 2.
+board_resolve_name() {
+  local arg="$1" n
+  case "$arg" in
+    '')       printf 'board name or number required\n' >&2; return 2 ;;
+    *[!0-9]*) : ;;                         # contains a non-digit -> treat as a name
+    *)        printf '%s' "$arg"; return 0 ;;   # pure integer -> passthrough
+  esac
+  if n="$(_board_conf_name_to_number "$arg")"; then printf '%s' "$n"; return 0; fi
+  if n="$(_board_builtin_name_to_number "$(printf '%s' "$arg" | tr '[:upper:]' '[:lower:]')")"; then
+    printf '%s' "$n"; return 0
+  fi
+  printf 'unknown board name: %s\nknown board names: %s\n' "$arg" "$(_board_known_names)" >&2
+  return 2
+}
+
 # --- issue-plane read-cache enable axis (F#988 Contract, cache-read-dispatch
 # item) ----------------------------------------------------------------------
 # A SIXTH boards.conf axis, a peer to repo/owner/project/backend/(milestone is
@@ -996,7 +1086,8 @@ _board_issues_create_many() {
 # prefer board_resolve_item (below): it skips the expensive whole-board item-list
 # AND stays always-live for the claim lock (GH #53).
 board_resolve() {
-  local board="$1" pv cache ttl
+  local board pv cache ttl
+  board="$(board_resolve_name "$1")" || return 1
   if _board_is_issues_only "$board"; then
     BOARD_PROJECT_ID=""
     BOARD_FIELDS_JSON='{"fields":[]}'
@@ -1048,7 +1139,8 @@ board_resolve() {
 #   board_resolve_item <board#> <issue#>
 # Returns non-zero (without setting state) if <board#> is not a known board.
 board_resolve_item() {
-  local board="$1" issue="$2" repo owner name pv
+  local board issue="$2" repo owner name pv
+  board="$(board_resolve_name "$1")" || return 1
   if _board_is_issues_only "$board"; then
     _board_issues_resolve_item "$board" "$issue"
     return $?
@@ -1128,6 +1220,7 @@ board_resolve_item() {
 # (BOARD_CACHE_TTL=90); export BOARD_CACHE_TTL=0 to force live reads.
 #   board_item_list <board#>  ->  item-list JSON on stdout
 board_item_list() {
+  local _b; _b="$(board_resolve_name "$1")" || return 1; set -- "$_b" "${@:2}"
   if _board_is_issues_only "$1"; then
     _board_issues_item_list "$1"
     return $?

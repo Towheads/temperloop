@@ -164,7 +164,7 @@ milestone_main() {
   local positional=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board) board="${2:?--board needs a value}"; shift 2 ;;
+      --board) board="$(board_resolve_name "${2:?--board needs a value}")" || return 2; shift 2 ;;
       -*) echo "unknown flag: $1" >&2; milestone_usage; return 2 ;;
       *) positional+=("$1"); shift ;;
     esac
