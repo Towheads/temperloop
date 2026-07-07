@@ -510,7 +510,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   MODE=markers
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board)  PROJECT_NUMBER="${2:?--board needs a value}"; shift 2 ;;
+      --board)  PROJECT_NUMBER="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
       --status) MODE=status; shift ;;
       --fix)    FIX=1; shift ;;
       *) echo "usage: reconcile.sh [--board 3|4] [--status [--fix]]" >&2; exit 2 ;;

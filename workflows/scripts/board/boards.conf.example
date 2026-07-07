@@ -15,6 +15,23 @@
 #   repo     "<owner>/<name>"  — repo-owner axis (gh issue create -R, REST)
 #   owner    "<login>"         — project-owner axis (gh project ... --owner)
 #   project  "<number>"        — project-number axis (gh project <number> ...)
+#   name     "<slug>"          — board NAME alias axis (temperloop #95). Lets
+#                                 every --board switch accept this NAME as well
+#                                 as the logical number, so a human never has to
+#                                 touch the private number space: `--board
+#                                 widget-app` resolves identically to `--board
+#                                 1`. Matching is case-insensitive; the number
+#                                 stays the sole internal key (names resolve to a
+#                                 number at the entrypoint boundary, nothing
+#                                 downstream is name-aware). A bare integer
+#                                 --board value always passes through unchanged,
+#                                 so this axis is purely additive — a board with
+#                                 no `name=` line is reachable by number exactly
+#                                 as before. An unknown name errors with the list
+#                                 of known names. Board.sh also ships a built-in
+#                                 name map for its OWN boards (see
+#                                 lib/board.sh board_resolve_name); a boards.conf
+#                                 `name=` line adds to / overrides that map.
 #   backend  "issues"          — tracker backend axis (foundation #799).
 #                                 Default (omitted, or any other value) is
 #                                 "projects" — the Projects-v2 path unchanged
@@ -73,6 +90,8 @@
 board.1.repo=acme/widget-app
 board.1.owner=acme
 board.1.project=1
+# Name alias — `--board widget-app` now resolves to board 1 everywhere:
+board.1.name=widget-app
 # Opted into the issue-cache store — install/doctor provision the on-disk
 # store for board 1 regardless of backend; the read-dispatch short-circuit
 # itself only fires today for a `backend=issues` board (see the `cache`

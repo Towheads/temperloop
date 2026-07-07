@@ -40,7 +40,7 @@ show_all=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --all) show_all=1; shift ;;
-    --board) PROJECT_NUMBER="${2:?--board needs a value}"; shift 2 ;;
+    --board) PROJECT_NUMBER="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
     *) echo "usage: worklist.sh [--all] [--board 3|4]" >&2; exit 2 ;;
   esac
 done

@@ -210,7 +210,7 @@ claim_main() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board) PROJECT_NUMBER="${2:?--board needs a value}"; shift 2 ;;
+      --board) PROJECT_NUMBER="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
       --) shift; break ;;
       -*) echo "unknown arg: $1" >&2; exit 2 ;;
       *) if [ -z "$issue" ]; then issue="$1"; shift; else echo "unexpected arg: $1" >&2; exit 2; fi ;;
