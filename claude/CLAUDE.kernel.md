@@ -39,6 +39,18 @@ Corollaries:
   something that conflicts with a kernel contract (e.g. a different branch/PR flow, a
   different required CI check name). A contradiction is a kernel-repo bug to fix
   upstream, not something to route around downstream.
+  - **Carve-out: named message templates.** The one deliberate exception is a
+    **named template defined in `claude/message-schema.md`** (e.g. the PR-body
+    skeleton, the parking note) — that file's own § Overlay override status
+    declares its named templates the sanctioned surface an overlay may
+    redeclare by name. This supersedes the "never contradict" default for
+    *that surface only*; it does not license an overlay to diverge from any
+    other kernel contract (a different branch/PR flow, a different `checks`
+    name, or a parsed/frozen surface per `claude/presentation-plane.md`
+    remain non-overridable). The redeclaration mechanism itself (precedence,
+    dangling-override detection) is specified by `message-schema.md`'s own
+    `## Overrides` section once a later change adds it — this carve-out only
+    states that the surface is sanctioned, not how the override resolves.
 
 ## Live/Drain pairing
 
