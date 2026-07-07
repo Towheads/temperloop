@@ -14,6 +14,14 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- `claude/hooks/write-lane-guard.sh`: set the executable bit. It shipped in v0.8.0
+  as `0644`, which left the PreToolUse guard **installed but inert** — Claude Code
+  runs the hook command path directly, so a non-executable hook never fires (every
+  sibling guard is `0755`). The test suite now asserts the hook is executable so
+  this cannot regress.
+
 ## [0.8.0] - 2026-07-06
 
 ### Added

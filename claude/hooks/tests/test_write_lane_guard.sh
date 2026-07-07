@@ -20,6 +20,10 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HOOK="$HERE/../write-lane-guard.sh"
 [ -f "$HOOK" ] || { echo "FATAL: hook not found at $HOOK" >&2; exit 1; }
+# Claude Code runs the hook COMMAND PATH directly, so the file MUST be executable
+# — a 0644 hook is silently inert (installed but never runs). Every sibling guard
+# is 0755; assert it here so a missing +x can never ship again.
+[ -x "$HOOK" ] || { echo "FATAL: hook is not executable (needs chmod +x) — Claude Code runs the command path directly" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required for this test" >&2; exit 1; }
 
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
