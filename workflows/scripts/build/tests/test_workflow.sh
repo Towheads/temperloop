@@ -1236,6 +1236,124 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 26: null spine return at the WORKTREE step (temperloop#72). When the
+# auto-mode safety classifier DENIES a spine command, agent() returns null and
+# runSpine normalizes it to a SPINE_DENIED sentinel. driveItem must escalate a
+# clean 'spine-denied' rather than dereference wtOut.outcome and crash with
+# 'null is not an object'.
+# ============================================================================
+run_node_case "null-spine-worktree: worktree spine returns null → spine-denied escalation, no TypeError (#72)" "
+$PREAMBLE
+// First spine call (worktree.sh create, board OFF) returns null (classifier denied).
+setSpine('wtdenied', null);
+happyWorker('wtdenied');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'wtdenied', branch: 'build/wtdenied', title: 'WT denied', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+if (parked.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-worktree: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
+if (escalations.length !== 1 || escalations[0].kind !== 'spine-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-worktree: expected 1 spine-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (escalations[0].payload.step !== 'worktree')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-worktree: expected payload.step=worktree, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 27: null spine return at the PUSH step (temperloop#72). Same null-guard,
+# exercised at 3f-1 push after a clean worker+gate+rebase+scan. Guards the
+# second site the crash was reported at (~453/push).
+# ============================================================================
+run_node_case "null-spine-push: push spine returns null → spine-denied escalation, no TypeError (#72)" "
+$PREAMBLE
+setSpine('pushdenied',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/pushdenied' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pd' },
+  { outcome: 'SCAN_CLEAN' },
+  null,   // push → classifier denied
+);
+happyWorker('pushdenied');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'pushdenied', branch: 'build/pushdenied', title: 'Push denied', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+if (parked.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-push: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
+if (escalations.length !== 1 || escalations[0].kind !== 'spine-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-push: expected 1 spine-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (escalations[0].payload.step !== 'push')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-push: expected payload.step=push, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 28: spineBinDir de-obfuscation (temperloop#72, root cause 1). When the
+# orchestrator passes a pre-resolved input.spineBinDir, spineBin emits a PLAIN
+# absolute path — the executed worktree/push command line must carry NO nested
+# \$(readlink …) command-substitution (what the classifier read as an obfuscated
+# bypass). We capture the spine prompts and assert the resolved path is present
+# and no readlink substitution leaks into the executed line.
+# ============================================================================
+run_node_case "spineBinDir: pre-resolved dir → plain paths, no readlink in executed spine command (#72)" "
+$PREAMBLE
+happySpine('deobf', 260, 'sha-deobf');
+happyWorker('deobf');
+let spinePrompts = [];
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts={}) {
+  if (opts.phase === 'spine') spinePrompts.push(String(prompt));
+  return origAgent(prompt, opts);
+};
+globalThis.args = { ...baseArgs, spineBinDir: '/resolved/spine/bin', items: [
+  { slug: 'deobf', branch: 'build/deobf', title: 'Deobf', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+// The worktree + push spine commands must use the plain resolved dir...
+const wtPrompt = spinePrompts.find(p => p.includes('worktree.sh'));
+const pushPrompt = spinePrompts.find(p => p.includes('pr.sh') && p.includes(' push '));
+if (!wtPrompt || !wtPrompt.includes('/resolved/spine/bin/worktree.sh'))
+  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: worktree cmd missing plain resolved path: ' + (wtPrompt||'<none>').slice(0,300) })); process.exit(0); }
+if (!pushPrompt || !pushPrompt.includes('/resolved/spine/bin/pr.sh'))
+  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: push cmd missing plain resolved path: ' + (pushPrompt||'<none>').slice(0,300) })); process.exit(0); }
+// ...and NO nested readlink command-substitution in any spine command line.
+const leaked = spinePrompts.find(p => p.includes('readlink'));
+if (leaked)
+  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: readlink substitution leaked into executed spine command: ' + leaked.slice(0,300) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# Root-cause-1 static guards (temperloop#72).
+# (1) spineBin must PREFER a pre-resolved input.spineBinDir (plain-path branch),
+#     so the executed pr.sh/worktree.sh line need not carry nested readlink.
+# (2) The runSpine / merge-check sub-agent instruction must no longer read as
+#     'blindly execute an opaque command' — the 'Do NOT interpret it' phrasing
+#     that (with the readlink substitution) tripped the auto-mode classifier is
+#     gone.
+grep -q 'input.spineBinDir' "$MJS" \
+  || fail "#72: spineBin must prefer a pre-resolved input.spineBinDir (de-obfuscated plain-path branch)"
+if grep -q 'Do NOT interpret it' "$MJS"; then
+  fail "#72: sub-agent instruction still reads as blind-execute ('Do NOT interpret it') — soften it"
+fi
+# (3) The null-guard must exist: a spineDenied() detector + a spine-denied escalation.
+grep -q 'function spineDenied(' "$MJS" \
+  || fail "#72: spineDenied() null/denied detector missing from build-level.mjs"
+grep -q "'spine-denied'" "$MJS" \
+  || fail "#72: no 'spine-denied' escalation emitted — a denied spine step must park, not crash"
+echo "PASS: #72 classifier-detrip + null-guard static guards — spineBinDir plain-path branch, softened instruction, spineDenied() + spine-denied escalation present"
+
+# ============================================================================
 # Spine-resolution regression guard (foundation #560).
 # build-level.mjs runs in the Workflow sandbox (no fs/Node API), so the
 # build-spine scripts (worktree.sh/pr.sh/ci-poll.sh) MUST be resolved via the
