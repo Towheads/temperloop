@@ -8,7 +8,7 @@
 #      (env dotfile, claude entry, board command, gh-shim)
 #   2. links_enumerate output is tab-delimited with exactly 3 fields per line
 #   3. settings.json is emitted as kind=real (the #292 exception)
-#   4. All 6 board commands are enumerated
+#   4. All board-toolkit + co-deployed commands are enumerated
 #   5. doctor classifies MISSING, DRIFT, SHADOWED, DANGLING correctly
 #      against a controlled fixture HOME, then exits non-zero
 #   6. doctor exits 0 when every entry is OK
@@ -63,7 +63,7 @@ touch "${FAKE_FOUND}/claude/CLAUDE.kernel.md"
 touch "${FAKE_FOUND}/claude/CLAUDE.overlay.md"
 
 # board commands: create stub scripts
-for cmd in claim release worklist reconcile capture milestone; do
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
   touch "${FAKE_FOUND}/workflows/scripts/board/${cmd}.sh"
 done
 
@@ -163,14 +163,14 @@ settings_src="$(awk -F'\t' '{print $3}' <<<"$settings_line")"
 pass "3: settings.json emitted as kind=real with empty expected_source"
 
 # ---------------------------------------------------------------------------
-# Test 4: all 6 board commands enumerated
+# Test 4: all board-toolkit + co-deployed commands enumerated
 # ---------------------------------------------------------------------------
-for cmd in claim release worklist reconcile capture milestone; do
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
   grep -q "${FAKE_HOME}/.local/bin/${cmd}" <<<"$output" || \
     fail "4: board command '${cmd}' not enumerated"
 done
 
-pass "4: all 6 board commands enumerated"
+pass "4: all board-toolkit + co-deployed commands enumerated"
 
 # ---------------------------------------------------------------------------
 # Test 5: doctor classifies MISSING/DRIFT/SHADOWED/DANGLING correctly
@@ -205,7 +205,7 @@ mkdir -p "${FAKE_FOUND5}/claude/commands"
 touch "${FAKE_FOUND5}/claude/commands/build.md"
 
 # board commands
-for cmd in claim release worklist reconcile capture milestone; do
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
   touch "${FAKE_FOUND5}/workflows/scripts/board/${cmd}.sh"
 done
 
@@ -242,6 +242,9 @@ ln -s "${FAKE_FOUND5}/workflows/scripts/board/capture.sh" \
 # board command 'milestone' → OK
 ln -s "${FAKE_FOUND5}/workflows/scripts/board/milestone.sh" \
   "${FAKE_HOME5}/.local/bin/milestone"
+# co-deployed 'pr-enqueue' → OK
+ln -s "${FAKE_FOUND5}/workflows/scripts/board/pr-enqueue.sh" \
+  "${FAKE_HOME5}/.local/bin/pr-enqueue"
 
 # gh shim → MISSING (don't create)
 # .zshrc → MISSING (no symlink created above)
@@ -310,7 +313,7 @@ touch "${FAKE_FOUND6}/claude/CLAUDE.overlay.md"
 echo '# composed' >"${FAKE_HOME6}/.claude/CLAUDE.md"
 
 # board commands (all OK symlinks)
-for cmd in claim release worklist reconcile capture milestone; do
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
   touch "${FAKE_FOUND6}/workflows/scripts/board/${cmd}.sh"
   ln -s "${FAKE_FOUND6}/workflows/scripts/board/${cmd}.sh" \
     "${FAKE_HOME6}/.local/bin/${cmd}"
@@ -462,7 +465,7 @@ touch "${FAKE_FOUND9}/claude/settings.json"
 echo '{"model":"test"}' >"${FAKE_HOME9}/.claude/settings.json"
 touch "${FAKE_FOUND9}/claude/CLAUDE.kernel.md" "${FAKE_FOUND9}/claude/CLAUDE.overlay.md"
 echo '# composed' >"${FAKE_HOME9}/.claude/CLAUDE.md"
-for cmd in claim release worklist reconcile capture milestone; do
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
   touch "${FAKE_FOUND9}/workflows/scripts/board/${cmd}.sh"
   ln -s "${FAKE_FOUND9}/workflows/scripts/board/${cmd}.sh" "${FAKE_HOME9}/.local/bin/${cmd}"
 done
