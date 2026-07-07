@@ -11,6 +11,11 @@
 #   - backticked `Closes #N` (FAIL — GitHub silently ignores it)
 #   - negated `does not close #N` (FAIL — GitHub honors it despite negation)
 #   - stray extra `Fixes #M` alongside the intended close (FAIL)
+#
+# Plus (temperloop#94, plan item `template-lints`): --require-verification, the
+# opt-in static check for the PR-body skeleton template's required
+# Verification-surface slot (a `## Verification` heading) — off by default so
+# the acceptance-coverage cases above are unaffected.
 
 set -euo pipefail
 
@@ -108,6 +113,19 @@ expect_exit "empty-ish body, no linkage (PASS)" 0 \
 
 expect_exit "backticked close, no --expect (PASS: GitHub ignores it)" 0 \
 	'Documenting the trap: a `Closes #5` is silently ignored.\n'
+
+# --- --require-verification: opt-in parsed-surface check ---------------------
+expect_exit "no --require-verification flag, no Verification section (PASS: opt-in, off by default)" 0 \
+	'Adds a lint.\n\nCloses #196\n'
+
+expect_msg "--require-verification with no Verification section (FAIL)" \
+	'Adds a lint.\n\nCloses #196\n' "no '## Verification' section" --require-verification --expect 196
+
+expect_exit "--require-verification with a Verification section present (PASS)" 0 \
+	'Adds a lint.\n\n## Verification\n\nRun the tests.\n\nCloses #196\n' --require-verification --expect 196
+
+expect_exit "--require-verification with a 'Verification surface' heading (PASS: prefix match)" 0 \
+	'Adds a lint.\n\n## Verification surface\n\nRun the tests.\n' --require-verification
 
 # ---------------------------------------------------------------------------
 echo
