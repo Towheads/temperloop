@@ -96,7 +96,9 @@ parse_origin_nwo() {
     || die "no 'origin' remote in $(pwd) — pass --repo <owner/repo>"
   nwo="$(printf '%s' "$url" \
     | sed -E 's#^[A-Za-z]+://##; s#^[^@/]*@##; s#^[^/:]+[:/]##; s#\.git/?$##; s#/$##')"
-  [ -n "$nwo" ] && [ "$nwo" != "$url" ] || die "could not parse owner/repo from origin URL: $url"
+  if [ -z "$nwo" ] || [ "$nwo" = "$url" ]; then
+    die "could not parse owner/repo from origin URL: $url"
+  fi
   case "$nwo" in
     */*) : ;;
     *) die "origin URL did not resolve to owner/repo: $url" ;;
@@ -107,7 +109,9 @@ parse_origin_nwo() {
 raw_nwo="${repo:-$(parse_origin_nwo)}"
 raw_owner="${raw_nwo%%/*}"
 raw_repo="${raw_nwo##*/}"
-[ -n "$raw_owner" ] && [ -n "$raw_repo" ] || die "invalid owner/repo '$raw_nwo'"
+if [ -z "$raw_owner" ] || [ -z "$raw_repo" ]; then
+  die "invalid owner/repo '$raw_nwo'"
+fi
 
 # Canonicalize via the REST endpoint: it is case-insensitive on both owner and
 # repo AND follows owner/repo renames (301), so a mismatched-casing/renamed
