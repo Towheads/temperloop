@@ -14,8 +14,41 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-06
+
+Epic temperloop#94 — the **communication-style / message-presentation layer**.
+A kernel contract for how Claude presents work: durable artifacts (PR bodies,
+commit messages, issues) and ephemeral surfaces (agent narration, unattended
+digests, status reports) now share one evidence-grounded schema, with a
+sanctioned overlay override seam and machine-checkable conformance lints. The
+underlying HCI/SE claims were put through an adversarial primary-source
+verification pass (25 Tier-2 claims → 21 confirmed / 4 refuted) before any
+template slot was locked. **Additive for existing overlays** — the new kernel
+`§ Communication conventions` refinements flow in via subtree and no overlay is
+forced to adapt, so this section is deliberately **not** tagged `BREAKING`.
+
 ### Added
 
+- `claude/message-schema.md` — the central message-presentation contract:
+  reader-state axes (present / cold / absent × operator / stranger / parser),
+  seven interaction modes, five artifact-shaped templates (PR-body skeleton,
+  parking note, digest entry, question block, degradation notice), the
+  reference-token rule (first-mention title hook; a trailing legend reserved for
+  long mode-6 durable artifacts), and the Tier-1 findings the templates encode
+  (BLUF; the Endsley perception → comprehension → projection shape for cold
+  returns; calibrated-trust status reporting). (temperloop#94, #109)
+- `claude/message-schema.md` § Overrides — the override seam. An overlay may
+  redeclare a **named template** whole, by name (later-definition-wins; a
+  byte-identical redeclaration is a no-op; a dangling override is flagged by the
+  template lints). This is the single sanctioned exception to
+  `CLAUDE.kernel.md`'s "overlay may extend, never contradict" default, scoped to
+  named templates only. (temperloop#94, #114)
+- `workflows/scripts/validate-template-refs.sh` — a kernel lint enforcing
+  message-schema conformance: reference-integrity, dangling-override detection
+  (parameterized over the overlay's override file via `MESSAGE_SCHEMA_OVERLAY`),
+  and template-registry completeness. Wired into `scripts/quality-gates.sh` and
+  the Makefile; `workflows/scripts/lint-pr-body.sh` gains an opt-in
+  `--require-verification` flag. (temperloop#94, #119)
 - `scripts/update-kernel.sh` — the sanctioned kernel-subtree puller now ships
   from the kernel itself (co-located with `VERSIONING.md`, so policy and the
   machinery that enforces it travel together) and carries a **breaking-delta
@@ -30,7 +63,46 @@ reads that marker; a stranger greps for it before pulling.
   `VERSIONING.md` § "Signal to the machinery" promises. (temperloop#89,
   follow-up to the versioning spike #79 / PR #88)
 
+### Changed
+
+- `claude/CLAUDE.kernel.md` § Communication conventions — reworked to defer to
+  the message-schema. The trailing **refs-legend** rule is **superseded** by a
+  first-mention title-hook (a legend is now reserved for long mode-6 durable
+  artifacts); board identity is named-not-numbered in prose; completion-summary
+  and resume-recap are grounded in BLUF + the Endsley cold-return shape; the
+  PR-verification-surface section is named as the owner of the PR-body-skeleton
+  template's Verification slot. A "named message templates" carve-out under the
+  "never contradict" corollary sanctions the override seam. (temperloop#94,
+  #109, #113)
+- `claude/plan-schema.md` — readability port and the override-seam schema
+  additions. (temperloop#94, #110, #114)
+
+### Fixed
+
+- `claude/commands/build.md` / `claude/workflows/build-level.mjs` — propagate the
+  quality-gates exit code through the Step 3e.5 gate pipe (`pipefail`), so a
+  failing acceptance gate is no longer masked by a later stage of the pipe.
+  (temperloop#116)
+- `workflows/scripts/board/tests/test_cache_store.sh` — removed a repo-wide
+  `check-kernel-manifest.sh` assertion that coupled this isolated board-cache
+  unit test to global manifest state, making it fail deterministically on any
+  unclassified tracked file anywhere in the repo (and present as a "flake").
+  `make test-kernel-manifest` already owns repo-wide coverage. (temperloop#120,
+  #122)
+
 ## [0.8.2] - 2026-07-06
+
+### Added
+
+- `claude/presentation-plane.md` — indexes which message surfaces are
+  contract-frozen / parsed (non-overridable) vs. style-free (overridable), the
+  boundary the v0.9.0 override seam and template lints enforce. Foundation-layer
+  scaffolding for epic temperloop#94; shipped here, documented retroactively.
+  (temperloop#94, #104)
+- `claude/measurement-proxies.md` — defines observable proxies for communication
+  quality so the presentation rules are measurable rather than aspirational.
+  Foundation-layer scaffolding for epic temperloop#94; shipped here, documented
+  retroactively. (temperloop#94, #105)
 
 ### Fixed
 
