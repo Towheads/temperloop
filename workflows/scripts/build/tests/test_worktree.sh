@@ -154,3 +154,45 @@ bash "$SCRIPT" create "$REPO" nohealspurious >/dev/null
 [ "$(git -C "$REPO.wt/nohealspurious" rev-parse HEAD)" = "$(git -C "$REPO" rev-parse origin/main)" ] \
   || fail "#529: create added a spurious commit on a repo with nothing to untrack"
 echo "PASS: create adds NO commit when there's nothing to untrack (steady-state no-op)"
+
+# --- deps-merged: the dep-merge precondition gate (#108) ----------------------
+# /build's 3b-0 refuses to create a dependent item's worktree until every
+# `depends-on` target's head sha is an ancestor of origin/<default> — i.e. the
+# depended-on PR has MERGED — so the worker builds and self-verifies against
+# merged dependency code, not a pre-merge base. deps-merged fetches origin first
+# (like create), then tests each comma-separated sha for ancestry.
+#
+# A commit that lands on upstream main stands in for a MERGED dependency; a real
+# commit object that is a CHILD of origin/main (but not an ancestor) stands in for
+# a pushed-but-UNMERGED PR head (the exact pre-merge window #108 guards).
+mergedsha="$(git -C "$TMP/upstream" commit -q --allow-empty -m 'dep merged' && git -C "$TMP/upstream" rev-parse HEAD)"
+unmergedsha="$(git -C "$REPO" commit-tree "origin/main^{tree}" -p origin/main -m 'dep unmerged head')"
+
+out="$(bash "$SCRIPT" deps-merged "$REPO" "$mergedsha")"
+[ "$(jq -r .outcome <<<"$out")" = "DEPS_MERGED" ] \
+  || fail "#108: a merged dep sha must be DEPS_MERGED (got: $out)"
+
+out="$(bash "$SCRIPT" deps-merged "$REPO" "$unmergedsha")"
+[ "$(jq -r .outcome <<<"$out")" = "DEPS_UNMERGED" ] \
+  || fail "#108: a pushed-but-unmerged dep sha must be DEPS_UNMERGED (got: $out)"
+[ "$(jq -r '.unmerged[0]' <<<"$out")" = "$unmergedsha" ] \
+  || fail "#108: DEPS_UNMERGED must name the unmerged sha (got: $out)"
+
+# unknown/unfetched object → conservatively UNMERGED (never a false green)
+out="$(bash "$SCRIPT" deps-merged "$REPO" "0000000000000000000000000000000000000000")"
+[ "$(jq -r .outcome <<<"$out")" = "DEPS_UNMERGED" ] \
+  || fail "#108: an unknown sha must conservatively read DEPS_UNMERGED (got: $out)"
+
+# ALL shas must be merged — one unmerged fails the gate, and only it is listed.
+out="$(bash "$SCRIPT" deps-merged "$REPO" "$mergedsha,$unmergedsha")"
+[ "$(jq -r .outcome <<<"$out")" = "DEPS_UNMERGED" ] \
+  || fail "#108: a mixed set (one unmerged) must be DEPS_UNMERGED (got: $out)"
+[ "$(jq -r '.unmerged | length' <<<"$out")" = "1" ] \
+  || fail "#108: a mixed set must list exactly the unmerged sha(s) (got: $out)"
+echo "PASS: deps-merged gates on every dep sha being an ancestor of origin/<default> (#108)"
+
+# empty sha list → structured ERROR + non-zero exit (closed outcome set)
+rc=0; out="$(bash "$SCRIPT" deps-merged "$REPO" "" 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "#108: deps-merged with an empty sha list did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "#108: empty sha list not ERROR (got: $out)"
+echo "PASS: deps-merged with an empty sha list emits structured ERROR + non-zero exit"

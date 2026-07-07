@@ -7,9 +7,10 @@
 # code here. The LLM orchestrator invokes this script; it never hand-rolls
 # `git worktree` for build items.
 #
-#   worktree.sh create <repo-root> <slug>     # add worktree + drop guard marker
-#   worktree.sh remove <repo-root> <slug>     # remove worktree + branch + marker
-#   worktree.sh prune  <repo-root> [--force]  # sweep merged <repo>.wt/* worktrees
+#   worktree.sh create <repo-root> <slug>        # add worktree + drop guard marker
+#   worktree.sh remove <repo-root> <slug>        # remove worktree + branch + marker
+#   worktree.sh prune  <repo-root> [--force]     # sweep merged <repo>.wt/* worktrees
+#   worktree.sh deps-merged <repo-root> <shas>   # gate: all comma-sep SHAs merged?
 #
 # Deterministic layout (pure function of the slug — never reported back by a
 # worker): path `<repo-root>.wt/<slug>`, branch `build/<slug>`, based on
@@ -29,6 +30,7 @@
 #   remove →  {"outcome":"REMOVED"|"NOT_FOUND","path":…,"branch":…}
 #   prune  →  one line per <repo>.wt/* worktree:
 #             {"outcome":"PRUNED"|"SKIPPED_DIRTY"|"SKIPPED_UNMERGED","path":…,"branch":…}
+#   deps-merged → {"outcome":"DEPS_MERGED"} | {"outcome":"DEPS_UNMERGED","unmerged":[…]}
 #   error  →  {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
 
@@ -45,7 +47,7 @@ die() {
 }
 
 usage() {
-  die "usage: worktree.sh create <repo-root> <slug> | remove <repo-root> <slug> | prune <repo-root> [--force]"
+  die "usage: worktree.sh create <repo-root> <slug> | remove <repo-root> <slug> | prune <repo-root> [--force] | deps-merged <repo-root> <sha,sha,...>"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -263,6 +265,40 @@ prune_one() {
   jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"PRUNED", path:$path, branch:$branch}'
 }
 
+# deps-merged — the dep-merge precondition gate for /build's 3b-0 (#108). Given a
+# comma-separated list of commit SHAs (each the merged head of a `depends-on`
+# target), report whether EVERY one is already an ancestor of origin/<default> —
+# i.e. the depended-on PR has landed in the default branch. worktree.sh create
+# bases a new item's branch on origin/<default>; gating create on this means the
+# worker builds and self-verifies against MERGED dependency code, not a pre-merge
+# base. An unknown/unfetched SHA (git errors) counts as UNMERGED (conservative).
+cmd_deps_merged() {
+  local repo default shas_csv sha
+  repo="$(resolve_repo "$1")"
+  shas_csv="$2"
+  [ -n "$shas_csv" ] || die "deps-merged requires a non-empty comma-separated SHA list"
+  default="$(default_branch "$repo")" || die "cannot resolve origin's default branch in '$repo'"
+  # Freshen the merge target before the ancestry test — mirrors cmd_create /
+  # cmd_prune. Offline (tests/planes) is fine: the local origin/<default> is then
+  # the conservative basis (a not-yet-fetched merge simply reads as unmerged).
+  git -C "$repo" fetch --quiet origin "$default" 2>/dev/null || true
+
+  local unmerged=()
+  local IFS=','
+  for sha in $shas_csv; do
+    [ -n "$sha" ] || continue
+    if ! git -C "$repo" merge-base --is-ancestor "$sha" "origin/$default" 2>/dev/null; then
+      unmerged+=("$sha")
+    fi
+  done
+
+  if [ "${#unmerged[@]}" -eq 0 ]; then
+    jq -cn '{outcome:"DEPS_MERGED"}'
+  else
+    printf '%s\n' "${unmerged[@]}" | jq -R . | jq -cs '{outcome:"DEPS_UNMERGED", unmerged:.}'
+  fi
+}
+
 [ $# -ge 1 ] || usage
 cmd="$1"; shift
 case "$cmd" in
@@ -273,6 +309,10 @@ case "$cmd" in
   remove)
     [ $# -eq 2 ] || usage
     cmd_remove "$1" "$2"
+    ;;
+  deps-merged)
+    [ $# -eq 2 ] || usage
+    cmd_deps_merged "$1" "$2"
     ;;
   prune)
     [ $# -ge 1 ] || usage

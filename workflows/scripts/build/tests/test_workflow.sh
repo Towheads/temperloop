@@ -819,6 +819,85 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 13.5: dep-merge precondition gate (#108) — a level's worktree is created
+# only after every depends-on target has MERGED to origin/<default>.
+#
+# Root cause of #108 is level ORDERING: a dependent item's worker must build and
+# self-verify against MERGED dependency code, not a pre-merge base. driveItem's
+# 3b-0 gate runs `worktree.sh deps-merged` BEFORE `worktree.sh create` whenever
+# item.dependsOn carries SHAs. This test drives ONE level with two independent
+# dependent items:
+#   - l2ok:      deps-merged → DEPS_MERGED → worktree created, item parks [m].
+#   - l2blocked: deps-merged → DEPS_UNMERGED → item escalates 'dep-not-merged'
+#                with NO worktree create and NO worker spawned (nothing is built
+#                against a stale/pre-merge base). Its sibling still parks.
+# ============================================================================
+run_node_case "dep-merge gate (#108): DEPS_UNMERGED blocks worktree create + worker; DEPS_MERGED proceeds; sibling parks" "
+$PREAMBLE
+
+// l2ok: dep gate passes, then the normal green spine sequence.
+setSpine('l2ok',
+  { outcome: 'DEPS_MERGED' },
+  { outcome: 'CREATED', path: '/tmp/repo.wt/l2ok' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-l2ok' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-l2ok', branch: 'build/l2ok' },
+  { outcome: 'PR_OPENED', pr_number: 811 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('l2ok');
+
+// l2blocked: dep gate reports an unmerged dependency — the ONLY spine call it
+// should ever make. No CREATED registered: if the code wrongly reached
+// worktree.sh create, the spine mock would throw 'label exhausted'.
+setSpine('l2blocked', { outcome: 'DEPS_UNMERGED', unmerged: ['sha-dep-unmerged'] });
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'l2ok',      branch: 'build/l2ok',      title: 'L2 OK',      kind: 'impl', acceptance: ['c'],
+    dependsOn: [{ slug: 'l1', sha: 'sha-l1-merged' }] },
+  { slug: 'l2blocked', branch: 'build/l2blocked', title: 'L2 Blocked', kind: 'impl', acceptance: ['c'],
+    dependsOn: [{ slug: 'l1', sha: 'sha-l1-unmerged' }] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const parked = result.parked ?? [];
+const escalations = result.escalations ?? [];
+
+// l2ok parks; l2blocked escalates.
+if (parked.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+if (parked[0].slug !== 'l2ok' || parked[0].pr !== 811)
+  { console.log(JSON.stringify({ ok: false, reason: 'wrong item parked: ' + JSON.stringify(parked[0]) })); process.exit(0); }
+if (escalations.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
+if (escalations[0].slug !== 'l2blocked' || escalations[0].kind !== 'dep-not-merged')
+  { console.log(JSON.stringify({ ok: false, reason: 'wrong escalation: ' + JSON.stringify(escalations[0]) })); process.exit(0); }
+
+// The gate is ORDERED before create: l2blocked must make its deps-merged spine
+// call but NEVER a worktree:create call, and NEVER spawn a worker — nothing was
+// built against the pre-merge base.
+const blockedDepChecks = callLog.filter(c => c.opts.label === 'depcheck:l2blocked');
+if (blockedDepChecks.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 depcheck for l2blocked, got ' + blockedDepChecks.length })); process.exit(0); }
+const blockedCreate = callLog.filter(c => c.opts.label === 'worktree:l2blocked');
+if (blockedCreate.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'l2blocked created a worktree despite unmerged dep: ' + JSON.stringify(blockedCreate) })); process.exit(0); }
+const blockedWorker = callLog.filter(c => c.opts.label === 'worker:l2blocked');
+if (blockedWorker.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'l2blocked spawned a worker despite unmerged dep: ' + JSON.stringify(blockedWorker) })); process.exit(0); }
+
+// And the gate runs BEFORE create for the passing item too (depcheck precedes worktree).
+const okLabels = callLog.filter(c => c.opts.label === 'depcheck:l2ok' || c.opts.label === 'worktree:l2ok').map(c => c.opts.label);
+if (okLabels[0] !== 'depcheck:l2ok' || okLabels[1] !== 'worktree:l2ok')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate not ordered before create for l2ok: ' + JSON.stringify(okLabels) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 14: deploy-discovery — ~/.claude/workflows/build-level.mjs resolves
 # The install-claude Makefile target symlinks claude/* into ~/.claude/.
 # We verify the source file exists and the installed path resolves.

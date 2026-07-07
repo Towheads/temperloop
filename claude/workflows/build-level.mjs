@@ -65,7 +65,8 @@
 // -----------------------------------------------------------------------------
 //   Input  (via global `args`):
 //     { repoRoot, planLink, board, items:[{ slug, branch, title, kind,
-//        ghIssue, alsoCloses, model, acceptance, source, scope, notes }],
+//        ghIssue, alsoCloses, model, acceptance, source, scope, notes,
+//        dependsOn }],
 //       ownerRepo, claimCmd, verdicts, onlySlugs }
 //
 //     repoRoot   — the parent checkout's top-level path; worktrees live at
@@ -74,7 +75,15 @@
 //     planLink   — the plan note's vault link (passed to pr.sh --plan-link).
 //     board      — logical board number (3/4) or null/false when board is OFF.
 //     items      — this level's FULL item array (the onlySlugs filter, below,
-//                  selects the active subset on a continuation).
+//                  selects the active subset on a continuation). Per item,
+//                  `dependsOn` is an array of { slug, sha } — the merged head
+//                  SHA of each `depends-on` target (from that dep's plan-note
+//                  `pushed_sha:`). It gates worktree creation (3b-0, #108): the
+//                  worktree is created only once every dep SHA is an ancestor of
+//                  origin/<default> (i.e. the depended-on PR has MERGED), so the
+//                  worker builds and self-verifies against merged dependency
+//                  code, not a pre-merge base. Absent/empty for level-0 items or
+//                  items whose only cross-item edges are `after:` (no merge dep).
 //     ownerRepo  — "owner/repo" for ci-poll.sh / gh ops. The workflow has no
 //                  shell to derive it, so the orchestrator passes it in (Step 0
 //                  probe: `gh repo view --json nameWithOwner -q .nameWithOwner`).
@@ -494,6 +503,42 @@ async function driveItem(item) {
     }
     if (claimOut.outcome === 'CLAIM_CONFLICT' || claimOut.outcome === 'ERROR') {
       return escalate(item.slug, 'claim-conflict', { claimOut });
+    }
+  }
+
+  // --- 3b-0. Dep-merge precondition gate (#108) ----------------------------
+  // A `depends-on` edge REQUIRES its target be [x] MERGED before this item's
+  // worker starts — the worker must build and self-verify against the merged
+  // dependency code, NOT a pre-merge base. The orchestrator's level ordering
+  // (it runs level k's merge gate before invoking build-level for level k+1) is
+  // the primary guarantee; this is the mechanical backstop that refuses to
+  // create the worktree until every depended-on PR has actually landed in
+  // origin/<default> (guarding a resume race, a partial merge, an ordering bug).
+  // Without it, worktree.sh create bases the branch on an origin/<default> that
+  // LACKS the dep, the worker self-verifies against stale code, and the 3f
+  // unconditional rebase (#525) only repairs the branch TEXTUALLY at push —
+  // too late for the worker's own build/verify. item.dependsOn is [{slug,sha}]
+  // (each dep's merged head SHA, from the plan note's pushed_sha:); an
+  // absent/empty list (level-0 or after:-only deps) is a no-op. Skipped on a
+  // continuation — the worktree already exists and its base was gated at first
+  // create; re-gating would need SHAs the continuation input does not carry.
+  const depShas = isContinuation
+    ? []
+    : (item.dependsOn ?? []).map((d) => d && d.sha).filter(Boolean);
+  if (depShas.length > 0) {
+    const wtGateBin = spineBin(repoRoot, 'worktree.sh');
+    const depOut = await runSpine(
+      `${wtGateBin} deps-merged ${sq(repoRoot)} ${sq(depShas.join(','))}`,
+      { label: `depcheck:${item.slug}`, slug: item.slug },
+    );
+    if (spineDenied(depOut)) {
+      return escalate(item.slug, 'spine-denied', { step: 'deps-merged', out: depOut });
+    }
+    if (depOut.outcome !== 'DEPS_MERGED') {
+      // A depended-on PR has NOT merged to origin/<default>. Do NOT create the
+      // worktree and do NOT spawn a worker — surface it so the orchestrator/human
+      // resolves the ordering. Nothing is built against a stale base.
+      return escalate(item.slug, 'dep-not-merged', { depOut });
     }
   }
 
