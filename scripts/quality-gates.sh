@@ -84,6 +84,15 @@ KERNEL_GATES=(
   "make validate-command-run-emit"
   "make validate-issue-touch-emit"
   "make validate-lexicon"
+  # Message-template reference-integrity + registry-completeness lint
+  # (temperloop#94, plan item `template-lints`): every by-name template
+  # reference in claude/CLAUDE.kernel.md / claude/commands/*.md resolves to a
+  # template claude/message-schema.md § Templates actually defines; any
+  # overlay override name (when an overlay message-schema is present) does
+  # too; and every contract-frozen row in claude/presentation-plane.md's
+  # kernel table names a resolvable owner file/section — the
+  # validate-live-drain.sh mold applied to the presentation-plane registry.
+  "make validate-template-refs"
   # zsh special-parameter-tie guard + its behavioral regression (temperloop#40,
   # surfaced from foundation#987). These are DIRECT `bash` gates rather than
   # `make` targets because the kernel Makefile is generator-owned (seeded from

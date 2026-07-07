@@ -18,7 +18,22 @@
 #      trap: it closes an issue you only mentioned in passing.
 #
 # This lint mechanizes the bidirectional post-merge linkage check so we can TRUST
-# the parser instead of hand-verifying every PR. It has two modes:
+# the parser instead of hand-verifying every PR.
+#
+# --require-verification (opt-in, static parsed-surface check — temperloop#94,
+# plan item `template-lints`): claude/presentation-plane.md's "Mixed surfaces"
+# note names the `## Verification` section as a frozen, parsed surface inside
+# an otherwise style-free PR body, and claude/message-schema.md's "PR-body
+# skeleton" template (mode 6) requires a Verification-surface slot to exist.
+# This flag asserts a `## Verification`-headed section is present in the body
+# — presence only (a static, CI-checkable structural check); it deliberately
+# does NOT inspect the section's rendered wording or content, which would be a
+# false floor (not mechanically verifiable). Opt-in and off by default so
+# existing callers/fixtures that don't carry a Verification section are
+# unaffected — see workflows/scripts/tests/test_lint_pr_body.sh for both the
+# pre-existing closing-keyword coverage and this flag's own cases.
+#
+# The linkage checks below have two modes:
 #
 #   --expect N  (known intent — used by tests and any caller that knows the
 #               issue the PR is meant to close):
@@ -43,8 +58,8 @@
 # bare keyword IS honored (and thus flagged).
 #
 # Usage:
-#   lint-pr-body.sh [--expect N] [FILE]
-#   lint-pr-body.sh [--expect N] < body.md
+#   lint-pr-body.sh [--expect N] [--require-verification] [FILE]
+#   lint-pr-body.sh [--expect N] [--require-verification] < body.md
 #
 # Exits 0 if clean, 1 on any violation (clear message on stderr), 2 on usage
 # error.
@@ -55,12 +70,17 @@ set -euo pipefail
 
 usage() {
 	cat >&2 <<'EOF'
-Usage: lint-pr-body.sh [--expect N] [FILE]
-       lint-pr-body.sh [--expect N] < body.md
+Usage: lint-pr-body.sh [--expect N] [--require-verification] [FILE]
+       lint-pr-body.sh [--expect N] [--require-verification] < body.md
 
   --expect N   Assert the intended `Closes #N` is present and BARE (not
                backticked / not in a fenced code block). Fails if backticked or
                absent. Also flags any OTHER honored close (M != N).
+  --require-verification
+               Assert the body has a '## Verification' section (the PR-body
+               skeleton template's required Verification-surface slot, per
+               claude/message-schema.md and claude/presentation-plane.md's
+               Mixed-surfaces note). Presence only, opt-in, off by default.
   FILE         Read the PR body from FILE (default: stdin).
 
 With or without --expect, any NEGATED honored closing keyword is flagged:
@@ -70,6 +90,7 @@ EOF
 
 expect=""
 file=""
+require_verification=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -80,6 +101,10 @@ while [ $# -gt 0 ]; do
 			;;
 		--expect=*)
 			expect="${1#--expect=}"
+			shift
+			;;
+		--require-verification)
+			require_verification=1
 			shift
 			;;
 		-h|--help)
@@ -259,6 +284,17 @@ for num in $negated_nums; do
 	echo "lint-pr-body: FAIL — body contains a NEGATED closing keyword for #$num (e.g. 'does not close #$num'). GitHub's parser IGNORES the negation and WILL close #$num on merge. Remove the keyword-then-#number adjacency (e.g. 'issue #$num') or backtick it if you only mean to reference it." >&2
 	violations=$((violations + 1))
 done
+
+# (4) --require-verification (opt-in, static parsed-surface check): the body
+# must have a '## Verification' (or '## Verification ...') heading — presence
+# only, per this script's header. A missing heading here means the PR-body
+# skeleton template's required Verification-surface slot was dropped.
+if [ "$require_verification" = "1" ]; then
+	if ! printf '%s\n' "$body" | grep -Eqi '^#{1,6}[[:space:]]+verification'; then
+		echo "lint-pr-body: FAIL — no '## Verification' section found. The PR-body skeleton template (claude/message-schema.md) requires a Verification-surface slot; see claude/CLAUDE.kernel.md § PR verification surface for the by-change-type breakdown to fill it with." >&2
+		violations=$((violations + 1))
+	fi
+fi
 
 if [ "$violations" -gt 0 ]; then
 	echo "lint-pr-body: $violations issue-linkage violation(s) found." >&2
