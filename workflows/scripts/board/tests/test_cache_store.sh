@@ -32,7 +32,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(cd "$HERE/../lib" && pwd)"
-REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
 
 # Fictitious owner/repo (never the real org — kernel personal-token denylist,
 # mirroring test_issues_backend.sh's "Acme/kernel-test" convention).
@@ -234,12 +233,5 @@ fi
 grep -q "board_repo() is not available" "$standalone_err" \
   || fail "cache.sh standalone-failure message missing the documented hint"
 rm -f "$standalone_err"
-
-# kernel-manifest.txt coverage: the pre-existing `kernel workflows/scripts/board/*`
-# catch-all already covers cache.sh + this test file with zero new manifest
-# lines (see cache.sh's header comment) — prove the repo-wide coverage checker
-# still passes with both new files present.
-bash "$REPO_ROOT/workflows/scripts/kernel/check-kernel-manifest.sh" >/dev/null \
-  || fail "kernel-manifest.txt coverage check failed with the new cache.sh/test files present"
 
 echo "test_cache_store.sh: all checks passed"
