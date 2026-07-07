@@ -115,10 +115,11 @@ The motivating case is the foundation↔stageFind shared board tooling. The boar
 
 Guardrails so the operator never has to leave the conversation (or scroll far back) to understand what's being referred to. Born from a real board-numbering confusion (foundation#362).
 
-- **Repo-qualify issue refs.** Whenever more than one repo is in play, write `stageFind#658` / `foundation#362` / `ssmobile#4` — never bare `#N`. Shorthand accepted in either direction: `S<N>` = stageFind#N, `F<N>` = foundation#N, `M<N>` = ssmobile#N, `W<N>` = subsetwiki#N, `K<N>` = temperloop#N. Boards are referenced by **name first**, logical number second: "the stageFind board (`--board 3`)".
-- **Refs legend.** Any response that references issue/PR/epic numbers ends with a compact legend — one line per ref: qualified number → title (+ state when it matters) — so no number ever requires a GitHub lookup to decode.
-- **Completion summary.** On completing a work item (fix merged, issue closed, batch level cleared), end with a short re-orientation block: what the item was, what changed, what's next. The reader may be returning cold.
-- **Resume recap.** The first response after a session resume or a long gap opens with one line on the active item and where it stands, before answering the new message.
+- **Repo-qualify issue refs, with a first-mention title hook.** Whenever more than one repo is in play, write `stageFind#658` / `foundation#362` / `ssmobile#4` — never bare `#N`. Shorthand accepted in either direction: `S<N>` = stageFind#N, `F<N>` = foundation#N, `M<N>` = ssmobile#N, `W<N>` = subsetwiki#N, `K<N>` = temperloop#N. Per `claude/message-schema.md` § The reference-token rule, the *first* mention of any such ref in a response carries a short title hook drawn from its own title (≤6 words) — `stageFind#658 (board-numbering confusion)` — bare refs are fine for re-mentions after that.
+- **Board identity is named, not numbered, in prose.** Boards are referenced by **name** in prose — "the stageFind board" — never by a bare logical number a reader must resolve from memory; a raw number (`--board 3`) appears only inside a literal, copy-pasteable command line.
+- **Refs legend — superseded.** The former rule ("any response that references issue/PR/epic numbers ends with a compact legend") is **superseded** by `claude/message-schema.md` § The reference-token rule: a trailing reference legend is reserved for long, non-linearly-read **mode-6 durable artifacts** (PR bodies, plan notes, decision notes) — ordinary responses use the first-mention hook above instead, never a legend.
+- **Completion summary.** On completing a work item (fix merged, issue closed, batch level cleared), front-load the outcome — BLUF, `claude/message-schema.md` Tier-1 finding 1 — then give the reader the Endsley perception→comprehension→projection shape for a cold return: what changed, what it means for the item as a whole, what's next.
+- **Resume recap.** The first response after a session resume or a long gap opens with one line on the active item and where it stands (the same Endsley shape, compressed to one line), before answering the new message.
 - **Capture terminology at source.** When a taxonomy/terminology confusion surfaces mid-session, fix the canonical glossary (this file, or the project `CLAUDE.md`) in that same session — a verbal clarification alone is how the same confusion recurs.
 
 ## GitHub Projects boards — always via the board.sh adapter
@@ -184,7 +185,7 @@ Rationale: `[[Decisions/stageFind - Plan-first default for non-trivial changes]]
 
 ## PR verification surface
 
-Every PR must ship its own verification surface in the PR body — a way for the reviewer to confirm correctness without grepping logs, decoding JSON, or running commands themselves. A PR that asks the reviewer to "run the script and see" or "check the output file" is incomplete. The verification surface is part of the deliverable, not an optional add-on.
+Every PR must ship its own verification surface in the PR body — a way for the reviewer to confirm correctness without grepping logs, decoding JSON, or running commands themselves. A PR that asks the reviewer to "run the script and see" or "check the output file" is incomplete. The verification surface is part of the deliverable, not an optional add-on. This section is the by-change-type breakdown that `claude/message-schema.md`'s **PR-body skeleton** template (mode 6) defers to for its Verification surface slot — that template only requires the slot exist; this section owns its shape.
 
 What this looks like, by change type:
 
