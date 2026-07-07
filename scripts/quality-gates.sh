@@ -148,6 +148,17 @@ KERNEL_GATES=(
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
+  # Diff-scoped public-repo leak guard (temperloop #74): the sibling of the two
+  # whole-tree kernel scrubs above. Scans the ADDED lines of a PR's diff (all
+  # tracked files, not just the kernel manifest) for personal/private tokens +
+  # secrets and fails the merge — the mechanical backstop to the kernel/overlay
+  # authoring rule, the way validate-live-drain backstops the live/drain rule.
+  # Riding KERNEL_GATES (not a new CI job) makes it part of the already-required
+  # `checks` status, so it gates pull_request AND merge_group with no
+  # branch-protection reconfiguration. On a feature-branch checkout it diffs the
+  # branch's own additions; on push:main / no resolvable base it skips the live
+  # scan cleanly; the bundled fixture test always gates detection.
+  "make test-pr-leak-guard"
   # Mechanical egress lint over Epic E's before/after value-loop producers
   # (foundation #766, privacy/egress audit item): greps baseline-snapshot.sh,
   # report.sh, bin/foundation's auto-offer check, and (in the composed-tree

@@ -18,7 +18,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-live-drain validate-command-run-emit validate-issue-touch-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings lint-pr-body-test test-stranger-config \
-	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-producer-egress docs \
+	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
 
 help:
@@ -44,6 +44,7 @@ help:
 	@echo "  test-kernel-manifest    kernel-manifest.txt coverage check"
 	@echo "  test-kernel-denylist    Personal-token denylist check"
 	@echo "  test-kernel-gitleaks    gitleaks secret scan over the kernel set"
+	@echo "  test-pr-leak-guard      Diff-scoped public-repo leak guard (PR added lines)"
 	@echo "  test-producer-egress    Egress lint over the Epic E value-loop producers"
 	@echo "  docs                    Render the generated docs site"
 	@echo "  test-docs-generator     Docs generator unit tests"
@@ -181,6 +182,18 @@ test-kernel-denylist:
 test-kernel-gitleaks:
 	@echo "==> Running kernel gitleaks scan..."
 	@bash $(FOUNDATION)/workflows/scripts/kernel/check-gitleaks-kernel.sh
+
+# Diff-scoped public-repo leak guard (temperloop #74): scans the ADDED lines of
+# a PR's diff (all tracked files) for personal/private tokens + secrets and
+# fails the merge — the diff-scoped complement to the whole-tree
+# denylist/gitleaks checks above. The live scan (against the current checkout's
+# diff-vs-base) runs first and must be green; on push:main / no-base it skips
+# cleanly. The fixture regression test then proves detection deterministically.
+test-pr-leak-guard:
+	@echo "==> Running diff-scoped PR leak guard against the current checkout..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/check-pr-leak-guard.sh
+	@echo "==> Running check-pr-leak-guard.sh fixture tests..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_pr_leak_guard.sh
 
 # Mechanical egress lint over Epic E's before/after value-loop producers
 # (foundation #766, privacy/egress audit item): greps the named producer

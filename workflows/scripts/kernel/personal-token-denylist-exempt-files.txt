@@ -60,6 +60,17 @@ README.md
 # above: the literal is the test subject, not a leak.
 workflows/scripts/tests/test_install_settings.sh
 
+# The PR-leak-guard's OWN fixture test (temperloop #74). To prove the guard
+# catches a real-pattern leak it must MENTION the very tokens it detects
+# (/Users/travis, travnew@yahoo.com, Towheads) — in its seeded fixtures, its
+# "# matches ..." comments, and its output assertions. Those literals are the
+# test subject, not a leak — identical rationale to test_install_settings.sh
+# immediately above. Exempting the file wholesale keeps both this whole-tree
+# check AND the diff-scoped guard (which shares this exempt list) green when
+# they scan the fixture. gitleaks does not read this list, but the file carries
+# no secret literal, so the whole-tree gitleaks scan stays green regardless.
+workflows/scripts/kernel/tests/test_check_pr_leak_guard.sh
+
 # Synthetic cwd fixtures for tidy's session-stub parsing tests; the
 # personal-looking path is deliberately realistic test input, never a real
 # session.

@@ -89,6 +89,21 @@ forced to adapt, so this section is deliberately **not** tagged `BREAKING`.
   unclassified tracked file anywhere in the repo (and present as a "flake").
   `make test-kernel-manifest` already owns repo-wide coverage. (temperloop#120,
   #122)
+- Diff-scoped public-repo leak guard (`workflows/scripts/kernel/check-pr-leak-guard.sh`,
+  `make test-pr-leak-guard`): temperloop is a PUBLIC kernel repo, and the whole-tree
+  denylist/gitleaks scrubs only covered kernel-manifest file *content*. The new guard
+  scans the **added lines of a PR's diff** across all tracked files and fails the merge
+  when a personal/private token (names, personal emails, `/Users/…` paths, org-private
+  refs) or a secret appears — the mechanical backstop to the kernel/overlay authoring
+  rule, the way `validate-live-drain` backstops the live/drain rule. It is DRY with the
+  existing scrubs: same `personal-token-denylist.tsv` deny set, same
+  `personal-token-denylist-exempt-files.txt` file exemptions, same inline
+  `denylist:allow` marker, and gitleaks for the secrets half. Wired into
+  `scripts/quality-gates.sh` so it rides the already-required `checks` status and gates
+  **pull_request AND merge_group** with no branch-protection change; `ci.yml` passes the
+  PR base SHA (`fetch-depth: 0` + `LEAK_GUARD_BASE`) so the live scan has a real base in
+  both events. Also extended the deny set with the repo author's full name and a
+  secondary personal email. (temperloop#74)
 
 ## [0.8.2] - 2026-07-06
 
