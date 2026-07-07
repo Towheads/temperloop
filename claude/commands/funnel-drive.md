@@ -66,7 +66,18 @@ as such in its bullet below.)
   therefore never receives a `route-needs-input` action; there is nothing to handle.)
 
 - **`route-foundational`** — a Foundational Ready item needs design + plan
-  approval. **Prep then gate**: run `/assess --epic <issue> --board <board>` to
+  approval. **First, the already-prepped guard (F#1053):** before running `/assess`,
+  check whether the epic already has a plan note whose frontmatter `status` is
+  anything other than absent or `draft` (i.e. `approved` or `executing`). If it does,
+  the epic was **already decomposed and approved** and is merely parked on its own
+  gate — re-running `/assess` would collide on the plan-schema filename ask
+  (operator-only, unresolvable headless) and mint a duplicate gate comment, which is
+  the #951 every-tick spin. **Do NOT run `/assess`.** Record this action as
+  `status: "refused"` with a one-line `note` naming the existing plan and its status
+  (e.g. `already-prepped: Plans/… is executing — parked for operator resume`) and move
+  on; `funnel-drive.sh` routes a refused route-foundational to the operator's decision
+  queue so it stops re-firing. Otherwise (no plan, or a `draft`), **prep then gate**:
+  run `/assess --epic <issue> --board <board>` to
   decompose/draft the plan note (draft only — `/assess` never approves), then route
   the design + plan-approval to the decision queue via build.md's decision-issue
   backend (post the gate comment, apply the `decision` label, assign

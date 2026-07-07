@@ -578,6 +578,51 @@ _route_refused() {  # $1 = merge_result blob
   done <<<"$rows"
 }
 
+# Safe-tier analog of _route_refused (F#1053): route a REFUSED route-foundational to
+# the operator's DECISION queue. The 5b driver refuses a route-foundational when the
+# epic already has an approved/executing plan note (funnel-drive.md) — re-running
+# /assess would collide on the plan-schema filename ask (unresolvable headless) and
+# mint a duplicate gate comment. A refused route-foundational has NO side effect, so it
+# sits Ready and funnel-tick re-emits route-foundational every tick → re-refused forever
+# (the #951 hourly spin). Applying the `decision` label + an operator assignee lands it
+# in funnel-tick's EXISTING route-already-assigned guard (`decision` + assignees>0 ⇒
+# parked), so it leaves the route-foundational path — reusing that guard, no new label
+# or self-heal machinery (this is why F#1045, the "funnel-tick shouldn't re-emit" half,
+# needs no separate change: the marker + the existing guard together prevent re-emission).
+# `decision` — NOT the merge tier's `funnel-escalated` — is the right queue: the epic is
+# prepped and the operator owns the RESUME (run /build on the existing plan once its gate
+# lifts), which is exactly what funnel-tick's decision-guard detail already says. Any
+# OTHER refusal reason routes the same way (parking beats re-firing); the driver's `note`
+# is surfaced verbatim as the reason. Idempotency is STRUCTURAL: once parked, funnel-tick
+# stops emitting route-foundational for it, so it never re-enters the safe tier and this
+# never re-comments — so no #910-style disposition guard is needed here. Deterministic +
+# shell-side (not model-driven) so it is unit-testable. Fail-open per _gh_sideeffect.
+# Sets the shared n_routed / routed_issues_json (both tiers "routed to the operator").
+_route_safe_refused() {  # $1 = safe_result blob
+  local ssum op rows issue note repo
+  ssum="$(printf '%s' "${1:-null}" | _safe_summary_json)"
+  [ -z "$ssum" ] && return 0
+  op="${FUNNEL_OPERATOR#@}"
+  # Only route-foundational refusals — a refused drain-*/spike action has its own
+  # handling and must NOT be dragged into the decision queue.
+  rows="$(jq -r '.results[]? | select((.action // "") == "route-foundational" and .status == "refused")
+                 | "\(.issue)\t\(.note // "")"' <<<"$ssum" 2>/dev/null)" || return 0
+  [ -z "$rows" ] && return 0
+  while IFS=$'\t' read -r issue note; do
+    [ -z "$issue" ] && continue
+    # repo comes from the safe actions we handed the 5b driver (the summary results
+    # carry no repo); skip if we cannot resolve it — mirrors _route_refused/$capped_merge.
+    repo="$(jq -r --arg i "$issue" 'map(select((.issue|tostring)==$i)) | .[0].repo // empty' <<<"$safe" 2>/dev/null)"
+    [ -z "$repo" ] && continue
+    _gh_sideeffect route "$issue" "$repo" issue edit "$issue" -R "$repo" \
+      --add-assignee "$op" --add-label decision
+    _gh_sideeffect route "$issue" "$repo" issue comment "$issue" -R "$repo" \
+      -b "_funnel-drive (rung 5b)_: route-foundational for #${issue} was refused (${note:-already prepped}). Parked to your decision queue — assigned to @${op} + labeled \`decision\` — so the funnel stops re-emitting route-foundational for it every tick. You own the resume (e.g. run /build on the existing plan once its gate lifts); the funnel will not re-route it while it stays assigned."
+    n_routed=$((n_routed + 1))
+    routed_issues_json="$(_audit_add "$routed_issues_json" "$issue")"
+  done <<<"$rows"
+}
+
 # Ground truth (#624): is there an OPEN PR that CLOSES this issue? Echoes the PR
 # number if so, nothing otherwise. The merge-tier drive's `Closes #<issue>` (build.md
 # 3f) is the durable linkage; we read it back rather than trust the model's summary,
@@ -889,6 +934,10 @@ if [ "${n_safe:-0}" -gt 0 ]; then
     # non-null result maps to null counts (unknown, never a false 0).
     safe_result="$(jq -cn --arg raw "$safe_raws" '{raw:$raw}')"
   fi
+  # Route any REFUSED route-foundational to the operator's decision queue so it stops
+  # re-firing every tick (F#1053 — the safe-tier analog of _route_refused/#622). Real-run
+  # only: --dry-run exited above, so this never mutates GitHub during a preview.
+  _route_safe_refused "$safe_result"
 fi
 
 # ── MERGING tier (rung 5c) — drive the capped kind:code items via /funnel-drive-merge ─
