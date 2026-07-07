@@ -288,7 +288,8 @@ For level *k* in the level list, process every item through 3a–3h, then run St
   ```
   args = { repoRoot, planLink, board, items, verdicts, ownerRepo, claimCmd, spineBinDir, onlySlugs }
   ```
-  where `items` is this level's **full** item array (each `{ slug, branch, title, kind, ghIssue, alsoCloses, model, acceptance, source, scope, notes }`). How each arg is resolved:
+  where `items` is this level's **full** item array (each `{ slug, branch, title, kind, ghIssue, alsoCloses, model, acceptance, source, scope, notes, dependsOn }`). How each arg is resolved:
+  - **`dependsOn`** — the **dep-merge precondition** input (#108), an array of `{ slug, sha }`: for each of this item's `depends-on` targets, the dep's **merged head sha** (read from that dep's plan-note `pushed_sha:` sub-line — a `depends-on` target is by construction in a **prior**, already-merged level, so its `pushed_sha:` is recorded). Empty/omitted for level-0 items and items whose only cross-item edges are `after:` (logical-order, not merge). `build-level.mjs`'s 3b-0 gate runs `worktree.sh deps-merged` on these shas **before** `worktree.sh create`: the worktree is created only once **every** dep sha is an ancestor of `origin/<default>` (the depended-on PR has MERGED), so the worker builds and self-verifies against merged dependency code — not a pre-merge base. If a dep has not merged, the item escalates `dep-not-merged` (no worktree, no worker) rather than silently building on stale code. The orchestrator's level ordering (Step 4 merges level *k* before this call for *k+1*) is the primary guarantee; `dependsOn` is the mechanical backstop against a resume race / partial merge / ordering bug. The 3f unconditional rebase (#525) does **not** replace it — that only repairs the branch *textually* at push, too late for the worker's own build/verify.
   - **`repoRoot`** / **`planLink`** / **`board`** — from the run context (the parent checkout's top-level path, the plan note's vault link, the logical board number or OFF).
   - **`ownerRepo`** — `"owner/repo"` for `ci-poll.sh` / `gh` ops; resolved by the **Step 0 probe** (`gh repo view --json nameWithOwner -q .nameWithOwner`). **The workflow has no shell to derive it**, so the orchestrator MUST pass it — without it every CI poll gets `''` and resolves to `ERROR`.
   - **`claimCmd`** — the absolute path to the board **`claim.sh`** entrypoint, resolved by the **Step 0 `CLAIM` probe**; consumed by 3a (board-ON claim). Absent → 3a falls back to a bare `claim.sh` on `PATH`.
@@ -351,6 +352,20 @@ This is an **opt-in** optimization layered on top of the default sequential leve
 
 Then patch the item's checkbox to `[~]`. Lets `git log` and the vault agree on what's in-flight. (Board OFF: just patch `[~]`.)
 
+#### 3b-0. Dep-merge precondition gate (before create — #108)
+
+**A `depends-on` edge requires its target be `[x]` MERGED before this item's worker starts** — the worker must build and self-verify against the dependency's *merged* code, not a pre-merge base. Level ordering (Step 4 merges level *k* before this call for level *k+1*) is the primary guarantee, but it is enforced only by orchestrator sequencing; this gate makes it **mechanical**. For each `depends-on` target of the item, read that dep's **merged head sha** from its plan-note `pushed_sha:` sub-line (the dep sits in a prior, already-merged level, so `pushed_sha:` is recorded) and, **before** calling `worktree.sh create`, verify it has landed:
+
+```
+workflows/scripts/build/worktree.sh deps-merged <repo-root> <dep-sha,dep-sha,...>
+# → {"outcome":"DEPS_MERGED"}  (every sha is an ancestor of origin/<default> — all deps merged)
+#   {"outcome":"DEPS_UNMERGED","unmerged":[...]}  (≥1 dep has NOT merged)
+# The script fetches origin/<default> first (like create), then tests ancestry. An unknown/
+# unfetched sha reads UNMERGED (conservative — never a false green). Branch on .outcome.
+```
+
+Only on `DEPS_MERGED` proceed to 3b (`worktree.sh create`). On `DEPS_UNMERGED`, **do NOT create the worktree and do NOT spawn a worker** — escalate `dep-not-merged` (a resume race, a partial merge, or an ordering bug left a dep unlanded; surface it rather than build against a stale base). Items with no `depends-on` (level-0) or only `after:` edges (logical-order, not merge) skip this gate entirely — `dependsOn` is empty. **The 3f unconditional rebase (#525) is not a substitute:** it repairs the branch *textually* at push, which is too late for the worker's own build/self-verify against merged code. (Under `--workflow`, `build-level.mjs`'s `driveItem` runs this gate from `item.dependsOn`; see the `dependsOn` arg above.)
+
 #### 3b. Pre-create the per-item worktree (orchestrator-owned, deterministic path)
 
 The orchestrator — **not** the worker — creates one dedicated worktree per item via the deterministic-spine script, at a **deterministic path** so 3f (push-by-SHA) and 3h (cleanup) reference it without depending on anything the worker reports:
@@ -365,7 +380,7 @@ workflows/scripts/build/worktree.sh create <repo-root> <item.slug>
 # {"outcome":"ERROR",...} + non-zero exit — branch on .outcome, never parse prose.
 ```
 
-- The script branches it from `origin/<default>` so it starts clean from `main` (a `depends-on` item's base is `main` *after* that dep merged at the prior level's gate — see 4e).
+- The script branches it from `origin/<default>` so it starts clean from `main` (a `depends-on` item's base is `main` *after* that dep merged at the prior level's gate — see 4e; the **3b-0 gate above** enforces that "after that dep merged" precondition mechanically before this create runs).
 - **`create` drops a `.build-guard` marker file in the new worktree root** — this is what arms the write-jail guard (3c) for any worker running in that worktree. Per-worktree state, so concurrent sessions on one host arm independently; the orchestrator exports no env var. `worktree.sh remove`/`prune` clean the marker up with the worktree.
 - **`create` also self-heals a legacy-tracked `.build-verification.md` (#529).** The verification-surface artifact is meant to be a dev-local, uncommitted file (kept out via `info/exclude`), but in consuming repos that committed it before the exclude existed, `info/exclude` is powerless and every item re-commits it → a multi-item level's serial-merge conflicts on it. So `create` untracks it as its **own** `chore: untrack …` commit on the fresh branch. **Expect that one extra deletion commit** on the first build branch in any such repo — it's intentional spine hygiene, not the worker's doing; all level branches make the identical removal (merges delete-vs-delete cleanly), and once that repo's `main` is clean the step is a silent no-op.
 - The worktree is created in the **parent checkout's** working tree but is a separate checkout dir; the orchestrator itself stays in the parent checkout. Two parallel level-0 workers each get their **own** pre-created worktree on their **own** `worktreeBranch`, so they **cannot** stack commits on one branch or commit onto the parent's branch (the #17 failure mode).
