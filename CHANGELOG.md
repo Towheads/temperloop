@@ -14,6 +14,20 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-06
+
+### Fixed
+
+- `funnel-drive.sh` / `funnel-drive.md`: route a refused `route-foundational` to the
+  operator's decision queue (`_route_safe_refused`). The rung-5b driver refuses a
+  `route-foundational` when the epic already has an approved/executing plan note, but
+  the refusal applied **no marker** — so `funnel-tick.sh` re-emitted it every tick and
+  a single Foundational epic spun for a full day. The refusal now applies the
+  `decision` label + an operator assignee, landing the item in funnel-tick's existing
+  `route-already-assigned` guard so it parks instead of re-firing. Reuses that guard
+  (no new label/self-heal), so the funnel-tick "should not re-emit" half needs no
+  separate change. (foundation#1053; subsumes foundation#1045)
+
 ## [0.8.1] - 2026-07-06
 
 ### Fixed
