@@ -77,8 +77,9 @@ The version/CHANGELOG delta is an **actionable** signal, not a bare label:
   unattended path** and requires an explicit acknowledgment
   (`KERNEL_ALLOW_BREAKING=1` or an interactive confirm), printing the
   migration notes from the marked sections. An additive/patch delta pulls
-  without prompting. *(This behavior is the routed follow-up — see below;
-  today `update-kernel` pulls any named tag blind to the delta.)*
+  without prompting. *(Implemented in `scripts/update-kernel.sh`'s
+  breaking-delta gate — temperloop#89, the routed follow-up to the versioning
+  spike #79 / PR #88.)*
 - **`kernel-drift-check`** — unchanged. It is a byte-identity check (subtree
   tree-hash vs `.kernel-pin`), orthogonal to semver; it answers "is `kernel/`
   the pinned tag?", not "how big is the jump?"
