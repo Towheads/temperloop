@@ -260,7 +260,11 @@ case "$prompt" in
   "/funnel-drive "*)
     payload="${prompt#/funnel-drive }"
     [ -f "$payload" ] && cp "$payload" "$CAP_DIR/safe-payload.json"
-    echo '{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
+    # The canned Step-3 summary. Tests override SAFE_SUMMARY to exercise the safe-tier
+    # refuse outcome (F#1053 route-foundational park); default = one clean execution.
+    ssummary="${SAFE_SUMMARY:-}"
+    [ -z "$ssummary" ] && ssummary='{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
+    printf '%s\n' "$ssummary"
     ;;
   *) echo '{}' ;;
 esac
@@ -520,6 +524,44 @@ OUT16D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16D" FUNNEL_GH_BIN="$G16D" CA
         GH_TIMELINE_JSON='[{"event":"unlabeled","label":{"name":"needs-clarification"}},{"event":"commented","body":"<!-- funnel:clarification-drained --> Clarified (funnel): operator answer consumed — released to drive."}]' bash "$DRIVE")"
 [ "$(jq -r '.routed' <<<"$OUT16D")" = "1" ] && ok "routed=1 (a needs-clarification drain is not a funnel-escalated disposition)" || bad "t16d.routed" "got $(jq -r '.routed' <<<"$OUT16D")"
 [ "$(jq -r '.route_suppressed' <<<"$OUT16D")" = "0" ] && ok "route_suppressed=0 (the two labels are decoupled since #697)" || bad "t16d.suppressed" "got $(jq -r '.route_suppressed' <<<"$OUT16D")"
+
+# ╭──────────────────────────────────────────────────────────────────────────╮
+# │ foundation #1053 — a REFUSED route-foundational (the 5b driver refused an  │
+# │ epic that already has an approved/executing plan) is routed to the         │
+# │ operator's DECISION queue (assign + `decision` + comment), so funnel-tick's│
+# │ existing route-already-assigned guard parks it instead of re-emitting      │
+# │ route-foundational every tick (the #951 spin). #1045 needs no separate fix.│
+# ╰──────────────────────────────────────────────────────────────────────────╯
+ROUTE_FND='[{"tick":"done","actions":[{"phase":"route","action":"route-foundational","board":"4","repo":"Towheads/foundation","issue":951,"title":"Epic: knowledge-store migration","mode":"prep"}]}]'
+SAFE_REFUSE_RF='{"driver":"funnel-drive","rung":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"route-foundational","issue":951,"board":"4","status":"refused","note":"already-prepped: Plans/2026-07-04 obsidian knowledge-store migration is executing"}]}'
+
+# ── 16e: a refused route-foundational → assigned + `decision` + comment (#1053) ──
+echo "--- test 16e: refused route-foundational → decision-queue park (#1053, subsumes #1045) ---"
+C16E="$TMP/c16e"; mkdir -p "$C16E"; D16E="$(make_merge_double "$C16E")"; G16E="$(make_gh_double "$C16E")"
+OUT16E="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16E" FUNNEL_GH_BIN="$G16E" CAP_DIR="$C16E" \
+        FUNNEL_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_REFUSE_RF" bash "$DRIVE")"
+[ "$(jq -r '.safe_refused' <<<"$OUT16E")" = "1" ] && ok "safe_refused=1 surfaced" || bad "t16e.refused" "got $(jq -r '.safe_refused' <<<"$OUT16E")"
+[ "$(jq -r '.routed' <<<"$OUT16E")" = "1" ] && ok "routed=1 (parked to the operator)" || bad "t16e.routed" "got $(jq -r '.routed' <<<"$OUT16E")"
+grep -qx "issue edit 951 -R Towheads/foundation --add-assignee towhead --add-label decision" "$C16E/gh-calls.txt" \
+  && ok "gh assigned the operator + added the \`decision\` label (funnel-tick's park guard)" || bad "t16e.edit" "got $(cat "$C16E/gh-calls.txt" 2>/dev/null || echo none)"
+grep -q '^issue comment 951 ' "$C16E/gh-calls.txt" \
+  && ok "gh posted a decision-queue park comment on the refused epic" || bad "t16e.comment" "no issue comment in $(cat "$C16E/gh-calls.txt" 2>/dev/null || echo none)"
+# The park MUST use `decision` (funnel-tick's route-already-assigned guard), NOT the
+# merge tier's `funnel-escalated` (which the guard treats as an open/failed-PR code item).
+if grep -qF 'funnel-escalated' "$C16E/gh-argv.txt" 2>/dev/null; then
+  bad "t16e.label" "route-foundational park wrongly used funnel-escalated, not decision"
+else
+  ok "park used decision, not funnel-escalated (right queue for a prepped epic)"
+fi
+
+# ── 16f: filter is route-foundational-SPECIFIC — a refused drain-* is NOT decision-parked ─
+echo "--- test 16f: a refused drain action is NOT routed to the decision queue (#1053 filter) ---"
+SAFE_REFUSE_DRAIN='{"driver":"funnel-drive","rung":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"drain-parse-miss","issue":951,"board":"4","status":"refused","note":"unparseable reply"}]}'
+C16F="$TMP/c16f"; mkdir -p "$C16F"; D16F="$(make_merge_double "$C16F")"; G16F="$(make_gh_double "$C16F")"
+OUT16F="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16F" FUNNEL_GH_BIN="$G16F" CAP_DIR="$C16F" \
+        FUNNEL_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_REFUSE_DRAIN" bash "$DRIVE")"
+[ "$(jq -r '.routed' <<<"$OUT16F")" = "0" ] && ok "routed=0 (a refused drain-* is not a route-foundational park)" || bad "t16f.routed" "got $(jq -r '.routed' <<<"$OUT16F")"
+[ ! -f "$C16F/gh-calls.txt" ] && ok "no gh edit/comment — the drain refusal keeps its own handling" || bad "t16f.gh" "gh was called: $(cat "$C16F/gh-calls.txt")"
 
 # ── 17: a clean merge is NOT routed (no operator hand-off, no stray gh edits) ──
 echo "--- test 17: a merged drive is not routed (#622) ---"
