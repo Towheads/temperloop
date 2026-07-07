@@ -45,9 +45,10 @@ parsed surfaces applies just as much to prose rules split across two files).
 The five templates authored here: **PR-body skeleton**, **parking note**,
 **digest entry**, **question block**, **degradation notice**. Rewriting
 `CLAUDE.kernel.md`'s existing communication rules to be *instances of* this
-model, and defining the overlay override mechanism itself, are separate,
-later plan items (`kernel-guides-unify`, `override-seam`) — not performed by
-this file.
+model is a separate, later plan item (`kernel-guides-unify`) — not performed
+by this file. The overlay override mechanism itself was a separate, later
+plan item (`override-seam`) at authoring time; it has since landed as
+§ Overrides below.
 
 ## The seven interaction modes (recap)
 
@@ -315,13 +316,74 @@ but none of the following may be authored as a firm, load-bearing rule:
 
 The named templates in this file are the sanctioned surface an overlay may
 override — see the carve-out added to `claude/CLAUDE.kernel.md` § Kernel vs
-overlay routing rule in this same change. This file does not yet specify the
-override *mechanism* (redeclaration precedence, dangling-override
-detection): that is the separate `override-seam` plan item, which will add
-its own `## Overrides` section here once it lands. Until then, "sanctioned
-surface" means only that a future override of one of these five templates by
-name is not, by itself, a violation of "overlay may extend, never
-contradict" — not that the override machinery already exists.
+overlay routing rule in this same change. § Overrides below specifies the
+mechanism (redeclaration precedence, dangling-override detection): "sanctioned
+surface" means a future override of one of these five templates by name is
+not, by itself, a violation of "overlay may extend, never contradict",
+resolved per that mechanism.
+
+## Overrides
+
+This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs
+overlay routing rule points at. It governs only the five named templates
+this file authors (§ Templates) — no other kernel contract is overridable by
+this or any other route.
+
+- **Whole-template redeclaration by name, not a delta.** An overlay overrides
+  a template by writing out the **entire template again under the same
+  name** — not a structured patch/delta against the kernel's version (no
+  "change slot X, leave the rest"). This is a deliberate rejection of a delta
+  format, for a reason an architecture review flagged as load-bearing: a
+  delta needs something to diff *against* and *stay in sync with* — a second
+  drift guard tracking whether the delta still applies to the kernel
+  template it patches. Whole-template redeclaration needs no such guard,
+  because there is nothing to drift out of sync: the overlay's copy is
+  simply read instead of the kernel's, in full, whenever it exists. Per
+  `claude/CLAUDE.md` § Design discipline (subtraction over mechanism), a
+  delta format is machinery to justify, not a default — and whole-template
+  redeclaration is the smaller mechanism that gets the same override power
+  without it.
+- **Composition precedence: later-definition-wins.** Where both the kernel
+  and an overlay define a template of the same name, the later definition in
+  the compose order wins. This is the same order `workflows/scripts/
+  install-claude-md.sh` already uses to compose `CLAUDE.kernel.md` and
+  `CLAUDE.overlay.md` into the installed `~/.claude/CLAUDE.md` — kernel
+  content first, overlay content concatenated after (§ Kernel vs overlay
+  routing rule) — so "the overlay wins" is not a new precedence rule this
+  file invents; it is the existing kernel-then-overlay compose order applied
+  to template names instead of prose sections. A template name the overlay
+  does not redeclare is untouched: the kernel's definition stands.
+- **A no-override checkout is byte-identical, by construction.** A checkout
+  with no overlay overrides present behaves exactly as this file defines,
+  because there is no overlay definition to compose after the kernel's — the
+  later-definition-wins rule has nothing to prefer, so the kernel template is
+  what's read. This is a property that **falls out of** whole-template
+  redeclaration; it is not a separate claim that needs its own proof or
+  guard. (Contrast a delta format: even a no-op delta is a thing that could
+  exist, drift, or be checked for existing — whole-template redeclaration
+  has no such residue when absent.)
+- **Dangling-override rule.** Every overlay-defined override name MUST match
+  the name of a template this file defines (§ Templates) — an overlay may
+  not "override" a template that doesn't exist here. Checking this
+  mechanically is the job of the `template-lints` plan item (L4); this file
+  states the rule, `template-lints` implements the check. Do not re-implement
+  or duplicate that check here or elsewhere.
+- **Per-template staleness detection is out of scope.** Whole-template
+  redeclaration means a kernel update to a template's *content* (wording,
+  slots, grounding) is silently shadowed wherever an overlay has redeclared
+  that same name — the overlay's copy keeps winning under
+  later-definition-wins even after the kernel version it was copied from has
+  since changed. This is a known, accepted trade-off of the contract above,
+  not an oversight: per the same subtraction-over-mechanism reasoning that
+  rules out a delta format, a staleness guard (detecting when an overlay
+  override has drifted from the kernel template it shadows) is itself
+  exactly the kind of second mechanism whole-template redeclaration is
+  designed to avoid needing. It is a ratified deferred seam, not an open
+  question — see the epic's Re-triage signals / epic decision on this point
+  (temperloop#94). Do not add a staleness guard, lint, or warning under this
+  section; a future change that decides the trade-off is no longer
+  acceptable is a new plan item against the epic, not an amendment folded in
+  here.
 
 ## Cross-references
 
@@ -344,5 +406,7 @@ contradict" — not that the override machinery already exists.
 - Deferred research debt (Cluster 5, over-explanation→harm link): temperloop#100
 - Later plan items that build on this file: `kernel-guides-unify` (rewrites
   `CLAUDE.kernel.md`'s prose against this schema, retires the refs legend),
-  `override-seam` (specifies the override mechanism), `overlay-adoption`
-  (foundation's adoption), `template-lints` (CI conformance checks)
+  `overlay-adoption` (foundation's adoption), `template-lints` (CI
+  conformance checks, including the § Overrides dangling-override rule).
+  `override-seam` (specified the override mechanism, § Overrides above) has
+  landed.
