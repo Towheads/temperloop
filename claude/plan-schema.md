@@ -88,6 +88,34 @@ The first two sections are the human-readable face of the plan; they are what th
 
 The level on each sub-bullet is the item's dependency level (the same level `/build` computes from `depends-on` + `after`), so the summary's sequencing and the execution DAG never disagree.
 
+### Item fields at a glance
+
+Every `## Items` entry is one checkbox line — `- [ ] **<title>** \`slug: <kebab>\` — <scope>` — followed by an indented field block. The table below is a scannable index; the subsections after it give each field's full rules. In the **Required?** column, *required* means every item carries it per the template; *optional* fields sit under an `Optional …` subsection below; validator-enforced fields cite their rule number (see `## Validation rules`).
+
+| Field | Required? | Purpose |
+|---|---|---|
+| `**<title>**` | required | Human-readable item title. |
+| *scope* (text after the slug) | required | One-line scope; becomes the PR title body. |
+| `slug:` | required (rule 3) | Stable kebab-case id; the handle `depends-on:` / `after:` reference. |
+| `branch:` | required (rule 4) | `<type>/<slug>`, type ∈ {feat, fix, chore, refactor, docs, test}. |
+| `repo:` | optional (rule 12) | Target `owner/repo` when the item lands in a repo other than the plan's home (the kernel-vs-overlay split); absent = the plan's home repo. |
+| `size:` | required | `S` \| `M` \| `L` (`L` means "should probably be split"). |
+| `kind:` | optional (default `code`) | `code` → PR; `spike` → verdict note + routed issue, no PR. |
+| `model:` | optional | Advisory worker-model tier `sonnet` \| `haiku`; absent = inherit the session model. |
+| `depends-on:` | optional | MERGE-safety edge — each dep must be `[x]` merged before this item starts. |
+| `after:` | optional | LOGICAL-order edge — satisfied by any terminal state (`[x]` / `[-]` / `[v]`). |
+| `source:` | recommended (rule 6) | Wikilink to the analysis doc/finding; must resolve when present. |
+| `gh_issue:` | optional (rule 7) | GitHub issue closed on merge — emits `Closes #N` in the PR body. |
+| `also_closes:` | optional | Additional issues this PR resolves — one bare `Closes #M` line each. |
+| `files:` | optional | Files the item is expected to touch. |
+| `acceptance:` | required (rule 2) | Bullet list of independently checkable conditions. |
+| `gate_check:` | conditional (rule 11) | Machine-checkable external-gate predicate; required whenever a prose external gate rides `notes:`. |
+| `notes:` | optional | Nuance for the worker — gotchas, prior failed approaches, external-gate prose. |
+| `review:` | optional | Reviewer override; otherwise inferred from changed files. |
+| `split_from:` | optional (rule 10) | `#N` this item was split from; mutually exclusive with `gh_issue:`. |
+| `epic:` (frontmatter) | optional | Parent epic issue # on board-enabled projects. |
+| `pr:`, `pushed_sha:` | orchestrator-written | Set by `/build` at PR-create time; authors don't set them. |
+
 ### Item identifier — slug, not position
 
 Each item has a stable slug (`slug: <kebab>`) used by `depends-on`. **Do not** reference items by position number — reorderings break positional references silently. Slugs survive edits.
