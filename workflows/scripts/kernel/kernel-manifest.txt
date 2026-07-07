@@ -255,6 +255,7 @@ kernel workflows/scripts/lint-pr-body.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-live-drain.sh
+kernel workflows/scripts/validate-template-refs.sh
 
 overlay workflows/scripts/aggregate_sessions.py
 overlay workflows/scripts/test_aggregate_sessions.py
