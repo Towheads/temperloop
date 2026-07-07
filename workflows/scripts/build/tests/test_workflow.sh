@@ -689,6 +689,56 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 11b: gate-timeout — 3e.5 gate executor prompt carries the long Bash-tool
+#           timeout directive (temperloop#115). Without it the executor's Bash
+#           tool defaults to 120s and SIGTERMs a >2min quality-gates suite →
+#           false GATE_FAIL on every drive. The prompt directive is the fix; a
+#           happy item must still park green (the directive doesn't disrupt flow).
+# ============================================================================
+run_node_case "gate-timeout: 3e.5 gate prompt carries the Bash-timeout directive (#115)" "
+$PREAMBLE
+
+happySpine('item-gto', 115, 'sha-gto');
+happyWorker('item-gto');
+
+// Wrap the mock agent to capture the FULL gate prompt (the shared callLog slices
+// to 120 chars, which truncates before the directive; mirror the continuation
+// case's full-prompt capture). Delegate every call to the original mock so spine
+// routing (GATE_PASS from happySpine) is unchanged.
+let gatePromptSeen = null;
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts = {}) {
+  if ((opts.label || '').startsWith('gate:item-gto')) gatePromptSeen = String(prompt);
+  return origAgent(prompt, opts);
+};
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gto', branch: 'build/item-gto', title: 'Gate Timeout Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// Happy path: the gate passed, so the item parks with no escalation — proof the
+// timeout directive is additive and does not perturb the normal gate flow.
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 escalations: ' + JSON.stringify(result) })); process.exit(0); }
+
+// The core regression: the gate executor prompt MUST carry the long Bash-tool
+// timeout (temperloop#115) — both the numeric value and the 'timeout' framing.
+if (!gatePromptSeen)
+  { console.log(JSON.stringify({ ok: false, reason: 'gate agent call never observed' })); process.exit(0); }
+if (!gatePromptSeen.includes('480000'))
+  { console.log(JSON.stringify({ ok: false, reason: 'gate prompt missing 480000 Bash timeout: ' + gatePromptSeen })); process.exit(0); }
+if (!/timeout/i.test(gatePromptSeen))
+  { console.log(JSON.stringify({ ok: false, reason: 'gate prompt missing timeout directive: ' + gatePromptSeen })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 12: worktree-failed — worktree.sh returns non-CREATED → worktree-failed escalation
 # ============================================================================
 run_node_case "worktree-failed: worktree.sh non-CREATED → worktree-failed escalation" "
@@ -1386,6 +1436,17 @@ echo "PASS: #560 spine-resolution guard — spineBin() resolves all spine script
 grep -q 'set -o pipefail; if \[ ! -x' "$MJS" \
   || fail "#68: 3e.5 gate command must prefix 'set -o pipefail' (pipe-ate-exit guard)"
 echo "PASS: #68 gate-pipefail guard — 3e.5 gate invocation carries set -o pipefail"
+
+# --- temperloop#115: the 3e.5 gate runSpine call must pass an explicit Bash-tool
+# timeout. The full quality-gates.sh suite runs >2min; without a raised timeout
+# the executor's Bash tool SIGTERMs it at the default 120s → a false GATE_FAIL on
+# every drive. Guard both the named constant and that the gate call threads it,
+# so a future edit can't silently drop the timeout and re-break every drive. ----
+grep -q 'const GATE_BASH_TIMEOUT_MS' "$MJS" \
+  || fail "#115: GATE_BASH_TIMEOUT_MS constant missing — 3e.5 gate would SIGTERM at 120s"
+grep -q 'bashTimeoutMs: GATE_BASH_TIMEOUT_MS' "$MJS" \
+  || fail "#115: 3e.5 gate runSpine call must pass bashTimeoutMs: GATE_BASH_TIMEOUT_MS"
+echo "PASS: #115 gate-timeout guard — 3e.5 gate carries an explicit long Bash-tool timeout"
 
 echo ""
 echo "All test_workflow.sh cases passed."

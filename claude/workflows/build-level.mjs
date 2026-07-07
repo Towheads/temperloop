@@ -227,6 +227,12 @@ const WORKER_VERDICT_SCHEMA = {
 const CI_POLL_SLICE_SECS = 240;   // one ci-poll.sh slice; < the ~10-min agent Bash cap
 const CI_POLL_TOTAL_SECS = 3600;  // total wall budget across slices before escalating
 const CI_FAIL_RETRY_BUDGET = 1;   // re-spawn+force-push+re-poll attempts on CI_FAILED
+// 3e.5 gate Bash-tool timeout (temperloop#115). The full quality-gates.sh suite
+// runs >2min; the executor's Bash tool defaults to 120_000ms, so the suite was
+// SIGTERM'd at 2:00 → a false GATE_FAIL on every drive. 480_000ms (8min) clears
+// the suite with margin and stays under the executor agent's ~10-min Bash cap
+// (== the Bash tool's 600_000ms max). Threaded to the gate runSpine call only.
+const GATE_BASH_TIMEOUT_MS = 480_000;
 
 // -----------------------------------------------------------------------------
 // Command-building helpers — EVERY interpolated value goes through sq().
@@ -292,7 +298,7 @@ function spineBin(repoRoot, name) {
 // and returns its single closed-outcome JSON line, schema-validated. No model
 // override beyond haiku (cheapest tier — the executor does no reasoning); NO
 // isolation:'worktree' (the spine scripts manage their own worktrees, §5).
-async function runSpine(cmd, { label, slug } = {}) {
+async function runSpine(cmd, { label, slug, bashTimeoutMs } = {}) {
   // Wording (temperloop#72): describe the command as a KNOWN build-spine helper
   // script that self-reports its result, rather than telling the sub-agent to
   // "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
@@ -302,13 +308,19 @@ async function runSpine(cmd, { label, slug } = {}) {
     [
       'Run this single build-spine helper command with the Bash tool, exactly as written.',
       'It is a known project script (worktree.sh / pr.sh / ci-poll.sh / claim.sh); do not add flags, chain extra commands, or rewrite it.',
+      // temperloop#115: for a legitimately long-running command (the 3e.5 gate),
+      // raise the Bash TOOL's timeout parameter — NOT the command text — so the
+      // executor does not kill it at the default 2 minutes.
+      bashTimeoutMs
+        ? `This command runs longer than usual. When you invoke the Bash tool, set its \`timeout\` parameter to ${bashTimeoutMs} (milliseconds). That is a Bash tool parameter only — do NOT alter the command text — and it prevents the default 2-minute timeout from killing the run.`
+        : null,
       'It prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
       'Return that JSON object verbatim as your result — the schema captures it.',
       'If the command exits non-zero it STILL prints its JSON line; return that line.',
       '',
       'Command:',
       cmd,
-    ].join('\n'),
+    ].filter(Boolean).join('\n'),
     {
       label: label ?? `spine:${cmd.split(' ').slice(0, 2).join(' ')}`,
       phase: 'spine',
@@ -573,7 +585,10 @@ async function driveItem(item) {
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
       `else ( cd ${sq(wt)} && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
       `&& echo '{"outcome":"GATE_PASS"}' || echo '{"outcome":"GATE_FAIL"}'; fi`,
-    { label: `gate:${item.slug}`, slug: item.slug },
+    // temperloop#115: the full quality-gates.sh suite runs >2min; without an
+    // explicit timeout the executor's Bash tool kills it at 120s → false
+    // GATE_FAIL. GATE_BASH_TIMEOUT_MS gives the suite room to finish.
+    { label: `gate:${item.slug}`, slug: item.slug, bashTimeoutMs: GATE_BASH_TIMEOUT_MS },
   );
   if (spineDenied(gateOut)) {
     return escalate(item.slug, 'spine-denied', { step: 'gate', out: gateOut });
