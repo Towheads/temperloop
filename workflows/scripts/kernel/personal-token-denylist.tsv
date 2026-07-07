@@ -30,6 +30,8 @@
 Towheads	personal GitHub org name (private org)
 [Tt]owhead\b	personal GitHub handle/org-login (lowercase form; \b avoids matching inside "Towheads")
 /Users/travis\b	personal absolute filesystem path
+Travis Newcomb	personal full name (repo author identity — appears in git metadata, must never land in tracked kernel content)
+travis\.newcomb@gmail\.com	personal email address (secondary)
 travnew	personal GitHub email-name / handle fragment
 TravisBook	personal machine name
 \bthe mini\b	personal machine nickname (Travis's secondary Mac)

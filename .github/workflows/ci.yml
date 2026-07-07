@@ -22,8 +22,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    # The diff-scoped PR leak guard (make test-pr-leak-guard, run inside
+    # quality-gates.sh) needs the PR's base commit to diff the added lines
+    # against. Hand it the base SHA from the event payload — pull_request and
+    # merge_group both carry one, so the guard's live scan runs in BOTH gating
+    # events; on push:main it stays empty and the guard skips the live scan.
+    env:
+      LEAK_GUARD_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
     steps:
+      # fetch-depth: 0 so the base commit above is present in the local history
+      # for `git diff <base>...HEAD` (a shallow depth-1 checkout has no base).
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install shellcheck (macOS)
         if: runner.os == 'macOS'
