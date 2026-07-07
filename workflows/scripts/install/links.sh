@@ -121,9 +121,12 @@ links_enumerate() {
   fi
 
   # ---- 3. board toolkit commands -> ~/.local/bin ----------------------------
-  # Mirrors install-board: BOARD_CMDS = claim release worklist reconcile capture milestone
+  # Mirrors install-board: BOARD_CMDS = claim release worklist reconcile capture
+  # milestone pr-enqueue. pr-enqueue (#534) is a dev-process PR/merge-queue
+  # helper co-deployed through the same PATH machinery (its source lives under
+  # board/, so install-board's "src under BOARD_SRC" filter installs it).
   local cmd
-  for cmd in claim release worklist reconcile capture milestone; do
+  for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
     target="${local_bin}/${cmd}"
     src="${board_src}/${cmd}.sh"
     printf '%s\t%s\t%s\n' "$target" "symlink" "$src"
