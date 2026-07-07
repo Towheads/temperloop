@@ -517,7 +517,17 @@ async function driveItem(item) {
   const gateOut = await runSpine(
     // If the script is missing → GATE_ABSENT (no-op). Else run it in the
     // worktree; exit 0 → GATE_PASS, non-zero → GATE_FAIL.
-    `if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
+    //
+    // `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
+    // The gate verdict is derived from the subshell's exit via `&& … || …`; the
+    // subshell here is redirected (`>log 2>&1`), not piped, so today the exit
+    // reaches the `||` cleanly. pipefail is the durable guard: should a future
+    // edit ever route the gate through a downstream filter/`tee` to capture its
+    // output (e.g. `qgBin | tee log`), a bare pipe's status reflects the LAST
+    // stage (tee's 0), swallowing a RED gate and degrading 3e.5 to a silent
+    // no-op. With pipefail set, the gate's own non-zero exit propagates and
+    // GATE_FAIL is still emitted — the runtime match for the documented rule.
+    `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
       `else ( cd ${sq(wt)} && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
       `&& echo '{"outcome":"GATE_PASS"}' || echo '{"outcome":"GATE_FAIL"}'; fi`,
     { label: `gate:${item.slug}`, slug: item.slug },

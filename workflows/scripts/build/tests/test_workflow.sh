@@ -1260,5 +1260,14 @@ sb_refs="$(grep -c 'spineBin(' "$MJS")"
   || fail "#560: expected >=5 spineBin references (1 def + 4 call sites), found $sb_refs"
 echo "PASS: #560 spine-resolution guard — spineBin() resolves all spine scripts; no hardcoded paths; qgBin stays repo-local"
 
+# --- temperloop#68: the 3e.5 gate command must carry `set -o pipefail` so a RED
+# quality-gates run can never be swallowed by a downstream pipe/filter (the
+# pipe-ate-exit-code defect). A future hand-edit that pipes the gate to capture
+# its output would otherwise mask a non-zero gate exit behind the last stage's 0,
+# degrading 3e.5 to a silent no-op. Guard the prefix statically. ------------
+grep -q 'set -o pipefail; if \[ ! -x' "$MJS" \
+  || fail "#68: 3e.5 gate command must prefix 'set -o pipefail' (pipe-ate-exit guard)"
+echo "PASS: #68 gate-pipefail guard — 3e.5 gate invocation carries set -o pipefail"
+
 echo ""
 echo "All test_workflow.sh cases passed."
