@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-06
+
 ### Fixed
 
 - `claude/hooks/write-lane-guard.sh`: set the executable bit. It shipped in v0.8.0
