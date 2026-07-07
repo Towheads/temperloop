@@ -14,6 +14,22 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/update-kernel.sh` — the sanctioned kernel-subtree puller now ships
+  from the kernel itself (co-located with `VERSIONING.md`, so policy and the
+  machinery that enforces it travel together) and carries a **breaking-delta
+  gate**: before the subtree pull it scans the version/CHANGELOG delta between
+  the current `.kernel-pin` tag and the target `KERNEL_TAG` and, on a breaking
+  delta — a `BREAKING`-marked CHANGELOG section in range (pre-1.0) or a
+  major-version increment (post-1.0) — **refuses the unattended path** and
+  requires an explicit acknowledgment (`KERNEL_ALLOW_BREAKING=1` or an
+  interactive confirm), printing the migration notes from the marked sections
+  first. An additive/patch delta pulls without prompting. `kernel-drift-check`
+  (byte-identity, orthogonal to semver) is untouched. Implements what
+  `VERSIONING.md` § "Signal to the machinery" promises. (temperloop#89,
+  follow-up to the versioning spike #79 / PR #88)
+
 ## [0.8.2] - 2026-07-06
 
 ### Fixed
