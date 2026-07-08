@@ -112,13 +112,35 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 The item shape produced by the issues-only reshape:
 
 ```json
-{"id":"ISSUE_105","content":{"number":105,"title":"…","type":"Issue"},"status":"Ready","component":"Ingest","labels":["fnd:status:ready","spike"]}
+{"id":"ISSUE_105","content":{"number":105,"title":"…","type":"Issue"},"status":"Ready","component":"Ingest","labels":["fnd:status:ready","spike"],"milestone":{"title":"Phase 2"}}
 ```
 
 — identical keys to the Projects-v2 shape (`id`, `content.number/title/type`,
-flattened field values, **and `labels`** — see § Funnel integration below),
+flattened field values, **`labels`** — see § Funnel integration below — **and
+`milestone`** — see § Milestone read passthrough below),
 so every existing jq-based reader of `BOARD_ITEMS_JSON` works without
-modification.
+modification. The `milestone` key is present only when the issue carries one
+(omitted otherwise, the same optional-field style as `component`/`host/Session`).
+
+### Milestone read passthrough (temperloop#154)
+
+`board_item_milestone <n>` reads `.milestone.title` out of `BOARD_ITEMS_JSON`.
+The Projects-v2 path gets that for free (`gh project item-list` emits
+`.milestone = {title, description, dueOn}`), but the issues-only `issue_item`
+reshape originally emitted **no** `milestone` key at all — the same class of
+dropped-field bug the #801 `labels` passthrough fixed. The consequence was
+silent: `board_item_milestone` always returned empty on an issues-only board, so
+`/triage`'s active-milestone **intake filter** (intake IFF unmilestoned OR
+milestone active) treated every item as unmilestoned and wrongly **intook** a
+Backlog item sitting on an INACTIVE milestone instead of deferring it (and the
+mandatory Step-5 deferred-at-intake count read zero). Fixed by (a) requesting
+`milestone` in `_board_issues_item_list`'s `gh issue list --json` field list and
+(b) emitting `{ title }` from the reshape, so `board_item_milestone` works
+unchanged on both backends. The single-issue read
+(`_board_issues_resolve_item`, `gh api …/issues/<n>`) already carried the full
+issue object, so it only needed the reshape half. Pinned by
+`tests/test_issues_backend.sh` case 3 (a milestoned issue's title round-trips;
+an unmilestoned one reads empty and carries no `.milestone` key).
 
 ## What split 1/3 (#799) intentionally did not do
 

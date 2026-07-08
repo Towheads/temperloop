@@ -118,8 +118,8 @@ echo "PASS: an unselected board's gh argv is byte-identical to the pre-#799 Proj
 
 # --- 3: issues-only board_item_list reshapes fnd: labels -------------------
 ISSUE_LIST_JSON='[
-  {"number":101,"title":"Ready item","labels":[{"name":"fnd:status:ready"},{"name":"spike"}]},
-  {"number":102,"title":"Unstatused item","labels":[]},
+  {"number":101,"title":"Ready item","labels":[{"name":"fnd:status:ready"},{"name":"spike"}],"milestone":{"title":"Phase 2"}},
+  {"number":102,"title":"Unstatused item","labels":[],"milestone":null},
   {"number":103,"title":"In-progress + component","labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:component:ingest"}]}
 ]'
 _board_gh() {
@@ -134,7 +134,7 @@ board_resolve 20
 [ "$(grep -c '^gh ' "$CALLS")" -eq 1 ] || fail "board_resolve 20 (issues-only) should make exactly 1 gh call"
 # %q under bash 3.2 (macOS system bash) backslash-escapes the commas in the
 # --json value; match loosely on the field LIST rather than pin the escaping.
-grep -Eq 'gh issue list -R Acme/kernel-test --state open --limit 500 --json number.?,?title.?,?labels' "$CALLS" \
+grep -Eq 'gh issue list -R Acme/kernel-test --state open --limit 500 --json number.?,?title.?,?labels.?,?milestone' "$CALLS" \
   || fail "board_resolve 20 issued the wrong issue-list argv: $(cat "$CALLS")"
 grep -q '^gh project' "$CALLS" && fail "board_resolve 20 must NEVER call gh project (no Projects board provisioned)"
 [ "$BOARD_PROJECT_ID" = "" ] || fail "BOARD_PROJECT_ID must be empty on the issues-only path, got '$BOARD_PROJECT_ID'"
@@ -164,6 +164,18 @@ LABELS_101="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -c '.items[] | select(.conten
 LABELS_102="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -c '.items[] | select(.content.number==102) | .labels')"
 [ "$LABELS_102" = "[]" ] || fail "labels for #102 (no labels) should be [], got: $LABELS_102"
 echo "PASS: issue_item's reshape passes through the raw, unfiltered label-name list (foundation #801)"
+
+# temperloop#154: the reshape must ALSO carry the release-phase milestone, or
+# board_item_milestone returns empty on this backend and /triage's active-milestone
+# intake filter silently mis-intakes a Backlog item on an inactive milestone. A
+# milestoned issue's title must round-trip; an unmilestoned one reads empty.
+[ "$(board_item_milestone 101)" = "Phase 2" ] \
+  || fail "board_item_milestone (issues-only) should read #101's milestone 'Phase 2', got: '$(board_item_milestone 101)'"
+[ "$(board_item_milestone 102)" = "" ] \
+  || fail "board_item_milestone (issues-only) should be empty for unmilestoned #102, got: '$(board_item_milestone 102)'"
+MS_102_KEY="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '.items[] | select(.content.number==102) | has("milestone")')"
+[ "$MS_102_KEY" = "false" ] || fail "unmilestoned #102 should carry no .milestone key (optional-field style), got has()=$MS_102_KEY"
+echo "PASS: issue_item's reshape carries the milestone title; board_item_milestone round-trips it (temperloop#154)"
 echo "PASS: board_resolve/board_item_list (issues-only) reshapes fnd: labels into the shared item schema, zero gh project calls"
 
 # --- 4: board_resolve_item (issues-only) is always-live and sees closed=Done ---

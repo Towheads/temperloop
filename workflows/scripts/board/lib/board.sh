@@ -753,6 +753,20 @@ _board_issues_label_prefix() {
 #     makes the issues-only item shape a byte-for-byte structural match for the
 #     Projects-v2 one on this key too. See ISSUES-ONLY-BACKEND.md § Funnel
 #     integration and tests/test_board_dual_adapter.sh (the parity proof).
+#   milestone: the item's release-phase milestone as { title } (temperloop#154 —
+#     the same class of dropped-field bug the #801 labels passthrough fixed).
+#     board_item_milestone reads `.milestone.title`; the Projects-v2 path gets it
+#     for free (gh project item-list emits `.milestone = {title, description,
+#     dueOn}`), but the issues-only reshape used to drop it entirely, so
+#     board_item_milestone always returned empty on this backend — which silently
+#     defeated /triage's active-milestone intake filter (every item read as
+#     unmilestoned, so a Backlog item on an INACTIVE milestone was wrongly intook
+#     instead of deferred). Emitting `{ title }` here (omitted when the issue has
+#     no milestone, matching the component/host optional-field style) makes
+#     board_item_milestone work unchanged on both backends. The whole-board live
+#     read (_board_issues_item_list) must request `milestone` in its `gh issue
+#     list --json` field list for this to be populated; the single-issue read
+#     (_board_issues_resolve_item via `gh api …/issues/<n>`) carries it already.
 read -r -d '' _BOARD_ISSUES_JQ_DEFS <<'JQ_DEFS' || true
 def unslug: split("-") | map((.[0:1] | ascii_upcase) + .[1:]) | join(" ");
 def issue_item($n):
@@ -771,7 +785,8 @@ def issue_item($n):
         elif $status_slug != "" then { status: ($status_slug | unslug) }
         else {} end )
     + ( if $comp_slug != "" then { component: ($comp_slug | unslug) } else {} end )
-    + ( if $host_session != "" then { "host/Session": $host_session } else {} end );
+    + ( if $host_session != "" then { "host/Session": $host_session } else {} end )
+    + ( if (.milestone.title // "") != "" then { milestone: { title: .milestone.title } } else {} end );
 JQ_DEFS
 
 # Whole-board (active-set) read for an issues-only board: every OPEN issue,
@@ -825,7 +840,7 @@ _board_issues_item_list() {
   fi
 
   raw="$(_board_gh issue list -R "$repo" --state open --limit "$lim" \
-        --json number,title,labels 2>/dev/null)" || {
+        --json number,title,labels,milestone 2>/dev/null)" || {
     echo "board: live read failed (issues, board $board) — rate limit or auth?" >&2
     return 1
   }
@@ -1275,9 +1290,12 @@ board_item_title() {
 # Resolve an item's release-phase milestone TITLE from the cached item-list.
 # The release-phase axis rides GitHub's built-in, read-only `Milestone` field
 # (foundation #97): a system field that can't be renamed/deleted, surfaced by
-# `gh project item-list` as `.milestone = {title, description, dueOn}`. So reads
-# are free here (no GraphQL branch), while WRITES go through board_set_milestone
-# (repo-level `gh issue edit`, since the board mirror is read-only).
+# `gh project item-list` as `.milestone = {title, description, dueOn}` on the
+# Projects-v2 path, and — since temperloop#154 — carried as `.milestone = {title}`
+# by the issues-only reshape (issue_item) too. Backend-agnostic on the read side:
+# this bare `.milestone.title // ""` works on both. WRITES go through
+# board_set_milestone (repo-level `gh issue edit`, since the board mirror is
+# read-only).
 #   board_item_milestone <issue#>  ->  milestone title (empty if none)
 board_item_milestone() {
   printf '%s' "$BOARD_ITEMS_JSON" |
