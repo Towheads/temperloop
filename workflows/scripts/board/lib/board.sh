@@ -1523,12 +1523,21 @@ board_set_milestone() {
 # (REST has its own separate 5,000/hr bucket). Routed through the `_board_gh` seam
 # so the fixture-replay harness can stub it; pipes to an external `jq` like
 # board_blocked_by_open / board_parent_issue so the seam stays replay-testable.
-# Returns non-zero (no output) on an unknown board.
+# Returns non-zero (no output) on an unknown board OR on an actual milestone-fetch
+# failure — the API output is captured first (`|| return 1`) so a genuine REST
+# error propagates instead of being masked by jq's exit code. A SUCCESSFUL fetch
+# that finds zero active markers stays exit 0 with empty output: "none active" is
+# the normal default state (milestones default inactive), NOT a failure. This lets
+# a caller distinguish "fetch failed" (non-zero) from "genuinely none active"
+# (exit 0, empty) — the disambiguation /triage's active-milestone guard needs
+# (temperloop#152). Callers that only capture output (e.g. milestone.sh) are
+# unaffected: an empty result reads the same either way.
 #   board_active_milestones <board#>  ->  active milestone titles, one per line
 board_active_milestones() {
-  local board="$1" repo
+  local board="$1" repo raw
   repo="$(board_repo "$board")" || return 1
-  _board_gh api "repos/$repo/milestones?state=open" 2>/dev/null |
+  raw="$(_board_gh api "repos/$repo/milestones?state=open" 2>/dev/null)" || return 1
+  printf '%s' "$raw" |
     _board_sanitize_control_chars |
     jq -r '.[] | select((.description // "") | contains("<!-- triage:active -->")) | .title'
 }

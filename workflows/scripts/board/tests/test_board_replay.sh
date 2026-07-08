@@ -156,6 +156,45 @@ out="$(board_active_milestones 3)"
   || fail "board_active_milestones argv wrong: $(last_call)"
 echo "PASS: board_active_milestones reads the open milestones over REST and prints only triage:active titles"
 
+# genuinely-none-active: a SUCCESSFUL fetch that finds zero triage:active markers
+# must stay exit 0 with empty output. "None active" is the normal default state
+# (milestones default inactive) — NOT a failure. This is the case /triage's guard
+# must treat as "proceed", not "STOP" (temperloop#152).
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Towheads/stageFind/milestones?state=open")
+      cat <<'JSON'
+[
+  { "number": 8, "title": "Backlog Phase",  "description": "future-only, no marker" },
+  { "number": 9, "title": "No Description",  "description": null }
+]
+JSON
+      ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+if out="$(board_active_milestones 3)"; then :; else fail "board_active_milestones must exit 0 on a successful fetch with no active markers"; fi
+[ -z "$out" ] || fail "board_active_milestones should print nothing when no milestone is active, got: [$out]"
+echo "PASS: board_active_milestones returns exit 0 + empty output when a successful fetch finds zero active markers"
+
+# fetch failure: when the milestone REST fetch ITSELF fails (non-zero from the
+# seam), board_active_milestones must PROPAGATE that failure (return non-zero)
+# rather than mask it behind jq's exit code and look like "empty / none active".
+# This is the disambiguation /triage's guard relies on to STOP only on a real
+# REST failure, never on a genuinely-empty active set (temperloop#152).
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Towheads/stageFind/milestones?state=open") return 1 ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+if board_active_milestones 3 >/dev/null 2>&1; then fail "board_active_milestones must return non-zero when the milestone fetch fails"; fi
+echo "PASS: board_active_milestones propagates a fetch failure (non-zero) instead of masking it as empty"
+
 # unknown board -> non-zero, no gh call
 : >"$CALLS"
 if board_active_milestones 9 >/dev/null 2>&1; then fail "board_active_milestones should fail for an unknown board"; fi
