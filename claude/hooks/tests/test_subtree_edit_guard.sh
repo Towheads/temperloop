@@ -58,6 +58,15 @@ echo "vendored" >"$REPO/kernel/claude/hooks/board-adapter-guard.sh"
 ln -s ../../kernel/claude/hooks/board-adapter-guard.sh "$REPO/claude/hooks/board-adapter-guard.sh"
 # Directory-level compat symlink (mirrors claude/agents -> ../kernel/claude/agents).
 ln -s kernel/claude/hooks "$REPO/hooks-dirlink"
+# The EXACT foundation#1070 / issue #130 shape: a build-scripts dir presented at
+# its pre-split path via an UP-AND-BACK relative dir symlink
+# (workflows/scripts/build -> ../../kernel/workflows/scripts/build). The raw
+# target string carries no `kernel/` component, so a pre-fix raw-string matcher
+# stayed silent and let the kernel edit through; only the realpath-resolved
+# path lands under kernel/.
+mkdir -p "$REPO/kernel/workflows/scripts/build" "$REPO/workflows/scripts"
+echo "cron" >"$REPO/kernel/workflows/scripts/build/funnel-cron.sh"
+ln -s ../../kernel/workflows/scripts/build "$REPO/workflows/scripts/build"
 echo "overlay" >"$REPO/overlay-only/real.txt"
 echo "readme" >"$REPO/README.md"
 git -C "$REPO" add -A
@@ -94,6 +103,22 @@ grep -q "$REPO_RP/kernel/claude/hooks/board-adapter-guard.sh" <<<"$out" \
 # --- pre-split compat symlink, DIRECTORY-level, new file inside -> ask ----
 out="$(run_hook "$REPO" Write "hooks-dirlink/another-new.sh")"
 check "compat symlink (dir-level) resolving into kernel/ -> ask" ask "$out"
+
+# --- REGRESSION (issue #130 / foundation#1070): build-script edited through the
+# `workflows/scripts/build -> ../../kernel/workflows/scripts/build` alias -> ask.
+# This is the failure the issue describes: the RAW input path has no `kernel/`
+# component, so a raw-string matcher (the pre-fix behavior) would NOT have fired
+# and the kernel edit slipped through. The guard resolves the realpath BEFORE
+# matching, so it must ask. The `case` below asserts the load-bearing property
+# — that the input path genuinely lacks `kernel/`, i.e. only resolution trips it.
+alias_target="workflows/scripts/build/funnel-cron.sh"
+case "$alias_target" in
+  *kernel/*) echo "FATAL: #130 fixture path unexpectedly contains kernel/ — assertion void" >&2; exit 1 ;;
+esac
+out="$(run_hook "$REPO" Edit "$alias_target")"
+check "build-dir alias (../../kernel up-and-back), raw path has no 'kernel/' -> ask [#130]" ask "$out"
+grep -q "$REPO_RP/kernel/workflows/scripts/build/funnel-cron.sh" <<<"$out" \
+  || { fail=$((fail + 1)); printf '  ✗ #130: ask reason does not name the RESOLVED kernel path\n'; }
 
 # --- MultiEdit shape (edits[].file_path) -> ask ----------------------------
 json=$(jq -cn --arg cwd "$REPO" \
