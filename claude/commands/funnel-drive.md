@@ -51,6 +51,37 @@ Your argument (`$ARGUMENTS`) is a path to a JSON file. Read it. Shape:
 If the file is missing/unparseable or `actions` is empty, emit the Step 3 summary
 with an empty `results` array and stop — nothing to drive.
 
+## Step 1.5 — Source the board adapter (before any board read/write)
+
+Several actions below **read or write the board**: a `drive-ready` spike *claims* its
+issue, does a contention/status read, moves it to *Done* on verdict-capture, and *closes*
+it. Those all go through the shared board adapter's `board_*` functions
+(`board_resolve_item` / `board_item_id` / `board_set_status`, the `BOARD_OPT_*` constants)
+— **which do not exist until the adapter (`lib/board.sh`) is sourced.** You are a headless
+`claude -p` session that never ran `/build` Step 0, so nothing has sourced it for you: an
+inline `board_resolve_item …` / `board_item_status` / `$BOARD_ITEM_STATUS` in an un-sourced
+bash block is `command not found` / an unbound variable, and every board read errors (the
+`jq 'Cannot index'/'iterate over null'` cascade downstream). That was foundation #1084 —
+recurring every headless run.
+
+So **prefix EVERY board bash block** with the locate-and-source one-liner below. It is
+load-bearing per-block, not once-per-session: a fresh `claude -p` bash call does **not**
+inherit a `source` from an earlier call. It mirrors `/build` Step 0's `BOARD_LIB`
+resolution, condensed because HARD RULE 5 already guarantees your cwd is the action's board
+checkout:
+
+```bash
+# Prefix EVERY board bash block with this — a fresh bash call inherits no earlier `source`.
+BOARD_LIB="$(ls scripts/lib/board.sh workflows/scripts/board/lib/board.sh 2>/dev/null | head -1)"
+[ -n "$BOARD_LIB" ] && source "$BOARD_LIB"   # now board_resolve_item / board_set_status / BOARD_OPT_* exist
+```
+
+Use each action's own `.board` / `.repo` from the payload (HARD RULE 5) — no repo→board
+reverse-lookup is needed. **Legible degradation:** if `BOARD_LIB` resolves **empty** (this
+checkout has no adapter), the board is unavailable — **skip** the claim / Done / close board
+moves and record the degradation in the action's `note`. Never fabricate a `board_*` call
+against a missing adapter (that reproduces #1084's command-not-found).
+
 ## Step 2 — Execute each action by its kind
 
 Process `actions` in order. For each, dispatch on `.action`. Every backend below is
@@ -128,8 +159,11 @@ as such in its bullet below.)
   singleton path** (the same path `/sweep` drives a singleton spike through, and
   `/build`'s kind:spike fork): **claim it**, do the read-only investigation, **write
   the verdict note** to the vault, **route any follow-up** issue, then **close the
-  issue** with the note linked. **This opens no PR and merges nothing** — if anything
-  tries to, stop and record a failure (it means the item was mis-stamped).
+  issue** with the note linked. The claim, the Done move, and the close are board
+  reads/writes — **source the adapter first in each of those bash blocks (Step 1.5)**,
+  or their `board_*` calls are command-not-found (#1084). **This opens no PR and merges
+  nothing** — if anything tries to, stop and record a failure (it means the item was
+  mis-stamped).
 
 After each action, record `{action, issue, board, status: "executed"|"failed"|"refused", note}`.
 
