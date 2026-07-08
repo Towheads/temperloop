@@ -683,6 +683,71 @@ RC22=$?
 [ "$(jq -r '.event' <<<"$OUT22")" = "ran" ] && ok "wake record still event=ran (snapshot failure did not abort the wake)" || bad "w22.event" "got $OUT22"
 [ -f "$SENT22" ] && ok "the failing rework-snapshot.sh was still invoked (its own failure is what's isolated)" || bad "w22.invoked" "no invocation recorded"
 
+# ╭──────────────────────────────────────────────────────────────────────────╮
+# │ #129 — fold rework-snapshot.sh's REWORK_SUMMARY stdout line into the wake  │
+# │ record as `rework_snapshot` (mirrors self_update, #640): a well-formed     │
+# │ summary is parsed & folded per board; a snapshot failure is isolated (wake │
+# │ completes) AND recorded rather than silently dropped.                      │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# rework-snapshot stub that EMITS a machine-readable REWORK_SUMMARY line on stdout
+# (foundation#1070's emit-half contract): a human log line, then the summary line.
+REWORK_STUB_SUMMARY="$TMP/rework-stub-summary.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "%s\n" "$*" >> "$REWORK_SENTINEL"' \
+  'echo "rework-snapshot: scanning board (human log)"' \
+  'echo "REWORK_SUMMARY {\"records\":3,\"errors\":[]}"' \
+  'exit 0' > "$REWORK_STUB_SUMMARY"
+chmod +x "$REWORK_STUB_SUMMARY"
+
+# ── WRAPPER 23: a well-formed REWORK_SUMMARY is parsed & folded per board ─────
+echo "--- wrapper 23: REWORK_SUMMARY folded into the wake record as rework_snapshot (#129) ---"
+# The full wake record is the durable one in latest.json (stdout carries only a
+# condensed run summary), so assertions read latest.json — as wrapper 14 does.
+LOGD23="$TMP/wlog20"
+SENT23="$TMP/rework23.txt"
+env FUNNEL_NOW_HOUR=14 FUNNEL_NOW_DATE=2026-06-25 FUNNEL_SCHEDULE_FILE="$F6" \
+  FUNNEL_TICK_BIN="$TICK_NOOP" FUNNEL_LOG_DIR="$LOGD23" FUNNEL_NOTIFY_CMD="true" \
+  FUNNEL_OPERATOR="@testops" \
+  REWORK_SNAPSHOT_BIN="$REWORK_STUB_SUMMARY" REWORK_SENTINEL="$SENT23" \
+  bash "$CRON" >/dev/null
+RC23=$?
+[ "$RC23" -eq 0 ] && ok "wrapper exits 0 with a summary-emitting rework-snapshot" || bad "w23.rc" "exit=$RC23"
+[ "$(jq -r '.rework_snapshot | has("3")' "$LOGD23/latest.json")" = "true" ] \
+  && ok "wake record carries rework_snapshot keyed by board 3" || bad "w23.key3" "$(jq -c '.rework_snapshot' "$LOGD23/latest.json")"
+[ "$(jq -r '.rework_snapshot["3"].records' "$LOGD23/latest.json")" = "3" ] \
+  && ok "board 3's parsed summary carries records=3 (the emitted payload)" || bad "w23.records" "$(jq -c '.rework_snapshot["3"]' "$LOGD23/latest.json")"
+[ "$(jq -r '.rework_snapshot["4"].records' "$LOGD23/latest.json")" = "3" ] \
+  && ok "board 4's summary is folded too (one entry per ticked board)" || bad "w23.board4" "$(jq -c '.rework_snapshot' "$LOGD23/latest.json")"
+
+# ── WRAPPER 23b: a --dry-run run attaches NO rework_snapshot (Step 2.5 skipped) ─
+echo "--- wrapper 23b: --dry-run run carries no rework_snapshot field ---"
+FX23="$TMP/wfx23"; mk_fixture "$FX23"; LOGD23B="$TMP/wlog20b"
+env FUNNEL_NOW_HOUR=14 FUNNEL_NOW_DATE=2026-06-25 FUNNEL_SCHEDULE_FILE="$F" \
+  FUNNEL_LOG_DIR="$LOGD23B" FUNNEL_NOTIFY_CMD="true" \
+  REWORK_SNAPSHOT_BIN="$REWORK_STUB_SUMMARY" REWORK_SENTINEL="$TMP/rework23b.txt" \
+  bash "$CRON" --dry-run --fixture "$FX23" >/dev/null
+[ "$(jq -r 'has("rework_snapshot")' "$LOGD23B/latest.json")" = "false" ] \
+  && ok "no rework_snapshot on a --dry-run wake (snapshot never ran)" || bad "w23b.absent" "$(jq -c '.rework_snapshot' "$LOGD23B/latest.json")"
+
+# ── WRAPPER 24: a snapshot FAILURE is isolated AND recorded (not dropped) ─────
+echo "--- wrapper 24: rework-snapshot failure is isolated + recorded in the wake record (#129) ---"
+LOGD24="$TMP/wlog21"
+SENT24="$TMP/rework24.txt"
+# REWORK_STUB exits non-zero (REWORK_STUB_EXIT=1) and emits no REWORK_SUMMARY line.
+OUT24="$(env FUNNEL_NOW_HOUR=14 FUNNEL_NOW_DATE=2026-06-25 FUNNEL_SCHEDULE_FILE="$F6" \
+  FUNNEL_TICK_BIN="$TICK_NOOP" FUNNEL_LOG_DIR="$LOGD24" FUNNEL_NOTIFY_CMD="true" \
+  FUNNEL_OPERATOR="@testops" \
+  REWORK_SNAPSHOT_BIN="$REWORK_STUB" REWORK_SENTINEL="$SENT24" REWORK_STUB_EXIT=1 \
+  bash "$CRON")"
+RC24=$?
+[ "$RC24" -eq 0 ] && ok "wake still exits 0 despite the snapshot failure (isolation intact)" || bad "w24.rc" "exit=$RC24"
+[ "$(jq -r '.event' <<<"$OUT24")" = "ran" ] && ok "wake record still event=ran (failure did not abort the wake)" || bad "w24.event" "$OUT24"
+[ "$(jq -r '.rework_snapshot["3"].status' "$LOGD24/latest.json")" = "failed" ] \
+  && ok "the failure is RECORDED (rework_snapshot[3].status=failed), not silently dropped" || bad "w24.recorded" "$(jq -c '.rework_snapshot' "$LOGD24/latest.json")"
+[ "$(jq -r '.rework_snapshot["3"] | has("reason")' "$LOGD24/latest.json")" = "true" ] \
+  && ok "the recorded failure carries a reason" || bad "w24.reason" "$(jq -c '.rework_snapshot["3"]' "$LOGD24/latest.json")"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "funnel-cron tests: $pass passed, $fail failed"

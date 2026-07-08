@@ -401,9 +401,38 @@ rm -f "$tick_err_file"
 # still exercised on every real run. REWORK_SNAPSHOT_BIN is the test seam
 # (mirrors FUNNEL_GATE_BIN/FUNNEL_TICK_BIN/FUNNEL_DRIVE_BIN) for a zero-network
 # non-dry-run test to inject a stub in place of the real script.
+#
+# FOLD THE SUMMARY INTO THE WAKE RECORD (#129, the KERNEL consume half of
+# foundation#1070's emit half): rework-snapshot.sh emits a machine-readable
+# `REWORK_SUMMARY {records,errors[,reason]}` line on stdout. That line used to be
+# discarded via `>/dev/null 2>&1`, so a SYSTEMIC snapshot failure (the meta-defect
+# that hid a month of 404s in foundation#1070) vanished. Now we capture stdout per
+# board and fold the parsed summary into the durable wake record as
+# `rework_snapshot` (keyed by board), mirroring the `self_update` note (#640) —
+# so a snapshot failure surfaces in the wake log instead of vanishing.
+# ISOLATION PRESERVED: capture is BEST-EFFORT behind the same `|| true` contract —
+# a non-zero exit, or a missing/garbled REWORK_SUMMARY line, records an error
+# marker and the wake keeps going. A snapshot failure NEVER breaks or aborts the
+# wake.
+rework_snapshot='{}'
 if [ "$DRY_RUN" -eq 0 ]; then
   for b in $boards; do
-    "$REWORK_SNAPSHOT" snapshot --board "$b" >/dev/null 2>&1 || true
+    # Capture stdout; `&& rs_ok=1 || rs_ok=0` is the `|| true` isolation — a
+    # non-zero snapshot exit is caught here, never propagated to abort the wake.
+    rs_out="$("$REWORK_SNAPSHOT" snapshot --board "$b" 2>/dev/null)" && rs_ok=1 || rs_ok=0
+    # Take the LAST REWORK_SUMMARY line's JSON payload (grep may match nothing →
+    # guard the pipefail non-zero). Everything here is best-effort; any miss →
+    # a recorded error marker, never a silent drop and never a wake abort.
+    rs_line="$(printf '%s\n' "$rs_out" | grep '^REWORK_SUMMARY ' | tail -n1)" || rs_line=""
+    if [ "$rs_ok" -eq 1 ] && [ -n "$rs_line" ] \
+       && rs_note="$(jq -ce . <<<"${rs_line#REWORK_SUMMARY }" 2>/dev/null)"; then
+      :   # rs_note holds the parsed {records,errors[,reason]} summary object
+    elif [ "$rs_ok" -ne 1 ]; then
+      rs_note='{"status":"failed","reason":"rework-snapshot.sh exited non-zero"}'
+    else
+      rs_note='{"status":"failed","reason":"missing or unparseable REWORK_SUMMARY line"}'
+    fi
+    rework_snapshot="$(jq -c --arg b "$b" --argjson n "$rs_note" '. + {($b):$n}' <<<"$rework_snapshot")" || true
   done
 fi
 
@@ -423,6 +452,11 @@ record="$(jq -nc --arg d "$log_date" --argjson boards \
   '{event:"ran",date:$d,boards:$boards,nonop_actions:$nonop,duration_ms:$ms,plans:$plans}')"
 # Carry a FAILED self-update forward into the durable wake record (#640).
 [ -n "$self_update_note" ] && record="$(jq -c --argjson su "$self_update_note" '. + {self_update:$su}' <<<"$record")"
+# Fold the per-board rework-snapshot summary into the wake record (#129). Empty
+# ('{}') on a --dry-run run (Step 2.5 is skipped there) → not attached; on a live
+# run it always carries one entry per ticked board (a parsed summary or an error
+# marker), so a systemic snapshot failure is visible instead of vanishing.
+[ "$rework_snapshot" != "{}" ] && record="$(jq -c --argjson rs "$rework_snapshot" '. + {rework_snapshot:$rs}' <<<"$record")"
 emit_record "$record" >/dev/null
 
 # ── Step 3: notify (only on a non-no-op run) ─────────────────────────────────
