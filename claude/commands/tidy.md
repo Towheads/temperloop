@@ -307,6 +307,41 @@ It checks: `Sessions/_inbox` stub count + oldest age (alarm > 20 stubs or oldest
 
 **This step does NOT** delete or move any vault file, does NOT mutate an entry's `Status` (check-in is the sole mutator, per its review section), and does NOT prune ledgers or archive plans. It only *reports* the drift; every disposal — deleting garbage, pruning a ledger, archiving a closed plan — happens at `check-in` on operator confirmation.
 
+### Environment hygiene
+
+A periodic **detect-and-propose** probe for the local filesystem environment — checkouts, worktrees, and launchd agents — the sibling of § Vault hygiene above for the *host* rather than the *vault* (temperloop#168/#176/#177). Nothing else periodically sweeps this state across sessions: `build`'s own Step 0.5 recovers only the current run's stranded claims, and a leaked worktree or a cron checkout that silently drifted behind `main` otherwise goes unseen until someone trips over it.
+
+**A drain-internal detector**, not a live/drain pair: like § Vault hygiene, it backstops no live extraction rule — environment drift is a *state* the host accumulates over time (a leaked worktree, a checkout that fell behind), not an author action a live rule captures — so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**.
+
+**Policy: aggressive in-lane, report cross-lane.** This step may auto-fix drift only in checkouts that are structurally nobody's interactive home — a disposable worktree, or a **cron/kernel checkout** (role-defined as always clean-on-main; `foundation.cron`, the kernel checkout, `foundation-kernel`). It never mutates a **foreign** checkout's `HEAD` — an **operator/consumer checkout** (`foundation`, `stageFind`, `ssmobile`, `subsetwiki`) may legitimately be another session's active lane, and per `claude/CLAUDE.md` § Working-tree ownership only the session that owns a checkout may move its `HEAD`. This mirrors that rule exactly: report, never switch.
+
+**Run the probe**, both formats — `report` to get the full per-checkout classification this step reasons over, `entry` for the ready-to-append block:
+
+```
+workflows/scripts/build/env-reconcile.sh --format report
+workflows/scripts/env-hygiene-report.sh --format entry
+```
+
+(`env-hygiene-report.sh` is a thin passthrough wrapper over `env-reconcile.sh --format entry` — either invocation is equivalent for the `entry` form; a checkout with neither script present no-ops, so this is safe to run unconditionally.) Both are **read-only and fail-open**: they never `git fetch`, `launchctl load/unload`, or write a file themselves — this step's own subsequent auto-heal actions (below) are what mutate.
+
+For each drift class the `report` output surfaces, dispose as follows:
+
+- **Auto-heal (safe, in-lane):**
+  - **`LEAKED_WORKTREE`** (any of `ORPHANED`/`BRANCH_GONE`/`MERGED`/`CLOSED`) — under *either* a cron or an operator parent repo's `<repo>.wt/`: `git -C <parent-repo> worktree remove --force <wt-path>` then `git worktree prune`. Safe under any parent, because a worktree is never a session's launch dir (`claude/CLAUDE.md` § Working-tree ownership) — removing it touches no peer session's `HEAD`. If its `build/<slug>` branch still exists and is independently confirmed merged, delete it too (`git -C <parent-repo> branch -D build/<slug>`) — mirrors `worktree.sh`'s own cleanup.
+  - **`BEHIND_MAIN`** on a cron/kernel checkout — fast-forward it: `git -C <repo> pull --ff-only`. Only when that same checkout classified *clean* (no `DIRTY`/`ON_BRANCH` alongside it) — `env-reconcile.sh` only ever emits `BEHIND_MAIN` for a checkout already confirmed on-default-branch, so this is the normal case. `--ff-only` refuses if the local ref isn't a strict ancestor, so this can never discard work.
+  - **Merged local branches in a cron/kernel checkout** — run `scripts/prune-merged-branches.sh --apply` from that checkout. Safe: it only ever deletes a branch `git branch -d` itself confirms fully merged, and a cron/kernel checkout is never expected to carry extra local branches.
+- **Report-only (cross-lane / risky) — append to the review surface, touch nothing:**
+  - **`PARKED_ON_MERGED`**, **`DIRTY`**, **`STALE_UNTRACKED`** on an **operator/consumer checkout** — this is exactly the working-tree-ownership foreign-lane case; never `git checkout`/`reset`/`clean` there.
+  - **`DIRTY`** or **`ON_BRANCH`** on a cron/kernel checkout — surprising for a role defined as always clean-on-main (a live run may be mid-flight there); report, don't touch.
+  - **`AGENT_UNLOADED`** / **`AGENT_STALE`** — never `launchctl load`/`unload` from this step; restarting or reloading an agent out from under a possibly-still-running process is exactly the kind of foreign mutation this policy exists to avoid.
+  - **`ABSENT`** / **`NOT_A_REPO`** / **`MALFORMED_PLIST`** — configuration problems with nothing safe to mechanically fix; report.
+
+**Record the finding.** If the `entry`-format command printed a block, append it verbatim to `Context/pipeline - environment hygiene report.md` (in the knowledge store) via `mcp__obsidian-builtin__vault_append` — it creates the note if absent; this is a new pipeline surface parallel to the pending-decisions and sensitivity-flags surfaces, consumed by `/check-in`. Prepend one line per auto-heal action actually taken (`- auto-healed: <action> — <path>`) so the surface shows what was fixed alongside what's being reported. If the probe printed nothing (clean) and no auto-heal ran, **surface nothing** and move on (default to silence).
+
+**File a board defect for a real misconfig** — a `BEHIND_MAIN` that `--ff-only` refused (true divergence, not a simple fast-forward), a `MALFORMED_PLIST`, an `AGENT_UNLOADED`/`AGENT_STALE` that recurs across drain runs, or an `ABSENT`/`NOT_A_REPO` checkout that should exist — via `workflows/scripts/board/capture.sh "<title>" --body "<one-line context>" --label bug [--board 3|4|--repo kernel]` (kernel-domain machinery routes `--repo kernel` per the kernel-vs-overlay routing rule; dedup against an existing issue first, same as § Unfiled defects). A drift class with a safe auto-heal (worktree prune, ff-pull, merged-branch delete) is not a "real misconfig" on its own — only file when the auto-heal itself failed or the drift is a class this step never auto-fixes.
+
+**This step never mutates a foreign checkout's `HEAD`** — verified against a fixture with a foreign parked-on-merged operator checkout: reported to the surface above, never `git checkout`ed or reset. It also never `launchctl load/unload`s an agent and never deletes anything outside a confirmed-merged branch or a confirmed-leaked worktree.
+
 ### Pending decisions surface
 
 Backstop for the live rule in `claude/CLAUDE.md` § Unattended pending-decisions surface. The live rule says: when a `batch-at-ritual` question (`build` Step 1.5, `build` Step 4b queue-stall, `assess` Step 6, this command's stale-claim sweep, `sweep` Step 2 leave-all-flagged) is deferred on an **unattended / mini / cron** run, the run takes its safe default AND appends an `### open` entry to the pending-decisions surface (`Context/pipeline - pending decisions.md` in the knowledge store) so the next `check-in` reviews it. This step catches the ones that slipped — an unattended run that defaulted a deferrable decision but never wrote the entry (so `check-in` would never surface it).
