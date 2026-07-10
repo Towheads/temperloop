@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# build.config.machine.sh.example — TEMPLATE for the machine-level override
+# that build.config.sh sources at precedence rung 3 of the six-rung config
+# ladder (temperloop#164/#169 — see ../../../docs/config-precedence.md for
+# the full ladder). This is the HOST-wide rung: it applies to every checkout
+# on the machine that sources build.config.sh, regardless of repo, and
+# outranks every checkout's own untracked build.config.local.sh (rung 4) and
+# every repo's tracked build.config.sh defaults (rung 5/6) — but still loses
+# to an exported env var (rung 2) or a CLI flag (rung 1).
+#
+# Typical use: a shared deploy host (e.g. a mini running a LaunchAgent/cron)
+# that needs ONE override applied across every checkout it runs, without
+# editing each checkout's own gitignored build.config.local.sh separately —
+# or a host-specific knob (a different BUILD_QUOTA_PAUSE_PCT, a different
+# FUNNEL_DRIVE_MODEL) that has nothing to do with any one repo.
+#
+# Install at the default discovery path:
+#   mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/temperloop"
+#   cp workflows/scripts/build/build.config.machine.sh.example \
+#      "${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh"
+#   chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh"  # may hold secrets
+#   # then edit in real values below
+#
+# BUILD_CONFIG_MACHINE overrides the discovery path itself (a test seam /
+# explicit host override), same shape as BUILD_CONFIG_LOCAL for rung 4.
+#
+# Idiom: `: "${VAR:=default}"` (set-only-if-unset), THEN a plain `export VAR`
+# on its own line — never `export VAR="value"` in one step. A plain
+# assignment here would unconditionally beat an exported env var, which is
+# exactly the ladder-order violation this rung exists to avoid (see
+# build.config.sh § Precedence rung 3). The separate `export VAR` line is
+# still required for the value to reach any subprocess a spine script spawns.
+
+# Example: pin every checkout on this host to a specific merge backend
+# regardless of each repo's own tracked default.
+# : "${BUILD_MERGE_BACKEND:=managed}"
+# export BUILD_MERGE_BACKEND
+
+# Example: host-wide funnel driver model override.
+# : "${FUNNEL_DRIVE_MODEL:=claude-sonnet-5}"
+# export FUNNEL_DRIVE_MODEL

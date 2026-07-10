@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
-# build.config.local.sh.example — TEMPLATE for the host-local, gitignored
-# override that build.config.sh sources LAST (foundation #709). Copy to
-# `build.config.local.sh` (same directory) on a host that needs secrets or
-# per-host env. The real file is gitignored, so credentials never commit, and
-# because it is untracked it survives the funnel cron's self-update
-# `git reset --hard origin/main` (which only resets tracked files).
+# build.config.local.sh.example — TEMPLATE for the untracked, gitignored
+# repo-local override that build.config.sh sources at precedence rung 4 of
+# the six-rung config ladder (foundation #709, temperloop#164/#169 — see
+# ../../../docs/config-precedence.md for the full ladder). Copy to
+# `build.config.local.sh` (same directory) on a checkout that needs secrets
+# or per-checkout overrides. The real file is gitignored, so credentials
+# never commit, and because it is untracked it survives the funnel cron's
+# self-update `git reset --hard origin/main` (which only resets tracked
+# files).
 #
 # Primary use: the funnel's Sentry crash-convergence poll credentials, read by
 # /signal-intake (crash-convergence/signal-intake.sh) via funnel-tick.sh Phase 0.
@@ -18,15 +21,24 @@
 #   chmod 600 workflows/scripts/build/build.config.local.sh   # it holds a token
 #   # then edit in the real SENTRY_AUTH_TOKEN below
 #
-# Values MUST be `export`ed so they reach the signal-intake.sh subprocess that
-# funnel-tick.sh spawns (a plain assignment would not cross the process boundary).
+# Idiom: use `: "${VAR:=default}"` (set-only-if-unset), THEN a plain `export
+# VAR` on its own line — never `export VAR="value"` in one step. This file is
+# sourced BEFORE an exported env var would otherwise lose to it, so a plain
+# assignment here would unconditionally win over a real environment override,
+# which is exactly the ladder-order violation this template used to have
+# (see build.config.sh § Precedence rung 4). The separate `export VAR` line
+# is still required so the value reaches the signal-intake.sh subprocess that
+# funnel-tick.sh spawns (a plain assignment would not cross the process
+# boundary even with the `:=` fix).
 
 # ── Sentry crash-convergence poll (foundation #637 / #709) ───────────────────
 # Read-scoped token (org:read, project:read, event:read) from Sentry:
 #   Settings → Account → Auth Tokens, or an org Internal Integration.
-export SENTRY_AUTH_TOKEN="REPLACE_WITH_READ_SCOPED_TOKEN"
-export SENTRY_ORG="your-sentry-org-slug"
-export SENTRY_PROJECT="your-sentry-project-slug"
+: "${SENTRY_AUTH_TOKEN:=REPLACE_WITH_READ_SCOPED_TOKEN}"
+: "${SENTRY_ORG:=your-sentry-org-slug}"
+: "${SENTRY_PROJECT:=your-sentry-project-slug}"
+export SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT
 # Default is https://sentry.io (US region). Override ONLY for a self-hosted
 # Sentry / GlitchTip instance (the vendor-neutral API seam).
-# export SENTRY_BASE_URL="https://sentry.io"
+# : "${SENTRY_BASE_URL:=https://sentry.io}"
+# export SENTRY_BASE_URL

@@ -35,6 +35,31 @@ pull, no overlay action.** Not tagged `BREAKING`.
 
 - Post-merge worktree + branch cleanup in `build` / `sweep` is now idempotent.
   (#179)
+Additive — the D1 config precedence ladder (temperloop#164/#169). **Contract
+surface grows: a new optional machine-conf rung, an existing bug fixed.**
+Deliberately **not** tagged `BREAKING` (nothing existing changes shape).
+
+### Added
+
+- A new **machine conf** rung in `build.config.sh`'s config precedence
+  ladder: an optional `$XDG_CONFIG_HOME/temperloop/build.config.sh`, sourced
+  before any checkout-local override, for a host-wide knob override that
+  applies across every checkout on that host. Template:
+  `workflows/scripts/build/build.config.machine.sh.example`. The full
+  six-rung ladder (CLI flag > env var > machine conf > untracked repo-local
+  conf > tracked repo conf > kernel built-in default) is documented in the
+  new [`docs/config-precedence.md`](docs/config-precedence.md).
+
+### Fixed
+
+- `build.config.local.sh` (and its `.example` template) now use the `:=`
+  set-only-if-unset idiom instead of plain assignments. Previously, because
+  `build.config.sh` sourced it LAST with plain assignments, a value set in
+  `build.config.local.sh` could silently beat an exported environment
+  variable — inverting the intended precedence. Fixed together with
+  reordering `build.config.sh` to source its conf-file rungs before applying
+  its own built-in defaults, so source order now matches precedence order
+  end to end.
 
 ## [0.9.1] - 2026-07-10
 

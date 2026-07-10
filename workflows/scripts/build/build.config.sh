@@ -11,6 +11,85 @@
 # edit the line below.
 #
 # This file is sourced, never executed — it has no CLI and writes nothing.
+#
+# ── The six-rung config PRECEDENCE ladder (temperloop#164/#169) ────────────
+# NOTE: "precedence rung" here is unrelated to the funnel's own "rung-5b" /
+# "rung-5c" driver-tier terminology used later in this file (§ Funnel rung-5b
+# driver / § Funnel rung-5c merge tier below) — same word, two different
+# ladders; this section always says "precedence rung N" to keep them apart.
+#
+# Every knob this file governs resolves through the same precedence ladder,
+# highest to lowest:
+#
+#   1. CLI flag           — a caller's explicit `--flag value` (handled by the
+#                            consuming script before/after sourcing this file;
+#                            out of scope here)
+#   2. env var             — an exported shell value already in the process
+#                            environment when this file is sourced
+#   3. machine conf        — $XDG_CONFIG_HOME/temperloop/build.config.sh (this
+#                            HOST's override, e.g. a mini's LaunchAgent env)
+#   4. untracked repo-local conf — build.config.local.sh, this file's
+#                            gitignored sibling (this CHECKOUT's override,
+#                            e.g. secrets)
+#   5. tracked repo conf   — this file's own `:=` defaults, AS COMMITTED in a
+#                            consuming repo that vendors/edits its own copy
+#   6. kernel built-in default — a matching `:=` fallback hardcoded directly
+#                            into an individual consumer script, for a
+#                            non-vendoring caller that never sources this file
+#                            at all (see e.g. FUNNEL_OPERATOR /
+#                            FUNNEL_MERGE_PENDING_LABEL below — several
+#                            spine scripts already keep one of these)
+#
+# Precedence rungs 5 and 6 are BOTH implemented by `:=` assignments, just in
+# two different places (this file vs. an individual script) — a consuming
+# repo that vendors this file gets rung 5; a script invoked standalone
+# without it falls through to rung 6. Rungs 3 and 4 are sourced BELOW, before
+# rung 5's defaults, so that (per the `:=` idiom) a value they set is already
+# bound by the time rung 5 runs and its own `:=` becomes a no-op for that var
+# — this is what makes source order double as precedence order. Full ladder
+# writeup, and how `boards.conf`'s XDG-then-repo-local discovery is an
+# INSTANCE of this same order: ../../../docs/config-precedence.md.
+#
+# ── Precedence rung 3: machine conf ─────────────────────────────────────────
+# Sourced FIRST (before repo-local and before this file's own defaults) so it
+# outranks both, per the ladder above. Absent file is a silent no-op. The
+# path is overridable via BUILD_CONFIG_MACHINE (a test seam / explicit
+# host override). MUST itself use the `:=` idiom for every var it sets —
+# a plain assignment here would beat an exported env var, the exact bug
+# this ladder fixes for build.config.local.sh below. Template:
+# build.config.machine.sh.example (copy to the path below on the host).
+: "${BUILD_CONFIG_MACHINE:=${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh}"
+if [ -f "$BUILD_CONFIG_MACHINE" ]; then
+  # shellcheck source=/dev/null
+  . "$BUILD_CONFIG_MACHINE"
+fi
+
+# ── Precedence rung 4: untracked repo-local conf (secrets / per-checkout override; #709) ──
+# Source an OPTIONAL, gitignored sibling `build.config.local.sh` for
+# checkout-local secrets and overrides that must NOT be committed — e.g. the
+# funnel's Sentry poll credentials (SENTRY_AUTH_TOKEN / SENTRY_ORG /
+# SENTRY_PROJECT) that /signal-intake reads via funnel-tick.sh Phase 0.
+# Sourced here, BEFORE this file's own `:=` defaults below, so it outranks
+# them — but AFTER precedence rung 3 (machine conf) above, so machine conf
+# still wins. An absent file is a silent no-op (never fatal), and being untracked it
+# survives the funnel cron's self-update `git reset --hard`. The path is
+# overridable via BUILD_CONFIG_LOCAL (a test seam that also lets a host point
+# elsewhere). MUST itself use the `:=` idiom for every var it sets — a plain
+# assignment here would unconditionally win over an exported env var, which
+# is precisely the ladder-order violation this file used to have (it sourced
+# this file LAST, with plain assignments, so a local.sh value could beat an
+# env export). Template + mini install: build.config.local.sh.example.
+: "${BUILD_CONFIG_LOCAL:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.config.local.sh}"
+if [ -f "$BUILD_CONFIG_LOCAL" ]; then
+  # shellcheck source=/dev/null
+  . "$BUILD_CONFIG_LOCAL"
+fi
+
+# ── Precedence rung 5 / 6: tracked repo conf / kernel built-in defaults ─────
+# Everything below is this file's own `:=` default set. It runs LAST, after
+# precedence rungs 3 and 4 above, so any var they already bound is left
+# untouched (its `:=` here is a no-op) — only a var still unset at this point
+# takes the value below.
 
 # ── 5-hour quota gate (#447) ────────────────────────────────────────────────
 # After each level (build) / each fix (sweep), the run checks the
@@ -67,7 +146,7 @@
 # FUNNEL_MERGE_PENDING_LABEL does; this file is the SOURCE OF TRUTH. `gh` wants
 # the bare login, so the leading @ is stripped at each use site. The placeholder
 # below MUST be overridden — set the real value in the gitignored
-# build.config.local.sh (§ Host-local override below), never here.
+# build.config.local.sh (§ Precedence rung 4 above), never here.
 : "${FUNNEL_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
 
 # Required CI gate name a PR must clear to merge (foundation #665). Every build
@@ -167,8 +246,8 @@
 # through it, e.g. parse_run_status.py's find_knowledge_store_root()) resolves
 # the SAME value a caller reading `~/dev/mind` directly used to hardcode,
 # without any of them repeating the literal. A real environment override (a
-# shell export, `.env`, or build.config.local.sh below) still wins per the
-# `:=` idiom.
+# shell export, `.env`, machine conf, or build.config.local.sh — both sourced
+# above) still wins per the `:=` idiom.
 : "${KNOWLEDGE_STORE_ROOT:=$HOME/dev/mind}"
 
 # ── Funnel label provisioning (a repo-onboarding prerequisite) ───────────────
@@ -190,18 +269,3 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
        FUNNEL_MERGE_PENDING_LABEL FUNNEL_CLARIFIED_MARKER FUNNEL_ESCALATED_LABEL \
        KNOWLEDGE_STORE_ROOT
-
-# ── Host-local override (secrets / per-host env; #709) ───────────────────────
-# Source an OPTIONAL, gitignored sibling `build.config.local.sh` for host-local
-# secrets and per-host overrides that must NOT be committed — e.g. the funnel's
-# Sentry poll credentials (SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT) that
-# /signal-intake reads via funnel-tick.sh Phase 0. Sourced LAST so it wins over
-# the defaults above; an absent file is a silent no-op (never fatal), and being
-# untracked it survives the funnel cron's self-update `git reset --hard`. The
-# path is overridable via BUILD_CONFIG_LOCAL (a test seam that also lets a host
-# point elsewhere). Template + mini install: build.config.local.sh.example.
-: "${BUILD_CONFIG_LOCAL:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.config.local.sh}"
-if [ -f "$BUILD_CONFIG_LOCAL" ]; then
-  # shellcheck source=/dev/null
-  . "$BUILD_CONFIG_LOCAL"
-fi
