@@ -231,6 +231,22 @@ kernel docs/failure-modes/*
 kernel docs/CONTRIBUTING.md
 kernel docs/managed-merge-queue.md
 kernel docs/config-precedence.md
+
+# Epic #147 "docs site" pre-claims (manifest-preclaims item, K#147): seeds
+# globs for every documentation path the epic's sibling L1 items will create,
+# so those six parallel doc items never collide editing this manifest
+# themselves. Globs matching zero tracked files today are legal and inert —
+# check-kernel-manifest.sh only classifies tracked files — until the docs
+# land. All kernel: a stranger's fresh install needs the docs site, its
+# feature/ADR pages, and the two root reference files (AGENTS.md, llms.txt)
+# same as any other kernel content.
+kernel docs/features/*
+kernel docs/adr/*
+kernel docs/architecture.md
+kernel docs/principles.md
+kernel docs/who-its-for.md
+kernel AGENTS.md
+kernel llms.txt
 overlay workflows/scripts/crash-convergence/*
 overlay workflows/scripts/sessions/*
 overlay workflows/scripts/validators/*
