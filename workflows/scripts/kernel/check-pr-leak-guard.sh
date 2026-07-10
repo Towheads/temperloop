@@ -34,7 +34,7 @@
 #      (tests/test_check_pr_leak_guard.sh) regardless of base.
 #
 # Usage:
-#   check-pr-leak-guard.sh [--base REF] [--head REF] [--path PATHSPEC ...]
+#   check-pr-leak-guard.sh [--base REF] [--head REF] [--path PATHSPEC ...] [--relative]
 #
 # Env overrides (also the test seams):
 #   LEAK_GUARD_BASE            base ref/sha to diff against (see resolution)
@@ -45,6 +45,11 @@
 #                              covers only the vendored subtree that round-trips to
 #                              the public kernel — overlay-private files, which
 #                              legitimately carry org/personal tokens, are excluded.
+#   LEAK_GUARD_RELATIVE        non-empty (or --relative) → `git diff --relative`,
+#                              limiting the scan to $ROOT's subtree AND emitting
+#                              $ROOT-relative paths. An OVERLAY sets this so paths
+#                              come back kernel-root-relative and match the shared
+#                              exempt list; at the kernel repo root it is a no-op.
 #   KERNEL_MANIFEST_ROOT       repo root (default: git toplevel of this script)
 #   KERNEL_DENYLIST_FILE       deny-pattern tsv (default: sibling)
 #   KERNEL_DENYLIST_EXEMPT_FILE  file-level exemptions (default: sibling)
@@ -75,11 +80,22 @@ HEAD="$LEAK_GUARD_HEAD"
 PATHS=()
 if [[ -n "${LEAK_GUARD_PATHS:-}" ]]; then read -r -a PATHS <<<"$LEAK_GUARD_PATHS"; fi
 
+# --relative / LEAK_GUARD_RELATIVE: run `git diff --relative` so the scan is
+# limited to $ROOT's subtree AND emits paths RELATIVE to $ROOT. In an OVERLAY,
+# $ROOT is the vendored kernel/ subtree (a subdir of the overlay repo), so this
+# both scopes to kernel/ and makes the reported paths kernel-root-relative — the
+# form the shared exempt list (personal-token-denylist-exempt-files.txt, one
+# git-relative path per line) is written in, so exemptions match exactly as in the
+# kernel repo's own CI. At the kernel repo root (temperloop) $ROOT IS the toplevel,
+# so --relative is a no-op there — public-repo whole-tree behavior is unchanged.
+RELATIVE="${LEAK_GUARD_RELATIVE:-}"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
     --head) HEAD="$2"; shift 2 ;;
     --path) PATHS+=("$2"); shift 2 ;;
+    --relative) RELATIVE=1; shift ;;
     *) echo "check-pr-leak-guard: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -165,10 +181,13 @@ _is_exempt() {
 # dropped here so BOTH halves (personal + secrets) honour the exemption.
 # A pathspec scope (PATHS) restricts the scan to the vendored subtree in an
 # overlay; empty = whole tree. The `--` guards against a path that looks like a rev.
+# --relative (RELATIVE) limits to $ROOT's subtree and emits $ROOT-relative paths.
+diff_opts=(--no-color --unified=0)
+[[ -n "$RELATIVE" ]] && diff_opts+=(--relative)
 if [[ ${#PATHS[@]} -gt 0 ]]; then
-  DIFF_RAW="$(git -C "$ROOT" diff --no-color --unified=0 "$DIFF_RANGE" -- "${PATHS[@]}" 2>/dev/null || true)"
+  DIFF_RAW="$(git -C "$ROOT" diff "${diff_opts[@]}" "$DIFF_RANGE" -- "${PATHS[@]}" 2>/dev/null || true)"
 else
-  DIFF_RAW="$(git -C "$ROOT" diff --no-color --unified=0 "$DIFF_RANGE" 2>/dev/null || true)"
+  DIFF_RAW="$(git -C "$ROOT" diff "${diff_opts[@]}" "$DIFF_RANGE" 2>/dev/null || true)"
 fi
 
 TMP_ADDED="$(mktemp "${TMPDIR:-/tmp}/leak-guard-added.XXXXXX")"

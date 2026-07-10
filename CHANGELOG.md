@@ -14,9 +14,12 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
-Additive — the D1 config precedence ladder (temperloop#164/#169). **Contract
-surface grows: a new optional machine-conf rung, an existing bug fixed.**
-Deliberately **not** tagged `BREAKING` (nothing existing changes shape).
+## [0.10.0] - 2026-07-10
+
+Additive — a config-precedence ladder, env/prose-knob seams, an env-hygiene
+probe, and the overlay integration for the public-repo leak guard. **Contract
+surface grows; nothing existing changes shape — safe pull, no overlay action.**
+Deliberately **not** tagged `BREAKING`.
 
 ### Added
 
@@ -27,7 +30,14 @@ Deliberately **not** tagged `BREAKING` (nothing existing changes shape).
   `workflows/scripts/build/build.config.machine.sh.example`. The full
   six-rung ladder (CLI flag > env var > machine conf > untracked repo-local
   conf > tracked repo conf > kernel built-in default) is documented in the
-  new [`docs/config-precedence.md`](docs/config-precedence.md).
+  new [`docs/config-precedence.md`](docs/config-precedence.md). (#192)
+- An **env-hygiene-report** probe that emits a vault drift-entry. (#196)
+- Runtime + compose-time **seams for prose-resident knobs**. (#193)
+
+### Changed
+
+- Generalized the stranger-cleanliness denylist and retired the `CANONICAL_USER`
+  seam. (#195)
 
 - The **kernel knob registry** (temperloop#164/#169, design decision D2): a
   new grep/cut-parseable `workflows/scripts/config/knob-registry.tsv`
@@ -50,5 +60,13 @@ Deliberately **not** tagged `BREAKING` (nothing existing changes shape).
   variable — inverting the intended precedence. Fixed together with
   reordering `build.config.sh` to source its conf-file rungs before applying
   its own built-in defaults, so source order now matches precedence order
-  end to end.
+  end to end. (#192)
+- `check-pr-leak-guard.sh` gains a `--relative` / `LEAK_GUARD_RELATIVE` mode: a
+  private overlay vendoring the guard scans only its `kernel/` subtree **and**
+  emits kernel-root-relative paths, so the shared exempt list matches and the
+  guard no longer false-positives on the kernel's own denylist tsv / test
+  fixtures (which legitimately carry the token literals). Whole-tree behavior at
+  the kernel repo root is unchanged (`--relative` is a no-op there). Completes
+  the overlay integration begun with the `--path` scope in 0.9.2. (#74)
+- Sweep merged/orphaned worktrees at session start. (#197)
 

@@ -237,4 +237,37 @@ fi
 echo "PASS: 8 --path/LEAK_GUARD_PATHS scopes the scan to the vendored subtree (out-of-scope ignored, in-scope caught)"
 git -C "$REPO" -c core.hooksPath=/dev/null reset -q --hard "$BASE_SHA"
 
+# --- 9: --relative — subtree scope + subtree-RELATIVE paths (overlay exempt match) --
+# The overlay case: run the guard with ROOT set to a SUBDIR (the vendored kernel/)
+# and --relative. Then (a) the scan is limited to that subdir, and (b) paths come
+# back subdir-relative — so an exempt list written subdir-relative (as the kernel's
+# own is) matches, exactly as in the kernel repo's CI. Without --relative the paths
+# carry the subdir prefix and the same exempt entry does NOT match.
+git -C "$REPO" -c core.hooksPath=/dev/null checkout -q -B rel-mode "$BASE_SHA"
+mkdir -p "$REPO/sub"
+{ echo clean > "$REPO/sub/keep.txt"; echo clean > "$REPO/outside.txt"; }
+commit "rel-mode fixture dirs"
+REL_BASE="$(git -C "$REPO" rev-parse HEAD)"
+echo "org = $LEAK_ORG" > "$REPO/sub/leak.env"       # token INSIDE the subtree
+echo "org = $LEAK_ORG" > "$REPO/outside.env"        # token OUTSIDE the subtree
+commit "tokens inside and outside sub/"
+REL_EXEMPT="$WORK/rel-exempt.txt"; echo "leak.env" > "$REL_EXEMPT"   # subtree-relative
+# 9a: --relative, ROOT=sub/ -> scoped to sub/ (outside excluded), path 'leak.env'
+#     matches the subtree-relative exempt -> PASS (no violations).
+if ! env KERNEL_MANIFEST_ROOT="$REPO/sub" KERNEL_DENYLIST_EXEMPT_FILE="$REL_EXEMPT" \
+        LEAK_GUARD_BASE="$REL_BASE" LEAK_GUARD_SKIP_SECRETS=1 LEAK_GUARD_RELATIVE=1 \
+        bash "$GUARD" >/dev/null 2>&1; then
+  fail "9a: --relative must scope to sub/ AND exempt the subtree-relative 'leak.env'"
+fi
+# 9b: WITHOUT --relative (ROOT=repo, whole tree), the path is 'sub/leak.env', which
+#     the subtree-relative exempt 'leak.env' does NOT match -> the token is caught.
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$REL_EXEMPT" \
+       LEAK_GUARD_BASE="$REL_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
+       bash "$GUARD" >/dev/null 2>&1; then
+  fail "9b: without --relative, a subtree-relative exempt entry must NOT match the prefixed path"
+fi
+echo "PASS: 9 --relative scopes to the subtree + yields subtree-relative paths (overlay exempt list matches)"
+git -C "$REPO" -c core.hooksPath=/dev/null checkout -q main 2>/dev/null || git -C "$REPO" -c core.hooksPath=/dev/null checkout -q "$BASE_SHA"
+git -C "$REPO" -c core.hooksPath=/dev/null reset -q --hard "$BASE_SHA"
+
 echo "PASS: all check-pr-leak-guard.sh fixture tests"
