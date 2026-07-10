@@ -128,7 +128,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # WIP cap for the autonomous lane. Per the pilot decision: KEEP WIP-3 (prove the
 # loop safe before raising throughput). This is surfaced, not enforced here —
-# the cap is INHERITED from /build's claim-first gate, not re-embedded.
+# the cap is INHERITED from /build's claim-first gate, not re-embedded. SOURCE
+# OF TRUTH is build.config.sh (sourced above), which also feeds the rendered
+# "WIP cap = {{WIP_CAP}}" prose in claude/CLAUDE.kernel.md (temperloop#183) —
+# this `:=` is only the non-vendoring-checkout fallback.
 : "${FUNNEL_WIP_CAP:=3}"
 
 # Per-tick DRIVE CAP (#642): how many Operational drive-ready items this tick may

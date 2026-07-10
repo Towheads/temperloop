@@ -18,7 +18,9 @@
 # Composition, in order:
 #   1. a generated-file banner (naming both sources — never hand-edit the
 #      target; edit the sources and re-run `make install-claude`)
-#   2. the kernel doc, verbatim
+#   2. the kernel doc, with any `{{KNOB_NAME}}` placeholder tokens it contains
+#      substituted for a value resolved from config (see "Prose-resident knob
+#      rendering" below) — otherwise verbatim
 #   3. a rendered "## Knowledge store routing" section (see below)
 #   4. the overlay doc, verbatim
 #
@@ -60,6 +62,41 @@ target="${3:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}
 foundation="$(cd "$(dirname "$kernel")/.." && pwd)"
 build_config="${foundation}/workflows/scripts/build/build.config.sh"
 ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
+
+# ---------------------------------------------------------------------------
+# ── Prose-resident knob rendering (temperloop#183, D3's "CLAUDE.md-resident
+#    knob" seam — claude/CLAUDE.kernel.md § Prose-resident knob convention) ──
+# A knob embedded in this file's own standing-rules prose (e.g. the WIP cap)
+# has no Step-0 to source a config file from — the doc is read passively by
+# the agent, never executed — so it is rendered here instead, at compose
+# time, into a `{{KNOB_NAME}}` placeholder token the kernel doc's own text
+# carries. SAME mechanism as § Knowledge store routing below (resolve a
+# value from build.config.sh in an isolated subshell, then substitute it into
+# the composed output) — this is one more resolved value fed through that
+# existing render pass, not a second templating engine.
+#
+# render_kernel_doc <kernel-file> — prints the kernel doc's content with every
+# known `{{KNOB_NAME}}` token substituted; unmatched tokens are left as-is
+# (surfacing a missing wiring loudly rather than silently blanking the knob).
+# ---------------------------------------------------------------------------
+render_kernel_doc() {
+  local kernel_file="$1" content wip_cap
+
+  wip_cap=""
+  if [ -f "$build_config" ]; then
+    wip_cap="$(
+      set -e
+      # shellcheck source=/dev/null
+      source "$build_config"
+      printf '%s\n' "$FUNNEL_WIP_CAP"
+    )" || wip_cap=""
+  fi
+  [ -n "$wip_cap" ] || wip_cap=3   # build.config.sh's own default, if unresolved
+
+  content="$(cat "$kernel_file")"
+  content="${content//\{\{WIP_CAP\}\}/$wip_cap}"
+  printf '%s' "$content"
+}
 
 # ---------------------------------------------------------------------------
 # render_knowledge_routing — prints the "## Knowledge store routing" section.
@@ -117,7 +154,7 @@ trap 'rm -f "$tmp"' EXIT
   # shellcheck disable=SC2016  # literal markdown backticks, not expansion
   printf '     `make install-claude`. See workflows/scripts/install-claude-md.sh. -->\n'
   printf '\n'
-  cat "$kernel"
+  render_kernel_doc "$kernel"
   printf '\n'
   render_knowledge_routing
   printf '\n'

@@ -7,8 +7,10 @@ generic process rules a stranger's fresh install of the open-source kernel repo 
 need. Its sibling `claude/CLAUDE.overlay.md` carries everything personal/org/machine-
 specific (Travis's Obsidian vault, session-log hooks, personal decision-capture rules,
 personal paths and boards). `make install-claude` composes both (plus a rendered
-knowledge-store-routing section, see below) into the single installed
-`~/.claude/CLAUDE.md` — see `workflows/scripts/install-claude-md.sh`.
+knowledge-store-routing section, and any `{{KNOB_NAME}}` placeholder tokens this
+kernel doc's own prose contains — § Prose-resident knob convention below) into
+the single installed `~/.claude/CLAUDE.md` — see
+`workflows/scripts/install-claude-md.sh`.
 
 Routing test for **where a new rule belongs**, applied when adding or editing a rule:
 
@@ -55,6 +57,44 @@ Corollaries:
 ## Live/Drain pairing
 
 When adding or modifying a real-time extraction rule (e.g. decision capture, config-drift detection, feedback memory, session optimization tracking), also add the corresponding backstop in `~/.claude/commands/tidy.md` Step 3 **in the same change** and register the pair in a registry table. There are two: `tidy.md`'s own top-of-file table is the **single source of truth for KERNEL pairs** (generic enough that a stranger's kernel-only checkout needs them backstopped too); a composed/overlay checkout additionally carries `claude/live-drain-registry.overlay.md`, the **overlay extension table**, for pairs whose live half is a personal/vault-backed rule with no meaning in a standalone kernel checkout. Route a new pair by that test. The two halves of a pair (live + drain) are a single feature with two surfaces — never ship only one. `foundation/workflows/scripts/validate-live-drain.sh` parses the kernel table always, and unions in the overlay extension table when present, in CI (the `checks` gate) — it **fails the build if any pair, in either table, is half-present**, so a live rule shipped without its drain backstop (or vice versa) is caught mechanically, not by review. See [[Patterns/Live-Drain pairing]] for rationale and edge cases.
+
+## Prose-resident knob convention
+
+A command spec (`claude/commands/*.md`) is AI-executed prose, not a program — a
+tunable value (a poll cadence, a cap, a window) embedded directly in that prose
+can only be changed by a model re-reading and re-editing the spec text itself.
+The rule (D3, temperloop#164/#169/#183): **prose names a knob, never states
+its value.** Two sites, two
+render times, because a command spec executes at run time but a standing-rules
+doc like this one never executes at all:
+
+- **Command-spec knobs (runtime).** A command spec's early "Step 0" sources a
+  config script — the existing convention is `source
+  workflows/scripts/build/build.config.sh` (bare repo-relative, matching the
+  build-spine scripts), which is the ONE place a batch-pipeline knob's default
+  lives (see that file's own header). Every later prose reference in the spec
+  then names the knob symbolically (`$KNOB_NAME`, or the belt-and-suspenders
+  `${KNOB_NAME:-default}` form for a consuming repo that doesn't vendor the
+  config file) instead of restating its value inline. `claude/commands/build.md`
+  Step 0 item 6 is the worked example — it sources `build.config.sh` once,
+  early, and every later knob reference in that spec (`BUILD_MERGE_GATE_WINDOW`,
+  `BUILD_QUOTA_PAUSE_PCT`, etc.) is symbolic from that point on, never a bare
+  literal. A new command spec with a tunable value follows the same shape:
+  source the config file at Step 0, reference `$KNOB_NAME` everywhere after.
+- **CLAUDE.md-resident knobs (compose time).** A knob inside a standing rule in
+  this file (e.g. the WIP cap below) has no Step 0 to source from — the doc is
+  read passively, never executed — so it renders at **compose time** instead,
+  through the same seam `install-claude-md.sh` already uses to render its
+  "## Knowledge store routing" section (§ Kernel vs overlay routing rule
+  above): the script resolves the value from `build.config.sh` and substitutes
+  it into a `{{KNOB_NAME}}` placeholder token in the kernel doc's own text
+  before writing the composed file. No new templating engine — one more
+  config value resolved into the same render pass.
+
+Both halves migrate the kernel's remaining prose-embedded tunables
+incrementally (temperloop#183 establishes the two seams; a later item migrates
+the rest of the fleet) — an un-migrated literal elsewhere in this repo's prose
+is a known gap, not a contract violation of this rule.
 
 ## Trust confirmed state
 
@@ -159,7 +199,7 @@ This section governs **board-enabled projects** — those with a GitHub Projects
 
 **Claim first — before you investigate.** The board is a cross-session lock, so the claim is the *first* action when an item enters In Progress — the user names an item, or you pull a Ready one. Claim **before** reading the issue in depth, exploring code, or reading vault notes: investigation and planning are themselves the duplicate-able work the lock protects, so claiming after them reopens the race a second session can double-pull through. A wrongful claim is cheap to undo (park it back to Ready per "Park, don't abandon"); claim-then-verify beats verify-then-claim.
 
-**WIP cap = 3 (per board).** At most three items In Progress at once on a given board — a deliberate bound on parallelism, not WIP-1. To take a fourth, first finish or park one.
+**WIP cap = {{WIP_CAP}} (per board).** At most {{WIP_CAP}} items In Progress at once on a given board — a deliberate bound on parallelism, not WIP-1. To take a fourth, first finish or park one. (`{{WIP_CAP}}` is rendered at compose time from `FUNNEL_WIP_CAP` in `workflows/scripts/build/build.config.sh` — the same knob the autonomous funnel driver's WIP cap reads, so the two never drift — by `workflows/scripts/install-claude-md.sh`; see § Prose-resident knob convention above. Edit the config, never this literal.)
 
 **Session-start ritual.** On a board-enabled project, before any work, list the In-Progress set (via the adapter's `worklist`) and ask which to resume — don't pick for the user, and don't start new work until they answer.
 

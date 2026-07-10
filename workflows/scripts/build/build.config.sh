@@ -36,6 +36,16 @@
 : "${BUILD_MERGE_GATE_WINDOW:=300}"   # timed merge-gate window (s); 0 = always modal
 : "${BUILD_QUEUE_TIMEOUT:=1800}"      # per-PR native-merge-queue timeout (s)
 
+# Board WIP cap (temperloop#183, the D3 "CLAUDE.md-resident knob" demonstration
+# knob): at most this many items In Progress at once, per board. SOURCE OF TRUTH
+# for TWO consumers that must never drift apart — funnel-tick.sh's autonomous-lane
+# cap (which is explicitly INHERITED from this policy, not re-embedded — see that
+# file's own comment) and the "WIP cap = {{WIP_CAP}}" prose in
+# claude/CLAUDE.kernel.md's Task-workflow section, rendered into place at compose
+# time by workflows/scripts/install-claude-md.sh (§ Prose-resident knob convention
+# in that doc). Change the pilot's WIP bound here, once, and both follow.
+: "${FUNNEL_WIP_CAP:=3}"
+
 # Merge-backend SELECTION (temperloop#13): a free personal repo can't always
 # provision GitHub's native merge queue, so `gate.sh backend` chooses NATIVE
 # vs MANAGED. "auto" probes the repo's branch ruleset for a `merge_queue` rule
@@ -184,7 +194,7 @@
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND \
+       BUILD_MERGE_BACKEND FUNNEL_WIP_CAP \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
