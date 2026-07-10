@@ -135,7 +135,7 @@ dur_ms=$(( end_ms - start_ms ))
   args_clean="$(printf '%s' "$*" | tr '\t\n' '  ')"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$start_ms" "$dur_ms" "$code" "$$" "$PPID" \
-    "$tool" "${GH_CALL_CONTEXT:-}" "${GH_CALL_OP:-}" "$PWD" "$args_clean" >>"$LOG"
+    "$tool" "${GH_CALL_CONTEXT:-}" "${GH_CALL_OP:-}" "$PWD" "$args_clean" >>"$LOG"  # knob:exempt — GH_CALL_OP is a per-call attribution tag, not a static operator default
 } 2>/dev/null || true
 
 exit "$code"

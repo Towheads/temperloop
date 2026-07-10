@@ -102,7 +102,7 @@ USER_TURNS=$(jq -r '
   | select(length > 0)
 ' "$TRANSCRIPT" 2>/dev/null | grep -c . || true)
 
-if [ "${USER_TURNS:-0}" -lt 1 ]; then
+if [ "${USER_TURNS:-0}" -lt 1 ]; then  # knob:exempt — USER_TURNS is a computed jq-derived count, not an operator default
   exit 0
 fi
 

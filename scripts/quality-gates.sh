@@ -135,6 +135,23 @@ KERNEL_GATES=(
   # form as the knowledge_search gates above (new workflows/scripts/<dir>
   # lib, no Makefile target needed — the kernel Makefile is generator-owned).
   "bash workflows/scripts/config/tests/test_knob_registry.sh"
+  # Registry-driven config lints (temperloop#164/#169, item
+  # registry-config-lints, D2/D3). Two live lints + their fixture suites,
+  # mirroring test-kernel-denylist's live-check-then-fixture-tests shape as
+  # direct `bash` gates (kernel Makefile is generator-owned, same as the
+  # knob-registry gate above):
+  #   - check-knob-registry.sh: layer-aware registry↔shell equality lint +
+  #     unregistered-knob sweep. NO baseline — strictly green on the
+  #     committed tree by construction (the registry records the literals
+  #     verbatim); a red run is real drift or a missing registry row.
+  #   - check-knob-prose.sh: D3 "prose names knobs, never values" lint over
+  #     claude/commands/*.md + claude/CLAUDE.kernel.md, with the
+  #     <!-- knob-prose:allow --> marker and a burn-down baseline
+  #     (knob-prose-baseline.tsv) the prose-tunables-migration item empties.
+  "bash workflows/scripts/config/check-knob-registry.sh"
+  "bash workflows/scripts/config/tests/test_check_knob_registry.sh"
+  "bash workflows/scripts/config/check-knob-prose.sh"
+  "bash workflows/scripts/config/tests/test_check_knob_prose.sh"
   "make test-scan-stub"
   # Vault-hygiene probe (foundation #959): fixture-vault suite for
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
