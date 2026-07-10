@@ -248,6 +248,7 @@ overlay workflows/scripts/tests/test_session_start_reconcile.sh
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
 kernel workflows/scripts/emit-command-run.sh
+kernel workflows/scripts/env-hygiene-report.sh
 kernel workflows/scripts/emit-gh-perf.sh
 kernel workflows/scripts/emit-issue-touch.sh
 kernel workflows/scripts/gh-call-logger.sh

@@ -135,6 +135,13 @@ KERNEL_GATES=(
   # Recent-findings tally (foundation #960): the drain "Recurrence → promotion"
   # heredoc extracted to drain/tally_recent_findings.py — fixture-seeded, hermetic.
   "make test-tally-findings"
+  # env-hygiene-report wrapper (temperloop#176, epic #168 L2): the thin
+  # passthrough over env-reconcile.sh --format entry that /tidy's forthcoming
+  # § Environment hygiene step (temperloop#177) will invoke — the environment
+  # counterpart to the vault-hygiene gate above. Hermetic (throwaway git repos,
+  # stubbed gh/launchctl on PATH, no network); also covers the
+  # env-reconcile.sh-missing and not-executable fail-open paths.
+  "make test-env-hygiene-report"
   "make lint-pr-body-test"
   "make test-stranger-config"
   # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite
