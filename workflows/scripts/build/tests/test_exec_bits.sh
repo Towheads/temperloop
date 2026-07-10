@@ -24,6 +24,7 @@ REPO_ROOT="$(git -C "$BUILD_DIR" rev-parse --show-toplevel)"
 # scripts stay off this list and are required-executable by default.
 SOURCED_ONLY=(
   "build.config.sh"
+  "merged-detect.sh"   # lib/ helper, `. sourced` by worktree.sh prune + env-reconcile.sh — never run by bare path
 )
 
 is_sourced_only() {
