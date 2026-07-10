@@ -91,4 +91,19 @@ HOME="$FAKEHOME" bash "$SCRIPT" "$tracked" "$target"
 diff -q "$TMP/second-first.json" "$target" >/dev/null || fail "8: path-rendered reconcile is not idempotent"
 echo "PASS: path rendering is idempotent under a fake \$HOME"
 
-echo "PASS: install-settings.sh reconciles settings.json keeping model machine-local while propagating every other field from the tracked template (#292), and renders every canonical-user path from \$HOME at install time (#773)"
+# --- 9. path rendering is username-generic, not hardcoded to "travis" --------
+# (temperloop#164/#169: CANONICAL_USER retired) A template authored under a
+# DIFFERENT /Users/<name> than the historical canonical one must still
+# render from the real $HOME — proving the sed pattern matches ANY
+# /Users/<user> structurally, with no personal username literal left in the
+# script itself.
+OTHERHOME="$TMP/fakehome-other-user-test"
+mkdir -p "$OTHERHOME"
+printf '{"model":"opus","hooks":{"h":"/Users/someoneelse/.claude/hooks/x.sh"}}' >"$tracked"
+rm -f "$target"
+HOME="$OTHERHOME" bash "$SCRIPT" "$tracked" "$target"
+! grep -q '/Users/someoneelse' "$target" || fail "9: rendered output must not contain a literal /Users/<other-user> path"
+[ "$(jq -r '.hooks.h' "$target")" = "$OTHERHOME/.claude/hooks/x.sh" ] || fail "9: hook path must derive from \$HOME regardless of which username the template was authored under"
+echo "PASS: path rendering is username-generic (no hardcoded canonical-user literal)"
+
+echo "PASS: install-settings.sh reconciles settings.json keeping model machine-local while propagating every other field from the tracked template (#292), and renders every /Users/<user> path from \$HOME at install time, generically, with no hardcoded username (#773, temperloop#164/#169)"

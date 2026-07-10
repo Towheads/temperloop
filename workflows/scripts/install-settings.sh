@@ -21,13 +21,21 @@
 # machine (no local file yet) and is preserved-over by whatever the machine later
 # selects. Idempotent: re-running reconciles to the same result.
 #
-# PATH RENDERING (foundation #773, kernel-readiness): the tracked template
-# hardcodes the canonical dev machine's absolute paths (e.g.
-# `/Users/<canonical-user>/.claude/hooks/*.sh`), matching the same CANONICAL_USER-sed
-# convention already used by the infra/launchd/install-*.sh plist installers.
-# This script sed-patches every such literal to derive from the ACTUAL `$HOME`
-# at render time, so the rendered settings.json never carries a hardcoded
-# machine path on any checkout/user other than the canonical one.
+# PATH RENDERING (foundation #773, kernel-readiness; generalized temperloop
+# #164/#169): the tracked template hardcodes the maintainer dev machine's
+# absolute paths (e.g. `/Users/<some-user>/.claude/hooks/*.sh`). This script
+# sed-patches every such literal to derive from the ACTUAL `$HOME` at render
+# time, so the rendered settings.json never carries a hardcoded machine path
+# on any checkout/user other than the one the template happened to be
+# authored on.
+#
+# No hardcoded username constant: the sed pattern matches ANY `/Users/<name>`
+# path structurally (one path-segment username, `[^/"[:space:]]+`) rather
+# than a specific literal — so this script names no personal identity at
+# all, and needs no denylist exemption for one. It renders correctly for the
+# machine the template WAS authored on (that literal is one of the ones the
+# generic pattern matches, same as any other) and for any other `$HOME` a
+# stranger's checkout runs under.
 #
 #   install-settings.sh <tracked-settings.json> <target-path>
 set -euo pipefail
@@ -35,9 +43,6 @@ set -euo pipefail
 tracked="${1:?usage: install-settings.sh <tracked-settings.json> <target-path>}"
 target="${2:?usage: install-settings.sh <tracked-settings.json> <target-path>}"
 [ -f "$tracked" ] || { echo "install-settings: tracked file not found: $tracked" >&2; exit 1; }
-
-# Canonical dev-machine user baked into the tracked template's literal paths.
-CANONICAL_USER="travis"
 
 # Preserve the local model if a settings file already exists. `[ -e ]` is false for
 # a broken symlink, so also test `[ -L ]`. On the very first run the target is still
@@ -57,10 +62,11 @@ else
   jq '.' "$tracked" >"$tmp"
 fi
 
-# Rewrite every literal canonical-user path to the ACTUAL $HOME so the rendered
-# output never carries a hardcoded machine path (foundation #773). A no-op when
-# $HOME already is /Users/$CANONICAL_USER (the canonical machine itself).
-sed "s|/Users/$CANONICAL_USER|$HOME|g" "$tmp" >"$tmp_rendered"
+# Rewrite every literal /Users/<user> path to the ACTUAL $HOME so the rendered
+# output never carries a hardcoded machine path (foundation #773). Matches the
+# username structurally (no specific name baked in) — a no-op when $HOME
+# already IS /Users/<that-user> (the machine the template was authored on).
+sed -E "s|/Users/[^/\"[:space:]]+|$HOME|g" "$tmp" >"$tmp_rendered"
 
 # Replace as a REAL file — drop any prior symlink first so the move can't write
 # through it back into the tracked source.

@@ -55,9 +55,12 @@ README.md
 
 # test_install_settings.sh deliberately feeds a literal personal path
 # (/Users/travis/...) as INPUT fixture data to assert install-settings.sh's
-# CANONICAL_USER-sed correctly strips it at install time (the test would be
-# pointless with an already-generic input). Same rationale as the exemptions
-# above: the literal is the test subject, not a leak.
+# generic /Users/<user>-sed correctly strips it at install time (the test
+# would be pointless with an already-generic input; temperloop#164/#169
+# retired the CANONICAL_USER constant this comment used to name — the sed
+# pattern is now username-generic, not tied to any one literal). Same
+# rationale as the exemptions above: the literal is the test subject, not a
+# leak.
 workflows/scripts/tests/test_install_settings.sh
 
 # The PR-leak-guard's OWN fixture test (temperloop #74). To prove the guard
@@ -78,8 +81,14 @@ workflows/scripts/drain/tests/fixtures/sample_stub.md
 workflows/scripts/drain/tests/fixtures/command_expansion_stub.md
 
 # The denylist tooling's OWN data files. personal-token-denylist.tsv's job is
-# to CONTAIN the pattern strings (that's the data, not a leak) and this
-# exempt-files list's own comments cite example paths/patterns for the same
-# documentary reason — both self-match every time they're scanned otherwise.
+# to CONTAIN the pattern strings (that's the data, not a leak), the burn-down
+# baseline's job is to QUOTE each pre-existing offending line verbatim so the
+# checker can match it exactly (temperloop#164/#169 — the debt ledger IS the
+# quoted offenders), and this exempt-files list's own comments cite example
+# paths/patterns for the same documentary reason — all three self-match every
+# time they're scanned otherwise (and the baseline's added lines would trip
+# the diff-scoped PR leak guard, which shares this list, on the very PR that
+# introduces them).
 workflows/scripts/kernel/personal-token-denylist.tsv
+workflows/scripts/kernel/personal-token-denylist-baseline.tsv
 workflows/scripts/kernel/personal-token-denylist-exempt-files.txt
