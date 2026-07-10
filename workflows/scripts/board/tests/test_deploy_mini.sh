@@ -20,7 +20,7 @@ GIT() { git -c user.email=t@t -c user.name=t -c init.defaultBranch=main "$@"; }
 
 # setup_repo <name> <guard:yes|no> — bare origin + a checkout clone (on main, at c1).
 setup_repo() {
-  local name="$1" guard="$2" org="$WORK/$1.git" seed="$WORK/$1.seed" co="$WORK/$1"
+  local guard="$2" org="$WORK/$1.git" seed="$WORK/$1.seed" co="$WORK/$1"
   GIT init -q --bare -b main "$org"
   GIT clone -q "$org" "$seed" 2>/dev/null
   mkdir -p "$seed/scripts/lib"
@@ -42,7 +42,7 @@ run() {
   DEPLOY_MINI_CHECKOUTS="$*" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/run.lock.d" \
     BOARD_CACHE_DIR="$WORK/cache" bash "$DEPLOY"
 }
-behind() { git -C "$1" rev-list --count HEAD..@{u} 2>/dev/null || echo "?"; }
+behind() { git -C "$1" rev-list --count "HEAD..@{u}" 2>/dev/null || echo "?"; }
 
 # --- 1. clean-on-main, behind → fast-forwarded to current --------------------
 setup_repo cleanpull yes; advance cleanpull
@@ -204,4 +204,58 @@ out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-repo
 echo "$out" | grep -q "board 9 (store absent)" || \
   fail "board 9 with no store on disk should report store absent (got: $out)"
 
-echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
+# --- 14. #168: a merged/orphaned <checkout>.wt/* worktree is swept -----------
+# per clean-on-main checkout, deploy-mini also runs worktree.sh prune. A
+# worktree whose branch is a plain ancestor of origin/main (trivially "merged" —
+# zero commits ahead) and clean must be removed; the dir + branch both go away
+# and deploy-mini reports it.
+WTSH="$HERE/../../build/worktree.sh"
+setup_repo wtsweep yes
+bash "$WTSH" create "$WORK/wtsweep" mergedwt >/dev/null \
+  || fail "test setup: worktree.sh create failed"
+[ -d "$WORK/wtsweep.wt/mergedwt" ] || fail "test setup: worktree not created"
+out="$(run "$WORK/wtsweep")" || fail "wtsweep run should exit 0"
+[ ! -e "$WORK/wtsweep.wt/mergedwt" ] || fail "merged worktree must be pruned by deploy-mini"
+GIT -C "$WORK/wtsweep" show-ref --verify --quiet refs/heads/build/mergedwt \
+  && fail "branch build/mergedwt must be removed with the pruned worktree"
+echo "$out" | grep -q "worktree prune: 1 pruned" || fail "should report 'worktree prune: 1 pruned' (got: $out)"
+echo "PASS: #168 a merged/orphaned <checkout>.wt/* worktree is swept by deploy-mini's per-checkout worktree.sh prune"
+
+# --- 15. #168: a dirty or genuinely-unmerged worktree is left intact ---------
+setup_repo wtkeep yes
+bash "$WTSH" create "$WORK/wtkeep" unmergedwt >/dev/null \
+  || fail "test setup: worktree.sh create (unmerged) failed"
+GIT -C "$WORK/wtkeep.wt/unmergedwt" commit -q --allow-empty -m "unlanded work"
+bash "$WTSH" create "$WORK/wtkeep" dirtywt >/dev/null \
+  || fail "test setup: worktree.sh create (dirty) failed"
+echo scratch >"$WORK/wtkeep.wt/dirtywt/junk.txt"
+out="$(run "$WORK/wtkeep")" || fail "wtkeep run should exit 0"
+[ -e "$WORK/wtkeep.wt/unmergedwt" ] || fail "genuinely-unmerged worktree must NOT be pruned"
+[ -e "$WORK/wtkeep.wt/dirtywt" ] || fail "dirty worktree must NOT be pruned (no --force)"
+echo "$out" | grep -q "worktree prune: 1 pruned" && fail "no worktree here should have been pruned (got: $out)"
+echo "PASS: #168 a dirty or genuinely-unmerged worktree is left intact by deploy-mini's worktree sweep"
+
+# --- 16. #168: fail-open — a worktree.sh prune failure never aborts deploy-mini
+# Point $FOUNDATION's worktree.sh lookup at a stub that always fails; deploy-mini
+# must still exit 0 (via the guard-verify step's own outcome) and log the
+# failure rather than abort. Simulated by temporarily shadowing jq (worktree.sh's
+# own hard dependency) off PATH for the run — worktree.sh then emits its ERROR
+# outcome and exits non-zero, which deploy-mini must swallow.
+setup_repo wtfail yes
+bash "$WTSH" create "$WORK/wtfail" somewt >/dev/null \
+  || fail "test setup: worktree.sh create (wtfail) failed"
+FAKEBIN="$WORK/fakebin"; mkdir -p "$FAKEBIN"
+for tool in git grep sed cat printf mktemp basename dirname cut sort uniq tr rm mkdir; do
+  real="$(command -v "$tool" 2>/dev/null)" && ln -sf "$real" "$FAKEBIN/$tool"
+done
+cat >"$FAKEBIN/jq" <<'EOF'
+#!/usr/bin/env bash
+exit 127
+EOF
+chmod +x "$FAKEBIN/jq"
+out="$(PATH="$FAKEBIN:$PATH" run "$WORK/wtfail")" && rc=0 || rc=$?
+[ "$rc" -eq 0 ] || fail "a worktree-prune failure must not abort deploy-mini (rc=$rc, got: $out)"
+echo "$out" | grep -q "worktree prune: FAILED (non-fatal)" || fail "should report the swallowed failure (got: $out)"
+echo "PASS: #168 a worktree.sh prune failure is fail-open — logged, deploy-mini still exits 0"
+
+echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
