@@ -255,6 +255,7 @@ KERNEL_DENYLIST_BASELINE_FILE	$SCRIPT_DIR/personal-token-denylist-baseline.tsv	p
 LEAK_GUARD_HEAD	HEAD	string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as HEAD for the added-lines diff
 LEAK_GUARD_BASE		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as the diff base
 LEAK_GUARD_PATHS		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Space-separated pathspec scope (empty = whole tree)
+LEAK_GUARD_RELATIVE		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Root dir for --relative path reporting (empty = repo toplevel; overlay vendoring sets it to the kernel/ subtree)
 LEAK_GUARD_SKIP_SECRETS	0	bool	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Skip the gitleaks secrets-scan half of the guard
 GITLEAKS_BIN		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Use this gitleaks binary verbatim instead of resolving one
 CHECK_PRODUCER_EGRESS_KERNEL_ROOT	$(cd "$SCRIPT_DIR/../../.." && pwd)	path	kernel	workflows/scripts/kernel/check-producer-egress.sh	Kernel root the producer-egress checker scans
