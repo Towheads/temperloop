@@ -85,9 +85,9 @@
 #
 # ── Personal-path-verbatim rows ─────────────────────────────────────────
 # A handful of rows below record a CURRENT default that is a personal
-# absolute path (e.g. KNOWLEDGE_STORE_ROOT's build.config.sh reseed to
-# `$HOME/dev/mind`) or this org's real repo URL (`Towheads/temperloop`).
-# Per this item's constraints, the shell literal is copied verbatim — a
+# absolute path (e.g. KNOWLEDGE_STORE_ROOT's build.config.sh reseed to the
+# operator's vault directory) or this org's real repo clone URL. Per this
+# item's constraints, the shell literal is copied verbatim — a
 # later item (kernel-literal-scrub) fixes the literal in the shell AND this
 # row together. Three rows carry an explicit `denylist:allow` marker
 # substring in their doc column (mirroring the `# denylist:allow —
