@@ -37,3 +37,4 @@ TravisBook	personal machine name
 \bthe mini\b	personal machine nickname (Travis's secondary Mac)
 travnew@yahoo\.com	personal email address
 subset-xg	personal Sentry org slug (real production value, not a placeholder)
+\bdev/mind\b	personal Obsidian vault path (operator's knowledge-store directory; temperloop#164/#169). Pre-existing hits are burned down via the baseline file (see check-personal-token-denylist.sh header), NOT exempted — a later item (kernel-literal-scrub) empties it.

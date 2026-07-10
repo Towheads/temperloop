@@ -33,13 +33,23 @@
 #      payload, so the per-line marker doesn't apply there) — see that
 #      file's header for the exact list + rationale.
 #
+# BURN-DOWN BASELINE (temperloop#164/#169): a DIFFERENT mechanism from the two
+# exemptions above, for a newly-widened denylist family that already has
+# pre-existing hits in the tree — a debt ledger, not a permanent exception.
+# personal-token-denylist-baseline.tsv (sibling file) lists (file, pattern,
+# exact line content) triples; a hit matching a baseline row is suppressed
+# (once per row — a duplicated line is only forgiven as many times as it's
+# listed) but does NOT need a `# denylist:allow` marker, since it isn't
+# intentional/permanent — it's tracked debt a later item burns down by fixing
+# the line and deleting its baseline row. See that file's own header.
+#
 # Usage:
 #   check-personal-token-denylist.sh [--root DIR]
 #   (called by `make test-kernel-denylist`)
 #
 # Env overrides (fixture-driven tests):
 #   KERNEL_MANIFEST_ROOT, KERNEL_MANIFEST_FILE, KERNEL_DENYLIST_FILE,
-#   KERNEL_DENYLIST_EXEMPT_FILE
+#   KERNEL_DENYLIST_EXEMPT_FILE, KERNEL_DENYLIST_BASELINE_FILE
 
 set -uo pipefail
 
@@ -49,6 +59,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 : "${KERNEL_MANIFEST_ROOT:=$REPO_ROOT}"
 : "${KERNEL_DENYLIST_FILE:=$SCRIPT_DIR/personal-token-denylist.tsv}"
 : "${KERNEL_DENYLIST_EXEMPT_FILE:=$SCRIPT_DIR/personal-token-denylist-exempt-files.txt}"
+: "${KERNEL_DENYLIST_BASELINE_FILE:=$SCRIPT_DIR/personal-token-denylist-baseline.tsv}"
 
 if [[ ! -f "$KERNEL_DENYLIST_FILE" ]]; then
   echo "check-personal-token-denylist: denylist not found at $KERNEL_DENYLIST_FILE" >&2
@@ -70,6 +81,48 @@ _kernel_denylist_is_exempt() {
   local target="$1" ex
   for ex in "${exempt_files[@]+"${exempt_files[@]}"}"; do
     [[ "$target" == "$ex" ]] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Load the burn-down baseline (file, pattern, line) triples. Bash-3.2-
+# compatible plain indexed arrays (no `declare -A` — kernel scripts must run
+# unmodified on macOS's system bash, see kernel-repo-layout.md), same linear-
+# scan idiom as _kernel_denylist_is_exempt above. Blank lines and
+# #-prefixed comment lines are skipped, same convention as the other two
+# data files. A parallel `baseline_used` flag array tracks per-row
+# consumption so each row forgives exactly one occurrence — a duplicated
+# line is only baselined as many times as it's listed.
+# ---------------------------------------------------------------------------
+baseline_files=()
+baseline_pats=()
+baseline_lines=()
+baseline_used=()
+if [[ -f "$KERNEL_DENYLIST_BASELINE_FILE" ]]; then
+  while IFS=$'\t' read -r bfile bpat bline || [[ -n "${bfile:-}" ]]; do
+    [[ -z "${bfile:-}" ]] && continue
+    case "$bfile" in \#*) continue ;; esac
+    [[ -z "${bpat:-}" ]] && continue
+    baseline_files+=("$bfile")
+    baseline_pats+=("$bpat")
+    baseline_lines+=("$bline")
+    baseline_used+=(0)
+  done < "$KERNEL_DENYLIST_BASELINE_FILE"
+fi
+
+_kernel_denylist_take_baseline() {
+  # Consumes the first not-yet-used baseline row matching (file, pattern,
+  # line), if any. Returns 0 (consumed) or 1 (no baseline credit — a
+  # real/new violation).
+  local target_f="$1" target_pat="$2" target_line="$3" j
+  for j in "${!baseline_files[@]}"; do
+    [[ "${baseline_used[$j]}" == 0 ]] || continue
+    [[ "${baseline_files[$j]}" == "$target_f" ]] || continue
+    [[ "${baseline_pats[$j]}" == "$target_pat" ]] || continue
+    [[ "${baseline_lines[$j]}" == "$target_line" ]] || continue
+    baseline_used[j]=1
+    return 0
   done
   return 1
 }
@@ -98,6 +151,7 @@ fi
 # some files are long, and a per-line subprocess loop is prohibitively slow.
 # ---------------------------------------------------------------------------
 violations=0
+baselined=0
 files_checked=0
 
 while IFS= read -r f; do
@@ -118,6 +172,10 @@ while IFS= read -r f; do
       case "$line" in
         *denylist:allow*) continue ;;
       esac
+      if _kernel_denylist_take_baseline "$f" "$pat" "$line"; then
+        baselined=$((baselined + 1))
+        continue
+      fi
       printf '%s:%s: [%s] %s\n    %s\n' \
         "$f" "$lineno" "$pat" "${descriptions[$i]}" "$line"
       violations=$((violations + 1))
@@ -127,8 +185,8 @@ done < <("$SCRIPT_DIR/list-kernel-set.sh" --root "$KERNEL_MANIFEST_ROOT")
 
 if (( violations > 0 )); then
   echo "---"
-  echo "FAIL: $violations personal-token denylist violation(s) across $files_checked kernel file(s)" >&2
+  echo "FAIL: $violations personal-token denylist violation(s) across $files_checked kernel file(s) ($baselined pre-existing hit(s) suppressed via burn-down baseline)" >&2
   exit 1
 fi
 
-echo "OK — 0 personal-token denylist violations across $files_checked kernel file(s)"
+echo "OK — 0 new personal-token denylist violations across $files_checked kernel file(s) ($baselined pre-existing hit(s) suppressed via burn-down baseline; see personal-token-denylist-baseline.tsv)"

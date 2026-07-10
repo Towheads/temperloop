@@ -55,9 +55,12 @@ README.md
 
 # test_install_settings.sh deliberately feeds a literal personal path
 # (/Users/travis/...) as INPUT fixture data to assert install-settings.sh's
-# CANONICAL_USER-sed correctly strips it at install time (the test would be
-# pointless with an already-generic input). Same rationale as the exemptions
-# above: the literal is the test subject, not a leak.
+# generic /Users/<user>-sed correctly strips it at install time (the test
+# would be pointless with an already-generic input; temperloop#164/#169
+# retired the CANONICAL_USER constant this comment used to name — the sed
+# pattern is now username-generic, not tied to any one literal). Same
+# rationale as the exemptions above: the literal is the test subject, not a
+# leak.
 workflows/scripts/tests/test_install_settings.sh
 
 # The PR-leak-guard's OWN fixture test (temperloop #74). To prove the guard

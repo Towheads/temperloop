@@ -8,6 +8,11 @@
 #
 # Mirrors workflows/scripts/board/tests/test_boards_conf.sh's plain
 # mktemp-fixture style — no framework, just `fail()` + sequential asserts.
+#
+# Also covers the burn-down baseline mechanism (temperloop#164/#169): a
+# pre-existing hit recorded in personal-token-denylist-baseline.tsv is
+# suppressed once (not permanently, and without a `# denylist:allow`
+# marker), while an un-baselined occurrence of the same pattern still fails.
 
 set -euo pipefail
 
@@ -46,11 +51,15 @@ EOF
 EXEMPT="$WORK/exempt.txt"
 : > "$EXEMPT"
 
+BASELINE="$WORK/baseline.tsv"
+: > "$BASELINE"
+
 run_check() {
   KERNEL_MANIFEST_ROOT="$REPO" \
   KERNEL_MANIFEST_FILE="$MANIFEST" \
   KERNEL_DENYLIST_FILE="$DENYLIST" \
   KERNEL_DENYLIST_EXEMPT_FILE="$EXEMPT" \
+  KERNEL_DENYLIST_BASELINE_FILE="$BASELINE" \
     bash "$KERNEL_DIR/check-personal-token-denylist.sh"
 }
 
@@ -101,5 +110,37 @@ if ! run_check >/dev/null 2>&1; then
   fail "5: file-level exemption list should suppress the whole file"
 fi
 echo "PASS: 5 file-level exemption list suppresses a whole file"
+
+# --- 6: burn-down baseline suppresses a recorded pre-existing hit -----------
+# Reset to a clean single-violation state: allowed.sh currently carries an
+# unmarked FakeOrgName leak exempted only by the file-level list from test 5.
+# Clear that exemption and instead baseline the exact (file, pattern, line).
+: > "$EXEMPT"
+if run_check >/dev/null 2>&1; then
+  fail "6 setup: unbaselined leak in allowed.sh should fail before baselining"
+fi
+printf 'kernel_dir/allowed.sh\tFakeOrgName\towner=FakeOrgName\n' > "$BASELINE"
+if ! run_check >/dev/null 2>&1; then
+  fail "6: a baselined (file, pattern, line) triple should be suppressed without a denylist:allow marker"
+fi
+echo "PASS: 6 burn-down baseline suppresses a recorded pre-existing hit"
+
+# --- 7: baseline suppresses ONLY the recorded occurrence, not a NEW one -----
+# allowed.sh already has the baselined "owner=FakeOrgName" line (still
+# present from test 6). Add a genuinely different, un-baselined leak line —
+# the baseline must not blanket-exempt the whole file/pattern.
+echo "second_owner=FakeOrgName" >> "$REPO/kernel_dir/allowed.sh"
+git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "add a second, un-baselined leak line"
+if run_check >/dev/null 2>&1; then
+  fail "7: a NEW occurrence not present in the baseline should still fail, even in an already-baselined file"
+fi
+out="$(run_check 2>&1 || true)"
+case "$out" in
+  *"second_owner=FakeOrgName"*) ;;
+  *) fail "7: failure output should name the new, un-baselined line; got: $out" ;;
+esac
+echo "PASS: 7 baseline suppresses only its recorded line, a new occurrence still fails"
+git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+: > "$BASELINE"
 
 echo "PASS: all check-personal-token-denylist.sh fixture tests"
