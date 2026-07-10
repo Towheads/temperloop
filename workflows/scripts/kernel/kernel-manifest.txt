@@ -224,6 +224,7 @@ overlay workflows/scripts/docs.d/*
 kernel docs/failure-modes/*
 kernel docs/CONTRIBUTING.md
 kernel docs/managed-merge-queue.md
+kernel docs/config-precedence.md
 overlay workflows/scripts/crash-convergence/*
 overlay workflows/scripts/sessions/*
 overlay workflows/scripts/validators/*
