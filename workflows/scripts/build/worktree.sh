@@ -36,6 +36,15 @@ set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
 
+# merged_detect_is_merged (#171/#173) — merge-queue-safe merged-detection
+# (gh pr view state, falling back to a squash-safe cherry heuristic) used by
+# prune_one below to reclaim a squash/rebase-merged branch whose tip is NOT an
+# ancestor of origin/<default> even though it landed. Sourced by repo-relative
+# path from this script's own location so it resolves regardless of cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/merged-detect.sh
+source "$SCRIPT_DIR/lib/merged-detect.sh"
+
 # fd 3 = the script's real stdout. Helpers like resolve_repo run inside
 # command substitutions, where a die()'s ERROR line would be captured by the
 # caller instead of reaching the orchestrator — emitting via fd 3 keeps the
@@ -238,12 +247,28 @@ cmd_prune() {
 }
 
 prune_one() {
-  local repo="$1" wt_path="$2" branch="$3" default="$4" force="$5" head
+  local repo="$1" wt_path="$2" branch="$3" default="$4" force="$5" head merged
   head="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || head=""
 
-  # Conservative gate 1: only a branch fully merged into origin/<default> is
-  # removable — an unmerged worktree holds unlanded work, --force or not.
-  if [ -z "$head" ] || ! git -C "$repo" merge-base --is-ancestor "$head" "origin/$default" 2>/dev/null; then
+  # Conservative gate 1: only a branch whose PR actually merged is removable —
+  # an unmerged worktree holds unlanded work, --force or not. Try the cheap,
+  # network-free ancestor test first (covers the ordinary case, including a
+  # branch that is literally origin/<default> with zero commits ahead); only
+  # fall through to the merge-queue-safe helper (#171) when the tip is NOT an
+  # ancestor — the squash/rebase-merge case the ancestor-only test misreads as
+  # unmerged. Never weakens the floor: a genuinely-unmerged branch still fails
+  # both checks and reports SKIPPED_UNMERGED.
+  if [ -z "$head" ]; then
+    merged="false"
+  elif git -C "$repo" merge-base --is-ancestor "$head" "origin/$default" 2>/dev/null; then
+    merged="true"
+  else
+    # `|| merged="false"` guards the caller-misuse return (2, e.g. an empty
+    # branch name for a detached-HEAD worktree) from tripping `set -e` — the
+    # safe default either way is NOT merged, never an abort mid-sweep.
+    merged="$(merged_detect_is_merged "$repo" "$branch" "$default")" || merged="false"
+  fi
+  if [ "$merged" != "true" ]; then
     jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"SKIPPED_UNMERGED", path:$path, branch:$branch}'
     return 0
   fi

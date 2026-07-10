@@ -101,6 +101,31 @@ out="$(bash "$SCRIPT" prune "$REPO" --force)"
 [ "$(oc unmerged)" = "SKIPPED_UNMERGED" ] || fail "--force pruned an UNMERGED worktree (got: $out)"
 echo "PASS: prune --force overrides dirty-skip but never removes unmerged work"
 
+# --- prune: squash/rebase-merged branch (tip NOT an ancestor of origin/main) --
+# is still detected MERGED via the merge-queue-safe helper (#171/#173) and
+# pruned — the ancestor-only test this replaces would misread it as unmerged.
+bash "$SCRIPT" create "$REPO" squashed >/dev/null
+printf 'squash content\n' > "$REPO.wt/squashed/squash.txt"
+git -C "$REPO.wt/squashed" add squash.txt
+git -C "$REPO.wt/squashed" commit -q -m "squashed: add squash.txt"
+# Land the identical cumulative diff as ONE new commit directly on upstream's
+# main (what a merge-queue squash produces), then advance main again so the
+# squashed branch's tip is provably NOT an ancestor of origin/main.
+printf 'squash content\n' > "$TMP/upstream/squash.txt"
+git -C "$TMP/upstream" add squash.txt
+git -C "$TMP/upstream" commit -q -m "squashed (#999) squash-merged"
+git -C "$TMP/upstream" commit -q --allow-empty -m "main advances again after the squash"
+git -C "$REPO" fetch -q origin main
+git -C "$REPO.wt/squashed" merge-base --is-ancestor HEAD origin/main \
+  && fail "test setup bug: squashed branch tip must NOT be an ancestor of origin/main"
+
+out="$(bash "$SCRIPT" prune "$REPO")"
+[ "$(oc squashed)" = "PRUNED" ] || fail "squash-merged branch not PRUNED (got: $out)"
+[ ! -e "$REPO.wt/squashed" ] || fail "squashed dir survived prune"
+git -C "$REPO" show-ref --verify --quiet refs/heads/build/squashed \
+  && fail "branch build/squashed survived prune"
+echo "PASS: prune detects a squash/rebase-merged branch (tip not an ancestor) via the merge-queue-safe helper and PRUNES it (#171/#173)"
+
 # --- error: closed ERROR outcome + non-zero exit ------------------------------
 rc=0; out="$(bash "$SCRIPT" create "$TMP" bad-root 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "non-toplevel repo-root did not exit non-zero"

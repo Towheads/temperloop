@@ -13,9 +13,19 @@
 # pre-setting stale remote branches still exists. This helper sweeps both.
 #
 # DRY-RUN BY DEFAULT — it prints what it would delete and changes nothing. Pass
-# --apply to actually delete. Local deletes use `git branch -d` (NEVER -D), which
-# refuses any branch not fully merged into the base, so an unmerged branch is
-# safe even if it slipped past the filter.
+# --apply to actually delete.
+#
+# Merged-detection (#171/#173): a local branch is a delete candidate if EITHER
+# it's a plain ancestor of $base (the ordinary case, `git merge-base
+# --is-ancestor`, no network needed) OR the merge-queue-safe helper
+# (merged-detect.sh: gh pr view state, falling back to a squash-safe cherry
+# heuristic) independently confirms its PR merged even though the branch tip
+# is NOT an ancestor — the squash/rebase-merge-queue topology the ancestor-only
+# test misses. Deletion still defaults to `git branch -d` (refuses anything not
+# fully merged — the safety floor); `-D` is used ONLY as a fallback for a
+# branch the helper independently confirmed merged, never for an ordinary `-d`
+# failure (e.g. in-use/worktree-bound), so a genuinely-unmerged branch is still
+# refused exactly as before.
 #
 #   prune-merged-branches.sh                 # dry-run: list merged local branches
 #   prune-merged-branches.sh --apply         # delete merged local branches
@@ -24,6 +34,9 @@
 #   prune-merged-branches.sh --base origin/develop --apply
 #
 set -euo pipefail
+
+# shellcheck source=../workflows/scripts/build/lib/merged-detect.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../workflows/scripts/build/lib/merged-detect.sh"
 
 base="origin/main"
 apply=0
@@ -78,13 +91,33 @@ read_into() {
 }
 
 # --- Local branches merged into base -----------------------------------------
-# Exclude the current branch, main, and the base branch itself. `git branch
-# --merged` lists ancestors of base; the `* ` current-branch marker is dropped.
-local_merged=()
-read_into local_merged < <(
-  git branch --merged "$base" --format='%(refname:short)' \
+# Exclude the current branch, main, and the base branch itself, then classify
+# EVERY remaining local branch (#171/#173): ancestor-of-base is the fast,
+# network-free path; a tip that is NOT an ancestor falls through to the
+# merge-queue-safe helper, which catches a squash/rebase-merged branch the
+# ancestor test alone would misreport as unmerged. `local_squash` tracks the
+# subset confirmed ONLY via the helper — `git branch -d` refuses those (their
+# tip genuinely isn't an ancestor), so the apply step below escalates those
+# specific branches to `-D`.
+all_local=()
+read_into all_local < <(
+  git branch --format='%(refname:short)' \
     | grep -vxE "main|${base_branch}|${current:-}" || true
 )
+
+repo_root="$(git rev-parse --show-toplevel)"
+local_merged=()
+local_squash=()
+if [ "${#all_local[@]}" -gt 0 ]; then
+  for b in "${all_local[@]}"; do
+    if git merge-base --is-ancestor "$b" "$base" 2>/dev/null; then
+      local_merged+=("$b")
+    elif [ "$(merged_detect_is_merged "$repo_root" "$b" "$base_branch" 2>/dev/null || echo false)" = "true" ]; then
+      local_merged+=("$b")
+      local_squash+=("$b")
+    fi
+  done
+fi
 
 # --- Remote heads merged into base (opt-in) ----------------------------------
 remote_merged=()
@@ -130,9 +163,24 @@ skipped_local=()
 if [ "${#local_merged[@]}" -gt 0 ]; then
   echo "==> Deleting ${#local_merged[@]} local branch(es) (git branch -d, refuses unmerged)"
   for b in "${local_merged[@]}"; do
-    # -d (not -D): git refuses any branch not fully merged — the safety floor.
+    # -d (not -D) first — git refuses any branch not fully merged; this is the
+    # safety floor and the fast path for the ordinary ancestor-merged case.
     # Suppress git's stderr on failure and print our own one-line skip note.
     if git branch -d "$b" 2>/dev/null; then
+      deleted_local=$((deleted_local + 1))
+      continue
+    fi
+    # -d refused (its tip genuinely isn't an ancestor) — escalate to -D ONLY
+    # when the merge-queue-safe helper independently confirmed THIS branch
+    # merged (local_squash, #171/#173): a squash/rebase-merge queue landed the
+    # PR without leaving the tip as an ancestor. Never force-delete a branch
+    # -d refused for any OTHER reason (in-use/worktree-bound, genuinely
+    # unmerged) — the safety floor stays intact.
+    is_squash=0
+    for s in "${local_squash[@]:-}"; do
+      [ "$s" = "$b" ] && { is_squash=1; break; }
+    done
+    if [ "$is_squash" -eq 1 ] && git branch -D "$b" 2>/dev/null; then
       deleted_local=$((deleted_local + 1))
     else
       skipped_local+=("$b")

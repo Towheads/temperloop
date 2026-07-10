@@ -101,6 +101,66 @@ if grep -qE "deleted 1 local / 2 remote; skipped 1 local" <<<"$out"; then
   pass "summary reports deleted + skipped counts"
 else fail "summary line wrong — output:"$'\n'"$out"; fi
 
+# ---------------------------------------------------------------------------
+# Squash/rebase-merge-queue scenario (#171/#173): a branch's PR merged via a
+# queue squash, so its tip is NOT an ancestor of main even though the PR
+# landed. `git branch --merged`/`git branch -d` alone would misread this as
+# unmerged and leave it forever — the merge-queue-safe helper (merged-detect.sh)
+# must catch it via the squash-safe cherry heuristic (no real GitHub remote
+# here, so gh errors and the local fallback carries this), and `-D` must be
+# the ONLY path used to actually delete it (plain `-d` refuses a non-ancestor).
+# ---------------------------------------------------------------------------
+build_fixture_squash() {
+  local tmp work
+  tmp="$(mktemp -d)"
+  work="$tmp/work"
+  git init -q --bare "$tmp/origin.git"
+  git clone -q "$tmp/origin.git" "$work" 2>/dev/null
+  git -C "$work" config user.email test@test
+  git -C "$work" config user.name Test
+  git -C "$work" commit -q --allow-empty -m init
+  git -C "$work" branch -M main
+  git -C "$work" push -q origin main
+
+  # squash-merged: real content change on a branch, pushed, then the SAME
+  # cumulative diff lands on main as ONE new commit (what a merge-queue squash
+  # produces) and main advances again — the branch tip is provably NOT an
+  # ancestor of main afterward.
+  git -C "$work" checkout -q -b squash-merged
+  printf 'squash content\n' > "$work/squash.txt"
+  git -C "$work" add squash.txt
+  git -C "$work" commit -q -m "squash-merged: add squash.txt"
+  git -C "$work" push -q origin squash-merged
+  git -C "$work" checkout -q main
+  printf 'squash content\n' > "$work/squash.txt"
+  git -C "$work" add squash.txt
+  git -C "$work" commit -q -m "squash-merged (#999) squash-merged via queue"
+  git -C "$work" commit -q --allow-empty -m "main advances again after the squash"
+  git -C "$work" push -q origin main
+
+  echo "$work"
+}
+
+work2="$(build_fixture_squash)"
+
+# Fixture sanity: prove this is the non-ancestor case the ancestor-only test
+# would misread as unmerged.
+if ! git -C "$work2" merge-base --is-ancestor squash-merged main 2>/dev/null; then
+  pass "squash fixture sanity: branch tip is NOT an ancestor of main"
+else
+  fail "squash fixture sanity: branch tip unexpectedly IS an ancestor of main"
+fi
+
+out2="$(cd "$work2" && bash "$SCRIPT" --apply 2>&1)"; rc2=$?
+if [ "$rc2" -eq 0 ]; then pass "squash scenario: exit 0"
+else fail "squash scenario: expected exit 0, got $rc2 — output:"$'\n'"$out2"; fi
+
+if ! git -C "$work2" rev-parse --verify -q squash-merged >/dev/null 2>&1; then
+  pass "squash-merged local branch pruned via the merge-queue-safe helper (#171/#173)"
+else
+  fail "squash-merged local branch should have been pruned — output:"$'\n'"$out2"
+fi
+
 echo "  ---"
 echo "  PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
