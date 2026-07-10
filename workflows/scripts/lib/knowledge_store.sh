@@ -5,16 +5,17 @@
 # and WHERE structured project notes actually live.
 #
 # Why this exists (foundation #771, Epic A #762 "kernel split"): every
-# hook/command in this repo currently names Travis's Obsidian vault path
-# (~/dev/mind) directly. A stranger's fresh install has no such vault, so the
-# open-source kernel needs an interface a plain-files backend can satisfy out
-# of the box, with an Obsidian-backed adapter available as an opt-in swap.
+# hook/command in this repo used to name the operator's Obsidian vault path
+# directly, as a hardcoded literal. A stranger's fresh install has no such
+# vault, so the open-source kernel needs an interface a plain-files backend
+# can satisfy out of the box, with an Obsidian-backed adapter available as an
+# opt-in swap.
 #
 # Scope of THIS file: the interface + root/backend resolution + the
-# plain-files backend + its tests. It does NOT route any existing caller —
-# every hook/command still names ~/dev/mind directly, unchanged, until a
-# later sibling item does the routing. It does NOT implement an Obsidian
-# backend — that is a separate sibling-level item.
+# plain-files backend + its tests. It does NOT implement an Obsidian
+# backend — that is a separate sibling-level item. Caller routing (every
+# hook/command going through this seam instead of a hardcoded vault path) is
+# tracked to completion by temperloop#164/#169 (kernel-literal-scrub).
 #
 # See knowledge_store.contract.md (same directory) for the full interface
 # spec: signatures, semantics, error/exit-code behavior, the root-resolution

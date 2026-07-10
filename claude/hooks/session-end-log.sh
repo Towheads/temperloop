@@ -68,7 +68,8 @@ SHORT_ID=$(printf '%s' "$SESSION_ID" | cut -c1-8)
 # SUBJECT model into a /tidy that may run days later under a different
 # model: drain stamps it as `source_model` (the model whose behavior the note
 # is about), distinct from the drain-runner's own `extracted_by_model`.
-# See ~/dev/mind/Decisions/foundation - Vault provenance schema (note-level).md.
+# See "Decisions/foundation - Vault provenance schema (note-level).md" in the
+# operator's knowledge store (workflows/scripts/lib/knowledge_store.contract.md).
 MODELS=$(jq -r 'select(.type == "assistant") | .message.model // empty' "$TRANSCRIPT" 2>/dev/null \
   | sort -u | paste -sd, - | sed 's/,$//')
 

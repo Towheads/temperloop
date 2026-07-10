@@ -83,22 +83,29 @@
 # `*_GH_BIN`) IS included — swapping the resolved binary is a real,
 # meaningful override, not merely a test's implementation detail.
 #
-# ── Personal-path-verbatim rows ─────────────────────────────────────────
-# A handful of rows below record a CURRENT default that is a personal
-# absolute path (e.g. KNOWLEDGE_STORE_ROOT's build.config.sh reseed to the
-# operator's vault directory) or this org's real repo clone URL. Per this
-# item's constraints, the shell literal is copied verbatim — a
-# later item (kernel-literal-scrub) fixes the literal in the shell AND this
-# row together. Three rows carry an explicit `denylist:allow` marker
-# substring in their doc column (mirroring the `# denylist:allow —
-# <reason>` convention check-personal-token-denylist.sh's marker-skip
-# already uses in shell files, adapted to TSV's data-not-code rows, since
-# the checker's marker test is a bare substring match, not shell-comment
-# syntax) — those rows would otherwise register as NEW denylist hits, and
-# the burn-down baseline mechanism explicitly does not accept new rows for
-# an already-tracked family (see personal-token-denylist-baseline.tsv's own
-# header). These are permanent, documented, load-bearing defaults, not
-# scrub debt — exactly the marker's intended use.
+# ── Personal-path-verbatim rows (superseded, kernel-literal-scrub, temperloop#189) ──
+# Two rows below (FOUNDATION_KERNEL_REPO, KERNEL_REMOTE) record a CURRENT
+# default that is this org's real repo clone URL — permanent, load-bearing,
+# out of scrub scope (this repo's own public identity, not a personal-token
+# leak; see check-personal-token-denylist.sh's category-1 rationale). They
+# carry an explicit `denylist:allow` marker substring in their doc column
+# (mirroring the `# denylist:allow — <reason>` convention
+# check-personal-token-denylist.sh's marker-skip already uses in shell
+# files, adapted to TSV's data-not-code rows, since the checker's marker
+# test is a bare substring match, not shell-comment syntax) — those rows
+# would otherwise register as NEW denylist hits, and the burn-down baseline
+# mechanism explicitly does not accept new rows for an already-tracked
+# family (see personal-token-denylist-baseline.tsv's own header). These are
+# permanent, documented, load-bearing defaults, not scrub debt — exactly the
+# marker's intended use.
+#
+# A THIRD row used to live here — KNOWLEDGE_STORE_ROOT's build.config.sh
+# reseed to the operator's personal vault directory. kernel-literal-scrub
+# removed that reseed (build.config.sh no longer sets a rung-5 default for
+# this knob at all) rather than allow-marking it, so the row was deleted
+# rather than converted — see the kernel-layer KNOWLEDGE_STORE_ROOT row
+# (owning-script knowledge_store.sh) below for the knob's one remaining
+# registry entry.
 #
 # ── Reserved ─────────────────────────────────────────────────────────────
 # TEMPERLOOP_PROFILE (below) is a RESERVED row, not a live seam today: no
@@ -202,7 +209,6 @@ FUNNEL_DRIVE_MERGE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.con
 FUNNEL_MERGE_PENDING_LABEL	funnel-merge-pending	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a cross-tick merge hand-off (open unmerged PR at session end)
 FUNNEL_CLARIFIED_MARKER	<!-- funnel:clarification-drained -->	marker	tracked-repo	workflows/scripts/build/build.config.sh	Idempotency marker posted when a needs-clarification item is drained
 FUNNEL_ESCALATED_LABEL	funnel-escalated	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a rung-5c CODE escalation (route-refused / terminally-red CI)
-KNOWLEDGE_STORE_ROOT	$HOME/dev/mind	path	tracked-repo	workflows/scripts/build/build.config.sh	This repo's reseeded knowledge-store root, overriding knowledge_store.sh's generic kernel default (personal-path-verbatim; denylist:allow — a documented, permanent, load-bearing default per that file's own header, not scrub debt)
 FUNNEL_DRIVE_SETTINGS	$HERE/funnel-drive.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 FUNNEL_DRIVE_MERGE_SETTINGS	$HERE/funnel-drive-merge.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
@@ -280,7 +286,7 @@ KNOWLEDGE_SEARCH_BM_PROJECT	foundation-knowledge	label	kernel	workflows/scripts/
 KNOWLEDGE_SEARCH_BM_VERSION	0.22.1	string	kernel	workflows/scripts/lib/knowledge_search.sh	Pinned basic-memory CLI version invoked via uvx
 KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES		string	kernel	workflows/scripts/lib/knowledge_search.sh	Overlay seam: extra .bmignore segments appended to the generic base set
 KNOWLEDGE_SEARCH_BM_HOME	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home	path	kernel	workflows/scripts/lib/knowledge_search.sh	Dedicated HOME dir for the basic-memory subprocess
-KNOWLEDGE_STORE_ROOT	${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; see the build.config.sh row above for this repo's reseeded value)
+KNOWLEDGE_STORE_ROOT	${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; build.config.sh no longer re-seeds a personal-path default here — kernel-literal-scrub, temperloop#189 — an operator sets one via machine conf / build.config.local.sh / a downstream repo's own edited tracked-repo copy instead)
 KNOWLEDGE_STORE_BACKEND	plain-files	enum	kernel	workflows/scripts/lib/knowledge_store.sh	Document-I/O backend name (dispatches to `_ks_backend_<name>_<op>`)
 LAND_GH	gh	path	kernel	workflows/scripts/lib/land-on-protected-main.sh	gh binary used by the shared protected-main landing kernel
 LAND_DEFAULT_BRANCH	main	label	kernel	workflows/scripts/lib/land-on-protected-main.sh	Default branch name the landing kernel treats as protected

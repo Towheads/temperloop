@@ -21,7 +21,9 @@
 #
 # Usage:
 #   vault_hygiene_report.sh [--root DIR] [--format entry]
-#     --root DIR       vault root (default: $KNOWLEDGE_STORE_ROOT or ~/dev/mind)
+#     --root DIR       vault root (default: the knowledge_store seam's ks_root
+#                      — KNOWLEDGE_STORE_ROOT if set, else its generic
+#                      per-user default; see knowledge_store.sh)
 #     --format entry   print a ready-to-append `### … Status: open` block IFF
 #                      any alarm fires (nothing when clean); default prints a
 #                      human-readable report + trailing `ALARM: <n>` / `OK`.
@@ -34,6 +36,10 @@
 # stat/date fallbacks, so it runs on the macOS dev shell as well as Linux CI.
 
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=workflows/scripts/lib/knowledge_store.sh
+. "$HERE/../lib/knowledge_store.sh"
 
 # ── Tunable caps (no machine cap existed before this script — foundation #959) ──
 # INBOX_MAX_STUBS / INBOX_MAX_AGE_H are registered knobs (knob-registry.tsv) —
@@ -54,7 +60,7 @@ LEDGER_PATHS=(
 LEDGER_CAPS=(250 120 400)
 
 # ── Arg parse ─────────────────────────────────────────────────────────────────
-ROOT="${KNOWLEDGE_STORE_ROOT:-$HOME/dev/mind}"
+ROOT="$(ks_root)"
 FORMAT="report"
 while [ $# -gt 0 ]; do
   case "$1" in

@@ -5,7 +5,7 @@
 # four document-I/O operations as the `plain-files` backend in
 # knowledge_store.sh, backed by the Obsidian Local REST API instead of the
 # filesystem, so a caller can point `KNOWLEDGE_STORE_BACKEND=obsidian` at a
-# real vault (Travis's default: ~/dev/mind) with zero change to call sites.
+# real vault with zero change to call sites.
 #
 # This is a SEPARATE file from knowledge_store.sh on purpose — the backend
 # registration seam documented in knowledge_store.contract.md says a new
@@ -45,7 +45,14 @@
 # This file is SOURCED — it sets no shell options (the caller owns set -euo).
 
 : "${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:=https://127.0.0.1:27124}"
-: "${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:=$HOME/dev/mind/.obsidian/plugins/obsidian-local-rest-api/data.json}"
+# Default key-file path is DERIVED from `ks_root` (knowledge_store.sh, sourced
+# before this file per this header's own requirement above) — the plugin's
+# fixed on-disk layout under whatever directory KNOWLEDGE_STORE_ROOT already
+# names, rather than a second, independently-hardcoded vault-path literal
+# that could silently drift from it (temperloop#189 kernel-literal-scrub; this
+# is also what doctor.sh's check_knowledge_root split-brain guard now derives
+# the "expected" side from, see that script).
+: "${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:=$(ks_root)/.obsidian/plugins/obsidian-local-rest-api/data.json}"
 
 # --- HTTP seam ---------------------------------------------------------------
 # <method> <url> [content-file] <api-key>

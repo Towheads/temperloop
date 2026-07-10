@@ -6,7 +6,7 @@ You are running the **tidy** command. Goal: turn raw session transcripts in `Ses
 
 **This command runs nightly, unattended** (a launchd/cron `claude -p "/tidy"` invocation, or on demand). It has **no live operator**, so it **never** blocks on an `AskUserQuestion` and never asks a clarifying question: it extracts liberally and **parks anything needing human judgment on a durable surface** that `/check-in` disposes at the next daily review. Those are the pipeline surfaces under `Context/pipeline - *` (pending-decisions, proposed-supersessions, candidate-tells, vault-hygiene) plus the **sensitivity flags** surface (Step 2). `/tidy` is the **drain-proposes** half; `/check-in` is the **operator-disposes** half — this command writes surfaces, never mutates their `Status`.
 
-**Operating principles** (honor the knowledge store's `Projects/foundation/workflows/daily-planning/README.md` note — document paths throughout this file, e.g. `Sessions/_inbox/`, `Decisions/`, `Context/pipeline - pending decisions.md`, are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`):
+**Operating principles** (honor the knowledge store's `Projects/foundation/workflows/daily-planning/README.md` note — document paths throughout this file, e.g. `Sessions/_inbox/`, `Decisions/`, `Context/pipeline - pending decisions.md`, are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`):
 - Write small, write in parallel — batch independent vault writes and Things writes.
 - Use the Obsidian MCP for vault reads/writes (the agent-plane transport stays on Obsidian per the contract's Obsidian-mode note — `search_vault_smart` below is that same path); use the Things MCP for task creation.
 - Never duplicate work the live session already captured — check existence before writing.
@@ -41,11 +41,11 @@ Every step in this command has a real-time counterpart that runs during the live
 
 **Do not load the full transcript.** The scanner pre-processes each stub into a compact JSON report (~2-3k tokens vs. ~18k for the raw transcript). Run it first; the report is your primary input. For each file in `_inbox/`:
 
-1. Derive the stub's local filesystem path — a **raw on-disk path outside the knowledge_store seam**: `scan_stub.py` reads the file directly from disk rather than through `ks_read`/MCP, because the obsidian backend's REST API has no filesystem-root semantics to route a disk read through (per `workflows/scripts/lib/knowledge_store.contract.md` § the obsidian backend's root-mapping note). Travis's default: `~/dev/mind/Sessions/_inbox/<filename>.md`.
+1. Derive the stub's local filesystem path — a **raw on-disk path outside the knowledge_store seam**: `scan_stub.py` reads the file directly from disk rather than through `ks_read`/MCP, because the obsidian backend's REST API has no filesystem-root semantics to route a disk read through (per `workflows/scripts/lib/knowledge_store.contract.md` § the obsidian backend's root-mapping note). Resolves under the knowledge store root, e.g. `$KNOWLEDGE_STORE_ROOT/Sessions/_inbox/<filename>.md`.
 2. Run the scanner, capturing its JSON output:
    ```
    python3 ~/dev/foundation/workflows/scripts/drain/scan_stub.py \
-     ~/dev/mind/Sessions/_inbox/<filename>.md
+     $KNOWLEDGE_STORE_ROOT/Sessions/_inbox/<filename>.md
    ```
    The scanner emits a single JSON object to stdout (schema: `workflows/scripts/drain/scan-report-schema.md`). Parse it and hold it in memory — this is the **scan report** for this stub.
 3. **Read the scan report, not the transcript.** Your extraction input is:
@@ -296,7 +296,7 @@ A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing e
 
 **A drain-internal detector**, not a live/drain pair (like § Contradiction detection, § Self-correction detector, and § Recurrence → promotion): it backstops **no live extraction rule** — hygiene drift is a *state* the vault accumulates over time, not an author action a live rule captures — so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**. It **proposes**; `check-in`'s `## Vault hygiene review` section is the **sole mutator** that disposes (the same drain-proposes / check-in-disposes split as § Pending decisions surface). Drain **never** bulk-deletes vault content.
 
-**Run the probe** (a kernel script that reads the store via the script-plane `plain-files` backend — `KNOWLEDGE_STORE_ROOT`, default `~/dev/mind`; a checkout with no vault prints one line and no-ops, so this is safe to run unconditionally):
+**Run the probe** (a kernel script that reads the store via the script-plane `plain-files` backend — `KNOWLEDGE_STORE_ROOT` (see `workflows/scripts/lib/knowledge_store.contract.md` for the default); a checkout with no vault prints one line and no-ops, so this is safe to run unconditionally):
 
 ```
 workflows/scripts/drain/vault_hygiene_report.sh --format entry
@@ -662,12 +662,12 @@ The raw transcript's terminal home is the **git-tracked archive at `~/dev/founda
 
 Move the processed stubs from `Sessions/_inbox/<filename>.md` into the git store. **Archive the whole run's stubs in ONE batched archiver call** — `archive-session.sh` accepts multiple stub paths and lands them as a **single commit / single PR** (the retention sweep + `INDEX.md` regen + landing attempt run once for the batch). This is the #487 fix: a per-stub call would open one PR per stub, each re-regenerating `INDEX.md` on adjacent same-date lines and conflicting in the merge queue. **All vault access stays on MCP; the filesystem copy is done by the archiver script (no model Write-tool involvement):**
 
-1. **Collect the cleanly-processed stubs.** For **each** stub that completed Steps 1–4 without unhandled errors, derive its local filesystem path — like Step 1's scanner call, a **raw on-disk path outside the knowledge_store seam**: the archiver reads vault files directly from disk (the MCP-only rule binds Claude, not shell scripts, and the obsidian backend's REST API has no filesystem-root semantics to route through). Travis's default: `~/dev/mind/Sessions/_inbox/<filename>.md`. **Exclude** any stub that failed mid-process — leave it in `_inbox/` for the next run; it is not part of this batch.
+1. **Collect the cleanly-processed stubs.** For **each** stub that completed Steps 1–4 without unhandled errors, derive its local filesystem path — like Step 1's scanner call, a **raw on-disk path outside the knowledge_store seam**: the archiver reads vault files directly from disk (the MCP-only rule binds Claude, not shell scripts, and the obsidian backend's REST API has no filesystem-root semantics to route through). Resolves under the knowledge store root, e.g. `$KNOWLEDGE_STORE_ROOT/Sessions/_inbox/<filename>.md`. **Exclude** any stub that failed mid-process — leave it in `_inbox/` for the next run; it is not part of this batch.
 2. Run the archiver **once, passing every collected stub path as a separate argument**. It copies each into `meta/sessions/archive/<basename>` via `cp` (printing `archived: <basename>` per stub), then runs the retention sweep (gzip cold logs), regenerates `INDEX.md` **once**, and makes a **single** landing attempt for the whole batch:
    ```
    bash ~/dev/foundation/workflows/scripts/sessions/archive-session.sh \
-     ~/dev/mind/Sessions/_inbox/<stub-1>.md \
-     ~/dev/mind/Sessions/_inbox/<stub-2>.md \
+     $KNOWLEDGE_STORE_ROOT/Sessions/_inbox/<stub-1>.md \
+     $KNOWLEDGE_STORE_ROOT/Sessions/_inbox/<stub-2>.md \
      …                                            # every cleanly-processed stub
    ```
    It is idempotent, touches **only the `meta/sessions/archive/` path, and only on the default branch (`main`)**. Because `main` is protected (the #330 merge-queue ruleset rejects a direct push — #404), on a protected `main` the archiver **lands the batch on a branch + PR + queue** rather than a bare local commit (which would be stranded local-only). Its **final** stdout line is a single durability verdict **for the whole batch** (the per-stub `archived:` lines above it are progress, not the verdict):

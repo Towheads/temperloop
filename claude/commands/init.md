@@ -1,5 +1,5 @@
 ---
-description: Initialize a new CLAUDE.md file with codebase documentation, then create a project context placeholder in the Obsidian vault at ~/dev/mind.
+description: Initialize a new CLAUDE.md file with codebase documentation, then create a project context placeholder in the knowledge store (see workflows/scripts/lib/knowledge_store.contract.md).
 ---
 
 Please analyze this codebase and create a CLAUDE.md file, which will be given to future instances of Claude Code to operate in this repository.
@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## After creating CLAUDE.md: Create Obsidian project placeholder
 
-Once CLAUDE.md has been written, create a project context placeholder in the Obsidian vault at `~/dev/mind`.
+Once CLAUDE.md has been written, create a project context placeholder in **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`.
 
 Steps:
 1. Derive the project name from the current working directory name (e.g. `/Users/alice/dev/BusinessSearch` → `BusinessSearch`). Convert hyphenated/underscored names to title case (e.g. `my-app` → `My App`).

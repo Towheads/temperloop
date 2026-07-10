@@ -17,7 +17,7 @@ reviews the file at each daily check-in; the operator promotes promising candida
 ## Path
 
 ```
-~/dev/mind/Context/pipeline - candidate tells.md
+Context/pipeline - candidate tells.md   # relative to the knowledge store root
 ```
 
 This is a **vault note** (not a git-tracked file) so it persists across machines

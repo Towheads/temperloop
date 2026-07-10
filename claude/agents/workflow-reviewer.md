@@ -17,7 +17,7 @@ The prose-workflow invariants you review against:
 - **Silent loss is the highest-cost failure** — a failed vault/Things/memory write produces no stack trace; every external call needs a *named* failure path (`Patterns/foundation - Design for failure modes`).
 - **`claude/` is the source of truth** for `~/.claude/`; the board toolkit's source is `workflows/scripts/board/`, never a consumer's synced copy; raw telemetry is append-only.
 - **Live/Drain pairing** — a real-time extraction rule and its `tidy` Step 3 backstop are one feature; CI (`validate-live-drain.sh`) owns the mechanical presence check, you own *equivalence*.
-- **Vault access is MCP-only** (`mcp__obsidian__*` / `mcp__obsidian-builtin__*`), never `ls`/`find`/`grep`/`Read` against `~/dev/mind`.
+- **Vault access is MCP-only** (`mcp__obsidian__*` / `mcp__obsidian-builtin__*`), never `ls`/`find`/`grep`/`Read` against the vault's filesystem path directly.
 
 ## Scope
 
@@ -43,7 +43,7 @@ Each item is a documented foundation invariant. Cite the source note in your fin
 
 **7. Step coherence** — preconditions are stated, ordering respects dependencies, no two steps contradict, and harness caveats are honored where relevant (e.g. exit plan mode before spawning a state-mutating subagent — `Mistakes/foundation - Subagent harness stops + plan-mode re-activation`).
 
-**8. Vault access discipline** — vault reads/writes go through `mcp__obsidian__*` / `mcp__obsidian-builtin__*` (semantic search on the mcp-tools server, other ops on the built-in REST server); never `ls`/`find`/`grep`/`Read` against `~/dev/mind`. (user-memory `feedback_vault_mcp_only`.)
+**8. Vault access discipline** — vault reads/writes go through `mcp__obsidian__*` / `mcp__obsidian-builtin__*` (semantic search on the mcp-tools server, other ops on the built-in REST server); never `ls`/`find`/`grep`/`Read` against the vault's filesystem path directly. (user-memory `feedback_vault_mcp_only`.)
 
 ## Output
 

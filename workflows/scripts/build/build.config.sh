@@ -278,21 +278,24 @@ fi
 # `:=` fallback for a non-vendoring checkout, exactly as FUNNEL_MERGE_PENDING_LABEL does.
 : "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
 
-# ── knowledge_store root (foundation #777, Epic A #762 "kernel split") ──────
+# ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
+#    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
 # `KNOWLEDGE_STORE_ROOT`'s KERNEL default (an XDG per-user data dir, correct
-# for a stranger's fresh install with no vault) — that file is not edited by
-# script-plane callers routing onto the seam. THIS repo's own environment is
-# different: the operator's structured notes live in an Obsidian vault at
-# $HOME/dev/mind (today's behavior, unconditionally, predating the seam), so
-# this is the ONE place that foundation-specific default is seeded — every
-# script-plane caller that sources this file before `ks_root` (or shells out
-# through it, e.g. parse_run_status.py's find_knowledge_store_root()) resolves
-# the SAME value a caller reading `~/dev/mind` directly used to hardcode,
-# without any of them repeating the literal. A real environment override (a
-# shell export, `.env`, machine conf, or build.config.local.sh — both sourced
-# above) still wins per the `:=` idiom.
-: "${KNOWLEDGE_STORE_ROOT:=$HOME/dev/mind}"
+# for a stranger's fresh install with no vault). THIS file — the kernel's own
+# tracked rung-5 default set — deliberately does NOT re-seed a different
+# default here: a personal vault path is exactly the kind of operator-
+# specific value the six-rung ladder's rungs 3/4 (machine conf /
+# build.config.local.sh, both sourced ABOVE this point) exist for, or —
+# for a downstream repo that vendors this file — its own edited copy of
+# this line (rung 5's own "consuming repo that vendors/edits its own copy"
+# case, per the ladder writeup above). An operator whose structured notes
+# live in a real vault sets `KNOWLEDGE_STORE_ROOT` at one of those rungs;
+# this kernel file simply leaves the var unset here and lets
+# `knowledge_store.sh`'s own generic default apply when nothing upstream
+# has claimed it. (Formerly this file hardcoded a personal vault path here
+# as a rung-5 default — removed as scrub debt; see git history on this
+# line for the prior literal.)
 
 # ── Funnel label provisioning (a repo-onboarding prerequisite) ───────────────
 # BOTH funnel labels above (`funnel-merge-pending`, `funnel-escalated`) must EXIST in
