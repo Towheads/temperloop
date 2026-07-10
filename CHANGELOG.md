@@ -14,6 +14,24 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-10
+
+Patch — an autonomous-funnel availability fix in `deploy-mini.sh`. **Contract
+surface untouched: safe pull, no overlay action.** Deliberately **not** tagged
+`BREAKING`.
+
+### Fixed
+
+- `deploy-mini.sh` now auto-recovers a checkout stranded on an **already-merged**
+  feature branch back to clean-on-main (`git merge-base --is-ancestor` = every
+  commit already contained in `origin/main` → `git switch main`, then the
+  existing ff-merge), instead of skipping any non-main checkout forever. A
+  canonical checkout left on a merged branch had been silently blocking the
+  funnel's clean-on-main merge tier (`funnel-drive.sh`) — observed as a **0%
+  merge rate over several days** in a live deployment. An **unmerged** feature
+  branch (real in-flight work) or a dirty tree is still skipped, never reset —
+  no risk to an active session. (#166)
+
 ## [0.9.0] - 2026-07-06
 
 Epic temperloop#94 — the **communication-style / message-presentation layer**.
