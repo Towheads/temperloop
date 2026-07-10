@@ -29,6 +29,18 @@ Deliberately **not** tagged `BREAKING` (nothing existing changes shape).
   conf > tracked repo conf > kernel built-in default) is documented in the
   new [`docs/config-precedence.md`](docs/config-precedence.md).
 
+- The **kernel knob registry** (temperloop#164/#169, design decision D2): a
+  new grep/cut-parseable `workflows/scripts/config/knob-registry.tsv`
+  cataloging every existing tunable knob (162 rows) with its current shell
+  default, plus `workflows/scripts/config/knob-registry-lib.sh`, a
+  union-aware parse helper that reads the kernel table and unions an
+  optional overlay extension TSV when present (mirroring
+  `validate-live-drain.sh`'s kernel-table + overlay-extension pattern). A
+  reserved `TEMPERLOOP_PROFILE` row (not yet read anywhere) holds the name
+  for a later profile mechanism. This is populate-only: no caller routes
+  through the registry yet, and no equality lint exists yet (a later item,
+  registry-config-lints).
+
 ### Fixed
 
 - `build.config.local.sh` (and its `.example` template) now use the `:=`

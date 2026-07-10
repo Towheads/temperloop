@@ -31,6 +31,7 @@ contract-surface change (minor-or-breaking, never a patch):
 | **CLI surface** | callers of `bin/foundation` and its subcommands (`init`, `eject`, `try`, `report`, `baseline-snapshot`) | `bin/foundation`, `bin/subcommands/*` |
 | **Compose / pin seam** | the overlay's `install-claude` compose (`CLAUDE.kernel.md` + overlay), `.kernel-pin` format, the kernel-manifest classification | `workflows/scripts/install-claude-md.sh`, `.kernel-pin`, `kernel-manifest.txt` |
 | **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
+| **Knob registry** | callers reading `workflows/scripts/config/knob-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — a future `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/knob-registry.tsv`, `workflows/scripts/config/knob-registry-lib.sh` |
 
 Renaming/removing a board function, changing a hook's I/O, renaming the
 `checks` job, changing `.kernel-pin`'s format, or dropping a documented
@@ -38,6 +39,17 @@ command step are **breaking**. Adding a new board command, a new hook, a new
 optional `plan-schema` field, or a new gate that no existing overlay is
 required to satisfy is **additive**. Fixing a bug with none of the above is a
 **patch**.
+
+**Knob registry, specifically** (finer-grained than the generic rule above,
+since a TSV row is itself structured data a caller can depend on at three
+different granularities): a **column change** (renaming/removing/reordering
+one of the six `name|default|type|layer|owning-script|doc` fields, or a
+parse-helper function signature/output-shape change) is **breaking** — every
+reader of the row shape must adapt. A **new knob row** (a name no reader
+already depended on) is **additive**. A **default-value change on an
+existing row** is **minor** — a stranger who dot-sources the previous
+default should re-check it, so it is never a bare **patch**, but it doesn't
+change the row shape so it isn't breaking either.
 
 ## Bump rules
 

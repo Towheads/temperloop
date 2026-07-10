@@ -127,6 +127,14 @@ KERNEL_GATES=(
   # gh_cmd` seam (this file's own live-fallback injection point), zero
   # network. Same direct-`bash` form as the issue-corpus gate above.
   "bash workflows/scripts/lib/tests/test_issue_marker_probe.sh"
+  # Knob registry (temperloop#164/#169 D2): parse/union tests for
+  # workflows/scripts/config/knob-registry-lib.sh — parses the real kernel
+  # TSV clean, unions a synthetic overlay fixture (add + redefault rows),
+  # and rejects malformed rows (bad field count, unknown type, an overlay
+  # add/kernel-name collision, an orphaned redefault). Same direct-`bash`
+  # form as the knowledge_search gates above (new workflows/scripts/<dir>
+  # lib, no Makefile target needed — the kernel Makefile is generator-owned).
+  "bash workflows/scripts/config/tests/test_knob_registry.sh"
   "make test-scan-stub"
   # Vault-hygiene probe (foundation #959): fixture-vault suite for
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector

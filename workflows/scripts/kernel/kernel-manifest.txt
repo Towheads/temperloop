@@ -183,6 +183,12 @@ overlay workflows/scripts/build/tests/test_rework_snapshot.sh
 kernel workflows/scripts/lib/*
 kernel workflows/scripts/drain/*
 kernel workflows/scripts/install/*
+# Knob registry (temperloop#164/#169 D2): the kernel TSV of every tunable
+# knob + the union-aware parse helper. A stranger's kernel-only checkout
+# needs both the registry and the parser (a future `temperloop config list`
+# and CI equality lint both read it) — kernel content, no org/vault subject
+# matter.
+kernel workflows/scripts/config/*
 # The manifest + coverage checker classify THEMSELVES kernel: a stranger's
 # repo needs the coverage gate itself, not just the classifications it holds.
 kernel workflows/scripts/kernel/*
