@@ -80,9 +80,10 @@ ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
 # (surfacing a missing wiring loudly rather than silently blanking the knob).
 # ---------------------------------------------------------------------------
 render_kernel_doc() {
-  local kernel_file="$1" content wip_cap
+  local kernel_file="$1" content wip_cap epic_subunit_floor
 
   wip_cap=""
+  epic_subunit_floor=""
   if [ -f "$build_config" ]; then
     wip_cap="$(
       set -e
@@ -90,11 +91,19 @@ render_kernel_doc() {
       source "$build_config"
       printf '%s\n' "$FUNNEL_WIP_CAP"
     )" || wip_cap=""
+    epic_subunit_floor="$(
+      set -e
+      # shellcheck source=/dev/null
+      source "$build_config"
+      printf '%s\n' "$EPIC_MIN_SUBUNITS"
+    )" || epic_subunit_floor=""
   fi
   [ -n "$wip_cap" ] || wip_cap=3   # build.config.sh's own default, if unresolved
+  [ -n "$epic_subunit_floor" ] || epic_subunit_floor=3   # build.config.sh's own default, if unresolved
 
   content="$(cat "$kernel_file")"
   content="${content//\{\{WIP_CAP\}\}/$wip_cap}"
+  content="${content//\{\{EPIC_MIN_SUBUNITS\}\}/$epic_subunit_floor}"
   printf '%s' "$content"
 }
 

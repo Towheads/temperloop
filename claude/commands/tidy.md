@@ -29,11 +29,12 @@ Every step in this command has a real-time counterpart that runs during the live
 
 1. Confirm `mcp__obsidian__*` is loaded — it is **required** (the vault is the whole point); if missing, surface that and stop. Confirm `mcp__things__*` is loaded too, but treat it as **optional under unattended operation**: on a headless nightly host the Things app may not be running, and its absence must **not** abort the vault extraction + archive + snapshot. If Things is missing, **degrade** — skip Step 4 (task generation) and any Things dedup/search, note `Things unavailable — task generation skipped` in the Step 6 summary, and continue.
 2. List `Sessions/_inbox/` via `mcp__obsidian__list_vault_files`. **Only `*.md` files are stubs** — ignore any `.drain.lock.*` entries here and everywhere below. If there are no `*.md` stubs, say so in one line and exit (don't acquire the lock — there's nothing to race over).
-3. **Acquire the cross-machine drain lock.** Multiple machines share `Sessions/_inbox/` via Obsidian Sync, so two `/tidy` runs (e.g. evening rituals on two machines within a minute of each other) can process the same backlog at once and double-create Things tasks (the Step 4 dedup is search-then-add, not atomic across concurrent runs). Sync is eventually-consistent (~seconds to a minute), so a plain lockfile is racy — the protocol is **acquire → wait for Sync → elect**, earliest timestamp wins:
+3. **Source the batch-pipeline config (best-effort).** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the drain-lock timing knobs (`TIDY_SYNC_WAIT`, `TIDY_LOCK_STALE_AFTER`) into scope, with any pre-set env value still overriding, before step 4 below uses them. If the file isn't found, proceed — 4c/4d keep their inline `${VAR:-default}` fallbacks.
+4. **Acquire the cross-machine drain lock.** Multiple machines share `Sessions/_inbox/` via Obsidian Sync, so two `/tidy` runs (e.g. evening rituals on two machines within a minute of each other) can process the same backlog at once and double-create Things tasks (the Step 4 dedup is search-then-add, not atomic across concurrent runs). Sync is eventually-consistent (~seconds to a minute), so a plain lockfile is racy — the protocol is **acquire → wait for Sync → elect**, earliest timestamp wins:
    a. Get identity (Bash): `EPOCH=$(date +%s)`, `HOST=$(hostname -s)`.
    b. Write `Sessions/_inbox/.drain.lock.<HOST>` containing one line `<EPOCH> <HOST> <this session-id>` (via `mcp__obsidian-builtin__vault_write`). **One file per host** — never a single shared lock file (concurrent writers would clobber it).
-   c. Wait ~90s to let Sync propagate every host's lock in both directions. **Do not run a foreground `sleep 90` (Bash) — the harness blocks foreground sleeps.** Instead wait via a backgrounded sleep: run `sleep 90` with `run_in_background: true` and let it re-invoke you on exit (or, equivalently, poll with `Monitor` on an until-loop with a 90s deadline). *(Override: if the user passed `--force-now`, skip the wait + election and proceed — a single-machine escape hatch for when you know no other host is draining.)*
-   d. Re-list `_inbox/` and read every `.drain.lock.*` file. **Discard and delete any lock whose `<EPOCH>` is more than 30 min old** (a crashed prior run — never let it block forever). Among the rest, the winner is the **lowest `<EPOCH>`**; tie-break on the lexicographically smallest `<HOST>`.
+   c. Wait `TIDY_SYNC_WAIT` to let Sync propagate every host's lock in both directions. **Do not run a foreground `sleep "$TIDY_SYNC_WAIT"` (Bash) — the harness blocks foreground sleeps.** Instead wait via a backgrounded sleep: run `sleep "$TIDY_SYNC_WAIT"` with `run_in_background: true` and let it re-invoke you on exit (or, equivalently, poll with `Monitor` on an until-loop with a `TIDY_SYNC_WAIT` deadline). *(Override: if the user passed `--force-now`, skip the wait + election and proceed — a single-machine escape hatch for when you know no other host is draining.)*
+   d. Re-list `_inbox/` and read every `.drain.lock.*` file. **Discard and delete any lock whose `<EPOCH>` is older than `TIDY_LOCK_STALE_AFTER`** (a crashed prior run — never let it block forever). Among the rest, the winner is the **lowest `<EPOCH>`**; tie-break on the lexicographically smallest `<HOST>`.
    e. If **my** lock is the winner → proceed to Step 1. Otherwise → delete my own `.drain.lock.<HOST>` and exit with one line: "another host (`<winner>`) is draining — yielding."
 
 ## Step 1 — Scan each stub (consume the scan report)
@@ -273,7 +274,7 @@ reconcile --status --board 4
 
 Each run is read-only (one cached-bypassed board resolve + two flat-cost REST list reads — no per-item GraphQL burst). Collect the lines under three sections of its output:
 
-- **`stale claims`** — In Progress, stamped to a **dead same-host session** (its Claude transcript is absent or untouched > 24h). The drain machine *can* verify these — they are the release candidates.
+- **`stale claims`** — In Progress, stamped to a **dead same-host session** (its Claude transcript is absent or untouched beyond `reconcile.sh`'s own `RECONCILE_STALE_AFTER_SECS` cutoff). The drain machine *can* verify these — they are the release candidates.
 - **`orphaned In-Progress`** — In Progress with an **empty** owner stamp (a half-landed claim, GH #103). Also release candidates.
 - **`foreign claims`** — In Progress on **another host**, whose liveness can't be checked from here. **Report-only, never released from this machine** — the owning host catches them on its own next drain.
 
@@ -301,7 +302,7 @@ A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing e
 workflows/scripts/drain/vault_hygiene_report.sh --format entry
 ```
 
-It checks: `Sessions/_inbox` stub count + oldest age (alarm > 20 stubs or oldest > 48h); closed plans (`status: done|complete|abandoned`) still resident in `Plans/` (should be archived + removed); named ledgers over their line cap; zero-byte / double-dot / stray-absolute-path garbage files; and a stale-`last_verified` tally (informational). With `--format entry` it prints a ready-to-append `### <ts> · vault hygiene · <host>` block carrying **Status: open** **iff** something alarmed, and prints **nothing** when the vault is clean.
+It checks: `Sessions/_inbox` stub count + oldest age (alarm above `INBOX_MAX_STUBS` stubs or `INBOX_MAX_AGE_H` hours); closed plans (`status: done|complete|abandoned`) still resident in `Plans/` (should be archived + removed); named ledgers over their line cap; zero-byte / double-dot / stray-absolute-path garbage files; and a stale-`last_verified` tally (informational). With `--format entry` it prints a ready-to-append `### <ts> · vault hygiene · <host>` block carrying **Status: open** **iff** something alarmed, and prints **nothing** when the vault is clean.
 
 **Record the finding.** If the command printed a block (alarms present), append it verbatim to the vault-hygiene review surface `Context/pipeline - vault hygiene report.md` (in the knowledge store) via `mcp__obsidian-builtin__vault_append` — it creates the note if absent. If the command printed nothing, the vault is clean: **surface nothing** and move on (default to silence).
 
@@ -708,7 +709,7 @@ Always output only the summary block — this run is unattended (see the intro).
 
 ## Step 7 — Release the drain lock
 
-Delete your own `Sessions/_inbox/.drain.lock.<HOST>` via `mcp__obsidian__delete_vault_file`. Do this **unconditionally** at the end of the run — even if some stubs were left in `_inbox/` for the next run — so the lock never blocks a later drain. (A crash that skips this is backstopped by Step 0.3d's 30-min staleness cutoff.) Skip if you took the `--force-now` path and never wrote a lock.
+Delete your own `Sessions/_inbox/.drain.lock.<HOST>` via `mcp__obsidian__delete_vault_file`. Do this **unconditionally** at the end of the run — even if some stubs were left in `_inbox/` for the next run — so the lock never blocks a later drain. (A crash that skips this is backstopped by Step 0 item 4d's `TIDY_LOCK_STALE_AFTER` staleness cutoff.) Skip if you took the `--force-now` path and never wrote a lock.
 
 ## Step 8 — Snapshot the vault (silent)
 

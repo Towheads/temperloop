@@ -36,8 +36,11 @@
 set -euo pipefail
 
 # ── Tunable caps (no machine cap existed before this script — foundation #959) ──
-INBOX_MAX_STUBS=20          # alarm above this many Sessions/_inbox stubs
-INBOX_MAX_AGE_H=48          # alarm if the oldest stub is older than this (hours)
+# INBOX_MAX_STUBS / INBOX_MAX_AGE_H are registered knobs (knob-registry.tsv) —
+# tidy.md's own prose names them symbolically rather than restating the
+# values (prose-tunables-migration, temperloop#164/#169 D3 follow-up).
+: "${INBOX_MAX_STUBS:=20}"    # alarm above this many Sessions/_inbox stubs
+: "${INBOX_MAX_AGE_H:=48}"    # alarm if the oldest stub is older than this (hours)
 STALE_VERIFIED_DAYS=90      # last_verified older than this counts as stale
 # Per-ledger line caps (entries ~ non-blank lines): a ledger over its cap is an
 # alarm to prune at check-in. Indexed arrays (bash-3.2 safe) — LEDGER_PATHS[i]
