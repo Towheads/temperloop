@@ -201,5 +201,40 @@ if ! env KERNEL_MANIFEST_ROOT="$NOBASE" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEM
   fail "7: an unresolvable base should skip the live scan and exit 0"
 fi
 echo "PASS: 7 no-base run skips the live scan and exits 0"
+git -C "$REPO" -c core.hooksPath=/dev/null checkout -q main 2>/dev/null || git -C "$REPO" -c core.hooksPath=/dev/null checkout -q "$BASE_SHA"
+git -C "$REPO" -c core.hooksPath=/dev/null reset -q --hard "$BASE_SHA"
+
+# --- 8: --path scope — overlay usage (scan only the vendored subtree) --------
+# A private overlay runs the guard scoped to kernel/. A token added OUTSIDE the
+# scope (an overlay-private file) is ignored; a token INSIDE the scope (a
+# vendored kernel/ file) is still caught. Whole-tree behavior is the default.
+mkdir -p "$REPO/kernel/sub" "$REPO/overlay"
+{ echo keep > "$REPO/kernel/sub/keep.txt"; echo keep > "$REPO/overlay/keep.txt"; }
+commit "scope fixture dirs"
+SCOPE_PATH_BASE="$(git -C "$REPO" rev-parse HEAD)"
+# token only in an OUT-OF-SCOPE overlay file
+echo "org = $LEAK_ORG" > "$REPO/overlay/private.env"
+commit "token in out-of-scope overlay file"
+if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+        LEAK_GUARD_BASE="$SCOPE_PATH_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
+        bash "$GUARD" --path kernel/ >/dev/null 2>&1; then
+  fail "8a: a token in an OUT-OF-SCOPE file must be ignored under --path kernel/"
+fi
+# sanity: the SAME diff, unscoped, MUST fail (proves the token really is a leak)
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+       LEAK_GUARD_BASE="$SCOPE_PATH_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
+       bash "$GUARD" >/dev/null 2>&1; then
+  fail "8b: sanity — the out-of-scope token IS a leak and must fail an unscoped scan"
+fi
+# token in an IN-SCOPE kernel/ file -> scoped scan still catches it (also via env)
+echo "org = $LEAK_ORG" > "$REPO/kernel/sub/leak.env"
+commit "token in in-scope kernel file"
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+       LEAK_GUARD_BASE="$SCOPE_PATH_BASE" LEAK_GUARD_SKIP_SECRETS=1 LEAK_GUARD_PATHS="kernel/" \
+       bash "$GUARD" >/dev/null 2>&1; then
+  fail "8c: a token in an IN-SCOPE kernel/ file must still be caught when scoped"
+fi
+echo "PASS: 8 --path/LEAK_GUARD_PATHS scopes the scan to the vendored subtree (out-of-scope ignored, in-scope caught)"
+git -C "$REPO" -c core.hooksPath=/dev/null reset -q --hard "$BASE_SHA"
 
 echo "PASS: all check-pr-leak-guard.sh fixture tests"
