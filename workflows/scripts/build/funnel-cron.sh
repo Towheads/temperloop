@@ -115,7 +115,7 @@ REWORK_SNAPSHOT="${REWORK_SNAPSHOT_BIN:-$HERE/../rework-snapshot.sh}"
 # checkout silently frozen at clone-time drift left no trace. Empty = no failure to
 # report (the OK path re-execs into a fresh process that never sees this block).
 self_update_note=""
-if [ "${FUNNEL_CRON_SELF_UPDATE:-0}" = "1" ] && [ "${FUNNEL_CRON_SELF_UPDATED:-0}" != "1" ]; then
+if [ "${FUNNEL_CRON_SELF_UPDATE:-0}" = "1" ] && [ "${FUNNEL_CRON_SELF_UPDATED:-0}" != "1" ]; then  # knob:exempt — FUNNEL_CRON_SELF_UPDATED is an internal re-exec guard set by the re-exec itself, not an operator default
   repo="${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}"
   su_err="$( ( cd "$repo" \
        && git fetch --quiet origin main \

@@ -128,7 +128,7 @@ EVAL_DENIAL_LOG	${XDG_STATE_DIR}/eval-board-adapter-denials.log	path	kernel	clau
 EVAL_RUN		bool	kernel	claude/hooks/board-adapter-guard.sh	Enables eval-mode record-and-deny (unset = normal interactive guard)
 KS_LIB_DIR	$HOME/dev/foundation/workflows/scripts/lib	path	kernel	claude/hooks/mcp-health-preflight.sh	Where the hook looks for knowledge_store.sh (personal-path-verbatim)
 KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE		path	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API key-file path
-MCP_HEALTH_API_BASE	https://127.0.0.1:27124	url	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API base URL override for the health preflight hook
+MCP_HEALTH_API_BASE	${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}	url	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API base URL override for the health preflight hook (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
 KNOWLEDGE_STORE_OBSIDIAN_API_BASE	https://127.0.0.1:27124	url	kernel	claude/hooks/session-start-drain.sh	Obsidian Local REST API base URL
 KERNEL_EDIT_ACK		bool	kernel	claude/hooks/subtree-edit-guard.sh	Build-worker bypass ack for editing vendored kernel/ paths directly
 KERNEL_UPDATE_ROOT	$REPO_ROOT	path	kernel	scripts/update-kernel.sh	Root of the consuming repo update-kernel.sh operates on
@@ -139,10 +139,10 @@ KERNEL_ALLOW_BREAKING	0	bool	kernel	scripts/update-kernel.sh	Acknowledge and pro
 KERNEL_UPDATE_ASSUME_TTY	auto	enum	kernel	scripts/update-kernel.sh	Force interactive(1)/unattended(0) confirmation instead of auto-detecting a TTY (auto|1|0)
 KERNEL_UPDATE_DRY_RUN	0	bool	kernel	scripts/update-kernel.sh	Run the breaking-delta gate but skip the actual subtree pull
 GH_CALL_CONTEXT	capture	label	kernel	workflows/scripts/board/capture.sh	Attribution tag for the gh call-logger shim
-ISSUE_TOUCHES_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/board/capture.sh	Sink dir for the issue-touches raw-lake stream (personal-path-verbatim)
+ISSUE_TOUCHES_RAW_DIR	$ISSUE_TOUCHES_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/capture.sh	Sink dir for the issue-touches raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 SUBSET_HOST_LABEL	$(hostname -s)	string	kernel	workflows/scripts/board/capture.sh	Host label recorded in issue-touch/telemetry records
-CLAIMS_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/board/claim.sh	Sink dir for the claims raw-lake stream (personal-path-verbatim)
-DEPLOY_MINI_CHECKOUTS	$FOUNDATION $HOME/dev/stageFind $HOME/dev/batch/stageFind $HOME/dev/batch2/stageFind	string	kernel	workflows/scripts/board/deploy-mini.sh	Space-separated checkouts deploy-mini.sh keeps current (personal-path-verbatim)
+CLAIMS_RAW_DIR	$CLAIMS_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/claim.sh	Sink dir for the claims raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+DEPLOY_MINI_CHECKOUTS	$DEFAULT_CHECKOUTS	string	kernel	workflows/scripts/board/deploy-mini.sh	Space-separated checkouts deploy-mini.sh keeps current (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/scripts/board/deploy-mini.sh	Single-instance lock dir for deploy-mini.sh
 DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
 BOARDS_CONF_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (rung 3; grandfathered `foundation` namespace per docs/config-precedence.md)
@@ -168,8 +168,9 @@ CLAUDE_PROJECTS_DIR	$HOME/.claude/projects	path	kernel	workflows/scripts/board/r
 PLAN_ARCHIVE_BRANCH	chore/plan-archive	label	kernel	workflows/scripts/build/archive-plan.sh	Stable branch name reused for every plan-archive PR
 PLAN_ARCHIVE_GH	gh	path	kernel	workflows/scripts/build/archive-plan.sh	gh binary override fed into the shared land-on-protected-main kernel
 PLAN_ARCHIVE_REQUIRES_PR		bool	kernel	workflows/scripts/build/archive-plan.sh	Test seam forcing the protected-branch (PR) landing path
+STAGEFIND_HOST_LABEL	$(hostname -s)	string	kernel	workflows/scripts/build/board-mirror.sh	Legacy/back-compat host-label override, nested inside SUBSET_HOST_LABEL's own fallback (registry-maintenance fix, registry-config-lints — row was missing)
 BUILD_CONFIG_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh	path	kernel	workflows/scripts/build/build.config.sh	Machine-conf path (rung 3 discovery path; its own default is the rung-6 literal)
-BUILD_CONFIG_LOCAL	<dir-of-this-file>/build.config.local.sh	path	kernel	workflows/scripts/build/build.config.sh	Untracked repo-local conf path (rung 4 discovery path; its own default is the rung-6 literal)
+BUILD_CONFIG_LOCAL	$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.config.local.sh	path	kernel	workflows/scripts/build/build.config.sh	Untracked repo-local conf path (rung 4 discovery path; its own default is the rung-6 literal; registry-maintenance fix, registry-config-lints — command substitution recorded verbatim, was placeholder-ized)
 BUILD_QUOTA_PAUSE_PCT	10	pct	tracked-repo	workflows/scripts/build/build.config.sh	Pause build/sweep when remaining 5h quota drops below this percent
 BUILD_QUOTA_CACHE	$HOME/.claude/rate-limits.json	path	tracked-repo	workflows/scripts/build/build.config.sh	Where status-line.sh persists the live rate-limit snapshot
 BUILD_QUOTA_WAIT_BUFFER	60	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Seconds waited past a quota window's reset before resuming
@@ -199,8 +200,8 @@ FUNNEL_DRIVE_MERGE_SETTINGS	$HERE/funnel-drive-merge.settings.json	path	kernel	w
 ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
 ENV_RECONCILE_AGENT_LOG_DIR	$HOME/Library/Logs	path	kernel	workflows/scripts/build/env-reconcile.sh	Where launchd agent logs are read from
 ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S	86400	seconds	kernel	workflows/scripts/build/env-reconcile.sh	Default expected cadence for a launchd agent with no explicit interval
-ENV_RECONCILE_CRON_CHECKOUTS	$HOME/dev/foundation.cron $HOME/dev/batch/temperloop $HOME/dev/foundation-kernel	string	kernel	workflows/scripts/build/env-reconcile.sh	Cron-role checkouts env-reconcile scans (personal-path-verbatim)
-ENV_RECONCILE_OPERATOR_CHECKOUTS	$HOME/dev/foundation $HOME/dev/stageFind $HOME/dev/ssmobile $HOME/dev/subsetwiki	string	kernel	workflows/scripts/build/env-reconcile.sh	Operator-role checkouts env-reconcile scans (personal-path-verbatim)
+ENV_RECONCILE_CRON_CHECKOUTS	$DEFAULT_CRON_CHECKOUTS	string	kernel	workflows/scripts/build/env-reconcile.sh	Cron-role checkouts env-reconcile scans (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+ENV_RECONCILE_OPERATOR_CHECKOUTS	$DEFAULT_OPERATOR_CHECKOUTS	string	kernel	workflows/scripts/build/env-reconcile.sh	Operator-role checkouts env-reconcile scans (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 ENV_RECONCILE_LAUNCHD_DIRS		string	kernel	workflows/scripts/build/env-reconcile.sh	Explicit launchd-agent dirs override (else derived from the checkout lists)
 FUNNEL_GATE_BIN	$HERE/funnel-schedule-gate.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the schedule-gate sub-script
 FUNNEL_TICK_BIN	$HERE/funnel-tick.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the tick sub-script
@@ -220,7 +221,7 @@ FUNNEL_CHECKOUT_4	$HOME/dev/foundation	path	kernel	workflows/scripts/build/funne
 FUNNEL_CHECKOUT_5	$HOME/dev/ssmobile	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 5 items in (personal-path-verbatim)
 FUNNEL_CHECKOUT_6	$HOME/dev/subsetwiki	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 6 items in (personal-path-verbatim)
 FUNNEL_DEFAULT_CHECKOUT	${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}	path	kernel	workflows/scripts/build/funnel-drive.sh	Default checkout for cwd-agnostic safe actions with no board-specific checkout
-FUNNEL_SCHEDULE_FILE	$(ks_root)/Context/foundation - funnel schedule.md	path	kernel	workflows/scripts/build/funnel-overlap.sh	Vault schedule note funnel-schedule-gate/tick read (personal-path-verbatim — vault content path)
+FUNNEL_SCHEDULE_FILE	$(ks_root 2>/dev/null || true)/Context/foundation - funnel schedule.md	path	kernel	workflows/scripts/build/funnel-overlap.sh	Vault schedule note funnel-schedule-gate/tick read (personal-path-verbatim — vault content path; registry-maintenance fix, registry-config-lints — command substitution recorded verbatim, was missing the `2>/dev/null || true` fail-open suffix)
 FUNNEL_TICK_CADENCE	daily	enum	kernel	workflows/scripts/build/funnel-tick.sh	Documented cron cadence (surfaced only; cadence is enforced by the installed cron entry)
 FUNNEL_LOCK_DIR	/tmp/funnel-tick	path	kernel	workflows/scripts/build/funnel-tick.sh	Single-flight lockfile dir (one tick per host at a time)
 FUNNEL_LOCK_FILE	$FUNNEL_LOCK_DIR/tick.lock	path	kernel	workflows/scripts/build/funnel-tick.sh	Single-flight lockfile path
@@ -231,10 +232,18 @@ GATE_CI_POLL_INTERVAL	30	seconds	kernel	workflows/scripts/build/gate.sh	Interval
 GATE_CI_POLL_TIMEOUT	3600	seconds	kernel	workflows/scripts/build/gate.sh	Max time to wait for CI to go green
 GATE_MERGE_POLL_INTERVAL	15	seconds	kernel	workflows/scripts/build/gate.sh	Interval between post-merge confirmation polls
 GATE_MERGE_POLL_TIMEOUT	600	seconds	kernel	workflows/scripts/build/gate.sh	Max time to wait for a merge to confirm
-PLAN_API_BASE	https://127.0.0.1:27124	url	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API base URL for plan-note vault writes
-PLAN_API_KEY_FILE		path	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API key-file path for plan-note vault writes
-CMD_RUN_RAW_DIR	<repo-root>/meta/data/raw	path	kernel	workflows/scripts/emit-command-run.sh	Sink dir for the /sweep and /triage per-run telemetry stream
-GH_PERF_RAW_DIR	<repo-root>/meta/data/raw	path	kernel	workflows/scripts/emit-gh-perf.sh	Sink dir for the gh-performance raw-lake stream
+PLAN_API_BASE	${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}	url	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API base URL for plan-note vault writes (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
+PLAN_API_KEY_FILE	${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}	path	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API key-file path for plan-note vault writes (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
+KNOB_REGISTRY_FILE	$_KNOB_REGISTRY_LIB_DIR/knob-registry.tsv	path	kernel	workflows/scripts/config/knob-registry-lib.sh	Override path to the kernel knob-registry TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
+KNOB_REGISTRY_OVERLAY_FILE	$_KNOB_REGISTRY_LIB_DIR/knob-registry.overlay.tsv	path	kernel	workflows/scripts/config/knob-registry-lib.sh	Override path to the overlay extension TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
+KNOB_REGISTRY_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-knob-registry.sh	Root the equality lint resolves owning-script paths / the kernel file set against (fixture-test seam)
+KNOB_REGISTRY_MANIFEST_FILE		path	kernel	workflows/scripts/config/check-knob-registry.sh	Manifest passed to list-kernel-set.sh for the unregistered-knob sweep (empty = that script's own default; fixture-test seam)
+KNOB_REGISTRY_EXEMPT_FILE	$SCRIPT_DIR/knob-registry-exempt-files.txt	path	kernel	workflows/scripts/config/check-knob-registry.sh	Path to the sweep's wholesale file-exemption list (fixture-test seam)
+KNOB_PROSE_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-knob-prose.sh	Root the prose lint resolves claude/commands/*.md + claude/CLAUDE.kernel.md against (fixture-test seam)
+KNOB_PROSE_BASELINE_FILE	$SCRIPT_DIR/knob-prose-baseline.tsv	path	kernel	workflows/scripts/config/check-knob-prose.sh	Path to the prose lint's burn-down baseline TSV (fixture-test seam)
+KNOB_PROSE_EMIT_BASELINE	0	bool	kernel	workflows/scripts/config/check-knob-prose.sh	Maintenance mode: print ready-to-append baseline TSV rows instead of violation text
+CMD_RUN_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-command-run.sh	Sink dir for the /sweep and /triage per-run telemetry stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
+GH_PERF_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-gh-perf.sh	Sink dir for the gh-performance raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
 GH_CALL_LOG_FILE	$HOME/.cache/gh-calls-v2.tsv	path	kernel	workflows/scripts/gh-call-logger.sh	Where the gh-call-logger shim appends its per-call TSV rows
 GH_CALL_LOG_MAX_BYTES	16777216	int	kernel	workflows/scripts/gh-call-logger.sh	Rotation threshold for the gh-call-logger TSV
 GH_CALL_LOG	1	bool	kernel	workflows/scripts/gh-call-logger.sh	Opt-out (0) for zero-overhead passthrough with no timing/logging
@@ -246,6 +255,7 @@ KERNEL_DENYLIST_BASELINE_FILE	$SCRIPT_DIR/personal-token-denylist-baseline.tsv	p
 LEAK_GUARD_HEAD	HEAD	string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as HEAD for the added-lines diff
 LEAK_GUARD_BASE		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as the diff base
 LEAK_GUARD_PATHS		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Space-separated pathspec scope (empty = whole tree)
+LEAK_GUARD_RELATIVE		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Root dir for --relative path reporting (empty = repo toplevel; overlay vendoring sets it to the kernel/ subtree)
 LEAK_GUARD_SKIP_SECRETS	0	bool	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Skip the gitleaks secrets-scan half of the guard
 GITLEAKS_BIN		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Use this gitleaks binary verbatim instead of resolving one
 CHECK_PRODUCER_EGRESS_KERNEL_ROOT	$(cd "$SCRIPT_DIR/../../.." && pwd)	path	kernel	workflows/scripts/kernel/check-producer-egress.sh	Kernel root the producer-egress checker scans

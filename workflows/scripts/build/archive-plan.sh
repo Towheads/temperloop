@@ -86,6 +86,6 @@ land_run populate_plan
 case "$LAND_RESULT" in
   committed)   echo "plan-archived: ${LAND_REV}${LAND_DETAIL:+ ($LAND_DETAIL)}" ;;
   pr-queued)   echo "plan-archive-pr-queued: $LAND_PR" ;;
-  *)           echo "plan-archive-skipped: ${LAND_DETAIL:-unknown}" ;;
+  *)           echo "plan-archive-skipped: ${LAND_DETAIL:-unknown}" ;;  # knob:exempt — LAND_DETAIL is an internal land-result field, not an operator default
 esac
 exit 0

@@ -1,0 +1,20 @@
+# knob-registry-exempt-files.txt — files WHOLESALE exempted from
+# check-knob-registry.sh's unregistered-knob sweep (temperloop#164/#169,
+# item registry-config-lints), one git-relative path per line. `#` starts a
+# comment; blank lines ignored. Mirrors
+# workflows/scripts/kernel/personal-token-denylist-exempt-files.txt's own
+# file-level exemption mechanism and its own stated rationale: a same-line
+# `# knob:exempt` marker (check-knob-registry.sh's per-line mechanism,
+# mirroring `# denylist:allow`) can't always be used safely — here, because
+# the seam-shaped text is emitted INSIDE a heredoc payload the script is
+# generating (a trailing marker comment would land inside the generated
+# file's own text and corrupt it), not because the checker's own file needs
+# to quote itself (contrast the denylist checker's OWN self-referential
+# exemption; this file has no such case today).
+
+# workflows/scripts/kernel/seed-kernel-repo.sh generates a Makefile fragment
+# via a heredoc; one generated line contains a make-escaped `$${FORCE_REHOME:-}`
+# shell seam meant for the OUTPUT Makefile's recipe text, not a live knob of
+# THIS script. A trailing `# knob:exempt` comment on that heredoc line would
+# be emitted verbatim into the generated Makefile recipe, corrupting it.
+workflows/scripts/kernel/seed-kernel-repo.sh

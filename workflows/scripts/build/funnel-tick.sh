@@ -438,7 +438,7 @@ read_ready_items() {
       # shellcheck source=/dev/null
       . "$lib"
       board_resolve "$board" >/dev/null 2>&1 || { echo '[]'; return; }
-      ready_items_from_json "${BOARD_ITEMS_JSON:-{\"items\":[]}}"
+      ready_items_from_json "${BOARD_ITEMS_JSON:-{\"items\":[]}}"  # knob:exempt — internal already-fetched board cache, not an operator default
     else
       echo '[]'
     fi

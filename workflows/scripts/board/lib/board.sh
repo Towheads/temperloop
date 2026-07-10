@@ -314,7 +314,7 @@ _board_cache_store_enabled() {
 # Every board `gh` call goes through here. Production runs real gh; tests
 # override this after sourcing (e.g. `_board_gh() { fake_gh "$@"; }`) to replay
 # fixtures. Mirrors lib/claim_marker.sh's `_claim_marker_tmux`.
-_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }
+_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }  # knob:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default
 
 # --- cross-process read cache (Projects-v2 GraphQL relief) ----------------
 # Every board read is a Projects-v2 GraphQL call against a 5,000-points/hr budget
@@ -923,7 +923,7 @@ _board_issues_set_field() {
   local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0
 
   issue="${item_id#ISSUE_}"
-  repo="$(board_repo "${BOARD_CURRENT:-}")" || {
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
     echo "board: _board_issues_set_field — no current board (call board_resolve_item first)" >&2
     return 1
   }
@@ -999,7 +999,7 @@ _board_issues_stamp_field() {
   local issue repo prefix target_label issue_json cur l already_present=0
 
   issue="${item_id#ISSUE_}"
-  repo="$(board_repo "${BOARD_CURRENT:-}")" || {
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
     echo "board: _board_issues_stamp_field — no current board (call board_resolve_item first)" >&2
     return 1
   }
