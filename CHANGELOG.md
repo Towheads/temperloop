@@ -16,9 +16,28 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [0.9.1] - 2026-07-10
 
-Patch — an autonomous-funnel availability fix in `deploy-mini.sh`. **Contract
-surface untouched: safe pull, no overlay action.** Deliberately **not** tagged
-`BREAKING`.
+Accumulated kernel work merged since 0.9.0 — the `deploy-mini` availability fix
+that prompted the release, plus additive tooling (a public-repo leak guard, a
+PR-enqueue helper, board-name `--board` resolution) and a batch of build / board
+/ funnel / triage fixes. **Contract surface only grows; nothing existing changes
+— safe pull, no overlay action.** Deliberately **not** tagged `BREAKING`.
+(Numbered `0.9.1` though it carries additive changes; pre-1.0 the CHANGELOG, not
+the version number, carries the pull-safety signal — and this pull is safe.)
+
+### Added
+
+- `check-pr-leak-guard.sh` — a diff-scoped, public-repo leak guard that scans a
+  PR's added lines for personal tokens / secrets, wired into the kernel quality
+  gates. (#121)
+- `pr-enqueue.sh` — a board helper for first-try PR create + merge-queue enqueue
+  + confirm. (#125)
+- `--board` now accepts board **names** (not just numbers), via a shared name
+  resolver. (#126)
+
+### Changed
+
+- `funnel-cron` Step 2.5 folds the `rework-snapshot` `REWORK_SUMMARY` into the
+  wake record. (#157)
 
 ### Fixed
 
@@ -31,6 +50,20 @@ surface untouched: safe pull, no overlay action.** Deliberately **not** tagged
   merge rate over several days** in a live deployment. An **unmerged** feature
   branch (real in-flight work) or a dirty tree is still skipped, never reset —
   no risk to an active session. (#166)
+- `board_item_milestone` — carry the milestone through the issues-only reshape.
+  (#155)
+- `triage` supports the issues-only board 7 (inference, active-milestone guard,
+  Seq skip). (#153)
+- The rung-5b funnel executor now sources the board adapter before its board
+  reads. (#151)
+- A dependency level's worktrees are created only **after** its depended-on PRs
+  have merged. (#128)
+- Raised the 3e.5 acceptance-gate Bash-tool timeout so the full suite completes.
+  (#127)
+- `build-level.mjs` spine push / worktree steps de-trip the auto-mode classifier
+  and null-guard a denied step. (#124)
+- Regression pin for the subtree-edit-guard realpath match through the build-dir
+  alias. (#156)
 
 ## [0.9.0] - 2026-07-06
 
