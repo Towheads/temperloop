@@ -86,7 +86,25 @@ for co in "${CHECKOUTS[@]}"; do
   fi
   branch="$(git -C "$co" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [ "$branch" != "main" ]; then
-    printf '  %-26s SKIP (on '\''%s'\'', not main)\n' "$label" "$branch"; continue
+    # F#1098: a checkout stranded on an ALREADY-MERGED feature branch (its PR merged,
+    # nothing unmerged) used to be SKIPPED here forever — silently blocking the funnel's
+    # clean-on-main merge tier for days (funnel-drive.sh refuses to merge from a non-main
+    # tree, and nothing ever reset the checkout — F#687). Auto-recover ONLY the provably
+    # safe case: a clean tree whose HEAD is fully contained in origin/main
+    # (`--is-ancestor` = every commit already merged) → switch to main and fall through to
+    # the ff-merge below. An UNMERGED feature branch (real in-flight work) or a dirty tree
+    # is still skipped, never reset — no risk to an active session. `--is-ancestor`
+    # detects the MERGE-commit method every build repo uses; a squash/rebase-merged branch
+    # would not read as an ancestor (no build repo squash-merges).
+    if [ -z "$(git -C "$co" status --porcelain 2>/dev/null)" ] \
+       && git -C "$co" fetch --quiet origin 2>/dev/null \
+       && git -C "$co" merge-base --is-ancestor HEAD origin/main 2>/dev/null \
+       && git -C "$co" switch --quiet main 2>/dev/null; then
+      printf '  %-26s RECOVERED (was on merged '\''%s'\'' → main; F#1098)\n' "$label" "$branch"
+      branch=main   # fall through to the ff-merge below
+    else
+      printf '  %-26s SKIP (on '\''%s'\'', not main)\n' "$label" "$branch"; continue
+    fi
   fi
   if [ -n "$(git -C "$co" status --porcelain 2>/dev/null)" ]; then
     printf '  %-26s SKIP (dirty — active work)\n' "$label"; continue

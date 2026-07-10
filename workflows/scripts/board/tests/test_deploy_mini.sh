@@ -62,13 +62,29 @@ out="$(run "$WORK/dirtyskip")" || true
 grep -q UNCOMMITTED "$WORK/dirtyskip/scripts/lib/board.sh" || fail "dirty working tree was clobbered"
 echo "$out" | grep -q "SKIP (dirty" || fail "dirty should report SKIP (dirty)"
 
-# --- 3. feature branch → SKIP ------------------------------------------------
+# --- 3. UNMERGED feature branch (real in-flight work) → SKIP, untouched ------
+# F#1098: the recovery below auto-resets ONLY a merged/contained branch. A branch
+# carrying a local commit NOT in origin/main is genuine work — it must stay put.
 setup_repo featskip yes; advance featskip
 GIT -C "$WORK/featskip" checkout -q -b feature/x
+echo "# local unmerged work" >>"$WORK/featskip/scripts/lib/board.sh"
+GIT -C "$WORK/featskip" add -A; GIT -C "$WORK/featskip" commit -qm "unmerged local"
 before="$(GIT -C "$WORK/featskip" rev-parse HEAD)"
 out="$(run "$WORK/featskip")" || true
-[ "$(GIT -C "$WORK/featskip" rev-parse HEAD)" = "$before" ] || fail "feature-branch checkout must NOT be pulled"
-echo "$out" | grep -q "not main" || fail "feature branch should report SKIP (not main)"
+[ "$(GIT -C "$WORK/featskip" rev-parse HEAD)" = "$before" ] || fail "unmerged feature-branch checkout must NOT be touched"
+[ "$(GIT -C "$WORK/featskip" branch --show-current)" = "feature/x" ] || fail "unmerged feature branch must stay checked out (not reset to main)"
+echo "$out" | grep -q "not main" || fail "unmerged feature branch should report SKIP (not main)"
+
+# --- 3b. MERGED/contained feature branch → RECOVERED to main + ff (F#1098) ----
+# The failure this fixes: a checkout stranded on an already-merged branch (its tip
+# fully contained in origin/main) used to be skipped forever, silently blocking the
+# funnel's clean-on-main merge tier. It must now be switched back to main and pulled.
+setup_repo featrecover yes; advance featrecover
+GIT -C "$WORK/featrecover" checkout -q -b feature/merged   # at c1, an ancestor of origin/main (c2)
+out="$(run "$WORK/featrecover")" || fail "merged-branch recovery run should exit 0"
+[ "$(GIT -C "$WORK/featrecover" branch --show-current)" = "main" ] || fail "merged feature branch must be recovered to main"
+[ "$(behind "$WORK/featrecover")" -eq 0 ] || fail "recovered checkout must be ff-pulled to current"
+echo "$out" | grep -q "RECOVERED" || fail "merged feature branch should report RECOVERED (got: $out)"
 
 # --- 4. absent path → SKIP, no error ----------------------------------------
 out="$(run "$WORK/does-not-exist")" || true
@@ -188,4 +204,4 @@ out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-repo
 echo "$out" | grep -q "board 9 (store absent)" || \
   fail "board 9 with no store on disk should report store absent (got: $out)"
 
-echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, skips dirty/feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
+echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
