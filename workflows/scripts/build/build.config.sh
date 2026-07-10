@@ -125,6 +125,15 @@ fi
 # in that doc). Change the pilot's WIP bound here, once, and both follow.
 : "${FUNNEL_WIP_CAP:=3}"
 
+# Epic-decomposition sub-unit threshold (prose-tunables-migration follow-up to
+# temperloop#183): a second "CLAUDE.md-resident knob" rendered at compose time
+# into claude/CLAUDE.kernel.md's Task-workflow section — "epic-sized" is
+# `{{EPIC_MIN_SUBUNITS}}`+ parallelizable sub-units (OR more than one
+# dependency level, which stays a structural/contract fact, not a separate
+# knob — see that section's own note). Same render seam as FUNNEL_WIP_CAP
+# above, in workflows/scripts/install-claude-md.sh.
+: "${EPIC_MIN_SUBUNITS:=3}"
+
 # Merge-backend SELECTION (temperloop#13): a free personal repo can't always
 # provision GitHub's native merge queue, so `gate.sh backend` chooses NATIVE
 # vs MANAGED. "auto" probes the repo's branch ruleset for a `merge_queue` rule
@@ -144,6 +153,31 @@ fi
 # catches any tail that outlasts them. Operator-present runs ignore this (they keep
 # the run_in_background + ScheduleWakeup path).
 : "${BUILD_HEADLESS_POLL_TIMEOUT:=540}"  # foreground CI/MERGED poll bound (s), headless path
+
+# ── Command-spec prose knobs (prose-tunables-migration, temperloop#164/#169
+#    D3 follow-up) ──────────────────────────────────────────────────────────
+# These knobs back a value that previously lived ONLY in a command spec's
+# prose (no shell seam at all — the D3 "prose names a knob, never states its
+# value" convention had nothing to point at). Each command spec now sources
+# THIS file at its own Step 0 (the same worked shape as build.md Step 0 item
+# 6) and references the symbolic name below instead of restating the
+# literal. Centralized here rather than a per-command config file — one
+# place, per § Prose-resident knob convention (`claude/CLAUDE.kernel.md`).
+
+# assess.md Step 6 — the approval-poll ScheduleWakeup cadence/budget.
+: "${ASSESS_POLL_FIRST_WAKE:=270}"    # first wake (s) after arming the poll
+: "${ASSESS_POLL_CADENCE:=1200}"      # every wake thereafter (s)
+: "${ASSESS_POLL_BUDGET:=7200}"       # give up this long (s) after arming
+
+# next.md Step 0.5 — orphan Sequencing/*.md record staleness prune.
+: "${NEXT_SEQ_STALE_AFTER:=64800}"    # prune a record older than this (s)
+
+# tidy.md Step 0 — cross-machine drain-lock election.
+: "${TIDY_SYNC_WAIT:=90}"             # wait for Obsidian Sync to propagate locks (s)
+: "${TIDY_LOCK_STALE_AFTER:=1800}"    # discard a `.drain.lock.*` older than this (s)
+
+# check-in.md — resolved-entry prune window across its review sections.
+: "${CHECKIN_PRUNE_DAYS:=30}"         # resolved entries older than this may be pruned
 
 # ── Funnel operator identity + required CI check (tracker seam v0, #772) ────
 # The operator handle the async decision-issue backend, the merge-tier escalation
@@ -273,7 +307,9 @@ fi
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND FUNNEL_WIP_CAP \
+       BUILD_MERGE_BACKEND FUNNEL_WIP_CAP EPIC_MIN_SUBUNITS \
+       ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
+       NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \

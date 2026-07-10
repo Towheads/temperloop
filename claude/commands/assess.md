@@ -49,6 +49,7 @@ Run in parallel:
 3. Resolve the board/repo from `--board`/`--project`. **If neither was given, infer the board from the local repo** (matching `/triage` Step 0.3, foundation#547): set `BOARD_LIB` = the first of `scripts/lib/board.sh` or `workflows/scripts/board/lib/board.sh` that exists, `source "$BOARD_LIB"`, then `repo=$(gh repo view --json nameWithOwner -q .nameWithOwner); BOARD=""; for b in 3 4 5 6; do [ "$(board_repo "$b")" = "$repo" ] && BOARD="$b"; done`. If a match is found, print `inferred board $BOARD (repo $repo)` before any board read and continue; if **no** candidate matches (an unmapped repo), STOP with `/assess: cannot infer board — pass --board <N> (3=stageFind, 4=foundation, 5=ssmobile, 6=subsetwiki) or --project <name>, or run from a board-mapped repo`. Call the resolved board number `$BOARD` (the `## Re-triage signals` persistent route in Step 4 reads it). Confirm the epic exists: `gh issue view <N> -R <repo> --json number,title,state` — stop if it's missing or closed.
 4. Confirm the plan-note schema `~/.claude/plan-schema.md` is reachable (deployed from foundation `claude/plan-schema.md` by `make install-claude`). If missing, surface "schema reference missing — run `make install-claude` in foundation" and stop.
 5. Resolve `--project` (plan filename/tag): explicit flag, else derived from the board (3 → `stagefind`, 4 → `foundation`).
+6. **Source the batch-pipeline config (best-effort).** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the Step 6 approval-poll's cadence/budget knobs (`ASSESS_POLL_FIRST_WAKE`, `ASSESS_POLL_CADENCE`, `ASSESS_POLL_BUDGET`) into scope, with any pre-set env value still overriding. If the file isn't found (a consuming repo that doesn't vendor the toolkit), proceed — Step 6 keeps its inline `${VAR:-default}` fallbacks.
 
 ## Step 1 — Read the source (the epic + its sub-issues) — the only source-selection step
 
@@ -233,14 +234,14 @@ If declined, stop. If armed, the session runs one of two paths based on operator
 Run a self-paced poll on the plan note's frontmatter `status`:
 
 - **Mechanism:** `ScheduleWakeup` (dynamic-mode self-pacing). On each wake, re-read **only** the plan note's frontmatter via `mcp__obsidian__get_vault_file` and branch on `status`. The poll is one in-flight thread, not board work.
-- **Cadence:** first wake at **~270s** (≈4.5 min — fast enough that a quick review isn't stalled, and inside the prompt-cache window so the first check is cheap), then **1200s** (20 min) per wake thereafter. Do **not** land the first wake on exactly 300s — that is a cache miss for no latency benefit.
-- **Budget:** give up **2 hours** after arming. Encode the **absolute deadline timestamp** in the `ScheduleWakeup` `prompt` itself, not just working memory — context may be summarized across a 2h span and the deadline must survive it.
+- **Cadence:** first wake after `ASSESS_POLL_FIRST_WAKE` (fast enough that a quick review isn't stalled, and inside the prompt-cache window so the first check is cheap), then every `ASSESS_POLL_CADENCE` thereafter. Do **not** land the first wake on exactly 300s — that is a cache miss for no latency benefit.
+- **Budget:** give up `ASSESS_POLL_BUDGET` after arming. Encode the **absolute deadline timestamp** in the `ScheduleWakeup` `prompt` itself, not just working memory — context may be summarized across that span and the deadline must survive it.
 - **Branch table:**
 
   | `status` reads | Action |
   |---|---|
   | `draft`, before deadline | reschedule the next wake; stay quiet |
-  | `draft`, deadline passed | stop; one-line report — "approval poll expired after 2h, plan still draft; launch `/build` manually when ready" |
+  | `draft`, deadline passed | stop; one-line report — "approval poll expired after `ASSESS_POLL_BUDGET`, plan still draft; launch `/build` manually when ready" |
   | `approved` | invoke `/build <plan> --unattended` (see build "unattended start"). Poll ends. |
   | `abandoned` | stop; explicit reject — "plan marked abandoned, not executing" |
   | `executing` / `done` | another session already claimed it — stop and note it |

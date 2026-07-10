@@ -178,8 +178,16 @@ BUILD_QUOTA_MAX_AGE	1800	seconds	tracked-repo	workflows/scripts/build/build.conf
 BUILD_MERGE_GATE_WINDOW	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Timed merge-gate window (0 = always modal)
 BUILD_QUEUE_TIMEOUT	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-PR native-merge-queue timeout
 FUNNEL_WIP_CAP	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Max items In Progress at once per board (also rendered into CLAUDE.kernel.md prose)
+EPIC_MIN_SUBUNITS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Epic-decomposition sub-unit threshold (rendered into CLAUDE.kernel.md prose)
 BUILD_MERGE_BACKEND	auto	enum	tracked-repo	workflows/scripts/build/build.config.sh	Merge-backend selection: auto probes for a merge_queue rule; native/managed override (auto|native|managed)
 BUILD_HEADLESS_POLL_TIMEOUT	540	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Foreground CI/MERGED poll bound on the headless (funnel merge-driver) path
+ASSESS_POLL_FIRST_WAKE	270	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll first wake after arming
+ASSESS_POLL_CADENCE	1200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll wake cadence after the first wake
+ASSESS_POLL_BUDGET	7200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll give-up budget after arming
+NEXT_SEQ_STALE_AFTER	64800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	next.md Step 0.5 orphan Sequencing/*.md record staleness prune
+TIDY_SYNC_WAIT	90	seconds	tracked-repo	workflows/scripts/build/build.config.sh	tidy.md Step 0 wait for Obsidian Sync to propagate cross-host drain locks
+TIDY_LOCK_STALE_AFTER	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	tidy.md Step 0 cutoff to discard a crashed prior run's drain lock
+CHECKIN_PRUNE_DAYS	30	int	tracked-repo	workflows/scripts/build/build.config.sh	check-in.md resolved-entry prune window across its review sections
 FUNNEL_OPERATOR	@REPLACE_WITH_YOUR_GH_LOGIN	label	tracked-repo	workflows/scripts/build/build.config.sh	Operator's GitHub login the async decision/merge-escalation baton targets
 FUNNEL_REQUIRED_CHECK	checks	label	tracked-repo	workflows/scripts/build/build.config.sh	Required CI job name a PR must clear to merge
 FUNNEL_DRIVEN_PATHS	kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile	string	tracked-repo	workflows/scripts/build/build.config.sh	Path prefixes = the funnel's operational surface for the overlap predicate
@@ -281,4 +289,6 @@ GH_BENCH_EMIT_BIN	$HERE/../emit-gh-perf.sh	path	kernel	workflows/scripts/probe/g
 GH_PERF_REPORT_EMIT_BIN	$HERE/../emit-gh-perf.sh	path	kernel	workflows/scripts/probe/gh-perf-report.sh	Test-double seam for the gh-perf emit sub-script
 STAGEFIND_DIR	$REPO/../stageFind	path	kernel	workflows/scripts/validate-live-drain.sh	stageFind checkout path checked for the cross-repo live-drain pairing (soft-skipped if absent)
 MESSAGE_SCHEMA_OVERLAY	$REPO/claude/message-schema.overlay.md	path	kernel	workflows/scripts/validate-template-refs.sh	Overlay message-schema file unioned when present (same union pattern this item's parser follows)
+INBOX_MAX_STUBS	20	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm above this many Sessions/_inbox stubs (tidy.md § Vault hygiene names this knob)
+INBOX_MAX_AGE_H	48	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm if the oldest _inbox stub is older than this many hours (tidy.md § Vault hygiene names this knob)
 TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/knob-registry.tsv	RESERVED — named config profile switch; no reader exists yet (deferred, D2 Bucket C)

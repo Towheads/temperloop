@@ -22,7 +22,9 @@ If the script exists, show its output **verbatim** as the first thing in the ses
 
 ## Part 2 — Dispose the overnight queues
 
-Each subsection reads one append-only surface and disposes its `### … - **Status:** open` entries. For every surface: if the file doesn't exist, say so in one line and move on. Resolved entries older than 30 days may be pruned. `/check-in` is the **sole mutator** of every `Status` line below.
+**Source the batch-pipeline config (best-effort), once, before this part.** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the prune-window knob (`CHECKIN_PRUNE_DAYS`, referenced below) into scope, with any pre-set env value still overriding. If the file isn't found, the sections below fall back to the `${CHECKIN_PRUNE_DAYS:-30}` inline default.
+
+Each subsection reads one append-only surface and disposes its `### … - **Status:** open` entries. For every surface: if the file doesn't exist, say so in one line and move on. Resolved entries older than `CHECKIN_PRUNE_DAYS` days may be pruned. `/check-in` is the **sole mutator** of every `Status` line below.
 
 ### Pending decisions review
 
@@ -52,7 +54,7 @@ For each `### … - **Status:** open` entry, present it: the Finding, the Axis, 
 - **accepts** it → file it as a board issue via `capture.sh` (title from the Finding, `--body` carrying the Evidence summary and Axis as measurement context, board matching the finding's repo — `--board 4` for foundation findings) despite the missing metric (a judgment call the automatic gate couldn't make), then patch that entry's `Status` line to `accepted → #N` with a direct `Edit`, where `N` is the new issue number; or
 - **dismisses** it (noise, already known, not worth tracking) → patch the `Status` line to `dismissed: <one-line reason>`.
 
-If there are no `open` entries, say "no retro findings to review" and move on. Disposed entries older than 30 days may be pruned.
+If there are no `open` entries, say "no retro findings to review" and move on. Disposed entries older than `CHECKIN_PRUNE_DAYS` days may be pruned.
 
 ### Candidate-tells review
 
@@ -63,7 +65,7 @@ Present any entries **not yet marked** `[promoted]` or `[discarded]` as a compac
 - **Discard** — the phrase is noise or too narrow. Append `[discarded]` the same way.
 - **Defer** — leave it unmarked; it re-appears tomorrow.
 
-Entries older than 30 days already marked `[promoted]`/`[discarded]` may be moved to a `## Archive` section at the bottom to keep the active list readable. If there are no unresolved entries, say "no candidate tells to review" and move on.
+Entries older than `CHECKIN_PRUNE_DAYS` days already marked `[promoted]`/`[discarded]` may be moved to a `## Archive` section at the bottom to keep the active list readable. If there are no unresolved entries, say "no candidate tells to review" and move on.
 
 ### Vault hygiene review
 
@@ -73,7 +75,7 @@ For each `### … - **Status:** open` entry, present its **Findings** list: whic
 - **acts** — carries out the maintenance (delete a garbage file, prune an over-cap ledger to its rolling window, archive + remove a resident closed plan, or run `/tidy` to clear an `_inbox` pile-up), then patch that entry's `Status` line to `resolved — <action taken>` with a direct `Edit`; or
 - **dismisses** it (a false positive, or a cap deliberately exceeded for now) → patch the `Status` line to `dismissed: <one-line reason>`.
 
-If there are no `open` entries, say "no vault hygiene findings to review" and move on. Disposed entries older than 30 days may be pruned.
+If there are no `open` entries, say "no vault hygiene findings to review" and move on. Disposed entries older than `CHECKIN_PRUNE_DAYS` days may be pruned.
 
 ### Sensitivity flags review
 
