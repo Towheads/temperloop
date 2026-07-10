@@ -14,6 +14,28 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-10
+
+Patch — overlay-integration + build-hygiene. **Contract surface untouched: safe
+pull, no overlay action.** Not tagged `BREAKING`.
+
+### Added
+
+- `check-pr-leak-guard.sh` accepts an optional pathspec scope (`--path` /
+  `LEAK_GUARD_PATHS`); default empty = whole tree (unchanged). A private overlay
+  vendoring the guard runs it with `--path kernel/` so it scans only the subtree
+  that round-trips to the public kernel — overlay-private files, which
+  legitimately carry org/personal tokens, are excluded. Fixes the guard
+  false-positiving on legitimate overlay content when vendored into a private
+  overlay. (#74)
+- `merged-detect` — a merge-queue-safe helper for detecting whether a branch's
+  work is already merged. (#180)
+
+### Changed
+
+- Post-merge worktree + branch cleanup in `build` / `sweep` is now idempotent.
+  (#179)
+
 ## [0.9.1] - 2026-07-10
 
 Accumulated kernel work merged since 0.9.0 — the `deploy-mini` availability fix
