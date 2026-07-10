@@ -12,7 +12,8 @@
 # vault prose containing failure-words) are scanned by the structured is_error
 # flag ONLY, never the free-text regex (#84). Fails OPEN: a successful call (or
 # any parse issue) passes through.
-# See ~/dev/mind/Decisions/foundation - Fail-loud halt when Obsidian MCP degrades.md
+# See "Decisions/foundation - Fail-loud halt when Obsidian MCP degrades.md" in
+# the operator's knowledge store (workflows/scripts/lib/knowledge_store.contract.md).
 set -uo pipefail
 
 # Hook logs live in the XDG state dir (foundation #773), not ~/.claude/hooks/ —

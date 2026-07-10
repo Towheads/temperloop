@@ -6,7 +6,7 @@ You are running the **check-in** command — the daily human driver's-seat revie
 
 This is the **operator-disposes** half of the drain-proposes / operator-disposes split: the pipeline surfaces are **append-only**, written by the unattended machinery, and `/check-in` is their **sole `Status` mutator**. (The personal daily plan — calendar, inbox-zero, slots, Today — is a *separate* activity: `/standup`, an overlay command. `/check-in` reviews the machine; `/standup` plans the day.)
 
-Throughout, surface files (`Context/pipeline - *.md`, `Priorities/<project>.md`) are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md` (Travis's default: the Obsidian vault `~/dev/mind`). Read them via `mcp__obsidian-builtin__vault_read`; mutate a `Status` line via a direct `Edit` on the store file (the store is a local folder under the `plain-files` backend). `/check-in` is the **only** mutator of these `Status` lines — the append-only discipline the surfaces depend on.
+Throughout, surface files (`Context/pipeline - *.md`, `Priorities/<project>.md`) are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`. Read them via `mcp__obsidian-builtin__vault_read`; mutate a `Status` line via a direct `Edit` on the store file (the store is a local folder under the `plain-files` backend). `/check-in` is the **only** mutator of these `Status` lines — the append-only discipline the surfaces depend on.
 
 ## Part 1 — Telemetry brief (status readout)
 

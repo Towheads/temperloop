@@ -102,8 +102,10 @@ six tracked categories applies: `redundant-status-check`,
 **explicitly an overlay/personal-vault-backed source, not a kernel-native one.**
 The six category slugs and the append convention are documented in the
 *composed* (kernel + overlay) `CLAUDE.md` § "Tooling friction capture," but the
-ledger file itself lives at `~/dev/mind/Context/Session friction ledger.md`,
-which a stranger's bare kernel checkout does not have and this repo does not
+ledger file itself lives at `Context/Session friction ledger.md`, relative to
+the knowledge store root (`workflows/scripts/lib/knowledge_store.contract.md`;
+Travis's install points that root at his Obsidian vault) — a path a stranger's
+bare kernel checkout does not have and this repo does not
 ship. **Named gap for the kernel-only case:** a stranger install has no
 equivalent log and no obligation to build one — this proxy is only available to
 an install that has adopted the overlay's vault convention. Where it *is*

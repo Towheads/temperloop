@@ -14,6 +14,41 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+Minor — the personal-token denylist's vault-path burn-down baseline
+(`\bdev/mind\b`, temperloop#164/#169) is now empty: every pre-existing hit
+was routed through the `knowledge_store` seam or genericized in prose
+(kernel-literal-scrub, temperloop#189). Not tagged `BREAKING` — the affected
+knobs already had a documented override path (machine conf /
+`build.config.local.sh` / a downstream repo's own tracked-repo copy) before
+this change; only the *default value* moved.
+
+### Changed
+
+- `build.config.sh` no longer re-seeds `KNOWLEDGE_STORE_ROOT` to a personal
+  vault path — the kernel's own tracked default now defers entirely to
+  `knowledge_store.sh`'s generic `${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge`
+  default. **A default-value change on an existing knob-registry row is
+  `minor` per `VERSIONING.md`.** An operator who relied on the old bare
+  default (no machine conf / `build.config.local.sh` / downstream tracked-repo
+  override already set) must now set `KNOWLEDGE_STORE_ROOT` explicitly at one
+  of those rungs to keep pointing at a real vault. The
+  `workflows/scripts/config/knob-registry.tsv` row for this default was
+  removed accordingly (the knob's remaining registry row is the kernel-layer
+  one owned by `knowledge_store.sh`).
+- `knowledge_store_obsidian.sh`'s `KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE`
+  default is now *derived* from `ks_root` (`$(ks_root)/.obsidian/plugins/obsidian-local-rest-api/data.json`)
+  instead of an independently-hardcoded vault-path literal — so it can never
+  silently drift from `KNOWLEDGE_STORE_ROOT`. `doctor.sh`'s knowledge-root
+  split-brain check was updated to resolve its "expected" side the same way.
+- `vault_hygiene_report.sh`'s `--root` default now resolves via the
+  `knowledge_store` seam's `ks_root` instead of a duplicated
+  `${KNOWLEDGE_STORE_ROOT:-<personal path>}` fallback.
+- Command-spec prose (`claude/commands/*.md`), the `workflow-reviewer` agent
+  spec, three hook header comments, and `claude/measurement-proxies.md` no
+  longer name the operator's personal vault path as a literal — they refer
+  to "the knowledge store root" (`workflows/scripts/lib/knowledge_store.contract.md`)
+  or a store-relative doc-id instead. No behavior change (prose only).
+
 ## [0.10.0] - 2026-07-10
 
 Additive — a config-precedence ladder, env/prose-knob seams, an env-hygiene

@@ -203,7 +203,7 @@ knobs):
 | Variable | Default | Meaning |
 |---|---|---|
 | `KNOWLEDGE_STORE_OBSIDIAN_API_BASE` | `https://127.0.0.1:27124` | Obsidian Local REST API base URL. |
-| `KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE` | `$HOME/dev/mind/.obsidian/plugins/obsidian-local-rest-api/data.json` | Path to the plugin's own key file (`.apiKey` field is the bearer token). |
+| `KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE` | `$(ks_root)/.obsidian/plugins/obsidian-local-rest-api/data.json` (derived from `KNOWLEDGE_STORE_ROOT`, not a second literal) | Path to the plugin's own key file (`.apiKey` field is the bearer token). |
 
 Op-to-REST mapping:
 
@@ -254,11 +254,12 @@ race noted in the table.
 
 ## Non-goals of this seam (deliberately out of scope)
 
-- **No caller routing.** This file defines the interface and both
-  backends (`plain-files`, `obsidian`) — it does not route any existing
-  hook, command, or script through the interface. Every current
-  hook/command still names `~/dev/mind` (the Obsidian vault) directly.
-  Routing callers over is later, sibling-level work.
+- **No caller routing (this file's own scope).** This file defines the
+  interface and both backends (`plain-files`, `obsidian`) — it does not
+  itself route any hook, command, or script through the interface.
+  Routing callers over (so no hook/command names an operator's vault path
+  as a hardcoded literal) is sibling-level work tracked to completion by
+  temperloop#164/#169 (kernel-literal-scrub).
 - **No frontmatter parsing/query API.** See above.
 - **No search.** `ks_list` enumerates by path/prefix only; it does not
   grep content or rank relevance.

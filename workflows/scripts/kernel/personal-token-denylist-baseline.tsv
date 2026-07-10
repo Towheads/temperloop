@@ -13,12 +13,15 @@
 #     the moment the family is added; the gate still fails on any hit NOT
 #     already recorded here, i.e. any NEW occurrence.
 #
-# Entries were added when the `\bdev/mind\b` (personal Obsidian vault path)
-# family was introduced. The follow-up item (kernel-literal-scrub) removes
-# the personal path from each listed line and deletes that line's baseline
-# row — the goal is an EMPTY file, not a maintained one. Do not add new
-# families' debt here without a plan to burn it down; do not add new rows to
-# an existing family's debt (fix new hits, don't grandfather them in).
+# EMPTY as of temperloop#189 (kernel-literal-scrub): the `\bdev/mind\b`
+# (personal Obsidian vault path) family's 33 pre-existing hits — the only
+# debt this file ever carried — were all routed through the knowledge_store
+# seam (KNOWLEDGE_STORE_ROOT / ks_root, for script/hook code and defaults)
+# or genericized in prose (for CLAUDE.md/command-spec text), per that item's
+# scope. This is the steady state: an EMPTY file, not a maintained one. Do
+# not add new families' debt here without a plan to burn it down; do not add
+# new rows to an existing family's debt (fix new hits, don't grandfather
+# them in).
 #
 # Format: <kernel-set-relative path> TAB <denylist pattern, verbatim from
 #         personal-token-denylist.tsv> TAB <exact matched line content>
@@ -31,36 +34,3 @@
 # A row whose line no longer matches the file (already fixed, or the file
 # changed around it) simply goes unused — that's expected burn-down
 # progress, not an error; there is no separate staleness check.
-claude/agents/workflow-reviewer.md	\bdev/mind\b	- **Vault access is MCP-only** (`mcp__obsidian__*` / `mcp__obsidian-builtin__*`), never `ls`/`find`/`grep`/`Read` against `~/dev/mind`.
-claude/agents/workflow-reviewer.md	\bdev/mind\b	**8. Vault access discipline** — vault reads/writes go through `mcp__obsidian__*` / `mcp__obsidian-builtin__*` (semantic search on the mcp-tools server, other ops on the built-in REST server); never `ls`/`find`/`grep`/`Read` against `~/dev/mind`. (user-memory `feedback_vault_mcp_only`.)
-claude/commands/assess.md	\bdev/mind\b	1. Confirm `mcp__obsidian__*` tools are loaded. Stop with one-line error if not. (Document paths cited throughout this file — `Plans/`, `Priorities/<project>.md`, `Mistakes/`, `Decisions/`, `Patterns/` — are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`. The agent-plane transport stays on Obsidian MCP tools — including `search_vault_smart` for fuzzy matching, used in the Context-bundling pass below — per that contract's Obsidian-mode note.)
-claude/commands/build.md	\bdev/mind\b	3. `mcp__obsidian__get_vault_file` on `$1` — confirm plan note exists. (`$1` and other document paths cited throughout this file — `Plans/`, `Priorities/<project>.md`, `Context/pipeline - pending decisions.md` — are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`. The agent-plane transport stays on Obsidian MCP tools per that contract's Obsidian-mode note.)
-claude/commands/check-in.md	\bdev/mind\b	Throughout, surface files (`Context/pipeline - *.md`, `Priorities/<project>.md`) are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md` (Travis's default: the Obsidian vault `~/dev/mind`). Read them via `mcp__obsidian-builtin__vault_read`; mutate a `Status` line via a direct `Edit` on the store file (the store is a local folder under the `plain-files` backend). `/check-in` is the **only** mutator of these `Status` lines — the append-only discipline the surfaces depend on.
-claude/commands/init.md	\bdev/mind\b	description: Initialize a new CLAUDE.md file with codebase documentation, then create a project context placeholder in the Obsidian vault at ~/dev/mind.
-claude/commands/init.md	\bdev/mind\b	Once CLAUDE.md has been written, create a project context placeholder in the Obsidian vault at `~/dev/mind`.
-claude/commands/next.md	\bdev/mind\b	1. Confirm `mcp__obsidian-builtin__*` (read/write/delete) and `mcp__obsidian__*` (smart search) tools are loaded — needed to read the priorities note, read/write the session record, and coordinate across sessions. If Obsidian is unreachable, you can still give a **one-shot advisory** from the board alone — warn that you cannot cache or coordinate across sessions (see Failure modes). (`Priorities/<project>.md`, `Plans/`, `Sequencing/<id8>.md` and other document paths below are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`. The agent-plane transport stays on Obsidian MCP tools — including `search_vault_smart` for fuzzy matching, Step 3 below — per that contract's Obsidian-mode note.)
-claude/commands/sweep.md	\bdev/mind\b	**Unattended / operator-absent run:** do **not** block forever on an absent operator. Take the safe default — **leave every flagged issue parked (flagged, skipped)** — and proceed to Phase 2 with only the **un-flagged** issues. This is a **`batch-at-ritual`** deferral ([[Context/foundation - AskUserQuestion severity taxonomy]]), so it must NOT default *silently*: per `claude/CLAUDE.md § Unattended pending-decisions surface`, append one `### open` entry to `~/dev/mind/Context/pipeline - pending decisions.md` via `mcp__obsidian-builtin__vault_append` — **Decision:** *sweep left clarifying questions unanswered (issues #N, …)*; **Default taken:** *leave-all-flagged; proceed with un-flagged only*; **Disposition:** *auto-taken (operator-absent); `needs-clarification` labels retained as the operational record*; **Status:** *open* — so the next `check-in` surfaces them (the label is the operational record; this entry is the ritual-facing signal `check-in` actually reads). **This is the fifth `batch-at-ritual` writer site** (registered in `claude/CLAUDE.md § Unattended pending-decisions surface` and `tidy.md` Step 3).
-claude/commands/tidy.md	\bdev/mind\b	     ~/dev/mind/Sessions/_inbox/<filename>.md
-claude/commands/tidy.md	\bdev/mind\b	     ~/dev/mind/Sessions/_inbox/<stub-1>.md \
-claude/commands/tidy.md	\bdev/mind\b	     ~/dev/mind/Sessions/_inbox/<stub-2>.md \
-claude/commands/tidy.md	\bdev/mind\b	**Operating principles** (honor the knowledge store's `Projects/foundation/workflows/daily-planning/README.md` note — document paths throughout this file, e.g. `Sessions/_inbox/`, `Decisions/`, `Context/pipeline - pending decisions.md`, are relative to **the knowledge store root**, resolved per `workflows/scripts/lib/knowledge_store.contract.md`; Travis's default: the Obsidian vault `~/dev/mind`):
-claude/commands/tidy.md	\bdev/mind\b	**Run the probe** (a kernel script that reads the store via the script-plane `plain-files` backend — `KNOWLEDGE_STORE_ROOT`, default `~/dev/mind`; a checkout with no vault prints one line and no-ops, so this is safe to run unconditionally):
-claude/commands/tidy.md	\bdev/mind\b	1. **Collect the cleanly-processed stubs.** For **each** stub that completed Steps 1–4 without unhandled errors, derive its local filesystem path — like Step 1's scanner call, a **raw on-disk path outside the knowledge_store seam**: the archiver reads vault files directly from disk (the MCP-only rule binds Claude, not shell scripts, and the obsidian backend's REST API has no filesystem-root semantics to route through). Travis's default: `~/dev/mind/Sessions/_inbox/<filename>.md`. **Exclude** any stub that failed mid-process — leave it in `_inbox/` for the next run; it is not part of this batch.
-claude/commands/tidy.md	\bdev/mind\b	1. Derive the stub's local filesystem path — a **raw on-disk path outside the knowledge_store seam**: `scan_stub.py` reads the file directly from disk rather than through `ks_read`/MCP, because the obsidian backend's REST API has no filesystem-root semantics to route a disk read through (per `workflows/scripts/lib/knowledge_store.contract.md` § the obsidian backend's root-mapping note). Travis's default: `~/dev/mind/Sessions/_inbox/<filename>.md`.
-claude/commands/triage.md	\bdev/mind\b	**Every `AskUserQuestion` is an attention datum** — an interruption that signals a *missing default or contract* (see `~/dev/mind/Context/foundation - AskUserQuestion severity taxonomy.md`). They are logged by the PostToolUse hook `claude/hooks/log-askuserquestion.sh` to the append-only stream `meta/data/raw/askuserquestion-events.jsonl` (schema: `meta/data/raw/README.md`). This step turns a **recurring** high-interrupt class into a triage **candidate** — a candidate for a *new default/contract* that would stop the interruption.
-claude/hooks/build-worktree-guard.sh	\bdev/mind\b	# See ~/dev/mind/Decisions/stageFind - Worker write-isolation guarantee.md
-claude/hooks/mcp-failure-tripwire.sh	\bdev/mind\b	# See ~/dev/mind/Decisions/foundation - Fail-loud halt when Obsidian MCP degrades.md
-claude/hooks/session-end-log.sh	\bdev/mind\b	# See ~/dev/mind/Decisions/foundation - Vault provenance schema (note-level).md.
-claude/measurement-proxies.md	\bdev/mind\b	ledger file itself lives at `~/dev/mind/Context/Session friction ledger.md`,
-workflows/scripts/build/build.config.sh	\bdev/mind\b	: "${KNOWLEDGE_STORE_ROOT:=$HOME/dev/mind}"
-workflows/scripts/build/build.config.sh	\bdev/mind\b	# $HOME/dev/mind (today's behavior, unconditionally, predating the seam), so
-workflows/scripts/build/build.config.sh	\bdev/mind\b	# the SAME value a caller reading `~/dev/mind` directly used to hardcode,
-workflows/scripts/drain/candidate-tells-format.md	\bdev/mind\b	~/dev/mind/Context/pipeline - candidate tells.md
-workflows/scripts/drain/vault_hygiene_report.sh	\bdev/mind\b	#     --root DIR       vault root (default: $KNOWLEDGE_STORE_ROOT or ~/dev/mind)
-workflows/scripts/drain/vault_hygiene_report.sh	\bdev/mind\b	ROOT="${KNOWLEDGE_STORE_ROOT:-$HOME/dev/mind}"
-workflows/scripts/lib/knowledge_store_obsidian.sh	\bdev/mind\b	: "${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:=$HOME/dev/mind/.obsidian/plugins/obsidian-local-rest-api/data.json}"
-workflows/scripts/lib/knowledge_store_obsidian.sh	\bdev/mind\b	# real vault (Travis's default: ~/dev/mind) with zero change to call sites.
-workflows/scripts/lib/knowledge_store.contract.md	\bdev/mind\b	  hook/command still names `~/dev/mind` (the Obsidian vault) directly.
-workflows/scripts/lib/knowledge_store.contract.md	\bdev/mind\b	| `KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE` | `$HOME/dev/mind/.obsidian/plugins/obsidian-local-rest-api/data.json` | Path to the plugin's own key file (`.apiKey` field is the bearer token). |
-workflows/scripts/lib/knowledge_store.sh	\bdev/mind\b	# (~/dev/mind) directly. A stranger's fresh install has no such vault, so the
-workflows/scripts/lib/knowledge_store.sh	\bdev/mind\b	# every hook/command still names ~/dev/mind directly, unchanged, until a

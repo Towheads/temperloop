@@ -48,7 +48,7 @@ If any check fails, surface in one line and stop.
 
 ## Step 0.6 — AskUserQuestion recurring-class intake (attention → candidate defaults)
 
-**Every `AskUserQuestion` is an attention datum** — an interruption that signals a *missing default or contract* (see `~/dev/mind/Context/foundation - AskUserQuestion severity taxonomy.md`). They are logged by the PostToolUse hook `claude/hooks/log-askuserquestion.sh` to the append-only stream `meta/data/raw/askuserquestion-events.jsonl` (schema: `meta/data/raw/README.md`). This step turns a **recurring** high-interrupt class into a triage **candidate** — a candidate for a *new default/contract* that would stop the interruption.
+**Every `AskUserQuestion` is an attention datum** — an interruption that signals a *missing default or contract* (see `Context/foundation - AskUserQuestion severity taxonomy.md` in the knowledge store). They are logged by the PostToolUse hook `claude/hooks/log-askuserquestion.sh` to the append-only stream `meta/data/raw/askuserquestion-events.jsonl` (schema: `meta/data/raw/README.md`). This step turns a **recurring** high-interrupt class into a triage **candidate** — a candidate for a *new default/contract* that would stop the interruption.
 
 This is a real intake step, not aspirational: run the weekly tally and ingest its recurring classes as Step-1 candidates alongside the board Backlog.
 

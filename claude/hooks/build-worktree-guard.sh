@@ -38,7 +38,8 @@
 #
 # Fails OPEN: any internal error (missing jq, unparseable input, git failure)
 # never blocks a write — the guard must never wedge a legitimate session.
-# See ~/dev/mind/Decisions/stageFind - Worker write-isolation guarantee.md
+# See "Decisions/stageFind - Worker write-isolation guarantee.md" in the
+# operator's knowledge store (workflows/scripts/lib/knowledge_store.contract.md).
 set -uo pipefail
 
 # Hook logs live in the XDG state dir (foundation #773), not ~/.claude/hooks/ —

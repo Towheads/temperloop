@@ -115,12 +115,13 @@ classify_entry() {
 # ---------------------------------------------------------------------------
 check_knowledge_root() {
   local build_config="${FOUNDATION}/workflows/scripts/build/build.config.sh"
+  local ks_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_store.sh"
   local ks_obsidian="${FOUNDATION}/workflows/scripts/lib/knowledge_store_obsidian.sh"
   local suffix="/.obsidian/plugins/obsidian-local-rest-api/data.json"
 
   printf '\nKnowledge-store root check:\n'
 
-  if [[ ! -f "$build_config" || ! -f "$ks_obsidian" ]]; then
+  if [[ ! -f "$build_config" || ! -f "$ks_lib" || ! -f "$ks_obsidian" ]]; then
     printf '  SKIPPED (config files not found under %s)\n' "$FOUNDATION"
     return 0
   fi
@@ -130,10 +131,15 @@ check_knowledge_root() {
     set -e
     # shellcheck source=/dev/null
     source "$build_config"
+    # knowledge_store_obsidian.sh's own API-key-file default is DERIVED from
+    # ks_root (knowledge_store.sh) — source it first, per that file's own
+    # documented "source AFTER knowledge_store.sh" requirement.
+    # shellcheck source=/dev/null
+    source "$ks_lib"
     # shellcheck source=/dev/null
     source "$ks_obsidian"
-    printf '%s\n%s\n' "$KNOWLEDGE_STORE_ROOT" "$KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE"
-  )" || { printf '  FAIL — could not resolve build.config.sh / knowledge_store_obsidian.sh\n'; return 1; }
+    printf '%s\n%s\n' "$(ks_root)" "$KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE"
+  )" || { printf '  FAIL — could not resolve build.config.sh / knowledge_store.sh / knowledge_store_obsidian.sh\n'; return 1; }
   store_root="$(sed -n '1p' <<<"$resolved")"
   api_key_file="$(sed -n '2p' <<<"$resolved")"
 
