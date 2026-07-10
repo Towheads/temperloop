@@ -15,6 +15,10 @@
 #     local accumulation a build machine leaves behind is cleared automatically,
 #     not when a human remembers `make prune-branches` (remote heads auto-delete via
 #     the repo setting; this is local-only, `git branch -d`, worktree-bound skipped);
+#   - sweeps merged/orphaned `<checkout>.wt/*` worktrees in each clean-on-main
+#     checkout (#168), via worktree.sh's hardened merged-detection (squash/rebase
+#     merges included, not just plain-ancestor) — a dirty or genuinely-unmerged
+#     worktree is left in place;
 #   - refreshes the PATH board symlinks (make install-board);
 #   - busts the board STRUCTURE cache when a pulled adapter actually changed, so a
 #     board renumber/migration can't leave stale project/field ids that break WRITES
@@ -143,6 +147,29 @@ for co in "${CHECKOUTS[@]}"; do
     prune_out="$( (cd "$co" && bash "$FOUNDATION/scripts/prune-merged-branches.sh" --apply) 2>&1 )"
     prune_sum="$(printf '%s\n' "$prune_out" | grep -E '^Done\.' || true)"
     [ -n "$prune_sum" ] && printf '  %-26s %s\n' "$label" "prune: ${prune_sum#Done. }"
+  fi
+
+  # Sweep merged/orphaned "$co".wt/* worktrees left over from /build sessions
+  # (#168). worktree.sh already carries the merge-queue-safe merged-detection
+  # (L1 worktree-prune-merge-robust: an ancestor test first, falling back to the
+  # squash/rebase-safe helper) so a worktree whose PR merged via squash/rebase is
+  # reclaimed too, not just a plain-ancestor merge. Runs only here, on the loop
+  # that already only reaches clean-on-main checkouts (dirty/non-main checkouts
+  # `continue`d above) — worktree.sh's own gates additionally leave a dirty or
+  # genuinely-unmerged worktree untouched regardless. Fail-open, mirroring the
+  # branch-prune above: a prune error is logged but must never abort deploy-mini
+  # (explicit if, not `A && B || C` — SC2015 on the CI runner).
+  wtsh="$FOUNDATION/workflows/scripts/build/worktree.sh"
+  if [ -x "$wtsh" ]; then
+    if wt_out="$(bash "$wtsh" prune "$co" 2>&1)"; then
+      wt_pruned="$(printf '%s\n' "$wt_out" | grep -c '"outcome":"PRUNED"')"
+      if [ -z "$wt_pruned" ]; then wt_pruned=0; fi
+      if [ "$wt_pruned" -gt 0 ]; then
+        printf '  %-26s %s\n' "$label" "worktree prune: $wt_pruned pruned"
+      fi
+    else
+      printf '  %-26s %s\n' "$label" "worktree prune: FAILED (non-fatal) — ${wt_out:0:160}"
+    fi
   fi
 done
 
