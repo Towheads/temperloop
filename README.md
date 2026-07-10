@@ -192,6 +192,13 @@ build) is separate, not-yet-built launch work — until then, `make docs` then
 serve `workflows/scripts/docs/_site/` locally (e.g.
 `python3 -m http.server -d workflows/scripts/docs/_site`).
 
+Two standalone docs, hand-maintained rather than generated, live directly
+under `docs/`: [`docs/managed-merge-queue.md`](docs/managed-merge-queue.md)
+(§ 9 below) and [`docs/config-precedence.md`](docs/config-precedence.md) —
+the six-rung precedence ladder (CLI flag > env var > machine conf > untracked
+repo-local conf > tracked repo conf > kernel built-in default) every config
+knob in this repo resolves through, and how `build.config.sh` implements it.
+
 ---
 
 ## 7. Contributing
