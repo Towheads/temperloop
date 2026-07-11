@@ -44,9 +44,9 @@ last_verified: <YYYY-MM-DD>
 This is the standard vault provenance schema (note-level) plus one
 brief-specific field: `status`. `status: draft` is the gate between the
 coverage walk and materialization — the command's ratify step
-(`/design` Step 6) flips it to `ratified` only after every dimension carries
+(`/design` Step 4) flips it to `ratified` only after every dimension carries
 a disposition (§ Disposition grammar) and the review tier for that epic's
-weight has run (`/design` Step 3–4). A `ratified` brief is treated as
+weight has run (`/design` Step 3). A `ratified` brief is treated as
 immutable going forward: a later change is a **new** brief that supersedes
 it (linked via `[[wikilink]]`), the same convention `Decisions/` notes use
 for supersession — never an edit-in-place of a ratified brief.
@@ -133,8 +133,8 @@ not dangle. A dimension with no disposition at all — not filled, not
 **No-silent-skips rule.** A brief with an undispositioned dimension fails
 the brief-conformance lint. The lint itself ships as a separate item
 (temperloop#216, forthcoming) — until it lands, this rule is an authoring
-standard enforced by the review tier (`/design` Step 4), not yet a
-mechanical gate; `/design`'s ratify step (Step 6) must not flip
+standard enforced by the review tier (`/design` Step 3), not yet a
+mechanical gate; `/design`'s ratify step (Step 4) must not flip
 `status: draft → ratified` while any dimension lacks a disposition,
 regardless of whether the lint exists yet.
 
@@ -164,7 +164,7 @@ that no longer holds for existing overlays).
 
 ## Materialization contract
 
-`/design`'s materialize step (Step 7) turns a ratified brief into a board
+`/design`'s materialize step (Step 5) turns a ratified brief into a board
 epic. A well-formed epic produced this way carries:
 
 - **A `## Contract` body** with the same three sections `/assess`'s

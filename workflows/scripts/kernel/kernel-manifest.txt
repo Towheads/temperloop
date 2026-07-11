@@ -138,6 +138,7 @@ kernel claude/commands/init.md
 kernel claude/commands/next.md
 kernel claude/commands/sweep.md
 kernel claude/commands/triage.md
+kernel claude/commands/design.md
 kernel claude/commands/funnel-drive.md
 kernel claude/commands/funnel-drive-merge.md
 overlay claude/commands/standup.md
