@@ -1,5 +1,5 @@
 ---
-description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. This file ships the CORE flow (intake → coverage walk → ratify → materialize); tier decision, adversarial review, and persona passes are `design-review-machinery` (temperloop#217), which edits the Step 3 seam this file leaves open.
+description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217). Executing customer-persona agents remain `design-persona-agents` (temperloop#221); ADR emission at materialize remains `design-adr-emission` (temperloop#219).
 argument-hint: "[<problem-statement> | <pointer-note>] [--board <N> | --project <name>]"
 ---
 
@@ -15,7 +15,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /design   intake → coverage walk → [review — #217] → ratify → materialize
+a design conversation ──► /design   intake → coverage walk → review pass → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -30,18 +30,25 @@ point of origin, not a patch to triage. Both front doors converge on the same
 `/assess --epic N` → `/build` pipeline — nothing downstream of materialization
 changes.
 
-## Scope — this item vs. `design-review-machinery` (temperloop#217)
+## Scope — this item vs. `design-persona-agents` (#221) and `design-adr-emission` (#219)
 
-This file ships the **core flow only**: intake → coverage walk → ratify →
-materialize. That flow alone closes the K94/K131 intake gap — a design
-conversation gets a named path to a well-formed epic even with no review tier
-wired in yet. Tier decision (brief pass vs. full pass), the adversarial lens
-panel, capability probes for reviewer agents, and the persona pass are
-**out of scope here** — they belong to `design-review-machinery` (temperloop#217),
-tracked in the same plan
-(`Plans/2026-07-08 temperloop - design command front door.md`), which edits
-the placeholder in Step 3 below. Nothing in Steps 0–2 or 4–6 assumes review
-machinery exists; #217 should need no changes outside Step 3.
+This file ships the full flow: intake → coverage walk → **review pass** →
+ratify → materialize. `design-command-core` shipped intake/walk/ratify/
+materialize; `design-review-machinery` (temperloop#217) filled Step 3 below
+with the tier decision, the adversarial lens panel, capability probes for
+reviewer agents, and the findings-fold-back step — closing the review-tier
+gap on top of the K94/K131 intake fix `design-command-core` already closed.
+
+Two things Step 3 below deliberately does **not** implement, tracked in the
+same plan (`Plans/2026-07-08 temperloop - design command front door.md`):
+the **executing** customer-persona agents themselves (Step 3 specifies
+*when* an executed first-run/uninstall run is mandatory and how it degrades
+when no such agent is declared; the agents that actually run one are
+`design-persona-agents`, #221, parked on K136's audience page landing) and
+**ADR emission** at materialize (`design-adr-emission`, #219, parked on
+K145's ADR-0000 process landing — a different section of Step 5, not Step 3).
+Nothing in Steps 0–2 or 4–6 needed to change for #217 to land; #219 and #221
+land later without touching Step 3.
 
 ## Inputs
 
@@ -67,12 +74,12 @@ machinery exists; #217 should need no changes outside Step 3.
   design ritual cannot run against an absent operator; that is a deliberate
   property of this command, not a gap to fill later.
 - **Minimum-viable-output rule.** Whatever else is unavailable — no `gh` auth,
-  no repo, no registered board, no reviewer agents (#217's concern, not this
-  file's) — the coverage walk still produces a **ratified brief note in the
+  no repo, no registered board, no reviewer agents declared (Step 3) — the
+  coverage walk still produces a **ratified brief note in the
   knowledge store**. That is the floor this command guarantees. Every
   dependency below degrades legibly (a stated `skipped — <reason>` line, never
-  a silent no-op) rather than blocking the walk itself. See Step 5's
-  degradation paths.
+  a silent no-op) rather than blocking the walk itself. See Step 3's and
+  Step 5's degradation paths.
 - **Idempotent materialization.** Epic creation is **probe-before-create** on
   the `design-brief:` marker line (Step 5b) — a re-run of `/design` against an
   already-ratified brief (or a re-run of just Step 5 after a partial failure)
@@ -124,12 +131,14 @@ Run in parallel:
    repo via `board_repo` reverse-lookup over the registered set). No adapter,
    or no registered board for this repo, is **not fatal** — it only means
    Step 5b's epic lands as a plain `gh issue create` with no board mirroring.
-5. **Reviewer-agent capability probing is out of scope here.** This command
-   invokes no review subagent (Step 3 is a placeholder — see the Scope
-   section). `design-review-machinery` (#217) owns that probe when it lands.
+5. **Reviewer-agent capability probing happens at Step 3, not here.** No
+   probe result changes Steps 0–2's behavior, so it's deferred to the point
+   of use — Step 3 probes `architecture-reviewer`, `requirements-auditor`,
+   a red-team lens, and any persona agent right before it would spawn each,
+   per the canonical predicate (Step 3.3).
 
 If check 1 or 2 fails, stop. Checks 3–4 are best-effort and never stop the
-run — they only shape Step 5's degradation path.
+run — they only shape Step 5's degradation path; check 5 shapes Step 3's.
 
 ## Step 1 — Intake
 
@@ -237,26 +246,201 @@ foundation that later shifts underneath it.
 
 ## Step 3 — Review pass
 
-`(review machinery — temperloop#217, forthcoming)`
+Runs after Step 2's coverage walk completes (every dimension carries a
+disposition) and before Step 4 (ratify). Four parts, in order: **3.1** tier
+decision, stated to the operator before any reviewer is spawned; **3.2** the
+install-surface first-run/uninstall mandate; **3.3** capability-probed
+adversarial panel execution; **3.4** findings fold-back into the brief. A
+brief that skips this step never reaches ratify — Step 4.1's
+dimension-completeness check is unchanged, Step 4.1b re-checks that every
+finding this step produced was actually disposed of, and Step 4.3's ratify
+question then follows a brief that has actually been reviewed, not merely
+walked.
 
-This item ships **no review-tier gate**. After Step 2's coverage walk
-completes, the command proceeds straight to Step 4 (ratify) — there is no
-tier decision, no adversarial lens panel, and no persona pass in this file
-today. `design-review-machinery` (temperloop#217) inserts those here, between
-the coverage walk and ratify, editing this section in place. Steps 0–2 and
-4–6 make no assumption about what does or doesn't happen in this step, so
-#217 landing should require no change outside it.
+### 3.1 — Tier decision (stated before committing)
+
+1. **State the cost, then ask.** Before spawning a single reviewer, tell the
+   operator what each tier costs: **brief pass** = two standing lenses
+   (`architecture-reviewer`, `requirements-auditor`) reviewing the brief
+   once each; **full pass** = the same two lenses **plus** a red-team lens,
+   a persona pass, and (when 3.2 applies) an executed first-run/uninstall
+   run. This is the adapted Shape Up "appetite" move (Singer, *Shape Up*
+   ch. 3, 2019) — the L0 methodology verdict confirms the mapping survives
+   *re-targeted*: the budgeted resource here is review effort/tokens, not a
+   team's build cycle, and the tier is a quantized review-cost appetite, not
+   a time estimate (`Context/temperloop - design methodology spike verdict.md`
+   § 6). Naming the cost **before** the pick is the point of the mapping;
+   never spawn a reviewer speculatively while the pick is still open. State
+   the availability caveat in the same breath: each lens runs only if it
+   passes 3.3's capability probe, so on a checkout with no agents declared
+   (e.g. the red-team and persona lenses until `design-persona-agents` #221
+   lands), part of a full pass reduces to legible skip lines — the operator
+   is pricing what *can* run here, not a hypothetical.
+2. **Ask.** `AskUserQuestion`: brief pass or full pass? Suggest a default
+   from the epic's apparent weight (a single-file, low-blast-radius design
+   suggests brief; a design that touches the install surface, adds a new
+   command, or reshapes a contract surface suggests full) — the operator's
+   answer overrides the suggestion regardless.
+3. **Brief pass always runs both standing lenses.** Per the ratified
+   design brief's RQ-4: `architecture-reviewer` **and**
+   `requirements-auditor` run on *every* review, brief tier or full —
+   there is no one-lens floor. Full pass is strictly additive on top of
+   brief pass, never a replacement of it.
+4. **Record the chosen tier** as a line in the brief's working notes (it is
+   not a schema dimension of its own — it's provenance for what review this
+   brief actually received) before proceeding to 3.2–3.3. When 3.3
+   completes, extend that same line with the **per-lens coverage record**:
+   which lenses actually ran and which were skipped (each skip naming its
+   `skipped — <agent> unavailable` reason). The live narration of a skip
+   (3.3.2) is not enough on its own — without the persisted record, a
+   brief whose entire panel skipped is indistinguishable in the artifact
+   from a fully-reviewed one, which is exactly the miscalibrated-trust
+   failure the degradation-notice template exists to prevent.
+
+### 3.2 — Install-surface first-run/uninstall mandate (spec-presence only)
+
+1. **The mandate.** If the design touches the install surface — bin/
+   entry points, install/uninstall code, hook or cron registration,
+   anything a stranger's fresh clone would run once and never again — an
+   **executed** first-run/uninstall persona run is **mandatory**,
+   regardless of which tier 3.1 picked. This is RQ-3 from the ratified
+   brief: the mandate is not a full-pass-only nicety, and dimension 12
+   (First-run experience) is the dimension that names the trigger.
+2. **What "executed" means, and why it outranks inspection.** The L0
+   verdict adapts cognitive walkthrough (Wharton, Rieman, Lewis, Polson,
+   1994) for this run's *rubric* only — its four questions (will the
+   persona try the right action, notice it's available, know it's correct,
+   understand the feedback?) and its required-inputs discipline (a named
+   user, a concrete task, the documented correct sequence). It does **not**
+   license calling the run itself "a cognitive walkthrough": per the
+   verdict, an agent actually executing install/uninstall in a worktree is
+   empirical first-use observation, which the literature rates *above*
+   inspection, not an instance of it (`Context/temperloop - design
+   methodology spike verdict.md` § 1). Never describe the run as a
+   cognitive walkthrough in a brief or Decisions note.
+3. **This file specifies the mandate, not the executor.** The agent that
+   actually performs a fresh clone → install → report-friction → uninstall
+   → diff-residue run is `design-persona-agents` (temperloop#221), scoped
+   separately because it's parameterized by the customer archetypes the
+   audience page (K136) defines — content this file must not invent.
+   Whenever the mandate applies and no such executing agent is declared
+   (the common case until #221 lands), this degrades exactly like any
+   other capability probe (3.3): a legible `skipped — <persona-agent>
+   unavailable` line, stamped into dimension 15 (failure modes / capability
+   limits) as an honest gap — **never** a silent pass, and never treated as
+   satisfying the mandate. A ratified brief with this gap stamped is still
+   ratifiable (Step 4 blocks on undispositioned dimensions, not on a
+   capability that was never available in this checkout); a ratified brief
+   with the mandate silently unmet is not.
+
+### 3.3 — Capability-probed adversarial panel
+
+1. **Availability predicate.** A review subagent is available iff this
+   project declares it in `CLAUDE.md § Subagents` or `.claude/agents/`
+   ([[Decisions/foundation - Project capability probes]]) — the same
+   predicate `/assess` Step 3 and `/triage` Step 3 apply to their own
+   panels. Probe each candidate lens right before it would be spawned;
+   absence is never fatal to the walk.
+2. **Brief pass (always).** Probe `architecture-reviewer` and
+   `requirements-auditor`. For each available, spawn it read-only and
+   advisory with the brief's per-dimension content (all sixteen
+   dimensions plus any overlay additions) and its own charter:
+   `architecture-reviewer` judges dimensions 1, 3, 5, 7, 10
+   (problem/outcome incl. the stranger-test call, routing, command shape,
+   maintainability coupling, upgrade path — boundary and contract-call
+   concerns); `requirements-auditor` judges dimensions 4, 8, 15 (Contract
+   seams, testability, failure modes — the same requirements-sanity
+   charter it applies in `/assess` Step 3). This design-time pass reviews
+   the *brief* and is distinct from — not a substitute for —
+   `workflow-reviewer`'s standing post-merge review of any resulting
+   command spec: `claude/design-schema.md`'s Enforcing-gate column ties
+   dimensions 5 and 15 to `workflow-reviewer` precisely because it later
+   reviews every edit to the spec the design *produces*; here the same
+   dimensions are judged as brief content, before any spec exists. Each
+   unavailable lens emits its own `skipped — <agent> unavailable` line,
+   narrated live (Mode 2 degradation notice, `claude/message-schema.md` §
+   Degradation notice) — never silently absorbed into a generic "review
+   skipped" note.
+3. **Full pass adds** (only when 3.1 picked full): a **red-team lens** —
+   an adversarial charter that attacks the brief's stated acceptance
+   criteria and threat model directly, looking for a way the design could
+   satisfy every dimension's disposition and still fail the customer — and
+   a **persona pass**: the opining half of the customer-archetype agents
+   (§ 2 of the ratified brief), critiquing the brief from each declared
+   archetype's value set. Both follow the same predicate as 3.3.1: no
+   red-team-lens agent or persona agent declared in this checkout (the
+   default today; `design-persona-agents` #221 is what would declare the
+   personas) → `skipped — <agent> unavailable`, one line each, same as any
+   other lens. 3.2's executed first-run also runs here when its mandate
+   applies.
+4. **Independent passes, aggregated after.** Every spawned lens sees only
+   the brief — never another lens's findings — until 3.4 aggregates them.
+   This adapts heuristic evaluation's independent-evaluator structure
+   (Nielsen & Molich, CHI 1990) for the panel's *shape only*: **provisional
+   — pending temperloop#225** — same-model lenses do not carry the
+   independent-human-evaluator priors the coverage/yield numbers in that
+   literature were measured for, so this file claims the structure (spawn
+   independently, aggregate after) and makes no coverage or
+   diminishing-returns claim for it (`Context/temperloop - design
+   methodology spike verdict.md` § 2). Do not cite a numeric finding
+   (e.g. any figure for what fraction of problems one evaluator finds) in
+   a brief or Decisions note produced by this step.
+
+### 3.4 — Findings fold-back (before ratify)
+
+1. **Collect.** Gather every spawned lens's findings, each tagged to the
+   dimension(s) it concerns.
+2. **Apply clear wins directly.** A finding that clearly improves a
+   dimension's content — no judgment call, no disagreement with the
+   brief's existing stance — is folded into that dimension's body **now**,
+   using the same write primitive Step 2.6 already uses for this backend
+   (Obsidian: small patch/append per dimension, full-file fallback when a
+   heading path isn't safely patchable; plain-files: full-file `ks_write`).
+   A finding that surfaces a real gap the operator chooses not to resolve
+   now converts that dimension's disposition to `deferred → <tracking
+   ref>` rather than leaving it `filled` with an unaddressed critique.
+3. **Surface contested findings.** A finding the brief's owner disagrees
+   with is not applied silently — put it to the operator via
+   `AskUserQuestion` (clear win vs. contested is the same split `/assess`
+   Step 3 makes for its own review pass) before folding or discarding it.
+4. **No dangling findings.** Every finding from 3.3 is either folded in,
+   converted to a `deferred` disposition with a real tracking ref, or
+   explicitly declined by the operator with the decline itself noted in
+   the brief's working notes — never left as an unincorporated comment
+   outside the brief. Record each finding's disposal (`folded` /
+   `deferred → <ref>` / `declined — <note>`) against the coverage record
+   3.1.4 keeps in the brief's working notes: that record is what Step
+   4.1b mechanically re-checks, so a forgotten finding blocks ratify
+   rather than evaporating (dimension-level completeness alone can't
+   catch it — every dimension already carried a disposition before the
+   panel ran).
+5. **Only then does Step 4 run.** This step does not re-open Step 2's walk
+   order or re-litigate the tier picked in 3.1 — it is strictly the
+   apply-findings-then-proceed step between review and ratify.
 
 ## Step 4 — Ratify
 
 1. **Completeness check.** Confirm every dimension — every kernel dimension
-   plus any overlay additions walked in Step 2 — carries exactly one
+   plus any overlay additions walked in Step 2, including any disposition
+   Step 3.4 converted to `deferred` during fold-back — carries exactly one
    disposition. List any gap and stop; do not proceed to ratify a brief with
    an undispositioned dimension. This is the enforcement point
    `claude/design-schema.md` § Disposition grammar's "No-silent-skips rule"
    names as living here (in the review tier, until temperloop#216's
-   mechanical lint lands) — Step 3 having no review tier yet does not relax
-   this check.
+   mechanical lint lands) — Step 3's review tier existing does not relax
+   this check; it only adds a source of new dispositions for it to catch.
+
+   1b. **Finding-disposal check.** Dimension-level completeness alone
+   cannot catch a dropped review finding — every dimension already
+   carried a disposition when Step 2 ended, so a brief that silently
+   dropped a finding still passes check 1. Re-check the coverage record
+   in the brief's working notes (3.1.4): every finding each 3.3 lens
+   returned must carry exactly one disposal — `folded`, `deferred →
+   <tracking ref>`, or `declined — <note>` (3.4.4's vocabulary). List
+   any finding without one and stop, same shape as check 1: return to
+   Step 3.4 and dispose of it, never ratify past it. A lens's `skipped —
+   <agent> unavailable` entry satisfies this trivially (no findings to
+   dispose); a lens that ran with zero findings records `no findings`.
 2. **Contract sanity.** Re-read dimension 4's `Produces` / `Consumes` /
    `Acceptance`. If it reads as a summary rather than an actual contract —
    the kind of content `/assess`'s epic-decomposition mode would need to
@@ -397,6 +581,13 @@ response.
   ratification — list the gaps and return to Step 2. Never ratify with a
   silent skip; the mechanical lint (temperloop#216) isn't required for this
   to be enforced here.
+- **A reviewer, red-team lens, or persona agent is unavailable (Step
+  3.2–3.3).** Not a failure of the command — the capability-probe predicate
+  ([[Decisions/foundation - Project capability probes]]) makes this an
+  expected outcome in a checkout with no `.claude/agents/` declared. Emit
+  `skipped — <agent> unavailable` per lens, live, and continue the panel
+  with whatever's available; an unmet install-surface first-run mandate
+  (3.2) is stamped into dimension 15 rather than silently satisfied.
 - **Dimension 4 reads as a summary, not a real contract (Step 4.2).** Send it
   back to Step 2 rather than ratifying a Contract `/assess` would have to
   reshape.
@@ -420,10 +611,18 @@ response.
 - Consumer, unchanged: `claude/commands/assess.md`'s epic-decomposition mode
   (a `## Contract`-bearing epic with no sub-issues).
 - Template + grammar this command applies: `claude/design-schema.md`.
-- Review-tier seam (Step 3, forthcoming): `design-review-machinery`,
-  temperloop#217.
+- Review-tier machinery (Step 3): shipped by `design-review-machinery`,
+  temperloop#217. Executing customer-persona agents: `design-persona-agents`,
+  temperloop#221 (parked on K136). ADR emission (Step 5, not Step 3):
+  `design-adr-emission`, temperloop#219 (parked on K145).
+- Capability-probe predicate: [[Decisions/foundation - Project capability
+  probes]] — same predicate `/assess` Step 3 and `/triage` Step 3 apply to
+  their own review panels.
 - Grounding: `Context/temperloop - design methodology spike verdict.md` (L0
-  spike verdict); the ratified brief,
+  spike verdict — grounds Step 3.1's tier/appetite mapping, Step 3.2's
+  executed-run rubric, and Step 3.3's panel-structure mapping; Double
+  Diamond is REJECTED there for the walk's structure and is never cited by
+  this file); the ratified brief,
   `Designs/temperloop - design command design brief.md`; the epic plan,
   `Plans/2026-07-08 temperloop - design command front door.md`.
 - Kernel routing: `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule.
