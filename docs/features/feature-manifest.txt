@@ -42,6 +42,7 @@ none docs/principles.md
 none docs/who-its-for.md
 none AGENTS.md
 none llms.txt
+none CLAUDE.md
 none docs/adr/*
 # The feature docs themselves (and any future file under docs/features/) are
 # documentation product, not feature code; the two registries below get a
