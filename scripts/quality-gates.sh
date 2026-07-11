@@ -291,6 +291,18 @@ KERNEL_GATES=(
   # marker-stamp, idempotent re-install convergence, a pre-seeded path's
   # backup-then-replace, and a green doctor.sh run afterward.
   "bash workflows/scripts/tests/test_install_cli.sh"
+  # Tier-1 hermetic install-lifecycle suite (temperloop#267, ADR K164 D6):
+  # the END-TO-END lifecycle leg on top of the per-CLI suites above —
+  # bootstrap from the local checkout over file:// -> `temperloop install`
+  # -> doctor green -> idempotent re-install (manifest byte-comparable, no
+  # spurious backups) -> `temperloop uninstall` -> sandbox_tree_diff of the
+  # machine surface (before-install vs after-uninstall) against a declared,
+  # commented exclusion set proves no unexplained residue; wrapped in the
+  # sandbox-integrity layer (preflight + real-machine tripwire). Self-scopes
+  # to a kernel-only checkout: on a composed overlay tree it prints a
+  # legible SKIP and exits 0 (downstream propagation is temperloop#255's
+  # decision). Same direct-`bash` form as the install-cli gate above.
+  "bash workflows/scripts/tests/test_install_lifecycle.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

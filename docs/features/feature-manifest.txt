@@ -217,3 +217,11 @@ sandbox-core workflows/scripts/tests/test_sandbox_dry_run_legs.sh
 #    sandbox.sh (still claimed by sandbox-core above; this slug claims only
 #    the integrity layer's own sibling test file) ─────────────────────────
 sandbox-integrity workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh
+
+# ── ci-install-lifecycle — tier-1 hermetic install-lifecycle CI suite
+#    (temperloop#267, ADR K164 D6): the end-to-end lifecycle leg (bootstrap
+#    -> install -> doctor -> idempotent re-install -> uninstall -> tree-diff
+#    no-residue proof). Overrides install-cli's broader
+#    `workflows/scripts/tests/test_install_*` glob above for this one path
+#    (longer patterns win) ────────────────────────────────────────────────
+ci-install-lifecycle workflows/scripts/tests/test_install_lifecycle.sh
