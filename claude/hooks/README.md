@@ -16,6 +16,7 @@
 | `ks-agent-read-log.sh` | PostToolUse | `mcp__.*` recommended (the hook re-checks every event against the `KNOWLEDGE_READ_LOG_AGENT_MATCHERS` config seam in `workflows/scripts/lib/knowledge_store.sh`, so a broader harness-level matcher is safe) | Agent-plane read-log line, same file/format as the script-plane emitter (`KNOWLEDGE_READ_LOG`, default `~/.local/state/foundation/knowledge-reads.log`) | Yes (exits 0 silently under EVAL_RUN) |
 | `log-askuserquestion.sh` | PostToolUse | AskUserQuestion | `meta/data/raw/askuserquestion-events.jsonl` | Yes |
 | `session-end-log.sh` | SessionEnd | — | `<cwd>/.mind/<stub>.md` | Yes |
+| `session-end-read-summary.sh` | SessionEnd | — | stdout one-liner (`knowledge store: N reads, M searches`), tallied from the read log (`KNOWLEDGE_READ_LOG`) | Yes |
 | `session-end-seq-cleanup.sh` | SessionEnd | — | Vault `Sequencing/<id8>.md` | Yes |
 
 ## Shared helper
