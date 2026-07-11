@@ -15,6 +15,7 @@
 | `mcp-failure-tripwire.sh` | PostToolUse | mcp__obsidian.* | None (block decision) | No (eval sessions don't use vault; hook is a no-op if MCP not called) |
 | `log-askuserquestion.sh` | PostToolUse | AskUserQuestion | `meta/data/raw/askuserquestion-events.jsonl` | Yes |
 | `session-end-log.sh` | SessionEnd | — | `<cwd>/.mind/<stub>.md` | Yes |
+| `session-end-read-summary.sh` | SessionEnd | — | stdout one-liner (`knowledge store: N reads, M searches`), tallied from the read log (`KNOWLEDGE_READ_LOG`) | Yes |
 | `session-end-seq-cleanup.sh` | SessionEnd | — | Vault `Sequencing/<id8>.md` | Yes |
 
 ## Shared helper
