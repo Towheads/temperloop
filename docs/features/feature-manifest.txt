@@ -98,6 +98,7 @@ tidy workflows/scripts/test_findings.py
 
 # ── telemetry — raw-lake emits + their validators ───────────────────────────
 telemetry claude/measurement-proxies.md
+telemetry claude/design-measurement-proxies.md
 telemetry meta/data/raw/README.md
 telemetry workflows/scripts/emit-command-run.sh
 telemetry workflows/scripts/emit-issue-touch.sh
