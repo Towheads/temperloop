@@ -13,6 +13,7 @@
 | `subtree-edit-guard.sh` | PreToolUse | Edit\|Write\|MultiEdit | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
 | `write-lane-guard.sh` | PreToolUse | Bash\|Edit\|Write\|MultiEdit\|NotebookEdit | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
 | `mcp-failure-tripwire.sh` | PostToolUse | mcp__obsidian.* | None (block decision) | No (eval sessions don't use vault; hook is a no-op if MCP not called) |
+| `ks-agent-read-log.sh` | PostToolUse | `mcp__.*` recommended (the hook re-checks every event against the `KNOWLEDGE_READ_LOG_AGENT_MATCHERS` config seam in `workflows/scripts/lib/knowledge_store.sh`, so a broader harness-level matcher is safe) | Agent-plane read-log line, same file/format as the script-plane emitter (`KNOWLEDGE_READ_LOG`, default `~/.local/state/foundation/knowledge-reads.log`) | Yes (exits 0 silently under EVAL_RUN) |
 | `log-askuserquestion.sh` | PostToolUse | AskUserQuestion | `meta/data/raw/askuserquestion-events.jsonl` | Yes |
 | `session-end-log.sh` | SessionEnd | — | `<cwd>/.mind/<stub>.md` | Yes |
 | `session-end-seq-cleanup.sh` | SessionEnd | — | Vault `Sequencing/<id8>.md` | Yes |
