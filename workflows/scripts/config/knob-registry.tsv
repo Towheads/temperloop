@@ -261,6 +261,10 @@ GH_PERF_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-gh-pe
 GH_CALL_LOG_FILE	$HOME/.cache/gh-calls-v2.tsv	path	kernel	workflows/scripts/gh-call-logger.sh	Where the gh-call-logger shim appends its per-call TSV rows
 GH_CALL_LOG_MAX_BYTES	16777216	int	kernel	workflows/scripts/gh-call-logger.sh	Rotation threshold for the gh-call-logger TSV
 GH_CALL_LOG	1	bool	kernel	workflows/scripts/gh-call-logger.sh	Opt-out (0) for zero-overhead passthrough with no timing/logging
+FEATURE_DOCS_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/validate-feature-docs.sh	Repo root the feature-docs coverage walk scans (fixture-test seam, same shape as KERNEL_MANIFEST_ROOT)
+FEATURE_MANIFEST_FILE	$FEATURE_DOCS_ROOT/docs/features/feature-manifest.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the full-coverage feature path-claims registry
+FEATURE_EXEMPT_FILE	$FEATURE_DOCS_ROOT/docs/features/backfill-exempt.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the shrink-only feature-doc backfill ratchet
+FEATURE_DOCS_DIR	$FEATURE_DOCS_ROOT/docs/features	path	kernel	workflows/scripts/validate-feature-docs.sh	Directory holding the docs/features/<slug>.md feature docs
 KERNEL_MANIFEST_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/kernel/check-kernel-manifest.sh	Repo root the kernel-manifest checker scans (also used by check-gitleaks-kernel.sh, check-personal-token-denylist.sh, check-pr-leak-guard.sh)
 KERNEL_MANIFEST_FILE	$SCRIPT_DIR/kernel-manifest.txt	path	kernel	workflows/scripts/kernel/check-kernel-manifest.sh	Path to the kernel/overlay classification manifest
 KERNEL_DENYLIST_FILE	$SCRIPT_DIR/personal-token-denylist.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the personal-token denylist TSV

@@ -278,6 +278,7 @@ kernel workflows/scripts/install-settings.sh
 kernel workflows/scripts/install-claude-md.sh
 kernel workflows/scripts/lint-pr-body.sh
 kernel workflows/scripts/validate-command-run-emit.sh
+kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-live-drain.sh
 kernel workflows/scripts/validate-template-refs.sh

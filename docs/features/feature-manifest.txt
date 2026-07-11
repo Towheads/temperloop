@@ -1,0 +1,170 @@
+# feature-manifest.txt — full-coverage path-claims registry (temperloop#132).
+#
+# Format: `<slug> <glob>` per line; #-comments and blank lines ignored.
+# Every git-tracked path must be claimed by at least one glob; the LONGEST
+# matching pattern wins ("most specific wins"), so an override entry can
+# narrow a broader glob from anywhere in the file — no ordering fragility.
+# The reserved pseudo-slug `none` claims repo meta that belongs to no single
+# feature (and never needs a docs/features/none.md).
+#
+# A glob that matches no tracked path YET is legal and inert — that is how
+# sibling PRs' paths are pre-claimed below before those files land.
+#
+# Enforced by workflows/scripts/validate-feature-docs.sh (a KERNEL_GATES
+# entry in scripts/quality-gates.sh). Every non-`none` slug named here must
+# have docs/features/<slug>.md or a backfill-exempt.txt line.
+#
+# NOTE: this is a feature-ownership taxonomy, orthogonal to
+# workflows/scripts/kernel/kernel-manifest.txt's kernel/overlay/split
+# taxonomy — do not merge the two.
+
+# ── none — repo meta, claimed by no single feature ──────────────────────────
+none .gitignore
+none CHANGELOG.md
+none LICENSE
+none NOTICE
+none README.md
+none SECURITY.md
+none VERSIONING.md
+none Makefile
+none Plans-archive/*
+none claude/.gitkeep
+none workflows/scripts/.gitkeep
+none claude/CLAUDE.kernel.md
+none docs/config-precedence.md
+# Pre-claims for the docs-site epic's L1 sibling PRs (docs/architecture.md,
+# docs/principles.md, docs/who-its-for.md, AGENTS.md, llms.txt — K#147's
+# kernel-manifest pre-claim counterpart) and #145's ADR corpus — inert until
+# tracked, so no sibling PR needs a feature-manifest edit and L1 merge order
+# stays free.
+none docs/architecture.md
+none docs/principles.md
+none docs/who-its-for.md
+none AGENTS.md
+none llms.txt
+none docs/adr/*
+# The feature docs themselves (and any future file under docs/features/) are
+# documentation product, not feature code; the two registries below get a
+# longer, more specific claim under quality-gates.
+none docs/features/*
+
+# ── board-adapter — Projects-v2/issues-only board adapter + board commands ──
+board-adapter workflows/scripts/board/*
+board-adapter workflows/scripts/board-sync-drift-check.sh
+
+# ── build-spine — /build pipeline: plan, worktree, workers, board mirror ────
+build-spine claude/commands/build.md
+build-spine claude/plan-schema.md
+build-spine claude/workflows/build-level.mjs
+build-spine workflows/scripts/build/*
+
+# ── merge-gate — PR enqueue, CI poll, batched merge gate, protected main ────
+merge-gate docs/managed-merge-queue.md
+merge-gate workflows/scripts/build/gate.sh
+merge-gate workflows/scripts/build/ci-poll.sh
+merge-gate workflows/scripts/build/tests/test_gate.sh
+merge-gate workflows/scripts/build/tests/test_ci_poll.sh
+merge-gate workflows/scripts/board/pr-enqueue.sh
+merge-gate workflows/scripts/board/tests/test_pr_enqueue.sh
+merge-gate workflows/scripts/lib/land-on-protected-main.sh
+
+# ── triage / assess / sweep / next / check-in — pipeline command specs ──────
+triage claude/commands/triage.md
+assess claude/commands/assess.md
+sweep claude/commands/sweep.md
+next claude/commands/next.md
+check-in claude/commands/check-in.md
+check-in claude/decision-queue-contract.md
+
+# ── tidy — nightly drain: stub scan, findings, hygiene probes, live/drain ───
+tidy claude/commands/tidy.md
+tidy workflows/scripts/drain/*
+tidy workflows/scripts/validate-live-drain.sh
+tidy workflows/scripts/env-hygiene-report.sh
+tidy workflows/scripts/tests/test_env_hygiene_report.sh
+tidy workflows/scripts/build/env-reconcile.sh
+tidy workflows/scripts/build/tests/test_env_reconcile.sh
+tidy workflows/scripts/test_findings.py
+
+# ── telemetry — raw-lake emits + their validators ───────────────────────────
+telemetry claude/measurement-proxies.md
+telemetry meta/data/raw/README.md
+telemetry workflows/scripts/emit-command-run.sh
+telemetry workflows/scripts/emit-issue-touch.sh
+telemetry workflows/scripts/validate-command-run-emit.sh
+telemetry workflows/scripts/validate-issue-touch-emit.sh
+
+# ── funnel-driver — autonomous funnel tick/drive/cron + work-class policy ───
+funnel-driver claude/commands/funnel-drive.md
+funnel-driver claude/commands/funnel-drive-merge.md
+funnel-driver claude/work-class-policy.md
+funnel-driver workflows/scripts/build/funnel-*
+funnel-driver workflows/scripts/build/tests/test_funnel_*
+
+# ── hooks — PreToolUse/SessionStart/SessionEnd guard + logging hooks ────────
+hooks claude/hooks/*
+hooks claude/status-line.sh
+
+# ── install-cli — bin/ CLI, install/doctor, kernel seed/update, onboarding ──
+install-cli bin/*
+install-cli claude/commands/init.md
+install-cli scripts/update-kernel.sh
+install-cli scripts/tests/test_update_kernel.sh
+install-cli scripts/tests/test_stranger_config.sh
+install-cli workflows/scripts/install-claude-md.sh
+install-cli workflows/scripts/install-settings.sh
+install-cli workflows/scripts/install/*
+install-cli workflows/scripts/tests/test_install_*
+install-cli workflows/scripts/demo/*
+install-cli workflows/scripts/proposal/*
+install-cli workflows/scripts/probe/conventions-probe.sh
+install-cli workflows/scripts/probe/tests/test_conventions_probe.sh
+install-cli workflows/scripts/lib/baseline_snapshot.contract.md
+install-cli workflows/scripts/lib/conventions_probe.contract.md
+install-cli workflows/scripts/lib/report.contract.md
+
+# ── knowledge-store — knowledge_store/search backends + issue corpus ────────
+knowledge-store workflows/scripts/lib/knowledge_*
+knowledge-store workflows/scripts/lib/tests/test_knowledge_*
+knowledge-store workflows/scripts/lib/issue-corpus.sh
+knowledge-store workflows/scripts/lib/issue-marker-probe.sh
+knowledge-store workflows/scripts/lib/tests/test_issue_corpus.sh
+knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
+
+# ── quality-gates — the static gate set, lints, kernel scrubs, knob registry ─
+quality-gates .github/workflows/ci.yml
+quality-gates scripts/quality-gates.sh
+quality-gates scripts/lint-zsh-param-tie.sh
+quality-gates workflows/scripts/config/*
+quality-gates workflows/scripts/kernel/*
+quality-gates workflows/scripts/lint-pr-body.sh
+quality-gates workflows/scripts/tests/test_lint_pr_body.sh
+quality-gates workflows/scripts/validate-feature-docs.sh
+quality-gates workflows/scripts/tests/test_validate_feature_docs.sh
+quality-gates docs/features/feature-manifest.txt
+quality-gates docs/features/backfill-exempt.txt
+
+# ── docs-generator — docs-site generator + published doc sources ────────────
+docs-generator .github/workflows/docs-pages.yml
+docs-generator workflows/scripts/docs/*
+docs-generator docs/CONTRIBUTING.md
+docs-generator docs/failure-modes/*
+
+# ── gh-perf — gh call logging, benchmarking, perf reporting ─────────────────
+gh-perf workflows/scripts/emit-gh-perf.sh
+gh-perf workflows/scripts/gh-call-logger.sh
+gh-perf workflows/scripts/probe/*
+
+# ── branch-hygiene — merged-branch detection + pruning ──────────────────────
+branch-hygiene scripts/prune-merged-branches.sh
+branch-hygiene scripts/tests/test_prune_merged_branches.sh
+branch-hygiene workflows/scripts/build/lib/merged-detect.sh
+branch-hygiene workflows/scripts/build/tests/test_merged_detect.sh
+
+# ── presentation-plane — message schema, templates, their ref lint ──────────
+presentation-plane claude/message-schema.md
+presentation-plane claude/presentation-plane.md
+presentation-plane workflows/scripts/validate-template-refs.sh
+
+# ── review-agents — advisory review subagent definitions ────────────────────
+review-agents claude/agents/*

@@ -152,6 +152,18 @@ KERNEL_GATES=(
   "bash workflows/scripts/config/tests/test_check_knob_registry.sh"
   "bash workflows/scripts/config/check-knob-prose.sh"
   "bash workflows/scripts/config/tests/test_check_knob_prose.sh"
+  # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
+  # documentation counterpart to test-kernel-manifest. Live validator walks
+  # every git-tracked path against docs/features/feature-manifest.txt
+  # (full-coverage `<slug> <glob>` claims, longest-match-wins, pseudo-slug
+  # `none`), requires docs/features/<slug>.md with the five required sections
+  # for every non-exempt slug, and enforces the shrink-only
+  # docs/features/backfill-exempt.txt ratchet (stale / exempt-but-documented
+  # lines fail). Path claims are never exempted — new unclaimed code fails
+  # from day one. Fixture suite alongside. Same direct-`bash` form as the
+  # knob-registry gates above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/validate-feature-docs.sh"
+  "bash workflows/scripts/tests/test_validate_feature_docs.sh"
   "make test-scan-stub"
   # Vault-hygiene probe (foundation #959): fixture-vault suite for
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
