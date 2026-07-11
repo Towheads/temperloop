@@ -20,10 +20,15 @@
 # keep working); a follow-up may migrate them onto this lib, but that is not
 # this item's scope.
 #
-# OUT OF SCOPE (a separate follow-up item, "sandbox-integrity" — see this
-# item's own NOTE): a write-preflight, a drift tripwire, or a tree-diff
-# helper. This file's functions are named/shaped so those can be added as
-# new sandbox_* functions later without reshaping what already exists here.
+# INTEGRITY LAYER (temperloop#266, "sandbox-integrity", belt-and-suspenders
+# on ADR K164 D6's no-VM isolation model): three more sandbox_* functions —
+# sandbox_preflight_links (write preflight), sandbox_tripwire_snapshot /
+# sandbox_tripwire_check (post-run drift tripwire on the REAL machine, not
+# the sandbox), and sandbox_tree_manifest / sandbox_tree_diff (symlink-aware
+# tree-manifest + diff, the tripwire's own reusable primitive) — appended
+# below the original sandbox-core functions rather than reshaping them. See
+# docs/features/sandbox-integrity.md for the full contract; their own
+# tests live in workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh.
 #
 # Usage (sourced, not executed):
 #
@@ -122,6 +127,64 @@
 #   SANDBOX_GH_CALL_LOG         set by sandbox_stub_gh
 #   SANDBOX_CLAUDE_CALL_LOG     set by sandbox_stub_claude
 #   SANDBOX_TEMPERLOOP           set by sandbox_bootstrap_checkout on success
+#
+# ---------------------------------------------------------------------------
+# INTEGRITY LAYER — public functions (temperloop#266, "sandbox-integrity")
+# ---------------------------------------------------------------------------
+#
+#   sandbox_preflight_links <foundation_root> [<links_lib_override>]
+#     Write PREFLIGHT: sources links.sh (default
+#     <foundation_root>/workflows/scripts/install/links.sh; pass an
+#     alternate path as the 2nd arg — a test-double seam, not a knob) and
+#     runs its links_enumerate INSIDE the sandbox env (sandbox_run, so
+#     links_enumerate's own $HOME-relative target computation resolves
+#     against $SANDBOX_HOME), then asserts every emitted target path falls
+#     under $SANDBOX_ROOT. Returns 0 iff every target resolves inside the
+#     sandbox; on any escaping target, prints it to stderr and returns 1.
+#     Call BEFORE the first write of a simulated install — it does no
+#     writing itself, only enumerates + checks. Requires sandbox_up first.
+#
+#   sandbox_tripwire_snapshot <label> [path...]
+#     Post-run drift TRIPWIRE, snapshot half. Hashes each given path (a
+#     REAL, non-sandboxed machine path — never re-pointed by sandbox_run)
+#     via sandbox_tree_manifest and stores the manifests under
+#     $SANDBOX_ROOT/tripwire/<label>/, read-only (no mutation of the given
+#     paths themselves). Defaults to the two real paths a sandboxed run
+#     must never touch: $HOME/.claude and $HOME/.local/bin/temperloop. An
+#     absent path is handled gracefully (recorded as a distinct "absent"
+#     manifest entry, not an error) so this is safe to call on a machine
+#     that has neither path yet. Call BEFORE a sandboxed run. Requires
+#     sandbox_up first (the snapshot lives under $SANDBOX_ROOT, not the
+#     paths being watched).
+#
+#   sandbox_tripwire_check <label>
+#     Tripwire, check half. Re-hashes the SAME real paths recorded by the
+#     matching sandbox_tripwire_snapshot call and diffs each against its
+#     stored manifest (sandbox_tree_diff, no exclusions). Returns 0 iff
+#     none drifted; on any drift, prints which real path changed to stderr
+#     and returns 1. Call AFTER a sandboxed run.
+#
+#   sandbox_tree_manifest <root>
+#     Symlink-aware tree-manifest generator: prints one tab-separated
+#     `<relpath>\t<type>\t<hash-or-target>` record per line to stdout, type
+#     one of file|symlink|absent. A symlink's OWN target string is
+#     recorded via `readlink` — the link is never followed/descended into.
+#     A missing <root> prints a single `.\tabsent\t` record rather than
+#     erroring, so an existence flip is itself a detectable diff. Pure
+#     read; no sandbox_up required (root can be any path, sandboxed or
+#     real).
+#
+#   sandbox_tree_diff <manifest_a> <manifest_b> [<exclusions>]
+#     Diffs two sandbox_tree_manifest outputs (file paths, not tree
+#     roots). <exclusions>, if given, is either a path to a file of
+#     newline-separated case-glob patterns (blank lines and `#`-comments
+#     skipped) or, if not an existing file, a literal
+#     whitespace/newline-separated inline pattern list — CALLER-SUPPLIED
+#     only, nothing hardcoded here. A manifest record whose relpath
+#     matches any pattern is ignored on BOTH sides before comparing.
+#     Returns 0 iff the (post-exclusion) manifests are identical; on any
+#     difference (added/removed/changed record, including a retargeted
+#     symlink) prints a unified diff to stderr and returns 1.
 #
 # shellcheck shell=bash
 
@@ -320,4 +383,212 @@ sandbox_bootstrap_checkout() {
   fi
   [[ -x "$SANDBOX_TEMPERLOOP" ]] \
     || { echo "sandbox_bootstrap_checkout: bootstrap.sh ran but $SANDBOX_TEMPERLOOP is not executable" >&2; return 1; }
+}
+
+# =============================================================================
+# INTEGRITY LAYER (temperloop#266, "sandbox-integrity") — see the header doc
+# block above for the public contract of each function below.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# _sandbox_sha256 <file>  (internal)
+#
+# Portable sha256 of a single regular file — prefers GNU coreutils
+# sha256sum, falls back to BSD/macOS shasum -a 256 (same binary shasum(1)
+# also ships on Linux, but sha256sum is the more common default there).
+# ---------------------------------------------------------------------------
+_sandbox_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+sandbox_preflight_links() {
+  local foundation="${1:?sandbox_preflight_links: foundation repo root required}"
+  local links_lib="${2:-$foundation/workflows/scripts/install/links.sh}"
+  : "${SANDBOX_ROOT:?sandbox_preflight_links: call sandbox_up first}"
+
+  if [[ ! -f "$links_lib" ]]; then
+    echo "sandbox_preflight_links: links lib not found: $links_lib" >&2
+    return 1
+  fi
+
+  local out
+  # shellcheck disable=SC2016  # deliberately single-quoted: $1/$2 must
+  # expand inside the sandboxed bash -c subprocess (as its own positional
+  # params), never in this caller shell — same idiom sandbox_bash documents.
+  out="$(sandbox_run bash -c '
+    # shellcheck disable=SC1090  # dynamic path, resolved by the caller
+    source "$1"
+    links_enumerate "$2"
+  ' sandbox-preflight-links "$links_lib" "$foundation")" || {
+    echo "sandbox_preflight_links: links_enumerate failed" >&2
+    return 1
+  }
+
+  local target kind bad=0
+  local src  # 3rd tab field — deliberately unused, only target/kind matter
+  # shellcheck disable=SC2034  # see comment above: src is read but unused.
+  while IFS=$'\t' read -r target kind src; do
+    [[ -n "$target" ]] || continue
+    case "$target" in
+      "$SANDBOX_ROOT"/*) : ;;
+      *)
+        echo "sandbox_preflight_links: target escapes sandbox root: $target (kind=$kind)" >&2
+        bad=1
+        ;;
+    esac
+  done <<<"$out"
+
+  return "$bad"
+}
+
+# ---------------------------------------------------------------------------
+sandbox_tree_manifest() {
+  local root="${1:?sandbox_tree_manifest: root path required}"
+
+  if [[ ! -e "$root" && ! -L "$root" ]]; then
+    printf '.\tabsent\t\n'
+    return 0
+  fi
+  if [[ -L "$root" ]]; then
+    printf '.\tsymlink\t%s\n' "$(readlink "$root")"
+    return 0
+  fi
+  if [[ -f "$root" ]]; then
+    printf '.\tfile\t%s\n' "$(_sandbox_sha256 "$root")"
+    return 0
+  fi
+
+  # Directory: walk with plain `find` (never -L — a symlinked subdir is
+  # recorded as a symlink record, never descended into) and emit one record
+  # per file/symlink, sorted by relpath for a stable, diffable manifest.
+  local entry relpath
+  local lines=()
+  while IFS= read -r entry; do
+    relpath="${entry#"$root"/}"
+    if [[ -L "$entry" ]]; then
+      lines+=("$(printf '%s\tsymlink\t%s' "$relpath" "$(readlink "$entry")")")
+    elif [[ -f "$entry" ]]; then
+      lines+=("$(printf '%s\tfile\t%s' "$relpath" "$(_sandbox_sha256 "$entry")")")
+    fi
+  done < <(find "$root" \( -type f -o -type l \) | LC_ALL=C sort)
+
+  if [[ ${#lines[@]} -gt 0 ]]; then
+    printf '%s\n' "${lines[@]}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# _sandbox_tree_diff_filter <manifest_path> <patterns>  (internal)
+#
+# Prints <manifest_path>'s records, dropping any whose relpath (field 1)
+# case-matches a pattern in the whitespace/newline-separated <patterns>
+# list, re-sorted by relpath so two independently-generated manifests
+# compare stably regardless of walk order.
+# ---------------------------------------------------------------------------
+_sandbox_tree_diff_filter() {
+  local manifest_path="$1" patterns="$2"
+  local relpath type hash pat excluded
+
+  while IFS=$'\t' read -r relpath type hash; do
+    [[ -n "$relpath" ]] || continue
+    excluded=0
+    if [[ -n "$patterns" ]]; then
+      # shellcheck disable=SC2086  # intentional word-splitting: <patterns>
+      # is a caller-supplied space/newline-separated list of glob patterns.
+      for pat in $patterns; do
+        # shellcheck disable=SC2254  # deliberately unquoted: $pat is a glob
+        # pattern here, not a literal — quoting would break exclusion
+        # matching (the whole point of this caller-supplied pattern list).
+        case "$relpath" in
+          $pat) excluded=1; break ;;
+        esac
+      done
+    fi
+    [[ "$excluded" -eq 1 ]] && continue
+    printf '%s\t%s\t%s\n' "$relpath" "$type" "$hash"
+  done < "$manifest_path" | LC_ALL=C sort -t "$(printf '\t')" -k1,1
+}
+
+# ---------------------------------------------------------------------------
+sandbox_tree_diff() {
+  local manifest_a="${1:?sandbox_tree_diff: manifest A required}"
+  local manifest_b="${2:?sandbox_tree_diff: manifest B required}"
+  local exclude_arg="${3:-}"
+
+  [[ -f "$manifest_a" ]] || { echo "sandbox_tree_diff: manifest A not found: $manifest_a" >&2; return 2; }
+  [[ -f "$manifest_b" ]] || { echo "sandbox_tree_diff: manifest B not found: $manifest_b" >&2; return 2; }
+
+  local exclude_list=""
+  if [[ -n "$exclude_arg" ]]; then
+    if [[ -f "$exclude_arg" ]]; then
+      exclude_list="$(grep -v '^[[:space:]]*#' "$exclude_arg" 2>/dev/null | grep -v '^[[:space:]]*$')"
+    else
+      exclude_list="$exclude_arg"
+    fi
+  fi
+
+  local filtered_a filtered_b
+  filtered_a="$(_sandbox_tree_diff_filter "$manifest_a" "$exclude_list")"
+  filtered_b="$(_sandbox_tree_diff_filter "$manifest_b" "$exclude_list")"
+
+  if [[ "$filtered_a" == "$filtered_b" ]]; then
+    return 0
+  fi
+
+  echo "sandbox_tree_diff: manifests differ (after exclusions):" >&2
+  diff -u <(printf '%s\n' "$filtered_a") <(printf '%s\n' "$filtered_b") >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+sandbox_tripwire_snapshot() {
+  : "${SANDBOX_ROOT:?sandbox_tripwire_snapshot: call sandbox_up first}"
+  local label="${1:?sandbox_tripwire_snapshot: label required}"
+  shift
+  local paths=("$@")
+  if [[ ${#paths[@]} -eq 0 ]]; then
+    paths=("$HOME/.claude" "$HOME/.local/bin/temperloop")
+  fi
+
+  local dir="$SANDBOX_ROOT/tripwire/$label"
+  mkdir -p "$dir"
+  : > "$dir/paths.list"
+
+  local i=0 p
+  for p in "${paths[@]}"; do
+    printf '%s\n' "$p" >> "$dir/paths.list"
+    sandbox_tree_manifest "$p" > "$dir/$i.manifest"
+    i=$((i + 1))
+  done
+}
+
+# ---------------------------------------------------------------------------
+sandbox_tripwire_check() {
+  : "${SANDBOX_ROOT:?sandbox_tripwire_check: call sandbox_up first}"
+  local label="${1:?sandbox_tripwire_check: label required}"
+  local dir="$SANDBOX_ROOT/tripwire/$label"
+
+  if [[ ! -f "$dir/paths.list" ]]; then
+    echo "sandbox_tripwire_check: no snapshot found for label '$label' (call sandbox_tripwire_snapshot first)" >&2
+    return 2
+  fi
+
+  local i=0 p bad=0 after
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || { i=$((i + 1)); continue; }
+    after="$dir/$i.after.manifest"
+    sandbox_tree_manifest "$p" > "$after"
+    if ! sandbox_tree_diff "$dir/$i.manifest" "$after"; then
+      echo "sandbox_tripwire_check: drift detected under real path: $p" >&2
+      bad=1
+    fi
+    i=$((i + 1))
+  done < "$dir/paths.list"
+
+  return "$bad"
 }

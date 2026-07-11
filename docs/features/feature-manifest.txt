@@ -204,3 +204,9 @@ review-agents claude/agents/*
 sandbox-core workflows/scripts/tests/lib/sandbox.sh
 sandbox-core workflows/scripts/tests/lib/tests/test_sandbox.sh
 sandbox-core workflows/scripts/tests/test_sandbox_dry_run_legs.sh
+
+# ── sandbox-integrity — write preflight, drift tripwire, tree-manifest diff
+#    (temperloop#266) — three more sandbox_* functions appended onto
+#    sandbox.sh (still claimed by sandbox-core above; this slug claims only
+#    the integrity layer's own sibling test file) ─────────────────────────
+sandbox-integrity workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh
