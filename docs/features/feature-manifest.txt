@@ -139,6 +139,16 @@ install-cli workflows/scripts/lib/report.contract.md
 # above for these two specific paths (longer patterns win) ─────────────────
 install-manifest-lib workflows/scripts/install/manifest.sh
 install-manifest-lib workflows/scripts/tests/test_install_manifest.sh
+# ── configure-config-cli — AI-guided config wizard + `config list` (temperloop#262) ──
+# More specific than install-cli's blanket `bin/*` claim above (longest
+# match wins) — these four paths get their OWN feature doc rather than
+# folding into install-cli, since they're a distinct operator-facing
+# surface (the config precedence ladder, docs/config-precedence.md) rather
+# than the onboarding/install machinery install-cli covers.
+configure-config-cli bin/subcommands/configure.sh
+configure-config-cli bin/subcommands/config.sh
+configure-config-cli bin/subcommands/tests/test_configure.sh
+configure-config-cli bin/subcommands/tests/test_config.sh
 
 # ── knowledge-store — knowledge_store/search backends + issue corpus ────────
 knowledge-store workflows/scripts/lib/knowledge_*
