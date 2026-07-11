@@ -261,6 +261,7 @@ GH_PERF_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-gh-pe
 GH_CALL_LOG_FILE	$HOME/.cache/gh-calls-v2.tsv	path	kernel	workflows/scripts/gh-call-logger.sh	Where the gh-call-logger shim appends its per-call TSV rows
 GH_CALL_LOG_MAX_BYTES	16777216	int	kernel	workflows/scripts/gh-call-logger.sh	Rotation threshold for the gh-call-logger TSV
 GH_CALL_LOG	1	bool	kernel	workflows/scripts/gh-call-logger.sh	Opt-out (0) for zero-overhead passthrough with no timing/logging
+GH_CALLS_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/gh-call-logger.sh	Sink dir for the gh-calls raw-lake stream (personal-path-verbatim; the shim is INSTALLED to ~/.local/bin/gh, decoupled from any repo checkout, so it can't use the BASH_SOURCE-relative trick the other emit sites use — see the script's own LAKE STREAM header note)
 FEATURE_DOCS_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/validate-feature-docs.sh	Repo root the feature-docs coverage walk scans (fixture-test seam, same shape as KERNEL_MANIFEST_ROOT)
 FEATURE_MANIFEST_FILE	$FEATURE_DOCS_ROOT/docs/features/feature-manifest.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the full-coverage feature path-claims registry
 FEATURE_EXEMPT_FILE	$FEATURE_DOCS_ROOT/docs/features/backfill-exempt.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the shrink-only feature-doc backfill ratchet
