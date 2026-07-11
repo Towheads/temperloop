@@ -225,3 +225,10 @@ sandbox-integrity workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh
 #    `workflows/scripts/tests/test_install_*` glob above for this one path
 #    (longer patterns win) ────────────────────────────────────────────────
 ci-install-lifecycle workflows/scripts/tests/test_install_lifecycle.sh
+
+# ── ci-install-tier2 — tier-2 scheduled REAL round-trip release gate
+#    (temperloop#268, ADR K164 D6): try -> init -> eject over real network,
+#    real gh, real claude, against the shared demo repo. Never per-PR (see
+#    the workflow file's own header for why) — scheduled + workflow_dispatch
+#    only ──────────────────────────────────────────────────────────────────
+ci-install-tier2 .github/workflows/install-tier2.yml
