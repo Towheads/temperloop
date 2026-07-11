@@ -33,8 +33,15 @@ cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 # tsv_field <tsv-output> <name> <field#> (1=name 2=rung 3=value 4=owning 5=doc)
+#
+# Herestring input, NOT `printf | awk`: awk's early `exit` closes the pipe
+# while the writer may still be flushing, so under this suite's
+# `set -o pipefail` a pipeline here can report SIGPIPE (rc 141) on a
+# perfectly good match — a scheduling race that fires readily on Linux CI
+# runners and almost never on macOS (the temperloop#262 CI-only failure).
+# A herestring has no writer process to kill, so it is race-free.
 tsv_field() {
-  printf '%s\n' "$1" | awk -F'\t' -v n="$2" -v f="$3" '$1==n{print $f; exit}'
+  awk -F'\t' -v n="$2" -v f="$3" '$1==n{print $f; exit}' <<<"$1"
 }
 
 # =============================================================================
@@ -108,11 +115,18 @@ echo "PASS: an untouched kernel-layer knob resolves to the registry default (run
 #    header row is exact.
 # =============================================================================
 text_out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL bash "$CONFIG" list)"
-echo "$text_out" | grep -q 'rung 1 .cli. is never resolved at list-time' \
+# Herestrings, not `echo "$text_out" | grep -q` / `printf | head -1`: -q and
+# -1 stop reading at the first match/line, and under `set -euo pipefail` the
+# still-writing left side then dies of SIGPIPE (rc 141), failing the pipeline
+# — and, for the head-1 assignment, killing the whole suite — on a run whose
+# output was CORRECT. This is the Linux-CI-only failure this suite shipped
+# with (temperloop#262): the race all but never fires on macOS, so it looked
+# platform-dependent. See tsv_field's comment above.
+grep -q 'rung 1 .cli. is never resolved at list-time' <<<"$text_out" \
   || fail "text format did not print the rung-1 n/a note"
-echo "$text_out" | grep -q '^NAME' || fail "text format did not print a NAME header"
+grep -q '^NAME' <<<"$text_out" || fail "text format did not print a NAME header"
 
-tsv_header="$(printf '%s\n' "$out" | head -1)"
+tsv_header="$(head -1 <<<"$out")"
 [ "$tsv_header" = "$(printf 'name\trung\tvalue\towning-script\tdoc')" ] \
   || fail "tsv header row is not exact (got: $tsv_header)"
 echo "PASS: --format text prints the rung-1 n/a note; --format tsv header row is exact"

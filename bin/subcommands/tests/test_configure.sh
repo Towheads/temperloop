@@ -161,7 +161,11 @@ out="$(FAKE_CLAUDE_RC=1 PATH="$BIN:/usr/bin:/bin" XDG_CONFIG_HOME="$XDG4" bash "
   --set FUNNEL_OPERATOR=octocat --yes </dev/null 2>&1)"
 rc=$?
 [ "$rc" -eq 0 ] || fail "AI-call-failure run did not still exit 0 (got: $rc) -- output:\n$out"
-echo "$out" | grep -q "falling back to plain prompts" || fail "AI-call-failure did not report a plain-prompt fallback (got: $out)"
+# Herestring, not `echo "$out" | grep -q`: -q stops at the first match and
+# the still-writing echo can then die of SIGPIPE (141), failing the pipeline
+# under `set -euo pipefail` on a correct output — the Linux-CI race that broke
+# test_config.sh (see its tsv_field comment).
+grep -q "falling back to plain prompts" <<<"$out" || fail "AI-call-failure did not report a plain-prompt fallback (got: $out)"
 mc4="$(machine_conf_path "$XDG4")"
 [ -f "$mc4" ] || fail "AI-call-failure run did not still write the machine-conf file"
 echo "PASS: an AI call failure degrades gracefully to plain prompts (still writes, never hard-fails)"
@@ -211,7 +215,8 @@ echo "PASS: a second configure run upserts (replaces) an existing knob's line ra
 XDG8="$(fresh_xdg)"
 out="$(PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG8" bash "$CONFIGURE" \
   --set 'FUNNEL_WIP_CAP=not-a-number' --yes </dev/null 2>&1)"
-echo "$out" | grep -qi "not a valid" || fail "invalid --set value was not reported as invalid (got: $out)"
+# Herestring for the same SIGPIPE-race reason as above.
+grep -qi "not a valid" <<<"$out" || fail "invalid --set value was not reported as invalid (got: $out)"
 mc8="$(machine_conf_path "$XDG8")"
 grep -q ': "${FUNNEL_WIP_CAP:=not-a-number}"' "$mc8" && fail "invalid value was written verbatim"
 grep -q ': "${FUNNEL_WIP_CAP:=3}"' "$mc8" || fail "invalid --set did not fall back to the registry default of 3 (got: $(cat "$mc8")\")"
