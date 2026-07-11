@@ -32,11 +32,6 @@ check-in
 telemetry
 funnel-driver
 
-# ── temperloop#142 — harness surfaces: hooks, gh-perf, review agents ────────
-hooks
-gh-perf
-review-agents
-
 # ── temperloop#143 — install + stores + docs: install-cli, knowledge-store, ─
 # ── docs-generator, presentation-plane ──────────────────────────────────────
 install-cli
