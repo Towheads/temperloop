@@ -493,5 +493,41 @@ echo "$doctor9_out" | grep -qE 'board\.1 +cache=on +store=absent' || \
 pass "9: an unwarmed (absent) cache store never fails doctor's overall gate"
 
 # ---------------------------------------------------------------------------
+# Test 10: an ABSENT env/ directory (a kernel-only checkout, e.g. this repo
+# itself) yields ZERO env records — not a bogus literal-glob entry
+# (temperloop#264, the bug `temperloop install`/doctor.sh going green on a
+# kernel-only checkout caught: bash's default non-nullglob behavior leaves
+# `env/.*` unexpanded when env/ doesn't exist, so the loop iterated once
+# with the literal pattern string and emitted `${home}/.*`).
+# ---------------------------------------------------------------------------
+FAKE_HOME10="${TMP}/home10"
+mkdir -p "$FAKE_HOME10"
+FAKE_FOUND10="${TMP}/foundation10"
+mkdir -p \
+  "${FAKE_FOUND10}/claude" \
+  "${FAKE_FOUND10}/workflows/scripts/board"
+# Deliberately NO ${FAKE_FOUND10}/env directory.
+touch "${FAKE_FOUND10}/claude/settings.json"
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
+  touch "${FAKE_FOUND10}/workflows/scripts/board/${cmd}.sh"
+done
+
+output10="$(
+  FOUNDATION="$FAKE_FOUND10" HOME="$FAKE_HOME10" bash -c '
+    # shellcheck source=/dev/null
+    source "'"$LINKS_SH"'"
+    links_enumerate
+  '
+)"
+
+if grep -q '\.\*' <<<"$output10"; then
+  fail "10: an absent env/ directory should yield zero env records, not a literal '.*' entry (got: $(grep '\.\*' <<<"$output10"))"
+fi
+echo "$output10" | grep -q "${FAKE_HOME10}/.claude/settings.json" || \
+  fail "10: non-env categories should still be enumerated when env/ is absent"
+
+pass "10: an absent env/ directory yields zero env records (no bogus literal-glob entry), other categories unaffected"
+
+# ---------------------------------------------------------------------------
 echo
 echo "PASS: all install-links tests passed"

@@ -281,6 +281,16 @@ KERNEL_GATES=(
   # appended onto sandbox.sh above. Sibling suite to test_sandbox.sh (kept
   # separate rather than folded in) — same direct-`bash` form.
   "bash workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh"
+  # `temperloop install` (temperloop#264, ADR K164 D7): the CLI half of the
+  # install manifest library (workflows/scripts/install/manifest.sh) landed
+  # above — installs the machine surface (links_enumerate() desired state)
+  # via bin/subcommands/install.sh, recording every touched path. Same
+  # sandbox_bootstrap_checkout idiom as the dry-run-legs gate above, but
+  # exercises a REAL (non-dry-run) install end to end: dry-run zero-writes,
+  # default-deny consent, fresh install + manifest state=created, gh-shim
+  # marker-stamp, idempotent re-install convergence, a pre-seeded path's
+  # backup-then-replace, and a green doctor.sh run afterward.
+  "bash workflows/scripts/tests/test_install_cli.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

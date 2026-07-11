@@ -26,6 +26,23 @@ materializes:
    they depend on `env/*` and machine-specific paths that are overlay-only
    and don't exist in this repo; wiring them in would look like a working
    install path that silently does nothing. That's later integration work.
+
+   **Superseded, narrowly (temperloop#264, ADR K164 D7):** the exclusion
+   above is about the *Makefile* recipes specifically, and stays true
+   unchanged — `install`/`install-env`/`install-claude` still depend on
+   `env/*` dotfiles that genuinely don't exist in a kernel-only checkout.
+   The "later integration work" this paragraph once deferred has since
+   landed as a **CLI** subcommand instead: `temperloop install`
+   (`bin/subcommands/install.sh`) installs the `env/*`-independent slice of
+   the machine surface — `links_enumerate()`'s `claude/*`, board-command,
+   and gh-shim entries under `~/.claude/` and `~/.local/bin/` — recording
+   every touched path via the install manifest
+   (`workflows/scripts/install/manifest.sh`) so a later `temperloop
+   uninstall` can cleanly reverse it. See `VERSIONING.md` § "Vendored" vs.
+   "installed" — two different senses for how this CLI, machine-scoped
+   sense of "install" differs from (and doesn't contradict) the
+   repo-integration ("vendored") sense this doc's own seeding description
+   otherwise uses.
 4. `.github/workflows/ci.yml` — a dual-OS (`ubuntu-latest` + `macos-latest`)
    matrix, job named `checks`, running the one command
    `bash scripts/quality-gates.sh`. Same script foundation's own CI runs, so

@@ -76,15 +76,26 @@ links_enumerate() {
   local board_src="${foundation}/workflows/scripts/board"
 
   # ---- 1. env/ dotfiles -> ~ -------------------------------------------------
-  # Mirrors install-env: loops env/.* (excluding . .. .gitkeep).
+  # Mirrors install-env: loops env/.* (excluding . .. .gitkeep). Guarded on
+  # the directory actually existing: a kernel-only checkout (this repo,
+  # temperloop) has NO env/ at all — env/* is overlay-only, per
+  # workflows/scripts/kernel/kernel-repo-layout.md's own "what got seeded"
+  # note. Without this guard, an absent env/ leaves the glob unexpanded
+  # (bash's default non-nullglob behavior), so `for f in .../env/.*` iterates
+  # ONCE with the literal pattern string itself — basename of that is ".*",
+  # which is neither "." nor ".." nor ".gitkeep", so it fell through and
+  # emitted a bogus `${home}/.*` record (temperloop#264, caught by
+  # `temperloop install`/doctor.sh going green on a kernel-only checkout).
   local f name target src
-  for f in "${foundation}"/env/.*; do
-    name="$(basename "$f")"
-    [[ "$name" == "." || "$name" == ".." || "$name" == ".gitkeep" ]] && continue
-    target="${home}/${name}"
-    src="${foundation}/env/${name}"
-    printf '%s\t%s\t%s\n' "$target" "symlink" "$src"
-  done
+  if [[ -d "${foundation}/env" ]]; then
+    for f in "${foundation}"/env/.*; do
+      name="$(basename "$f")"
+      [[ "$name" == "." || "$name" == ".." || "$name" == ".gitkeep" ]] && continue
+      target="${home}/${name}"
+      src="${foundation}/env/${name}"
+      printf '%s\t%s\t%s\n' "$target" "symlink" "$src"
+    done
+  fi
 
   # ---- 2. claude/* entries -> ~/.claude/ ------------------------------------
   # Mirrors install-claude: loops claude/*.
