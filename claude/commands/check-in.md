@@ -28,7 +28,7 @@ Each subsection reads one append-only surface and disposes its `### … - **Stat
 
 ### Pending decisions review
 
-Read the **unattended pending-decisions surface** — `Pipeline/pending decisions.md`, falling back to the legacy `Context/pipeline - pending decisions.md` (path fallback convention above) — via `mcp__obsidian-builtin__vault_read`. This is the cross-run inbox where `batch-at-ritual` questions land when a batch-pipeline command (`build` Step 1.5/1.7/4b/4d, `assess` Step 6, `tidy`'s stale-claim sweep, `sweep` Step 2) ran **unattended / mini / cron** with no live operator and took its safe default to keep moving (see `claude/CLAUDE.md` § Unattended pending-decisions surface).
+Read the **unattended pending-decisions surface** — `Pipeline/pending decisions.md`, falling back to the legacy `Context/pipeline - pending decisions.md` (path fallback convention above) — via `mcp__obsidian-builtin__vault_read`. This is the cross-run inbox where `batch-at-ritual` questions land when a batch-pipeline command (`build` Step 1.5/1.7/4b/4d, `assess` Step 1's provenance default, `assess` Step 6, `tidy`'s stale-claim sweep, `tidy`'s provenance-less-epics sweep, `sweep` Step 2) ran **unattended / mini / cron** with no live operator and took its safe default to keep moving (see `claude/CLAUDE.md` § Unattended pending-decisions surface).
 
 For each `### … - **Status:** open` entry, present it in one compact list: the decision, the **default that was auto-taken** on the operator's behalf, and when/which run took it. For each, the operator either:
 - **confirms** the default was right → patch that entry's `Status` line to `resolved — confirmed` with a direct `Edit`; or
