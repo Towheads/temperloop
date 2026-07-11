@@ -1,0 +1,237 @@
+name: Install Tier-2 (real round-trip)
+
+# install-tier2.yml — the tier-2 leg of ADR K164 D6's install-lifecycle
+# validation strategy (temperloop#268). Tier-1
+# (workflows/scripts/tests/test_install_lifecycle.sh, wired into
+# scripts/quality-gates.sh's `checks` job — see docs/features/
+# ci-install-lifecycle.md) proves the install/uninstall MACHINE-SURFACE
+# lifecycle hermetically, entirely inside a sandboxed HOME/XDG tree with a
+# `file://` bare clone as its only "network" call — fast and free enough to
+# run on every PR. This workflow proves the OTHER half: the REAL newcomer
+# adoption path (`temperloop try` -> `temperloop init` -> `temperloop
+# eject`) against a REAL target repo, over REAL network, with a REAL `gh`
+# and a REAL `claude -p` judgment call — see docs/features/
+# ci-install-tier2.md for the full "how it works".
+#
+# WHY NEVER PER-PR (the reason this is a SEPARATE workflow, not a job added
+# to ci.yml's `checks`):
+#   - COST: a real live `claude -p` shadow-triage call against the demo
+#     repo's open issues is a billed LLM turn (`temperloop try` caps it at
+#     $1.00 via TRY_CLAUDE_MAX_BUDGET_USD, bin/lib/cost-estimates.conf) —
+#     harmless once, but every PR push/re-push on this repo would multiply
+#     that spend for zero marginal coverage over tier-1's hermetic suite.
+#   - SHARED REMOTE STATE: `temperloop init`'s consented-apply step writes
+#     REAL API state (a branch-protection required-check, a label set, a
+#     proposal PR) onto the shared demo repo. Two PRs' tier-2 runs racing
+#     the same remote repo concurrently would collide; this workflow's own
+#     `concurrency` group below serializes runs for exactly that reason,
+#     which is fine for a weekly/manual cadence and wrong for a per-PR one.
+#   - FLAKINESS SURFACE: real network + a live model call + GitHub API
+#     rate limits are exactly the nondeterminism per-PR CI must not carry
+#     (a stranger's PR should never go red because the demo repo's API
+#     round-trip hiccuped) — that's what tier-1's hermetic suite is FOR.
+#
+# CADENCE: weekly (Monday 05:00 UTC) is right for a release-gate leg — it
+# only needs to prove the live path still works before a release ships, not
+# on every commit. Also `workflow_dispatch` for an on-demand run — in
+# particular, run this BY HAND once before cutting a kernel release tag
+# (its "release-gate role": a green run here is the real-world proof tier-1
+# can't give, that a stranger's actual `try`/`init`/`eject` still works
+# against a live target repo, not just a hermetic sandbox).
+#
+# FAILURE VISIBILITY: `on: schedule` failures already trigger GitHub's
+# built-in scheduled-workflow-failure notification (repo Watch settings ->
+# Actions) to the repo's default recipients — no extra notification
+# plumbing needed here. On top of that, the final "Round-trip verdict" job
+# step below writes a leg-by-leg outcome table to $GITHUB_STEP_SUMMARY and
+# fails the job with an explicit `::error::` line NAMING which leg
+# (try/init/eject) failed — see that step for why a bare exit-code check on
+# `try`/`init` isn't enough (both scripts are deliberately fail-open at the
+# shell-exit-code layer; degrade-to-skip is caught by content-scanning
+# their captured logs instead).
+#
+# NEVER pull_request / push / merge_group — this workflow must never gate
+# or run on a PR. If you're tempted to add one of those triggers here,
+# that's tier-1's job (scripts/quality-gates.sh via ci.yml), not this
+# file's.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# One real round trip against the shared demo repo at a time — a second
+# concurrent run would race the same remote API state (see "WHY NEVER
+# PER-PR" above). Let an in-flight run finish rather than cancel it
+# mid-mutation.
+concurrency:
+  group: install-tier2
+  cancel-in-progress: false
+
+env:
+  DEMO_REPO: Towheads/temperloop-demo  # denylist:allow — this repo's own scratch demo-repo default (mirrors seed-demo-repo.sh / try.sh's identical default), its identity, not a personal-token leak
+
+jobs:
+  round-trip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify required secrets are present
+        env:
+          HAVE_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAVE_DEMO_TOKEN: ${{ secrets.DEMO_REPO_TOKEN != '' }}
+        run: |
+          missing=""
+          [ "$HAVE_ANTHROPIC" = "true" ] || missing="$missing ANTHROPIC_API_KEY"
+          [ "$HAVE_DEMO_TOKEN" = "true" ] || missing="$missing DEMO_REPO_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::install-tier2: missing required repo secret(s):$missing — set them under Settings > Secrets and variables > Actions, then re-run. See docs/features/ci-install-tier2.md for what each one is for."
+            exit 1
+          fi
+          echo "install-tier2: required secrets present (ANTHROPIC_API_KEY, DEMO_REPO_TOKEN)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Bootstrap the temperloop CLI from this checkout
+        run: |
+          FOUNDATION_HOME="$RUNNER_TEMP/temperloop-home"
+          FOUNDATION_BIN_DIR="$RUNNER_TEMP/temperloop-bin"
+          FOUNDATION_KERNEL_REPO="file://$GITHUB_WORKSPACE" \
+            FOUNDATION_HOME="$FOUNDATION_HOME" \
+            FOUNDATION_BIN_DIR="$FOUNDATION_BIN_DIR" \
+            sh bin/bootstrap.sh
+          echo "$FOUNDATION_BIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Reset the demo repo to a known baseline
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
+        run: bash workflows/scripts/demo/seed-demo-repo.sh --repo "$DEMO_REPO" --reset
+
+      - name: Clone the demo repo (the newcomer's local checkout)
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
+        run: |
+          gh auth setup-git
+          git clone "https://github.com/$DEMO_REPO.git" "$RUNNER_TEMP/demo-repo"
+          echo "DEMO_DIR=$RUNNER_TEMP/demo-repo" >> "$GITHUB_ENV"
+
+      # --- The real round trip -------------------------------------------
+      #
+      # `temperloop try`/`init` are BOTH deliberately fail-open at the
+      # shell-exit-code layer for their interactive/degraded-network use
+      # case (a real `gh`/`claude` failure prints "skipped — <reason>" or
+      # "FAILED — <reason>" and still exits 0 — see bin/subcommands/try.sh
+      # and init.sh's own headers). That's the right default for a curious
+      # stranger on a flaky connection, and the wrong one for a gate whose
+      # whole point is proving the LIVE path actually ran. So each leg
+      # below captures its own log, then greps it for those two markers and
+      # turns a soft degrade into a hard step failure. `continue-on-error:
+      # true` on try/init so the eject leg still runs and attempts a clean
+      # revert of whatever init did manage to apply, even if a step above
+      # it failed partway — see the "Round-trip verdict" step for how the
+      # job's real pass/fail is decided from these three outcomes.
+
+      - name: "Round trip 1/3 — try (probe + live claude shadow-triage)"
+        id: try
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
+        run: |
+          temperloop try --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --timeout 30 \
+            2>&1 | tee "$RUNNER_TEMP/try.log"
+          if grep -q "skipped —" "$RUNNER_TEMP/try.log"; then
+            echo "::error::install-tier2: 'temperloop try' degraded instead of completing the live round trip — see the try.log artifact for the skip reason(s):"
+            grep "skipped —" "$RUNNER_TEMP/try.log" || true
+            exit 1
+          fi
+          echo "try: OK — probe + open-issue list + live claude shadow-triage all ran live, zero skips"
+
+      - name: "Round trip 2/3 — init (proposal PR + consented API-state apply)"
+        id: init
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
+        run: |
+          temperloop init --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --timeout 30 \
+            --yes-required-check --yes-labels --no-board \
+            2>&1 | tee "$RUNNER_TEMP/init.log"
+          if grep -q "skipped —" "$RUNNER_TEMP/init.log"; then
+            echo "::error::install-tier2: 'temperloop init' degraded instead of completing the live round trip — see the init.log artifact for the skip reason(s):"
+            grep "skipped —" "$RUNNER_TEMP/init.log" || true
+            exit 1
+          fi
+          if grep -q "FAILED" "$RUNNER_TEMP/init.log"; then
+            echo "::error::install-tier2: 'temperloop init' reported a FAILED apply action — see the init.log artifact:"
+            grep "FAILED" "$RUNNER_TEMP/init.log" || true
+            exit 1
+          fi
+          echo "init: OK — proposal PR opened + required-check/labels applied live, zero skips/failures"
+
+      - name: "Round trip 3/3 — eject (manifest-driven revert)"
+        id: eject
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
+        run: |
+          temperloop eject --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --yes \
+            2>&1 | tee "$RUNNER_TEMP/eject.log"
+
+      - name: Upload round-trip logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-tier2-logs
+          path: |
+            ${{ runner.temp }}/try.log
+            ${{ runner.temp }}/init.log
+            ${{ runner.temp }}/eject.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Round-trip verdict
+        if: always()
+        env:
+          TRY_OUTCOME: ${{ steps.try.outcome }}
+          INIT_OUTCOME: ${{ steps.init.outcome }}
+          EJECT_OUTCOME: ${{ steps.eject.outcome }}
+        run: |
+          {
+            echo "## install-tier2 round trip"
+            echo
+            echo "| leg | outcome |"
+            echo "|---|---|"
+            echo "| try | $TRY_OUTCOME |"
+            echo "| init | $INIT_OUTCOME |"
+            echo "| eject | $EJECT_OUTCOME |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed_legs=""
+          [ "$TRY_OUTCOME" = "success" ] || failed_legs="$failed_legs try"
+          [ "$INIT_OUTCOME" = "success" ] || failed_legs="$failed_legs init"
+          [ "$EJECT_OUTCOME" = "success" ] || failed_legs="$failed_legs eject"
+
+          if [ -n "$failed_legs" ]; then
+            echo "::error::install-tier2: real round trip FAILED at leg(s):$failed_legs — download the install-tier2-logs artifact and check the named step(s) above for detail."
+            {
+              echo
+              echo "**FAILED leg(s):$failed_legs** — see the install-tier2-logs artifact and the named step logs above."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "All three legs (try/init/eject) completed the live round trip successfully." >> "$GITHUB_STEP_SUMMARY"
