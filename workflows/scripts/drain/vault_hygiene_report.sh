@@ -52,6 +52,14 @@
 #                             usually really a Decision/Investigation.
 #                             Propose-only.
 #
+# Repeat-mistake detector (temperloop#234 — ADR §2.6):
+#  11. repeat-mistake        — a NEW Session friction ledger row (dated within
+#                             FRICTION_RECENT_DAYS) whose text shares enough
+#                             vocabulary with an existing Mistakes/ note's
+#                             title + `trigger:` frontmatter is flagged as a
+#                             retrieval failure — a recurrence despite an
+#                             existing note. Propose-only. ALARM if any.
+#
 # `Personal/` is NEVER flagged by any lint above (structural or housekeeping)
 # — it is in the folder allowlist outright, and every recursive walk below
 # prunes it explicitly (case-insensitively), so nothing nested under it is
@@ -603,6 +611,107 @@ EOF
   return 0
 }
 register_check check_kind_misfile
+
+# ── Check 11: repeat-mistake detector (temperloop#234 — ADR §2.6) ───────────
+# ADR §2.6 names repeat-mistake rate ≈ 0 as the headline value metric for
+# "the vault works" — a friction row that recurs despite an existing
+# Mistakes/ note is exactly the failure that metric tracks, so this check
+# cross-references NEW friction-ledger rows against Mistakes/ and flags a
+# match as a retrieval failure. "New" = dated within FRICTION_RECENT_DAYS of
+# now, the same recency-window shape STALE_PLAN_DAYS/STALE_VERIFIED_DAYS
+# already use elsewhere in this script, rather than re-scanning the ledger's
+# whole history every run (a row older than the window already went through
+# at least one prior check-in/tidy cycle — not this check's concern).
+# Matching is deliberately simple and mechanical: lowercase + split on
+# non-alnum, drop tokens shorter than 4 chars and a small stopword list, then
+# count tokens shared between the row's text and a Mistakes/ note's title +
+# `trigger:` frontmatter (scalar `trigger: a, b` or YAML-list form); >=2
+# shared tokens is a match (1 alone is too weak — every row and every note
+# share the project name, e.g. "temperloop", so a 1-token floor would flag on
+# that alone). Propose-only: never edits the ledger or Mistakes/. Graceful
+# no-op when the ledger or Mistakes/ is absent (a bare kernel checkout has
+# neither).
+FRICTION_RECENT_DAYS=14
+_HYG_STOPWORDS=" this that with from have were what when where which should using used just been also into over than then still very more your "
+
+# YYYY-MM-DD -> epoch (GNU `date -d` vs BSD `date -j -f`); empty on failure.
+_hyg_date_to_epoch() {
+  date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null || echo ''
+}
+# string -> space-separated lowercase alnum tokens, len>=4, stopwords dropped
+_hyg_tokenize() {
+  local s t out=""
+  s="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' ' ')"
+  for t in $s; do
+    [ "${#t}" -ge 4 ] || continue
+    case "$_HYG_STOPWORDS" in *" $t "*) continue ;; esac
+    out="$out $t"
+  done
+  printf '%s' "$out"
+}
+# set_a set_b (space-separated token lists) -> count of $1's tokens also in $2
+_hyg_token_overlap() {
+  local a match=0
+  for a in $1; do
+    case " $2 " in *" $a "*) match=$((match + 1)) ;; esac
+  done
+  printf '%s' "$match"
+}
+# Mistakes/<file>.md -> its title + `trigger:` frontmatter tokens (scalar
+# `trigger: a, b, c` or YAML-list `trigger:\n  - a\n  - b`).
+_hyg_mistake_tokens() {
+  local f="$1" fm title trig trig_list
+  title="$(basename "$f" .md)"
+  fm="$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$f" 2>/dev/null)"
+  trig="$(printf '%s\n' "$fm" | grep -im1 '^trigger:' | sed -e 's/^[Tt]rigger:[[:space:]]*//' -e 's/["'\'']//g')"
+  trig_list="$(printf '%s\n' "$fm" | awk '/^trigger:[[:space:]]*$/{f=1;next} f && /^[[:space:]]+-/{print;next} {f=0}')"
+  _hyg_tokenize "$title $trig $trig_list"
+}
+
+check_repeat_mistake() {
+  local LEDGER="$ROOT/Context/Session friction ledger.md" MISTAKES="$ROOT/Mistakes"
+  local count=0 checked=0 now cutoff line row rdate rrest repoch rtoks
+  local mf mtoks overlap
+  if [ ! -f "$LEDGER" ] || [ ! -d "$MISTAKES" ]; then
+    add "- ok repeat-mistake: 0 (no friction ledger or no Mistakes/)"
+    return 0
+  fi
+  now="$(now_epoch)"
+  cutoff=$((FRICTION_RECENT_DAYS * 86400))
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    row="${line#- }"
+    rdate="${row%% *}"
+    rrest="${row#"$rdate" }"
+    rrest="${rrest#"· "}"
+    [ -n "$rdate" ] || continue
+    repoch="$(_hyg_date_to_epoch "$rdate")"
+    [ -n "$repoch" ] || continue
+    [ $(( now - repoch )) -gt "$cutoff" ] && continue
+    checked=$((checked + 1))
+    rtoks="$(_hyg_tokenize "$rrest")"
+    [ -n "$rtoks" ] || continue
+    while IFS= read -r mf; do
+      [ -n "$mf" ] || continue
+      mtoks="$(_hyg_mistake_tokens "$mf")"
+      [ -n "$mtoks" ] || continue
+      overlap="$(_hyg_token_overlap "$rtoks" "$mtoks")"
+      if [ "$overlap" -ge 2 ]; then
+        add "- ⚠️ repeat-mistake: ${rdate} — ${rrest} — matches Mistakes/${mf#"$ROOT"/} (retrieval failure: recurrence despite an existing note)"
+        inc
+        count=$((count + 1))
+        break
+      fi
+    done <<EOF
+$(find "$MISTAKES" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  done <<EOF
+$(grep -E '^- [0-9]{4}-[0-9]{2}-[0-9]{2} · ' "$LEDGER" 2>/dev/null)
+EOF
+  [ "$count" -eq 0 ] && add "- ok repeat-mistake: 0 (${checked} new row(s) within ${FRICTION_RECENT_DAYS}d checked)"
+  return 0
+}
+register_check check_repeat_mistake
 
 # ── Run every registered check (generic — never changes when adding a check) ──
 for _hyg_fn in "${CHECKS[@]}"; do

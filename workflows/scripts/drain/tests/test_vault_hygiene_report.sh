@@ -25,6 +25,11 @@
 #      in the script has a matching `register_check check_<name>` call (a
 #      mechanical proxy for the "purely additive, no shared-line edits"
 #      registration contract).
+#  10. Repeat-mistake detector (temperloop#234) → a NEW friction-ledger row
+#      that shares enough vocabulary with an existing Mistakes/ note's title
+#      + trigger: frontmatter fires as a retrieval failure; an unrelated row
+#      stays quiet; a matching row outside the recency window is skipped; no
+#      ledger / no Mistakes/ is a quiet no-op (stranger test).
 #
 # Usage: bash workflows/scripts/drain/tests/test_vault_hygiene_report.sh
 # Exit 0 = all pass, exit 1 = one or more failures.
@@ -166,6 +171,7 @@ assert_has "$creport" "ok one-file-directory: 0"                             "on
 assert_has "$creport" "ok naming: 0 drift"                                   "naming drift quiet on clean"
 assert_has "$creport" "ok stale plans (draft/approved >30d): 0"              "stale plan quiet on clean"
 assert_has "$creport" "ok kind-misfile (Patterns/): 0"                       "kind-misfile quiet on clean"
+assert_has "$creport" "ok repeat-mistake:"                                   "repeat-mistake quiet on clean (no ledger/Mistakes)"
 centry="$(bash "$SCRIPT" --root "$CLEAN" --format entry)"
 if [ -z "$centry" ]; then ok "clean --format entry emits nothing"; else fail_test "clean entry" "expected empty, got: $centry"; fi
 rm -rf "$CLEAN"
@@ -275,6 +281,61 @@ fi
 # `for ... in "${CHECKS[@]}"` loop, so a new check never needs a second one.
 run_loop_count="$(grep -cE '^for .* in "\$\{CHECKS\[@\]\}"; do$' "$SCRIPT")"
 if [ "$run_loop_count" -eq 1 ]; then ok "exactly one generic CHECKS[] run loop"; else fail_test "run loop count" "expected 1, got $run_loop_count"; fi
+
+# ── Test 10: repeat-mistake detector (temperloop#234) ──────────────────────
+echo "--- test 10: repeat-mistake detector ---"
+
+# A Mistakes/ note whose title + trigger: frontmatter carry the vocabulary
+# the fixtures below match (or deliberately don't match) against.
+make_mistake_note() {
+  local v="$1"
+  mkdir -p "$v/Mistakes"
+  printf -- '---\ntags: [mistake, project/temperloop]\ntrigger: BSD stat -f flags, non-portable date parsing\n---\nUse the portable file_mtime() helper instead.\n' \
+    > "$v/Mistakes/temperloop - BSD stat flags break Linux CI.md"
+}
+
+# 10a: seeded recurrence — a NEW friction row whose evidence shares enough
+# vocabulary with an existing Mistakes/ note fires the flag (a retrieval
+# failure: the note existed but didn't prevent the recurrence).
+RM="$(mktemp -d)"; mkdir -p "$RM/Context"; make_mistake_note "$RM"
+today="$(date +%Y-%m-%d)"
+echo "- ${today} · temperloop · tool-misuse · vault_hygiene_report.sh used BSD stat -f flags on Linux CI and broke the build" \
+  > "$RM/Context/Session friction ledger.md"
+rmreport="$(bash "$SCRIPT" --root "$RM")"
+assert_has "$rmreport" "repeat-mistake:"                                                  "seeded recurrence fires the flag"
+assert_has "$rmreport" "retrieval failure"                                                "flag names it a retrieval failure"
+assert_has "$rmreport" "Mistakes/temperloop - BSD stat flags break Linux CI.md"           "flag names the matching Mistakes/ note"
+assert_has "$rmreport" "ALARM:"                                                           "seeded recurrence trips an alarm"
+rm -rf "$RM"
+
+# 10b: a clean ledger row with no meaningful vocabulary overlap (sharing only
+# the project token, "temperloop", is NOT enough to match) stays quiet.
+RM2="$(mktemp -d)"; mkdir -p "$RM2/Context"; make_mistake_note "$RM2"
+today2="$(date +%Y-%m-%d)"
+echo "- ${today2} · temperloop · redundant-status-check · confirmed board cache already fresh before re-polling structure" \
+  > "$RM2/Context/Session friction ledger.md"
+cleanreport="$(bash "$SCRIPT" --root "$RM2")"
+assert_missing "$cleanreport" "repeat-mistake: ${today2}" "unrelated row does not fire the flag"
+assert_has     "$cleanreport" "ok repeat-mistake:"         "clean ledger reports ok"
+assert_missing "$cleanreport" "ALARM:"                     "clean ledger trips no alarm"
+rm -rf "$RM2"
+
+# 10c: recency window — a row that would otherwise match but is dated well
+# outside FRICTION_RECENT_DAYS is skipped (this check is scoped to NEW rows).
+RM3="$(mktemp -d)"; mkdir -p "$RM3/Context"; make_mistake_note "$RM3"
+echo "- 2020-01-01 · temperloop · tool-misuse · vault_hygiene_report.sh used BSD stat -f flags on Linux CI and broke the build" \
+  > "$RM3/Context/Session friction ledger.md"
+oldreport="$(bash "$SCRIPT" --root "$RM3")"
+assert_missing "$oldreport" "repeat-mistake: 2020-01-01" "row outside the recency window is not flagged"
+rm -rf "$RM3"
+
+# 10d: stranger test — no friction ledger and/or no Mistakes/ folder is a
+# quiet no-op (no alarm, no error) — a bare kernel checkout has neither.
+RM4="$(mktemp -d)"
+strangerreport="$(bash "$SCRIPT" --root "$RM4")"
+assert_has     "$strangerreport" "ok repeat-mistake:"    "no ledger / no Mistakes/ -> quiet no-op"
+assert_missing "$strangerreport" "repeat-mistake: 20"    "no ledger / no Mistakes/ -> never flags"
+rm -rf "$RM4"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
