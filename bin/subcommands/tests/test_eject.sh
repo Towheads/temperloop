@@ -155,7 +155,7 @@ REPO1="$(new_fixture_repo repo1)"
 run 0 --dir "$REPO1" --yes
 [ ! -s "$CALL_LOG" ] || fail "no-config run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
 echo "$out" | grep -q "nothing to eject" || fail "no-config run did not report nothing-to-eject (got: $out)"
-echo "$out" | grep -q "Machine-level CLI uninstall" || fail "no-config run did not print the uninstall bullet (got: $out)"
+echo "$out" | grep -q "Three separate removal scopes" || fail "no-config run did not print the uninstall bullet (got: $out)"
 echo "PASS: no .foundation/config -> no-op, zero gh calls, uninstall bullet printed"
 
 # =============================================================================
