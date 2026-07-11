@@ -109,6 +109,40 @@
 #                             still holds the real file) is flagged too.
 #                             Propose-only. ALARM if any.
 #
+# Heat score + review queue (temperloop#240, epic temperloop#226 — ADR
+# §2.6-2.7, MemoryOS/generative-agents-style scoring done with data we
+# already have):
+#  17. heat-score            — per-note HEAT: a simple, documented, weighted
+#                             combination of telemetry reads (from the read
+#                             log, mirroring check 12's tally conventions),
+#                             inbound wikilink count (a grep-based backlink
+#                             count from every other store note), and a
+#                             recency-of-verification score (linearly decayed
+#                             over HEAT_RECENCY_HORIZON_DAYS, from
+#                             `last_verified` frontmatter, or file mtime when
+#                             absent, via the existing portable
+#                             file_mtime()). Weights (HEAT_W_READS/
+#                             HEAT_W_LINKS/HEAT_W_RECENCY below) and the
+#                             staleness definition (days since
+#                             last_verified/mtime) are documented at the
+#                             check itself. Advisory only, informational —
+#                             never an ALARM — and nothing is EVER
+#                             auto-evicted on heat. Appends a top-
+#                             HEAT_QUEUE_SIZE (5) review queue ranked by
+#                             heat × staleness, capped at 5 BY CONSTRUCTION
+#                             (the emit loop always stops after 5 ranks
+#                             regardless of candidate count), folding in the
+#                             orphan-pattern (check 13), stale-plan (check 9),
+#                             and repeat-mistake (check 11) flags already
+#                             raised earlier in the SAME run as a `[tag]`
+#                             annotation on any queue entry those checks also
+#                             flagged. Degrades gracefully with no telemetry
+#                             (an absent/empty read log → every note's reads
+#                             component is 0 → pure links+recency ranking,
+#                             never an error) and on an empty store (0
+#                             candidate notes → one "ok" line, no queue, no
+#                             error — the stranger test).
+#
 # `Personal/` is NEVER flagged by any lint above (structural or housekeeping)
 # — it is in the folder allowlist outright, and every recursive walk below
 # prunes it explicitly (case-insensitively), so nothing nested under it is
@@ -1243,6 +1277,183 @@ EOF
   return 0
 }
 register_check check_controls
+
+# ── Heat-score / review-queue tunables (temperloop#240 — ADR §2.6-2.7) ──────
+# Candidate universe: the same "provenance" folders check 5 (stale
+# last_verified) already tallies, PLUS Plans/ — added here (check 5 doesn't
+# scan Plans/) specifically so a stale-plan-flagged (check 9) note is
+# eligible to fold into the review queue below. Personal/ is never a
+# candidate (not in this list) and never a link SOURCE either (every
+# whole-vault walk in this script prunes it, including the inbound-link scan
+# below).
+HEAT_SCAN_FOLDERS=(Decisions Patterns Mistakes Context Plans)
+# Weights: a simple, documented, mechanical weighted combination — no
+# over-engineering, per temperloop#240's own acceptance note. Telemetry
+# reads are the strongest direct-use signal when present; inbound links are
+# a static "well-connected" proxy; recency-of-verification is the weakest of
+# the three (a note can be recently verified without ever being used),
+# hence 3 / 2 / 1.
+HEAT_W_READS=3
+HEAT_W_LINKS=2
+HEAT_W_RECENCY=1
+# Recency-of-verification score: linearly decayed 10 -> 0 across this many
+# days since last_verified (or mtime when last_verified is absent), floored
+# at 0 beyond the horizon — a note unverified for 6 months contributes no
+# recency heat, however many reads/links it otherwise has.
+HEAT_RECENCY_HORIZON_DAYS=180
+# The review queue is capped at this many entries BY CONSTRUCTION — the
+# emit loop below always stops after this many ranks are printed, whatever
+# the candidate count.
+HEAT_QUEUE_SIZE=5
+
+# doc-id (relative-to-root path, .md-suffixed) -> its telemetry read count,
+# one "<doc>\t<count>" line per distinct doc read. A SEPARATE, small awk
+# pass over the SAME read log check 12 (check_read_stats) reads — mirroring
+# its exact conventions (the "<ts> · <session> · <plane> · <op> · <doc>"
+# line shape, the same doc-reassembly-from-field-5..NF and ".md"-suffix
+# normalization) rather than literally sharing code: this script is
+# deliberately kept bash-3.2 compatible (no associative arrays — see the
+# file-wide shellcheck note at the top of this file), so check 12 has no
+# per-doc count MAP to hand off (only a single best-of "most-read" scalar) —
+# a second pass with the identical shape is the practical reuse available.
+# Prints nothing when the log is absent/empty — the caller then treats
+# every note's read count as 0, which is the no-telemetry degrade path.
+_hyg_heat_read_counts() {
+  local LOG DOT SEP
+  LOG="$(_ks_read_log_path 2>/dev/null || true)"
+  [ -n "$LOG" ] && [ -s "$LOG" ] || return 0
+  DOT="$(printf '\xc2\xb7')"
+  SEP=" ${DOT} "
+  awk -v SEP="$SEP" -F"$SEP" '
+    NF < 5 { next }
+    $4=="read" {
+      doc=$5
+      for (i=6; i<=NF; i++) doc = doc SEP $i
+      if (doc !~ /\.md$/) doc = doc ".md"
+      count[doc]++
+    }
+    END { for (d in count) printf "%s\t%d\n", d, count[d] }
+  ' "$LOG" 2>/dev/null
+}
+
+# rel map -> read count for rel (0 when absent from the map, including an
+# empty map — the no-telemetry degrade path).
+_hyg_heat_read_lookup() {
+  local rel="$1" map="$2"
+  printf '%s\n' "$map" | awk -F'\t' -v d="$rel" '$1==d{print $2; found=1} END{if(!found) print 0}'
+}
+
+# base self all_files -> count of DISTINCT other store notes (from
+# all_files, the same Personal/-pruned whole-vault list every other check
+# here uses) containing a literal `[[<base>` wikilink reference — a simple,
+# documented, grep-based inbound-link count (per temperloop#240's own
+# acceptance note: "a simple grep-based count is fine"). Counts one per
+# LINKING FILE, not per occurrence, so a note that links twice from the same
+# file isn't double-weighted.
+_hyg_inbound_link_count() {
+  local base="$1" self="$2" all_files="$3" count=0 f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = "$self" ] && continue
+    grep -qF -- "[[${base}" "$f" 2>/dev/null && count=$((count + 1))
+  done <<EOF
+$all_files
+EOF
+  printf '%s' "$count"
+}
+
+# note file -> its last_verified frontmatter parsed to epoch, or (when
+# last_verified is absent or unparsable) the file's mtime via the existing
+# portable file_mtime() — the same staleness-source fallback this check's
+# header documents, and the same last_verified parse shape check 5 uses.
+_hyg_heat_epoch() {
+  local f="$1" lv lv_epoch
+  lv="$(grep -m1 -E '^last_verified:[[:space:]]*' "$f" 2>/dev/null | sed -e 's/^last_verified:[[:space:]]*//' -e 's/["'\'']//g' | tr -d '\r' | awk '{print $1}' || true)"
+  if [ -n "$lv" ]; then
+    lv_epoch="$(date -d "$lv" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$lv" +%s 2>/dev/null || echo '')"
+    if [ -n "$lv_epoch" ]; then
+      printf '%s\n' "$lv_epoch"
+      return 0
+    fi
+  fi
+  file_mtime "$f"
+}
+
+# ── Check 17: heat score + top-5 review queue (temperloop#240 — ADR §2.6-2.7) ──
+check_heat_score() {
+  local now read_map all_files d dir f rel base
+  local reads links epoch stale_days stale_capped recency heat tag priority
+  local n=0 lines=""
+  local rank pri rq_rel rq_heat rq_stale rq_reads rq_tag
+  now="$(now_epoch)"
+  read_map="$(_hyg_heat_read_counts)"
+  all_files="$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)"
+
+  for d in "${HEAT_SCAN_FOLDERS[@]}"; do
+    dir="$ROOT/$d"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      n=$((n + 1))
+      rel="${f#"$ROOT"/}"
+      base="$(basename "$f" .md)"
+
+      reads="$(_hyg_heat_read_lookup "$rel" "$read_map")"
+      case "$reads" in ''|*[!0-9]*) reads=0 ;; esac
+
+      links="$(_hyg_inbound_link_count "$base" "$f" "$all_files")"
+      case "$links" in ''|*[!0-9]*) links=0 ;; esac
+
+      epoch="$(_hyg_heat_epoch "$f")"
+      case "$epoch" in ''|*[!0-9]*) epoch=0 ;; esac
+      if [ "$epoch" -gt 0 ] && [ "$epoch" -lt "$now" ]; then
+        stale_days=$(( (now - epoch) / 86400 ))
+      else
+        stale_days=0
+      fi
+
+      stale_capped=$stale_days
+      [ "$stale_capped" -gt "$HEAT_RECENCY_HORIZON_DAYS" ] && stale_capped=$HEAT_RECENCY_HORIZON_DAYS
+      recency=$(( (HEAT_RECENCY_HORIZON_DAYS - stale_capped) * 10 / HEAT_RECENCY_HORIZON_DAYS ))
+
+      heat=$(( HEAT_W_READS * reads + HEAT_W_LINKS * links + HEAT_W_RECENCY * recency ))
+      priority=$(( heat * stale_days ))
+
+      # Fold in flags already raised by earlier checks in THIS SAME run —
+      # $FINDINGS is fully populated with checks 1-16's output by the time
+      # this check (registered last) runs, so a literal substring search
+      # against their known, documented line shapes is a cheap, mechanical
+      # cross-reference rather than re-deriving each condition.
+      tag=""
+      case "$FINDINGS" in *"orphan-pattern: ${rel} "*) tag="${tag}[orphan-pattern]" ;; esac
+      case "$FINDINGS" in *"stale plan: $(basename "$rel") ("*) tag="${tag}[stale-plan]" ;; esac
+      case "$FINDINGS" in *"matches Mistakes/${rel} ("*) tag="${tag}[repeat-mistake]" ;; esac
+
+      lines="${lines}$(printf '%d\t%s\t%d\t%d\t%d\t%s' "$priority" "$rel" "$heat" "$stale_days" "$reads" "$tag")"$'\n'
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  done
+
+  add "- info heat-score: ${n} candidate note(s) scored (weights: reads=${HEAT_W_READS} links=${HEAT_W_LINKS} recency=${HEAT_W_RECENCY}/10 decayed over ${HEAT_RECENCY_HORIZON_DAYS}d; staleness = days since last_verified, or mtime when absent; advisory only — nothing is ever auto-evicted on heat)"
+
+  if [ "$n" -eq 0 ]; then
+    add "- info review-queue: empty (0 candidate notes)"
+    return 0
+  fi
+
+  rank=0
+  while IFS=$'\t' read -r pri rq_rel rq_heat rq_stale rq_reads rq_tag; do
+    [ -n "$rq_rel" ] || continue
+    rank=$((rank + 1))
+    [ "$rank" -gt "$HEAT_QUEUE_SIZE" ] && break
+    add "- info review-queue #${rank}: ${rq_rel} — heat=${rq_heat} staleness=${rq_stale}d reads=${rq_reads} priority=${pri}${rq_tag:+ ${rq_tag}}"
+  done <<EOF
+$(printf '%s' "$lines" | sort -t "$(printf '\t')" -k1,1 -nr)
+EOF
+  return 0
+}
+register_check check_heat_score
 
 # ── Run every registered check (generic — never changes when adding a check) ──
 for _hyg_fn in "${CHECKS[@]}"; do
