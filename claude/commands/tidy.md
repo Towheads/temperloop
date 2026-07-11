@@ -345,6 +345,32 @@ For each drift class the `report` output surfaces, dispose as follows:
 
 **This step never mutates a foreign checkout's `HEAD`** — verified against a fixture with a foreign parked-on-merged operator checkout: reported to the surface above, never `git checkout`ed or reset. It also never `launchctl load/unload`s an agent and never deletes anything outside a confirmed-merged branch or a confirmed-leaked worktree.
 
+### Generated navigation (Index + Project Home MOCs)
+
+A **detect-and-generate** step, the sibling of § Vault hygiene and § Environment hygiene above (temperloop#231, epic #226 "generated navigation"). Design intent (epic #226 ADR §2.1): project-first browsing of the vault is served **virtually**, by regeneration from signals already present in the store, never by hand-curating a nav page. `Index.md` (top-level) and `Projects/<name>/Home.md` (one per detected project) are the two generated MOCs; both are content **/tidy owns**, not the operator — a hand-edit to either is never reflected back and is never silently destroyed (see the refuse-and-propose behavior below).
+
+**Like § Vault hygiene and § Environment hygiene, this is a drain-internal step, not a live/drain pair** — no live rule captures project navigation by hand (the whole point is that nothing should), so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**.
+
+**Run the generator** (a kernel script that resolves the store root via the script-plane `knowledge_store.sh` seam — never a hardcoded vault path; a checkout with no store, or a store with zero detected projects, prints one line and no-ops, so this is safe to run unconditionally):
+
+```
+workflows/scripts/drain/generate_moc.sh --format entry
+```
+
+**Detection** (both signals feed the same project namespace; a note counts if either matches): a **filename prefix** `<project> - <title>.md` (the vault's own `<project> - <short title>.md` naming convention, applied uniformly across `Decisions/`, `Patterns/`, `Mistakes/`, `Context/` — note this deliberately excludes the unrelated `<date> <project> - <title>.md` `Plans/` convention, whose leading token is a date+space, not a bare project slug), or a **`project/<name>` frontmatter tag** anywhere in the note's YAML block.
+
+**What it writes, when projects are detected:**
+- `Index.md` — links every detected project's `Projects/<name>/Home.md`, with a note count.
+- `Projects/<name>/Home.md` — lists every note associated with that project (union of both signals).
+
+Both carry a do-not-hand-edit banner as their first line, and both regenerate **idempotently** — an unchanged store produces byte-identical output run to run (no timestamp or run-specific data is embedded in the generated content itself).
+
+**No hand-curated content lost (refuse-and-propose).** Before overwriting a target, the generator checks for its own banner as the target's first line. If the target already exists **without** it — hand-authored content, or content pre-dating this generator — the script **refuses to overwrite it** and reports a conflict instead; it never destroys hand-written content. This is the same propose/dispose idiom as § Vault hygiene and § Environment hygiene: `--format entry` prints a ready-to-append `### … Status: open` block **iff** a conflict was found (nothing when clean).
+
+**Record the finding.** If the command printed a block (a conflict was found), append it verbatim to `Context/pipeline - moc generation conflicts.md` (in the knowledge store) via `mcp__obsidian-builtin__vault_append` — it creates the note if absent; a new pipeline surface parallel to the vault-hygiene and environment-hygiene ones, consumed by `/check-in`. If the command printed nothing (every target was either freshly written or already carried the generator's banner), **surface nothing** and move on (default to silence).
+
+**This step does NOT** touch any note outside `Index.md` / `Projects/<name>/Home.md`, does NOT mutate an entry's `Status` (check-in is the sole mutator), and does NOT ever overwrite a hand-authored target — the operator resolves a reported conflict at `check-in` (typically by deleting or renaming the stray hand-written file so the next `/tidy` run can generate cleanly in its place).
+
 ### Pending decisions surface
 
 Backstop for the live rule in `claude/CLAUDE.md` § Unattended pending-decisions surface. The live rule says: when a `batch-at-ritual` question (`build` Step 1.5, `build` Step 4b queue-stall, `assess` Step 6, this command's stale-claim sweep, `sweep` Step 2 leave-all-flagged) is deferred on an **unattended / mini / cron** run, the run takes its safe default AND appends an `### open` entry to the pending-decisions surface (`Context/pipeline - pending decisions.md` in the knowledge store) so the next `check-in` reviews it. This step catches the ones that slipped — an unattended run that defaulted a deferrable decision but never wrote the entry (so `check-in` would never surface it).
@@ -698,6 +724,7 @@ One-block summary:
 - Tool-event structural passes: AskUserQuestion answered: M → feedback/decisions: K; errors: M → friction: J / mistakes: K; interrupts: M → feedback: K; capture_calls seen: M (dedup'd against Unfiled defects)
 - Unfiled defects filed: M (issue #s); self-resolved: M (titles)
 - Stale/orphaned board claims: M (#s → board:host:sess; parked: K, report-only foreign: J)
+- Generated navigation: Index.md + N project Home.md(s) regenerated; conflicts (hand-authored, not overwritten): M (surfaced to moc-generation-conflicts surface for check-in)
 - Answered decisions drained: M (issue #s, repos, kinds, artifact types); parse-misses re-queued: M; skipped (contention): M
 - Tooling friction logged: M (categories); friction candidates (≥5/14d): M (categories)
 - Recurrence candidates (≥5/14d): M (types — feedback/pattern/mistake); promotion tasks added: M (titles)
