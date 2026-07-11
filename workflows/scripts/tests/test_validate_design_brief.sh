@@ -104,6 +104,47 @@ run --brief "$BRIEF_FIXTURES/bad-grammar.md"
 assert_rc "$rc" 1 "bad-grammar fixture exits 1"
 assert_has "$out" "BAD-DISPOSITION  bad-grammar.md dimension 6 — 'disposition: skipped'" "bad disposition value named"
 
+# ── 7b. brief conformance: bare-integer heading beyond the kernel count ──────
+echo "--- 7b. --brief on bare-integer-overflow ('## 17.' bare integer) ---"
+run --brief "$BRIEF_FIXTURES/bare-integer-overflow.md"
+assert_rc "$rc" 1 "bare-integer-overflow fixture exits 1"
+assert_has "$out" "UNKNOWN-DIMENSION  bare-integer-overflow.md — '## 17.'" "bare integer 17 named"
+assert_has "$out" "letter-suffixed, e.g. 16a" "failure points at the sanctioned overlay form"
+
+# ── 7c. brief conformance: letter-suffixed overlay dimension is sanctioned ───
+echo "--- 7c. --brief on overlay-added ('## 16a.' letter-suffixed) ---"
+run --brief "$BRIEF_FIXTURES/overlay-added.md"
+assert_rc "$rc" 0 "overlay-added fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "overlay-added fixture says OK"
+assert_has "$out" "17 dimension heading(s) found" "16 kernel + 1 overlay heading counted"
+
+# ── 7d. anti-drift: renamed schema section must not pass vacuously ───────────
+echo "--- 7d. --schema on a renamed-section schema (zero parsed rows) ---"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+sed 's/^## Kernel dimension list$/## Renamed dimension section/' \
+  "$REPO/claude/design-schema.md" > "$SCRATCH/renamed-schema.md"
+run --schema "$SCRATCH/renamed-schema.md"
+assert_rc "$rc" 1 "renamed-section schema exits 1 (no vacuous pass)"
+assert_has "$out" "NO-DIMENSION-ROWS" "zero-row parse named"
+
+# ── 7e. anti-drift: kernel dimension count drift fails ci mode ────────────────
+echo "--- 7e. ci mode against a schema copy with a kernel row removed ---"
+mkdir -p "$SCRATCH/driftroot/claude"
+# Drop dimension 16's table row (bare-integer rows go 16 -> 15).
+grep -v '^| 16 |' "$REPO/claude/design-schema.md" \
+  > "$SCRATCH/driftroot/claude/design-schema.md"
+rc=0
+out="$(DESIGN_SCHEMA_ROOT="$SCRATCH/driftroot" bash "$SCRIPT" 2>&1)" || rc=$?
+assert_rc "$rc" 1 "row-removed schema fails ci mode"
+assert_has "$out" "DIM-COUNT-DRIFT" "count drift named"
+assert_has "$out" "15 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=16" "drift counts named"
+
+# ── 7f. anti-drift: --schema fixture mode does NOT enforce the count ─────────
+echo "--- 7f. --schema fixture mode exempt from the count check ---"
+run --schema "$SCHEMA_FIXTURES/dangling-citation.md"
+assert_lacks "$out" "DIM-COUNT-DRIFT" "2-row fixture not flagged for count drift"
+
 # ── 8. brief conformance: brief file itself absent ───────────────────────────
 echo "--- 8. --brief on a nonexistent path ---"
 run --brief "$BRIEF_FIXTURES/does-not-exist.md"

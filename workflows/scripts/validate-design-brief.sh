@@ -34,9 +34,24 @@
 #         disposition: filled
 #         disposition: n/a — <reason>
 #         disposition: deferred → <tracking ref>
-#       No dimension may be silently absent (no heading at all), and no
-#       heading may lack a disposition line (heading present, nothing or the
-#       wrong shape follows). This is the "no-silent-skips rule."
+#       The disposition is the FIRST non-blank line under its dimension
+#       heading (design-schema.md § Disposition grammar states this
+#       position). No dimension may be silently absent (no heading at all),
+#       and no heading may lack a disposition line (heading present, nothing
+#       or the wrong shape follows). This is the "no-silent-skips rule."
+#       A bare-integer heading beyond the kernel count (e.g. `## 17.`) fails
+#       as UNKNOWN-DIMENSION — design-schema.md § Overlay extensibility
+#       reserves bare integers for future kernel dimensions; overlay
+#       additions are letter-suffixed (`16a`).
+#
+# ANTI-DRIFT GUARDS (both live in check (A)):
+#   - NO-DIMENSION-ROWS: zero parsed table rows always fails — a renamed or
+#     restructured "## Kernel dimension list" section must never yield a
+#     vacuous OK.
+#   - DIM-COUNT-DRIFT (ci mode only, not --schema fixture mode): the parsed
+#     bare-integer row count must equal KERNEL_DIM_COUNT below — if the
+#     schema adds/removes a kernel dimension, CI goes red here instead of
+#     every later brief lint silently under-checking.
 #
 # CI-vs-on-demand split (briefs live in the knowledge store, not this repo —
 # CI has no vault to read):
@@ -104,15 +119,19 @@ failures=()
 
 # ---------------------------------------------------------------------------
 # (A) Schema citation check.
+#     <enforce_count> = 1 (ci mode, the real schema): the parsed bare-integer
+#     row count must equal KERNEL_DIM_COUNT (DIM-COUNT-DRIFT guard);
+#     0 (--schema fixture mode): fixtures legitimately carry fewer rows, so
+#     only the zero-rows vacuous-pass guard applies.
 # ---------------------------------------------------------------------------
 check_schema_citations() {
-  local file="$1" root="$2"
+  local file="$1" root="$2" enforce_count="$3"
   if [[ ! -f "$file" ]]; then
     failures+=("SCHEMA-NOT-FOUND  $file")
     return
   fi
 
-  local rows nrows=0 ncites=0
+  local rows nrows=0 nint_rows=0 ncites=0
   rows="$(awk '
     /^## Kernel dimension list/ { insec = 1; next }
     insec && /^## / { insec = 0 }
@@ -136,6 +155,13 @@ check_schema_citations() {
       *) continue ;;
     esac
     nrows=$((nrows + 1))
+    # Bare-integer (kernel) rows counted separately for the drift guard —
+    # letter-suffixed overlay rows (e.g. 16a) don't count toward the kernel
+    # dimension total.
+    case "$dimnum" in
+      *[!0-9]*) : ;;
+      *) nint_rows=$((nint_rows + 1)) ;;
+    esac
     cell="$(printf '%s' "$row" | awk -F'|' '{print $(NF-1)}')"
 
     local tok
@@ -158,6 +184,16 @@ EOF
   done <<EOF
 $rows
 EOF
+
+  # Vacuous-pass guard: a renamed/restructured "## Kernel dimension list"
+  # section yields zero parsed rows — that must never print OK.
+  if (( nrows == 0 )); then
+    failures+=("NO-DIMENSION-ROWS  $file — no dimension table rows parsed under '## Kernel dimension list' (section renamed/restructured? a zero-row parse must never pass)")
+  elif [[ "$enforce_count" == "1" ]] && (( nint_rows != KERNEL_DIM_COUNT )); then
+    # Drift guard (ci mode only): the script's encoded kernel count and the
+    # schema's actual bare-integer row count must move together.
+    failures+=("DIM-COUNT-DRIFT  $file — schema table has $nint_rows bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=$KERNEL_DIM_COUNT (update both together; design-schema.md is the source of truth)")
+  fi
 
   echo "schema citation check: $file — $nrows dimension row(s), $ncites citation(s) checked"
 }
@@ -208,6 +244,20 @@ check_brief_conformance() {
     local lineno dimnum disp
     lineno="${hline%%:*}"
     dimnum="$(printf '%s' "$hline" | sed -E 's/^[0-9]+:## ([0-9]+[a-z]?)\..*/\1/')"
+
+    # Overlay numbering reservation (design-schema.md § Overlay
+    # extensibility): bare integers beyond the kernel count are reserved for
+    # future KERNEL dimensions — an overlay-added dimension must be
+    # letter-suffixed (e.g. 16a). A bare `## 17.` is therefore malformed.
+    case "$dimnum" in
+      *[!0-9]*) : ;;  # letter-suffixed (e.g. 16a) — sanctioned overlay form
+      *)
+        if (( dimnum > KERNEL_DIM_COUNT )); then
+          failures+=("UNKNOWN-DIMENSION  $label — '## $dimnum.' is a bare integer beyond the kernel count ($KERNEL_DIM_COUNT); overlay additions are letter-suffixed, e.g. 16a (design-schema.md § Overlay extensibility)")
+          continue
+        fi
+        ;;
+    esac
     disp="$(awk -v start="$lineno" '
       NR > start {
         if ($0 ~ /^## /) exit
@@ -248,13 +298,17 @@ EOF
 # ---------------------------------------------------------------------------
 case "$mode" in
   ci)
-    check_schema_citations "$DESIGN_SCHEMA_ROOT/claude/design-schema.md" "$DESIGN_SCHEMA_ROOT"
+    # enforce_count=1: the real schema must carry exactly KERNEL_DIM_COUNT
+    # bare-integer rows (DIM-COUNT-DRIFT guard).
+    check_schema_citations "$DESIGN_SCHEMA_ROOT/claude/design-schema.md" "$DESIGN_SCHEMA_ROOT" 1
     ;;
   brief)
     check_brief_conformance "$target_file" "$(basename "$target_file")"
     ;;
   schema)
-    check_schema_citations "$target_file" "$DESIGN_SCHEMA_ROOT"
+    # enforce_count=0: fixture schemas legitimately carry fewer rows; only
+    # the zero-rows vacuous-pass guard applies.
+    check_schema_citations "$target_file" "$DESIGN_SCHEMA_ROOT" 0
     ;;
 esac
 

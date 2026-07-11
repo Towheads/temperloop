@@ -122,6 +122,10 @@ n/a — <reason>                 — genuinely inapplicable to this design, with
 deferred → <tracking ref>      — real but out of scope for this brief; ref is an issue/epic that owns it
 ```
 
+The disposition line is the **first non-blank line** under its dimension
+heading — body prose follows it, never precedes it (the brief-conformance
+lint enforces this position).
+
 `n/a` is not a way to skip an inconvenient dimension — it is for a
 dimension that genuinely does not apply (e.g. dimension 11 uninstallability
 may be `n/a — no runtime component; brief proposes only a docs change` when
