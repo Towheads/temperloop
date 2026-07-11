@@ -15,7 +15,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /design   intake → coverage walk → [review — #217] → ratify → materialize
+a design conversation ──► /design   intake → coverage walk → review pass → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -251,9 +251,11 @@ disposition) and before Step 4 (ratify). Four parts, in order: **3.1** tier
 decision, stated to the operator before any reviewer is spawned; **3.2** the
 install-surface first-run/uninstall mandate; **3.3** capability-probed
 adversarial panel execution; **3.4** findings fold-back into the brief. A
-brief that skips this step never reaches ratify — Step 4.1's completeness
-check is unchanged, but Step 4.3's ratify question now follows a brief that
-has actually been reviewed, not merely walked.
+brief that skips this step never reaches ratify — Step 4.1's
+dimension-completeness check is unchanged, Step 4.1b re-checks that every
+finding this step produced was actually disposed of, and Step 4.3's ratify
+question then follows a brief that has actually been reviewed, not merely
+walked.
 
 ### 3.1 — Tier decision (stated before committing)
 
@@ -268,7 +270,12 @@ has actually been reviewed, not merely walked.
    team's build cycle, and the tier is a quantized review-cost appetite, not
    a time estimate (`Context/temperloop - design methodology spike verdict.md`
    § 6). Naming the cost **before** the pick is the point of the mapping;
-   never spawn a reviewer speculatively while the pick is still open.
+   never spawn a reviewer speculatively while the pick is still open. State
+   the availability caveat in the same breath: each lens runs only if it
+   passes 3.3's capability probe, so on a checkout with no agents declared
+   (e.g. the red-team and persona lenses until `design-persona-agents` #221
+   lands), part of a full pass reduces to legible skip lines — the operator
+   is pricing what *can* run here, not a hypothetical.
 2. **Ask.** `AskUserQuestion`: brief pass or full pass? Suggest a default
    from the epic's apparent weight (a single-file, low-blast-radius design
    suggests brief; a design that touches the install surface, adds a new
@@ -281,7 +288,14 @@ has actually been reviewed, not merely walked.
    brief pass, never a replacement of it.
 4. **Record the chosen tier** as a line in the brief's working notes (it is
    not a schema dimension of its own — it's provenance for what review this
-   brief actually received) before proceeding to 3.2–3.3.
+   brief actually received) before proceeding to 3.2–3.3. When 3.3
+   completes, extend that same line with the **per-lens coverage record**:
+   which lenses actually ran and which were skipped (each skip naming its
+   `skipped — <agent> unavailable` reason). The live narration of a skip
+   (3.3.2) is not enough on its own — without the persisted record, a
+   brief whose entire panel skipped is indistinguishable in the artifact
+   from a fully-reviewed one, which is exactly the miscalibrated-trust
+   failure the degradation-notice template exists to prevent.
 
 ### 3.2 — Install-surface first-run/uninstall mandate (spec-presence only)
 
@@ -331,11 +345,18 @@ has actually been reviewed, not merely walked.
    `requirements-auditor`. For each available, spawn it read-only and
    advisory with the brief's per-dimension content (all sixteen
    dimensions plus any overlay additions) and its own charter:
-   `architecture-reviewer` judges dimensions 1, 3, 5, 7, 10 (routing,
-   command shape, maintainability coupling, upgrade path — boundary and
-   contract-call concerns); `requirements-auditor` judges dimensions 4, 8,
-   15 (Contract seams, testability, failure modes — the same
-   requirements-sanity charter it applies in `/assess` Step 3). Each
+   `architecture-reviewer` judges dimensions 1, 3, 5, 7, 10
+   (problem/outcome incl. the stranger-test call, routing, command shape,
+   maintainability coupling, upgrade path — boundary and contract-call
+   concerns); `requirements-auditor` judges dimensions 4, 8, 15 (Contract
+   seams, testability, failure modes — the same requirements-sanity
+   charter it applies in `/assess` Step 3). This design-time pass reviews
+   the *brief* and is distinct from — not a substitute for —
+   `workflow-reviewer`'s standing post-merge review of any resulting
+   command spec: `claude/design-schema.md`'s Enforcing-gate column ties
+   dimensions 5 and 15 to `workflow-reviewer` precisely because it later
+   reviews every edit to the spec the design *produces*; here the same
+   dimensions are judged as brief content, before any spec exists. Each
    unavailable lens emits its own `skipped — <agent> unavailable` line,
    narrated live (Mode 2 degradation notice, `claude/message-schema.md` §
    Degradation notice) — never silently absorbed into a generic "review
@@ -386,9 +407,13 @@ has actually been reviewed, not merely walked.
    converted to a `deferred` disposition with a real tracking ref, or
    explicitly declined by the operator with the decline itself noted in
    the brief's working notes — never left as an unincorporated comment
-   outside the brief. Step 4.1's completeness check is what would catch a
-   dimension a fold-back left undispositioned, but the intent here is that
-   it never has to.
+   outside the brief. Record each finding's disposal (`folded` /
+   `deferred → <ref>` / `declined — <note>`) against the coverage record
+   3.1.4 keeps in the brief's working notes: that record is what Step
+   4.1b mechanically re-checks, so a forgotten finding blocks ratify
+   rather than evaporating (dimension-level completeness alone can't
+   catch it — every dimension already carried a disposition before the
+   panel ran).
 5. **Only then does Step 4 run.** This step does not re-open Step 2's walk
    order or re-litigate the tier picked in 3.1 — it is strictly the
    apply-findings-then-proceed step between review and ratify.
@@ -404,6 +429,18 @@ has actually been reviewed, not merely walked.
    names as living here (in the review tier, until temperloop#216's
    mechanical lint lands) — Step 3's review tier existing does not relax
    this check; it only adds a source of new dispositions for it to catch.
+
+   1b. **Finding-disposal check.** Dimension-level completeness alone
+   cannot catch a dropped review finding — every dimension already
+   carried a disposition when Step 2 ended, so a brief that silently
+   dropped a finding still passes check 1. Re-check the coverage record
+   in the brief's working notes (3.1.4): every finding each 3.3 lens
+   returned must carry exactly one disposal — `folded`, `deferred →
+   <tracking ref>`, or `declined — <note>` (3.4.4's vocabulary). List
+   any finding without one and stop, same shape as check 1: return to
+   Step 3.4 and dispose of it, never ratify past it. A lens's `skipped —
+   <agent> unavailable` entry satisfies this trivially (no findings to
+   dispose); a lens that ran with zero findings records `no findings`.
 2. **Contract sanity.** Re-read dimension 4's `Produces` / `Consumes` /
    `Acceptance`. If it reads as a summary rather than an actual contract —
    the kind of content `/assess`'s epic-decomposition mode would need to
