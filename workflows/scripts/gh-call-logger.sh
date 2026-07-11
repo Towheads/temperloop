@@ -50,11 +50,45 @@
 #   awk -F'\t' -v cut=$(( $(date +%s)*1000 - 3600000 )) \
 #     '$1>cut{c[$8]++; d[$8]+=$2} END{for(k in c) printf "%6d  %9d ms  %s\n", c[k], d[k], k}' \
 #     ~/.cache/gh-calls-v2.tsv | sort -rn | head
+#
+# LAKE STREAM (dual-write, DESIGN-FORK-avoided per the item contract: prefer
+# dual-write over retire while a real consumer of the TSV exists — see below).
+#   Every row above is ALSO appended, same call, as one JSONL record to the
+#   per-host monthly raw-lake stream `gh-calls-<YYYY-MM>.jsonl`
+#   (canonical sink spec: meta/data/raw/README.md), using the SAME
+#   override-then-fallback resolution seam emit-command-run.sh /
+#   emit-issue-touch.sh / emit-gh-perf.sh use for their own <STREAM>_RAW_DIR:
+#   an explicit override (GH_CALLS_RAW_DIR) first, else a fixed default
+#   ($HOME/dev/foundation/meta/data/raw). This shim can't use those scripts'
+#   BASH_SOURCE-relative trick (`cd "$here/../.."`) because, unlike them, it
+#   is INSTALLED — copied to ~/.local/bin/gh (make install-gh-logger) and run
+#   from there, decoupled from any repo checkout on disk; the fixed fallback
+#   is therefore the primary path in practice, not a rare degrade case.
+#
+#   CUTOVER NOTE: the TSV (`$LOG`, below) stays live because
+#   workflows/scripts/probe/gh-perf-report.sh reads it directly (percentile/
+#   share-of-time tables, the F#988 git-bug-tracker before/after evaluation's
+#   live-window source) — a real, current consumer, so retiring it now would
+#   break that in-flight measurement. Retire the TSV write once
+#   gh-perf-report.sh is migrated to read the JSONL lake instead (or the
+#   F#988 evaluation concludes), whichever comes first; until then this is a
+#   deliberate two-sink period, not a leftover.
+#
+#   The lake write reuses the JSON build already needed for the TSV's args
+#   sanitization (tabs/newlines already flattened to spaces) and escapes
+#   in-place via bash parameter expansion — no jq spawn, no extra subshell
+#   per field — to keep this per-call hot path cheap (see _gh_lake_esc_var).
+#   Like the TSV write, the lake write is inside the best-effort logging
+#   block: it can never change the wrapped tool's exit code, and
+#   GH_CALL_LOG=0 skips both sinks via the same zero-overhead exec passthrough.
 set -u
 
 # v2 uses a NEW file so old-schema (5-col) rows never mix with new (10-col) ones.
 LOG="${GH_CALL_LOG_FILE:-$HOME/.cache/gh-calls-v2.tsv}"
 MAX_BYTES="${GH_CALL_LOG_MAX_BYTES:-16777216}"   # 16 MiB
+
+# Lake stream (dual-write sibling of $LOG — see header LAKE STREAM note).
+LAKE_DIR="${GH_CALLS_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}"
 
 # Resolve THIS shim's own absolute path so we never exec ourselves (infinite loop).
 # When invoked as `gh` via PATH, $0 may be bare "gh"; command -v then yields this
@@ -103,6 +137,19 @@ _now_ms() {
   fi
 }
 
+# In-place JSON-string escape (no subshell, no jq): backslash- and
+# quote-escape the NAMED variable's value in place, so it's safe to embed as
+# a JSON string literal. bash-3.2-safe (eval-based indirection — this repo's
+# dev/CI bash is 3.2 on macOS, which has no `declare -n` namerefs, those are
+# bash 4.3+). Used only by the lake-stream write below.
+_gh_lake_esc_var() {
+  local __name="$1" __val
+  eval "__val=\"\${$__name}\""
+  __val="${__val//\\/\\\\}"
+  __val="${__val//\"/\\\"}"
+  eval "$__name=\"\$__val\""
+}
+
 real="$(_real_tool)" || {
   echo "gh-call-logger: cannot locate the real $tool on PATH (only this shim found)" >&2
   exit 127
@@ -133,9 +180,62 @@ dur_ms=$(( end_ms - start_ms ))
   # args is the LAST column and is sanitized (tabs/newlines -> space) so a
   # GraphQL query arg can never split or corrupt the row (a latent v1 bug).
   args_clean="$(printf '%s' "$*" | tr '\t\n' '  ')"
+  # Read the two attribution env vars ONCE into plain (lowercase, non-knob-
+  # shaped) locals and reuse them for both sinks below — GH_CALL_OP has no
+  # registry row (a per-call attribution tag, not a static operator default;
+  # knob:exempt), so a single read here keeps check-knob-registry.sh's
+  # unregistered-seam sweep to exactly one exempted occurrence instead of one
+  # per sink. GH_CALL_CONTEXT is registered (owning script capture.sh; this
+  # is a byte-identical duplicate seam elsewhere, allowed name-only).
+  call_context="${GH_CALL_CONTEXT:-}"
+  call_op="${GH_CALL_OP:-}"  # knob:exempt — per-call attribution tag, not a static operator default
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$start_ms" "$dur_ms" "$code" "$$" "$PPID" \
-    "$tool" "${GH_CALL_CONTEXT:-}" "${GH_CALL_OP:-}" "$PWD" "$args_clean" >>"$LOG"  # knob:exempt — GH_CALL_OP is a per-call attribution tag, not a static operator default
+    "$tool" "$call_context" "$call_op" "$PWD" "$args_clean" >>"$LOG"
+
+  # --- lake stream: gh-calls-<YYYY-MM>.jsonl (dual-write; see header note) --
+  lake_month="$(date -u +%Y-%m 2>/dev/null)"
+  if [ -n "$lake_month" ]; then
+    lake_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+    lake_host="${SUBSET_HOST_LABEL:-}"
+    if [ -z "$lake_host" ]; then
+      # $HOSTNAME is bash's own automatic variable (generic OS/harness-
+      # injected runtime value, KNOB_REGISTRY_GENERIC_ALLOWLIST category —
+      # same class as HOME/PATH/SHELL, not an operator-tunable knob).
+      if [ -n "${HOSTNAME:-}" ]; then
+        lake_host="${HOSTNAME%%.*}"
+      else
+        lake_host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+      fi
+    fi
+    _gh_lake_esc_var lake_host
+
+    lake_tool="$tool"; _gh_lake_esc_var lake_tool
+    lake_cwd="$PWD"; _gh_lake_esc_var lake_cwd
+    lake_args="$args_clean"; _gh_lake_esc_var lake_args
+
+    if [ -n "$call_context" ]; then
+      lake_ctx="$call_context"; _gh_lake_esc_var lake_ctx; ctx_json="\"$lake_ctx\""
+    else
+      ctx_json="null"
+    fi
+    if [ -n "$call_op" ]; then
+      lake_op="$call_op"; _gh_lake_esc_var lake_op; op_json="\"$lake_op\""
+    else
+      op_json="null"
+    fi
+    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+      lake_sess="$CLAUDE_CODE_SESSION_ID"; _gh_lake_esc_var lake_sess; sess_json="\"$lake_sess\""
+    else
+      sess_json="null"
+    fi
+
+    mkdir -p "$LAKE_DIR"
+    printf '{"schema_version":"1","ts":"%s","host":"%s","start_ms":%s,"dur_ms":%s,"exit_code":%s,"pid":%s,"ppid":%s,"tool":"%s","context":%s,"op":%s,"cwd":"%s","args":"%s","session_id":%s}\n' \
+      "$lake_ts" "$lake_host" "$start_ms" "$dur_ms" "$code" "$$" "$PPID" \
+      "$lake_tool" "$ctx_json" "$op_json" "$lake_cwd" "$lake_args" "$sess_json" \
+      >>"$LAKE_DIR/gh-calls-${lake_month}.jsonl"
+  fi
 } 2>/dev/null || true
 
 exit "$code"

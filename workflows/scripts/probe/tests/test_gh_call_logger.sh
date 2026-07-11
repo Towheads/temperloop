@@ -55,11 +55,18 @@ EOF
 # Install the shim under a given tool name and run it. Uses a minimal PATH so the
 # ONLY <name> the shim can resolve as "real" is our fake (never the machine's real
 # gh or an installed shim copy). Logs to a per-call file we assert on.
+#
+# GH_CALLS_RAW_DIR is ALWAYS pinned to a scratch dir under $WORK here (never
+# left to its real default of $HOME/dev/foundation/meta/data/raw) — otherwise
+# every test invocation would append a live row into the developer's actual
+# telemetry lake as a side effect of running this suite.
+LAKE_DEFAULT="$WORK/lake"
 run_shim() {  # <toolname> <logfile> -- <args...>
   local name="$1" logf="$2"; shift 2; [ "$1" = "--" ] && shift
   cp "$SHIM_SRC" "$SHIMBIN/$name"; chmod +x "$SHIMBIN/$name"
   make_fake "$REALBIN/$name"
   GH_CALL_LOG_FILE="$logf" \
+  GH_CALLS_RAW_DIR="${GH_CALLS_RAW_DIR:-$LAKE_DEFAULT}" \
   PATH="$REALBIN:/usr/bin:/bin" \
     "$SHIMBIN/$name" "$@"
 }
@@ -133,5 +140,51 @@ GH_CALL_LOG_MAX_BYTES=10 run_shim gh "$L" -- one >/dev/null || fail "rotation ru
 GH_CALL_LOG_MAX_BYTES=10 run_shim gh "$L" -- two >/dev/null || fail "rotation run 2 failed"
 [ -f "$L.1" ] || fail "log did not rotate to $L.1 past the cap"
 echo "  [ok] size-cap rotation to <log>.1"
+
+# --- 9: lake dual-write — well-formed JSONL record lands alongside the TSV --
+month_now="$(date -u +%Y-%m)"
+L="$WORK/log9.tsv"; LAKE9="$WORK/lake9"
+GH_CALLS_RAW_DIR="$LAKE9" GH_CALL_CONTEXT=funnel-tick GH_CALL_OP="board:_board_item_list_fresh" \
+  run_shim gh "$L" -- issue list --repo o/r >/dev/null || fail "lake dual-write run failed"
+LAKE_FILE="$LAKE9/gh-calls-${month_now}.jsonl"
+[ -f "$LAKE_FILE" ] || fail "no lake file at $LAKE_FILE"
+[ "$(wc -l <"$LAKE_FILE")" -eq 1 ] || fail "expected exactly 1 lake record"
+if command -v jq >/dev/null 2>&1; then
+  jq -e . "$LAKE_FILE" >/dev/null 2>&1 || fail "lake record is not valid JSON: $(cat "$LAKE_FILE")"
+  [ "$(jq -r '.schema_version' "$LAKE_FILE")" = "1" ] || fail "schema_version should be \"1\""
+  [ "$(jq -r '.tool' "$LAKE_FILE")" = "gh" ] || fail "lake tool field wrong"
+  [ "$(jq -r '.exit_code' "$LAKE_FILE")" = "0" ] || fail "lake exit_code field wrong"
+  [ "$(jq -r '.context' "$LAKE_FILE")" = "funnel-tick" ] || fail "lake context field wrong"
+  [ "$(jq -r '.op' "$LAKE_FILE")" = "board:_board_item_list_fresh" ] || fail "lake op field wrong"
+  [ "$(jq -r '.args' "$LAKE_FILE")" = "issue list --repo o/r" ] || fail "lake args field wrong"
+  [ "$(jq -r '.host' "$LAKE_FILE")" != "" ] || fail "lake host field empty"
+  [ "$(jq -r '.dur_ms' "$LAKE_FILE")" -ge 0 ] 2>/dev/null || fail "lake dur_ms not a non-negative integer"
+  [ "$(jq -r '.ts' "$LAKE_FILE")" != "null" ] || fail "lake ts field missing"
+  echo "  [ok] lake JSONL record: valid JSON, schema_version, tool, exit_code, context/op, args, host, dur_ms, ts"
+else
+  echo "  [skip] jq unavailable — lake record shape not deep-checked, only presence/line-count"
+fi
+
+# --- 10: GH_CALL_LOG=0 skips the lake write too -----------------------------
+L="$WORK/log10.tsv"; LAKE10="$WORK/lake10"
+out="$(GH_CALLS_RAW_DIR="$LAKE10" GH_CALL_LOG=0 run_shim gh "$L" -- issue list)" \
+  || fail "GH_CALL_LOG=0 path exited nonzero (lake case)"
+echo "$out" | grep -q "real-stdout issue list" || fail "GH_CALL_LOG=0 did not run real tool (lake case)"
+[ ! -f "$LAKE10/gh-calls-${month_now}.jsonl" ] || fail "GH_CALL_LOG=0 must not write a lake record either"
+echo "  [ok] GH_CALL_LOG=0 skips the lake write too (same zero-overhead passthrough)"
+
+# --- 11: a quote/backslash in an arg still yields valid, faithful JSON -----
+L="$WORK/log11.tsv"; LAKE11="$WORK/lake11"
+GH_CALLS_RAW_DIR="$LAKE11" run_shim gh "$L" -- api -f 'query=say "hi" \ bye' >/dev/null \
+  || fail "quoted-arg run failed"
+LAKE_FILE11="$LAKE11/gh-calls-${month_now}.jsonl"
+if command -v jq >/dev/null 2>&1; then
+  jq -e . "$LAKE_FILE11" >/dev/null 2>&1 || fail "quoted-arg lake record is not valid JSON: $(cat "$LAKE_FILE11")"
+  [ "$(jq -r '.args' "$LAKE_FILE11")" = 'api -f query=say "hi" \ bye' ] \
+    || fail "quoted-arg round-trip mismatch: $(jq -r '.args' "$LAKE_FILE11")"
+  echo "  [ok] a quote/backslash in an arg still yields valid, faithful JSON"
+else
+  echo "  [skip] jq unavailable — quoted-arg JSON validity not checked"
+fi
 
 echo "PASS: gh-call-logger v2 shim"

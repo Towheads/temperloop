@@ -11,7 +11,8 @@ this kernel checkout emits.
 
 **Scope.** This stub documents only the streams a bare kernel checkout
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
-unioned at read time), `funnel`, and `knowledge-search-fallback`. A downstream overlay checkout (e.g. the
+unioned at read time), `funnel`, `knowledge-search-fallback`, and `gh-calls`.
+A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
 checkout doesn't have (e.g. rework tracking, richer issue-metadata snapshots,
@@ -32,6 +33,7 @@ meta/data/raw/<stream>-<YYYY-MM>.jsonl
 - `issue-touches-<YYYY-MM>.jsonl`
 - `claims-<YYYY-MM>.jsonl`
 - `funnel-<YYYY-MM>.jsonl`
+- `gh-calls-<YYYY-MM>.jsonl`
 
 Each file is newline-delimited JSON (JSONL), one record per line, strictly
 append-only — a reader unions across month-files as needed and never expects
@@ -192,4 +194,48 @@ Example record:
 
 ```json
 {"schema_version":"1","ts":"2026-07-05T15:11:04Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini","backend":"basic-memory-mcp","reason":"unreachable","detail":"bm mcp daemon unreachable at http://127.0.0.1:8766/mcp","url":"http://127.0.0.1:8766/mcp","project":"foundation-knowledge"}
+```
+
+### `gh-calls` — `gh-calls-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/gh-call-logger.sh` (the `gh`/`git-bug` TIMED
+call-logger shim, F#988; lake promotion: temperloop `gh-logger-lake-stream`),
+one record per wrapped `gh`/`git-bug` invocation. Unlike the other streams on
+this page, the emit site is an **installed** shim (`make install-gh-logger`
+copies it to `~/.local/bin/gh`, decoupled from any repo checkout on disk), so
+its raw-dir resolution is override-then-**fixed-fallback**
+(`${GH_CALLS_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}`) rather than the
+BASH_SOURCE-relative trick the in-repo emit sites use.
+
+**Dual-write, not a replacement (yet).** This stream is written *alongside*
+the shim's pre-existing self-truncating live TSV
+(`${GH_CALL_LOG_FILE:-$HOME/.cache/gh-calls-v2.tsv}`), not instead of it —
+`workflows/scripts/probe/gh-perf-report.sh` still reads that TSV directly for
+the F#988 git-bug-tracker before/after evaluation's live-window tables, a
+real current consumer. The TSV write retires once `gh-perf-report.sh` is
+migrated to read this lake stream instead (or the F#988 evaluation
+concludes), whichever comes first.
+
+Record shape: `{schema_version, ts, host, start_ms, dur_ms, exit_code, pid, ppid, tool, context, op, cwd, args, session_id}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix (wall-clock time the row was logged, i.e. after the wrapped call returned) |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `$HOSTNAME` (bash's own, domain-stripped) or `hostname -s` — same derivation as `claim.sh` / `emit-issue-touch.sh`, per-host as this whole directory is |
+| `start_ms` | integer | epoch milliseconds the wrapped call started (ms-resolution via perl `Time::HiRes` when available, else whole-second) |
+| `dur_ms` | integer | wall-clock duration of the wrapped call, in ms |
+| `exit_code` | integer | the wrapped call's verbatim exit code, including 128+N signal deaths (e.g. Ctrl-C → 130) |
+| `pid` / `ppid` | integer | the shim process's own pid / parent pid |
+| `tool` | string | `"gh"` or `"git-bug"` — this shim's own install basename (basename-generic: the same script installed as either name logs+dispatches that same name) |
+| `context` | string \| null | `$GH_CALL_CONTEXT` — the outermost command (`worklist` / `reconcile` / `funnel-tick` / …), `null` when unset |
+| `op` | string \| null | `$GH_CALL_OP` — fine-grained per-call attribution tag (e.g. the board adapter's calling function), `null` when unset |
+| `cwd` | string | `$PWD` at call time |
+| `args` | string | the wrapped call's arguments, space-joined, with embedded tabs/newlines flattened to spaces (same sanitization as the TSV's `args` column, so a GraphQL query arg can never split or corrupt the record) |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams; `null` on a non-Claude-Code/manual run |
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-07-10T18:22:47Z","host":"mini","start_ms":1783455767210,"dur_ms":143,"exit_code":0,"pid":41213,"ppid":41190,"tool":"gh","context":"worklist","op":"board:_board_item_list_fresh","cwd":"/home/dev/checkout","args":"issue list --repo o/r","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
 ```
