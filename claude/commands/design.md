@@ -108,7 +108,10 @@ Run in parallel:
 2. **`claude/design-schema.md` reachable.** Confirm the file exists in this
    checkout (deployed to `~/.claude/design-schema.md` by `make install-claude`
    alongside `plan-schema.md`). If missing, stop: "design-schema missing —
-   run `make install-claude`."
+   run `make install-claude` from the foundation checkout, or copy
+   `claude/design-schema.md` to `~/.claude/design-schema.md` directly on a
+   standalone kernel checkout (this repo's Makefile deliberately carries no
+   `install-claude` target)."
 3. **`gh` + repo (best-effort — needed for materialize, not for the walk).**
    `gh auth status`; if it fails, or no repo resolves at all (`gh repo view`
    also fails), note the gap and continue — Step 5 degrades materialize to
@@ -149,9 +152,24 @@ foundation that later shifts underneath it.
    adapter, build/sweep pipeline, install/doctor, branch/PR policy) to work
    correctly? The answer feeds **dimension 3** (Alignment / routing)
    directly — record the routing call and its rationale now.
-4. **Create the brief note**, `status: draft`, at `Designs/<short
-   title>.md`, per `claude/design-schema.md`'s frontmatter shape (`tags`,
-   `date`, `status: draft`, `source_kind: claude-stamped`, `source_session`,
+4. **Probe-before-create the brief note** — the brief-side mirror of Step
+   5b.3's epic probe, so a re-run (including one crashed between ratify and
+   materialize) never clobbers an existing brief. Check whether
+   `Designs/<short title>.md` already exists in the knowledge store; if it
+   does, branch on its frontmatter `status`:
+   - **`draft`** → adopt it: skip creation and **resume the walk at Step 2**
+     against the existing note (its already-dispositioned dimensions stand;
+     the walk covers the rest).
+   - **`ratified`** → **stop.** A ratified brief is immutable
+     (`claude/design-schema.md` § Frontmatter); never edit it in place. If
+     the design has genuinely changed, author a **new** brief under a new
+     title that supersedes it via `[[wikilink]]`; if it hasn't, the right
+     move is Step 5 (materialize) against the ratified brief, not a new
+     walk.
+
+   Only when no note exists: **create it**, `status: draft`, per
+   `claude/design-schema.md`'s frontmatter shape (`tags`, `date`,
+   `status: draft`, `source_kind: claude-stamped`, `source_session`,
    `source_model`, `last_verified`), with dimensions 1 and 3 pre-filled from
    this step's answers (disposition `filled` on both, assuming the answers
    are real — a stranger test that can't yet be answered gets `deferred → …`
@@ -202,11 +220,20 @@ foundation that later shifts underneath it.
    *added* to the walk is still open — **provisional — pending temperloop#224**
    — this command makes no change either way until that item resolves.
 6. **Persist as you go.** Write each dimension's content into the brief note
-   incrementally (a small append/patch per dimension) rather than one
-   end-of-walk rewrite — per the vault's write-small convention, using a
-   full-file rewrite whenever a heading path isn't safely `vault_patch`-able
-   (the vault safe-targeting contract). On a plain-files knowledge store,
-   write the same way.
+   incrementally — after each dimension (or small cluster) is dispositioned,
+   not in one end-of-walk rewrite — so a crashed walk loses at most the
+   dimension in flight. The write primitive differs by backend:
+   - **Obsidian-backed store:** a small append/patch per dimension (the
+     vault's write-small convention), falling back to a full-file rewrite
+     whenever a heading path isn't safely `vault_patch`-able (the vault
+     safe-targeting contract).
+   - **Plain-files store:** the backend has **no mid-file patch primitive** —
+     the `knowledge_store` interface offers only `ks_write` (whole-file
+     replace) and `ks_append` (end-of-file). So each dimension update is a
+     **full-file rewrite via `ks_write`** (read → modify in memory → write).
+     **Never** persist dimensions as per-dimension `ks_append` calls: the
+     walk is operator-reorderable (Step 2.2), so appends land out of
+     dimension order and corrupt the note's numbered-section structure.
 
 ## Step 3 — Review pass
 
@@ -255,9 +282,20 @@ Runs only against a `ratified` brief (Step 4). Four sub-steps, in order —
 each degrades legibly rather than blocking the ones after it, except where
 noted.
 
-### 5a — Leak-guard scan (outbound content only)
+### 5a — Compose the epic body, then leak-guard scan it (outbound content only)
 
-Before the epic body (composed in 5b) is written anywhere outbound, scan it:
+**First, compose the epic body** — composition is a precondition of the scan,
+so it happens here, before anything outbound exists: title = the brief's
+title; body = a `## Contract` heading containing dimension 4's `Produces` /
+`Consumes` / `Acceptance`, copied forward **verbatim** from the ratified
+brief — not re-derived (`claude/design-schema.md` § Materialization
+contract) — plus the provenance marker line, on its own line:
+
+```
+design-brief: [[Designs/<note>]]
+```
+
+**Then scan the composed body** before it is written anywhere outbound:
 
 - If this checkout's `workflows/scripts/kernel/personal-token-denylist.tsv`
   exists, grep the composed epic body text against its pattern column — the
@@ -284,20 +322,13 @@ Before the epic body (composed in 5b) is written anywhere outbound, scan it:
 1. Resolve `repo` from `--board`/`--project`, else the Step 0.4 inference. **If
    `gh` auth failed or no repo resolved at all** (Step 0.3), stop here — do
    **not** attempt epic creation. This is the minimum-viable-output floor: the
-   brief is already ratified and persisted (Steps 1–4), and 5c (Decisions
-   capture) still runs, so nothing is lost; only the epic and the final
-   hand-off degrade. Emit the degraded hand-off from Step 5d instead of
-   continuing to 5c/5d as written below.
-2. **Compose the epic body**: title = the brief's title; body = a `##
-   Contract` heading containing dimension 4's `Produces` / `Consumes` /
-   `Acceptance`, copied forward **verbatim** from the ratified brief — not
-   re-derived (`claude/design-schema.md` § Materialization contract) — plus
-   the provenance marker line, on its own line:
-
-   ```
-   design-brief: [[Designs/<note>]]
-   ```
-
+   brief is already ratified and persisted (Steps 1–4), so nothing is lost;
+   only the epic and the final hand-off degrade. Skip the rest of 5b, still
+   run 5c (Decisions capture), and emit Step 5d's **degraded** hand-off line
+   instead of the full one.
+2. **Take the epic body composed and scanned in 5a** — do not re-compose it
+   here; 5b writes exactly the content the leak-guard scan cleared, nothing
+   else.
 3. **Probe-before-create.** Search for an existing epic carrying this exact
    marker line before creating a new one:
    `gh issue list -R "$repo" --search "design-brief: [[Designs/<note>]] in:body" --state all`
