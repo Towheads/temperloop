@@ -53,6 +53,16 @@
 #      names the file), and a machine-read file living outside Controls/ all
 #      fire; a healthy registry-matched control never fires; no Controls/
 #      folder is a quiet no-op.
+#  15. Heat score + review queue (temperloop#240, ADR §2.6-2.7) → a fixture
+#      with distinct reads/links/last_verified combos computes the
+#      documented weighted heat score and ranks the top-5 review queue by
+#      heat × staleness correctly; a no-read-log invocation degrades to a
+#      links+recency-only ranking with no error; a 7-candidate fixture
+#      proves the queue caps at exactly 5 entries by construction; the
+#      orphan-pattern/stale-plan/repeat-mistake flags already raised by
+#      checks 9/11/13 fold into the queue line as a `[tag]` annotation; an
+#      empty store reports 0 candidates with no queue and no error; and the
+#      check never contributes an ALARM on its own.
 #
 # Usage: bash workflows/scripts/drain/tests/test_vault_hygiene_report.sh
 # Exit 0 = all pass, exit 1 = one or more failures.
@@ -559,6 +569,114 @@ CV2="$(mktemp -d)"
 cv2report="$(bash "$SCRIPT" --root "$CV2")"
 assert_has "$cv2report" "ok controls: 0 (no Controls/ folder)" "no Controls/ folder -> quiet no-op"
 rm -rf "$CV2"
+
+# ── Test 15: heat score + review queue (temperloop#240 — ADR §2.6-2.7) ────────
+echo "--- test 15: heat score + review queue ---"
+
+# Portable "N days ago" as YYYY-MM-DD (GNU `date -d` vs BSD `date -v`) — the
+# same dialect split every date helper in the script under test uses.
+days_ago() { date -d "-$1 days" +%Y-%m-%d 2>/dev/null || date -v-"$1"d +%Y-%m-%d; }
+
+# 15a: weighted ranking, by hand, against the script's own documented
+# defaults (HEAT_W_READS=3, HEAT_W_LINKS=2, HEAT_W_RECENCY=1,
+# HEAT_RECENCY_HORIZON_DAYS=180):
+#   A "very hot decision"   — reads=5, links=3, last_verified 60d ago
+#                              recency=(180-60)*10/180=6; heat=3*5+2*3+1*6=27
+#                              priority=27*60=1620
+#   B "moderately cold ptn" — reads=1, links=1, last_verified 300d ago
+#                              (beyond the 180d horizon -> recency floors 0)
+#                              heat=3*1+2*1+1*0=5; priority=5*300=1500
+# A's higher heat (despite less staleness) out-ranks B's higher staleness —
+# proof the score is a genuine weighted combination, not staleness alone.
+HS="$(mktemp -d)"; mkdir -p "$HS/Decisions" "$HS/Patterns" "$HS/Context"
+printf -- '---\nlast_verified: %s\n---\nhot\n' "$(days_ago 60)" > "$HS/Decisions/temperloop - very hot decision.md"
+printf -- '---\ntrigger: t\nlast_verified: %s\n---\ncold\n' "$(days_ago 300)" > "$HS/Patterns/temperloop - moderately cold pattern.md"
+echo "See [[temperloop - very hot decision]] for context."   > "$HS/Context/link-hot-1.md"
+echo "See [[temperloop - very hot decision]] for context."   > "$HS/Context/link-hot-2.md"
+echo "See [[temperloop - very hot decision]] for context."   > "$HS/Context/link-hot-3.md"
+echo "See [[temperloop - moderately cold pattern]] instead." > "$HS/Context/link-cold-1.md"
+HSLOG="$HS/reads.log"
+{
+  for i in 1 2 3 4 5; do printf '2026-01-01T00:00:0%dZ · s1 · script · read · Decisions/temperloop - very hot decision.md\n' "$i"; done
+  printf '2026-01-01T00:00:06Z · s1 · script · read · Patterns/temperloop - moderately cold pattern.md\n'
+} > "$HSLOG"
+hsreport="$(KNOWLEDGE_READ_LOG="$HSLOG" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS")"
+assert_has "$hsreport" "info heat-score: 6 candidate note(s) scored (weights: reads=3 links=2 recency=1/10 decayed over 180d" "heat-score summary line reports weights + candidate count"
+assert_has "$hsreport" "review-queue #1: Decisions/temperloop - very hot decision.md — heat=27 staleness=60d reads=5 priority=1620" "rank #1 is the higher-heat note with its exact computed score"
+assert_has "$hsreport" "review-queue #2: Patterns/temperloop - moderately cold pattern.md — heat=5 staleness=300d reads=1 priority=1500" "rank #2 is the lower-heat, more-stale note with its exact computed score"
+assert_missing "$hsreport" "ALARM:" "heat-score/review-queue never contributes an ALARM"
+rm -rf "$HS"
+
+# 15b: no-telemetry degrade — an absent read log makes every note's reads
+# component 0, so the ranking becomes pure links+recency with no error (the
+# reads=3 weight simply contributes nothing). The more-linked note still
+# ranks first, proving the degrade path is a real ranking, not a crash.
+HS2="$(mktemp -d)"; mkdir -p "$HS2/Decisions" "$HS2/Context"
+printf -- '---\nlast_verified: %s\n---\nlinked\n' "$(days_ago 90)" > "$HS2/Decisions/temperloop - well linked.md"
+echo "[[temperloop - well linked]]" > "$HS2/Context/link-a.md"
+echo "[[temperloop - well linked]]" > "$HS2/Context/link-b.md"
+noTelReport="$(KNOWLEDGE_READ_LOG="$HS2/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS2")"
+# recency=(180-90)*10/180=5; heat=3*0+2*2+1*5=9; priority=9*90=810
+assert_has "$noTelReport" "review-queue #1: Decisions/temperloop - well linked.md — heat=9 staleness=90d reads=0 priority=810" "no read log -> reads=0, links+recency ranking still computed correctly"
+assert_missing "$noTelReport" "ALARM:" "no-telemetry heat-score fixture stays alarm-free"
+rm -rf "$HS2"
+
+# 15c: cap-at-5 — 7 candidate notes with distinct nonzero priorities (via
+# distinct link counts, all last_verified the same 10d-ago so only heat
+# varies) -> the queue never emits a 6th or 7th rank, by construction.
+HS3="$(mktemp -d)"; mkdir -p "$HS3/Decisions"
+i=1
+while [ "$i" -le 7 ]; do
+  printf -- '---\nlast_verified: %s\n---\nnote %d\n' "$(days_ago 10)" "$i" > "$HS3/Decisions/temperloop - candidate $i.md"
+  i=$((i + 1))
+done
+capReport="$(KNOWLEDGE_READ_LOG="$HS3/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS3")"
+assert_has     "$capReport" "info heat-score: 7 candidate note(s) scored" "all 7 candidates scored"
+assert_has     "$capReport" "review-queue #5:" "rank #5 is present"
+assert_missing "$capReport" "review-queue #6:" "rank #6 never appears — capped at 5 by construction"
+assert_missing "$capReport" "review-queue #7:" "rank #7 never appears — capped at 5 by construction"
+rm -rf "$HS3"
+
+# 15d: flag-folding — a stale-plan (check 9), an orphan-pattern (check 13),
+# and a repeat-mistake (check 11) finding each fold into the review-queue
+# line for the SAME note as a `[tag]` annotation.
+HS4="$(mktemp -d)"; mkdir -p "$HS4/Plans" "$HS4/Patterns" "$HS4/Mistakes" "$HS4/Context"
+# stale-plan: status draft, mtime forced far in the past (check 9's own
+# recognition shape), plus one inbound link so its heat is nonzero.
+printf -- '---\nstatus: draft\n---\nold draft\n' > "$HS4/Plans/temperloop - flagged stale plan.md"
+touch -t 202001010000 "$HS4/Plans/temperloop - flagged stale plan.md"
+echo "[[temperloop - flagged stale plan]]" > "$HS4/Context/link-plan.md"
+# orphan-pattern: has trigger:, old last_verified, absent from the (empty)
+# T0 inventory fixture below -> orphan-pattern fires.
+printf -- '---\ntrigger: t\nlast_verified: 2020-01-01\n---\norphan content\n' > "$HS4/Patterns/temperloop - flagged pattern.md"
+echo "[[temperloop - flagged pattern]]" > "$HS4/Context/link-pattern.md"
+# repeat-mistake: a Mistakes/ note + a NEW matching friction-ledger row
+# (same fixture shape as test 10a).
+printf -- '---\ntags: [mistake]\ntrigger: BSD stat -f flags, non-portable date parsing\nlast_verified: 2020-01-01\n---\nUse file_mtime().\n' \
+  > "$HS4/Mistakes/temperloop - BSD stat flags break Linux CI.md"
+echo "[[temperloop - BSD stat flags break Linux CI]]" > "$HS4/Context/link-mistake.md"
+today15="$(date +%Y-%m-%d)"
+echo "- ${today15} · temperloop · tool-misuse · vault_hygiene_report.sh used BSD stat -f flags on Linux CI and broke the build" \
+  > "$HS4/Context/Session friction ledger.md"
+emptyT0="$HS4/t0-empty.txt"; : > "$emptyT0"
+foldReport="$(T0_INVENTORY_FILE="$emptyT0" KNOWLEDGE_READ_LOG="$HS4/no-such-log" bash "$SCRIPT" --root "$HS4")"
+assert_has "$foldReport" "Plans/temperloop - flagged stale plan.md — heat="                      "stale-plan-flagged note reaches the review queue"
+assert_has "$foldReport" "[stale-plan]"                                                          "stale-plan flag folds into its review-queue line"
+assert_has "$foldReport" "Patterns/temperloop - flagged pattern.md — heat="                       "orphan-pattern-flagged note reaches the review queue"
+assert_has "$foldReport" "[orphan-pattern]"                                                       "orphan-pattern flag folds into its review-queue line"
+assert_has "$foldReport" "Mistakes/temperloop - BSD stat flags break Linux CI.md — heat="          "repeat-mistake-flagged note reaches the review queue"
+assert_has "$foldReport" "[repeat-mistake]"                                                       "repeat-mistake flag folds into its review-queue line"
+rm -rf "$HS4"
+
+# 15e: empty store — no HEAT_SCAN_FOLDERS present at all -> 0 candidates, no
+# queue, no error (the stranger test: a bare kernel checkout has no vault
+# content of this shape yet).
+HS5="$(mktemp -d)"
+emptyReport="$(KNOWLEDGE_READ_LOG="$HS5/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS5")"
+assert_has     "$emptyReport" "info heat-score: 0 candidate note(s) scored"   "empty store -> 0 candidates, no error"
+assert_has     "$emptyReport" "info review-queue: empty (0 candidate notes)" "empty store -> empty queue, not an alarm"
+assert_missing "$emptyReport" "ALARM:"                                       "empty store trips no alarm from heat-score"
+rm -rf "$HS5"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
