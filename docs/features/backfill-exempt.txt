@@ -11,11 +11,6 @@
 # Grouped per planned backfill sub-issue so the six backfill PRs each delete
 # only their own contiguous block (fewer cross-PR merge conflicts).
 
-# ── temperloop#139 — build spine + merge gate + quality gates ───────────────
-build-spine
-merge-gate
-quality-gates
-
 # ── temperloop#141 — drain + review half: tidy, check-in, telemetry, funnel ─
 tidy
 check-in
