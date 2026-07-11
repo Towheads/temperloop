@@ -275,6 +275,11 @@ echo "=== Section G: knowledge_store.sh round-trips under a stranger KNOWLEDGE_S
 KS_OUT="$(
   export KNOWLEDGE_STORE_ROOT="$STRANGER_KS_ROOT"
   export HOME="$STRANGER_HOME"
+  # Pin the read-log (temperloop#229) into the stranger sandbox: HOME is
+  # overridden above, but an inherited XDG_STATE_HOME from the outer
+  # environment would otherwise win the log path's default and leak test
+  # entries into the real machine's state dir.
+  export XDG_STATE_HOME="$STRANGER_HOME/.local/state"
   # shellcheck source=/dev/null
   source "$KS_LIB"
   root="$(ks_root)"

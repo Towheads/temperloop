@@ -108,6 +108,13 @@ KERNEL_GATES=(
   # .bmignore / KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES seam it now covers. Same direct-
   # `bash` form as the zsh-tie gate above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_knowledge_search.sh"
+  # Read-log telemetry (temperloop#229, Epic #226 "script-plane read
+  # telemetry"): ks__read_log_emit + its two call sites (knowledge_store.sh's
+  # ks__dispatch — every ks_read/ks_write/ks_append/ks_list, plain-files
+  # backend — and knowledge_search.sh's ks_search entrypoint). Zero network
+  # (fake `uvx` for the ks_search case, mirrors test_knowledge_search.sh).
+  # Same direct-`bash` form as the knowledge_search gates above.
+  "bash workflows/scripts/lib/tests/test_knowledge_read_log.sh"
   # Issue-corpus renderer + ks_search reindex chain (plan item
   # "cache-search-corpus"): the first production caller of knowledge_search's
   # dormant ks_search seam. Fake `_cache_gh` (mirrors test_cache_store.sh) +

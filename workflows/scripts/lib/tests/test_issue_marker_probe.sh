@@ -43,9 +43,14 @@ MARKER="Retro-for-epic: #7"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/issue-marker-probe-test-XXXXXX")"
 CACHE_STORE_ROOT="$TMP/cache"
 KNOWLEDGE_STORE_ROOT="$TMP/store"
+# Isolate the read-log (temperloop#229) under the throwaway tmpdir too — the
+# ks_read/ks_write/ks_list calls below go through ks__read_log_emit; without
+# this override it would default to the real machine's $XDG_STATE_HOME/
+# foundation/knowledge-reads.log.
+KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 FAKE_GH_LOG="$TMP/gh-calls.log"
 mkdir -p "$CACHE_STORE_ROOT" "$KNOWLEDGE_STORE_ROOT"
-export CACHE_STORE_ROOT KNOWLEDGE_STORE_ROOT
+export CACHE_STORE_ROOT KNOWLEDGE_STORE_ROOT KNOWLEDGE_READ_LOG
 
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT

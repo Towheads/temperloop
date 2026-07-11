@@ -108,6 +108,11 @@ export KNOWLEDGE_STORE_ROOT="$ROOT"
 export KNOWLEDGE_SEARCH_BM_HOME="$BM_HOME"
 export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
 export FAKE_UVX_LOG
+# Isolate the read-log (temperloop#229) under the throwaway tmpdir too — every
+# ks_search call below goes through ks__read_log_emit; without this override
+# it would default to the real machine's $XDG_STATE_HOME/foundation/
+# knowledge-reads.log.
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 
 # shellcheck source=/dev/null
 source "$STORE_LIB"

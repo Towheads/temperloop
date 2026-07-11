@@ -61,6 +61,11 @@ trap 'rm -rf "$TMP"' EXIT
 ROOT="$TMP/store"
 export KNOWLEDGE_STORE_ROOT="$ROOT"
 unset XDG_DATA_HOME || true
+# Isolate the read-log (temperloop#229) under the throwaway tmpdir too — every
+# ks_write/ks_read/ks_append/ks_list call below goes through ks__read_log_emit
+# (knowledge_store.sh); without this override it would default to the real
+# machine's $XDG_STATE_HOME/foundation/knowledge-reads.log.
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 # shellcheck source=/dev/null
 source "$LIB"
 

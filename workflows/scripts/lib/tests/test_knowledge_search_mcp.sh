@@ -27,6 +27,11 @@ mkdir -p "$TMP/store" "$TMP/raw" "$TMP/state"
 # Point the backend at a definitely-closed port so the warm path fails FAST
 # (connection refused) into the fail-open branch — no daemon required.
 export KNOWLEDGE_STORE_ROOT="$TMP/store"
+# Isolate the read-log (temperloop#229) under the throwaway tmpdir too — any
+# ks_search call below goes through ks__read_log_emit; without this override
+# it would default to the real machine's $XDG_STATE_HOME/foundation/
+# knowledge-reads.log.
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 export KNOWLEDGE_SEARCH_BM_MCP_URL="http://127.0.0.1:1/mcp"
 export KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT="1"
 export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
