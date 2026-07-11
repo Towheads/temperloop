@@ -267,6 +267,7 @@ FEATURE_MANIFEST_FILE	$FEATURE_DOCS_ROOT/docs/features/feature-manifest.txt	path
 FEATURE_EXEMPT_FILE	$FEATURE_DOCS_ROOT/docs/features/backfill-exempt.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the shrink-only feature-doc backfill ratchet
 FEATURE_DOCS_DIR	$FEATURE_DOCS_ROOT/docs/features	path	kernel	workflows/scripts/validate-feature-docs.sh	Directory holding the docs/features/<slug>.md feature docs
 KERNEL_MANIFEST_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/kernel/check-kernel-manifest.sh	Repo root the kernel-manifest checker scans (also used by check-gitleaks-kernel.sh, check-personal-token-denylist.sh, check-pr-leak-guard.sh)
+DESIGN_SCHEMA_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/validate-design-brief.sh	Repo root the design-brief lint resolves schema gate citations against (fixture-test seam, same shape as FEATURE_DOCS_ROOT)
 KERNEL_MANIFEST_FILE	$SCRIPT_DIR/kernel-manifest.txt	path	kernel	workflows/scripts/kernel/check-kernel-manifest.sh	Path to the kernel/overlay classification manifest
 KERNEL_DENYLIST_FILE	$SCRIPT_DIR/personal-token-denylist.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the personal-token denylist TSV
 KERNEL_DENYLIST_EXEMPT_FILE	$SCRIPT_DIR/personal-token-denylist-exempt-files.txt	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the denylist's exempt-files list
