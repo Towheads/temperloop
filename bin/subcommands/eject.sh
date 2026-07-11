@@ -111,10 +111,17 @@ EOF
 
 print_uninstall_bullet() {
   cat <<EOF
-Machine-level CLI uninstall (removes the 'foundation' command itself — a
-  SEPARATE concern from a target repo's .foundation/config, which is what
-  this subcommand handles; see kernel/bin/README.md § Uninstall):
-  rm -f "$FOUNDATION_CLI_BIN_DEFAULT" && rm -rf "$FOUNDATION_CLI_HOME_DEFAULT"
+Three separate removal scopes — this subcommand only handles (c); see
+  kernel/bin/README.md § Uninstall for the full table:
+  (a) Bootstrap footprint (predates any manifest — manual removal):
+        rm -f "$FOUNDATION_CLI_BIN_DEFAULT" "${FOUNDATION_CLI_BIN_DEFAULT%/*}/foundation"
+        rm -rf "$FOUNDATION_CLI_HOME_DEFAULT"
+  (b) Machine-surface install manifest (settings/config/symlinks a
+      'temperloop install' wrote under \$HOME — a separate concern from
+      (a) and (c)):
+        temperloop uninstall
+  (c) THIS repo's .foundation/config side effects (labels, required
+      checks, boards, proposal PRs) — what 'foundation eject' just did.
 EOF
 }
 

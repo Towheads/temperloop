@@ -33,11 +33,29 @@ compat shim alongside it) to the entrypoints inside that checkout, and
 prints a `PATH` reminder if `~/.local/bin` isn't on it already. No shell-rc
 edits, no `sudo`.
 
-**Uninstall**: remove `~/.local/bin/temperloop`, `~/.local/bin/foundation`,
-and `~/.local/share/temperloop` — the bootstrap's entire footprint. (A
-`temperloop eject` subcommand, once installed, additionally documents
-removal of anything the CLI itself wrote to a *target* repo you pointed it
-at — a separate concern from uninstalling the CLI tool itself.)
+**Uninstall — three separate scopes, don't conflate them:**
+
+| Scope | What it undoes | How |
+|---|---|---|
+| (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
+| (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
+| (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.foundation/config` | `temperloop eject` (run inside the target repo) |
+
+Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
+it or remove it — this is a deliberate stance, not a gap: inferring "this
+looks like a temperloop path, remove it too" would be exactly the
+namespace-grep behavior the manifest's own read discipline forbids (see
+`workflows/scripts/install/manifest.sh`'s header). `temperloop uninstall`
+prints the scope-(a) manual-removal bullet as guidance every time it runs,
+so it's never a dead end — just never automatic.
+
+`temperloop uninstall` reads **only** its manifest: it removes every path it
+created and restores every preexisting path it backed up from that exact
+backup, and never touches a path absent from the manifest — a hand-edited
+machine conf under `$XDG_CONFIG_HOME/temperloop/`, for instance, always
+survives. `--dry-run` previews with zero writes; `--yes` pre-confirms
+(otherwise an interactive `y/N` prompt, or a non-interactive default-deny
+that touches nothing).
 
 ## Prerequisites
 

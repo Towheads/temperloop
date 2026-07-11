@@ -139,6 +139,13 @@ install-cli workflows/scripts/lib/report.contract.md
 # above for these two specific paths (longer patterns win) ─────────────────
 install-manifest-lib workflows/scripts/install/manifest.sh
 install-manifest-lib workflows/scripts/tests/test_install_manifest.sh
+# ── uninstall-cli — `temperloop uninstall`: manifest-scoped, reversible
+# removal (temperloop#265, ADR K164 D7): overrides the broader install-cli
+# `bin/*` claim above for these two specific paths (longer patterns win) —
+# its own operator-facing surface (the three removal-scope delineation),
+# same reasoning configure-config-cli below uses to carve itself out ──────
+uninstall-cli bin/subcommands/uninstall.sh
+uninstall-cli bin/subcommands/tests/test_uninstall.sh
 # ── configure-config-cli — AI-guided config wizard + `config list` (temperloop#262) ──
 # More specific than install-cli's blanket `bin/*` claim above (longest
 # match wins) — these four paths get their OWN feature doc rather than
