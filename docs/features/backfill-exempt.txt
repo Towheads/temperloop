@@ -1,0 +1,45 @@
+# backfill-exempt.txt — the shrink-only feature-doc backfill ratchet
+# (temperloop#132). One slug per line: manifest slugs whose feature doc has
+# not been backfilled yet. Exemption excuses ONLY the doc-presence check —
+# path claims are never exempted.
+#
+# THE LIST ONLY SHRINKS. When a slug's docs/features/<slug>.md lands, delete
+# its line in the same PR (validate-feature-docs.sh fails an
+# exempt-but-documented slug). Never add a line for new work — a new feature
+# ships its doc with its code.
+#
+# Grouped per planned backfill sub-issue so the six backfill PRs each delete
+# only their own contiguous block (fewer cross-PR merge conflicts).
+
+# ── temperloop#138 — board + branch hygiene ─────────────────────────────────
+board-adapter
+branch-hygiene
+
+# ── temperloop#139 — build spine + merge gate + quality gates ───────────────
+build-spine
+merge-gate
+quality-gates
+
+# ── temperloop#140 — pipeline front half: triage, assess, sweep, next ───────
+triage
+assess
+sweep
+next
+
+# ── temperloop#141 — drain + review half: tidy, check-in, telemetry, funnel ─
+tidy
+check-in
+telemetry
+funnel-driver
+
+# ── temperloop#142 — harness surfaces: hooks, gh-perf, review agents ────────
+hooks
+gh-perf
+review-agents
+
+# ── temperloop#143 — install + stores + docs: install-cli, knowledge-store, ─
+# ── docs-generator, presentation-plane ──────────────────────────────────────
+install-cli
+knowledge-store
+docs-generator
+presentation-plane
