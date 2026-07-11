@@ -48,6 +48,14 @@ none docs/adr/*
 # longer, more specific claim under quality-gates.
 none docs/features/*
 
+# Pre-claim for the /design front-door epic (temperloop#148): design-schema.md
+# (temperloop#214) lands ahead of claude/commands/design.md and its feature
+# doc (a sibling L1 item, "feature doc + path claims" per the ratified
+# design brief's phasing). Inert `none` claim until the "design" slug + its
+# docs/features/design.md land in that sibling item, mirroring the
+# docs-site-epic sibling pre-claim pattern above.
+none claude/design-schema.md
+
 # ── board-adapter — Projects-v2/issues-only board adapter + board commands ──
 board-adapter workflows/scripts/board/*
 board-adapter workflows/scripts/board-sync-drift-check.sh
