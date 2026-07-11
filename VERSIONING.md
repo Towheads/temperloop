@@ -28,11 +28,43 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Pipeline command contracts** | operators running the slash commands; their documented steps + `plan-schema.md` shape | `claude/commands/*.md`, `claude/plan-schema.md` |
 | **Hook names + signatures** | a machine's installed hooks; anything keying off their I/O contract | `claude/hooks/*.sh` |
 | **Quality-gate contract** | CI + local gate parity: the required job name `checks`, the `KERNEL_GATES` set, the Live/Drain + PR-body-lint registry formats | `scripts/quality-gates.sh`, `.github/workflows/ci.yml` |
-| **CLI surface** | callers of `bin/foundation` and its subcommands (`init`, `eject`, `try`, `report`, `baseline-snapshot`, `configure`, `config`, `uninstall`) | `bin/foundation`, `bin/subcommands/*` |
+| **CLI surface** | callers of `bin/foundation` and its subcommands (`init`, `eject`, `try`, `report`, `baseline-snapshot`, `configure`, `config`, `install`, `uninstall`) | `bin/foundation`, `bin/subcommands/*` |
 | **Compose / pin seam** | the overlay's `install-claude` compose (`CLAUDE.kernel.md` + overlay), `.kernel-pin` format, the kernel-manifest classification | `workflows/scripts/install-claude-md.sh`, `.kernel-pin`, `kernel-manifest.txt` |
 | **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
 | **Knob registry** | callers reading `workflows/scripts/config/knob-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/knob-registry.tsv`, `workflows/scripts/config/knob-registry-lib.sh` |
 | **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
+
+### "Vendored" vs. "installed" — two different senses (ADR K164 D7)
+
+This document's own "the kernel is **vendored, not installed**" framing
+(above) is about **repo integration**: how the kernel's *code* reaches a
+downstream tree — a `git subtree` pull at a tag, never an npm/pip-style
+package dependency. That sense is unchanged by `temperloop install`
+(temperloop#264, the CLI half of the machine-surface install manifest row
+in the contract-surface table above): running that subcommand never
+touches how the kernel repo itself is consumed, pulled, or pinned.
+
+`temperloop install` is a **separate, machine-scoped** sense of "install"
+— it materializes the **machine surface** (`~/.claude/*`, `~/.local/bin/*`,
+the composed `CLAUDE.md`, the `gh` call-logger shim) that lets an operator
+actually *use* a vendored-or-cloned checkout day to day, per
+`links_enumerate()`'s desired state (`workflows/scripts/install/links.sh`).
+Every touched path is recorded in the install manifest so a later
+`temperloop uninstall` (not yet built) can cleanly reverse exactly what
+this run did. Two axes, never conflated:
+
+| Axis | "Vendored" | "Installed" |
+|---|---|---|
+| What moves | the kernel's **code** (a git subtree pull) | the kernel's **machine footprint** (symlinks/real files under `$HOME`) |
+| Direction | into a downstream **repo tree** | onto an operator's **machine** |
+| Mechanism | `make update-kernel` / `git subtree` | `temperloop install` (this item) / `temperloop uninstall` (future) |
+| Reversible via | `.kernel-pin` + a subtree re-pull | the install manifest (`manifest_restore_from_record`) |
+
+So "the kernel is vendored, not installed" continues to describe the
+repo-integration axis exactly as it always has; it says nothing about, and
+is not contradicted by, the machine-surface axis `temperloop install` now
+covers. `docs/kernel-repo-layout.md`'s own "what got seeded" note (its
+Makefile-exclusion paragraph) points back here for the disambiguation.
 
 Renaming/removing a board function, changing a hook's I/O, renaming the
 `checks` job, changing `.kernel-pin`'s format, or dropping a documented
