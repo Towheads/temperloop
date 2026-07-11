@@ -11,6 +11,8 @@ the code does and what the site says it does:
 | Plan-note contract | `claude/plan-schema.md` | `sources/plan_schema.py` |
 | Quality gates | `scripts/quality-gates.sh --list` | `sources/gates.py` |
 | Adapter contracts | `workflows/scripts/lib/*.contract.md` | `sources/adapter_contracts.py` |
+| Feature docs | `docs/features/*.md` (pinned glob, content not yet built) | `sources/features.py` |
+| ADRs | `docs/adr/*.md` (pinned glob, content not yet built) | `sources/features.py` |
 
 Run it:
 
@@ -110,6 +112,26 @@ write scrubbed Markdown files into `docs/failure-modes/`. `docs/failure-modes/`
 does not exist yet in this repo; `glob()` on a missing directory returns
 empty, so today's `make docs` run produces zero chapter pages and no error —
 the same degrade-for-free shape as the overlay drop-in above.
+
+## Feature docs + ADRs (pinned glob, content not yet built)
+
+`sources/features.py` scans two pinned globs, one module folding both
+curated doc classes (temperloop #133 — feature docs and ADRs share the
+identical one-file-one-page rendering shape, so folding avoided two
+near-duplicate modules; each still gets its own glob constant and loop):
+
+- **`docs/features/*.md`** (repo-root-relative) -> one page per file, nav
+  group "Features".
+- **`docs/adr/*.md`** (repo-root-relative) -> one page per file, nav group
+  "ADRs".
+
+Same pinned-glob shape as the chapters convention above: neither
+`docs/features/` nor `docs/adr/` exists yet in this repo, so today's
+`make docs` run produces zero pages from this module and no error — the
+same degrade-for-free shape as `sources/chapters.py`. A registry `.txt`
+file a later item may write alongside the feature docs under
+`docs/features/` (e.g. a feature-flag registry) is ignored for free, since
+the glob is `*.md`, not `*`.
 
 ## Design notes
 

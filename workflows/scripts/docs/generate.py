@@ -16,6 +16,12 @@ renderers item). Today that glob matches exactly one file
 (knowledge_store.contract.md) — there is deliberately no tracker-contract
 page (that seam's own contract file is foundation #814, separate scope).
 
+Also pinned-but-currently-empty: curated feature docs and ADRs
+(sources/features.py; temperloop #133), via docs/features/*.md and
+docs/adr/*.md — same "pin the glob, let a later item fill it" shape as
+chapters.py, folded into one module since both classes share the identical
+one-file-one-page rendering shape.
+
 Telemetry metric-definition rendering is a separate, OVERLAY concern (the
 rollup producers it reads live under the overlay classification in
 kernel-manifest.txt) and is NOT a sources/*.py module here — it ships as an
@@ -72,7 +78,7 @@ if str(DOCS_DIR) not in sys.path:
 
 from lib.kernel_manifest import load_manifest  # noqa: E402
 from lib.page import Page, render_page  # noqa: E402
-from sources import adapter_contracts, chapters, cli, commands, gates, plan_schema  # noqa: E402
+from sources import adapter_contracts, chapters, cli, commands, features, gates, plan_schema  # noqa: E402
 
 KERNEL_MANIFEST_PATH = REPO_ROOT / "workflows" / "scripts" / "kernel" / "kernel-manifest.txt"
 OVERLAY_DROPIN_DIR = REPO_ROOT / "workflows" / "scripts" / "docs.d"
@@ -82,7 +88,7 @@ DEFAULT_OUT_DIR = DOCS_DIR / "_site"
 # build_pages(repo_root, manifest_entries) -> list[Page]. `cli` leads the
 # list — the bootstrap + subcommand reference is the newcomer's first read
 # (foundation #765 Epic D, item cli-entrypoint-bootstrap / #849).
-_SOURCE_MODULES = [cli, commands, plan_schema, gates, adapter_contracts, chapters]
+_SOURCE_MODULES = [cli, commands, plan_schema, gates, adapter_contracts, chapters, features]
 
 
 def _load_overlay_pages(repo_root: Path, dropin_dir: Path = OVERLAY_DROPIN_DIR) -> list[Page]:

@@ -4,7 +4,9 @@ Exercises the two pinned conventions this item's acceptance bar names
 directly: the kernel-manifest include filter (an overlay-classified command
 never renders) and the overlay renderer drop-in (absent -> zero extra
 pages; present -> its pages are unioned in). Also covers the chapters glob
-(absent dir -> zero chapter pages, no error) and idempotent re-run.
+(absent dir -> zero chapter pages, no error), the feature-docs/ADR globs
+(temperloop #133 — same absent-dir zero-page shape, plus fixture rendering
+under their own nav groups), and idempotent re-run.
 
 Builds a small synthetic fixture repo per test rather than depending on this
 checkout's real claude/commands/ contents, so these tests don't churn every
@@ -127,6 +129,63 @@ class TestBuildSite(unittest.TestCase):
             pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
 
         self.assertFalse(any(p.slug.startswith("failure-modes/") for p in pages))
+
+    def test_features_and_adr_globs_absent_dirs_yield_zero_pages_no_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = _make_fixture_repo(tmp)
+            manifest_path = _make_manifest(tmp)
+            empty_dropin = tmp / "no-dropin-here"
+
+            # No docs/features/ or docs/adr/ dir created anywhere under repo.
+            pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
+
+        self.assertFalse(any(p.slug.startswith("features/") for p in pages))
+        self.assertFalse(any(p.slug.startswith("adr/") for p in pages))
+
+    def test_features_source_renders_fixture_feature_doc_and_adr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = _make_fixture_repo(tmp)
+            _write(
+                repo / "docs" / "features" / "widget-export.md",
+                "---\ntitle: Widget export\n---\n\nExport widgets to CSV.\n",
+            )
+            _write(
+                repo / "docs" / "adr" / "0001-use-sqlite.md",
+                "---\ntitle: Use SQLite for local storage\n---\n\nDecision body text.\n",
+            )
+            manifest_path = _make_manifest(tmp)
+            empty_dropin = tmp / "no-dropin-here"
+
+            pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
+
+        feature_page = next(p for p in pages if p.slug == "features/widget-export")
+        self.assertEqual(feature_page.title, "Widget export")
+        self.assertEqual(feature_page.nav_group, "Features")
+        self.assertIn("Export widgets to CSV", feature_page.body_html)
+
+        adr_page = next(p for p in pages if p.slug == "adr/0001-use-sqlite")
+        self.assertEqual(adr_page.title, "Use SQLite for local storage")
+        self.assertEqual(adr_page.nav_group, "ADRs")
+        self.assertIn("Decision body text", adr_page.body_html)
+
+    def test_features_glob_ignores_registry_txt_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = _make_fixture_repo(tmp)
+            _write(
+                repo / "docs" / "features" / "widget-export.md",
+                "---\ntitle: Widget export\n---\n\nExport widgets to CSV.\n",
+            )
+            _write(repo / "docs" / "features" / "registry.txt", "widget-export\tenabled\n")
+            manifest_path = _make_manifest(tmp)
+            empty_dropin = tmp / "no-dropin-here"
+
+            pages = build_site(repo, manifest_path=manifest_path, dropin_dir=empty_dropin)
+
+        feature_slugs = [p.slug for p in pages if p.slug.startswith("features/")]
+        self.assertEqual(feature_slugs, ["features/widget-export"])
 
     def test_cli_source_absent_readme_yields_zero_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:
