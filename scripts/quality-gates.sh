@@ -77,6 +77,14 @@ KERNEL_GATES=(
   "make test-build-workflow"
   "make test-hooks"
   "make test-install"
+  # Compose-plane T0 inventory (temperloop#235, ADR §2.5 capture point 3):
+  # workflows/scripts/install-claude-md.sh's regenerated set of
+  # knowledge-store notes reachable from the composed CLAUDE.md's own
+  # rules — wikilink + backtick-literal store-path extraction, dedup,
+  # sort, idempotence, and the empty-store no-error path. Same direct-
+  # `bash` form as the knob-registry gates below (kernel Makefile is
+  # generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_install_claude_md_t0_inventory.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
