@@ -189,3 +189,8 @@ presentation-plane workflows/scripts/validate-template-refs.sh
 
 # ── review-agents — advisory review subagent definitions ────────────────────
 review-agents claude/agents/*
+
+# ── sandbox-core — hermetic env-sandbox test harness (temperloop#263) ───────
+sandbox-core workflows/scripts/tests/lib/sandbox.sh
+sandbox-core workflows/scripts/tests/lib/tests/test_sandbox.sh
+sandbox-core workflows/scripts/tests/test_sandbox_dry_run_legs.sh

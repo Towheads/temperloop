@@ -261,6 +261,17 @@ KERNEL_GATES=(
   # SEPARATE, sibling item's concern (the Pages workflow) — this gate only
   # proves the site still builds.
   "make docs"
+  # Hermetic env-sandbox test harness (temperloop#263, "sandbox-core", ADR
+  # K164 D6) + the install-surface dry-run legs it wires: sandbox.sh's own
+  # unit suite (env-scoping, gh/claude stubs, bootstrap-over-file://,
+  # no-residue), then `temperloop init --dry-run` / `temperloop eject
+  # --dry-run` run end to end through a REAL bootstrapped install. NO
+  # container — a throwaway HOME + all four XDG vars, scoped to the
+  # invoked subprocess only, never exported into this gate's own shell.
+  # Same direct-`bash` form as the other kernel/workflows/scripts/tests
+  # entries above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/tests/lib/tests/test_sandbox.sh"
+  "bash workflows/scripts/tests/test_sandbox_dry_run_legs.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a
