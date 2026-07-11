@@ -81,10 +81,16 @@ points, keyed by PR:
 - `claude/commands/build.md` 3g's `ci-poll.sh` `CI_FAILED` outcome (which
   triggers an escalate-on-retry re-spawn per the 3c operating principle) and
   4b's managed-merge gate `EJECTED` disposition (exit 5 — CI red after
-  `update-branch`) are reconstructable after the fact from each PR's check-run
+  `update-branch`) are approximated after the fact from each PR's check-run
   history: `gh api repos/<owner>/<repo>/commits/<sha>/check-runs` per SHA the
   PR carried (a PR that needed a force-push re-run left more than one
-  distinct head SHA, each independently queryable).
+  distinct head SHA, each independently queryable). **Any pre-merge red
+  check-run approximates these events from history** — the raw check-run
+  record cannot distinguish an orchestrator-observed `CI_FAILED` from an
+  `EJECTED` from a red run no poll ever observed, so the proxy counts
+  "PR carried ≥1 red pre-merge check-run," a slight over-approximation of
+  the orchestrator-witnessed event set, applied identically to both sides
+  of the comparison.
 - Epic classification rides the `design-brief: [[Designs/<note>]]` marker
   line `claude/commands/design.md` Step 5a writes into a materialized epic's
   body — its presence/absence is exactly what already distinguishes a
@@ -195,7 +201,15 @@ this nuance only concerns the epic-decomposition-mode path.)
 count / total Contract-derived items, read directly off the plan note (`##
 Items` section) at the moment its `status` flips `draft → approved` — a diff
 between the `/assess`-authored draft and the approved version shows exactly
-which placeholders got filled in and how. **Caveat, stated plainly:** K94 and
+which placeholders got filled in and how. **Named gap, stated honestly:**
+placeholders are filled *before* the status flip, so at flip time the count
+is always zero — and the kernel's knowledge-store contract
+(`workflows/scripts/lib/knowledge_store.contract.md`) does not guarantee
+version history, so the draft→approved diff exists only where the store
+happens to be versioned (e.g. a git-backed or Obsidian-synced store); on a
+bare plain-files store this proxy is computable **forward-only, at
+`/assess`-completion time** (the draft state, placeholders still present),
+not retrospectively. **Caveat, stated plainly:** K94 and
 K131 both arrived with real, `/triage`-authored sub-issues from the start
 (not Contract-derived), so their own `/assess` pass — if run — would show
 clarification via the `needs-clarification`-label/`## Re-triage signals`
@@ -214,9 +228,12 @@ pull, since it needs no history walk.
 ## Proxy 4 — Dimension-disposition distribution
 
 **What it measures.** Across every ratified `/design` brief, the per-dimension
-distribution of dispositions (`filled` / `n/a — <reason>` / `deferred →
-<ref>`) among `claude/design-schema.md`'s 16 kernel dimensions (plus any
-overlay-added ones). A dimension disposed `n/a` on (nearly) every brief is
+distribution of dispositions — the `disposition: filled` /
+`disposition: n/a — <reason>` / `disposition: deferred → <ref>` line each
+dimension carries, in the prefixed shape the brief-conformance lint
+(`workflows/scripts/validate-design-brief.sh`) checks and the schema's
+worked example uses — among `claude/design-schema.md`'s 16 kernel dimensions
+(plus any overlay-added ones). A dimension disposed `n/a` on (nearly) every brief is
 dead weight in the schema — a removal candidate, per the ratified brief's
 own framing (§ 9: "the template earns its slots empirically").
 
@@ -227,8 +244,8 @@ line** under each numbered dimension heading
 going forward mechanically enforced by the brief-conformance lint,
 temperloop#216 / `workflows/scripts/validate-design-brief.sh`). Compute by
 walking every `status: ratified` note in `Designs/` and tallying, per
-dimension number, how many briefs disposed it `filled` vs. `n/a` vs.
-`deferred`.
+dimension number, how many briefs carry `disposition: filled` vs.
+`disposition: n/a — …` vs. `disposition: deferred → …` on it.
 
 **Designed-vs-baseline comparison.** This proxy has **no** hand-authored
 comparison axis — K94 and K131 pre-date the brief schema entirely and carry
