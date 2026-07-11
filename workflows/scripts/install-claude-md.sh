@@ -48,6 +48,47 @@
 # This script is idempotent: composing the same sources twice, on the same
 # machine, byte-for-byte reproduces the same target (no timestamps or other
 # non-deterministic content are rendered in).
+#
+# ── Compose-plane T0 inventory (temperloop#235, ADR §2.5 capture point 3) ──
+# Alongside the composed target, this script regenerates a T0 inventory: the
+# set of knowledge-store notes REACHABLE FROM the composed doc's own rules —
+# every wikilink (`[[Decisions/...]]`, `[[Patterns/...]]`, `[[Mistakes/...]]`,
+# `[[Context/...]]`) and every literal store-path mention (a backticked or
+# plain-text `<Folder>/<name>.md` reference) to one of those same four
+# knowledge-store folders, found anywhere in the fully composed doc (kernel +
+# rendered knowledge-routing + overlay). `Sessions/` is deliberately excluded
+# — those wikilinks are template placeholders (`[[Sessions/<source_session>]]`)
+# or raw session-archive pointers, never a literal curated note. T0 is
+# DERIVED FROM THE COMPOSED DOC, not a hand-maintained list — this is
+# load-bearing: promoting a note into scope means editing the composed doc's
+# *source* prose so a new reference appears here on the next compose.
+#
+# Written to `<dirname target>/t0-inventory.txt` — a plain lowercase-derived
+# path (no new operator knob: it is wholly a function of the existing
+# `target` argument, so it needs no knob-registry.tsv row), sibling to the
+# composed CLAUDE.md the same way plan-schema.md / message-schema.md /
+# decision-queue-contract.md already sit alongside it under `~/.claude/`.
+#
+# Format: one knowledge-store-relative note reference per line, WITHOUT the
+# `.md` extension (Obsidian's own wikilink convention — `Decisions/foo`, not
+# `Decisions/foo.md`), deduped and sorted byte-wise (`LC_ALL=C sort -u`) for
+# determinism across locales/machines, LF-terminated, no trailing blank line.
+# Zero references (an empty/absent overlay, or a fixture with no store
+# mentions) yields a zero-byte file, never an error. Consumed by the later
+# `/tidy` read-stats tally (temperloop#235's sibling item) to correlate T0
+# scope against the store's actual read-recency stats.
+#
+# A "literal store-path reference" is scoped to a BACKTICK-DELIMITED span
+# (the repo's own prose convention for any file/path mention — every literal
+# reference surveyed in claude/CLAUDE.kernel.md and claude/CLAUDE.overlay.md
+# is backtick-wrapped) rather than bare prose: a note title routinely
+# contains spaces and parentheses (e.g. `` `Decisions/foundation - Vault
+# provenance schema (note-level).md` ``), which makes bare-prose boundary
+# detection ambiguous, but the backtick span itself is unambiguous. A span
+# may also carry a store-root path prefix before the store folder (e.g.
+# `` `<store-root>/Decisions/...md` `` in the Decision-capture rule) — only
+# the trailing `<Folder>/...` portion from the LAST folder-name match
+# onward is kept.
 set -euo pipefail
 
 kernel="${1:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}"
@@ -152,8 +193,41 @@ Rendered at compose time (\`make install-claude\` → \`workflows/scripts/instal
 EOF
 }
 
+# ---------------------------------------------------------------------------
+# extract_t0_inventory <composed-file> — prints the T0 inventory (one
+# knowledge-store-relative note reference per line, extension-stripped,
+# deduped, sorted) for the fully composed doc at <composed-file>. See the
+# "Compose-plane T0 inventory" header comment above for the exact scope.
+# ---------------------------------------------------------------------------
+extract_t0_inventory() {
+  local composed_file="$1" store_folders='Decisions|Patterns|Mistakes|Context'
+  {
+    # Wikilinks: [[Target]], [[Target|alias]], [[Target#anchor]] — strip the
+    # brackets, then drop any alias/anchor suffix.
+    grep -oE '\[\[[^][]+\]\]' "$composed_file" 2>/dev/null \
+      | sed -E 's/^\[\[//; s/\]\]$//; s/[|#].*$//' \
+      || true
+    # Literal store-path mentions: a backtick-delimited span ending in
+    # `.md` that contains one of the four store-folder names (see the
+    # header comment above for why backticks, not bare-prose boundaries).
+    # Strip everything up to the LAST folder-name match (absorbs any
+    # store-root path prefix), then the surrounding backticks and the
+    # `.md` extension.
+    # shellcheck disable=SC2016  # the backticks are literal (a markdown span delimiter), not command substitution
+    grep -oE "\`[^\`]*(${store_folders})/[^\`]*\\.md\`" "$composed_file" 2>/dev/null \
+      | sed -E 's/^`//; s/`$//' \
+      | sed -E "s#.*((${store_folders})/)#\\1#" \
+      | sed -E 's/\.md$//' \
+      || true
+  } \
+    | sed -E 's/[[:space:]]+$//' \
+    | { grep -E "^(${store_folders})/" || true; } \
+    | LC_ALL=C sort -u
+}
+
 tmp="$(mktemp "${TMPDIR:-/tmp}/install-claude-md.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
+t0_tmp="$(mktemp "${TMPDIR:-/tmp}/install-claude-md-t0.XXXXXX")"
+trap 'rm -f "$tmp" "$t0_tmp"' EXIT
 
 {
   printf '<!-- GENERATED by foundation '"'"'make install-claude'"'"' — DO NOT EDIT HERE.\n'
@@ -170,9 +244,18 @@ trap 'rm -f "$tmp"' EXIT
   cat "$overlay"
 } >"$tmp"
 
+# T0 inventory: derived from the fully composed doc just assembled in $tmp —
+# regenerated every run, written next to $target (see the "Compose-plane T0
+# inventory" header comment). extract_t0_inventory never fails on zero
+# matches (an empty/absent overlay yields a zero-byte file, not an error).
+extract_t0_inventory "$tmp" >"$t0_tmp"
+t0_target="$(dirname "$target")/t0-inventory.txt"
+
 # Replace as a REAL file — drop any prior symlink first so the move can't
 # write through it back into a tracked source (same discipline as
 # install-settings.sh's #292 reconcile).
 rm -f "$target"
 mv -f "$tmp" "$target"
+rm -f "$t0_target"
+mv -f "$t0_tmp" "$t0_target"
 trap - EXIT
