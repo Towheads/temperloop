@@ -54,6 +54,26 @@ ks_root() {
 # ── Backend dispatch ─────────────────────────────────────────────────────
 : "${KNOWLEDGE_STORE_BACKEND:=plain-files}"
 
+# ── Agent-plane transport matcher seam (temperloop#236, Epic #226 capture
+# point 2: "agent-plane read telemetry") ───────────────────────────────────
+# Space-separated list of shell `case`-glob patterns naming which PostToolUse
+# `tool_name` values the agent-plane read-telemetry hook
+# (claude/hooks/ks-agent-read-log.sh) treats as knowledge-store MCP calls —
+# the transport-layer counterpart to KNOWLEDGE_STORE_BACKEND just above
+# (that knob selects the SCRIPT-plane backend; this one tells the
+# AGENT-plane hook which MCP tool namespaces count as "reading the
+# knowledge store" today).
+#
+# ONE seam to update at the planned `mcp__obsidian__*` EOL cutover
+# (F#946/#947): appending ` mcp__basic-memory__*` here is the entire
+# change — no hook edit required. Kept as a plain space-separated glob list
+# (not JSON/YAML) so it stays a single `${VAR:=...}` shell literal that a
+# machine-readable lint (the telemetry-coverage lint named in the epic's
+# Contract) can parse with a trivial `for pat in $VAR` loop — the same shape
+# as every other space-separated knob in this tree (e.g. FUNNEL_DRIVEN_PATHS
+# in build.config.sh).
+: "${KNOWLEDGE_READ_LOG_AGENT_MATCHERS:=mcp__obsidian* mcp__obsidian-builtin*}"
+
 # <op> -> prints the resolved backend function name for the CURRENT
 # KNOWLEDGE_STORE_BACKEND. Kebab-case backend names map to snake_case
 # function-name segments (plain-files -> plain_files).

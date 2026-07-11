@@ -270,9 +270,16 @@ shape, fields joined by `" · "`:
 - `timestamp` — UTC, `date -u +%Y-%m-%dT%H:%M:%SZ`.
 - `session-id` — `$CLAUDE_CODE_SESSION_ID`, or `-` when unset.
 - `plane` — `script` for every call in `knowledge_store.sh` /
-  `knowledge_search.sh`; a later agent-plane hook calls the same emit
-  function with `plane=agent` rather than getting a new knob.
-- `op` — `read` | `write` | `append` | `list` | `search`.
+  `knowledge_search.sh`. The agent-plane read-telemetry hook
+  (`claude/hooks/ks-agent-read-log.sh`, temperloop#236) calls the SAME
+  `ks__read_log_emit` function with `plane=agent` rather than getting a new
+  knob.
+- `op` — `read` | `write` | `append` | `list` | `search`, plus `other` from
+  the agent-plane hook only, for a matched MCP tool name its simple
+  name-based mapping can't classify (see that hook's own header for the
+  mapping table) — logged rather than dropped, per the epic's "unknown
+  knowledge-store tools log with a generic op rather than being dropped
+  silently" contract.
 - `doc-path-or-query` — the dispatched doc-id, or the `ks_search` query,
   newline/tab-sanitized to a single line.
 
@@ -282,10 +289,21 @@ ONE override point for the log's location. Logging is fail-open: a write
 failure (log dir uncreatable, disk full, etc.) is WARNed to stderr and never
 propagates into the wrapped `ks_*` call's own exit code.
 
-This line format is a stable contract — later telemetry items (an
-agent-plane hook, a SessionEnd one-liner, a `/tidy` tally) are documented to
-consume it as-is; changing the field order/count/separator means updating
-every consumer.
+This line format is a stable contract — later telemetry items (a SessionEnd
+one-liner, a `/tidy` tally) are documented to consume it as-is; changing the
+field order/count/separator means updating every consumer.
+
+**Agent plane.** `claude/hooks/ks-agent-read-log.sh` is a PostToolUse hook
+that appends the same-format line for a knowledge-store MCP tool call. Which
+`tool_name` values count is read from `KNOWLEDGE_READ_LOG_AGENT_MATCHERS`
+(space-separated `case`-glob patterns, defined right next to
+`KNOWLEDGE_STORE_BACKEND` in this file) — today `mcp__obsidian*
+mcp__obsidian-builtin*`; enabling a future `mcp__basic-memory__*` transport
+at the `mcp__obsidian__*` EOL cutover is a one-line edit to that knob, no
+hook change. The hook sources this file (`knowledge_store.sh`) to resolve
+both that matcher list and `ks__read_log_emit` itself; on a checkout where
+this file isn't reachable (no knowledge-store config at all) the hook is
+inert and fails open — it emits nothing rather than guessing a format.
 
 ## Non-goals of this seam (deliberately out of scope)
 
