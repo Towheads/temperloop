@@ -85,6 +85,11 @@ KERNEL_GATES=(
   # `bash` form as the knob-registry gates below (kernel Makefile is
   # generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_install_claude_md_t0_inventory.sh"
+  # Machine-surface install manifest library (temperloop#261, ADR K164 D7):
+  # workflows/scripts/install/manifest.sh's backup/record/restore/read-compat/
+  # marker-stamp helpers. Same direct-`bash` form as the T0-inventory gate
+  # above (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_install_manifest.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"

@@ -32,6 +32,7 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Compose / pin seam** | the overlay's `install-claude` compose (`CLAUDE.kernel.md` + overlay), `.kernel-pin` format, the kernel-manifest classification | `workflows/scripts/install-claude-md.sh`, `.kernel-pin`, `kernel-manifest.txt` |
 | **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
 | **Knob registry** | callers reading `workflows/scripts/config/knob-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — a future `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/knob-registry.tsv`, `workflows/scripts/config/knob-registry-lib.sh` |
+| **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
 
 Renaming/removing a board function, changing a hook's I/O, renaming the
 `checks` job, changing `.kernel-pin`'s format, or dropping a documented
@@ -50,6 +51,20 @@ already depended on) is **additive**. A **default-value change on an
 existing row** is **minor** — a stranger who dot-sources the previous
 default should re-check it, so it is never a bare **patch**, but it doesn't
 change the row shape so it isn't breaking either.
+
+**Machine-surface install manifest, specifically** (same three-way split as
+the knob registry, applied to the manifest's own JSON shape): a **field/
+column change** (renaming, removing, or reshaping `schema_version`,
+`state`, or `backup_path` on a path entry, or a `manifest.sh` helper
+function's signature/output-shape change) is **breaking** — every reader
+must adapt, and per the library's own read-compat stance a reader unable to
+parse an older manifest must refuse legibly, naming the schema version it
+found, never guess. A **new field** added to a path entry (a name no
+existing reader already depends on) is **additive**. A **semantics-only
+change** with no shape change (e.g. changing what circumstance sets
+`state=preexisting` vs. `created`) is **minor** — the JSON shape is
+unchanged, but a reader's assumptions about the field's meaning may need
+re-checking, so it is never a bare patch.
 
 ## Bump rules
 

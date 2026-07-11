@@ -134,6 +134,12 @@ install-cli workflows/scripts/lib/baseline_snapshot.contract.md
 install-cli workflows/scripts/lib/conventions_probe.contract.md
 install-cli workflows/scripts/lib/report.contract.md
 
+# ── install-manifest-lib — machine-surface install manifest library
+# (temperloop#261, ADR K164 D7): overrides the broader install-cli globs
+# above for these two specific paths (longer patterns win) ─────────────────
+install-manifest-lib workflows/scripts/install/manifest.sh
+install-manifest-lib workflows/scripts/tests/test_install_manifest.sh
+
 # ── knowledge-store — knowledge_store/search backends + issue corpus ────────
 knowledge-store workflows/scripts/lib/knowledge_*
 knowledge-store workflows/scripts/lib/tests/test_knowledge_*
