@@ -272,6 +272,15 @@ KERNEL_GATES=(
   # entries above (kernel Makefile is generator-owned).
   "bash workflows/scripts/tests/lib/tests/test_sandbox.sh"
   "bash workflows/scripts/tests/test_sandbox_dry_run_legs.sh"
+  # Sandbox-integrity layer (temperloop#266, "sandbox-integrity", belt-and-
+  # suspenders on ADR K164 D6): sandbox_preflight_links (write preflight),
+  # sandbox_tripwire_snapshot/check (post-run drift tripwire on the REAL
+  # $HOME/.claude + $HOME/.local/bin/temperloop, never mutated by the test —
+  # all fixtures live under mktemp scratch), and sandbox_tree_manifest/diff
+  # (symlink-aware tree-manifest + caller-supplied-exclusion diff), all
+  # appended onto sandbox.sh above. Sibling suite to test_sandbox.sh (kept
+  # separate rather than folded in) — same direct-`bash` form.
+  "bash workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

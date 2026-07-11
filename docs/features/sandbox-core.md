@@ -60,12 +60,13 @@ Both suites are wired into `scripts/quality-gates.sh` (the single
 KERNEL_GATES source CI's `checks` job, the local dev gate, and `/build`'s
 parent-side acceptance gate all run — see that script's own header), so
 local gate = CI gate for this harness exactly like every other kernel
-suite. Nothing else currently sources `sandbox.sh`; it is designed to be
-reused by any future install-surface test (a `try --dry-run` leg, a
-`doctor`/`update-kernel` hermetic test) without reshaping what already
-exists — a separate, out-of-scope follow-up item ("sandbox-integrity")
-will add write-preflight / drift-tripwire / tree-diff helpers to this same
-file rather than a second one.
+suite. Nothing else currently sources `sandbox.sh` for these core functions;
+it is designed to be reused by any future install-surface test (a
+`try --dry-run` leg, a `doctor`/`update-kernel` hermetic test) without
+reshaping what already exists. A follow-up item, "sandbox-integrity"
+(temperloop#266), has since added a write-preflight, a post-run drift
+tripwire, and a symlink-aware tree-manifest-diff helper onto this same
+file rather than a second one — see `docs/features/sandbox-integrity.md`.
 
 ## Resource impact
 
