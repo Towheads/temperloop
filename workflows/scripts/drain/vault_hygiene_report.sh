@@ -117,11 +117,18 @@
 # Kept POSIX-bash-3.2 compatible (no mapfile/associative arrays) with BSD-vs-GNU
 # stat/date fallbacks, so it runs on the macOS dev shell as well as Linux CI.
 #
-# shellcheck disable=SC2329
-# ^ File-wide: every check_*/helper function here is invoked INDIRECTLY,
-# through the register_check → CHECKS[] → `"$_hyg_fn"` dispatch loop (see
-# § Additive check-registration seam above) rather than by a literal call
-# site. shellcheck's "never invoked" reachability pass tracks that loop fine
+# shellcheck disable=SC2329,SC2317
+# ^ File-wide, both codes for ONE false positive: every check_*/helper
+# function here is invoked INDIRECTLY, through the register_check →
+# CHECKS[] → `"$_hyg_fn"` dispatch loop (see § Additive check-registration
+# seam). Newer shellcheck (≥0.10) reports that as function-level SC2329
+# ("never invoked"); older shellcheck (0.9.x, ubuntu-latest CI's apt build)
+# predates the SC2329 split and instead emits per-command SC2317
+# ("unreachable") inside the same functions — both must be disabled for the
+# gate to pass on both toolchains (same paired disable as
+# workflows/scripts/build/archive-plan.sh uses for its indirectly-invoked
+# populate_plan). Details of the reproduced false positive: shellcheck's
+# "never invoked" reachability pass tracks that loop fine
 # on its own, but loses the thread once the top-level `if/exit` emit logic
 # after it is also present (confirmed false-positive, reproduced in
 # isolation: a minimal register_check+for-loop script stays clean until a
@@ -203,8 +210,30 @@ if [ ! -d "$ROOT" ]; then
 fi
 
 # ── Portable stat/date helpers ────────────────────────────────────────────────
-# Epoch mtime of a file (BSD `stat -f %m` vs GNU `stat -c %Y`).
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# Epoch mtime of a file (BSD `stat -f %m` vs GNU `stat -c %Y`). The dialect is
+# feature-detected ONCE, up front — a `stat -f %m || stat -c %Y` fallback
+# chain is NOT portable, because GNU stat does not fail cleanly on the BSD
+# spelling: there `-f` means --file-system (a boolean, not a format flag), so
+# `stat -f %m FILE` prints multi-line filesystem status for FILE on stdout
+# and exits 1 (the literal `%m` operand doesn't exist), and the `||` fallback
+# then APPENDS the real epoch to that garbage. The poisoned value lands in
+# integer comparisons ("integer expression expected" spam) and, under
+# `set -u`, kills the whole run at the first `$(( now - mt ))` (Linux CI,
+# temperloop#250). Detection probe: only GNU stat accepts `-c`; BSD stat
+# exits non-zero on it with no stdout.
+if stat -c %Y . >/dev/null 2>&1; then
+  _hyg_stat_mtime() { stat -c %Y "$1" 2>/dev/null; }   # GNU coreutils
+else
+  _hyg_stat_mtime() { stat -f %m "$1" 2>/dev/null; }   # BSD/macOS
+fi
+# Regression guard for the above: whatever the dialect emitted, never let a
+# non-numeric value reach a `[ -lt ]`/`$(( ))` caller — coerce to 0 instead.
+file_mtime() {
+  local m
+  m="$(_hyg_stat_mtime "$1")" || m=0
+  case "$m" in ''|*[!0-9]*) m=0 ;; esac
+  printf '%s\n' "$m"
+}
 # Current epoch without Date.now()-style pitfalls — plain `date` is fine here.
 now_epoch() { date +%s; }
 
