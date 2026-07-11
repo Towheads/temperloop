@@ -20,12 +20,6 @@ build-spine
 merge-gate
 quality-gates
 
-# ── temperloop#140 — pipeline front half: triage, assess, sweep, next ───────
-triage
-assess
-sweep
-next
-
 # ── temperloop#141 — drain + review half: tidy, check-in, telemetry, funnel ─
 tidy
 check-in
