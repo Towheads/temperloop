@@ -36,6 +36,23 @@
 #      correctly regardless of which plane emitted a line; a missing/empty
 #      read log is a quiet no-op (stranger test) that skips the never-read
 #      walk entirely; the check never sets an ALARM.
+#  12. Read-path lints (temperloop#239): orphan-pattern (no inbound T0 link
+#      and not retrieval: search-only) and missing-trigger (a new Patterns/
+#      note with no trigger: frontmatter, scoped to a recency window) fire
+#      on their seeded fixtures and stay quiet on a T0-linked / search-only /
+#      trigger-carrying / recency-exempt note; an absent T0 inventory
+#      degrades orphan-pattern gracefully (skipped, never a false alarm).
+#  13. Telemetry-coverage lint (temperloop#239, the mcp_obsidian EOL cutover
+#      gate) → an Obsidian-backed vault whose KNOWLEDGE_READ_LOG_AGENT_MATCHERS
+#      drops a known transport's pattern fires; the real default matcher list
+#      covers both known transports and stays quiet; a non-Obsidian-backed
+#      root is a quiet no-op regardless of the matcher list.
+#  14. Controls lint (temperloop#239, ADR §2.3a/§2.4/§2.8) → against a
+#      fixture knob-registry.tsv (KNOB_REGISTRY_FILE override): a dead dial
+#      (matched row's owning-script missing), an orphaned control (no row
+#      names the file), and a machine-read file living outside Controls/ all
+#      fire; a healthy registry-matched control never fires; no Controls/
+#      folder is a quiet no-op.
 #
 # Usage: bash workflows/scripts/drain/tests/test_vault_hygiene_report.sh
 # Exit 0 = all pass, exit 1 = one or more failures.
@@ -57,6 +74,18 @@ SCRIPT="$REPO/workflows/scripts/drain/vault_hygiene_report.sh"
 # throwaway logs.
 _TEST_ISOLATION_DIR="$(mktemp -d)"
 export KNOWLEDGE_READ_LOG="$_TEST_ISOLATION_DIR/no-such-read-log.log"
+
+# Hermetic guard: point every invocation below at a guaranteed-absent
+# T0_INVENTORY_FILE by default, so this suite's result never depends on
+# whatever the machine running it happens to have at the real
+# $HOME/.claude/t0-inventory.txt (the orphan-pattern lint, check 13,
+# degrades gracefully — and DETERMINISTICALLY skips — when the artifact is
+# absent; without this export, a dev machine with a real composed CLAUDE.md
+# would make every fixture below spuriously subject to orphan-pattern
+# findings against ITS real T0 inventory instead of this suite's fixtures).
+# Tests that specifically exercise T0 coverage override this per-invocation.
+export T0_INVENTORY_FILE
+T0_INVENTORY_FILE="$(mktemp -u "${TMPDIR:-/tmp}/vault-hygiene-test-no-t0-XXXXXX")"
 
 pass=0
 fail=0
@@ -110,8 +139,11 @@ make_clean_vault() {
   printf -- '---\nstatus: executing\n---\nlive\n' > "$v/Plans/temperloop - live plan.md"
   # A fresh last_verified (today-ish) — not stale.
   printf -- '---\nlast_verified: 2099-01-01\n---\nfresh\n' > "$v/Decisions/temperloop - fresh decision.md"
-  # A well-formed Pattern (no date prefix, no verdict/decision keyword).
-  echo "reusable approach" > "$v/Patterns/temperloop - reusable retry approach.md"
+  # A well-formed Pattern (no date prefix, no verdict/decision keyword, and
+  # carries trigger: frontmatter so the missing-trigger lint, check 14,
+  # stays quiet too).
+  printf -- '---\ntrigger: retry backoff, flaky network call\n---\nreusable approach\n' \
+    > "$v/Patterns/temperloop - reusable retry approach.md"
 }
 
 # A vault seeded with every STRUCTURAL-lint alarm condition (checks 6-10,
@@ -191,6 +223,10 @@ assert_has "$creport" "ok naming: 0 drift"                                   "na
 assert_has "$creport" "ok stale plans (draft/approved >30d): 0"              "stale plan quiet on clean"
 assert_has "$creport" "ok kind-misfile (Patterns/): 0"                       "kind-misfile quiet on clean"
 assert_has "$creport" "ok repeat-mistake:"                                   "repeat-mistake quiet on clean (no ledger/Mistakes)"
+assert_has "$creport" "ok orphan-pattern: 0"                                 "orphan-pattern quiet on clean (no T0 inventory)"
+assert_has "$creport" "ok missing-trigger: 0"                                "missing-trigger quiet on clean"
+assert_has "$creport" "ok telemetry-coverage: 0"                             "telemetry-coverage quiet on clean (not Obsidian-backed)"
+assert_has "$creport" "ok controls: 0"                                       "controls quiet on clean (no Controls/ folder)"
 centry="$(bash "$SCRIPT" --root "$CLEAN" --format entry)"
 if [ -z "$centry" ]; then ok "clean --format entry emits nothing"; else fail_test "clean entry" "expected empty, got: $centry"; fi
 rm -rf "$CLEAN"
@@ -419,6 +455,110 @@ assert_missing "$rsreport4" "ALARM"                                             
 rm -rf "$RS4"
 
 rm -rf "$_TEST_ISOLATION_DIR"
+# ── Test 12: orphan-pattern + missing-trigger (temperloop#239) ────────────────
+echo "--- test 12: orphan-pattern + missing-trigger ---"
+
+# A Patterns/ fixture exercising both lints:
+#   - orphan pattern.md    : has trigger:, absent from T0 -> orphan-pattern fires
+#   - linked pattern.md    : has trigger:, present in T0 -> orphan-pattern quiet
+#   - search only.md       : has trigger:, absent from T0 but retrieval:
+#                             search-only -> orphan-pattern quiet (exempt)
+#   - no trigger.md        : new (default mtime), no trigger: -> missing-trigger
+#                             fires (also absent from T0, so orphan-pattern
+#                             fires on it too — not asserted either way)
+#   - old no trigger.md    : no trigger:, mtime forced far in the past ->
+#                             missing-trigger stays quiet (outside the
+#                             recency window)
+RP="$(mktemp -d)"; mkdir -p "$RP/Patterns"
+printf -- '---\ntrigger: some trigger\n---\norphan content\n'      > "$RP/Patterns/temperloop - orphan pattern.md"
+printf -- '---\ntrigger: some trigger\n---\nlinked content\n'      > "$RP/Patterns/temperloop - linked pattern.md"
+printf -- '---\nretrieval: search-only\ntrigger: t\n---\nsearch-only content\n' > "$RP/Patterns/temperloop - search only pattern.md"
+printf -- '---\ntags: [pattern]\n---\nno trigger content\n'        > "$RP/Patterns/temperloop - no trigger pattern.md"
+printf -- '---\ntags: [pattern]\n---\nold no trigger content\n'    > "$RP/Patterns/temperloop - old no trigger pattern.md"
+touch -t 202001010000 "$RP/Patterns/temperloop - old no trigger pattern.md"
+
+t0file="$RP/t0-inventory.txt"
+printf 'Patterns/temperloop - linked pattern\n' > "$t0file"
+
+rpreport="$(T0_INVENTORY_FILE="$t0file" bash "$SCRIPT" --root "$RP")"
+assert_has     "$rpreport" "orphan-pattern: Patterns/temperloop - orphan pattern.md" "orphan (absent from T0, no search-only) fires"
+assert_missing "$rpreport" "orphan-pattern: Patterns/temperloop - linked pattern.md" "T0-linked pattern stays quiet"
+assert_missing "$rpreport" "orphan-pattern: Patterns/temperloop - search only pattern.md" "retrieval: search-only pattern is exempt"
+assert_has     "$rpreport" "missing-trigger: Patterns/temperloop - no trigger pattern.md" "new pattern with no trigger: fires"
+assert_missing "$rpreport" "missing-trigger: Patterns/temperloop - old no trigger pattern.md" "pattern outside the recency window stays quiet"
+assert_missing "$rpreport" "missing-trigger: Patterns/temperloop - orphan pattern.md" "pattern WITH trigger: never fires missing-trigger"
+assert_has     "$rpreport" "ALARM:" "orphan/missing-trigger fixture trips an alarm"
+rm -rf "$RP"
+
+# 12b: T0 inventory absent -> orphan-pattern degrades gracefully (skipped,
+# quiet), even though a Patterns/ note that would otherwise be an orphan
+# exists.
+RP2="$(mktemp -d)"; mkdir -p "$RP2/Patterns"
+printf -- '---\ntrigger: t\n---\ncontent\n' > "$RP2/Patterns/temperloop - would-be orphan.md"
+noT0report="$(bash "$SCRIPT" --root "$RP2")"
+assert_has     "$noT0report" "ok orphan-pattern: 0 (no T0 inventory" "absent T0 inventory -> graceful skip, not an alarm"
+assert_missing "$noT0report" "orphan-pattern: Patterns/temperloop - would-be orphan.md" "no false alarm when T0 inventory is absent"
+rm -rf "$RP2"
+
+# ── Test 13: telemetry-coverage (temperloop#239 — mcp_obsidian EOL gate) ──────
+echo "--- test 13: telemetry-coverage ---"
+
+# 13a: Obsidian-backed vault + a matcher list that DROPS the mcp-tools search
+# server's pattern -> the uncovered transport fires.
+TC="$(mktemp -d)"; mkdir -p "$TC/.obsidian"
+tcreport="$(KNOWLEDGE_READ_LOG_AGENT_MATCHERS="mcp__obsidian-builtin*" bash "$SCRIPT" --root "$TC")"
+assert_has "$tcreport" "telemetry-coverage: transport 'mcp__obsidian__search_vault_smart' has no matching" "uncovered transport fires"
+assert_has "$tcreport" "ALARM:" "uncovered transport trips an alarm"
+rm -rf "$TC"
+
+# 13b: Obsidian-backed vault + the real default matcher list -> quiet (both
+# known transports covered).
+TC2="$(mktemp -d)"; mkdir -p "$TC2/.obsidian"
+tc2report="$(bash "$SCRIPT" --root "$TC2")"
+assert_has     "$tc2report" "ok telemetry-coverage: 0 (2 known transport(s) covered)" "default matcher list covers both known transports"
+assert_missing "$tc2report" "⚠️ telemetry-coverage:" "no uncovered-transport finding with the default matchers"
+rm -rf "$TC2"
+
+# 13c: not Obsidian-backed -> nothing to check, quiet regardless of matchers.
+TC3="$(mktemp -d)"
+tc3report="$(KNOWLEDGE_READ_LOG_AGENT_MATCHERS="" bash "$SCRIPT" --root "$TC3")"
+assert_has "$tc3report" "ok telemetry-coverage: 0 (store root is not Obsidian-backed" "non-Obsidian root -> quiet no-op"
+rm -rf "$TC3"
+
+# ── Test 14: controls (temperloop#239 — ADR §2.3a/§2.4/§2.8) ──────────────────
+echo "--- test 14: controls ---"
+
+CV="$(mktemp -d)"; mkdir -p "$CV/Controls" "$CV/Context"
+# A healthy control: named by a row whose owning-script really exists.
+echo "good" > "$CV/Controls/temperloop - good dial.md"
+# A dead-dial control: named by a row whose owning-script does NOT exist.
+echo "dead" > "$CV/Controls/temperloop - dead dial.md"
+# An orphaned control: no row names it at all.
+echo "orphan" > "$CV/Controls/temperloop - orphan dial.md"
+# A machine-read file living OUTSIDE Controls/ (its row's Context/ fallback
+# literal resolves to a file that physically exists there).
+echo "outside" > "$CV/Context/temperloop - outside dial.md"
+
+fixture_registry="$CV/knob-registry.tsv"
+cat > "$fixture_registry" <<EOF
+CTRL_GOOD	Controls/temperloop - good dial.md	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Points at \`Controls/temperloop - good dial.md\` — a healthy, reachable control (fixture).
+CTRL_DEAD	Controls/temperloop - dead dial.md	path	kernel	workflows/scripts/does/not/exist.sh	Points at \`Controls/temperloop - dead dial.md\` but its consumer script is missing (fixture dead-dial case).
+CTRL_OUTSIDE	Context/temperloop - outside dial.md	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Legacy path: defaults to \`Controls/temperloop - outside dial.md\`, falling back to \`Context/temperloop - outside dial.md\` during the overlay move window (fixture).
+EOF
+
+cvreport="$(KNOB_REGISTRY_FILE="$fixture_registry" bash "$SCRIPT" --root "$CV")"
+assert_missing "$cvreport" "controls: Controls/temperloop - good dial.md" "healthy, registry-matched control with a real consumer script is never flagged"
+assert_has     "$cvreport" "controls: Controls/temperloop - dead dial.md — named consumer script missing" "dead dial (missing consumer script) fires"
+assert_has     "$cvreport" "controls: Controls/temperloop - orphan dial.md — no knob-registry.tsv path row points at it" "orphaned control (no row names it) fires"
+assert_has     "$cvreport" "controls: Context/temperloop - outside dial.md — machine-read store file outside Controls/" "machine-read file outside Controls/ fires"
+assert_has     "$cvreport" "ALARM:" "controls fixture trips an alarm"
+rm -rf "$CV"
+
+# 14b: no Controls/ folder -> quiet no-op regardless of the registry.
+CV2="$(mktemp -d)"
+cv2report="$(bash "$SCRIPT" --root "$CV2")"
+assert_has "$cv2report" "ok controls: 0 (no Controls/ folder)" "no Controls/ folder -> quiet no-op"
+rm -rf "$CV2"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
