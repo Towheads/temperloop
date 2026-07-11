@@ -60,6 +60,17 @@
 #                             retrieval failure — a recurrence despite an
 #                             existing note. Propose-only. ALARM if any.
 #
+# Read-log telemetry surfacing (temperloop#238):
+#  12. read-stats            — tallies the knowledge-store read log
+#                             (KNOWLEDGE_READ_LOG; both the script-plane
+#                             emitter, PR #249, and the agent-plane
+#                             PostToolUse hook, PR #254, append the same
+#                             normalized line shape) into reads/session,
+#                             most-read and never-read notes, and
+#                             search→read conversion. Informational only —
+#                             never an ALARM. Graceful no-op on a missing/
+#                             empty read log (stranger test).
+#
 # `Personal/` is NEVER flagged by any lint above (structural or housekeeping)
 # — it is in the folder allowlist outright, and every recursive walk below
 # prunes it explicitly (case-insensitively), so nothing nested under it is
@@ -712,6 +723,195 @@ EOF
   return 0
 }
 register_check check_repeat_mistake
+
+# ── Check 12: read-log telemetry surfacing (temperloop#238) ─────────────────
+# Tallies the knowledge-store read log (KNOWLEDGE_READ_LOG, resolved via
+# knowledge_store.sh's `_ks_read_log_path` — the ONE knob for this path; see
+# that file) into the metrics /tidy's Vault hygiene step records, and that
+# the (overlay) `/telemetry` brief renderer can quote when present. Both the
+# script-plane emitter (`ks__read_log_emit`, PR #249) and the agent-plane
+# PostToolUse hook (`claude/hooks/ks-agent-read-log.sh`, PR #254) append the
+# SAME normalized line shape:
+#
+#   <timestamp> · <session-id> · <plane> · <op> · <doc-path-or-query>
+#
+# so this check is plane-agnostic BY CONSTRUCTION — it never branches on
+# `plane`, only on `op`; a script-plane line and an agent-plane line tally
+# identically. Informational only: this check never sets an ALARM (a low
+# read count, a "never-read" note, or a low conversion rate is a signal for
+# a human to weigh, not itself a hygiene defect) — same posture as Check 5
+# (stale last_verified tally).
+#
+# "Reads" here means op=read lines ONLY — deliberately narrower than
+# `claude/hooks/session-end-read-summary.sh`'s SessionEnd one-liner, which
+# lumps every non-search op (read/write/append/list) into "reads" for a
+# simple two-bucket per-session summary. That looser definition is fine for
+# a single roll-up number, but this check's note-level metrics (most-read,
+# never-read) need to name an actual document RETRIEVAL — counting a note's
+# op=append/op=write lines toward "reads" would misreport a heavily-WRITTEN
+# note (e.g. a ledger appended every run) as "most-read". A deliberate,
+# documented divergence, not an inconsistency.
+#
+# Metrics (deliberately simple + mechanical, per temperloop#238's own
+# acceptance note — "keep the metric simple, mechanical, documented in the
+# check; do not over-engineer"):
+#   - reads/session    total op=read lines ÷ distinct session-ids seen in the
+#                      log (any op — a session that only searched or wrote
+#                      still counts toward the denominator), one decimal.
+#   - most-read         the doc-path-or-query with the highest op=read count
+#                      (ties broken by first-seen order in the log),
+#                      reported with its count.
+#   - never-read        store notes (the SAME recursive walk + Personal/
+#                      exemption every other check in this file uses) whose
+#                      normalized doc-id never appears as an op=read
+#                      doc-path in the log. Normalization mirrors
+#                      `ks__normalize_id` (".md" appended when absent) so a
+#                      caller that logged "Decisions/foo" and one that
+#                      logged "Decisions/foo.md" count as the same note.
+#   - search→read conv. of every op=search line, the fraction ALSO followed,
+#                      later in the SAME session-id, by at least one op=read
+#                      line — the log is append-only, so file order is
+#                      chronological order within a session even when
+#                      interleaved with other sessions' lines. No attempt to
+#                      match the read's doc-path against the search query's
+#                      terms — "a read of a result-ish path" is approximated
+#                      as "any read at all after the search, same session",
+#                      the simplest mechanical proxy the acceptance note
+#                      allows; a search may "convert" more than one
+#                      subsequent read and a later read may satisfy more
+#                      than one earlier search — this metric counts SEARCH
+#                      lines, not distinct read events.
+#
+# Graceful no-op (stranger test): a missing/empty read log prints one "ok"
+# line and returns immediately — with no log, EVERY note would trivially
+# read "never-read", which is noise, not signal, so the never-read walk is
+# skipped entirely rather than reported as 100%. An empty store (no *.md
+# notes at all) still reports "0/0 note(s) never read" — a fully quiet,
+# division-free tally.
+check_read_stats() {
+  local LOG DOT SEP awk_out line key val
+  local total_read=0 total_search=0 distinct_sessions=0 converted=0
+  local most_read_doc="" most_read_count=0
+  local read_docs="" note_total=0 never_read=0 f rel avg pct
+
+  LOG="$(_ks_read_log_path 2>/dev/null || true)"
+  if [ -z "$LOG" ] || [ ! -f "$LOG" ] || [ ! -s "$LOG" ]; then
+    add "- ok read-stats: 0 (no read log)"
+    return 0
+  fi
+
+  DOT="$(printf '\xc2\xb7')"
+  SEP=" ${DOT} "
+
+  # Single pass over the log: tallies total_read/total_search, distinct
+  # sessions (any op), per-doc op=read counts + first-seen order (for
+  # most-read), the last op=read line number per session (for the
+  # search→read conversion check below), and emits the set of normalized
+  # read doc-ids (one READ_DOC= line per distinct doc) for the never-read
+  # walk. `doc` is reassembled from field 5..NF in case the doc/query text
+  # itself ever contained the " · " separator (defensive — the emitter
+  # sanitizes tabs/newlines but not this literal sequence).
+  awk_out="$(awk -v SEP="$SEP" -F"$SEP" '
+    NF < 5 { next }
+    {
+      sess=$2; op=$4; doc=$5
+      for (i=6; i<=NF; i++) doc = doc SEP $i
+      all_sessions[sess]=1
+      if (op=="read") {
+        total_read++
+        d=doc
+        if (d !~ /\.md$/) d = d ".md"
+        if (!(d in read_count)) first_seen[d]=NR
+        read_count[d]++
+        last_read_line[sess]=NR
+      } else if (op=="search") {
+        total_search++
+        search_count++
+        search_sess[search_count]=sess
+        search_line[search_count]=NR
+      }
+    }
+    END {
+      printf "TOTAL_READ=%d\n", total_read+0
+      printf "TOTAL_SEARCH=%d\n", total_search+0
+      printf "DISTINCT_SESSIONS=%d\n", length(all_sessions)
+      best=""; bestcount=0; bestseen=2147483647
+      for (d in read_count) {
+        c=read_count[d]; fs=first_seen[d]
+        if (c > bestcount || (c == bestcount && fs < bestseen)) { best=d; bestcount=c; bestseen=fs }
+      }
+      if (best != "") { printf "MOST_READ_DOC=%s\n", best; printf "MOST_READ_COUNT=%d\n", bestcount }
+      for (d in read_count) printf "READ_DOC=%s\n", d
+      conv=0
+      for (i=1; i<=search_count; i++) {
+        s=search_sess[i]; ln=search_line[i]
+        if ((s in last_read_line) && last_read_line[s] > ln) conv++
+      }
+      printf "CONVERTED_SEARCH=%d\n", conv
+    }
+  ' "$LOG" 2>/dev/null)"
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    case "$key" in
+      TOTAL_READ) total_read="$val" ;;
+      TOTAL_SEARCH) total_search="$val" ;;
+      DISTINCT_SESSIONS) distinct_sessions="$val" ;;
+      MOST_READ_DOC) most_read_doc="$val" ;;
+      MOST_READ_COUNT) most_read_count="$val" ;;
+      CONVERTED_SEARCH) converted="$val" ;;
+      READ_DOC) read_docs="${read_docs}${val}"$'\n' ;;
+    esac
+  done <<EOF
+$awk_out
+EOF
+
+  case "$total_read" in ''|*[!0-9]*) total_read=0 ;; esac
+  case "$total_search" in ''|*[!0-9]*) total_search=0 ;; esac
+  case "$distinct_sessions" in ''|*[!0-9]*) distinct_sessions=0 ;; esac
+  case "$converted" in ''|*[!0-9]*) converted=0 ;; esac
+  case "$most_read_count" in ''|*[!0-9]*) most_read_count=0 ;; esac
+
+  if [ "$distinct_sessions" -gt 0 ]; then
+    avg="$(awk -v r="$total_read" -v s="$distinct_sessions" 'BEGIN{printf "%.1f", r/s}')"
+  else
+    avg="0.0"
+  fi
+  add "- info read-stats: ${total_read} read(s), ${total_search} search(es), ${distinct_sessions} session(s) (${avg} reads/session)"
+
+  if [ -n "$most_read_doc" ]; then
+    add "- info read-stats most-read: ${most_read_doc} (${most_read_count}x)"
+  else
+    add "- info read-stats most-read: none (no reads logged)"
+  fi
+
+  if [ "$total_search" -gt 0 ]; then
+    pct="$(awk -v c="$converted" -v t="$total_search" 'BEGIN{printf "%.0f", (c/t)*100}')"
+    add "- info read-stats search→read conversion: ${converted}/${total_search} (${pct}%)"
+  else
+    add "- info read-stats search→read conversion: n/a (no searches logged)"
+  fi
+
+  # never-read: walk store notes (same prune convention as every other
+  # whole-vault walk in this file — Personal/ + vault internals excluded)
+  # and flag any whose normalized doc-id never appeared as an op=read line.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    note_total=$((note_total + 1))
+    rel="${f#"$ROOT"/}"
+    if ! printf '%s' "$read_docs" | grep -qxF -- "$rel"; then
+      never_read=$((never_read + 1))
+    fi
+  done <<EOF
+$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)
+EOF
+
+  add "- info read-stats never-read: ${never_read}/${note_total} note(s) never read"
+  return 0
+}
+register_check check_read_stats
 
 # ── Run every registered check (generic — never changes when adding a check) ──
 for _hyg_fn in "${CHECKS[@]}"; do

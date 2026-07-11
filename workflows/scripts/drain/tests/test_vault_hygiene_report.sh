@@ -30,6 +30,12 @@
 #      + trigger: frontmatter fires as a retrieval failure; an unrelated row
 #      stays quiet; a matching row outside the recency window is skipped; no
 #      ledger / no Mistakes/ is a quiet no-op (stranger test).
+#  11. Read-log telemetry surfacing (temperloop#238) → a fixture read log
+#      mixing script-plane AND agent-plane lines tallies reads/session,
+#      most-read note, never-read notes, and search→read conversion
+#      correctly regardless of which plane emitted a line; a missing/empty
+#      read log is a quiet no-op (stranger test) that skips the never-read
+#      walk entirely; the check never sets an ALARM.
 #
 # Usage: bash workflows/scripts/drain/tests/test_vault_hygiene_report.sh
 # Exit 0 = all pass, exit 1 = one or more failures.
@@ -38,6 +44,19 @@ set -uo pipefail
 
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 SCRIPT="$REPO/workflows/scripts/drain/vault_hygiene_report.sh"
+
+# Isolate every invocation below from the REAL machine's knowledge-store read
+# log: check_read_stats (temperloop#238) runs on every $SCRIPT invocation and
+# resolves KNOWLEDGE_READ_LOG via knowledge_store.sh's own default
+# (${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log) when
+# unset — a real, populated file on any machine with normal daily usage.
+# Without this override, tests 1-10 (which assert nothing about read-stats
+# and never set this var themselves) would silently tally that real log
+# instead of staying hermetic. Point it at a guaranteed-nonexistent path by
+# default; Test 11's fixtures override it per-invocation for their own
+# throwaway logs.
+_TEST_ISOLATION_DIR="$(mktemp -d)"
+export KNOWLEDGE_READ_LOG="$_TEST_ISOLATION_DIR/no-such-read-log.log"
 
 pass=0
 fail=0
@@ -336,6 +355,70 @@ strangerreport="$(bash "$SCRIPT" --root "$RM4")"
 assert_has     "$strangerreport" "ok repeat-mistake:"    "no ledger / no Mistakes/ -> quiet no-op"
 assert_missing "$strangerreport" "repeat-mistake: 20"    "no ledger / no Mistakes/ -> never flags"
 rm -rf "$RM4"
+
+# ── Test 11: read-log telemetry surfacing (temperloop#238) ─────────────────
+echo "--- test 11: read-log telemetry surfacing ---"
+
+# 11a: seeded fixture — a read log mixing SCRIPT-plane and AGENT-plane lines
+# across two sessions, plus a vault with one never-read note. Hand-crafted
+# lines (not routed through the real ks_* dispatch/hook) so the fixture can
+# freely control plane/op/session/ordering: s1 searches then reads
+# Decisions/a.md twice (once per plane) — a converted search; s2 reads
+# Decisions/b.md (agent-plane) then searches with NO subsequent read — an
+# unconverted search. Decisions/c.md is never logged at all.
+RS="$(mktemp -d)"; mkdir -p "$RS/vault/Decisions"
+echo "a" > "$RS/vault/Decisions/a.md"
+echo "b" > "$RS/vault/Decisions/b.md"
+echo "c" > "$RS/vault/Decisions/c.md"
+RSLOG="$RS/knowledge-reads.log"
+{
+  printf '2026-07-01T00:00:00Z · s1 · script · search · foo query\n'
+  printf '2026-07-01T00:00:01Z · s1 · script · read · Decisions/a.md\n'
+  printf '2026-07-01T00:00:02Z · s1 · agent · read · Decisions/a\n'
+  printf '2026-07-01T00:00:03Z · s2 · agent · read · Decisions/b.md\n'
+  printf '2026-07-01T00:00:04Z · s2 · script · search · bar query\n'
+} > "$RSLOG"
+rsreport="$(KNOWLEDGE_READ_LOG="$RSLOG" bash "$SCRIPT" --root "$RS/vault")"
+assert_has "$rsreport" "info read-stats: 3 read(s), 2 search(es), 2 session(s) (1.5 reads/session)" "reads/session tally (both planes counted alike)"
+assert_has "$rsreport" "info read-stats most-read: Decisions/a.md (2x)"                            "most-read note (script + agent lines both count toward the same doc)"
+assert_has "$rsreport" "info read-stats search→read conversion: 1/2 (50%)"                          "search→read conversion (one converted, one not)"
+assert_has "$rsreport" "info read-stats never-read: 1/3 note(s) never read"                         "never-read tally names Decisions/c.md via its count"
+rm -rf "$RS"
+
+# 11b: agent-plane-only reads still tally identically to script-plane —
+# isolates the "plane-agnostic" claim from 11a's mixed fixture.
+RS2="$(mktemp -d)"; mkdir -p "$RS2/vault/Decisions"
+echo "a" > "$RS2/vault/Decisions/a.md"
+RSLOG2="$RS2/knowledge-reads.log"
+printf '2026-07-01T00:00:00Z · s1 · agent · read · Decisions/a.md\n' > "$RSLOG2"
+rsreport2="$(KNOWLEDGE_READ_LOG="$RSLOG2" bash "$SCRIPT" --root "$RS2/vault")"
+assert_has "$rsreport2" "info read-stats: 1 read(s), 0 search(es), 1 session(s) (1.0 reads/session)" "agent-plane-only line is tallied as a read"
+assert_has "$rsreport2" "info read-stats never-read: 0/1 note(s) never read"                          "agent-plane read satisfies never-read for its note"
+rm -rf "$RS2"
+
+# 11c: missing/empty read log → quiet no-op (stranger test); never-read walk
+# is skipped entirely (not reported as 100%), and no ALARM is ever set by
+# this check regardless of read-log state.
+RS3="$(mktemp -d)"; mkdir -p "$RS3/vault/Decisions"
+echo "a" > "$RS3/vault/Decisions/a.md"
+rsreport3="$(KNOWLEDGE_READ_LOG="$RS3/no-such-log" bash "$SCRIPT" --root "$RS3/vault")"
+assert_has     "$rsreport3" "ok read-stats: 0 (no read log)" "missing read log is a quiet no-op"
+assert_missing "$rsreport3" "read-stats most-read"            "no most-read line when there is no log"
+assert_missing "$rsreport3" "read-stats never-read"            "never-read walk skipped entirely when there is no log"
+rm -rf "$RS3"
+
+# 11d: search with no logged reads at all → conversion is 0/N, never n/a
+# division-by-zero, and the check still never contributes an ALARM.
+RS4="$(mktemp -d)"; mkdir -p "$RS4/vault"
+RSLOG4="$RS4/knowledge-reads.log"
+printf '2026-07-01T00:00:00Z · s1 · script · search · foo\n' > "$RSLOG4"
+rsreport4="$(KNOWLEDGE_READ_LOG="$RSLOG4" bash "$SCRIPT" --root "$RS4/vault")"
+assert_has     "$rsreport4" "info read-stats search→read conversion: 0/1 (0%)" "unconverted search with an empty store reports 0/1, not n/a"
+assert_has     "$rsreport4" "info read-stats never-read: 0/0 note(s) never read" "empty store reports 0/0 never-read, no divide-by-zero"
+assert_missing "$rsreport4" "ALARM"                                              "read-stats never contributes an ALARM on its own"
+rm -rf "$RS4"
+
+rm -rf "$_TEST_ISOLATION_DIR"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
