@@ -71,6 +71,44 @@
 #                             never an ALARM. Graceful no-op on a missing/
 #                             empty read log (stranger test).
 #
+# Read-path lints (temperloop#239, epic temperloop#226 — ADR §2.4/§2.8/§2.3a):
+# these keep the retrieval graph itself honest, rather than the folder/file
+# hygiene checks 1-11, or the read-log telemetry check 12,
+# already cover.
+#  13. orphan-pattern        — a Patterns/ note with no inbound T0 link (per
+#                             the compose-plane T0 inventory, temperloop#235)
+#                             and not marked `retrieval: search-only` in its
+#                             own frontmatter. Reads the T0 inventory
+#                             artifact where available (T0_INVENTORY_FILE);
+#                             degrades gracefully (skips, never guesses) when
+#                             it's absent. Propose-only.
+#  14. missing-trigger       — a NEW Patterns/ note (mtime within
+#                             PATTERN_TRIGGER_RECENT_DAYS) with no `trigger:`
+#                             frontmatter key. Scoped to new notes only — the
+#                             convention is enforced going forward, not
+#                             retroactively litigated against legacy content.
+#                             Propose-only.
+#  15. telemetry-coverage    — a knowledge-store agent-plane transport this
+#                             vault is actually configured for (today: is
+#                             ROOT Obsidian-backed, the same probe
+#                             install-claude-md.sh's render_knowledge_routing
+#                             uses) with no covering pattern in
+#                             KNOWLEDGE_READ_LOG_AGENT_MATCHERS
+#                             (knowledge_store.sh) — the mcp_obsidian EOL
+#                             cutover gate. ALARM if any.
+#  16. controls              — cross-references $ROOT/Controls/ against
+#                             knob-registry.tsv's `path`-typed rows (the
+#                             registry-reachability rule,
+#                             docs/config-precedence.md § The
+#                             registry-reachability rule): a Controls/ file
+#                             named by no row is orphaned; a file whose
+#                             matching row's owning-script doesn't exist on
+#                             disk is a dead dial; a knob-registry path row
+#                             whose referenced file physically lives outside
+#                             Controls/ (e.g. a legacy fallback path that
+#                             still holds the real file) is flagged too.
+#                             Propose-only. ALARM if any.
+#
 # `Personal/` is NEVER flagged by any lint above (structural or housekeeping)
 # — it is in the folder allowlist outright, and every recursive walk below
 # prunes it explicitly (case-insensitively), so nothing nested under it is
@@ -203,6 +241,22 @@ SCHEMA_NESTED_DIRS=(
 # excluded.
 NAMING_LINT_FOLDERS=(Decisions Patterns Mistakes Plans)
 STALE_PLAN_DAYS=30   # Plans/ note with status draft|approved untouched this long -> alarm
+
+# ── Read-path-lint tunables (temperloop#239) ─────────────────────────────────
+# "New" window for the missing-trigger lint (check 14) — same recency-window
+# shape as STALE_PLAN_DAYS/FRICTION_RECENT_DAYS above/below; not an
+# operator-overridable knob (a plain assignment, not a `:=` seam), mirroring
+# those two siblings.
+PATTERN_TRIGGER_RECENT_DAYS=30
+# Compose-plane T0 inventory artifact (temperloop#235, ADR §2.5 capture point
+# 3) the orphan-pattern lint (check 13) reads — see install-claude-md.sh's
+# own header for the format/generation contract. This IS a registered,
+# operator-overridable knob (knob-registry.tsv) since the real path is a
+# function of wherever `make install-claude`'s <target> argument lands on a
+# given machine; the default mirrors the same `$HOME/.claude/...` convention
+# already used by CLAUDE_PROJECTS_DIR/BUILD_QUOTA_CACHE/FUNNEL_LOG_DIR in the
+# registry. Read-only: this script never regenerates or writes this file.
+: "${T0_INVENTORY_FILE:=$HOME/.claude/t0-inventory.txt}"
 
 # ── Arg parse ─────────────────────────────────────────────────────────────────
 ROOT="$(ks_root)"
@@ -912,6 +966,283 @@ EOF
   return 0
 }
 register_check check_read_stats
+# ── Check 13: orphan-pattern (temperloop#239 — ADR §2.4/§2.8) ────────────────
+# A Patterns/ note with no inbound T0 link (per the compose-plane T0
+# inventory, temperloop#235 — install-claude-md.sh's extract_t0_inventory)
+# and not marked `retrieval: search-only` in its own frontmatter is a
+# candidate orphan: nothing in the composed CLAUDE.md's own rules ever
+# routes an agent to it by wikilink, so it's reachable only via ad-hoc
+# semantic search (search_vault_smart) or not at all. `retrieval:
+# search-only` is the deliberate escape hatch for a note that's
+# INTENTIONALLY search-only (no T0 anchor expected or wanted). Propose-only:
+# never edits a note's frontmatter or wires a link.
+#
+# T0_INVENTORY_FILE is READ where available, NEVER regenerated here (that
+# stays install-claude-md.sh's job). When the artifact is absent (a bare
+# kernel checkout, or `make install-claude` has never run) this check
+# degrades gracefully — it reports that it was skipped, never alarms, and
+# never guesses at reachability without ground truth.
+check_orphan_pattern() {
+  local dir="$ROOT/Patterns" count=0 f rel base fm retrieval
+  if [ ! -f "$T0_INVENTORY_FILE" ]; then
+    add "- ok orphan-pattern: 0 (no T0 inventory at ${T0_INVENTORY_FILE} — skipped; run \`make install-claude\` to generate one)"
+    return 0
+  fi
+  if [ -d "$dir" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      rel="${f#"$ROOT"/}"
+      base="${rel%.md}"
+      fm="$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$f" 2>/dev/null)"
+      retrieval="$(printf '%s\n' "$fm" | grep -im1 '^retrieval:' | sed -e 's/^[Rr]etrieval:[[:space:]]*//' -e 's/["'\'']//g' | tr -d '\r' | tr '[:upper:]' '[:lower:]' | awk '{print $1}' || true)"
+      [ "$retrieval" = "search-only" ] && continue
+      if ! grep -qxF "$base" "$T0_INVENTORY_FILE" 2>/dev/null; then
+        count=$((count + 1))
+        add "- ⚠️ orphan-pattern: ${rel} — no inbound T0 link and not marked retrieval: search-only (propose-only: link it from a rule that should route to it, or add retrieval: search-only if intentional)"
+        inc
+      fi
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  fi
+  [ "$count" -eq 0 ] && add "- ok orphan-pattern: 0"
+  return 0
+}
+register_check check_orphan_pattern
+
+# ── Check 14: missing-trigger (temperloop#239 — ADR §2.4/§2.8) ───────────────
+# A NEW Patterns/ note (mtime within PATTERN_TRIGGER_RECENT_DAYS — the same
+# recency-window shape STALE_PLAN_DAYS/FRICTION_RECENT_DAYS already use
+# elsewhere in this script) with no `trigger:` frontmatter key is flagged:
+# `trigger:` is what the repeat-mistake detector (check 11) — and any future
+# retrieval-scoring pass — keys off of, so a pattern captured without one is
+# invisible to that machinery even though it exists. Older/legacy notes
+# (mtime beyond the window) are not re-litigated forever — the convention is
+# enforced going forward, not backfilled by a lint. Propose-only: never
+# edits a note's frontmatter.
+check_missing_trigger() {
+  local dir="$ROOT/Patterns" count=0 f rel fm has_trigger now cutoff mt
+  now="$(now_epoch)"
+  cutoff=$((PATTERN_TRIGGER_RECENT_DAYS * 86400))
+  if [ -d "$dir" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      mt="$(file_mtime "$f")"
+      [ $(( now - mt )) -gt "$cutoff" ] && continue
+      fm="$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$f" 2>/dev/null)"
+      has_trigger="$(printf '%s\n' "$fm" | grep -im1 '^trigger:' || true)"
+      if [ -z "$has_trigger" ]; then
+        rel="${f#"$ROOT"/}"
+        count=$((count + 1))
+        add "- ⚠️ missing-trigger: ${rel} — new pattern (untouched <${PATTERN_TRIGGER_RECENT_DAYS}d) has no trigger: frontmatter (propose-only: add one, or confirm it's intentionally trigger-less)"
+        inc
+      fi
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  fi
+  [ "$count" -eq 0 ] && add "- ok missing-trigger: 0"
+  return 0
+}
+register_check check_missing_trigger
+
+# ── Check 15: telemetry-coverage (temperloop#239 — ADR §2.4/§2.8; the
+# mcp_obsidian EOL cutover gate, epic temperloop#226) ────────────────────────
+# KNOWLEDGE_READ_LOG_AGENT_MATCHERS (sourced from knowledge_store.sh above)
+# names which PostToolUse tool_name values the agent-plane read-telemetry
+# hook (claude/hooks/ks-agent-read-log.sh) treats as knowledge-store reads.
+# This check verifies that seam actually COVERS the transport THIS vault is
+# really configured for — reusing the exact same mechanical probe
+# install-claude-md.sh's own render_knowledge_routing() uses to decide the
+# agent-plane access rule rendered into CLAUDE.md (a `.obsidian` directory
+# at ROOT means "Obsidian MCP is the live transport"), rather than a second,
+# possibly-divergent predicate.
+#
+# KNOWN_AGENT_TRANSPORTS names one representative tool per Obsidian MCP
+# server (CLAUDE.md's own "Two MCP servers, route by capability" section —
+# mcp-tools for search, the REST-API server for everything else), purely to
+# test matcher-glob coverage; it is NOT an exhaustive tool list. Extend this
+# array at the mcp_obsidian EOL cutover (F#946/#947) — the same seam
+# KNOWLEDGE_READ_LOG_AGENT_MATCHERS' own header names as the one line to
+# update (e.g. appending `mcp__basic-memory__*`). A store root that is NOT
+# Obsidian-backed has no MCP transport to check (direct Read/Write) — quiet
+# no-op.
+KNOWN_AGENT_TRANSPORTS=(
+  "mcp__obsidian-builtin__vault_read"
+  "mcp__obsidian__search_vault_smart"
+)
+
+check_telemetry_coverage() {
+  local count=0 sample pat matched
+  if [ ! -d "$ROOT/.obsidian" ]; then
+    add "- ok telemetry-coverage: 0 (store root is not Obsidian-backed — no agent-plane MCP transport to check)"
+    return 0
+  fi
+  for sample in "${KNOWN_AGENT_TRANSPORTS[@]}"; do
+    matched=0
+    # Intentional word-splitting: KNOWLEDGE_READ_LOG_AGENT_MATCHERS is a
+    # space-separated list of case-glob patterns by design (same seam
+    # ks-agent-read-log.sh itself matches against).
+    # shellcheck disable=SC2086
+    for pat in $KNOWLEDGE_READ_LOG_AGENT_MATCHERS; do
+      # shellcheck disable=SC2254  # $pat is deliberately unquoted: it's a
+      # glob pattern from the matcher-seam list, not a literal to match verbatim.
+      case "$sample" in
+        $pat) matched=1; break ;;
+      esac
+    done
+    if [ "$matched" -eq 0 ]; then
+      count=$((count + 1))
+      add "- ⚠️ telemetry-coverage: transport '${sample}' has no matching KNOWLEDGE_READ_LOG_AGENT_MATCHERS pattern (mcp_obsidian EOL cutover gate — the read-log hook won't see this transport's agent-plane reads)"
+      inc
+    fi
+  done
+  [ "$count" -eq 0 ] && add "- ok telemetry-coverage: 0 (${#KNOWN_AGENT_TRANSPORTS[@]} known transport(s) covered)"
+  return 0
+}
+register_check check_telemetry_coverage
+
+# ── Check 16: controls (temperloop#239 — ADR §2.3a/§2.4/§2.8) ────────────────
+# Cross-references $ROOT/Controls/ against knob-registry.tsv's `path`-typed
+# rows — the mechanical enforcement of docs/config-precedence.md's
+# "registry-reachability rule" ("every file under Controls/ ... MUST be
+# pointed at by a path-typed row ... a file dropped into Controls/ with no
+# registry row pointing at it is orphaned"). Three findings:
+#   (a) dead dial      — a Controls/ file matched to a registry row whose
+#                        `owning-script` does not exist on disk.
+#   (b) orphaned control — a Controls/ file matched to NO registry row at all.
+#   (c) outside Controls/ — a path-typed row's referenced file, when its
+#                        folder isn't Controls/, physically exists on disk
+#                        there (e.g. the legacy fallback path from the
+#                        overlay-move-window pattern, docs/config-
+#                        precedence.md § The overlay move window, still
+#                        holding the real file after the file should have
+#                        moved).
+#
+# Matching a Controls/ file to "the row that names it" is NECESSARILY a
+# heuristic: knob-registry.tsv's `default` column is frequently a dynamic
+# `$(...)` call (e.g. FUNNEL_SCHEDULE_FILE's own row) rather than a static
+# literal, and knob-registry-lib.sh deliberately never sources or evals a
+# registry row (parsed with grep/cut only — see that file's own header) —
+# resolving a dynamic default would mean executing arbitrary registry-named
+# shell, which this lint will not do. So the mechanical, documented
+# convention THIS lint introduces: a path-typed row that resolves into the
+# store carries a backtick-delimited literal `<Folder>/<name>.md` span
+# SOMEWHERE in its `default` or `doc` column (the exact same backtick-span
+# convention install-claude-md.sh's own extract_t0_inventory() already uses,
+# for the identical reason — a note title routinely contains spaces/parens,
+# so a backtick span is the only unambiguous boundary). A row with no such
+# literal span anywhere is invisible to this lint — a documented
+# false-negative, not a bug.
+_HYG_CONTROLS_STORE_FOLDERS_RE="Plans|Decisions|Patterns|Mistakes|Context|Sessions|Priorities|Controls|Pipeline|Investigations|Projects"
+
+# <TSV row (6 tab-separated fields)> -> prints each backtick-delimited
+# `<Folder>/<name>.md` literal reference found in the row's default (field 2)
+# + doc (field 6) columns, one per line, normalized to "<Folder>/<name>.md"
+# (folder-name onward — any store-root path prefix before it is stripped).
+_hyg_row_store_refs() {
+  local row="$1"
+  # shellcheck disable=SC2016  # the backticks are literal (a markdown span delimiter), not command substitution
+  cut -f2,6 <<<"$row" \
+    | grep -oE "\`[^\`]*(${_HYG_CONTROLS_STORE_FOLDERS_RE})/[^\`]*\\.md\`" 2>/dev/null \
+    | sed -E 's/^`//; s/`$//' \
+    | sed -E "s#.*((${_HYG_CONTROLS_STORE_FOLDERS_RE})/)#\\1#"
+  return 0
+}
+
+check_controls() {
+  local dir="$ROOT/Controls" count=0
+  if [ ! -d "$dir" ]; then
+    add "- ok controls: 0 (no Controls/ folder)"
+    return 0
+  fi
+  local kr_lib="$HERE/../config/knob-registry-lib.sh"
+  if [ ! -f "$kr_lib" ]; then
+    add "- ok controls: 0 (knob-registry-lib.sh not found in this checkout — skipped)"
+    return 0
+  fi
+  # shellcheck source=workflows/scripts/config/knob-registry-lib.sh
+  . "$kr_lib"
+  local kernel_repo_root
+  kernel_repo_root="$(cd "$HERE/../../.." 2>/dev/null && pwd)" || kernel_repo_root=""
+
+  local rows row rtype kname owning ref
+  local controls_names=() controls_scripts=()
+  local outside_refs=() outside_knobs=() outside_owners=()
+  rows="$(knob_registry_rows 2>/dev/null || true)"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    rtype="$(cut -f3 <<<"$row")"
+    [ "$rtype" = "path" ] || continue
+    kname="$(cut -f1 <<<"$row")"
+    owning="$(cut -f5 <<<"$row")"
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      case "$ref" in
+        Controls/*)
+          controls_names+=("${ref#Controls/}")
+          controls_scripts+=("$owning")
+          ;;
+        */*)
+          outside_refs+=("$ref")
+          outside_knobs+=("$kname")
+          outside_owners+=("$owning")
+          ;;
+      esac
+    done <<EOF
+$(_hyg_row_store_refs "$row")
+EOF
+  done <<EOF
+$rows
+EOF
+
+  # (a) dead dial + (b) orphaned control — walk every real Controls/ file.
+  local f base i found script_ok
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    base="$(basename "$f")"
+    found=0
+    i=0
+    while [ "$i" -lt "${#controls_names[@]}" ]; do
+      if [ "${controls_names[$i]}" = "$base" ]; then
+        found=1
+        script_ok=1
+        if [ -n "$kernel_repo_root" ] && [ -n "${controls_scripts[$i]}" ] && [ ! -f "$kernel_repo_root/${controls_scripts[$i]}" ]; then
+          script_ok=0
+        fi
+        if [ "$script_ok" -eq 0 ]; then
+          count=$((count + 1))
+          add "- ⚠️ controls: Controls/${base} — named consumer script missing: ${controls_scripts[$i]} (dead dial)"
+          inc
+        fi
+      fi
+      i=$((i + 1))
+    done
+    if [ "$found" -eq 0 ]; then
+      count=$((count + 1))
+      add "- ⚠️ controls: Controls/${base} — no knob-registry.tsv path row points at it (orphaned control — docs/config-precedence.md § The registry-reachability rule)"
+      inc
+    fi
+  done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+
+  # (c) machine-read store file living outside Controls/.
+  i=0
+  while [ "$i" -lt "${#outside_refs[@]}" ]; do
+    ref="${outside_refs[$i]}"
+    if [ -f "$ROOT/$ref" ]; then
+      count=$((count + 1))
+      add "- ⚠️ controls: ${ref} — machine-read store file outside Controls/ (registered by ${outside_knobs[$i]} in ${outside_owners[$i]})"
+      inc
+    fi
+    i=$((i + 1))
+  done
+
+  [ "$count" -eq 0 ] && add "- ok controls: 0"
+  return 0
+}
+register_check check_controls
 
 # ── Run every registered check (generic — never changes when adding a check) ──
 for _hyg_fn in "${CHECKS[@]}"; do
