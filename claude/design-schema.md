@@ -57,12 +57,15 @@ Sixteen dimensions, one per numbered section of a brief. The kernel owns
 this list and its order; an overlay may **add** dimensions but never
 remove or reorder a kernel one (§ Overlay extensibility). Each entry below
 states what the dimension must answer and the mechanism — if any — that
-checks the promise at merge time.
+checks the promise at merge time. The "Enforcing gate" column's own
+citations are not themselves lint-checked today (no lint scans this file's
+gate references); the forthcoming brief-conformance lint (temperloop#216)
+is chartered to also resolve this doc's gate citations, closing that gap.
 
 | # | Dimension | What it answers | Enforcing gate |
 |---|---|---|---|
 | 1 | **Problem & outcome (stranger standpoint)** | The problem and the customer-visible outcome, stated from a stranger's point of view — never the implementation's. Decides the stranger test (kernel vs overlay routing, `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule). | Advisory — no mechanical gate; the stranger-test call is reviewed by the adversarial panel and, downstream, by whichever repo the resulting code actually lands in. |
-| 2 | **Audience & interaction modes** | Who the feature is for (live operator, unattended run, both) and which `claude/message-schema.md` interaction modes it uses. | Advisory for the audience call itself; if the brief names a message-schema template or mode by name, `workflows/scripts/validate-template-refs.sh` confirms that reference resolves. |
+| 2 | **Audience & interaction modes** | Who the feature is for (live operator, unattended run, both) and which `claude/message-schema.md` interaction modes it uses. | Advisory today — briefs live in the knowledge store, outside the repo, so no repo CI lint can scan one (`workflows/scripts/validate-template-refs.sh` scans only `claude/CLAUDE.kernel.md` + `claude/commands/*.md`, never a brief); brief-side template/mode reference checking routes to the forthcoming brief-conformance lint (temperloop#216), which runs at ratify time in a session that can read the knowledge store. |
 | 3 | **Alignment (guiding principles / routing)** | How the feature advances a guiding principle, and the kernel-vs-overlay routing decision with its rationale. | Advisory at design time (reviewed by architecture-reviewer); the routing call is checked downstream when code lands — a kernel-routed dimension implemented as overlay code (or vice versa) trips `workflows/scripts/kernel/check-kernel-manifest.sh`'s path classification at merge. |
 | 4 | **Contract seams (Produces / Consumes / Acceptance)** | The epic-shaped contract this design will materialize into (§ Materialization contract) — what the resulting work produces, what it depends on, and how completion is checked. | No static lint yet (forthcoming brief-conformance lint, temperloop#216); functionally enforced today by `/assess`'s epic-decomposition mode (foundation#526), which asks/fails when Produces/Consumes/Acceptance aren't well-formed enough to decompose without reshaping. |
 | 5 | **Command/mechanism shape** | A steps sketch for the resulting workflow (if the design produces a command or ritual) — enough for a reviewer to judge shape, not the final grammar. | If the design produces a prose workflow spec (`claude/commands/*.md`), the `workflow-reviewer` agent covers every edit to it going forward — advisory, standing review, not merge-blocking. |
@@ -76,7 +79,7 @@ checks the promise at merge time.
 | 13 | **Docs & marketing surface** | The feature doc this design will need (five required sections) and any positioning/marketing claim. | The feature-docs coverage gate, `workflows/scripts/validate-feature-docs.sh` (temperloop#132) — a non-exempt manifest slug with a missing/empty required section fails CI. |
 | 14 | **Security / privacy** | What personal/org content this design's conversation or artifacts might carry, and where the public/private boundary sits. | The PR leak guard, `workflows/scripts/kernel/check-pr-leak-guard.sh` (temperloop#74) — scans outbound content before it can land in the public repo. |
 | 15 | **Failure modes, degradation & capability limits** | Premortem-framed failure story, legible-degradation paths for every optional dependency, and honest capability limits (never overclaimed). | Advisory — no static lint; the legible-degradation invariant it documents (`skipped — <agent> unavailable`, never a silent no-op) is checked by `workflow-reviewer` wherever the resulting command spec implements a capability-probe gate. |
-| 16 | **Adoption & enforcement** | How this design's flow **displaces the default it replaces** — every design must answer this, not just ones that add new commands. | The kernel routing rule (`claude/CLAUDE.kernel.md`) + `/assess`'s in-pipeline provenance check (an epic with `## Contract` but no `design-brief:` marker triggers a legible ask) + the `/tidy` drain backstop, registered as a Live/Drain pair (dimension 7's own gate covers this pair's completeness). |
+| 16 | **Adoption & enforcement** | How this design's flow **displaces the default it replaces** — every design must answer this, not just ones that add new commands. | The kernel routing rule (`claude/CLAUDE.kernel.md`) + `/assess`'s in-pipeline provenance check (an epic with `## Contract` but no `design-brief:` marker triggers a legible ask; forthcoming — temperloop#218) + the `/tidy` drain backstop (forthcoming — temperloop#218; it ships registered as a Live/Drain pair with that item, at which point dimension 7's own gate covers the pair's completeness). |
 
 Dimension 16 (Adoption & enforcement) is itself a template addition
 discovered by the /design brief's own bootstrap run — every design brief,
@@ -145,7 +148,12 @@ kernel-precedence shape `claude/message-schema.md` § Overlay override
 status establishes for its named templates (an overlay may extend a
 sanctioned surface, never contradict a kernel contract), applied here to a
 list rather than a template body: appending is sanctioned, subtracting is
-not.
+not. The override *mechanism* itself — how an overlay declares an added
+dimension and how precedence resolves — is deferred to the override-seam
+pattern (temperloop#112); the numbering namespace is reserved now:
+overlay-added dimensions are letter-suffixed on the kernel dimension they
+follow (e.g. `16a`), never bare integers, so a future kernel-additive
+dimension (a new `17`) can never collide with an overlay's addition.
 
 Removing or weakening a kernel dimension is itself a **kernel change**,
 never an overlay decision — it requires editing this file upstream and a
@@ -172,12 +180,13 @@ epic. A well-formed epic produced this way carries:
   design-brief: [[Designs/<note>]]
   ```
 
-  This is what `/assess` Step 1's in-pipeline provenance check looks for:
-  an epic carrying a `## Contract` but no `design-brief:` marker triggers a
-  legible ask (proceed without a brief, or park and run `/design` first)
-  rather than either a silent bypass or a hard block. `/triage` gives the
-  mirror redirect line for new-design material handed to it instead of an
-  already-designed epic.
+  This is what `/assess` Step 1's in-pipeline provenance check (forthcoming
+  — temperloop#218) looks for: an epic carrying a `## Contract` but no
+  `design-brief:` marker triggers a legible ask (proceed without a brief,
+  or park and run `/design` first) rather than either a silent bypass or a
+  hard block. `/triage`'s mirror redirect line for new-design material
+  handed to it instead of an already-designed epic ships with the same item
+  (forthcoming — temperloop#218).
 - **The brief's home stays `Designs/`** in the knowledge store — the epic
   links to it, it is never copied into the epic body. The brief is the
   deliberation record (full reasoning, rejected alternatives, persona
