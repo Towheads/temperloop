@@ -63,7 +63,7 @@ record per `/sweep` or `/triage` command run — these commands have no
 plan-note footer of their own (unlike `/build`), so this is their only
 telemetry signal.
 
-Record shape: `{ts, session_id, command, board, items_processed, merged, parked}`
+Record shape: `{ts, session_id, command, board, items_processed, merged, parked, epic?}`
 
 | field | type | notes |
 |---|---|---|
@@ -74,11 +74,18 @@ Record shape: `{ts, session_id, command, board, items_processed, merged, parked}
 | `items_processed` | integer | how many items the run drove/considered |
 | `merged` | integer | how many reached a successful terminal outcome |
 | `parked` | integer | how many were parked/deferred/escalated |
+| `epic` | number \| string, OPTIONAL | the epic issue number the run drove against (e.g. `/assess --epic N`, or `/build` on a plan note with an `epic:` frontmatter field), from `--epic`. ABSENT from the record entirely (not `null`) when the caller doesn't pass `--epic` — purely additive, no `schema_version` bump |
 
 Example record:
 
 ```json
 {"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1}
+```
+
+Example record, run against an epic (`--epic` passed):
+
+```json
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1,"epic":42}
 ```
 
 ### `issue-touches` — `issue-touches-<YYYY-MM>.jsonl`

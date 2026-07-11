@@ -15,7 +15,7 @@
 #
 # Usage:
 #   emit-command-run.sh --command sweep|triage --board <N> \
-#     --items-processed <N> --merged <N> --parked <N>
+#     --items-processed <N> --merged <N> --parked <N> [--epic <N>]
 #
 # Appends ONE JSONL line to:
 #   ${CMD_RUN_RAW_DIR:-<repo>/meta/data/raw}/command-runs-YYYY-MM.jsonl
@@ -25,7 +25,7 @@
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
 # convention; this stream's own record shape is documented below).
 #
-# Record shape: {ts, session_id, command, board, items_processed, merged, parked}
+# Record shape: {ts, session_id, command, board, items_processed, merged, parked, epic?}
 #   ts               ISO-8601 UTC, `Z` suffix (matches the raw/ stream convention)
 #   session_id       the RAW $CLAUDE_CODE_SESSION_ID (full value, UNTRUNCATED) —
 #                     the join key every other raw/ stream keys on
@@ -41,6 +41,15 @@
 #   items_processed  integer — how many items the run drove/considered
 #   merged           integer — how many reached a successful terminal outcome
 #   parked           integer — how many were parked/deferred/escalated
+#   epic             OPTIONAL — the epic issue number the run drove against
+#                     (e.g. `/assess --epic N`, or `/build` on a plan note with
+#                     an `epic:` frontmatter field). ABSENT (not null/empty)
+#                     from the record entirely when the caller doesn't pass
+#                     `--epic` — most command-run callers (sweep/triage) never
+#                     run against a single epic, so this keeps their records
+#                     shaped exactly as before (purely additive; no
+#                     schema_version bump per the convention in
+#                     meta/data/raw/README.md).
 #
 # WARN, DON'T DROP: any failure here (jq missing, sink unwritable, disk full)
 # warns to stderr and exits 0. A telemetry emit must never fail or block the
@@ -58,6 +67,7 @@ board=""
 items_processed=""
 merged=""
 parked=""
+epic=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,6 +76,7 @@ while [ $# -gt 0 ]; do
     --items-processed) items_processed="${2:-}"; shift 2 ;;
     --merged) merged="${2:-}"; shift 2 ;;
     --parked) parked="${2:-}"; shift 2 ;;
+    --epic) epic="${2:-}"; shift 2 ;;
     *)
       printf '%s: WARN unknown argument %s (ignored)\n' "$self" "$1" >&2
       shift
@@ -113,6 +124,7 @@ record="$(jq -nc \
   --argjson items_processed "$items_processed" \
   --argjson merged "$merged" \
   --argjson parked "$parked" \
+  --arg epic "$epic" \
   '{
     ts: $ts,
     session_id: (if $session_id == "" then null else $session_id end),
@@ -121,7 +133,8 @@ record="$(jq -nc \
     items_processed: $items_processed,
     merged: $merged,
     parked: $parked
-  }' 2>/dev/null)"
+  }
+  + (if $epic == "" then {} else {epic: ($epic | tonumber? // $epic)} end)' 2>/dev/null)"
 
 if [ -z "$record" ]; then
   printf '%s: WARN failed to build JSON record (command=%s) — no record emitted\n' "$self" "$command" >&2
