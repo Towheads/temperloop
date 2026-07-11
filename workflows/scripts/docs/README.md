@@ -58,6 +58,21 @@ paraphrase, no structural parsing of free-form prose: a fixed heading marker
 delimits a literal Markdown bullet block, which is handed to
 `lib/markdown_lite.py`'s existing generic renderer unchanged).
 
+## Static files copied verbatim (`llms.txt`)
+
+Every page above goes through the `Page` / `render_page()` pipeline, which
+wraps rendered content in this generator's shared nav/CSS HTML shell.
+`llms.txt` (repo root, temperloop#137) can't go through that pipeline — the
+[llms.txt spec](https://llmstxt.org) requires it be served as its own
+plain-text file at the site root, not HTML-wrapped. `generate.py`'s
+`STATIC_COPY_FILES` list (currently just `llms.txt`) is copied byte-for-byte
+into the output directory root by `_copy_static_files()`, called once after
+`_write_site()` (which wipes and rewrites the output directory) so the copy
+always survives. This is the smallest mechanism that keeps `make docs`
+green and byte-deterministic without introducing a general static-asset
+pipeline the generator has never otherwise needed — add a new entry to
+`STATIC_COPY_FILES` if a second raw file ever needs the same treatment.
+
 ## Kernel-manifest include filter
 
 `sources/commands.py` is handed the parsed

@@ -1,0 +1,47 @@
+# TemperLoop
+
+> A dev-process kernel for Claude Code–driven development: a board adapter
+> that turns a GitHub Projects board (or a plain issues-only tracker) into a
+> cross-session work queue, a build/sweep pipeline of Claude Code slash
+> commands that drives a GitHub issue from triage to a merged, CI-green pull
+> request, and the install/quality-gate tooling that gets both running in a
+> repo you already have.
+
+TemperLoop is a toolkit — scripts, slash commands, and contract files you
+read — not a hosted service or an app you depend on. It is Apache-2.0
+licensed; see [`LICENSE`](LICENSE).
+
+## Docs
+
+- [README](README.md): what TemperLoop is, prerequisites, the CLI
+  quickstart, repo layout, the command map, the docs site, and the
+  merge-backend notes.
+- [AGENTS.md](AGENTS.md): cross-agent operating instructions for a coding
+  agent working in this repo — the CLI vs. `make` split, board-adapter
+  rules and the GraphQL budget, quality gates, and the branch/PR/worktree
+  safety rails.
+- [Principles](docs/principles.md): the design principles behind the
+  kernel.
+- [Architecture](docs/architecture.md): how the board adapter, the
+  build/sweep pipeline, and the install/quality-gate tooling fit together.
+- [Who it's for](docs/who-its-for.md): the intended adopter and use case.
+- [Feature docs](docs/features/): per-feature reference pages.
+- [Managed merge queue](docs/managed-merge-queue.md): running the
+  build/sweep merge ladder end-to-end on a repo with no native GitHub merge
+  queue available.
+- [Config precedence](docs/config-precedence.md): the six-rung config
+  resolution ladder every tunable knob in this repo follows.
+- [Contributing](docs/CONTRIBUTING.md): how to contribute a failure-mode
+  chapter, or a new knowledge-store or issue-tracker adapter.
+
+## Optional
+
+- [CLI reference](bin/README.md): install, prerequisites, and the
+  `try` → `try --demo` → `init` quickstart in full.
+- [Plan-note schema](claude/plan-schema.md): the plan-note contract
+  `/assess` writes and `/build` consumes.
+- [Kernel process contract](claude/CLAUDE.kernel.md): the full branch/PR,
+  board-adapter, and workflow rules governing Claude Code sessions in this
+  and sibling repos.
+- [Failure-mode chapters](docs/failure-modes/): real engineering failures
+  this project hit, each ending in the mechanical guard it produced.
