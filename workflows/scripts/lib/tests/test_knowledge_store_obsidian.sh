@@ -40,6 +40,11 @@ KEY_FILE="$TMP/data.json"
 printf '{"apiKey":"test-key-123"}\n' > "$KEY_FILE"
 
 export KNOWLEDGE_STORE_ROOT="$TMP/store"          # for the plain-files half of the dispatch test
+# Isolate the read-log (temperloop#229) under the throwaway tmpdir too — every
+# dispatched ks_* call below goes through ks__read_log_emit; without this
+# override it would default to the real machine's $XDG_STATE_HOME/foundation/
+# knowledge-reads.log.
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 export KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE="$KEY_FILE"
 export KNOWLEDGE_STORE_OBSIDIAN_API_BASE="https://127.0.0.1:27124"
 

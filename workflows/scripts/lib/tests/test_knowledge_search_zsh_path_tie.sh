@@ -44,6 +44,7 @@ fail() {
 set +e
 out="$(PATH="$BIN:$PATH" KNOWLEDGE_STORE_ROOT="$VAULT" KNOWLEDGE_SEARCH_BM_PROJECT=proj \
   KNOWLEDGE_SEARCH_BM_HOME="$TMP/bm-home" \
+  KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log" \
   zsh -c "source '$STORE_LIB'; source '$SEARCH_LIB'; _ks_bm_project_add proj '$VAULT'" 2>&1)"
 rc=$?
 set -e

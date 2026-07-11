@@ -90,6 +90,26 @@ ks_search() {
     echo "knowledge_search: usage: ks_search <query> [--limit N]" >&2
     return 2
   fi
+  # Read-log telemetry (temperloop#229): this is "the search entrypoint" the
+  # knowledge_store.sh read-log contract names — ks__read_log_emit is
+  # defined there (sourced before this file, per this file's own header),
+  # logged here with op="search" and the query as the doc-path-or-query
+  # field, in the exact same line format ks__dispatch uses for read/write/
+  # append/list. An empty query already returned above, so every call
+  # reaching this point carries a real query — never an empty one.
+  #
+  # Gated on the backend's availability probe (the same "available" op
+  # ks_search_available exposes publicly; dispatched directly here, stdout/
+  # stderr suppressed for THIS probe only so its "skipped —" notice isn't
+  # printed twice) — mirrors ks__dispatch's own "only log a call that's
+  # actually dispatchable" behavior: an unavailable backend (no uvx on PATH)
+  # never really searches, so it shouldn't log a search attempt either, and
+  # the probe itself is a zero-subprocess `command -v` check, so this gate
+  # never depends on PATH carrying anything beyond that (the exact condition
+  # ks_search's own "no uvx" legible-degradation path is tested under).
+  if ks_search__dispatch available >/dev/null 2>/dev/null; then
+    ks__read_log_emit script search "$query"
+  fi
   shift || true
   ks_search__dispatch search "$query" "$@"
 }

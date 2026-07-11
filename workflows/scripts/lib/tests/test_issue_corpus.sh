@@ -51,10 +51,15 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/issue-corpus-test-XXXXXX")"
 CACHE_STORE_ROOT="$TMP/cache"
 KNOWLEDGE_STORE_ROOT="$TMP/store"
 KNOWLEDGE_SEARCH_BM_HOME="$TMP/bm-home"
+# Isolate the read-log (temperloop#229) under the throwaway tmpdir too — the
+# ks_read/ks_search calls below go through ks__read_log_emit; without this
+# override it would default to the real machine's $XDG_STATE_HOME/foundation/
+# knowledge-reads.log.
+KNOWLEDGE_READ_LOG="$TMP/knowledge-reads.log"
 BIN="$TMP/bin"
 FAKE_UVX_LOG="$TMP/uvx-calls.log"
 mkdir -p "$CACHE_STORE_ROOT" "$KNOWLEDGE_STORE_ROOT" "$BIN"
-export CACHE_STORE_ROOT KNOWLEDGE_STORE_ROOT KNOWLEDGE_SEARCH_BM_HOME FAKE_UVX_LOG
+export CACHE_STORE_ROOT KNOWLEDGE_STORE_ROOT KNOWLEDGE_SEARCH_BM_HOME KNOWLEDGE_READ_LOG FAKE_UVX_LOG
 export KNOWLEDGE_SEARCH_BM_PROJECT="issue-corpus-test-project"
 
 cleanup() {

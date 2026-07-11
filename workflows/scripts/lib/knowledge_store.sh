@@ -73,7 +73,83 @@ ks__dispatch() {
       "$KNOWLEDGE_STORE_BACKEND" "$op" "$fn" >&2
     return 2
   fi
+  ks__read_log_emit script "$op" "${1:-}"
   "$fn" "$@"
+}
+
+# ── Read-log telemetry (temperloop#229, Epic #226 "script-plane read
+# telemetry") ───────────────────────────────────────────────────────────
+# One normalized line per dispatched op — read/write/append/list from THIS
+# file's ks__dispatch, plus "search" from knowledge_search.sh's ks_search
+# entrypoint (that file sources this one first, per the contract, so
+# ks__read_log_emit is already in scope there — no duplicate implementation).
+# The log lives OUTSIDE the knowledge store on purpose: a doc-store-internal
+# log would churn the search index and create a self-observation loop (the
+# store logging reads of its own read-log).
+#
+# Line format (fields joined by " · ", one event per line):
+#
+#   <timestamp> · <session-id> · <plane> · <op> · <doc-path-or-query>
+#
+#   timestamp           UTC, `date -u +%Y-%m-%dT%H:%M:%SZ` — matches this
+#                        repo's other raw-lake emitters (claim.sh/capture.sh).
+#   session-id           $CLAUDE_CODE_SESSION_ID, or literal "-" when unset.
+#                        A single-char placeholder (rather than an empty
+#                        field) keeps the field COUNT/shape stable even when
+#                        the value is missing — unlike this repo's JSONL
+#                        raw-lake records, a plain " · "-joined text line has
+#                        no key names to anchor a reader on, so an empty
+#                        field between two separators is easy to miscount.
+#   plane                caller's plane. Always "script" for every call in
+#                        this file and knowledge_search.sh (both are
+#                        script-plane callers of the seam) — an agent-plane
+#                        hook is a LATER, separate item per the epic
+#                        contract, and will call ks__read_log_emit with
+#                        plane="agent" rather than get a new knob here.
+#   op                   read | write | append | list | search
+#   doc-path-or-query    the dispatched doc-id (read/write/append/list) or
+#                        the search query (ks_search) — sanitized (newlines/
+#                        tabs -> single spaces) so one event is always
+#                        exactly one line.
+#
+# This is a STABLE contract other telemetry items are documented to consume
+# (agent-plane hook, SessionEnd one-liner, /tidy tally) — do not change the
+# field order/count/separator without updating every consumer.
+#
+# Knob: KNOWLEDGE_READ_LOG (path). ONE override point for the log's
+# location, same "one knob" shape as KNOWLEDGE_STORE_ROOT above. Default
+# follows the XDG state-dir convention (this is runtime/operational log
+# output, not user data — XDG_STATE_HOME is the correct base per the XDG
+# base-directory spec, distinct from KNOWLEDGE_STORE_ROOT's XDG_DATA_HOME).
+_ks_read_log_path() {
+  : "${KNOWLEDGE_READ_LOG:=${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log}"
+  printf '%s\n' "$KNOWLEDGE_READ_LOG"
+}
+
+# <plane> <op> <doc-path-or-query> -> appends one normalized read-log line.
+# NEVER fails the caller: every failure mode (mkdir, append) is swallowed
+# and WARNed to stderr, mirroring claim.sh/capture.sh's raw-lake emit
+# guards — read-log telemetry must never be the reason a real
+# ks_read/ks_write/ks_append/ks_list/ks_search call fails (fail-open, always
+# returns 0).
+ks__read_log_emit() {
+  local plane="$1" op="$2" doc="$3" log ts sess clean log_dir
+  log="$(_ks_read_log_path)"
+  log_dir="$(dirname "$log")"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  sess="${CLAUDE_CODE_SESSION_ID:--}"
+  clean="$(printf '%s' "$doc" | tr '\t\n' '  ')"
+  if ! mkdir -p "$log_dir" 2>/dev/null; then
+    printf 'knowledge_store: WARN read-log dir unavailable: %s (dispatch unaffected)\n' "$log_dir" >&2
+    return 0
+  fi
+  # \xc2\xb7 is the UTF-8 encoding of U+00B7 MIDDLE DOT ("·"), written as a
+  # printf escape rather than the literal glyph so the separator survives a
+  # non-UTF-8-aware editor/diff/grep untouched — a byte pinned exactly, since
+  # every consumer of this log greps/splits on it.
+  printf '%s \xc2\xb7 %s \xc2\xb7 %s \xc2\xb7 %s \xc2\xb7 %s\n' "$ts" "$sess" "$plane" "$op" "$clean" >>"$log" 2>/dev/null \
+    || printf 'knowledge_store: WARN failed to append read-log record to %s (dispatch unaffected)\n' "$log" >&2
+  return 0
 }
 
 # ── doc-id normalization (shared by every backend) ──────────────────────────

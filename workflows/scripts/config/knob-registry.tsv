@@ -293,6 +293,7 @@ KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES		string	kernel	workflows/scripts/lib/knowledge
 KNOWLEDGE_SEARCH_BM_HOME	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home	path	kernel	workflows/scripts/lib/knowledge_search.sh	Dedicated HOME dir for the basic-memory subprocess
 KNOWLEDGE_STORE_ROOT	${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; build.config.sh no longer re-seeds a personal-path default here — kernel-literal-scrub, temperloop#189 — an operator sets one via machine conf / build.config.local.sh / a downstream repo's own edited tracked-repo copy instead)
 KNOWLEDGE_STORE_BACKEND	plain-files	enum	kernel	workflows/scripts/lib/knowledge_store.sh	Document-I/O backend name (dispatches to `_ks_backend_<name>_<op>`)
+KNOWLEDGE_READ_LOG	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log	path	kernel	workflows/scripts/lib/knowledge_store.sh	Script-plane read-log path — one normalized line per ks__dispatch/ks_search call (temperloop#229)
 LAND_GH	gh	path	kernel	workflows/scripts/lib/land-on-protected-main.sh	gh binary used by the shared protected-main landing kernel
 LAND_DEFAULT_BRANCH	main	label	kernel	workflows/scripts/lib/land-on-protected-main.sh	Default branch name the landing kernel treats as protected
 LAND_REQUIRES_PR		bool	kernel	workflows/scripts/lib/land-on-protected-main.sh	Test seam forcing the protected-branch (PR) landing path

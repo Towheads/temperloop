@@ -252,6 +252,41 @@ race noted in the table.
 | `ks_list` exit code | always 0 | 0 when the target dir 404s; **1** on any other failure mid-walk |
 | Locking | none | none (plus the `--no-clobber` pre-flight race) |
 
+## Read-log telemetry (script plane)
+
+`knowledge_store.sh` also implements `ks__read_log_emit <plane> <op>
+<doc-path-or-query>` (temperloop#229, Epic #226 "script-plane read
+telemetry") — every `ks__dispatch` call (so every `ks_read`/`ks_write`/
+`ks_append`/`ks_list`, for every backend) and `knowledge_search.sh`'s
+`ks_search` entrypoint append one normalized line to a log kept deliberately
+**outside** the store itself (no embed churn from the log becoming a
+document the search index has to chew on, no self-observation loop). Line
+shape, fields joined by `" · "`:
+
+```
+<timestamp> · <session-id> · <plane> · <op> · <doc-path-or-query>
+```
+
+- `timestamp` — UTC, `date -u +%Y-%m-%dT%H:%M:%SZ`.
+- `session-id` — `$CLAUDE_CODE_SESSION_ID`, or `-` when unset.
+- `plane` — `script` for every call in `knowledge_store.sh` /
+  `knowledge_search.sh`; a later agent-plane hook calls the same emit
+  function with `plane=agent` rather than getting a new knob.
+- `op` — `read` | `write` | `append` | `list` | `search`.
+- `doc-path-or-query` — the dispatched doc-id, or the `ks_search` query,
+  newline/tab-sanitized to a single line.
+
+Config: `KNOWLEDGE_READ_LOG` (path), default
+`${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log` — the
+ONE override point for the log's location. Logging is fail-open: a write
+failure (log dir uncreatable, disk full, etc.) is WARNed to stderr and never
+propagates into the wrapped `ks_*` call's own exit code.
+
+This line format is a stable contract — later telemetry items (an
+agent-plane hook, a SessionEnd one-liner, a `/tidy` tally) are documented to
+consume it as-is; changing the field order/count/separator means updating
+every consumer.
+
 ## Non-goals of this seam (deliberately out of scope)
 
 - **No caller routing (this file's own scope).** This file defines the
