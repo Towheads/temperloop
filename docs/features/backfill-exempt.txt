@@ -22,9 +22,3 @@ check-in
 telemetry
 funnel-driver
 
-# ── temperloop#143 — install + stores + docs: install-cli, knowledge-store, ─
-# ── docs-generator, presentation-plane ──────────────────────────────────────
-install-cli
-knowledge-store
-docs-generator
-presentation-plane
