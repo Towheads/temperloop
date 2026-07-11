@@ -257,6 +257,20 @@ KERNEL_GATES=(
   # proves the site still builds.
   "make docs"
   "make shellcheck"
+  # Design-brief-conformance lint (temperloop#216, plan item
+  # design-brief-lint): a mechanical check that a /design brief carries a
+  # valid disposition for every kernel dimension (claude/design-schema.md
+  # § Disposition grammar's no-silent-skips rule), plus a resolution check
+  # of claude/design-schema.md's own "Enforcing gate" column citations
+  # (the gap that file's own § Kernel dimension list names this lint as
+  # chartered to close). Bare invocation checks only the real schema file's
+  # citations (briefs live in the knowledge store, outside this repo — CI
+  # has no vault to read); the fixture suite alongside exercises the
+  # brief-conformance path against in-repo fixtures. Same direct-`bash`
+  # form as the knob-registry/feature-docs gates above (kernel Makefile is
+  # generator-owned).
+  "bash workflows/scripts/validate-design-brief.sh"
+  "bash workflows/scripts/tests/test_validate_design_brief.sh"
 )
 
 # The overlay gate set — empty by default; populated only by drop-ins.

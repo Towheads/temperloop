@@ -258,6 +258,13 @@ overlay workflows/scripts/evals/*
 # above) and rides the OVERLAY_GATES `test-session-start-reconcile` gate.
 kernel workflows/scripts/tests/*
 overlay workflows/scripts/tests/test_session_start_reconcile.sh
+# Explicit lines for the design-brief-lint item's own new test + fixtures
+# (temperloop#216) — redundant with the workflows/scripts/tests/* catch-all
+# above (longest-pattern-wins keeps these as no-op overrides), listed
+# explicitly per this item's own convention of classifying every new path.
+kernel workflows/scripts/tests/test_validate_design_brief.sh
+kernel workflows/scripts/tests/fixtures/design-briefs/*
+kernel workflows/scripts/tests/fixtures/design-schema/*
 
 # workflows/scripts/*.{sh,py} flat files — mixed. Kernel: PR-hygiene, board
 # GraphQL-budget attribution, install, and the tidy findings-stream
@@ -283,6 +290,7 @@ kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-live-drain.sh
 kernel workflows/scripts/validate-template-refs.sh
+kernel workflows/scripts/validate-design-brief.sh
 
 overlay workflows/scripts/aggregate_sessions.py
 overlay workflows/scripts/test_aggregate_sessions.py

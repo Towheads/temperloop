@@ -150,6 +150,10 @@ quality-gates workflows/scripts/lint-pr-body.sh
 quality-gates workflows/scripts/tests/test_lint_pr_body.sh
 quality-gates workflows/scripts/validate-feature-docs.sh
 quality-gates workflows/scripts/tests/test_validate_feature_docs.sh
+quality-gates workflows/scripts/validate-design-brief.sh
+quality-gates workflows/scripts/tests/test_validate_design_brief.sh
+quality-gates workflows/scripts/tests/fixtures/design-briefs/*
+quality-gates workflows/scripts/tests/fixtures/design-schema/*
 quality-gates docs/features/feature-manifest.txt
 quality-gates docs/features/backfill-exempt.txt
 
