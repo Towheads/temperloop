@@ -24,6 +24,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Stale board-claim sweep | `claude/CLAUDE.md` § `Board hygiene is part of the gate` | `Stale board claims` |
 | Answered decision issues | `system-prompt` § `decision_sink_ask` | `Answered decisions` |
 | Kernel-vs-overlay classification | `claude/CLAUDE.md` § `Kernel vs overlay routing rule` | `Kernel-candidate learnings` |
+| Design-first default for invented work | `claude/CLAUDE.md` § `Design-first default for invented work` | `Provenance-less epics` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -220,6 +221,26 @@ Pitfalls, failure modes, things that broke. Save to vault `Mistakes/<title>.md` 
 For each such note, apply the stranger test: would a stranger's kernel-only install need this for the kernel machinery (board adapter, build/sweep pipeline, install/doctor, branch/PR policy) to work correctly? If yes and the note isn't already tagged `kernel-candidate`, add that tag to its frontmatter `tags:` list via `mcp__obsidian__patch_vault_file` (a targeted `tags:` field patch, not a rewrite) — this flags it for eventual upstream contribution once the kernel repo exists as a live checkout. Never remove an existing `kernel-candidate` tag, and never tag a note the stranger test doesn't clearly pass — **default to `overlay`** (no tag), matching `/triage`'s Step 2.8 default (a missed kernel tag costs nothing; a wrongly-added one misroutes a personal/org-specific note).
 
 **Default to silence.** Skip entirely on a checkout with no `claude/CLAUDE.kernel.md`. Most notes stay untagged.
+
+### Provenance-less epics
+
+Backstop for `claude/CLAUDE.kernel.md` § Design-first default for invented work (temperloop#218). The live rule asks whoever materializes invented, epic-sized work to route it through `/design` first, and `/assess` Step 1 backstops it **in-band** (a legible, fail-open ask fires the moment such an epic reaches decomposition) — but an epic that is created and never assessed (sitting on the board, never run through `/assess --epic N`) slips past that in-band check entirely. This sweep is the periodic, out-of-band net: it catches a hand-authored epic before anyone gets around to assessing it.
+
+**Run for each governed board** (via the board adapter — `board_item_list <board>`, or a raw `gh issue list -R "$repo" --search "## Contract in:body" --state open` if this checkout doesn't vendor the adapter): list **open** epics — issues carrying native sub-issues, or an `epic` label — whose body contains a `## Contract` heading but **no** `design-brief: [[Designs/` marker line (the same marker `/assess` Step 1 and `/design` Step 5a check). **Read-only** — this sweep never edits an epic body, never touches its `design-brief:` state, and never blocks anything; it only reports. **Scope — Contract-shaped epics only:** an invented epic hand-decomposed straight into sub-issues with *no* `## Contract` is invisible to this sweep (and to `/assess`'s in-band check, which gates on the same shape) — a known gap (temperloop#286), deliberately not widened here: flagging every Contract-less epic would drown the legitimate discovered-work epics `/triage` births, which never carry a Contract by design.
+
+For each hit, append one `### open` entry to the pending-decisions surface (`Pipeline/pending decisions.md` vs the legacy `Context/pipeline - pending decisions.md` — target pinned by the append-target resolution rule of the path fallback convention, `claude/commands/check-in.md`; in the knowledge store) via `mcp__obsidian-builtin__vault_append`:
+
+```markdown
+### <YYYY-MM-DD HH:MM> · tidy provenance-less-epic sweep · <board>:#<n>
+- **Decision:** epic #<n> ("<title>") carries a `## Contract` with no `design-brief:` marker — was it meant to go through `/design` first?
+- **Default taken:** leave as-is (report-only; epic not edited, not parked, not blocked)
+- **Disposition:** auto-taken (unattended; no live operator)
+- **Status:** open
+```
+
+Skip an epic already recorded by a prior sweep (match on board + issue number under an existing `open` entry) — don't re-append the same finding every run.
+
+**Default to silence.** If a board has no such epics, surface nothing. Same report-only stance as § Stale board claims above — this sweep proposes a review, it never edits an epic; `/check-in` disposes it (confirm the epic is fine as hand-authored, or run `/design` retroactively and materialize the marker onto it).
 
 ### Self-correction moments → Mistakes / Patterns + recurring-tell promotion
 

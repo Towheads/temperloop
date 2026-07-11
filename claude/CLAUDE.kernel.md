@@ -244,6 +244,16 @@ This is a **strong default, not an absolute bar**: you may go straight to implem
 
 Rationale: `[[Decisions/stageFind - Plan-first default for non-trivial changes]]`.
 
+## Design-first default for invented work
+
+Default to running **`/design`** before materializing invented, epic-sized work into a hand-authored epic. "Invented" means born in a conversation — an idea, a new capability, a "we should build X" — as opposed to *discovered* work (a Backlog defect, a sweep finding), which still enters through `/triage` as before; `/design` is the funnel's **second front door**, for invented rather than discovered work (`[[Decisions/temperloop - design command as front door for invented work]]`). "Epic-sized" is the same threshold § Task workflow's "Decompose epic-sized work up front" rule already names (`{{EPIC_MIN_SUBUNITS}}`+ parallelizable sub-units, or more than one dependency level) — below it, a single board item is right and `/design`'s coverage walk is unneeded overhead.
+
+This is a **strong default, not an absolute bar**: you may hand-author the epic directly only if you state up front — in the turn *before* creating it — why this invented work is trivial enough, or urgent enough, to skip the design walk, and the user doesn't object. Silence is not consent to skip; the rebuttal has to be voiced and given a beat to land. Absent that explicit, un-objected rebuttal, run `/design` first and let it materialize the epic (`claude/commands/design.md` Step 5) with its `## Contract` and `design-brief:` provenance marker.
+
+**Why this exists.** A hand-authored epic skips the coverage walk's dimension checklist (`claude/design-schema.md`) — testability, uninstallability, adoption/enforcement, and the rest — exactly the gaps that surface expensively later (an unremovable feature, an untested seam, a design nobody can uninstall). `/assess`'s provenance check (`claude/commands/assess.md` Step 1) and the `/tidy` drain sweep (`claude/commands/tidy.md` Step 3 § Provenance-less epics) both backstop a hand-authored epic that skipped this default — but the backstop existing is not license to lean on it; it exists because the default sometimes has a legitimate exception (see above), not because skipping is fine. **Backstop scope — Contract-shaped epics only:** both nets key on a `## Contract` body, so an invented epic hand-decomposed straight into sub-issues with *no* Contract is invisible to both — a known gap (temperloop#286), deliberately not widened here (flagging every Contract-less epic would drown the legitimate discovered-work epics `/triage` births).
+
+Rationale: `[[Decisions/temperloop - design command as front door for invented work]]`.
+
 ## PR verification surface
 
 Every PR must ship its own verification surface in the PR body — a way for the reviewer to confirm correctness without grepping logs, decoding JSON, or running commands themselves. A PR that asks the reviewer to "run the script and see" or "check the output file" is incomplete. The verification surface is part of the deliverable, not an optional add-on. This section is the by-change-type breakdown that `claude/message-schema.md`'s **PR-body skeleton** template (mode 6) defers to for its Verification surface slot — that template only requires the slot exist; this section owns its shape.

@@ -79,7 +79,7 @@ is chartered to also resolve this doc's gate citations, closing that gap.
 | 13 | **Docs & marketing surface** | The feature doc this design will need (five required sections) and any positioning/marketing claim. | The feature-docs coverage gate, `workflows/scripts/validate-feature-docs.sh` (temperloop#132) — a non-exempt manifest slug with a missing/empty required section fails CI. |
 | 14 | **Security / privacy** | What personal/org content this design's conversation or artifacts might carry, and where the public/private boundary sits. | The PR leak guard, `workflows/scripts/kernel/check-pr-leak-guard.sh` (temperloop#74) — scans outbound content before it can land in the public repo. |
 | 15 | **Failure modes, degradation & capability limits** | Premortem-framed failure story, legible-degradation paths for every optional dependency, and honest capability limits (never overclaimed). | Advisory — no static lint; the legible-degradation invariant it documents (`skipped — <agent> unavailable`, never a silent no-op) is checked by `workflow-reviewer` wherever the resulting command spec implements a capability-probe gate. |
-| 16 | **Adoption & enforcement** | How this design's flow **displaces the default it replaces** — every design must answer this, not just ones that add new commands. | The kernel routing rule (`claude/CLAUDE.kernel.md`) + `/assess`'s in-pipeline provenance check (an epic with `## Contract` but no `design-brief:` marker triggers a legible ask; forthcoming — temperloop#218) + the `/tidy` drain backstop (forthcoming — temperloop#218; it ships registered as a Live/Drain pair with that item, at which point dimension 7's own gate covers the pair's completeness). |
+| 16 | **Adoption & enforcement** | How this design's flow **displaces the default it replaces** — every design must answer this, not just ones that add new commands. | The kernel routing rule (`claude/CLAUDE.kernel.md` § Design-first default for invented work) + `/assess`'s in-pipeline provenance check (`claude/commands/assess.md` Step 1 — an epic with `## Contract` but no `design-brief:` marker triggers a legible, fail-open ask) + the `/tidy` drain backstop (`claude/commands/tidy.md` § Provenance-less epics — registered as a Live/Drain pair per dimension 7's own gate, `workflows/scripts/validate-live-drain.sh`). |
 
 Dimension 16 (Adoption & enforcement) is itself a template addition
 discovered by the /design brief's own bootstrap run — every design brief,
@@ -184,13 +184,14 @@ epic. A well-formed epic produced this way carries:
   design-brief: [[Designs/<note>]]
   ```
 
-  This is what `/assess` Step 1's in-pipeline provenance check (forthcoming
-  — temperloop#218) looks for: an epic carrying a `## Contract` but no
-  `design-brief:` marker triggers a legible ask (proceed without a brief,
-  or park and run `/design` first) rather than either a silent bypass or a
-  hard block. `/triage`'s mirror redirect line for new-design material
-  handed to it instead of an already-designed epic ships with the same item
-  (forthcoming — temperloop#218).
+  This is what `/assess` Step 1's in-pipeline provenance check
+  (`claude/commands/assess.md` Step 1, temperloop#218) looks for: an epic
+  carrying a `## Contract` but no `design-brief:` marker triggers a legible,
+  fail-open ask (proceed without a brief, or park and run `/design` first)
+  rather than either a silent bypass or a hard block. `/triage`'s mirror
+  redirect line for invented work handed to it instead of an
+  already-designed epic (`claude/commands/triage.md` § Mirror redirect:
+  invented work arriving at triage's door) ships with the same item.
 - **The brief's home stays `Designs/`** in the knowledge store — the epic
   links to it, it is never copied into the epic body. The brief is the
   deliberation record (full reasoning, rejected alternatives, persona
