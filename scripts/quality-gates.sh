@@ -169,6 +169,16 @@ KERNEL_GATES=(
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
   # /tidy runs. Hermetic (mktemp fake vaults, no real vault, no network).
   "make test-vault-hygiene"
+  # Generated navigation MOCs (temperloop#231, epic #226): fixture-vault
+  # suite for drain/generate_moc.sh — the Index.md + Projects/<name>/Home.md
+  # generator /tidy runs, covering detection (filename prefix + project/<name>
+  # tag), idempotency, the absent-root/empty-store no-ops, and the
+  # refuse-and-propose conflict path for hand-authored content. Hermetic
+  # (mktemp fake vaults, no real vault, no network). Direct `bash` form (no
+  # Makefile target) — the kernel Makefile is generator-owned (seeded from
+  # foundation; see its header), same as the knob-registry/knowledge_search
+  # gates above.
+  "bash workflows/scripts/drain/tests/test_generate_moc.sh"
   # Recent-findings tally (foundation #960): the drain "Recurrence → promotion"
   # heredoc extracted to drain/tally_recent_findings.py — fixture-seeded, hermetic.
   "make test-tally-findings"
