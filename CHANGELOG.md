@@ -14,13 +14,38 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
-Minor — the personal-token denylist's vault-path burn-down baseline
-(`\bdev/mind\b`, temperloop#164/#169) is now empty: every pre-existing hit
-was routed through the `knowledge_store` seam or genericized in prose
-(kernel-literal-scrub, temperloop#189). Not tagged `BREAKING` — the affected
-knobs already had a documented override path (machine conf /
-`build.config.local.sh` / a downstream repo's own tracked-repo copy) before
-this change; only the *default value* moved.
+## [0.11.0] - 2026-07-10
+
+Minor — the registry-driven config lints land as quality gates, the ~10
+remaining prose-only tunables migrate onto env seams + registry rows, and the
+personal-token denylist's vault-path burn-down baseline (`\bdev/mind\b`,
+temperloop#164/#169) is now empty: every pre-existing hit was routed through
+the `knowledge_store` seam or genericized in prose (kernel-literal-scrub,
+temperloop#189). Completes the D1–D5 config-architecture epic (temperloop#169)
+kernel-side. Not tagged `BREAKING` — new gates are additive, new knobs default
+to their prior prose values, and the one default-value change already had a
+documented override path (machine conf / `build.config.local.sh` / a
+downstream repo's own tracked-repo copy); only the *default value* moved.
+
+### Added
+
+- Registry-driven config lints (temperloop#186, ADR D2/D3), wired into
+  `scripts/quality-gates.sh` (38 → 42 gates):
+  `workflows/scripts/config/check-knob-registry.sh` — layer-aware
+  registry↔shell equality + unregistered-knob sweep, strictly green with no
+  baseline — and `workflows/scripts/config/check-knob-prose.sh` — fails a NEW
+  literal restatement adjacent to a registered knob name in
+  `claude/commands/*.md` / `claude/CLAUDE.kernel.md`, honors a
+  `<!-- knob-prose:allow -->` marker — plus fixture test suites for both.
+- The ~10 prose-only Bucket A tunables migrated onto env seams + registry rows
+  at unchanged defaults (temperloop#187): assess/next/tidy/check-in cadences,
+  inbox alarms, and `CLAUDE.kernel.md`'s epic-decomposition threshold via a
+  new `{{EPIC_MIN_SUBUNITS}}` compose-time render token. The
+  `knob-prose-baseline.tsv` burn-down baseline is now empty; the prose lint is
+  strictly enforcing.
+- Pre-claimed kernel-manifest globs for the docs-site epic's paths
+  (`docs/adr/*`, `docs/architecture.md`, …) so the parallel doc items never
+  collide editing the manifest (PR #204); inert until those files land.
 
 ### Changed
 
