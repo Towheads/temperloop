@@ -37,9 +37,19 @@
 # runs = more spend; fewer / `enabled: no` = quiet.
 #
 # Config (env overrides win; defaults centralized in build.config.sh):
-#   FUNNEL_SCHEDULE_FILE  the vault schedule note (default: <ks_root>/Context/foundation
-#                         - funnel schedule.md — ks_root's default is seeded in
-#                         build.config.sh, see knowledge_store.contract.md)
+#   FUNNEL_SCHEDULE_FILE  the operator-controls schedule note — an ADR §2.3a
+#                         kind-3 control (docs/config-precedence.md §
+#                         "operator controls"): vault-resident, operator-
+#                         flipped, commit-free. UNSET default resolution
+#                         probes <ks_root>/Controls/foundation - funnel
+#                         schedule.md first, falling back to the legacy
+#                         <ks_root>/Context/foundation - funnel schedule.md
+#                         when Controls/ is absent — the fallback keeps this
+#                         gate firing through the overlay's vault-side move
+#                         window (temperloop#226/#232; ks_root's default is
+#                         seeded in build.config.sh, see
+#                         knowledge_store.contract.md). An EXPLICIT override
+#                         (any higher rung) is used verbatim, no probing.
 #   FUNNEL_NOW_HOUR       test seam: override "now" hour 0–23 (default: date +%H)
 
 set -euo pipefail
@@ -55,10 +65,23 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Root resolution routes through the knowledge_store seam's ks_root (foundation
 # #777, Epic A #762 "kernel split") rather than a literal — build.config.sh
 # (sourced above) seeds KNOWLEDGE_STORE_ROOT's foundation-specific default, so
-# an unconfigured environment resolves to the SAME schedule-file path this gate
-# has always used. The vault-relative "Context/foundation - funnel schedule.md"
-# knob (the operator-editable part) is unchanged.
-: "${FUNNEL_SCHEDULE_FILE:=$(ks_root 2>/dev/null || true)/Context/foundation - funnel schedule.md}"
+# an unconfigured environment resolves under the same store root this gate has
+# always used.
+#
+# Controls/ is the ADR §2.3a operator-controls home going forward; Context/ is
+# kept as a probed fallback for the overlay's vault-side move window (the note
+# itself hasn't moved yet as of temperloop#232) — see docs/config-precedence.md
+# § "operator controls". Duplicated verbatim in funnel-overlap.sh (same
+# non-vendoring-checkout-fallback convention as this repo's other byte-
+# identical duplicate knob defaults, e.g. FUNNEL_OPERATOR) — keep both in sync.
+_funnel_schedule_file_default() {
+  local root controls
+  root="$(ks_root 2>/dev/null || true)"
+  controls="$root/Controls/foundation - funnel schedule.md"
+  [ -r "$controls" ] && { printf '%s' "$controls"; return; }
+  printf '%s' "$root/Context/foundation - funnel schedule.md"
+}
+: "${FUNNEL_SCHEDULE_FILE:=$(_funnel_schedule_file_default)}"
 
 # Emit a skip verdict (fail-closed) and exit 1. Defined as a function so every
 # bail-out path is one call; `now_hour` may be unset on the earliest failures, so

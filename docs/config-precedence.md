@@ -104,6 +104,81 @@ namespace until temperloop#165 (the tracked rename item) migrates it. Any
 above — uses the `temperloop` namespace from the start; `foundation` never
 appears in a new one.
 
+## Operator controls (ADR §2.3a kind 3) — not a rung either
+
+A **control** is a third kind of config surface, alongside the six-rung
+ladder above and `boards.conf`'s own row format — governed by ADR §2.3a
+rather than by this ladder's rung order, because it answers a different
+question. The ladder (rungs 1–6) picks **which source wins** when several
+places could set the same knob; a control is instead the **one** knob whose
+file content an operator flips **live, without a commit or a redeploy**, to
+change autonomous-pipeline behavior at runtime. `FUNNEL_SCHEDULE_FILE`
+(`workflows/scripts/build/funnel-schedule-gate.sh`,
+`workflows/scripts/build/funnel-overlap.sh`) is the kernel's one control
+today: the *path knob* is an ordinary rung-6 kernel default like any other
+row in `knob-registry.tsv`, but the *file it points at* is a control — its
+content, not its path, is what the operator edits to change behavior.
+
+A control's contract has four load-bearing properties, all required
+together:
+
+- **Vault-resident.** The file lives in the operator's knowledge store (the
+  `ks_root` seam, `workflows/scripts/lib/knowledge_store.sh`) — never in the
+  repo tree. A control is content an operator maintains in their own
+  notes app, not a file a developer edits alongside source.
+- **Operator-flipped.** Changing behavior is a plain edit to the file's
+  content (e.g. toggling `enabled: yes` → `no` in a fenced block) — no
+  script invocation, no flag, no restart. The control's *reader* (a gate
+  script) re-resolves the file fresh on every invocation.
+- **Commit-free.** The file is never tracked in git. It has no PR, no
+  review, no CI run of its own — editing it is instant and carries none of
+  the repo's change-control ceremony, which is the point: an operator
+  dialing autonomous spend up or down needs a lever faster than a branch
+  and a merge queue.
+- **Fail-closed, overriding code defaults at runtime.** A control's reader
+  must treat "missing", "unreadable", and "malformed" identically to an
+  explicit off — never fall back to a permissive code default. This is what
+  makes a control safe to be commit-free: a sync hiccup, a typo, or a
+  deleted note degrades a spend-gated control toward *less* autonomous
+  action, never more (`funnel-schedule-gate.sh`'s own header documents this
+  as the fail-closed/fail-open split with `funnel-overlap.sh`'s advisory
+  predicate). "Overriding code defaults at runtime" means the control's
+  *content* — not just its path — takes precedence over whatever a script
+  would otherwise do in the control's absence; the path knob's rung-6
+  fallback only decides *where to look*, never *what to do* if the control
+  can't be read.
+
+### The registry-reachability rule
+
+Every file under `Controls/` in the knowledge store MUST be pointed at by a
+`path`-typed row in `knob-registry.tsv` — i.e. a control is only real config
+surface if some registered knob's default resolves to it. A file dropped
+into `Controls/` with no registry row pointing at it is orphaned: no reader
+is contractually promised to look for it, and the registry (the map of
+every tunable this repo's pipeline machinery reads) is silently incomplete.
+This is the control-specific corollary of the registry's own inclusion
+rule (`knob-registry.tsv`'s header) — every operator-overridable seam gets a
+row — applied to the *content* layer rather than the *path* layer: the path
+knob is registered because it's an ordinary rung-6 default, and the
+registry-reachability rule is what additionally guarantees the file that
+path resolves to, by default, is one some script actually reads.
+
+### The overlay move window: two paths, one control
+
+`FUNNEL_SCHEDULE_FILE`'s default resolution is deliberately a two-path
+probe, not a single path: it checks `Controls/foundation - funnel
+schedule.md` under `ks_root` first, falling back to the legacy `Context/
+foundation - funnel schedule.md` when `Controls/` doesn't have it. This
+exists because kernel items land before the corresponding vault-side folder
+move (temperloop#226's decomposition: "the overlay vault moves … are
+external to this epic — kernel items must not assume the new folders
+(`Controls/`, …) exist yet"). The fallback keeps the SAME control readable,
+and the gate fail-closed either way, across the whole window between "the
+kernel knows about `Controls/`" and "the operator's note has actually moved
+there" — an explicit `FUNNEL_SCHEDULE_FILE` override (any higher rung) skips
+the probe entirely and is used verbatim, exactly like every other rung-1/2
+override in the ladder above.
+
 ## See also
 
 - `workflows/scripts/build/build.config.sh` — the reference implementation
@@ -112,3 +187,10 @@ appears in a new one.
   board-registry instance of this ladder's order.
 - `workflows/scripts/board/boards.conf.example` — the `boards.conf` row
   format (unaffected by this document).
+- `workflows/scripts/build/funnel-schedule-gate.sh` and
+  `workflows/scripts/build/funnel-overlap.sh` — the kernel's one operator
+  control (`FUNNEL_SCHEDULE_FILE`) and its Controls/-then-Context/ default
+  resolution.
+- `workflows/scripts/config/knob-registry.tsv` — the registry-reachability
+  rule's enforcement point: every `Controls/`-resolving path knob is a row
+  here.

@@ -13,7 +13,9 @@
 # · board ∉ boards → no-overlap · enabled:no / missing file / no block →
 # no-overlap (fail-open) · empty boards: falls back to FUNNEL_ENABLED_BOARDS
 # · no files → inconclusive no-overlap · no --board → no-overlap ·
-# FUNNEL_DRIVEN_PATHS override honored · malformed enabled token fails open.
+# FUNNEL_DRIVEN_PATHS override honored · malformed enabled token fails open ·
+# (temperloop#226/#232) FUNNEL_SCHEDULE_FILE's UNSET-default resolution —
+# Controls/ then legacy Context/ fallback, same probe as funnel-schedule-gate.sh.
 
 set -euo pipefail
 
@@ -135,6 +137,34 @@ write_sched "$TMP/bad.md" "enabled: maybe" "hours: 9" "boards: 4"
 rc=0; v=$(run "$TMP/bad.md" FUNNEL_DRIVEN_PATHS="workflows/scripts/" -- \
       --board 4 workflows/scripts/board/lib/board.sh) || rc=$?
 [ "$rc" = "0" ] && ok "exit 0" || bad "malformed.rc" "got $rc"
+
+# ── 12: FUNNEL_SCHEDULE_FILE default resolution — Controls/ then Context/
+#    fallback (temperloop#226/#232). Leaves FUNNEL_SCHEDULE_FILE UNSET and
+#    sandboxes KNOWLEDGE_STORE_ROOT instead, so the predicate's own `:=`
+#    default-derivation logic runs for real (tests 1-11 above all inject
+#    FUNNEL_SCHEDULE_FILE explicitly and never exercise it).
+echo "--- test 12: FUNNEL_SCHEDULE_FILE default — Controls/ then Context/ fallback ---"
+KROOT="$TMP/kstore"
+mkdir -p "$KROOT/Controls" "$KROOT/Context"
+
+# 12a: Controls/ file present (Context/ absent) → overlap fires from Controls/.
+write_sched "$KROOT/Controls/foundation - funnel schedule.md" "enabled: yes" "hours: 9" "boards: 4"
+rc=0; v=$(env KNOWLEDGE_STORE_ROOT="$KROOT" FUNNEL_DRIVEN_PATHS="workflows/scripts/" \
+      bash "$PRED" --board 4 workflows/scripts/board/lib/board.sh) || rc=$?
+[ "$rc" = "10" ] && ok "overlap fires reading the Controls/ path only" || bad "default12a.rc" "got $rc"
+rm -f "$KROOT/Controls/foundation - funnel schedule.md"
+
+# 12b: Controls/ absent, legacy Context/ present → falls back, still fires.
+write_sched "$KROOT/Context/foundation - funnel schedule.md" "enabled: yes" "hours: 9" "boards: 4"
+rc=0; v=$(env KNOWLEDGE_STORE_ROOT="$KROOT" FUNNEL_DRIVEN_PATHS="workflows/scripts/" \
+      bash "$PRED" --board 4 workflows/scripts/board/lib/board.sh) || rc=$?
+[ "$rc" = "10" ] && ok "overlap fires reading the legacy Context/ path only" || bad "default12b.rc" "got $rc"
+rm -f "$KROOT/Context/foundation - funnel schedule.md"
+
+# 12c: neither path exists → no-overlap (fail-open, same as test 4).
+rc=0; v=$(env KNOWLEDGE_STORE_ROOT="$KROOT" FUNNEL_DRIVEN_PATHS="workflows/scripts/" \
+      bash "$PRED" --board 4 workflows/scripts/board/lib/board.sh) || rc=$?
+[ "$rc" = "0" ] && ok "neither path present → no-overlap (fail-open)" || bad "default12c.rc" "got $rc"
 
 echo
 echo "passed: $pass  failed: $fail"

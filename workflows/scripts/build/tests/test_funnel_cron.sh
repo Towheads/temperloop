@@ -13,7 +13,9 @@
 # Covers the #596 acceptance bullets:
 #   GATE: hour in/out of list · enabled:no kill switch · missing-file fail-closed
 #         · malformed fail-closed (no block / bad token) · boards: override
-#         · injected-hour determinism.
+#         · injected-hour determinism · (temperloop#226/#232) FUNNEL_SCHEDULE_FILE's
+#         UNSET-default resolution — Controls/ then legacy Context/ fallback,
+#         Controls/ winning when both exist, fail-closed when neither does.
 #   WRAPPER: skip → exit 0, zero tick, skip log line · run → tick emits, day-jsonl
 #            + latest.json written · notify ONLY on a non-no-op run.
 
@@ -137,6 +139,38 @@ F9="$TMP/cap-zero.md"
 printf '%s\n' '```funnel-schedule' 'enabled: yes' 'hours: 14' 'cap: 0' '```' > "$F9"
 run_gate env FUNNEL_NOW_HOUR=14 FUNNEL_SCHEDULE_FILE="$F9" bash "$GATE"
 [ "$VRC" -eq 0 ] && [ "$(jq -r '.cap' <<<"$VOUT")" = "" ] && ok "cap: 0 (<1) dropped to empty, still runs" || bad "g9.zero" "rc=$VRC cap=$(jq -r '.cap' <<<"$VOUT")"
+
+# ── GATE 10: FUNNEL_SCHEDULE_FILE default resolution — Controls/ then legacy
+#    Context/ fallback (temperloop#226/#232, docs/config-precedence.md §
+#    "operator controls"). UNLIKE gates 1-9 above (which all inject
+#    FUNNEL_SCHEDULE_FILE explicitly and so never exercise the default
+#    resolution), these leave it UNSET and instead sandbox KNOWLEDGE_STORE_ROOT,
+#    so the gate's own `:=` default-derivation logic runs for real. ──────────
+echo "--- gate 10: FUNNEL_SCHEDULE_FILE default — Controls/ then Context/ fallback ---"
+KROOT="$TMP/kstore"
+mkdir -p "$KROOT/Controls" "$KROOT/Context"
+
+# 10a: Controls/ file present (Context/ absent) → the Controls/ path is used.
+printf '%s\n' '```funnel-schedule' 'enabled: yes' 'hours: 14' '```' > "$KROOT/Controls/foundation - funnel schedule.md"
+run_gate env FUNNEL_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$KROOT" bash "$GATE"
+[ "$VRC" -eq 0 ] && ok "fires with the schedule file at the Controls/ path only" || bad "g10a.rc" "exit=$VRC ($VOUT)"
+rm -f "$KROOT/Controls/foundation - funnel schedule.md"
+
+# 10b: Controls/ absent, legacy Context/ present → falls back and still fires.
+printf '%s\n' '```funnel-schedule' 'enabled: yes' 'hours: 14' '```' > "$KROOT/Context/foundation - funnel schedule.md"
+run_gate env FUNNEL_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$KROOT" bash "$GATE"
+[ "$VRC" -eq 0 ] && ok "fires with the schedule file at the legacy Context/ path only" || bad "g10b.rc" "exit=$VRC ($VOUT)"
+
+# 10c: BOTH present → Controls/ wins (probed first).
+printf '%s\n' '```funnel-schedule' 'enabled: no' 'hours: 14' '```' > "$KROOT/Controls/foundation - funnel schedule.md"
+run_gate env FUNNEL_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$KROOT" bash "$GATE"
+[ "$VRC" -eq 1 ] && ok "Controls/ wins over Context/ when both exist (Controls/'s enabled:no honored)" || bad "g10c.rc" "exit=$VRC ($VOUT)"
+rm -f "$KROOT/Controls/foundation - funnel schedule.md" "$KROOT/Context/foundation - funnel schedule.md"
+
+# 10d: neither path exists → fail-closed skip, same as any missing-file case.
+run_gate env FUNNEL_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$KROOT" bash "$GATE"
+[ "$VRC" -eq 1 ] && ok "missing/unparseable at BOTH paths still fails closed" || bad "g10d.rc" "exit=$VRC ($VOUT)"
+[ "$(jq -r '.action' <<<"$VOUT")" = "skip" ] && ok "neither-path case verdict action=skip" || bad "g10d.action" "got $(jq -r '.action' <<<"$VOUT")"
 
 # ── Wrapper fixtures: a Ready item to drive + a notify stub ──────────────────
 mk_fixture() { local fx="$1"; mkdir -p "$fx/board-3"

@@ -32,9 +32,11 @@
 # match their own prefix directly; no symlink resolution is attempted.
 #
 # Config (env overrides win; defaults centralized in build.config.sh):
-#   FUNNEL_SCHEDULE_FILE   the vault schedule note (same resolution as
-#                          funnel-schedule-gate.sh — ks_root + the Context/
-#                          default seeded in build.config.sh)
+#   FUNNEL_SCHEDULE_FILE   the operator-controls schedule note (same
+#                          resolution as funnel-schedule-gate.sh — ks_root,
+#                          probing Controls/ then falling back to the legacy
+#                          Context/ path; see that script's header and
+#                          docs/config-precedence.md § "operator controls")
 #   FUNNEL_ENABLED_BOARDS  default board set when the schedule's `boards:` is
 #                          empty (same fallback funnel-cron.sh uses)
 #   FUNNEL_DRIVEN_PATHS    space-separated path prefixes = the funnel's
@@ -48,8 +50,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflows/scripts/lib/knowledge_store.sh
 [ -f "$HERE/../lib/knowledge_store.sh" ] && . "$HERE/../lib/knowledge_store.sh"
 
-# Same schedule-note resolution as funnel-schedule-gate.sh (ks_root seam).
-: "${FUNNEL_SCHEDULE_FILE:=$(ks_root 2>/dev/null || true)/Context/foundation - funnel schedule.md}"
+# Same schedule-note resolution as funnel-schedule-gate.sh (ks_root seam) —
+# Controls/ probed first, Context/ as the fallback through the overlay's
+# vault-side move window. Duplicated verbatim from that script (byte-identical
+# non-vendoring-checkout fallback, per knob-registry.tsv's own convention) —
+# keep both in sync.
+_funnel_schedule_file_default() {
+  local root controls
+  root="$(ks_root 2>/dev/null || true)"
+  controls="$root/Controls/foundation - funnel schedule.md"
+  [ -r "$controls" ] && { printf '%s' "$controls"; return; }
+  printf '%s' "$root/Context/foundation - funnel schedule.md"
+}
+: "${FUNNEL_SCHEDULE_FILE:=$(_funnel_schedule_file_default)}"
 # Same non-vendoring fallbacks the other funnel consumers keep.
 : "${FUNNEL_ENABLED_BOARDS:=3}"
 : "${FUNNEL_DRIVEN_PATHS:=kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile}"
