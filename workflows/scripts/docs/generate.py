@@ -67,6 +67,19 @@ import shutil
 import sys
 from pathlib import Path
 
+# STATIC_COPY_FILES: repo-root files copied byte-for-byte into the site root,
+# alongside the generated *.html pages, rather than run through the Page /
+# render_page HTML-shell pipeline above. llms.txt (temperloop#137,
+# agent-discoverability item) is the first and so far only entry: the
+# https://llmstxt.org spec requires it be served as its own plain-text file
+# at the site root, not wrapped in this generator's nav/CSS chrome, so it
+# can't be a Page like every other source module's output. This is the
+# smallest mechanism that keeps `make docs` green and byte-deterministic
+# (a plain file copy, no timestamps) without inventing a general static-
+# asset pipeline this generator has never needed before — see this
+# directory's README.md for the one-line pointer to this convention.
+STATIC_COPY_FILES = ["llms.txt"]
+
 DOCS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = DOCS_DIR.parent.parent.parent
 
@@ -160,6 +173,21 @@ def _write_site(pages: list[Page], out_dir: Path) -> None:
     (out_dir / "index.html").write_text(render_page(index_page, nav_items), encoding="utf-8")
 
 
+def _copy_static_files(repo_root: Path, out_dir: Path) -> None:
+    """Copy STATIC_COPY_FILES from repo_root into out_dir verbatim (bytes,
+    not HTML-rendered). Called after _write_site (which wipes out_dir), so
+    this always runs last. A missing source file is silently skipped rather
+    than failing the build — see chapters.py / cli.py's absent-source
+    convention elsewhere in this generator."""
+    for rel_path in STATIC_COPY_FILES:
+        src = repo_root / rel_path
+        if not src.is_file():
+            continue
+        dest = out_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -176,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     _write_site(pages, args.out)
+    _copy_static_files(REPO_ROOT, args.out)
     print(f"generate: wrote {len(pages)} page(s) + index to {args.out}")
     return 0
 

@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generate import _write_site, build_site
+from generate import _copy_static_files, _write_site, build_site
 from lib.page import Page
 
 
@@ -286,6 +286,45 @@ class TestWriteSiteIdempotent(unittest.TestCase):
             _write_site([Page(slug="fresh", title="Fresh", body_html="<p>y</p>")], out_dir)
             self.assertFalse((out_dir / "stale.html").exists())
             self.assertTrue((out_dir / "fresh.html").exists())
+
+
+class TestCopyStaticFiles(unittest.TestCase):
+    def test_llms_txt_copied_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = tmp / "repo"
+            out_dir = tmp / "_site"
+            _write(repo / "llms.txt", "# Fixture\n\n> A summary.\n")
+            out_dir.mkdir()
+
+            _copy_static_files(repo, out_dir)
+
+            self.assertEqual((out_dir / "llms.txt").read_text(encoding="utf-8"), "# Fixture\n\n> A summary.\n")
+
+    def test_missing_static_file_is_skipped_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = tmp / "repo"  # no llms.txt written
+            out_dir = tmp / "_site"
+            repo.mkdir()
+            out_dir.mkdir()
+
+            _copy_static_files(repo, out_dir)  # must not raise
+
+            self.assertFalse((out_dir / "llms.txt").exists())
+
+    def test_survives_write_site_wipe_when_called_after(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            repo = tmp / "repo"
+            out_dir = tmp / "_site"
+            _write(repo / "llms.txt", "# Fixture\n")
+
+            _write_site([Page(slug="a", title="A", body_html="<p>alpha</p>")], out_dir)
+            _copy_static_files(repo, out_dir)
+
+            self.assertTrue((out_dir / "a.html").exists())
+            self.assertEqual((out_dir / "llms.txt").read_text(encoding="utf-8"), "# Fixture\n")
 
 
 if __name__ == "__main__":
