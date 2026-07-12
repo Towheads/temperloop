@@ -11,9 +11,3 @@
 # Grouped per planned backfill sub-issue so the six backfill PRs each delete
 # only their own contiguous block (fewer cross-PR merge conflicts).
 
-# ── temperloop#141 — drain + review half: tidy, check-in, telemetry, funnel ─
-tidy
-check-in
-telemetry
-funnel-driver
-
