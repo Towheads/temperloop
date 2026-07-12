@@ -58,7 +58,26 @@ elif ! grep -Fq 'emit-issue-touch.sh' "$BUILD_MD"; then
 else
   check_kind_wiring() {  # $1=step label (for the message) $2=expected --kind value
     local label="$1" kindval="$2"
-    if ! grep -A4 -F 'emit-issue-touch.sh' "$BUILD_MD" | grep -Eq -- "--kind[[:space:]]+${kindval}\b"; then
+    # Materialize the -A4 context block via command substitution FIRST, then
+    # scan the captured text — never pipe it live into a second grep. A live
+    # `grep -A4 ... | grep -Eq ...` pipeline is a false-failure trap under
+    # `set -o pipefail` (foundation #287): `grep -Eq` exits the instant it
+    # finds a match, closing its read end while the upstream `grep -A4` may
+    # still have buffered context lines queued to write; the upstream then
+    # dies with "grep: write error: Broken pipe" (EPIPE) and a nonzero exit,
+    # which — even though the match WAS found — makes the pipeline's
+    # pipefail-computed status nonzero and reads as "pattern absent". This is
+    # timing-dependent (depends on pipe-buffer/scheduling), so it flakes
+    # rather than failing deterministically. Command substitution has no such
+    # race: `grep -A4` runs to completion and its full output is captured
+    # before the second grep ever looks at it, so there is no live pipe to
+    # close early. `|| true` on the capture keeps `set -e` from tripping when
+    # the emit-issue-touch.sh line simply has no match at all (a genuine
+    # absence, not an EPIPE) — the subsequent `grep -Eq` on the captured text
+    # (possibly empty) still correctly reports FAIL for that case.
+    local block
+    block="$(grep -A4 -F 'emit-issue-touch.sh' "$BUILD_MD" || true)"
+    if ! grep -Eq -- "--kind[[:space:]]+${kindval}\b" <<<"$block"; then
       echo "FAIL  build.md invokes emit-issue-touch.sh but never with --kind ${kindval} (expected at $label) — wiring drifted"
       fail=1
       return

@@ -342,7 +342,12 @@ file_mtime() {
   printf '%s\n' "$m"
 }
 # Current epoch without Date.now()-style pitfalls — plain `date` is fine here.
-now_epoch() { date +%s; }
+# HYG_NOW_EPOCH is the test seam (mirrors FUNNEL_NOW_EPOCH / _reconcile_now
+# elsewhere in this repo): a test that asserts an exact day-count staleness must
+# pin `now` against a fixed anchor, otherwise a real-wall-clock `now` read a
+# beat after the fixture dates were written can cross a midnight boundary and
+# shift every staleness by a day. Unset in production -> real `date +%s`.
+now_epoch() { echo "${HYG_NOW_EPOCH:-$(date +%s)}"; }
 
 # Excludes for whole-vault walks: never descend Obsidian internals, the
 # embedding store (thousands of files — CLAUDE.md forbids bulk-grepping it),
@@ -483,8 +488,13 @@ check_stale_verified() {
     [ -n "$f" ] || continue
     lv="$(grep -m1 -E '^last_verified:[[:space:]]*' "$f" 2>/dev/null | sed -e 's/^last_verified:[[:space:]]*//' -e 's/["'\'']//g' | tr -d '\r' | awk '{print $1}' || true)"
     [ -n "$lv" ] || continue
-    # Parse YYYY-MM-DD → epoch (GNU `date -d` vs BSD `date -j -f`).
-    lv_epoch="$(date -d "$lv" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$lv" +%s 2>/dev/null || echo '')"
+    # Parse YYYY-MM-DD → epoch (GNU `date -d` vs BSD `date -j -f`). The BSD
+    # branch MUST pin the time to `00:00:00`: `date -j -f '%Y-%m-%d'` with no
+    # time component fills in the CURRENT wall-clock time-of-day, which would
+    # make a note's staleness depend on what hour the report runs (foundation
+    # #287). GNU `date -d "$lv"` already lands on midnight, so both platforms
+    # now agree on midnight-based day arithmetic.
+    lv_epoch="$(date -d "$lv" +%s 2>/dev/null || date -j -f '%Y-%m-%d %H:%M:%S' "$lv 00:00:00" +%s 2>/dev/null || echo '')"
     [ -n "$lv_epoch" ] || continue
     if [ $(( now - lv_epoch )) -gt "$horizon" ]; then
       stale_verified=$((stale_verified + 1))
@@ -734,8 +744,10 @@ FRICTION_RECENT_DAYS=14
 _HYG_STOPWORDS=" this that with from have were what when where which should using used just been also into over than then still very more your "
 
 # YYYY-MM-DD -> epoch (GNU `date -d` vs BSD `date -j -f`); empty on failure.
+# BSD branch pins `00:00:00` so the parse is midnight, not the current
+# time-of-day BSD would otherwise inject (see check 5's note; foundation #287).
 _hyg_date_to_epoch() {
-  date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null || echo ''
+  date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d %H:%M:%S' "$1 00:00:00" +%s 2>/dev/null || echo ''
 }
 # string -> space-separated lowercase alnum tokens, len>=4, stopwords dropped
 _hyg_tokenize() {
@@ -1370,7 +1382,7 @@ _hyg_heat_epoch() {
   local f="$1" lv lv_epoch
   lv="$(grep -m1 -E '^last_verified:[[:space:]]*' "$f" 2>/dev/null | sed -e 's/^last_verified:[[:space:]]*//' -e 's/["'\'']//g' | tr -d '\r' | awk '{print $1}' || true)"
   if [ -n "$lv" ]; then
-    lv_epoch="$(date -d "$lv" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$lv" +%s 2>/dev/null || echo '')"
+    lv_epoch="$(date -d "$lv" +%s 2>/dev/null || date -j -f '%Y-%m-%d %H:%M:%S' "$lv 00:00:00" +%s 2>/dev/null || echo '')"
     if [ -n "$lv_epoch" ]; then
       printf '%s\n' "$lv_epoch"
       return 0
