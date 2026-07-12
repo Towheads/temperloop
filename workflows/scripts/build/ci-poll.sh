@@ -8,6 +8,7 @@
 # LLM seat — this script reports WHAT failed, never decides what to do about it.
 #
 #   ci-poll.sh <owner>/<repo> <pr> [--sha <sha>] [--interval <secs>] [--timeout <secs>]
+#              [--exit-nonzero-on-failure]
 #
 # Polls the PR head SHA's check-runs over REST (`gh api`, core bucket) — NEVER
 # `gh pr checks --watch`, which is GraphQL-backed and burns the scarce
@@ -29,13 +30,26 @@
 # Output contract — CLOSED outcome set, one structured JSON line, no prose
 # (the orchestrator branches on `.outcome`, never parses prose):
 #   {"outcome":"CI_GREEN","pr":…,"sha":…}                        exit 0
-#   {"outcome":"CI_FAILED","pr":…,"sha":…,"failed_run_ids":[…]}  exit 0
+#   {"outcome":"CI_FAILED","pr":…,"sha":…,"failed_run_ids":[…]}  exit 0 (default) | exit 2 (--exit-nonzero-on-failure)
 #   {"outcome":"TIMEOUT","pr":…,"sha":…,"waited":…}              exit 1
 #   {"outcome":"ERROR","error":…}                                exit 1
-# CI_FAILED exits 0 on purpose: the poll itself succeeded — the verdict is
-# data, not a script failure. Only TIMEOUT/ERROR (poll never completed) are
-# non-zero. failed_run_ids come from `gh run list --commit <sha>` filtered to
-# conclusion=="failure" (best-effort: an empty list, never a missing key).
+# CI_FAILED exits 0 by DEFAULT on purpose: the poll itself succeeded — the
+# verdict is data, not a script failure. Only TIMEOUT/ERROR (poll never
+# completed) are non-zero by default. failed_run_ids come from `gh run list
+# --commit <sha>` filtered to conclusion=="failure" (best-effort: an empty
+# list, never a missing key).
+#
+# --exit-nonzero-on-failure (additive, opt-in): makes CI_FAILED exit 2
+# instead of 0, while every other outcome/exit-code pairing above is
+# unchanged. This exists so an &&-chained caller (e.g.
+# `ci-poll.sh … --exit-nonzero-on-failure && gh pr merge …`) stops on a red
+# PR instead of enqueueing it — without the flag, CI_FAILED's exit-0 "the
+# poll succeeded" contract makes `&&` treat a red PR the same as a green one
+# (#206). Exit 2 is deliberately distinct from TIMEOUT/ERROR's exit 1, so a
+# caller inspecting the exit code (not just `.outcome`) can still tell
+# "CI ran and failed" apart from "the poll itself never completed". Omit the
+# flag and every existing caller's behavior — including the default exit
+# code on CI_FAILED — is byte-for-byte unchanged.
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
@@ -49,7 +63,7 @@ die() {
 }
 
 usage() {
-  die "usage: ci-poll.sh <owner>/<repo> <pr> [--sha <sha>] [--interval <secs>] [--timeout <secs>]"
+  die "usage: ci-poll.sh <owner>/<repo> <pr> [--sha <sha>] [--interval <secs>] [--timeout <secs>] [--exit-nonzero-on-failure]"
 }
 
 [ $# -ge 2 ] || usage
@@ -60,11 +74,13 @@ shift 2
 sha=""
 interval=30
 timeout=3600
+exit_nonzero_on_failure=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha)      [ $# -ge 2 ] || usage; sha="$2"; shift ;;
     --interval) [ $# -ge 2 ] || usage; interval="$2"; shift ;;
     --timeout)  [ $# -ge 2 ] || usage; timeout="$2"; shift ;;
+    --exit-nonzero-on-failure) exit_nonzero_on_failure=1 ;;
     *) usage ;;
   esac
   shift
@@ -123,6 +139,7 @@ while :; do
     jq -e . >/dev/null 2>&1 <<<"$failed_ids" || failed_ids="[]"
     jq -cn --argjson pr "$pr" --arg sha "$sha" --argjson ids "$failed_ids" \
       '{outcome:"CI_FAILED", pr:$pr, sha:$sha, failed_run_ids:$ids}'
+    [ "$exit_nonzero_on_failure" -eq 1 ] && exit 2
     exit 0
   fi
 
