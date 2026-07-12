@@ -1,16 +1,69 @@
-# Contributing: failure-mode chapters
+# Contributing
 
-`docs/failure-modes/` holds the "why" chapters for the generated docs site:
-short, curated write-ups of real engineering failures encountered while
-building this project's automation, each ending in a mechanical guard that
-now exists because of it. They are rendered as pages by `make docs` — see
-`workflows/scripts/docs/sources/chapters.py` for the ingestion mechanism.
+This repo takes three kinds of contribution: a new feature ships its own
+doc in the same PR as its code (below — mechanically enforced by CI), a
+failure-mode chapter documents a real engineering failure and the guard it
+produced, and a new backend adapter extends the board or knowledge-store
+seam. Read the section below for the kind you're making.
 
 This file lives at `docs/CONTRIBUTING.md`, one level above
-`docs/failure-modes/`, deliberately — the generator's pinned ingestion glob
-is `docs/failure-modes/*.md`, so anything dropped inside that directory
-renders as a chapter page. Keeping this guide a level up keeps it from
-being picked up as a spurious chapter itself.
+`docs/failure-modes/`, deliberately — the docs-site generator's pinned
+ingestion glob is `docs/failure-modes/*.md`, so anything dropped inside
+that directory renders as a chapter page. Keeping this guide a level up
+keeps it from being picked up as a spurious chapter itself.
+
+## Shipping a new feature
+
+Every git-tracked path in this repo must be claimed by a slug in
+[`docs/features/feature-manifest.txt`](features/feature-manifest.txt) (the
+reserved slug `none` covers repo meta that belongs to no single feature),
+and every non-`none` slug needs a `docs/features/<slug>.md` doc — or a line
+in [`docs/features/backfill-exempt.txt`](features/backfill-exempt.txt)
+while it's still being backfilled; see that file's own header for the
+shrink-only ratchet (the list only shrinks, never grows for new work). This
+is enforced by `workflows/scripts/validate-feature-docs.sh`, a
+`scripts/quality-gates.sh` gate that runs in CI, so a new feature that
+skips its doc fails the build rather than merging silently undocumented.
+The flow, end to end:
+
+1. **Write the code.** Add whatever files the feature needs, without
+   touching the manifest yet.
+2. **Hit the unclaimed-path failure.** CI (or a local
+   `bash workflows/scripts/validate-feature-docs.sh` run) fails with
+   `UNCLAIMED <path> — no feature-manifest glob claims this tracked path`
+   for any new file not already covered by an existing glob. This is
+   expected and by design — it's the gate that keeps coverage total; a
+   new feature is never accidentally left off the map.
+3. **Claim the path.** Add a `<slug> <glob>` line to
+   `docs/features/feature-manifest.txt` naming your feature (kebab-case,
+   `[a-z0-9-]`, no leading/trailing `-`) with a glob that covers the new
+   path(s). The *longest* matching glob wins, so a narrow override can
+   carve a special case out of a broader existing claim from anywhere in
+   the file — no ordering fragility.
+4. **Write the doc.** Create `docs/features/<slug>.md` with a single-line
+   `slug: <slug>` in its frontmatter (must equal the filename stem) and
+   all five required sections, each non-empty — state "None." explicitly
+   if a section doesn't apply; an implied-empty section fails the gate:
+   - `## Problem` — what breaks or is missing without this feature.
+   - `## How it works` — the mechanism, concretely.
+   - `## Integration` — what it consumes, what it produces, who else
+     reads or writes the same surface.
+   - `## Resource impact` — network calls, disk, API budget, anything a
+     reader should know before running it at scale.
+   - `## Telemetry` — how the feature's own health is observed, or
+     "None." if it emits nothing. [`docs/features/telemetry.md`](features/telemetry.md)
+     is a fully worked example of the five-section shape.
+5. **Merge atomically.** The manifest claim and the doc land in the same
+   PR as the code — there is no follow-up-doc convention here; a doc that
+   ships later than its feature is exactly the drift the gate exists to
+   prevent.
+
+Run `bash scripts/quality-gates.sh` (or the narrower
+`bash workflows/scripts/validate-feature-docs.sh` for a faster local loop)
+before opening the PR — one pass reports every `UNCLAIMED` / `MISSING-DOC`
+/ `MISSING-SECTION` / `EMPTY-SECTION` / `ORPHAN-DOC` / `SLUG-MISMATCH` /
+`STALE-EXEMPT` / `EXEMPT-BUT-DOCUMENTED` failure at once, instead of one
+CI round-trip per fix.
 
 ## Contributing a chapter
 
