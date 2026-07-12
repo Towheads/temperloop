@@ -91,6 +91,30 @@ _knob_registry_field_count() {
   awk -F'\t' '{print NF}' <<<"$1"
 }
 
+# _knob_split_row <tab-row> -> sets globals KR_F1..KR_F7 to fields 1..7 (empty
+# for any field the row lacks) and KR_NF to the field count. Parameter
+# expansion ONLY — no `cut`/`awk` subshells. This is the hot path for
+# knob_registry_validate / _rows / _get, each of which walks all ~190 registry
+# rows; the previous per-row `$(_knob_registry_field_count …)` + four/one
+# `$(cut …)` subshells were ~5 forks/row and dominated `config list`, the
+# `configure` wizard, and the equality lint's runtime (K305). Deliberately NOT
+# `IFS=$'\t' read`: tab is IFS-whitespace, so `read` collapses consecutive
+# tabs and mis-aligns rows with an empty field (field 2 `default` is
+# legitimately empty for many knobs, e.g. EVAL_RUN). Parameter expansion
+# preserves empty fields, matching `cut -f` exactly. Bash-3.2-portable.
+_knob_split_row() {
+  local r="$1" tabs="${1//[!$'\t']/}"
+  KR_NF=$(( ${#tabs} + 1 ))
+  KR_F1=''; KR_F2=''; KR_F3=''; KR_F4=''; KR_F5=''; KR_F6=''; KR_F7=''
+  KR_F1="${r%%$'\t'*}"; [ "$KR_NF" -ge 2 ] || return 0; r="${r#*$'\t'}"
+  KR_F2="${r%%$'\t'*}"; [ "$KR_NF" -ge 3 ] || return 0; r="${r#*$'\t'}"
+  KR_F3="${r%%$'\t'*}"; [ "$KR_NF" -ge 4 ] || return 0; r="${r#*$'\t'}"
+  KR_F4="${r%%$'\t'*}"; [ "$KR_NF" -ge 5 ] || return 0; r="${r#*$'\t'}"
+  KR_F5="${r%%$'\t'*}"; [ "$KR_NF" -ge 6 ] || return 0; r="${r#*$'\t'}"
+  KR_F6="${r%%$'\t'*}"; [ "$KR_NF" -ge 7 ] || return 0; r="${r#*$'\t'}"
+  KR_F7="${r%%$'\t'*}"
+}
+
 # _knob_registry_in_list <needle> <space-separated list> -> rc 0 if present.
 _knob_registry_in_list() {
   local needle="$1" list="$2" item
@@ -131,16 +155,17 @@ knob_registry_validate() {
   rows="$(_knob_registry_data_rows "$kfile")"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    fc="$(_knob_registry_field_count "$row")"
+    _knob_split_row "$row"
+    fc="$KR_NF"
     if [ "$fc" != "6" ]; then
       echo "MALFORMED: kernel row has $fc fields (want 6): $row" >&2
       bad=1
       continue
     fi
-    name="$(cut -f1 <<<"$row")"
-    type="$(cut -f3 <<<"$row")"
-    layer="$(cut -f4 <<<"$row")"
-    owning_script="$(cut -f5 <<<"$row")"
+    name="$KR_F1"
+    type="$KR_F3"
+    layer="$KR_F4"
+    owning_script="$KR_F5"
     # Uniqueness key is (name, owning-script), not name alone — a knob
     # legitimately gets two rows when its default genuinely differs between
     # two owning scripts (see this function's header comment).
@@ -169,16 +194,17 @@ EOF
       rows="$(_knob_registry_data_rows "$ofile")"
       while IFS= read -r row; do
         [ -n "$row" ] || continue
-        fc="$(_knob_registry_field_count "$row")"
+        _knob_split_row "$row"
+        fc="$KR_NF"
         if [ "$fc" != "7" ]; then
           echo "MALFORMED: overlay row has $fc fields (want 7): $row" >&2
           bad=1
           continue
         fi
-        name="$(cut -f1 <<<"$row")"
-        type="$(cut -f3 <<<"$row")"
-        layer="$(cut -f4 <<<"$row")"
-        op="$(cut -f7 <<<"$row")"
+        name="$KR_F1"
+        type="$KR_F3"
+        layer="$KR_F4"
+        op="$KR_F7"
         if ! _knob_registry_in_list "$type" "$KNOB_REGISTRY_TYPES"; then
           echo "MALFORMED: overlay row '$name' has unknown type '$type': $row" >&2
           bad=1
@@ -221,7 +247,7 @@ EOF
 # you want malformed rows rejected rather than silently best-effort unioned
 # (an unrecognized op is treated as a no-op skip here, not an error).
 knob_registry_rows() {
-  local kfile ofile row name ofile_rows orow oname oop kernel_rows out=""
+  local kfile ofile row name ofile_rows orow kernel_rows out=""
   kfile="$(knob_registry_kernel_file)"
   kernel_rows="$(_knob_registry_data_rows "$kfile")"
 
@@ -233,15 +259,14 @@ knob_registry_rows() {
   # one exists.
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    name="$(cut -f1 <<<"$row")"
+    name="${row%%$'\t'*}"          # field 1, no fork
     local replaced=""
     if [ -n "$ofile_rows" ]; then
       while IFS= read -r orow; do
         [ -n "$orow" ] || continue
-        oname="$(cut -f1 <<<"$orow")"
-        oop="$(cut -f7 <<<"$orow")"
-        if [ "$oname" = "$name" ] && [ "$oop" = "redefault" ]; then
-          replaced="$(cut -f1-6 <<<"$orow")"
+        _knob_split_row "$orow"
+        if [ "$KR_F1" = "$name" ] && [ "$KR_F7" = "redefault" ]; then
+          replaced="$KR_F1"$'\t'"$KR_F2"$'\t'"$KR_F3"$'\t'"$KR_F4"$'\t'"$KR_F5"$'\t'"$KR_F6"
           break
         fi
       done <<EOF
@@ -261,9 +286,9 @@ EOF
   if [ -n "$ofile_rows" ]; then
     while IFS= read -r orow; do
       [ -n "$orow" ] || continue
-      oop="$(cut -f7 <<<"$orow")"
-      [ "$oop" = "add" ] || continue
-      out="$out$(cut -f1-6 <<<"$orow")"$'\n'
+      _knob_split_row "$orow"
+      [ "$KR_F7" = "add" ] || continue
+      out="$out$KR_F1"$'\t'"$KR_F2"$'\t'"$KR_F3"$'\t'"$KR_F4"$'\t'"$KR_F5"$'\t'"$KR_F6"$'\n'
     done <<EOF
 $ofile_rows
 EOF
@@ -275,12 +300,12 @@ EOF
 # knob_registry_get <name> -> prints the unioned row's `default` field for
 # <name>, rc 1 on no match.
 knob_registry_get() {
-  local name="$1" row rname
+  local name="$1" row rest
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    rname="$(cut -f1 <<<"$row")"
-    if [ "$rname" = "$name" ]; then
-      cut -f2 <<<"$row"
+    if [ "${row%%$'\t'*}" = "$name" ]; then   # field 1, no fork
+      rest="${row#*$'\t'}"
+      printf '%s\n' "${rest%%$'\t'*}"          # field 2
       return 0
     fi
   done <<EOF
