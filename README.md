@@ -13,6 +13,16 @@ read, not a service you depend on.
 
 ## 1. What TemperLoop is
 
+TemperLoop is an opinionated process kernel for scaling AI development: it
+takes the machinery that already scales medium-to-large human engineering
+orgs — issue tracking, contract-scoped work, code review, protected
+branches, merge queues, WIP caps — and applies it to agent-driven work
+instead of assuming a human will supply that discipline by hand. See
+[Guiding principles](docs/principles.md) for the full thesis this rests on,
+[Architecture overview](docs/architecture.md) for how the pieces below fit
+together end to end, and [Who this is for](docs/who-its-for.md) for the
+reader every doc and gate in this repo is written against.
+
 Three pieces, meant to be adopted independently or together:
 
 1. **The board adapter** (`workflows/scripts/board/`) — `claim` / `release` /
@@ -181,6 +191,15 @@ then open (or serve, for root-relative links) `workflows/scripts/docs/_site/`:
 - [Plan-note contract](workflows/scripts/docs/_site/plan-schema.html) — the schema `/assess` writes and `/build` consumes
 - [Quality gates](workflows/scripts/docs/_site/quality-gates.html) — the full static gate list
 - [Adapter contracts](workflows/scripts/docs/_site/adapter-contracts/knowledge_store.html) — the knowledge-store adapter interface
+- [Feature docs](docs/features/) — one page per shipped feature (problem,
+  how it works, integration, resource impact, telemetry), enforced
+  complete by `workflows/scripts/validate-feature-docs.sh`; also rendered
+  onto the generated site under `features/`. `docs/features/telemetry.md`
+  is a good worked example of the five-section shape.
+- [ADRs](docs/adr/) — the architecture decision record corpus, starting
+  with [ADR-0000](docs/adr/0000-adr-process.md) (the MADR-lite process the
+  rest of the corpus follows); also rendered onto the generated site under
+  `adr/`.
 - Failure-mode chapters — real engineering failures this project hit, each ending in the mechanical guard it produced:
   [worktree write-isolation leak](workflows/scripts/docs/_site/failure-modes/01-worktree-write-isolation-leak.html),
   [GraphQL budget exhaustion](workflows/scripts/docs/_site/failure-modes/02-graphql-budget-exhaustion.html),
@@ -203,10 +222,11 @@ knob in this repo resolves through, and how `build.config.sh` implements it.
 
 ## 7. Contributing
 
-See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for how to contribute a
-failure-mode chapter to the docs site above. Broader contribution guidance
-(adapter contributions, community surface) is on its way as part of this
-project's public launch.
+See [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) for how to ship a new
+feature's doc (the manifest-claim → five-section-doc flow the quality
+gates enforce), contribute a failure-mode chapter, or add a
+knowledge-store/tracker adapter. Broader contribution guidance (community
+surface) is on its way as part of this project's public launch.
 
 ## 8. About the name
 
