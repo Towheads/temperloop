@@ -118,39 +118,18 @@
 
 set -uo pipefail
 
-# ---------------------------------------------------------------------------
-# _try_run_with_timeout SECS cmd... — portable bash-3.2-safe watchdog (no
-# `timeout` binary assumed present). Mirrors conventions-probe.sh's helper
-# of the same shape (itself mirroring scripts/kernel-drift-check.sh).
-# ---------------------------------------------------------------------------
-#
-# NOTE (fixes a latent pipe-leak this helper's upstream sibling carries —
-# conventions-probe.sh's _probe_run_with_timeout, foundation #765): the
-# watchdog subshell below is explicitly redirected to /dev/null at the
-# subshell boundary (`) </dev/null >/dev/null 2>&1 &`), NOT left to inherit
-# this function's stdout. Without that redirect, when this whole call sits
-# inside a command substitution (`out="$(_try_run_with_timeout ...)"`), the
-# watchdog's `sleep $secs` child inherits the substitution's pipe write-end
-# too — and even after the fast path kills the watchdog PROCESS below, that
-# orphaned `sleep` grandchild keeps running and keeps the pipe open, so the
-# command substitution can't see EOF until the full $secs elapses regardless
-# of how fast the real command finished. That turns every fast, successful
-# call into a full-timeout-length stall — silent and easy to miss because
-# small `--timeout` values in tests hide it as "a bit slow", not "hung".
-# See kernel/bin/subcommands/tests/test_try.sh's fast-path timing assertion.
-_try_run_with_timeout() {
-  local secs="$1"; shift
-  "$@" &
-  local cmd_pid=$!
-  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-  local watchdog_pid=$!
-  local status
-  wait "$cmd_pid" 2>/dev/null
-  status=$?
-  kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
-  return "$status"
-}
+# run_with_timeout SECS cmd... — portable bounded-subprocess watchdog, the
+# ONE shared shim every such call site sources rather than re-deriving
+# (temperloop#256). See kernel/workflows/scripts/lib/portable-timeout.sh
+# for the pipe-leak-fix rationale (foundation #861) and the
+# kernel/bin/subcommands/tests/test_try.sh fast-path timing assertion this
+# preserves. Path resolved via pure bash parameter expansion (${x%/*}),
+# never `dirname` — see baseline-snapshot.sh's identical resolution for why
+# (a sibling script's PATH-minimal degrade test).
+_pt_here="${BASH_SOURCE[0]%/*}"; [ "$_pt_here" = "${BASH_SOURCE[0]}" ] && _pt_here="."
+# shellcheck source=../../workflows/scripts/lib/portable-timeout.sh
+source "$(cd "$_pt_here/../.." && pwd)/workflows/scripts/lib/portable-timeout.sh"
+unset _pt_here
 
 # ---------------------------------------------------------------------------
 # Locate sibling kernel content. try.sh lives at kernel/bin/subcommands/ —
@@ -413,7 +392,7 @@ PROMPT_EOF
   # later command substitution (e.g. `jq` on a malformed judgment-call
   # response) returns non-zero — exactly the case the explicit `fix_rc` /
   # `fix_path` checks below exist to handle gracefully.
-  fix_json="$(_try_run_with_timeout "$TRY_DEMO_CLAUDE_TIMEOUT_SECS" \
+  fix_json="$(run_with_timeout "$TRY_DEMO_CLAUDE_TIMEOUT_SECS" \
     "$CLAUDE_BIN" -p "$prompt" \
     --tools "" \
     --output-format text \
@@ -585,7 +564,7 @@ if [ -z "$issues_reason" ]; then
   # Hard ceiling of 1000 open issues counted — a documented, generous cap
   # (not a silent truncation a caller could mistake for the true total).
   out=""
-  if out="$(_try_run_with_timeout "$try_timeout" \
+  if out="$(run_with_timeout "$try_timeout" \
       "$TRY_GH_BIN" issue list -R "$gh_repo" --state open --limit 1000 \
       --json number,title,url,labels,body 2>/dev/null)"; then
     issues_json="$out"
@@ -676,7 +655,7 @@ PROMPT_EOF
 )"
 
 set +e
-triage_out="$(_try_run_with_timeout "$TRY_CLAUDE_TIMEOUT_SECS" \
+triage_out="$(run_with_timeout "$TRY_CLAUDE_TIMEOUT_SECS" \
   "$CLAUDE_BIN" -p "$prompt" \
   --tools "" \
   --output-format text \

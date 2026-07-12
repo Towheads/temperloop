@@ -147,6 +147,15 @@ KERNEL_GATES=(
   # gh_cmd` seam (this file's own live-fallback injection point), zero
   # network. Same direct-`bash` form as the issue-corpus gate above.
   "bash workflows/scripts/lib/tests/test_issue_marker_probe.sh"
+  # Portable-timeout shared shim (temperloop#256): run_with_timeout's
+  # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
+  # background+kill fallback), the 124->137 exit-code normalization across
+  # backends, argument/output passthrough, and the foundation #861
+  # pipe-leak-fix regression. The ONE guard baseline-snapshot.sh, report.sh,
+  # try.sh, configure.sh, and conventions-probe.sh now source instead of
+  # each re-deriving their own copy. Same direct-`bash` form as the
+  # knowledge_search gates above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/lib/tests/test_portable_timeout.sh"
   # Knob registry (temperloop#164/#169 D2): parse/union tests for
   # workflows/scripts/config/knob-registry-lib.sh — parses the real kernel
   # TSV clean, unions a synthetic overlay fixture (add + redefault rows),

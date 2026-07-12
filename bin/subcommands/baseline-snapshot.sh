@@ -126,32 +126,19 @@ lookback_days="${BASELINE_SNAPSHOT_LOOKBACK_DAYS:-90}"
 pr_limit="${BASELINE_SNAPSHOT_PR_LIMIT:-500}"
 issue_limit="${BASELINE_SNAPSHOT_ISSUE_LIMIT:-500}"
 
-# ---------------------------------------------------------------------------
-# run_with_timeout SECS cmd... — portable bash-3.2-safe watchdog (no
-# `timeout` binary assumed present; macOS dev machines don't ship one).
-# Same shape/name-family as conventions-probe.sh's _probe_run_with_timeout
-# and scripts/kernel-drift-check.sh's helper — duplicated per-script by
-# established convention (see conventions-probe.sh's own header note on
-# this), not centralized in a shared lib.
-# ---------------------------------------------------------------------------
-_baseline_run_with_timeout() {
-  local secs="$1"; shift
-  "$@" &
-  local cmd_pid=$!
-  # Redirect the watchdog subshell at its boundary so its `sleep` child
-  # never inherits a command substitution's pipe write-end — an inherited
-  # write-end keeps the pipe open after the fast path kills the watchdog
-  # process, stalling every fast call for the full $secs (foundation #861;
-  # same fix as conventions-probe.sh / try.sh's watchdog helpers).
-  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-  local watchdog_pid=$!
-  local status
-  wait "$cmd_pid" 2>/dev/null
-  status=$?
-  kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
-  return "$status"
-}
+# run_with_timeout SECS cmd... — portable bounded-subprocess watchdog (no
+# `timeout` binary assumed present; macOS dev machines don't ship one), the
+# ONE shared shim every such call site sources rather than re-deriving
+# (temperloop#256). Path resolved via pure bash parameter expansion (${x%/*}),
+# never `dirname` — this script's own gh-absent degrade path is exercised
+# under an intentionally minimal PATH (see
+# bin/subcommands/tests/test_baseline_snapshot.sh's NOGHBIN allowlist) that
+# does not include `dirname`, and this sourcing must not add a new external
+# dependency to a script whose header promises only bash/git/jq.
+_pt_here="${BASH_SOURCE[0]%/*}"; [ "$_pt_here" = "${BASH_SOURCE[0]}" ] && _pt_here="."
+# shellcheck source=../../workflows/scripts/lib/portable-timeout.sh
+source "$(cd "$_pt_here/../.." && pwd)/workflows/scripts/lib/portable-timeout.sh"
+unset _pt_here
 
 # ---------------------------------------------------------------------------
 # Repo root + gh slug — local-only, no network (mirrors conventions-probe.sh's
@@ -206,7 +193,7 @@ elif [ "$have_gh" -ne 1 ]; then
   metrics_reason="skipped — gh CLI not found on PATH"
 elif [ -z "$since_date" ]; then
   metrics_reason="skipped — could not compute the lookback window start date"
-elif ! _baseline_run_with_timeout "$gh_timeout" "$GH_BIN" auth status >/dev/null 2>&1; then
+elif ! run_with_timeout "$gh_timeout" "$GH_BIN" auth status >/dev/null 2>&1; then
   metrics_reason="skipped — gh not authenticated (or the auth check timed out)"
 else
   metrics_available=1
@@ -215,10 +202,10 @@ fi
 pr_json=""
 issue_json=""
 if [ "$metrics_available" -eq 1 ]; then
-  if pr_json="$(_baseline_run_with_timeout "$gh_timeout" "$GH_BIN" pr list \
+  if pr_json="$(run_with_timeout "$gh_timeout" "$GH_BIN" pr list \
       --repo "$gh_repo" --state merged --search "merged:>=${since_date}" \
       --json createdAt,mergedAt,reviews --limit "$pr_limit" 2>/dev/null)" \
-      && issue_json="$(_baseline_run_with_timeout "$gh_timeout" "$GH_BIN" issue list \
+      && issue_json="$(run_with_timeout "$gh_timeout" "$GH_BIN" issue list \
         --repo "$gh_repo" --state open \
         --json createdAt --limit "$issue_limit" 2>/dev/null)" \
       && [ -n "$pr_json" ] && [ -n "$issue_json" ]; then
