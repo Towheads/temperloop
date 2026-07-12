@@ -1,5 +1,5 @@
 ---
-description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217). Executing customer-persona agents remain `design-persona-agents` (temperloop#221); ADR emission at materialize remains `design-adr-emission` (temperloop#219).
+description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217); ADR emission at materialize landed with `design-adr-emission` (temperloop#219). Executing customer-persona agents remain `design-persona-agents` (temperloop#221).
 argument-hint: "[<problem-statement> | <pointer-note>] [--board <N> | --project <name>]"
 ---
 
@@ -30,7 +30,7 @@ point of origin, not a patch to triage. Both front doors converge on the same
 `/assess --epic N` → `/build` pipeline — nothing downstream of materialization
 changes.
 
-## Scope — this item vs. `design-persona-agents` (#221) and `design-adr-emission` (#219)
+## Scope — this item vs. `design-persona-agents` (#221)
 
 This file ships the full flow: intake → coverage walk → **review pass** →
 ratify → materialize. `design-command-core` shipped intake/walk/ratify/
@@ -38,17 +38,19 @@ materialize; `design-review-machinery` (temperloop#217) filled Step 3 below
 with the tier decision, the adversarial lens panel, capability probes for
 reviewer agents, and the findings-fold-back step — closing the review-tier
 gap on top of the K94/K131 intake fix `design-command-core` already closed.
+`design-adr-emission` (temperloop#219) added Step 5c below — draft ADR
+emission for the ratified brief's architectural calls, conforming to
+`docs/adr/0000-adr-process.md` — a different section of Step 5, not Step 3,
+so it needed no Step 3 change.
 
-Two things Step 3 below deliberately does **not** implement, tracked in the
+One thing Step 3 below deliberately does **not** implement, tracked in the
 same plan (`Plans/2026-07-08 temperloop - design command front door.md`):
 the **executing** customer-persona agents themselves (Step 3 specifies
 *when* an executed first-run/uninstall run is mandatory and how it degrades
 when no such agent is declared; the agents that actually run one are
-`design-persona-agents`, #221, parked on K136's audience page landing) and
-**ADR emission** at materialize (`design-adr-emission`, #219, parked on
-K145's ADR-0000 process landing — a different section of Step 5, not Step 3).
-Nothing in Steps 0–2 or 4–6 needed to change for #217 to land; #219 and #221
-land later without touching Step 3.
+`design-persona-agents`, #221, parked on K136's audience page landing).
+Nothing in Steps 0–2 or 4–6 needed to change for #217 or #219 to land; #221
+lands later without touching Step 3.
 
 ## Inputs
 
@@ -462,7 +464,7 @@ walked.
 
 ## Step 5 — Materialize
 
-Runs only against a `ratified` brief (Step 4). Four sub-steps, in order —
+Runs only against a `ratified` brief (Step 4). Five sub-steps, in order —
 each degrades legibly rather than blocking the ones after it, except where
 noted.
 
@@ -508,7 +510,8 @@ design-brief: [[Designs/<note>]]
    **not** attempt epic creation. This is the minimum-viable-output floor: the
    brief is already ratified and persisted (Steps 1–4), so nothing is lost;
    only the epic and the final hand-off degrade. Skip the rest of 5b, still
-   run 5c (Decisions capture), and emit Step 5d's **degraded** hand-off line
+   run 5c (ADR emission — each emitted ADR notes no epic exists yet) and 5d
+   (Decisions capture), and emit Step 5e's **degraded** hand-off line
    instead of the full one.
 2. **Take the epic body composed and scanned in 5a** — do not re-compose it
    here; 5b writes exactly the content the leak-guard scan cleared, nothing
@@ -534,19 +537,94 @@ design-brief: [[Designs/<note>]]
    as a plain GitHub issue; note the skip in the Step 6 summary, don't treat
    it as a failure.
 
-### 5c — Decisions capture
+### 5c — ADR emission (best-effort, degrades legibly)
+
+**Four artifacts, four different things — no content duplication.**
+`claude/design-schema.md` § Materialization contract names three: the brief
+(private deliberation record, `Designs/` in the knowledge store), the epic
+(operational tracker), and the Decisions note (personal capture, 5d below).
+This sub-step adds a fourth, distinct from all three: the **public decision
+record** — a draft ADR under `docs/adr/`, immutable once later ratified to
+`Accepted` by a human outside this command. Each of the four holds different
+content, never a copy of another's: the brief carries the full deliberation
+(alternatives considered, persona findings, rejected options); the ADR
+states the decision plus its consequences, in ADR-0000's MADR-lite shape,
+at ADR length — not the brief's exploratory reasoning restated; the
+Decisions note (5d) carries the operator's own personal framing/rationale.
+Compose each ADR section fresh from the brief's content; do not paste brief
+prose or Decisions-note prose into it verbatim.
+
+1. **Identify architectural calls.** Walk the ratified brief's dispositioned
+   dimensions for calls that pass the stranger test
+   (`claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule, applied to
+   decision records per `docs/adr/0000-adr-process.md` § "Routing rule:
+   which decisions get an ADR, and which stay in the vault") — a decision a
+   stranger's fresh clone of this kernel repo would need the rationale for,
+   to understand why kernel machinery is shaped the way it is. Dimension 3
+   (Alignment / routing) already ran this exact test at Step 1.3 and is the
+   first place to look; dimensions 4, 5, 7, and 10 are the other likely
+   sources wherever the brief commits to a specific architectural shape (a
+   new component, a contract surface, a board-field axis, a coupling
+   commitment). A brief can make zero, one, or several such calls — this is
+   a judgment call over the brief's content, not a fixed count.
+2. **Degrade legibly when there's nothing to emit.** If `docs/adr/` doesn't
+   exist in this checkout, or the walk in 5c.1 finds zero architectural
+   calls, emit nothing and say so plainly — `claude/message-schema.md`'s
+   Degradation notice template (what was skipped, why, one line) — never a
+   silent skip. This mirrors 5a/5b's own best-effort degradation style.
+3. **Emit one draft ADR per identified call.** For each: allocate the next
+   append-only 4-digit number by scanning `docs/adr/NNNN-*.md` for the
+   highest existing prefix and incrementing by one (per ADR-0000 §
+   Numbering — never reused, never a guessed gap); write
+   `docs/adr/NNNN-<kebab-case-title>.md` conforming to ADR-0000's
+   MADR-lite four-section format:
+   - Frontmatter `title: NNNN: <title>` (single line, per ADR-0000).
+   - `## Status` — **`Proposed`**, always, never `Accepted`: this command
+     only drafts the ADR, it does not ratify it. Accepting an ADR (or
+     superseding one) is a separate, later human act outside this command's
+     scope.
+   - `## Context` — the forces at play, drawn from the brief's relevant
+     dimension(s), plus a reference back to the materialized epic (`epic:
+     <owner/repo>#<N>`, or — if 5b degraded — "no epic exists yet; see the
+     ratified brief", the same degraded-path phrasing 5d uses for its own
+     epic cross-link).
+   - `## Decision` — the call itself, stated plainly enough to act on
+     without re-deriving it, per ADR-0000 § Decision.
+   - `## Consequences` — what follows: benefits, costs, follow-on work,
+     drawn from the brief's dimension 15 (failure modes) / dimension 16
+     (adoption & enforcement) content where applicable.
+   Register the `docs/adr/*` glob in both governance manifests ADR-0000 §
+   Manifest registration names — `workflows/scripts/kernel/kernel-manifest.txt`
+   (`kernel docs/adr/*`) and `docs/features/feature-manifest.txt` (`none
+   docs/adr/*`) — if an entry for the glob isn't already present; ordinarily
+   a no-op after the first ADR this command ever emits, since the glob
+   claims the whole directory once.
+4. **Link back to the epic; link the epic forward to the ADRs.** Each
+   emitted ADR's `## Context` (or `## Consequences`) already names the epic
+   per 5c.3 above — that is the epic-ward direction. For the reverse
+   direction, append a section to the epic body (composed in 5a, created or
+   adopted in 5b) listing every emitted ADR's path, e.g. an `## ADRs`
+   heading with one path per line, via `gh issue edit`. **If 5b degraded**
+   (no epic exists), skip only this reverse-linking half — the ADRs
+   themselves still emit per 5c.3, each noting "no epic exists yet" in its
+   `## Context` rather than a real epic reference; note the skip in Step 6.
+5. **Best-effort, like 5a/5b.** A failure in this sub-step (a write error,
+   a manifest-registration failure) is reported plainly in Step 6 and does
+   not roll back 5a/5b or block 5d/5e from running.
+
+### 5d — Decisions capture
 
 Write a `Decisions/` note capturing the ratified design call, per
 `claude/CLAUDE.kernel.md` § Decision capture (the same frontmatter, the same
 `## Source` footer convention), cross-linking `[[wikilink]]`s both back to
 the brief and forward to the epic (or, if 5b degraded, noting that no epic
-exists yet). This is the third artifact `claude/design-schema.md` §
-Materialization contract names — brief (deliberation record), epic
-(operational tracker), Decisions note (personal capture) — and it runs
+exists yet). This is the third of the four artifacts named in 5c above —
+brief (deliberation record), epic (operational tracker), ADR (public
+decision record, 5c), Decisions note (personal capture, here) — and it runs
 **regardless of whether 5b succeeded**: a degraded materialize still gets its
 Decisions note.
 
-### 5d — Hand-off line
+### 5e — Hand-off line
 
 End Step 5 with exactly one line:
 
@@ -561,9 +639,10 @@ End Step 5 with exactly one line:
 Print, in order: the brief note's path and final `status`; each dimension's
 disposition in one compact line (`filled: N · n/a: N · deferred: N`, with the
 deferred refs listed); whether the leak-guard scan ran or was skipped (and
-why); the epic — created, adopted, or not-created-and-why; the Decisions
-note path; and the Step 5d hand-off line, verbatim, as the last line of the
-response.
+why); the epic — created, adopted, or not-created-and-why; each ADR emitted
+in Step 5c (path + number), or the degradation reason if none were emitted;
+the Decisions note path; and the Step 5e hand-off line, verbatim, as the
+last line of the response.
 
 ## Failure modes
 
@@ -572,11 +651,15 @@ response.
   nowhere to write the brief without the store.
 - **`gh`/repo unavailable at materialize time (Step 5b).** Not a failure of
   the command — the brief still ratifies and persists; only the epic and the
-  final hand-off degrade (Step 5d's degraded line). Report it plainly in Step
+  final hand-off degrade (Step 5e's degraded line). Report it plainly in Step
   6, never silently.
 - **No board registered for the resolved repo (Step 5b.4).** The epic still
   gets created as a plain GitHub issue; board mirroring is a convenience, not
   a requirement. Note the skip.
+- **No `docs/adr/` directory in this checkout, or the ratified brief makes no
+  architectural call (Step 5c).** Emit nothing — a legible degradation
+  notice naming which condition applied, same best-effort style as 5a/5b;
+  never a silent skip.
 - **A dimension is left undispositioned at ratify time (Step 4.1).** Block
   ratification — list the gaps and return to Step 2. Never ratify with a
   silent skip; the mechanical lint (temperloop#216) isn't required for this
@@ -611,10 +694,12 @@ response.
 - Consumer, unchanged: `claude/commands/assess.md`'s epic-decomposition mode
   (a `## Contract`-bearing epic with no sub-issues).
 - Template + grammar this command applies: `claude/design-schema.md`.
+- ADR process Step 5c conforms to: `docs/adr/0000-adr-process.md`
+  (MADR-lite format, append-only numbering, kernel-public routing rule).
 - Review-tier machinery (Step 3): shipped by `design-review-machinery`,
-  temperloop#217. Executing customer-persona agents: `design-persona-agents`,
-  temperloop#221 (parked on K136). ADR emission (Step 5, not Step 3):
-  `design-adr-emission`, temperloop#219 (parked on K145).
+  temperloop#217. ADR emission (Step 5c, not Step 3): shipped by
+  `design-adr-emission`, temperloop#219. Executing customer-persona agents
+  remain `design-persona-agents`, temperloop#221 (parked on K136).
 - Capability-probe predicate: [[Decisions/foundation - Project capability
   probes]] — same predicate `/assess` Step 3 and `/triage` Step 3 apply to
   their own review panels.
