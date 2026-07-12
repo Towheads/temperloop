@@ -39,6 +39,22 @@
 #      pointed at a throwaway tree), proving the seam works without this
 #      repo needing a real overlay to prove it.
 #
+#      SCAN-ROOT-AWARE (temperloop#243): a kernel row's owning-script is
+#      ALWAYS resolved against KNOB_REGISTRY_SCAN_ROOT. An overlay row's
+#      owning-script is resolved against a SEPARATE KNOB_REGISTRY_OVERLAY_
+#      SCAN_ROOT, which defaults to KNOB_REGISTRY_SCAN_ROOT itself. This
+#      matters only in a composed (kernel+overlay) tree, where the wrapper
+#      pins KNOB_REGISTRY_SCAN_ROOT to the vendored kernel/ subtree so the
+#      kernel table's rows resolve against the pristine kernel checkout —
+#      which left overlay-owned owning-scripts (living at the composed
+#      root, e.g. workflows/scripts/vault-shadow-reindex.sh, OUTSIDE
+#      kernel/) structurally unresolvable against that same pinned root.
+#      Setting KNOB_REGISTRY_OVERLAY_SCAN_ROOT to the composed root lets
+#      overlay rows resolve correctly while kernel rows keep resolving
+#      against kernel/, unchanged. Unset (the default), the two roots are
+#      identical and a standalone-kernel checkout behaves byte-for-byte as
+#      before this seam existed.
+#
 #   2. UNREGISTERED — every kernel-classified `*.sh` file (per
 #      list-kernel-set.sh --class kernel, matching the same file-set
 #      convention as check-personal-token-denylist.sh) is swept for
@@ -97,11 +113,17 @@
 # workflows/scripts/kernel/*'s KERNEL_MANIFEST_ROOT/FILE convention):
 #   KNOB_REGISTRY_FILE, KNOB_REGISTRY_OVERLAY_FILE   (knob-registry-lib.sh's
 #     own seams — which file to read for the kernel/overlay TABLES)
-#   KNOB_REGISTRY_SCAN_ROOT   root that owning-script paths (and the
-#     unregistered-sweep's kernel-manifest file set) are resolved against.
-#     Defaults to this repo's root. Also passed as --root to
+#   KNOB_REGISTRY_SCAN_ROOT   root that KERNEL-table owning-script paths
+#     (and the unregistered-sweep's kernel-manifest file set) are resolved
+#     against. Defaults to this repo's root. Also passed as --root to
 #     list-kernel-set.sh, so a fixture test can point BOTH the registry
 #     tables and the scanned file tree at the same throwaway checkout.
+#   KNOB_REGISTRY_OVERLAY_SCAN_ROOT   root that OVERLAY-table (add/redefault)
+#     owning-script paths are resolved against. Defaults to
+#     KNOB_REGISTRY_SCAN_ROOT (so an unset seam is a no-op — see the
+#     SCAN-ROOT-AWARE note above). Set this to a composed tree's root when
+#     KNOB_REGISTRY_SCAN_ROOT is pinned to a vendored kernel/ subtree, so
+#     overlay-owned owning-scripts outside kernel/ still resolve.
 #   KNOB_REGISTRY_MANIFEST_FILE   passed as --manifest to list-kernel-set.sh
 #     (defaults to that script's own default, the real kernel-manifest.txt)
 #   KNOB_REGISTRY_EXEMPT_FILE   path to the wholesale file-exemption list
@@ -129,6 +151,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 : "${KNOB_REGISTRY_SCAN_ROOT:=$REPO_ROOT}"
+: "${KNOB_REGISTRY_OVERLAY_SCAN_ROOT:=$KNOB_REGISTRY_SCAN_ROOT}"
 : "${KNOB_REGISTRY_EXEMPT_FILE:=$SCRIPT_DIR/knob-registry-exempt-files.txt}"
 : "${KNOB_REGISTRY_MANIFEST_FILE:=}"
 
@@ -238,7 +261,14 @@ _knob_check_row() {
       return 0
       ;;
   esac
-  local path="$KNOB_REGISTRY_SCAN_ROOT/$owning_script"
+  # Kernel rows resolve against KNOB_REGISTRY_SCAN_ROOT; overlay (add/
+  # redefault) rows resolve against KNOB_REGISTRY_OVERLAY_SCAN_ROOT, which
+  # defaults to KNOB_REGISTRY_SCAN_ROOT itself — see this file's header
+  # "SCAN-ROOT-AWARE" note (temperloop#243). Unset, the two are identical
+  # and this is a no-op.
+  local scan_root="$KNOB_REGISTRY_SCAN_ROOT"
+  [ "$table" = "overlay" ] && scan_root="$KNOB_REGISTRY_OVERLAY_SCAN_ROOT"
+  local path="$scan_root/$owning_script"
   local found_defaults rc
   found_defaults="$(_knob_seam_defaults_for "$name" "$path")"
   rc=$?
