@@ -12,11 +12,13 @@
 #   plan.sh writeback <planFile> --slug <slug> --sentinel <state> \
 #         [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]
 #
-# `validate` enforces the 11 plan-schema rules (status==approved, slug+acceptance
+# `validate` enforces the 13 plan-schema rules (status==approved, slug+acceptance
 # present, unique kebab slugs ≤40, branch <type>/<slug>, depends-on/after refs
 # exist, the depends-on∪after union acyclic, no leftover acceptance placeholder,
 # gh_issue a positive int, gh_issue/split_from mutual exclusion, the rule-11
-# external-gate gate_check requirement). `toposort` partitions items into
+# external-gate gate_check requirement, rule-12 repo owner/repo shape, the
+# rule-13 activation-block class∈{A,B,C} + class-A proof: requirement).
+# `toposort` partitions items into
 # dependency levels — level 0 = items with neither depends-on nor after — over
 # the UNION of both edge sets, and emits `{"levels":[["a","b"],["c"]]}` on stdout.
 #
@@ -154,11 +156,15 @@ parse_items() {
         rec = rec SEP "notes=" notes
         rec = rec SEP "acceptance=" (acc_count>0 ? "1" : "0")
         rec = rec SEP "acc_placeholder=" acc_placeholder
+        rec = rec SEP "activation=" (activation ? "1" : "0")
+        rec = rec SEP "act_class=" act_class
+        rec = rec SEP "act_proof=" act_proof
         print rec
       }
       have_item=0; slug=""; sentinel=""; title=""; branch=""; dependson="";
       after=""; gh_issue=""; split_from=""; gate_check=""; notes="";
       acc_count=0; acc_placeholder=0; in_acc=0
+      activation=0; act_class=""; act_proof=""; in_activation=0
     }
     BEGIN { SEP=sprintf("%c",31); in_items=0 }
     /^##[[:space:]]+Items[[:space:]]*$/ { in_items=1; next }
@@ -191,7 +197,7 @@ parse_items() {
     have_item {
       l=$0
       # acceptance block: `- acceptance:` opens it; subsequent deeper bullets are entries.
-      if (l ~ /^[[:space:]]*-[[:space:]]*acceptance:[[:space:]]*$/) { in_acc=1; next }
+      if (l ~ /^[[:space:]]*-[[:space:]]*acceptance:[[:space:]]*$/) { in_acc=1; in_activation=0; next }
       if (in_acc) {
         # placeholder line is fatal at execution
         if (l ~ /no acceptance criteria derivable from source/) { acc_placeholder=1 }
@@ -199,6 +205,20 @@ parse_items() {
         if (l ~ /^[[:space:]]+-[[:space:]]+/) { acc_count++; next }
         # a same-level field key ends the acceptance block (fall through to field parse)
         if (l ~ /^[[:space:]]*-[[:space:]]*[a-zA-Z_-]+:/) { in_acc=0 }
+        else { next }
+      }
+      # activation block: `- activation:` opens it; `- class:` / `- proof:` are its
+      # keyed entries (the inward twin of gate_check — plan-schema.md § activation).
+      if (l ~ /^[[:space:]]*-[[:space:]]*activation:[[:space:]]*$/) { in_activation=1; activation=1; in_acc=0; next }
+      if (in_activation) {
+        if (match(l, /^[[:space:]]*-[[:space:]]*class:[[:space:]]*/)) {
+          v=l; sub(/^[[:space:]]*-[[:space:]]*class:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]/,"",v); act_class=v; next
+        }
+        if (match(l, /^[[:space:]]*-[[:space:]]*proof:[[:space:]]*/)) {
+          v=l; sub(/^[[:space:]]*-[[:space:]]*proof:[[:space:]]*/,"",v); act_proof=v; next
+        }
+        # any other same-level field key ends the activation block (fall through to field parse)
+        if (l ~ /^[[:space:]]*-[[:space:]]*[a-zA-Z_-]+:/) { in_activation=0 }
         else { next }
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*branch:[[:space:]]*/)) {
@@ -287,6 +307,7 @@ cmd_validate() {
     slug="$(rec_slug "$rec")"
     [ -n "$slug" ] || continue
     local branch acc acc_ph gh_issue split_from gate_check notes dep aft tok
+    local activation act_class act_proof
     branch="$(rec_field "$rec" branch)"
     acc="$(rec_field "$rec" acceptance)"
     acc_ph="$(rec_field "$rec" acc_placeholder)"
@@ -296,6 +317,9 @@ cmd_validate() {
     notes="$(rec_field "$rec" notes)"
     dep="$(rec_field "$rec" dependson)"
     aft="$(rec_field "$rec" after)"
+    activation="$(rec_field "$rec" activation)"
+    act_class="$(rec_field "$rec" act_class)"
+    act_proof="$(rec_field "$rec" act_proof)"
 
     # Rule 2: acceptance block present.
     [ "$acc" = "1" ] || errors+=("rule 2: item '$slug' has no acceptance: block")
@@ -322,6 +346,18 @@ cmd_validate() {
     # Rule 11: a prose external/cross-plan gate in notes: needs a gate_check:.
     if [ -n "$notes" ] && [[ "$notes" =~ (do[[:space:]]not[[:space:]]start|don\'?t[[:space:]]start|until[[:space:]]+#[0-9]+|lands[[:space:]]*\(?#[0-9]+) ]]; then
       [ -n "$gate_check" ] || errors+=("rule 11: item '$slug' declares a prose external gate in notes: but carries no gate_check: predicate")
+    fi
+    # Rule 13: an activation: block (when present) must declare a valid class; a
+    # class-A block must carry a proof: predicate (the synchronous in-repo
+    # activation check /build runs at Step 3e.6). B/C are ledger-discharged.
+    if [ "$activation" = "1" ]; then
+      case "$act_class" in
+        A|B|C) : ;;
+        *) errors+=("rule 13: item '$slug' activation: class '${act_class:-<missing>}' must be one of A|B|C") ;;
+      esac
+      if [ "$act_class" = "A" ] && [ -z "$act_proof" ]; then
+        errors+=("rule 13: item '$slug' activation: class A must carry a proof: predicate (the synchronous in-repo activation check)")
+      fi
     fi
     # Rule 5/8: depends-on + after refs must exist in this plan.
     for tok in $(split_list "$dep"); do
