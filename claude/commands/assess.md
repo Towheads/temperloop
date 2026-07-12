@@ -6,10 +6,17 @@ argument-hint: "--epic <N> [--board <N> | --project <name>] [--no-poll]"
 You are running the **assess** command. Goal: take one **already-triaged epic** and work out *how it builds safely* — decompose it to the **seam**, compute merge-safety (`depends-on`) and logical-order (`after:`) edges and dependency levels, and emit a structured plan note that `/build` can execute. This is the **technical-judgment** stage of the funnel (logical grouping already happened in `/triage`):
 
 ```
-/triage   cull → group → epic + sub-issues (Backlog→Ready)
-   └─► /assess --epic N   epic → decompose to seams → edges/levels → Plans/ note (draft)
-          └─► /build   execute → claim → merge → close children → close epic (Done)
+/triage   cull → group → epic + sub-issues (Backlog→Ready)          ┐
+/design   intake → coverage walk → review pass → ratify → materialize ┼─► epic (## Contract)
+                                                                        │
+                                                    └─► /assess --epic N   epic → decompose to seams → edges/levels → Plans/ note (draft)
+                                                              └─► /build   execute → claim → merge → close children → close epic (Done)
 ```
+
+`/design` is the funnel's second front door (invented work, not discovered
+work) — its own materialize step produces the same Contract-bearing epic
+shape `/triage` does, so everything from `/assess` down is unchanged
+regardless of which door an epic came through.
 
 The plan conforms to the plan-note schema (`~/.claude/plan-schema.md`) and ships with `status: draft` — promotion to `approved` is the user's decision. See [[Decisions/foundation - Triage stage and the logical-technical pipeline split]] for the logical/technical split this command's scope sits on.
 
