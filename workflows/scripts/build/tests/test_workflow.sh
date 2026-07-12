@@ -51,6 +51,14 @@ command -v node >/dev/null 2>&1 || {
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# Unique per-run temp root (#258): a fixed /tmp/wf-test-* path collides when
+# two `quality-gates.sh` runs execute this suite concurrently in separate
+# worktrees on the same host (parallel /build workers). mktemp -d gives each
+# invocation its own PID/random-suffixed directory, and the EXIT trap sweeps
+# it — no shared prefix for a sibling run to clobber or race against.
+WF_TEST_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/wf-test.XXXXXX")"
+trap 'rm -rf "$WF_TEST_TMPDIR"' EXIT
+
 # ---------------------------------------------------------------------------
 # run_node_case <description> <node-es-module-body>
 # Writes a temp .mjs, runs it with node, reads the last stdout line as a JSON
@@ -59,7 +67,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 run_node_case() {
   local desc="$1"
   local tmpf
-  tmpf="$(mktemp /tmp/wf-test-XXXXXX.mjs)"
+  tmpf="$(mktemp "$WF_TEST_TMPDIR/case-XXXXXX.mjs")"
   printf '%s\n' "$2" > "$tmpf"
   local out rc=0
   out="$(node "$tmpf" 2>&1)" || rc=$?
