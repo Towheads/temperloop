@@ -77,18 +77,19 @@ set -euo pipefail
 
 # --- fixture seam -------------------------------------------------------------
 # One test-injection seam per external dependency, mirroring board.sh's single
-# `_board_gh` indirection. Production runs real gh/git; tests source this file
-# (sourced-guard below stops the dispatch) and override these to replay fixtures
-# with zero network. We also source board.sh so the suite shares ONE fixture
-# system — the board harness overrides `_board_gh`, we override `_gate_gh` /
-# `_gate_git` the same way.
+# `_board_gh` indirection. Production runs real gh (gate.sh has no local-git
+# dependency — every read, including the risk predicate's changed-file diff,
+# goes through the GitHub API so a PR's head ref never needs to be reachable
+# locally; temperloop#242). Tests source this file (sourced-guard below stops
+# the dispatch) and override `_gate_gh` to replay fixtures with zero network.
+# We also source board.sh so the suite shares ONE fixture system — the board
+# harness overrides `_board_gh`, we override `_gate_gh` the same way.
 _GATE_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflows/scripts/board/lib/board.sh
 # shellcheck disable=SC1091
 [ -f "$_GATE_HERE/../board/lib/board.sh" ] && source "$_GATE_HERE/../board/lib/board.sh"
 
-_gate_gh()  { gh "$@"; }
-_gate_git() { git "$@"; }
+_gate_gh() { gh "$@"; }
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
 
@@ -242,11 +243,17 @@ cmd_backend() {
 # it is a necessary, not sufficient, condition for a batched merge; the human
 # still consents. Reasons accumulate so the orchestrator can surface every
 # trigger, not just the first.
-_gate_pr_files() {  # changed files for a PR: origin/main..<headRef>, one per line
-  local owner_repo="$1" pr="$2" head raw
-  head="$(_gate_gh pr view "$pr" -R "$owner_repo" --json headRefName --jq '.headRefName' 2>&1)" \
-    || { printf 'ERR\t%s\n' "$head"; return 1; }
-  raw="$(_gate_git diff --name-only "origin/main..$head" 2>&1)" \
+_gate_pr_files() {  # changed files for a PR, one per line — via the GitHub
+                     # API's own `files` field, NEVER local git. A bare
+                     # `origin/main..<headRefName>` diff assumes the head ref
+                     # is reachable as a local/origin branch, which a
+                     # push-by-SHA branch (`git push origin <sha>:refs/heads/
+                     # <branch>`, /build's own convention) is not guaranteed
+                     # to be in every checkout — the API already knows the
+                     # PR's changed files without any local ref at all
+                     # (temperloop#242).
+  local owner_repo="$1" pr="$2" raw
+  raw="$(_gate_gh pr view "$pr" -R "$owner_repo" --json files --jq '.files[].path' 2>&1)" \
     || { printf 'ERR\t%s\n' "$raw"; return 1; }
   printf '%s\n' "$raw"
 }
@@ -274,9 +281,17 @@ cmd_risk() {
     if grep -qiE '^(hold|risky)$' <<<"$labels"; then
       reasons+=("PR #$pr carries a hold/risky label")
     fi
-    # changed-file set for the pairwise-disjoint test
-    local f; f="$(_gate_pr_files "$owner_repo" "$pr")"
-    case "$f" in ERR*) rm -rf "$files_dir"; die "git diff failed for #$pr: ${f#ERR	}" ;; esac
+    # changed-file set for the pairwise-disjoint test. The assignment and its
+    # `||` handler MUST be one statement (never a bare `f="$(...)"` preceded
+    # by a separate `local f;`) — under `set -euo pipefail` a failing command
+    # substitution in a bare assignment kills the whole script BEFORE any
+    # later `case`/error check ever runs, exiting empty-stdout/rc=1 with no
+    # closed-JSON outcome for the orchestrator to branch on (temperloop#242).
+    # Chaining `|| { ... }` directly onto the assignment keeps it inside a
+    # tested command, so -e does not fire and the ERR path actually executes.
+    local f
+    f="$(_gate_pr_files "$owner_repo" "$pr")" \
+      || { rm -rf "$files_dir"; die "gh pr view (files) failed for #$pr: ${f#ERR	}"; }
     printf '%s\n' "$f" | grep -v '^$' | sort -u > "$files_dir/$pr"
   done
 
