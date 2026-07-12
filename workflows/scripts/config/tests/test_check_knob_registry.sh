@@ -238,4 +238,77 @@ $out" ;;
 esac
 echo "PASS: 11 overlay redefault mismatch caught against its own owning-script (RED)"
 
+# --- 12. KNOB_REGISTRY_OVERLAY_SCAN_ROOT: composed-tree seam (temperloop#243)
+#         kernel rows resolve against KNOB_REGISTRY_SCAN_ROOT (pinned to a
+#         vendored kernel/ subtree); an overlay add/redefault row's
+#         owning-script lives OUTSIDE that subtree, at the composed root,
+#         and resolves against KNOB_REGISTRY_OVERLAY_SCAN_ROOT instead.
+mkdir -p "$REPO/kernel/pkg" "$REPO/overlay_pkg"
+cat >"$REPO/kernel/pkg/a.sh" <<'EOF'
+#!/usr/bin/env bash
+: "${KNOB_A:=10}"
+echo "$KNOB_A"
+EOF
+cat >"$REPO/overlay_pkg/overlay_composed.sh" <<'EOF'
+#!/usr/bin/env bash
+: "${KNOB_OVERLAY_COMPOSED:=composed-value}"
+EOF
+cat >"$WORK/kernel.tsv" <<'EOF'
+KNOB_A	10	int	kernel	pkg/a.sh	first test knob
+EOF
+cat >"$WORK/overlay.tsv" <<'EOF'
+KNOB_OVERLAY_COMPOSED	composed-value	string	kernel	overlay_pkg/overlay_composed.sh	overlay addition living outside the kernel subtree	add
+EOF
+: >"$WORK/exempt.txt"
+commit_repo
+
+run_checker_composed() {
+  (
+    KNOB_REGISTRY_FILE="$WORK/kernel.tsv"
+    KNOB_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
+    KNOB_REGISTRY_SCAN_ROOT="$REPO/kernel"
+    KNOB_REGISTRY_OVERLAY_SCAN_ROOT="$REPO"
+    KNOB_REGISTRY_MANIFEST_FILE="$MANIFEST"
+    KNOB_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
+    export KNOB_REGISTRY_FILE KNOB_REGISTRY_OVERLAY_FILE KNOB_REGISTRY_SCAN_ROOT
+    export KNOB_REGISTRY_OVERLAY_SCAN_ROOT
+    export KNOB_REGISTRY_MANIFEST_FILE KNOB_REGISTRY_EXEMPT_FILE
+    bash "$CHECKER"
+  )
+}
+
+out="$(run_checker_composed 2>&1)" || fail "12: composed-tree overlay-scan-root seam should pass:
+$out"
+case "$out" in
+  *"EQUALITY: no shell seam found for KNOB_OVERLAY_COMPOSED"*) fail "12: overlay row should have resolved against KNOB_REGISTRY_OVERLAY_SCAN_ROOT, not the kernel-pinned scan root:
+$out" ;;
+esac
+echo "PASS: 12 KNOB_REGISTRY_OVERLAY_SCAN_ROOT resolves an overlay row's owning-script outside a kernel-pinned scan root"
+
+# --- 13. RED: without KNOB_REGISTRY_OVERLAY_SCAN_ROOT (unset, so it
+#         defaults to the kernel-pinned scan root), the same overlay row is
+#         structurally unresolvable — proving 12 actually exercises the seam
+#         and isn't passing for some other reason.
+run_checker_composed_no_overlay_root() {
+  (
+    KNOB_REGISTRY_FILE="$WORK/kernel.tsv"
+    KNOB_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
+    KNOB_REGISTRY_SCAN_ROOT="$REPO/kernel"
+    KNOB_REGISTRY_MANIFEST_FILE="$MANIFEST"
+    KNOB_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
+    unset KNOB_REGISTRY_OVERLAY_SCAN_ROOT 2>/dev/null || true
+    export KNOB_REGISTRY_FILE KNOB_REGISTRY_OVERLAY_FILE KNOB_REGISTRY_SCAN_ROOT
+    export KNOB_REGISTRY_MANIFEST_FILE KNOB_REGISTRY_EXEMPT_FILE
+    bash "$CHECKER"
+  )
+}
+out="$(run_checker_composed_no_overlay_root 2>&1)" && fail "13: without KNOB_REGISTRY_OVERLAY_SCAN_ROOT, the composed-tree overlay row should fail to resolve:
+$out"
+case "$out" in
+  *"EQUALITY: no shell seam found for KNOB_OVERLAY_COMPOSED"*) ;;
+  *) fail "13: expected a 'no shell seam found' message for KNOB_OVERLAY_COMPOSED when the overlay-scan-root seam is unset, got:
+$out" ;;
+esac
+echo "PASS: 13 unset KNOB_REGISTRY_OVERLAY_SCAN_ROOT correctly leaves the composed-tree overlay row unresolvable (proves 12 exercises the seam)"
+
 echo "ALL PASS: check-knob-registry.sh"
