@@ -3,18 +3,23 @@
 # Tests for workflows/scripts/build/gate.sh — the build 4a/4b/4c
 # merge-gate mechanics (epic #253, spike #245). ONE fixture system: this test
 # `source`s gate.sh (whose source guard skips the dispatch), which in turn
-# sources board.sh — and overrides the `_gate_gh` / `_gate_git` seams exactly
-# the way the board replay tests override `_board_gh` (no second mock layer, no
-# PATH shim, zero network). Each case redefines the seam, then calls the cmd_*
-# function directly and asserts on the structured JSON it prints.
+# sources board.sh — and overrides the `_gate_gh` seam exactly the way the
+# board replay tests override `_board_gh` (no second mock layer, no PATH shim,
+# zero network; gate.sh has no local-git dependency at all — temperloop#242).
+# Each case redefines the seam, then calls the cmd_* function directly and
+# asserts on the structured JSON it prints.
 #
 # Covers:
 #   - read: stable MERGEABLE/CLEAN read; UNKNOWN/BEHIND triggers exactly one
 #     re-poll, then classifies on the second (settled) value
 #   - strict: required_status_checks.strict==true → STRICT; gh 404 → NON_STRICT
-#   - risk: RISKY on overlapping files; RISKY on a hold/risky label; RISKY on a
-#     not-CLEAN mergeStateStatus; a clean, pairwise-disjoint, unflagged set →
-#     CLEAN_DISJOINT_INDEPENDENT
+#   - risk: RISKY on overlapping files (via the GitHub API's own `files` field,
+#     never a local git diff, so a push-by-SHA head ref with no reachable
+#     local/origin branch is never a problem — temperloop#242); RISKY on a
+#     hold/risky label; RISKY on a not-CLEAN mergeStateStatus; a clean,
+#     pairwise-disjoint, unflagged set → CLEAN_DISJOINT_INDEPENDENT; a failed
+#     files lookup emits a closed {"outcome":"ERROR"} line rather than dying
+#     with empty stdout under `set -e` (the dead-ERR-path regression)
 #   - queue: canonical --auto incantation → QUEUED (a real merge is never run)
 #   - nudge: BEHIND → NUDGED (update-branch called); not-BEHIND → NUDGE_NOOP
 #   - poll: ONE fixture per terminal outcome — MERGED (exit 0, the SOLE success
@@ -100,8 +105,13 @@ out="$(cmd_strict Towheads/foundation)"
 echo "PASS: strict → NON_STRICT on a 404 (branch not protected)"
 
 # --- risk: CLEAN, pairwise-disjoint, unflagged set → passes -----------------
-# _gate_gh dispatches on the requested --json field; _gate_git returns each
-# PR's disjoint file set keyed off the headRef encoded as origin/main..pr-<n>.
+# _gate_gh dispatches on the requested --json field; the "files" field (the
+# GitHub API's own PR-files list, NEVER local git — temperloop#242) returns
+# each PR's disjoint file set. This is also the push-by-SHA regression case:
+# a real push-by-SHA branch has no local/origin ref of that name at all, so a
+# fixture that answered via `headRefName` + a git diff could never model it
+# faithfully — routing entirely through the `files` field is what makes this
+# test exercise the actual push-by-SHA-safe code path, not just a mock of it.
 _gate_gh() {
   local pr field=""; local -a a=("$@")
   pr="${a[2]}"
@@ -109,22 +119,28 @@ _gate_gh() {
   case "$field" in
     mergeable,mergeStateStatus,state,statusCheckRollup)
       echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}' ;;
-    headRefName) echo "pr-$pr" ;;
-    labels)      echo "" ;;   # no labels
+    files)  echo "src/file_$pr.sh" ;;   # one unique file per PR → disjoint
+    labels) echo "" ;;                  # no labels
     *) echo "{}" ;;
   esac
-}
-_gate_git() {  # diff --name-only origin/main..pr-<n>
-  local spec="${*: -1}"; local pr="${spec##*pr-}"
-  echo "src/file_$pr.sh"   # one unique file per PR → disjoint
 }
 out="$(cmd_risk Towheads/foundation 10 11 12)"
 [ "$(jq -r .outcome <<<"$out")" = "CLEAN_DISJOINT_INDEPENDENT" ] \
   || fail "clean disjoint set not CLEAN_DISJOINT_INDEPENDENT (got: $out)"
-echo "PASS: risk → CLEAN_DISJOINT_INDEPENDENT on a CLEAN, disjoint, unflagged set"
+echo "PASS: risk → CLEAN_DISJOINT_INDEPENDENT on a CLEAN, disjoint, unflagged set (files via API, not local git)"
 
 # --- risk: overlapping changed files → RISKY --------------------------------
-_gate_git() { echo "src/shared.sh"; }   # every PR touches the SAME file → overlap
+_gate_gh() {
+  local pr field=""; local -a a=("$@"); pr="${a[2]}"
+  for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+  case "$field" in
+    mergeable,mergeStateStatus,state,statusCheckRollup)
+      echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}' ;;
+    files)  echo "src/shared.sh" ;;   # every PR touches the SAME file → overlap
+    labels) echo "" ;;
+    *) echo "{}" ;;
+  esac
+}
 out="$(cmd_risk Towheads/foundation 10 11)"
 [ "$(jq -r .outcome <<<"$out")" = "RISKY" ] || fail "overlap not RISKY (got: $out)"
 jq -e '.reasons[] | select(test("overlapping files"))' <<<"$out" >/dev/null \
@@ -132,15 +148,14 @@ jq -e '.reasons[] | select(test("overlapping files"))' <<<"$out" >/dev/null \
 echo "PASS: risk → RISKY when changed-file sets are not pairwise disjoint"
 
 # --- risk: a hold/risky label → RISKY ---------------------------------------
-_gate_git() { local spec="${*: -1}"; local pr="${spec##*pr-}"; echo "src/file_$pr.sh"; }  # disjoint again
 _gate_gh() {
   local pr field=""; local -a a=("$@"); pr="${a[2]}"
   for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
   case "$field" in
     mergeable,mergeStateStatus,state,statusCheckRollup)
       echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}' ;;
-    headRefName) echo "pr-$pr" ;;
-    labels)      [ "$pr" = "11" ] && echo "hold" || echo "" ;;
+    files)  echo "src/file_$pr.sh" ;;   # disjoint again
+    labels) [ "$pr" = "11" ] && echo "hold" || echo "" ;;
     *) echo "{}" ;;
   esac
 }
@@ -161,8 +176,8 @@ _gate_gh() {
       else
         echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}'
       fi ;;
-    headRefName) echo "pr-$pr" ;;
-    labels)      echo "" ;;
+    files)  echo "src/file_$pr.sh" ;;
+    labels) echo "" ;;
     *) echo "{}" ;;
   esac
 }
@@ -171,6 +186,37 @@ out="$(cmd_risk Towheads/foundation 10 11)"
 jq -e '.reasons[] | select(test("not CLEAN"))' <<<"$out" >/dev/null \
   || fail "not-CLEAN reason not surfaced (got: $out)"
 echo "PASS: risk → RISKY when any PR's mergeStateStatus is not CLEAN"
+
+# --- risk: a failed files lookup emits a closed ERROR outcome, never dies
+# empty ------------------------------------------------------------------
+# Regression for the dead-ERR-path defect (temperloop#242): a bare
+# `local f; f="$(_gate_pr_files ...)"` split across two statements let a
+# failing command substitution kill the whole script under `set -euo
+# pipefail` BEFORE the `case "$f" in ERR*)` handler ever ran — rc=1 with
+# EMPTY stdout, no JSON for the orchestrator to branch on. This asserts the
+# fixed call site always produces a closed-JSON {"outcome":"ERROR",...} line
+# on stdout (via the fd-3 `die` seam) rather than dying silent.
+_gate_gh() {
+  local pr field=""; local -a a=("$@"); pr="${a[2]}"
+  for ((k=0; k<${#a[@]}; k++)); do [ "${a[$k]}" = "--json" ] && field="${a[$((k+1))]}"; done
+  case "$field" in
+    mergeable,mergeStateStatus,state,statusCheckRollup)
+      echo '{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","state":"OPEN","statusCheckRollup":[]}' ;;
+    files)  echo "gh: pull request files lookup failed (rate limited)" >&2; return 1 ;;
+    labels) echo "" ;;
+    *) echo "{}" ;;
+  esac
+}
+# die() emits on fd 3 (the script's real-stdout seam — see the "error: bad
+# inputs" case below); capture it back into the command substitution with
+# `3>&1` and silence the plain-stdout side (2/1) so a genuine empty-stdout
+# regression can't hide behind fd 3's output.
+rc=0; out="$( (cmd_risk Towheads/foundation 10) 3>&1 2>/dev/null)" || rc=$?
+[ "$rc" -eq 1 ] || fail "expected cmd_risk to exit 1 on a files-lookup failure (got rc=$rc, out: $out)"
+[ -n "$out" ] || fail "cmd_risk died with EMPTY stdout on a files-lookup failure (the dead-ERR-path regression)"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "expected a closed {\"outcome\":\"ERROR\"} line, got: $out"
+echo "PASS: risk → closed ERROR-outcome JSON (never empty-stdout death) when the files lookup fails"
 
 # --- queue: canonical --auto incantation → QUEUED ---------------------------
 # Assert gate.sh queues via --auto --merge --delete-branch (never a bare
