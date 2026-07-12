@@ -7,11 +7,22 @@ You are running the **triage** command. Goal: take everything sitting in a board
 
 ```
 capture.sh (bugs) ┐
-sweeps / audits   ┼─► /triage   cull → collapse → group → epic + sub-issues (Backlog→Ready)
+sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues (Backlog→Ready)
 loose Backlog     ┘
-        └─► /assess --epic N   (technical: seams, depends-on/after edges, levels → Plans/ note)
-                └─► /build        (execution lifecycle; claims, merges, closes the epic on last child)
+                                                                    │
+a design conversation ──► /design   intake → coverage walk → review pass → ratify → materialize
+                                                                    │
+                                                                    ▼
+                                              board epic (## Contract, design-brief: marker)
+                                                                    │
+                                                                    └─► /assess --epic N   (technical: seams, depends-on/after edges, levels → Plans/ note)
+                                                                            └─► /build        (execution lifecycle; claims, merges, closes the epic on last child)
 ```
+
+`/design` is the funnel's second front door — for **invented** work rather
+than the discovered work triage sweeps. Both doors converge on the same
+`/assess --epic N` → `/build` pipeline; see the Mirror-redirect note below
+for how triage hands off invented work that lands at its door instead.
 
 **Triage is logical judgment only.** It decides survival and meaning-grouping. It does **not** decide *how* anything builds — contract/seam scoping, `depends-on` (merge-safety) and `after:` (logical-order) edges, dependency levels, and spike-wiring all belong to `/assess` (companion **#22** adds its `--epic N` source mode). Epic *death* belongs to `/build` (companion **#23** adds epic auto-close). Triage owns epic **birth** and membership; that's the whole job.
 

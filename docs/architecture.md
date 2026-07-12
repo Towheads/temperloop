@@ -31,14 +31,19 @@ into two parallel tracks — grouped work becomes an **epic** with native
 sub-issues and goes through `/assess` for dependency-ordered decomposition;
 an issue triage leaves **ungrouped** (a singleton) skips straight to
 `/sweep`, which folds `/assess`'s missing pre-execution clarification step
-into its own upfront question sweep. Both tracks converge on the same
-per-item execution mechanics: an isolated worktree, a worker, a PR, CI, and
-a merge gate.
+into its own upfront question sweep. A separate, second front door,
+`/design`, feeds the same epic shape for **invented** work (an idea born in
+conversation, never a Backlog item) via its own intake → coverage walk →
+ratify → materialize flow. All tracks converge on the same per-item
+execution mechanics: an isolated worktree, a worker, a PR, CI, and a merge
+gate.
 
 ```mermaid
 flowchart LR
     Issue["GitHub issue<br/>(board Backlog)"] --> Triage["/triage<br/>cull, collapse, group"]
+    Conversation["A design conversation<br/>(invented work)"] --> Design["/design<br/>coverage walk, ratify, materialize"]
     Triage --> Epic["Epic<br/>(parent issue + native sub-issues)"]
+    Design --> Epic
     Triage --> Singleton["Ready singleton<br/>(ungrouped issue)"]
     Epic --> Assess["/assess --epic N"]
     Assess --> Plan["Plan note<br/>(Plans/, dependency-ordered)"]
@@ -59,8 +64,17 @@ A few things this diagram compresses that are worth naming explicitly:
 - **`/triage`** runs the logical decision tree — cull, root-cause collapse,
   group-by-meaning, value/priority — over a board's Backlog, then
   materialises survivors as board-native epics (parent issue + sub-issues)
-  or leaves an ungrouped survivor as a Ready singleton. This is the *only*
-  front door onto the board; nothing downstream re-decides what survives.
+  or leaves an ungrouped survivor as a Ready singleton. This is the funnel's
+  front door for **discovered** work; nothing downstream re-decides what
+  survives.
+- **`/design`** is the funnel's second front door, for **invented** work —
+  an idea that starts as "we should build X" with no Backlog item behind
+  it. It walks a fixed coverage template (`claude/design-schema.md`)
+  instead of triage's decision tree, then materializes a ratified brief
+  into the same Contract-bearing epic shape `/triage` produces, plus draft
+  ADRs for any architectural calls the brief makes and a `Decisions/` note.
+  Nothing downstream of the epic (`/assess` onward) treats a designed epic
+  differently from a triaged one.
 - **`/assess --epic N`** is the epic path's technical decomposition step: it
   turns an epic into a dependency-ordered plan note under `Plans/`, each
   item scoped to a contract (what it produces, what it consumes, its
