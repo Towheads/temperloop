@@ -54,29 +54,17 @@
 
 set -uo pipefail
 
-# ---------------------------------------------------------------------------
-# run_with_timeout SECS cmd... — portable bash-3.2-safe watchdog (no
-# `timeout` binary assumed present; macOS dev machines don't ship one).
-# Mirrors scripts/kernel-drift-check.sh's helper of the same name/shape.
-# ---------------------------------------------------------------------------
-_probe_run_with_timeout() {
-  local secs="$1"; shift
-  "$@" &
-  local cmd_pid=$!
-  # Redirect the watchdog subshell at its boundary so its `sleep` child never
-  # inherits a command substitution's pipe write-end — an inherited write-end
-  # keeps the pipe open after the fast path kills the watchdog process,
-  # stalling every fast call for the full $secs (foundation #861; same fix as
-  # try.sh's _try_run_with_timeout).
-  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-  local watchdog_pid=$!
-  local status
-  wait "$cmd_pid" 2>/dev/null
-  status=$?
-  kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
-  return "$status"
-}
+# run_with_timeout SECS cmd... — portable bounded-subprocess watchdog, the
+# ONE shared shim every such call site sources rather than re-deriving
+# (temperloop#256). Path resolved via pure bash parameter expansion
+# (${x%/*}), never `dirname` — this script's own gh-absent degrade path is
+# exercised under an intentionally minimal PATH (see
+# workflows/scripts/probe/tests/test_conventions_probe.sh's NOGHBIN
+# allowlist) that does not include `dirname`.
+_pt_here="${BASH_SOURCE[0]%/*}"; [ "$_pt_here" = "${BASH_SOURCE[0]}" ] && _pt_here="."
+# shellcheck source=../lib/portable-timeout.sh
+source "$(cd "$_pt_here/../lib" && pwd)/portable-timeout.sh"
+unset _pt_here
 
 # ---------------------------------------------------------------------------
 # CLI parsing
@@ -282,7 +270,7 @@ detect_branch_protection() {
 
   local out err_file status
   err_file="$(mktemp)"
-  if out="$(_probe_run_with_timeout "$probe_timeout" \
+  if out="$(run_with_timeout "$probe_timeout" \
       gh api "repos/${gh_repo}/branches/${default_branch}/protection" 2>"$err_file")"; then
     printf '%s' "$out" | jq '{
       available: true,
@@ -609,7 +597,7 @@ detect_labels() {
   fi
 
   local out status
-  if ! out="$(_probe_run_with_timeout "$probe_timeout" \
+  if ! out="$(run_with_timeout "$probe_timeout" \
       gh api "repos/${gh_repo}/labels" --paginate --jq '.' 2>/dev/null)"; then
     status=$?
     if [ "$status" -eq 137 ]; then

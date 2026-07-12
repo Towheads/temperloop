@@ -105,29 +105,16 @@
 
 set -uo pipefail
 
-# _configure_run_with_timeout SECS cmd... — portable bash-3.2-safe
-# watchdog (no `timeout` binary assumed present). Same shape as, and same
-# pipe-leak fix as, try.sh's _try_run_with_timeout (see that function's
-# header comment for the full rationale) — copied rather than sourced
-# since it's a small, self-contained helper and configure.sh has no other
-# reason to depend on try.sh.
-_configure_run_with_timeout() {
-  local secs="$1"; shift
-  "$@" &
-  local cmd_pid=$!
-  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-  local watchdog_pid=$!
-  local status
-  wait "$cmd_pid" 2>/dev/null
-  status=$?
-  kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
-  return "$status"
-}
-
 SUBCOMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
 KERNEL_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+
+# run_with_timeout SECS cmd... — portable bounded-subprocess watchdog, the
+# ONE shared shim every such call site sources rather than re-deriving
+# (temperloop#256).
+# shellcheck source=../../workflows/scripts/lib/portable-timeout.sh
+source "$KERNEL_ROOT/workflows/scripts/lib/portable-timeout.sh"
+
 REGISTRY_LIB="$KERNEL_ROOT/workflows/scripts/config/knob-registry-lib.sh"
 
 if [ ! -f "$REGISTRY_LIB" ]; then
@@ -361,7 +348,7 @@ PROMPT_EOF
   # pipefail` only (`-e` was never on), so `ai_rc` is checked explicitly
   # below rather than relying on errexit (mirrors try.sh's own rationale
   # for its analogous judgment-call capture).
-  ai_out="$(_configure_run_with_timeout "$CONFIGURE_CLAUDE_TIMEOUT_SECS" \
+  ai_out="$(run_with_timeout "$CONFIGURE_CLAUDE_TIMEOUT_SECS" \
     "$CLAUDE_BIN" -p "$prompt" \
     --tools "" \
     --output-format text \

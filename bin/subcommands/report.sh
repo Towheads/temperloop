@@ -88,25 +88,15 @@
 
 set -uo pipefail
 
-# ---------------------------------------------------------------------------
-# _report_run_with_timeout SECS cmd... -- portable bash-3.2-safe watchdog,
-# identical shape to baseline-snapshot.sh's _baseline_run_with_timeout /
-# try.sh's _try_run_with_timeout (duplicated per established convention --
-# see those files' own header notes on why this isn't centralized).
-# ---------------------------------------------------------------------------
-_report_run_with_timeout() {
-  local secs="$1"; shift
-  "$@" &
-  local cmd_pid=$!
-  ( sleep "$secs" 2>/dev/null; kill -9 "$cmd_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-  local watchdog_pid=$!
-  local status
-  wait "$cmd_pid" 2>/dev/null
-  status=$?
-  kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
-  return "$status"
-}
+# run_with_timeout SECS cmd... — portable bounded-subprocess watchdog, the
+# ONE shared shim every such call site sources rather than re-deriving
+# (temperloop#256). Path resolved via pure bash parameter expansion
+# (${x%/*}), never `dirname` — see baseline-snapshot.sh's identical
+# resolution for why (a sibling script's PATH-minimal degrade test).
+_pt_here="${BASH_SOURCE[0]%/*}"; [ "$_pt_here" = "${BASH_SOURCE[0]}" ] && _pt_here="."
+# shellcheck source=../../workflows/scripts/lib/portable-timeout.sh
+source "$(cd "$_pt_here/../.." && pwd)/workflows/scripts/lib/portable-timeout.sh"
+unset _pt_here
 
 usage() {
   cat <<'EOF'
@@ -307,7 +297,7 @@ else
       echo
       continue
     fi
-    out="$(_report_run_with_timeout "$timeout_secs" "$f" 2>/dev/null)"
+    out="$(run_with_timeout "$timeout_secs" "$f" 2>/dev/null)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       if [ "$rc" -eq 137 ]; then
