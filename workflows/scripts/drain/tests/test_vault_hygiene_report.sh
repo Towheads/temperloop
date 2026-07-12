@@ -573,9 +573,21 @@ rm -rf "$CV2"
 # ── Test 15: heat score + review queue (temperloop#240 — ADR §2.6-2.7) ────────
 echo "--- test 15: heat score + review queue ---"
 
-# Portable "N days ago" as YYYY-MM-DD (GNU `date -d` vs BSD `date -v`) — the
-# same dialect split every date helper in the script under test uses.
-days_ago() { date -d "-$1 days" +%Y-%m-%d 2>/dev/null || date -v-"$1"d +%Y-%m-%d; }
+# Deterministic "N days ago" for the exact-staleness heat-score fixtures below.
+# These are anchored to a FIXED epoch (not the wall clock) and paired with
+# `HYG_NOW_EPOCH=$HYG_ANCHOR_EPOCH TZ=UTC` on the script invocation, so the
+# staleness the script computes — (now - midnight(last_verified)) / 86400 — is
+# exactly N regardless of when the test runs. A wall-clock `days_ago` raced the
+# script's own real `now`: if a midnight boundary fell between writing the
+# fixture and the script reading `now`, staleness shifted to N+1 and the
+# exact-priority assertions flaked in CI (foundation #287). The anchor is a
+# UTC midnight and TZ=UTC removes any DST/zone skew from the day arithmetic.
+HYG_ANCHOR_EPOCH=1780790400   # 2026-06-07T00:00:00Z — a fixed reference instant
+export HYG_ANCHOR_EPOCH
+days_ago() {
+  local e=$(( HYG_ANCHOR_EPOCH - $1 * 86400 ))
+  TZ=UTC date -u -d "@$e" +%Y-%m-%d 2>/dev/null || TZ=UTC date -u -r "$e" +%Y-%m-%d
+}
 
 # 15a: weighted ranking, by hand, against the script's own documented
 # defaults (HEAT_W_READS=3, HEAT_W_LINKS=2, HEAT_W_RECENCY=1,
@@ -600,7 +612,7 @@ HSLOG="$HS/reads.log"
   for i in 1 2 3 4 5; do printf '2026-01-01T00:00:0%dZ · s1 · script · read · Decisions/temperloop - very hot decision.md\n' "$i"; done
   printf '2026-01-01T00:00:06Z · s1 · script · read · Patterns/temperloop - moderately cold pattern.md\n'
 } > "$HSLOG"
-hsreport="$(KNOWLEDGE_READ_LOG="$HSLOG" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS")"
+hsreport="$(HYG_NOW_EPOCH="$HYG_ANCHOR_EPOCH" TZ=UTC KNOWLEDGE_READ_LOG="$HSLOG" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS")"
 assert_has "$hsreport" "info heat-score: 6 candidate note(s) scored (weights: reads=3 links=2 recency=1/10 decayed over 180d" "heat-score summary line reports weights + candidate count"
 assert_has "$hsreport" "review-queue #1: Decisions/temperloop - very hot decision.md — heat=27 staleness=60d reads=5 priority=1620" "rank #1 is the higher-heat note with its exact computed score"
 assert_has "$hsreport" "review-queue #2: Patterns/temperloop - moderately cold pattern.md — heat=5 staleness=300d reads=1 priority=1500" "rank #2 is the lower-heat, more-stale note with its exact computed score"
@@ -615,7 +627,7 @@ HS2="$(mktemp -d)"; mkdir -p "$HS2/Decisions" "$HS2/Context"
 printf -- '---\nlast_verified: %s\n---\nlinked\n' "$(days_ago 90)" > "$HS2/Decisions/temperloop - well linked.md"
 echo "[[temperloop - well linked]]" > "$HS2/Context/link-a.md"
 echo "[[temperloop - well linked]]" > "$HS2/Context/link-b.md"
-noTelReport="$(KNOWLEDGE_READ_LOG="$HS2/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS2")"
+noTelReport="$(HYG_NOW_EPOCH="$HYG_ANCHOR_EPOCH" TZ=UTC KNOWLEDGE_READ_LOG="$HS2/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS2")"
 # recency=(180-90)*10/180=5; heat=3*0+2*2+1*5=9; priority=9*90=810
 assert_has "$noTelReport" "review-queue #1: Decisions/temperloop - well linked.md — heat=9 staleness=90d reads=0 priority=810" "no read log -> reads=0, links+recency ranking still computed correctly"
 assert_missing "$noTelReport" "ALARM:" "no-telemetry heat-score fixture stays alarm-free"
@@ -630,7 +642,7 @@ while [ "$i" -le 7 ]; do
   printf -- '---\nlast_verified: %s\n---\nnote %d\n' "$(days_ago 10)" "$i" > "$HS3/Decisions/temperloop - candidate $i.md"
   i=$((i + 1))
 done
-capReport="$(KNOWLEDGE_READ_LOG="$HS3/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS3")"
+capReport="$(HYG_NOW_EPOCH="$HYG_ANCHOR_EPOCH" TZ=UTC KNOWLEDGE_READ_LOG="$HS3/no-such-log" T0_INVENTORY_FILE="$T0_INVENTORY_FILE" bash "$SCRIPT" --root "$HS3")"
 assert_has     "$capReport" "info heat-score: 7 candidate note(s) scored" "all 7 candidates scored"
 assert_has     "$capReport" "review-queue #5:" "rank #5 is present"
 assert_missing "$capReport" "review-queue #6:" "rank #6 never appears — capped at 5 by construction"
