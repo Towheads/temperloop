@@ -183,17 +183,21 @@ _config_list_bulk_source() {
   )
 }
 
-# _config_list_lookup <map> <name> -> prints the value if <name> appears in
-# <map> (name<TAB>value lines, one per line), rc 1 if absent. Portable
-# line-scan (bash 3.2, no associative arrays) — same `while read <<EOF`
-# idiom knob-registry-lib.sh already uses throughout.
+# _config_list_lookup <map> <name> -> rc 0 if <name> appears in <map>
+# (name<TAB>value lines, one per line), setting global CFG_LOOKUP_VAL to its
+# value; rc 1 if absent. Portable line-scan (bash 3.2, no associative arrays).
+# Sets a global rather than printing so the per-row call sites below can invoke
+# it directly instead of via a `$(…)` command substitution — that subshell
+# fork, paid up to 3× per registry row across ~190 rows, was part of what made
+# `config list` slow (K305).
 _config_list_lookup() {
   local map="$1" name="$2" lname lval
+  CFG_LOOKUP_VAL=""
   [ -n "$map" ] || return 1
   while IFS=$'\t' read -r lname lval; do
     [ -n "$lname" ] || continue
     if [ "$lname" = "$name" ]; then
-      printf '%s' "$lval"
+      CFG_LOOKUP_VAL="$lval"
       return 0
     fi
   done <<EOF
@@ -230,24 +234,25 @@ fi
 
 while IFS= read -r row; do
   [ -n "$row" ] || continue
-  name="$(cut -f1 <<<"$row")"
-  default="$(cut -f2 <<<"$row")"
-  layer="$(cut -f4 <<<"$row")"
-  owning="$(cut -f5 <<<"$row")"
-  doc="$(cut -f6 <<<"$row")"
+  _knob_split_row "$row"   # fork-free field split (lib helper); K305
+  name="$KR_F1"
+  default="$KR_F2"
+  layer="$KR_F4"
+  owning="$KR_F5"
+  doc="$KR_F6"
 
   value="" rung=""
   if [ -n "${!name+x}" ]; then
     value="${!name}"
     rung="env"
-  elif v="$(_config_list_lookup "$machine_conf_map" "$name")"; then
-    value="$v"
+  elif _config_list_lookup "$machine_conf_map" "$name"; then
+    value="$CFG_LOOKUP_VAL"
     rung="machine-conf"
-  elif v="$(_config_list_lookup "$repo_local_map" "$name")"; then
-    value="$v"
+  elif _config_list_lookup "$repo_local_map" "$name"; then
+    value="$CFG_LOOKUP_VAL"
     rung="repo-local"
-  elif v="$(_config_list_lookup "$tracked_repo_map" "$name")"; then
-    value="$v"
+  elif _config_list_lookup "$tracked_repo_map" "$name"; then
+    value="$CFG_LOOKUP_VAL"
     rung="tracked-repo"
   else
     value="$default"
