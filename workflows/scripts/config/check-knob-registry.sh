@@ -154,8 +154,12 @@ _kr_trim_leading_ws() {
 }
 
 _kr_is_comment_line() {
-  local trimmed
-  trimmed="$(_kr_trim_leading_ws "$1")"
+  # Strip leading whitespace inline (parameter expansion only) rather than via
+  # a `$(_kr_trim_leading_ws …)` subshell: this runs once per line of every
+  # owning-script scanned, once per registry row, so a per-call fork here cost
+  # tens of thousands of process spawns and dominated the equality check's
+  # runtime (K306).
+  local trimmed="${1#"${1%%[![:space:]]*}"}"
   case "$trimmed" in
     '#'*) return 0 ;;
     *) return 1 ;;
@@ -258,6 +262,24 @@ $found_defaults
 EOF
 }
 
+# _kr_split_row <tab-row> -> sets name/default/type/layer/owning_script/doc
+# from a 6-column TSV row using parameter expansion only (no forks). Replaces
+# six `$(cut -f<n> <<<"$row")` subshells per row (K306). NOT `IFS=$'\t' read`:
+# tab is IFS-whitespace, so `read` collapses consecutive tabs and would
+# mis-align rows with an empty field (field 2 `default` is legitimately empty
+# for many knobs, e.g. EVAL_RUN). Parameter expansion preserves empty fields,
+# matching `cut -f` exactly. Trailing columns beyond field 6 are dropped, as
+# `cut -f6` did.
+_kr_split_row() {
+  local r="$1"
+  name="${r%%$'\t'*}";          r="${r#*$'\t'}"
+  default="${r%%$'\t'*}";       r="${r#*$'\t'}"
+  type="${r%%$'\t'*}";          r="${r#*$'\t'}"
+  layer="${r%%$'\t'*}";         r="${r#*$'\t'}"
+  owning_script="${r%%$'\t'*}"; r="${r#*$'\t'}"
+  doc="${r%%$'\t'*}"
+}
+
 echo "=== check-knob-registry: equality (kernel table) ==="
 kfile="$(knob_registry_kernel_file)"
 kernel_rows="$(_knob_registry_data_rows "$kfile")"
@@ -269,12 +291,7 @@ kernel_row_count=0
 while IFS= read -r row; do
   [ -z "$row" ] && continue
   kernel_row_count=$((kernel_row_count + 1))
-  name="$(cut -f1 <<<"$row")"
-  default="$(cut -f2 <<<"$row")"
-  type="$(cut -f3 <<<"$row")"
-  layer="$(cut -f4 <<<"$row")"
-  owning_script="$(cut -f5 <<<"$row")"
-  doc="$(cut -f6 <<<"$row")"
+  _kr_split_row "$row"
   _knob_check_row "$name" "$default" "$type" "$layer" "$owning_script" "$doc" "kernel"
 done <<EOF
 $kernel_rows
@@ -289,12 +306,7 @@ if [ -f "$ofile" ]; then
   while IFS= read -r row; do
     [ -z "$row" ] && continue
     overlay_row_count=$((overlay_row_count + 1))
-    name="$(cut -f1 <<<"$row")"
-    default="$(cut -f2 <<<"$row")"
-    type="$(cut -f3 <<<"$row")"
-    layer="$(cut -f4 <<<"$row")"
-    owning_script="$(cut -f5 <<<"$row")"
-    doc="$(cut -f6 <<<"$row")"
+    _kr_split_row "$row"
     _knob_check_row "$name" "$default" "$type" "$layer" "$owning_script" "$doc" "overlay"
   done <<EOF
 $overlay_rows
