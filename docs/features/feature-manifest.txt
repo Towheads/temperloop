@@ -134,6 +134,13 @@ install-cli workflows/scripts/probe/tests/test_conventions_probe.sh
 install-cli workflows/scripts/lib/baseline_snapshot.contract.md
 install-cli workflows/scripts/lib/conventions_probe.contract.md
 install-cli workflows/scripts/lib/report.contract.md
+# The shared bounded-subprocess timeout shim (temperloop#256): one portable
+# run_with_timeout consumed by the CLI subcommands (baseline-snapshot, report,
+# try, conventions-probe) and configure.sh — folded here rather than given its
+# own feature doc, since it is plumbing for these surfaces, not a standalone
+# operator-facing feature.
+install-cli workflows/scripts/lib/portable-timeout.sh
+install-cli workflows/scripts/lib/tests/test_portable_timeout.sh
 
 # ── install-manifest-lib — machine-surface install manifest library
 # (temperloop#261, ADR K164 D7): overrides the broader install-cli globs
