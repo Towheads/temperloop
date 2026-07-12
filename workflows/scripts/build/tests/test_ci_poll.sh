@@ -9,6 +9,8 @@
 # Covers:
 #   - all-green check-runs (success/neutral/skipped mix) → CI_GREEN, exit 0
 #   - a failed run → CI_FAILED + failed_run_ids resolved (failure only), exit 0
+#   - --exit-nonzero-on-failure: CI_FAILED exits 2 instead of 0, JSON unchanged
+#   - --exit-nonzero-on-failure: CI_GREEN's exit 0 is unaffected
 #   - pending-then-complete across two polls (tiny --interval) → CI_GREEN
 #   - zero check-runs → TIMEOUT outcome + non-zero exit (never spins forever)
 #   - --sha pins the head: the pulls endpoint is never queried
@@ -123,6 +125,34 @@ rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42)" || rc=$?
 [ "$(jq -c .failed_run_ids <<<"$out")" = "[111]" ] \
   || fail "failed_run_ids must list failure conclusions only (got: $out)"
 echo "PASS: failed run → CI_FAILED with failed_run_ids=[111] (success run excluded), exit 0"
+
+# --- --exit-nonzero-on-failure: CI_FAILED now exits non-zero (2) -------------
+reset_state
+cat > "$TMP/state/checkruns.json" <<'EOF'
+{"check_runs":[
+  {"status":"completed","conclusion":"success"},
+  {"status":"completed","conclusion":"failure"}
+]}
+EOF
+cat > "$TMP/state/runs.json" <<'EOF'
+[{"databaseId":111,"conclusion":"failure"},{"databaseId":222,"conclusion":"success"}]
+EOF
+rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42 --exit-nonzero-on-failure)" || rc=$?
+[ "$rc" -eq 2 ] || fail "--exit-nonzero-on-failure must make CI_FAILED exit 2 (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "CI_FAILED" ] || fail "flagged failed outcome (got: $out)"
+[ "$(jq -c .failed_run_ids <<<"$out")" = "[111]" ] \
+  || fail "flagged failed_run_ids must be unchanged (got: $out)"
+echo "PASS: --exit-nonzero-on-failure → CI_FAILED exits 2 (distinct from TIMEOUT/ERROR's 1), JSON unchanged"
+
+# --- --exit-nonzero-on-failure: CI_GREEN is unaffected (still exit 0) --------
+reset_state
+cat > "$TMP/state/checkruns.json" <<'EOF'
+{"check_runs":[{"status":"completed","conclusion":"success"}]}
+EOF
+rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42 --exit-nonzero-on-failure)" || rc=$?
+[ "$rc" -eq 0 ] || fail "--exit-nonzero-on-failure must not affect CI_GREEN's exit 0 (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "CI_GREEN" ] || fail "flagged green outcome (got: $out)"
+echo "PASS: --exit-nonzero-on-failure leaves CI_GREEN's exit 0 unchanged"
 
 # --- pending-then-complete across two polls -----------------------------------
 reset_state
