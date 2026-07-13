@@ -21,6 +21,15 @@ re-deciding the logical calls triage already made.
 
 ## How it works
 
+Before doing any of that work, `/assess` first checks whether the epic is
+*already* assessed: it probes the plan-note store for a note whose epic
+link matches the target, and if one exists it warns and stops short of
+re-deriving anything — offering to refine the existing note in place,
+regenerate a fresh versioned copy, or abort, and defaulting an
+operator-absent run to a safe skip. This keeps a second `/assess` on an
+already-planned epic from silently re-running the whole decomposition and
+clobbering the plan the operator already has.
+
 `/assess` takes exactly one already-triaged epic — its membership is
 gospel; `/assess` never re-culls or re-groups it — and reads either the
 epic's native sub-issues (the normal case) or, for a pre-designed epic

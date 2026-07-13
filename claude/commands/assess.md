@@ -58,6 +58,30 @@ Run in parallel:
 5. Resolve `--project` (plan filename/tag): explicit flag, else derived from the board (3 → `stagefind`, 4 → `foundation`).
 6. **Source the batch-pipeline config (best-effort).** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the Step 6 approval-poll's cadence/budget knobs (`ASSESS_POLL_FIRST_WAKE`, `ASSESS_POLL_CADENCE`, `ASSESS_POLL_BUDGET`) into scope, with any pre-set env value still overriding. If the file isn't found (a consuming repo that doesn't vendor the toolkit), proceed — Step 6 keeps its inline `${VAR:-default}` fallbacks.
 
+## Step 0.5 — Probe for an existing plan note (fail fast — don't silently re-assess)
+
+**Before any decomposition work (Steps 1–3.5), check whether this epic is already assessed** (temperloop#257). The failure this prevents: an operator (or a funnel tick) launches `/assess --epic <N>` on an epic that was already assessed on an earlier day — the plan note exists and the epic is parked — and the command re-runs the whole expensive decomposition, regenerating or clobbering the existing note, until someone manually interrupts it. The `Plans/` note *is* the durable artifact; a second `/assess` must **warn and refine-in-place (or defer to the operator)**, never silently regenerate or overwrite. This probe is the early gate; Step 4's filename-collision handling stays as the write-time backstop (for a note that appears mid-run, or a same-filename / different-epic collision).
+
+Procedure:
+
+1. **Find any plan note whose frontmatter `epic:` equals `<N>`.** `mcp__obsidian__search_vault_simple` with query `epic: <N>`, then for **each** hit under `Plans/` read its frontmatter (`mcp__obsidian-builtin__vault_read`) and keep only notes whose `epic:` value is **exactly** `<N>` — guard against substring false-positives (`epic: 2571` must not match epic `257`). Record each surviving match's path and `status:`. (The `epic:` frontmatter is the durable plan↔epic link Step 4 writes and `/build` reads — schema `~/.claude/plan-schema.md` § Optional `epic:` frontmatter field — so it is the reliable key, not the filename.)
+2. **No match → proceed to Step 1 silently.** This is the overwhelmingly common first-assess case; the probe adds one cheap search and stays quiet.
+3. **One or more matches → WARN and branch — do NOT run Steps 1–3.5 yet.** Print, naming each existing note and its status:
+
+   ```
+   ⚠ epic #<N> already has a plan note: [[Plans/<existing>]] (status: <s>).
+     /assess will not silently regenerate or overwrite it.
+   ```
+
+   - **Existing note `status:` is `executing` or `done` → hard stop, regardless of operator-presence.** A plan mid-build or complete is another session's live/finished work; refining or overwriting it would corrupt an in-flight build (the same reasoning as `/build`'s "already claimed" guard). Report the note + status and stop — the operator resolves it (let the build finish, or abandon the plan) before re-assessing.
+   - **Operator-present** (and status is `draft` / `approved` / `abandoned`) → ask via `AskUserQuestion` with three options:
+     - **Refine in place** (default) — run Steps 1–6, but in Step 4 write back into the **existing** note (same path), preserving its `status:` and hand-edits where they don't conflict, rather than minting a new file. This is the "refine-in-place" path: the decomposition is re-derived and folded into the note the operator already has.
+     - **Regenerate as a new version** — keep the existing note untouched and write a fresh note with a `v2`/`v3` filename suffix (Step 4's suffix path). Use when the existing plan is stale enough to replace but worth keeping for reference.
+     - **Abort** — stop now; the epic is already assessed. Report the existing note path + status and the next action (review/approve it, or delete it and re-run to regenerate from scratch).
+
+     Carry the chosen mode into Step 4's write (in-place vs. versioned suffix); on **Abort**, stop here.
+   - **Operator-absent / unattended** (no live operator — a funnel tick, a cron/`--unattended` run) → **fail open to Abort (skip)**: do **not** regenerate, overwrite, or run the decomposition. Report the existing note + status in the run summary; the skip is the correct no-op, because the durable plan note already exists for the operator to act on. This is exactly the fail-fast the reported incident needed — never re-run the full decomposition unattended on an already-planned epic. (No pending-decisions entry is needed: Abort mutates nothing and loses nothing — the existing plan note is itself the surface the operator reviews — unlike the Step 1 provenance default, which records because it *proceeds*.)
+
 ## Step 1 — Read the source (the epic + its sub-issues) — the only source-selection step
 
 Everything after this step is source-agnostic. Read the epic and enumerate its members:
@@ -199,7 +223,7 @@ Write via `mcp__obsidian__create_vault_file` using exactly the `~/.claude/plan-s
   - If there are none, write `- none` (don't omit the section — its presence tells the reviewer it was considered).
 - **`## Items`** — the decomposed list per schema (each item carries its prefilled `gh_issue:`).
 
-**Filename collision handling:** if a plan note for this epic already exists (same `epic:` frontmatter), surface to user and ask: **overwrite**, **suffix with version (`v2`, `v3`)**, or **merge into the existing note**. Don't silently overwrite.
+**Filename collision handling (write-time backstop):** the primary existing-plan gate is **Step 0.5**, which fails fast *before* decomposition and (operator-present) already resolved the mode — refine-in-place (write back to the existing path), regenerate-versioned (`v2`/`v3` suffix), or abort. Honor that chosen mode here. This write-time check remains as a backstop for the residual cases Step 0.5 can't have caught: a plan note that **appeared mid-run** (created between Step 0.5 and now), or a **same-filename / different-`epic`** collision (a different epic sharing the short-title prefix). If either surfaces at write time, surface to the user and ask — **overwrite**, **suffix with version (`v2`, `v3`)**, or **merge into the existing note** — and never silently overwrite. (On the same-`epic:` case Step 0.5 already handled, don't re-prompt; just write per the mode it set.)
 
 ## Step 5 — Summarize for review
 
@@ -283,6 +307,7 @@ This is an **epic-carried, cross-tick handoff** — the plan-approval answer liv
 ## Failure modes
 
 - **Epic not found / closed.** Surface and stop at Step 0 — don't plan a phantom epic.
+- **Epic already has a plan note (temperloop#257).** Step 0.5 probes `Plans/` for a note whose `epic:` frontmatter equals `<N>` *before* any decomposition and **warns rather than silently regenerating/overwriting**: a `status: executing`/`done` match is a hard stop (a live/finished build); otherwise an operator-present run asks (refine-in-place default / regenerate-versioned / abort) and an operator-absent run fails open to **Abort (skip)**. Never re-run the full decomposition on an already-planned epic without an explicit refine/regenerate choice. Step 4's filename-collision handling is only the write-time backstop for the mid-run / different-epic residual.
 - **Epic has no sub-issues.** Branch on the epic body (foundation #526): **a `## Contract` is present** → enter **epic-decomposition mode** (Step 1) and decompose the Contract's `Produces` into items (`gh_issue:`/`split_from:` unset — `/build` mints sub-issues under the existing epic); **no Contract** → surface "no sub-issues and no `## Contract` to decompose — run `/triage` to populate it" and stop. Don't manufacture items from a vague Contract — a seam with no falsifiable check gets the acceptance placeholder, not invented criteria.
 - **Contract present with no `design-brief:` marker (Step 1 provenance check, temperloop#218).** Ask (proceed / park + run `/design`) — never a silent bypass, never a hard block. Fail-open: an unattended run or an absent operator takes the **Proceed** default, records it as a `### open` entry on the pending-decisions surface (the `batch-at-ritual` convention — never a silent default), and notes it in the summary rather than stalling. A `park` answer posts the durable "parked pending /design" comment on the epic, then stops this command's run for that epic, not the whole invocation (a multi-epic batch, if any, continues); `/tidy`'s § Provenance-less epics sweep re-surfaces a parked epic the operator never returns to.
 - **`project` scope missing.** Stop at Step 0 with the `gh auth refresh -s project` hint (reading sub-issues + labels needs it).
