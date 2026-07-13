@@ -14,6 +14,18 @@
 # item out of In Progress. Park/close the board item deliberately (board UI or
 # `gh project item-edit`), per the "Park, don't abandon" rule in CLAUDE.md.
 #
+# Claim held until Done (K#275). This script is NOT required by the normal
+# /build flow: a claim is legitimately HELD until its item reaches Done (the
+# board half leaves In Progress via the close->Done cascade on merge, or a
+# deliberate skip — see CLAUDE.md "Claim held until Done"). Clearing the local
+# marker at park is an optional convenience. Because the marker is one-per-
+# window (below), in a MULTI-CLAIM WINDOW — one session claiming several items
+# in a parallel level — the marker holds only the LATEST claim, so releasing a
+# NON-LATEST issue here correctly REFUSES. That refusal is expected and non-
+# fatal: leave the earlier claim held; reconcile.sh / the cascade clear it on
+# merge. Callers (e.g. /build 3h) MUST NOT fail a park on this refusal, and
+# MUST NOT depend on this script to release a non-latest claim.
+#
 #   scripts/release.sh        # clear THIS window's claim marker
 #   scripts/release.sh <issue#>   # same, but REFUSE unless this window holds #<issue>
 #
