@@ -194,6 +194,8 @@ Source it — `workflows/scripts/board/lib/board.sh` in foundation, `scripts/lib
 - **writes** → `board_set_status` / `board_set_milestone` / `board_set_component` / `board_set_number` (resolve-by-name; they bust the cache).
 - or a **board command**: `worklist` / `claim` / `release` / `reconcile` / `capture` / `milestone`.
 
+**Headless-run contract — source once per call, real helpers only, resolve before you set.** Shell state does not persist between separate Bash tool calls, so **every** Bash call that touches the board must `source` the lib *itself* — invoking `board_resolve_item` / `board_item_id` / `board_set_status` in a fresh call that didn't source `board.sh` fails `command not found`, the single most-repeated headless-session board misuse. Two more from the same cluster: (a) **use only helpers that exist in the lib** — read it, never *guess* an accessor (`board_item_status`, `board_get_field`, `board_opt_by_name`, `board_opt_value` do **not** exist); and (b) **`board_set_status` takes a `PVTI_*` item-id, not a board number or an issue number** — resolve `board_resolve_item <board> <n>` → `board_item_id <n>` first (its arg guard rejects the wrong type, but the round-trip still wastes a turn). This is the prose counterpart to `board-adapter-guard.sh`: the hook steers *raw `gh project`* onto the adapter, this rule keeps the *adapter's own* invocation correct. See [[Mistakes/foundation - board.sh helper misuse in headless runs]].
+
 **The board glossary** — three number spaces collide here; this table is canonical:
 
 | Logical board (`--board N`, the only number spoken in prose) | Name | Repo | Org-project URL |
