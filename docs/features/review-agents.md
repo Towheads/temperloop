@@ -91,6 +91,33 @@ notice — into its own step summary. The agents themselves have no
 integration surface beyond being invoked with a prompt and returning text;
 they hold no state between invocations.
 
+## Installation — making the agents discoverable in a fresh clone
+
+The agent (and command) definitions ship as **source** under `claude/agents/`
+and `claude/commands/`, but Claude Code discovers project agents and commands
+from a **project-scoped `.claude/agents/` and `.claude/commands/`** — not from
+`claude/*`. On a fresh standalone-kernel clone nothing wires the source into a
+live `.claude/`, so the capability probe evaluates FALSE for every lens and
+every review degrades to all-skipped (temperloop#290).
+
+The install path that closes that gap:
+
+```sh
+bash workflows/scripts/install/project-agents.sh
+```
+
+Run once from a fresh clone, it deploys one entry per source file into the
+repo's own project-scoped `.claude/agents/` and `.claude/commands/` — by
+default as symlinks back to the tracked source (so a later `git pull` needs no
+re-run), or as detached real-file copies with `--copy`. It is **project-scoped**
+(never writes under `~`, so it can't collide with a machine-surface
+`temperloop install`), **idempotent** (an already-correct entry is left alone),
+and **non-destructive** (a pre-existing non-managed file at a target is
+reported and skipped, never clobbered). Deploy the agents into a *different*
+working repo (adopting the kernel's review lenses there) with
+`--project-dir DIR`; preview with `--dry-run`. Once it has run, the capability
+probe resolves and the review lenses execute instead of skipping.
+
 ## Resource impact
 
 Each invocation is a single subagent call scoped to read-only tools, priced

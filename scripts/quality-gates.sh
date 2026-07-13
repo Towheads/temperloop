@@ -90,6 +90,13 @@ KERNEL_GATES=(
   # marker-stamp helpers. Same direct-`bash` form as the T0-inventory gate
   # above (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_install_manifest.sh"
+  # Project-scoped review-agent/command deploy (temperloop#290):
+  # workflows/scripts/install/project-agents.sh — the kernel-safe install path
+  # that wires claude/agents/* + claude/commands/* into a live .claude/ so the
+  # capability probe resolves them on a fresh clone. Same direct-`bash` form as
+  # the manifest/T0-inventory gates above (kernel Makefile is generator-owned;
+  # no new target added here).
+  "bash workflows/scripts/tests/test_install_project_agents.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"

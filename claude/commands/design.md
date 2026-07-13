@@ -670,7 +670,13 @@ last line of the response.
   expected outcome in a checkout with no `.claude/agents/` declared. Emit
   `skipped — <agent> unavailable` per lens, live, and continue the panel
   with whatever's available; an unmet install-surface first-run mandate
-  (3.2) is stamped into dimension 15 rather than silently satisfied.
+  (3.2) is stamped into dimension 15 rather than silently satisfied. To make
+  the lenses resolvable in a fresh standalone clone (where the agents ship as
+  source under `claude/agents/` but no live `.claude/` exists), run the
+  project-scoped install path once — `bash
+  workflows/scripts/install/project-agents.sh` (temperloop#290) — which wires
+  `claude/agents/*` + `claude/commands/*` into `.claude/`; see
+  `docs/features/review-agents.md` § Installation.
 - **Dimension 4 reads as a summary, not a real contract (Step 4.2).** Send it
   back to Step 2 rather than ratifying a Contract `/assess` would have to
   reshape.

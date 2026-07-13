@@ -153,6 +153,27 @@ Makefile        the in-checkout command surface (test/gate/docs targets)
 | `/check-in` | Daily human review: renders the telemetry brief, disposes the surfaces `/tidy` parked overnight, and sets the `/next` priorities per project. |
 | `/init` | Bootstraps a new project's `CLAUDE.md` + context. |
 
+### Review agents (definitions in `claude/agents/`)
+
+The pipeline skills above capability-probe a set of read-only review lenses
+(`architecture-reviewer`, `requirements-auditor`, `workflow-reviewer`, plus
+persona lenses) before spawning them — a lens runs only if the project
+declares it in `CLAUDE.md § Subagents` or has it under a project-scoped
+`.claude/agents/`, and otherwise degrades to a legible `skipped — <agent>
+unavailable` line. A fresh clone ships these as source under `claude/agents/`
+but has no live `.claude/`, so nothing is discoverable until you deploy them:
+
+```sh
+bash workflows/scripts/install/project-agents.sh   # --dry-run to preview
+```
+
+This project-scoped install path wires `claude/agents/*` and
+`claude/commands/*` into a live `.claude/agents/` + `.claude/commands/`
+(symlinks by default, `--copy` for detached copies) so the capability probe
+resolves. It is idempotent, never touches `~`, and never clobbers a
+pre-existing non-managed file. See `docs/features/review-agents.md` §
+Installation.
+
 ### Board adapter (bare commands, source in `workflows/scripts/board/`)
 
 All Projects-v2 reads/writes go through these — never ad-hoc `gh project …` or
