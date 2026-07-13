@@ -2,7 +2,7 @@
 #
 # funnel-tick.sh — the autonomous funnel driver's per-board tick (foundation
 # #569). A THIN SCHEDULER: it CALLS the existing `/triage → /assess → /build`
-# pipeline and inherits every hardened behavior (WIP cap, quota gate,
+# pipeline and inherits every hardened behavior (drive-concurrency governor, quota gate,
 # claim-first, timed merge gate, epic lifecycle) — it NEVER re-embeds any of it.
 # Re-implementing a pipeline step is a contract violation (see
 # `Decisions/foundation - Autonomous funnel driver + GitHub decision queue`
@@ -126,19 +126,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # here too since it's sourced first.
 : "${FUNNEL_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
 
-# WIP cap for the autonomous lane. Per the pilot decision: KEEP WIP-3 (prove the
-# loop safe before raising throughput). This is surfaced, not enforced here —
-# the cap is INHERITED from /build's claim-first gate, not re-embedded. SOURCE
-# OF TRUTH is build.config.sh (sourced above), which also feeds the rendered
-# "WIP cap = {{WIP_CAP}}" prose in claude/CLAUDE.kernel.md (temperloop#183) —
-# this `:=` is only the non-vendoring-checkout fallback.
-: "${FUNNEL_WIP_CAP:=3}"
+# Drive-concurrency governor for the autonomous lane (temperloop#162): the bound
+# on concurrent drives the funnel lane keeps per tick. This is surfaced, not
+# enforced here — real per-item concurrency is INHERITED from /build's claim-first
+# gate, not re-embedded. SOURCE OF TRUTH is build.config.sh (sourced above); this
+# `:=` is only the non-vendoring-checkout fallback. (Formerly FUNNEL_WIP_CAP, which
+# also doubled as the now-retired human "WIP cap = 3" governance prose — that human
+# cap was retired in temperloop#162; this knob is the mechanical governor only.)
+: "${FUNNEL_DRIVE_CONCURRENCY:=3}"
 
 # Per-tick DRIVE CAP (#642): how many Operational drive-ready items this tick may
 # EMIT. Was a hardcoded one-per-tick; now the canonical operator knob, fed from the
 # vault `cap:` (the ```funnel-schedule block) by funnel-cron.sh and defaulted in
 # build.config.sh. A bare `funnel-tick.sh` run uses the =1 fallback. This bounds the
-# EMIT; real concurrency is still governed by the WIP-3 claim-first gate downstream.
+# EMIT; real concurrency is still governed by the claim-first gate downstream.
 : "${FUNNEL_DRIVE_CAP:=1}"
 
 # Single-flight lockfile (contract § 4). One tick per host at a time.
@@ -229,9 +230,9 @@ if [ "$LIST_ENABLED" -eq 1 ]; then
   jq -cn \
     --argjson boards "$(printf '%s\n' "$FUNNEL_ENABLED_BOARDS" | jq -R 'split(" ")|map(select(length>0))')" \
     --arg cadence "$FUNNEL_TICK_CADENCE" \
-    --argjson wip "$FUNNEL_WIP_CAP" \
+    --argjson conc "$FUNNEL_DRIVE_CONCURRENCY" \
     --argjson cap "$FUNNEL_DRIVE_CAP" \
-    '{enabled_boards:$boards, cadence:$cadence, wip_cap:$wip, drive_cap:$cap}'
+    '{enabled_boards:$boards, cadence:$cadence, drive_concurrency:$conc, drive_cap:$cap}'
   exit 0
 fi
 
@@ -787,9 +788,9 @@ tick_board() {
 
   # Up to FUNNEL_DRIVE_CAP Operational drives + one Foundational route per tick
   # (#642). did_op is now a COUNTER, not a boolean: it gates how many Operational
-  # drive-ready items this tick emits (vault `cap:` feeds the cap). The WIP-3 cap
-  # still governs real concurrency once items are claimed (INHERITED from /build,
-  # not enforced here). Foundational items are ROUTED, not driven, so did_found
+  # drive-ready items this tick emits (vault `cap:` feeds the cap). The claim-first
+  # lock still governs real per-item concurrency once items are claimed (INHERITED
+  # from /build, not enforced here). Foundational items are ROUTED, not driven, so did_found
   # stays one-per-tick — the drive cap does not apply to routing.
   local did_op=0 did_found=0 did_route=0 j=0
   while [ "$j" -lt "$n_ready" ]; do
@@ -946,7 +947,7 @@ tick_board() {
                     then "standalone spike = Ready singleton, not an epic; drive to a verdict note + routed follow-up via the kind:spike singleton path, never /assess --epic (#635)"
                     elif $route=="singleton-code"
                     then "bare Ready singleton (0 sub-issues, no ## Contract) — driven via the /sweep per-issue build path scoped to this issue, never /assess --epic (which refuses it) nor the whole-pool /sweep (#717, the kind:code sibling of #635)"
-                    else "inherits WIP cap + quota + claim-first + epic lifecycle from the called commands (re-embeds none)"
+                    else "inherits drive-concurrency governor + quota + claim-first + epic lifecycle from the called commands (re-embeds none)"
                     end)}')"
       fi
       did_op=$((did_op+1))

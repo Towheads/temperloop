@@ -134,7 +134,7 @@ If any check fails, surface in one line and stop.
    - **Declined (skip):** Remove the `decision` label; post a confirmation comment: "Decision applied: plan not approved — skipping." The plan note remains `status: draft`.
    - **Deferred (/hold #N):** Leave the issue as-is (label + no assignee); skip for this tick.
 
-5. **One plan per tick-start drain.** If multiple answered plan-approval issues are found, process them in issue-number order, one per tick. This prevents a single tick from launching unbounded concurrent builds (the WIP-3 gate per board governs concurrency once items are claimed). Log which issues were found and which was processed.
+5. **One plan per tick-start drain.** If multiple answered plan-approval issues are found, process them in issue-number order, one per tick. This prevents a single tick from launching unbounded concurrent builds (the funnel's `FUNNEL_DRIVE_CONCURRENCY` governor bounds per-tick drive concurrency, and the per-item claim-first lock governs concurrency once items are claimed). Log which issues were found and which was processed.
 
 ## Step 0.5 — Reconcile state (resume only)
 

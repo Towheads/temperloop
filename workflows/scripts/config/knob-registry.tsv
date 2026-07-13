@@ -184,7 +184,7 @@ BUILD_QUOTA_WAIT_BUFFER	60	seconds	tracked-repo	workflows/scripts/build/build.co
 BUILD_QUOTA_MAX_AGE	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Ignore a quota cache snapshot older than this (fail open)
 BUILD_MERGE_GATE_WINDOW	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Timed merge-gate window (0 = always modal)
 BUILD_QUEUE_TIMEOUT	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-PR native-merge-queue timeout
-FUNNEL_WIP_CAP	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Max items In Progress at once per board (also rendered into CLAUDE.kernel.md prose)
+FUNNEL_DRIVE_CONCURRENCY	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Autonomous funnel lane's concurrent-drive bound per tick (mechanical governor; formerly FUNNEL_WIP_CAP, split from the retired human WIP-cap rule)
 EPIC_MIN_SUBUNITS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Epic-decomposition sub-unit threshold (rendered into CLAUDE.kernel.md prose)
 BUILD_MERGE_BACKEND	auto	enum	tracked-repo	workflows/scripts/build/build.config.sh	Merge-backend selection: auto probes for a merge_queue rule; native/managed override (auto|native|managed)
 BUILD_HEADLESS_POLL_TIMEOUT	540	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Foreground CI/MERGED poll bound on the headless (funnel merge-driver) path

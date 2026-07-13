@@ -25,7 +25,7 @@ command, sharing the same ladder the rest of the repo already depends on.
 
 **`temperloop configure`** (`bin/subcommands/configure.sh`) is a short
 wizard over a small, hardcoded starter set of four operator-facing knobs
-(`FUNNEL_OPERATOR`, `FUNNEL_WIP_CAP`, `BUILD_MERGE_GATE_WINDOW`,
+(`FUNNEL_OPERATOR`, `FUNNEL_DRIVE_CONCURRENCY`, `BUILD_MERGE_GATE_WINDOW`,
 `BUILD_QUOTA_PAUSE_PCT` — chosen for type diversity and first-install
 relevance, not an attempt to cover the full registry). It resolves each
 knob's value from one of three sources, in order: an explicit

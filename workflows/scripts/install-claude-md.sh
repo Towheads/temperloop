@@ -107,7 +107,8 @@ ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
 # ---------------------------------------------------------------------------
 # ── Prose-resident knob rendering (temperloop#183, D3's "CLAUDE.md-resident
 #    knob" seam — claude/CLAUDE.kernel.md § Prose-resident knob convention) ──
-# A knob embedded in this file's own standing-rules prose (e.g. the WIP cap)
+# A knob embedded in this file's own standing-rules prose (e.g. the epic-
+# decomposition sub-unit threshold)
 # has no Step-0 to source a config file from — the doc is read passively by
 # the agent, never executed — so it is rendered here instead, at compose
 # time, into a `{{KNOB_NAME}}` placeholder token the kernel doc's own text
@@ -121,17 +122,10 @@ ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
 # (surfacing a missing wiring loudly rather than silently blanking the knob).
 # ---------------------------------------------------------------------------
 render_kernel_doc() {
-  local kernel_file="$1" content wip_cap epic_subunit_floor
+  local kernel_file="$1" content epic_subunit_floor
 
-  wip_cap=""
   epic_subunit_floor=""
   if [ -f "$build_config" ]; then
-    wip_cap="$(
-      set -e
-      # shellcheck source=/dev/null
-      source "$build_config"
-      printf '%s\n' "$FUNNEL_WIP_CAP"
-    )" || wip_cap=""
     epic_subunit_floor="$(
       set -e
       # shellcheck source=/dev/null
@@ -139,11 +133,9 @@ render_kernel_doc() {
       printf '%s\n' "$EPIC_MIN_SUBUNITS"
     )" || epic_subunit_floor=""
   fi
-  [ -n "$wip_cap" ] || wip_cap=3   # build.config.sh's own default, if unresolved
   [ -n "$epic_subunit_floor" ] || epic_subunit_floor=3   # build.config.sh's own default, if unresolved
 
   content="$(cat "$kernel_file")"
-  content="${content//\{\{WIP_CAP\}\}/$wip_cap}"
   content="${content//\{\{EPIC_MIN_SUBUNITS\}\}/$epic_subunit_floor}"
   printf '%s' "$content"
 }

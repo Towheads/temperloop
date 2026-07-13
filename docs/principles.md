@@ -50,11 +50,15 @@ Projects provisioning) is a **cross-session lock**, not a status display.
 Claiming an item — marking it In Progress and stamping the owning
 session — is the first action before investigation even starts, because
 investigation itself is duplicate-able work the lock is meant to prevent.
-A WIP cap bounds how much work is in flight at once.
+On the autonomous lane, the funnel's drive-concurrency governor
+(`FUNNEL_DRIVE_CONCURRENCY`) bounds how many drives a tick launches; the
+human WIP-cap governance rule was retired (temperloop#162) once it proved to
+double a mechanical governor as a cross-session bound the claim-first lock
+already provides per item.
 
 - Claim-first mechanics: `workflows/scripts/board/claim.sh`
-- The claim-first rule and the WIP-cap gate, in prose: `claude/CLAUDE.kernel.md`
-  §§ "Claim first — before you investigate" and "WIP cap"
+- The claim-first rule, in prose: `claude/CLAUDE.kernel.md`
+  §§ "The In-Progress gate" and "Claim first — before you investigate"
 
 ### 2. Decompose to the seam, not the implementation
 
