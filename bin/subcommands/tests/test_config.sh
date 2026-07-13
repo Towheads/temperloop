@@ -94,10 +94,10 @@ echo "PASS: a repo-local (BUILD_CONFIG_LOCAL) file setting a var wins over its t
 #    rung=tracked-repo.
 # =============================================================================
 out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL bash "$CONFIG" list --format tsv)"
-[ "$(tsv_field "$out" FUNNEL_WIP_CAP 2)" = "tracked-repo" ] \
-  || fail "untouched FUNNEL_WIP_CAP did not report rung=tracked-repo (got: $(tsv_field "$out" FUNNEL_WIP_CAP 2))"
-[ "$(tsv_field "$out" FUNNEL_WIP_CAP 3)" = "3" ] \
-  || fail "untouched FUNNEL_WIP_CAP did not report build.config.sh's default of 3 (got: $(tsv_field "$out" FUNNEL_WIP_CAP 3))"
+[ "$(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 2)" = "tracked-repo" ] \
+  || fail "untouched FUNNEL_DRIVE_CONCURRENCY did not report rung=tracked-repo (got: $(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 2))"
+[ "$(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 3)" = "3" ] \
+  || fail "untouched FUNNEL_DRIVE_CONCURRENCY did not report build.config.sh's default of 3 (got: $(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 3))"
 echo "PASS: an untouched tracked-repo-layer knob resolves to build.config.sh's own default (rung=tracked-repo)"
 
 # =============================================================================

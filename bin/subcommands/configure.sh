@@ -47,7 +47,7 @@
 # like init.sh's consented-apply step).
 #
 # CONFIGURE_KNOBS is a small, hardcoded starter set (FUNNEL_OPERATOR,
-# FUNNEL_WIP_CAP, BUILD_MERGE_GATE_WINDOW, BUILD_QUOTA_PAUSE_PCT) chosen
+# FUNNEL_DRIVE_CONCURRENCY, BUILD_MERGE_GATE_WINDOW, BUILD_QUOTA_PAUSE_PCT) chosen
 # for type diversity (label/int/seconds/pct) and first-install relevance —
 # NOT an attempt to cover the whole registry (`temperloop config list`
 # already shows every registry knob for manual override via any rung; this
@@ -137,7 +137,7 @@ CONFIGURE_CLAUDE_MAX_BUDGET_USD="0.25"
 
 # The curated starter set (see header comment). Order is the prompt/
 # summary order.
-CONFIGURE_KNOBS="FUNNEL_OPERATOR FUNNEL_WIP_CAP BUILD_MERGE_GATE_WINDOW BUILD_QUOTA_PAUSE_PCT"
+CONFIGURE_KNOBS="FUNNEL_OPERATOR FUNNEL_DRIVE_CONCURRENCY BUILD_MERGE_GATE_WINDOW BUILD_QUOTA_PAUSE_PCT"
 
 usage() {
   cat <<'EOF'

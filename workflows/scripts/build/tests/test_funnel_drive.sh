@@ -73,7 +73,7 @@ export FUNNEL_DEFAULT_CHECKOUT="$CO4"  # safe-tier fallback for an unmapped boar
 
 # A synthetic tick-plan ARRAY — the shape funnel-cron.sh collects (per-board
 # {tick,actions[]} objects). One of every action class, so the tiering is exercised
-# in full. (A real single tick emits at most one drive-ready — the WIP cap — so the
+# in full. (A real single tick emits at most one drive-ready — the drive cap — so the
 # two drives here are synthetic, to assert spike-vs-code routing in one pass.)
 PLANS='[{"tick":"done","actions":[
   {"phase":"route","action":"route-already-assigned","board":"3","repo":"Towheads/stageFind","issue":733},
@@ -274,7 +274,7 @@ DOUBLE
 }
 
 MERGE_OVERLAY="$(cd "$HERE/.." && pwd)/funnel-drive-merge.settings.json"
-# A realistic single code drive (a tick is WIP-capped to ~one drive).
+# A realistic single code drive (a tick is drive-capped to ~one drive).
 CODE1='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":101,"kind":"code","emit":"/build"}]}]'
 
@@ -719,7 +719,7 @@ SAFEDOUBLE
   printf '%s' "$f"
 }
 
-# A single spike drive (a real tick is WIP-capped to ~one drive) → n_safe=1.
+# A single spike drive (a real tick is drive-capped to ~one drive) → n_safe=1.
 SPIKE1='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":449,"kind":"spike","emit":"drive the spike to its verdict"}]}]'
 REFUSE_SAFE='{"driver":"funnel-drive","rung":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"drive-ready","issue":449,"status":"refused","note":"single spike, not an epic"}]}'

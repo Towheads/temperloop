@@ -180,7 +180,7 @@ PLAN="$(FUNNEL_ENABLED_BOARDS="3 4" bash "$TICK" --dry-run --fixture "$FX" --boa
 echo "--- test 8: --list-enabled surface ---"
 OUT="$(bash "$TICK" --list-enabled)"
 [ "$(jq -r '.enabled_boards[0]' <<<"$OUT")" = "3" ] && ok "--list-enabled shows board 3 (pilot)" || bad "t8.list" "got $OUT"
-[ "$(jq -r '.wip_cap' <<<"$OUT")" = "3" ] && ok "WIP cap default = 3 (pilot keeps WIP-3)" || bad "t8.wip" "got $(jq -r '.wip_cap' <<<"$OUT")"
+[ "$(jq -r '.drive_concurrency' <<<"$OUT")" = "3" ] && ok "drive-concurrency default = 3" || bad "t8.conc" "got $(jq -r '.drive_concurrency' <<<"$OUT")"
 [ "$(jq -r '.drive_cap' <<<"$OUT")" = "1" ] && ok "drive cap default = 1 (per-tick emit cap, #642)" || bad "t8.drivecap" "got $(jq -r '.drive_cap' <<<"$OUT")"
 OUT3="$(FUNNEL_DRIVE_CAP=3 bash "$TICK" --list-enabled)"
 [ "$(jq -r '.drive_cap' <<<"$OUT3")" = "3" ] && ok "--list-enabled reflects FUNNEL_DRIVE_CAP=3" || bad "t8.drivecap3" "got $(jq -r '.drive_cap' <<<"$OUT3")"

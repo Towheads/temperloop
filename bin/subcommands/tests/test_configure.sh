@@ -110,7 +110,7 @@ machine_conf_path() {
 : > "$CLAUDE_CALL_COUNT_FILE"
 XDG1="$(fresh_xdg)"
 out="$(PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG1" bash "$CONFIGURE" \
-  --set FUNNEL_OPERATOR=octocat --set FUNNEL_WIP_CAP=5 \
+  --set FUNNEL_OPERATOR=octocat --set FUNNEL_DRIVE_CONCURRENCY=5 \
   --set BUILD_MERGE_GATE_WINDOW=120 --set BUILD_QUOTA_PAUSE_PCT=20 \
   --yes </dev/null 2>&1)"
 rc=$?
@@ -119,7 +119,7 @@ rc=$?
 mc1="$(machine_conf_path "$XDG1")"
 [ -f "$mc1" ] || fail "machine-conf file was not written: $mc1"
 grep -q ': "${FUNNEL_OPERATOR:=octocat}"' "$mc1" || fail "written file missing FUNNEL_OPERATOR=octocat (got: $(cat "$mc1")\""
-grep -q ': "${FUNNEL_WIP_CAP:=5}"' "$mc1" || fail "written file missing FUNNEL_WIP_CAP=5"
+grep -q ': "${FUNNEL_DRIVE_CONCURRENCY:=5}"' "$mc1" || fail "written file missing FUNNEL_DRIVE_CONCURRENCY=5"
 echo "PASS: claude genuinely absent from PATH -> zero claude invocations, wizard still resolves + writes via --set"
 
 # =============================================================================
@@ -128,9 +128,9 @@ echo "PASS: claude genuinely absent from PATH -> zero claude invocations, wizard
 # =============================================================================
 : > "$CLAUDE_CALL_COUNT_FILE"
 XDG2="$(fresh_xdg)"
-FAKE_CLAUDE_JSON='{"FUNNEL_WIP_CAP":{"value":"9","why":"x"}}' \
+FAKE_CLAUDE_JSON='{"FUNNEL_DRIVE_CONCURRENCY":{"value":"9","why":"x"}}' \
   PATH="$BIN:/usr/bin:/bin" XDG_CONFIG_HOME="$XDG2" bash "$CONFIGURE" --no-ai \
-  --set FUNNEL_OPERATOR=octocat --set FUNNEL_WIP_CAP=5 \
+  --set FUNNEL_OPERATOR=octocat --set FUNNEL_DRIVE_CONCURRENCY=5 \
   --set BUILD_MERGE_GATE_WINDOW=120 --set BUILD_QUOTA_PAUSE_PCT=20 \
   --yes </dev/null >/dev/null 2>&1
 [ "$(claude_call_count)" -eq 0 ] || fail "--no-ai still invoked claude"
@@ -142,12 +142,12 @@ echo "PASS: --no-ai forces plain-prompt mode even with claude present (zero invo
 # =============================================================================
 : > "$CLAUDE_CALL_COUNT_FILE"
 XDG3="$(fresh_xdg)"
-FAKE_CLAUDE_JSON='{"FUNNEL_OPERATOR":{"value":"@REPLACE_WITH_YOUR_GH_LOGIN","why":"placeholder"},"FUNNEL_WIP_CAP":{"value":"4","why":"ok"},"BUILD_MERGE_GATE_WINDOW":{"value":"300","why":"ok"},"BUILD_QUOTA_PAUSE_PCT":{"value":"15","why":"ok"}}' \
+FAKE_CLAUDE_JSON='{"FUNNEL_OPERATOR":{"value":"@REPLACE_WITH_YOUR_GH_LOGIN","why":"placeholder"},"FUNNEL_DRIVE_CONCURRENCY":{"value":"4","why":"ok"},"BUILD_MERGE_GATE_WINDOW":{"value":"300","why":"ok"},"BUILD_QUOTA_PAUSE_PCT":{"value":"15","why":"ok"}}' \
   PATH="$BIN:/usr/bin:/bin" XDG_CONFIG_HOME="$XDG3" bash "$CONFIGURE" --yes </dev/null >/dev/null 2>&1
 [ "$(claude_call_count)" -eq 1 ] || fail "AI-guided mode did not invoke claude exactly once (got: $(claude_call_count))"
 argv_has_tools_empty || fail "claude was not invoked with --tools immediately followed by an empty string"
 mc3="$(machine_conf_path "$XDG3")"
-grep -q ': "${FUNNEL_WIP_CAP:=4}"' "$mc3" || fail "AI-suggested FUNNEL_WIP_CAP=4 not written (got: $(cat "$mc3")\")"
+grep -q ': "${FUNNEL_DRIVE_CONCURRENCY:=4}"' "$mc3" || fail "AI-suggested FUNNEL_DRIVE_CONCURRENCY=4 not written (got: $(cat "$mc3")\")"
 grep -q ': "${BUILD_QUOTA_PAUSE_PCT:=15}"' "$mc3" || fail "AI-suggested BUILD_QUOTA_PAUSE_PCT=15 not written"
 echo "PASS: AI-guided mode invokes claude exactly once (--tools \"\" structural proof), applies its JSON suggestions"
 
@@ -178,7 +178,7 @@ XDG5="$(fresh_xdg)"
 mkdir -p "$XDG5"
 before="$(find "$XDG5" -type f | sort)"
 PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG5" bash "$CONFIGURE" --dry-run \
-  --set FUNNEL_WIP_CAP=6 --yes </dev/null >/dev/null 2>&1
+  --set FUNNEL_DRIVE_CONCURRENCY=6 --yes </dev/null >/dev/null 2>&1
 after="$(find "$XDG5" -type f | sort)"
 [ "$before" = "$after" ] || fail "--dry-run created/modified a file under XDG_CONFIG_HOME (before: [$before] after: [$after])"
 echo "PASS: --dry-run touches no file"
@@ -188,7 +188,7 @@ echo "PASS: --dry-run touches no file"
 # =============================================================================
 XDG6="$(fresh_xdg)"
 PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG6" bash "$CONFIGURE" \
-  --set FUNNEL_WIP_CAP=6 </dev/null >/dev/null 2>&1
+  --set FUNNEL_DRIVE_CONCURRENCY=6 </dev/null >/dev/null 2>&1
 mc6="$(machine_conf_path "$XDG6")"
 [ ! -f "$mc6" ] || fail "non-interactive run with no --yes still wrote a file"
 echo "PASS: non-interactive with no --yes declines the write (default-deny, file never created)"
@@ -199,13 +199,13 @@ echo "PASS: non-interactive with no --yes declines the write (default-deny, file
 # =============================================================================
 XDG7="$(fresh_xdg)"
 PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG7" bash "$CONFIGURE" \
-  --set FUNNEL_WIP_CAP=5 --yes </dev/null >/dev/null 2>&1
+  --set FUNNEL_DRIVE_CONCURRENCY=5 --yes </dev/null >/dev/null 2>&1
 PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG7" bash "$CONFIGURE" \
-  --set FUNNEL_WIP_CAP=7 --yes </dev/null >/dev/null 2>&1
+  --set FUNNEL_DRIVE_CONCURRENCY=7 --yes </dev/null >/dev/null 2>&1
 mc7="$(machine_conf_path "$XDG7")"
-[ "$(grep -c ': "${FUNNEL_WIP_CAP:=' "$mc7")" -eq 1 ] || fail "upsert produced more than one FUNNEL_WIP_CAP value line"
-grep -q ': "${FUNNEL_WIP_CAP:=7}"' "$mc7" || fail "second run's value (7) did not win (got: $(cat "$mc7")\")"
-grep -q ': "${FUNNEL_WIP_CAP:=5}"' "$mc7" && fail "first run's stale value (5) is still present"
+[ "$(grep -c ': "${FUNNEL_DRIVE_CONCURRENCY:=' "$mc7")" -eq 1 ] || fail "upsert produced more than one FUNNEL_DRIVE_CONCURRENCY value line"
+grep -q ': "${FUNNEL_DRIVE_CONCURRENCY:=7}"' "$mc7" || fail "second run's value (7) did not win (got: $(cat "$mc7")\")"
+grep -q ': "${FUNNEL_DRIVE_CONCURRENCY:=5}"' "$mc7" && fail "first run's stale value (5) is still present"
 echo "PASS: a second configure run upserts (replaces) an existing knob's line rather than duplicating it"
 
 # =============================================================================
@@ -214,12 +214,12 @@ echo "PASS: a second configure run upserts (replaces) an existing knob's line ra
 # =============================================================================
 XDG8="$(fresh_xdg)"
 out="$(PATH="/usr/bin:/bin" XDG_CONFIG_HOME="$XDG8" bash "$CONFIGURE" \
-  --set 'FUNNEL_WIP_CAP=not-a-number' --yes </dev/null 2>&1)"
+  --set 'FUNNEL_DRIVE_CONCURRENCY=not-a-number' --yes </dev/null 2>&1)"
 # Herestring for the same SIGPIPE-race reason as above.
 grep -qi "not a valid" <<<"$out" || fail "invalid --set value was not reported as invalid (got: $out)"
 mc8="$(machine_conf_path "$XDG8")"
-grep -q ': "${FUNNEL_WIP_CAP:=not-a-number}"' "$mc8" && fail "invalid value was written verbatim"
-grep -q ': "${FUNNEL_WIP_CAP:=3}"' "$mc8" || fail "invalid --set did not fall back to the registry default of 3 (got: $(cat "$mc8")\")"
+grep -q ': "${FUNNEL_DRIVE_CONCURRENCY:=not-a-number}"' "$mc8" && fail "invalid value was written verbatim"
+grep -q ': "${FUNNEL_DRIVE_CONCURRENCY:=3}"' "$mc8" || fail "invalid --set did not fall back to the registry default of 3 (got: $(cat "$mc8")\")"
 echo "PASS: an invalid --set value is rejected and falls back to the seed/registry default"
 
 echo

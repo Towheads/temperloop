@@ -115,23 +115,24 @@ fi
 : "${BUILD_MERGE_GATE_WINDOW:=300}"   # timed merge-gate window (s); 0 = always modal
 : "${BUILD_QUEUE_TIMEOUT:=1800}"      # per-PR native-merge-queue timeout (s)
 
-# Board WIP cap (temperloop#183, the D3 "CLAUDE.md-resident knob" demonstration
-# knob): at most this many items In Progress at once, per board. SOURCE OF TRUTH
-# for TWO consumers that must never drift apart — funnel-tick.sh's autonomous-lane
-# cap (which is explicitly INHERITED from this policy, not re-embedded — see that
-# file's own comment) and the "WIP cap = {{WIP_CAP}}" prose in
-# claude/CLAUDE.kernel.md's Task-workflow section, rendered into place at compose
-# time by workflows/scripts/install-claude-md.sh (§ Prose-resident knob convention
-# in that doc). Change the pilot's WIP bound here, once, and both follow.
-: "${FUNNEL_WIP_CAP:=3}"
+# Autonomous funnel drive-concurrency governor (temperloop#162, split out from the
+# retired human "WIP cap" governance rule): at most this many concurrent drives the
+# autonomous funnel lane bounds per tick. SOURCE OF TRUTH for funnel-tick.sh's
+# autonomous-lane concurrency bound (which is explicitly INHERITED from this policy,
+# not re-embedded — see that file's own comment). This is the mechanical governor
+# ONLY — the former human "WIP cap = 3" cross-session governance rule it used to
+# double as was retired in temperloop#162 (the In-Progress gate + claim-first lock
+# in claude/CLAUDE.kernel.md's Task-workflow section stay; the numeric human cap is
+# gone). Change the funnel's concurrency bound here, once.
+: "${FUNNEL_DRIVE_CONCURRENCY:=3}"
 
 # Epic-decomposition sub-unit threshold (prose-tunables-migration follow-up to
 # temperloop#183): a second "CLAUDE.md-resident knob" rendered at compose time
 # into claude/CLAUDE.kernel.md's Task-workflow section — "epic-sized" is
 # `{{EPIC_MIN_SUBUNITS}}`+ parallelizable sub-units (OR more than one
 # dependency level, which stays a structural/contract fact, not a separate
-# knob — see that section's own note). Same render seam as FUNNEL_WIP_CAP
-# above, in workflows/scripts/install-claude-md.sh.
+# knob — see that section's own note). Rendered into the kernel doc at compose
+# time by workflows/scripts/install-claude-md.sh.
 : "${EPIC_MIN_SUBUNITS:=3}"
 
 # Merge-backend SELECTION (temperloop#13): a free personal repo can't always
@@ -310,7 +311,7 @@ fi
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND FUNNEL_WIP_CAP EPIC_MIN_SUBUNITS \
+       BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
