@@ -300,6 +300,8 @@ _ERROR_SIGNATURES = [
     # outside the allowed working directories. Verbatim observed harness string
     # (candidate-tells 2026-06-27); deterministic → no IGNORECASE (foundation #662).
     re.compile(r"may only concatenate files from the allowed working directories"),
+    re.compile(r"Could not resolve to a [Uu]ser or bot with the login", re.IGNORECASE),  # gh assignee/login resolution failure
+    re.compile(r"maximum number of (certificates|devices|profiles)", re.IGNORECASE),  # Apple Developer vendor-quota slow outage
 ]
 
 
