@@ -14,6 +14,42 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-14 — BREAKING
+
+### Changed
+
+- **BREAKING — the `/design` command is renamed `/workshop`** (temperloop#354,
+  PR #355). The old name collides with Claude Code's builtin `/design` (the
+  claude.ai design-system sync consent flow), which answers instead of the
+  kernel command on any fresh install — a stranger-test failure. The rename is
+  command-name only: `claude/commands/design.md` → `workshop.md`,
+  `docs/features/design.md` → `workshop.md` (slug `workshop`), every `/design`
+  invocation reference, and the feature/kernel manifests. The artifact
+  vocabulary is unchanged — "design brief", `design-schema.md`,
+  `design-measurement-proxies.md`, the `design-brief:` epic marker, and
+  `validate-design-brief.sh` + fixtures all keep their names. **Migration:**
+  rename any overlay/docs references to the `/design` command to `/workshop`,
+  and re-run `workflows/scripts/install/project-agents.sh` in each live
+  checkout — the deployed `.claude/commands/design.md` symlink dangles after
+  the pull and must be removed/replaced by `workshop.md`.
+- **BREAKING — funnel governor knob renamed `FUNNEL_WIP_CAP` →
+  `FUNNEL_DRIVE_CONCURRENCY`**, and the human WIP-cap-3 standing rule is
+  retired from the kernel prose (PR #334). The old rule conflated a
+  human/cross-session governance bound with the autonomous funnel's mechanical
+  drive-concurrency governor; only the latter was real, and it keeps the same
+  default (3). **Migration:** grep your overlay config/env for
+  `FUNNEL_WIP_CAP` and rename it, then re-run `make install-claude` — the
+  composed `~/.claude/CLAUDE.md` otherwise keeps rendering the retired rule
+  from the old placeholder.
+- Standing-rule promotions from the drain lexicon (PRs #337–#342): recurring
+  pattern/mistake/feedback extractions promoted into kernel standing rules
+  (merge-autonomy & consent, cost-tier routing, guard rules) plus two new
+  error signatures. Claim-until-Done blessed; the required release-at-park of
+  a non-latest claim is dropped (temperloop#275, PR #333). The design-schema
+  disposition grammar block is now prefixed `disposition:` (PR #350), and the
+  provenance-net Contract-shaped scope is ratified as an accepted-gap decision
+  (temperloop#349, PR #351).
+
 ### Added
 
 - Funnel rung-5c gains a `_reclaim_abandoned` backstop (foundation#1157): when a
@@ -45,6 +81,23 @@ reads that marker; a stranger greps for it before pulling.
   3e routing degrades legibly (`skipped — docs-reviewer unavailable`) where the
   capability probe resolves false. Per-consumer activation (vendor the tag, then
   `make install`) is tracked as class-B propagation work under temperloop#318.
+- The funnel tick's Phase-0 intake pre-gate warns once (instead of silently
+  no-opping, observed ~19h unnoticed) when the signal-intake backend script is
+  missing or present-but-unconfigured (temperloop#330, PR #345); the two knob
+  seams the WARN added are registered/exempted in the knob registry.
+- Collision-free parallel-append registries and check slots (temperloop#321,
+  PR #346): append-only, order-independent registries (feature-manifest,
+  kernel-manifest, the exempt-file lists) get a `merge=union` `.gitattributes`
+  driver so two same-level sibling PRs appending at one insertion point
+  auto-merge instead of textually colliding and costing a rebase-respawn.
+
+### Fixed
+
+- `/build`'s CI-retry push is a plain fast-forward instead of an unconditional
+  `--force` (temperloop#335, PR #343): the retry commit is a fast-forward
+  descendant by construction, and the needless force-push non-deterministically
+  tripped the git-destructive safety classifier in auto mode, silently parking
+  autonomous `/sweep` / `/build --unattended` / funnel-drive-merge runs.
 
 ## [0.11.0] - 2026-07-10
 
