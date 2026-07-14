@@ -3,7 +3,7 @@ description: Facilitate a structured design conversation for INVENTED work (an i
 argument-hint: "[<problem-statement> | <pointer-note>] [--board <N> | --project <name>]"
 ---
 
-You are running the **design** command. Goal: take an idea that was *invented* in
+You are running the **workshop** command (formerly `/design`; renamed — temperloop#354 — to avoid colliding with Claude Code's builtin `/design`). Goal: take an idea that was *invented* in
 conversation — not discovered as a Backlog defect — and walk it against a fixed
 coverage template until every dimension has an explicit disposition, then ratify
 and materialize it into the same funnel `/triage` feeds. This is the funnel's
@@ -15,7 +15,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /design   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -25,7 +25,7 @@ a design conversation ──► /design   intake → coverage walk → review pa
 ```
 
 `/triage` explicitly disclaims a pre-designed epic (its own spec: "no path to
-decompose an already-existing, fully-specified epic"); `/design` is that epic's
+decompose an already-existing, fully-specified epic"); `/workshop` is that epic's
 point of origin, not a patch to triage. Both front doors converge on the same
 `/assess --epic N` → `/build` pipeline — nothing downstream of materialization
 changes.
@@ -66,7 +66,7 @@ lands later without touching Step 3.
 
 ## Operating principles
 
-- **Operator-present only — no unattended arm.** `/design` is modal by
+- **Operator-present only — no unattended arm.** `/workshop` is modal by
   construction: there is no `--unattended` flag, no `ScheduleWakeup` poll, and
   no async decision-issue backend. Every ask in this command (Step 4's ratify
   confirmation; any disambiguating question during the walk) is a direct,
@@ -83,7 +83,7 @@ lands later without touching Step 3.
   a silent no-op) rather than blocking the walk itself. See Step 3's and
   Step 5's degradation paths.
 - **Idempotent materialization.** Epic creation is **probe-before-create** on
-  the `design-brief:` marker line (Step 5b) — a re-run of `/design` against an
+  the `design-brief:` marker line (Step 5b) — a re-run of `/workshop` against an
   already-ratified brief (or a re-run of just Step 5 after a partial failure)
   **adopts** the existing epic rather than duplicating it, exactly like
   `/triage`'s epic creation.
@@ -522,7 +522,7 @@ design-brief: [[Designs/<note>]]
    (or the `issue_marker_probe` helper,
    `workflows/scripts/lib/issue-marker-probe.sh`, when this checkout vendors
    it — same corpus-first-then-live-fallback shape `/triage` Step 4 uses).
-   **Found** → adopt it; this is the re-run path (a repeated `/design` pass,
+   **Found** → adopt it; this is the re-run path (a repeated `/workshop` pass,
    or a materialize retried after a partial failure) — if the ratified
    brief's Contract changed since the epic was created, update the epic body
    to match, but never create a second epic for the same brief.
@@ -684,7 +684,7 @@ last line of the response.
   the one non-best-effort check in Step 5, because the epic body is outbound
   content. Fix the offending text (in the brief, then re-copy into the
   Contract) and re-run Step 5.
-- **Re-running `/design` (or just Step 5) against an already-ratified,
+- **Re-running `/workshop` (or just Step 5) against an already-ratified,
   already-materialized brief.** Idempotent throughout: the epic probe adopts
   rather than duplicates (5b.3); the Decisions note capture is a one-time
   write per decision, not a per-run one (skip if it already exists for this

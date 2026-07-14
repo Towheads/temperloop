@@ -50,15 +50,16 @@ none docs/adr/*
 # longer, more specific claim under quality-gates.
 none docs/features/*
 
-# The /design front-door epic (temperloop#148): design-schema.md
-# (temperloop#214) and claude/commands/design.md (temperloop#215) landed
-# ahead of their feature doc; both now carry the "design" slug landed by
-# the doc + path-claims sibling item (temperloop#222), same as the
-# docs-site-epic sibling pre-claim pattern above resolved for its own
-# siblings. docs/features/design.md is covered by the broad
+# The workshop front-door epic (temperloop#148; command renamed /design ->
+# /workshop, temperloop#354): design-schema.md (temperloop#214) and
+# claude/commands/workshop.md (temperloop#215) landed ahead of their
+# feature doc; both now carry the "workshop" slug (originally "design",
+# landed by the doc + path-claims sibling item, temperloop#222), same as
+# the docs-site-epic sibling pre-claim pattern above resolved for its own
+# siblings. docs/features/workshop.md is covered by the broad
 # `none docs/features/*` claim above, not a slug line of its own.
-design claude/design-schema.md
-design claude/commands/design.md
+workshop claude/design-schema.md
+workshop claude/commands/workshop.md
 
 # ── board-adapter — Projects-v2/issues-only board adapter + board commands ──
 board-adapter workflows/scripts/board/*

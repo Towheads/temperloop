@@ -10,7 +10,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues (Backlog→Ready)
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /design   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -19,7 +19,7 @@ a design conversation ──► /design   intake → coverage walk → review pa
                                                                             └─► /build        (execution lifecycle; claims, merges, closes the epic on last child)
 ```
 
-`/design` is the funnel's second front door — for **invented** work rather
+`/workshop` is the funnel's second front door — for **invented** work rather
 than the discovered work triage sweeps. Both doors converge on the same
 `/assess --epic N` → `/build` pipeline; see the Mirror-redirect note below
 for how triage hands off invented work that lands at its door instead.
@@ -28,7 +28,7 @@ for how triage hands off invented work that lands at its door instead.
 
 **Triage births epics from loose findings — it does NOT decompose a pre-designed epic (foundation #526).** Triage materialises sub-issues only when it culls/groups **loose findings** (Backlog items, sweep docs) into a *new* epic. It has **no** path to take an *already-existing*, fully-specified epic and expand it into sub-issues — so running `/triage` on a tier-N>1 epic that was authored with a rich `## Contract` body but **zero sub-issues by design** (the per-tier *"sub-issues authored when the tier approaches"* pattern) does nothing useful. **That decomposition is `/assess`'s job** — its **epic-decomposition mode** reads the epic's `## Contract` and authors the seam-scoped items (`/build` then mints the sub-issues under the existing epic). If you land here trying to decompose a designed epic, run `/assess --epic N`, not `/triage`. See [[Decisions/foundation - Assess epic-decomposition mode (who authors sub-issues for a designed epic)]].
 
-**Mirror redirect: invented work arriving at triage's door (temperloop#218).** Triage's Backlog is for *discovered* work; a candidate that instead reads as **invented** — a new capability, a "we should build X" idea, filed straight to Backlog rather than walked through `/design` — is `/design`'s material, not triage's, whenever it is epic-sized (`claude/CLAUDE.kernel.md` § Design-first default for invented work — the same threshold as § Task workflow's "Decompose epic-sized work up front"). Don't cull or triage it as a defect: flag it in the Step 3.5 preview / Step 5 summary — `candidate #<n> reads as invented, epic-sized work — recommend /design instead of triaging it here` — and let the operator decide at the Step 4 write gate whether to run `/design` on it first. A small invented idea below the epic threshold needs no redirect; triage it as a normal singleton.
+**Mirror redirect: invented work arriving at triage's door (temperloop#218).** Triage's Backlog is for *discovered* work; a candidate that instead reads as **invented** — a new capability, a "we should build X" idea, filed straight to Backlog rather than walked through `/workshop` — is `/workshop`'s material, not triage's, whenever it is epic-sized (`claude/CLAUDE.kernel.md` § Design-first default for invented work — the same threshold as § Task workflow's "Decompose epic-sized work up front"). Don't cull or triage it as a defect: flag it in the Step 3.5 preview / Step 5 summary — `candidate #<n> reads as invented, epic-sized work — recommend /workshop instead of triaging it here` — and let the operator decide at the Step 4 write gate whether to run `/workshop` on it first. A small invented idea below the epic threshold needs no redirect; triage it as a normal singleton.
 
 ## Inputs
 
