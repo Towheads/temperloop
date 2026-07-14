@@ -117,9 +117,9 @@ Every dimension in a brief gets **exactly one** explicit disposition —
 no dimension may be silently absent:
 
 ```
-filled                         — the dimension is answered in the brief body
-n/a — <reason>                 — genuinely inapplicable to this design, with the reason stated
-deferred → <tracking ref>      — real but out of scope for this brief; ref is an issue/epic that owns it
+disposition: filled                       — the dimension is answered in the brief body
+disposition: n/a — <reason>               — genuinely inapplicable to this design, with the reason stated
+disposition: deferred → <tracking ref>    — real but out of scope for this brief; ref is an issue/epic that owns it
 ```
 
 The disposition line is the **first non-blank line** under its dimension
