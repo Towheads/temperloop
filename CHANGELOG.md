@@ -16,6 +16,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- Funnel rung-5c gains a `_reclaim_abandoned` backstop (foundation#1157): when a
+  one-shot `/funnel-drive-merge` session disobeys the synchronous-block guardrail —
+  backgrounds a wait and dies before opening a PR — it leaves its board item
+  stranded In Progress with no PR, and enough of those exceed the WIP cap and jam
+  the funnel. The driver now releases such a claim back to Ready (driven this tick,
+  no open PR, issue still open, no terminal status reported), so it re-enters the
+  drive pool next tick. Adds `board/unclaim.sh` — the board-status half of undoing
+  `claim.sh` (In Progress → Ready), the autonomous release-to-Ready primitive
+  `release.sh` deliberately is not (release.sh clears only the local claim marker).
+  The reclaim shells out to that CLI (new `FUNNEL_UNCLAIM_BIN` test-double seam),
+  keeping `funnel-drive.sh` adapter-free. New wake-record fields `reclaimed` /
+  `reclaimed_issues`. Additive — the synchronous-block guardrail stays the primary
+  fix; this only makes its failure self-healing instead of a jam.
 - `docs-reviewer` advisory agent (`claude/agents/docs-reviewer.md`) and its
   `/build` Step 3e wiring (temperloop#282, PR 261c22f): a read-only,
   `sonnet`-tier documentation reviewer — the fourth member of the advisory

@@ -64,10 +64,11 @@
 #    safe_failed:<n|null>, merge_driven:<n>, merged_pr:<n|null>, merge_status:<enum>,
 #    parked:<n|null>, failed:<n|null>, refused:<n|null>, routed:<n>,
 #    route_suppressed:<n>, handed_off:<n>,
-#    reconciled_merged:<n>, merge_pending:<n>,
+#    reconciled_merged:<n>, merge_pending:<n>, reclaimed:<n>,
 #    escalated:<n>, skipped_merge:<n>,
 #    routed_issues:[…], handed_off_issues:[…], escalated_issues:[…],  (#640 audit)
 #    reconciled_merged_issues:[…], merge_pending_issues:[…],  (#718 audit)
+#    reclaimed_issues:[…],  (#1157 audit)
 #    duration_ms:<n>,  (#640 timing; second-granularity — see funnel-cron.sh _epoch_s)
 #    gh_error_count:<n>, gh_errors:[…],  (#641)
 #    safe:[…], merge:[…], result:<safe driver summary | null>,
@@ -126,6 +127,13 @@
 # label) instead of resume-looped forever — a red gate has no autonomous merge path,
 # since the merge tier pushes no fixes (#665). Disjoint from `handed_off` (CI not yet
 # terminal → still resumed) and `routed` (the driver itself refused, no PR opened).
+# `reclaimed` (+ `reclaimed_issues` audit) = claims the merge session ABANDONED this
+# tick — driven, but the one-shot session backgrounded a wait and died before opening
+# a PR (the guardrail-disobedience #1157 backstops), leaving the item stranded In
+# Progress. _reclaim_abandoned releases each back to Ready (via the unclaim.sh board
+# CLI) so it re-enters the drive pool next tick instead of jamming the WIP cap.
+# DISJOINT from `handed_off` (that owns items WITH an open PR; reclaim owns items with
+# NONE) and from `routed`/`refused` (a reported terminal status is never reclaimed).
 # `skipped_merge` = merges left for the operator (all of them in 5b, only those
 # beyond the cap in 5c).
 #
@@ -182,6 +190,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # own placeholder wins here too since it's sourced first.
 : "${FUNNEL_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
 : "${FUNNEL_GH_BIN:=gh}"
+
+# Board CLI used by the #1157 abandonment reclaim to release a stranded claim back
+# to Ready (In Progress → Ready). Shelling out to the CLI — rather than sourcing
+# board.sh here — keeps this driver adapter-free (the adapter loads in unclaim.sh's
+# own process, exactly as the CLAIM is made by a subprocess CLI via
+# /build→build-level.mjs→claim.sh). FUNNEL_UNCLAIM_BIN is the test-double seam
+# (mirrors FUNNEL_GH_BIN / CLAUDE_BIN).
+: "${FUNNEL_UNCLAIM_BIN:=$HERE/../board/unclaim.sh}"
 
 # Rung-5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
 # marker). This script applies THIS label — not `needs-clarification` — to every CODE
@@ -398,6 +414,7 @@ n_handed_off=0   # code drives that opened a PR but did not merge this tick → 
 n_escalated=0   # merge-pending PRs with terminally-red CI escalated to the operator instead of looped (#665)
 n_reconciled_merged=0   # funnel-opened PRs that merged ASYNC (issue now closed) — reconciled + label retired (#718)
 n_merge_pending=0   # standing set of merge-pending issues whose PR is still open this tick (#718)
+n_reclaimed=0   # abandoned claims released back to Ready this tick (#1157 — driven, no PR, session died)
 n_gh_errors=0   # routing/hand-off gh side-effect calls that FAILED this tick — recorded, not swallowed (#641)
 gh_errors_json='[]'   # per-failure detail {phase,issue,repo,gh_op,exit} accumulated by _gh_sideeffect (#641)
 # Mutation audit (#640): WHICH issues each side-effect acted on — the counters alone
@@ -409,6 +426,7 @@ handed_off_issues_json='[]'
 escalated_issues_json='[]'
 reconciled_merged_issues_json='[]'   # #718 audit: funnel-opened issues reconciled as async-merged
 merge_pending_issues_json='[]'       # #718 audit: merge-pending issues still open this tick
+reclaimed_issues_json='[]'           # #1157 audit: abandoned claims released back to Ready this tick
 drive_start_s="${FUNNEL_NOW_EPOCH:-$(date +%s)}"   # tick wall-clock start (#640 timing)
 if [ "${FUNNEL_DRIVE_MERGE:-0}" = "1" ] && [ "${n_merge:-0}" -gt 0 ]; then
   do_merge=1
@@ -735,6 +753,67 @@ _record_handoff() {  # $1 = merge_result blob
   done < <(jq -r '.[]? | "\(.issue)\t\(.repo)"' <<<"$capped_merge" 2>/dev/null)
 }
 
+# Reclaim an ABANDONED claim (#1157). The rung-5c one-shot merge session claims each
+# item In Progress (via /build → build-level.mjs 3a → claim.sh) as its FIRST action.
+# When that session DISOBEYS the synchronous-block guardrail (funnel-drive-merge.md
+# :96-112) — backgrounds a wait and ends its turn — the headless process exits
+# mid-drive, leaving the item stranded In Progress with NO branch and NO PR. Seven
+# such strandings on 2026-07-12 exceeded the WIP cap and jammed the whole funnel.
+#
+# The synchronous-block guardrail stays the PRIMARY fix; this is the mechanical
+# BACKSTOP that makes its failure self-healing (release → re-drive next tick) instead
+# of a jam — the same defense-in-depth philosophy as _record_handoff (trust the
+# ground-truth probe, not the model report). It releases via the unclaim.sh board
+# CLI — the CLAIM is made by a subprocess CLI, so the RELEASE is too, keeping this
+# driver adapter-free (no board.sh sourcing here; see _board_repo's comment).
+#
+# DISJOINT BY CONSTRUCTION from _record_handoff: that pass acts on items WITH an open
+# PR (a real hand-off to resume); this one acts ONLY on items with NO open PR
+# (condition b). An item is in exactly one set, so ordering (reclaim AFTER handoff)
+# is provably safe. Release predicate — ALL must hold, else the item is left
+# untouched (a false release is worse than a missed one):
+#   (a) the session reported NO terminal status for the issue (status ∉
+#       {merged, handed-off, parked, refused, failed}) — the abandonment/unparseable
+#       signature. A reported terminal is owned by _route_refused / _record_handoff /
+#       the merge itself, never reclaimed here.
+#   (b) NO open PR closes the issue (ground-truth _open_pr_for_issue probe) — an item
+#       with a PR is a hand-off, handled above.
+#   (d) the issue is still OPEN — protects a just-merged item whose PR is closed (so
+#       (b) passes) but whose close→Done cascade has not fired yet; a closed issue is
+#       never "stranded", the cascade takes it to Done.
+#   (c) [enforced INSIDE unclaim.sh] the card is still In Progress — the idempotent
+#       CLI guard flips only In Progress→Ready, no-op otherwise, so the authoritative
+#       board-status check lives in the adapter-sourcing subprocess, not this driver.
+# Fail-open like every reconciliation pass: an unclaim error just leaves the item
+# stranded (the pre-fix status quo), never wedges the tick. Sets n_reclaimed +
+# reclaimed_issues_json (folded into the wake record).
+_reclaim_abandoned() {  # $1 = merge_result blob
+  local msum issue repo board status pr state
+  msum="$(printf '%s' "${1:-null}" | _merge_summary_json)"
+  while IFS=$'\t' read -r issue repo board; do
+    [ -z "$issue" ] && continue
+    # (a) skip any issue the session reported a terminal status for.
+    status=""
+    [ -n "$msum" ] && status="$(jq -r --arg i "$issue" \
+      '(.results // []) | map(select((.issue|tostring)==$i)) | .[0].status // ""' <<<"$msum" 2>/dev/null)"
+    case "$status" in
+      merged|handed-off|parked|refused|failed) continue ;;
+    esac
+    # (b) skip any issue with an OPEN PR — that is a hand-off, not an abandonment.
+    pr="$(_open_pr_for_issue "$repo" "$issue")"
+    [ -n "$pr" ] && continue
+    # (d) skip a CLOSED issue — a merged item mid-cascade is not stranded.
+    state="$("$FUNNEL_GH_BIN" issue view "$issue" -R "$repo" --json state --jq '.state' 2>/dev/null || echo "")"
+    [ "$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')" = "OPEN" ] || continue
+    # Release to Ready via the board CLI (its idempotent In-Progress-only guard is
+    # condition (c)). Fail-open: an error never aborts the tick, just skips the item.
+    if "$FUNNEL_UNCLAIM_BIN" "$issue" --board "$board" >/dev/null 2>&1; then
+      n_reclaimed=$((n_reclaimed + 1))
+      reclaimed_issues_json="$(_audit_add "$reclaimed_issues_json" "$issue")"
+    fi
+  done < <(jq -r '.[]? | "\(.issue)\t\(.repo)\t\(.board)"' <<<"$capped_merge" 2>/dev/null)
+}
+
 # Reconcile the funnel's STANDING merge-pending set against ground truth (#718). The
 # funnel labels every hand-off issue FUNNEL_MERGE_PENDING_LABEL (#624), so that label
 # set IS "PRs the funnel opened that had not merged yet." We read it back each real tick
@@ -828,6 +907,7 @@ emit_outcome() {  # $1=status  $2=safe_result(json|null)  $3=merge_result(json|n
     --argjson escalated "${n_escalated:-0}" \
     --argjson reconciled_merged "${n_reconciled_merged:-0}" \
     --argjson merge_pending "${n_merge_pending:-0}" \
+    --argjson reclaimed "${n_reclaimed:-0}" \
     --argjson skipped "${n_skipped_merge:-0}" \
     --arg merge_status "$merge_status" \
     --argjson gh_error_count "${n_gh_errors:-0}" \
@@ -837,6 +917,7 @@ emit_outcome() {  # $1=status  $2=safe_result(json|null)  $3=merge_result(json|n
     --argjson escalated_issues "${escalated_issues_json:-[]}" \
     --argjson reconciled_merged_issues "${reconciled_merged_issues_json:-[]}" \
     --argjson merge_pending_issues "${merge_pending_issues_json:-[]}" \
+    --argjson reclaimed_issues "${reclaimed_issues_json:-[]}" \
     --argjson duration_ms "$(( ( ${FUNNEL_NOW_EPOCH:-$(date +%s)} - drive_start_s ) * 1000 ))" \
     --argjson safe "$safe" --argjson merge "$merge" \
     --arg status "$1" --argjson result "${2:-null}" --argjson merge_result "$mr" \
@@ -845,9 +926,10 @@ emit_outcome() {  # $1=status  $2=safe_result(json|null)  $3=merge_result(json|n
       merge_driven:$merge_driven,
       merged_pr:$merged_pr, merge_status:$merge_status, parked:$parked, failed:$failed, refused:$refused,
       routed:$routed, route_suppressed:$route_suppressed, handed_off:$handed_off, escalated:$escalated,
-      reconciled_merged:$reconciled_merged, merge_pending:$merge_pending, skipped_merge:$skipped,
+      reconciled_merged:$reconciled_merged, merge_pending:$merge_pending, reclaimed:$reclaimed, skipped_merge:$skipped,
       routed_issues:$routed_issues, handed_off_issues:$handed_off_issues, escalated_issues:$escalated_issues,
       reconciled_merged_issues:$reconciled_merged_issues, merge_pending_issues:$merge_pending_issues,
+      reclaimed_issues:$reclaimed_issues,
       duration_ms:$duration_ms,
       gh_error_count:$gh_error_count, gh_errors:$gh_errors,
       safe:$safe, merge:$merge,
@@ -1030,6 +1112,11 @@ if [ "$do_merge" -eq 1 ]; then
   # (#624) — the one-shot session ended before /build's merge gate fired. Disjoint
   # from _route_refused by status; ground-truth open-PR probe, not a model report.
   _record_handoff "$merge_result"
+  # Reclaim any claim the merge session ABANDONED (#1157): driven this tick, no open
+  # PR, issue still open, and no terminal status reported → release the stranded
+  # In-Progress claim back to Ready so it re-enters the drive pool instead of jamming
+  # the WIP cap. Disjoint from _record_handoff (that one owns the has-a-PR items).
+  _reclaim_abandoned "$merge_result"
 fi
 
 # Reconcile the standing merge-pending set against ground truth (#718): count PRs the
