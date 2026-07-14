@@ -240,6 +240,7 @@ FUNNEL_SCHEDULE_FILE	$(_funnel_schedule_file_default)	path	kernel	workflows/scri
 FUNNEL_TICK_CADENCE	daily	enum	kernel	workflows/scripts/build/funnel-tick.sh	Documented cron cadence (surfaced only; cadence is enforced by the installed cron entry)
 FUNNEL_LOCK_DIR	/tmp/funnel-tick	path	kernel	workflows/scripts/build/funnel-tick.sh	Single-flight lockfile dir (one tick per host at a time)
 FUNNEL_LOCK_FILE	$FUNNEL_LOCK_DIR/tick.lock	path	kernel	workflows/scripts/build/funnel-tick.sh	Single-flight lockfile path
+FUNNEL_INTAKE_WARN_DIR	$FUNNEL_LOCK_DIR	path	kernel	workflows/scripts/build/funnel-tick.sh	Per-board dedup-marker dir for the signal-intake config-absent WARN (once per condition, not per poll)
 FUNNEL_DELIVERED_MARKER	<!-- funnel:decision-applied -->	marker	kernel	workflows/scripts/build/funnel-tick.sh	Idempotency marker for an already-applied answered decision
 FUNNEL_INTAKE_CMD	$HERE/../crash-convergence/signal-intake.sh	path	kernel	workflows/scripts/build/funnel-tick.sh	Crash-signal intake orchestrator invoked/injected by the tick
 GATE_REPOLL_DELAY	3	seconds	kernel	workflows/scripts/build/gate.sh	Sleep before one re-poll of an UNKNOWN/BEHIND mergeable state

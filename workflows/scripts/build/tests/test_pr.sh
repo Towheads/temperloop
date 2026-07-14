@@ -166,7 +166,44 @@ out="$(bash "$SCRIPT" push "$REPO" feat/widget --force)"
 [ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "push --force outcome (got: $out)"
 [ "$(git -C "$BARE" rev-parse refs/heads/feat/widget)" = "$newsha" ] \
   || fail "remote branch not at force-pushed sha"
-echo "PASS: push collision → PUSH_REJECTED + non-zero; --force re-push lands (PUSHED)"
+# #335: the amended HEAD does NOT descend from the remote tip (a genuine
+# history rewrite), so --force is really used — forced=true.
+[ "$(jq -r .forced <<<"$out")" = "true" ] \
+  || fail "genuine rewrite must report forced=true (got: $out)"
+echo "PASS: push collision → PUSH_REJECTED + non-zero; --force re-push lands (PUSHED, forced=true)"
+
+# --- push: --force on a fast-forward descendant DOWNGRADES to a plain push (#335) ---
+# A CI-retry commit is a fast-forward descendant of the already-pushed head: the
+# CI-fix worker resets to the remote tip and commits on top. build-level.mjs
+# still *requests* --force (pr.sh push … --force), but because the local head
+# descends from the current remote tip the push needs no history rewrite — pr.sh
+# must DOWNGRADE to a plain (non-force) push (forced=false) so the git-destructive
+# safety classifier is never engaged. The remote must still advance to the new sha.
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -B ff-retry refs/remotes/origin/feat/widget
+ff_base="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" commit -q --allow-empty -m "CI-retry fix commit (ff descendant)"
+ff_sha="$(git -C "$REPO" rev-parse HEAD)"
+[ "$ff_sha" != "$ff_base" ] || fail "fixture error: ff-retry commit did not advance HEAD"
+out="$(bash "$SCRIPT" push "$REPO" feat/widget --force)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "ff --force push outcome (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "false" ] \
+  || fail "fast-forward --force must DOWNGRADE to a plain push (forced=false) (got: $out)"
+[ "$(git -C "$BARE" rev-parse refs/heads/feat/widget)" = "$ff_sha" ] \
+  || fail "remote branch did not advance to the fast-forward retry sha"
+echo "PASS: push --force on a fast-forward descendant downgrades to a plain push (PUSHED, forced=false)"
+
+# --- push: a plain (non-force) push reports forced=false --------------------------
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -b plainpush origin/main
+git -C "$REPO" commit -q --allow-empty -m "fresh branch commit"
+plainsha="$(git -C "$REPO" rev-parse HEAD)"
+out="$(bash "$SCRIPT" push "$REPO" feat/plainpush)"
+[ "$(jq -r .outcome <<<"$out")" = "PUSHED" ] || fail "plain push outcome (got: $out)"
+[ "$(jq -r .forced <<<"$out")" = "false" ] || fail "plain push must report forced=false (got: $out)"
+[ "$(git -C "$BARE" rev-parse refs/heads/feat/plainpush)" = "$plainsha" ] \
+  || fail "plain push did not land the branch"
+echo "PASS: plain push (no --force requested) reports forced=false"
 
 # --- open --body-only: per-entry bare Closes + full 3f body shape ----------------
 cat > "$TMP/verdict.json" <<'EOF'

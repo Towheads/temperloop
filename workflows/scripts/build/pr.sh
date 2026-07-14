@@ -41,8 +41,11 @@
 #   base-check → {"outcome":"BASE_CURRENT"|"BASE_STALE","merge_base":…,"tip":…}
 #   rebase     → {"outcome":"REBASED","base":…,"tip":…,"sha":…} |
 #                {"outcome":"REBASE_CONFLICT","base":…,"tip":…} + non-zero exit
-#   push       → {"outcome":"PUSHED","sha":…,"branch":…} |
+#   push       → {"outcome":"PUSHED","sha":…,"branch":…,"forced":bool} |
 #                {"outcome":"PUSH_REJECTED","sha":…,"branch":…,"error":…} + non-zero exit
+#                (forced=true only when a genuine rewrite needed --force; a
+#                 requested --force that is a pure fast-forward downgrades to a
+#                 plain push, forced=false — #335)
 #   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…} |
 #                {"outcome":"EXISTS","pr_number":…,"url":…}
 #                (EXISTS when gh reports a PR for that branch already exists — adopt it)
@@ -213,17 +216,44 @@ cmd_rebase() {
 # --- push: 3f step 1 — push-by-SHA ---------------------------------------------
 # Push the worktree's HEAD to the plan branch by SHA, honoring the plan's
 # `branch:` name regardless of the worktree's throwaway build/<slug> local
-# branch. --force serves the rebase re-push (0.5) and CI-fix re-push (3g)
-# paths. A rejection is a structured outcome — stale-branch-vs-collision
-# triage is the orchestrator's call.
+# branch. --force is *requested* by the rebase re-push (0.5) and CI-fix re-push
+# (3g) paths, but is only actually *used* when the push is a genuine history
+# rewrite — see the fast-forward downgrade below (#335). A rejection is a
+# structured outcome — stale-branch-vs-collision triage is the orchestrator's
+# call.
+#
+# #335 — prefer a plain fast-forward push over --force. A CI-retry commit is a
+# fast-forward descendant of the already-pushed head (the CI-fix worker resets
+# to the remote tip, then commits on top), so it needs no history rewrite; yet
+# the requesting caller always passes --force. An unconditional --force on a
+# feature branch trips the git-destructive safety classifier in auto mode
+# non-deterministically, which silently parks/dead-ends an autonomous /sweep,
+# /build --unattended, or funnel-drive-merge run. So when --force is requested
+# we DOWNGRADE to a plain push whenever we can positively prove the local head
+# descends from the current remote tip (a pure fast-forward), and reserve the
+# real --force for a genuine rewrite (local head does NOT descend the tip) or an
+# indeterminate remote state (fetch failed) — never weakening main's safety.
+# `forced` in the PUSHED payload records what was actually used.
 cmd_push() {
-  local wt branch force="$1" sha out
+  local wt branch force="$1" sha out effective_force
   wt="$(resolve_worktree "$2")"
   branch="$3"
   validate_branch "$branch"
   sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || die "cannot resolve HEAD in '$wt'"
-  if out="$(git -C "$wt" push ${force:+--force} origin "$sha:refs/heads/$branch" 2>&1)"; then
-    jq -cn --arg sha "$sha" --arg branch "$branch" '{outcome:"PUSHED", sha:$sha, branch:$branch}'
+  effective_force="$force"
+  if [ -n "$force" ]; then
+    # Fetch the current remote tip (FETCH_HEAD). If it is an ancestor of the
+    # local head, the push is a pure fast-forward — no --force needed. Only a
+    # POSITIVE proof downgrades; a fetch failure or a non-ancestor tip keeps the
+    # requested --force, so behavior is unchanged whenever a rewrite may be real.
+    if git -C "$wt" fetch --quiet origin "$branch" 2>/dev/null \
+       && git -C "$wt" merge-base --is-ancestor FETCH_HEAD HEAD 2>/dev/null; then
+      effective_force=""
+    fi
+  fi
+  if out="$(git -C "$wt" push ${effective_force:+--force} origin "$sha:refs/heads/$branch" 2>&1)"; then
+    jq -cn --arg sha "$sha" --arg branch "$branch" --argjson forced "$([ -n "$effective_force" ] && echo true || echo false)" \
+      '{outcome:"PUSHED", sha:$sha, branch:$branch, forced:$forced}'
   else
     jq -cn --arg sha "$sha" --arg branch "$branch" --arg error "$out" \
       '{outcome:"PUSH_REJECTED", sha:$sha, branch:$branch, error:$error}'

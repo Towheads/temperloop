@@ -87,7 +87,7 @@ file a bug	filing-decision	literal
 issue to track	filing-decision	literal
 want me to file	filing-decision	literal
 resolved by verification	filing-decision	literal
-supersedes	filing-decision	literal
+supersed	filing-decision	literal
 collapses into	filing-decision	literal
 behavior-preserving	filing-decision	literal
 heuristic recorded	filing-decision	literal
@@ -104,3 +104,42 @@ left unchecked	deferral	literal
 deliberate deferral	deferral	literal
 stopping point	deferral	literal
 don'?t want to (set|arm|enable) .* until|confident it'?s working	deferral	regex
+
+# self-critique
+silently died	self-critique	literal
+silently ignor(es|ed)	self-critique	regex
+help text is stale|usage .* stale	self-critique	regex
+haven'?t granted (it )?yet	self-critique	regex
+verified false|the real cause was	self-critique	regex
+incident report|restored .* from backup	self-critique	regex
+Key lesson	self-critique	literal
+
+# state-collision
+fell out of the queue|recurring (github )?glitch	state-collision	regex
+
+# filing-decision
+untracked defect	filing-decision	literal
+not a good name for this	filing-decision	literal
+don'?t file (the|a|this) (backlog )?(item|issue)	filing-decision	regex
+this is done and should be closed	filing-decision	literal
+premise (moot|no longer holds)|already (folded|fixed)	filing-decision	regex
+
+# trust-rupture
+don'?t ask for more approvals|approval fatigue	trust-rupture	regex
+why (are|is) (we|you) .*(bypass|skip)	trust-rupture	regex
+solving the wrong problem	trust-rupture	literal
+use a worktree instead|why did you use that directory	trust-rupture	regex
+opus agents again|judging from the token spend	trust-rupture	regex
+(dense|challenging|hard) (for me )?to (parse|read)	trust-rupture	regex
+
+# flagging
+moving forward I'?d like	flagging	regex
+no need to (pause|prompt).*(merge|approval)|don'?t (pause|prompt).*(merge|approval)	flagging	regex
+(opus|sonnet|haiku|fable).{0,40}(as possible|instead of|cheaper|for the tasks that require)	flagging	regex
+what the .* latency actually is|underestimating the cost	flagging	regex
+is it wired in|was(n't| going to be)? .* (wired|leveraged) in	flagging	regex
+incentivized to|gameable	flagging	regex
+personal/private info	flagging	literal
+
+# deferral
+No response after 60s	deferral	literal

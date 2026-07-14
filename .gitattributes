@@ -1,0 +1,26 @@
+# .gitattributes — merge drivers for collision-free parallel authoring.
+#
+# ── Append-only registry/manifest files: merge=union (temperloop#321) ─────────
+# These files are pure-append, ORDER-INDEPENDENT registries: every reader
+# resolves an entry by set-membership or longest-glob-wins, never by line
+# order. Two same-level sibling PRs that each append a DISTINCT entry would,
+# under git's default 3-way merge, textually conflict at the shared end-of-file
+# insertion point — a hunk collision that costs a rebase-respawn even though the
+# two appends are semantically independent (the recurring cost #320 named for
+# check slots and #321 generalized to any append-only shared file). The `union`
+# merge driver resolves that class by KEEPING BOTH SIDES' added lines, so the
+# two appends auto-merge with no rebase.
+#
+# Safety: `union` only alters CONFLICTING hunks — a clean (non-overlapping)
+# merge is untouched — so every existing entry still validates exactly as
+# before; the change is purely additive. Scoped deliberately to files whose
+# consumer is order-independent AND whose only mutation is append. NOT applied
+# to shrink-only ratchets (docs/features/backfill-exempt.txt, whose entries are
+# DELETED as docs land — union's keep-both semantics would resurrect a deleted
+# line), nor to any code/table file where line order or a genuine same-line edit
+# carries meaning (there, a real merge SHOULD surface — see #321's check-slot
+# leg, solved by name-keying instead).
+docs/features/feature-manifest.txt                                merge=union
+workflows/scripts/kernel/kernel-manifest.txt                      merge=union
+workflows/scripts/kernel/personal-token-denylist-exempt-files.txt merge=union
+workflows/scripts/config/knob-registry-exempt-files.txt           merge=union

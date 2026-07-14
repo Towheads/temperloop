@@ -24,7 +24,19 @@
 #   9. Additive check-registration seam sanity — every check_<name> function
 #      in the script has a matching `register_check check_<name>` call (a
 #      mechanical proxy for the "purely additive, no shared-line edits"
-#      registration contract).
+#      registration contract); and the slots are name-keyed and UNIQUE by
+#      construction (no duplicate check function / register target), so two
+#      parallel authors can never hand-pick the same slot (temperloop#320/#321).
+#
+# SLOT/LABEL CONVENTION (temperloop#320/#321): a check's slot is its unique
+# `check_<name>`, never a hand-picked integer. The `--- test N: … ---` banners
+# below are HISTORICAL labels read by nothing; existing ones are grandfathered
+# (no renumbering), but a NEW check's test group is labelled by the check's
+# name (`--- test check_<name>: … ---`), not the next sequential integer — the
+# same rule the script's § Additive check-registration seam states for its own
+# `# ── check_<name> ──` banners. Name-keying removes the shared integer two
+# parallel authors otherwise both pick (the #320 collision that respawned a
+# renumber of checks 13-16).
 #  10. Repeat-mistake detector (temperloop#234) → a NEW friction-ledger row
 #      that shares enough vocabulary with an existing Mistakes/ note's title
 #      + trigger: frontmatter fires as a retrieval failure; an unrelated row
@@ -346,6 +358,19 @@ fi
 # `for ... in "${CHECKS[@]}"` loop, so a new check never needs a second one.
 run_loop_count="$(grep -cE '^for .* in "\$\{CHECKS\[@\]\}"; do$' "$SCRIPT")"
 if [ "$run_loop_count" -eq 1 ]; then ok "exactly one generic CHECKS[] run loop"; else fail_test "run loop count" "expected 1, got $run_loop_count"; fi
+
+# 9d/9e: name-keyed slots are non-colliding BY CONSTRUCTION (temperloop#320/#321).
+# The slot that identifies a check is its `check_<name>` function name, not a
+# hand-picked integer — so two parallel authors adding check_foo and check_bar
+# can never hand-pick the same slot the way #320's two siblings both chose
+# "check 12". These assertions mechanically enforce that guarantee: no check
+# function name is defined twice, and no register_check names the same check
+# twice. A duplicate on either side is the collision the seam is meant to make
+# impossible, and it fails the build here rather than at a parallel-merge respawn.
+dup_check_fns="$(grep -oE '^check_[A-Za-z0-9_]+\(\)' "$SCRIPT" | sed 's/()$//' | sort | uniq -d)"
+if [ -z "$dup_check_fns" ]; then ok "no duplicate check_<name> function definitions (slots name-keyed, unique)"; else fail_test "duplicate check slot" "collision on: $(echo "$dup_check_fns" | tr '\n' ' ')"; fi
+dup_registers="$(grep -oE '^register_check check_[A-Za-z0-9_]+$' "$SCRIPT" | sort | uniq -d)"
+if [ -z "$dup_registers" ]; then ok "no duplicate register_check target (each slot registered once)"; else fail_test "duplicate register_check" "collision on: $(echo "$dup_registers" | tr '\n' ' ')"; fi
 
 # ── Test 10: repeat-mistake detector (temperloop#234) ──────────────────────
 echo "--- test 10: repeat-mistake detector ---"

@@ -142,3 +142,17 @@ and quality-gate list) are also browsable as a generated static site at
   Claude Code sessions by the `write-lane-guard.sh` PreToolUse hook
   (`claude/hooks/`), which intercepts a state-mutating call into a foreign
   checkout and asks before proceeding.
+- **Portable shell only (macOS/BSD + zsh).** Scripts here run on
+  contributors' macOS (BSD userland) and get sourced under both bash and
+  zsh, where several silent-failure footguns slip past the whole-tree
+  shellcheck gate. Three recurring ones to avoid: (1) `grep -P` (PCRE) — BSD
+  grep does not support it; use `grep -E` or `rg` instead. (2) Relying on an
+  unquoted `$VAR` to word-split inside a `for` loop — zsh does **not** split
+  unquoted parameters, so `for x in $LIST` iterates once over the whole
+  concatenated string (a cull loop silently no-op'd on its list this way);
+  use an array, `${(z)VAR}`, or awk-internal splitting. (3) GNU-only `mktemp`
+  invocations — write portable `mktemp "${TMPDIR:-/tmp}/name.XXXXXX"`. The
+  zsh-tied special-parameter slice of this class (`local path=…` rebinding
+  `PATH` under zsh) is already caught mechanically by
+  `scripts/lint-zsh-param-tie.sh`; the rest is author discipline shellcheck
+  cannot see.
