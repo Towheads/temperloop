@@ -20,6 +20,7 @@
 
 # ── none — repo meta, claimed by no single feature ──────────────────────────
 none .gitignore
+none .gitattributes
 none CHANGELOG.md
 none LICENSE
 none NOTICE
