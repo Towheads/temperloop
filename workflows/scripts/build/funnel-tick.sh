@@ -188,6 +188,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # of the real Sentry/board-hitting script. Default resolved once, below.
 : "${FUNNEL_INTAKE_CMD:=$HERE/../crash-convergence/signal-intake.sh}"
 
+# Intake config-absent WARN dedup dir (temperloop#330). The intake pre-gate used
+# to invoke FUNNEL_INTAKE_CMD and swallow the outcome: on a host where the backend
+# script is MISSING, or its Sentry credential is UNSET/placeholder, intake either
+# can't run or cleanly no-ops (rc=0) — so the tick saw "success", printed NOTHING,
+# and intake silently did nothing for ~19h unnoticed. run_intake_phase now surfaces
+# ONE operator-visible WARN naming the reason, deduped ACROSS ticks (each tick is a
+# fresh process) via a per-board marker file here — so it fires once per condition,
+# not once per poll. Script-local like FUNNEL_LOCK_DIR (an internal marker path, not
+# an operator knob); override only for a test seam. Defaults alongside the lockfile.
+: "${FUNNEL_INTAKE_WARN_DIR:=$FUNNEL_LOCK_DIR}"
+
 # ── Arg parse ────────────────────────────────────────────────────────────────
 DRY_RUN=0
 FIXTURE=""
@@ -633,11 +644,61 @@ bare_ready_singleton() {  # $1=board  $2=repo  $3=issue
 # calls. A test that wants to exercise the failure-handling path sets
 # FUNNEL_INTAKE_CMD to a stub — an explicit override runs even under --dry-run,
 # since a stub has no side effects of its own.
+# Emit the config-absent WARN for $board with $reason AT MOST ONCE per condition
+# (temperloop#330): only when the reason differs from the one already recorded in
+# the per-board marker (or no marker yet). This is the "once per condition, not per
+# poll" dedup — each tick is a fresh process, so the "already warned" state must
+# persist on disk. Marker write is best-effort: a /tmp write failure must never
+# wedge the tick (the WARN already printed), so every fs op is `|| true`-guarded.
+_intake_warn_once() {
+  local board="$1" reason="$2" marker prev=""
+  marker="$FUNNEL_INTAKE_WARN_DIR/intake-warned-$board"
+  [ -f "$marker" ] && prev="$(cat "$marker" 2>/dev/null || true)"
+  if [ "$prev" != "$reason" ]; then
+    printf 'funnel-tick: WARN — signal-intake config absent for board %s: %s (emitted once per condition, not per tick)\n' \
+      "$board" "$reason" >&2
+    mkdir -p "$FUNNEL_INTAKE_WARN_DIR" 2>/dev/null || true
+    printf '%s\n' "$reason" > "$marker" 2>/dev/null || true
+  fi
+}
+
+# Clear a board's config-absent marker once config is PRESENT again, so the next
+# time it goes absent the WARN fires afresh (once-per-condition, never once-ever).
+_intake_warn_clear() {
+  rm -f "$FUNNEL_INTAKE_WARN_DIR/intake-warned-$1" 2>/dev/null || true
+}
+
 run_intake_phase() {
   local board="$1"
   if [ "$DRY_RUN" -eq 1 ] && [ "$FUNNEL_INTAKE_CMD" = "$HERE/../crash-convergence/signal-intake.sh" ]; then
     return 0
   fi
+
+  # Config-absent surfacing (temperloop#330) — two conditions, two dispositions:
+  #
+  #  1. backend MISSING / not executable — invoking it would just make the rc!=0
+  #     failure path below spam EVERY tick (rc=127), so WARN once and SKIP the
+  #     invocation entirely.
+  #  2. backend present but the Sentry credential is UNSET/placeholder — intake
+  #     runs but cleanly no-ops (nothing to poll), the exact silent case #330
+  #     observed no-op'ing ~19h unnoticed. WARN once, then STILL invoke best-effort
+  #     (the backend is a black box that may do token-free work, and a stubbed
+  #     backend must still run — warn-not-skip keeps the #671 intake tests intact).
+  #
+  # A recovered tick (backend present AND credential set) clears the marker so a
+  # future re-absence warns again. The two reasons are distinct conditions, so a
+  # transition between them (e.g. backend appears but token still absent) re-warns.
+  if [ ! -x "$FUNNEL_INTAKE_CMD" ]; then
+    _intake_warn_once "$board" "backend script not found or not executable: $FUNNEL_INTAKE_CMD"
+    return 0
+  fi
+  case "${SENTRY_AUTH_TOKEN:-}" in
+    ''|REPLACE_WITH_READ_SCOPED_TOKEN)
+      _intake_warn_once "$board" "SENTRY_AUTH_TOKEN unset or still the example placeholder — set it in build.config.local.sh (see build.config.local.sh.example); intake has nothing to poll" ;;
+    *)
+      _intake_warn_clear "$board" ;;
+  esac
+
   local err rc=0
   err="$("$FUNNEL_INTAKE_CMD" run --board "$board" 2>&1 >/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then

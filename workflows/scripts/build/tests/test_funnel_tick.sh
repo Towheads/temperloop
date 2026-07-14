@@ -923,6 +923,94 @@ PLAN="$(FUNNEL_OPERATOR=@me BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" -
 [ "$(jq -r 'first(.actions[]|select(.action=="drain-parse-miss")|.reassign_to)' <<<"$PLAN")" = "@me" ] \
   && ok "drain-parse-miss reassign_to preserves @me" || bad "t21f.miss" "got $(jq -r 'first(.actions[]|select(.action=="drain-parse-miss")|.reassign_to)' <<<"$PLAN")"
 
+# ── 22: intake config-absent WARN (temperloop#330) ───────────────────────────
+# The intake pre-gate (run_intake_phase) used to invoke FUNNEL_INTAKE_CMD and
+# swallow the outcome — a MISSING backend or an UNSET/placeholder Sentry
+# credential made it silently no-op (observed no-op'ing ~19h unnoticed). It must
+# now surface ONE operator-visible WARN naming the reason, deduped ACROSS ticks
+# (each tick is a fresh process) via a per-board on-disk marker so it fires once
+# per condition, not once per poll — and must never regress the config-present path.
+# Isolation: a fresh FUNNEL_INTAKE_WARN_DIR per test + neutralized config-file
+# rungs so a real build.config.{machine,local}.sh on the host cannot inject a token.
+NOLOCAL="$TMP/no-local.sh"; NOMACHINE="$TMP/no-machine.sh"   # non-existent → sourced as no-ops
+PLACEHOLDER="REPLACE_WITH_READ_SCOPED_TOKEN"                 # the example-template placeholder value
+
+echo "--- test 22a: missing backend → one WARN naming the reason, tick still proceeds, not per-tick spam ---"
+FX="$TMP/t22a"; seed_board "$FX" 3
+cat > "$FX/board-3/ready.json" <<'JSON'
+[{"number":2201,"title":"drivable work","labels":["Operational"]}]
+JSON
+WARNDIR="$TMP/warn22a"; ERR="$TMP/t22a.err"; : > "$ERR"
+MISSING="$TMP/does-not-exist-intake.sh"   # never created → not executable → condition 1
+for _ in 1 2; do   # two ticks, same condition — the WARN must appear EXACTLY ONCE
+  FUNNEL_INTAKE_CMD="$MISSING" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+    BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+    bash "$TICK" --dry-run --fixture "$FX" --board 3 2>>"$ERR" >/dev/null
+done
+WC="$(grep -c 'WARN — signal-intake config absent for board 3' "$ERR" | tr -d ' ')"
+[ "$WC" = "1" ] && ok "backend-missing WARN emitted exactly once across two ticks" || bad "t22a.once" "expected 1, got $WC: $(cat "$ERR")"
+grep -q "backend script not found or not executable" "$ERR" \
+  && ok "the WARN names the reason (backend not found/executable)" || bad "t22a.reason" "reason missing: $(cat "$ERR")"
+PLAN="$(FUNNEL_INTAKE_CMD="$MISSING" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" bash "$TICK" --dry-run --fixture "$FX" --board 3 2>/dev/null)"
+[ "$(jq -r 'first(.actions[]|select(.action=="drive-ready")|.issue)' <<<"$PLAN")" = "2201" ] \
+  && ok "tick still drives Ready work despite the missing backend (non-blocking)" || bad "t22a.proceed" "got $PLAN"
+
+echo "--- test 22b: backend present but Sentry credential absent → WARN once, backend STILL invoked ---"
+FX="$TMP/t22b"; seed_board "$FX" 3
+INVLOG="$TMP/t22b-invoked.log"; : > "$INVLOG"
+STUB="$TMP/t22b-intake.sh"
+cat > "$STUB" <<SH
+#!/usr/bin/env bash
+echo invoked >> "$INVLOG"
+exit 0
+SH
+chmod +x "$STUB"
+WARNDIR="$TMP/warn22b"; ERR="$TMP/t22b.err"; : > "$ERR"
+for _ in 1 2; do   # placeholder token (non-empty → survives any conf `:=`) simulates "absent"
+  SENTRY_AUTH_TOKEN="$PLACEHOLDER" FUNNEL_INTAKE_CMD="$STUB" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+    BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+    bash "$TICK" --dry-run --fixture "$FX" --board 3 2>>"$ERR" >/dev/null
+done
+WC="$(grep -c 'WARN — signal-intake config absent for board 3' "$ERR" | tr -d ' ')"
+[ "$WC" = "1" ] && ok "credential-absent WARN emitted exactly once across two ticks" || bad "t22b.once" "expected 1, got $WC: $(cat "$ERR")"
+grep -q "SENTRY_AUTH_TOKEN unset or still the example placeholder" "$ERR" \
+  && ok "the WARN names the reason (SENTRY_AUTH_TOKEN absent)" || bad "t22b.reason" "reason missing: $(cat "$ERR")"
+[ "$(wc -l < "$INVLOG" | tr -d ' ')" = "2" ] \
+  && ok "backend STILL invoked both ticks despite the WARN (best-effort, non-skipping)" || bad "t22b.invoked" "expected 2, got $(cat "$INVLOG")"
+
+echo "--- test 22c: credential present → NO WARN (config-present path unchanged) ---"
+FX="$TMP/t22c"; seed_board "$FX" 3
+STUB="$TMP/t22c-intake.sh"
+cat > "$STUB" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$STUB"
+WARNDIR="$TMP/warn22c"; ERR="$TMP/t22c.err"; : > "$ERR"
+SENTRY_AUTH_TOKEN="a-real-read-scoped-token" FUNNEL_INTAKE_CMD="$STUB" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3 2>"$ERR" >/dev/null
+[ ! -s "$ERR" ] && ok "no WARN when the credential is present (no spurious noise)" || bad "t22c.quiet" "unexpected stderr: $(cat "$ERR")"
+
+echo "--- test 22d: recovery clears the marker → a later re-absence WARNS again (once-per-condition, not once-ever) ---"
+FX="$TMP/t22d"; seed_board "$FX" 3
+STUB="$TMP/t22d-intake.sh"
+cat > "$STUB" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$STUB"
+WARNDIR="$TMP/warn22d"; ERR="$TMP/t22d.err"; : > "$ERR"
+run22d() { SENTRY_AUTH_TOKEN="$1" FUNNEL_INTAKE_CMD="$STUB" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3 2>>"$ERR" >/dev/null; }
+run22d "$PLACEHOLDER"                 # absent → WARN
+run22d "$PLACEHOLDER"                 # absent → deduped (no WARN)
+run22d "a-real-read-scoped-token"     # present → clears the marker, no WARN
+run22d "$PLACEHOLDER"                 # absent AGAIN → WARN again
+WC="$(grep -c 'WARN — signal-intake config absent for board 3' "$ERR" | tr -d ' ')"
+[ "$WC" = "2" ] && ok "WARN fires again after a recovery (2 total: initial + post-recovery)" || bad "t22d.recover" "expected 2, got $WC: $(cat "$ERR")"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "funnel-tick tests: $pass passed, $fail failed"
