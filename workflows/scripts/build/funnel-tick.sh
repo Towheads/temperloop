@@ -692,7 +692,7 @@ run_intake_phase() {
     _intake_warn_once "$board" "backend script not found or not executable: $FUNNEL_INTAKE_CMD"
     return 0
   fi
-  case "${SENTRY_AUTH_TOKEN:-}" in
+  case "${SENTRY_AUTH_TOKEN:-}" in # knob:exempt — credential presence-probe (unset/placeholder?), not a kernel default; the token is operator config in build.config.local.sh(.example)
     ''|REPLACE_WITH_READ_SCOPED_TOKEN)
       _intake_warn_once "$board" "SENTRY_AUTH_TOKEN unset or still the example placeholder — set it in build.config.local.sh (see build.config.local.sh.example); intake has nothing to poll" ;;
     *)
