@@ -884,7 +884,12 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       if (fixVerdict.status !== 'done') {
         return { escalation: 'ci-failed', payload: { fixVerdict, sha } };
       }
-      // Force-push the fixed SHA and pin the re-poll to it. pr.sh push --force.
+      // Push the fixed SHA and pin the re-poll to it. We *request* --force, but
+      // pr.sh downgrades it to a plain fast-forward push when the fixed head
+      // descends from the remote tip (the common CI-retry case: reset-to-tip +
+      // commit), which is a fast-forward — this keeps the git-destructive safety
+      // classifier from denying a routine retry in auto mode (#335). --force is
+      // still used (correctly) if the CI-fix worker rewrote history.
       const prBin = spineBin(input.repoRoot, 'pr.sh');
       const fpush = await runSpine(
         `${prBin} push ${sq(wt)} ${sq(item.branch)} --force`,
