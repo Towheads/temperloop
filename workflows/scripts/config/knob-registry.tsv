@@ -230,6 +230,7 @@ FUNNEL_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/
 FUNNEL_OPERATOR_RESOLVE_BIN		path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for resolving the operator's gh login (else `gh api user`)
 FUNNEL_NOTIFY_CMD		path	kernel	workflows/scripts/build/funnel-cron.sh	Custom notify command for a non-no-op tick (else osascript, else stderr)
 FUNNEL_GH_BIN	gh	path	kernel	workflows/scripts/build/funnel-drive.sh	Test-double seam for the gh binary used by funnel-drive's routing calls
+FUNNEL_UNCLAIM_BIN	$HERE/../board/unclaim.sh	path	kernel	workflows/scripts/build/funnel-drive.sh	Test-double seam for the unclaim.sh board CLI the #1157 abandonment reclaim shells out to
 FUNNEL_CHECKOUT_3	$HOME/dev/stageFind	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 3 items in (personal-path-verbatim)
 FUNNEL_CHECKOUT_4	$HOME/dev/foundation	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 4 items in (personal-path-verbatim)
 FUNNEL_CHECKOUT_5	$HOME/dev/ssmobile	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 5 items in (personal-path-verbatim)

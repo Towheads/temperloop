@@ -71,6 +71,16 @@ export FUNNEL_CHECKOUT_5="$CO3" FUNNEL_CHECKOUT_6="$CO3"
 export FUNNEL_CHECKOUT_9=""           # explicitly unmapped → no-checkout policy
 export FUNNEL_DEFAULT_CHECKOUT="$CO4"  # safe-tier fallback for an unmapped board
 
+# #1157: the #1157 abandonment reclaim (_reclaim_abandoned) shells out to unclaim.sh
+# to release a stranded claim. A clean-merge summary ({merged:N,results:[]}) has the
+# SAME empty per-issue status as an abandonment, so the reclaim pass RUNS in every
+# merge test — point FUNNEL_UNCLAIM_BIN at a global NO-OP double for the WHOLE suite
+# so no test can ever invoke the REAL unclaim.sh → real board write. The reclaim
+# tests below override FUNNEL_UNCLAIM_BIN with their own per-case recording double.
+GLOBAL_UNCLAIM="$TMP/unclaim-noop.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$GLOBAL_UNCLAIM"; chmod +x "$GLOBAL_UNCLAIM"
+export FUNNEL_UNCLAIM_BIN="$GLOBAL_UNCLAIM"
+
 # A synthetic tick-plan ARRAY — the shape funnel-cron.sh collects (per-board
 # {tick,actions[]} objects). One of every action class, so the tiering is exercised
 # in full. (A real single tick emits at most one drive-ready — the drive cap — so the
@@ -440,6 +450,14 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
   printf '%s' "${GH_PR_VIEW_JSON:-}"
   exit 0
 fi
+# `issue view N --json state --jq .state` — the #1157 reclaim's condition-(d) probe
+# (_reclaim_abandoned). Served from GH_ISSUE_STATE (default OPEN → the issue is live,
+# so a no-PR/no-terminal item is genuinely stranded and eligible for reclaim), and
+# NOT recorded (it is a read, keeping the routing-edit assertions clean).
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+  printf '%s' "${GH_ISSUE_STATE:-OPEN}"
+  exit 0
+fi
 # `api repos/.../issues/N/timeline` — the #910 operator-disposition probe
 # (_operator_dispositioned). Served from GH_TIMELINE_JSON (default empty → the probe
 # reads it as "no unlabeled event", i.e. NOT dispositioned → route as before), and
@@ -459,6 +477,21 @@ if [ -n "${GH_FAIL_MATCH:-}" ] && printf '%s' "$*" | grep -qF -- "$GH_FAIL_MATCH
 fi
 exit 0
 GHDOUBLE
+  chmod +x "$f"
+  printf '%s' "$f"
+}
+
+# An unclaim.sh double for the #1157 reclaim tests: records each release call's argv
+# ("<issue> --board <n>", one per line) to $CAP_DIR/unclaim-calls.txt and exits 0
+# (simulating a successful In Progress → Ready release). Lets the reclaim's board
+# write be asserted offline, with zero real board mutation.
+make_unclaim_double() {  # $1 = capture dir
+  local d="$1" f="$1/unclaim.sh"
+  cat > "$f" <<'UNCLAIMDOUBLE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CAP_DIR/unclaim-calls.txt"
+exit 0
+UNCLAIMDOUBLE
   chmod +x "$f"
   printf '%s' "$f"
 }
@@ -1101,6 +1134,53 @@ printf '%s' "$CODE1" | env CLAUDE_BIN="$D53B" FUNNEL_GH_BIN="$G53B" CAP_DIR="$C5
 grep -qx "issue edit 701 -R Towheads/stageFind --remove-label funnel-merge-pending" "$C53B/gh-calls.txt" \
   && ok "no conf → built-in Towheads/stageFind fallback (byte-identical to pre-#770)" \
   || bad "t53b.repo" "got $(cat "$C53B/gh-calls.txt" 2>/dev/null || echo none)"
+
+# ╭──────────────────────────────────────────────────────────────────────────╮
+# │ foundation #1157 — _reclaim_abandoned releases a claim the one-shot merge  │
+# │ session ABANDONED (backgrounded a wait and died before opening a PR),      │
+# │ leaving the item stranded In Progress. Release predicate: (a) no terminal  │
+# │ status reported, (b) no open PR, (d) issue still open; the board-status    │
+# │ (c) guard lives inside unclaim.sh. Disjoint from _record_handoff (has-PR). │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# ── 54a: abandonment (unparseable, no PR, issue open) → released to Ready ──────
+echo "--- test 54a: abandoned claim (no PR, no terminal status, issue open) → reclaimed (#1157) ---"
+C54A="$TMP/c54a"; mkdir -p "$C54A"; D54A="$(make_merge_double "$C54A")"; G54A="$(make_gh_double "$C54A")"; U54A="$(make_unclaim_double "$C54A")"
+OUT54A="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54A" FUNNEL_GH_BIN="$G54A" FUNNEL_UNCLAIM_BIN="$U54A" CAP_DIR="$C54A" \
+        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
+[ "$(jq -r '.merge_status' <<<"$OUT54A")" = "unparseable" ] && ok "sanity: the abandoned session's summary is unparseable" || bad "t54a.status" "got $(jq -r '.merge_status' <<<"$OUT54A")"
+[ "$(jq -r '.reclaimed' <<<"$OUT54A")" = "1" ] && ok "reclaimed=1 (the stranded claim was released)" || bad "t54a.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54A")"
+[ "$(jq -c '.reclaimed_issues' <<<"$OUT54A")" = "[101]" ] && ok "reclaimed_issues=[101] (audit)" || bad "t54a.audit" "got $(jq -c '.reclaimed_issues' <<<"$OUT54A")"
+[ "$(jq -r '.handed_off' <<<"$OUT54A")" = "0" ] && ok "handed_off=0 (no PR → not a hand-off; disjoint from reclaim)" || bad "t54a.handoff" "got $(jq -r '.handed_off' <<<"$OUT54A")"
+grep -qx "101 --board 3" "$C54A/unclaim-calls.txt" && ok "unclaim.sh released #101 on board 3" || bad "t54a.unclaim" "got $(cat "$C54A/unclaim-calls.txt" 2>/dev/null || echo none)"
+
+# ── 54b: an open PR exists → hand-off, NOT reclaimed (disjointness) ────────────
+echo "--- test 54b: unparseable BUT an open PR closes the issue → hand-off, not reclaimed (#1157) ---"
+C54B="$TMP/c54b"; mkdir -p "$C54B"; D54B="$(make_merge_double "$C54B")"; G54B="$(make_gh_double "$C54B")"; U54B="$(make_unclaim_double "$C54B")"
+OUT54B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54B" FUNNEL_GH_BIN="$G54B" FUNNEL_UNCLAIM_BIN="$U54B" CAP_DIR="$C54B" \
+        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" \
+        GH_PR_LIST_JSON='[{"number":555,"body":"Closes #101"}]' bash "$DRIVE")"
+[ "$(jq -r '.reclaimed' <<<"$OUT54B")" = "0" ] && ok "reclaimed=0 (an item with an open PR is never reclaimed)" || bad "t54b.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54B")"
+[ "$(jq -r '.handed_off' <<<"$OUT54B")" = "1" ] && ok "handed_off=1 (the open PR routes it to the resume path instead)" || bad "t54b.handoff" "got $(jq -r '.handed_off' <<<"$OUT54B")"
+[ ! -f "$C54B/unclaim-calls.txt" ] && ok "unclaim.sh NOT called for a has-PR item" || bad "t54b.unclaim" "unclaim was called: $(cat "$C54B/unclaim-calls.txt")"
+
+# ── 54c: a reported terminal status (refused) → NOT reclaimed (condition a) ────
+echo "--- test 54c: a refused item (reported terminal status) → routed, not reclaimed (#1157 cond a) ---"
+C54C="$TMP/c54c"; mkdir -p "$C54C"; D54C="$(make_merge_double "$C54C")"; G54C="$(make_gh_double "$C54C")"; U54C="$(make_unclaim_double "$C54C")"
+OUT54C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54C" FUNNEL_GH_BIN="$G54C" FUNNEL_UNCLAIM_BIN="$U54C" CAP_DIR="$C54C" \
+        FUNNEL_OPERATOR=@towhead FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+[ "$(jq -r '.reclaimed' <<<"$OUT54C")" = "0" ] && ok "reclaimed=0 (a reported terminal is owned by _route_refused, not reclaimed)" || bad "t54c.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54C")"
+[ "$(jq -r '.routed' <<<"$OUT54C")" = "1" ] && ok "routed=1 (the refused item still goes to the operator)" || bad "t54c.routed" "got $(jq -r '.routed' <<<"$OUT54C")"
+[ ! -f "$C54C/unclaim-calls.txt" ] && ok "unclaim.sh NOT called for a refused item" || bad "t54c.unclaim" "unclaim was called: $(cat "$C54C/unclaim-calls.txt")"
+
+# ── 54d: a CLOSED issue (merged mid-cascade) → NOT reclaimed (condition d) ─────
+echo "--- test 54d: unparseable + no PR but the issue is CLOSED → not reclaimed (#1157 cond d) ---"
+C54D="$TMP/c54d"; mkdir -p "$C54D"; D54D="$(make_merge_double "$C54D")"; G54D="$(make_gh_double "$C54D")"; U54D="$(make_unclaim_double "$C54D")"
+OUT54D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54D" FUNNEL_GH_BIN="$G54D" FUNNEL_UNCLAIM_BIN="$U54D" CAP_DIR="$C54D" \
+        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" \
+        GH_ISSUE_STATE="CLOSED" bash "$DRIVE")"
+[ "$(jq -r '.reclaimed' <<<"$OUT54D")" = "0" ] && ok "reclaimed=0 (a closed issue is not stranded — the cascade takes it to Done)" || bad "t54d.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54D")"
+[ ! -f "$C54D/unclaim-calls.txt" ] && ok "unclaim.sh NOT called for a closed issue" || bad "t54d.unclaim" "unclaim was called: $(cat "$C54D/unclaim-calls.txt")"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
