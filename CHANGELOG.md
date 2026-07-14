@@ -14,6 +14,25 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- `docs-reviewer` advisory agent (`claude/agents/docs-reviewer.md`) and its
+  `/build` Step 3e wiring (temperloop#282, PR 261c22f): a read-only,
+  `sonnet`-tier documentation reviewer — the fourth member of the advisory
+  review family alongside `architecture-reviewer`, `requirements-auditor`, and
+  `workflow-reviewer`. It scores stranger-facing prose (`docs/**`, READMEs,
+  and other `*.md`) against named rules in `claude/message-schema.md`,
+  `claude/measurement-proxies.md`, and the `docs/who-its-for.md` reader
+  persona — never taste. `/build` 3e routes a PR touching `docs/**` or a prose
+  `*.md` (except a `claude/commands/*.md` workflow spec, which routes to
+  `workflow-reviewer`) to it. Advisory only — never a `checks` gate entry.
+  Landed on `main` after the v0.11.0 tag, so this entry is the release-surface
+  record that lets the next kernel tag ship it and `update-kernel` / a stranger
+  grepping the CHANGELOG see it. Not `BREAKING` — the agent is additive and the
+  3e routing degrades legibly (`skipped — docs-reviewer unavailable`) where the
+  capability probe resolves false. Per-consumer activation (vendor the tag, then
+  `make install`) is tracked as class-B propagation work under temperloop#318.
+
 ## [0.11.0] - 2026-07-10
 
 Minor — the registry-driven config lints land as quality gates, the ~10
