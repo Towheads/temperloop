@@ -60,6 +60,7 @@ split CLAUDE.md
 kernel README.md
 split Makefile
 kernel .gitignore
+kernel .gitattributes
 kernel .github/*
 overlay .claude/*
 

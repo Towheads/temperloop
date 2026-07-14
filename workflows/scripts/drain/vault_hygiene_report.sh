@@ -148,7 +148,7 @@
 # prunes it explicitly (case-insensitively), so nothing nested under it is
 # ever swept into a finding, healed, or counted.
 #
-# ── Additive check-registration seam (temperloop#230) ──────────────────────
+# ── Additive check-registration seam (temperloop#230; slots name-keyed #321) ──
 # Every check is a self-contained `check_<name>()` function that appends its
 # own finding(s) via `add`/`inc`, immediately followed by one
 # `register_check check_<name>` call. The run loop near the bottom of this
@@ -157,9 +157,23 @@
 # the function, register it, done — no renumbering, no shared-line edits, no
 # touching the emit/arg-parse machinery. This is the seam four later plan
 # items (repeat-mistake-detector, ks-read-surfacing, heat-score-review-queue,
-# vault-readpath-lints) each add a check through, in parallel branches. A
-# template:
+# vault-readpath-lints) each add a check through, in parallel branches.
 #
+# THE SLOT IS THE CHECK'S NAME, NOT A HAND-PICKED INTEGER (temperloop#320/#321).
+# A check's identity is its unique `check_<name>` function — the CHECKS[] run
+# loop dispatches by that name, order-independent. The `# ── Check N: … ──`
+# integer in the existing section banners below is a HISTORICAL LABEL ONLY: it
+# is read by nothing and it is a shared resource two parallel authors otherwise
+# hand-pick the same value for (the #320 collision: two siblings both chose
+# "check 12" and one respawn renumbered 13-16). So a NEW check is labelled by
+# its name, never a next sequential integer — `# ── check_my_new_lint ──`, not
+# `# ── Check 18: … ──`. Existing numbered banners are grandfathered in place
+# (no renumbering is ever required); the by-construction guarantee is that the
+# function name — unique or the script won't source — is what identifies the
+# slot. Its test group in test_vault_hygiene_report.sh follows the same rule
+# (name-keyed group label, not `test N`). A template:
+#
+#   # ── check_my_new_lint ──
 #   check_my_new_lint() {
 #     local count=0
 #     # ... walk $ROOT, call `add "- ⚠️ ..."` + `inc` per finding, or a single
