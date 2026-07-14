@@ -14,7 +14,7 @@
 # .claude/. So on a fresh clone the capability-probe predicate (an agent is
 # available iff declared in `CLAUDE.md § Subagents` or present under
 # `.claude/agents/` — see docs/features/review-agents.md § "The capability
-# probe") evaluates FALSE for every review lens, and every /design, /assess,
+# probe") evaluates FALSE for every review lens, and every /workshop, /assess,
 # and /triage review degrades to all-skipped. This script is the missing
 # install path: run it once in a fresh clone and the probe resolves.
 #

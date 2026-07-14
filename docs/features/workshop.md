@@ -1,9 +1,9 @@
 ---
-title: Design
-slug: design
+title: Workshop
+slug: workshop
 ---
 
-# Design
+# Workshop
 
 ## Problem
 
@@ -11,11 +11,11 @@ slug: design
 item, a sweep finding, something already sitting there waiting for logical
 judgment. It has no path for work that is *invented* mid-conversation: an
 idea that starts as "we should build X," with no Backlog item behind it. Two
-epics (K94, K131) were hand-authored this way before `/design` existed — a
+epics (K94, K131) were hand-authored this way before `/workshop` existed — a
 rich `## Contract` body typed straight into a GitHub issue, with no coverage
 checklist run against it and no ritual forcing the hard questions (does this
 change a contract surface? what's the uninstall story? what's the telemetry
-proxy?) to get asked before the epic exists. `/design` closes that gap: it
+proxy?) to get asked before the epic exists. `/workshop` closes that gap: it
 gives invented work the same kind of structured, checklist-driven front door
 that discovered work already had, so a designed epic arrives at `/assess`
 having already answered the questions `/assess` and downstream merge gates
@@ -23,7 +23,7 @@ would otherwise have to catch late, or never.
 
 ## How it works
 
-`/design` walks a fixed sequence — intake, coverage walk, review pass,
+`/workshop` walks a fixed sequence — intake, coverage walk, review pass,
 ratify, materialize — against the coverage template in
 `claude/design-schema.md`. It is modal by construction: there is no
 unattended arm, because a design ritual has no meaning without a live
@@ -65,7 +65,7 @@ operator to make the calls.
      marker line. Creation is probe-before-create, so a re-run adopts an
      existing epic rather than duplicating it.
    - **Draft ADRs** (Step 5c) — for every architectural call the brief makes
-     that passes the stranger test, `/design` emits a `docs/adr/NNNN-*.md`
+     that passes the stranger test, `/workshop` emits a `docs/adr/NNNN-*.md`
      file conforming to `docs/adr/0000-adr-process.md`'s MADR-lite format,
      `## Status: Proposed` (never `Accepted` — ratifying an ADR is a
      separate human act outside this command). Each ADR links back to the
@@ -86,7 +86,7 @@ other dependency degrades legibly instead of blocking the walk.
 
 ## Integration
 
-`/design` is the funnel's **second front door**, a peer to `/triage` rather
+`/workshop` is the funnel's **second front door**, a peer to `/triage` rather
 than a patch on top of it:
 
 ```
@@ -94,7 +94,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /design   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -104,7 +104,7 @@ a design conversation ──► /design   intake → coverage walk → review pa
 ```
 
 `/triage` explicitly disclaims decomposing an already-existing, fully-specified
-epic; `/design` is that epic's point of origin, not something `/triage`
+epic; `/workshop` is that epic's point of origin, not something `/triage`
 grows into. Both doors converge on the same `/assess --epic N` → `/build`
 pipeline — nothing downstream of materialization changes because of which
 door an epic came through.
@@ -114,13 +114,13 @@ lose its provenance or slip through the wrong door:
 
 - **`/triage`'s mirror redirect.** A Backlog candidate that reads as
   invented, epic-sized work gets flagged at `/triage`'s preview/summary step
-  — "recommend `/design` instead of triaging it here" — rather than culled
+  — "recommend `/workshop` instead of triaging it here" — rather than culled
   or grouped as if it were a discovered defect.
 - **`/assess`'s provenance check.** When `/assess --epic N` finds a
   Contract-bearing epic with no sub-issues (the epic-decomposition path), it
   checks for the `design-brief:` marker. Present → proceed silently, this
-  came from a ratified `/design` walk. Absent → a legible, fail-open ask:
-  proceed with the hand-authored Contract as-is, or park and run `/design`
+  came from a ratified `/workshop` walk. Absent → a legible, fail-open ask:
+  proceed with the hand-authored Contract as-is, or park and run `/workshop`
   first. Unattended runs take the safe default (proceed) and log it to the
   pending-decisions surface rather than blocking.
 - **`/tidy`'s drain backstop.** A provenance-less epic that the live
@@ -130,7 +130,7 @@ lose its provenance or slip through the wrong door:
 
 ## Resource impact
 
-`/design` is **operator-present only** — there is no unattended arm, no
+`/workshop` is **operator-present only** — there is no unattended arm, no
 `ScheduleWakeup` poll, and no async decision-issue backend, because a design
 ritual has no meaning without a live operator making the calls. Cost is
 therefore conversational: the coverage-walk conversation itself, plus
@@ -145,7 +145,7 @@ existing proxies (see below).
 
 ## Telemetry
 
-`/design` introduces no new emitted telemetry stream of its own — its
+`/workshop` introduces no new emitted telemetry stream of its own — its
 effect is measured through four **measurement proxies** on existing signal
 rather than a dedicated stream:
 
