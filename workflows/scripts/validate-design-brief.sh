@@ -213,7 +213,19 @@ resolve_citation() {
     *)
       # Bare filename, no directory component — resolve by basename search
       # over the tracked tree.
-      ( cd "$root" 2>/dev/null && git ls-files 2>/dev/null | grep -qE "(^|/)$(printf '%s' "$tok" | sed 's/[].[^$*\/]/\\&/g')\$" )
+      #
+      # The listing is captured, then matched with a here-string — NOT piped
+      # into `grep -q`. `grep -q` exits on the FIRST match and closes the pipe;
+      # the producer still writing then dies of SIGPIPE (141), and under this
+      # script's `set -o pipefail` that 141 becomes the pipeline's status, so a
+      # citation that DID match is reported as dangling. It only bites once the
+      # listing exceeds the pipe buffer (~64KiB) — invisible in a kernel-only
+      # tree (~15KiB), reproducible in a composed overlay tree (~74KiB), which
+      # is why it shipped green. Keep the match pipeline-free. (#358)
+      local files re
+      files="$(cd "$root" 2>/dev/null && git ls-files 2>/dev/null)" || return 1
+      re="(^|/)$(printf '%s' "$tok" | sed 's/[].[^$*\/]/\\&/g')\$"
+      grep -qE "$re" <<<"$files"
       return $? ;;
   esac
 }
