@@ -44,6 +44,25 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+
+# Self-scoping gate (temperloop#361) — every leg below dispatches through a
+# REAL bootstrapped temperloop via sandbox_bootstrap_checkout, which bare-clones
+# $REPO_ROOT and runs its bin/bootstrap.sh: a hard precondition only a
+# standalone kernel checkout satisfies. Runs BEFORE sourcing the sandbox lib so
+# a composed-tree run exits 0 fast with zero setup, mirroring
+# test_install_lifecycle.sh.
+# shellcheck source=workflows/scripts/tests/lib/composed-tree.sh
+. "$HERE/lib/composed-tree.sh"
+if _composed_reason="$(composed_tree_reason "$REPO_ROOT")"; then
+  echo "SKIP: test_install_cli.sh — composed overlay tree detected ($_composed_reason)."
+  echo "  This suite is scoped to a kernel-only checkout by design (temperloop#264):"
+  echo "  a composed tree vendors the kernel at kernel/ and has no bin/bootstrap.sh"
+  echo "  of its own, so there is no checkout here to bootstrap. Whether this leg"
+  echo "  propagates downstream into a composed tree is temperloop#255's decision —"
+  echo "  exiting 0 (legible skip, not a failure)."
+  exit 0
+fi
+
 # shellcheck source=workflows/scripts/tests/lib/sandbox.sh
 source "$HERE/lib/sandbox.sh"
 

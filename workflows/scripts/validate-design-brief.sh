@@ -213,7 +213,18 @@ resolve_citation() {
     *)
       # Bare filename, no directory component — resolve by basename search
       # over the tracked tree.
-      ( cd "$root" 2>/dev/null && git ls-files 2>/dev/null | grep -qE "(^|/)$(printf '%s' "$tok" | sed 's/[].[^$*\/]/\\&/g')\$" )
+      #
+      # Capture the file list FIRST, then match — never `git ls-files | grep -q`
+      # (temperloop#359). Under this script's `set -o pipefail`, `grep -q` exits
+      # on its first match, `git ls-files` then takes SIGPIPE, and pipefail
+      # surfaces 141 as the function's rc — reporting a citation that DOES
+      # resolve as dangling. It only bites once the list is big enough that git
+      # is still writing when grep exits, which is why a kernel-only checkout
+      # (~368 tracked files) never saw it and a composed overlay tree (~1374)
+      # failed on early-matching tokens only.
+      local tracked
+      tracked="$( cd "$root" 2>/dev/null && git ls-files 2>/dev/null )" || return 1
+      grep -qE "(^|/)$(printf '%s' "$tok" | sed 's/[].[^$*\/]/\\&/g')\$" <<<"$tracked"
       return $? ;;
   esac
 }

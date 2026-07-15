@@ -14,6 +14,48 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+Composed-tree safety of the v0.12.0 gate set — every fix below is invisible to
+a kernel-only checkout (where all three gates already passed) and only affects
+a composed overlay tree vendoring the kernel at `kernel/`. Not `BREAKING`: no
+contract surface moves, the `KERNEL_GATES` set is unchanged, and each change
+turns a false failure into a pass or a legible skip. Found while vendoring
+v0.12.0 into foundation (foundation#1169), which these three collectively
+blocked.
+
+- `validate-design-brief.sh`: `resolve_citation` reported false
+  `DANGLING-CITATION` for citations that do resolve (temperloop#359). Its
+  `git ls-files | grep -q` raced under `set -o pipefail` — `grep -q` exits on
+  first match, `git` takes SIGPIPE, and pipefail surfaces 141 as the rc. Only
+  fired once the tracked list was large enough that `git` was still writing
+  when `grep` exited, so a kernel-only checkout (~368 files) never saw it while
+  a composed tree (~1374) failed on early-matching tokens only. Now captures
+  the file list first and matches second — no pipe, no race.
+- `test_install_project_agents.sh`: bare `find` does not traverse a symlink, so
+  every source-tree enumeration missed `claude/agents/*.md` where that path is
+  a compat symlink into the vendored kernel — reporting zero agents, then an
+  empty sample and a `cmp: …/claude/agents/: Is a directory` (temperloop#360).
+  Source-tree finds now use `find -L`, agreeing with the bash glob the script
+  under test already used. Deployed-tree finds are unchanged (no `-L` needed).
+- `test_sandbox.sh` (legs 4-5), `test_sandbox_dry_run_legs.sh` and
+  `test_install_cli.sh` hard-failed on a composed tree with a bare
+  `bin/bootstrap.sh not found` instead of self-scoping like their sibling
+  `test_install_lifecycle.sh` (temperloop#361). All call
+  `sandbox_bootstrap_checkout`, which bare-clones `$REPO_ROOT` and runs its
+  `bin/bootstrap.sh` — a hard precondition only a standalone kernel checkout
+  satisfies. They now emit a legible SKIP and exit 0. `test_sandbox.sh` scopes
+  out only legs 4-5, keeping its tree-shape-agnostic legs 1-3 running.
+
+### Changed
+
+- The three-signal composed-tree predicate introduced inline by temperloop#267
+  moves to `workflows/scripts/tests/lib/composed-tree.sh` and is now shared by
+  all four `sandbox_bootstrap_checkout` suites rather than copied per-suite
+  (temperloop#361). `test_install_lifecycle.sh` keeps its behaviour and message
+  verbatim; the helper is side-effect free by contract, preserving that suite's
+  "exits 0 fast with zero sandbox setup" property.
+
 ## [0.12.0] - 2026-07-14 — BREAKING
 
 ### Changed

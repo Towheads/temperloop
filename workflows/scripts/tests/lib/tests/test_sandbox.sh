@@ -90,6 +90,29 @@ sandbox_down
 pass "3: sandbox_bash runs an inline script with the sandbox env applied"
 
 # =============================================================================
+# Scoping gate for legs 4-5 (temperloop#361) — both call
+# sandbox_bootstrap_checkout, which bare-clones $REPO_ROOT and runs its
+# bin/bootstrap.sh. That is a hard precondition only a standalone kernel
+# checkout satisfies; a composed overlay tree vendors the kernel at kernel/,
+# has no bin/ of its own, and is not clonable at a subtree path. Legs 1-3 are
+# tree-shape agnostic and have already run, so scope out only the bootstrap
+# legs — rather than skipping the whole suite, or hard-failing on a bare
+# "bin/bootstrap.sh not found" (which is what blocked foundation's v0.12.0
+# vendor, foundation#1169).
+# =============================================================================
+# shellcheck source=workflows/scripts/tests/lib/composed-tree.sh
+. "$HERE/../composed-tree.sh"
+if _composed_reason="$(composed_tree_reason "$REPO_ROOT")"; then
+  echo
+  echo "SKIP: test_sandbox.sh legs 4-5 — composed overlay tree detected ($_composed_reason)."
+  echo "  sandbox_bootstrap_checkout requires a clonable, standalone kernel checkout"
+  echo "  carrying bin/bootstrap.sh; a composed tree vendors the kernel at kernel/ and"
+  echo "  has no bin/ of its own. Legs 1-3 (env scoping, gh/claude stubs, sandbox_bash)"
+  echo "  ran and passed above — exiting 0 (legible skip, not a failure)."
+  exit 0
+fi
+
+# =============================================================================
 # 4. sandbox_bootstrap_checkout: bootstraps THIS repo over file://, produces
 #    a working temperloop binary that lists real subcommands
 # =============================================================================

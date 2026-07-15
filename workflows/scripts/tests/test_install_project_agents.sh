@@ -33,8 +33,15 @@ pass() { echo "PASS: $1"; }
 [ -f "$DEPLOY_SH" ] || fail "0: deploy script not found at $DEPLOY_SH"
 
 # Expected source inventory (real tree — the script deploys from REPO_ROOT).
-agents_n="$(find "${REPO_ROOT}/claude/agents" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
-cmds_n="$(find "${REPO_ROOT}/claude/commands" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
+# EVERY find that reads the SOURCE tree must use -L (temperloop#360): on a
+# composed overlay tree claude/agents is a compat SYMLINK into the vendored
+# kernel, and bare `find` does not traverse it — yielding 0 sources here, and
+# an empty $sample_agent (hence `cmp: .../claude/agents/: Is a directory`)
+# below. The script under test enumerates with a bash glob, which DOES follow
+# the symlink, so -L is what makes this suite agree with it. Finds that read a
+# DEPLOYED tree (a real dir of symlinked entries) need no -L.
+agents_n="$(find -L "${REPO_ROOT}/claude/agents" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
+cmds_n="$(find -L "${REPO_ROOT}/claude/commands" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
 [ "$agents_n" -ge 1 ] || fail "0: expected at least one source agent .md"
 [ "$cmds_n" -ge 1 ] || fail "0: expected at least one source command .md"
 
@@ -52,7 +59,7 @@ got_cmds="$(find "${P1}/.claude/commands" -maxdepth 1 -name '*.md' | wc -l | tr 
 
 # The capability-probe-satisfying invariant: a file is PRESENT under
 # .claude/agents/ and reads back the source content.
-sample_agent="$(basename "$(find "${REPO_ROOT}/claude/agents" -maxdepth 1 -name '*.md' | head -1)")"
+sample_agent="$(basename "$(find -L "${REPO_ROOT}/claude/agents" -maxdepth 1 -name '*.md' | head -1)")"
 [ -e "${P1}/.claude/agents/${sample_agent}" ] || fail "1: deployed agent not present at target"
 cmp -s "${REPO_ROOT}/claude/agents/${sample_agent}" "${P1}/.claude/agents/${sample_agent}" \
   || fail "1: deployed agent does not resolve to source content"
@@ -106,7 +113,7 @@ P5="${TMP}/kernel-copy"
 mkdir -p "${P5}/workflows/scripts/install" "${P5}/claude/agents" "${P5}/claude/commands"
 cp "$DEPLOY_SH" "${P5}/workflows/scripts/install/project-agents.sh"
 cp "${REPO_ROOT}/claude/agents/${sample_agent}" "${P5}/claude/agents/${sample_agent}"
-sample_cmd="$(basename "$(find "${REPO_ROOT}/claude/commands" -maxdepth 1 -name '*.md' | head -1)")"
+sample_cmd="$(basename "$(find -L "${REPO_ROOT}/claude/commands" -maxdepth 1 -name '*.md' | head -1)")"
 cp "${REPO_ROOT}/claude/commands/${sample_cmd}" "${P5}/claude/commands/${sample_cmd}"
 
 bash "${P5}/workflows/scripts/install/project-agents.sh" >/dev/null 2>&1 \

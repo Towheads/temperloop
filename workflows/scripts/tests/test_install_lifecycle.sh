@@ -65,52 +65,17 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 # Self-scoping gate (acceptance criterion 4) — MUST run before sourcing
 # anything else, so a composed-tree run exits 0 fast with zero sandbox setup.
 #
-# Detection, two independent signals (either fires -> composed):
-#   1. claude/CLAUDE.overlay.md present beside claude/CLAUDE.kernel.md — the
-#      same idiom workflows/scripts/validate-live-drain.sh's own
-#      KERNEL_ONLY_MD check already uses (composed = overlay present).
-#   2. A kernel/ subtree present at the repo root, itself recognizably a
-#      vendored kernel checkout (carries its own bin/temperloop or
-#      claude/CLAUDE.kernel.md) — the "vendored at foundation/kernel/"
-#      layout workflows/scripts/kernel/check-producer-egress.sh's own header
-#      names as a possibility this repo's scripts must tolerate. Gated on a
-#      recognizable marker file (not bare directory presence) so an
-#      unrelated repo that happens to have its own top-level `kernel/`
-#      directory for other reasons doesn't false-positive.
-#   3. This script IS the vendored copy: $REPO_ROOT (derived from
-#      BASH_SOURCE, so it points at the kernel subtree itself when this
-#      file lives at <overlay>/kernel/workflows/scripts/tests/) is not its
-#      own git toplevel — i.e. the kernel tree is embedded inside a larger
-#      (composed) repo. Neither arm 1 nor 2 can see this case from inside
-#      the subtree. Also a hard precondition, not just scoping:
-#      sandbox_bootstrap_checkout bare-clones $REPO_ROOT, which requires a
-#      real repo root — a subtree path isn't clonable. Fail-open: if `git`
-#      is unavailable or errors, this arm stays silent and the suite runs
-#      (a standalone kernel checkout in CI is always its own toplevel).
+# The three-signal predicate itself now lives in lib/composed-tree.sh
+# (temperloop#361), shared with the other sandbox_bootstrap_checkout suites
+# that need exactly the same scoping; see that file for the detection
+# rationale. It is side-effect free by contract, so sourcing it here does not
+# violate the "before sourcing anything else" property above — it defines one
+# function and sets up nothing.
 # ---------------------------------------------------------------------------
-CLAUDE_MD_KERNEL="$REPO_ROOT/claude/CLAUDE.kernel.md"
-CLAUDE_MD_OVERLAY="$REPO_ROOT/claude/CLAUDE.overlay.md"
-KERNEL_SUBTREE="$REPO_ROOT/kernel"
+# shellcheck source=workflows/scripts/tests/lib/composed-tree.sh
+. "$REPO_ROOT/workflows/scripts/tests/lib/composed-tree.sh"
 
-_composed_reason=""
-if [ -f "$CLAUDE_MD_KERNEL" ] && [ -f "$CLAUDE_MD_OVERLAY" ]; then
-  _composed_reason="claude/CLAUDE.overlay.md is present beside claude/CLAUDE.kernel.md under $REPO_ROOT/claude"
-elif [ -d "$KERNEL_SUBTREE" ] && { [ -f "$KERNEL_SUBTREE/bin/temperloop" ] || [ -f "$KERNEL_SUBTREE/claude/CLAUDE.kernel.md" ]; }; then
-  _composed_reason="a kernel/ subtree is vendored at the repo root ($KERNEL_SUBTREE)"
-else
-  _git_toplevel="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -n "$_git_toplevel" ]; then
-    # Physical-path both sides (cd -P) before comparing — on macOS, $TMPDIR
-    # and /var symlinks make string comparison of logical paths unreliable.
-    _repo_root_phys="$(cd -P "$REPO_ROOT" && pwd)"
-    _toplevel_phys="$(cd -P "$_git_toplevel" && pwd)"
-    if [ "$_repo_root_phys" != "$_toplevel_phys" ]; then
-      _composed_reason="this suite's own tree ($REPO_ROOT) is a vendored subtree inside a larger repo ($_git_toplevel), not a standalone kernel checkout"
-    fi
-  fi
-fi
-
-if [ -n "$_composed_reason" ]; then
+if _composed_reason="$(composed_tree_reason "$REPO_ROOT")"; then
   echo "SKIP: test_install_lifecycle.sh — composed overlay tree detected ($_composed_reason)."
   echo "  This suite is scoped to a kernel-only checkout by design (temperloop#267):"
   echo "  its declared tree-diff exclusion set is sized for links_enumerate()'s"
