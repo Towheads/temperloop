@@ -352,6 +352,74 @@ FAKE_CLAUDE_EOF
 }
 
 # ---------------------------------------------------------------------------
+# sandbox_skip_if_composed_tree <suite-name> <repo-root> [extra-rationale]
+#
+# A legible SKIP (exit 0) for a suite that is scoped to a KERNEL-ONLY checkout.
+# Sourced, so the `exit 0` ends the calling suite.
+#
+# WHY THIS EXISTS: every suite that calls sandbox_bootstrap_checkout below
+# bootstraps THIS repo from `$repo/bin/bootstrap.sh`. That path only exists
+# when the repo root IS the kernel. In an overlay that vendors the kernel as a
+# subtree the root is the overlay and the CLI lives at kernel/bin/, so the
+# suite errors out on a layout it was never scoped to — it is re-testing
+# kernel-owned install behaviour the kernel's own CI already covers, at a path
+# the overlay does not own.
+#
+# The detection is temperloop#267's, extracted verbatim from
+# test_install_lifecycle.sh (subtraction over mechanism, per this file's own
+# header) rather than copied into each sibling: #267 got this right and its
+# three siblings simply never inherited it, which is the whole of #363.
+#
+# Detection order matters — cheapest, most specific signal first:
+#   1. composed CLAUDE (overlay beside kernel) — the definitive overlay marker;
+#   2. a vendored kernel/ subtree at the root;
+#   3. our own tree is a subtree INSIDE a larger repo (git toplevel != root).
+# The caller passes its OWN repo root rather than this lib deriving one: in a
+# composed tree these suites are reached through a compat symlink, so a root
+# derived here from BASH_SOURCE would resolve to the kernel subtree (with
+# `cd -P`) or the overlay (without) depending purely on that flag — exactly the
+# ambiguity being guarded against. Every caller already computes REPO_ROOT.
+sandbox_skip_if_composed_tree() {
+  local suite="${1:?sandbox_skip_if_composed_tree: suite name required}"
+  local repo_root="${2:?sandbox_skip_if_composed_tree: repo root required}"
+  local extra="${3:-}"
+  local reason=""
+
+  if [ -f "$repo_root/claude/CLAUDE.kernel.md" ] && [ -f "$repo_root/claude/CLAUDE.overlay.md" ]; then
+    reason="claude/CLAUDE.overlay.md is present beside claude/CLAUDE.kernel.md under $repo_root/claude"
+  elif [ -d "$repo_root/kernel" ] && { [ -f "$repo_root/kernel/bin/temperloop" ] || [ -f "$repo_root/kernel/claude/CLAUDE.kernel.md" ]; }; then
+    reason="a kernel/ subtree is vendored at the repo root ($repo_root/kernel)"
+  else
+    local toplevel root_phys top_phys
+    toplevel="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$toplevel" ]; then
+      # Physical-path both sides (cd -P) before comparing — on macOS $TMPDIR
+      # and /var symlinks make logical string comparison unreliable.
+      root_phys="$(cd -P "$repo_root" && pwd)"
+      top_phys="$(cd -P "$toplevel" && pwd)"
+      if [ "$root_phys" != "$top_phys" ]; then
+        reason="this suite's own tree ($repo_root) is a vendored subtree inside a larger repo ($toplevel), not a standalone kernel checkout"
+      fi
+    fi
+  fi
+
+  [ -n "$reason" ] || return 0
+
+  echo "SKIP: $suite — composed overlay tree detected ($reason)."
+  echo "  This suite is scoped to a kernel-only checkout by design (temperloop#267):"
+  if [ -n "$extra" ]; then
+    echo "  $extra"
+  else
+    echo "  it bootstraps this repo's own install CLI from bin/bootstrap.sh, which"
+    echo "  exists only when the repo root IS the kernel. A vendoring overlay reaches"
+    echo "  that CLI at kernel/bin/ and has no reason to re-test kernel-owned install"
+    echo "  behaviour the kernel's own CI already covers."
+  fi
+  echo "  Exiting 0 (legible skip, not a failure)."
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
 sandbox_bootstrap_checkout() {
   : "${SANDBOX_ROOT:?sandbox_bootstrap_checkout: call sandbox_up first}"
   local source_repo="${1:?sandbox_bootstrap_checkout: source repo dir required}"

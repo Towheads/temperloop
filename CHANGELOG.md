@@ -14,6 +14,35 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The composed gate set is now overlay-safe.** Vendoring v0.12.0 into a
+  downstream overlay failed **6 of 74** gates, none of which this repo's own CI
+  could see: every one assumed a **kernel-only layout** and broke on a composed
+  tree. Not a contract change — an overlay pulling this needs no migration, it
+  just stops being wrong. (foundation#1169 found all three.)
+  - `validate-design-brief.sh` reported *resolved* citations as
+    `DANGLING-CITATION`. `resolve_citation` piped `git ls-files` into
+    `grep -q`; grep exits on first match, the producer takes SIGPIPE (141), and
+    `set -o pipefail` promotes that 141 to the pipeline's status. It needs both
+    a listing over the pipe buffer (~64KiB) **and** an early match — this repo's
+    tree is ~15KiB, so it cannot reproduce here at all, while foundation's
+    composed tree is ~74KiB. Now captured and matched with a here-string; the
+    regression test builds an ~87KiB synthetic tree with a first-sorting
+    sentinel, and asserts both conditions so it can't silently go vacuous. (#358)
+  - Three suites calling `sandbox_bootstrap_checkout` (`test_install_cli.sh`,
+    `test_sandbox_dry_run_legs.sh`, `lib/tests/test_sandbox.sh`) bootstrap this
+    repo from `bin/bootstrap.sh` — a path that exists only when the repo root IS
+    the kernel. `test_install_lifecycle.sh` already skipped for this reason
+    (#267); its siblings never inherited the guard. The detection is now
+    `sandbox_skip_if_composed_tree()` in `sandbox.sh`, shared by all four rather
+    than pasted into three more files. (#363)
+  - `test_install_project_agents.sh` inventoried kernel sources with bare
+    `find`, which won't descend a symlink — so an overlay's compat-symlinked
+    `claude/agents` counted 0 and failed the suite's first precondition. Four
+    sites, now `find -L`; the two subtler ones handed `cmp` a *directory*
+    instead of a file. (#364)
+
 ## [0.12.0] - 2026-07-14 — BREAKING
 
 ### Changed

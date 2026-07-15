@@ -33,6 +33,10 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 # shellcheck source=workflows/scripts/tests/lib/sandbox.sh
 source "$HERE/lib/sandbox.sh"
 
+# Kernel-only: bootstraps this repo's install CLI from bin/bootstrap.sh, which
+# exists only when the repo root IS the kernel. (#363)
+sandbox_skip_if_composed_tree "test_sandbox_dry_run_legs.sh" "$REPO_ROOT"
+
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1"; }
 

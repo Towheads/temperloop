@@ -29,6 +29,13 @@ REPO_ROOT="$(cd "$HERE/../../../../.." && pwd)"
 # shellcheck source=workflows/scripts/tests/lib/sandbox.sh
 source "$HERE/../sandbox.sh"
 
+# Kernel-only: test 4 bootstraps this repo from bin/bootstrap.sh, which exists
+# only when the repo root IS the kernel. Tests 1-3 would pass in a composed
+# tree, but this suite tests the kernel's own lib and the kernel's CI is where
+# that coverage lives — skipping whole-suite matches #267's precedent rather
+# than inventing per-leg skipping. (#363)
+sandbox_skip_if_composed_tree "test_sandbox.sh" "$REPO_ROOT"
+
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1"; }
 
