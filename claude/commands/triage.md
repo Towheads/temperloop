@@ -1,6 +1,6 @@
 ---
-description: Logical-judgment front door of the bug→PR pipeline. Sweeps a board's Backlog (and optionally ingests analysis docs) and runs the logical decision tree — cull → root-cause collapse → group-by-meaning → value/priority → route decision-only items off-board — then materialises survivors as board-native epics (parent issue + native sub-issues), labels spikes, sets Seq, and flips grouped survivors Backlog→Ready (= triaged). Hands each epic to `/assess --epic N`. Infers the board from the local repo when `--board` is omitted; exits only if the repo is unmapped.
-argument-hint: "[--board <N> | --project <name>] [<analysis-doc-paths>...] [--dry-run]"
+description: Logical-judgment front door of the bug→PR pipeline. Sweeps a board's Backlog (and optionally ingests analysis docs) and runs the logical decision tree — cull → root-cause collapse → group-by-meaning → value/priority → route decision-only items off-board — then materialises survivors as board-native epics (parent issue + native sub-issues), labels spikes, sets Seq, and flips grouped survivors Backlog→Ready (= triaged). Hands each epic to `/assess --epic N`. Optionally (`--feedback`) ends by walking the operator's pending-feedback queue — the issues parked on *them* — one at a time so they can answer in one batched sitting. Infers the board from the local repo when `--board` is omitted; exits only if the repo is unmapped.
+argument-hint: "[--board <N> | --project <name>] [<analysis-doc-paths>...] [--dry-run] [--feedback]"
 ---
 
 You are running the **triage** command. Goal: take everything sitting in a board's **Backlog** (plus, optionally, analysis docs that haven't been filed yet) and make the **logical** decisions about it — *what survives* and *what belongs together* — then record those decisions as durable board state: one **epic** per logical group, survivors linked as native GitHub **sub-issues**, grouped survivors flipped **Backlog → Ready** (= triaged). This is the front door of the funnel in [[Decisions/foundation - Triage stage and the logical-technical pipeline split]]:
@@ -35,6 +35,7 @@ for how triage hands off invented work that lands at its door instead.
 - `--board <N>` / `--project <name>` (**optional — at most one**) — which board's Backlog to sweep (`3` = stageFind, `4` = foundation, `5` = ssmobile, `6` = subsetwiki, `7` = temperloop kernel; every Projects-v2-backed board is migrated onto GitHub's built-in `Status` field per [[Decisions/foundation - Migrate board #4 onto Status field|GH #340]] — board 7 is an issues-only backend with no Projects-v2 `Status` field, emulating Status via `fnd:status:*` labels, see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`). Explicit `--board`/`--project` is **preferred**; if omitted, the board is **inferred from the local repo** (see Step 0.3). Inference is bounded to the repo you're standing in — it can only resolve to that repo's registered board, so it cannot silently act on an *unintended* board. The prior stageFind-`3` arbitrary default is still gone; this is context-derived inference, a different thing. (See [[Decisions/foundation - Triage requires an explicit board (no default)]] — superseded by foundation#547's inference rule.)
 - `$1...$N` (optional) — vault paths to analysis docs (`Sweeps/…`, `Issues/…`, audits) to ingest as a **second intake adapter** alongside the board Backlog. Findings from a doc that survive triage get a GitHub issue created (front-loading the creation `/build` would otherwise do late).
 - `--dry-run` (optional) — rehearsal: validate + intake + run the decision tree, then **print** the planned board mutations with **zero** writes. See Step 3.5.
+- `--feedback` (optional, **off by default**) — after the sweep, run **Step 6**: walk the **pending-feedback queue** — every open issue on this board's repo *assigned to you* and carrying `needs-clarification`, `decision`, or `funnel-escalated` — one at a time, with context, so you can answer them in one sitting instead of each in isolation. Interactive by nature; composes with `--dry-run` (prints the queue, answers nothing).
 
 ## Operating principles
 
@@ -144,6 +145,8 @@ Print the planned board mutations so a bad grouping is caught before any write:
 
 If `--dry-run`, **STOP here** — zero mutation, no issue/epic creation, no field flips. End with: "Re-run without `--dry-run` to execute." This is the authoring-time mirror of `/build --dry-run`.
 
+**Exception — `--dry-run --feedback`:** skip straight to **Step 6** and stop after it. Step 6's own dry-run arm is read-only (it prints the pending-feedback queue and answers nothing), so running it preserves this step's zero-mutation guarantee while still letting a rehearsal show *both* halves of what the run would touch. Do **not** run Steps 4–5.
+
 ## Step 4 — Materialise on the board
 
 Gate the outward writes once: print the Step 3.5 preview and ask via `AskUserQuestion` — **Apply all** (default) / **Pick a subset of groups** / **Cancel**. Then, for the approved set (idempotent throughout — the board is the state):
@@ -214,6 +217,120 @@ The **Step-1 intake-deferred line is the mandatory one every run** (foundation #
 Close with the next actions:
 1. For each new epic: **`/assess --epic <N>`** to decompose it to seams and produce a `Plans/` note (companion **#22**).
 2. Note that `/build` (companion **#23**) owns the epic's runtime + close downstream — triage does not.
+3. If `--feedback` was passed, Step 6 follows. If it was **not**, and the operator's pending-feedback queue is non-empty, it costs one cheap search to say so — see Step 6's tail note.
+
+## Step 6 — Pending-feedback review (optional, `--feedback` only)
+
+**Skip this step entirely unless `--feedback` was passed.** Everything above is triage's own job — deciding what survives and what belongs together. This step does something different: it drains the queue of questions the pipeline has parked **on the operator**.
+
+**Why this lives here.** The pipeline has **producers** that park work on the operator (Step 4.4 above, `/sweep`'s park-on-question, `/build`'s async decision-issue backend, the funnel's 5c merge tier) and **drains** that consume the operator's reply (`tidy` § Answered decisions, the funnel's `drain-answer` / `drain-clarification`) — but no surface where the operator actually **answers**. The standing expectation is that they work a saved GitHub view by hand (`claude/decision-queue-contract.md` § 2 — `is:open assignee:@me label:decision`), each issue in isolation. Triage is the right home for the missing half: it is already the **batch-judgment** surface, where the operator is in a batch-decision headspace rather than paging one issue's context in at a time, and it already resolved the board.
+
+**The seam that makes it cheap.** The pending-feedback queue is the exact **complement of the funnel's drain lists**. The funnel drains `no:assignee` (the operator answered and handed the baton back — `funnel-tick.sh`'s `read_answered_decisions` / `read_answered_clarifications`); `assignee:@me` is the half still sitting on the operator. Every producer **assigns the operator at source** (foundation #684), so the assignee bit is already a reliable, board-wide "this is yours" marker. There is no new state to invent — this step reads a marker the pipeline already maintains.
+
+### 6.1 — Build the queue
+
+**First resolve *whose* queue this is — the producers do not all assign the same identity.** Step 4.4 assigns `@me` (the `gh`-authenticated operator), but the funnel assigns the **configured** `$FUNNEL_OPERATOR` login (`workflows/scripts/build/build.config.sh`; `funnel-tick.sh` carries a matching `:=` fallback). Those coincide on a single-operator host and **diverge** whenever they are configured apart — a second operator, a different machine's `gh auth`, a shared account. A bare `assignee:@me` search would then silently return a partial queue and print "no pending feedback" over real work. Resolve both, and search their **union**:
+
+```bash
+source workflows/scripts/build/build.config.sh 2>/dev/null || true   # best-effort; a non-vendoring checkout just gets @me
+op="${FUNNEL_OPERATOR:-}"
+case "$op" in ''|'@REPLACE_WITH_YOUR_GH_LOGIN') op='' ;; esac        # unconfigured placeholder → not a real login
+op="${op#@}"                                                          # gh wants the bare login
+me="$(gh api user --jq .login 2>/dev/null)"
+[ "$op" = "$me" ] && op=''                                            # same identity → one search is enough
+```
+
+Then, per assignee (`@me`, plus `$op` when non-empty), one repo-level search (`repo="$(board_repo "$BOARD")"` from Step 0.3), using GitHub search's **comma-OR** on `label:`:
+
+```bash
+gh issue list -R "$repo" --state open \
+  --search 'assignee:@me label:needs-clarification,decision,funnel-escalated' \
+  --json number,title,body,labels,comments,url
+```
+
+Union the results and **dedupe by issue number** (an issue can only carry one assignee set, but a divergent-operator repo returns two disjoint lists that must be walked as one queue). Carry each item's resolved assignee forward — 6.3's `--remove-assignee` must drop the identity that is actually on the issue, not assume `@me`. If `$op` is non-empty, **say which identities were searched** in the 6.4 summary; a queue scoped to an identity the operator didn't expect is the same silent-under-report in a different disguise.
+
+This is deliberately **repo-level, not board-level** — `gh issue list` + `gh issue edit`, no Projects-v2 field reads — so the step works identically on every backend, including the **issues-only** kernel tracker (board 7), with no `Status`-field dependency and none of Step 4.5's `board_set_number` hazard.
+
+Three classes, each with a different disposition. **Dispatch most-specific-first** when an issue carries several: `funnel-escalated` → `decision` → `needs-clarification`.
+
+| Label | Parked by | Class | The operator owes |
+|---|---|---|---|
+| `needs-clarification` | Step 4.4, `/sweep` park-on-question, the 5c refusal escalation | **Answerable** — free text | an answer |
+| `decision` | `/build`'s async decision-issue backend; the funnel's `route-foundational` | **Answerable** — *typed grammar* | a choice from a closed set |
+| `funnel-escalated` | the funnel's 5c merge tier (foundation #697) | **Actionable** — *not a question* | a merge or a close |
+
+**Do NOT include `funnel-merge-pending`.** It looks adjacent and is not: it means *PR open, session ended pre-merge, the funnel resumes it next tick* — the funnel's own resume pointer, not an ask of the operator. Surfacing it would put work in the operator's queue that is not theirs to act on.
+
+If the queue is empty, say `no pending feedback on this board` in one line and stop.
+
+**Under `--dry-run`, STOP after printing the queue** — each item's number, title, and class, with **zero** writes and **no** `AskUserQuestion`. Same zero-mutation guarantee Step 3.5 gives the sweep half.
+
+### 6.2 — Walk it one issue at a time
+
+**Sequential, one issue per round — deliberately *not* `/sweep` Phase 1's ≤4 batch.** The batch is right for Phase 1, whose questions are homogeneous and pre-written. Here each item carries its own context and the operator is choosing a *direction*, so the value is in seeing one issue's full picture at a time. Render, ask, apply, advance.
+
+Per item, render before asking: the issue **number + title**, **which producer parked it** (read from the flagging comment), the **question or decision text** verbatim, its **parent epic** if `board_parent_issue "$BOARD" <n>` prints one, and — for `funnel-escalated` — the PR and its CI verdict (6.3c).
+
+### 6.3 — Apply the answer
+
+**The ordering below is load-bearing, not stylistic: comment FIRST, release the baton SECOND.** Both drains read the **most recent comment at drain time** and only act on `no:assignee`.
+
+- **Unassign-first** opens a window where a tick lists the item and parses the *question* comment as the reply → parse-miss → re-assign + "couldn't parse" noise.
+- **Comment-first** means a failed comment write leaves the item flagged *and* assigned, so it re-enters the next run untouched. A missing marker self-heals; a missing **answer** under a "handled"-looking marker is silently lost.
+
+This is the same asymmetry Step 4.4 already encodes for the flagging direction (foundation #684) — record the durable text before the markers move.
+
+**(a) `needs-clarification` — answer, then clear.** Follows `/sweep` Phase 1's answer handling, **plus one deliberate addition — read the divergence, don't assume parity**:
+
+1. `gh issue comment <n> -R "$repo" --body "Clarified (triage): <answer>"`
+2. **Only if 1 succeeded:** `gh issue edit <n> -R "$repo" --remove-label needs-clarification --remove-assignee <operator>` (`<operator>` = the identity resolved in 6.1)
+
+Clear the label **here** rather than leaving it for the funnel's `drain-clarification`. Clearing the label + releasing the item *is* that drain's entire job, so doing it inline saves a tick of latency and — more importantly — is correct on **both** funnel-enabled and funnel-less boards, with no need to probe which kind you are on. Do **not** write the `<!-- funnel:clarification-drained -->` sentinel: that marker is the funnel executor's, and a cleared label means the item never lists for a drain anyway.
+
+**The `--remove-assignee` is the divergence.** `/sweep` Phase 1 and `/assess` both clear *only* the label and leave the assignee alone — so this step does strictly more than either, and the difference is intentional rather than an oversight. The reason it is safe here and not there: the assignment means *"this is in your queue awaiting your answer"* (foundation #684), so once the answer is recorded it must leave that queue or the operator's assigned-to-me view grows monotonically with items they have already handled. Unassigning is also the operator's own sanctioned baton-return gesture on a funnel board (foundation #657) — Step 6 simply performs it on their behalf. This does **not** contradict Step 4.4's "on a board with no funnel consumer, leave the assignment": that instruction protects an item whose *label is still set* and which therefore depends on a later `/sweep`//`/assess` to drain it. Here the label is cleared in the same breath, so the item is fully released and nothing is stranded.
+
+**(b) `decision` — answer, then hand the baton to the drain.** The `decision` reply is **machine-parsed** under a closed-enum-or-escalate rule (`claude/decision-queue-contract.md` § 3): `chosen:` must name one of the options the question comment offered, or the drain re-assigns the operator with a "couldn't parse" comment and the item spins.
+
+1. **Parse the offered option labels out of the question comment, and render them *as* the `AskUserQuestion` options** — the contract's closed enum and `AskUserQuestion`'s closed enum are the same shape, so the operator can only pick a label the question actually offered. Two things break that equivalence if you let them, and **both must be handled or the "closed enum" is a property of the prompt rather than of the bytes that reach the parser**:
+   - **The ≤4-option cap.** `AskUserQuestion` takes **2–4 options**. With **≤4** offered labels, render them one-to-one. With **>4** you cannot — so print the full offered set as a numbered text list first, then ask a single-select over a bounded slice plus an explicit *"I'll name another"* escape (the tool's own free-text `Other` serves this) and take the label from the typed reply. `/build`'s risky-set gate documents the same cap and the same text-list-plus-bounded-ask escape (`claude/commands/build.md`, Approval — risky set) — reuse that shape, don't invent one.
+   - **The verbatim requirement.** `chosen:` must name an offered label; the real parser is `funnel-tick.sh`'s, and it reads the **original question comment**, not your re-rendering. A label you round-tripped through a prompt can pick up a stray backtick from the comment's markdown, a trailing space, or case drift.
+
+   **So validate before posting, on every path:** the string about to be written into `chosen:` MUST appear **byte-for-byte** in the question comment's offered set (strip the markdown the comment renders it in). On a mismatch, re-ask — never post a `chosen:` you did not round-trip. If the offered set genuinely cannot be parsed at all, fall back to free-text and **say so**; never guess a label.
+
+   With the cap handled and the round-trip check in place, a parse-miss is closed off by construction. Without them it is not — and a `decision` that *looks* answered here still spins on the drain's closed-enum-or-escalate re-assign next tick, invisibly to the operator who believed it resolved.
+2. `gh issue comment <n> -R "$repo"` with the reply in the **typed-reply grammar** — the fenced ` ```decision ` block with its `chosen:` key (the selected option label verbatim), or the `/choose <label>` shorthand. **Read the exact shape from `claude/decision-queue-contract.md` § 3 and emit it byte-for-byte; do not reproduce it from this spec.** That grammar is a **frozen surface** (`claude/presentation-plane.md` § Kernel table) whose sole owner is the contract — restating it here would be a second copy free to drift out of sync with the parser, exactly as `/build`'s decision-issue backend points at the contract rather than pasting it.
+3. **Only if 2 succeeded:** `gh issue edit <n> -R "$repo" --remove-assignee @me`
+4. **Keep the `decision` label.** ← the asymmetry against (a), and the easiest thing to get wrong. A *clarification* answer needs no application (it is free text the next drive reads), so triage can finish the job. A *decision* answer must still be **translated into an artifact** — that is what `tidy` § Answered decisions / the funnel's `drain-answer` do, and dropping the label *then* is the last step of that translation. Clearing it here would strand the answer with nothing to apply it.
+
+**(c) `funnel-escalated` — not a question; a stuck code item.** The 5c merge tier could not land it (route-refused / terminally-red CI), so it has an **open or failed PR** and awaits a manual disposition. Resolve the PR and its CI verdict for context:
+
+```bash
+gh pr list -R "$repo" --search "Closes #<n>" --state all \
+  --json number,url,state,statusCheckRollup
+```
+
+Offer, per item:
+- **Merge it** → a **bare** `gh pr merge <pr> -R "$repo"` (enqueues; the merge queue owns the strategy — never guess a method flag, per `claude/CLAUDE.kernel.md` § Branch & PR policy's enqueue-method caveat). The close→Done cascade then closes the issue and moves the card. This is the one **outward** action in this step, and it fires only on an explicit per-item choice.
+- **Close it** → the escalation is obsolete/abandoned. **Close the PR too, not just the issue:** `gh pr close <pr> -R "$repo" --comment "<reason>"` *then* `gh issue close <n> -R "$repo" --comment "<reason>"`. A `funnel-escalated` item has an open or failed PR **by definition** (that is what the 5c tier escalated), so closing the issue alone strands a live PR with no owner, no tracking issue, and no path back to attention — an artifact whose failure mode is to sit open forever. If the PR is already merged or closed, skip that call and close the issue alone.
+- **Re-drive it** → `gh issue edit <n> -R "$repo" --remove-label funnel-escalated --remove-assignee <operator>`, returning it to the funnel's drive pool. ⚠ **Guard: offer this only once the stale PR is merged or closed.** Re-driving with a PR still open makes the next drive open a **duplicate PR** — precisely the hazard `/sweep` Step 1 drops these items to avoid. If the PR is open, say so and offer merge/close instead.
+- **Leave it** → no writes; it stays in the queue for next time.
+
+**Deferred / skipped items** (the operator passes on one) keep their labels and assignment untouched and re-enter the next run — same self-healing posture as `/sweep` Phase 1's unanswered arm.
+
+### 6.4 — Summarise the queue
+
+```
+/triage --feedback — pending-feedback queue (repo <owner/repo>)
+- Searched as: @me (<login>)  [+ <FUNNEL_OPERATOR login> — print this second identity ONLY when it diverged, per 6.1]
+- Queue: Q open, assigned to you  (C needs-clarification, D decision, E funnel-escalated)
+- Clarifications answered: A  (#s → label + assignee cleared, released to drive)
+- Decisions answered: B  (#s → chosen: <label>; `decision` label retained for the drain to apply)
+- Escalations disposed: F  (#s → merged / closed / re-driven)
+- Deferred (left in the queue): G  (#s)
+```
+
+**Tail note when `--feedback` was NOT passed.** The queue search in 6.1 is one cheap call, so the Step-5 summary should close with a one-line pointer whenever it is non-empty — `N issues are pending your feedback on this board — re-run with --feedback to review them` — and print nothing when it is empty. A queue the operator has to remember to go look at is a queue that silently grows; this is the same reasoning as the mandatory Step-1 intake-deferred line (foundation #164 — deferral is always reported, never silent).
 
 ## Failure modes
 
@@ -226,3 +343,11 @@ Close with the next actions:
 - **Candidate is both a decision and build work.** Surface via `AskUserQuestion` (route the decision off-board *and* keep a build survivor, or treat as one) — don't guess.
 - **Doc has no actionable findings.** Report "no candidates derivable from <doc>" and continue with the board-only set.
 - **Re-run after a partial pass.** Idempotent: already-`Ready` items aren't re-intook; epics/issues are probe-before-create. Safe to re-run.
+- **Pending-feedback queue search fails (Step 6.1).** Report it in one line and stop the step — never half-walk a queue you couldn't fully read (a partial queue silently under-reports what is pending on the operator, the same class of masking failure the Step-1 `board_active_milestones` exit-code branch guards against). The sweep half (Steps 1–5) has already completed and stands; only Step 6 stops.
+- **Answer comment fails to post (Step 6.3).** Do **not** apply the label/assignee change — leave the issue flagged and assigned so it re-enters the next run. The comment is the durable record; the markers are recoverable state. Never invert this order (foundation #684).
+- **`decision` offered options unparseable (Step 6.3b).** Fall back to free-text and **say so** — never guess a label into `chosen:`. A guessed label that isn't in the offered set is a parse-miss at drain time, which re-assigns the operator and spins the item; an honest free-text reply at least reaches a human. Closed-enum-or-escalate, exactly as `claude/decision-queue-contract.md` § 3 requires of the driver.
+- **`decision` offers more than 4 options (Step 6.3b).** `AskUserQuestion` renders 2–4, so a one-to-one mapping is impossible — do **not** silently drop the tail (that would present a *partial* enum as if it were the whole one, and the dropped options become unpickable without any error). Print the full offered set as text and ask over a bounded slice plus an "I'll name another" escape, then round-trip the answer as below.
+- **`chosen:` fails the verbatim round-trip (Step 6.3b).** The label about to be posted does not appear byte-for-byte in the question comment's offered set — re-ask rather than posting it. The drain parses the *original* comment, so a near-miss (stray backtick, trailing space, case drift) reads as a parse-miss there and spins the item while looking answered here.
+- **Operator identity diverges from `@me` (Step 6.1).** `$FUNNEL_OPERATOR` and the `gh`-authenticated login can be configured apart, and the two producers assign differently (Step 4.4 → `@me`; the funnel → `$FUNNEL_OPERATOR`). Search the union and name the identities searched. A `@me`-only search on a divergent host prints "no pending feedback" over a real queue — a wrong answer with no error, the same silent-under-report class as a masked intake failure.
+- **`funnel-escalated` closed without its PR (Step 6.3c).** Closing the issue alone strands the open/failed PR the escalation exists because of. Close the PR in the same disposition, or state explicitly that it is being left for manual cleanup — never leave it unmentioned.
+- **`funnel-escalated` re-drive with an open PR (Step 6.3c).** Refuse it and offer merge/close instead — re-driving an item whose PR is still open makes the next drive open a **duplicate PR** (foundation #697 / the `/sweep` Step 1 duplicate-PR guard).
