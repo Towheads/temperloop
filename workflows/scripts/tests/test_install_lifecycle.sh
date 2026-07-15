@@ -88,46 +88,24 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 #      is unavailable or errors, this arm stays silent and the suite runs
 #      (a standalone kernel checkout in CI is always its own toplevel).
 # ---------------------------------------------------------------------------
-CLAUDE_MD_KERNEL="$REPO_ROOT/claude/CLAUDE.kernel.md"
-CLAUDE_MD_OVERLAY="$REPO_ROOT/claude/CLAUDE.overlay.md"
-KERNEL_SUBTREE="$REPO_ROOT/kernel"
-
-_composed_reason=""
-if [ -f "$CLAUDE_MD_KERNEL" ] && [ -f "$CLAUDE_MD_OVERLAY" ]; then
-  _composed_reason="claude/CLAUDE.overlay.md is present beside claude/CLAUDE.kernel.md under $REPO_ROOT/claude"
-elif [ -d "$KERNEL_SUBTREE" ] && { [ -f "$KERNEL_SUBTREE/bin/temperloop" ] || [ -f "$KERNEL_SUBTREE/claude/CLAUDE.kernel.md" ]; }; then
-  _composed_reason="a kernel/ subtree is vendored at the repo root ($KERNEL_SUBTREE)"
-else
-  _git_toplevel="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -n "$_git_toplevel" ]; then
-    # Physical-path both sides (cd -P) before comparing — on macOS, $TMPDIR
-    # and /var symlinks make string comparison of logical paths unreliable.
-    _repo_root_phys="$(cd -P "$REPO_ROOT" && pwd)"
-    _toplevel_phys="$(cd -P "$_git_toplevel" && pwd)"
-    if [ "$_repo_root_phys" != "$_toplevel_phys" ]; then
-      _composed_reason="this suite's own tree ($REPO_ROOT) is a vendored subtree inside a larger repo ($_git_toplevel), not a standalone kernel checkout"
-    fi
-  fi
-fi
-
-if [ -n "$_composed_reason" ]; then
-  echo "SKIP: test_install_lifecycle.sh — composed overlay tree detected ($_composed_reason)."
-  echo "  This suite is scoped to a kernel-only checkout by design (temperloop#267):"
-  echo "  its declared tree-diff exclusion set is sized for links_enumerate()'s"
-  echo "  kernel-only surface (no env/*, no settings.json, no composed CLAUDE.md) and"
-  echo "  would either miss or misreport residue on a composed checkout's larger"
-  echo "  managed-path surface. Whether/how this lifecycle leg propagates downstream"
-  echo "  into a composed tree (foundation, stageFind, ssmobile, subsetwiki) is"
-  echo "  temperloop#255's decision, not this item's — exiting 0 (legible skip, not a"
-  echo "  failure)."
-  exit 0
-fi
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1"; }
 
 # shellcheck source=workflows/scripts/tests/lib/sandbox.sh
 source "$HERE/lib/sandbox.sh"
+
+# The detection itself now lives in the shared harness (sandbox.sh) — #363
+# found its three sibling suites had never inherited this guard and were
+# failing in composed trees. Extracted rather than re-copied; the rationale
+# below is this suite's own and stays here.
+sandbox_skip_if_composed_tree "test_install_lifecycle.sh" "$REPO_ROOT" \
+  "its declared tree-diff exclusion set is sized for links_enumerate()'s
+  kernel-only surface (no env/*, no settings.json, no composed CLAUDE.md) and
+  would either miss or misreport residue on a composed checkout's larger
+  managed-path surface. Whether/how this lifecycle leg propagates downstream
+  into a composed tree (foundation, stageFind, ssmobile, subsetwiki) is
+  temperloop#255's decision, not this item's."
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 
