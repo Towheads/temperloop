@@ -229,13 +229,26 @@ Close with the next actions:
 
 ### 6.1 — Build the queue
 
-One repo-level search (`repo="$(board_repo "$BOARD")"` from Step 0.3), using GitHub search's **comma-OR** on `label:`:
+**First resolve *whose* queue this is — the producers do not all assign the same identity.** Step 4.4 assigns `@me` (the `gh`-authenticated operator), but the funnel assigns the **configured** `$FUNNEL_OPERATOR` login (`workflows/scripts/build/build.config.sh`; `funnel-tick.sh` carries a matching `:=` fallback). Those coincide on a single-operator host and **diverge** whenever they are configured apart — a second operator, a different machine's `gh auth`, a shared account. A bare `assignee:@me` search would then silently return a partial queue and print "no pending feedback" over real work. Resolve both, and search their **union**:
+
+```bash
+source workflows/scripts/build/build.config.sh 2>/dev/null || true   # best-effort; a non-vendoring checkout just gets @me
+op="${FUNNEL_OPERATOR:-}"
+case "$op" in ''|'@REPLACE_WITH_YOUR_GH_LOGIN') op='' ;; esac        # unconfigured placeholder → not a real login
+op="${op#@}"                                                          # gh wants the bare login
+me="$(gh api user --jq .login 2>/dev/null)"
+[ "$op" = "$me" ] && op=''                                            # same identity → one search is enough
+```
+
+Then, per assignee (`@me`, plus `$op` when non-empty), one repo-level search (`repo="$(board_repo "$BOARD")"` from Step 0.3), using GitHub search's **comma-OR** on `label:`:
 
 ```bash
 gh issue list -R "$repo" --state open \
   --search 'assignee:@me label:needs-clarification,decision,funnel-escalated' \
   --json number,title,body,labels,comments,url
 ```
+
+Union the results and **dedupe by issue number** (an issue can only carry one assignee set, but a divergent-operator repo returns two disjoint lists that must be walked as one queue). Carry each item's resolved assignee forward — 6.3's `--remove-assignee` must drop the identity that is actually on the issue, not assume `@me`. If `$op` is non-empty, **say which identities were searched** in the 6.4 summary; a queue scoped to an identity the operator didn't expect is the same silent-under-report in a different disguise.
 
 This is deliberately **repo-level, not board-level** — `gh issue list` + `gh issue edit`, no Projects-v2 field reads — so the step works identically on every backend, including the **issues-only** kernel tracker (board 7), with no `Status`-field dependency and none of Step 4.5's `board_set_number` hazard.
 
@@ -268,16 +281,24 @@ Per item, render before asking: the issue **number + title**, **which producer p
 
 This is the same asymmetry Step 4.4 already encodes for the flagging direction (foundation #684) — record the durable text before the markers move.
 
-**(a) `needs-clarification` — answer, then clear.** Mirrors `/sweep` Phase 1's answer handling:
+**(a) `needs-clarification` — answer, then clear.** Follows `/sweep` Phase 1's answer handling, **plus one deliberate addition — read the divergence, don't assume parity**:
 
 1. `gh issue comment <n> -R "$repo" --body "Clarified (triage): <answer>"`
-2. **Only if 1 succeeded:** `gh issue edit <n> -R "$repo" --remove-label needs-clarification --remove-assignee @me`
+2. **Only if 1 succeeded:** `gh issue edit <n> -R "$repo" --remove-label needs-clarification --remove-assignee <operator>` (`<operator>` = the identity resolved in 6.1)
 
 Clear the label **here** rather than leaving it for the funnel's `drain-clarification`. Clearing the label + releasing the item *is* that drain's entire job, so doing it inline saves a tick of latency and — more importantly — is correct on **both** funnel-enabled and funnel-less boards, with no need to probe which kind you are on. Do **not** write the `<!-- funnel:clarification-drained -->` sentinel: that marker is the funnel executor's, and a cleared label means the item never lists for a drain anyway.
 
+**The `--remove-assignee` is the divergence.** `/sweep` Phase 1 and `/assess` both clear *only* the label and leave the assignee alone — so this step does strictly more than either, and the difference is intentional rather than an oversight. The reason it is safe here and not there: the assignment means *"this is in your queue awaiting your answer"* (foundation #684), so once the answer is recorded it must leave that queue or the operator's assigned-to-me view grows monotonically with items they have already handled. Unassigning is also the operator's own sanctioned baton-return gesture on a funnel board (foundation #657) — Step 6 simply performs it on their behalf. This does **not** contradict Step 4.4's "on a board with no funnel consumer, leave the assignment": that instruction protects an item whose *label is still set* and which therefore depends on a later `/sweep`//`/assess` to drain it. Here the label is cleared in the same breath, so the item is fully released and nothing is stranded.
+
 **(b) `decision` — answer, then hand the baton to the drain.** The `decision` reply is **machine-parsed** under a closed-enum-or-escalate rule (`claude/decision-queue-contract.md` § 3): `chosen:` must name one of the options the question comment offered, or the drain re-assigns the operator with a "couldn't parse" comment and the item spins.
 
-1. **Parse the offered option labels out of the question comment, and render them *as* the `AskUserQuestion` options.** This is what makes a parse-miss **structurally impossible**: the contract's closed enum and `AskUserQuestion`'s closed enum are the same shape, so the reply can only ever name an offered label. If the offered set genuinely cannot be parsed, fall back to free-text entry and **say so** — never guess a label into `chosen:`.
+1. **Parse the offered option labels out of the question comment, and render them *as* the `AskUserQuestion` options** — the contract's closed enum and `AskUserQuestion`'s closed enum are the same shape, so the operator can only pick a label the question actually offered. Two things break that equivalence if you let them, and **both must be handled or the "closed enum" is a property of the prompt rather than of the bytes that reach the parser**:
+   - **The ≤4-option cap.** `AskUserQuestion` takes **2–4 options**. With **≤4** offered labels, render them one-to-one. With **>4** you cannot — so print the full offered set as a numbered text list first, then ask a single-select over a bounded slice plus an explicit *"I'll name another"* escape (the tool's own free-text `Other` serves this) and take the label from the typed reply. `/build`'s risky-set gate documents the same cap and the same text-list-plus-bounded-ask escape (`claude/commands/build.md`, Approval — risky set) — reuse that shape, don't invent one.
+   - **The verbatim requirement.** `chosen:` must name an offered label; the real parser is `funnel-tick.sh`'s, and it reads the **original question comment**, not your re-rendering. A label you round-tripped through a prompt can pick up a stray backtick from the comment's markdown, a trailing space, or case drift.
+
+   **So validate before posting, on every path:** the string about to be written into `chosen:` MUST appear **byte-for-byte** in the question comment's offered set (strip the markdown the comment renders it in). On a mismatch, re-ask — never post a `chosen:` you did not round-trip. If the offered set genuinely cannot be parsed at all, fall back to free-text and **say so**; never guess a label.
+
+   With the cap handled and the round-trip check in place, a parse-miss is closed off by construction. Without them it is not — and a `decision` that *looks* answered here still spins on the drain's closed-enum-or-escalate re-assign next tick, invisibly to the operator who believed it resolved.
 2. `gh issue comment <n> -R "$repo"` with the reply in the **typed-reply grammar** — the fenced ` ```decision ` block with its `chosen:` key (the selected option label verbatim), or the `/choose <label>` shorthand. **Read the exact shape from `claude/decision-queue-contract.md` § 3 and emit it byte-for-byte; do not reproduce it from this spec.** That grammar is a **frozen surface** (`claude/presentation-plane.md` § Kernel table) whose sole owner is the contract — restating it here would be a second copy free to drift out of sync with the parser, exactly as `/build`'s decision-issue backend points at the contract rather than pasting it.
 3. **Only if 2 succeeded:** `gh issue edit <n> -R "$repo" --remove-assignee @me`
 4. **Keep the `decision` label.** ← the asymmetry against (a), and the easiest thing to get wrong. A *clarification* answer needs no application (it is free text the next drive reads), so triage can finish the job. A *decision* answer must still be **translated into an artifact** — that is what `tidy` § Answered decisions / the funnel's `drain-answer` do, and dropping the label *then* is the last step of that translation. Clearing it here would strand the answer with nothing to apply it.
@@ -291,8 +312,8 @@ gh pr list -R "$repo" --search "Closes #<n>" --state all \
 
 Offer, per item:
 - **Merge it** → a **bare** `gh pr merge <pr> -R "$repo"` (enqueues; the merge queue owns the strategy — never guess a method flag, per `claude/CLAUDE.kernel.md` § Branch & PR policy's enqueue-method caveat). The close→Done cascade then closes the issue and moves the card. This is the one **outward** action in this step, and it fires only on an explicit per-item choice.
-- **Close it** → `gh issue close <n> -R "$repo" --comment "<reason>"` (the escalation is obsolete/abandoned).
-- **Re-drive it** → `gh issue edit <n> -R "$repo" --remove-label funnel-escalated --remove-assignee @me`, returning it to the funnel's drive pool. ⚠ **Guard: offer this only once the stale PR is merged or closed.** Re-driving with a PR still open makes the next drive open a **duplicate PR** — precisely the hazard `/sweep` Step 1 drops these items to avoid. If the PR is open, say so and offer merge/close instead.
+- **Close it** → the escalation is obsolete/abandoned. **Close the PR too, not just the issue:** `gh pr close <pr> -R "$repo" --comment "<reason>"` *then* `gh issue close <n> -R "$repo" --comment "<reason>"`. A `funnel-escalated` item has an open or failed PR **by definition** (that is what the 5c tier escalated), so closing the issue alone strands a live PR with no owner, no tracking issue, and no path back to attention — an artifact whose failure mode is to sit open forever. If the PR is already merged or closed, skip that call and close the issue alone.
+- **Re-drive it** → `gh issue edit <n> -R "$repo" --remove-label funnel-escalated --remove-assignee <operator>`, returning it to the funnel's drive pool. ⚠ **Guard: offer this only once the stale PR is merged or closed.** Re-driving with a PR still open makes the next drive open a **duplicate PR** — precisely the hazard `/sweep` Step 1 drops these items to avoid. If the PR is open, say so and offer merge/close instead.
 - **Leave it** → no writes; it stays in the queue for next time.
 
 **Deferred / skipped items** (the operator passes on one) keep their labels and assignment untouched and re-enter the next run — same self-healing posture as `/sweep` Phase 1's unanswered arm.
@@ -301,6 +322,7 @@ Offer, per item:
 
 ```
 /triage --feedback — pending-feedback queue (repo <owner/repo>)
+- Searched as: @me (<login>)  [+ <FUNNEL_OPERATOR login> — print this second identity ONLY when it diverged, per 6.1]
 - Queue: Q open, assigned to you  (C needs-clarification, D decision, E funnel-escalated)
 - Clarifications answered: A  (#s → label + assignee cleared, released to drive)
 - Decisions answered: B  (#s → chosen: <label>; `decision` label retained for the drain to apply)
@@ -324,4 +346,8 @@ Offer, per item:
 - **Pending-feedback queue search fails (Step 6.1).** Report it in one line and stop the step — never half-walk a queue you couldn't fully read (a partial queue silently under-reports what is pending on the operator, the same class of masking failure the Step-1 `board_active_milestones` exit-code branch guards against). The sweep half (Steps 1–5) has already completed and stands; only Step 6 stops.
 - **Answer comment fails to post (Step 6.3).** Do **not** apply the label/assignee change — leave the issue flagged and assigned so it re-enters the next run. The comment is the durable record; the markers are recoverable state. Never invert this order (foundation #684).
 - **`decision` offered options unparseable (Step 6.3b).** Fall back to free-text and **say so** — never guess a label into `chosen:`. A guessed label that isn't in the offered set is a parse-miss at drain time, which re-assigns the operator and spins the item; an honest free-text reply at least reaches a human. Closed-enum-or-escalate, exactly as `claude/decision-queue-contract.md` § 3 requires of the driver.
+- **`decision` offers more than 4 options (Step 6.3b).** `AskUserQuestion` renders 2–4, so a one-to-one mapping is impossible — do **not** silently drop the tail (that would present a *partial* enum as if it were the whole one, and the dropped options become unpickable without any error). Print the full offered set as text and ask over a bounded slice plus an "I'll name another" escape, then round-trip the answer as below.
+- **`chosen:` fails the verbatim round-trip (Step 6.3b).** The label about to be posted does not appear byte-for-byte in the question comment's offered set — re-ask rather than posting it. The drain parses the *original* comment, so a near-miss (stray backtick, trailing space, case drift) reads as a parse-miss there and spins the item while looking answered here.
+- **Operator identity diverges from `@me` (Step 6.1).** `$FUNNEL_OPERATOR` and the `gh`-authenticated login can be configured apart, and the two producers assign differently (Step 4.4 → `@me`; the funnel → `$FUNNEL_OPERATOR`). Search the union and name the identities searched. A `@me`-only search on a divergent host prints "no pending feedback" over a real queue — a wrong answer with no error, the same silent-under-report class as a masked intake failure.
+- **`funnel-escalated` closed without its PR (Step 6.3c).** Closing the issue alone strands the open/failed PR the escalation exists because of. Close the PR in the same disposition, or state explicitly that it is being left for manual cleanup — never leave it unmentioned.
 - **`funnel-escalated` re-drive with an open PR (Step 6.3c).** Refuse it and offer merge/close instead — re-driving an item whose PR is still open makes the next drive open a **duplicate PR** (foundation #697 / the `/sweep` Step 1 duplicate-PR guard).

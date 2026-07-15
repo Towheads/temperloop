@@ -111,8 +111,13 @@ finishes the job and releases the item outright; a typed design choice must
 still be translated into an artifact by the automation that owns it, so the
 step records the choice, hands the item back, and deliberately leaves that
 work to its owner. For typed choices the offered options are read off the
-original question and presented **as** the available answers, so a reply
-that the consuming automation cannot parse is impossible to produce.
+original question and presented **as** the available answers, and the
+selected label is checked back against the original text before anything is
+posted — so the reply the consuming automation eventually parses can only be
+one that automation already offered. That check is what makes the guarantee
+real rather than merely likely: the prompt and the parser read different
+copies of the question, and only a round-trip against the original closes
+the gap between them.
 
 The step is off by default and never fires unmentioned: when it is not
 requested and the pending set is non-empty, the run's summary still closes
