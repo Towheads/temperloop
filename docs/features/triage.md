@@ -124,6 +124,18 @@ requested and the pending set is non-empty, the run's summary still closes
 with a one-line count of what is waiting, on the principle that a queue the
 operator has to remember to go look at is a queue that silently grows.
 
+It can also be run **on its own**, skipping the Backlog sweep entirely, for
+the common case where the operator only wants to clear their queue and has
+no reason to re-judge the Backlog. That variant is not just a convenience:
+the queue walk needs nothing from the board itself — it is an issue search
+plus, at most, a per-item parent lookup — so running it alone skips the
+whole-board read the sweep opens with, turning the run's board cost from one
+full board page into nothing at all. It deliberately emits no run telemetry,
+because the metrics that record a triage run describe the sweep (candidates
+taken in, survivors promoted, items held back), and reporting those as zeroes
+would claim the sweep ran and found nothing — the exact state those metrics
+exist to distinguish from not having run.
+
 ## Integration
 
 `/triage` is the entry point of a four-stage pipeline: candidates culled
