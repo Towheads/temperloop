@@ -14,6 +14,24 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/tidy` Step 5 deletes per stub, not per batch — `Sessions/_inbox` can
+  actually drain.** The archiver folds a whole run into one commit/PR (#487) and
+  reports one durability verdict for the batch; Step 5 deleted stubs only on
+  `archive-committed`. So any batch holding a genuinely-new stub returned
+  `archive-pr-queued` and **every** stub in it was retained, including ones merged
+  to `origin` days earlier. Every batch on an active machine holds something new,
+  so "retain" was the permanent verdict: 109 of 123 stubs stranded over 11 days,
+  behind two archive PRs that had **both already merged**. Step 5 now consumes the
+  archiver's per-stub `archive-stub-durable:` / `archive-stub-pending:` lines and
+  deletes the durable ones whatever the batch verdict says — falling back to the
+  batch line when a build emits no per-stub lines, so an overlay on an older
+  archiver keeps its current behaviour and needs no migration. The spec's "the flow
+  self-heals across runs" claim is **removed**, not reworded: self-healing needs a
+  batch containing nothing new, which never arrives. (#372; the archiver half and the
+  measurements live in the foundation overlay's #1161.)
+
 ## [0.12.1] - 2026-07-15
 
 ### Fixed
