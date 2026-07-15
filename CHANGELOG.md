@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-15
+
 ### Fixed
 
 - **The composed gate set is now overlay-safe.** Vendoring v0.12.0 into a
