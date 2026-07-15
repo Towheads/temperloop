@@ -65,13 +65,24 @@ record per `/sweep` or `/triage` command run — these commands have no
 plan-note footer of their own (unlike `/build`), so this is their only
 telemetry signal.
 
+`/triage --feedback-only` (temperloop#369) is a **distinct run shape** rather
+than a sweep, and carries its own `command` value: it walks the operator's
+pending-feedback queue and never runs the Backlog sweep, so the counters
+below describe the *queue walk* (items = queue size, merged = answered or
+disposed, parked = deferred). It gets a separate value precisely so a reader
+cannot mistake it for a sweep — recording it as `"triage"` would assert that
+a sweep ran and considered N candidates, which is exactly what a `--feedback-only`
+run did not do. A `/triage --feedback` run (sweep **plus** queue walk) still
+emits one `"triage"` record for its sweep; giving its queue walk counters of
+its own is a follow-on, not covered here.
+
 Record shape: `{ts, session_id, command, board, items_processed, merged, parked, epic?}`
 
 | field | type | notes |
 |---|---|---|
 | `ts` | string | ISO-8601 UTC, `Z` suffix |
 | `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — the join key other raw/ streams key on; `null` for a non-Claude-Code/manual run |
-| `command` | string | `"sweep"` \| `"triage"`, verbatim from `--command` |
+| `command` | string | `"sweep"` \| `"triage"` \| `"triage-feedback"`, verbatim from `--command`. `"triage-feedback"` is a `/triage --feedback-only` run (queue walk, no sweep — see above); purely additive, no `schema_version` bump, but note a reader filtering on `command == "triage"` will **not** see these runs, which is intended |
 | `board` | number \| string \| null | the logical board number (`--board`), or `null` if omitted |
 | `items_processed` | integer | how many items the run drove/considered |
 | `merged` | integer | how many reached a successful terminal outcome |
