@@ -155,4 +155,26 @@ export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-4"
   || fail "board_backend 7 (repo overridden, backend not) should still resolve 'issues' from the built-in map, got: $(board_backend 7)"
 echo "PASS: a boards.conf entry overrides board 7's repo exactly like any other board; backend still falls back to the built-in kernel default"
 
+# --- 8: board_registered_boards() — single source of truth for probes ------
+# The accessor every command-spec repo->board reverse-lookup probe iterates
+# (temperloop#352), replacing the hardcoded `3 4 5 6` literal. Conf-absent it is
+# exactly the built-in set INCLUDING board 7 (the exact #352 gap); a boards.conf
+# that registers a NEW board number unions it in, so a probe picks up an
+# onboarded board with no command-spec edit (drift-proof).
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-8"
+export BOARDS_CONF_REPO_LOCAL="$WORK/no-such-repo-local-conf-8"
+[ "$(board_registered_boards | tr '\n' ' ')" = "3 4 5 6 7 " ] \
+  || fail "board_registered_boards (conf-absent) should be the built-in set '3 4 5 6 7', got: $(board_registered_boards | tr '\n' ' ')"
+board_registered_boards | grep -qx 7 \
+  || fail "board_registered_boards must include board 7 (temperloop#352: probes dropped it)"
+
+cat > "$WORK/board8.conf" <<'EOF'
+board.8.repo=Acme/eighth
+EOF
+export BOARDS_CONF_REPO_LOCAL="$WORK/board8.conf"
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-8b"
+[ "$(board_registered_boards | tr '\n' ' ')" = "3 4 5 6 7 8 " ] \
+  || fail "board_registered_boards should union a conf-registered board 8, got: $(board_registered_boards | tr '\n' ' ')"
+echo "PASS: board_registered_boards is the built-in set (incl. board 7) unioned with conf-registered boards (temperloop#352)"
+
 echo "ALL PASS: test_boards_conf.sh"

@@ -118,6 +118,26 @@ board_repo() {
   esac
 }
 
+# The registered logical board numbers — the SINGLE SOURCE OF TRUTH every
+# caller's repo->board reverse-lookup probe iterates, instead of a hardcoded
+# `3 4 5 6` literal duplicated across command specs that silently drifts each
+# time a board is onboarded. That drift was temperloop#352: board 7 was added to
+# board_repo()'s case map above but /build, /assess, /sweep still looped
+# `3 4 5 6`, so the probe never matched the temperloop repo and board integration
+# resolved OFF on the kernel's own tracker. Emits the built-in set (the twin of
+# board_repo()'s case map — onboarding a board is one line there plus one number
+# here) UNION any board numbers a discovered boards.conf defines, one per line,
+# ascending. Iterate it as `for b in $(board_registered_boards)`.
+board_registered_boards() {
+  local file
+  {
+    printf '%s\n' 3 4 5 6 7
+    if file="$(_board_conf_file)"; then
+      grep -oE '^board\.[0-9]+\.' "$file" 2>/dev/null | grep -oE '[0-9]+' || true
+    fi
+  } | sort -nu
+}
+
 # board number -> the GitHub login that owns the board's Projects-v2 PROJECT (for
 # `gh project … --owner`). This is the seam where a board migrated to a different
 # owner expresses it: boards 3/4/5 were all migrated into this repo's own org (#330)
