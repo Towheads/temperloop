@@ -69,9 +69,27 @@ REAL_HOME_BEFORE="$HOME"
 # assertion is "unchanged", never "absent" — same before/after form as
 # workflows/scripts/tests/lib/tests/test_sandbox.sh's own test 5.
 snapshot_path() {
+  # snapshot_path PATH — "absent" if it doesn't exist, else "present:<n>"
+  # where <n> is a portable file-count fingerprint (no stat flags, works on
+  # both BSD/macOS and GNU find).
+  #
+  # The basic-memory knowledge store (F#946) lives under
+  # ~/.local/state/foundation/{basic-memory-home,bm-*} and is LIVE, concurrently
+  # written runtime state — churned on-demand by ks_search / the
+  # CLAUDE.kernel.md § Phase-1 parity `bm` leg from any other session or hook,
+  # with hundreds of files created inside a single test window. It is NOT the
+  # bootstrap residue this guard looks for, so counting it makes test 5 flake on
+  # unrelated concurrent bm activity (temperloop#382, completing #377's fix in
+  # the sibling test_sandbox.sh — this file's snapshot_path was missed there).
+  # Prune the bm subtrees:
+  #   - by directory NAME — the bm dirs only ever appear under
+  #     .local/state/foundation, so a global name-prune cannot hide bootstrap
+  #     residue leaked into any other REAL_CANDIDATE path;
+  #   - via -prune, so the 400k+-file store is never descended (fast, and the
+  #     count stays a leak-detector, not a store-size measurement).
   local p="$1"
   if [ -e "$p" ]; then
-    printf 'present:%s' "$(find "$p" 2>/dev/null | wc -l | tr -d ' ')"
+    printf 'present:%s' "$(find "$p" \( -name basic-memory-home -o -name 'bm-*' \) -prune -o -print 2>/dev/null | wc -l | tr -d ' ')"
   else
     printf 'absent'
   fi
