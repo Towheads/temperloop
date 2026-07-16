@@ -27,8 +27,11 @@ assert_eq() {
 }
 
 # Seed a root with a findings stream: recent accepted feedback×2 + pattern×1,
-# a recent NON-accepted feedback (excluded), and an OLD accepted mistake (100d,
-# outside the 14d window). Timestamps are computed relative to now by python.
+# a recent NON-accepted feedback (excluded), an OLD accepted mistake (100d,
+# outside the 14d window), and a recent accepted record with a NAIVE (no-tz)
+# timestamp — the real-lake shape from #341 that used to crash the offset-aware
+# `cutoff` compare; it must be normalized to UTC and counted, not fatal.
+# Timestamps are computed relative to now by python.
 ROOT="$(mktemp -d)"
 mkdir -p "$ROOT/meta/data/raw"
 python3 - "$ROOT" <<'PY'
@@ -38,12 +41,15 @@ root = sys.argv[1]
 now = datetime.now(timezone.utc)
 recent = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
 old = (now - timedelta(days=100)).isoformat().replace("+00:00", "Z")
+# Naive (offset-naive) timestamp: drop the tzinfo so isoformat carries no suffix.
+recent_naive = (now - timedelta(days=2)).replace(tzinfo=None).isoformat()
 rows = [
-    {"accepted": True,  "ts": recent, "finding_type": "feedback"},
-    {"accepted": True,  "ts": recent, "finding_type": "feedback"},
-    {"accepted": True,  "ts": recent, "finding_type": "pattern"},
-    {"accepted": False, "ts": recent, "finding_type": "feedback"},   # non-accepted → excluded
-    {"accepted": True,  "ts": old,    "finding_type": "mistake"},    # out of 14d window
+    {"accepted": True,  "ts": recent,       "finding_type": "feedback"},
+    {"accepted": True,  "ts": recent,       "finding_type": "feedback"},
+    {"accepted": True,  "ts": recent,       "finding_type": "pattern"},
+    {"accepted": True,  "ts": recent_naive, "finding_type": "feedback"},  # naive ts → normalized to UTC, counted
+    {"accepted": False, "ts": recent,       "finding_type": "feedback"},   # non-accepted → excluded
+    {"accepted": True,  "ts": old,          "finding_type": "mistake"},    # out of 14d window
 ]
 with open(os.path.join(root, "meta/data/raw/findings-test.jsonl"), "w") as f:
     for r in rows:
@@ -54,11 +60,11 @@ PY
 echo "--- test 1: default 14d window ---"
 out="$(python3 "$SCRIPT" "$ROOT" 2>/dev/null)"; rc=$?
 if [ "$rc" -eq 0 ]; then ok "exit 0"; else fail_test "exit" "got $rc"; fi
-assert_eq "$out" "$(printf 'feedback\t2\npattern\t1')" "counts recent accepted, excludes non-accepted + old + malformed"
+assert_eq "$out" "$(printf 'feedback\t3\npattern\t1')" "counts recent accepted (incl. naive-tz), excludes non-accepted + old + malformed"
 
 echo "--- test 2: --days 365 includes the old mistake ---"
 out2="$(python3 "$SCRIPT" "$ROOT" --days 365 2>/dev/null)"
-assert_eq "$out2" "$(printf 'feedback\t2\nmistake\t1\npattern\t1')" "widened window includes old record"
+assert_eq "$out2" "$(printf 'feedback\t3\nmistake\t1\npattern\t1')" "widened window includes old record"
 
 echo "--- test 3: empty findings dir → empty, exit 0 ---"
 EMPTY="$(mktemp -d)"; mkdir -p "$EMPTY/meta/data/raw"

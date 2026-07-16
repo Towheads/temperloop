@@ -41,6 +41,11 @@ def tally(root, days):
                     t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 except (ValueError, AttributeError):
                     continue
+                # A real record's `ts` may parse offset-naive (no tz suffix);
+                # `cutoff` is offset-aware, and comparing the two raises
+                # TypeError. Assume UTC for a naive ts before the compare.
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
                 if t < cutoff:
                     continue
                 ft = r.get("finding_type", "")
