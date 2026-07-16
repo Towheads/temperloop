@@ -317,11 +317,13 @@ cmd_risk() {
 }
 
 # --- queue: 4b — --auto merge queue ------------------------------------------
-# Queue the canonical incantation. --strict main → `--auto --merge
-# --delete-branch` (the merge lands only once required checks pass + branch is
-# current). --non-strict → `--merge --delete-branch --auto` queues equivalently
-# (auto-merge still requires consent + green checks to fire). This is NOT a
-# merge: --auto enqueues; it cannot bypass branch protection or a missing check.
+# Queue the canonical incantation. --strict main → `--auto --merge` (the merge
+# lands only once required checks pass + branch is current). --non-strict →
+# `--merge --auto` queues equivalently (auto-merge still requires consent +
+# green checks to fire). This is NOT a merge: --auto enqueues; it cannot bypass
+# branch protection or a missing check. No --delete-branch flag: the merge
+# queue rejects it and owns head-branch deletion itself (via the repo's
+# delete_branch_on_merge setting), per the Branch & PR policy.
 cmd_queue() {
   local owner_repo="$1" pr="$2" strict="" out
   validate_owner_repo "$owner_repo"
@@ -337,8 +339,9 @@ cmd_queue() {
   done
   # Both strict and non-strict use --auto (queue, not merge-now). The strict
   # flag is recorded in the outcome for the orchestrator's audit trail; the
-  # incantation is the same canonical `--auto --merge --delete-branch`.
-  if ! out="$(_gate_gh pr merge "$pr" -R "$owner_repo" --auto --merge --delete-branch 2>&1)"; then
+  # incantation is the same canonical `--auto --merge` (no --delete-branch —
+  # the merge queue rejects it and deletes the head branch itself).
+  if ! out="$(_gate_gh pr merge "$pr" -R "$owner_repo" --auto --merge 2>&1)"; then
     die "gh pr merge --auto failed for #$pr: $out"
   fi
   jq -cn --argjson pr "$pr" --argjson strict "$([ -n "$strict" ] && echo true || echo false)" \
@@ -476,8 +479,8 @@ _gate_ci_poll() {
 # --non-strict skips update-branch + the re-poll ENTIRELY (preserves a
 # non-strict repo's immediate-merge cost profile) and merges directly.
 #
-# Either path's merge is the same `gh pr merge --merge --delete-branch` — NOT
-# --auto (unlike cmd_queue): managed-merge has already established
+# Either path's merge is the same `gh pr merge --merge` — NOT --auto (unlike
+# cmd_queue): managed-merge has already established
 # mergeability itself (strict: via the re-poll; non-strict: by definition), so
 # it merges now rather than queuing. A merge the platform itself rejects (e.g.
 # branch protection, or a queue-armed repo refusing a direct merge) surfaces
@@ -538,7 +541,7 @@ cmd_managed_merge() {
     esac
   fi
 
-  if ! out="$(_gate_gh pr merge "$pr" -R "$owner_repo" --merge --delete-branch 2>&1)"; then
+  if ! out="$(_gate_gh pr merge "$pr" -R "$owner_repo" --merge 2>&1)"; then
     jq -cn --argjson pr "$pr" --arg error "$out" '{outcome:"MERGE_REJECTED", pr:$pr, error:$error}'
     return 6
   fi

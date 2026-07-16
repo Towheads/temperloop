@@ -219,9 +219,11 @@ rc=0; out="$( (cmd_risk Towheads/foundation 10) 3>&1 2>/dev/null)" || rc=$?
 echo "PASS: risk → closed ERROR-outcome JSON (never empty-stdout death) when the files lookup fails"
 
 # --- queue: canonical --auto incantation → QUEUED ---------------------------
-# Assert gate.sh queues via --auto --merge --delete-branch (never a bare
-# merge-now), and records the strict flag. The seam logs the argv so we can
-# prove the incantation; it never performs a real merge.
+# Assert gate.sh queues via --auto --merge (never a bare merge-now), and records
+# the strict flag. The merge queue rejects --delete-branch and deletes the head
+# branch itself, so the incantation must NOT carry it (Branch & PR policy). The
+# seam logs the argv so we can prove the incantation; it never performs a real
+# merge.
 _gate_gh() { echo "$*" > "$TMP/merge_argv"; return 0; }
 out="$(cmd_queue Towheads/foundation 42 --strict)"
 [ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "queue outcome (got: $out)"
@@ -229,8 +231,8 @@ out="$(cmd_queue Towheads/foundation 42 --strict)"
 argv="$(<"$TMP/merge_argv")"
 grep -q -- '--auto' <<<"$argv" || fail "queue did not use --auto (argv: $argv)"
 grep -q -- '--merge' <<<"$argv" || fail "queue did not use --merge (argv: $argv)"
-grep -q -- '--delete-branch' <<<"$argv" || fail "queue did not use --delete-branch"
-echo "PASS: queue → QUEUED via the canonical --auto --merge --delete-branch (no bare merge)"
+grep -q -- '--delete-branch' <<<"$argv" && fail "queue must NOT pass --delete-branch (the merge queue rejects it; argv: $argv)"
+echo "PASS: queue → QUEUED via the canonical --auto --merge (no --delete-branch, no bare merge)"
 
 # --- nudge: BEHIND → NUDGED (update-branch invoked) -------------------------
 rm -f "$TMP/nudge_called"
