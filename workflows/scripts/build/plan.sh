@@ -114,7 +114,8 @@ PLAN_API_KEY_FILE="${PLAN_API_KEY_FILE:-${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:
 #   2. The vault root RESOLVED from the plan note's own absolute on-disk path:
 #      the parent of its `/Plans/` segment. This is what makes writeback work in
 #      a checkout whose vault differs from the KNOWLEDGE_STORE_ROOT default
-#      (e.g. a temperloop kernel checkout writing ~/dev/mind/Plans/…): the plan
+#      (e.g. a temperloop kernel checkout whose vault lives under a non-default
+#      knowledge-store root, writing that vault's own /Plans/…): the plan
 #      file's location is the ground truth for which vault it belongs to.
 # A resolved candidate must actually EXIST on disk to be used — a nonexistent
 # path is treated as "no REST config here", not a hard error.
