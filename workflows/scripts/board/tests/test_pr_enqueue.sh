@@ -7,7 +7,9 @@
 #   1. a mismatched-casing/host origin is CANONICALIZED and set as the gh default
 #      before the PR is created;
 #   2. the enqueue is a BARE `gh pr merge <n>` — never --merge/--squash/--rebase;
-#   3. the queued state is CONFIRMED (and a confirm miss fails non-zero).
+#   3. the queued state is CONFIRMED (and a confirm miss fails non-zero) — via
+#      autoMergeRequest/mergeQueueEntry, NOT the gh-rejected isInMergeQueue
+#      field (temperloop #357): a PR armed by auto-merge alone still confirms.
 #
 # Org/repo names here are deliberately GENERIC placeholders (Acme/widget) — the
 # helper is repo-agnostic, so the fixtures carry no real org identity (kept out
@@ -29,12 +31,24 @@ cat >"$FAKE_GH" <<'EOF'
 #!/usr/bin/env bash
 # Fake gh. Env: GH_LOG (argv transcript), GH_FULLNAME (canonical .full_name),
 # GH_PR_URL (created PR url), GH_QUEUED (true|false), GH_MERGED (true|false),
+# GH_ARM (queue|auto|none — how the confirm graphql reports the arm; default:
+# queue when GH_QUEUED=true, none when GH_QUEUED=false — back-compat),
 # GH_CREATE_EXIT (0|nonzero), GH_CREATE_OUT (override create output).
 printf 'gh ' >>"$GH_LOG"; printf '%q ' "$@" >>"$GH_LOG"; printf '\n' >>"$GH_LOG"
 sub="${1:-}"; sub2="${2:-}"
 if [ "$sub" = "api" ] && [ "$sub2" = "graphql" ]; then
-  printf '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":%s,"isInMergeQueue":%s,"mergeQueueEntry":{"state":"QUEUED","position":1}}}}}\n' \
-    "${GH_MERGED:-false}" "${GH_QUEUED:-true}"
+  # Guard against querying isInMergeQueue — the field temperloop #357 removed
+  # because some gh versions reject it and fail the whole document.
+  case " $* " in *isInMergeQueue*) echo '{"errors":[{"message":"Unknown field isInMergeQueue"}]}'; exit 0 ;; esac
+  arm="${GH_ARM:-}"
+  [ -n "$arm" ] || { [ "${GH_QUEUED:-true}" = "true" ] && arm=queue || arm=none; }
+  case "$arm" in
+    queue) ame='null'; mqe='{"state":"QUEUED","position":1}' ;;
+    auto)  ame='{"enabledAt":"2026-07-16T00:00:00Z"}'; mqe='null' ;;
+    *)     ame='null'; mqe='null' ;;
+  esac
+  printf '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":%s,"autoMergeRequest":%s,"mergeQueueEntry":%s}}}}\n' \
+    "${GH_MERGED:-false}" "$ame" "$mqe"
   exit 0
 fi
 if [ "$sub" = "api" ]; then
@@ -68,7 +82,7 @@ run() {  # <repo-dir> ; extra env via caller; args after
   local repo="$1"; shift
   ( cd "$repo" \
     && PR_ENQUEUE_GH="$FAKE_GH" PR_ENQUEUE_CONFIRM_INTERVAL=0 PR_ENQUEUE_CONFIRM_RETRIES=2 \
-       GH_LOG="$GH_LOG" GH_FULLNAME="$GH_FULLNAME" GH_QUEUED="${GH_QUEUED:-true}" GH_MERGED="${GH_MERGED:-false}" \
+       GH_LOG="$GH_LOG" GH_FULLNAME="$GH_FULLNAME" GH_QUEUED="${GH_QUEUED:-true}" GH_MERGED="${GH_MERGED:-false}" GH_ARM="${GH_ARM:-}" \
        GH_CREATE_EXIT="${GH_CREATE_EXIT:-0}" GH_CREATE_OUT="${GH_CREATE_OUT:-}" GH_MERGE_EXIT="${GH_MERGE_EXIT:-0}" \
        GH_PR_URL="${GH_PR_URL:-https://github.com/Acme/widget/pull/42}" \
        bash "$SCRIPT" "$@" )
@@ -151,6 +165,32 @@ grep -q 'adopted existing PR #99' <<<"$out" || fail "5: did not adopt existing P
 grep -qE '^gh pr merge 99 ' "$GH_LOG" || fail "5: did not enqueue adopted PR #99"
 unset GH_CREATE_EXIT GH_CREATE_OUT
 pass "5: existing PR adopted and enqueued"
+
+# =============================================================================
+# Case 6 (temperloop #357 regression): a PR armed via AUTO-MERGE only — no
+#   merge-queue entry — is still confirmed (autoMergeRequest.enabledAt set).
+#   Before the fix the confirm keyed on isInMergeQueue/mergeQueueEntry only and
+#   false-errored "could NOT be confirmed" for an armed PR. The fake-gh also
+#   errors if the confirm query still requests isInMergeQueue, so a regression
+#   to the old field is caught here too.
+# =============================================================================
+GH_LOG="$TMP/log6"; : >"$GH_LOG"
+GH_FULLNAME="Acme/widget"; GH_MERGED=false; GH_ARM=auto
+REPO="$(make_repo "https://github.com/Acme/widget.git")"
+out="$(run "$REPO" --title "T" --body "b")" || fail "6: exit non-zero for auto-merge-armed PR: $out"
+grep -q 'armed to auto-merge' <<<"$out" \
+  || fail "6: auto-merge-armed PR not confirmed as armed: $out"
+# The confirm graphql must NOT request the gh-rejected isInMergeQueue field.
+if grep -qE '^gh api graphql .*isInMergeQueue' "$GH_LOG"; then
+  fail "6: confirm query still requests isInMergeQueue (gh-rejected field)"
+fi
+# --json variant of the same arm reports outcome ARMED with auto_merge:true.
+GH_LOG="$TMP/log6b"; : >"$GH_LOG"
+out="$(run "$REPO" --title "T" --body "b" --json)" || fail "6b: exit non-zero: $out"
+jq -e '.outcome=="ARMED" and .auto_merge==true and .queue_state==""' >/dev/null <<<"$out" \
+  || fail "6b: json record wrong for auto-merge arm: $out"
+unset GH_ARM
+pass "6: auto-merge-armed PR confirmed (no isInMergeQueue query); --json outcome ARMED"
 
 echo
 echo "PASS: all pr-enqueue tests passed"

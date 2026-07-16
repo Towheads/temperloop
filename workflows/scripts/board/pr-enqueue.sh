@@ -23,9 +23,16 @@
 #       queue"), while a BARE `gh pr merge` silently enqueues with no output,
 #       leaving it unclear whether it worked. This helper enqueues with the
 #       bare form (the queue owns the strategy — NO method-flag guesswork) and
-#       then CONFIRMS the PR is in the queue (or already merged) via the
-#       `isInMergeQueue` / `mergeQueueEntry` GraphQL fields, exiting non-zero
-#       with a clear message if the enqueue cannot be confirmed.
+#       then CONFIRMS the enqueue took (or the PR already merged) via the
+#       `autoMergeRequest.enabledAt` and `mergeQueueEntry` GraphQL fields,
+#       exiting non-zero with a clear message if the enqueue cannot be
+#       confirmed. It deliberately does NOT query `isInMergeQueue`: some
+#       installed gh versions reject that field ("Unknown JSON field:
+#       isInMergeQueue"), which turned a successfully-armed PR into a false
+#       "could not be confirmed" error (temperloop #357, seen on PRs #355/#356).
+#       A bare `gh pr merge` arms the PR — via a merge-queue entry on a
+#       queue-required main, or via auto-merge otherwise — and BOTH arm signals
+#       are checked, so either mechanism confirms.
 #
 # Usage:
 #   pr-enqueue [--title <t>] [--body <b>] [--base <branch>] [--head <branch>]
@@ -188,19 +195,26 @@ else
   fi
 fi
 
-# --- confirm the queued (or already-merged) state -----------------------------
+# --- confirm the queued/armed (or already-merged) state -----------------------
 # The $owner/$name/$number tokens are GraphQL variables, not shell expansions.
+# We confirm via `autoMergeRequest.enabledAt` (set when a bare `gh pr merge`
+# arms auto-merge — the temperloop #357 case) AND `mergeQueueEntry` (set when
+# the same command enqueues on a queue-required main). We deliberately do NOT
+# request `isInMergeQueue`: some installed gh versions reject that field, and a
+# single unknown field fails the WHOLE GraphQL document — turning a
+# successfully-armed PR into a false "could not be confirmed" error.
 # shellcheck disable=SC2016
 CONFIRM_QUERY='query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      state merged isInMergeQueue
+      state merged
+      autoMergeRequest{ enabledAt }
       mergeQueueEntry{ state position }
     }
   }
 }'
 
-confirmed="" pr_state="" q_state="" q_position="" merged=""
+confirmed="" pr_state="" q_state="" q_position="" merged="" auto_enabled=""
 i=0
 while [ "$i" -lt "$CONFIRM_RETRIES" ]; do
   i=$((i + 1))
@@ -210,10 +224,12 @@ while [ "$i" -lt "$CONFIRM_RETRIES" ]; do
   if [ -n "$cj" ]; then
     pr_state="$(jq -r '.data.repository.pullRequest.state // ""' <<<"$cj" 2>/dev/null || echo "")"
     merged="$(jq -r '.data.repository.pullRequest.merged // false' <<<"$cj" 2>/dev/null || echo false)"
-    inqueue="$(jq -r '.data.repository.pullRequest.isInMergeQueue // false' <<<"$cj" 2>/dev/null || echo false)"
+    auto_enabled="$(jq -r '.data.repository.pullRequest.autoMergeRequest.enabledAt // ""' <<<"$cj" 2>/dev/null || echo "")"
     q_state="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.state // ""' <<<"$cj" 2>/dev/null || echo "")"
     q_position="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.position // ""' <<<"$cj" 2>/dev/null || echo "")"
-    if [ "$merged" = "true" ] || [ "$inqueue" = "true" ]; then
+    # Armed iff already merged, OR auto-merge is enabled, OR there's a
+    # merge-queue entry (either arm mechanism a bare enqueue produces).
+    if [ "$merged" = "true" ] || [ -n "$auto_enabled" ] || [ -n "$q_state" ]; then
       confirmed=1
       break
     fi
@@ -235,16 +251,23 @@ if [ -n "$JSON" ]; then
     --argjson merged "${merged:-false}" \
     --arg queue_state "$q_state" \
     --arg position "$q_position" \
-    '{outcome:(if $merged then "MERGED" else "QUEUED" end),
+    --arg auto_merge "$auto_enabled" \
+    '{outcome:(if $merged then "MERGED"
+               elif $queue_state!="" then "QUEUED"
+               else "ARMED" end),
       repo:$repo, pr_number:$number, url:$url, pr_state:$state,
       merged:$merged, queue_state:$queue_state,
+      auto_merge:($auto_merge!=""),
       position:(if $position=="" then null else ($position|tonumber) end)}'
 else
   if [ "${merged:-false}" = "true" ]; then
     note "✓ PR #$pr_number already merged: $pr_url"
-  else
+  elif [ -n "$q_state" ]; then
     posn=""
     [ -n "$q_position" ] && posn=" (position $q_position)"
     note "✓ PR #$pr_number enqueued in the merge queue${posn}: $pr_url"
+  else
+    # Armed via auto-merge (no merge-queue entry — the non-queue-main path).
+    note "✓ PR #$pr_number armed to auto-merge: $pr_url"
   fi
 fi
