@@ -358,13 +358,45 @@ out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
 grep -qi 'unreachable' "$TMP/err" || fail "no fail-loud stderr message on unreachable REST (got: $(cat "$TMP/err"))"
 echo "PASS: unreachable REST → WRITE_FAILED + non-zero exit + stderr (never silent success)"
 
-# --- writeback: missing key-file also fails loud -----------------------------
+# --- writeback: no REST config → fail SOFT to a direct filesystem write (#342) -
+# When no Obsidian REST config is resolvable (nonexistent key file, and the plan
+# path is not under a vault that carries the plugin), the seam must NOT fail loud
+# — it persists the sentinel directly to the plan note's on-disk path (resume-
+# safety intact) and returns WRITTEN. This is the temperloop-kernel-checkout case
+# the old "fail loud on missing key file" behavior broke (WRITE_FAILED with a
+# hardcoded ~/.local/share/foundation/knowledge path). No curl shim on PATH here,
+# so a stray REST attempt would error visibly rather than silently succeed.
+cp "$TMP/valid.md" "$TMP/wb.md"
 rc=0
 out="$(PLAN_API_KEY_FILE="$TMP/nonexistent.json" \
   bash "$SCRIPT" writeback "$TMP/wb.md" --slug base --sentinel '[x]' 2>"$TMP/err2")" || rc=$?
-[ "$rc" -ne 0 ] || fail "missing key-file writeback did not exit non-zero"
-grep -qi 'key file missing' "$TMP/err2" || fail "no fail-loud stderr on missing key file (got: $(cat "$TMP/err2"))"
-echo "PASS: missing REST key-file → fail loud (non-zero + stderr)"
+[ "$rc" -eq 0 ] || fail "no-REST-config writeback did not fail soft (exit $rc, out: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "WRITTEN" ] || fail "no-REST-config writeback not WRITTEN via FS fallback (got: $out)"
+grep -qi 'filesystem fallback' "$TMP/err2" || fail "no filesystem-fallback notice on stderr (got: $(cat "$TMP/err2"))"
+# the sentinel flip must be persisted to the on-disk plan file itself
+grep -q '^- \[x\] \*\*Base change\*\* `slug: base`' "$TMP/wb.md" \
+  || fail "FS fallback did not flip the base sentinel to [x] on disk (got: $(grep 'slug: base' "$TMP/wb.md"))"
+echo "PASS: no REST config → filesystem-write fallback persists the sentinel (→ WRITTEN, never WRITE_FAILED) (#342)"
+
+# --- writeback: no REST config AND no writable on-disk path → WRITE_SKIPPED ----
+# The soft outcome the orchestrator can handle: nothing persisted, but zero exit
+# (not the hard WRITE_FAILED of a broken-but-configured endpoint). We force the
+# FS fallback itself to fail by making the plan file read-only. Skipped when the
+# suite runs as root (a 0444 file is still writable to root, so the fallback
+# would succeed and the branch is unreachable).
+if [ "$(id -u)" -ne 0 ]; then
+  cp "$TMP/valid.md" "$TMP/ro.md"
+  chmod 0444 "$TMP/ro.md"
+  rc=0
+  out="$(PLAN_API_KEY_FILE="$TMP/nonexistent.json" \
+    bash "$SCRIPT" writeback "$TMP/ro.md" --slug base --sentinel '[x]' 2>"$TMP/err3")" || rc=$?
+  chmod 0644 "$TMP/ro.md"
+  [ "$rc" -eq 0 ] || fail "WRITE_SKIPPED case exited non-zero (should be a soft, zero-exit skip; got rc=$rc)"
+  [ "$(jq -r .outcome <<<"$out")" = "WRITE_SKIPPED" ] || fail "read-only fallback not WRITE_SKIPPED (got: $out)"
+  echo "PASS: no REST config + unwritable plan path → WRITE_SKIPPED (soft, zero exit) (#342)"
+else
+  echo "SKIP: WRITE_SKIPPED read-only test (running as root)"
+fi
 
 # --- error: bad args → structured ERROR + non-zero ----------------------------
 rc=0; out="$(bash "$SCRIPT" validate "$TMP/nonexistent.md" 2>/dev/null)" || rc=$?
