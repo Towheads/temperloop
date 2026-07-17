@@ -84,7 +84,7 @@ guard-install-worktree:
 test-board:
 	@echo "==> Running board toolkit tests..."
 	@for t in $(BOARD_SRC)/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 test-board-dual-adapter:
@@ -94,7 +94,7 @@ test-board-dual-adapter:
 test-build:
 	@echo "==> Running build toolkit tests..."
 	@for t in $(BUILD_SRC)/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 test-build-workflow:
@@ -106,7 +106,7 @@ test-build-workflow:
 test-conventions-probe:
 	@echo "==> Running conventions-probe tests..."
 	@for t in $(PROBE_SRC)/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 # Glob-based, mirroring test-board (F#836) — kernel coverage tracks
@@ -114,7 +114,7 @@ test-conventions-probe:
 test-demo:
 	@echo "==> Running demo-repo seed script tests..."
 	@for t in $(DEMO_SRC)/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 # Glob-based, mirroring test-board (F#836) — kernel coverage tracks whatever
@@ -122,7 +122,7 @@ test-demo:
 test-proposal-pr:
 	@echo "==> Running proposal-PR generator tests..."
 	@for t in $(PROPOSAL_SRC)/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 # Glob-based, same rationale as test-board/test-conventions-probe above
@@ -131,13 +131,13 @@ test-proposal-pr:
 test-try:
 	@echo "==> Running foundation try tests..."
 	@for t in $(BIN_SRC)/subcommands/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 test-hooks:
 	@echo "==> Running hook tests..."
 	@for t in $(HOOKS_SRC)/tests/test_*.sh; do \
-		bash "$$t" >/dev/null 2>&1 && echo "  [ok] $$(basename $$t)" || { echo "  [FAIL] $$(basename $$t)"; exit 1; }; \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
 shellcheck:

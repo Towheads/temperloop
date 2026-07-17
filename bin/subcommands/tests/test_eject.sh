@@ -44,6 +44,30 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/eject-test-XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
+# --- config-hermetic git env, no background gc/maintenance (temperloop#400) --
+# This suite was flaking intermittently on the macos-latest CI runner while
+# passing everywhere else and locally. The suspected cause is git's automatic
+# background `maintenance` / `gc --auto`, which git fires after commit/fetch/
+# push and which — under a loaded runner's I/O contention — can race the NEXT
+# fixture git command for the repo's index/ref locks. Pin an isolated global +
+# empty system config with auto-maintenance OFF so no git process runs in the
+# background, and so the fixtures depend on ZERO ambient config (identity still
+# comes from the GIT_*_NAME/EMAIL vars above). GIT_OPTIONAL_LOCKS=0 stops read
+# commands from taking optional locks / refreshing the index behind our back.
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_CONFIG_GLOBAL="$WORK/gitconfig"
+export GIT_OPTIONAL_LOCKS=0
+cat > "$GIT_CONFIG_GLOBAL" <<'GITCFG'
+[gc]
+	auto = 0
+[maintenance]
+	auto = false
+[fetch]
+	writeCommitGraph = false
+[init]
+	defaultBranch = main
+GITCFG
+
 # --- fixture: a BARE upstream (push-able) + a clone, origin/main real ------
 new_fixture_repo() {
   local name="$1"
