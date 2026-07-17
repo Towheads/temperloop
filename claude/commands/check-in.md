@@ -1,5 +1,5 @@
 ---
-description: Daily human check-in — review the overnight machine output and set direction. Render the telemetry brief (status readout), dispose the pipeline surfaces `/tidy` and the funnel parked overnight (pending-decisions, proposed-supersessions, retro-findings, candidate-tells, vault-hygiene, sensitivity-flags), then review/set the `/next` priorities for every project.
+description: Daily human check-in — review the overnight machine output and set direction. Render the telemetry brief (status readout), dispose the pipeline surfaces `/tidy` and the funnel parked overnight (pending-decisions, pending-activations, proposed-supersessions, retro-findings, candidate-tells, vault-hygiene, sensitivity-flags), then review/set the `/next` priorities for every project.
 ---
 
 You are running the **check-in** command — the daily human driver's-seat review. Overnight, unattended machinery (`/tidy`, the funnel cron, `/build --unattended`, `/retro`) did work and **parked everything needing human judgment** on durable surfaces. `/check-in` is where a person clears those queues and sets direction. Three parts: **① a status readout** (telemetry brief), **② dispose the overnight queues**, **③ review/set the `/next` priorities per project**. Be concise.
@@ -35,6 +35,40 @@ For each `### … - **Status:** open` entry, present it in one compact list: the
 - **overrides** it → patch the `Status` line to `resolved — overridden: <action>` and carry out (or queue as a Things task) the override action they named.
 
 If there are no `open` entries, say "no pending decisions" in one line and move on. This is what stops an unattended run's defaulted decision from silently standing.
+
+### Pending-activations ledger
+
+Read the **pending-activations ledger** — `Pipeline/pending activations.md`, falling back to the legacy `Context/pipeline - pending activations.md` (path fallback convention above) — via `mcp__obsidian-builtin__vault_read`. This is the cross-run home for an **activation obligation that cannot discharge at merge**. Per the activation-completeness contract (`[[Decisions/temperloop - Activation-completeness contract]]`), "done" splits into `merged` (code landed + CI green) and `activated` (the built thing is provably live), and only its two non-synchronous activation classes ever ledger here — a **class-B** obligation (propagation-gated / cross-repo: a kernel feature is live for a given consumer only once that consumer's installed kernel tag reaches the shipping tag) or a **class-C** obligation (time-deferred / soak: a LaunchAgent must actually fire on cadence, or a rollup needs a window to accumulate data, before liveness can be confirmed). A **class-A** obligation (synchronous, in-repo — flag, register, wire, render) discharges at merge and is never written here.
+
+Each record carries:
+- **class:** `B` or `C`
+- **proof:** the concrete check that counts as "activated" for this obligation — what to run/read, and what a passing result looks like
+- **locus:** where the proof is evaluated — the consumer checkout, machine, or agent the obligation is scoped to
+- **watermark:** (class B only) the shipping tag/commit the locus's installed kernel tag must reach or exceed
+- **soak-until:** (class C only) the date/time before which the proof cannot yet be evaluated — a poll before this date is a no-op, not a failure
+- **status:** `open` | `discharged`
+
+**Only `/check-in` (and `/tidy`'s env-hygiene probe) mutate a record's `status:`** — no other command, live rule, or drain step writes it; a record parks `open` until one of those two polls it and finds the proof satisfied.
+
+Worked example, class B:
+```
+### kernel-hook-live-in-foundation - **Status:** open
+- **class:** B
+- **proof:** foundation's installed kernel tag (composed `~/.claude/CLAUDE.md` provenance header) is >= the shipping tag
+- **locus:** foundation checkout (`make update-kernel && make install` run there)
+- **watermark:** v1.4.0
+```
+
+Worked example, class C:
+```
+### tidy-nightly-agent-first-fire - **Status:** open
+- **class:** C
+- **proof:** `launchctl list` shows the tidy-nightly LaunchAgent has fired at least once, per its declared cadence, since this record was opened
+- **locus:** foundation.cron checkout / launchd
+- **soak-until:** 2026-07-18T00:00
+```
+
+For each `open` entry whose class-appropriate gate has passed — a class-B record whose locus's installed tag is now >= `watermark`, or a class-C record whose `soak-until` has elapsed and whose proof check now passes — patch that entry's `Status` line to `discharged — <tag or timestamp observed>` with a direct `Edit`. An entry whose gate hasn't passed yet is left `open` and reported as still pending — never proactively re-checked before its watermark/soak-until, and never silently dropped. If there are no `open` entries, say "no pending activations" in one line and move on.
 
 ### Proposed-supersessions review
 
@@ -114,4 +148,4 @@ The durable priorities note per project — `Projects/<project>/Priorities.md`, 
 
 ## Close
 
-Briefly summarize: pending decisions disposed (confirmed/overridden), supersessions linked/dismissed, retro findings accepted/dismissed, candidate tells promoted/discarded, hygiene findings acted/dismissed, review-queue notes disposed (re-verified/promoted/consolidated/retired), sensitivity flags resolved, and which projects' priorities changed. One line each; then stop.
+Briefly summarize: pending decisions disposed (confirmed/overridden), pending activations discharged/still-pending, supersessions linked/dismissed, retro findings accepted/dismissed, candidate tells promoted/discarded, hygiene findings acted/dismissed, review-queue notes disposed (re-verified/promoted/consolidated/retired), sensitivity flags resolved, and which projects' priorities changed. One line each; then stop.
