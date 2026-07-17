@@ -12,12 +12,14 @@
 #   plan.sh writeback <planFile> --slug <slug> --sentinel <state> \
 #         [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]
 #
-# `validate` enforces the 13 plan-schema rules (status==approved, slug+acceptance
+# `validate` enforces the 14 plan-schema rules (status==approved, slug+acceptance
 # present, unique kebab slugs ≤40, branch <type>/<slug>, depends-on/after refs
 # exist, the depends-on∪after union acyclic, no leftover acceptance placeholder,
 # gh_issue a positive int, gh_issue/split_from mutual exclusion, the rule-11
 # external-gate gate_check requirement, rule-12 repo owner/repo shape, the
-# rule-13 activation-block class∈{A,B,C} + class-A proof: requirement).
+# rule-13 activation-block class∈{A,B,C} + class-A proof: requirement, the
+# rule-14 product-source activation-required requirement — see
+# RULE_14_CUTOVER_DATE below for the grandfather gate).
 # `toposort` partitions items into
 # dependency levels — level 0 = items with neither depends-on nor after — over
 # the UNION of both edge sets, and emits `{"levels":[["a","b"],["c"]]}` on stdout.
@@ -57,6 +59,16 @@
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
+
+# Rule 14 (plan-schema.md) grandfather cutover: a plan whose frontmatter `date:`
+# is present and STRICTLY BEFORE this date is exempt from the product-source
+# activation-required check, so an already-`approved` in-flight plan authored
+# before rule 14 shipped keeps validating unchanged on its next /build resume
+# (temperloop non-BREAKING release discipline). A plan with NO `date:`
+# frontmatter is never grandfathered (treated as on-or-after cutover). Bump
+# this only when deliberately re-cutting the grandfather boundary — never to
+# silence a specific plan's failure.
+RULE_14_CUTOVER_DATE="2026-07-17"
 
 # fd 3 = the script's real stdout. Helpers run inside command substitutions,
 # where a die()'s ERROR line would be captured by the caller instead of reaching
@@ -202,11 +214,26 @@ fm_status() {
   ' "$1"
 }
 
+# Read the frontmatter `date:` value (first `date:` between the leading --- markers).
+# Used by rule 14's grandfather gate — a plan authored before RULE_14_CUTOVER_DATE
+# is exempt. Prints nothing (empty) when no `date:` frontmatter is present.
+fm_date() {
+  awk '
+    NR==1 && $0=="---" { infm=1; next }
+    infm && $0=="---" { exit }
+    infm && /^date:[[:space:]]*/ {
+      sub(/^date:[[:space:]]*/,""); sub(/[[:space:]]*#.*/,""); gsub(/[[:space:]]+$/,"");
+      print; exit
+    }
+  ' "$1"
+}
+
 # Emit, for each item, a line: SLUG<TAB>FIELD=VALUE pairs joined by US (0x1f).
 # Recognized fields: slug, branch, depends-on, after, gh_issue, split_from,
 # gate_check, acceptance (=1 if a non-empty acceptance block exists),
 # acceptance_placeholder (=1 if the placeholder line is present), notes,
-# sentinel (the current checkbox char), title.
+# sentinel (the current checkbox char), title, kind (code|spike, default code),
+# files (raw comma-separated files: value, backtick-quoted per entry).
 # This is the single parse used by validate/toposort/writeback.
 parse_items() {
   awk '
@@ -227,12 +254,15 @@ parse_items() {
         rec = rec SEP "activation=" (activation ? "1" : "0")
         rec = rec SEP "act_class=" act_class
         rec = rec SEP "act_proof=" act_proof
+        rec = rec SEP "kind=" (kind=="" ? "code" : kind)
+        rec = rec SEP "files=" files
         print rec
       }
       have_item=0; slug=""; sentinel=""; title=""; branch=""; dependson="";
       after=""; gh_issue=""; split_from=""; gate_check=""; notes="";
       acc_count=0; acc_placeholder=0; in_acc=0
       activation=0; act_class=""; act_proof=""; in_activation=0
+      kind=""; files=""
     }
     BEGIN { SEP=sprintf("%c",31); in_items=0 }
     /^##[[:space:]]+Items[[:space:]]*$/ { in_items=1; next }
@@ -310,6 +340,12 @@ parse_items() {
       if (match(l, /^[[:space:]]*-[[:space:]]*notes:[[:space:]]*/)) {
         v=l; sub(/^[[:space:]]*-[[:space:]]*notes:[[:space:]]*/,"",v); notes=v; next
       }
+      if (match(l, /^[[:space:]]*-[[:space:]]*kind:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*kind:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); kind=v; next
+      }
+      if (match(l, /^[[:space:]]*-[[:space:]]*files:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*files:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); files=v; next
+      }
     }
     END { flush() }
   ' "$1"
@@ -328,6 +364,23 @@ rec_slug() { awk 'BEGIN{FS=sprintf("%c",31)}{print $1; exit}' <<<"$1"; }
 # Split a comma/space-separated slug list into space-separated tokens.
 split_list() { printf '%s' "$1" | tr ',' ' ' | xargs 2>/dev/null || true; }
 
+# Rule 14's product-source predicate (plan-schema.md § Optional `activation:`
+# block): does a raw `files:` value carry at least one path under a shipped
+# kernel/product-machinery root — scripts/, workflows/, or claude/? Backtick
+# quoting is stripped before splitting on commas. Returns 0 (true) on a match,
+# 1 (false) on no files or no matching entry.
+_files_touch_shipped() {
+  local raw="${1//\`/}" tok
+  IFS=',' read -ra _ftoks <<<"$raw"
+  for tok in "${_ftoks[@]}"; do
+    tok="$(printf '%s' "$tok" | xargs 2>/dev/null || true)"
+    case "$tok" in
+      scripts/*|workflows/*|claude/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # --- validate ----------------------------------------------------------------
 cmd_validate() {
   local file="$1" records status errors=() slug rec
@@ -335,6 +388,16 @@ cmd_validate() {
   status="$(fm_status "$file")"
   records="$(parse_items "$file")"
   [ -n "$records" ] || die "no items found under '## Items' in '$file'"
+
+  # Rule 14 grandfather gate: a plan whose frontmatter `date:` is present and
+  # STRICTLY BEFORE RULE_14_CUTOVER_DATE is exempt (already-approved in-flight
+  # plans keep validating unchanged). No `date:` → never grandfathered.
+  # YYYY-MM-DD strings compare correctly lexically, no date arithmetic needed.
+  local plan_date rule14_grandfathered=0
+  plan_date="$(fm_date "$file")"
+  if [ -n "$plan_date" ] && [[ "$plan_date" < "$RULE_14_CUTOVER_DATE" ]]; then
+    rule14_grandfathered=1
+  fi
 
   # Rule 1: status must be approved (not draft / missing).
   if [ "$status" != "approved" ]; then
@@ -375,7 +438,7 @@ cmd_validate() {
     slug="$(rec_slug "$rec")"
     [ -n "$slug" ] || continue
     local branch acc acc_ph gh_issue split_from gate_check notes dep aft tok
-    local activation act_class act_proof
+    local activation act_class act_proof kind files
     branch="$(rec_field "$rec" branch)"
     acc="$(rec_field "$rec" acceptance)"
     acc_ph="$(rec_field "$rec" acc_placeholder)"
@@ -388,6 +451,8 @@ cmd_validate() {
     activation="$(rec_field "$rec" activation)"
     act_class="$(rec_field "$rec" act_class)"
     act_proof="$(rec_field "$rec" act_proof)"
+    kind="$(rec_field "$rec" kind)"
+    files="$(rec_field "$rec" files)"
 
     # Rule 2: acceptance block present.
     [ "$acc" = "1" ] || errors+=("rule 2: item '$slug' has no acceptance: block")
@@ -426,6 +491,17 @@ cmd_validate() {
       if [ "$act_class" = "A" ] && [ -z "$act_proof" ]; then
         errors+=("rule 13: item '$slug' activation: class A must carry a proof: predicate (the synchronous in-repo activation check)")
       fi
+    fi
+    # Rule 14: a PRODUCT-SOURCE item — kind: code (not spike) whose files: list
+    # includes at least one path under scripts/, workflows/, or claude/ — must
+    # carry an activation: block. kind: spike and docs-only items (files: only
+    # under docs/ or a *.md outside claude/) are exempt. Grandfathered plans
+    # (frontmatter date: before RULE_14_CUTOVER_DATE) are exempt regardless, so
+    # an already-approved in-flight plan authored before rule 14 shipped keeps
+    # validating unchanged on resume.
+    if [ "$rule14_grandfathered" -ne 1 ] && [ "$kind" = "code" ] \
+       && _files_touch_shipped "$files" && [ "$activation" != "1" ]; then
+      errors+=("rule 14: item '$slug' is product-source (kind: code, files: touches scripts/|workflows/|claude/) but carries no activation: block")
     fi
     # Rule 5/8: depends-on + after refs must exist in this plan.
     for tok in $(split_list "$dep"); do
