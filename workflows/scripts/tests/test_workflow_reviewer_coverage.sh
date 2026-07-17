@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test_workflow_reviewer_coverage.sh — hermetic tests for the #1007 coverage rollup.
-# Stubs `gh` via GH_BIN: `pr list` returns a fixed merged-PR set, `pr view <n>
+# Stubs `gh` via WFR_COVERAGE_GH_BIN: `pr list` returns a fixed merged-PR set, `pr view <n>
 # --json files` returns that PR's touched paths. Zero network.
 set -euo pipefail
 
@@ -45,7 +45,7 @@ printf 'claude/commands/build.md\n'  > "$TMP/fix/files-1.txt"
 printf 'claude/commands/tidy.md\n'   > "$TMP/fix/files-2.txt"
 printf 'package.json\n'              > "$TMP/fix/files-3.txt"
 
-run() { env PATH="$TMP/bin:$PATH" GH_BIN="$TMP/bin/gh" GH_FIXTURE_DIR="$TMP/fix" bash "$SCRIPT" "$@"; }
+run() { env PATH="$TMP/bin:$PATH" WFR_COVERAGE_GH_BIN="$TMP/bin/gh" GH_FIXTURE_DIR="$TMP/fix" bash "$SCRIPT" "$@"; }
 
 # --- 1. text summary: 1 of 2 command-doc PRs covered = 50% --------------------
 out="$(run --days 28)"

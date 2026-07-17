@@ -129,6 +129,7 @@ EJECT_GH_BIN	gh	path	kernel	bin/subcommands/eject.sh	Test-double seam for the gh
 INIT_GH_BIN	gh	path	kernel	bin/subcommands/init.sh	Test-double seam for the gh binary
 CLAUDE_BIN	claude	path	kernel	workflows/scripts/build/funnel-drive.sh	Test-double seam for the claude CLI binary
 TRY_GH_BIN	gh	path	kernel	bin/subcommands/try.sh	Test-double seam for the gh binary
+WFR_COVERAGE_GH_BIN	gh	path	kernel	workflows/scripts/workflow-reviewer-coverage.sh	Test-double seam for the gh binary
 TRY_DEMO_CLONE_URL	https://github.com/$demo_repo.git	url	kernel	bin/subcommands/try.sh	Scratch-clone source URL for `try --demo`
 TRY_DEMO_BOARD_NUM	900	int	kernel	bin/subcommands/try.sh	Throwaway internal board number for the demo run's scratch boards.conf
 EVAL_DENIAL_LOG	${XDG_STATE_DIR}/eval-board-adapter-denials.log	path	kernel	claude/hooks/board-adapter-guard.sh	Log path for eval-mode board-adapter-bypass denials

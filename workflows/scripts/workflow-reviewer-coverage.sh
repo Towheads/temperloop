@@ -17,11 +17,11 @@
 #   --repo R   owner/repo (default: gh's resolved default for the cwd)
 #   --json     machine-readable output instead of the text summary
 #
-# Test seam: GH_BIN overrides the gh binary (hermetic; see test_workflow_reviewer_coverage.sh).
+# Test seam: WFR_COVERAGE_GH_BIN overrides the gh binary (hermetic; see test_workflow_reviewer_coverage.sh).
 # Fail-open: an unreadable PR list yields a zero-row report and exit 0.
 set -euo pipefail
 
-GH="${GH_BIN:-gh}"
+GH="${WFR_COVERAGE_GH_BIN:-gh}"
 DAYS=28
 REPO=""
 JSON=0
