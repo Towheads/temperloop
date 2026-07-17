@@ -29,7 +29,10 @@
 #                              STALE_UNTRACKED   an untracked file older than
 #                                                the staleness horizon
 #                            Default checkouts: foundation, stageFind,
-#                            ssmobile, subsetwiki. Override:
+#                            ssmobile, subsetwiki, temperloop (the interactive
+#                            operator checkout of the kernel repo — a DIFFERENT
+#                            ROLE of the same repo as the cron checkout above at
+#                            $HOME/dev/batch/temperloop). Override:
 #                            ENV_RECONCILE_OPERATOR_CHECKOUTS.
 #
 #   worktree <repo>.wt/<slug> — disposable. Drift:
@@ -116,7 +119,12 @@ AGENT_LOG_DIR="${ENV_RECONCILE_AGENT_LOG_DIR:-$HOME/Library/Logs}"
 AGENT_DEFAULT_CADENCE_S="${ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S:-86400}"
 
 DEFAULT_CRON_CHECKOUTS="$HOME/dev/foundation.cron $HOME/dev/batch/temperloop $HOME/dev/foundation-kernel"
-DEFAULT_OPERATOR_CHECKOUTS="$HOME/dev/foundation $HOME/dev/stageFind $HOME/dev/ssmobile $HOME/dev/subsetwiki"
+# Note: $HOME/dev/batch/temperloop (cron, above) and $HOME/dev/temperloop
+# (operator, here) are two DIFFERENT ROLES of the SAME repo — the cron/kernel
+# checkout is clean-on-main, the interactive operator checkout legitimately
+# sits on feature branches and owns the temperloop.wt/* worktrees. Both must be
+# registered so each is classified against its own baseline.
+DEFAULT_OPERATOR_CHECKOUTS="$HOME/dev/foundation $HOME/dev/stageFind $HOME/dev/ssmobile $HOME/dev/subsetwiki $HOME/dev/temperloop"
 
 read -r -a CRON_CHECKOUTS <<<"${ENV_RECONCILE_CRON_CHECKOUTS:-$DEFAULT_CRON_CHECKOUTS}"
 read -r -a OPERATOR_CHECKOUTS <<<"${ENV_RECONCILE_OPERATOR_CHECKOUTS:-$DEFAULT_OPERATOR_CHECKOUTS}"
