@@ -56,8 +56,12 @@ set -euo pipefail
   printf 'BASIC_MEMORY_DISABLE_PERMALINKS=%s\n' "${BASIC_MEMORY_DISABLE_PERMALINKS:-<unset>}"
 } >> "$FAKE_UVX_LOG"
 
-# argv shape from _ks_bm_run: --from basic-memory==<ver> basic-memory <sub> ...
-shift 3
+# argv shape from _ks_bm_run: [uvx flags...] basic-memory <sub> ...
+# Consume everything up to and including the `basic-memory` command token so
+# a new uvx flag (--python, --from) never breaks the fake. (`basic-memory==<ver>`
+# is a distinct string, so the --from value never terminates the loop early.)
+while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
+shift || true
 sub="${1:-}"; shift || true
 
 case "$sub" in
@@ -66,6 +70,10 @@ case "$sub" in
     if [ "$action" = "add" ]; then
       name="${1:-}"; path="${2:-}"
       printf 'PROJECT_ADD name=%s path=%s\n' "$name" "$path" >> "$FAKE_UVX_LOG"
+      if [ "${FAKE_UVX_MODE:-ok}" = "project_add_fail" ]; then
+        echo "Error adding project: simulated registration failure detail" >&2
+        exit 1
+      fi
       echo "Project '$name' added successfully"
       exit 0
     fi
@@ -253,12 +261,12 @@ echo "PASS: 7 the subprocess env carries the belt-and-suspenders disable-permali
 ! grep -qE '^ARGS:.* mcp( |$)' "$FAKE_UVX_LOG" || fail "8: found a 'basic-memory mcp' invocation -- adapter must be CLI-only"
 echo "PASS: 8 no call in this test run ever invoked 'basic-memory mcp' (sidesteps upstream #1017)"
 
-# --- 9. version pin reaches every invocation (point 5) ------------------------
+# --- 9. version + interpreter pins reach every invocation (point 5) -----------
 total_calls="$(grep -c '^ARGS:' "$FAKE_UVX_LOG")"
-pinned_calls="$(grep -c '^ARGS: --from basic-memory==0.22.1 basic-memory' "$FAKE_UVX_LOG")"
+pinned_calls="$(grep -c "^ARGS: --python $KNOWLEDGE_SEARCH_BM_PYTHON --from basic-memory==0.22.1 basic-memory" "$FAKE_UVX_LOG")"
 [ "$total_calls" -gt 0 ] || fail "9: expected at least one subprocess call in the log"
-[ "$total_calls" -eq "$pinned_calls" ] || fail "9: not every call carried the version pin (total=$total_calls pinned=$pinned_calls)"
-echo "PASS: 9 every subprocess invocation is pinned via --from basic-memory==0.22.1 (point 5)"
+[ "$total_calls" -eq "$pinned_calls" ] || fail "9: not every call carried both pins (total=$total_calls pinned=$pinned_calls; expected --python $KNOWLEDGE_SEARCH_BM_PYTHON --from basic-memory==0.22.1)"
+echo "PASS: 9 every subprocess invocation carries the version pin AND the interpreter pin (point 5 + K#368)"
 
 # --- 10. backend error: subprocess exits non-zero -> exit 4 -------------------
 set +e
@@ -271,6 +279,25 @@ set -e
 [ -z "$out" ] || fail "10: a failing subprocess must print nothing to stdout (got: $out)"
 [ -n "$err" ] || fail "10: a failing subprocess should leave a message on stderr"
 echo "PASS: 10 a failing basic-memory subprocess call returns exit 4 with nothing on stdout"
+
+# --- 10b. registration failure surfaces the subprocess's own error (K#368) ----
+set +e
+out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=project_add_fail ks_search "anything" 2>/tmp/ks-search-test-err10b.$$)"
+rc=$?
+err="$(cat "/tmp/ks-search-test-err10b.$$")"
+rm -f "/tmp/ks-search-test-err10b.$$"
+set -e
+[ "$rc" -eq 4 ] || fail "10b: a failing project registration should exit 4 (got $rc)"
+[ -z "$out" ] || fail "10b: a failing registration must print nothing to stdout (got: $out)"
+case "$err" in
+  *"simulated registration failure detail"*) : ;;
+  *) fail "10b: stderr must surface the subprocess's own error, not only the adapter's opaque message (got: $err)" ;;
+esac
+case "$err" in
+  *"project registration failed"*) : ;;
+  *) fail "10b: stderr must still carry the adapter's registration-failed message (got: $err)" ;;
+esac
+echo "PASS: 10b a failing project registration surfaces the subprocess's own error alongside exit 4"
 
 # --- 11. backend error: unparseable output -> exit 4 --------------------------
 set +e

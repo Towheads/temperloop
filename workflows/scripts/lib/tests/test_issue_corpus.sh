@@ -74,7 +74,10 @@ cat > "$BIN/uvx" <<'FAKE'
 set -euo pipefail
 : "${FAKE_UVX_LOG:?}"
 printf 'ARGS: %s\n' "$*" >> "$FAKE_UVX_LOG"
-shift 3
+# Consume `[uvx flags...] basic-memory` — robust to new uvx flags (--python,
+# --from); `basic-memory==<ver>` is a distinct string, never matched.
+while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
+shift || true
 sub="${1:-}"; shift || true
 case "$sub" in
   project)

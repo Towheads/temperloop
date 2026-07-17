@@ -160,8 +160,11 @@ SEARCH_LOG="$SEARCH_TMP/knowledge-reads.log"
 cat > "$SEARCH_TMP/bin/uvx" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-shift 2 || true   # drop `--from basic-memory==<ver>`
-shift || true     # drop `basic-memory`
+# Drop `[uvx flags...] basic-memory` — consume up to and including the
+# `basic-memory` command token, so a new uvx flag (--python, --from) never
+# breaks the fake (`basic-memory==<ver>` is a distinct string, never matched).
+while [ $# -gt 0 ] && [ "$1" != "basic-memory" ]; do shift; done
+shift || true
 case "$1 $2 $3" in
   "project add "*) exit 0 ;;
   "tool search-notes "*)

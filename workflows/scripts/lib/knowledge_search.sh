@@ -52,6 +52,20 @@
 #                                Default: 0.22.1 (the spike-verdict pin —
 #                                upgrades are a deliberate adapter change to
 #                                this default, not silent drift).
+#   KNOWLEDGE_SEARCH_BM_PYTHON   pinned CPython version passed to
+#                                `uvx --python <version>` (point 5's
+#                                companion pin). The bm version pin alone
+#                                still let uv resolve whatever interpreter
+#                                the host offered; a host that resolved
+#                                3.14 hit a from-source maturin/PyO3 build
+#                                of litellm (a bm dep with no cp314 wheel)
+#                                that fails, surfacing as an opaque
+#                                registration failure (temperloop#368,
+#                                foundation#1176). Default: 3.13 (newest
+#                                CPython with prebuilt wheels for the full
+#                                0.22.1 dependency closure — bump together
+#                                with KNOWLEDGE_SEARCH_BM_VERSION, never
+#                                silently).
 #
 # NOT a corpus-root knob: ks_search always targets ks_root (knowledge_store.sh)
 # — there is no KNOWLEDGE_SEARCH_ROOT or equivalent.
@@ -156,6 +170,7 @@ ks_search__dispatch() {
 
 : "${KNOWLEDGE_SEARCH_BM_PROJECT:=foundation-knowledge}"
 : "${KNOWLEDGE_SEARCH_BM_VERSION:=0.22.1}"
+: "${KNOWLEDGE_SEARCH_BM_PYTHON:=3.13}"
 # Overlay seam (foundation#946): extra `.bmignore` patterns appended to the
 # generic upstream base set that _ks_bm_ensure_ignore writes — space- or
 # newline-separated BARE segment names. EMPTY by default, so a stranger's install
@@ -320,7 +335,11 @@ JSON
 
 # Runs the pinned basic-memory CLI as a subprocess (points 4 and 5): isolated
 # HOME (point 6) + the belt-and-suspenders env var (point 1, on top of the
-# config.json key of the same name) + the version pin (point 5). This is the
+# config.json key of the same name) + the version pin (point 5) + the
+# interpreter pin (KNOWLEDGE_SEARCH_BM_PYTHON — without it uv resolves the
+# host's newest CPython, and a resolution onto a version some bm dependency
+# ships no wheel for triggers a from-source native build that can fail; the
+# temperloop#368 / foundation#1176 failure mode). This is the
 # ONLY place in this file that invokes the `basic-memory` binary, and it is
 # always via `uvx --from basic-memory==<pin>` — never a bare `basic-memory`
 # that could silently pick up an unpinned/system install, and NEVER the
@@ -328,16 +347,26 @@ JSON
 _ks_bm_run() {
   HOME="$(_ks_bm_home)" \
   BASIC_MEMORY_DISABLE_PERMALINKS=true \
-  uvx --from "basic-memory==${KNOWLEDGE_SEARCH_BM_VERSION}" basic-memory "$@"
+  uvx --python "$KNOWLEDGE_SEARCH_BM_PYTHON" --from "basic-memory==${KNOWLEDGE_SEARCH_BM_VERSION}" basic-memory "$@"
 }
 
 # point 9: project registration via the CLI only — config-only edits to the
 # `projects` map are not honored in 0.22.1. `project add` is idempotent
 # (confirmed against the real CLI), so this is safe to call on every
 # search/reindex without a separate "is it already registered" check.
+# On failure the subprocess's own output is surfaced (bounded to its tail)
+# instead of swallowed: an opaque "registration failed" with no cause left
+# three separate field failures undiagnosable until someone re-ran the
+# subprocess by hand (temperloop#368 / foundation#1176 — the actual cause
+# was a uvx dependency build, invisible from the adapter's message alone).
 _ks_bm_project_add() {
-  local name="$1" proj_path="$2"   # NOT `path` — see the zsh PATH-tie note above (temperloop#40)
-  _ks_bm_run project add "$name" "$proj_path" >/dev/null 2>&1
+  local name="$1" proj_path="$2" out rc=0   # NOT `path` — see the zsh PATH-tie note above (temperloop#40)
+  out="$(_ks_bm_run project add "$name" "$proj_path" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" | tail -n 15 >&2
+    return "$rc"
+  fi
+  return 0
 }
 
 # Reshape basic-memory's SearchResponse JSON ({results:[...]}) read on stdin
