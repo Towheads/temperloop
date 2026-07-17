@@ -212,6 +212,11 @@ KERNEL_GATES=(
   # knob-registry gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/validate-feature-docs.sh"
   "bash workflows/scripts/tests/test_validate_feature_docs.sh"
+  # workflow-reviewer coverage rollup (temperloop#1007): hermetic gh-double suite
+  # for the reporting script that measures the workflow-reviewer gate's coverage
+  # over merged command-doc PRs. Reporting rollup, not a merge gate — its own
+  # test just proves the numerator/denominator/rate math and fail-open behavior.
+  "bash workflows/scripts/tests/test_workflow_reviewer_coverage.sh"
   "make test-scan-stub"
   # Vault-hygiene probe (foundation #959): fixture-vault suite for
   # drain/vault_hygiene_report.sh — the detect-and-propose maintenance detector
