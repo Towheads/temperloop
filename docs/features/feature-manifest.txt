@@ -70,6 +70,7 @@ build-spine claude/commands/build.md
 build-spine claude/plan-schema.md
 build-spine claude/workflows/build-level.mjs
 build-spine workflows/scripts/build/*
+build-spine workflows/scripts/validate-activation-registry.sh
 
 # ── merge-gate — PR enqueue, CI poll, batched merge gate, protected main ────
 merge-gate docs/managed-merge-queue.md
