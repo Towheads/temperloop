@@ -293,6 +293,7 @@ KS_SEARCH_FALLBACK_STATE_DIR	${TMPDIR:-/tmp}	path	kernel	workflows/scripts/lib/k
 KNOWLEDGE_SEARCH_BACKEND	basic-memory	enum	kernel	workflows/scripts/lib/knowledge_search.sh	Search backend name (dispatches to `_ks_search_backend_<name>_<op>`)
 KNOWLEDGE_SEARCH_BM_PROJECT	foundation-knowledge	label	kernel	workflows/scripts/lib/knowledge_search.sh	basic-memory project name
 KNOWLEDGE_SEARCH_BM_VERSION	0.22.1	string	kernel	workflows/scripts/lib/knowledge_search.sh	Pinned basic-memory CLI version invoked via uvx
+KNOWLEDGE_SEARCH_BM_PYTHON	3.13	string	kernel	workflows/scripts/lib/knowledge_search.sh	Pinned CPython version for the uvx basic-memory env (wheel-availability guard, K#368)
 KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES		string	kernel	workflows/scripts/lib/knowledge_search.sh	Overlay seam: extra .bmignore segments appended to the generic base set
 KNOWLEDGE_SEARCH_BM_HOME	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home	path	kernel	workflows/scripts/lib/knowledge_search.sh	Dedicated HOME dir for the basic-memory subprocess
 KNOWLEDGE_STORE_ROOT	${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; build.config.sh no longer re-seeds a personal-path default here — kernel-literal-scrub, temperloop#189 — an operator sets one via machine conf / build.config.local.sh / a downstream repo's own edited tracked-repo copy instead)

@@ -406,7 +406,14 @@ The adapter's required posture, every point implemented in
 5. **`auto_update: false`**; the version is pinned in every invocation via
    `uvx --from basic-memory==0.22.1 basic-memory ...`
    (`KNOWLEDGE_SEARCH_BM_VERSION`, default `0.22.1`). Upgrading the pin is
-   a deliberate adapter change, not silent drift.
+   a deliberate adapter change, not silent drift. The **interpreter is
+   pinned too** (`uvx --python <ver>`, `KNOWLEDGE_SEARCH_BM_PYTHON`, default
+   `3.13`): the version pin alone still let uv resolve the host's newest
+   CPython, and a resolution onto a version some dependency ships no
+   prebuilt wheel for triggers a from-source native build that can fail on
+   hosts without the build toolchain (temperloop#368 / foundation#1176 —
+   litellm had no cp314 wheel and its maturin/PyO3 build failed). Bump the
+   two pins together, deliberately.
 6. **Isolated state**: a dedicated `HOME` for the `basic-memory` subprocess
    (`KNOWLEDGE_SEARCH_BM_HOME`, default
    `${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home`),
