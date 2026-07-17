@@ -14,23 +14,98 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-17
+
+Additive minor. Safe pull, no migration — no `BREAKING` marker. The headline
+is the **activation-completeness contract** (epic #317): a new capability an
+overlay opts into, not a change to anything existing. Its one new hard-fail
+(plan-schema rule 14) ships with a **grandfather cutover** deliberately
+engineered to keep the release non-breaking — every plan authored before
+`2026-07-17` is exempt, so no already-approved in-flight plan breaks on pull
+(see `VERSIONING.md` and `plan-schema.md` § Rule 14).
+
+### Added
+
+- **Activation-completeness contract (epic #317).** Splits "done" into
+  **merged** (code + CI) vs **activated** (the built thing provably live), so a
+  correct-but-never-wired-in change can no longer read as complete. Three
+  activation classes, each with its own discharge path:
+  - **Class A — synchronous / in-repo.** `/build` gains a Step 3e.6 activation
+    gate that runs an item's `activation: class: A` `proof:` predicate against
+    its own reachability surface (the `__init__.py` entry, the flipped flag, the
+    rendered panel) before the item counts as done. (#319)
+  - **Pending-activations ledger.** New grammar in `/check-in`
+    (`class` / `proof` / `locus` / `watermark` / `soak-until` / `soak_check` /
+    `status`); only `/check-in` and `/tidy` mutate a record's `status`. (#392)
+  - **plan-schema rule 14 — require `activation:` on product-source items.** A
+    `kind: code` item whose `files:` touch `scripts/`, `workflows/`, or
+    `claude/` must declare an `activation:` block. Shipped with a grandfather
+    cutover (`RULE_14_CUTOVER_DATE`, `2026-07-17`) so pre-cutover plans stay
+    exempt — the mechanism that keeps this release non-breaking. (#393)
+  - **Epic-close activation accounting.** `/build`'s 4d-epic step refuses to
+    close an epic while any `<epic>-*` record on the ledger is still `open`, and
+    emits class-B/C records at child-close. (#394)
+  - **Class-B discharge — cross-repo propagation.** `/check-in` reads each
+    consumer's `.kernel-pin` tag and discharges a class-B record once every
+    consumer's pin is at or past the shipping watermark. (#395)
+  - **Class-A activation-registry CI validator.** `validate-activation-registry.sh`
+    (a new quality gate, `validate-live-drain.sh`'s mold applied to
+    `Plans-archive/*.md`'s `activation:` blocks) — reads archived plans only,
+    never the live vault. (#396)
+  - **Class-C discharge — time-deferred / soak.** `/tidy` + `/check-in`
+    discharge a class-C record by concrete predicate: `AGENT_STALE` launchd
+    liveness, or a `soak_check:` data predicate, after the soak-until window.
+    (#397)
+- **`/triage --feedback-only`.** Walk the decision queue without the full
+  Backlog sweep; emits its own telemetry and closes its own review findings.
+  (#371)
+
+### Changed
+
+- **Funnel board probes derive from `board_registered_boards`.** `/build` Step 0
+  and the funnel-tick board reverse-lookup now iterate the adapter's own
+  registered-board set instead of a hardcoded `3 4 5 6` literal, so the
+  temperloop kernel tracker (board 7, issues-only) is no longer silently
+  dropped — the drift that left `/build` board-OFF on the kernel's own tracker.
+  (#381)
+- **`env-reconcile` registers the temperloop operator checkout** in its
+  default operator-checkout set, so kernel-repo drift is classified against the
+  right baseline. (#374)
+
 ### Fixed
 
+- **`/build` no longer requires `project` gh-scope for an issues-only board.**
+  Step 0's board-integration probe gated the whole run on the `project` scope
+  and stopped if missing — but an issues-only board (board 7) drives Status /
+  claim / Done / mirror entirely through plain-REST label writes, issue-close,
+  and the sub-issues API, none of which need it. The check is now
+  backend-conditional on `board_backend`, so a board-7 run whose token carries
+  only `repo` is no longer wrongly halted. (#398, closes #391)
+- **`plan.sh` writeback resolves its REST config from the knowledge-store
+  root** and fails soft when absent, and a personal-vault path literal was
+  scrubbed from a `plan.sh` comment (stranger-test cleanliness). (#342)
+- **`plan.sh` `_files_touch_shipped` is bash-3.2-safe** — an empty `files:`
+  value no longer expands an empty array under `set -u` (which aborts on macOS
+  system bash), the guard rule 14's product-source predicate needs. (#393)
 - **`/tidy` Step 5 deletes per stub, not per batch — `Sessions/_inbox` can
-  actually drain.** The archiver folds a whole run into one commit/PR (#487) and
+  actually drain.** The archiver folds a whole run into one commit/PR and
   reports one durability verdict for the batch; Step 5 deleted stubs only on
-  `archive-committed`. So any batch holding a genuinely-new stub returned
-  `archive-pr-queued` and **every** stub in it was retained, including ones merged
-  to `origin` days earlier. Every batch on an active machine holds something new,
-  so "retain" was the permanent verdict: 109 of 123 stubs stranded over 11 days,
-  behind two archive PRs that had **both already merged**. Step 5 now consumes the
-  archiver's per-stub `archive-stub-durable:` / `archive-stub-pending:` lines and
-  deletes the durable ones whatever the batch verdict says — falling back to the
-  batch line when a build emits no per-stub lines, so an overlay on an older
-  archiver keeps its current behaviour and needs no migration. The spec's "the flow
-  self-heals across runs" claim is **removed**, not reworded: self-healing needs a
-  batch containing nothing new, which never arrives. (#372; the archiver half and the
-  measurements live in the foundation overlay's #1161.)
+  `archive-committed`, so any batch holding a genuinely-new stub retained
+  **every** stub in it (109 of 123 stranded over 11 days behind two
+  already-merged archive PRs). Step 5 now consumes the archiver's per-stub
+  `archive-stub-durable:` / `archive-stub-pending:` lines and deletes the durable
+  ones whatever the batch verdict says — falling back to the batch line for an
+  older archiver, so no migration. (#372; the archiver half lives in the
+  foundation overlay's #1161.)
+- **`pr-enqueue` confirms the queued state via `autoMergeRequest`**, not the
+  gh-rejected `isInMergeQueue` field. (#357)
+- **`gate.sh` drops `--delete-branch` from both merge-queue paths** — the queue
+  rejects the flag; head branches auto-delete via the repo setting. (#353)
+- **`drain` normalizes naive-timezone timestamps** in `tally_recent_findings`
+  so the recurring-issue tally doesn't skew on a naive-tz row. (#341)
+- **Sandbox test suites prune the live basic-memory store** from their
+  no-residue snapshots, so a populated local store no longer fails
+  `test_sandbox.sh` / `test_sandbox_dry_run_legs.sh`. (#377, #382)
 
 ## [0.12.1] - 2026-07-15
 
