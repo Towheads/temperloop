@@ -309,4 +309,5 @@ MESSAGE_SCHEMA_OVERLAY	$REPO/claude/message-schema.overlay.md	path	kernel	workfl
 INBOX_MAX_STUBS	20	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm above this many Sessions/_inbox stubs (tidy.md § Vault hygiene names this knob)
 INBOX_MAX_AGE_H	48	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm if the oldest _inbox stub is older than this many hours (tidy.md § Vault hygiene names this knob)
 T0_INVENTORY_FILE	$HOME/.claude/t0-inventory.txt	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Compose-plane T0 inventory artifact (temperloop#235) the orphan-pattern lint (temperloop#239) reads to determine Patterns/ inbound-link reachability; absent = the lint degrades gracefully (skipped, never guesses)
+GATE_MAX_ATTEMPTS	3	int	kernel	scripts/quality-gates.sh	Bounded per-gate retry count in quality-gates.sh absorbing transient CI-runner flakiness (temperloop#403); set 1 to disable retries
 TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/knob-registry.tsv	RESERVED — named config profile switch; no reader exists yet (deferred, D2 Bucket C)
