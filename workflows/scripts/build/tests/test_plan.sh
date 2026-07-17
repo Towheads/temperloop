@@ -12,6 +12,11 @@
 #     branch, dangling depends-on/after ref, leftover acceptance placeholder,
 #     non-int gh_issue, gh_issue+split_from together, prose external gate with
 #     no gate_check); a depends-on ∪ after cycle → INVALID (rule 8)
+#   - validate rule 14: a product-source item (kind: code, files: under
+#     scripts/|workflows/|claude/) with no activation: block → INVALID; a
+#     kind: spike or docs-only item with no block → VALID (exempt); a
+#     product-source item WITH a block → VALID; a pre-RULE_14_CUTOVER_DATE
+#     plan's product-source item with no block → VALID (grandfathered)
 #   - toposort: a 2-level DAG over the union of depends-on + after → the right
 #     level partition; a cycle → CYCLE outcome + non-zero exit
 #   - writeback routes EVERY vault write through _plan_vault_write (grep: no
@@ -301,6 +306,110 @@ EOF
 out="$(bash "$SCRIPT" validate "$TMP/act-b.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "class-B activation without proof should be VALID (ledger-discharged) (got: $out)"
 echo "PASS: validate → VALID on a class-B activation block with no proof: (ledger-discharged) (rule 13)"
+
+# --- validate: rule 14 — activation required for product-source items --------
+# A plan dated ON-OR-AFTER the RULE_14_CUTOVER_DATE (2026-07-17) so the
+# grandfather gate does NOT apply — rule 14 is live for all cases below unless
+# a per-file date says otherwise.
+
+# product-source (kind: code, files: touches claude/) WITHOUT activation: → INVALID
+cat > "$TMP/r14-product-noact.md" <<'EOF'
+---
+status: approved
+date: 2026-07-20
+---
+## Items
+
+- [ ] **Product source, no activation** `slug: r14-product-noact` — touches shipped claude/ machinery
+  - branch: `feat/r14-product-noact`
+  - kind: code
+  - files: `claude/plan-schema.md`
+  - acceptance:
+    - x
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r14-product-noact.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 14")) | any' <<<"$out" >/dev/null \
+  || fail "product-source item with no activation: block not flagged (rule 14) (got: $out)"
+echo "PASS: validate → INVALID on a product-source item (kind: code, files: under claude/) with no activation: block (rule 14)"
+
+# kind: spike WITHOUT activation: → VALID (exempt)
+cat > "$TMP/r14-spike-noact.md" <<'EOF'
+---
+status: approved
+date: 2026-07-20
+---
+## Items
+
+- [ ] **Spike, no activation** `slug: r14-spike-noact` — verdict-only, exempt from rule 14
+  - branch: `feat/r14-spike-noact`
+  - kind: spike
+  - files: `claude/plan-schema.md`
+  - acceptance:
+    - x
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r14-spike-noact.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "kind: spike item with no activation: block should be VALID (rule 14 exempt) (got: $out)"
+echo "PASS: validate → VALID on a kind: spike item with no activation: block (rule 14 exemption)"
+
+# docs-only (files: only under docs/) WITHOUT activation: → VALID (exempt)
+cat > "$TMP/r14-docsonly-noact.md" <<'EOF'
+---
+status: approved
+date: 2026-07-20
+---
+## Items
+
+- [ ] **Docs only, no activation** `slug: r14-docsonly-noact` — docs-only, exempt from rule 14
+  - branch: `docs/r14-docsonly-noact`
+  - kind: code
+  - files: `docs/usage.md`
+  - acceptance:
+    - x
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r14-docsonly-noact.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "docs-only item with no activation: block should be VALID (rule 14 exempt) (got: $out)"
+echo "PASS: validate → VALID on a docs-only item (files: under docs/) with no activation: block (rule 14 exemption)"
+
+# product-source WITH activation: → VALID
+cat > "$TMP/r14-product-withact.md" <<'EOF'
+---
+status: approved
+date: 2026-07-20
+---
+## Items
+
+- [ ] **Product source, with activation** `slug: r14-product-withact` — touches shipped workflows/ machinery, has activation:
+  - branch: `feat/r14-product-withact`
+  - kind: code
+  - files: `workflows/scripts/build/plan.sh`
+  - activation:
+    - class: A
+    - proof: "true"
+  - acceptance:
+    - x
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r14-product-withact.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "product-source item WITH activation: block should be VALID (got: $out)"
+echo "PASS: validate → VALID on a product-source item (kind: code, files: under workflows/) carrying an activation: block (rule 14)"
+
+# grandfathered: pre-cutover date: + product-source + no activation: → VALID
+cat > "$TMP/r14-grandfathered.md" <<'EOF'
+---
+status: approved
+date: 2026-07-16
+---
+## Items
+
+- [ ] **Pre-cutover product source, no activation** `slug: r14-grandfathered` — predates rule 14's cutover, exempt
+  - branch: `feat/r14-grandfathered`
+  - kind: code
+  - files: `claude/commands/build.md`
+  - acceptance:
+    - x
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r14-grandfathered.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "grandfathered (pre-cutover date:) product-source item with no activation: should be VALID (got: $out)"
+echo "PASS: validate → VALID on a product-source item with no activation: block when the plan's date: predates RULE_14_CUTOVER_DATE (rule 14 grandfather clause)"
 
 # --- toposort: 2-level DAG over depends-on ∪ after ----------------------------
 out="$(bash "$SCRIPT" toposort "$TMP/valid.md")"
