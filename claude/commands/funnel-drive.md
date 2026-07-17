@@ -108,11 +108,15 @@ as such in its bullet below.)
   (e.g. `already-prepped: Plans/… is executing — parked for operator resume`) and move
   on; `funnel-drive.sh` routes a refused route-foundational to the operator's decision
   queue so it stops re-firing. Otherwise (no plan, or a `draft`), **prep then gate**:
-  run `/assess --epic <issue> --board <board>` to
+  run `/assess --epic <issue> --board <board> --no-poll` to
   decompose/draft the plan note (draft only — `/assess` never approves), then route
   the design + plan-approval to the decision queue via build.md's decision-issue
   backend (post the gate comment, apply the `decision` label, assign
-  `.reassign_to`, park). You are preparing and routing for the operator — you are
+  `.reassign_to`, park). **`--no-poll` is required:** this action runs operator-absent
+  (the safe tier spawns with `FUNNEL_OPERATOR_ABSENT=1`, #329), and without it
+  `/assess`'s own Step 6 poll would *also* post a decision issue on the epic —
+  funnel-drive owns the *single* decision-queue routing, so `/assess` must stop after
+  its Step 5 draft. You are preparing and routing for the operator — you are
   **not** approving the plan or building it.
 
 - **`drain-answer`** — the operator answered a decision issue (`.chosen` carries
