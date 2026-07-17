@@ -596,6 +596,24 @@ OUT16F="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16F" FUNNEL_GH_BIN="$G16F
 [ "$(jq -r '.routed' <<<"$OUT16F")" = "0" ] && ok "routed=0 (a refused drain-* is not a route-foundational park)" || bad "t16f.routed" "got $(jq -r '.routed' <<<"$OUT16F")"
 [ ! -f "$C16F/gh-calls.txt" ] && ok "no gh edit/comment — the drain refusal keeps its own handling" || bad "t16f.gh" "gh was called: $(cat "$C16F/gh-calls.txt")"
 
+# ── 16g: an EXECUTED route-foundational runs operator-ABSENT to a non-failed ──
+# terminal state (#329). Root cause: the safe tier spawned /funnel-drive with
+# opabsent=0, so the inline /assess hit an unanswerable modal AskUserQuestion and
+# recorded status:failed. With the fix the safe tier spawns opabsent=1, so /assess
+# takes its operator-absent branches and route-foundational reaches `executed`.
+echo "--- test 16g: executed route-foundational spawns opabsent=1, terminal=ran (#329) ---"
+SAFE_EXEC_RF='{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[{"action":"route-foundational","issue":951,"board":"4","status":"executed","note":"prepped draft plan + routed to decision queue"}]}'
+C16G="$TMP/c16g"; mkdir -p "$C16G"; D16G="$(make_merge_double "$C16G")"; G16G="$(make_gh_double "$C16G")"
+OUT16G="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16G" FUNNEL_GH_BIN="$G16G" CAP_DIR="$C16G" \
+        FUNNEL_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_EXEC_RF" bash "$DRIVE")"
+# The #329 root-cause proof: the safe tier spawned the /funnel-drive driver operator-ABSENT.
+grep -q '^opabsent=1 prompt=/funnel-drive ' "$C16G/calls.txt" \
+  && ok "safe tier ran /funnel-drive with FUNNEL_OPERATOR_ABSENT=1 (#329 — inline /assess takes its operator-absent branches)" \
+  || bad "t16g.opabsent" "safe tier not operator-absent: $(cat "$C16G/calls.txt" 2>/dev/null || echo none)"
+[ "$(jq -r '.safe_executed' <<<"$OUT16G")" = "1" ] && ok "safe_executed=1 (route-foundational reached a non-failed terminal state)" || bad "t16g.exec" "got $(jq -r '.safe_executed' <<<"$OUT16G")"
+[ "$(jq -r '.safe_failed' <<<"$OUT16G")" = "0" ] && ok "safe_failed=0 (no status:failed wall)" || bad "t16g.failed" "got $(jq -r '.safe_failed' <<<"$OUT16G")"
+[ "$(jq -r '.status' <<<"$OUT16G")" = "ran" ] && ok "status=ran (tier terminal, not failed)" || bad "t16g.status" "got $(jq -r '.status' <<<"$OUT16G")"
+
 # ── 17: a clean merge is NOT routed (no operator hand-off, no stray gh edits) ──
 echo "--- test 17: a merged drive is not routed (#622) ---"
 C17="$TMP/c17"; mkdir -p "$C17"; D17="$(make_merge_double "$C17")"; G17="$(make_gh_double "$C17")"

@@ -996,7 +996,14 @@ if [ "${n_safe:-0}" -gt 0 ]; then
     # CLAUDE_BIN is the test-double seam; the overlay (--settings, NEVER
     # --dangerously-skip-permissions) contains it. Fail-open: a per-board driver
     # error is reported as a tier error (the cron wraps the whole drive).
-    driver_out="$(_spawn_in_checkout "$co" 0 "/funnel-drive $pf" "$FUNNEL_DRIVE_MODEL" "$FUNNEL_DRIVE_SETTINGS")"
+    # opabsent=1: the safe tier is a headless cron run with no live operator, so a
+    # route-foundational action's inline /assess must take /assess's operator-absent
+    # branches (async decision-issue for the approval gate; fail-open Abort/Proceed
+    # for provenance/collision) instead of hitting an unanswerable modal
+    # AskUserQuestion and recording status:failed (#329). The other safe actions
+    # (drain-answer/parse-miss/clarification, spike) are deterministic gh mutations
+    # or open no PR, so they are unaffected by the flag. Mirrors the merge tier below.
+    driver_out="$(_spawn_in_checkout "$co" 1 "/funnel-drive $pf" "$FUNNEL_DRIVE_MODEL" "$FUNNEL_DRIVE_SETTINGS")"
     if [ "$_spawn_rc" -ne 0 ]; then
       emit_outcome "error" "$(jq -cn --arg rc "$_spawn_rc" --arg b "$b" '{driver_exit:($rc|tonumber),board:$b}')" null
       exit 0
