@@ -48,6 +48,8 @@ Each record carries:
 - **soak-until:** (class C only) the date/time before which the proof cannot yet be evaluated — a poll before this date is a no-op, not a failure
 - **status:** `open` | `discharged`
 
+For a **class-B cross-repo kernel-propagation** record specifically — the flavor this section's discharge mechanics below are written for — `locus` is either one or more explicit checkout paths (space-separated) or the literal token `all-consumers`, meaning every checkout already registered in `workflows/scripts/build/env-reconcile.sh`'s consumer registry (`DEFAULT_OPERATOR_CHECKOUTS`, override `ENV_RECONCILE_OPERATOR_CHECKOUTS`). Reusing that registry — rather than re-listing consumers in the ledger — is deliberate: it's the same enumeration `/tidy`'s env-hygiene probe already walks, so the two never drift apart.
+
 **Only `/check-in` (and `/tidy`'s env-hygiene probe) mutate a record's `status:`** — no other command, live rule, or drain step writes it; a record parks `open` until one of those two polls it and finds the proof satisfied.
 
 Worked example, class B:
@@ -59,6 +61,16 @@ Worked example, class B:
 - **watermark:** v1.4.0
 ```
 
+Worked example, class B, cross-repo propagation (`all-consumers` locus):
+```
+### semver-ledger-grammar-fleetwide - **Status:** open
+- **class:** B
+- **proof:** every registered consumer's `.kernel-pin` `tag` is >= the shipping tag, semver-compared
+- **locus:** all-consumers
+- **watermark:** v0.12.0
+```
+Say the registry currently resolves to two consumers, one on `v0.12.1` and one still on `v0.11.0`: `semver_ge v0.12.1 v0.12.0` is `true` (meets it) but `semver_ge v0.11.0 v0.12.0` is `false` (straggler) — the record stays `open`, reported as still pending on the second checkout. Once that straggler updates to (say) `v0.12.2`, both resolved checkouts meet the watermark and the record discharges as `discharged — v0.12.1 / v0.12.2` (the tags observed at discharge).
+
 Worked example, class C:
 ```
 ### tidy-nightly-agent-first-fire - **Status:** open
@@ -68,7 +80,16 @@ Worked example, class C:
 - **soak-until:** 2026-07-18T00:00
 ```
 
-For each `open` entry whose class-appropriate gate has passed — a class-B record whose locus's installed tag is now >= `watermark`, or a class-C record whose `soak-until` has elapsed and whose proof check now passes — patch that entry's `Status` line to `discharged — <tag or timestamp observed>` with a direct `Edit`. An entry whose gate hasn't passed yet is left `open` and reported as still pending — never proactively re-checked before its watermark/soak-until, and never silently dropped. If there are no `open` entries, say "no pending activations" in one line and move on.
+For each `open` entry, check its class-appropriate gate:
+
+- **Class C:** `soak-until` has elapsed and the proof check now passes.
+- **Class B (cross-repo kernel propagation):** resolve `locus` to a concrete checkout list, then require **every** checkout in that list to have reached `watermark`:
+  1. **Resolve the consumer list.** If `locus` names explicit checkout paths, use those. If `locus` is the literal `all-consumers`, source the registry rather than re-deriving it: `source workflows/scripts/build/env-reconcile.sh` with **no arguments** — this is safe to source (it only defines functions/populates `OPERATOR_CHECKOUTS` and returns; it does not run the reconciler or hit one of its `exit` calls, which under `source` would otherwise exit this session's shell, not just return) — then iterate `"${OPERATOR_CHECKOUTS[@]}"`.
+  2. **Read each checkout's installed tag.** For each resolved checkout, call the now-sourced `kernel_pin_tag_of <checkout>` — it reads straight from that checkout's own `.kernel-pin` file's `tag` line (the same file `scripts/update-kernel.sh` already writes atomically; never a new stamp). A checkout with no `.kernel-pin`, or no `tag` line, returns nothing (exit 1) — treat it as **not yet reached**, not an error.
+  3. **Compare under semver, never lexically.** For each tag that was read, call `semver_ge <tag> <watermark>` (also sourced from `env-reconcile.sh`) — a numeric `MAJOR.MINOR.PATCH` compare, e.g. `semver_ge v0.12.1 v0.9.0` prints `true` even though `v0.9.0` would sort *higher* than `v0.12.1` under plain lexical/string comparison.
+  4. **All-or-nothing.** The record discharges only when **every** resolved checkout both has a readable tag and meets the watermark. One straggler (an unreadable `.kernel-pin`, or a tag still short of `watermark`) keeps the whole record `open` — report which checkout(s) are still short.
+
+For an entry whose gate has passed, patch that entry's `Status` line to `discharged — <tag or timestamp observed>` with a direct `Edit` (for class B, the tag every consumer had reached). An entry whose gate hasn't passed yet is left `open` and reported as still pending, naming the still-short consumer(s) for class B — never proactively re-checked before its watermark/soak-until, and never silently dropped. If there are no `open` entries, say "no pending activations" in one line and move on.
 
 ### Proposed-supersessions review
 
