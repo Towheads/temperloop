@@ -292,6 +292,7 @@ kernel workflows/scripts/validate-activation-registry.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
+kernel workflows/scripts/workflow-reviewer-coverage.sh
 kernel workflows/scripts/validate-live-drain.sh
 kernel workflows/scripts/validate-template-refs.sh
 kernel workflows/scripts/validate-design-brief.sh
