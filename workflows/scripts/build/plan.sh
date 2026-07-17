@@ -24,11 +24,23 @@
 # and stamps sub-lines (pr:, pushed_sha:, speculative:, Run-status:) on the plan
 # note. It is the SOLE sentinel-writeback path: ALL vault writes route through a
 # single `_plan_vault_write` indirection (mirrors board.sh's `_board_gh`),
-# overridable in tests. The writeback goes to the Obsidian Local REST API (the
-# same API the board adapter and session-start-drain hook use); an unreachable
-# REST API FAILS LOUD — non-zero exit + stderr — never silent success, because a
-# sentinel write IS the resume-safety substrate and a silent loss loses resume
-# state.
+# overridable in tests.
+#
+# The write is TWO-TIER, resolved per call (#342):
+#   1. If an Obsidian Local REST API config (the plugin's data.json) is found —
+#      via PLAN_API_KEY_FILE / KNOWLEDGE_STORE_ROOT-derived, or the vault root
+#      RESOLVED from the plan note's own absolute path — the patched note PUTs
+#      to that REST API (the same API the board adapter and session-start-drain
+#      hook use). A configured-but-unreachable REST API FAILS LOUD (WRITE_FAILED
+#      + non-zero) — never silent success — because a sentinel write IS the
+#      resume-safety substrate and a silent loss loses resume state.
+#   2. If NO REST config is found (e.g. a temperloop kernel checkout whose vault
+#      has no Local REST API plugin), the write FAILS SOFT to a direct
+#      filesystem write of the plan note's on-disk path — the sentinel is still
+#      persisted durably (resume-safety intact), just via the filesystem instead
+#      of REST. Only when there is neither a REST config NOR a writable on-disk
+#      plan path does it emit WRITE_SKIPPED — a soft, non-fatal outcome the
+#      orchestrator can handle (vs. the hard WRITE_FAILED of a broken endpoint).
 #
 # Output contract — CLOSED outcome set, one structured JSON line per outcome
 # (exception: `toposort` prints the `{"levels":…}` object directly):
@@ -37,6 +49,7 @@
 #   toposort  → {"levels":[[…],…],"order":[…]} |
 #               {"outcome":"CYCLE","cycle":[…]} + non-zero exit
 #   writeback → {"outcome":"WRITTEN","slug":…,"sentinel":…} |
+#               {"outcome":"WRITE_SKIPPED","slug":…,"reason":…} (soft; zero exit) |
 #               {"outcome":"WRITE_FAILED","slug":…,"error":…} + non-zero exit
 #   error     → {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
@@ -65,8 +78,13 @@ usage() {
 #
 #   _plan_vault_write <vaultRelPath> <contentFile>
 #
-# MUST exit non-zero on an unreachable REST endpoint so the caller fails loud —
-# a sentinel write that silently no-ops loses resume state.
+# Return-code contract (consumed by cmd_writeback):
+#   0  → written (via REST when configured, else the filesystem fallback)
+#   1  → REST was CONFIGURED but the write FAILED (unreachable / HTTP error) —
+#        fail loud (WRITE_FAILED); a configured endpoint going silent loses
+#        resume state, so this stays a hard, non-zero failure.
+#   3  → no REST config AND no writable on-disk plan path — WRITE_SKIPPED, a
+#        SOFT outcome (nothing was persisted, but nothing was broken either).
 # Config default resolution routes through the knowledge_store seam's obsidian
 # backend (foundation #777, Epic A #762 "kernel split") rather than a literal:
 # KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE already default to today's
@@ -85,33 +103,83 @@ if [ -f "$PLAN_LIB_DIR/knowledge_store_obsidian.sh" ]; then
 fi
 PLAN_API_BASE="${PLAN_API_BASE:-${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}}"
 PLAN_API_KEY_FILE="${PLAN_API_KEY_FILE:-${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}}"
-_plan_vault_write() {
-  local vault_path="$1" content_file="$2" api_key http_code encoded_path
-  [ -f "$PLAN_API_KEY_FILE" ] || { echo "plan.sh: REST API key file missing: $PLAN_API_KEY_FILE" >&2; return 1; }
-  api_key="$(jq -r '.apiKey // empty' "$PLAN_API_KEY_FILE" 2>/dev/null)"
-  [ -n "$api_key" ] || { echo "plan.sh: could not read apiKey from $PLAN_API_KEY_FILE" >&2; return 1; }
-  # URL-encode each path SEGMENT (preserving the '/' separators) before the PUT.
-  # Plan filenames carry spaces per the canonical 'Plans/<date> <project> -
-  # <title>.md' convention; interpolated raw, curl rejects the URL (exit 3,
-  # http_code 000) and writeback breaks for EVERY real plan (#364). jq @uri
-  # percent-encodes per segment so 'Plans/a b.md' → 'Plans/a%20b.md'.
-  encoded_path="$(printf '%s' "$vault_path" | jq -sRr 'split("/") | map(@uri) | join("/")')" \
-    || { echo "plan.sh: failed to URL-encode vault path '$vault_path'" >&2; return 1; }
-  # Whole-file PUT (idempotent); no PATCH, so the REST-API 4.0 targetScope rule
-  # does not apply (cf. session-start-drain.sh, foundation #6).
-  http_code="$(curl -s -k -o /dev/null -w '%{http_code}' \
-    -X PUT "$PLAN_API_BASE/vault/$encoded_path" \
-    -H "Authorization: Bearer $api_key" \
-    -H "Content-Type: text/markdown" \
-    --data-binary "@$content_file" 2>/dev/null)" || {
-      echo "plan.sh: REST API unreachable at $PLAN_API_BASE (curl failed)" >&2
-      return 1
-    }
-  case "$http_code" in
-    200|204) return 0 ;;
-    000|"") echo "plan.sh: REST API unreachable at $PLAN_API_BASE (no response)" >&2; return 1 ;;
-    *) echo "plan.sh: REST API write to $vault_path failed (HTTP $http_code)" >&2; return 1 ;;
+
+# Resolve the Obsidian Local REST API key file for THIS writeback, printing the
+# first existing candidate on stdout (exit 0), or exit 1 when none exists (=>
+# no REST config, the caller falls soft to a filesystem write). Resolution
+# order, most-specific first (#342):
+#   1. PLAN_API_KEY_FILE — the caller/test override, itself defaulted from the
+#      knowledge_store seam's KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE knob (which
+#      derives from KNOWLEDGE_STORE_ROOT — the "actual knowledge-store root").
+#   2. The vault root RESOLVED from the plan note's own absolute on-disk path:
+#      the parent of its `/Plans/` segment. This is what makes writeback work in
+#      a checkout whose vault differs from the KNOWLEDGE_STORE_ROOT default
+#      (e.g. a temperloop kernel checkout whose vault lives under a non-default
+#      knowledge-store root, writing that vault's own /Plans/…): the plan
+#      file's location is the ground truth for which vault it belongs to.
+# A resolved candidate must actually EXIST on disk to be used — a nonexistent
+# path is treated as "no REST config here", not a hard error.
+_plan_resolve_api_key_file() {
+  local on_disk="${1:-}" vault_root cand
+  if [ -n "$PLAN_API_KEY_FILE" ] && [ -f "$PLAN_API_KEY_FILE" ]; then
+    printf '%s\n' "$PLAN_API_KEY_FILE"
+    return 0
+  fi
+  case "$on_disk" in
+    /*/Plans/*)
+      vault_root="${on_disk%%/Plans/*}"
+      cand="$vault_root/.obsidian/plugins/obsidian-local-rest-api/data.json"
+      if [ -f "$cand" ]; then
+        printf '%s\n' "$cand"
+        return 0
+      fi
+      ;;
   esac
+  return 1
+}
+
+# _plan_vault_write <vaultRelPath> <contentFile> [<onDiskPath>]
+_plan_vault_write() {
+  local vault_path="$1" content_file="$2" on_disk="${3:-}" \
+        api_key http_code encoded_path key_file
+  if key_file="$(_plan_resolve_api_key_file "$on_disk")"; then
+    # --- Tier 1: a REST config exists → PUT to the Obsidian Local REST API ----
+    api_key="$(jq -r '.apiKey // empty' "$key_file" 2>/dev/null)"
+    [ -n "$api_key" ] || { echo "plan.sh: could not read apiKey from $key_file" >&2; return 1; }
+    # URL-encode each path SEGMENT (preserving the '/' separators) before the PUT.
+    # Plan filenames carry spaces per the canonical 'Plans/<date> <project> -
+    # <title>.md' convention; interpolated raw, curl rejects the URL (exit 3,
+    # http_code 000) and writeback breaks for EVERY real plan (#364). jq @uri
+    # percent-encodes per segment so 'Plans/a b.md' → 'Plans/a%20b.md'.
+    encoded_path="$(printf '%s' "$vault_path" | jq -sRr 'split("/") | map(@uri) | join("/")')" \
+      || { echo "plan.sh: failed to URL-encode vault path '$vault_path'" >&2; return 1; }
+    # Whole-file PUT (idempotent); no PATCH, so the REST-API 4.0 targetScope rule
+    # does not apply (cf. session-start-drain.sh, foundation #6).
+    http_code="$(curl -s -k -o /dev/null -w '%{http_code}' \
+      -X PUT "$PLAN_API_BASE/vault/$encoded_path" \
+      -H "Authorization: Bearer $api_key" \
+      -H "Content-Type: text/markdown" \
+      --data-binary "@$content_file" 2>/dev/null)" || {
+        echo "plan.sh: REST API unreachable at $PLAN_API_BASE (curl failed)" >&2
+        return 1
+      }
+    case "$http_code" in
+      200|204) return 0 ;;
+      000|"") echo "plan.sh: REST API unreachable at $PLAN_API_BASE (no response)" >&2; return 1 ;;
+      *) echo "plan.sh: REST API write to $vault_path failed (HTTP $http_code)" >&2; return 1 ;;
+    esac
+  fi
+
+  # --- Tier 2: no REST config → fail SOFT to a direct filesystem write --------
+  # The sentinel is still persisted durably (resume-safety intact), just to the
+  # plan note's on-disk path instead of via REST. cmd_writeback verified the
+  # path exists before calling us, so this is normally a straight overwrite.
+  if [ -n "$on_disk" ] && cat "$content_file" > "$on_disk" 2>/dev/null; then
+    echo "plan.sh: no Obsidian REST config found; wrote sentinel directly to $on_disk (filesystem fallback)" >&2
+    return 0
+  fi
+  echo "plan.sh: no REST config and no writable on-disk plan path — sentinel NOT persisted (WRITE_SKIPPED)" >&2
+  return 3
 }
 
 # --- plan-note parsing -------------------------------------------------------
@@ -543,16 +611,29 @@ cmd_writeback() {
     *)         vault_path="Plans/$(basename "$file")" ;;
   esac
 
-  if _plan_vault_write "$vault_path" "$tmp"; then
-    rm -f "$tmp"
-    jq -cn --arg slug "$slug" --arg sentinel "$sentinel" \
-      '{outcome:"WRITTEN", slug:$slug, sentinel:$sentinel}'
-  else
-    rm -f "$tmp"
-    jq -cn --arg slug "$slug" \
-      '{outcome:"WRITE_FAILED", slug:$slug, error:"vault REST write failed — see stderr"}' >&3
-    exit 1
-  fi
+  # Pass the plan note's on-disk path as the filesystem-fallback target: when no
+  # REST config is resolvable the seam persists the sentinel there instead of
+  # failing loud (#342). rc: 0 = WRITTEN, 1 = WRITE_FAILED (loud), 3 = SKIPPED.
+  local rc=0
+  _plan_vault_write "$vault_path" "$tmp" "$file" || rc=$?
+  rm -f "$tmp"
+  case "$rc" in
+    0)
+      jq -cn --arg slug "$slug" --arg sentinel "$sentinel" \
+        '{outcome:"WRITTEN", slug:$slug, sentinel:$sentinel}'
+      ;;
+    3)
+      # Soft skip: nothing was persisted, but nothing broke — zero exit so the
+      # orchestrator can decide how to proceed rather than aborting the run.
+      jq -cn --arg slug "$slug" \
+        '{outcome:"WRITE_SKIPPED", slug:$slug, reason:"no REST config and no writable on-disk plan path — see stderr"}' >&3
+      ;;
+    *)
+      jq -cn --arg slug "$slug" \
+        '{outcome:"WRITE_FAILED", slug:$slug, error:"vault REST write failed — see stderr"}' >&3
+      exit 1
+      ;;
+  esac
 }
 
 [ $# -ge 1 ] || usage
