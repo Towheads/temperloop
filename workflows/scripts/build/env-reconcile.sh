@@ -77,6 +77,15 @@
 #                            (prints nothing) if absent — "not yet reached".
 #   semver_ge <a> <b>        prints `true`/`false` for a numeric (not
 #                            lexical) `vMAJOR.MINOR.PATCH` compare.
+#   agent_status_by_label <l> looks up the launchd agent declaring Label <l>
+#                            across the resolved LAUNCHD_DIRS registry and
+#                            prints classify_agent's verdict for it —
+#                            `AGENT_STALE:<l>` / `AGENT_UNLOADED:<l>` / empty
+#                            (fresh) — reused (not reinvented) by /check-in's
+#                            class-C launchd-sub-case discharge
+#                            (claude/commands/check-in.md). Exits 1 (prints
+#                            nothing) if no plist declaring <l> is found —
+#                            "can't verify", never a crash.
 #
 # Env overrides (all optional; space-separated path lists unless noted):
 #   ENV_RECONCILE_CRON_CHECKOUTS
@@ -417,12 +426,48 @@ classify_agent() {
   printf ''
 }
 
+# ── agent_status_by_label <label> ─────────────────────────────────────────────
+# Finds the launchd agent declaring Label <label> among the resolved
+# LAUNCHD_DIRS registry and returns classify_agent's verdict for its plist —
+# the same AGENT_STALE:<label> / AGENT_UNLOADED:<label> signal the
+# direct-invocation report already emits (classify_agent above), reused
+# (never reinvented) by /check-in's class-C activation discharge
+# (claude/commands/check-in.md § Pending-activations ledger) for the
+# launchd sub-case: a record's `locus` names an agent's declared Label, and
+# discharge polls this instead of standing up a new "is the agent alive"
+# sensor. Prints one of:
+#   AGENT_STALE:<label>     loaded, but no evidence of a run within cadence
+#   AGENT_UNLOADED:<label>  declared but not currently loaded
+#   (empty)                 fresh — fired within its own declared cadence
+# and exits 0 in all three cases. If no plist among LAUNCHD_DIRS declares
+# <label>, prints nothing and exits 1 — "can't verify", the same fail-open
+# shape as kernel_pin_tag_of's "not yet reached": the caller keeps the
+# record open and reports it as unverifiable rather than guessing.
+agent_status_by_label() {
+  local label="$1" dir plist found_label
+  local _i=0
+  while [ "$_i" -lt "${#LAUNCHD_DIRS[@]}" ]; do
+    dir="${LAUNCHD_DIRS[$_i]}"; _i=$((_i + 1))
+    [ -d "$dir" ] || continue
+    for plist in "$dir"/*.plist; do
+      [ -e "$plist" ] || continue
+      found_label="$(_plist_extract_key "$plist" Label)"
+      if [ "$found_label" = "$label" ]; then
+        classify_agent "$plist"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 # ── Main enumeration + Emit — DIRECT-INVOCATION ONLY ─────────────────────────
 # Guarded so this script is also safely SOURCEABLE as a library: a caller
-# (e.g. /check-in's class-B activation discharge — claude/commands/check-in.md
-# § Pending-activations ledger) can `source` this file with no args to pull in
-# OPERATOR_CHECKOUTS (the consumer registry) and the kernel_pin_tag_of /
-# semver_ge helpers above WITHOUT running the reconciler or hitting one of its
+# (e.g. /check-in's class-B and class-C activation discharge —
+# claude/commands/check-in.md § Pending-activations ledger) can `source` this
+# file with no args to pull in OPERATOR_CHECKOUTS (the consumer registry),
+# LAUNCHD_DIRS, and the kernel_pin_tag_of / semver_ge / agent_status_by_label
+# helpers above WITHOUT running the reconciler or hitting one of its
 # `exit` calls (which, under `source`, would exit the *caller's* shell, not
 # just return). Direct execution (`env-reconcile.sh [--format ...]`) is
 # unaffected — this guard is true exactly when the script is its own $0.

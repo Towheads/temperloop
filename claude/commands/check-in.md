@@ -46,6 +46,7 @@ Each record carries:
 - **locus:** where the proof is evaluated — the consumer checkout, machine, or agent the obligation is scoped to
 - **watermark:** (class B only) the shipping tag/commit the locus's installed kernel tag must reach or exceed
 - **soak-until:** (class C only) the date/time before which the proof cannot yet be evaluated — a poll before this date is a no-op, not a failure
+- **soak_check:** (class C, **data-accumulation sub-case only**) a machine-checkable predicate evaluated directly — a command or count whose result decides the gate (e.g. `jq -e '.samples >= 100' <rollup.json>`), inward analog of a class-A `proof:`, never a vague "sensor". Omit this field on the **launchd sub-case**, which reuses `AGENT_STALE` instead (see the discharge gate below) rather than carrying its own predicate. A class-C record with **neither** a `soak_check:` **nor** a launchd-agent `locus` has no derivable predicate and is surfaced, never auto-discharged.
 - **status:** `open` | `discharged`
 
 For a **class-B cross-repo kernel-propagation** record specifically — the flavor this section's discharge mechanics below are written for — `locus` is either one or more explicit checkout paths (space-separated) or the literal token `all-consumers`, meaning every checkout already registered in `workflows/scripts/build/env-reconcile.sh`'s consumer registry (`DEFAULT_OPERATOR_CHECKOUTS`, override `ENV_RECONCILE_OPERATOR_CHECKOUTS`). Reusing that registry — rather than re-listing consumers in the ledger — is deliberate: it's the same enumeration `/tidy`'s env-hygiene probe already walks, so the two never drift apart.
@@ -71,25 +72,38 @@ Worked example, class B, cross-repo propagation (`all-consumers` locus):
 ```
 Say the registry currently resolves to two consumers, one on `v0.12.1` and one still on `v0.11.0`: `semver_ge v0.12.1 v0.12.0` is `true` (meets it) but `semver_ge v0.11.0 v0.12.0` is `false` (straggler) — the record stays `open`, reported as still pending on the second checkout. Once that straggler updates to (say) `v0.12.2`, both resolved checkouts meet the watermark and the record discharges as `discharged — v0.12.1 / v0.12.2` (the tags observed at discharge).
 
-Worked example, class C:
+Worked example, class C (launchd sub-case):
 ```
 ### tidy-nightly-agent-first-fire - **Status:** open
 - **class:** C
-- **proof:** `launchctl list` shows the tidy-nightly LaunchAgent has fired at least once, per its declared cadence, since this record was opened
-- **locus:** foundation.cron checkout / launchd
+- **proof:** the `foundation.tidy-nightly` LaunchAgent (declared in `infra/launchd/tidy-nightly.plist`) has fired at least once, per its declared cadence, since this record was opened — reuses `env-reconcile.sh`'s existing `AGENT_STALE` signal, never a new sensor
+- **locus:** `foundation.tidy-nightly` (the plist's `Label`)
 - **soak-until:** 2026-07-18T00:00
+```
+
+Worked example, class C (data-accumulation sub-case):
+```
+### retro-measurement-rollup-warm - **Status:** open
+- **class:** C
+- **proof:** the retro-measurement rollup has accumulated at least 100 samples since this record was opened
+- **locus:** `<knowledge-store-root>/Context/retro-measurement-rollup.json`
+- **soak-until:** 2026-07-25T00:00
+- **soak_check:** `jq -e '.samples >= 100' <knowledge-store-root>/Context/retro-measurement-rollup.json`
 ```
 
 For each `open` entry, check its class-appropriate gate:
 
-- **Class C:** `soak-until` has elapsed and the proof check now passes.
+- **Class C (time-deferred / soak):** first, `soak-until` must have elapsed — a poll before it is a no-op, not a failure, and the record simply stays `open`, unreported. Once elapsed, the gate splits on which predicate the record actually carries:
+  1. **Launchd sub-case** (record has no `soak_check:`; `proof`/`locus` describe a LaunchAgent). Reuse `env-reconcile.sh`'s existing `AGENT_STALE` signal as the liveness sensor — never invent a new one. Source the registry the same way class B does: `source workflows/scripts/build/env-reconcile.sh` with **no arguments** (safe — defines functions/populates `LAUNCHD_DIRS` and returns; does not run the reconciler). Then call the now-sourced `agent_status_by_label "<locus label>"`, which walks `LAUNCHD_DIRS` for the plist declaring that `Label` and returns `classify_agent`'s verdict directly — empty output means the agent fired within its declared cadence (discharge); `AGENT_STALE:<label>` means it's loaded but overdue (keep `open`, surface it); `AGENT_UNLOADED:<label>` means it isn't loaded at all (keep `open`, surface it); a non-zero exit with no output means no plist declaring that label was found among `LAUNCHD_DIRS` (unverifiable — keep `open`, surface it as unverifiable rather than guessing).
+  2. **Data-accumulation sub-case** (record has `soak_check:`). Evaluate that command directly (e.g. via `Bash`) — exit `0` discharges, non-zero keeps the record `open` and reports the observed count/state if the command's output makes that available (e.g. re-run `jq '.samples' <rollup.json>` for a friendlier "at 63/100" report).
+  3. **No derivable predicate** (record has neither `soak_check:` nor a launchd-agent `locus` `agent_status_by_label` can resolve). Never auto-discharge — surface the record as needing a human-supplied predicate (a missing `soak_check:` on a data-accumulation obligation, or a `locus` that doesn't name a real plist `Label`) and leave `status:` `open`.
 - **Class B (cross-repo kernel propagation):** resolve `locus` to a concrete checkout list, then require **every** checkout in that list to have reached `watermark`:
   1. **Resolve the consumer list.** If `locus` names explicit checkout paths, use those. If `locus` is the literal `all-consumers`, source the registry rather than re-deriving it: `source workflows/scripts/build/env-reconcile.sh` with **no arguments** — this is safe to source (it only defines functions/populates `OPERATOR_CHECKOUTS` and returns; it does not run the reconciler or hit one of its `exit` calls, which under `source` would otherwise exit this session's shell, not just return) — then iterate `"${OPERATOR_CHECKOUTS[@]}"`.
   2. **Read each checkout's installed tag.** For each resolved checkout, call the now-sourced `kernel_pin_tag_of <checkout>` — it reads straight from that checkout's own `.kernel-pin` file's `tag` line (the same file `scripts/update-kernel.sh` already writes atomically; never a new stamp). A checkout with no `.kernel-pin`, or no `tag` line, returns nothing (exit 1) — treat it as **not yet reached**, not an error.
   3. **Compare under semver, never lexically.** For each tag that was read, call `semver_ge <tag> <watermark>` (also sourced from `env-reconcile.sh`) — a numeric `MAJOR.MINOR.PATCH` compare, e.g. `semver_ge v0.12.1 v0.9.0` prints `true` even though `v0.9.0` would sort *higher* than `v0.12.1` under plain lexical/string comparison.
   4. **All-or-nothing.** The record discharges only when **every** resolved checkout both has a readable tag and meets the watermark. One straggler (an unreadable `.kernel-pin`, or a tag still short of `watermark`) keeps the whole record `open` — report which checkout(s) are still short.
 
-For an entry whose gate has passed, patch that entry's `Status` line to `discharged — <tag or timestamp observed>` with a direct `Edit` (for class B, the tag every consumer had reached). An entry whose gate hasn't passed yet is left `open` and reported as still pending, naming the still-short consumer(s) for class B — never proactively re-checked before its watermark/soak-until, and never silently dropped. If there are no `open` entries, say "no pending activations" in one line and move on.
+For an entry whose gate has passed, patch that entry's `Status` line to `discharged — <tag or timestamp observed>` with a direct `Edit` (for class B, the tag every consumer had reached; for class C, the observed `soak_check` count/state, or the timestamp the launchd agent's freshest run was confirmed at). An entry whose gate hasn't passed yet is left `open` and reported as still pending — naming the still-short consumer(s) for class B, or the launchd label's `AGENT_STALE`/`AGENT_UNLOADED` state or the observed `soak_check` shortfall for class C — never proactively re-checked before its watermark/soak-until, and never silently dropped. A class-C record with no derivable predicate is reported as such (needs a `soak_check:` or a resolvable launchd `locus`), also never silently dropped. If there are no `open` entries, say "no pending activations" in one line and move on.
 
 ### Proposed-supersessions review
 
