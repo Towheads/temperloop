@@ -62,6 +62,22 @@
 #                      drain/vault_hygiene_report.sh --format entry) —
 #                      emits NOTHING and exits 0 when no drift is found
 #
+# Library surface (also SOURCEABLE — `source env-reconcile.sh` with no args
+# defines the functions below and populates OPERATOR_CHECKOUTS without running
+# the reconciler; see the direct-invocation guard ahead of "Main enumeration"):
+#   OPERATOR_CHECKOUTS      array — the resolved consumer-checkout registry
+#                            (DEFAULT_OPERATOR_CHECKOUTS, or the
+#                            ENV_RECONCILE_OPERATOR_CHECKOUTS override) — the
+#                            single source of truth for "which checkouts are
+#                            kernel consumers", reused (not re-listed) by
+#                            /check-in's class-B cross-repo-propagation
+#                            discharge (claude/commands/check-in.md).
+#   kernel_pin_tag_of <c>    prints checkout <c>'s installed kernel tag, read
+#                            from its own `.kernel-pin` `tag` line; exits 1
+#                            (prints nothing) if absent — "not yet reached".
+#   semver_ge <a> <b>        prints `true`/`false` for a numeric (not
+#                            lexical) `vMAJOR.MINOR.PATCH` compare.
+#
 # Env overrides (all optional; space-separated path lists unless noted):
 #   ENV_RECONCILE_CRON_CHECKOUTS
 #   ENV_RECONCILE_OPERATOR_CHECKOUTS
@@ -79,8 +95,12 @@
 #
 # Kept POSIX-bash-3.2 compatible (no mapfile/associative arrays) with BSD-vs-
 # GNU stat fallbacks, so it runs on the macOS dev shell as well as Linux CI.
-# It is a DIRECTLY-INVOKED script (env-hygiene-report.sh + /tidy call it by
-# bare path) — tracked 100755, unlike its sourced-only sibling lib/merged-detect.sh.
+# It is primarily a DIRECTLY-INVOKED script (env-hygiene-report.sh + /tidy
+# call it by bare path) — tracked 100755, like its sourced-only sibling
+# lib/merged-detect.sh is NOT — but it is also safely sourceable for its
+# library surface above (a `source`'d run's arg-parse loop simply sees an
+# empty "$@" and its main-enumeration body is skipped by the direct-invocation
+# guard, so sourcing never runs the reconciler or trips one of its `exit`s).
 
 set -uo pipefail
 
@@ -152,6 +172,54 @@ fi
 # ── Portable stat/date helpers (mirrors vault_hygiene_report.sh) ─────────────
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 now_epoch() { date +%s; }
+
+# ── kernel_pin_tag_of <checkout> ──────────────────────────────────────────────
+# Reads the installed kernel tag straight from a consumer checkout's own
+# `.kernel-pin` file (atomically written by `scripts/update-kernel.sh`; NOT a
+# new stamp — this is the /check-in class-B discharge's only source of truth
+# for "what kernel tag is this consumer running"). Prints the tag (e.g.
+# `v0.12.1`) and exits 0 on success; prints nothing and exits 1 when the
+# checkout or its `.kernel-pin` is absent or has no `tag` line — the caller
+# treats that as "not yet reached", never a crash (a straggler/never-updated
+# consumer keeps a class-B record open, it doesn't abort the discharge pass).
+kernel_pin_tag_of() {
+  local checkout="$1" pin tag
+  pin="$checkout/.kernel-pin"
+  [ -f "$pin" ] || return 1
+  tag="$(awk '$1=="tag"{print $2; exit}' "$pin" 2>/dev/null)"
+  [ -n "$tag" ] || return 1
+  printf '%s\n' "$tag"
+  return 0
+}
+
+# ── semver_ge <a> <b> ──────────────────────────────────────────────────────────
+# bash-3.2-safe semver `a >= b` compare for the `vMAJOR.MINOR.PATCH` tag shape
+# (a leading `v` is optional on either side; a missing component defaults to
+# 0). Prints `true` or `false` on stdout and always exits 0 — this is a pure
+# string-in/string-out helper, never a pass/fail exit code, so callers test
+# its printed value rather than `$?`. NUMERIC comparison, not lexical: lexical
+# order would wrongly rank "0.9.0" above "0.12.1" (`9` > `1` as the first
+# differing character); semver_ge compares each dotted component as an
+# integer instead. (BSD `sort -V` on macOS also orders these correctly and is
+# a fine ad-hoc sanity check — `printf 'v0.9.0\nv0.12.1\n' | sort -V` — but
+# this function is used directly rather than shelling out to `sort` so the
+# compare stays a single in-process call.)
+semver_ge() {
+  local a="${1#v}" b="${2#v}" a_maj a_min a_pat b_maj b_min b_pat
+  IFS='.' read -r a_maj a_min a_pat <<<"$a"
+  IFS='.' read -r b_maj b_min b_pat <<<"$b"
+  a_maj="${a_maj%%[^0-9]*}"; a_min="${a_min%%[^0-9]*}"; a_pat="${a_pat%%[^0-9]*}"
+  b_maj="${b_maj%%[^0-9]*}"; b_min="${b_min%%[^0-9]*}"; b_pat="${b_pat%%[^0-9]*}"
+  a_maj="${a_maj:-0}"; a_min="${a_min:-0}"; a_pat="${a_pat:-0}"
+  b_maj="${b_maj:-0}"; b_min="${b_min:-0}"; b_pat="${b_pat:-0}"
+  if [ "$a_maj" -gt "$b_maj" ]; then printf 'true\n'; return 0; fi
+  if [ "$a_maj" -lt "$b_maj" ]; then printf 'false\n'; return 0; fi
+  if [ "$a_min" -gt "$b_min" ]; then printf 'true\n'; return 0; fi
+  if [ "$a_min" -lt "$b_min" ]; then printf 'false\n'; return 0; fi
+  if [ "$a_pat" -ge "$b_pat" ]; then printf 'true\n'; return 0; fi
+  printf 'false\n'
+  return 0
+}
 
 # ── Findings accumulator ──────────────────────────────────────────────────────
 alarms=0
@@ -349,7 +417,17 @@ classify_agent() {
   printf ''
 }
 
-# ── Main enumeration ──────────────────────────────────────────────────────────
+# ── Main enumeration + Emit — DIRECT-INVOCATION ONLY ─────────────────────────
+# Guarded so this script is also safely SOURCEABLE as a library: a caller
+# (e.g. /check-in's class-B activation discharge — claude/commands/check-in.md
+# § Pending-activations ledger) can `source` this file with no args to pull in
+# OPERATOR_CHECKOUTS (the consumer registry) and the kernel_pin_tag_of /
+# semver_ge helpers above WITHOUT running the reconciler or hitting one of its
+# `exit` calls (which, under `source`, would exit the *caller's* shell, not
+# just return). Direct execution (`env-reconcile.sh [--format ...]`) is
+# unaffected — this guard is true exactly when the script is its own $0.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+
 declare -a WT_ROOTS=()
 _i=0
 while [ "$_i" -lt "${#CRON_CHECKOUTS[@]}" ]; do
@@ -470,3 +548,5 @@ else
   echo "OK"
 fi
 exit 0
+
+fi # end direct-invocation guard
