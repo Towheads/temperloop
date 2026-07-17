@@ -110,6 +110,7 @@ Every `## Items` entry is one checkbox line — `- [ ] **<title>** \`slug: <keba
 | `files:` | optional | Files the item is expected to touch. |
 | `acceptance:` | required (rule 2) | Bullet list of independently checkable conditions. |
 | `gate_check:` | conditional (rule 11) | Machine-checkable external-gate predicate; required whenever a prose external gate rides `notes:`. |
+| `activation:` | conditional (rule 13) | Inward activation predicate — how `/build` confirms *this item's own* output is live. A `class: A` block carries a `proof:` command run at Step 3e.6; `class: B`/`C` are ledger-discharged (temperloop#317). |
 | `notes:` | optional | Nuance for the worker — gotchas, prior failed approaches, external-gate prose. |
 | `review:` | optional | Reviewer override; otherwise inferred from changed files. |
 | `split_from:` | optional (rule 10) | `#N` this item was split from; mutually exclusive with `gh_issue:`. |
@@ -237,6 +238,24 @@ Write the predicate against what makes the gated work *possible*, never against 
 
 **This prevents the ELT #492 false gate-lift.** During the ELT run, item #492's gate rode `notes:` as prose ("don't start until #380 lands"); the orchestrator declared it lifted from issue state alone — *"#380 CLOSED → roster gate lifted"* — but #380 had closed the data capture while deferring product wiring (`configs/artists.toml` still listed 3 of 40 artists). #492 was re-opened on that false premise, re-parked, two missing prereqs filed (#519/#520), and the leg re-decomposed — the costliest replan of the run. A `gate_check: "configs/artists.toml lists >=40 artists"` would have read **false** at the gate-lift decision and stopped it. `/assess` emits the predicate alongside the prose gate; `/build` Step 3a runs it instead of inferring lift from issue-closed-state.
 
+### Optional `activation:` block — the inward activation predicate
+
+`gate_check:` points **outward** — "has a *dependency's* consumable materialized." `activation:` is its **inward twin**: "is *this item's own* output now wired into the running path?" It exists because the pipeline's definition of done — worker self-checks `acceptance:` → static gate → CI green → PR merged — measures the *artifact*, never the artifact's *integration*. A runner that is correct but never registered, a flag built but never flipped, a rollup computed but never rendered all satisfy "done" while staying dormant. See `Decisions/temperloop - Activation-completeness contract`.
+
+Activation is a taxonomy of three classes, keyed by **where** the proof lives and **when** it is observable:
+
+```markdown
+  - activation:
+    - class: A
+    - proof: "grep -q GeminiRunner evals/runners/__init__.py"
+```
+
+- **`class: A` — synchronous / in-repo.** Flag flip, dispatch-table registration, call-site wiring, render-a-rollup. Proof lives in the same repo and is observable at merge. Carries a **`proof:`** predicate — a shell command that reads **false until the built code is genuinely reachable**, pinned on the *reachability surface* (the `__init__.py` entry, the config value, the rendered panel), never on "the code exists." `/build` runs it at Step 3e.6; if `proof:` is omitted, `/build` falls back to driving `/verify` on the item's `files:`. **This is the only class enforced today** (temperloop#317 Level 1).
+- **`class: B` — propagation-gated / cross-repo.** A kernel feature is live only after a release + each consumer's `make update-kernel` + `make install`. Discharged **per-consumer** against an installed-kernel-version watermark, on the `Context/pipeline - pending activations.md` ledger — not at merge. *(Machinery lands with temperloop#317; a `class: B` block records intent today but is not yet auto-discharged.)*
+- **`class: C` — time-deferred / soak.** A LaunchAgent firing on cadence, a rollup accumulating data, cross-host reconciliation. Discharged by a periodic liveness poll after a soak window (`env-reconcile.sh`'s `AGENT_STALE` is the launchd sensor), also via the ledger. *(Same status as class B — intent recorded, auto-discharge is temperloop#317.)*
+
+The block is **optional** while temperloop#317 is in flight — a product-source item that omits it is not yet a validation failure (that hard requirement lands with the full epic, once B/C discharge exists, so authoring a B/C block isn't forced before the machinery can honor it). When the block **is** present, rule 13 enforces its internal consistency.
+
 ### Orchestrator-written fields (`pr:`, `pushed_sha:`)
 
 `/build` writes these onto an item as it works — authors don't set them. `pr:` (the open PR number) and `pushed_sha:` (the worker commit pushed to the branch) are recorded at PR-create time (3f), *before* the CI watch, so a crash leaves a recoverable pointer: Step 1 resume re-attaches to `pr:` instead of re-spawning a worker, and Step 0.5 reconciles open PRs against it.
@@ -324,6 +343,7 @@ Fail fast if any of:
 10. An item carries **both** `gh_issue:` and `split_from:` (mutually exclusive), or a non-empty `split_from:` whose value isn't a `#<positive-integer>` issue ref. A split item must leave `gh_issue:` unset so Step 2.5 mints it a fresh per-item issue (#73). This mutual exclusion is an **always-true invariant**, including across a resume: `build` Step 2.5 **swaps `split_from:`→`gh_issue:` atomically** — the same patch that writes the minted `gh_issue:` also *removes* `split_from:`, restoring the 1:1 item↔issue end-state — so an item is never left carrying both, and a resumed run's re-validation of this rule always passes. Worked before/after of one split item across Step 2.5: `split_from: #40` / no `gh_issue:`  →  `gh_issue: #57` / no `split_from:`.
 11. An item declares an **external / cross-plan gate in `notes:`** (a prose gate of the "don't start until #N lands" form — the schema forbids a cross-plan `after:` ref, so such a gate can only ride `notes:`) but carries **no `gate_check:` predicate**. A prose-only external gate is a **validation smell**: it is unverifiable, so a gate-lift can only be *inferred* from issue-closed-state — the ELT #492 trap, where "#380 CLOSED → roster gate lifted" was wrong because #380 deferred product wiring ("issue closed" ≠ "dependency consumable exists"). Every external/cross-plan gate MUST carry a machine-checkable `gate_check:` on the **consumable** (e.g. `gate_check: "configs/artists.toml lists >=40 artists"`) that `/build` Step 3a evaluates directly instead of inferring lift from the tracker. (A `gate_check:` is **optional** on an item with no external gate — the requirement is conditional on the prose gate being present.)
 12. `repo:` (when present) must match `owner/repo` shape — a single `/` separating two non-empty segments of `[A-Za-z0-9_.-]+`, no leading `#`, no issue number. Fail otherwise; do not silently coerce or strip. (`repo:` absent is never a failure — it is optional and defaults to the plan's home repo.)
+13. An item declares an `activation:` block whose `class:` is not one of `A` \| `B` \| `C`, **or** a `class: A` block that carries no `proof:` predicate. Class A is the synchronous in-repo activation check `/build` runs at Step 3e.6, so it must be machine-checkable — like `gate_check:`, but pinned on *this item's own* reachability surface (the `__init__.py` entry, the flipped flag, the rendered panel) rather than a dependency's. Class B/C are ledger-discharged (temperloop#317) and need no `proof:`. (An `activation:` block is **optional** — the requirement is conditional on the block being present; a `class: A` block specifically must carry `proof:`.)
 
 > `## Problem` and the grouped `## Summary` are an **authoring standard, not a validation rule** — `/build` does not fail a plan that lacks them, so plans authored before this convention still execute on resume.
 

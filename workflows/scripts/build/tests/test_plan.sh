@@ -224,6 +224,84 @@ out="$(bash "$SCRIPT" validate "$TMP/gate-ok.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "external gate WITH gate_check should be VALID (got: $out)"
 echo "PASS: validate flags a prose external gate missing gate_check, clears it once gate_check present (rule 11)"
 
+# --- validate: activation block internal consistency (rule 13) ----------------
+# class A without a proof: predicate → INVALID
+cat > "$TMP/act-noproof.md" <<'EOF'
+---
+status: approved
+---
+## Items
+
+- [ ] **Class A no proof** `slug: act-a-noproof` — synchronous activation, missing predicate
+  - branch: `feat/act-a-noproof`
+  - activation:
+    - class: A
+  - acceptance:
+    - x
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/act-noproof.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 13")) | any' <<<"$out" >/dev/null \
+  || fail "class-A activation without proof: not flagged (rule 13) (got: $out)"
+echo "PASS: validate → INVALID on a class-A activation block missing proof: (rule 13)"
+
+# an unknown class → INVALID
+cat > "$TMP/act-badclass.md" <<'EOF'
+---
+status: approved
+---
+## Items
+
+- [ ] **Bad class** `slug: act-badclass` — class must be A|B|C
+  - branch: `feat/act-badclass`
+  - activation:
+    - class: X
+    - proof: "true"
+  - acceptance:
+    - x
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/act-badclass.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 13")) | any' <<<"$out" >/dev/null \
+  || fail "activation with an invalid class not flagged (rule 13) (got: $out)"
+echo "PASS: validate → INVALID on an activation class outside A|B|C (rule 13)"
+
+# class A WITH proof: → VALID (and coexists with acceptance parsing)
+cat > "$TMP/act-ok.md" <<'EOF'
+---
+status: approved
+---
+## Items
+
+- [ ] **Class A with proof** `slug: act-a-ok` — synchronous activation, wired-in predicate
+  - branch: `feat/act-a-ok`
+  - activation:
+    - class: A
+    - proof: "grep -q GeminiRunner evals/runners/__init__.py"
+  - acceptance:
+    - runner registered and dispatched
+    - tests pass
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/act-ok.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "class-A activation WITH proof should be VALID (got: $out)"
+echo "PASS: validate → VALID on a class-A activation block carrying proof: (rule 13)"
+
+# class B needs no proof: (ledger-discharged) → VALID
+cat > "$TMP/act-b.md" <<'EOF'
+---
+status: approved
+---
+## Items
+
+- [ ] **Class B** `slug: act-b` — propagation-gated, no proof required
+  - branch: `feat/act-b`
+  - activation:
+    - class: B
+  - acceptance:
+    - x
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/act-b.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "class-B activation without proof should be VALID (ledger-discharged) (got: $out)"
+echo "PASS: validate → VALID on a class-B activation block with no proof: (ledger-discharged) (rule 13)"
+
 # --- toposort: 2-level DAG over depends-on ∪ after ----------------------------
 out="$(bash "$SCRIPT" toposort "$TMP/valid.md")"
 jq -e '.levels | length == 2' <<<"$out" >/dev/null || fail "expected 2 levels (got: $out)"
