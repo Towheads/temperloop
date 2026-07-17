@@ -106,6 +106,16 @@ engineered to keep the release non-breaking — every plan authored before
 - **Sandbox test suites prune the live basic-memory store** from their
   no-residue snapshots, so a populated local store no longer fails
   `test_sandbox.sh` / `test_sandbox_dry_run_legs.sh`. (#377, #382)
+- **Test runners surface failed-test output; `test_eject.sh` is
+  config-hermetic with git auto-maintenance off.** The 7 `test-*` Makefile
+  runner loops ran each script with `>/dev/null 2>&1`, so a CI failure named
+  only the script, never the assertion — which is why a `test_eject.sh` flake
+  on the macos-latest runner couldn't be root-caused. The loops now dump the
+  captured output (indented) on `[FAIL]`, pass path unchanged. `test_eject.sh`
+  is additionally pinned to an isolated global / empty system git config with
+  `gc` and `maintenance` auto **off** (the suspected flake: git's background
+  maintenance racing fixture index/ref locks under macOS-runner I/O
+  contention). (#401, closes #400)
 
 ## [0.12.1] - 2026-07-15
 
