@@ -42,7 +42,7 @@ repo_args=()
 since="$(date -u -v-"${DAYS}"d '+%Y-%m-%d' 2>/dev/null || date -u -d "-${DAYS} days" '+%Y-%m-%d')"
 
 # Merged PRs in the window (number + body) — one list call.
-prs_json="$("$GH" pr list "${repo_args[@]}" --state merged --search "merged:>=$since" \
+prs_json="$("$GH" pr list "${repo_args[@]+"${repo_args[@]}"}" --state merged --search "merged:>=$since" \
              --limit 200 --json number,body 2>/dev/null || echo '[]')"
 [ -n "$prs_json" ] || prs_json='[]'
 
@@ -52,7 +52,7 @@ uncovered_list=""
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   # Did this PR touch a workflow spec? (per-PR files — not available on `pr list`.)
-  files="$("$GH" pr view "$n" "${repo_args[@]}" --json files --jq '.files[].path' 2>/dev/null || true)"
+  files="$("$GH" pr view "$n" "${repo_args[@]+"${repo_args[@]}"}" --json files --jq '.files[].path' 2>/dev/null || true)"
   printf '%s\n' "$files" | grep -qE '^claude/commands/.*\.md$' || continue
   total=$((total + 1))
   body="$(printf '%s' "$prs_json" | jq -r --argjson n "$n" '.[] | select(.number==$n) | .body // ""')"
