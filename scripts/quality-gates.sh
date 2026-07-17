@@ -113,6 +113,18 @@ KERNEL_GATES=(
   # kernel table names a resolvable owner file/section — the
   # validate-live-drain.sh mold applied to the presentation-plane registry.
   "make validate-template-refs"
+  # Class-A "static-second-surface" activation-registry lint (temperloop
+  # plan item activation-registry-validator, Class-A subset of the
+  # activation-completeness contract, temperloop#317 Level 1): the
+  # validate-live-drain.sh mold applied to Plans-archive/*.md's `activation:`
+  # blocks — for each `class: A` block whose `proof:` reduces to a
+  # recognized static file-check idiom (grep/test/[/stat/ls/cat/find), both
+  # the item's declared `files:` surface and the proof's activating-surface
+  # file must exist in-tree; anything else (class B/C, or a class-A proof
+  # that isn't a static second-file check) is out of scope and reported as
+  # a skip, not a failure. Reads Plans-archive/ (git-tracked) only, never
+  # the live vault Plans/ — see the script's own header.
+  "make validate-activation-registry"
   # zsh special-parameter-tie guard + its behavioral regression (temperloop#40,
   # surfaced from foundation#987). These are DIRECT `bash` gates rather than
   # `make` targets because the kernel Makefile is generator-owned (seeded from
