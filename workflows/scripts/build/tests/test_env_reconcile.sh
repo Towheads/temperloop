@@ -186,4 +186,64 @@ echo "PASS: malformed plist + absent checkout -> exit 0, never aborts"
 [ -d "${OP1}.wt/leaked-slug" ] || fail "leaked worktree was removed (env-reconcile.sh must be READ-ONLY)"
 echo "PASS: read-only -- no checkout/worktree was mutated by any run"
 
+# --- AGENT_STALE freshness oracle (#1173 / #904): heartbeat marker, not mtime --
+# launchd touches StandardOutPath on every wake, so freshness must be judged from
+# a marker the job writes on SUCCESS. Three loaded agents in an isolated dir:
+HB="$TMP/heartbeat"; mkdir -p "$HB"
+mkdir -p "$TMP/launchd-fresh"
+for lbl in com.test.stale com.test.fresh com.test.nomarker; do
+  cat > "$TMP/launchd-fresh/$lbl.plist" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$lbl</string>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>$TMP/$lbl.out.log</string>
+</dict>
+</plist>
+PL
+  # Every agent has a FRESH, 0-byte StandardOutPath — the exact #1173 trap: launchd
+  # opened the log on a wake, giving it a current mtime regardless of whether the
+  # job did any work.
+  : > "$TMP/$lbl.out.log"
+done
+# com.test.stale: last SUCCESS marker is ancient (older than the 3600s cadence) →
+# STALE, even though its StandardOutPath mtime is fresh. Old (mtime) code would
+# false-FRESH this; the marker oracle correctly flags it. THE #1173 regression.
+touch -t 202001010000 "$HB/com.test.stale.ran"
+# com.test.fresh: marker touched now (< cadence) → clean.
+touch "$HB/com.test.fresh.ran"
+# com.test.nomarker: no marker at all → freshness unknown (nothing emitted),
+# never a false-STALE from the launchd-touched log.
+
+rc=0
+sout="$(
+  PATH="$TMP/bin:$PATH" \
+  LAUNCHCTL_MOCK_LOADED="com.test.stale com.test.fresh com.test.nomarker" \
+  ENV_RECONCILE_AGENT_HEARTBEAT_DIR="$HB" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd-fresh" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "AGENT_STALE run: expected exit 0 (got $rc); output:
+$sout"
+echo "$sout" | grep -q "AGENT_STALE:com.test.stale" \
+  || fail "#1173 regression: agent with an ancient success-marker but a fresh launchd-touched log was NOT flagged AGENT_STALE; output:
+$sout"
+echo "PASS: #1173 — freshness judged from the heartbeat marker (ancient) not StandardOutPath mtime (fresh) -> AGENT_STALE"
+if echo "$sout" | grep -q "AGENT_STALE:com.test.fresh"; then
+  fail "fresh heartbeat wrongly flagged AGENT_STALE; output:
+$sout"
+fi
+echo "PASS: loaded agent with a fresh marker -> not stale"
+if echo "$sout" | grep -q "AGENT_STALE:com.test.nomarker"; then
+  fail "marker-less agent flagged STALE from launchd-touched log mtime (the false-STALE #1173 warns against); output:
+$sout"
+fi
+echo "PASS: marker-less agent is freshness-unknown, never false-STALE"
+
 echo "ALL PASS: test_env_reconcile.sh"

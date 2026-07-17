@@ -49,10 +49,18 @@
 #                            checkout above. Drift:
 #                              AGENT_UNLOADED  declared but not in
 #                                              `launchctl list`
-#                              AGENT_STALE     loaded, but no evidence of a
-#                                              run within its own cadence
+#                              AGENT_STALE     loaded, but its heartbeat marker
+#                                              is older than its cadence (no
+#                                              successful run within cadence)
 #                            Override: ENV_RECONCILE_LAUNCHD_DIRS
 #                            (space-separated dirs to glob *.plist in).
+#                            Heartbeat convention (#1173): freshness is judged
+#                            from a marker the job writes on SUCCESS, at
+#                            $AGENT_HEARTBEAT_DIR/<label>.ran — NEVER from
+#                            StandardOutPath's mtime, which launchd touches on
+#                            every wake (incl. a wake that aborts having done
+#                            nothing). A marker-less agent is reported as
+#                            freshness-unknown (nothing emitted), not STALE.
 #
 # Usage:
 #   env-reconcile.sh [--format report|entry]
@@ -92,7 +100,9 @@
 #   ENV_RECONCILE_OPERATOR_CHECKOUTS
 #   ENV_RECONCILE_LAUNCHD_DIRS
 #   ENV_RECONCILE_STALE_UNTRACKED_DAYS      (default 7)
-#   ENV_RECONCILE_AGENT_LOG_DIR             (default $HOME/Library/Logs)
+#   ENV_RECONCILE_AGENT_HEARTBEAT_DIR       (default $XDG_STATE_HOME/foundation/
+#                                            agent-heartbeat — dir of <label>.ran
+#                                            markers the jobs write on success)
 #   ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S   (default 86400 — used when a
 #                                            plist declares no StartInterval)
 #
@@ -144,8 +154,11 @@ case "$FORMAT" in report|entry) ;; *) echo "unknown --format: $FORMAT (report|en
 
 # ── Tunables (env-overridable) ────────────────────────────────────────────────
 STALE_UNTRACKED_DAYS="${ENV_RECONCILE_STALE_UNTRACKED_DAYS:-7}"
-AGENT_LOG_DIR="${ENV_RECONCILE_AGENT_LOG_DIR:-$HOME/Library/Logs}"
 AGENT_DEFAULT_CADENCE_S="${ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S:-86400}"
+# Heartbeat markers: the reliable freshness signal (#1173). A launchd job touches
+# $AGENT_HEARTBEAT_DIR/<label>.ran on SUCCESSFUL completion; env-reconcile reads
+# the marker's mtime, never StandardOutPath (which launchd touches on every wake).
+AGENT_HEARTBEAT_DIR="${ENV_RECONCILE_AGENT_HEARTBEAT_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/agent-heartbeat}"
 
 DEFAULT_CRON_CHECKOUTS="$HOME/dev/foundation.cron $HOME/dev/batch/temperloop $HOME/dev/foundation-kernel"
 # Note: $HOME/dev/batch/temperloop (cron, above) and $HOME/dev/temperloop
@@ -179,7 +192,17 @@ else
 fi
 
 # ── Portable stat/date helpers (mirrors vault_hygiene_report.sh) ─────────────
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# Portable mtime-as-epoch. GNU-first, then BSD — each branch emits ONLY on
+# success (guarded by capture + non-empty check), because GNU `stat -f %m`
+# mis-parses as filesystem mode and leaks a multi-line "File: …" blob to stdout
+# while exiting non-zero, which a bare `A || B` would concatenate into the result
+# (breaking the arithmetic that consumes it under `set -u`).
+file_mtime() {
+  local m
+  if m="$(stat -c %Y "$1" 2>/dev/null)" && [ -n "$m" ]; then printf '%s\n' "$m"; return 0; fi
+  if m="$(stat -f %m "$1" 2>/dev/null)" && [ -n "$m" ]; then printf '%s\n' "$m"; return 0; fi
+  echo 0
+}
 now_epoch() { date +%s; }
 
 # ── kernel_pin_tag_of <checkout> ──────────────────────────────────────────────
@@ -390,7 +413,7 @@ _plist_extract_key() {
 
 # ── classify_agent <plist> ────────────────────────────────────────────────────
 classify_agent() {
-  local plist="$1" label interval log_path last_run age_s
+  local plist="$1" label interval last_run age_s marker
 
   label="$(_plist_extract_key "$plist" Label)"
   if [ -z "$label" ]; then
@@ -411,18 +434,35 @@ classify_agent() {
   interval="$(_plist_extract_key "$plist" StartInterval)"
   case "$interval" in '' | *[!0-9]*) interval="$AGENT_DEFAULT_CADENCE_S" ;; esac
 
-  log_path="$(_plist_extract_key "$plist" StandardOutPath)"
-  [ -n "$log_path" ] || log_path="$AGENT_LOG_DIR/${label}.log"
-
-  if [ -f "$log_path" ]; then
-    last_run="$(file_mtime "$log_path")"
+  # ── Freshness oracle (#1173 / #904) ─────────────────────────────────────────
+  # launchd touches StandardOutPath's mtime on EVERY wake — including a wake that
+  # aborts in seconds having done nothing — so that mtime cannot distinguish "the
+  # job ran" from "launchd opened the file" (a 0-byte log can carry a current
+  # mtime; this is how the F#1170 silent-abort nights stayed invisible to the very
+  # probe meant to catch them). The reliable signal is a heartbeat MARKER the job
+  # itself writes on SUCCESSFUL completion; env-reconcile reads the marker, never
+  # StandardOutPath. Agents opt in by `touch`-ing $AGENT_HEARTBEAT_DIR/<label>.ran
+  # at the end of a successful run.
+  marker="$AGENT_HEARTBEAT_DIR/${label}.ran"
+  if [ -f "$marker" ]; then
+    last_run="$(file_mtime "$marker")"
     age_s=$(( $(now_epoch) - last_run ))
+    # Stale once the last SUCCESSFUL run is older than one full cadence: a single
+    # missed or silently-aborted cycle leaves the marker untouched and trips this.
     if [ "$age_s" -gt "$interval" ]; then
       printf 'AGENT_STALE:%s' "$label"
       return 0
     fi
+    printf ''
+    return 0
   fi
 
+  # No heartbeat marker: the agent has not adopted the reliable signal, and
+  # StandardOutPath mtime is untrustworthy (#1173), so we do NOT assert freshness
+  # from it — a false-STALE every run is noise, and the false-FRESH it used to
+  # emit was the F#1170 blind spot. The loaded-state check above still catches an
+  # UNLOADED agent; freshness for a marker-less agent is reported as unknown
+  # (nothing emitted) until it adopts the heartbeat. Fail-open.
   printf ''
 }
 
