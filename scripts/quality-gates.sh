@@ -390,17 +390,45 @@ cd "$REPO_ROOT" || exit 1
 # Run all gates (don't fail-fast) so one run surfaces every failure, then exit
 # non-zero if any failed — friendlier locally than CI's step-by-step halt while
 # still giving CI a single non-zero exit to gate on.
+# Bounded per-gate retry to absorb transient macOS-runner flakiness
+# (temperloop#403): the GitHub macos-latest runner intermittently fails
+# unrelated hermetic gates (fork/exec/IO under runner load) that pass locally
+# and on ubuntu — e.g. test_eject.sh and test_validate_design_brief.sh, which
+# share no code. A real breakage fails all attempts and still gates; a flake
+# clears on a retry. Retries are LOGGED (per-attempt + an end-of-run summary)
+# so a flake stays visible rather than silently masked. Set GATE_MAX_ATTEMPTS=1
+# to disable (e.g. when hunting a real intermittent bug).
+GATE_MAX_ATTEMPTS="${GATE_MAX_ATTEMPTS:-3}"
 failures=()
+retried=()
 for gate in "${GATES[@]}"; do
   printf '\n=== %s ===\n' "$gate"
   # Each GATES entry is a full command line; split it into argv (no eval).
   read -ra cmd <<< "$gate"
-  if ! "${cmd[@]}"; then
-    failures+=("$gate")
-  fi
+  attempt=1
+  while true; do
+    if "${cmd[@]}"; then
+      if (( attempt > 1 )); then
+        retried+=("$gate (green on attempt $attempt/$GATE_MAX_ATTEMPTS)")
+      fi
+      break
+    fi
+    if (( attempt >= GATE_MAX_ATTEMPTS )); then
+      failures+=("$gate")
+      break
+    fi
+    printf '\n::: gate failed on attempt %d/%d — retrying (transient-flake tolerance, temperloop#403): %s\n' \
+      "$attempt" "$GATE_MAX_ATTEMPTS" "$gate" >&2
+    attempt=$(( attempt + 1 ))
+  done
 done
 
 echo
+if (( ${#retried[@]} > 0 )); then
+  printf 'NOTE: %d gate(s) passed only after a retry (transient flake — see temperloop#403):\n' "${#retried[@]}"
+  printf '  - %s\n' "${retried[@]}"
+  echo
+fi
 if (( ${#failures[@]} > 0 )); then
   printf 'FAILED %d/%d quality gate(s):\n' "${#failures[@]}" "${#GATES[@]}"
   printf '  - %s\n' "${failures[@]}"
