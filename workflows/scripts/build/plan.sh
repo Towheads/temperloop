@@ -371,6 +371,9 @@ split_list() { printf '%s' "$1" | tr ',' ' ' | xargs 2>/dev/null || true; }
 # 1 (false) on no files or no matching entry.
 _files_touch_shipped() {
   local raw="${1//\`/}" tok
+  # No files declared → cannot touch a shipped path (also avoids expanding an
+  # empty array under `set -u`, which aborts on bash 3.2 / macOS system bash).
+  [ -n "$raw" ] || return 1
   IFS=',' read -ra _ftoks <<<"$raw"
   for tok in "${_ftoks[@]}"; do
     tok="$(printf '%s' "$tok" | xargs 2>/dev/null || true)"
