@@ -192,7 +192,17 @@ else
 fi
 
 # ── Portable stat/date helpers (mirrors vault_hygiene_report.sh) ─────────────
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# Portable mtime-as-epoch. GNU-first, then BSD — each branch emits ONLY on
+# success (guarded by capture + non-empty check), because GNU `stat -f %m`
+# mis-parses as filesystem mode and leaks a multi-line "File: …" blob to stdout
+# while exiting non-zero, which a bare `A || B` would concatenate into the result
+# (breaking the arithmetic that consumes it under `set -u`).
+file_mtime() {
+  local m
+  if m="$(stat -c %Y "$1" 2>/dev/null)" && [ -n "$m" ]; then printf '%s\n' "$m"; return 0; fi
+  if m="$(stat -f %m "$1" 2>/dev/null)" && [ -n "$m" ]; then printf '%s\n' "$m"; return 0; fi
+  echo 0
+}
 now_epoch() { date +%s; }
 
 # ── kernel_pin_tag_of <checkout> ──────────────────────────────────────────────
