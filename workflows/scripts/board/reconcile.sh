@@ -588,7 +588,7 @@ _label_reconcile_append_pending_decision() {
     echo "reconcile.sh: label hygiene — knowledge_store.sh not found at $ks_lib; skipping pending-decision append" >&2
     return 0
   fi
-  # shellcheck source=scripts/lib/knowledge_store.sh
+  # shellcheck disable=SC1090,SC1091  # optional, guarded above — a synced consumer tree may not carry the lib
   source "$ks_lib" 2>/dev/null || {
     echo "reconcile.sh: label hygiene — failed to source knowledge_store.sh; skipping pending-decision append" >&2
     return 0
