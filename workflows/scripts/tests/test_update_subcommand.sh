@@ -5,9 +5,9 @@
 # temperloop#429, ADR 0002 "Managed-clone state ownership").
 #
 # Builds a SYNTHETIC "upstream" clone of this repo's own committed tree
-# (never the real Towheads/temperloop remote — see the SAFETY note below)
-# carrying four fixture tags, each an intentionally small, controlled change
-# on top of the last:
+# (never the real public kernel remote — see the SAFETY note below) carrying
+# four fixture tags, each an intentionally small, controlled change on top
+# of the last:
 #
 #   v9.1.0  baseline — a deterministic, self-contained CHANGELOG.md replaces
 #           the real one, so this suite never depends on (or is broken by)
