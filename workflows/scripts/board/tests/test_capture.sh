@@ -470,3 +470,196 @@ cleanup_late
 trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
 
 echo "ALL capture.sh board-landing race tests passed (F#1226)"
+
+# ---------------------------------------------------------------------------
+# Batch-budget fixes (foundation #1225): capture.sh drives board_add_to_board /
+# board_create_many (both in lib/board.sh), which capture.sh itself doesn't
+# touch — these two tests drive the fix through the real capture.sh entrypoint,
+# as real subprocesses, to prove the observable behavior end to end.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 1) Cache-patch call-counting: N SERIAL capture.sh invocations that all fall
+#    through to the board_create_many fallback (auto-add never fires) must
+#    share <=1 LIVE whole-board `item-list` fetch within one BOARD_CACHE_TTL
+#    window, not pay one per invocation (the O(N) mechanism #1225 reported: 9
+#    serial captures drained the shared GraphQL budget). A stateful fake `gh`
+#    on PATH: `project item-add` records the added issue number into a shared
+#    state file and echoes back `{"id":"PVTI_<num>"}` (the real gh behavior
+#    board_add_to_board now reads to splice the cache — see
+#    _board_cache_patch_add in lib/board.sh); `project item-list` counts its
+#    own live calls and replies with every issue added so far. `api graphql`
+#    (board_capture_item's own auto-add poll) always reports the issue absent,
+#    so EVERY invocation takes the board_create_many fallback — the worst case.
+#
+# Mechanism under test: invocation 1 has no warm cache yet, so its
+# board_add_to_board falls back to a bust and board_resolve pays the ONE live
+# item-list fetch (unavoidable — nothing to share yet). Invocations 2..N each
+# splice their new item straight into the now-warm cache (_board_cache_patch_add)
+# instead of busting it, so their board_resolve is a cache HIT — zero further
+# item-list calls. Total across all N: exactly 1.
+# ---------------------------------------------------------------------------
+BURST_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-burst-bin-XXXXXX")"
+BURST_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/capture-burst-cache-XXXXXX")"
+BURST_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-burst-log-XXXXXX")"
+BURST_STATE="$(mktemp "${TMPDIR:-/tmp}/capture-burst-state-XXXXXX")"
+BURST_ITEMLIST_CALLS="$(mktemp "${TMPDIR:-/tmp}/capture-burst-calls-XXXXXX")"
+BURST_ISSUE_COUNTER="$(mktemp "${TMPDIR:-/tmp}/capture-burst-counter-XXXXXX")"
+: > "$BURST_STATE"
+: > "$BURST_ITEMLIST_CALLS"
+echo 800 > "$BURST_ISSUE_COUNTER"
+export BURST_LOG BURST_STATE BURST_ITEMLIST_CALLS BURST_ISSUE_COUNTER
+cat > "$BURST_BIN/gh" <<'BURSTGH'
+#!/usr/bin/env bash
+# Stateful fake gh for the serial-capture cache-patch test (foundation #1225).
+# See the test's own header comment (test_capture.sh) for the full mechanism.
+set -euo pipefail
+: "${BURST_LOG:?}" "${BURST_STATE:?}" "${BURST_ITEMLIST_CALLS:?}" "${BURST_ISSUE_COUNTER:?}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$BURST_LOG"
+case "$1 $2" in
+  "issue create")
+    n=$(($(cat "$BURST_ISSUE_COUNTER") + 1)); echo "$n" > "$BURST_ISSUE_COUNTER"
+    printf 'https://github.com/ExampleOrg/example-repo/issues/%s\n' "$n"
+    ;;
+  "label create")   : ;;
+  "project view")   printf '{"id":"PVT_kwTESTPROJECT123","number":3,"title":"stageFind build","owner":{"login":"ExampleOrg"}}\n' ;;
+  "project field-list")
+    printf '{"fields":[{"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"opt_backlog","name":"Backlog"}]}]}\n' ;;
+  "project item-add")
+    # Extract the issue number off the trailing --url path segment, record it
+    # (idempotent), and echo back the real gh shape board_add_to_board reads.
+    url=""; prev=""
+    for a in "$@"; do [ "$prev" = "--url" ] && url="$a"; prev="$a"; done
+    num="${url##*/}"
+    grep -qx "$num" "$BURST_STATE" 2>/dev/null || echo "$num" >> "$BURST_STATE"
+    printf '{"id":"PVTI_item%s"}\n' "$num"
+    ;;
+  "project item-edit") : ;;
+  "project item-list")
+    echo x >> "$BURST_ITEMLIST_CALLS"
+    items="[]"
+    if [ -s "$BURST_STATE" ]; then
+      items="$(jq -sR '[split("\n")[] | select(length>0) | {id: ("PVTI_item" + .), content: {number: (.|tonumber), title: "Burst item", type: "Issue"}}]' "$BURST_STATE")"
+    fi
+    jq -n --argjson items "$items" '{items: $items, totalCount: ($items|length)}'
+    ;;
+  "api graphql")
+    # board_capture_item's auto-add poll: always report the issue absent, so
+    # every invocation takes the board_create_many fallback (the worst case).
+    printf '{"data":{"repository":{"issue":{"title":"Burst item","projectItems":{"nodes":[]}}}}}\n'
+    ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+BURSTGH
+chmod +x "$BURST_BIN/gh"
+cat > "$BURST_BIN/sleep" <<'BURSTSLEEP'
+#!/usr/bin/env bash
+exit 0
+BURSTSLEEP
+chmod +x "$BURST_BIN/sleep"
+cleanup_burst() { rm -rf "$BURST_BIN" "$BURST_CACHE" "$BURST_LOG" "$BURST_STATE" "$BURST_ITEMLIST_CALLS" "$BURST_ISSUE_COUNTER"; unset BURST_LOG BURST_STATE BURST_ITEMLIST_CALLS BURST_ISSUE_COUNTER; }
+trap 'cleanup_burst; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+for i in 1 2 3; do
+  rc=0
+  out="$(
+    PATH="$BURST_BIN:$PATH" \
+    BOARD_CACHE_TTL=300 BOARD_CACHE_DIR="$BURST_CACHE" BOARD_BUDGET_GUARD_THRESHOLD=0 \
+    bash "$CAPTURE" "Burst item $i" 2>&1
+  )" || rc=$?
+  [ "$rc" -eq 0 ] || fail "burst capture #$i exited $rc (out: $out)"
+  grep -Eq 'Captured .* -> board 3 Backlog' <<<"$out" \
+    || fail "burst capture #$i did not report landing on the board (out: $out)"
+done
+
+itemlist_calls="$(wc -l < "$BURST_ITEMLIST_CALLS" | tr -d ' ')"
+[ "$itemlist_calls" -eq 1 ] \
+  || fail "3 serial captures within BOARD_CACHE_TTL should share exactly 1 live item-list fetch (cache-patch, not bust — foundation #1225), got $itemlist_calls (log: $(cat "$BURST_LOG"))"
+[ "$(wc -l < "$BURST_STATE" | tr -d ' ')" -eq 3 ] \
+  || fail "expected all 3 burst issues to have been item-added (state: $(cat "$BURST_STATE"))"
+echo "PASS: 3 serial capture.sh invocations within one BOARD_CACHE_TTL window share exactly 1 live whole-board item-list fetch — board_add_to_board patches the cache instead of busting it (foundation #1225)"
+
+cleanup_burst
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+# ---------------------------------------------------------------------------
+# 2) Budget-guard abort: board_create_many's index-wait retry loop must
+#    pre-flight the SAME GraphQL budget guard used by board_resolve
+#    (_board_budget_guard), but DEFAULTING TO ABORT (not the general guard's
+#    warn-only default) so a near-empty budget stops the retry loop loud
+#    instead of continuing to drain it. The item here NEVER indexes (item-list
+#    always empty, auto-add's graphql probe always empty), forcing the
+#    fallback's retry loop to actually iterate; `api rate_limit` reports a
+#    budget under the default threshold (200) with BOARD_BUDGET_GUARD left
+#    UNSET (proving the abort is the retry loop's own default, not something
+#    the caller had to opt into). BOARD_CREATE_INDEX_RETRIES is set higher
+#    than 1 so a passing item-list count proves the GUARD cut the loop short,
+#    not that the retry budget merely ran out.
+# ---------------------------------------------------------------------------
+GUARD_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-guard-log-XXXXXX")"
+GUARD_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-guard-bin-XXXXXX")"
+GUARD_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/capture-guard-cache-XXXXXX")"
+GUARD_ITEMLIST_CALLS="$(mktemp "${TMPDIR:-/tmp}/capture-guard-calls-XXXXXX")"
+: > "$GUARD_ITEMLIST_CALLS"
+export GUARD_LOG GUARD_ITEMLIST_CALLS
+cat > "$GUARD_BIN/gh" <<'GUARDGH'
+#!/usr/bin/env bash
+# Fake gh for the budget-guard-abort test: the item NEVER indexes (item-list
+# always empty, auto-add's graphql probe always empty), and the GraphQL
+# budget is reported low — proving board_create_many's retry loop aborts
+# rather than exhausting its full retry budget against a near-empty bucket.
+set -euo pipefail
+: "${GUARD_LOG:?}" "${GUARD_ITEMLIST_CALLS:?}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$GUARD_LOG"
+case "$1 $2" in
+  "issue create")   printf 'https://github.com/ExampleOrg/example-repo/issues/904\n' ;;
+  "label create")   : ;;
+  "project view")   printf '{"id":"PVT_kwTESTPROJECT123","number":3,"title":"stageFind build","owner":{"login":"ExampleOrg"}}\n' ;;
+  "project field-list")
+    printf '{"fields":[{"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"opt_backlog","name":"Backlog"}]}]}\n' ;;
+  "project item-add")  printf '{"id":"PVTI_item904"}\n' ;;
+  "project item-edit") : ;;
+  "project item-list")
+    echo x >> "$GUARD_ITEMLIST_CALLS"
+    echo '{"items":[],"totalCount":0}'
+    ;;
+  "api graphql")
+    printf '{"data":{"repository":{"issue":{"title":"Budget-guarded item","projectItems":{"nodes":[]}}}}}\n' ;;
+  "api rate_limit")
+    # Under the default BOARD_BUDGET_GUARD_THRESHOLD (200): a near-empty budget.
+    printf '%s\n%s\n' 40 "$(( $(date +%s) + 600 ))"
+    ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+GUARDGH
+chmod +x "$GUARD_BIN/gh"
+cat > "$GUARD_BIN/sleep" <<'GUARDSLEEP'
+#!/usr/bin/env bash
+exit 0
+GUARDSLEEP
+chmod +x "$GUARD_BIN/sleep"
+cleanup_guard() { rm -rf "$GUARD_BIN" "$GUARD_CACHE" "$GUARD_LOG" "$GUARD_ITEMLIST_CALLS"; unset GUARD_LOG GUARD_ITEMLIST_CALLS; }
+trap 'cleanup_guard; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+rc=0
+out="$(
+  PATH="$GUARD_BIN:$PATH" \
+  BOARD_CACHE_TTL=0 BOARD_CACHE_DIR="$GUARD_CACHE" BOARD_CREATE_INDEX_RETRIES=3 \
+  bash "$CAPTURE" "Item under a drained budget" 2>&1
+)" || rc=$?
+[ "$rc" -ne 0 ] || fail "capture.sh must exit non-zero when board_create_many's retry loop budget-aborts (out: $out)"
+grep -qi 'NOT land' <<<"$out" \
+  || fail "capture.sh must still print the loud not-landed message on a budget-abort (out: $out)"
+grep -q '#904' <<<"$out" \
+  || fail "capture.sh's not-landed message must name the issue number (out: $out)"
+grep -qi 'aborting index-wait retry' <<<"$out" \
+  || fail "board_create_many must name the budget-abort explicitly (out: $out)"
+guard_calls="$(wc -l < "$GUARD_ITEMLIST_CALLS" | tr -d ' ')"
+[ "$guard_calls" -eq 1 ] \
+  || fail "the retry loop must abort on its FIRST budget check (only the base board_resolve item-list call, 1 total), not exhaust BOARD_CREATE_INDEX_RETRIES=3 — got $guard_calls item-list calls (log: $(cat "$GUARD_LOG"))"
+echo "PASS: board_create_many's index-wait retry loop pre-flight budget-guards each re-list and ABORTS BY DEFAULT (not board_resolve's warn-only default) on a near-empty GraphQL budget, propagating through the same truthful-failure contract as an index-timeout (foundation #1225)"
+
+cleanup_guard
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+echo "ALL capture.sh batch-budget tests passed (F#1225)"

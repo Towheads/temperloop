@@ -300,6 +300,21 @@ issue_touch_log_emit "$repo" "$num" "capture" || true
 # auto-add never fires — so the GraphQL-heavy add (GH #53) is the rare fallback,
 # not every capture. Correct whether or not auto-add is configured.
 #
+# That fallback (board_create_on_board -> board_create_many, in lib/board.sh) is
+# exactly the path a BURST of serial capture.sh invocations hits when auto-add
+# is off/slow, and it used to be O(N) in the burst size (foundation #1225): every
+# invocation's board_add_to_board unconditionally busted the cross-process items
+# cache the NEXT invocation would have reused, so N serial captures inside one
+# BOARD_CACHE_TTL window paid N live whole-board resolves instead of sharing ~1.
+# Two fixes now live in lib/board.sh, not here (no capture.sh code needed):
+# board_add_to_board splices the newly-added item's stub into the warm cache
+# instead of busting it (_board_cache_patch_add), and board_create_many's
+# index-wait retry loop is now pre-flight budget-guarded — DEFAULTING TO ABORT
+# (not the general guard's warn-only default) on a near-empty GraphQL budget, so
+# a burst that would have silently drained the budget instead fails loud through
+# the SAME truthful-failure contract the `board_capture_item` check below already
+# handles (non-zero + BOARD_UNLANDED_ISSUES) rather than stranding issues off-board.
+#
 # board_capture_item now returns non-zero when the item never actually lands
 # (foundation #1226 — the Projects-v2 index race board_create_many's header
 # comment documents). Called EXPLICITLY under `set -euo pipefail`, not bare: a
