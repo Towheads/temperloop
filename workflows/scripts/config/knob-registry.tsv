@@ -146,6 +146,7 @@ KERNEL_REMOTE	https://github.com/Towheads/temperloop	url	kernel	scripts/update-k
 KERNEL_ALLOW_BREAKING	0	bool	kernel	scripts/update-kernel.sh	Acknowledge and proceed through a BREAKING kernel delta unattended
 KERNEL_UPDATE_ASSUME_TTY	auto	enum	kernel	scripts/update-kernel.sh	Force interactive(1)/unattended(0) confirmation instead of auto-detecting a TTY (auto|1|0)
 KERNEL_UPDATE_DRY_RUN	0	bool	kernel	scripts/update-kernel.sh	Run the breaking-delta gate but skip the actual subtree pull
+UPDATE_ASSUME_TTY	auto	enum	kernel	bin/subcommands/update.sh	Force interactive(1)/unattended(0) confirmation instead of auto-detecting a TTY (auto|1|0) — temperloop update's own consent gate, mirrors KERNEL_UPDATE_ASSUME_TTY's convention above
 GH_CALL_CONTEXT	capture	label	kernel	workflows/scripts/board/capture.sh	Attribution tag for the gh call-logger shim
 ISSUE_TOUCHES_RAW_DIR	$ISSUE_TOUCHES_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/capture.sh	Sink dir for the issue-touches raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 SUBSET_HOST_LABEL	$(hostname -s)	string	kernel	workflows/scripts/board/capture.sh	Host label recorded in issue-touch/telemetry records

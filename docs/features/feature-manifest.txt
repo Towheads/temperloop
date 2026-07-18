@@ -135,6 +135,14 @@ install-cli workflows/scripts/install/*
 install-cli workflows/scripts/tests/test_install_*
 install-cli workflows/scripts/demo/*
 install-cli workflows/scripts/proposal/*
+# `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
+# ownership") + the shared CHANGELOG-range parsing lib it and
+# scripts/update-kernel.sh both source — bin/subcommands/update.sh itself
+# and its unit test already fall under the `bin/*` claim above; these three
+# don't match any existing install-cli glob.
+install-cli workflows/scripts/lib/changelog.sh
+install-cli workflows/scripts/lib/tests/test_changelog.sh
+install-cli workflows/scripts/tests/test_update_subcommand.sh
 install-cli workflows/scripts/probe/conventions-probe.sh
 install-cli workflows/scripts/probe/tests/test_conventions_probe.sh
 install-cli workflows/scripts/lib/baseline_snapshot.contract.md
