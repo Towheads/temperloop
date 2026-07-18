@@ -108,6 +108,12 @@ fix it — never a bare stack trace.
 Three steps, each strictly more than the last: taste it read-only, watch it
 mutate something disposable, then opt your own repo in.
 
+**Before step 1: what this costs, and what it will do on its own.**
+[`../docs/cost-and-autonomy.md`](../docs/cost-and-autonomy.md) covers real
+spend figures per tier (including whether a budget cap is on by default),
+and exactly what an unattended run may do without asking versus what always
+blocks for you — worth two minutes before you run anything below.
+
 ### 1. `temperloop try` — zero-config, zero writes
 
 ```sh

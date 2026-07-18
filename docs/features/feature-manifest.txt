@@ -41,6 +41,7 @@ none docs/config-precedence.md
 none docs/architecture.md
 none docs/principles.md
 none docs/who-its-for.md
+none docs/cost-and-autonomy.md
 none AGENTS.md
 none llms.txt
 none CLAUDE.md
