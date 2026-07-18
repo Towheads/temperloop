@@ -418,6 +418,18 @@ walked.
    A finding that surfaces a real gap the operator chooses not to resolve
    now converts that dimension's disposition to `deferred → <tracking
    ref>` rather than leaving it `filled` with an unaddressed critique.
+   **Dimension-0 carve-out.** A finding on **dimension 0** (Premise &
+   null hypothesis — the red-team lens's sharpest target) is the one
+   exception: dimension 0 is `filled`-only (`claude/design-schema.md`
+   § Disposition grammar), so an unresolved dimension-0 finding may
+   **never** convert to `deferred`. It resolves one of two ways — a
+   real fix folded into the premise justification now (`folded`), or an
+   explicit decline that leaves dimension 0 `filled` (the finding is
+   rejected, noted per item 4's decline vocabulary). If the operator
+   judges the premise gap serious enough that dimension 0 cannot
+   honestly stay `filled`, that is a signal to route back to the premise
+   gate (Step 1.3b) or to decline-and-stay-`draft` — never to mint an
+   invalid `deferred` disposition the schema declares impossible.
 3. **Surface contested findings.** A finding the brief's owner disagrees
    with is not applied silently — put it to the operator via
    `AskUserQuestion` (clear win vs. contested is the same split `/assess`
@@ -448,6 +460,11 @@ walked.
    names as living here (in the review tier, until temperloop#216's
    mechanical lint lands) — Step 3's review tier existing does not relax
    this check; it only adds a source of new dispositions for it to catch.
+   One per-dimension invariant this check also holds until #216's lint
+   lands: **dimension 0's only legal disposition is `filled`** (`n/a` and
+   `deferred` are both invalid for it — `claude/design-schema.md` §
+   Disposition grammar), so a dimension 0 carrying `deferred` (e.g. from a
+   mishandled fold-back) is a gap here, not a passing disposition.
 
    1b. **Finding-disposal check.** Dimension-level completeness alone
    cannot catch a dropped review finding — every dimension already
