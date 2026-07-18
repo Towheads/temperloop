@@ -380,24 +380,9 @@ KERNEL_GATES=(
   # legible SKIP and exits 0 (downstream propagation is temperloop#255's
   # decision). Same direct-`bash` form as the install-cli gate above.
   "bash workflows/scripts/tests/test_install_lifecycle.sh"
-  # `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
-  # ownership") — hermetic, deterministic, no-network end-to-end fixture:
-  # a synthetic 4-tag fixture upstream drives the starting --depth-1/tagless
-  # managed clone (bin/bootstrap.sh's own current shape) through unshallow +
-  # fetch-tags, a BREAKING-marked CHANGELOG delta surfaced before consent, a
-  # non-interactive/no-consent refusal, a clean additive update, and an
-  # incompatible install-manifest schema halting BEFORE HEAD moves — plus a
-  # decoy target-repo and a $REPO_ROOT tripwire proving no path outside the
-  # throwaway managed clone is ever written. Same direct-`bash` form as the
-  # install-lifecycle gate above.
-  "bash workflows/scripts/tests/test_update_subcommand.sh"
-  # scripts/update-kernel.sh's own breaking-delta gate (temperloop#89) —
-  # black-box regression proof that lifting semver_major()/
-  # breaking_sections() into workflows/scripts/lib/changelog.sh (temperloop
-  # #429) didn't change this script's behavior. Was previously unregistered
-  # in this gate set (a pre-existing gap, not introduced here); wired in now
-  # since #429 is the first change to touch this script since it landed.
-  "bash scripts/tests/test_update_kernel.sh"
+  # (The `temperloop update` managed-clone gate and the update-kernel
+  # breaking-delta gate are surface-conditional — registered just below the
+  # array, temperloop#488.)
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a
@@ -414,6 +399,36 @@ KERNEL_GATES=(
   "bash workflows/scripts/validate-design-brief.sh"
   "bash workflows/scripts/tests/test_validate_design_brief.sh"
 )
+
+# Surface-conditional kernel gates (temperloop#488). These two gates test
+# surfaces a consuming repo's composed tree may legitimately not carry, so
+# each registers only when its surface is actually present — with a legible
+# skip line otherwise (never a silent no-op, per the legible-degradation
+# rule). In the kernel's own checkout both surfaces exist and both gates
+# always run; the skips fire only in a composed consumer tree.
+SKIPPED_KERNEL_GATES=()
+# `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
+# ownership") — hermetic, deterministic, no-network end-to-end fixture over
+# bin/subcommands/update.sh. A consumer that has not adopted the bin/
+# managed-clone CLI (e.g. a bespoke-subtree vendoring repo) has no such
+# surface to test.
+if [[ -f "$REPO_ROOT/bin/subcommands/update.sh" ]]; then
+  KERNEL_GATES+=("bash workflows/scripts/tests/test_update_subcommand.sh")
+else
+  SKIPPED_KERNEL_GATES+=("test_update_subcommand.sh — bin/subcommands/update.sh absent (managed-clone CLI not adopted)")
+fi
+# scripts/update-kernel.sh's own breaking-delta gate (temperloop#89) —
+# black-box regression proof that lifting semver_major()/breaking_sections()
+# into workflows/scripts/lib/changelog.sh (temperloop#429) didn't change this
+# script's behavior. Applies only to the kernel's seam-bearing version of the
+# script (detected by its KERNEL_UPDATE_ROOT test seam); a consumer whose
+# overlay replaces update-kernel.sh with its own vendoring flow is not the
+# script under test.
+if grep -q 'KERNEL_UPDATE_ROOT' "$REPO_ROOT/scripts/update-kernel.sh" 2>/dev/null; then
+  KERNEL_GATES+=("bash scripts/tests/test_update_kernel.sh")
+else
+  SKIPPED_KERNEL_GATES+=("test_update_kernel.sh — scripts/update-kernel.sh is not the kernel's seam-bearing version (overlay-owned vendoring flow)")
+fi
 
 # The overlay gate set — empty by default; populated only by drop-ins.
 OVERLAY_GATES=()
@@ -442,6 +457,11 @@ if [[ "${1:-}" == "--list" ]]; then
       printf '[overlay] %s\n' "$gate"
     done
   fi
+  if [[ ${#SKIPPED_KERNEL_GATES[@]} -gt 0 ]]; then
+    for skip in "${SKIPPED_KERNEL_GATES[@]}"; do
+      printf '[skipped] %s\n' "$skip"
+    done
+  fi
   exit 0
 fi
 
@@ -453,6 +473,14 @@ fi
 # Run gates from the repo root so the `make` targets resolve regardless of the
 # caller's CWD (build 3e.5 runs this from a throwaway worker checkout).
 cd "$REPO_ROOT" || exit 1
+
+# Name every surface-conditional gate that did not register (temperloop#488)
+# up front, so a composed consumer tree's run shows the skip explicitly.
+if [[ ${#SKIPPED_KERNEL_GATES[@]} -gt 0 ]]; then
+  for skip in "${SKIPPED_KERNEL_GATES[@]}"; do
+    printf 'skipped gate — %s\n' "$skip"
+  done
+fi
 
 # Run all gates (don't fail-fast) so one run surfaces every failure, then exit
 # non-zero if any failed — friendlier locally than CI's step-by-step halt while

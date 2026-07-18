@@ -14,6 +14,27 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-07-18
+
+Patch. Safe pull, no migration — no `BREAKING` marker. CI-portability fix
+for composed consumer trees (temperloop#488): the two v0.14.0 gate
+registrations that test kernel-context surfaces — the `bin/subcommands/
+update.sh` managed-clone CLI gate and the `scripts/update-kernel.sh`
+breaking-delta gate — are now **surface-conditional**. Each registers only
+when its surface is actually present (a `bin/subcommands/update.sh` file;
+the seam-bearing `update-kernel.sh`, detected by its `KERNEL_UPDATE_ROOT`
+test seam) and otherwise prints a legible `skipped gate — <reason>` line,
+in both the run output and `--list` (`[skipped]` rows). In the kernel's own
+checkout both surfaces exist, so both gates always run — behavior there is
+unchanged. A consuming repo whose composed tree legitimately lacks the
+surface (no `bin/` adoption; a bespoke overlay vendoring flow) no longer
+fails CI on tests for code it doesn't ship.
+
+### Fixed
+- `scripts/quality-gates.sh`: `test_update_subcommand.sh` and
+  `test_update_kernel.sh` registrations guard on their surface, with
+  legible skip lines — never a silent no-op (#488).
+
 ## [0.14.0] - 2026-07-18
 
 Additive minor. Safe pull, no migration — no `BREAKING` marker. The headline
