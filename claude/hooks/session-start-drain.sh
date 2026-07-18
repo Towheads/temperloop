@@ -30,16 +30,30 @@ set -uo pipefail
 # comment below on why a whole-file PUT stays outside the interface's own
 # write op for this hook.
 #
-# Absolute path (not BASH_SOURCE-relative): this hook is symlinked to
-# ~/.claude/hooks/, so a relative "../.." climb from BASH_SOURCE[0] would climb
-# out of ~/.claude, not out of the foundation checkout — hence the absolute
-# $HOME/dev/foundation anchor.
-KS_LIB_DIR="${KS_LIB_DIR:-$HOME/dev/foundation/workflows/scripts/lib}"
-if [ -f "$KS_LIB_DIR/knowledge_store.sh" ]; then
+# Resolution order (temperloop#406 — no shipped hook may default to a
+# hardcoded personal checkout path):
+#   1. KS_LIB_DIR env override — highest precedence, always wins.
+#   2. BASH_SOURCE-relative: claude/hooks/<this file> -> ../../workflows/scripts/lib.
+#      Works for both a plain checkout and the production whole-directory
+#      symlink install (workflows/scripts/install/links.sh symlinks the
+#      entire claude/hooks/ directory, not per-file — the OS resolves that
+#      symlinked directory before applying "..", so the relative climb still
+#      lands in the real checkout). Same convention as
+#      session-end-read-summary.sh's own KS_LIB_DIR resolution in this
+#      directory.
+# No hardcoded personal-path default: on a checkout where neither resolves
+# (a stripped-down tree with no workflows/scripts/lib/), KS_LIB_DIR stays
+# empty and the sourcing below simply no-ops — the drain then fails open at
+# the "API key file missing" check further down, same as today.
+KS_LIB_DIR="${KS_LIB_DIR:-}"
+if [ -z "$KS_LIB_DIR" ]; then
+  KS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../workflows/scripts/lib" 2>/dev/null && pwd)"
+fi
+if [ -n "$KS_LIB_DIR" ] && [ -f "$KS_LIB_DIR/knowledge_store.sh" ]; then
   # shellcheck source=/dev/null
   . "$KS_LIB_DIR/knowledge_store.sh"
 fi
-if [ -f "$KS_LIB_DIR/knowledge_store_obsidian.sh" ]; then
+if [ -n "$KS_LIB_DIR" ] && [ -f "$KS_LIB_DIR/knowledge_store_obsidian.sh" ]; then
   # shellcheck source=/dev/null
   . "$KS_LIB_DIR/knowledge_store_obsidian.sh"
 fi

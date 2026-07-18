@@ -134,7 +134,7 @@ TRY_DEMO_CLONE_URL	https://github.com/$demo_repo.git	url	kernel	bin/subcommands/
 TRY_DEMO_BOARD_NUM	900	int	kernel	bin/subcommands/try.sh	Throwaway internal board number for the demo run's scratch boards.conf
 EVAL_DENIAL_LOG	${XDG_STATE_DIR}/eval-board-adapter-denials.log	path	kernel	claude/hooks/board-adapter-guard.sh	Log path for eval-mode board-adapter-bypass denials
 EVAL_RUN		bool	kernel	claude/hooks/board-adapter-guard.sh	Enables eval-mode record-and-deny (unset = normal interactive guard)
-KS_LIB_DIR	$HOME/dev/foundation/workflows/scripts/lib	path	kernel	claude/hooks/mcp-health-preflight.sh	Where the hook looks for knowledge_store.sh (personal-path-verbatim)
+KS_LIB_DIR		path	kernel	claude/hooks/mcp-health-preflight.sh	Where the hook looks for knowledge_store.sh; empty default falls through to a BASH_SOURCE-relative resolution against the installed checkout (temperloop#406)
 KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE		path	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API key-file path
 MCP_HEALTH_API_BASE	${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}	url	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API base URL override for the health preflight hook (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
 KNOWLEDGE_STORE_OBSIDIAN_API_BASE	https://127.0.0.1:27124	url	kernel	claude/hooks/session-start-drain.sh	Obsidian Local REST API base URL

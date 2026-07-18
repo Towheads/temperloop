@@ -9,7 +9,7 @@
 # another repo's canonical checkout in place — `git checkout -b`, commits, a
 # merge, `make install` — moves that peer's HEAD/branch pointer underneath it,
 # leaving the peer's on-disk state inconsistent with its in-memory view. That is
-# exactly how epic #86 stepped on a concurrent session working in dev/foundation.
+# exactly how epic #86 stepped on a concurrent session working in a peer checkout.
 #
 # WHAT: the session's LANE = its home dir (`$CLAUDE_PROJECT_DIR`, the launch dir)
 # PLUS any linked git worktree (a linked worktree is ephemeral task scratch with
@@ -208,7 +208,7 @@ fi
 
 [ -n "$hit" ] || exit 0                     # in-lane -> silent, proceed
 
-reason="This ${tool} targets '${hit_target}', inside the canonical checkout of a DIFFERENT repo ('${hit}') than this session's home ('${home_real}'). Under the one-session-per-repo-directory invariant that other checkout is very likely a concurrent Claude session's live working tree — mutating it in place (moving its HEAD/branch, committing, merging, make install) leaves that peer's on-disk state inconsistent with what it thinks it has (exactly the epic #86 dev/foundation incident). If you need to change that repo, do it in an ISOLATED worktree instead: 'git -C ${hit} worktree add <path> -b <branch>' and work under <path> (worktrees are in-lane, never prompt). Approve only if you are certain no other session holds '${hit}'."
+reason="This ${tool} targets '${hit_target}', inside the canonical checkout of a DIFFERENT repo ('${hit}') than this session's home ('${home_real}'). Under the one-session-per-repo-directory invariant that other checkout is very likely a concurrent Claude session's live working tree — mutating it in place (moving its HEAD/branch, committing, merging, make install) leaves that peer's on-disk state inconsistent with what it thinks it has (exactly the epic #86 peer-checkout incident). If you need to change that repo, do it in an ISOLATED worktree instead: 'git -C ${hit} worktree add <path> -b <branch>' and work under <path> (worktrees are in-lane, never prompt). Approve only if you are certain no other session holds '${hit}'."
 log "ASK :: tool=${tool} target=${hit_target} foreign_root=${hit} home=${home_real}"
 jq -cn --arg r "$reason" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}' \

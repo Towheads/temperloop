@@ -51,11 +51,14 @@ Create a minimal config dir that omits or stubs production hooks as needed.  A t
 ```sh
 EVAL_CONFIG="$HOME/.claude-eval"
 mkdir -p "$EVAL_CONFIG/hooks"
+# REPO_ROOT is your installed kernel checkout (e.g. $HOME/.local/share/temperloop
+# for a bootstrap install) — never a hardcoded personal dev path.
+REPO_ROOT="${REPO_ROOT:?set to your kernel checkout root}"
 # Link (not copy) hooks — they self-suppress via EVAL_RUN
 for h in session-end-log session-start-drain log-askuserquestion \
           session-end-seq-cleanup mcp-health-preflight board-adapter-guard \
           eval-guard; do
-  ln -sf "$HOME/dev/foundation/claude/hooks/${h}.sh" "$EVAL_CONFIG/hooks/"
+  ln -sf "$REPO_ROOT/claude/hooks/${h}.sh" "$EVAL_CONFIG/hooks/"
 done
 # Provide a minimal settings.json referencing the eval hook paths
 ```

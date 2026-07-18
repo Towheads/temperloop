@@ -266,9 +266,12 @@ function sq(value) {
 // <repoRoot>/workflows/scripts/build; if that dir is absent, locate the
 // foundation checkout via $FOUNDATION, the deployed workflow symlink
 // ($HOME/.claude/workflows/build-level.mjs → foundation, best-effort — a BSD
-// readlink without -f just fails that candidate), or the $HOME/dev/foundation
-// convention. If none resolve, the emitted path points at the missing repo-local
-// dir and the spine script's own "not found" (exit 127) surfaces loudly. NOTE:
+// readlink without -f just fails that candidate), or the FOUNDATION_HOME
+// bootstrap-clone convention (bin/bootstrap.sh's own default,
+// $HOME/.local/share/temperloop — never a hardcoded personal dev path,
+// temperloop#406). If none resolve, the emitted path points at the missing
+// repo-local dir and the spine script's own "not found" (exit 127) surfaces
+// loudly. NOTE:
 // only spine scripts route through here; the project's OWN vendored gate
 // (scripts/quality-gates.sh) stays repo-local and is resolved directly.
 function spineBin(repoRoot, name) {
@@ -290,7 +293,7 @@ function spineBin(repoRoot, name) {
     'if [ ! -d "$d" ]; then for c in ' +
     '"${FOUNDATION:-}/workflows/scripts/build" ' +
     '"$(dirname "$(readlink -f "$HOME/.claude/workflows/build-level.mjs" 2>/dev/null)" 2>/dev/null)/../../workflows/scripts/build" ' +
-    '"$HOME/dev/foundation/workflows/scripts/build"; ' +
+    '"${FOUNDATION_HOME:-$HOME/.local/share/temperloop}/workflows/scripts/build"; ' +
     'do [ -d "$c" ] && { d="$c"; break; }; done; fi; ' +
     "printf '%s' \"$d/" + name + '")"';
 }
