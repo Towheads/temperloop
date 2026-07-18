@@ -162,6 +162,7 @@ BOARD_ITEM_LIMIT	500	int	kernel	workflows/scripts/board/lib/board.sh	Page-size c
 BOARD_ITEM_QUERY	-status:Done	string	kernel	workflows/scripts/board/lib/board.sh	Projects `--query` filter for a whole-board read
 BOARD_BUDGET_GUARD_THRESHOLD	200	int	kernel	workflows/scripts/board/lib/board.sh	GraphQL-remaining threshold below which the budget guard warns (0 disables)
 BOARD_BUDGET_GUARD	0	bool	kernel	workflows/scripts/board/lib/board.sh	Hard-abort (vs warn-only) a heavy whole-board read under a near-empty GraphQL budget
+BOARD_CREATE_BUDGET_GUARD	1	bool	kernel	workflows/scripts/board/lib/board.sh	Fallback guard posture for board_create_many's index-wait retry when the caller left BOARD_BUDGET_GUARD unset (defaults the retry loop to abort, not warn-only)
 BOARD_CREATE_INDEX_RETRIES	5	int	kernel	workflows/scripts/board/lib/board.sh	Retry budget for Projects-v2 index lag after board_create_many adds items
 CACHE_STORE_ROOT	${XDG_CACHE_HOME:-$HOME/.cache}/temperloop	path	kernel	workflows/scripts/board/lib/cache.sh	Store root for the durable issue-cache corpus store
 CACHE_STORE_TTL	3600	seconds	kernel	workflows/scripts/board/lib/cache.sh	Max-stale window before a cache_read triggers a refresh

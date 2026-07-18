@@ -490,6 +490,57 @@ _board_cache_patch_field() {
   printf '%s' "$patched" | jq '.json' >"$cache" 2>/dev/null || _board_cache_bust "$board"
 }
 
+# Splice a NEWLY-ADDED item's stub entry into the cached items page IN PLACE, so a
+# read-after-add (board_resolve / board_item_list) stays correct WITHOUT busting the
+# whole page. This is the ADD-side counterpart to _board_cache_patch_field (which
+# splices a mutated FIELD on an EXISTING item) — used by board_add_to_board
+# (foundation #1225): `gh project item-add --format json` returns the new item's id
+# synchronously, so the caller can hand it straight here instead of full-busting.
+#
+#   _board_cache_patch_add <board#> <item-id> <issue-num> [title]
+#
+# The spliced entry is `{id, content:{number, title, type:"Issue"}}` — NO field
+# values (Status isn't assigned yet at add time); the caller's following
+# board_set_status call patches status in via _board_cache_patch_field once the
+# item resolves, same as any other single-item write. Root cause this closes (GH
+# #1225): board_add_to_board's OLD unconditional _board_cache_bust meant every
+# SERIAL capture.sh invocation's fallback path busted the exact cross-process cache
+# the NEXT invocation would have reused within BOARD_CACHE_TTL — so N serial
+# captures paid N live whole-board resolves instead of sharing ~1. Splicing here
+# means invocation 2..N's board_resolve (called right after this splice, inside
+# board_create_many) sees the already-warm, already-patched page and skips the
+# live item-list fetch entirely.
+#
+# Falls back to the whole-page bust under the IDENTICAL predicate as
+# _board_cache_patch_field: no board known, the cache file absent or STALE (past
+# its ttl — splicing into a stale page would leave other items wrong). Unlike
+# _board_cache_patch_field, an item ALREADY present in the cache (a duplicate
+# item-add / retry) is a no-op — not a bust — since the page already carries a
+# trustworthy entry for it and re-adding changes nothing.
+_board_cache_patch_add() {
+  local board="${1:-$BOARD_CURRENT}" item_id="$2" num="$3" title="${4:-}"
+  local cache ttl patched
+  [ -n "$board" ] || return 0
+  cache="$(_board_cache_file "$board" items)"
+  ttl="${BOARD_CACHE_TTL:-90}"
+  # No fresh cached page to splice into -> nothing warm to keep; bust (next read = live).
+  if [ "$ttl" -le 0 ] || [ ! -f "$cache" ] || [ "$(_board_file_age "$cache")" -ge "$ttl" ]; then
+    _board_cache_bust "$board"
+    return 0
+  fi
+  patched="$(
+    jq --arg id "$item_id" --argjson n "$num" --arg t "$title" '
+      if any(.items[]?; .content.number == $n)
+      then { json: ., changed: false }
+      else { json: ( .items += [ { id: $id, content: { number: $n, title: $t, type: "Issue" } } ] ), changed: true }
+      end' "$cache" 2>/dev/null
+  )" || { _board_cache_bust "$board"; return 0; }
+  if [ "$(printf '%s' "$patched" | jq -r '.changed')" != "true" ]; then
+    return 0
+  fi
+  printf '%s' "$patched" | jq '.json' >"$cache" 2>/dev/null || _board_cache_bust "$board"
+}
+
 # Public: invalidate a board's STRUCTURE cache (project view + field-list) so the
 # next resolve re-reads the schema live. The adapter never mutates structure, so
 # nothing auto-busts it; run this after a MANUAL structural edit (gh project
@@ -676,9 +727,13 @@ _board_cached_read() {
 #     (HARD-ABORT before the heavy read).
 # Conservative by construction: any failure to read/parse the rate_limit (network
 # hiccup, unexpected JSON) is swallowed and the guard PROCEEDS — it can never make
-# board_resolve worse than today. Lives ONLY on the heavy whole-board path
-# (board_resolve, and only when the items cache misses); board_resolve_item never
-# calls it, so a claim never pays the latency.
+# board_resolve worse than today. Lives on TWO whole-board-cost call sites:
+# board_resolve's heavy item-list (only when the items cache misses), and
+# board_create_many's index-wait retry loop (foundation #1225 — its OWN
+# `_board_item_list_fresh` re-list, always live by design, had NO budget check at
+# all before #1225; see that call site's comment for why it also flips the
+# DEFAULT posture from warn-only to abort). board_resolve_item never calls this,
+# so a claim never pays the latency.
 #   _board_budget_guard <board#>  ->  0 = proceed, non-zero = hard-abort
 _board_budget_guard() {
   local board="$1" threshold remaining reset now mins out
@@ -1676,10 +1731,30 @@ board_set_number() {
 
 # Add an existing issue URL to a board (does NOT set Status; caller follows
 # with board_resolve + board_set_status to land it in Backlog).
+#
+# PATCHES the cross-process items cache with a stub entry for the new item
+# instead of full-busting it (foundation #1225 — see _board_cache_patch_add's
+# header for the root-cause detail): `gh project item-add --format json`
+# returns the new item's id synchronously, so on success we splice
+# {id, content:{number}} straight into a warm cache via _board_cache_patch_add.
+# Falls back to a full bust whenever the splice can't be trusted — no id in the
+# item-add response (a stubbed/older gh, or an unexpected shape) or no issue
+# number parseable off the URL's trailing path segment — same conservative
+# fallback shape _board_cache_patch_add itself applies for a cold/stale cache.
 #   board_add_to_board <board#> <issue-url>
 board_add_to_board() {
-  _board_gh project item-add "$(board_project_number "$1")" --owner "$(board_owner "$1")" --url "$2" >/dev/null || return 1
-  _board_cache_bust "$1"
+  local board="$1" url="$2" out item_id num
+  out="$(_board_gh project item-add "$(board_project_number "$board")" --owner "$(board_owner "$board")" --url "$url" --format json)" || return 1
+  item_id="$(printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null || true)"
+  num="${url##*/}"
+  case "$num" in
+    '' | *[!0-9]*) num="" ;;
+  esac
+  if [ -n "$item_id" ] && [ -n "$num" ]; then
+    _board_cache_patch_add "$board" "$item_id" "$num"
+  else
+    _board_cache_bust "$board"
+  fi
 }
 
 # Add many already-created issues to a board and land each in Backlog, paying a
@@ -1702,6 +1777,25 @@ board_add_to_board() {
 # active-set page per attempt, never per item) a few times. The client-side
 # Backlog set is the load-bearing no-untracked-item guarantee (GH #387) — board 3
 # has a server-side 'Item added -> Backlog' workflow, but not every board does.
+# That re-fetch retry is now pre-flight budget-guarded (foundation #1225, see the
+# `_board_budget_guard` call inline below) — it defaults to ABORT rather than the
+# general guard's warn-only default, so a near-empty budget stops the retry loop
+# loud (the un-resolved items simply count as "missing" -> un-landed, below) rather
+# than silently draining further.
+#
+# ACROSS SEPARATE INVOCATIONS of this function (the dominant real-world shape:
+# capture.sh runs it once per call, and a burst of noticed-mid-work defects files
+# N SERIAL capture.sh processes), the WHOLE-BATCH-COST-ONE-RESOLVE property above
+# used to reset every time: board_add_to_board's item-add unconditionally busted
+# the cross-process items cache, which is exactly the cache the NEXT invocation's
+# board_resolve (a few lines below) would have reused within BOARD_CACHE_TTL — so
+# N serial single-item captures still paid N live whole-board resolves (foundation
+# #1225: 9 serial captures drained the shared GraphQL budget this way, mid-run,
+# with issues created but stranded off-board). board_add_to_board now PATCHES the
+# warm cache with the new item's stub instead of busting it (_board_cache_patch_add,
+# same file), so invocation 2..N's board_resolve below sees an already-warm,
+# already-correct page and skips its own live fetch — N serial invocations inside
+# one TTL window now share ≤1 live whole-board resolve, not N.
 #
 # RETURN CONTRACT (foundation #1226 — supersedes the old "always returns 0"
 # behavior, which let a genuinely-dropped item print as a success one line
@@ -1725,7 +1819,7 @@ board_create_many() {
     _board_issues_create_many "$board" "$@"
     return $?
   fi
-  local url num attempt item_id missing max_attempts
+  local url num attempt item_id missing max_attempts _bcm_guard_rc
   local nums=() failed=()
   # Index-lag retry budget. Projects-v2 can take longer than a few seconds to
   # index a just-added item; too small a budget leaves laggards unstatused (the
@@ -1754,6 +1848,45 @@ board_create_many() {
     if [ "$missing" -eq 0 ]; then break; fi
     # Graduated backoff: give GitHub progressively more time to index laggards.
     sleep "$((attempt + 1))"
+    # Pre-flight budget guard (GH #156) BEFORE each heavy re-list (foundation
+    # #1225): this retry loop is the one whole-board cost center the guard never
+    # covered — up to $max_attempts extra live item-list pages per invocation,
+    # with NO budget check, was exactly how 9 serial captures silently drained
+    # the shared 5,000-pt/hr GraphQL budget mid-run (issues got created but
+    # never landed on the board — the original #1225 incident).
+    #
+    # GUARD POSTURE HERE DELIBERATELY DEFAULTS TO ABORT, not board_resolve's
+    # warn-only default — a silent warn-and-continue here is precisely the
+    # failure mode #1225 reported: issues created, budget exhausted mid-burst,
+    # cards left off-board with no loud signal until someone tripped over it 45
+    # minutes later. This can't be a second `${BOARD_BUDGET_GUARD:-1}` literal
+    # (the equality-checked knob registry pins ONE default per name per
+    # owning-script — board_resolve's own `${BOARD_BUDGET_GUARD:-0}` inside
+    # _board_budget_guard already owns that seam), so a SEPARATE registered
+    # knob, BOARD_CREATE_BUDGET_GUARD (default 1), supplies the fallback: only
+    # when the caller has NOT already set BOARD_BUDGET_GUARD at all (the `+x`
+    # existence test — never a `:-`/`-` default on BOARD_BUDGET_GUARD itself)
+    # do we set it from that fallback for THIS call, so an explicit caller
+    # override (BOARD_BUDGET_GUARD=0 for warn-only, or =1) still wins
+    # untouched. Aborting composes with the truthful-failure contract below
+    # (foundation #462/#1226): a guard abort just makes the remaining
+    # un-checked items count as "missing", so they fall through to the SAME
+    # un-landed accounting as an index-timeout — no new failure path, no
+    # sleep-until-reset, the graduated backoff above stays the only wait.
+    # BOARD_BUDGET_GUARD_THRESHOLD=0 (the existing opt-out) still disables the
+    # guard entirely here too.
+    _bcm_guard_rc=0
+    if [ -n "${BOARD_BUDGET_GUARD+x}" ]; then
+      _board_budget_guard "$board" || _bcm_guard_rc=$?
+    else
+      BOARD_BUDGET_GUARD="${BOARD_CREATE_BUDGET_GUARD:-1}" _board_budget_guard "$board" || _bcm_guard_rc=$?
+    fi
+    if [ "$_bcm_guard_rc" -ne 0 ]; then
+      echo "board_create_many: aborting index-wait retry — GraphQL budget too low to" \
+           "continue safely (board $board); un-resolved items will report as un-landed" \
+           "rather than risk a silent drain" >&2
+      break
+    fi
     # Read FRESH: a cached page would hide the just-added items we're waiting on.
     BOARD_ITEMS_JSON="$(_board_item_list_fresh "$board")"
   done
