@@ -169,7 +169,7 @@ CLAIMS_RAW_DIR	$CLAIMS_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/claim
 DEPLOY_MINI_CHECKOUTS	$DEFAULT_CHECKOUTS	string	kernel	workflows/scripts/board/deploy-mini.sh	Space-separated checkouts deploy-mini.sh keeps current (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/scripts/board/deploy-mini.sh	Single-instance lock dir for deploy-mini.sh
 DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
-BOARDS_CONF_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (rung 3; grandfathered `foundation` namespace per docs/config-precedence.md)
+BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (rung 3). Default probes $XDG_CONFIG_HOME/temperloop/boards.conf, falling back to an existing legacy $XDG_CONFIG_HOME/foundation/boards.conf through the rename window (temperloop#165; legacy fallback removed in v0.16.0) — see docs/config-precedence.md
 BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (rung 4)
 BOARD_CACHE_TTL	90	seconds	kernel	workflows/scripts/board/lib/board.sh	Item-state cross-process cache TTL
 BOARD_STRUCTURE_TTL	86400	seconds	kernel	workflows/scripts/board/lib/board.sh	Board structure (project/field schema) cache TTL

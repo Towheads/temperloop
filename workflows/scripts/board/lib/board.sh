@@ -58,8 +58,15 @@ BOARD_FIELD_COMPONENT="Component"
 # resolves its value through an optional external `boards.conf` FIRST, falling
 # back to the built-in case map below when no conf entry exists. Discovery
 # order (first hit wins):
-#   1. machine-level: $XDG_CONFIG_HOME/foundation/boards.conf
-#      (default ~/.config/foundation/boards.conf) — override BOARDS_CONF_MACHINE
+#   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
+#      (default ~/.config/temperloop/boards.conf) — override BOARDS_CONF_MACHINE.
+#      The subdir renamed foundation/ -> temperloop/ in v0.14.0
+#      (temperloop#165, read-old-write-new): when no file exists at the new
+#      default, an EXISTING legacy ~/.config/foundation/boards.conf is used
+#      instead (see _board_machine_conf_default). The legacy fallback is
+#      removed in v0.16.0 — move the file (mkdir -p ~/.config/temperloop &&
+#      mv ~/.config/foundation/boards.conf ~/.config/temperloop/) or set
+#      BOARDS_CONF_MACHINE.
 #   2. repo-local override: workflows/scripts/board/boards.conf, next to this
 #      lib — override BOARDS_CONF_REPO_LOCAL
 #   3. the built-in case map (below) — the fallback every caller sees when
@@ -85,11 +92,35 @@ BOARD_FIELD_COMPONENT="Component"
 # workflows/scripts/board/boards.conf.example for the documented format.
 _BOARD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Default machine-level conf path (rung 3), with the temperloop#165 rename
+# window: prefer $XDG_CONFIG_HOME/temperloop/boards.conf; when that does not
+# exist but a legacy $XDG_CONFIG_HOME/foundation/boards.conf does, use the
+# legacy file (read-old — silent by design: board.sh runs on every board op,
+# so a per-call notice would be pure spam; docs/config-precedence.md and the
+# CHANGELOG carry the migration note). Legacy fallback removed in v0.16.0.
+# TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never set
+# in production use): =1 simulates the post-v0.16.0 removal — the legacy
+# file is then ignored with a one-line stderr notice, never silently.
+_board_machine_conf_default() {
+  local new_f old_f
+  new_f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+  old_f="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  if [ ! -f "$new_f" ] && [ -f "$old_f" ]; then
+    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+      echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.16.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
+    else
+      printf '%s' "$old_f"
+      return 0
+    fi
+  fi
+  printf '%s' "$new_f"
+}
+
 # Echo the first EXISTING conf file in discovery order; rc 1 if neither exists
 # (callers then fall through to their built-in case map).
 _board_conf_file() {
   local f
-  f="${BOARDS_CONF_MACHINE:-${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf}"
+  f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
   [ -f "$f" ] && { printf '%s' "$f"; return 0; }
   f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
   [ -f "$f" ] && { printf '%s' "$f"; return 0; }
@@ -103,7 +134,7 @@ _board_conf_file() {
 # nothing (rc 0, empty output) when neither file exists.
 _board_conf_files() {
   local f
-  f="${BOARDS_CONF_MACHINE:-${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf}"
+  f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
   [ -f "$f" ] && printf '%s\n' "$f"
   f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
   [ -f "$f" ] && printf '%s\n' "$f"

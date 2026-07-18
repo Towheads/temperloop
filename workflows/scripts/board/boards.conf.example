@@ -2,8 +2,11 @@
 #
 # Only a file literally named `boards.conf` (no `.example`) is consulted, at
 # one of two locations, in this order (first hit wins):
-#   1. machine-level: $XDG_CONFIG_HOME/foundation/boards.conf
-#      (default ~/.config/foundation/boards.conf)
+#   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
+#      (default ~/.config/temperloop/boards.conf). Renamed from the legacy
+#      foundation/ subdir in v0.14.0 (temperloop#165): an existing
+#      ~/.config/foundation/boards.conf is still read as a fallback through
+#      the rename window, removed in v0.16.0 — move the file.
 #   2. repo-local override: workflows/scripts/board/boards.conf (next to this
 #      file)
 # If NEITHER exists, board.sh / funnel-tick.sh / funnel-drive.sh fall back to
