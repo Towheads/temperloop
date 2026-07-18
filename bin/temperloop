@@ -40,10 +40,27 @@
 #   mechanism. A new FEATURE belongs in subcommands/, never as a new verb
 #   handled here.
 #
-# Every subcommand dispatch (anything past help/version) runs a prereq
-# check first — Claude Code CLI on PATH + gh authenticated — with an honest,
-# specific failure message per missing piece (see lib/common.sh). This is
-# centralized here so no individual subcommand item has to reimplement it.
+# Every subcommand dispatch (anything past help/version) runs a PER-
+# SUBCOMMAND prereq check first (temperloop#412, "subcommand-prereq-
+# scoping") — never a blanket claude+gh gate applied uniformly to every
+# subcommand regardless of whether it touches either tool. A subcommand
+# file declares what it needs via a `# prereqs: ...` header line (a subset
+# of `claude`, `gh`, space-separated — see _foundation_subcommand_prereqs
+# below); the dispatcher checks only that declared set before dispatch,
+# with an honest, specific failure message per missing piece (see
+# lib/common.sh's foundation_check_prereqs). A subcommand with NO
+# `# prereqs:` header declares nothing and is dispatched with zero
+# dispatcher-level checks — this is the common case: every subcommand
+# shipped today (try, install, uninstall, init, eject, configure,
+# baseline-snapshot, report, config) already has its OWN internal,
+# honest degrade-with-reason path for a missing/unauthenticated gh or an
+# absent claude (try's documented zero-auth contract chief among them), so
+# a blanket dispatcher-level gate was redundant at best and, for
+# install/uninstall (which call neither tool at all) and try (whose whole
+# point is to work with zero auth), an outright bug — see the issue for
+# the fuller history. A future subcommand that genuinely has no internal
+# degrade path for a hard dependency opts in with a `# prereqs: gh` (or
+# `claude`, or both) header instead of reimplementing the check itself.
 #
 # Alongside that prereq check sits a second, PASSIVE pre-dispatch check: the
 # 14-day report auto-offer (foundation #766 Epic E, item report-auto-offer /
@@ -87,6 +104,24 @@ _foundation_subcommand_description() {
   else
     printf '%s\n' "(no description)"
   fi
+}
+
+# _foundation_subcommand_prereqs <file>
+#   Prints the file's `# prereqs: ...` header line — the per-subcommand
+#   prereq-scoping declaration (temperloop#412) — or an EMPTY string if the
+#   file has no such header. Same lightweight convention as
+#   _foundation_subcommand_description above (a documented `#
+#   <keyword>: ...` first-lines comment, also rendered into the docs
+#   site's subcommand-reference table by
+#   kernel/workflows/scripts/docs/sources/cli.py). Unlike the description
+#   convention, an ABSENT header here is meaningful, not a placeholder: it
+#   means the subcommand declares NO dispatch-level prereqs at all (see
+#   this file's header comment above for why that's the common case).
+#   Valid tokens: `claude`, `gh` (space-separated, either or both).
+_foundation_subcommand_prereqs() {
+  local file="$1" line
+  line="$(grep -m1 '^# prereqs: ' "$file" 2>/dev/null || true)"
+  printf '%s\n' "${line#\# prereqs: }"
 }
 
 _foundation_print_help() {
@@ -212,7 +247,8 @@ if [[ ! -f "$subcommand_file" ]]; then
   exit 1
 fi
 
-if ! foundation_check_prereqs; then
+subcommand_prereqs="$(_foundation_subcommand_prereqs "$subcommand_file")"
+if [[ -n "$subcommand_prereqs" ]] && ! foundation_check_prereqs "$subcommand_prereqs"; then
   echo "" >&2
   echo "temperloop: fix the above, then re-run: temperloop $cmd" >&2
   exit 1

@@ -42,12 +42,15 @@ pass() { printf 'PASS: %s\n' "$1"; }
 
 # assert_no_mutating_gh_calls LABEL — unlike test_init.sh/test_eject.sh
 # (which invoke the subcommand script directly), this suite dispatches
-# through the real `temperloop` CLI, whose prereq gate
-# (bin/lib/common.sh: foundation_check_prereqs) makes exactly one
-# read-only `gh auth status` call before EVERY dispatch — that call is
-# inherent to using the real install surface, not a leak from
-# init.sh/eject.sh's own dry-run logic. So the bar here is "no call other
-# than that one read-only probe", not "zero calls of any kind".
+# through the real `temperloop` CLI. Per-subcommand prereq scoping
+# (temperloop#412) means the dispatcher's prereq gate
+# (bin/lib/common.sh: foundation_check_prereqs) only probes `gh auth
+# status` for a subcommand that declares `gh` via its own `# prereqs: ...`
+# header — neither init.sh nor eject.sh does, so in practice this asserts
+# ZERO gh calls today. The helper still tolerates one bare "auth status"
+# line rather than requiring the log be empty, so it stays valid without
+# editing if init/eject ever legitimately opt into that dispatcher-level
+# probe.
 assert_no_mutating_gh_calls() {
   local label="$1" log="$2" other
   other="$(grep -Fxv "auth status" "$log" 2>/dev/null || true)"

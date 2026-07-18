@@ -32,21 +32,25 @@ FOUNDATION_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
 # shellcheck disable=SC2034
 FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 
-# foundation_check_prereqs
-#   Verifies the two external tools every live subcommand needs:
-#     - the Claude Code CLI (`claude`) — drives the actual work
-#     - an authenticated `gh` — talks to GitHub
-#   Prints one specific, actionable line per missing/failing prerequisite to
-#   stderr (never a bare failure or a downstream stack trace) and returns
-#   non-zero if anything is missing. Read-only: zero side effects.
-foundation_check_prereqs() {
-  local problems=0
-
+# foundation_check_prereq_claude
+#   Verifies the Claude Code CLI (`claude`) is on PATH. Prints one specific,
+#   actionable line to stderr and returns non-zero if it is missing.
+#   Read-only: zero side effects.
+foundation_check_prereq_claude() {
   if ! command -v claude >/dev/null 2>&1; then
     echo "temperloop: 'claude' (Claude Code CLI) not found on PATH." >&2
     echo "  Install: https://docs.claude.com/en/docs/claude-code/quickstart" >&2
-    problems=$((problems + 1))
+    return 1
   fi
+  return 0
+}
+
+# foundation_check_prereq_gh
+#   Verifies `gh` is on PATH AND authenticated. Prints one specific,
+#   actionable line per missing/failing piece to stderr and returns
+#   non-zero if either is missing. Read-only: zero side effects.
+foundation_check_prereq_gh() {
+  local problems=0
 
   if ! command -v gh >/dev/null 2>&1; then
     echo "temperloop: 'gh' (GitHub CLI) not found on PATH." >&2
@@ -57,6 +61,42 @@ foundation_check_prereqs() {
     echo "  Run: gh auth login" >&2
     problems=$((problems + 1))
   fi
+
+  if [[ "$problems" -gt 0 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# foundation_check_prereqs <prereq-list>
+#   Per-subcommand prereq scoping (temperloop#412): checks ONLY the
+#   space-separated prereq names actually passed (a subset of `claude`,
+#   `gh`) — never a blanket "check everything" default. This is what lets
+#   the `bin/temperloop` dispatcher gate a subcommand on exactly what its
+#   own `# prereqs: ...` header declares (see that script's
+#   _foundation_subcommand_prereqs) instead of a one-size-fits-all check
+#   applied to every subcommand regardless of whether it touches claude or
+#   gh at all. Called with an empty/absent list, this is a pure no-op that
+#   returns 0 immediately — a subcommand with no declared prereqs gets zero
+#   dispatcher-level checks, on the premise that its own internal
+#   degrade-with-reason logic (see bin/temperloop's header comment) is the
+#   real, already-correct contract. Prints one specific, actionable line
+#   per missing/failing prerequisite to stderr (never a bare failure or a
+#   downstream stack trace) and returns non-zero if anything named is
+#   missing. Read-only: zero side effects.
+foundation_check_prereqs() {
+  local prereqs="${1:-}" name problems=0
+
+  for name in $prereqs; do
+    case "$name" in
+      claude) foundation_check_prereq_claude || problems=$((problems + 1)) ;;
+      gh) foundation_check_prereq_gh || problems=$((problems + 1)) ;;
+      *)
+        echo "temperloop: internal error: unknown prereq '$name' declared by this subcommand." >&2
+        problems=$((problems + 1))
+        ;;
+    esac
+  done
 
   if [[ "$problems" -gt 0 ]]; then
     return 1

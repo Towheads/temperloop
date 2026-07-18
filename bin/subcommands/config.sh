@@ -76,15 +76,15 @@
 # Dependencies: bash (3.2+), awk, grep. No `jq`, no `gh`, no `claude` — this
 # subcommand is pure local shell-state introspection, never a network call.
 #
-# NOTE on the CLI dispatcher's prereq gate: `bin/temperloop`'s dispatcher
-# requires `claude` + authenticated `gh` on PATH before invoking ANY
-# subcommand file (see that script's own header) — a pre-existing,
-# subcommand-agnostic gate this file does not touch or reconsider. In
-# practice that means `temperloop config list` currently inherits that
-# gate even though this subcommand itself needs neither tool; testing (and
-# any caller wanting a truly zero-dependency path) invokes this script
-# directly, exactly like the existing eject.sh/init.sh/try.sh test suites
-# already do.
+# NOTE on the CLI dispatcher's prereq gate: per-subcommand prereq scoping
+# (temperloop#412) means `bin/temperloop`'s dispatcher checks a subcommand
+# only against what its own `# prereqs: ...` header declares (see that
+# script's own header) — this file declares none, so `temperloop config
+# list` reaches this script with zero dispatcher-level claude/gh checks,
+# matching what it actually needs (nothing). Testing still invokes this
+# script directly, exactly like the existing eject.sh/init.sh/try.sh test
+# suites already do — that stays the simplest path for a fixture that
+# wants no CLI-dispatch machinery involved at all.
 #
 # shellcheck shell=bash
 

@@ -59,14 +59,15 @@
 # CLI usage.
 #
 # Dependencies: bash (3.2+), jq. No network — this subcommand never calls
-# `gh` or `claude` itself. The `temperloop` dispatcher's prereq gate
-# (bin/lib/common.sh: foundation_check_prereqs) still runs before ANY
-# subcommand dispatch, including this one — that gate is unconditional at
-# the dispatcher level, not something an individual subcommand opts out of.
-# A test that wants to exercise only this script's own logic invokes it
-# directly (bash bin/subcommands/uninstall.sh ...), bypassing the
-# dispatcher entirely — the same idiom bin/subcommands/tests/test_eject.sh
-# already uses.
+# `gh` or `claude` itself, and (temperloop#412, per-subcommand prereq
+# scoping) declares no `# prereqs: ...` header, so `bin/temperloop`'s
+# dispatcher gate (bin/lib/common.sh: foundation_check_prereqs) runs zero
+# claude/gh checks before dispatching it — `temperloop uninstall` works
+# with neither tool on PATH, matching what this script actually needs
+# (nothing). A test that wants to exercise only this script's own logic
+# still invokes it directly (bash bin/subcommands/uninstall.sh ...),
+# bypassing the dispatcher entirely — the same idiom
+# bin/subcommands/tests/test_eject.sh already uses.
 #
 # shellcheck shell=bash
 

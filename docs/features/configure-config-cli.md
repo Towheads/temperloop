@@ -85,13 +85,14 @@ knob-registry row: `CLAUDE_BIN`'s existing row (owned by
 knob list / validation charsets are plain hardcoded script constants, not
 operator-overridable `${VAR:-default}` seams.
 
-Note: `bin/temperloop`'s dispatcher requires `claude` + authenticated `gh`
-on PATH before invoking ANY subcommand (a pre-existing, subcommand-agnostic
-gate — see that script's own header) — this item does not touch that gate.
-In practice, `configure`'s plain-prompt degradation and `config list`'s
-zero-dependency operation are both exercised today by invoking the
-subcommand scripts directly, exactly like the existing
-`eject.sh`/`init.sh`/`try.sh` test suites already do.
+Note: per-subcommand prereq scoping (temperloop#412) means `bin/temperloop`'s
+dispatcher checks a subcommand only against what its own `# prereqs: ...`
+header declares (see that script's own header) — neither `configure.sh` nor
+`config.sh` declares one, so both are dispatched with zero dispatcher-level
+claude/gh checks: `configure`'s plain-prompt degradation and `config list`'s
+zero-dependency operation are both fully reachable through the real CLI with
+neither tool on PATH. They are also exercised directly in tests, exactly
+like the existing `eject.sh`/`init.sh`/`try.sh` test suites already do.
 
 ## Resource impact
 

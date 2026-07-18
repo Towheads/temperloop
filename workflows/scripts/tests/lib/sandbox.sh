@@ -90,12 +90,21 @@
 #     Truncates any pre-existing call_log content.
 #
 #   sandbox_stub_claude [call_log]
-#     Installs a minimal logging no-op fake `claude` at $SANDBOX_BIN/claude
-#     — needed only because bin/temperloop's dispatcher prereq gate
-#     (bin/lib/common.sh: foundation_check_prereqs) requires `claude` on
-#     PATH before dispatching ANY subcommand; init.sh/eject.sh never invoke
-#     it themselves. call_log default: $SANDBOX_ROOT/claude-calls.log,
-#     exposed as SANDBOX_CLAUDE_CALL_LOG.
+#     Installs a minimal logging no-op fake `claude` at $SANDBOX_BIN/claude.
+#     SUPERSEDED AS A DISPATCH REQUIREMENT (temperloop#412,
+#     "subcommand-prereq-scoping"): the dispatcher's prereq gate
+#     (bin/lib/common.sh: foundation_check_prereqs) now checks only the
+#     tools a subcommand's own `# prereqs: ...` header declares — no
+#     shipped subcommand declares `claude`, so dispatching through the real
+#     `temperloop` CLI no longer requires this stub at all (previously it
+#     was needed unconditionally, since the gate checked for `claude` on
+#     PATH before dispatching ANY subcommand even though init.sh/eject.sh
+#     never invoke it themselves — that was the bug #412 fixed). Kept
+#     available for a caller that wants to simulate `claude` being present
+#     for a subcommand that DOES call it directly (e.g. try.sh's shadow
+#     triage step, or configure.sh's AI-guided mode) and inspect the call
+#     log. call_log default: $SANDBOX_ROOT/claude-calls.log, exposed as
+#     SANDBOX_CLAUDE_CALL_LOG.
 #
 #   sandbox_bootstrap_checkout <source_repo_dir>
 #     Bare-clones <source_repo_dir> (at whatever it currently has committed
@@ -340,10 +349,12 @@ sandbox_stub_claude() {
   : > "$call_log"
   cat > "$SANDBOX_BIN/claude" <<'FAKE_CLAUDE_EOF'
 #!/usr/bin/env bash
-# Minimal no-op stand-in — only needed so bin/temperloop's dispatcher
-# prereq gate (bin/lib/common.sh: foundation_check_prereqs) finds `claude`
-# on PATH before dispatching a subcommand; init.sh/eject.sh never invoke it
-# themselves. $CLAUDE_CALL_LOG is injected by sandbox_env.
+# Minimal no-op stand-in for a subcommand that calls `claude` directly
+# (try.sh's shadow triage, configure.sh's AI-guided mode) — no longer
+# needed just to satisfy bin/temperloop's dispatcher prereq gate, which
+# (temperloop#412) checks `claude` only for a subcommand that declares it
+# via a `# prereqs: ...` header; none shipped today do. $CLAUDE_CALL_LOG is
+# injected by sandbox_env.
 printf '%s\n' "$*" >> "$CLAUDE_CALL_LOG"
 exit 0
 FAKE_CLAUDE_EOF
