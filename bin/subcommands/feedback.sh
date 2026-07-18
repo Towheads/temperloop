@@ -197,7 +197,7 @@ trap cleanup EXIT
   echo "---"
   echo "temperloop version: $FOUNDATION_VERSION"
   echo "source repo (git origin, sanitized): $repo_context"
-  echo "platform: $os_context (bash ${BASH_VERSION:-unknown})"
+  echo "platform: $os_context (bash ${BASH_VERSION:-unknown})"  # knob:exempt — BASH_VERSION is a bash builtin special variable, never an operator default
   echo "composed: $ts"
 } > "$PAYLOAD_FILE"
 
@@ -280,8 +280,8 @@ fi
 # consent, and there is no flag that overrides this.
 # ---------------------------------------------------------------------------
 _feedback_attended() {
-  case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac
-  case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac
+  case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — standard CI-ecosystem ambient signal, not an operator default this repo defines
+  case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — GitHub Actions' own ambient signal, not an operator default this repo defines
   if [ -t 0 ]; then return 0; fi
   [ "${TEMPERLOOP_FEEDBACK_ASSUME_TTY:-0}" = "1" ] && return 0
   return 1
