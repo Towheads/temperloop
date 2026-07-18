@@ -41,6 +41,18 @@ drain on schedule").
   ending a turn with "want me to file this?", because that offer dies with the
   session ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Task
   workflow). Filing is reversible; a dropped bug is not.
+- **Epic completion files its own retrospective.** When `/build` drives an epic
+  to completion, its `4d-retro` step *synchronously* files a "Process retro:
+  epic #N" issue — the four standing decomposition-retro questions (was the
+  sub-unit threshold right, did the contract seam hold, was spike routing
+  right, where did the triage→assess→build cadence add friction) plus a
+  handoff-defect taxonomy — so the lessons of *how the work was structured* get
+  a durable tracker instead of depending on someone remembering to open one
+  ([`claude/commands/build.md`](../claude/commands/build.md) § 4d-retro). It's
+  filed at the instant the epic closes, not deferred to the drain, so the
+  learning can't be lost if the session ends first. This closes the
+  contract-decomposition loop: every completed epic teaches the next
+  decomposition.
 - **The other live rules are overlay/vault** — decision capture (→ `Decisions/`
   notes), feedback memory, config-drift sync, session-optimization tracking (→
   `Patterns/`), and tooling-friction capture (→ the friction ledger,
