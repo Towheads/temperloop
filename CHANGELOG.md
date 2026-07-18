@@ -134,6 +134,28 @@ overlay/config/env before that release, not necessarily before this pull.
   justification into dimension 0, offers proceed/reshape/drop) plus the Step
   1.4 dropped-branch stop-and-reopen-confirm — ships in the same PR.
 
+### Deprecated
+
+- **The Projects-v2/GraphQL board adapter arm is deprecated (epic
+  temperloop#460), removed by the follow-on BREAKING removal epic
+  temperloop#524 "Remove the Projects-v2/GraphQL arm (BREAKING) —
+  post-soak follow-on to epic #460".** Classified **non-breaking/minor**
+  for *this* bullet: marking an arm deprecated changes no behavior — the
+  GraphQL arm remains fully functional through the soak window this entry
+  opens, and `changelog_breaking_sections()` (`workflows/scripts/lib/
+  changelog.sh`) can't parse this untagged `## [Unreleased] — BREAKING`
+  section's per-bullet classification (its `BREAKING`-marker scan is
+  section-level, keyed off `VERSIONING.md`'s bump-rules table), so the
+  classification is stated here in prose instead — precedent: the
+  worklist-Seq-retire bullet above does the same. All four fleet boards
+  (ssmobile, stageFind, subsetwiki, foundation) plus the kernel's own
+  tracker now run issues-only per ADR 0004; the GraphQL arm (the budget
+  guard, the structure/state cache split, `migrate-board-to-issues.sh`,
+  and the rest of the Projects-v2 branchwork) stays live and supported for
+  any adopter still migrating, and is removed outright — a real BREAKING
+  cut — once the removal epic ships, per its own migration-ordering
+  contract.
+
 ### Removed
 
 - **`workflows/scripts/board/worklist.sh`: the Seq display column and its
