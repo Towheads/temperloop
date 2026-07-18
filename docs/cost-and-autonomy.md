@@ -388,27 +388,26 @@ independent of how large the ready backlog is) — check
 for current defaults; never trust a hardcoded number in prose, since a
 knob's value can change without this page being touched.
 
-### CI minutes are a shared team resource
+### The merge gate is free on any repo — and its CI cost
 
-If you're the only person touching a repo, everything above is the whole
-story: it's your account, your usage, your call. On a **shared team repo**,
-one more thing is worth knowing, because it isn't "your" spend in the same
-sense — it's a resource every collaborator using this tooling draws from
-together:
+The full merge-gated pipeline runs on **any** repo — a free organization or a
+personal-account repo included — at no extra charge and with no paid GitHub
+plan. GitHub's *native* merge queue is a paid, organization-only feature, but
+temperloop **does not require it**: it ships a **managed merge queue** that
+replicates the native queue's re-validate-then-land semantics with existing
+primitives, so the same gate works everywhere
+([`docs/managed-merge-queue.md`](managed-merge-queue.md),
+[`docs/features/merge-gate.md`](features/merge-gate.md)). The managed queue is
+part of the toolkit, not an add-on you pay for.
 
-- **CI minutes are the repo's, not yours personally.** Every PR through the
-  merge-gated pipeline runs the required `checks` job at least once, plus
-  whatever the merge queue (native or managed) re-runs before landing — on
-  a repo without a native merge queue, a managed-backend merge costs **one
-  extra CI run per PR** compared to a native queue merge, the price of
-  replicating queue re-validation by hand
-  ([`docs/features/merge-gate.md`](features/merge-gate.md)). On GitHub's free
-  tier this comes out of the repo's own shared Actions minutes allotment,
-  not an individual contributor's.
-
-This is not Claude spend, and it doesn't show up in your own account's
-usage view — it's the shared-infrastructure side of running this tooling on
-a repo other people also use.
+The one price of that universality is **CI minutes**. Every PR through the gate
+runs the required `checks` job at least once; on a repo without the native
+queue, the managed backend re-tests each PR against current tip by hand, which
+is **one extra CI run per PR** compared to a native-queue merge. On a **shared
+repo** those minutes come out of the repo's own GitHub Actions allotment, not
+any one contributor's — the shared-infrastructure side of running this on a
+repo other people also use. It is not Claude spend and doesn't show up in your
+own account's usage view.
 
 ### Where to read more
 

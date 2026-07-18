@@ -2,10 +2,12 @@
 title: Guiding principles
 ---
 
-temperloop#135. This page states the thesis TemperLoop is built on and the
-fifteen principles that follow from it — each one pinned to the in-repo
-mechanism that embodies it, so the claim is falsifiable, not aspirational.
-Every path below exists in this repo today; open it and check.
+# Guiding principles
+
+This page states the thesis TemperLoop is built on and the fifteen principles
+that follow from it — each one pinned to the in-repo mechanism that embodies
+it, so the claim is falsifiable, not aspirational. Every path below exists in
+this repo today; open it and check (temperloop#135).
 
 This page is **dual-use**, the same way `docs/who-its-for.md` is for the
 persona agents: it is the stranger-facing thesis README and ADR-0001 point
