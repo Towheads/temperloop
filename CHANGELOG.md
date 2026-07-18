@@ -17,7 +17,8 @@ reads that marker; a stranger greps for it before pulling.
 ## [0.14.0] - 2026-07-18
 
 Additive minor. Safe pull, no migration — no `BREAKING` marker. The headline
-is the **L0 issues-only tracking changes** (epic #460): the `boards.conf`
+is the **issues-only tracking changes** (epic #460's first dependency
+level): the `boards.conf`
 backend axis now resolves per-key so a machine conf silent on a board no
 longer shadows a committed repo-local `backend=issues` flip,
 `board_set_number` fails loud on the issues-only backend (Seq retired by
@@ -79,9 +80,9 @@ exact guarded invocation as an enrichment) plus the additions below.
   touching a non-`fnd:` label. Dry-run is the interactive default; unattended
   default is apply, with a `### open` pending-decisions append per the
   batch-at-ritual rule (never a silent auto-take). Wired into `tidy.md`'s
-  "Stale board claims" step, invoked per board (3, 4, and 7 the kernel
-  tracker); a live dry-run against the real board 7 tracker found 19
-  orphaned host/session labels and 155 stale status labels, confirming the
+  "Stale board claims" step, invoked per governed board, plus the kernel
+  tracker itself (board 7); a live dry-run against the real kernel tracker
+  found 19 orphaned host/session labels and 155 stale status labels, confirming the
   gap was genuine.
 - **Zero-GraphQL CLI-entrypoint test (#479, closes #467).**
   `test_cli_entrypoint_no_graphql.sh` runs
