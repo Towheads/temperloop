@@ -8,7 +8,7 @@ Proposed
 
 ## Context
 
-epic: Towheads/temperloop#460
+epic: temperloop#460
 
 The board adapter has carried two backends since foundation #799: a
 GitHub Projects-v2 arm (GraphQL, org-level boards, a dedicated 5,000-pt/hr

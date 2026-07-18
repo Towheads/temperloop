@@ -8,7 +8,7 @@ Proposed
 
 ## Context
 
-epic: Towheads/temperloop#460
+epic: temperloop#460
 
 The Projects-v2 backend carried a numeric `Seq` field that /triage wrote to
 order a board's worklist. Plain GitHub Issues have no ordering field, and

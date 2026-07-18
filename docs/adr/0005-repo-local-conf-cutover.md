@@ -8,7 +8,7 @@ Proposed
 
 ## Context
 
-epic: Towheads/temperloop#460
+epic: temperloop#460
 
 Flipping a board's backend can happen at two seams: the kernel's built-in
 case map inside the vendored `board.sh` (reaching every checkout only on
