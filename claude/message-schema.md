@@ -230,6 +230,15 @@ Shared required slots:
   `## Questions` entry, a decision-queue issue, the pending-decisions note) —
   a pointer to that surface, never a restatement of its grammar.
 
+**When the block is the right vehicle.** This structured block (and
+`AskUserQuestion`) fits a **bounded** decision — approve/reject, or pick from
+a small closed set of named options. For an **open-ended** question — an
+exploratory design fork, a "what should this even look like" — prefer plain
+prose: forcing open-ended judgment into fixed options usually means the option
+set omitted the real answer, and an operator who rejects every option is
+exactly that signal. Reserve the block for the bounded case; ask the open-ended
+one in prose.
+
 Variant-specific:
 
 - **Blocking variant** (mode 3): no default is required — the reader is

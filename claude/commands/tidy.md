@@ -10,6 +10,7 @@ You are running the **tidy** command. Goal: turn raw session transcripts in `Ses
 - Write small, write in parallel — batch independent vault writes and Things writes.
 - Use the Obsidian MCP for vault reads/writes (the agent-plane transport stays on Obsidian per the contract's Obsidian-mode note — `search_vault_smart` below is that same path); use the Things MCP for task creation.
 - Never duplicate work the live session already captured — check existence before writing.
+- **Consolidate before writing — one batched write pass, never per-stub.** Scanning and adjudicating stubs produces *candidates* only; hold them in a single dedup ledger (across stubs, and against already-existing vault/memory artifacts) and execute one batched write pass after all stubs are scanned. Never write a Decision/Pattern/memory the moment an extraction is found mid-scan (that is the F#1012/#1013 duplicate pattern), and never let an analyst subagent write — the orchestrator owns the writes.
 
 ## Live/Drain pairings
 
