@@ -78,8 +78,8 @@ else here:
   $0.08 per open issue classified** (≈**7,000–27,000 tokens**, mostly
   input, at the list price above), hand-derived once from real operator
   usage (`bin/lib/cost-estimates.conf`), hard-capped at **$1.00** for the
-  whole run regardless of issue count or how wrong the estimate turns out
-  to be.
+  whole run (≈**330,000 tokens** if the whole cap were spent) regardless of
+  issue count or how wrong the estimate turns out to be.
 - `temperloop try --demo` — the one mutating exception: one real issue → PR
   tick against a disposable, throwaway demo repo. Directional band:
   **$0.05–$0.40 per tick** (≈**9,000–74,000 tokens**, assuming roughly an

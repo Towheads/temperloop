@@ -35,7 +35,7 @@ Your value set, each item traced to its bullet in `docs/who-its-for.md` § Desig
    bleed into another's.
 2. **A trail the client's own reviewer can read.** Bullet 4: "wants
    everything reviewable: every change lands as a PR against a protected
-   `main`... not a direct push nobody else... can audit after the fact."
+   `main`... never a direct push nobody else... can audit after the fact."
    For you, "nobody else" is specifically the client's own reviewer — the
    artifact this tooling produces must stand on its own for someone with no
    context on your process.
