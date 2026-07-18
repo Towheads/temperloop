@@ -29,6 +29,13 @@
 # and it stays replay-testable through the one seam. There is NO raw `gh project`
 # / `updateProjectV2Field` / Projects-v2 GraphQL anywhere in this file.
 #
+# `board_capture_item` truthfully returns non-zero when an item never lands on
+# the board (foundation #1226 — see its and board_create_many's header
+# comments in lib/board.sh for the full return contract). Every call site
+# below already wraps it in `|| die` or a deliberate `|| true`; that wrapping
+# is now load-bearing rather than dead code — `die` genuinely fires on a real
+# landing failure instead of being unreachable behind an always-0 return.
+#
 # Output contract — one structured JSON line per outcome (the orchestrator
 # branches on `.outcome`, never parses prose). ERROR + non-zero on bad input /
 # adapter failure; a contention HALT (3a) is also non-zero.
@@ -155,6 +162,11 @@ cmd_ensure_issue() {
     board_resolve_item "$board" "$num" >/dev/null 2>&1 || true
     if [ -z "$(board_item_id "$num")" ]; then
       url="$(_board_gh api "repos/$repo/issues/$num" --jq '.html_url' 2>/dev/null)" || url=""
+      # Deliberate `|| true`, not an oversight: the issue was already found via
+      # the back-link probe (ISSUE_EXISTS below is correct regardless), so a
+      # board-landing failure here is best-effort placement, not a creation
+      # failure worth dying over — the outcome this branch reports doesn't
+      # change either way.
       if [ -n "$url" ]; then board_capture_item "$board" "$url" "$num" || true; fi
     fi
     jq -cn --argjson n "$num" '{outcome:"ISSUE_EXISTS", issue:$n}'

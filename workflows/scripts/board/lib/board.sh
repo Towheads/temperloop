@@ -415,6 +415,15 @@ _board_cache_file() {
 # board_stamp) know which board's on-disk cache to invalidate after a write.
 BOARD_CURRENT=""
 
+# Machine-readable un-landed-issue list, set by board_create_many /
+# _board_issues_create_many / board_capture_item on every return: a
+# space-separated list of the issue numbers that did NOT resolve/status in the
+# call that just returned (empty string on a fully-successful call). A caller
+# that wants the specifics — not just the pass/fail return code — reads this
+# global immediately after the call. See board_create_many's own header
+# comment for the full return-code contract (foundation #1226).
+BOARD_UNLANDED_ISSUES=""
+
 # Drop a board's cached item-list so the next read re-fetches live. A write makes
 # the cached page stale; busting here is what lets the cache default ON without
 # breaking read-after-write across processes. Item edits never change board
@@ -1092,18 +1101,36 @@ board_claim_contended() {
 # synchronous REST, not an async Projects-v2 mutation), so "landing an item"
 # collapses to just labeling it Backlog. The issues already exist repo-side
 # (gh issue create is the caller's job, same as the Projects path).
+#
+# RETURN CONTRACT: identical to board_create_many (foundation #1226) so the
+# contract does not diverge by backend (see ISSUES-ONLY-BACKEND.md's
+# function-level interface parity table) — 0/full, 1/partial, 2/total, with
+# BOARD_UNLANDED_ISSUES carrying the space-separated failures on any non-zero.
 #   _board_issues_create_many <board#> <url1> <num1> [<url2> <num2> ...]
 _board_issues_create_many() {
   local board="$1"; shift
   local url num item_id
+  local nums=() failed=()
   BOARD_CURRENT="$board"
   while [ "$#" -ge 2 ]; do
     url="$1"; num="$2"; shift 2
+    nums+=("$num")
     item_id="ISSUE_$num"
-    board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || \
-      echo "warning: #$num (issues-only board $board) could not be labeled Backlog" >&2
+    if board_set_status "$item_id" "$BOARD_OPT_BACKLOG"; then
+      continue
+    fi
+    failed+=("$num")
+    echo "warning: #$num (issues-only board $board) could not be labeled Backlog" >&2
   done
-  return 0
+  if [ "${#failed[@]}" -eq 0 ]; then
+    BOARD_UNLANDED_ISSUES=""
+    return 0
+  fi
+  BOARD_UNLANDED_ISSUES="${failed[*]}"
+  if [ "${#failed[@]}" -eq "${#nums[@]}" ]; then
+    return 2
+  fi
+  return 1
 }
 
 # --- resolve once, cache across processes ---------------------------------
@@ -1675,8 +1702,22 @@ board_add_to_board() {
 # active-set page per attempt, never per item) a few times. The client-side
 # Backlog set is the load-bearing no-untracked-item guarantee (GH #387) — board 3
 # has a server-side 'Item added -> Backlog' workflow, but not every board does.
-# An item that never indexes WARNs on stderr (no silent unstatused add); the
-# batch still returns 0 so a caller's success line still prints.
+#
+# RETURN CONTRACT (foundation #1226 — supersedes the old "always returns 0"
+# behavior, which let a genuinely-dropped item print as a success one line
+# later in every caller). An item that never resolves/statuses WARNs on
+# stderr AND is counted as a failure — a single exit code can't distinguish
+# "everything failed" from "one straggler in a big batch failed", so:
+#   - every item landed  -> return 0, BOARD_UNLANDED_ISSUES=""
+#   - SOME items failed  -> return 1 (partial), BOARD_UNLANDED_ISSUES=
+#                           "<space-separated un-landed issue numbers>"
+#   - ALL items failed   -> return 2 (total),   BOARD_UNLANDED_ISSUES=
+#                           "<space-separated un-landed issue numbers>"
+# A caller that only checks `|| die`/`|| true` still gets truthful pass/fail;
+# a caller that wants the specifics reads BOARD_UNLANDED_ISSUES right after
+# the call (before any other board.sh call touches it). No new retry
+# machinery here — this is the outcome-propagation half only; the index-lag
+# retry budget above is unchanged.
 #   board_create_many <board#> <url1> <num1> [<url2> <num2> ...]
 board_create_many() {
   local board="$1"; shift
@@ -1685,7 +1726,7 @@ board_create_many() {
     return $?
   fi
   local url num attempt item_id missing max_attempts
-  local nums=()
+  local nums=() failed=()
   # Index-lag retry budget. Projects-v2 can take longer than a few seconds to
   # index a just-added item; too small a budget leaves laggards unstatused (the
   # observed 2026-06-21 friction: 3 of 8 new items unstatused because the old
@@ -1698,7 +1739,10 @@ board_create_many() {
     board_add_to_board "$board" "$url"
     nums+=("$num")
   done
-  [ "${#nums[@]}" -gt 0 ] || return 0
+  if [ "${#nums[@]}" -eq 0 ]; then
+    BOARD_UNLANDED_ISSUES=""
+    return 0
+  fi
   # 2) ONE resolve, then a bounded retry that re-lists ONCE per attempt for the
   #    whole batch (not per item) until every added item indexes.
   board_resolve "$board"
@@ -1713,23 +1757,41 @@ board_create_many() {
     # Read FRESH: a cached page would hide the just-added items we're waiting on.
     BOARD_ITEMS_JSON="$(_board_item_list_fresh "$board")"
   done
-  # 3) set Backlog on each item that resolved; warn (don't fail) on the rest.
+  # 3) set Backlog on each item that resolved; a resolve-miss OR a failed
+  #    status-set both count as a landing failure (see the return contract in
+  #    this function's header comment) — no more silent `|| true` swallow.
   for num in "${nums[@]}"; do
     item_id="$(board_item_id "$num")"
     if [ -n "$item_id" ]; then
       # Every board governs on the built-in Status field (board_set_status default).
-      board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || true
+      if board_set_status "$item_id" "$BOARD_OPT_BACKLOG"; then
+        continue
+      fi
+      failed+=("$num")
+      echo "warning: #$num added to board $board but setting Backlog failed" >&2
     else
+      failed+=("$num")
       echo "warning: #$num added to board $board but its item id did not resolve" \
            "in time to set Backlog; it may be unstatused on the board" >&2
     fi
   done
+  if [ "${#failed[@]}" -eq 0 ]; then
+    BOARD_UNLANDED_ISSUES=""
+    return 0
+  fi
+  BOARD_UNLANDED_ISSUES="${failed[*]}"
+  if [ "${#failed[@]}" -eq "${#nums[@]}" ]; then
+    return 2   # total failure — nothing in this batch landed
+  fi
+  return 1     # partial failure — some landed, some didn't (see BOARD_UNLANDED_ISSUES)
 }
 
 # Single-item convenience wrapper over board_create_many (the capture.sh flow:
 # one issue already created repo-side; item-add it and land it in Backlog). For a
 # burst of items prefer board_create_many directly — it resolves the board once
-# for the whole batch instead of once per item (GH #40).
+# for the whole batch instead of once per item (GH #40). Return code and
+# BOARD_UNLANDED_ISSUES pass straight through from board_create_many — with a
+# single item, "partial" (1) never happens, only 0 (landed) or 2 (didn't).
 #   board_create_on_board <board#> <issue-url> <issue#>
 board_create_on_board() {
   board_create_many "$1" "$2" "$3"
@@ -1751,6 +1813,12 @@ board_create_on_board() {
 #
 # NOTE: only a net win once auto-add is enabled on the board; with it OFF every
 # call burns the poll attempts before falling back. Enable auto-add first.
+#
+# RETURN CONTRACT (foundation #1226): same shape as board_create_many, since
+# this is itself single-item — return 0 on a landed item, non-zero (2, by
+# board_create_many's total-failure convention — see its header comment) on
+# one that never landed, and BOARD_UNLANDED_ISSUES carries "<num>" on failure.
+# A caller MUST check this return, not assume the old always-0 behavior.
 #   board_capture_item <board#> <issue-url> <issue#>
 board_capture_item() {
   # NB: 'item_status', not 'status' — 'status' is zsh's read-only alias for $?,
@@ -1766,8 +1834,13 @@ board_capture_item() {
           jq -r --argjson n "$num" '.items[] | select(.content.number==$n) | .status // ""'
       )"
       # Auto-add placed it; land it in Backlog only if it isn't already statused.
-      [ -n "$item_status" ] || board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || true
-      return 0
+      if [ -n "$item_status" ] || board_set_status "$item_id" "$BOARD_OPT_BACKLOG"; then
+        BOARD_UNLANDED_ISSUES=""
+        return 0
+      fi
+      BOARD_UNLANDED_ISSUES="$num"
+      echo "warning: #$num found on board $board but setting Backlog failed" >&2
+      return 2
     fi
     sleep 2
   done

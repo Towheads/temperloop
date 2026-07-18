@@ -299,7 +299,26 @@ issue_touch_log_emit "$repo" "$num" "capture" || true
 # in Backlog, and only falls back to an explicit item-add + whole-board resolve if
 # auto-add never fires — so the GraphQL-heavy add (GH #53) is the rare fallback,
 # not every capture. Correct whether or not auto-add is configured.
-board_capture_item "$board" "$url" "$num"
+#
+# board_capture_item now returns non-zero when the item never actually lands
+# (foundation #1226 — the Projects-v2 index race board_create_many's header
+# comment documents). Called EXPLICITLY under `set -euo pipefail`, not bare: a
+# bare call would abort the script mid-flight on that failure with no message
+# of its own (a silent, unexplained abort instead of the old false "Captured
+# -> Backlog" success line — an improvement over the bug, but still not the
+# actionable report a caller needs, and it would skip the milestone step
+# below with no explanation). Handle it explicitly instead: report the
+# created-but-not-landed issue loudly with a concrete next step, and exit
+# non-zero — NEVER fall through to the "Captured -> Backlog" line for an item
+# that didn't land.
+if ! board_capture_item "$board" "$url" "$num"; then
+  echo "capture.sh: created $url (#$num) but it did NOT land on board $board" \
+       "— the board card is missing or unstatused (a Projects-v2 index race);" \
+       "next step: re-run \`board_capture_item $board '$url' $num\` (after" \
+       "sourcing lib/board.sh) once indexing catches up, or add/status it on" \
+       "the board by hand" >&2
+  exit 1
+fi
 
 # 4) Optional: tag a release phase. Assign the native GitHub milestone as a free,
 # concurrent grouping label and LEAVE the item in Backlog — the milestone no longer

@@ -330,3 +330,143 @@ cleanup_kernel
 trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
 
 echo "ALL capture.sh --repo kernel/ambiguous tests passed"
+
+# ---------------------------------------------------------------------------
+# board_capture_item / board_create_many race: never-resolves + resolves-late
+# (foundation #1226). The original bug: `board_create_many` always returned 0
+# even when an item never landed on the board, so capture.sh's caller-side
+# "Captured -> Backlog" success line printed on the very next line after a
+# loud "did not resolve in time" warning — a created-but-not-landed issue read
+# as success in the run summary. Both cases below drive capture.sh as a real
+# subprocess against a bespoke fake `gh` (same style as the --repo kernel fake
+# above): the shared fixtures/fake_gh.sh PATH-binary form can't express a
+# stateful "empty now, populated on a later call" item-list, which the
+# resolves-late case needs. A fake `sleep` on PATH (ahead of the real one)
+# keeps both cases fast despite board_capture_item's 3x2s poll and
+# board_create_many's graduated backoff.
+# ---------------------------------------------------------------------------
+
+# --- never resolves: total failure -> non-zero exit, no false success line --
+RACE_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-race-log-XXXXXX")"
+RACE_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-race-bin-XXXXXX")"
+RACE_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/capture-race-cache-XXXXXX")"
+export RACE_LOG
+cat > "$RACE_BIN/gh" <<'RACEGH'
+#!/usr/bin/env bash
+# Minimal fake gh for the never-resolves race test: the added item NEVER
+# indexes — every item-list and single-item graphql probe reports nothing —
+# so both board_capture_item's own poll and its board_create_on_board
+# fallback's index-lag retry exhaust with no card found.
+set -euo pipefail
+: "${RACE_LOG:?fake gh needs RACE_LOG}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$RACE_LOG"
+case "$1 $2" in
+  "issue create")   printf 'https://github.com/ExampleOrg/example-repo/issues/902\n' ;;
+  "label create")   : ;;
+  "project view")   printf '{"id":"PVT_kwTESTPROJECT123","number":3,"title":"stageFind build","owner":{"login":"ExampleOrg"}}\n' ;;
+  "project field-list")
+    printf '{"fields":[{"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"opt_backlog","name":"Backlog"}]}]}\n' ;;
+  "project item-add")  : ;;
+  "project item-edit") : ;;
+  "project item-list") echo '{"items":[],"totalCount":0}' ;;
+  "api graphql")
+    printf '{"data":{"repository":{"issue":{"title":"Never lands","projectItems":{"nodes":[]}}}}}\n' ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+RACEGH
+chmod +x "$RACE_BIN/gh"
+cat > "$RACE_BIN/sleep" <<'RACESLEEP'
+#!/usr/bin/env bash
+exit 0
+RACESLEEP
+chmod +x "$RACE_BIN/sleep"
+cleanup_race() { rm -rf "$RACE_LOG" "$RACE_BIN" "$RACE_CACHE"; unset RACE_LOG; }
+trap 'cleanup_race; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+rc=0
+out="$(
+  PATH="$RACE_BIN:$PATH" RACE_LOG="$RACE_LOG" \
+  BOARD_CACHE_TTL=0 BOARD_CACHE_DIR="$RACE_CACHE" BOARD_BUDGET_GUARD_THRESHOLD=0 \
+  BOARD_CREATE_INDEX_RETRIES=1 \
+  bash "$CAPTURE" "Item that never lands" 2>&1
+)" || rc=$?
+[ "$rc" -ne 0 ] || fail "capture.sh must exit non-zero when the item never lands on the board (out: $out)"
+if grep -Eq 'Captured .* -> board .* Backlog' <<<"$out"; then
+  fail "capture.sh must NEVER print the Backlog success line for an item that never landed (out: $out)"
+fi
+grep -qi 'NOT land' <<<"$out" \
+  || fail "capture.sh must print a distinct loud line naming the created-but-not-landed issue (out: $out)"
+grep -q '#902' <<<"$out" \
+  || fail "capture.sh's not-landed message must name the issue number (out: $out)"
+echo "PASS: capture.sh exits non-zero and never prints a false Backlog success line when the board add races and the item never lands (F#1226)"
+
+cleanup_race
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+# --- resolves late: the item indexes on a retry, not immediately -> still a
+#     truthful success (regression guard against over-tightening the new
+#     contract into treating a slow-but-eventual landing as a failure) -------
+LATE_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-late-log-XXXXXX")"
+LATE_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-late-bin-XXXXXX")"
+LATE_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/capture-late-cache-XXXXXX")"
+LATE_COUNT="$(mktemp "${TMPDIR:-/tmp}/capture-late-count-XXXXXX")"
+echo 0 > "$LATE_COUNT"
+export LATE_LOG LATE_COUNT
+cat > "$LATE_BIN/gh" <<'LATEGH'
+#!/usr/bin/env bash
+# Minimal fake gh for the resolves-late race test: auto-add never fires (the
+# single-item graphql probe board_capture_item polls always reports nothing),
+# forcing the board_create_on_board fallback; that fallback's item-list is
+# EMPTY on its first call (mimicking un-indexed Projects-v2) and POPULATED
+# from the second call on, so the item lands on the index-lag retry rather
+# than immediately.
+set -euo pipefail
+: "${LATE_LOG:?fake gh needs LATE_LOG}" "${LATE_COUNT:?fake gh needs LATE_COUNT}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$LATE_LOG"
+case "$1 $2" in
+  "issue create")   printf 'https://github.com/ExampleOrg/example-repo/issues/903\n' ;;
+  "label create")   : ;;
+  "project view")   printf '{"id":"PVT_kwTESTPROJECT123","number":3,"title":"stageFind build","owner":{"login":"ExampleOrg"}}\n' ;;
+  "project field-list")
+    printf '{"fields":[{"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"opt_backlog","name":"Backlog"}]}]}\n' ;;
+  "project item-add")  : ;;
+  "project item-edit") : ;;
+  "project item-list")
+    c=$(($(cat "$LATE_COUNT") + 1)); echo "$c" > "$LATE_COUNT"
+    if [ "$c" -lt 2 ]; then
+      echo '{"items":[],"totalCount":0}'
+    else
+      echo '{"items":[{"id":"PVTI_item903","content":{"number":903,"title":"Resolves late","type":"Issue"}}],"totalCount":1}'
+    fi
+    ;;
+  "api graphql")
+    printf '{"data":{"repository":{"issue":{"title":"Resolves late","projectItems":{"nodes":[]}}}}}\n' ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+LATEGH
+chmod +x "$LATE_BIN/gh"
+cat > "$LATE_BIN/sleep" <<'LATESLEEP'
+#!/usr/bin/env bash
+exit 0
+LATESLEEP
+chmod +x "$LATE_BIN/sleep"
+cleanup_late() { rm -rf "$LATE_LOG" "$LATE_BIN" "$LATE_CACHE" "$LATE_COUNT"; unset LATE_LOG LATE_COUNT; }
+trap 'cleanup_late; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+rc=0
+out="$(
+  PATH="$LATE_BIN:$PATH" LATE_LOG="$LATE_LOG" LATE_COUNT="$LATE_COUNT" \
+  BOARD_CACHE_TTL=0 BOARD_CACHE_DIR="$LATE_CACHE" BOARD_BUDGET_GUARD_THRESHOLD=0 \
+  bash "$CAPTURE" "Item that resolves late" 2>&1
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "capture.sh must still exit 0 when the item lands on a later index-lag retry (out: $out)"
+grep -Eq 'Captured .* -> board 3 Backlog \(#903\)' <<<"$out" \
+  || fail "capture.sh must print the truthful Backlog success line once the item lands late (out: $out)"
+[ "$(grep -c '^gh project item-list' "$LATE_LOG")" -ge 2 ] \
+  || fail "resolves-late: expected the item-list to be re-fetched at least once (log: $(cat "$LATE_LOG"))"
+echo "PASS: capture.sh still reports truthful success when the board add lands on a later index-lag retry (F#1226)"
+
+cleanup_late
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+echo "ALL capture.sh board-landing race tests passed (F#1226)"

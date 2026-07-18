@@ -616,12 +616,28 @@ _board_gh() {
   esac
 }
 : >"$CALLS"
-err="$(board_create_on_board 3 "https://github.com/Towheads/stageFind/issues/999" 999 2>&1 >/dev/null)"
+rc=0
+# NB: capture stderr to a FILE, not via `err="$(... 2>&1)"` — a command
+# substitution runs in a subshell, so a BOARD_UNLANDED_ISSUES assignment made
+# inside board_create_on_board there would be invisible back in THIS shell
+# once the subshell exits. Redirecting to a file keeps the call in-process so
+# the global lands here, where the assertion below reads it.
+ERRFILE="$(mktemp "${TMPDIR:-/tmp}/board-never-indexed-err-XXXXXX")"
+board_create_on_board 3 "https://github.com/Towheads/stageFind/issues/999" 999 >/dev/null 2>"$ERRFILE" || rc=$?
+err="$(cat "$ERRFILE")"; rm -f "$ERRFILE"
 printf '%s' "$err" | grep -q "may be unstatused" \
   || fail "never-indexed: expected an 'unstatused' warning on stderr, got: $err"
 [ "$(grep -c 'gh project item-edit' "$CALLS")" -eq 0 ] \
   || fail "never-indexed: must NOT issue an item-edit when the item never resolves"
-echo "PASS: board_create_on_board warns (no edit) when the added item never indexes"
+# foundation #1226: a never-landed item is now a truthful non-zero return (a
+# single item that fails is, by definition, the WHOLE batch failing — the
+# total-failure code 2), not the old always-0 that let this print as success
+# one line later in every caller.
+[ "$rc" -eq 2 ] \
+  || fail "never-indexed: board_create_on_board must return 2 (total failure) when the item never lands, got rc=$rc (#1226)"
+[ "$BOARD_UNLANDED_ISSUES" = "999" ] \
+  || fail "never-indexed: BOARD_UNLANDED_ISSUES must name the un-landed issue, got: '$BOARD_UNLANDED_ISSUES' (#1226)"
+echo "PASS: board_create_on_board warns (no edit) and returns non-zero with BOARD_UNLANDED_ISSUES set when the added item never indexes (#1226)"
 
 # --- board_create_on_board: widened index-lag retry budget (foundation #589) ---
 # An item that only indexes on the 4th item-list call must STILL get Backlog set:
