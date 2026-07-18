@@ -80,7 +80,9 @@ it's excluded from the PR gate).
 Real network + a real billed LLM call, by design — this is the entire
 point of the tier-2 leg (tier-1 already covers the hermetic, free case).
 Bounded: `temperloop try`'s live `claude -p` shadow-triage call is capped
-at `TRY_CLAUDE_MAX_BUDGET_USD` = $1.00 per run
+at `TRY_CLAUDE_MAX_BUDGET_USD` = $1.00 per run (≈330,000 tokens at Claude
+Sonnet 5 list price, if the whole cap were spent — see
+`docs/cost-and-autonomy.md` for the conversion basis)
 (`bin/lib/cost-estimates.conf`); `init`/`eject` make only plain `gh` API
 calls (free, rate-limited but not billed). One run/week (plus occasional
 manual `workflow_dispatch` before a release) keeps aggregate spend

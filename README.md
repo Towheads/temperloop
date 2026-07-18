@@ -13,15 +13,15 @@ read, not a service you depend on.
 
 ## 1. What TemperLoop is
 
-TemperLoop is an opinionated process kernel for scaling AI development: it
-takes the machinery that already scales medium-to-large human engineering
-orgs — issue tracking, contract-scoped work, code review, protected
-branches, merge queues, WIP caps — and applies it to agent-driven work
-instead of assuming a human will supply that discipline by hand. See
-[Guiding principles](docs/principles.md) for the full thesis this rests on,
-[Architecture overview](docs/architecture.md) for how the pieces below fit
-together end to end, and [Who this is for](docs/who-its-for.md) for the
-reader every doc and gate in this repo is written against.
+The three pieces below take machinery that already scales medium-to-large
+human engineering orgs — issue tracking, contract-scoped work, code
+review, protected branches, merge queues, WIP caps — and apply it to
+agent-driven work too, instead of assuming a human supplies that
+discipline by hand. See [Guiding principles](docs/principles.md) for the
+full thesis this rests on, [Architecture overview](docs/architecture.md)
+for how the pieces fit together end to end, and
+[Who this is for](docs/who-its-for.md) for the reader every doc and gate
+in this repo is written against.
 
 Three pieces, meant to be adopted independently or together:
 
