@@ -227,6 +227,11 @@ FUNNEL_DRIVE_MERGE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.con
 FUNNEL_MERGE_PENDING_LABEL	funnel-merge-pending	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a cross-tick merge hand-off (open unmerged PR at session end)
 FUNNEL_CLARIFIED_MARKER	<!-- funnel:clarification-drained -->	marker	tracked-repo	workflows/scripts/build/build.config.sh	Idempotency marker posted when a needs-clarification item is drained
 FUNNEL_ESCALATED_LABEL	funnel-escalated	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a rung-5c CODE escalation (route-refused / terminally-red CI)
+RETRO_MINT_ENABLED	1	bool	tracked-repo	workflows/scripts/build/build.config.sh	Master on/off for the /build 4d-retro MINT (files a per-epic retro tracker at epic close)
+RETRO_MIN_INTERVAL	259200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Debounce: minimum age of the oldest retro-pending tracker before the funnel tick emits a retro-judge action
+RETRO_URGENT_CI_RETRIES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	CI-retry count at/above which a retro tracker is stamped retro-urgent at mint time (bypasses the debounce)
+RETRO_BATCH_SESSION_CAP	5	int	tracked-repo	workflows/scripts/build/build.config.sh	Max number of retro trackers a single /retro --pending judge session processes (enforced judge-side)
+RETRO_JUDGE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model the funnel runs claude -p "/retro --pending" under (distinct from FUNNEL_DRIVE_MODEL)
 FUNNEL_DRIVE_SETTINGS	$HERE/funnel-drive.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 FUNNEL_DRIVE_MERGE_SETTINGS	$HERE/funnel-drive-merge.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
