@@ -4,13 +4,13 @@ title: Cost & autonomy — what running temperloop costs, and what it does on it
 
 # Cost & autonomy — what running temperloop costs, and what it does on its own
 
-temperloop#426. Two questions a stranger should be able to answer before
-running anything, not after: **what does this spend of my own money**, and
-**what will it do without asking me first**. This page answers both, with
-real figures where a real figure exists, and an honest "no fixed number"
-where one doesn't. It's linked from the very first step of the quickstart
-(`README.md` § 3, `bin/README.md`) on purpose — read this before `temperloop
-try`, not after.
+This page answers the two questions a stranger should be able to answer
+*before* running anything, not after: **what does this spend of my own
+money**, and **what will it do without asking me first**
+(temperloop#426 (cost & autonomy expectations doc)). Real figures where a
+real figure exists, an honest "no fixed number" where one doesn't. It's
+linked from the very first step of the quickstart (`README.md` § 3,
+`bin/README.md`) on purpose — read this before `temperloop try`, not after.
 
 ## What running temperloop costs
 
@@ -57,11 +57,14 @@ only by how much work you asked for.
 
 **Tier 3 — unattended (the autonomous funnel driver, nightly `/tidy`, any
 `claude -p` cron invocation).** These run without you watching, so they're
-the tier most worth having a real number for. One concrete observed data
-point: a real headless `/tidy` invocation — a full nightly drain pass over
-a session-stub backlog — cost **$1.48** in one logged run. That's a single
-data point, not a guaranteed average (cost scales with backlog size, same
-as any other tier), but it's real, not modeled. The autonomous funnel driver
+the tier most worth having a real number for. One concrete data point: a
+real headless `/tidy` invocation — a full nightly drain pass over a
+session-stub backlog — was hand-observed at **$1.48** for that one run. This
+repo doesn't yet emit a per-run dollar-cost log a reader could check
+themselves (`meta/data/raw/` tracks command/issue/funnel *events*, not
+spend — see `meta/data/raw/README.md`), so treat this as a real but
+single, unlogged data point, not a guaranteed average — cost scales with
+backlog size like any other tier. The autonomous funnel driver
 adds its own per-tick spend on top of ordinary interactive use, proportional
 to how many actions it was handed that tick (`docs/features/funnel-driver.md`
 § Resource impact) — the per-tick item cap (below) is the direct lever on
@@ -120,17 +123,17 @@ Once you do:
   consent — read that section for the full contract). Any write to an
   external system beyond this repo's own tracker — most concretely, a
   feedback/report submission that would leave your machine — requires
-  explicit consent and a preview step; nothing repo-derived transmits
-  silently, unattended or not.
-- **The knobs that govern all of this** (name them symbolically — check
-  `workflows/scripts/build/build.config.sh` for current defaults, never
-  trust a hardcoded number in prose): `FUNNEL_DRIVE` (safe tier on/off),
-  `FUNNEL_DRIVE_MERGE` (merge tier on/off, rides on top of the safe tier),
-  `FUNNEL_DRIVE_CAP` / `FUNNEL_DRIVE_MERGE_CAP` (max items driven per tick —
-  the direct lever on blast radius, independent of backlog size),
-  `BUILD_MERGE_GATE_WINDOW` (the timed auto-merge window for a clean set;
-  `0` forces every merge modal, no auto tier at all), and the 5-hour quota
-  gate knobs above.
+  explicit consent and a preview step (landing with this release,
+  temperloop#428 (consent-gated feedback submit)); nothing repo-derived
+  transmits silently, unattended or not.
+
+The knobs above are named symbolically on purpose (`FUNNEL_DRIVE`,
+`FUNNEL_DRIVE_MERGE`, `BUILD_MERGE_GATE_WINDOW`, plus the per-tick item caps,
+`FUNNEL_DRIVE_CAP` / `FUNNEL_DRIVE_MERGE_CAP`, which bound blast radius
+independent of how large the ready backlog is) — check
+`workflows/scripts/build/build.config.sh` for current defaults; never trust
+a hardcoded number in prose, since a knob's value can change without this
+page being touched.
 
 ## Your spend vs. the team's shared resources
 
