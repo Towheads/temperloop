@@ -18,8 +18,8 @@
 # to keep: one entry per path install has touched, INCLUDING an explicit,
 # never-derived backup location for anything install replaced.
 #
-# WHY A SEPARATE MANIFEST FROM .foundation/config (bin/subcommands/eject.sh,
-# bin/subcommands/init.sh): .foundation/config is REPO-TREE-scoped (lives
+# WHY A SEPARATE MANIFEST FROM .temperloop/config (bin/subcommands/eject.sh,
+# bin/subcommands/init.sh): .temperloop/config is REPO-TREE-scoped (lives
 # inside a target repo's working copy, committed on a proposal branch) and
 # has a SOLE-WRITER contract (init.sh is documented as the only writer;
 # eject.sh is the only reader for revert purposes). This manifest is
@@ -29,7 +29,7 @@
 # The two manifests are never merged, never cross-read, and use different
 # on-disk formats by design — see D7's own note in
 # `Decisions/temperloop - Configuration & installation architecture (K164)`:
-# "kept as a *separate* manifest; .foundation/config is repo-tree-scoped
+# "kept as a *separate* manifest; .temperloop/config is repo-tree-scoped
 # with a sole-writer contract, don't overload it."
 #
 # ── On-disk location ────────────────────────────────────────────────────

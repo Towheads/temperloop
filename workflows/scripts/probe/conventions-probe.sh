@@ -3,7 +3,7 @@
 # conventions-probe.sh — read-only detector of a target repo's conventions.
 #
 # foundation #765. PURE STDOUT, zero writes, always: this script never
-# creates, modifies, or deletes a file anywhere (not `.foundation/config`,
+# creates, modifies, or deletes a file anywhere (not `.temperloop/config`,
 # not a cache, not a scratch temp file that outlives the run) — it only
 # reads the target checkout and (best-effort, network-gated) the GitHub
 # API, and prints one JSON document to stdout. Persistence of a probe
@@ -161,7 +161,7 @@ fi
 
 # `dir` is deliberately never populated with the absolute local filesystem
 # path (temperloop#416). This script's own stdout gets folded VERBATIM
-# into a target repo's COMMITTED `.foundation/config` by `foundation init`
+# into a target repo's COMMITTED `.temperloop/config` by `foundation init`
 # (bin/subcommands/init.sh's build_config_json, `--argjson probe
 # "$probe_json"`), proposed via a real reviewable PR the target repo's own
 # reviewers read — an absolute path there leaks the operator's local

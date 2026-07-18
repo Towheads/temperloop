@@ -58,7 +58,7 @@ Two public entry points carry the install/uninstall contract:
   causes a REFUSAL (non-zero return) rather than a destructive guess. A
   path with **no** manifest entry is untouched and unreported as an
   error — it is invisible, exactly like `eject.sh`'s "nothing is inferred
-  by namespace grep" discipline for `.foundation/config`.
+  by namespace grep" discipline for `.temperloop/config`.
 
 Read-compatibility is explicit: `manifest_load` checks the on-disk
 `schema_version` against `MANIFEST_READABLE_SCHEMA_VERSIONS` (currently
@@ -82,7 +82,7 @@ Consumed by the not-yet-built `temperloop install` / `temperloop
 uninstall` subcommands (ADR K164 D7, this epic's remaining items): install
 calls `manifest_backup_and_record` for every path it writes; uninstall
 calls `manifest_restore_from_record` for every path it wants to undo.
-Deliberately a SEPARATE file and format from `.foundation/config`
+Deliberately a SEPARATE file and format from `.temperloop/config`
 (`bin/subcommands/init.sh` / `bin/subcommands/eject.sh`) — that manifest is
 repo-tree-scoped with a sole-writer contract (init.sh writes, eject.sh
 reads) for API-state side effects (labels, required-checks, boards); this

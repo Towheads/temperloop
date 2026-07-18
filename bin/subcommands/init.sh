@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: bootstrap .foundation/config; propose tree changes via PR; consented apply of API-state (required check, fnd: labels, opt-in board)
+# description: bootstrap .temperloop/config; propose tree changes via PR; consented apply of API-state (required check, fnd: labels, opt-in board)
 #
 # init.sh — `foundation init`: opt-in, reviewable adoption (foundation #765
 # Epic D "newcomer experience", item foundation-init / #854).
@@ -11,7 +11,7 @@
 #      schema 1) — read-only detection of the target repo's conventions.
 #   2. the proposal-PR generator (workflows/scripts/proposal/proposal-pr.sh)
 #      — the ONLY path by which this script ever writes to the target
-#      repo's TREE. Every tree change (`.foundation/config`, an optional
+#      repo's TREE. Every tree change (`.temperloop/config`, an optional
 #      `workflows/scripts/board/boards.conf` entry) rides a reviewable PR;
 #      nothing is ever committed straight to the default branch.
 #   3. a CONSENTED APPLY STEP, owned by this script (there is no landed
@@ -21,11 +21,11 @@
 #      Projects-v2 board. Each is a plain `gh` call; --dry-run or a denied
 #      prompt performs zero of them.
 #
-# `foundation init` is the SOLE WRITER of `.foundation/config` — no other
+# `foundation init` is the SOLE WRITER of `.temperloop/config` — no other
 # subcommand (this repo's `eject`, once it lands, only READS it) ever
 # creates or edits that file. Every side effect this script produces (a
 # label, a required-check setting, a proposal branch/PR, a board) is
-# recorded in `.foundation/config`'s `installs` array — the exact set
+# recorded in `.temperloop/config`'s `installs` array — the exact set
 # `foundation eject` reverts. Re-running this script MERGES into that
 # array rather than clobbering it (see "round-trip" below), and an install
 # already recorded from a prior run (or already present on the remote,
@@ -40,20 +40,20 @@
 # exists), proposes appending them to that repo's `boards.conf` via the
 # SAME proposal-PR generator (still tree-only, still reviewable). When the
 # toolkit isn't present yet, the rendered entry is only recorded in
-# `.foundation/config` (`tracker.boards_conf_entry`) for the operator to
-# apply by hand later — `.foundation/config` itself is NEVER read by the
+# `.temperloop/config` (`tracker.boards_conf_entry`) for the operator to
+# apply by hand later — `.temperloop/config` itself is NEVER read by the
 # adapter, so there is no risk of two config stores disagreeing.
 # Issues-only (`board.<N>.backend=issues`) is the default tracker mode —
 # opt into a real Projects-v2 board with `--tracker-mode projects
 # --provision-board`.
 #
 # BOOTSTRAP ORDERING NOTE (a known, accepted limitation): the proposal PR
-# this script opens carries `.foundation/config`'s content as committed
+# this script opens carries `.temperloop/config`'s content as committed
 # BEFORE that PR's own outcome (its branch/PR number) is known — a
 # PR can't describe itself before it exists. This script resolves it with
 # a second pass: once the first `proposal-pr.sh open` call returns
 # PR_OPENED/EXISTS, it folds a `{"type":"proposal_pr",...}` install entry
-# for THIS run into `.foundation/config` and calls the SAME generator a
+# for THIS run into `.temperloop/config` and calls the SAME generator a
 # second time (same branch, --force) so the version that actually lands
 # is self-describing. A --dry-run or NO_CHANGES first pass skips this
 # second pass — there is no PR yet to describe.
@@ -69,7 +69,7 @@
 # PARTIAL-RUN RECOVERY (temperloop#414): a run that dies anywhere from Step
 # 3's proposal-pr.sh call onward (killed process, failed push, failed `gh pr
 # create`) leaves the checkout on the proposal branch with no memory of what
-# branch it came from. This script writes an untracked `.foundation/.recovery.json`
+# branch it came from. This script writes an untracked `.temperloop/.recovery.json`
 # ({"original_branch":...,"proposal_branch":...}) immediately before that
 # call and deletes it immediately after the call succeeds (whatever the
 # outcome) — so the marker survives on disk exactly when, and only when, a
@@ -109,7 +109,7 @@
 #                          needs no further opt-in — see --provision-board.
 #   --board N               Logical board number the rendered boards.conf
 #                          entry uses. Default: carried forward from an
-#                          existing .foundation/config, else 1.
+#                          existing .temperloop/config, else 1.
 #   --provision-board       Explicit opt-in to ALSO offer provisioning a
 #                          real Projects-v2 board via the consented apply
 #                          step. No-op unless --tracker-mode projects.
@@ -254,8 +254,8 @@ echo
 # file exists. Never blocks init either way.
 #
 # --dry-run GATE (temperloop#413): baseline-snapshot.sh is a real writer —
-# it appends to .foundation/baseline.jsonl and self-manages
-# .foundation/.gitignore, both straight to disk, with no proposal-PR/commit
+# it appends to .temperloop/baseline.jsonl and self-manages
+# .temperloop/.gitignore, both straight to disk, with no proposal-PR/commit
 # indirection of its own. A dry run must be genuinely zero-write (bin/
 # README.md bills it as "preview first: tree-only, zero API writes"), so
 # this step is skipped outright on --dry-run — never invoked, not even in
@@ -305,23 +305,44 @@ fi
 echo
 
 # ---------------------------------------------------------------------------
-# Step 2 — read any existing .foundation/config: the round-trip half of
+# Step 2 — read any existing .temperloop/config: the round-trip half of
 # the persisted contract (probe -> config -> init re-reads it). A prior
 # run's install manifest is carried forward (merged, never clobbered); an
 # unreadable/wrong-schema file is treated as absent, with a warning, so a
 # corrupt config can't wedge every future run.
 # ---------------------------------------------------------------------------
-config_rel=".foundation/config"
+config_rel=".temperloop/config"
 config_path="$repo_dir/$config_rel"
+# temperloop#165 rename window (read-old-write-new): a pre-v0.14.0 init
+# wrote .foundation/config. When no .temperloop/config exists, READ the
+# legacy file so a re-run still merges the old install manifest — but the
+# config this run WRITES always lands at .temperloop/config (write-new).
+# The legacy read is removed in v0.16.0; `temperloop eject` cleans either
+# dir throughout. TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY
+# seam (never set in production use): =1 simulates the post-v0.16.0
+# behavior — a legible refusal naming the migration, never a silent
+# fresh-manifest restart on top of forgotten legacy state.
+legacy_config_rel=".foundation/config"
+read_config_rel="$config_rel"
+read_config_path="$config_path"
+if [ ! -f "$config_path" ] && [ -f "$repo_dir/$legacy_config_rel" ]; then
+  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+    echo "init.sh: ERROR — found legacy $legacy_config_rel, whose read support was removed in v0.16.0 (the config renamed to .temperloop/config in v0.14.0). Rename the directory (git mv .foundation .temperloop) or run 'temperloop eject' with a pre-v0.16.0 release, then re-run init." >&2
+    exit 1
+  fi
+  echo "init.sh: NOTE — reading legacy $legacy_config_rel (renamed .temperloop/config in v0.14.0; legacy read removed in v0.16.0). This run's config will be written to $config_rel." >&2
+  read_config_rel="$legacy_config_rel"
+  read_config_path="$repo_dir/$legacy_config_rel"
+fi
 existing_config=""
 existing_installs="[]"
-if [ -f "$config_path" ]; then
-  if existing_config="$(jq -e '.' "$config_path" 2>/dev/null)" \
+if [ -f "$read_config_path" ]; then
+  if existing_config="$(jq -e '.' "$read_config_path" 2>/dev/null)" \
       && [ "$(jq -r '.schema // empty' <<<"$existing_config")" = "1" ]; then
     existing_installs="$(jq -c '.installs // []' <<<"$existing_config")"
-    echo "-- Found existing $config_rel (schema 1) — merging its install manifest ($(jq 'length' <<<"$existing_installs") entries) --"
+    echo "-- Found existing $read_config_rel (schema 1) — merging its install manifest ($(jq 'length' <<<"$existing_installs") entries) --"
   else
-    echo "init.sh: warning — existing $config_rel is not valid schema-1 JSON; starting a fresh install manifest" >&2
+    echo "init.sh: warning — existing $read_config_rel is not valid schema-1 JSON; starting a fresh install manifest" >&2
     existing_config=""
   fi
   echo
@@ -476,7 +497,7 @@ all_installs="$(jq -c -n --argjson a "$existing_installs" --argjson b "$new_inst
   '($a + $b) | unique_by([.type, (.name // ""), (.branch // ""), (.repo // ""), (.url // "")])')"
 
 # ---------------------------------------------------------------------------
-# Step 4 — build .foundation/config content and the tree-only proposal.
+# Step 4 — build .temperloop/config content and the tree-only proposal.
 # ---------------------------------------------------------------------------
 now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 build_config_json() {
@@ -531,9 +552,9 @@ fi
 echo
 
 echo "-- 3. Proposal PR (tree-only; nothing lands without review) --"
-title="chore: foundation init — .foundation/config"
-[ "${#manifest_entries[@]}" -gt 1 ] && title="chore: foundation init — .foundation/config + boards.conf"
-body="Proposed by \`foundation init\` (opt-in, reviewable — foundation #765 Epic D).
+title="chore: temperloop init — .temperloop/config"
+[ "${#manifest_entries[@]}" -gt 1 ] && title="chore: temperloop init — .temperloop/config + boards.conf"
+body="Proposed by \`temperloop init\` (opt-in, reviewable — foundation #765 Epic D).
 
 This PR is TREE-ONLY: it never touches labels, branch protection, or
 Projects-v2 board state. Those are applied only via this run's separate
@@ -581,7 +602,7 @@ else
   # anywhere from here on (a killed process, a failed push, a failed `gh pr
   # create`) leaves the checkout sitting on $branch with no further trace of
   # what branch to return to once the process is gone. Record it BEFORE the
-  # switch, as untracked (gitignored) recovery state under .foundation/ — the
+  # switch, as untracked (gitignored) recovery state under .temperloop/ — the
   # exact same directory `foundation eject` already owns cleaning up. Cleared
   # right below the instant the switch is known to have succeeded (whatever
   # its outcome — NO_CHANGES/PR_OPENED/EXISTS all mean "this branch is now
@@ -591,11 +612,11 @@ else
   # (nothing to protect against) or HEAD is detached (nothing named to
   # restore to).
   if [ -n "$orig_branch" ] && [ "$orig_branch" != "$branch" ]; then
-    mkdir -p "$repo_dir/.foundation" 2>/dev/null
+    mkdir -p "$repo_dir/.temperloop" 2>/dev/null
     jq -cn --arg orig "$orig_branch" --arg prop "$branch" \
       '{original_branch:$orig, proposal_branch:$prop}' \
-      > "$repo_dir/.foundation/.recovery.json" 2>/dev/null || true
-    gi_path="$repo_dir/.foundation/.gitignore"
+      > "$repo_dir/.temperloop/.recovery.json" 2>/dev/null || true
+    gi_path="$repo_dir/.temperloop/.gitignore"
     if [ -f "$gi_path" ]; then
       grep -Fxq ".recovery.json" "$gi_path" 2>/dev/null || printf '%s\n' ".recovery.json" >> "$gi_path"
     else
@@ -611,7 +632,7 @@ else
     echo "init.sh: proposal-pr.sh failed (exit $proposal_rc)" >&2
     exit "$proposal_rc"
   fi
-  rm -f "$repo_dir/.foundation/.recovery.json" 2>/dev/null || true
+  rm -f "$repo_dir/.temperloop/.recovery.json" 2>/dev/null || true
   outcome="$(jq -r '.outcome // "ERROR"' <<<"$proposal_out" 2>/dev/null || echo ERROR)"
   echo
 

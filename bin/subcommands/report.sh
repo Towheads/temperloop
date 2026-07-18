@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# description: before/after value report -- kernel-tier deltas from .foundation/baseline.jsonl + overlay-tier repo drop-ins
+# description: before/after value report -- kernel-tier deltas from .temperloop/baseline.jsonl + overlay-tier repo drop-ins
 #
-# report.sh -- `foundation report`: the 'AFTER' picture of Epic E's
+# report.sh -- `temperloop report`: the 'AFTER' picture of Epic E's
 # before/after value loop (foundation #766, epic #765-adjacent "Epic E"
 # value-proof work, item report-renderer). Reads every line of
-# .foundation/baseline.jsonl (written by baseline-snapshot.sh -- see
+# .temperloop/baseline.jsonl (written by baseline-snapshot.sh -- see
 # kernel/workflows/scripts/lib/baseline_snapshot.contract.md) and renders
 # first-record-vs-latest-record deltas across four kernel-tier metrics. This
 # script NEVER calls `gh` itself except when --refresh is passed, in which
@@ -20,16 +20,16 @@
 # that rule is about THIS repo's day-to-day `make` targets staying on
 # `make`, never duplicated into a dispatcher verb); `report` never wraps a
 # Makefile target at all, kernel or otherwise -- it only ever renders the
-# TARGET repo's own baseline JSONL plus its own .foundation/report.d/
+# TARGET repo's own baseline JSONL plus its own .temperloop/report.d/
 # drop-ins.
 #
 # DISPATCH MODEL: a discovered subcommand, same as every sibling in this
 # directory (see kernel/bin/foundation's header comment + baseline-
 # snapshot.sh's identical note) -- this file's mere presence at
-# kernel/bin/subcommands/report.sh IS `foundation report`.
+# kernel/bin/subcommands/report.sh IS `temperloop report`.
 #
 # TWO TIERS:
-#   KERNEL-TIER (always renders, .foundation/baseline.jsonl only, zero
+#   KERNEL-TIER (always renders, .temperloop/baseline.jsonl only, zero
 #     network by default): merged items/day, median time-to-merge, review
 #     latency, issue backlog age -- each a first-record-vs-latest-record
 #     delta. The population definition behind every one of these numbers is
@@ -39,11 +39,11 @@
 #     design" section -- one source, kept in sync by hand, never re-derived
 #     independently).
 #   OVERLAY-TIER (the drop-in seam): every executable file directly inside
-#     the target repo's .foundation/report.d/ (a TRACKED dir -- meant to be
+#     the target repo's .temperloop/report.d/ (a TRACKED dir -- meant to be
 #     committed, unlike the gitignored baseline.jsonl) is run with no args,
 #     cwd = the target repo, under a watchdog; the contract is exit 0 + a
 #     self-contained stdout block, rendered verbatim under its own
-#     "-- report.d/<name> --" heading. An absent .foundation/report.d/, a
+#     "-- report.d/<name> --" heading. An absent .temperloop/report.d/, a
 #     non-executable file, a non-zero exit, or a timeout all degrade to one
 #     line -- "skipped -- <name>: producer unavailable" -- NEVER a hard
 #     error; see kernel/workflows/scripts/lib/report.contract.md's "Overlay
@@ -73,8 +73,9 @@
 #   0  rendered a report (even a heavily degraded one -- a missing
 #      report.d/ dir, an unavailable metrics record, or a failed drop-in
 #      are all legible skip reasons, not failures).
-#   1  fatal: no .foundation/baseline.jsonl found (run `foundation
-#      baseline-snapshot` or `foundation report --refresh` first), --dir
+#   1  fatal: no .temperloop/baseline.jsonl (or legacy .foundation/
+#      baseline.jsonl) found (run `temperloop baseline-snapshot` or
+#      `temperloop report --refresh` first), --dir
 #      doesn't exist, or (with --refresh) the sibling baseline-snapshot.sh
 #      file is missing (broken kernel checkout).
 #   2  invalid CLI usage.
@@ -131,7 +132,7 @@ abs_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 target_dir="$(abs_dir "$report_dir")" || { echo "report.sh: --dir '$report_dir' does not exist" >&2; exit 1; }
 repo_root="$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null)" || repo_root="$target_dir"
 
-echo "== foundation report =="
+echo "== temperloop report =="
 echo
 
 if [ "$do_refresh" -eq 1 ]; then
@@ -139,17 +140,21 @@ if [ "$do_refresh" -eq 1 ]; then
     echo "report.sh: --refresh requires baseline-snapshot.sh at $BASELINE_SNAPSHOT (broken kernel checkout)" >&2
     exit 1
   fi
-  echo "-- Refreshing baseline (foundation baseline-snapshot) --"
+  echo "-- Refreshing baseline (temperloop baseline-snapshot) --"
   if ! (cd "$repo_root" && bash "$BASELINE_SNAPSHOT"); then
     echo "report.sh: baseline-snapshot refresh reported a failure -- rendering from whatever is already on disk" >&2
   fi
   echo
 fi
 
-baseline_file="$repo_root/.foundation/baseline.jsonl"
+# temperloop#165 rename window: .temperloop/ preferred, an existing legacy
+# .foundation/baseline.jsonl read as fallback (removed in v0.16.0 — see
+# baseline-snapshot.sh's continue-in-place note).
+baseline_file="$repo_root/.temperloop/baseline.jsonl"
+[ -f "$baseline_file" ] || baseline_file="$repo_root/.foundation/baseline.jsonl"
 if [ ! -f "$baseline_file" ]; then
-  echo "report.sh: no .foundation/baseline.jsonl found in $repo_root" >&2
-  echo "  Run 'foundation baseline-snapshot' (or 'foundation report --refresh') first." >&2
+  echo "report.sh: no .temperloop/baseline.jsonl (or legacy .foundation/baseline.jsonl) found in $repo_root" >&2
+  echo "  Run 'temperloop baseline-snapshot' (or 'temperloop report --refresh') first." >&2
   exit 1
 fi
 
@@ -188,7 +193,7 @@ latest_mc="$(jq -r '.metrics.pr_throughput.merged_count // "null"' <<<"$latest_r
 echo "Repo: $gh_repo"
 if [ "$record_count" -eq 1 ]; then
   echo "Baseline records: 1 (only one snapshot so far -- first == latest; deltas"
-  echo "  will appear once a later 'foundation baseline-snapshot' run appends a"
+  echo "  will appear once a later 'temperloop baseline-snapshot' run appends a"
   echo "  second record). Recorded: $first_gen"
 else
   echo "Baseline records: $record_count  (first: $first_gen  latest: $latest_gen)"
@@ -274,17 +279,24 @@ _kernel_row "Issue backlog age" ".metrics.issue_backlog.median_age_days" "d"
 echo
 
 # ---------------------------------------------------------------------------
-# Overlay tier -- the drop-in seam (.foundation/report.d/). See this file's
+# Overlay tier -- the drop-in seam (.temperloop/report.d/). See this file's
 # header comment + kernel/workflows/scripts/lib/report.contract.md's
 # "Overlay drop-in contract" section for the full rule.
+# temperloop#165 rename window: .temperloop/report.d/ preferred; an existing
+# legacy .foundation/report.d/ (a TRACKED dir in adopter repos) is used as
+# fallback when the new one is absent (removed in v0.16.0 -- git mv the
+# dir). Never unioned: one dir wins, so a producer is never run twice.
 # ---------------------------------------------------------------------------
-echo "-- Overlay-tier: repo drop-ins (.foundation/report.d/) --"
-report_d="$repo_root/.foundation/report.d"
+echo "-- Overlay-tier: repo drop-ins (.temperloop/report.d/) --"
+report_d="$repo_root/.temperloop/report.d"
+if [ ! -d "$report_d" ] && [ -d "$repo_root/.foundation/report.d" ]; then
+  report_d="$repo_root/.foundation/report.d"
+fi
 tokens_ok=0
 tokens_spent=""
 
 if [ ! -d "$report_d" ]; then
-  echo "skipped -- no .foundation/report.d/ directory (no overlay drop-ins registered for this repo)"
+  echo "skipped -- no .temperloop/report.d/ (or legacy .foundation/report.d/) directory (no overlay drop-ins registered for this repo)"
 else
   found_any=0
   for f in "$report_d"/*; do
@@ -320,7 +332,7 @@ else
     fi
   done
   if [ "$found_any" -eq 0 ]; then
-    echo "skipped -- .foundation/report.d/ exists but is empty (no producers registered)"
+    echo "skipped -- ${report_d#"$repo_root"/} exists but is empty (no producers registered)"
   fi
 fi
 echo
@@ -360,5 +372,5 @@ else
 fi
 echo
 
-echo "foundation report: done"
+echo "temperloop report: done"
 exit 0

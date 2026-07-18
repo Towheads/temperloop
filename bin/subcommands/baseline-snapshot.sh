@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: append one aggregate-only 90-day gh-history snapshot record to .foundation/baseline.jsonl
+# description: append one aggregate-only 90-day gh-history snapshot record to .temperloop/baseline.jsonl
 #
 # baseline-snapshot.sh — `foundation baseline-snapshot`: the 'BEFORE'
 # picture for Epic E's value loop (foundation #766, epic #765-adjacent
@@ -19,7 +19,7 @@
 # and adds no code for it. Both call sites use the SAME one-line contract:
 #
 #     invoked with NO ARGS, cwd = the target repo. Exit 0 = a record was
-#     appended to .foundation/baseline.jsonl. This is a SOFT SEAM: it is
+#     appended to .temperloop/baseline.jsonl. This is a SOFT SEAM: it is
 #     designed to never need a non-zero exit to signal "nothing to report"
 #     — an unresolvable repo, missing/unauthenticated gh, or a network
 #     failure all still produce a legible `metrics.available: false`
@@ -49,14 +49,14 @@
 # definition (see the contract doc's "Population definition" section) —
 # merged PRs / open issues as of THIS run's `gh` read, over a rolling
 # 90-day window ending "now". A later report reads every line in
-# .foundation/baseline.jsonl and never calls `gh` itself.
+# .temperloop/baseline.jsonl and never calls `gh` itself.
 #
-# GITIGNORE SELF-MANAGEMENT: `.foundation/baseline.jsonl` is generated,
+# GITIGNORE SELF-MANAGEMENT: `.temperloop/baseline.jsonl` is generated,
 # per-checkout runtime data — never meant to be committed. init.sh proposes
-# `.foundation/config` via a reviewable PR (proposal-pr.sh); this script has
+# `.temperloop/config` via a reviewable PR (proposal-pr.sh); this script has
 # no such PR machinery available to it (it must also work standalone, e.g.
 # invoked directly with no init.sh in the loop at all) and so is not
-# proposing anything — it just writes `.foundation/.gitignore` straight to
+# proposing anything — it just writes `.temperloop/.gitignore` straight to
 # disk, idempotently (never clobbers an existing entry, never duplicates
 # the line on a repeat run).
 #
@@ -100,7 +100,7 @@ case "${1:-}" in
     cat <<'EOF'
 usage: baseline-snapshot.sh
 Appends one aggregate-only 90-day gh-history snapshot record to
-.foundation/baseline.jsonl in the current working directory's repo root.
+.temperloop/baseline.jsonl in the current working directory's repo root.
 Takes no arguments; see this file's header comment for env-var test seams.
 EOF
     exit 0
@@ -293,10 +293,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Write: .foundation/baseline.jsonl (append) + .foundation/.gitignore
+# Write: .temperloop/baseline.jsonl (append) + .temperloop/.gitignore
 # (self-managed, idempotent — never committed).
+#
+# temperloop#165 rename window: an EXISTING legacy .foundation/baseline.jsonl
+# keeps accreting IN PLACE through the window — the baseline is one
+# append-only before/after history, and splitting it across two dirs
+# mid-window would silently truncate every later report's "before" anchor
+# (report.sh reads exactly one file). A repo with no legacy baseline writes
+# to .temperloop/ from the start. The legacy continue-in-place arm is
+# removed in v0.16.0 (move the file: git has never tracked it — plain
+# mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/).
 # ---------------------------------------------------------------------------
-foundation_dir="$repo_root/.foundation"
+foundation_dir="$repo_root/.temperloop"
+if [ ! -f "$foundation_dir/baseline.jsonl" ] && [ -f "$repo_root/.foundation/baseline.jsonl" ]; then
+  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+    echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.16.0 (renamed .temperloop/ in v0.14.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
+    exit 1
+  fi
+  foundation_dir="$repo_root/.foundation"
+  echo "baseline-snapshot: NOTE — appending to legacy ${foundation_dir#"$repo_root"/}/baseline.jsonl (dir renamed .temperloop/ in v0.14.0; legacy append removed in v0.16.0 — move the file)." >&2
+fi
 if ! mkdir -p "$foundation_dir" 2>/dev/null; then
   echo "baseline-snapshot.sh: could not create $foundation_dir" >&2
   exit 1
