@@ -4,7 +4,7 @@ title: 0005: Fleet cutover rides committed repo-local boards.conf entries, not t
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

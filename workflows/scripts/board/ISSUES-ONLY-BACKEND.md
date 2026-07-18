@@ -15,7 +15,18 @@ Both consume the vocabulary and function-level interface below. **Do not
 invent a second label scheme or a second set of adapter functions** — extend
 this one (subtraction over mechanism).
 
-## Issues-only is now the default backend (temperloop#460, ADR 0004/0005)
+## What "issues-only" means
+
+A board is either **issues-only** (no Projects board is ever provisioned or
+queried; item CRUD and Status ride plain `fnd:`-namespaced GitHub **labels**
+on the repo's Issues, and "Done" is simply **the issue being closed** — see
+§ Issues-only is now the default backend, below) or **Projects-v2-backed**
+(a GitHub Projects board provisioned, everything in `lib/board.sh`'s
+pre-#799 code path — the deprecated legacy arm during the soak window
+described below). Milestone intake (release-phase axis) is unaffected
+either way — see below.
+
+## Issues-only is now the default backend (temperloop#460 — issues-only tracking everywhere, ADR 0004/0005)
 
 **Supersedes** every earlier framing in this file (and in
 `docs/features/board-adapter.md`) that described issues-only as "board 7's
@@ -29,44 +40,42 @@ issues-only from the start. Every board this project's own pipeline drives
 today runs `backend=issues`.
 
 Mechanically, per
-[ADR 0005](../../../docs/adr/0005-repo-local-conf-cutover.md), each of
-those five boards got there the same way: a **committed `boards.conf` entry
-in its own consuming repo** (`board.<N>.backend=issues`), never a change to
-this adapter's built-in fallback map. That map's own default —
+[ADR 0005](../../../docs/adr/0005-repo-local-conf-cutover.md), the four
+fleet boards (3–6) got there the same way: a **committed `boards.conf`
+entry in its own consuming repo** (`board.<N>.backend=issues`), never a
+change to this adapter's built-in fallback map. Board 7 got there
+differently, and earlier — it was already registered directly in the
+built-in map (foundation #808, § The temperloop tracker below), not via a
+`boards.conf` entry, and this migration left that pre-existing registration
+untouched. Either way, the adapter's own code-level fallback —
 `board_backend` resolves an unconfigured board to `"projects"` — is
 deliberately **untouched** by this migration (see § Selecting the backend
 below), so "the default" above is a fleet/policy default (every board this
-pipeline actually points at is configured issues-only), not yet a change to
-the adapter's own code-level fallback. A brand-new board registered with no
-`boards.conf` entry still needs `backend=issues` written explicitly to get
-the same behavior, until the follow-on removal epic below flips the
-fallback itself.
+pipeline actually points at is configured issues-only, one way or the
+other), not a change to the adapter's own code-level fallback. A brand-new
+board registered with no `boards.conf` entry still needs `backend=issues`
+written explicitly to get the same behavior — see the soak-period paragraph
+below for what removing that fallback would take and who owns it.
 
 **Soak-period rule.** Issues-only is the sole canonical path for all
 tracking work from here on — every pipeline command (`worklist`, `claim`,
 `capture`, `reconcile`, `/triage`, `/assess`, `/build`) is expected to run
-against `backend=issues` boards only. The five repos' frozen Projects-v2
-boards stay provisioned and readable through a soak window (any post-flip
-write to one of them is the tell of a lagging, unsynced checkout still
-driving the dead arm — ADR 0005), but they are not written to going forward
-and are not part of the supported path. The Projects-v2/GraphQL arm itself
-(the budget guard, the structure/state cache split, the dual-adapter
-branchwork) is **deprecated, not removed** — it stays in the codebase only
-to serve that soak window and any as-yet-unconverted board. Its removal is
-tracked as its own follow-on breaking-change epic (temperloop#476), never
-something this file, or the migration epic behind it, performs — nothing
+against `backend=issues` boards only. The four fleet repos' frozen
+Projects-v2 boards (temperloop/board 7 never had one to freeze — it was
+issues-only from the start) stay provisioned and readable through a soak
+window (any post-flip write to one of them is the tell of a lagging,
+unsynced checkout still driving the dead arm — ADR 0005), but they are not
+written to going forward and are not part of the supported path. The
+Projects-v2/GraphQL arm itself (the budget guard, the structure/state cache
+split, the dual-adapter branchwork) is **deprecated, not removed** — it
+stays in the codebase only to serve that soak window and any
+as-yet-unconverted board. Deprecation-marking the arm and filing the
+follow-on breaking-change removal epic is tracked as temperloop#476
+(Projects-arm deprecation) — #476 is the item that does that
+marking-and-filing, it is **not itself the removal epic**, and the removal
+epic doesn't exist yet as of this file. Neither this file, the migration
+epic behind it, nor #476 performs the removal itself — nothing above or
 below should be read as a removal timeline.
-
-## What "issues-only" means
-
-A board is either **issues-only** (no Projects board is ever provisioned or
-queried; item CRUD and Status ride plain `fnd:`-namespaced GitHub **labels**
-on the repo's Issues, and "Done" is simply **the issue being closed** — see
-§ Issues-only is now the default backend, above) or **Projects-v2-backed**
-(a GitHub Projects board provisioned, everything in `lib/board.sh`'s
-pre-#799 code path — the deprecated legacy arm during the soak window
-described above). Milestone intake (release-phase axis) is unaffected
-either way — see below.
 
 ## Selecting the backend
 

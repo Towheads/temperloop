@@ -9,7 +9,8 @@ slug: board-adapter
 board-touching script (`claim.sh`, `capture.sh`, `worklist.sh`,
 `reconcile.sh`, `milestone.sh`, `release.sh`, `pr-enqueue.sh`) uses to talk
 to a tracker board. **Issues-only — plain GitHub Issues, no Projects board
-ever provisioned — is the default backend** (temperloop#460, ADR 0004): a
+ever provisioned — is the default backend** (temperloop#460 — issues-only
+tracking everywhere, ADR 0004): a
 GitHub Projects-v2 board is still fully supported (`backend=projects`) and
 is what this file originally documented, but it is now the deprecated
 legacy arm, kept working through a soak window for any as-yet-unconverted
@@ -96,15 +97,18 @@ resolves which mode a given board number uses; the adapter's own built-in
 fallback (no `boards.conf` entry) still resolves to `projects`, unchanged
 from before this seam existed, but that fallback is no longer what "the
 default" means at the policy level: every board this project's own pipeline
-actually drives — all five maintainer repos — is configured `backend=issues`
-via a committed `boards.conf` entry, per ADR 0004/0005. One kernel-tracked
-board — board 7, the issue tracker for this repo itself — is hard-coded to
-the issues-only backend directly in the adapter's built-in map (rather than
-via a `boards.conf` entry), because being issues-only is a structural fact
-of what that board is, not a per-deployment config choice; it is no longer
-the *sole* issues-only board, only the sole one baked into the built-in map
-itself (see `ISSUES-ONLY-BACKEND.md`'s § The temperloop tracker for the
-full supersession note). Every board-facing function (`board_resolve`,
+actually drives is configured issues-only, though not all the same way. The
+four fleet maintainer repos (ssmobile, stageFind, subsetwiki, foundation)
+each got there via a committed `boards.conf` entry (`backend=issues`), per
+ADR 0004/0005. One kernel-tracked board — board 7, the issue tracker for
+this repo itself — got there differently and earlier: it is hard-coded to
+the issues-only backend directly in the adapter's built-in map (foundation
+#808), never via a `boards.conf` entry, because being issues-only is a
+structural fact of what that board is, not a per-deployment config choice;
+this migration left that pre-existing registration untouched. Board 7 is
+no longer the *sole* issues-only board, only the sole one baked into the
+built-in map itself (see `ISSUES-ONLY-BACKEND.md`'s § The temperloop
+tracker for the full supersession note). Every board-facing function (`board_resolve`,
 `board_resolve_item`, `board_stamp`, `board_set_status`, and so on) branches
 internally on backend, so a caller written against the Projects-v2 shape
 works unchanged against an issues-only board.

@@ -4,7 +4,7 @@ title: 0004: Issues-only is the default tracking backend
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
