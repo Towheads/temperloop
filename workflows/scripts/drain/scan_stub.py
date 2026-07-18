@@ -302,6 +302,17 @@ _ERROR_SIGNATURES = [
     re.compile(r"may only concatenate files from the allowed working directories"),
     re.compile(r"Could not resolve to a [Uu]ser or bot with the login", re.IGNORECASE),  # gh assignee/login resolution failure
     re.compile(r"maximum number of (certificates|devices|profiles)", re.IGNORECASE),  # Apple Developer vendor-quota slow outage
+    # Deferred tool called before its schema was ToolSearch-loaded (Monitor /
+    # TaskUpdate / MCP class; ≥5 sessions, one stalled unattended run — see
+    # foundation#1201). Verbatim harness string → no IGNORECASE (K#422).
+    re.compile(r"\bInputValidationError\b"),
+    # Vendored-copy / toolkit-sync drift: a synced script older than its
+    # caller's assumptions rejects a flag the caller passes (K#422).
+    re.compile(r"\bunknown (arg|argument|option|flag)\b|\bunrecognized option\b", re.IGNORECASE),
+    # capture.sh board-add race: this warning is followed by a success line on
+    # the very next line, so it is invisible to both the is_error pass and a
+    # human skimming — the item silently drops from Backlog-only intake (K#422).
+    re.compile(r"did not resolve in time|may be unstatused", re.IGNORECASE),
 ]
 
 

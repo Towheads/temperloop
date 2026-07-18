@@ -50,3 +50,21 @@ thinking about this wrong	self-correction	literal
 \b(misread|misunderstood)\s+(the|this|that)\b	self-correction	regex
 \bbarking\s+up\s+the\s+wrong\s+tree\b	self-correction	regex
 \bscratch\s+that\b	self-correction	regex
+
+# --- 2026-07-17 check-in promotion batch (K#422) — assistant-narrated defect /
+# self-correction tells from the 2026-07-14 drain review. ---
+
+# worked-around-defect
+\b(fell|falling|fall) back to\b	worked-around-defect	regex
+we'?ve hit (this|it) before|same .{0,20}class we'?ve	worked-around-defect	regex
+(known|likely|probably|almost certainly) (a )?(flake|flaky|local[- ]env artifact|environmental)	worked-around-defect	regex
+\bnever (reloaded|restarted|re-?installed|re-?sourced)\b	worked-around-defect	regex
+NOT LOADED|never (installed|ran|fired)|no evidence of a run	worked-around-defect	regex
+\bstash (dance|pop)\b|\b(dropped|split|lost) .{0,30}(edits|changes) (out of|from) the commit\b	worked-around-defect	regex
+
+# self-correction
+\bmy\s+(earlier|previous|initial)\s+(advice|recommendation|analysis|answer)\s+(was|is)\s+wrong\b	self-correction	regex
+\b(premise|assumption|framing)\s+(is|was)\s+wrong\b	self-correction	regex
+compared .{0,30} against nothing	self-correction	regex
+\bI over-?reached\b|the classifier denied that, and it was right	self-correction	regex
+kernel .{0,40}(hard-?calls?|references?) .{0,40}overlay-only	self-correction	regex

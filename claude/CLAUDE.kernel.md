@@ -103,6 +103,15 @@ Don't spend a round-trip re-checking state you've already confirmed:
 - Trust a green `gh pr checks`/CI result (or a `--watch`/poll that already exited 0); only re-poll on a non-zero or `UNKNOWN`.
 - A confirmed diagnosis explains its downstream symptoms — don't re-probe to "confirm" what you already established.
 - Don't re-read a file you just wrote to "verify" it — the write tool already errored if it failed.
+- Don't re-fetch a value you already hold through a heavier path — reading one board field via raw GraphQL after the adapter's resolve already cached it (`BOARD_ITEMS_JSON` carries it) bypasses the cache and spends the shared budget. Reaching for a heavier tool to read a single value you resolved earlier is the tell.
+
+## Tool invocation discipline
+
+The friction ledger's dominant recurring class is tool misuse that a ten-second read would have prevented. Three guards, promoted from repeated live evidence (K#422):
+
+- **Load a deferred tool's schema before its first call.** A tool listed as deferred (`Monitor`, `TaskUpdate`, MCP tools named in a system reminder) fails `InputValidationError` when called cold — run `ToolSearch "select:<name>"` first. On an unattended run this class has stalled an entire pass (foundation#1201).
+- **Read a script's usage header before invoking it with guessed flags or env vars.** A guessed flag (`capture.sh --title …` — the title is positional) costs a round-trip when it errors, and a guessed env override (`COMMAND_RUN_RAW_DIR` vs the real `CMD_RUN_RAW_DIR`) can silently succeed against the wrong target. Same rule for sourced libs: call only helpers the lib actually defines — read it, don't guess accessors.
+- **Check the platform's dialect before leaning on a flag or regex feature.** macOS ships BSD tools: no GNU `timeout`, no `\?` in basic-regex `sed` (use `sed -E` / `gtimeout`). A silently no-op'd expression that happens to agree with your hypothesis is the expensive kind of wrong.
 
 ## Fetch ground truth before building
 
