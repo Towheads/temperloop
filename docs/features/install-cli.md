@@ -22,6 +22,19 @@ the CLI was named `foundation` before its rename — to the entrypoints inside
 that checkout. No shell-rc edits, no `sudo`. Uninstalling means removing
 those three paths; that is the installer's entire footprint.
 
+**Update.** `temperloop update` (ADR 0002 "Managed-clone state ownership") is
+the sole sanctioned way to move that managed clone's `HEAD` forward once it
+exists. It fetches release tags (auto-converting a tagless `--depth 1` clone
+via `git fetch --unshallow` on first run), prints the full CHANGELOG delta
+for the jump — any `BREAKING`-marked section called out — BEFORE asking for
+consent (an explicit `--yes`, an interactive `y/N`, or a legible refusal on a
+non-interactive run; there is no timeout-as-consent), checks the on-disk
+install manifest's schema against the target tag's own `manifest.sh` before
+touching `HEAD` at all, then checks out the tag and re-runs `install` +
+`doctor`. It takes no `--dir`/`--repo` argument — its entire write surface is
+the managed clone's own git state plus the machine surface `install.sh`
+already owns, never a repo-tracked path in any other repo.
+
 **The adoption ladder: `try` -> `try --demo` -> `init`.** Each step does
 strictly more than the last:
 

@@ -80,6 +80,30 @@ renderer keeps its exact guarded invocation as an enrichment.
   same one-directional kernel→overlay reference rule as before (the overlay
   call stays behind its `[ -f … ]` existence guard).
 
+- **`temperloop update` — the sole post-install HEAD mover of the managed
+  clone (temperloop#429, ADR 0002 "Managed-clone state ownership").**
+  `bin/subcommands/update.sh` fetches tags (auto-converting a `--depth 1`
+  tagless clone — `bin/bootstrap.sh`'s current shape — via
+  `git fetch --unshallow`), surfaces the full CHANGELOG delta with any
+  `BREAKING` section called out BEFORE a consent-gated checkout (`--yes`, an
+  interactive y/N, or a legible refusal on a non-interactive run — no
+  timeout-as-consent), re-runs the manifest-backed `temperloop install`, and
+  finishes with `doctor`. Before touching HEAD it also checks the on-disk
+  install manifest's `schema_version` against the target tag's own
+  `manifest.sh` — an incompatible schema halts with instructions rather than
+  guessing. Never writes a repo-tracked path in any other repo (no `--dir`
+  argument; its entire write surface is the managed clone's own git state
+  plus the machine surface `install.sh` already owns).
+- **`workflows/scripts/lib/changelog.sh` — shared CHANGELOG-range parsing.**
+  `semver_major()`/`breaking_sections()` lifted out of
+  `scripts/update-kernel.sh`'s own private helpers into a sourceable lib
+  (`changelog_semver_major`/`changelog_sections_in_range`/
+  `changelog_breaking_sections`) so both `update-kernel.sh` and the new
+  `update` subcommand share one implementation instead of `bin/`
+  back-channeling into `scripts/`. `update-kernel.sh` resolves it
+  script-relative; behavior is unchanged (see its own regression suite,
+  `scripts/tests/test_update_kernel.sh`).
+
 ## [0.13.1] - 2026-07-17
 
 Patch. Safe pull, no migration — no `BREAKING` marker. CI-resilience fix only:

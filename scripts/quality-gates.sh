@@ -200,6 +200,17 @@ KERNEL_GATES=(
   # each re-deriving their own copy. Same direct-`bash` form as the
   # knowledge_search gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_portable_timeout.sh"
+  # Shared CHANGELOG-range parsing lib (temperloop#429, ADR 0002 follow-on):
+  # workflows/scripts/lib/changelog.sh's changelog_semver_major()/
+  # changelog_sections_in_range()/changelog_breaking_sections() — lifted out
+  # of scripts/update-kernel.sh's former private semver_major()/
+  # breaking_sections() so bin/subcommands/update.sh (the managed-clone
+  # updater) can reuse the exact same parsing without a bin/->scripts/
+  # back-channel. Fast, no-git, literal-fixture unit tests; the end-to-end
+  # proof (real git tags, a real checkout) is the update-subcommand gate
+  # below. Same direct-`bash` form as the knowledge_search/portable-timeout
+  # gates above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/lib/tests/test_changelog.sh"
   # Knob registry (temperloop#164/#169 D2): parse/union tests for
   # workflows/scripts/config/knob-registry-lib.sh — parses the real kernel
   # TSV clean, unions a synthetic overlay fixture (add + redefault rows),
@@ -369,6 +380,24 @@ KERNEL_GATES=(
   # legible SKIP and exits 0 (downstream propagation is temperloop#255's
   # decision). Same direct-`bash` form as the install-cli gate above.
   "bash workflows/scripts/tests/test_install_lifecycle.sh"
+  # `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
+  # ownership") — hermetic, deterministic, no-network end-to-end fixture:
+  # a synthetic 4-tag fixture upstream drives the starting --depth-1/tagless
+  # managed clone (bin/bootstrap.sh's own current shape) through unshallow +
+  # fetch-tags, a BREAKING-marked CHANGELOG delta surfaced before consent, a
+  # non-interactive/no-consent refusal, a clean additive update, and an
+  # incompatible install-manifest schema halting BEFORE HEAD moves — plus a
+  # decoy target-repo and a $REPO_ROOT tripwire proving no path outside the
+  # throwaway managed clone is ever written. Same direct-`bash` form as the
+  # install-lifecycle gate above.
+  "bash workflows/scripts/tests/test_update_subcommand.sh"
+  # scripts/update-kernel.sh's own breaking-delta gate (temperloop#89) —
+  # black-box regression proof that lifting semver_major()/
+  # breaking_sections() into workflows/scripts/lib/changelog.sh (temperloop
+  # #429) didn't change this script's behavior. Was previously unregistered
+  # in this gate set (a pre-existing gap, not introduced here); wired in now
+  # since #429 is the first change to touch this script since it landed.
+  "bash scripts/tests/test_update_kernel.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a
