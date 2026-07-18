@@ -28,9 +28,9 @@ trap 'rm -rf "$TMP"' EXIT
   # shellcheck source=/dev/null
   source "$LIB"
   got="$(ks_root)"
-  want="$TMP/xdg/foundation/knowledge"
+  want="$TMP/xdg/temperloop/knowledge"
   [ "$got" = "$want" ] || fail "1: default root should honor XDG_DATA_HOME (got $got want $want)"
-  echo "PASS: 1 default root resolves under \$XDG_DATA_HOME/foundation/knowledge"
+  echo "PASS: 1 default root resolves under \$XDG_DATA_HOME/temperloop/knowledge"
 )
 
 # --- 2. default root resolution falls back to \$HOME/.local/share when XDG unset --
@@ -41,9 +41,57 @@ trap 'rm -rf "$TMP"' EXIT
   # shellcheck source=/dev/null
   source "$LIB"
   got="$(ks_root)"
-  want="$TMP/home/.local/share/foundation/knowledge"
+  want="$TMP/home/.local/share/temperloop/knowledge"
   [ "$got" = "$want" ] || fail "2: fallback root should be \$HOME/.local/share/... (got $got want $want)"
-  echo "PASS: 2 default root falls back to \$HOME/.local/share/foundation/knowledge"
+  echo "PASS: 2 default root falls back to \$HOME/.local/share/temperloop/knowledge"
+)
+
+# --- 2b. rename window (temperloop#165): an EXISTING store at the legacy
+# foundation/ default is still found when nothing exists at the new default —
+# with a NOTE on stderr — and a fresh install (neither dir) resolves new. ----
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-legacy"
+  mkdir -p "$TMP/xdg-legacy/foundation/knowledge"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root 2>"$TMP/2b-note.txt")"
+  want="$TMP/xdg-legacy/foundation/knowledge"
+  [ "$got" = "$want" ] || fail "2b: legacy store should be found through the window (got $got want $want)"
+  grep -q 'legacy store root' "$TMP/2b-note.txt" || fail "2b: legacy fallback must print a NOTE naming the legacy root"
+  grep -q 'v0.16.0' "$TMP/2b-note.txt" || fail "2b: the NOTE must state the removal version (v0.16.0)"
+  echo "PASS: 2b legacy foundation/knowledge store found through the rename window, with removal-version NOTE"
+)
+
+# --- 2c. rename window: when BOTH defaults exist, the NEW one wins ----------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-both"
+  mkdir -p "$TMP/xdg-both/foundation/knowledge" "$TMP/xdg-both/temperloop/knowledge"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root 2>/dev/null)"
+  want="$TMP/xdg-both/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "2c: new default must win when both stores exist (got $got want $want)"
+  echo "PASS: 2c new temperloop/knowledge default wins when both exist"
+)
+
+# --- 2d. window closed (TEMPERLOOP_LEGACY_WINDOW_CLOSED=1 simulation): the
+# legacy store is NOT silently used — resolution goes to the new default and
+# a legible NOTE names the stranded legacy store + the migration. -----------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-closed"
+  export TEMPERLOOP_LEGACY_WINDOW_CLOSED=1
+  mkdir -p "$TMP/xdg-closed/foundation/knowledge"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root 2>"$TMP/2d-note.txt")"
+  want="$TMP/xdg-closed/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "2d: closed window must resolve to the new default (got $got want $want)"
+  grep -q 'removed in v0.16.0' "$TMP/2d-note.txt" || fail "2d: closed-window resolution must name the removal legibly"
+  grep -q 'KNOWLEDGE_STORE_ROOT' "$TMP/2d-note.txt" || fail "2d: closed-window NOTE must name the migration/override knob"
+  echo "PASS: 2d closed window degrades legibly (new default + NOTE naming the stranded legacy store)"
 )
 
 # --- 3. KNOWLEDGE_STORE_ROOT is the ONE override; XDG_DATA_HOME is ignored when set --
