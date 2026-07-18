@@ -277,6 +277,14 @@ KERNEL_GATES=(
   # Read-only repo-convention detector (foundation #765): zero-network
   # fixture-repo tests, plus a live PATH-trimmed case proving the `gh`-absent
   # degrade path (see workflows/scripts/probe/tests/test_conventions_probe.sh).
+  # Also covers the portable-config regression test (test id
+  # test-conventions-probe-portable, temperloop#416,
+  # workflows/scripts/probe/tests/test_conventions_probe_portable.sh) that
+  # asserts the emitted probe JSON's `repo.dir` never carries an absolute
+  # local filesystem path — this is a NEW test_*.sh file picked up by the
+  # SAME `make test-conventions-probe` glob below (F#836 rationale: kernel
+  # coverage can never trail whichever tests/test_*.sh files are actually
+  # vendored), not a second gate registration.
   "make test-conventions-probe"
   # `foundation try` — zero-config, zero-write taste (foundation #765 Epic D,
   # item foundation-try / #852): fake `gh`/`claude` on PATH (the

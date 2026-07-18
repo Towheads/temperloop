@@ -159,13 +159,29 @@ if [ "$default_branch" = "HEAD" ]; then
   default_branch=""
 fi
 
+# `dir` is deliberately never populated with the absolute local filesystem
+# path (temperloop#416). This script's own stdout gets folded VERBATIM
+# into a target repo's COMMITTED `.foundation/config` by `foundation init`
+# (bin/subcommands/init.sh's build_config_json, `--argjson probe
+# "$probe_json"`), proposed via a real reviewable PR the target repo's own
+# reviewers read — an absolute path there leaks the operator's local
+# machine layout (home-directory username, a consultant's client-naming
+# checkout path, ...) into someone else's repo history, and it happened
+# even under --dry-run (the local commit is still created). $probe_dir is
+# always canonicalized to the probed repo's own toplevel (line ~120 above),
+# so it never carried a portable repo-relative fact beyond "this is the
+# repo's own root" — nothing this schema doesn't already imply elsewhere.
+# Grepped every caller in this tree (init.sh, try.sh, eject.sh,
+# baseline-snapshot.sh): none read `.repo.dir` / `probe.repo.dir`, so
+# nothing downstream needs it — kept present-but-null (not removed) to
+# preserve the field's schema shape for any external caller doing
+# `.repo.dir`, rather than emitting a private path.
 repo_json="$(jq -n \
-  --arg dir "$probe_dir" \
   --arg remote_url "$remote_url" \
   --arg gh_repo "$gh_repo" \
   --arg default_branch "$default_branch" \
   '{
-    dir: $dir,
+    dir: null,
     remote_url: (if $remote_url == "" then null else $remote_url end),
     gh_repo: (if $gh_repo == "" then null else $gh_repo end),
     default_branch: (if $default_branch == "" then null else $default_branch end)
