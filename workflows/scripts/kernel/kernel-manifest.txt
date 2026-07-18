@@ -250,6 +250,7 @@ kernel docs/architecture.md
 kernel docs/principles.md
 kernel docs/who-its-for.md
 kernel docs/cost-and-autonomy.md
+kernel docs/token-spend.md
 kernel docs/pitch.md
 kernel AGENTS.md
 kernel llms.txt

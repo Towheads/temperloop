@@ -42,6 +42,7 @@ none docs/architecture.md
 none docs/principles.md
 none docs/who-its-for.md
 none docs/cost-and-autonomy.md
+none docs/token-spend.md
 # The ≤1-page postable pitch (temperloop#432): a stranger-shareable summary
 # derived from docs/who-its-for.md + README.md § 1, same "none" treatment as
 # the other top-level docs-site pages above (it's documentation product, not
