@@ -33,7 +33,7 @@
 #      before this split; this suite proves that holds for an issues-only
 #      board number too.
 #   6. _board_assert_item_id accepts ISSUE_* alongside PVTI_*; board_set_number
-#      (Seq — retired by design, ADR 0004) fails loud with a documented stderr
+#      (Seq — retired by design, ADR 0006) fails loud with a documented stderr
 #      message naming the retirement, rather than silently misbehaving.
 #      board_stamp (Host/Session) is now implemented by the claim/edges split
 #      (foundation #800) — see test_issues_claim_edges.sh for its coverage.
@@ -350,7 +350,7 @@ grep -q 'gh issue edit 106 -R Acme/kernel-test --milestone Phase' "$CALLS" \
 echo "PASS: board_set_milestone works unchanged against an issues-only board"
 
 # --- 10: board_set_number fails LOUD with a documented retirement message ---
-# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0004), not emulated:
+# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0006), not emulated:
 # an issues-only board has no Projects field schema for it, so it must refuse
 # (return 1) with an explicit stderr message naming the retirement and its
 # replacement signal (epic dependency levels + milestones) — never silently

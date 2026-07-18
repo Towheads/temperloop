@@ -1707,7 +1707,7 @@ board_set_milestone_description() {
 # Resolves the field id by name from cache, then issues the --number item-edit.
 # Returns non-zero without editing if the field name does not resolve.
 #
-# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0004), not emulated —
+# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0006), not emulated —
 # an ISSUE_* item-id has no Projects-v2 field schema to resolve a number field
 # against, and no `fnd:seq:<n>` label encoding was introduced to fake one (that
 # would mint an unbounded numeric label namespace, recreating the label sprawl
@@ -1721,7 +1721,7 @@ board_set_number() {
   _board_assert_item_id "$item_id" board_set_number || return 1
   case "$item_id" in
     ISSUE_*)
-      echo "board: board_set_number — Seq is retired by design on the issues-only backend — ordering lives in epic dependency levels and milestones (ADR 0004)" >&2
+      echo "board: board_set_number — Seq is retired by design on the issues-only backend — ordering lives in epic dependency levels and milestones (ADR 0006)" >&2
       return 1 ;;
   esac
   field_id="$(board_field_id "$field_name")"
