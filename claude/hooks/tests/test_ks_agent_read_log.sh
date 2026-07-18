@@ -152,8 +152,8 @@ fi
 # eval-guard.sh sibling exist, but NOTHING else of the repo does (no
 # workflows/scripts/lib/knowledge_store.sh two directories up). Proves the
 # hook resolves its library path relative to ITS OWN real directory (never a
-# hardcoded personal path like $HOME/dev/foundation) and, finding nothing,
-# stays inert rather than guessing the log format.
+# hardcoded personal checkout path) and, finding nothing, stays inert rather
+# than guessing the log format.
 FIXTURE="$TMP/hooks-only-vendor"
 mkdir -p "$FIXTURE/claude/hooks"
 cp "$HOOK" "$FIXTURE/claude/hooks/"

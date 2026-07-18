@@ -70,7 +70,7 @@
 # is INERT (no knowledge_store.sh to source) rather than reimplementing the
 # line format from a hardcoded guess. Never hardcodes a personal path: the
 # knowledge_store.sh location is resolved relative to this file's own
-# (symlink-resolved) directory, never a literal like $HOME/dev/foundation.
+# (symlink-resolved) directory, never a hardcoded personal checkout literal.
 set -uo pipefail
 
 # shellcheck source=eval-guard.sh
@@ -93,9 +93,9 @@ tool=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 [ -n "$tool" ] || exit 0
 
 # ── Resolve knowledge_store.sh relative to THIS file's real directory ─────
-# Never a hardcoded personal path (e.g. $HOME/dev/foundation) — that would
-# fail the stranger test for any checkout whose owner isn't the machine the
-# literal was authored on. `cd ... && pwd -P` follows a symlinked hooks/
+# Never a hardcoded personal checkout path — that would fail the stranger
+# test for any checkout whose owner isn't the machine the literal was
+# authored on. `cd ... && pwd -P` follows a symlinked hooks/
 # directory (this hook is typically reached via a `~/.claude/hooks ->
 # <repo>/claude/hooks` directory symlink, per this repo's install
 # convention) back to the real repo tree, so `../..` correctly climbs to
