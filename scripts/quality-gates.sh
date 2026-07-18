@@ -383,6 +383,17 @@ KERNEL_GATES=(
   # (The `temperloop update` managed-clone gate and the update-kernel
   # breaking-delta gate are surface-conditional — registered just below the
   # array, temperloop#488.)
+  # foundation→temperloop rename window (temperloop#165, v0.14.0): hermetic
+  # read-old-write-new proof — a legacy FOUNDATION_*-env bootstrap installs
+  # with per-var deprecation NOTEs while TEMPERLOOP_* installs silently;
+  # the `foundation` shim dispatches + self-deprecates; a legacy-env
+  # install survives an adjacent-tag `update` through the shim; a
+  # pre-rename .foundation/config and a legacy machine boards.conf are
+  # read by new code; and the TEMPERLOOP_LEGACY_WINDOW_CLOSED simulation
+  # proves every legacy surface degrades legibly (names the replacement +
+  # v0.16.0) once the window shuts. Same fixture-upstream + sandbox
+  # conventions as test_update_subcommand.sh above.
+  "bash workflows/scripts/tests/test_rename_compat.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

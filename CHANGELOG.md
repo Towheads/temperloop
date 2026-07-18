@@ -12,7 +12,74 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased]
+## [Unreleased] — BREAKING
+
+**`BREAKING`** — ships as a **minor-breaking 0.x bump (v0.15.0)** per
+VERSIONING.md's pre-1.0 rules: the foundation→temperloop identity rename
+(temperloop#165), **read-old-write-new**. Every legacy `foundation` name
+keeps working through the migration window with a one-line deprecation
+notice, and the legacy reads are **removed in v0.17.0** — touch your
+overlay/config/env before that release, not necessarily before this pull.
+
+### Changed
+
+- **BREAKING — the stranger-facing `foundation` names are renamed
+  `temperloop` (temperloop#165), read-old-write-new; legacy names are
+  removed in v0.17.0.** The surfaces, each with new-name canonical + a
+  windowed legacy read:
+  - **Env-var prefix**: `TEMPERLOOP_HOME` / `TEMPERLOOP_BIN_DIR` /
+    `TEMPERLOOP_KERNEL_REPO` / `TEMPERLOOP_VERSION` are the canonical env
+    knobs (bootstrap, dispatcher, feedback, CI, sandbox). A set legacy
+    `FOUNDATION_*` var still works while its twin is unset (precedence:
+    new > old > default) and prints a one-line deprecation notice. Knob
+    registry: four new `TEMPERLOOP_*` rows; the `FOUNDATION_*` rows are
+    marked `DEPRECATED` in their doc column and are deleted in v0.17.0 — a
+    removed row-name, i.e. BREAKING per the registry's own rule, which is
+    exactly what this marked section signals.
+  - **CLI compat shim**: `foundation <sub>` still dispatches (now printing
+    one deprecation NOTE per invocation); the shim is removed in v0.17.0 —
+    invoke `temperloop`.
+  - **Committed per-repo config**: `temperloop init` writes
+    `.temperloop/config` (recovery marker + self-managed `.gitignore`
+    included); a legacy `.foundation/config` is still read on re-run, and
+    `temperloop eject` cleans either dir (legacy cleanup deliberately
+    survives the window). `baseline-snapshot` continues an existing legacy
+    baseline in place; `report` and the 14-day offer probe new-then-legacy
+    for `baseline.jsonl` and `report.d/`.
+  - **Legacy `$XDG_CONFIG_HOME/foundation/` subdir**: the machine
+    boards.conf default is now `$XDG_CONFIG_HOME/temperloop/boards.conf`;
+    an existing legacy `foundation/boards.conf` is read as fallback at all
+    seven reader sites (board.sh, funnel-drive/tick, deploy-mini, doctor,
+    links).
+  - **Knowledge-store default namespace** (published-contract change,
+    `knowledge_store.contract.md`): the default root is now
+    `${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge`; an
+    existing store at the legacy `foundation/knowledge` default is still
+    found (one NOTE per process). Fresh installs create under
+    `temperloop/`.
+  - **Grandfathered machine-state paths deliberately NOT migrated here**
+    (allowlisted-as-legacy; the gate-sweep item formalizes):
+    `ENV_RECONCILE_AGENT_HEARTBEAT_DIR` and the
+    `${XDG_STATE_HOME}/foundation/` machine-state family (hook state dirs,
+    `KNOWLEDGE_READ_LOG`, `KNOWLEDGE_SEARCH_BM_HOME`, report-offer
+    dismissals) — cross-host writers/readers (launchd agents,
+    env-reconcile freshness oracles) update on their own cadence, and a
+    split-state window is worse than a delayed coordinated move. `KS_LIB_DIR`
+    needs no action (name-neutral, no foundation-named default).
+
+  **Migration** (any time before v0.17.0): rename `FOUNDATION_*` env vars
+  to `TEMPERLOOP_*` in your shell profile/CI/overlay config; switch
+  `foundation <sub>` invocations to `temperloop <sub>`; `git mv .foundation
+  .temperloop` in any repo you ran `init` in (or run `temperloop eject` /
+  re-`init`); `mkdir -p ~/.config/temperloop && mv
+  ~/.config/foundation/boards.conf ~/.config/temperloop/`; and `mv
+  "${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge"
+  "${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge"` (or set
+  `KNOWLEDGE_STORE_ROOT`). Until you migrate, everything keeps working —
+  each legacy use tells you so on stderr. New hermetic gate:
+  `test_rename_compat.sh` (legacy-env install, shim dispatch,
+  adjacent-tag update through the shim, legacy on-disk artifact reads, and
+  the window-closed legible-degradation simulation).
 
 ## [0.14.1] - 2026-07-18
 
