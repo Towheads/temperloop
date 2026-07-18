@@ -36,7 +36,7 @@ operator to make the calls.
    its own foundation later. A brief is created (or, on a re-run, adopted)
    at `Designs/<short title>.md` in the knowledge store.
 2. **Coverage walk.** Walk every dimension `claude/design-schema.md` defines
-   — sixteen kernel dimensions, plus any overlay additions — and record
+   — seventeen kernel dimensions, plus any overlay additions — and record
    exactly one of three dispositions for each: `filled`, `n/a — <reason>`,
    or `deferred → <tracking ref>`. No dimension is ever left silently
    unaddressed. Dimension 4 (Contract seams: Produces / Consumes /
