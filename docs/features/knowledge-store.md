@@ -65,7 +65,8 @@ document-I/O path (hooks, commands, scripts). A live agent session instead
 stays on Obsidian's own MCP tools whenever the configured store root
 actually *is* an Obsidian vault — independent of whatever
 `KNOWLEDGE_STORE_BACKEND` is configured — so the two planes can diverge if
-misconfigured. `make doctor`'s knowledge-store root check exists
+misconfigured. `doctor.sh`'s (`bash workflows/scripts/install/doctor.sh`)
+knowledge-store root check exists
 specifically to catch that split: it derives the Obsidian MCP vault root
 mechanically (from the Local REST API plugin's fixed on-disk config path)
 and compares it against `ks_root`, failing loudly on a mismatch rather than
@@ -81,7 +82,7 @@ consumes the board issue-cache store's on-disk contract (`cache.sh`'s
 sources `board.sh` — so the knowledge-store stack carries no dependency on
 the board toolkit being loaded. Consumed by: any hook/command migrated onto
 this seam instead of a hardcoded vault path (the kernel-literal-scrub
-effort), `make doctor`'s root-agreement guard, and
+effort), `doctor.sh`'s root-agreement guard, and
 `install-claude-md.sh`'s rendered "Knowledge store routing" section.
 
 ## Resource impact
@@ -101,7 +102,8 @@ version.
 
 The `knowledge-search-fallback` stream (one of the frozen telemetry
 record shapes named in `claude/presentation-plane.md`'s kernel table)
-records when a search falls back to a degraded path. `make doctor`'s
+records when a search falls back to a degraded path. `doctor.sh`'s
 "Knowledge-store root check" and "Cache-store state" sections are the
-direct-observation surface for backend/root drift — run `make doctor` and
-read `OK` / `MISMATCH` / `SKIPPED` per check.
+direct-observation surface for backend/root drift — run `bash
+workflows/scripts/install/doctor.sh` and read `OK` / `MISMATCH` /
+`SKIPPED` per check.

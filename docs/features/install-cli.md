@@ -61,15 +61,18 @@ caller's own. `init`'s API-state changes carry the same "explicit consent,
 default no" shape, and `--dry-run` sidesteps the consented-apply step
 entirely.
 
-**`make doctor` / `doctor.sh` link states.** Every managed install path
+**`doctor.sh` link states.** Every managed install path
 (symlinks under `~/.claude/`, the composed `CLAUDE.md`, the `gh` logger
 shim) is classified into one of five states: `OK` (symlink present and
 correct, or the managed real file/shim is present), `MISSING` (target does
 not exist), `DRIFT` (symlink present but points somewhere else, or a real
 file exists where the wrong kind of thing is expected), `SHADOWED` (a real
 file/directory sits where a symlink should be), or `DANGLING` (symlink
-present but its target does not exist on disk). `make doctor` exits 0 only
-when every entry is `OK`, 1 otherwise. It separately reports a
+present but its target does not exist on disk). `bash
+workflows/scripts/install/doctor.sh` exits 0 only
+when every entry is `OK`, 1 otherwise (`temperloop install` also prints this
+exact command at the end of its own run — see § Verify in `bin/README.md`).
+It separately reports a
 knowledge-store root check (does the agent-plane Obsidian MCP vault agree
 with the script-plane `KNOWLEDGE_STORE_ROOT`?) and, when a `boards.conf` is
 present, the per-board issue-cache store state — both read-only, both
@@ -95,9 +98,9 @@ consumes `workflows/scripts/install/links.sh`'s managed-path enumeration and
 `workflows/scripts/build/build.config.sh` / `workflows/scripts/lib/
 knowledge_store.sh` / `knowledge_store_obsidian.sh` for the vault-agreement
 check. `try --demo` consumes the tree-only proposal-PR generator under
-`workflows/scripts/proposal/`. `install-claude-md.sh` is invoked by `make
-install-claude` and is itself consumed by `make doctor`'s `claude-md`
-classification.
+`workflows/scripts/proposal/`. `install-claude-md.sh` is invoked by
+`temperloop install` (its `claude-md`-kind managed path) and is itself
+verified by `doctor.sh`'s `claude-md` classification.
 
 ## Resource impact
 

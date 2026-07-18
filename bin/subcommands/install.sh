@@ -364,7 +364,7 @@ echo
 
 echo "-- Summary --"
 echo "${n} managed path(s) processed, ${failures} failure(s)"
-echo "Verify with: bash ${INSTALL_DIR}/doctor.sh (or 'make doctor' from a foundation checkout)"
+echo "Verify with: bash ${INSTALL_DIR}/doctor.sh"
 echo
 
 if [ "$failures" -gt 0 ]; then

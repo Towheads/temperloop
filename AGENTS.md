@@ -43,8 +43,8 @@ target list with descriptions. The ones an agent needs most:
   toolkit test suites (zero network).
 - `make docs` — renders the generated docs site to
   `workflows/scripts/docs/_site/` (gitignored; a build artifact).
-- `make prune-branches` — sweep merged local branches (dry-run by default;
-  `--apply` to delete).
+- `bash scripts/prune-merged-branches.sh` — sweep merged local branches
+  (dry-run by default; `--apply` to delete).
 
 ### Board-adapter rules
 

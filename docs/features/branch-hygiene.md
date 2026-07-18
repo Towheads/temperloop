@@ -86,11 +86,12 @@ human remembers to run it by hand.
 detection helper, so the squash/rebase-safe check used here is the same
 one the build worktree-cleanup path uses when deciding whether a
 work-item worktree is safe to remove — one detection implementation, two
-callers. `make prune-branches` at the repo root is the on-demand entry
-point for a human running the sweep manually; the session-start hook is
-the equivalent automatic trigger on a machine configured to run it, so
-`make prune-branches` is the off-machine or on-demand lever, not the only
-way the sweep runs.
+callers. `bash scripts/prune-merged-branches.sh` at the repo root is the
+on-demand entry point for a human running the sweep manually (dry-run by
+default; `--apply` to delete); the session-start hook is the equivalent
+automatic trigger on a machine configured to run it, so
+`scripts/prune-merged-branches.sh` run by hand is the off-machine or
+on-demand lever, not the only way the sweep runs.
 
 ## Resource impact
 
