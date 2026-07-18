@@ -83,8 +83,20 @@
 # `*_GH_BIN`) IS included — swapping the resolved binary is a real,
 # meaningful override, not merely a test's implementation detail.
 #
+# ── Renamed env-var rows (temperloop#165, the foundation→temperloop rename) ──
+# The FOUNDATION_KERNEL_REPO / FOUNDATION_HOME / FOUNDATION_BIN_DIR /
+# FOUNDATION_VERSION rows are DEPRECATED: renamed to the TEMPERLOOP_* rows
+# beside them in v0.14.0. Read-old-write-new — the owning scripts read the
+# legacy var as the new var's fallback (the nested `${FOUNDATION_*:-...}`
+# literal IS the new row's default, verbatim per this registry's own rule),
+# so both rows stay equality-lint-true through the window. The legacy rows
+# (and the fallback seams they transcribe) are REMOVED in v0.16.0 — a
+# removed row-name, i.e. BREAKING per the rule above, carried by the
+# v0.14.0 CHANGELOG BREAKING entry's stated window.
+#
 # ── Personal-path-verbatim rows (superseded, kernel-literal-scrub, temperloop#189) ──
-# Two rows below (FOUNDATION_KERNEL_REPO, KERNEL_REMOTE) record a CURRENT
+# Three rows below (TEMPERLOOP_KERNEL_REPO, its deprecated FOUNDATION_KERNEL_REPO
+# twin, KERNEL_REMOTE) record a CURRENT
 # default that is this org's real repo clone URL — permanent, load-bearing,
 # out of scrub scope (this repo's own public identity, not a personal-token
 # leak; see check-personal-token-denylist.sh's category-1 rationale). They
@@ -117,9 +129,12 @@
 #
 # See row count at end of file (grep -c for a live count; comment count
 # drifts if this header grows).
-FOUNDATION_KERNEL_REPO	https://github.com/Towheads/temperloop.git	url	kernel	bin/bootstrap.sh	Clone URL bootstrap.sh pulls the kernel repo from (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak)
-FOUNDATION_HOME	$HOME/.local/share/temperloop	path	kernel	bin/bootstrap.sh	Local install dir for the bootstrapped kernel checkout
-FOUNDATION_BIN_DIR	$HOME/.local/bin	path	kernel	bin/bootstrap.sh	Where bootstrap.sh symlinks the temperloop CLI onto PATH
+TEMPERLOOP_KERNEL_REPO	${FOUNDATION_KERNEL_REPO:-https://github.com/Towheads/temperloop.git}	url	kernel	bin/bootstrap.sh	Clone URL bootstrap.sh pulls the kernel repo from (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak); canonical name since v0.14.0, reads the legacy var as fallback through the window
+FOUNDATION_KERNEL_REPO	https://github.com/Towheads/temperloop.git	url	kernel	bin/bootstrap.sh	DEPRECATED — renamed TEMPERLOOP_KERNEL_REPO in v0.14.0, read as fallback through the window, removed in v0.16.0 (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak)
+TEMPERLOOP_HOME	${FOUNDATION_HOME:-$HOME/.local/share/temperloop}	path	kernel	bin/bootstrap.sh	Local install dir for the bootstrapped kernel checkout; canonical name since v0.14.0, reads the legacy var as fallback through the window
+FOUNDATION_HOME	$HOME/.local/share/temperloop	path	kernel	bin/bootstrap.sh	DEPRECATED — renamed TEMPERLOOP_HOME in v0.14.0, read as fallback through the window, removed in v0.16.0
+TEMPERLOOP_BIN_DIR	${FOUNDATION_BIN_DIR:-$HOME/.local/bin}	path	kernel	bin/bootstrap.sh	Where bootstrap.sh symlinks the temperloop CLI onto PATH; canonical name since v0.14.0, reads the legacy var as fallback through the window
+FOUNDATION_BIN_DIR	$HOME/.local/bin	path	kernel	bin/bootstrap.sh	DEPRECATED — renamed TEMPERLOOP_BIN_DIR in v0.14.0, read as fallback through the window, removed in v0.16.0
 BASELINE_SNAPSHOT_GH_BIN	gh	path	kernel	bin/subcommands/baseline-snapshot.sh	Test-double seam for the gh binary
 BASELINE_SNAPSHOT_TIMEOUT	20	seconds	kernel	bin/subcommands/baseline-snapshot.sh	Per-gh-call watchdog timeout
 BASELINE_SNAPSHOT_LOOKBACK_DAYS	90	int	kernel	bin/subcommands/baseline-snapshot.sh	How many days back the baseline snapshot scans
@@ -322,4 +337,5 @@ TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/knob-registry.ts
 TEMPERLOOP_FEEDBACK_DENYLIST_FILE	$REPO_ROOT/workflows/scripts/kernel/personal-token-denylist.tsv	path	kernel	bin/subcommands/feedback.sh	Path to the personal-token denylist TSV the composed feedback payload is leak-scanned against (temperloop#428)
 TEMPERLOOP_FEEDBACK_REPO	Towheads/temperloop	label	kernel	bin/subcommands/feedback.sh	Target repo `temperloop feedback` opens its GitHub issue on (temperloop#428) — the kernel's own upstream tracker, its identity (denylist:allow — same category-1 rationale as feedback.sh's own marked constant)
 TEMPERLOOP_FEEDBACK_ASSUME_TTY	0	bool	kernel	bin/subcommands/feedback.sh	Test seam: treat stdin as attended even when it isn't a real TTY (temperloop#428) — never bypasses the CI/GITHUB_ACTIONS unattended signal, and never substitutes for the actual interactive "y" consent read
-FOUNDATION_VERSION	dev	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-knob check)
+TEMPERLOOP_VERSION	${FOUNDATION_VERSION:-dev}	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-knob check); canonical name since v0.14.0, reads the legacy var as fallback through the window
+FOUNDATION_VERSION	dev	string	kernel	bin/subcommands/feedback.sh	DEPRECATED — renamed TEMPERLOOP_VERSION in v0.14.0, read as fallback through the window, removed in v0.16.0
