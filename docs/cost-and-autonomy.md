@@ -213,8 +213,11 @@ temperloop is not free to run — the planning passes, the gates, the
 decision capture, and the verification steps all spend tokens that a
 "just tell Claude to fix it" workflow wouldn't. The claim isn't that it
 spends *less*; it's that it spends the *cheap* tokens up front to avoid the
-*expensive* ones later. The argument, lever by lever — stated as design
-rationale, since this repo doesn't yet log measured ROI:
+*expensive* ones later. (For the concrete levers that keep spend down —
+model-tier routing, per-tick caps, the quota gate — and what the pipeline
+tracks, see [`token-spend.md`](token-spend.md).) The argument, lever by
+lever — stated as design rationale, since this repo doesn't yet log measured
+ROI:
 
 - **Catching a wrong turn in planning is orders of magnitude cheaper than
   catching it after a merge.** The plan-first / design-first defaults
@@ -409,6 +412,9 @@ a repo other people also use.
 
 ### Where to read more
 
+- [`token-spend.md`](token-spend.md) — the operator/contributor companion:
+  every lever temperloop uses to reduce model spend (model-tier routing,
+  caps, quota gates) and what it tracks, with the exact knobs and files.
 - [`docs/features/funnel-driver.md`](features/funnel-driver.md) — the full
   autonomy-tier mechanics (rungs 5a/5b/5c) and their resource impact.
 - [`docs/features/build-spine.md`](features/build-spine.md) — the 5-hour
