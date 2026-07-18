@@ -29,9 +29,25 @@ sh temperloop-bootstrap.sh
 curl -fsSL https://raw.githubusercontent.com/Towheads/temperloop/main/bin/bootstrap.sh | sh
 ```
 
-The installer does exactly three things, nothing else: shallow-clones
-`temperloop` into `~/.local/share/temperloop` (or fast-forward-updates it in
-place on re-run), symlinks `~/.local/bin/temperloop` (and the `foundation`
+The installer does exactly three things, nothing else, and the details
+differ between a fresh install and a re-run (ADR 0002, "Managed-clone state
+ownership"):
+
+- **Fresh install**: clones `temperloop` into `~/.local/share/temperloop`
+  with enough history for tags to resolve, then **lands the clone on the
+  latest release tag** (highest `vX.Y.Z` by version sort) — you get a
+  released version, never `main`'s unreleased tip. If the remote genuinely
+  has no release tags yet, it stays on the default branch with an explicit
+  warning printed to stderr.
+- **Re-run** (an install already exists): the bootstrap script never pulls
+  or fast-forwards the existing clone in place — it **delegates to
+  `temperloop update`**, which surfaces the CHANGELOG delta (including any
+  `BREAKING` sections) and asks for consent before moving anything. An
+  install that predates the `update` subcommand fails with a stated
+  recovery (reinstall fresh, or move the clone to a tag by hand) rather than
+  a silent pull or a dead end.
+
+Either way it also symlinks `~/.local/bin/temperloop` (and the `foundation`
 compat shim alongside it) to the entrypoints inside that checkout, and
 prints a `PATH` reminder if `~/.local/bin` isn't on it already. No shell-rc
 edits, no `sudo`.

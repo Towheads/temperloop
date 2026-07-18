@@ -21,8 +21,18 @@
 #
 # WHAT THIS SCRIPT DOES, IN ORDER — nothing else. No shell-rc edits, no
 # sudo, no writes outside the two paths below:
-#   1. Shallow-clones (or, on re-run, fast-forward-updates in place) the
-#      public temperloop repo into $TEMPERLOOP_HOME.
+#   1. FIRST INSTALL ONLY (ADR 0002 "Managed-clone state ownership",
+#      temperloop#434): clones the public temperloop repo into
+#      $TEMPERLOOP_HOME with tag-resolvable history and lands the clone on
+#      the latest v0.x.y release tag (highest by version sort), detached.
+#      No release tag exists on the remote -> stays on the default branch
+#      tip, with an explicit warning (never a silent, unpinned install).
+#      RE-RUN (an existing $TEMPERLOOP_HOME/.git): this script NEVER pulls
+#      in place — it delegates entirely to `temperloop update`
+#      (bin/subcommands/update.sh), the sole post-install HEAD mover. A
+#      clone that predates that subcommand (installed before temperloop#429)
+#      fails legibly with a stated recovery, never a silent pull or a dead
+#      end.
 #   2. Symlinks $TEMPERLOOP_HOME/bin/temperloop onto
 #      $TEMPERLOOP_BIN_DIR/temperloop — and, so an existing `foundation
 #      <sub>` caller keeps working through the rename window, also symlinks
@@ -85,11 +95,56 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 if [ -d "$TEMPERLOOP_HOME/.git" ]; then
-  echo "bootstrap: $TEMPERLOOP_HOME already exists — updating in place..."
-  git -C "$TEMPERLOOP_HOME" pull --ff-only
+  # --- RE-RUN: never pull in place (ADR 0002) — delegate to the sole
+  # post-install HEAD mover, `temperloop update`. ------------------------
+  echo "bootstrap: $TEMPERLOOP_HOME already exists — delegating to 'temperloop update' (bootstrap never updates an existing install in place; see ADR 0002)..."
+  if [ ! -f "$TEMPERLOOP_HOME/bin/subcommands/update.sh" ]; then
+    echo "bootstrap: ERROR — $TEMPERLOOP_HOME predates the 'temperloop update' subcommand (bin/subcommands/update.sh not found in this clone), so there is no in-place upgrade path this bootstrap can delegate to." >&2
+    echo "  Recovery — pick one:" >&2
+    echo "    1) remove the old install and re-run this bootstrap for a fresh, tag-pinned install:" >&2
+    echo "         rm -rf $TEMPERLOOP_HOME" >&2
+    echo "         curl -fsSL https://raw.githubusercontent.com/Towheads/temperloop/main/bin/bootstrap.sh | sh  # denylist:allow — same rationale as the header's own one-liner" >&2
+    echo "    2) or bring this clone up to a release tag by hand:" >&2
+    echo "         git -C $TEMPERLOOP_HOME fetch --tags && git -C $TEMPERLOOP_HOME checkout <a-vX.Y.Z-tag>" >&2
+    exit 1
+  fi
+  if ! bash "$TEMPERLOOP_HOME/bin/temperloop" update; then
+    echo "bootstrap: 'temperloop update' exited non-zero — see its output above; the managed clone's HEAD may be unchanged (a refused/declined consent exits 0, so a non-zero exit here means a real fetch/checkout/install/doctor failure or a schema-gate refusal)." >&2
+    exit 1
+  fi
 else
+  # --- FIRST INSTALL: clone with tag-resolvable history and pin to the
+  # latest release tag (falling back to the default branch, with an
+  # explicit warning, only when no release tag exists). -------------------
   echo "bootstrap: cloning $TEMPERLOOP_KERNEL_REPO -> $TEMPERLOOP_HOME ..."
-  git clone --depth 1 "$TEMPERLOOP_KERNEL_REPO" "$TEMPERLOOP_HOME"
+  # A full clone (no --depth) so every tag's target commit is present
+  # locally and `git tag -l` / checkout resolve without a follow-up fetch —
+  # the simplest mechanism that is unconditionally correct regardless of
+  # how the remote's shallow-clone protocol support behaves (a shallow
+  # clone's tags are only reliably resolvable after `temperloop update`'s
+  # own `git fetch --unshallow`, which is a POST-install operation, not
+  # available here). This repo is small enough that the extra history costs
+  # a curl-one-liner a second or two, not minutes.
+  git clone "$TEMPERLOOP_KERNEL_REPO" "$TEMPERLOOP_HOME"
+
+  latest_tag="$(git -C "$TEMPERLOOP_HOME" tag -l 'v*' --sort=-v:refname | head -n1)"
+  if [ -n "$latest_tag" ]; then
+    echo "bootstrap: pinning fresh install to latest release tag $latest_tag ..."
+    git -C "$TEMPERLOOP_HOME" checkout --detach "$latest_tag"
+  else
+    # rev-parse --abbrev-ref (never `symbolic-ref HEAD`) — it prints the
+    # literal string "HEAD" instead of erroring when the fresh clone landed
+    # detached (a source repo with no advertised HEAD symref — e.g. a CI
+    # checkout with no refs/remotes/origin/HEAD — can leave a same-shape
+    # local clone detached even though bootstrap itself never touched HEAD
+    # in this no-tag branch), so this line never depends on a fatal-on-
+    # failure command inside a conditional expansion.
+    cur_branch="$(git -C "$TEMPERLOOP_HOME" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+    if [ "$cur_branch" = "HEAD" ]; then
+      cur_branch="(detached)"
+    fi
+    echo "bootstrap: WARNING — no release tags (v*) found on $TEMPERLOOP_KERNEL_REPO; staying on '$cur_branch' (unpinned, not a release). Once a v0.x.y tag exists, remove $TEMPERLOOP_HOME and re-run this bootstrap to land on it, or run 'temperloop update' after this install completes." >&2
+  fi
 fi
 
 if [ ! -f "$TEMPERLOOP_HOME/bin/temperloop" ]; then

@@ -394,6 +394,17 @@ KERNEL_GATES=(
   # v0.17.0) once the window shuts. Same fixture-upstream + sandbox
   # conventions as test_update_subcommand.sh above.
   "bash workflows/scripts/tests/test_rename_compat.sh"
+  # bin/bootstrap.sh tag-pinning + delegate-to-update (temperloop#434, ADR
+  # 0002 "Managed-clone state ownership"): a fresh bootstrap clones with
+  # tag-resolvable history and lands on the latest release tag (never the
+  # untagged mainline tip), a tagless remote falls back to the default
+  # branch with an explicit warning, a re-run delegates entirely to
+  # `temperloop update` (refuses non-interactively with HEAD untouched,
+  # but actually moves HEAD when consent is given — never a pull), and a
+  # re-run against a pre-`update`-era install fails legibly with a stated
+  # recovery. Same fixture-upstream + sandbox conventions as
+  # test_update_subcommand.sh / test_rename_compat.sh above.
+  "bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

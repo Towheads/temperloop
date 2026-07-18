@@ -149,6 +149,10 @@ install-cli workflows/scripts/lib/changelog.sh
 install-cli workflows/scripts/lib/tests/test_changelog.sh
 install-cli workflows/scripts/tests/test_update_subcommand.sh
 install-cli workflows/scripts/tests/test_rename_compat.sh
+# bin/bootstrap.sh tag-pinning + delegate-to-update (temperloop#434, ADR
+# 0002): the fixture suite doesn't match any existing install-cli glob
+# either (same reasoning as the three lines above it).
+install-cli workflows/scripts/tests/test_bootstrap_tag_pinning.sh
 install-cli workflows/scripts/probe/conventions-probe.sh
 install-cli workflows/scripts/probe/tests/test_conventions_probe.sh
 install-cli workflows/scripts/lib/baseline_snapshot.contract.md
