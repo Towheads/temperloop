@@ -104,6 +104,23 @@ renderer keeps its exact guarded invocation as an enrichment.
   script-relative; behavior is unchanged (see its own regression suite,
   `scripts/tests/test_update_kernel.sh`).
 
+- **`temperloop feedback` — consent-gated feedback submit mechanism (#428).**
+  A new CLI subcommand (`bin/subcommands/feedback.sh`) that sends feedback to
+  the kernel maintainers via a GitHub issue on the kernel's own upstream
+  tracker — deliberately distinct from `temperloop report` (which only ever
+  renders a stranger's own local before/after metrics and never transmits
+  anything).
+  Nothing repo-derived leaves the machine without: (1) composing the payload
+  to a single artifact file, (2) running the same
+  `personal-token-denylist.tsv` RULESET that guards the kernel file set
+  against that composed payload itself — a hit blocks transmission and names
+  the matching pattern, (3) previewing the exact payload bytes, and (4) an
+  explicit, interactively-typed "yes" at a real prompt — there is no `--yes`
+  bypass for this step. A closed/non-TTY stdin, or a `CI`/`GITHUB_ACTIONS`
+  unattended-environment signal, always refuses to transmit with a legible
+  message: a timeout or a flag is never consent for an external write. See
+  `bin/subcommands/feedback.sh`'s own header for the full contract.
+
 ## [0.13.1] - 2026-07-17
 
 Patch. Safe pull, no migration — no `BREAKING` marker. CI-resilience fix only:
