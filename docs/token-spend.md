@@ -31,9 +31,12 @@ Two framing facts carry over from the cost page:
 
 ## How temperloop keeps token spend efficient
 
-Four families of lever, roughly in the order work flows through the pipeline:
-**shape** the work small, **route** each piece to the cheapest model that
-fits, **challenge** it before building, and keep each run's **context** lean.
+Five families of lever. The first four make *building* a given change cheaper —
+**shape** the work small, **route** each piece to the cheapest model that fits,
+**challenge** it before building, and keep each run's **context** lean. The
+fifth makes *every future* change cheaper: capture intent durably so
+**maintenance** recalls it instead of re-deriving it — and since maintenance is
+most of a codebase's lifetime, that's where temperloop's token cost drops most.
 
 ### 1. Break work into small, contract-scoped chunks
 
@@ -160,6 +163,45 @@ the window from ballooning:
   a cache read, not a cache miss (`ASSESS_POLL_FIRST_WAKE` et al.,
   [`claude/commands/assess.md`](../claude/commands/assess.md)).
 
+### 5. Make the record durable, so maintenance stays cheap
+
+Most of a codebase's lifetime is *maintenance*, not the initial build — and
+maintenance is where re-establishing **intent** is normally the expensive part.
+A session that has to reconstruct why a feature exists, what its later changes
+were reasoning about, and which tradeoffs were deliberately accepted pays for
+all of that in input tokens (re-reading code, diffing history) — and risks
+getting it wrong, which is rework. temperloop front-loads that capture so a
+maintenance session **recalls** the context cheaply instead of reconstructing
+it:
+
+- **Feature docs are problem-first.** Each page under
+  [`docs/features/`](features/) opens with a `## Problem` section stating *why*
+  the feature exists, not just what it does — so the intent behind a subsystem
+  is a cheap read, not a code-archaeology exercise. ([`README.md`](../README.md)
+  indexes them, "one page per shipped feature.")
+- **ADRs capture the architectural calls and their tradeoffs.** Decisions with
+  lasting consequences land as immutable records under
+  [`docs/adr/`](adr/) (process in [`docs/adr/0000-adr-process.md`](adr/0000-adr-process.md));
+  `/workshop` emits a draft ADR for each architectural decision at materialize
+  time ([`claude/commands/workshop.md`](../claude/commands/workshop.md) § 5c).
+  A maintainer reads the tradeoff that was accepted instead of re-deriving —
+  or accidentally re-litigating — it.
+- **The epic `## Contract` records the seam durably** on the issue itself —
+  what each unit produces, consumes, and accepts — so a later change reasons
+  against a stated contract rather than reverse-engineering one from the code.
+- **PR verification surfaces stay in the PR body** (§ PR verification surface),
+  so *how a change was proven correct* is recoverable from history without
+  re-deriving it.
+- **Decision and context notes** captured to the knowledge store
+  ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Task workflow,
+  "Capture at source") record a decided-but-unbuilt direction or a deferred
+  design seam, so a later session doesn't re-open a settled question.
+
+The through-line is the same "capture once, recall — don't re-derive"
+discipline as the other levers, but it's the one whose payoff *compounds over
+the whole life of the code*: every future maintenance touch that would
+otherwise re-establish the same context becomes a cheap recall instead.
+
 ### Principles behind the levers
 
 The levers above are applications of a handful of standing rules in
@@ -183,8 +225,11 @@ efficiency rule, says "don't spend tokens you don't have to":
 - **Fetch ground truth before building** (§ Fetch ground truth before
   building) — probe current state before you mutate or build on it; stale
   assumptions cause the most expensive rework.
-- **Capture decisions once** (§ Decision capture) — write rationale to the
-  store so a later session recalls it instead of re-deriving it.
+- **Capture intent once, recall it forever** (§ Task workflow "Capture at
+  source"; the ADR and feature-doc records) — write the rationale, the
+  tradeoff, and the contract down when they're cheap to state, so every later
+  session (especially maintenance) recalls them instead of re-deriving them
+  (lever 5).
 
 ## How temperloop tracks spend — and where the gaps are
 
