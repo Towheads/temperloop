@@ -118,6 +118,19 @@ assert_rc "$rc" 0 "overlay-added fixture exits 0"
 assert_has "$out" "validate-design-brief: OK" "overlay-added fixture says OK"
 assert_has "$out" "17 dimension heading(s) found" "16 kernel + 1 overlay heading counted"
 
+# ── 7c-0. brief conformance: dimension 0 (## 0.) is an accepted bare integer ─
+# temperloop#508: dimension 0 was prepended to the kernel set (0..16). A brief
+# carrying `## 0.` must be ACCEPTED — not flagged UNKNOWN-DIMENSION / bare-
+# integer-overflow (that boundary keys on KERNEL_DIM_MAX=16, so 0..16 are valid
+# bare integers, >=17 is overflow). Guards the semantic goal of #508's validator
+# coupling: `## 0.` is a valid kernel dimension, not an unknown one.
+echo "--- 7c-0. --brief on dimension-0-accepted ('## 0.' present) ---"
+run --brief "$BRIEF_FIXTURES/dimension-0-accepted.md"
+assert_rc "$rc" 0 "dimension-0-accepted fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "dimension-0-accepted fixture says OK"
+assert_lacks "$out" "UNKNOWN-DIMENSION" "'## 0.' is NOT flagged as an unknown/overflow dimension"
+assert_lacks "$out" "'## 0.'" "no failure line names '## 0.'"
+
 # ── 7d. anti-drift: renamed schema section must not pass vacuously ───────────
 echo "--- 7d. --schema on a renamed-section schema (zero parsed rows) ---"
 SCRATCH="$(mktemp -d)"
@@ -131,14 +144,15 @@ assert_has "$out" "NO-DIMENSION-ROWS" "zero-row parse named"
 # ── 7e. anti-drift: kernel dimension count drift fails ci mode ────────────────
 echo "--- 7e. ci mode against a schema copy with a kernel row removed ---"
 mkdir -p "$SCRATCH/driftroot/claude"
-# Drop dimension 16's table row (bare-integer rows go 16 -> 15).
+# Drop dimension 16's table row (bare-integer rows go 17 -> 16; the real
+# schema now carries dimensions 0..16 inclusive per temperloop#508).
 grep -v '^| 16 |' "$REPO/claude/design-schema.md" \
   > "$SCRATCH/driftroot/claude/design-schema.md"
 rc=0
 out="$(DESIGN_SCHEMA_ROOT="$SCRATCH/driftroot" bash "$SCRIPT" 2>&1)" || rc=$?
 assert_rc "$rc" 1 "row-removed schema fails ci mode"
 assert_has "$out" "DIM-COUNT-DRIFT" "count drift named"
-assert_has "$out" "15 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=16" "drift counts named"
+assert_has "$out" "16 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=17" "drift counts named"
 
 # ── 7f. anti-drift: --schema fixture mode does NOT enforce the count ─────────
 echo "--- 7f. --schema fixture mode exempt from the count check ---"

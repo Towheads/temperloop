@@ -1,11 +1,11 @@
 # Design-brief schema
 
 Canonical coverage-dimension list and disposition grammar for design briefs
-produced by `/design` and consumed by `/assess` (via the epic `## Contract`
+produced by `/workshop` and consumed by `/assess` (via the epic `## Contract`
 it materializes into). Peer of `claude/plan-schema.md` — where a plan note
 governs *how an approved epic decomposes into build items*, a design brief
 governs *what a proposed feature must have decided before it becomes an
-epic at all*. This file is the brief's contracts doc; `claude/commands/design.md`
+epic at all*. This file is the brief's contracts doc; `claude/commands/workshop.md`
 is the command that walks it.
 
 > **Core idea: design-time promise ↔ merge-time enforcement is one loop.**
@@ -44,16 +44,16 @@ last_verified: <YYYY-MM-DD>
 This is the standard vault provenance schema (note-level) plus one
 brief-specific field: `status`. `status: draft` is the gate between the
 coverage walk and materialization — the command's ratify step
-(`/design` Step 4) flips it to `ratified` only after every dimension carries
+(`/workshop` Step 4) flips it to `ratified` only after every dimension carries
 a disposition (§ Disposition grammar) and the review tier for that epic's
-weight has run (`/design` Step 3). A `ratified` brief is treated as
+weight has run (`/workshop` Step 3). A `ratified` brief is treated as
 immutable going forward: a later change is a **new** brief that supersedes
 it (linked via `[[wikilink]]`), the same convention `Decisions/` notes use
 for supersession — never an edit-in-place of a ratified brief.
 
 ## Kernel dimension list
 
-Sixteen dimensions, one per numbered section of a brief. The kernel owns
+Seventeen dimensions, one per numbered section of a brief. The kernel owns
 this list and its order; an overlay may **add** dimensions but never
 remove or reorder a kernel one (§ Overlay extensibility). Each entry below
 states what the dimension must answer and the mechanism — if any — that
@@ -64,6 +64,7 @@ is chartered to also resolve this doc's gate citations, closing that gap.
 
 | # | Dimension | What it answers | Enforcing gate |
 |---|---|---|---|
+| 0 | **Premise & null hypothesis** | The do-nothing cost, the strongest subtraction/existing-surface alternative, and the operator's justification for proceeding (or the kill rationale) — the case *against* this design existing at all, made and answered before any other dimension is walked. **`filled`-only**: `n/a` and `deferred` are not valid dispositions for this dimension (§ Disposition grammar) — a deferred premise is exactly the gap this dimension exists to close. | The `/workshop` Step 1.3b premise gate (temperloop#509, forthcoming) — composes the case against citing `docs/principles.md`, elicits and records the operator's justification into this dimension, and offers proceed/reshape/drop; a drop flips the brief's `status` to `dropped` with this dimension carrying the kill rationale. |
 | 1 | **Problem & outcome (stranger standpoint)** | The problem and the customer-visible outcome, stated from a stranger's point of view — never the implementation's. Decides the stranger test (kernel vs overlay routing, `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule). | Advisory — no mechanical gate; the stranger-test call is reviewed by the adversarial panel and, downstream, by whichever repo the resulting code actually lands in. |
 | 2 | **Audience & interaction modes** | Who the feature is for (live operator, unattended run, both) and which `claude/message-schema.md` interaction modes it uses. | Advisory today — briefs live in the knowledge store, outside the repo, so no repo CI lint can scan one (`workflows/scripts/validate-template-refs.sh` scans only `claude/CLAUDE.kernel.md` + `claude/commands/*.md`, never a brief); brief-side template/mode reference checking routes to the forthcoming brief-conformance lint (temperloop#216), which runs at ratify time in a session that can read the knowledge store. |
 | 3 | **Alignment (guiding principles / routing)** | How the feature advances a guiding principle, and the kernel-vs-overlay routing decision with its rationale. | Advisory at design time (reviewed by architecture-reviewer); the routing call is checked downstream when code lands — a kernel-routed dimension implemented as overlay code (or vice versa) trips `workflows/scripts/kernel/check-kernel-manifest.sh`'s path classification at merge. |
@@ -82,10 +83,20 @@ is chartered to also resolve this doc's gate citations, closing that gap.
 | 16 | **Adoption & enforcement** | How this design's flow **displaces the default it replaces** — every design must answer this, not just ones that add new commands. | The kernel routing rule (`claude/CLAUDE.kernel.md` § Design-first default for invented work) + `/assess`'s in-pipeline provenance check (`claude/commands/assess.md` Step 1 — an epic with `## Contract` but no `design-brief:` marker triggers a legible, fail-open ask) + the `/tidy` drain backstop (`claude/commands/tidy.md` § Provenance-less epics — registered as a Live/Drain pair per dimension 7's own gate, `workflows/scripts/validate-live-drain.sh`). |
 
 Dimension 16 (Adoption & enforcement) is itself a template addition
-discovered by the /design brief's own bootstrap run — every design brief,
+discovered by the /workshop brief's own bootstrap run — every design brief,
 not only ones proposing a new command, must answer how its resulting flow
 displaces the default behavior it replaces, or state honestly that it
 doesn't change any existing default.
+
+**Dimension 0 (Premise & null hypothesis) is numbered `0`, not appended as
+`17`, so it sorts and is walked *first*** — before problem/outcome, before
+anything — without renumbering dimensions 1–16. It is also the schema's
+**only `filled`-only dimension**: every other dimension may legitimately
+resolve `n/a` or `deferred` (§ Disposition grammar), but dimension 0 may
+not — a brief that "defers" its own premise justification has produced
+exactly the unexamined-idea gap the premise gate exists to close, so the
+gate (`/workshop` Step 1.3b, temperloop#509) never accepts anything but a
+real answer or an honest kill.
 
 > **Provisional — pending temperloop#224.** Dimension 5's coverage-**walk
 > structure** (the order dimensions are walked in, and whether a bounded
@@ -134,17 +145,27 @@ chooses not to resolve now; it must point at something that tracks the gap,
 not dangle. A dimension with no disposition at all — not filled, not
 `n/a`, not `deferred` — is the failure mode this grammar exists to prevent.
 
+**Dimension 0 is the one exception to this three-way grammar: `filled` is
+its only valid disposition.** `n/a` and `deferred` are both invalid for
+dimension 0 — there is no design for which "should this exist at all" is
+inapplicable, and deferring the premise justification is the exact gap
+the premise gate (§ Kernel dimension list, row 0) exists to close. A
+dimension-0 section carrying `n/a` or `deferred` fails the brief-conformance
+lint (temperloop#216) once it lands, and is an authoring-standard violation
+today the same way any other missing disposition is (§ No-silent-skips
+rule below).
+
 **No-silent-skips rule.** A brief with an undispositioned dimension fails
 the brief-conformance lint. The lint itself ships as a separate item
 (temperloop#216, forthcoming) — until it lands, this rule is an authoring
-standard enforced by the review tier (`/design` Step 3), not yet a
-mechanical gate; `/design`'s ratify step (Step 4) must not flip
+standard enforced by the review tier (`/workshop` Step 3), not yet a
+mechanical gate; `/workshop`'s ratify step (Step 4) must not flip
 `status: draft → ratified` while any dimension lacks a disposition,
 regardless of whether the lint exists yet.
 
 ## Overlay extensibility — add-only
 
-The kernel owns the sixteen-dimension default list (§ Kernel dimension
+The kernel owns the seventeen-dimension default list (§ Kernel dimension
 list) and its order. An overlay **may add** dimensions — an org-specific
 concern with no meaning in a stranger's kernel-only checkout — but **may
 never remove or weaken** a kernel dimension. This is the same
@@ -168,7 +189,7 @@ that no longer holds for existing overlays).
 
 ## Materialization contract
 
-`/design`'s materialize step (Step 5) turns a ratified brief into a board
+`/workshop`'s materialize step (Step 5) turns a ratified brief into a board
 epic. A well-formed epic produced this way carries:
 
 - **A `## Contract` body** with the same three sections `/assess`'s
@@ -187,7 +208,7 @@ epic. A well-formed epic produced this way carries:
   This is what `/assess` Step 1's in-pipeline provenance check
   (`claude/commands/assess.md` Step 1, temperloop#218) looks for: an epic
   carrying a `## Contract` but no `design-brief:` marker triggers a legible,
-  fail-open ask (proceed without a brief, or park and run `/design` first)
+  fail-open ask (proceed without a brief, or park and run `/workshop` first)
   rather than either a silent bypass or a hard block. `/triage`'s mirror
   redirect line for invented work handed to it instead of an
   already-designed epic (`claude/commands/triage.md` § Mirror redirect:
@@ -213,6 +234,13 @@ last_verified: 2026-08-01
 ---
 
 # Design brief: <feature name>
+
+## 0. Premise & null hypothesis
+disposition: filled
+<do-nothing cost; the strongest subtraction/existing-surface alternative;
+the operator's justification for proceeding (or, on a kill, the rationale
+recorded here instead) — `n/a` and `deferred` are not valid dispositions
+for this dimension>
 
 ## 1. Problem & outcome (stranger standpoint)
 disposition: filled
@@ -281,7 +309,7 @@ disposition: filled
 
 ## Cross-references
 
-- Source brief (the schema's own bootstrap run): the ratified `/design`
+- Source brief (the schema's own bootstrap run): the ratified `/workshop`
   design brief in the knowledge store's `Designs/` folder.
 - Grounding: the L0 design-methodology spike verdict (Context note),
   temperloop#224 (walk-structure follow-up), temperloop#225 (lens-panel

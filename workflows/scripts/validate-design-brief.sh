@@ -30,7 +30,12 @@
 #       § File location) must carry a disposition line for every kernel
 #       dimension (1..16, plus any letter-suffixed overlay addition, e.g.
 #       `16a`), matching the grammar exactly (design-schema.md
-#       § Disposition grammar):
+#       § Disposition grammar). NOTE: dimension 0 (Premise & null hypothesis,
+#       temperloop#508) is not yet required here — this loop still starts at
+#       1 (KERNEL_DIM_MAX below), a known gap tracked as a fast-follow rather
+#       than guessed at in this change; design-schema.md itself is the
+#       source of truth for dimension 0's filled-only requirement in the
+#       meantime:
 #         disposition: filled
 #         disposition: n/a — <reason>
 #         disposition: deferred → <tracking ref>
@@ -90,7 +95,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 : "${DESIGN_SCHEMA_ROOT:=$REPO_ROOT}"
 
-KERNEL_DIM_COUNT=16
+# claude/design-schema.md § Kernel dimension list numbers dimension 0
+# (Premise & null hypothesis, temperloop#508) as a PREPEND — the kernel set
+# is 0..KERNEL_DIM_MAX, not a contiguous 1..N — so "how many kernel
+# dimensions total" and "highest bare-integer dimension number" are two
+# different numbers now:
+KERNEL_DIM_MAX=16      # highest bare-integer kernel dimension (1..16); the
+                        # UNKNOWN-DIMENSION guard and check (B)'s required-
+                        # heading loop both key on this. Dimension 0 is not
+                        # yet required by check (B) below — a brief missing
+                        # a '## 0.' heading is not flagged MISSING-DIMENSION
+                        # (tracked as a fast-follow; the schema itself is
+                        # already the source of truth per design-schema.md).
+KERNEL_DIM_COUNT=17    # total kernel dimension count, 0..KERNEL_DIM_MAX
+                        # inclusive — used only by check (A)'s DIM-COUNT-
+                        # DRIFT guard against the real schema table below.
 # Extension suffixes that mark a backtick token as a path citation (see (A)
 # above) rather than an agent name, constant, error code, or command.
 CITATION_EXT_RE='\.(sh|md|py|txt|mjs|json|yml|yaml)$'
@@ -244,7 +263,7 @@ check_brief_conformance() {
   headings="$(grep -nE '^## [0-9]+[a-z]?\. ' "$file" || true)"
 
   local n
-  for (( n = 1; n <= KERNEL_DIM_COUNT; n++ )); do
+  for (( n = 1; n <= KERNEL_DIM_MAX; n++ )); do
     if ! printf '%s\n' "$headings" | grep -qE "^[0-9]+:## ${n}\. "; then
       failures+=("MISSING-DIMENSION  $label — kernel dimension $n has no '## $n. <title>' heading")
     fi
@@ -264,8 +283,8 @@ check_brief_conformance() {
     case "$dimnum" in
       *[!0-9]*) : ;;  # letter-suffixed (e.g. 16a) — sanctioned overlay form
       *)
-        if (( dimnum > KERNEL_DIM_COUNT )); then
-          failures+=("UNKNOWN-DIMENSION  $label — '## $dimnum.' is a bare integer beyond the kernel count ($KERNEL_DIM_COUNT); overlay additions are letter-suffixed, e.g. 16a (design-schema.md § Overlay extensibility)")
+        if (( dimnum > KERNEL_DIM_MAX )); then
+          failures+=("UNKNOWN-DIMENSION  $label — '## $dimnum.' is a bare integer beyond the kernel count ($KERNEL_DIM_MAX); overlay additions are letter-suffixed, e.g. 16a (design-schema.md § Overlay extensibility)")
           continue
         fi
         ;;

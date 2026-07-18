@@ -81,6 +81,42 @@ overlay/config/env before that release, not necessarily before this pull.
   adjacent-tag update through the shim, legacy on-disk artifact reads, and
   the window-closed legible-degradation simulation).
 
+### Added
+
+- **`claude/design-schema.md` § Kernel dimension list gains dimension `0`
+  — Premise & null hypothesis (temperloop#508, epic temperloop#498).**
+  Additive, not breaking: no existing dimension is removed, reordered, or
+  has its enforcing-gate binding changed — dimensions 1–16 keep their
+  numbers and meaning unchanged. The new row records the do-nothing cost,
+  the strongest subtraction/existing-surface alternative, and the
+  operator's justification for proceeding (or the kill rationale), enforced
+  by the forthcoming `/workshop` Step 1.3b premise gate (temperloop#509).
+  **Dimension 0 spends the schema's only prepend slot**: numbering it `0`
+  (rather than appending `17`) is what lets it sort and be walked *first*,
+  ahead of every other dimension, without renumbering 1–16 — but that slot
+  is a one-time move. A future *intake-time* dimension (one that must also
+  walk before dimension 1) cannot reuse this trick a second time; it forces
+  a real renumbering of the kernel list. Never reach for a negative number
+  (`-1`) to dodge that — see § Overlay extensibility's numbering-namespace
+  note in the schema doc for why the namespace is reserved the way it is.
+  Dimension 0 is also the schema's first **`filled`-only** dimension: `n/a`
+  and `deferred` are invalid dispositions for it (§ Disposition grammar) —
+  a deferred premise is exactly the unexamined-idea gap the gate exists to
+  close. The worked-example skeleton gains a matching `## 0.` section.
+  **Migration note for in-flight `draft` briefs:** an existing `Designs/*.md`
+  brief written before this change has no dimension-0 section; it needs a
+  **one-touch migration** — add `## 0. Premise & null hypothesis` with a
+  `filled` disposition — before it can pass a ratify-time coverage check
+  that includes dimension 0. A brief already `status: ratified` is
+  unaffected (ratified briefs are immutable per § Frontmatter; the gap is
+  grandfathered, not retroactively invalid). Same-PR opportunistic cleanup:
+  every stale `/design` command reference in `claude/design-schema.md` is
+  updated to `/workshop` (the command was renamed in temperloop#354; this
+  schema doc had not yet been swept), and the doc's dimension-count prose
+  (`claude/design-schema.md`, `claude/commands/workshop.md`,
+  `docs/features/workshop.md`) is updated from sixteen/16 to
+  seventeen/17 throughout.
+
 ### Fixed
 
 - `reconcile.sh`: shellcheck directive on the label-lens optional

@@ -189,7 +189,7 @@ foundation that later shifts underneath it.
 
 ## Step 2 — Coverage walk
 
-1. Read `claude/design-schema.md` § Kernel dimension list — the 16 kernel
+1. Read `claude/design-schema.md` § Kernel dimension list — the 17 kernel
    dimensions — plus any overlay-added dimensions from
    `claude/design-schema.overlay.md` if this checkout carries one (letter-suffixed,
    e.g. `16a`, per that file's § Overlay extensibility — add-only; a kernel-only
@@ -351,7 +351,7 @@ walked.
    absence is never fatal to the walk.
 2. **Brief pass (always).** Probe `architecture-reviewer` and
    `requirements-auditor`. For each available, spawn it read-only and
-   advisory with the brief's per-dimension content (all sixteen
+   advisory with the brief's per-dimension content (all seventeen
    dimensions plus any overlay additions) and its own charter:
    `architecture-reviewer` judges dimensions 1, 3, 5, 7, 10
    (problem/outcome incl. the stranger-test call, routing, command shape,
