@@ -125,7 +125,7 @@ it sits above inspection in the literature, not inside it.
   path rather than the network) to keep every write inside the scratch dir
   — never touch the real `~/.local` or `~/.claude`. (The legacy
   `FOUNDATION_*` names still work through the rename window — removed in
-  v0.16.0 — but new invocations use `TEMPERLOOP_*`.)
+  v0.17.0 — but new invocations use `TEMPERLOOP_*`.)
 - Clean the scratch dir yourself at the end of the run unless the invoking
   session says it will (state which, in your summary).
 

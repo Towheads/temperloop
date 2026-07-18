@@ -40,17 +40,17 @@ notice="$("$FOUNDATION" --version 2>&1 >/dev/null | grep '^foundation: NOTE' || 
 [ -n "$notice" ] || fail "shim must print a deprecation NOTE on stderr"
 [ "$(printf '%s\n' "$notice" | wc -l | tr -d ' ')" = "1" ] || fail "shim must print exactly one NOTE line (got: $notice)"
 case "$notice" in *temperloop*) ;; *) fail "shim NOTE must name 'temperloop' (got: $notice)" ;; esac
-case "$notice" in *v0.16.0*) ;; *) fail "shim NOTE must state the removal version v0.16.0 (got: $notice)" ;; esac
-echo "PASS: shim prints one deprecation NOTE naming temperloop + removal version v0.16.0"
+case "$notice" in *v0.17.0*) ;; *) fail "shim NOTE must state the removal version v0.17.0 (got: $notice)" ;; esac
+echo "PASS: shim prints one deprecation NOTE naming temperloop + removal version v0.17.0"
 
-# Window-closed simulation (the post-v0.16.0 behavior, testable now): the
+# Window-closed simulation (the post-v0.17.0 behavior, testable now): the
 # shim refuses legibly — non-zero exit, a message naming 'temperloop' —
 # never a silent success or an opaque failure.
 rc_c=0; out_c="$(TEMPERLOOP_LEGACY_WINDOW_CLOSED=1 "$FOUNDATION" --version 2>&1)" || rc_c=$?
 [ "$rc_c" -ne 0 ] || fail "window-closed shim must exit non-zero"
 case "$out_c" in *temperloop*) ;; *) fail "window-closed shim failure must name 'temperloop' (got: $out_c)" ;; esac
-case "$out_c" in *v0.16.0*) ;; *) fail "window-closed shim failure must name v0.16.0 (got: $out_c)" ;; esac
-echo "PASS: window-closed shim degrades legibly (exit $rc_c, names temperloop + v0.16.0)"
+case "$out_c" in *v0.17.0*) ;; *) fail "window-closed shim failure must name v0.17.0 (got: $out_c)" ;; esac
+echo "PASS: window-closed shim degrades legibly (exit $rc_c, names temperloop + v0.17.0)"
 
 # --- T1: --version identical --------------------------------------------
 out_t="$("$TEMPERLOOP" --version 2>&1)"

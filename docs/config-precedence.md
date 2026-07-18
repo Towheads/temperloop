@@ -99,11 +99,11 @@ even though the two don't share an implementation.
 namespace as rung 3 above. `boards.conf` was built (foundation #770) before
 this repo's public rename from `foundation` to `temperloop` and was
 grandfathered under `$XDG_CONFIG_HOME/foundation/` until temperloop#165
-migrated it (v0.14.0, read-old-write-new): when no file exists at the
+migrated it (v0.15.0, read-old-write-new): when no file exists at the
 `temperloop/` path, an **existing** legacy
 `$XDG_CONFIG_HOME/foundation/boards.conf` is still read as a fallback
 through the migration window, and that legacy fallback is **removed in
-v0.16.0** — move the file (`mkdir -p ~/.config/temperloop && mv
+v0.17.0** — move the file (`mkdir -p ~/.config/temperloop && mv
 ~/.config/foundation/boards.conf ~/.config/temperloop/`) or set
 `BOARDS_CONF_MACHINE`. Any **new** machine-conf surface added after this
 ladder — including rung 3 above — uses the `temperloop` namespace from the

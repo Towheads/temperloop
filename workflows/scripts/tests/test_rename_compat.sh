@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # test_rename_compat.sh — the foundation→temperloop rename window
-# (temperloop#165, gh #165 "rename stranger surfaces", v0.14.0): proves the
+# (temperloop#165, gh #165 "rename stranger surfaces", v0.15.0): proves the
 # READ-OLD-WRITE-NEW contract end to end, hermetically.
 #
 #   1. LEGACY-ENV INSTALL: a bootstrap driven entirely by the pre-rename
 #      FOUNDATION_KERNEL_REPO / FOUNDATION_HOME / FOUNDATION_BIN_DIR env
 #      vars still installs correctly (new > old > default precedence), and
 #      each legacy var used surfaces a one-line deprecation NOTE naming its
-#      TEMPERLOOP_* replacement + the v0.16.0 removal.
+#      TEMPERLOOP_* replacement + the v0.17.0 removal.
 #   2. NEW-ENV INSTALL: the TEMPERLOOP_* names drive the same install with
 #      ZERO deprecation noise.
 #   3. TWO INSTALLS AT ADJACENT TAGS AGAINST ONE REPO (fixture-based
@@ -25,7 +25,7 @@
 #      identical window is unit-tested in
 #      workflows/scripts/lib/tests/test_knowledge_store.sh cases 2b–2d.)
 #   5. COLD INSTALL PAST WINDOW CLOSE (TEMPERLOOP_LEGACY_WINDOW_CLOSED=1,
-#      the post-v0.16.0 simulation seam): every legacy surface degrades
+#      the post-v0.17.0 simulation seam): every legacy surface degrades
 #      LEGIBLY — bootstrap refuses with the rename + removal version and
 #      installs nothing; init refuses on a legacy config naming the
 #      migration; board.sh ignores the legacy machine conf with a NOTE —
@@ -104,7 +104,7 @@ for var in FOUNDATION_KERNEL_REPO FOUNDATION_HOME FOUNDATION_BIN_DIR; do
   grep -q "NOTE — \$$var is deprecated" "$boot_err" \
     || fail "1: bootstrap must print a deprecation NOTE for $var (stderr: $(cat "$boot_err"))"
 done
-grep -q 'removed in v0.16.0' "$boot_err" || fail "1: the NOTEs must state the v0.16.0 removal"
+grep -q 'removed in v0.17.0' "$boot_err" || fail "1: the NOTEs must state the v0.17.0 removal"
 pass "1: legacy FOUNDATION_* env install works, with per-var deprecation NOTEs naming the window"
 
 # The shim dispatches, and says it is deprecated.
@@ -231,9 +231,9 @@ env "${SANDBOX_ENV_ARGS[@]}" \
 [ "$rc" -ne 0 ] || fail "5a: window-closed bootstrap with a legacy env var must exit non-zero"
 grep -q 'no longer read' "$closed_err" || fail "5a: the refusal must say the legacy var is no longer read"
 grep -q 'TEMPERLOOP_KERNEL_REPO' "$closed_err" || fail "5a: the refusal must name the replacement var"
-grep -q 'removed in v0.16.0' "$closed_err" || fail "5a: the refusal must name the removal version"
+grep -q 'removed in v0.17.0' "$closed_err" || fail "5a: the refusal must name the removal version"
 [ ! -d "$CLOSED_HOME" ] || fail "5a: a refused bootstrap must install nothing"
-pass "5a: window-closed bootstrap refuses legibly (names replacement + v0.16.0, installs nothing)"
+pass "5a: window-closed bootstrap refuses legibly (names replacement + v0.17.0, installs nothing)"
 
 # 5b. init over a legacy config refuses legibly.
 rc=0
@@ -242,7 +242,7 @@ env "${SANDBOX_ENV_ARGS[@]}" TEMPERLOOP_LEGACY_WINDOW_CLOSED=1 \
     bash "$LEGACY_HOME/bin/subcommands/init.sh" --dir "$TARGET" --dry-run --no-network \
     >"$init_closed" 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "5b: window-closed init over a legacy .foundation/config must refuse"
-grep -q 'removed in v0.16.0' "$init_closed" || fail "5b: init's refusal must name the removal version"
+grep -q 'removed in v0.17.0' "$init_closed" || fail "5b: init's refusal must name the removal version"
 grep -q 'git mv .foundation .temperloop' "$init_closed" || fail "5b: init's refusal must name the migration step"
 pass "5b: window-closed init refuses legibly on a legacy config, naming the migration"
 
@@ -254,7 +254,7 @@ got="$(env "${SANDBOX_ENV_ARGS[@]}" TEMPERLOOP_LEGACY_WINDOW_CLOSED=1 \
 [ "$got" = "$XDGC/temperloop/boards.conf" ] \
   || fail "5c: window-closed probe must resolve the new path (got: $got)"
 grep -q 'no longer read' "$probe_err" || fail "5c: the ignored legacy conf must be named on stderr"
-grep -q 'v0.16.0' "$probe_err" || fail "5c: the NOTE must name the removal version"
+grep -q 'v0.17.0' "$probe_err" || fail "5c: the NOTE must name the removal version"
 pass "5c: window-closed board.sh names the ignored legacy machine conf (never a silent miss)"
 
 # ===========================================================================

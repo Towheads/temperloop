@@ -270,7 +270,7 @@ function sq(value) {
 // bootstrap-clone convention (bin/bootstrap.sh's own default,
 // $HOME/.local/share/temperloop — never a hardcoded personal dev path,
 // temperloop#406; the legacy FOUNDATION_HOME name is read as a fallback
-// through the rename window, removed in v0.16.0). If none resolve, the
+// through the rename window, removed in v0.17.0). If none resolve, the
 // emitted path points at the missing
 // repo-local dir and the spine script's own "not found" (exit 127) surfaces
 // loudly. NOTE:

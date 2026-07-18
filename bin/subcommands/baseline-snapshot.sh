@@ -302,17 +302,17 @@ fi
 # mid-window would silently truncate every later report's "before" anchor
 # (report.sh reads exactly one file). A repo with no legacy baseline writes
 # to .temperloop/ from the start. The legacy continue-in-place arm is
-# removed in v0.16.0 (move the file: git has never tracked it — plain
+# removed in v0.17.0 (move the file: git has never tracked it — plain
 # mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/).
 # ---------------------------------------------------------------------------
 foundation_dir="$repo_root/.temperloop"
 if [ ! -f "$foundation_dir/baseline.jsonl" ] && [ -f "$repo_root/.foundation/baseline.jsonl" ]; then
   if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
-    echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.16.0 (renamed .temperloop/ in v0.14.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
+    echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.17.0 (renamed .temperloop/ in v0.15.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
     exit 1
   fi
   foundation_dir="$repo_root/.foundation"
-  echo "baseline-snapshot: NOTE — appending to legacy ${foundation_dir#"$repo_root"/}/baseline.jsonl (dir renamed .temperloop/ in v0.14.0; legacy append removed in v0.16.0 — move the file)." >&2
+  echo "baseline-snapshot: NOTE — appending to legacy ${foundation_dir#"$repo_root"/}/baseline.jsonl (dir renamed .temperloop/ in v0.15.0; legacy append removed in v0.17.0 — move the file)." >&2
 fi
 if ! mkdir -p "$foundation_dir" 2>/dev/null; then
   echo "baseline-snapshot.sh: could not create $foundation_dir" >&2

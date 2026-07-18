@@ -120,7 +120,7 @@ observation, rated above inspection in the literature, not an instance of it.
 - Override `TEMPERLOOP_HOME` / `TEMPERLOOP_BIN_DIR` / `HOME` (and
   `TEMPERLOOP_KERNEL_REPO` for a local "fresh clone") so every write stays
   inside the scratch dir. (Legacy `FOUNDATION_*` names work through the
-  rename window, removed in v0.16.0.)
+  rename window, removed in v0.17.0.)
 - **Check specifically for team-shared-state bleed**: does anything the
   install/first-run/uninstall sequence touches live in a path a teammate's
   own checkout would also read (a repo-tracked file, a shared config, a

@@ -60,11 +60,11 @@ BOARD_FIELD_COMPONENT="Component"
 # order (first hit wins):
 #   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
 #      (default ~/.config/temperloop/boards.conf) — override BOARDS_CONF_MACHINE.
-#      The subdir renamed foundation/ -> temperloop/ in v0.14.0
+#      The subdir renamed foundation/ -> temperloop/ in v0.15.0
 #      (temperloop#165, read-old-write-new): when no file exists at the new
 #      default, an EXISTING legacy ~/.config/foundation/boards.conf is used
 #      instead (see _board_machine_conf_default). The legacy fallback is
-#      removed in v0.16.0 — move the file (mkdir -p ~/.config/temperloop &&
+#      removed in v0.17.0 — move the file (mkdir -p ~/.config/temperloop &&
 #      mv ~/.config/foundation/boards.conf ~/.config/temperloop/) or set
 #      BOARDS_CONF_MACHINE.
 #   2. repo-local override: workflows/scripts/board/boards.conf, next to this
@@ -97,9 +97,9 @@ _BOARD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # exist but a legacy $XDG_CONFIG_HOME/foundation/boards.conf does, use the
 # legacy file (read-old — silent by design: board.sh runs on every board op,
 # so a per-call notice would be pure spam; docs/config-precedence.md and the
-# CHANGELOG carry the migration note). Legacy fallback removed in v0.16.0.
+# CHANGELOG carry the migration note). Legacy fallback removed in v0.17.0.
 # TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never set
-# in production use): =1 simulates the post-v0.16.0 removal — the legacy
+# in production use): =1 simulates the post-v0.17.0 removal — the legacy
 # file is then ignored with a one-line stderr notice, never silently.
 _board_machine_conf_default() {
   local new_f old_f
@@ -107,7 +107,7 @@ _board_machine_conf_default() {
   old_f="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   if [ ! -f "$new_f" ] && [ -f "$old_f" ]; then
     if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
-      echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.16.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
+      echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.17.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
     else
       printf '%s' "$old_f"
       return 0

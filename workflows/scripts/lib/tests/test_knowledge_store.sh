@@ -59,7 +59,7 @@ trap 'rm -rf "$TMP"' EXIT
   want="$TMP/xdg-legacy/foundation/knowledge"
   [ "$got" = "$want" ] || fail "2b: legacy store should be found through the window (got $got want $want)"
   grep -q 'legacy store root' "$TMP/2b-note.txt" || fail "2b: legacy fallback must print a NOTE naming the legacy root"
-  grep -q 'v0.16.0' "$TMP/2b-note.txt" || fail "2b: the NOTE must state the removal version (v0.16.0)"
+  grep -q 'v0.17.0' "$TMP/2b-note.txt" || fail "2b: the NOTE must state the removal version (v0.17.0)"
   echo "PASS: 2b legacy foundation/knowledge store found through the rename window, with removal-version NOTE"
 )
 
@@ -89,7 +89,7 @@ trap 'rm -rf "$TMP"' EXIT
   got="$(ks_root 2>"$TMP/2d-note.txt")"
   want="$TMP/xdg-closed/temperloop/knowledge"
   [ "$got" = "$want" ] || fail "2d: closed window must resolve to the new default (got $got want $want)"
-  grep -q 'removed in v0.16.0' "$TMP/2d-note.txt" || fail "2d: closed-window resolution must name the removal legibly"
+  grep -q 'removed in v0.17.0' "$TMP/2d-note.txt" || fail "2d: closed-window resolution must name the removal legibly"
   grep -q 'KNOWLEDGE_STORE_ROOT' "$TMP/2d-note.txt" || fail "2d: closed-window NOTE must name the migration/override knob"
   echo "PASS: 2d closed window degrades legibly (new default + NOTE naming the stranded legacy store)"
 )

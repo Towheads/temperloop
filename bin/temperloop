@@ -89,7 +89,7 @@ LIB_DIR="$_tl_self_bin_dir/lib"
 source "$LIB_DIR/common.sh"
 
 # Legacy FOUNDATION_* env vars are adopted (with a one-line deprecation
-# notice) through the rename window — removed in v0.16.0. See
+# notice) through the rename window — removed in v0.17.0. See
 # temperloop_env_compat in lib/common.sh (temperloop#165).
 temperloop_env_compat || exit 1
 
@@ -212,8 +212,8 @@ _foundation_check_report_offer() {
 
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root="$(pwd)"
   # .temperloop/ is the canonical per-repo dir (renamed from .foundation/ in
-  # v0.14.0, temperloop#165); the legacy dir is read through the window
-  # (removed in v0.16.0).
+  # v0.15.0, temperloop#165); the legacy dir is read through the window
+  # (removed in v0.17.0).
   baseline_file="$repo_root/.temperloop/baseline.jsonl"
   [ -f "$baseline_file" ] || baseline_file="$repo_root/.foundation/baseline.jsonl"
   [ -f "$baseline_file" ] || return 0

@@ -276,7 +276,7 @@ _drive_conf_repo() {  # $1 = board number; rc 1 on any miss (no conf, or no key)
   if [ -z "$f" ]; then
     # temperloop#165 rename window (mirrors board.sh's
     # _board_machine_conf_default): prefer the temperloop/ machine conf,
-    # fall back to an existing legacy foundation/ one (removed in v0.16.0).
+    # fall back to an existing legacy foundation/ one (removed in v0.17.0).
     f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
     lf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
     if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # knob:exempt — test/simulation-only seam

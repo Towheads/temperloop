@@ -225,7 +225,7 @@ links_provision_cache_stores() {
   echo "  ✓ cache store root ready: ${store_root}"
 
   # temperloop#165 rename window: temperloop/ machine conf preferred, an
-  # existing legacy foundation/ one read as fallback (removed in v0.16.0).
+  # existing legacy foundation/ one read as fallback (removed in v0.17.0).
   local machine_conf machine_conf_legacy conf=""
   machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
   machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"

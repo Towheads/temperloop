@@ -148,7 +148,7 @@ if [ "$do_refresh" -eq 1 ]; then
 fi
 
 # temperloop#165 rename window: .temperloop/ preferred, an existing legacy
-# .foundation/baseline.jsonl read as fallback (removed in v0.16.0 — see
+# .foundation/baseline.jsonl read as fallback (removed in v0.17.0 — see
 # baseline-snapshot.sh's continue-in-place note).
 baseline_file="$repo_root/.temperloop/baseline.jsonl"
 [ -f "$baseline_file" ] || baseline_file="$repo_root/.foundation/baseline.jsonl"
@@ -284,7 +284,7 @@ echo
 # "Overlay drop-in contract" section for the full rule.
 # temperloop#165 rename window: .temperloop/report.d/ preferred; an existing
 # legacy .foundation/report.d/ (a TRACKED dir in adopter repos) is used as
-# fallback when the new one is absent (removed in v0.16.0 -- git mv the
+# fallback when the new one is absent (removed in v0.17.0 -- git mv the
 # dir). Never unioned: one dir wins, so a producer is never run twice.
 # ---------------------------------------------------------------------------
 echo "-- Overlay-tier: repo drop-ins (.temperloop/report.d/) --"

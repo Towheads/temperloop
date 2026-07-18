@@ -45,12 +45,12 @@ computed number -- never a crash, never a silently wrong number.
 
 ## Overlay drop-in contract
 
-**Legacy-dir window (v0.14.0 → removed in v0.16.0, temperloop#165):** the
+**Legacy-dir window (v0.15.0 → removed in v0.17.0, temperloop#165):** the
 per-repo dir renamed `.foundation/` → `.temperloop/`. `report.sh` prefers
 `.temperloop/report.d/` and falls back to an existing legacy
 `.foundation/report.d/` when the new dir is absent — one dir wins, never a
 union, so a producer is never run twice. The legacy fallback is removed in
-v0.16.0 (`git mv .foundation/report.d .temperloop/report.d` — the dir is
+v0.17.0 (`git mv .foundation/report.d .temperloop/report.d` — the dir is
 tracked). The baseline read follows the same new-then-legacy probe.
 
 Every executable file found directly inside the target repo's

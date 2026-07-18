@@ -32,11 +32,11 @@ FOUNDATION_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
 # shellcheck disable=SC2034
 FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 
-# ── Env-var rename window (temperloop#165, v0.14.0) ─────────────────────────
+# ── Env-var rename window (temperloop#165, v0.15.0) ─────────────────────────
 # TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR / TEMPERLOOP_KERNEL_REPO /
 # TEMPERLOOP_VERSION are the canonical env knobs; the pre-rename
 # FOUNDATION_* names are read as fallbacks through the migration window and
-# removed in v0.16.0 (VERSIONING.md pre-1.0 bump rules; the v0.14.0
+# removed in v0.17.0 (VERSIONING.md pre-1.0 bump rules; the v0.15.0
 # CHANGELOG BREAKING entry carries the migration note).
 #
 # temperloop_env_compat
@@ -49,7 +49,7 @@ FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 #
 #   TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never
 #   set in production use; same registry-exempt status as BUILD_QUOTA_NOW):
-#   =1 simulates the post-v0.16.0 removal — a set legacy var then fails
+#   =1 simulates the post-v0.17.0 removal — a set legacy var then fails
 #   legibly (returns 1 after a specific message) instead of being adopted,
 #   so the removal-release behavior is testable before it ships.
 temperloop_env_compat() {
@@ -66,11 +66,11 @@ temperloop_env_compat() {
     eval "legacy_val=\${${legacy}:-}"
     if [ -n "$legacy_set" ] && [ -z "$new_set" ] && [ -n "$legacy_val" ]; then
       if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
-        echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.14.0 and the legacy name was removed in v0.16.0. Set \$$new and re-run." >&2
+        echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.15.0 and the legacy name was removed in v0.17.0. Set \$$new and re-run." >&2
         return 1
       fi
       export "$new=$legacy_val"
-      echo "temperloop: NOTE — \$$legacy is deprecated: renamed \$$new in v0.14.0; the legacy name still works but is removed in v0.16.0. Set \$$new instead." >&2
+      echo "temperloop: NOTE — \$$legacy is deprecated: renamed \$$new in v0.15.0; the legacy name still works but is removed in v0.17.0. Set \$$new instead." >&2
     fi
   done
   return 0

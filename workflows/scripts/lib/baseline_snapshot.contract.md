@@ -61,15 +61,15 @@ failure — the one case where "a record was appended" is actually false).
    ensures on a cold repo with no prior `.temperloop/` directory at all
    (the first run creates both the directory and the ignore entry).
 
-**Legacy-dir window (v0.14.0 → removed in v0.16.0).** The per-repo dir
-renamed `.foundation/` → `.temperloop/` in v0.14.0 (temperloop#165). An
+**Legacy-dir window (v0.15.0 → removed in v0.17.0).** The per-repo dir
+renamed `.foundation/` → `.temperloop/` in v0.15.0 (temperloop#165). An
 **existing** legacy `.foundation/baseline.jsonl` keeps accreting **in
 place** through the window (the baseline is one append-only before/after
 history; splitting it across two dirs would truncate every later report's
 "before" anchor), with a one-line `NOTE` per run; a repo with no legacy
 baseline writes under `.temperloop/` from the first run. `report` reads
 whichever single file exists (new preferred). The legacy arm is removed in
-v0.16.0 — migrate with `mkdir -p .temperloop && mv
+v0.17.0 — migrate with `mkdir -p .temperloop && mv
 .foundation/baseline.jsonl .temperloop/` (the file is gitignored, never
 tracked).
 

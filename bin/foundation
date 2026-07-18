@@ -9,18 +9,18 @@
 # symlink still works), prints a one-line deprecation notice, and execs the
 # real dispatcher next to it. New callers should use `temperloop`.
 #
-# REMOVAL WINDOW: this shim is removed in v0.16.0 (VERSIONING.md pre-1.0
-# bump rules; the v0.14.0 CHANGELOG BREAKING entry carries the migration
+# REMOVAL WINDOW: this shim is removed in v0.17.0 (VERSIONING.md pre-1.0
+# bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the migration
 # note). TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam
-# (never set in production use): =1 simulates the post-v0.16.0 removal so
+# (never set in production use): =1 simulates the post-v0.17.0 removal so
 # the legible failure below stays testable before the removal release ships.
 set -uo pipefail
 
 if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
-  echo "foundation: this compat shim was removed in v0.16.0 — the CLI was renamed 'temperloop' in v0.14.0. Invoke 'temperloop' instead." >&2
+  echo "foundation: this compat shim was removed in v0.17.0 — the CLI was renamed 'temperloop' in v0.15.0. Invoke 'temperloop' instead." >&2
   exit 1
 fi
-echo "foundation: NOTE — 'foundation' is a deprecated alias for 'temperloop' (renamed in v0.14.0); this shim is removed in v0.16.0." >&2
+echo "foundation: NOTE — 'foundation' is a deprecated alias for 'temperloop' (renamed in v0.15.0); this shim is removed in v0.17.0." >&2
 
 _src="${BASH_SOURCE[0]}"
 while [ -L "$_src" ]; do

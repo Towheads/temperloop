@@ -27,16 +27,16 @@
 #      $TEMPERLOOP_BIN_DIR/temperloop — and, so an existing `foundation
 #      <sub>` caller keeps working through the rename window, also symlinks
 #      the checkout's kernel/bin/foundation compat shim onto
-#      $TEMPERLOOP_BIN_DIR/foundation (the shim is removed in v0.16.0).
+#      $TEMPERLOOP_BIN_DIR/foundation (the shim is removed in v0.17.0).
 #   3. Prints a PATH reminder if $TEMPERLOOP_BIN_DIR isn't on it already.
 #
-# ENV KNOBS + RENAME WINDOW (temperloop#165, v0.14.0): TEMPERLOOP_KERNEL_REPO,
+# ENV KNOBS + RENAME WINDOW (temperloop#165, v0.15.0): TEMPERLOOP_KERNEL_REPO,
 # TEMPERLOOP_HOME, and TEMPERLOOP_BIN_DIR are the canonical override names,
 # renamed from the pre-rename FOUNDATION_* prefix. Read-old-write-new: a
 # legacy FOUNDATION_* var still works while its TEMPERLOOP_* twin is unset
 # (precedence: new > old > built-in default) and prints a one-line
-# deprecation notice; the legacy names are removed in v0.16.0 (VERSIONING.md
-# pre-1.0 bump rules; the v0.14.0 CHANGELOG BREAKING entry carries the
+# deprecation notice; the legacy names are removed in v0.17.0 (VERSIONING.md
+# pre-1.0 bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the
 # migration note).
 #
 # UNINSTALL: remove $TEMPERLOOP_BIN_DIR/temperloop, $TEMPERLOOP_BIN_DIR/foundation,
@@ -52,18 +52,18 @@
 # ever changes.
 set -eu
 
-# --- legacy FOUNDATION_* env-var fallback window (removed in v0.16.0) ------
+# --- legacy FOUNDATION_* env-var fallback window (removed in v0.17.0) ------
 # TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never set
 # in production use; same registry-exempt status as BUILD_QUOTA_NOW): =1
-# simulates the post-v0.16.0 removal so the legible failure below stays
+# simulates the post-v0.17.0 removal so the legible failure below stays
 # testable before the removal release ships.
 _tl_legacy_notice() {
   # $1 = legacy var name (set in the caller's environment), $2 = new name
   if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
-    echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.14.0 and the legacy name was removed in v0.16.0. Set \$$2 and re-run." >&2
+    echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.15.0 and the legacy name was removed in v0.17.0. Set \$$2 and re-run." >&2
     exit 1
   fi
-  echo "bootstrap: NOTE — \$$1 is deprecated: renamed \$$2 in v0.14.0; the legacy name still works but is removed in v0.16.0. Set \$$2 instead." >&2
+  echo "bootstrap: NOTE — \$$1 is deprecated: renamed \$$2 in v0.15.0; the legacy name still works but is removed in v0.17.0. Set \$$2 instead." >&2
 }
 if [ -z "${TEMPERLOOP_KERNEL_REPO+x}" ] && [ -n "${FOUNDATION_KERNEL_REPO+x}" ]; then
   _tl_legacy_notice FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO
@@ -107,11 +107,11 @@ echo "bootstrap: installed -> $TEMPERLOOP_BIN_DIR/temperloop (-> $TEMPERLOOP_HOM
 # execs temperloop) so an existing `foundation <sub>` caller — a script, a
 # shell alias, muscle memory — keeps working after a fresh install too.
 # Windowed with the rest of the rename (temperloop#165): the shim prints a
-# one-line deprecation notice per invocation and is removed in v0.16.0.
+# one-line deprecation notice per invocation and is removed in v0.17.0.
 if [ -f "$TEMPERLOOP_HOME/bin/foundation" ]; then
   chmod +x "$TEMPERLOOP_HOME/bin/foundation"
   ln -sf "$TEMPERLOOP_HOME/bin/foundation" "$TEMPERLOOP_BIN_DIR/foundation"
-  echo "bootstrap: installed -> $TEMPERLOOP_BIN_DIR/foundation (compat shim -> $TEMPERLOOP_HOME/bin/foundation; deprecated, removed in v0.16.0)"
+  echo "bootstrap: installed -> $TEMPERLOOP_BIN_DIR/foundation (compat shim -> $TEMPERLOOP_HOME/bin/foundation; deprecated, removed in v0.17.0)"
 fi
 
 case ":$PATH:" in

@@ -10,8 +10,8 @@ stay on `make` — this CLI does not duplicate a Makefile target.
 project's ratified public name, TemperLoop. `foundation <sub>` still works
 through the rename window — `kernel/bin/foundation` is a thin compat shim
 that prints a one-line deprecation notice and execs `temperloop` — and is
-**removed in v0.16.0** along with the other legacy `foundation` names; see
-the v0.14.0 CHANGELOG `BREAKING` entry for the full migration note.)
+**removed in v0.17.0** along with the other legacy `foundation` names; see
+the v0.15.0 CHANGELOG `BREAKING` entry for the full migration note.)
 
 ## Install
 
@@ -42,7 +42,7 @@ edits, no `sudo`.
 |---|---|---|
 | (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
 | (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
-| (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.temperloop/config` (pre-v0.14.0 inits wrote `.foundation/config` — read through the rename window, removed in v0.16.0) | `temperloop eject` (run inside the target repo; cleans either dir) |
+| (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.temperloop/config` (pre-v0.15.0 inits wrote `.foundation/config` — read through the rename window, removed in v0.17.0) | `temperloop eject` (run inside the target repo; cleans either dir) |
 | (d) **Issue-cache store root** | `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"` |
 
 Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
@@ -120,7 +120,7 @@ different repo/org, same as it would for a bare `gh` call.
 global, per-machine** install — the machine-wide `~/.claude/CLAUDE.md`,
 `settings.json`, and the rest are shared by every repo you point this CLI
 at, not duplicated per repo. What *is* per-repo is `.temperloop/config`
-(pre-v0.14.0: `.foundation/config`, read through the rename window),
+(pre-v0.15.0: `.foundation/config`, read through the rename window),
 written inside the target repo's own working tree by `temperloop init` (and
 reverted by `temperloop eject`, scope (c)) — labels, required checks, board
 wiring, and proposal PRs live there, scoped to that one repo, never in the
@@ -137,7 +137,7 @@ client-specific path before running the bootstrap script to keep each
 engagement's install fully separate. (The pre-rename `FOUNDATION_HOME` /
 `FOUNDATION_BIN_DIR` / `FOUNDATION_KERNEL_REPO` names are still read as
 fallbacks through the rename window — with a one-line deprecation notice —
-and are removed in v0.16.0.)
+and are removed in v0.17.0.)
 
 ## Quickstart: try → try --demo → init
 

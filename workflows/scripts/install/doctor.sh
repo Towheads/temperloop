@@ -198,7 +198,7 @@ check_cache_state() {
   fi
 
   # temperloop#165 rename window: temperloop/ machine conf preferred, an
-  # existing legacy foundation/ one read as fallback (removed in v0.16.0).
+  # existing legacy foundation/ one read as fallback (removed in v0.17.0).
   local machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
   local machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   local repo_conf="${FOUNDATION}/workflows/scripts/board/boards.conf"
@@ -207,7 +207,7 @@ check_cache_state() {
     conf="$machine_conf"
   elif [[ -f "$machine_conf_legacy" ]]; then
     conf="$machine_conf_legacy"
-    printf '  NOTE: machine boards.conf found at the legacy path %s — the default moved to %s in v0.14.0 (legacy read removed in v0.16.0); move the file.\n' "$machine_conf_legacy" "$machine_conf"
+    printf '  NOTE: machine boards.conf found at the legacy path %s — the default moved to %s in v0.15.0 (legacy read removed in v0.17.0); move the file.\n' "$machine_conf_legacy" "$machine_conf"
   elif [[ -f "$repo_conf" ]]; then
     conf="$repo_conf"
   fi

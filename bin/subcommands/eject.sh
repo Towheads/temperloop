@@ -5,11 +5,11 @@
 # init` (foundation #765 Epic D "newcomer experience", item foundation-eject
 # / #855).
 #
-# RENAME WINDOW (temperloop#165, v0.14.0): the per-repo dir is
+# RENAME WINDOW (temperloop#165, v0.15.0): the per-repo dir is
 # `.temperloop/`; a pre-rename adoption used `.foundation/`. Every read
 # below prefers the new dir and falls back to the legacy one, and eject
 # removes BOTH — cleaning legacy residue stays supported even past the
-# v0.16.0 window close (it is exactly this subcommand's job). Comments
+# v0.17.0 window close (it is exactly this subcommand's job). Comments
 # below name only `.temperloop/` for brevity.
 #
 # `temperloop init` (kernel/bin/subcommands/init.sh) is documented as the
@@ -148,7 +148,7 @@ Three separate removal scopes — this subcommand only handles (c); see
       (a) and (c)):
         temperloop uninstall
   (c) THIS repo's .temperloop/config side effects (labels, required
-      checks, boards, proposal PRs; a pre-v0.14.0 init recorded them in
+      checks, boards, proposal PRs; a pre-v0.15.0 init recorded them in
       .foundation/config) — what 'temperloop eject' just did.
 EOF
 }
@@ -185,7 +185,7 @@ echo "== temperloop eject =="
 echo
 
 # temperloop#165 rename window: `.temperloop/` is the canonical per-repo dir
-# (written by v0.14.0+ inits); a pre-rename adoption left `.foundation/`.
+# (written by v0.15.0+ inits); a pre-rename adoption left `.foundation/`.
 # Eject CLEANS EITHER — deliberately in force even past the window close
 # (removing legacy residue is exactly this subcommand's job), so no
 # TEMPERLOOP_LEGACY_WINDOW_CLOSED arm exists here. Reads (config, recovery
@@ -198,7 +198,7 @@ config_path="$repo_dir/$config_rel"
 if [ ! -f "$config_path" ] && [ -f "$legacy_dir/config" ]; then
   config_rel=".foundation/config"
   config_path="$legacy_dir/config"
-  echo "NOTE: reading legacy $config_rel (renamed .temperloop/config in v0.14.0; 'temperloop eject' cleans either dir)."
+  echo "NOTE: reading legacy $config_rel (renamed .temperloop/config in v0.15.0; 'temperloop eject' cleans either dir)."
   echo
 fi
 # Human-readable name for "what eject removes" in the messages below.

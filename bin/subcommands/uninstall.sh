@@ -33,7 +33,7 @@
 #       records (settings/config/symlinks under $HOME the CLI itself wrote).
 #   (c) `temperloop eject` — a target REPO's `.temperloop/config` side
 #       effects (labels, required checks, boards, proposal PRs; a
-#       pre-v0.14.0 init recorded them in `.foundation/config`). A wholly
+#       pre-v0.15.0 init recorded them in `.foundation/config`). A wholly
 #       separate manifest, a wholly separate script — see eject.sh's own
 #       header for why the two are never merged. This script prints a
 #       reminder to run it (print_eject_reminder below) since a machine-
@@ -153,7 +153,7 @@ print_eject_reminder() {
   cat <<EOF
 Ran 'temperloop init' in one or more target repos? Their side effects
   (labels, required checks, boards, proposal PRs, recorded in that repo's
-  .temperloop/config — or .foundation/config from a pre-v0.14.0 init) are
+  .temperloop/config — or .foundation/config from a pre-v0.15.0 init) are
   scope (c) — a separate manifest this script never touches. Run
   'temperloop eject' inside each such repo if you want those reverted too.
 EOF
