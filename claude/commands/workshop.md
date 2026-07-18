@@ -275,12 +275,13 @@ walked.
    § 6). Naming the cost **before** the pick is the point of the mapping;
    never spawn a reviewer speculatively while the pick is still open. State
    the availability caveat in the same breath: each lens runs only if it
-   passes 3.3's capability probe, so on a checkout missing a declared agent
-   (e.g. the red-team lens, which has no agent shipped yet — the persona
-   lenses shipped with `design-persona-agents` temperloop#221 and are
-   declared in `claude/agents/`), part of a full pass reduces to legible
-   skip lines — the operator is pricing what *can* run here, not a
-   hypothetical.
+   passes 3.3's capability probe, so on a checkout missing a declared agent,
+   part of a full pass reduces to legible skip lines — the operator is
+   pricing what *can* run here, not a hypothetical. Both the red-team lens
+   (`claude/agents/red-team-lens.md`, temperloop#510) and the persona lenses
+   (`design-persona-agents` temperloop#221) now ship as declared agents under
+   `claude/agents/`, so a full pass runs live here subject to the normal
+   capability probe.
 2. **Ask.** `AskUserQuestion`: brief pass or full pass? Suggest a default
    from the epic's apparent weight (a single-file, low-blast-radius design
    suggests brief; a design that touches the install surface, adds a new
@@ -371,17 +372,26 @@ walked.
    skipped" note.
 3. **Full pass adds** (only when 3.1 picked full): a **red-team lens** —
    an adversarial charter that attacks the brief's stated acceptance
-   criteria and threat model directly, looking for a way the design could
-   satisfy every dimension's disposition and still fail the customer — and
-   a **persona pass**: the opining half of the customer-archetype agents
-   (§ 2 of the ratified brief), critiquing the brief from each declared
-   archetype's value set. Both follow the same predicate as 3.3.1: the
-   persona agents shipped with `design-persona-agents` (temperloop#221) —
+   criteria (dimension 4), threat model / premortem (dimension 15), and
+   **premise justification (dimension 0)** directly — surfacing where they
+   are weak, unfalsifiable, circular, or where the premise's case-against
+   was not honestly engaged — looking for a way the design could satisfy
+   every dimension's disposition and still fail the customer. Its
+   **authoritative charter is `claude/agents/red-team-lens.md`**
+   (temperloop#510), which also states the mandatory rule that every finding
+   cites a named principle from `docs/principles.md` (an uncited finding is
+   discardable on sight). Full pass also adds a **persona pass**: the opining
+   half of the customer-archetype agents (§ 2 of the ratified brief),
+   critiquing the brief from each declared archetype's value set. All follow
+   the same predicate as 3.3.1: the red-team lens ships as
+   `claude/agents/red-team-lens.md` and the persona agents shipped with
+   `design-persona-agents` (temperloop#221) —
    `claude/agents/hobbyist-persona.md`, `consultant-persona.md`,
-   `team-member-persona.md` — so the persona pass is live in this checkout;
-   the red-team lens has no agent shipped yet, so it still degrades to
-   `skipped — <agent> unavailable` until one lands. 3.2's executed
-   first-run also runs here when its mandate applies.
+   `team-member-persona.md` — so both the red-team lens and the persona pass
+   run live in this checkout, each subject to the normal capability probe
+   (each degrades to `skipped — <agent> unavailable` only in a checkout where
+   its agent isn't declared). 3.2's executed first-run also runs here when
+   its mandate applies.
 4. **Independent passes, aggregated after.** Every spawned lens sees only
    the brief — never another lens's findings — until 3.4 aggregates them.
    This adapts heuristic evaluation's independent-evaluator structure
@@ -408,6 +418,18 @@ walked.
    A finding that surfaces a real gap the operator chooses not to resolve
    now converts that dimension's disposition to `deferred → <tracking
    ref>` rather than leaving it `filled` with an unaddressed critique.
+   **Dimension-0 carve-out.** A finding on **dimension 0** (Premise &
+   null hypothesis — the red-team lens's sharpest target) is the one
+   exception: dimension 0 is `filled`-only (`claude/design-schema.md`
+   § Disposition grammar), so an unresolved dimension-0 finding may
+   **never** convert to `deferred`. It resolves one of two ways — a
+   real fix folded into the premise justification now (`folded`), or an
+   explicit decline that leaves dimension 0 `filled` (the finding is
+   rejected, noted per item 4's decline vocabulary). If the operator
+   judges the premise gap serious enough that dimension 0 cannot
+   honestly stay `filled`, that is a signal to route back to the premise
+   gate (Step 1.3b) or to decline-and-stay-`draft` — never to mint an
+   invalid `deferred` disposition the schema declares impossible.
 3. **Surface contested findings.** A finding the brief's owner disagrees
    with is not applied silently — put it to the operator via
    `AskUserQuestion` (clear win vs. contested is the same split `/assess`
@@ -438,6 +460,11 @@ walked.
    names as living here (in the review tier, until temperloop#216's
    mechanical lint lands) — Step 3's review tier existing does not relax
    this check; it only adds a source of new dispositions for it to catch.
+   One per-dimension invariant this check also holds until #216's lint
+   lands: **dimension 0's only legal disposition is `filled`** (`n/a` and
+   `deferred` are both invalid for it — `claude/design-schema.md` §
+   Disposition grammar), so a dimension 0 carrying `deferred` (e.g. from a
+   mishandled fold-back) is a gap here, not a passing disposition.
 
    1b. **Finding-disposal check.** Dimension-level completeness alone
    cannot catch a dropped review finding — every dimension already
