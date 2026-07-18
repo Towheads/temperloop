@@ -131,14 +131,15 @@ assert_has "$out" "NO-DIMENSION-ROWS" "zero-row parse named"
 # ── 7e. anti-drift: kernel dimension count drift fails ci mode ────────────────
 echo "--- 7e. ci mode against a schema copy with a kernel row removed ---"
 mkdir -p "$SCRATCH/driftroot/claude"
-# Drop dimension 16's table row (bare-integer rows go 16 -> 15).
+# Drop dimension 16's table row (bare-integer rows go 17 -> 16; the real
+# schema now carries dimensions 0..16 inclusive per temperloop#508).
 grep -v '^| 16 |' "$REPO/claude/design-schema.md" \
   > "$SCRATCH/driftroot/claude/design-schema.md"
 rc=0
 out="$(DESIGN_SCHEMA_ROOT="$SCRATCH/driftroot" bash "$SCRIPT" 2>&1)" || rc=$?
 assert_rc "$rc" 1 "row-removed schema fails ci mode"
 assert_has "$out" "DIM-COUNT-DRIFT" "count drift named"
-assert_has "$out" "15 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=16" "drift counts named"
+assert_has "$out" "16 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=17" "drift counts named"
 
 # ── 7f. anti-drift: --schema fixture mode does NOT enforce the count ─────────
 echo "--- 7f. --schema fixture mode exempt from the count check ---"
