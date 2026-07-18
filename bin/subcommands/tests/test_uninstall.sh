@@ -129,6 +129,8 @@ echo "$out1" | grep -q "temperloop uninstall: done" || fail "1: expected a done 
 [ "$(manifest_path_count)" = "0" ] || fail "1: manifest should have 0 entries after a fully successful uninstall"
 
 echo "$out1" | grep -q "Bootstrap footprint" || fail "1: expected the bootstrap-footprint guidance bullet (got: $out1)"
+echo "$out1" | grep -q "Issue-cache store root" || fail "1: expected the cache-store-root guidance bullet (got: $out1)"
+echo "$out1" | grep -q "temperloop init" || fail "1: expected the eject reminder (got: $out1)"
 
 sandbox_down
 echo "PASS: 1 (created removed, preexisting restored from backup, decoy + XDG_CONFIG_HOME conf survive)"
@@ -229,6 +231,58 @@ echo "$out5" | grep -q "temperloop uninstall: incomplete" || fail "5: expected t
 
 sandbox_down
 echo "PASS: 5 (partial failure: unresolved entry stays recorded for a retry, every other entry still resolves, exit 1)"
+
+# =============================================================================
+# Test 6: an emptied ~/.claude is rmdir'd; a ~/.claude left non-empty by an
+#         unrecorded file survives (rmdir only, never rm -rf).
+# =============================================================================
+sandbox_up uninstall-test6
+
+created6="$SANDBOX_HOME/.claude/settings.json"
+seed_created "$created6" "installed content"
+[ -d "$SANDBOX_HOME/.claude" ] || fail "6: setup — \$HOME/.claude should exist before uninstall"
+
+out6="$(run_uninstall --yes 2>&1)" && rc6=0 || rc6=$?
+[ "$rc6" -eq 0 ] || fail "6: uninstall --yes should exit 0 (got rc=$rc6, out: $out6)"
+[ ! -e "$SANDBOX_HOME/.claude" ] || fail "6: an emptied \$HOME/.claude must be rmdir'd after uninstall"
+echo "$out6" | grep -q '\.claude removed (was left empty)' || fail "6: expected the empty-dir removal line (got: $out6)"
+
+sandbox_down
+echo "PASS: 6a (an emptied \$HOME/.claude is rmdir'd)"
+
+sandbox_up uninstall-test6b
+
+created6b="$SANDBOX_HOME/.claude/settings.json"
+seed_created "$created6b" "installed content"
+unrecorded6b="$SANDBOX_HOME/.claude/hand-edited-notes.md"
+printf 'never in the manifest\n' > "$unrecorded6b"
+
+out6b="$(run_uninstall --yes 2>&1)" && rc6b=0 || rc6b=$?
+[ "$rc6b" -eq 0 ] || fail "6b: uninstall --yes should exit 0 (got rc=$rc6b, out: $out6b)"
+[ -d "$SANDBOX_HOME/.claude" ] || fail "6b: \$HOME/.claude must survive when a non-recorded file still lives in it"
+[ -f "$unrecorded6b" ] || fail "6b: the unrecorded file itself must survive untouched"
+
+sandbox_down
+echo "PASS: 6b (a \$HOME/.claude left non-empty by an unrecorded path survives — rmdir only, never rm -rf)"
+
+# =============================================================================
+# Test 7: the printed cache-store-root guidance honors an explicit
+#         CACHE_STORE_ROOT override — the same precedence links.sh
+#         (links_provision_cache_stores) and board/lib/cache.sh resolve the
+#         real store root with. A guidance line built from the
+#         XDG_CACHE_HOME/$HOME/.cache fallback alone, ignoring an operator's
+#         CACHE_STORE_ROOT, would print the wrong rm -rf path.
+# =============================================================================
+sandbox_up uninstall-test7
+
+override_root7="$SANDBOX_ROOT/custom-cache-root"
+out7="$(CACHE_STORE_ROOT="$override_root7" run_uninstall --yes 2>&1)" && rc7=0 || rc7=$?
+[ "$rc7" -eq 0 ] || fail "7: uninstall --yes should exit 0 (got rc=$rc7, out: $out7)"
+echo "$out7" | grep -qF "$override_root7" || fail "7: expected the guidance to print the CACHE_STORE_ROOT override path (got: $out7)"
+echo "$out7" | grep -qF "${SANDBOX_XDG_CACHE_HOME}/temperloop" && fail "7: guidance must NOT print the XDG_CACHE_HOME fallback when CACHE_STORE_ROOT is set (got: $out7)"
+
+sandbox_down
+echo "PASS: 7 (cache-store-root guidance honors an explicit CACHE_STORE_ROOT override)"
 
 echo
 echo "ALL PASS: test_uninstall.sh"

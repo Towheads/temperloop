@@ -1,5 +1,5 @@
 ---
-description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217); ADR emission at materialize landed with `design-adr-emission` (temperloop#219). Executing customer-persona agents remain `design-persona-agents` (temperloop#221).
+description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217); ADR emission at materialize landed with `design-adr-emission` (temperloop#219). Executing customer-persona agents shipped with `design-persona-agents` (temperloop#221).
 argument-hint: "[<problem-statement> | <pointer-note>] [--board <N> | --project <name>]"
 ---
 
@@ -43,14 +43,15 @@ emission for the ratified brief's architectural calls, conforming to
 `docs/adr/0000-adr-process.md` — a different section of Step 5, not Step 3,
 so it needed no Step 3 change.
 
-One thing Step 3 below deliberately does **not** implement, tracked in the
-same plan (`Plans/2026-07-08 temperloop - design command front door.md`):
-the **executing** customer-persona agents themselves (Step 3 specifies
-*when* an executed first-run/uninstall run is mandatory and how it degrades
-when no such agent is declared; the agents that actually run one are
-`design-persona-agents`, #221, parked on K136's audience page landing).
-Nothing in Steps 0–2 or 4–6 needed to change for #217 or #219 to land; #221
-lands later without touching Step 3.
+One thing Step 3 below deliberately did **not** implement itself, tracked
+in the same plan (`Plans/2026-07-08 temperloop - design command front
+door.md`): the **executing** customer-persona agents themselves (Step 3
+specifies *when* an executed first-run/uninstall run is mandatory and how
+it degrades when no such agent is declared; the agents that actually run
+one are `design-persona-agents`, temperloop#221 — closed 2026-07-11,
+shipping `claude/agents/hobbyist-persona.md`, `consultant-persona.md`, and
+`team-member-persona.md`). As anticipated, #221 landed without touching
+Step 3 below — Steps 0–2 and 4–6 needed no change either for #217 or #219.
 
 ## Inputs
 
@@ -274,10 +275,12 @@ walked.
    § 6). Naming the cost **before** the pick is the point of the mapping;
    never spawn a reviewer speculatively while the pick is still open. State
    the availability caveat in the same breath: each lens runs only if it
-   passes 3.3's capability probe, so on a checkout with no agents declared
-   (e.g. the red-team and persona lenses until `design-persona-agents` #221
-   lands), part of a full pass reduces to legible skip lines — the operator
-   is pricing what *can* run here, not a hypothetical.
+   passes 3.3's capability probe, so on a checkout missing a declared agent
+   (e.g. the red-team lens, which has no agent shipped yet — the persona
+   lenses shipped with `design-persona-agents` temperloop#221 and are
+   declared in `claude/agents/`), part of a full pass reduces to legible
+   skip lines — the operator is pricing what *can* run here, not a
+   hypothetical.
 2. **Ask.** `AskUserQuestion`: brief pass or full pass? Suggest a default
    from the epic's apparent weight (a single-file, low-blast-radius design
    suggests brief; a design that touches the install surface, adds a new
@@ -322,18 +325,21 @@ walked.
    cognitive walkthrough in a brief or Decisions note.
 3. **This file specifies the mandate, not the executor.** The agent that
    actually performs a fresh clone → install → report-friction → uninstall
-   → diff-residue run is `design-persona-agents` (temperloop#221), scoped
-   separately because it's parameterized by the customer archetypes the
-   audience page (K136) defines — content this file must not invent.
-   Whenever the mandate applies and no such executing agent is declared
-   (the common case until #221 lands), this degrades exactly like any
-   other capability probe (3.3): a legible `skipped — <persona-agent>
-   unavailable` line, stamped into dimension 15 (failure modes / capability
-   limits) as an honest gap — **never** a silent pass, and never treated as
-   satisfying the mandate. A ratified brief with this gap stamped is still
-   ratifiable (Step 4 blocks on undispositioned dimensions, not on a
-   capability that was never available in this checkout); a ratified brief
-   with the mandate silently unmet is not.
+   → diff-residue run is `design-persona-agents` (temperloop#221 — closed
+   2026-07-11), scoped separately because it's parameterized by the
+   customer archetypes the audience page (K136) defines — content this
+   file must not invent. `claude/agents/hobbyist-persona.md`,
+   `consultant-persona.md`, and `team-member-persona.md` now declare it,
+   each with an EXECUTING mode for exactly this run. Whenever the mandate
+   applies but no such executing agent happens to be declared in a given
+   checkout, this degrades exactly like any other capability probe (3.3): a
+   legible `skipped — <persona-agent> unavailable` line, stamped into
+   dimension 15 (failure modes / capability limits) as an honest gap —
+   **never** a silent pass, and never treated as satisfying the mandate. A
+   ratified brief with this gap stamped is still ratifiable (Step 4 blocks
+   on undispositioned dimensions, not on a capability that was never
+   available in this checkout); a ratified brief with the mandate silently
+   unmet is not.
 
 ### 3.3 — Capability-probed adversarial panel
 
@@ -369,12 +375,13 @@ walked.
    satisfy every dimension's disposition and still fail the customer — and
    a **persona pass**: the opining half of the customer-archetype agents
    (§ 2 of the ratified brief), critiquing the brief from each declared
-   archetype's value set. Both follow the same predicate as 3.3.1: no
-   red-team-lens agent or persona agent declared in this checkout (the
-   default today; `design-persona-agents` #221 is what would declare the
-   personas) → `skipped — <agent> unavailable`, one line each, same as any
-   other lens. 3.2's executed first-run also runs here when its mandate
-   applies.
+   archetype's value set. Both follow the same predicate as 3.3.1: the
+   persona agents shipped with `design-persona-agents` (temperloop#221) —
+   `claude/agents/hobbyist-persona.md`, `consultant-persona.md`,
+   `team-member-persona.md` — so the persona pass is live in this checkout;
+   the red-team lens has no agent shipped yet, so it still degrades to
+   `skipped — <agent> unavailable` until one lands. 3.2's executed
+   first-run also runs here when its mandate applies.
 4. **Independent passes, aggregated after.** Every spawned lens sees only
    the brief — never another lens's findings — until 3.4 aggregates them.
    This adapts heuristic evaluation's independent-evaluator structure
@@ -705,7 +712,9 @@ last line of the response.
 - Review-tier machinery (Step 3): shipped by `design-review-machinery`,
   temperloop#217. ADR emission (Step 5c, not Step 3): shipped by
   `design-adr-emission`, temperloop#219. Executing customer-persona agents
-  remain `design-persona-agents`, temperloop#221 (parked on K136).
+  shipped with `design-persona-agents`, temperloop#221 (closed 2026-07-11)
+  — `claude/agents/hobbyist-persona.md`, `consultant-persona.md`,
+  `team-member-persona.md`.
 - Capability-probe predicate: [[Decisions/foundation - Project capability
   probes]] — same predicate `/assess` Step 3 and `/triage` Step 3 apply to
   their own review panels.

@@ -128,6 +128,8 @@ _foundation_print_help() {
   cat <<EOF
 temperloop — kernel newcomer/adoption-surface CLI
 
+Start here: temperloop try
+
 Usage:
   temperloop <subcommand> [args...]
   temperloop help
