@@ -66,6 +66,19 @@
 # Absent -> "skipped — baseline-snapshot unavailable", and init continues
 # either way; this is a soft seam that never blocks init.
 #
+# PARTIAL-RUN RECOVERY (temperloop#414): a run that dies anywhere from Step
+# 3's proposal-pr.sh call onward (killed process, failed push, failed `gh pr
+# create`) leaves the checkout on the proposal branch with no memory of what
+# branch it came from. This script writes an untracked `.foundation/.recovery.json`
+# ({"original_branch":...,"proposal_branch":...}) immediately before that
+# call and deletes it immediately after the call succeeds (whatever the
+# outcome) — so the marker survives on disk exactly when, and only when, a
+# run was interrupted mid-switch. `foundation eject` (kernel/bin/subcommands/
+# eject.sh) is the reader: it restores `original_branch` and deletes the
+# stray `proposal_branch` when it finds the marker and the checkout is still
+# sitting on that branch. A run whose HEAD is detached, or that never
+# switches branch (already on it), writes no marker — nothing to restore.
+#
 # Usage:
 #   init.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network] [--timeout SECS]
 #           [--branch NAME] [--base BRANCH] [--remote NAME]
@@ -224,6 +237,14 @@ repo_dir="$(abs_dir "$init_dir")" || { echo "init.sh: --dir '$init_dir' does not
 repo_top="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null)" \
   || { echo "init.sh: --dir '$init_dir' is not a git working tree" >&2; exit 1; }
 repo_dir="$(abs_dir "$repo_top")"
+
+# Capture the caller's branch BEFORE anything below ever switches it (only
+# Step 3's proposal-pr.sh call does that, via `git checkout -B`) — this is
+# the "original branch" a partial/failed run needs to restore later (see
+# the recovery-marker note ahead of that call, and temperloop#414).  Empty
+# when HEAD is detached; the marker is then never written (nothing named
+# to restore to).
+orig_branch="$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
 echo "== foundation init =="
 echo
@@ -554,6 +575,34 @@ else
     --body "$body" --files-manifest - --remote "$remote" --force)
   [ -n "$base" ] && proposal_args+=(--base "$base")
 
+  # --- recovery marker (temperloop#414) ------------------------------------
+  # proposal-pr.sh's own `git checkout -B "$branch" ...` (inside the call
+  # below) is the ONLY branch switch in this whole script — a run that dies
+  # anywhere from here on (a killed process, a failed push, a failed `gh pr
+  # create`) leaves the checkout sitting on $branch with no further trace of
+  # what branch to return to once the process is gone. Record it BEFORE the
+  # switch, as untracked (gitignored) recovery state under .foundation/ — the
+  # exact same directory `foundation eject` already owns cleaning up. Cleared
+  # right below the instant the switch is known to have succeeded (whatever
+  # its outcome — NO_CHANGES/PR_OPENED/EXISTS all mean "this branch is now
+  # intentional", not a stray leftover); a run that never reaches that point
+  # leaves the marker in place for `foundation eject` (or a later `init` run
+  # from the very same branch) to act on. Skipped when already on $branch
+  # (nothing to protect against) or HEAD is detached (nothing named to
+  # restore to).
+  if [ -n "$orig_branch" ] && [ "$orig_branch" != "$branch" ]; then
+    mkdir -p "$repo_dir/.foundation" 2>/dev/null
+    jq -cn --arg orig "$orig_branch" --arg prop "$branch" \
+      '{original_branch:$orig, proposal_branch:$prop}' \
+      > "$repo_dir/.foundation/.recovery.json" 2>/dev/null || true
+    gi_path="$repo_dir/.foundation/.gitignore"
+    if [ -f "$gi_path" ]; then
+      grep -Fxq ".recovery.json" "$gi_path" 2>/dev/null || printf '%s\n' ".recovery.json" >> "$gi_path"
+    else
+      printf '%s\n' ".recovery.json" > "$gi_path"
+    fi
+  fi
+
   manifest_json="$(printf '%s\n' "${manifest_entries[@]}" | jq -sc '.')"
   proposal_out="$(printf '%s' "$manifest_json" | bash "$PROPOSAL" "${proposal_args[@]}")"
   proposal_rc=$?
@@ -562,6 +611,7 @@ else
     echo "init.sh: proposal-pr.sh failed (exit $proposal_rc)" >&2
     exit "$proposal_rc"
   fi
+  rm -f "$repo_dir/.foundation/.recovery.json" 2>/dev/null || true
   outcome="$(jq -r '.outcome // "ERROR"' <<<"$proposal_out" 2>/dev/null || echo ERROR)"
   echo
 

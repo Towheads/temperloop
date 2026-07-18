@@ -28,10 +28,24 @@
 #     calls, .foundation/config left in place (all entries still recorded)
 #   - a label that already existed before init (no matching installs[]
 #     entry) is never touched — proves manifest-driven, not namespace grep
+#   - temperloop#414 partial/failed-init recovery:
+#     - .foundation/ residue with NO .foundation/config (init.sh Step 0's
+#       baseline.jsonl, written before config exists) is recognized and
+#       cleaned up — zero gh calls, no branch change (the old config-gated
+#       "nothing to eject" no-op used to miss this entirely)
+#     - that same residue path honors --dry-run and non-interactive
+#       default-deny exactly like the config-manifest path
+#     - end-to-end: a REAL 'foundation init' run that dies after its branch
+#       switch (proposal-pr.sh's `git checkout -B`) leaves .foundation/config
+#       committed on the stray branch plus a recovery marker; `foundation
+#       eject` restores the original branch, deletes the stray unmerged
+#       local branch, and removes .foundation/ — byte-identical to before
+#       init ran
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EJECT="$HERE/../eject.sh"
+INIT="$HERE/../init.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
@@ -172,6 +186,16 @@ call_count() {
   grep -Fc "$1" "$CALL_LOG" 2>/dev/null || true
 }
 
+# run_init ARGS... — invoke the REAL init.sh with the same fake gh on PATH,
+# closed stdin. Sets $init_out; the caller reads $init_rc itself (test 11
+# below deliberately drives init.sh to a NON-zero exit — a broken push,
+# standing in for a killed/failed run — and inspects the resulting repo
+# state, not init.sh's own gh-call accounting).
+run_init() {
+  init_rc=0
+  init_out="$(PATH="$BIN:$PATH" INIT_GH_BIN=gh bash "$INIT" "$@" </dev/null 2>&1)" || init_rc=$?
+}
+
 # =============================================================================
 # 1. No .foundation/config -> no-op, exit 0, zero gh calls, uninstall bullet
 # =============================================================================
@@ -301,6 +325,100 @@ grep -q "label delete fnd:status:ready" "$CALL_LOG" && fail "eject deleted a lab
 grep -q "label delete needs-clarification" "$CALL_LOG" && fail "eject deleted a label with no installs[] entry (namespace-grep behavior, not manifest-driven)"
 [ "$(call_count 'label delete fnd:status:backlog')" -eq 1 ] || fail "the one recorded label was not deleted exactly once"
 echo "PASS: only manifest-recorded labels are ever deleted — a pre-existing sibling label is untouched"
+
+# =============================================================================
+# 10. temperloop#414 — .foundation/ residue with NO .foundation/config
+#     (init.sh Step 0 writes baseline.jsonl BEFORE config ever exists) is
+#     recognized and cleaned up: the old config-gated no-op used to miss
+#     this entirely ("nothing to eject" over real residue). Zero gh calls
+#     (nothing was ever recorded), no branch change (never switched off the
+#     original branch — Step 0 never touches branches).
+# =============================================================================
+REPO10="$(new_fixture_repo repo10)"
+mkdir -p "$REPO10/.foundation"
+printf 'baseline.jsonl\n' > "$REPO10/.foundation/.gitignore"
+printf '{"schema":1,"generated_at":"2026-01-01T00:00:00Z","metrics":{"available":false}}\n' \
+  > "$REPO10/.foundation/baseline.jsonl"
+BEFORE_BRANCH10="$(git -C "$REPO10" branch --show-current)"
+run 0 --dir "$REPO10" --yes
+[ ! -s "$CALL_LOG" ] || fail "partial-residue cleanup made gh calls (should be zero):\n$(cat "$CALL_LOG")"
+[ ! -e "$REPO10/.foundation" ] || fail "partial-residue cleanup did not remove .foundation/"
+[ "$(git -C "$REPO10" branch --show-current)" = "$BEFORE_BRANCH10" ] \
+  || fail "partial-residue cleanup switched branches unexpectedly"
+echo "$out" | grep -q "Partial-init residue" || fail "did not report the partial-init-residue path (got: $out)"
+echo "PASS: .foundation/ residue with no config (Step-0 baseline.jsonl only) is recognized and cleaned up, zero gh calls, no branch change"
+
+# --- same residue path honors --dry-run and non-interactive default-deny --
+REPO10B="$(new_fixture_repo repo10b)"
+mkdir -p "$REPO10B/.foundation"
+printf 'baseline.jsonl\n' > "$REPO10B/.foundation/baseline.jsonl"
+run 0 --dir "$REPO10B" --dry-run
+[ ! -s "$CALL_LOG" ] || fail "dry-run on partial residue made gh calls (should be zero):\n$(cat "$CALL_LOG")"
+[ -e "$REPO10B/.foundation" ] || fail "dry-run removed partial residue (should be untouched)"
+echo "$out" | grep -q "Dry run: would remove" || fail "dry-run did not report what it would remove (got: $out)"
+
+run 0 --dir "$REPO10B"
+[ ! -s "$CALL_LOG" ] || fail "non-interactive default-deny on partial residue made gh calls (should be zero):\n$(cat "$CALL_LOG")"
+[ -e "$REPO10B/.foundation" ] || fail "non-interactive default-deny removed partial residue (should be untouched)"
+echo "$out" | grep -q "aborted — nothing removed" || fail "non-interactive default-deny on partial residue did not report the abort (got: $out)"
+echo "PASS: partial-init residue honors --dry-run and non-interactive default-deny exactly like the config-manifest path"
+
+# =============================================================================
+# 11. End-to-end partial-init -> eject recovery (temperloop#414): a REAL
+#     'foundation init' run that dies AFTER its branch switch
+#     (proposal-pr.sh's `git checkout -B`) — simulated deterministically by
+#     breaking the push (removing the bare upstream after cloning) rather
+#     than a literal kill, so the test is hermetic/portable; the resulting
+#     on-disk state (checked out on the stray proposal branch,
+#     .foundation/config committed there, .foundation/.recovery.json
+#     present, nothing ever pushed) is identical to what an interrupting
+#     kill mid-push would leave. 'foundation eject' must then restore the
+#     original branch, delete the stray unmerged local branch, and remove
+#     .foundation/ — leaving the checkout byte-identical to before init ran.
+# =============================================================================
+BARE11="$WORK/repo11-upstream.git"
+REPO11="$WORK/repo11"
+git init -q --bare --initial-branch=main "$BARE11"
+git clone -q "$BARE11" "$REPO11" 2>/dev/null
+git -C "$REPO11" commit -q --allow-empty -m init
+git -C "$REPO11" push -q origin main 2>/dev/null
+git -C "$REPO11" fetch -q origin
+
+BEFORE_HEAD11="$(git -C "$REPO11" rev-parse HEAD)"
+BEFORE_BRANCH11="$(git -C "$REPO11" branch --show-current)"
+BEFORE_FIND11="$(find "$REPO11" -mindepth 1 -not -path '*/.git*' | sort)"
+
+# Break the push deterministically: remove the bare upstream AFTER cloning
+# (the local refs/remotes/origin/main ref already exists, so base-branch
+# resolution inside proposal-pr.sh still succeeds; only the push fails).
+rm -rf "$BARE11"
+
+run_init --dir "$REPO11" --gh-repo acme/widget --no-network
+[ "$init_rc" -ne 0 ] || fail "test setup: expected the broken-push init run to fail (got rc=0): $init_out"
+echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
+[ "$(git -C "$REPO11" branch --show-current)" = "foundation-init/config" ] \
+  || fail "test setup: expected the failed init run to leave the checkout on foundation-init/config"
+[ -f "$REPO11/.foundation/config" ] || fail "test setup: expected .foundation/config committed locally despite the push failure"
+[ -f "$REPO11/.foundation/.recovery.json" ] || fail "test setup: expected the recovery marker to survive the failed run"
+[ "$(jq -r '.original_branch' "$REPO11/.foundation/.recovery.json")" = "main" ] \
+  || fail "test setup: recovery marker original_branch wrong (got: $(cat "$REPO11/.foundation/.recovery.json"))"
+
+run 0 --dir "$REPO11" --yes
+echo "$out" | grep -q "restored 'main'" || fail "eject did not report restoring the original branch (got: $out)"
+echo "$out" | grep -q "deleted stray 'foundation-init/config'" || fail "eject did not report deleting the stray branch (got: $out)"
+[ "$(git -C "$REPO11" branch --show-current)" = "$BEFORE_BRANCH11" ] \
+  || fail "eject did not restore the original branch (on: $(git -C "$REPO11" branch --show-current))"
+git -C "$REPO11" show-ref --verify --quiet refs/heads/foundation-init/config \
+  && fail "eject did not delete the stray local branch"
+[ ! -e "$REPO11/.foundation" ] || fail "eject did not remove .foundation/ residue"
+[ "$(git -C "$REPO11" rev-parse HEAD)" = "$BEFORE_HEAD11" ] \
+  || fail "eject left HEAD different from before the failed init run"
+[ -z "$(git -C "$REPO11" status --porcelain)" ] \
+  || fail "eject left an uncommitted/dirty tree (status: $(git -C "$REPO11" status --porcelain))"
+AFTER_FIND11="$(find "$REPO11" -mindepth 1 -not -path '*/.git*' | sort)"
+[ "$AFTER_FIND11" = "$BEFORE_FIND11" ] \
+  || fail "eject left extra files behind (before:\n$BEFORE_FIND11\nafter:\n$AFTER_FIND11)"
+echo "PASS: a real 'foundation init' run that dies after its branch switch (broken push, standing in for a killed process) leaves .foundation/config committed + a recovery marker on the stray branch; 'foundation eject' restores the original branch, deletes the stray unmerged branch, and removes .foundation/ — byte-identical to before init ran"
 
 echo
 echo "ALL PASS: test_eject.sh"
