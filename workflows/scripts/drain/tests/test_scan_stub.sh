@@ -553,6 +553,89 @@ else
   fail_test "assistant self-correction precision" "expected 0 self-correction matches, got $sc_benign"
 fi
 
+# capture-miss (foundation#1162): the assistant OFFERING to file a defect instead
+# of filing it — "Want me to file X? … or leave it for the retro?" — is by
+# definition an assistant utterance, so the tell lives in lexicon-assistant.tsv
+# (role:"assistant"), NOT the user-only main lexicon where it could never fire.
+TMP_STUB8F="$TMPDIR8/assistant_capture_miss_stub.md"
+cat > "$TMP_STUB8F" << 'STUBEOF'
+---
+date: 2026-06-01
+time: "1700"
+project: testproject
+cwd: /tmp
+session_id: aabbccdd-test-assistant-0000006
+transcript: /nonexistent
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+run the retro
+
+### Assistant
+
+Want me to file the 3–6 board-probe finding as a board-7 defect now, or leave it
+for the formal foundation-side retro to file with a proper Measurement block?
+STUBEOF
+
+report8f=$(scan "$TMP_STUB8F") || true
+cm_matches=$(printf '%s' "$report8f" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+m = [x for x in d.get('lexicon_matches', []) if x.get('role') == 'assistant' and x.get('category') == 'capture-miss']
+print(len(m))
+" 2>/dev/null)
+if [ "${cm_matches:-0}" -gt 0 ]; then
+  ok "assistant tell: capture-miss offer ('want me to file … or leave it for') → $cm_matches assistant match(es)"
+else
+  fail_test "assistant capture-miss" "expected ≥1 assistant capture-miss match, got ${cm_matches:-0}"
+fi
+
+# Regression (the whole point of #1162): a USER turn quoting § "Capture, don't
+# ask" prose ("want me to file this?") must NOT produce a capture-miss match —
+# the old user-gated row fired here 100% of the time as pure noise. The role
+# split (assistant-only scan) is what silences it.
+TMP_STUB8G="$TMPDIR8/user_quotes_rule_stub.md"
+cat > "$TMP_STUB8G" << 'STUBEOF'
+---
+date: 2026-06-01
+time: "1700"
+project: testproject
+cwd: /tmp
+session_id: aabbccdd-test-assistant-0000007
+transcript: /nonexistent
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+Remember the rule: do not end the turn with "want me to file this?" and wait —
+file it immediately. Should I file the follow-up myself?
+
+### Assistant
+
+Understood — I'll file at source and mention it.
+STUBEOF
+
+report8g=$(scan "$TMP_STUB8G") || true
+cm_user=$(printf '%s' "$report8g" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(len([x for x in d.get('lexicon_matches', []) if x.get('category') == 'capture-miss']))
+" 2>/dev/null)
+if [ "${cm_user:-1}" -eq 0 ]; then
+  ok "capture-miss precision: user quoting the rule → 0 capture-miss matches (role-gated to assistant)"
+else
+  fail_test "capture-miss precision" "expected 0 capture-miss matches on user quote, got $cm_user"
+fi
+
 rm -rf "$TMPDIR8"
 
 # ── Test 9: soft-failure tool result (is_error false, error signature, #444) ──

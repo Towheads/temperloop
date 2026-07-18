@@ -83,9 +83,14 @@ stale\s+(local\s+)?main\b	state-collision	regex
 reset --hard origin/main	state-collision	literal
 
 # --- filing / decision ---
+# NOTE: the "want me to file" tell moved to lexicon-assistant.tsv as a
+# `capture-miss` regex (foundation#1162). It was role-gated here to USER turns,
+# but "Want me to file X?" is by definition an ASSISTANT utterance, so on a
+# user-only scan it could only ever match the user quoting § "Capture, don't
+# ask" — noise 100% of the time, structurally incapable of catching a real
+# occurrence. The role split (assistant-only scan) is what makes the tell fire.
 file a bug	filing-decision	literal
 issue to track	filing-decision	literal
-want me to file	filing-decision	literal
 resolved by verification	filing-decision	literal
 supersed	filing-decision	literal
 collapses into	filing-decision	literal
