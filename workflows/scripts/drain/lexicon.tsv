@@ -143,3 +143,20 @@ personal/private info	flagging	literal
 
 # deferral
 No response after 60s	deferral	literal
+
+# --- 2026-07-17 check-in promotion batch (K#422) — operator-reviewed candidate tells.
+# Operator-confusion / premise-challenge family: a user challenging, hedging at, or
+# failing to parse the assistant's framing is the highest-value feedback moment the
+# 2026-07-14 drain found (killed an approved design; preceded a ~30x measured win).
+
+# trust-rupture (user turns)
+^\s*(i (don'?t|do not) (think i )?understand|that (doesn'?t|does not) make sense|what do you mean)\b	trust-rupture	regex
+\b(am I wrong|maybe I'?m wrong|correct me if|I don'?t think .{0,40}(is|are) supposed to|my understanding (is|was))\b	trust-rupture	regex
+\bwhy (a|an|the) \w+\?|how does (this|that) (improve|help|fix)\b	trust-rupture	regex
+you'?re (under|over)estimating|\bI think you'?re wrong\b	trust-rupture	regex
+^\s*again[,.]|this shouldn'?t keep happening|I('?ve| have) (told|asked) you (before|already)|like I said	trust-rupture	regex
+I don'?t know what .{0,30} means|still don'?t (quite )?understand|is jargon	trust-rupture	regex
+any chance you'?re wrong|i don'?t think this is correct|are you sure about that	trust-rupture	regex
+
+# flagging (user turns)
+consolidate .{0,40} before (writing|mutating)	flagging	regex
