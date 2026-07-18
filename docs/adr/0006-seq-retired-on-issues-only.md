@@ -4,7 +4,7 @@ title: 0006: Per-item Seq ordering is retired, not emulated, on issues-only
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

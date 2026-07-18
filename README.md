@@ -27,11 +27,16 @@ Three pieces, meant to be adopted independently or together:
 
 1. **The board adapter** (`workflows/scripts/board/`) — `claim` / `release` /
    `worklist` / `reconcile` / `capture` / `milestone`, plus `lib/board.sh` for
-   scripting. Turns a GitHub Projects-v2 board (or, with zero board
-   provisioning at all, a plain issues-only tracker — see
-   `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`) into a cross-session lock
-   and work queue, so multiple sessions (or a human and an agent) never
-   silently duplicate the same issue.
+   scripting. Turns your GitHub issue tracker into a cross-session lock and
+   work queue, so multiple sessions (or a human and an agent) never silently
+   duplicate the same issue. **Issues-only — plain GitHub Issues, zero board
+   provisioning — is the default**: a fresh clone on a free GitHub account
+   tracks work end-to-end (capture → worklist → claim) with nothing more
+   than a repo and `gh auth login` — no org, no Projects board to
+   provision, no paid plan. A GitHub Projects-v2 board is still fully
+   supported for a repo that already has one; see
+   `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` for both backends and
+   what the `fnd:*` labels the issues-only path writes actually mean.
 2. **The build/sweep pipeline** (`claude/commands/`) — Claude Code slash
    commands: `/triage` sweeps a board's backlog and decomposes survivors into
    epics; `/assess` turns an epic into a dependency-ordered plan note;
