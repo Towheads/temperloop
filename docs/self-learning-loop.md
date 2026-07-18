@@ -99,6 +99,20 @@ Every adjudication — accepted or rejected — is written as a **findings recor
 ([`workflows/scripts/drain/findings-schema.md`](../workflows/scripts/drain/findings-schema.md)),
 which is what makes the next stage possible.
 
+**A full install adds a second reader of those sessions: `/retro`, the judge.**
+Where `/tidy` reads a session forward and pulls content *out* of it, the overlay
+`/retro` command reads archived sessions and asks a different question — *did
+the system itself perform well?* — grading across five axes (extraction recall,
+rule efficacy, efficiency, outcome quality, judgment quality), each checked
+against a named source. A finding that names a measurable effect is filed
+straight to the board with a `## Measurement` contract; one that can't is routed
+to the retro-review surface `/check-in` disposes (stage 7). `/retro` is the
+**judge** counterpart to `/tidy`'s **extractor** — it grades system performance
+rather than extracting session content — and it is an **overlay** command, not
+present in a bare kernel checkout. (The epic-close `4d-retro` above, by
+contrast, ships in the kernel: it files the per-epic *process* retro, a narrower
+thing than `/retro`'s cross-session performance judgment.)
+
 ### 4. Detect recurrence → promote — one-off vs. pattern
 
 A single stumble is just a note; a *repeated* one is tracked work. The drain
@@ -179,6 +193,7 @@ not proofs**. Same honesty as the cost and token-spend pages.
 |---|---|---|
 | Drain, enforcement, plumbing | **kernel (this repo)** | `/tidy`, `/check-in`, the session hooks, the drain scripts, the maturity-ladder guard hooks, `validate-live-drain.sh`, the findings schema |
 | Live-capture rules | **private overlay** | decision capture, feedback memory, config-drift sync, session-optimization tracking, tooling-friction capture (composed into `~/.claude/CLAUDE.md` at install) |
+| The retrospective *judge* | **private overlay** | `/retro` (the epic #916 retro-judge layer) — grades system performance across five axes and feeds `/check-in`'s retro-review surface; the judge counterpart to the kernel's `/tidy` extractor |
 | The knowledge store the loop reads and writes | **Obsidian vault** | the friction ledger, curated `Decisions/`/`Patterns/`/`Mistakes/`/`Context/`, the `Sessions/_inbox/` stubs, the pipeline disposition surfaces |
 
 So a bare kernel checkout has the machine that *processes and hardens*
