@@ -12,6 +12,16 @@
 # title that starts with `--` must exit 2 — all WITHOUT touching gh.
 set -euo pipefail
 
+# Hermetic conf env (temperloop#501): fixture tests must never resolve boards
+# through the repo's or host's real boards.conf — a consumer's committed
+# cutover flip (e.g. stageFind's board.3.backend=issues) or a driver host's
+# machine-level conf would silently change canned-fixture resolution.
+# (The --repo kernel section below re-exports its own fixture conf, then
+# cleanup restores these hermetic defaults.)
+export BOARDS_CONF_REPO_LOCAL=/dev/null
+export BOARDS_CONF_MACHINE=/dev/null
+
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 CAPTURE="$SCRIPTS_DIR/capture.sh"
@@ -242,7 +252,7 @@ KBIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-kernel-bin-XXXXXX")"
 KLOG="$(mktemp "${TMPDIR:-/tmp}/capture-kernel-log-XXXXXX")"
 KBODY="$(mktemp "${TMPDIR:-/tmp}/capture-kernel-body-XXXXXX")"
 export KLOG KBODY KERNEL_TEST_REPO
-cleanup_kernel() { rm -rf "$KBIN" "$KLOG" "$KBODY" "$KCONF_DIR"; unset BOARDS_CONF_REPO_LOCAL BOARDS_CONF_MACHINE; }
+cleanup_kernel() { rm -rf "$KBIN" "$KLOG" "$KBODY" "$KCONF_DIR"; export BOARDS_CONF_REPO_LOCAL=/dev/null BOARDS_CONF_MACHINE=/dev/null; }
 trap 'cleanup_kernel; rm -rf "$BIN"' EXIT
 
 # NB: a QUOTED heredoc delimiter ('FAKEGH') — this script's own comments

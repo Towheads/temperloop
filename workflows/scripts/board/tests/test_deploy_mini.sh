@@ -10,6 +10,14 @@
 # DEPLOY_MINI_CHECKOUTS / DEPLOY_MINI_LOCK isolate it from the real machine.
 set -uo pipefail
 
+# Hermetic conf env (temperloop#501): fixture tests must never resolve boards
+# through the repo's or host's real boards.conf — a consumer's committed
+# cutover flip (e.g. stageFind's board.3.backend=issues) or a driver host's
+# machine-level conf would silently change canned-fixture resolution.
+export BOARDS_CONF_REPO_LOCAL=/dev/null
+export BOARDS_CONF_MACHINE=/dev/null
+
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY="$HERE/../deploy-mini.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/deploy-mini-test-XXXXXX")"
