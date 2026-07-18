@@ -11,15 +11,24 @@
 #
 # This file is therefore deliberately NARROW and HIGH-PRECISION: only phrases
 # that signal the assistant narrating its own behavior — *acknowledging a defect
-# while routing around it* (worked-around-defect), or *catching itself going the
-# wrong way mid-task* (self-correction). These are action phrases the model emits
-# about its own work — they do NOT appear in injected CLAUDE.md prose, so scanning
-# them against assistant turns is safe. drain-mind Step 3 adjudicates each.
+# while routing around it* (worked-around-defect), *offering to file instead of
+# filing* (capture-miss), or *catching itself going the wrong way mid-task*
+# (self-correction). These are action phrases the model emits about its own work —
+# they do NOT appear in injected CLAUDE.md prose (and the injected prose that
+# *names* them, e.g. § "Capture, don't ask", arrives on USER turns, which this
+# assistant-only scan never sees), so scanning them against assistant turns is
+# safe. drain-mind Step 3 adjudicates each.
 #
 # Format: <pattern> TAB <category> TAB <match_type>   (same schema as lexicon.tsv)
 #   match_type — "literal" (substring, case-insensitive) or "regex" (ERE, case-insensitive).
 #   category   — one of:
 #     worked-around-defect — assistant routed around a defect; routes to Unfiled defects.
+#     capture-miss         — assistant *offered to file* a defect ("want me to
+#                            file X?", "or leave it for the retro?") instead of
+#                            filing it at source, violating § "Capture, don't ask";
+#                            the offer dies when the session ends (foundation#1162).
+#                            Routes to Unfiled defects (tidy.md § Unfiled defects
+#                            already names this category).
 #     self-correction      — assistant caught itself mid-session ("I'm thinking
 #                            about this wrong", "that didn't go right", "let me
 #                            reconsider"); routes to the self-correction pass
@@ -35,6 +44,18 @@
 \bknown\s+(bug|issue|defect|regression)\b	worked-around-defect	regex
 \binstead\s+because\b	worked-around-defect	regex
 \bbug\s+here\b	worked-around-defect	regex
+
+# --- capture-miss (assistant OFFERED to file a defect instead of filing it —
+#     "want me to file X?", "or leave it for the retro?" — violating
+#     § "Capture, don't ask"; the offer dies at session end, foundation#1162).
+#     HIGH-PRECISION + safe on assistant turns: these are first-person offers the
+#     model emits about its OWN work. The CLAUDE.md prose that NAMES the phrase
+#     (§ "Capture, don't ask") arrives on USER turns, which this assistant-only
+#     scan never sees — the role split is what makes both directions safe. Routes
+#     to Unfiled defects (tidy.md § Unfiled defects already names this category). ---
+\bwant\s+me\s+to\s+(file|capture|open|track)\b	capture-miss	regex
+\b(should|shall)\s+I\s+(file|capture|open)\b	capture-miss	regex
+\bor\s+leave\s+it\s+for\b	capture-miss	regex
 
 # --- self-correction (assistant catches itself mid-task — "that didn't go right" /
 #     "I'm thinking about this wrong" realization; foundation #501). HIGH-PRECISION:
