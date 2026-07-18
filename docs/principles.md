@@ -3,9 +3,17 @@ title: Guiding principles
 ---
 
 temperloop#135. This page states the thesis TemperLoop is built on and the
-twelve principles that follow from it — each one pinned to the in-repo
+fifteen principles that follow from it — each one pinned to the in-repo
 mechanism that embodies it, so the claim is falsifiable, not aspirational.
 Every path below exists in this repo today; open it and check.
+
+This page is **dual-use**, the same way `docs/who-its-for.md` is for the
+persona agents: it is the stranger-facing thesis README and ADR-0001 point
+to, and it is also the **charter-derivation source** a principle-referencing
+lens — `/workshop`'s premise gate and its red-team lens — cites back to by
+name, so a design ratified against "principle 13" or "principle 14" resolves
+to an actual, checkable section here rather than a lens inventing its own
+parallel list.
 
 ## The thesis
 
@@ -41,7 +49,7 @@ contributor being infallible.
   merge) is contained to the smallest scope that could have caused it, not
   free to spread across a shared checkout or an unreviewed `main`.
 
-## The twelve principles
+## The fifteen principles
 
 ### 1. Manage agents like an org, not like a chat
 
@@ -211,3 +219,41 @@ if either half of a pair ships without the other.
   `claude/commands/tidy.md` (the "Live/Drain pairings" table)
 - The CI check that fails on a half-shipped pair:
   `workflows/scripts/validate-live-drain.sh`
+
+### 13. The stranger test
+
+A kernel rule or mechanism earns its place only if a stranger's fresh
+install — someone who cloned only the kernel repo, with no org history, no
+personal vault, no personal board tied to it — would actually need it for
+the kernel machinery (board adapter, build/sweep pipeline, install/doctor,
+branch/PR policy) to work. A concern that's personal, org-specific, or tied
+to one machine's paths or credentials routes downstream to the overlay
+instead, never patched silently into the kernel.
+
+- The rule verbatim, by this name: `claude/CLAUDE.kernel.md` § "Kernel vs
+  overlay routing rule" ("The stranger test")
+
+### 14. Minimum-viable-output
+
+Whatever else is unavailable to a workflow — no `gh` auth, no repo, no
+registered board, no reviewer agents declared — the run still produces the
+one artifact that is its floor, and every dependency below that floor
+degrades legibly rather than blocking the floor itself.
+
+- The rule verbatim, by this name: `claude/commands/workshop.md` § "Minimum-
+  viable-output rule" (the coverage walk's guaranteed floor: a ratified
+  brief note in the knowledge store, even when every downstream integration
+  is unavailable)
+
+### 15. Legible degradation
+
+When an agent-gated step's dependency — a reviewer agent, a capability probe
+target — is unavailable, the step emits a one-line `skipped — <x>
+unavailable` notice rather than silently no-opping. A silent skip is
+indistinguishable from a pass that never ran, which is worse than a loud
+failure because it hides the missing check instead of surfacing it.
+
+- The rule verbatim, by this name: `claude/CLAUDE.kernel.md` § "Subagent
+  usage" ("Legible agent-gate degradation")
+- The presentation-plane instance of the same rule: `claude/message-schema.md`
+  § "Degradation notice"
