@@ -295,6 +295,8 @@ KERNEL_MANIFEST_FILE	$SCRIPT_DIR/kernel-manifest.txt	path	kernel	workflows/scrip
 KERNEL_DENYLIST_FILE	$SCRIPT_DIR/personal-token-denylist.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the personal-token denylist TSV
 KERNEL_DENYLIST_EXEMPT_FILE	$SCRIPT_DIR/personal-token-denylist-exempt-files.txt	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the denylist's exempt-files list
 KERNEL_DENYLIST_BASELINE_FILE	$SCRIPT_DIR/personal-token-denylist-baseline.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the denylist burn-down baseline TSV
+PRERENAME_VERDICTS_FILE	$SCRIPT_DIR/prerename-leak-verdicts.tsv	path	kernel	workflows/scripts/kernel/check-prerename-leak-guard.sh	Path to the pre-rename identifier migrate-vs-allowlist verdict table
+PRERENAME_EXEMPT_FILE	$SCRIPT_DIR/prerename-leak-exempt-files.txt	path	kernel	workflows/scripts/kernel/check-prerename-leak-guard.sh	Path to the prerename gate's own exempt-files list
 LEAK_GUARD_HEAD	HEAD	string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as HEAD for the added-lines diff
 LEAK_GUARD_BASE		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as the diff base
 LEAK_GUARD_PATHS		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Space-separated pathspec scope (empty = whole tree)
