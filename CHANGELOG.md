@@ -14,6 +14,38 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- **Knowledge-store sync — optional backend capability (temperloop#430, ADR
+  0003).** `ks_sync` (`init <remote-url>` / `push [-m <msg>]` / `pull` /
+  `status`) plus the `ks_sync_available` probe: git-backed, **manual-only**
+  replication of the `plain-files` store (the store directory becomes a git
+  repo with one `origin` remote, private by default), so a second
+  environment can `init` against the operator's remote and `pull` the real
+  store. Sync is a *capability*, not a universal op: a backend that cannot
+  implement it (`obsidian` never consults `KNOWLEDGE_STORE_ROOT`) degrades
+  to exit 3 with `skipped — sync unavailable for backend <name>` — the
+  `ks_search` availability-probe pattern, never a silent no-op or a hard
+  failure. All sync ops route through the `ks_` dispatch; the store —
+  including its `.git` and remote config — is user data `temperloop
+  uninstall` keeps intact (`test_install_lifecycle.sh`'s residue diff now
+  proves no sync-specific state survives outside the explicitly-kept store
+  dir). EXPERIMENTAL: single-tenant per `$HOME` (per-project partition
+  deferred — temperloop#418), single-writer (`pull` is `--ff-only`); the
+  thin entry `workflows/scripts/lib/knowledge_sync.sh` is deliberately kept
+  out of the stranger-facing CLI reference so the `temperloop sync`
+  promotion decision stays open. New hermetic gate:
+  `test_knowledge_store_sync.sh` (two-environment bootstrap against a local
+  bare remote, zero network).
+
+  *Published-contracts mark (`VERSIONING.md` § Published schemas/contracts):
+  additive change to `workflows/scripts/lib/knowledge_store.contract.md` —
+  new § Sync (optional backend capability), a backend-matrix Sync row, and
+  the read-log `op` set gaining `sync`. Minor, not `BREAKING`: no existing
+  backend, caller, or overlay must change (no backend inherits a new
+  required op; the read-log line shape — field order/count/separator — is
+  untouched).*
+
 ## [0.13.1] - 2026-07-17
 
 Patch. Safe pull, no migration — no `BREAKING` marker. CI-resilience fix only:

@@ -126,7 +126,10 @@ ks__dispatch() {
 #                        hook is a LATER, separate item per the epic
 #                        contract, and will call ks__read_log_emit with
 #                        plane="agent" rather than get a new knob here.
-#   op                   read | write | append | list | search
+#   op                   read | write | append | list | search | sync
+#                        (sync — the optional capability, temperloop#430 —
+#                        carries its SUB-op, e.g. "push", in the
+#                        doc-path-or-query field)
 #   doc-path-or-query    the dispatched doc-id (read/write/append/list) or
 #                        the search query (ks_search) — sanitized (newlines/
 #                        tabs -> single spaces) so one event is always
@@ -210,11 +213,64 @@ ks__normalize_id() {
 # ks_write <doc-id> [--no-clobber]          <- content on stdin; full replace
 # ks_append <doc-id>                        <- content on stdin; create-or-append
 # ks_list [prefix]                          -> one doc-id per line, sorted
+# ks_sync <sub-op> [args...]                -> OPTIONAL backend capability
+#                                              (init/push/pull/status); exit 3
+#                                              "skipped —" when the backend
+#                                              does not implement it
+# ks_sync_available                          -> exit 0/3 probe, no stdout
 # See knowledge_store.contract.md for the authoritative semantics/exit codes.
 ks_read()   { ks__dispatch read   "$@"; }
 ks_write()  { ks__dispatch write  "$@"; }
 ks_append() { ks__dispatch append "$@"; }
 ks_list()   { ks__dispatch list   "$@"; }
+
+# ── Sync — OPTIONAL backend capability (temperloop#430, ADR 0003) ──────────
+# Unlike read/write/append/list (universal ops every backend must implement),
+# sync is a store-level capability only coherent for a backend whose store is
+# a directory under ks_root (plain-files: a git repo AT the root). A backend
+# that cannot implement it — e.g. `obsidian`, which never consults
+# KNOWLEDGE_STORE_ROOT at all (the vault root IS the store root, so a
+# git-under-root sync has no meaning there) — degrades to the legible exit-3
+# "skipped —" pattern knowledge_search.sh established: never a silent no-op,
+# never a hard failure. MANUAL invocation only, by contract: no caller of
+# this seam may run ks_sync from a scheduled/background job (launchd, cron,
+# a watcher); it is an operator-invoked action, like `git push` itself.
+
+# Availability probe (mirrors ks_search_available's exit-0/exit-3 shape).
+# Two layers, both legible:
+#   1. capability: the current backend defines a `sync` op at all — if not,
+#      the exact "skipped — sync unavailable for backend <name>" notice
+#      (stderr) + exit 3.
+#   2. tooling: the backend may additionally define a `sync_available` op
+#      probing its required subprocess tooling (plain-files: git on PATH),
+#      dispatched through the same ks__backend_fn naming seam; its own exit
+#      3 + "skipped —" notice propagates.
+# Exit 0 = ready; exit 3 = unavailable (notice on stderr, never stdout).
+ks_sync_available() {
+  local fn avail_fn
+  fn="$(ks__backend_fn sync)"
+  if ! declare -F "$fn" >/dev/null 2>&1; then
+    printf 'skipped — sync unavailable for backend %s\n' "$KNOWLEDGE_STORE_BACKEND" >&2
+    return 3
+  fi
+  avail_fn="$(ks__backend_fn sync_available)"
+  if declare -F "$avail_fn" >/dev/null 2>&1; then
+    "$avail_fn" || return $?
+  fi
+  return 0
+}
+
+# <sub-op> [args...] — the ONE sanctioned entry for every sync operation.
+# ALL sync ops route through this dispatch: no caller may shell
+# `git -C "$(ks_root)"` directly — under a backend that never consults
+# KNOWLEDGE_STORE_ROOT (obsidian) that back-channel would "sync" a directory
+# that is not the store at all. Gated on the availability probe first, so an
+# incapable backend yields exit 3 (skip), never the generic exit-2 dispatch
+# error reserved for a missing UNIVERSAL op.
+ks_sync() {
+  ks_sync_available || return $?
+  ks__dispatch sync "$@"
+}
 
 # ── plain-files backend ─────────────────────────────────────────────────
 # Markdown files (optionally carrying a YAML frontmatter block) under
@@ -309,4 +365,176 @@ _ks_backend_plain_files_list() {
   fi
   [ -d "$scope" ] || return 0
   ( cd "$root" && find "$rel" -type f -name '*.md' | sed 's#^\./##' | sort )
+}
+
+# ── plain-files sync (git-backed, manual-only) — temperloop#430, ADR 0003 ──
+# EXPERIMENTAL. The store directory itself becomes a git repository
+# (`$(ks_root)/.git`) with one remote, `origin`, pointing at an
+# operator-provided URL — PRIVATE by default (the store is personal working
+# notes; the documented worked example creates the remote with
+# `gh repo create ... --private`). Single-tenant per $HOME: one flat store
+# root, one remote — per-project partition is deferred (temperloop#418).
+# Single-writer assumption: no merge-conflict story beyond git's own; `pull`
+# is --ff-only and a diverged store is handed back to the operator to
+# resolve with git directly (fail loud, exit 4 — never an auto-merge).
+#
+# Sub-op exit codes (mirrors knowledge_search.sh's shape):
+#   0 — success
+#   2 — invalid usage (unknown sub-op, missing <remote-url>)
+#   3 — unavailable (via the ks_sync_available gate / sync_available probe)
+#   4 — sync-operation failure (git failed: not initialized, no remote,
+#       non-fast-forward pull, rejected push) — cause on stderr
+
+# Tooling probe (layer 2 of ks_sync_available): git on PATH. Same
+# "skipped —" prefix contract as knowledge_search's uvx probe.
+_ks_backend_plain_files_sync_available() {
+  command -v git >/dev/null 2>&1 && return 0
+  echo "skipped — sync unavailable for backend plain-files: git not found on PATH" >&2
+  return 3
+}
+
+# Guard: the store root must carry its OWN .git. Without this, a store dir
+# that happens to sit inside some enclosing git repo would let `git -C`
+# operate on that OUTER repo — the exact cross-repo damage this refuses.
+_ks_backend_plain_files_sync__require_repo() {
+  local root="$1"
+  if [ ! -d "$root/.git" ]; then
+    printf 'knowledge_store: sync not initialized for %s — run: ks_sync init <remote-url>\n' "$root" >&2
+    return 4
+  fi
+  return 0
+}
+
+# init <remote-url> — make the store a git repo (if not one already) and
+# point remote `origin` at <remote-url> (add or update). Idempotent. Never
+# clones/pulls by itself — a second environment inits against the operator's
+# existing remote and then runs `ks_sync pull` to receive the store.
+_ks_backend_plain_files_sync__init() {
+  local remote_url="${1:-}" root
+  if [ -z "$remote_url" ]; then
+    echo "knowledge_store: usage: ks_sync init <remote-url>" >&2
+    return 2
+  fi
+  root="$(ks_root)"
+  mkdir -p "$root" || return 4
+  if [ ! -d "$root/.git" ]; then
+    git -C "$root" init -q || return 4
+    # Deterministic branch name, independent of the host's
+    # init.defaultBranch (harmless on the unborn HEAD a fresh init has).
+    git -C "$root" symbolic-ref HEAD refs/heads/main || return 4
+  fi
+  if git -C "$root" remote get-url origin >/dev/null 2>&1; then
+    git -C "$root" remote set-url origin "$remote_url" || return 4
+  else
+    git -C "$root" remote add origin "$remote_url" || return 4
+  fi
+  printf 'knowledge_store: sync initialized — store %s, remote origin -> %s\n' \
+    "$root" "$remote_url"
+}
+
+# push [-m <msg>] — stage everything, commit (only if there are changes),
+# push the current branch to origin. Commit identity: the operator's own
+# git identity (config or GIT_COMMITTER_* env) when present; a neutral
+# knowledge-store-sync fallback otherwise (a fresh CI/sandbox HOME has
+# neither, and an identity error here would be pure friction). The -c
+# fallback never overrides a real identity — env vars outrank injected
+# config in git's own precedence, and it is only injected when user.email
+# resolves to nothing.
+_ks_backend_plain_files_sync__push() {
+  local msg="" root branch
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m|--message)
+        msg="${2:?knowledge_store: ks_sync push -m requires a value}"
+        shift 2
+        ;;
+      *)
+        printf 'knowledge_store: unknown ks_sync push argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+  [ -n "$msg" ] || msg="knowledge-store sync: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  root="$(ks_root)"
+  _ks_backend_plain_files_sync__require_repo "$root" || return $?
+  if ! git -C "$root" remote get-url origin >/dev/null 2>&1; then
+    printf 'knowledge_store: sync has no remote for %s — run: ks_sync init <remote-url>\n' "$root" >&2
+    return 4
+  fi
+  branch="$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null)" || branch=main
+  git -C "$root" add -A || return 4
+  if [ -n "$(git -C "$root" status --porcelain)" ]; then
+    if git -C "$root" config user.email >/dev/null 2>&1; then
+      git -C "$root" commit -q -m "$msg" || return 4
+    else
+      git -C "$root" -c user.name="knowledge-store-sync" \
+                     -c user.email="knowledge-store-sync@localhost" \
+                     commit -q -m "$msg" || return 4
+    fi
+  fi
+  if ! git -C "$root" rev-parse --verify -q HEAD >/dev/null; then
+    echo "knowledge_store: nothing to push (store has no commits yet)"
+    return 0
+  fi
+  git -C "$root" push -q -u origin "$branch" || {
+    printf 'knowledge_store: sync push to origin failed (see git output above)\n' >&2
+    return 4
+  }
+  printf 'knowledge_store: sync pushed %s -> origin\n' "$branch"
+}
+
+# pull — fast-forward-only pull of the current branch from origin. On a
+# freshly-init'ed store (unborn HEAD) this receives the operator's real
+# store from the remote — the second-environment bootstrap path. A diverged
+# store fails loud (exit 4); resolving it is a deliberate operator action
+# with git directly, never an auto-merge here.
+_ks_backend_plain_files_sync__pull() {
+  local root branch
+  root="$(ks_root)"
+  _ks_backend_plain_files_sync__require_repo "$root" || return $?
+  if ! git -C "$root" remote get-url origin >/dev/null 2>&1; then
+    printf 'knowledge_store: sync has no remote for %s — run: ks_sync init <remote-url>\n' "$root" >&2
+    return 4
+  fi
+  branch="$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null)" || branch=main
+  git -C "$root" pull -q --ff-only origin "$branch" || {
+    printf 'knowledge_store: sync pull failed (diverged store? resolve with git in %s)\n' "$root" >&2
+    return 4
+  }
+  printf 'knowledge_store: sync pulled origin/%s\n' "$branch"
+}
+
+# status — read-only summary (store, remote, branch, unsynced change count).
+# Always exit 0 when it can answer, including the legible "not initialized"
+# answer — status is a probe, not a gate.
+_ks_backend_plain_files_sync__status() {
+  local root dirty
+  root="$(ks_root)"
+  if [ ! -d "$root/.git" ]; then
+    printf 'sync: not initialized (no git repo at %s) — run: ks_sync init <remote-url>\n' "$root"
+    return 0
+  fi
+  printf 'store:  %s\n' "$root"
+  printf 'remote: %s\n' \
+    "$(git -C "$root" remote get-url origin 2>/dev/null || echo '(none — run: ks_sync init <remote-url>)')"
+  printf 'branch: %s\n' \
+    "$(git -C "$root" symbolic-ref --short HEAD 2>/dev/null || echo '(detached)')"
+  dirty="$(git -C "$root" status --porcelain | wc -l | tr -d ' ')"
+  printf 'unsynced changes: %s path(s)\n' "$dirty"
+}
+
+# The backend's sync op — sub-op router (dispatch target of ks__dispatch).
+_ks_backend_plain_files_sync() {
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    init)   _ks_backend_plain_files_sync__init   "$@" ;;
+    push)   _ks_backend_plain_files_sync__push   "$@" ;;
+    pull)   _ks_backend_plain_files_sync__pull   "$@" ;;
+    status) _ks_backend_plain_files_sync__status "$@" ;;
+    *)
+      echo "knowledge_store: usage: ks_sync <init <remote-url>|push [-m <msg>]|pull|status>" >&2
+      return 2
+      ;;
+  esac
 }

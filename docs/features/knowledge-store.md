@@ -60,6 +60,27 @@ inside `ks_root` — so embedding-model cache writes can never land inside,
 or require write access to, the corpus itself (safe even against a
 read-only corpus).
 
+**Sync (optional backend capability — EXPERIMENTAL).** `ks_sync`
+(`init <remote-url>` / `push` / `pull` / `status`) is git-backed, **manual**
+replication of the plain-files store: the store directory itself becomes a
+git repo with one remote (`origin`, private by default — the store is
+personal working notes), so a second environment can `init` against the
+operator's remote and `pull` the real store. It is a *capability*, not a
+universal op: a backend that cannot implement it (the `obsidian` backend
+never consults `KNOWLEDGE_STORE_ROOT`, so a git-under-root sync has no
+meaning there) degrades to exit 3 with a
+`skipped — sync unavailable for backend <name>` notice — the same legible
+availability-probe pattern as `ks_search`, never a silent no-op. Every sync
+op routes through the `ks_` dispatch (no caller shells `git -C` at the
+store root directly), it is never wired into a scheduled or background job,
+and the store — including its `.git` and remote config — is user data
+`temperloop uninstall` keeps intact. Experimental scope: single-tenant per
+`$HOME` (per-project partition is deferred — temperloop#418) and
+single-writer (pull is `--ff-only`; a diverged store is handed back to the
+operator). The thin entry `workflows/scripts/lib/knowledge_sync.sh` is
+deliberately absent from the stranger-facing CLI reference, keeping the
+`temperloop sync` promotion decision open.
+
 **Agent-plane vs. script-plane routing.** This seam is the script-plane
 document-I/O path (hooks, commands, scripts). A live agent session instead
 stays on Obsidian's own MCP tools whenever the configured store root
