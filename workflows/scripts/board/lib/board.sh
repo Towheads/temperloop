@@ -1706,9 +1706,24 @@ board_set_milestone_description() {
 #   board_set_number <item-id> <field-name> <value>   (e.g. "Seq" 3)
 # Resolves the field id by name from cache, then issues the --number item-edit.
 # Returns non-zero without editing if the field name does not resolve.
+#
+# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0004), not emulated —
+# an ISSUE_* item-id has no Projects-v2 field schema to resolve a number field
+# against, and no `fnd:seq:<n>` label encoding was introduced to fake one (that
+# would mint an unbounded numeric label namespace, recreating the label sprawl
+# the issues-only migration removes). Work ordering on this backend lives where
+# it already effectively lived: epic dependency levels (computed from plan
+# notes) and milestones. So an ISSUE_* item-id fails LOUD here with a message
+# naming the retirement and its replacement signal, instead of falling through
+# to the generic "field id doesn't resolve" silent return 1 below.
 board_set_number() {
   local item_id="$1" field_name="$2" value="$3" field_id
   _board_assert_item_id "$item_id" board_set_number || return 1
+  case "$item_id" in
+    ISSUE_*)
+      echo "board: board_set_number — Seq is retired by design on the issues-only backend — ordering lives in epic dependency levels and milestones (ADR 0004)" >&2
+      return 1 ;;
+  esac
   field_id="$(board_field_id "$field_name")"
   if [ -z "$field_id" ]; then
     return 1

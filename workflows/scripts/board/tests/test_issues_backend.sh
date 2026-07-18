@@ -33,7 +33,8 @@
 #      before this split; this suite proves that holds for an issues-only
 #      board number too.
 #   6. _board_assert_item_id accepts ISSUE_* alongside PVTI_*; board_set_number
-#      (Seq — still out of scope) fails loud rather than silently misbehaving.
+#      (Seq — retired by design, ADR 0004) fails loud with a documented stderr
+#      message naming the retirement, rather than silently misbehaving.
 #      board_stamp (Host/Session) is now implemented by the claim/edges split
 #      (foundation #800) — see test_issues_claim_edges.sh for its coverage.
 #
@@ -348,17 +349,22 @@ grep -q 'gh issue edit 106 -R Acme/kernel-test --milestone Phase' "$CALLS" \
   || fail "board_set_milestone (issues-only board) wrong argv: $(cat "$CALLS")"
 echo "PASS: board_set_milestone works unchanged against an issues-only board"
 
-# --- 10: board_set_number still fails LOUD; board_stamp is now implemented --
-# Seq (worklist order) remains out of scope (no future item owns it yet) — an
-# issues-only board has no Projects field schema for it, so it must refuse
-# (return 1), never silently no-op or crash. board_stamp on ISSUE_* is now
-# IMPLEMENTED by the claim/edges split (foundation #800) — see
-# test_issues_claim_edges.sh for its full coverage (write/clear/round-trip);
-# this file just pins that board_set_number's refusal is unchanged.
-if board_set_number "ISSUE_106" "Seq" 3 2>/dev/null; then
-  fail "board_set_number must fail loud on an issues-only board (still out of scope)"
-fi
-echo "PASS: board_set_number still fails loud (not silently) on an issues-only board — board_stamp is now implemented (see test_issues_claim_edges.sh)"
+# --- 10: board_set_number fails LOUD with a documented retirement message ---
+# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0004), not emulated:
+# an issues-only board has no Projects field schema for it, so it must refuse
+# (return 1) with an explicit stderr message naming the retirement and its
+# replacement signal (epic dependency levels + milestones) — never silently
+# no-op or crash. board_stamp on ISSUE_* is IMPLEMENTED by the claim/edges
+# split (foundation #800) — see test_issues_claim_edges.sh for its full
+# coverage (write/clear/round-trip); this file just pins that board_set_number
+# refuses loudly here.
+SET_NUMBER_ERR="$(board_set_number "ISSUE_106" "Seq" 3 2>&1 1>/dev/null)" && \
+  fail "board_set_number must fail loud on an issues-only board (Seq retired by design)"
+case "$SET_NUMBER_ERR" in
+  *"retired by design"*"issues-only"*"dependency levels and milestones"*) : ;;
+  *) fail "board_set_number stderr should name the ADR-0004 retirement (dependency levels + milestones), got: $SET_NUMBER_ERR" ;;
+esac
+echo "PASS: board_set_number fails loud on an issues-only board with a documented 'Seq retired by design' stderr message — board_stamp is now implemented (see test_issues_claim_edges.sh)"
 
 echo
 echo "ALL PASS: test_issues_backend.sh"
