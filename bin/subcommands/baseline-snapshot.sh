@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # description: append one aggregate-only 90-day gh-history snapshot record to .temperloop/baseline.jsonl
 #
-# baseline-snapshot.sh — `foundation baseline-snapshot`: the 'BEFORE'
+# baseline-snapshot.sh — `temperloop baseline-snapshot`: the 'BEFORE'
 # picture for Epic E's value loop (foundation #766, epic #765-adjacent
 # "Epic E" value-proof work, item baseline-snapshot / #766). A later item's
 # "report" reads this file and never calls `gh` itself — this script is the
@@ -10,7 +10,7 @@
 #
 # DISPATCH MODEL: this file is a DISCOVERED subcommand — its mere presence
 # at kernel/bin/subcommands/baseline-snapshot.sh next to the dispatcher's
-# other subcommand files IS `foundation baseline-snapshot`, executed in its
+# other subcommand files IS `temperloop baseline-snapshot`, executed in its
 # own process (see kernel/bin/foundation's header comment). This script
 # also has a SECOND call site: kernel/bin/subcommands/init.sh Step 0 shells
 # out to it directly (`bash "$BASELINE_SNAPSHOT"`, cwd already set to the

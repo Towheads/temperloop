@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tests for baseline-snapshot.sh — `foundation baseline-snapshot` (foundation
+# Tests for baseline-snapshot.sh — `temperloop baseline-snapshot` (foundation
 # #766, Epic E "before/after value proof"). Zero real network — a fake `gh`
 # on PATH (or none at all) drives every case against a scratch fixture git
 # repo, mirroring the try.sh/init.sh test convention (see
@@ -13,7 +13,7 @@
 #      name) ever appears anywhere in the emitted record, even though the
 #      fake gh's raw reviews payload carries author info.
 #   2. re-appendable: two runs produce two JSONL lines, not a rewrite.
-#   3. .foundation/.gitignore self-management: created on a cold repo,
+#   3. .temperloop/.gitignore self-management: created on a cold repo,
 #      idempotent on a repeat run (no duplicate "baseline.jsonl" line).
 #   4. degrade paths, each still exit 0 with metrics.available=false and a
 #      specific reason: no origin remote; gh absent from PATH; gh present
@@ -92,7 +92,7 @@ NOW="2026-07-03T00:00:00Z"
 out="$(cd "$REPO" && PATH="$BIN:$PATH" BASELINE_SNAPSHOT_NOW="$NOW" bash "$SNAP")"
 echo "$out" | grep -q "metrics available: true" || fail "stdout should report metrics available: true"
 
-record="$(cd "$REPO" && tail -n1 .foundation/baseline.jsonl)"
+record="$(cd "$REPO" && tail -n1 .temperloop/baseline.jsonl)"
 echo "$record" | jq empty || fail "record is not valid JSON"
 
 [ "$(jq -r '.schema' <<<"$record")" = "1" ] || fail "schema should be 1"
@@ -115,17 +115,17 @@ echo "$record" | grep -qi "alice" && fail "reviewer identity must never appear i
 echo "$record" | grep -qi "login" && fail "no 'login'-shaped field should appear anywhere in the record"
 
 # --- 2: re-appendable ---------------------------------------------------------
-lines_before="$(cd "$REPO" && wc -l < .foundation/baseline.jsonl | tr -d ' ')"
+lines_before="$(cd "$REPO" && wc -l < .temperloop/baseline.jsonl | tr -d ' ')"
 (cd "$REPO" && PATH="$BIN:$PATH" BASELINE_SNAPSHOT_NOW="$NOW" bash "$SNAP" >/dev/null)
-lines_after="$(cd "$REPO" && wc -l < .foundation/baseline.jsonl | tr -d ' ')"
+lines_after="$(cd "$REPO" && wc -l < .temperloop/baseline.jsonl | tr -d ' ')"
 [ "$lines_after" -eq "$((lines_before + 1))" ] || fail "a second run should APPEND one more line, not rewrite the file"
 
 # --- 3: .gitignore self-management, idempotent ------------------------------
-[ -f "$REPO/.foundation/.gitignore" ] || fail ".foundation/.gitignore should be created"
-grep -Fxq "baseline.jsonl" "$REPO/.foundation/.gitignore" || fail ".gitignore should list baseline.jsonl"
-gitignore_lines_before="$(wc -l < "$REPO/.foundation/.gitignore" | tr -d ' ')"
+[ -f "$REPO/.temperloop/.gitignore" ] || fail ".temperloop/.gitignore should be created"
+grep -Fxq "baseline.jsonl" "$REPO/.temperloop/.gitignore" || fail ".gitignore should list baseline.jsonl"
+gitignore_lines_before="$(wc -l < "$REPO/.temperloop/.gitignore" | tr -d ' ')"
 (cd "$REPO" && PATH="$BIN:$PATH" BASELINE_SNAPSHOT_NOW="$NOW" bash "$SNAP" >/dev/null)
-gitignore_lines_after="$(wc -l < "$REPO/.foundation/.gitignore" | tr -d ' ')"
+gitignore_lines_after="$(wc -l < "$REPO/.temperloop/.gitignore" | tr -d ' ')"
 [ "$gitignore_lines_after" -eq "$gitignore_lines_before" ] || fail ".gitignore entry must be idempotent (no duplicate line)"
 
 # --- 4a: degrade — no origin remote -----------------------------------------
@@ -133,7 +133,7 @@ NOREMOTE="$WORK/no-remote-repo"
 mkdir -p "$NOREMOTE"
 git -C "$NOREMOTE" init -q -b main
 (cd "$NOREMOTE" && PATH="$BIN:$PATH" BASELINE_SNAPSHOT_NOW="$NOW" bash "$SNAP" >/dev/null)
-rec4a="$(cd "$NOREMOTE" && tail -n1 .foundation/baseline.jsonl)"
+rec4a="$(cd "$NOREMOTE" && tail -n1 .temperloop/baseline.jsonl)"
 [ "$(jq -r '.metrics.available' <<<"$rec4a")" = "false" ] || fail "metrics.available should be false with no origin remote"
 jq -e '.metrics.reason | test("owner/repo")' <<<"$rec4a" >/dev/null || fail "reason should mention owner/repo"
 [ "$(jq -r '.repo.gh_repo' <<<"$rec4a")" = "null" ] || fail "gh_repo should be null with no origin remote"
@@ -147,13 +147,13 @@ for tool in git jq sed awk grep sort mktemp date find cut printf cat sleep wc tr
 done
 BASH_BIN="$(command -v bash)"
 (cd "$REPO" && PATH="$NOGHBIN" BASELINE_SNAPSHOT_NOW="$NOW" "$BASH_BIN" "$SNAP" >/dev/null)
-rec4b="$(cd "$REPO" && tail -n1 .foundation/baseline.jsonl)"
+rec4b="$(cd "$REPO" && tail -n1 .temperloop/baseline.jsonl)"
 [ "$(jq -r '.metrics.available' <<<"$rec4b")" = "false" ] || fail "metrics.available should be false with gh absent"
 jq -e '.metrics.reason | test("gh CLI not found")' <<<"$rec4b" >/dev/null || fail "reason should name gh CLI absence"
 
 # --- 4c: degrade — gh present but unauthenticated ---------------------------
 (cd "$REPO" && PATH="$BIN:$PATH" FAKE_AUTH_RC=1 BASELINE_SNAPSHOT_NOW="$NOW" bash "$SNAP" >/dev/null)
-rec4c="$(cd "$REPO" && tail -n1 .foundation/baseline.jsonl)"
+rec4c="$(cd "$REPO" && tail -n1 .temperloop/baseline.jsonl)"
 [ "$(jq -r '.metrics.available' <<<"$rec4c")" = "false" ] || fail "metrics.available should be false when gh is unauthenticated"
 jq -e '.metrics.reason | test("not authenticated")' <<<"$rec4c" >/dev/null || fail "reason should mention gh not authenticated"
 
@@ -161,8 +161,8 @@ jq -e '.metrics.reason | test("not authenticated")' <<<"$rec4c" >/dev/null || fa
 COLD="$WORK/cold-dir"
 mkdir -p "$COLD"
 (cd "$COLD" && PATH="$NOGHBIN" "$BASH_BIN" "$SNAP" >/dev/null)
-[ -f "$COLD/.foundation/baseline.jsonl" ] || fail "a cold (non-git) dir should still get a written record"
-rec5="$(cd "$COLD" && tail -n1 .foundation/baseline.jsonl)"
+[ -f "$COLD/.temperloop/baseline.jsonl" ] || fail "a cold (non-git) dir should still get a written record"
+rec5="$(cd "$COLD" && tail -n1 .temperloop/baseline.jsonl)"
 [ "$(jq -r '.repo.gh_repo' <<<"$rec5")" = "null" ] || fail "gh_repo should be null in a cold non-git dir"
 
 # --- 6: CLI hygiene ------------------------------------------------------------

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # description: bootstrap .temperloop/config; propose tree changes via PR; consented apply of API-state (required check, fnd: labels, opt-in board)
 #
-# init.sh — `foundation init`: opt-in, reviewable adoption (foundation #765
+# init.sh — `temperloop init`: opt-in, reviewable adoption (foundation #765
 # Epic D "newcomer experience", item foundation-init / #854).
 #
 # Thin wiring over three landed seams — this script is their ONLY call
@@ -21,12 +21,12 @@
 #      Projects-v2 board. Each is a plain `gh` call; --dry-run or a denied
 #      prompt performs zero of them.
 #
-# `foundation init` is the SOLE WRITER of `.temperloop/config` — no other
+# `temperloop init` is the SOLE WRITER of `.temperloop/config` — no other
 # subcommand (this repo's `eject`, once it lands, only READS it) ever
 # creates or edits that file. Every side effect this script produces (a
 # label, a required-check setting, a proposal branch/PR, a board) is
 # recorded in `.temperloop/config`'s `installs` array — the exact set
-# `foundation eject` reverts. Re-running this script MERGES into that
+# `temperloop eject` reverts. Re-running this script MERGES into that
 # array rather than clobbering it (see "round-trip" below), and an install
 # already recorded from a prior run (or already present on the remote,
 # e.g. a label that already existed) is never re-recorded or re-applied.
@@ -73,7 +73,7 @@
 # ({"original_branch":...,"proposal_branch":...}) immediately before that
 # call and deletes it immediately after the call succeeds (whatever the
 # outcome) — so the marker survives on disk exactly when, and only when, a
-# run was interrupted mid-switch. `foundation eject` (kernel/bin/subcommands/
+# run was interrupted mid-switch. `temperloop eject` (kernel/bin/subcommands/
 # eject.sh) is the reader: it restores `original_branch` and deletes the
 # stray `proposal_branch` when it finds the marker and the checkout is still
 # sitting on that branch. A run whose HEAD is detached, or that never
@@ -246,7 +246,7 @@ repo_dir="$(abs_dir "$repo_top")"
 # to restore to).
 orig_branch="$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 
-echo "== foundation init =="
+echo "== temperloop init =="
 echo
 
 # ---------------------------------------------------------------------------
@@ -603,11 +603,11 @@ else
   # create`) leaves the checkout sitting on $branch with no further trace of
   # what branch to return to once the process is gone. Record it BEFORE the
   # switch, as untracked (gitignored) recovery state under .temperloop/ — the
-  # exact same directory `foundation eject` already owns cleaning up. Cleared
+  # exact same directory `temperloop eject` already owns cleaning up. Cleared
   # right below the instant the switch is known to have succeeded (whatever
   # its outcome — NO_CHANGES/PR_OPENED/EXISTS all mean "this branch is now
   # intentional", not a stray leftover); a run that never reaches that point
-  # leaves the marker in place for `foundation eject` (or a later `init` run
+  # leaves the marker in place for `temperloop eject` (or a later `init` run
   # from the very same branch) to act on. Skipped when already on $branch
   # (nothing to protect against) or HEAD is detached (nothing named to
   # restore to).
@@ -669,5 +669,5 @@ echo "boards.conf entry:"
 printf '%s\n' "$boards_conf_entry" | sed 's/^/  /'
 echo "config: $config_rel"
 echo
-echo "foundation init: done"
+echo "temperloop init: done"
 exit 0

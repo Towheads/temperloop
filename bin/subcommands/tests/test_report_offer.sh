@@ -11,7 +11,7 @@
 # scratch fixture repo and a scratch XDG_STATE_HOME.
 #
 # Covers:
-#   1. no .foundation/baseline.jsonl at all -> no offer.
+#   1. no .temperloop/baseline.jsonl at all -> no offer.
 #   2. baseline present, first record < 14 days old -> no offer.
 #   3. baseline present, first record >= 14 days old, undismissed -> the
 #      offer prints (to stderr), names both accept-action commands
@@ -99,10 +99,10 @@ out="$(run_foundation "$REPO1" "$STATE1" 2>&1 1>/dev/null)"
 echo "$out" | grep -q "baseline snapshot is" && fail "no offer expected with no baseline.jsonl yet"
 
 # --- 2: baseline present, first record < 14 days old -> no offer -----------
-mkdir -p "$REPO1/.foundation"
+mkdir -p "$REPO1/.temperloop"
 fresh_ts="$(_iso_days_ago 3)"
 printf '{"schema":1,"generated_at":"%s","lookback_days":90,"repo":{"gh_repo":"test-owner/repo1"},"metrics":{"available":false,"reason":"x","pr_throughput":null,"time_to_merge_hours":null,"review_latency_hours":null,"issue_backlog":null}}\n' \
-  "$fresh_ts" > "$REPO1/.foundation/baseline.jsonl"
+  "$fresh_ts" > "$REPO1/.temperloop/baseline.jsonl"
 out="$(run_foundation "$REPO1" "$STATE1" 2>&1 1>/dev/null)"
 echo "$out" | grep -q "baseline snapshot is" && fail "no offer expected when first record is only 3 days old"
 
@@ -110,21 +110,21 @@ echo "$out" | grep -q "baseline snapshot is" && fail "no offer expected when fir
 # LATER record is fresh, only the FIRST record's generated_at is old) ------
 STATE3="$WORK/state3"
 REPO3="$(new_fixture_repo repo3)"
-mkdir -p "$REPO3/.foundation"
+mkdir -p "$REPO3/.temperloop"
 old_ts="$(_iso_days_ago 20)"
 now_ts="$(_iso_days_ago 0)"
 {
   printf '{"schema":1,"generated_at":"%s","lookback_days":90,"repo":{"gh_repo":"test-owner/repo3"},"metrics":{"available":false,"reason":"x","pr_throughput":null,"time_to_merge_hours":null,"review_latency_hours":null,"issue_backlog":null}}\n' "$old_ts"
   printf '{"schema":1,"generated_at":"%s","lookback_days":90,"repo":{"gh_repo":"test-owner/repo3"},"metrics":{"available":false,"reason":"x","pr_throughput":null,"time_to_merge_hours":null,"review_latency_hours":null,"issue_backlog":null}}\n' "$now_ts"
-} > "$REPO3/.foundation/baseline.jsonl"
+} > "$REPO3/.temperloop/baseline.jsonl"
 # file mtime is "now" (just written) -- proves the anchor is NOT mtime.
 
 out="$(run_foundation "$REPO3" "$STATE3" 2>&1 1>/dev/null)"
 echo "$out" | grep -q "baseline snapshot is" || fail "offer should fire when the FIRST record is >=14 days old"
-echo "$out" | grep -q "foundation baseline-snapshot && foundation report" || fail "offer should document the accept-action chain (baseline-snapshot then report)"
+echo "$out" | grep -q "temperloop baseline-snapshot && temperloop report" || fail "offer should document the accept-action chain (baseline-snapshot then report)"
 
 # subcommand dispatch must still have run (offer is advisory, never blocking)
-lines_after_first_dispatch="$(wc -l < "$REPO3/.foundation/baseline.jsonl" | tr -d ' ')"
+lines_after_first_dispatch="$(wc -l < "$REPO3/.temperloop/baseline.jsonl" | tr -d ' ')"
 [ "$lines_after_first_dispatch" -eq 3 ] || fail "the dispatched subcommand (baseline-snapshot) should still have appended its own record"
 
 # --- 7: dismissal state lands only under XDG_STATE_HOME, never in the repo -
@@ -139,10 +139,10 @@ echo "$out2" | grep -q "baseline snapshot is" && fail "the offer must not repeat
 # its own offer even though repo3's dismissal state already exists in the
 # same XDG_STATE_HOME. -------------------------------------------------------
 REPO6="$(new_fixture_repo repo6)"
-mkdir -p "$REPO6/.foundation"
+mkdir -p "$REPO6/.temperloop"
 old_ts6="$(_iso_days_ago 30)"
 printf '{"schema":1,"generated_at":"%s","lookback_days":90,"repo":{"gh_repo":"test-owner/repo6"},"metrics":{"available":false,"reason":"x","pr_throughput":null,"time_to_merge_hours":null,"review_latency_hours":null,"issue_backlog":null}}\n' \
-  "$old_ts6" > "$REPO6/.foundation/baseline.jsonl"
+  "$old_ts6" > "$REPO6/.temperloop/baseline.jsonl"
 out6="$(run_foundation "$REPO6" "$STATE3" 2>&1 1>/dev/null)"
 echo "$out6" | grep -q "baseline snapshot is" || fail "a different, independently-stale repo should still get its own offer"
 

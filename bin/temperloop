@@ -79,11 +79,11 @@ while [ -L "$_src" ]; do
   _src="$(readlink "$_src")"
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
-FOUNDATION_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+_tl_self_bin_dir="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 
-SUBCOMMANDS_DIR="$FOUNDATION_BIN_DIR/subcommands"
-LIB_DIR="$FOUNDATION_BIN_DIR/lib"
+SUBCOMMANDS_DIR="$_tl_self_bin_dir/subcommands"
+LIB_DIR="$_tl_self_bin_dir/lib"
 
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
@@ -159,7 +159,7 @@ EOF
 In-checkout operations (board, build, quality gates) stay on 'make' — this
 CLI is the pre-checkout newcomer surface only.
 
-Running from: ${FOUNDATION_BIN_DIR%/bin}
+Running from: ${_tl_self_bin_dir%/bin}
 Default install location: $FOUNDATION_CLI_HOME_DEFAULT
   (symlinked onto PATH at $FOUNDATION_CLI_BIN_DEFAULT by bin/bootstrap.sh)
 EOF
