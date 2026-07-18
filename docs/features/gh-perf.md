@@ -23,8 +23,9 @@ failure alone.
 ## How it works
 
 **The `gh` shim.** `workflows/scripts/gh-call-logger.sh` is installed in
-place of the real `gh` binary on `PATH` (`make install-gh-logger`, symmetric
-with `make uninstall-gh-logger`), so every invocation of `gh` anywhere on the
+place of the real `gh` binary on `PATH` as part of `temperloop install`'s
+managed-path set (`gh-shim` kind; reversed by `temperloop uninstall`), so
+every invocation of `gh` anywhere on the
 host — the board adapter, an ad-hoc script, an interactive shell — passes
 through it transparently. The shim times the real call (millisecond
 resolution where a system `perl` with `Time::HiRes` is available, falling

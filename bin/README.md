@@ -127,6 +127,25 @@ calls of any kind.
 `foundation <subcommand>` runs the identical dispatch as `temperloop
 <subcommand>` throughout this ladder (the compat shim — see above).
 
+### Verify: `temperloop install` + `doctor.sh`
+
+The three steps above work against a target repo and need no machine-wide
+setup. Separately, `temperloop install` wires up the **machine surface** —
+the symlinked `~/.claude/CLAUDE.md` / `settings.json`, the `gh` call-logger
+shim, and the other managed paths listed in the Uninstall table above — and
+every run ends by printing the exact command to check what actually landed:
+
+```sh
+temperloop install            # --dry-run to preview, --yes to skip the prompt
+# ⇒ ends with: Verify with: bash <clone>/workflows/scripts/install/doctor.sh
+```
+
+Run that printed command any time to re-check link state on its own — `OK`
+per managed path, or `MISSING` / `DRIFT` / `SHADOWED` / `DANGLING` when
+something's drifted. There is no `temperloop doctor` subcommand; `doctor.sh`
+is invoked directly, at the path `temperloop install` prints for you. See
+`docs/features/install-cli.md` for exactly what it checks.
+
 ## Usage
 
 ```
