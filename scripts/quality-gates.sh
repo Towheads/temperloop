@@ -291,6 +291,18 @@ KERNEL_GATES=(
   "make test-kernel-manifest"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
+  # Pre-rename identifier leak-gate sweep (temperloop#433, gate-sweep item;
+  # depends on the foundation->temperloop rename, temperloop#165 / PR #487):
+  # the `prerename` gate. Extends the kernel/personal-token scrub family so a
+  # pre-rename `foundation` identifier can't silently re-enter a stranger
+  # surface — a pre-rename FOUNDATION_* env var or a legacy foundation/<leaf>
+  # XDG subdir is allowed ONLY via a reviewed row in the sibling verdict
+  # table (prerename-leak-verdicts.tsv, encoding the rename item's own
+  # migrate-vs-allowlist verdicts); the compat shim's own two intentional
+  # legacy literals (.foundation/<any leaf>, bin/foundation) are always
+  # sanctioned. Same live-check-then-fixture-tests shape as
+  # test-kernel-denylist above.
+  "make test-kernel-prerename"
   # Diff-scoped public-repo leak guard (temperloop #74): the sibling of the two
   # whole-tree kernel scrubs above. Scans the ADDED lines of a PR's diff (all
   # tracked files, not just the kernel manifest) for personal/private tokens +

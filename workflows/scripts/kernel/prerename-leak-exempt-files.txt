@@ -1,0 +1,26 @@
+# prerename-leak-exempt-files.txt — files WHOLESALE exempted from
+# check-prerename-leak-guard.sh (temperloop#433), one git-relative path per
+# line. `#` starts a comment; blank lines ignored.
+#
+# This gate ALSO honours personal-token-denylist-exempt-files.txt (the
+# sibling gate's own exempt list) for the SAME reason check-pr-leak-guard.sh
+# already reuses it: several of those entries are board/build fixture-replay
+# tests whose mock `gh` JSON/CLI data embeds full GitHub URLs for the real,
+# still-existing `Towheads/foundation` build repo (board 4) — e.g.
+# ".../repos/Towheads/foundation/issues/145" — which incidentally contains
+# the substring `foundation/issues`, matching this gate's `foundation/<leaf>`
+# scan even though it has nothing to do with the temperloop kernel's own
+# pre-rename identity. Rather than re-list those same files here, this
+# gate's own script reads BOTH files. See that file's header for the full
+# per-file rationale.
+#
+# Entries below are specific to THIS gate (not shared with the denylist
+# gate):
+
+# This gate's OWN fixture-replay test (temperloop#433). To prove detection
+# it must seed a genuinely un-vetted FOUNDATION_-shaped token (one that is
+# deliberately NOT in prerename-leak-verdicts.tsv) and assert the gate goes
+# red on it, then removes it. That literal is the test subject, not a leak —
+# identical rationale to check-pr-leak-guard.sh's own fixture test being
+# exempted from check-personal-token-denylist.sh.
+workflows/scripts/kernel/tests/test_check_prerename_leak_guard.sh
