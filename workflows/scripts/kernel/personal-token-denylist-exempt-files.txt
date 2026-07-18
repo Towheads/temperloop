@@ -80,6 +80,17 @@ workflows/scripts/kernel/tests/test_check_pr_leak_guard.sh
 workflows/scripts/drain/tests/fixtures/sample_stub.md
 workflows/scripts/drain/tests/fixtures/command_expansion_stub.md
 
+# test_feedback.sh (temperloop#428, feedback-submit-mechanism) — the
+# feedback subcommand's own leak-scan test. To prove the leak-scan blocks a
+# real-pattern hit it must MENTION the very tokens it detects
+# (/Users/travis) in its seeded fixture message and assertions, and it also
+# asserts against the kernel repo's own real target-repo identity
+# (Towheads/temperloop, feedback.sh's own `denylist:allow`-marked constant)
+# in its stubbed-gh-call assertions. Same rationale as
+# test_check_pr_leak_guard.sh above: those literals are the test subject
+# (or the fixed transmit target under test), not a leak.
+bin/subcommands/tests/test_feedback.sh
+
 # The denylist tooling's OWN data files. personal-token-denylist.tsv's job is
 # to CONTAIN the pattern strings (that's the data, not a leak), the burn-down
 # baseline's job is to QUOTE each pre-existing offending line verbatim so the

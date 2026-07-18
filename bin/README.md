@@ -187,6 +187,20 @@ something's drifted. There is no `temperloop doctor` subcommand; `doctor.sh`
 is invoked directly, at the path `temperloop install` prints for you. See
 `docs/features/install-cli.md` for exactly what it checks.
 
+### `temperloop feedback` vs. `temperloop report` — sending vs. rendering
+
+These two subcommands are easy to conflate by name association, so the
+split is stated explicitly here: `temperloop report` never leaves your
+machine — it only renders your own local `.foundation/baseline.jsonl`
+before/after metrics to your terminal. `temperloop feedback` is the
+opposite: it **sends** a message to the kernel maintainers, as a GitHub
+issue on `Towheads/temperloop`. Nothing is ever sent without you seeing the
+exact composed payload first, it always gets scanned for personal/org
+tokens before you see it, and it refuses outright in any non-interactive or
+CI context — a timeout or a flag is never consent for an external write.
+See `bin/subcommands/feedback.sh`'s own header comment for the full
+compose → leak-scan → preview → consent → transmit contract.
+
 ## Usage
 
 ```
