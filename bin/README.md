@@ -40,7 +40,7 @@ edits, no `sudo`.
 | (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
 | (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
 | (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.foundation/config` | `temperloop eject` (run inside the target repo) |
-| (d) **Issue-cache store root** | `${XDG_CACHE_HOME:-$HOME/.cache}/temperloop` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/temperloop"` |
+| (d) **Issue-cache store root** | `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"` |
 
 Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
 it or remove it — this is a deliberate stance, not a gap: inferring "this
@@ -114,7 +114,7 @@ different repo/org, same as it would for a bare `gh` call.
 ## Running across multiple repos or clients
 
 `temperloop install` (scope (b) of the Uninstall table above) is a **single
-global, per-machine** install — the symlinked `~/.claude/CLAUDE.md`,
+global, per-machine** install — the machine-wide `~/.claude/CLAUDE.md`,
 `settings.json`, and the rest are shared by every repo you point this CLI
 at, not duplicated per repo. What *is* per-repo is `.foundation/config`,
 written inside the target repo's own working tree by `temperloop init` (and
@@ -201,9 +201,10 @@ calls of any kind.
 
 The three steps above work against a target repo and need no machine-wide
 setup. Separately, `temperloop install` wires up the **machine surface** —
-the symlinked `~/.claude/CLAUDE.md` / `settings.json`, the `gh` call-logger
-shim, and the other managed paths listed in the Uninstall table above — and
-every run ends by printing the exact command to check what actually landed:
+the machine-wide `~/.claude/CLAUDE.md` / `settings.json`, the `gh`
+call-logger shim, and the other managed paths listed in the Uninstall table
+above — and every run ends by printing the exact command to check what
+actually landed:
 
 ```sh
 temperloop install            # --dry-run to preview, --yes to skip the prompt

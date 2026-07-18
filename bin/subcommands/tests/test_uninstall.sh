@@ -265,5 +265,24 @@ out6b="$(run_uninstall --yes 2>&1)" && rc6b=0 || rc6b=$?
 sandbox_down
 echo "PASS: 6b (a \$HOME/.claude left non-empty by an unrecorded path survives — rmdir only, never rm -rf)"
 
+# =============================================================================
+# Test 7: the printed cache-store-root guidance honors an explicit
+#         CACHE_STORE_ROOT override — the same precedence links.sh
+#         (links_provision_cache_stores) and board/lib/cache.sh resolve the
+#         real store root with. A guidance line built from the
+#         XDG_CACHE_HOME/$HOME/.cache fallback alone, ignoring an operator's
+#         CACHE_STORE_ROOT, would print the wrong rm -rf path.
+# =============================================================================
+sandbox_up uninstall-test7
+
+override_root7="$SANDBOX_ROOT/custom-cache-root"
+out7="$(CACHE_STORE_ROOT="$override_root7" run_uninstall --yes 2>&1)" && rc7=0 || rc7=$?
+[ "$rc7" -eq 0 ] || fail "7: uninstall --yes should exit 0 (got rc=$rc7, out: $out7)"
+echo "$out7" | grep -qF "$override_root7" || fail "7: expected the guidance to print the CACHE_STORE_ROOT override path (got: $out7)"
+echo "$out7" | grep -qF "${SANDBOX_XDG_CACHE_HOME}/temperloop" && fail "7: guidance must NOT print the XDG_CACHE_HOME fallback when CACHE_STORE_ROOT is set (got: $out7)"
+
+sandbox_down
+echo "PASS: 7 (cache-store-root guidance honors an explicit CACHE_STORE_ROOT override)"
+
 echo
 echo "ALL PASS: test_uninstall.sh"

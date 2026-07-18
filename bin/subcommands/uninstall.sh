@@ -37,7 +37,8 @@
 #       header for why the two are never merged. This script prints a
 #       reminder to run it (print_eject_reminder below) since a machine-
 #       scoped manifest has no way to know which repos `init` ever touched.
-#   (d) the issue-cache store root (${XDG_CACHE_HOME:-$HOME/.cache}/temperloop,
+#   (d) the issue-cache store root
+#       (${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop},
 #       links.sh's links_provision_cache_stores) — created by `temperloop
 #       install` but DELIBERATELY left out of this manifest (see
 #       print_cache_store_bullet below for why) rather than folded into
@@ -124,7 +125,12 @@ EOF
 # cache, not install state; documented here as a deliberately-unmanaged
 # scope rather than silently left unexplained.
 print_cache_store_bullet() {
-  local cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/temperloop"
+  # Same precedence links.sh (links_provision_cache_stores) and
+  # board/lib/cache.sh resolve the store root with: an explicit
+  # CACHE_STORE_ROOT override wins outright, THEN the XDG_CACHE_HOME/
+  # $HOME/.cache fallback. Printing anything else here would hand an
+  # operator who has CACHE_STORE_ROOT set a wrong rm -rf path.
+  local cache_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
   cat <<EOF
 Issue-cache store root (deliberately unmanaged — not tracked by this
   manifest, never touched by 'temperloop uninstall'; scope (d) of
