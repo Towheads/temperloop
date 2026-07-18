@@ -48,6 +48,26 @@
 # `.foundation/config` to keep ONLY the unresolved entries, so a re-run
 # retries just those, converging without re-doing already-reverted work.
 #
+# PARTIAL/FAILED INIT RECOVERY (temperloop#414): a run of `foundation init`
+# that dies before ever reaching its own SOLE-WRITER step (init.sh's Step 0
+# writes `.foundation/baseline.jsonl` before `.foundation/config` exists)
+# leaves `.foundation/` residue with no config to gate on — the "nothing to
+# eject" check below therefore keys on `.foundation/` PRESENCE, not on
+# config presence, so this residue is always recognized and cleaned up. A
+# run that dies AFTER its branch switch (init.sh's proposal-pr.sh call,
+# which does `git checkout -B <branch>`) additionally leaves the checkout on
+# that stray branch with an unmerged local commit. init.sh records the
+# branch it switched FROM in an untracked `.foundation/.recovery.json`
+# marker immediately before the switch, and deletes it immediately once the
+# switch's outcome is known (success either way) — see init.sh's own header
+# note. This script is the marker's reader: when it finds the marker AND
+# the checkout is still sitting on the branch it names, it restores the
+# recorded original branch and deletes the stray one as part of the same
+# consented revert this script already gates everything else behind (never
+# on `--dry-run`, never without --yes/an interactive confirm) — so ejecting
+# a partial run leaves the repo exactly as it was: no `.foundation/`
+# residue, original branch restored, no stray unmerged branch.
+#
 # Usage:
 #   eject.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network]
 #            [--yes] [--dry-run]
@@ -158,18 +178,148 @@ echo
 
 config_rel=".foundation/config"
 config_path="$repo_dir/$config_rel"
+foundation_dir="$repo_dir/.foundation"
 
 # ---------------------------------------------------------------------------
-# Step 0 — no manifest, nothing to do. This is the SECOND-RUN idempotency
-# path too: a fully successful revert deletes config_path as its last step.
+# Step 0 — no .foundation/ AT ALL, nothing to do. Keyed on the DIRECTORY,
+# not on config_path (temperloop#414): a partial/failed 'foundation init'
+# can leave .foundation/ residue (init.sh Step 0's baseline.jsonl, written
+# BEFORE .foundation/config exists) with no config ever written, and that
+# residue must still be recognized as something to eject — see the
+# dedicated branch below. This check is also the SECOND-RUN idempotency
+# path: a fully successful revert removes .foundation/ entirely as its last
+# step, so a re-run finds nothing here and no-ops.
 # ---------------------------------------------------------------------------
-if [ ! -f "$config_path" ]; then
-  echo "No $config_rel found in $repo_dir — nothing to eject (already ejected, or"
+if [ ! -d "$foundation_dir" ]; then
+  echo "No .foundation/ found in $repo_dir — nothing to eject (already ejected, or"
   echo "  'foundation init' was never run here)."
   echo
   print_uninstall_bullet
   echo
   echo "foundation eject: done (no-op)"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Recovery marker (temperloop#414, written by init.sh — see its own header
+# note): present + naming the CURRENT branch means init's own branch switch
+# (Step 3's proposal-pr.sh `git checkout -B`) was never followed by a clean
+# completion — the checkout is sitting on a stray, unmerged branch.
+# recovery_active gates restore_original_branch below, which is only ever
+# invoked once .foundation/ is about to be fully removed (never mid a
+# PARTIAL-failure retry, where config_path must stay put on this same
+# branch for a later re-run to retry against).
+# ---------------------------------------------------------------------------
+recovery_path="$foundation_dir/.recovery.json"
+recovery_active=0
+recovery_original_branch=""
+recovery_proposal_branch=""
+if [ -f "$recovery_path" ]; then
+  if recovery_json="$(jq -e '.' "$recovery_path" 2>/dev/null)"; then
+    recovery_original_branch="$(jq -r '.original_branch // empty' <<<"$recovery_json")"
+    recovery_proposal_branch="$(jq -r '.proposal_branch // empty' <<<"$recovery_json")"
+    recovery_cur_branch="$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [ -n "$recovery_original_branch" ] && [ -n "$recovery_proposal_branch" ] \
+        && [ "$recovery_original_branch" != "$recovery_proposal_branch" ] \
+        && [ "$recovery_cur_branch" = "$recovery_proposal_branch" ]; then
+      recovery_active=1
+    fi
+  fi
+fi
+
+restore_original_branch() {
+  [ "$recovery_active" -eq 1 ] || return 0
+  if ! git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$recovery_original_branch"; then
+    echo "branch: original branch '$recovery_original_branch' no longer exists locally — leaving on '$recovery_proposal_branch'"
+    return 1
+  fi
+  if ! git -C "$repo_dir" checkout -q "$recovery_original_branch" 2>/dev/null; then
+    echo "branch: FAILED to check out '$recovery_original_branch' — leaving on '$recovery_proposal_branch'"
+    return 1
+  fi
+  echo "branch: restored '$recovery_original_branch' (was on stray '$recovery_proposal_branch' from an interrupted init run)"
+  if git -C "$repo_dir" branch -D "$recovery_proposal_branch" >/dev/null 2>&1; then
+    echo "branch: deleted stray '$recovery_proposal_branch'"
+  else
+    echo "branch: FAILED to delete stray '$recovery_proposal_branch'"
+    return 1
+  fi
+  return 0
+}
+
+# _eject_confirm PROMPT — mirrors init.sh's _init_confirm default: nothing
+# reverted without explicit consent (--yes, or an interactive y/N). This is
+# the revert-direction twin of that same rule; a non-interactive run with
+# no --yes returns 1 (decline), leaving everything on disk untouched.
+_eject_confirm() {
+  local prompt="$1"
+  if [ "$do_yes" -eq 1 ]; then
+    echo "revert: yes (--yes)"
+    return 0
+  fi
+  if [ -t 0 ]; then
+    local ans=""
+    printf '%s [y/N] ' "$prompt"
+    read -r ans || ans=""
+    case "$ans" in
+      y|Y|yes|YES) echo "revert: yes (operator confirmed)"; return 0 ;;
+      *) echo "revert: no (operator declined)"; return 1 ;;
+    esac
+  fi
+  echo "revert: no (skipped — no explicit consent; non-interactive; pass --yes to opt in)"
+  return 1
+}
+
+if [ "$recovery_active" -eq 1 ]; then
+  echo "-- Recovery (interrupted 'foundation init' run) --"
+  echo "  currently on stray branch '$recovery_proposal_branch' — original branch was '$recovery_original_branch'"
+  echo
+fi
+
+# ---------------------------------------------------------------------------
+# Partial-init residue: .foundation/ exists but .foundation/config was
+# never written (or never survived) — nothing was ever recorded to revert
+# via gh, so this is a pure local cleanup (+ the recovery restore above,
+# when applicable).
+# ---------------------------------------------------------------------------
+if [ ! -f "$config_path" ]; then
+  echo "-- Partial-init residue: .foundation/ present, no $config_rel (no install manifest was ever recorded) --"
+  echo
+
+  extra_msg=""
+  [ "$recovery_active" -eq 1 ] && extra_msg=", restore branch '$recovery_original_branch', and delete stray '$recovery_proposal_branch'"
+
+  if [ "$dry_run" -eq 1 ]; then
+    echo "-- Dry run: would remove $foundation_dir$extra_msg. Nothing done --"
+    echo
+    echo "foundation eject: done (dry run)"
+    exit 0
+  fi
+
+  if _eject_confirm "Remove $foundation_dir (no install manifest recorded)?"; then
+    proceed=1
+  else
+    proceed=0
+  fi
+  echo
+
+  if [ "$proceed" -ne 1 ]; then
+    echo "foundation eject: aborted — nothing removed, $foundation_dir left intact"
+    exit 0
+  fi
+
+  recovery_failed=0
+  restore_original_branch || recovery_failed=1
+  rm -rf "${repo_dir:?}/.foundation"
+  echo "partial init residue removed ($foundation_dir)"
+  echo
+  print_uninstall_bullet
+  echo
+  if [ "$recovery_failed" -eq 1 ]; then
+    echo "foundation eject: incomplete (branch restore failed — see above)"
+    exit 1
+  fi
+  echo "foundation eject: done"
   exit 0
 fi
 
@@ -196,33 +346,22 @@ fi
 echo
 
 if [ "$dry_run" -eq 1 ]; then
+  extra_msg=""
+  [ "$recovery_active" -eq 1 ] && extra_msg=", restore branch '$recovery_original_branch', and delete stray '$recovery_proposal_branch'"
   echo "-- Dry run: would revert the $n_installs install(s) above, then remove"
-  echo "   $config_rel. Nothing done (zero gh calls, config untouched) --"
+  echo "   $config_rel$extra_msg. Nothing done (zero gh calls, config untouched) --"
   echo
   echo "foundation eject: done (dry run)"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# Consent gate — mirrors init.sh's _init_confirm default: nothing reverted
-# without explicit consent (--yes, or an interactive y/N). This is the
-# revert-direction twin of that same rule; a non-interactive run with no
-# --yes aborts entirely, leaving config_path untouched.
+# Consent gate — see _eject_confirm above.
 # ---------------------------------------------------------------------------
-proceed=0
-if [ "$do_yes" -eq 1 ]; then
+if _eject_confirm "Revert the $n_installs install(s) above and remove $config_rel?"; then
   proceed=1
-  echo "revert: yes (--yes)"
-elif [ -t 0 ]; then
-  printf 'Revert the %s install(s) above and remove %s? [y/N] ' "$n_installs" "$config_rel"
-  ans=""
-  read -r ans || ans=""
-  case "$ans" in
-    y|Y|yes|YES) proceed=1; echo "revert: yes (operator confirmed)" ;;
-    *) echo "revert: no (operator declined)" ;;
-  esac
 else
-  echo "revert: no (skipped — no explicit consent; non-interactive; pass --yes to opt in)"
+  proceed=0
 fi
 echo
 
@@ -232,11 +371,17 @@ if [ "$proceed" -ne 1 ]; then
 fi
 
 if [ "$n_installs" -eq 0 ]; then
+  recovery_failed=0
+  restore_original_branch || recovery_failed=1
   rm -rf "${repo_dir:?}/.foundation"
   echo "nothing recorded to revert — $config_rel removed"
   echo
   print_uninstall_bullet
   echo
+  if [ "$recovery_failed" -eq 1 ]; then
+    echo "foundation eject: incomplete (branch restore failed — see above)"
+    exit 1
+  fi
   echo "foundation eject: done"
   exit 0
 fi
@@ -425,11 +570,17 @@ echo
 n_unresolved="$(jq 'length' <<<"$unresolved_installs")"
 echo "-- Summary --"
 if [ "$n_unresolved" -eq 0 ]; then
+  recovery_failed=0
+  restore_original_branch || recovery_failed=1
   rm -rf "${repo_dir:?}/.foundation"
   echo "all $n_installs install(s) reverted; $config_rel removed"
   echo
   print_uninstall_bullet
   echo
+  if [ "$recovery_failed" -eq 1 ]; then
+    echo "foundation eject: incomplete (branch restore failed — see above)"
+    exit 1
+  fi
   echo "foundation eject: done"
   exit 0
 else
