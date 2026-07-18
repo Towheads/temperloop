@@ -119,8 +119,27 @@ Probe current state before you mutate or build on it — stale assumptions cause
 - Before branching or opening a PR: `git fetch` and check `git log origin/main..HEAD` for divergence, plus `gh pr list --head <branch>` for an existing PR — don't build on a stale checkout or re-create a PR that already exists.
 - Before a file move/delete that a decision might govern, check the vault (or repo history) for why it's there.
 - A board's auto-add (or any async automation) can lag — wait/poll before concluding it "didn't fire."
+- A bad experience with one *instance* isn't evidence against another. Before vetoing an approach on the strength of a prior failure, measure the specific case in front of you — a different backend, host, or config can invert the result the prior was based on.
 
 The branch half of this rule is now **mechanically backstopped**: the `git-stale-branch-guard.sh` PreToolUse hook (foundation #590, the hook #49 deferred) intercepts `git checkout -b` / `git switch -c` off a local default branch, fetches origin, and `ask`s — naming behind-by-N — when the local base is stale. It only fires on the genuinely-stale case (branching off `origin/<default>` or an up-to-date local base stays silent) and fails open, so it backs the habit without replacing it.
+
+## Measure the delta, don't assume it
+
+A change is not an improvement until the improvement is measured. Capture the load-bearing number *before* a change and again *after* it, and let the before/after delta — not the plausibility of the change — decide whether it stays, grows, or reverts. This is the companion to § Fetch ground truth above: ground-truth probes the state you're about to act on; this probes the state you *changed*. The failure it prevents is shipping something that felt better but moved nothing (or moved the wrong number) — never assume a change is good because it seems like it should be.
+
+## Fix the real problem, not the symptom
+
+Reach for the root cause at the right altitude, not the quickest thing that makes the symptom go away:
+- **Never dismiss a test failure as "flaky."** Treat every failure as real signal and investigate it — a retry that makes it pass is a workaround, not a fix (`[[Patterns/foundation - retries are a workaround not a root fix]]`).
+- **A broken build spine or dev environment gets fixed first**, before you hand-roll a one-off workaround around it — the workaround masks the breakage for the next person too.
+- **A fix scoped to one instance is a smell.** When a fix targets a single board/backend/host/instance, ask whether the real fix is one layer up — hoist the mechanism rather than patch the instance, or you re-patch every sibling in turn.
+- **When verification needs a deploy, build the durable CD path**, not a one-off manual deploy — the manual deploy is a symptom-level fix for a recurring need.
+
+## A change isn't complete until it's reflected everywhere
+
+A change that lands in one place but leaves its implications un-propagated is half-done:
+- **A new tool, script, or command wires its own discoverability in the same change** — the docs, the index, the `--help`, the place someone would look to find it — never "add it now, make it findable later."
+- **When you reverse or supersede a direction, purge the superseded premise from every live artifact** — the issue body, the plan note, the open PR — not just the Decisions note that records the reversal. A stale premise left standing in a live artifact is how a rejected direction quietly comes back.
 
 ## Branch & PR policy
 
@@ -193,6 +212,8 @@ Bidirectional post-merge check: confirm the issue actually closed. Before merge,
 
 The motivating case is the foundation↔stageFind shared board tooling. The board scripts (`board.sh`, `claim`/`worklist`/`capture`/`reconcile`, etc.) are generated in **foundation** and deployed/synced into **stageFind**; when a foundation PR fixes shared tooling that is tracked by an issue on the *other* board, a `Closes <org>/stageFind#N` (or `Closes <org>/foundation#N`) line in that PR body auto-closes the cross-board issue on merge — removing a manual cross-board reconcile step that would otherwise be needed to mark the other board's item Done.
 
+**Cross-repo work splits into halves — don't gate the ready half on the unbuilt one.** A feature spanning two repos rarely lands atomically. Land the half whose *contract* you own in this repo's PR now, and file the dependent half (the other repo's producer/consumer change) as its own **non-blocking** item on that repo's board — linked, not gated. The cross-repo `Closes owner/repo#N` above closes the *other* half's issue when its own PR lands; it does not fuse the two halves into one PR. Holding this repo's ready contract hostage to the other repo's not-yet-built half just stalls both.
+
 ## Communication conventions
 
 Guardrails so the operator never has to leave the conversation (or scroll far back) to understand what's being referred to. Born from a real board-numbering confusion (foundation#362).
@@ -203,6 +224,9 @@ Guardrails so the operator never has to leave the conversation (or scroll far ba
 - **Completion summary.** On completing a work item (fix merged, issue closed, batch level cleared), front-load the outcome — BLUF, `claude/message-schema.md` Tier-1 finding 1 — then give the reader the Endsley perception→comprehension→projection shape for a cold return: what changed, what it means for the item as a whole, what's next.
 - **Resume recap.** The first response after a session resume or a long gap opens with one line on the active item and where it stands (the same Endsley shape, compressed to one line), before answering the new message.
 - **Capture terminology at source.** When a taxonomy/terminology confusion surfaces mid-session, fix the canonical glossary (this file, or the project `CLAUDE.md`) in that same session — a verbal clarification alone is how the same confusion recurs.
+- **Print handoff URLs in full.** An artifact, report, or dashboard URL handed to the operator is printed in full at least once — never only a truncated or shortened form they can't click or copy.
+- **Plain terms before shorthand.** Give plain context before falling back on issue/board shorthand or internal jargon, and decide low-stakes bookkeeping yourself rather than surfacing it as a question. The shorthand is a re-mention convenience (the first-mention hook above), not the first thing a reader should have to decode.
+- **Load-bearing context goes inside the question or final message.** Mid-turn narration is not reliably surfaced to the operator, so any context a decision depends on belongs in the `AskUserQuestion` block itself (or the final message) — not in prose emitted earlier in the same turn.
 
 ## GitHub Projects boards — always via the board.sh adapter
 
@@ -247,7 +271,7 @@ This section governs **board-enabled projects** — those with a GitHub Projects
 
 **Capture at source + defect-vs-enhancement routing.** A thread that opens mid-work is never a bare aside. Part of the active item → add a checkbox to it. Separate → file it, then continue. Route by kind: a **defect** (something broken, a gap, a regression, untracked work that *should already exist*) → GitHub issue + board item (via the adapter's `capture`); an **enhancement or deferred design seam** (a future capability, a "consider later", a decided-but-unbuilt direction) → a vault `Decisions/` or `Context/` note (this is the live counterpart to the **Decision capture** rule above). When genuinely ambiguous, prefer the board — a Backlog item is cheap to close, a dropped defect is expensive to lose. **"Captured in a vault note" satisfies *rationale*, not *tracking*** — if the note names actionable work, it also needs a worklist item.
 
-**Capture, don't ask.** When you notice a defect mid-work you are *not* fixing now, do **not** end the turn with "want me to file this?" and wait — that offer dies when the session ends, which is how bugs get dropped. File it immediately (adapter `capture`, with `--board 3|4` as appropriate) and mention you did. Filing is reversible; a silently dropped bug is not. (`/tidy` § Unfiled defects is the backstop.)
+**Capture, don't ask.** When you notice a defect mid-work you are *not* fixing now, do **not** end the turn with "want me to file this?" and wait — that offer dies when the session ends, which is how bugs get dropped. File it immediately (adapter `capture`, with `--board 3|4` as appropriate) and mention you did. Filing is reversible; a silently dropped bug is not. Two sharpenings: **(a)** this is **defects only** — a *defect* (something broken, a gap, untracked work that should already exist) gets filed; a speculative *enhancement* does not become a Backlog item just to look tracked (route it per the defect-vs-enhancement split above). **(b)** The sharpest trigger is **working around** a defect: the moment you reach for a retry, a shim, or a manual step to route past something broken, file it in that same action — that is exactly when it is easiest to promise yourself you'll remember, and exactly when you won't. (`/tidy` § Unfiled defects is the backstop.)
 
 **Board hygiene is part of the gate.** The board is only a trustworthy parallelism substrate if it reflects reality. When an item merges or closes, the close→Done cascade (GH #340) moves its card to Done automatically — the merge's `Closes #N` (or an `gh issue close`) closes the issue, and the cascade does the board move — so a manual `board_set_status … Done` is a redundant backstop, not the primary mechanism; rely on the cascade and let `reconcile.sh` catch the rare card it misses. When you create an epic's sub-issues, add them to the board. A board that shows closed work as Ready/In-Progress can't be used to pick parallel work. If you find drift, fix it before pulling new work. (This composes with **Fetch ground truth before building** — probe the board's real state before relying on it.)
 
