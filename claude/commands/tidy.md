@@ -311,6 +311,20 @@ Each run is read-only (one cached-bypassed board resolve + two flat-cost REST li
 
 The current draining session's own claims self-exclude (their transcript mtime is current), so this never releases live work — including any item this very session is holding.
 
+**Board LABEL hygiene (issues-only backend).** A DIFFERENT drift class on the same governed boards: the issues-only backend (board 7, the kernel tracker itself — see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`) rides item state on `fnd:`-namespaced repo labels rather than Projects-v2 fields, and two label classes accumulate cruft nothing has ever swept — an orphaned `fnd:host/session:*` repo label (a claim stamp left behind after its issue closed or was re-claimed) and a stale `fnd:status:*` label left on an issue that later closed (a PR's `Closes #N` closes the issue without stripping its status label). This is board LABEL drift, not the marker/claim drift the status reconcile above catches — it belongs here, not in the filesystem-scoped § Environment hygiene step below (that step's role/checkout model has no meaning for a repo's own tracker labels).
+
+Run the SAME `reconcile` adapter with `--labels --unattended` for each governed board (a Projects-v2 board — 3, 4 — has no `fnd:` labels to sweep and reports "nothing to sweep", harmlessly):
+
+```
+reconcile --labels --board 3 --unattended
+reconcile --labels --board 4 --unattended
+reconcile --labels --board 7 --unattended
+```
+
+Unlike the report-only stale-claim sweep above, this sweep's **ratified unattended default is apply** (`--unattended` on this lens forces the delete/strip, it does not merely report) — a deleted `fnd:` label object is trivially recoverable with one `gh label create`, so auto-applying under no live operator is safe by design; see `reconcile.sh`'s own § Lens 3 header comment for the full rationale. Every delete/strip is preceded by an immediate re-check (a fresh read, not the initial scan's snapshot) so a claim or status write landing between scan and apply is never destroyed, and a second run against the post-apply state reports zero changes (idempotent).
+
+**The pending-decision append is automatic — this step does NOT do it.** Unlike every other `batch-at-ritual` deferral in this file, `reconcile --labels --unattended` records its own auto-taken apply (the counts deleted/stripped) to the pending-decisions surface itself, via `workflows/scripts/lib/knowledge_store.sh`'s `ks_append` (script-plane, not the agent-plane `mcp__obsidian-builtin__vault_append` every other site here uses) — best-effort: a missing/unavailable knowledge store degrades to a stderr notice and never fails the sweep. Just fold each run's "applied: deleted N label(s), stripped M status label(s)." line (or "nothing to sweep" / "In sync…") into the Step 6 summary; do not append a second pending-decision entry for this sweep yourself.
+
 ### Vault hygiene
 
 A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing else alarms on hygiene drift — `/tidy` curates *on touch* (provenance audit, contradiction detection) but never *sweeps* the vault, so a silent pile-up (162 `Sessions/_inbox` stubs / 18 MB before anyone noticed — foundation #958/#959) goes unseen until it is large. This step runs a standalone probe each drain and records any drift to a review surface for `check-in` to dispose of.

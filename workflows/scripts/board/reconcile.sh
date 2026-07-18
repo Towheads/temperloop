@@ -10,6 +10,13 @@
 #                                       orphaned In-Progress). Read-only report.
 #          ... --status --fix           also auto-applies the one SAFE repair
 #                                       (terminal-but-not-Done → Done).
+#   reconcile.sh [--board N] --labels   LABEL hygiene — orphaned issues-only
+#                                       `fnd:` tracker labels. Dry-run report
+#                                       (zero writes) by default.
+#          ... --labels --apply         also deletes/strips the candidates.
+#          ... --labels --unattended    implies --apply, AND records the
+#                                       auto-taken apply to the pending-
+#                                       decisions surface (batch-at-ritual).
 #
 # ─── Lens 1: marker drift (default) ──────────────────────────────────────────
 # scripts/claim.sh stamps BOTH the board (Status=In Progress +
@@ -77,10 +84,54 @@
 # REST list calls are flat-cost (2 per run, not per-item) and do NOT touch the
 # Projects-v2 GraphQL budget that single-item GraphQL would.
 #
+# ─── Lens 3: label hygiene (--labels) ────────────────────────────────────────
+# The issues-only backend (board_backend == "issues", e.g. board 7 — the kernel
+# tracker itself) rides ALL item state on `fnd:`-namespaced repo labels rather
+# than Projects-v2 fields (see lib/board.sh's issues-only-backend section and
+# ISSUES-ONLY-BACKEND.md). Two label classes accumulate cruft over the
+# tracker's lifetime that nothing has ever swept (lib/board.sh ~L1015-1023,
+# the `_board_issues_stamp_field` header, documented this exact gap):
+#
+#   (g) orphaned host/session labels — a `fnd:host/session:<host>:<sess8>`
+#       repo label object left behind after its claiming issue closed (or was
+#       re-claimed under a different stamp). "Orphaned" = attached to ZERO
+#       OPEN issues — a claim's label on an open issue is always live and is
+#       NEVER a delete candidate. Distinct label VALUES accumulate one repo
+#       label object per claim ever made; `_board_issues_ensure_label`
+#       memoizes creation but nothing ever removes the object.
+#   (h) stale status labels on closed issues — a `fnd:status:*` label left on
+#       an issue that is now CLOSED. Closing an issue (via `gh issue close`,
+#       or via a merged PR's `Closes #N`) never strips its status label — only
+#       `_board_issues_set_field`'s own Status-field write path does that, and
+#       a PR close bypasses it entirely.
+#
+# --labels alone is a REPORT — it prints both candidate lists and their
+# counts with ZERO writes (the interactive default, matching --status's
+# report-only default). --apply performs the deletes/strips; a SECOND --apply
+# run is idempotent (the just-deleted/-stripped labels are no longer
+# candidates, so it reports/applies zero changes). Every delete/strip is
+# preceded by an IMMEDIATE re-check (a fresh `issue list`/`api` read, not the
+# earlier bulk scan) so a claim or a status write that lands in the gap
+# between scan and apply is never destroyed — see label_reconcile_main's own
+# comments for the exact re-check call. No non-`fnd:`-prefixed label is ever
+# read for deletion candidacy, listed, touched, or modified by this lens.
+#
+# --unattended additionally (a) implies --apply (this sweep's ratified default
+# under NO live operator is to apply, unlike the report-only stale-claim sweep
+# above — a deleted label object is trivially recoverable via `gh label
+# create`, so the auto-take is safe) and (b) records the auto-taken apply to
+# the pending-decisions surface (`claude/CLAUDE.md` § Unattended
+# pending-decisions surface) via `workflows/scripts/lib/knowledge_store.sh`'s
+# `ks_append` — best-effort: a missing/unavailable knowledge store degrades to
+# a stderr notice and never fails the sweep itself.
+#
 # Usage:
 #   scripts/reconcile.sh                       # marker drift report; exits 0
 #   scripts/reconcile.sh --board 4 --status    # status drift report; exits 0
 #   scripts/reconcile.sh --board 4 --status --fix   # + apply terminal→Done
+#   scripts/reconcile.sh --board 7 --labels    # label hygiene report; exits 0
+#   scripts/reconcile.sh --board 7 --labels --apply         # + apply
+#   scripts/reconcile.sh --board 7 --labels --unattended    # apply + ledger
 #
 # Test seams (overridable AFTER sourcing, mirroring lib/claim_marker.sh and
 # lib/board.sh): board reads/writes route through board.sh's `_board_gh`; tmux
@@ -134,6 +185,17 @@ FIX=0
 # Page size for the issue/PR state bulk-reads. A board larger than this would
 # under-read; status_reconcile_main warns when a list hits the cap (no silent cap).
 STATE_LIMIT=1000
+# --labels --apply: perform the delete/strip candidates (default 0 = report
+# only, zero writes). --labels --unattended forces this to 1 (§ Lens 3 above).
+LABELS_APPLY=0
+# --labels --unattended: apply (forces LABELS_APPLY=1) AND record the
+# auto-taken apply to the pending-decisions surface. Set by the execute-guard
+# or by a sourcing test before it calls label_reconcile_main.
+LABELS_UNATTENDED=0
+# Page size for the label-list / closed-issues bulk reads (§ Lens 3). A repo
+# with more than this many `fnd:` labels or closed issues would under-read;
+# label_reconcile_main warns when a list hits the cap (no silent cap).
+LABEL_LIMIT=1000
 # Staleness cutoff for a same-host claim whose session transcript EXISTS but
 # hasn't been touched recently (an absent transcript is dead immediately). A
 # claim stamped to this host whose session has been idle longer than this is a
@@ -502,26 +564,233 @@ status_reconcile_main() {
   return 0
 }
 
+# --- Lens 3: label hygiene (board LABEL drift on the issues-only backend) ----
+# Best-effort append of a `batch-at-ritual` pending-decision entry recording an
+# UNATTENDED label-hygiene apply (`claude/CLAUDE.md` § Unattended
+# pending-decisions surface). Routes through workflows/scripts/lib/
+# knowledge_store.sh's `ks_read`/`ks_append` — the SCRIPT-plane seam (portable
+# to a stranger's kernel-only install with no Obsidian vault), never the
+# agent-plane MCP tools. A missing knowledge_store.sh, an unavailable store, or
+# a failed ks_append must NEVER fail the sweep itself — every failure path
+# below degrades to a stderr notice and returns 0. Implements the same
+# append-target resolution rule named by claude/commands/check-in.md's "Path
+# fallback convention" section: pin the append to whichever of the new
+# (`Pipeline/…`) / legacy (`Context/pipeline - …`) paths already exists,
+# preferring the new path when both do, and create at the legacy path when
+# neither exists yet.
+#   _label_reconcile_append_pending_decision <board#> <repo> <deleted> <stripped>
+_label_reconcile_append_pending_decision() {
+  local board="$1" repo="$2" deleted="$3" stripped="$4"
+  local ks_lib doc new_doc legacy_doc ts host
+
+  ks_lib="$SCRIPT_DIR/../lib/knowledge_store.sh"
+  if [ ! -f "$ks_lib" ]; then
+    echo "reconcile.sh: label hygiene — knowledge_store.sh not found at $ks_lib; skipping pending-decision append" >&2
+    return 0
+  fi
+  # shellcheck source=scripts/lib/knowledge_store.sh
+  source "$ks_lib" 2>/dev/null || {
+    echo "reconcile.sh: label hygiene — failed to source knowledge_store.sh; skipping pending-decision append" >&2
+    return 0
+  }
+  if ! declare -F ks_append >/dev/null 2>&1; then
+    echo "reconcile.sh: label hygiene — ks_append unavailable after sourcing knowledge_store.sh; skipping pending-decision append" >&2
+    return 0
+  fi
+
+  new_doc="Pipeline/pending decisions.md"
+  legacy_doc="Context/pipeline - pending decisions.md"
+  if ks_read "$new_doc" >/dev/null 2>&1; then
+    doc="$new_doc"
+  elif ks_read "$legacy_doc" >/dev/null 2>&1; then
+    doc="$legacy_doc"
+  else
+    doc="$legacy_doc"   # neither exists yet — create at the legacy path
+  fi
+
+  ts="$(date -u '+%Y-%m-%d %H:%M')"
+  host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
+  if {
+    printf '### %s · label hygiene sweep · %s:board%s\n' "$ts" "$host" "$board"
+    # shellcheck disable=SC2016  # backticks below are literal markdown spans, not expansion
+    printf -- '- **Decision:** delete orphaned `fnd:host/session:*` repo labels (zero open-issue attachments) and strip `fnd:status:*` from closed issues on board %s (%s)\n' "$board" "$repo"
+    printf -- '- **Default taken:** applied — deleted %s label(s), stripped %s status label(s)\n' "$deleted" "$stripped"
+    printf -- '- **Disposition:** auto-taken (unattended; no live operator)\n'
+    printf -- '- **Status:** open\n'
+  } | ks_append "$doc" 2>/dev/null; then
+    return 0
+  fi
+  echo "reconcile.sh: label hygiene — ks_append to $doc failed; pending-decision entry not recorded" >&2
+  return 0
+}
+
+# The Lens 3 report+apply, wrapped like reconcile_main/status_reconcile_main so
+# a test can source this file, override _board_gh, set $LABELS_APPLY/
+# $LABELS_UNATTENDED, and drive it offline. Always exits 0.
+label_reconcile_main() {
+  local repo hs_labels_json hs_labels orphan_hs_labels closed_json strip_rows
+  local label recheck_count deleted=0 stripped=0
+  local n l issue_json state has_label
+
+  if ! _board_is_issues_only "$PROJECT_NUMBER"; then
+    echo "Board label hygiene — board $PROJECT_NUMBER is not the issues-only backend (fnd: labels only exist there) — nothing to sweep"
+    return 0
+  fi
+  repo="$(board_repo "$PROJECT_NUMBER")" || {
+    echo "reconcile.sh: label hygiene — could not resolve repo for board $PROJECT_NUMBER" >&2
+    return 0
+  }
+
+  # --- scan 1: orphaned fnd:host/session:* repo labels ------------------------
+  # Every repo label carrying the prefix, filtered LOCALLY (jq startswith) to
+  # the exact prefix rather than relying on `gh label list --search`'s fuzzy
+  # text match — never lists a non-fnd: label as a candidate.
+  hs_labels_json="$(_board_gh label list -R "$repo" --limit "$LABEL_LIMIT" --json name 2>/dev/null)" || hs_labels_json="[]"
+  [ -n "$hs_labels_json" ] || hs_labels_json="[]"
+  if [ "$(printf '%s' "$hs_labels_json" | jq 'length')" -ge "$LABEL_LIMIT" ]; then
+    echo "WARNING: repo label list hit the ${LABEL_LIMIT}-item cap — some fnd:host/session:* labels may be unread." >&2
+  fi
+  hs_labels="$(printf '%s' "$hs_labels_json" | jq -r '.[].name | select(startswith("fnd:host/session:"))')"
+
+  # A label is an orphan candidate iff it is attached to ZERO open issues. One
+  # `issue list --label … --state open --limit 1` read per candidate label
+  # (bounded by the repo's real fnd:host/session:* label count — every claim
+  # ever made, not every claim currently live).
+  orphan_hs_labels=""
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    recheck_count="$(_board_gh issue list -R "$repo" --label "$label" --state open --limit 1 --json number 2>/dev/null | jq 'length')"
+    [ "${recheck_count:-0}" -eq 0 ] && orphan_hs_labels+="$label"$'\n'
+  done < <(printf '%s\n' "$hs_labels")
+
+  # --- scan 2: stale fnd:status:* labels on CLOSED issues ----------------------
+  # One bulk read of every closed issue's labels; filter LOCALLY to fnd:status:
+  # rows so a closed issue's other labels are never touched or listed.
+  closed_json="$(_board_gh issue list -R "$repo" --state closed --limit "$LABEL_LIMIT" --json number,labels 2>/dev/null)" || closed_json="[]"
+  [ -n "$closed_json" ] || closed_json="[]"
+  if [ "$(printf '%s' "$closed_json" | jq 'length')" -ge "$LABEL_LIMIT" ]; then
+    echo "WARNING: closed-issue list hit the ${LABEL_LIMIT}-item cap — some stale fnd:status:* labels may be unread." >&2
+  fi
+  strip_rows="$(
+    printf '%s' "$closed_json" | jq -r '
+      .[] | .number as $n
+      | (.labels[]? | .name | select(startswith("fnd:status:"))) as $l
+      | [ ($n|tostring), $l ] | @tsv
+    '
+  )"
+
+  # --- report -------------------------------------------------------------
+  echo "Board label hygiene — board $PROJECT_NUMBER ($repo)"
+  echo
+
+  local drift=0
+  if [ -n "$orphan_hs_labels" ]; then
+    drift=1
+    echo "orphaned host/session labels (attached to zero open issues):"
+    printf '%s\n' "$orphan_hs_labels" | grep -v '^$' | sed 's/^/  /'
+    echo
+  fi
+  if [ -n "$strip_rows" ]; then
+    drift=1
+    echo "stale status labels on closed issues:"
+    while IFS=$'\t' read -r n l; do
+      [ -n "$n" ] || continue
+      echo "  #$n — $l"
+    done <<<"$strip_rows"
+    echo
+  fi
+  if [ "$drift" -eq 0 ]; then
+    echo "In sync: no orphaned host/session labels, no stale status labels on closed issues."
+    return 0
+  fi
+
+  if [ "$LABELS_UNATTENDED" = 1 ]; then
+    LABELS_APPLY=1
+  fi
+
+  if [ "$LABELS_APPLY" != 1 ]; then
+    echo "(dry-run — no writes; pass --apply, or --unattended, to delete/strip these)"
+    return 0
+  fi
+
+  echo "--apply: deleting/stripping…"
+
+  # Delete each orphan label — RE-CHECKED immediately before the delete call
+  # (a fresh, single-label `issue list` read, not the scan-1 snapshot above),
+  # so a claim landing in the scan→apply gap is never destroyed.
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    recheck_count="$(_board_gh issue list -R "$repo" --label "$label" --state open --limit 1 --json number 2>/dev/null | jq 'length')"
+    if [ "${recheck_count:-0}" -ne 0 ]; then
+      echo "  skip (now attached to an open issue): $label"
+      continue
+    fi
+    if _board_gh label delete "$label" -R "$repo" --yes >/dev/null 2>&1; then
+      echo "  deleted: $label"
+      deleted=$((deleted + 1))
+    else
+      echo "  FAILED to delete: $label" >&2
+    fi
+  done <<<"$orphan_hs_labels"
+
+  # Strip each stale status label — RE-CHECKED immediately before the strip
+  # call (a fresh single-issue `api` read, not the scan-2 bulk snapshot), so a
+  # status write or a reopen landing in the scan→apply gap is never undone.
+  while IFS=$'\t' read -r n l; do
+    [ -n "$n" ] || continue
+    issue_json="$(_board_gh api "repos/$repo/issues/$n" 2>/dev/null)"
+    state="$(printf '%s' "$issue_json" | jq -r '.state // "open"')"
+    has_label="$(printf '%s' "$issue_json" | jq -r --arg l "$l" '([.labels[]?.name] | index($l)) != null')"
+    if [ "$state" != "closed" ] || [ "$has_label" != "true" ]; then
+      echo "  skip (no longer closed+labeled): #$n $l"
+      continue
+    fi
+    if _board_gh issue edit "$n" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+      echo "  stripped: #$n $l"
+      stripped=$((stripped + 1))
+    else
+      echo "  FAILED to strip: #$n $l" >&2
+    fi
+  done <<<"$strip_rows"
+
+  echo
+  echo "applied: deleted $deleted label(s), stripped $stripped status label(s)."
+
+  if [ "$LABELS_UNATTENDED" = 1 ] && { [ "$deleted" -gt 0 ] || [ "$stripped" -gt 0 ]; }; then
+    _label_reconcile_append_pending_decision "$PROJECT_NUMBER" "$repo" "$deleted" "$stripped"
+  fi
+  return 0
+}
+
 # Execute-guard: run a report only when this file is RUN, not SOURCED. When
-# sourced (BASH_SOURCE[0] != $0), a test sets $PROJECT_NUMBER / $FIX, defines its
-# _board_gh / _reconcile_tmux overrides, and calls reconcile_main or
-# status_reconcile_main itself — keeping these defaults untouched.
+# sourced (BASH_SOURCE[0] != $0), a test sets $PROJECT_NUMBER / $FIX /
+# $LABELS_APPLY / $LABELS_UNATTENDED, defines its _board_gh / _reconcile_tmux
+# overrides, and calls reconcile_main / status_reconcile_main /
+# label_reconcile_main itself — keeping these defaults untouched.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   MODE=markers
   while [ $# -gt 0 ]; do
     case "$1" in
-      --board)  PROJECT_NUMBER="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
-      --status) MODE=status; shift ;;
-      --fix)    FIX=1; shift ;;
-      *) echo "usage: reconcile.sh [--board 3|4] [--status [--fix]]" >&2; exit 2 ;;
+      --board)       PROJECT_NUMBER="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
+      --status)      MODE=status; shift ;;
+      --fix)         FIX=1; shift ;;
+      --labels)      MODE=labels; shift ;;
+      --apply)       LABELS_APPLY=1; shift ;;
+      --unattended)  LABELS_UNATTENDED=1; shift ;;
+      *) echo "usage: reconcile.sh [--board 3|4] [--status [--fix] | --labels [--apply|--unattended]]" >&2; exit 2 ;;
     esac
   done
   if [ "$FIX" = 1 ] && [ "$MODE" != status ]; then
     echo "reconcile.sh: --fix requires --status (it repairs status drift)" >&2
     exit 2
   fi
+  if { [ "$LABELS_APPLY" = 1 ] || [ "$LABELS_UNATTENDED" = 1 ]; } && [ "$MODE" != labels ]; then
+    echo "reconcile.sh: --apply/--unattended require --labels (they drive the label-hygiene sweep)" >&2
+    exit 2
+  fi
   case "$MODE" in
     markers) reconcile_main ;;
     status)  status_reconcile_main ;;
+    labels)  label_reconcile_main ;;
   esac
 fi
