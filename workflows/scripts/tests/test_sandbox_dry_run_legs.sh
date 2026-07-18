@@ -140,9 +140,17 @@ git -C "$TARGET" fetch -q origin
 
 # ---------------------------------------------------------------------------
 # 3. init --dry-run leg: --no-network --dry-run (test_init.sh's own test-1
-#    flag combination) -> exit 0, ZERO gh calls, .foundation/config
-#    committed locally.
+#    flag combination) -> exit 0, ZERO gh calls, GENUINELY ZERO-WRITE
+#    (temperloop#413): no .foundation/config, no .foundation/baseline.jsonl,
+#    no commit, HEAD/branch/status left exactly as they were. Mirrors what
+#    bin/subcommands/tests/test_init.sh's own (rewritten) test 1 already
+#    asserts at the bare-subcommand level; this leg re-proves it through the
+#    bootstrapped CLI dispatcher.
 # ---------------------------------------------------------------------------
+target_head_before="$(git -C "$TARGET" rev-parse HEAD)"
+target_branch_before="$(git -C "$TARGET" branch --show-current)"
+target_status_before="$(git -C "$TARGET" status --porcelain)"
+
 : > "$SANDBOX_GH_CALL_LOG"
 init_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" init \
   --dir "$TARGET" --gh-repo acme/widget --no-network --dry-run \
@@ -150,14 +158,35 @@ init_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" init \
 init_rc=$?
 [ "$init_rc" -eq 0 ] || fail "init --dry-run exited $init_rc (output: $init_out)"
 assert_no_mutating_gh_calls "init --dry-run" "$SANDBOX_GH_CALL_LOG"
+[ -e "$TARGET/.foundation/config" ] \
+  && fail "init --dry-run wrote .foundation/config to disk (must be zero-write)"
+[ -e "$TARGET/.foundation/baseline.jsonl" ] \
+  && fail "init --dry-run wrote .foundation/baseline.jsonl (baseline snapshot must be gated by --dry-run)"
 git -C "$TARGET" show HEAD:.foundation/config >/dev/null 2>&1 \
-  || fail "init --dry-run did not commit .foundation/config locally"
-pass "1: 'temperloop init --dry-run' (through the bootstrapped CLI) exits 0, makes zero gh calls beyond the dispatcher's own read-only prereq probe, commits .foundation/config locally"
+  && fail "init --dry-run committed .foundation/config locally (must be zero-write)"
+[ "$(git -C "$TARGET" rev-parse HEAD)" = "$target_head_before" ] \
+  || fail "init --dry-run moved HEAD"
+[ "$(git -C "$TARGET" branch --show-current)" = "$target_branch_before" ] \
+  || fail "init --dry-run switched branches"
+[ "$(git -C "$TARGET" status --porcelain)" = "$target_status_before" ] \
+  || fail "init --dry-run left the target checkout dirty"
+pass "1: 'temperloop init --dry-run' (through the bootstrapped CLI) exits 0, makes zero gh calls beyond the dispatcher's own read-only prereq probe, is genuinely zero-write (no .foundation/config, no baseline.jsonl, no commit, HEAD/branch/status unchanged)"
 
 # ---------------------------------------------------------------------------
 # 4. eject --dry-run leg: exit 0, ZERO gh calls, .foundation/config left
-#    untouched (mirrors test_eject.sh's own test 2).
+#    untouched (mirrors test_eject.sh's own test 2). Since init --dry-run is
+#    now genuinely zero-write (test 1 above) it no longer leaves a
+#    .foundation/config behind for this leg to exercise eject against, so
+#    seed one directly — same seed_config fixture shape as
+#    bin/subcommands/tests/test_eject.sh.
 # ---------------------------------------------------------------------------
+mkdir -p "$TARGET/.foundation"
+jq -n '{schema:1, generated_at:"2026-01-01T00:00:00Z",
+        probe:{schema:1}, tracker:{mode:"issues", board:1},
+        installs:[{type:"label", repo:"acme/widget", name:"fnd:status:backlog"}]}' \
+  > "$TARGET/.foundation/config"
+git -C "$TARGET" add -A -- .foundation/config
+git -C "$TARGET" commit -q -m "seed .foundation/config"
 config_before="$(cat "$TARGET/.foundation/config")"
 : > "$SANDBOX_GH_CALL_LOG"
 eject_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" eject --dir "$TARGET" --dry-run 2>&1)"

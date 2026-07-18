@@ -231,9 +231,19 @@ echo
 # ---------------------------------------------------------------------------
 # Step 0 — Epic E soft seam: baseline snapshot, iff the sibling subcommand
 # file exists. Never blocks init either way.
+#
+# --dry-run GATE (temperloop#413): baseline-snapshot.sh is a real writer —
+# it appends to .foundation/baseline.jsonl and self-manages
+# .foundation/.gitignore, both straight to disk, with no proposal-PR/commit
+# indirection of its own. A dry run must be genuinely zero-write (bin/
+# README.md bills it as "preview first: tree-only, zero API writes"), so
+# this step is skipped outright on --dry-run — never invoked, not even in
+# some "preview" mode of its own (it has none).
 # ---------------------------------------------------------------------------
 echo "-- 0. Baseline snapshot (Epic E soft seam) --"
-if [ -f "$BASELINE_SNAPSHOT" ]; then
+if [ "$dry_run" -eq 1 ]; then
+  echo "skipped (--dry-run — tree-only preview, no baseline write)"
+elif [ -f "$BASELINE_SNAPSHOT" ]; then
   if (cd "$repo_dir" && bash "$BASELINE_SNAPSHOT"); then
     echo "baseline snapshot written"
   else
@@ -512,41 +522,71 @@ this PR.
 Tracker mode: **$tracker_mode** (default is issues-only; opt into a real
 Projects-v2 board with --tracker-mode projects --provision-board)."
 
-proposal_args=(open --repo-dir "$repo_dir" --branch "$branch" --title "$title" \
-  --body "$body" --files-manifest - --remote "$remote" --force)
-[ -n "$base" ] && proposal_args+=(--base "$base")
-[ "$dry_run" -eq 1 ] && proposal_args+=(--dry-run)
-
-manifest_json="$(printf '%s\n' "${manifest_entries[@]}" | jq -sc '.')"
-proposal_out="$(printf '%s' "$manifest_json" | bash "$PROPOSAL" "${proposal_args[@]}")"
-proposal_rc=$?
-echo "$proposal_out" | jq '.' 2>/dev/null || echo "$proposal_out"
-if [ "$proposal_rc" -ne 0 ]; then
-  echo "init.sh: proposal-pr.sh failed (exit $proposal_rc)" >&2
-  exit "$proposal_rc"
-fi
-outcome="$(jq -r '.outcome // "ERROR"' <<<"$proposal_out" 2>/dev/null || echo ERROR)"
-echo
-
-# --- bootstrap-ordering second pass: fold THIS run's own PR record into
-# the config that actually lands, once the PR outcome is known (see the
-# header note "BOOTSTRAP ORDERING NOTE"). Skipped for DRY_RUN/NO_CHANGES —
-# there is no PR to describe. ------------------------------------------
-if [ "$outcome" = "PR_OPENED" ] || [ "$outcome" = "EXISTS" ]; then
-  pr_url="$(jq -r '.url // empty' <<<"$proposal_out")"
-  pr_number="$(jq -r '.pr_number // empty' <<<"$proposal_out")"
-  pr_entry="$(jq -cn --arg branch "$branch" --arg url "$pr_url" --arg n "${pr_number:-}" \
-    '{type:"proposal_pr", branch:$branch, pr_number:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
-  all_installs2="$(jq -c -n --argjson a "$all_installs" --argjson b "[$pr_entry]" \
-    '($a + $b) | unique_by([.type, (.name // ""), (.branch // ""), (.repo // ""), (.url // "")])')"
-  config_json2="$(build_config_json "$all_installs2")"
-  manifest_entries[0]="$(jq -cn --arg p "$config_rel" --arg c "$config_json2" '{path:$p, content:$c}')"
-  manifest_json2="$(printf '%s\n' "${manifest_entries[@]}" | jq -sc '.')"
-
-  echo "-- config self-record pass (folds this run's own PR into $config_rel) --"
-  proposal_out2="$(printf '%s' "$manifest_json2" | bash "$PROPOSAL" "${proposal_args[@]}")"
-  echo "$proposal_out2" | jq '.' 2>/dev/null || echo "$proposal_out2"
+if [ "$dry_run" -eq 1 ]; then
+  # --dry-run GATE (temperloop#413): genuinely zero-write — compute and
+  # print what WOULD be proposed, without ever invoking proposal-pr.sh.
+  # proposal-pr.sh's OWN --dry-run mode still performs a REAL local
+  # `git checkout -B <branch>` + `git commit` in $repo_dir (its header
+  # says so explicitly: "Still a real local git checkout + commit in
+  # --repo-dir — nothing remote, nothing on GitHub") — that is exactly
+  # the second half of #413's bug report (a dry run left the checkout on
+  # foundation-init/config instead of the caller's original branch). So a
+  # dry run never calls it at all; this preview is computed locally and
+  # read-only, against whatever branch/HEAD the caller already has
+  # checked out — it is never switched, and nothing is written to disk.
+  echo "dry-run — tree-only preview; zero writes to $repo_dir (no branch switch, no commit, no push, no PR)"
+  for entry in "${manifest_entries[@]}"; do
+    entry_path="$(jq -r '.path' <<<"$entry")"
+    entry_content="$(jq -r '.content' <<<"$entry")"
+    entry_abs="$repo_dir/$entry_path"
+    if [ ! -e "$entry_abs" ]; then
+      echo "  would create: $entry_path"
+    elif [ "$(cat "$entry_abs" 2>/dev/null)" = "$entry_content" ]; then
+      echo "  unchanged:    $entry_path"
+    else
+      echo "  would update: $entry_path"
+    fi
+  done
+  outcome="DRY_RUN"
   echo
+else
+  proposal_args=(open --repo-dir "$repo_dir" --branch "$branch" --title "$title" \
+    --body "$body" --files-manifest - --remote "$remote" --force)
+  [ -n "$base" ] && proposal_args+=(--base "$base")
+
+  manifest_json="$(printf '%s\n' "${manifest_entries[@]}" | jq -sc '.')"
+  proposal_out="$(printf '%s' "$manifest_json" | bash "$PROPOSAL" "${proposal_args[@]}")"
+  proposal_rc=$?
+  echo "$proposal_out" | jq '.' 2>/dev/null || echo "$proposal_out"
+  if [ "$proposal_rc" -ne 0 ]; then
+    echo "init.sh: proposal-pr.sh failed (exit $proposal_rc)" >&2
+    exit "$proposal_rc"
+  fi
+  outcome="$(jq -r '.outcome // "ERROR"' <<<"$proposal_out" 2>/dev/null || echo ERROR)"
+  echo
+
+  # --- bootstrap-ordering second pass: fold THIS run's own PR record into
+  # the config that actually lands, once the PR outcome is known (see the
+  # header note "BOOTSTRAP ORDERING NOTE"). Skipped for NO_CHANGES — there
+  # is no PR to describe. (DRY_RUN can no longer reach this branch at all
+  # — see the --dry-run arm above, which returns its own synthetic
+  # "DRY_RUN" outcome without ever calling proposal-pr.sh.) --------------
+  if [ "$outcome" = "PR_OPENED" ] || [ "$outcome" = "EXISTS" ]; then
+    pr_url="$(jq -r '.url // empty' <<<"$proposal_out")"
+    pr_number="$(jq -r '.pr_number // empty' <<<"$proposal_out")"
+    pr_entry="$(jq -cn --arg branch "$branch" --arg url "$pr_url" --arg n "${pr_number:-}" \
+      '{type:"proposal_pr", branch:$branch, pr_number:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
+    all_installs2="$(jq -c -n --argjson a "$all_installs" --argjson b "[$pr_entry]" \
+      '($a + $b) | unique_by([.type, (.name // ""), (.branch // ""), (.repo // ""), (.url // "")])')"
+    config_json2="$(build_config_json "$all_installs2")"
+    manifest_entries[0]="$(jq -cn --arg p "$config_rel" --arg c "$config_json2" '{path:$p, content:$c}')"
+    manifest_json2="$(printf '%s\n' "${manifest_entries[@]}" | jq -sc '.')"
+
+    echo "-- config self-record pass (folds this run's own PR into $config_rel) --"
+    proposal_out2="$(printf '%s' "$manifest_json2" | bash "$PROPOSAL" "${proposal_args[@]}")"
+    echo "$proposal_out2" | jq '.' 2>/dev/null || echo "$proposal_out2"
+    echo
+  fi
 fi
 
 # ---------------------------------------------------------------------------
