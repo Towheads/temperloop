@@ -105,7 +105,7 @@ echo '<html><body>503 Service Unavailable</body></html>' > "$TMP/state/checkruns
 cat > "$TMP/state/checkruns.json" <<'EOF'
 {"check_runs":[{"status":"completed","conclusion":"success"}]}
 EOF
-out="$(bash "$SCRIPT" Towheads/foundation 42 2>"$TMP/stderr.1.log")"
+out="$(bash "$SCRIPT" example-org/example-repo 42 2>"$TMP/stderr.1.log")"
 [ "$(jq -r .outcome <<<"$out")" = "CI_GREEN" ] \
   || fail "transient-then-green must still resolve CI_GREEN (got: $out)"
 [ "$(jq -r .sha <<<"$out")" = "$HEAD_SHA" ] || fail "transient-then-green sha (got: $out)"
@@ -118,7 +118,7 @@ echo "PASS: 2 transient non-JSON check-runs polls retried, 3rd (== CI_POLL_API_M
 # --- persistent garbage on check-runs → legible ERROR, bounded, exhausted ----
 reset_state
 echo '<html><body>503 Service Unavailable</body></html>' > "$TMP/state/checkruns.json"
-rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42 2>"$TMP/stderr.2.log")" || rc=$?
+rc=0; out="$(bash "$SCRIPT" example-org/example-repo 42 2>"$TMP/stderr.2.log")" || rc=$?
 [ "$rc" -eq 1 ] || fail "persistent check-runs garbage must exit 1 like any other ERROR (got rc=$rc)"
 [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "persistent check-runs garbage not ERROR (got: $out)"
 [ "$(jq -r .transient_retries_exhausted <<<"$out")" = "true" ] \
@@ -138,7 +138,7 @@ echo "PASS: persistent non-JSON check-runs polls exhaust CI_POLL_API_MAX_ATTEMPT
 # --- persistent garbage on the head-SHA (pulls) resolve -----------------------
 reset_state
 echo '<html><body>503 Service Unavailable</body></html>' > "$TMP/state/pull.json"
-rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42 2>/dev/null)" || rc=$?
+rc=0; out="$(bash "$SCRIPT" example-org/example-repo 42 2>/dev/null)" || rc=$?
 [ "$rc" -eq 1 ] || fail "persistent pulls-resolve garbage must exit 1 (got rc=$rc)"
 [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "persistent pulls garbage not ERROR (got: $out)"
 [ "$(jq -r .transient_retries_exhausted <<<"$out")" = "true" ] \
@@ -147,8 +147,8 @@ case "$(jq -r .error <<<"$out")" in
   *"head SHA resolve"*) ;;
   *) fail "error message should name the head SHA resolve (got: $out)" ;;
 esac
-[ "$(grep -c 'api repos/Towheads/foundation/pulls/42' "$TMP/state/calls.log")" -eq 3 ] \
-  || fail "expected exactly 3 bounded pulls-resolve attempts, got $(grep -c 'api repos/Towheads/foundation/pulls/42' "$TMP/state/calls.log")"
+[ "$(grep -c 'api repos/example-org/example-repo/pulls/42' "$TMP/state/calls.log")" -eq 3 ] \
+  || fail "expected exactly 3 bounded pulls-resolve attempts, got $(grep -c 'api repos/example-org/example-repo/pulls/42' "$TMP/state/calls.log")"
 grep -q 'check-runs' "$TMP/state/calls.log" \
   && fail "check-runs endpoint should never be reached when head-SHA resolve is exhausted"
 echo "PASS: persistent non-JSON head-SHA (pulls) resolve exhausts CI_POLL_API_MAX_ATTEMPTS(3), legible ERROR + transient_retries_exhausted:true, check-runs never reached"
