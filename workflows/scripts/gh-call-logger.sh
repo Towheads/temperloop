@@ -58,12 +58,21 @@
 #   (canonical sink spec: meta/data/raw/README.md), using the SAME
 #   override-then-fallback resolution seam emit-command-run.sh /
 #   emit-issue-touch.sh / emit-gh-perf.sh use for their own <STREAM>_RAW_DIR:
-#   an explicit override (GH_CALLS_RAW_DIR) first, else a fixed default
-#   ($HOME/dev/foundation/meta/data/raw). This shim can't use those scripts'
-#   BASH_SOURCE-relative trick (`cd "$here/../.."`) because, unlike them, it
-#   is INSTALLED — copied to ~/.local/bin/gh (make install-gh-logger) and run
-#   from there, decoupled from any repo checkout on disk; the fixed fallback
-#   is therefore the primary path in practice, not a rare degrade case.
+#   an explicit override (GH_CALLS_RAW_DIR) first, else an XDG-scoped default
+#   (${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls, temperloop
+#   #415). This shim can't use those scripts' BASH_SOURCE-relative trick
+#   (`cd "$here/../.."`) because, unlike them, it is INSTALLED — copied to
+#   ~/.local/bin/gh (`temperloop install`, bin/subcommands/install.sh) and
+#   run from there, decoupled from any repo checkout on disk; the XDG
+#   fallback is therefore the primary path in practice, not a rare degrade
+#   case. A real downstream build-repo checkout that wants the lake to land
+#   in its own meta/data/raw/ (unioned with the other in-repo emit sites)
+#   sets GH_CALLS_RAW_DIR explicitly — the override always wins. The default
+#   was previously a hardcoded path under one operator's personal projects
+#   directory: a fresh machine's first few `gh` calls silently pre-populated
+#   the exact directory this project documents as the canonical `git clone`
+#   target for that downstream repo, breaking that clone on a non-empty
+#   destination (temperloop#415).
 #
 #   CUTOVER NOTE: the TSV (`$LOG`, below) stays live because
 #   workflows/scripts/probe/gh-perf-report.sh reads it directly (percentile/
@@ -88,7 +97,11 @@ LOG="${GH_CALL_LOG_FILE:-$HOME/.cache/gh-calls-v2.tsv}"
 MAX_BYTES="${GH_CALL_LOG_MAX_BYTES:-16777216}"   # 16 MiB
 
 # Lake stream (dual-write sibling of $LOG — see header LAKE STREAM note).
-LAKE_DIR="${GH_CALLS_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}"
+# Default is XDG-scoped (never a hardcoded personal checkout path —
+# temperloop#415); GH_CALLS_RAW_DIR overrides for a real downstream
+# build-repo checkout that wants the lake unioned into its own
+# meta/data/raw/.
+LAKE_DIR="${GH_CALLS_RAW_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls}"
 
 # Resolve THIS shim's own absolute path so we never exec ourselves (infinite loop).
 # When invoked as `gh` via PATH, $0 may be bare "gh"; command -v then yields this

@@ -57,6 +57,41 @@ survives. `--dry-run` previews with zero writes; `--yes` pre-confirms
 (otherwise an interactive `y/N` prompt, or a non-interactive default-deny
 that touches nothing).
 
+### The `gh` call-logger shim (disclosure)
+
+`temperloop install` (scope (b) above) unconditionally installs
+`workflows/scripts/gh-call-logger.sh` as `~/.local/bin/gh` — a transparent
+wrapper around **every** `gh` invocation on the machine (and, installed
+under the same mechanism as `git-bug`, every `git-bug` call too). This is
+part of the machine-surface install manifest, so it shows up in
+`temperloop uninstall`'s removal list like any other managed path; it is not
+a hidden side effect.
+
+**What it does.** It runs the real `gh`/`git-bug` binary as a child process,
+times the call, and appends one record of the call (start time, duration,
+exit code, the outermost command/op that made it if set, cwd, and the
+arguments) to two local, append-only sinks — never sending anything over the
+network itself. It never blocks, alters, or fails a call: logging is
+best-effort, and a logging failure can never change the wrapped tool's exit
+code.
+
+**Where it logs.**
+
+- A self-truncating TSV at `${GH_CALL_LOG_FILE:-$HOME/.cache/gh-calls-v2.tsv}`
+  (rotates to `<file>.1` past a 16&nbsp;MiB cap).
+- A monthly JSONL lake file at
+  `${GH_CALLS_RAW_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls}/gh-calls-<YYYY-MM>.jsonl`.
+  The default is XDG-scoped and never assumes a particular downstream repo
+  checkout exists on disk; a real `foundation` checkout that wants this
+  stream unioned into its own `meta/data/raw/` sets `GH_CALLS_RAW_DIR`
+  explicitly (see `meta/data/raw/README.md` for the record shape).
+
+**How to opt out.** Set `GH_CALL_LOG=0` (per-call or exported machine-wide)
+for a zero-overhead passthrough — the real tool still runs, but no timing,
+no log row, no lake record. To remove the shim entirely, run `temperloop
+uninstall` (or `rm -f ~/.local/bin/gh`, restoring your shell's own `gh`
+resolution from `PATH`).
+
 ## Prerequisites
 
 `temperloop` shells out to two tools it doesn't vendor, and checks both

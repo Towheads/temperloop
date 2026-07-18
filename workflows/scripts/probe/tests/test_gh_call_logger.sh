@@ -57,9 +57,10 @@ EOF
 # gh or an installed shim copy). Logs to a per-call file we assert on.
 #
 # GH_CALLS_RAW_DIR is ALWAYS pinned to a scratch dir under $WORK here (never
-# left to its real default of $HOME/dev/foundation/meta/data/raw) — otherwise
-# every test invocation would append a live row into the developer's actual
-# telemetry lake as a side effect of running this suite.
+# left to its real default of ${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/
+# gh-calls) — otherwise every test invocation would append a live row into
+# the developer's actual telemetry lake as a side effect of running this
+# suite.
 LAKE_DEFAULT="$WORK/lake"
 run_shim() {  # <toolname> <logfile> -- <args...>
   local name="$1" logf="$2"; shift 2; [ "$1" = "--" ] && shift
@@ -186,5 +187,36 @@ if command -v jq >/dev/null 2>&1; then
 else
   echo "  [skip] jq unavailable — quoted-arg JSON validity not checked"
 fi
+
+# --- 12: default GH_CALLS_RAW_DIR is XDG-scoped, never a personal checkout
+#     path (temperloop#415) — exercised with GH_CALLS_RAW_DIR deliberately
+#     UNSET, unlike every case above which pins it via run_shim.
+FAKEHOME="$WORK/fakehome12"; mkdir -p "$FAKEHOME"
+NAME12="gh"; L12="$WORK/log12.tsv"
+cp "$SHIM_SRC" "$SHIMBIN/$NAME12"; chmod +x "$SHIMBIN/$NAME12"
+make_fake "$REALBIN/$NAME12"
+
+# 12a: XDG_STATE_HOME set -> lake lands under $XDG_STATE_HOME/temperloop/gh-calls
+XDG12="$WORK/xdg12"
+env -u GH_CALLS_RAW_DIR HOME="$FAKEHOME" XDG_STATE_HOME="$XDG12" \
+  GH_CALL_LOG_FILE="$L12" PATH="$REALBIN:/usr/bin:/bin" \
+  "$SHIMBIN/$NAME12" issue list >/dev/null \
+  || fail "default-lake-dir (XDG_STATE_HOME set) run failed"
+[ -f "$XDG12/temperloop/gh-calls/gh-calls-${month_now}.jsonl" ] \
+  || fail "default lake dir should be \$XDG_STATE_HOME/temperloop/gh-calls, found: $(find "$XDG12" -type f 2>/dev/null)"
+
+# 12b: XDG_STATE_HOME unset -> lake lands under $HOME/.local/state/temperloop/gh-calls
+env -u GH_CALLS_RAW_DIR -u XDG_STATE_HOME HOME="$FAKEHOME" \
+  GH_CALL_LOG_FILE="$L12" PATH="$REALBIN:/usr/bin:/bin" \
+  "$SHIMBIN/$NAME12" issue list >/dev/null \
+  || fail "default-lake-dir (XDG_STATE_HOME unset) run failed"
+[ -f "$FAKEHOME/.local/state/temperloop/gh-calls/gh-calls-${month_now}.jsonl" ] \
+  || fail "fallback lake dir should be \$HOME/.local/state/temperloop/gh-calls, found: $(find "$FAKEHOME" -type f 2>/dev/null)"
+
+# Never, in either arm, materialize the personal dev/foundation checkout path
+# this default used to hardcode (the exact regression #415 reports).
+[ ! -e "$FAKEHOME/dev/foundation" ] \
+  || fail "default lake dir must never create \$HOME/dev/foundation (temperloop#415 regression)"
+echo "  [ok] default GH_CALLS_RAW_DIR is XDG-scoped (\$XDG_STATE_HOME/temperloop/gh-calls, falling back to \$HOME/.local/state/temperloop/gh-calls) and never touches \$HOME/dev/foundation"
 
 echo "PASS: gh-call-logger v2 shim"

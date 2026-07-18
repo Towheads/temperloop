@@ -212,11 +212,19 @@ Example record:
 Emitted by `workflows/scripts/gh-call-logger.sh` (the `gh`/`git-bug` TIMED
 call-logger shim, F#988; lake promotion: temperloop `gh-logger-lake-stream`),
 one record per wrapped `gh`/`git-bug` invocation. Unlike the other streams on
-this page, the emit site is an **installed** shim (`make install-gh-logger`
-copies it to `~/.local/bin/gh`, decoupled from any repo checkout on disk), so
-its raw-dir resolution is override-then-**fixed-fallback**
-(`${GH_CALLS_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}`) rather than the
-BASH_SOURCE-relative trick the in-repo emit sites use.
+this page, the emit site is an **installed** shim (`temperloop install` /
+`bin/subcommands/install.sh` copies it to `~/.local/bin/gh`, decoupled from
+any repo checkout on disk), so its raw-dir resolution is
+override-then-**fixed-fallback** — an explicit `GH_CALLS_RAW_DIR` first, else
+an XDG-scoped default
+(`${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls`, temperloop
+#415) — rather than the BASH_SOURCE-relative trick the in-repo emit sites
+use. A real foundation checkout that wants this stream unioned into its own
+`meta/data/raw/` sets `GH_CALLS_RAW_DIR` explicitly; the default deliberately
+never hardcodes a personal checkout path (temperloop#415 — the prior fixed
+default, `$HOME/dev/foundation/meta/data/raw`, silently pre-populated the
+very directory this project documents as the canonical downstream-clone
+target on a fresh machine).
 
 **Dual-write, not a replacement (yet).** This stream is written *alongside*
 the shim's pre-existing self-truncating live TSV
