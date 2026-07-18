@@ -185,7 +185,7 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
 PAYLOAD_FILE="$(mktemp "${TMPDIR:-/tmp}/temperloop-feedback.XXXXXX")"
 # Invoked indirectly via `trap ... EXIT` below -- same idiom (and same
 # false-positive) as archive-plan.sh's populate_plan.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() { rm -f "$PAYLOAD_FILE"; }
 trap cleanup EXIT
 
