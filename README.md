@@ -73,6 +73,12 @@ someone who has never touched this repo's Makefile, board, or build pipeline.
 Install it, then walk the ladder: taste it read-only, see it mutate something
 disposable, then opt your own repo in.
 
+**Before step 1: what this costs, and what it will do on its own.**
+[`docs/cost-and-autonomy.md`](docs/cost-and-autonomy.md) covers real spend
+figures per tier (including whether a budget cap is on by default), and
+exactly what an unattended run may do without asking versus what always
+blocks for you — worth two minutes before you run anything below.
+
 ```sh
 # 1. Install — inspect first (recommended), then run
 curl -fsSL https://raw.githubusercontent.com/Towheads/temperloop/main/bin/bootstrap.sh -o temperloop-bootstrap.sh
