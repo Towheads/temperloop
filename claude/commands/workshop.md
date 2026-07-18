@@ -164,28 +164,147 @@ foundation that later shifts underneath it.
    adapter, build/sweep pipeline, install/doctor, branch/PR policy) to work
    correctly? The answer feeds **dimension 3** (Alignment / routing)
    directly — record the routing call and its rationale now.
+
 4. **Probe-before-create the brief note** — the brief-side mirror of Step
    5b.3's epic probe, so a re-run (including one crashed between ratify and
-   materialize) never clobbers an existing brief. Check whether
-   `Designs/<short title>.md` already exists in the knowledge store; if it
-   does, branch on its frontmatter `status`:
+   materialize) never clobbers an existing brief, **and so a killed or
+   ratified idea short-circuits here — before the premise gate (item 5) could
+   re-litigate it**. This probe therefore runs **ahead of** the premise gate:
+   create-or-adopt the note first, walk the gate second, so the gate's
+   dimension-0 write and any drop action always target a note already on disk.
+   Check whether `Designs/<short title>.md` already exists in the knowledge
+   store; if it does, branch on its frontmatter `status`:
    - **`draft`** → adopt it: skip creation and **resume the walk at Step 2**
      against the existing note (its already-dispositioned dimensions stand;
-     the walk covers the rest).
+     the walk covers the rest). The premise gate already ran on the pass that
+     first created this draft, so it is **not** re-run on a plain adopt.
    - **`ratified`** → **stop.** A ratified brief is immutable
      (`claude/design-schema.md` § Frontmatter); never edit it in place. If
      the design has genuinely changed, author a **new** brief under a new
      title that supersedes it via `[[wikilink]]`; if it hasn't, the right
      move is Step 5 (materialize) against the ratified brief, not a new
      walk.
+   - **`dropped`** → **stop.** A `dropped` brief is a **killed idea** —
+     Step 1.3b's drop action flipped it, and its dimension 0 carries the
+     kill rationale. **Never take the silent `draft`-adopt path here**:
+     reopening a killed idea requires an **explicit operator confirmation**
+     — offer an `AskUserQuestion` (reopen this dropped brief, or leave it
+     killed). Absent an explicit "reopen", **stop**, so a later run on the
+     same title never silently un-kills an idea the operator already rejected.
+     Only on an explicit "reopen" does the walk resume: flip `status:
+     dropped → draft` **via a full-file rewrite** (`vault_write`, or the
+     plain-files `ks_write` equivalent) and bump `last_verified` to today —
+     **never** a `vault_patch` frontmatter-scalar `replace`, which the vault
+     safe-targeting contract (and Step 4.4) documents as **silently dropping
+     the field and returning OK**; a silent no-op there would leave the brief
+     `status: dropped` while the walk believed it reopened. Trust the flip
+     only when written by that full-file rewrite (or confirm it with a
+     read-back). Then resume at Step 2.
 
    Only when no note exists: **create it**, `status: draft`, per
    `claude/design-schema.md`'s frontmatter shape (`tags`, `date`,
    `status: draft`, `source_kind: claude-stamped`, `source_session`,
-   `source_model`, `last_verified`), with dimensions 1 and 3 pre-filled from
-   this step's answers (disposition `filled` on both, assuming the answers
-   are real — a stranger test that can't yet be answered gets `deferred → …`
-   like any other dimension, never a placeholder masquerading as an answer).
+   `source_model`, `last_verified`), with **dimension 0's `## 0. Premise &
+   null hypothesis` section present as the landing place the premise gate
+   (item 5) fills** — created empty/placeholder here, populated by the gate's
+   part (ii) — and dimensions 1 and 3 pre-filled from this step's answers
+   (disposition `filled` on both, assuming the answers are real — a stranger
+   test that can't yet be answered gets `deferred → …` like any other
+   dimension, never a placeholder masquerading as an answer). Then **continue
+   to the premise gate (item 5)**: note-creation is a precondition of the
+   gate, so on a brand-new design's first pass the gate's dimension-0 write
+   and its drop action both act on the note just created here — a `drop`
+   therefore persists a durable `status: dropped` kill record even on that
+   first pass, which is the whole point of creating the note first.
+5. **Step 1.3b — Premise gate (null-hypothesis checkpoint).** Runs **after**
+   the brief note exists (item 4's probe-before-create) — so its dimension-0
+   write and its drop action always target a note already on disk, and a
+   killed or ratified idea has already short-circuited at item 4 before this
+   gate could re-litigate it. (Numbered `1.3b` for its stable
+   cross-reference name — it is the null-hypothesis checkpoint that
+   conceptually belongs with the Step 1.3 routing call — but it **executes
+   here**, as the fifth intake action, once the note exists.) Compose and
+   answer the case *against* this design existing at all — the content of
+   **dimension 0** (Premise & null hypothesis) in `claude/design-schema.md`
+   § Kernel dimension list, the schema's one **`filled`-only** dimension
+   (`n/a`/`deferred` are invalid for it). This gate fires once per intake
+   pass. Three parts, in order:
+
+   - **(i) Compose the case *against*.** From the null hypothesis "this
+     design should not exist", state:
+     - the **do-nothing cost** — what actually breaks if this is never built;
+     - the **strongest subtraction alternative** — the smallest existing
+       surface (a rule, a gate, a doc, a habit) that could absorb the need
+       with no new mechanism;
+     - **existing-surface coverage** — which current mechanism already covers
+       part or all of this.
+
+     Argue each point **citing `docs/principles.md` by principle name** —
+     most directly the **stranger test** (principle 13: would a stranger's
+     kernel-only install actually need this?), **subtraction over mechanism**
+     (principle 8: fit or remove an existing mechanism before adding one), and
+     **minimum-viable-output** (principle 14). A case-against that names no
+     principle is not composed — cite the named principle each point rests on.
+     This is a genuine adversarial pass, not a formality: compose the
+     strongest case you honestly can, so the operator answers a real
+     challenge rather than a rubber stamp.
+
+   - **(ii) Elicit and record the operator's justification into dimension
+     0.** Put the composed case-against to the operator; elicit their
+     justification for proceeding anyway (or their agreement to kill it).
+     Record that justification — and the case-against it answers — into the
+     brief's **`## 0. Premise & null hypothesis`** section (the landing place
+     item 4 created) at disposition `filled`. **Compose the case-against and
+     its justification fresh for THIS brief every time** — never reuse, copy,
+     or suggest a premise carried over from a prior brief; a recycled
+     justification defeats the gate, whose whole point is that this specific
+     idea earned its own place. On the **proceed** path this dimension-0 body
+     write uses the same backend write primitive Step 2.6 defines (a
+     `vault_patch`/append on an Obsidian store, a full-file `ks_write` on a
+     plain-files store); on the **drop** path it is folded into that path's
+     single full-file rewrite (below), which also flips the frontmatter.
+
+   - **(iii) Offer the decision — `AskUserQuestion`.** The offered option set
+     is **conditioned on this brief's reshape marker** (see the `reshape`
+     bullet): on the **first** encounter this pass, present all three —
+     `proceed` / `reshape` / `drop`; **once the reshape marker is set**,
+     present only two — `proceed` / `drop` (reshape is spent). This is the
+     bounded-ceremony rule, stated once here so the "exactly three" and "two
+     on the second encounter" cases don't read as a contradiction — the count
+     is a function of the marker, not a constant.
+     - **proceed** → the premise holds. Record dimension 0 `filled` (part ii)
+       and continue to **Step 2**.
+     - **reshape** → the framing is wrong but the idea isn't dead. **First set
+       the reshape marker**: persist a one-line `premise-gate: reshaped once`
+       marker into the brief's **working-notes surface — the same surface
+       Step 3.1's tier record uses (3.1.4)** — so the once-per-pass bound
+       survives a crash/resume rather than living only in this pass's
+       in-context memory. Then loop back to **Step 1.1** to restate the
+       problem and re-run **Steps 1.1, 1.2, 1.3, and this gate** against the
+       new framing — **not** item 4's note probe (the draft note already
+       exists this pass; re-probing it would adopt-and-resume, skipping this
+       gate). Because the marker is now set, this gate's next encounter offers
+       only `proceed` / `drop` — reshape is **not** offered a second time; if
+       the reshaped framing still fails the premise the operator chooses
+       `proceed` or `drop`, never a third loop.
+     - **drop** → the case-against wins; the idea is killed. Perform the
+       **drop action** as a **single full-file rewrite** (`vault_write`, or
+       the plain-files `ks_write` equivalent) that sets the brief's
+       frontmatter to **`status: dropped`** (the additive enum value in
+       `claude/design-schema.md` § Frontmatter), writes **dimension 0's
+       `## 0.` section with the kill rationale** (disposition `filled` — the
+       justification, stated in the negative), and bumps `last_verified` to
+       today. **Never** use a `vault_patch` frontmatter-scalar `replace` for
+       the status flip — the vault safe-targeting contract (and Step 4.4)
+       documents it as **silently dropping the field and returning OK**, which
+       would leave the brief `status: draft` while the gate believed the kill
+       landed, defeating the whole invariant. Trust the flip only when written
+       by that full-file rewrite (or confirm it with a read-back). Then
+       **stop the command** — a dropped brief is neither ratified nor
+       materialized; it stands as the durable record (persisted by item 4's
+       note creation, now flipped `dropped`) that this idea was considered and
+       killed, so a later run on the same title sees the kill at item 4's
+       `dropped` branch rather than silently re-litigating it.
 
 ## Step 2 — Coverage walk
 

@@ -117,6 +117,23 @@ overlay/config/env before that release, not necessarily before this pull.
   `docs/features/workshop.md`) is updated from sixteen/16 to
   seventeen/17 throughout.
 
+- **`claude/design-schema.md` § Frontmatter `status` enum gains `dropped`
+  (temperloop#509, epic temperloop#498).** Additive, not breaking: `draft`
+  and `ratified` keep their meaning and the `draft → ratified` ratify path is
+  unchanged. `dropped` is a third **terminal** value a brief reaches only via
+  the new `/workshop` Step 1.3b premise-gate **drop action** — a killed idea
+  whose dimension 0 carries the kill rationale (disposition `filled`), neither
+  ratified nor materialized. **A consumer or overlay that pattern-matches the
+  `status` field on `draft|ratified` must be told about `dropped`** (a lint,
+  dashboard, or reader enumerating brief states) — hence this additive marker,
+  parallel to the dimension-0 additive note above. Reopening a `dropped` brief
+  requires an explicit operator confirmation (`/workshop` Step 1.4 stops on a
+  dropped brief rather than silently re-adopting it as a draft). The paired
+  `/workshop` prose change — the Step 1.3b premise gate (composes the case
+  *against* citing `docs/principles.md` by name, records the operator's
+  justification into dimension 0, offers proceed/reshape/drop) plus the Step
+  1.4 dropped-branch stop-and-reopen-confirm — ships in the same PR.
+
 ### Fixed
 
 - `reconcile.sh`: shellcheck directive on the label-lens optional
