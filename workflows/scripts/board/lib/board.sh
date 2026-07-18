@@ -69,6 +69,16 @@ BOARD_FIELD_COMPONENT="Component"
 #      the sync never carries a conf file: a consuming repo with no conf must
 #      behave EXACTLY as it did pre-#770.
 #
+# The repo/owner/project axes above resolve "whole-file first-hit-wins": once
+# a conf file exists at a higher-precedence location, THAT file alone is
+# consulted for the axis (a miss there falls straight to the built-in map,
+# never checking a lower-precedence file — see _board_conf_get's comment and
+# test_boards_conf.sh section 3, which pins this). The `backend` axis
+# (board_backend below) is the one exception: it resolves per-key across
+# BOTH files via _board_conf_get_layered, so a machine-level conf that is
+# merely silent on a board's backend key falls through to a repo-local entry
+# instead of shadowing it outright — see board_backend's own comment for why.
+#
 # Conf format: `board.<N>.<axis>=<value>` lines, axis in {repo,owner,project}.
 # Blank lines and `#`-prefixed lines are ignored. Parsed with grep/cut only —
 # NEVER sourced or eval'd, so a conf file cannot execute code. See
@@ -86,14 +96,57 @@ _board_conf_file() {
   return 1
 }
 
+# Echo EVERY existing conf file, one per line, in discovery order (machine
+# then repo-local). Unlike _board_conf_file() (which stops at the first
+# existing file, for the "one file wins" axes), this is the enumeration seam
+# _board_conf_get_layered() below walks for a per-key fallthrough. Emits
+# nothing (rc 0, empty output) when neither file exists.
+_board_conf_files() {
+  local f
+  f="${BOARDS_CONF_MACHINE:-${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf}"
+  [ -f "$f" ] && printf '%s\n' "$f"
+  f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
+  [ -f "$f" ] && printf '%s\n' "$f"
+  return 0
+}
+
 # _board_conf_get <board> <axis> — echo the conf value + rc 0 on a hit; rc 1 on
 # any miss (no conf file, or no matching key) so the caller falls back cleanly.
+# Whole-file "one file wins" discovery: only the FIRST existing conf file is
+# ever consulted for this axis, even if a lower-precedence file would have
+# matched — see test_boards_conf.sh section 3, which pins this contract
+# deliberately (no cross-file per-key merge) for the repo/owner/project axes.
 _board_conf_get() {
   local board="$1" axis="$2" file val
   file="$(_board_conf_file)" || return 1
   val="$(grep -m1 "^board\.${board}\.${axis}=" "$file" 2>/dev/null | cut -d= -f2-)"
   [ -n "$val" ] || return 1
   printf '%s' "$val"
+}
+
+# _board_conf_get_layered <board> <axis> — like _board_conf_get, but walks
+# EVERY existing conf file in discovery order (machine, then repo-local) and
+# returns the first line match ACROSS files, instead of stopping at the first
+# existing file. This is per-key fallthrough: a machine-level conf that omits
+# this axis for this board no longer shadows a repo-local entry that sets it
+# (a fleet cutover flips a board's backend via a COMMITTED repo-local
+# boards.conf entry, which a host's unrelated machine-level conf must not
+# silently defeat) — an explicit machine-level value for the axis still wins
+# outright, since it's found first. Used ONLY by board_backend() below; every
+# other axis keeps
+# _board_conf_get's whole-file "one file wins" contract (see its comment).
+# rc 1 if no existing conf file carries the key.
+_board_conf_get_layered() {
+  local board="$1" axis="$2" file val
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    val="$(grep -m1 "^board\.${board}\.${axis}=" "$file" 2>/dev/null | cut -d= -f2-)"
+    if [ -n "$val" ]; then
+      printf '%s' "$val"
+      return 0
+    fi
+  done < <(_board_conf_files)
+  return 1
 }
 
 # board number -> "owner/repo" for `gh issue create -R`. This is the ONE
@@ -200,10 +253,20 @@ board_project_number() {
 # same discovery order as any other board) — this hard-codes only the
 # DEFAULT any boards.conf-less consumer sees, exactly like board_repo()'s
 # boards 3-6 already do for the `repo` axis.
+# NOTE the backend axis alone uses _board_conf_get_layered (per-key
+# fallthrough across BOTH conf files), NOT _board_conf_get (whole-file "one
+# file wins", used by repo/owner/project above). A COMMITTED repo-local entry
+# is how a fleet cutover flips a board's backend; a host that separately
+# carries a machine-level conf for unrelated boards must not silently shadow
+# that committed flip just because the machine conf exists and happens not to
+# mention this board's backend key. An EXPLICIT machine-level
+# `board.<N>.backend=` line still wins outright (found first in discovery
+# order) — only the machine-conf-silent-on-this-key case falls through to
+# repo-local instead of jumping straight to the built-in map.
 #   board_backend <board#>  ->  "issues" | "projects" (default)
 board_backend() {
   local v
-  v="$(_board_conf_get "$1" backend)" && { printf '%s\n' "$v"; return 0; }
+  v="$(_board_conf_get_layered "$1" backend)" && { printf '%s\n' "$v"; return 0; }
   case "$1" in
     7) printf '%s\n' "issues"; return 0 ;;   # the kernel tracker (F#808) — see comment above
   esac
