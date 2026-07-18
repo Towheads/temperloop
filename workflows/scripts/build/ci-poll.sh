@@ -50,6 +50,25 @@
 # "CI ran and failed" apart from "the poll itself never completed". Omit the
 # flag and every existing caller's behavior — including the default exit
 # code on CI_FAILED — is byte-for-byte unchanged.
+#
+# Transient-gh-hiccup retry (temperloop#386): both `gh api` calls below (the
+# once-only head-SHA resolve and the per-poll check-runs query) go through
+# gh_retry(), which absorbs a transient non-JSON body (an HTML/503 error
+# page — the observed `invalid character '<' looking for beginning of value`
+# failure during a 2026-07-16 GitHub API degradation) or any other single-call
+# `gh` failure by retrying up to CI_POLL_API_MAX_ATTEMPTS times with a
+# CI_POLL_API_RETRY_BACKOFF-second graduated backoff between attempts, rather
+# than dying on the first hiccup. This keeps ci-poll.sh from surfacing a
+# transient API blip as an immediate ERROR — which the orchestrator (build-
+# level.mjs's ciPollLoop) treats the same as a genuine CI failure and
+# escalates `ci-failed` on, per the caller contract documented above (any
+# non-CI_GREEN/TIMEOUT/CI_FAILED outcome escalates). Only a call that fails
+# CI_POLL_API_MAX_ATTEMPTS times in a row (a genuinely persistent outage, not
+# a blip) still dies — legibly, with the retry count in the message and a
+# `transient_retries_exhausted:true` field so a caller inspecting the ERROR
+# payload (not just `.outcome`) can tell "gh/API never came back" apart from
+# a hard argument/config error. The closed outcome set itself (CI_GREEN /
+# CI_FAILED / TIMEOUT / ERROR) is unchanged — no new outcome was added.
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
@@ -60,6 +79,48 @@ exec 3>&1
 die() {
   jq -cn --arg error "$1" '{outcome:"ERROR", error:$error}' >&3
   exit 1
+}
+
+# die_transient_exhausted() — same ERROR shape as die(), plus a
+# transient_retries_exhausted:true field (temperloop#386) so a caller
+# inspecting the payload can tell "gh/API stayed broken across every retry"
+# apart from a hard/config ERROR that never got a retry at all. The closed
+# `.outcome` enum itself is unchanged.
+die_transient_exhausted() {
+  jq -cn --arg error "$1" \
+    '{outcome:"ERROR", error:$error, transient_retries_exhausted:true}' >&3
+  exit 1
+}
+
+# gh_retry <description> <gh-argv...> — runs the given `gh` invocation,
+# capturing combined stdout+stderr. On success, prints the captured output
+# (via stdout) and returns 0 — the normal, silent, common-case path. On
+# failure, retries the SAME invocation up to CI_POLL_API_MAX_ATTEMPTS times
+# total, with a graduated CI_POLL_API_RETRY_BACKOFF*attempt-second sleep
+# between attempts (mirrors board.sh's BOARD_CREATE_INDEX_RETRIES graduated-
+# backoff shape), logging each retry to stderr so a flake stays visible
+# rather than silently masked (same visibility stance as quality-gates.sh's
+# GATE_MAX_ATTEMPTS). Exhausting every attempt calls die_transient_exhausted
+# (never returns). This is what absorbs a transient non-JSON/HTTP-5xx `gh`
+# hiccup (temperloop#386) instead of the caller escalating on the first one.
+CI_POLL_API_MAX_ATTEMPTS="${CI_POLL_API_MAX_ATTEMPTS:-5}"
+CI_POLL_API_RETRY_BACKOFF="${CI_POLL_API_RETRY_BACKOFF:-2}"
+gh_retry() {
+  local desc="$1"; shift
+  local attempt=1 out
+  while :; do
+    if out="$("$@" 2>&1)"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    if [ "$attempt" -ge "$CI_POLL_API_MAX_ATTEMPTS" ]; then
+      die_transient_exhausted "$desc failed after $CI_POLL_API_MAX_ATTEMPTS attempts (temperloop#386): $out"
+    fi
+    printf '::: %s failed on attempt %d/%d — retrying (transient gh/API hiccup, temperloop#386): %s\n' \
+      "$desc" "$attempt" "$CI_POLL_API_MAX_ATTEMPTS" "$out" >&2
+    sleep "$(awk -v b="$CI_POLL_API_RETRY_BACKOFF" -v a="$attempt" 'BEGIN{print b*a}')"
+    attempt=$((attempt + 1))
+  done
 }
 
 usage() {
@@ -110,20 +171,23 @@ if [ -n "$sha" ]; then
   esac
 fi
 
-# Resolve the head SHA once (REST). --sha skips this entirely.
+# Resolve the head SHA once (REST). --sha skips this entirely. A transient
+# gh/API hiccup here is absorbed by gh_retry (temperloop#386); only a
+# persistent failure reaches die_transient_exhausted.
 if [ -z "$sha" ]; then
-  if ! sha="$(gh api "repos/$owner_repo/pulls/$pr" --jq .head.sha 2>&1)"; then
-    die "could not resolve head SHA for PR #$pr: $sha"
-  fi
+  sha="$(gh_retry "head SHA resolve for PR #$pr" \
+    gh api "repos/$owner_repo/pulls/$pr" --jq .head.sha)"
   [ -n "$sha" ] || die "PR #$pr resolved to an empty head SHA"
 fi
 
 deadline=$((SECONDS + timeout))
 while :; do
-  if ! runs="$(gh api "repos/$owner_repo/commits/$sha/check-runs" \
-      --jq '[.check_runs[]|{status,conclusion}]' 2>&1)"; then
-    die "check-runs query failed for $sha: $runs"
-  fi
+  # A transient gh/API hiccup (non-JSON/HTTP-5xx body) here is absorbed by
+  # gh_retry (temperloop#386) rather than dying on the first bad poll; only a
+  # persistent failure reaches die_transient_exhausted.
+  runs="$(gh_retry "check-runs query for $sha" \
+    gh api "repos/$owner_repo/commits/$sha/check-runs" \
+    --jq '[.check_runs[]|{status,conclusion}]')"
   n="$(jq length <<<"$runs")"
   pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$runs")"
 

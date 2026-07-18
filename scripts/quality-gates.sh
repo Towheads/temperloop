@@ -73,6 +73,15 @@ KERNEL_GATES=(
   # one scripts/quality-gates.sh actually runs — see
   # workflows/scripts/board/ISSUES-ONLY-BACKEND.md § Funnel integration).
   "make test-board-dual-adapter"
+  # test-ci-poll-retry (temperloop#386): ci-poll.sh's gh_retry() transient-
+  # API-hiccup absorption — a bounded, backoff-retried gh api call rather
+  # than an immediate false-escalating ERROR on a transient non-JSON/HTTP-5xx
+  # response. Lives at workflows/scripts/build/tests/test_ci_poll_retry.sh,
+  # sibling of test_ci_poll.sh, and is auto-covered by the glob-based
+  # `make test-build` recipe below (same "kernel Makefile is generator-owned,
+  # no per-file target" convention every workflows/scripts/build/tests/
+  # test_*.sh file already follows) — this comment is the explicit
+  # by-name registration the activation proof greps for.
   "make test-build"
   "make test-build-workflow"
   "make test-hooks"
