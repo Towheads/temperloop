@@ -246,3 +246,8 @@ ci-install-lifecycle workflows/scripts/tests/test_install_lifecycle.sh
 #    the workflow file's own header for why) — scheduled + workflow_dispatch
 #    only ──────────────────────────────────────────────────────────────────
 ci-install-tier2 .github/workflows/install-tier2.yml
+
+# ── feedback-issue-templates — bug/friction/question issue-form templates
+#    that route straight into the fnd:status:backlog intake /triage sweeps
+#    (temperloop#427) ───────────────────────────────────────────────────
+feedback-issue-templates .github/ISSUE_TEMPLATE/*

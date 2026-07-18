@@ -1,0 +1,48 @@
+name: Friction / rough edge
+description: Something works, but was confusing, surprising, or harder than it should have been.
+title: "[friction]: "
+labels:
+  - friction
+  - fnd:status:backlog
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for flagging a rough edge — this is for things that aren't
+        broken but slowed you down, confused you, or surprised you (an
+        unclear error message, a doc that didn't match reality, a command
+        with an unintuitive default).
+
+        **Privacy warning — do not paste private repository content.** No
+        tokens, credentials, hostnames, private issue/PR text, or logs from
+        a repo you don't intend to make public. Describe the *shape* of
+        what confused you rather than pasting raw output from a private
+        checkout. See `docs/CONTRIBUTING.md` § "Be scrubbed" for the same
+        rule this repo applies to its own contributed docs.
+
+        **What happens after you submit.** This form drops the issue
+        straight into this repo's own tracker Backlog (the
+        `fnd:status:backlog` label — see
+        `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`). It's picked up
+        the next time `/triage` sweeps that Backlog — every issue filed
+        this way is swept, not just the ones a maintainer happens to
+        notice; see `docs/features/funnel-driver.md` for the (optional,
+        maintainer-side) scheduled-tick machinery some checkouts run this
+        under. There's no fixed response-time SLA, but nothing filed here
+        is silently dropped.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What were you trying to do, and what tripped you up?
+      description: >-
+        The command/doc/flow you were following, and where it stopped
+        matching your expectation.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What would have been less confusing?
+      description: Optional — a clearer message, a different default, a doc fix, etc.
+    validations:
+      required: false
