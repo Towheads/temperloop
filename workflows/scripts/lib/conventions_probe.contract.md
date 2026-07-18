@@ -74,7 +74,7 @@ network-gated sections, the GitHub API's current state).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `dir` | string | Absolute path to the probed repo's root. |
+| `dir` | `null` (always) | Deliberately never populated (temperloop#416). This field previously carried the absolute local filesystem path to the probed repo's root — but this document's stdout is folded verbatim into a target repo's **committed** `.foundation/config` by `foundation init`, so an absolute path here leaked the operator's local machine layout (home-directory username, a consultant's client-naming checkout path, ...) into someone else's repo history via a real reviewable PR. No caller in this tree ever read `.repo.dir`, so it is kept present-but-`null` (not removed) to preserve the field's schema shape rather than emit a private path. |
 | `remote_url` | string \| null | `origin`'s remote URL, or `null` if there is no `origin` remote. |
 | `gh_repo` | string \| null | `OWNER/REPO`, from `--gh-repo` or inferred from `remote_url` (github.com only); `null` if neither resolves. |
 | `default_branch` | string \| null | `origin/HEAD`'s target branch name, falling back to the current checked-out branch; `null` if neither resolves (e.g. detached HEAD with no origin). |
