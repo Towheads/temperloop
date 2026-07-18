@@ -14,6 +14,31 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-17
+
+Patch. Safe pull, no migration — no `BREAKING` marker. CI-resilience fix only:
+the composed quality-gate run now absorbs transient macOS-runner flakiness
+without letting a real breakage through.
+
+### Fixed
+
+- **Bounded per-gate retry in the composed gate run (#404, temperloop#403).**
+  `scripts/quality-gates.sh` ran each gate exactly once, so a transient
+  `macos-latest` runner failure (fork/exec/IO under load) in *any* hermetic
+  gate failed the whole `checks` job and stalled the merge queue — observed
+  across unrelated gates that share no code and pass locally and on Ubuntu.
+  The serial gate loop is now wrapped in a bounded retry (`GATE_MAX_ATTEMPTS`,
+  default `3`): a real breakage fails every attempt and still gates, while a
+  flake clears on a retry. Retries are logged per-attempt and summarized at
+  end-of-run so a flake stays visible rather than silently masked; set
+  `GATE_MAX_ATTEMPTS=1` to disable when hunting a genuine intermittent bug.
+  Green runs retry nothing, so there is no added CI time in the common case.
+- **`GATE_MAX_ATTEMPTS` registered in the knob registry (#404).** The new
+  `${VAR:-default}` retry seam carries its `knob-registry.tsv` row (kernel
+  layer, int, default `3`, owning `scripts/quality-gates.sh`), so the
+  unregistered-knob sweep passes and the registry↔shell equality lint's
+  default matches the shell default.
+
 ## [0.13.0] - 2026-07-17
 
 Additive minor. Safe pull, no migration — no `BREAKING` marker. The headline
