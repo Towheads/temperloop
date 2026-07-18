@@ -148,6 +148,7 @@ install-cli workflows/scripts/proposal/*
 install-cli workflows/scripts/lib/changelog.sh
 install-cli workflows/scripts/lib/tests/test_changelog.sh
 install-cli workflows/scripts/tests/test_update_subcommand.sh
+install-cli workflows/scripts/tests/test_rename_compat.sh
 install-cli workflows/scripts/probe/conventions-probe.sh
 install-cli workflows/scripts/probe/tests/test_conventions_probe.sh
 install-cli workflows/scripts/lib/baseline_snapshot.contract.md
