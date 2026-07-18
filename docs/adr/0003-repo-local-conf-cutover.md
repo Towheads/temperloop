@@ -31,7 +31,13 @@ Each migrating board flips via a **committed `boards.conf` entry in its own
 consuming repo**. The cutover unit is one repo, atomic on that repo's own
 pull: sync the adapter, freeze board writes for a short announced window,
 run the migration with parity verification, commit the conf flip — one
-change. The kernel's built-in case map is untouched by the migration epic;
+change. One companion write rides inside the same freeze window: cross-board
+automation (funnel cron, reconcile sweeps) resolves backends through the
+**driver checkout's** (foundation's) own `boards.conf`, so each cutover also
+lands a paired one-line entry there — otherwise driver-run sweeps keep
+writing the old Projects board, the very split-brain this ADR designs
+against. (Foundation's own cutover needs no pair; it is the driver
+checkout.) The kernel's built-in case map is untouched by the migration epic;
 the additive-only rule and its config-selection test pin survive intact and
 are superseded only by the follow-on removal epic, which retires the
 Projects defaults explicitly. During soak, the frozen Projects boards are
