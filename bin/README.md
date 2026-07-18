@@ -33,13 +33,14 @@ compat shim alongside it) to the entrypoints inside that checkout, and
 prints a `PATH` reminder if `~/.local/bin` isn't on it already. No shell-rc
 edits, no `sudo`.
 
-**Uninstall — three separate scopes, don't conflate them:**
+**Uninstall — four separate scopes, don't conflate them:**
 
 | Scope | What it undoes | How |
 |---|---|---|
 | (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
 | (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
 | (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.foundation/config` | `temperloop eject` (run inside the target repo) |
+| (d) **Issue-cache store root** | `${XDG_CACHE_HOME:-$HOME/.cache}/temperloop` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/temperloop"` |
 
 Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
 it or remove it — this is a deliberate stance, not a gap: inferring "this
@@ -47,7 +48,9 @@ looks like a temperloop path, remove it too" would be exactly the
 namespace-grep behavior the manifest's own read discipline forbids (see
 `workflows/scripts/install/manifest.sh`'s header). `temperloop uninstall`
 prints the scope-(a) manual-removal bullet as guidance every time it runs,
-so it's never a dead end — just never automatic.
+so it's never a dead end — just never automatic. It prints the same kind of
+guidance for scope (d) (the cache store root) and a reminder to run
+`temperloop eject` for scope (c) in any target repo you ran `init` against.
 
 `temperloop uninstall` reads **only** its manifest: it removes every path it
 created and restores every preexisting path it backed up from that exact
@@ -102,6 +105,32 @@ before doing anything:
 
 If either is missing, `temperloop` prints exactly what's missing and how to
 fix it — never a bare stack trace.
+
+Working across more than one GitHub identity (e.g. a personal account plus a
+client's org)? `gh` resolves whichever identity is currently active —
+`gh auth switch` swaps it before you run a `temperloop` subcommand against a
+different repo/org, same as it would for a bare `gh` call.
+
+## Running across multiple repos or clients
+
+`temperloop install` (scope (b) of the Uninstall table above) is a **single
+global, per-machine** install — the symlinked `~/.claude/CLAUDE.md`,
+`settings.json`, and the rest are shared by every repo you point this CLI
+at, not duplicated per repo. What *is* per-repo is `.foundation/config`,
+written inside the target repo's own working tree by `temperloop init` (and
+reverted by `temperloop eject`, scope (c)) — labels, required checks, board
+wiring, and proposal PRs live there, scoped to that one repo, never in the
+global install.
+
+If you want an isolated instance per engagement instead of the one shared
+global install — the case for, say, a consultant running this across
+several unrelated client codebases — `bin/bootstrap.sh` honors two
+environment-variable overrides read *before* it clones anything:
+`FOUNDATION_HOME` (default `~/.local/share/temperloop`, where the checkout
+lives) and `FOUNDATION_BIN_DIR` (default `~/.local/bin`, where the
+`temperloop`/`foundation` entrypoints get symlinked). Set both to a
+client-specific path before running the bootstrap script to keep each
+engagement's install fully separate.
 
 ## Quickstart: try → try --demo → init
 
