@@ -81,6 +81,14 @@ overlay/config/env before that release, not necessarily before this pull.
   adjacent-tag update through the shim, legacy on-disk artifact reads, and
   the window-closed legible-degradation simulation).
 
+### Fixed
+
+- `reconcile.sh`: shellcheck directive on the label-lens optional
+  knowledge-store source is now `disable=SC1090,SC1091` (was `source=<path>`)
+  — the sync deliberately omits that lib from consumer repos and the runtime
+  already skips fail-open behind an `-f` guard, so a consumer's bare-shellcheck
+  CI no longer fails on the synced copy (#495).
+
 ## [0.14.1] - 2026-07-18
 
 Patch. Safe pull, no migration — no `BREAKING` marker. CI-portability fix
