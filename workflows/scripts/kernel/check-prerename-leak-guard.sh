@@ -68,15 +68,24 @@
 # not a design goal.
 #
 # EXEMPTIONS: this gate honours its OWN wholesale file-exempt list
-# (prerename-leak-exempt-files.txt, sibling — today just this gate's own
-# fixture-replay test) AND, deliberately DRY with the sibling scrub, the
-# personal-token-denylist's exempt list (personal-token-denylist-exempt-files.txt)
-# — several of those board/build fixture-replay tests embed full GitHub URLs
-# for the real, still-existing `Towheads/foundation` build repo (board 4),
-# e.g. ".../repos/Towheads/foundation/issues/145", which incidentally
-# contains the substring `foundation/issues` and would otherwise false-positive
-# shape #4 above even though it has nothing to do with this kernel's own
-# pre-rename identity. See that file's header for the per-file rationale.
+# (prerename-leak-exempt-files.txt, sibling) — a handful of board/build
+# fixture-replay tests that embed full GitHub URLs for the real,
+# still-existing `<org>/foundation` build repo (board 4), e.g.
+# ".../repos/<org>/foundation/issues/145", which incidentally contains
+# the substring `foundation/issues` and would otherwise false-positive shape
+# #4 above even though it has nothing to do with this kernel's own
+# pre-rename identity, plus this gate's own fixture-replay test. See that
+# file's header for the per-file rationale.
+#
+# Deliberately NOT reused: personal-token-denylist-exempt-files.txt (the
+# sibling scrub's own exempt list). It wholesale-exempts bin/README.md and
+# README.md for an UNRELATED reason (they repeat the kernel's own public
+# clone/raw URL in a copy-paste code fence) — but acceptance 2 requires THIS
+# gate to actually scan bin/README.md (the bootstrap hand-synced
+# triplication doc), so blanket-reusing that list would silently blind this
+# gate to the one file it's explicitly required to cover. Any file that
+# genuinely needs exemption from both gates for genuinely-shared reasons
+# gets listed in both files explicitly, not via a shared include.
 #
 # Usage:
 #   check-prerename-leak-guard.sh [--root DIR]
@@ -84,7 +93,7 @@
 #
 # Env overrides (fixture-driven tests):
 #   KERNEL_MANIFEST_ROOT, KERNEL_MANIFEST_FILE, PRERENAME_VERDICTS_FILE,
-#   PRERENAME_EXEMPT_FILE, KERNEL_DENYLIST_EXEMPT_FILE
+#   PRERENAME_EXEMPT_FILE
 #
 # Kept bash-3.2 friendly (macOS default shell) — no mapfile/associative arrays.
 
@@ -96,7 +105,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 : "${KERNEL_MANIFEST_ROOT:=$REPO_ROOT}"
 : "${PRERENAME_VERDICTS_FILE:=$SCRIPT_DIR/prerename-leak-verdicts.tsv}"
 : "${PRERENAME_EXEMPT_FILE:=$SCRIPT_DIR/prerename-leak-exempt-files.txt}"
-: "${KERNEL_DENYLIST_EXEMPT_FILE:=$SCRIPT_DIR/personal-token-denylist-exempt-files.txt}"
 
 if [[ ! -f "$PRERENAME_VERDICTS_FILE" ]]; then
   echo "check-prerename-leak-guard: verdict table not found at $PRERENAME_VERDICTS_FILE" >&2
@@ -104,8 +112,7 @@ if [[ ! -f "$PRERENAME_VERDICTS_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Load wholesale file exemptions from BOTH lists (this gate's own, plus the
-# reused personal-token-denylist one — see header).
+# Load wholesale file exemptions (this gate's own list only — see header).
 # ---------------------------------------------------------------------------
 exempt_files=()
 _load_exempt() {
@@ -120,7 +127,6 @@ _load_exempt() {
   done < "$file"
 }
 _load_exempt "$PRERENAME_EXEMPT_FILE"
-_load_exempt "$KERNEL_DENYLIST_EXEMPT_FILE"
 
 _prerename_is_exempt() {
   local target="$1" ex

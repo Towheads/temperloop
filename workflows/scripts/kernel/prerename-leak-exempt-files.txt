@@ -2,20 +2,27 @@
 # check-prerename-leak-guard.sh (temperloop#433), one git-relative path per
 # line. `#` starts a comment; blank lines ignored.
 #
-# This gate ALSO honours personal-token-denylist-exempt-files.txt (the
-# sibling gate's own exempt list) for the SAME reason check-pr-leak-guard.sh
-# already reuses it: several of those entries are board/build fixture-replay
-# tests whose mock `gh` JSON/CLI data embeds full GitHub URLs for the real,
-# still-existing `Towheads/foundation` build repo (board 4) — e.g.
-# ".../repos/Towheads/foundation/issues/145" — which incidentally contains
-# the substring `foundation/issues`, matching this gate's `foundation/<leaf>`
-# scan even though it has nothing to do with the temperloop kernel's own
-# pre-rename identity. Rather than re-list those same files here, this
-# gate's own script reads BOTH files. See that file's header for the full
-# per-file rationale.
-#
-# Entries below are specific to THIS gate (not shared with the denylist
-# gate):
+# Deliberately NOT a reuse of personal-token-denylist-exempt-files.txt (the
+# sibling gate's own exempt list): that list wholesale-exempts bin/README.md
+# and README.md for an UNRELATED reason (they repeat the kernel's own public
+# clone/raw URL in a copy-paste code fence), and this gate's acceptance
+# criteria explicitly require it to scan bin/README.md (the bootstrap
+# hand-synced triplication doc) — so blanket-including that file here would
+# reintroduce exactly the blind spot this gate exists to close. The three
+# board/build fixture-replay tests below ARE also on that other list, for a
+# genuinely different (personal-org-token) reason — they're
+# re-listed here explicitly rather than shared via an include.
+
+# Three board/build fixture-replay tests whose mock `gh` JSON/CLI data embeds
+# full GitHub URLs for the real, still-existing `<org>/foundation` build
+# repo (board 4) — e.g. ".../repos/<org>/foundation/issues/145" — which
+# incidentally contains the substring `foundation/issues`, matching this
+# gate's `foundation/<leaf>` scan even though it has nothing to do with the
+# temperloop kernel's own pre-rename identity. Same fixture data, same
+# rationale, as their entries in personal-token-denylist-exempt-files.txt.
+workflows/scripts/board/tests/test_parent_issue.sh
+workflows/scripts/build/tests/test_pr.sh
+workflows/scripts/build/tests/test_board_mirror.sh
 
 # This gate's OWN fixture-replay test (temperloop#433). To prove detection
 # it must seed a genuinely un-vetted FOUNDATION_-shaped token (one that is

@@ -51,15 +51,12 @@ EOF
 
 EXEMPT="$WORK/exempt.txt"
 : > "$EXEMPT"
-DENYLIST_EXEMPT="$WORK/denylist-exempt.txt"
-: > "$DENYLIST_EXEMPT"
 
 run_check() {
   KERNEL_MANIFEST_ROOT="$REPO" \
   KERNEL_MANIFEST_FILE="$MANIFEST" \
   PRERENAME_VERDICTS_FILE="$VERDICTS" \
   PRERENAME_EXEMPT_FILE="$EXEMPT" \
-  KERNEL_DENYLIST_EXEMPT_FILE="$DENYLIST_EXEMPT" \
     bash "$KERNEL_DIR/check-prerename-leak-guard.sh"
 }
 
@@ -176,18 +173,27 @@ if ! run_check >/dev/null 2>&1; then
 fi
 echo "PASS: 10 file-level exemption list (prerename-leak-exempt-files.txt) suppresses a whole file"
 : > "$EXEMPT"
-
-# --- 11: the REUSED personal-token-denylist exempt list also suppresses ---
-if run_check >/dev/null 2>&1; then
-  fail "11 setup: unmarked leak should still fail with both exempt lists empty"
-fi
-echo "kernel_dir/clean.sh" > "$DENYLIST_EXEMPT"
-if ! run_check >/dev/null 2>&1; then
-  fail "11: the reused KERNEL_DENYLIST_EXEMPT_FILE should also suppress the whole file"
-fi
-echo "PASS: 11 the reused personal-token-denylist exempt list also suppresses a whole file"
-: > "$DENYLIST_EXEMPT"
 git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+
+# --- 11: REGRESSION — this gate must NOT reuse another gate's exempt list --
+# check-personal-token-denylist.sh's own exempt list wholesale-exempts
+# bin/README.md/README.md for an unrelated reason (they repeat the kernel's
+# public clone URL); an earlier version of this gate blanket-reused that
+# whole file and, as a result, silently stopped scanning bin/README.md
+# entirely — exactly the file acceptance criterion 2 requires it to cover.
+# Prove that ANY file exempted only by a fixture standing in for that OTHER
+# list is still scanned (not exempted) by THIS gate, whether or not such a
+# file also happens to be named in personal-token-denylist-exempt-files.txt.
+OTHER_GATE_EXEMPT="$WORK/other-gate-exempt.txt"
+echo "kernel_dir/clean.sh" > "$OTHER_GATE_EXEMPT"
+echo 'FOUNDATION_STILL_UNREVIEWED=1' >> "$REPO/kernel_dir/clean.sh"
+git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "add unmarked leak (regression fixture)"
+if run_check >/dev/null 2>&1; then
+  fail "11: an unreviewed leak in a file exempted only by a DIFFERENT gate's list must still fail here"
+fi
+echo "PASS: 11 a file exempted only by another gate's list is still scanned by this gate"
+git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
+rm -f "$OTHER_GATE_EXEMPT"
 
 # --- 12: GREEN again — final state is clean ---------------------------------
 if ! run_check >/dev/null 2>&1; then
