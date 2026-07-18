@@ -44,6 +44,16 @@
 #                                 issues-only board only needs the `repo` axis
 #                                 — `owner`/`project` are meaningless without a
 #                                 Projects board and are simply never read.
+#                                 UNLIKE every other axis on this page, this
+#                                 one resolves PER-KEY across both conf files:
+#                                 a machine-level conf that exists but has no
+#                                 `backend=` line for this board falls through
+#                                 to a repo-local `backend=` line instead of
+#                                 shadowing it (an explicit machine-level
+#                                 `backend=` line still wins outright). This
+#                                 is what lets a committed repo-local backend
+#                                 flip survive an unrelated machine-level conf
+#                                 on the same host.
 #   cache    "on"               — issue-plane read-cache enable axis
 #                                 (F#988/#1026, cache-read-dispatch item's
 #                                 Contract; workflows/scripts/board/lib/cache.sh

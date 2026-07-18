@@ -177,4 +177,46 @@ export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-8b"
   || fail "board_registered_boards should union a conf-registered board 8, got: $(board_registered_boards | tr '\n' ' ')"
 echo "PASS: board_registered_boards is the built-in set (incl. board 7) unioned with conf-registered boards (temperloop#352)"
 
+# --- 9: backend axis per-key fallthrough (boards.conf per-axis backend
+# fallthrough) — a machine-level conf that EXISTS but is silent on this
+# board's backend key must fall through to a repo-local `backend=` entry,
+# NOT shadow it whole-file and jump straight to the built-in default. This is
+# the fleet-cutover case: a committed repo-local backend flip (e.g.
+# board.9.backend=issues) must survive an unrelated machine-level conf
+# present on the host for OTHER boards. Deliberately does NOT change the
+# repo/owner/project axes' whole-file contract pinned in section 3 above.
+cat > "$WORK/repo-local-9.conf" <<'EOF'
+board.9.repo=Acme/ninth
+board.9.backend=issues
+EOF
+cat > "$WORK/machine-9-silent.conf" <<'EOF'
+# a machine-level conf that exists, but says nothing about board 9's backend
+# (e.g. it only configures unrelated boards)
+board.42.repo=Acme/unrelated
+EOF
+export BOARDS_CONF_MACHINE="$WORK/machine-9-silent.conf"
+export BOARDS_CONF_REPO_LOCAL="$WORK/repo-local-9.conf"
+
+[ "$(board_backend 9)" = "issues" ] \
+  || fail "board_backend 9 should fall through the silent machine-level conf to the repo-local backend=issues entry, got: $(board_backend 9)"
+
+# ...but an EXPLICIT machine-level backend= line still wins outright over the
+# repo-local one (discovery order preserved; only the absent-key case falls
+# through).
+cat > "$WORK/machine-9-explicit.conf" <<'EOF'
+board.9.backend=projects
+EOF
+export BOARDS_CONF_MACHINE="$WORK/machine-9-explicit.conf"
+# BOARDS_CONF_REPO_LOCAL still points at repo-local-9.conf (backend=issues)
+
+[ "$(board_backend 9)" = "projects" ] \
+  || fail "an explicit machine-level backend= line should still win over repo-local, got: $(board_backend 9)"
+
+# A board mentioned in NEITHER file for the backend key still defaults to
+# "projects" (unaffected by the fallthrough change).
+[ "$(board_backend 4)" = "projects" ] \
+  || fail "board_backend 4 (backend key absent from both conf files) should still default to 'projects'"
+
+echo "PASS: the backend axis falls through a silent machine-level conf to repo-local, while an explicit machine-level value still wins"
+
 echo "ALL PASS: test_boards_conf.sh"
