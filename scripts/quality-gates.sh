@@ -112,6 +112,14 @@ KERNEL_GATES=(
   "make validate-live-drain"
   "make validate-command-run-emit"
   "make validate-issue-touch-emit"
+  # Kernel telemetry-brief renderer (temperloop#431): the five-question brief
+  # rendered from kernel-only raw streams, wired into claude/commands/
+  # check-in.md Part 1 — fixture-lake render reconciliation, empty-stream
+  # "no data yet" degradation, stale-window honesty, torn-line resilience,
+  # and the check-in.md wiring presence check. Same direct-`bash` form as
+  # the T0-inventory/manifest gates above (kernel Makefile is
+  # generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_telemetry_brief.sh"
   "make validate-lexicon"
   # Message-template reference-integrity + registry-completeness lint
   # (temperloop#94, plan item `template-lints`): every by-name template
