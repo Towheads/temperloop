@@ -4,8 +4,7 @@ title: TemperLoop, in one page — what it does, who it's for, how to try it
 
 # TemperLoop, in one page
 
-This is temperloop in one page — what it does, who it's for, and how to try
-it — for someone who has never seen this repo before.
+The page to share with someone who has never seen this repo before.
 
 ## What it does
 
@@ -40,6 +39,11 @@ straightforward exclusion: `docs/who-its-for.md`.
 
 ## How to try it
 
+Before anything below: `docs/cost-and-autonomy.md` covers real spend figures
+per tier and exactly what an unattended run may do without asking — worth
+two minutes first, especially before turning on anything that runs without
+you watching.
+
 The zero-write path: install the CLI — see `bin/README.md`'s Install section
 for the exact command (an inspect-first form and a one-line form, your
 choice) — then, from inside any repo, run:
@@ -58,12 +62,13 @@ own repo in): `bin/README.md`'s Quickstart section.
 
 ## Before you run anything: what it costs
 
-Unattended usage — the autonomous funnel driver, nightly `/tidy`, any
-cron-style `claude -p` invocation — spends **your own** Claude account's
-budget. TemperLoop has no billing of its own and runs no hosted service, so
-an unattended run draws down your usage or API spend while you aren't
-watching. Read `docs/cost-and-autonomy.md` before turning on anything
-unattended: it has real cost bands per tier, states plainly whether a dollar
-cap is on by default (yes for the onboarding tier, no beyond it), and spells
-out exactly what an autonomous tier may do without asking versus what always
-blocks for a human.
+Any unattended or scheduled run of this tooling — the mechanisms are named
+in `docs/cost-and-autonomy.md`, not repeated here — spends **your own**
+Claude account's budget. TemperLoop has no billing of its own and runs no
+hosted service, so a run left going while you aren't watching draws down
+your usage or API spend the same as any session you'd run yourself. Read
+`docs/cost-and-autonomy.md` before turning on anything unattended: it has
+real cost bands per tier, states plainly whether a dollar cap is on by
+default (yes for the onboarding tier, no beyond it), and spells out exactly
+what an autonomous tier may do without asking versus what always blocks for
+a human.
