@@ -10,7 +10,15 @@ Throughout, surface files (`Context/pipeline - *.md`, `Priorities/<project>.md`)
 
 ## Part 1 — Telemetry brief (status readout)
 
-Lead with the push-surface telemetry digest — "what needs me" should open the review. This uses the **overlay** telemetry renderer, so render it **only if present** (a composed install has it; a kernel-only checkout does not):
+Lead with the push-surface telemetry digest — "what needs me" should open the review. Render the **kernel telemetry brief** first — the kernel-side renderer ships in every checkout (kernel-only or composed), reads **only the kernel raw streams** (the `meta/data/raw/` lake streams plus the knowledge-store read log — each named explicitly in its output, per-section, so every number is reconcilable against its source file), and degrades honestly: an absent or empty stream renders a "no data yet" line, never a crash or a fabricated number:
+
+```sh
+bash workflows/scripts/telemetry-brief.sh
+```
+
+Show its output **verbatim** as the first thing in the session — it leads with **data age** across the kernel streams and alarms loudly (`DATA STALE`) if the freshest record is past 24h. If it prints `DATA STALE` or `DATA AGE: UNKNOWN`, call that out as your opening line before anything else, since it means the rest of the brief (and other telemetry-backed surfaces) can't be trusted right now. Do not summarize or drop the data-age line — paste the markdown as-is.
+
+Then render the **overlay enrichment, only if present** (a composed install has it; a kernel-only checkout does not — the kernel brief above stands alone). The overlay renderer adds the rollup-backed digest the kernel streams can't derive: token-cost spend (cost-per-epic), rework/retro yield, and funnel escalation detail:
 
 ```sh
 if [ -f workflows/scripts/build_telemetry_brief.py ]; then
@@ -18,7 +26,7 @@ if [ -f workflows/scripts/build_telemetry_brief.py ]; then
 fi
 ```
 
-If the script exists, show its output **verbatim** as the first thing in the session — it leads with **data age** and alarms loudly if the rollups are stale (past 24h). If it prints `DATA STALE` or `DATA AGE: UNKNOWN`, call that out as your opening line before anything else, since it means the rest of the brief (and other telemetry-backed surfaces) can't be trusted right now. Do not summarize or drop the data-age line — paste the markdown as-is. If the script is **absent** (kernel-only checkout, no telemetry rollups), skip Part 1 with a one-line note (`telemetry brief unavailable — no renderer in this checkout`) and continue.
+If the overlay script exists, show its output verbatim too (same data-age callout rule — it leads with the rollups' own data age). If it is absent, note in one line that the overlay enrichment is unavailable in this checkout and continue — the kernel brief has already rendered.
 
 ## Part 2 — Dispose the overnight queues
 

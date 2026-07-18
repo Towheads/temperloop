@@ -96,10 +96,13 @@ the pipeline command or script whose activity it's recording (a build step,
 a drain pass, a funnel tick, a search-backend fallback path).
 
 Produces: the raw lake, which several downstream readers consume without
-any of them owning the schema — a telemetry-brief renderer (the status
-readout `check-in` leads with), a vault-hygiene probe's read-log tally, a
-`gh`-performance before/after report, and any ad hoc analysis over the raw
-files. `findings` in particular feeds the candidate-tells surface that
+any of them owning the schema — the kernel telemetry-brief renderer
+(`workflows/scripts/telemetry-brief.sh`, the five-question status readout
+`check-in` leads with on every checkout; it reads only these kernel streams
+plus the knowledge-store read log, names each source stream in its output,
+and degrades to an honest "no data yet" line per empty stream), a
+vault-hygiene probe's read-log tally, a `gh`-performance before/after
+report, and any ad hoc analysis over the raw files. `findings` in particular feeds the candidate-tells surface that
 `check-in`'s review disposes. Emit-site correctness for the two oldest
 streams is itself covered by dedicated validator scripts; the findings
 stream has its own schema document that downstream consumers are expected

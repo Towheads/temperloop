@@ -14,6 +14,11 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+Additive. Safe pull, no migration — no `BREAKING` marker. The `/check-in`
+pipeline-command contract **grows** (its Part 1 telemetry brief now renders
+kernel-side on every checkout); nothing existing changes shape — the overlay
+renderer keeps its exact guarded invocation as an enrichment.
+
 ### Added
 
 - **Knowledge-store sync — optional backend capability (temperloop#430, ADR
@@ -45,6 +50,35 @@ reads that marker; a stranger greps for it before pulling.
   backend, caller, or overlay must change (no backend inherits a new
   required op; the read-log line shape — field order/count/separator — is
   untouched).*
+
+- **Kernel-side telemetry-brief renderer (temperloop#431).**
+  `workflows/scripts/telemetry-brief.sh` renders the five-question telemetry
+  brief (attention, funnel health & trust, spend, improvement, command
+  effectiveness) from **kernel-only raw streams** — the `meta/data/raw/` lake
+  (`command-runs`, `issue-touches` ∪ `claims`, `funnel`, `gh-calls`,
+  `knowledge-search-fallback`) plus the knowledge-store read log
+  (`ks__read_log_emit`) — so the brief and `/check-in`'s daily render work on
+  a bare kernel checkout with no overlay, vault, or rollup pipeline. Every
+  section names its source stream verbatim (numbers are reconcilable by
+  reading the named file); an absent or empty stream degrades to an honest
+  "no data yet — <stream> is empty" line, never a crash or a fabricated
+  number; records with no in-window hits report the freshest record found
+  instead of rendering zeros as current. Leads with cross-stream `DATA AGE`
+  (alarming `DATA STALE` past 24h), matching the overlay renderer's contract.
+  Reader follows the emitters' own `*_RAW_DIR` overrides first, falling back
+  to the new `TELEMETRY_RAW_DIR` knob; window set by `TELEMETRY_LOOKBACK_DAYS`
+  / `--lookback-days` (both registered in `knob-registry.tsv`). Covered by a
+  new `KERNEL_GATES` test (`workflows/scripts/tests/test_telemetry_brief.sh`:
+  fixture-lake reconciliation, empty-stream degradation, stale-window honesty,
+  torn-line resilience, check-in wiring presence).
+- **`/check-in` Part 1 renders kernel-first (contract change, additive).**
+  `claude/commands/check-in.md` Part 1 previously skipped the telemetry brief
+  entirely on a kernel-only checkout (`telemetry brief unavailable — no
+  renderer in this checkout`); it now always renders the kernel brief via
+  `workflows/scripts/telemetry-brief.sh`, then renders the overlay
+  `build_telemetry_brief.py` digest as a guarded enrichment when present —
+  same one-directional kernel→overlay reference rule as before (the overlay
+  call stays behind its `[ -f … ]` existence guard).
 
 ## [0.13.1] - 2026-07-17
 

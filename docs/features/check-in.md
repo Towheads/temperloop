@@ -54,9 +54,11 @@ actually shifted.
 
 Consumes: every review surface the drain pass (`tidy`) and the autonomous
 funnel driver write — pending decisions, proposed supersessions, retro
-findings, candidate tells, vault hygiene, sensitivity flags — plus a
-telemetry-brief renderer for Part 1's status readout, when one is present
-in the checkout.
+findings, candidate tells, vault hygiene, sensitivity flags — plus the
+telemetry-brief renderers for Part 1's status readout: the kernel renderer
+(`workflows/scripts/telemetry-brief.sh`) unconditionally — it ships in every
+checkout and degrades honestly on empty streams — and the overlay's
+rollup-backed renderer as an enrichment when present.
 
 Produces: resolved/dismissed status on every surface entry it disposes;
 worklist issues for accepted retro findings; lexicon updates for promoted
@@ -81,11 +83,14 @@ each a small note read-and-confirm.
 
 None as a direct raw-lake emitter — this command is the human-facing
 consumer of telemetry rather than a producer of it. Its Part 1 status
-readout surfaces whatever the checkout's telemetry-brief renderer already
+readout surfaces whatever the checkout's telemetry-brief renderers already
 computed from the raw-lake streams (command runs, issue touches, funnel
-ticks, findings, and the rest); if that renderer reports stale or missing
+ticks, findings, and the rest); if a renderer reports stale or missing
 data, that staleness is itself the observable signal that something in the
-telemetry pipeline needs attention. Absent any renderer, the way to notice
-this command isn't doing its job is indirect: review surfaces (pending
-decisions, sensitivity flags, and the rest) accumulating unresolved entries
-across multiple days is the tell that check-ins have lapsed.
+telemetry pipeline needs attention. The kernel renderer is now
+**unconditional** — every checkout renders Part 1's brief, so "no renderer
+in this checkout" is no longer a state this command can be in; a fresh
+install simply renders honest "no data yet" lines until the streams warm
+up. The remaining indirect tell that check-ins themselves have lapsed:
+review surfaces (pending decisions, sensitivity flags, and the rest)
+accumulating unresolved entries across multiple days.
