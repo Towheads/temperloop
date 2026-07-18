@@ -134,6 +134,27 @@ overlay/config/env before that release, not necessarily before this pull.
   justification into dimension 0, offers proceed/reshape/drop) plus the Step
   1.4 dropped-branch stop-and-reopen-confirm — ships in the same PR.
 
+### Removed
+
+- **`workflows/scripts/board/worklist.sh`: the Seq display column and its
+  `.seq // 9999` sort key are retired (temperloop#474, epic
+  temperloop#460) — the read-side completion of ADR 0006's Seq
+  retirement.** Classified **non-breaking/minor** against VERSIONING.md's
+  Board adapter interface contract-surface row: `worklist.sh`'s
+  human-readable text output is not one of that row's coupling points
+  (`board_resolve_item` / `board_resolve` / `board_item_list` /
+  `board_set_*` function signatures and JSON shapes are all untouched), and
+  by this level every registered board (all four fleet boards plus the
+  temperloop issues-only tracker) is issues-backed per ADR 0006 — no board
+  has carried a live Seq value since the write side (`board_set_number`)
+  was already changed to fail loud at epic temperloop#460's L0, so the
+  column has been permanently empty everywhere it could still render.
+  Output is otherwise unchanged: the `--all` and default (In-Progress)
+  views keep the same remaining columns, and sort order now falls back to
+  ascending issue number (`sort_by(.content.number)`, replacing
+  `sort_by(.seq // 9999)`) for deterministic ordering. The two header
+  comments mentioning Seq are updated to match.
+
 ### Fixed
 
 - `reconcile.sh`: shellcheck directive on the label-lens optional

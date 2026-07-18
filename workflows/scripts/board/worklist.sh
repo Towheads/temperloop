@@ -2,7 +2,7 @@
 #
 # Unified, cross-machine worklist: which board item each Claude Code session is
 # working, on any machine. Reads a GitHub Projects v2 board and
-# prints the In-Progress set with its Host/Session stamp and Seq.
+# prints the In-Progress set with its Host/Session stamp.
 #
 # The board is the cross-machine source of truth for "what's being worked,
 # where" — it's reachable from every machine, so this command answers the
@@ -11,7 +11,7 @@
 #
 # --board selects the Projects-v2 board (default 3 = stageFind; 4 = foundation).
 #
-#   worklist.sh                   # In-Progress items + host/session + seq
+#   worklist.sh                   # In-Progress items + host/session
 #   worklist.sh --all             # every item, grouped by Status
 #   worklist.sh --board 4         # the foundation board
 #
@@ -54,7 +54,7 @@ if [ "$show_all" -eq 1 ]; then
     .items
     | group_by(.status // "(no status)")[]
     | "── \(.[0].status // "(no status)") ──",
-      ( sort_by(.seq // 9999)[]
+      ( sort_by(.content.number)[]
         | "  #\(.content.number)  \(.content.title)"
           + ( if (.["host/Session"] // "") != "" then "  [\(.["host/Session"])]" else "" end ) )
   '
@@ -63,8 +63,8 @@ else
   echo "$json" | jq -r --arg ip_name "$BOARD_OPT_INPROGRESS" '
     [ .items[] | select(.status == $ip_name) ] as $ip
     | if ($ip | length) == 0 then "No items In Progress."
-      else ( $ip | sort_by(.seq // 9999)[]
-             | "#\(.content.number)  \(.content.title)\n        seq \(.seq // "?")   owner: \(.["host/Session"] // "(unstamped)")" )
+      else ( $ip | sort_by(.content.number)[]
+             | "#\(.content.number)  \(.content.title)\n        owner: \(.["host/Session"] // "(unstamped)")" )
       end
   '
 fi
