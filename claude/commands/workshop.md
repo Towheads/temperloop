@@ -164,6 +164,67 @@ foundation that later shifts underneath it.
    adapter, build/sweep pipeline, install/doctor, branch/PR policy) to work
    correctly? The answer feeds **dimension 3** (Alignment / routing)
    directly — record the routing call and its rationale now.
+
+   **Step 1.3b — Premise gate (null-hypothesis checkpoint).** Runs here,
+   after the stranger-test/routing call (Step 1.3) and **before** the
+   brief-note probe (Step 1.4). Compose and answer the case *against* this
+   design existing at all — the content of **dimension 0** (Premise & null
+   hypothesis) in `claude/design-schema.md` § Kernel dimension list, the
+   schema's one **`filled`-only** dimension (`n/a`/`deferred` are invalid for
+   it). This gate fires once per intake pass. Three parts, in order:
+
+   - **(i) Compose the case *against*.** From the null hypothesis "this
+     design should not exist", state:
+     - the **do-nothing cost** — what actually breaks if this is never built;
+     - the **strongest subtraction alternative** — the smallest existing
+       surface (a rule, a gate, a doc, a habit) that could absorb the need
+       with no new mechanism;
+     - **existing-surface coverage** — which current mechanism already covers
+       part or all of this.
+
+     Argue each point **citing `docs/principles.md` by principle name** —
+     most directly the **stranger test** (principle 13: would a stranger's
+     kernel-only install actually need this?), **subtraction over mechanism**
+     (principle 8: fit or remove an existing mechanism before adding one), and
+     **minimum-viable-output** (principle 14). A case-against that names no
+     principle is not composed — cite the named principle each point rests on.
+     This is a genuine adversarial pass, not a formality: compose the
+     strongest case you honestly can, so the operator answers a real
+     challenge rather than a rubber stamp.
+
+   - **(ii) Elicit and record the operator's justification into dimension
+     0.** Put the composed case-against to the operator; elicit their
+     justification for proceeding anyway (or their agreement to kill it).
+     Record that justification — and the case-against it answers — into the
+     brief's **`## 0. Premise & null hypothesis`** section at disposition
+     `filled`. **Compose the case-against and its justification fresh for
+     THIS brief every time** — never reuse, copy, or suggest a premise
+     carried over from a prior brief; a recycled justification defeats the
+     gate, whose whole point is that this specific idea earned its own place.
+     Persist the section with the same backend write primitive Step 2.6
+     defines (a `vault_patch`/append on an Obsidian store, a full-file
+     `ks_write` on a plain-files store).
+
+   - **(iii) Offer the decision — `AskUserQuestion`, three options.** Present
+     exactly `proceed` / `reshape` / `drop`:
+     - **proceed** → the premise holds. Continue to **Step 1.4** with
+       dimension 0 recorded `filled`.
+     - **reshape** → the framing is wrong but the idea isn't dead. Loop back
+       to **Step 1.1** to restate the problem and re-run intake (Steps 1.2,
+       1.3, and this gate) against the new framing. reshape loops back to
+       Step 1.1 **exactly once per pass** — bounded ceremony: a second
+       reshape in the same pass is **not** offered, and if the reshaped
+       framing still fails the premise the operator chooses `proceed` or
+       `drop`, never a third loop.
+     - **drop** → the case-against wins; the idea is killed. Perform the
+       **drop action**: flip the brief's frontmatter to **`status: dropped`**
+       (the additive enum value in `claude/design-schema.md` § Frontmatter),
+       with **dimension 0's `## 0.` section carrying the kill rationale**
+       (disposition `filled` — the justification, stated in the negative).
+       Then **stop the command** — a dropped brief is neither ratified nor
+       materialized; it stands as the durable record that this idea was
+       considered and killed, so a later run on the same title (Step 1.4)
+       sees the kill rather than silently re-litigating it.
 4. **Probe-before-create the brief note** — the brief-side mirror of Step
    5b.3's epic probe, so a re-run (including one crashed between ratify and
    materialize) never clobbers an existing brief. Check whether
@@ -178,6 +239,15 @@ foundation that later shifts underneath it.
      title that supersedes it via `[[wikilink]]`; if it hasn't, the right
      move is Step 5 (materialize) against the ratified brief, not a new
      walk.
+   - **`dropped`** → **stop.** A `dropped` brief is a **killed idea** —
+     Step 1.3b's drop action flipped it, and its dimension 0 carries the
+     kill rationale. **Never take the silent `draft`-adopt path here**:
+     reopening a killed idea requires an **explicit operator confirmation**
+     — offer an `AskUserQuestion` (reopen this dropped brief, or leave it
+     killed). Only on an explicit "reopen" does the walk resume (flip
+     `status: dropped → draft` and resume at Step 2); absent that
+     confirmation, **stop**, so a later run on the same title never silently
+     un-kills an idea the operator already rejected.
 
    Only when no note exists: **create it**, `status: draft`, per
    `claude/design-schema.md`'s frontmatter shape (`tags`, `date`,

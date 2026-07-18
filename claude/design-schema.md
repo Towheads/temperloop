@@ -33,7 +33,7 @@ store, parallel in status to `Plans/`.
 ---
 tags: [design-brief, project/<name>]
 date: <YYYY-MM-DD created>
-status: draft                         # draft | ratified
+status: draft                         # draft | ratified | dropped
 source_kind: claude-stamped
 source_session: <session-id>
 source_model: <model id that drafted the brief>
@@ -50,6 +50,18 @@ weight has run (`/workshop` Step 3). A `ratified` brief is treated as
 immutable going forward: a later change is a **new** brief that supersedes
 it (linked via `[[wikilink]]`), the same convention `Decisions/` notes use
 for supersession — never an edit-in-place of a ratified brief.
+
+A `dropped` brief is a **killed idea** — the third terminal `status` value,
+alongside `draft` (in-walk) and `ratified` (accepted). The `/workshop`
+Step 1.3b premise gate's **drop action** (temperloop#509) flips
+`status: draft → dropped` when the operator decides the case *against* the
+design wins the null-hypothesis checkpoint, with **dimension 0 carrying the
+kill rationale** (disposition `filled`). A dropped brief is neither ratified
+nor materialized; it is the durable record that the idea was considered and
+rejected, so a later `/workshop` run on the same title **stops** rather than
+silently re-adopting it as a draft. Reopening a dropped brief requires an
+**explicit operator confirmation** (`/workshop` Step 1.4), never the silent
+draft-adopt path — a killed idea does not un-kill itself on the next run.
 
 ## Kernel dimension list
 
