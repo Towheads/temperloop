@@ -152,18 +152,45 @@ call_count() {
 }
 
 # =============================================================================
-# 1. --dry-run + --no-network: tree-only, ZERO gh calls of any kind
+# 1. --dry-run + --no-network: GENUINELY ZERO-WRITE (temperloop#413) — no
+#    baseline.jsonl write, no .foundation/config write, no commit, no
+#    branch switch, and the target checkout is bit-identical (HEAD,
+#    current branch, `git status --porcelain`, and the tree's file
+#    listing all unchanged) before vs. after the dry run. Also zero gh
+#    calls of any kind (unchanged from before this fix).
 # =============================================================================
 REPO1="$(new_fixture_repo repo1)"
+BEFORE_HEAD="$(git -C "$REPO1" rev-parse HEAD)"
+BEFORE_BRANCH="$(git -C "$REPO1" branch --show-current)"
+BEFORE_STATUS="$(git -C "$REPO1" status --porcelain)"
+BEFORE_FIND="$(find "$REPO1" -mindepth 1 -not -path '*/.git*' | sort)"
+
 run 0 --dir "$REPO1" --gh-repo acme/widget --no-network --dry-run \
   --yes-required-check --yes-labels
+
 [ ! -s "$CALL_LOG" ] || fail "dry-run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q '"outcome": "DRY_RUN"' || fail "dry-run did not report DRY_RUN outcome (got: $out)"
+echo "$out" | grep -q 'would create: .foundation/config' \
+  || fail "dry-run did not print a tree-only preview of what it would write (got: $out)"
+echo "$out" | grep -q 'skipped (--dry-run — tree-only preview, no baseline write)' \
+  || fail "dry-run did not report the baseline snapshot as skipped (got: $out)"
+
+AFTER_HEAD="$(git -C "$REPO1" rev-parse HEAD)"
+AFTER_BRANCH="$(git -C "$REPO1" branch --show-current)"
+AFTER_STATUS="$(git -C "$REPO1" status --porcelain)"
+AFTER_FIND="$(find "$REPO1" -mindepth 1 -not -path '*/.git*' | sort)"
+
+[ "$AFTER_HEAD" = "$BEFORE_HEAD" ] || fail "dry-run moved HEAD ($BEFORE_HEAD -> $AFTER_HEAD)"
+[ "$AFTER_BRANCH" = "$BEFORE_BRANCH" ] || fail "dry-run switched branches ($BEFORE_BRANCH -> $AFTER_BRANCH)"
+[ "$AFTER_STATUS" = "$BEFORE_STATUS" ] \
+  || fail "dry-run left the working tree dirty (before status=[$BEFORE_STATUS] after status=[$AFTER_STATUS])"
+[ "$AFTER_FIND" = "$BEFORE_FIND" ] \
+  || fail "dry-run changed the tree's file listing (before:\n$BEFORE_FIND\nafter:\n$AFTER_FIND)"
+[ ! -e "$REPO1/.foundation/config" ] || fail "dry-run wrote .foundation/config to disk"
+[ ! -e "$REPO1/.foundation/baseline.jsonl" ] \
+  || fail "dry-run wrote .foundation/baseline.jsonl (baseline snapshot must be gated by --dry-run)"
 git -C "$REPO1" show HEAD:.foundation/config >/dev/null 2>&1 \
-  || fail "dry-run did not commit .foundation/config locally"
-[ "$(jq -r '.schema' < <(git -C "$REPO1" show HEAD:.foundation/config))" = "1" ] \
-  || fail "dry-run config schema is not 1"
-echo "PASS: --dry-run + --no-network is tree-only (zero gh calls), commits config locally, schema 1"
+  && fail "dry-run committed .foundation/config locally (must be zero-write)"
+echo "PASS: --dry-run + --no-network is genuinely zero-write — no baseline.jsonl, no .foundation/config, no commit, HEAD/branch/tree bit-identical before vs. after, zero gh calls"
 
 # =============================================================================
 # 2. Non-interactive default-deny: no --yes-* flag, closed stdin -> every
@@ -221,19 +248,24 @@ echo "PASS: round-trip (probe -> config -> init re-reads it) — schema-1 re-rea
 
 # =============================================================================
 # 5. boards.conf integration: board toolkit present -> proposes the entry;
-#    a second run with it already present leaves boards.conf untouched
+#    a second run with it already present leaves boards.conf untouched.
+#    Real (non-dry-run) runs, since --dry-run is now zero-write (#413) and
+#    no longer commits anything locally to inspect via `git show` — that
+#    invariant is covered by test 1 above; this test's own job is the
+#    boards.conf proposal + idempotent-re-run logic, unrelated to dry-run.
 # =============================================================================
 REPO5="$(new_fixture_repo repo5)"
 mkdir -p "$REPO5/workflows/scripts/board"
 echo "# marker" > "$REPO5/workflows/scripts/board/marker.txt"
 git -C "$REPO5" add -A && git -C "$REPO5" commit -q -m "seed board toolkit"
-FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget --no-network --dry-run
+FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
 git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null | grep -q "board.1.repo=acme/widget" \
   || fail "boards.conf entry was not proposed when the board toolkit is present"
 git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null | grep -q "board.1.backend=issues" \
   || fail "boards.conf entry missing backend=issues (issues-only default)"
 
-FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget --no-network --dry-run
+FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
+  run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
 echo "$out" | grep -q "already present — leaving" \
   || fail "second run did not detect the already-present boards.conf entry (got: $out)"
 echo "PASS: boards.conf integration proposes the rendered entry when the toolkit is present, idempotent on re-run"
