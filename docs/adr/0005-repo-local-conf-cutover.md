@@ -1,5 +1,5 @@
 ---
-title: 0003: Fleet cutover rides committed repo-local boards.conf entries, not the built-in map
+title: 0005: Fleet cutover rides committed repo-local boards.conf entries, not the built-in map
 ---
 
 ## Status

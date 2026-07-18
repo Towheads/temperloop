@@ -1,5 +1,5 @@
 ---
-title: 0002: Issues-only is the default tracking backend
+title: 0004: Issues-only is the default tracking backend
 ---
 
 ## Status
@@ -46,13 +46,13 @@ sufficient, and the maintainers run exactly the code path adopters run.
 - The migration tooling (`migrate-board-to-issues.sh`) necessarily couples
   to both arms and therefore dies with the Projects arm; the removal
   release's migration note must instruct operators to run it *before*
-  pulling past the removal (ADR 0003 covers the cutover mechanics).
+  pulling past the removal (ADR 0005 covers the cutover mechanics).
 - The issues-only path is deliberately uncached and always-live; migrating
   the four active boards onto it is the first real volume test of that
   posture. The soak window monitors REST consumption, with the existing
   per-board `cache=on` axis as the ready mitigation.
 - Per-item ordering (the Projects `Seq` field) has no issues-only
-  representation and is retired rather than emulated (ADR 0004).
+  representation and is retired rather than emulated (ADR 0006).
 - On a repo with multiple collaborators, adopting label-based tracking is a
   team-level decision — the labels land in shared tracker state. The docs
   state this, and the kernel enforces nothing on collaborators who don't

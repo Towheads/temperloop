@@ -1,5 +1,5 @@
 ---
-title: 0004: Per-item Seq ordering is retired, not emulated, on issues-only
+title: 0006: Per-item Seq ordering is retired, not emulated, on issues-only
 ---
 
 ## Status
@@ -14,7 +14,7 @@ The Projects-v2 backend carried a numeric `Seq` field that /triage wrote to
 order a board's worklist. Plain GitHub Issues have no ordering field, and
 the issues-only backend deliberately left `board_set_number` unimplemented
 (a silent `return 1`) rather than guess a convention. With issues-only
-becoming the default backend (ADR 0002), that deferral has to resolve: an
+becoming the default backend (ADR 0004), that deferral has to resolve: an
 issues-only representation could be invented (numeric labels, body markers)
 or the concept could be retired.
 
