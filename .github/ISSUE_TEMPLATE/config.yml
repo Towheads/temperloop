@@ -1,0 +1,9 @@
+# Blank issues are disabled deliberately: every issue filed through the
+# form picker carries the fnd:status:backlog label that puts it in this
+# repo's own tracker Backlog and gets it swept by /triage (see
+# workflows/scripts/board/ISSUES-ONLY-BACKEND.md). A blank issue would skip
+# that label and sit unswept until someone notices and labels it by hand —
+# the form picker is what makes bullet 1 of temperloop#427 ("routes into the
+# existing capture/triage intake") true for every issue, not just the ones a
+# maintainer happens to catch.
+blank_issues_enabled: false

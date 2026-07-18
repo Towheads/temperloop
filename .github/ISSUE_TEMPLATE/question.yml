@@ -1,0 +1,44 @@
+name: Question
+description: Something you're not sure about — usage, intent, or how a piece fits together.
+title: "[question]: "
+labels:
+  - question
+  - fnd:status:backlog
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for asking — questions from real usage often reveal a doc
+        gap worth fixing, so this feeds the same intake as a bug report.
+
+        **Privacy warning — do not paste private repository content.** No
+        tokens, credentials, hostnames, private issue/PR text, or logs from
+        a repo you don't intend to make public. Describe the *shape* of
+        your situation rather than pasting raw output from a private
+        checkout. See `docs/CONTRIBUTING.md` § "Be scrubbed" for the same
+        rule this repo applies to its own contributed docs.
+
+        **What happens after you submit.** This form drops the issue
+        straight into this repo's own tracker Backlog (the
+        `fnd:status:backlog` label — see
+        `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`). It's picked up
+        the next time `/triage` sweeps that Backlog — every issue filed
+        this way is swept, not just the ones a maintainer happens to
+        notice; see `docs/features/funnel-driver.md` for the (optional,
+        maintainer-side) scheduled-tick machinery some checkouts run this
+        under. There's no fixed response-time SLA, but nothing filed here
+        is silently dropped.
+  - type: textarea
+    id: question
+    attributes:
+      label: What's your question?
+      description: What are you trying to do, and what's unclear about how to do it?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What have you already checked?
+      description: Optional — docs/READMEs you've read, commands you've tried.
+    validations:
+      required: false
