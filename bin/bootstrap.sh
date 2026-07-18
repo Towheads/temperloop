@@ -132,7 +132,17 @@ else
     echo "bootstrap: pinning fresh install to latest release tag $latest_tag ..."
     git -C "$TEMPERLOOP_HOME" checkout --detach "$latest_tag"
   else
-    cur_branch="$(git -C "$TEMPERLOOP_HOME" symbolic-ref --short -q HEAD 2>/dev/null || echo '(detached)')"
+    # rev-parse --abbrev-ref (never `symbolic-ref HEAD`) — it prints the
+    # literal string "HEAD" instead of erroring when the fresh clone landed
+    # detached (a source repo with no advertised HEAD symref — e.g. a CI
+    # checkout with no refs/remotes/origin/HEAD — can leave a same-shape
+    # local clone detached even though bootstrap itself never touched HEAD
+    # in this no-tag branch), so this line never depends on a fatal-on-
+    # failure command inside a conditional expansion.
+    cur_branch="$(git -C "$TEMPERLOOP_HOME" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+    if [ "$cur_branch" = "HEAD" ]; then
+      cur_branch="(detached)"
+    fi
     echo "bootstrap: WARNING — no release tags (v*) found on $TEMPERLOOP_KERNEL_REPO; staying on '$cur_branch' (unpinned, not a release). Once a v0.x.y tag exists, remove $TEMPERLOOP_HOME and re-run this bootstrap to land on it, or run 'temperloop update' after this install completes." >&2
   fi
 fi

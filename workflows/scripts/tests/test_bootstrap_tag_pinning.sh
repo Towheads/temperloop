@@ -88,6 +88,19 @@ BOOTSTRAP_SH="$REPO_ROOT/bin/bootstrap.sh"
 FIXTURE_TAGGED="$SANDBOX_ROOT/fixture-tagged"
 git clone -q --no-tags "$REPO_ROOT" "$FIXTURE_TAGGED" \
   || fail "1: could not clone $REPO_ROOT (--no-tags) to build FIXTURE_TAGGED"
+# Force a KNOWN, deterministic branch name right after cloning — never rely
+# on $REPO_ROOT's own currently-checked-out branch (which may itself be
+# detached, e.g. a CI checkout with no refs/remotes/origin/HEAD symref; a
+# local clone of a detached source can land ALSO detached, with no
+# refs/heads/* at all). `checkout -B` creates-or-resets the named branch to
+# HEAD's current commit and checks it out unconditionally, regardless of
+# whether the clone landed on a branch, a differently-named branch, or
+# nothing at all — the same determinism test_sandbox_dry_run_legs.sh /
+# test_update_subcommand.sh / test_init.sh get from `git init
+# --initial-branch=main`, applied post-clone since this fixture needs
+# $REPO_ROOT's actual committed content, not a from-scratch init.
+git -C "$FIXTURE_TAGGED" checkout -q -B main \
+  || fail "1: could not force FIXTURE_TAGGED onto a deterministic 'main' branch"
 
 echo "fixture: v9.1.0 baseline" >> "$FIXTURE_TAGGED/.fixture-marker"
 git -C "$FIXTURE_TAGGED" add .fixture-marker
@@ -105,7 +118,13 @@ echo "fixture: untagged mainline change after v9.2.0" >> "$FIXTURE_TAGGED/.fixtu
 git -C "$FIXTURE_TAGGED" add .fixture-marker
 git -C "$FIXTURE_TAGGED" commit -q -m "fixture: untagged mainline commit after v9.2.0"
 
-tagged_branch="$(git -C "$FIXTURE_TAGGED" symbolic-ref --short HEAD)"
+# -q -s so a failure here degrades to "DETACHED" rather than a hard `fatal:
+# ref HEAD is not a symbolic ref` — belt-and-suspenders: the forced
+# `checkout -B main` above should make this always resolve to "main", but
+# this read stays tolerant regardless (same idiom as this file's own
+# REPO_ROOT tripwire reads below).
+tagged_branch="$(git -C "$FIXTURE_TAGGED" symbolic-ref --short -q HEAD || echo DETACHED)"
+[ "$tagged_branch" = "main" ] || fail "1: FIXTURE_TAGGED must be deterministically on 'main' after checkout -B (got: $tagged_branch)"
 pass "1: built FIXTURE_TAGGED (v9.1.0 -> v9.2.0, tip one untagged commit further on '$tagged_branch')"
 
 # ===========================================================================
@@ -114,7 +133,11 @@ pass "1: built FIXTURE_TAGGED (v9.1.0 -> v9.2.0, tip one untagged commit further
 FIXTURE_NOTAGS="$SANDBOX_ROOT/fixture-notags"
 git clone -q --no-tags "$REPO_ROOT" "$FIXTURE_NOTAGS" \
   || fail "2: could not clone $REPO_ROOT (--no-tags) to build FIXTURE_NOTAGS"
-notags_branch="$(git -C "$FIXTURE_NOTAGS" symbolic-ref --short HEAD)"
+# Same deterministic-branch forcing as FIXTURE_TAGGED above.
+git -C "$FIXTURE_NOTAGS" checkout -q -B main \
+  || fail "2: could not force FIXTURE_NOTAGS onto a deterministic 'main' branch"
+notags_branch="$(git -C "$FIXTURE_NOTAGS" symbolic-ref --short -q HEAD || echo DETACHED)"
+[ "$notags_branch" = "main" ] || fail "2: FIXTURE_NOTAGS must be deterministically on 'main' after checkout -B (got: $notags_branch)"
 [ -z "$(git -C "$FIXTURE_NOTAGS" tag -l)" ] || fail "2: FIXTURE_NOTAGS must be tagless"
 pass "2: built FIXTURE_NOTAGS (tagless, on '$notags_branch')"
 
