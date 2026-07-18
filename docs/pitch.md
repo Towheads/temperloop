@@ -60,15 +60,10 @@ issue-to-PR tick against a disposable, throwaway demo repo, never your own.
 Full walkthrough, including what comes after (`temperloop init`, opting your
 own repo in): `bin/README.md`'s Quickstart section.
 
-## Before you run anything: what it costs
+## One more thing before you turn on anything unattended
 
-Any unattended or scheduled run of this tooling — the mechanisms are named
-in `docs/cost-and-autonomy.md`, not repeated here — spends **your own**
-Claude account's budget. TemperLoop has no billing of its own and runs no
-hosted service, so a run left going while you aren't watching draws down
-your usage or API spend the same as any session you'd run yourself. Read
-`docs/cost-and-autonomy.md` before turning on anything unattended: it has
-real cost bands per tier, states plainly whether a dollar cap is on by
-default (yes for the onboarding tier, no beyond it), and spells out exactly
-what an autonomous tier may do without asking versus what always blocks for
-a human.
+TemperLoop has no billing of its own and runs no hosted service — an
+unattended or scheduled run spends **your own** Claude account's budget,
+the same as any session you'd run yourself. `docs/cost-and-autonomy.md`
+(linked above) is the one place with the real numbers and the autonomy
+contract; this page won't restate them.

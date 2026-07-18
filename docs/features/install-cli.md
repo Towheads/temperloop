@@ -67,7 +67,8 @@ strictly more than the last:
 **The safety contract.** The mutating step in the ladder is exactly one
 (`try --demo`), and it is bounded three separate ways: a spend guard prints
 a directional cost estimate and a hard mechanical cap (`--demo-cap-usd`,
-default `$2.00`) before anything runs; a non-interactive shell with no
+default `$2.00` — ≈370,000 tokens at Claude Sonnet 5 list price, see
+`docs/cost-and-autonomy.md` for the conversion basis) before anything runs; a non-interactive shell with no
 `--yes` is refused outright, so a curious stranger cannot silently burn API
 spend; and the tick itself touches only the disposable demo repo, never the
 caller's own. `init`'s API-state changes carry the same "explicit consent,
@@ -120,8 +121,9 @@ verified by `doctor.sh`'s `claude-md` classification.
 Storage: a shallow clone into `~/.local/share/temperloop` (typically tens of
 MB) plus a handful of negligible symlinks in `~/.local/bin`. API budget:
 `try` issues zero `gh` mutations and one bounded `claude -p` call with tools
-disabled; `try --demo` is hard-capped at `--demo-cap-usd` (default `$2.00`),
-enforced before any spend, and mechanically bounded to a single funnel tick.
+disabled; `try --demo` is hard-capped at `--demo-cap-usd` (default `$2.00`,
+≈370,000 tokens at Claude Sonnet 5 list price), enforced before any spend,
+and mechanically bounded to a single funnel tick.
 Runtime: `doctor.sh` is pure shell and sub-second; `try` and `try --demo`
 each drive one `claude -p` invocation, so their wall time tracks that call.
 

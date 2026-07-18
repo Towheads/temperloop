@@ -13,16 +13,13 @@ read this page for the shape of the system, and the linked command/contract
 files for the mechanics of one piece.
 
 All three diagrams below are [Mermaid](https://mermaid.js.org) fenced code
-blocks. GitHub renders Mermaid natively in any Markdown file it displays —
-that rendering is this page's canonical view; no build step or script this
-repo ships is required to see them. `make docs` (§6 of the
-README) does not process this file at all: like
+blocks, rendered natively by GitHub in any Markdown file it displays — that
+rendering is this page's canonical view, with no build step required to see
+them. `make docs` (§6 of the README) does not process this file: like
 [`docs/managed-merge-queue.md`](managed-merge-queue.md) and
-[`docs/config-precedence.md`](config-precedence.md), this is a hand-maintained
+[`docs/config-precedence.md`](config-precedence.md), it's a hand-maintained
 standalone doc, not one of the three generated sources the docs-site
-generator (`workflows/scripts/docs/generate.py`) renders — so the generator
-stays zero-network and zero-install (stdlib-only Markdown, no Mermaid
-runtime) with nothing extra to wire up here.
+generator (`workflows/scripts/docs/generate.py`) renders.
 
 ## 1. Pipeline flow
 
