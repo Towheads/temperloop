@@ -259,9 +259,13 @@ flowchart LR
   signal rather than a swallowed per-query stderr line.
 
 The read side is `/check-in`'s daily status readout, which leads with a
-telemetry brief rendered from these streams (an overlay-provided renderer in
-a composed install; a kernel-only checkout skips that one section with a
-one-line note and reviews the rest of `/check-in` as normal) — and, on
-demand, the same brief as a `telemetry` skill invocation mid-session. Both
-are pure readers: nothing in this pipeline mutates a raw-lake file once
-written.
+telemetry brief rendered from these streams. The kernel renders it
+**unconditionally** on every checkout: `workflows/scripts/telemetry-brief.sh`
+reads only the kernel raw streams (plus the knowledge-store read log), names
+each source stream in its output, and degrades any absent or empty stream to
+an honest "no data yet" line. A composed install then **enriches** it: the
+overlay's rollup-backed renderer (token-cost spend, rework/retro yield)
+renders after the kernel brief, behind an existence guard — the kernel brief
+stands alone without it. On demand, the same brief is a `telemetry` skill
+invocation mid-session. All of these are pure readers: nothing in this
+pipeline mutates a raw-lake file once written.
