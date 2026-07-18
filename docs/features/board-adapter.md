@@ -8,10 +8,18 @@ slug: board-adapter
 `workflows/scripts/board/lib/board.sh` is the single sourced library every
 board-touching script (`claim.sh`, `capture.sh`, `worklist.sh`,
 `reconcile.sh`, `milestone.sh`, `release.sh`, `pr-enqueue.sh`) uses to talk
-to a GitHub Projects-v2 board. It is kernel content — the canonical copy
-this repo carries — synced byte-for-byte into every consuming repo that
-runs the same build/sweep pipeline, so a fix here lands everywhere at once
-instead of being re-patched per checkout.
+to a tracker board. **Issues-only — plain GitHub Issues, no Projects board
+ever provisioned — is the default backend** (temperloop#460, ADR 0004): a
+GitHub Projects-v2 board is still fully supported (`backend=projects`) and
+is what this file originally documented, but it is now the deprecated
+legacy arm, kept working through a soak window for any as-yet-unconverted
+board (see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Issues-only
+is now the default backend for the supersession statement and the removal
+timeline, which is a separate follow-on epic, not this feature). This
+library is kernel content — the canonical copy this repo carries — synced
+byte-for-byte into every consuming repo that runs the same build/sweep
+pipeline, so a fix here lands everywhere at once instead of being
+re-patched per checkout.
 
 ## Problem
 
@@ -80,19 +88,33 @@ remaining points and reset time, rather than letting the heavy read fail
 opaquely partway through. On a healthy budget it's silent and adds no
 overhead.
 
-**Issues-only backend.** Not every consuming repo has a Projects-v2 board
-provisioned. A board can instead be configured as `backend=issues`: item
-CRUD and Status ride plain namespaced GitHub labels on the repo's issues
-instead of Projects-v2 fields, and "Done" is simply the issue being closed.
-`board_backend <N>` resolves which mode a given board number uses (default
-`projects`, unchanged from before this seam existed). One kernel-tracked
+**Issues-only backend.** A board can be configured as `backend=issues`: item
+CRUD and Status ride plain `fnd:`-namespaced GitHub labels on the repo's
+issues instead of Projects-v2 fields, and "Done" is simply the issue being
+closed — no Projects board provisioning at all. `board_backend <N>`
+resolves which mode a given board number uses; the adapter's own built-in
+fallback (no `boards.conf` entry) still resolves to `projects`, unchanged
+from before this seam existed, but that fallback is no longer what "the
+default" means at the policy level: every board this project's own pipeline
+actually drives — all five maintainer repos — is configured `backend=issues`
+via a committed `boards.conf` entry, per ADR 0004/0005. One kernel-tracked
 board — board 7, the issue tracker for this repo itself — is hard-coded to
-the issues-only backend in the adapter's built-in map, because being
-issues-only is a structural fact of what that board is, not a
-per-deployment config choice. Every board-facing function (`board_resolve`,
+the issues-only backend directly in the adapter's built-in map (rather than
+via a `boards.conf` entry), because being issues-only is a structural fact
+of what that board is, not a per-deployment config choice; it is no longer
+the *sole* issues-only board, only the sole one baked into the built-in map
+itself (see `ISSUES-ONLY-BACKEND.md`'s § The temperloop tracker for the
+full supersession note). Every board-facing function (`board_resolve`,
 `board_resolve_item`, `board_stamp`, `board_set_status`, and so on) branches
 internally on backend, so a caller written against the Projects-v2 shape
 works unchanged against an issues-only board.
+
+A short plain-language rundown of what the `fnd:*` labels actually are —
+including that a non-adopting teammate can simply ignore them, the
+shared-repo team-decision caveat, and the verbatim-hostname note on the
+claim stamp — lives in `ISSUES-ONLY-BACKEND.md`'s § What `fnd:*` labels
+mean; that same file's § Pruning GitHub's default labels documents the
+(separate, one-time, operator-driven) label-taxonomy prune.
 
 **Claim-lock semantics.** Claiming an item is two ordered writes: a
 free-text ownership stamp (`board_stamp`, e.g. `<host>:<session>`) followed

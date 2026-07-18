@@ -15,14 +15,58 @@ Both consume the vocabulary and function-level interface below. **Do not
 invent a second label scheme or a second set of adapter functions** — extend
 this one (subtraction over mechanism).
 
+## Issues-only is now the default backend (temperloop#460, ADR 0004/0005)
+
+**Supersedes** every earlier framing in this file (and in
+`docs/features/board-adapter.md`) that described issues-only as "board 7's
+sole exception" to a Projects-v2 default. That framing is retired.
+[ADR 0004](../../../docs/adr/0004-issues-only-default-backend.md) makes
+issues-only the default tracking backend for every board; the four
+maintainer repos (ssmobile / board 5, stageFind / board 3, subsetwiki /
+board 6, foundation / board 4) have all migrated off their Projects-v2
+boards, alongside the kernel tracker (board 7) that was already
+issues-only from the start. Every board this project's own pipeline drives
+today runs `backend=issues`.
+
+Mechanically, per
+[ADR 0005](../../../docs/adr/0005-repo-local-conf-cutover.md), each of
+those five boards got there the same way: a **committed `boards.conf` entry
+in its own consuming repo** (`board.<N>.backend=issues`), never a change to
+this adapter's built-in fallback map. That map's own default —
+`board_backend` resolves an unconfigured board to `"projects"` — is
+deliberately **untouched** by this migration (see § Selecting the backend
+below), so "the default" above is a fleet/policy default (every board this
+pipeline actually points at is configured issues-only), not yet a change to
+the adapter's own code-level fallback. A brand-new board registered with no
+`boards.conf` entry still needs `backend=issues` written explicitly to get
+the same behavior, until the follow-on removal epic below flips the
+fallback itself.
+
+**Soak-period rule.** Issues-only is the sole canonical path for all
+tracking work from here on — every pipeline command (`worklist`, `claim`,
+`capture`, `reconcile`, `/triage`, `/assess`, `/build`) is expected to run
+against `backend=issues` boards only. The five repos' frozen Projects-v2
+boards stay provisioned and readable through a soak window (any post-flip
+write to one of them is the tell of a lagging, unsynced checkout still
+driving the dead arm — ADR 0005), but they are not written to going forward
+and are not part of the supported path. The Projects-v2/GraphQL arm itself
+(the budget guard, the structure/state cache split, the dual-adapter
+branchwork) is **deprecated, not removed** — it stays in the codebase only
+to serve that soak window and any as-yet-unconverted board. Its removal is
+tracked as its own follow-on breaking-change epic (temperloop#476), never
+something this file, or the migration epic behind it, performs — nothing
+below should be read as a removal timeline.
+
 ## What "issues-only" means
 
-A board is either **Projects-v2-backed** (the default — a GitHub Projects
-board provisioned, everything in `lib/board.sh`'s pre-#799 code path) or
-**issues-only**: no Projects board is ever provisioned or queried. Item CRUD
-and Status ride plain `fnd:`-namespaced GitHub **labels** on the repo's
-Issues, and "Done" is simply **the issue being closed**. Milestone intake
-(release-phase axis) is unaffected either way — see below.
+A board is either **issues-only** (no Projects board is ever provisioned or
+queried; item CRUD and Status ride plain `fnd:`-namespaced GitHub **labels**
+on the repo's Issues, and "Done" is simply **the issue being closed** — see
+§ Issues-only is now the default backend, above) or **Projects-v2-backed**
+(a GitHub Projects board provisioned, everything in `lib/board.sh`'s
+pre-#799 code path — the deprecated legacy arm during the soak window
+described above). Milestone intake (release-phase axis) is unaffected
+either way — see below.
 
 ## Selecting the backend
 
@@ -44,7 +88,39 @@ deliberately **no built-in case-map entry** defaulting any board number to
 `tests/test_issues_backend.sh`'s config-selection case (an unconfigured board
 still emits the exact `gh project …` argv `test_board_replay.sh` pins).
 
-## The `fnd:` label vocabulary
+Every board this project's own pipeline drives today carries such a
+`boards.conf` entry (or, for board 7, the built-in-map entry described in
+§ The temperloop tracker below) — see § Issues-only is now the default
+backend, above.
+
+## What `fnd:*` labels mean
+
+Every `fnd:`-prefixed label on an issue is bookkeeping this board adapter
+itself reads and writes — Status, Component, and claim ownership. If you
+(or a teammate) don't run this tooling, you can simply **ignore them**:
+they carry no special meaning to plain GitHub, don't affect notifications,
+search, or any other GitHub feature, and nothing breaks if they're left
+alone or even removed by hand (the adapter just re-derives state from
+whatever's there, or isn't, on its next read/write).
+
+**Adopting this on a shared repo is a team decision, not an individual
+one.** The labels land in shared, repo-visible tracker state every
+collaborator sees — not a private view scoped to whoever runs the tooling.
+Bringing this pipeline onto a repo with other maintainers is worth raising
+with them first, the same way you'd raise adopting any other shared
+convention (a linter config, a commit-message format).
+
+**The claim stamp is a real, verbatim hostname — said plainly.** The
+`fnd:host/session:<host>:<session>` stamp (see § Claim lock below) is
+stored **verbatim, never slugged or redacted**: whatever hostname the
+claiming machine reports is what lands in a repo-visible label. On a repo
+you don't fully control — a shared team repo, a client's repo — weigh that
+exposure before claiming from a machine whose hostname you'd rather not
+publish there. This is documented, intentional behavior (see § Claim lock's
+"Storage" bullet for why it can't safely be slugged), not an oversight —
+nothing in the adapter offers to mask it.
+
+### The label vocabulary
 
 | Label | Field | Meaning |
 |---|---|---|
@@ -53,6 +129,7 @@ still emits the exact `gh project …` argv `test_board_replay.sh` pins).
 | `fnd:status:in-progress` | Status | mirrors Projects' `In Progress` option |
 | *(none — issue is closed)* | Status | mirrors Projects' `Done` option |
 | `fnd:component:<slug>` | Component | mirrors the board-native `Component` single-select |
+| `fnd:host/session:<host>:<session>` | claim stamp | which machine/session holds the in-progress claim (verbatim, never slugged — see above) |
 
 General rule: a label is `fnd:<field-slug>:<value-slug>`, where `<field-slug>`
 is the field name lowercased with spaces→hyphens (`Status`→`status`,
@@ -354,7 +431,55 @@ directly (`gh issue list --search …`, `gh issue view --json assignees`),
 which were already backend-agnostic (per-issue/per-search REST, no Projects
 call either way).
 
+## Pruning GitHub's default labels (one-time operator act)
+
+Migrating a repo onto the issues-only backend does **not** include pruning
+GitHub's stock default label set (`bug`, `enhancement`, `wontfix`,
+`invalid`, `duplicate`, `question`, `help wanted`, `good first issue`, …).
+That prune is a **one-time act an operator performs by hand on their own
+repo** — never kernel machinery, and never something `/triage`, `/build`,
+the label-hygiene sweep, or any other pipeline command does on its own. The
+label-hygiene sweep (`reconcile.sh`, surfaced in `/tidy`'s board-label
+step) is strictly scoped to `fnd:`-namespaced labels — it never lists,
+touches, or deletes a non-`fnd:` label, by construction.
+
+If you do want to prune the defaults (the temperloop maintainers did this,
+across all five of their repos):
+
+- **Verify zero usage first, per repo.** Confirm no open or closed issue in
+  that specific repo carries the default label before deleting it (`gh
+  label delete` doesn't check for you) — a label used anywhere in the
+  repo's history is still meaningful search/filter state for anyone
+  browsing it later.
+- **Keep contributor-facing labels wherever you want them.** `help wanted`
+  and `good first issue` are conventions outside contributors and GitHub's
+  own UI recognize on their own; keep them on any repo where drive-by
+  contributions are welcome, independent of whether this tooling uses them.
+- **Restoring a pruned label is one command.** `gh label create <name>
+  --color <hex> --description "<text>"` — deleting a default label is not a
+  one-way door.
+- **The prunable defaults have native replacements, not new labels.**
+  GitHub's own issue/PR close reasons (`completed`, `not planned`,
+  `duplicate`) supersede the `wontfix` / `invalid` / `duplicate` labels —
+  close with a reason instead of labeling-then-closing. `question` has no
+  native close-reason equivalent, but this pipeline already carries a label
+  that means the same thing: `needs-clarification` (there is deliberately
+  no `Blocked` status either — a genuine dependency block is a native
+  `blocked_by` edge, and an open question is the `needs-clarification`
+  label, not a status; see `claude/CLAUDE.kernel.md` § Task workflow,
+  "Park, don't abandon").
+
 ## The temperloop tracker (board 7, foundation #808)
+
+**Status update (temperloop#460):** board 7 was the sole board hard-coded
+to issues-only in the built-in map when this split landed. It no longer is
+unique at the *policy* level — every fleet board (3–6) is now also
+issues-only, via committed `boards.conf` entries rather than a built-in-map
+change (ADR 0004/0005; see § Issues-only is now the default backend,
+above). Board 7 remains the sole board whose issues-only-ness is baked
+directly into `board_backend()`'s built-in map, for the structural reason
+described below (it isn't a per-deployment choice for the kernel's own
+tracker) — the rest of this section is otherwise unchanged.
 
 The kernel-vs-overlay routing rule (CLAUDE.kernel.md § Kernel vs overlay
 routing rule) needed a concrete board number before it could be *followed*

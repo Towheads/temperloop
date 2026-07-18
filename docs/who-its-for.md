@@ -30,7 +30,16 @@ org-grade process without an org:
 5. **On GitHub, including the free plan.** A personal account or free org,
    no budget for GitHub Enterprise, no native merge queue available —
    `docs/managed-merge-queue.md` exists specifically to close that gap so
-   the same merge-gated ladder runs end-to-end here too.
+   the same merge-gated ladder runs end-to-end here too. Tracking itself
+   asks for even less: issues-only is the default board backend (a plain
+   GitHub Issues tracker, `fnd:*`-namespaced labels, no Projects board ever
+   provisioned — `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`), so a
+   fresh clone tracks work end-to-end — capture → worklist → claim — with
+   just a repo and `gh auth login`. No org membership and no Projects
+   provisioning step stand between "clone" and "first tracked issue,"
+   whether you're one consultant spinning this up per client repo, one
+   hobbyist with no budget line at all, or one of a handful of teammates
+   who don't want to ask anyone to provision anything on their behalf.
 
 ## Explicitly not a fit
 
