@@ -254,6 +254,43 @@ n_backups_2="$(find "$BACKUPS_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')"
 pass "4: idempotent re-install — manifest byte-comparable (jq -S canonical JSON identical), path count unchanged, zero spurious backups"
 
 # ===========================================================================
+# 4b. Knowledge-store SYNC state seeded before uninstall (temperloop#430,
+#     ADR 0003): initialize the sandbox's knowledge store as a git-backed
+#     sync store (local bare "remote" under $SANDBOX_ROOT — outside every
+#     diffed machine root), write a note through the seam, push. The store
+#     is USER DATA: uninstall must keep it — including its .git and remote
+#     config — and no sync-specific state may land anywhere OUTSIDE the
+#     store dir (asserted by the 7a–7e tree-diffs below, whose only new
+#     exclusion is the store dir itself).
+# ===========================================================================
+SYNC_REMOTE="$SANDBOX_ROOT/sync-remote.git"
+git init --bare -q "$SYNC_REMOTE" || fail "4b: could not create the bare sync-remote fixture"
+
+# The store resolves through the DEFAULT root seam (no KNOWLEDGE_STORE_ROOT
+# override): ${XDG_DATA_HOME}/foundation/knowledge under the sandbox. The
+# read-log (temperloop#229) is pointed OUTSIDE the diffed roots so the sync
+# leg's telemetry can't muddy the residue diff it exists to sharpen. The lib
+# is sourced from $REPO_ROOT (this working tree), NOT the bootstrapped
+# $CHECKOUT — the bootstrap bare-clones committed state only, so a
+# working-tree change to knowledge_store.sh would be invisible there; every
+# WRITE still lands inside the sandbox (env-scoped via sandbox_run).
+STORE_DIR="$SANDBOX_XDG_DATA_HOME/foundation/knowledge"
+sync_out="$(sandbox_run env "KNOWLEDGE_READ_LOG=$SANDBOX_ROOT/knowledge-reads.log" \
+  bash -c '
+    set -euo pipefail
+    source "$1/workflows/scripts/lib/knowledge_store.sh"
+    ks_sync init "$2"
+    printf "note that must survive uninstall\n" | ks_write "Decisions/sync-survivor"
+    ks_sync push
+  ' _ "$REPO_ROOT" "$SYNC_REMOTE" 2>&1)"
+sync_rc=$?
+[ "$sync_rc" -eq 0 ] || fail "4b: sync init/write/push leg exited $sync_rc (output: $sync_out)"
+[ -d "$STORE_DIR/.git" ] || fail "4b: the store should be a git repo after ks_sync init"
+[ "$(git -C "$SYNC_REMOTE" rev-list --count refs/heads/main)" -eq 1 ] \
+  || fail "4b: the sync remote should hold the pushed store commit"
+pass "4b: knowledge store sync-initialized through the ks_ seam (git repo at the default store root, note pushed to a local bare remote)"
+
+# ===========================================================================
 # 5. `temperloop uninstall --yes` (consented).
 # ===========================================================================
 uninstall_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" uninstall --yes 2>&1)"
@@ -270,6 +307,19 @@ pass "5: 'temperloop uninstall --yes' completed (exit 0, 'temperloop uninstall: 
 [ "$(cat "$WIZARD_CONF")" = "operator-authored config, never recorded by any install manifest" ] \
   || fail "the operator-authored config's content must be byte-for-byte untouched by uninstall"
 pass "6: an operator-authored machine conf under \$XDG_CONFIG_HOME/temperloop/ (never manifest-recorded) survives uninstall byte-for-byte"
+
+# ===========================================================================
+# 6b. The knowledge store — including its sync state (.git + remote config,
+#     temperloop#430 / ADR 0003) — is USER DATA and must survive uninstall
+#     intact: repo present, remote still wired, note content untouched.
+# ===========================================================================
+[ -d "$STORE_DIR" ] || fail "6b: the knowledge store dir must survive uninstall"
+[ -d "$STORE_DIR/.git" ] || fail "6b: the store's .git must survive uninstall (sync state is user data)"
+[ "$(git -C "$STORE_DIR" remote get-url origin)" = "$SYNC_REMOTE" ] \
+  || fail "6b: the store's sync remote config must survive uninstall unchanged"
+[ "$(cat "$STORE_DIR/Decisions/sync-survivor.md")" = "note that must survive uninstall" ] \
+  || fail "6b: the store's note content must survive uninstall byte-for-byte"
+pass "6b: the knowledge store survives uninstall intact — dir, .git, remote origin URL, and note content all untouched (uninstall never deletes or de-remotes the store)"
 
 # ===========================================================================
 # 7. After-uninstall snapshot + tree-diff against the declared, commented
@@ -318,10 +368,17 @@ EXCL_XDG_CONFIG=""
 EXCL_XDG_STATE="temperloop/install-manifest.json"
 
 # $XDG_DATA_HOME: nothing in links_enumerate(), manifest.sh, or the
-# cache-store provisioning step targets XDG_DATA_HOME at all — it should
-# never be touched anywhere in this lifecycle. Zero exclusions (the
-# strongest claim: this root should show literally no activity).
-EXCL_XDG_DATA=""
+# cache-store provisioning step targets XDG_DATA_HOME at all. The ONE
+# expected occupant is the knowledge STORE this suite's own sync leg (4b)
+# seeds at the default store root — user data (notes + the git-backed sync
+# state: .git, the origin remote config) that `temperloop uninstall` must
+# keep, per ADR 0003 ("the store is user data — uninstall never deletes or
+# de-remotes it"; asserted positively in 6b). Declaring EXACTLY the store
+# dir here is what makes this diff the residue proof for sync: any
+# sync-specific state landing OUTSIDE the explicitly-kept store dir — in
+# this root or in any of the other four (e.g. a stray global gitconfig
+# write under $HOME) — still fails its root's diff.
+EXCL_XDG_DATA="foundation/knowledge/*"
 
 # $XDG_CACHE_HOME: install.sh's own "Best-effort cache-store provisioning"
 # step (links_provision_cache_stores, F#988/#1026) unconditionally
@@ -352,8 +409,8 @@ sandbox_tree_diff "$BEFORE_DIR/xdg-state.tsv" "$AFTER_DIR/xdg-state.tsv" "$EXCL_
 pass "7c: \$XDG_STATE_HOME residue after uninstall is exactly the declared exclusion (the empty install-manifest.json a full uninstall legitimately leaves behind) — no unexplained residue"
 
 sandbox_tree_diff "$BEFORE_DIR/xdg-data.tsv" "$AFTER_DIR/xdg-data.tsv" "$EXCL_XDG_DATA" \
-  || fail "7d: unexplained diff under \$XDG_DATA_HOME (nothing in this lifecycle should ever touch it)"
-pass "7d: \$XDG_DATA_HOME is untouched throughout the whole lifecycle (zero exclusions)"
+  || fail "7d: unexplained residue under \$XDG_DATA_HOME beyond the explicitly-kept knowledge store dir (see the unified diff above)"
+pass "7d: \$XDG_DATA_HOME residue after uninstall is exactly the explicitly-kept knowledge store (user data incl. its git-backed sync state) — no sync-specific residue outside the store dir"
 
 sandbox_tree_diff "$BEFORE_DIR/xdg-cache.tsv" "$AFTER_DIR/xdg-cache.tsv" "$EXCL_XDG_CACHE" \
   || fail "7e: unexplained residue under \$XDG_CACHE_HOME beyond the declared cache-store-root exclusion (see the unified diff above)"

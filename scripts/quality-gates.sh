@@ -149,6 +149,14 @@ KERNEL_GATES=(
   # .bmignore / KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES seam it now covers. Same direct-
   # `bash` form as the zsh-tie gate above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_knowledge_search.sh"
+  # Knowledge-store sync capability (temperloop#430, ADR 0003): ks_sync /
+  # ks_sync_available — the plain-files git-backed manual sync (init/push/
+  # pull/status, two-environment bootstrap against a local bare remote) and
+  # the exit-3 "skipped — sync unavailable for backend <name>" degradation
+  # on the obsidian backend. Zero network (the "remote" is a bare repo in a
+  # tmpdir); never touches the real HOME/XDG/git config. Same direct-`bash`
+  # form as the knowledge_search gates below.
+  "bash workflows/scripts/lib/tests/test_knowledge_store_sync.sh"
   # Read-log telemetry (temperloop#229, Epic #226 "script-plane read
   # telemetry"): ks__read_log_emit + its two call sites (knowledge_store.sh's
   # ks__dispatch — every ks_read/ks_write/ks_append/ks_list, plain-files

@@ -251,6 +251,108 @@ race noted in the table.
 | `ks_write --no-clobber` | atomic filesystem check (`[ -e "$path" ]`) | emulated via pre-flight `GET` (TOCTOU race under concurrent writers) |
 | `ks_list` exit code | always 0 | 0 when the target dir 404s; **1** on any other failure mid-walk |
 | Locking | none | none (plus the `--no-clobber` pre-flight race) |
+| Sync (optional capability, see § Sync) | implemented (git-backed, manual) | not implemented — `ks_sync` exits 3, `skipped — sync unavailable for backend obsidian` |
+
+## Sync — optional backend capability (EXPERIMENTAL)
+
+Sync (temperloop#430, ADR 0003) is **not** a universal op like
+`read`/`write`/`append`/`list` — it is an **optional backend capability**,
+following the availability-probe precedent `ks_search` established. It is a
+*store-level* operation only coherent for a backend whose store is a
+directory under `ks_root`; the `obsidian` backend never consults
+`KNOWLEDGE_STORE_ROOT` at all (the vault root IS the store root), so a
+git-under-root sync has no meaning there and it degrades legibly rather
+than inheriting an unimplementable obligation.
+
+**Status: EXPERIMENTAL.** Single-tenant per `$HOME` — one flat store root,
+one remote; per-project partition is deferred (temperloop#418).
+Single-writer assumption — there is no conflict story beyond git's own:
+`pull` is fast-forward-only, and a diverged store fails loud for the
+operator to resolve with git directly, never an auto-merge.
+
+### Public interface
+
+```
+ks_sync init <remote-url>     -> make the store a git repo + wire remote `origin`
+ks_sync push [-m <msg>]       -> stage all, commit (iff changes), push
+ks_sync pull                  -> fast-forward-only pull from `origin`
+ks_sync status                -> read-only summary (store, remote, branch, unsynced count)
+ks_sync_available             -> exit 0/3 probe, no stdout
+```
+
+Exit codes (mirroring `knowledge_search`'s shape):
+
+| Exit | Meaning |
+|---|---|
+| 0 | Success (for `status`: it answered — including the legible "not initialized" answer; `status` is a probe, not a gate). |
+| 2 | Invalid usage (missing/unknown sub-op, `init` without `<remote-url>`, an unknown `push` argument). |
+| 3 | Capability unavailable ("skipped"). A message beginning `skipped — sync unavailable for backend <name>` is printed to stderr; **nothing is ever printed to stdout**. Same legible-degradation contract as `ks_search`'s exit 3. |
+| 4 | Sync-operation failure: the backend can sync but the operation failed (store not initialized, no remote wired, non-fast-forward pull, rejected push). Cause on stderr. |
+
+`ks_sync_available` is the standalone probe (exit 0 = ready, exit 3 = the
+same `skipped —` notice on stderr). It checks two layers: the current
+backend defines a `sync` op at all (a backend registers the capability by
+defining `_ks_backend_<name>_sync`, optionally plus
+`_ks_backend_<name>_sync_available` as its tooling probe — the same
+registration seam as the universal ops), and — when the backend provides
+one — that tooling probe passes (`plain-files`: `git` on `PATH`).
+
+### Hard rules (all backends)
+
+- **Every sync op routes through `ks_sync`** — no caller may shell
+  `git -C "$(ks_root)"` (or equivalent) directly. Under a backend that
+  never consults `KNOWLEDGE_STORE_ROOT` (obsidian), that back-channel would
+  "sync" a directory that is not the store at all; the dispatch gate is
+  what makes the exit-3 degradation reachable.
+- **Manual invocation only.** `ks_sync` is an operator action, like
+  `git push` itself — it is never wired into a scheduled or background job
+  (launchd, cron, a watcher, a hook).
+- **The store is user data.** `temperloop uninstall` never deletes or
+  de-remotes the store: the store directory — including its `.git` and
+  remote config — survives uninstall intact, and no sync-specific state
+  lives anywhere *outside* the store directory (asserted end-to-end by
+  `workflows/scripts/tests/test_install_lifecycle.sh`'s residue diff).
+
+### The `plain-files` implementation
+
+The store directory itself becomes a git repository (`$(ks_root)/.git`)
+with one remote, `origin`:
+
+- **`init <remote-url>`** — `git init` (if the root has no `.git` of its
+  own) pinned to branch `main` regardless of the host's
+  `init.defaultBranch`, then `remote add`/`set-url origin <remote-url>`.
+  Idempotent; never clones or pulls by itself. **The remote should be
+  private by default** — the store is personal working notes; the worked
+  example creates it with `gh repo create <owner>/knowledge-store
+  --private`.
+- **`push [-m <msg>]`** — `add -A`, commit only if there are changes
+  (default message `knowledge-store sync: <UTC timestamp>`), push the
+  current branch with `-u`. Commit identity: the operator's own git
+  identity when configured (config or `GIT_COMMITTER_*` env); a neutral
+  `knowledge-store-sync` fallback is injected only when `user.email`
+  resolves to nothing, so a fresh CI/sandbox `$HOME` never fails on
+  identity.
+- **`pull`** — `pull --ff-only origin <branch>`. On a freshly-`init`-ed
+  store (unborn `HEAD`) this receives the operator's real store from the
+  remote — the **second-environment bootstrap**: `ks_sync init
+  <remote-url>` then `ks_sync pull` in a fresh environment reproduces the
+  store, in-beta the cheap path to fresh-install validation against real
+  data.
+- **Enclosing-repo guard** — `push`/`pull` require the root to carry its
+  *own* `.git` (exit 4 otherwise): a store directory that merely sits
+  inside some outer git repository is never operated on through that outer
+  repo.
+
+### Thin operator entry
+
+`workflows/scripts/lib/knowledge_sync.sh` is an executable wrapper (source
+the lib, pass through to `ks_sync`, exit codes untouched) so an operator
+can run a manual sync without hand-sourcing the library. It is
+**deliberately not** a `bin/temperloop` subcommand and **not listed in the
+stranger-facing CLI reference** — whether this experimental surface is
+promoted to a first-class `temperloop sync` subcommand is a decision kept
+open; adding it to the CLI reference now would freeze a contract surface
+(`VERSIONING.md` § CLI surface) around an experimental capability.
 
 ## Read-log telemetry (script plane)
 
@@ -274,7 +376,9 @@ shape, fields joined by `" · "`:
   (`claude/hooks/ks-agent-read-log.sh`, temperloop#236) calls the SAME
   `ks__read_log_emit` function with `plane=agent` rather than getting a new
   knob.
-- `op` — `read` | `write` | `append` | `list` | `search`, plus `other` from
+- `op` — `read` | `write` | `append` | `list` | `search` | `sync` (the
+  optional sync capability's dispatches, temperloop#430 — its
+  `doc-path-or-query` field carries the sub-op, e.g. `push`), plus `other` from
   the agent-plane hook only, for a matched MCP tool name its simple
   name-based mapping can't classify (see that hook's own header for the
   mapping table) — logged rather than dropped, per the epic's "unknown
