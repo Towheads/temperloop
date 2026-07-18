@@ -1369,23 +1369,71 @@ _hyg_heat_read_lookup() {
   printf '%s\n' "$map" | awk -F'\t' -v d="$rel" '$1==d{print $2; found=1} END{if(!found) print 0}'
 }
 
-# base self all_files -> count of DISTINCT other store notes (from
-# all_files, the same Personal/-pruned whole-vault list every other check
-# here uses) containing a literal `[[<base>` wikilink reference — a simple,
-# documented, grep-based inbound-link count (per temperloop#240's own
-# acceptance note: "a simple grep-based count is fine"). Counts one per
-# LINKING FILE, not per occurrence, so a note that links twice from the same
-# file isn't double-weighted.
-_hyg_inbound_link_count() {
-  local base="$1" self="$2" all_files="$3" count=0 f
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    [ "$f" = "$self" ] && continue
-    grep -qF -- "[[${base}" "$f" 2>/dev/null && count=$((count + 1))
-  done <<EOF
-$all_files
-EOF
-  printf '%s' "$count"
+# all_files -> a backlink INDEX: one "<target>\t<distinct-linking-file-count>"
+# line per wikilink target, built in a SINGLE pass over the whole vault
+# (foundation #1202). The former implementation grep'd every note against every
+# other note — an O(n^2) file-read scan that took >12min on
+# an 872-note vault and either blocked or got skipped on the nightly /tidy run.
+# This does it once: extract every `[[<target>` wikilink token from every file
+# (all_files is the same Personal/-pruned whole-vault list every other check
+# here uses), then tally the number of DISTINCT linking files per target.
+#
+# Semantics preserved from the old per-note count, still "a simple grep-based
+# count is fine" per temperloop#240:
+#   - Counts one per LINKING FILE, not per occurrence (the `seen[file,tok]`
+#     guard), so a note that links twice from one file isn't double-weighted.
+#   - A file's link to its OWN basename is skipped (the self-exclusion the old
+#     `[ "$f" = "$self" ]` guard implemented).
+#   - The token is the text immediately after `[[`, up to the first `]`, `|`,
+#     or `#` — so `[[Name]]`, `[[Name|alias]]`, and `[[Name#heading]]` all tally
+#     under `Name`, while a folder-qualified `[[Folder/Name]]` tallies under
+#     `Folder/Name` (never `Name`), exactly as the old `[[<base>` prefix grep
+#     did (it never matched a base sitting after a `Folder/`).
+# The one deliberate difference: the old substring grep also matched a base that
+# was a strict PREFIX of a longer target (`base` counted a `[[baseball]]` link);
+# this exact-target index does not — a fix to that accidental over-count,
+# immaterial here since heat is informational and never alarms.
+#
+# `set -euo pipefail` note: grep exits 1 when a batch has no wikilink match, so
+# the xargs|grep stage is wrapped in `|| true` to keep the empty/no-link case
+# (small fixtures, a linkless vault) from aborting the whole check.
+_hyg_build_backlink_index() {
+  local all_files="$1"
+  [ -n "$all_files" ] || return 0
+  printf '%s\n' "$all_files" \
+    | tr '\n' '\0' \
+    | { xargs -0 grep -oHE '\[\[[^]|#]+' 2>/dev/null || true; } \
+    | awk '
+        {
+          # grep -oH emits "<file>:<match>"; split on the first colon only
+          # (vault paths carry no colon), the match is the rest of the line.
+          ci = index($0, ":")
+          if (ci == 0) next
+          file = substr($0, 1, ci - 1)
+          tok  = substr($0, ci + 1)     # "[[<target>"
+          sub(/^\[\[/, "", tok)         # -> "<target>"
+          if (tok == "") next
+          # skip a self-link: a file linking to its own basename
+          nf = split(file, parts, "/")
+          fbase = parts[nf]
+          sub(/\.md$/, "", fbase)
+          if (fbase == tok) next
+          if (!((file SUBSEP tok) in seen)) {
+            seen[file SUBSEP tok] = 1
+            count[tok]++
+          }
+        }
+        END { for (t in count) printf "%s\t%d\n", t, count[t] }
+      '
+}
+
+# base index -> distinct-linking-file count for base (0 when absent from the
+# index, including an empty index — the no-backlinks degrade path). Mirrors
+# _hyg_heat_read_lookup's exact-key awk lookup over an in-memory map: no file
+# I/O per candidate — that per-note whole-vault re-read was the O(n^2) cost.
+_hyg_heat_link_lookup() {
+  local base="$1" idx="$2"
+  printf '%s\n' "$idx" | awk -F'\t' -v d="$base" '$1==d{print $2; found=1} END{if(!found) print 0}'
 }
 
 # note file -> its last_verified frontmatter parsed to epoch, or (when
@@ -1407,13 +1455,17 @@ _hyg_heat_epoch() {
 
 # ── Check 17: heat score + top-5 review queue (temperloop#240 — ADR §2.6-2.7) ──
 check_heat_score() {
-  local now read_map all_files d dir f rel base
+  local now read_map all_files link_index d dir f rel base
   local reads links epoch stale_days stale_capped recency heat tag priority
   local n=0 lines=""
   local rank pri rq_rel rq_heat rq_stale rq_reads rq_tag
   now="$(now_epoch)"
   read_map="$(_hyg_heat_read_counts)"
   all_files="$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)"
+  # Build the whole-vault backlink index ONCE (foundation #1202), then look
+  # each candidate note up in it — replacing the former per-note grep-over-
+  # every-note scan that made this check O(n^2) in the note count.
+  link_index="$(_hyg_build_backlink_index "$all_files")"
 
   for d in "${HEAT_SCAN_FOLDERS[@]}"; do
     dir="$ROOT/$d"
@@ -1427,7 +1479,7 @@ check_heat_score() {
       reads="$(_hyg_heat_read_lookup "$rel" "$read_map")"
       case "$reads" in ''|*[!0-9]*) reads=0 ;; esac
 
-      links="$(_hyg_inbound_link_count "$base" "$f" "$all_files")"
+      links="$(_hyg_heat_link_lookup "$base" "$link_index")"
       case "$links" in ''|*[!0-9]*) links=0 ;; esac
 
       epoch="$(_hyg_heat_epoch "$f")"
