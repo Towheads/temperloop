@@ -107,7 +107,7 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 | `board_sub_issues` (NEW, #800) | Read-side counterpart to `board_parent_issue` — child issue numbers via GitHub's native sub-issues REST endpoint. Same shape as its siblings: per-issue REST, always live, backend-agnostic. See § Parent/child and dependency edges. |
 | `board_stamp` (#800 — now IMPLEMENTED) | `ISSUE_n` routes to a free-text `fnd:host/session:<verbatim-text>` label (single label of that prefix kept at a time; empty text clears). See § Claim lock. |
 | `board_claim_contended` (NEW, #800; extended to Projects-v2) | Backend-agnostic pre-check: is `<issue#>` already In Progress under a DIFFERENT Host/Session stamp? See § Claim lock. Reads the already-resolved `BOARD_ITEMS_JSON` on either backend — no extra `gh`/GraphQL call. |
-| `board_set_number` | **Still out of scope** — Seq/worklist ordering is deferred to a future worklist-ordering item, not owned by the claim/edges split. On an issues-only board this still **fails loud** (return 1, no silent no-op) because `BOARD_FIELDS_JSON` carries no field schema — intentional, not a gap to route around. |
+| `board_set_number` | **Retired by design (ADR 0006), not emulated.** Seq/worklist ordering is not owned by the claim/edges split and has no future item to land it — an `ISSUE_*` item-id has no Projects-v2 field schema to resolve a number field against, and no `fnd:seq:<n>` label encoding was introduced to fake one (that would mint an unbounded numeric label namespace, recreating the label sprawl this migration removes). Work ordering on this backend lives in epic dependency levels and milestones instead. On an issues-only board this **fails loud** (return 1, plus a documented stderr message naming the retirement — no silent no-op) — intentional, not a gap to route around. |
 
 The item shape produced by the issues-only reshape:
 
@@ -152,9 +152,8 @@ an unmilestoned one reads empty and carries no `.milestone` key).
 - ~~No claim lock / Host/Session.~~ **Filled in by #800** — see § Claim lock.
 - ~~No parent/child or dependency edges.~~ **Filled in by #800** (mostly for
   free — see § Parent/child and dependency edges) — see that section.
-- **No Seq ordering.** Still deferred — a future worklist-ordering item, not
-  claim/edges; `board_set_number` fails loud rather than guessing a
-  convention.
+- **No Seq ordering.** Retired by design, not deferred (ADR 0006) — see
+  `board_set_number` above.
 - **No funnel wiring.** That's the funnel-integration split (3/3).
 
 ## Claim lock (Host/Session-equivalent, foundation #800)
