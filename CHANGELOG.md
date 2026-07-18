@@ -14,12 +14,94 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
-Additive. Safe pull, no migration — no `BREAKING` marker. The `/check-in`
-pipeline-command contract **grows** (its Part 1 telemetry brief now renders
-kernel-side on every checkout); nothing existing changes shape — the overlay
-renderer keeps its exact guarded invocation as an enrichment.
+## [0.14.0] - 2026-07-18
+
+Additive minor. Safe pull, no migration — no `BREAKING` marker. The headline
+is the **L0 issues-only tracking changes** (epic #460): the `boards.conf`
+backend axis now resolves per-key so a machine conf silent on a board no
+longer shadows a committed repo-local `backend=issues` flip,
+`board_set_number` fails loud on the issues-only backend (Seq retired by
+design, ADR 0006), a dry-run-first Projects→issues migration script ships,
+and `/tidy` gains a board label-hygiene sweep. Draft ADRs 0004–0006 (all
+`Status: Proposed`) land alongside, recording the issues-only-default
+decision, the repo-local conf-cutover mechanism, and the Seq retirement.
+**Soak-window note:** the issues-only path is deliberately uncached and
+always-live, and migrating the four maintainer boards onto it (this epic's
+follow-on cutover work) is the first real volume test of that posture — REST
+consumption is monitored during the soak window that follows this release,
+with the existing per-board `cache=on` axis (`boards.conf`) as the ready
+mitigation (ADR 0004 § Consequences).
+
+The release also carries the `/check-in` pipeline-command contract
+**growing** (its Part 1 telemetry brief now renders kernel-side on every
+checkout; nothing existing changes shape — the overlay renderer keeps its
+exact guarded invocation as an enrichment) plus the additions below.
+
+### Fixed
+
+- **`board_backend()` resolves the `boards.conf` backend axis per-key, not
+  whole-file (#478, closes #465).** A machine-level conf that is silent on a
+  given board's backend no longer shadows a committed repo-local
+  `backend=issues` flip: a new `_board_conf_get_layered()` helper walks every
+  existing conf file (machine, then repo-local) and returns the first
+  per-key match, for the `backend` axis only — every other axis
+  (`repo`/`owner`/`project`) keeps the original whole-file "first hit wins"
+  behavior (`test_boards_conf.sh` section 3 pins it unchanged). An explicit
+  machine-level `backend=` line still wins outright.
+- **`board_set_number` fails loud on the issues-only backend — Seq retired
+  by design, not emulated (#480, closes #464, ADR 0006).** A new `ISSUE_*`
+  case branch replaces a silent `return 1` with a documented stderr message
+  naming the retirement (ordering now lives in epic dependency levels and
+  milestones); its test asserts on the message with stderr unsuppressed.
+  `claude/commands/triage.md`'s three Seq special-case sites and
+  `ISSUES-ONLY-BACKEND.md`'s two Seq rows are reworded from "deferred" to
+  "retired by design"; `worklist.sh`'s Seq column/sort key is intentionally
+  untouched (read-side retirement is a follow-on item).
 
 ### Added
+
+- **`migrate-board-to-issues.sh` — dry-run-first Projects→issues migration
+  script (#481, closes #466).** Reads a board's Status/Component via the
+  Projects arm and writes `fnd:` labels via the existing issues-arm write
+  path (`board_set_status`/`board_set_component`), with schema-level
+  validation that refuses an unrecognized single-select field or Status
+  option before any write. Dry-run is the default (prints the full
+  field-to-label mapping table, zero writes); `--apply` writes and then
+  verifies every open item reads identically through `backend=issues`;
+  idempotent (a second `--apply` reports zero changes); emits a per-repo
+  report. Covered by a fixture-replay test suite, zero network.
+- **`reconcile.sh --labels` — board label-hygiene sweep (#482, closes
+  #463).** A third `reconcile.sh` lens that reports and, on
+  `--apply`/`--unattended`, deletes orphaned `fnd:host/session:*` repo
+  labels (zero open-issue attachments, re-checked immediately before each
+  delete) and strips stale `fnd:status:*` labels from closed issues (the
+  bare-`Closes #N` adapter-bypass leak) — strictly `fnd:`-namespaced, never
+  touching a non-`fnd:` label. Dry-run is the interactive default; unattended
+  default is apply, with a `### open` pending-decisions append per the
+  batch-at-ritual rule (never a silent auto-take). Wired into `tidy.md`'s
+  "Stale board claims" step, invoked per board (3, 4, and 7 the kernel
+  tracker); a live dry-run against the real board 7 tracker found 19
+  orphaned host/session labels and 155 stale status labels, confirming the
+  gap was genuine.
+- **Zero-GraphQL CLI-entrypoint test (#479, closes #467).**
+  `test_cli_entrypoint_no_graphql.sh` runs
+  `worklist.sh`/`claim.sh`/`capture.sh`/`reconcile.sh` as real subprocesses
+  against a `backend=issues` board through a PATH-shadowed `gh` logging
+  shim, asserting zero `gh project` and zero `gh api graphql` calls at the
+  process level — complementing the existing function-level coverage in
+  `test_issues_backend.sh` / `test_issues_claim_edges.sh` / `test_capture.sh`.
+  Verified to actually catch a regression before landing (forced
+  `board_backend` to answer `projects`, confirmed 7/9 checks failed, then
+  reverted).
+- **Draft ADRs 0004–0006 for issues-only-everywhere (epic #460, PR #461).**
+  `docs/adr/0004-issues-only-default-backend.md`,
+  `0005-repo-local-conf-cutover.md`, and `0006-seq-retired-on-issues-only.md`
+  — all `Status: Proposed` — record the issues-only-default decision
+  (Projects-v2 deprecated this release, removed in a follow-on breaking
+  release after a soak), the repo-local `boards.conf`-entry cutover
+  mechanism (per-repo commit, not the kernel's built-in map), and the
+  Seq-retirement rationale this release's `board_set_number` fix
+  implements.
 
 - **Knowledge-store sync — optional backend capability (temperloop#430, ADR
   0003).** `ks_sync` (`init <remote-url>` / `push [-m <msg>]` / `pull` /
