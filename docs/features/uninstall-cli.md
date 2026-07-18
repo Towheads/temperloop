@@ -78,12 +78,12 @@ conflates them — `bin/README.md`'s Uninstall section and `eject.sh`'s own
 
 `temperloop uninstall` is dispatched exactly like every other subcommand —
 a discovered file at `bin/subcommands/uninstall.sh`, no dispatcher edit
-required (`bin/temperloop`'s DISPATCH MODEL). Like every subcommand, it
-still passes through the dispatcher's unconditional prereq gate
-(`claude` + authenticated `gh` on `PATH`) before it runs, even though this
-subcommand itself never calls either tool — that gate is dispatcher-level,
-not opt-outable per subcommand (see `bin/lib/common.sh`:
-`foundation_check_prereqs`).
+required (`bin/temperloop`'s DISPATCH MODEL). Per-subcommand prereq scoping
+(temperloop#412) means the dispatcher checks a subcommand only against what
+its own `# prereqs: ...` header declares (see `bin/lib/common.sh`:
+`foundation_check_prereqs`); this subcommand declares none, matching that it
+never calls `claude` or `gh` itself, so `temperloop uninstall` runs with
+zero dispatcher-level claude/gh checks in front of it.
 
 ## Resource impact
 

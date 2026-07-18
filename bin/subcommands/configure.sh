@@ -65,15 +65,15 @@
 # later hold host secrets, same guidance as
 # build.config.machine.sh.example).
 #
-# NOTE on the CLI dispatcher's prereq gate: `bin/temperloop`'s dispatcher
-# requires `claude` + authenticated `gh` on PATH before invoking ANY
-# subcommand (see that script's own header) — a pre-existing,
-# subcommand-agnostic gate this file does not touch. In practice this
-# means the plain-prompt degradation this script implements is reachable
-# through `temperloop configure` only once that gate's `claude` dependency
-# is itself relaxed elsewhere; today it is exercised by invoking this
-# script directly, exactly like the existing eject.sh/init.sh/try.sh test
-# suites already do.
+# NOTE on the CLI dispatcher's prereq gate: per-subcommand prereq scoping
+# (temperloop#412) means `bin/temperloop`'s dispatcher checks a subcommand
+# only against what its own `# prereqs: ...` header declares (see that
+# script's own header) — this file declares none, so the plain-prompt
+# degradation this script implements (see AI-GUIDED / PLAIN PROMPTS above)
+# is fully reachable through `temperloop configure` with `claude` absent
+# from PATH, no dispatcher-level check standing in front of it. It is
+# still exercised directly in tests too, exactly like the existing
+# eject.sh/init.sh/try.sh test suites already do.
 #
 # Usage:
 #   configure.sh [--set NAME=VALUE ...] [--no-ai] [--yes] [--dry-run]
