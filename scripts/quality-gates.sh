@@ -305,7 +305,7 @@ KERNEL_GATES=(
   # Mechanical egress lint over Epic E's before/after value-loop producers
   # (foundation #766, privacy/egress audit item): greps baseline-snapshot.sh,
   # report.sh, bin/foundation's auto-offer check, and (in the composed-tree
-  # invocation via the root Makefile) the .foundation/report.d/ overlay
+  # invocation via the root Makefile) the .temperloop/report.d/ overlay
   # drop-ins for network-call patterns beyond the one sanctioned `gh`
   # channel. See check-producer-egress.sh's header for the documented
   # (today: empty) opt-in egress surface.
@@ -383,6 +383,17 @@ KERNEL_GATES=(
   # (The `temperloop update` managed-clone gate and the update-kernel
   # breaking-delta gate are surface-conditional — registered just below the
   # array, temperloop#488.)
+  # foundation→temperloop rename window (temperloop#165, v0.15.0): hermetic
+  # read-old-write-new proof — a legacy FOUNDATION_*-env bootstrap installs
+  # with per-var deprecation NOTEs while TEMPERLOOP_* installs silently;
+  # the `foundation` shim dispatches + self-deprecates; a legacy-env
+  # install survives an adjacent-tag `update` through the shim; a
+  # pre-rename .foundation/config and a legacy machine boards.conf are
+  # read by new code; and the TEMPERLOOP_LEGACY_WINDOW_CLOSED simulation
+  # proves every legacy surface degrades legibly (names the replacement +
+  # v0.17.0) once the window shuts. Same fixture-upstream + sandbox
+  # conventions as test_update_subcommand.sh above.
+  "bash workflows/scripts/tests/test_rename_compat.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

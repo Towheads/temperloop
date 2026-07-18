@@ -79,16 +79,23 @@ while [ -L "$_src" ]; do
   _src="$(readlink "$_src")"
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
-FOUNDATION_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+_tl_self_bin_dir="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 
-SUBCOMMANDS_DIR="$FOUNDATION_BIN_DIR/subcommands"
-LIB_DIR="$FOUNDATION_BIN_DIR/lib"
+SUBCOMMANDS_DIR="$_tl_self_bin_dir/subcommands"
+LIB_DIR="$_tl_self_bin_dir/lib"
 
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
 
-FOUNDATION_VERSION="${FOUNDATION_VERSION:-dev}"
+# Legacy FOUNDATION_* env vars are adopted (with a one-line deprecation
+# notice) through the rename window — removed in v0.17.0. See
+# temperloop_env_compat in lib/common.sh (temperloop#165).
+temperloop_env_compat || exit 1
+
+# Mirrors bin/subcommands/feedback.sh's identical seam (that one is the
+# registry-recorded copy; this file isn't a `.sh` so isn't swept).
+TEMPERLOOP_VERSION="${TEMPERLOOP_VERSION:-${FOUNDATION_VERSION:-dev}}"
 
 # _foundation_subcommand_description <file>
 #   Prints the file's `# description: ...` header line — a documented,
@@ -152,7 +159,7 @@ EOF
 In-checkout operations (board, build, quality gates) stay on 'make' — this
 CLI is the pre-checkout newcomer surface only.
 
-Running from: ${FOUNDATION_BIN_DIR%/bin}
+Running from: ${_tl_self_bin_dir%/bin}
 Default install location: $FOUNDATION_CLI_HOME_DEFAULT
   (symlinked onto PATH at $FOUNDATION_CLI_BIN_DEFAULT by bin/bootstrap.sh)
 EOF
@@ -162,8 +169,9 @@ EOF
 #   The 14-day report auto-offer (foundation #766 Epic E "cost/benefit value
 #   loop", item report-auto-offer / #880): a PASSIVE, pre-dispatch nudge —
 #   no cron, no daemon, no new verb — that prints a one-line offer to run
-#   `foundation report` once the target repo's baseline snapshot
-#   (.foundation/baseline.jsonl, written by `foundation baseline-snapshot` —
+#   `temperloop report` once the target repo's baseline snapshot
+#   (.temperloop/baseline.jsonl — legacy .foundation/ read through the
+#   rename window, temperloop#165 — written by `temperloop baseline-snapshot`;
 #   see kernel/workflows/scripts/lib/baseline_snapshot.contract.md) is at
 #   least 14 days old and the offer hasn't already fired for this repo.
 #
@@ -203,7 +211,11 @@ _foundation_check_report_offer() {
   command -v jq >/dev/null 2>&1 || return 0
 
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root="$(pwd)"
-  baseline_file="$repo_root/.foundation/baseline.jsonl"
+  # .temperloop/ is the canonical per-repo dir (renamed from .foundation/ in
+  # v0.15.0, temperloop#165); the legacy dir is read through the window
+  # (removed in v0.17.0).
+  baseline_file="$repo_root/.temperloop/baseline.jsonl"
+  [ -f "$baseline_file" ] || baseline_file="$repo_root/.foundation/baseline.jsonl"
   [ -f "$baseline_file" ] || return 0
 
   first_record="$(head -n1 "$baseline_file" 2>/dev/null)"
@@ -220,11 +232,14 @@ _foundation_check_report_offer() {
   [ "$age_days" -ge 14 ] || return 0
 
   dismiss_key="${repo_root//\//_}"
+  # The state/ subdir deliberately stays `foundation` — allowlisted legacy
+  # machine-state path (temperloop#165 verdict: cross-host writers/readers
+  # migrate together in the gate-sweep item, not per-call-site).
   dismiss_dir="${XDG_STATE_HOME:-$HOME/.local/state}/foundation/report-offer-dismissed"
   dismiss_file="$dismiss_dir/$dismiss_key"
   [ -f "$dismiss_file" ] && return 0
 
-  echo "temperloop: your baseline snapshot is ${age_days} days old — run 'foundation baseline-snapshot && foundation report' to see your before/after value (won't ask again for this repo)." >&2
+  echo "temperloop: your baseline snapshot is ${age_days} days old — run 'temperloop baseline-snapshot && temperloop report' to see your before/after value (won't ask again for this repo)." >&2
 
   mkdir -p "$dismiss_dir" 2>/dev/null && : > "$dismiss_file" 2>/dev/null
   return 0
@@ -238,7 +253,7 @@ if [[ "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" ]]; then
 fi
 
 if [[ "$cmd" == "--version" || "$cmd" == "-v" || "$cmd" == "version" ]]; then
-  echo "temperloop $FOUNDATION_VERSION"
+  echo "temperloop $TEMPERLOOP_VERSION"
   exit 0
 fi
 

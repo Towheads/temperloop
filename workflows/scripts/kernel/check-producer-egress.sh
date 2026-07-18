@@ -9,8 +9,8 @@
 # separate doc tree for it):
 #
 #   EMPTY. As of this writing, every producer this check covers reads and
-#   writes LOCAL FILES ONLY — `.foundation/baseline.jsonl`,
-#   `.foundation/report.d/*`, `.foundation/.gitignore`, and the XDG
+#   writes LOCAL FILES ONLY — `.temperloop/baseline.jsonl`,
+#   `.temperloop/report.d/*`, `.temperloop/.gitignore`, and the XDG
 #   dismiss-marker under `${XDG_STATE_HOME:-$HOME/.local/state}/foundation/
 #   report-offer-dismissed/` — with exactly ONE sanctioned exception:
 #   `baseline-snapshot.sh`'s own `gh pr list` / `gh issue list` / `gh auth
@@ -46,7 +46,7 @@
 #   A missing file or absent overlay dir is a silent, legible skip — this
 #   is a lint over whatever producers actually exist in the checkout it's
 #   run from (a standalone kernel-only checkout has no
-#   `.foundation/report.d/` of its own — see the OVERLAY_REPORT_D default
+#   `.temperloop/report.d/` of its own — see the OVERLAY_REPORT_D default
 #   below), not a presence/coverage check (that is kernel-manifest's job).
 #
 # PATTERNS FLAGGED — network-call IDIOMS, deliberately not the bare word
@@ -64,7 +64,7 @@
 #   (called by `make test-producer-egress` — see kernel/Makefile for the
 #   standalone-kernel-checkout invocation with no overlay dir, and
 #   foundation's own root Makefile for the composed-tree invocation that
-#   also passes --overlay-report-d so .foundation/report.d/'s real
+#   also passes --overlay-report-d so .temperloop/report.d/'s real
 #   drop-ins are covered there.)
 #
 # Env overrides (same effect as the matching flag above; flags win if both

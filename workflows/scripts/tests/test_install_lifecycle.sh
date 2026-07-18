@@ -267,14 +267,14 @@ SYNC_REMOTE="$SANDBOX_ROOT/sync-remote.git"
 git init --bare -q "$SYNC_REMOTE" || fail "4b: could not create the bare sync-remote fixture"
 
 # The store resolves through the DEFAULT root seam (no KNOWLEDGE_STORE_ROOT
-# override): ${XDG_DATA_HOME}/foundation/knowledge under the sandbox. The
+# override): ${XDG_DATA_HOME}/temperloop/knowledge (temperloop#165) under the sandbox. The
 # read-log (temperloop#229) is pointed OUTSIDE the diffed roots so the sync
 # leg's telemetry can't muddy the residue diff it exists to sharpen. The lib
 # is sourced from $REPO_ROOT (this working tree), NOT the bootstrapped
 # $CHECKOUT — the bootstrap bare-clones committed state only, so a
 # working-tree change to knowledge_store.sh would be invisible there; every
 # WRITE still lands inside the sandbox (env-scoped via sandbox_run).
-STORE_DIR="$SANDBOX_XDG_DATA_HOME/foundation/knowledge"
+STORE_DIR="$SANDBOX_XDG_DATA_HOME/temperloop/knowledge"
 sync_out="$(sandbox_run env "KNOWLEDGE_READ_LOG=$SANDBOX_ROOT/knowledge-reads.log" \
   bash -c '
     set -euo pipefail
@@ -378,7 +378,7 @@ EXCL_XDG_STATE="temperloop/install-manifest.json"
 # sync-specific state landing OUTSIDE the explicitly-kept store dir — in
 # this root or in any of the other four (e.g. a stray global gitconfig
 # write under $HOME) — still fails its root's diff.
-EXCL_XDG_DATA="foundation/knowledge/*"
+EXCL_XDG_DATA="temperloop/knowledge/*"
 
 # $XDG_CACHE_HOME: install.sh's own "Best-effort cache-store provisioning"
 # step (links_provision_cache_stores, F#988/#1026) unconditionally

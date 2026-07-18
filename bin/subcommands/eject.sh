@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# description: manifest-driven clean exit — reverts every foundation-init side effect and removes .foundation/
+# description: manifest-driven clean exit — reverts every temperloop-init side effect and removes .temperloop/ (or a pre-rename .foundation/)
 #
-# eject.sh — `foundation eject`: the clean-exit counterpart to `foundation
+# eject.sh — `temperloop eject`: the clean-exit counterpart to `temperloop
 # init` (foundation #765 Epic D "newcomer experience", item foundation-eject
 # / #855).
 #
-# `foundation init` (kernel/bin/subcommands/init.sh) is documented as the
-# SOLE WRITER of `.foundation/config`, and records every API-state side
+# RENAME WINDOW (temperloop#165, v0.15.0): the per-repo dir is
+# `.temperloop/`; a pre-rename adoption used `.foundation/`. Every read
+# below prefers the new dir and falls back to the legacy one, and eject
+# removes BOTH — cleaning legacy residue stays supported even past the
+# v0.17.0 window close (it is exactly this subcommand's job). Comments
+# below name only `.temperloop/` for brevity.
+#
+# `temperloop init` (kernel/bin/subcommands/init.sh) is documented as the
+# SOLE WRITER of `.temperloop/config`, and records every API-state side
 # effect it produces (a label, a required-check setting, a proposal
 # branch/PR, a provisioned board) in that file's `installs[]` array. This
 # script is the ONLY reader of that manifest for the purpose of reverting
-# it — it inspects `.foundation/config`, undoes exactly the recorded set,
-# and removes `.foundation/` itself. Nothing here is inferred by namespace
+# it — it inspects `.temperloop/config`, undoes exactly the recorded set,
+# and removes `.temperloop/` itself. Nothing here is inferred by namespace
 # grep (e.g. scanning for `fnd:`-prefixed labels) — a label the user created
 # independently, with no matching `installs[]` entry, is never touched.
 #
 # TREE vs API-STATE, the same split init.sh draws:
-#   - `.foundation/config` itself is a TREE artifact, already present in the
+#   - `.temperloop/config` itself is a TREE artifact, already present in the
 #     local working copy (init.sh's proposal-pr.sh call leaves the local
 #     checkout ON the proposal branch with the file committed there,
 #     regardless of whether that branch's PR ever merged upstream) — so
@@ -33,7 +40,7 @@
 #
 # proposal_pr entries get special handling: a `type":"proposal_pr"` install
 # records the branch init.sh's proposal-pr.sh call opened. If that PR was
-# MERGED, its tree changes (`.foundation/config`, an optional
+# MERGED, its tree changes (`.temperloop/config`, an optional
 # `boards.conf` entry) are already part of the target repo's default
 # branch — reverting them is explicitly OUT OF SCOPE (see the "acceptance"
 # framing in the epic: "byte-identical modulo proposal PRs the user chose
@@ -42,22 +49,22 @@
 # so an abandoned/declined proposal leaves no trace.
 #
 # IDEMPOTENT BY CONSTRUCTION: a fully successful revert deletes
-# `.foundation/config` as its last step, so a second run finds nothing and
+# `.temperloop/config` as its last step, so a second run finds nothing and
 # no-ops (prints a message, exit 0, zero `gh` calls). A PARTIAL revert (some
 # install action failed — e.g. `gh` transiently unreachable) rewrites
-# `.foundation/config` to keep ONLY the unresolved entries, so a re-run
+# `.temperloop/config` to keep ONLY the unresolved entries, so a re-run
 # retries just those, converging without re-doing already-reverted work.
 #
-# PARTIAL/FAILED INIT RECOVERY (temperloop#414): a run of `foundation init`
+# PARTIAL/FAILED INIT RECOVERY (temperloop#414): a run of `temperloop init`
 # that dies before ever reaching its own SOLE-WRITER step (init.sh's Step 0
-# writes `.foundation/baseline.jsonl` before `.foundation/config` exists)
-# leaves `.foundation/` residue with no config to gate on — the "nothing to
-# eject" check below therefore keys on `.foundation/` PRESENCE, not on
+# writes `.temperloop/baseline.jsonl` before `.temperloop/config` exists)
+# leaves `.temperloop/` residue with no config to gate on — the "nothing to
+# eject" check below therefore keys on `.temperloop/` PRESENCE, not on
 # config presence, so this residue is always recognized and cleaned up. A
 # run that dies AFTER its branch switch (init.sh's proposal-pr.sh call,
 # which does `git checkout -B <branch>`) additionally leaves the checkout on
 # that stray branch with an unmerged local commit. init.sh records the
-# branch it switched FROM in an untracked `.foundation/.recovery.json`
+# branch it switched FROM in an untracked `.temperloop/.recovery.json`
 # marker immediately before the switch, and deletes it immediately once the
 # switch's outcome is known (success either way) — see init.sh's own header
 # note. This script is the marker's reader: when it finds the marker AND
@@ -65,7 +72,7 @@
 # recorded original branch and deletes the stray one as part of the same
 # consented revert this script already gates everything else behind (never
 # on `--dry-run`, never without --yes/an interactive confirm) — so ejecting
-# a partial run leaves the repo exactly as it was: no `.foundation/`
+# a partial run leaves the repo exactly as it was: no `.temperloop/`
 # residue, original branch restored, no stray unmerged branch.
 #
 # Usage:
@@ -73,32 +80,32 @@
 #            [--yes] [--dry-run]
 #
 #   --dir DIR             Git checkout to eject. Default: current dir.
-#   --gh-repo OWNER/REPO  Overrides the repo recorded in .foundation/config's
+#   --gh-repo OWNER/REPO  Overrides the repo recorded in .temperloop/config's
 #                          probe.repo.gh_repo (usually unnecessary — the
 #                          manifest already carries it from the init run
 #                          that produced it).
 #   --no-network           Skip every API-state revert action (label/
 #                          required-check/board/proposal_pr) with a legible
-#                          skip reason; .foundation/config is left with
+#                          skip reason; .temperloop/config is left with
 #                          those entries so a later run can retry.
 #   --yes                  Pre-confirm the revert instead of an interactive
 #                          y/N prompt. Required on a non-interactive stdin —
 #                          absent both, the whole run aborts with NOTHING
-#                          reverted and .foundation/config left intact
+#                          reverted and .temperloop/config left intact
 #                          (the same "nothing lands without explicit
 #                          consent" default init.sh uses, mirrored for the
 #                          also-mutating uninstall direction).
 #   --dry-run               Print what would be reverted; zero `gh` calls,
-#                          .foundation/config left untouched.
+#                          .temperloop/config left untouched.
 #
 # Exit codes: 0 = ran to completion (a declined confirmation or an empty
 # manifest is a legible no-op, not a failure). 1 = fatal usage/environment
 # error, OR a partial revert (some install entries could not be reverted —
-# see the rewritten .foundation/config). 2 = invalid CLI usage.
+# see the rewritten .temperloop/config). 2 = invalid CLI usage.
 #
 # Dependencies: bash (3.2+), git, jq. `gh` is optional — its absence
 # degrades only the API-state revert step (every install entry reports
-# "skipped", .foundation/config is left in place for a later retry).
+# "skipped", .temperloop/config is left in place for a later retry).
 #
 # shellcheck shell=bash
 
@@ -140,8 +147,9 @@ Three separate removal scopes — this subcommand only handles (c); see
       'temperloop install' wrote under \$HOME — a separate concern from
       (a) and (c)):
         temperloop uninstall
-  (c) THIS repo's .foundation/config side effects (labels, required
-      checks, boards, proposal PRs) — what 'foundation eject' just did.
+  (c) THIS repo's .temperloop/config side effects (labels, required
+      checks, boards, proposal PRs; a pre-v0.15.0 init recorded them in
+      .foundation/config) — what 'temperloop eject' just did.
 EOF
 }
 
@@ -173,30 +181,49 @@ repo_top="$(git -C "$repo_dir" rev-parse --show-toplevel 2>/dev/null)" \
   || { echo "eject.sh: --dir '$eject_dir' is not a git working tree" >&2; exit 1; }
 repo_dir="$(abs_dir "$repo_top")"
 
-echo "== foundation eject =="
+echo "== temperloop eject =="
 echo
 
-config_rel=".foundation/config"
+# temperloop#165 rename window: `.temperloop/` is the canonical per-repo dir
+# (written by v0.15.0+ inits); a pre-rename adoption left `.foundation/`.
+# Eject CLEANS EITHER — deliberately in force even past the window close
+# (removing legacy residue is exactly this subcommand's job), so no
+# TEMPERLOOP_LEGACY_WINDOW_CLOSED arm exists here. Reads (config, recovery
+# marker) prefer the new dir and fall back to the legacy one; the
+# partial-failure rewrite goes back to whichever file was actually read.
+tl_dir="$repo_dir/.temperloop"
+legacy_dir="$repo_dir/.foundation"
+config_rel=".temperloop/config"
 config_path="$repo_dir/$config_rel"
-foundation_dir="$repo_dir/.foundation"
+if [ ! -f "$config_path" ] && [ -f "$legacy_dir/config" ]; then
+  config_rel=".foundation/config"
+  config_path="$legacy_dir/config"
+  echo "NOTE: reading legacy $config_rel (renamed .temperloop/config in v0.15.0; 'temperloop eject' cleans either dir)."
+  echo
+fi
+# Human-readable name for "what eject removes" in the messages below.
+tl_dirs_desc="$tl_dir"
+if [ -d "$legacy_dir" ]; then
+  if [ -d "$tl_dir" ]; then tl_dirs_desc="$tl_dir + $legacy_dir"; else tl_dirs_desc="$legacy_dir"; fi
+fi
 
 # ---------------------------------------------------------------------------
-# Step 0 — no .foundation/ AT ALL, nothing to do. Keyed on the DIRECTORY,
-# not on config_path (temperloop#414): a partial/failed 'foundation init'
-# can leave .foundation/ residue (init.sh Step 0's baseline.jsonl, written
-# BEFORE .foundation/config exists) with no config ever written, and that
-# residue must still be recognized as something to eject — see the
-# dedicated branch below. This check is also the SECOND-RUN idempotency
-# path: a fully successful revert removes .foundation/ entirely as its last
-# step, so a re-run finds nothing here and no-ops.
+# Step 0 — no .temperloop/ AND no legacy .foundation/ AT ALL, nothing to do.
+# Keyed on the DIRECTORIES, not on config_path (temperloop#414): a
+# partial/failed 'temperloop init' can leave dir residue (init.sh Step 0's
+# baseline.jsonl, written BEFORE the config exists) with no config ever
+# written, and that residue must still be recognized as something to eject
+# — see the dedicated branch below. This check is also the SECOND-RUN
+# idempotency path: a fully successful revert removes both dirs entirely as
+# its last step, so a re-run finds nothing here and no-ops.
 # ---------------------------------------------------------------------------
-if [ ! -d "$foundation_dir" ]; then
-  echo "No .foundation/ found in $repo_dir — nothing to eject (already ejected, or"
-  echo "  'foundation init' was never run here)."
+if [ ! -d "$tl_dir" ] && [ ! -d "$legacy_dir" ]; then
+  echo "No .temperloop/ (or legacy .foundation/) found in $repo_dir — nothing to eject (already ejected, or"
+  echo "  'temperloop init' was never run here)."
   echo
   print_uninstall_bullet
   echo
-  echo "foundation eject: done (no-op)"
+  echo "temperloop eject: done (no-op)"
   exit 0
 fi
 
@@ -206,11 +233,13 @@ fi
 # (Step 3's proposal-pr.sh `git checkout -B`) was never followed by a clean
 # completion — the checkout is sitting on a stray, unmerged branch.
 # recovery_active gates restore_original_branch below, which is only ever
-# invoked once .foundation/ is about to be fully removed (never mid a
-# PARTIAL-failure retry, where config_path must stay put on this same
-# branch for a later re-run to retry against).
+# invoked once the per-repo dir(s) are about to be fully removed (never mid
+# a PARTIAL-failure retry, where config_path must stay put on this same
+# branch for a later re-run to retry against). Probes the new dir first,
+# then the legacy one (a marker left by a pre-rename init).
 # ---------------------------------------------------------------------------
-recovery_path="$foundation_dir/.recovery.json"
+recovery_path="$tl_dir/.recovery.json"
+[ -f "$recovery_path" ] || recovery_path="$legacy_dir/.recovery.json"
 recovery_active=0
 recovery_original_branch=""
 recovery_proposal_branch=""
@@ -277,26 +306,26 @@ if [ "$recovery_active" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Partial-init residue: .foundation/ exists but .foundation/config was
-# never written (or never survived) — nothing was ever recorded to revert
-# via gh, so this is a pure local cleanup (+ the recovery restore above,
-# when applicable).
+# Partial-init residue: a per-repo dir exists but no config was ever
+# written (or never survived) — nothing was ever recorded to revert via gh,
+# so this is a pure local cleanup (+ the recovery restore above, when
+# applicable).
 # ---------------------------------------------------------------------------
 if [ ! -f "$config_path" ]; then
-  echo "-- Partial-init residue: .foundation/ present, no $config_rel (no install manifest was ever recorded) --"
+  echo "-- Partial-init residue: $tl_dirs_desc present, no $config_rel (no install manifest was ever recorded) --"
   echo
 
   extra_msg=""
   [ "$recovery_active" -eq 1 ] && extra_msg=", restore branch '$recovery_original_branch', and delete stray '$recovery_proposal_branch'"
 
   if [ "$dry_run" -eq 1 ]; then
-    echo "-- Dry run: would remove $foundation_dir$extra_msg. Nothing done --"
+    echo "-- Dry run: would remove $tl_dirs_desc$extra_msg. Nothing done --"
     echo
-    echo "foundation eject: done (dry run)"
+    echo "temperloop eject: done (dry run)"
     exit 0
   fi
 
-  if _eject_confirm "Remove $foundation_dir (no install manifest recorded)?"; then
+  if _eject_confirm "Remove $tl_dirs_desc (no install manifest recorded)?"; then
     proceed=1
   else
     proceed=0
@@ -304,22 +333,22 @@ if [ ! -f "$config_path" ]; then
   echo
 
   if [ "$proceed" -ne 1 ]; then
-    echo "foundation eject: aborted — nothing removed, $foundation_dir left intact"
+    echo "temperloop eject: aborted — nothing removed, $tl_dirs_desc left intact"
     exit 0
   fi
 
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  rm -rf "${repo_dir:?}/.foundation"
-  echo "partial init residue removed ($foundation_dir)"
+  rm -rf "${repo_dir:?}/.temperloop" "${repo_dir:?}/.foundation"
+  echo "partial init residue removed ($tl_dirs_desc)"
   echo
   print_uninstall_bullet
   echo
   if [ "$recovery_failed" -eq 1 ]; then
-    echo "foundation eject: incomplete (branch restore failed — see above)"
+    echo "temperloop eject: incomplete (branch restore failed — see above)"
     exit 1
   fi
-  echo "foundation eject: done"
+  echo "temperloop eject: done"
   exit 0
 fi
 
@@ -351,7 +380,7 @@ if [ "$dry_run" -eq 1 ]; then
   echo "-- Dry run: would revert the $n_installs install(s) above, then remove"
   echo "   $config_rel$extra_msg. Nothing done (zero gh calls, config untouched) --"
   echo
-  echo "foundation eject: done (dry run)"
+  echo "temperloop eject: done (dry run)"
   exit 0
 fi
 
@@ -366,23 +395,23 @@ fi
 echo
 
 if [ "$proceed" -ne 1 ]; then
-  echo "foundation eject: aborted — nothing reverted, $config_rel left intact"
+  echo "temperloop eject: aborted — nothing reverted, $config_rel left intact"
   exit 0
 fi
 
 if [ "$n_installs" -eq 0 ]; then
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  rm -rf "${repo_dir:?}/.foundation"
+  rm -rf "${repo_dir:?}/.temperloop" "${repo_dir:?}/.foundation"
   echo "nothing recorded to revert — $config_rel removed"
   echo
   print_uninstall_bullet
   echo
   if [ "$recovery_failed" -eq 1 ]; then
-    echo "foundation eject: incomplete (branch restore failed — see above)"
+    echo "temperloop eject: incomplete (branch restore failed — see above)"
     exit 1
   fi
-  echo "foundation eject: done"
+  echo "temperloop eject: done"
   exit 0
 fi
 
@@ -572,24 +601,24 @@ echo "-- Summary --"
 if [ "$n_unresolved" -eq 0 ]; then
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  rm -rf "${repo_dir:?}/.foundation"
+  rm -rf "${repo_dir:?}/.temperloop" "${repo_dir:?}/.foundation"
   echo "all $n_installs install(s) reverted; $config_rel removed"
   echo
   print_uninstall_bullet
   echo
   if [ "$recovery_failed" -eq 1 ]; then
-    echo "foundation eject: incomplete (branch restore failed — see above)"
+    echo "temperloop eject: incomplete (branch restore failed — see above)"
     exit 1
   fi
-  echo "foundation eject: done"
+  echo "temperloop eject: done"
   exit 0
 else
   new_config_json="$(jq -c --argjson installs "$unresolved_installs" '.installs = $installs' <<<"$config_json")"
   printf '%s\n' "$new_config_json" | jq '.' > "$config_path" 2>/dev/null \
     || printf '%s' "$new_config_json" > "$config_path"
   echo "$n_unresolved of $n_installs install(s) could not be reverted — $config_rel updated to"
-  echo "  record only the remainder. Re-run 'foundation eject' once resolved."
+  echo "  record only the remainder. Re-run 'temperloop eject' once resolved."
   echo
-  echo "foundation eject: incomplete"
+  echo "temperloop eject: incomplete"
   exit 1
 fi

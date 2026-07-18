@@ -22,12 +22,12 @@
 # NAMESPACING is a CALL-SITE responsibility, not a generator mechanic: post
 # design-review, the "generic policy enforced by the generator" framing was
 # retired — the caller who builds the files manifest owns what paths/content
-# it contains (e.g. everything under `.foundation/`, or an `fnd:`-prefixed
+# it contains (e.g. everything under `.temperloop/`, or an `fnd:`-prefixed
 # file). This script does not inspect or gate manifest paths against a
 # namespace convention; it only guards against path TRAVERSAL (an entry
 # that would write outside the target repo — see validate_manifest_path).
 # Every fixture in this script's own test suite happens to write under
-# `.foundation/` to demonstrate the intended calling convention, but that is
+# `.temperloop/` to demonstrate the intended calling convention, but that is
 # a test-authoring choice, not an enforced contract.
 #
 # Usage:

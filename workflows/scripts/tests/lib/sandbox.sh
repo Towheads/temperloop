@@ -112,12 +112,12 @@
 #     never included, matching this repo's own "commit first, then gates"
 #     discipline) into the sandbox, then runs *that source checkout's own*
 #     bin/bootstrap.sh against the clone over a file:// remote
-#     (FOUNDATION_KERNEL_REPO=file://<bare-clone-path>) — the hermetic
+#     (TEMPERLOOP_KERNEL_REPO=file://<bare-clone-path>) — the hermetic
 #     stand-in for the curl-pipe-sh newcomer install bin/bootstrap.sh's own
 #     header documents. Runs with the sandbox env (HOME/XDG_* re-pointed),
 #     so bootstrap.sh's own $HOME-relative defaults
-#     (FOUNDATION_HOME=$HOME/.local/share/temperloop,
-#     FOUNDATION_BIN_DIR=$HOME/.local/bin) resolve inside the sandbox with
+#     (TEMPERLOOP_HOME=$HOME/.local/share/temperloop,
+#     TEMPERLOOP_BIN_DIR=$HOME/.local/bin) resolve inside the sandbox with
 #     no extra overrides needed. On success sets SANDBOX_TEMPERLOOP to the
 #     resulting `temperloop` binary's path.
 #
@@ -450,7 +450,7 @@ sandbox_bootstrap_checkout() {
 
   sandbox_env
   if ! env "${SANDBOX_ENV_ARGS[@]}" \
-      FOUNDATION_KERNEL_REPO="file://$upstream" \
+      TEMPERLOOP_KERNEL_REPO="file://$upstream" \
       sh "$bootstrap_script"; then
     return 1
   fi

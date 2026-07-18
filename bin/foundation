@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# foundation — DEPRECATED compat shim (foundation #893). The CLI's public
-# name is TemperLoop (binary `temperloop`, see kernel/bin/temperloop and
-# Decisions/foundation - Kernel public name TemperLoop); this file exists
-# only so an existing `foundation <sub>` caller — a script, a shell alias,
-# an already-bootstrapped install — keeps working unchanged. It does
-# nothing but resolve its own location (following symlinks, so an
-# already-installed `~/.local/bin/foundation` symlink still works) and exec
-# the real dispatcher next to it. New callers should use `temperloop`.
+# foundation — DEPRECATED compat shim (foundation #893; windowed by
+# temperloop#165). The CLI's public name is TemperLoop (binary `temperloop`,
+# see kernel/bin/temperloop and Decisions/foundation - Kernel public name
+# TemperLoop); this file exists only so an existing `foundation <sub>`
+# caller — a script, a shell alias, an already-bootstrapped install — keeps
+# working through the rename window. It resolves its own location
+# (following symlinks, so an already-installed `~/.local/bin/foundation`
+# symlink still works), prints a one-line deprecation notice, and execs the
+# real dispatcher next to it. New callers should use `temperloop`.
+#
+# REMOVAL WINDOW: this shim is removed in v0.17.0 (VERSIONING.md pre-1.0
+# bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the migration
+# note). TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam
+# (never set in production use): =1 simulates the post-v0.17.0 removal so
+# the legible failure below stays testable before the removal release ships.
 set -uo pipefail
+
+if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+  echo "foundation: this compat shim was removed in v0.17.0 — the CLI was renamed 'temperloop' in v0.15.0. Invoke 'temperloop' instead." >&2
+  exit 1
+fi
+echo "foundation: NOTE — 'foundation' is a deprecated alias for 'temperloop' (renamed in v0.15.0); this shim is removed in v0.17.0." >&2
 
 _src="${BASH_SOURCE[0]}"
 while [ -L "$_src" ]; do

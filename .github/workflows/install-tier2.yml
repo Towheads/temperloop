@@ -106,13 +106,13 @@ jobs:
 
       - name: Bootstrap the temperloop CLI from this checkout
         run: |
-          FOUNDATION_HOME="$RUNNER_TEMP/temperloop-home"
-          FOUNDATION_BIN_DIR="$RUNNER_TEMP/temperloop-bin"
-          FOUNDATION_KERNEL_REPO="file://$GITHUB_WORKSPACE" \
-            FOUNDATION_HOME="$FOUNDATION_HOME" \
-            FOUNDATION_BIN_DIR="$FOUNDATION_BIN_DIR" \
+          TEMPERLOOP_HOME="$RUNNER_TEMP/temperloop-home"
+          TEMPERLOOP_BIN_DIR="$RUNNER_TEMP/temperloop-bin"
+          TEMPERLOOP_KERNEL_REPO="file://$GITHUB_WORKSPACE" \
+            TEMPERLOOP_HOME="$TEMPERLOOP_HOME" \
+            TEMPERLOOP_BIN_DIR="$TEMPERLOOP_BIN_DIR" \
             sh bin/bootstrap.sh
-          echo "$FOUNDATION_BIN_DIR" >> "$GITHUB_PATH"
+          echo "$TEMPERLOOP_BIN_DIR" >> "$GITHUB_PATH"
 
       - name: Reset the demo repo to a known baseline
         env:

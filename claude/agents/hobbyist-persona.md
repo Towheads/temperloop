@@ -120,10 +120,12 @@ it sits above inspection in the literature, not inside it.
 - Work only inside the scratch directory the prompt gives you (e.g.
   `<worktree>/.scratch/<name>/`). Never touch the invoking checkout's own
   tracked files, never `git push`, never write outside that scratch dir.
-- Override `FOUNDATION_HOME` / `FOUNDATION_BIN_DIR` / `HOME` (and, for a
-  same-machine "fresh clone," `FOUNDATION_KERNEL_REPO` pointed at a local
+- Override `TEMPERLOOP_HOME` / `TEMPERLOOP_BIN_DIR` / `HOME` (and, for a
+  same-machine "fresh clone," `TEMPERLOOP_KERNEL_REPO` pointed at a local
   path rather than the network) to keep every write inside the scratch dir
-  — never touch the real `~/.local` or `~/.claude`.
+  — never touch the real `~/.local` or `~/.claude`. (The legacy
+  `FOUNDATION_*` names still work through the rename window — removed in
+  v0.17.0 — but new invocations use `TEMPERLOOP_*`.)
 - Clean the scratch dir yourself at the end of the run unless the invoking
   session says it will (state which, in your summary).
 

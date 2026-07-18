@@ -226,10 +226,14 @@ for co in "${CHECKOUTS[@]}"; do
 
   cache_lib="$(dirname "$bsh")/cache.sh"
   if [ -f "$cache_lib" ]; then
-    machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+    # temperloop#165 rename window: temperloop/ machine conf preferred, an
+    # existing legacy foundation/ one read as fallback (removed in v0.17.0).
+    machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+    machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
     repo_conf="$(dirname "$bsh")/../boards.conf"
     conf=""
     if [ -f "$machine_conf" ]; then conf="$machine_conf"
+    elif [ -f "$machine_conf_legacy" ]; then conf="$machine_conf_legacy"
     elif [ -f "$repo_conf" ]; then conf="$repo_conf"
     fi
     if [ -n "$conf" ]; then

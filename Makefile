@@ -203,7 +203,7 @@ test-pr-leak-guard:
 # (foundation #766, privacy/egress audit item): greps the named producer
 # scripts for network-call patterns beyond the one sanctioned `gh` channel.
 # Standalone-kernel-checkout invocation — no --overlay-report-d, since a
-# kernel-only checkout has no .foundation/report.d/ of its own; see this
+# kernel-only checkout has no .temperloop/report.d/ of its own; see this
 # repo's own root Makefile for the composed-tree invocation that also
 # scans the overlay drop-ins. See check-producer-egress.sh's header for
 # the documented (today: empty) opt-in egress surface.

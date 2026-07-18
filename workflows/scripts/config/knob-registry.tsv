@@ -83,8 +83,20 @@
 # `*_GH_BIN`) IS included — swapping the resolved binary is a real,
 # meaningful override, not merely a test's implementation detail.
 #
+# ── Renamed env-var rows (temperloop#165, the foundation→temperloop rename) ──
+# The FOUNDATION_KERNEL_REPO / FOUNDATION_HOME / FOUNDATION_BIN_DIR /
+# FOUNDATION_VERSION rows are DEPRECATED: renamed to the TEMPERLOOP_* rows
+# beside them in v0.15.0. Read-old-write-new — the owning scripts read the
+# legacy var as the new var's fallback (the nested `${FOUNDATION_*:-...}`
+# literal IS the new row's default, verbatim per this registry's own rule),
+# so both rows stay equality-lint-true through the window. The legacy rows
+# (and the fallback seams they transcribe) are REMOVED in v0.17.0 — a
+# removed row-name, i.e. BREAKING per the rule above, carried by the
+# v0.15.0 CHANGELOG BREAKING entry's stated window.
+#
 # ── Personal-path-verbatim rows (superseded, kernel-literal-scrub, temperloop#189) ──
-# Two rows below (FOUNDATION_KERNEL_REPO, KERNEL_REMOTE) record a CURRENT
+# Three rows below (TEMPERLOOP_KERNEL_REPO, its deprecated FOUNDATION_KERNEL_REPO
+# twin, KERNEL_REMOTE) record a CURRENT
 # default that is this org's real repo clone URL — permanent, load-bearing,
 # out of scrub scope (this repo's own public identity, not a personal-token
 # leak; see check-personal-token-denylist.sh's category-1 rationale). They
@@ -117,9 +129,12 @@
 #
 # See row count at end of file (grep -c for a live count; comment count
 # drifts if this header grows).
-FOUNDATION_KERNEL_REPO	https://github.com/Towheads/temperloop.git	url	kernel	bin/bootstrap.sh	Clone URL bootstrap.sh pulls the kernel repo from (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak)
-FOUNDATION_HOME	$HOME/.local/share/temperloop	path	kernel	bin/bootstrap.sh	Local install dir for the bootstrapped kernel checkout
-FOUNDATION_BIN_DIR	$HOME/.local/bin	path	kernel	bin/bootstrap.sh	Where bootstrap.sh symlinks the temperloop CLI onto PATH
+TEMPERLOOP_KERNEL_REPO	${FOUNDATION_KERNEL_REPO:-https://github.com/Towheads/temperloop.git}	url	kernel	bin/bootstrap.sh	Clone URL bootstrap.sh pulls the kernel repo from (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak); canonical name since v0.15.0, reads the legacy var as fallback through the window
+FOUNDATION_KERNEL_REPO	https://github.com/Towheads/temperloop.git	url	kernel	bin/bootstrap.sh	DEPRECATED — renamed TEMPERLOOP_KERNEL_REPO in v0.15.0, read as fallback through the window, removed in v0.17.0 (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak)
+TEMPERLOOP_HOME	${FOUNDATION_HOME:-$HOME/.local/share/temperloop}	path	kernel	bin/bootstrap.sh	Local install dir for the bootstrapped kernel checkout; canonical name since v0.15.0, reads the legacy var as fallback through the window
+FOUNDATION_HOME	$HOME/.local/share/temperloop	path	kernel	bin/bootstrap.sh	DEPRECATED — renamed TEMPERLOOP_HOME in v0.15.0, read as fallback through the window, removed in v0.17.0
+TEMPERLOOP_BIN_DIR	${FOUNDATION_BIN_DIR:-$HOME/.local/bin}	path	kernel	bin/bootstrap.sh	Where bootstrap.sh symlinks the temperloop CLI onto PATH; canonical name since v0.15.0, reads the legacy var as fallback through the window
+FOUNDATION_BIN_DIR	$HOME/.local/bin	path	kernel	bin/bootstrap.sh	DEPRECATED — renamed TEMPERLOOP_BIN_DIR in v0.15.0, read as fallback through the window, removed in v0.17.0
 BASELINE_SNAPSHOT_GH_BIN	gh	path	kernel	bin/subcommands/baseline-snapshot.sh	Test-double seam for the gh binary
 BASELINE_SNAPSHOT_TIMEOUT	20	seconds	kernel	bin/subcommands/baseline-snapshot.sh	Per-gh-call watchdog timeout
 BASELINE_SNAPSHOT_LOOKBACK_DAYS	90	int	kernel	bin/subcommands/baseline-snapshot.sh	How many days back the baseline snapshot scans
@@ -154,7 +169,7 @@ CLAIMS_RAW_DIR	$CLAIMS_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/claim
 DEPLOY_MINI_CHECKOUTS	$DEFAULT_CHECKOUTS	string	kernel	workflows/scripts/board/deploy-mini.sh	Space-separated checkouts deploy-mini.sh keeps current (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/scripts/board/deploy-mini.sh	Single-instance lock dir for deploy-mini.sh
 DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
-BOARDS_CONF_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (rung 3; grandfathered `foundation` namespace per docs/config-precedence.md)
+BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (rung 3). Default probes $XDG_CONFIG_HOME/temperloop/boards.conf, falling back to an existing legacy $XDG_CONFIG_HOME/foundation/boards.conf through the rename window (temperloop#165; legacy fallback removed in v0.17.0) — see docs/config-precedence.md
 BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (rung 4)
 BOARD_CACHE_TTL	90	seconds	kernel	workflows/scripts/board/lib/board.sh	Item-state cross-process cache TTL
 BOARD_STRUCTURE_TTL	86400	seconds	kernel	workflows/scripts/board/lib/board.sh	Board structure (project/field schema) cache TTL
@@ -301,7 +316,7 @@ KNOWLEDGE_SEARCH_BM_VERSION	0.22.1	string	kernel	workflows/scripts/lib/knowledge
 KNOWLEDGE_SEARCH_BM_PYTHON	3.13	string	kernel	workflows/scripts/lib/knowledge_search.sh	Pinned CPython version for the uvx basic-memory env (wheel-availability guard, K#368)
 KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES		string	kernel	workflows/scripts/lib/knowledge_search.sh	Overlay seam: extra .bmignore segments appended to the generic base set
 KNOWLEDGE_SEARCH_BM_HOME	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home	path	kernel	workflows/scripts/lib/knowledge_search.sh	Dedicated HOME dir for the basic-memory subprocess
-KNOWLEDGE_STORE_ROOT	${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; build.config.sh no longer re-seeds a personal-path default here — kernel-literal-scrub, temperloop#189 — an operator sets one via machine conf / build.config.local.sh / a downstream repo's own edited tracked-repo copy instead)
+KNOWLEDGE_STORE_ROOT	$(_ks_default_root)	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; build.config.sh no longer re-seeds a personal-path default here — kernel-literal-scrub, temperloop#189). Default probes $XDG_DATA_HOME/temperloop/knowledge, falling back to an existing legacy $XDG_DATA_HOME/foundation/knowledge store through the rename window (temperloop#165; legacy fallback removed in v0.17.0)
 KNOWLEDGE_STORE_BACKEND	plain-files	enum	kernel	workflows/scripts/lib/knowledge_store.sh	Document-I/O backend name (dispatches to `_ks_backend_<name>_<op>`)
 KNOWLEDGE_READ_LOG_AGENT_MATCHERS	mcp__obsidian* mcp__obsidian-builtin*	string	kernel	workflows/scripts/lib/knowledge_store.sh	Agent-plane read-telemetry hook's PostToolUse tool_name matcher list (space-separated case-glob patterns; temperloop#236) — the one-line seam to add mcp__basic-memory__* at the mcp_obsidian EOL cutover
 KNOWLEDGE_READ_LOG	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log	path	kernel	workflows/scripts/lib/knowledge_store.sh	Script-plane read-log path — one normalized line per ks__dispatch/ks_search call (temperloop#229)
@@ -322,4 +337,5 @@ TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/knob-registry.ts
 TEMPERLOOP_FEEDBACK_DENYLIST_FILE	$REPO_ROOT/workflows/scripts/kernel/personal-token-denylist.tsv	path	kernel	bin/subcommands/feedback.sh	Path to the personal-token denylist TSV the composed feedback payload is leak-scanned against (temperloop#428)
 TEMPERLOOP_FEEDBACK_REPO	Towheads/temperloop	label	kernel	bin/subcommands/feedback.sh	Target repo `temperloop feedback` opens its GitHub issue on (temperloop#428) — the kernel's own upstream tracker, its identity (denylist:allow — same category-1 rationale as feedback.sh's own marked constant)
 TEMPERLOOP_FEEDBACK_ASSUME_TTY	0	bool	kernel	bin/subcommands/feedback.sh	Test seam: treat stdin as attended even when it isn't a real TTY (temperloop#428) — never bypasses the CI/GITHUB_ACTIONS unattended signal, and never substitutes for the actual interactive "y" consent read
-FOUNDATION_VERSION	dev	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-knob check)
+TEMPERLOOP_VERSION	${FOUNDATION_VERSION:-dev}	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-knob check); canonical name since v0.15.0, reads the legacy var as fallback through the window
+FOUNDATION_VERSION	dev	string	kernel	bin/subcommands/feedback.sh	DEPRECATED — renamed TEMPERLOOP_VERSION in v0.15.0, read as fallback through the window, removed in v0.17.0

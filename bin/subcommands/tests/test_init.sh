@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tests for init.sh — `foundation init` (foundation #765 Epic D "newcomer
+# Tests for init.sh — `temperloop init` (foundation #765 Epic D "newcomer
 # experience", item foundation-init / #854). Board/proposal-toolkit fixture
 # style: a throwaway real-git bare upstream + clone, a stubbed `gh` on
 # PATH that LOGS every call it sees (the write-intercepting-wrapper proof:
@@ -13,10 +13,10 @@
 #   - non-interactive default-deny: no --yes-* flag + closed stdin ->
 #     every consented-apply action declines, zero mutating gh calls
 #   - consented apply (--yes-required-check --yes-labels): the exact gh
-#     calls fire, and every side effect lands in .foundation/config's
+#     calls fire, and every side effect lands in .temperloop/config's
 #     installs array (the "install manifest" acceptance criterion)
 #   - round-trip: re-running against the same repo re-reads the prior
-#     .foundation/config (schema 1), carries its installs forward, and
+#     .temperloop/config (schema 1), carries its installs forward, and
 #     skips re-creating a label gh already reports present (no duplicate
 #     `label create` calls)
 #   - boards.conf integration: when workflows/scripts/board/ exists in the
@@ -153,7 +153,7 @@ call_count() {
 
 # =============================================================================
 # 1. --dry-run + --no-network: GENUINELY ZERO-WRITE (temperloop#413) — no
-#    baseline.jsonl write, no .foundation/config write, no commit, no
+#    baseline.jsonl write, no .temperloop/config write, no commit, no
 #    branch switch, and the target checkout is bit-identical (HEAD,
 #    current branch, `git status --porcelain`, and the tree's file
 #    listing all unchanged) before vs. after the dry run. Also zero gh
@@ -169,7 +169,7 @@ run 0 --dir "$REPO1" --gh-repo acme/widget --no-network --dry-run \
   --yes-required-check --yes-labels
 
 [ ! -s "$CALL_LOG" ] || fail "dry-run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q 'would create: .foundation/config' \
+echo "$out" | grep -q 'would create: .temperloop/config' \
   || fail "dry-run did not print a tree-only preview of what it would write (got: $out)"
 echo "$out" | grep -q 'skipped (--dry-run — tree-only preview, no baseline write)' \
   || fail "dry-run did not report the baseline snapshot as skipped (got: $out)"
@@ -185,12 +185,12 @@ AFTER_FIND="$(find "$REPO1" -mindepth 1 -not -path '*/.git*' | sort)"
   || fail "dry-run left the working tree dirty (before status=[$BEFORE_STATUS] after status=[$AFTER_STATUS])"
 [ "$AFTER_FIND" = "$BEFORE_FIND" ] \
   || fail "dry-run changed the tree's file listing (before:\n$BEFORE_FIND\nafter:\n$AFTER_FIND)"
-[ ! -e "$REPO1/.foundation/config" ] || fail "dry-run wrote .foundation/config to disk"
-[ ! -e "$REPO1/.foundation/baseline.jsonl" ] \
-  || fail "dry-run wrote .foundation/baseline.jsonl (baseline snapshot must be gated by --dry-run)"
-git -C "$REPO1" show HEAD:.foundation/config >/dev/null 2>&1 \
-  && fail "dry-run committed .foundation/config locally (must be zero-write)"
-echo "PASS: --dry-run + --no-network is genuinely zero-write — no baseline.jsonl, no .foundation/config, no commit, HEAD/branch/tree bit-identical before vs. after, zero gh calls"
+[ ! -e "$REPO1/.temperloop/config" ] || fail "dry-run wrote .temperloop/config to disk"
+[ ! -e "$REPO1/.temperloop/baseline.jsonl" ] \
+  || fail "dry-run wrote .temperloop/baseline.jsonl (baseline snapshot must be gated by --dry-run)"
+git -C "$REPO1" show HEAD:.temperloop/config >/dev/null 2>&1 \
+  && fail "dry-run committed .temperloop/config locally (must be zero-write)"
+echo "PASS: --dry-run + --no-network is genuinely zero-write — no baseline.jsonl, no .temperloop/config, no commit, HEAD/branch/tree bit-identical before vs. after, zero gh calls"
 
 # =============================================================================
 # 2. Non-interactive default-deny: no --yes-* flag, closed stdin -> every
@@ -209,7 +209,7 @@ echo "PASS: non-interactive, no --yes-* flags -> every consented-apply action de
 
 # =============================================================================
 # 3. Consented apply: --yes-required-check --yes-labels -> the calls fire,
-#    every side effect lands in .foundation/config's installs[]
+#    every side effect lands in .temperloop/config's installs[]
 # =============================================================================
 REPO3="$(new_fixture_repo repo3)"
 FAKE_PR_NUM=21 run 0 --dir "$REPO3" --gh-repo acme/widget \
@@ -218,7 +218,7 @@ FAKE_PR_NUM=21 run 0 --dir "$REPO3" --gh-repo acme/widget \
 [ "$(call_count 'label create')" -eq 6 ] || fail "expected 6 label create calls, got $(call_count 'label create')"
 echo "$out" | grep -q '"outcome": "PR_OPENED"' || fail "expected PR_OPENED outcome (got: $out)"
 
-cfg="$(cat "$REPO3/.foundation/config")"
+cfg="$(cat "$REPO3/.temperloop/config")"
 [ "$(jq -r '.schema' <<<"$cfg")" = "1" ] || fail "landed config schema is not 1"
 [ "$(jq -r '.tracker.mode' <<<"$cfg")" = "issues" ] || fail "landed config tracker.mode wrong"
 [ "$(jq '[.installs[] | select(.type=="label")] | length' <<<"$cfg")" -eq 6 ] \
@@ -227,21 +227,21 @@ cfg="$(cat "$REPO3/.foundation/config")"
   || fail "installs[] missing the required_check entry"
 [ "$(jq -r '.installs[] | select(.type=="proposal_pr") | .pr_number' <<<"$cfg")" = "21" ] \
   || fail "installs[] missing/wrong proposal_pr entry (self-record second pass) (got: $(jq -c '.installs' <<<"$cfg"))"
-echo "PASS: consented apply fires the right gh calls; every side effect (labels, required-check, the PR itself) is recorded in .foundation/config installs[]"
+echo "PASS: consented apply fires the right gh calls; every side effect (labels, required-check, the PR itself) is recorded in .temperloop/config installs[]"
 
 # =============================================================================
 # 4. Round-trip: re-run against the SAME repo (now on the proposal branch
-#    with .foundation/config present) — schema-1 re-read succeeds, prior
+#    with .temperloop/config present) — schema-1 re-read succeeds, prior
 #    installs are carried forward, and gh reporting the labels as already
 #    present means NO duplicate `label create` calls this time.
 # =============================================================================
 FAKE_EXISTING_LABELS="fnd:status:backlog fnd:status:ready fnd:status:in-progress needs-clarification funnel-escalated decision" \
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=21 \
   run 0 --dir "$REPO3" --gh-repo acme/widget --yes-required-check --yes-labels
-echo "$out" | grep -q "Found existing .foundation/config (schema 1)" \
+echo "$out" | grep -q "Found existing .temperloop/config (schema 1)" \
   || fail "round-trip did not detect+re-read the existing config (got: $out)"
 grep -q "^label create" "$CALL_LOG" && fail "round-trip re-created a label gh already reported present"
-cfg2="$(cat "$REPO3/.foundation/config")"
+cfg2="$(cat "$REPO3/.temperloop/config")"
 [ "$(jq '[.installs[] | select(.type=="label")] | length' <<<"$cfg2")" -eq 6 ] \
   || fail "round-trip lost the carried-forward label installs (got: $(jq -c '.installs' <<<"$cfg2"))"
 echo "PASS: round-trip (probe -> config -> init re-reads it) — schema-1 re-read, installs carried forward, no duplicate creates"
@@ -278,7 +278,7 @@ REPO6="$(new_fixture_repo repo6)"
 FAKE_PR_NUM=23 FAKE_OWNER=acme FAKE_PROJECT_NUM=99 \
   run 0 --dir "$REPO6" --gh-repo acme/widget --tracker-mode projects --provision-board --yes-board
 [ "$(call_count 'project create')" -eq 1 ] || fail "opt-in board provisioning did not call gh project create"
-cfg6="$(cat "$REPO6/.foundation/config")"
+cfg6="$(cat "$REPO6/.temperloop/config")"
 [ "$(jq -r '.installs[] | select(.type=="board") | .project_number' <<<"$cfg6")" = "99" ] \
   || fail "board install entry missing/wrong project_number (got: $(jq -c '.installs' <<<"$cfg6"))"
 [ "$(jq -r '.tracker.mode' <<<"$cfg6")" = "projects" ] || fail "tracker.mode not recorded as projects"

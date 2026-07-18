@@ -7,8 +7,11 @@ operations (the board toolkit, the build/sweep pipeline, the quality gates)
 stay on `make` — this CLI does not duplicate a Makefile target.
 
 (The CLI was named `foundation` before foundation #893's rename to the
-project's ratified public name, TemperLoop. `foundation <sub>` still works —
-`kernel/bin/foundation` is a thin compat shim that execs `temperloop`.)
+project's ratified public name, TemperLoop. `foundation <sub>` still works
+through the rename window — `kernel/bin/foundation` is a thin compat shim
+that prints a one-line deprecation notice and execs `temperloop` — and is
+**removed in v0.17.0** along with the other legacy `foundation` names; see
+the v0.15.0 CHANGELOG `BREAKING` entry for the full migration note.)
 
 ## Install
 
@@ -39,7 +42,7 @@ edits, no `sudo`.
 |---|---|---|
 | (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
 | (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
-| (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.foundation/config` | `temperloop eject` (run inside the target repo) |
+| (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.temperloop/config` (pre-v0.15.0 inits wrote `.foundation/config` — read through the rename window, removed in v0.17.0) | `temperloop eject` (run inside the target repo; cleans either dir) |
 | (d) **Issue-cache store root** | `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"` |
 
 Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
@@ -116,7 +119,8 @@ different repo/org, same as it would for a bare `gh` call.
 `temperloop install` (scope (b) of the Uninstall table above) is a **single
 global, per-machine** install — the machine-wide `~/.claude/CLAUDE.md`,
 `settings.json`, and the rest are shared by every repo you point this CLI
-at, not duplicated per repo. What *is* per-repo is `.foundation/config`,
+at, not duplicated per repo. What *is* per-repo is `.temperloop/config`
+(pre-v0.15.0: `.foundation/config`, read through the rename window),
 written inside the target repo's own working tree by `temperloop init` (and
 reverted by `temperloop eject`, scope (c)) — labels, required checks, board
 wiring, and proposal PRs live there, scoped to that one repo, never in the
@@ -126,11 +130,14 @@ If you want an isolated instance per engagement instead of the one shared
 global install — the case for, say, a consultant running this across
 several unrelated client codebases — `bin/bootstrap.sh` honors two
 environment-variable overrides read *before* it clones anything:
-`FOUNDATION_HOME` (default `~/.local/share/temperloop`, where the checkout
-lives) and `FOUNDATION_BIN_DIR` (default `~/.local/bin`, where the
+`TEMPERLOOP_HOME` (default `~/.local/share/temperloop`, where the checkout
+lives) and `TEMPERLOOP_BIN_DIR` (default `~/.local/bin`, where the
 `temperloop`/`foundation` entrypoints get symlinked). Set both to a
 client-specific path before running the bootstrap script to keep each
-engagement's install fully separate.
+engagement's install fully separate. (The pre-rename `FOUNDATION_HOME` /
+`FOUNDATION_BIN_DIR` / `FOUNDATION_KERNEL_REPO` names are still read as
+fallbacks through the rename window — with a one-line deprecation notice —
+and are removed in v0.17.0.)
 
 ## Quickstart: try → try --demo → init
 
@@ -184,7 +191,7 @@ temperloop init --dry-run   # preview first: tree-only, zero API writes
 temperloop init              # for real, once you like the preview
 ```
 
-Bootstraps `.foundation/config` in your repo and proposes any tree changes
+Bootstraps `.temperloop/config` in your repo and proposes any tree changes
 (e.g. a `boards.conf` entry) via a reviewable PR — nothing ever lands
 without review. Separately, and only with explicit per-action consent (an
 interactive `y/N` or an explicit `--yes-<action>` flag; the default is
@@ -221,7 +228,7 @@ is invoked directly, at the path `temperloop install` prints for you. See
 
 These two subcommands are easy to conflate by name association, so the
 split is stated explicitly here: `temperloop report` never leaves your
-machine — it only renders your own local `.foundation/baseline.jsonl`
+machine — it only renders your own local `.temperloop/baseline.jsonl`
 before/after metrics to your terminal. `temperloop feedback` is the
 opposite: it **sends** a message to the kernel maintainers, as a GitHub
 issue on `Towheads/temperloop`. Nothing is ever sent without you seeing the

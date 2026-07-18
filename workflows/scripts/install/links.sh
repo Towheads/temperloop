@@ -224,10 +224,15 @@ links_provision_cache_stores() {
   fi
   echo "  ✓ cache store root ready: ${store_root}"
 
-  local machine_conf conf=""
-  machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  # temperloop#165 rename window: temperloop/ machine conf preferred, an
+  # existing legacy foundation/ one read as fallback (removed in v0.17.0).
+  local machine_conf machine_conf_legacy conf=""
+  machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+  machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   if [ -f "$machine_conf" ]; then
     conf="$machine_conf"
+  elif [ -f "$machine_conf_legacy" ]; then
+    conf="$machine_conf_legacy"
   elif [ -n "$foundation" ] && [ -f "${foundation}/workflows/scripts/board/boards.conf" ]; then
     conf="${foundation}/workflows/scripts/board/boards.conf"
   fi

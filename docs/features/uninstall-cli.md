@@ -15,7 +15,7 @@ belongs to temperloop). Two other undo surfaces already exist and are
 deliberately **not** this one: `bin/bootstrap.sh`'s own footprint
 (`~/.local/bin/temperloop`, the `foundation` compat shim,
 `~/.local/share/temperloop`) predates any manifest — nothing recorded it —
-and `temperloop eject` undoes a *target repo's* `.foundation/config` side
+and `temperloop eject` undoes a *target repo's* `.temperloop/config` side
 effects (labels, required checks, boards), a wholly different manifest for
 a wholly different class of side effect. This item is the third, missing
 piece: reversing the *machine-surface* manifest a `temperloop install`
@@ -70,7 +70,7 @@ conflates them — `bin/README.md`'s Uninstall section and `eject.sh`'s own
 - **(b) This subcommand** — the machine-surface install manifest a
   `temperloop install` (a sibling item in this epic, not yet landed as of
   this item) records.
-- **(c) `temperloop eject`** — a target repo's `.foundation/config`
+- **(c) `temperloop eject`** — a target repo's `.temperloop/config`
   side effects. A wholly separate manifest (repo-tree-scoped, sole-writer
   `init.sh`/reader `eject.sh`) from the machine-scoped manifest this item
   reverses — see `manifest.sh`'s own header for why the two are never

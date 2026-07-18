@@ -32,6 +32,50 @@ FOUNDATION_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
 # shellcheck disable=SC2034
 FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 
+# ── Env-var rename window (temperloop#165, v0.15.0) ─────────────────────────
+# TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR / TEMPERLOOP_KERNEL_REPO /
+# TEMPERLOOP_VERSION are the canonical env knobs; the pre-rename
+# FOUNDATION_* names are read as fallbacks through the migration window and
+# removed in v0.17.0 (VERSIONING.md pre-1.0 bump rules; the v0.15.0
+# CHANGELOG BREAKING entry carries the migration note).
+#
+# temperloop_env_compat
+#   Called once by the dispatcher (kernel/bin/temperloop) before any
+#   subcommand dispatch. For each legacy/new pair: when the TEMPERLOOP_*
+#   primary is unset and the legacy FOUNDATION_* var is set non-empty, adopt
+#   the legacy value (exported under the new name, so subcommand processes
+#   see it) and print a one-line deprecation notice to stderr. Precedence is
+#   always new > old > default — a set TEMPERLOOP_* var wins silently.
+#
+#   TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never
+#   set in production use; same registry-exempt status as BUILD_QUOTA_NOW):
+#   =1 simulates the post-v0.17.0 removal — a set legacy var then fails
+#   legibly (returns 1 after a specific message) instead of being adopted,
+#   so the removal-release behavior is testable before it ships.
+temperloop_env_compat() {
+  local pair legacy new legacy_set new_set legacy_val
+  for pair in \
+    "FOUNDATION_HOME TEMPERLOOP_HOME" \
+    "FOUNDATION_BIN_DIR TEMPERLOOP_BIN_DIR" \
+    "FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO" \
+    "FOUNDATION_VERSION TEMPERLOOP_VERSION"; do
+    legacy="${pair%% *}"
+    new="${pair##* }"
+    eval "legacy_set=\${${legacy}+x}"
+    eval "new_set=\${${new}+x}"
+    eval "legacy_val=\${${legacy}:-}"
+    if [ -n "$legacy_set" ] && [ -z "$new_set" ] && [ -n "$legacy_val" ]; then
+      if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+        echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.15.0 and the legacy name was removed in v0.17.0. Set \$$new and re-run." >&2
+        return 1
+      fi
+      export "$new=$legacy_val"
+      echo "temperloop: NOTE — \$$legacy is deprecated: renamed \$$new in v0.15.0; the legacy name still works but is removed in v0.17.0. Set \$$new instead." >&2
+    fi
+  done
+  return 0
+}
+
 # foundation_check_prereq_claude
 #   Verifies the Claude Code CLI (`claude`) is on PATH. Prints one specific,
 #   actionable line to stderr and returns non-zero if it is missing.

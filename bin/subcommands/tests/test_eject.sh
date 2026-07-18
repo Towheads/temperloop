@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tests for eject.sh — `foundation eject` (foundation #765 Epic D "newcomer
+# Tests for eject.sh — `temperloop eject` (foundation #765 Epic D "newcomer
 # experience", item foundation-eject / #855). Same fixture style as
 # test_init.sh: a throwaway real-git bare upstream + clone, a stubbed `gh`
 # on PATH that LOGS every call it sees (the write-intercepting-wrapper
@@ -8,13 +8,13 @@
 # log), zero network, structured-output assertions via jq.
 #
 # Covers:
-#   - no .foundation/config -> no-op, exit 0, zero gh calls, prints the
+#   - no .temperloop/config -> no-op, exit 0, zero gh calls, prints the
 #     machine-level uninstall bullet
-#   - --dry-run: zero gh calls, .foundation/config left untouched
+#   - --dry-run: zero gh calls, .temperloop/config left untouched
 #   - non-interactive default-deny (no --yes, closed stdin): zero gh calls,
-#     .foundation/config left untouched
+#     .temperloop/config left untouched
 #   - consented full revert (--yes): the exact gh calls fire for each
-#     install type (label/required_check/board), .foundation/ removed
+#     install type (label/required_check/board), .temperloop/ removed
 #   - idempotency: re-running after a full revert is a no-op (no config,
 #     zero gh calls)
 #   - proposal_pr MERGED: left alone (no close/delete-branch call, branch
@@ -22,24 +22,24 @@
 #   - proposal_pr OPEN, branch currently checked out: switches off the
 #     branch first, then closes + deletes it
 #   - partial failure (a label delete fails and the label still exists):
-#     .foundation/config is rewritten with only the unresolved entry,
+#     .temperloop/config is rewritten with only the unresolved entry,
 #     exit 1, and a re-run retries only that entry
 #   - offline (--no-network): every install skipped with a reason, zero gh
-#     calls, .foundation/config left in place (all entries still recorded)
+#     calls, .temperloop/config left in place (all entries still recorded)
 #   - a label that already existed before init (no matching installs[]
 #     entry) is never touched — proves manifest-driven, not namespace grep
 #   - temperloop#414 partial/failed-init recovery:
-#     - .foundation/ residue with NO .foundation/config (init.sh Step 0's
+#     - .temperloop/ residue with NO .temperloop/config (init.sh Step 0's
 #       baseline.jsonl, written before config exists) is recognized and
 #       cleaned up — zero gh calls, no branch change (the old config-gated
 #       "nothing to eject" no-op used to miss this entirely)
 #     - that same residue path honors --dry-run and non-interactive
 #       default-deny exactly like the config-manifest path
-#     - end-to-end: a REAL 'foundation init' run that dies after its branch
-#       switch (proposal-pr.sh's `git checkout -B`) leaves .foundation/config
+#     - end-to-end: a REAL 'temperloop init' run that dies after its branch
+#       switch (proposal-pr.sh's `git checkout -B`) leaves .temperloop/config
 #       committed on the stray branch plus a recovery marker; `foundation
 #       eject` restores the original branch, deletes the stray unmerged
-#       local branch, and removes .foundation/ — byte-identical to before
+#       local branch, and removes .temperloop/ — byte-identical to before
 #       init ran
 set -euo pipefail
 
@@ -96,16 +96,16 @@ new_fixture_repo() {
 }
 
 seed_config() {
-  # seed_config REPO_DIR INSTALLS_JSON — writes + commits .foundation/config
+  # seed_config REPO_DIR INSTALLS_JSON — writes + commits .temperloop/config
   local repo="$1" installs="$2"
-  mkdir -p "$repo/.foundation"
+  mkdir -p "$repo/.temperloop"
   jq -n --argjson installs "$installs" \
     '{schema:1, generated_at:"2026-01-01T00:00:00Z",
       probe:{repo:{gh_repo:"acme/widget", default_branch:"main"}},
       tracker:{mode:"issues", board:1, boards_conf_path:"workflows/scripts/board/boards.conf", boards_conf_entry:""},
-      installs:$installs}' > "$repo/.foundation/config"
+      installs:$installs}' > "$repo/.temperloop/config"
   git -C "$repo" add -A
-  git -C "$repo" commit -q -m "seed .foundation/config"
+  git -C "$repo" commit -q -m "seed .temperloop/config"
 }
 
 # --- fake gh: logs every call; env vars steer replies ----------------------
@@ -197,14 +197,14 @@ run_init() {
 }
 
 # =============================================================================
-# 1. No .foundation/config -> no-op, exit 0, zero gh calls, uninstall bullet
+# 1. No .temperloop/config -> no-op, exit 0, zero gh calls, uninstall bullet
 # =============================================================================
 REPO1="$(new_fixture_repo repo1)"
 run 0 --dir "$REPO1" --yes
 [ ! -s "$CALL_LOG" ] || fail "no-config run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
 echo "$out" | grep -q "nothing to eject" || fail "no-config run did not report nothing-to-eject (got: $out)"
 echo "$out" | grep -q "Three separate removal scopes" || fail "no-config run did not print the uninstall bullet (got: $out)"
-echo "PASS: no .foundation/config -> no-op, zero gh calls, uninstall bullet printed"
+echo "PASS: no .temperloop/config -> no-op, zero gh calls, uninstall bullet printed"
 
 # =============================================================================
 # 2. --dry-run: zero gh calls, config left untouched
@@ -213,8 +213,8 @@ REPO2="$(new_fixture_repo repo2)"
 seed_config "$REPO2" '[{"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}]'
 run 0 --dir "$REPO2" --dry-run
 [ ! -s "$CALL_LOG" ] || fail "dry-run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-[ -f "$REPO2/.foundation/config" ] || fail "dry-run removed .foundation/config (should be untouched)"
-echo "PASS: --dry-run makes zero gh calls, leaves .foundation/config untouched"
+[ -f "$REPO2/.temperloop/config" ] || fail "dry-run removed .temperloop/config (should be untouched)"
+echo "PASS: --dry-run makes zero gh calls, leaves .temperloop/config untouched"
 
 # =============================================================================
 # 3. Non-interactive default-deny (no --yes, closed stdin): zero gh calls,
@@ -224,13 +224,13 @@ REPO3="$(new_fixture_repo repo3)"
 seed_config "$REPO3" '[{"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}]'
 run 0 --dir "$REPO3"
 [ ! -s "$CALL_LOG" ] || fail "default-deny made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-[ -f "$REPO3/.foundation/config" ] || fail "default-deny removed .foundation/config (should be untouched)"
+[ -f "$REPO3/.temperloop/config" ] || fail "default-deny removed .temperloop/config (should be untouched)"
 echo "$out" | grep -q "aborted — nothing reverted" || fail "default-deny did not report the abort (got: $out)"
 echo "PASS: non-interactive, no --yes -> aborts, zero gh calls, config untouched"
 
 # =============================================================================
 # 4. Consented full revert (--yes): label + required_check + board all
-#    revert via the exact gh calls, .foundation/ removed. Then a SECOND run
+#    revert via the exact gh calls, .temperloop/ removed. Then a SECOND run
 #    is idempotent: no config, zero gh calls.
 # =============================================================================
 REPO4="$(new_fixture_repo repo4)"
@@ -243,13 +243,13 @@ run 0 --dir "$REPO4" --yes
 [ "$(call_count 'label delete fnd:status:backlog')" -ge 1 ] || fail "label delete call missing"
 [ "$(call_count 'required_status_checks')" -ge 1 ] || fail "required-check revert call missing"
 [ "$(call_count 'project delete 42')" -ge 1 ] || fail "board delete call missing"
-[ ! -e "$REPO4/.foundation" ] || fail "full revert did not remove .foundation/"
-echo "$out" | grep -q "foundation eject: done" || fail "full revert did not report done (got: $out)"
+[ ! -e "$REPO4/.temperloop" ] || fail "full revert did not remove .temperloop/"
+echo "$out" | grep -q "temperloop eject: done" || fail "full revert did not report done (got: $out)"
 
 run 0 --dir "$REPO4" --yes
 [ ! -s "$CALL_LOG" ] || fail "second run made gh calls (should be zero — idempotent):\n$(cat "$CALL_LOG")"
 echo "$out" | grep -q "no-op" || fail "second run did not report no-op (got: $out)"
-echo "PASS: consented full revert fires the exact gh calls per install type, removes .foundation/; re-run is a zero-call no-op"
+echo "PASS: consented full revert fires the exact gh calls per install type, removes .temperloop/; re-run is a zero-call no-op"
 
 # =============================================================================
 # 5. proposal_pr MERGED: left alone (no close/delete-branch call), still
@@ -259,7 +259,7 @@ REPO5="$(new_fixture_repo repo5)"
 seed_config "$REPO5" '[{"type":"proposal_pr","branch":"foundation-init/config","pr_number":21,"url":"https://github.com/acme/widget/pull/21"}]'
 FAKE_PR_STATE=MERGED run 0 --dir "$REPO5" --yes
 grep -q "^pr close" "$CALL_LOG" && fail "MERGED proposal_pr should never be closed"
-[ ! -e "$REPO5/.foundation" ] || fail "MERGED proposal_pr revert did not remove .foundation/"
+[ ! -e "$REPO5/.temperloop" ] || fail "MERGED proposal_pr revert did not remove .temperloop/"
 echo "$out" | grep -q "merged — left in tree" || fail "did not report the merged/left-in-tree outcome (got: $out)"
 echo "PASS: proposal_pr MERGED is left alone (no close call), still counts as reverted"
 
@@ -281,7 +281,7 @@ echo "PASS: proposal_pr OPEN switches off a currently-checked-out branch, then c
 
 # =============================================================================
 # 7. Partial failure: label delete fails AND the label still exists ->
-#    .foundation/config is rewritten with only that unresolved entry,
+#    .temperloop/config is rewritten with only that unresolved entry,
 #    exit 1; a re-run retries only it.
 # =============================================================================
 REPO7="$(new_fixture_repo repo7)"
@@ -291,15 +291,15 @@ seed_config "$REPO7" '[
 ]'
 FAKE_LABEL_DELETE_RC=1 FAKE_EXISTING_LABELS="fnd:status:backlog fnd:status:ready" \
   run 1 --dir "$REPO7" --yes
-echo "$out" | grep -q "foundation eject: incomplete" || fail "partial failure did not report incomplete (got: $out)"
-[ -f "$REPO7/.foundation/config" ] || fail "partial failure removed .foundation/config (should be kept for retry)"
-cfg="$(cat "$REPO7/.foundation/config")"
+echo "$out" | grep -q "temperloop eject: incomplete" || fail "partial failure did not report incomplete (got: $out)"
+[ -f "$REPO7/.temperloop/config" ] || fail "partial failure removed .temperloop/config (should be kept for retry)"
+cfg="$(cat "$REPO7/.temperloop/config")"
 [ "$(jq '.installs | length' <<<"$cfg")" -eq 2 ] || fail "partial-failure config should keep both unresolved label entries (got: $(jq -c '.installs' <<<"$cfg"))"
 
 # Re-run: now the deletes succeed -> fully resolved this time
 FAKE_LABEL_DELETE_RC=0 run 0 --dir "$REPO7" --yes
-[ ! -e "$REPO7/.foundation" ] || fail "retry after partial failure did not fully revert"
-echo "PASS: a failed revert keeps only the unresolved entries in .foundation/config, exit 1; retry resolves them"
+[ ! -e "$REPO7/.temperloop" ] || fail "retry after partial failure did not fully revert"
+echo "PASS: a failed revert keeps only the unresolved entries in .temperloop/config, exit 1; retry resolves them"
 
 # =============================================================================
 # 8. Offline (--no-network): every install skipped, zero gh calls, config
@@ -309,7 +309,7 @@ REPO8="$(new_fixture_repo repo8)"
 seed_config "$REPO8" '[{"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}]'
 run 1 --dir "$REPO8" --yes --no-network
 [ ! -s "$CALL_LOG" ] || fail "--no-network made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-[ -f "$REPO8/.foundation/config" ] || fail "--no-network removed .foundation/config (should be kept)"
+[ -f "$REPO8/.temperloop/config" ] || fail "--no-network removed .temperloop/config (should be kept)"
 echo "$out" | grep -q -- "--no-network" || fail "--no-network skip reason not reported (got: $out)"
 echo "PASS: --no-network skips every install with a reason, zero gh calls, config kept for a later retry"
 
@@ -327,7 +327,7 @@ grep -q "label delete needs-clarification" "$CALL_LOG" && fail "eject deleted a 
 echo "PASS: only manifest-recorded labels are ever deleted — a pre-existing sibling label is untouched"
 
 # =============================================================================
-# 10. temperloop#414 — .foundation/ residue with NO .foundation/config
+# 10. temperloop#414 — .temperloop/ residue with NO .temperloop/config
 #     (init.sh Step 0 writes baseline.jsonl BEFORE config ever exists) is
 #     recognized and cleaned up: the old config-gated no-op used to miss
 #     this entirely ("nothing to eject" over real residue). Zero gh calls
@@ -335,46 +335,46 @@ echo "PASS: only manifest-recorded labels are ever deleted — a pre-existing si
 #     original branch — Step 0 never touches branches).
 # =============================================================================
 REPO10="$(new_fixture_repo repo10)"
-mkdir -p "$REPO10/.foundation"
-printf 'baseline.jsonl\n' > "$REPO10/.foundation/.gitignore"
+mkdir -p "$REPO10/.temperloop"
+printf 'baseline.jsonl\n' > "$REPO10/.temperloop/.gitignore"
 printf '{"schema":1,"generated_at":"2026-01-01T00:00:00Z","metrics":{"available":false}}\n' \
-  > "$REPO10/.foundation/baseline.jsonl"
+  > "$REPO10/.temperloop/baseline.jsonl"
 BEFORE_BRANCH10="$(git -C "$REPO10" branch --show-current)"
 run 0 --dir "$REPO10" --yes
 [ ! -s "$CALL_LOG" ] || fail "partial-residue cleanup made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-[ ! -e "$REPO10/.foundation" ] || fail "partial-residue cleanup did not remove .foundation/"
+[ ! -e "$REPO10/.temperloop" ] || fail "partial-residue cleanup did not remove .temperloop/"
 [ "$(git -C "$REPO10" branch --show-current)" = "$BEFORE_BRANCH10" ] \
   || fail "partial-residue cleanup switched branches unexpectedly"
 echo "$out" | grep -q "Partial-init residue" || fail "did not report the partial-init-residue path (got: $out)"
-echo "PASS: .foundation/ residue with no config (Step-0 baseline.jsonl only) is recognized and cleaned up, zero gh calls, no branch change"
+echo "PASS: .temperloop/ residue with no config (Step-0 baseline.jsonl only) is recognized and cleaned up, zero gh calls, no branch change"
 
 # --- same residue path honors --dry-run and non-interactive default-deny --
 REPO10B="$(new_fixture_repo repo10b)"
-mkdir -p "$REPO10B/.foundation"
-printf 'baseline.jsonl\n' > "$REPO10B/.foundation/baseline.jsonl"
+mkdir -p "$REPO10B/.temperloop"
+printf 'baseline.jsonl\n' > "$REPO10B/.temperloop/baseline.jsonl"
 run 0 --dir "$REPO10B" --dry-run
 [ ! -s "$CALL_LOG" ] || fail "dry-run on partial residue made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-[ -e "$REPO10B/.foundation" ] || fail "dry-run removed partial residue (should be untouched)"
+[ -e "$REPO10B/.temperloop" ] || fail "dry-run removed partial residue (should be untouched)"
 echo "$out" | grep -q "Dry run: would remove" || fail "dry-run did not report what it would remove (got: $out)"
 
 run 0 --dir "$REPO10B"
 [ ! -s "$CALL_LOG" ] || fail "non-interactive default-deny on partial residue made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-[ -e "$REPO10B/.foundation" ] || fail "non-interactive default-deny removed partial residue (should be untouched)"
+[ -e "$REPO10B/.temperloop" ] || fail "non-interactive default-deny removed partial residue (should be untouched)"
 echo "$out" | grep -q "aborted — nothing removed" || fail "non-interactive default-deny on partial residue did not report the abort (got: $out)"
 echo "PASS: partial-init residue honors --dry-run and non-interactive default-deny exactly like the config-manifest path"
 
 # =============================================================================
 # 11. End-to-end partial-init -> eject recovery (temperloop#414): a REAL
-#     'foundation init' run that dies AFTER its branch switch
+#     'temperloop init' run that dies AFTER its branch switch
 #     (proposal-pr.sh's `git checkout -B`) — simulated deterministically by
 #     breaking the push (removing the bare upstream after cloning) rather
 #     than a literal kill, so the test is hermetic/portable; the resulting
 #     on-disk state (checked out on the stray proposal branch,
-#     .foundation/config committed there, .foundation/.recovery.json
+#     .temperloop/config committed there, .temperloop/.recovery.json
 #     present, nothing ever pushed) is identical to what an interrupting
-#     kill mid-push would leave. 'foundation eject' must then restore the
+#     kill mid-push would leave. 'temperloop eject' must then restore the
 #     original branch, delete the stray unmerged local branch, and remove
-#     .foundation/ — leaving the checkout byte-identical to before init ran.
+#     .temperloop/ — leaving the checkout byte-identical to before init ran.
 # =============================================================================
 BARE11="$WORK/repo11-upstream.git"
 REPO11="$WORK/repo11"
@@ -398,10 +398,10 @@ run_init --dir "$REPO11" --gh-repo acme/widget --no-network
 echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
 [ "$(git -C "$REPO11" branch --show-current)" = "foundation-init/config" ] \
   || fail "test setup: expected the failed init run to leave the checkout on foundation-init/config"
-[ -f "$REPO11/.foundation/config" ] || fail "test setup: expected .foundation/config committed locally despite the push failure"
-[ -f "$REPO11/.foundation/.recovery.json" ] || fail "test setup: expected the recovery marker to survive the failed run"
-[ "$(jq -r '.original_branch' "$REPO11/.foundation/.recovery.json")" = "main" ] \
-  || fail "test setup: recovery marker original_branch wrong (got: $(cat "$REPO11/.foundation/.recovery.json"))"
+[ -f "$REPO11/.temperloop/config" ] || fail "test setup: expected .temperloop/config committed locally despite the push failure"
+[ -f "$REPO11/.temperloop/.recovery.json" ] || fail "test setup: expected the recovery marker to survive the failed run"
+[ "$(jq -r '.original_branch' "$REPO11/.temperloop/.recovery.json")" = "main" ] \
+  || fail "test setup: recovery marker original_branch wrong (got: $(cat "$REPO11/.temperloop/.recovery.json"))"
 
 run 0 --dir "$REPO11" --yes
 echo "$out" | grep -q "restored 'main'" || fail "eject did not report restoring the original branch (got: $out)"
@@ -410,7 +410,7 @@ echo "$out" | grep -q "deleted stray 'foundation-init/config'" || fail "eject di
   || fail "eject did not restore the original branch (on: $(git -C "$REPO11" branch --show-current))"
 git -C "$REPO11" show-ref --verify --quiet refs/heads/foundation-init/config \
   && fail "eject did not delete the stray local branch"
-[ ! -e "$REPO11/.foundation" ] || fail "eject did not remove .foundation/ residue"
+[ ! -e "$REPO11/.temperloop" ] || fail "eject did not remove .temperloop/ residue"
 [ "$(git -C "$REPO11" rev-parse HEAD)" = "$BEFORE_HEAD11" ] \
   || fail "eject left HEAD different from before the failed init run"
 [ -z "$(git -C "$REPO11" status --porcelain)" ] \
@@ -418,7 +418,7 @@ git -C "$REPO11" show-ref --verify --quiet refs/heads/foundation-init/config \
 AFTER_FIND11="$(find "$REPO11" -mindepth 1 -not -path '*/.git*' | sort)"
 [ "$AFTER_FIND11" = "$BEFORE_FIND11" ] \
   || fail "eject left extra files behind (before:\n$BEFORE_FIND11\nafter:\n$AFTER_FIND11)"
-echo "PASS: a real 'foundation init' run that dies after its branch switch (broken push, standing in for a killed process) leaves .foundation/config committed + a recovery marker on the stray branch; 'foundation eject' restores the original branch, deletes the stray unmerged branch, and removes .foundation/ — byte-identical to before init ran"
+echo "PASS: a real 'temperloop init' run that dies after its branch switch (broken push, standing in for a killed process) leaves .temperloop/config committed + a recovery marker on the stray branch; 'temperloop eject' restores the original branch, deletes the stray unmerged branch, and removes .temperloop/ — byte-identical to before init ran"
 
 echo
 echo "ALL PASS: test_eject.sh"

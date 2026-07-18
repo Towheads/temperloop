@@ -4,7 +4,7 @@
 **'AFTER' picture** of the epic's value loop -- `baseline-snapshot` is the
 'BEFORE' picture (see `kernel/workflows/scripts/lib/baseline_snapshot.contract.md`).
 Implementation: `kernel/bin/subcommands/report.sh` (bash, 3.2-compatible).
-Reads every line of the target repo's `.foundation/baseline.jsonl` and never
+Reads every line of the target repo's `.temperloop/baseline.jsonl` and never
 calls `gh` itself, **except** when invoked with `--refresh`, which shells out
 to the sibling `baseline-snapshot.sh` first (to append one fresh record) and
 then renders -- `baseline-snapshot.sh` remains the only place in the value
@@ -16,7 +16,7 @@ actually means), and the overlay drop-in seam's one-paragraph contract.
 
 ## Kernel tier -- first-record-vs-latest-record deltas
 
-Always renders from `.foundation/baseline.jsonl` alone, zero network. Every
+Always renders from `.temperloop/baseline.jsonl` alone, zero network. Every
 run reads the **first** line and the **last** line of the file and reports
 the delta between them across four metrics:
 
@@ -45,13 +45,21 @@ computed number -- never a crash, never a silently wrong number.
 
 ## Overlay drop-in contract
 
+**Legacy-dir window (v0.15.0 → removed in v0.17.0, temperloop#165):** the
+per-repo dir renamed `.foundation/` → `.temperloop/`. `report.sh` prefers
+`.temperloop/report.d/` and falls back to an existing legacy
+`.foundation/report.d/` when the new dir is absent — one dir wins, never a
+union, so a producer is never run twice. The legacy fallback is removed in
+v0.17.0 (`git mv .foundation/report.d .temperloop/report.d` — the dir is
+tracked). The baseline read follows the same new-then-legacy probe.
+
 Every executable file found directly inside the target repo's
-`.foundation/report.d/` (a **tracked** dir -- meant to be committed to the
-target repo, unlike the gitignored `.foundation/baseline.jsonl`) is invoked
+`.temperloop/report.d/` (a **tracked** dir -- meant to be committed to the
+target repo, unlike the gitignored `.temperloop/baseline.jsonl`) is invoked
 with no arguments, cwd = the target repo, under a per-run watchdog
 (`--timeout`, default 15s); the contract is **exit 0 + a self-contained
 block of stdout**, which `report.sh` renders verbatim under its own `--
-report.d/<name> --` heading. A missing `.foundation/report.d/` directory, a
+report.d/<name> --` heading. A missing `.temperloop/report.d/` directory, a
 present-but-non-executable file, a non-zero exit, or a timeout are **not**
 errors -- each renders as one line, `skipped -- <name>: producer
 unavailable`, and the run continues. The producer named exactly `tokens`
@@ -87,6 +95,6 @@ empty) opt-in egress surface for this whole value loop.
   labeled directional; `report.sh` has no opinion on how a `tokens` producer
   derives its own number, only that it be a JSON object with that one field.
 - **No new baseline data.** `report.sh` computes nothing that isn't already
-  in `.foundation/baseline.jsonl` or a drop-in's own stdout -- it is a pure
+  in `.temperloop/baseline.jsonl` or a drop-in's own stdout -- it is a pure
   renderer (`--refresh` is the one exception, and even then the actual `gh`
   work is fully delegated to `baseline-snapshot.sh`).

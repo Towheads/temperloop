@@ -94,7 +94,10 @@ REPO_ROOT="$(cd "$SUBCOMMAND_DIR/../.." && pwd)"
 # category-1 "this repo's own real value" rationale as try.sh's demo-repo
 # default and bootstrap.sh's clone URL (see those files' own markers).
 FEEDBACK_TARGET_REPO="${TEMPERLOOP_FEEDBACK_REPO:-Towheads/temperloop}"  # denylist:allow — the kernel repo's own upstream feedback target (its identity, same category-1 rationale as try.sh's demo-repo default)
-FOUNDATION_VERSION="${FOUNDATION_VERSION:-dev}"
+# TEMPERLOOP_VERSION is canonical (renamed from FOUNDATION_VERSION in
+# v0.15.0, temperloop#165); the legacy name is read as a fallback through
+# the window and removed in v0.17.0.
+TEMPERLOOP_VERSION="${TEMPERLOOP_VERSION:-${FOUNDATION_VERSION:-dev}}"
 
 usage() {
   cat <<'EOF'
@@ -195,7 +198,7 @@ trap cleanup EXIT
   echo "$message"
   echo
   echo "---"
-  echo "temperloop version: $FOUNDATION_VERSION"
+  echo "temperloop version: $TEMPERLOOP_VERSION"
   echo "source repo (git origin, sanitized): $repo_context"
   echo "platform: $os_context (bash ${BASH_VERSION:-unknown})"  # knob:exempt — BASH_VERSION is a bash builtin special variable, never an operator default
   echo "composed: $ts"

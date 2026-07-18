@@ -283,8 +283,18 @@ fi
 # the repo-local workflows/scripts/board/boards.conf override, then the
 # built-in map below (foundation #770; byte-identical to the pre-#770 map).
 _tick_conf_repo() {  # $1 = board number; rc 1 on any miss (no conf, or no key)
-  local f val
-  f="${BOARDS_CONF_MACHINE:-${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf}"
+  local f val lf
+  f="${BOARDS_CONF_MACHINE:-}"
+  if [ -z "$f" ]; then
+    # temperloop#165 rename window (mirrors board.sh's
+    # _board_machine_conf_default): prefer the temperloop/ machine conf,
+    # fall back to an existing legacy foundation/ one (removed in v0.17.0).
+    f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+    lf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+    if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # knob:exempt — test/simulation-only seam
+      f="$lf"
+    fi
+  fi
   [ -f "$f" ] || f="${BOARDS_CONF_REPO_LOCAL:-$HERE/../board/boards.conf}"
   [ -f "$f" ] || return 1
   val="$(grep -m1 "^board\.${1}\.repo=" "$f" 2>/dev/null | cut -d= -f2-)"

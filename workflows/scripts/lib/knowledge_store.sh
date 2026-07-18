@@ -25,7 +25,12 @@
 #
 # ── Config: ONE knob for the root, ONE knob for the backend ────────────────
 #   KNOWLEDGE_STORE_ROOT     store root directory (absolute path). Default:
-#                            ${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge
+#                            ${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge
+#                            (renamed from .../foundation/knowledge in
+#                            v0.15.0, temperloop#165 — an EXISTING store at
+#                            the legacy default is still found through the
+#                            rename window; see _ks_default_root below.
+#                            Legacy fallback removed in v0.17.0.)
 #                            This is the ONLY place the root is configured —
 #                            no second path knob exists anywhere in this file
 #                            or its callers.
@@ -44,10 +49,41 @@
 # beyond the `: "${VAR:=default}"` seams below, which assign-if-unset).
 
 # ── Root resolution (the ONE seam) ──────────────────────────────────────────
+# Default-root probe for the temperloop#165 rename window (v0.15.0,
+# read-old-write-new): the default namespace moved from
+# .../foundation/knowledge to .../temperloop/knowledge. When
+# KNOWLEDGE_STORE_ROOT is unset, prefer the NEW default; when nothing exists
+# there but an EXISTING store sits at the legacy default, resolve to the
+# legacy store (one NOTE line per process — the `:=` seam in ks_root below
+# runs this at most once) so a pre-rename install keeps finding its notes.
+# The legacy fallback is removed in v0.17.0 (VERSIONING.md pre-1.0 window;
+# the v0.15.0 CHANGELOG BREAKING entry carries the migration note).
+# TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never set
+# in production use; same registry-exempt status as BUILD_QUOTA_NOW): =1
+# simulates the post-v0.17.0 removal — the legacy store is then named
+# loudly and the NEW default used, never a silent miss.
+_ks_default_root() {
+  local new_root old_root
+  new_root="${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge"
+  old_root="${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge"
+  if [ ! -d "$new_root" ] && [ -d "$old_root" ]; then
+    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+      printf 'knowledge_store: NOTE — a legacy store exists at %s but the legacy default-root fallback was removed in v0.17.0; the default root is now %s. Move the store (mv "%s" "%s") or set KNOWLEDGE_STORE_ROOT.\n' \
+        "$old_root" "$new_root" "$old_root" "$new_root" >&2
+    else
+      printf 'knowledge_store: NOTE — using legacy store root %s (default moved to %s in v0.15.0; legacy fallback removed in v0.17.0 — move the store or set KNOWLEDGE_STORE_ROOT).\n' \
+        "$old_root" "$new_root" >&2
+      printf '%s\n' "$old_root"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$new_root"
+}
+
 # Prints the resolved store root (no trailing slash). Does not create it —
 # callers/backends create directories lazily on write.
 ks_root() {
-  : "${KNOWLEDGE_STORE_ROOT:=${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge}"
+  : "${KNOWLEDGE_STORE_ROOT:=$(_ks_default_root)}"
   printf '%s\n' "$KNOWLEDGE_STORE_ROOT"
 }
 

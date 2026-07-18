@@ -4,7 +4,7 @@
 the **'BEFORE' picture** of the epic's value loop: a discovered `foundation`
 subcommand (`kernel/bin/subcommands/baseline-snapshot.sh`) that, on every
 run, appends exactly **one** aggregate-only JSON record to
-`.foundation/baseline.jsonl` **in the target repo (the current working
+`.temperloop/baseline.jsonl` **in the target repo (the current working
 directory)**, derived from a 90-day `gh`-history lookback. A later item's
 "report" reads every line of that file and never calls `gh` itself — this
 script is the only place in the value loop that talks to the GitHub API for
@@ -44,10 +44,10 @@ failure — the one case where "a record was appended" is actually false).
 
 ## Effects
 
-1. **`.foundation/baseline.jsonl`** (repo-root-relative, appended to — never
+1. **`.temperloop/baseline.jsonl`** (repo-root-relative, appended to — never
    rewritten) gains exactly one line: a compact single-line JSON record,
    schema below.
-2. **`.foundation/.gitignore`** is created (or, if present, appended to) so
+2. **`.temperloop/.gitignore`** is created (or, if present, appended to) so
    it contains a `baseline.jsonl` line — idempotent, checked before every
    write so a repeat run never duplicates the entry. This script writes
    that file **directly to disk**, not via a reviewable proposal PR: unlike
@@ -58,8 +58,20 @@ failure — the one case where "a record was appended" is actually false).
    a PR-generation seam it can't assume is being driven.
 3. Both are runtime, per-checkout, generated data — never meant to be
    committed, which is exactly what the self-managed `.gitignore` entry
-   ensures on a cold repo with no prior `.foundation/` directory at all
+   ensures on a cold repo with no prior `.temperloop/` directory at all
    (the first run creates both the directory and the ignore entry).
+
+**Legacy-dir window (v0.15.0 → removed in v0.17.0).** The per-repo dir
+renamed `.foundation/` → `.temperloop/` in v0.15.0 (temperloop#165). An
+**existing** legacy `.foundation/baseline.jsonl` keeps accreting **in
+place** through the window (the baseline is one append-only before/after
+history; splitting it across two dirs would truncate every later report's
+"before" anchor), with a one-line `NOTE` per run; a repo with no legacy
+baseline writes under `.temperloop/` from the first run. `report` reads
+whichever single file exists (new preferred). The legacy arm is removed in
+v0.17.0 — migrate with `mkdir -p .temperloop && mv
+.foundation/baseline.jsonl .temperloop/` (the file is gitignored, never
+tracked).
 
 ## Re-appendable by design
 
@@ -76,7 +88,7 @@ run independently queries:
 Because the population definition (the two `gh` queries above) never
 changes run-to-run, records accumulated across many runs are directly
 comparable — a later report can read every line in
-`.foundation/baseline.jsonl` and trend the metrics over time without
+`.temperloop/baseline.jsonl` and trend the metrics over time without
 re-deriving what each run actually measured.
 
 ## Consent posture: aggregate-only, by construction
@@ -139,12 +151,12 @@ redaction step applied after the fact.
   field that happens to be absent.
 - **No cross-run aggregation.** This script only ever computes and appends
   ONE record from a fresh `gh` read; trending/comparing across the
-  accumulated `.foundation/baseline.jsonl` lines is a later report's job,
+  accumulated `.temperloop/baseline.jsonl` lines is a later report's job,
   which this script has no opinion on.
 - **No opinionated verdict.** Like `conventions-probe.sh`, this script
   reports what it *measured*, not what a repo *should* do about it — no
   "your review latency is too high" field.
 - **No proposal-PR machinery.** Unlike `init.sh`'s tree changes, this
-  script's two on-disk effects (`.foundation/baseline.jsonl`,
-  `.foundation/.gitignore`) are written straight to disk, not proposed —
+  script's two on-disk effects (`.temperloop/baseline.jsonl`,
+  `.temperloop/.gitignore`) are written straight to disk, not proposed —
   see "Effects" above for why.

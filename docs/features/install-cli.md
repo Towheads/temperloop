@@ -56,7 +56,7 @@ strictly more than the last:
    closed, it exits 0 with "no tick run" instead of failing.
 3. `temperloop init` opts a real repo in. `init --dry-run` previews the
    tree-only proposal PR with zero API writes of any kind. `init` for real
-   bootstraps `.foundation/config` and proposes tree changes (e.g. a
+   bootstraps `.temperloop/config` and proposes tree changes (e.g. a
    `boards.conf` entry) via a reviewable PR — nothing ever lands without
    review. Only with explicit per-action consent (an interactive `y/N`, or
    an explicit `--yes-<action>` flag — the default is always "no") does it

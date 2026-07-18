@@ -95,14 +95,19 @@ as the ladder above, so a reader who understands one understands the other,
 even though the two don't share an implementation.
 
 `boards.conf`'s machine-level path is
-**`$XDG_CONFIG_HOME/foundation/boards.conf`** — note the `foundation`
-namespace, not `temperloop`. This is a deliberate, temporary exception:
-`boards.conf` was built (foundation #770) before this repo's public rename
-from `foundation` to `temperloop`, and is **grandfathered** under the old
-namespace until temperloop#165 (the tracked rename item) migrates it. Any
-**new** machine-conf surface added after this ladder — including rung 3
-above — uses the `temperloop` namespace from the start; `foundation` never
-appears in a new one.
+**`$XDG_CONFIG_HOME/temperloop/boards.conf`** — the same `temperloop`
+namespace as rung 3 above. `boards.conf` was built (foundation #770) before
+this repo's public rename from `foundation` to `temperloop` and was
+grandfathered under `$XDG_CONFIG_HOME/foundation/` until temperloop#165
+migrated it (v0.15.0, read-old-write-new): when no file exists at the
+`temperloop/` path, an **existing** legacy
+`$XDG_CONFIG_HOME/foundation/boards.conf` is still read as a fallback
+through the migration window, and that legacy fallback is **removed in
+v0.17.0** — move the file (`mkdir -p ~/.config/temperloop && mv
+~/.config/foundation/boards.conf ~/.config/temperloop/`) or set
+`BOARDS_CONF_MACHINE`. Any **new** machine-conf surface added after this
+ladder — including rung 3 above — uses the `temperloop` namespace from the
+start; `foundation` never appears in a new one.
 
 ## Operator controls (ADR §2.3a kind 3) — not a rung either
 
