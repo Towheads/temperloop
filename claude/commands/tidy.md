@@ -10,12 +10,13 @@ You are running the **tidy** command. Goal: turn raw session transcripts in `Ses
 - Write small, write in parallel — batch independent vault writes and Things writes.
 - Use the Obsidian MCP for vault reads/writes (the agent-plane transport stays on Obsidian per the contract's Obsidian-mode note — `search_vault_smart` below is that same path); use the Things MCP for task creation.
 - Never duplicate work the live session already captured — check existence before writing.
+- **Consolidate before writing — one batched write pass, never per-stub.** Scanning and adjudicating stubs produces *candidates* only; hold them in a single dedup ledger (across stubs, and against already-existing vault/memory artifacts) and execute one batched write pass after all stubs are scanned. Never write a Decision/Pattern/memory the moment an extraction is found mid-scan (that is the F#1012/#1013 duplicate pattern), and never let an analyst subagent write — the orchestrator owns the writes.
 
 ## Live/Drain pairings
 
 Every step in this command has a real-time counterpart that runs during the live session — the drain is the backstop, not the primary defense. **This table is the single source of truth for KERNEL live/drain pairings** — pairs generic enough that a stranger's kernel-only checkout needs them backstopped too. A composed (overlay) checkout carries a second table, the **overlay extension**, at `claude/live-drain-registry.overlay.md`, for pairs that reference Travis-personal (vault-backed) rules and have no meaning in a standalone kernel checkout; `workflows/scripts/validate-live-drain.sh` unions the two when the overlay file is present, and validates this kernel table alone otherwise. `[[Patterns/Live-Drain pairing]]` and `claude/CLAUDE.md` § Live/Drain pairing point here. The validator parses both tables in CI (the `checks` gate) — it fails the build if any pair, in either table, is **half-present** (a live anchor present without its drain anchor, or vice versa). When you add a pair: kernel machinery (board/build/funnel/harness-generic) → a row here, in the same change as the rule; a personal/vault-backed rule → a row in the overlay extension table instead.
 
-**Cell grammar** (so the validator can parse it): every checkable token is `backticked`. The **Live location** cell is `` `<source>` § `<anchor>`… `` where `<source>` is a file (`claude/CLAUDE.md` = global config, `foundation/CLAUDE.md` = this repo's root CLAUDE.md, `stageFind/CLAUDE.md` = the consuming repo) or the literal `` `system-prompt` `` (unverifiable — the validator checks only the drain half); each `` `<anchor>` `` is the exact heading or bold-label text to find in that source. The **Drain backstop** cell lists the exact `### <heading>` anchors in this file's Step 3. Same grammar in the overlay extension table.
+**Cell grammar** (so the validator can parse it): every checkable token is `backticked`. The **Live location** cell is `` `<source>` § `<anchor>`… `` where `<source>` is a file (`claude/CLAUDE.md` = global config, `foundation/CLAUDE.md` = this repo's root CLAUDE.md, `stageFind/CLAUDE.md` = the consuming repo, or `claude/commands/<cmd>.md` = a kernel command spec — a tracked file the validator hard-checks like any other) or the literal `` `system-prompt` `` (unverifiable — the validator checks only the drain half); each `` `<anchor>` `` is the exact heading or bold-label text to find in that source. The **Drain backstop** cell lists the exact `### <heading>` anchors in this file's Step 3. Same grammar in the overlay extension table.
 
 | Live rule | Live location | Drain backstop |
 |---|---|---|
@@ -25,6 +26,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Answered decision issues | `system-prompt` § `decision_sink_ask` | `Answered decisions` |
 | Kernel-vs-overlay classification | `claude/CLAUDE.md` § `Kernel vs overlay routing rule` | `Kernel-candidate learnings` |
 | Design-first default for invented work | `claude/CLAUDE.md` § `Design-first default for invented work` | `Provenance-less epics` |
+| Per-epic retro mint | `claude/commands/build.md` § `Mint the per-epic retro tracker` | `Retro mint backstop` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -241,6 +243,18 @@ For each hit, append one `### open` entry to the pending-decisions surface (`Pip
 Skip an epic already recorded by a prior sweep (match on board + issue number under an existing `open` entry) — don't re-append the same finding every run.
 
 **Default to silence.** If a board has no such epics, surface nothing. Same report-only stance as § Stale board claims above — this sweep proposes a review, it never edits an epic; `/check-in` disposes it (confirm the epic is fine as hand-authored, or run `/workshop` retroactively and materialize the marker onto it).
+
+### Retro mint backstop
+
+Backstop for the live `/build` **4d-retro mint** rule (`claude/commands/build.md` § Mint the per-epic retro tracker) — the registered Live/Drain pair of that mint (§ Live/Drain pairings above). The live mint files exactly one `Retro-for-epic: #<epic>` tracker at each epic's build-close; this sweep is the periodic net for the three ways that mint-then-judge loop can silently break. **Report-only — it mutates nothing:** no tracker, epic, or label is ever created, closed, or relabelled. Each probe that fires appends one `### open` entry to the pending-decisions surface (`Pipeline/pending decisions.md` vs the legacy `Context/pipeline - pending decisions.md` — target pinned by the append-target resolution rule, `claude/commands/check-in.md`; in the knowledge store) via `mcp__obsidian-builtin__vault_append`, and folds a count into the Step 6 summary; `/check-in` disposes (re-mint by hand, nudge the judge, or close the tracker).
+
+**Run for each governed board** (via the board adapter — `board_item_list <board>`, or a raw `gh issue list -R "$repo"` when this checkout doesn't vendor the adapter) — boards 3, 4, and 7 (the kernel tracker). Exactly **three probes**, each detecting its own fault and touching nothing:
+
+1. **Missing mint** — a build-closed epic with **no** `Retro-for-epic:`-markered tracker. **Scope to epics with an archived plan note** (a `Plans-archive/<…>.md` snapshot exists — i.e. 4d-archive ran, so `/build` drove that epic to close): for each such epic #<n>, probe for its tracker (`gh issue list -R "$repo" --search "Retro-for-epic: #<n> in:body" --state all --json number`, or `issue_marker_probe` where the corpus lib is vendored — the same body-marker probe the mint's step 1 uses). A zero result means the mint never fired for a `/build`-closed epic (the mint was gated off at close, or the step errored) — report it. Scoping to archived-plan epics is what keeps this from flagging every hand-closed or triage-culled epic that was never a `/build`-driven close.
+2. **Stale `retro-pending`** — a `retro-pending` tracker still **open** past a staleness bound (`gh issue list -R "$repo" --label retro-pending --state open --json number,createdAt`): flag any tracker older than `RETRO_MIN_INTERVAL` (`workflows/scripts/build/build.config.sh` — one judge cadence). A tracker still `retro-pending` and open well past one cadence means the overlay `/retro` judge isn't picking it up (its cron is down, or absent) — report it.
+3. **Open `retro-judged`** — a `retro-judged` tracker still **open** (`gh issue list -R "$repo" --label retro-judged --state open --json number`). The judge relabels `retro-pending`→`retro-judged` and closes a tracker it has processed; a `retro-judged` tracker left open means that close step was missed — report it.
+
+**Default to silence.** A board with none of the three faults surfaces nothing (a kernel-only checkout with no `/retro` judge mints only terminal `retro-info` trackers, so probes 2 and 3 never match there). Skip an epic/tracker already recorded under an existing `open` entry (match on board + issue number) — don't re-append the same finding every run. This sweep never creates, closes, or relabels a tracker and never edits an epic — the same report-only stance as § Stale board claims and § Provenance-less epics above.
 
 ### Self-correction moments → Mistakes / Patterns + recurring-tell promotion
 

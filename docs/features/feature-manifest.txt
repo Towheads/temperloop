@@ -200,6 +200,14 @@ knowledge-store workflows/scripts/lib/issue-marker-probe.sh
 knowledge-store workflows/scripts/lib/tests/test_issue_corpus.sh
 knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
 
+# ── command-declared — slash-command availability probe (ADR 0008) ──────────
+# The command-side peer of the subagent capability-probe: `command_declared
+# <name>` answers "is slash command <name> available" across the three
+# source-or-installed surfaces a headless `claude -p` resolves. Exact-path
+# claims (one per file), same style as the knowledge-store lib siblings above.
+command-declared workflows/scripts/lib/command_declared.sh
+command-declared workflows/scripts/lib/tests/test_command_declared.sh
+
 # ── quality-gates — the static gate set, lints, kernel scrubs, knob registry ─
 quality-gates .github/workflows/ci.yml
 quality-gates scripts/quality-gates.sh
@@ -244,6 +252,11 @@ review-agents claude/agents/*
 review-agents workflows/scripts/tests/fixtures/docs-reviewer/*
 review-agents workflows/scripts/workflow-reviewer-coverage.sh
 review-agents workflows/scripts/tests/test_workflow_reviewer_coverage.sh
+review-agents workflows/scripts/install/reviewer-activation-coverage.sh
+review-agents workflows/scripts/tests/test_reviewer_activation_coverage.sh
+review-agents workflows/scripts/install/reviewer-activate.sh
+review-agents workflows/scripts/tests/test_reviewer_activate.sh
+review-agents workflows/scripts/tests/test_doctor_reviewer_coverage.sh
 
 # ── sandbox-core — hermetic env-sandbox test harness (temperloop#263) ───────
 sandbox-core workflows/scripts/tests/lib/sandbox.sh

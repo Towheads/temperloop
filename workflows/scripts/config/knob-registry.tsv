@@ -204,6 +204,7 @@ BUILD_MERGE_GATE_WINDOW	300	seconds	tracked-repo	workflows/scripts/build/build.c
 BUILD_QUEUE_TIMEOUT	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-PR native-merge-queue timeout
 FUNNEL_DRIVE_CONCURRENCY	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Autonomous funnel lane's concurrent-drive bound per tick (mechanical governor; formerly FUNNEL_WIP_CAP, split from the retired human WIP-cap rule)
 EPIC_MIN_SUBUNITS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Epic-decomposition sub-unit threshold (rendered into CLAUDE.kernel.md prose)
+DISPLAY_TZ	America/Los_Angeles	string	tracked-repo	workflows/scripts/build/build.config.sh	Human-facing display timezone (IANA name so DST is automatic); rendered into CLAUDE.kernel.md prose as {{DISPLAY_TZ}}, with belt-and-suspenders defaults in telemetry-brief.sh/reconcile.sh. Stored/parsed timestamps stay UTC.
 BUILD_MERGE_BACKEND	auto	enum	tracked-repo	workflows/scripts/build/build.config.sh	Merge-backend selection: auto probes for a merge_queue rule; native/managed override (auto|native|managed)
 BUILD_HEADLESS_POLL_TIMEOUT	540	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Foreground CI/MERGED poll bound on the headless (funnel merge-driver) path
 ASSESS_POLL_FIRST_WAKE	270	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll first wake after arming
@@ -227,6 +228,12 @@ FUNNEL_DRIVE_MERGE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.con
 FUNNEL_MERGE_PENDING_LABEL	funnel-merge-pending	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a cross-tick merge hand-off (open unmerged PR at session end)
 FUNNEL_CLARIFIED_MARKER	<!-- funnel:clarification-drained -->	marker	tracked-repo	workflows/scripts/build/build.config.sh	Idempotency marker posted when a needs-clarification item is drained
 FUNNEL_ESCALATED_LABEL	funnel-escalated	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a rung-5c CODE escalation (route-refused / terminally-red CI)
+RETRO_MINT_ENABLED	1	bool	tracked-repo	workflows/scripts/build/build.config.sh	Master on/off for the /build 4d-retro MINT (files a per-epic retro tracker at epic close)
+RETRO_MIN_INTERVAL	259200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Debounce: minimum age of the oldest retro-pending tracker before the funnel tick emits a retro-judge action
+RETRO_URGENT_CI_RETRIES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	CI-retry count at/above which a retro tracker is stamped retro-urgent at mint time (bypasses the debounce)
+RETRO_BATCH_SESSION_CAP	5	int	tracked-repo	workflows/scripts/build/build.config.sh	Max number of retro trackers a single /retro --pending judge session processes (enforced judge-side)
+RETRO_JUDGE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model the funnel runs claude -p "/retro --pending" under (distinct from FUNNEL_DRIVE_MODEL)
+REVIEWER_SCAN_MIN_FILES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Language-reviewer catalog install-time coverage scan / doctor check: minimum file count before a language is offered its reviewer (temperloop#538, ADR 0007/0008) — install/doctor-time, not the batch build pipeline
 FUNNEL_DRIVE_SETTINGS	$HERE/funnel-drive.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 FUNNEL_DRIVE_MERGE_SETTINGS	$HERE/funnel-drive-merge.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
@@ -277,6 +284,8 @@ KNOB_REGISTRY_EXEMPT_FILE	$SCRIPT_DIR/knob-registry-exempt-files.txt	path	kernel
 KNOB_PROSE_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-knob-prose.sh	Root the prose lint resolves claude/commands/*.md + claude/CLAUDE.kernel.md against (fixture-test seam)
 KNOB_PROSE_BASELINE_FILE	$SCRIPT_DIR/knob-prose-baseline.tsv	path	kernel	workflows/scripts/config/check-knob-prose.sh	Path to the prose lint's burn-down baseline TSV (fixture-test seam)
 KNOB_PROSE_EMIT_BASELINE	0	bool	kernel	workflows/scripts/config/check-knob-prose.sh	Maintenance mode: print ready-to-append baseline TSV rows instead of violation text
+REVIEWER_ROUTING_TSV	$SCRIPT_DIR/reviewer-routing.tsv	path	kernel	workflows/scripts/config/check-reviewer-routing.sh	Path to the reviewer-routing tsv the drift lint compares against build.md's 3e prose (fixture-test seam)
+REVIEWER_ROUTING_BUILD_MD	$REPO_ROOT/claude/commands/build.md	path	kernel	workflows/scripts/config/check-reviewer-routing.sh	Path to build.md whose 3e section the drift lint scans (fixture-test seam)
 CMD_RUN_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-command-run.sh	Sink dir for the /sweep and /triage per-run telemetry stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
 GH_PERF_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-gh-perf.sh	Sink dir for the gh-performance raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
 TELEMETRY_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/telemetry-brief.sh	Raw-lake dir the kernel telemetry-brief reader falls back to for any stream whose own emitter *_RAW_DIR override is unset (temperloop#431 — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)

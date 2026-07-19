@@ -125,6 +125,28 @@ jq -e '.safe + .merge | any(.action=="route-already-assigned" or .action=="drain
 [ "$(jq -c '[.merge[].issue]' <<<"$OUT")" = "[101]" ] \
   && ok "merge tier = {code drive 101} (left for the operator)" || bad "t1.merge" "got $(jq -c '[.merge[].issue]' <<<"$OUT")"
 
+# ── 1b: retro-judge classifies SAFE, no-merge (epic #528, temperloop#535) ─────
+# The KERNEL trigger half of the mint-then-judge design: funnel-tick.sh emits
+# `retro-judge` when a due `retro-pending` tracker (build.md 4d-retro's mint,
+# #533) is found. It spawns the overlay `/retro --pending` judge — no PR, no
+# merge of its own — so it belongs in the SAFE tier alongside the other
+# no-merge drains, and `skip-retro-judge` (emitted when no judge is declared)
+# is a no-op-ish record dropped from both tiers, same as skip-contention.
+echo "--- test 1b: retro-judge classifies SAFE; skip-retro-judge is dropped (no-op-ish) ---"
+RETRO_PLANS='[{"tick":"done","actions":[
+  {"phase":"retro","action":"retro-judge","board":"3","repo":"Towheads/stageFind","count":2,"reason":"debounce"},
+  {"phase":"retro","action":"skip-retro-judge","board":"3","repo":"Towheads/stageFind"}
+]}]'
+OUT1B="$(printf '%s' "$RETRO_PLANS" | bash "$DRIVE" --dry-run)"
+[ "$(jq -r '.status' <<<"$OUT1B")" = "dry-run" ] && ok "t1b status=dry-run" || bad "t1b.status" "got $(jq -r '.status' <<<"$OUT1B")"
+jq -e '.safe | any(.action=="retro-judge")' <<<"$OUT1B" >/dev/null \
+  && ok "retro-judge lands in the SAFE tier" || bad "t1b.safe" "retro-judge missing from safe: $(jq -c '.safe' <<<"$OUT1B")"
+jq -e '.merge | any(.action=="retro-judge") | not' <<<"$OUT1B" >/dev/null \
+  && ok "retro-judge never lands in the MERGING tier" || bad "t1b.merge" "retro-judge leaked into merge"
+jq -e '.safe + .merge | any(.action=="skip-retro-judge") | not' <<<"$OUT1B" >/dev/null \
+  && ok "skip-retro-judge is dropped from both tiers (no-op-ish)" || bad "t1b.skip" "skip-retro-judge survived tiering"
+[ "$(jq -r '.driven' <<<"$OUT1B")" = "1" ] && ok "driven=1 (only retro-judge; the skip is not an attempt)" || bad "t1b.driven" "got $(jq -r '.driven' <<<"$OUT1B")"
+
 # ── 2: a kind-less drive defaults to MERGING (fail closed on the merge side) ──
 echo "--- test 2: a drive-ready with no kind defaults to merging, never safe ---"
 NOKIND='[{"tick":"done","actions":[{"action":"drive-ready","board":"3","repo":"r","issue":201}]}]'

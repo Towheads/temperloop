@@ -255,6 +255,165 @@ check_cache_state() {
 }
 
 # ---------------------------------------------------------------------------
+# _doctor_ensure_reviewer_state_gitignored <project-dir> — 0 iff, on return,
+# <project-dir>/.claude/reviewer-state/ resolves ignored under `git
+# check-ignore` (either it already was, or the entry was appended to
+# <project-dir>/.gitignore to make it so). Mirrors reviewer-activate.sh's own
+# _ra_ensure_gitignore_entry() for this ONE entry — that script cannot be
+# safely sourced here (it has no source-guard and runs its whole interactive
+# CLI body unconditionally at the top level; see check_reviewer_coverage()'s
+# header), so this is a small self-contained reimplementation of just the
+# gitignore-safety half, scoped to the one path doctor.sh itself ever writes.
+# Returns 1 (writes nothing) when <project-dir> isn't a git repo or the
+# .gitignore can't be confirmed/updated — callers must treat that as "degrade
+# to read-only", never as license to write anyway.
+#
+# Newline-guarded append (temperloop#550 install-surface persona finding,
+# HIGH): a bare `printf '%s\n' "$entry" >>"$gi"` glues onto the last line of
+# a pre-existing .gitignore that has no trailing newline — corrupting a
+# tracked, team-shared file (e.g. `node_modules/\n*.pyc` with no final
+# newline becomes `*.pyc.claude/reviewer-state/`, silently breaking the
+# `*.pyc` rule AND failing to add the new one). Before appending the entry,
+# this ensures the file already ends in a newline, adding one first if not.
+# `[ -s "$gi" ] && [ -n "$(tail -c1 "$gi")" ]` is true iff the file is
+# non-empty AND its last byte is not a newline (command substitution strips
+# a trailing "\n", so a properly newline-terminated file yields an empty
+# capture here). Prints a console notice ONLY when it genuinely appends
+# (never when the entry was already present/ignored), mirroring
+# reviewer-activate.sh's own _ra_ensure_gitignore_entry() notice.
+# ---------------------------------------------------------------------------
+_doctor_ensure_reviewer_state_gitignored() {
+  local project_dir="$1"
+  local entry=".claude/reviewer-state/"
+  local sample="${project_dir}/.claude/reviewer-state/.doctor-probe"
+
+  git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+
+  if git -C "$project_dir" check-ignore -q -- "$sample" 2>/dev/null; then
+    return 0
+  fi
+
+  local gi="${project_dir}/.gitignore"
+  if [[ -f "$gi" ]] && grep -qxF "$entry" "$gi" 2>/dev/null; then
+    :
+  else
+    if ! { [ -e "$gi" ] || touch "$gi" 2>/dev/null; }; then
+      return 1
+    fi
+    if [ -s "$gi" ] && [ -n "$(tail -c1 "$gi" 2>/dev/null)" ]; then
+      printf '\n' >>"$gi" 2>/dev/null || return 1
+    fi
+    if printf '%s\n' "$entry" >>"$gi" 2>/dev/null; then
+      echo "doctor.sh: added '$entry' to $gi to keep reviewer-state per-checkout (never committed)"
+    else
+      return 1
+    fi
+  fi
+
+  git -C "$project_dir" check-ignore -q -- "$sample" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# check_reviewer_coverage — advisory, WARN-level reviewer-activation-coverage
+# check (temperloop#550, ADR 0007/0008). REUSES #548's pure, non-interactive
+# data path (reviewer_coverage_gaps / reviewer_coverage_check_integrity,
+# sourced from reviewer-activation-coverage.sh) — NEVER #549's interactive
+# reviewer-activate.sh (that script has no source-guard and would run its
+# whole offer/prompt body unconditionally if sourced here).
+#
+# Strictly advisory: a WARN increments a local tally ONLY, never `non_ok`/
+# the exit code — an inert, un-activated reviewer is the DESIGNED default
+# (opt-in, ADR 0007), so a fresh checkout with zero activated reviewers must
+# still exit 0. Mirrors check_cache_state()'s read-only `|| true` posture.
+#
+# Three outcomes per catalogued-reviewer language, computed from #548's own
+# gap-set semantics:
+#   - resolvable gap (catalogued in reviewer-routing.tsv, material usage at/
+#     above REVIEWER_SCAN_MIN_FILES, not yet activated, not durably declined)
+#     -> WARN, every run, until activated or declined. reviewer_coverage_
+#     gaps() already computes exactly this set.
+#   - durably declined (a decline marker under the per-repo reviewer-state
+#     dir, #549's format) -> silent. reviewer_coverage_gaps() already
+#     excludes these from its output, so nothing extra is needed here.
+#   - uncatalogued (a reviewer-routing.tsv row whose catalog-agent-path does
+#     NOT resolve to a real file on disk — reviewer_coverage_check_
+#     integrity() reports it DANGLING, i.e. that "catalogued" language has no
+#     actual backing rubric to activate) -> a ONE-TIME INFO, never a
+#     repeating WARN. This check is catalog-wide (not dependent on this
+#     checkout's own file mix), so it fires identically anywhere the tsv/
+#     catalog pairing is broken. "One-time" state is a small marker file
+#     under the SAME gitignored per-repo reviewer-state dir #549 owns
+#     (.claude/reviewer-state/doctor-uncatalogued-notified) — this is
+#     doctor.sh's FIRST write-capable check, a deliberate scoped exception to
+#     its otherwise read-only posture, confined to that one gitignored path
+#     and NEVER touching anything a `git add -A` would stage. If the state
+#     dir/gitignore can't be confirmed safe, this degrades to read-only
+#     (skips the write, so the INFO simply reprints next run) rather than
+#     leaking state anywhere — and never fails the check either way.
+# ---------------------------------------------------------------------------
+check_reviewer_coverage() {
+  local rac_sh="${FOUNDATION}/workflows/scripts/install/reviewer-activation-coverage.sh"
+
+  printf '\nReviewer coverage check (temperloop#550):\n'
+
+  if [[ ! -f "$rac_sh" ]]; then
+    printf '  SKIPPED (reviewer-activation-coverage.sh not found under %s)\n' "$FOUNDATION"
+    return 0
+  fi
+
+  # shellcheck source=/dev/null
+  if ! source "$rac_sh" 2>/dev/null; then
+    printf '  SKIPPED (could not source reviewer-activation-coverage.sh)\n'
+    return 0
+  fi
+
+  if [[ ! -f "${REVIEWER_ROUTING_TSV:-}" ]]; then
+    printf '  SKIPPED (reviewer-routing.tsv not found at %s)\n' "${REVIEWER_ROUTING_TSV:-<unset>}"
+    return 0
+  fi
+
+  local project_dir="$FOUNDATION"
+  local gaps=""
+  gaps="$(reviewer_coverage_gaps "$project_dir" "$REVIEWER_ROUTING_TSV" 2>/dev/null)" || gaps=""
+
+  local warn_count=0 name
+  if [[ -n "$gaps" ]]; then
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      printf '  WARN  %-22s catalogued, not yet activated (repo has material usage at/above threshold) — run reviewer-activate.sh to opt in or decline\n' "$name"
+      warn_count=$((warn_count + 1))
+    done <<<"$gaps"
+  fi
+
+  local integrity_err=""
+  integrity_err="$(reviewer_coverage_check_integrity "$REVIEWER_ROUTING_TSV" "$FOUNDATION" 2>&1 1>/dev/null)" || true
+
+  if [[ -n "$integrity_err" ]]; then
+    local state_dir="${project_dir}/.claude/reviewer-state"
+    local notice_marker="${state_dir}/doctor-uncatalogued-notified"
+
+    if [[ ! -e "$notice_marker" ]]; then
+      printf '  INFO  one or more reviewer-routing.tsv entries reference a language with no backing rubric on disk (uncatalogued) — see docs/features/review-agents.md for the bring-your-own path:\n'
+      printf '%s\n' "$integrity_err" | sed 's/^/        /'
+
+      if _doctor_ensure_reviewer_state_gitignored "$project_dir"; then
+        # if-then-else, not `A && B || C` (SC2015): the marker write is
+        # best-effort — a failed mkdir or printf must never fail the check.
+        if mkdir -p "$state_dir" 2>/dev/null; then
+          printf '# doctor.sh: uncatalogued-language notice already shown on %s\n' "$(date +%Y-%m-%d)" >"$notice_marker" 2>/dev/null || true
+        fi
+      fi
+    fi
+  fi
+
+  if [[ "$warn_count" -eq 0 && -z "$integrity_err" ]]; then
+    printf '  no resolvable reviewer-activation gaps\n'
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main — enumerate and classify every managed entry.
 # ---------------------------------------------------------------------------
 ok=0
@@ -283,6 +442,8 @@ knowledge_root_status=0
 check_knowledge_root || knowledge_root_status=$?
 
 check_cache_state || true
+
+check_reviewer_coverage || true
 
 if (( non_ok > 0 )); then
   echo

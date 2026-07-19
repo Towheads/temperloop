@@ -135,6 +135,20 @@ fi
 # time by workflows/scripts/install-claude-md.sh.
 : "${EPIC_MIN_SUBUNITS:=3}"
 
+# HUMAN-FACING display timezone (temperloop — Pacific display convention). The
+# IANA zone every human-facing date/time renders in: conversation reports and
+# by-day breakdowns, telemetry-brief's "today" bucket, reconcile's status-line
+# stamps. An IANA name (NOT a fixed "PST"/"PDT") so DST is handled automatically
+# — reads PDT in summer, PST in winter, always matching the operator's wall clock.
+# A third "CLAUDE.md-resident knob" rendered at compose time into
+# claude/CLAUDE.kernel.md § Communication conventions as `{{DISPLAY_TZ}}` by
+# workflows/scripts/install-claude-md.sh.
+#
+# NOT for STORED/PARSED records: the telemetry data lake (emit-*.sh), board
+# claim/capture timestamps, and the plan-schema consent timestamp stay ISO-8601
+# UTC (canonical, parseable, DST-free) — never localize those.
+: "${DISPLAY_TZ:=America/Los_Angeles}"
+
 # Merge-backend SELECTION (temperloop#13): a free personal repo can't always
 # provision GitHub's native merge queue, so `gate.sh backend` chooses NATIVE
 # vs MANAGED. "auto" probes the repo's branch ruleset for a `merge_queue` rule
@@ -279,6 +293,46 @@ fi
 # `:=` fallback for a non-vendoring checkout, exactly as FUNNEL_MERGE_PENDING_LABEL does.
 : "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
 
+# ── Unified-retrospection RETRO_* knobs (temperloop#532) ────────────────────
+# These five knobs are NAMED (in prose) by other items of the
+# unified-retrospection epic and VALUED only here, per § Prose-resident knob
+# convention (`claude/CLAUDE.kernel.md`) — a command spec (`build.md`'s
+# 4d-retro MINT step, the funnel tick's retro-judge emit, `/retro` itself)
+# references `$RETRO_*` symbolically and never restates the literal.
+
+# Master on/off for the `/build` 4d-retro MINT (files a per-epic retro
+# tracker at epic close). Default ON.
+: "${RETRO_MINT_ENABLED:=1}"
+
+# Debounce: minimum age (s) of the oldest `retro-pending` tracker before the
+# funnel tick emits a retro-judge action. Default a 3-day cadence.
+: "${RETRO_MIN_INTERVAL:=259200}"
+
+# CI-retry count at/above which a retro tracker is stamped `retro-urgent` at
+# mint time (bypasses the debounce above).
+: "${RETRO_URGENT_CI_RETRIES:=3}"
+
+# Max number of retro trackers a single `/retro --pending` judge session
+# processes (enforced judge-side).
+: "${RETRO_BATCH_SESSION_CAP:=5}"
+
+# Model the funnel runs `claude -p "/retro --pending"` under — its own named
+# model knob, distinct from FUNNEL_DRIVE_MODEL (same tier: the judge is a
+# safe/standard drive, not a merge-tier high-judgment one).
+: "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
+
+# ── Language-reviewer catalog coverage scan (temperloop#538, ADR 0007/0008) ──
+# The catalog's install-time coverage scan (and `make doctor`'s matching
+# check) count each candidate language's files in the repo and offer
+# activation only for a language that clears this floor — a repo with a
+# single stray `.rb` file should not be offered a Ruby reviewer it doesn't
+# need. This is INSTALL/DOCTOR-TIME machinery, not a batch-build-pipeline
+# knob (contrast FUNNEL_DRIVE_CONCURRENCY above). Default 3: low enough that
+# a small-but-real component (a handful of shell scripts, a slim Python
+# helper) still gets offered its reviewer, high enough that a single
+# generated/vendored/example file doesn't trigger a false-positive offer.
+: "${REVIEWER_SCAN_MIN_FILES:=3}"
+
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
@@ -311,11 +365,14 @@ fi
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS \
+       BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
        FUNNEL_MERGE_PENDING_LABEL FUNNEL_CLARIFIED_MARKER FUNNEL_ESCALATED_LABEL \
+       RETRO_MINT_ENABLED RETRO_MIN_INTERVAL RETRO_URGENT_CI_RETRIES \
+       RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
+       REVIEWER_SCAN_MIN_FILES \
        KNOWLEDGE_STORE_ROOT

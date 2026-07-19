@@ -1,8 +1,8 @@
 ---
-description: Daily human check-in — review the overnight machine output and set direction. Render the telemetry brief (status readout), dispose the pipeline surfaces `/tidy` and the funnel parked overnight (pending-decisions, pending-activations, proposed-supersessions, retro-findings, candidate-tells, vault-hygiene, sensitivity-flags), then review/set the `/next` priorities for every project.
+description: Daily human check-in — review the overnight machine output and set direction. Render the telemetry brief (status readout), dispose the pipeline surfaces `/tidy` and the funnel parked overnight (pending-decisions, pending-activations, proposed-supersessions, retro-findings if `/retro` is installed, candidate-tells, vault-hygiene, sensitivity-flags), then review/set the `/next` priorities for every project.
 ---
 
-You are running the **check-in** command — the daily human driver's-seat review. Overnight, unattended machinery (`/tidy`, the funnel cron, `/build --unattended`, `/retro`) did work and **parked everything needing human judgment** on durable surfaces. `/check-in` is where a person clears those queues and sets direction. Three parts: **① a status readout** (telemetry brief), **② dispose the overnight queues**, **③ review/set the `/next` priorities per project**. Be concise.
+You are running the **check-in** command — the daily human driver's-seat review. Overnight, unattended machinery (`/tidy`, the funnel cron, `/build --unattended`, and `/retro` if installed — see the capability check in Part 2) did work and **parked everything needing human judgment** on durable surfaces. `/check-in` is where a person clears those queues and sets direction. Three parts: **① a status readout** (telemetry brief), **② dispose the overnight queues**, **③ review/set the `/next` priorities per project**. Be concise.
 
 This is the **operator-disposes** half of the drain-proposes / operator-disposes split: the pipeline surfaces are **append-only**, written by the unattended machinery, and `/check-in` is their **sole `Status` mutator**. (The personal daily plan — calendar, inbox-zero, slots, Today — is a *separate* activity: `/standup`, an overlay command. `/check-in` reviews the machine; `/standup` plans the day.)
 
@@ -31,6 +31,8 @@ If the overlay script exists, show its output verbatim too (same data-age callou
 ## Part 2 — Dispose the overnight queues
 
 **Source the batch-pipeline config (best-effort), once, before this part.** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the prune-window knob (`CHECKIN_PRUNE_DAYS`, referenced below) into scope, with any pre-set env value still overriding. If the file isn't found, the sections below fall back to the `${CHECKIN_PRUNE_DAYS:-30}` inline default.
+
+**Capability check for `/retro` (once, before the queues below), best-effort.** Source `workflows/scripts/lib/command_declared.sh` and evaluate `command_declared retro` — TRUE iff a `retro.md` command file exists at any of the three surfaces this helper checks (source-or-installed presence, not runtime-resolvability — see `command_declared.sh`'s own header): `$PWD/.claude/commands/retro.md`, this checkout's `claude/commands/retro.md`, `$HOME/.claude/commands/retro.md`. If the lib file itself can't be sourced (e.g. a checkout that predates this helper), treat `/retro` as **not installed** and take the FALSE branch below — the same best-effort fallback shape as the `build.config.sh` sourcing above. If TRUE (a composed install with `/retro` present), the **Retro findings review** subsection below runs and reports exactly as it does today. If FALSE (a bare kernel-only checkout with no `/retro` installed, or the lib couldn't be sourced — temperloop#521), skip that subsection entirely and instead emit exactly this one consolidated line here, for the whole run: `retro review skipped — /retro not installed (command_declared retro = false)`. This is the single skip notice for the entire session — nothing below repeats or elaborates on it.
 
 Each subsection reads one append-only surface and disposes its `### … - **Status:** open` entries. For every surface: if the file doesn't exist, say so in one line and move on. Resolved entries older than `CHECKIN_PRUNE_DAYS` days may be pruned. `/check-in` is the **sole mutator** of every `Status` line below.
 
@@ -125,6 +127,8 @@ If there are no `open` entries, say "no proposed supersessions" and move on.
 
 ### Retro findings review
 
+Runs only when the Part 2 capability check above found `command_declared retro` TRUE; when FALSE, this subsection is skipped in full — its coverage is already accounted for by that single consolidated skip line, so do not repeat or reference the skip here.
+
 Read the **retro review surface** — `Pipeline/retro review surface.md`, falling back to the legacy `Context/pipeline - retro review surface.md` (path fallback convention above) — via `mcp__obsidian-builtin__vault_read` (nuanced/unmeasurable findings `/retro` could not name a measurable effect for at filing time; findings that clear `/retro`'s filing gate go straight to the board with a `## Measurement` block and never reach this surface). If the file doesn't exist yet, say "no retro findings" and move on.
 
 For each `### … - **Status:** open` entry, present it: the Finding, the Axis, the Evidence summary, and `/retro`'s Suggested disposition. For each, the operator either:
@@ -191,4 +195,4 @@ The durable priorities note per project — `Projects/<project>/Priorities.md`, 
 
 ## Close
 
-Briefly summarize: pending decisions disposed (confirmed/overridden), pending activations discharged/still-pending, supersessions linked/dismissed, retro findings accepted/dismissed, candidate tells promoted/discarded, hygiene findings acted/dismissed, review-queue notes disposed (re-verified/promoted/consolidated/retired), sensitivity flags resolved, and which projects' priorities changed. One line each; then stop.
+Briefly summarize: pending decisions disposed (confirmed/overridden), pending activations discharged/still-pending, supersessions linked/dismissed, retro findings accepted/dismissed (or, if `/retro` wasn't installed, "retro review: skipped — see the Part 2 skip line above" — do not reprint the canonical skip string here; Part 2 already emitted it once for the run), candidate tells promoted/discarded, hygiene findings acted/dismissed, review-queue notes disposed (re-verified/promoted/consolidated/retired), sensitivity flags resolved, and which projects' priorities changed. One line each; then stop.

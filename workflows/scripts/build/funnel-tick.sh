@@ -28,6 +28,21 @@
 #   C. route-foundational — for one Foundational Ready item, EMIT the
 #                        decision-queue routing (build.md's decision-issue
 #                        backend posts the gate; this script names it).
+#   R. retro-judge      — the KERNEL trigger half of the mint-then-judge design
+#                        (epic #528, temperloop#535): build.md 4d-retro (#533,
+#                        already merged) MINTS a `retro-pending`/`retro-info`
+#                        tracker at epic close (applying `retro-urgent` when past
+#                        the mint's own urgency bar). This phase hands DUE
+#                        `retro-pending` trackers to the overlay `/retro --pending`
+#                        judge. THIN: the only threshold applied here is the
+#                        RETRO_MIN_INTERVAL debounce on the oldest tracker's age —
+#                        bypassed unconditionally by a `retro-urgent` tracker
+#                        (urgency was already decided at mint). The judge-side
+#                        session cap (RETRO_BATCH_SESSION_CAP) is `/retro`'s own
+#                        concern, never enforced here. When no `/retro` judge is
+#                        declared (`command_declared retro` false — the overlay
+#                        command isn't installed), EMITs a legible skip instead —
+#                        never a retro-judge action.
 #
 # WHY "EMIT", not "do": `/triage`, `/assess`, `/build` are prose specs executed
 # by Claude, not callable binaries. The deterministic half — single-flight,
@@ -81,7 +96,7 @@
 # action set: drain-answer · drain-parse-miss · drain-already-applied
 # · drain-clarification · drain-clarification-already-applied
 # · drive-ready · route-foundational · route-already-assigned
-# · skip-contention · no-op.
+# · skip-contention · retro-judge · skip-retro-judge · no-op.
 #
 # Single-flight: a flock lockfile (the contract's § 4 convention) so two
 # overlapping ticks never double-act. The lock is released by fd-close on exit
@@ -101,6 +116,23 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Config (env overrides win; defaults centralized in build.config.sh) ──────
 # shellcheck source=workflows/scripts/build/build.config.sh
 [ -f "$HERE/build.config.sh" ] && . "$HERE/build.config.sh"
+
+# Shared "is slash command <name> available" probe (ADR 0008), resolve-once —
+# the Phase R retro-judge trigger uses this to decide whether an overlay
+# `/retro` judge is even installed before emitting a retro-judge action. If
+# this checkout has no lib (a stray copy, or a source layout mismatch), the
+# `command_declared` function is simply never defined; every call site below
+# treats "function absent" the same as "declared=false" (fail toward the skip
+# line, never toward assuming an uninstalled judge exists).
+# shellcheck source=workflows/scripts/lib/command_declared.sh
+[ -f "$HERE/../lib/command_declared.sh" ] && . "$HERE/../lib/command_declared.sh"
+
+# Model the Phase R retro-judge trigger spawns `claude -p "/retro --pending"`
+# under (temperloop#532/#535). SOURCE OF TRUTH is build.config.sh (sourced
+# above); this `:=` is only the non-vendoring-checkout fallback, exactly as
+# FUNNEL_OPERATOR's fallback line above it.
+: "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
+: "${RETRO_MIN_INTERVAL:=259200}"
 
 # The set of boards the driver is ENABLED on. PILOT = stageFind (board 3) ONLY
 # (the ON/OFF flip; foundation#569). To enable another board, add its logical
@@ -631,6 +663,113 @@ bare_ready_singleton() {  # $1=board  $2=repo  $3=issue
   return 0
 }
 
+# ── Phase R helpers — retro-judge trigger (epic #528, temperloop#535) ────────
+# The KERNEL trigger half of the mint-then-judge design: build.md 4d-retro
+# (#533, already merged) files a `retro-pending`/`retro-info` tracker at epic
+# close, applying `retro-urgent` when past the mint's own urgency bar. This
+# phase reads back the `retro-pending` set and decides whether it's due — it
+# holds NO judgment beyond the RETRO_MIN_INTERVAL debounce (urgency was
+# already decided at mint, and RETRO_BATCH_SESSION_CAP is the judge's own
+# concern, never enforced here).
+
+# List OPEN `retro-pending` trackers for a board/repo.
+# Live: `gh issue list --search 'label:retro-pending state:open'`. Fixture:
+# $FIXTURE/board-<N>/retro-trackers.json — the SAME raw shape (an array of
+# {number,title,createdAt,labels,state?}), filtered here by the identical
+# state:open + label:retro-pending predicate the live search applies — so a
+# fixture tracker pre-set to `retro-judged`/closed (e.g. left in the fixture
+# file for test convenience, already processed by a prior judge run) is
+# filtered out exactly as it would be live, and is NEVER re-emitted.
+read_retro_trackers() {
+  local board="$1" repo="$2"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    local f="$FIXTURE/board-$board/retro-trackers.json"
+    [ -f "$f" ] || { echo '[]'; return; }
+    jq -c '[.[] | select(((.state // "open") | ascii_downcase) == "open")
+                 | select((.labels // []) | index("retro-pending"))]' "$f" 2>/dev/null || echo '[]'
+  else
+    gh issue list -R "$repo" --search 'label:retro-pending state:open' \
+      --json number,title,createdAt,labels 2>/dev/null || echo '[]'
+  fi
+}
+
+# ISO8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`, gh's `createdAt` shape) → epoch seconds.
+# Platform-dialect guard (kernel CLAUDE.md § Tool invocation discipline: macOS
+# ships BSD date, no `-d`): try GNU `date -d` first (the Linux cron host), fall
+# back to BSD/macOS `date -j -f` (a dev laptop). Echoes nothing + rc 1 on a
+# parse failure — the caller skips an unparseable createdAt rather than
+# mis-computing an age off it.
+_retro_iso_to_epoch() {
+  local iso="$1"
+  date -u -d "$iso" +%s 2>/dev/null && return 0
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null && return 0
+  return 1
+}
+
+# Is $1 (a retro-trackers JSON array, already filtered to open+retro-pending)
+# DUE for the judge? Echoes the reason ("urgent" or "debounce") + rc 0 when
+# due; rc 1 (nothing echoed) when not due (empty set, or the oldest tracker
+# hasn't crossed RETRO_MIN_INTERVAL and none is urgent).
+#   urgent   — ANY tracker carries `retro-urgent` (decided at mint, #533) —
+#              bypasses the age gate unconditionally, checked FIRST.
+#   debounce — no urgent tracker, but the OLDEST tracker's age (now - its
+#              createdAt) is >= RETRO_MIN_INTERVAL.
+# This is the ONLY threshold Phase R applies — the tick holds no policy beyond
+# it (RETRO_BATCH_SESSION_CAP is the judge's own concern downstream).
+retro_judge_due_reason() {
+  local trackers="$1" now oldest="" epoch ts
+  jq -e 'any(.[]; (.labels // []) | index("retro-urgent"))' <<<"$trackers" >/dev/null 2>&1 \
+    && { echo "urgent"; return 0; }
+  now="${FUNNEL_NOW_EPOCH:-$(date -u +%s)}"
+  while IFS= read -r ts; do
+    [ -z "$ts" ] && continue
+    epoch="$(_retro_iso_to_epoch "$ts")" || continue
+    if [ -z "$oldest" ] || [ "$epoch" -lt "$oldest" ]; then oldest="$epoch"; fi
+  done < <(jq -r '.[].createdAt // empty' <<<"$trackers" 2>/dev/null)
+  [ -n "$oldest" ] || return 1
+  [ $(( now - oldest )) -ge "${RETRO_MIN_INTERVAL:-259200}" ] && { echo "debounce"; return 0; }
+  return 1
+}
+
+# Phase R — EMIT the retro-judge trigger (or a legible skip) for one board.
+# bash 3.2 has no namerefs, so this function returns nothing to the caller
+# directly — its only contract is ACTIONS growth: append exactly one action
+# when it has anything to say (a skip-retro-judge, or a due retro-judge),
+# append nothing when there is genuinely nothing to report (a judge is
+# declared but there are no trackers, or trackers exist but none is due). The
+# caller (tick_board) detects whether it emitted anything by diffing ACTIONS
+# before/after, mirroring how did_op/did_found/did_route are tracked inline.
+run_retro_phase() {
+  local board="$1" repo="$2"
+  # Read the parked retro-pending set FIRST: a skip (or a trigger) is only
+  # meaningful when retro work is actually parked. An empty set emits nothing —
+  # which is what keeps the probe-false path from adding a spurious
+  # skip-retro-judge to EVERY tick on a checkout with no /retro judge (a
+  # kernel-only checkout / CI), where it would otherwise inflate every unrelated
+  # tick's action list (the fixture action-count regression, temperloop#535).
+  local trackers n
+  trackers="$(read_retro_trackers "$board" "$repo")"
+  n="$(jq 'length' <<<"$trackers" 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ] || return 0
+  if ! { command -v command_declared >/dev/null 2>&1 && command_declared retro; }; then
+    # Parked trackers exist but no overlay `/retro` judge is installed — emit
+    # exactly one legible skip naming the parked count; no retro-judge action.
+    add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" \
+      '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",count:$n,
+        detail:("\($n) retro-pending tracker(s) parked, but no /retro judge is declared (command_declared retro = false, or the shared lib was unsourceable) — they stay parked; no retro-judge action emitted this tick")}')"
+    return 0
+  fi
+  local reason
+  reason="$(retro_judge_due_reason "$trackers")" || return 0
+  add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" --arg reason "$reason" \
+    --arg model "$RETRO_JUDGE_MODEL" \
+    '{phase:"retro",board:$b,repo:$r,action:"retro-judge",count:$n,reason:$reason,
+      emit:("claude -p \"/retro --pending --board "+$b+"\" --model "+$model+" — hand "+($n|tostring)+" due retro-pending tracker(s) to the overlay judge ("+
+            (if $reason=="urgent" then "urgency bypass: at least one tracker carries retro-urgent, decided at mint (#533)"
+             else "oldest tracker'"'"'s age has crossed RETRO_MIN_INTERVAL" end)+")"),
+      detail:"THIN trigger only: urgency was decided at mint, not here; the only threshold this phase applies is the RETRO_MIN_INTERVAL debounce (bypassed by urgency); RETRO_BATCH_SESSION_CAP is the judge'"'"'s own concern, never enforced here (epic #528, temperloop#535)"}')"
+}
+
 # ── Phase 0 — crash-signal intake (foundation #671, epic #637) ───────────────
 # Runs /signal-intake (the L2 crash-convergence orchestrator) ONCE per board,
 # BEFORE any of the tick's spend decisions — Phase A's drain loop and Phase
@@ -730,6 +869,17 @@ tick_board() {
   # run_intake_phase's header comment). Runs every tick regardless of what (if
   # anything) this tick ends up draining/driving/routing.
   run_intake_phase "$board"
+
+  # Phase R — retro-judge trigger (epic #528, temperloop#535), likewise BEFORE
+  # Phase A/B/C: it is independent of decision/Ready state, so it is evaluated
+  # every tick regardless of what else this tick drains/drives/routes. Detect
+  # whether it emitted anything (bash 3.2 has no namerefs, so compare ACTIONS
+  # before/after rather than have the function return a value) so the
+  # tick-is-a-no-op check below does not contradict a retro-judge/skip record.
+  local actions_before_retro="$ACTIONS"
+  run_retro_phase "$board" "$repo"
+  local did_retro=0
+  [ "$ACTIONS" != "$actions_before_retro" ] && did_retro=1
 
   # ── Phase A — drain answered decisions FIRST (contract + build.md 0a) ──────
   local decisions reply chosen issue
@@ -1062,8 +1212,9 @@ tick_board() {
   # A tick is a no-op only when NO phase produced an action — Phase A2 (n_clar>0
   # ⇒ a drain / already-applied / contention was emitted) counts too, mirroring how
   # n_dec gates the decision drain. Without the n_clar term, a drain-only tick would
-  # append a contradicting "no drivable work" record.
-  if [ "$did_op" -eq 0 ] && [ "$did_found" -eq 0 ] && [ "$did_route" -eq 0 ] && [ "$n_dec" -eq 0 ] && [ "$n_clar" -eq 0 ]; then
+  # append a contradicting "no drivable work" record. Phase R (did_retro) joins the
+  # same guard: a retro-judge/skip-retro-judge-only tick must not ALSO claim no-op.
+  if [ "$did_op" -eq 0 ] && [ "$did_found" -eq 0 ] && [ "$did_route" -eq 0 ] && [ "$n_dec" -eq 0 ] && [ "$n_clar" -eq 0 ] && [ "$did_retro" -eq 0 ]; then
     add_action "$(jq -cn --arg b "$board" --arg r "$repo" \
       '{phase:"tick",board:$b,repo:$r,action:"no-op",detail:"no answered decisions/clarifications and no drivable Ready work this tick"}')"
   fi

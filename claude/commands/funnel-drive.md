@@ -1,5 +1,5 @@
 ---
-description: Rung-5b EXECUTOR of the autonomous funnel driver. Headless (`claude -p`) layer that executes the SAFE, no-merge tier of a funnel tick plan — route-foundational, drain-answer, drain-parse-miss, drain-clarification, and kind:spike drives — by invoking the real pipeline commands. STRUCTURALLY cannot merge: it is handed only the pre-filtered safe actions and is forbidden to open PRs, merge, or drive a kind:code item. Spawned by funnel-drive.sh; the merging tier waits for rung 5c.
+description: Rung-5b EXECUTOR of the autonomous funnel driver. Headless (`claude -p`) layer that executes the SAFE, no-merge tier of a funnel tick plan — route-foundational, drain-answer, drain-parse-miss, drain-clarification, retro-judge, and kind:spike drives — by invoking the real pipeline commands. STRUCTURALLY cannot merge: it is handed only the pre-filtered safe actions and is forbidden to open PRs, merge, or drive a kind:code item. Spawned by funnel-drive.sh; the merging tier waits for rung 5c.
 argument-hint: "<payload-file>  (a JSON file: {rung, hard_rules, actions[]} written by funnel-drive.sh)"
 ---
 
@@ -154,6 +154,34 @@ as such in its bullet below.)
   re-lists it and retries cleanly. Count a fully-applied item (label cleared **and**
   ack posted) under Step-3 `executed`. Never re-add the label or re-assign. Open no PR,
   merge nothing.
+
+- **`retro-judge`** — the KERNEL trigger half of the mint-then-judge design (epic
+  #528, temperloop#535). `funnel-tick.sh` emitted this because at least one
+  `retro-pending` tracker (build.md 4d-retro's mint, #533) is due — urgent, or past
+  the `RETRO_MIN_INTERVAL` debounce. `/retro` is an **OVERLAY** command (not part
+  of this kernel checkout), so this is a **direct nested spawn**, not a
+  followed-in-session pipeline call like `/assess`/`/build` above: run, via Bash,
+  synchronously (never backgrounded) —
+  ```bash
+  claude -p "/retro --pending --board <board>" --model "$RETRO_JUDGE_MODEL" --output-format json
+  ```
+  using the action's own `.board` (HARD RULE 5). The judge owns everything
+  downstream from there — relabeling each processed tracker, closing it, and its
+  own per-session batch cap — you only trigger it and report the outcome. A
+  non-zero exit, or output carrying no parseable summary, is `failed` (with a
+  one-line `note` naming the failure); a clean exit **whose summary reports no
+  blocked or failed per-tracker write** is `executed`. **The foundation#978 rule
+  below binds this action too:** if the judge's summary names a tracker whose
+  relabel/close/verdict write was blocked or failed (a permission-denied MCP call,
+  an unavailable backend), record this action `failed` — or, only if the loss is
+  genuinely best-effort, keep `executed` but name the degraded write in `note` —
+  **never** a silent `executed` over a write-failure the summary does surface.
+  Absent such a signal you rely on `/retro`'s own contract to exit non-zero on a
+  hard write failure; you do not re-verify the judge's per-tracker writes yourself.
+  This action never opens a PR and never merges anything — that disclaimer is
+  scoped to **merge/PR authority**: if the judge's output claims a PR or merge,
+  that's the judge's concern, not something you act on. It does **not** license
+  ignoring a write-failure the summary reports.
 
 - **`drive-ready`** (only ever `kind:"spike"` here — see HARD RULE 3) — drive the
   spike to its verdict. A drive-ready spike is a **standalone Ready singleton, not an

@@ -106,6 +106,31 @@ KERNEL_GATES=(
   # the manifest/T0-inventory gates above (kernel Makefile is generator-owned;
   # no new target added here).
   "bash workflows/scripts/tests/test_install_project_agents.sh"
+  # Reviewer activation-coverage scan (temperloop#548, ADR 0007/0008):
+  # workflows/scripts/install/reviewer-activation-coverage.sh — the pure,
+  # non-interactive data path that computes the gap set (catalogued
+  # reviewers present at/above REVIEWER_SCAN_MIN_FILES, not yet activated,
+  # not durably declined) and the reviewer-routing.tsv<->catalog
+  # referential-integrity check. Same direct-`bash` form as the
+  # project-agents/manifest/T0-inventory gates above (kernel Makefile is
+  # generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_reviewer_activation_coverage.sh"
+  # Reviewer opt-in activation caller + durable-decline marker (temperloop#549,
+  # ADR 0007/0008): workflows/scripts/install/reviewer-activate.sh — the
+  # interactive layer between #548's gap-set data path and #543's --only
+  # deploy path: one batched offer per gap set, activation via --only,
+  # durable per-name decline markers under the gitignored
+  # .claude/reviewer-state/declined/. Same direct-`bash` form as the
+  # reviewer-activation-coverage/project-agents gates above (kernel Makefile
+  # is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_reviewer_activate.sh"
+  # Advisory `make doctor` reviewer-coverage check (temperloop#550, ADR
+  # 0007/0008): workflows/scripts/install/doctor.sh's check_reviewer_
+  # coverage() — WARN-level, strictly per-checkout, reusing #548's
+  # non-interactive data path (never #549's interactive caller). Same
+  # direct-`bash` form as the sibling reviewer gates above (kernel Makefile
+  # is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
@@ -191,6 +216,16 @@ KERNEL_GATES=(
   # gh_cmd` seam (this file's own live-fallback injection point), zero
   # network. Same direct-`bash` form as the issue-corpus gate above.
   "bash workflows/scripts/lib/tests/test_issue_marker_probe.sh"
+  # Command-availability probe (ADR 0008, temperloop#537): `command_declared
+  # <name>`, the shared "source-or-installed present" check for a slash
+  # command across the three surfaces a headless `claude -p` invocation's
+  # supporting tooling reads/writes (cwd .claude/commands/, this checkout's
+  # own claude/commands/, and $HOME/.claude/commands/), plus the
+  # COMMAND_DECLARED_OVERRIDE fixture escape hatch. Zero network, zero
+  # mutation of the real HOME/checkout (a throwaway git repo under a tmpdir
+  # stands in for the checkout-surface case). Same direct-`bash` form as the
+  # issue-marker-probe gate above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/lib/tests/test_command_declared.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across
@@ -236,6 +271,16 @@ KERNEL_GATES=(
   "bash workflows/scripts/config/tests/test_check_knob_registry.sh"
   "bash workflows/scripts/config/check-knob-prose.sh"
   "bash workflows/scripts/config/tests/test_check_knob_prose.sh"
+  # Reviewer-routing extension/glob-axis drift lint (ADR 0008,
+  # docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md): compares the
+  # extension/glob SET between workflows/scripts/config/reviewer-routing.tsv
+  # (the single source of truth for that axis, including docs/**) and
+  # claude/commands/build.md's 3e routing prose — a tsv key's literal
+  # backtick-quoted form reappearing in the prose fails, catching a silent
+  # reintroduction of the old inline extension list. Same direct-`bash`
+  # form, same check-knob-prose.sh shape, as the two gates above.
+  "bash workflows/scripts/config/check-reviewer-routing.sh"
+  "bash workflows/scripts/config/tests/test_check_reviewer_routing.sh"
   # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
   # documentation counterpart to test-kernel-manifest. Live validator walks
   # every git-tracked path against docs/features/feature-manifest.txt
