@@ -37,19 +37,40 @@ ambiguous scope (the `architectural` route has no extension to compare).
 the **extension/path-glob → reviewer axis only** — explicitly and by design, not
 by omission.
 
-- The tsv holds extension and glob routes (`.py` → python-reviewer, `docs/**` →
-  docs-reviewer) and the catalog-agent path for each reviewer. It carries no
-  per-checkout activation state — activation lives solely as symlink/copy
-  presence in the gitignored `.claude/agents/`.
+- **Amendment (still Proposed):** the tsv owns **every** extension/path-glob
+  route, including **`docs/**` → docs-reviewer**. The original version of this
+  ADR lumped `docs/**` into prose alongside its `claude/commands/*.md`
+  exception; on review that drew the boundary in the wrong place. `docs/**` is
+  itself a plain path-glob route with no kind/override/cardinality branching
+  of its own — it belongs on the extension/glob axis with every other row, not
+  in prose. Only the *exception* (`claude/commands/*.md` overriding the tsv's
+  `docs/**` route to `workflow-reviewer` instead) is non-extension logic, and
+  that alone stays prose-resident. The boundary is now: **the tsv owns every
+  extension/glob route; `build.md` prose owns only the exception, the
+  `architectural` kind route, the `review:` override, and the run-both
+  multi-match.**
+- The tsv holds extension and glob routes (`.py` → python-reviewer, `.sh` →
+  shell-reviewer, the adopter-language extensions `.ts`/`.js` → typescript-
+  reviewer, `.go` → go-reviewer, `.rs` → rust-reviewer, `.java` →
+  java-reviewer, `.swift` → swift-reviewer, and `docs/**` → docs-reviewer) and
+  the catalog-agent path for each reviewer. It carries no per-checkout
+  activation state — activation lives solely as symlink/copy presence in the
+  gitignored `.claude/agents/`.
 - The non-extension routing logic — the `architectural` kind route, the
-  `docs/**`-vs-`claude/commands/*.md` exception, the `review:` override, the
-  run-both multi-match, and the temperloop#1007 mandatory-workflow-reviewer
-  contract — stays prose-resident in `build.md`.
-- `build.md`'s routing text cites the tsv for the extension axis; the mechanical
-  check is a prose-reference lint (the `check-knob-prose.sh` shape — the text
-  points at the tsv and the old inline extension list is gone), NOT a runtime
-  behavioral-equality test. The architectural branch is explicitly out of the
-  lint's scope.
+  `claude/commands/*.md` exception (which wins over the tsv's `docs/**` row
+  for that one path), the `review:` override, the run-both multi-match, and
+  the temperloop#1007 mandatory-workflow-reviewer contract — stays
+  prose-resident in `build.md`.
+- `build.md`'s routing text cites the tsv for the extension/glob axis; the
+  mechanical check is a prose-reference lint (the `check-knob-prose.sh`
+  shape) that **compares the extension/glob SET between the tsv and
+  `build.md`** — for every extension/glob key the tsv defines, its literal
+  backtick-quoted form must not reappear in `build.md`'s 3e routing prose (the
+  tsv is the only place that route may be stated), rather than merely
+  checking that `build.md` cites the tsv's filename by name. This is a
+  mechanical set-membership check, NOT a runtime behavioral-equality test.
+  The `architectural` kind branch carries no file extension and is
+  explicitly out of the lint's scope.
 
 ## Consequences
 

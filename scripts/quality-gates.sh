@@ -246,6 +246,16 @@ KERNEL_GATES=(
   "bash workflows/scripts/config/tests/test_check_knob_registry.sh"
   "bash workflows/scripts/config/check-knob-prose.sh"
   "bash workflows/scripts/config/tests/test_check_knob_prose.sh"
+  # Reviewer-routing extension/glob-axis drift lint (ADR 0008,
+  # docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md): compares the
+  # extension/glob SET between workflows/scripts/config/reviewer-routing.tsv
+  # (the single source of truth for that axis, including docs/**) and
+  # claude/commands/build.md's 3e routing prose — a tsv key's literal
+  # backtick-quoted form reappearing in the prose fails, catching a silent
+  # reintroduction of the old inline extension list. Same direct-`bash`
+  # form, same check-knob-prose.sh shape, as the two gates above.
+  "bash workflows/scripts/config/check-reviewer-routing.sh"
+  "bash workflows/scripts/config/tests/test_check_reviewer_routing.sh"
   # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
   # documentation counterpart to test-kernel-manifest. Live validator walks
   # every git-tracked path against docs/features/feature-manifest.txt

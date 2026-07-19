@@ -1,0 +1,40 @@
+# reviewer-routing.tsv — single source of truth for the EXTENSION/PATH-GLOB
+# axis of /build's 3e pre-push reviewer routing (ADR 0008,
+# docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md).
+#
+# Scope (ADR 0008 Decision): this tsv owns every file-extension/path-glob
+# route, INCLUDING the docs/** -> docs-reviewer glob. It carries NO
+# per-checkout activation state — activation lives solely as
+# symlink/copy presence in the gitignored .claude/agents/ (ADR 0007).
+#
+# The non-extension routing logic stays prose-resident in
+# claude/commands/build.md 3e: the claude/commands/*.md -> workflow-reviewer
+# override (temperloop#1007, which wins over any tsv row for that path),
+# the `architectural` change-kind route (no file extension to key on), the
+# per-item `review:` override, and the run-both multi-match rule.
+#
+# Format: TAB-separated, 3 columns, no header line consumed by tooling
+# (this comment block documents them):
+#   1. extension-or-path-glob   e.g. `.py` or `docs/**`
+#   2. reviewer-name            the review subagent's declared name
+#   3. catalog-agent-path       repo-relative path to its agent definition
+#
+# Invariant: no extension/glob is claimed by two rows (checked by
+# check-reviewer-routing.sh, wired into scripts/quality-gates.sh).
+#
+# Two rows may name the SAME reviewer for different extensions (.ts and .js
+# both -> typescript-reviewer) — that is not a duplicate claim.
+#
+# The seven-language roster (ADR 0007) ships as an INERT kernel catalog —
+# claude/agents/reviewers/<name>.md is the planned catalog location; an
+# un-activated reviewer is never deployed into a live .claude/agents/ and
+# costs nothing until a repo opts in.
+.py	python-reviewer	claude/agents/reviewers/python-reviewer.md
+.sh	shell-reviewer	claude/agents/reviewers/shell-reviewer.md
+.ts	typescript-reviewer	claude/agents/reviewers/typescript-reviewer.md
+.js	typescript-reviewer	claude/agents/reviewers/typescript-reviewer.md
+.go	go-reviewer	claude/agents/reviewers/go-reviewer.md
+.rs	rust-reviewer	claude/agents/reviewers/rust-reviewer.md
+.java	java-reviewer	claude/agents/reviewers/java-reviewer.md
+.swift	swift-reviewer	claude/agents/reviewers/swift-reviewer.md
+docs/**	docs-reviewer	claude/agents/docs-reviewer.md
