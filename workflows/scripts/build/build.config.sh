@@ -307,6 +307,18 @@ fi
 # safe/standard drive, not a merge-tier high-judgment one).
 : "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
 
+# ── Language-reviewer catalog coverage scan (temperloop#538, ADR 0007/0008) ──
+# The catalog's install-time coverage scan (and `make doctor`'s matching
+# check) count each candidate language's files in the repo and offer
+# activation only for a language that clears this floor — a repo with a
+# single stray `.rb` file should not be offered a Ruby reviewer it doesn't
+# need. This is INSTALL/DOCTOR-TIME machinery, not a batch-build-pipeline
+# knob (contrast FUNNEL_DRIVE_CONCURRENCY above). Default 3: low enough that
+# a small-but-real component (a handful of shell scripts, a slim Python
+# helper) still gets offered its reviewer, high enough that a single
+# generated/vendored/example file doesn't trigger a false-positive offer.
+: "${REVIEWER_SCAN_MIN_FILES:=3}"
+
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
@@ -348,4 +360,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        FUNNEL_MERGE_PENDING_LABEL FUNNEL_CLARIFIED_MARKER FUNNEL_ESCALATED_LABEL \
        RETRO_MINT_ENABLED RETRO_MIN_INTERVAL RETRO_URGENT_CI_RETRIES \
        RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
+       REVIEWER_SCAN_MIN_FILES \
        KNOWLEDGE_STORE_ROOT
