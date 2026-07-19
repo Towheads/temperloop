@@ -48,8 +48,9 @@ an overlay-only command, absent on a bare kernel checkout (temperloop#521,
 (the shared `command_declared` helper — see its own feature doc); when true,
 the retro findings subsection runs exactly as described above, and when
 false the whole subsection is skipped in favor of a single consolidated
-`retro review skipped — /retro not installed` line for the run, rather than
-a dangling reference to a command that isn't there.
+`retro review skipped — /retro not installed (command_declared retro = false)`
+line for the run, rather than a dangling reference to a command that isn't
+there.
 
 **Part 3 — priorities review.** A durable per-project priorities note (the
 weighted themes, the definition of "impactful"/"done", the avoid-now list)
