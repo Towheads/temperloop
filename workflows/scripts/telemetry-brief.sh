@@ -90,7 +90,13 @@ gh_calls_dir="${GH_CALLS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 ks_fallback_dir="${KS_SEARCH_FALLBACK_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 read_log="${KNOWLEDGE_READ_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log}"
 
-today="$(date -u +%Y-%m-%d)"
+# Human-facing "today" bucket renders in the operator's display timezone, not
+# UTC, so a late-evening run isn't filed under tomorrow's date (kernel doc §
+# Communication conventions). Belt-and-suspenders default per § Prose-resident
+# knob convention — respects an exported DISPLAY_TZ, else the build.config.sh
+# default. The interval math below (cutoff_iso / iso_to_epoch, epoch diffs) stays
+# UTC by design: absolute instants, unaffected by display zone.
+today="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date +%Y-%m-%d)"
 
 # ── date portability helpers (BSD first, GNU fallback) ──────────────────────
 cutoff_iso() {  # $1 = days back -> ISO-8601 Z
