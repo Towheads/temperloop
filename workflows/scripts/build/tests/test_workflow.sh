@@ -136,7 +136,7 @@ const mergeCheckMap = new Map();
 
 function slugFromLabel(label) {
   // Labels from runSpine: "worktree:slug", "gate:slug", "scan:slug", "push:slug",
-  // "pr-open:slug", "ci-poll:slug#N", "push-force:slug", "spine:cmd ..."
+  // "pr-open:slug", "ci-poll:slug#N", "push-retry:slug", "spine:cmd ..."
   // Labels from worker: "worker:slug", "worker-cifix:slug"
   // Labels from merge-check: "merge-check:slug#N"
   // Claim: "claim:slug"
@@ -376,7 +376,7 @@ setSpine('item-cifix',
   { outcome: 'PR_OPENED', pr_number: 401 },
   // First CI poll: CI_FAILED
   { outcome: 'CI_FAILED', failed_run_ids: [9001] },
-  // Force-push after fix worker
+  // Retry push after fix worker (plain push — ff descendant, no --force)
   { outcome: 'PUSHED', sha: 'sha-v2', branch: 'build/item-cifix' },
   // Re-poll pinned to sha-v2: CI_GREEN
   { outcome: 'CI_GREEN' },
