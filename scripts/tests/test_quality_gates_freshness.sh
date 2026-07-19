@@ -16,6 +16,12 @@
 
 set -uo pipefail
 
+# Control our own env: quality-gates.sh may be invoked with
+# QUALITY_GATES_SKIP_FRESHNESS=1 (which every child gate inherits), but this
+# suite must exercise the guard's ACTIVE path — so clear it here. Case 3 re-sets
+# it command-scoped on a single call to prove the disable path.
+unset QUALITY_GATES_SKIP_FRESHNESS
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB="$REPO_ROOT/workflows/scripts/lib/checkout-freshness.sh"
