@@ -49,8 +49,8 @@ All four proxies below derive from artifacts `/design`, `/assess`, or
 - each PR's existing CI check-run history (`ci-poll.sh`'s `CI_FAILED`
   outcome, `gate.sh managed-merge`'s `EJECTED` disposition — `claude/commands/build.md`
   3g/4b);
-- the epic-close retro issue's `## Merge friction` section (`claude/commands/build.md`
-  4d-epic, Step 3) and the `rework`/`rework-cause:<cause>` labels
+- the epic-close retro tracker's `## Merge friction` section (`claude/commands/build.md`
+  4d-retro, the mint) and the `rework`/`rework-cause:<cause>` labels
   (`workflows/scripts/board/capture.sh --rework`, F#730);
 - the plan note's Contract-derived acceptance-placeholder bullets and the
   `needs-clarification` label / `## Re-triage signals` section
@@ -125,16 +125,19 @@ redone, or a contract/edge actually changed, after building started — the
 sign that dimension 4 (Contract seams)'s design-time promise didn't hold,
 forcing mid-build replanning the coverage walk should have caught.
 
-**Data source.** No new stream — two existing artifacts:
+**Data source.** No new stream — two existing artifacts, with a relocation
+this proxy must account for (the mint-then-judge redesign, temperloop#533):
 
-- **Primary:** the epic-close retro issue's `## Merge friction` section
-  (`claude/commands/build.md` 4d-epic, Step 3) already buckets every PR
-  conflict encountered as `trivial-inline` (resolved in place) /
-  `rebase-respawn` (needed an update-branch/rebase round-trip) /
-  `real-rework` (a contract or edge actually had to change) — `real-rework`
-  is defined, verbatim, as mid-build rework. This section already
-  explicitly feeds the existing "plan-defects-per-epic KPI" trend
-  `build.md` names.
+- **Primary:** the epic-close retro tracker's `## Merge friction` section
+  (`claude/commands/build.md` 4d-retro — the mint, filed at epic close; not
+  4d-epic, which only closes the epic issue) buckets every PR conflict
+  encountered as `trivial-inline` (resolved in place) / `rebase-respawn`
+  (needed an update-branch/rebase round-trip) / `real-rework` (a contract or
+  edge actually had to change) — `real-rework` is defined, verbatim, as
+  mid-build rework. This bucket data is a **"what happened" signal only**:
+  as of #533 the mint deliberately carries no judgment (`build.md` 4d-retro's
+  own framing — "the tracker is a mint, not a questionnaire"), so it no
+  longer feeds any named KPI trend inside the kernel itself.
 - **Secondary, corroborating:** the `rework` / `rework-cause:<regression|spec-miss|flake>`
   GitHub labels (`workflows/scripts/board/capture.sh --rework`, F#730)
   applied when a mid-build-discovered defect is re-filed. This is broader
@@ -142,14 +145,32 @@ forcing mid-build replanning the coverage walk should have caught.
   rework surfacing while a specific epic is being built), so it corroborates
   rather than substitutes for the retro issue's own count.
 
+**Handoff-defect KPI — relocated out of the kernel mint (#533).** Before
+#533, the mint template itself asked four decomposition-retro questions and
+tallied a handoff-defect taxonomy, and this doc used to cite that data as
+feeding a "plan-defects-per-epic KPI" trend `build.md` named. #533 removed
+both the four questions and the handoff-defect taxonomy from the kernel mint
+template outright and relocated them to the overlay `/retro` judge's sixth
+axis (`build.md` 4d-retro, verbatim: "The four decomposition-retro questions
+and the handoff-defect taxonomy that used to live here have moved out of the
+kernel into that judge's sixth axis"). The handoff-defect KPI therefore now
+sources from **the judge's verdict**, not the kernel mint — and `build.md`
+(and `tidy.md`) no longer name a `plan-defects-per-epic` KPI trend at all
+(confirmed: the string is absent from both files at HEAD). **Named gap,
+stated honestly:** on a bare kernel-only checkout with no overlay `/retro`
+judge installed, this KPI has **no kernel-side source at all** — the mint's
+`retro-info` state label (as opposed to `retro-pending`) is exactly the
+marker for this case: nothing measures the handoff-defect count for that
+tracker, by design, until a judge is installed and runs against it.
+
 **Designed-vs-baseline comparison.** Rework rate = `real-rework`-bucketed
 conflict count / total conflicts (or / total PRs) logged in the epic's own
 retro issue. Compare designed epics against K94/K131.
 
-**How/when computed.** Read at epic-close time, when the retro issue already
-exists (`claude/commands/build.md` 4d-epic auto-files it on the epic's
-open→closed transition) — no separate pull needed beyond reading that
-issue's `## Merge friction` section.
+**How/when computed.** Read at epic-close time, when the retro tracker
+already exists (`claude/commands/build.md` 4d-retro — the mint — auto-files
+it on the epic's open→closed transition) — no separate pull needed beyond
+reading that tracker's `## Merge friction` section.
 
 **Named gap, stated honestly.** Neither K94 nor K131 has a filed retro issue
 today — confirmed via `gh issue list --search "Retro-for-epic: #94 in:body"`
@@ -282,10 +303,13 @@ pass lands.
   classifier): `claude/commands/design.md` Step 5a/5b.
 - CI-poll / managed-merge-gate outcomes (Proxy 1): `claude/commands/build.md`
   3g, 4b.
-- Epic-retro `## Merge friction` section + the plan-defects-per-epic KPI,
-  and the `rework`/`rework-cause:*` label convention (Proxy 2):
-  `claude/commands/build.md` 4d-epic Step 3; `workflows/scripts/board/capture.sh`
-  (F#730).
+- Epic-retro `## Merge friction` section, and the `rework`/`rework-cause:*`
+  label convention (Proxy 2): `claude/commands/build.md` 4d-retro;
+  `workflows/scripts/board/capture.sh` (F#730).
+- The handoff-defect KPI's relocation out of the kernel mint into the
+  judge's sixth axis (temperloop#533, Proxy 2): the mint,
+  `claude/commands/build.md` 4d-retro; the judge, the overlay `/retro`
+  command (not present in a kernel-only checkout — see Proxy 2's named gap).
 - Epic-decomposition mode, the acceptance-placeholder rule, and the
   `needs-clarification` label / `## Re-triage signals` mechanism (Proxy 3):
   `claude/commands/assess.md` Steps 1, 2, 4 (foundation #526).
