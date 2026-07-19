@@ -141,6 +141,7 @@ install-cli workflows/scripts/install-claude-md.sh
 install-cli workflows/scripts/install-settings.sh
 install-cli workflows/scripts/install/*
 install-cli workflows/scripts/tests/test_install_*
+install-cli workflows/scripts/tests/test_project_agents_*
 install-cli workflows/scripts/demo/*
 install-cli workflows/scripts/proposal/*
 # `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
