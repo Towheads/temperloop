@@ -227,6 +227,27 @@ _feedback_leak_scan() {
     descriptions+=("$desc")
   done < "$denylist"
 
+  # Overlay (temperloop#438): the operator-personal denylist rows live in a
+  # gitignored sibling personal-token-denylist.local.tsv, NOT the tracked file.
+  # UNION it in when present so `feedback` still catches personal paths/handles
+  # before posting publicly; DEGRADE LEGIBLY (a one-line NOTE, never a silent
+  # skip) when absent, so a stranger's clone scans against the tracked
+  # structural rows only. Same single-source read the check-*.sh guards do.
+  local overlay="${denylist%.tsv}.local.tsv"
+  if [ -f "$overlay" ]; then
+    local _ov=0
+    while IFS=$'\t' read -r pat desc; do
+      [ -z "${pat:-}" ] && continue
+      case "$pat" in \#*) continue ;; esac
+      patterns+=("$pat")
+      descriptions+=("$desc")
+      _ov=$((_ov + 1))
+    done < "$overlay"
+    echo "feedback.sh: loaded $_ov operator-personal overlay row(s) from ${overlay##*/}" >&2
+  else
+    echo "feedback.sh: NOTE -- no personal-token-denylist.local.tsv overlay present; scanning against the tracked structural/example rows only (operator-personal tokens enforced only where the gitignored overlay exists)." >&2
+  fi
+
   if [ "${#patterns[@]}" -eq 0 ]; then
     echo "feedback.sh: denylist has zero entries -- refusing to scan (fail closed)" >&2
     return 2

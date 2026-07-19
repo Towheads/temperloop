@@ -67,6 +67,13 @@ exit 0
 FAKE_GH_EOF
 chmod +x "$BIN/gh"
 
+# --- fixture denylist: self-contained, so the leak-scan-block test does not
+# depend on the operator-personal rows that moved to the gitignored overlay
+# (temperloop#438). Carries the one personal-path pattern this test exercises;
+# feedback.sh reads it via TEMPERLOOP_FEEDBACK_DENYLIST_FILE. -----------------
+FIXTURE_DENYLIST="$WORK/denylist.tsv"
+printf '%s\t%s\n' '/Users/travis\b' 'personal absolute filesystem path' > "$FIXTURE_DENYLIST"
+
 reset_log() { : > "$GH_LOG"; }
 log_call_count() { grep -c . "$GH_LOG" 2>/dev/null || true; }
 
@@ -84,7 +91,7 @@ run_feedback() {
 # 1. Leak-scan block
 # ===========================================================================
 reset_log
-run_feedback 1 bash "$FEEDBACK" --type bug \
+run_feedback 1 env TEMPERLOOP_FEEDBACK_DENYLIST_FILE="$FIXTURE_DENYLIST" bash "$FEEDBACK" --type bug \
   --message 'Repro: run it from /Users/travis/secret-notes and it fails.' \
   --dry-run < /dev/null
 out="$(cat "$WORK/out.log")"
