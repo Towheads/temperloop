@@ -741,16 +741,24 @@ retro_judge_due_reason() {
 # before/after, mirroring how did_op/did_found/did_route are tracked inline.
 run_retro_phase() {
   local board="$1" repo="$2"
-  if ! { command -v command_declared >/dev/null 2>&1 && command_declared retro; }; then
-    add_action "$(jq -cn --arg b "$board" --arg r "$repo" \
-      '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",
-        detail:"no /retro judge declared (command_declared retro = false, or the shared lib was unsourceable) — retro-pending trackers stay parked; no retro-judge action emitted this tick"}')"
-    return 0
-  fi
+  # Read the parked retro-pending set FIRST: a skip (or a trigger) is only
+  # meaningful when retro work is actually parked. An empty set emits nothing —
+  # which is what keeps the probe-false path from adding a spurious
+  # skip-retro-judge to EVERY tick on a checkout with no /retro judge (a
+  # kernel-only checkout / CI), where it would otherwise inflate every unrelated
+  # tick's action list (the fixture action-count regression, temperloop#535).
   local trackers n
   trackers="$(read_retro_trackers "$board" "$repo")"
   n="$(jq 'length' <<<"$trackers" 2>/dev/null || echo 0)"
   [ "${n:-0}" -gt 0 ] || return 0
+  if ! { command -v command_declared >/dev/null 2>&1 && command_declared retro; }; then
+    # Parked trackers exist but no overlay `/retro` judge is installed — emit
+    # exactly one legible skip naming the parked count; no retro-judge action.
+    add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" \
+      '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",count:$n,
+        detail:("\($n) retro-pending tracker(s) parked, but no /retro judge is declared (command_declared retro = false, or the shared lib was unsourceable) — they stay parked; no retro-judge action emitted this tick")}')"
+    return 0
+  fi
   local reason
   reason="$(retro_judge_due_reason "$trackers")" || return 0
   add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" --arg reason "$reason" \
