@@ -870,14 +870,22 @@ The tracker is a **mint, not a questionnaire**: it records *what happened* (merg
      - **merge gate** — whether the epic's PRs actually cleared a merge gate (`passed`), or never reached one (`did-not-run`, e.g. a spike-only epic).
    - **State label** — resolve whether an overlay `/retro` judge is installed to pick this tracker up, via the shared `command_declared` predicate (`workflows/scripts/lib/command_declared.sh`; resolve-once like `$PROBE_LIB`: `CMD_DECL_LIB="$(git rev-parse --show-toplevel 2>/dev/null || echo .)/workflows/scripts/lib/command_declared.sh"; [ -f "$CMD_DECL_LIB" ] && source "$CMD_DECL_LIB"`). Then: **`retro-pending`** iff `command_declared retro` is true (a judge exists — the tracker is *pending* judgment); else **`retro-info`** (a **terminal** label — no judge is installed, so nothing will ever pick it up; the tracker stays a durable record only). If `command_declared` can't be sourced in this checkout, treat it as false ⇒ `retro-info`. **Never apply a `spike` label** — the mint is not a spike.
    - **Urgency** — the mint is *past the urgency bar* iff **any** worker ejection (≥1), **any** design fork (≥1), or **CI retries ≥ `RETRO_URGENT_CI_RETRIES`** (`build.config.sh`). Past the bar ⇒ the tracker **also** carries `retro-urgent`, in addition to its state label.
-3. **File exactly one tracker into Backlog via the board `capture` entrypoint** (the same adapter front door 2.5/`capture.sh` use — lands in Backlog, no `--milestone`), carrying the state label from step 2:
+3. **Ensure the tracker's labels exist first, then file exactly one tracker into Backlog via the board `capture` entrypoint.** `capture.sh` passes a non-work-class `--label` value straight through to `gh issue create`, which **aborts with no issue created** if the label doesn't exist on the target repo — and a fresh-history kernel/adopter repo won't have the `retro-*` labels yet, so an un-provisioned mint would fail on every epic close with no tracker and no `Retro-for-epic:` marker, defeating the step-1 idempotency probe (it would find nothing and re-fail identically forever). Provision them idempotently first, using the same helper `capture.sh` uses for its own work-class labels — `_board_issues_ensure_label` is in scope from `$BOARD_LIB`; its inner `gh label create` is `|| true`, so this is a harmless no-op wherever the labels already exist:
+
+   ```bash
+   _board_issues_ensure_label "$repo" "retro-pending" "fbca04"
+   _board_issues_ensure_label "$repo" "retro-info"    "c5def5"
+   _board_issues_ensure_label "$repo" "retro-urgent"  "d93f0b"
+   ```
+
+   Then file the tracker (the same adapter front door 2.5/`capture.sh` use — lands in Backlog, no `--milestone`), carrying the state label from step 2:
 
    ```bash
    "$(dirname "$BOARD_LIB")/../capture.sh" "Process retro: epic #<epic>" \
      --body "<body>" --board "$BOARD" --label "<retro-pending|retro-info>"
    ```
 
-   Then, **only when the mint is past the urgency bar** (step 2), add the urgency label to the issue `capture` just created: `gh issue edit <n> -R "$repo" --add-label retro-urgent` (`<n>` = the number `capture` printed). Both labels ride the same tracker.
+   Then, **only when the mint is past the urgency bar** (step 2), add the urgency label to the issue `capture` just created: `gh issue edit <n> -R "$repo" --add-label retro-urgent` (`<n>` = the number `capture` printed). If that add-label call fails (a transient `gh` error), **do not silently drop the escalation** — the tracker still exists with its state label, but its urgency is lost and the step-1 probe will short-circuit ("already filed") on every later run, so nothing re-applies it: log the failure and fold `retro-urgent add FAILED on #<n>` into the Step 6 summary so a human can re-apply the one label, rather than leaving it invisibly missing. Both labels ride the same tracker.
 4. **Tracker body** — the machine-readable marker (**unchanged** — the idempotency probe in step 1 keys on it), a one-line reader gloss carrying the honest state label, the merge-friction and build-health stamps, then the links. **No retro questions, no handoff-defect taxonomy** — the mint records *what happened*; the overlay `/retro` judge asks the decomposition questions later:
 
    ```markdown
@@ -960,7 +968,7 @@ When all items reach terminal state, patch frontmatter:
 - Open PRs awaiting manual merge: M (slugs → PR #s)
 - Skipped: M (slugs → reasons)
 - Worktrees remaining: M (paths — should be 0 if all terminal)
-- Board (when ON): created I issues (slugs → #s); epic #E (created | adopted-from-triage; linked C children); epic stamp: landed on first claim | **NEVER LANDED — epic unstamped** (last error); park-back: cleared | **FAILED** (error) | n/a (epic closed, not owned by this run, or stamp never landed); moved J merged items → Done; epic closed → Done: yes/no (open children remaining: R); plan archived → `Plans-archive/<basename>` (committed | already-archived | n/a — epic still open); process-retro issue: #P (filed | already-existed | n/a — epic still open)
+- Board (when ON): created I issues (slugs → #s); epic #E (created | adopted-from-triage; linked C children); epic stamp: landed on first claim | **NEVER LANDED — epic unstamped** (last error); park-back: cleared | **FAILED** (error) | n/a (epic closed, not owned by this run, or stamp never landed); moved J merged items → Done; epic closed → Done: yes/no (open children remaining: R); plan archived → `Plans-archive/<basename>` (committed | already-archived | n/a — epic still open); retro tracker: #P (created | already-existed; state `<retro-pending|retro-info>`; urgent? yes/no [+ `retro-urgent add FAILED` if the urgency add-label failed] | n/a — epic still open | n/a — `RETRO_MINT_ENABLED` off)
 - Funnel: no overlap | overlap check inconclusive (no `files:` fields) | frozen at Step 1.7 → re-enabled at 4d-funnel | frozen at Step 1.7 → **remains FROZEN** (left frozen at 4d-funnel, or epic still open) | overlap acknowledged — ran unfrozen
 - Reviewed without declared principles: M (slugs — the priorities note (`Projects/<project>/Priorities.md`, falling back to the legacy `Priorities/<project>.md`) had no `## Principles`, or the read failed)
 - Spikes verdict-captured: V (slugs → verdict notes)

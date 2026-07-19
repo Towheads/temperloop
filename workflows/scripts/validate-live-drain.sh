@@ -102,6 +102,7 @@ resolve_source() {
       else
         printf 'SKIP:stageFind not checked out at %s' "$STAGEFIND_DIR"
       fi ;;
+    claude/commands/*.md) printf '%s' "$REPO/$1" ;;
     *)                    printf 'SKIP:unknown source %s' "$1" ;;
   esac
 }
