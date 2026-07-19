@@ -39,7 +39,14 @@ Policy loci are fixed: urgency is computed at mint (kernel, where the
 health data is), the session cap is enforced judge-side (overlay, where
 the deep-reads are), and no kernel surface may invoke or assume `/retro`
 without a capability probe. Judgment content has exactly one owner — the
-judge.
+judge. Because the trigger hands off via a **nested `claude -p "/retro
+--pending"`** that does *not* inherit the funnel driver's no-merge
+prohibition, the action's safe-tier (non-merging) guarantee rests on
+`/retro`'s own contract — which must assert it merges nothing — rather than
+on a kernel-side guard; the kernel side classifies the action SAFE and
+passes no merge-capable action across the seam. `/retro`'s own contract
+must therefore carry a one-line no-merge assertion covering this
+delegation — an overlay-side companion change (foundation#1247).
 
 ## Consequences
 

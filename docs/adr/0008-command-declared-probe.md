@@ -26,12 +26,20 @@ not be written at all without a mechanical predicate.
 ## Decision
 
 The kernel owns a shared helper, `command_declared <name>`, that answers
-command availability by checking the surfaces a headless `claude -p`
-invocation actually resolves, in order: the working directory's
+command availability by checking the three surfaces where a command's
+**source or installed copy** can live, in order: the working directory's
 `.claude/commands/`, the checkout's `claude/commands/` (the kernel's
 source of truth), and `~/.claude/commands/` (the composed-install
 deployment target) — with an environment override so fixtures can force
-either answer. Kernel surfaces that reference an optional command (the
+either answer. The predicate's contract is **"source-or-installed
+present," not "runtime-resolvable"**: the middle surface `claude/commands/`
+is the kernel's *compose input* (the source `make install-claude` deploys
+from), not a path a headless `claude -p` itself resolves at run time. So on
+an **uninstalled** checkout the helper can read *true* for a kernel command
+`claude -p` cannot yet invoke — a latent false-positive that is inert for
+the three current callers, which all probe the overlay-only `/retro`
+(absent from kernel source, so it can only resolve *true* once genuinely
+installed at `~/.claude/commands/`). Kernel surfaces that reference an optional command (the
 funnel retro trigger, `/check-in`'s retro sections, the mint's state-label
 choice) cite this helper rather than improvising a file check. The
 subagent probe decision explicitly does not cover commands; this ADR
@@ -46,6 +54,8 @@ instead of per-site improvisation, and the false-negative-on-composed-
 install failure mode is designed out. Costs: one more kernel helper to
 maintain, and its resolution order becomes a small contract surface —
 adding a new command-deployment location later means updating the helper,
-not the call sites. Follow-on: existing unconditional command references
-in kernel specs (temperloop#521's `/check-in` case) migrate to the helper
-as they are touched.
+not the call sites. Follow-on: temperloop#521's `/check-in`
+case is migrated to the helper **in this epic** (closing #521 by
+construction, consistent with ADR 0007) — not deferred; any *other*
+unconditional command references in kernel specs migrate to the helper as
+they are touched.
