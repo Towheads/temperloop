@@ -42,6 +42,16 @@ discard it, redact a flagged secret, and so on. This command is the **sole
 mutator** of every entry's status — every surface above is written
 append-only by the unattended side and disposed only here.
 
+The retro findings surface specifically is **capability-gated**: `/retro` is
+an overlay-only command, absent on a bare kernel checkout (temperloop#521,
+"the layering leak"). Part 2 opens with one `command_declared retro` check
+(the shared `command_declared` helper — see its own feature doc); when true,
+the retro findings subsection runs exactly as described above, and when
+false the whole subsection is skipped in favor of a single consolidated
+`retro review skipped — /retro not installed (command_declared retro = false)`
+line for the run, rather than a dangling reference to a command that isn't
+there.
+
 **Part 3 — priorities review.** A durable per-project priorities note (the
 weighted themes, the definition of "impactful"/"done", the avoid-now list)
 drives what an advisory "what should I work on next" recommendation
@@ -54,7 +64,8 @@ actually shifted.
 
 Consumes: every review surface the drain pass (`tidy`) and the autonomous
 funnel driver write — pending decisions, proposed supersessions, retro
-findings, candidate tells, vault hygiene, sensitivity flags — plus the
+findings (when `/retro` is installed — gated via `command_declared`, see
+above), candidate tells, vault hygiene, sensitivity flags — plus the
 telemetry-brief renderers for Part 1's status readout: the kernel renderer
 (`workflows/scripts/telemetry-brief.sh`) unconditionally — it ships in every
 checkout and degrades honestly on empty streams — and the overlay's
