@@ -397,8 +397,11 @@ check_reviewer_coverage() {
       printf '%s\n' "$integrity_err" | sed 's/^/        /'
 
       if _doctor_ensure_reviewer_state_gitignored "$project_dir"; then
-        mkdir -p "$state_dir" 2>/dev/null &&
+        # if-then-else, not `A && B || C` (SC2015): the marker write is
+        # best-effort — a failed mkdir or printf must never fail the check.
+        if mkdir -p "$state_dir" 2>/dev/null; then
           printf '# doctor.sh: uncatalogued-language notice already shown on %s\n' "$(date +%Y-%m-%d)" >"$notice_marker" 2>/dev/null || true
+        fi
       fi
     fi
   fi
