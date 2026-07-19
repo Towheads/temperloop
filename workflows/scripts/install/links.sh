@@ -155,10 +155,24 @@ links_enumerate() {
 # links_apply_symlink <target> <expected_source>
 #
 # Idempotent symlink creation with the canonical install-* semantics:
-#   - already correctly linked  -> print "✓ <name> already linked"
-#   - exists but not our symlink -> print "! <name> exists and is not a
-#     symlink — skipping (backup manually)"
+#   - already correctly linked   -> print "✓ <name> already linked"
+#   - a symlink pointing anywhere else (including a DANGLING one into a
+#     deleted worktree) -> atomically re-point it, print "→ relinked <name>".
+#     This is what makes a re-run self-healing: a farm of stale/dangling links
+#     is repaired in place rather than failing with "ln: <target>: File exists".
+#   - a real (non-symlink) file/dir at the target -> print "! <name> exists
+#     and is not a symlink — skipping (backup manually)". A user's real file is
+#     never clobbered.
 #   - absent -> create symlink, print "→ linked <name>"
+#
+# The heal path uses `ln -sfn` (force + no-dereference): `-f` removes the
+# existing symlink before creating the new one, and `-n` ensures an old symlink
+# that resolves to a directory is replaced itself rather than the new link
+# landing *inside* it. This satisfies the acceptance's "ln -sfn or rm-then-ln"
+# atomic-replace requirement. Critically, `[ -L ]` is tested BEFORE `[ -e ]`
+# because a dangling symlink is `-L`-true but `-e`-false, so the old `-e`-first
+# check silently missed it and fell through to a bare `ln -s` (the "File
+# exists" failure this fixes).
 #
 # Used by install-env, install-claude, and install-board recipes that have been
 # refactored to source this helper.
@@ -172,8 +186,15 @@ links_apply_symlink() {
   local name
   name="$(basename "$target")"
 
-  if [ -L "$target" ] && [ "$(readlink "$target")" = "$src" ]; then
-    echo "  ✓ ${name} already linked"
+  if [ -L "$target" ]; then
+    # It IS a symlink (possibly dangling — `-L` is true even when the link is
+    # broken). Either it already points where we want, or it's stale/dangling
+    # and we heal it in place.
+    if [ "$(readlink "$target")" = "$src" ]; then
+      echo "  ✓ ${name} already linked"
+    else
+      ln -sfn "$src" "$target" && echo "  → relinked ${name}"
+    fi
   elif [ -e "$target" ]; then
     echo "  ! ${name} exists and is not a symlink — skipping (backup manually)"
   else
