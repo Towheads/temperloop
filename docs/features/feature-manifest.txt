@@ -256,6 +256,7 @@ review-agents workflows/scripts/install/reviewer-activation-coverage.sh
 review-agents workflows/scripts/tests/test_reviewer_activation_coverage.sh
 review-agents workflows/scripts/install/reviewer-activate.sh
 review-agents workflows/scripts/tests/test_reviewer_activate.sh
+review-agents workflows/scripts/tests/test_doctor_reviewer_coverage.sh
 
 # ── sandbox-core — hermetic env-sandbox test harness (temperloop#263) ───────
 sandbox-core workflows/scripts/tests/lib/sandbox.sh
