@@ -69,20 +69,30 @@ PROJECT_NUMBER=7
 LABEL_LIST_JSON=""
 OPEN_ATTACHED_LABELS=""
 CLOSED_ISSUES_JSON="[]"
+# OPEN_ISSUES_JSON -> `gh issue list --state open --json number,labels` bulk-read
+# response (scan 3, temperloop#376 — unstatused open issues). Distinct from the
+# per-label open-count queries above (those carry --label); this is the
+# label-less --state open bulk read. Defaults to empty so pre-existing cases
+# (which never set it) surface zero unstatused-open candidates.
+OPEN_ISSUES_JSON="[]"
 RACE_LABEL=""
 RACE_CALLS_FILE="/dev/null"
 DELETES="/dev/null"
 STRIPS="/dev/null"
+BACKFILLS="/dev/null"
 
 _board_gh() {
   case "$1 $2" in
     "label list")
       printf '%s' "$LABEL_LIST_JSON" ;;
     "issue list")
-      local has_label=0 lbl="" a want=0
+      local has_label=0 lbl="" a want=0 state=""
       for a in "$@"; do
         if [ "$want" = 1 ]; then lbl="$a"; want=0; continue; fi
-        [ "$a" = "--label" ] && { has_label=1; want=1; }
+        case "$a" in
+          --label) has_label=1; want=1 ;;
+          open|closed|all) state="$a" ;;
+        esac
       done
       if [ "$has_label" = 1 ]; then
         if [ -n "$RACE_LABEL" ] && [ "$lbl" = "$RACE_LABEL" ]; then
@@ -96,20 +106,32 @@ _board_gh() {
             *)          echo '[]' ;;
           esac
         fi
+      elif [ "$state" = open ]; then
+        printf '%s' "$OPEN_ISSUES_JSON"
       else
         printf '%s' "$CLOSED_ISSUES_JSON"
       fi
       ;;
+    "label create")
+      # _board_issues_ensure_label (backfill path) creates the label object
+      # idempotently — a no-op here, same as the real gh's "already exists" swallow.
+      return 0 ;;
     "label delete")
       printf '%s\n' "$3" >>"$DELETES"
       return 0 ;;
     "issue edit")
-      local n="$3" a want=0 lbl=""
+      # Distinguish a strip (--remove-label, scan 2) from a backfill
+      # (--add-label, scan 3): record each to its own log so a case can assert
+      # exactly which write fired.
+      local n="$3" a want_rm=0 want_add=0 rm_lbl="" add_lbl=""
       for a in "$@"; do
-        if [ "$want" = 1 ]; then lbl="$a"; want=0; continue; fi
-        [ "$a" = "--remove-label" ] && want=1
+        if [ "$want_rm" = 1 ]; then rm_lbl="$a"; want_rm=0; continue; fi
+        if [ "$want_add" = 1 ]; then add_lbl="$a"; want_add=0; continue; fi
+        [ "$a" = "--remove-label" ] && want_rm=1
+        [ "$a" = "--add-label" ] && want_add=1
       done
-      printf '%s\t%s\n' "$n" "$lbl" >>"$STRIPS"
+      [ -n "$rm_lbl" ] && printf '%s\t%s\n' "$n" "$rm_lbl" >>"$STRIPS"
+      [ -n "$add_lbl" ] && printf '%s\t%s\n' "$n" "$add_lbl" >>"$BACKFILLS"
       return 0 ;;
     *)
       case "$1" in
@@ -127,8 +149,8 @@ _board_gh() {
 }
 
 run_labels() {
-  DELETES="$(mktemp)"; STRIPS="$(mktemp)"; RACE_CALLS_FILE="$(mktemp)"
-  TEST_TMP_DIRS+=("$DELETES" "$STRIPS" "$RACE_CALLS_FILE")
+  DELETES="$(mktemp)"; STRIPS="$(mktemp)"; BACKFILLS="$(mktemp)"; RACE_CALLS_FILE="$(mktemp)"
+  TEST_TMP_DIRS+=("$DELETES" "$STRIPS" "$BACKFILLS" "$RACE_CALLS_FILE")
   : >"$RACE_CALLS_FILE"
   OUT="$(label_reconcile_main)"
 }
@@ -340,6 +362,88 @@ run_labels
 printf '%s' "$OUT" | grep -q "applied: deleted 1 label(s), stripped 1 status label(s)\." \
   || fail "case7: the sweep itself must still complete when the knowledge store is unavailable\n$OUT"
 echo "PASS: case 7 unattended apply degrades best-effort when the knowledge store is unavailable — the sweep still completes"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
+echo "=== Scan 3: unstatused open issues — the /triage-invisibility backstop (temperloop#376) ==="
+
+# From here on isolate scan 3: no orphaned host/session labels, no stale
+# closed-issue status labels — only OPEN_ISSUES_JSON drives drift.
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[]'
+RACE_LABEL=""
+
+# =========================================================================
+# Case 8: dry-run reports an OPEN issue carrying NO fnd:status:* label as an
+# invisible-to-/triage candidate, with ZERO writes. An open issue that DOES
+# carry a status label is never a candidate.
+# =========================================================================
+OPEN_ISSUES_JSON='[{"number":300,"labels":[{"name":"Operational"}]},{"number":301,"labels":[{"name":"Operational"},{"name":"fnd:status:ready"}]}]'
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+printf '%s' "$OUT" | grep -q "unstatused open issues" \
+  || fail "case8: expected the unstatused-open-issues section\n$OUT"
+printf '%s' "$OUT" | grep -q "#300 — no fnd:status:\* label; backfill target: fnd:status:backlog" \
+  || fail "case8: expected #300 reported as unstatused with the fnd:status:backlog backfill target\n$OUT"
+printf '%s' "$OUT" | grep -q "#301" \
+  && fail "case8: an open issue that already carries a fnd:status:* label must NEVER be a candidate\n$OUT"
+printf '%s' "$OUT" | grep -q "(dry-run" \
+  || fail "case8: expected the dry-run notice\n$OUT"
+[ ! -s "$BACKFILLS" ] || fail "case8: dry-run must issue ZERO backfills\n$(cat "$BACKFILLS")"
+echo "PASS: case 8 dry-run reports an unstatused open issue as invisible-to-/triage, zero writes (temperloop#376)"
+
+# =========================================================================
+# Case 9: --apply backfills fnd:status:backlog on the unstatused open issue,
+# and the immediate re-check skips an issue that gained a status label OR was
+# closed in the scan->apply gap. #300 backfilled; #301 (gained status) and
+# #302 (closed) skipped.
+# =========================================================================
+OPEN_ISSUES_JSON='[{"number":300,"labels":[{"name":"Operational"}]},{"number":301,"labels":[{"name":"Operational"}]},{"number":302,"labels":[{"name":"Operational"}]}]'
+API_300_JSON='{"state":"open","labels":[{"name":"Operational"}]}'
+API_301_JSON='{"state":"open","labels":[{"name":"Operational"},{"name":"fnd:status:ready"}]}'  # gained a status in the gap
+API_302_JSON='{"state":"closed","labels":[{"name":"Operational"}]}'                            # closed in the gap
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+printf '%s' "$OUT" | grep -q "backfilled: #300 fnd:status:backlog" \
+  || fail "case9: expected #300 backfilled with fnd:status:backlog\n$OUT"
+grep -qF "$(printf '300\tfnd:status:backlog')" "$BACKFILLS" \
+  || fail "case9: expected #300 recorded in the backfill log\n$(cat "$BACKFILLS")"
+printf '%s' "$OUT" | grep -q "skip (no longer open+unstatused): #301" \
+  || fail "case9: expected #301 (gained a status in the gap) skipped by the re-check\n$OUT"
+printf '%s' "$OUT" | grep -q "skip (no longer open+unstatused): #302" \
+  || fail "case9: expected #302 (closed in the gap) skipped by the re-check\n$OUT"
+grep -q "^301	" "$BACKFILLS" && fail "case9: #301 must NOT be backfilled (it gained a status)\n$(cat "$BACKFILLS")"
+grep -q "^302	" "$BACKFILLS" && fail "case9: #302 must NOT be backfilled (it was closed)\n$(cat "$BACKFILLS")"
+printf '%s' "$OUT" | grep -q "applied: deleted 0 label(s), stripped 0 status label(s), backfilled 1 status label(s)\." \
+  || fail "case9: expected the summary to name the backfilled count\n$OUT"
+echo "PASS: case 9 --apply backfills fnd:status:backlog; the immediate re-check protects an issue re-statused or closed in the gap (temperloop#376)"
+
+# =========================================================================
+# Case 10: unattended apply records the backfill in the pending-decisions
+# entry — the Default-taken line names the backfilled count and the Decision
+# line mentions the backfill.
+# =========================================================================
+KS_ROOT_10="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_10"
+OPEN_ISSUES_JSON='[{"number":300,"labels":[{"name":"Operational"}]}]'
+API_300_JSON='{"state":"open","labels":[{"name":"Operational"}]}'
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+LEGACY_DOC="$KS_ROOT_10/Context/pipeline - pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case10: expected the pending-decisions entry created at the legacy path\n$(find "$KS_ROOT_10" -type f)"
+grep -q "Default taken:\*\* applied — deleted 0 label(s), stripped 0 status label(s), backfilled 1 status label(s)" "$LEGACY_DOC" \
+  || fail "case10: entry missing the backfilled count on the default-taken line\n$(cat "$LEGACY_DOC")"
+grep -q "backfill .fnd:status:backlog. on unstatused open issues" "$LEGACY_DOC" \
+  || fail "case10: entry missing the backfill mention on the decision line\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 10 unattended apply records the backfill in the pending-decisions entry (temperloop#376)"
 unset KNOWLEDGE_STORE_ROOT
 
 echo

@@ -104,8 +104,19 @@
 #       or via a merged PR's `Closes #N`) never strips its status label — only
 #       `_board_issues_set_field`'s own Status-field write path does that, and
 #       a PR close bypasses it entirely.
+#   (i) unstatused open issues — an OPEN issue carrying NO `fnd:status:*` label
+#       at all (temperloop#376). Status is emulated by that label, so such an
+#       issue reads as `.status = ""` in board_item_list — and /triage's
+#       Backlog intake (Adapter A keeps only `.status == Backlog`) SILENTLY
+#       SKIPS it, so a genuine defect falls out of the funnel with no error.
+#       The capture path (capture.sh → board_capture_item) already stamps
+#       fnd:status:backlog on everything it files; this class is the backstop
+#       for an issue that reached the tracker by any OTHER route (a hand
+#       `gh issue create`, an older/foreign tool). --apply BACKFILLS
+#       fnd:status:backlog — the safe default: it only makes the issue visible
+#       to the next Backlog sweep, and is reversible via a later status write.
 #
-# --labels alone is a REPORT — it prints both candidate lists and their
+# --labels alone is a REPORT — it prints every candidate list and its
 # counts with ZERO writes (the interactive default, matching --status's
 # report-only default). --apply performs the deletes/strips; a SECOND --apply
 # run is idempotent (the just-deleted/-stripped labels are no longer
@@ -119,7 +130,8 @@
 # --unattended additionally (a) implies --apply (this sweep's ratified default
 # under NO live operator is to apply, unlike the report-only stale-claim sweep
 # above — a deleted label object is trivially recoverable via `gh label
-# create`, so the auto-take is safe) and (b) records the auto-taken apply to
+# create`, and a backfilled status label is reversible via a later status
+# write, so both auto-takes are safe) and (b) records the auto-taken apply to
 # the pending-decisions surface (`claude/CLAUDE.md` § Unattended
 # pending-decisions surface) via `workflows/scripts/lib/knowledge_store.sh`'s
 # `ks_append` — best-effort: a missing/unavailable knowledge store degrades to
@@ -578,10 +590,10 @@ status_reconcile_main() {
 # (`Pipeline/…`) / legacy (`Context/pipeline - …`) paths already exists,
 # preferring the new path when both do, and create at the legacy path when
 # neither exists yet.
-#   _label_reconcile_append_pending_decision <board#> <repo> <deleted> <stripped>
+#   _label_reconcile_append_pending_decision <board#> <repo> <deleted> <stripped> [<backfilled>]
 _label_reconcile_append_pending_decision() {
-  local board="$1" repo="$2" deleted="$3" stripped="$4"
-  local ks_lib doc new_doc legacy_doc ts host
+  local board="$1" repo="$2" deleted="$3" stripped="$4" backfilled="${5:-0}"
+  local ks_lib doc new_doc legacy_doc ts host decision_extra taken_extra
 
   ks_lib="$SCRIPT_DIR/../lib/knowledge_store.sh"
   if [ ! -f "$ks_lib" ]; then
@@ -616,11 +628,19 @@ _label_reconcile_append_pending_decision() {
   # math (_reconcile_now) stays UTC — absolute instants, unaffected.
   ts="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date '+%Y-%m-%d %H:%M %Z')"
   host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
+  # Only name the backfill dimension when it actually acted (temperloop#376), so
+  # a sweep that deleted/stripped but backfilled nothing keeps its prior wording.
+  decision_extra=""; taken_extra=""
+  if [ "${backfilled:-0}" -gt 0 ]; then
+    # shellcheck disable=SC2016  # literal markdown span, not expansion
+    decision_extra=' and backfill `fnd:status:backlog` on unstatused open issues'
+    taken_extra="$(printf ', backfilled %s status label(s)' "$backfilled")"
+  fi
   if {
     printf '### %s · label hygiene sweep · %s:board%s\n' "$ts" "$host" "$board"
     # shellcheck disable=SC2016  # backticks below are literal markdown spans, not expansion
-    printf -- '- **Decision:** delete orphaned `fnd:host/session:*` repo labels (zero open-issue attachments) and strip `fnd:status:*` from closed issues on board %s (%s)\n' "$board" "$repo"
-    printf -- '- **Default taken:** applied — deleted %s label(s), stripped %s status label(s)\n' "$deleted" "$stripped"
+    printf -- '- **Decision:** delete orphaned `fnd:host/session:*` repo labels (zero open-issue attachments) and strip `fnd:status:*` from closed issues%s on board %s (%s)\n' "$decision_extra" "$board" "$repo"
+    printf -- '- **Default taken:** applied — deleted %s label(s), stripped %s status label(s)%s\n' "$deleted" "$stripped" "$taken_extra"
     printf -- '- **Disposition:** auto-taken (unattended; no live operator)\n'
     printf -- '- **Status:** open\n'
   } | ks_append "$doc" 2>/dev/null; then
@@ -635,8 +655,9 @@ _label_reconcile_append_pending_decision() {
 # $LABELS_UNATTENDED, and drive it offline. Always exits 0.
 label_reconcile_main() {
   local repo hs_labels_json hs_labels orphan_hs_labels closed_json strip_rows
-  local label recheck_count deleted=0 stripped=0
-  local n l issue_json state has_label
+  local label recheck_count deleted=0 stripped=0 backfilled=0
+  local n l issue_json state has_label has_status
+  local open_json unstatused_rows backlog_label
 
   if ! _board_is_issues_only "$PROJECT_NUMBER"; then
     echo "Board label hygiene — board $PROJECT_NUMBER is not the issues-only backend (fnd: labels only exist there) — nothing to sweep"
@@ -646,6 +667,10 @@ label_reconcile_main() {
     echo "reconcile.sh: label hygiene — could not resolve repo for board $PROJECT_NUMBER" >&2
     return 0
   }
+  # The canonical Backlog status label, derived (never hardcoded) from the SAME
+  # helpers the write path uses (_board_issues_set_field) so it stays in lockstep
+  # with the fnd: vocabulary — "fnd:status:backlog".
+  backlog_label="$(_board_issues_label_prefix "$BOARD_FIELD_STATUS")$(_board_issues_slug "$BOARD_OPT_BACKLOG")"
 
   # --- scan 1: orphaned fnd:host/session:* repo labels ------------------------
   # Every repo label carrying the prefix, filtered LOCALLY (jq startswith) to
@@ -685,6 +710,24 @@ label_reconcile_main() {
     '
   )"
 
+  # --- scan 3: OPEN issues carrying NO fnd:status:* label (temperloop#376) ------
+  # One bulk read of every OPEN issue's labels; filter LOCALLY to those with zero
+  # fnd:status:* labels — the class /triage's Backlog intake silently skips (an
+  # unstatused issue reads as .status="" and Adapter A keeps only .status==Backlog).
+  # Same flat-cost, non-Projects-GraphQL REST read shape as scan 2.
+  open_json="$(_board_gh issue list -R "$repo" --state open --limit "$LABEL_LIMIT" --json number,labels 2>/dev/null)" || open_json="[]"
+  [ -n "$open_json" ] || open_json="[]"
+  if [ "$(printf '%s' "$open_json" | jq 'length')" -ge "$LABEL_LIMIT" ]; then
+    echo "WARNING: open-issue list hit the ${LABEL_LIMIT}-item cap — some unstatused open issues may be unread." >&2
+  fi
+  unstatused_rows="$(
+    printf '%s' "$open_json" | jq -r '
+      .[]
+      | select(([ .labels[]?.name | select(startswith("fnd:status:")) ] | length) == 0)
+      | (.number|tostring)
+    '
+  )"
+
   # --- report -------------------------------------------------------------
   echo "Board label hygiene — board $PROJECT_NUMBER ($repo)"
   echo
@@ -705,8 +748,17 @@ label_reconcile_main() {
     done <<<"$strip_rows"
     echo
   fi
+  if [ -n "$unstatused_rows" ]; then
+    drift=1
+    echo "unstatused open issues (no fnd:status:* label — invisible to /triage Backlog intake):"
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      echo "  #$n — no fnd:status:* label; backfill target: $backlog_label"
+    done <<<"$unstatused_rows"
+    echo
+  fi
   if [ "$drift" -eq 0 ]; then
-    echo "In sync: no orphaned host/session labels, no stale status labels on closed issues."
+    echo "In sync: no orphaned host/session labels, no stale status labels on closed issues, no unstatused open issues."
     return 0
   fi
 
@@ -759,11 +811,39 @@ label_reconcile_main() {
     fi
   done <<<"$strip_rows"
 
-  echo
-  echo "applied: deleted $deleted label(s), stripped $stripped status label(s)."
+  # Backfill fnd:status:backlog on each unstatused open issue — RE-CHECKED
+  # immediately before the write (a fresh single-issue `api` read, not the
+  # scan-3 bulk snapshot), so a status write OR a close that landed in the
+  # scan→apply gap is never clobbered: an issue that gained a status label, or
+  # was closed, in the gap is skipped. Ensure the label object exists first
+  # (idempotent, memoized), same as the write path.
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    issue_json="$(_board_gh api "repos/$repo/issues/$n" 2>/dev/null)"
+    state="$(printf '%s' "$issue_json" | jq -r '.state // "open"')"
+    has_status="$(printf '%s' "$issue_json" | jq -r '(([.labels[]?.name | select(startswith("fnd:status:"))] | length) > 0)')"
+    if [ "$state" != "open" ] || [ "$has_status" = "true" ]; then
+      echo "  skip (no longer open+unstatused): #$n"
+      continue
+    fi
+    _board_issues_ensure_label "$repo" "$backlog_label" || true
+    if _board_gh issue edit "$n" -R "$repo" --add-label "$backlog_label" >/dev/null 2>&1; then
+      echo "  backfilled: #$n $backlog_label"
+      backfilled=$((backfilled + 1))
+    else
+      echo "  FAILED to backfill: #$n $backlog_label" >&2
+    fi
+  done <<<"$unstatused_rows"
 
-  if [ "$LABELS_UNATTENDED" = 1 ] && { [ "$deleted" -gt 0 ] || [ "$stripped" -gt 0 ]; }; then
-    _label_reconcile_append_pending_decision "$PROJECT_NUMBER" "$repo" "$deleted" "$stripped"
+  echo
+  # Only name the backfill dimension when scan 3 found candidates, so a sweep
+  # with nothing to backfill prints its prior byte-identical summary line.
+  local applied_summary="applied: deleted $deleted label(s), stripped $stripped status label(s)"
+  [ -n "$unstatused_rows" ] && applied_summary+="$(printf ', backfilled %s status label(s)' "$backfilled")"
+  echo "$applied_summary."
+
+  if [ "$LABELS_UNATTENDED" = 1 ] && { [ "$deleted" -gt 0 ] || [ "$stripped" -gt 0 ] || [ "$backfilled" -gt 0 ]; }; then
+    _label_reconcile_append_pending_decision "$PROJECT_NUMBER" "$repo" "$deleted" "$stripped" "$backfilled"
   fi
   return 0
 }
