@@ -46,6 +46,7 @@
 #
 # Usage:
 #   project-agents.sh [--project-dir DIR] [--copy] [--dry-run] [-h|--help]
+#   project-agents.sh --only NAME --category CAT [--project-dir DIR] [--copy] [--dry-run]
 #
 #   --project-dir DIR   Deploy into DIR/.claude/ instead of this kernel
 #                       checkout's own .claude/ (for adopting the kernel's
@@ -53,7 +54,27 @@
 #                       kernel checkout this script lives in.
 #   --copy              Deploy real-file copies instead of symlinks.
 #   --dry-run           Print the plan; write nothing.
+#   --only NAME         Selective mode: deploy exactly one named agent instead
+#                       of a whole category. Requires --category. Reads from
+#                       claude/agents/<CAT>/<NAME>.md (a subdir) but writes to
+#                       the FLAT .claude/agents/<NAME>.md — asymmetric on
+#                       purpose, matching where the capability probe resolves
+#                       agents (docs/features/review-agents.md § "The
+#                       capability probe"); it never writes
+#                       .claude/<CAT>/<NAME>.md. An unknown NAME (no such file
+#                       in the catalog) is a fatal "not found" error.
+#   --category CAT      The claude/agents/ subdir --only reads from (e.g.
+#                       "reviewers"). Must be used together with --only —
+#                       either flag given without the other is a usage error.
 #   -h, --help          Show usage.
+#
+# --only mode's symlink-vs-copy DEFAULT differs from the bulk categories
+# path above: in-tree (the project IS this kernel checkout) still defaults to
+# a relative symlink, but OUT-OF-TREE defaults to --copy (a detached
+# real-file copy) rather than an absolute symlink — a single agent deployed
+# into a client repo should never leave an absolute symlink back into the
+# operator's kernel checkout on disk. Pass --copy explicitly to force a copy
+# in-tree too; the bulk categories path above is unaffected by this flip.
 #
 # Exit codes: 0 = ran to completion (a dry run is a legible no-op, not a
 # failure). 1 = a fatal usage/environment error, or one or more entries could
@@ -79,12 +100,15 @@ KERNEL_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CATEGORIES=(agents commands)
 
 usage() {
-  sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 project_dir="$KERNEL_ROOT"
 mode="symlink"
+explicit_copy=0
 dry_run=0
+only_name=""
+only_category=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -93,8 +117,18 @@ while [ $# -gt 0 ]; do
       project_dir="$2"; shift 2 ;;
     --project-dir=*)
       project_dir="${1#*=}"; shift ;;
-    --copy) mode="copy"; shift ;;
+    --copy) mode="copy"; explicit_copy=1; shift ;;
     --dry-run) dry_run=1; shift ;;
+    --only)
+      [ $# -ge 2 ] || { echo "project-agents.sh: --only needs a value" >&2; exit 1; }
+      only_name="$2"; shift 2 ;;
+    --only=*)
+      only_name="${1#*=}"; shift ;;
+    --category)
+      [ $# -ge 2 ] || { echo "project-agents.sh: --category needs a value" >&2; exit 1; }
+      only_category="$2"; shift 2 ;;
+    --category=*)
+      only_category="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "project-agents.sh: unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -106,15 +140,134 @@ if [ ! -d "$project_dir" ]; then
 fi
 project_dir="$(cd "$project_dir" && pwd)"
 
+# same_file A B — true iff A and B are the same file (inode), tolerating
+# different path spellings. Used to decide relative-vs-absolute symlink target.
+same_file() { [ "$1" -ef "$2" ] 2>/dev/null; }
+
+# deploy_only NAME CAT — selective single-agent mode. Reads from the
+# CATEGORY SUBDIR claude/agents/<CAT>/<NAME>.md but writes to the FLAT
+# .claude/agents/<NAME>.md (asymmetric on purpose — see header comment and
+# the "Selective single-agent deploy mode" acceptance notes). Never writes
+# .claude/<CAT>/<NAME>.md.
+deploy_only() {
+  local name="$1" cat="$2" src target link_target only_mode
+
+  src="$KERNEL_ROOT/claude/agents/$cat/$name.md"
+  target="$project_dir/.claude/agents/$name.md"
+
+  if [ ! -f "$src" ]; then
+    echo "project-agents.sh: not found — no such agent '$name' in claude/agents/$cat/ (unknown agent)" >&2
+    exit 1
+  fi
+
+  # Default mode: --copy (explicit) always wins. Otherwise in-tree (the
+  # project IS this kernel checkout) keeps the relative-symlink default;
+  # out-of-tree flips the default to --copy (see header comment) so a
+  # selective deploy into a client repo never leaves an absolute symlink
+  # back into the operator's kernel checkout.
+  if [ "$explicit_copy" -eq 1 ]; then
+    only_mode="copy"
+  elif same_file "$project_dir" "$KERNEL_ROOT"; then
+    only_mode="symlink"
+  else
+    only_mode="copy"
+  fi
+
+  echo "== temperloop install-agents (selective: $name) =="
+  echo "  kernel source : $src"
+  echo "  project target: $target"
+  echo "  mode          : $only_mode$([ "$dry_run" -eq 1 ] && echo '  (dry run)')"
+  echo
+
+  if [ "$dry_run" -ne 1 ]; then
+    if ! mkdir -p "$project_dir/.claude/agents"; then
+      echo "  ! could not create $project_dir/.claude/agents" >&2
+      exit 1
+    fi
+  fi
+
+  if [ "$only_mode" = "symlink" ]; then
+    if same_file "$project_dir" "$KERNEL_ROOT"; then
+      link_target="../../claude/agents/$cat/$name.md"
+    else
+      link_target="$src"
+    fi
+
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$link_target" ]; then
+      echo "  = agents/$name.md (already linked)"
+      echo
+      echo "project-agents.sh: done"
+      exit 0
+    fi
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      echo "  ! agents/$name.md exists and is not a managed link — skipping (remove it to re-deploy)"
+      echo
+      echo "project-agents.sh: done (skipped — pre-existing non-managed target)"
+      exit 0
+    fi
+    if [ "$dry_run" -eq 1 ]; then
+      echo "  → agents/$name.md (would link -> $link_target)"
+      echo
+      echo "project-agents.sh: done (dry run — nothing written)"
+      exit 0
+    fi
+    if ln -s "$link_target" "$target"; then
+      echo "  → linked agents/$name.md"
+      echo
+      echo "project-agents.sh: done"
+      exit 0
+    fi
+    echo "  ! failed to link agents/$name.md" >&2
+    exit 1
+  fi
+
+  # --- copy mode ---
+  if [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$src" "$target"; then
+    echo "  = agents/$name.md (already up to date)"
+    echo
+    echo "project-agents.sh: done"
+    exit 0
+  fi
+  # Any other pre-existing target — a differently-content regular file, a
+  # symlink to something else, a directory — is foreign and never clobbered.
+  # (Stricter than the bulk categories path's copy-mode check above, which
+  # falls through to an unconditional cp for a content-mismatched regular
+  # file; --only's contract requires never clobbering a non-managed target.)
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    echo "  ! agents/$name.md exists and is not a managed copy — skipping (remove it to re-deploy)"
+    echo
+    echo "project-agents.sh: done (skipped — pre-existing non-managed target)"
+    exit 0
+  fi
+  if [ "$dry_run" -eq 1 ]; then
+    echo "  → agents/$name.md (would copy)"
+    echo
+    echo "project-agents.sh: done (dry run — nothing written)"
+    exit 0
+  fi
+  if cp "$src" "$target"; then
+    echo "  → copied agents/$name.md"
+    echo
+    echo "project-agents.sh: done"
+    exit 0
+  fi
+  echo "  ! failed to copy agents/$name.md" >&2
+  exit 1
+}
+
+if [ -n "$only_name" ] || [ -n "$only_category" ]; then
+  if [ -z "$only_name" ] || [ -z "$only_category" ]; then
+    echo "project-agents.sh: --only and --category must be used together" >&2
+    exit 1
+  fi
+  deploy_only "$only_name" "$only_category"
+fi
+
 echo "== temperloop install-agents (project-scoped) =="
 echo "  kernel source : $KERNEL_ROOT/claude/{agents,commands}"
 echo "  project target: $project_dir/.claude/{agents,commands}"
 echo "  mode          : $mode$([ "$dry_run" -eq 1 ] && echo '  (dry run)')"
 echo
-
-# same_file A B — true iff A and B are the same file (inode), tolerating
-# different path spellings. Used to decide relative-vs-absolute symlink target.
-same_file() { [ "$1" -ef "$2" ] 2>/dev/null; }
 
 deployed=0
 skipped=0
