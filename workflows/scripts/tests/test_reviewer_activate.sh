@@ -37,6 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RA_SH="${REPO_ROOT}/workflows/scripts/install/reviewer-activate.sh"
 RAC_SH="${REPO_ROOT}/workflows/scripts/install/reviewer-activation-coverage.sh"
+GITIGNORE_SAFETY_SH="${REPO_ROOT}/workflows/scripts/install/gitignore-safety.sh"
 CONFIG_SH="${REPO_ROOT}/workflows/scripts/build/build.config.sh"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-ra-XXXXXX")"
@@ -270,6 +271,80 @@ grep -q "is not a git repository" <<<"$out9" \
 [ ! -d "${F9}/.claude" ] || fail "9: no state should have been written when the target isn't a git repo"
 
 pass "9: a non-git target refuses loudly and writes no activation/decline state"
+
+# ---------------------------------------------------------------------------
+# Test 10: newline-guard regression (temperloop#563/#569). A target
+# .gitignore that exists but has NO trailing newline must not get the new
+# entry glued onto its last line — the pre-existing rule must survive AND
+# the new entry must actually take effect.
+# ---------------------------------------------------------------------------
+[ -f "$GITIGNORE_SAFETY_SH" ] || fail "10: shared lib not found at $GITIGNORE_SAFETY_SH"
+
+F10="${TMP}/f10"
+mkdir -p "$F10"
+git init -q "$F10" >/dev/null 2>&1
+# Deliberately NO trailing newline after '*.pyc' — this is the repro.
+printf 'node_modules/\n*.pyc' >"${F10}/.gitignore"
+[ -f "${F10}/.gitignore" ] || fail "10: fixture .gitignore was not created"
+case "$(tail -c 1 "${F10}/.gitignore" | wc -l | tr -d ' ')" in
+  0) : ;; # confirmed: no trailing newline, as intended
+  *) fail "10: fixture setup error — .gitignore unexpectedly ends in a newline" ;;
+esac
+
+# Sourcing the shared lib must not run anything (no CLI at source time).
+# shellcheck source=/dev/null
+source "$GITIGNORE_SAFETY_SH"
+
+echo 'x.pyc' >"${F10}/x.pyc"
+gitignore_ensure_entry "$F10" ".claude/reviewer-state/" ".claude/reviewer-state/foo" \
+  || fail "10: gitignore_ensure_entry failed on a no-trailing-newline target .gitignore"
+
+# The pre-existing *.pyc rule must have survived the append (the bug glued
+# the new entry onto this line, destroying it).
+git -C "$F10" check-ignore -q "x.pyc" \
+  || fail "10: pre-existing '*.pyc' rule did not survive the append — newline-guard regression"
+
+# The newly-appended entry must also actually work.
+git -C "$F10" check-ignore -q ".claude/reviewer-state/foo" \
+  || fail "10: newly appended '.claude/reviewer-state/' entry does not resolve ignored"
+
+# The two original lines must still be distinct (not glued into one).
+grep -qxF '*.pyc' "${F10}/.gitignore" \
+  || fail "10: '*.pyc' is no longer its own line in .gitignore (glued append)"
+grep -qxF '.claude/reviewer-state/' "${F10}/.gitignore" \
+  || fail "10: '.claude/reviewer-state/' is not its own line in .gitignore"
+
+pass "10: newline-guarded append (#563/#569 repro) preserves a pre-existing rule with no trailing newline and adds a working new entry"
+
+# ---------------------------------------------------------------------------
+# Test 11: sourcing reviewer-activate.sh defines its helpers WITHOUT running
+# the interactive CLI (temperloop#569 source-guard).
+# ---------------------------------------------------------------------------
+out11="$(bash -c '
+  set -u
+  source "'"$RA_SH"'" </dev/null
+  # If main() ran at source time, it would either print an offer/prompt or
+  # (with no gaps in this bare $PWD) print "no activation gaps found" and
+  # exit the whole process before we ever reach here.
+  echo "SOURCED_OK"
+  type _ra_split_list >/dev/null 2>&1 && echo "HAS__ra_split_list"
+  type _ra_filter_to_gaps >/dev/null 2>&1 && echo "HAS__ra_filter_to_gaps"
+  type _ra_ensure_state_gitignored >/dev/null 2>&1 && echo "HAS__ra_ensure_state_gitignored"
+  type main >/dev/null 2>&1 && echo "HAS_main"
+' 2>&1)" || fail "11: sourcing reviewer-activate.sh exited non-zero — output: $out11"
+
+grep -q "SOURCED_OK" <<<"$out11" \
+  || fail "11: sourcing did not complete (main() likely ran and exited early) — output: $out11"
+grep -q "^== reviewer activation offer" <<<"$out11" \
+  && fail "11: sourcing printed the interactive offer header — the CLI ran on source! output: $out11"
+grep -q "no activation gaps found" <<<"$out11" \
+  && fail "11: sourcing printed the no-gaps CLI message — the CLI ran on source! output: $out11"
+grep -q "HAS__ra_split_list" <<<"$out11" || fail "11: _ra_split_list not defined after sourcing"
+grep -q "HAS__ra_filter_to_gaps" <<<"$out11" || fail "11: _ra_filter_to_gaps not defined after sourcing"
+grep -q "HAS__ra_ensure_state_gitignored" <<<"$out11" || fail "11: _ra_ensure_state_gitignored not defined after sourcing"
+grep -q "HAS_main" <<<"$out11" || fail "11: main not defined after sourcing"
+
+pass "11: sourcing reviewer-activate.sh defines its helper functions without running the interactive CLI"
 
 echo
 echo "All reviewer-activate tests passed."

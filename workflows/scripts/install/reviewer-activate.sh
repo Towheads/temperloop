@@ -38,22 +38,28 @@
 #   — see this repo's own .gitignore entry (.claude/reviewer-state/) added
 #   alongside this file.
 #
-# TARGET-REPO GITIGNORE SAFETY (temperloop#560 mitigation, this file's local
-# half). This kernel checkout's OWN .gitignore already carries both entries
-# below, but a real adopter repo (foundation/stageFind/ssmobile/subsetwiki
-# and any other target this script is pointed at) does NOT — so writing
-# activation/decline state straight into an un-ignored .claude/ would leave
-# it untracked-but-stageable, one `git add -A` away from committing a single
-# teammate's personal opt-in (violating ADR 0007's "never imposed on
-# teammates" invariant). Before EITHER write path (deploying via --only, or
-# writing a decline marker), this script therefore verifies — and if
-# missing, APPENDS — both entries in the TARGET project's OWN .gitignore:
+# TARGET-REPO GITIGNORE SAFETY (temperloop#560 mitigation, temperloop#569
+# extraction). This kernel checkout's OWN .gitignore already carries both
+# entries below, but a real adopter repo (foundation/stageFind/ssmobile/
+# subsetwiki and any other target this script is pointed at) does NOT — so
+# writing activation/decline state straight into an un-ignored .claude/
+# would leave it untracked-but-stageable, one `git add -A` away from
+# committing a single teammate's personal opt-in (violating ADR 0007's
+# "never imposed on teammates" invariant). Before EITHER write path
+# (deploying via --only, or writing a decline marker), this script
+# therefore verifies — and if missing, APPENDS — both entries in the
+# TARGET project's OWN .gitignore:
 #   .claude/agents/
 #   .claude/reviewer-state/
 # Idempotent (checked with `git check-ignore` first; never duplicates a
-# line) and refuses to proceed with that write — loudly, to stderr — if the
-# target isn't a git repo or its .gitignore can't be written, rather than
-# silently leaving state exposed. See _ra_ensure_state_gitignored() below.
+# line), newline-guarded (never glues onto a target .gitignore's last line
+# if it lacks a trailing newline), and refuses to proceed with that write —
+# loudly, to stderr — if the target isn't a git repo or its .gitignore
+# can't be written, rather than silently leaving state exposed. The actual
+# guard logic lives in the shared, sourceable
+# gitignore-safety.sh:gitignore_ensure_all() (this file only calls it) —
+# see that file's own header for the extraction rationale and the bug it
+# fixes.
 #
 # REVERSING. To deactivate a reviewer, remove its
 # .claude/agents/<name>.md; to re-offer a declined one, remove its marker
@@ -111,6 +117,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RAC_SH="${SCRIPT_DIR}/reviewer-activation-coverage.sh"
 PROJECT_AGENTS_SH="${SCRIPT_DIR}/project-agents.sh"
+GITIGNORE_SAFETY_SH="${SCRIPT_DIR}/gitignore-safety.sh"
 
 if [ ! -f "$RAC_SH" ]; then
   echo "reviewer-activate.sh: missing sibling script: $RAC_SH" >&2
@@ -120,12 +127,18 @@ if [ ! -f "$PROJECT_AGENTS_SH" ]; then
   echo "reviewer-activate.sh: missing sibling script: $PROJECT_AGENTS_SH" >&2
   exit 1
 fi
+if [ ! -f "$GITIGNORE_SAFETY_SH" ]; then
+  echo "reviewer-activate.sh: missing sibling script: $GITIGNORE_SAFETY_SH" >&2
+  exit 1
+fi
 
 # shellcheck source=reviewer-activation-coverage.sh
 source "$RAC_SH"
+# shellcheck source=gitignore-safety.sh
+source "$GITIGNORE_SAFETY_SH"
 
 usage() {
-  sed -n '2,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,110p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 _ra_default_project_dir() {
@@ -173,60 +186,31 @@ _ra_filter_to_gaps() {
   printf '%s' "$kept"
 }
 
-# _ra_ensure_gitignore_entry PROJECT_DIR ENTRY SAMPLE_PATH -> 0 iff, on
-# return, SAMPLE_PATH resolves ignored under `git -C PROJECT_DIR
-# check-ignore` — either it already was, or ENTRY was appended to
-# PROJECT_DIR/.gitignore (creating the file if absent) to make it so. Prints
-# one line to stdout when it actually appends (nothing when already
-# ignored). Returns 1 and warns loudly to stderr, WITHOUT writing anything,
-# when PROJECT_DIR isn't a git repo, .gitignore can't be written, or the
-# path is somehow still not ignored after appending.
-_ra_ensure_gitignore_entry() {
-  local project_dir="$1" entry="$2" sample_path="$3" gi
-
-  if ! git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "reviewer-activate.sh: ! $project_dir is not a git repository — cannot guarantee '$entry' stays untracked; refusing to write activation/decline state here" >&2
-    return 1
-  fi
-
-  if git -C "$project_dir" check-ignore -q -- "$sample_path" 2>/dev/null; then
-    return 0
-  fi
-
-  gi="${project_dir}/.gitignore"
-  if [ -f "$gi" ] && grep -qxF "$entry" "$gi" 2>/dev/null; then
-    : # entry already literally present; check-ignore above should have
-      # caught this — fall through to the post-check below, which will
-      # surface a clear failure if it somehow still isn't ignored.
-  elif { [ -e "$gi" ] || touch "$gi" 2>/dev/null; } && printf '%s\n' "$entry" >>"$gi" 2>/dev/null; then
-    echo "reviewer-activate.sh: added '$entry' to $gi to keep activation/decline state per-checkout (never committed)"
-  else
-    echo "reviewer-activate.sh: ! could not write $gi to add '$entry' — refusing to write activation/decline state here" >&2
-    return 1
-  fi
-
-  if ! git -C "$project_dir" check-ignore -q -- "$sample_path" 2>/dev/null; then
-    echo "reviewer-activate.sh: ! $sample_path is still not ignored after updating $gi — refusing to write activation/decline state here" >&2
-    return 1
-  fi
-  return 0
-}
-
 # _ra_ensure_state_gitignored PROJECT_DIR -> 0 iff BOTH the activation
 # (.claude/agents/) and decline-marker (.claude/reviewer-state/) trees
 # resolve ignored in PROJECT_DIR, appending to its .gitignore as needed.
 # Called before EITHER write path (accept or decline) — see header comment.
+# Thin wrapper over the shared gitignore-safety.sh:gitignore_ensure_all()
+# (temperloop#569 extraction) so every call site here keeps its existing
+# name/signature.
 _ra_ensure_state_gitignored() {
-  local project_dir="$1" ok=0
-  _ra_ensure_gitignore_entry "$project_dir" ".claude/agents/" ".claude/agents/.reviewer-activate-probe" || ok=1
-  _ra_ensure_gitignore_entry "$project_dir" ".claude/reviewer-state/" ".claude/reviewer-state/.reviewer-activate-probe" || ok=1
-  return "$ok"
+  local project_dir="$1"
+  gitignore_ensure_all "$project_dir" \
+    ".claude/agents/" ".claude/agents/.reviewer-activate-probe" \
+    ".claude/reviewer-state/" ".claude/reviewer-state/.reviewer-activate-probe"
 }
 
-project_dir=""
-dry_run=0
-accept_list=""
-decline_list=""
+# ---------------------------------------------------------------------------
+# main — arg parsing + the offer/accept/decline flow. Wrapped so sourcing
+# this file (a test, or a future `make doctor --fix` caller) only defines
+# functions and never runs the interactive CLI — see the source-guard at
+# EOF (temperloop#569).
+# ---------------------------------------------------------------------------
+main() {
+local project_dir=""
+local dry_run=0
+local accept_list=""
+local decline_list=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -260,6 +244,7 @@ if [ ! -d "$project_dir" ]; then
 fi
 project_dir="$(cd "$project_dir" && pwd)"
 
+local gaps
 gaps="$(reviewer_coverage_gaps "$project_dir" "$REVIEWER_ROUTING_TSV")"
 
 if [ -z "$gaps" ]; then
@@ -267,10 +252,12 @@ if [ -z "$gaps" ]; then
   exit 0
 fi
 
+local gap_count
 gap_count="$(printf '%s\n' "$gaps" | grep -c . || true)"
 
 echo "== reviewer activation offer — $project_dir =="
 echo "  ${gap_count} catalogued reviewer(s) match this repo's language mix and are not yet active:"
+local g
 while IFS= read -r g; do
   [ -n "$g" ] && echo "    - $g"
 done <<<"$gaps"
@@ -281,8 +268,7 @@ echo
 # prompting) or from a SINGLE batched interactive prompt covering the whole
 # gap set (never one prompt per reviewer).
 # ---------------------------------------------------------------------------
-accept_set=""
-decline_set=""
+local accept_set="" decline_set="" answer
 
 if [ -n "$accept_list" ] || [ -n "$decline_list" ]; then
   if [ "$accept_list" = "all" ]; then
@@ -317,9 +303,7 @@ fi
 accept_set="$(_ra_filter_to_gaps "$accept_set" "$gaps")"
 decline_set="$(_ra_filter_to_gaps "$decline_set" "$gaps")"
 
-activated=0
-declined=0
-failures=0
+local activated=0 declined=0 failures=0 name accept_n decline_n marker_dir
 
 if [ -n "$accept_set" ]; then
   echo "-- activating --"
@@ -396,3 +380,16 @@ fi
 echo
 echo "reviewer-activate.sh: done"
 exit 0
+}
+
+# ---------------------------------------------------------------------------
+# Source-guard: only run main() when this file is the top-level EXECUTED
+# script, never on `source` — so a test (or a future doctor.sh/
+# project-agents.sh caller) can source this file to reuse its helper
+# functions (_ra_split_list, _ra_contains, _ra_filter_to_gaps,
+# _ra_ensure_state_gitignored, _ra_default_project_dir) without triggering
+# the interactive offer/accept/decline CLI (temperloop#569).
+# ---------------------------------------------------------------------------
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi
