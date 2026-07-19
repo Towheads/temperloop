@@ -124,6 +124,13 @@ KERNEL_GATES=(
   # reviewer-activation-coverage/project-agents gates above (kernel Makefile
   # is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_reviewer_activate.sh"
+  # Advisory `make doctor` reviewer-coverage check (temperloop#550, ADR
+  # 0007/0008): workflows/scripts/install/doctor.sh's check_reviewer_
+  # coverage() — WARN-level, strictly per-checkout, reusing #548's
+  # non-interactive data path (never #549's interactive caller). Same
+  # direct-`bash` form as the sibling reviewer gates above (kernel Makefile
+  # is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
