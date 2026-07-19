@@ -191,6 +191,16 @@ KERNEL_GATES=(
   # gh_cmd` seam (this file's own live-fallback injection point), zero
   # network. Same direct-`bash` form as the issue-corpus gate above.
   "bash workflows/scripts/lib/tests/test_issue_marker_probe.sh"
+  # Command-availability probe (ADR 0008, temperloop#537): `command_declared
+  # <name>`, the shared "source-or-installed present" check for a slash
+  # command across the three surfaces a headless `claude -p` invocation's
+  # supporting tooling reads/writes (cwd .claude/commands/, this checkout's
+  # own claude/commands/, and $HOME/.claude/commands/), plus the
+  # COMMAND_DECLARED_OVERRIDE fixture escape hatch. Zero network, zero
+  # mutation of the real HOME/checkout (a throwaway git repo under a tmpdir
+  # stands in for the checkout-surface case). Same direct-`bash` form as the
+  # issue-marker-probe gate above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/lib/tests/test_command_declared.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across
