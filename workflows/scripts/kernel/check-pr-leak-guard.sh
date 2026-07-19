@@ -152,6 +152,32 @@ while IFS=$'\t' read -r pat desc; do
   patterns+=("$pat")
   descriptions+=("$desc")
 done < "$KERNEL_DENYLIST_FILE"
+
+# Overlay: the operator-personal rows (name, personal emails, machine names,
+# Sentry slug, vault path, private org/handle) do NOT ship in the tracked,
+# public denylist (temperloop#438) — they live in a sibling, gitignored
+# personal-token-denylist.local.tsv. UNION it in when present; DEGRADE LEGIBLY
+# (a one-line NOTE, never a silent skip) when absent, so a stranger's
+# kernel-only clone still runs — scanning added lines against the tracked
+# structural/example rows only — and the coverage gap is visible rather than
+# silent. Path defaults to the sibling of KERNEL_DENYLIST_FILE (overridable via
+# KERNEL_DENYLIST_LOCAL_FILE, a test seam). This is the same single-source read
+# the whole-tree check-personal-token-denylist.sh does, kept DRY.
+: "${KERNEL_DENYLIST_LOCAL_FILE:=${KERNEL_DENYLIST_FILE%.tsv}.local.tsv}"
+if [[ -f "$KERNEL_DENYLIST_LOCAL_FILE" ]]; then
+  _local_rows=0
+  while IFS=$'\t' read -r pat desc; do
+    [[ -z "${pat:-}" ]] && continue
+    case "$pat" in \#*) continue ;; esac
+    patterns+=("$pat")
+    descriptions+=("$desc")
+    _local_rows=$((_local_rows + 1))
+  done < "$KERNEL_DENYLIST_LOCAL_FILE"
+  echo "check-pr-leak-guard: loaded $_local_rows operator-personal overlay row(s) from ${KERNEL_DENYLIST_LOCAL_FILE##*/}" >&2
+else
+  echo "check-pr-leak-guard: NOTE — no personal-token-denylist.local.tsv overlay present; scanning added lines against the tracked structural/example rows only (operator-personal tokens are enforced only where the gitignored overlay exists)." >&2
+fi
+
 if [[ ${#patterns[@]} -eq 0 ]]; then
   echo "check-pr-leak-guard: denylist has zero entries — nothing to check" >&2
   exit 1

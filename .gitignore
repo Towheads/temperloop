@@ -4,6 +4,12 @@
 # if present, gitignored so credentials (e.g. SENTRY_* for /signal-intake) never
 # commit. Template: workflows/scripts/build/build.config.local.sh.example.
 /workflows/scripts/build/build.config.local.sh
+# Operator-personal leak-guard denylist overlay (temperloop#438): the tracked
+# personal-token-denylist.tsv ships only structural/example rows; the real
+# operator/personal deny patterns (name, personal emails, machine names,
+# Sentry slug, vault path) live in this untracked overlay, which the leak-guard
+# reads when present and degrades legibly when absent. Never committed.
+/workflows/scripts/kernel/personal-token-denylist.local.tsv
 .mind/
 .claude/settings.local.json
 .claude/*.lock

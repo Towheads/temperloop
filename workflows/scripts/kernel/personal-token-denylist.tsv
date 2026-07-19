@@ -1,7 +1,34 @@
-# personal-token-denylist.tsv — single source of truth for the personal/org
-# token classes that must not appear in the kernel file set (foundation #798,
+# personal-token-denylist.tsv — STRUCTURAL/EXAMPLE rows only (temperloop#438,
+# split out of the former operator-personal index; originally foundation #798,
 # epic #762 kernel extraction). Checked by check-personal-token-denylist.sh
-# against every path list-kernel-set.sh reports.
+# against every path list-kernel-set.sh reports, and (diff-scoped) by
+# check-pr-leak-guard.sh against a PR's added lines.
+#
+# THE SPLIT. This TRACKED, public kernel file ships only the MACHINERY and an
+# illustrative example row. The operator-personal deny patterns (full name,
+# personal emails, machine names, Sentry org slug, Obsidian vault path, the
+# private GitHub org/handle) live in a sibling, GITIGNORED overlay file:
+#
+#     personal-token-denylist.local.tsv
+#
+# Both leak-guard checks UNION this tracked file with the .local overlay when
+# the overlay is present, and DEGRADE LEGIBLY — a one-line NOTE on stderr,
+# never a silent skip — when it is absent (a stranger's kernel-only clone).
+# So a public clone enforces only the structural/example rows below; the
+# operator's own checkout, which carries the untracked overlay, additionally
+# enforces the personal rows. Shipping the personal ROWS in the public repo
+# was a mild anti-pattern (no credentials, identity breadcrumbs only) — its
+# MACHINERY is kernel-shippable and stays here. Historical blobs retain the
+# pre-split rows (history is NOT rewritten); this is forward-going hygiene,
+# not a flip blocker.
+#
+# To (re)create the overlay on an operator machine, recover the pre-split rows
+# from git history and write them to the gitignored path:
+#     git show <pre-split-commit>:workflows/scripts/kernel/personal-token-denylist.tsv \
+#       | grep -vE '^[[:space:]]*(#|$)' \
+#       > workflows/scripts/kernel/personal-token-denylist.local.tsv
+# then edit to hold your own tokens. That path is gitignored; it can never be
+# committed.
 #
 # Format: <pattern> TAB <description>
 #   pattern     — an ERE (grep -E), matched case-sensitively against each
@@ -27,14 +54,11 @@
 # (3/4/5/6) — these are illustrative multi-board-pipeline examples, not
 # identity/credential tokens, and a later item (plan-schema repo-field) is
 # the one that replaces the hardcoded board-number mapping architecture.
-Towheads	personal GitHub org name (private org)
-[Tt]owhead\b	personal GitHub handle/org-login (lowercase form; \b avoids matching inside "Towheads")
-/Users/travis\b	personal absolute filesystem path
-Travis Newcomb	personal full name (repo author identity — appears in git metadata, must never land in tracked kernel content)
-travis\.newcomb@gmail\.com	personal email address (secondary)
-travnew	personal GitHub email-name / handle fragment
-TravisBook	personal machine name
-\bthe mini\b	personal machine nickname (Travis's secondary Mac)
-travnew@yahoo\.com	personal email address
-subset-xg	personal Sentry org slug (real production value, not a placeholder)
-\bdev/mind\b	personal Obsidian vault path (operator's knowledge-store directory; temperloop#164/#169). Pre-existing hits are burned down via the baseline file (see check-personal-token-denylist.sh header), NOT exempted — a later item (kernel-literal-scrub) empties it.
+#
+# --- structural/example row -------------------------------------------------
+# The single example below is INERT: the placeholder token never appears in
+# real kernel content, so it matches nothing and enforces nothing. It exists
+# only to document the row shape for anyone authoring the .local overlay, and
+# to keep this file non-empty (both checks error on a zero-entry denylist).
+# Put your REAL operator/personal deny patterns in the OVERLAY file, not here.
+YOUR_ORG_OR_NAME_TOKEN_HERE	EXAMPLE (structural, inert placeholder) — real operator/personal deny patterns belong in the gitignored personal-token-denylist.local.tsv overlay, never in this tracked file. See this file's header for the split.
