@@ -115,6 +115,15 @@ KERNEL_GATES=(
   # project-agents/manifest/T0-inventory gates above (kernel Makefile is
   # generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_reviewer_activation_coverage.sh"
+  # Reviewer opt-in activation caller + durable-decline marker (temperloop#549,
+  # ADR 0007/0008): workflows/scripts/install/reviewer-activate.sh — the
+  # interactive layer between #548's gap-set data path and #543's --only
+  # deploy path: one batched offer per gap set, activation via --only,
+  # durable per-name decline markers under the gitignored
+  # .claude/reviewer-state/declined/. Same direct-`bash` form as the
+  # reviewer-activation-coverage/project-agents gates above (kernel Makefile
+  # is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_reviewer_activate.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
