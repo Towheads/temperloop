@@ -143,8 +143,9 @@ test-hooks:
 
 shellcheck:
 	@echo "==> shellcheck (production + hook scripts)..."
-	@find . -name '*.sh' -not -path './.git/*' -not -path '*/tests/*' -print0 \
-		| xargs -0 --no-run-if-empty shellcheck -e SC1091
+	@bin="$$(bash scripts/ensure-shellcheck.sh)" || exit 1; \
+	find . -name '*.sh' -not -path './.git/*' -not -path '*/tests/*' -print0 \
+		| xargs -0 --no-run-if-empty "$$bin" -e SC1091
 
 quality-gates:
 	@bash $(FOUNDATION)/scripts/quality-gates.sh

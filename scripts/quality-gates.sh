@@ -479,6 +479,12 @@ KERNEL_GATES=(
   # recovery. Same fixture-upstream + sandbox conventions as
   # test_update_subcommand.sh / test_rename_compat.sh above.
   "bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh"
+  # Pinned-shellcheck resolver (temperloop#567): asserts scripts/ensure-shellcheck.sh
+  # resolves a binary reporting EXACTLY the pinned version and fails loudly on an
+  # unresolvable version — the guarantee that `make shellcheck` (the gate below)
+  # runs the same shellcheck locally and in CI, closing the false-green skew that
+  # let CI-ubuntu's 0.9.0 flag an SC2015 that local/brew 0.11.0 did not (#550).
+  "bash scripts/tests/test_ensure_shellcheck.sh"
   "make shellcheck"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a

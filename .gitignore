@@ -51,3 +51,7 @@ __pycache__/
 # and reviewer-activation-coverage.sh (#548) / a future `make doctor` check
 # (#550) read from. Per-repo install/local state — never committed.
 .claude/reviewer-state/
+# Pinned-tool download cache (temperloop#567): scripts/ensure-shellcheck.sh
+# caches the pinned shellcheck static binary here. Host-local, regenerated on
+# demand — never committed.
+.cache/
