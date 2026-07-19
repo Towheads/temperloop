@@ -67,6 +67,16 @@ BOARD_FIELD_COMPONENT="Component"
 #      removed in v0.17.0 — move the file (mkdir -p ~/.config/temperloop &&
 #      mv ~/.config/foundation/boards.conf ~/.config/temperloop/) or set
 #      BOARDS_CONF_MACHINE.
+#   1b. composed-tree consumer-root conf (temperloop#494): in a self-hosting
+#      checkout that vendors this kernel as a `kernel/` subtree and symlinks
+#      workflows/scripts/board into it (foundation), the rung-2 repo-local path
+#      below physically lands inside kernel/. This rung — between machine-level
+#      and repo-local — probes the CONSUMER ROOT (the directory containing
+#      kernel/, located from board.sh's own physical path) for a real
+#      workflows/scripts/board/boards.conf OUTSIDE kernel/, giving that tree a
+#      committable driver-side seam. Inert for synced-directory consumers and
+#      the kernel repo itself (not inside a kernel/ subtree). See
+#      _board_consumer_root_conf below.
 #   2. repo-local override: workflows/scripts/board/boards.conf, next to this
 #      lib — override BOARDS_CONF_REPO_LOCAL
 #   3. the built-in case map (below) — the fallback every caller sees when
@@ -116,12 +126,68 @@ _board_machine_conf_default() {
   printf '%s' "$new_f"
 }
 
-# Echo the first EXISTING conf file in discovery order; rc 1 if neither exists
+# Composed-tree consumer-root conf (temperloop#494). A self-hosting composed
+# checkout (foundation, the funnel driver) vendors this kernel as a `kernel/`
+# subtree and exposes `workflows/scripts/board` as a DIRECTORY SYMLINK into it —
+# so the symlink-resolved repo-local location ($_BOARD_LIB_DIR/../boards.conf,
+# the rung-2 path in _board_conf_file/_board_conf_files below) physically lands
+# INSIDE kernel/, where a committed consumer-owned conf trips kernel-drift-check
+# and conflicts with every subtree pull. That is exactly why foundation — alone
+# among the consumers — could not commit its driver-side backend-flip entries
+# (temperloop#460 L3 canary, temperloop#470) and fell back to a machine-level
+# ~/.config conf.
+#
+# This probe gives such a tree a committable, reviewable seam OUTSIDE kernel/:
+# board.sh's OWN physical path (symlinks resolved, `pwd -P`) is inspected for a
+# `/kernel/` component; if present, the consumer root is the directory that
+# CONTAINS kernel/, and its `workflows/scripts/board/boards.conf` is used —
+# but ONLY when it is a real file whose directory does NOT itself resolve back
+# inside kernel/ (i.e. the consumer really does own a physical board dir there,
+# not merely a whole-directory symlink into the subtree). That guard is what
+# keeps the current whole-`board`-symlink layout falling straight through to
+# rung 2 unchanged, and lights up only once the consumer materialises a real
+# consumer-owned boards.conf at that path.
+#
+# ADR 0005's "boards.conf is never vendored" rule is preserved: this file lives
+# at the CONSUMER root, above kernel/ — it is consumer-owned, never carried into
+# the vendored subtree. A synced-directory consumer (stageFind/ssmobile/
+# subsetwiki, whose `workflows/scripts/board` is a real banner-stamped copy, not
+# a subtree symlink) and the kernel repo itself are NOT inside a `/kernel/`
+# subtree, so this returns rc 1 and their existing rung-2 path is used verbatim.
+# rc 0 + the path on a hit; rc 1 on any miss (not a composed tree, no file, or
+# a file that resolves back inside kernel/).
+_board_consumer_root_conf() {
+  local phys root cand cand_dir
+  # board.sh's own PHYSICAL directory (pwd -P resolves the board symlink into
+  # kernel/ for a composed tree; leaves a real synced/kernel checkout as-is).
+  phys="$(cd "$_BOARD_LIB_DIR" 2>/dev/null && pwd -P)" || return 1
+  case "$phys" in
+    */kernel/*) root="${phys%%/kernel/*}" ;;   # dir that contains kernel/
+    *) return 1 ;;                              # not a vendored composed tree
+  esac
+  cand="$root/workflows/scripts/board/boards.conf"
+  [ -f "$cand" ] || return 1
+  # Reject a candidate whose directory resolves back INSIDE kernel/ — that is
+  # the whole-`board`-symlink case, which is NOT a committable seam. Only a real
+  # consumer-owned board dir at the root passes.
+  cand_dir="$(cd "$(dirname "$cand")" 2>/dev/null && pwd -P)" || return 1
+  case "$cand_dir/" in
+    "$root/kernel/"*) return 1 ;;
+  esac
+  printf '%s' "$cand"
+  return 0
+}
+
+# Echo the first EXISTING conf file in discovery order; rc 1 if none exists
 # (callers then fall through to their built-in case map).
 _board_conf_file() {
   local f
   f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
   [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+  # composed-tree consumer-root conf — BEFORE the symlink-resolved repo-local
+  # one, so a self-hosting tree's committed driver-side conf wins over the
+  # kernel-internal path its board symlink would otherwise resolve to (#494).
+  f="$(_board_consumer_root_conf)" && { printf '%s' "$f"; return 0; }
   f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
   [ -f "$f" ] && { printf '%s' "$f"; return 0; }
   return 1
@@ -136,6 +202,11 @@ _board_conf_files() {
   local f
   f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
   [ -f "$f" ] && printf '%s\n' "$f"
+  # composed-tree consumer-root conf, same rung/precedence as in
+  # _board_conf_file (between machine-level and symlink-resolved repo-local) so
+  # the per-key backend fallthrough walked by _board_conf_get_layered() sees it
+  # too (#494).
+  f="$(_board_consumer_root_conf)" && printf '%s\n' "$f"
   f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
   [ -f "$f" ] && printf '%s\n' "$f"
   return 0

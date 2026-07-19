@@ -177,6 +177,142 @@ export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-8b"
   || fail "board_registered_boards should union a conf-registered board 8, got: $(board_registered_boards | tr '\n' ' ')"
 echo "PASS: board_registered_boards is the built-in set (incl. board 7) unioned with conf-registered boards (temperloop#352)"
 
+# --- 10: composed-tree consumer-root conf (temperloop#494) ------------------
+# A self-hosting composed checkout (foundation) vendors the kernel as a
+# `kernel/` subtree and exposes workflows/scripts/board as a DIRECTORY SYMLINK
+# into it, so the symlink-resolved repo-local path ($_BOARD_LIB_DIR/../
+# boards.conf) physically lands INSIDE kernel/ — un-committable (kernel-drift).
+# board.sh must instead probe the CONSUMER ROOT (the directory containing
+# kernel/) for a real workflows/scripts/board/boards.conf OUTSIDE kernel/,
+# BEFORE that symlink-resolved location. This builds a fixture composed tree and
+# asserts the probe precedence from a SUBSHELL that re-sources board.sh so its
+# $_BOARD_LIB_DIR resolves through the fixture's board symlink (the real
+# in-process $_BOARD_LIB_DIR points at this repo's own lib, which is not inside
+# a kernel/ subtree). Neither BOARDS_CONF_MACHINE nor BOARDS_CONF_REPO_LOCAL is
+# set — the consumer-root rung must fire on its own.
+CT="$WORK/composed"
+# kernel subtree: the real board.sh + a kernel-internal boards.conf (the path
+# the board symlink resolves to — must LOSE to the consumer-root file).
+mkdir -p "$CT/kernel/workflows/scripts/board/lib"
+cp "$LIB_DIR/board.sh" "$CT/kernel/workflows/scripts/board/lib/board.sh"
+cat > "$CT/kernel/workflows/scripts/board/boards.conf" <<'EOF'
+board.4.repo=Kernel/should-not-win
+EOF
+# consumer root: a REAL board dir (its lib is a symlink into the kernel subtree,
+# exactly like foundation composes it) holding the committed consumer-owned conf.
+mkdir -p "$CT/workflows/scripts/board"
+ln -s "../../../kernel/workflows/scripts/board/lib" "$CT/workflows/scripts/board/lib"
+cat > "$CT/workflows/scripts/board/boards.conf" <<'EOF'
+board.4.repo=Consumer/root-wins
+EOF
+
+# Sanity: the fixture reproduces the failing geometry — board.sh's physical lib
+# is inside kernel/, and the symlink-resolved repo-local conf is the kernel one.
+ct_phys="$(cd "$CT/workflows/scripts/board/lib" && pwd -P)"
+case "$ct_phys" in
+  */kernel/workflows/scripts/board/lib) : ;;
+  *) fail "fixture geometry wrong: board lib did not resolve into kernel/, got: $ct_phys" ;;
+esac
+
+ct_repo="$(
+  set -euo pipefail
+  unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  # A machine conf default that certainly does not exist, so rung 1 is inert
+  # without depending on the host's real ~/.config.
+  export XDG_CONFIG_HOME="$WORK/no-such-xdg"
+  # shellcheck source=/dev/null
+  source "$CT/workflows/scripts/board/lib/board.sh"
+  board_repo 4
+)"
+[ "$ct_repo" = "Consumer/root-wins" ] \
+  || fail "composed tree: board_repo 4 should resolve the CONSUMER-ROOT conf before the symlink-resolved kernel one, got: $ct_repo"
+
+# _board_consumer_root_conf points at the consumer-root file, not the kernel one.
+ct_conf="$(
+  set -euo pipefail
+  unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  export XDG_CONFIG_HOME="$WORK/no-such-xdg"
+  # shellcheck source=/dev/null
+  source "$CT/workflows/scripts/board/lib/board.sh"
+  _board_consumer_root_conf
+)"
+# pwd -P canonicalizes /var -> /private/var on macOS, so compare against the
+# physically-resolved expected path rather than the raw mktemp path.
+ct_expect="$(cd "$CT/workflows/scripts/board" && pwd -P)/boards.conf"
+[ "$ct_conf" = "$ct_expect" ] \
+  || fail "_board_consumer_root_conf should return the consumer-root path ($ct_expect), got: $ct_conf"
+case "$ct_conf" in
+  */kernel/*) fail "consumer-root conf must be OUTSIDE kernel/, got: $ct_conf" ;;
+esac
+
+echo "PASS: composed tree resolves the consumer-root boards.conf before the symlink-resolved kernel path (temperloop#494)"
+
+# --- 10b: whole-board-symlink layout has NO consumer-root seam yet ----------
+# When workflows/scripts/board is itself a whole-directory symlink into kernel/
+# (foundation's CURRENT layout, before it materialises a real board dir), the
+# consumer-root candidate resolves BACK inside kernel/ — it is not a committable
+# seam, so the probe must decline and fall through to rung 2 unchanged.
+CT2="$WORK/composed-symlink"
+mkdir -p "$CT2/kernel/workflows/scripts/board/lib"
+cp "$LIB_DIR/board.sh" "$CT2/kernel/workflows/scripts/board/lib/board.sh"
+cat > "$CT2/kernel/workflows/scripts/board/boards.conf" <<'EOF'
+board.4.repo=Kernel/only
+EOF
+mkdir -p "$CT2/workflows/scripts"
+ln -s "../../kernel/workflows/scripts/board" "$CT2/workflows/scripts/board"
+
+ct2_conf="$(
+  set -euo pipefail
+  unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  export XDG_CONFIG_HOME="$WORK/no-such-xdg"
+  # shellcheck source=/dev/null
+  source "$CT2/workflows/scripts/board/lib/board.sh"
+  if _board_consumer_root_conf; then echo HIT; else echo MISS; fi
+)"
+[ "$ct2_conf" = "MISS" ] \
+  || fail "whole-board-symlink layout should NOT yield a consumer-root seam (candidate resolves back into kernel/), got: $ct2_conf"
+
+# ...and _board_conf_file then falls through to the (kernel-internal) rung-2
+# path unchanged — the pre-#494 behavior, so nothing regresses for a tree that
+# has not yet materialised a real consumer-owned board dir.
+ct2_repo="$(
+  set -euo pipefail
+  unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  export XDG_CONFIG_HOME="$WORK/no-such-xdg"
+  # shellcheck source=/dev/null
+  source "$CT2/workflows/scripts/board/lib/board.sh"
+  board_repo 4
+)"
+[ "$ct2_repo" = "Kernel/only" ] \
+  || fail "whole-board-symlink layout should fall through to the rung-2 symlink-resolved conf, got: $ct2_repo"
+
+echo "PASS: a whole-board-symlink layout declines the consumer-root seam and falls through to rung 2 unchanged (temperloop#494)"
+
+# --- 10c: a synced-directory consumer is NOT a composed tree ---------------
+# stageFind/ssmobile/subsetwiki get a real (banner-stamped copy) board dir with
+# no kernel/ subtree above it. board.sh's physical path has no /kernel/
+# component, so the consumer-root probe is inert and the existing repo-local
+# path resolves their real committed conf unchanged.
+CT3="$WORK/synced"
+mkdir -p "$CT3/workflows/scripts/board/lib"
+cp "$LIB_DIR/board.sh" "$CT3/workflows/scripts/board/lib/board.sh"
+cat > "$CT3/workflows/scripts/board/boards.conf" <<'EOF'
+board.4.repo=Synced/repo-local
+EOF
+ct3_repo="$(
+  set -euo pipefail
+  unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  export XDG_CONFIG_HOME="$WORK/no-such-xdg"
+  # shellcheck source=/dev/null
+  source "$CT3/workflows/scripts/board/lib/board.sh"
+  if _board_consumer_root_conf; then echo "CONSUMER-ROOT-FIRED"; fi
+  board_repo 4
+)"
+[ "$ct3_repo" = "Synced/repo-local" ] \
+  || fail "synced-directory consumer should resolve its own repo-local conf (consumer-root probe inert), got: $ct3_repo"
+
+echo "PASS: a synced-directory consumer resolves its committed repo-local conf, consumer-root probe inert (temperloop#494)"
+
 # --- 9: backend axis per-key fallthrough (boards.conf per-axis backend
 # fallthrough) — a machine-level conf that EXISTS but is silent on this
 # board's backend key must fall through to a repo-local `backend=` entry,
