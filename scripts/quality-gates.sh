@@ -106,6 +106,14 @@ KERNEL_GATES=(
   # the manifest/T0-inventory gates above (kernel Makefile is generator-owned;
   # no new target added here).
   "bash workflows/scripts/tests/test_install_project_agents.sh"
+  # Out-of-tree bulk deploy copy-default regression (temperloop#497):
+  # project-agents.sh's bulk deploy_one() now mirrors deploy_only()'s
+  # in-tree/out-of-tree mode decision — an out-of-tree adopter defaults to a
+  # detached real-file copy instead of an absolute symlink back into the
+  # operator's kernel checkout. Same direct-`bash` form as the sibling
+  # project-agents gate above (kernel Makefile is generator-owned; no new
+  # target added here).
+  "bash workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh"
   # Reviewer activation-coverage scan (temperloop#548, ADR 0007/0008):
   # workflows/scripts/install/reviewer-activation-coverage.sh — the pure,
   # non-interactive data path that computes the gap set (catalogued
