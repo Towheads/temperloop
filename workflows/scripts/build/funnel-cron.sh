@@ -366,6 +366,13 @@ cap="${sched_cap:-$FUNNEL_DRIVE_CAP}"
 export FUNNEL_DRIVE_CAP="$cap"
 export FUNNEL_DRIVE_MERGE_CAP="$cap"
 
+# Run identity for this wake (temperloop#492). The board loop below spawns a
+# fresh funnel-tick.sh PROCESS per board; a shared, wake-stable id lets the
+# per-process flock-degradation notice (stock macOS has no `flock`) dedup to
+# ONCE per run instead of once per board per tick. Wake-unique = this cron PID
+# plus the wake date, so a later wake re-warns once (never once-ever).
+export FUNNEL_RUN_ID="${FUNNEL_RUN_ID:-$log_date-$$}"
+
 plans='[]'
 tick_err_file="$FUNNEL_LOG_DIR/.tick-err.$$"
 for b in $boards; do

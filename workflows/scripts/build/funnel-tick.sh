@@ -178,6 +178,23 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FUNNEL_LOCK_DIR:=/tmp/funnel-tick}"
 : "${FUNNEL_LOCK_FILE:=$FUNNEL_LOCK_DIR/tick.lock}"
 
+# The flock binary name (temperloop#492). Stock macOS ships no `flock`, so the
+# single-flight lock degrades to the per-issue contention pre-check with a WARN.
+# Script-local like FUNNEL_LOCK_DIR (a binary name, not an operator knob); the
+# override exists so a test can force the degraded path deterministically on a
+# host that DOES carry flock, and so a host with a differently-named binary can
+# point at it.
+: "${FUNNEL_FLOCK_CMD:=flock}"
+
+# Run identity for the once-per-run flock-degradation notice (temperloop#492).
+# funnel-cron loops boards → many funnel-tick PROCESSES per wake, each emitting
+# the flock-missing WARN independently; on stock macOS that accumulates one line
+# per board per tick, unattended, forever. The dedup keys off this shared run id
+# (funnel-cron.sh exports it for the whole wake), persisted in a marker so the
+# notice fires AT MOST ONCE per run. A bare/standalone funnel-tick.sh run has no
+# exported id and falls back to its own PID — one process, one acquisition, one
+# notice, exactly as before.
+
 # Idempotency marker (foundation #587). The drain applier (tidy.md
 # § Answered decisions step f) posts a confirmation comment when it applies an
 # answered decision and drops the `decision` label. Search-index lag can re-list
@@ -279,15 +296,37 @@ if [ "$LIST_ENABLED" -eq 1 ]; then
   exit 0
 fi
 
+# Emit the flock-missing single-flight degradation notice AT MOST ONCE per
+# funnel run (temperloop#492). The condition (no `flock` on stock macOS) is
+# stable and holds on EVERY tick, so the raw echo below used to accumulate one
+# WARN line per board per tick on an unattended macOS host, drowning the log.
+# funnel-cron loops boards → a fresh funnel-tick PROCESS per board, so the
+# "already warned this run" state must persist on disk (mirrors _intake_warn_once,
+# #330). The marker records the RUN ID that last warned; a differing (or absent)
+# id re-warns — so each new run gets exactly one notice, never once-ever (a fresh
+# cron log still shows it once). Marker writes are best-effort: a /tmp failure
+# must never wedge the tick (the notice has already printed). NOTE: noise
+# reduction only — the fallback per-issue contention pre-check is unchanged and
+# remains the real double-act guard.
+_flock_degraded_warn_once() {
+  local run="${FUNNEL_RUN_ID:-$$}" marker prev=""
+  marker="$FUNNEL_LOCK_DIR/flock-degraded-warned"
+  [ -f "$marker" ] && prev="$(cat "$marker" 2>/dev/null || true)"
+  [ "$prev" = "$run" ] && return 0
+  echo '{"warning":"flock not found — single-flight lock skipped; relying on the per-issue contention pre-check"}' >&2
+  mkdir -p "$FUNNEL_LOCK_DIR" 2>/dev/null || true
+  printf '%s\n' "$run" > "$marker" 2>/dev/null || true
+}
+
 # ── Single-flight lock (contract § 4 — skip in dry-run; the fixture path has no
 # shared mutable state to protect, and tests must run concurrently). The live
 # path acquires it; a second overlapping tick gets flock -n failure and exits 0
 # (a no-op tick, not an error). ────────────────────────────────────────────────
 if [ "$DRY_RUN" -eq 0 ]; then
-  if command -v flock >/dev/null 2>&1; then
+  if command -v "$FUNNEL_FLOCK_CMD" >/dev/null 2>&1; then
     mkdir -p "$FUNNEL_LOCK_DIR"
     exec 200>"$FUNNEL_LOCK_FILE"
-    if ! flock -n 200; then
+    if ! "$FUNNEL_FLOCK_CMD" -n 200; then
       echo '{"tick":"skipped","reason":"funnel-tick already running (single-flight lock held)"}'
       exit 0
     fi
@@ -297,8 +336,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
     # double-act guard; the lockfile is the coarse host-level single-flight on
     # top of it. Without flock we proceed and rely on the pre-check — a tick
     # must never refuse to run merely because the coarse lock primitive is
-    # missing. The cron host (the always-on Linux/mini) carries flock.
-    echo '{"warning":"flock not found — single-flight lock skipped; relying on the per-issue contention pre-check"}' >&2
+    # missing. The cron host (the always-on Linux/mini) carries flock. The notice
+    # is squelched to once per run (temperloop#492) — see _flock_degraded_warn_once.
+    _flock_degraded_warn_once
   fi
 fi
 

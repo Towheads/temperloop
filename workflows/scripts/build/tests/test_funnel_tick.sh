@@ -228,6 +228,40 @@ else
 fi
 fi   # end flock-available guard
 
+# ── 9b: flock-degradation notice squelched to once per run (#492) ─────────────
+# On stock macOS `flock` is absent, so the single-flight lock degrades to the
+# per-issue contention pre-check and emits a WARN. That WARN must fire AT MOST
+# ONCE per funnel run — not once per board/tick — or an unattended macOS host
+# accrues a line every tick, forever. We force the degraded path deterministically
+# via FUNNEL_FLOCK_CMD=<nonexistent> (so this runs identically on a host that HAS
+# flock), then fire TWO ticks sharing one FUNNEL_RUN_ID + lock dir (the shape of
+# funnel-cron's per-board loop within one wake) and assert the notice appears
+# exactly ONCE across both. Board 999 is unknown/disabled, so each tick is a clean
+# no-op that touches no network — the WARN emits from the lock step, before any
+# board read. The fallback locking behavior is unchanged: the tick still PROCEEDS
+# (it does not skip), it merely stops repeating the notice.
+echo "--- test 9b: flock-degradation notice squelched to once per run (#492) ---"
+LOCKDIR9B="$TMP/lock9b"; mkdir -p "$LOCKDIR9B"
+ERR9B="$TMP/t9b.err"; : > "$ERR9B"
+run_deg9b() {
+  FUNNEL_FLOCK_CMD="__no_such_flock_binary__" FUNNEL_RUN_ID="$1" \
+  FUNNEL_LOCK_DIR="$LOCKDIR9B" FUNNEL_LOCK_FILE="$LOCKDIR9B/tick.lock" \
+  FUNNEL_ENABLED_BOARDS="999" bash "$TICK" --board 999 >/dev/null 2>>"$ERR9B" || true
+}
+run_deg9b "run-alpha"
+run_deg9b "run-alpha"
+WARN9B="$(grep -c 'flock not found' "$ERR9B" || true)"
+[ "$WARN9B" = "1" ] \
+  && ok "flock-degradation notice emitted exactly once across two same-run ticks" \
+  || bad "t9b.once-per-run" "expected 1 flock WARN across two same-run ticks, got $WARN9B"
+# A DIFFERENT run id re-warns (once per run, never once-ever) — the operator still
+# sees the notice on each fresh cron log.
+run_deg9b "run-beta"
+WARN9B2="$(grep -c 'flock not found' "$ERR9B" || true)"
+[ "$WARN9B2" = "2" ] \
+  && ok "a new run id re-warns once (not silenced once-ever)" \
+  || bad "t9b.per-run-reset" "expected 2 total after a fresh run id, got $WARN9B2"
+
 # ── 10: malformed board-items tail still drives Ready work (#584) ────────────
 # Regression for the live-seam bug. board_resolve's BOARD_ITEMS_JSON was
 # observed on the LIVE board to carry a trailing token (jq: "Unmatched '}'"),
