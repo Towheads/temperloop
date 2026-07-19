@@ -42,7 +42,12 @@
 #                             (NAMING_LINT_FOLDERS below) that doesn't match
 #                             the `<project> - <title>` convention. Propose-
 #                             only — the correct project/title split is a
-#                             judgment call.
+#                             judgment call. A deliberately cross-cutting note
+#                             opts OUT via the explicit `cross_project: true`
+#                             frontmatter marker (a precise, per-note opt-in,
+#                             NOT a maintained blanket exemption list — see the
+#                             NAMING_LINT_FOLDERS tunable block below,
+#                             temperloop#420).
 #   9. stale plan           — a Plans/ note with frontmatter `status:`
 #                             draft|approved whose mtime is older than
 #                             STALE_PLAN_DAYS. Propose-only.
@@ -275,6 +280,10 @@ LEDGER_CAPS=(250 120 400)
 ALLOWED_TOP_FOLDERS=(
   Plans Decisions Patterns Mistakes Context Sessions Priorities Controls
   Pipeline Investigations Projects Personal
+  # In-use top-level folders reconciled against the live vault (temperloop#420):
+  # the ruleset shipped from epic temperloop#226 never listed these, so every
+  # nightly run re-flagged them as unlisted even though they are known-good.
+  Designs Issues Plans-archive Sequencing Spikes StageFind
 )
 # Folders the one-file-directory lint (check 7) must NOT flag even though
 # they nest below a top-level folder and may legitimately hold exactly one
@@ -288,6 +297,16 @@ SCHEMA_NESTED_DIRS=(
 # <project>-<id8>.md` prefix convention) and Personal/ are deliberately
 # excluded.
 NAMING_LINT_FOLDERS=(Decisions Patterns Mistakes Plans)
+# THE CROSS-PROJECT MARKER (temperloop#420). A note that is deliberately
+# cross-cutting — one that legitimately has no single `<project>` owner (a
+# glossary, a shared-tooling decision, a convention that spans every project)
+# — opts OUT of the `<project>`-prefix rule above by carrying the explicit
+# `cross_project: true` frontmatter marker. This is a PRECISE, per-note
+# opt-in: each cross-cutting note declares itself, rather than the lint
+# carrying a maintained blanket exemption list that silently drifts out of
+# date. Any other value, or an absent key, is NOT a marker and the note is
+# still linted. Parsed by _hyg_has_cross_project_marker() below; accepts the
+# truthy scalar spellings true|yes|1 (case-insensitive).
 STALE_PLAN_DAYS=30   # Plans/ note with status draft|approved untouched this long -> alarm
 
 # ── Read-path-lint tunables (temperloop#239) ─────────────────────────────────
@@ -650,6 +669,25 @@ EOF
 }
 register_check check_one_file_dir
 
+# note file -> 0 iff it carries the explicit cross-project marker
+# (`cross_project: true` in its YAML frontmatter), which opts the note OUT of
+# the naming-drift `<project>`-prefix rule (check 8). This is a PRECISE,
+# per-note opt-in — a deliberately cross-cutting note declares itself
+# cross-project rather than being blanket-exempted by a maintained list
+# (temperloop#420). The frontmatter is extracted with the same awk idiom every
+# other frontmatter-reading check here uses (check 11/13/14). Truthy scalar
+# spellings true|yes|1 (case-insensitive) count as the marker; any other value
+# or an absent key does NOT.
+_hyg_has_cross_project_marker() {
+  local f="$1" fm val
+  fm="$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$f" 2>/dev/null)"
+  val="$(printf '%s\n' "$fm" | grep -im1 '^cross_project:' | sed -e 's/^[Cc]ross_project:[[:space:]]*//' -e 's/["'\'']//g' | tr -d '\r' | tr '[:upper:]' '[:lower:]' | awk '{print $1}' || true)"
+  case "$val" in
+    true|yes|1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── Check 8: naming drift ─────────────────────────────────────────────────────
 check_naming_drift() {
   local count=0 d dir f base rel
@@ -662,6 +700,10 @@ check_naming_drift() {
       case "$base" in
         *" - "*) continue ;;   # matches the `<project> - <title>` convention
       esac
+      # A deliberately cross-cutting note opts out of the `<project>`-prefix
+      # rule via the explicit `cross_project: true` frontmatter marker — a
+      # precise, per-note opt-in, not a blanket exemption list (temperloop#420).
+      _hyg_has_cross_project_marker "$f" && continue
       count=$((count + 1))
       rel="${f#"$ROOT"/}"
       add "- ⚠️ naming: ${rel} — filename doesn't match the \`<project> - <title>\` convention (propose-only: confirm the right project/title split before renaming)"
