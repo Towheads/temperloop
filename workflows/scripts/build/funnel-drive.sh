@@ -15,13 +15,18 @@
 #
 #   SAFE — auto-executed headlessly (no PR, no merge), always when invoked:
 #     route-foundational · drain-answer · drain-parse-miss · drain-clarification
-#     · drive-ready WHERE kind == "spike"   (build.md kind:spike path: writes a
-#       verdict note + routes a follow-up; opens no PR — #600)
+#     · retro-judge · drive-ready WHERE kind == "spike"   (build.md kind:spike
+#       path: writes a verdict note + routes a follow-up; opens no PR — #600)
 #     (drain-clarification — #657 — clears `needs-clarification` on an item the
 #      operator answered + unassigned: a label remove + ack comment, no PR/merge,
 #      so it belongs in the safe tier alongside drain-answer.)
 #     (route-needs-input retired in #684: `needs-clarification` producers now
 #      assign the operator at source, so the funnel only parks — see below.)
+#     (retro-judge — epic #528, temperloop#535 — the KERNEL trigger half of the
+#      mint-then-judge design: funnel-tick.sh emits it when a `retro-pending`
+#      tracker (build.md 4d-retro's mint, #533) is due. It spawns the OVERLAY
+#      `/retro --pending` judge — a nested headless session, no PR/merge of its
+#      own — so it belongs in the safe tier alongside the other no-merge drains.)
 #
 #   MERGING — drive-ready WHERE kind == "code" (→ /build --unattended → PR →
 #     merge). Surfaced-but-not-driven by default; DRIVEN only when
@@ -32,12 +37,14 @@
 #   no-op-ish — nothing to execute, dropped silently:
 #     route-already-assigned · drain-already-applied
 #     · drain-clarification-already-applied
-#     · skip-contention · no-op · board-disabled
+#     · skip-contention · skip-retro-judge · no-op · board-disabled
 #     (route-already-assigned covers every parked `needs-clarification` item — #684 —
 #      AND every parked `funnel-escalated` 5c code escalation — #697; the operator was
 #      already assigned at source in both cases, so there is nothing for the funnel to
 #      do but drop it. #697 retired the skip-merge-escalation verb: a `funnel-escalated`
-#      item no longer carries `needs-clarification`, so the drain never lists it.)
+#      item no longer carries `needs-clarification`, so the drain never lists it.
+#      skip-retro-judge — funnel-tick.sh's own legible record that no overlay
+#      `/retro` judge is declared — there is nothing here to drive either.)
 #
 # 5b safety = STRUCTURALLY incapable of merging: with FUNNEL_DRIVE_MERGE off
 # (default) the merging tier is filtered OUT before the headless Claude sees it,
@@ -397,6 +404,7 @@ safe="$(jq -c '[.[]?.actions[]? | select(
     or (.action == "drain-answer")
     or (.action == "drain-parse-miss")
     or (.action == "drain-clarification")
+    or (.action == "retro-judge")
     or (.action == "drive-ready" and .kind == "spike")
 )]' <<<"$plans" 2>/dev/null || echo '[]')"
 
