@@ -8,7 +8,7 @@ Proposed
 
 ## Context
 
-epic: Towheads/temperloop#528 (kernel half) · Towheads/foundation#1247
+epic: temperloop#528 (kernel half) · foundation#1247
 (overlay half) · design brief: `Designs/temperloop - unified retrospection`
 
 Two partially-overlapping retrospection mechanisms existed: `/build`'s

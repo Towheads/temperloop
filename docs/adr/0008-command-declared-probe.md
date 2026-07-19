@@ -8,7 +8,7 @@ Proposed
 
 ## Context
 
-epic: Towheads/temperloop#528 · design brief:
+epic: temperloop#528 · design brief:
 `Designs/temperloop - unified retrospection`
 
 The kernel's capability-probe predicate ([[Decisions/foundation - Project
