@@ -156,6 +156,18 @@ issue always reports `status: "Done"` regardless of what labels remain on it
 close). An **open** issue with no `fnd:status:*` label reads as unstatused
 (no `.status` key) — distinct from Done.
 
+Because an unstatused open issue reads as `.status = ""`, **`/triage`'s Backlog
+intake silently skips it** (Adapter A keeps only `.status == Backlog`), so a
+genuine defect can fall out of the funnel with no error (temperloop#376). The
+capture path (`capture.sh` → `board_capture_item`) already stamps
+`fnd:status:backlog` on every issue it files — so the normal front door never
+produces one — but an issue reaching the tracker by any *other* route (a hand
+`gh issue create`, an older/foreign tool) can land unstatused. `reconcile.sh
+--labels` is the backstop: its third label-hygiene scan reports every unstatused
+open issue, and `--apply` **backfills `fnd:status:backlog`** (the safe default —
+it only makes the issue visible to the next Backlog sweep, reversible via a
+later status write). See that file's Lens 3 header, class (i).
+
 At most one `fnd:status:*` label and one `fnd:component:*` label are present
 on an issue at a time (single-select emulation): a status/component write
 removes every other label sharing its prefix before/without re-adding the
