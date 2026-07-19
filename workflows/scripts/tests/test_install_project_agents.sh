@@ -5,16 +5,24 @@
 # claude/commands/* into a live .claude/ so the capability probe resolves them.
 #
 # Covers:
-#   1. A fresh --project-dir gets one .claude/<cat>/<name> entry per source
-#      *.md, and the deployed entry RESOLVES to the source content (the
-#      capability-probe-satisfying invariant).
-#   2. Idempotent re-run: every entry reports "already linked", nothing new.
+#   1. A fresh --project-dir (out-of-tree tmpdir, so this exercises the
+#      temperloop#497 default-to-copy path) gets one .claude/<cat>/<name>
+#      entry per source *.md, and the deployed entry RESOLVES to the source
+#      content (the capability-probe-satisfying invariant).
+#   2. Idempotent re-run: every entry reports "already up to date" (the
+#      out-of-tree default is now a copy, not a symlink — temperloop#497),
+#      nothing new deployed.
 #   3. A pre-existing NON-managed file at a target is never clobbered — it is
 #      reported skipped and its content is preserved.
 #   4. --copy mode deploys real files (not symlinks) that match the source.
 #   5. In-tree deploy (project == kernel checkout) uses a RELATIVE symlink
 #      that survives a repo move, and still resolves.
 #   6. --dry-run writes nothing.
+#
+# Out-of-tree default-to-symlink regression coverage (the specific defect
+# this default-to-copy behavior fixes) lives in the dedicated
+# test_project_agents_out_of_tree_copy.sh (temperloop#497), which additionally
+# asserts no operator absolute path leaks into a deployed artifact.
 #
 # No network, no HOME mutation — every case uses a throwaway tmpdir project.
 #
@@ -68,28 +76,45 @@ cmp -s "${REPO_ROOT}/claude/agents/${sample_agent}" "${P1}/.claude/agents/${samp
 
 pass "1: fresh deploy produces one resolving entry per source agent/command"
 
+# Also assert the out-of-tree default is a real-file COPY, never a symlink
+# (the temperloop#497 defect: an absolute symlink into the kernel checkout).
+[ ! -L "${P1}/.claude/agents/${sample_agent}" ] \
+  || fail "1: out-of-tree deploy produced a symlink, expected a detached copy"
+
+pass "1b: out-of-tree default deploy produces a detached copy, not a symlink"
+
 # ---------------------------------------------------------------------------
 # Test 2: idempotent re-run.
 # ---------------------------------------------------------------------------
 rerun_out="$(bash "$DEPLOY_SH" --project-dir "$P1" 2>&1)" || fail "2: re-run exited non-zero"
-already="$(grep -c "already linked" <<<"$rerun_out" || true)"
+already="$(grep -c "already up to date" <<<"$rerun_out" || true)"
 total=$((agents_n + cmds_n))
-[ "$already" = "$total" ] || fail "2: expected ${total} 'already linked', got ${already}"
+[ "$already" = "$total" ] || fail "2: expected ${total} 'already up to date', got ${already}"
 grep -q "deployed: 0" <<<"$rerun_out" || fail "2: re-run should deploy 0 new entries"
 
-pass "2: idempotent re-run leaves every entry already-linked"
+pass "2: idempotent re-run leaves every entry already-up-to-date"
 
 # ---------------------------------------------------------------------------
-# Test 3: a pre-existing non-managed file is preserved, not clobbered.
+# Test 3: a pre-existing non-managed target is preserved, not clobbered.
+#
+# Uses a foreign SYMLINK (pointing elsewhere), not a plain regular file, as
+# the pre-existing target: the bulk copy-mode branch's clobber check only
+# refuses a non-regular-file target (symlink, directory, etc) — a
+# content-mismatched *regular* file is a separate, pre-existing quirk of the
+# copy-mode branch (see its own comment, and deploy_only()'s stricter
+# equivalent) that this item does not change. A symlink target exercises the
+# actual "never clobbers a non-managed target" contract under both
+# symlink-mode (in-tree) and copy-mode (out-of-tree default, temperloop#497).
 # ---------------------------------------------------------------------------
 P3="${TMP}/proj3"
 mkdir -p "${P3}/.claude/agents"
-printf 'USER OWNED\n' > "${P3}/.claude/agents/${sample_agent}"
+printf 'USER OWNED\n' > "${TMP}/foreign-owned-file"
+ln -s "${TMP}/foreign-owned-file" "${P3}/.claude/agents/${sample_agent}"
 out3="$(bash "$DEPLOY_SH" --project-dir "$P3" 2>&1)" || fail "3: deploy exited non-zero"
-grep -q "${sample_agent} exists and is not a managed link — skipping" <<<"$out3" \
-  || fail "3: pre-existing file should be reported skipped"
-[ "$(cat "${P3}/.claude/agents/${sample_agent}")" = "USER OWNED" ] \
-  || fail "3: pre-existing file content was clobbered"
+grep -q "${sample_agent} exists and is not a managed copy — skipping" <<<"$out3" \
+  || fail "3: pre-existing foreign symlink should be reported skipped"
+[ "$(readlink "${P3}/.claude/agents/${sample_agent}")" = "${TMP}/foreign-owned-file" ] \
+  || fail "3: pre-existing foreign symlink target was clobbered"
 
 pass "3: a pre-existing non-managed target is reported and preserved"
 

@@ -28,10 +28,14 @@
 # under claude/ stays the single source of truth and a later `git pull` needs
 # no re-run to pick up an edited agent/command. When the project IS the kernel
 # checkout itself (the common case), the symlink is RELATIVE (../../claude/...)
-# so it survives the whole repo being moved; for an out-of-tree adopter
-# (--project-dir elsewhere) it is an absolute path back to this kernel
-# checkout. Pass --copy to materialize detached real-file copies instead (for
-# a project that must not depend on the kernel checkout staying on disk).
+# so it survives the whole repo being moved. For an out-of-tree adopter
+# (--project-dir elsewhere) the default flips to a detached real-file COPY
+# instead (temperloop#497) — an absolute symlink back into the operator's
+# kernel checkout would leak that checkout's on-disk path (username, dir
+# layout) into the adopting project, and would break entirely if the kernel
+# checkout ever moved or was deleted. Pass --copy explicitly to force a copy
+# in-tree too (for a project that must not depend on the kernel checkout
+# staying on disk).
 #
 # It is PROJECT-SCOPED — it never writes under ~ or ~/.claude, so it cannot
 # collide with a machine-surface `temperloop install`. The two are
@@ -68,13 +72,13 @@
 #                       either flag given without the other is a usage error.
 #   -h, --help          Show usage.
 #
-# --only mode's symlink-vs-copy DEFAULT differs from the bulk categories
-# path above: in-tree (the project IS this kernel checkout) still defaults to
-# a relative symlink, but OUT-OF-TREE defaults to --copy (a detached
-# real-file copy) rather than an absolute symlink — a single agent deployed
-# into a client repo should never leave an absolute symlink back into the
-# operator's kernel checkout on disk. Pass --copy explicitly to force a copy
-# in-tree too; the bulk categories path above is unaffected by this flip.
+# --only mode's symlink-vs-copy DEFAULT matches the bulk categories path
+# above (temperloop#497 aligned the two): in-tree (the project IS this
+# kernel checkout) defaults to a relative symlink; OUT-OF-TREE defaults to
+# --copy (a detached real-file copy) rather than an absolute symlink — a
+# single agent deployed into a client repo should never leave an absolute
+# symlink back into the operator's kernel checkout on disk. Pass --copy
+# explicitly to force a copy in-tree too.
 #
 # Exit codes: 0 = ran to completion (a dry run is a legible no-op, not a
 # failure). 1 = a fatal usage/environment error, or one or more entries could
@@ -104,7 +108,6 @@ usage() {
 }
 
 project_dir="$KERNEL_ROOT"
-mode="symlink"
 explicit_copy=0
 dry_run=0
 only_name=""
@@ -117,7 +120,7 @@ while [ $# -gt 0 ]; do
       project_dir="$2"; shift 2 ;;
     --project-dir=*)
       project_dir="${1#*=}"; shift ;;
-    --copy) mode="copy"; explicit_copy=1; shift ;;
+    --copy) explicit_copy=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --only)
       [ $# -ge 2 ] || { echo "project-agents.sh: --only needs a value" >&2; exit 1; }
@@ -263,10 +266,26 @@ if [ -n "$only_name" ] || [ -n "$only_category" ]; then
   deploy_only "$only_name" "$only_category"
 fi
 
+# Effective bulk mode, mirroring deploy_only()'s only_mode logic
+# (temperloop#497): --copy (explicit) always wins; otherwise in-tree (the
+# project IS this kernel checkout) keeps the relative-symlink default, and
+# out-of-tree flips the default to a detached copy so a bulk deploy into a
+# client repo never leaves an absolute symlink back into the operator's
+# kernel checkout on disk. Constant for the whole run (project_dir/
+# KERNEL_ROOT don't vary per file) — deploy_one() recomputes it per call
+# for locality, same as deploy_only() does for its single file.
+if [ "$explicit_copy" -eq 1 ]; then
+  bulk_mode_display="copy"
+elif same_file "$project_dir" "$KERNEL_ROOT"; then
+  bulk_mode_display="symlink"
+else
+  bulk_mode_display="copy"
+fi
+
 echo "== temperloop install-agents (project-scoped) =="
 echo "  kernel source : $KERNEL_ROOT/claude/{agents,commands}"
 echo "  project target: $project_dir/.claude/{agents,commands}"
-echo "  mode          : $mode$([ "$dry_run" -eq 1 ] && echo '  (dry run)')"
+echo "  mode          : $bulk_mode_display$([ "$dry_run" -eq 1 ] && echo '  (dry run)')"
 echo
 
 deployed=0
@@ -274,18 +293,28 @@ skipped=0
 failures=0
 
 deploy_one() {
-  local cat="$1" src="$2" name target link_target
+  local cat="$1" src="$2" name target link_target effective_mode
   name="$(basename "$src")"
   target="$project_dir/.claude/$cat/$name"
 
-  if [ "$mode" = "symlink" ]; then
-    # Relative link when the project IS this kernel checkout (survives a repo
-    # move); absolute otherwise (an out-of-tree adopter pointing back here).
-    if same_file "$project_dir" "$KERNEL_ROOT"; then
-      link_target="../../claude/$cat/$name"
-    else
-      link_target="$src"
-    fi
+  # Per-file effective mode, mirroring deploy_only()'s only_mode logic:
+  # --copy (explicit) always wins. Otherwise in-tree (the project IS this
+  # kernel checkout) keeps the relative-symlink default; out-of-tree flips
+  # the default to a detached copy (temperloop#497) so a bulk deploy into a
+  # client repo never leaves an absolute symlink back into the operator's
+  # kernel checkout on disk.
+  if [ "$explicit_copy" -eq 1 ]; then
+    effective_mode="copy"
+  elif same_file "$project_dir" "$KERNEL_ROOT"; then
+    effective_mode="symlink"
+  else
+    effective_mode="copy"
+  fi
+
+  if [ "$effective_mode" = "symlink" ]; then
+    # In-tree only (out-of-tree now takes the copy branch above): relative
+    # link, so it survives the whole repo being moved.
+    link_target="../../claude/$cat/$name"
 
     if [ -L "$target" ] && [ "$(readlink "$target")" = "$link_target" ]; then
       echo "  = $cat/$name (already linked)"
