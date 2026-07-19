@@ -47,11 +47,18 @@
 #
 #   launchd agent            each infra/launchd/*.plist declared beside a
 #                            checkout above. Drift:
-#                              AGENT_UNLOADED  declared but not in
-#                                              `launchctl list`
+#                              AGENT_UNLOADED  declared AND installed on THIS
+#                                              host, but not in `launchctl list`
 #                              AGENT_STALE     loaded, but its heartbeat marker
 #                                              is older than its cadence (no
 #                                              successful run within cadence)
+#                            Non-drift (informational):
+#                              EXPECTED_ELSEWHERE  declared, but this host does
+#                                              not own the agent (not installed
+#                                              here / not in ENV_RECONCILE_AGENT_HOSTS)
+#                                              — the agent host owns it, so its
+#                                              not-loaded state is NOT this
+#                                              host's drift (#531).
 #                            Override: ENV_RECONCILE_LAUNCHD_DIRS
 #                            (space-separated dirs to glob *.plist in).
 #                            Heartbeat convention (#1173): freshness is judged
@@ -105,6 +112,19 @@
 #                                            markers the jobs write on success)
 #   ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S   (default 86400 — used when a
 #                                            plist declares no StartInterval)
+#   ENV_RECONCILE_AGENT_HOSTS               (host-role override, #531 — space-
+#                                            separated host labels that OWN the
+#                                            launchd/cron role; compared against
+#                                            ${SUBSET_HOST_LABEL:-hostname -s}.
+#                                            When set, a host NOT in the list
+#                                            reports its agents/cron checkouts as
+#                                            EXPECTED_ELSEWHERE. When UNSET, the
+#                                            install-marker auto-detect below is
+#                                            used instead — no config needed.)
+#   ENV_RECONCILE_AGENT_INSTALL_DIR         (default ~/Library/LaunchAgents — the
+#                                            launchd user-agent install dir whose
+#                                            plists mark which agents THIS host
+#                                            actually runs, #531)
 #
 # READ-ONLY / FAIL-OPEN contract: this script never runs `git fetch`, never
 # writes a file, never calls `launchctl load/unload`, never invokes `gh` in
@@ -159,6 +179,29 @@ AGENT_DEFAULT_CADENCE_S="${ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S:-86400}"
 # $AGENT_HEARTBEAT_DIR/<label>.ran on SUCCESSFUL completion; env-reconcile reads
 # the marker's mtime, never StandardOutPath (which launchd touches on every wake).
 AGENT_HEARTBEAT_DIR="${ENV_RECONCILE_AGENT_HEARTBEAT_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/agent-heartbeat}"
+
+# ── Host-role ownership (#531) ────────────────────────────────────────────────
+# The launchd-agent and cron-checkout roles are owned by ONE host (the agent host),
+# not every machine that carries this checkout. A laptop that never installed
+# the plists and never held the cron checkouts must NOT report the agent host's agents
+# as AGENT_UNLOADED nor the agent host's cron checkouts as ABSENT — that drift belongs
+# to the owning host, and flagging it everywhere is the #531 false-positive.
+#
+# Ownership resolves through two seams, cheapest-first, both READ-ONLY:
+#   1. Explicit host list — ENV_RECONCILE_AGENT_HOSTS (space-separated host
+#      labels, matched against this host's ${SUBSET_HOST_LABEL:-hostname -s}).
+#      When set, THIS host owns the role iff it is in the list; every other host
+#      classifies the agents/cron checkouts as EXPECTED_ELSEWHERE (not drift).
+#   2. Install-marker auto-detect (default, zero-config) — a launchd USER agent
+#      is "installed" on a host only when its plist lives in the launchd agents
+#      directory ($AGENT_INSTALL_DIR, default ~/Library/LaunchAgents). If a
+#      declared plist is NOT installed here, this host does not run that agent →
+#      EXPECTED_ELSEWHERE; if it IS installed but not loaded → genuine
+#      AGENT_UNLOADED. The install directory being empty of the declared agents
+#      is exactly the laptop's self-describing "not my role" signal.
+RECONCILE_HOST="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)}"
+AGENT_INSTALL_DIR="${ENV_RECONCILE_AGENT_INSTALL_DIR:-$HOME/Library/LaunchAgents}"
+read -r -a AGENT_HOSTS <<<"${ENV_RECONCILE_AGENT_HOSTS:-}"
 
 DEFAULT_CRON_CHECKOUTS="$HOME/dev/foundation.cron $HOME/dev/batch/temperloop $HOME/dev/foundation-kernel"
 # Note: $HOME/dev/batch/temperloop (cron, above) and $HOME/dev/temperloop
@@ -411,6 +454,72 @@ _plist_extract_key() {
   ' "$plist" 2>/dev/null || true
 }
 
+# ── Host-role ownership helpers (#531) ────────────────────────────────────────
+# _host_in_agent_hosts — true iff this host is in the explicit AGENT_HOSTS list.
+_host_in_agent_hosts() {
+  local h _i=0
+  while [ "$_i" -lt "${#AGENT_HOSTS[@]}" ]; do
+    h="${AGENT_HOSTS[$_i]}"; _i=$((_i + 1))
+    [ "$h" = "$RECONCILE_HOST" ] && return 0
+  done
+  return 1
+}
+
+# _agent_installed_here <plist> — is the agent declared by <plist> installed on
+# THIS host? An installed launchd user agent lives in $AGENT_INSTALL_DIR (default
+# ~/Library/LaunchAgents), matched by plist basename first (the shape
+# `make install-launchd-all` produces) then, as a fallback, by declared Label.
+# READ-ONLY — a stat/glob only, never a launchctl call.
+_agent_installed_here() {
+  local plist="$1" base label f flabel
+  [ -d "$AGENT_INSTALL_DIR" ] || return 1
+  base="$(basename "$plist")"
+  [ -e "$AGENT_INSTALL_DIR/$base" ] && return 0
+  label="$(_plist_extract_key "$plist" Label)"
+  [ -n "$label" ] || return 1
+  for f in "$AGENT_INSTALL_DIR"/*.plist; do
+    [ -e "$f" ] || continue
+    flabel="$(_plist_extract_key "$f" Label)"
+    [ "$flabel" = "$label" ] && return 0
+  done
+  return 1
+}
+
+# _agent_owned_here <plist> — does THIS host own (and therefore run) the agent
+# declared by <plist>? Explicit AGENT_HOSTS list wins when set; otherwise the
+# install-marker auto-detect above. When false, the agent is another host's
+# responsibility and classify_agent reports EXPECTED_ELSEWHERE, not drift.
+_agent_owned_here() {
+  local plist="$1"
+  if [ "${#AGENT_HOSTS[@]}" -gt 0 ]; then
+    _host_in_agent_hosts
+    return $?
+  fi
+  _agent_installed_here "$plist"
+}
+
+# _this_host_owns_cron — does THIS host own the cron-checkout role? Explicit
+# AGENT_HOSTS list wins when set; otherwise auto-detect: a host owns the cron
+# role iff it has at least one of the declared launchd agents installed (the same
+# automation-host signal). A host with none installed (a laptop) does not own the
+# cron checkouts, so their absence is EXPECTED_ELSEWHERE rather than ABSENT.
+_this_host_owns_cron() {
+  if [ "${#AGENT_HOSTS[@]}" -gt 0 ]; then
+    _host_in_agent_hosts
+    return $?
+  fi
+  local d p _i=0
+  while [ "$_i" -lt "${#LAUNCHD_DIRS[@]}" ]; do
+    d="${LAUNCHD_DIRS[$_i]}"; _i=$((_i + 1))
+    [ -d "$d" ] || continue
+    for p in "$d"/*.plist; do
+      [ -e "$p" ] || continue
+      _agent_installed_here "$p" && return 0
+    done
+  done
+  return 1
+}
+
 # ── classify_agent <plist> ────────────────────────────────────────────────────
 classify_agent() {
   local plist="$1" label interval last_run age_s marker
@@ -418,6 +527,14 @@ classify_agent() {
   label="$(_plist_extract_key "$plist" Label)"
   if [ -z "$label" ]; then
     printf 'MALFORMED_PLIST:%s' "$(basename "$plist")"
+    return 0
+  fi
+
+  # Host-role gate (#531): an agent this host does not own belongs to the agent host,
+  # not here — report EXPECTED_ELSEWHERE (a non-drift class) rather than probing
+  # launchctl and false-flagging it AGENT_UNLOADED on a non-owning laptop.
+  if ! _agent_owned_here "$plist"; then
+    printf 'EXPECTED_ELSEWHERE:%s' "$label"
     return 0
   fi
 
@@ -525,16 +642,31 @@ while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
   [ -d "${_c}.wt" ] && WT_ROOTS+=("$_c")
 done
 
+# Resolve once (#531): does THIS host own the cron-checkout role? On a
+# non-owning host a cron checkout that is simply not present here is
+# EXPECTED_ELSEWHERE, not ABSENT — the absence is the owning host's concern.
+if _this_host_owns_cron; then HOST_OWNS_CRON=1; else HOST_OWNS_CRON=0; fi
+
 CRON_LINES=""
 _i=0
 while [ "$_i" -lt "${#CRON_CHECKOUTS[@]}" ]; do
   c="${CRON_CHECKOUTS[$_i]}"; _i=$((_i + 1))
   [ -n "$c" ] || continue
   cls="$(classify_cron_checkout "$c")"
+  # A missing cron checkout on a host that does not own the cron role isn't
+  # drift — reclassify ABSENT → EXPECTED_ELSEWHERE so a laptop stops reporting
+  # the agent host's cron checkouts as ABSENT (#531).
+  if [ "$cls" = "ABSENT" ] && [ "$HOST_OWNS_CRON" -eq 0 ]; then
+    cls="EXPECTED_ELSEWHERE"
+  fi
   if [ -z "$cls" ]; then
     CRON_LINES="${CRON_LINES}  OK           $c"$'\n'
   else
     case "$cls" in
+      EXPECTED_ELSEWHERE)
+        # Not this host's role (#531) — informational, never drift.
+        CRON_LINES="${CRON_LINES}  EXPECTED     $c  [${cls}]"$'\n'
+        ;;
       ABSENT | NOT_A_REPO)
         CRON_LINES="${CRON_LINES}  ${cls}$(printf '%*s' $((13 - ${#cls})) '')$c"$'\n'
         ;;
@@ -598,8 +730,16 @@ while [ "$_i" -lt "${#LAUNCHD_DIRS[@]}" ]; do
     if [ -z "$cls" ]; then
       AGENT_LINES="${AGENT_LINES}  OK           $p"$'\n'
     else
-      AGENT_LINES="${AGENT_LINES}  DRIFT        $p  [${cls}]"$'\n'
-      add "- ⚠️ launchd agent drift: $p — ${cls}" drift
+      case "$cls" in
+        EXPECTED_ELSEWHERE:*)
+          # Not this host's role (#531) — informational, never drift.
+          AGENT_LINES="${AGENT_LINES}  EXPECTED     $p  [${cls}]"$'\n'
+          ;;
+        *)
+          AGENT_LINES="${AGENT_LINES}  DRIFT        $p  [${cls}]"$'\n'
+          add "- ⚠️ launchd agent drift: $p — ${cls}" drift
+          ;;
+      esac
     fi
   done < <(find "$d" -mindepth 1 -maxdepth 1 -type f -name '*.plist' 2>/dev/null)
 done

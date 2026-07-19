@@ -104,6 +104,7 @@ out="$(
   ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
   ENV_RECONCILE_OPERATOR_CHECKOUTS="$OP1 $OP2" \
   ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd" \
   bash "$SCRIPT" --format report
 )" || rc=$?
 [ "$rc" -eq 0 ] || fail "expected exit 0 (got $rc); output:
@@ -137,6 +138,7 @@ entry="$(
   ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
   ENV_RECONCILE_OPERATOR_CHECKOUTS="$OP1 $OP2" \
   ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd" \
   bash "$SCRIPT" --format entry
 )" || rc=$?
 [ "$rc" -eq 0 ] || fail "--format entry: expected exit 0 (got $rc); output:
@@ -171,6 +173,7 @@ out2="$(
   ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
   ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
   ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd" \
   bash "$SCRIPT" --format report
 )" || rc2=$?
 [ "$rc2" -eq 0 ] || fail "malformed input: expected exit 0 (got $rc2); output:
@@ -227,6 +230,7 @@ sout="$(
   ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
   ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
   ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd-fresh" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd-fresh" \
   bash "$SCRIPT" --format report
 )" || rc=$?
 [ "$rc" -eq 0 ] || fail "AGENT_STALE run: expected exit 0 (got $rc); output:
@@ -245,5 +249,112 @@ if echo "$sout" | grep -q "AGENT_STALE:com.test.nomarker"; then
 $sout"
 fi
 echo "PASS: marker-less agent is freshness-unknown, never false-STALE"
+
+# --- #531 host-role awareness: a NON-owning host (laptop) emits no false drift ---
+# A laptop declares the same plists (its checkouts carry infra/launchd/) but never
+# INSTALLED them (~/Library/LaunchAgents / AGENT_INSTALL_DIR has none) and does not
+# hold the cron checkouts. It must NOT flag the agent host's agents AGENT_UNLOADED nor the
+# mini's cron checkouts as ABSENT. Auto-detect path (no ENV_RECONCILE_AGENT_HOSTS).
+mkdir -p "$TMP/install-empty"   # an install dir with none of the declared agents
+rc=0
+lout="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-A $TMP/no-such-cron-B" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/install-empty" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "#531 non-owning host: expected exit 0 (got $rc); output:
+$lout"
+if echo "$lout" | grep -q "AGENT_UNLOADED:com.test.envreconcile"; then
+  fail "#531 non-owning host FALSE-flagged AGENT_UNLOADED for an agent it does not own; output:
+$lout"
+fi
+echo "$lout" | grep -q "EXPECTED_ELSEWHERE:com.test.envreconcile" \
+  || fail "#531 non-owning host: agent it does not own should be EXPECTED_ELSEWHERE; output:
+$lout"
+echo "$lout" | grep -q "EXPECTED     $TMP/no-such-cron-A  \[EXPECTED_ELSEWHERE\]" \
+  || fail "#531 non-owning host: unowned cron checkout should be EXPECTED_ELSEWHERE, not ABSENT; output:
+$lout"
+if echo "$lout" | grep -qE "ABSENT +$TMP/no-such-cron-A"; then
+  fail "#531 non-owning host STILL emits ABSENT for a cron checkout it does not own; output:
+$lout"
+fi
+# The unowned agent must NOT appear on a DRIFT line (it is EXPECTED, not drift).
+if echo "$lout" | grep -q "DRIFT.*com.test.envreconcile"; then
+  fail "#531 non-owning host counted an unowned agent as drift; output:
+$lout"
+fi
+echo "PASS: #531 non-owning host — no false AGENT_UNLOADED / ABSENT; unowned resources -> EXPECTED_ELSEWHERE (not drift)"
+
+# --- #531: the OWNING host still catches a genuinely-unloaded agent as drift ----
+# Same declared plist, but installed here (AGENT_INSTALL_DIR contains it) and NOT
+# in `launchctl list` -> a real AGENT_UNLOADED that must still surface as drift.
+rc=0
+oout="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "#531 owning host: expected exit 0 (got $rc); output:
+$oout"
+echo "$oout" | grep -q "DRIFT.*AGENT_UNLOADED:com.test.envreconcile" \
+  || fail "#531 REGRESSION: owning host failed to flag a genuinely-unloaded installed agent as DRIFT; output:
+$oout"
+echo "$oout" | grep -qE "^DRIFT: [0-9]" \
+  || fail "#531 owning host: a real unloaded agent should register drift; output:
+$oout"
+echo "PASS: #531 owning host — a genuinely-unloaded INSTALLED agent still flags AGENT_UNLOADED (drift)"
+
+# --- #531 explicit ENV_RECONCILE_AGENT_HOSTS seam (a hosts map) -----------------
+# When the owning host is named explicitly, host membership decides ownership
+# regardless of the install dir. This host in the list -> owned -> real drift.
+rc=0
+hin="$(
+  PATH="$TMP/bin:$PATH" \
+  SUBSET_HOST_LABEL="thehost" \
+  ENV_RECONCILE_AGENT_HOSTS="otherhost thehost" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/install-empty" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "#531 hosts-map (owning): expected exit 0 (got $rc)"
+echo "$hin" | grep -q "AGENT_UNLOADED:com.test.envreconcile" \
+  || fail "#531 hosts-map: this host IS the owner (in AGENT_HOSTS) so an unloaded agent must flag AGENT_UNLOADED even with an empty install dir; output:
+$hin"
+echo "PASS: #531 ENV_RECONCILE_AGENT_HOSTS names this host -> owns role -> real drift caught"
+
+# This host NOT in the list -> not owned -> EXPECTED_ELSEWHERE even though the
+# plist happens to be present in AGENT_INSTALL_DIR (the host list wins).
+rc=0
+hout="$(
+  PATH="$TMP/bin:$PATH" \
+  SUBSET_HOST_LABEL="thehost" \
+  ENV_RECONCILE_AGENT_HOSTS="mini-only" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$TMP/no-such-operator-checkout" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/launchd" \
+  ENV_RECONCILE_AGENT_INSTALL_DIR="$TMP/launchd" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "#531 hosts-map (non-owning): expected exit 0 (got $rc)"
+if echo "$hout" | grep -q "AGENT_UNLOADED:com.test.envreconcile"; then
+  fail "#531 hosts-map: this host is NOT the named owner, so the agent must be EXPECTED_ELSEWHERE not AGENT_UNLOADED; output:
+$hout"
+fi
+echo "$hout" | grep -q "EXPECTED_ELSEWHERE:com.test.envreconcile" \
+  || fail "#531 hosts-map: non-owning host should report EXPECTED_ELSEWHERE; output:
+$hout"
+echo "PASS: #531 ENV_RECONCILE_AGENT_HOSTS excludes this host -> EXPECTED_ELSEWHERE (host list wins over install dir)"
+
+# --- #531 read-only preserved on the new host-role paths ------------------------
+[ -z "$(git -C "$OP1" status --porcelain)" ] || fail "operator1 mutated by host-role runs"
+echo "PASS: #531 host-role classification stays read-only"
 
 echo "ALL PASS: test_env_reconcile.sh"
