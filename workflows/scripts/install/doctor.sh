@@ -34,6 +34,17 @@ export FOUNDATION
 # shellcheck source=links.sh
 source "${SCRIPT_DIR}/links.sh"
 
+# Source the shared gitignore-safety helper (temperloop#569/#570 dedup —
+# check_reviewer_coverage() below calls gitignore_ensure_entry() directly
+# instead of a private, doctor-local reimplementation).
+GITIGNORE_SAFETY_SH="${SCRIPT_DIR}/gitignore-safety.sh"
+if [ ! -f "$GITIGNORE_SAFETY_SH" ]; then
+  echo "doctor.sh: missing sibling script: $GITIGNORE_SAFETY_SH" >&2
+  exit 1
+fi
+# shellcheck source=gitignore-safety.sh
+source "$GITIGNORE_SAFETY_SH"
+
 # ---------------------------------------------------------------------------
 # classify_entry <target> <expected_source> <kind>
 #
@@ -255,65 +266,6 @@ check_cache_state() {
 }
 
 # ---------------------------------------------------------------------------
-# _doctor_ensure_reviewer_state_gitignored <project-dir> — 0 iff, on return,
-# <project-dir>/.claude/reviewer-state/ resolves ignored under `git
-# check-ignore` (either it already was, or the entry was appended to
-# <project-dir>/.gitignore to make it so). Mirrors reviewer-activate.sh's own
-# _ra_ensure_gitignore_entry() for this ONE entry — that script cannot be
-# safely sourced here (it has no source-guard and runs its whole interactive
-# CLI body unconditionally at the top level; see check_reviewer_coverage()'s
-# header), so this is a small self-contained reimplementation of just the
-# gitignore-safety half, scoped to the one path doctor.sh itself ever writes.
-# Returns 1 (writes nothing) when <project-dir> isn't a git repo or the
-# .gitignore can't be confirmed/updated — callers must treat that as "degrade
-# to read-only", never as license to write anyway.
-#
-# Newline-guarded append (temperloop#550 install-surface persona finding,
-# HIGH): a bare `printf '%s\n' "$entry" >>"$gi"` glues onto the last line of
-# a pre-existing .gitignore that has no trailing newline — corrupting a
-# tracked, team-shared file (e.g. `node_modules/\n*.pyc` with no final
-# newline becomes `*.pyc.claude/reviewer-state/`, silently breaking the
-# `*.pyc` rule AND failing to add the new one). Before appending the entry,
-# this ensures the file already ends in a newline, adding one first if not.
-# `[ -s "$gi" ] && [ -n "$(tail -c1 "$gi")" ]` is true iff the file is
-# non-empty AND its last byte is not a newline (command substitution strips
-# a trailing "\n", so a properly newline-terminated file yields an empty
-# capture here). Prints a console notice ONLY when it genuinely appends
-# (never when the entry was already present/ignored), mirroring
-# reviewer-activate.sh's own _ra_ensure_gitignore_entry() notice.
-# ---------------------------------------------------------------------------
-_doctor_ensure_reviewer_state_gitignored() {
-  local project_dir="$1"
-  local entry=".claude/reviewer-state/"
-  local sample="${project_dir}/.claude/reviewer-state/.doctor-probe"
-
-  git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-
-  if git -C "$project_dir" check-ignore -q -- "$sample" 2>/dev/null; then
-    return 0
-  fi
-
-  local gi="${project_dir}/.gitignore"
-  if [[ -f "$gi" ]] && grep -qxF "$entry" "$gi" 2>/dev/null; then
-    :
-  else
-    if ! { [ -e "$gi" ] || touch "$gi" 2>/dev/null; }; then
-      return 1
-    fi
-    if [ -s "$gi" ] && [ -n "$(tail -c1 "$gi" 2>/dev/null)" ]; then
-      printf '\n' >>"$gi" 2>/dev/null || return 1
-    fi
-    if printf '%s\n' "$entry" >>"$gi" 2>/dev/null; then
-      echo "doctor.sh: added '$entry' to $gi to keep reviewer-state per-checkout (never committed)"
-    else
-      return 1
-    fi
-  fi
-
-  git -C "$project_dir" check-ignore -q -- "$sample" 2>/dev/null
-}
-
-# ---------------------------------------------------------------------------
 # check_reviewer_coverage — advisory, WARN-level reviewer-activation-coverage
 # check (temperloop#550, ADR 0007/0008). REUSES #548's pure, non-interactive
 # data path (reviewer_coverage_gaps / reviewer_coverage_check_integrity,
@@ -396,7 +348,7 @@ check_reviewer_coverage() {
       printf '  INFO  one or more reviewer-routing.tsv entries reference a language with no backing rubric on disk (uncatalogued) — see docs/features/review-agents.md for the bring-your-own path:\n'
       printf '%s\n' "$integrity_err" | sed 's/^/        /'
 
-      if _doctor_ensure_reviewer_state_gitignored "$project_dir"; then
+      if gitignore_ensure_entry "$project_dir" ".claude/reviewer-state/" "${project_dir}/.claude/reviewer-state/.doctor-probe"; then
         # if-then-else, not `A && B || C` (SC2015): the marker write is
         # best-effort — a failed mkdir or printf must never fail the check.
         if mkdir -p "$state_dir" 2>/dev/null; then
