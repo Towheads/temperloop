@@ -56,7 +56,7 @@
 #                              EXPECTED_ELSEWHERE  declared, but this host does
 #                                              not own the agent (not installed
 #                                              here / not in ENV_RECONCILE_AGENT_HOSTS)
-#                                              — the mini owns it, so its
+#                                              — the agent host owns it, so its
 #                                              not-loaded state is NOT this
 #                                              host's drift (#531).
 #                            Override: ENV_RECONCILE_LAUNCHD_DIRS
@@ -181,10 +181,10 @@ AGENT_DEFAULT_CADENCE_S="${ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S:-86400}"
 AGENT_HEARTBEAT_DIR="${ENV_RECONCILE_AGENT_HEARTBEAT_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/agent-heartbeat}"
 
 # ── Host-role ownership (#531) ────────────────────────────────────────────────
-# The launchd-agent and cron-checkout roles are owned by ONE host (the mini),
+# The launchd-agent and cron-checkout roles are owned by ONE host (the agent host),
 # not every machine that carries this checkout. A laptop that never installed
-# the plists and never held the cron checkouts must NOT report the mini's agents
-# as AGENT_UNLOADED nor the mini's cron checkouts as ABSENT — that drift belongs
+# the plists and never held the cron checkouts must NOT report the agent host's agents
+# as AGENT_UNLOADED nor the agent host's cron checkouts as ABSENT — that drift belongs
 # to the owning host, and flagging it everywhere is the #531 false-positive.
 #
 # Ownership resolves through two seams, cheapest-first, both READ-ONLY:
@@ -530,7 +530,7 @@ classify_agent() {
     return 0
   fi
 
-  # Host-role gate (#531): an agent this host does not own belongs to the mini,
+  # Host-role gate (#531): an agent this host does not own belongs to the agent host,
   # not here — report EXPECTED_ELSEWHERE (a non-drift class) rather than probing
   # launchctl and false-flagging it AGENT_UNLOADED on a non-owning laptop.
   if ! _agent_owned_here "$plist"; then
@@ -655,7 +655,7 @@ while [ "$_i" -lt "${#CRON_CHECKOUTS[@]}" ]; do
   cls="$(classify_cron_checkout "$c")"
   # A missing cron checkout on a host that does not own the cron role isn't
   # drift — reclassify ABSENT → EXPECTED_ELSEWHERE so a laptop stops reporting
-  # the mini's cron checkouts as ABSENT (#531).
+  # the agent host's cron checkouts as ABSENT (#531).
   if [ "$cls" = "ABSENT" ] && [ "$HOST_OWNS_CRON" -eq 0 ]; then
     cls="EXPECTED_ELSEWHERE"
   fi

@@ -253,7 +253,7 @@ echo "PASS: marker-less agent is freshness-unknown, never false-STALE"
 # --- #531 host-role awareness: a NON-owning host (laptop) emits no false drift ---
 # A laptop declares the same plists (its checkouts carry infra/launchd/) but never
 # INSTALLED them (~/Library/LaunchAgents / AGENT_INSTALL_DIR has none) and does not
-# hold the cron checkouts. It must NOT flag the mini's agents AGENT_UNLOADED nor the
+# hold the cron checkouts. It must NOT flag the agent host's agents AGENT_UNLOADED nor the
 # mini's cron checkouts as ABSENT. Auto-detect path (no ENV_RECONCILE_AGENT_HOSTS).
 mkdir -p "$TMP/install-empty"   # an install dir with none of the declared agents
 rc=0
