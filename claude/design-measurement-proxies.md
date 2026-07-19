@@ -49,8 +49,8 @@ All four proxies below derive from artifacts `/design`, `/assess`, or
 - each PR's existing CI check-run history (`ci-poll.sh`'s `CI_FAILED`
   outcome, `gate.sh managed-merge`'s `EJECTED` disposition — `claude/commands/build.md`
   3g/4b);
-- the epic-close retro issue's `## Merge friction` section (`claude/commands/build.md`
-  4d-epic, Step 3) and the `rework`/`rework-cause:<cause>` labels
+- the epic-close retro tracker's `## Merge friction` section (`claude/commands/build.md`
+  4d-retro, the mint) and the `rework`/`rework-cause:<cause>` labels
   (`workflows/scripts/board/capture.sh --rework`, F#730);
 - the plan note's Contract-derived acceptance-placeholder bullets and the
   `needs-clarification` label / `## Re-triage signals` section
