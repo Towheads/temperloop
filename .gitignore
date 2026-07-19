@@ -40,3 +40,8 @@ __pycache__/
 # here is the committed, self-documenting belt for non-build clones.
 .build-verification.md
 .build-guard
+# Reviewer activation opt-in state (temperloop#549): the durable-decline
+# marker directory workflows/scripts/install/reviewer-activate.sh writes to
+# and reviewer-activation-coverage.sh (#548) / a future `make doctor` check
+# (#550) read from. Per-repo install/local state — never committed.
+.claude/reviewer-state/
