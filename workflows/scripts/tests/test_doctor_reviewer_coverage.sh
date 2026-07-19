@@ -201,5 +201,43 @@ fi
 
 pass "4b: second run is silent (one-time INFO already recorded); exit code unchanged across both runs"
 
+# ---------------------------------------------------------------------------
+# Test 5 (regression, temperloop#550 install-surface persona finding, HIGH):
+# a pre-existing, team-shared .gitignore with NO trailing newline must not be
+# corrupted by the gitignore-safety append. Before the fix, appending
+# '.claude/reviewer-state/' onto a file ending "...*.pyc" (no final newline)
+# glued the two lines into '*.pyc.claude/reviewer-state/', silently breaking
+# the teammate's existing *.pyc rule AND failing to add the new entry.
+# ---------------------------------------------------------------------------
+FOUND3="$(_mk_fake_found found3)"
+printf '.zz\tzz-reviewer\tclaude/agents/reviewers/does-not-exist-zz.md\n' \
+  >>"${FOUND3}/workflows/scripts/config/reviewer-routing.tsv"
+
+# A pre-existing, team-authored .gitignore with a real rule and deliberately
+# NO trailing newline (the exact shape that glued before the fix).
+printf '*.pyc' >"${FOUND3}/.gitignore"
+touch "${FOUND3}/stray.pyc"
+git -C "$FOUND3" check-ignore -q -- stray.pyc \
+  || fail "5: pre-check sanity — fixture's own *.pyc rule should already ignore stray.pyc before doctor ever runs"
+
+set +e
+out_regress="$(bash "$DOCTOR_SH" "$FOUND3" 2>&1)"
+set -e
+
+printf '%s\n' "$out_regress" | grep -q "added '.claude/reviewer-state/'" \
+  || fail "5: expected a console notice naming the .gitignore write — got: $out_regress"
+
+git -C "$FOUND3" check-ignore -q -- stray.pyc \
+  || fail "5: the pre-existing *.pyc rule was corrupted by the gitignore append (newline-glue regression)"
+git -C "$FOUND3" check-ignore -q -- ".claude/reviewer-state/anything" \
+  || fail "5: .claude/reviewer-state/ is not correctly ignored after the append"
+
+grep -qx '\*.pyc' "${FOUND3}/.gitignore" \
+  || fail "5: '*.pyc' should still be its own exact line in .gitignore (got: $(cat "${FOUND3}/.gitignore"))"
+grep -qx '.claude/reviewer-state/' "${FOUND3}/.gitignore" \
+  || fail "5: '.claude/reviewer-state/' should be its own exact line in .gitignore (got: $(cat "${FOUND3}/.gitignore"))"
+
+pass "5: appending to a .gitignore with no trailing newline preserves the pre-existing rule and adds the new one cleanly (no line-gluing)"
+
 echo
 echo "All doctor reviewer-coverage tests passed."

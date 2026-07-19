@@ -267,6 +267,20 @@ check_cache_state() {
 # Returns 1 (writes nothing) when <project-dir> isn't a git repo or the
 # .gitignore can't be confirmed/updated — callers must treat that as "degrade
 # to read-only", never as license to write anyway.
+#
+# Newline-guarded append (temperloop#550 install-surface persona finding,
+# HIGH): a bare `printf '%s\n' "$entry" >>"$gi"` glues onto the last line of
+# a pre-existing .gitignore that has no trailing newline — corrupting a
+# tracked, team-shared file (e.g. `node_modules/\n*.pyc` with no final
+# newline becomes `*.pyc.claude/reviewer-state/`, silently breaking the
+# `*.pyc` rule AND failing to add the new one). Before appending the entry,
+# this ensures the file already ends in a newline, adding one first if not.
+# `[ -s "$gi" ] && [ -n "$(tail -c1 "$gi")" ]` is true iff the file is
+# non-empty AND its last byte is not a newline (command substitution strips
+# a trailing "\n", so a properly newline-terminated file yields an empty
+# capture here). Prints a console notice ONLY when it genuinely appends
+# (never when the entry was already present/ignored), mirroring
+# reviewer-activate.sh's own _ra_ensure_gitignore_entry() notice.
 # ---------------------------------------------------------------------------
 _doctor_ensure_reviewer_state_gitignored() {
   local project_dir="$1"
@@ -282,10 +296,18 @@ _doctor_ensure_reviewer_state_gitignored() {
   local gi="${project_dir}/.gitignore"
   if [[ -f "$gi" ]] && grep -qxF "$entry" "$gi" 2>/dev/null; then
     :
-  elif { [ -e "$gi" ] || touch "$gi" 2>/dev/null; } && printf '%s\n' "$entry" >>"$gi" 2>/dev/null; then
-    :
   else
-    return 1
+    if ! { [ -e "$gi" ] || touch "$gi" 2>/dev/null; }; then
+      return 1
+    fi
+    if [ -s "$gi" ] && [ -n "$(tail -c1 "$gi" 2>/dev/null)" ]; then
+      printf '\n' >>"$gi" 2>/dev/null || return 1
+    fi
+    if printf '%s\n' "$entry" >>"$gi" 2>/dev/null; then
+      echo "doctor.sh: added '$entry' to $gi to keep reviewer-state per-checkout (never committed)"
+    else
+      return 1
+    fi
   fi
 
   git -C "$project_dir" check-ignore -q -- "$sample" 2>/dev/null
