@@ -212,6 +212,8 @@ command-declared workflows/scripts/lib/tests/test_command_declared.sh
 # ── quality-gates — the static gate set, lints, kernel scrubs, knob registry ─
 quality-gates .github/workflows/ci.yml
 quality-gates scripts/quality-gates.sh
+quality-gates workflows/scripts/lib/checkout-freshness.sh
+quality-gates scripts/tests/test_quality_gates_freshness.sh
 quality-gates scripts/lint-zsh-param-tie.sh
 quality-gates workflows/scripts/config/*
 quality-gates workflows/scripts/kernel/*

@@ -228,26 +228,39 @@ for co in "${CHECKOUTS[@]}"; do
   if [ -f "$cache_lib" ]; then
     # temperloop#165 rename window: temperloop/ machine conf preferred, an
     # existing legacy foundation/ one read as fallback (removed in v0.17.0).
-    machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
-    machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+    # temperloop#591: honor the SAME BOARDS_CONF_MACHINE override seam board.sh's
+    # _board_conf_files uses for the MACHINE layer, and UNION the machine +
+    # per-checkout repo-local layers rather than taking only the first that
+    # exists. The old first-match logic ignored BOARDS_CONF_MACHINE entirely and
+    # let a host's real ~/.config machine conf SHADOW a checkout's own
+    # boards.conf — so a hermetic test's BOARDS_CONF_MACHINE=/dev/null was
+    # disregarded and test_deploy_mini's cache-report case false-failed on any
+    # host that happens to carry a machine boards.conf. (The repo-local layer
+    # stays the PER-CHECKOUT path, not BOARDS_CONF_REPO_LOCAL: deploy-mini walks
+    # many checkouts, each with its own conf, so a single env override can't
+    # represent them.) Union of `cache=on` presence across layers is the right
+    # set semantic here: a board is cache-enabled if ANY layer says so (this
+    # block is informational only — it never affects pass/fail).
+    if [ -n "${BOARDS_CONF_MACHINE:-}" ]; then
+      machine_conf="$BOARDS_CONF_MACHINE"
+    else
+      machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+      machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+      [ ! -f "$machine_conf" ] && [ -f "$machine_conf_legacy" ] && machine_conf="$machine_conf_legacy"
+    fi
     repo_conf="$(dirname "$bsh")/../boards.conf"
-    conf=""
-    if [ -f "$machine_conf" ]; then conf="$machine_conf"
-    elif [ -f "$machine_conf_legacy" ]; then conf="$machine_conf_legacy"
-    elif [ -f "$repo_conf" ]; then conf="$repo_conf"
-    fi
-    if [ -n "$conf" ]; then
-      cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
-      while IFS= read -r cn; do
-        [ -n "$cn" ] || continue
-        repo="$(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
-        store_state="absent"
-        if [ -n "$repo" ] && [ -f "${cache_store_root}/issues/$(printf '%s' "$repo" | tr '/' '-')/meta.json" ]; then
-          store_state="present"
-        fi
-        printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
-      done < <(grep -oE '^board\.[0-9]+\.cache=on$' "$conf" 2>/dev/null | cut -d. -f2 | sort -un)
-    fi
+    cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
+    while IFS= read -r cn; do
+      [ -n "$cn" ] || continue
+      repo="$(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
+      store_state="absent"
+      if [ -n "$repo" ] && [ -f "${cache_store_root}/issues/$(printf '%s' "$repo" | tr '/' '-')/meta.json" ]; then
+        store_state="present"
+      fi
+      printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
+    done < <(for _conf in "$machine_conf" "$repo_conf"; do
+               [ -f "$_conf" ] && grep -oE '^board\.[0-9]+\.cache=on$' "$_conf" 2>/dev/null
+             done | cut -d. -f2 | sort -un)
   fi
 done
 if [ "$n" -eq 0 ]; then

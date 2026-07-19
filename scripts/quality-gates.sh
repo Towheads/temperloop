@@ -525,6 +525,12 @@ if grep -q 'KERNEL_UPDATE_ROOT' "$REPO_ROOT/scripts/update-kernel.sh" 2>/dev/nul
 else
   SKIPPED_KERNEL_GATES+=("test_update_kernel.sh — scripts/update-kernel.sh is not the kernel's seam-bearing version (overlay-owned vendoring flow)")
 fi
+# Checkout-freshness guard (temperloop#591): the staleness warning this script
+# itself emits (check_checkout_freshness below) — the one that turns a silent
+# "green locally, red in CI" from a stale checkout into a loud, non-fatal banner.
+# Hermetic: throwaway git repos with a bare origin, no network. Same direct-`bash`
+# form as the update-kernel gate above (kernel Makefile is generator-owned).
+KERNEL_GATES+=("bash scripts/tests/test_quality_gates_freshness.sh")
 
 # The overlay gate set — empty by default; populated only by drop-ins.
 OVERLAY_GATES=()
@@ -569,6 +575,28 @@ fi
 # Run gates from the repo root so the `make` targets resolve regardless of the
 # caller's CWD (build 3e.5 runs this from a throwaway worker checkout).
 cd "$REPO_ROOT" || exit 1
+
+# --- Checkout-freshness guard (temperloop#591) --------------------------------
+# This script runs whatever gate LIST the checked-out tree contains, and the
+# diff-scoped gates (the PR leak guard) diff against origin/<default>. So a
+# checkout that is BEHIND origin/<default> silently runs a SMALLER gate set than
+# CI (which checks out the PR's merge with current main) and scans a stale/empty
+# leak-guard diff — a green run here then does NOT imply green CI. That exact
+# trap cost a 12-item /sweep four post-push CI round-trips (the knob-registry /
+# denylist / leak-guard gates the stale local run never exercised). The guard
+# (in the sourced lib) turns that silent divergence into a LOUD but NON-FATAL
+# banner: a stale checkout is sometimes legitimate (offline work, deliberately
+# testing an old commit), so it never fails the run — it only refuses to let
+# staleness pass unseen. build-level.mjs's own worker worktrees branch off a
+# freshly-fetched origin/<default> (worktree.sh create), so they report 0-behind
+# and the guard stays silent on that hot path. QUALITY_GATES_SKIP_FRESHNESS=1
+# disables it. It sets CHECKOUT_BEHIND / CHECKOUT_BEHIND_REF (re-surfaced in the
+# end-of-run summary below).
+CHECKOUT_BEHIND=0
+CHECKOUT_BEHIND_REF=""
+# shellcheck source=workflows/scripts/lib/checkout-freshness.sh
+source "$REPO_ROOT/workflows/scripts/lib/checkout-freshness.sh"
+check_checkout_freshness "$REPO_ROOT"
 
 # Name every surface-conditional gate that did not register (temperloop#488)
 # up front, so a composed consumer tree's run shows the skip explicitly.
@@ -615,6 +643,14 @@ for gate in "${GATES[@]}"; do
 done
 
 echo
+# Re-surface the staleness warning at the END too (temperloop#591): a 75-gate run
+# scrolls the top banner far off-screen, and the whole point is that the operator
+# does not trust a green result from a stale checkout — so repeat it next to the
+# pass/fail verdict where the decision is actually made.
+if (( CHECKOUT_BEHIND > 0 )); then
+  printf 'REMINDER: this run was against a checkout %s commit(s) behind %s — a green result here does NOT guarantee green CI (temperloop#591). Rebase/pull before trusting it.\n\n' \
+    "$CHECKOUT_BEHIND" "$CHECKOUT_BEHIND_REF" >&2
+fi
 if (( ${#retried[@]} > 0 )); then
   printf 'NOTE: %d gate(s) passed only after a retry (transient flake — see temperloop#403):\n' "${#retried[@]}"
   printf '  - %s\n' "${retried[@]}"
