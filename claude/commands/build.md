@@ -846,71 +846,72 @@ This is the **"machines to git"** half of the vault/git boundary (epic #252). Wh
 
 **Does NOT touch `/tidy`.** This is a mechanical build archive step, **not** a Live/Drain extraction rule — it adds no live/drain pair, so no `tidy.md` Step-3 backstop is required and none is added.
 
-#### 4d-retro. File the per-epic process retro (board ON + plan has `epic:`)
+#### 4d-retro. Mint the per-epic retro tracker (board ON + plan has `epic:`)
 
-Fires **only when 4d-epic just transitioned the epic open→closed in *this* run** — i.e. this run's merges / `[v]` verdict-captures closed the epic's last open child and the step-2 close above ran. It fires from **BOTH** the Step-4 merge-gate path and the spike kind-fork path — the trigger is identical: 4d-epic just transitioned the epic open→closed in this run. This closes the contract-decomposition loop: every epic build completes auto-files its own retro tracker, so the decomposition learnings (was the threshold right, did the seam hold) get a durable home instead of depending on someone remembering to open one. Skip entirely when board integration is OFF or the plan has no `epic:` frontmatter.
+**Mint the per-epic retro tracker.** Fires **only when 4d-epic just transitioned the epic open→closed in *this* run** — i.e. this run's merges / `[v]` verdict-captures closed the epic's last open child and the step-2 close above ran. It fires from **BOTH** the Step-4 merge-gate path and the spike kind-fork path — the trigger is identical: 4d-epic just transitioned the epic open→closed in this run. This closes the contract-decomposition loop: every epic build completes **mints** its own retro tracker — a cheap, durable record of the epic's build health, filed at close so the decomposition learnings get a durable home instead of depending on someone remembering to open one.
+
+The tracker is a **mint, not a questionnaire**: it records *what happened* (merge friction + build-health signals) and hands the *judgment* — was the threshold right, did the seam hold — to the overlay `/retro` judge, which later picks up `retro-pending` trackers. The four decomposition-retro questions and the handoff-defect taxonomy that used to live here have **moved out of the kernel** into that judge's sixth axis; the mint deliberately carries no judgment questions.
+
+**Gated by `RETRO_MINT_ENABLED`** (`workflows/scripts/build/build.config.sh`, already in scope from Step 0, default on): when it is **off** (`0` / empty), this entire step no-ops — no idempotency probe, no tracker, **zero footprint**. Skip entirely when `RETRO_MINT_ENABLED` is off, when board integration is OFF, or when the plan has no `epic:` frontmatter.
 
 **Does NOT fire for:** an epic that was already closed **before** this run (4d-epic was a no-op); a **partial-coverage** plan whose epic stays open (4d-epic didn't close it — open-children > 0); or a triage-cull / by-hand close that happened **outside** build. The trigger is specifically *build drove this epic to completion in this run*, not "an epic is closed."
 
 **DOES fire for the reconcile-driven close.** When Step 0.5 reconcile auto-fixes a *missed* 4d-epic close (an epic left open with zero open children), that close is still 4d-epic driving the epic open→closed in this run — so 4d-retro **should** run after it; the body-marker idempotency probe (step 1) safely no-ops if the retro was already filed on a prior run.
 
-**Synchronous at epic-close — not deferred to `/tidy`.** File the retro issue **the moment** 4d-epic closes the epic, in this same step — *not* as a `/tidy` extraction rule. Rationale (the architecture-review alternative, rejected): a drain-time extraction would lose the retro if the session ends before the next drain; filing synchronously guarantees the tracker exists the instant the epic dies.
+**Synchronous at epic-close — not deferred to `/tidy`.** Mint the tracker **the moment** 4d-epic closes the epic, in this same step — the mint is the *primary* filing, *not* a `/tidy` extraction rule. Rationale (the architecture-review alternative, rejected): a drain-time extraction would lose the retro if the session ends before the next drain; minting synchronously guarantees the tracker exists the instant the epic dies. `/tidy` still carries a **report-only** backstop for this mint (the registered Live/Drain pair — `tidy.md` Step 3 § `Retro mint backstop`), but it is a periodic *net* that only reports a missed mint, never the filing path.
 
 1. **Idempotent — probe before create (body-marker, not title), corpus-rg-first.** Mirror Step 2.5's body-marker pattern (same helper, same resolve-once `$PROBE_LIB` seam — re-source it here if this is a fresh bash block): probe for the unique machine-readable marker line `Retro-for-epic: #<epic>` embedded in the retro issue **body**, so a resumed / re-run build never files a duplicate: `issue_marker_probe "$repo" "Retro-for-epic: #<epic>"` — searches the rendered issue corpus first (zero `gh` calls when fresh), falling back to the identical live `gh issue list -R "$repo" --search "Retro-for-epic: #<epic> in:body" --state all --json number` whenever the corpus is absent or stale-beyond-limit (or `PROBE_LIB` doesn't exist in this checkout — same graceful degrade as 2.5). A match (`jq -r '.[0].number // empty'` off the returned array) → already filed; do nothing. **Probe the body, not the title** — a `#<epic>` token inside an `in:title` search is parsed by GitHub as an issue-reference and can silently return empty even when the issue exists (→ a duplicate retro on every resume); `in:body` is literal text search, not a reference token, and this helper's corpus path never reads title at all (see issue-marker-probe.sh's header on the in:title trap), so the same protection holds on both the corpus and the gh-fallback path.
-2. **File exactly one `spike`-labelled issue into Backlog via the board `capture` entrypoint** (the same adapter front door 2.5/`capture.sh` use — lands in Backlog, no `--milestone`):
+2. **Gather the mint's signals and decide its labels — no judgment, only what the run observed.** From this run's own record of the epic's build, collect:
+   - **Merge friction** — conflicts encountered (count + which PRs) and each conflict's resolution-cost bucket (`trivial-inline` resolved in place / `rebase-respawn` needed a rebase round-trip / `real-rework` a contract or edge had to change); `0/none` if clean. (This is the content the `## Merge friction` body section renders.)
+   - **Build-health signals**, each recorded as a `(value, gate-state)` pair — where gate-state is **`passed`** (the gate actually ran this epic and verified this value) or **`did-not-run`** (the gate never executed this run, so a clean value is *unverified*, not confirmed). This clean-verified vs clean-unverified distinction is load-bearing — never render a bare `0` that conflates "the gate ran and saw zero" with "the gate never ran":
+     - **CI retries** — total CI-retry count across the epic's PRs; gate `did-not-run` on a spike-only epic (no `code` item ⇒ no PR ⇒ CI never ran).
+     - **worker ejections** — count of workers ejected-and-respawned during the build; gate = worker execution (ran iff any item built).
+     - **design forks** — count of items that returned a `design-fork` verdict this run.
+     - **merge gate** — whether the epic's PRs actually cleared a merge gate (`passed`), or never reached one (`did-not-run`, e.g. a spike-only epic).
+   - **State label** — resolve whether an overlay `/retro` judge is installed to pick this tracker up, via the shared `command_declared` predicate (`workflows/scripts/lib/command_declared.sh`; resolve-once like `$PROBE_LIB`: `CMD_DECL_LIB="$(git rev-parse --show-toplevel 2>/dev/null || echo .)/workflows/scripts/lib/command_declared.sh"; [ -f "$CMD_DECL_LIB" ] && source "$CMD_DECL_LIB"`). Then: **`retro-pending`** iff `command_declared retro` is true (a judge exists — the tracker is *pending* judgment); else **`retro-info`** (a **terminal** label — no judge is installed, so nothing will ever pick it up; the tracker stays a durable record only). If `command_declared` can't be sourced in this checkout, treat it as false ⇒ `retro-info`. **Never apply a `spike` label** — the mint is not a spike.
+   - **Urgency** — the mint is *past the urgency bar* iff **any** worker ejection (≥1), **any** design fork (≥1), or **CI retries ≥ `RETRO_URGENT_CI_RETRIES`** (`build.config.sh`). Past the bar ⇒ the tracker **also** carries `retro-urgent`, in addition to its state label.
+3. **Ensure the tracker's labels exist first, then file exactly one tracker into Backlog via the board `capture` entrypoint.** `capture.sh` passes a non-work-class `--label` value straight through to `gh issue create`, which **aborts with no issue created** if the label doesn't exist on the target repo — and a fresh-history kernel/adopter repo won't have the `retro-*` labels yet, so an un-provisioned mint would fail on every epic close with no tracker and no `Retro-for-epic:` marker, defeating the step-1 idempotency probe (it would find nothing and re-fail identically forever). Provision them idempotently first, using the same helper `capture.sh` uses for its own work-class labels — `_board_issues_ensure_label` is in scope from `$BOARD_LIB`; its inner `gh label create` is `|| true`, so this is a harmless no-op wherever the labels already exist:
+
+   ```bash
+   _board_issues_ensure_label "$repo" "retro-pending" "fbca04"
+   _board_issues_ensure_label "$repo" "retro-info"    "c5def5"
+   _board_issues_ensure_label "$repo" "retro-urgent"  "d93f0b"
+   ```
+
+   Then file the tracker (the same adapter front door 2.5/`capture.sh` use — lands in Backlog, no `--milestone`), carrying the state label from step 2:
 
    ```bash
    "$(dirname "$BOARD_LIB")/../capture.sh" "Process retro: epic #<epic>" \
-     --body "<body>" --board "$BOARD" --label spike
+     --body "<body>" --board "$BOARD" --label "<retro-pending|retro-info>"
    ```
 
-   The `<body>` templates the four standing retro questions, the handoff-defect taxonomy checklist, plus the three links below.
-3. **Issue body** — the four standing decomposition-retro questions, the handoff-defect taxonomy checklist, then the links:
+   Then, **only when the mint is past the urgency bar** (step 2), add the urgency label to the issue `capture` just created: `gh issue edit <n> -R "$repo" --add-label retro-urgent` (`<n>` = the number `capture` printed). If that add-label call fails (a transient `gh` error), **do not silently drop the escalation** — the tracker still exists with its state label, but its urgency is lost and the step-1 probe will short-circuit ("already filed") on every later run, so nothing re-applies it: log the failure and fold `retro-urgent add FAILED on #<n>` into the Step 6 summary so a human can re-apply the one label, rather than leaving it invisibly missing. Both labels ride the same tracker.
+4. **Tracker body** — the machine-readable marker (**unchanged** — the idempotency probe in step 1 keys on it), a one-line reader gloss carrying the honest state label, the merge-friction and build-health stamps, then the links. **No retro questions, no handoff-defect taxonomy** — the mint records *what happened*; the overlay `/retro` judge asks the decomposition questions later:
 
    ```markdown
    Retro-for-epic: #<epic>
 
-   Process retro for epic #<epic> (closed by /build on <date>). The decomposition
-   contract is [[Decisions/stageFind - Contract-based epic decomposition]] — this issue is
-   the *tracker*; that note is the *memory* where findings accumulate.
-
-   ## Retro questions
-   1. **Threshold** — was the 3-sub-unit / >1-dependency-level epic threshold right for this
-      epic, or did it over-/under-decompose?
-   2. **Spike routing** — did spikes resolved *outside* build vs. build handling
-      verdict items in-band land in the right place?
-   3. **Seam durability** — did "decompose to the seam, not the implementation" hold, or did
-      a contract go stale once building started?
-   4. **Cadence friction** — where did the triage → assess → build cadence add
-      friction worth fixing?
-
-   ## Handoff defect taxonomy
-   Grade the PLAN, not just the run. For each class below, answer yes/no and cite where —
-   a falsifiable check that the plan handed off clean contracts. The classes are the
-   #229/#230/#189 handoff defects surfaced by the ELT retro.
-   - **unverified-mechanism criteria** (#229) — did any acceptance bullet assume a mechanism
-     that didn't exist yet? yes/no + where (the requirements-auditor's recurring catch).
-   - **unverifiable external gate** (#229) — did any externally-gated item ride a prose gate
-     with no machine-checkable predicate? yes/no + where.
-   - **unpartitioned gate scope** (#230) — did sequential legs share one acceptance gate
-     without per-leg scope? yes/no + where.
-   - **granularity miss** (#189-adjacent) — was the epic over-/under-decomposed (wrong size, a
-     split that should have been one leg, or one leg that should have split)? yes/no + where.
-
-   The **trend over epics** of these four counts is the **plan-defects-per-epic KPI** — it
-   answers "is assess improving" (a falling count = better plan hand-off over time).
+   Process retro (mint) for epic #<epic> (closed by /build on <date>). State: <retro-pending|retro-info>.
+   This is a durable **mint** — the build-health record for this epic, filed at close: it records what
+   happened, and the retrospective *judgment* is done later by the overlay `/retro` judge, which picks up
+   `retro-pending` trackers. A `retro-info` tracker is **terminal** — no `/retro` judge is installed here
+   to pick it up, so it stays a durable record only. Findings accumulate in the decomposition note linked below.
 
    ## Merge friction
-   Measure what merging this epic's PRs actually cost — so the "merge more aggressively"
-   posture is data-driven, not feared.
-   - **conflicts encountered** — count + which PRs hit a conflict (e.g. `2 — #284, #285`).
-   - **resolution cost** — bucket each conflict as `trivial-inline` (resolved in place,
-     no respawn), `rebase-respawn` (needed an update-branch / rebase round-trip), or
-     `real-rework` (a contract or edge actually had to change). 0/none if clean.
+   What merging this epic's PRs actually cost — so the "merge more aggressively" posture is data-driven.
+   - **conflicts encountered** — count + which PRs hit a conflict (e.g. `2 — #284, #285`); `0/none` if clean.
+   - **resolution cost** — each conflict bucketed `trivial-inline` / `rebase-respawn` / `real-rework`; `0/none` if clean.
 
-   This merge-friction line **feeds the same plan-defects-per-epic KPI trend** as the four
-   handoff-defect counts above — a falling conflict/rework count over epics is the signal
-   that aggressive merging is safe, the data the merge-posture decision rides on.
+   ## Build health
+   Per-signal stamp — each signal's **value** and whether its **gate actually ran** (`passed` = the gate ran
+   and verified this value; `did-not-run` = the gate never executed, so a clean value is *unverified*, not confirmed).
+   - **CI retries** — <count> (<passed | did-not-run — spike-only epic, no PR>)
+   - **worker ejections** — <count> (<passed | did-not-run>)
+   - **design forks** — <count> (<passed | did-not-run>)
+   - **merge gate** — <cleared | did-not-run> (<passed | did-not-run — spike-only epic>)
+
+   Past the urgency bar (any worker ejection or design fork, or CI retries ≥ RETRO_URGENT_CI_RETRIES) ⇒ this
+   tracker also carries `retro-urgent`.
 
    ## Links
    - Epic: #<epic>
@@ -918,7 +919,7 @@ Fires **only when 4d-epic just transitioned the epic open→closed in *this* run
    - Findings accumulate in: [[Decisions/stageFind - Contract-based epic decomposition]] (the canonical, board-agnostic decomposition note)
    ```
    (The `Plans/` path is `$1` — the plan note this run executed; on foundation it is the `foundation`-scoped plan.)
-4. Record `(retro issue #, created | already-existed)` for the Step 6 summary.
+5. Record `(retro tracker #, created | already-existed, state label, urgent?)` for the Step 6 summary.
 
 ### 4e-quota. 5-hour quota gate (after each level)
 
@@ -967,7 +968,7 @@ When all items reach terminal state, patch frontmatter:
 - Open PRs awaiting manual merge: M (slugs → PR #s)
 - Skipped: M (slugs → reasons)
 - Worktrees remaining: M (paths — should be 0 if all terminal)
-- Board (when ON): created I issues (slugs → #s); epic #E (created | adopted-from-triage; linked C children); epic stamp: landed on first claim | **NEVER LANDED — epic unstamped** (last error); park-back: cleared | **FAILED** (error) | n/a (epic closed, not owned by this run, or stamp never landed); moved J merged items → Done; epic closed → Done: yes/no (open children remaining: R); plan archived → `Plans-archive/<basename>` (committed | already-archived | n/a — epic still open); process-retro issue: #P (filed | already-existed | n/a — epic still open)
+- Board (when ON): created I issues (slugs → #s); epic #E (created | adopted-from-triage; linked C children); epic stamp: landed on first claim | **NEVER LANDED — epic unstamped** (last error); park-back: cleared | **FAILED** (error) | n/a (epic closed, not owned by this run, or stamp never landed); moved J merged items → Done; epic closed → Done: yes/no (open children remaining: R); plan archived → `Plans-archive/<basename>` (committed | already-archived | n/a — epic still open); retro tracker: #P (created | already-existed; state `<retro-pending|retro-info>`; urgent? yes/no [+ `retro-urgent add FAILED` if the urgency add-label failed] | n/a — epic still open | n/a — `RETRO_MINT_ENABLED` off)
 - Funnel: no overlap | overlap check inconclusive (no `files:` fields) | frozen at Step 1.7 → re-enabled at 4d-funnel | frozen at Step 1.7 → **remains FROZEN** (left frozen at 4d-funnel, or epic still open) | overlap acknowledged — ran unfrozen
 - Reviewed without declared principles: M (slugs — the priorities note (`Projects/<project>/Priorities.md`, falling back to the legacy `Priorities/<project>.md`) had no `## Principles`, or the read failed)
 - Spikes verdict-captured: V (slugs → verdict notes)
