@@ -889,19 +889,26 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       if (fixVerdict.status !== 'done') {
         return { escalation: 'ci-failed', payload: { fixVerdict, sha } };
       }
-      // Push the fixed SHA and pin the re-poll to it. We *request* --force, but
-      // pr.sh downgrades it to a plain fast-forward push when the fixed head
-      // descends from the remote tip (the common CI-retry case: reset-to-tip +
-      // commit), which is a fast-forward — this keeps the git-destructive safety
-      // classifier from denying a routine retry in auto mode (#335). --force is
-      // still used (correctly) if the CI-fix worker rewrote history.
+      // Push the fixed SHA and pin the re-poll to it. This is a plain push — no
+      // --force — because the CI-fix worker's head is a fast-forward descendant
+      // by construction: it resets to the remote tip (`git reset --hard
+      // FETCH_HEAD`) and commits on top, so the local head strictly descends
+      // from the current remote tip. A plain push therefore always succeeds on
+      // the intended path. We deliberately do NOT pass a classifier-visible
+      // --force here: pr.sh's internal downgrade cannot prevent the git-
+      // destructive safety classifier from pre-emptively denying the command
+      // as SPINE_DENIED (#437), which would mask a routine retry as an opaque
+      // pre-execution denial. If the head is somehow a genuine non-fast-forward,
+      // the plain push surfaces as a visible PUSH_REJECTED outcome (triaged
+      // below), not an opaque SPINE_DENIED. (pr.sh's --force→plain downgrade is
+      // retained for other callers that legitimately rewrite history — #335.)
       const prBin = spineBin(input.repoRoot, 'pr.sh');
       const fpush = await runSpine(
-        `${prBin} push ${sq(wt)} ${sq(item.branch)} --force`,
-        { label: `push-force:${item.slug}`, slug: item.slug },
+        `${prBin} push ${sq(wt)} ${sq(item.branch)}`,
+        { label: `push-retry:${item.slug}`, slug: item.slug },
       );
       if (spineDenied(fpush)) {
-        return { escalation: 'spine-denied', payload: { step: 'push-force', out: fpush, sha } };
+        return { escalation: 'spine-denied', payload: { step: 'push-retry', out: fpush, sha } };
       }
       if (fpush.outcome !== 'PUSHED') {
         return { escalation: 'ci-failed', payload: { fpush, sha } };
