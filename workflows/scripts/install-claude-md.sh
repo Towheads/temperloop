@@ -122,9 +122,10 @@ ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
 # (surfacing a missing wiring loudly rather than silently blanking the knob).
 # ---------------------------------------------------------------------------
 render_kernel_doc() {
-  local kernel_file="$1" content epic_subunit_floor
+  local kernel_file="$1" content epic_subunit_floor display_tz
 
   epic_subunit_floor=""
+  display_tz=""
   if [ -f "$build_config" ]; then
     epic_subunit_floor="$(
       set -e
@@ -132,11 +133,20 @@ render_kernel_doc() {
       source "$build_config"
       printf '%s\n' "$EPIC_MIN_SUBUNITS"
     )" || epic_subunit_floor=""
+    display_tz="$(
+      set -e
+      # shellcheck source=/dev/null
+      source "$build_config"
+      # shellcheck disable=SC2153  # DISPLAY_TZ is defined by the sourced build.config.sh, not a misspelling of the local display_tz
+      printf '%s\n' "$DISPLAY_TZ"
+    )" || display_tz=""
   fi
-  [ -n "$epic_subunit_floor" ] || epic_subunit_floor=3   # build.config.sh's own default, if unresolved
+  [ -n "$epic_subunit_floor" ] || epic_subunit_floor=3               # build.config.sh's own default, if unresolved
+  [ -n "$display_tz" ] || display_tz="America/Los_Angeles"           # build.config.sh's own default, if unresolved
 
   content="$(cat "$kernel_file")"
   content="${content//\{\{EPIC_MIN_SUBUNITS\}\}/$epic_subunit_floor}"
+  content="${content//\{\{DISPLAY_TZ\}\}/$display_tz}"
   printf '%s' "$content"
 }
 

@@ -135,6 +135,20 @@ fi
 # time by workflows/scripts/install-claude-md.sh.
 : "${EPIC_MIN_SUBUNITS:=3}"
 
+# HUMAN-FACING display timezone (temperloop — Pacific display convention). The
+# IANA zone every human-facing date/time renders in: conversation reports and
+# by-day breakdowns, telemetry-brief's "today" bucket, reconcile's status-line
+# stamps. An IANA name (NOT a fixed "PST"/"PDT") so DST is handled automatically
+# — reads PDT in summer, PST in winter, always matching the operator's wall clock.
+# A third "CLAUDE.md-resident knob" rendered at compose time into
+# claude/CLAUDE.kernel.md § Communication conventions as `{{DISPLAY_TZ}}` by
+# workflows/scripts/install-claude-md.sh.
+#
+# NOT for STORED/PARSED records: the telemetry data lake (emit-*.sh), board
+# claim/capture timestamps, and the plan-schema consent timestamp stay ISO-8601
+# UTC (canonical, parseable, DST-free) — never localize those.
+: "${DISPLAY_TZ:=America/Los_Angeles}"
+
 # Merge-backend SELECTION (temperloop#13): a free personal repo can't always
 # provision GitHub's native merge queue, so `gate.sh backend` chooses NATIVE
 # vs MANAGED. "auto" probes the repo's branch ruleset for a `merge_queue` rule
@@ -311,7 +325,7 @@ fi
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS \
+       BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \

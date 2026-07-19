@@ -608,7 +608,13 @@ _label_reconcile_append_pending_decision() {
     doc="$legacy_doc"   # neither exists yet — create at the legacy path
   fi
 
-  ts="$(date -u '+%Y-%m-%d %H:%M')"
+  # Human-facing heading stamp on the pending-decisions review surface renders in
+  # the operator's display timezone (kernel doc § Communication conventions); %Z
+  # names the zone explicitly so a reader never has to guess. Belt-and-suspenders
+  # default per § Prose-resident knob convention — this board script is vendored
+  # into consumer repos that may not carry build.config.sh. The reconcile epoch
+  # math (_reconcile_now) stays UTC — absolute instants, unaffected.
+  ts="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date '+%Y-%m-%d %H:%M %Z')"
   host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
   if {
     printf '### %s · label hygiene sweep · %s:board%s\n' "$ts" "$host" "$board"
