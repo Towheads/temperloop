@@ -114,6 +114,15 @@ KERNEL_GATES=(
   # project-agents gate above (kernel Makefile is generator-owned; no new
   # target added here).
   "bash workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh"
+  # Gitignore-precondition propagation at project-agents deploy time
+  # (temperloop#560, ADR 0007): project-agents.sh now ensures the ADR 0007
+  # gitignore precondition (.claude/agents/, .claude/commands/,
+  # .claude/reviewer-state/) via the shared gitignore-safety.sh helper
+  # BEFORE it writes into an adopter's .claude/ tree — reusing the same
+  # helper reviewer-activate.sh already calls, never a second hand-rolled
+  # append. Same direct-`bash` form as the sibling project-agents gates
+  # above (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_project_agents_gitignore_propagation.sh"
   # Reviewer activation-coverage scan (temperloop#548, ADR 0007/0008):
   # workflows/scripts/install/reviewer-activation-coverage.sh — the pure,
   # non-interactive data path that computes the gap set (catalogued

@@ -139,6 +139,10 @@ pass "4: --copy deploys real (non-symlink) files matching the source"
 P5="${TMP}/kernel-copy"
 mkdir -p "${P5}/workflows/scripts/install" "${P5}/claude/agents" "${P5}/claude/commands"
 cp "$DEPLOY_SH" "${P5}/workflows/scripts/install/project-agents.sh"
+# project-agents.sh sources its sibling gitignore-safety.sh (temperloop#560) —
+# a minimal kernel tree must carry it too or the copied script fails its own
+# "missing sibling script" guard.
+cp "${REPO_ROOT}/workflows/scripts/install/gitignore-safety.sh" "${P5}/workflows/scripts/install/gitignore-safety.sh"
 cp "${REPO_ROOT}/claude/agents/${sample_agent}" "${P5}/claude/agents/${sample_agent}"
 sample_cmd="$(basename "$(find -L "${REPO_ROOT}/claude/commands" -maxdepth 1 -name '*.md' | head -1)")"
 cp "${REPO_ROOT}/claude/commands/${sample_cmd}" "${P5}/claude/commands/${sample_cmd}"

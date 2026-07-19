@@ -48,6 +48,20 @@
 # something else) is never clobbered — it is reported and skipped, so the
 # script can never destroy a user's own project-scoped agent/command.
 #
+# GITIGNORE PRECONDITION (temperloop#560). ADR 0007 assumes the target
+# project's .claude/agents/ and .claude/reviewer-state/ are gitignored — and
+# an out-of-tree copy deploy (#497) leaves real, untracked-but-stageable
+# files sitting exactly there. Before any write, this script calls the
+# shared gitignore-safety.sh:gitignore_ensure_all() helper (the same one
+# reviewer-activate.sh uses) to ensure BOTH paths resolve git-ignored in
+# $project_dir, appending to its .gitignore if needed and printing a console
+# notice naming the path it added. This is BEST-EFFORT and NON-FATAL: for a
+# target that isn't a git repo (or whose .gitignore can't be written), the
+# helper warns to stderr and the deploy proceeds anyway — unlike
+# reviewer-activate.sh, which refuses only its OWN state write, here the
+# deploy of catalog files is the primary action and is never aborted by a
+# precondition it can't establish. Skipped entirely on --dry-run.
+#
 # Usage:
 #   project-agents.sh [--project-dir DIR] [--copy] [--dry-run] [-h|--help]
 #   project-agents.sh --only NAME --category CAT [--project-dir DIR] [--copy] [--dry-run]
@@ -102,6 +116,23 @@ KERNEL_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # The two deployed categories. Source is claude/<cat>; target is
 # <project>/.claude/<cat>.
 CATEGORIES=(agents commands)
+
+# ---------------------------------------------------------------------------
+# Shared .gitignore-precondition helper (temperloop#560, reusing the
+# gitignore-safety.sh lib extracted for reviewer-activate.sh in #569). ADR
+# 0007 assumes a downstream adopter's .claude/agents/ and
+# .claude/reviewer-state/ are gitignored; this script writes into the former
+# (and, out-of-tree, leaves real-file copies sitting untracked-but-stageable
+# there — #497), so it must ensure the precondition itself rather than assume
+# it, the same way reviewer-activate.sh already does before its own writes.
+# ---------------------------------------------------------------------------
+GITIGNORE_SAFETY_SH="${SCRIPT_DIR}/gitignore-safety.sh"
+if [ ! -f "$GITIGNORE_SAFETY_SH" ]; then
+  echo "project-agents.sh: missing sibling script: $GITIGNORE_SAFETY_SH" >&2
+  exit 1
+fi
+# shellcheck source=gitignore-safety.sh
+source "$GITIGNORE_SAFETY_SH"
 
 usage() {
   sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -257,6 +288,32 @@ deploy_only() {
   echo "  ! failed to copy agents/$name.md" >&2
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# Ensure the gitignore precondition BEFORE any write into $project_dir/.claude/
+# — covers both the --only single-agent path and the bulk categories path
+# below (this is the one call site both dispatch through). Best-effort and
+# non-fatal: gitignore_ensure_all returns 1 and warns to stderr when
+# project_dir isn't a git repo or its .gitignore can't be written, but the
+# deploy of catalog files is the primary action here (unlike
+# reviewer-activate.sh, which refuses only its OWN state write) — so a
+# precondition failure is surfaced, never used to abort the deploy. Skipped
+# entirely on --dry-run, which must write nothing.
+#
+# Three pairs, not just the two ADR 0007 names: this script is the one
+# installer that ALSO deploys into .claude/commands/ (the other CATEGORIES
+# entry), and the kernel's own .gitignore already treats that the same as
+# .claude/agents/ — so an adopter's .claude/commands/ gets the same
+# precondition, keeping `git status` fully clean after a deploy rather than
+# just the two ADR-named paths.
+# ---------------------------------------------------------------------------
+if [ "$dry_run" -ne 1 ]; then
+  gitignore_ensure_all "$project_dir" \
+    ".claude/agents/" "${project_dir}/.claude/agents/.project-agents-probe" \
+    ".claude/commands/" "${project_dir}/.claude/commands/.project-agents-probe" \
+    ".claude/reviewer-state/" "${project_dir}/.claude/reviewer-state/.project-agents-probe" \
+    || echo "project-agents.sh: ! could not ensure the .claude/ gitignore precondition in $project_dir — proceeding with the deploy anyway (see warning above)" >&2
+fi
 
 if [ -n "$only_name" ] || [ -n "$only_category" ]; then
   if [ -z "$only_name" ] || [ -z "$only_category" ]; then
