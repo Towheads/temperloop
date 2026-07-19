@@ -392,6 +392,34 @@ out="$(bash "$SCRIPT" validate "$TMP/r14-product-withact.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "product-source item WITH activation: block should be VALID (got: $out)"
 echo "PASS: validate → VALID on a product-source item (kind: code, files: under workflows/) carrying an activation: block (rule 14)"
 
+# product-source WITH activation: placed AFTER acceptance: (the canonical field
+# order) → VALID. Regression guard for the parser bug where the in_acc branch
+# tested the deeper-bullet acceptance-entry regex before the same-level field-key
+# regex, so a `- activation:` bullet following acceptance: was miscounted as an
+# acceptance entry and never opened the activation block — rule 14 then wrongly
+# reported 'carries no activation: block' for a well-formed item.
+cat > "$TMP/r14-act-after-acc.md" <<'EOF'
+---
+status: approved
+date: 2026-07-20
+---
+## Items
+
+- [ ] **Activation after acceptance** `slug: r14-act-after-acc` — canonical field order, activation: after acceptance:
+  - branch: `feat/r14-act-after-acc`
+  - kind: code
+  - files: `workflows/scripts/build/plan.sh`
+  - acceptance:
+    - runner registered and dispatched
+    - tests pass
+  - activation:
+    - class: A
+    - proof: "true"
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r14-act-after-acc.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "product-source item with activation: placed AFTER acceptance: should be VALID — rule 14 false positive on canonical field order (got: $out)"
+echo "PASS: validate → VALID on a product-source item whose activation: block follows acceptance: (rule 14 field-order regression)"
+
 # grandfathered: pre-cutover date: + product-source + no activation: → VALID
 cat > "$TMP/r14-grandfathered.md" <<'EOF'
 ---

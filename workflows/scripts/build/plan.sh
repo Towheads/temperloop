@@ -299,10 +299,16 @@ parse_items() {
       if (in_acc) {
         # placeholder line is fatal at execution
         if (l ~ /no acceptance criteria derivable from source/) { acc_placeholder=1 }
-        # a deeper bullet that is not itself a recognized field key counts as an entry
-        if (l ~ /^[[:space:]]+-[[:space:]]+/) { acc_count++; next }
-        # a same-level field key ends the acceptance block (fall through to field parse)
+        # A same-level field key (activation:, notes:, gate_check:, ...) ends the
+        # acceptance block — tested BEFORE the deeper-bullet entry regex. A field
+        # bullet like `- activation:` also matches the generic `- <text>` deeper-
+        # bullet shape, so if the entry regex ran first it would swallow the field
+        # as an acceptance entry and never open the activation block — the rule-14
+        # false positive that fires when activation: follows acceptance: (the
+        # canonical field order). Field keys carry `<word>:`; prose entries do not.
         if (l ~ /^[[:space:]]*-[[:space:]]*[a-zA-Z_-]+:/) { in_acc=0 }
+        # otherwise a deeper bullet is an acceptance entry
+        else if (l ~ /^[[:space:]]+-[[:space:]]+/) { acc_count++; next }
         else { next }
       }
       # activation block: `- activation:` opens it; `- class:` / `- proof:` are its
