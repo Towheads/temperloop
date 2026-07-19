@@ -101,6 +101,10 @@ pass "1: out-of-tree summary header reports the effective copy mode"
 P2="${TMP}/kernel-copy"
 mkdir -p "${P2}/workflows/scripts/install" "${P2}/claude/agents" "${P2}/claude/commands"
 cp "$DEPLOY_SH" "${P2}/workflows/scripts/install/project-agents.sh"
+# project-agents.sh sources its sibling gitignore-safety.sh (temperloop#560) —
+# a minimal kernel tree must carry it too or the copied script fails its own
+# "missing sibling script" guard.
+cp "${SCRIPT_DIR}/../install/gitignore-safety.sh" "${P2}/workflows/scripts/install/gitignore-safety.sh"
 sample_agent="$(basename "$(find -L "${REPO_ROOT}/claude/agents" -maxdepth 1 -name '*.md' | head -1)")"
 sample_cmd="$(basename "$(find -L "${REPO_ROOT}/claude/commands" -maxdepth 1 -name '*.md' | head -1)")"
 cp "${REPO_ROOT}/claude/agents/${sample_agent}" "${P2}/claude/agents/${sample_agent}"
