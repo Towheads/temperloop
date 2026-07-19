@@ -529,5 +529,97 @@ echo "$output10" | grep -q "${FAKE_HOME10}/.claude/settings.json" || \
 pass "10: an absent env/ directory yields zero env records (no bogus literal-glob entry), other categories unaffected"
 
 # ---------------------------------------------------------------------------
+# Test 11: links_apply_symlink is self-healing (temperloop#530) — re-running
+# it over a farm of DANGLING links pointing into a deleted worktree repairs
+# every one atomically, with no "ln: <target>: File exists" error and no
+# broken links left behind. Also covers the OK / real-file / absent branches.
+# ---------------------------------------------------------------------------
+FAKE_HOME11="${TMP}/home11"
+mkdir -p "${FAKE_HOME11}/.local/bin"
+
+# The "current" source tree the links SHOULD point into.
+NEW_SRC="${TMP}/src-current/workflows/scripts/board"
+mkdir -p "$NEW_SRC"
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
+  touch "${NEW_SRC}/${cmd}.sh"
+done
+
+# A now-DELETED worktree the old link farm points into.
+OLD_SRC="${TMP}/src-deleted-worktree/workflows/scripts/board"
+mkdir -p "$OLD_SRC"
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
+  touch "${OLD_SRC}/${cmd}.sh"
+  ln -s "${OLD_SRC}/${cmd}.sh" "${FAKE_HOME11}/.local/bin/${cmd}"
+done
+# Delete the old worktree — every link is now dangling.
+rm -rf "${TMP}/src-deleted-worktree"
+[ -L "${FAKE_HOME11}/.local/bin/claim" ] || fail "11: setup — claim should be a symlink"
+[ -e "${FAKE_HOME11}/.local/bin/claim" ] && fail "11: setup — claim should be DANGLING (resolve to nothing)"
+
+apply_farm() {
+  # shellcheck source=/dev/null
+  source "$LINKS_SH"
+  for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
+    links_apply_symlink "${FAKE_HOME11}/.local/bin/${cmd}" "${NEW_SRC}/${cmd}.sh"
+  done
+}
+
+apply_out="$( ( apply_farm ) 2>&1 )" && apply_exit=0 || apply_exit=$?
+[[ "$apply_exit" -eq 0 ]] || fail "11: apply over dangling farm exited non-zero (${apply_exit}); output: ${apply_out}"
+
+# No "File exists" error anywhere.
+if grep -qi "File exists" <<<"$apply_out"; then
+  fail "11: healing a dangling link farm must not emit 'ln: File exists' (got: ${apply_out})"
+fi
+
+# Every link is now VALID and points at the new source; none dangling.
+for cmd in claim release worklist reconcile capture milestone pr-enqueue; do
+  link="${FAKE_HOME11}/.local/bin/${cmd}"
+  [ -L "$link" ] || fail "11: ${cmd} should still be a symlink after heal"
+  [ -e "$link" ] || fail "11: ${cmd} is still DANGLING after heal (should resolve)"
+  [ "$(readlink "$link")" = "${NEW_SRC}/${cmd}.sh" ] || \
+    fail "11: ${cmd} should point at the new source, got '$(readlink "$link")'"
+done
+
+# It reported the heal (relinked), not a spurious "already linked".
+grep -q "relinked claim" <<<"$apply_out" || \
+  fail "11: expected a 'relinked' notice for a healed dangling link (got: ${apply_out})"
+
+# Idempotent second run: everything is already correct now → no re-linking.
+apply_out2="$( ( apply_farm ) 2>&1 )"
+grep -q "already linked" <<<"$apply_out2" || \
+  fail "11: a correctly-linked farm should report 'already linked' on re-run (got: ${apply_out2})"
+if grep -q "relinked" <<<"$apply_out2"; then
+  fail "11: an already-correct link must NOT be re-linked (got: ${apply_out2})"
+fi
+
+# A real (non-symlink) file at the target is preserved, not clobbered.
+echo "user real file" >"${FAKE_HOME11}/.local/bin/realfile"
+apply_real_out="$(
+  ( # shellcheck source=/dev/null
+    source "$LINKS_SH"
+    links_apply_symlink "${FAKE_HOME11}/.local/bin/realfile" "${NEW_SRC}/claim.sh" ) 2>&1
+)"
+grep -q "is not a symlink — skipping" <<<"$apply_real_out" || \
+  fail "11: a real file must be skipped, not clobbered (got: ${apply_real_out})"
+{ [ -f "${FAKE_HOME11}/.local/bin/realfile" ] && [ ! -L "${FAKE_HOME11}/.local/bin/realfile" ]; } || \
+  fail "11: the real file should be left untouched (still a plain file)"
+[ "$(cat "${FAKE_HOME11}/.local/bin/realfile")" = "user real file" ] || \
+  fail "11: the real file's contents must be preserved"
+
+# An absent target is created fresh.
+apply_absent_out="$(
+  ( # shellcheck source=/dev/null
+    source "$LINKS_SH"
+    links_apply_symlink "${FAKE_HOME11}/.local/bin/fresh" "${NEW_SRC}/claim.sh" ) 2>&1
+)"
+grep -q "linked fresh" <<<"$apply_absent_out" || \
+  fail "11: an absent target should be freshly linked (got: ${apply_absent_out})"
+[ "$(readlink "${FAKE_HOME11}/.local/bin/fresh")" = "${NEW_SRC}/claim.sh" ] || \
+  fail "11: freshly-created link should point at the source"
+
+pass "11: links_apply_symlink heals a dangling link farm atomically, is idempotent, preserves real files, and creates absent links"
+
+# ---------------------------------------------------------------------------
 echo
 echo "PASS: all install-links tests passed"
