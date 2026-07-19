@@ -692,6 +692,244 @@ fi
 
 rm -rf "$TMPDIR10"
 
+# ── Test 11: AUQ answer-field scan (#421 detector 1) ─────────────────────────
+#
+# The AskUserQuestion ANSWER is structurally unreachable by the turn-scanning
+# lexicon (it lives in the tool_result, not a ### User turn). Two signals:
+#   (1a) a confusion answer ("I do not understand this…") — top feedback moment
+#   (1b) an answer that is itself a question / counter-proposal — the option set
+#        omitted the right answer.
+
+echo "--- test 11: AUQ answer-field scan (confusion + omitted-option) ---"
+
+TMPDIR11=$(mktemp -d)
+TMP_JSONL11="$TMPDIR11/auq.jsonl"
+cat > "$TMP_JSONL11" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"q_conf","name":"AskUserQuestion","input":{"questions":[{"question":"Fix the test or the implementation?"}]}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q_conf","content":"Your questions have been answered: \"Fix the test or the implementation?\"=\"I do not understand this. I need more context.\""}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"q_omit","name":"AskUserQuestion","input":{"questions":[{"question":"Which path?"}]}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q_omit","content":"Your questions have been answered: \"Which path?\"=\"Why not use the existing adapter?\""}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"q_ok","name":"AskUserQuestion","input":{"questions":[{"question":"Which path?"}]}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"q_ok","content":"Your questions have been answered: \"Which path?\"=\"Fix the implementation\""}]}}
+JSONLEOF
+
+report11=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL11") || true
+
+conf_count=$(printf '%s' "$report11" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len([f for f in te.get('auq_answer_flags', []) if f.get('signal') == 'confusion']))
+" 2>/dev/null)
+if [ "${conf_count:-0}" -eq 1 ]; then
+  ok "AUQ scan: confusion answer → 1 confusion flag"
+else
+  fail_test "AUQ confusion" "expected 1 confusion flag, got ${conf_count:-0}"
+fi
+
+omit_count=$(printf '%s' "$report11" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len([f for f in te.get('auq_answer_flags', []) if f.get('signal') == 'omitted-option']))
+" 2>/dev/null)
+if [ "${omit_count:-0}" -eq 1 ]; then
+  ok "AUQ scan: question-shaped answer → 1 omitted-option flag"
+else
+  fail_test "AUQ omitted-option" "expected 1 omitted-option flag, got ${omit_count:-0}"
+fi
+
+# Precision: a normal selected answer produces no flag.
+total11=$(printf '%s' "$report11" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('auq_answer_flags', [])))
+" 2>/dev/null)
+if [ "${total11:-99}" -eq 2 ]; then
+  ok "AUQ scan precision: normal 'Fix the implementation' answer → no flag (2 flags total)"
+else
+  fail_test "AUQ precision" "expected 2 flags total, got ${total11:-99}"
+fi
+
+rm -rf "$TMPDIR11"
+
+# ── Test 12: repeated inline env-var workaround (#421 detector 2) ─────────────
+#
+# A leading `export VAR=value` re-typed verbatim ahead of 3+ separate Bash
+# calls in one session (config patched at call site vs. fixing the default).
+
+echo "--- test 12: repeated inline env-var workaround (export prefix ×3) ---"
+
+TMPDIR12=$(mktemp -d)
+TMP_JSONL12="$TMPDIR12/env.jsonl"
+cat > "$TMP_JSONL12" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"e1","name":"Bash","input":{"command":"export DISPLAY_TZ=America/Los_Angeles && python3 render.py a"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"e2","name":"Bash","input":{"command":"export DISPLAY_TZ=America/Los_Angeles && python3 render.py b"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"e3","name":"Bash","input":{"command":"export DISPLAY_TZ=America/Los_Angeles && python3 render.py c"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"e4","name":"Bash","input":{"command":"export OTHER=1 && echo once"}}]}}
+JSONLEOF
+
+report12=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL12") || true
+
+rep_count=$(printf '%s' "$report12" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_env_prefixes', [])))
+" 2>/dev/null)
+if [ "${rep_count:-0}" -eq 1 ]; then
+  ok "env workaround: repeated export prefix → 1 flagged prefix"
+else
+  fail_test "env workaround" "expected 1 flagged prefix, got ${rep_count:-0}"
+fi
+
+rep_n=$(printf '%s' "$report12" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+p = te.get('repeated_env_prefixes', [])
+print(p[0]['count'] if p else 0)
+" 2>/dev/null)
+if [ "${rep_n:-0}" -eq 3 ]; then
+  ok "env workaround: count == 3 (the DISPLAY_TZ prefix), the OTHER=1 single call not flagged"
+else
+  fail_test "env workaround count" "expected count 3, got ${rep_n:-0}"
+fi
+
+# Precision: the same prefix used only twice must NOT flag (< 3).
+TMP_JSONL12B="$TMPDIR12/env_twice.jsonl"
+cat > "$TMP_JSONL12B" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"export FOO=bar && echo a"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"export FOO=bar && echo b"}}]}}
+JSONLEOF
+report12b=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL12B") || true
+rep_twice=$(printf '%s' "$report12b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_env_prefixes', [])))
+" 2>/dev/null)
+if [ "${rep_twice:-1}" -eq 0 ]; then
+  ok "env workaround precision: prefix used only twice → not flagged (< 3)"
+else
+  fail_test "env workaround precision" "expected 0 flagged prefixes for a 2× prefix, got $rep_twice"
+fi
+
+rm -rf "$TMPDIR12"
+
+# ── Test 13: MCP -32602 Invalid arguments bucket (#421 detector 3) ────────────
+
+echo "--- test 13: MCP -32602 Invalid arguments its own bucket ---"
+
+TMPDIR13=$(mktemp -d)
+TMP_JSONL13="$TMPDIR13/mcp.jsonl"
+cat > "$TMP_JSONL13" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"mc1","name":"mcp__obsidian-builtin__vault_patch","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"mc1","is_error":true,"content":[{"type":"text","text":"MCP error -32602: Invalid arguments for tool vault_patch: target is required"}]}]}}
+JSONLEOF
+report13=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL13") || true
+mcp_count=$(printf '%s' "$report13" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('mcp_invalid_args', [])))
+" 2>/dev/null)
+if [ "${mcp_count:-0}" -eq 1 ]; then
+  ok "MCP -32602: dedicated bucket → 1 entry"
+else
+  fail_test "MCP -32602" "expected 1 mcp_invalid_args entry, got ${mcp_count:-0}"
+fi
+
+mcp_tool=$(printf '%s' "$report13" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+b = te.get('mcp_invalid_args', [])
+print(b[0].get('tool_name','') if b else '')
+" 2>/dev/null)
+if [ "$mcp_tool" = "mcp__obsidian-builtin__vault_patch" ]; then
+  ok "MCP -32602: bucket entry carries tool_name"
+else
+  fail_test "MCP -32602 tool_name" "expected vault_patch tool_name, got '$mcp_tool'"
+fi
+
+# Precision: a different MCP error code must NOT land in this bucket.
+TMP_JSONL13B="$TMPDIR13/mcp_other.jsonl"
+cat > "$TMP_JSONL13B" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"mo1","name":"mcp__x__y","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"mo1","is_error":true,"content":[{"type":"text","text":"MCP error -32000: Server error, please retry"}]}]}}
+JSONLEOF
+report13b=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL13B") || true
+mcp_other=$(printf '%s' "$report13b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('mcp_invalid_args', [])))
+" 2>/dev/null)
+if [ "${mcp_other:-1}" -eq 0 ]; then
+  ok "MCP -32602 precision: a -32000 error → 0 entries (only -32602 counted)"
+else
+  fail_test "MCP -32602 precision" "expected 0 for -32000 error, got $mcp_other"
+fi
+
+rm -rf "$TMPDIR13"
+
+# ── Test 14: mutating-MCP timeout bucket (#421 detector 4) ────────────────────
+#
+# A vault_write/vault_move/vault_delete result matching /timed out/i leaves the
+# store in UNKNOWN state — materially unlike a read timeout. Distinct bucket.
+
+echo "--- test 14: mutating-MCP timeout distinct bucket ---"
+
+TMPDIR14=$(mktemp -d)
+TMP_JSONL14="$TMPDIR14/timeout.jsonl"
+cat > "$TMP_JSONL14" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"mv1","name":"mcp__obsidian-builtin__vault_move","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"mv1","is_error":true,"content":[{"type":"text","text":"The operation timed out."}]}]}}
+JSONLEOF
+report14=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL14") || true
+mut_count=$(printf '%s' "$report14" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('mutating_mcp_timeouts', [])))
+" 2>/dev/null)
+if [ "${mut_count:-0}" -eq 1 ]; then
+  ok "mutating-MCP timeout: vault_move timeout → 1 distinct-bucket entry"
+else
+  fail_test "mutating-MCP timeout" "expected 1 entry, got ${mut_count:-0}"
+fi
+
+# Precision: a READ-tool (vault_read) timeout must NOT land in the mutating
+# bucket (a read timeout leaves no UNKNOWN store state).
+TMP_JSONL14B="$TMPDIR14/read_timeout.jsonl"
+cat > "$TMP_JSONL14B" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"rd1","name":"mcp__obsidian-builtin__vault_read","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"rd1","is_error":true,"content":[{"type":"text","text":"The operation timed out."}]}]}}
+JSONLEOF
+report14b=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL14B") || true
+read_to=$(printf '%s' "$report14b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('mutating_mcp_timeouts', [])))
+" 2>/dev/null)
+if [ "${read_to:-1}" -eq 0 ]; then
+  ok "mutating-MCP timeout precision: vault_read timeout → 0 entries (read ≠ mutating)"
+else
+  fail_test "mutating-MCP timeout precision" "expected 0 for a read timeout, got $read_to"
+fi
+
+# Precision: a mutating tool that did NOT time out (some other error) → 0.
+TMP_JSONL14C="$TMPDIR14/mut_other.jsonl"
+cat > "$TMP_JSONL14C" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"mw1","name":"mcp__obsidian-builtin__vault_write","input":{}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"mw1","is_error":true,"content":[{"type":"text","text":"File not found: some/path.md"}]}]}}
+JSONLEOF
+report14c=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL14C") || true
+mut_other=$(printf '%s' "$report14c" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('mutating_mcp_timeouts', [])))
+" 2>/dev/null)
+if [ "${mut_other:-1}" -eq 0 ]; then
+  ok "mutating-MCP timeout precision: vault_write non-timeout error → 0 entries"
+else
+  fail_test "mutating-MCP timeout precision" "expected 0 for a non-timeout mutating error, got $mut_other"
+fi
+
+rm -rf "$TMPDIR14"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo "---"

@@ -327,6 +327,129 @@ def _matches_error_signature(text):
 
 
 # ---------------------------------------------------------------------------
+# Structural detectors (temperloop #421)
+# ---------------------------------------------------------------------------
+#
+# Four detectors that are structurally unreachable by the turn-scanning /
+# error-signature passes above — each keys off a shape in the raw tool stream
+# (an AskUserQuestion answer, a repeated Bash export prefix, a JSON-RPC error
+# code, a mutating-MCP tool identity) rather than a line of prose.
+
+# (1a) AUQ answer expressing confusion — a top-signal feedback moment: the
+# operator did not answer the question, they signalled they couldn't. Narrow,
+# high-precision phrases (not a bare "confused" that benign prose carries).
+_AUQ_CONFUSION_RE = re.compile(
+    r"\b("
+    r"i (?:do not|don't) understand"
+    r"|i(?:'m| am) (?:confused|lost)"
+    r"|(?:need|want) more context"
+    r"|not sure what you(?:'re| are) asking"
+    r"|(?:this )?makes no sense"
+    r"|no idea what"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# (1b) AUQ answer that is itself a question, or opens with a counter-proposal
+# stem — the tell that the presented option set omitted the right answer, so the
+# operator had to type past it. Applied to the *selected answer value*, not the
+# wrapper string (see _scan_auq_answer).
+_AUQ_OMITTED_START_RE = re.compile(
+    r"^\s*(?:why\b|what about\b|couldn['’]?t\b|can['’]?t\b|how about\b)",
+    re.IGNORECASE,
+)
+
+# The AskUserQuestion tool_result wraps the selection as
+#   Your questions have been answered: "<question>"="<answer>"
+# so the *answer value* the operator actually gave is the RHS of each `="..."`.
+# Extract those so (1b)'s prefix/suffix tests see the answer, not the wrapper.
+_AUQ_ANSWER_VALUE_RE = re.compile(r'="((?:[^"\\]|\\.)*)"')
+
+
+def _auq_answer_values(answer):
+    """Return the selected answer value(s) from an AUQ result string.
+
+    Falls back to the whole (stripped) string when the `="..."` wrapper is
+    absent — a free-text / non-standard answer shape.
+    """
+    if not answer:
+        return []
+    vals = _AUQ_ANSWER_VALUE_RE.findall(answer)
+    if vals:
+        return [v.strip() for v in vals if v.strip()]
+    stripped = answer.strip()
+    return [stripped] if stripped else []
+
+
+def _scan_auq_answer(answer):
+    """Scan an AUQ answer string; return a sorted list of signal strings.
+
+    Signals: "confusion" (1a) and/or "omitted-option" (1b).
+    """
+    signals = set()
+    values = _auq_answer_values(answer)
+    for val in values:
+        if _AUQ_CONFUSION_RE.search(val):
+            signals.add("confusion")
+        if val.endswith("?") or _AUQ_OMITTED_START_RE.search(val):
+            signals.add("omitted-option")
+    # Confusion phrasing can also appear when the wrapper wasn't parseable into
+    # values but the whole answer still carries it — belt-and-suspenders for 1a
+    # (1b's positional tests deliberately stay on the extracted value only).
+    if answer and _AUQ_CONFUSION_RE.search(answer):
+        signals.add("confusion")
+    return sorted(signals)
+
+
+# (2) Repeated inline env-var workaround — a leading `export VAR=value` that the
+# session re-types verbatim ahead of many separate Bash calls, instead of
+# fixing the default (F#1141). Capture the *leading* export assignment only;
+# quoted values (spaces) and bare values both supported.
+_EXPORT_PREFIX_RE = re.compile(
+    r'^\s*(export\s+[A-Za-z_][A-Za-z0-9_]*='
+    r'''(?:"[^"]*"|'[^']*'|\S*))'''
+)
+
+# Minimum distinct Bash calls carrying the same verbatim export prefix before it
+# is flagged as a workaround (the "3+ separate Bash calls" acceptance bar).
+_ENV_PREFIX_MIN_CALLS = 3
+
+
+def _extract_export_prefix(command):
+    """Return the leading `export VAR=value` prefix of a Bash command, or None."""
+    if not command:
+        return None
+    m = _EXPORT_PREFIX_RE.match(command)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+# (3) MCP JSON-RPC -32602 "Invalid arguments" — always the caller's bug, and
+# invisible when folded into the generic errors[] list. Counted as its own
+# bucket. DOTALL so the `.*` between the code and "Invalid arguments" spans
+# newlines in a multi-line error body.
+_MCP_INVALID_ARGS_RE = re.compile(
+    r"MCP error -32602.*Invalid arguments", re.IGNORECASE | re.DOTALL
+)
+
+# (4) Mutating-MCP timeout — a vault_write / vault_move / vault_delete result
+# that timed out leaves the store in UNKNOWN state (applied? partial? not at
+# all?), materially unlike a read timeout. Distinct bucket. Matched by the
+# mutating tool's identity (substring of the fully-qualified MCP tool name) plus
+# a /timed out/i result body.
+_MUTATING_MCP_TOOL_SUBSTRINGS = ("vault_write", "vault_move", "vault_delete")
+_TIMED_OUT_RE = re.compile(r"timed out", re.IGNORECASE)
+
+
+def _is_mutating_mcp_tool(tool_name):
+    """Return True if `tool_name` is a mutating vault MCP op."""
+    if not tool_name:
+        return False
+    return any(sub in tool_name for sub in _MUTATING_MCP_TOOL_SUBSTRINGS)
+
+
+# ---------------------------------------------------------------------------
 # Tool-event parsing from raw .jsonl
 # ---------------------------------------------------------------------------
 
@@ -342,20 +465,32 @@ def parse_tool_events(jsonl_path):
     - capture.sh Bash invocations: the command body (defect-at-source signals)
 
     Returns a dict with keys:
-        ask_user_questions: list of {id, question, answer, location}
-        errors:             list of {tool_name, content, kind, location}
-        interrupts:         list of {location}
-        capture_calls:      list of {command, location}
+        ask_user_questions:    list of {id, question, answer, location}
+        errors:                list of {tool_name, content, kind, location}
+        interrupts:            list of {location}
+        capture_calls:         list of {command, location}
+        auq_answer_flags:      list of {signal, question, answer, location} (#421-1)
+        repeated_env_prefixes: list of {prefix, count, locations} (#421-2)
+        mcp_invalid_args:      list of {tool_name, content, location} (#421-3)
+        mutating_mcp_timeouts: list of {tool_name, content, location} (#421-4)
     """
     result = {
         "ask_user_questions": [],
         "errors": [],
         "interrupts": [],
         "capture_calls": [],
+        "auq_answer_flags": [],
+        "repeated_env_prefixes": [],
+        "mcp_invalid_args": [],
+        "mutating_mcp_timeouts": [],
     }
 
     if not jsonl_path or not os.path.isfile(jsonl_path):
         return result
+
+    # (#421-2) Collect every Bash export-prefix as (prefix, location) so a
+    # post-pass can flag any prefix repeated verbatim across 3+ separate calls.
+    export_prefix_hits = []  # list of (prefix, location) in file order
 
     # First pass: collect tool_use events so we can match them to tool_results.
     tool_use_by_id = {}  # id → {name, input, event_index}
@@ -425,6 +560,11 @@ def parse_tool_events(jsonl_path):
                             "command": cmd[:400],
                             "location": f"jsonl line {lineno}",
                         })
+                    # (#421-2) Record any leading `export VAR=value` prefix for
+                    # the repeated-workaround post-pass below.
+                    prefix = _extract_export_prefix(cmd)
+                    if prefix:
+                        export_prefix_hits.append((prefix, f"jsonl line {lineno}"))
 
             # ── tool_result ───────────────────────────────────────────────
             elif itype == "tool_result":
@@ -457,6 +597,24 @@ def parse_tool_events(jsonl_path):
                         "location": f"jsonl line {lineno}",
                     })
 
+                # (#421-3) MCP -32602 "Invalid arguments" — its own counted
+                # bucket (always the caller's bug; invisible among errors[]).
+                if _MCP_INVALID_ARGS_RE.search(result_text):
+                    result["mcp_invalid_args"].append({
+                        "tool_name": tname,
+                        "content": result_text[:300],
+                        "location": f"jsonl line {lineno}",
+                    })
+
+                # (#421-4) Mutating-MCP timeout — vault_write/move/delete that
+                # timed out leaves the store in UNKNOWN state; its own bucket.
+                if _is_mutating_mcp_tool(tname) and _TIMED_OUT_RE.search(result_text):
+                    result["mutating_mcp_timeouts"].append({
+                        "tool_name": tname,
+                        "content": result_text[:300],
+                        "location": f"jsonl line {lineno}",
+                    })
+
                 # AskUserQuestion answer: match by tool_use_id.
                 if tname == "AskUserQuestion":
                     # Find the corresponding question record and fill in answer.
@@ -470,6 +628,36 @@ def parse_tool_events(jsonl_path):
                 text_val = item.get("text", "")
                 if "[Request interrupted by user for tool use]" in text_val:
                     result["interrupts"].append({"location": f"jsonl line {lineno}"})
+
+    # (#421-1) AUQ answer-field scan: flag confusion answers (1a) and
+    # answers that are themselves questions / counter-proposals (1b — the
+    # option set omitted the right answer). Runs after answers are populated.
+    for aq in result["ask_user_questions"]:
+        answer = aq.get("answer")
+        if not answer:
+            continue
+        questions = aq.get("questions", [])
+        question = questions[0] if questions else ""
+        for signal in _scan_auq_answer(answer):
+            result["auq_answer_flags"].append({
+                "signal": signal,
+                "question": question,
+                "answer": answer[:500],
+                "location": aq.get("location", ""),
+            })
+
+    # (#421-2) Repeated inline env-var workaround: flag any export prefix that
+    # appeared verbatim ahead of _ENV_PREFIX_MIN_CALLS (3+) separate Bash calls.
+    prefix_locations = {}  # prefix → [locations] in file order
+    for prefix, loc in export_prefix_hits:
+        prefix_locations.setdefault(prefix, []).append(loc)
+    for prefix, locs in prefix_locations.items():
+        if len(locs) >= _ENV_PREFIX_MIN_CALLS:
+            result["repeated_env_prefixes"].append({
+                "prefix": prefix,
+                "count": len(locs),
+                "locations": locs,
+            })
 
     # Clean up: remove internal 'id' from AskUserQuestion records (not part of public schema).
     for aq in result["ask_user_questions"]:
