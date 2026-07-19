@@ -1011,6 +1011,101 @@ run22d "$PLACEHOLDER"                 # absent AGAIN → WARN again
 WC="$(grep -c 'WARN — signal-intake config absent for board 3' "$ERR" | tr -d ' ')"
 [ "$WC" = "2" ] && ok "WARN fires again after a recovery (2 total: initial + post-recovery)" || bad "t22d.recover" "expected 2, got $WC: $(cat "$ERR")"
 
+# ── Phase R: retro-judge trigger (epic #528, temperloop#535) ─────────────────
+# THIN trigger: urgency was decided at MINT (#533), not here — the only
+# threshold this phase applies is the RETRO_MIN_INTERVAL debounce on the
+# oldest `retro-pending` tracker's age, unconditionally bypassed by a
+# `retro-urgent` tracker. Portable epoch<->ISO helpers (mirrors funnel-tick.sh's
+# own GNU-then-BSD dialect guard) so these tests are deterministic regardless
+# of host and independent of any real machine build.config: every run below
+# pins BUILD_CONFIG_LOCAL/BUILD_CONFIG_MACHINE at the non-existent no-op files.
+_t_epoch_to_iso() {
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+}
+RNOW=1700000000                      # a fixed, arbitrary "now" — never wall-clock
+ROLD="$(_t_epoch_to_iso $((RNOW - 1000000)))"   # ~11.5 days old — past the default 3-day debounce
+RFRESH="$(_t_epoch_to_iso $((RNOW - 10)))"       # 10s old — nowhere near the debounce
+
+echo "--- test 23: /retro declared + a tracker past RETRO_MIN_INTERVAL -> exactly ONE retro-judge ---"
+FX="$TMP/t23"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":901,"title":"Process retro: epic #800","createdAt":"$ROLD","labels":["retro-pending"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq '[.actions[]|select(.action=="retro-judge")]|length' <<<"$PLAN")" = "1" ] \
+  && ok "exactly one retro-judge action" || bad "t23.count" "got $(jq -c '[.actions[]|select(.action=="retro-judge")]' <<<"$PLAN")"
+RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
+[ "$(jq -r '.reason' <<<"$RJ")" = "debounce" ] && ok "reason=debounce (age past RETRO_MIN_INTERVAL)" || bad "t23.reason" "got $(jq -r '.reason' <<<"$RJ")"
+[ "$(jq -r '.count' <<<"$RJ")" = "1" ] && ok "count=1 tracker" || bad "t23.tcount" "got $(jq -r '.count' <<<"$RJ")"
+jq -e '.emit | test("/retro --pending") and test("--board 3")' <<<"$RJ" >/dev/null \
+  && ok "emits a call to the overlay /retro --pending judge (calls, not re-implements)" || bad "t23.emit" "$(jq -r '.emit' <<<"$RJ")"
+[ -z "$(action_for <<<"$PLAN" '.action=="skip-retro-judge"')" ] && ok "no skip line when a judge is declared and due" || bad "t23.noskip" "unexpected skip-retro-judge"
+
+echo "--- test 24: a retro-urgent tracker fires REGARDLESS of the debounce (urgency bypass) ---"
+FX="$TMP/t24"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":905,"title":"Process retro: epic #810","createdAt":"$RFRESH","labels":["retro-pending","retro-urgent"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
+[ -n "$RJ" ] && ok "retro-urgent tracker still fires despite being fresh" || bad "t24.fire" "no retro-judge action; PLAN=$PLAN"
+[ "$(jq -r '.reason' <<<"$RJ")" = "urgent" ] && ok "reason=urgent (bypasses the age gate)" || bad "t24.reason" "got $(jq -r '.reason' <<<"$RJ")"
+
+echo "--- test 25: a fresh, non-urgent tracker does NOT fire (debounce not yet met) ---"
+FX="$TMP/t25"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":906,"title":"Process retro: epic #820","createdAt":"$RFRESH","labels":["retro-pending"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] && ok "no retro-judge — debounce not yet crossed" || bad "t25.nofire" "unexpectedly fired: $PLAN"
+[ "$(jq -r 'first(.actions[]|select(.action=="no-op"))' <<<"$PLAN")" != "null" ] \
+  && ok "tick still reports no-op (nothing else drivable this tick)" || bad "t25.noop" "got $PLAN"
+
+echo "--- test 26: /retro NOT declared -> exactly ONE legible skip-retro-judge; NO retro-judge action ---"
+FX="$TMP/t26"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":907,"title":"Process retro: epic #830","createdAt":"$ROLD","labels":["retro-pending"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="" FUNNEL_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq '[.actions[]|select(.action=="skip-retro-judge")]|length' <<<"$PLAN")" = "1" ] \
+  && ok "exactly one skip-retro-judge line" || bad "t26.skipcount" "got $(jq -c '[.actions[]|select(.action=="skip-retro-judge")]' <<<"$PLAN")"
+[ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] && ok "no retro-judge action emitted when the judge isn't declared" || bad "t26.noaction" "a retro-judge action leaked through: $PLAN"
+
+echo "--- test 27: a tracker pre-set to retro-judged/closed is NEVER re-emitted ---"
+FX="$TMP/t27"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":908,"title":"Process retro: epic #840 (already judged)","createdAt":"$ROLD","state":"closed","labels":["retro-judged"]},
+ {"number":909,"title":"Process retro: epic #841 (already judged, still open)","createdAt":"$ROLD","labels":["retro-judged"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] \
+  && ok "a retro-judged tracker (closed, or open-but-relabeled) is never re-emitted" || bad "t27.rejudged" "unexpectedly fired: $PLAN"
+
+echo "--- test 28: multiple due trackers still yield exactly ONE batched retro-judge action ---"
+FX="$TMP/t28"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":910,"title":"epic #850","createdAt":"$ROLD","labels":["retro-pending"]},
+ {"number":911,"title":"epic #851","createdAt":"$ROLD","labels":["retro-pending"]},
+ {"number":912,"title":"epic #852 (already judged)","createdAt":"$ROLD","labels":["retro-judged"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq '[.actions[]|select(.action=="retro-judge")]|length' <<<"$PLAN")" = "1" ] \
+  && ok "still exactly one retro-judge action for a multi-tracker batch" || bad "t28.count" "got $(jq -c '[.actions[]|select(.action=="retro-judge")]' <<<"$PLAN")"
+RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
+[ "$(jq -r '.count' <<<"$RJ")" = "2" ] && ok "count=2 (the already-judged tracker excluded)" || bad "t28.tcount" "got $(jq -r '.count' <<<"$RJ")"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
 echo "funnel-tick tests: $pass passed, $fail failed"
