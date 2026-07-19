@@ -106,6 +106,15 @@ KERNEL_GATES=(
   # the manifest/T0-inventory gates above (kernel Makefile is generator-owned;
   # no new target added here).
   "bash workflows/scripts/tests/test_install_project_agents.sh"
+  # Reviewer activation-coverage scan (temperloop#548, ADR 0007/0008):
+  # workflows/scripts/install/reviewer-activation-coverage.sh — the pure,
+  # non-interactive data path that computes the gap set (catalogued
+  # reviewers present at/above REVIEWER_SCAN_MIN_FILES, not yet activated,
+  # not durably declined) and the reviewer-routing.tsv<->catalog
+  # referential-integrity check. Same direct-`bash` form as the
+  # project-agents/manifest/T0-inventory gates above (kernel Makefile is
+  # generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_reviewer_activation_coverage.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
