@@ -169,9 +169,19 @@ as such in its bullet below.)
   downstream from there — relabeling each processed tracker, closing it, and its
   own per-session batch cap — you only trigger it and report the outcome. A
   non-zero exit, or output carrying no parseable summary, is `failed` (with a
-  one-line `note` naming the failure); a clean exit is `executed`. This action
-  never opens a PR and never merges anything — if the judge's own output somehow
-  claims otherwise, that's the judge's concern, not something you verify or act on.
+  one-line `note` naming the failure); a clean exit **whose summary reports no
+  blocked or failed per-tracker write** is `executed`. **The foundation#978 rule
+  below binds this action too:** if the judge's summary names a tracker whose
+  relabel/close/verdict write was blocked or failed (a permission-denied MCP call,
+  an unavailable backend), record this action `failed` — or, only if the loss is
+  genuinely best-effort, keep `executed` but name the degraded write in `note` —
+  **never** a silent `executed` over a write-failure the summary does surface.
+  Absent such a signal you rely on `/retro`'s own contract to exit non-zero on a
+  hard write failure; you do not re-verify the judge's per-tracker writes yourself.
+  This action never opens a PR and never merges anything — that disclaimer is
+  scoped to **merge/PR authority**: if the judge's output claims a PR or merge,
+  that's the judge's concern, not something you act on. It does **not** license
+  ignoring a write-failure the summary reports.
 
 - **`drive-ready`** (only ever `kind:"spike"` here — see HARD RULE 3) — drive the
   spike to its verdict. A drive-ready spike is a **standalone Ready singleton, not an
