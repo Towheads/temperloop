@@ -52,11 +52,16 @@ case "$min_files" in
   ''|*[!0-9]*) fail "0: could not resolve a numeric REVIEWER_SCAN_MIN_FILES (got '$min_files')" ;;
 esac
 
-# make_fixture DIR — a fresh repo dir with enough .sh and .py files to clear
-# the activation threshold for both shell-reviewer and python-reviewer.
+# make_fixture DIR — a fresh, GIT-INITIALIZED repo dir with enough .sh and
+# .py files to clear the activation threshold for both shell-reviewer and
+# python-reviewer. Real git init (not just a plain tmpdir) is load-bearing:
+# reviewer-activate.sh's gitignore-safety guard (temperloop#560 mitigation)
+# refuses to write activation/decline state outside an actual git repo, so
+# every fixture that exercises accept/decline must be one.
 make_fixture() {
   local dir="$1" i=1
   mkdir -p "$dir"
+  git init -q "$dir" >/dev/null 2>&1
   while [ "$i" -le "$min_files" ]; do
     echo '#!/usr/bin/env bash' >"${dir}/script${i}.sh"
     echo 'print("hi")' >"${dir}/mod${i}.py"
@@ -196,6 +201,75 @@ bash "$RA_SH" --project-dir "$F7c" </dev/null >/dev/null \
 [ ! -d "${F7c}/.claude" ] || fail "7c: EOF/no-stdin with no flags should make no changes"
 
 pass "7: interactive prompt — 'y' accepts the batch, a name accepts a subset, EOF makes no changes"
+
+# ---------------------------------------------------------------------------
+# Test 8: target-repo gitignore-bleed mitigation (temperloop#560 local half).
+# A fresh git-initialized target with NO .gitignore at all: an activate and
+# a decline must each leave the written state resolving under `git
+# check-ignore` in the TARGET repo (i.e. NOT staged by a `git add -A` there)
+# — never relying on the KERNEL checkout's own .gitignore. Also asserts the
+# .gitignore append is idempotent (no duplicate lines across the two writes).
+# ---------------------------------------------------------------------------
+F8="${TMP}/f8"
+mkdir -p "$F8"
+git init -q "$F8" >/dev/null 2>&1
+i=1
+while [ "$i" -le "$min_files" ]; do
+  echo '#!/usr/bin/env bash' >"${F8}/script${i}.sh"
+  echo 'print("hi")' >"${F8}/mod${i}.py"
+  i=$((i + 1))
+done
+[ ! -e "${F8}/.gitignore" ] || fail "8: fixture should start with no .gitignore"
+
+out8a="$(bash "$RA_SH" --project-dir "$F8" --accept python-reviewer 2>&1)" \
+  || fail "8a: accept exited non-zero — output: $out8a"
+grep -q "added '.claude/agents/' to " <<<"$out8a" \
+  || fail "8a: expected an 'added .claude/agents/ to <gitignore>' notice — got: $out8a"
+git -C "$F8" check-ignore -q ".claude/agents/python-reviewer.md" \
+  || fail "8a: .claude/agents/python-reviewer.md does not resolve git-ignored in the TARGET repo"
+
+# The accept step above already ensured BOTH entries (the guard checks both
+# on every write, per the header comment), so the decline step here should
+# find .claude/reviewer-state/ already ignored and add nothing new — assert
+# exactly that (no second "added" notice for the same entry).
+out8b="$(bash "$RA_SH" --project-dir "$F8" --decline shell-reviewer 2>&1)" \
+  || fail "8b: decline exited non-zero — output: $out8b"
+if grep -q "added '.claude/reviewer-state/' to " <<<"$out8b"; then
+  fail "8b: .claude/reviewer-state/ should already have been ignored by the prior accept step — got a duplicate 'added' notice: $out8b"
+fi
+git -C "$F8" check-ignore -q ".claude/reviewer-state/declined/shell-reviewer" \
+  || fail "8b: .claude/reviewer-state/declined/shell-reviewer does not resolve git-ignored in the TARGET repo"
+
+# Idempotency: exactly one occurrence of each entry line, no duplicates
+# across the accept (which added both entries up front) and decline writes.
+agents_lines="$(grep -cxF '.claude/agents/' "${F8}/.gitignore" || true)"
+state_lines="$(grep -cxF '.claude/reviewer-state/' "${F8}/.gitignore" || true)"
+[ "$agents_lines" = "1" ] || fail "8c: expected exactly one '.claude/agents/' line, got $agents_lines"
+[ "$state_lines" = "1" ] || fail "8c: expected exactly one '.claude/reviewer-state/' line, got $state_lines"
+
+pass "8: a fresh target repo with no .gitignore gets both entries appended on first write, activation/decline state resolves git-ignored, and re-writes never duplicate the lines"
+
+# ---------------------------------------------------------------------------
+# Test 9: a target that is NOT a git repo at all — refuse loudly, write
+# nothing, rather than silently leaving state exposed.
+# ---------------------------------------------------------------------------
+F9="${TMP}/f9"
+mkdir -p "$F9"
+i=1
+while [ "$i" -le "$min_files" ]; do
+  echo '#!/usr/bin/env bash' >"${F9}/script${i}.sh"
+  echo 'print("hi")' >"${F9}/mod${i}.py"
+  i=$((i + 1))
+done
+
+if out9="$(bash "$RA_SH" --project-dir "$F9" --accept all 2>&1)"; then
+  fail "9: expected non-zero exit when the target is not a git repo — output: $out9"
+fi
+grep -q "is not a git repository" <<<"$out9" \
+  || fail "9: expected a loud 'is not a git repository' warning — got: $out9"
+[ ! -d "${F9}/.claude" ] || fail "9: no state should have been written when the target isn't a git repo"
+
+pass "9: a non-git target refuses loudly and writes no activation/decline state"
 
 echo
 echo "All reviewer-activate tests passed."

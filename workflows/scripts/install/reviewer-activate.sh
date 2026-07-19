@@ -38,6 +38,27 @@
 #   — see this repo's own .gitignore entry (.claude/reviewer-state/) added
 #   alongside this file.
 #
+# TARGET-REPO GITIGNORE SAFETY (temperloop#560 mitigation, this file's local
+# half). This kernel checkout's OWN .gitignore already carries both entries
+# below, but a real adopter repo (foundation/stageFind/ssmobile/subsetwiki
+# and any other target this script is pointed at) does NOT — so writing
+# activation/decline state straight into an un-ignored .claude/ would leave
+# it untracked-but-stageable, one `git add -A` away from committing a single
+# teammate's personal opt-in (violating ADR 0007's "never imposed on
+# teammates" invariant). Before EITHER write path (deploying via --only, or
+# writing a decline marker), this script therefore verifies — and if
+# missing, APPENDS — both entries in the TARGET project's OWN .gitignore:
+#   .claude/agents/
+#   .claude/reviewer-state/
+# Idempotent (checked with `git check-ignore` first; never duplicates a
+# line) and refuses to proceed with that write — loudly, to stderr — if the
+# target isn't a git repo or its .gitignore can't be written, rather than
+# silently leaving state exposed. See _ra_ensure_state_gitignored() below.
+#
+# REVERSING. To deactivate a reviewer, remove its
+# .claude/agents/<name>.md; to re-offer a declined one, remove its marker
+# under .claude/reviewer-state/declined/<name>.
+#
 # INTERACTIVITY. The offer/accept prompt below is this script's ONLY
 # interactive surface. Two non-interactive paths exist for driving it
 # without a TTY (a fixture test, or a future scripted caller like `make
@@ -104,7 +125,7 @@ fi
 source "$RAC_SH"
 
 usage() {
-  sed -n '2,75p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,104p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 _ra_default_project_dir() {
@@ -150,6 +171,56 @@ _ra_filter_to_gaps() {
     fi
   done <<<"$list"
   printf '%s' "$kept"
+}
+
+# _ra_ensure_gitignore_entry PROJECT_DIR ENTRY SAMPLE_PATH -> 0 iff, on
+# return, SAMPLE_PATH resolves ignored under `git -C PROJECT_DIR
+# check-ignore` — either it already was, or ENTRY was appended to
+# PROJECT_DIR/.gitignore (creating the file if absent) to make it so. Prints
+# one line to stdout when it actually appends (nothing when already
+# ignored). Returns 1 and warns loudly to stderr, WITHOUT writing anything,
+# when PROJECT_DIR isn't a git repo, .gitignore can't be written, or the
+# path is somehow still not ignored after appending.
+_ra_ensure_gitignore_entry() {
+  local project_dir="$1" entry="$2" sample_path="$3" gi
+
+  if ! git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "reviewer-activate.sh: ! $project_dir is not a git repository — cannot guarantee '$entry' stays untracked; refusing to write activation/decline state here" >&2
+    return 1
+  fi
+
+  if git -C "$project_dir" check-ignore -q -- "$sample_path" 2>/dev/null; then
+    return 0
+  fi
+
+  gi="${project_dir}/.gitignore"
+  if [ -f "$gi" ] && grep -qxF "$entry" "$gi" 2>/dev/null; then
+    : # entry already literally present; check-ignore above should have
+      # caught this — fall through to the post-check below, which will
+      # surface a clear failure if it somehow still isn't ignored.
+  elif { [ -e "$gi" ] || touch "$gi" 2>/dev/null; } && printf '%s\n' "$entry" >>"$gi" 2>/dev/null; then
+    echo "reviewer-activate.sh: added '$entry' to $gi to keep activation/decline state per-checkout (never committed)"
+  else
+    echo "reviewer-activate.sh: ! could not write $gi to add '$entry' — refusing to write activation/decline state here" >&2
+    return 1
+  fi
+
+  if ! git -C "$project_dir" check-ignore -q -- "$sample_path" 2>/dev/null; then
+    echo "reviewer-activate.sh: ! $sample_path is still not ignored after updating $gi — refusing to write activation/decline state here" >&2
+    return 1
+  fi
+  return 0
+}
+
+# _ra_ensure_state_gitignored PROJECT_DIR -> 0 iff BOTH the activation
+# (.claude/agents/) and decline-marker (.claude/reviewer-state/) trees
+# resolve ignored in PROJECT_DIR, appending to its .gitignore as needed.
+# Called before EITHER write path (accept or decline) — see header comment.
+_ra_ensure_state_gitignored() {
+  local project_dir="$1" ok=0
+  _ra_ensure_gitignore_entry "$project_dir" ".claude/agents/" ".claude/agents/.reviewer-activate-probe" || ok=1
+  _ra_ensure_gitignore_entry "$project_dir" ".claude/reviewer-state/" ".claude/reviewer-state/.reviewer-activate-probe" || ok=1
+  return "$ok"
 }
 
 project_dir=""
@@ -252,47 +323,59 @@ failures=0
 
 if [ -n "$accept_set" ]; then
   echo "-- activating --"
-  while IFS= read -r name; do
-    [ -z "$name" ] && continue
-    if [ "$dry_run" -eq 1 ]; then
+  accept_n="$(printf '%s\n' "$accept_set" | grep -c . || true)"
+  if [ "$dry_run" -eq 1 ]; then
+    while IFS= read -r name; do
+      [ -z "$name" ] && continue
       echo "  → would activate $name"
       activated=$((activated + 1))
-      continue
-    fi
-    if bash "$PROJECT_AGENTS_SH" --project-dir "$project_dir" --only "$name" --category reviewers; then
-      activated=$((activated + 1))
-    else
-      echo "  ! failed to activate $name" >&2
-      failures=$((failures + 1))
-    fi
-  done <<<"$accept_set"
+    done <<<"$accept_set"
+  elif ! _ra_ensure_state_gitignored "$project_dir"; then
+    echo "  ! refusing to activate any reviewer here — see gitignore warning(s) above" >&2
+    failures=$((failures + accept_n))
+  else
+    while IFS= read -r name; do
+      [ -z "$name" ] && continue
+      if bash "$PROJECT_AGENTS_SH" --project-dir "$project_dir" --only "$name" --category reviewers; then
+        activated=$((activated + 1))
+      else
+        echo "  ! failed to activate $name" >&2
+        failures=$((failures + 1))
+      fi
+    done <<<"$accept_set"
+  fi
   echo
 fi
 
 if [ -n "$decline_set" ]; then
   echo "-- declining (durable — will not be re-offered) --"
+  decline_n="$(printf '%s\n' "$decline_set" | grep -c . || true)"
   marker_dir="${project_dir}/.claude/reviewer-state/declined"
-  if [ "$dry_run" -ne 1 ]; then
+  if [ "$dry_run" -eq 1 ]; then
+    while IFS= read -r name; do
+      [ -z "$name" ] && continue
+      echo "  → would decline $name (marker: $marker_dir/$name)"
+      declined=$((declined + 1))
+    done <<<"$decline_set"
+  elif ! _ra_ensure_state_gitignored "$project_dir"; then
+    echo "  ! refusing to decline any reviewer here — see gitignore warning(s) above" >&2
+    failures=$((failures + decline_n))
+  else
     if ! mkdir -p "$marker_dir"; then
       echo "  ! could not create $marker_dir" >&2
       exit 1
     fi
+    while IFS= read -r name; do
+      [ -z "$name" ] && continue
+      if printf '# reviewer-activate: declined %s on %s\n' "$name" "$(date +%Y-%m-%d)" >"${marker_dir}/${name}"; then
+        echo "  → declined $name"
+        declined=$((declined + 1))
+      else
+        echo "  ! failed to write decline marker for $name" >&2
+        failures=$((failures + 1))
+      fi
+    done <<<"$decline_set"
   fi
-  while IFS= read -r name; do
-    [ -z "$name" ] && continue
-    if [ "$dry_run" -eq 1 ]; then
-      echo "  → would decline $name (marker: $marker_dir/$name)"
-      declined=$((declined + 1))
-      continue
-    fi
-    if printf '# reviewer-activate: declined %s on %s\n' "$name" "$(date +%Y-%m-%d)" >"${marker_dir}/${name}"; then
-      echo "  → declined $name"
-      declined=$((declined + 1))
-    else
-      echo "  ! failed to write decline marker for $name" >&2
-      failures=$((failures + 1))
-    fi
-  done <<<"$decline_set"
   echo
 fi
 
