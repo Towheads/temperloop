@@ -300,7 +300,7 @@ For each candidate:
 
 Backstop for the live "Board hygiene is part of the gate" / "Park, don't abandon" rules in `claude/CLAUDE.md` § Task workflow, and for build's per-run Step 0.5 self-claim recovery. Those catch the *single-run* case; nothing periodically sweeps the board **across sessions** for claims a dead run stranded In Progress (bugs **and** epics — both carry a real `Host/Session` stamp; the epic stamp lands at `build.md` Step 3a). A 2026-06-04/05 session found two epics stranded In-Progress for days under dead sessions (GH #85). This sweep is the periodic net.
 
-**Run the status reconcile for each governed board** (via the board adapter's `reconcile`, on PATH from `make install-board`; if `reconcile` isn't on PATH, fall back to `workflows/scripts/board/reconcile.sh` in a foundation checkout, else skip this step with a one-line note):
+**Run the status reconcile for each governed board** (via the board adapter's `reconcile`, on PATH from `make install-board` in the foundation fleet; if `reconcile` isn't on PATH — as in a standalone kernel checkout, which ships no `install-board` target — fall back to `workflows/scripts/board/reconcile.sh`, else skip this step with a one-line note):
 
 ```
 reconcile --status --board 3
