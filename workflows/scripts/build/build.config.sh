@@ -279,6 +279,34 @@ fi
 # `:=` fallback for a non-vendoring checkout, exactly as FUNNEL_MERGE_PENDING_LABEL does.
 : "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
 
+# ── Unified-retrospection RETRO_* knobs (temperloop#532) ────────────────────
+# These five knobs are NAMED (in prose) by other items of the
+# unified-retrospection epic and VALUED only here, per § Prose-resident knob
+# convention (`claude/CLAUDE.kernel.md`) — a command spec (`build.md`'s
+# 4d-retro MINT step, the funnel tick's retro-judge emit, `/retro` itself)
+# references `$RETRO_*` symbolically and never restates the literal.
+
+# Master on/off for the `/build` 4d-retro MINT (files a per-epic retro
+# tracker at epic close). Default ON.
+: "${RETRO_MINT_ENABLED:=1}"
+
+# Debounce: minimum age (s) of the oldest `retro-pending` tracker before the
+# funnel tick emits a retro-judge action. Default a 3-day cadence.
+: "${RETRO_MIN_INTERVAL:=259200}"
+
+# CI-retry count at/above which a retro tracker is stamped `retro-urgent` at
+# mint time (bypasses the debounce above).
+: "${RETRO_URGENT_CI_RETRIES:=3}"
+
+# Max number of retro trackers a single `/retro --pending` judge session
+# processes (enforced judge-side).
+: "${RETRO_BATCH_SESSION_CAP:=5}"
+
+# Model the funnel runs `claude -p "/retro --pending"` under — its own named
+# model knob, distinct from FUNNEL_DRIVE_MODEL (same tier: the judge is a
+# safe/standard drive, not a merge-tier high-judgment one).
+: "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
+
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
@@ -318,4 +346,6 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
        FUNNEL_MERGE_PENDING_LABEL FUNNEL_CLARIFIED_MARKER FUNNEL_ESCALATED_LABEL \
+       RETRO_MINT_ENABLED RETRO_MIN_INTERVAL RETRO_URGENT_CI_RETRIES \
+       RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
        KNOWLEDGE_STORE_ROOT
