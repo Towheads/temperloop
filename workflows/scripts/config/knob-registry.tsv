@@ -232,6 +232,7 @@ RETRO_MIN_INTERVAL	259200	seconds	tracked-repo	workflows/scripts/build/build.con
 RETRO_URGENT_CI_RETRIES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	CI-retry count at/above which a retro tracker is stamped retro-urgent at mint time (bypasses the debounce)
 RETRO_BATCH_SESSION_CAP	5	int	tracked-repo	workflows/scripts/build/build.config.sh	Max number of retro trackers a single /retro --pending judge session processes (enforced judge-side)
 RETRO_JUDGE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model the funnel runs claude -p "/retro --pending" under (distinct from FUNNEL_DRIVE_MODEL)
+REVIEWER_SCAN_MIN_FILES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Language-reviewer catalog install-time coverage scan / doctor check: minimum file count before a language is offered its reviewer (temperloop#538, ADR 0007/0008) — install/doctor-time, not the batch build pipeline
 FUNNEL_DRIVE_SETTINGS	$HERE/funnel-drive.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 FUNNEL_DRIVE_MERGE_SETTINGS	$HERE/funnel-drive-merge.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
 ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
