@@ -65,6 +65,13 @@
 #      names the file), and a machine-read file living outside Controls/ all
 #      fire; a healthy registry-matched control never fires; no Controls/
 #      folder is a quiet no-op.
+#  check_folder_allowlist / check_naming_drift (temperloop#420) → the 6 in-use
+#      folders (Designs/, Issues/, Plans-archive/, Sequencing/, Spikes/,
+#      StageFind/) reconciled into the ADR §2.2 allowlist report zero
+#      folder-allowlist violations; and the explicit `cross_project: true`
+#      frontmatter marker exempts a deliberately cross-cutting note from the
+#      `<project>`-prefix naming rule while an unmarked (or non-truthy-marked)
+#      drifting note still flags.
 #  15. Heat score + review queue (temperloop#240, ADR §2.6-2.7) → a fixture
 #      with distinct reads/links/last_verified combos computes the
 #      documented weighted heat score and ranks the top-5 review queue by
@@ -714,6 +721,44 @@ assert_has     "$emptyReport" "info heat-score: 0 candidate note(s) scored"   "e
 assert_has     "$emptyReport" "info review-queue: empty (0 candidate notes)" "empty store -> empty queue, not an alarm"
 assert_missing "$emptyReport" "ALARM:"                                       "empty store trips no alarm from heat-score"
 rm -rf "$HS5"
+
+# ── test check_folder_allowlist: in-use folders allowlisted (temperloop#420) ──
+echo "--- test check_folder_allowlist: in-use folders (temperloop#420) ---"
+# The 6 in-use top-level folders reconciled against the live vault must all be
+# in the ADR §2.2 allowlist now, so a vault holding each of them reports zero
+# folder-allowlist violations (previously every one re-flagged as unlisted).
+AL="$(mktemp -d)"
+for _d in Designs Issues Plans-archive Sequencing Spikes StageFind; do
+  mkdir -p "$AL/$_d"
+  echo "x" > "$AL/$_d/note.md"
+done
+alreport="$(bash "$SCRIPT" --root "$AL")"
+assert_has "$alreport" "ok folder allowlist: 0 violations" "the 6 in-use folders are all allowlisted (no unlisted-folder flag)"
+for _d in Designs Issues Plans-archive Sequencing Spikes StageFind; do
+  assert_missing "$alreport" "allowlist: $_d/ — not in the ADR" "$_d/ is no longer flagged as unlisted"
+done
+rm -rf "$AL"
+
+# ── test check_naming_drift: cross-project marker (temperloop#420) ─────────────
+echo "--- test check_naming_drift: cross-project marker (temperloop#420) ---"
+# A deliberately cross-cutting note carrying `cross_project: true` frontmatter
+# is exempt from the `<project>`-prefix rule even though its filename has no
+# ` - ` separator; an unmarked note of the same non-convention shape still
+# flags — proving the marker is a precise per-note opt-in, not a blanket pass.
+XP="$(mktemp -d)"; mkdir -p "$XP/Decisions"
+printf -- '---\ncross_project: true\n---\ncross-cutting content\n' > "$XP/Decisions/BoardNumberingGlossary.md"
+echo "content" > "$XP/Decisions/UnmarkedDrift.md"
+xpreport="$(bash "$SCRIPT" --root "$XP")"
+assert_missing "$xpreport" "naming: Decisions/BoardNumberingGlossary.md" "cross_project-marked note is exempt from the <project>-prefix rule"
+assert_has     "$xpreport" "naming: Decisions/UnmarkedDrift.md"          "unmarked drifting note still flags"
+rm -rf "$XP"
+
+# A non-truthy cross_project value is NOT a marker — the note is still linted.
+XP2="$(mktemp -d)"; mkdir -p "$XP2/Decisions"
+printf -- '---\ncross_project: false\n---\ncontent\n' > "$XP2/Decisions/NotReallyCrossProject.md"
+xp2report="$(bash "$SCRIPT" --root "$XP2")"
+assert_has "$xp2report" "naming: Decisions/NotReallyCrossProject.md" "cross_project: false is not a marker — note still flags"
+rm -rf "$XP2"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
