@@ -215,6 +215,8 @@ quality-gates scripts/quality-gates.sh
 quality-gates workflows/scripts/lib/checkout-freshness.sh
 quality-gates scripts/tests/test_quality_gates_freshness.sh
 quality-gates scripts/lint-zsh-param-tie.sh
+quality-gates scripts/ensure-shellcheck.sh
+quality-gates scripts/tests/test_ensure_shellcheck.sh
 quality-gates workflows/scripts/config/*
 quality-gates workflows/scripts/kernel/*
 quality-gates workflows/scripts/lint-pr-body.sh

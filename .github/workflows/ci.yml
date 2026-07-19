@@ -36,8 +36,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install shellcheck (macOS)
-        if: runner.os == 'macOS'
-        run: brew install shellcheck
-
+      # No shellcheck install step: scripts/quality-gates.sh -> `make shellcheck`
+      # provisions a PINNED shellcheck (scripts/ensure-shellcheck.sh) on BOTH OS
+      # legs, so the version is identical to what runs locally (temperloop#567 —
+      # a local green must guarantee a CI green on this gate). This bypasses the
+      # ubuntu runner's pre-installed apt shellcheck and macOS brew entirely.
       - run: bash scripts/quality-gates.sh
