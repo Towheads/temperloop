@@ -152,4 +152,33 @@ $out" ;;
 esac
 echo "PASS: 6 a build.md with no 3e section fails legibly"
 
+# --- 7. GREEN: the stranger-facing-prose `*.md` fallback clause is fine ----
+# (it is not a tsv key — `*.md` never appears as a row in the tsv, only the
+# concrete `docs/**` glob does — so the prose fallback clause covering any
+# OTHER stranger-facing *.md must never trip the lint. Regression test for
+# the build/reviewer-routing-tsv BLOCKING finding: the tsv-migration diff
+# dropped this broader fallback outright rather than merely restating a tsv
+# key, so case 4's drift check alone would not have caught it.)
+clean_tsv
+cat >"$WORK/build.md" <<'EOF'
+#### 3e. Optional pre-push review
+
+If project CLAUDE.md `## Subagents` lists a review subagent matching the
+item's `review:` override, the item's change *kind* (`architectural` ->
+`architecture-reviewer`), the extension/path-glob axis --
+`workflows/scripts/config/reviewer-routing.tsv` is the single source of
+truth for that axis -- or the prose fallback of that axis -- any other
+stranger-facing prose `*.md` not matched by a `reviewer-routing.tsv` row ->
+`docs-reviewer` -- except a workflow spec under `claude/commands/*.md`,
+which always routes to `workflow-reviewer` regardless of any tsv row or the
+prose fallback, invoke as read-only pass.
+
+#### 3e.5. Parent-side acceptance gate
+
+Unrelated section, not scanned.
+EOF
+out="$(run_checker 2>&1)" || fail "7: the stranger-facing-prose *.md fallback clause should not trip the lint:
+$out"
+echo "PASS: 7 the non-tsv stranger-facing-prose *.md fallback clause is not a violation (GREEN)"
+
 echo "ALL PASS: check-reviewer-routing.sh"

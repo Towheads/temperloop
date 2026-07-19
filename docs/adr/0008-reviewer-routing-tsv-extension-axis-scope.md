@@ -19,12 +19,14 @@ cannot drift.
 The tempting framing is "extract the whole routing map into one table." But the
 routing at `build.md:534` is not a pure extension → reviewer lookup. It also
 branches on: a change *kind* that has no file extension (`architectural` →
-`architecture-reviewer`); a path glob *with an exception* (`docs/**` →
-`docs-reviewer`, except `claude/commands/*.md` → `workflow-reviewer`); a
-*multi-match* case ("a change touching both classes runs both"); a per-item
-`review:` override; and a mandatory-not-advisory distinction for
-`claude/commands/*.md` (temperloop#1007). A flat extension-keyed table can
-represent none of the kind/exception/override/cardinality axes.
+`architecture-reviewer`); a path glob *with a broader prose fallback and an
+exception* (`docs/**` → `docs-reviewer`, **or** any other stranger-facing
+prose `*.md` not matched by `docs/**` → `docs-reviewer`, except
+`claude/commands/*.md` → `workflow-reviewer`); a *multi-match* case ("a
+change touching both classes runs both"); a per-item `review:` override; and
+a mandatory-not-advisory distinction for `claude/commands/*.md`
+(temperloop#1007). A flat extension-keyed table can represent none of the
+kind/fallback/exception/override/cardinality axes.
 
 Claiming the tsv is the single source of truth for *all* routing would therefore
 be an overclaim: the drift guard would silently cover only the extension subset
@@ -37,18 +39,29 @@ ambiguous scope (the `architectural` route has no extension to compare).
 the **extension/path-glob → reviewer axis only** — explicitly and by design, not
 by omission.
 
-- **Amendment (still Proposed):** the tsv owns **every** extension/path-glob
-  route, including **`docs/**` → docs-reviewer**. The original version of this
-  ADR lumped `docs/**` into prose alongside its `claude/commands/*.md`
-  exception; on review that drew the boundary in the wrong place. `docs/**` is
-  itself a plain path-glob route with no kind/override/cardinality branching
-  of its own — it belongs on the extension/glob axis with every other row, not
-  in prose. Only the *exception* (`claude/commands/*.md` overriding the tsv's
-  `docs/**` route to `workflow-reviewer` instead) is non-extension logic, and
-  that alone stays prose-resident. The boundary is now: **the tsv owns every
-  extension/glob route; `build.md` prose owns only the exception, the
-  `architectural` kind route, the `review:` override, and the run-both
-  multi-match.**
+- **Amendment (still Proposed):** the tsv owns **every concrete**
+  extension/path-glob route, including **`docs/**` → docs-reviewer**. The
+  original version of this ADR lumped `docs/**` into prose alongside its
+  `claude/commands/*.md` exception; on review that drew the boundary in the
+  wrong place. `docs/**` is itself a plain path-glob route with no
+  kind/override/cardinality branching of its own — it belongs on the
+  extension/glob axis with every other row, not in prose. **This is not the
+  full prior docs-reviewer scope**: the pre-amendment prose routed to
+  `docs-reviewer` on `docs/**` **or** a second, broader condition — "any other
+  stranger-facing prose `*.md`" not already matched by `docs/**` (covering a
+  root-level file like `README.md`/`AGENTS.md`/`CHANGELOG.md`). That broader
+  condition has no concrete extension/glob key of its own — a bare `*.md` tsv
+  row would over-match every markdown file in the repo, including
+  non-stranger-facing ones the tsv's extension/glob axis is not scoped to
+  judge — so it is non-extension logic by the same test the `architectural`
+  kind route already uses, and it **stays prose-resident**, unchanged by this
+  amendment. The *exception* (`claude/commands/*.md` overriding both the
+  tsv's `docs/**` route and the prose fallback, to `workflow-reviewer`
+  instead) is also non-extension logic and stays prose-resident. The boundary
+  is now: **the tsv owns every concrete extension/glob route; `build.md`
+  prose owns the broader stranger-facing-prose `*.md` fallback, the
+  `claude/commands/*.md` exception, the `architectural` kind route, the
+  `review:` override, and the run-both multi-match.**
 - The tsv holds extension and glob routes (`.py` → python-reviewer, `.sh` →
   shell-reviewer, the adopter-language extensions `.ts`/`.js` → typescript-
   reviewer, `.go` → go-reviewer, `.rs` → rust-reviewer, `.java` →
