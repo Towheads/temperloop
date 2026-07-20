@@ -51,6 +51,22 @@ source "$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# --- temperloop#602: read-position accessors are set -u-safe BEFORE any resolve ---
+# board.sh defaults its in-memory resolve globals (BOARD_ITEMS_JSON / BOARD_FIELDS_JSON)
+# to empty at load, so an accessor invoked before board_resolve returns the documented
+# empty "not on the board" result instead of aborting on an 'unbound variable' error
+# under set -u — the capture.sh --repo kernel path runs set -u and was stranding a
+# freshly-captured issue off-board. Regression runs in a fresh subshell that re-sources
+# the lib and calls the accessors with NO resolve first.
+(
+  set -euo pipefail
+  source "$LIB_DIR/board.sh"
+  [ -z "$(board_item_id 123)" ]                        || exit 11
+  [ -z "$(board_option_id Status Ready 2>/dev/null)" ] || exit 12
+  [ -z "$(board_item_title 123 2>/dev/null)" ]         || exit 13
+) || fail "602: a read-position accessor aborted (or returned non-empty) pre-resolve under set -u (rc=$?)"
+echo "PASS: 602 board_item_id/board_option_id/board_item_title are set -u-safe pre-resolve (empty result, no unbound-var abort)"
+
 # Count item-list calls; replay the canned pages for reads. item-edit / item-add
 # (the mutators) fall through to the no-op default — board_set_status etc. only
 # check the call's exit code, not its output.

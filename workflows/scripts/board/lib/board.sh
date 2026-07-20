@@ -548,6 +548,18 @@ BOARD_CACHE_TTL="${BOARD_CACHE_TTL:-90}"
 BOARD_STRUCTURE_TTL="${BOARD_STRUCTURE_TTL:-86400}"
 BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-${TMPDIR:-/tmp}}"
 
+# In-memory resolve results, populated by board_resolve / board_resolve_item. Default
+# them to empty AT LOAD so a read-position accessor (board_item_id, board_option_id,
+# board_field_id, board_item_title, board_item_milestone, …) invoked BEFORE any resolve
+# returns its documented empty-string "not on the board" result instead of aborting with
+# an 'unbound variable' error under set -u — the capture.sh --repo kernel path runs set -u
+# and was stranding freshly-captured issues off-board (temperloop#602). The `+x` guard
+# assigns only when unset, so a resolve already run in this process is never clobbered by a
+# defensive re-source; the plain-assignment form (not the ${VAR:-} knob idiom) keeps these
+# internal cache globals out of the knob-registry ${VAR:-} seam sweep.
+[ -n "${BOARD_ITEMS_JSON+x}" ]  || BOARD_ITEMS_JSON=""
+[ -n "${BOARD_FIELDS_JSON+x}" ] || BOARD_FIELDS_JSON=""
+
 # One file per (board, kind). kind defaults to `items` so the historical
 # `subset-board-<n>-items.json` name is unchanged; board_resolve also caches
 # `project` and `fields` (board structure, invariant under item edits).
