@@ -366,5 +366,88 @@ case "$SET_NUMBER_ERR" in
 esac
 echo "PASS: board_set_number fails loud on an issues-only board with a documented 'Seq retired by design' stderr message — board_stamp is now implemented (see test_issues_claim_edges.sh)"
 
+# --- 11: a --remove-label failure is NOT swallowed (temperloop#601) ---------
+# Regression: _board_issues_set_field used `--remove-label … || true`, so a
+# throttled/transient removal that left the OLD fnd:status:* label behind still
+# returned 0 — the item ended up carrying DUAL fnd:status:* labels (e.g.
+# backlog + ready) while board_set_status reported a clean flip. The fix retries
+# the removal once and, on a persistent failure, returns non-zero so the
+# caller's exit code reflects the half-failed flip.
+
+# 11a — a PERSISTENT --remove-label failure surfaces as a non-zero return.
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:backlog"
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Acme/kernel-test/issues/105")
+      local ljson='[]'
+      if [ -n "$FAKE_LABELS" ]; then
+        ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
+      fi
+      printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
+      ;;
+    "issue edit")
+      shift 2
+      local prev="" a
+      for a in "$@"; do
+        case "$prev" in
+          --remove-label) return 1 ;;                # every removal fails
+          --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;
+        esac
+        prev="$a"
+      done
+      ;;
+    "label create") : ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+if board_set_status "ISSUE_105" "Ready" 2>/dev/null; then
+  fail "board_set_status must return non-zero when a stale fnd:status:* removal persistently fails (temperloop#601 — no swallowed dual-label flip)"
+fi
+[ "$(grep -c -- '--remove-label fnd:status:backlog' "$CALLS")" -ge 2 ] \
+  || fail "expected the failing --remove-label to be retried at least once before surfacing the failure"
+echo "PASS: board_set_status surfaces a persistent --remove-label failure (no swallowed dual-label flip)"
+
+# 11b — a SINGLE transient --remove-label failure is absorbed by the retry, so
+# the write still succeeds and the item is left with exactly one fnd:status:*.
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:backlog"
+REMOVE_FAILS_LEFT=1
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Acme/kernel-test/issues/105")
+      local ljson='[]'
+      if [ -n "$FAKE_LABELS" ]; then
+        ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
+      fi
+      printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
+      ;;
+    "issue edit")
+      shift 2
+      local prev="" a
+      for a in "$@"; do
+        case "$prev" in
+          --remove-label)
+            if [ "$REMOVE_FAILS_LEFT" -gt 0 ]; then
+              REMOVE_FAILS_LEFT=$((REMOVE_FAILS_LEFT - 1)); return 1
+            fi
+            FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
+          --add-label) FAKE_LABELS="$FAKE_LABELS $a" ;;
+        esac
+        prev="$a"
+      done
+      ;;
+    "label create") : ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+board_set_status "ISSUE_105" "Ready" || fail "a single transient --remove-label failure should be absorbed by the retry and still succeed"
+[ "$FAKE_LABELS" = " fnd:status:ready" ] || fail "after a retry-absorbed removal the item must carry exactly one fnd:status:* label, got: '$FAKE_LABELS'"
+echo "PASS: board_set_status retries a transient --remove-label failure and yields a single fnd:status:* label"
+
 echo
 echo "ALL PASS: test_issues_backend.sh"
