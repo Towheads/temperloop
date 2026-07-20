@@ -1169,7 +1169,7 @@ _board_cache_dirty_after_write() {
 #   _board_issues_set_field <ISSUE_n> <field-name> <option-name>
 _board_issues_set_field() {
   local item_id="$1" field_name="$2" opt_name="$3"
-  local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0
+  local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0 removal_failed=0
 
   issue="${item_id#ISSUE_}"
   repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
@@ -1196,7 +1196,18 @@ _board_issues_set_field() {
       already_present=1
       continue
     fi
-    _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 || true
+    # Retry once, then surface the failure — do NOT swallow it. A silently
+    # dropped removal leaves DUAL fnd:<field>:* labels (e.g. status:backlog +
+    # status:ready) on the issue while the write still reports success, so the
+    # caller cannot tell the flip half-failed (temperloop#601). The removal is
+    # not inherently broken (running it by hand succeeds); the hazard is a
+    # transient/throttled failure being hidden, so a single retry absorbs the
+    # transient case and a persistent failure is reported via a non-zero return.
+    if ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 \
+       && ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+      echo "board: _board_issues_set_field — failed to remove stale '$prefix' label '$l' on $repo#$issue" >&2
+      removal_failed=1
+    fi
   done <<<"$cur"
 
   # Skip a redundant add when the target label is already the issue's only
@@ -1214,6 +1225,10 @@ _board_issues_set_field() {
     fi
   fi
   _board_cache_dirty_after_write "$repo"
+  # A stale-label removal that persistently failed above means the issue may
+  # still carry a second fnd:<field>:* label — report that to the caller rather
+  # than claiming a clean single-label flip (temperloop#601).
+  [ "$removal_failed" -eq 0 ] || return 1
   return 0
 }
 
@@ -1245,7 +1260,7 @@ _board_issues_set_field() {
 #   _board_issues_stamp_field <ISSUE_n> <field-name> <text>
 _board_issues_stamp_field() {
   local item_id="$1" field_name="$2" text="$3"
-  local issue repo prefix target_label issue_json cur l already_present=0
+  local issue repo prefix target_label issue_json cur l already_present=0 removal_failed=0
 
   issue="${item_id#ISSUE_}"
   repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
@@ -1269,13 +1284,22 @@ _board_issues_stamp_field() {
       already_present=1
       continue
     fi
-    _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 || true
+    # Same non-swallowing contract as _board_issues_set_field: retry once, then
+    # surface a persistent removal failure via a non-zero return rather than
+    # leaving a stale second fnd:<field>:* stamp label behind silently
+    # (temperloop#601).
+    if ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 \
+       && ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+      echo "board: _board_issues_stamp_field — failed to remove stale '$prefix' label '$l' on $repo#$issue" >&2
+      removal_failed=1
+    fi
   done <<<"$cur"
 
   if [ -n "$text" ] && [ "$already_present" -eq 0 ]; then
     _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
   fi
   _board_cache_dirty_after_write "$repo"
+  [ "$removal_failed" -eq 0 ] || return 1
   return 0
 }
 
