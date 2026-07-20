@@ -37,6 +37,15 @@ trap cleanup EXIT
 # Keep the board cache off the real dir + force live reads (no stale page).
 export BOARD_CACHE_DIR="$TMP/cache"; mkdir -p "$BOARD_CACHE_DIR"
 export BOARD_CACHE_TTL=0
+# Isolate from any host-level boards.conf (machine, legacy ~/.config/foundation,
+# or repo-local) so board 4 resolves to its built-in default (projects backend,
+# project #3). A real dev-host boards.conf carrying `board.4.backend=issues`
+# (the temperloop#460 fleet-cutover soak) would otherwise flip board 4 onto the
+# issues-only resolve path this projects-fixtured suite does not stub, so the
+# 3a contention pre-check reads an unstamped default issue and never HALTS —
+# green in CI (clean host, no conf), red on a dev host. temperloop#592.
+export BOARDS_CONF_MACHINE="$TMP/no-machine.conf"     # nonexistent -> no machine/legacy conf
+export BOARDS_CONF_REPO_LOCAL="$TMP/no-repo.conf"     # nonexistent -> no repo-local conf
 # Deterministic claim stamp; never inside tmux (skip claim.sh's marker block).
 export SUBSET_HOST_LABEL="testhost"
 export CLAUDE_CODE_SESSION_ID="sess1234deadbeef"   # -> stamp "testhost:sess1234"

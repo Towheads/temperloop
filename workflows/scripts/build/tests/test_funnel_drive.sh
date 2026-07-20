@@ -1159,7 +1159,7 @@ cat > "$CONF53" <<'EOF'
 board.3.repo=Conf/board3-override
 EOF
 OUT53="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D53" FUNNEL_GH_BIN="$G53" CAP_DIR="$C53" \
-        BOARDS_CONF_REPO_LOCAL="$CONF53" \
+        BOARDS_CONF_REPO_LOCAL="$CONF53" BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
         GH_PENDING_JSON='[{"number":701,"state":"CLOSED"}]' bash "$DRIVE")"
 [ "$(jq -r '.reconciled_merged' <<<"$OUT53")" = "1" ] && ok "reconciled_merged=1 (conf-resolved repo still drives the probe)" || bad "t53.reconciled" "got $(jq -r '.reconciled_merged' <<<"$OUT53")"
 grep -qx "issue edit 701 -R Conf/board3-override --remove-label funnel-merge-pending" "$C53/gh-calls.txt" \

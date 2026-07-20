@@ -23,6 +23,17 @@ DEPLOY="$HERE/../deploy-mini.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/deploy-mini-test-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# Hermetic conf env, part 2 (temperloop#591 deploy-mini half): deploy-mini.sh's
+# own §3 cache-report discovery reads $XDG_CONFIG_HOME/{temperloop,foundation}/
+# boards.conf DIRECTLY — it does NOT honor BOARDS_CONF_MACHINE (the guard above
+# only reaches board.sh's resolver). A real host machine conf (e.g. a driver's
+# ~/.config/foundation/boards.conf carrying board.N.backend=issues, the #470
+# cutover soak) would otherwise shadow the fixture's repo_conf and suppress the
+# board.N.cache=on rows the store-present assertions rely on. Point it at an
+# empty (uncreated) fixture dir so both machine-conf branches miss and §3 falls
+# through to the fixture's repo_conf, matching CI's clean-host behavior.
+export XDG_CONFIG_HOME="$WORK/xdg"
+
 fail() { echo "FAIL: $1" >&2; exit 1; }
 GIT() { git -c user.email=t@t -c user.name=t -c init.defaultBranch=main "$@"; }
 
