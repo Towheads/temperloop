@@ -177,7 +177,7 @@ For each item's `files:` list, classify every path via `workflows/scripts/kernel
 
 **Resolve the effective principle set first (point-of-use, never cached across runs).** The **kernel set** — `claude/engineering-principles.md`'s "The seven principles" — always applies; a kernel-only checkout with nothing else declared still hands review subagents this baseline (no "generic review" fallback exists anymore, since a criteria set always exists). Then read the project's own extension: `Projects/<project>/Priorities.md` (via `mcp__obsidian-builtin__vault_read`); if that read fails (file absent), fall back to the legacy `Priorities/<project>.md` (path fallback convention, `claude/commands/check-in.md`).
 
-**Merge per `claude/engineering-principles.md`'s own § Merge semantics (the single statement site — implement it here, do not restate or re-derive it):** a present `## Principles` section **extends** the kernel set by default — the effective set is their union, a duplicate collapses once with the **project's own phrasing winning**, and a genuine contradiction between a project principle and a kernel one is **named** in the output as "kernel principle overridden by project: `<name>`" (distinguished from a plain duplicate). A section may instead declare `mode: replace` (swap the kernel set out wholesale for the project's own), name specific kernel principles to exclude by heading (keep the rest plus the project's additions), or `none` (opt out of engineering principles entirely — no kernel set, no project set, an explicit recorded decision).
+**Merge per `claude/engineering-principles.md`'s own § Merge semantics (the single statement site — implement it here, do not restate or re-derive it):** a present `## Principles` section extends the kernel set by default, or narrows it per an explicit `mode: replace`, named exclusion(s), or `none`, exactly as that section states — dedupe/override handling (a duplicate collapsing to one entry with project phrasing winning, a genuine contradiction named as a kernel-principle override) is per that section too, not restated here.
 
 **Absent vs. malformed both resolve to "project slot empty."** If both paths are absent, a read fails, or the resolved file has no `## Principles` section (these collapse to one outcome — never assume a read error means "section absent" without naming it), the effective set is the **kernel set alone**, project slot empty. If a `## Principles` section is *present* but empty or malformed (no parseable principle text, an unrecognized `mode:` value, an unresolvable wikilink), treat it the **same way** — kernel set alone — plus a degradation notice (`project § Principles present but empty/malformed — treated as absent`), so the gap is visible rather than silently swallowed.
 
@@ -249,7 +249,7 @@ Rules for filling it:
 ```
 /assess --epic <N>  →  [[Plans/<date> <project> - <title>]]   (status: draft)
 [epic-decomposition: N items from epic #<N>'s Contract → /build mints N sub-issues under the epic]   ← only in epic-decomposition mode
-[principles: kernel (7) ∪ project (<path>: M, phrasing wins on D dupes)]   ← always present; see the outcome forms above
+principles: kernel (7) ∪ project (<path>: M, phrasing wins on D dupes)   ← always present (unbracketed — unlike the conditional line above, never trim this one); see the outcome forms above
 
 ## Problem
 <the 2-4 sentence problem definition from the note>
