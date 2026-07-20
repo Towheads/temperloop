@@ -125,6 +125,7 @@ kernel claude/decision-queue-contract.md
 kernel claude/work-class-policy.md
 kernel claude/measurement-proxies.md
 kernel claude/design-measurement-proxies.md
+kernel claude/engineering-principles.md
 kernel claude/agents/*
 kernel claude/workflows/*
 
