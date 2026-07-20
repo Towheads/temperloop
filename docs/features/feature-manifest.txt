@@ -269,8 +269,12 @@ review-agents workflows/scripts/tests/test_doctor_reviewer_coverage.sh
 #    docs/features/engineering-principles.md, docs/adr/000{9,10}-*.md, and
 #    VERSIONING.md's row are already covered by the broader
 #    `none docs/features/*` / `none docs/adr/*` / `none VERSIONING.md`
-#    claims above (most-specific-wins; no override needed) ─────────────────
+#    claims above (most-specific-wins; no override needed). The first-epic
+#    template (temperloop#609, ADR 0010) is the onboarding delivery vehicle
+#    for these same principles plus the GitHub/CI substrate, so it rides
+#    the same slug rather than a new one ─────────────────────────────────
 engineering-principles claude/engineering-principles.md
+engineering-principles claude/templates/first-epic-setup.md
 
 # ── sandbox-core — hermetic env-sandbox test harness (temperloop#263) ───────
 sandbox-core workflows/scripts/tests/lib/sandbox.sh
