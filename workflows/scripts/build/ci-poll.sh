@@ -31,6 +31,7 @@
 # (the orchestrator branches on `.outcome`, never parses prose):
 #   {"outcome":"CI_GREEN","pr":…,"sha":…}                        exit 0
 #   {"outcome":"CI_FAILED","pr":…,"sha":…,"failed_run_ids":[…]}  exit 0 (default) | exit 2 (--exit-nonzero-on-failure)
+#   {"outcome":"NO_CI","pr":…,"sha":…,"waited":…}                exit 0
 #   {"outcome":"TIMEOUT","pr":…,"sha":…,"waited":…}              exit 1
 #   {"outcome":"ERROR","error":…}                                exit 1
 # CI_FAILED exits 0 by DEFAULT on purpose: the poll itself succeeded — the
@@ -38,6 +39,22 @@
 # completed) are non-zero by default. failed_run_ids come from `gh run list
 # --commit <sha>` filtered to conclusion=="failure" (best-effort: an empty
 # list, never a missing key).
+#
+# NO_CI (temperloop#605): zero check-runs EVER appeared on the head SHA
+# through a bounded grace window (default CI_POLL_NOCI_GRACE_SECS=120s,
+# capped at --timeout when the timeout is shorter) is a DISTINCT, legitimate
+# verdict from TIMEOUT — a repo with no CI configured (no workflow triggers
+# the SHA) is not "CI hung", it simply has no CI. Before #605, this case fell
+# through to TIMEOUT after the FULL --timeout (default 3600s), making every
+# /build PR in an adopter repo without GitHub Actions appear to hang for an
+# hour on its very first epic. The grace window is what keeps a
+# slow-to-trigger CI (checks that land seconds after push) from being
+# misclassified as no-CI: as long as ANY check-run has appeared, the
+# existing pending/completed logic below runs unchanged and NO_CI can never
+# fire again for that SHA. Exits 0 like CI_GREEN/CI_FAILED — the poll itself
+# succeeded, the verdict is just "no CI to wait on" — never TIMEOUT/ERROR's
+# exit 1, since the poll didn't fail to complete, it completed with nothing
+# to watch.
 #
 # --exit-nonzero-on-failure (additive, opt-in): makes CI_FAILED exit 2
 # instead of 0, while every other outcome/exit-code pairing above is
@@ -136,6 +153,12 @@ sha=""
 interval=30
 timeout=3600
 exit_nonzero_on_failure=0
+# NO_CI grace window (temperloop#605) — an env knob, not a new flag, mirroring
+# the CI_POLL_API_MAX_ATTEMPTS/CI_POLL_API_RETRY_BACKOFF convention above.
+# Default 120s (four 30s intervals) is long enough to absorb ordinary
+# CI-trigger startup lag without meaningfully delaying the zero-CI verdict
+# against the default 3600s --timeout.
+grace="${CI_POLL_NOCI_GRACE_SECS:-120}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha)      [ $# -ge 2 ] || usage; sha="$2"; shift ;;
@@ -165,6 +188,9 @@ esac
 case "$timeout" in
   ""|*[!0-9]*) die "timeout '$timeout' invalid — must be whole seconds" ;;
 esac
+case "$grace" in
+  ""|*[!0-9]*) die "CI_POLL_NOCI_GRACE_SECS '$grace' invalid — must be whole seconds" ;;
+esac
 if [ -n "$sha" ]; then
   case "$sha" in
     *[!0-9a-fA-F]*) die "sha '$sha' invalid — must be a hex commit SHA" ;;
@@ -181,6 +207,11 @@ if [ -z "$sha" ]; then
 fi
 
 deadline=$((SECONDS + timeout))
+# grace_deadline (temperloop#605): the NO_CI check fires no later than
+# `deadline` itself — a --timeout shorter than the grace window (e.g. tests)
+# must still resolve to a terminal outcome at `deadline`, never wait past it.
+grace_deadline=$((SECONDS + grace))
+[ "$grace_deadline" -le "$deadline" ] || grace_deadline=$deadline
 while :; do
   # A transient gh/API hiccup (non-JSON/HTTP-5xx body) here is absorbed by
   # gh_retry (temperloop#386) rather than dying on the first bad poll; only a
@@ -189,22 +220,36 @@ while :; do
     gh api "repos/$owner_repo/commits/$sha/check-runs" \
     --jq '[.check_runs[]|{status,conclusion}]')"
   n="$(jq length <<<"$runs")"
-  pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$runs")"
 
-  if [ "$n" -gt 0 ] && [ "$pending" -eq 0 ]; then
-    if jq -e 'all(.[]; .conclusion|IN("success","neutral","skipped"))' <<<"$runs" >/dev/null; then
-      jq -cn --argjson pr "$pr" --arg sha "$sha" '{outcome:"CI_GREEN", pr:$pr, sha:$sha}'
+  if [ "$n" -eq 0 ]; then
+    # No check-run has EVER appeared on this SHA yet. Distinct from the
+    # n>0 branch below on purpose (temperloop#605): this is either a
+    # slow-starting CI (still inside the grace window — keep polling, fall
+    # through to the ordinary deadline/sleep tail below) or a genuinely
+    # no-CI SHA (grace elapsed — emit the named NO_CI verdict now, well
+    # before the full --timeout).
+    if [ "$SECONDS" -ge "$grace_deadline" ]; then
+      jq -cn --argjson pr "$pr" --arg sha "$sha" --argjson waited "$SECONDS" \
+        '{outcome:"NO_CI", pr:$pr, sha:$sha, waited:$waited}'
       exit 0
     fi
-    # Resolve failed run ids over REST. Best-effort: a resolve hiccup yields
-    # [], never blocks the CI_FAILED verdict itself.
-    failed_ids="$(gh run list -R "$owner_repo" --commit "$sha" --json databaseId,conclusion \
-        --jq '[.[]|select(.conclusion=="failure")|.databaseId]' 2>/dev/null)" || failed_ids="[]"
-    jq -e . >/dev/null 2>&1 <<<"$failed_ids" || failed_ids="[]"
-    jq -cn --argjson pr "$pr" --arg sha "$sha" --argjson ids "$failed_ids" \
-      '{outcome:"CI_FAILED", pr:$pr, sha:$sha, failed_run_ids:$ids}'
-    [ "$exit_nonzero_on_failure" -eq 1 ] && exit 2
-    exit 0
+  else
+    pending="$(jq '[.[]|select(.status!="completed")]|length' <<<"$runs")"
+    if [ "$pending" -eq 0 ]; then
+      if jq -e 'all(.[]; .conclusion|IN("success","neutral","skipped"))' <<<"$runs" >/dev/null; then
+        jq -cn --argjson pr "$pr" --arg sha "$sha" '{outcome:"CI_GREEN", pr:$pr, sha:$sha}'
+        exit 0
+      fi
+      # Resolve failed run ids over REST. Best-effort: a resolve hiccup yields
+      # [], never blocks the CI_FAILED verdict itself.
+      failed_ids="$(gh run list -R "$owner_repo" --commit "$sha" --json databaseId,conclusion \
+          --jq '[.[]|select(.conclusion=="failure")|.databaseId]' 2>/dev/null)" || failed_ids="[]"
+      jq -e . >/dev/null 2>&1 <<<"$failed_ids" || failed_ids="[]"
+      jq -cn --argjson pr "$pr" --arg sha "$sha" --argjson ids "$failed_ids" \
+        '{outcome:"CI_FAILED", pr:$pr, sha:$sha, failed_run_ids:$ids}'
+      [ "$exit_nonzero_on_failure" -eq 1 ] && exit 2
+      exit 0
+    fi
   fi
 
   if [ "$SECONDS" -ge "$deadline" ]; then
