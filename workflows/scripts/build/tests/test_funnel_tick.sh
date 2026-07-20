@@ -854,6 +854,7 @@ cat > "$CONF20" <<'EOF'
 board.999.repo=Conf/tick-override
 EOF
 PLAN20="$(FUNNEL_ENABLED_BOARDS="999" BOARDS_CONF_REPO_LOCAL="$CONF20" \
+          BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
           bash "$TICK" --board 999 --dry-run --fixture "$FX")"
 [ "$(jq -r '.tick' <<<"$PLAN20")" = "done" ] && ok "tick completes for an otherwise-unmapped board once boards.conf resolves its repo" || bad "t20.tick" "got $(jq -r '.tick' <<<"$PLAN20")"
 [ "$(jq -r '.actions[0].repo' <<<"$PLAN20")" = "Conf/tick-override" ] && ok "resolved repo is the boards.conf value, not a built-in guess" || bad "t20.repo" "got $(jq -r '.actions[0].repo' <<<"$PLAN20")"
