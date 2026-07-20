@@ -33,6 +33,7 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
 | **Knob registry** | callers reading `workflows/scripts/config/knob-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/knob-registry.tsv`, `workflows/scripts/config/knob-registry-lib.sh` |
 | **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
+| **Kernel engineering-principles criteria** | review agents and `/build` workers judging a diff against the declared cross-language criteria; a project's `§ Principles` section merging with (extending, replacing, or excluding from) the kernel set per the merge semantics stated in the file's own header | `claude/engineering-principles.md` |
 
 ### "Vendored" vs. "installed" — two different senses (ADR K164 D7)
 
