@@ -39,16 +39,23 @@
 #   - Contract (g), fixture half: scaffolded workflow job named `checks`
 #     matches the armed protection; the no-Actions posture scaffolds nothing
 #     and records the local-gates/--non-strict disposition.
-#   - EXCLUDED: Contract (g2) zero-CI *execution* — that is the separate
-#     `zero-ci-run-check` plan item; its absence never counts against this
-#     harness.
+#   - Contract (g2): zero-CI *execution* — pre-CI epic items complete with the
+#     legible "no CI configured" skip (ci-poll.sh's NO_CI verdict, #605), never
+#     a TIMEOUT after the full poll window. Added by the `zero-ci-run-check`
+#     plan item (temperloop#612) as the Zero-CI leg below, driven directly
+#     against ci-poll.sh (never gate.sh's own inline re-poll) on PR#A's head
+#     sha while it is still open on this no-Actions fixture repo.
 #
-# NARRATIVE (one repo, two real PRs, one injected-probe scenario):
+# NARRATIVE (one repo, two real PRs, one injected-probe scenario, one direct
+# ci-poll.sh leg):
 #   Scenario A — "adopter declines CI for now": consent branch protection
 #     (require-PR, forbid-direct-push, NO required status) + auto-delete;
-#     decline CI. Opens PR#A, merges via `gate.sh managed-merge --non-strict`
-#     (no CI to re-poll — the correct posture for a no-Actions/MANAGED
-#     backend), confirms auto-delete actually removed the head ref.
+#     decline CI. Opens PR#A, and — WHILE it is still open, before merge —
+#     the Zero-CI leg (Contract g2) drives ci-poll.sh directly against its
+#     head sha with a short --timeout/grace, asserting NO_CI fires (not
+#     TIMEOUT). Then merges via `gate.sh managed-merge --non-strict` (no CI
+#     to re-poll — the correct posture for a no-Actions/MANAGED backend),
+#     confirms auto-delete actually removed the head ref.
 #   Scenario B — "adopter later adds CI": scaffolds `.github/workflows/
 #     checks.yml` (job literally named `checks`) on a branch, opens PR#B,
 #     merges it BEFORE arming the required-status (workflow isn't a producer
@@ -89,6 +96,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_SH="$HERE/../gate.sh"
+CI_POLL_SH="$HERE/../ci-poll.sh"
 
 CONFIRM=0
 KEEP=0
@@ -147,6 +155,7 @@ fi
 
 command -v jq >/dev/null 2>&1 || { echo "jq not found" >&2; exit 1; }
 [ -x "$GATE_SH" ] || [ -f "$GATE_SH" ] || { echo "gate.sh not found at $GATE_SH" >&2; exit 1; }
+[ -x "$CI_POLL_SH" ] || [ -f "$CI_POLL_SH" ] || { echo "ci-poll.sh not found at $CI_POLL_SH" >&2; exit 1; }
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -376,6 +385,38 @@ PLAN "opened PR #$PR_A (scenario A)"
 READ_A="$(bash "$GATE_SH" read "$REPO" "$PR_A")"
 assert_eq "PR#$PR_A pre-merge checks digest is NONE (no producer -> nothing required, nothing pending)" \
   "$(jq -r .checks <<<"$READ_A")" "NONE"
+
+# ----------------------------------------------------------------------------
+# ZERO-CI LEG — Contract (g2), plan item `zero-ci-run-check` (temperloop#612)
+# ----------------------------------------------------------------------------
+# PR#A is still OPEN at this point, on a repo with NO .github/workflows/ at
+# all — the genuine zero-CI case: no producer will EVER post a check-run to
+# this head sha. Drives ci-poll.sh DIRECTLY (never gate.sh's own inline
+# _gate_ci_poll re-poll used by managed-merge below — this leg is specifically
+# about the deterministic-spine script that owns /build's real 3g step, per
+# ci-poll.sh's own header) against PR#A's head sha, with a short --timeout and
+# a low CI_POLL_NOCI_GRACE_SECS grace so the NO_CI verdict (temperloop#605)
+# fires in seconds, not the full poll window. Proves the first-epic L0 PR
+# path completes with the legible zero-CI skip instead of hanging to TIMEOUT.
+section "Zero-CI leg (Contract g2) — pre-CI PR#$PR_A completes with NO_CI, not TIMEOUT"
+ZERO_CI_TIMEOUT=30
+ZERO_CI_GRACE=6
+ZERO_CI_START=$SECONDS
+ZERO_CI_RC=0
+ZERO_CI_OUT="$(CI_POLL_NOCI_GRACE_SECS="$ZERO_CI_GRACE" bash "$CI_POLL_SH" "$REPO" "$PR_A" \
+    --interval 2 --timeout "$ZERO_CI_TIMEOUT")" || ZERO_CI_RC=$?
+ZERO_CI_ELAPSED=$((SECONDS - ZERO_CI_START))
+ZERO_CI_OUTCOME="$(jq -r .outcome <<<"$ZERO_CI_OUT" 2>/dev/null || printf 'PARSE_ERROR\n')"
+assert_eq "zero-CI leg: ci-poll.sh outcome is NO_CI on a no-Actions fixture PR (never TIMEOUT)" \
+  "$ZERO_CI_OUTCOME" "NO_CI"
+assert_eq "zero-CI leg: ci-poll.sh exits 0 on NO_CI (poll succeeded — the verdict is data, not a script failure)" \
+  "$ZERO_CI_RC" "0"
+if [ "$ZERO_CI_ELAPSED" -lt "$ZERO_CI_TIMEOUT" ]; then
+  ok "zero-CI leg: NO_CI fired at ${ZERO_CI_ELAPSED}s, well inside the ${ZERO_CI_GRACE}s grace window — NOT after the full ${ZERO_CI_TIMEOUT}s --timeout"
+else
+  bad "zero-CI leg: took the full ${ZERO_CI_TIMEOUT}s timeout to resolve (expected NO_CI well before it)"
+fi
+PLAN "zero-CI leg verdict: $ZERO_CI_OUT (elapsed ${ZERO_CI_ELAPSED}s, grace=${ZERO_CI_GRACE}s, timeout=${ZERO_CI_TIMEOUT}s)"
 
 # managed-merge --non-strict is the CORRECT posture here: MANAGED backend +
 # no-Actions -> no CI to re-poll, so --non-strict (never --strict, which
