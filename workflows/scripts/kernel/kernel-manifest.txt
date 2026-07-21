@@ -126,6 +126,12 @@ kernel claude/work-class-policy.md
 kernel claude/measurement-proxies.md
 kernel claude/design-measurement-proxies.md
 kernel claude/engineering-principles.md
+# The first-epic template (temperloop#609): the static, pre-designed body
+# of the adopter's first epic ("Set up <project> with temperloop",
+# ADR 0010). Deliberately NOT under claude/commands/ (a bare .md there is
+# discovered as a slash command; this is template data, not a command),
+# same reasoning as claude/live-drain-registry.overlay.md above.
+kernel claude/templates/first-epic-setup.md
 kernel claude/agents/*
 kernel claude/workflows/*
 
