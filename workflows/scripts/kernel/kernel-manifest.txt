@@ -142,6 +142,7 @@ kernel claude/workflows/*
 # command like any other).
 kernel claude/commands/assess.md
 kernel claude/commands/build.md
+kernel claude/commands/fix.md
 kernel claude/commands/tidy.md
 kernel claude/commands/check-in.md
 kernel claude/commands/init.md
