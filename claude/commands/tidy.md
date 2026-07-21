@@ -27,6 +27,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Kernel-vs-overlay classification | `claude/CLAUDE.md` § `Kernel vs overlay routing rule` | `Kernel-candidate learnings` |
 | Design-first default for invented work | `claude/CLAUDE.md` § `Design-first default for invented work` | `Provenance-less epics` |
 | Per-epic retro mint | `claude/commands/build.md` § `Mint the per-epic retro tracker` | `Retro mint backstop` |
+| Route a conversational fix request through /fix | `claude/CLAUDE.md` § `Route a conversational fix request through /fix` | `Unlinked fix PRs` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -338,6 +339,34 @@ reconcile --labels --board 7 --unattended
 Unlike the report-only stale-claim sweep above, this sweep's **ratified unattended default is apply** (`--unattended` on this lens forces the delete/strip, it does not merely report) — a deleted `fnd:` label object is trivially recoverable with one `gh label create`, so auto-applying under no live operator is safe by design; see `reconcile.sh`'s own § Lens 3 header comment for the full rationale. Every delete/strip is preceded by an immediate re-check (a fresh read, not the initial scan's snapshot) so a claim or status write landing between scan and apply is never destroyed, and a second run against the post-apply state reports zero changes (idempotent).
 
 **The pending-decision append is automatic — this step does NOT do it.** Unlike every other `batch-at-ritual` deferral in this file, `reconcile --labels --unattended` records its own auto-taken apply (the counts deleted/stripped) to the pending-decisions surface itself, via `workflows/scripts/lib/knowledge_store.sh`'s `ks_append` (script-plane, not the agent-plane `mcp__obsidian-builtin__vault_append` every other site here uses) — best-effort: a missing/unavailable knowledge store degrades to a stderr notice and never fails the sweep. Just fold each run's "applied: deleted N label(s), stripped M status label(s)." line (or "nothing to sweep" / "In sync…") into the Step 6 summary; do not append a second pending-decision entry for this sweep yourself.
+
+### Unlinked fix PRs
+
+Backstop for the live "Route a conversational fix request through /fix" rule in `claude/CLAUDE.md` § Route a conversational fix request through /fix. A conversational fix driven ad hoc in a live session, bypassing `/fix`, leaves a recoverable trace: a merged or open PR with no issue-closing keyword behind it — `/fix` always emits a bare `Closes #<issue>` (from its `ghIssue:` item field, `claude/commands/fix.md` § 4a), so a PR with no such linkage is the tell that something bypassed the flow. (The bypass *also* skips claim-first board hygiene, but that half is **not recoverable at drain time** — a closed issue's claim marker, an `fnd:status:*` label on an issues-only board or the In-Progress Status on a Projects board, is cleared on close, leaving issue-linkage as the only durable post-hoc signal. This sweep detects that half; it does not attempt to reconstruct claim history.) **If a project's own reconcile/tidy tooling already owns this exact class** (a merged/open-PR-vs-issue-linkage sweep), delegate to it by name here instead of duplicating; as of this writing no such check exists in this kernel (`workflows/scripts/board/reconcile.sh` covers claim/label drift, not PR-issue linkage), so this sweep is the first owner of the class.
+
+**Run for each board-enabled repo this checkout governs** (the boards in `board_registered_boards` — matching the live rule's board-enabled scope; a boardless checkout has no claim-first gate for `/fix` to bypass, so the sweep does not apply there):
+
+```bash
+gh pr list -R "$repo" --state merged --limit 50 --json number,title,url,body,mergedAt,headRefName
+gh pr list -R "$repo" --state open   --json number,title,url,body,updatedAt,headRefName
+```
+
+For each PR, check linkage two ways, in order: (a) GitHub's own parsed linkage — `gh pr view <n> -R "$repo" --json closingIssuesReferences` — the authoritative signal, since it reflects a bare `Closes #N` GitHub actually recognized, not just body text; (b) a cross-repo `Closes owner/repo#N` line in the body (§ Cross-repo closes) when (a) is empty. A **backticked** or prose-embedded `Closes #N` that GitHub silently ignored (the known `/build` 3f failure mode, § Issue linkage) does **not** count as linkage — flag that PR the same as one with no mention at all.
+
+- **Merged, no linkage** — a merged PR with empty `closingIssuesReferences` and no valid cross-repo `Closes` line. Exclude a PR whose title/body is self-evidently a refactor/chore/doc change with no pre-existing tracker (§ Issue linkage's own carve-out — the same judgment call `/build` 3f already makes); when genuinely unsure, include it rather than guess it away.
+- **Open, no linkage, and idle** — an open PR with empty `closingIssuesReferences`/no valid cross-repo `Closes` line, and no recent activity (a judgment call, not a fixed knob — on the order of two weeks untouched by commit or comment, a PR that has sat long enough to read as abandoned rather than mid-review; report-only and inclusion-biased, so an exact cadence is deliberately unfixed).
+
+**Report-only, never auto-file or auto-close.** Mirrors the § Stale board claims sweep's posture: list every candidate in the Step 6 summary and take no action — the change may have been an intentional, correctly-invoked trivial-change escape hatch (the live rule's own carve-out), not a bypass. This is a **`batch-at-ritual` deferral** ([[Context/foundation - AskUserQuestion severity taxonomy]]) — append one `### open` entry to the pending-decisions surface (`Pipeline/pending decisions.md` vs the legacy `Context/pipeline - pending decisions.md` — target pinned by the append-target resolution rule of the path fallback convention, `claude/commands/check-in.md` — in the knowledge store) via `mcp__obsidian-builtin__vault_append`, only when at least one candidate surfaces:
+
+```markdown
+### <YYYY-MM-DD HH:MM> · tidy unlinked-fix-PR sweep · <repo>
+- **Decision:** review candidate PR(s) for a conversational fix that bypassed /fix (merged-no-linkage: #A, #B; open-idle-no-linkage: #C)
+- **Default taken:** leave all (report-only; no issue filed, no PR touched, no label changed)
+- **Disposition:** auto-taken (unattended/--force-now; no live operator)
+- **Status:** open
+```
+
+**Default to silence.** If no candidates surface for a repo, emit nothing for it — no pending-decision entry, no Step 6 line — the common case once `/fix` adoption is in force.
 
 ### Vault hygiene
 
