@@ -1,7 +1,7 @@
 ---
 tags: [design-brief, project/fixture]
 date: 2026-01-01
-status: draft
+status: ratified
 source_kind: claude-stamped
 source_session: fixture0
 source_model: fixture-model
@@ -15,6 +15,12 @@ letter-suffixed overlay-added dimension (`## 16a.`) — the sanctioned overlay
 form per design-schema.md § Overlay extensibility. Must pass: the overlay
 dimension carries its own disposition and its numbering never collides with
 a future kernel `17`.
+
+`status: ratified` on purpose (temperloop#512): this fixture's job is the
+overlay-dimension (`## 16a.`) acceptance path, which is status-independent.
+Marking it ratified exempts it from the conditional dimension-0 (`## 0.`)
+requirement so it can stay a `## 1.`-first brief and keep that concern
+isolated from dim-0.
 
 ## 1. Problem & outcome (stranger standpoint)
 disposition: filled

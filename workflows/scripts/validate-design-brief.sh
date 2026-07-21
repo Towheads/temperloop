@@ -30,12 +30,19 @@
 #       § File location) must carry a disposition line for every kernel
 #       dimension (1..16, plus any letter-suffixed overlay addition, e.g.
 #       `16a`), matching the grammar exactly (design-schema.md
-#       § Disposition grammar). NOTE: dimension 0 (Premise & null hypothesis,
-#       temperloop#508) is not yet required here — this loop still starts at
-#       1 (KERNEL_DIM_MAX below), a known gap tracked as a fast-follow rather
-#       than guessed at in this change; design-schema.md itself is the
-#       source of truth for dimension 0's filled-only requirement in the
-#       meantime:
+#       § Disposition grammar). Dimension 0 (Premise & null hypothesis,
+#       temperloop#508) is required CONDITIONALLY (temperloop#512): a
+#       `ratified` brief is IMMUTABLE (design-schema.md § Frontmatter: "a
+#       later change is a **new** brief that supersedes it ... never an
+#       edit-in-place of a ratified brief") and its six pre-`## 0.`-era
+#       instances must NOT be retrofitted — so a ratified brief missing a
+#       `## 0.` heading is EXEMPT, not flagged MISSING-DIMENSION. An
+#       in-flight / newly-authored brief (any NON-ratified status — draft,
+#       dropped, or absent) IS in scope and must carry `## 0.`. The switch
+#       reads a PER-BRIEF signal (the frontmatter `status:` field), never a
+#       global flip, exactly as the ratified-immutability rule demands.
+#       design-schema.md itself remains the source of truth for dimension
+#       0's filled-only requirement:
 #         disposition: filled
 #         disposition: n/a — <reason>
 #         disposition: deferred → <tracking ref>
@@ -102,11 +109,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # different numbers now:
 KERNEL_DIM_MAX=16      # highest bare-integer kernel dimension (1..16); the
                         # UNKNOWN-DIMENSION guard and check (B)'s required-
-                        # heading loop both key on this. Dimension 0 is not
-                        # yet required by check (B) below — a brief missing
-                        # a '## 0.' heading is not flagged MISSING-DIMENSION
-                        # (tracked as a fast-follow; the schema itself is
-                        # already the source of truth per design-schema.md).
+                        # heading loop (dimensions 1..KERNEL_DIM_MAX) both key
+                        # on this. Dimension 0 is checked SEPARATELY and
+                        # CONDITIONALLY (temperloop#512) — see
+                        # check_brief_conformance below: required for every
+                        # NON-ratified (in-flight) brief, exempt for a ratified
+                        # (immutable) one, keyed on the brief's frontmatter
+                        # `status:` field.
 KERNEL_DIM_COUNT=17    # total kernel dimension count, 0..KERNEL_DIM_MAX
                         # inclusive — used only by check (A)'s DIM-COUNT-
                         # DRIFT guard against the real schema table below.
@@ -249,6 +258,26 @@ resolve_citation() {
   esac
 }
 
+# brief_status <file> -> prints the frontmatter `status:` value, lowercased
+# with any trailing comment/whitespace stripped, or empty if absent. Reads
+# ONLY the leading YAML frontmatter block (the first `---` up to the next
+# `---`); a `status:` in body prose is deliberately ignored.
+brief_status() {
+  awk '
+    NR == 1 && $0 == "---" { infm = 1; next }
+    NR == 1 { exit }                       # no leading frontmatter block
+    infm && $0 == "---" { exit }           # end of frontmatter
+    infm && /^status:[[:space:]]*/ {
+      v = $0
+      sub(/^status:[[:space:]]*/, "", v)
+      sub(/[[:space:]]*#.*$/, "", v)       # strip a trailing YAML comment
+      sub(/[[:space:]]+$/, "", v)
+      print tolower(v)
+      exit
+    }
+  ' "$1"
+}
+
 # ---------------------------------------------------------------------------
 # (B) Brief conformance check.
 # ---------------------------------------------------------------------------
@@ -261,6 +290,21 @@ check_brief_conformance() {
 
   local headings
   headings="$(grep -nE '^## [0-9]+[a-z]?\. ' "$file" || true)"
+
+  # Dimension 0 (Premise & null hypothesis, temperloop#508) — CONDITIONAL
+  # requirement (temperloop#512). A `ratified` brief is immutable
+  # (design-schema.md § Frontmatter) and its pre-`## 0.`-era instances must
+  # never be retrofitted, so it is EXEMPT. Every other status — an in-flight
+  # draft, a dropped brief, or a brief with no status frontmatter at all — is
+  # in scope and must carry a `## 0.` heading. Keyed on the per-brief
+  # `status:` signal, never a global flip.
+  local status
+  status="$(brief_status "$file")"
+  if [[ "$status" != "ratified" ]]; then
+    if ! printf '%s\n' "$headings" | grep -qE "^[0-9]+:## 0\. "; then
+      failures+=("MISSING-DIMENSION  $label — kernel dimension 0 (Premise & null hypothesis) has no '## 0. <title>' heading; required for in-flight briefs (status='${status:-<none>}', not ratified) per design-schema.md § Kernel dimension list (dimension 0 is filled-only)")
+    fi
+  fi
 
   local n
   for (( n = 1; n <= KERNEL_DIM_MAX; n++ )); do
