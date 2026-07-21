@@ -52,8 +52,24 @@
 # `set -u`. Override seam: _merged_detect_gh (mirrors _gate_gh / _board_gh in
 # this same toolkit) — tests redefine it to stand in for the real `gh`
 # binary without touching the network.
-
-_merged_detect_gh() { gh "$@"; }
+#
+# Attribution for the gh call-logger shim (F#988 / foundation#1265): this seam
+# tags every gh call it makes so the probe's calls stop landing in the shim's
+# `unattributed` bucket. Two tiers, mirroring the _board_gh convention:
+#   GH_CALL_OP=merged-detect  — the fine-grained op, so a reader can filter for
+#     THIS probe regardless of which command triggered it. This is the tell that
+#     an exit-1 here is the DESIGNED fall-through (branch has no PR → Method 2),
+#     not a real failure — see the file header's detection contract.
+#   GH_CALL_CONTEXT default    — set to merged-detect ONLY when no outer context
+#     exists (`:-`), so a standalone prune reads `merged-detect` instead of null,
+#     while an outer driver (funnel-drive, worktree prune) keeps winning.
+# See workflows/scripts/gh-call-logger.sh.
+_merged_detect_gh() {
+  # GH_CALL_OP is a per-call attribution tag, not a static operator default, so
+  # it carries no knob-registry row — same as gh-call-logger.sh's own GH_CALL_OP
+  # handling; the trailing `# knob:exempt` marks it for check-knob-registry.sh.
+  GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-merged-detect}" GH_CALL_OP="${GH_CALL_OP:-merged-detect}" gh "$@"  # knob:exempt — per-call attribution tag, not a static operator default
+}
 
 # Best-effort default-branch resolution (mirrors worktree.sh's own
 # default_branch()) — used only when the caller doesn't pass one explicitly.
