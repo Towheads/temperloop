@@ -164,6 +164,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflows/scripts/build/build.config.sh
 [ -f "$HERE/build.config.sh" ] && . "$HERE/build.config.sh"
 
+# Attribution for the gh call-logger shim (F#988 / foundation#1265): tag every
+# gh call this command makes with its outermost context. `:-` preserves an
+# already-set (outer) value, so a nested command's context isn't clobbered.
+# funnel-tick.sh already does this; funnel-drive.sh (the 5b/5c executor) never
+# did, leaving its `pr list --json number,body` / `issue list --label
+# funnel-merge-pending` polls in the shim's `unattributed` bucket. See
+# workflows/scripts/gh-call-logger.sh.
+export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-drive}"
+
 : "${FUNNEL_DRIVE_MODEL:=claude-sonnet-5}"
 : "${CLAUDE_BIN:=claude}"
 # Permission containment overlay handed to the headless `claude -p` (--settings):
