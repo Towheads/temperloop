@@ -184,6 +184,13 @@ kernel workflows/scripts/board/*
 # narrows the board/* catch-all above (longest-pattern-wins). foundation #798.
 overlay workflows/scripts/board/migrate-to-org.sh
 kernel workflows/scripts/build/*
+# issue-state.sh + lib/pr-linkage.sh (temperloop #635) are already covered by
+# the build/* catch-all above; these two explicit lines are the requested
+# by-name registration for the new `resolve` single-issue state probe and
+# its shared open-PR-linkage lib (both kernel: generic build-spine tooling,
+# no org/personal content).
+kernel workflows/scripts/build/issue-state.sh
+kernel workflows/scripts/build/lib/pr-linkage.sh
 # test_rework_snapshot.sh tests workflows/scripts/rework-snapshot.sh, which is
 # overlay (personal telemetry pipeline, see the flat-files block below) — a
 # kernel-only checkout has nothing for this test to exercise. Single-file
