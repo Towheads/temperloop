@@ -12,13 +12,23 @@
 #     does it already have an open linked PR, or is it fresh work. #635
 #     (THIS item) implements this arm.
 #
-#   reattach ...               — resumes a driver against a pre-opened PR by
-#     routing through claude/workflows/build-level.mjs's `mode:"reattach"`
-#     (reuses its ciPollLoop + the #254 SHA-pin guard + the inline rebase —
-#     see the spike verdict § (c)). #636 (a LATER item, depends-on this one)
-#     implements this arm; until then it is a placeholder that refuses.
+#   reattach <repo> <pr>       — REVALIDATES an already-open PR and prints a
+#     single ready/not-ready verdict JSON. It NEVER merges (the caller owns
+#     the merge) — this is the adoption-safety check `/fix` runs before
+#     driving an existing PR through the merge gate. #636 (THIS arm).
 #
-# This file is the CREATION of the shared skeleton — #636 adds a case arm,
+# reattach is a PURE BASH op that COMPOSES the shared spine scripts — it does
+# NOT re-encode the CI poll loop or the #254 SHA-pin, and it does NOT touch
+# claude/workflows/build-level.mjs (the earlier spike note said "add a mode
+# to build-level.mjs"; that was CORRECTED — build-level.mjs is a Workflow-
+# runtime module a bash op cannot drive; see the spike verdict's CORRECTION
+# section). Instead it delegates:
+#   - CI re-poll  → workflows/scripts/build/ci-poll.sh (with `--sha <head oid>`,
+#                   which IS the #254 SHA-pin — never re-read a lagging PR head)
+#   - the rebase  → the pr.sh `rebase` contract (fixture path); see
+#                   cmd_reattach's stale-base-rebase design note below.
+#
+# This file is the CREATION of the shared skeleton — reattach adds a case arm,
 # it does not restructure this dispatch.
 #
 # `resolve`'s ground truth: `gh issue view` for issue state/labels, and the
@@ -46,6 +56,25 @@
 #   $FIXTURE/worktree-<issue>.txt  — optional; a single local worktree path
 #                                     (best-effort field, see find_worktree
 #                                     below)
+#
+# reattach fixtures (kept under DISTINCT filenames from resolve's so the two
+# subcommands' fixtures never collide in one dir):
+#   $FIXTURE/reattach-pr-<pr>.json      — the `gh pr view --json state,
+#                                         mergeable,mergeStateStatus,headRefOid,
+#                                         headRefName` shape:
+#                                         {"state":"OPEN","mergeable":"MERGEABLE",
+#                                          "mergeStateStatus":"CLEAN",
+#                                          "headRefOid":"abc123"}
+#   $FIXTURE/ci-poll-<pr>.json          — the ci-poll.sh verdict returned by the
+#                                         FIRST (head-oid-pinned) re-poll:
+#                                         {"outcome":"CI_GREEN|CI_FAILED|TIMEOUT|
+#                                          NO_CI|ERROR"}
+#   $FIXTURE/rebase-<pr>.json           — the pr.sh `rebase` verdict for a BEHIND
+#                                         base: {"outcome":"REBASED","sha":"..."}
+#                                         | {"outcome":"REBASE_CONFLICT"}
+#   $FIXTURE/ci-poll-rebased-<pr>.json  — the ci-poll.sh verdict returned by the
+#                                         SECOND (rebased-sha-pinned) re-poll,
+#                                         same shape as ci-poll-<pr>.json
 #
 # This file is EXECUTED (not sourced) — `set -euo pipefail` applies to the
 # whole script.
@@ -108,9 +137,10 @@ subcommands:
       claimed-elsewhere|already-done|ambiguous). See this file's header for
       the full verdict shape.
 
-  reattach ...
-      Resume a driver against a pre-opened PR. NOT YET IMPLEMENTED
-      (temperloop #636) — this arm currently refuses.
+  reattach <repo> <pr> [--dry-run --fixture <dir>]
+      Revalidate an already-open PR and print a single ready/not-ready
+      verdict JSON to stdout. NEVER merges — the caller owns the merge.
+      See this file's header and `reattach --help` for the verdict shape.
 
   -h, --help
       Show this usage and exit 0.
@@ -338,10 +368,235 @@ cmd_resolve() {
     }'
 }
 
-# ── reattach (placeholder — temperloop #636) ────────────────────────────
+# ── reattach ─────────────────────────────────────────────────────────────
+reattach_usage() {
+  cat >&2 <<'USAGE'
+usage: issue-state.sh reattach <repo> <pr> [--dry-run --fixture <dir>]
+
+Revalidates an already-open PR by composing the shared spine scripts
+(ci-poll.sh + the pr.sh rebase contract) and prints ONE ready/not-ready
+verdict JSON to stdout. It NEVER merges — the caller owns the merge. This is
+the adoption-safety check `/fix` runs before driving an existing PR through
+the merge gate.
+
+  {
+    "repo":"owner/repo", "pr":N,
+    "state":"OPEN|CLOSED|MERGED",
+    "mergeable":"MERGEABLE|CONFLICTING|UNKNOWN",
+    "merge_state":"CLEAN|BEHIND|BLOCKED|DIRTY|...",
+    "ci":"green|pending|red|unknown",
+    "ready": true|false,
+    "reason":"<one line>"
+  }
+
+Verdict precedence (first decisive condition wins):
+  1. state != OPEN                          -> ready:false "closed-underneath"
+  2. mergeable CONFLICTING or merge DIRTY   -> ready:false "conflict" (no CI poll)
+  3. CI re-poll (pinned to the PR head oid):
+       CI_FAILED  -> ready:false "ci-red"
+       TIMEOUT    -> ready:false "ci-pending"
+       CI_GREEN / NO_CI -> continue
+  4. merge_state BEHIND -> rebase (pr.sh rebase) + re-poll (rebased sha):
+       clean rebase + green re-poll -> ready:true "rebased"
+       rebase conflict              -> ready:false "stale-base-conflict"
+  5. otherwise (OPEN, MERGEABLE/CLEAN, CI green) -> ready:true "green-ready"
+
+  --dry-run --fixture <dir>   Offline fixture mode (see this file's header
+                               comment for the reattach fixture layout).
+USAGE
+}
+
+# reattach_get_pr <repo> <pr> — prints the raw `gh pr view --json state,
+# mergeable,mergeStateStatus,headRefOid,headRefName` JSON (or its fixture
+# equivalent).
+reattach_get_pr() {
+  local repo="$1" pr="$2" f
+  if [ "$DRY_RUN" -eq 1 ]; then
+    f="$FIXTURE/reattach-pr-$pr.json"
+    if [ -f "$f" ]; then cat "$f"; else echo '{"state":"OPEN","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN"}'; fi
+    return 0
+  fi
+  gh pr view "$pr" -R "$repo" --json state,mergeable,mergeStateStatus,headRefOid,headRefName 2>/dev/null || echo '{}'
+}
+
+# reattach_ci_poll <repo> <pr> <sha> <fixture-key> — re-polls CI via the shared
+# ci-poll.sh, ALWAYS pinning the head SHA (`--sha`, the #254 guard — never let
+# ci-poll re-read a lagging PR API head). Prints ci-poll.sh's verdict JSON
+# regardless of its exit code (ci-poll emits the JSON on stdout even for its
+# non-zero TIMEOUT/ERROR outcomes). In DRY_RUN, reads the named fixture instead.
+reattach_ci_poll() {
+  local repo="$1" pr="$2" sha="$3" key="$4" f out
+  if [ "$DRY_RUN" -eq 1 ]; then
+    f="$FIXTURE/$key.json"
+    if [ -f "$f" ]; then cat "$f"; else echo '{"outcome":"NO_CI"}'; fi
+    return 0
+  fi
+  if [ -n "$sha" ]; then
+    out="$(bash "$HERE/ci-poll.sh" "$repo" "$pr" --sha "$sha" 2>/dev/null)" || true
+  else
+    out="$(bash "$HERE/ci-poll.sh" "$repo" "$pr" 2>/dev/null)" || true
+  fi
+  [ -n "$out" ] || out='{"outcome":"ERROR","error":"ci-poll produced no output"}'
+  printf '%s\n' "$out"
+}
+
+# reattach_rebase <pr> — resolves the BEHIND-base rebase.
+#
+# DRY_RUN: reads $FIXTURE/rebase-<pr>.json (a mock of the pr.sh `rebase`
+# contract) — {"outcome":"REBASED","sha":...} | {"outcome":"REBASE_CONFLICT"}.
+# This is the surface the stale-base-rebasable / stale-base-conflict fixture
+# cases exercise: the full REBASED -> re-poll -> "rebased" and REBASE_CONFLICT
+# -> "stale-base-conflict" decision branches run against it.
+#
+# LIVE: `reattach` holds only <owner/repo> + <pr> — it does NOT own a local
+# checkout, so it cannot safely perform a force-pushing rebase from inside this
+# VERDICT op (reattach "NEVER merges"; a surprise force-push from a revalidation
+# check is a bigger, un-owned mutation). It therefore DEGRADES DELIBERATELY to a
+# NEEDS_UPDATE signal; the caller (`/fix`), which owns a local checkout, runs the
+# rebase (composing pr.sh rebase + pr.sh push --force + a `--sha`-pinned re-poll,
+# all already-tested spine scripts) and re-invokes reattach. The DRY_RUN path
+# above still exercises the rebase decision logic in full — see the design note
+# in the verification surface (task's sanctioned choice for the live case).
+reattach_rebase() {
+  local pr="$1" f
+  if [ "$DRY_RUN" -eq 1 ]; then
+    f="$FIXTURE/rebase-$pr.json"
+    if [ -f "$f" ]; then cat "$f"; else echo '{"outcome":"REBASE_CONFLICT","error":"no rebase fixture"}'; fi
+    return 0
+  fi
+  echo '{"outcome":"NEEDS_UPDATE"}'
+}
+
+# reattach_emit — prints the single verdict JSON. `ready` is passed as a bare
+# true/false literal (via --argjson).
+reattach_emit() {
+  local repo="$1" pr="$2" state="$3" mergeable="$4" merge_state="$5" ci="$6" ready="$7" reason="$8"
+  jq -cn \
+    --arg repo "$repo" \
+    --argjson pr "$pr" \
+    --arg state "$state" \
+    --arg mergeable "$mergeable" \
+    --arg merge_state "$merge_state" \
+    --arg ci "$ci" \
+    --argjson ready "$ready" \
+    --arg reason "$reason" \
+    '{
+      repo: $repo, pr: $pr, state: $state,
+      mergeable: $mergeable, merge_state: $merge_state,
+      ci: $ci, ready: $ready, reason: $reason
+    }'
+}
+
 cmd_reattach() {
-  echo "reattach: not yet implemented (temperloop #636)" >&2
-  exit 1
+  local repo="" pr="" args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY_RUN=1; shift ;;
+      --fixture) FIXTURE="${2:?--fixture needs a dir}"; shift 2 ;;
+      -h|--help) reattach_usage; exit 0 ;;
+      -*) echo "issue-state.sh reattach: unknown flag '$1'" >&2; reattach_usage; exit 2 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  if [ "${#args[@]}" -ne 2 ]; then
+    echo "issue-state.sh reattach: expected <repo> <pr>" >&2
+    reattach_usage
+    exit 2
+  fi
+  repo="${args[0]}"; pr="${args[1]}"
+  case "$pr" in
+    ""|*[!0-9]*)
+      echo "issue-state.sh reattach: pr '$pr' invalid — must be a PR number" >&2
+      reattach_usage
+      exit 2
+      ;;
+  esac
+
+  if [ "$DRY_RUN" -eq 1 ] && [ -z "$FIXTURE" ]; then
+    echo "issue-state.sh reattach: --dry-run requires --fixture <dir>" >&2
+    exit 2
+  fi
+  if [ -n "$FIXTURE" ] && [ ! -d "$FIXTURE" ]; then
+    echo "issue-state.sh reattach: fixture dir not found: $FIXTURE" >&2
+    exit 2
+  fi
+
+  local pr_json state mergeable merge_state head_oid
+  pr_json="$(reattach_get_pr "$repo" "$pr")"
+  state="$(jq -r '.state // "OPEN"' <<<"$pr_json" | tr '[:lower:]' '[:upper:]')"
+  mergeable="$(jq -r '.mergeable // "UNKNOWN"' <<<"$pr_json" | tr '[:lower:]' '[:upper:]')"
+  merge_state="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$pr_json" | tr '[:lower:]' '[:upper:]')"
+  head_oid="$(jq -r '.headRefOid // ""' <<<"$pr_json")"
+
+  # 1. state != OPEN (closed/merged underneath) — decisive, no further checks.
+  if [ "$state" != "OPEN" ]; then
+    reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "unknown" false "closed-underneath"
+    return 0
+  fi
+
+  # 2. conflict — escalate IMMEDIATELY, do NOT poll CI to timeout.
+  if [ "$mergeable" = "CONFLICTING" ] || [ "$merge_state" = "DIRTY" ]; then
+    reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "unknown" false "conflict"
+    return 0
+  fi
+
+  # 3. Re-poll CI, pinned to the PR head oid (#254 SHA-pin).
+  local poll outcome ci
+  poll="$(reattach_ci_poll "$repo" "$pr" "$head_oid" "ci-poll-$pr")"
+  outcome="$(jq -r '.outcome // "ERROR"' <<<"$poll")"
+  case "$outcome" in
+    CI_GREEN) ci="green" ;;
+    NO_CI)    ci="unknown" ;;  # a repo with no CI has nothing to gate on — continue (cf. #605)
+    CI_FAILED)
+      reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "red" false "ci-red"
+      return 0 ;;
+    TIMEOUT)
+      reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "pending" false "ci-pending"
+      return 0 ;;
+    *)
+      reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "unknown" false "ci-error"
+      return 0 ;;
+  esac
+
+  # 4. Stale base (BEHIND) — rebase, then re-poll pinned to the rebased sha.
+  if [ "$merge_state" = "BEHIND" ]; then
+    local rb rb_outcome rebased_sha repoll rep_outcome
+    rb="$(reattach_rebase "$pr")"
+    rb_outcome="$(jq -r '.outcome // "REBASE_CONFLICT"' <<<"$rb")"
+    case "$rb_outcome" in
+      REBASE_CONFLICT)
+        reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" false "stale-base-conflict"
+        return 0 ;;
+      NEEDS_UPDATE)
+        reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" false "stale-base — needs update"
+        return 0 ;;
+      REBASED)
+        rebased_sha="$(jq -r '.sha // ""' <<<"$rb")"
+        repoll="$(reattach_ci_poll "$repo" "$pr" "$rebased_sha" "ci-poll-rebased-$pr")"
+        rep_outcome="$(jq -r '.outcome // "ERROR"' <<<"$repoll")"
+        case "$rep_outcome" in
+          CI_GREEN|NO_CI)
+            reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "green" true "rebased"
+            return 0 ;;
+          CI_FAILED)
+            reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "red" false "ci-red"
+            return 0 ;;
+          TIMEOUT)
+            reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "pending" false "ci-pending"
+            return 0 ;;
+          *)
+            reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "unknown" false "ci-error"
+            return 0 ;;
+        esac ;;
+      *)
+        # Any unexpected rebase outcome is treated conservatively as not-ready.
+        reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" false "stale-base-conflict"
+        return 0 ;;
+    esac
+  fi
+
+  # 5. Otherwise: OPEN, MERGEABLE/CLEAN, CI green -> ready.
+  reattach_emit "$repo" "$pr" "$state" "$mergeable" "$merge_state" "$ci" true "green-ready"
 }
 
 # ── dispatch ─────────────────────────────────────────────────────────────

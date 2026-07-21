@@ -195,15 +195,24 @@ TOPHELP="$(bash "$CLI" --help 2>&1 || true)"
 printf '%s' "$TOPHELP" | grep -qi 'resolve' && printf '%s' "$TOPHELP" | grep -qi 'reattach' \
   && ok "top-level usage lists both subcommands" || bad "top.text" "missing resolve/reattach in usage"
 
-# ── reattach placeholder ─────────────────────────────────────────────────
-echo "--- reattach placeholder refuses ---"
-if bash "$CLI" reattach acme/widgets 999 >/dev/null 2>&1; then
-  bad "reattach.exit" "reattach exited 0 (expected non-zero placeholder refusal)"
+# ── reattach activation proof ────────────────────────────────────────────
+# reattach is now IMPLEMENTED (temperloop #636) — its behavior is covered in
+# depth by tests/test_issue_state_reattach.sh. Here we only assert the shared
+# dispatch still routes `reattach --help` to an exit-0 usage (activation proof)
+# and rejects missing args, so the resolve suite stays green after the shared
+# file gained the real arm. (Offline: no live `reattach acme/widgets N`, which
+# would reach ci-poll.sh over the network.)
+echo "--- reattach activation proof (implemented, #636) ---"
+if bash "$CLI" reattach --help >/dev/null 2>&1; then
+  ok "reattach --help exits 0"
 else
-  ok "reattach exits non-zero"
+  bad "reattach.help" "reattach --help exited non-zero"
 fi
-REATTACH_ERR="$(bash "$CLI" reattach acme/widgets 999 2>&1 || true)"
-printf '%s' "$REATTACH_ERR" | grep -q '#636' && ok "reattach names temperloop #636" || bad "reattach.text" "got: $REATTACH_ERR"
+if bash "$CLI" reattach >/dev/null 2>&1; then
+  bad "reattach.noargs" "reattach with no args exited 0 (expected non-zero usage error)"
+else
+  ok "reattach with missing args exits non-zero"
+fi
 
 # ── summary ────────────────────────────────────────────────────────────────
 echo
