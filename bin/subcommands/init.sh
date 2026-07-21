@@ -66,6 +66,49 @@
 # Absent -> "skipped — baseline-snapshot unavailable", and init continues
 # either way; this is a soft seam that never blocks init.
 #
+# FIRST-EPIC OFFER (temperloop#610, ADR 0010, item first-epic-offer): the
+# LAST thing the consented-apply step (Step 2) offers, gated behind the SAME
+# gh_repo/gh-binary/dry-run/no-network preconditions as required-check/
+# labels/board. Consumes the kernel-shipped template
+# (claude/templates/first-epic-setup.md) as pure data — this script never
+# restates its content, only extracts and substitutes <project>.
+#   - IDEMPOTENT: probes issue BODIES (never titles) in the adopter's repo
+#     for a design-brief marker (accept already happened) or a decline
+#     marker (decline already happened + its re-offer pointer was filed)
+#     before ever offering — a re-run of this script neither re-files the
+#     epic nor re-nags after a decline.
+#   - Skip vs. decline are DELIBERATELY DISTINCT outcomes. A non-interactive
+#     run (no TTY, or a CI/GITHUB_ACTIONS ambient signal, and no
+#     --yes-first-epic/--no-first-epic preset) SKIPS with a plain notice —
+#     nobody actually answered, so nothing beyond the notice happens. Only
+#     an ACTUAL "no" (typed at a real prompt, or an explicit
+#     --no-first-epic) triggers the decline floors below. This mirrors why
+#     _init_confirm's default-no is fine for required-check/labels/board
+#     (each of those has a safe, silent default — the substrate is simply
+#     absent) but is wrong here: a decline should leave a durable, tracked
+#     trace, which a merely-unattended run has no standing to create on the
+#     adopter's behalf.
+#   - DECLINE FLOORS (never a vanished gap): declining the whole epic still
+#     runs an INLINE principles interview — the L0 content only, extracted
+#     verbatim from the template's own "### A1." section (never restated —
+#     single-statement-site discipline) — and its resolution (extend /
+#     replace / exclude / adopt-as-is / declined-outright) is recorded into
+#     the knowledge-store priorities note (`Projects/<project>/Priorities.md`
+#     via workflows/scripts/lib/knowledge_store.sh) — the SAME doc-id
+#     claude/commands/assess.md Step 3 resolves at point of use, never a
+#     parallel location. A "declined outright" answer records nothing (the
+#     kernel default still applies at point of use, per the template's own
+#     Decline floors section — declining costs only the *recorded* choice).
+#     Alongside the interview, a durable re-offer pointer (a plain GitHub
+#     issue, `fnd:status:backlog` labelled) is filed in the ADOPTER's OWN
+#     repo naming exactly what remains unconfigured (branch protection,
+#     auto-delete, merge-queue disposition, CI disposition) — so the gap
+#     stays tracked rather than vanishing. The GitHub/CI Phase A/B/C
+#     interview itself is NOT run here — that only makes sense once the
+#     epic exists, and is driven later by /assess --epic N -> /build; this
+#     script's job ends at the offer + (on decline) the L0 fallback +
+#     the pointer.
+#
 # PARTIAL-RUN RECOVERY (temperloop#414): a run that dies anywhere from Step
 # 3's proposal-pr.sh call onward (killed process, failed push, failed `gh pr
 # create`) leaves the checkout on the proposal branch with no memory of what
@@ -87,6 +130,7 @@
 #           [--yes-required-check | --no-required-check]
 #           [--yes-labels | --no-labels]
 #           [--yes-board | --no-board]
+#           [--yes-first-epic | --no-first-epic]
 #           [--dry-run]
 #
 #   --dir DIR             Git checkout to initialize. Default: current dir.
@@ -116,12 +160,18 @@
 #                          Absent this flag, board provisioning is never
 #                          even offered — the strongest form of "opt-in".
 #   --yes-<action> / --no-<action>
-#                          Pre-answer one of the three consented-apply
-#                          actions (required-check / labels / board)
-#                          instead of an interactive prompt. With none of
-#                          these AND no interactive tty, the default is
-#                          "no" for every action — nothing lands without
-#                          explicit consent, ever.
+#                          Pre-answer one of the four consented-apply
+#                          actions (required-check / labels / board /
+#                          first-epic) instead of an interactive prompt.
+#                          With none of these AND no interactive tty, the
+#                          default is "no" for every action — nothing
+#                          lands without explicit consent, ever. The one
+#                          exception is first-epic: a non-interactive run
+#                          with no --yes-first-epic/--no-first-epic preset
+#                          SKIPS the offer entirely (never asks, never
+#                          silently declines) — see Step "First epic
+#                          offer" below for why a silent skip and an
+#                          explicit decline are kept distinct.
 #   --dry-run               Forwarded to the proposal generator (local
 #                          commit only, nothing pushed, no PR opened) AND
 #                          skips the consented-apply step entirely (zero
@@ -176,6 +226,7 @@ usage: init.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network] [--timeout SECS
                [--yes-required-check | --no-required-check]
                [--yes-labels | --no-labels]
                [--yes-board | --no-board]
+               [--yes-first-epic | --no-first-epic]
                [--dry-run]
 EOF
 }
@@ -196,6 +247,7 @@ provision_board=0
 consent_required_check=""
 consent_labels=""
 consent_board=""
+consent_first_epic=""
 dry_run=0
 
 while [ $# -gt 0 ]; do
@@ -216,6 +268,8 @@ while [ $# -gt 0 ]; do
     --no-labels) consent_labels=no; shift ;;
     --yes-board) consent_board=yes; shift ;;
     --no-board) consent_board=no; shift ;;
+    --yes-first-epic) consent_first_epic=yes; shift ;;
+    --no-first-epic) consent_first_epic=no; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "init.sh: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -408,18 +462,22 @@ if [ "$dry_run" -eq 1 ]; then
   echo "required-check: skipped (--dry-run — tree-only preview, no API writes)"
   echo "labels: skipped (--dry-run)"
   echo "board: skipped (--dry-run)"
+  echo "first-epic: skipped (--dry-run — tree-only preview, no API writes)"
 elif [ "$no_network" -eq 1 ]; then
   echo "required-check: skipped (--no-network)"
   echo "labels: skipped (--no-network)"
   echo "board: skipped (--no-network)"
+  echo "first-epic: skipped (--no-network)"
 elif [ -z "$gh_repo" ]; then
   echo "required-check: skipped (no resolved gh_repo)"
   echo "labels: skipped (no resolved gh_repo)"
   echo "board: skipped (no resolved gh_repo)"
+  echo "first-epic: skipped (no resolved gh_repo)"
 elif ! command -v "$INIT_GH_BIN" >/dev/null 2>&1; then
   echo "required-check: skipped (gh CLI not found on PATH)"
   echo "labels: skipped (gh CLI not found on PATH)"
   echo "board: skipped (gh CLI not found on PATH)"
+  echo "first-epic: skipped (gh CLI not found on PATH)"
 else
   # --- required status check ------------------------------------------
   if _init_confirm "required-check" "$consent_required_check" \
@@ -487,6 +545,191 @@ else
     echo "board: skipped (--provision-board given but --tracker-mode is 'issues' — nothing to provision)"
   else
     echo "board: skipped (not opted in — pass --provision-board to offer this)"
+  fi
+
+  # --- first epic offer (temperloop#610, ADR 0010) ---------------------
+  # See the "FIRST-EPIC OFFER" header comment (top of file) for the full
+  # design rationale — skip vs. decline, idempotency probes, decline
+  # floors. This block only ever runs once the surrounding gates above
+  # (dry-run/no-network/gh_repo/gh-binary) already passed.
+  first_epic_project="$(basename "$gh_repo")"
+  first_epic_marker='design-brief: docs/adr/0010-onboarding-as-first-executed-epic.md'
+  first_epic_decline_marker="First-epic-decline: $gh_repo"
+  first_epic_template="$KERNEL_ROOT/claude/templates/first-epic-setup.md"
+
+  # Mirrors feedback.sh's _feedback_attended: a CI/GITHUB_ACTIONS ambient
+  # signal or closed stdin both mean "no live operator to ask" — degrade to
+  # a legible skip, never a hang and never a silent "decline".
+  _init_first_epic_attended() {
+    case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — standard CI-ecosystem ambient signal, not an operator default this repo defines
+    case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — GitHub Actions' own ambient signal, not an operator default this repo defines
+    [ -t 0 ] && return 0
+    return 1
+  }
+
+  if [ ! -f "$first_epic_template" ]; then
+    echo "first-epic: skipped (template not found at $first_epic_template — broken kernel checkout)"
+  else
+    # Idempotency probes — search issue BODIES (in:body, never in:title):
+    # a prior accept already filed the epic (design-brief marker), or a
+    # prior decline already filed the durable re-offer pointer (decline
+    # marker). Either hit means: never re-offer.
+    first_epic_existing_num="$("$INIT_GH_BIN" api -X GET search/issues \
+      -f q="repo:$gh_repo in:body \"$first_epic_marker\"" \
+      --jq '.items[0].number // empty' 2>/dev/null || true)"
+    first_epic_existing_pointer=""
+    if [ -z "$first_epic_existing_num" ]; then
+      first_epic_existing_pointer="$("$INIT_GH_BIN" api -X GET search/issues \
+        -f q="repo:$gh_repo in:body \"$first_epic_decline_marker\"" \
+        --jq '.items[0].number // empty' 2>/dev/null || true)"
+    fi
+
+    if [ -n "$first_epic_existing_num" ]; then
+      echo "first-epic: already filed as #$first_epic_existing_num — skipping offer (idempotent)"
+    elif [ -n "$first_epic_existing_pointer" ]; then
+      echo "first-epic: previously declined — re-offer pointer #$first_epic_existing_pointer already tracks the gap — skipping re-offer"
+    elif [ -z "$consent_first_epic" ] && ! _init_first_epic_attended; then
+      echo "first-epic: skipped — no interactive operator detected (no TTY, or an unattended/CI signal is set); point-of-use principle defaults and the managed-merge floor still apply with zero configuration — pass --yes-first-epic/--no-first-epic to decide non-interactively"
+    else
+      first_epic_decision="$consent_first_epic"
+      if [ -z "$first_epic_decision" ]; then
+        echo
+        echo "temperloop ships a pre-designed first epic: \"Set up $first_epic_project with temperloop\" —"
+        echo "it configures engineering-review principles, a GitHub branch/PR/merge substrate, and CI"
+        echo "by driving REAL work through this repo's own pipeline (/assess --epic N -> /build)."
+        echo "See claude/templates/first-epic-setup.md and docs/adr/0010-onboarding-as-first-executed-epic.md."
+        printf 'Set up %s with temperloop as your first epic? [y/N] ' "$first_epic_project"
+        first_epic_ans=""
+        read -r first_epic_ans || first_epic_ans=""
+        case "$first_epic_ans" in
+          y|Y|yes|YES) first_epic_decision=yes ;;
+          *)           first_epic_decision=no ;;
+        esac
+      fi
+
+      if [ "$first_epic_decision" = yes ]; then
+        # The epic body is EVERYTHING from the template's own
+        # "# Set up <project> with temperloop" heading down — copied
+        # verbatim (never restated) after substituting <project>. This is
+        # data extraction, not a second copy of the epic's content.
+        first_epic_body="$(awk '/^# Set up /{p=1} p' "$first_epic_template" | sed "s/<project>/$first_epic_project/g")"
+        if first_epic_url="$("$INIT_GH_BIN" issue create -R "$gh_repo" \
+            --title "Set up $first_epic_project with temperloop" \
+            --body "$first_epic_body" 2>&1)"; then
+          first_epic_num="$(basename "$first_epic_url")"
+          echo "first-epic: filed $first_epic_url (#$first_epic_num) — next: /assess --epic $first_epic_num"
+          add_install "$(jq -cn --arg repo "$gh_repo" --arg url "$first_epic_url" --arg n "${first_epic_num:-}" \
+            '{type:"first_epic", repo:$repo, issue:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
+        else
+          echo "first-epic: FAILED to file — $first_epic_url"
+        fi
+      else
+        echo "first-epic: declined — running the inline principles interview (L0) + filing a durable re-offer pointer"
+        echo
+        echo "-- Inline principles interview (L0 only — referencing claude/templates/first-epic-setup.md § A1, not restating it) --"
+        awk '/^### A1\./{p=1} p && /^### A2\./{exit} p' "$first_epic_template"
+        echo
+        printf 'Do you have existing engineering conventions to merge with the kernel set? [y/N] '
+        first_epic_have_own=""
+        read -r first_epic_have_own || first_epic_have_own=""
+        first_epic_principles_mode="declined"
+        case "$first_epic_have_own" in
+          y|Y|yes|YES)
+            printf 'Extend (add kernel set to yours, default), replace (drop kernel set), or exclude specific kernel principles? [extend/replace/exclude, default: extend] '
+            first_epic_choice=""
+            read -r first_epic_choice || first_epic_choice=""
+            case "$first_epic_choice" in
+              replace) first_epic_principles_mode="replace" ;;
+              exclude)
+                printf 'Which kernel principles should be excluded (comma-separated names)? '
+                first_epic_excl=""
+                read -r first_epic_excl || first_epic_excl=""
+                first_epic_principles_mode="exclude:$first_epic_excl"
+                ;;
+              *) first_epic_principles_mode="extend" ;;
+            esac
+            ;;
+          *)
+            printf 'Adopt the kernel set as-is? [Y/n] '
+            first_epic_adopt=""
+            read -r first_epic_adopt || first_epic_adopt=""
+            case "$first_epic_adopt" in
+              n|N|no|NO) first_epic_principles_mode="declined" ;;
+              *)         first_epic_principles_mode="adopt" ;;
+            esac
+            ;;
+        esac
+
+        if [ "$first_epic_principles_mode" = "declined" ]; then
+          echo "first-epic: principles recording declined — nothing written; the kernel default (claude/engineering-principles.md) still applies at point of use"
+        else
+          # Record the disposition into the knowledge-store priorities note
+          # — the SAME doc-id claude/commands/assess.md Step 3 resolves at
+          # point of use, never a parallel/ad-hoc location.
+          first_epic_ks_doc="Projects/$first_epic_project/Priorities.md"
+          # shellcheck source=../../workflows/scripts/lib/knowledge_store.sh
+          source "$KERNEL_ROOT/workflows/scripts/lib/knowledge_store.sh"
+          first_epic_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          case "$first_epic_principles_mode" in
+            extend)
+              first_epic_section="mode: extend (default) — kernel engineering-principles set (claude/engineering-principles.md) plus this project's own conventions. Recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
+              ;;
+            replace)
+              first_epic_section="mode: replace — kernel engineering-principles set discarded; this project's own conventions apply instead. Recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
+              ;;
+            exclude:*)
+              first_epic_section="mode: extend, excluding: ${first_epic_principles_mode#exclude:} — recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
+              ;;
+            adopt)
+              first_epic_section="kernel engineering-principles set (claude/engineering-principles.md) adopted as-is, empty project slot. Recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
+              ;;
+          esac
+          if first_epic_priorities="$(ks_read "$first_epic_ks_doc" 2>/dev/null)"; then
+            if printf '%s' "$first_epic_priorities" | grep -q '^## Principles'; then
+              echo "first-epic: $first_epic_ks_doc already has a ## Principles section — leaving it untouched (not overwriting an operator-authored section)"
+            elif printf '\n## Principles\n\n%s\n' "$first_epic_section" | ks_append "$first_epic_ks_doc"; then
+              echo "first-epic: recorded principles disposition ($first_epic_principles_mode) into $first_epic_ks_doc"
+            else
+              echo "first-epic: WARN — could not append principles disposition to $first_epic_ks_doc"
+            fi
+          elif printf '# %s\n\n## Principles\n\n%s\n' "$first_epic_project" "$first_epic_section" | ks_write "$first_epic_ks_doc"; then
+            echo "first-epic: recorded principles disposition ($first_epic_principles_mode) into new $first_epic_ks_doc"
+          else
+            echo "first-epic: WARN — could not create $first_epic_ks_doc"
+          fi
+        fi
+
+        # Durable re-offer pointer — a Backlog item in the ADOPTER's own
+        # repo naming exactly what remains unconfigured, so the gap stays
+        # tracked rather than vanishing (ADR 0010 § Decline floors).
+        "$INIT_GH_BIN" label create "fnd:status:backlog" -R "$gh_repo" \
+          --color "ededed" --description "Tracker status (issues-only backend)" >/dev/null 2>&1 || true
+        first_epic_pointer_body="temperloop's pre-designed first epic (\"Set up $first_epic_project with temperloop\") was offered by \`temperloop init\` and declined.
+
+Unconfigured substrate this leaves behind:
+- Default-branch protection (require-PR, no direct pushes)
+- Head-branch auto-delete on merge
+- A merge-queue disposition (native queue, or the managed-merge fallback)
+- A CI disposition (a scaffolded \`checks\` workflow, or an explicit no-Actions posture)
+
+None of this leaves the repo broken — the kernel's point-of-use principle
+defaults and the managed-merge fallback both still work with zero
+configuration. Re-run \`temperloop init\` (or open the epic by hand from
+claude/templates/first-epic-setup.md) to configure it later.
+
+$first_epic_decline_marker"
+        if first_epic_pointer_url="$("$INIT_GH_BIN" issue create -R "$gh_repo" \
+            --title "temperloop first-epic setup: still unconfigured" \
+            --body "$first_epic_pointer_body" --label "fnd:status:backlog" 2>&1)"; then
+          first_epic_pointer_num="$(basename "$first_epic_pointer_url")"
+          echo "first-epic: filed durable re-offer pointer $first_epic_pointer_url (#$first_epic_pointer_num)"
+          add_install "$(jq -cn --arg repo "$gh_repo" --arg url "$first_epic_pointer_url" --arg n "${first_epic_pointer_num:-}" \
+            '{type:"first_epic_decline_pointer", repo:$repo, issue:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
+        else
+          echo "first-epic: FAILED to file the re-offer pointer — $first_epic_pointer_url"
+        fi
+      fi
+    fi
   fi
 fi
 echo
