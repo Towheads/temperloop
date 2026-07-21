@@ -48,6 +48,14 @@ site) implements this rule — it does not restate or re-derive it:
 - **Default: extend.** A project's `§ Principles` section **adds to** the
   kernel set. Nothing here is dropped unless the project says so explicitly
   (below).
+- **Dedupe and contradiction naming (part of the extend default).** When the
+  project's set and the kernel set both address the same criterion, the
+  merge **collapses them to one entry** rather than duplicating it, and the
+  **project's own phrasing wins** for that entry's wording. When a project
+  principle genuinely **contradicts** a kernel one — a real reversal, not
+  just a rephrase — a call site names the kernel principle as overridden,
+  rendered as `kernel principle overridden by project: <name>`, so a reader
+  can tell a plain duplicate collapse apart from an actual reversal.
 - **`mode: replace`.** A project's `§ Principles` section may declare
   `mode: replace` to swap its own set in wholesale, discarding the kernel
   set entirely for that project. This is a deliberate, visible departure —
