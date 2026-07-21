@@ -283,6 +283,14 @@ This section governs **board-enabled projects** — those with a GitHub Projects
 
 Rationale: `[[Decisions/stageFind - Task workflow (board + WIP-3 gate)]]`, `[[Decisions/stageFind - Contract-based epic decomposition]]`, `[[Decisions/stageFind - Dropped-bug capture net]]`.
 
+## Route a conversational fix request through /fix
+
+On a **board-enabled project**, when the operator raises a fix request in conversation — "can you fix X", a described bug, a reported regression — rather than naming an existing board item or issue number to resume, default to routing it through **`/fix`** (`claude/commands/fix.md`) instead of driving it ad hoc in the live session. `/fix` composes the existing state-probe → claim-first → isolated worker → PR → CI → modal-merge spine, so the request gets the same claim-first board hygiene, PR verification surface, and issue-linkage discipline any other tracked fix gets — a fix driven by hand in conversation routinely skips one of those, most concretely a merged PR carrying no `Closes #N` and no board claim trail (§ Issue linkage, § Task workflow above).
+
+This is a **strong default, not an absolute bar**: you may fix it directly in the live session only if you state up front — in the turn *before* editing — why the change is trivial enough to skip the `/fix` flow (the same bar § Plan-first default uses: a one-line fix, a typo, a comment, a mechanical config tweak), and the user doesn't object. Silence is not consent to skip; the rebuttal has to be voiced and given a beat to land. Absent that explicit, un-objected rebuttal, run `/fix <description>` (or `/fix <issue#>` when one already exists) rather than editing ad hoc.
+
+**Why this exists.** A conversational fix that bypasses `/fix` skips claim-first board hygiene, the modal merge gate, and issue linkage in one motion — exactly the trace a merged-with-no-linkage PR, or an abandoned open PR with no issue reference, leaves behind. `claude/commands/tidy.md` § Unlinked fix PRs is this rule's drain backstop.
+
 ## Plan-first default
 
 Default to **plan mode** before any non-trivial change. "Non-trivial" is broad: anything beyond a one-line fix, a typo, a comment, or a mechanical config tweak qualifies — new behavior, a multi-file edit, a new component, a schema touch, a refactor, a scorer/prompt/pipeline change. When in doubt, plan. (This is the plan-first habit the **Task workflow** section above composes with on board-enabled projects; here it applies generally, board or no board.)
