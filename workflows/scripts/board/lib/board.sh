@@ -1600,7 +1600,26 @@ board_item_title() {
 # board_set_milestone (repo-level `gh issue edit`, since the board mirror is
 # read-only).
 #   board_item_milestone <issue#>  ->  milestone title (empty if none)
+#
+# Arg guard (temperloop#594): this accessor takes a SINGLE issue-number arg — no
+# leading board arg, unlike the accessor-family siblings board_blocked_by_open /
+# board_set_status that take/guard one. Called with the guessable leading-board-arg
+# shape `board_item_milestone 7 592`, jq would select issue #7 (the board number)
+# and silently return empty — reading as "unmilestoned" and masking real milestones
+# (in a live /triage run this hid 8 milestoned Backlog items). So reject any call
+# that isn't exactly one all-digits issue number, LOUD on stderr + non-zero, like
+# board_set_status's item-id guard — the misuse surfaces even when a caller swallows
+# the exit code.
 board_item_milestone() {
+  if [ "$#" -ne 1 ]; then
+    echo "board: board_item_milestone takes exactly ONE issue# arg — no leading board arg (got $# arg(s): '$*'); it reads .milestone.title for a single issue" >&2
+    return 1
+  fi
+  case "$1" in
+    '' | *[!0-9]*)
+      echo "board: board_item_milestone needs a numeric issue# (got '$1')" >&2
+      return 1 ;;
+  esac
   printf '%s' "$BOARD_ITEMS_JSON" |
     jq -r --argjson n "$1" '.items[] | select(.content.number == $n) | .milestone.title // ""'
 }
