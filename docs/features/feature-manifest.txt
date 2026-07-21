@@ -91,10 +91,11 @@ merge-gate workflows/scripts/board/pr-enqueue.sh
 merge-gate workflows/scripts/board/tests/test_pr_enqueue.sh
 merge-gate workflows/scripts/lib/land-on-protected-main.sh
 
-# ── triage / assess / sweep / next / check-in — pipeline command specs ──────
+# ── triage / assess / sweep / fix / next / check-in — pipeline command specs ─
 triage claude/commands/triage.md
 assess claude/commands/assess.md
 sweep claude/commands/sweep.md
+fix claude/commands/fix.md
 next claude/commands/next.md
 check-in claude/commands/check-in.md
 check-in claude/decision-queue-contract.md

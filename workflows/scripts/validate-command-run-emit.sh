@@ -32,6 +32,7 @@ REPO="$(cd -P "$SCRIPTS_DIR/../.." && pwd)"
 EMIT_SCRIPT="$SCRIPTS_DIR/emit-command-run.sh"
 SWEEP_MD="$REPO/claude/commands/sweep.md"
 TRIAGE_MD="$REPO/claude/commands/triage.md"
+FIX_MD="$REPO/claude/commands/fix.md"
 
 fail=0
 
@@ -72,6 +73,7 @@ check_wiring() {  # $1=label $2=path $3=expected --command value
 
 check_wiring "sweep.md"  "$SWEEP_MD"  "sweep"
 check_wiring "triage.md" "$TRIAGE_MD" "triage"
+check_wiring "fix.md"    "$FIX_MD"    "fix"
 
 echo "---"
 if [ "$fail" -ne 0 ]; then
