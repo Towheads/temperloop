@@ -28,6 +28,25 @@ fi
 
 If the overlay script exists, show its output verbatim too (same data-age callout rule — it leads with the rollups' own data age). If it is absent, note in one line that the overlay enrichment is unavailable in this checkout and continue — the kernel brief has already rendered.
 
+### Nightly-tidy liveness (did the overnight drain actually complete?)
+
+**Why this lives here, in the status readout, and not only in the queues below:** the overnight `/tidy` is what *writes* the Part 2 surfaces (pending-decisions, sensitivity-flags, vault-hygiene). If `/tidy` itself silently no-op'd — the temperloop#657 failure, where a headless drive reports `subtype: success` but drains nothing — those surfaces are simply *empty*, indistinguishable from a genuinely quiet night, and `/tidy`'s own env-hygiene probe (which would have flagged the drift) never ran either. So the liveness check has to live *here*, in the operator-run readout, reading a signal a failed drive cannot have forged.
+
+Reuse `env-reconcile.sh`'s existing `AGENT_STALE` sensor — never invent a new one. It reads the tidy agent's **heartbeat marker**, which `tidy-nightly.sh` writes **only on a drive that actually drained** (temperloop#657): a no-op / aborted / didn't-fire-at-all night leaves the marker untouched, so a stale marker is ground-truth "no successful drain within the agent's nightly cadence" (≈ since the last daily check-in). Source with **no arguments** (safe — it only defines functions and returns; it does not run the reconciler), then read the verdict it prints for the tidy LaunchAgent's label — named via the `TIDY_AGENT_LABEL` knob (the same one `tidy-nightly.sh` honors; default `com.foundation.tidy-nightly`), so a fork with a differently-named nightly-tidy agent overrides the knob rather than editing this prose:
+
+```sh
+source workflows/scripts/build/env-reconcile.sh
+agent_status_by_label "${TIDY_AGENT_LABEL:-com.foundation.tidy-nightly}"
+```
+
+Dispose by the verdict it prints (`classify_agent`'s grammar):
+- **empty output** → the drain completed within cadence. Healthy — **surface nothing** (default to silence, as elsewhere in this readout).
+- **`AGENT_STALE:<label>`** → the agent is loaded but its last *successful* drain is overdue. Surface a loud line near the top of the readout: `⚠️ nightly /tidy has not completed a successful drain within cadence — Sessions/_inbox is likely accruing (see ~/.claude/tidy/log/tidy-nightly.log and the pending-decisions surface below).`
+- **`AGENT_UNLOADED:<label>`** → the agent isn't loaded at all; no unattended drain is running on this host. Surface: `⚠️ nightly /tidy LaunchAgent is not loaded — no unattended drain is running on this host.`
+- **`EXPECTED_ELSEWHERE:<label>`** → this host isn't the one that owns the nightly-tidy role (e.g. an operator laptop whose checkout declares the plist but the mini actually runs it). **Skip silently** — the drain is another host's job, and *that* host's own check-in surfaces its staleness. This is the routine case on a non-owning checkout.
+- **`MALFORMED_PLIST:<file>`** → the agent's plist couldn't be parsed, so the liveness signal is unavailable. Surface it as a config error to fix.
+- **non-zero exit, no output** → no plist declares this label in this checkout (a kernel-only or non-drain host). **Skip silently** — there is no nightly-tidy agent here to be stale. (This deliberately differs from the Pending-activations launchd sub-case below, which surfaces the same raw signal as *unverifiable*: there an open record *asserts* the agent should exist, so silence would hide a real gap; here the probe runs unconditionally on every host, most of which legitimately have no such agent.)
+
 ## Part 2 — Dispose the overnight queues
 
 **Source the batch-pipeline config (best-effort), once, before this part.** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the prune-window knob (`CHECKIN_PRUNE_DAYS`, referenced below) into scope, with any pre-set env value still overriding. If the file isn't found, the sections below fall back to the `${CHECKIN_PRUNE_DAYS:-30}` inline default.
@@ -86,8 +105,8 @@ Worked example, class C (launchd sub-case):
 ```
 ### tidy-nightly-agent-first-fire - **Status:** open
 - **class:** C
-- **proof:** the `foundation.tidy-nightly` LaunchAgent (declared in `infra/launchd/tidy-nightly.plist`) has fired at least once, per its declared cadence, since this record was opened — reuses `env-reconcile.sh`'s existing `AGENT_STALE` signal, never a new sensor
-- **locus:** `foundation.tidy-nightly` (the plist's `Label`)
+- **proof:** the `com.foundation.tidy-nightly` LaunchAgent (declared in `infra/launchd/com.foundation.tidy-nightly.plist`) has fired at least once, per its declared cadence, since this record was opened — reuses `env-reconcile.sh`'s existing `AGENT_STALE` signal, never a new sensor
+- **locus:** `com.foundation.tidy-nightly` (the plist's `Label` — `agent_status_by_label` matches it exactly, so it must be the full `com.`-prefixed Label, not a shorthand)
 - **soak-until:** 2026-07-18T00:00
 ```
 
