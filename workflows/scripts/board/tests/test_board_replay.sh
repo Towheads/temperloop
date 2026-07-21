@@ -99,6 +99,25 @@ echo "PASS: board_resolve issues 3 gh calls and accessors resolve ids by name"
 [ -z "$(board_item_milestone 12345)" ] || fail "absent issue should read empty milestone"
 echo "PASS: board_item_milestone reads the built-in Milestone mirror by issue number"
 
+# --- board_item_milestone arg guard (temperloop#594) --------------------------
+# It takes a SINGLE issue# arg — no leading board arg. The guessable accessor-family
+# leading-board-arg form `board_item_milestone 7 592` must fail LOUD (non-zero +
+# stderr) instead of silently selecting issue #7 and returning empty ("unmilestoned"
+# read that masked 8 milestoned Backlog items in a live /triage run).
+merr="$(board_item_milestone 7 592 2>&1 1>/dev/null)" \
+  && fail "board_item_milestone must reject the leading-board-arg form '7 592'"
+case "$merr" in
+  *"board arg"* | *"ONE issue"*) : ;;
+  *) fail "board_item_milestone wrong-arity error should be loud (got: $merr)" ;;
+esac
+# A non-numeric single arg is also rejected loud.
+board_item_milestone abc >/dev/null 2>&1 \
+  && fail "board_item_milestone must reject a non-numeric issue#"
+# The correct single-arg call still works unchanged (regression).
+[ "$(board_item_milestone 227)" = "Production Live" ] \
+  || fail "board_item_milestone must still read the milestone for a valid single arg"
+echo "PASS: board_item_milestone arg guard rejects the leading-board-arg/non-numeric misuse, accepts the single-arg call"
+
 # --- board_set_component: the board-native subsystem single-select -------------
 # Thin wrapper over board_set_status's field-override arm; resolves the Component
 # field id + option id by NAME and issues the item-edit.
