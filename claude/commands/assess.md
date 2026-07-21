@@ -271,7 +271,7 @@ NEEDS ATTENTION
 
 Then close with the next two actions (a short numbered list, not prose):
 1. Review `[[Plans/<date> <project> - <title>]]`; fix slugs / acceptance / sizing, and **resolve every `NEEDS ATTENTION` row** (re-run `/triage` if a regroup is warranted).
-2. Flip frontmatter `status: draft → approved`, then run `/build Plans/<date> <project> - <title>` — or let me arm the approval poll (Step 6) and I'll start it the moment you flip the status.
+2. **Approve.** The quickest path: just reply **`approve`** and I'll promote the plan for you — I flip its frontmatter `status: draft → approved` (a **full-file rewrite**, per the frontmatter-scalar contract, since `vault_patch` can't set a frontmatter scalar reliably). The **equivalent self-service path** stays available: edit the note yourself and flip `status: draft → approved` by hand — same gate. On a **poll-armed (non-hand-driven) repo**, `approve` is also the Step 6 poll's approval signal, so promoting the status **auto-starts** `/build`. On a **hand-driven repo (temperloop)**, `approve` promotes the plan but you still run `/build Plans/<date> <project> - <title>` **explicitly** — the poll is never armed there (operator-scoped rule). Or let me arm the approval poll (Step 6) and I'll start it the moment the status flips.
 
 ## Step 6 — Offer the approval poll (optional walk-away handoff)
 
