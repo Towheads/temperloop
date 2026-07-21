@@ -22,9 +22,10 @@
 #     confirmation flag below.
 #   - requires `--confirm-live-writes` to do anything beyond print its plan —
 #     no accidental live run.
-#   - operates ONLY on a repo whose name matches the `tl-fixture-` prefix
-#     under the authenticated account — refuses (hard exit) on anything
-#     else. NEVER touches a real adopter/org repo.
+#   - operates ONLY on a repo whose name matches the reusable-pool naming
+#     (`test-fixture-repo` or `test-fixture-repo-<N>`) under the
+#     authenticated account — refuses (hard exit) on anything else. NEVER
+#     touches a real adopter/org repo.
 #
 # SCOPE (mirrors the plan item's acceptance gate — see the plan note /
 # temperloop#611):
@@ -72,21 +73,36 @@
 #     write) was composed instead.
 #
 # Usage:
-#   verify-first-epic-consent.sh --confirm-live-writes [--repo OWNER/NAME] [--keep]
+#   verify-first-epic-consent.sh --confirm-live-writes [--repo OWNER/NAME] [--slot N]
 #   verify-first-epic-consent.sh            # prints the plan, does nothing live
 #
 #   --confirm-live-writes   required to perform ANY live gh write. Without
 #                           it, prints the plan (repo name, steps) and exits 0.
 #   --repo OWNER/NAME       override the fixture repo (default:
-#                           <gh-user>/tl-fixture-admin-<nonce>). MUST match
-#                           tl-fixture-* in its name — refuses otherwise.
-#   --keep                 skip the end-of-run cleanup attempt (leave the
-#                           fixture as-is for manual inspection).
+#                           <gh-user>/test-fixture-repo, or
+#                           <gh-user>/test-fixture-repo-<N> with --slot N).
+#                           MUST match test-fixture-repo / test-fixture-repo-<N>
+#                           in its name — refuses otherwise.
+#   --slot N                pick pool member <N> (1..8): targets
+#                           test-fixture-repo-<N> instead of the bare
+#                           test-fixture-repo default. Lets two concurrent
+#                           runs use disjoint fixtures without colliding on
+#                           one repo's state.
 #
-# Env overrides: FIXTURE_NONCE (default: kt611 — a fixed, hand-picked nonce
-# per the operator's instruction, never system randomness/date), GH bin
-# override not needed (uses `gh` directly — this is a live harness, not a
-# fixture-replay test, so there is no `_gate_gh`-style mock seam to override).
+# REUSABLE ACROSS RUNS — this harness NEVER deletes its fixture repo. The
+# fixtures are a small, stable, bounded pool (test-fixture-repo and
+# test-fixture-repo-1..8) that PERSIST between runs and are reset to a known
+# baseline at the START of every run (protection removed, auto-delete off,
+# scenario files + stale branches swept — see Setup). So a repeat run reuses
+# the same repo cleanly rather than minting a new one; there is no per-run
+# name churn and nothing to clean up afterward. (Repo lifecycle rationale:
+# Decisions/temperloop - fixture-repo lifecycle (no auto-delete) — deletion
+# is manual, and delete_repo is deliberately kept off the agent token.)
+#
+# Env overrides: RIGHTS_PROBE_OVERRIDE (Contract f3 injection seam — see
+# rights_probe() below). GH bin override not needed (uses `gh` directly —
+# this is a live harness, not a fixture-replay test, so there is no
+# `_gate_gh`-style mock seam to override).
 #
 # Requires: gh (authenticated, `repo` scope), jq, base64. Consumes
 # workflows/scripts/build/gate.sh's `backend`/`read`/`managed-merge`
@@ -99,17 +115,18 @@ GATE_SH="$HERE/../gate.sh"
 CI_POLL_SH="$HERE/../ci-poll.sh"
 
 CONFIRM=0
-KEEP=0
 repo_override=""
-NONCE="${FIXTURE_NONCE:-kt611}"
+slot=""
+REPO_BASE="test-fixture-repo"
+POOL_MAX=8
 
 usage() {
   cat <<'EOF'
-usage: verify-first-epic-consent.sh [--confirm-live-writes] [--repo OWNER/NAME] [--keep]
+usage: verify-first-epic-consent.sh [--confirm-live-writes] [--repo OWNER/NAME] [--slot N]
 
   --confirm-live-writes   required to perform any live gh write
-  --repo OWNER/NAME       override fixture repo (must match tl-fixture-*)
-  --keep                  skip end-of-run cleanup attempt
+  --repo OWNER/NAME       override fixture repo (must match test-fixture-repo / test-fixture-repo-<N>)
+  --slot N                target pool member test-fixture-repo-<N> (1..8) instead of the bare default
 EOF
 }
 
@@ -117,7 +134,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --confirm-live-writes) CONFIRM=1; shift ;;
     --repo) repo_override="${2:-}"; shift 2 ;;
-    --keep) KEEP=1; shift ;;
+    --slot) slot="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "verify-first-epic-consent: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac
@@ -128,13 +145,24 @@ GH_USER="$(gh api user --jq .login 2>/dev/null)" || {
   echo "REFUSING: could not resolve authenticated gh user (gh auth status?)" >&2
   exit 1
 }
-REPO_NAME="tl-fixture-admin-${NONCE}"
+if [ -n "$slot" ]; then
+  case "$slot" in
+    ''|*[!0-9]*) echo "REFUSING: --slot must be a positive integer (1..$POOL_MAX)" >&2; exit 2 ;;
+  esac
+  if [ "$slot" -lt 1 ] || [ "$slot" -gt "$POOL_MAX" ]; then
+    echo "REFUSING: --slot $slot out of range — the reusable pool is test-fixture-repo-1..$POOL_MAX" >&2
+    exit 2
+  fi
+  REPO_NAME="${REPO_BASE}-${slot}"
+else
+  REPO_NAME="$REPO_BASE"
+fi
 REPO="${repo_override:-$GH_USER/$REPO_NAME}"
 REPO_BASENAME="${REPO##*/}"
 case "$REPO_BASENAME" in
-  tl-fixture-*) : ;;
+  test-fixture-repo|test-fixture-repo-*) : ;;
   *)
-    echo "REFUSING: repo '$REPO' basename '$REPO_BASENAME' does not match the required 'tl-fixture-*' prefix — this harness creates/mutates ONLY disposable tl-fixture-* repos, never a real repo." >&2
+    echo "REFUSING: repo '$REPO' basename '$REPO_BASENAME' is not a reusable test fixture (must be 'test-fixture-repo' or 'test-fixture-repo-<N>') — this harness creates/mutates ONLY disposable test-fixture-repo* repos, never a real repo." >&2
     exit 1
     ;;
 esac
@@ -302,7 +330,7 @@ if gh api "repos/$REPO" >/dev/null 2>&1; then
   PLAN "fixture repo already exists — reusing: $REPO"
 else
   gh_write repo create "$REPO" --private --add-readme \
-    --description "temperloop K#611 disposable fixture — first-epic consent verification. Safe to delete." >/dev/null
+    --description "Disposable, reusable test fixture for temperloop's first-epic consent harness. Reset at each run; safe to delete." >/dev/null
   ok "created fixture repo $REPO"
 fi
 IS_ADMIN="$(gh api "repos/$REPO" --jq '.permissions.admin')"
@@ -557,15 +585,11 @@ PLAN "is first-epic-offer's own build-time acceptance, not re-proven here."
 section "Summary"
 PLAN "PASS: $PASS_COUNT   FAIL: $FAIL_COUNT   total real gh-write calls this run: $WRITE_CALL_COUNT"
 
-if [ "$KEEP" -ne 1 ]; then
-  section "Cleanup (best-effort — token has no delete_repo scope, failure is EXPECTED)"
-  if gh repo delete "$REPO" --yes >/dev/null 2>&1; then
-    PLAN "deleted $REPO"
-  else
-    PLAN "MANUAL CLEANUP NEEDED — delete_repo scope absent (expected). Delete by hand or run:"
-    PLAN "  gh auth refresh -s delete_repo && gh repo delete $REPO --yes"
-    PLAN "Fixture repos created by this run: $REPO"
-  fi
-fi
+section "Fixture retained for reuse (no auto-delete by design)"
+PLAN "Left $REPO in place — it is a reusable pool fixture, reset to baseline at the start of every run."
+PLAN "The pool is bounded (test-fixture-repo, test-fixture-repo-1..$POOL_MAX); nothing accumulates per run."
+PLAN "Deletion is deliberately manual (delete_repo kept off the agent token) — see"
+PLAN "Decisions/temperloop - fixture-repo lifecycle (no auto-delete). To remove a fixture, delete it via"
+PLAN "the GitHub web UI (Settings -> Danger Zone) or: gh repo delete $REPO --yes  (needs delete_repo scope)."
 
 [ "$FAIL_COUNT" -eq 0 ]
