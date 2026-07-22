@@ -275,7 +275,8 @@ function sq(value) {
 // repo-local dir and the spine script's own "not found" (exit 127) surfaces
 // loudly. NOTE:
 // only spine scripts route through here; the project's OWN vendored gate
-// (scripts/quality-gates.sh) stays repo-local and is resolved directly.
+// (scripts/quality-gates.sh) is repo-local and is resolved directly against
+// the WORKTREE checkout (see 3e.5, temperloop#626), never via this fallback.
 function spineBin(repoRoot, name) {
   // De-obfuscated fast path (temperloop#72). When the orchestrator has already
   // resolved the build-spine directory in its OWN shell (build.md Step 0) and
@@ -625,7 +626,23 @@ async function driveItem(item) {
   // script doesn't exist, e.g. foundation itself) → skip. FAIL → escalate
   // (do NOT push a known-red branch). The executor synthesizes GATE_PASS /
   // GATE_FAIL / GATE_ABSENT so the .mjs branches on a closed outcome.
-  const qgBin = `${repoRoot}/scripts/quality-gates.sh`;
+  //
+  // Resolve the gate script from the WORKTREE, not repoRoot (temperloop#626).
+  // The point of 3e.5 is to validate the worker's CHANGES, and the `cd ${wt}`
+  // below intends exactly that — but quality-gates.sh's first act is
+  // `cd "$REPO_ROOT"` where REPO_ROOT is derived from the SCRIPT's own path
+  // (BASH_SOURCE/..). If we ran repoRoot's copy, that cd would jump straight
+  // back to the main checkout and the gate would validate main's tree, not the
+  // worktree — silently defeating the cd. Running the worktree's own copy makes
+  // REPO_ROOT resolve to the worktree, so every gate (make targets, the
+  // diff-scoped leak guard that diffs the branch's additions, the freshness
+  // check) runs against the worker's tree — matching what CI sees on the PR's
+  // merge. The worktree is a full checkout of the branch, so this copy always
+  // exists whenever repoRoot's would (GATE_ABSENT still fires for a repo with
+  // no vendored gate). Only build-SPINE scripts (worktree.sh / pr.sh / …) route
+  // through spineBin's foundation fallback; the repo-local gate resolves
+  // directly against the worktree.
+  const qgBin = `${wt}/scripts/quality-gates.sh`;
   const gateOut = await runSpine(
     // If the script is missing → GATE_ABSENT (no-op). Else run it in the
     // worktree; exit 0 → GATE_PASS, non-zero → GATE_FAIL.

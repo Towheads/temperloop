@@ -789,6 +789,69 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 11c: gate-worktree — the 3e.5 acceptance gate must run the WORKTREE's copy
+#           of quality-gates.sh, not repoRoot's (temperloop#626). quality-gates.sh
+#           begins by cd'ing to its own REPO_ROOT (BASH_SOURCE/..); if the gate
+#           ran repoRoot's copy, that cd would jump back to the MAIN checkout and
+#           validate main's tree instead of the worker's changes — silently
+#           defeating the intended `cd \$wt`. Resolving the script from the
+#           worktree makes REPO_ROOT the worktree, so the gate validates the
+#           worker's tree (matching CI on the PR's merge). Regression assert: the
+#           gate command names the worktree's quality-gates.sh and NEVER the bare
+#           repoRoot copy.
+# ============================================================================
+run_node_case "gate-worktree: 3e.5 gate runs the worktree's quality-gates.sh, not repoRoot's (#626)" "
+$PREAMBLE
+
+happySpine('item-qgwt', 626, 'sha-qgwt');
+happyWorker('item-qgwt');
+
+// Capture the FULL gate prompt (the shared callLog truncates to 120 chars,
+// which cuts off the script path; mirror 11b's full-prompt capture). Delegate
+// to the original mock so spine routing (GATE_PASS from happySpine) is intact.
+let gatePromptSeen = null;
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts = {}) {
+  if ((opts.label || '').startsWith('gate:item-qgwt')) gatePromptSeen = String(prompt);
+  return origAgent(prompt, opts);
+};
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-qgwt', branch: 'build/item-qgwt', title: 'Gate Worktree Item', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// Happy path: the gate passed, so the item parks with no escalation — the
+// worktree-copy resolution must not perturb the normal gate flow.
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 escalations: ' + JSON.stringify(result) })); process.exit(0); }
+
+if (!gatePromptSeen)
+  { console.log(JSON.stringify({ ok: false, reason: 'gate agent call never observed' })); process.exit(0); }
+
+// The mock repoRoot is '/tmp/repo'; the worktree (happySpine CREATED.path) is
+// '/tmp/repo.wt/item-qgwt'. These two script paths are cleanly distinguishable
+// (the char after '/tmp/repo' is '/' vs '.'), so the buggy repoRoot copy is not
+// a substring of the correct worktree copy.
+const repoRootQg = '/tmp/repo/scripts/quality-gates.sh';
+const worktreeQg = '/tmp/repo.wt/item-qgwt/scripts/quality-gates.sh';
+
+// CORE regression: the gate must invoke the worktree's copy…
+if (!gatePromptSeen.includes(worktreeQg))
+  { console.log(JSON.stringify({ ok: false, reason: 'gate does not run the worktree quality-gates.sh (' + worktreeQg + '): ' + gatePromptSeen })); process.exit(0); }
+// …and must NEVER reference the bare repoRoot copy (whose cd \$REPO_ROOT would
+// jump back to main and defeat the worktree validation).
+if (gatePromptSeen.includes(repoRootQg))
+  { console.log(JSON.stringify({ ok: false, reason: 'gate still references repoRoot quality-gates.sh (' + repoRootQg + '), which validates main not the worktree: ' + gatePromptSeen })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 12: worktree-failed — worktree.sh returns non-CREATED → worktree-failed escalation
 # ============================================================================
 run_node_case "worktree-failed: worktree.sh non-CREATED → worktree-failed escalation" "
@@ -1543,10 +1606,13 @@ echo "PASS: #72 classifier-detrip + null-guard static guards — spineBinDir pla
 # separately in the PR's executed 4-scenario matrix.)
 grep -q '^function spineBin(' "$MJS" \
   || fail "#560: spineBin() resolver missing from build-level.mjs"
-# The project's OWN vendored gate stays repo-local — spineBin is spine-only.
-# shellcheck disable=SC2016  # grepping for the LITERAL ${repoRoot} token in source
-grep -q 'const qgBin = `${repoRoot}/scripts/quality-gates.sh`' "$MJS" \
-  || fail "#560: qgBin (repo-local quality-gates) must NOT route through spineBin"
+# The project's OWN vendored gate is resolved DIRECTLY (spineBin is spine-only) —
+# and against the WORKTREE checkout, not repoRoot, so quality-gates.sh's own
+# `cd "$REPO_ROOT"` stays in the worker's tree rather than jumping back to main
+# (temperloop#626). It still never routes through spineBin's foundation fallback.
+# shellcheck disable=SC2016  # grepping for the LITERAL ${wt} token in source
+grep -q 'const qgBin = `${wt}/scripts/quality-gates.sh`' "$MJS" \
+  || fail "#560/#626: qgBin (repo-local quality-gates) must resolve from the worktree (\${wt}), directly — never repoRoot, never spineBin"
 # No spine call site may regress to the hardcoded `.../workflows/scripts/build/<script>` template.
 if grep -nE '\}/workflows/scripts/build/(worktree|pr|ci-poll)\.sh' "$MJS"; then
   fail "#560: a spine script is still hardcoded to \${repoRoot}/workflows/scripts/build/ — route it through spineBin()"
