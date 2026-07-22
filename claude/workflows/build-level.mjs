@@ -464,7 +464,40 @@ async function driveItem(item) {
     ? input.verdicts?.[item.slug]?.verdict_section
     : undefined;
 
+  // --- 3a. Claim (claim-first), board ON only ------------------------------
+  // Claim-first applies to EVERY kind, spike included (build.md L312: "For a
+  // spike: run 3a (claim, mark `[~]`), then spawn a read-only worker"). This
+  // block therefore runs BEFORE the kind:spike verdict-park below so a
+  // spike-labeled item takes the cross-session board lock before any
+  // investigation begins — without it, two concurrent drivers could each pull
+  // and investigate the same spike with no lock (temperloop#650).
+  // Skipped on a continuation: the issue is already claimed by this run (the
+  // escalation never released it), and a re-claim is at best a self-owned
+  // no-op (spec 3d-esc step 4: "does NOT re-run 3a").
+  if (board && item.ghIssue && !isContinuation) {
+    // The CLAIM entrypoint + --board are resolved by the orchestrator's Step 0
+    // probe and passed in input.claimCmd (an absolute path to claim.sh).
+    const claimBin = input.claimCmd ?? 'claim.sh';
+    const claimOut = await runSpine(
+      // claim.sh exits 0 on success; we wrap a contention/no-op check into the
+      // executor by asking it to emit a CLAIMED/CLAIM_CONFLICT line. The
+      // orchestrator's claim.sh itself sets In Progress + stamps Host/Session.
+      `${sq(claimBin)} ${sq(item.ghIssue)} --board ${sq(board)} && ` +
+        `echo '{"outcome":"CLAIMED"}' || echo '{"outcome":"CLAIM_CONFLICT"}'`,
+      { label: `claim:${item.slug}`, slug: item.slug },
+    );
+    if (spineDenied(claimOut)) {
+      return escalate(item.slug, 'spine-denied', { step: 'claim', out: claimOut });
+    }
+    if (claimOut.outcome === 'CLAIM_CONFLICT' || claimOut.outcome === 'ERROR') {
+      return escalate(item.slug, 'claim-conflict', { claimOut });
+    }
+  }
+
   // --- kind: spike — read-only fork, NO push/PR (skip 3b–3h) ---------------
+  // Runs AFTER 3a (claim-first) above so the spike is claimed before its
+  // read-only verdict fork begins — matching build.md L312 and the kernel
+  // claim-first contract (temperloop#650).
   if (item.kind === 'spike') {
     log(`[${item.slug}] spike — read-only verdict fork (no PR)`);
     const verdict = await agent(
@@ -493,30 +526,6 @@ async function driveItem(item) {
     // Spike parks as a verdict marker (no pr/pushed_sha). The orchestrator
     // turns this into a [v] sentinel + Done/close at the boundary.
     return park(item.slug, null, null, verdict.acceptance_results);
-  }
-
-  // --- 3a. Claim (claim-first), board ON only ------------------------------
-  // Skipped on a continuation: the issue is already claimed by this run (the
-  // escalation never released it), and a re-claim is at best a self-owned
-  // no-op (spec 3d-esc step 4: "does NOT re-run 3a").
-  if (board && item.ghIssue && !isContinuation) {
-    // The CLAIM entrypoint + --board are resolved by the orchestrator's Step 0
-    // probe and passed in input.claimCmd (an absolute path to claim.sh).
-    const claimBin = input.claimCmd ?? 'claim.sh';
-    const claimOut = await runSpine(
-      // claim.sh exits 0 on success; we wrap a contention/no-op check into the
-      // executor by asking it to emit a CLAIMED/CLAIM_CONFLICT line. The
-      // orchestrator's claim.sh itself sets In Progress + stamps Host/Session.
-      `${sq(claimBin)} ${sq(item.ghIssue)} --board ${sq(board)} && ` +
-        `echo '{"outcome":"CLAIMED"}' || echo '{"outcome":"CLAIM_CONFLICT"}'`,
-      { label: `claim:${item.slug}`, slug: item.slug },
-    );
-    if (spineDenied(claimOut)) {
-      return escalate(item.slug, 'spine-denied', { step: 'claim', out: claimOut });
-    }
-    if (claimOut.outcome === 'CLAIM_CONFLICT' || claimOut.outcome === 'ERROR') {
-      return escalate(item.slug, 'claim-conflict', { claimOut });
-    }
   }
 
   // --- 3b-0. Dep-merge precondition gate (#108) ----------------------------

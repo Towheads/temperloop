@@ -710,6 +710,47 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 10b: spike claim-first (temperloop#650) — a board-ON spike claims its
+# issue (3a) BEFORE the read-only verdict fork spawns its worker. Guards the
+# regression where the kind:spike branch returned via park ahead of the 3a
+# claim, leaving a spike un-claimed and racing two concurrent drivers.
+# ============================================================================
+run_node_case "spike claim-first: 3a claim precedes the spike verdict-worker (#650)" "
+$PREAMBLE
+
+// Claim spine call for the spike returns CLAIMED (board ON, ghIssue present).
+setSpine('spike-claim', { outcome: 'CLAIMED' });
+setWorker('spike-claim',
+  { status: 'done', summary: 'spike verdict produced', acceptance_results: [{ criterion: 'verdict-written', passed: true, evidence: 'v.md' }], verification_surface_path: '/tmp/verdict.md' }
+);
+
+globalThis.args = { ...baseArgs, board: 3, claimCmd: '/fake/claim.sh', items: [
+  { slug: 'spike-claim', branch: 'build/spike-claim', title: 'Spike Claim', kind: 'spike', ghIssue: '650', acceptance: ['verdict-written'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+// Parks (spike verdict), no escalation.
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'unexpected escalation: ' + JSON.stringify(result) })); process.exit(0); }
+
+// Ordering assertion: the claim call MUST appear in callLog before the worker.
+const claimIdx = callLog.findIndex(c => (c.opts.label||'') === 'claim:spike-claim');
+const workerIdx = callLog.findIndex(c => (c.opts.label||'') === 'worker:spike-claim');
+if (claimIdx === -1)
+  { console.log(JSON.stringify({ ok: false, reason: 'no claim call for spike: ' + JSON.stringify(callLog.map(c=>c.opts.label)) })); process.exit(0); }
+if (workerIdx === -1)
+  { console.log(JSON.stringify({ ok: false, reason: 'no worker call for spike: ' + JSON.stringify(callLog.map(c=>c.opts.label)) })); process.exit(0); }
+if (!(claimIdx < workerIdx))
+  { console.log(JSON.stringify({ ok: false, reason: 'claim did not precede worker: claimIdx=' + claimIdx + ' workerIdx=' + workerIdx })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 11: gate-fail → acceptance-gate-failed escalation
 # ============================================================================
 run_node_case "gate-fail: GATE_FAIL → acceptance-gate-failed escalation" "
