@@ -1,14 +1,47 @@
-# TemperLoop
+# Temperloop
 
-**A dev-process kernel for Claude Code–driven development.** TemperLoop turns
-a GitHub issue tracker into a work queue that Claude Code sessions drive from
-raw issue to merged, CI-green pull request. It is a toolkit, not an app —
-everything here is a script, a slash command, or a contract file you read,
-not a service you depend on.
+# AI Congruency Factory: A New Approach to SDLC
+
+I wanted to use my spare time to build an N-tier music event discovery app, temperloop, but ended up compulsively building an AI "congruency factory" alongside it. 
+
+I found the constant code reviews and clarifications of AI-assisted development to be mind-numbing and repetitive. Unless I was hyper-vigilant, the agents regularly drifted, producing misaligned and poor-quality work.
+
+**My thesis:** If I embed my 20+ years of SDLC experience into a set of tools, I can create an automated development experience that meets or exceeds my own standards. 
+
+Those standards require an architecture that:
+
+*   **Respects my time:** Identifies, clusters, and surfaces critical decisions early.
+*   **Keeps cognitive load low:** Uses memory, specs, and issue-tracking to automatically answer operational questions, only escalating foundational questions to the operator.
+*   **Has a low blast radius:** Conservatively sizes and thoroughly tests every task.
+*   **Enforces strict governance:** Ensures every change is traceable, passes all quality gates, and meets stated standards.
+*   **Maintains congruency:** Aligns every subsequent change with the existing vision, design, and implementation.
+*   **Prioritizes maintainability:** Produces well-structured, secure, and clean code.
+*   **Is cost-efficient:** Invests tokens upfront in planning and review to minimize rework, smartly allocating subtasks to cheaper models.
+*   **Is time-efficient:** Safely parallelizes independent tasks while strictly supporting sequencing dependencies.
+*   **Provides full visibility:** Measures the impact of process, model, or gate changes on token spend, task duration, and rework rates—making model evals a no-op.
+
+I’m having a lot of fun playing with tech again, and I’d love to figure out how to make this useful for more than just myself. To do that, I need some help.
+
+I’m looking for people to test-drive what I’ve built and provide feedback. If you have a new or existing project and want to see what it’s like to have a "virtual Travis" managing your SDLC, please reach out. 
+
+I’m also refining the larger vision for this tooling and would like to connect with professionals in the following roles:
+
+*   **Leaders** looking to implement AI workflows in non-software domains.
+*   **Consultants** needing tools to give clients clear visibility into work completed and associated costs.
+*   **Scientists** managing research, data synthesis, or report generation.
+*   **Civic/Non-profit organizations** handling data analysis, reporting, and operational management.
+*   **Government agencies** working through municipal backlogs.
+*   **Finance leaders** looking to pipeline their financial reports.
+*   **Members/Leaders** of technical standards consortiums.
+
+I suspect we can work out a win-win arrangement: I’ll help you solve concrete problems in your space, and in exchange, I get visibility into your internal business constraints and processes.
+
+More to come soon…
+
 
 ---
 
-## 1. What TemperLoop is
+## 1. What Temperloop is
 
 Engineering orgs scale with process — issue tracking, contract-scoped work,
 code review, protected branches, merge queues, WIP caps. TemperLoop applies
