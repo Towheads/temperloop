@@ -47,6 +47,18 @@ Dispose by the verdict it prints (`classify_agent`'s grammar):
 - **`MALFORMED_PLIST:<file>`** → the agent's plist couldn't be parsed, so the liveness signal is unavailable. Surface it as a config error to fix.
 - **non-zero exit, no output** → no plist declares this label in this checkout (a kernel-only or non-drain host). **Skip silently** — there is no nightly-tidy agent here to be stale. (This deliberately differs from the Pending-activations launchd sub-case below, which surfaces the same raw signal as *unverifiable*: there an open record *asserts* the agent should exist, so silence would hide a real gap; here the probe runs unconditionally on every host, most of which legitimately have no such agent.)
 
+### Pending archive PR (delete-on-PR-record)
+
+`/tidy` archives each drained batch on the `chore/session-archive` branch as an auto-merging PR and deletes the `_inbox` stubs the moment they ride it (delete-on-PR-record — `[[Decisions/foundation - Delete-on-PR-record archive drain (supersedes 1161)]]`). That PR normally merges via the queue within minutes. But a **lingering unmerged archive PR pauses all further draining**: the archiver refuses to stack a second one, and `/tidy` Step 0 early-exits while it's open — so a stuck archive PR silently stops the nightly drain until it merges. Surface it (run in the archive checkout so no org/repo is hard-coded):
+
+```sh
+( cd ~/dev/foundation 2>/dev/null && gh pr list --head chore/session-archive --state open --json number,title,createdAt )
+```
+
+- **empty / no open PR** → healthy; the last drain's PR merged. **Surface nothing** (default to silence).
+- **one open PR** → surface it: `⚠️ archive PR #<n> open since <date> — draining is PAUSED until it merges; merge it (gh pr merge <n>) or investigate why the queue hasn't.` Merging it unblocks the next `/tidy`.
+- **`gh` absent, `~/dev/foundation` not present, or the command errors** → **skip silently** (this checkout doesn't own the nightly archive).
+
 ## Part 2 — Dispose the overnight queues
 
 **Source the batch-pipeline config (best-effort), once, before this part.** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Prose-resident knob convention). This pulls the prune-window knob (`CHECKIN_PRUNE_DAYS`, referenced below) into scope, with any pre-set env value still overriding. If the file isn't found, the sections below fall back to the `${CHECKIN_PRUNE_DAYS:-30}` inline default.
