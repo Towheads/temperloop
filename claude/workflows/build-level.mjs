@@ -158,7 +158,7 @@ const SPINE_OUTCOME_SCHEMA = {
         'REBASED', 'REBASE_CONFLICT',
         'PUSHED', 'PUSH_REJECTED',
         'PR_OPENED', 'EXISTS',
-        'CI_GREEN', 'CI_FAILED', 'TIMEOUT',
+        'CI_GREEN', 'CI_FAILED', 'NO_CI', 'TIMEOUT',
         'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT',
         'CLAIMED', 'CLAIM_CONFLICT',
         'ERROR',
@@ -416,11 +416,18 @@ function workerPrompt(item, worktreePath, extraSection) {
 function escalate(slug, kind, payload) {
   return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
 }
-function park(slug, pr, pushedSha, acceptanceResults) {
+function park(slug, pr, pushedSha, acceptanceResults, noCi) {
+  const parked = { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] };
+  // temperloop#605/#618: a NO_CI-outcome item parks identically to a green one,
+  // but carries a durable `no_ci` marker so the orchestrator stamps the
+  // `  - no_ci: true` sub-line (build.md 3h) and renders `CI —  (no CI
+  // configured)` rather than `CI ✓` in the 4a summary — never letting an
+  // untested-by-CI PR look confirmed-green.
+  if (noCi === true) parked.no_ci = true;
   return {
     _kind: 'parked',
     slug,
-    parked: { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] },
+    parked,
   };
 }
 
@@ -750,8 +757,10 @@ async function driveItem(item) {
   }
 
   // --- 3h. Park as [m] (the workflow returns the record; orchestrator writes)
-  log(`[${item.slug}] parked — PR #${pr} CI green`);
-  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results);
+  // A NO_CI resolution (temperloop#605/#618) parks the same, but the returned
+  // record carries `no_ci: true` so the orchestrator stamps the sentinel.
+  log(`[${item.slug}] parked — PR #${pr} ${ciResult.noCi ? 'no CI configured (skipped)' : 'CI green'}`);
+  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true);
 }
 
 // -----------------------------------------------------------------------------
@@ -763,6 +772,9 @@ async function driveItem(item) {
 // within CI_FAIL_RETRY_BUDGET, we re-spawn the worker + force-push + re-poll
 // PINNED to the new SHA (#254 false-green guard). Returns:
 //   { ok:true, finalSha }                         — CI green
+//   { ok:true, finalSha, noCi:true }              — NO_CI (temperloop#605/#618):
+//        no CI configured on this repo/SHA — a legible skip mirroring build.md
+//        3g, NOT a failure; 3h parks [m] with the no_ci sentinel stamped
 //   { escalation:'ci-failed', payload:{...} }      — budget exhausted / hard fail
 //   { escalation:'merge-conflict', payload:{...} } — PR is CONFLICTING/DIRTY
 
@@ -848,6 +860,17 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 
     if (out.outcome === 'CI_GREEN') {
       return { ok: true, finalSha: sha };
+    }
+
+    if (out.outcome === 'NO_CI') {
+      // temperloop#605/#618: ci-poll.sh's bounded grace window elapsed with
+      // ZERO check-runs ever configured on the head SHA — a repo with no CI,
+      // NOT a hang and NOT a failure. Mirror build.md 3g's legible skip: resolve
+      // as success carrying a `noCi` marker so 3h parks `[m]` with the
+      // `no_ci: true` sentinel, instead of falling through to the catch-all
+      // below and escalating `ci-failed` (the exact mis-escalation this fixes).
+      log(`[${item.slug}] PR #${pr}: no CI configured on this SHA — skipping the CI gate (slice ${slice + 1})`);
+      return { ok: true, finalSha: sha, noCi: true };
     }
 
     if (out.outcome === 'TIMEOUT') {

@@ -499,6 +499,48 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
+# TEST 6b: NO_CI outcome → parked [m] with no_ci:true, NOT ci-failed (#605/#618)
+# A zero-CI repo's head SHA resolves NO_CI on the --workflow spine path; it must
+# park like a green item (legible 'no CI configured' skip mirroring build.md 3g)
+# carrying the no_ci sentinel, never fall through to the escalate-ci-failed
+# catch-all.
+# ============================================================================
+run_node_case "no-ci: NO_CI outcome → parked with no_ci:true, no escalation (#618)" "
+$PREAMBLE
+
+setSpine('item-noci',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-noci' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-n', branch: 'build/item-noci' },
+  { outcome: 'PR_OPENED', pr_number: 618 },
+  { outcome: 'NO_CI', pr: 618, sha: 'sha-n', waited: 90 },
+);
+happyWorker('item-noci');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-noci', branch: 'build/item-noci', title: 'No-CI Item', kind: 'impl' },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'NO_CI must NOT escalate (regression: escalate-ci-failed catch-all): ' + JSON.stringify(result) })); process.exit(0); }
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked for NO_CI: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.parked[0].pr !== 618)
+  { console.log(JSON.stringify({ ok: false, reason: 'parked pr wrong: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+if (result.parked[0].pushed_sha !== 'sha-n')
+  { console.log(JSON.stringify({ ok: false, reason: 'parked pushed_sha wrong: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+if (result.parked[0].no_ci !== true)
+  { console.log(JSON.stringify({ ok: false, reason: 'NO_CI item must carry no_ci:true sentinel: ' + JSON.stringify(result.parked[0]) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
 # TEST 7: claim-conflict → claim-conflict escalation (board ON, ghIssue set)
 # ============================================================================
 run_node_case "claim-conflict: CLAIM_CONFLICT → claim-conflict escalation" "
