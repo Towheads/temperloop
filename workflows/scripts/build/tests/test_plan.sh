@@ -17,6 +17,9 @@
 #     kind: spike or docs-only item with no block → VALID (exempt); a
 #     product-source item WITH a block → VALID; a pre-RULE_14_CUTOVER_DATE
 #     plan's product-source item with no block → VALID (grandfathered)
+#   - validate rule 15 (temperloop#526): keystone: true on a kind: spike → VALID;
+#     keystone: on a kind: code item → INVALID; keystone: <non-true> → INVALID;
+#     a routine spike with no keystone: → VALID (absent field is the common case)
 #   - toposort: a 2-level DAG over the union of depends-on + after → the right
 #     level partition; a cycle → CYCLE outcome + non-zero exit
 #   - writeback routes EVERY vault write through _plan_vault_write (grep: no
@@ -438,6 +441,88 @@ EOF
 out="$(bash "$SCRIPT" validate "$TMP/r14-grandfathered.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "grandfathered (pre-cutover date:) product-source item with no activation: should be VALID (got: $out)"
 echo "PASS: validate → VALID on a product-source item with no activation: block when the plan's date: predates RULE_14_CUTOVER_DATE (rule 14 grandfather clause)"
+
+# --- validate: rule 15 — keystone: spike-only, value 'true' (temperloop#526) --
+# A keystone: true spike halts /build for operator verdict-review before
+# dependents build. It is spike-only and its only meaningful value is 'true'.
+
+# keystone: true on a kind: spike → VALID
+cat > "$TMP/r15-keystone-spike.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Reshaping spike** `slug: r15-ks-spike` — verdict reshapes downstream contracts
+  - branch: `chore/r15-ks-spike`
+  - kind: spike
+  - keystone: true
+  - acceptance:
+    - verdict note written
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r15-keystone-spike.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "keystone: true on a kind: spike item should be VALID (rule 15) (got: $out)"
+echo "PASS: validate → VALID on a keystone: true marker on a kind: spike item (rule 15)"
+
+# keystone: true on a kind: code item → INVALID (rule 15)
+cat > "$TMP/r15-keystone-code.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Not a spike** `slug: r15-ks-code` — keystone marker on a code item is a defect
+  - branch: `feat/r15-ks-code`
+  - kind: code
+  - keystone: true
+  - files: `docs/x.md`
+  - acceptance:
+    - x
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r15-keystone-code.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 15")) | any' <<<"$out" >/dev/null \
+  || fail "keystone: true on a kind: code item not flagged (rule 15) (got: $out)"
+echo "PASS: validate → INVALID on a keystone: true marker on a non-spike (kind: code) item (rule 15)"
+
+# keystone: <not true> on a spike → INVALID (rule 15)
+cat > "$TMP/r15-keystone-badval.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Bad keystone value** `slug: r15-ks-badval` — only 'true' is meaningful
+  - branch: `chore/r15-ks-badval`
+  - kind: spike
+  - keystone: yes
+  - acceptance:
+    - verdict note written
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r15-keystone-badval.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 15")) | any' <<<"$out" >/dev/null \
+  || fail "keystone: <non-true> value not flagged (rule 15) (got: $out)"
+echo "PASS: validate → INVALID on a keystone: value other than 'true' (rule 15)"
+
+# a routine spike (no keystone:) → VALID (unchanged autonomous path)
+cat > "$TMP/r15-routine-spike.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Routine spike** `slug: r15-routine-spike` — no keystone marker, autonomous
+  - branch: `chore/r15-routine-spike`
+  - kind: spike
+  - acceptance:
+    - verdict note written
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r15-routine-spike.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "routine spike (no keystone:) should be VALID (rule 15) (got: $out)"
+echo "PASS: validate → VALID on a routine spike with no keystone: marker (rule 15 — absent field is the common case)"
 
 # --- toposort: 2-level DAG over depends-on ∪ after ----------------------------
 out="$(bash "$SCRIPT" toposort "$TMP/valid.md")"

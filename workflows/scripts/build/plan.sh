@@ -12,14 +12,16 @@
 #   plan.sh writeback <planFile> --slug <slug> --sentinel <state> \
 #         [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]
 #
-# `validate` enforces the 14 plan-schema rules (status==approved, slug+acceptance
+# `validate` enforces the 15 plan-schema rules (status==approved, slug+acceptance
 # present, unique kebab slugs ≤40, branch <type>/<slug>, depends-on/after refs
 # exist, the depends-on∪after union acyclic, no leftover acceptance placeholder,
 # gh_issue a positive int, gh_issue/split_from mutual exclusion, the rule-11
 # external-gate gate_check requirement, rule-12 repo owner/repo shape, the
 # rule-13 activation-block class∈{A,B,C} + class-A proof: requirement, the
 # rule-14 product-source activation-required requirement — see
-# RULE_14_CUTOVER_DATE below for the grandfather gate).
+# RULE_14_CUTOVER_DATE below for the grandfather gate — and the rule-15
+# keystone-spike marker being value 'true' on a kind: spike item only,
+# temperloop#526).
 # `toposort` partitions items into
 # dependency levels — level 0 = items with neither depends-on nor after — over
 # the UNION of both edge sets, and emits `{"levels":[["a","b"],["c"]]}` on stdout.
@@ -233,7 +235,9 @@ fm_date() {
 # gate_check, acceptance (=1 if a non-empty acceptance block exists),
 # acceptance_placeholder (=1 if the placeholder line is present), notes,
 # sentinel (the current checkbox char), title, kind (code|spike, default code),
-# files (raw comma-separated files: value, backtick-quoted per entry).
+# keystone (the raw keystone: value — a keystone spike halts /build for verdict
+# review before dependents build, temperloop#526), files (raw comma-separated
+# files: value, backtick-quoted per entry).
 # This is the single parse used by validate/toposort/writeback.
 parse_items() {
   awk '
@@ -255,6 +259,7 @@ parse_items() {
         rec = rec SEP "act_class=" act_class
         rec = rec SEP "act_proof=" act_proof
         rec = rec SEP "kind=" (kind=="" ? "code" : kind)
+        rec = rec SEP "keystone=" keystone
         rec = rec SEP "files=" files
         print rec
       }
@@ -262,7 +267,7 @@ parse_items() {
       after=""; gh_issue=""; split_from=""; gate_check=""; notes="";
       acc_count=0; acc_placeholder=0; in_acc=0
       activation=0; act_class=""; act_proof=""; in_activation=0
-      kind=""; files=""
+      kind=""; keystone=""; files=""
     }
     BEGIN { SEP=sprintf("%c",31); in_items=0 }
     /^##[[:space:]]+Items[[:space:]]*$/ { in_items=1; next }
@@ -348,6 +353,9 @@ parse_items() {
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*kind:[[:space:]]*/)) {
         v=l; sub(/^[[:space:]]*-[[:space:]]*kind:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); kind=v; next
+      }
+      if (match(l, /^[[:space:]]*-[[:space:]]*keystone:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*keystone:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); keystone=v; next
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*files:[[:space:]]*/)) {
         v=l; sub(/^[[:space:]]*-[[:space:]]*files:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); files=v; next
@@ -447,7 +455,7 @@ cmd_validate() {
     slug="$(rec_slug "$rec")"
     [ -n "$slug" ] || continue
     local branch acc acc_ph gh_issue split_from gate_check notes dep aft tok
-    local activation act_class act_proof kind files
+    local activation act_class act_proof kind keystone files
     branch="$(rec_field "$rec" branch)"
     acc="$(rec_field "$rec" acceptance)"
     acc_ph="$(rec_field "$rec" acc_placeholder)"
@@ -461,6 +469,7 @@ cmd_validate() {
     act_class="$(rec_field "$rec" act_class)"
     act_proof="$(rec_field "$rec" act_proof)"
     kind="$(rec_field "$rec" kind)"
+    keystone="$(rec_field "$rec" keystone)"
     files="$(rec_field "$rec" files)"
 
     # Rule 2: acceptance block present.
@@ -511,6 +520,20 @@ cmd_validate() {
     if [ "$rule14_grandfathered" -ne 1 ] && [ "$kind" = "code" ] \
        && _files_touch_shipped "$files" && [ "$activation" != "1" ]; then
       errors+=("rule 14: item '$slug' is product-source (kind: code, files: touches scripts/|workflows/|claude/) but carries no activation: block")
+    fi
+    # Rule 15: keystone: (when present) is a spike-only marker whose only
+    # meaningful value is `true` — a keystone spike halts /build for operator
+    # verdict-review before dependents build (temperloop#526). It is meaningless
+    # on a code item (which merges through the normal gate) so a keystone: on a
+    # non-spike item is a plan defect. An empty value = field absent = no gate.
+    if [ -n "$keystone" ]; then
+      if [ "$keystone" != "true" ]; then
+        errors+=("rule 15: item '$slug' keystone '$keystone' must be 'true' (the only meaningful value) or absent")
+      fi
+      # kind defaults to code when unset; a keystone marker requires kind: spike.
+      if [ "${kind:-code}" != "spike" ]; then
+        errors+=("rule 15: item '$slug' carries keystone: but is not kind: spike (keystone is a spike-only review-gate marker)")
+      fi
     fi
     # Rule 5/8: depends-on + after refs must exist in this plan.
     for tok in $(split_list "$dep"); do
