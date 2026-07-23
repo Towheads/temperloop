@@ -66,12 +66,45 @@ release is best-effort by design: the release helper correctly refuses to
 clear a non-latest marker, that refusal is expected and non-fatal, and the
 claim is simply held until the issue reaches its terminal state.
 
+**On an attended run with a chunk width above one, an overlap tier (tier
+2) folds the operator's question-answering time into build time.** Once
+Phase-1 detection has split the pool into a clean set (no open question)
+and a flagged set, the first clean chunk launches as a *background*
+invocation before the question batch is even presented: the launch
+returns immediately with a task handle, and a completion notification
+re-invokes the driver when the chunk finishes — so the operator answers
+clarifying questions while the first chunk builds concurrently. Issues
+whose questions get answered during the batch accumulate into a **tail
+chunk** — driven in that same run, sequenced after any chunk whose merge
+pass is still pending and behind the same between-chunk release-management
+gate as every other chunk — so an answer given mid-run is consumed
+immediately rather than waiting for the next run. The overlap tier runs
+only when three conditions all hold: the run is attended (a live
+operator), the chunk width exceeds one (width one restores full legacy
+semantics — sequential drive and questions-first ordering, overlap
+disabled), and background invocation is available in the harness. An
+unattended or headless run never uses the overlap tier — it has no
+background-completion re-invoke loop — and keeps the synchronous chunked
+path unchanged. If the background launch turns out to be unavailable or
+is refused at run time, the run emits an explicit degradation notice
+(what was skipped, why, and that results and coverage are unaffected —
+only the wall-clock overlap is lost) and falls back to the synchronous
+path; the fallback is a designed floor, never a silent behavior change or
+a stall. A dry run never launches anything in the background: it prints
+which issues would have formed the overlapped first chunk and which would
+have gone to the question batch, preserving the zero-mutation guarantee.
+
 Every pooled issue reaches one of a small set of terminal outcomes by the
 end of a run — merged, resolved as a verdict-only item, or parked on an
 open question — and the run structurally cannot report success while an
 issue is left with no recorded outcome: an explicit tracked checklist,
 verified complete immediately before the summary is produced, is what
 makes silently skipping an issue impossible rather than merely unlikely.
+That guarantee is deliberately tier-agnostic: an issue driven by the
+overlapped background chunk is tracked on the same checklist as one
+driven synchronously, so a background chunk whose completion notification
+is lost surfaces as unchecked entries at the pre-summary assertion rather
+than vanishing silently.
 
 ## Integration
 
@@ -86,7 +119,14 @@ library's idempotency and rate-limit protections. `/sweep` also composes
 with the same release-management gate the rest of the pipeline honors —
 checked between chunks, at the same clean boundary where merges batch —
 pausing and auto-resuming later in-session if usage runs low rather than
-letting a run burn through headroom that other work also depends on.
+letting a run burn through headroom that other work also depends on. The
+overlap tier additionally depends on the conversational harness's
+background-invocation contract — an immediate task-handle return plus a
+completion notification that re-invokes the driver — which exists only
+for an attended conversational session; that dependency is why the
+unattended arm never uses the overlap and why an unavailable or refused
+background launch degrades legibly to the synchronous path rather than
+being worked around.
 
 ## Resource impact
 
@@ -100,7 +140,12 @@ change the run's concurrency posture: up to `SWEEP_FANOUT_WIDTH` issues
 build and run CI at the same time, so board work-in-progress and
 concurrent CI load both rise to at most the chunk width (the same posture
 epic execution already has per level); `SWEEP_FANOUT_WIDTH=1` restores the
-flat, one-at-a-time footprint.
+flat, one-at-a-time footprint. The overlap tier does not raise that
+ceiling: only one chunk ever builds at a time — the overlapped first
+chunk runs concurrently with the operator answering questions, not with
+another chunk — so the concurrency cap stays the chunk width; what the
+overlap buys is wall-clock, by reclaiming operator think-time that a
+synchronous run would spend idle.
 
 ## Telemetry
 
