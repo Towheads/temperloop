@@ -479,6 +479,14 @@ KERNEL_GATES=(
   # recovery. Same fixture-upstream + sandbox conventions as
   # test_update_subcommand.sh / test_rename_compat.sh above.
   "bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh"
+  # Release version embedding (temperloop#677): the shipped repo-root VERSION
+  # file is the source of truth `temperloop version` reports (not a runtime
+  # git-describe, not a hardcoded "dev"), an env override still wins, and —
+  # the drift guard — when HEAD is exactly a release tag `vX.Y.Z` the VERSION
+  # file must equal `X.Y.Z`, so "bump VERSION in the tagged commit" is
+  # mechanically enforced rather than a release-ritual discipline a cut can
+  # silently skip.
+  "bash workflows/scripts/tests/test_version_embedding.sh"
   # Pinned-shellcheck resolver (temperloop#567): asserts scripts/ensure-shellcheck.sh
   # resolves a binary reporting EXACTLY the pinned version and fails loudly on an
   # unresolvable version — the guarantee that `make shellcheck` (the gate below)

@@ -76,6 +76,50 @@ temperloop_env_compat() {
   return 0
 }
 
+# ── Release version embedding (temperloop#677) ──────────────────────────────
+# temperloop_resolve_version
+#   Single source of truth for what `temperloop version` (and feedback.sh's
+#   telemetry) reports. Precedence:
+#     TEMPERLOOP_VERSION env  >  FOUNDATION_VERSION env (rename window)
+#       >  the shipped repo-root VERSION file  >  "dev".
+#
+#   The VERSION file is the COMMITTED, shipped source of truth: a release cut
+#   bumps it in the tagged commit (kernel-repo-layout.md § Release-tag
+#   convention), so a fresh tag-pinned install CONTAINS its own version rather
+#   than deriving it from git at runtime. A dev checkout with no readable
+#   VERSION file degrades to "dev".
+#
+#   The file is read relative to THIS library's real location — inside the
+#   function, BASH_SOURCE[0] is common.sh (bin/lib/common.sh), so the repo
+#   root is two levels up regardless of whether the dispatcher or a
+#   subcommand-in-its-own-process sourced us, and through the bootstrap
+#   symlink (only bin/temperloop is symlinked; this file is sourced by its
+#   real path). An explicit env override still wins unchanged — the seam CI
+#   and test fixtures already rely on.
+temperloop_resolve_version() {
+  if [ -n "${TEMPERLOOP_VERSION:-}" ]; then
+    printf '%s\n' "$TEMPERLOOP_VERSION"
+    return 0
+  fi
+  if [ -n "${FOUNDATION_VERSION:-}" ]; then
+    printf '%s\n' "$FOUNDATION_VERSION"
+    return 0
+  fi
+  local _common_dir _version_file _v
+  _common_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _version_file="$_common_dir/../../VERSION"
+  if [ -f "$_version_file" ]; then
+    # First non-empty line, all whitespace stripped (BSD/macOS-safe sed).
+    _v="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$_version_file" | head -n1)"
+    if [ -n "$_v" ]; then
+      printf '%s\n' "$_v"
+      return 0
+    fi
+  fi
+  printf '%s\n' "dev"
+  return 0
+}
+
 # foundation_check_prereq_claude
 #   Verifies the Claude Code CLI (`claude`) is on PATH. Prints one specific,
 #   actionable line to stderr and returns non-zero if it is missing.

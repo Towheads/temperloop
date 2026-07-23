@@ -96,7 +96,11 @@ REPO_ROOT="$(cd "$SUBCOMMAND_DIR/../.." && pwd)"
 FEEDBACK_TARGET_REPO="${TEMPERLOOP_FEEDBACK_REPO:-Towheads/temperloop}"  # denylist:allow — the kernel repo's own upstream feedback target (its identity, same category-1 rationale as try.sh's demo-repo default)
 # TEMPERLOOP_VERSION is canonical (renamed from FOUNDATION_VERSION in
 # v0.15.0, temperloop#165); the legacy name is read as a fallback through
-# the window and removed in v0.17.0.
+# the window and removed in v0.17.0. The dispatcher (bin/temperloop) resolves
+# the embedded VERSION and EXPORTS it (temperloop#677), so a normal
+# `temperloop feedback` invocation inherits the shipped version here; this
+# literal seam is the standalone/registry-recorded fallback and stays the
+# knob-registry owning-script default for both names.
 TEMPERLOOP_VERSION="${TEMPERLOOP_VERSION:-${FOUNDATION_VERSION:-dev}}"
 
 usage() {

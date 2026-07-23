@@ -93,9 +93,11 @@ source "$LIB_DIR/common.sh"
 # temperloop_env_compat in lib/common.sh (temperloop#165).
 temperloop_env_compat || exit 1
 
-# Mirrors bin/subcommands/feedback.sh's identical seam (that one is the
-# registry-recorded copy; this file isn't a `.sh` so isn't swept).
-TEMPERLOOP_VERSION="${TEMPERLOOP_VERSION:-${FOUNDATION_VERSION:-dev}}"
+# Resolve the version via the shared helper (bin/lib/common.sh): env override
+# > shipped repo-root VERSION file > "dev". Exported so subcommand child
+# processes (feedback.sh's telemetry) inherit the embedded value. temperloop#677.
+TEMPERLOOP_VERSION="$(temperloop_resolve_version)"
+export TEMPERLOOP_VERSION
 
 # _foundation_subcommand_description <file>
 #   Prints the file's `# description: ...` header line — a documented,
