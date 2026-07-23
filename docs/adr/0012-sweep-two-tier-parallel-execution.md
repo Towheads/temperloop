@@ -23,7 +23,7 @@ completion notification is a conversational-harness capability only
 of concurrent items is a multi-claim window, where `release.sh` correctly
 refuses non-latest markers (K#275).
 
-epic: Towheads/temperloop#671
+epic: temperloop#671
 
 ## Decision
 

@@ -81,8 +81,8 @@ overlay/config/env before that release, not necessarily before this pull.
   adjacent-tag update through the shim, legacy on-disk artifact reads, and
   the window-closed legible-degradation simulation).
 
-- **`/sweep` Phase 2 is now chunked parallel fanout (temperloop#671, tier 1
-  of ADR 0012).** The Ready-singleton fix loop no longer drives one issue at
+- **`/sweep` Phase 2 is now chunked parallel fanout (temperloop#671, the
+  sweep-parallelization epic; tier 1 of ADR 0012).** The Ready-singleton fix loop no longer drives one issue at
   a time: the Phase-2 set partitions into chunks of up to
   `SWEEP_FANOUT_WIDTH` issues, each chunk one synchronous multi-item
   `build-level.mjs` invocation (the same within-level parallel path `/build`
