@@ -214,6 +214,8 @@ NEXT_SEQ_STALE_AFTER	64800	seconds	tracked-repo	workflows/scripts/build/build.co
 TIDY_SYNC_WAIT	90	seconds	tracked-repo	workflows/scripts/build/build.config.sh	tidy.md Step 0 wait for Obsidian Sync to propagate cross-host drain locks
 TIDY_LOCK_STALE_AFTER	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	tidy.md Step 0 cutoff to discard a crashed prior run's drain lock
 CHECKIN_PRUNE_DAYS	30	int	tracked-repo	workflows/scripts/build/build.config.sh	check-in.md resolved-entry prune window across its review sections
+SWEEP_FANOUT_WIDTH	3	int	tracked-repo	workflows/scripts/build/build.config.sh	sweep.md Phase 2 clarification-free-issue fanout width per batch chunk (1 = full legacy sequential)
+SWEEP_DETECT_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for sweep.md Phase 1 underspecification-detection subagent fanout; empty = inherit-session sentinel — Contract-pinned default (NOT a cheap tier): detection is judgment work and a missed ambiguity silently reaching Phase 2 is the costly failure
 FUNNEL_OPERATOR	@REPLACE_WITH_YOUR_GH_LOGIN	label	tracked-repo	workflows/scripts/build/build.config.sh	Operator's GitHub login the async decision/merge-escalation baton targets
 FUNNEL_REQUIRED_CHECK	checks	label	tracked-repo	workflows/scripts/build/build.config.sh	Required CI job name a PR must clear to merge
 FUNNEL_DRIVEN_PATHS	kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile	string	tracked-repo	workflows/scripts/build/build.config.sh	Path prefixes = the funnel's operational surface for the overlap predicate

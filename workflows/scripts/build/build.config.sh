@@ -194,6 +194,20 @@ fi
 # check-in.md — resolved-entry prune window across its review sections.
 : "${CHECKIN_PRUNE_DAYS:=30}"         # resolved entries older than this may be pruned
 
+# sweep.md Phase 2 — clarification-free-issue fanout WIDTH per batch chunk:
+# how many issues drive concurrently in a single Phase-2 chunk. 1 = full
+# legacy sequential behavior (one issue at a time, the pre-fanout shape).
+: "${SWEEP_FANOUT_WIDTH:=3}"
+
+# sweep.md Phase 1 — model tier for the underspecification-detection subagent
+# fanout. Sentinel: an EMPTY value means INHERIT THE SESSION'S OWN model (no
+# override) — this is a deliberate, Contract-pinned default from a ratified
+# design brief, not an oversight: detection is judgment work, and a missed
+# ambiguity that silently reaches Phase 2 is the costly failure mode, so
+# this knob does NOT default to a cheap tier the way FUNNEL_DRIVE_MODEL does
+# for mechanical drives (§ Cost-tier routing, claude/CLAUDE.kernel.md).
+: "${SWEEP_DETECT_MODEL:=}"
+
 # ── Funnel operator identity + required CI check (tracker seam v0, #772) ────
 # The operator handle the async decision-issue backend, the merge-tier escalation
 # path, and funnel-tick's assignee baton all target. MUST be the operator's real
@@ -368,6 +382,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
+       SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
