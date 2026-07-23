@@ -81,6 +81,24 @@ overlay/config/env before that release, not necessarily before this pull.
   adjacent-tag update through the shim, legacy on-disk artifact reads, and
   the window-closed legible-degradation simulation).
 
+- **`/sweep` Phase 2 is now chunked parallel fanout (temperloop#671, tier 1
+  of ADR 0012).** The Ready-singleton fix loop no longer drives one issue at
+  a time: the Phase-2 set partitions into chunks of up to
+  `SWEEP_FANOUT_WIDTH` issues, each chunk one synchronous multi-item
+  `build-level.mjs` invocation (the same within-level parallel path `/build`
+  uses) followed by a per-chunk merge pass, with the quota gate moved from
+  per-issue to per-chunk. Phase-1 underspecification detection fans out
+  across parallel subagents at the `SWEEP_DETECT_MODEL` tier (empty default
+  = inherit the session model). **Not BREAKING — `SWEEP_FANOUT_WIDTH=1` is
+  the downstream opt-out lever**: setting it restores the prior behavior
+  exactly (sequential drive, questions-first ordering), config-only, no
+  spec revert. Resource-posture note for kernel-sync adopters: at the
+  default width a sweep run now opens up to chunk-width **concurrent CI
+  runs** (and board WIP rises to the chunk width) — a repo whose CI
+  capacity can't absorb that sets the knob down (or to `1`). See
+  `docs/adr/0012-sweep-two-tier-parallel-execution.md`; the background
+  overlap tier (tier 2) is deliberately not included.
+
 ### Added
 
 - **`claude/design-schema.md` § Kernel dimension list gains dimension `0`
