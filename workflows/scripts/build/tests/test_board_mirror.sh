@@ -364,6 +364,58 @@ out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
 grep -q 'issue_close' "$LOG" && fail "4d-epic closed despite open children"
 echo "PASS: 4d-epic does NOT close while a child is still open"
 
+# temperloop#458 — body-acceptance guard (children drained; epic body still carries
+# unchecked acceptance/verification prose that was never split into a sub-issue).
+echo '[{"number":41,"state":"closed"},{"number":42,"state":"closed"}]' > "$STATE/sub_issues.json"
+
+# (d) zero open children BUT an unchecked acceptance box in the body -> refuse close.
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400,"body":"## Acceptance\n\n- [ ] induced crash converges to a board item\n- [x] handled error converges\n"}
+EOF
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_ACCEPTANCE_OPEN" ] || fail "4d-epic expected EPIC_ACCEPTANCE_OPEN (got $out)"
+[ "$(jq -r .acceptance_open <<<"$out")" = "1" ] || fail "4d-epic wrong acceptance_open count (got $out)"
+grep -q 'issue_close' "$LOG" && fail "4d-epic closed despite an open body-acceptance box"
+echo "PASS: 4d-epic REFUSES to close while an unchecked body acceptance box remains"
+
+# (e) same body, but the explicit override closes anyway (acceptance_override flagged).
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400 --allow-open-acceptance)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_CLOSED" ] || fail "4d-epic override expected EPIC_CLOSED (got $out)"
+[ "$(jq -r '.acceptance_override' <<<"$out")" = "true" ] || fail "4d-epic override did not flag acceptance_override (got $out)"
+grep -q 'issue_close 400' "$LOG" || fail "4d-epic override did not close #400"
+echo "PASS: 4d-epic --allow-open-acceptance overrides the guard and closes (flagged)"
+
+# (f) no-regression: heading-scoped + checked boxes -> close normally.
+#   Only sections whose heading matches /accept|verif/i are scanned; an unchecked
+#   box under a non-acceptance heading, and a CHECKED acceptance box, are ignored.
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400,"body":"## Tasks\n\n- [ ] some non-acceptance note\n\n## Acceptance\n\n- [x] all e2e legs green\n"}
+EOF
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_CLOSED" ] || fail "4d-epic no-regression expected EPIC_CLOSED (got $out)"
+grep -q 'issue_close 400' "$LOG" || fail "4d-epic no-regression did not close #400"
+echo "PASS: 4d-epic closes normally when acceptance boxes are checked (heading-scoped, no false positive)"
+
+# (g) child-reference checkboxes under Acceptance are NOT body acceptance -> close.
+#   `- [ ] #N` / `- [ ] owner/repo#N` are tracked by the sub-issue state count, so
+#   they must not block the close as if they were freestanding acceptance prose.
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400,"body":"## Acceptance\n\n- [ ] #358\n- [ ] Towheads/foundation#709\n"}
+EOF
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_CLOSED" ] || fail "4d-epic child-ref case expected EPIC_CLOSED (got $out)"
+grep -q 'issue_close 400' "$LOG" || fail "4d-epic child-ref case did not close #400"
+echo "PASS: 4d-epic ignores bare #N / owner/repo#N child-ref checkboxes under Acceptance"
+
+# restore the all-closed children fixture for downstream tests (retro/park reuse it)
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400}
+EOF
+
 # =============================================================================
 # 4d-retro file-retro
 # =============================================================================
