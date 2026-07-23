@@ -15,7 +15,8 @@
 #                                [--issue N] [--label L]            # 2.5
 #   board-mirror.sh ensure-epic  --board N --epic N [--child N[,N...]] # 2.6
 #   board-mirror.sh claim-item   --board N --issue N [--epic N]       # 3a
-#   board-mirror.sh close-epic   --board N --epic N                   # 4d-epic
+#   board-mirror.sh close-epic   --board N --epic N \
+#                                [--allow-open-acceptance]            # 4d-epic
 #   board-mirror.sh file-retro   --board N --epic N [--just-closed]   # 4d-retro
 #   board-mirror.sh park-epic    --board N --epic N                   # Step-5
 #
@@ -97,6 +98,35 @@ _subissue_open_children() {
   local repo="$1" epic="$2"
   _board_gh api "repos/$repo/issues/$epic/sub_issues" 2>/dev/null |
     jq '[.[]? | select(.state=="open")] | length'
+}
+
+# temperloop#458: count UNCHECKED acceptance/verification checkboxes in an epic's
+# BODY — work-bearing acceptance written as prose (never split into its own
+# sub-issue) that the open-children count alone cannot see, and which would
+# otherwise vanish silently when the last child closes. Scans only sections whose
+# heading matches /accept|verif/i, and IGNORES bare `#N` / `owner/repo#N`
+# child-reference checkboxes (those are tracked by the sub-issue state count, not
+# by body prose). Prints an integer count (0 = none / no acceptance section).
+_epic_body_open_acceptance() {
+  local repo="$1" epic="$2"
+  _board_gh api "repos/$repo/issues/$epic" --jq '.body // ""' 2>/dev/null |
+    tr -d '\r' |
+    awk '
+      /^[[:space:]]*#+[[:space:]]+/ {
+        h = tolower($0)
+        in_acc = (h ~ /accept|verif/) ? 1 : 0
+        next
+      }
+      in_acc && /^[[:space:]]*[-*+][[:space:]]+\[ \]/ {
+        line = $0
+        sub(/^[[:space:]]*[-*+][[:space:]]+\[ \][[:space:]]*/, "", line)
+        gsub(/[[:space:]]+$/, "", line)
+        if (line ~ /^#?[0-9]+$/) next                        # bare "123" / "#123"
+        if (line ~ /^[A-Za-z0-9._\/-]+#[0-9]+$/) next        # "owner/repo#123"
+        n++
+      }
+      END { print n + 0 }
+    '
 }
 
 # Link a child issue under a parent as a native sub-issue. The REST endpoint
@@ -317,15 +347,25 @@ cmd_claim_item() {
 # DATA-DRIVEN: closes iff the sub-issues API reports zero OPEN children — NOT
 # "the plan finished". Idempotent: a no-op (EPIC_ALREADY_CLOSED) if the epic is
 # already closed; EPIC_OPEN_CHILDREN (no close) while any child is still open.
-#   EPIC_CLOSED          — closed now (open children == 0, was open)
-#   EPIC_ALREADY_CLOSED  — already closed, no-op
-#   EPIC_OPEN_CHILDREN   — {open:N} still-open children, not closed
+# temperloop#458: even with zero open children, REFUSE to close while the epic
+# BODY still carries unchecked acceptance/verification checkboxes — work-bearing
+# acceptance left as prose (never materialized as a sub-issue) would otherwise
+# vanish silently on the last child's close. --allow-open-acceptance is the
+# explicit operator override that closes anyway.
+#   EPIC_CLOSED           — closed now (open children == 0, acceptance clear or
+#                           overridden; {acceptance_override:true} when the
+#                           override forced past open acceptance boxes)
+#   EPIC_ALREADY_CLOSED   — already closed, no-op
+#   EPIC_OPEN_CHILDREN    — {open:N} still-open children, not closed
+#   EPIC_ACCEPTANCE_OPEN  — {acceptance_open:N} children drained but N unchecked
+#                           body acceptance/verification boxes remain, not closed
 cmd_close_epic() {
-  local board="" epic="" repo state open
+  local board="" epic="" allow_open_acceptance="" repo state open acc_open acc_override
   while [ $# -gt 0 ]; do
     case "$1" in
       --board) [ $# -ge 2 ] || usage; board="$2"; shift ;;
       --epic)  [ $# -ge 2 ] || usage; epic="$2"; shift ;;
+      --allow-open-acceptance) allow_open_acceptance=1 ;;
       *) usage ;;
     esac
     shift
@@ -347,10 +387,24 @@ cmd_close_epic() {
       '{outcome:"EPIC_OPEN_CHILDREN", epic:$n, open:$open}'
     return 0
   fi
+  # temperloop#458: body-acceptance guard (skipped by the explicit override).
+  if [ -n "$allow_open_acceptance" ]; then
+    acc_override=true
+  else
+    acc_open="$(_epic_body_open_acceptance "$repo" "$epic")"
+    case "$acc_open" in ""|*[!0-9]*) acc_open=0 ;; esac
+    if [ "$acc_open" -gt 0 ]; then
+      jq -cn --argjson n "$epic" --argjson a "$acc_open" \
+        '{outcome:"EPIC_ACCEPTANCE_OPEN", epic:$n, acceptance_open:$a}'
+      return 0
+    fi
+    acc_override=false
+  fi
   _board_gh issue close "$epic" -R "$repo" >/dev/null 2>&1 \
     || die "gh issue close failed for epic #$epic"
   # The board's close->Done cascade moves the card; we do not set Done by hand.
-  jq -cn --argjson n "$epic" '{outcome:"EPIC_CLOSED", epic:$n}'
+  jq -cn --argjson n "$epic" --argjson ov "$acc_override" \
+    '{outcome:"EPIC_CLOSED", epic:$n} + (if $ov then {acceptance_override:true} else {} end)'
 }
 
 # --- 4d-retro: file exactly ONE spike-labelled process-retro issue -------------
