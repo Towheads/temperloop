@@ -12,7 +12,7 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased] — BREAKING
+## [0.15.0] - 2026-07-23 — BREAKING
 
 **`BREAKING`** — ships as a **minor-breaking 0.x bump (v0.15.0)** per
 VERSIONING.md's pre-1.0 rules: the foundation→temperloop identity rename
@@ -165,6 +165,21 @@ overlay/config/env before that release, not necessarily before this pull.
   *against* citing `docs/principles.md` by name, records the operator's
   justification into dimension 0, offers proceed/reshape/drop) plus the Step
   1.4 dropped-branch stop-and-reopen-confirm — ships in the same PR.
+- **Release version embedded in shipped files (temperloop#677).** `temperloop
+  version` now reports the tagged release version from a committed repo-root
+  `VERSION` file (resolution order: env override > `FOUNDATION_VERSION` rename
+  window > `VERSION` file > `dev`) instead of always printing `dev`. A
+  `test_version_embedding.sh` drift guard asserts `VERSION == X.Y.Z` when HEAD
+  is exactly a `vX.Y.Z` tag, and install-tier2 gains a `version` leg.
+- **`sweep` gains chunked, tiered fan-out.** Phase 2 is rewritten as a chunked
+  synchronous fan-out (tier 1, temperloop#683), with an added attended
+  question-overlap pass (tier 2, temperloop#685); new `SWEEP_FANOUT_WIDTH` and
+  `SWEEP_DETECT_MODEL` knobs tune fan-out width and the detection model
+  (temperloop#676).
+- **`tidy` delete-on-PR-record archive semantics (temperloop#667).** The
+  session-archive step records its PR and cleans up on record (Step 5 plus a
+  Step 0 early-exit); `check-in` now surfaces a pending (unmerged) tidy archive
+  PR.
 
 ### Deprecated
 
@@ -216,6 +231,21 @@ overlay/config/env before that release, not necessarily before this pull.
   — the sync deliberately omits that lib from consumer repos and the runtime
   already skips fail-open behind an `-f` guard, so a consumer's bare-shellcheck
   CI no longer fails on the synced copy (#495).
+- **`check-kernel-manifest.sh` runs against a vendored subtree root
+  (temperloop#680).** Its `.git` hard-guard is relaxed (via `git rev-parse
+  --is-inside-work-tree`) so a downstream overlay can gate kernel-manifest
+  coverage against its vendored `kernel/` subtree — the enabler a downstream
+  coverage gate consumes. Running against the kernel repo's own root is
+  unchanged; a subtree-root regression test covers both the classified (green)
+  and unclassified (red, names the path) cases.
+- **`build` pipeline robustness.** The 3e.5 acceptance gate is now hermetic
+  against the pipeline's own config knobs (temperloop#684) and tests the
+  worktree rather than repoRoot (temperloop#663); the conversational path is
+  guarded against workers backgrounding the quality gate (temperloop#678);
+  epic auto-close is guarded against body-only acceptance loss (temperloop#668);
+  `build-level` claims spike items before the verdict-park (claim-first,
+  temperloop#664) and wires the `NO_CI` outcome into the spine schema and CI
+  poll loop (temperloop#662).
 
 ## [0.14.1] - 2026-07-18
 
