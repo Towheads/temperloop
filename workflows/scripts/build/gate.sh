@@ -42,6 +42,12 @@
 #         processing order, and stop/continue-past-an-eject policy stay in the
 #         orchestrator (build.md); a set-loop here would move merge-order
 #         policy into the spine.
+#   gate.sh diagnose-queue <owner>/<repo> <pr>
+#       → classify a STALLED native-queue poll (temperloop#1150): reads the two
+#         observability channels the bare `gh pr view` poll cannot — the GraphQL
+#         `mergeQueueEntry` membership signal and the `merge_group` run history —
+#         so a silent dequeue resolves to a structured QUEUED / MERGE_GROUP_FAILED
+#         / DEQUEUED / MERGED verdict instead of an opaque BUILD_QUEUE_TIMEOUT.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per command
 # (the orchestrator branches on `.outcome`, never parses prose):
@@ -63,13 +69,20 @@
 #                    {"outcome":"MERGE_REJECTED","pr":…,"error":…}          exit 6
 #                    {"outcome":"CONFLICTING","pr":…,"mergeStateStatus":…}  exit 3
 #                    {"outcome":"TIMEOUT","pr":…,"waited":…}                exit 4
+#   diagnose-queue → {"outcome":"QUEUED","pr":…,"queueState":…}       exit 0
+#                    {"outcome":"MERGED","pr":…,"mergedAt":…}          exit 0
+#                    {"outcome":"MERGE_GROUP_FAILED","pr":…,"run_id":…} exit 7
+#                    {"outcome":"DEQUEUED","pr":…}                     exit 8
 #   error  → {"outcome":"ERROR","error":…}                           exit 1
 # Exit codes: 0 success; 1 ERROR (bad input / failed call); 3 CONFLICTING/DIRTY
 # terminal-bad (poll, and managed-merge's post-merge confirm poll); 4 TIMEOUT/
 # stall (poll, ditto); 5 EJECTED (managed-merge: CI red on the updated head —
 # no merge attempted); 6 MERGE_REJECTED (managed-merge: the platform itself
 # refused the `gh pr merge` call, e.g. branch protection or a queue-armed repo
-# rejecting a direct merge). MERGED is the SOLE success check for poll and for
+# rejecting a direct merge); 7 MERGE_GROUP_FAILED (diagnose-queue: the queue's
+# merge_group CI concluded failure — a real group conflict); 8 DEQUEUED
+# (diagnose-queue: the PR left the queue with no failing group run — an entry
+# dropped during churn). MERGED is the SOLE success check for poll and for
 # managed-merge's confirm step — never "closed", never "checks green" — so a
 # PR closed-without-merge can never read as merged (the #130 premature-close
 # class).
@@ -102,7 +115,7 @@ die() {
 }
 
 usage() {
-  die "usage: gate.sh read <owner>/<repo> <pr> | strict <owner>/<repo> | risk <owner>/<repo> <pr> [<pr> ...] | queue <owner>/<repo> <pr> [--strict|--non-strict] | nudge <owner>/<repo> <pr> | poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>] | backend <owner>/<repo> | managed-merge <owner>/<repo> <pr> [--strict|--non-strict]"
+  die "usage: gate.sh read <owner>/<repo> <pr> | strict <owner>/<repo> | risk <owner>/<repo> <pr> [<pr> ...] | queue <owner>/<repo> <pr> [--strict|--non-strict] | nudge <owner>/<repo> <pr> | poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>] | backend <owner>/<repo> | managed-merge <owner>/<repo> <pr> [--strict|--non-strict] | diagnose-queue <owner>/<repo> <pr>"
 }
 
 # Closed-set validation shared by every command (these feed gh paths / jq).
@@ -421,6 +434,111 @@ cmd_poll() {
   done
 }
 
+# --- diagnose-queue: classify a STALLED native-queue poll (temperloop#1150) --
+# The NATIVE merge-queue poll — build.md 4b step 1 (LLM-driven `gh pr view`) and
+# cmd_poll above — reads only state/mergedAt/mergeStateStatus. Those fields
+# CANNOT tell a PR silently dequeued by the queue (its merge_group CI failed, or
+# its entry dropped during queue churn) from one still legitimately queued: both
+# sit OPEN + non-DIRTY, so today the only backstop is running out
+# BUILD_QUEUE_TIMEOUT and then guessing. This subcommand adds the two
+# observability channels the poll lacks so a stall resolves to a STRUCTURED
+# verdict the orchestrator routes on:
+#   (1) mergeQueueEntry{ state } via GraphQL — the ONE signal that directly says
+#       "still in the queue". The gh `--json mergeQueueEntry` CLI field is absent
+#       (build.md's NATIVE poll predicate), but the GraphQL field works —
+#       pr-enqueue.sh already relies on it. Non-empty state ⇒ QUEUED (keep
+#       waiting; NOT a dequeue).
+#   (2) merge_group workflow runs via REST — repos/<r>/actions/runs?event=
+#       merge_group. When not in the queue, the LATEST run whose trial branch
+#       references this PR (gh-readonly-queue/<base>/pr-<N>-<sha>) says WHY it
+#       left: conclusion==failure ⇒ MERGE_GROUP_FAILED (a real group CI failure —
+#       a semantic conflict or transiently-broken main; the caller routes
+#       straight to 4c rather than burning a managed-merge retry that re-fails);
+#       no referencing run ⇒ DEQUEUED (entry dropped during churn — re-arm --auto
+#       once). An in-progress referencing run ⇒ still QUEUED.
+#
+# LIMITATION (documented — a bounded improvement, never a regression): when the
+# queue BATCHES several PRs into one group, the trial-branch ref names one PR, so
+# a group failure attributed to a sibling's ref reads as DEQUEUED (no referencing
+# run) for ours rather than MERGE_GROUP_FAILED. Recovery still fires (DEQUEUED
+# re-arms), just without the failed-run id — strictly better than today's opaque
+# timeout, never worse.
+cmd_diagnose_queue() {
+  local owner_repo="$1" pr="$2" owner name
+  validate_owner_repo "$owner_repo"
+  validate_pr "$pr"
+  owner="${owner_repo%%/*}"; name="${owner_repo#*/}"
+
+  # Channel 1 — GraphQL membership: is the PR still in the queue? Extract each
+  # scalar with its OWN jq (never a tab-joined `read` — tab is IFS-whitespace, so
+  # `read` would silently trim an empty leading field, exactly the not-in-queue
+  # case). Mirrors pr-enqueue.sh's per-field jq -r style.
+  local q cj merged mergedat qstate
+  # shellcheck disable=SC2016  # $owner/$name/$number are GraphQL vars, not shell
+  q='query($owner:String!,$name:String!,$number:Int!){
+       repository(owner:$owner,name:$name){
+         pullRequest(number:$number){
+           merged mergedAt
+           mergeQueueEntry{ state position }
+         }
+       }
+     }'
+  cj="$(_gate_gh api graphql -f query="$q" -f owner="$owner" -f name="$name" \
+        -F number="$pr" 2>&1)" || die "merge-queue membership query failed for #$pr: $cj"
+  merged="$(jq -r '.data.repository.pullRequest.merged // false' <<<"$cj" 2>/dev/null)" \
+    || die "unparseable merge-queue membership response for #$pr"
+  mergedat="$(jq -r '.data.repository.pullRequest.mergedAt // ""' <<<"$cj" 2>/dev/null || echo "")"
+  qstate="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.state // ""' <<<"$cj" 2>/dev/null || echo "")"
+
+  # Already landed (a race — cmd_poll's own MERGED check normally wins first;
+  # diagnose is defensive) → report MERGED so the caller goes to 4d, not recovery.
+  if [ "$merged" = "true" ]; then
+    jq -cn --argjson pr "$pr" --arg at "$mergedat" '{outcome:"MERGED", pr:$pr, mergedAt:$at}'
+    return 0
+  fi
+  # Still enqueued → keep waiting; a slow queue is not a dequeue.
+  if [ -n "$qstate" ]; then
+    jq -cn --argjson pr "$pr" --arg s "$qstate" '{outcome:"QUEUED", pr:$pr, queueState:$s}'
+    return 0
+  fi
+
+  # Channel 2 — REST merge_group runs: WHY did it leave the queue? The anchored
+  # substring `/pr-<N>-` avoids #4 matching a #42/#420 trial branch; latest by
+  # created_at.
+  local raw run conclusion status run_id
+  raw="$(_gate_gh api "repos/$owner_repo/actions/runs?event=merge_group&per_page=100" 2>&1)" \
+    || die "merge_group run query failed for #$pr: $raw"
+  run="$(jq -c --arg n "$pr" \
+        '[.workflow_runs[]? | select((.head_branch // "") | test("/pr-" + $n + "-"))]
+         | sort_by(.created_at) | last' <<<"$raw" 2>/dev/null)" \
+    || die "unparseable merge_group run response for #$pr"
+
+  # No merge_group run references this PR → entry dropped during queue churn.
+  if [ "$run" = "null" ] || [ -z "$run" ]; then
+    jq -cn --argjson pr "$pr" '{outcome:"DEQUEUED", pr:$pr}'
+    return 8
+  fi
+  conclusion="$(jq -r '.conclusion // ""' <<<"$run" 2>/dev/null || echo "")"
+  status="$(jq -r '.status // ""' <<<"$run" 2>/dev/null || echo "")"
+  run_id="$(jq -r '.id // empty' <<<"$run" 2>/dev/null || echo "")"
+
+  if [ "$conclusion" = "failure" ]; then
+    jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
+      '{outcome:"MERGE_GROUP_FAILED", pr:$pr, run_id:$rid}'
+    return 7
+  fi
+  # A referencing run still building (not yet concluded) → not a dequeue; wait.
+  if [ -n "$status" ] && [ "$status" != "completed" ]; then
+    jq -cn --argjson pr "$pr" --arg s "merge_group:$status" \
+      '{outcome:"QUEUED", pr:$pr, queueState:$s}'
+    return 0
+  fi
+  # A completed non-failure run but the PR is neither queued nor merged → the
+  # entry was dropped; re-arm.
+  jq -cn --argjson pr "$pr" '{outcome:"DEQUEUED", pr:$pr}'
+  return 8
+}
+
 # --- managed-merge: SHA-pinned CI re-poll ------------------------------------
 # Implemented INLINE via _gate_gh rather than shelling out to ci-poll.sh: this
 # keeps managed-merge on the SAME single _gate_gh fixture seam the rest of
@@ -569,6 +687,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     poll)   [ $# -ge 2 ] || usage; cmd_poll "$@" ;;
     backend) [ $# -eq 1 ] || usage; cmd_backend "$1" ;;
     managed-merge) [ $# -ge 2 ] || usage; cmd_managed_merge "$@" ;;
+    diagnose-queue) [ $# -eq 2 ] || usage; cmd_diagnose_queue "$1" "$2" ;;
     *) usage ;;
   esac
 fi

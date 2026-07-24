@@ -35,6 +35,12 @@
 #     merge attempted; `gh pr merge` itself rejected (e.g. queue-armed repo) →
 #     MERGE_REJECTED, distinct non-silent outcome; an existing subcommand's
 #     JSON is asserted BYTE-IDENTICAL (no-behavior-change-on-native guarantee)
+#   - diagnose-queue (temperloop#1150): a live mergeQueueEntry → QUEUED (exit 0,
+#     the merge_group probe is NOT even queried); a failed merge_group run for
+#     the PR → MERGE_GROUP_FAILED (exit 7) + the run id; not-in-queue with no
+#     referencing run → DEQUEUED (exit 8); the `/pr-<N>-` branch anchor does not
+#     let #4 match a #42 run; an in-progress referencing run → QUEUED (not a
+#     dequeue); an already-merged PR → MERGED (exit 0), short-circuiting the probe
 #
 # The seams are redefined mid-file per case (the library calls them
 # indirectly), so shellcheck's "never invoked"/"unreachable" checks are false
@@ -289,6 +295,93 @@ rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 0)" || rc=
 [ "$rc" -eq 4 ] || fail "stall did not exit 4 (rc=$rc)"
 [ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "poll TIMEOUT outcome (got: $out)"
 echo "PASS: poll → TIMEOUT + distinct exit 4 on a stalled (never-terminal) PR"
+
+# --- diagnose-queue: still enqueued (mergeQueueEntry present) → QUEUED --------
+# The membership signal short-circuits: a live mergeQueueEntry means "still in
+# the queue", so the merge_group probe is not even reached. The runs fixture is
+# a FAILING run on purpose — if the code wrongly queried channel 2 it would
+# emit MERGE_GROUP_FAILED, and the QUEUED assertion would catch the regression.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":{"state":"QUEUED","position":1}}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-abc","conclusion":"failure","status":"completed","id":1,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 0 ] || fail "QUEUED did not exit 0 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "diagnose QUEUED outcome (got: $out)"
+echo "PASS: diagnose-queue → QUEUED (still enqueued via mergeQueueEntry; merge_group NOT consulted)"
+
+# --- diagnose-queue: not in queue + failed merge_group run → MERGE_GROUP_FAILED
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-abc123","conclusion":"failure","status":"completed","id":9001,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 7 ] || fail "MERGE_GROUP_FAILED did not exit 7 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGE_GROUP_FAILED" ] || fail "diagnose MERGE_GROUP_FAILED outcome (got: $out)"
+[ "$(jq -r .run_id <<<"$out")" = "9001" ] || fail "diagnose failed run_id (got: $out)"
+echo "PASS: diagnose-queue → MERGE_GROUP_FAILED (exit 7) + failed run id when the group CI failed"
+
+# --- diagnose-queue: not in queue + no referencing run → DEQUEUED ------------
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 8 ] || fail "DEQUEUED did not exit 8 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "DEQUEUED" ] || fail "diagnose DEQUEUED outcome (got: $out)"
+echo "PASS: diagnose-queue → DEQUEUED (exit 8) when the PR left the queue with no failing merge_group run"
+
+# --- diagnose-queue: the /pr-<N>- anchor — #4 must NOT match a #42 run -------
+# Same failing-#42 runs fixture, but we diagnose #4: the anchored substring
+# `/pr-4-` must not match `.../pr-42-...`, so #4 reads DEQUEUED, not the #42
+# failure (guards a pr-4 / pr-42 / pr-420 collision).
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-abc123","conclusion":"failure","status":"completed","id":9001,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 4)" || rc=$?
+[ "$rc" -eq 8 ] || fail "pr-4 matched a pr-42 run (anchoring bug!) rc=$rc"
+[ "$(jq -r .outcome <<<"$out")" = "DEQUEUED" ] || fail "diagnose anchoring outcome (got: $out)"
+echo "PASS: diagnose-queue → the /pr-<N>- anchor does not let #4 match a #42 merge_group run"
+
+# --- diagnose-queue: in-progress referencing run → QUEUED (not a dequeue) ----
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-abc","conclusion":null,"status":"in_progress","id":9002,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 0 ] || fail "in-progress group did not exit 0 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "diagnose in-progress QUEUED (got: $out)"
+echo "PASS: diagnose-queue → QUEUED when a referencing merge_group run is still building (not a dequeue)"
+
+# --- diagnose-queue: already merged (a race) → MERGED, probe short-circuited --
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"MERGED","merged":true,"mergedAt":"2026-07-02T08:00:00Z","mergeQueueEntry":null}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-x","conclusion":"failure","status":"completed","id":1,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 0 ] || fail "MERGED-race did not exit 0 (rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGED" ] || fail "diagnose MERGED-race outcome (got: $out)"
+[ "$(jq -r .mergedAt <<<"$out")" = "2026-07-02T08:00:00Z" ] || fail "diagnose MERGED-race mergedAt (got: $out)"
+echo "PASS: diagnose-queue → MERGED (exit 0) short-circuits the merge_group probe when the PR already landed"
 
 # --- error: bad inputs → structured ERROR + non-zero exit -------------------
 # die() emits on fd 3 (the script's real-stdout seam); when sourced, fd 3 is the
