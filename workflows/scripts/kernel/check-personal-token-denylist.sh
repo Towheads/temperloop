@@ -88,7 +88,7 @@ _kernel_denylist_is_exempt() {
 # ---------------------------------------------------------------------------
 # Load the burn-down baseline (file, pattern, line) triples. Bash-3.2-
 # compatible plain indexed arrays (no `declare -A` — kernel scripts must run
-# unmodified on macOS's system bash, see kernel-repo-layout.md), same linear-
+# unmodified on macOS's system bash 3.2), same linear-
 # scan idiom as _kernel_denylist_is_exempt above. Blank lines and
 # #-prefixed comment lines are skipped, same convention as the other two
 # data files. A parallel `baseline_used` flag array tracks per-row

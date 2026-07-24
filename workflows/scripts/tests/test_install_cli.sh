@@ -12,8 +12,8 @@
 #
 # This repo (temperloop, the kernel-only checkout) has NO env/ directory
 # and NO claude/settings.json / claude/CLAUDE.overlay.md — those are
-# overlay-only (workflows/scripts/kernel/kernel-repo-layout.md's "what got
-# seeded" note). So links_enumerate() here yields ONLY kind=symlink and
+# overlay-only, composed in only by a downstream overlay checkout. So
+# links_enumerate() here yields ONLY kind=symlink and
 # kind=gh-shim records (confirmed by direct enumeration against this repo's
 # own tree) — install.sh's kind=real/kind=claude-md branches exist for a
 # downstream overlay-composed checkout and are exercised by
