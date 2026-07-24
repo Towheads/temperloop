@@ -208,6 +208,17 @@ fi
 # for mechanical drives (§ Cost-tier routing, claude/CLAUDE.kernel.md).
 : "${SWEEP_DETECT_MODEL:=}"
 
+# sweep.md Step 3 tier-2 composition — the BOUNDED wait on background chunk 1's
+# completion notification. After the Phase-1 question batch resolves, if chunk 1's
+# `<task-notification>` has not arrived, the driver polls the chunk's task state
+# up to ATTEMPTS times, INTERVAL seconds apart (the same background-`sleep` wake
+# pattern the per-chunk quota gate uses); on exhaustion chunk 1 is treated as a
+# dropped-background escalation and the run proceeds to the Step-3.5 terminal-state
+# assertion, which fails loudly on its unaccounted entries. The bound is what keeps
+# a dropped notification from stalling the run indefinitely.
+: "${SWEEP_BG_POLL_ATTEMPTS:=6}"      # bounded poll count before declaring the chunk dropped
+: "${SWEEP_BG_POLL_INTERVAL:=120}"    # seconds between polls
+
 # ── Funnel operator identity + required CI check (tracker seam v0, #772) ────
 # The operator handle the async decision-issue backend, the merge-tier escalation
 # path, and funnel-tick's assignee baton all target. MUST be the operator's real
@@ -382,7 +393,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
-       SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL \
+       SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
        FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
        FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
        FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
