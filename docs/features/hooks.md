@@ -57,15 +57,20 @@ fact and can only observe and record, never block.
   keeps single-item operations off an expensive full-board page load; an
   ad-hoc raw query bypasses both protections and has drained a shared,
   metered GraphQL budget in a real incident.
-- **build-worktree-guard.sh** — matches `Edit|Write|MultiEdit`. Enforces that
-  an automated build worker only ever writes inside its own pre-created
+- **build-worktree-guard.sh** — matches `Bash|Edit|Write|MultiEdit`. Enforces
+  that an automated build worker only ever writes inside its own pre-created
   worktree. It is inert by default and arms only when a per-worktree marker
   file is present *and* the worktree sits under the expected
   `<repo>.wt/<name>/` convention — so an ordinary interactive session, which
   has neither, is never affected. It exists because a bare absolute path can
   resolve against the parent checkout even when the worker's shell is `cd`'d
   into its worktree, silently leaking an uncommitted write into the
-  orchestrator's own tree.
+  orchestrator's own tree. Beyond the file-write tools, it also inspects
+  **Bash** commands and denies a destructive filesystem verb
+  (`rm`/`rmdir`/`mv`/`shred`/`truncate`/`dd of=`) whose target it cannot prove
+  stays inside the worktree — including any non-literal target (a `$`
+  expansion, a `$(…)` substitution, or a glob), the exact shape that once
+  resolved to `~/dev` and wiped every checkout.
 - **subtree-edit-guard.sh** — matches `Edit|Write|MultiEdit`. In a repository
   that vendors this kernel via a pinned subtree, an edit through the vendored
   path (or a compatibility symlink into it) returns an `ask` — the only

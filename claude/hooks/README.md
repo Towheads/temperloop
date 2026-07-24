@@ -9,7 +9,7 @@
 | `session-start-deploy-mini.sh` | SessionStart | — | Board toolkit deploy (mini-only) | No (mini-gate handles it; eval runs are not mini) |
 | `board-adapter-guard.sh` | PreToolUse | Bash | None (prod: *ask* decision) | Behavior changes: prod→ask, eval→record-and-deny |
 | `git-stale-branch-guard.sh` | PreToolUse | Bash | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
-| `build-worktree-guard.sh` | PreToolUse | Edit\|Write\|MultiEdit | None (deny decision) | No (write jail is always active) |
+| `build-worktree-guard.sh` | PreToolUse | Bash\|Edit\|Write\|MultiEdit | None (deny decision) | No (write jail is always active) |
 | `subtree-edit-guard.sh` | PreToolUse | Edit\|Write\|MultiEdit | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
 | `write-lane-guard.sh` | PreToolUse | Bash\|Edit\|Write\|MultiEdit\|NotebookEdit | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
 | `mcp-failure-tripwire.sh` | PostToolUse | mcp__obsidian.* | None (block decision) | No (eval sessions don't use vault; hook is a no-op if MCP not called) |
