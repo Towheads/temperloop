@@ -1,10 +1,10 @@
 ---
-title: 0002: Premise gate as kernel dimension 0
+title: 0013: Premise gate as kernel dimension 0
 ---
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

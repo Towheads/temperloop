@@ -1,10 +1,10 @@
 ---
-title: 0003: principles.md as charter-derivation source for adversarial lenses
+title: 0014: principles.md as charter-derivation source for adversarial lenses
 ---
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
