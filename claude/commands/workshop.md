@@ -365,6 +365,28 @@ foundation that later shifts underneath it.
      **Never** persist dimensions as per-dimension `ks_append` calls: the
      walk is operator-reorderable (Step 2.2), so appends land out of
      dimension order and corrupt the note's numbered-section structure.
+7. **Persist-then-ask ordering — dual-surface before any gate.** Step 2.6
+   requires the incremental *write*; this fixes its **ordering** relative to
+   any operator gate. Never open an accept/object (or any approval)
+   `AskUserQuestion` over drafted dimension content until that content is
+   **both**:
+   - **(a) persisted to the brief note** via Step 2.6's write primitive —
+     the note is the **artifact of record**, the durable surface the
+     operator (and every later step) reads; **and**
+   - **(b) echoed in chat** — a readable presentation of the same content,
+     for in-line review.
+
+   Both surfaces must be **current** — reflecting exactly the content the
+   gate asks about — *before* the question is posed. A batched draft is
+   still fine: you may walk and disposition several dimensions, then persist
+   and echo the batch, then ask once over it. What is forbidden is asking
+   the operator to accept or object to content that exists **only** as a
+   transient chat bullet list with **no** persisted note behind it — the
+   observed failure (temperloop#670: a 13-dimension draft gated for
+   approval while the brief note was still empty, leaving the operator no
+   reviewable artifact). The chat echo is for review convenience; the note
+   is what makes the review *possible* on the next read. Ask over neither
+   surface alone — over both, current.
 
 ## Step 3 — Review pass
 
