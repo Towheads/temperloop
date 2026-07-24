@@ -136,6 +136,23 @@ centrally-typed array (its whole point is that a stranger's install has exactly
 one authoritative list to read), and centralizing it is a feature, not the
 collision surface the convention targets.
 
+**Reaching the operator on a blocking halt.** `decision-notify.sh` runs on
+entry to every *blocking-now* decision gate — a design fork, a blocked worker, a
+failed item, a claim conflict, a structurally-risky merge set — and decides,
+purely from the halt's severity, whether to pull in the operator. These halts
+have no safe default, so they park the run and wait; the failure mode is not
+the halt but the *silence* — a halt on a session the operator has stepped away
+from can sit unseen for hours. When the severity warrants it, the script emits
+a one-line summary the orchestrator pushes to the operator's phone via the
+harness's own notification tool, which stays quiet when the operator is in fact
+still at the terminal, so an attended halt is never interrupted. An optional
+operator-configured command adds an independent push (a notification service, a
+webhook) for reach that does not depend on the harness. The non-blocking
+severities — a timed gate that takes its own default, an advisory question
+deferred to a daily review — never reach the script at all. The notification is
+best-effort and never blocks: a nudge, not a consent, changing nothing about
+the gate it announces.
+
 **The 5-hour quota gate.** `quota-gate.sh` reads a locally persisted
 rate-limit snapshot after each level (or, in the sweep pipeline, after each
 fix) and decides whether the run may proceed or should pause. Its verdict is
@@ -169,7 +186,8 @@ note rather than inferred from anything ephemeral.
 these scripts, at the steps their own headers name (worktree create/remove
 at 3b/3h and the stranded-worktree sweep at Step 0.5; plan validate/toposort
 at Step 1 and writeback throughout; the CI poll at 3g; the combined-tree
-pre-check at the level merge gate before any enqueue; the quota gate at
+pre-check at the level merge gate before any enqueue; the operator-notify
+ping on entry to every blocking-now decision gate; the quota gate at
 each level boundary). `/sweep` reuses the quota gate the same way, after
 each individual fix rather than after a whole level. Every tunable each
 script reads — the quota pause threshold, poll intervals and timeouts, the
