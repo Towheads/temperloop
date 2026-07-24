@@ -90,6 +90,52 @@ resolves to a structured verdict — `QUEUED` (still enqueued, keep waiting),
 conflict recovery), `DEQUEUED` (dropped during churn, re-arm), or `MERGED` (it
 landed) — so recovery is chosen by cause instead of by waiting out the clock.
 
+**Catching a semantic collision before the queue.**
+`combined-tree-precheck.sh` runs once at the level merge gate — the checkpoint
+where a level's parked pull requests wait before enqueue, the same gate the
+plan note records as its batch merge gate — when a level has parked more than
+one pull request, before any of them is enqueued. Two
+changes can each pass their own continuous-integration run in isolation and
+still break the build the moment they land together — one adds a check and
+another adds the very files that check rejects, or each registers a build
+target the other's files trip over. A per-pull-request or pairwise-textual
+comparison cannot see that class of conflict at all; only actually building
+the combined result and running the full test suite against it can. Left
+undetected until merge, such a collision surfaces only inside the native
+merge queue's own trial branch, at the cost of a full eject-diagnose-rebase-
+requeue round-trip for every pull request in the batch. This check moves that
+discovery earlier: it adds a throwaway, isolated checkout, merges every parked
+branch into it in turn, and runs the exact same gate suite CI would
+(`quality-gates.sh`) against the merged whole. A branch that will not merge
+resolves to `CONFLICT` naming it; a merged whole that fails the suite resolves
+to `GATE_FAILED` carrying the failing gate's output; a clean whole that passes
+resolves to `CLEAN`. Only a `CLEAN` union proceeds to enqueue — a collision is
+paid for once, as a local test run, instead of once per pull request as a
+queue round-trip. The check is **fail-open** (a setup failure resolves to a
+proceed, since the queue's own trial branch remains the backstop) and
+**opt-out** (a single knob disables it for a repository that would rather lean
+on the queue alone); a single-pull-request level skips it, having nothing to
+combine.
+
+**A companion convention: drop-a-file registration.**
+The pre-check is one half of a paired discipline; the other is a convention
+that shrinks the collision surface in the first place. Wherever the build
+registers something in a shared list — a set of gates, a set of build targets,
+a set of always-out-of-date target names — two changes that each append a line
+to the *same* list are a textual conflict waiting to happen, and two changes
+that each add an *entry* the other's code scans are a semantic one. The
+convention is to prefer, wherever a mechanism supports it, a **drop-a-file**
+registration (a directory each contributor drops one self-contained file into,
+discovered by a glob) over an append-to-one-shared-list registration: two
+contributors adding two files never touch the same line, and the discovery
+glob picks both up with no merge at all. The quality-gate suite's own overlay
+extension already works this way — an empty directory each drop-in appends
+itself to — which is exactly why it is exempt from this convention; its kernel
+(core-install) gate list, by deliberate contrast, stays a single
+centrally-typed array (its whole point is that a stranger's install has exactly
+one authoritative list to read), and centralizing it is a feature, not the
+collision surface the convention targets.
+
 **The 5-hour quota gate.** `quota-gate.sh` reads a locally persisted
 rate-limit snapshot after each level (or, in the sweep pipeline, after each
 fix) and decides whether the run may proceed or should pause. Its verdict is
@@ -122,7 +168,8 @@ note rather than inferred from anything ephemeral.
 `/build` (`claude/commands/build.md`) is the sole orchestrator that drives
 these scripts, at the steps their own headers name (worktree create/remove
 at 3b/3h and the stranded-worktree sweep at Step 0.5; plan validate/toposort
-at Step 1 and writeback throughout; the CI poll at 3g; the quota gate at
+at Step 1 and writeback throughout; the CI poll at 3g; the combined-tree
+pre-check at the level merge gate before any enqueue; the quota gate at
 each level boundary). `/sweep` reuses the quota gate the same way, after
 each individual fix rather than after a whole level. Every tunable each
 script reads — the quota pause threshold, poll intervals and timeouts, the

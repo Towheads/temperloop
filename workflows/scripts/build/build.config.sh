@@ -115,6 +115,15 @@ fi
 : "${BUILD_MERGE_GATE_WINDOW:=300}"   # timed merge-gate window (s); 0 = always modal
 : "${BUILD_QUEUE_TIMEOUT:=1800}"      # per-PR native-merge-queue timeout (s)
 
+# Step-4a.5 combined-tree pre-check (temperloop#865): before enqueuing a level
+# that parked >1 PR, build the UNION of the parked branches in a throwaway
+# worktree and run the full gate suite against it — catching a SEMANTIC
+# collision (two PRs green alone, red combined) LOCALLY instead of paying the
+# native queue's ~1h eject/diagnose/rebase/requeue cycle. "on" (default) runs
+# it; "off" skips the check outright, leaning on the queue's own merge_group as
+# the sole backstop. Single-PR levels skip it regardless (nothing to combine).
+: "${BUILD_COMBINED_TREE_PRECHECK:=on}"   # on|off — run the Step-4a.5 union pre-check
+
 # Autonomous funnel drive-concurrency governor (temperloop#162, split out from the
 # retired human "WIP cap" governance rule): at most this many concurrent drives the
 # autonomous funnel lane bounds per tick. SOURCE OF TRUTH for funnel-tick.sh's
@@ -390,7 +399,7 @@ fi
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
+       BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
