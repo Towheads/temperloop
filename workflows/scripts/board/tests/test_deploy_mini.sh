@@ -23,15 +23,17 @@ DEPLOY="$HERE/../deploy-mini.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/deploy-mini-test-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# Hermetic conf env, part 2 (temperloop#591 deploy-mini half): deploy-mini.sh's
-# own §3 cache-report discovery reads $XDG_CONFIG_HOME/{temperloop,foundation}/
-# boards.conf DIRECTLY — it does NOT honor BOARDS_CONF_MACHINE (the guard above
-# only reaches board.sh's resolver). A real host machine conf (e.g. a driver's
-# ~/.config/foundation/boards.conf carrying board.N.backend=issues, the #470
-# cutover soak) would otherwise shadow the fixture's repo_conf and suppress the
-# board.N.cache=on rows the store-present assertions rely on. Point it at an
-# empty (uncreated) fixture dir so both machine-conf branches miss and §3 falls
-# through to the fixture's repo_conf, matching CI's clean-host behavior.
+# Hermetic conf env, part 2 (temperloop#616): as of temperloop#616 deploy-mini.sh's
+# own §3 cache-report discovery no longer reimplements conf lookup — it routes
+# through the checkout's board.sh resolver (_board_conf_files), so the
+# BOARDS_CONF_MACHINE=/dev/null guard above ALREADY hermeticizes its machine
+# layer (a real host ~/.config/{temperloop,foundation}/boards.conf can no longer
+# shadow the fixture's repo-local conf). Pointing XDG_CONFIG_HOME at an empty
+# fixture dir is now belt-and-suspenders (BOARDS_CONF_MACHINE=/dev/null already
+# defeats the XDG machine default), kept so the machine layer stays inert on any
+# host regardless of how the seam resolves its default. (Before temperloop#616 §3
+# read $XDG_CONFIG_HOME/{temperloop,foundation}/boards.conf directly and this
+# export was load-bearing.)
 export XDG_CONFIG_HOME="$WORK/xdg"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -188,19 +190,19 @@ GIT -C "$WORK/prunelocal" rev-parse --verify -q unmergedlocal >/dev/null \
 echo "$out" | grep -q "prune: deleted 1 local" || fail "should report 'prune: deleted 1 local' (got: $out)"
 
 # --- 13. F#988/#1026: cache-enabled boards are reported (store present vs absent) ---
-# A dedicated minimal board.sh (guard string + a board_repo() stub) rather than the
-# real one — this test targets deploy-mini's OWN reporting logic, not board.sh's conf
-# discovery (that's covered by test_boards_conf.sh / test_cache_store.sh).
+# temperloop#616: §3 now enumerates conf layers through the checkout's OWN
+# board.sh resolver (_board_conf_files), so the fixture board.sh is the REAL
+# adapter (copied in) rather than a minimal stub — the report is now an
+# integration of deploy-mini's reporting logic WITH board.sh's conf discovery.
+# board_repo() for boards 9/10 resolves via the fixture repo-local boards.conf
+# (board.9.repo / board.10.repo), no stub needed. BOARDS_CONF_REPO_LOCAL is
+# overridden to empty for these runs so _board_conf_files' `:-` default resolves
+# the repo-local layer to the fixture's own $bsh-relative boards.conf (the global
+# /dev/null export would otherwise miss it); BOARDS_CONF_MACHINE=/dev/null keeps
+# the machine layer inert, exercising the single-override hermeticity this item
+# establishes.
 setup_repo cacherep yes
-cat >"$WORK/cacherep/scripts/lib/board.sh" <<'BOARDEOF'
-_board_assert_item_id() { :; }
-board_repo() {
-  case "$1" in
-    9) echo "acme/cached-thing" ;;
-    10) echo "acme/uncached-thing" ;;
-  esac
-}
-BOARDEOF
+cp "$HERE/../lib/board.sh" "$WORK/cacherep/scripts/lib/board.sh"
 cp "$HERE/../lib/cache.sh" "$WORK/cacherep/scripts/lib/cache.sh"
 cat >"$WORK/cacherep/scripts/boards.conf" <<'EOF'
 board.9.repo=acme/cached-thing
@@ -211,7 +213,7 @@ CACHE_ROOT="$WORK/cache-store-root"
 mkdir -p "$CACHE_ROOT/issues/acme-cached-thing"
 echo '{"schema_version":1,"repo":"acme/cached-thing","last_refresh":1}' \
   >"$CACHE_ROOT/issues/acme-cached-thing/meta.json"
-out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report run should exit 0"
+out="$(BOARDS_CONF_REPO_LOCAL='' CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report run should exit 0"
 echo "$out" | grep -q "board 9 (store present)" || \
   fail "board 9 (cache=on, store on disk) should report store present (got: $out)"
 echo "$out" | grep -q "board 10" && \
@@ -219,7 +221,7 @@ echo "$out" | grep -q "board 10" && \
 
 # Same checkout, no store on disk yet for board 9 → reports "store absent".
 rm -rf "$CACHE_ROOT"
-out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report (absent) run should exit 0"
+out="$(BOARDS_CONF_REPO_LOCAL='' CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report (absent) run should exit 0"
 echo "$out" | grep -q "board 9 (store absent)" || \
   fail "board 9 with no store on disk should report store absent (got: $out)"
 
