@@ -72,6 +72,24 @@ reports one of `CI_GREEN`, `CI_FAILED` (with the failed run IDs), or
 `TIMEOUT` — never prose, so the orchestrator branches on the outcome
 directly.
 
+**Classifying a stalled merge-queue poll.** `gate.sh diagnose-queue` tells a
+genuinely-dropped queued merge apart from one still legitimately waiting its
+turn — a distinction a plain `gh pr view` can't make. GitHub's native merge
+queue (its queue-and-batch feature for a protected branch; see
+[managed-merge-queue.md](../managed-merge-queue.md) for the fallback on a repo
+that has none) can silently drop a PR when its combined `merge_group` trial
+branch fails CI on a semantic conflict, or when its entry is evicted during
+queue churn — yet the dropped PR still sits `OPEN` and non-dirty,
+indistinguishable from one still enqueued, so the only backstop was running out
+the per-PR queue timeout and guessing. `diagnose-queue` closes that blind spot
+by reading the two signals the poll fields omit: the GraphQL `mergeQueueEntry`
+(the one field that directly says "still in the queue") and the REST
+`merge_group` workflow-run history (which says *why* a PR left it). A stall then
+resolves to a structured verdict — `QUEUED` (still enqueued, keep waiting),
+`MERGE_GROUP_FAILED` (the group CI failed, with the run ID, route straight to
+conflict recovery), `DEQUEUED` (dropped during churn, re-arm), or `MERGED` (it
+landed) — so recovery is chosen by cause instead of by waiting out the clock.
+
 **The 5-hour quota gate.** `quota-gate.sh` reads a locally persisted
 rate-limit snapshot after each level (or, in the sweep pipeline, after each
 fix) and decides whether the run may proceed or should pause. Its verdict is
