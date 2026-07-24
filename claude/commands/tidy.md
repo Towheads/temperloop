@@ -28,6 +28,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Design-first default for invented work | `claude/CLAUDE.md` § `Design-first default for invented work` | `Provenance-less epics` |
 | Per-epic retro mint | `claude/commands/build.md` § `Mint the per-epic retro tracker` | `Retro mint backstop` |
 | Route a conversational fix request through /fix | `claude/CLAUDE.md` § `Route a conversational fix request through /fix` | `Unlinked fix PRs` |
+| Disconfirm a root-cause diagnosis before institutionalizing it | `claude/CLAUDE.md` § `Disconfirm a root-cause diagnosis before institutionalizing it` | `Un-disconfirmed diagnoses` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -278,6 +279,24 @@ Backstop for the live `/build` **4d-retro mint** rule (`claude/commands/build.md
 - **Recurring self-corrections as a class** are picked up by § Recurrence → promotion: because each accepted self-correction is a `mistake`/`pattern` findings record, the trailing-14-day tally already counts them, and crossing the ≥5 threshold raises a promotion task (tighten a guard rule or elevate a pattern). No new tally is needed.
 
 **Default to silence.** Most stubs surface no genuine self-correction. Do not manufacture one from routine "let me check X" narration — only a real reasoning reversal qualifies.
+
+### Un-disconfirmed diagnoses
+
+Backstop for the live "Disconfirm a root-cause diagnosis before institutionalizing it" rule in `claude/CLAUDE.md` § Fix the real problem, not the symptom. The live rule says: before propagating a root-cause diagnosis (filing an issue on it, baking a warning into a spec or worker prompts, fanning a fix across sites), run the cheapest direct disconfirming probe the diagnosis makes available. This step catches the ones that skipped it — a diagnosis institutionalized on confidence alone, then either later disproved or never cheap-checked at all (the #1090 incident: a false "SwiftLint autocorrect build phase rewrites files mid-build" root cause baked into an issue + ~15 worker prompts for ~9.5h until a one-line `pbxproj` grep, available at diagnosis time, disproved it).
+
+**Adjudicate — anchor on the structural institutionalization signal first.** The highest-cost, structurally-visible institutionalization is a **filed issue**, so lead there: walk `report.tool_events.capture_calls[]` (the same structural pass § Unfiled defects dedups against) and, for each filing whose body asserts a **root cause**, check the transcript for a **cheap disconfirming probe run before the filing** — a grep of the file the theory names, an "is X installed / present" probe, a read of the config the mechanism assumes. A root-cause-derived filing with **no such probe on record** is the core signature. Then, **secondarily and lower-confidence** — the scan report exposes no `Edit`/`Write` events, so these channels are skim-only, not structurally anchored — skim `report.user_turns[]` and the assistant turns for the live rule's other two institutionalization channels (a causal warning propagated into a spec / plan note / worker prompt; a fix fanned across multiple sites), applying the same before-it-shipped disconfirming-probe test. The tell throughout is the pairing: a confident causal claim propagated as fact with **no seconds-long falsification attempt on record**. **Skip a diagnosis that WAS disconfirmed** (the probe ran and the theory survived) — that is the rule working, not a miss.
+
+**No lexicon tell — deliberate (guards against the #1137 false-positive class).** Unlike § Self-correction moments, this sweep is anchored on the structural institutionalization signal (`capture_calls[]`) plus judgment, **not** a phrase tell, and it does **not** propose new tells to § Candidate-tells accumulation. A bare causal-claim phrase ("the root cause is", "this is caused by") is low-precision — it fires on every *correct* diagnosis too — so promoting it into `lexicon-assistant.tsv` (a high-precision-only file) would manufacture exactly the false-positive storm foundation#1137 tracks. The signature is the *pairing* (claim + institutionalization + no disconfirmation), which no single phrase carries.
+
+**Dedup against § Self-correction moments (runs earlier this pass).** A diagnosis that was institutionalized *and then reversed later in the same transcript* satisfies both this sweep and § Self-correction moments ("I had this backwards"). Before emitting, check whether § Self-correction moments already adjudicated this same incident this run: if so, emit **one** findings record only and **one** Mistakes note — keep this sweep's framing when the incident's cost was the *propagation* (an issue others acted on, a warning baked into many prompts), else defer to Self-correction's recovery framing — so the shared § Recurrence → promotion tally counts the incident once, not twice.
+
+For each accepted case:
+
+1. **Emit a findings record** (§ Findings records) with `finding_type: mistake`, so it feeds the trailing-14-day recurrence tally.
+2. **Route a durable lesson to Mistakes** (vault `Mistakes/`, provenance schema) when the case names a recurring *class* of premature diagnosis (a build-phase theory, an env/tooling assumption, a "the framework does X" causal guess), deduping against existing notes exactly as the § Mistakes step does. A one-off with no general lesson stays a findings record only.
+3. **Recurrence promotion is automatic** — because each accepted case is a `mistake` findings record, § Recurrence → promotion already counts it; crossing the threshold raises a promotion task to tighten the guard (e.g. a sharper live tell, or a required-probe checklist for a diagnosis class). No new tally.
+
+**Default to silence.** Most sessions institutionalize nothing, or disconfirm before they do. Do **not** manufacture a finding from a diagnosis that was appropriately cheap-checked, from a hypothesis explored and dropped without being propagated, or from ordinary "I think X is the cause, let me verify" narration that then *did* verify.
 
 ### Unfiled defects
 
