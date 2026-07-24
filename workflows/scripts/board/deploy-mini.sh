@@ -226,29 +226,25 @@ for co in "${CHECKOUTS[@]}"; do
 
   cache_lib="$(dirname "$bsh")/cache.sh"
   if [ -f "$cache_lib" ]; then
-    # temperloop#165 rename window: temperloop/ machine conf preferred, an
-    # existing legacy foundation/ one read as fallback (removed in v0.17.0).
-    # temperloop#591: honor the SAME BOARDS_CONF_MACHINE override seam board.sh's
-    # _board_conf_files uses for the MACHINE layer, and UNION the machine +
-    # per-checkout repo-local layers rather than taking only the first that
-    # exists. The old first-match logic ignored BOARDS_CONF_MACHINE entirely and
-    # let a host's real ~/.config machine conf SHADOW a checkout's own
-    # boards.conf — so a hermetic test's BOARDS_CONF_MACHINE=/dev/null was
-    # disregarded and test_deploy_mini's cache-report case false-failed on any
-    # host that happens to carry a machine boards.conf. (The repo-local layer
-    # stays the PER-CHECKOUT path, not BOARDS_CONF_REPO_LOCAL: deploy-mini walks
-    # many checkouts, each with its own conf, so a single env override can't
-    # represent them.) Union of `cache=on` presence across layers is the right
-    # set semantic here: a board is cache-enabled if ANY layer says so (this
-    # block is informational only — it never affects pass/fail).
-    if [ -n "${BOARDS_CONF_MACHINE:-}" ]; then
-      machine_conf="$BOARDS_CONF_MACHINE"
-    else
-      machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
-      machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
-      [ ! -f "$machine_conf" ] && [ -f "$machine_conf_legacy" ] && machine_conf="$machine_conf_legacy"
-    fi
-    repo_conf="$(dirname "$bsh")/../boards.conf"
+    # temperloop#616: enumerate this checkout's boards.conf layers through the
+    # checkout's OWN board.sh resolver (_board_conf_files) rather than
+    # reimplementing machine/repo-local discovery inline. _board_conf_files is
+    # the single BOARDS_CONF_*-honoring discovery seam every other consumer
+    # already routes through — it applies BOARDS_CONF_MACHINE + the temperloop#165
+    # XDG rename window (temperloop/ preferred, legacy foundation/ fallback,
+    # removed in v0.17.0) to the MACHINE layer, adds the #494 composed-tree
+    # consumer-root conf, and honors BOARDS_CONF_REPO_LOCAL (else the
+    # $bsh-relative repo-local) — so a single BOARDS_CONF_* override now
+    # hermeticizes deploy-mini exactly as it does board.sh / board-mirror /
+    # funnel-tick, closing the per-consumer divergence that made the #592/#614
+    # test-hermeticity leaks possible (temperloop#591 fixed only deploy-mini's
+    # BOARDS_CONF_MACHINE handling — this routes the whole discovery through the
+    # shared seam so nothing is reimplemented here at all). Sourced from the
+    # PER-CHECKOUT $bsh so the consumer-root + repo-local layers resolve relative
+    # to THIS checkout (each checkout carries its own conf; the machine layer is
+    # machine-wide). Union of `cache=on` across all layers is the right set
+    # semantic: a board is cache-enabled if ANY layer says so (informational
+    # only — this block never affects the step's pass/fail).
     cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
     while IFS= read -r cn; do
       [ -n "$cn" ] || continue
@@ -258,9 +254,10 @@ for co in "${CHECKOUTS[@]}"; do
         store_state="present"
       fi
       printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
-    done < <(for _conf in "$machine_conf" "$repo_conf"; do
-               [ -f "$_conf" ] && grep -oE '^board\.[0-9]+\.cache=on$' "$_conf" 2>/dev/null
-             done | cut -d. -f2 | sort -un)
+    done < <(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; _board_conf_files 2>/dev/null' |
+               while IFS= read -r _conf; do
+                 [ -f "$_conf" ] && grep -oE '^board\.[0-9]+\.cache=on$' "$_conf" 2>/dev/null
+               done | cut -d. -f2 | sort -un)
   fi
 done
 if [ "$n" -eq 0 ]; then
