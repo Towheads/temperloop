@@ -269,16 +269,30 @@ same notice lands in a durable artifact).
   in the surrounding result (locked, Lee & See); never silently imply full
   confidence when a gate didn't run (Amershi G10, locked).
 - **Remedy pointer** (optional) — what would restore the capability, if
-  known.
+  known. In mode 6 this is unconditional; in mode 2 it is permitted **only**
+  for the shipped-but-not-installed subagent case defined below.
 
-The mode-2 minimal form matches the existing one-line `skipped —
-<agent> unavailable` convention verbatim — that exact wording is owned by
-`CLAUDE.kernel.md` itself and is not restated here. The fuller mode-6 form
-adds the calibrated-trust and remedy slots because a cold or stranger reader
-of a durable artifact lacks the live session's surrounding context; this
-live-vs-recorded distinction is an authoring judgment call, not itself a
-research-grounded finding — flag it as such rather than dressing it up as
-locked.
+The mode-2 minimal form has **two shapes, and only two.** Its **default** is
+the bare one-line `skipped — <agent> unavailable` convention verbatim — that
+exact wording is owned by `CLAUDE.kernel.md` itself and is not restated here.
+Its **one sanctioned exception** is the *shipped-but-not-installed* case: when
+the skipped capability is a subagent that **ships as source under
+`claude/agents/<agent>.md`** but is not resolvable as a live agent (no
+`.claude/agents/<agent>.md` and no `CLAUDE.md § Subagents` declaration), the
+mode-2 line MAY carry a **single short remedy clause** naming the one-command
+fix — `skipped — <agent> available as source; run
+workflows/scripts/install/project-agents.sh to enable`. This is the **only**
+remedy pointer permitted on a live mode-2 line; it exists because this
+specific degradation has a known, in-the-moment fix the operator needs
+*while the panel is running*, not merely in a later durable record.
+Conciseness stays structurally enforced — one clause, this case only; every
+other mode-2 skip (a genuinely not-shipped agent, or a non-agent capability
+like `/verify` that has no `project-agents.sh` install path) stays bare. The
+fuller mode-6 form still adds the calibrated-trust and (unconditional) remedy
+slots because a cold or stranger reader of a durable artifact lacks the live
+session's surrounding context; this live-vs-recorded distinction is an
+authoring judgment call, not itself a research-grounded finding — flag it as
+such rather than dressing it up as locked.
 
 ## Provisional slots — do not lock
 

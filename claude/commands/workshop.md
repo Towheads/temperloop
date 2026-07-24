@@ -486,7 +486,9 @@ walked.
    each with an EXECUTING mode for exactly this run. Whenever the mandate
    applies but no such executing agent happens to be declared in a given
    checkout, this degrades exactly like any other capability probe (3.3): a
-   legible `skipped — <persona-agent> unavailable` line, stamped into
+   legible skip line — the not-shipped vs shipped-but-not-installed form per
+   § 3.3 item 1a (the persona agents ship as source under `claude/agents/`, so
+   the shipped-but-not-installed remedy form applies) — stamped into
    dimension 15 (failure modes / capability limits) as an honest gap —
    **never** a silent pass, and never treated as satisfying the mandate. A
    ratified brief with this gap stamped is still ratifiable (Step 4 blocks
@@ -502,6 +504,25 @@ walked.
    predicate `/assess` Step 3 and `/triage` Step 3 apply to their own
    panels. Probe each candidate lens right before it would be spawned;
    absence is never fatal to the walk.
+1a. **Two skip-line forms — the single definition every later mention below
+   defers to.** When the predicate is false, the skip line takes one of two
+   forms per `claude/message-schema.md` § Degradation notice (the contract
+   home; kernel wording owner is `CLAUDE.kernel.md` § Legible agent-gate
+   degradation) — distinguish *why* before emitting it:
+   - **Not shipped** — no `claude/agents/<agent>.md` source file exists in
+     this checkout. Nothing to install → bare `skipped — <agent> unavailable`.
+   - **Shipped but not installed** — a `claude/agents/<agent>.md` source file
+     *does* exist but the lens isn't resolvable live (no
+     `.claude/agents/<agent>.md`, no `CLAUDE.md § Subagents` declaration) →
+     the remedy-bearing form `skipped — <agent> available as source; run
+     workflows/scripts/install/project-agents.sh to enable` (temperloop#290).
+     This is the recurring fresh-standalone-clone case — every lens ships as
+     source under `claude/agents/` but no live `.claude/` exists yet — so the
+     operator sees the one-command fix on the live line, not a bare dead-end.
+   Every other reference to `skipped — <agent> unavailable` in this file —
+   before or after this item, including the § 3.2 persona-agent skip — is
+   shorthand for whichever of these two forms the probe selects; the skip is
+   never silent either way.
 2. **Brief pass (always).** Probe `architecture-reviewer` and
    `requirements-auditor`. For each available, spawn it read-only and
    advisory with the brief's per-dimension content (all seventeen
@@ -518,10 +539,10 @@ walked.
    dimensions 5 and 15 to `workflow-reviewer` precisely because it later
    reviews every edit to the spec the design *produces*; here the same
    dimensions are judged as brief content, before any spec exists. Each
-   unavailable lens emits its own `skipped — <agent> unavailable` line,
-   narrated live (Mode 2 degradation notice, `claude/message-schema.md` §
-   Degradation notice) — never silently absorbed into a generic "review
-   skipped" note.
+   unavailable lens emits its own skip line — the not-shipped vs
+   shipped-but-not-installed form per 1a — narrated live (Mode 2 degradation
+   notice, `claude/message-schema.md` § Degradation notice) — never silently
+   absorbed into a generic "review skipped" note.
 3. **Full pass adds** (only when 3.1 picked full): a **red-team lens** —
    an adversarial charter that attacks the brief's stated acceptance
    criteria (dimension 4), threat model / premortem (dimension 15), and
@@ -861,15 +882,16 @@ last line of the response.
   3.2–3.3).** Not a failure of the command — the capability-probe predicate
   ([[Decisions/foundation - Project capability probes]]) makes this an
   expected outcome in a checkout with no `.claude/agents/` declared. Emit
-  `skipped — <agent> unavailable` per lens, live, and continue the panel
-  with whatever's available; an unmet install-surface first-run mandate
-  (3.2) is stamped into dimension 15 rather than silently satisfied. To make
-  the lenses resolvable in a fresh standalone clone (where the agents ship as
-  source under `claude/agents/` but no live `.claude/` exists), run the
-  project-scoped install path once — `bash
-  workflows/scripts/install/project-agents.sh` (temperloop#290) — which wires
-  `claude/agents/*` + `claude/commands/*` into `.claude/`; see
-  `docs/features/review-agents.md` § Installation.
+  the per-lens skip line — the not-shipped vs shipped-but-not-installed form
+  per § 3.3 item 1a — live, and continue the panel with whatever's available;
+  an unmet install-surface first-run mandate (3.2) is stamped into
+  dimension 15 rather than silently satisfied. The shipped-but-not-installed
+  form is the common one: in a fresh standalone clone the agents ship as
+  source under `claude/agents/` but no live `.claude/` exists, so its skip
+  line already names the remedy on the live line — run the project-scoped
+  install path once, `bash workflows/scripts/install/project-agents.sh`
+  (temperloop#290), which wires `claude/agents/*` + `claude/commands/*` into
+  `.claude/`; see `docs/features/review-agents.md` § Installation.
 - **Dimension 4 reads as a summary, not a real contract (Step 4.2).** Send it
   back to Step 2 rather than ratifying a Contract `/assess` would have to
   reshape.
