@@ -103,8 +103,8 @@
 #      sibling knob-registry-exempt-files.txt is skipped by the sweep
 #      entirely — for the rare case (a heredoc payload emitting shell text
 #      for ANOTHER file) where a trailing same-line marker would itself
-#      corrupt the emitted content. See that file's own header for today's
-#      one entry (seed-kernel-repo.sh).
+#      corrupt the emitted content. See that file's own header; the list is
+#      empty today (its sole historical entry was retired with its script).
 #
 # Usage:
 #   check-knob-registry.sh

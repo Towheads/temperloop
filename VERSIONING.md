@@ -65,8 +65,10 @@ this run did. Two axes, never conflated:
 So "the kernel is vendored, not installed" continues to describe the
 repo-integration axis exactly as it always has; it says nothing about, and
 is not contradicted by, the machine-surface axis `temperloop install` now
-covers. `docs/kernel-repo-layout.md`'s own "what got seeded" note (its
-Makefile-exclusion paragraph) points back here for the disambiguation.
+covers. The Makefile ships no `install`/`install-env`/`install-claude`
+target for the same reason — those depend on `env/*` dotfiles absent from a
+kernel-only checkout — so the vendored-vs-installed table above is the
+authoritative disambiguation.
 
 Renaming/removing a board function, changing a hook's I/O, renaming the
 `checks` job, changing `.kernel-pin`'s format, or dropping a documented

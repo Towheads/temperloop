@@ -78,9 +78,9 @@ links_enumerate() {
   # ---- 1. env/ dotfiles -> ~ -------------------------------------------------
   # Mirrors install-env: loops env/.* (excluding . .. .gitkeep). Guarded on
   # the directory actually existing: a kernel-only checkout (this repo,
-  # temperloop) has NO env/ at all — env/* is overlay-only, per
-  # workflows/scripts/kernel/kernel-repo-layout.md's own "what got seeded"
-  # note. Without this guard, an absent env/ leaves the glob unexpanded
+  # temperloop) has NO env/ at all — env/* is overlay-only, composed in only
+  # by a downstream overlay checkout. Without this guard, an absent env/
+  # leaves the glob unexpanded
   # (bash's default non-nullglob behavior), so `for f in .../env/.*` iterates
   # ONCE with the literal pattern string itself — basename of that is ".*",
   # which is neither "." nor ".." nor ".gitkeep", so it fell through and
