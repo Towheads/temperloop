@@ -124,6 +124,18 @@ fi
 # the sole backstop. Single-PR levels skip it regardless (nothing to combine).
 : "${BUILD_COMBINED_TREE_PRECHECK:=on}"   # on|off — run the Step-4a.5 union pre-check
 
+# Operator-phone reach on a blocking-now halt (foundation#863). Every
+# `blocking-now` gate the /build orchestrator surfaces via `decision_sink_ask`
+# calls decision-notify.sh, which relays a one-line summary to the operator's
+# phone through the harness PushNotification tool. This knob is an OPTIONAL
+# ADDITIONAL scriptable channel — an ntfy/pushover/terminal-notifier/webhook
+# command an operator wires for phone reach independent of Remote Control. It
+# receives the summary as a single argument (e.g. `ntfy pub my-topic`). Empty
+# (default) = rely on PushNotification alone; a batch-severity (timed / non-
+# blocking) gate never enters the seam, so it never notifies through either
+# channel. Also the test-injection seam decision-notify.sh's own test drives.
+: "${BUILD_DECISION_NOTIFY_CMD:=}"        # optional scriptable operator-notify channel
+
 # Autonomous funnel drive-concurrency governor (temperloop#162, split out from the
 # retired human "WIP cap" governance rule): at most this many concurrent drives the
 # autonomous funnel lane bounds per tick. SOURCE OF TRUTH for funnel-tick.sh's
