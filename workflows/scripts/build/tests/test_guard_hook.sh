@@ -55,6 +55,12 @@ run_hook() {
     '{tool_name:"Write", tool_input:{file_path:$fp}, cwd:$cwd}' \
     | bash "$HOOK" 2>"$ERR"
 }
+# run_bash_hook <cwd> <command> → stdout — the Bash write-jail arm (F#932).
+run_bash_hook() {
+  jq -cn --arg cwd "$1" --arg cmd "$2" \
+    '{tool_name:"Bash", tool_input:{command:$cmd}, cwd:$cwd}' \
+    | bash "$HOOK" 2>"$ERR"
+}
 denied() { grep -q '"permissionDecision":"deny"' <<<"$1"; }
 
 OUTSIDE="$SCRATCH/outside-target.txt"   # under $HOME, not /tmp — not allow-listed
@@ -87,6 +93,53 @@ denied "$out" || fail "worktree B allowed a write into sibling worktree A"
 out="$(run_hook "$WT_B" "$WT_B/own-file.txt")"
 denied "$out" && fail "worktree B denied its own in-worktree write"
 echo "PASS: per-worktree marker scoping — concurrent worktrees jail independently"
+
+# --- Bash arm: destructive verb with a NON-LITERAL target DENIED (F#932) -------
+# The exact incident shape: rm -rf "$(dirname "$(pwd)")" wiped ~/dev.
+out="$(run_bash_hook "$WT_A" 'rm -rf "$(dirname "$(pwd)")"')"
+denied "$out" || fail "armed Bash arm allowed the F#932 command-substitution rm (out: $out)"
+out="$(run_bash_hook "$WT_A" 'rm -rf $HOME/dev')"
+denied "$out" || fail "armed Bash arm allowed an rm with a \$-variable target"
+out="$(run_bash_hook "$WT_A" 'rm -rf ../*')"
+denied "$out" || fail "armed Bash arm allowed an rm with a glob target"
+echo "PASS: Bash arm denies destructive verbs with non-literal (subst/var/glob) targets"
+
+# --- Bash arm: destructive verb with a literal OUTSIDE target DENIED -----------
+out="$(run_bash_hook "$WT_A" "rm -rf $REPO/src")"
+denied "$out" || fail "armed Bash arm allowed rm of a literal parent-checkout path"
+out="$(run_bash_hook "$WT_A" "rm -rf $OUTSIDE")"
+denied "$out" || fail "armed Bash arm allowed rm of a literal out-of-worktree path"
+out="$(run_bash_hook "$WT_A" "mv $WT_A/keep.txt $OUTSIDE")"
+denied "$out" || fail "armed Bash arm allowed mv with a destination outside the worktree"
+echo "PASS: Bash arm denies destructive verbs targeting a literal path outside the worktree"
+
+# --- Bash arm: cd OUTSIDE then a destructive verb DENIED -----------------------
+out="$(run_bash_hook "$WT_A" "cd $REPO && rm -rf build")"
+denied "$out" || fail "armed Bash arm allowed a destructive verb after cd to the parent checkout"
+echo "PASS: Bash arm denies a destructive verb run after cd'ing outside the worktree"
+
+# --- Bash arm: in-worktree / allow-listed destructive verbs ALLOWED ------------
+out="$(run_bash_hook "$WT_A" 'rm -f ./stale.txt')"
+denied "$out" && fail "armed Bash arm denied an in-worktree relative rm"
+out="$(run_bash_hook "$WT_A" "rm -rf $WT_A/subdir")"
+denied "$out" && fail "armed Bash arm denied an in-worktree absolute rm"
+out="$(run_bash_hook "$WT_A" "rm -rf ${TMPDIR:-/tmp}/guard-scratch")"
+denied "$out" && fail "armed Bash arm denied an rm under the /tmp allow-list"
+out="$(run_bash_hook "$WT_A" 'cd sub && rm -f x')"
+denied "$out" && fail "armed Bash arm denied a destructive verb after cd to an in-worktree subdir"
+echo "PASS: Bash arm allows destructive verbs confined to the worktree and /tmp/\$TMPDIR"
+
+# --- Bash arm: non-destructive commands ALLOWED (dominant worker traffic) ------
+out="$(run_bash_hook "$WT_A" "git -C $REPO status")"
+denied "$out" && fail "armed Bash arm denied a non-destructive git command"
+out="$(run_bash_hook "$WT_A" 'grep -r foo /Users/somebody/elsewhere')"
+denied "$out" && fail "armed Bash arm denied a non-destructive grep outside the worktree"
+echo "PASS: Bash arm ignores non-destructive commands (no false denials)"
+
+# --- Bash arm: inert when NOT armed (no marker) --------------------------------
+out="$(run_bash_hook "$REPO" "rm -rf $OUTSIDE")"
+denied "$out" && fail "Bash arm denied with no marker present (must be inert)"
+echo "PASS: Bash arm inert with no marker (interactive sessions unaffected)"
 
 # --- marker outside the .wt convention: warn + fail OPEN -----------------------
 out="$(run_hook "$SCRATCH/plain" "$OUTSIDE")"

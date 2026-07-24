@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook (matcher: Edit|Write|MultiEdit) — build worker write jail.
+# PreToolUse hook (matcher: Bash|Edit|Write|MultiEdit) — build worker write jail.
 #
 # Structurally enforces /build worker write-isolation (foundation #17, #10):
 # a worker spawned by the orchestrator must only edit files inside its OWN
@@ -8,6 +8,31 @@
 # even when the worker's Bash cwd is the worktree. This hook DENIES any Edit/
 # Write/MultiEdit whose resolved absolute target is outside the active worktree
 # root, so isolation no longer depends on the worker model's discretion.
+#
+# BASH ARM (foundation #1087 / F#932). File-tool writes were the only jailed
+# vector; worker *Bash* was unjailed, so a shell command could delete or write
+# anywhere. F#932: a worker ran `rm -rf "$(dirname "$(pwd)")"` from an
+# unexpected cwd, which resolved to `/Users/travis/dev` and wiped every checkout
+# and the local Obsidian vault. This hook now also inspects Bash commands and
+# DENIES a DESTRUCTIVE filesystem verb (rm, rmdir, mv, shred, truncate, dd of=)
+# unless it can PROVE every path operand stays inside the worktree (or the
+# /tmp//$TMPDIR allow-list). The proof fails — so the command is denied — when an
+# operand (or a preceding `cd` target) is NON-LITERAL: it contains a `$`
+# expansion, a `\`…\`` / `$(…)` command substitution, a `~`, a `*`/`?`/`[` glob,
+# or a `{` brace. That is exactly the F#932 shape ("target is computed, not a
+# literal path"), and it enforces the avoidance rule the incident post-mortem
+# named: destructive targets must be literal paths under the worktree.
+#
+# BASH ARM — accepted fail-open gaps (documented, like the sibling guards):
+#   - Only tree-destructive verbs are inspected. Output redirections (`> file`,
+#     `>> file`), `tee`, and in-place edits (`sed -i`) are NOT parsed — the
+#     dominant catastrophic vector is tree deletion/move, and redirect parsing
+#     is noisy for little safety gain (write-lane-guard.sh makes the same call).
+#   - Operand/cd containment is judged against a LEADING/most-recent `cd` context
+#     and whitespace tokenization; an exotic one-liner (verbs glued to `;`/`&&`
+#     with no spaces, a mid-pipeline subshell `cd`) may not be modelled — those
+#     cases fail OPEN, never falsely deny. Preventive coverage of the common
+#     destructive shapes, not a complete shell sandbox.
 #
 # CRITICAL SAFETY — INERT BY DEFAULT, ARMED BY A PER-WORKTREE MARKER. The
 # hook enforces ONLY when BOTH hold for the tool cwd's worktree toplevel
@@ -65,7 +90,7 @@ command -v jq >/dev/null 2>&1 || exit 0   # fail open: no jq, no enforcement
 
 tool=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 case "$tool" in
-  Edit|Write|MultiEdit) ;;
+  Bash|Edit|Write|MultiEdit) ;;
   *) exit 0 ;;   # matcher should scope this, but double-check
 esac
 
@@ -106,34 +131,22 @@ case "$(dirname "$wt")" in
     ;;
 esac
 
-# Collect every target path the tool would write. Edit/Write/MultiEdit all carry
-# a single `file_path` in tool_input; gather defensively in case a variant adds
-# more. Newline-delimited read loop (portable to bash 3.2 — no `mapfile`); tool
-# paths from the harness never contain embedded newlines.
-targets=()
-while IFS= read -r _t; do
-  [ -n "$_t" ] && targets+=("$_t")
-done < <(printf '%s' "$INPUT" | jq -r '
-  (.tool_input // {}) as $i
-  | [ $i.file_path?, $i.path?, ($i.edits // [])[].file_path? ]
-  | map(select(. != null and . != ""))
-  | .[]' 2>/dev/null)
-
-# No parseable target → fail open.
-[ "${#targets[@]}" -gt 0 ] || exit 0
+# --- shared helpers (used by both the Edit/Write and Bash arms) ---------------
 
 # Normalize a path to absolute WITHOUT requiring it to exist (a Write target may
 # be a new file). Resolves the existing parent dir, then re-attaches the leaf.
+# Relative paths resolve against $2 (an explicit base dir) or, by default, the
+# tool's cwd — the Bash arm passes a `cd`-adjusted base.
 abspath() {
-  local p="$1" dir base rdir
+  local p="$1" root="${2:-$cwd}" dir leaf rdir
   case "$p" in
     /*) ;;                       # already absolute
-    *)  p="$cwd/$p" ;;           # resolve relative to the tool's cwd
+    *)  p="$root/$p" ;;          # resolve relative to the base dir
   esac
   dir=$(dirname -- "$p")
-  base=$(basename -- "$p")
+  leaf=$(basename -- "$p")
   if rdir=$(cd "$dir" 2>/dev/null && pwd -P); then
-    printf '%s/%s\n' "$rdir" "$base"
+    printf '%s/%s\n' "$rdir" "$leaf"
   else
     # Parent dir doesn't exist yet — return the lexically-joined path as-is.
     printf '%s\n' "$p"
@@ -170,6 +183,140 @@ is_gitignored() {
   local p="$1"
   git -C "$worktree_root" check-ignore -q -- "$p" 2>/dev/null
 }
+
+# True iff a shell token is NON-LITERAL — it carries an expansion, command
+# substitution, glob, or brace whose runtime value the guard cannot resolve
+# statically. `..` is deliberately NOT here: it is literal and abspath's `pwd -P`
+# resolves it, so it stays subject to the ordinary containment check.
+is_nonliteral() {
+  case "$1" in
+    *'$'*|*'`'*|*'*'*|*'?'*|*'['*|*'~'*|*'{'*) return 0 ;;
+  esac
+  return 1
+}
+
+# Strip one layer of surrounding single/double quotes from a whitespace-split
+# shell token, so a quoted literal path (`"/tmp/x"`) compares as a bare path.
+strip_quotes() {
+  local s="$1"
+  s="${s#[\"\']}"; s="${s%[\"\']}"
+  printf '%s' "$s"
+}
+
+# --- Bash arm: destructive filesystem verbs (foundation #1087 / F#932) --------
+if [ "$tool" = "Bash" ]; then
+  cmd=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+  [ -n "$cmd" ] || exit 0
+
+  # Walk the command left-to-right. Track the active `cd`/`pushd` context, and
+  # for each destructive verb emit one tab-delimited record per path operand:
+  #   <baseKind>\t<baseVal>\t<opndVal>
+  # baseKind: CWD (no cd — resolve against the worktree cwd) | LIT <dir> |
+  # NONLIT <dir> (a cd whose target the guard cannot resolve). Flags, redirect
+  # operators, and command separators end an operand list. For `dd`, only the
+  # `of=` operand is a write target.
+  while IFS=$'\t' read -r bk bv op; do
+    [ -n "$op" ] || continue
+
+    # Resolve the base dir the operand is relative to (the active cd context).
+    basedir="$cwd"
+    if [ "$bk" = "NONLIT" ]; then
+      deny "build worktree guard (Bash): a destructive command runs after 'cd $bv', whose target the guard cannot resolve statically (it contains an expansion, substitution, or glob), so it cannot prove the command stays inside the worktree root '$wt'. cd to a literal path under '$wt' first, or drop the cd. (foundation #1087/#932 — worker Bash must not escape the write-jail.)"
+    fi
+    if [ "$bk" = "LIT" ]; then
+      bdir=$(abspath "$(strip_quotes "$bv")")
+      case "$bdir" in
+        "$wt"/*|"$wt") basedir="$bdir" ;;
+        *) if is_allowlisted "$bdir"; then basedir="$bdir"
+           else deny "build worktree guard (Bash): a destructive command runs after 'cd $bv' → '$bdir', which is OUTSIDE the active worktree root '$wt'. A build worker must operate only inside its own worktree (or /tmp). (foundation #1087/#932.)"
+           fi ;;
+      esac
+    fi
+
+    # A non-literal operand is unprovable → deny (the exact F#932 shape).
+    if is_nonliteral "$op"; then
+      deny "build worktree guard (Bash): a destructive command (rm/rmdir/mv/shred/truncate/dd) targets '$op', a NON-LITERAL path — it contains an expansion, command substitution, or glob whose value the guard cannot resolve, so it cannot prove the target stays inside the worktree root '$wt'. This is the F#932 failure shape ('rm -rf \"\$(dirname \"\$(pwd)\")\"' wiped ~/dev). Re-issue with a literal path typed in full under '$wt' (or /tmp/\$TMPDIR). (foundation #1087/#932.)"
+    fi
+
+    ap=$(abspath "$(strip_quotes "$op")" "$basedir")
+
+    # Inside the worktree, or allow-listed, or a gitignored in-tree copy → OK.
+    case "$ap" in "$wt"/*|"$wt") continue ;; esac
+    is_allowlisted "$ap" && continue
+    is_gitignored "$ap" && continue
+
+    deny "build worktree guard (Bash): a destructive command (rm/rmdir/mv/shred/truncate/dd) targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
+  done < <(printf '%s' "$cmd" | awk '
+    function isDestructive(s){
+      return s=="rm"||s=="rmdir"||s=="mv"||s=="shred"||s=="truncate"||s=="dd"
+    }
+    function nonlit(s){
+      return (index(s,"$")||index(s,"`")||index(s,"*")||index(s,"?")|| \
+              index(s,"[")||index(s,"~")||index(s,"{"))
+    }
+    # Never emit an empty baseVal field: a tab-delimited shell read collapses
+    # empty whitespace-run fields, which would shift op into bv. CWD uses a dash.
+    function emit(bk,bv,op){ if(bv==""){bv="-"} print bk "\t" bv "\t" op }
+    {
+      n=split($0,t,/[[:space:]]+/)
+      baseKind="CWD"; baseVal=""
+      i=1
+      while(i<=n){
+        tok=t[i]
+        if(tok==""){ i++; continue }
+        # Track the active cd/pushd context (its dir becomes the operand base).
+        if(tok=="cd"||tok=="pushd"){
+          j=i+1
+          while(j<=n && (t[j]==""||substr(t[j],1,1)=="-")) j++
+          if(j<=n){
+            d=t[j]
+            if(nonlit(d)){ baseKind="NONLIT" } else { baseKind="LIT" }
+            baseVal=d
+            i=j+1; continue
+          }
+          i++; continue
+        }
+        if(isDestructive(tok)){
+          verb=tok
+          j=i+1
+          while(j<=n){
+            o=t[j]
+            if(o==""){ j++; continue }
+            # command separators / redirects end this operand list
+            if(o==";"||o=="|"||o=="||"||o=="&"||o=="&&"|| \
+               o==">"||o==">>"||o=="<"||o=="2>"||o=="2>>"){ break }
+            if(substr(o,1,1)=="-"){ j++; continue }   # a flag
+            if(verb=="dd"){
+              if(substr(o,1,3)=="of="){ emit(baseKind,baseVal,substr(o,4)) }
+              j++; continue
+            }
+            emit(baseKind,baseVal,o)
+            j++
+          }
+          i=j; continue
+        }
+        i++
+      }
+    }')
+  exit 0
+fi
+
+# --- Edit/Write/MultiEdit arm -------------------------------------------------
+# Collect every target path the tool would write. Edit/Write/MultiEdit all carry
+# a single `file_path` in tool_input; gather defensively in case a variant adds
+# more. Newline-delimited read loop (portable to bash 3.2 — no `mapfile`); tool
+# paths from the harness never contain embedded newlines.
+targets=()
+while IFS= read -r _t; do
+  [ -n "$_t" ] && targets+=("$_t")
+done < <(printf '%s' "$INPUT" | jq -r '
+  (.tool_input // {}) as $i
+  | [ $i.file_path?, $i.path?, ($i.edits // [])[].file_path? ]
+  | map(select(. != null and . != ""))
+  | .[]' 2>/dev/null)
+
+# No parseable target → fail open.
+[ "${#targets[@]}" -gt 0 ] || exit 0
 
 for t in "${targets[@]}"; do
   ap=$(abspath "$t")

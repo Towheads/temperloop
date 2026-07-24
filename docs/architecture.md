@@ -122,7 +122,7 @@ flowchart TB
     subgraph Hooks["Guard hooks (PreToolUse)"]
         WriteLane["write-lane-guard.sh<br/>asks before a mutation targets a<br/>foreign repo's canonical checkout<br/>fails open: home dir, linked worktrees,<br/>non-repo paths, read-only ops"]
         StaleBranch["git-stale-branch-guard.sh<br/>asks before branching off a stale<br/>local default branch<br/>fails open: base already up to date"]
-        WorktreeGuard["build-worktree-guard.sh<br/>denies any write outside the<br/>worker's own worktree root"]
+        WorktreeGuard["build-worktree-guard.sh<br/>denies any write (Edit/Write or a<br/>destructive Bash verb) outside the<br/>worker's own worktree root"]
         BoardGuard["board-adapter-guard.sh<br/>asks before a raw gh project /<br/>Projects GraphQL call<br/>fails open: adapter-mediated calls"]
         SubtreeGuard["subtree-edit-guard.sh<br/>asks before a direct edit under<br/>a vendored kernel/ subtree<br/>fails open: armed .build-guard marker"]
     end
@@ -160,10 +160,13 @@ flowchart TB
 - **`build-worktree-guard.sh`** is the mechanical write-isolation jail for
   build/sweep workers: it self-arms via a `.build-guard` marker that
   `worktree.sh create` drops in each pre-created per-item worktree, then
-  structurally **denies** (not asks) any `Edit`/`Write`/`MultiEdit` that
-  resolves outside that worktree's root. Unlike the other four guards this
+  structurally **denies** (not asks) any `Edit`/`Write`/`MultiEdit` — or any
+  destructive **Bash** verb (`rm`/`rmdir`/`mv`/`shred`/`truncate`/`dd of=`) —
+  that resolves outside that worktree's root. Unlike the other four guards this
   one is a hard deny, not a confirmation prompt — a worker has no path to
-  leak a write into the parent checkout or a sibling worktree.
+  leak a write into the parent checkout or a sibling worktree, nor to delete
+  outside its jail (the Bash arm closes the gap that let a worker `rm -rf` its
+  way to `~/dev`).
 - **`board-adapter-guard.sh`** protects the board's shared GraphQL rate
   budget: it asks before a raw `gh project` call or hand-rolled Projects
   GraphQL query that bypasses the board adapter (`board.sh` and its
