@@ -524,6 +524,66 @@ out="$(bash "$SCRIPT" validate "$TMP/r15-routine-spike.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "routine spike (no keystone:) should be VALID (rule 15) (got: $out)"
 echo "PASS: validate → VALID on a routine spike with no keystone: marker (rule 15 — absent field is the common case)"
 
+# --- validate rule 16 (foundation#1059): cost: block requires because: --------
+# A cost: block WITH because: (and optional budget:) → VALID.
+cat > "$TMP/r16-ok.md" <<'EOF'
+---
+tags: [plan]
+date: 2026-07-24
+status: approved
+---
+## Items
+
+- [ ] **Deep research run** `slug: r16-deep` — run the research harness
+  - branch: `feat/r16-deep`
+  - size: M
+  - cost:
+      - because: deep-research
+      - budget: 500000
+  - acceptance:
+    - it runs
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r16-ok.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "cost: block with because: should be VALID (rule 16) (got: $out)"
+grep -q "rule 16" <<<"$out" && fail "rule 16 should NOT fire on a valid cost: block (got: $out)"
+echo "PASS: validate → VALID on a cost: block carrying because: (+optional budget:) (rule 16)"
+
+# A cost: block with NO because: → INVALID (rule 16).
+sed '/because: deep-research/d' "$TMP/r16-ok.md" > "$TMP/r16-nobecause.md"
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r16-nobecause.md")" || rc=$?
+[ "$rc" -ne 0 ] || fail "cost: with no because: should exit non-zero (rule 16) (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "INVALID" ] || fail "cost: with no because: should be INVALID (rule 16) (got: $out)"
+jq -e '.errors[] | select(test("rule 16"))' <<<"$out" >/dev/null \
+  || fail "cost: with no because: INVALID but rule 16 not in errors (got: $out)"
+echo "PASS: validate → INVALID + rule 16 on a cost: block missing because:"
+
+# An item with NO cost: block → VALID, rule 16 never fires (the common case).
+grep -q "rule 16" <<<"$(bash "$SCRIPT" validate "$TMP/valid.md")" \
+  && fail "rule 16 must not fire on a plan with no cost: blocks"
+echo "PASS: validate → rule 16 dormant on plans with no cost: block (absent = standard cost)"
+
+# Inline shorthand `- cost: <driver>` (a hand-authored one-liner) is FLAGGED, not
+# silently dropped: the inline value is captured as because: → VALID, no rule 16.
+cat > "$TMP/r16-inline.md" <<'EOF'
+---
+tags: [plan]
+date: 2026-07-24
+status: approved
+---
+## Items
+
+- [ ] **Inline cost flag** `slug: r16-inline` — one-liner cost, cost BEFORE acceptance
+  - branch: `feat/r16-inline`
+  - size: M
+  - cost: agent-fanout
+  - acceptance:
+    - it runs
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r16-inline.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "inline '- cost: <driver>' should be VALID (because captured inline) (got: $out)"
+grep -q "rule 16" <<<"$out" && fail "inline cost value must count as because: (rule 16 must NOT fire) (got: $out)"
+echo "PASS: validate → inline '- cost: <driver>' captures the driver as because: (not silently dropped) + a cost block before acceptance still parses"
+
 # --- toposort: 2-level DAG over depends-on ∪ after ----------------------------
 out="$(bash "$SCRIPT" toposort "$TMP/valid.md")"
 jq -e '.levels | length == 2' <<<"$out" >/dev/null || fail "expected 2 levels (got: $out)"
