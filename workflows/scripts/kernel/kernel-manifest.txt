@@ -374,3 +374,4 @@ kernel NOTICE
 kernel SECURITY.md
 kernel CHANGELOG.md
 kernel VERSIONING.md
+kernel VERSION
