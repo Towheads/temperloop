@@ -63,6 +63,7 @@ Build order: L0 first → Ln last; items in the same level ship together.
   - repo: owner/repo                   # optional; target repo for this item's work, when different from the plan's home repo (the kernel-repo case). Default: the plan's home repo
   - size: S | M | L                    # L means "should probably be split"
   - kind: code | spike                 # default code; spike = verdict-only (note + routed issue, no PR)
+  - keystone: true                     # optional; kind: spike ONLY — halt /build after this spike's verdict for operator review before dependents build (temperloop#526)
   - model: sonnet                      # optional; advisory worker-model tier for /build 3c (sonnet | haiku); absent = inherit the session model (top tier)
   - depends-on: other-slug, another-slug   # MERGE-safety edge: dep must be [x] merged before this starts
   - after: predecessor-slug            # LOGICAL-order edge: satisfied by any terminal state ([x]/[-]/[v])
@@ -101,6 +102,7 @@ Every `## Items` entry is one checkbox line — `- [ ] **<title>** \`slug: <keba
 | `repo:` | optional (rule 12) | Target `owner/repo` when the item lands in a repo other than the plan's home (the kernel-vs-overlay split); absent = the plan's home repo. |
 | `size:` | required | `S` \| `M` \| `L` (`L` means "should probably be split"). |
 | `kind:` | optional (default `code`) | `code` → PR; `spike` → verdict note + routed issue, no PR. |
+| `keystone:` | optional (rule 15) | `kind: spike` **only**; value `true`. Marks a *keystone* spike — one whose verdict reshapes downstream contracts — so `/build` halts for operator verdict-review before dependents build (temperloop#526). Absent = routine spike (today's autonomous path). |
 | `model:` | optional | Advisory worker-model tier `sonnet` \| `haiku`; absent = inherit the session model. |
 | `depends-on:` | optional | MERGE-safety edge — each dep must be `[x]` merged before this item starts. |
 | `after:` | optional | LOGICAL-order edge — satisfied by any terminal state (`[x]` / `[-]` / `[v]`). |
@@ -189,6 +191,19 @@ Two patterns motivate it:
 ### Item `kind:` — code vs spike
 
 `kind:` is `code` (default) or `spike`. A **code** item produces a PR (worker → commit → push → PR → CI → merge). A **spike** item is verdict-only — its deliverable is a Context/Decision note + a routed follow-up issue, not a PR. `/build` runs a `spike` read-only, skips push/PR/CI, verifies the note exists and the issue is routed, and marks it `[v]` (verdict-captured); on board-enabled projects the spike's issue closes on verdict-capture, not via a PR `Closes`. In the `## Summary`, a spike gets its level tag like any other item — isolate it into its own earlier level (via `after:` edges) so no level mixes a spike and a build item.
+
+### Optional `keystone:` field — the keystone-spike review gate
+
+`keystone: true` is a **spike-only** marker (validated by rule 15) for a *keystone* spike: one whose verdict **reshapes downstream contracts or scope**, as opposed to a routine investigation spike whose verdict merely informs a single dependent. By default every `kind: spike` runs **fully autonomously** (`/build` Step 3 spike kind-fork → `[v]`, no operator gate — a spike-only level needs no merge gate), so a keystone spike's contract-reshaping verdict would otherwise flow **straight into dependent builds with no operator review**. `keystone: true` closes that gap: `/build` **halts after the keystone spike captures its verdict**, so the operator reviews the Decisions/Context verdict note before any dependent level builds.
+
+Mechanics (`/build` spike kind-fork, `claude/commands/build.md`): the run splits into **two runs against the same plan note**, recorded in an orchestrator-written `## Run scope` section (below):
+
+- **RUN 1 (spike):** process levels up to and including the keystone spike's level; the spike captures its `[v]` verdict as normal, then — because it is `keystone: true` **and** non-terminal items remain — `/build` records the halt in `## Run scope` and **stops without advancing** to dependent levels. The plan stays `status: executing` so a later run resumes.
+- **RUN 2 (build):** the operator reviews the verdict note and **re-runs `/build`**. On resume the keystone spike is already `[v]` at start (it did not transition *this* run), so no halt fires — RUN 2 builds the dependent levels normally. Re-running `/build` **is** the operator's approval to proceed; if the verdict says the plan should change, the operator edits the plan (or abandons it) instead of re-running.
+
+This gate is **`blocking-now`** (no safe default — a contract-reshaping verdict is exactly what a human must see) and is therefore **NOT skippable by an `--unattended` approval poll.** `--unattended` controls the *start*, never a mid-run gate: an operator-absent run that hits the keystone halt parks the plan (`status: executing`), posts a verdict-review decision issue on the epic (operator-absent backend), and stops the tick — it never auto-proceeds into dependent builds on silence. Routine spikes (`keystone:` absent) keep today's autonomous path unchanged.
+
+Author a keystone spike exactly like any other spike — its own isolated level via `after:` edges — and add the one `keystone: true` line. See `Decisions/temperloop - Keystone-spike review gate`.
 
 ### Optional `model:` field — tier by verification, not difficulty
 
@@ -320,6 +335,27 @@ One line per consent event, four fields:
 - **`mode:`** — how consent arose: `modal-approved` (explicit operator approval at the modal gate) | `timed-elapsed` (timed window elapsed with no objection) | `headless-immediate` (`FUNNEL_OPERATOR_ABSENT=1` immediate-merge branch, re-poll passed).
 - **`PRs:`** — the **exact** consented PR list. Consent pins this list: a PR not in it (or work re-pushed under a new PR number) is **not** covered and must earn consent at a fresh gate. A level gated more than once (e.g. an EJECTED item re-parked and re-gated) appends a **new** line — lines are append-only, never edited.
 
+## Orchestrator-written `## Run scope` section (keystone-spike halt boundary)
+
+`/build` appends this section onto the plan note **only when a plan carries a `keystone: true` spike** (§ Optional `keystone:` field; temperloop#526) — authors don't author it. It is the **durable record of the keystone-spike review halt**: the boundary at which a RUN 1 (spike) stopped so the operator could review a contract-reshaping verdict before the RUN 2 (build) of dependent levels. Like `## Merge gate log`, it exists so the halt survives a crash and a resumed run can tell which side of the boundary it is on. Written via `vault_append` (a reliable EOF op) at the moment the halt fires (RUN 1) and again when the run resumes past it (RUN 2).
+
+Its load-bearing job is **audit legibility, not resume control** — resume correctness rides the spike's own `[v]` sentinel (a keystone spike already `[v]` at run start did not transition *this* run, so no halt re-fires; the re-run itself is the operator's approval to proceed). The `## Run scope` lines make the two-run split and the operator's review point legible after the fact, especially on an `--unattended` run where the halt parked the plan and posted a decision issue rather than blocking a live operator.
+
+### Shape
+
+```markdown
+## Run scope
+
+- RUN 1 (spike) · 2026-07-23T14:02:11Z · keystone spike `provider-contract-spike` (level 0) `[v]` — HALTED before levels 1–3; verdict: [[Decisions/temperloop - provider contract reshape]] · review then re-run /build to proceed
+- RUN 2 (build) · 2026-07-24T09:15:40Z · resumed after operator review — building levels 1–3
+```
+
+One line per run boundary:
+
+- **`RUN <n> (<phase>)`** — `RUN 1 (spike)` for the halt, `RUN 2 (build)` for the resume. A plan with several keystone spikes appends a new `RUN k (spike)` / `RUN k+1 (build)` pair per halt — lines are append-only, never edited.
+- **Timestamp** — ISO-8601 UTC, the moment the halt fired or the resume began.
+- **The halt line** names the keystone spike slug + level, its `[v]` capture, the levels held, and the `verdict:` wikilink the operator reviews. On `--unattended` it also names the posted decision issue (`decision issue: #N`).
+
 ## Status sentinels (in-band tracking)
 
 `/build` mutates the plan note as it goes. Six states:
@@ -353,6 +389,7 @@ Fail fast if any of:
 12. `repo:` (when present) must match `owner/repo` shape — a single `/` separating two non-empty segments of `[A-Za-z0-9_.-]+`, no leading `#`, no issue number. Fail otherwise; do not silently coerce or strip. (`repo:` absent is never a failure — it is optional and defaults to the plan's home repo.)
 13. An item declares an `activation:` block whose `class:` is not one of `A` \| `B` \| `C`, **or** a `class: A` block that carries no `proof:` predicate. Class A is the synchronous in-repo activation check `/build` runs at Step 3e.6, so it must be machine-checkable — like `gate_check:`, but pinned on *this item's own* reachability surface (the `__init__.py` entry, the flipped flag, the rendered panel) rather than a dependency's. Class B/C are ledger-discharged (temperloop#317) and need no `proof:`. (An `activation:` block is **optional** — the requirement is conditional on the block being present; a `class: A` block specifically must carry `proof:`.)
 14. A **product-source** item — `kind: code` (not `kind: spike`) whose `files:` list includes at least one path under `scripts/`, `workflows/`, or `claude/` — carries **no `activation:` block**. Fail unless the item is exempt (`kind: spike`; docs-only — every `files:` entry under `docs/` or a `*.md` outside `claude/`; or no `files:` entry touches `scripts/`/`workflows/`/`claude/`) **or** the plan is **grandfathered** — its frontmatter `date:` is present and strictly before the cutover constant `RULE_14_CUTOVER_DATE` in `workflows/scripts/build/plan.sh` (currently `2026-07-17`); a plan with no `date:` frontmatter is never grandfathered. See § Optional `activation:` block for the full predicate and grandfather rationale. This is the inward-enforcement counterpart to rule 11 (which forces a *dependency's* gate to be machine-checkable) — rule 14 forces *this item's own* activation to be declared at all, closing the "correct but never wired in" gap the activation-completeness contract (`Decisions/temperloop - Activation-completeness contract`) exists to catch.
+15. An item carries a `keystone:` field whose value is **not `true`**, OR a `keystone: true` marker on an item that is **not `kind: spike`** (default `kind` is `code`). `keystone: true` is the spike-only marker for the keystone-spike review gate (temperloop#526) — `/build` halts after a keystone spike's verdict for operator review before dependents build. It is meaningless on a `code` item (which merges through the normal gate), so a `keystone:` on a non-spike item is a plan defect; an absent/empty `keystone:` is the common case (a routine spike on today's autonomous path). See § Optional `keystone:` field.
 
 > `## Problem` and the grouped `## Summary` are an **authoring standard, not a validation rule** — `/build` does not fail a plan that lacks them, so plans authored before this convention still execute on resume.
 
