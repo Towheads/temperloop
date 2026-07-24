@@ -652,6 +652,16 @@ async function driveItem(item) {
   // through spineBin's foundation fallback; the repo-local gate resolves
   // directly against the worktree.
   const qgBin = `${wt}/scripts/quality-gates.sh`;
+  // temperloop#1241: SCRUB the pipeline's own build.config.sh knobs from the
+  // gate's environment before running the suite. Under funnel-drive the session
+  // exports ~40 build.config.sh knobs; the config-precedence tests the gate runs
+  // (test_config.sh / test_stranger_config.sh / test_funnel_cron.sh) assert rung
+  // precedence (env > machine-conf > repo-local > tracked-default), so an
+  // inherited knob wins the env rung and false-FAILs a change CI's `checks`
+  // passes green. `build-config-knobs.sh` prints the (SSOT-derived) knob names;
+  // unsetting them makes the gate hermetic — tracked defaults, matching CI. A
+  // missing/older helper prints nothing → `unset` no-op → prior behavior.
+  const knobsBin = `${wt}/workflows/scripts/build/build-config-knobs.sh`;
   const gateOut = await runSpine(
     // If the script is missing → GATE_ABSENT (no-op). Else run it in the
     // worktree; exit 0 → GATE_PASS, non-zero → GATE_FAIL.
@@ -666,7 +676,7 @@ async function driveItem(item) {
     // no-op. With pipefail set, the gate's own non-zero exit propagates and
     // GATE_FAIL is still emitted — the runtime match for the documented rule.
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-      `else ( cd ${sq(wt)} && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
+      `else ( cd ${sq(wt)} && unset $(bash ${sq(knobsBin)} 2>/dev/null) && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
       `&& echo '{"outcome":"GATE_PASS"}' || echo '{"outcome":"GATE_FAIL"}'; fi`,
     // temperloop#115: the full quality-gates.sh suite runs >2min; without an
     // explicit timeout the executor's Bash tool kills it at 120s → false
