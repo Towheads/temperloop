@@ -467,36 +467,12 @@ KERNEL_GATES=(
   # (The `temperloop update` managed-clone gate and the update-kernel
   # breaking-delta gate are surface-conditional — registered just below the
   # array, temperloop#488.)
-  # foundation→temperloop rename window (temperloop#165, v0.15.0): hermetic
-  # read-old-write-new proof — a legacy FOUNDATION_*-env bootstrap installs
-  # with per-var deprecation NOTEs while TEMPERLOOP_* installs silently;
-  # the `foundation` shim dispatches + self-deprecates; a legacy-env
-  # install survives an adjacent-tag `update` through the shim; a
-  # pre-rename .foundation/config and a legacy machine boards.conf are
-  # read by new code; and the TEMPERLOOP_LEGACY_WINDOW_CLOSED simulation
-  # proves every legacy surface degrades legibly (names the replacement +
-  # v0.17.0) once the window shuts. Same fixture-upstream + sandbox
-  # conventions as test_update_subcommand.sh above.
-  "bash workflows/scripts/tests/test_rename_compat.sh"
-  # bin/bootstrap.sh tag-pinning + delegate-to-update (temperloop#434, ADR
-  # 0002 "Managed-clone state ownership"): a fresh bootstrap clones with
-  # tag-resolvable history and lands on the latest release tag (never the
-  # untagged mainline tip), a tagless remote falls back to the default
-  # branch with an explicit warning, a re-run delegates entirely to
-  # `temperloop update` (refuses non-interactively with HEAD untouched,
-  # but actually moves HEAD when consent is given — never a pull), and a
-  # re-run against a pre-`update`-era install fails legibly with a stated
-  # recovery. Same fixture-upstream + sandbox conventions as
-  # test_update_subcommand.sh / test_rename_compat.sh above.
-  "bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh"
-  # Release version embedding (temperloop#677): the shipped repo-root VERSION
-  # file is the source of truth `temperloop version` reports (not a runtime
-  # git-describe, not a hardcoded "dev"), an env override still wins, and —
-  # the drift guard — when HEAD is exactly a release tag `vX.Y.Z` the VERSION
-  # file must equal `X.Y.Z`, so "bump VERSION in the tagged commit" is
-  # mechanically enforced rather than a release-ritual discipline a cut can
-  # silently skip.
-  "bash workflows/scripts/tests/test_version_embedding.sh"
+  # (Kernel self-distribution gates — test_rename_compat.sh,
+  # test_bootstrap_tag_pinning.sh, test_version_embedding.sh, and
+  # test_update_subcommand.sh — are CLASS-gated on a vendoring-consumer signal
+  # just below this array, not listed here: a bespoke-subtree consumer carries
+  # none of their bin/bootstrap.sh + VERSION surface. See the self-distribution
+  # block after SKIPPED_KERNEL_GATES, temperloop#691.)
   # Pinned-shellcheck resolver (temperloop#567): asserts scripts/ensure-shellcheck.sh
   # resolves a binary reporting EXACTLY the pinned version and fails loudly on an
   # unresolvable version — the guarantee that `make shellcheck` (the gate below)
@@ -520,22 +496,43 @@ KERNEL_GATES=(
   "bash workflows/scripts/tests/test_validate_design_brief.sh"
 )
 
-# Surface-conditional kernel gates (temperloop#488). These two gates test
-# surfaces a consuming repo's composed tree may legitimately not carry, so
-# each registers only when its surface is actually present — with a legible
-# skip line otherwise (never a silent no-op, per the legible-degradation
-# rule). In the kernel's own checkout both surfaces exist and both gates
-# always run; the skips fire only in a composed consumer tree.
+# Surface-conditional kernel gates (temperloop#488, class-gated per temperloop#691).
+# Some gates test surfaces a consuming repo's composed tree may legitimately not
+# carry, so they register only when the surface is present — with a legible skip
+# line otherwise (never a silent no-op, per the legible-degradation rule). In the
+# kernel's own checkout the surfaces exist and the gates run; the skips fire only
+# in a composed consumer tree.
 SKIPPED_KERNEL_GATES=()
-# `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
-# ownership") — hermetic, deterministic, no-network end-to-end fixture over
-# bin/subcommands/update.sh. A consumer that has not adopted the bin/
-# managed-clone CLI (e.g. a bespoke-subtree vendoring repo) has no such
-# surface to test.
-if [[ -f "$REPO_ROOT/bin/subcommands/update.sh" ]]; then
-  KERNEL_GATES+=("bash workflows/scripts/tests/test_update_subcommand.sh")
+
+# Kernel self-distribution / self-update gates — CLASS-gated (temperloop#691,
+# generalizing the per-test temperloop#488 pattern to a per-CLASS one). These
+# test how the kernel BOOTSTRAPS, RENAME-migrates, VERSION-embeds, and
+# SELF-UPDATES a fresh install of ITSELF (bin/bootstrap.sh, the `foundation`
+# rename shim, the repo-root VERSION file, bin/subcommands/update.sh). A
+# bespoke-subtree vendoring consumer carries none of that surface — it pulls the
+# kernel through its own `make update-kernel` subtree flow, and its composed tree
+# presents the kernel's dirs as symlinks the self-update CLI's
+# `git show <ref>:<path>` cannot traverse. Rather than guard each test on its own
+# surface probe (which silently drifts the moment a new self-distribution test is
+# added without one), gate the whole CLASS on ONE signal: a repo-root
+# `.kernel-pin` marks a vendoring consumer (the kernel's own checkout has none),
+# so a new self-distribution test joins this list and is excluded from every
+# consumer for free.
+SELF_DISTRIBUTION_GATES=(
+  "bash workflows/scripts/tests/test_rename_compat.sh"
+  "bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh"
+  "bash workflows/scripts/tests/test_version_embedding.sh"
+  "bash workflows/scripts/tests/test_update_subcommand.sh"
+)
+if [[ ! -f "$REPO_ROOT/.kernel-pin" ]]; then
+  # Kernel's own checkout (no .kernel-pin) — full self-distribution coverage.
+  KERNEL_GATES+=("${SELF_DISTRIBUTION_GATES[@]}")
 else
-  SKIPPED_KERNEL_GATES+=("test_update_subcommand.sh — bin/subcommands/update.sh absent (managed-clone CLI not adopted)")
+  # Vendoring consumer (repo-root .kernel-pin present) — no self-distribution surface.
+  for _sd_gate in "${SELF_DISTRIBUTION_GATES[@]}"; do
+    SKIPPED_KERNEL_GATES+=("${_sd_gate#bash workflows/scripts/tests/} — kernel self-distribution gate (vendoring consumer, .kernel-pin present)")
+  done
+  unset _sd_gate
 fi
 # scripts/update-kernel.sh's own breaking-delta gate (temperloop#89) —
 # black-box regression proof that lifting semver_major()/breaking_sections()
