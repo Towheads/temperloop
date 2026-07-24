@@ -77,12 +77,15 @@ clarifying questions while the first chunk builds concurrently. Issues
 whose questions get answered during the batch accumulate into a **tail
 chunk** — driven in that same run, sequenced after any chunk whose merge
 pass is still pending and behind the same between-chunk release-management
-gate as every other chunk — so an answer given mid-run is consumed
+gate as every other chunk (a usage check run between chunks that pauses
+the run when remaining quota is low and auto-resumes it in-session once
+headroom returns) — so an answer given mid-run is consumed
 immediately rather than waiting for the next run. The overlap tier runs
-only when three conditions all hold: the run is attended (a live
+only when four conditions all hold: the run is attended (a live
 operator), the chunk width exceeds one (width one restores full legacy
 semantics — sequential drive and questions-first ordering, overlap
-disabled), and background invocation is available in the harness. An
+disabled), background invocation is available in the harness, and the
+run is not a rehearsal (`--dry-run`). An
 unattended or headless run never uses the overlap tier — it has no
 background-completion re-invoke loop — and keeps the synchronous chunked
 path unchanged. If the background launch turns out to be unavailable or
@@ -90,9 +93,12 @@ is refused at run time, the run emits an explicit degradation notice
 (what was skipped, why, and that results and coverage are unaffected —
 only the wall-clock overlap is lost) and falls back to the synchronous
 path; the fallback is a designed floor, never a silent behavior change or
-a stall. A dry run never launches anything in the background: it prints
-which issues would have formed the overlapped first chunk and which would
-have gone to the question batch, preserving the zero-mutation guarantee.
+a stall. A rehearsal run (`/sweep --dry-run`) never launches anything in
+the background: it prints which issues would have formed the overlapped
+first chunk and which would have gone to the question batch. Its
+zero-mutation guarantee is literal — a dry run does not claim, merge,
+park, comment, label, or launch anything; it only prints what would
+happen.
 
 Every pooled issue reaches one of a small set of terminal outcomes by the
 end of a run — merged, resolved as a verdict-only item, or parked on an
@@ -123,10 +129,9 @@ letting a run burn through headroom that other work also depends on. The
 overlap tier additionally depends on the conversational harness's
 background-invocation contract — an immediate task-handle return plus a
 completion notification that re-invokes the driver — which exists only
-for an attended conversational session; that dependency is why the
-unattended arm never uses the overlap and why an unavailable or refused
-background launch degrades legibly to the synchronous path rather than
-being worked around.
+for an attended conversational session; the gating and degradation
+behavior that follows from that dependency is described in the
+overlap-tier paragraph under "How it works" above.
 
 ## Resource impact
 
