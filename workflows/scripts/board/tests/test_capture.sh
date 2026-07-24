@@ -75,17 +75,41 @@ run 2
 grep -q 'usage: capture.sh' <<<"$out" || fail "no-arg run did not print usage (got: $out)"
 echo "PASS: capture.sh with no title exits 2 with usage (no issue filed)"
 
-# 4) a title that starts with `--` (misplaced flag) → refused, exit 2, no gh
+# 4) a leading flag with no title → "title required", exit 2, no gh.
+# (Post-#1227 a leading `--` arg is a flag, not the title, so `--board 4` with no
+# title is a missing-title error rather than the "--"-prefixed-title refusal.)
 run 2 --board 4
-grep -q "refusing a title that starts with '--'" <<<"$out" \
-  || fail "flag-as-title not refused (got: $out)"
-echo "PASS: capture.sh refuses a '--'-prefixed title instead of filing it (#366)"
+grep -q "a title is required" <<<"$out" \
+  || fail "flags-only-no-title not rejected with the title-required error (got: $out)"
+echo "PASS: capture.sh with flags but no title exits 2 (no junk issue) (#366/#1227)"
 
 # 5) invalid --rework cause → refused, exit 2, no gh (F#730)
 run 2 "Some title" --rework bogus
 grep -q -- "--rework must be one of regression, spec-miss, flake" <<<"$out" \
   || fail "invalid --rework cause not rejected (got: $out)"
 echo "PASS: capture.sh rejects an invalid --rework cause without filing an issue (F#730)"
+
+# 6) --title alias is ACCEPTED as the title and proceeds past arg-parsing to the
+# filing path (foundation#1227). The fail-on-call fake gh makes "reached gh" the
+# proof that arg-parsing accepted the title rather than rejecting it in the
+# preamble. (This is the one case that intentionally reaches gh.)
+rm -f "$SENTINEL"
+PATH="$BIN:$PATH" bash "$CAPTURE" --title "Alias title" --board 4 >/dev/null 2>&1 || true
+[ -e "$SENTINEL" ] \
+  || fail "6: --title should be accepted and proceed to the filing path (not rejected in arg-parsing)"
+echo "PASS: capture.sh --title <t> is accepted as a positional-title alias (#1227)"
+
+# 7) BOTH a positional title AND --title → exit 2, no gh (exactly one source).
+run 2 "Positional" --title "Flag"
+grep -q "EITHER positionally OR via --title, not both" <<<"$out" \
+  || fail "7: passing both a positional title and --title should be rejected (got: $out)"
+echo "PASS: capture.sh rejects both a positional title and --title (#1227)"
+
+# 8) --title whose value starts with `--` (a misplaced flag) → refused, exit 2.
+run 2 --title --board
+grep -q "refusing a title that starts with '--'" <<<"$out" \
+  || fail "8: a '--'-prefixed --title value should be refused (got: $out)"
+echo "PASS: capture.sh refuses a '--'-prefixed --title value (#1227 keeps the junk-flag guard)"
 
 # 6) invalid --repo value → refused, exit 2, no gh (F#808)
 run 2 "Some title" --repo overlay
@@ -204,6 +228,15 @@ grep -q -- "--label Operational" <<<"$line" \
 grep -q -- "--label bug" <<<"$line" \
   || fail "#49: a non-work-class --label must still append (line: $line)"
 echo "PASS: capture.sh --label bug still appends on top of the default Operational (#49)"
+
+# 4) --title alias: the flag VALUE flows through to `gh issue create` as the
+# title (foundation#1227 — the whole point of the alias). Full-flow harness, so
+# this proves value-passthrough, not merely that arg-parsing accepted the flag.
+line="$(wc_issue_create_line --title "AliasTitle" --label bug)"
+[ -n "$line" ] || fail "#1227: --title never reached gh issue create"
+grep -q -- "--title AliasTitle" <<<"$line" \
+  || fail "#1227: --title value did not flow to gh issue create as the title (line: $line)"
+echo "PASS: capture.sh --title <t> flows the flag value through as the issue title (#1227)"
 
 cleanup_wc
 trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT

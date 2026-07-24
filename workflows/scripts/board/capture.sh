@@ -126,8 +126,11 @@ usage() {
   cat <<'EOF'
 usage: capture.sh "<title>" [--body "..."] [--label <l>] [--board 3|4] [--milestone "<m>"]
                   [--rework <regression|spec-miss|flake>] [--repo kernel|ambiguous]
+   or: capture.sh --title "<title>" [ ...same flags... ]
 
 Capture a noticed-but-not-now item as a tracked board item in one call.
+  --title      the issue title, as a flag alias for the positional first arg
+               (pass EITHER positionally OR via --title, not both)
   --body       longer description (defaults to a provenance line)
   --label      add an extra GitHub label (e.g. bug); Operational is always added
                by default — pass --label Foundational to override the work class
@@ -149,14 +152,18 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
 
-title="${1:-}"
-[ -n "$title" ] || { usage >&2; exit 2; }
-# A title starting with `--` is almost certainly a misplaced flag (a typo or a
-# forgotten title), not an intended issue title — refuse rather than file junk.
-case "$title" in
-  --*) { echo "capture.sh: refusing a title that starts with '--' (looks like a misplaced flag): $title"; usage; } >&2; exit 2 ;;
+# Title source: the positional first arg OR `--title <value>` (foundation#1227).
+# Every sibling field is a flag, so the odd-one-out positional kept getting
+# mis-passed as `--title` (misuse recurred 2026-07-07 / 2026-07-17 with the
+# lesson already banked) — so accept both, but require EXACTLY ONE source. A
+# leading `--` arg is NOT taken as the positional title (it's a flag, including
+# `--title` itself, parsed in the loop below); a bare leading arg is.
+title=""
+positional_title=0
+case "${1:-}" in
+  '' | --*) : ;;                    # no positional title (flags-only, or empty)
+  *) title="$1"; positional_title=1; shift ;;
 esac
-shift
 
 body=""
 label=""
@@ -166,6 +173,9 @@ rework=""
 repo_route=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --title)
+      [ "$positional_title" -eq 0 ] || { echo "capture.sh: pass the title EITHER positionally OR via --title, not both" >&2; exit 2; }
+      title="${2:?--title needs a value}"; shift 2 ;;
     --body)  body="${2:?--body needs a value}"; shift 2 ;;
     --label) label="${2:?--label needs a value}"; shift 2 ;;
     --board) board="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
@@ -175,6 +185,13 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+[ -n "$title" ] || { echo "capture.sh: a title is required (positional or --title)" >&2; usage >&2; exit 2; }
+# A title starting with `--` is almost certainly a misplaced flag (a typo or a
+# forgotten value), not an intended issue title — refuse rather than file junk.
+case "$title" in
+  --*) { echo "capture.sh: refusing a title that starts with '--' (looks like a misplaced flag): $title"; usage; } >&2; exit 2 ;;
+esac
 
 # --repo kernel/ambiguous routing (F#808, Guard #3 of the kernel-vs-overlay
 # routing rule) — overrides --board. `ambiguous` routes to the SAME board as
