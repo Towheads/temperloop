@@ -352,8 +352,12 @@ _ks_bm_run() {
 
 # point 9: project registration via the CLI only — config-only edits to the
 # `projects` map are not honored in 0.22.1. `project add` is idempotent
-# (confirmed against the real CLI), so this is safe to call on every
-# search/reindex without a separate "is it already registered" check.
+# (confirmed against the real CLI), so it is safe to call whenever registration
+# is needed without a separate "is it already registered" check. Since #996 the
+# SEARCH path no longer calls this per query — it registers LAZILY only on a
+# project-not-found miss (the ~1.9s re-register was ~45% of search latency,
+# F#992); reindex still calls it up front. Idempotency is what makes the
+# lazy-on-miss retry safe (first use AND the post-`reset` DB-dropped path).
 # On failure the subprocess's own output is surfaced (bounded to its tail)
 # instead of swallowed: an opaque "registration failed" with no cause left
 # three separate field failures undiagnosable until someone re-ran the
@@ -400,18 +404,41 @@ _ks_search_backend_basic_memory_search() {
   local root project raw rc=0
   root="$(ks_root)"
   project="$KNOWLEDGE_SEARCH_BM_PROJECT"
-  _ks_bm_project_add "$project" "$root" || {
-    echo "knowledge_search: basic-memory project registration failed" >&2
-    return 4
-  }
 
-  # `|| rc=$?` (not a bare trailing `$?` read) so a failing command
-  # substitution doesn't trip the CALLER's `set -e` before rc is captured —
-  # this file is sourced into scripts that own that option.
+  # foundation#996: try the search FIRST and register the project lazily only on
+  # a miss. The per-query `basic-memory project add` is a ~1.9s subprocess (~45%
+  # of search latency, F#992) yet a no-op on an already-registered project, so
+  # the warm path — the overwhelming common case — now issues ONE subprocess
+  # instead of two. `|| rc=$?` (not a bare trailing `$?` read) so a failing
+  # command substitution doesn't trip the CALLER's `set -e` before rc is
+  # captured — this file is sourced into scripts that own that option.
   raw="$(_ks_bm_run tool search-notes "$query" --hybrid --project "$project" --page-size "$limit" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
-    echo "knowledge_search: basic-memory search-notes failed (exit $rc)" >&2
-    return 4
+    # Miss: the project isn't registered yet (first use), or a `basic-memory
+    # reset` dropped the DB while config still lists it (the idempotency caveat
+    # the per-query call used to cover). Register (idempotent) and retry ONCE. A
+    # genuinely empty result is NOT a miss — basic-memory returns a non-empty
+    # `{"results":[]}` envelope for it — so this branch fires only on a real
+    # project-not-found / DB-dropped failure, never on a warm no-match query.
+    _ks_bm_project_add "$project" "$root" || {
+      echo "knowledge_search: basic-memory project registration failed" >&2
+      return 4
+    }
+    rc=0
+    # The FIRST search's stderr is suppressed above (a miss there is expected —
+    # "project not found" on a cold start). A RETRY failure, by contrast, is a
+    # genuine backend error worth diagnosing, so capture its stderr and surface
+    # the tail on failure — the same K#368/foundation#1176 discipline
+    # `_ks_bm_project_add` applies (an opaque "failed" with no cause is
+    # undiagnosable).
+    local search_err; search_err="$(mktemp "${TMPDIR:-/tmp}/ks-search-err.XXXXXX" 2>/dev/null)" || search_err=/dev/null
+    raw="$(_ks_bm_run tool search-notes "$query" --hybrid --project "$project" --page-size "$limit" 2>"$search_err")" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
+      echo "knowledge_search: basic-memory search-notes failed (exit $rc)" >&2
+      [ "$search_err" != /dev/null ] && { tail -n 15 "$search_err" >&2; rm -f "$search_err"; }
+      return 4
+    fi
+    [ "$search_err" != /dev/null ] && rm -f "$search_err"
   fi
 
   printf '%s' "$raw" | _ks_bm_reshape_results \

@@ -74,6 +74,10 @@ case "$sub" in
         echo "Error adding project: simulated registration failure detail" >&2
         exit 1
       fi
+      # register_then_ok (#996 lazy-on-miss cold path): registration drops a
+      # marker so a subsequent search-notes succeeds where the pre-register one
+      # failed (project-not-found → register → retry).
+      [ "${FAKE_UVX_MODE:-ok}" = "register_then_ok" ] && : > "${FAKE_UVX_LOG}.registered"
       echo "Project '$name' added successfully"
       exit 0
     fi
@@ -88,12 +92,33 @@ case "$sub" in
       shift
       printf 'SEARCH args=%s\n' "$*" >> "$FAKE_UVX_LOG"
       case "${FAKE_UVX_MODE:-ok}" in
-        search_fail)
-          echo "fake-uvx: simulated backend crash" >&2
+        search_fail|project_add_fail)
+          # project_add_fail must also MISS the search: under #996's lazy-on-miss
+          # flow, `project add` is only attempted after a search miss, so a
+          # registration-failure test needs the search to fail first.
+          echo "fake-uvx: simulated backend crash / miss" >&2
           exit 1
           ;;
         bad_json)
           echo "this is not json"
+          exit 0
+          ;;
+        empty_results)
+          # A zero-match query: basic-memory returns a non-empty {"results":[]}
+          # ENVELOPE (exit 0), NOT empty stdout — the load-bearing #996 contract.
+          echo '{"results":[],"current_page":1,"page_size":10,"total":0,"has_more":false}'
+          exit 0
+          ;;
+        register_then_ok)
+          # Fail until the project has been registered (marker present), then
+          # return results — the #996 lazy-on-miss cold/reset path.
+          if [ ! -f "${FAKE_UVX_LOG}.registered" ]; then
+            echo "fake-uvx: project not registered (register_then_ok, pre-registration)" >&2
+            exit 1
+          fi
+          cat <<'JSON'
+{"results":[{"title":"Foo","type":"entity","score":1.23,"content":"c1 full text","matched_chunk":"c1 snippet","file_path":"Decisions/foo.md","metadata":{},"entity_id":1},{"title":"Bar","type":"entity","score":0.9,"content":"c2 full text","matched_chunk":"c2 snippet","file_path":"Decisions/bar.md","metadata":{},"entity_id":2}],"current_page":1,"page_size":10,"total":0,"has_more":false}
+JSON
           exit 0
           ;;
         *)
@@ -178,7 +203,7 @@ echo "PASS: 3b ks_search_available exit-code probe matches ks_search's own gate 
 
 # --- 4. successful hybrid search -> JSONL reshape, ranked order preserved ----
 rm -rf "$BM_HOME"
-rm -f "$FAKE_UVX_LOG"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
 out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search "orchard" --limit 5)" || fail "4: ks_search should succeed"
 lines="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
 [ "$lines" -eq 2 ] || fail "4: expected 2 JSONL result lines (got $lines): $out"
@@ -194,10 +219,55 @@ doc2="$(printf '%s' "$line2" | jq -r '.doc_id')"
 [ "$doc2" = "Decisions/bar.md" ] || fail "4: second result doc_id wrong (got $doc2) -- ranked order not preserved"
 echo "PASS: 4 ks_search reshapes basic-memory's hybrid-search JSON into ranked JSONL"
 
-# --- 5. corpus-root binding: project registration always uses ks_root --------
+# --- 4b. warm path issues ONE subprocess: no per-query project add (#996) -----
+# The warm/ok path (project already registered) must NOT call `project add` —
+# the ~1.9s re-register #996 drops — and must issue exactly one search-notes.
+if grep -q '^PROJECT_ADD ' "$FAKE_UVX_LOG"; then
+  fail "4b: warm path must NOT call project add (#996); log:\n$(cat "$FAKE_UVX_LOG")"
+fi
+warm_search_calls="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+[ "$warm_search_calls" -eq 1 ] \
+  || fail "4b: warm path should issue exactly ONE search-notes (got $warm_search_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+echo "PASS: 4b warm path issues one subprocess — no per-query project add (#996)"
+
+# --- 4c. warm no-match: exit 0 + empty stdout, still NO re-register (#996) -----
+# The load-bearing #996 correctness contract: bm returns a non-empty
+# {"results":[]} envelope for a zero-match query, so `[ -z "$raw" ]` is false →
+# NOT a miss → no re-register, and the empty envelope reshapes to zero output
+# lines + exit 0 (NOT a backend error). If this ever broke, a no-match would
+# both slow to a needless register+retry AND wrongly report exit 4.
+rm -rf "$BM_HOME"; rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out4c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "no-such-term" --limit 5)" \
+  || fail "4c: a warm no-match must exit 0 (empty {\"results\":[]} envelope is not a failure)"
+[ -z "$out4c" ] || fail "4c: a warm no-match must print nothing to stdout (got: $out4c)"
+if grep -q '^PROJECT_ADD ' "$FAKE_UVX_LOG"; then
+  fail "4c: a warm no-match must NOT re-register (#996); log:\n$(cat "$FAKE_UVX_LOG")"
+fi
+nomatch_search="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+[ "$nomatch_search" -eq 1 ] \
+  || fail "4c: warm no-match should issue exactly ONE search (got $nomatch_search); log:\n$(cat "$FAKE_UVX_LOG")"
+echo "PASS: 4c warm no-match → exit 0, empty stdout, no re-register (#996 empty-envelope contract)"
+
+# --- 5. cold/reset path: lazy register-on-miss, bound to ks_root, then retry --
+# When the first search misses (project not registered on first use, or a
+# `basic-memory reset` dropped the DB while config still lists it), ks_search
+# registers (bound to ks_root — the corpus-root binding still holds, now on the
+# cold path) and retries the search ONCE.
+rm -rf "$BM_HOME"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out5="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=register_then_ok ks_search "orchard" --limit 5)" \
+  || fail "5: cold-path ks_search should recover via register+retry"
+[ "$(printf '%s\n' "$out5" | wc -l | tr -d ' ')" -eq 2 ] \
+  || fail "5: cold-path search should return 2 results after register+retry; got: $out5"
 grep -q "PROJECT_ADD name=test-project path=$ROOT\$" "$FAKE_UVX_LOG" \
-  || fail "5: fake-uvx log missing a project-add call bound to ROOT ($ROOT); log:\n$(cat "$FAKE_UVX_LOG")"
-echo "PASS: 5 ks_search binds the backend's project registration to ks_root (no independent path knob)"
+  || fail "5: cold-path register must bind project to ROOT ($ROOT); log:\n$(cat "$FAKE_UVX_LOG")"
+cold_add_calls="$(grep -c '^PROJECT_ADD ' "$FAKE_UVX_LOG" || true)"
+cold_search_calls="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+[ "$cold_add_calls" -eq 1 ] \
+  || fail "5: cold path should register exactly once (got $cold_add_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+[ "$cold_search_calls" -eq 2 ] \
+  || fail "5: cold path should search twice — miss then retry (got $cold_search_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+echo "PASS: 5 cold/reset path lazily registers (bound to ks_root) and retries the search once (#996)"
 
 # --- 6. posture assembly: config.json carries every no-mutation key ----------
 CONFIG="$BM_HOME/.basic-memory/config.json"
