@@ -318,7 +318,12 @@ if [ -n "${report_nojsonl:-}" ]; then
   empty_te=$(printf '%s' "$report_nojsonl" | python3 -c "
 import json, sys
 te = json.load(sys.stdin).get('tool_events', {})
-all_empty = all(len(v) == 0 for v in te.values())
+# list/dict sub-arrays must be empty; scalar flags (spec_authoring_context, a
+# bool — foundation#1137) must be falsy. Skipping the len() check for scalars.
+all_empty = all(
+    (len(v) == 0) if isinstance(v, (list, dict)) else (not v)
+    for v in te.values()
+)
 print('yes' if all_empty else 'no')
 " 2>/dev/null)
   if [ "${empty_te:-no}" = "yes" ]; then
@@ -929,6 +934,96 @@ else
 fi
 
 rm -rf "$TMPDIR14"
+
+# ── Test 15: spec-authoring lexicon damping (foundation#1137) ────────────────
+#
+# A session that edits the drain's own tell-defining files (command spec /
+# CLAUDE.md / lexicon TSV) quotes tell phrases verbatim, so its lexicon_matches
+# are a false-positive storm. scan_stub must detect the context and damp: empty
+# lexicon_matches, set spec_authoring_context, and record the suppressed count —
+# while a session editing a NORMAL file is untouched. The SAMPLE_STUB carries 11
+# real tell matches, so the suppression is genuinely demonstrated (not a 0→0).
+echo "--- test 15: spec-authoring lexicon damping (#1137) ---"
+
+TMPDIR15=$(mktemp -d)
+
+# Baseline / control: an Edit to a NON-spec file → no damping, matches intact.
+TMP_JSONL15N="$TMPDIR15/normal_edit.jsonl"
+cat > "$TMP_JSONL15N" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_e1","name":"Edit","input":{"file_path":"/Users/x/dev/proj/src/foo.py","old_string":"a","new_string":"b"}}]}}
+JSONLEOF
+report15n=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL15N") || true
+base_count=$(printf '%s' "$report15n" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('%d %s %d' % (len(d['lexicon_matches']), d.get('spec_authoring_context'), d.get('lexicon_matches_suppressed', -1)))
+" 2>/dev/null)
+if [ "$base_count" = "11 False 0" ]; then
+  ok "normal-file edit → not spec-authoring, 11 matches intact, 0 suppressed"
+else
+  fail_test "normal-file edit" "expected '11 False 0', got '${base_count:-}'"
+fi
+
+# Spec-authoring: an Edit to claude/commands/tidy.md → damp to zero.
+TMP_JSONL15S="$TMPDIR15/spec_edit.jsonl"
+cat > "$TMP_JSONL15S" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_e2","name":"Edit","input":{"file_path":"/Users/x/dev/proj/claude/commands/tidy.md","old_string":"a","new_string":"b"}}]}}
+JSONLEOF
+report15s=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL15S") || true
+spec_state=$(printf '%s' "$report15s" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('%d %s %d' % (len(d['lexicon_matches']), d.get('spec_authoring_context'), d.get('lexicon_matches_suppressed', -1)))
+" 2>/dev/null)
+if [ "$spec_state" = "0 True 11" ]; then
+  ok "command-spec edit → spec-authoring, 0 matches, 11 suppressed (count preserved)"
+else
+  fail_test "command-spec edit" "expected '0 True 11', got '${spec_state:-}'"
+fi
+
+# Positive precision: the CLAUDE.md family (Write), the drain lexicon TSV
+# (MultiEdit), and a plain claude/commands spec all trigger.
+i=0
+for spec in \
+  "Write|/r/claude/CLAUDE.kernel.md" \
+  "MultiEdit|/r/workflows/scripts/drain/lexicon-assistant.tsv" \
+  "Edit|/r/claude/commands/build.md"; do
+  tool="${spec%%|*}"; fp="${spec#*|}"; i=$((i + 1))
+  TMP_J="$TMPDIR15/pos_$i.jsonl"
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_p%d","name":"%s","input":{"file_path":"%s","content":"x","old_string":"a","new_string":"b"}}]}}\n' "$i" "$tool" "$fp" > "$TMP_J"
+  ctx=$(scan "$SAMPLE_STUB" --jsonl "$TMP_J" | python3 -c "import json,sys; print(json.load(sys.stdin).get('spec_authoring_context'))" 2>/dev/null)
+  if [ "$ctx" = "True" ]; then
+    ok "spec-authoring detected for $(basename "$fp") ($tool)"
+  else
+    fail_test "spec-authoring surface" "expected True for $fp ($tool), got ${ctx:-}"
+  fi
+done
+
+# NEGATIVE precision (pins the tightened predicate, #1137 review): a near-miss
+# basename must NOT damp the session — matches stay intact. A whole-session
+# false positive would silently suppress every real tell.
+i=0
+for fp in \
+  "/r/docs/CLAUDE-notes.md" \
+  "/r/data/lexicon_helper.tsv" \
+  "/r/nlp/lexicon-english.tsv" \
+  "/r/home/myclaude/commands/thing.md"; do
+  i=$((i + 1))
+  TMP_J="$TMPDIR15/neg_$i.jsonl"
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_n%d","name":"Edit","input":{"file_path":"%s","old_string":"a","new_string":"b"}}]}}\n' "$i" "$fp" > "$TMP_J"
+  state=$(scan "$SAMPLE_STUB" --jsonl "$TMP_J" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('%s %d' % (d.get('spec_authoring_context'), len(d['lexicon_matches'])))
+" 2>/dev/null)
+  if [ "$state" = "False 11" ]; then
+    ok "near-miss $(basename "$fp") → NOT spec-authoring, 11 matches intact"
+  else
+    fail_test "near-miss precision" "expected 'False 11' for $fp, got '${state:-}'"
+  fi
+done
+
+rm -rf "$TMPDIR15"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

@@ -75,6 +75,13 @@ If found: **do not** copy the secret into any extracted artifact. Because this r
 
 **Input: the scan report from Step 1.** Adjudicate `report.lexicon_matches[]` (decide which flagged tells are real extractions vs. noise or already-captured live) and skim `report.user_turns[]` for novel signal the lexicon couldn't catch. Run the **Tool-event structural passes** below first — they reach the insight class no text phrase can surface — then run the tell-based extractors that follow.
 
+**Spec-authoring damping (foundation#1137).** When `report.spec_authoring_context` is `true`, this session edited the drain's own tell-defining files (a command spec / CLAUDE.md / a lexicon TSV), so it quotes tell phrases verbatim and `report.lexicon_matches[]` is **deliberately empty** (`scan_stub` suppressed a false-positive storm; the count is in `report.lexicon_matches_suppressed`). Do **not** treat the empty match list as "no signal." Two fallbacks, both in force:
+
+- The phrase-independent **Tool-event structural passes** (errors, `capture_calls`, interrupts, AUQ answers) never used the lexicon, so they run unchanged.
+- **Three extraction classes are lexicon-driven AND assistant-narrated, so a `report.user_turns[]` skim CANNOT recover them** (that digest is user turns only): § Self-correction moments (`category: "self-correction"`), § Unfiled defects' `worked-around-defect` category, and § Tooling friction's `state-collision` tells. On a damped stub these do **not** self-heal — do not treat the stub as "clean" for them. Instead **skim the ASSISTANT turns directly** (via the Step 1.4 wider-transcript access) for a genuine mid-session self-correction / worked-around-defect / stale-state realization, applying **heightened skepticism**: the very reason the lexicon was damped is that this session writes those tell phrases *into a spec as content*, so distinguish a real in-flight realization from a tell phrase merely being authored into a file.
+
+Note the damping (`lexicon damped: N suppressed`) in the Step 6 summary so the suppression is visible, not silent.
+
 **Adjudication rule for `lexicon_matches`.** Each match is a candidate. For each:
 - Read the `match.line` and `match.context` (±1 lines). If clearly a real signal (an unfiled defect, a decision, friction, etc.) → extract. If clearly noise (incidental phrase, confirmed-already-live) → skip. If ambiguous → fetch the wider transcript window (Step 1.4) and then decide. Track your adjudication in the summary so the step count reflects actual extractions, not raw match count.
 
@@ -842,7 +849,7 @@ One-block summary:
 - Memories saved: M (types)
 - Patterns/Mistakes: M
 - Optimization tools captured: M (titles)
-- Tool-event structural passes: AskUserQuestion answered: M → feedback/decisions: K; errors: M → friction: J / mistakes: K; interrupts: M → feedback: K; capture_calls seen: M (dedup'd against Unfiled defects)
+- Tool-event structural passes: AskUserQuestion answered: M → feedback/decisions: K; errors: M → friction: J / mistakes: K; interrupts: M → feedback: K; capture_calls seen: M (dedup'd against Unfiled defects); spec-authoring damping: M stub(s), N lexicon match(es) suppressed (or "none")
 - Unfiled defects filed: M (issue #s); self-resolved: M (titles)
 - Stale/orphaned board claims: M (#s → board:host:sess; parked: K, report-only foreign: J)
 - Board LABEL hygiene: board 3: deleted M / stripped N (or "in sync"); board 4: deleted M / stripped N (or "in sync"); board 7: deleted M / stripped N (or "in sync")

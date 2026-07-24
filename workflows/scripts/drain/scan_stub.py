@@ -449,6 +449,42 @@ def _is_mutating_mcp_tool(tool_name):
     return any(sub in tool_name for sub in _MUTATING_MCP_TOOL_SUBSTRINGS)
 
 
+# Tool names whose edits can carry tell-phrase prose into a file.
+_SPEC_AUTHORING_EDIT_TOOLS = ("Edit", "Write", "MultiEdit")
+
+
+def _is_spec_authoring_path(file_path):
+    """True if `file_path` is one of the drain's own tell-DEFINING surfaces
+    (foundation#1137).
+
+    Editing these files makes a session quote lexicon tells verbatim — a command
+    spec / CLAUDE.md carries friction-slug prose (the self-match trap the
+    lexicon-assistant split, #444, already guards for *assistant turns*), and the
+    lexicon TSVs literally are the tell list. A session that edits them produces a
+    false-positive lexicon storm, so scan_stub damps the lexicon when this fires.
+
+    Matches (on an absolute OR repo-relative path) — anchored tightly so a
+    NEAR-MISS name doesn't silently damp a whole legitimate session:
+      - `…/claude/commands/*.md`  — the command specs (separator-anchored, so
+        `myclaude/commands/x.md` does NOT match)
+      - `…/CLAUDE.*.md` / `CLAUDE.md`  — the CLAUDE.md family; the required dot
+        rejects `CLAUDE-notes.md` / `CLAUDEFILE.md`
+      - `…/drain/lexicon*.tsv`    — the drain's own tell lists specifically; the
+        `drain/lexicon` anchor rejects an unrelated `data/lexicon_helper.tsv`
+    """
+    if not file_path:
+        return False
+    p = str(file_path).replace(os.sep, "/")
+    base = p.rsplit("/", 1)[-1]
+    if ("/claude/commands/" in p or p.startswith("claude/commands/")) and base.endswith(".md"):
+        return True
+    if base.startswith("CLAUDE.") and base.endswith(".md"):
+        return True
+    if "drain/lexicon" in p and base.endswith(".tsv"):
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Tool-event parsing from raw .jsonl
 # ---------------------------------------------------------------------------
@@ -483,6 +519,10 @@ def parse_tool_events(jsonl_path):
         "repeated_env_prefixes": [],
         "mcp_invalid_args": [],
         "mutating_mcp_timeouts": [],
+        # foundation#1137: set True when this session edited a tell-defining file
+        # (command spec / CLAUDE.md / lexicon TSV), so scan_stub damps the lexicon.
+        "spec_authoring_context": False,
+        "spec_authoring_files": [],
     }
 
     if not jsonl_path or not os.path.isfile(jsonl_path):
@@ -532,6 +572,17 @@ def parse_tool_events(jsonl_path):
                 tid = item.get("id", "")
                 tname = item.get("name", "")
                 tinput = item.get("input", {})
+
+                # Spec-authoring detection (#1137): an Edit/Write/MultiEdit to a
+                # tell-defining file means this session quotes tell phrases
+                # verbatim → its lexicon signal is unreliable. Flag it so
+                # scan_stub can damp the lexicon.
+                if tname in _SPEC_AUTHORING_EDIT_TOOLS and isinstance(tinput, dict):
+                    fp = tinput.get("file_path", "")
+                    if _is_spec_authoring_path(fp):
+                        result["spec_authoring_context"] = True
+                        if fp not in result["spec_authoring_files"]:
+                            result["spec_authoring_files"].append(fp)
                 tool_use_by_id[tid] = {
                     "name": tname,
                     "input": tinput,
@@ -709,6 +760,20 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
     digest = user_turn_digest(turns)
     tool_events = parse_tool_events(jsonl_path)
 
+    # Damp the lexicon for a spec-authoring session (foundation#1137). A session
+    # that edited the drain's own tell-defining files (command spec / CLAUDE.md /
+    # lexicon TSV) quotes tell phrases verbatim, so its lexicon_matches are a
+    # false-positive storm that swamps the drain. Suppress them — but record the
+    # count and set the flag so nothing is silently lost: the STRUCTURAL
+    # tool_events passes (errors, capture_calls, interrupts, AUQ answers) are
+    # phrase-independent and stay fully in force, so a genuine defect/decision
+    # from such a session is still caught.
+    spec_authoring = bool(tool_events.get("spec_authoring_context"))
+    lexicon_matches_suppressed = 0
+    if spec_authoring:
+        lexicon_matches_suppressed = len(matches)
+        matches = []
+
     report = {
         "schema_version": "1",
         "stub": {
@@ -719,6 +784,8 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
             "time": meta.get("time", ""),
         },
         "lexicon_matches": matches,
+        "spec_authoring_context": spec_authoring,
+        "lexicon_matches_suppressed": lexicon_matches_suppressed,
         "user_turns": digest,
         "tool_events": tool_events,
     }
