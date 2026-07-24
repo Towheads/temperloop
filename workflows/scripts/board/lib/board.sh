@@ -799,7 +799,8 @@ _board_drop_pr_cards() {
 # _board_drop_pr_cards (#223): ONE shared pipe-stage helper applied at the raw
 # whole-board exits — _board_item_list_fresh (live) and board_item_list (cached) —
 # AND at every per-issue / per-milestone REST→jq seam that reads a user-controlled
-# body/description: board_blocked_by_open, board_parent_issue, board_active_milestones,
+# body/description: board_blocked_by_open, board_parent_issue, _board_issue_db_id,
+# board_active_milestones,
 # board_set_milestone_description, and milestone.sh's _milestone_description /
 # milestone_list (#614). Those single-item REST reads were the uncovered class: a
 # gh-leaked literal control byte made their `… 2>/dev/null | jq` fail, the 2>/dev/null
@@ -1641,6 +1642,75 @@ board_blocked_by_open() {
   _board_gh api "repos/$repo/issues/$issue/dependencies/blocked_by" 2>/dev/null |
     _board_sanitize_control_chars |
     jq -r '.[] | select(.state=="open") | .number'
+}
+
+# Resolve an issue NUMBER to its REST **database id** (`.id`) — the integer the
+# dependencies WRITE API keys blockers by (distinct from `.number` and the
+# GraphQL `.node_id`). Internal helper for the blocked_by writers below; goes
+# through the `_board_gh` seam so those writers stay replay-testable. Empty
+# output + non-zero when the issue can't be resolved.
+#   _board_issue_db_id <repo> <issue#>  ->  numeric database id, or empty
+_board_issue_db_id() {
+  local repo="${1:-}" issue="${2:-}" id
+  id="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null |
+    _board_sanitize_control_chars |
+    jq -r '.id // empty')"
+  [ -n "$id" ] || return 1
+  printf '%s' "$id"
+}
+
+# Add a native GitHub `blocked_by` dependency edge — make <issue#> blocked by
+# <blocker#>. The WRITE counterpart to board_blocked_by_open (foundation#1221):
+# the adapter had the reader but no writer, so a dependency-edge write had to
+# bypass the adapter via raw REST, against the "all board reads/writes go through
+# the adapter" rule. Like the reader this is per-issue REST, ALWAYS LIVE (REST's
+# 5,000/hr bucket, not the GraphQL board budget) — and there is NO board cache to
+# bust, since board_blocked_by_open reads the same live endpoint, so a written
+# edge is visible on the very next read. The dependencies WRITE API keys the
+# blocker by its **database id**, not its number (foundation#1221 verified: the
+# issue object exposes `.id` ≠ `.number`), so we resolve <blocker#> → its id
+# first, then POST. Both calls go through `_board_gh` so the writer is
+# replay-testable like its reader sibling. Adding an edge that ALREADY exists is
+# the API's 422 (surfaced as a non-zero return), NOT a silent success — a caller
+# wanting idempotency gates on board_blocked_by_open first.
+#   board_blocked_by_add <board> <issue#> <blocker#>  ->  exit 0 on success
+board_blocked_by_add() {
+  local board="${1:-}" issue="${2:-}" blocker="${3:-}" repo blocker_id
+  if [ "$#" -ne 3 ]; then
+    echo "board: board_blocked_by_add takes <board> <issue#> <blocker#> (got $#: '$*')" >&2
+    return 1
+  fi
+  case "$issue" in '' | *[!0-9]*) echo "board: board_blocked_by_add needs a numeric <issue#> (got '$issue')" >&2; return 1 ;; esac
+  case "$blocker" in '' | *[!0-9]*) echo "board: board_blocked_by_add needs a numeric <blocker#> (got '$blocker')" >&2; return 1 ;; esac
+  repo="$(board_repo "$board")" || return 1
+  if ! blocker_id="$(_board_issue_db_id "$repo" "$blocker")"; then
+    echo "board: board_blocked_by_add could not resolve the database id of blocker #$blocker in $repo" >&2
+    return 1
+  fi
+  _board_gh api --method POST "repos/$repo/issues/$issue/dependencies/blocked_by" \
+    -F "issue_id=$blocker_id" >/dev/null
+}
+
+# Remove a native `blocked_by` dependency edge — the DELETE counterpart to
+# board_blocked_by_add (foundation#1221), so the writer contract is whole. Same
+# database-id keying (the DELETE path ends in the blocker's `.id`, not its
+# number). Removing an edge that ISN'T present is the API's 404 (non-zero), not a
+# silent success. Same always-live REST / no-cache posture as _add.
+#   board_blocked_by_remove <board> <issue#> <blocker#>  ->  exit 0 on success
+board_blocked_by_remove() {
+  local board="${1:-}" issue="${2:-}" blocker="${3:-}" repo blocker_id
+  if [ "$#" -ne 3 ]; then
+    echo "board: board_blocked_by_remove takes <board> <issue#> <blocker#> (got $#: '$*')" >&2
+    return 1
+  fi
+  case "$issue" in '' | *[!0-9]*) echo "board: board_blocked_by_remove needs a numeric <issue#> (got '$issue')" >&2; return 1 ;; esac
+  case "$blocker" in '' | *[!0-9]*) echo "board: board_blocked_by_remove needs a numeric <blocker#> (got '$blocker')" >&2; return 1 ;; esac
+  repo="$(board_repo "$board")" || return 1
+  if ! blocker_id="$(_board_issue_db_id "$repo" "$blocker")"; then
+    echo "board: board_blocked_by_remove could not resolve the database id of blocker #$blocker in $repo" >&2
+    return 1
+  fi
+  _board_gh api --method DELETE "repos/$repo/issues/$issue/dependencies/blocked_by/$blocker_id" >/dev/null
 }
 
 # Print the parent EPIC's issue number for a sub-issue, or empty for a singleton
