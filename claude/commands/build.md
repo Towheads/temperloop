@@ -697,7 +697,7 @@ If **none** of (a)/(b)/(c)/(d) holds, the set is **clean, disjoint, and independ
 - **`SKIP`** (fewer than two branches — a defensive echo) → proceed to 4b.
 - **`ERROR`** (the pre-check's own tooling failed — bad ref, worktree-add failure) → **fail-open**: note it in the 4a summary and proceed to 4b **without** the pre-check's protection, exactly as a missing quota snapshot resolves to "proceed". The native queue's `merge_group` remains the downstream backstop; the run must never stall on the pre-check's own failure.
 
-**Cost.** One full local gate-suite run per multi-PR level — a modest tax that buys back a ~1h queue round-trip on every collision it catches. `BUILD_COMBINED_TREE_PRECHECK=off` disables it for a repo/run that would rather lean on the queue's `merge_group` alone.
+**Cost.** One full local gate-suite run per multi-PR level — a modest tax that buys back a ~1h queue round-trip per collision it catches. The opt-out knob (named at *When it runs* above) disables the check for a repo/run that would rather rely on the queue's `merge_group` alone.
 
 ### 4b. Mergeable set — approval (modal or timed), then merge
 
