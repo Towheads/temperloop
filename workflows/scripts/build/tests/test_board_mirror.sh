@@ -296,6 +296,31 @@ rc=0; out="$(bash "$SCRIPT" claim-item --board 4 --issue 200)" || rc=$?
 [ "$(jq -r .owner   <<<"$out")" = "otherhost:beef0000" ] || fail "3a wrong owner (got $out)"
 echo "PASS: 3a claim-item HALTS (CONTENDED) when a different live session owns it"
 
+# (a-issues) contention on the ISSUES-ONLY backend — now the live path for boards
+# 3/4/5/6 mid-cutover (#470). Board 4 is flipped backend=issues via a machine-level
+# boards.conf; board_resolve_item then takes its ISSUES path (a `gh api
+# repos/.../issues/<n>` REST read reshaped from `fnd:` labels), NOT the Projects-v2
+# projectItems GraphQL stub. The 3a pre-check must read cur_status from the
+# `fnd:status:in-progress` label and cur_stamp from the `fnd:host/session:` label and
+# HALT (CONTENDED) under a foreign stamp. To PROVE the labels path is the one
+# exercised (and the projectItems stub is NOT), point the Projects-v2 resolve fixture
+# at #205 as an UNCLAIMED Ready item with no stamp: were the projects path wrongly
+# taken here, cur_status would read "Ready" and the pre-check would proceed to claim
+# rather than HALT — so a CONTENDED outcome can ONLY come from the issues reshape.
+cat > "$STATE/issues_backend.conf" <<'EOF'
+board.4.backend=issues
+EOF
+write_resolve 205 "Ready" ""     # projectItems stub: would NOT contend if wrongly taken
+cat > "$STATE/issue_205.json" <<'EOF'
+{"number":205,"state":"open","id":205205,"labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:host/session:otherhost:beef0000"}]}
+EOF
+rc=0
+out="$(BOARDS_CONF_MACHINE="$STATE/issues_backend.conf" bash "$SCRIPT" claim-item --board 4 --issue 205)" || rc=$?
+[ "$rc" -ne 0 ] || fail "3a issues-backend contention did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "CONTENDED" ] || fail "3a issues-backend expected CONTENDED (got $out)"
+[ "$(jq -r .owner   <<<"$out")" = "otherhost:beef0000" ] || fail "3a issues-backend wrong owner (got $out)"
+echo "PASS: 3a claim-item HALTS (CONTENDED) on the ISSUES-ONLY backend (fnd:status + fnd:host/session labels, not the projectItems stub)"
+
 # (b) claim a Ready item + move the epic In Progress on first claim.
 #     claim.sh resolves the ISSUE; then we resolve the EPIC. Both share the one
 #     resolve_item.json, so point it at whichever is being resolved by sequencing:
