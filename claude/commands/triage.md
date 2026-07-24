@@ -132,7 +132,7 @@ Spawn `Agent { subagent_type: "requirements-auditor" }` with the proposed groups
 - Candidates that are really **decisions** (should route off-board) or are **invalid / out of scope** (should cull).
 - A group with only one real survivor (should be a singleton, no epic).
 
-Read-only and advisory. Apply clear wins; surface contested suggestions via `AskUserQuestion` before Step 4. **Graceful skip:** if the agent isn't available, note "sanity pass skipped — agent unavailable" in the Step 5 summary and continue.
+Read-only and advisory. Apply clear wins; surface contested suggestions via `AskUserQuestion` before Step 4. **Graceful skip:** if the agent isn't available, note the skip in the Step 5 summary (as the sanity pass) and continue, using the canonical two-form degradation line (`claude/message-schema.md` § Degradation notice): bare `skipped — requirements-auditor unavailable`, or — since `requirements-auditor` ships as source at `claude/agents/requirements-auditor.md` — the remedy-bearing `skipped — requirements-auditor available as source; run workflows/scripts/install/project-agents.sh to enable` when the source exists but the agent isn't installed.
 
 ## Step 3.5 — Preview before mutation
 
