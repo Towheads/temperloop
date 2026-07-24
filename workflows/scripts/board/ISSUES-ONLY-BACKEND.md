@@ -202,6 +202,7 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 | `board_create_many` / `board_create_on_board` / `board_capture_item` | No `gh project item-add`, no index-lag retry (a label write is synchronous REST). Landing a fresh issue collapses to labeling it Backlog. **Return contract is identical across backends** (foundation #1226): 0 on full success, 1 on partial failure, 2 on total failure, with `BOARD_UNLANDED_ISSUES` carrying the space-separated un-landed issue numbers on any non-zero return — `_board_issues_create_many` (the issues-only twin of `board_create_many`) implements the same three-way return, it just never has an index-lag failure mode to hit (a label write is synchronous REST, so the only failure is the `gh` call itself erroring). |
 | `board_active_milestones` / `board_set_milestone` / `board_set_milestone_description` | **Unchanged, no new code** — these were already REST-only (`repos/<repo>/milestones…`) and backend-agnostic before this split. Milestone intake (the `<!-- triage:active -->` marker convention) works identically on an issues-only board. |
 | `board_blocked_by_open` / `board_parent_issue` | **Unchanged, no new code** — same reason (per-issue REST, never Projects). Backend-agnostic for free: works identically on a Projects-v2 or issues-only board. |
+| `board_blocked_by_add` / `board_blocked_by_remove` (NEW, #1221) | Write-side counterpart to `board_blocked_by_open` — add/remove a native `blocked_by` dependency edge (resolve the blocker's REST db id → POST/DELETE the dependencies endpoint). Same shape as its reader sibling: per-issue REST, always live, backend-agnostic, no Projects call. Closes the reader-without-writer gap that forced dependency-edge writes through raw REST. |
 | `board_sub_issues` (NEW, #800) | Read-side counterpart to `board_parent_issue` — child issue numbers via GitHub's native sub-issues REST endpoint. Same shape as its siblings: per-issue REST, always live, backend-agnostic. See § Parent/child and dependency edges. |
 | `board_stamp` (#800 — now IMPLEMENTED) | `ISSUE_n` routes to a free-text `fnd:host/session:<verbatim-text>` label (single label of that prefix kept at a time; empty text clears). See § Claim lock. |
 | `board_claim_contended` (NEW, #800; extended to Projects-v2) | Backend-agnostic pre-check: is `<issue#>` already In Progress under a DIFFERENT Host/Session stamp? See § Claim lock. Reads the already-resolved `BOARD_ITEMS_JSON` on either backend — no extra `gh`/GraphQL call. |
@@ -329,7 +330,12 @@ everything here was already backend-agnostic before this split touched it:
   with zero adapter code needed for this split**. No body-marker or
   label-based dependency scheme was invented (there was nothing to invent) —
   this is the "simplest faithful mechanism" the item description anticipated
-  might be needed; it turned out to already exist.
+  might be needed; it turned out to already exist. The **write** counterpart —
+  `board_blocked_by_add` / `board_blocked_by_remove` (NEW, foundation#1221) —
+  closes the reader-without-writer gap that had forced every dependency-edge
+  write through raw REST: they resolve the blocker's REST db id (the id the
+  dependencies WRITE API keys by, not its number) and POST/DELETE the same
+  endpoint, backend-agnostic per-issue REST like the reader.
 
 All three functions gate on candidate items only (never the whole board) —
 same caveat as every per-issue REST accessor in this file.
