@@ -176,6 +176,13 @@ install-cli workflows/scripts/lib/tests/test_portable_timeout.sh
 # above for these two specific paths (longer patterns win) ─────────────────
 install-manifest-lib workflows/scripts/install/manifest.sh
 install-manifest-lib workflows/scripts/tests/test_install_manifest.sh
+# ── version-embedding — the release version stamped into the shipped files
+# (temperloop#677): the committed VERSION file and its drift-guard gate. The
+# resolver helper lives in bin/lib/common.sh (claimed by install-cli's bin
+# globs) and the dispatcher/feedback call sites stay install-cli's; only the
+# two paths that are wholly this feature's are carved out here ──────────────
+version-embedding VERSION
+version-embedding workflows/scripts/tests/test_version_embedding.sh
 # ── uninstall-cli — `temperloop uninstall`: manifest-scoped, reversible
 # removal (temperloop#265, ADR K164 D7): overrides the broader install-cli
 # `bin/*` claim above for these two specific paths (longer patterns win) —

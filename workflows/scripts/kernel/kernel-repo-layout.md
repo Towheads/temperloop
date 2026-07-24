@@ -79,6 +79,14 @@ kind of drift-prone mechanism the kernel/overlay split is trying to avoid.
   the canonical bump rules — when a bump is breaking vs additive vs a fix, and
   the `BREAKING` CHANGELOG-marker convention that carries the breaking signal
   pre-1.0.
+- **Bump the shipped `VERSION` file in the commit you tag** (temperloop#677).
+  The repo-root `VERSION` file (a bare `x.y.z`, no `v`) is the source of truth
+  `temperloop version` reports, so the release *artifact contains its own
+  version* rather than deriving it from git at runtime. Set `VERSION` to
+  `x.y.z`, commit, then `git tag -a vx.y.z` **that** commit — the tag and the
+  file must agree. `test_version_embedding.sh` (a `checks` gate) enforces this
+  mechanically: when HEAD is exactly a `vX.Y.Z` tag it fails the build unless
+  `VERSION` equals `X.Y.Z`, so a cut cannot silently ship a stale number.
 - `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/):
   one `## [x.y.z] - YYYY-MM-DD` section per release, `### Added` /
   `### Changed` / `### Fixed` / `### Removed` subsections as needed.

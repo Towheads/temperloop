@@ -101,6 +101,20 @@ overlay/config/env before that release, not necessarily before this pull.
 
 ### Added
 
+- **The release version is now embedded in the shipped files
+  (temperloop#677).** A committed repo-root `VERSION` file (bare `x.y.z`) is
+  the source of truth `temperloop version` reports, resolved by the shared
+  `temperloop_resolve_version` helper in `bin/lib/common.sh` — precedence
+  `TEMPERLOOP_VERSION` env > `FOUNDATION_VERSION` env (rename window) >
+  `VERSION` file > `dev`. Previously a real tag-pinned install reported
+  `temperloop dev` because nothing embedded the number; now the artifact
+  carries its own version. A release cut **bumps `VERSION` in the tagged
+  commit** (kernel-repo-layout.md § Release-tag convention), and
+  `test_version_embedding.sh` (a `checks` gate) fails the build if `VERSION`
+  drifts from the tag when HEAD is a release tag. The `install-tier2`
+  round-trip gains a `version` leg asserting the installed CLI reports its
+  embedded version, not `dev`. Additive: an explicit `TEMPERLOOP_VERSION`
+  override still wins, so CI/test fixtures are unchanged.
 - **`claude/design-schema.md` § Kernel dimension list gains dimension `0`
   — Premise & null hypothesis (temperloop#508, epic temperloop#498).**
   Additive, not breaking: no existing dimension is removed, reordered, or

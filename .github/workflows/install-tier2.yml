@@ -113,6 +113,35 @@ jobs:
             TEMPERLOOP_BIN_DIR="$TEMPERLOOP_BIN_DIR" \
             sh bin/bootstrap.sh
           echo "$TEMPERLOOP_BIN_DIR" >> "$GITHUB_PATH"
+          echo "TEMPERLOOP_HOME=$TEMPERLOOP_HOME" >> "$GITHUB_ENV"
+
+      # The release must be VERSIONED: the just-installed CLI has to report the
+      # version embedded in its shipped files (temperloop#677), not "dev". This
+      # is the one leg that proves the install carries its own version number —
+      # a hermetic unit gate (test_version_embedding.sh) can't, because it only
+      # sees the in-tree checkout, not what bootstrap actually landed on PATH.
+      # Fail-closed: unlike try/init there is no degraded-network excuse for a
+      # wrong version string. continue-on-error so the round trip below still
+      # runs and the verdict reports every leg at once.
+      - name: "Version embedded in the install"
+        id: version
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          shipped="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$TEMPERLOOP_HOME/VERSION" | head -n1)"
+          [ -n "$shipped" ] || { echo "::error::install-tier2: pinned checkout $TEMPERLOOP_HOME has no readable VERSION file"; exit 1; }
+          reported="$(temperloop version)"
+          echo "shipped VERSION file: $shipped"
+          echo "temperloop version : $reported"
+          if [ "$reported" = "temperloop dev" ]; then
+            echo "::error::install-tier2: 'temperloop version' reports 'dev' — the release version is not embedded in the shipped files (temperloop#677)"
+            exit 1
+          fi
+          if [ "$reported" != "temperloop $shipped" ]; then
+            echo "::error::install-tier2: 'temperloop version' ('$reported') does not match the shipped VERSION file ('$shipped')"
+            exit 1
+          fi
+          echo "OK: the installed CLI reports its embedded version ($shipped)."
 
       - name: Reset the demo repo to a known baseline
         env:
@@ -206,6 +235,7 @@ jobs:
       - name: Round-trip verdict
         if: always()
         env:
+          VERSION_OUTCOME: ${{ steps.version.outcome }}
           TRY_OUTCOME: ${{ steps.try.outcome }}
           INIT_OUTCOME: ${{ steps.init.outcome }}
           EJECT_OUTCOME: ${{ steps.eject.outcome }}
@@ -215,12 +245,14 @@ jobs:
             echo
             echo "| leg | outcome |"
             echo "|---|---|"
+            echo "| version | $VERSION_OUTCOME |"
             echo "| try | $TRY_OUTCOME |"
             echo "| init | $INIT_OUTCOME |"
             echo "| eject | $EJECT_OUTCOME |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           failed_legs=""
+          [ "$VERSION_OUTCOME" = "success" ] || failed_legs="$failed_legs version"
           [ "$TRY_OUTCOME" = "success" ] || failed_legs="$failed_legs try"
           [ "$INIT_OUTCOME" = "success" ] || failed_legs="$failed_legs init"
           [ "$EJECT_OUTCOME" = "success" ] || failed_legs="$failed_legs eject"
