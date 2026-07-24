@@ -361,6 +361,15 @@ KERNEL_GATES=(
   # form as the knob-registry/knowledge_search gates above (kernel Makefile
   # is generator-owned; a new tests/ file needs no new Makefile target).
   "bash workflows/scripts/kernel/tests/test_check_kernel_manifest.sh"
+  # Symlinked-vendored-kernel resolution for kernel_lib_resolve_for_classify
+  # (foundation#1050): synthetic-fixture suite proving a plan item's `files:`
+  # path that points at kernel content through a consumer's dir symlink into a
+  # vendored `kernel/` subtree maps to the manifest-relative path and classifies
+  # as kernel (both the surface-symlink and git-real vendored forms), while a
+  # genuine overlay file and the kernel-repo self-case are left unchanged. Same
+  # direct-`bash` form (kernel Makefile is generator-owned; a new tests/ file
+  # needs no new Makefile target).
+  "bash workflows/scripts/kernel/tests/test_kernel_lib_resolve.sh"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
   # Pre-rename identifier leak-gate sweep (temperloop#433, gate-sweep item;
