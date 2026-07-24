@@ -12,6 +12,27 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
+## [0.15.1] - 2026-07-23
+
+### Fixed
+
+- **`quality-gates.sh`: kernel self-distribution tests are now CLASS-gated on a
+  vendoring-consumer signal (temperloop#691).** v0.15.0 guarded
+  `test_update_subcommand` / `test_update_kernel` surface-conditionally so a
+  bespoke-subtree vendoring consumer skips them, but left `test_rename_compat`,
+  `test_bootstrap_tag_pinning`, and `test_version_embedding` **unconditional** —
+  they require the `bin/bootstrap.sh` + repo-root `VERSION` surface a vendoring
+  consumer does not carry, so no surface choice let such a consumer's
+  `make quality-gates` go green (surfacing `bin/` to satisfy them also flips on
+  `test_update_subcommand`, whose managed-clone CLI cannot traverse a composed
+  tree's symlinked kernel dirs via `git show <ref>:<path>`). All four
+  self-distribution / self-update tests are now gated as a CLASS on one signal —
+  a repo-root `.kernel-pin` marks a vendoring consumer (the kernel's own
+  checkout has none), so the kernel runs all four and every consumer skips all
+  four legibly. Categorical by design: a future self-distribution test joins the
+  list and is excluded from consumers with no per-test guard drift. **No
+  behavior change in the kernel's own CI** — all four still run there.
+
 ## [0.15.0] - 2026-07-23 — BREAKING
 
 **`BREAKING`** — ships as a **minor-breaking 0.x bump (v0.15.0)** per
