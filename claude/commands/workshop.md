@@ -372,7 +372,13 @@ foundation that later shifts underneath it.
    **both**:
    - **(a) persisted to the brief note** via Step 2.6's write primitive —
      the note is the **artifact of record**, the durable surface the
-     operator (and every later step) reads; **and**
+     operator (and every later step) reads. A write's OK return is **not**
+     proof it landed: an Obsidian `vault_patch` can silently misfire (the
+     vault safe-targeting contract — duplicate-heading synthesis, a stale
+     document map), so **confirm the persist with a read-back** (or take the
+     full-file-rewrite path, which is misfire-free) before treating (a) as
+     satisfied — the same read-back discipline Steps 1.3b and 4.4 already
+     require for this silent-drop class; **and**
    - **(b) echoed in chat** — a readable presentation of the same content,
      for in-line review.
 
@@ -387,6 +393,11 @@ foundation that later shifts underneath it.
    reviewable artifact). The chat echo is for review convenience; the note
    is what makes the review *possible* on the next read. Ask over neither
    surface alone — over both, current.
+
+   **Scope:** this ordering governs the gates *inside* the coverage walk
+   (Step 2) and the findings fold-back (Step 3.4). Step 4.3's ratify ask is
+   **exempt** — its precondition, Step 4.1's dimension-completeness check,
+   already guarantees the note is current, so no re-echo is required there.
 
 ## Step 3 — Review pass
 
@@ -839,6 +850,13 @@ last line of the response.
   ratification — list the gaps and return to Step 2. Never ratify with a
   silent skip; the mechanical lint (temperloop#216) isn't required for this
   to be enforced here.
+- **Operator gated on drafted content with no persisted note behind it (Step
+  2.7).** The note is the artifact of record; a chat-only draft is not
+  reviewable on a later read, and a `vault_patch` that returned OK may have
+  silently misfired. Never open an approval gate until the content is
+  persisted (read-back-confirmed) *and* echoed in chat — this is the
+  temperloop#670 failure, and its subtler belief-vs-actual-persistence
+  variant one layer down.
 - **A reviewer, red-team lens, or persona agent is unavailable (Step
   3.2–3.3).** Not a failure of the command — the capability-probe predicate
   ([[Decisions/foundation - Project capability probes]]) makes this an
