@@ -351,6 +351,16 @@ KERNEL_GATES=(
   # zero network — mirrors test-board's glob-based kernel coverage (F#836).
   "make test-proposal-pr"
   "make test-kernel-manifest"
+  # Subtree-root support for check-kernel-manifest.sh (temperloop#680,
+  # derived from foundation#870): synthetic-fixture suite proving the guard
+  # accepts a KERNEL_MANIFEST_ROOT that is a subdirectory of an ENCLOSING
+  # git checkout with no `.git` of its own (a downstream overlay's vendored
+  # kernel/ subtree) — green on a fully-classified subtree, red+named-path
+  # on an unclassified one — while the classic own-.git-root invocation
+  # (make test-kernel-manifest above) stays unaffected. Same direct-`bash`
+  # form as the knob-registry/knowledge_search gates above (kernel Makefile
+  # is generator-owned; a new tests/ file needs no new Makefile target).
+  "bash workflows/scripts/kernel/tests/test_check_kernel_manifest.sh"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
   # Pre-rename identifier leak-gate sweep (temperloop#433, gate-sweep item;
