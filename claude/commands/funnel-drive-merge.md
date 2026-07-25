@@ -18,10 +18,10 @@ whose timed/modal merge gate is the human-supervised checkpoint**.
 
 ## HARD RULES — read first, they override everything below
 
-1. **Merge ONLY through `/build --unattended`.** Never run `gh pr merge`, `gh pr <!-- cite: FDM.1 guard:workflows/scripts/build/funnel-drive.sh -->
+1. **Merge ONLY through `/build --unattended`.** Never run `gh pr merge`, `gh pr
    create`, `git push`, or any merge/enqueue yourself. `/build` owns the branch →
    PR → CI → merge lifecycle; you only *invoke* it. If you find yourself about to
-   type a `gh pr` or `git push` command directly, STOP — that is `/build`'s job.
+   type a `gh pr` or `git push` command directly, STOP — that is `/build`'s job. <!-- cite: FDM.1 guard:workflows/scripts/build/funnel-drive.sh -->
 2. **Honor `/build`'s merge gate — never force a risky set.** `/build --unattended` <!-- cite: FDM.2 guard:claude/commands/build.md -->
    auto-merges only a clean, disjoint, independent set after its timed window; a
    **structurally-risky** set hard-blocks for explicit approval (and, operator-absent,

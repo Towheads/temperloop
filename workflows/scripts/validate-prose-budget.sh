@@ -238,8 +238,12 @@ fi
 # ---------------------------------------------------------------------------
 marker_grammar='<!-- cite: [A-Z]+\.[0-9]+ (incident|guard|class|keep):[^[:space:]]+ -->'
 
-reg_pairs="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.reg.XXXXXX")"
-found_pairs="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.found.XXXXXX")"
+# mktemp failures MUST be loud: with `set -u` (no `-e`) an unchecked failure
+# would leave both pair files empty and the reconciliation below would print
+# "OK ... 0 registry row(s) reconciled 1:1" — a silent-green environment
+# failure.
+reg_pairs="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.reg.XXXXXX")" || { echo "validate-prose-budget: mktemp failed for the registry pair file" >&2; exit 1; }
+found_pairs="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.found.XXXXXX")" || { echo "validate-prose-budget: mktemp failed for the found-marker pair file" >&2; exit 1; }
 trap 'rm -f "$tmp_err" "$reg_pairs" "$found_pairs"' EXIT
 
 if [ ! -f "$CITATION_REGISTRY_FILE" ]; then
@@ -250,6 +254,7 @@ fi
 # parse the registry: `<row-id><TAB><file>`, #-comments and blank lines
 # ignored; a malformed data row is a violation (never silently skipped).
 reg_lineno=0
+reg_malformed=0
 while IFS= read -r rline || [ -n "$rline" ]; do
   reg_lineno=$((reg_lineno + 1))
   case "$rline" in ''|\#*) continue ;; esac
@@ -258,11 +263,21 @@ while IFS= read -r rline || [ -n "$rline" ]; do
   if [ "$rid" = "$rline" ] || [ -z "$rfile" ] || ! printf '%s' "$rid" | grep -qE '^[A-Z]+\.[0-9]+$'; then
     fail=1
     violations=$((violations + 1))
+    reg_malformed=$((reg_malformed + 1))
     echo "CITATION-MARKERS: $CITATION_REGISTRY_FILE:$reg_lineno: malformed registry row (expected '<ROW-ID><TAB><file>'): $rline"
     continue
   fi
   printf '%s\t%s\n' "$rid" "$rfile" >>"$reg_pairs"
 done <"$CITATION_REGISTRY_FILE"
+
+# a registry that exists but yielded ZERO valid data rows (and no malformed
+# rows to explain why) is an environment/config failure, not a clean tree —
+# without this guard the reconciliation below would print a vacuous
+# "0 registry row(s) reconciled 1:1" green.
+if [ ! -s "$reg_pairs" ] && [ "$reg_malformed" -eq 0 ]; then
+  echo "validate-prose-budget: citation registry $CITATION_REGISTRY_FILE contains zero data rows — refusing a vacuous 1:1 reconciliation" >&2
+  exit 1
+fi
 
 # duplicate registry rows are themselves a defect (the 1:1 contract needs a
 # set, not a bag).
@@ -324,7 +339,34 @@ PARSED_EOF
       echo "  Remediation: fix the marker to the grammar in claude/citation-schema.md"
     fi
   done <<CAND_EOF
-$(awk '/^[[:space:]]*```/ { fence = !fence; next } !fence && index($0, "<!-- cite:") { printf "%d\t%s\n", FNR, $0 }' "$fpath")
+$(awk '
+  # CommonMark-faithful fence tracking: an opening fence is a run of 3+
+  # backticks OR tildes; it closes ONLY on a run of the SAME character at
+  # least as LONG with nothing else on the line — never on a different
+  # fence character or a shorter run. A naive parity toggle on bare ```
+  # would let a ~~~ block quoting an odd number of ``` lines (live case:
+  # claude/decision-queue-contract.md) invert the fence state and silently
+  # SKIP a later live marker — a false green.
+  {
+    s = $0
+    sub(/^[[:space:]]*/, "", s)
+    if (fence) {
+      n = 0
+      while (substr(s, n + 1, 1) == fchar) n++
+      rest = substr(s, n + 1)
+      if (n >= flen && rest ~ /^[[:space:]]*$/) fence = 0
+      next
+    }
+    if (s ~ /^```/ || s ~ /^~~~/) {
+      fchar = substr(s, 1, 1)
+      n = 0
+      while (substr(s, n + 1, 1) == fchar) n++
+      flen = n
+      fence = 1
+      next
+    }
+    if (index($0, "<!-- cite:")) printf "%d\t%s\n", FNR, $0
+  }' "$fpath")
 CAND_EOF
 done
 

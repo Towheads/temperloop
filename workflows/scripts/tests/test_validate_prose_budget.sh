@@ -243,6 +243,11 @@ mkdir -p "$MFIX/claude" "$MFIX/workflows/scripts"
 cat >"$MFIX/claude/CLAUDE.kernel.md" <<'EOF'
 # Fixture kernel doc
 
+~~~markdown
+```
+<!-- cite: QQ.9 incident:K#9 -->
+~~~
+
 A standing rule with a marker. <!-- cite: ZZ.1 incident:K#1 -->
 
 ```
@@ -270,7 +275,12 @@ printf '# fixture registry\nZZ.1\tclaude/CLAUDE.kernel.md\nYY.1\tclaude/extra.md
 # green: markers <-> registry reconcile exactly; the fenced ZZ.9 marker and
 # the backtick-quoted prefix are both ignored (either would be red if
 # scanned — unregistered and malformed respectively — so a green run IS the
-# proof of the ignore rules).
+# proof of the ignore rules). The leading ~~~ block quotes an ODD number of
+# ``` lines (the claude/decision-queue-contract.md shape): a naive
+# parity-toggle fence tracker would leave fence state inverted after it —
+# skipping the live ZZ.1 marker (missing -> red) and/or scanning QQ.9
+# (unregistered -> red) — so this same green run also proves the
+# char+length-aware fence tracking.
 out6="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_GREEN" bash "$SCRIPT" 2>&1)"; rc6=$?
 assert_rc "$rc6" 0 "fixture green: markers reconcile 1:1 (fenced + code-span markers ignored)"
 assert_has "$out6" "citation markers: 2 registry row(s) reconciled 1:1" "fixture green OK line counts exactly the two registered rows"
@@ -320,6 +330,16 @@ assert_has "$out6g" "not in the tracked claude/**/*.md set" "untracked-file regi
 out6r="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$TMP/no-such-registry.tsv" bash "$SCRIPT" 2>&1)"; rc6r=$?
 assert_rc "$rc6r" 1 "missing citation registry exits 1"
 assert_has "$out6r" "citation registry not found" "missing-registry error is named"
+
+# a registry that parses to ZERO valid data rows is RED — never a vacuous
+# "0 registry row(s) reconciled 1:1" green (the silent-green environment-
+# failure guard).
+REG_EMPTY="$TMP/registry-empty.tsv"
+printf '# comments only, no data rows\n' >"$REG_EMPTY"
+out6z="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_EMPTY" bash "$SCRIPT" 2>&1)"; rc6z=$?
+assert_rc "$rc6z" 1 "a zero-data-row citation registry exits 1"
+assert_has "$out6z" "zero data rows" "zero-data-row registry error is named"
+assert_not_has "$out6z" "reconciled 1:1" "a zero-data-row registry never prints the vacuous OK reconciliation"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
