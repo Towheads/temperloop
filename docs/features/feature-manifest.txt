@@ -240,6 +240,13 @@ quality-gates workflows/scripts/tests/fixtures/design-briefs/*
 quality-gates workflows/scripts/tests/fixtures/design-schema/*
 quality-gates docs/features/feature-manifest.txt
 quality-gates docs/features/backfill-exempt.txt
+# Prose-plane baseline counter (temperloop#719/#722): the mechanical
+# tier-1/tier-2 line counter that seeds the forthcoming two-tier prose
+# budget gate's caps (docs/adr/0015-prose-plane-budget-gate.md) — a
+# quality-gates-family tool even though the gate itself lands in a later
+# item, same slug as the other size/coverage validators above.
+quality-gates workflows/scripts/count-prose.sh
+quality-gates workflows/scripts/tests/test_count_prose.sh
 
 # ── docs-generator — docs-site generator + published doc sources ────────────
 docs-generator .github/workflows/docs-pages.yml

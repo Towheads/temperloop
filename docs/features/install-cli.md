@@ -102,6 +102,14 @@ generated-file banner, the kernel doc (`claude/CLAUDE.kernel.md`, with any
 sources twice on the same machine reproduces the target byte-for-byte — and
 alongside the composed file it writes a T0 inventory of every
 knowledge-store note the composed rules actually reference.
+An opt-in `INSTALL_CLAUDE_MD_KERNEL_ONLY=1` render-only mode emits the
+rendered kernel doc alone — no banner, no knowledge-store-routing section,
+no overlay, no T0-inventory write — for
+`workflows/scripts/count-prose.sh`'s tier-1 prose-plane count (tier-1 = the
+kernel-authored line count alone, as opposed to the full kernel+overlay
+total a real install renders). `temperloop install` (this repo's own CLI;
+a downstream fleet's `make install-claude` wrapper is the same story) never
+sets it, so a normal compose is unaffected.
 
 ## Integration
 

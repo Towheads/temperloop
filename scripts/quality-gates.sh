@@ -310,6 +310,20 @@ KERNEL_GATES=(
   # knob-registry gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/validate-feature-docs.sh"
   "bash workflows/scripts/tests/test_validate_feature_docs.sh"
+  # Prose-plane baseline counter (temperloop#719, item
+  # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
+  # composed-kernel-authored-render line count (through
+  # install-claude-md.sh's INSTALL_CLAUDE_MD_KERNEL_ONLY render-only seam —
+  # never a duplicated compose implementation, ADR 0015) plus per-file
+  # counts across claude/**/*.md. Its own baseline numbers seed the
+  # forthcoming two-tier CI budget gate's caps (item prose-budget-gate);
+  # this item ships the counter alone, no gate yet. Fixture suite proves
+  # host-determinism — a machine-conf/repo-local-conf fixture that perturbs
+  # EPIC_MIN_SUBUNITS/DISPLAY_TZ must not move the tier-1 count — running on
+  # both the ubuntu-latest and macos-latest CI legs, same direct-`bash` form
+  # as the knob-registry/feature-docs gates above.
+  "bash workflows/scripts/count-prose.sh"
+  "bash workflows/scripts/tests/test_count_prose.sh"
   # workflow-reviewer coverage rollup (temperloop#1007): hermetic gh-double suite
   # for the reporting script that measures the workflow-reviewer gate's coverage
   # over merged command-doc PRs. Reporting rollup, not a merge gate — its own
