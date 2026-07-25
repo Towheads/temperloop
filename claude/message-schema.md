@@ -204,7 +204,11 @@ operator later reviews it.
   Quantity — don't manufacture urgency to fill the slot).
 - **Calibrated-trust statement**, where the entry reports on autonomous or
   unattended action — state confidence and limits honestly (locked, Lee &
-  See 2004) rather than defaulting to a uniformly confident tone.
+  See 2004) rather than defaulting to a uniformly confident tone. The
+  concrete failure mode this guards against is citable: explanations can be
+  **persuasive but not informative**, raising reader acceptance of *wrong*
+  outputs (arXiv 2605.10930) — a confident-sounding rationale is itself a
+  trust-miscalibration risk, not automatically a transparency win.
 - **Deferred-question backlog pointer** (optional) — a link to any question
   block entries (deferred variant, below) this digest is surfacing.
 
@@ -309,15 +313,32 @@ but none of the following may be authored as a firm, load-bearing rule:
   device) actually enforces it is not — this file names the templates as the
   enforcement surface without claiming that surface is proven sufficient.
 - **Mode-2/6 error-message readability tuned to expertise level** (Cluster
-  5) — **unresolved**, zero evidence found either way; templates here must
-  not assume the CHI-2021 vocabulary/jargon/sentence-structure/length
-  findings (novice populations) generalize to an operator or expert reader
-  of CLI/PR content. Routed to temperloop#100.
-- **"Over-explanation harms comprehension/trust"** as a causal claim — the
-  parking-note and digest-entry "don't restate what's already visible"
-  guidance above rests only on the locked CLT redundancy-effect finding
-  (self-sufficient artifacts, Tier-1 finding 3), not on a proven link to
-  reader trust or comprehension outcomes. Routed to temperloop#100.
+  5) — direction **theoretically supported but empirically unconfirmed**:
+  expertise-reversal predicts expert readers may tolerate or even prefer
+  terser, denser output (2025 meta-analysis, 176 effect sizes), but this is
+  unconfirmed for professional developers, untested in the error-message
+  domain, and the reversal effect itself is unestablished at professional
+  expertise levels. Templates here must still not assume the CHI-2021
+  vocabulary/jargon/sentence-structure/length findings (novice populations)
+  generalize to an operator or expert reader of CLI/PR content. **Stays
+  provisional** — accepted standing gap per the temperloop#718 verdict
+  record (`Context/temperloop - CHI-2021 readability + over-explanation
+  harm research verdicts (#100)`, from the temperloop#100 spike).
+- **"Over-explanation harms comprehension"** as a causal claim — the former
+  combined "harms comprehension/trust" slot is **split in two** per the
+  temperloop#100 verdicts. The *trust-miscalibration / over-reliance* half
+  is now **citable and no longer provisional**: explanations can be
+  persuasive but not informative, raising reader acceptance of wrong
+  outputs (arXiv 2605.10930; supporting: doi 10.1080/0144929X.2025.2568928,
+  S0747563224002206, doi 10.1145/3686164) — see the strengthened Mode-5
+  calibrated-trust rule (§ Digest entry) and § Citation hygiene. The
+  *comprehension-degradation* half **stays provisional**: no study isolates
+  over-explanation → worse understanding, so the parking-note and
+  digest-entry "don't restate what's already visible" guidance above still
+  rests only on the locked CLT redundancy-effect finding (self-sufficient
+  artifacts, Tier-1 finding 3). Verdicts recorded in the temperloop#718
+  verdict record (`Context/temperloop - CHI-2021 readability +
+  over-explanation harm research verdicts (#100)`).
 
 ## Citation hygiene
 
@@ -326,6 +347,16 @@ but none of the following may be authored as a firm, load-bearing rule:
 - Scope the LLM-verbosity figure (≈50.4% compressible without information
   loss) to **short-QA tasks with an explicit brevity instruction** — do not
   generalize it to "about half of all responses."
+- Cite **arXiv 2605.10930** for the trust-harm link: explanations
+  "persuasive but not informative" raise reader acceptance of wrong outputs
+  (supporting: doi 10.1080/0144929X.2025.2568928, S0747563224002206, doi
+  10.1145/3686164). The measured harm is a function of **explanation
+  type/presence, not narration length per se** — do not cite it as evidence
+  that longer narration harms trust.
+- Keep **arXiv 2411.07858** scoped to **verbosity-compensation frequency
+  and compressibility only**. The trust/reliance sources above measure a
+  different construct (reader trust and over-reliance) and **complement,
+  not replace**, it — do not merge the two into one "verbosity harms" claim.
 - Do **not** cite arXiv 2507.10906 for the commit "What + Why" definition —
   refuted 0-3 on primary-source verification. Cite ICSE 2023 (doi
   10.1109/ICSE48619.2023.00076) and the stairs.ics.uci.edu commit-messages
@@ -426,7 +457,10 @@ this or any other route.
   reference tokens are a first-class artifact class")
 - L0 verification verdicts: `Context/temperloop - communication-style
   Tier-2 verification verdicts` (vault note)
-- Deferred research debt (Cluster 5, over-explanation→harm link): temperloop#100
+- Research debt (Cluster 5, over-explanation→harm link): adjudicated by the
+  temperloop#100 spike, applied here via temperloop#718; verdict record:
+  `Context/temperloop - CHI-2021 readability + over-explanation harm
+  research verdicts (#100)` (vault note)
 - Later plan items that build on this file: `kernel-guides-unify` (rewrites
   `CLAUDE.kernel.md`'s prose against this schema, retires the refs legend),
   `overlay-adoption` (foundation's adoption), `template-lints` (CI
