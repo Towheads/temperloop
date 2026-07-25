@@ -41,6 +41,18 @@ drain on schedule").
   ending a turn with "want me to file this?", because that offer dies with the
   session ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Task
   workflow). Filing is reversible; a dropped bug is not.
+- **Epic completion files its own retrospective.** When `/build` drives an epic
+  to completion, its `4d-retro` step *synchronously* files a "Process retro:
+  epic #N" issue — the four standing decomposition-retro questions (was the
+  sub-unit threshold right, did the contract seam hold, was spike routing
+  right, where did the triage→assess→build cadence add friction) plus a
+  handoff-defect taxonomy — so the lessons of *how the work was structured* get
+  a durable tracker instead of depending on someone remembering to open one
+  ([`claude/commands/build.md`](../claude/commands/build.md) § 4d-retro). It's
+  filed at the instant the epic closes, not deferred to the drain, so the
+  learning can't be lost if the session ends first. This closes the
+  contract-decomposition loop: every completed epic teaches the next
+  decomposition.
 - **The other live rules are overlay/vault** — decision capture (→ `Decisions/`
   notes), feedback memory, config-drift sync, session-optimization tracking (→
   `Patterns/`), and tooling-friction capture (→ the friction ledger,
@@ -86,6 +98,20 @@ surfaces the operator disposes later (stage 7). Each run:
 Every adjudication — accepted or rejected — is written as a **findings record**
 ([`workflows/scripts/drain/findings-schema.md`](../workflows/scripts/drain/findings-schema.md)),
 which is what makes the next stage possible.
+
+**A full install adds a second reader of those sessions: `/retro`, the judge.**
+Where `/tidy` reads a session forward and pulls content *out* of it, the overlay
+`/retro` command reads archived sessions and asks a different question — *did
+the system itself perform well?* — grading across five axes (extraction recall,
+rule efficacy, efficiency, outcome quality, judgment quality), each checked
+against a named source. A finding that names a measurable effect is filed
+straight to the board with a `## Measurement` contract; one that can't is routed
+to the retro-review surface `/check-in` disposes (stage 7). `/retro` is the
+**judge** counterpart to `/tidy`'s **extractor** — it grades system performance
+rather than extracting session content — and it is an **overlay** command, not
+present in a bare kernel checkout. (The epic-close `4d-retro` above, by
+contrast, ships in the kernel: it files the per-epic *process* retro, a narrower
+thing than `/retro`'s cross-session performance judgment.)
 
 ### 4. Detect recurrence → promote — one-off vs. pattern
 
@@ -167,6 +193,7 @@ not proofs**. Same honesty as the cost and token-spend pages.
 |---|---|---|
 | Drain, enforcement, plumbing | **kernel (this repo)** | `/tidy`, `/check-in`, the session hooks, the drain scripts, the maturity-ladder guard hooks, `validate-live-drain.sh`, the findings schema |
 | Live-capture rules | **private overlay** | decision capture, feedback memory, config-drift sync, session-optimization tracking, tooling-friction capture (composed into `~/.claude/CLAUDE.md` at install) |
+| The retrospective *judge* | **private overlay** | `/retro` (the epic #916 retro-judge layer) — grades system performance across five axes and feeds `/check-in`'s retro-review surface; the judge counterpart to the kernel's `/tidy` extractor |
 | The knowledge store the loop reads and writes | **Obsidian vault** | the friction ledger, curated `Decisions/`/`Patterns/`/`Mistakes/`/`Context/`, the `Sessions/_inbox/` stubs, the pipeline disposition surfaces |
 
 So a bare kernel checkout has the machine that *processes and hardens*
