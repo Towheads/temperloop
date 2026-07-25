@@ -98,21 +98,37 @@ case "$PROSE_BUDGET_TIER2_FILE_CAP" in ''|*[!0-9]*) echo "validate-prose-budget:
 
 # ---------------------------------------------------------------------------
 # Run count-prose.sh and parse its report. Never re-derive either number.
+#
+# stdout and stderr are captured SEPARATELY (never merged via 2>&1) — a
+# merged stream makes line POSITION meaningless: any benign stderr line
+# (a git-advice notice, a warning count-prose.sh itself emits) landing
+# before the real TIER-1 line would either shift it out of "line 1" (a
+# spurious "parser drift" red) or, worse, itself be a stray digit-only line
+# mistaken for the count. stderr is captured to a scratch file and surfaced
+# only in the failure path below, never fed to the parser.
 # ---------------------------------------------------------------------------
-report="$(COUNT_PROSE_ROOT="$COUNT_PROSE_ROOT" bash "$COUNT_PROSE_BIN" 2>&1)"
+tmp_err="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.stderr.XXXXXX")"
+trap 'rm -f "$tmp_err"' EXIT
+
+report="$(COUNT_PROSE_ROOT="$COUNT_PROSE_ROOT" bash "$COUNT_PROSE_BIN" 2>"$tmp_err")"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "validate-prose-budget: count-prose.sh failed (exit $rc) — cannot evaluate the budget:" >&2
   printf '%s\n' "$report" >&2
+  [ -s "$tmp_err" ] && cat "$tmp_err" >&2
   exit 1
 fi
 
-# tier-1: first line reads "TIER-1 kernel-authored composed render: NNN
-# lines" — anchored past "render: " and before " lines" (NOT a bare
+# tier-1: locate the "TIER-1 kernel-authored composed render: NNN lines"
+# line ANYWHERE in the (stdout-only) report by its full, anchored content —
+# never by its POSITION (e.g. `sed -n '1p'`), which a stray leading line
+# (from either stream) would silently defeat — and never by a bare
 # digit-run search, which would match the literal "1" in "TIER-1" itself
-# before ever reaching the real count — see test_count_prose.sh's own
-# extract_tier1 for the same fix, applied here identically).
-tier1_count="$(printf '%s\n' "$report" | sed -n '1p' | sed -E 's/^.*render: ([0-9]+) lines.*$/\1/')"
+# before ever reaching the real count (see test_count_prose.sh's own
+# extract_tier1 for the same fix, applied here identically). `head -1`
+# guards against a hypothetical duplicate match rather than trusting
+# uniqueness.
+tier1_count="$(printf '%s\n' "$report" | sed -n -E 's/^TIER-1 kernel-authored composed render: ([0-9]+) lines$/\1/p' | head -1)"
 case "$tier1_count" in
   ''|*[!0-9]*)
     echo "validate-prose-budget: could not parse a TIER-1 line count from count-prose.sh's report — parser drift against that script's output format?" >&2

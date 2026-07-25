@@ -12,9 +12,14 @@
 # per-file source change — proving the failure message's "every file flat"
 # claim is actually true, not just asserted); the failure-message contract
 # (file/count/cap/both remediation paths named, tier-1 prints the full
-# tier-2 breakdown); and the input-validation error paths (missing/
-# non-numeric cap knobs, missing counting script, a failing count-prose.sh
-# propagated rather than swallowed).
+# tier-2 breakdown); and the input-validation error paths (non-numeric cap
+# knobs, a missing counting script, a failing count-prose.sh propagated
+# rather than swallowed, an unparseable report). Does NOT exercise a
+# missing/unset cap knob (`PROSE_BUDGET_TIER1_CAP`/`_TIER2_FILE_CAP`
+# unset entirely) — build.config.sh always sets both, so there is no
+# in-repo seam to unset one without also breaking every other consumer of
+# that file; the `:?` guard on each in validate-prose-budget.sh is
+# unexercised here.
 #
 # Zero network. The tier-1-only-breach fixture uses a `git clone --local
 # --no-hardlinks` of THIS checkout (read-only source; the clone's checked-out
@@ -22,7 +27,13 @@
 # install-claude-md.sh cannot perturb this checkout) — mirrors this repo's
 # existing sandbox_bootstrap_checkout convention of cloning the real tree for
 # an end-to-end fixture, without pulling in that heavier CLI-install
-# machinery this test doesn't need.
+# machinery this test doesn't need. Test 4's byte-identical-table assertion
+# compares this checkout's OWN working tree against a clone of its committed
+# HEAD, so it assumes a CLEAN working tree (no uncommitted claude/**/*.md
+# changes) when run interactively; a dirty dev tree would show as a
+# (misleading) table mismatch rather than a real regression — CI and a
+# freshly-cloned worktree are always clean, so this is a documented
+# dev-loop caveat, not a guarded precondition.
 #
 # Usage: bash workflows/scripts/tests/test_validate_prose_budget.sh
 
@@ -139,7 +150,7 @@ with open(path, "w", encoding="utf-8") as f:
     f.write(text)
 PYEOF
   if ! grep -q "FIXTURE PADDING" "$install_md" 2>/dev/null; then
-    fail_test "seam-fixture patch" "perl patch did not apply (install-claude-md.sh unchanged): $(cat "$TMP/patch.err" 2>/dev/null)"
+    fail_test "seam-fixture patch" "python3 patch did not apply (install-claude-md.sh unchanged; this is also the only net for a missing/broken python3 on this host): $(cat "$TMP/patch.err" 2>/dev/null)"
   else
     ok "seam-fixture: patched the clone's compose seam without touching any claude/**/*.md file"
 
