@@ -257,7 +257,7 @@ PIPELINE_TICK_BIN	$HERE/pipeline-tick.sh	path	kernel	workflows/scripts/build/pip
 PIPELINE_DRIVE_BIN	$HERE/pipeline-drive.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the drive sub-script
 PIPELINE_ISSUE_META_BIN	$HERE/../issue-meta-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the issue-meta-snapshot sub-script
 REWORK_SNAPSHOT_BIN	$HERE/../rework-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the rework-snapshot sub-script
-PIPELINE_ENABLED_BOARDS	3	string	kernel	workflows/scripts/build/pipeline-cron.sh	Space-separated logical board numbers the pipeline ticks
+PIPELINE_ENABLED_BOARDS	3	string	kernel	workflows/scripts/build/pipeline-cron.sh	Space-separated board ids the pipeline ticks
 PIPELINE_LOG_DIR	$HOME/.claude/funnel/log	path	kernel	workflows/scripts/build/pipeline-cron.sh	Local (non-git-archived) pipeline wake-record log dir
 PIPELINE_CRON_SELF_UPDATE	0	bool	kernel	workflows/scripts/build/pipeline-cron.sh	Opt-in: fetch+hard-reset the checkout to origin/main and re-exec before ticking
 FOUNDATION	$(cd "$HERE/../../.." && pwd)	path	kernel	workflows/scripts/build/pipeline-cron.sh	Root of the foundation/kernel checkout the pipeline operates in

@@ -37,7 +37,7 @@
 #                     telemetry this record exists to support. null when the
 #                     env var is unset (e.g. a manual/non-Claude-Code run).
 #   command          "sweep" | "triage" (whatever --command was passed, verbatim)
-#   board            the logical board number (--board), or null
+#   board            the board id (--board), or null
 #   items_processed  integer — how many items the run drove/considered
 #   merged           integer — how many reached a successful terminal outcome
 #   parked           integer — how many were parked/deferred/escalated

@@ -50,7 +50,7 @@
 #
 # Deliberately NOT covered here (see foundation #798 build's verification
 # doc for the scoping rationale): the app/board names themselves
-# (stageFind/foundation/ssmobile/subsetwiki) and their logical board numbers
+# (stageFind/foundation/ssmobile/subsetwiki) and their board ids
 # (3/4/5/6) — these are illustrative multi-board-pipeline examples, not
 # identity/credential tokens, and a later item (plan-schema repo-field) is
 # the one that replaces the hardcoded board-number mapping architecture.
