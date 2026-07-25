@@ -72,6 +72,27 @@ bad() { echo "  FAIL  $1: $2"; fail=$((fail + 1)); }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/stranger-config-test-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# ── Hermeticity: neutralize any host-local build.config.local.sh (#1055) ─────
+# build.config.sh (sourced by funnel-tick.sh/funnel-drive.sh, and directly in
+# Section I) sources $BUILD_CONFIG_LOCAL when it exists — its documented test
+# seam. On a developer's PRIMARY checkout that sibling file is present and
+# hard-`export`s a real FUNNEL_OPERATOR (@towhead), which leaks past the injected
+# STRANGER_OPERATOR and fails Section D's reassign assertion (`got towhead`). A
+# fresh checkout / CI has no such file and passes, so the break only surfaces
+# on a real dev machine. Point the seam at a guaranteed-absent path so no
+# host-local config is ever sourced, keeping the test hermetic regardless of the
+# running checkout. Exported so every subshell (the funnel-tick / build.config
+# invocations below) inherits it.
+#
+# The same neutralization is applied to BUILD_CONFIG_MACHINE (build.config.sh
+# precedence rung 3, `$XDG_CONFIG_HOME/temperloop/build.config.sh`): a host that
+# carries a machine-level build config would leak it identically, and a fresh
+# worktree / CI masks that just the same. One nonexistent-path sentinel per
+# seam; an absent file is a silent no-op (build.config.sh guards both with
+# `[ -f ]`).
+export BUILD_CONFIG_LOCAL="$WORK/no-such-local-config.sh"
+export BUILD_CONFIG_MACHINE="$WORK/no-such-machine-config.sh"
+
 # ── A: synthetic stranger identity ──────────────────────────────────────────
 # Board 42 is NOT one of the built-in boards (3/4/5/6) — a genuinely new board
 # number, not an override of an existing one, so a mis-resolution to the
