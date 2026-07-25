@@ -110,6 +110,17 @@ out="$(run_checker 2>&1)" || fail "6: allow-marker line should pass:
 $out"
 echo "PASS: 6 <!-- knob-prose:allow --> marker suppresses the line (GREEN)"
 
+# --- 7b. GREEN: a citation marker's digits are not a restated value --------
+# (claude/citation-schema.md markers are HTML comments — invisible metadata,
+# never prose; a row id like AB.300 on a knob-naming line must not
+# false-positive as the knob's default.)
+cat >"$ROOT/claude/commands/spec.md" <<'EOF'
+The window knob is `KNOB_WINDOW`, named here symbolically. <!-- cite: AB.300 incident:K#300 -->
+EOF
+out="$(run_checker 2>&1)" || fail "7b: citation-marker digits should not count as a restated default:
+$out"
+echo "PASS: 7b citation-marker digits are not a violation (GREEN)"
+
 # --- 7. GREEN: name-substring of a longer identifier doesn't count ---------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
 `KNOB_MODE_EXTENDED` is a different knob entirely; auto is mentioned freely here.

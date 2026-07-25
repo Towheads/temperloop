@@ -1,6 +1,6 @@
 # first-epic-setup.md — kernel template, not a slash command
 
-This file lives at `claude/templates/` (never `claude/commands/` — a bare
+This file lives at `claude/templates/` (never `claude/commands/` — a bare <!-- cite: TPL.1 class:template-becomes-command -->
 `.md` under `claude/commands/` is auto-discovered as a slash command, and
 this is data, not a command) so it never gets picked up as one.
 
@@ -36,7 +36,7 @@ This is your first epic driven through the **real** temperloop pipeline
 the three things a fresh install assumes but doesn't yet have: engineering
 review criteria, a working GitHub branch/PR/merge substrate, and CI.
 
-Shape: **interview-first → compose → disclose → apply.** Every question
+Shape: **interview-first → compose → disclose → apply.** Every question <!-- cite: TPL.2 guard:docs/adr/0010-onboarding-as-first-executed-epic.md -->
 below is asked *before* any external write; each write's consequence is
 named at the moment you're asked; your answers compose into **one**
 change-set you confirm **once**, as a whole; only then do this epic's own
@@ -218,7 +218,7 @@ that will never appear.
 
 ## Decline floors
 
-Nothing here can leave your repo worse off, or in an ambiguous
+Nothing here can leave your repo worse off, or in an ambiguous <!-- cite: TPL.3 incident:K#605 -->
 half-configured state:
 
 - **Decline the whole epic** → you still get the inline principles

@@ -15,7 +15,7 @@ where that brief's promise is discharged in full.
 
 ## Independence from /workshop's own merge acceptance
 
-**These proxies measure the system `/workshop` feeds. They do not gate any
+**These proxies measure the system `/workshop` feeds. They do not gate any <!-- cite: DMP.1 incident:K#220 -->
 sibling plan item's merge.** Nothing in `Plans/2026-07-08 temperloop -
 design command front door.md` takes a `depends-on:`/`after:` edge on this
 file, and no other `design-telemetry-proxies` sibling (`design-command-core`,
@@ -40,7 +40,7 @@ epistemic stance.
 
 ## No new telemetry stream
 
-All four proxies below derive from artifacts `/workshop`, `/assess`, or
+All four proxies below derive from artifacts `/workshop`, `/assess`, or <!-- cite: DMP.2 guard:meta/data/raw/README.md -->
 `/build` **already produce** — satisfying this item's acceptance criterion
 2 without inventing instrumentation:
 

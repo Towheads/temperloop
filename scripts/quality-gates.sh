@@ -335,7 +335,12 @@ KERNEL_GATES=(
   # this item measured (338 / 1057 lines) rather than the epic's earlier
   # recorded artifact — main had already drifted a few lines past that
   # artifact by landing time, and seeding from a stale number would have
-  # landed this gate red on an unrelated PR on day one. Fixture suite proves
+  # landed this gate red on an unrelated PR on day one. The same gate also
+  # owns the CITATION-MARKER presence check (item citation-markers / #724):
+  # every registered standing kernel rule's same-line citation marker is
+  # reconciled 1:1 against workflows/scripts/config/citation-registry.tsv
+  # (grammar/placement: claude/citation-schema.md) — missing, duplicate,
+  # unregistered, and malformed markers all fail. Fixture suite proves
   # both a demonstrated tier-2 overage AND the tier-1-only-breach case (a
   # real compose-seam fixture: a scratch clone's install-claude-md.sh
   # patched to inflate the composed render with the per-file table proven

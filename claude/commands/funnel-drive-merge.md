@@ -21,8 +21,8 @@ whose timed/modal merge gate is the human-supervised checkpoint**.
 1. **Merge ONLY through `/build --unattended`.** Never run `gh pr merge`, `gh pr
    create`, `git push`, or any merge/enqueue yourself. `/build` owns the branch →
    PR → CI → merge lifecycle; you only *invoke* it. If you find yourself about to
-   type a `gh pr` or `git push` command directly, STOP — that is `/build`'s job.
-2. **Honor `/build`'s merge gate — never force a risky set.** `/build --unattended`
+   type a `gh pr` or `git push` command directly, STOP — that is `/build`'s job. <!-- cite: FDM.1 guard:workflows/scripts/build/funnel-drive.sh -->
+2. **Honor `/build`'s merge gate — never force a risky set.** `/build --unattended` <!-- cite: FDM.2 guard:claude/commands/build.md -->
    auto-merges only a clean, disjoint, independent set after its timed window; a
    **structurally-risky** set hard-blocks for explicit approval (and, operator-absent,
    routes to the decision queue). Do **not** override, shorten, or bypass that gate.
@@ -59,7 +59,7 @@ Your argument (`$ARGUMENTS`) is a path to a JSON file. Read it. Shape:
 Each action carries a **`mode`** (foundation #624):
 
 - **`fresh`** (or absent) — a first-time drive: claim → `/assess` → `/build` → open a PR.
-- **`resume`** — a prior tick already opened a PR for this issue, but the one-shot
+- **`resume`** — a prior tick already opened a PR for this issue, but the one-shot <!-- cite: FDM.3 incident:F#624 -->
   headless session ended before CI greened and `/build`'s merge gate fired. **Re-attach
   to that OPEN PR and run only the merge phase** — do NOT re-assess or open a second PR
   (that is the duplicate-PR bug #624 exists to prevent). See Step 2's resume path.
@@ -93,7 +93,7 @@ Process `actions` in order. Each is a `drive-ready` with `kind == "code"`. Branc
   so a `blocking-now` decision is posted to the decision queue and the item parks —
   it does **not** hang. Let `/build` reach its own terminal state; do not intervene in
   its gate.
-- **Let `/build` block synchronously through CI-watch and the merge gate — do NOT
+- **Let `/build` block synchronously through CI-watch and the merge gate — do NOT <!-- cite: FDM.4 incident:F#626 -->
   dispatch a background poll and yield (#626).** This headless run has no
   re-invoke-on-background-completion loop, so a backgrounded CI watch or a
   `ScheduleWakeup` merge window would simply end the session before the merge fires —
@@ -140,7 +140,7 @@ Process `actions` in order. Each is a `drive-ready` with `kind == "code"`. Branc
   `refused` (you judged the item not autonomously driveable to a merged PR — e.g. a
   manual-ops task with no committable code artifact).
 
-**Do not edit the issue yourself on `refused` or `failed`** (no `gh issue edit`, no
+**Do not edit the issue yourself on `refused` or `failed`** (no `gh issue edit`, no <!-- cite: FDM.5 incident:F#697 -->
 assign, no label, no comment). Just report the status and a one-line `note` with the
 reason. `funnel-drive.sh` deterministically ROUTES every refused/failed item to the
 operator — assigns the operator (`$FUNNEL_OPERATOR`), adds `funnel-escalated` (its own gate since #697 — not

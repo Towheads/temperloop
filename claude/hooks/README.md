@@ -21,7 +21,7 @@
 
 ## Shared helper
 
-**`eval-guard.sh`** — sourced by every hook that owns a production write channel.  Provides a single function:
+**`eval-guard.sh`** — sourced by every hook that owns a production write channel.  Provides a single function: <!-- cite: HK.1 guard:claude/hooks/eval-guard.sh -->
 
 ```bash
 # shellcheck source=eval-guard.sh

@@ -226,10 +226,18 @@ for path in "${targets[@]}"; do
       case "$line" in
         *'<!-- knob-prose:allow'*) continue ;;
       esac
-      # strip backtick code spans; nothing here expands — the quoting is a
-      # literal sed program, not a missed expansion.
+      # strip backtick code spans AND HTML comments (`<!-- ... -->`) —
+      # neither is prose. Comments cover the same-line citation markers
+      # (claude/citation-schema.md): a marker's row id / ref digits (e.g.
+      # `<!-- cite: SW.3 ... -->` on a line naming a knob whose default is
+      # 3) would otherwise false-positive as a restated value. The comment
+      # ERE is the full body-aware form (`[^-]|-[^-]|--[^>]`), not a naive
+      # `[^>]*`, so a comment whose body legitimately contains `>` (the
+      # citation grammar's ref token permits any non-space character) still
+      # strips. Nothing here expands — the quoting is a literal sed
+      # program, not a missed expansion.
       # shellcheck disable=SC2016
-      prose="$(printf '%s' "$line" | sed -E 's/`[^`]*`//g')"
+      prose="$(printf '%s' "$line" | sed -E 's/`[^`]*`//g; s/<!--([^-]|-[^-]|--[^>])*-->//g')"
       if printf '%s' "$prose" | grep -qE -- "$pat"; then
         if _kp_take_baseline "$rel" "$name" "$default" "$line"; then
           baselined=$((baselined + 1))

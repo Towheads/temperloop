@@ -14,7 +14,7 @@ the kernel's output surfaces are not prose at all: they are grammars a parser
 failure shape (looks like it worked; nothing downstream notices until the
 mechanism that depended on the exact bytes fails).
 
-This file is the **index of which surfaces are which**. It is deliberately
+This file is the **index of which surfaces are which**. It is deliberately <!-- cite: PP.1 incident:F#164 -->
 **not** a second copy of any contract: each row below names a surface,
 classifies it, and points at the ONE place that surface's real shape is owned
 (spec-centralization — the same discipline foundation's F#741 telemetry-sink
@@ -40,14 +40,14 @@ For any concrete output you're about to restyle:
    descriptions, plan-item titles and notes prose, commit-message bodies
    minus any closing-keyword line, decision-issue question prose, session
    summaries) that a style template may restyle freely.
-4. Found a machine-parsed surface that isn't listed? That's a gap in this
+4. Found a machine-parsed surface that isn't listed? That's a gap in this <!-- cite: PP.3 class:stale-index-licensed-breakage -->
    index, not license to guess — file it (kernel: an issue against this repo;
    overlay: per that project's capture-at-source rule) and add a row once the
    real owner is confirmed.
 
 ### Mixed surfaces (the common trap)
 
-Most frozen surfaces are not whole documents — they are **exact lines or
+Most frozen surfaces are not whole documents — they are **exact lines or <!-- cite: PP.2 incident:F#265 -->
 fields embedded inside an otherwise free-form document**. A PR body is mostly
 style-free prose, EXCEPT a bare `Closes #N` line and the `## Verification`
 section's resolved content. A plan-note item is mostly free-form prose,
@@ -81,6 +81,7 @@ no board, no vault) needs them frozen too.
 | Board adapter field names/values: `Status` single-select option strings, the `Host/Session` claim-stamp format, `Seq`, `Component` | **Frozen** | `workflows/scripts/board/lib/board.sh` (field-name constants) + `claim.sh`/`worklist.sh`/`reconcile.sh` (consumers) | The distributed-lock read (claim/release/reconcile) and the board's Ready/In-Progress/Done routing key off these exact option strings and the stamp format; a restyled option string desyncs the board from every reader. |
 | Work-class labels `Operational` / `Foundational` | **Frozen** | `claude/work-class-policy.md` | The autonomous funnel driver's autonomy-policy branch (fully-autonomous vs prep-then-gate) matches on these exact label strings. |
 | Live/Drain pairing registry table (`claude/commands/tidy.md` § "Live/Drain pairings" table) | **Frozen** | `workflows/scripts/validate-live-drain.sh` (mechanical table parser) | The validator parses this table's literal row/column structure to assert every live rule has a paired drain backstop; reflowing the table (not just its prose) breaks the CI gate silently. |
+| Citation markers (`<!-- cite: <row-id> <class>:<ref> -->`) + `workflows/scripts/config/citation-registry.tsv` rows | **Frozen** | `claude/citation-schema.md` (grammar/placement) + `workflows/scripts/validate-prose-budget.sh` (mechanical 1:1 reconciler) | The budget gate greps the exact marker token grammar across `claude/**/*.md` and reconciles it against the registry's `row-id<TAB>file` rows; a restyled marker, a reflowed registry row, or a marker moved into code font goes red (or silently unscanned). |
 
 ## Overlay-extension table
 

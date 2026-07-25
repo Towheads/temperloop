@@ -1,6 +1,6 @@
 # Work-class taxonomy: Operational vs Foundational
 
-Every issue/epic processed by the autonomous funnel driver carries one of two
+Every issue/epic processed by the autonomous funnel driver carries one of two <!-- cite: WC.1 incident:F#567 -->
 **work-class labels**, which determines the driver's autonomy policy for that item.
 
 > **Canonical source:** `Decisions/foundation - Autonomous funnel driver + GitHub decision queue`
@@ -39,7 +39,7 @@ venue/artist expansion is *initiated* yet Operational. The correct axis is
 
 ## Misclassification safety net
 
-The work-class binary is a **default routing, not a guarantee.** An Operational item
+The work-class binary is a **default routing, not a guarantee.** An Operational item <!-- cite: WC.2 guard:claude/commands/build.md -->
 that turns out to need architectural judgment trips `/build`'s existing **design-fork
 halt**, which routes the item to the decision queue regardless of its label. That
 safety net is what makes the binary safe even when a classification is wrong.

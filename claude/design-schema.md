@@ -46,7 +46,7 @@ brief-specific field: `status`. `status: draft` is the gate between the
 coverage walk and materialization — the command's ratify step
 (`/workshop` Step 4) flips it to `ratified` only after every dimension carries
 a disposition (§ Disposition grammar) and the review tier for that epic's
-weight has run (`/workshop` Step 3). A `ratified` brief is treated as
+weight has run (`/workshop` Step 3). A `ratified` brief is treated as <!-- cite: DS.4 class:ratified-record-silent-mutation -->
 immutable going forward: a later change is a **new** brief that supersedes
 it (linked via `[[wikilink]]`), the same convention `Decisions/` notes use
 for supersession — never an edit-in-place of a ratified brief.
@@ -65,7 +65,7 @@ draft-adopt path — a killed idea does not un-kill itself on the next run.
 
 ## Kernel dimension list
 
-Seventeen dimensions, one per numbered section of a brief. The kernel owns
+Seventeen dimensions, one per numbered section of a brief. The kernel owns <!-- cite: DS.1 incident:K#148 -->
 this list and its order; an overlay may **add** dimensions but never
 remove or reorder a kernel one (§ Overlay extensibility). Each entry below
 states what the dimension must answer and the mechanism — if any — that
@@ -100,7 +100,7 @@ not only ones proposing a new command, must answer how its resulting flow
 displaces the default behavior it replaces, or state honestly that it
 doesn't change any existing default.
 
-**Dimension 0 (Premise & null hypothesis) is numbered `0`, not appended as
+**Dimension 0 (Premise & null hypothesis) is numbered `0`, not appended as <!-- cite: DS.2 incident:K#509 -->
 `17`, so it sorts and is walked *first*** — before problem/outcome, before
 anything — without renumbering dimensions 1–16. It is also the schema's
 **only `filled`-only dimension**: every other dimension may legitimately
@@ -110,7 +110,7 @@ exactly the unexamined-idea gap the premise gate exists to close, so the
 gate (`/workshop` Step 1.3b, temperloop#509) never accepts anything but a
 real answer or an honest kill.
 
-> **Provisional — pending temperloop#224.** Dimension 5's coverage-**walk
+> **Provisional — pending temperloop#224.** Dimension 5's coverage-**walk <!-- cite: DS.7 incident:K#224 -->
 > structure** (the order dimensions are walked in, and whether a bounded
 > alternatives/divergence moment precedes the convergent walk) is not
 > settled. The walk is grounded as a **convergent inspection checklist**
@@ -136,7 +136,7 @@ real answer or an honest kill.
 
 ## Disposition grammar
 
-Every dimension in a brief gets **exactly one** explicit disposition —
+Every dimension in a brief gets **exactly one** explicit disposition — <!-- cite: DS.3 guard:workflows/scripts/validate-design-brief.sh -->
 no dimension may be silently absent:
 
 ```
@@ -177,7 +177,7 @@ regardless of whether the lint exists yet.
 
 ## Overlay extensibility — add-only
 
-The kernel owns the seventeen-dimension default list (§ Kernel dimension
+The kernel owns the seventeen-dimension default list (§ Kernel dimension <!-- cite: DS.5 class:overlay-dimension-collision -->
 list) and its order. An overlay **may add** dimensions — an org-specific
 concern with no meaning in a stranger's kernel-only checkout — but **may
 never remove or weaken** a kernel dimension. This is the same
@@ -201,7 +201,7 @@ that no longer holds for existing overlays).
 
 ## Materialization contract
 
-`/workshop`'s materialize step (Step 5) turns a ratified brief into a board
+`/workshop`'s materialize step (Step 5) turns a ratified brief into a board <!-- cite: DS.6 incident:K#218 -->
 epic. A well-formed epic produced this way carries:
 
 - **A `## Contract` body** with the same three sections `/assess`'s

@@ -67,7 +67,7 @@ Step 3 below — Steps 0–2 and 4–6 needed no change either for #217 or #219.
 
 ## Operating principles
 
-- **Operator-present only — no unattended arm.** `/workshop` is modal by
+- **Operator-present only — no unattended arm.** `/workshop` is modal by <!-- cite: W.1 class:rubber-stamped-coverage-walk -->
   construction: there is no `--unattended` flag, no `ScheduleWakeup` poll, and
   no async decision-issue backend. Every ask in this command (Step 4's ratify
   confirmation; any disambiguating question during the walk) is a direct,
@@ -76,19 +76,19 @@ Step 3 below — Steps 0–2 and 4–6 needed no change either for #217 or #219.
   absent one, and there is never an absent-operator case to choose here. A
   design ritual cannot run against an absent operator; that is a deliberate
   property of this command, not a gap to fill later.
-- **Minimum-viable-output rule.** Whatever else is unavailable — no `gh` auth,
+- **Minimum-viable-output rule.** Whatever else is unavailable — no `gh` auth, <!-- cite: W.2 guard:docs/principles.md -->
   no repo, no registered board, no reviewer agents declared (Step 3) — the
   coverage walk still produces a **ratified brief note in the
   knowledge store**. That is the floor this command guarantees. Every
   dependency below degrades legibly (a stated `skipped — <reason>` line, never
   a silent no-op) rather than blocking the walk itself. See Step 3's and
   Step 5's degradation paths.
-- **Idempotent materialization.** Epic creation is **probe-before-create** on
+- **Idempotent materialization.** Epic creation is **probe-before-create** on <!-- cite: W.3 class:duplicate-epics-on-rerun -->
   the `design-brief:` marker line (Step 5b) — a re-run of `/workshop` against an
   already-ratified brief (or a re-run of just Step 5 after a partial failure)
   **adopts** the existing epic rather than duplicating it, exactly like
   `/triage`'s epic creation.
-- **The dimension list belongs to `claude/design-schema.md`, not to this
+- **The dimension list belongs to `claude/design-schema.md`, not to this <!-- cite: W.4 class:driftable-dimension-list-copy -->
   file.** This command walks whatever that file currently defines — the
   kernel's 16 dimensions plus any overlay-added ones (letter-suffixed, e.g.
   `16a`, per that file's § Overlay extensibility — add-only). Never hand-add
@@ -173,7 +173,7 @@ foundation that later shifts underneath it.
    create-or-adopt the note first, walk the gate second, so the gate's
    dimension-0 write and any drop action always target a note already on disk.
    Check whether `Designs/<short title>.md` already exists in the knowledge
-   store; if it does, branch on its frontmatter `status`:
+   store; if it does, branch on its frontmatter `status`: <!-- cite: W.5 incident:K#509 -->
    - **`draft`** → adopt it: skip creation and **resume the walk at Step 2**
      against the existing note (its already-dispositioned dimensions stand;
      the walk covers the rest). The premise gate already ran on the pass that
@@ -216,7 +216,7 @@ foundation that later shifts underneath it.
    and its drop action both act on the note just created here — a `drop`
    therefore persists a durable `status: dropped` kill record even on that
    first pass, which is the whole point of creating the note first.
-5. **Step 1.3b — Premise gate (null-hypothesis checkpoint).** Runs **after**
+5. **Step 1.3b — Premise gate (null-hypothesis checkpoint).** Runs **after** <!-- cite: W.6 incident:K#509 -->
    the brief note exists (item 4's probe-before-create) — so its dimension-0
    write and its drop action always target a note already on disk, and a
    killed or ratified idea has already short-circuited at item 4 before this
@@ -340,7 +340,7 @@ foundation that later shifts underneath it.
    summary of one; `/assess`'s epic-decomposition mode must be able to
    decompose `Produces` with zero changes (`claude/design-schema.md` §
    Materialization contract).
-5. **Walk-structure note — provisional, do not cite Double Diamond.** The
+5. **Walk-structure note — provisional, do not cite Double Diamond.** The <!-- cite: W.16 incident:K#224 -->
    walk above is a **convergent inspection checklist**: dimensions applied in
    a fixed default order, each dispositioned, with no divergent /
    alternatives-generation phase anywhere in it. This is the grounding the L0
@@ -365,7 +365,7 @@ foundation that later shifts underneath it.
      **Never** persist dimensions as per-dimension `ks_append` calls: the
      walk is operator-reorderable (Step 2.2), so appends land out of
      dimension order and corrupt the note's numbered-section structure.
-7. **Persist-then-ask ordering — dual-surface before any gate.** Step 2.6
+7. **Persist-then-ask ordering — dual-surface before any gate.** Step 2.6 <!-- cite: W.8 incident:K#670 -->
    requires the incremental *write*; this fixes its **ordering** relative to
    any operator gate. Never open an accept/object (or any approval)
    `AskUserQuestion` over drafted dimension content until that content is
@@ -414,7 +414,7 @@ walked.
 
 ### 3.1 — Tier decision (stated before committing)
 
-1. **State the cost, then ask.** Before spawning a single reviewer, tell the
+1. **State the cost, then ask.** Before spawning a single reviewer, tell the <!-- cite: W.9 class:unpriced-speculative-review-spend -->
    operator what each tier costs: **brief pass** = two standing lenses
    (`architecture-reviewer`, `requirements-auditor`) reviewing the brief
    once each; **full pass** = the same two lenses **plus** a red-team lens,
@@ -464,7 +464,7 @@ walked.
    regardless of which tier 3.1 picked. This is RQ-3 from the ratified
    brief: the mandate is not a full-pass-only nicety, and dimension 12
    (First-run experience) is the dimension that names the trigger.
-2. **What "executed" means, and why it outranks inspection.** The L0
+2. **What "executed" means, and why it outranks inspection.** The L0 <!-- cite: W.10 incident:K#221 -->
    verdict adapts cognitive walkthrough (Wharton, Rieman, Lewis, Polson,
    1994) for this run's *rubric* only — its four questions (will the
    persona try the right action, notice it's available, know it's correct,
@@ -504,7 +504,7 @@ walked.
    predicate `/assess` Step 3 and `/triage` Step 3 apply to their own
    panels. Probe each candidate lens right before it would be spawned;
    absence is never fatal to the walk.
-1a. **Two skip-line forms — the single definition every later mention below
+1a. **Two skip-line forms — the single definition every later mention below <!-- cite: W.11 incident:K#290 -->
    defers to.** When the predicate is false, the skip line takes one of two
    forms per `claude/message-schema.md` § Degradation notice (the contract
    home; kernel wording owner is `CLAUDE.kernel.md` § Legible agent-gate
@@ -591,7 +591,7 @@ walked.
    A finding that surfaces a real gap the operator chooses not to resolve
    now converts that dimension's disposition to `deferred → <tracking
    ref>` rather than leaving it `filled` with an unaddressed critique.
-   **Dimension-0 carve-out.** A finding on **dimension 0** (Premise &
+   **Dimension-0 carve-out.** A finding on **dimension 0** (Premise & <!-- cite: W.13 guard:claude/design-schema.md -->
    null hypothesis — the red-team lens's sharpest target) is the one
    exception: dimension 0 is `filled`-only (`claude/design-schema.md`
    § Disposition grammar), so an unresolved dimension-0 finding may
@@ -607,7 +607,7 @@ walked.
    with is not applied silently — put it to the operator via
    `AskUserQuestion` (clear win vs. contested is the same split `/assess`
    Step 3 makes for its own review pass) before folding or discarding it.
-4. **No dangling findings.** Every finding from 3.3 is either folded in,
+4. **No dangling findings.** Every finding from 3.3 is either folded in, <!-- cite: W.12 class:silently-dropped-review-findings -->
    converted to a `deferred` disposition with a real tracking ref, or
    explicitly declined by the operator with the decline itself noted in
    the brief's working notes — never left as an unincorporated comment
@@ -658,7 +658,7 @@ walked.
 3. **Ask.** Confirm with the operator directly via `AskUserQuestion` — ratify
    this brief? (No `decision_sink_ask(...)` routing: per the Operating
    principles, this command has no operator-absent case to route around.)
-4. **On approval:** flip the note's frontmatter `status: draft → ratified`
+4. **On approval:** flip the note's frontmatter `status: draft → ratified` <!-- cite: W.7 class:frontmatter-patch-silent-drop -->
    and update `last_verified` to today, via a **full-file rewrite**
    (`vault_write`, or the plain-files equivalent) — never a `vault_patch`
    frontmatter-scalar `replace`, which the vault safe-targeting contract
@@ -688,7 +688,7 @@ contract) — plus the provenance marker line, on its own line:
 design-brief: [[Designs/<note>]]
 ```
 
-**Then scan the composed body** before it is written anywhere outbound:
+**Then scan the composed body** before it is written anywhere outbound: <!-- cite: W.14 incident:K#74 -->
 
 - If this checkout's `workflows/scripts/kernel/personal-token-denylist.tsv`
   exists, grep the composed epic body text against its pattern column — the
@@ -746,7 +746,7 @@ design-brief: [[Designs/<note>]]
 
 ### 5c — ADR emission (best-effort, degrades legibly)
 
-**Four artifacts, four different things — no content duplication.**
+**Four artifacts, four different things — no content duplication.** <!-- cite: W.15 guard:docs/adr/0000-adr-process.md -->
 `claude/design-schema.md` § Materialization contract names three: the brief
 (private deliberation record, `Designs/` in the knowledge store), the epic
 (operational tracker), and the Decisions note (personal capture, 5d below).
