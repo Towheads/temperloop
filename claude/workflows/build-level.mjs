@@ -394,6 +394,23 @@ function workerPrompt(item, worktreePath, extraSection) {
     `Write your verification-surface markdown block to ${worktreePath}/.build-verification.md`,
     'and return its path as `verification_surface_path`. Do NOT inline it in the JSON.',
     '',
+    // §3c "No long-running background work" (#1219). Embedded in the generated
+    // prompt — NOT left to prose the caller may forget — so every worker (main
+    // AND spike, both route through workerPrompt) is told up front to foreground
+    // the gate. Without this the worker backgrounds quality-gates.sh, yields, and
+    // returns no verdict (build.md §3c/§3d must stay in lockstep with this block).
+    '## Quality gate & long-running work — FOREGROUND ONLY (#1219)',
+    '- Run EVERY verification command in the FOREGROUND (a blocking Bash call): the',
+    '  `quality-gates.sh` acceptance gate above all, plus any eval / build / sweep.',
+    '- NEVER launch one with `run_in_background: true`, and never end your turn awaiting',
+    '  a Monitor / background-task notification. A subagent has NO re-invoke-on-completion',
+    '  loop: a backgrounded process is reaped when you yield and the notification never',
+    '  reaches you — you hang and return NO verdict. A turn that ends while awaiting a',
+    '  background task is the #1219 bug, not a valid return.',
+    '- If a single command would exceed the ~10-min Bash foreground cap, NARROW or split',
+    '  it, or return `blocked` / `failed` and let the orchestrator run it parent-side —',
+    '  never background-and-wait.',
+    '',
     extraSection ?? '',
     '',
     '## Return contract — your FINAL message must be EXACTLY this JSON and nothing after:',
@@ -406,6 +423,25 @@ function workerPrompt(item, worktreePath, extraSection) {
   ]
     .filter((l) => l !== null)
     .join('\n');
+}
+
+// FOREGROUND_CURE (#1219) — appended to the ONE null-verdict re-spawn so the
+// retry prompt DIFFERS from the first attempt (a byte-identical retry re-stalls
+// identically). Names the failure explicitly; the workerPrompt foreground block
+// above is prevention, this is the backstop cure. build.md §3d must stay in
+// lockstep. Kept as its own section so the test can assert its presence.
+const FOREGROUND_CURE = [
+  '## Re-spawn cure (#1219) — your previous turn returned NO verdict',
+  'Your previous attempt ended without a parseable verdict. The usual cause is',
+  'backgrounding the quality gate (`run_in_background: true`) or awaiting a Monitor',
+  'notification a subagent never receives. Run EVERY command — the `quality-gates.sh`',
+  'gate above all — in the FOREGROUND, never `run_in_background` / Monitor, and END',
+  'this turn with exactly the fenced verdict JSON and nothing after it.',
+].join('\n');
+
+// Compose the retry `extraSection` = the original section (if any) + the cure.
+function withCure(section) {
+  return [section, FOREGROUND_CURE].filter(Boolean).join('\n\n');
 }
 
 // -----------------------------------------------------------------------------
@@ -602,10 +638,13 @@ async function driveItem(item) {
     schema: WORKER_VERDICT_SCHEMA,
   });
   if (verdict == null) {
-    // agent() returned null — user skip or transient API error (e.g. 5xx).
-    // Auto-retry exactly once; a 5xx is typically transient and one retry clears it.
-    log(`[${item.slug}] worker returned null — retrying once`);
-    verdict = await agent(workerPrompt(item, wt, verdictSection), {
+    // agent() returned null — user skip, transient API error (e.g. 5xx), OR the
+    // #1219 background-stall (worker backgrounded the gate and yielded no verdict).
+    // Auto-retry exactly once, appending FOREGROUND_CURE so the retry prompt
+    // DIFFERS from the first — a byte-identical retry re-stalls identically. A 5xx
+    // is transient (the extra section is harmless); a stall is cured by it.
+    log(`[${item.slug}] worker returned null — retrying once (foreground cure #1219)`);
+    verdict = await agent(workerPrompt(item, wt, withCure(verdictSection)), {
       label: `worker:${item.slug}#retry`,
       phase: 'worker',
       model: item.model,
