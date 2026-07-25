@@ -131,10 +131,27 @@ land__via_pr() {  # <populate_fn>
     land__set uncommitted "" "" "push of branch '$branch' failed"
     return 0
   fi
+  # Three-tier PR resolve (#27). $branch is a reused, orchestrator-owned ref, so a
+  # PRIOR run's open PR is the common case — the adopt-or-open step has to converge
+  # on that one PR rather than dead-end. Each tier is a fallback for the previous
+  # tier's specific blind spot:
+  #
+  #   1. `pr list --head` — cheap, but SEARCH-INDEX backed, and the index lags the
+  #      force-push above by seconds. An empty result is NOT proof no PR exists.
+  #   2. `pr create` — on a duplicate it REFUSES, exits non-zero, and prints the
+  #      existing PR's URL to STDERR. So capture 2>&1 (not 2>/dev/null, which threw
+  #      the recoverable number away) and match the `/pull/<n>` URL — not a bare
+  #      trailing `[0-9]+$`, which a digit at the end of the title/body can satisfy.
+  #   3. `pr view <branch>` — authoritative head-ref lookup with no search index in
+  #      the path; adopts a PR tier 1 could not yet see.
   pr="$("$LAND_GH" pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
   if [ -z "$pr" ]; then
     pr="$("$LAND_GH" pr create --base "$LAND_DEFAULT_BRANCH" --head "$branch" \
-            --title "$LAND_PR_TITLE" --body "$LAND_PR_BODY" 2>/dev/null | grep -oE '[0-9]+$' | tail -1 || true)"
+            --title "$LAND_PR_TITLE" --body "$LAND_PR_BODY" 2>&1 \
+            | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+$' | tail -1 || true)"
+  fi
+  if [ -z "$pr" ]; then
+    pr="$("$LAND_GH" pr view "$branch" --json number -q .number 2>/dev/null || true)"
   fi
   land__finish_wt "$wt"
   if [ -z "$pr" ]; then
