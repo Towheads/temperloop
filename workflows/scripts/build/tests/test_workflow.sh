@@ -158,7 +158,7 @@ globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
-  callLog.push({ prompt: String(prompt).slice(0, 120), opts: { label: opts.label, phase: opts.phase, model: opts.model } });
+  callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model } });
   const slug = slugFromLabel(opts.label);
   if (opts.phase === 'spine') {
     // Spine call — one-shot executor, routed by slug
@@ -1683,6 +1683,76 @@ grep -q 'const GATE_BASH_TIMEOUT_MS' "$MJS" \
 grep -q 'bashTimeoutMs: GATE_BASH_TIMEOUT_MS' "$MJS" \
   || fail "#115: 3e.5 gate runSpine call must pass bashTimeoutMs: GATE_BASH_TIMEOUT_MS"
 echo "PASS: #115 gate-timeout guard — 3e.5 gate carries an explicit long Bash-tool timeout"
+
+# ============================================================================
+# TEST (K712): worker background-gate stall — prevention + cure
+#   The worker prompt MUST embed the FOREGROUND-ONLY contract (prevention), and
+#   a null-verdict retry MUST append FOREGROUND_CURE so the retry prompt DIFFERS
+#   from the first attempt (cure), then escalate worker-error only after TWO nulls.
+# ============================================================================
+run_node_case "K712 prevention: workerPrompt embeds the FOREGROUND-ONLY (#1219) contract" "
+$PREAMBLE
+
+happySpine('fg-item', 900, 'shaFg');
+happyWorker('fg-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'fg-item', branch: 'build/fg-item', title: 'FG item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const w = callLog.find(c => (c.opts.label||'') === 'worker:fg-item');
+if (!w) { console.log(JSON.stringify({ ok: false, reason: 'no worker call logged' })); process.exit(0); }
+if (!w.promptFull.includes('FOREGROUND ONLY (#1219)')) { console.log(JSON.stringify({ ok: false, reason: 'worker prompt missing FOREGROUND-ONLY contract' })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "K712 cure: null verdict → retry prompt carries FOREGROUND_CURE, first does not → parked" "
+$PREAMBLE
+
+happySpine('cure-item', 901, 'shaCure');
+setWorker('cure-item', null, { status: 'done', summary: 'cured', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cure-item', branch: 'build/cure-item', title: 'Cure item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const first = callLog.find(c => (c.opts.label||'') === 'worker:cure-item');
+const retry = callLog.find(c => (c.opts.label||'') === 'worker:cure-item#retry');
+let reason = null;
+if (!retry) reason = 'no retry call after null verdict';
+else if (!retry.promptFull.includes('Re-spawn cure (#1219)')) reason = 'retry prompt missing FOREGROUND_CURE';
+else if (first && first.promptFull.includes('Re-spawn cure (#1219)')) reason = 'first prompt must NOT carry the cure';
+else if (parked.length !== 1) reason = 'expected 1 parked item after cured retry, got ' + parked.length;
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K712 regression: null verdict TWICE → worker-error escalation (unchanged)" "
+$PREAMBLE
+
+setSpine('err-item', { outcome: 'CREATED', path: '/tmp/repo.wt/err-item' });
+setWorker('err-item', null, null);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'err-item', branch: 'build/err-item', title: 'Err item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+if (esc.length !== 1 || esc[0].kind !== 'worker-error') { console.log(JSON.stringify({ ok: false, reason: 'expected 1 worker-error escalation, got ' + JSON.stringify(esc.map(e => e.kind)) })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# --- K712 static lockstep guards (grep the MJS source directly, matching the
+# tail-guard idiom above). These lock the code SHAPE build.md §3c/§3d cite, so a
+# future edit cannot silently drop the prevention section or the retry cure. -----
+grep -q 'FOREGROUND ONLY (#1219)' "$MJS" \
+  || fail "#712: workerPrompt must embed the '## Quality gate … FOREGROUND ONLY (#1219)' contract (prevention)"
+echo "PASS: #712 prevention guard — workerPrompt embeds the foreground-only gate contract"
+grep -q 'const FOREGROUND_CURE' "$MJS" \
+  || fail "#712: FOREGROUND_CURE constant missing — null-retry cure"
+grep -q 'withCure(verdictSection)' "$MJS" \
+  || fail "#712: main-worker null-retry must append the cure via withCure(verdictSection) so the retry prompt differs"
+echo "PASS: #712 cure guard — null-verdict re-spawn appends FOREGROUND_CURE (retry prompt differs from first)"
 
 echo ""
 echo "All test_workflow.sh cases passed."
