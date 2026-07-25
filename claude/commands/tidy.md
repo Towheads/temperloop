@@ -396,6 +396,23 @@ For each PR, check linkage two ways, in order: (a) GitHub's own parsed linkage �
 
 **Default to silence.** If no candidates surface for a repo, emit nothing for it — no pending-decision entry, no Step 6 line — the common case once `/fix` adoption is in force.
 
+### Ready-but-unmerged PRs
+
+The **readiness-keyed** drain half of the orphaned-PR net (temperloop#721). A complete PR — checks green, mergeable, non-draft — can sit unmerged indefinitely and nothing else notices: `/fix` guards only the PRs its own flow produced, the § Unlinked fix PRs sweep above keys on issue-linkage + idleness (not readiness), and the merge queue makes enqueue ≠ merged — a PR enqueued and then dropped by the queue is exactly the orphan this sweep resurfaces (classified like any other open PR; no special casing). **A drain-internal probe, not a live/drain pair** — modeled on § Environment hygiene below: it probes accumulated *external* state (the open-PR set across the governed repos), not an author action a live rule captures, so it has **no live anchor it backstops, no Live/Drain registry row, and needs no `validate-live-drain.sh` change**.
+
+**Run the probe**, both formats — `report` for the per-PR classification this step reasons over, `entry` for the ready-to-append block:
+
+```
+workflows/scripts/ready-pr-sweep.sh --format report
+workflows/scripts/ready-pr-sweep.sh --format entry
+```
+
+The script (its usage header carries the full contract) enumerates every repo in `board_registered_boards`/`board_repo` — never a hardcoded repo list — and classifies each open PR from plain `gh pr list` + `statusCheckRollup` (PRs are not board items, so this never routes through the Projects-v2 board adapter or touches its GraphQL budget): **ready** (required checks green + `mergeStateStatus` CLEAN — an enqueue candidate), **needs-rebase** (BEHIND/DIRTY), **needs-attention** (failing or pending checks, or any other not-ready state — inclusion-biased), **skip** (draft, or a DO-NOT-MERGE marker in the title). Both formats are **read-only and fail-open**: the script never merges, enqueues, rebases, closes, or comments on a PR, and one repo erroring never aborts the sweep (a checkout without the script no-ops, so this is safe to run unconditionally).
+
+**Report-only — auto-enqueue of the ready class is explicitly OUT of scope** (a later autonomy rung; per `claude/CLAUDE.md` § Merge autonomy & consent, a merge is never driven from an unattended drain). This is a **`batch-at-ritual` deferral** ([[Context/foundation - AskUserQuestion severity taxonomy]]): when the `entry` command printed a block (at least one ready/needs-rebase/needs-attention candidate — skip-class PRs never trigger it), append it verbatim as one `### open` entry to the pending-decisions surface (`Pipeline/pending decisions.md` vs the legacy `Context/pipeline - pending decisions.md` — target pinned by the append-target resolution rule of the path fallback convention, `claude/commands/check-in.md`; in the knowledge store) via `mcp__obsidian-builtin__vault_append` — `/check-in` disposes (enqueue the ready ones via `pr-enqueue`, rebase or investigate the rest, or dismiss). Note the per-class counts in the Step 6 summary.
+
+**Default to silence.** Zero candidates → the `entry` command prints nothing; append no entry and emit just one Step 6 summary line (`ready-PR sweep: clean`).
+
 ### Vault hygiene
 
 A periodic **detect-and-propose** probe for the knowledge-store vault. Nothing else alarms on hygiene drift — `/tidy` curates *on touch* (provenance audit, contradiction detection) but never *sweeps* the vault, so a silent pile-up (162 `Sessions/_inbox` stubs / 18 MB before anyone noticed — foundation #958/#959) goes unseen until it is large. This step runs a standalone probe each drain and records any drift to a review surface for `check-in` to dispose of.

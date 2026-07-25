@@ -107,6 +107,8 @@ tidy workflows/scripts/drain/*
 tidy workflows/scripts/validate-live-drain.sh
 tidy workflows/scripts/env-hygiene-report.sh
 tidy workflows/scripts/tests/test_env_hygiene_report.sh
+tidy workflows/scripts/ready-pr-sweep.sh
+tidy workflows/scripts/tests/test_ready_pr_sweep.sh
 tidy workflows/scripts/build/env-reconcile.sh
 tidy workflows/scripts/build/tests/test_env_reconcile.sh
 tidy workflows/scripts/test_findings.py

@@ -340,6 +340,12 @@ KERNEL_GATES=(
   # stubbed gh/launchctl on PATH, no network); also covers the
   # env-reconcile.sh-missing and not-executable fail-open paths.
   "make test-env-hygiene-report"
+  # ready-pr sweep (temperloop#721): the read-only complete-but-unmerged-PR
+  # classifier /tidy's § Ready-but-unmerged PRs step invokes — the drain half
+  # of the orphaned-PR net. Hermetic (stub gh replaying JSON fixtures, stub
+  # board lib for the registry seam, no network); also covers the fail-open
+  # erroring-repo, nothing-when-clean, and read-only (pr-list-only) contracts.
+  "bash workflows/scripts/tests/test_ready_pr_sweep.sh"
   "make lint-pr-body-test"
   "make test-stranger-config"
   # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite

@@ -369,3 +369,6 @@ ENV_RECONCILE_AGENT_HOSTS		string	kernel	workflows/scripts/build/env-reconcile.s
 KERNEL_DENYLIST_LOCAL_FILE	${KERNEL_DENYLIST_FILE%.tsv}.local.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Test seam / override for the gitignored operator-personal denylist overlay path; defaults to the sibling .local.tsv of the tracked denylist (temperloop#438)
 KERNEL_DENYLIST_LOCAL_FILE	${KERNEL_DENYLIST_FILE%.tsv}.local.tsv	path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Test seam / override for the gitignored operator-personal denylist overlay path; defaults to the sibling .local.tsv of the tracked denylist (temperloop#438)
 RIGHTS_PROBE_OVERRIDE		enum	kernel	workflows/scripts/build/fixtures/verify-first-epic-consent.sh	Test/injection seam for Contract (f3): overrides rights_probe()'s admin-rights read (values: true, false; unset = real gh api probe), temperloop#611
+READY_PR_SWEEP_BOARD_LIB	$SCRIPT_DIR/board/lib/board.sh	path	kernel	workflows/scripts/ready-pr-sweep.sh	Path to board.sh (the board registry seam for repo enumeration)
+READY_PR_SWEEP_LIMIT	100	int	kernel	workflows/scripts/ready-pr-sweep.sh	Per-repo open-PR page size passed to gh pr list
+READY_PR_SWEEP_REPOS		string	kernel	workflows/scripts/ready-pr-sweep.sh	Space-separated owner/repo override (bypasses board registry)
