@@ -247,6 +247,11 @@ quality-gates docs/features/backfill-exempt.txt
 # item, same slug as the other size/coverage validators above.
 quality-gates workflows/scripts/count-prose.sh
 quality-gates workflows/scripts/tests/test_count_prose.sh
+# Two-tier prose-budget gate (temperloop#719/#725, item prose-budget-gate;
+# ADR 0015): validate-prose-budget.sh joins the checks gate set above,
+# consuming count-prose.sh's report rather than re-counting anything itself.
+quality-gates workflows/scripts/validate-prose-budget.sh
+quality-gates workflows/scripts/tests/test_validate_prose_budget.sh
 
 # ── docs-generator — docs-site generator + published doc sources ────────────
 docs-generator .github/workflows/docs-pages.yml

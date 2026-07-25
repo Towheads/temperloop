@@ -324,6 +324,26 @@ KERNEL_GATES=(
   # as the knob-registry/feature-docs gates above.
   "bash workflows/scripts/count-prose.sh"
   "bash workflows/scripts/tests/test_count_prose.sh"
+  # Two-tier prose-budget gate (temperloop#719, item prose-budget-gate /
+  # #725; ADR 0015): validate-prose-budget.sh fails a PR that grows the
+  # composed kernel-authored render (tier-1) or any single tracked
+  # claude/**/*.md file (tier-2, one uniform per-file cap — never a per-file
+  # table) past its cap, via count-prose.sh's own report (never a second,
+  # duplicated counting implementation). Caps are seeded as
+  # PROSE_BUDGET_TIER1_CAP/PROSE_BUDGET_TIER2_FILE_CAP knobs in
+  # build.config.sh + their knob-registry.tsv rows, at the FRESH baseline
+  # this item measured (338 / 1057 lines) rather than the epic's earlier
+  # recorded artifact — main had already drifted a few lines past that
+  # artifact by landing time, and seeding from a stale number would have
+  # landed this gate red on an unrelated PR on day one. Fixture suite proves
+  # both a demonstrated tier-2 overage AND the tier-1-only-breach case (a
+  # real compose-seam fixture: a scratch clone's install-claude-md.sh
+  # patched to inflate the composed render with the per-file table proven
+  # byte-identical to the real tree's), plus the failure-message contract
+  # (file/count/cap/both remediation paths named). Same direct-`bash` form
+  # as the count-prose gate above.
+  "bash workflows/scripts/validate-prose-budget.sh"
+  "bash workflows/scripts/tests/test_validate_prose_budget.sh"
   # workflow-reviewer coverage rollup (temperloop#1007): hermetic gh-double suite
   # for the reporting script that measures the workflow-reviewer gate's coverage
   # over merged command-doc PRs. Reporting rollup, not a merge gate — its own
