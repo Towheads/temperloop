@@ -100,14 +100,16 @@ target="${3:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}
 # INSTALL_CLAUDE_MD_KERNEL_ONLY=1 emits ONLY render_kernel_doc's own
 # knob-substituted output — no generated-file banner, no rendered
 # "## Knowledge store routing" section (host-rendered, never kernel-authored
-# prose), no overlay content appended. This is the ONE compose seam
-# workflows/scripts/count-prose.sh calls for its tier-1 count: the composed
-# kernel-authored surface alone, through this existing implementation —
-# never a second, duplicated render inside the counting script (ADR 0015 /
-# docs/adr/0015-prose-plane-budget-gate.md). Default behavior (the var unset
-# or "0") is completely unchanged — `make install-claude` never sets it, so
-# the normal three-piece compose (banner + kernel + knowledge-routing +
-# overlay) is untouched by this addition.
+# prose), no overlay content appended, and (see below) NO T0-inventory write
+# either. This is the ONE compose seam workflows/scripts/count-prose.sh calls
+# for its tier-1 count: the composed kernel-authored surface alone, through
+# this existing implementation — never a second, duplicated render inside
+# the counting script (ADR 0015 / docs/adr/0015-prose-plane-budget-gate.md).
+# Default behavior (the var unset or "0") is completely unchanged — neither
+# `temperloop install` (this repo's own CLI) nor a downstream fleet's
+# `make install-claude` wrapper ever sets it, so the normal three-piece
+# compose (banner + kernel + knowledge-routing + overlay) is untouched by
+# this addition.
 : "${INSTALL_CLAUDE_MD_KERNEL_ONLY:=0}"  # knob:exempt — internal render-mode toggle for count-prose.sh's own kernel-only caller, not an operator-facing config-precedence default
 
 [ -f "$kernel" ]  || { echo "install-claude-md: kernel doc not found: $kernel" >&2; exit 1; }
@@ -268,18 +270,30 @@ else
   } >"$tmp"
 fi
 
-# T0 inventory: derived from the fully composed doc just assembled in $tmp —
-# regenerated every run, written next to $target (see the "Compose-plane T0
-# inventory" header comment). extract_t0_inventory never fails on zero
-# matches (an empty/absent overlay yields a zero-byte file, not an error).
-extract_t0_inventory "$tmp" >"$t0_tmp"
-t0_target="$(dirname "$target")/t0-inventory.txt"
+if [ "$INSTALL_CLAUDE_MD_KERNEL_ONLY" = "1" ]; then
+  # Kernel-only render: $target alone. Deliberately NO T0-inventory write —
+  # T0 is defined over the fully composed doc (kernel + knowledge-routing +
+  # overlay); a kernel-only render's T0 would be a truncated, misleading
+  # subset, and writing it next to $target risks CLOBBERING A REAL
+  # ~/.claude/t0-inventory.txt if this mode were ever pointed at a live
+  # install target. Skipping it here means the ONLY t0-inventory.txt any
+  # caller ever sees is the one the full (default) compose below writes.
+  rm -f "$target"
+  mv -f "$tmp" "$target"
+else
+  # T0 inventory: derived from the fully composed doc just assembled in $tmp —
+  # regenerated every run, written next to $target (see the "Compose-plane T0
+  # inventory" header comment). extract_t0_inventory never fails on zero
+  # matches (an empty/absent overlay yields a zero-byte file, not an error).
+  extract_t0_inventory "$tmp" >"$t0_tmp"
+  t0_target="$(dirname "$target")/t0-inventory.txt"
 
-# Replace as a REAL file — drop any prior symlink first so the move can't
-# write through it back into a tracked source (same discipline as
-# install-settings.sh's #292 reconcile).
-rm -f "$target"
-mv -f "$tmp" "$target"
-rm -f "$t0_target"
-mv -f "$t0_tmp" "$t0_target"
+  # Replace as a REAL file — drop any prior symlink first so the move can't
+  # write through it back into a tracked source (same discipline as
+  # install-settings.sh's #292 reconcile).
+  rm -f "$target"
+  mv -f "$tmp" "$target"
+  rm -f "$t0_target"
+  mv -f "$t0_tmp" "$t0_target"
+fi
 trap - EXIT

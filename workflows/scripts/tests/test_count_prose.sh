@@ -6,12 +6,16 @@
 #
 # Covers: the real-tree happy path (tier-1 + tier-2 report, tier-2 total
 # equals the sum of its own per-file lines), the host-determinism guarantee
-# (a machine-conf AND a repo-local-conf fixture that perturb
-# EPIC_MIN_SUBUNITS/DISPLAY_TZ must have ZERO effect on the tier-1 count —
-# this is the acceptance-2 "host-deterministic" property, and this suite
-# running on both the ubuntu-latest and macos-latest CI legs is what
-# "verified in CI" means for that acceptance bullet), and the missing-input
-# error paths via the COUNT_PROSE_ROOT seam. Zero network.
+# across all THREE config-precedence rungs count-prose.sh must neutralize —
+# a machine-conf fixture (rung 3), a repo-local-conf fixture (rung 4), AND
+# an EXPORTED knob (rung 2 — outranks both file-based rungs, section 4,
+# using a newline-bearing value so a real scrub failure is distinguishable
+# from wc -l merely being insensitive to a plain-scalar perturbation) must
+# all have ZERO effect on the tier-1 count. This is the acceptance-2
+# "host-deterministic" property, and this suite running on both the
+# ubuntu-latest and macos-latest CI legs is what "verified in CI" means for
+# that acceptance bullet. Also covers the missing-input error paths via the
+# COUNT_PROSE_ROOT seam. Zero network.
 #
 # Usage: bash workflows/scripts/tests/test_count_prose.sh
 
@@ -45,9 +49,15 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-# extract_tier1 <output> — first line's trailing integer.
+# extract_tier1 <output> — the tier-1 line COUNT specifically, anchored past
+# "render: " and before " lines". NOT `grep -oE '[0-9]+' | head -1` — the
+# first line is literally "TIER-1 kernel-authored composed render: NNN
+# lines", and a bare digit-run search matches the constant "1" in "TIER-1"
+# BEFORE ever reaching the real count, so every determinism assertion below
+# would silently compare 1 == 1 regardless of what the script actually
+# printed (caught in review: temperloop#722).
 extract_tier1() {
-  printf '%s\n' "$1" | sed -n '1p' | grep -oE '[0-9]+' | head -1
+  printf '%s\n' "$1" | sed -n '1p' | sed -E 's/^.*render: ([0-9]+) lines.*$/\1/'
 }
 
 # ── 1. real-tree happy path ──────────────────────────────────────────────────
@@ -101,17 +111,32 @@ assert_rc "$rc" 0 "perturbed-repo-local-conf run exits 0"
 tier1_local="$(extract_tier1 "$out_local")"
 assert_eq "$tier1_local" "$tier1_count" "repo-local-conf perturbation does not move the tier-1 count"
 
-# ── 4. missing-input error paths via COUNT_PROSE_ROOT ───────────────────────
-echo "--- 4. missing-input error paths ---"
+# ── 4. host-determinism: an EXPORTED knob (rung 2, outranks the rung-3/4
+#      config-FILE pinning covered above) must ALSO have zero effect. Uses a
+#      newline-bearing value specifically — a plain scalar perturbation
+#      (e.g. "99") can't distinguish "the env var was actually scrubbed"
+#      from "wc -l is merely insensitive to this particular value"; a
+#      newline embedded IN the value, if it ever reached the render, would
+#      itself add a line to the rendered doc and move the wc -l count
+#      (caught in review: temperloop#722, the same case the reviewer
+#      demonstrated moves tier-1 338->341 without the rung-2 scrub) ────────
+echo "--- 4. host-determinism (exported knob, rung 2) ---"
+out_env="$(EPIC_MIN_SUBUNITS=$'99\n99' bash "$SCRIPT" 2>&1)"; rc=$?
+assert_rc "$rc" 0 "perturbed-exported-knob run exits 0"
+tier1_env="$(extract_tier1 "$out_env")"
+assert_eq "$tier1_env" "$tier1_count" "an exported EPIC_MIN_SUBUNITS (with an embedded newline) does not move the tier-1 count"
 
-# 4a. no claude/CLAUDE.kernel.md at all.
+# ── 5. missing-input error paths via COUNT_PROSE_ROOT ───────────────────────
+echo "--- 5. missing-input error paths ---"
+
+# 5a. no claude/CLAUDE.kernel.md at all.
 NOKERNEL="$TMP/no-kernel-repo"
 mkdir -p "$NOKERNEL/.git"
 out="$(COUNT_PROSE_ROOT="$NOKERNEL" bash "$SCRIPT" 2>&1)"; rc=$?
 assert_rc "$rc" 1 "missing kernel doc exits 1"
 assert_has "$out" "kernel doc not found" "missing kernel doc named"
 
-# 4b. kernel doc present, compose seam (install-claude-md.sh) missing.
+# 5b. kernel doc present, compose seam (install-claude-md.sh) missing.
 NOSEAM="$TMP/no-seam-repo"
 mkdir -p "$NOSEAM/.git" "$NOSEAM/claude" "$NOSEAM/workflows/scripts"
 printf '# fixture kernel doc\n' > "$NOSEAM/claude/CLAUDE.kernel.md"
@@ -119,7 +144,7 @@ out="$(COUNT_PROSE_ROOT="$NOSEAM" bash "$SCRIPT" 2>&1)"; rc=$?
 assert_rc "$rc" 1 "missing compose seam exits 1"
 assert_has "$out" "compose seam not found" "missing compose seam named"
 
-# 4c. both present, but the root is not a git checkout at all.
+# 5c. both present, but the root is not a git checkout at all.
 NOTGIT="$TMP/not-a-git-repo"
 mkdir -p "$NOTGIT/claude"
 printf '# fixture kernel doc\n' > "$NOTGIT/claude/CLAUDE.kernel.md"

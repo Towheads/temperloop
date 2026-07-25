@@ -37,12 +37,24 @@
 #     (precedence rungs 3/4) only `if [ -f "$path" ]`; /dev/null is never a
 #     regular file, so both sourcing blocks silently no-op regardless of
 #     what a real host's XDG machine conf or a checkout's untracked
-#     build.config.local.sh contain. This neutralizes the two config rungs
-#     to the TRACKED repo defaults (rung 5) only, so the
-#     {{EPIC_MIN_SUBUNITS}} / {{DISPLAY_TZ}} knob substitution baked into
-#     the kernel doc's rendered text is identical on every host and every CI
-#     runner — no machine-specific or checkout-local override can perturb
-#     the tier-1 number.
+#     build.config.local.sh contain. This neutralizes the two config-FILE
+#     rungs (3/4) to the TRACKED repo defaults (rung 5) only.
+#   - THIS PROCESS'S OWN ENVIRONMENT is also scrubbed of every
+#     build.config.sh knob name before invoking the seam — rung 2 (an
+#     exported env var) OUTRANKS rung 5's tracked `:=` default, so an
+#     inherited `EPIC_MIN_SUBUNITS`/`DISPLAY_TZ` (e.g. from a funnel-drive
+#     session, or a caller's own shell) would otherwise flow straight
+#     through the `:=` idiom and perturb the render even with rungs 3/4
+#     neutralized above. `build-config-knobs.sh` is the SSOT-derived name
+#     list (temperloop#1241 — the same mechanism build-level.mjs's 3e.5 gate
+#     already uses to make `quality-gates.sh` hermetic under funnel-drive);
+#     unsetting every name it prints, rather than hand-listing
+#     EPIC_MIN_SUBUNITS/DISPLAY_TZ ourselves, means a future knob addition
+#     to build.config.sh is covered here with no edit to this script.
+#   - Combined, the {{EPIC_MIN_SUBUNITS}} / {{DISPLAY_TZ}} knob substitution
+#     baked into the kernel doc's rendered text is identical on every host
+#     and every CI runner — no machine-specific override, checkout-local
+#     override, OR inherited-env override can perturb the tier-1 number.
 #   - Tracked-file enumeration goes through `git ls-files` (never a
 #     filesystem glob), so an untracked scratch file dropped under claude/
 #     on the authoring host can never inflate tier-2 relative to a clean CI
@@ -56,7 +68,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"
+: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # knob:exempt — test/fixture root override (mirrors FEATURE_DOCS_ROOT/KERNEL_MANIFEST_ROOT), not an operator-facing config-precedence default
 kernel_doc="$COUNT_PROSE_ROOT/claude/CLAUDE.kernel.md"
 install_script="$COUNT_PROSE_ROOT/workflows/scripts/install-claude-md.sh"
 
@@ -82,6 +94,15 @@ lines_in() {
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/count-prose.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
+# Scrub every build.config.sh knob NAME from this process's own environment
+# before invoking the seam (see the header determinism note above — rung 2
+# outranks the rung-3/4 file-pinning below, so an inherited exported knob
+# must be unset here too). A missing/older helper prints nothing -> `unset`
+# with no args is a harmless no-op.
+knobs_bin="$COUNT_PROSE_ROOT/workflows/scripts/build/build-config-knobs.sh"
+# shellcheck disable=SC2046  # intentional word-splitting: unset takes N bare NAME args, one per line from build-config-knobs.sh
+unset $(bash "$knobs_bin" 2>/dev/null)
+
 tier1_target="$scratch/kernel-only.md"
 # The overlay path is never read or existence-checked when
 # INSTALL_CLAUDE_MD_KERNEL_ONLY=1 (see install-claude-md.sh) — passed here
@@ -99,11 +120,32 @@ tier1_count="$(lines_in "$tier1_target")"
 # ---------------------------------------------------------------------------
 cd "$COUNT_PROSE_ROOT" || exit 1
 
+# Captured into a variable (never a `< <(process substitution)`) so a real
+# failure anywhere in the pipeline is actually checked: a process
+# substitution's own exit status is NOT observed by the `while read ... done
+# < <(...)` construct that consumes it (a well-known bash gotcha — the loop
+# only ever sees `read`'s own EOF-driven exit code), so a git/grep/sort
+# failure there would silently degrade to an empty file list instead of a
+# clear error. `set -o pipefail` (this file's own top-of-file `set -euo
+# pipefail`) makes the command-substitution SUBSHELL's own exit code
+# reflect the first failing pipeline stage; the explicit `||` below then
+# actually observes that exit code, which the process-substitution form
+# could not.
+#   `grep`'s own "zero matches" exit (1) is deliberately absorbed (`|| true`)
+#   so it never trips `pipefail` on its own — a real repo variant with zero
+#   claude/**/*.md files is a legitimate, distinctly-messaged case (the
+#   explicit `${#tier2_files[@]} -eq 0` check below), not a pipeline error.
+#   A genuine `git ls-files` failure still trips pipefail via ITS stage.
+if ! tier2_raw="$(git ls-files -- claude | { grep '\.md$' || true; } | LC_ALL=C sort)"; then
+  echo "count-prose: failed to enumerate tracked claude/**/*.md files (git ls-files | grep | sort)" >&2
+  exit 1
+fi
+
 tier2_files=()
 while IFS= read -r f; do
   [ -z "$f" ] && continue
   tier2_files+=("$f")
-done < <(git ls-files -- claude | grep '\.md$' | LC_ALL=C sort)
+done <<<"$tier2_raw"
 
 if [ "${#tier2_files[@]}" -eq 0 ]; then
   echo "count-prose: zero tracked claude/**/*.md files found under $COUNT_PROSE_ROOT — nothing to count" >&2
