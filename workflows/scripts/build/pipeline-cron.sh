@@ -156,7 +156,10 @@ _pipeline_backfill() {
   mkdir -p "$to"
   found=0
   shopt -s nullglob
-  for f in "$from"/pipeline-*.jsonl; do
+  # v0.17.0 rename legacy window (temperloop#729): a pre-rename lake carries
+  # funnel-<YYYY-MM>.jsonl month-files — migrate them too (kept under their
+  # original basenames; the readers' legacy glob unions them through v0.19.0).
+  for f in "$from"/pipeline-*.jsonl "$from"/funnel-*.jsonl; do
     found=1
     base="$(basename "$f")"
     target="$to/$base"
@@ -176,7 +179,7 @@ _pipeline_backfill() {
     printf 'pipeline-backfill: %s -> %s (%s new line(s) appended, rest already present)\n' "$f" "$target" "$added"
   done
   shopt -u nullglob
-  [ "$found" -eq 0 ] && echo "pipeline-cron --backfill: no pipeline-*.jsonl in $from (nothing to backfill)" >&2
+  [ "$found" -eq 0 ] && echo "pipeline-cron --backfill: no pipeline-*.jsonl (or legacy funnel-*.jsonl) in $from (nothing to backfill)" >&2
   return 0
 }
 

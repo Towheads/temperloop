@@ -78,7 +78,7 @@ this rides:
 **Baseline capture method.** Before `message-schema.md` lands: pull the last
 N (suggest N≥20) `decision`-labeled issues closed in the async backend, compute
 the assign→unassign count per originating plan item (a `[ ]`-parked-then-answered
-`## Questions` entry, or a `ask-now` gate) and the parse-miss rate as a
+`## Questions` entry, or an `ask-now` gate) and the parse-miss rate as a
 fraction of total round-trips. Record median round-trips/item and parse-miss %
 as the pre-template baseline. For the modal path, manually sample N recent
 `/build`/`/assess` sessions (via the overlay session archive, where available)

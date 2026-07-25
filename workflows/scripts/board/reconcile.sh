@@ -577,7 +577,7 @@ status_reconcile_main() {
 }
 
 # --- Lens 3: label hygiene (board LABEL drift on the issues-only backend) ----
-# Best-effort append of a `ask-at-checkin` pending-decision entry recording an
+# Best-effort append of an `ask-at-checkin` pending-decision entry recording an
 # UNATTENDED label-hygiene apply (`claude/CLAUDE.md` § Unattended
 # pending-decisions surface). Routes through workflows/scripts/lib/
 # knowledge_store.sh's `ks_read`/`ks_append` — the SCRIPT-plane seam (portable

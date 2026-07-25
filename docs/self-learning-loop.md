@@ -161,7 +161,7 @@ The loop only works if a capture rule can't silently lose its backstop. So
 every live-capture rule must ship **paired** with a nightly drain rule,
 registered in a table, and [`workflows/scripts/validate-capture-backstop.sh`](../workflows/scripts/validate-capture-backstop.sh)
 **fails the build** (it's part of the required `checks` gate) if any pair is
-half-present — a capture anchor with no drain, or a drain with no live. That is the
+half-present — a capture anchor with no backstop, or a backstop with no capture anchor. That is the
 CI-enforced invariant at the top of the maturity ladder, guarding the loop
 against its own silent-loss failure mode ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md)
 § Capture/Backstop pairing).

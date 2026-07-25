@@ -94,6 +94,17 @@ if [ -f "$BUILD_CONFIG_LOCAL" ]; then
   . "$BUILD_CONFIG_LOCAL"
 fi
 
+# Second legacy-window pass (temperloop#729): layers 3/4 above may THEMSELVES
+# set pre-rename FUNNEL_*/KNOB_* names (a machine conf or local conf written
+# before the v0.17.0 rename). The first shim pass at the top of this file ran
+# before they were sourced, so forward again now — the shim is NEW > OLD, so
+# a renamed name already set (env, or the first pass) still wins, and only a
+# conf-supplied legacy var gains a new-name binding here (with its NOTE).
+if command -v _rename_compat_0170_apply >/dev/null 2>&1; then
+  _rename_compat_0170_apply "FUNNEL_" "PIPELINE_"
+  _rename_compat_0170_apply "KNOB_" "SETTING_"
+fi
+
 # ── Precedence layer 5 / 6: tracked repo conf / kernel built-in defaults ─────
 # Everything below is this file's own `:=` default set. It runs LAST, after
 # precedence layers 3 and 4 above, so any var they already bound is left

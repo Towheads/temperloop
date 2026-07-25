@@ -167,7 +167,7 @@ The issue is closed. There is nothing to drive. **Clear any stale routing label*
 
 ### 4f — `ambiguous`: disambiguate, never guess
 
-More than one open PR links to the issue (`resolve.open_prs` has ≥2). `/fix` **must not guess** which to adopt. Surface all candidates via `decision_sink_ask(<the N open PRs + their draft/author/CI state>, [adopt PR #A, adopt PR #B, …, stop and let me clean up], ask-now)`. The chosen PR reroutes to **4b** (`reattach` + Step 5). "Stop" is a terminal **parked** disposition (the operator resolves the duplicate PRs by hand). This is a `ask-now` decision with **no safe default** — never auto-proceed on silence.
+More than one open PR links to the issue (`resolve.open_prs` has ≥2). `/fix` **must not guess** which to adopt. Surface all candidates via `decision_sink_ask(<the N open PRs + their draft/author/CI state>, [adopt PR #A, adopt PR #B, …, stop and let me clean up], ask-now)`. The chosen PR reroutes to **4b** (`reattach` + Step 5). "Stop" is a terminal **parked** disposition (the operator resolves the duplicate PRs by hand). This is an `ask-now` decision with **no safe default** — never auto-proceed on silence.
 
 ## Step 5 — The MODAL merge gate (exactly ONE confirmation)
 

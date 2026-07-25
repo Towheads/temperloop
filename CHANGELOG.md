@@ -14,14 +14,15 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [0.17.0] - 2026-07-25 — BREAKING
 
-One-shot pre-GA terminology consolidation (temperloop#729, epic #719, ADR
-0017): one name per concept, plain words over coinages, applied as a single
-rename so adopters relearn once instead of per-release. **An overlay or
-consuming checkout must migrate by the map below before pulling** —
-`update-kernel` requires the usual breaking ack (`KERNEL_ALLOW_BREAKING=1`
-or the interactive confirm). A legacy read window (env vars, old script
-paths, the old overlay-registry filename) forwards with deprecation NOTEs
-until **v0.19.0**.
+One-shot pre-GA terminology consolidation (temperloop#729, epic #719
+(prose-plane subtraction and budget), ADR 0017): one name per concept,
+plain words over coinages, applied as a single rename so adopters relearn
+once instead of per-release. **An overlay or consuming checkout must
+migrate by the map below before pulling** — `update-kernel` requires the
+usual breaking ack (`KERNEL_ALLOW_BREAKING=1` or the interactive confirm).
+A legacy read window (env vars, old script paths, the old overlay-registry
+filename, the old telemetry month-file glob) forwards with deprecation
+NOTEs until **v0.19.0**.
 
 ### Changed — the full rename map
 
@@ -34,7 +35,7 @@ until **v0.19.0**.
 | `blocking-now` severity | `ask-now` |
 | `batch-at-gate` severity | `ask-at-gate` |
 | `batch-at-ritual` severity | `ask-at-checkin` |
-| ritual (the daily review) | check-in (elsewhere: routine) |
+| ritual | contextual, not 1:1 — check-in where it names the daily `/check-in` review; otherwise routine / review / step / session as the sentence requires |
 | build spine (the shared build scripts) | build machinery |
 | design spine (docs/cognitive-load.md only) | design backbone |
 | precedence rung (config ladder) | precedence layer |
@@ -79,6 +80,13 @@ through v0.19.0):**
   `test_pipeline_*`, `test_build_config_knobs.sh` →
   `test_build_config_settings.sh`, `test_knob_registry.sh` →
   `test_setting_registry.sh`, `test_check_knob_*` → `test_check_setting_*`)
+- **telemetry stream**: the pipeline tick's raw-lake month-files are now
+  written `pipeline-<YYYY-MM>.jsonl` (previously `funnel-<YYYY-MM>.jsonl`).
+  Writers emit only the new name; readers (`telemetry-brief.sh`, and
+  `pipeline-cron.sh --backfill`) union the legacy `funnel-*.jsonl`
+  month-files in read-only, with a one-line NOTE, through v0.19.0 — an
+  existing install's accumulated history stays visible. Legacy files are
+  never renamed in place.
 
 **Pipeline command contracts:** the slash commands `/funnel-drive` and
 `/funnel-drive-merge` are now `/pipeline-drive` and `/pipeline-drive-merge`.
@@ -118,7 +126,7 @@ need no change.
 
 ### Deliberately NOT renamed (migration note)
 
-- **Persisted external state keeps its pre-rename values** (the K165
+- **Persisted external state keeps its pre-rename values** (the temperloop#165
   `.foundation/` precedent — renaming them would orphan live state): the
   `funnel-merge-pending` / `funnel-escalated` GitHub labels, the
   `<!-- funnel:clarification-drained -->` / `<!-- funnel:decision-applied -->`

@@ -74,7 +74,7 @@ Step 3 below — Steps 0–2 and 4–6 needed no change either for #217 or #219.
   interactive `AskUserQuestion` — never routed through `decision_sink_ask(...)`,
   because that seam's whole purpose is choosing between a live operator and an
   absent one, and there is never an absent-operator case to choose here. A
-  design session cannot run against an absent operator; that is a deliberate
+  design routine cannot run against an absent operator; that is a deliberate
   property of this command, not a gap to fill later.
 - **Minimum-viable-output rule.** Whatever else is unavailable — no `gh` auth, <!-- cite: W.2 guard:docs/principles.md -->
   no repo, no registered board, no reviewer agents declared (Step 3) — the

@@ -83,6 +83,13 @@ while IFS= read -r f; do
   fi
 done < <(git -C "$SCAN_ROOT" ls-files)
 
+# Fail LOUD on an empty scan: a failed/misdirected `git ls-files` (not a git
+# repo, bad SCAN_ROOT) would otherwise false-green this gate as "0 scanned".
+if [ "$scanned" -eq 0 ]; then
+  echo "check-terminology-leak-guard: FAIL — scanned 0 file(s) (git ls-files failed, or SCAN_ROOT '$SCAN_ROOT' is not a git checkout)"
+  exit 1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "check-terminology-leak-guard: FAIL"
   exit 1

@@ -79,11 +79,11 @@ This is a real intake step, not aspirational: run the weekly tally and ingest it
    python3 "$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo .)/workflows/scripts/askuserquestion_tally.py" --days 7 --min-count 3 --json
    ```
    (From a board-consuming checkout that vendors foundation, resolve the foundation checkout's path to the script instead; if the script or stream is absent — e.g. on a board without the hook installed — note `AskUserQuestion intake skipped — no event stream` and continue. Never fail triage over a missing telemetry stream.)
-2. **Each recurring class becomes a candidate** with `provenance: askuserquestion`, `title = "Add a default/contract for repeated interruption: <class>"`, body = the class `site_hint`/`header`, its 7-day `count`, and the per-project breakdown, plus a one-line scope: *"This AskUserQuestion site interrupted N times this week — decide whether it warrants a new default (a `ask-at-gate`/`ask-at-checkin` default per the severity taxonomy) so it stops asking."* `source_ref = meta/data/raw/askuserquestion-events.jsonl#<class>`.
+2. **Each recurring class becomes a candidate** with `provenance: askuserquestion`, `title = "Add a default/contract for repeated interruption: <class>"`, body = the class `site_hint`/`header`, its 7-day `count`, and the per-project breakdown, plus a one-line scope: *"This AskUserQuestion site interrupted N times this week — decide whether it warrants a new default (an `ask-at-gate`/`ask-at-checkin` default per the severity taxonomy) so it stops asking."* `source_ref = meta/data/raw/askuserquestion-events.jsonl#<class>`.
 3. **These candidates run the normal Step-2 decision tree** like any other:
    - Most will **route off-board as a *decision*** (Step 2.5) — "decide whether site X gets a default" is a decision, not build work — written to a `Decisions/` stub. If the decision *does* spawn build work (wire the default into the command), that build re-enters the pipeline as its own item.
    - A class that is already a known design seam may **collapse** (Step 2.2) into an existing survivor.
-   - **Cull** a class whose interruptions are all legitimately `ask-now` (no safe default exists — see the taxonomy): a `ask-now` site has no default *by design*, so a recurring count there is not a defect and gets no candidate.
+   - **Cull** a class whose interruptions are all legitimately `ask-now` (no safe default exists — see the taxonomy): an `ask-now` site has no default *by design*, so a recurring count there is not a defect and gets no candidate.
    The `--min-count 3` threshold is the recurrence gate — a one-off interruption is noise, not a missing contract.
 
 ## Step 1 — Intake (the one fork)

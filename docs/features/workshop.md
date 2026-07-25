@@ -26,7 +26,7 @@ would otherwise have to catch late, or never.
 `/workshop` walks a fixed sequence — intake, coverage walk, review pass,
 ratify, materialize — against the coverage template in
 `claude/design-schema.md`. It is modal by construction: there is no
-unattended arm, because a design session has no meaning without a live
+unattended arm, because a design routine has no meaning without a live
 operator to make the calls.
 
 1. **Intake.** Establish the problem statement, the customer-visible

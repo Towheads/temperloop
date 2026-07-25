@@ -79,7 +79,7 @@ ones.
   unanswered entry takes its default, never a silent stall
   ([`claude/plan-schema.md`](../claude/plan-schema.md)).
 - **Unattended runs record what they auto-took.** When a command runs with no
-  live operator, a `ask-at-checkin` choice takes its safe default to keep
+  live operator, an `ask-at-checkin` choice takes its safe default to keep
   moving *and* records the auto-disposition on a durable surface, so a defaulted
   decision never stands silently — you review the batch later in one place
   ([`claude/commands/check-in.md`](../claude/commands/check-in.md)).

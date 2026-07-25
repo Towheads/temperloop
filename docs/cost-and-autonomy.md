@@ -263,7 +263,7 @@ spirit as the cost figures above.
 ### Maintenance vs. on-demand build spend — how much is upkeep?
 
 A natural follow-up: of everything above, how much is **maintenance** — the
-recurring recurring background commands (nightly `/tidy`, daily `/check-in`,
+recurring background commands (nightly `/tidy`, daily `/check-in`,
 pipeline ticks) — as opposed to **on-demand build work** that scales with
 what you actually ask `/build`/`/sweep` to do?
 

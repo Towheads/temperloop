@@ -372,7 +372,7 @@ Each entry is **one line** with a checkbox sentinel plus a `## Questions`-local 
 - **Checkbox** — `[ ]` unanswered (default still pending), `[x]` answered/resolved (default overridden or confirmed at the gate).
 - **`step:`** (required) — the originating build step that deferred the question (e.g. `2.5`, `2.6`, `0.5`, `4c`), so the gate can route the answer back to the right action.
 - **`item:`** / `pr:` (optional) — the plan-item slug or PR number the question is scoped to, when per-item; omitted for run-wide questions.
-- **The question text**, then **`default: <value>`** in bold — the value taken if the entry is unanswered when the gate resolves. **Every entry MUST state its default** — a `ask-at-gate` entry with no default is a defect (it cannot be deferred, because deferral needs a value to proceed with meanwhile). This is the pinned convention from the severity taxonomy.
+- **The question text**, then **`default: <value>`** in bold — the value taken if the entry is unanswered when the gate resolves. **Every entry MUST state its default** — an `ask-at-gate` entry with no default is a defect (it cannot be deferred, because deferral needs a value to proceed with meanwhile). This is the pinned convention from the severity taxonomy.
 - **`auto-proceed:` sub-line** (required) — one line spelling out what taking the default does, so an unanswered entry resolving at the gate is legible after the fact.
 
 ### Lifecycle

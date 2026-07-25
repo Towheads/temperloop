@@ -86,6 +86,16 @@ cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+# v0.17.0 rename legacy window (temperloop#729): NOTE once per run when legacy
+# funnel-<YYYY-MM>.jsonl month-files are present (stream_files unions them in,
+# read-only, through v0.19.0 — writers emit only pipeline-*.jsonl).
+for _lf in "$pipeline_dir"/funnel-*.jsonl; do
+  if [ -e "$_lf" ]; then
+    echo "NOTE: reading legacy funnel-*.jsonl telemetry (renamed pipeline-*.jsonl in v0.17.0, temperloop#729; legacy read closes in v0.19.0)" >&2
+    break
+  fi
+done
+unset _lf
 gh_calls_dir="${GH_CALLS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 ks_fallback_dir="${KS_SEARCH_FALLBACK_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 read_log="${KNOWLEDGE_READ_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log}"
@@ -116,6 +126,15 @@ cutoff="$(cutoff_iso "$lookback")"
 stream_files() {  # $1=dir $2=stream-prefix -> matching month-files, one per line
   [ -d "$1" ] || return 0
   local f
+  # v0.17.0 rename legacy window (temperloop#729): the pipeline stream was
+  # named funnel-<YYYY-MM>.jsonl before the terminology consolidation. Union
+  # the legacy month-files in (read-only — writers emit only the new name)
+  # through v0.19.0, so an existing install's history does not go dark.
+  if [ "$2" = "pipeline" ]; then
+    for f in "$1/funnel"-*.jsonl; do
+      [ -e "$f" ] && printf '%s\n' "$f"
+    done
+  fi
   for f in "$1/$2"-*.jsonl; do
     [ -e "$f" ] && printf '%s\n' "$f"
   done

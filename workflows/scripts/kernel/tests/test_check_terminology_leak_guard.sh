@@ -75,6 +75,11 @@ git -C "$FIX" add -A
 out="$(run_gate)" || fail "exempt-listed file went red: $out"
 pass "6 an exempt-listed file carrying old identifiers stays green"
 
+# 7b non-repo scan root fails LOUD, never false-greens as 0-scanned
+out="$(TERMINOLOGY_LEAK_SCAN_ROOT="$FIX/does-not-exist" TERMINOLOGY_LEAK_EXEMPT_FILE="$FIX/exempt.txt" bash "$GATE" 2>/dev/null)" && fail "empty scan did not fail loud"
+printf '%s' "$out" | grep -q 'scanned 0 file' || fail "empty-scan failure does not say why: $out"
+pass "7b an empty/failed scan is a loud FAIL, not a false green"
+
 # 7 real tree
 out="$(bash "$GATE" 2>&1)" || fail "REAL tree is red: $out"
 pass "7 the real tree is green (seeded state)"

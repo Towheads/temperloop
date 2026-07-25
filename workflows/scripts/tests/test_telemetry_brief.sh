@@ -197,6 +197,21 @@ else
   fail_test "check-in.md names telemetry-brief.sh specifically" "reference missing"
 fi
 
+# ── 7. v0.17.0 legacy stream read (temperloop#729): funnel-*.jsonl unioned ──
+# A pre-rename install's lake has only funnel-<YYYY-MM>.jsonl history — the
+# renderer must still see it (read-only legacy glob, NOTE on stderr) so the
+# accumulated telemetry does not go dark at upgrade. Window closes v0.19.0.
+legacy_lake="$TMP/legacy-lake"
+mkdir -p "$legacy_lake"
+cat > "$legacy_lake/funnel-${month}.jsonl" <<EOF
+{"event":"drive","status":"error","date":"2026-07-16","duration_ms":100,"reason":"driver-failed","context":"boom","ts":"$now_ts"}
+EOF
+out="$(run_brief "$legacy_lake" "$TMP/no-reads.log" 2>"$TMP/legacy-stderr.txt")"; rc=$?
+assert_rc0 "$rc" "legacy-only lake renders (rc 0)"
+assert_has "$out" "pipeline drive errors" "legacy funnel-*.jsonl records are counted as the pipeline stream"
+assert_not_has "$out" "no data yet — pipeline stream is empty" "pipeline stream is NOT reported empty on a legacy-only lake"
+assert_has "$(cat "$TMP/legacy-stderr.txt")" "reading legacy funnel-*.jsonl telemetry" "legacy read surfaces the one-line NOTE on stderr"
+
 echo
 echo "test_telemetry_brief: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

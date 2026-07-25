@@ -25,13 +25,15 @@ fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1"; }
 
 CFG="$REPO_ROOT/workflows/scripts/build/build.config.sh"
+ERRTMP="$(mktemp "${TMPDIR:-/tmp}/rc0170.XXXXXX")"
+trap 'rm -f "$ERRTMP"' EXIT
 LIB="$REPO_ROOT/workflows/scripts/config/setting-registry-lib.sh"
 OLD_LIB="$REPO_ROOT/workflows/scripts/config/knob-registry-lib.sh"
 
 # ── 1. legacy env honored + NOTE ────────────────────────────────────────────
 out="$(env -i HOME="$HOME" PATH="$PATH" FUNNEL_DRIVE_CAP=7 \
-  bash -c "source '$CFG' 2>/tmp/rc0170.$$; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
-err="$(cat /tmp/rc0170.$$; rm -f /tmp/rc0170.$$)"
+  bash -c "source '$CFG' 2>"$ERRTMP"; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
+err="$(cat "$ERRTMP")"
 [ "$out" = "7" ] || fail "legacy FUNNEL_DRIVE_CAP=7 did not drive PIPELINE_DRIVE_CAP (got '$out')"
 printf '%s' "$err" | grep -q 'FUNNEL_DRIVE_CAP is deprecated — renamed PIPELINE_DRIVE_CAP in v0.17.0' \
   || fail "no deprecation NOTE for FUNNEL_DRIVE_CAP (stderr: $err)"
@@ -39,8 +41,8 @@ pass "1 legacy FUNNEL_* env drives the renamed setting, with a deprecation NOTE"
 
 # ── 2. new > old, no NOTE ───────────────────────────────────────────────────
 out="$(env -i HOME="$HOME" PATH="$PATH" FUNNEL_DRIVE_CAP=7 PIPELINE_DRIVE_CAP=9 \
-  bash -c "source '$CFG' 2>/tmp/rc0170.$$; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
-err="$(cat /tmp/rc0170.$$; rm -f /tmp/rc0170.$$)"
+  bash -c "source '$CFG' 2>"$ERRTMP"; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
+err="$(cat "$ERRTMP")"
 [ "$out" = "9" ] || fail "PIPELINE_DRIVE_CAP=9 should outrank legacy FUNNEL_DRIVE_CAP=7 (got '$out')"
 printf '%s' "$err" | grep -q 'FUNNEL_DRIVE_CAP' \
   && fail "NOTE emitted for an IGNORED legacy var (new name set): $err"
@@ -58,6 +60,22 @@ out="$(env -i HOME="$HOME" PATH="$PATH" KNOB_REGISTRY_FILE=/tmp/some-registry.ts
 [ "$out" = "/tmp/some-registry.tsv" ] \
   || fail "legacy KNOB_REGISTRY_FILE did not drive SETTING_REGISTRY_FILE (got '$out')"
 pass "4 legacy KNOB_* env drives the renamed SETTING_* seam through the lib"
+
+# ── 4b. machine-conf layer legacy var (second shim pass) ───────────────────
+# A pre-rename machine conf (layer 3) setting FUNNEL_* with the mandated `:=`
+# idiom must still drive the renamed setting — the shim re-applies AFTER the
+# conf layers, so a conf-supplied legacy var is not silently lost to the
+# kernel default (the exact silent-behavior-change the window prevents).
+mc="$(mktemp "${TMPDIR:-/tmp}/rc0170-machine.XXXXXX")"
+printf ': "${FUNNEL_DRIVE_CAP:=5}"\n' > "$mc"
+out="$(env -i HOME="$HOME" PATH="$PATH" BUILD_CONFIG_MACHINE="$mc" \
+  bash -c "source '$CFG' 2>/dev/null; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
+[ "$out" = "5" ] || fail "machine-conf legacy FUNNEL_DRIVE_CAP=5 did not drive PIPELINE_DRIVE_CAP (got '$out')"
+out="$(env -i HOME="$HOME" PATH="$PATH" BUILD_CONFIG_MACHINE="$mc" PIPELINE_DRIVE_CAP=9 \
+  bash -c "source '$CFG' 2>/dev/null; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
+[ "$out" = "9" ] || fail "renamed env var should outrank a machine-conf legacy var (got '$out')"
+rm -f "$mc"
+pass "4b machine-conf-layer legacy var forwards via the second shim pass; new env still wins"
 
 # ── 5. forwarding stub ──────────────────────────────────────────────────────
 stub_err="$(bash "$REPO_ROOT/workflows/scripts/validate-live-drain.sh" 2>&1 >/dev/null)"; rc=$?

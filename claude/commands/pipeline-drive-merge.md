@@ -90,7 +90,7 @@ Process `actions` in order. Each is a `drive-ready` with `kind == "code"`. Branc
     that gated path, never by hand.
 - `/build --unattended` carries the run from worktree → agent → push → PR → CI-watch →
   **its merge gate**. It runs operator-absent (the cron sets `PIPELINE_OPERATOR_ABSENT=1`),
-  so a `ask-now` decision is posted to the decision queue and the item parks —
+  so an `ask-now` decision is posted to the decision queue and the item parks —
   it does **not** hang. Let `/build` reach its own terminal state; do not intervene in
   its gate.
 - **Let `/build` block synchronously through CI-watch and the merge gate — do NOT <!-- cite: FDM.4 incident:F#626 -->
