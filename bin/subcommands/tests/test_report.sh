@@ -18,7 +18,10 @@
 #      error.
 #   6. tokens headline: a `tokens` drop-in with valid JSON drives the
 #      tokens-vs-merged-items headline; invalid JSON falls back to the
-#      kernel-tier headline.
+#      kernel-tier headline. (6c, foundation#882) a by_model breakdown +
+#      .temperloop/pricing.json renders a directional dollar line; each
+#      missing/malformed/zero-overlap piece degrades to one legible line; a
+#      by_model-less producer renders no dollar line (backward compat).
 #   7. --refresh appends a real baseline record via a fake gh, then renders.
 #   8. CLI hygiene: unknown arg is exit 2; -h is exit 0; a nonexistent --dir
 #      is exit 1.
@@ -172,6 +175,70 @@ out6b="$(bash "$REPORT" --dir "$REPO6")"
 echo "$out6b" | grep -q "Kernel-tier headline" || fail "an invalid-JSON tokens drop-in should fall back to the kernel-tier headline"
 echo "$out6b" | grep -qv "Tokens spent vs items merged" || true  # rendered section still present verbatim, only the HEADLINE falls back
 echo "$out6b" | grep -q "Merged items/day: 0.1000 -> 0.2000/day" || fail "kernel-tier headline fallback should show the items/day figures"
+
+# --- 6c: dollar framing (foundation#882) -------------------------------------
+# A tokens producer that also emits a by_model breakdown, combined with a
+# user-supplied .temperloop/pricing.json, renders a directional dollar line.
+REPO_D="$WORK/repoD"
+mk_repo "$REPO_D"
+mkdir -p "$REPO_D/.temperloop/report.d"
+cp "$REPO1/.temperloop/baseline.jsonl" "$REPO_D/.temperloop/baseline.jsonl"
+cat > "$REPO_D/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": 3000000, "by_model": {"claude-opus-4-8": 1000000, "claude-sonnet-5": 2000000}}'
+EOF
+chmod +x "$REPO_D/.temperloop/report.d/tokens"
+
+# 6c-i: all models priced -> ~$28.00 = (1M*18 + 2M*5)/1M, all covered.
+echo '{"claude-opus-4-8": 18.00, "claude-sonnet-5": 5.00}' > "$REPO_D/.temperloop/pricing.json"
+outDi="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDi" | grep -q 'Tokens spent vs items merged' || fail "dollar framing must keep the tokens headline"
+echo "$outDi" | grep -q '~[$]28.00 directional' || fail "all-priced dollar total should be 28.00 (1M*18 + 2M*5 per Mtok)"
+echo "$outDi" | grep -q '2 model(s) priced; all attributed tokens covered' || fail "all-priced line should report 2 covered, none excluded"
+
+# 6c-ii: one model unpriced -> ~$18.00, sonnet excluded by name.
+echo '{"claude-opus-4-8": 18.00}' > "$REPO_D/.temperloop/pricing.json"
+outDii="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDii" | grep -q '~[$]18.00 directional' || fail "one-unpriced dollar total should exclude the unpriced model (18.00)"
+echo "$outDii" | grep -q 'unpriced tokens excluded: claude-sonnet-5' || fail "the unpriced model should be named and excluded"
+
+# 6c-iii: no pricing.json -> a legible 'add pricing.json' nudge, no dollar figure.
+rm -f "$REPO_D/.temperloop/pricing.json"
+outDiii="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDiii" | grep -q 'add .temperloop/pricing.json' || fail "by_model without a pricing table should nudge to add one"
+if echo "$outDiii" | grep -q 'directional (priced from'; then fail "no dollar figure should render when the pricing table is absent"; fi
+
+# 6c-iv: malformed (non-JSON) pricing.json -> a legible 'not a {model: $/Mtok}
+# object' note, no crash, exit 0.
+echo 'not json at all' > "$REPO_D/.temperloop/pricing.json"
+outDiv="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDiv" | grep -qF '{model: $/Mtok} object' || fail "a malformed pricing.json should degrade to the object-shape note"
+
+# 6c-iv-b: valid JSON but NOT an object (an array) -> same object-shape note,
+# not a misleading 'no model matched' (would otherwise throw on indexing).
+echo '[1, 2, 3]' > "$REPO_D/.temperloop/pricing.json"
+outDivb="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDivb" | grep -qF '{model: $/Mtok} object' || fail "a non-object pricing.json should report the object-shape note, not a name-mismatch"
+if echo "$outDivb" | grep -q 'no model in .temperloop/pricing.json matched'; then fail "a non-object pricing.json must not misreport as a name-mismatch"; fi
+
+# 6c-v: a pricing table matching none of the by_model models -> 'no model matched'.
+echo '{"some-other-model": 1.00}' > "$REPO_D/.temperloop/pricing.json"
+outDv="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDv" | grep -q 'no model in .temperloop/pricing.json matched' || fail "a zero-overlap pricing table should report no match"
+
+# 6c-vi: backward-compat -- a tokens producer WITHOUT by_model renders no
+# dollar line at all, even when a pricing.json is present.
+echo '{"claude-opus-4-8": 18.00}' > "$REPO_D/.temperloop/pricing.json"
+cat > "$REPO_D/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": 3000000}'
+EOF
+chmod +x "$REPO_D/.temperloop/report.d/tokens"
+outDvi="$(bash "$REPORT" --dir "$REPO_D")"
+echo "$outDvi" | grep -q 'Tokens spent vs items merged' || fail "a by_model-less tokens producer must still drive the tokens headline"
+if echo "$outDvi" | grep -qE 'directional \(priced from|add .temperloop/pricing.json'; then
+  fail "a tokens producer with no by_model must render no dollar line or nudge at all"
+fi
 
 # --- 7: --refresh appends via a fake gh, then renders -----------------------
 REPO7="$WORK/repo7"

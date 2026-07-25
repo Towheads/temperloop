@@ -69,7 +69,42 @@ stdout must **also** parse as a single JSON object with a numeric
 same lookback window) for `report.sh` to compute "tokens spent vs items
 merged" as the headline -- an absent, failing, non-executable, or
 non-JSON-conforming `tokens` producer simply falls back to the kernel-tier
-headline, never an error.
+headline, never an error. The `tokens` producer **may** additionally emit an
+optional `by_model` object (`{"<model-id>": <tokens>, ...}`) — the model
+attribution that feeds the directional dollar line (see "Pricing table &
+dollar framing" below). `by_model` is purely optional: an absent or
+non-object `by_model` just means no dollar line, never an error.
+
+## Pricing table & dollar framing (foundation#882)
+
+The tokens headline can render a **directional dollar estimate** when two
+user-supplied pieces are both present:
+
+1. the `tokens` producer emits a `by_model` breakdown (above), and
+2. the target repo carries a **pricing table** at `.temperloop/pricing.json`
+   — a single JSON object mapping each model id to its **USD-per-million-tokens
+   list price**, e.g. `{"claude-opus-4-8": 18.00, "claude-sonnet-5": 5.40}`.
+
+`report.sh` then multiplies each attributed model's tokens by its list price
+(`tokens × price ÷ 1,000,000`), sums the priced models, and prints a
+`~$<total> directional` line under the same **DIRECTIONAL** label as the
+tokens headline, naming the count of priced models and **excluding** (by
+name) any `by_model` model with no matching price. This is a **user-supplied,
+hand-edited, directional** table, exactly like the sibling
+`kernel/bin/lib/cost-estimates.conf`: it is never a live pricing-API read,
+never recalculated at runtime, and refreshed only by hand-editing the file
+(no regeneration script) — the producer-egress lint covers this seam and the
+table read is a **local file read only, no network**. The pricing table is
+**absent by default**: the kernel ships no prices (just as it ships no
+`tokens` producer), so a stranger opts in by writing their own table.
+
+Every degradation is one legible line, never an error: **no** `by_model` →
+no dollar line; `by_model` present but **no** `pricing.json` → a one-line
+"add `.temperloop/pricing.json`" nudge; a `pricing.json` that is **not a JSON
+object** (malformed, or a valid array/number/string/`null`) → a "not a
+`{model: $/Mtok}` object" note; a `pricing.json` object that matches **none**
+of the `by_model` models → a "no model matched" note. The kernel-tier
+headline and the tokens/item line are unchanged in every case.
 
 **Egress:** this seam and its own drop-ins are covered by the mechanical
 network-call lint at `kernel/workflows/scripts/kernel/check-producer-egress.sh`
@@ -83,7 +118,10 @@ empty) opt-in egress surface for this whole value loop.
 - **If** a `tokens` drop-in is present, executable, exits 0, and its stdout
   parses as `{"tokens_spent": <number>, ...}`: the headline is `tokens_spent`
   divided by the **latest** record's `merged_count`, labeled directional
-  (never a precise unit cost -- see "Non-goals" below).
+  (never a precise unit cost -- see "Non-goals" below). When that producer
+  **also** emits `by_model` and the repo carries `.temperloop/pricing.json`,
+  the headline additionally renders a directional `~$<total>` dollar line
+  (see "Pricing table & dollar framing" above).
 - **Else**: the headline is the kernel-tier numbers alone -- the
   merged-items/day delta plus the median-time-to-merge delta.
 
@@ -91,9 +129,15 @@ empty) opt-in egress surface for this whole value loop.
 
 - **No opinionated verdict**, mirroring `baseline_snapshot.contract.md` --
   `report` prints what changed, not whether that's good or bad.
-- **No precise cost accounting.** The tokens-based headline is explicitly
-  labeled directional; `report.sh` has no opinion on how a `tokens` producer
-  derives its own number, only that it be a JSON object with that one field.
+- **No precise cost accounting.** The tokens-based headline — and the
+  optional `~$<total>` dollar line derived from `by_model` × a user-supplied
+  `.temperloop/pricing.json` — are explicitly labeled **directional**.
+  `report.sh` has no opinion on how a `tokens` producer derives its own
+  numbers, only that `tokens_spent` be a number and (optionally) `by_model`
+  an object; the pricing table is a hand-edited, user-supplied,
+  never-runtime-recalculated list-price map, exactly the directional posture
+  of `kernel/bin/lib/cost-estimates.conf`. This is a real-dollar *framing*,
+  not an accounting ledger.
 - **No new baseline data.** `report.sh` computes nothing that isn't already
   in `.temperloop/baseline.jsonl` or a drop-in's own stdout -- it is a pure
   renderer (`--refresh` is the one exception, and even then the actual `gh`
