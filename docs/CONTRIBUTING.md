@@ -146,16 +146,18 @@ The two seams:
   [`workflows/scripts/lib/knowledge_store.contract.md`](../workflows/scripts/lib/knowledge_store.contract.md).
   Read that file rather than this one for the actual contract; it is the
   source of truth and this guide does not restate it.
-- **Tracker adapter** — the issue/board backend seam (label vocabulary,
-  claim lock, parent/child and dependency edges, close→Done cascade) that
-  the board toolkit talks to instead of assuming a specific tracker. The
-  current interface is documented alongside the reference `issues-only`
-  backend in
+- **Tracker adapter** — the issue/board backend seam a caller uses to
+  resolve items, read and set status/fields, walk parent/child and
+  dependency edges, and land new issues without hardcoding a Projects-v2
+  query or assuming a specific tracker. The full interface — configuration
+  (`boards.conf`), backend selection, the public `board_*` functions, and the
+  `projects-v2` / `issues-only` backends as worked examples — is specified in
+  [`workflows/scripts/lib/tracker.contract.md`](../workflows/scripts/lib/tracker.contract.md).
+  Read that file rather than this one for the actual contract; it is the
+  source of truth and this guide does not restate it. The issues-only
+  backend's operational deep-dive (label vocabulary, claim lock, edges,
+  close→Done cascade) is its companion,
   [`workflows/scripts/board/ISSUES-ONLY-BACKEND.md`](../workflows/scripts/board/ISSUES-ONLY-BACKEND.md).
-  There is no standalone `tracker.contract.md` yet separating the general
-  interface from that one backend's specifics — that split is tracked as a
-  follow-up, foundation#891 — so until it lands, ISSUES-ONLY-BACKEND.md is
-  the source of truth for the tracker seam's shape.
 
 Before opening an adapter PR:
 
