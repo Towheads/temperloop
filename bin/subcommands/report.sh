@@ -57,6 +57,13 @@
 # directional -- see the contract file). Otherwise the headline falls back
 # to the kernel-tier numbers alone: merged-items/day delta + time-to-merge
 # delta.
+#   DOLLAR FRAMING (foundation#882): the `tokens` producer may additionally
+#   emit a `by_model` object ({model: tokens}); if the target repo also
+#   carries a user-supplied .temperloop/pricing.json ({model: USD-per-Mtok}),
+#   the headline gains a directional dollar line (attributed tokens x list
+#   price, unpriced models named and excluded). Absent/malformed pricing or
+#   an absent by_model degrades to one legible line, never an error -- no
+#   precise cost accounting, no network (a local jq file read).
 #
 # Usage:
 #   report.sh [--dir DIR] [--refresh] [--timeout SECS]
@@ -294,6 +301,10 @@ if [ ! -d "$report_d" ] && [ -d "$repo_root/.foundation/report.d" ]; then
 fi
 tokens_ok=0
 tokens_spent=""
+# by_model breakdown (foundation#882): {model: tokens}, optionally emitted by
+# the tokens producer alongside tokens_spent; drives the directional dollar
+# line in the headline below. "{}" means none supplied.
+tokens_by_model="{}"
 
 if [ ! -d "$report_d" ]; then
   echo "skipped -- no .temperloop/report.d/ (or legacy .foundation/report.d/) directory (no overlay drop-ins registered for this repo)"
@@ -328,6 +339,10 @@ else
       if [ -n "$parsed" ]; then
         tokens_spent="$parsed"
         tokens_ok=1
+        # Optional per-model breakdown (foundation#882). An object of
+        # {model: tokens}; anything else (absent, non-object) stays "{}".
+        by_model="$(jq -c 'if (.by_model | type) == "object" then .by_model else {} end' <<<"$out" 2>/dev/null)"
+        [ -n "$by_model" ] && tokens_by_model="$by_model"
       fi
     fi
   done
@@ -351,6 +366,53 @@ if [ "$tokens_ok" -eq 1 ] && [ "$latest_mc_usable" -eq 1 ]; then
   echo "Tokens spent vs items merged (DIRECTIONAL -- see report.contract.md):"
   echo "  $tokens_spent tokens / $latest_mc merged item(s) in the latest ${latest_lb}-day"
   echo "  window = $ratio tokens/item."
+  # -- Directional dollar framing (foundation#882) ---------------------------
+  # Iff the tokens producer emitted a per-model breakdown AND the target repo
+  # carries a user-supplied pricing table (.temperloop/pricing.json, a JSON
+  # map {model: USD-per-Mtok}), multiply each model's attributed tokens by its
+  # list price and render a directional dollar estimate under the same
+  # DIRECTIONAL label. Every missing/malformed piece degrades to one legible
+  # line, never a hard error -- report.sh stays a pure renderer and adds no
+  # precise cost accounting (see report.contract.md "Non-goals"). No network:
+  # a local file read via jq, covered by the producer-egress lint.
+  if [ "$tokens_by_model" != "{}" ]; then
+    pricing_file="$repo_root/.temperloop/pricing.json"
+    if [ ! -f "$pricing_file" ]; then
+      echo "  (add .temperloop/pricing.json -- a {model: \$/Mtok} map -- for a"
+      echo "    directional dollar estimate; see report.contract.md.)"
+    elif ! jq -e 'type == "object"' >/dev/null 2>&1 <"$pricing_file"; then
+      # Require an OBJECT, not merely valid JSON: an array/number/string/null
+      # parses but would throw on `$prices[$e.key]` below, and misreports as a
+      # name-mismatch. One legible line covers malformed JSON and wrong-shape
+      # alike (a stranger who wrote an array is steered to the object shape).
+      echo "  (no dollar estimate: .temperloop/pricing.json is not a"
+      echo "    {model: \$/Mtok} object.)"
+    else
+      dollar_json="$(jq -n --argjson bm "$tokens_by_model" --slurpfile pr "$pricing_file" '
+        ($pr[0] // {}) as $prices
+        | reduce ($bm | to_entries[]) as $e
+            ({priced: 0, total: 0, unpriced: []};
+             if ($e.value | type) == "number" then
+               (if ($prices[$e.key] | type) == "number"
+                then .priced += 1 | .total += ($e.value * $prices[$e.key] / 1000000)
+                else .unpriced += [$e.key] end)
+             else . end)' 2>/dev/null || true)"
+      d_priced="$(jq -r '.priced // 0' <<<"$dollar_json" 2>/dev/null || echo 0)"
+      if [ -n "$d_priced" ] && [ "$d_priced" -gt 0 ] 2>/dev/null; then
+        d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | awk '{printf "%.2f", $1}')"
+        d_unpriced="$(jq -r 'if (.unpriced | length) > 0 then (.unpriced | join(", ")) else "" end' <<<"$dollar_json")"
+        echo "  ~\$$d_total_fmt directional (priced from .temperloop/pricing.json;"
+        if [ -n "$d_unpriced" ]; then
+          echo "    $d_priced model(s) priced; unpriced tokens excluded: $d_unpriced)."
+        else
+          echo "    $d_priced model(s) priced; all attributed tokens covered)."
+        fi
+      else
+        echo "  (no dollar estimate: no model in .temperloop/pricing.json matched"
+        echo "    the tokens producer's by_model breakdown.)"
+      fi
+    fi
+  fi
 else
   echo "Kernel-tier headline (no usable tokens drop-in -- see report.contract.md):"
   if [ -n "$first_ipd" ] && [ -n "$latest_ipd" ]; then
