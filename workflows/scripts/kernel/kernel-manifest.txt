@@ -301,6 +301,7 @@ kernel workflows/scripts/tests/fixtures/design-schema/*
 # validate-issue-meta-snapshot, telemetry-test, sessions-test) in
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
+kernel workflows/scripts/count-prose.sh
 kernel workflows/scripts/emit-command-run.sh
 kernel workflows/scripts/env-hygiene-report.sh
 kernel workflows/scripts/ready-pr-sweep.sh

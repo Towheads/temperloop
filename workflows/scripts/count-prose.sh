@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+#
+# count-prose.sh — kernel prose-plane baseline counter (temperloop#719, item
+# prose-baseline-measurement / #722).
+#
+# Reports the two numbers the two-tier CI budget gate (docs/adr/
+# 0015-prose-plane-budget-gate.md, item prose-budget-gate / #725) seeds its
+# caps from:
+#
+#   TIER-1 — line count of the composed KERNEL-AUTHORED render only:
+#            claude/CLAUDE.kernel.md rendered through the existing compose
+#            seam (workflows/scripts/install-claude-md.sh's own
+#            render_kernel_doc, invoked via its INSTALL_CLAUDE_MD_KERNEL_ONLY
+#            render-only mode) — never a second, duplicated compose
+#            implementation living in this script (ADR 0015). The
+#            host-rendered "## Knowledge store routing" section and the
+#            personal `claude/CLAUDE.overlay.md` are excluded — this is the
+#            kernel-authored surface alone, never the kernel+overlay total.
+#   TIER-2 — a line count for every tracked file matching `claude/**/*.md`
+#            (agent charters under claude/agents/ included), plus the sum
+#            across all of them.
+#
+# Usage:
+#   workflows/scripts/count-prose.sh
+#
+# Stranger-clean: no vault/overlay/org dependency. This script and the seam
+# it calls read only tracked repo files (claude/CLAUDE.kernel.md,
+# workflows/scripts/install-claude-md.sh, workflows/scripts/build/
+# build.config.sh) — it never reads claude/CLAUDE.overlay.md, the knowledge
+# store, or the operator's friction ledger.
+#
+# Host determinism (verified in CI by workflows/scripts/tests/
+# test_count_prose.sh, which runs on both the ubuntu-latest and
+# macos-latest CI legs, matching whatever host authored the numbers):
+#   - BUILD_CONFIG_MACHINE and BUILD_CONFIG_LOCAL are pinned to /dev/null
+#     before invoking the compose seam. build.config.sh sources both paths
+#     (precedence rungs 3/4) only `if [ -f "$path" ]`; /dev/null is never a
+#     regular file, so both sourcing blocks silently no-op regardless of
+#     what a real host's XDG machine conf or a checkout's untracked
+#     build.config.local.sh contain. This neutralizes the two config rungs
+#     to the TRACKED repo defaults (rung 5) only, so the
+#     {{EPIC_MIN_SUBUNITS}} / {{DISPLAY_TZ}} knob substitution baked into
+#     the kernel doc's rendered text is identical on every host and every CI
+#     runner — no machine-specific or checkout-local override can perturb
+#     the tier-1 number.
+#   - Tracked-file enumeration goes through `git ls-files` (never a
+#     filesystem glob), so an untracked scratch file dropped under claude/
+#     on the authoring host can never inflate tier-2 relative to a clean CI
+#     checkout.
+#   - Line counts use `wc -l`, trimmed of the leading-whitespace padding
+#     BSD `wc` prints (macOS) that GNU `wc` (Linux CI) does not, so the
+#     printed number is identical text on both OS families, not just
+#     numerically equal.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"
+kernel_doc="$COUNT_PROSE_ROOT/claude/CLAUDE.kernel.md"
+install_script="$COUNT_PROSE_ROOT/workflows/scripts/install-claude-md.sh"
+
+[ -f "$kernel_doc" ] || { echo "count-prose: kernel doc not found: $kernel_doc" >&2; exit 1; }
+[ -f "$install_script" ] || { echo "count-prose: compose seam not found: $install_script" >&2; exit 1; }
+if [ ! -d "$COUNT_PROSE_ROOT/.git" ] && [ ! -f "$COUNT_PROSE_ROOT/.git" ]; then
+  echo "count-prose: $COUNT_PROSE_ROOT is not a git checkout" >&2
+  exit 1
+fi
+
+# lines_in <file> — echo a file's line count, trimmed. BSD `wc -l` (macOS)
+# right-pads its count with leading spaces; GNU `wc -l` (Linux) does not —
+# strip whitespace so the two OS families print byte-identical text, not
+# just numerically equal counts.
+lines_in() {
+  wc -l <"$1" | tr -d '[:space:]'
+}
+
+# ---------------------------------------------------------------------------
+# TIER-1 — the composed kernel-authored render, through the compose seam's
+# own render-only mode (never a duplicated render here).
+# ---------------------------------------------------------------------------
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/count-prose.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+
+tier1_target="$scratch/kernel-only.md"
+# The overlay path is never read or existence-checked when
+# INSTALL_CLAUDE_MD_KERNEL_ONLY=1 (see install-claude-md.sh) — passed here
+# only to satisfy the script's positional-arg contract.
+BUILD_CONFIG_MACHINE=/dev/null \
+BUILD_CONFIG_LOCAL=/dev/null \
+INSTALL_CLAUDE_MD_KERNEL_ONLY=1 \
+  "$install_script" "$kernel_doc" "$scratch/unused-overlay.md" "$tier1_target"
+
+tier1_count="$(lines_in "$tier1_target")"
+
+# ---------------------------------------------------------------------------
+# TIER-2 — per-file line counts over every TRACKED claude/**/*.md file
+# (git ls-files, never a filesystem glob — see the determinism note above).
+# ---------------------------------------------------------------------------
+cd "$COUNT_PROSE_ROOT" || exit 1
+
+tier2_files=()
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  tier2_files+=("$f")
+done < <(git ls-files -- claude | grep '\.md$' | LC_ALL=C sort)
+
+if [ "${#tier2_files[@]}" -eq 0 ]; then
+  echo "count-prose: zero tracked claude/**/*.md files found under $COUNT_PROSE_ROOT — nothing to count" >&2
+  exit 1
+fi
+
+tier2_total=0
+declare -a tier2_counts=()
+for f in "${tier2_files[@]}"; do
+  c="$(lines_in "$f")"
+  tier2_counts+=("$c")
+  tier2_total=$((tier2_total + c))
+done
+
+# ---------------------------------------------------------------------------
+# Report.
+# ---------------------------------------------------------------------------
+echo "TIER-1 kernel-authored composed render: ${tier1_count} lines"
+echo "  (claude/CLAUDE.kernel.md rendered via workflows/scripts/install-claude-md.sh"
+echo "   INSTALL_CLAUDE_MD_KERNEL_ONLY=1 — knowledge-store-routing + overlay excluded)"
+echo
+echo "TIER-2 per-file line counts (claude/**/*.md, agent charters included):"
+i=0
+for f in "${tier2_files[@]}"; do
+  printf '%8d  %s\n' "${tier2_counts[$i]}" "$f"
+  i=$((i + 1))
+done
+echo
+echo "TIER-2 total: ${tier2_total} lines across ${#tier2_files[@]} files"
