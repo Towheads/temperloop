@@ -138,6 +138,19 @@ full at `claim_log_emit`'s own header comment):
 `{ts, host, session_id, board, issue, item_id}` — no `schema_version` field
 yet (see the schema-version convention above for what that implies).
 
+**Pinned sink — `claims` does not honor cwd.** Unlike every other stream here
+(which lands in the invoking checkout's own `meta/data/raw/`), `claim.sh` pins
+its claims sink to `$HOME/dev/foundation/meta/data/raw` **regardless of the cwd
+it runs in** (`CLAIMS_RAW_DIR_DEFAULT` in `claim.sh`; `CLAIMS_RAW_DIR` overrides
+it, tests only) — deliberate, so every host's claims aggregate in one place
+rather than scattering across per-checkout lakes. **Consequence for a reader:** a
+touch-stream consumer running from a **non-foundation checkout** (a kernel or
+consumer checkout) has **no** `claims-*.jsonl` in its own local `meta/data/raw/`,
+so to see the claims half of an issue's touch history it must read the pinned
+sink — `$HOME/dev/foundation/meta/data/raw/claims-*.jsonl` — directly, unioned
+with its own local lake. (In a composed/foundation checkout, the overlay
+`/retro` command's Step 1 performs exactly this union — foundation#1216.)
+
 ### `funnel` — `funnel-<YYYY-MM>.jsonl`
 
 Emitted by `workflows/scripts/build/funnel-cron.sh` (foundation #596), one
