@@ -36,6 +36,14 @@ case "$1" in
       [ "$a" = "-X" ] && is_put=1
     done
     case "$path" in
+      user)
+        # `gh api user -q .login` — the seeder derives the default owner from
+        # this (foundation#871). Echo the fake login (already "filtered" — the
+        # fake pretends -q .login extracted it); FAKE_GH_USER_RC simulates an
+        # unauthenticated gh (non-zero → no login → the script's require-target error).
+        [ "${FAKE_GH_USER_RC:-0}" -eq 0 ] && printf '%s\n' "${FAKE_GH_LOGIN:-stranger}"
+        exit "${FAKE_GH_USER_RC:-0}"
+        ;;
       */contents/*)
         if [ "$is_put" -eq 1 ]; then
           exit 0
@@ -113,6 +121,9 @@ run() {
     FAKE_LABELS="${FAKE_LABELS:-}" \
     FAKE_EXISTING_TITLES="${FAKE_EXISTING_TITLES:-}" \
     FAKE_OPEN_NUMBERS="${FAKE_OPEN_NUMBERS:-}" \
+    FAKE_GH_LOGIN="${FAKE_GH_LOGIN:-}" \
+    FAKE_GH_USER_RC="${FAKE_GH_USER_RC:-0}" \
+    SEED_DEMO_REPO="${SEED_DEMO_REPO_OVERRIDE:-}" \
     CALL_LOG="$CALL_LOG" \
     bash "$SEED" "$@" 2>&1)" || rc=$?
   [ "$rc" -eq "$want" ] || fail "expected exit $want for [$*], got $rc (out: $out)"
@@ -164,6 +175,14 @@ echo "PASS: unknown flag exits 2 without touching gh"
 run 2 --repo ""
 [ ! -s "$CALL_LOG" ] || fail "empty --repo reached gh"
 echo "PASS: empty --repo exits 2 without touching gh"
+
+# ---------------------------------------------------------------------------
+# T3b -- bare trailing `--repo` (flag as the last arg, no value): reaches the
+# empty-value guard and exits 2 (consistent with T3), not the set -e shift abort.
+# ---------------------------------------------------------------------------
+run 2 --repo
+[ ! -s "$CALL_LOG" ] || fail "bare --repo reached gh"
+echo "PASS: bare --repo exits 2 without touching gh"
 
 # ---------------------------------------------------------------------------
 # T4 -- fresh repo (repo view fails, nothing exists yet): --dry-run creates
@@ -268,5 +287,39 @@ FAKE_OPEN_NUMBERS=""
 run 0 --repo "$TEST_REPO" --reset --dry-run
 assert_contains "-> none open"
 echo "PASS: --reset with no open issues reports none-open and still recreates"
+
+# ---------------------------------------------------------------------------
+# T9 (foundation#871) -- no --repo, no SEED_DEMO_REPO: derive the owner from
+# the authenticated gh login → <login>/temperloop-demo (a stranger seeds a repo
+# THEY own, never a hardcoded org they can't push to).
+# ---------------------------------------------------------------------------
+# A distinctive login (not the fake's own `${FAKE_GH_LOGIN:-stranger}` fallback)
+# so the assertion pins passthrough of the derived owner, not the fallback value.
+FAKE_GH_LOGIN=zztestuser
+run 0 --dry-run
+FAKE_GH_LOGIN=""
+assert_contains "zztestuser/temperloop-demo"
+assert_not_contains "Towheads/temperloop-demo"
+echo "PASS: no --repo → default owner derived from gh login (<login>/temperloop-demo) (#871)"
+
+# ---------------------------------------------------------------------------
+# T10 -- no --repo and gh not authenticated (api user fails): clear error, exit 2.
+# ---------------------------------------------------------------------------
+FAKE_GH_USER_RC=1
+run 2 --dry-run
+FAKE_GH_USER_RC=0
+assert_contains "pass --repo OWNER/NAME, set SEED_DEMO_REPO"
+echo "PASS: no --repo + unauthenticated gh → clear require-target error, exit 2 (#871)"
+
+# ---------------------------------------------------------------------------
+# T11 -- SEED_DEMO_REPO env (the host-local config seam) is used when set, and
+# short-circuits the gh-login derivation (no `gh api user` call).
+# ---------------------------------------------------------------------------
+SEED_DEMO_REPO_OVERRIDE="myorg/mydemo"
+run 0 --dry-run
+SEED_DEMO_REPO_OVERRIDE=""
+assert_contains "myorg/mydemo"
+grep -q "^api user" "$CALL_LOG" && fail "SEED_DEMO_REPO set must NOT call 'gh api user' (log: $(cat "$CALL_LOG"))"
+echo "PASS: SEED_DEMO_REPO env used as the default target, no gh-login derivation (#871)"
 
 echo "ALL PASS: test_seed_demo_repo.sh"
