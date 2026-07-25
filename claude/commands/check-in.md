@@ -1,5 +1,5 @@
 ---
-description: Daily human check-in — review the overnight machine output and set direction. Render the telemetry brief (status readout), dispose the pipeline surfaces `/tidy` and the funnel parked overnight (pending-decisions, pending-activations, proposed-supersessions, retro-findings if `/retro` is installed, candidate-tells, vault-hygiene, sensitivity-flags), then review/set the `/next` priorities for every project.
+description: Daily human check-in — review the overnight machine output and set direction. Render the telemetry brief (status readout), dispose the pipeline surfaces `/tidy` and the funnel parked overnight (pending-decisions, pending-activations, proposed-supersessions, proposed-deletions, retro-findings if `/retro` is installed, candidate-tells, vault-hygiene, sensitivity-flags), then review/set the `/next` priorities for every project.
 ---
 
 You are running the **check-in** command — the daily human driver's-seat review. Overnight, unattended machinery (`/tidy`, the funnel cron, `/build --unattended`, and `/retro` if installed — see the capability check in Part 2) did work and **parked everything needing human judgment** on durable surfaces. `/check-in` is where a person clears those queues and sets direction. Three parts: **① a status readout** (telemetry brief), **② dispose the overnight queues**, **③ review/set the `/next` priorities per project**. Be concise.
@@ -156,6 +156,34 @@ For each `### … - **Status:** open` entry, present it: the two notes (`D_new` 
 
 If there are no `open` entries, say "no proposed supersessions" and move on.
 
+### Proposed-deletions review
+
+Read the **proposed-deletions surface** — `Pipeline/proposed deletions.md`, falling back to the legacy `Context/pipeline - proposed deletions.md` (path fallback convention above) — via `mcp__obsidian-builtin__vault_read`. This is the durable disposal queue for **uncited standing rules**: when a prose-plane citation audit (a subtraction pass over the kernel's rule corpus) finds a standing rule with no incident, no guard, and no named catastrophic class behind it, it **proposes** deletion by appending an entry here — the audit never deletes anything itself. The surface is append-only, and `/check-in` is its **reader and sole disposer** (the same drain-proposes / operator-disposes split as every surface above). If the file doesn't exist yet, say "no proposed deletions" and move on.
+
+Entry grammar — entries are **repo-keyed and date-keyed** (the heading carries both, so headings from different repos' audits, or from re-audits on later dates, never collide *as parse keys* — that is all the keying guarantees; a re-audit can still legitimately re-propose a rule already sitting `open` or already keep-disposed here, and de-duplicating a re-proposal against those existing entries for the same rule-id is the **proposing audit's** responsibility, not this surface's grammar):
+
+```
+### <repo> · <YYYY-MM-DD> · <rule-id> - **Status:** open
+- **rule:** `<file>` § <section> — <one-line statement of the rule proposed for deletion>
+- **audit-verdict:** uncited — <the audit's one-line rationale for why no citation exists>
+- **deletion-cost:** <one line: what is lost if this rule goes>
+- **disposition:** keep
+```
+
+The **disposal grammar** is `keep | delete | demote-to-pointer`, and the **safe default is `keep`**: an entry ships with `disposition: keep` pre-filled, the proposing audit's write never sets a terminal disposition — only `/check-in`, which is always human-attended, does — and an entry the operator declines to decide simply stays `open` with its `keep` default standing, so a proposal can never remove prose by timeout or by silence. (Disambiguation: this surface is a **sibling of, not a member of**, the pending-decisions `batch-at-ritual` contract — it is not one of that contract's registered writer sites and has no unattended writer that auto-takes a default; the pre-filled `keep` exists so nothing short of an explicit human `delete`/`demote-to-pointer` ever removes prose.) For each `### … - **Status:** open` entry, present it compactly (the rule, the audit verdict, the deletion cost), and the operator picks one:
+
+- **keep** — the rule stays as-is (the proposal is declined). Patch that entry's `Status` line to `disposed — keep` with a direct `Edit`; the `disposition:` field already says `keep`.
+- **delete** — the rule's prose is removed outright. Set the entry's `disposition:` field to `delete` and patch the `Status` line to `disposed — delete`.
+- **demote-to-pointer** — the rule's prose collapses to a one-line pointer at the mechanism or note that actually carries it (the pointer-collapse shape, for a rule whose content survives elsewhere). Set `disposition:` to `demote-to-pointer` and patch the `Status` line to `disposed — demote-to-pointer`.
+
+**Downstream consumer.** Disposal here decides; application happens elsewhere: each `delete` / `demote-to-pointer` disposition is applied by the **apply-approved-deletions** pass, which lands every applied deletion as an ordinary reviewable PR whose body carries the entry's audit rationale (and names the entry's heading key, so the PR is findable from the entry and vice versa) — so the public trail stands alone without access to the private knowledge store. That pass *reads* this surface but never mutates it; `/check-in` remains the sole `Status` mutator, including the lifecycle's terminal marker: on each run, for every entry still sitting at `disposed — delete` or `disposed — demote-to-pointer`, check whether its applying PR has merged (search the repo's merged PRs for the entry's heading key; ask the operator if it isn't findable) — once it has, patch that entry's `Status` line to `applied — PR #N` with a direct `Edit`; until it has, report the entry as **approved, awaiting application**, never silently dropped.
+
+**Prune eligibility follows the terminal state.** A `disposed — keep` entry is terminal at disposal and may be pruned once older than `CHECKIN_PRUNE_DAYS` days, exactly like the sibling surfaces' resolved entries. A `disposed — delete` / `disposed — demote-to-pointer` entry is **not yet terminal** — it is excluded from pruning until its `Status` carries the `applied — PR #N` marker, because pruning it first would silently discard an operator-approved deletion the apply pass never got to. Once `applied`, the same `CHECKIN_PRUNE_DAYS` window applies from there.
+
+**The cap, not the disposal flow, is the forcing function.** The prose-budget cap in CI decides *whether* subtraction happens; disposal here selects only *which* rules go. An **all-keep disposal is legal** — this ritual never forces a removal — but an all-keep disposal cannot meet a tightened cap, so keeping everything means the cap is met by trimming elsewhere or by an explicit cap-raise config PR, never by the disposal flow quietly waving the budget through.
+
+If there are no `open` entries, say "no proposed deletions" and move on.
+
 ### Retro findings review
 
 Runs only when the Part 2 capability check above found `command_declared retro` TRUE; when FALSE, this subsection is skipped in full — its coverage is already accounted for by that single consolidated skip line, so do not repeat or reference the skip here.
@@ -226,4 +254,4 @@ The durable priorities note per project — `Projects/<project>/Priorities.md`, 
 
 ## Close
 
-Briefly summarize: pending decisions disposed (confirmed/overridden), pending activations discharged/still-pending, supersessions linked/dismissed, retro findings accepted/dismissed (or, if `/retro` wasn't installed, "retro review: skipped — see the Part 2 skip line above" — do not reprint the canonical skip string here; Part 2 already emitted it once for the run), candidate tells promoted/discarded, hygiene findings acted/dismissed, review-queue notes disposed (re-verified/promoted/consolidated/retired), sensitivity flags resolved, and which projects' priorities changed. One line each; then stop.
+Briefly summarize: pending decisions disposed (confirmed/overridden), pending activations discharged/still-pending, supersessions linked/dismissed, deletion proposals disposed (keep/delete/demote-to-pointer), retro findings accepted/dismissed (or, if `/retro` wasn't installed, "retro review: skipped — see the Part 2 skip line above" — do not reprint the canonical skip string here; Part 2 already emitted it once for the run), candidate tells promoted/discarded, hygiene findings acted/dismissed, review-queue notes disposed (re-verified/promoted/consolidated/retired), sensitivity flags resolved, and which projects' priorities changed. One line each; then stop.
