@@ -14,12 +14,14 @@ The kernel's prose plane — the composed `CLAUDE.md` kernel half plus the
 command specs, schemas, and agent charters under `claude/` — is ~10,200
 lines and has only intake mechanisms (capture rules, live/drain pairing),
 no removal mechanism. The composed half loads into every session of every
-consuming repo, so growth is a permanent per-session token cost, and the
-audience doc's afternoon-adoption claim is structurally contradicted by
-the surface a fresh clone must absorb. Advisory pressure (a lean-authoring
-norm, standing prose reviewers) has existed throughout and accretion
-continued — the observed leak the maturity ladder requires before a rule
-earns a mechanical gate.
+consuming repo, so growth is a permanent per-session token cost, and a
+fresh clone must absorb the whole composed surface before its first
+session — which cuts against `docs/who-its-for.md`'s own "No org
+membership and no Projects provisioning step stand between 'clone' and
+'first tracked issue'" framing. Advisory pressure (a lean-authoring norm,
+standing prose reviewers) has existed throughout and accretion continued —
+the observed leak the maturity ladder (`docs/principles.md` § 5) requires
+before a rule earns a mechanical gate.
 
 ## Decision
 
