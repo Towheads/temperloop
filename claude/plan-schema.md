@@ -4,6 +4,21 @@ Canonical schema for plan notes consumed by `/build` and produced by `/assess`.
 
 > **Source of truth: foundation `claude/plan-schema.md`**, deployed to `~/.claude/plan-schema.md` by `make install-claude` (same symlink as the rest of `claude/`). It is **not** kept in the Obsidian vault — it ships with the commands that cite it, so it resolves on every machine they run on (incl. stageFind / a headless cron/deploy host). The *plan notes* it describes still live in the vault at `Plans/<date> <project> - <title>.md`; only this contract lives with the code. Rationale: `Decisions/foundation - Plan schema in claude config (out of the vault)`. Branch field formatting: `Decisions/foundation - Branch naming convention`.
 
+## Contents
+
+1. **File location** · **Frontmatter** — where a plan note lives and its required YAML (`status:` gates planning → execution).
+2. **Body structure** — the note template (`## Problem` / `## Summary` / `## Items`), then each item field in detail:
+   - Problem & Summary · Item fields at a glance (the scannable field index) · Item identifier · Branch field · `repo:` (optional) · Acceptance
+   - Optional item fields: `gh_issue:` · `also_closes:` · `kind:` · `keystone:` · `model:` · Edges (`depends-on:` / `after:`) · `epic:` · `split_from:` · `gate_check:` · `activation:` · `cost:` · orchestrator-written `pr:` / `pushed_sha:`
+3. **Orchestrator-written sections** — `## Questions` (batch-at-gate deferrals) · `## Merge gate log` (merge consent) · `## Run scope` (keystone-spike halt)
+4. **Status sentinels** — the six in-band `[ ]` / `[~]` / `[m]` / `[x]` / `[v]` / `[-]` states
+5. **Validation rules** — the 16 checks `/build` enforces before execution
+6. **Worked example** · **Cross-references**
+
+Most field subsections below open with a bold **Rule:** line — the operative
+contract in one sentence — followed by its rationale. Skim the rules; read the
+rationale only when you need the *why*.
+
 ## File location
 
 Plan notes live at `Plans/<YYYY-MM-DD> <project> - <short title>.md` in the Obsidian vault, where `<YYYY-MM-DD>` is the plan's creation date (the same value as frontmatter `date:`). The **date-first prefix is required on every plan** — it matches the vault's `Sweeps/` / `Issues/` / `Sessions/` naming and keeps the `Plans/` folder chronologically sortable. The short title is the theme (3-7 words) and must **not** also lead with a date, since the prefix already carries it. The `Plans/` folder is a sibling of `Decisions/` and holds work breakdowns derived from analysis docs.
@@ -122,6 +137,8 @@ Every `## Items` entry is one checkbox line — `- [ ] **<title>** \`slug: <keba
 
 ### Item identifier — slug, not position
 
+**Rule:** every item carries a stable `slug: <kebab>` (lowercase `[a-z0-9-]+`, ≤40 chars, unique in the plan, descriptive); `depends-on:` / `after:` reference items **by slug, never by position** — reorderings break positional refs silently.
+
 Each item has a stable slug (`slug: <kebab>`) used by `depends-on`. **Do not** reference items by position number — reorderings break positional references silently. Slugs survive edits.
 
 Slug rules:
@@ -130,6 +147,8 @@ Slug rules:
 - Should be descriptive enough to read in prose: `gemini-retry-504`, not `item-3`.
 
 ### Branch field
+
+**Rule:** `branch:` must be `<type>/<slug>` with type ∈ {feat, fix, chore, refactor, docs, test}, and its slug half should equal the item's `slug:` (keeping the plan → branch → PR chain traceable).
 
 `branch:` must follow `<type>/<slug>` per `Decisions/foundation - Branch naming convention`. The slug part should equal the item's `slug:` field — keeping them in lockstep makes the plan→branch→PR chain easy to trace.
 
@@ -146,6 +165,8 @@ Type derivation table:
 
 ### Optional `repo:` field
 
+**Rule:** set `repo: owner/repo` only when this item's work lands in a *different* repo than the plan's home (the kernel-vs-overlay split); absent = the plan's home repo. `/build` uses it to pick the item's checkout/worktree and to qualify the `Closes` line.
+
 `repo:` names the `owner/repo` this item's work actually lands in, when that differs from the plan's home repo. Default (absent) is the plan's home repo — the common case. The motivating case is the **kernel-vs-overlay split** (`claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule, the "stranger test"): a plan authored in an overlay/consumer repo can carry an item whose fix is actually kernel-classified and belongs **upstream**, in the kernel repo, not the plan's own checkout. `/triage` flags such candidates (its kernel-vs-overlay routing step) and `/assess` carries the classification into the item's `repo:` field.
 
 `/build` consumes `repo:` at two honor points:
@@ -155,6 +176,8 @@ Type derivation table:
 Format: bare `owner/repo` (no `#`, no issue number — that's what `gh_issue:` carries). Slug/kebab org and repo names only.
 
 ### Acceptance — bullet list, not prose
+
+**Rule:** `acceptance:` is a **list** of independently checkable conditions (the worker's self-check before `status: done`), never a paragraph. When sequential legs share one gate/corpus, each leg's block MUST state its **gate scope** — the fixtures it owns, plus the exclusions owned by a **named** later item.
 
 Each `acceptance:` block is a list of independently checkable conditions. The worker uses these for self-verification before returning `status: done`; a paragraph form is harder to tick off mentally.
 
@@ -168,6 +191,8 @@ Each `acceptance:` block is a list of independently checkable conditions. The wo
 
 ### Optional `gh_issue:` field
 
+**Rule:** set `gh_issue: <n>` when the item closes an existing tracked issue — `/build` emits `Closes #N` in the PR body. Leave it unset for untracked work, a `split_from:` item, or a Contract-derived item; `/build` mints a fresh issue for those.
+
 When an item resolves a GitHub issue tracked in the project's repo, set `gh_issue: <number>`. `/build` consumes this field to inject `Closes #N` into the PR body, which auto-closes the issue on merge per GitHub's keyword linkage. Items without `gh_issue:` don't emit a `Closes` section — refactors, chores, features without a pre-existing tracker.
 
 Three flavours of item leave `gh_issue:` unset, and `/build` Step 2.5 mints a fresh tracking issue for each: (a) untracked work with no pre-existing issue; (b) a **split item** (carries `split_from: #N`; Step 2.6 then *closes* the coarse #N); and (c) a **Contract-derived item** from `/assess` **epic-decomposition mode** — a pre-designed epic decomposed from its `## Contract` body when it had no sub-issues (foundation #526). A Contract-derived item leaves **both** `gh_issue:` and `split_from:` unset and relies on `epic:` frontmatter: `/build` mints its sub-issue and Step 2.6 links it under the **existing** epic, closing nothing (unlike the split case, there is no coarse issue to retire — the parent is the epic, which stays open until its last child closes).
@@ -177,6 +202,8 @@ When a plan item is decomposed from an `Issues/` vault note that wraps the GH is
 Project-level rule on PR-body issue references lives in the project `CLAUDE.md` under "Issue linkage" (when the project has one).
 
 ### Optional `also_closes:` field
+
+**Rule:** list *additional* issues this one PR closes beyond `gh_issue:` — `/build` emits one bare `Closes #M` line per entry (never `Closes #1 and #2`). Absent is the common case.
 
 `also_closes:` is a list of **additional** issue numbers this PR resolves, beyond the primary `gh_issue:`. `/build` emits **one bare `Closes #M` line per entry** (each on its own line, never combined) in the PR body, alongside the primary `Closes #<gh_issue>`. GitHub closes an issue only when it carries its **own** keyword — `Closes #1` then `Closes #2` on separate lines — **never** `Closes #1 and #2`; so each entry must become its own line.
 
@@ -191,9 +218,13 @@ Two patterns motivate it:
 
 ### Item `kind:` — code vs spike
 
+**Rule:** `code` (default) produces a PR (worker → commit → push → PR → CI → merge); `spike` is verdict-only — a note + routed issue, no PR — and lands in terminal state `[v]`.
+
 `kind:` is `code` (default) or `spike`. A **code** item produces a PR (worker → commit → push → PR → CI → merge). A **spike** item is verdict-only — its deliverable is a Context/Decision note + a routed follow-up issue, not a PR. `/build` runs a `spike` read-only, skips push/PR/CI, verifies the note exists and the issue is routed, and marks it `[v]` (verdict-captured); on board-enabled projects the spike's issue closes on verdict-capture, not via a PR `Closes`. In the `## Summary`, a spike gets its level tag like any other item — isolate it into its own earlier level (via `after:` edges) so no level mixes a spike and a build item.
 
 ### Optional `keystone:` field — the keystone-spike review gate
+
+**Rule:** `keystone: true` is **spike-only** — it makes `/build` halt after the spike captures its verdict so the operator reviews it before any dependent level builds. Use it when the verdict reshapes downstream contracts/scope; omit for a routine spike (today's autonomous path).
 
 `keystone: true` is a **spike-only** marker (validated by rule 15) for a *keystone* spike: one whose verdict **reshapes downstream contracts or scope**, as opposed to a routine investigation spike whose verdict merely informs a single dependent. By default every `kind: spike` runs **fully autonomously** (`/build` Step 3 spike kind-fork → `[v]`, no operator gate — a spike-only level needs no merge gate), so a keystone spike's contract-reshaping verdict would otherwise flow **straight into dependent builds with no operator review**. `keystone: true` closes that gap: `/build` **halts after the keystone spike captures its verdict**, so the operator reviews the Decisions/Context verdict note before any dependent level builds.
 
@@ -208,6 +239,8 @@ Author a keystone spike exactly like any other spike — its own isolated level 
 
 ### Optional `model:` field — tier by verification, not difficulty
 
+**Rule:** `model:` is an optional worker-tier hint (`sonnet` | `haiku`); **absent = inherit the session model (top tier)**, the safe default. It is advisory for `/build` 3c only, never a validation rule. `/assess` stamps `sonnet` on `size: S`/`M` **code** items and leaves spikes / `size: L` absent — except an S/M item whose files are exclusively advisory-only-verified spec-prose, which also inherits (Carve-out (a) below). *Tier by verification, not difficulty.*
+
 `model:` is an optional per-item worker-model tier: `sonnet` | `haiku`, or absent. **Absent = inherit the session model (the top tier)** — the safe default. The field is **advisory routing for `/build` 3c only** (it is passed through to the worker `Agent` spawn when present); it is never a validation rule, and an item without it executes normally on the session model.
 
 **Stamping rule** (applied by `/assess` Step 2 when drafting items):
@@ -220,6 +253,8 @@ The principle is **tier by verification, not difficulty**: a seat takes a cheape
 
 ### Edges — `depends-on:` (merge-safety) vs `after:` (logical order)
 
+**Rule:** `depends-on:` = a **merge-safety** edge (the dep must be `[x]` **merged** before this item's worker starts); `after:` = a **logical-order** edge (satisfied by *any* terminal state `[x]`/`[-]`/`[v]`). Reach for `after:` whenever the edge is only about order, not merge conflict.
+
 Two distinct ordering fields, both comma-separated slug lists:
 
 - **`depends-on:`** is a **merge-safety** edge — use it only when out-of-order merging would break (items share schema or identical lines). The dependent's worker starts only after the dep is `[x]` **merged** (it builds on the dep's merged code). `[m]` does **not** satisfy a `depends-on`.
@@ -229,15 +264,21 @@ Two distinct ordering fields, both comma-separated slug lists:
 
 ### Optional `epic:` frontmatter field
 
+**Rule:** `epic: <n>` records the parent epic tracking this plan as one unit; on board-enabled projects, if it is absent `/build` mints an epic from the `## Summary` and backfills the field. Optional.
+
 `epic: <issue-number>` records the parent epic that tracks this plan as one unit. On board-enabled projects, `/build` (Step 2.6) creates the epic from the plan `## Summary` if `epic:` is absent, links each per-item issue as a child, and writes the number back here — idempotent on re-run, exactly like `gh_issue:`. `epic:` absent is valid.
 
 ### Optional `split_from:` item field
+
+**Rule:** `split_from: #N` marks an item `/assess` split out of coarse issue #N — set it **only** with `gh_issue:` left unset (the two are mutually exclusive, rule 10). `/build` mints a fresh per-item issue and swaps `split_from:`→`gh_issue:` atomically, then closes the coarse #N.
 
 `split_from: #N` marks an item that `/assess` split out of one coarse sub-issue #N. It is set **only** on split-derived items, and **only with `gh_issue:` left unset** — the two are mutually exclusive. It exists to preserve `/build`'s one-item↔one-issue invariant when one sub-issue decomposes into several items: copying `gh_issue: #N` onto all of them is the #73 bug (the first PR's `Closes #N` closes the shared issue while the rest of the chain is unmerged, and the board moves #N to Done prematurely).
 
 Mechanism: `/build` Step 2.5 sees no `gh_issue:` and **mints a fresh per-item issue** for each split item, writing the minted `gh_issue:` while **removing `split_from:` in the same patch** (the atomic swap that makes "1:1 restored" literal and keeps rule 10 always true — see rule 10), and adding a `Split from #N` lineage line to each minted body; Step 2.6 links the minted leaves as **direct epic children** and then **closes the coarse #N** (once all its leaves are minted) so the data-driven 4d epic-close doesn't hang on a bucket issue. Most items are 1:1 and carry `gh_issue:` instead — `split_from:` absent is the common case. See `Decisions/foundation - Split member 1-to-1 issue minting`.
 
 ### Optional `gate_check:` field — the external-gate predicate
+
+**Rule:** any external/cross-plan gate riding `notes:` ("don't start until #N lands") MUST carry a `gate_check:` — a machine-checkable predicate on the **consumable** (the file/artifact/count the gated item needs), never on the upstream tracker's closed-state. *"Issue closed" ≠ "dependency consumable exists."*
 
 The schema forbids cross-plan `after:` refs, so an item that must wait on work **outside this plan** (another plan's leg, an unplanned upstream issue) records that gate as **prose in `notes:`** — `"Do not start until #380 lands"`. Prose is unverifiable: a reader (or `/build`) can only *infer* whether the gate lifted, and the cheapest inference — "the issue is closed" — is **wrong**, because **"issue closed" ≠ "dependency consumable exists."** An issue can close the *data-capture* half of its work while explicitly deferring the *product-wiring* half, so the consumable the gated item actually needs still doesn't exist.
 
@@ -256,6 +297,8 @@ Write the predicate against what makes the gated work *possible*, never against 
 **This prevents the ELT #492 false gate-lift.** During the ELT run, item #492's gate rode `notes:` as prose ("don't start until #380 lands"); the orchestrator declared it lifted from issue state alone — *"#380 CLOSED → roster gate lifted"* — but #380 had closed the data capture while deferring product wiring (`configs/artists.toml` still listed 3 of 40 artists). #492 was re-opened on that false premise, re-parked, two missing prereqs filed (#519/#520), and the leg re-decomposed — the costliest replan of the run. A `gate_check: "configs/artists.toml lists >=40 artists"` would have read **false** at the gate-lift decision and stopped it. `/assess` emits the predicate alongside the prose gate; `/build` Step 3a runs it instead of inferring lift from issue-closed-state.
 
 ### Optional `activation:` block — the inward activation predicate
+
+**Rule:** `activation:` declares how `/build` confirms *this item's own* output is wired into the running path (not merely built). `class: A` (in-repo) carries a `proof:` command run at Step 3e.6 — the only class enforced today; `class: B`/`C` are ledger-recorded (auto-discharge machinery pending, temperloop#317). **Required on a product-source item** — `kind: code` whose `files:` touch `scripts/`/`workflows/`/`claude/` (rule 14).
 
 `gate_check:` points **outward** — "has a *dependency's* consumable materialized." `activation:` is its **inward twin**: "is *this item's own* output now wired into the running path?" It exists because the pipeline's definition of done — worker self-checks `acceptance:` → static gate → CI green → PR merged — measures the *artifact*, never the artifact's *integration*. A runner that is correct but never registered, a flag built but never flipped, a rollup computed but never rendered all satisfy "done" while staying dormant. See `Decisions/temperloop - Activation-completeness contract`.
 
@@ -283,6 +326,8 @@ The block stays **optional** on any item that isn't product-source (below), and 
 
 ### Optional `cost:` block — the expensive-work flag (foundation#1059)
 
+**Rule:** add a `cost:` block to flag an item with outsized *execution* spend (deep-research, large agent fan-out, big eval), so it's visible at the approval surface instead of hiding in a plain-looking item. **Presence is the binary "expensive" flag**; `because:` (the driver) is required (rule 16), `budget:` optional. Advisory/display-only — drives no control flow.
+
 Most plan items are cheap and uniform to execute. A few are **not** — a run of the deep-research harness, a `Workflow` that fans out large numbers of parallel subagents, a big eval/benchmark sweep — and on the approval surface such an item looks identical to a one-line typo fix, so a large token/time spend can hide inside an innocuous-looking plan item. The `cost:` block makes that visible **before** approval.
 
 ```markdown
@@ -303,6 +348,8 @@ An **inline shorthand** is accepted for a hand-authored one-liner: `- cost: agen
 `/build` writes these onto an item as it works — authors don't set them. `pr:` (the open PR number) and `pushed_sha:` (the worker commit pushed to the branch) are recorded at PR-create time (3f), *before* the CI watch, so a crash leaves a recoverable pointer: Step 1 resume re-attaches to `pr:` instead of re-spawning a worker, and Step 0.5 reconciles open PRs against it.
 
 ## Orchestrator-written `## Questions` section (batch-at-gate deferred decisions)
+
+**Rule:** `/build` writes this section (authors don't) — the **in-run, ephemeral** queue for `batch-at-gate` decisions (non-blocking mid-run choices that carry an obvious default). The orchestrator appends an entry and proceeds on its default, then surfaces the whole batch as ONE question at the next level merge gate.
 
 `/build` writes this section onto the plan note as it runs — authors don't author it; it is created on demand the first time a deferrable in-run decision arises. It is the **in-run, ephemeral queue** for **`batch-at-gate`** decisions: non-blocking choices that arise *during an active run* (e.g. "create N tracking issues?", "auto-fix the safe reconcile divergences?", a per-PR conflict disposition) which carry an **obvious default** and so need not interrupt the level. Instead of issuing an interrupting `AskUserQuestion` mid-level, the orchestrator **appends one entry here** and proceeds on the default; the whole batch is then surfaced as ONE question at the next **level merge gate** (Step 4), before merge consent is recorded. See the severity taxonomy `[[Context/foundation - AskUserQuestion severity taxonomy]]` for which sites defer here vs. stay blocking.
 
@@ -336,6 +383,8 @@ Each entry is **one line** with a checkbox sentinel plus a `## Questions`-local 
 
 ## Orchestrator-written `## Merge gate log` section (merge-consent lines)
 
+**Rule:** `/build` writes this (authors don't) — one **append-only** line per level merge-consent event, recorded at consent time. It is the durable pointer that makes **resume-without-re-consent** mechanical on the MANAGED merge backend.
+
 `/build` appends this section onto the plan note as it runs — authors don't author it. It is the **durable record of merge consent**, one line per level-consent event, written **at consent time** (modal approval given, timed window elapsed with no objection, or the headless immediate-merge re-poll passed) and **before the first merge call of that level**, via `vault_append` (a reliable EOF op). Like `pr:`/`pushed_sha:`, it exists so a crash leaves a recoverable pointer — here, the pointer that makes **resume-without-re-consent** mechanical on the MANAGED merge backend (`/build` 4b "Merge — MANAGED backend" resume state table): a resumed run that finds a consent line covering a still-`[m]` item's PR re-enters the managed loop without re-asking the operator; absent a covering line, the level takes a fresh gate. No PR/issue label carries this state — consent and resume ride the plan note alone, cross-checked against a live PR probe.
 
 ### Shape
@@ -355,6 +404,8 @@ One line per consent event, four fields:
 - **`PRs:`** — the **exact** consented PR list. Consent pins this list: a PR not in it (or work re-pushed under a new PR number) is **not** covered and must earn consent at a fresh gate. A level gated more than once (e.g. an EJECTED item re-parked and re-gated) appends a **new** line — lines are append-only, never edited.
 
 ## Orchestrator-written `## Run scope` section (keystone-spike halt boundary)
+
+**Rule:** `/build` writes this (authors don't), only for a plan carrying a `keystone: true` spike — it records the RUN 1 (spike) halt / RUN 2 (build) resume boundary. Its job is **audit legibility, not resume control** (resume rides the spike's own `[v]` sentinel).
 
 `/build` appends this section onto the plan note **only when a plan carries a `keystone: true` spike** (§ Optional `keystone:` field; temperloop#526) — authors don't author it. It is the **durable record of the keystone-spike review halt**: the boundary at which a RUN 1 (spike) stopped so the operator could review a contract-reshaping verdict before the RUN 2 (build) of dependent levels. Like `## Merge gate log`, it exists so the halt survives a crash and a resumed run can tell which side of the boundary it is on. Written via `vault_append` (a reliable EOF op) at the moment the halt fires (RUN 1) and again when the run resumes past it (RUN 2).
 
