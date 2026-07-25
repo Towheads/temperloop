@@ -12,6 +12,77 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
+## [0.16.0] - 2026-07-25
+
+Non-breaking minor bump: several additive capabilities across the pipeline
+commands, the board adapter, the report, and the plan schema, plus a batch of
+fixes. **No contract surface is removed** — the temperloop#165 rename's legacy
+reads remain through their v0.17.0 window, so no overlay must change to pull
+this tag.
+
+### Added
+
+- **`report`: directional dollar framing from a user-supplied pricing table
+  (temperloop#882).** The report can translate token/latency deltas into a
+  directional `$` figure when the operator supplies a pricing table — opt-in,
+  no pricing assumed by default.
+- **`plan`: a `cost:` block flags expensive work (temperloop#1059).** A plan
+  item may carry a `cost:` block so `/build` can surface and gate expensive
+  work before it runs; the pre-check reads it at the level merge gate.
+- **`build`: combined-tree pre-check at the level merge gate (F#865).** Before
+  a level's merge set is approved, a combined-tree pre-check runs across the
+  set; its opt-out knob is named symbolically and registered in
+  `knob-registry.tsv`.
+- **`build`: push-notify the operator on every `blocking-now` halt
+  (temperloop#695).** Every modal halt now emits an operator push notification
+  so an unattended run's blocking gate is not silent.
+- **`capture`: `--title` accepted as an alias for the positional title
+  (temperloop#1227).** `capture.sh` now takes `--title <t>` in addition to the
+  positional form, removing a recurring invocation footgun.
+- **`board`: `board_blocked_by_add` / `board_blocked_by_remove` writers
+  complete the adapter contract.** The native `blocked_by` dependency edge is
+  now writable through the adapter, not just readable.
+- **`assess`: require an owned host-config/secret seam when acceptance names a
+  credential (temperloop#716).** A plan item whose acceptance references a
+  credential must declare an owned host-config/secret seam.
+- **`demo`: de-personalize the seed-demo-repo default target
+  (temperloop#871).** The demo seeder no longer defaults to a personal target.
+
+### Changed
+
+- **`ks_search`: register the basic-memory project lazily, not per query
+  (temperloop#996).** Project registration moved out of the per-query hot path.
+- **`deploy-mini`: route §3 conf discovery through `board.sh`'s resolver
+  (temperloop#616).** Conf discovery reuses the adapter resolver instead of a
+  bespoke path.
+- **`kernel`: retire `seed-kernel-repo.sh` and trim `kernel-repo-layout.md`
+  (temperloop#681).** Removes a superseded seeding script (not a contract
+  surface — no adopter couples to it).
+- Documentation: authored `tracker.contract.md` (the tracker-adapter interface
+  contract, temperloop#891); ADR renumbering + premise-gate/principles-charter
+  ADRs; `/workshop` persist-then-ask ordering contract and reviewer-finding
+  folds; a kernel rule to disconfirm a root-cause diagnosis before
+  institutionalizing it (temperloop#1090).
+
+### Fixed
+
+- **`build`: embed the FOREGROUND-ONLY gate contract in the worker prompt
+  (temperloop#712).** `/build` workers backgrounded `quality-gates.sh` and
+  ended their turn awaiting a Monitor notification a subagent never receives,
+  returning no verdict. `build-level.mjs`'s generated `workerPrompt()` now
+  embeds the FOREGROUND-ONLY contract (prevention, both the main and spike
+  prompts) and the one null-verdict re-spawn appends `FOREGROUND_CURE` so the
+  retry differs from the first attempt (cure); `build.md` §3c/§3d kept in
+  lockstep.
+- **`drain`: damp the lexicon on spec-authoring sessions (temperloop#1137).**
+- **`hooks`: make the MCP preflight `/search/smart` probe body-aware
+  (temperloop#1224 Part 1).**
+- **`kernel`: resolve symlinks before kernel/overlay classification
+  (temperloop#1050).**
+- **`degradation`: bounded remedy pointer on the live Mode-2 agent-gate skip
+  line.**
+- **`plan-schema`: spec-prose model-stamping carve-out (temperloop#672).**
+
 ## [0.15.1] - 2026-07-23
 
 ### Fixed
