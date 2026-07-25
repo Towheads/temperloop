@@ -83,7 +83,15 @@ trap 'rm -rf "$WORK"' EXIT
 # host-local config is ever sourced, keeping the test hermetic regardless of the
 # running checkout. Exported so every subshell (the funnel-tick / build.config
 # invocations below) inherits it.
+#
+# The same neutralization is applied to BUILD_CONFIG_MACHINE (build.config.sh
+# precedence rung 3, `$XDG_CONFIG_HOME/temperloop/build.config.sh`): a host that
+# carries a machine-level build config would leak it identically, and a fresh
+# worktree / CI masks that just the same. One nonexistent-path sentinel per
+# seam; an absent file is a silent no-op (build.config.sh guards both with
+# `[ -f ]`).
 export BUILD_CONFIG_LOCAL="$WORK/no-such-local-config.sh"
+export BUILD_CONFIG_MACHINE="$WORK/no-such-machine-config.sh"
 
 # ── A: synthetic stranger identity ──────────────────────────────────────────
 # Board 42 is NOT one of the built-in boards (3/4/5/6) — a genuinely new board
