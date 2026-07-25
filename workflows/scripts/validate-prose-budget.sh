@@ -78,7 +78,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"
+: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # knob:exempt — forwarded verbatim to count-prose.sh, whose own identical seam carries this same marker (test/fixture root override, not an operator-facing config-precedence default)
 : "${COUNT_PROSE_BIN:=$SCRIPT_DIR/count-prose.sh}"  # knob:exempt — test-double seam (fixture: a modified compose seam under a scratch COUNT_PROSE_ROOT tree)
 
 [ -f "$COUNT_PROSE_BIN" ] || { echo "validate-prose-budget: counting script not found: $COUNT_PROSE_BIN" >&2; exit 1; }
