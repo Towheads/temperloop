@@ -404,4 +404,74 @@ case "$err" in
 esac
 echo "PASS: 13 ks_search_reindex degrades legibly the same way ks_search does (exit 3, skipped notice)"
 
+# --- 14. rg fallback surfaces a literal corpus match on a backend zero-result -
+# foundation#950: when the backend returns a legitimate zero-result (exit 0,
+# empty), ks_search falls back to ripgrep over the corpus and reshapes hits into
+# the SAME JSONL contract, with score=0 marking a lexical fallback. Guarded on
+# rg being installed (the feature is a no-op without it — fail-open).
+if command -v rg >/dev/null 2>&1; then
+  mkdir -p "$ROOT/Decisions"
+  printf '# Widget cache decision\n\nThe frobnicator uses a widget cache.\n' > "$ROOT/Decisions/widget-cache.md"
+  rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+  out14="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "frobnicator" --limit 5 2>/dev/null)" \
+    || fail "14: rg fallback path should exit 0"
+  [ -n "$out14" ] || fail "14: rg fallback should surface the literal match (got empty)"
+  fdoc="$(printf '%s\n' "$out14" | sed -n '1p' | jq -r '.doc_id')"
+  fscore="$(printf '%s\n' "$out14" | sed -n '1p' | jq -r '.score')"
+  [ "$fdoc" = "Decisions/widget-cache.md" ] \
+    || fail "14: fallback doc_id should be the corpus-relative path (got: $fdoc)"
+  [ "$fscore" = "0" ] || fail "14: fallback score should be the 0 sentinel (got: $fscore)"
+  fb_search="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+  [ "$fb_search" -eq 1 ] \
+    || fail "14: fallback must not issue extra backend subprocesses (got $fb_search); log:\n$(cat "$FAKE_UVX_LOG")"
+  echo "PASS: 14 rg fallback surfaces a literal corpus match on a backend zero-result (foundation#950)"
+else
+  echo "SKIP: 14 rg fallback assertion (ripgrep not installed)"
+fi
+
+# --- 14b. rg fallback is fail-open: zero-result with no corpus match -> empty --
+rm -rf "${ROOT:?}/Decisions"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out14b="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "no-such-literal-xyzzy" --limit 5 2>/dev/null)" \
+  || fail "14b: a zero-result with no fallback match must still exit 0"
+[ -z "$out14b" ] || fail "14b: no backend match and no rg match must print nothing (got: $out14b)"
+echo "PASS: 14b rg fallback is fail-open — no backend match and no corpus match yields empty, exit 0"
+
+# --- 14c. fallback must not trip a caller's set -e on the no-match path --------
+# The lib is SOURCED into scripts owning `set -euo pipefail`. On a no-match rg
+# exits 1, so the fallback's `hits=$(… rg … | jq | head)` pipeline exits non-zero
+# under pipefail — unguarded, it would abort the caller (foundation#950 shell-
+# review; the `|| true` is the guard). This runs in a SEPARATE process where
+# set -e is genuinely active (an inline `$(…) || fail` would put the subshell in
+# a set-e-IGNORED context — bash: an explicit `set -e` there has no effect — and
+# could never catch the regression), and calls the fallback DIRECTLY (the via-
+# ks_search command-substitution layer masks the abort; the direct call is the
+# proven-teeth form). Pointed at a guaranteed-EMPTY store so rg deterministically
+# misses. Verified: with the `|| true` guard this exits 0 + SURVIVED; without it,
+# the consumer aborts (exit 1, no SURVIVED).
+if command -v rg >/dev/null 2>&1; then
+  mkdir -p "$TMP/empty-store-14c"
+  CONSUMER="$TMP/consumer_14c.sh"
+  cat > "$CONSUMER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export KNOWLEDGE_STORE_ROOT="$TMP/empty-store-14c"
+source "$STORE_LIB"
+source "$SEARCH_LIB"
+ks_search__rg_fallback "no-such-literal-xyzzy" --limit 5
+printf 'SURVIVED:[]\n'
+EOF
+  set +e
+  cons_out="$(bash "$CONSUMER" 2>/dev/null)"
+  cons_rc=$?
+  set -e
+  [ "$cons_rc" -eq 0 ] \
+    || fail "14c: the rg-fallback no-match path aborted a set -e caller (exit $cons_rc) — missing '|| true' guard?"
+  [ "$cons_out" = "SURVIVED:[]" ] \
+    || fail "14c: caller should survive to the marker with an empty result (got: $cons_out)"
+  echo "PASS: 14c rg-fallback no-match does not trip a sourced caller's set -e (caller survives)"
+else
+  echo "SKIP: 14c set -e no-match survival (ripgrep not installed)"
+fi
+
 echo "ALL PASS: knowledge_search.sh (interface + basic-memory backend, mocked subprocess)"

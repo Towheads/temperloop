@@ -89,7 +89,12 @@
 # Exit codes (both ks_search and ks_search_reindex):
 #   0 — success. For ks_search, this includes a legitimate ZERO-result
 #       match — an empty JSONL stream on stdout with exit 0 is a real "no
-#       matches", never confused with "backend unavailable".
+#       matches", never confused with "backend unavailable". On a backend
+#       zero-result, ks_search first attempts a ripgrep lexical fallback over
+#       the corpus (foundation#950); a fallback hit is emitted in the same
+#       JSONL contract with a score of 0 (marking a lexical, not semantic,
+#       match) and a one-line stderr notice. Still exit 0 when the fallback
+#       also finds nothing (or rg is absent) — a genuine no-match.
 #   2 — invalid usage (empty query, dispatch to an unregistered backend).
 #   3 — backend unavailable ("skipped"): the backend's required subprocess
 #       tooling (uvx) is not on PATH. A message beginning
@@ -125,7 +130,70 @@ ks_search() {
     ks__read_log_emit script search "$query"
   fi
   shift || true
-  ks_search__dispatch search "$query" "$@"
+
+  # Dispatch to the backend, capturing stdout so a legitimate ZERO-result
+  # (exit 0, empty stream) can trigger a ripgrep fallback over the corpus
+  # (foundation#950). A backend error (exit 4) or unavailable backend (exit 3)
+  # is NOT masked — its legible-degradation contract (stderr notice, exit code)
+  # is preserved: only the exit-0-empty case falls back. Result sets are bounded
+  # by --limit, so buffering the happy path in a var is cheap.
+  local out rc=0
+  out="$(ks_search__dispatch search "$query" "$@")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  # Backend returned a genuine zero-result. A query class the semantic/hybrid
+  # backend ranked to nothing may still have a literal match — try ripgrep so
+  # the answer is degraded-but-answered rather than silently empty (foundation#950).
+  ks_search__rg_fallback "$query" "$@"
+  return 0
+}
+
+# Ripgrep lexical fallback over the knowledge_store corpus (foundation#950).
+# Fires ONLY when the selected backend returns a legitimate zero-result — a
+# fixed-string, case-insensitive rg over the corpus's `*.md` files, reshaped
+# into the SAME {doc_id,title,score,snippet} JSONL contract the backend emits so
+# a consumer can't tell the two apart (score is a 0 sentinel marking a lexical
+# fallback hit vs. the backend's real relevance float). rg's defaults already
+# skip hidden dirs (the vault's `.smart-env` embedding store, `.obsidian`), so
+# this never bulk-greps them. Fail-open and SILENT on the common no-match path:
+# no rg on PATH, no corpus root, or no literal match leaves the empty result
+# untouched (a genuine no-match is not an error); only an actual fallback hit
+# prints results AND a one-line stderr notice, so ordinary no-match queries add
+# no noise. Depends on: ks_root (knowledge_store.sh), rg, jq.
+ks_search__rg_fallback() {
+  local query="$1"; shift
+  local limit=10
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit) limit="${2:-10}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  command -v rg >/dev/null 2>&1 || return 0     # no rg → the empty result stands
+  local root; root="$(ks_root 2>/dev/null)" || return 0
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  local hits
+  hits="$( ( cd "$root" 2>/dev/null || exit 0
+             rg --json -i -F -m1 -g '*.md' -e "$query" -- . 2>/dev/null ) \
+    | jq -c 'select(.type=="match")
+             | {doc_id: (.data.path.text | ltrimstr("./")),
+                title:  (.data.path.text | split("/") | last | rtrimstr(".md")),
+                score:  0,
+                snippet:(.data.lines.text | rtrimstr("\n"))}' 2>/dev/null \
+    | head -n "$limit" )" || true
+  # `|| true`: this lib is SOURCED into scripts that own `set -euo pipefail`, and
+  # the pipeline exits non-zero on the two fail-open cases — rg exits 1 on the
+  # common NO-MATCH path, and `head` closing the pipe early on a many-hit result
+  # SIGPIPEs jq (141) under pipefail. Neither is an error here, so the assignment
+  # must not be allowed to trip the caller's set -e (foundation#950 shell-review).
+  [ -n "$hits" ] || return 0                     # rg found nothing → genuine no-match
+  echo "knowledge_search: backend returned no matches; surfacing ripgrep lexical fallback (score=0) over the corpus (foundation#950)" >&2
+  printf '%s\n' "$hits"
 }
 
 ks_search_reindex() {
