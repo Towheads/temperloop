@@ -92,6 +92,28 @@ check "compound: fetch && checkout -b off stale -> ask" ask \
 check "EVAL_RUN suppresses the prompt -> silent" silent \
   "$(run_hook "$TMP/work_stale" 'git checkout -b feat/x' 1)"
 
+# --- foundation #1138: worktree-add-b path + explicit HEAD/@ base
+check "worktree add -b off stale main -> ask" ask \
+  "$(run_hook "$TMP/work_stale" 'git worktree add -b feat/x ../wt')"
+
+check "worktree add -b with explicit origin/main commit-ish -> silent" silent \
+  "$(run_hook "$TMP/work_stale" 'git worktree add -b feat/x ../wt origin/main')"
+
+check "git -C prefix + worktree add -b off stale -> ask" ask \
+  "$(run_hook "$TMP/work_stale" 'git -C . worktree add -b feat/x ../wt')"
+
+check "worktree add without -b (checkout existing) -> silent" silent \
+  "$(run_hook "$TMP/work_stale" 'git worktree add ../wt main')"
+
+check "non-add worktree subcommand (list) -> silent" silent \
+  "$(run_hook "$TMP/work_stale" 'git worktree list')"
+
+check "checkout -b with explicit HEAD base off stale -> ask" ask \
+  "$(run_hook "$TMP/work_stale" 'git checkout -b feat/x HEAD')"
+
+check "switch -c with explicit @ base off stale -> ask" ask \
+  "$(run_hook "$TMP/work_stale" 'git switch -c feat/x @')"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1

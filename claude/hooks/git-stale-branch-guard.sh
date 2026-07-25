@@ -65,6 +65,32 @@ create_info=$(printf '%s' "$cmd" | awk '
         break
       }
       subcmd = tok[j]
+      if (subcmd == "worktree") {
+        # git worktree add [-b|-B|--create <name>] [flags] <path> [<commit-ish>]
+        # Guard only a branch-CREATING worktree add (carries -b/-B/--create); a
+        # plain `worktree add <path>` that checks out an existing ref is left
+        # silent. This is the branch path /build and /sweep actually use
+        # (git worktree add -b), which the checkout/switch-only parser missed
+        # (foundation #1138).
+        if (tok[j + 1] != "add") continue
+        name = ""; start = ""; np = 0
+        for (k = j + 2; k <= n; k++) {
+          t = tok[k]
+          if (t == "&&" || t == "||" || t == ";" || t == "|") break   # end of this command
+          if (t == "-b" || t == "-B") {     # worktree add uses only -b/-B for a new branch (no --create)
+            k++
+            while (k <= n && tok[k] ~ /^-/) k++
+            if (k <= n) name = tok[k]
+            continue
+          }
+          if (t ~ /^-/) continue            # other flag -> skip
+          np++; pos[np] = t                 # bare positional: <path> then optional <commit-ish>
+        }
+        if (name == "") continue            # no new branch -> not a creation we guard
+        if (np >= 2) start = pos[np]        # 2+ positionals: last is the <commit-ish> base
+        print name "\t" start               # 1 positional (<path> only): start empty -> current HEAD
+        exit
+      }
       if (subcmd != "checkout" && subcmd != "switch") continue
       for (k = j + 1; k <= n; k++) {
         t = tok[k]
@@ -96,8 +122,11 @@ ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)
 default=${ref##*/}
 [ -n "$default" ] || default="main"
 
-# The base the new branch is created from: explicit start-point, else current HEAD.
-if [ -n "$start" ]; then
+# The base the new branch is created from: an explicit start-point, else current
+# HEAD. An explicit "HEAD"/"@" start-point IS the current branch, so normalize it
+# the same as no start-point — otherwise `checkout -b x HEAD` off a stale local
+# default slips the base==default check below (foundation #1138).
+if [ -n "$start" ] && [ "$start" != "HEAD" ] && [ "$start" != "@" ]; then
   base="$start"
 else
   base=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
