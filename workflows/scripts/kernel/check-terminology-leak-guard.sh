@@ -39,8 +39,8 @@ set -uo pipefail
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -P "$HERE/../../.." && pwd)"
-SCAN_ROOT="${TERMINOLOGY_LEAK_SCAN_ROOT:-$REPO_ROOT}"
-EXEMPT_FILE="${TERMINOLOGY_LEAK_EXEMPT_FILE:-$HERE/terminology-leak-exempt-files.txt}"
+SCAN_ROOT="${TERMINOLOGY_LEAK_SCAN_ROOT:-$REPO_ROOT}"   # setting:exempt — fixture seam
+EXEMPT_FILE="${TERMINOLOGY_LEAK_EXEMPT_FILE:-$HERE/terminology-leak-exempt-files.txt}"   # setting:exempt — fixture seam
 
 # Pre-rename identifier shapes (ERE). Kept as ONE alternation so a single
 # grep pass covers the whole map.
