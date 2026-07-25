@@ -51,6 +51,14 @@
 
 _SETTING_REGISTRY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# v0.17.0 terminology-rename legacy window (temperloop#729): legacy KNOB_*
+# env seams still drive the renamed SETTING_* names through v0.19.0.
+if [ -f "$_SETTING_REGISTRY_LIB_DIR/../../scripts/lib/rename-compat-0170.sh" ]; then
+  . "$_SETTING_REGISTRY_LIB_DIR/../../scripts/lib/rename-compat-0170.sh"
+elif [ -f "$_SETTING_REGISTRY_LIB_DIR/../lib/rename-compat-0170.sh" ]; then
+  . "$_SETTING_REGISTRY_LIB_DIR/../lib/rename-compat-0170.sh"
+fi
+
 # The closed `type` vocabulary (setting-registry.tsv's own header is the
 # canonical documentation of these; kept here too so validation doesn't need
 # to re-parse the header comment).

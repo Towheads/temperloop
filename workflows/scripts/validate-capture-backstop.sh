@@ -51,6 +51,13 @@ set -euo pipefail
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DRAIN="$REPO/claude/commands/tidy.md"
 DRAIN_OVERLAY_EXT="$REPO/claude/capture-backstop-registry.overlay.md"
+# v0.17.0 rename legacy window (temperloop#729): a downstream overlay checkout
+# may still ship the pre-rename overlay filename until it migrates — read-old
+# (with a NOTE) when the new name is absent; removed in v0.19.0.
+if [ ! -f "$DRAIN_OVERLAY_EXT" ] && [ -f "$REPO/claude/live-drain-registry.overlay.md" ]; then
+  DRAIN_OVERLAY_EXT="$REPO/claude/live-drain-registry.overlay.md"
+  echo "NOTE: claude/live-drain-registry.overlay.md was renamed claude/capture-backstop-registry.overlay.md in v0.17.0 (temperloop#729); reading the legacy filename through v0.19.0." >&2
+fi
 STAGEFIND_DIR="${STAGEFIND_DIR:-$REPO/../stageFind}"
 CLAUDE_MD_KERNEL="$REPO/claude/CLAUDE.kernel.md"
 CLAUDE_MD_OVERLAY="$REPO/claude/CLAUDE.overlay.md"

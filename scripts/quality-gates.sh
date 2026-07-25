@@ -288,6 +288,11 @@ KERNEL_GATES=(
   "bash workflows/scripts/config/tests/test_check_setting_registry.sh"
   "bash workflows/scripts/config/check-setting-prose.sh"
   "bash workflows/scripts/config/tests/test_check_setting_prose.sh"
+  # v0.17.0 terminology-rename legacy window (temperloop#729): READ-OLD-WRITE-NEW
+  # for FUNNEL_*->PIPELINE_* / KNOB_*->SETTING_* env seams, the forwarding
+  # stubs at the old script paths, and the knob-registry-lib source-forwarder.
+  # Removed with the window in v0.19.0.
+  "bash workflows/scripts/tests/test_terminology_rename_compat.sh"
   # Reviewer-routing extension/glob-axis drift lint (ADR 0008,
   # docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md): compares the
   # extension/glob SET between workflows/scripts/config/reviewer-routing.tsv

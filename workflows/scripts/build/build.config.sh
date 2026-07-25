@@ -50,6 +50,14 @@
 # writeup, and how `boards.conf`'s XDG-then-repo-local discovery is an
 # INSTANCE of this same order: ../../../docs/config-precedence.md.
 #
+# ── v0.17.0 terminology-rename legacy window (temperloop#729) ────────────────
+# Legacy FUNNEL_*/KNOB_* env vars still drive the renamed PIPELINE_*/SETTING_*
+# settings (NEW > OLD > default, one NOTE per legacy var used) through v0.19.0.
+# Fail-open: a consuming repo that does not vendor the lib skips the shim.
+_rc0170="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/rename-compat-0170.sh"
+if [ -f "$_rc0170" ]; then . "$_rc0170"; fi
+unset _rc0170
+
 # ── Precedence layer 3: machine conf ─────────────────────────────────────────
 # Sourced FIRST (before repo-local and before this file's own defaults) so it
 # outranks both, per the ladder above. Absent file is a silent no-op. The
