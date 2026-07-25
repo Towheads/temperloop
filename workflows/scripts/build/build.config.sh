@@ -55,6 +55,7 @@
 # settings (NEW > OLD > default, one NOTE per legacy var used) through v0.19.0.
 # Fail-open: a consuming repo that does not vendor the lib skips the shim.
 _rc0170="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/rename-compat-0170.sh"
+# shellcheck source=workflows/scripts/lib/rename-compat-0170.sh
 if [ -f "$_rc0170" ]; then . "$_rc0170"; fi
 unset _rc0170
 

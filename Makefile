@@ -18,7 +18,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
-	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-pr-leak-guard test-producer-egress docs \
+	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
 
 help:
@@ -46,6 +46,7 @@ help:
 	@echo "  test-kernel-denylist    Personal-token denylist check"
 	@echo "  test-kernel-gitleaks    gitleaks secret scan over the kernel set"
 	@echo "  test-kernel-prerename   Pre-rename (foundation->temperloop) identifier leak-gate sweep"
+	@echo "  test-kernel-terminology v0.17.0 terminology-rename identifier leak-gate sweep"
 	@echo "  test-pr-leak-guard      Diff-scoped public-repo leak guard (PR added lines)"
 	@echo "  test-producer-egress    Egress lint over the Epic E value-loop producers"
 	@echo "  docs                    Render the generated docs site"
@@ -198,6 +199,17 @@ test-kernel-prerename:
 	@bash $(FOUNDATION)/workflows/scripts/kernel/check-prerename-leak-guard.sh
 	@echo "==> Running check-prerename-leak-guard.sh fixture tests..."
 	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_prerename_leak_guard.sh
+
+# v0.17.0 terminology-rename identifier leak gate (temperloop#729): keeps the
+# renamed coined identifiers (the legacy env prefixes, the old script-file
+# names, and the coined severity/pairing tokens) from silently re-entering a
+# stranger surface — only the reviewed exempt set (compat window + records)
+# may carry them; anything else fails.
+test-kernel-terminology:
+	@echo "==> Running terminology-rename identifier leak-gate sweep..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/check-terminology-leak-guard.sh
+	@echo "==> Running check-terminology-leak-guard.sh fixture tests..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_terminology_leak_guard.sh
 
 # Diff-scoped public-repo leak guard (temperloop #74): scans the ADDED lines of
 # a PR's diff (all tracked files) for personal/private tokens + secrets and

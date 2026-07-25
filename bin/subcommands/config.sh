@@ -237,7 +237,7 @@ while IFS= read -r row; do
   _setting_split_row "$row"   # fork-free field split (lib helper); K305
   name="$KR_F1"
   default="$KR_F2"
-  layer="$KR_F4"
+  reg_layer="$KR_F4"
   owning="$KR_F5"
   doc="$KR_F6"
 
@@ -256,7 +256,8 @@ while IFS= read -r row; do
     layer="tracked-repo"
   else
     value="$default"
-    layer="$layer"
+    # untouched -> the registry row's own recorded layer (layer 5/6) wins
+    layer="$reg_layer"
   fi
 
   if [ "$format" = "tsv" ]; then

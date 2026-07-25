@@ -434,6 +434,12 @@ KERNEL_GATES=(
   # sanctioned. Same live-check-then-fixture-tests shape as
   # test-kernel-denylist above.
   "make test-kernel-prerename"
+  # v0.17.0 terminology-rename leak gate (temperloop#729): the same closed-set
+  # discipline for the coined-identifier renames — the legacy env prefixes,
+  # old script paths, and coined severity/pairing tokens cannot
+  # silently re-enter; only the reviewed exempt set (the compat window's own
+  # surfaces + records) may carry them.
+  "make test-kernel-terminology"
   # Diff-scoped public-repo leak guard (temperloop #74): the sibling of the two
   # whole-tree kernel scrubs above. Scans the ADDED lines of a PR's diff (all
   # tracked files, not just the kernel manifest) for personal/private tokens +

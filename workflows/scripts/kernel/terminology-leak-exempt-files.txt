@@ -1,0 +1,47 @@
+# terminology-leak-exempt-files.txt — files WHOLESALE exempted from
+# check-terminology-leak-guard.sh's pre-rename identifier scan
+# (temperloop#729, v0.17.0 terminology consolidation). Each entry is an
+# exact repo-relative path, or a directory prefix ending in `/`.
+#
+# Rationale classes:
+#   window — the legacy window's own machinery: it names the old
+#            identifiers BY DESIGN (the env shim, the forwarding stubs at
+#            the old paths, the source-forwarder, the legacy-overlay
+#            fallback, and the compat test). Removed with the window in
+#            v0.19.0.
+#   record — historical records that keep pre-rename terms verbatim
+#            (CHANGELOG history + the 0.17.0 migration map itself, ADRs,
+#            archived plans, session/meta data).
+#   self   — this gate's own family (the shapes/allowlist live here).
+#   registry — path registries that must keep claiming the stub files'
+#              old-named paths while the window is open.
+
+# window
+workflows/scripts/lib/rename-compat-0170.sh
+workflows/scripts/tests/test_terminology_rename_compat.sh
+workflows/scripts/build/funnel-cron.sh
+workflows/scripts/build/funnel-drive.sh
+workflows/scripts/build/funnel-tick.sh
+workflows/scripts/build/funnel-overlap.sh
+workflows/scripts/build/funnel-schedule-gate.sh
+workflows/scripts/build/build-config-knobs.sh
+workflows/scripts/config/check-knob-registry.sh
+workflows/scripts/config/check-knob-prose.sh
+workflows/scripts/config/knob-registry-lib.sh
+workflows/scripts/validate-live-drain.sh
+workflows/scripts/validate-capture-backstop.sh
+
+# record
+CHANGELOG.md
+docs/adr/
+Plans-archive/
+meta/
+
+# self
+workflows/scripts/kernel/check-terminology-leak-guard.sh
+workflows/scripts/kernel/terminology-leak-exempt-files.txt
+workflows/scripts/kernel/tests/test_check_terminology_leak_guard.sh
+
+# registry
+docs/features/feature-manifest.txt
+workflows/scripts/kernel/kernel-manifest.txt
