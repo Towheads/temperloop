@@ -12,7 +12,7 @@ epic: Towheads/temperloop#719
 
 Kernel rules accrete and never die: nothing records why a standing rule
 earns its place, and there is no flow through which a rule leaves the
-doc. The intake side is mechanized (capture rules, live/drain pairing,
+doc. The intake side is mechanized (capture rules, capture/backstop pairing,
 CI-checked pairing registry); removal is not — an asymmetry the
 principles doc itself reflects, where every principle governs adding
 discipline. The maturity ladder also lacks a descent: a rule that earns a
@@ -34,10 +34,10 @@ demote-to-pointer, safe default keep); every applied deletion lands as an
 ordinary reviewable PR carrying the audit rationale in its body, so the
 public trail stands alone. The cap — not the disposal flow — is the
 forcing function: disposal selects which rules go, never whether
-subtraction happens. (3) **Descent rung:** one new append-only principle —
-when a rule earns a mechanical guard, its prose collapses to a pointer;
-mechanization deletes prose rather than doubling it. The budget and
-citation disciplines land as extensions under existing principles 11 and
+subtraction happens. (3) **Pointer collapse (`demote-to-pointer`):** one new
+append-only principle — when a rule earns a mechanical guard, its prose
+collapses to a pointer; mechanization deletes prose rather than doubling
+it. The budget and citation disciplines land as extensions under existing principles 11 and
 5/10 respectively — deliberately not new numbered principles, because
 appending three principles to enforce subtraction would be the accretion
 pattern this change cures.
@@ -51,6 +51,6 @@ carrying the citation it previously lacked — the system working, not
 failing. The discipline binds kernel authorship only: an adopter's
 overlay, personal rules, and project files are never audited or gated.
 Named limit: proposal triage runs through the single-operator `/check-in`
-ritual; multi-operator triage is out of scope. Per-teammate exemptions
+review; multi-operator triage is out of scope. Per-teammate exemptions
 were explicitly declined as the exemption-creep failure mode; the
 self-service path is a cap-raise config PR.

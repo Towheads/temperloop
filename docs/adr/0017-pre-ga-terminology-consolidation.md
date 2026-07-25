@@ -35,6 +35,24 @@ one-time script, deliberately not a new standing validator — plus
 `validate-template-refs.sh` within its actual scope (named template refs
 only; it does not sweep arbitrary terminology).
 
+As applied (v0.17.0, temperloop#729): funnel→pipeline, knob→setting,
+blocking-now/batch-at-gate/batch-at-ritual→ask-now/ask-at-gate/
+ask-at-checkin (ritual→check-in/routine), build spine→build machinery,
+precedence rung→layer + autonomy rung-5x→level-5x, Live/Drain
+pairing→Capture/Backstop pairing, logical board number→board id. The full
+per-surface map is the CHANGELOG `[0.17.0]` BREAKING section (the
+migration note this ADR calls for). No message-schema template name
+needed renaming — all five were already plain words. The legacy window
+(`workflows/scripts/lib/rename-compat-0170.sh` env shim, forwarding stubs
+at every old script path, the old overlay-registry filename read) closes
+in v0.19.0; persisted external state (the `funnel-*` labels/markers and
+state paths) keeps its pre-rename values, exactly as `.foundation/` did
+in the #165 precedent. One standing gate WAS added beyond the one-time
+sweep — `check-terminology-leak-guard.sh` (`make test-kernel-terminology`)
+— because the #165 rename's own leak-guard precedent showed a closed,
+reviewed exempt set is what keeps retired identifiers from silently
+re-entering stranger surfaces.
+
 ## Consequences
 
 Readers stop paying a vocabulary tax, at the cost of a per-checkout
