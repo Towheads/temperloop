@@ -33,18 +33,20 @@ through the existing compose seam — never the kernel+overlay total, so an
 adopter's own overlay content can never trip a kernel check. Tier 2 caps
 every file in the `claude/**/*.md` glob (agent charters included) under one
 **uniform** per-file knob — a single knob, because per-file values would
-be relocated exemptions. Caps are the `PROSE_BUDGET_TIER1_CAP` (338 lines)
+be relocated exemptions. Caps are the `PROSE_BUDGET_TIER1_CAP` (340 lines)
 and `PROSE_BUDGET_TIER2_FILE_CAP` (1057 lines) knobs in `build.config.sh`,
 registered verbatim-equal in the knob registry; no inline exemption
 mechanism exists. Landing order is a **ratchet**: both caps seed at the
-epic's recorded baseline for these two figures (the composed count and the
-largest tracked file) — reconfirmed by a fresh measurement at build time,
-whose per-file counts matched exactly even though the tracked-file TOTAL
-(itself uncapped) had independently drifted a few lines in the interim —
-so the gate merges green by construction and blocks no unrelated PR;
-tightening is a later, deliberate config PR after the subtraction passes
-land. The failure message is a first-class deliverable: file, count, cap,
-and both remediation paths (trim, or open a cap-raise config PR).
+tree's own state at merge time, re-measured rather than trusted from an
+earlier point — this item's own build re-seeded the tier-1 figure twice
+for exactly that reason (once at initial landing, again after a rebase
+picked up ~2 unrelated lines of growth in the composed render before
+merge), while the tier-2 figure (the largest tracked file) held constant
+across both — so the gate merges green by construction and blocks no
+unrelated PR; tightening is a later, deliberate config PR after the
+subtraction passes land. The failure message is a first-class deliverable:
+file, count, cap, and both remediation paths (trim, or open a cap-raise
+config PR).
 
 ## Consequences
 

@@ -384,27 +384,32 @@ fi
 # Two-tier CI cap consumed by workflows/scripts/validate-prose-budget.sh,
 # which measures both counts via workflows/scripts/count-prose.sh (never a
 # second counting implementation — one compose seam). RATCHET: both caps are
-# seeded at the FRESH baseline this item measured in its own worktree at
-# landing time (count-prose.sh's own report) rather than the epic's earlier
-# recorded artifact, because main had already drifted a few lines past that
-# artifact by the time this item built — seeding from a stale lower number
-# would land this gate red on an unrelated PR on day one, the exact failure
-# the ratchet exists to prevent. A cap is lowered again only by a later
-# config PR, after a subtraction pass actually shrinks the prose (never
-# raised/lowered by hand-editing prose to dodge the gate — see the
-# knob-registry.tsv row for the same two knobs, which must stay verbatim-
-# equal to these two literals).
+# seeded at the FRESH baseline measured against the tree this item actually
+# merges against — never a number recorded earlier and trusted stale. This
+# item was seeded twice for exactly that reason: once at initial landing
+# (338/1057, already past the epic's own earlier-recorded artifact by a few
+# lines), and again (340/1057) after a rebase onto a newer main picked up an
+# unrelated ~2-line growth in claude/CLAUDE.kernel.md — re-measuring and
+# re-seeding at merge-time state, rather than patching the gate to tolerate
+# the old number, is the ratchet's own "green by construction" rule applied
+# literally: whatever the tree looks like right before this PR merges IS the
+# baseline, full stop. A cap is lowered again only by a later config PR,
+# after a subtraction pass actually shrinks the prose (never raised/lowered
+# by hand-editing prose to dodge the gate — see the knob-registry.tsv row
+# for the same two knobs, which must stay verbatim-equal to these two
+# literals).
 #
 # TIER-1: caps the composed KERNEL-AUTHORED render only (claude/
 # CLAUDE.kernel.md rendered via install-claude-md.sh's
 # INSTALL_CLAUDE_MD_KERNEL_ONLY seam — never the kernel+overlay total).
-: "${PROSE_BUDGET_TIER1_CAP:=338}"
+: "${PROSE_BUDGET_TIER1_CAP:=340}"
 # TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
 # (agent charters included) — deliberately a single knob, not a per-file
 # table (a per-file value would just be a relocated exemption mechanism,
 # which this item has none of). Seeded to clear the largest tracked file at
-# landing time (claude/commands/build.md, 1057 lines) — every other file
-# already sits well under this cap, by construction of "uniform".
+# landing time (claude/commands/build.md, 1057 lines, unchanged across both
+# seedings) — every other file already sits well under this cap, by
+# construction of "uniform".
 : "${PROSE_BUDGET_TIER2_FILE_CAP:=1057}"
 
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
