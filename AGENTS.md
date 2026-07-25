@@ -97,8 +97,11 @@ quality-gates` to run them all.
 - `workflows/scripts/lib/knowledge_store.contract.md` — the knowledge
   (document-I/O) adapter interface, for anyone wiring in a new notes
   backend.
-- `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` — the tracker adapter
-  interface, documented alongside its reference `issues-only` backend.
+- `workflows/scripts/lib/tracker.contract.md` — the tracker (work-tracking)
+  adapter interface contract, symmetric with `knowledge_store.contract.md`,
+  for anyone wiring in a new tracker backend. Its companion
+  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` is the `issues-only`
+  backend's operational deep-dive.
 - `docs/managed-merge-queue.md` — the merge-backend seam (native vs.
   managed queue) that lets the build/sweep ladder run end-to-end even on a
   repo with no native merge queue available.
