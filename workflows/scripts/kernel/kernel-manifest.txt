@@ -302,6 +302,8 @@ kernel workflows/scripts/tests/fixtures/design-schema/*
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
 kernel workflows/scripts/count-prose.sh
+kernel workflows/scripts/validate-prose-budget.sh
+kernel workflows/scripts/tests/test_validate_prose_budget.sh
 kernel workflows/scripts/emit-command-run.sh
 kernel workflows/scripts/env-hygiene-report.sh
 kernel workflows/scripts/ready-pr-sweep.sh

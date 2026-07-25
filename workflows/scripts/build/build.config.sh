@@ -379,6 +379,39 @@ fi
 # generated/vendored/example file doesn't trigger a false-positive offer.
 : "${REVIEWER_SCAN_MIN_FILES:=3}"
 
+# ── Prose-plane budget gate (temperloop#719/#725, item prose-budget-gate;
+#    ADR 0015) ──────────────────────────────────────────────────────────────
+# Two-tier CI cap consumed by workflows/scripts/validate-prose-budget.sh,
+# which measures both counts via workflows/scripts/count-prose.sh (never a
+# second counting implementation — one compose seam). RATCHET: both caps are
+# seeded at the FRESH baseline measured against the tree this item actually
+# merges against — never a number recorded earlier and trusted stale. This
+# item was seeded twice for exactly that reason: once at initial landing
+# (338/1057, already past the epic's own earlier-recorded artifact by a few
+# lines), and again (340/1057) after a rebase onto a newer main picked up an
+# unrelated ~2-line growth in claude/CLAUDE.kernel.md — re-measuring and
+# re-seeding at merge-time state, rather than patching the gate to tolerate
+# the old number, is the ratchet's own "green by construction" rule applied
+# literally: whatever the tree looks like right before this PR merges IS the
+# baseline, full stop. A cap is lowered again only by a later config PR,
+# after a subtraction pass actually shrinks the prose (never raised/lowered
+# by hand-editing prose to dodge the gate — see the knob-registry.tsv row
+# for the same two knobs, which must stay verbatim-equal to these two
+# literals).
+#
+# TIER-1: caps the composed KERNEL-AUTHORED render only (claude/
+# CLAUDE.kernel.md rendered via install-claude-md.sh's
+# INSTALL_CLAUDE_MD_KERNEL_ONLY seam — never the kernel+overlay total).
+: "${PROSE_BUDGET_TIER1_CAP:=340}"
+# TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
+# (agent charters included) — deliberately a single knob, not a per-file
+# table (a per-file value would just be a relocated exemption mechanism,
+# which this item has none of). Seeded to clear the largest tracked file at
+# landing time (claude/commands/build.md, 1057 lines, unchanged across both
+# seedings) — every other file already sits well under this cap, by
+# construction of "uniform".
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1057}"
+
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
@@ -422,4 +455,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        RETRO_MINT_ENABLED RETRO_MIN_INTERVAL RETRO_URGENT_CI_RETRIES \
        RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
        REVIEWER_SCAN_MIN_FILES \
+       PROSE_BUDGET_TIER1_CAP PROSE_BUDGET_TIER2_FILE_CAP \
        KNOWLEDGE_STORE_ROOT
