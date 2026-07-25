@@ -38,14 +38,28 @@
 # a seam-only regression (composed count grows, every per-file count stays
 # flat) is attributable on sight, with no second investigation step.
 #
-# Scope: this item owns the SIZE-CAP checks only. A citation-marker-presence
-# check is a separate, later item (citation-markers) — not implemented or
-# stubbed here.
+# CITATION-MARKER presence check (temperloop#719, item citation-markers /
+# #724): alongside the two size caps, this gate reconciles the tree's
+# same-line `<!-- cite: <row-id> <class>:<ref> -->` markers 1:1 against
+# workflows/scripts/config/citation-registry.tsv — the registry IS the
+# mechanical definition of "a standing kernel rule needing a marker" (see
+# claude/citation-schema.md for the grammar, classes, and placement rules).
+# Enforced both directions over the SAME tracked file set the TIER-2 table
+# already carries (no second file-walk): a registry row whose marker is
+# missing or duplicated in its file is red; a marker found in any tracked
+# claude/**/*.md file with no registry row for that file is red; any
+# `<!-- cite:` occurrence outside a fenced code block that does not parse
+# to the grammar is red. Markers are zero-line-growth by construction
+# (same-line HTML comments), so this check never fights the size caps.
 #
 # Usage:
 #   workflows/scripts/validate-prose-budget.sh
 #
 # Env overrides (fixture-driven tests):
+#   CITATION_REGISTRY_FILE path to the citation registry TSV (default: the
+#                          tracked workflows/scripts/config/
+#                          citation-registry.tsv). knob:exempt — fixture
+#                          seam, same rationale as COUNT_PROSE_BIN.
 #   COUNT_PROSE_ROOT       forwarded verbatim to count-prose.sh (its own
 #                          test/fixture root override — see that script's
 #                          header). A fixture pointing this at a scratch git
@@ -80,6 +94,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 : "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # knob:exempt — forwarded verbatim to count-prose.sh, whose own identical seam carries this same marker (test/fixture root override, not an operator-facing config-precedence default)
 : "${COUNT_PROSE_BIN:=$SCRIPT_DIR/count-prose.sh}"  # knob:exempt — test-double seam (fixture: a modified compose seam under a scratch COUNT_PROSE_ROOT tree)
+: "${CITATION_REGISTRY_FILE:=$REPO_ROOT/workflows/scripts/config/citation-registry.tsv}"  # knob:exempt — fixture seam (a scratch registry against a scratch COUNT_PROSE_ROOT tree), not an operator-facing config-precedence default
 
 [ -f "$COUNT_PROSE_BIN" ] || { echo "validate-prose-budget: counting script not found: $COUNT_PROSE_BIN" >&2; exit 1; }
 
@@ -210,9 +225,155 @@ if [ "$tier1_count" -gt "$PROSE_BUDGET_TIER1_CAP" ]; then
   printf '%s\n' "$report" | sed -n '/^TIER-2 per-file line counts/,$p' | sed 's/^/  /'
 fi
 
+# ---------------------------------------------------------------------------
+# Citation-marker presence check (item citation-markers / #724).
+#
+# The registry (row-id <TAB> file) is the single mechanical definition of the
+# rule set; the tree's markers must reconcile 1:1 against it, both
+# directions, over exactly the TIER-2 tracked file set parsed above. Fence-
+# aware: a marker inside a fenced code block is ignored (that is how
+# claude/citation-schema.md displays the grammar without registering it).
+# Bash-3.2 portable: pair sets go through temp files + sort/comm/uniq, never
+# associative arrays.
+# ---------------------------------------------------------------------------
+marker_grammar='<!-- cite: [A-Z]+\.[0-9]+ (incident|guard|class|keep):[^[:space:]]+ -->'
+
+reg_pairs="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.reg.XXXXXX")"
+found_pairs="$(mktemp "${TMPDIR:-/tmp}/validate-prose-budget.found.XXXXXX")"
+trap 'rm -f "$tmp_err" "$reg_pairs" "$found_pairs"' EXIT
+
+if [ ! -f "$CITATION_REGISTRY_FILE" ]; then
+  echo "validate-prose-budget: citation registry not found: $CITATION_REGISTRY_FILE (CITATION_REGISTRY_FILE)" >&2
+  exit 1
+fi
+
+# parse the registry: `<row-id><TAB><file>`, #-comments and blank lines
+# ignored; a malformed data row is a violation (never silently skipped).
+reg_lineno=0
+while IFS= read -r rline || [ -n "$rline" ]; do
+  reg_lineno=$((reg_lineno + 1))
+  case "$rline" in ''|\#*) continue ;; esac
+  rid="${rline%%	*}"
+  rfile="${rline#*	}"
+  if [ "$rid" = "$rline" ] || [ -z "$rfile" ] || ! printf '%s' "$rid" | grep -qE '^[A-Z]+\.[0-9]+$'; then
+    fail=1
+    violations=$((violations + 1))
+    echo "CITATION-MARKERS: $CITATION_REGISTRY_FILE:$reg_lineno: malformed registry row (expected '<ROW-ID><TAB><file>'): $rline"
+    continue
+  fi
+  printf '%s\t%s\n' "$rid" "$rfile" >>"$reg_pairs"
+done <"$CITATION_REGISTRY_FILE"
+
+# duplicate registry rows are themselves a defect (the 1:1 contract needs a
+# set, not a bag).
+while IFS= read -r dup; do
+  [ -z "$dup" ] && continue
+  fail=1
+  violations=$((violations + 1))
+  echo "CITATION-MARKERS: duplicate registry row: ${dup}"
+done <<REG_DUP_EOF
+$(LC_ALL=C sort "$reg_pairs" | uniq -d)
+REG_DUP_EOF
+
+# every registry file must be in the tracked TIER-2 set (a row pointing at an
+# untracked/renamed file would otherwise surface as a misleading "missing
+# marker").
+tier2_list="$(printf '%s\n' "${tier2_files[@]}")"
+while IFS= read -r rfile; do
+  [ -z "$rfile" ] && continue
+  if ! printf '%s\n' "$tier2_list" | grep -qxF "$rfile"; then
+    fail=1
+    violations=$((violations + 1))
+    echo "CITATION-MARKERS: registry names a file not in the tracked claude/**/*.md set: $rfile"
+    echo "  Remediation: fix the citation-registry.tsv row (renamed/deleted file?), or track the file"
+  fi
+done <<REG_FILES_EOF
+$(cut -f2 "$reg_pairs" | LC_ALL=C sort -u)
+REG_FILES_EOF
+
+# scan every tracked file for markers, fence-aware; collect (row-id, file)
+# pairs and flag any `<!-- cite:` occurrence that does not parse.
+for f in "${tier2_files[@]}"; do
+  fpath="$COUNT_PROSE_ROOT/$f"
+  [ -f "$fpath" ] || continue  # defensive; count-prose just listed it
+  while IFS= read -r cand; do
+    [ -z "$cand" ] && continue
+    lineno="${cand%%	*}"
+    # strip backtick code spans first (same rationale as check-knob-prose.sh):
+    # a `<!-- cite:` shown in code font is a quotation, never a live marker.
+    # The quoting is a literal sed program, not a missed expansion.
+    # shellcheck disable=SC2016
+    ltext="$(printf '%s' "${cand#*	}" | sed -E 's/`[^`]*`//g')"
+    raw_n="$(printf '%s' "$ltext" | grep -o '<!-- cite:' | wc -l | tr -d '[:space:]')"
+    parsed="$(printf '%s' "$ltext" | grep -oE "$marker_grammar" || true)"
+    parsed_n=0
+    if [ -n "$parsed" ]; then
+      parsed_n="$(printf '%s\n' "$parsed" | grep -c . | tr -d '[:space:]')"
+      while IFS= read -r m; do
+        rid="$(printf '%s' "$m" | sed -E 's/^<!-- cite: ([A-Z]+\.[0-9]+) .*$/\1/')"
+        printf '%s\t%s\n' "$rid" "$f" >>"$found_pairs"
+      done <<PARSED_EOF
+$parsed
+PARSED_EOF
+    fi
+    if [ "$raw_n" -ne "$parsed_n" ]; then
+      fail=1
+      violations=$((violations + 1))
+      echo "CITATION-MARKERS: $f:$lineno: malformed citation marker (does not parse as '<!-- cite: <ROW-ID> <incident|guard|class|keep>:<ref> -->'):"
+      echo "    $ltext"
+      echo "  Remediation: fix the marker to the grammar in claude/citation-schema.md"
+    fi
+  done <<CAND_EOF
+$(awk '/^[[:space:]]*```/ { fence = !fence; next } !fence && index($0, "<!-- cite:") { printf "%d\t%s\n", FNR, $0 }' "$fpath")
+CAND_EOF
+done
+
+sorted_reg="$(LC_ALL=C sort -u "$reg_pairs")"
+sorted_found_u="$(LC_ALL=C sort -u "$found_pairs")"
+
+# registry rows with no marker in their file.
+while IFS= read -r miss; do
+  [ -z "$miss" ] && continue
+  rid="${miss%%	*}"
+  rfile="${miss#*	}"
+  fail=1
+  violations=$((violations + 1))
+  echo "CITATION-MARKERS: missing marker: registered rule $rid has no '<!-- cite: $rid ...' marker in $rfile"
+  echo "  Remediation: add the rule's same-line marker (claude/citation-schema.md), or remove the citation-registry.tsv row if the rule was deliberately deleted"
+done <<MISS_EOF
+$(LC_ALL=C comm -23 <(printf '%s\n' "$sorted_reg") <(printf '%s\n' "$sorted_found_u"))
+MISS_EOF
+
+# markers with no registry row.
+while IFS= read -r extra; do
+  [ -z "$extra" ] && continue
+  rid="${extra%%	*}"
+  rfile="${extra#*	}"
+  fail=1
+  violations=$((violations + 1))
+  echo "CITATION-MARKERS: unregistered marker: $rfile carries '<!-- cite: $rid ...' but citation-registry.tsv has no ($rid, $rfile) row"
+  echo "  Remediation: add the registry row in the same change, or remove the stray marker"
+done <<EXTRA_EOF
+$(LC_ALL=C comm -13 <(printf '%s\n' "$sorted_reg") <(printf '%s\n' "$sorted_found_u"))
+EXTRA_EOF
+
+# duplicated markers (a registered pair appearing more than once in the tree).
+while IFS= read -r dup; do
+  [ -z "$dup" ] && continue
+  rid="${dup%%	*}"
+  rfile="${dup#*	}"
+  fail=1
+  violations=$((violations + 1))
+  echo "CITATION-MARKERS: duplicate marker: '<!-- cite: $rid ...' appears more than once in $rfile (the registry contract is exactly once per row)"
+done <<DUP_EOF
+$(LC_ALL=C sort "$found_pairs" | uniq -d)
+DUP_EOF
+
+reg_count="$(printf '%s\n' "$sorted_reg" | grep -c . | tr -d '[:space:]')"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAIL: $violations prose-budget violation(s)" >&2
   exit 1
 fi
-echo "OK — prose budget clean: tier-1 $tier1_count/$PROSE_BUDGET_TIER1_CAP lines; tier-2 ${#tier2_files[@]} file(s) checked against a $PROSE_BUDGET_TIER2_FILE_CAP-line uniform cap (largest: $tier2_max lines)"
+echo "OK — prose budget clean: tier-1 $tier1_count/$PROSE_BUDGET_TIER1_CAP lines; tier-2 ${#tier2_files[@]} file(s) checked against a $PROSE_BUDGET_TIER2_FILE_CAP-line uniform cap (largest: $tier2_max lines); citation markers: $reg_count registry row(s) reconciled 1:1"
