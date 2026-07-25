@@ -5,6 +5,9 @@
 #   reconcile.sh [--board N]            (default) MARKER drift — board In-Progress
 #                                       vs. the local tmux @claimed_issue markers
 #                                       for THIS host. Read-only.
+#          ... --fix                    also auto-applies the one SAFE marker
+#                                       repair (THIS window's stale marker whose
+#                                       issue is provably closed/merged).
 #   reconcile.sh [--board N] --status   STATUS drift — board Status vs. GitHub
 #                                       reality (closed/merged backing issues/PRs,
 #                                       orphaned In-Progress). Read-only report.
@@ -40,6 +43,42 @@
 #   2) board-without-marker — the board has an item In Progress stamped to THIS
 #      host, but no live tmux window holds its @claimed_issue marker. Claimed on
 #      the board with no local marker (e.g. after release.sh, or a dead session).
+#
+# ─── Lens 1 repair: --fix (temperloop#748) ───────────────────────────────────
+# `--fix` on the marker lens applies ONE narrowly-scoped, provably-safe repair:
+# it clears THIS WINDOW's own claim marker, and only when that marker names an
+# issue that is BOTH (a) marker-without-board drift and (b) PROVABLY TERMINAL
+# (its backing issue/PR reads CLOSED or MERGED on GitHub). The clear routes
+# through lib/claim_marker.sh's `claim_marker_clear` — the same primitive
+# release.sh uses — so there is exactly one marker-clearing implementation.
+#
+# Three boundaries are deliberate and NOT negotiable:
+#
+#   * OPT-IN. Without `--fix` this lens still only reports; it mutates nothing.
+#
+#   * THIS WINDOW ONLY. The report scans every window on the tmux server, but
+#     the repair touches only the caller's own window ($TMUX_PANE / the caller's
+#     own cmux workspace) — the GH #297 doctrine every marker write in this
+#     toolkit obeys: never brand or un-brand a window you do not own, because a
+#     concurrent session may be living in it. A stale marker in another window
+#     is still REPORTED; clearing it means running this from that window.
+#
+#   * PROVABLY-TERMINAL ONLY, and never the converse class. A marker whose
+#     issue is still OPEN is left alone (the work may be live). The entire
+#     `board-without-marker` class is NEVER repaired — not cleared, and above
+#     all never re-stamped: temperloop#719 showed that class produces FALSE
+#     stranded-claim signals (a demonstrably LIVE session's window marker had
+#     simply been clobbered by a later claim), so acting on it risks stomping a
+#     live peer session. Detect and report it; never repair it.
+#
+# This is the LOCAL-MARKER half of the post-terminal claim rot only. The board
+# half — a closed issue retaining `fnd:status:in-progress` / `fnd:host/session:*`
+# — is Lens 3 (--labels) and temperloop#744, deliberately separate.
+#
+# K#275 is untouched: `release.sh <n>` still refuses to clear a non-latest
+# claim. This repair never forces such a release — it clears whatever THIS
+# window holds, exactly like an argument-less `release.sh`, and only after
+# proving that marker names terminal work.
 #
 # "THIS host" matches claim.sh's logic:
 #   ${SUBSET_HOST_LABEL:-$(hostname -s)}
@@ -139,6 +178,8 @@
 #
 # Usage:
 #   scripts/reconcile.sh                       # marker drift report; exits 0
+#   scripts/reconcile.sh --fix                 # + clear THIS window's marker if
+#                                              #   it names provably-terminal work
 #   scripts/reconcile.sh --board 4 --status    # status drift report; exits 0
 #   scripts/reconcile.sh --board 4 --status --fix   # + apply terminal→Done
 #   scripts/reconcile.sh --board 7 --labels    # label hygiene report; exits 0
@@ -169,6 +210,12 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
 source "$SCRIPT_DIR/lib/board.sh"
+# The marker-repair path (--fix on Lens 1) clears markers through the SAME
+# primitive release.sh uses — claim_marker_clear — rather than reimplementing a
+# second marker-clearing code path. claim_marker_peek reads this window's marker
+# without clearing it, for the safety gates. Sourcing is side-effect-free.
+# shellcheck source=scripts/lib/claim_marker.sh
+source "$SCRIPT_DIR/lib/claim_marker.sh"
 
 # reconcile is the board↔marker CONSISTENCY check — its whole job is to surface
 # drift, so it must read the board LIVE. Opt out of the default-ON cross-process
@@ -191,8 +238,10 @@ source "$SCRIPT_DIR/lib/board.sh"
 export BOARD_CACHE_TTL=0
 
 PROJECT_NUMBER=3
-# --status --fix: apply the one safe repair (terminal→Done). Set by the
-# execute-guard or by a sourcing test before it calls status_reconcile_main.
+# --fix: apply the one safe repair of whichever lens is selected — Lens 2's
+# terminal→Done board move (--status --fix), or Lens 1's this-window stale-marker
+# clear (the default marker lens). Set by the execute-guard or by a sourcing test
+# before it calls status_reconcile_main / reconcile_main.
 FIX=0
 # Page size for the issue/PR state bulk-reads. A board larger than this would
 # under-read; status_reconcile_main warns when a list hits the cap (no silent cap).
@@ -300,6 +349,106 @@ in_list() {
   printf '%s\n' "$2" | grep -qx "$1"
 }
 
+# --- Lens 1 repair: terminality oracle (temperloop#748) ----------------------
+# Is <number> PROVABLY terminal on GitHub — i.e. does its backing issue (or PR,
+# since the two share one number namespace) read CLOSED or MERGED? Prints the
+# upper-cased state, or nothing when it cannot be established. Routes through
+# `_board_gh` so a test replays it offline with zero network, like every other
+# GitHub read in this file. Single-item reads, NOT the Lens 2 bulk lists: the
+# repair has at most ONE candidate (this window's own marker), so one targeted
+# read is strictly cheaper than two whole-repo pages — and these are REST reads,
+# never Projects-v2 GraphQL, so they cost nothing against the board budget.
+#
+# FAIL-SAFE BY CONSTRUCTION: any failure — a missing issue, an auth error, an
+# unparseable payload — yields an empty string, which the caller treats as "not
+# provably terminal" and therefore does NOT repair. A read failure can only ever
+# make this path do less, never more.
+#   _reconcile_issue_state <repo> <number>
+_reconcile_issue_state() {
+  local repo="$1" n="$2" json state=""
+  json="$(_board_gh issue view "$n" -R "$repo" --json state 2>/dev/null || true)"
+  if [ -n "$json" ]; then
+    state="$(printf '%s' "$json" | jq -r '.state // ""' 2>/dev/null || true)"
+  fi
+  if [ -z "$state" ]; then
+    json="$(_board_gh pr view "$n" -R "$repo" --json state 2>/dev/null || true)"
+    if [ -n "$json" ]; then
+      state="$(printf '%s' "$json" | jq -r '.state // ""' 2>/dev/null || true)"
+    fi
+  fi
+  printf '%s' "$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
+}
+
+# --- Lens 1 repair: the one safe marker repair (temperloop#748) --------------
+# Clear THIS WINDOW's claim marker, and only when it is provably safe to do so.
+# See the "Lens 1 repair" header section for the full rationale; the gates are:
+#
+#   gate 0 — a marker is actually set in THIS window (claim_marker_peek), and it
+#            carries a leading "#<n>".
+#   gate 1 — that #<n> is marker-without-board DRIFT: the board does NOT have it
+#            In Progress stamped to this host. A live same-host claim is never
+#            touched (that is the K#275 claim-until-Done case).
+#   gate 2 — #<n> is PROVABLY TERMINAL on GitHub (CLOSED or MERGED). An OPEN
+#            issue — or a state we could not read — is reported, never cleared.
+#
+# Only after all three does it call `claim_marker_clear` (release.sh's own
+# primitive). The `board-without-marker` class never reaches here at all: this
+# function starts from a marker that EXISTS, so a board claim with no marker has
+# nothing for it to act on — it is structurally unreachable, not merely skipped.
+#   _reconcile_marker_repair <host> <board-in-progress-tsv>
+_reconcile_marker_repair() {
+  local host="$1" board_ip_tsv="$2"
+  local cur n row ip_host repo state prev
+
+  echo "--fix (marker lens): repairing THIS window's marker only, provably-terminal claims only."
+  echo "  (board-without-marker is never repaired — report-only by design, temperloop#719)"
+
+  cur="$(claim_marker_peek)"
+  if [ -z "$cur" ]; then
+    echo "  nothing to repair: no claim marker is set in this window."
+    echo "  A stale marker in ANOTHER window is cleared by running this from that window."
+    return 0
+  fi
+
+  n="$(marker_issue_number "$cur")"
+  if [ -z "$n" ]; then
+    echo "  not repaired: this window's marker ('$cur') carries no leading '#<issue>'."
+    return 0
+  fi
+
+  # gate 1 — must be marker-without-board drift, not a live same-host claim.
+  row="$(printf '%s\n' "$board_ip_tsv" | awk -F'\t' -v n="$n" '$1==n {print; exit}')"
+  if [ -n "$row" ]; then
+    ip_host="$(printf '%s' "$row" | cut -f2)"
+    if [ "$ip_host" = "$host" ]; then
+      echo "  #$n — NOT repaired: it is In Progress on the board, stamped to this host '$host' (a live claim)."
+      return 0
+    fi
+  fi
+
+  # gate 2 — must be provably terminal on GitHub.
+  repo="$(board_repo "$PROJECT_NUMBER")" || repo=""
+  if [ -z "$repo" ]; then
+    echo "  #$n — NOT repaired: could not resolve the repo for board $PROJECT_NUMBER to check its state." >&2
+    return 0
+  fi
+  state="$(_reconcile_issue_state "$repo" "$n")"
+  case "$state" in
+    CLOSED|MERGED) ;;
+    *)
+      echo "  #$n — NOT repaired: marker is stale, but #$n is not provably terminal (state '${state:-unknown}')."
+      return 0 ;;
+  esac
+
+  prev="$(claim_marker_clear)"
+  if [ -n "$prev" ]; then
+    echo "  ✓ cleared [$prev] — #$n is $state; status now shows 'No Issue Claimed'"
+  else
+    echo "  ✓ #$n is $state; no marker remained to clear (outside every multiplexer?)"
+  fi
+  return 0
+}
+
 # The whole report, wrapped so a test can source this file (defining its seam
 # overrides AFTER board.sh is sourced) and drive it without the script running
 # at import time. The execute-guard at the bottom calls this only when the file
@@ -388,18 +537,28 @@ reconcile_main() {
     drift=1
     echo "marker-without-board (stale local marker):"
     printf '%s' "$marker_without_board"
+    if [ "$FIX" != 1 ]; then
+      echo "  (pass --fix to clear THIS window's marker when its issue is closed/merged)"
+    fi
     echo
   fi
 
   if [ -n "$board_without_marker" ]; then
     drift=1
-    echo "board-without-marker (claimed on board, no local marker):"
+    echo "board-without-marker (claimed on board, no local marker — REPORT-ONLY, never repaired):"
     printf '%s' "$board_without_marker"
     echo
   fi
 
   if [ "$drift" -eq 0 ]; then
     echo "In sync: every local marker matches a board In-Progress claim for this host, and vice versa."
+  fi
+
+  # OPT-IN repair (temperloop#748). Without --fix this lens has mutated nothing
+  # above and returns here having only reported — the dry-run contract.
+  if [ "$FIX" = 1 ]; then
+    echo
+    _reconcile_marker_repair "$HOST" "$board_ip_tsv"
   fi
 
   return 0
@@ -863,11 +1022,16 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       --labels)      MODE=labels; shift ;;
       --apply)       LABELS_APPLY=1; shift ;;
       --unattended)  LABELS_UNATTENDED=1; shift ;;
-      *) echo "usage: reconcile.sh [--board 3|4] [--status [--fix] | --labels [--apply|--unattended]]" >&2; exit 2 ;;
+      *) echo "usage: reconcile.sh [--board 3|4] [--fix | --status [--fix] | --labels [--apply|--unattended]]" >&2; exit 2 ;;
     esac
   done
-  if [ "$FIX" = 1 ] && [ "$MODE" != status ]; then
-    echo "reconcile.sh: --fix requires --status (it repairs status drift)" >&2
+  # --fix now applies to BOTH repair-bearing lenses — the default marker lens
+  # (this window's provably-terminal stale marker, temperloop#748) and --status
+  # (terminal→Done). It is still meaningless on --labels, whose apply verb is
+  # --apply/--unattended, so that combination stays a hard error rather than a
+  # silently-ignored flag.
+  if [ "$FIX" = 1 ] && [ "$MODE" = labels ]; then
+    echo "reconcile.sh: --fix does not apply to --labels (use --apply or --unattended there)" >&2
     exit 2
   fi
   if { [ "$LABELS_APPLY" = 1 ] || [ "$LABELS_UNATTENDED" = 1 ]; } && [ "$MODE" != labels ]; then

@@ -12,6 +12,25 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
+## [Unreleased]
+
+### Added
+
+- **`reconcile`: `--fix` gains a marker-lens repair (temperloop#748).** The
+  marker lens could name a stale local claim marker every run forever without
+  ever being able to clear one — `--fix` was `--status`-only. It now also
+  applies one narrowly-scoped repair on the default marker lens: it clears
+  **this window's** claim marker, via the same `claim_marker_clear` primitive
+  `release.sh` uses, and only when that marker is `marker-without-board` drift
+  **and** its issue is provably terminal (`CLOSED`/`MERGED` on GitHub). Still
+  opt-in — without `--fix` the lens only reports. Deliberately never repaired:
+  a marker whose issue is still open, any window other than the caller's own
+  (the GH #297 doctrine), and the entire `board-without-marker` class, which
+  temperloop#719 showed produces false stranded-claim signals. `--fix` remains
+  rejected with `--labels` (that lens applies via `--apply`/`--unattended`).
+  K#275 is untouched: `release.sh <n>` still refuses a non-latest claim, now
+  pinned by `workflows/scripts/board/tests/test_release.sh`.
+
 ## [0.17.0] - 2026-07-25 — BREAKING
 
 One-shot pre-GA terminology consolidation (temperloop#729, epic #719

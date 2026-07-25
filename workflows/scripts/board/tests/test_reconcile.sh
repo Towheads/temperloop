@@ -51,6 +51,14 @@ export SUBSET_HOST_LABEL="testhost"
 # Pretend we are inside tmux so reconcile reads markers (the value is unused —
 # _reconcile_tmux is fully overridden below).
 export TMUX="fake-socket,0,0"
+# A pane id makes lib/claim_marker.sh's `_claim_marker_targetable` true, so the
+# --fix marker-repair cases (temperloop#748) exercise the REAL claim_marker_peek /
+# claim_marker_clear — their tmux calls are redirected to a file-backed stub below,
+# so no real tmux server is ever contacted.
+export TMUX_PANE="%0"
+# Never let a runner that happens to be inside cmux pull the repair down the cmux
+# branch — the marker-repair cases are tmux-shaped and must stay hermetic.
+unset CMUX_WORKSPACE_ID
 # Isolated cache dir (not the real TMPDIR) so the live-pin case below (which
 # plants a fake on-disk cache file) can never collide with another test/run's
 # cache files.
@@ -77,6 +85,11 @@ MARKER_LINES=""
 ISSUE_LIST_JSON="[]"   # status lens: [{"number":N,"state":"OPEN|CLOSED"}]
 PR_LIST_JSON="[]"      # status lens: [{"number":N,"state":"OPEN|CLOSED|MERGED"}]
 EDITS="/dev/null"      # status lens: run_status repoints this to a temp file
+# Marker-repair (--fix, temperloop#748) terminality oracle fixtures: the single-item
+# `issue view` / `pr view` reads _reconcile_issue_state makes. Empty = "gh printed
+# nothing" (the not-found / unreadable case), which must fail safe to NO repair.
+ISSUE_VIEW_JSON=""     # e.g. '{"state":"CLOSED"}'
+PR_VIEW_JSON=""        # e.g. '{"state":"MERGED"}'
 # Stubbed session-liveness oracle (GH #85): treat every session as LIVE except
 # those listed here (space-separated session ids). Default empty → all live, so
 # the pre-existing scases (whose stamped items are all "ok/live") pass unchanged;
@@ -93,6 +106,8 @@ _board_gh() {
     "project item-list")  printf '%s' "$ITEM_LIST_JSON" ;;
     "issue list")         printf '%s' "$ISSUE_LIST_JSON" ;;
     "pr list")            printf '%s' "$PR_LIST_JSON" ;;
+    "issue view")         printf '%s' "$ISSUE_VIEW_JSON" ;;
+    "pr view")            printf '%s' "$PR_VIEW_JSON" ;;
     "project item-edit")
       local a want=0
       for a in "$@"; do
@@ -176,6 +191,194 @@ printf '%s' "$OUT" | grep -q "marker-without-board" \
 printf '%s' "$OUT" | grep -q "board-without-marker" \
   && fail "case3: unexpected board-without-marker section\n$OUT"
 echo "PASS: case 3 fully in-sync all-clear (other host's claim not mis-flagged)"
+
+echo
+echo "=== Lens 1 repair: --fix marker repair (temperloop#748) ==="
+
+# The repair clears THIS window's marker through the REAL lib/claim_marker.sh
+# primitives release.sh uses (claim_marker_peek / claim_marker_clear) — so rather
+# than stubbing those functions (which would prove nothing about reuse), we stub
+# the ONE tmux seam beneath them, `_claim_marker_tmux`, with a file-backed fake
+# window-option store. File-backed, not a shell variable, because reconcile_main
+# runs inside a command substitution: a variable mutation there would die with the
+# subshell, while a clear recorded to a file is observable from the test.
+MARKER_STUB_DIR="$BOARD_CACHE_DIR/marker-stub"
+mkdir -p "$MARKER_STUB_DIR"
+WINDOW_MARKER_FILE="$MARKER_STUB_DIR/claimed_issue"
+MARKER_CLEARS_FILE="$MARKER_STUB_DIR/clears"
+: >"$WINDOW_MARKER_FILE"; : >"$MARKER_CLEARS_FILE"
+
+_claim_marker_tmux() {
+  case "$1" in
+    show-options)  cat "$WINDOW_MARKER_FILE" ;;
+    set-option)
+      # Only the unset form (`-wu @claimed_issue`) is reachable from the repair
+      # path; record it and empty the store. Prints nothing (its stdout would
+      # otherwise land in the captured report).
+      case " $* " in
+        *" -wu "*)
+          printf 'cleared:%s\n' "$(cat "$WINDOW_MARKER_FILE")" >>"$MARKER_CLEARS_FILE"
+          : >"$WINDOW_MARKER_FILE" ;;
+      esac ;;
+  esac
+  return 0
+}
+
+# Per-case fixture reset: seed this window's marker, forget prior clears.
+set_window_marker() {
+  printf '%s' "$1" >"$WINDOW_MARKER_FILE"
+  : >"$MARKER_CLEARS_FILE"
+}
+cleared_count() { grep -c '^cleared:' "$MARKER_CLEARS_FILE" 2>/dev/null || true; }
+
+# --- mcase 1: dry-run — no --fix mutates NOTHING ------------------------------
+# The exact temperloop#748 repro: this window's marker names #502, which is not
+# In Progress on the board and is CLOSED on GitHub — the provably-safe class. With
+# FIX=0 it must still only be REPORTED (plus the discoverability hint), never cleared.
+ITEM_LIST_JSON='{"items":[
+  {"id":"i503","content":{"number":503,"title":"Unrelated"},"status":"Ready"}
+]}'
+MARKER_LINES='#502 Claim target
+'
+ISSUE_VIEW_JSON='{"state":"CLOSED"}'
+PR_VIEW_JSON=""
+set_window_marker '#502 Claim target'
+FIX=0
+run_case
+printf '%s' "$OUT" | grep -q "#502 — marker set locally, but #502 is NOT In Progress" \
+  || fail "mcase1: expected the #502 stale-marker drift line\n$OUT"
+printf '%s' "$OUT" | grep -q -- "pass --fix to clear THIS window's marker" \
+  || fail "mcase1: report should point at the repair flag\n$OUT"
+printf '%s' "$OUT" | grep -q -- "--fix (marker lens)" \
+  && fail "mcase1: repair section must not run without --fix\n$OUT"
+[ "$(cleared_count)" = "0" ] || fail "mcase1: dry run must clear nothing (got $(cleared_count))"
+[ "$(cat "$WINDOW_MARKER_FILE")" = '#502 Claim target' ] \
+  || fail "mcase1: dry run must leave the marker intact (got '$(cat "$WINDOW_MARKER_FILE")')"
+echo "PASS: marker case 1 report-only without --fix (mutates nothing)"
+
+# --- mcase 2: safe clear — stale marker naming a CLOSED issue -----------------
+# Same fixture, FIX=1: both gates pass (marker-without-board drift + provably
+# terminal), so claim_marker_clear fires exactly once and the marker is gone.
+set_window_marker '#502 Claim target'
+FIX=1
+run_case
+printf '%s' "$OUT" | grep -q -- "--fix (marker lens)" \
+  || fail "mcase2: expected the repair section\n$OUT"
+printf '%s' "$OUT" | grep -q "✓ cleared \[#502 Claim target\] — #502 is CLOSED" \
+  || fail "mcase2: expected #502 to be cleared as CLOSED\n$OUT"
+[ "$(cleared_count)" = "1" ] || fail "mcase2: expected exactly one clear (got $(cleared_count))\n$OUT"
+[ -z "$(cat "$WINDOW_MARKER_FILE")" ] \
+  || fail "mcase2: marker should be gone (got '$(cat "$WINDOW_MARKER_FILE")')"
+FIX=0
+echo "PASS: marker case 2 safe clear fires for a CLOSED-issue stale marker"
+
+# --- mcase 3: PR fallback — a MERGED PR number is terminal too ----------------
+# `gh issue view` finds nothing (empty payload); the pr-view fallback reports
+# MERGED, which is equally terminal.
+ITEM_LIST_JSON='{"items":[]}'
+MARKER_LINES='#740 Merged PR
+'
+ISSUE_VIEW_JSON=""
+PR_VIEW_JSON='{"state":"MERGED"}'
+set_window_marker '#740 Merged PR'
+FIX=1
+run_case
+printf '%s' "$OUT" | grep -q "✓ cleared \[#740 Merged PR\] — #740 is MERGED" \
+  || fail "mcase3: expected the pr-view fallback to prove #740 MERGED\n$OUT"
+[ "$(cleared_count)" = "1" ] || fail "mcase3: expected exactly one clear (got $(cleared_count))\n$OUT"
+FIX=0
+echo "PASS: marker case 3 MERGED PR resolves terminal via the pr-view fallback"
+
+# --- mcase 4: UNSAFE — stale marker whose issue is still OPEN ------------------
+# marker-without-board drift, but #800 is OPEN: the work may be live, so it is
+# reported and NEVER cleared.
+ITEM_LIST_JSON='{"items":[]}'
+MARKER_LINES='#800 Still open
+'
+ISSUE_VIEW_JSON='{"state":"OPEN"}'
+PR_VIEW_JSON=""
+set_window_marker '#800 Still open'
+FIX=1
+run_case
+printf '%s' "$OUT" | grep -q "#800 — NOT repaired" \
+  || fail "mcase4: an OPEN issue's marker must be refused\n$OUT"
+printf '%s' "$OUT" | grep -q "not provably terminal (state 'OPEN')" \
+  || fail "mcase4: refusal should name the non-terminal state\n$OUT"
+printf '%s' "$OUT" | grep -q "✓ cleared" && fail "mcase4: nothing may be cleared\n$OUT"
+[ "$(cleared_count)" = "0" ] || fail "mcase4: OPEN issue must not be cleared (got $(cleared_count))"
+[ "$(cat "$WINDOW_MARKER_FILE")" = '#800 Still open' ] \
+  || fail "mcase4: the marker must survive untouched"
+FIX=0
+echo "PASS: marker case 4 no clear for an OPEN-issue marker"
+
+# --- mcase 5: UNSAFE — unreadable state fails safe ----------------------------
+# Neither view returns anything (not found / auth error). "Not provably terminal"
+# → no repair. A read failure can only ever make the repair do LESS.
+ITEM_LIST_JSON='{"items":[]}'
+MARKER_LINES='#999 Unknown to GitHub
+'
+ISSUE_VIEW_JSON=""
+PR_VIEW_JSON=""
+set_window_marker '#999 Unknown to GitHub'
+FIX=1
+run_case
+printf '%s' "$OUT" | grep -q "not provably terminal (state 'unknown')" \
+  || fail "mcase5: an unreadable state must fail safe to no repair\n$OUT"
+[ "$(cleared_count)" = "0" ] || fail "mcase5: unreadable state must clear nothing (got $(cleared_count))"
+FIX=0
+echo "PASS: marker case 5 unreadable GitHub state fails safe (no clear)"
+
+# --- mcase 6: UNSAFE — the whole board-without-marker class is never repaired --
+# #600 is In Progress on the board for THIS host with no live marker anywhere —
+# the class temperloop#719 proved produces FALSE stranded-claim signals. Even with
+# --fix, nothing is cleared and (above all) nothing is re-stamped: with no marker
+# in this window there is nothing for the repair to act on at all.
+ITEM_LIST_JSON='{"items":[
+  {"id":"i600","content":{"number":600,"title":"Claimed here, marker clobbered"},"status":"In Progress","host/Session":"testhost:e4e906b5"}
+]}'
+MARKER_LINES=''
+ISSUE_VIEW_JSON='{"state":"CLOSED"}'   # even a terminal answer must not license a repair here
+PR_VIEW_JSON=""
+set_window_marker ''
+FIX=1
+run_case
+printf '%s' "$OUT" | grep -q "board-without-marker (claimed on board, no local marker — REPORT-ONLY, never repaired)" \
+  || fail "mcase6: expected the board-without-marker section, marked report-only\n$OUT"
+printf '%s' "$OUT" | grep -q "#600 — In Progress on the board (this host) but NO live tmux marker" \
+  || fail "mcase6: #600 should still be reported\n$OUT"
+printf '%s' "$OUT" | grep -q "nothing to repair: no claim marker is set in this window" \
+  || fail "mcase6: repair should no-op with no marker in this window\n$OUT"
+printf '%s' "$OUT" | grep -q "✓ cleared" && fail "mcase6: board-without-marker must never be cleared\n$OUT"
+[ "$(cleared_count)" = "0" ] || fail "mcase6: board-without-marker must clear nothing (got $(cleared_count))"
+[ -z "$(cat "$WINDOW_MARKER_FILE")" ] \
+  || fail "mcase6: board-without-marker must never RE-STAMP a marker (got '$(cat "$WINDOW_MARKER_FILE")')"
+FIX=0
+echo "PASS: marker case 6 board-without-marker never repaired (no clear, no re-stamp)"
+
+# --- mcase 7: UNSAFE — a LIVE same-host board claim is never cleared -----------
+# The marker names #700, which IS In Progress on the board stamped to this host: a
+# live claim (the K#275 claim-until-Done case). Gate 1 must refuse BEFORE the
+# terminality check, so even a CLOSED answer from GitHub cannot license the clear.
+ITEM_LIST_JSON='{"items":[
+  {"id":"i700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"}
+]}'
+MARKER_LINES='#700 Working it now
+'
+ISSUE_VIEW_JSON='{"state":"CLOSED"}'
+PR_VIEW_JSON=""
+set_window_marker '#700 Working it now'
+FIX=1
+run_case
+printf '%s' "$OUT" | grep -q "#700 — NOT repaired: it is In Progress on the board, stamped to this host" \
+  || fail "mcase7: a live same-host claim must be refused by gate 1\n$OUT"
+[ "$(cleared_count)" = "0" ] || fail "mcase7: a live claim must not be cleared (got $(cleared_count))"
+[ "$(cat "$WINDOW_MARKER_FILE")" = '#700 Working it now' ] \
+  || fail "mcase7: the live claim's marker must survive"
+FIX=0
+echo "PASS: marker case 7 a live same-host claim is refused before the terminality check"
+
+# Restore the marker-lens fixtures for anything downstream.
+ISSUE_VIEW_JSON=""; PR_VIEW_JSON=""; set_window_marker ''
 
 echo
 echo "=== Lens 2: status drift (status_reconcile_main) ==="
