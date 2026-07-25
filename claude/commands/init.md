@@ -10,7 +10,7 @@ What to add:
 
 Usage notes:
 - If there's already a CLAUDE.md, suggest improvements to it.
-- When you make the initial CLAUDE.md, do not repeat yourself and do not include obvious instructions like "Provide helpful error messages to users", "Write unit tests for all new utilities", "Never include sensitive information (API keys, tokens) in code or commits".
+- When you make the initial CLAUDE.md, do not repeat yourself and do not include obvious instructions like "Provide helpful error messages to users", "Write unit tests for all new utilities", "Never include sensitive information (API keys, tokens) in code or commits". <!-- cite: IN.1 keep:2026-07-25 -->
 - Avoid listing every component or file structure that can be easily discovered.
 - Don't include generic development practices.
 - If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (in .github/copilot-instructions.md), make sure to include the important parts.
@@ -29,7 +29,7 @@ Once CLAUDE.md has been written, create a project context placeholder in **the k
 Steps:
 1. Derive the project name from the current working directory name (e.g. `/Users/alice/dev/BusinessSearch` → `BusinessSearch`). Convert hyphenated/underscored names to title case (e.g. `my-app` → `My App`).
 2. Build a kebab-case tag slug from the project name (e.g. `My App` → `my-app`).
-3. Check whether `Context/<ProjectName>/index.md` already exists in the vault using `mcp__obsidian__get_vault_file`. If it does, skip creation.
+3. Check whether `Context/<ProjectName>/index.md` already exists in the vault using `mcp__obsidian__get_vault_file`. If it does, skip creation. <!-- cite: IN.2 class:duplicate-project-notes -->
 4. If it doesn't exist, use `mcp__obsidian__create_vault_file` to create `Context/<ProjectName>/index.md` with this content (substituting the actual values):
 
 ```markdown

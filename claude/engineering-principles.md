@@ -1,6 +1,6 @@
 # Engineering principles
 
-Cross-language engineering review and authoring **criteria** — the kernel's
+Cross-language engineering review and authoring **criteria** — the kernel's <!-- cite: EP.4 guard:docs/adr/0009-kernel-engineering-principles-layer.md -->
 answer to "what should a review agent (or a human) flag in this diff, no
 matter what language it's written in." This file states **what** the bar is;
 it says nothing about **how** a reviewer applies it in any particular
@@ -10,7 +10,7 @@ this set with zero configuration; a project may extend or override it.
 
 ## How this file relates to the other principles surfaces
 
-Four surfaces exist in this repo, each with a distinct job, and none of them
+Four surfaces exist in this repo, each with a distinct job, and none of them <!-- cite: EP.1 class:drifting-principle-sets -->
 redefines another:
 
 - **`docs/principles.md`** — the toolkit's own design charter: why the
@@ -40,7 +40,7 @@ generation-time prompt), never precomputed or cached across runs.
 
 ## Merge semantics (single statement site)
 
-This is the **one place** this repo states how a project's own principles
+This is the **one place** this repo states how a project's own principles <!-- cite: EP.2 class:silent-criterion-suppression -->
 combine with the kernel set below. Any other spec that resolves this merge
 (`claude/commands/assess.md`, `claude/commands/build.md`, or a future call
 site) implements this rule — it does not restate or re-derive it:
@@ -79,7 +79,7 @@ choice suppressed it."
 
 ## Advisory posture
 
-Every principle below is a **flaggable review criterion**, not a mechanical
+Every principle below is a **flaggable review criterion**, not a mechanical <!-- cite: EP.3 class:hard-gated-judgment-deadlock -->
 gate. A review agent (or a human reviewer) cites a principle when a diff
 appears to violate it; that citation **advises** — it never blocks a merge
 by construction, and no principle in this file is wired into

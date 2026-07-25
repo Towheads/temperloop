@@ -29,7 +29,7 @@ decision needs; see that note for the full verdict table.
 
 ## Scope — artifact-shaped templates only
 
-This file authors **artifact-shaped** templates: message shapes that are
+This file authors **artifact-shaped** templates: message shapes that are <!-- cite: MS.1 class:driftable-second-copy -->
 written *into* a standalone artifact (a PR body, a board comment, a digest
 record) and can be named, checked, and overridden as a unit. It deliberately
 does **not** author **every-turn conversational shapes** — the completion
@@ -52,7 +52,7 @@ plan item (`override-seam`) at authoring time; it has since landed as
 
 ## The seven interaction modes (recap)
 
-Canonical in temperloop#94; restated here (as `measurement-proxies.md` also
+Canonical in temperloop#94; restated here (as `measurement-proxies.md` also <!-- cite: MS.2 incident:K#94 -->
 does) only so each template's mode-mapping below is self-contained:
 
 1. **CLI terminal output** — `try`/`init`, board commands, `gate.sh`
@@ -98,7 +98,7 @@ line) byte-for-byte alone.
 
 ## The reference-token rule
 
-A template class, not a single template: **any token whose meaning lives in
+A template class, not a single template: **any token whose meaning lives in <!-- cite: MS.3 incident:K#94 -->
 an external system — an issue/PR/epic id, a board id, a plan-note slug, a
 session id, a milestone/phase name — must be self-sufficient at its point of
 use.** Concretely:
@@ -138,7 +138,7 @@ restated.
 
 ### PR-body skeleton
 
-**Mode(s):** 6 (durable review artifact) — read cold by the reviewer,
+**Mode(s):** 6 (durable review artifact) — read cold by the reviewer, <!-- cite: MS.4 guard:workflows/scripts/build/pr.sh -->
 absently by a later auditor, mechanically by GitHub's closing-keyword
 scanner.
 
@@ -234,7 +234,7 @@ Shared required slots:
   `## Questions` entry, a decision-queue issue, the pending-decisions note) —
   a pointer to that surface, never a restatement of its grammar.
 
-**When the block is the right vehicle.** This structured block (and
+**When the block is the right vehicle.** This structured block (and <!-- cite: MS.5 guard:claude/plan-schema.md -->
 `AskUserQuestion`) fits a **bounded** decision — approve/reject, or pick from
 a small closed set of named options. For an **open-ended** question — an
 exploratory design fork, a "what should this even look like" — prefer plain
@@ -276,7 +276,7 @@ same notice lands in a durable artifact).
   known. In mode 6 this is unconditional; in mode 2 it is permitted **only**
   for the shipped-but-not-installed subagent case defined below.
 
-The mode-2 minimal form has **two shapes, and only two.** Its **default** is
+The mode-2 minimal form has **two shapes, and only two.** Its **default** is <!-- cite: MS.6 incident:F#164 -->
 the bare one-line `skipped — <agent> unavailable` convention verbatim — that
 exact wording is owned by `CLAUDE.kernel.md` itself and is not restated here.
 Its **one sanctioned exception** is the *shipped-but-not-installed* case: when
@@ -300,7 +300,7 @@ such rather than dressing it up as locked.
 
 ## Provisional slots — do not lock
 
-Per the L0 verification verdict, the following remain explicitly
+Per the L0 verification verdict, the following remain explicitly <!-- cite: MS.7 incident:K#100 -->
 provisional. A template above rests its *structure* on these where noted,
 but none of the following may be authored as a firm, load-bearing rule:
 
@@ -342,7 +342,7 @@ but none of the following may be authored as a firm, load-bearing rule:
 
 ## Citation hygiene
 
-- Cite **Iqbal & Bailey** (CHI 2008 / TOCHI 2010) for the ~90s (88.6s mean)
+- Cite **Iqbal & Bailey** (CHI 2008 / TOCHI 2010) for the ~90s (88.6s mean) <!-- cite: MS.8 incident:K#94 -->
   breakpoint-deferral-cost anchor — **not** Iqbal & Horvitz.
 - Scope the LLM-verbosity figure (≈50.4% compressible without information
   loss) to **short-QA tasks with an explicit brevity instruction** — do not
@@ -378,7 +378,7 @@ resolved per that mechanism.
 
 ## Overrides
 
-This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs
+This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs <!-- cite: MS.9 class:drifting-delta-divergence -->
 overlay routing rule points at. It governs only the five named templates
 this file authors (§ Templates) — no other kernel contract is overridable by
 this or any other route.

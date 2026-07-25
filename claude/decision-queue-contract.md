@@ -38,7 +38,7 @@ stage. The baton has two states:
    — the unassign is the baton handback; the driver recognizes an unassigned
    `decision`-labeled issue as "answered, drain me."
 
-The driver MUST NOT re-assign the issue to itself. The two states (assigned-to-op /
+The driver MUST NOT re-assign the issue to itself. The two states (assigned-to-op / <!-- cite: DQ.1 incident:F#657 -->
 unassigned) are the only states that matter; a bot assignee is treated as unassigned.
 
 ---
@@ -87,7 +87,7 @@ The saved view is purely informational — the board automation does not depend 
 
 ## 3. Typed reply grammar
 
-The operator's answer lives in a **reply comment** on the decision issue. The driver
+The operator's answer lives in a **reply comment** on the decision issue. The driver <!-- cite: DQ.2 incident:F#587 -->
 reads the **most recent comment on the issue at drain time** (the comment posted
 after the baton handback = after the unassign).
 
@@ -140,7 +140,7 @@ A parse-miss never silently defaults to any option. Closed-enum-or-escalate.
 
 ### Single-flight lockfile
 
-Only one `funnel-tick` run may be active at a time per host. The driver acquires a
+Only one `funnel-tick` run may be active at a time per host. The driver acquires a <!-- cite: DQ.3 class:double-driven-decision -->
 lockfile before processing any board:
 
 ```sh
@@ -178,7 +178,7 @@ run. This is the same "assignee changed since I read it = conflict" discipline a
 
 ### Reuse the existing Host/Session claim stamp
 
-When the driver claims a workable item (not a decision issue, but a Ready board
+When the driver claims a workable item (not a decision issue, but a Ready board <!-- cite: DQ.4 guard:workflows/scripts/board/claim.sh -->
 item the driver is about to work), it uses the same stamp `claim.sh` already writes:
 
 ```sh

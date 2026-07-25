@@ -17,14 +17,14 @@ never merge code. See
 
 ## HARD RULES — read first, they override everything below
 
-1. **NEVER open a pull request.** Not for any action, ever.
+1. **NEVER open a pull request.** Not for any action, ever. <!-- cite: FD.1 guard:workflows/scripts/build/funnel-drive.sh -->
 2. **NEVER merge anything.** No `gh pr merge`, no enqueue, no auto-merge arm.
 3. **NEVER drive a `kind:code` item.** Only `kind:spike` drive-ready actions are
    permitted here (a spike opens no PR — build.md's kind:spike path writes a
    verdict note + routes a follow-up). If you are somehow handed a drive-ready
    whose `kind` is not exactly `"spike"`, **skip it** and record it as
    `refused: kind-not-spike` — do not run it.
-4. **Execute each action independently.** A failure on one action is recorded and
+4. **Execute each action independently.** A failure on one action is recorded and <!-- cite: FD.7 incident:F#655 -->
    you continue to the next; one bad action never aborts the batch.
 5. **Stay on the action's own board/repo — your cwd is already that checkout.** The
    driver spawns you INSIDE the target board's local checkout (foundation #655), so a
@@ -64,7 +64,7 @@ bash block is `command not found` / an unbound variable, and every board read er
 `jq 'Cannot index'/'iterate over null'` cascade downstream). That was foundation #1084 —
 recurring every headless run.
 
-So **prefix EVERY board bash block** with the locate-and-source one-liner below. It is
+So **prefix EVERY board bash block** with the locate-and-source one-liner below. It is <!-- cite: FD.2 incident:F#1084 -->
 load-bearing per-block, not once-per-session: a fresh `claude -p` bash call does **not**
 inherit a `source` from an earlier call. It mirrors `/build` Step 0's `BOARD_LIB`
 resolution, condensed because HARD RULE 5 already guarantees your cwd is the action's board
@@ -97,7 +97,7 @@ as such in its bullet below.)
   therefore never receives a `route-needs-input` action; there is nothing to handle.)
 
 - **`route-foundational`** — a Foundational Ready item needs design + plan
-  approval. **First, the already-prepped guard (F#1053):** before running `/assess`,
+  approval. **First, the already-prepped guard (F#1053):** before running `/assess`, <!-- cite: FD.3 incident:F#1053 -->
   check whether the epic already has a plan note whose frontmatter `status` is
   anything other than absent or `draft` (i.e. `approved` or `executing`). If it does,
   the epic was **already decomposed and approved** and is merely parked on its own
@@ -143,7 +143,7 @@ as such in its bullet below.)
      sentinel is what funnel-tick's `clarification_already_applied` guard reads to skip
      a re-listed item before the label drop propagates through the search index.
 
-  **Do NOT post the ack if the label removal failed.** If you did, the marker would
+  **Do NOT post the ack if the label removal failed.** If you did, the marker would <!-- cite: FD.4 incident:F#657 -->
   become the item's latest comment while the label is still present — and every future
   tick would then match `clarification_already_applied`, skip the item as
   already-drained (and the Ready-loop park too, via the `drained_clar` guard), so it
@@ -183,7 +183,7 @@ as such in its bullet below.)
   that's the judge's concern, not something you act on. It does **not** license
   ignoring a write-failure the summary reports.
 
-- **`drive-ready`** (only ever `kind:"spike"` here — see HARD RULE 3) — drive the
+- **`drive-ready`** (only ever `kind:"spike"` here — see HARD RULE 3) — drive the <!-- cite: FD.6 incident:F#635 -->
   spike to its verdict. A drive-ready spike is a **standalone Ready singleton, not an
   epic**, so do **NOT** run `/assess --epic` on it: `/assess` refuses a single issue
   with no sub-issues and no `## Contract` ("run `/triage`"), which is the 2026-06-29
@@ -199,7 +199,7 @@ as such in its bullet below.)
 
 After each action, record `{action, issue, board, status: "executed"|"failed"|"refused", note}`.
 
-**A blocked or failed vault write is never `executed` (foundation#978).** Several
+**A blocked or failed vault write is never `executed` (foundation#978).** Several <!-- cite: FD.5 incident:F#978 -->
 actions above must land a durable vault artifact — a retro/verdict note, a
 pending-decisions append, an `/assess` plan-note write. If that write fails to land
 for **any** reason — a permission-denied MCP tool call (`mcp__obsidian…` /

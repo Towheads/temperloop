@@ -1,6 +1,6 @@
 # Measurement proxies for communication quality
 
-Falsifiability contract for the communication-style model (temperloop#94, epic
+Falsifiability contract for the communication-style model (temperloop#94, epic <!-- cite: MP.2 class:vibes-based-improvement-claims -->
 [[Plans/2026-07-06 temperloop - communication style model]]). Before any
 `claude/message-schema.md` template lands, this file pins **what "highly readable"
 cashes out to** — named, checkable proxies, each tied to a data source (or an
@@ -9,7 +9,7 @@ comparable against a pre-template number instead of against vibes.
 
 ## Independence from the template layer
 
-**These proxies measure the system. They do not gate template authoring.** This
+**These proxies measure the system. They do not gate template authoring.** This <!-- cite: MP.1 incident:K#94 -->
 file has no dependency edge on `claude/message-schema.md` (no `depends-on:` /
 `after:` in the epic's plan) and `message-schema.md`'s authors are not blocked on
 any proxy reaching a target value here — a proxy with no baseline yet, or a proxy

@@ -118,6 +118,7 @@ overlay claude/live-drain-registry.overlay.md
 split claude/settings.json
 kernel claude/status-line.sh
 kernel claude/plan-schema.md
+kernel claude/citation-schema.md
 kernel claude/design-schema.md
 kernel claude/message-schema.md
 kernel claude/presentation-plane.md

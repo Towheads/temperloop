@@ -252,6 +252,11 @@ quality-gates workflows/scripts/tests/test_count_prose.sh
 # consuming count-prose.sh's report rather than re-counting anything itself.
 quality-gates workflows/scripts/validate-prose-budget.sh
 quality-gates workflows/scripts/tests/test_validate_prose_budget.sh
+# Citation-marker convention (temperloop#719/#724, item citation-markers):
+# the marker grammar/placement doc whose registry
+# (workflows/scripts/config/citation-registry.tsv, claimed by the config/*
+# glob above) validate-prose-budget.sh reconciles 1:1 against the tree.
+quality-gates claude/citation-schema.md
 
 # ── docs-generator — docs-site generator + published doc sources ────────────
 docs-generator .github/workflows/docs-pages.yml

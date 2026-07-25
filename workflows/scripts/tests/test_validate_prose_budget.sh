@@ -21,6 +21,15 @@
 # that file; the `:?` guard on each in validate-prose-budget.sh is
 # unexercised here.
 #
+# Also covers the CITATION-MARKER presence check (temperloop#719, item
+# citation-markers / #724): green 1:1 reconciliation on the real tree; a
+# synthetic fixture root (scratch git checkout + stub compose seam) proving
+# each red path — missing marker (a registered fixture rule lacking its
+# marker), unregistered marker, duplicate marker, malformed marker, a
+# registry row naming an untracked file, and a missing registry file — plus
+# the fence/code-span ignore rules (a fenced or backticked marker is a
+# quotation, never a live marker).
+#
 # Zero network. The tier-1-only-breach fixture uses a `git clone --local
 # --no-hardlinks` of THIS checkout (read-only source; the clone's checked-out
 # working files are independent copies, so patching the clone's
@@ -218,6 +227,99 @@ chmod +x "$FAKE_COUNT2"
 out5e="$(COUNT_PROSE_BIN="$FAKE_COUNT2" bash "$SCRIPT" 2>&1)"; rc5e=$?
 assert_rc "$rc5e" 1 "an unparseable count-prose.sh report exits 1"
 assert_has "$out5e" "could not parse a TIER-1 line count" "the tier-1 parse-failure error is named"
+
+# ── 6. citation-marker presence check ───────────────────────────────────────
+echo "--- 6. citation-marker presence check ---"
+
+# 6a. real tree: the green run's OK line reports the 1:1 reconciliation.
+assert_has "$out" "citation markers:" "real-tree OK line reports the citation-marker reconciliation"
+assert_has "$out" "reconciled 1:1" "real-tree OK line claims the 1:1 contract"
+
+# 6b. synthetic fixture root: a minimal git checkout + stub compose seam, so
+# each marker red path is demonstrated against a controlled tree (markers
+# are same-line, so none of these cases can perturb the size caps).
+MFIX="$TMP/marker-fixture"
+mkdir -p "$MFIX/claude" "$MFIX/workflows/scripts"
+cat >"$MFIX/claude/CLAUDE.kernel.md" <<'EOF'
+# Fixture kernel doc
+
+A standing rule with a marker. <!-- cite: ZZ.1 incident:K#1 -->
+
+```
+<!-- cite: ZZ.9 incident:K#9 -->
+```
+
+A quoted `<!-- cite:` prefix in code font is ignored.
+
+A second rule, deliberately unmarked (the missing-marker case's target).
+EOF
+cat >"$MFIX/claude/extra.md" <<'EOF'
+Second file rule. <!-- cite: YY.1 guard:some/path.sh -->
+EOF
+cat >"$MFIX/workflows/scripts/install-claude-md.sh" <<'EOF'
+#!/bin/sh
+cat "$1" >"$3"
+EOF
+chmod +x "$MFIX/workflows/scripts/install-claude-md.sh"
+git -C "$MFIX" init --quiet
+git -C "$MFIX" add claude workflows 2>/dev/null
+
+REG_GREEN="$TMP/registry-green.tsv"
+printf '# fixture registry\nZZ.1\tclaude/CLAUDE.kernel.md\nYY.1\tclaude/extra.md\n' >"$REG_GREEN"
+
+# green: markers <-> registry reconcile exactly; the fenced ZZ.9 marker and
+# the backtick-quoted prefix are both ignored (either would be red if
+# scanned — unregistered and malformed respectively — so a green run IS the
+# proof of the ignore rules).
+out6="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_GREEN" bash "$SCRIPT" 2>&1)"; rc6=$?
+assert_rc "$rc6" 0 "fixture green: markers reconcile 1:1 (fenced + code-span markers ignored)"
+assert_has "$out6" "citation markers: 2 registry row(s) reconciled 1:1" "fixture green OK line counts exactly the two registered rows"
+
+# missing: a registered fixture rule lacking its marker is RED.
+REG_MISS="$TMP/registry-missing.tsv"
+cat "$REG_GREEN" >"$REG_MISS"
+printf 'ZZ.2\tclaude/CLAUDE.kernel.md\n' >>"$REG_MISS"
+out6m="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_MISS" bash "$SCRIPT" 2>&1)"; rc6m=$?
+assert_rc "$rc6m" 1 "fixture red: a registered rule lacking a marker exits 1"
+assert_has "$out6m" "missing marker: registered rule ZZ.2" "missing-marker failure names the row id"
+assert_has "$out6m" "claude/CLAUDE.kernel.md" "missing-marker failure names the file"
+assert_has "$out6m" "Remediation: add the rule's same-line marker" "missing-marker failure offers the remediation path"
+
+# unregistered: a marker with no registry row is RED.
+REG_HALF="$TMP/registry-half.tsv"
+printf 'ZZ.1\tclaude/CLAUDE.kernel.md\n' >"$REG_HALF"
+out6u="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_HALF" bash "$SCRIPT" 2>&1)"; rc6u=$?
+assert_rc "$rc6u" 1 "fixture red: an unregistered marker exits 1"
+assert_has "$out6u" "unregistered marker" "unregistered-marker failure is named"
+assert_has "$out6u" "YY.1" "unregistered-marker failure names the row id"
+
+# duplicate: the same registered marker appearing twice is RED.
+printf 'Dup line. <!-- cite: ZZ.1 incident:K#1 -->\n' >>"$MFIX/claude/CLAUDE.kernel.md"
+out6d="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_GREEN" bash "$SCRIPT" 2>&1)"; rc6d=$?
+assert_rc "$rc6d" 1 "fixture red: a duplicated marker exits 1"
+assert_has "$out6d" "duplicate marker" "duplicate-marker failure is named"
+git -C "$MFIX" checkout -- claude/CLAUDE.kernel.md 2>/dev/null || true
+
+# restore-check + malformed: an unparseable `<!-- cite:` occurrence is RED.
+printf 'Bad. <!-- cite: ZZ.3 wrongclass:K#3 -->\n' >>"$MFIX/claude/CLAUDE.kernel.md"
+out6b="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_GREEN" bash "$SCRIPT" 2>&1)"; rc6b=$?
+assert_rc "$rc6b" 1 "fixture red: a malformed marker exits 1"
+assert_has "$out6b" "malformed citation marker" "malformed-marker failure is named"
+git -C "$MFIX" checkout -- claude/CLAUDE.kernel.md 2>/dev/null || true
+
+# registry row naming an untracked file is RED (never a misleading bare
+# "missing marker").
+REG_GHOST="$TMP/registry-ghost.tsv"
+cat "$REG_GREEN" >"$REG_GHOST"
+printf 'QQ.1\tclaude/not-tracked.md\n' >>"$REG_GHOST"
+out6g="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_GHOST" bash "$SCRIPT" 2>&1)"; rc6g=$?
+assert_rc "$rc6g" 1 "fixture red: a registry row naming an untracked file exits 1"
+assert_has "$out6g" "not in the tracked claude/**/*.md set" "untracked-file registry row failure is named"
+
+# missing registry file is RED with a clear error.
+out6r="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$TMP/no-such-registry.tsv" bash "$SCRIPT" 2>&1)"; rc6r=$?
+assert_rc "$rc6r" 1 "missing citation registry exits 1"
+assert_has "$out6r" "citation registry not found" "missing-registry error is named"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
