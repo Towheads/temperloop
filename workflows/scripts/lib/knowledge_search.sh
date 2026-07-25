@@ -8,7 +8,7 @@
 # Companion to knowledge_store.sh (same directory, document I/O). This file
 # adds a SEARCH surface bound to the SAME corpus: ks_search's target is
 # always ks_root (knowledge_store.sh) — there is NO independent search-corpus
-# path knob. A search index that could point somewhere other than the
+# path setting. A search index that could point somewhere other than the
 # document store would silently drift from it (split-brain guard).
 #
 # Backend selected by the Phase-0 spike verdict (foundation #776, completed
@@ -29,7 +29,7 @@
 # set -euo). Depends on: knowledge_store.sh (ks_root — source it first),
 # jq (reshaping basic-memory's JSON into this file's JSONL output).
 #
-# ── Config knobs ─────────────────────────────────────────────────────────
+# ── Config settings ─────────────────────────────────────────────────────────
 #   KNOWLEDGE_SEARCH_BACKEND     backend name, kebab-case. Default:
 #                                basic-memory (the only backend this file
 #                                implements; the plain-files knowledge_store
@@ -67,7 +67,7 @@
 #                                with KNOWLEDGE_SEARCH_BM_VERSION, never
 #                                silently).
 #
-# NOT a corpus-root knob: ks_search always targets ks_root (knowledge_store.sh)
+# NOT a corpus-root setting: ks_search always targets ks_root (knowledge_store.sh)
 # — there is no KNOWLEDGE_SEARCH_ROOT or equivalent.
 
 # ── Public interface ────────────────────────────────────────────────────

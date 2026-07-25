@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Tests for workflows/scripts/build/funnel-drive.sh — the autonomous funnel
-# driver's RUNG-5b safe-actions-only EXECUTOR (foundation #604).
+# Tests for workflows/scripts/build/pipeline-drive.sh — the autonomous pipeline
+# driver's LAYER-5b safe-actions-only EXECUTOR (foundation #604).
 #
-# funnel-drive.sh is a THIN executor: it tiers a tick plan into SAFE (auto-execute,
+# pipeline-drive.sh is a THIN executor: it tiers a tick plan into SAFE (auto-execute,
 # no-merge) vs MERGING (leave for the operator) vs no-op-ish, then hands ONLY the
-# safe tier to a headless `claude -p "/funnel-drive"`. These tests run entirely
+# safe tier to a headless `claude -p "/pipeline-drive"`. These tests run entirely
 # OFFLINE: the deterministic tiering is asserted via --dry-run (no claude spawn),
 # and the headless invocation is exercised against a CAPTURE DOUBLE that records
 # the payload instead of calling the real CLI. Zero network, zero real claude.
@@ -19,10 +19,10 @@
 #   4. live drive → the headless payload carries the safe actions AND the
 #      merge-forbidding HARD RULES; the driver's JSON summary is passed through.
 #   5. a code-only plan in LIVE mode spawns NO claude (the merging tier never
-#      reaches the headless layer) WHEN FUNNEL_DRIVE_MERGE is off (the default).
-#   6–12. rung 5c (#615) — with FUNNEL_DRIVE_MERGE=1 the kind:code merge tier IS
-#      driven via a headless `claude -p "/funnel-drive-merge"` under the
-#      merge-ALLOWING overlay and FUNNEL_OPERATOR_ABSENT=1: the cap is enforced,
+#      reaches the headless layer) WHEN PIPELINE_DRIVE_MERGE is off (the default).
+#   6–12. level 5c (#615) — with PIPELINE_DRIVE_MERGE=1 the kind:code merge tier IS
+#      driven via a headless `claude -p "/pipeline-drive-merge"` under the
+#      merge-ALLOWING overlay and PIPELINE_OPERATOR_ABSENT=1: the cap is enforced,
 #      the gate defaults OFF (no merge drive), a missing merge overlay fails
 #      closed, the overlay grants the gh pr/merge/push surface, and both tiers
 #      can run in one tick.
@@ -30,7 +30,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DRIVE="$HERE/../funnel-drive.sh"
+DRIVE="$HERE/../pipeline-drive.sh"
 
 pass=0
 fail=0
@@ -53,7 +53,7 @@ mk_repo() {  # $1 = dir  $2 = branch (default main)
 }
 
 # #655: the driver now spawns the headless `claude -p` INSIDE the target board's
-# checkout (FUNNEL_CHECKOUT_<n>) so /build's cwd-derived repoRoot+board match the
+# checkout (PIPELINE_CHECKOUT_<n>) so /build's cwd-derived repoRoot+board match the
 # action's board/repo. Point every board at a hermetic fake checkout (a dir with a
 # .git child — the test double ignores cwd, it only needs `cd` to succeed) so the
 # suite never depends on the machine's ~/dev layout, and distinct dirs per board so
@@ -66,22 +66,22 @@ mk_repo() {  # $1 = dir  $2 = branch (default main)
 # pre-flight tests (t37/t38).
 CO3="$TMP/co3"; CO4="$TMP/co4"
 mk_repo "$CO3"; mk_repo "$CO4"
-export FUNNEL_CHECKOUT_3="$CO3" FUNNEL_CHECKOUT_4="$CO4"
-export FUNNEL_CHECKOUT_5="$CO3" FUNNEL_CHECKOUT_6="$CO3"
-export FUNNEL_CHECKOUT_9=""           # explicitly unmapped → no-checkout policy
-export FUNNEL_DEFAULT_CHECKOUT="$CO4"  # safe-tier fallback for an unmapped board
+export PIPELINE_CHECKOUT_3="$CO3" PIPELINE_CHECKOUT_4="$CO4"
+export PIPELINE_CHECKOUT_5="$CO3" PIPELINE_CHECKOUT_6="$CO3"
+export PIPELINE_CHECKOUT_9=""           # explicitly unmapped → no-checkout policy
+export PIPELINE_DEFAULT_CHECKOUT="$CO4"  # safe-tier fallback for an unmapped board
 
 # #1157: the #1157 abandonment reclaim (_reclaim_abandoned) shells out to unclaim.sh
 # to release a stranded claim. A clean-merge summary ({merged:N,results:[]}) has the
 # SAME empty per-issue status as an abandonment, so the reclaim pass RUNS in every
-# merge test — point FUNNEL_UNCLAIM_BIN at a global NO-OP double for the WHOLE suite
+# merge test — point PIPELINE_UNCLAIM_BIN at a global NO-OP double for the WHOLE suite
 # so no test can ever invoke the REAL unclaim.sh → real board write. The reclaim
-# tests below override FUNNEL_UNCLAIM_BIN with their own per-case recording double.
+# tests below override PIPELINE_UNCLAIM_BIN with their own per-case recording double.
 GLOBAL_UNCLAIM="$TMP/unclaim-noop.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$GLOBAL_UNCLAIM"; chmod +x "$GLOBAL_UNCLAIM"
-export FUNNEL_UNCLAIM_BIN="$GLOBAL_UNCLAIM"
+export PIPELINE_UNCLAIM_BIN="$GLOBAL_UNCLAIM"
 
-# A synthetic tick-plan ARRAY — the shape funnel-cron.sh collects (per-board
+# A synthetic tick-plan ARRAY — the shape pipeline-cron.sh collects (per-board
 # {tick,actions[]} objects). One of every action class, so the tiering is exercised
 # in full. (A real single tick emits at most one drive-ready — the drive cap — so the
 # two drives here are synthetic, to assert spike-vs-code routing in one pass.)
@@ -126,7 +126,7 @@ jq -e '.safe + .merge | any(.action=="route-already-assigned" or .action=="drain
   && ok "merge tier = {code drive 101} (left for the operator)" || bad "t1.merge" "got $(jq -c '[.merge[].issue]' <<<"$OUT")"
 
 # ── 1b: retro-judge classifies SAFE, no-merge (epic #528, temperloop#535) ─────
-# The KERNEL trigger half of the mint-then-judge design: funnel-tick.sh emits
+# The KERNEL trigger half of the mint-then-judge design: pipeline-tick.sh emits
 # `retro-judge` when a due `retro-pending` tracker (build.md 4d-retro's mint,
 # #533) is found. It spawns the overlay `/retro --pending` judge — no PR, no
 # merge of its own — so it belongs in the SAFE tier alongside the other
@@ -171,7 +171,7 @@ OUT3="$(printf '%s' "$CODE_ONLY" | env CLAUDE_BIN="$NOSPAWN_DOUBLE" DOUBLE_MARK=
 # ── 4: live drive → payload carries the safe actions + HARD RULES; summary passthrough ─
 echo "--- test 4: live drive hands the safe payload (with hard rules) to claude -p ---"
 CAP="$TMP/cap"; mkdir -p "$CAP"
-# Capture double: records argv + the /funnel-drive payload file, returns a canned summary.
+# Capture double: records argv + the /pipeline-drive payload file, returns a canned summary.
 CAP_DOUBLE="$TMP/claude-capture.sh"
 cat > "$CAP_DOUBLE" <<'DOUBLE'
 #!/usr/bin/env bash
@@ -182,14 +182,14 @@ for a in "$@"; do
   [ "$prev" = "-p" ] && prompt="$a"
   prev="$a"
 done
-# prompt looks like: /funnel-drive /tmp/funnel-drive.XXXX
-payload="${prompt#/funnel-drive }"
+# prompt looks like: /pipeline-drive /tmp/pipeline-drive.XXXX
+payload="${prompt#/pipeline-drive }"
 [ -f "$payload" ] && cp "$payload" "$CAP_DIR/payload.json"
-echo '{"driver":"funnel-drive","rung":"5b","executed":3,"failed":0,"refused":0,"results":[]}'
+echo '{"driver":"pipeline-drive","layer":"5b","executed":3,"failed":0,"refused":0,"results":[]}'
 DOUBLE
 chmod +x "$CAP_DOUBLE"
 
-OUT4="$(printf '%s' "$PLANS" | env CLAUDE_BIN="$CAP_DOUBLE" CAP_DIR="$CAP" FUNNEL_DRIVE_MODEL="claude-test" bash "$DRIVE")"
+OUT4="$(printf '%s' "$PLANS" | env CLAUDE_BIN="$CAP_DOUBLE" CAP_DIR="$CAP" PIPELINE_DRIVE_MODEL="claude-test" bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT4")" = "ran" ] && ok "live drive → status=ran" || bad "t4.status" "got $(jq -r '.status' <<<"$OUT4")"
 # The driver's JSON summary is passed through verbatim under .result.
 [ "$(jq -r '.result.executed' <<<"$OUT4")" = "3" ] && ok "driver summary passed through (.result.executed=3)" || bad "t4.result" "got $(jq -r '.result.executed // "none"' <<<"$OUT4")"
@@ -211,7 +211,7 @@ jq -e '[.hard_rules[]] | any(test("kind:code"))' "$CAP/payload.json" >/dev/null 
   && ok "payload carries the 'never drive a kind:code item' hard rule" || bad "t4.rule-code" "no code-drive prohibition in payload"
 # Containment (#606): the headless invocation is launched UNDER the --settings deny
 # overlay and NEVER with --dangerously-skip-permissions.
-OVERLAY="$(cd "$HERE/.." && pwd)/funnel-drive.settings.json"
+OVERLAY="$(cd "$HERE/.." && pwd)/pipeline-drive.settings.json"
 grep -qx -- "--settings" "$CAP/argv.txt" \
   && ok "claude invoked with --settings (containment overlay)" || bad "t4.settings-flag" "no --settings in argv"
 grep -qxF "$OVERLAY" "$CAP/argv.txt" \
@@ -223,13 +223,13 @@ grep -q "dangerously-skip-permissions" "$CAP/argv.txt" \
 echo "--- test 5a: a missing settings overlay fails closed (no claude spawn) ---"
 MISS_MARK="$TMP/should-not-spawn-missing"
 OUT5A="$(printf '%s' "$PLANS" | env CLAUDE_BIN="$NOSPAWN_DOUBLE" DOUBLE_MARK="$MISS_MARK" \
-          FUNNEL_DRIVE_SETTINGS="$TMP/nope-not-here.json" bash "$DRIVE")"
+          PIPELINE_DRIVE_SETTINGS="$TMP/nope-not-here.json" bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT5A")" = "error" ] && ok "missing overlay → status=error (fail-closed)" || bad "t5a.status" "got $(jq -r '.status' <<<"$OUT5A")"
 [ ! -f "$MISS_MARK" ] && ok "no claude spawned with a missing overlay (never runs uncontained)" || bad "t5a.spawn" "claude spawned despite missing overlay"
 
 # ── 5b: the policy file itself denies the merge/PR/push surface ───────────────
-echo "--- test 5b: funnel-drive.settings.json denies gh pr + git push ---"
-POLICY="$(cd "$HERE/.." && pwd)/funnel-drive.settings.json"
+echo "--- test 5b: pipeline-drive.settings.json denies gh pr + git push ---"
+POLICY="$(cd "$HERE/.." && pwd)/pipeline-drive.settings.json"
 [ -f "$POLICY" ] && ok "overlay policy file exists" || bad "t5b.exists" "policy file missing at $POLICY"
 jq -e '.permissions.deny | index("Bash(gh pr:*)")' "$POLICY" >/dev/null \
   && ok "policy denies Bash(gh pr:*)" || bad "t5b.deny-pr" "gh pr not denied"
@@ -240,7 +240,7 @@ jq -e '.permissions.deny | index("Bash(git push:*)")' "$POLICY" >/dev/null \
 # Without an allow block the headless driver (untrusted workspace) is denied
 # Read/Bash wholesale and no-ops; these entries let route/drain/assess/spike act
 # while deny (above) still blocks the merge surface (deny > allow).
-echo "--- test 5c: funnel-drive.settings.json allows the safe-tier surface ---"
+echo "--- test 5c: pipeline-drive.settings.json allows the safe-tier surface ---"
 for entry in "Bash" "Read" "Edit" "Write" "Task" "mcp__obsidian__*"; do
   jq -e --arg e "$entry" '.permissions.allow | index($e)' "$POLICY" >/dev/null \
     && ok "policy allows $entry" || bad "t5c.allow" "allow missing $entry"
@@ -252,12 +252,12 @@ OUT5="$(printf 'not json at all' | bash "$DRIVE" --dry-run)"
 [ "$(jq -r '.status' <<<"$OUT5")" = "empty" ] && ok "garbage input → status=empty (fail-open)" || bad "t5.status" "got $(jq -r '.status' <<<"$OUT5")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
-# │ RUNG 5c — the merge tier (#615). FUNNEL_DRIVE_MERGE=1 drives kind:code.    │
+# │ LAYER 5c — the merge tier (#615). PIPELINE_DRIVE_MERGE=1 drives kind:code.    │
 # ╰──────────────────────────────────────────────────────────────────────────╯
 
-# A dual capture double: records argv + which prose command + the FUNNEL_OPERATOR_ABSENT
+# A dual capture double: records argv + which prose command + the PIPELINE_OPERATOR_ABSENT
 # env, copies each tier's payload, and returns the matching canned summary. Distinguishes
-# /funnel-drive (safe) from /funnel-drive-merge (5c merge).
+# /pipeline-drive (safe) from /pipeline-drive-merge (5c merge).
 make_merge_double() {  # $1 = capture dir
   local d="$1" f="$1/double.sh"
   cat > "$f" <<'DOUBLE'
@@ -269,16 +269,16 @@ for a in "$@"; do
   [ "$prev" = "-p" ] && prompt="$a"
   prev="$a"
 done
-printf 'opabsent=%s prompt=%s\n' "${FUNNEL_OPERATOR_ABSENT:-unset}" "$prompt" >> "$CAP_DIR/calls.txt"
+printf 'opabsent=%s prompt=%s\n' "${PIPELINE_OPERATOR_ABSENT:-unset}" "$prompt" >> "$CAP_DIR/calls.txt"
 printf '%s\t%s\n' "$PWD" "$prompt" >> "$CAP_DIR/pwd.txt"
 case "$prompt" in
-  "/funnel-drive-merge "*)
-    payload="${prompt#/funnel-drive-merge }"
+  "/pipeline-drive-merge "*)
+    payload="${prompt#/pipeline-drive-merge }"
     [ -f "$payload" ] && cp "$payload" "$CAP_DIR/merge-payload.json"
     # The canned Step-3 summary. Tests override MERGE_SUMMARY to exercise the
     # park/refuse outcomes (#620); default = one clean merge.
     summary="${MERGE_SUMMARY:-}"
-    [ -z "$summary" ] && summary='{"driver":"funnel-drive-merge","rung":"5c","merged":1,"parked":0,"failed":0,"refused":0,"results":[]}'
+    [ -z "$summary" ] && summary='{"driver":"pipeline-drive-merge","layer":"5c","merged":1,"parked":0,"failed":0,"refused":0,"results":[]}'
     if [ "${MERGE_WRAP:-0}" = "1" ]; then
       # Emit the PRODUCTION shape: a `claude -p --output-format json` envelope
       # carrying the summary as a ```json fenced block inside .result, so the
@@ -289,13 +289,13 @@ case "$prompt" in
       printf '%s\n' "$summary"
     fi
     ;;
-  "/funnel-drive "*)
-    payload="${prompt#/funnel-drive }"
+  "/pipeline-drive "*)
+    payload="${prompt#/pipeline-drive }"
     [ -f "$payload" ] && cp "$payload" "$CAP_DIR/safe-payload.json"
     # The canned Step-3 summary. Tests override SAFE_SUMMARY to exercise the safe-tier
     # refuse outcome (F#1053 route-foundational park); default = one clean execution.
     ssummary="${SAFE_SUMMARY:-}"
-    [ -z "$ssummary" ] && ssummary='{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
+    [ -z "$ssummary" ] && ssummary='{"driver":"pipeline-drive","layer":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
     printf '%s\n' "$ssummary"
     ;;
   *) echo '{}' ;;
@@ -305,28 +305,28 @@ DOUBLE
   printf '%s' "$f"
 }
 
-MERGE_OVERLAY="$(cd "$HERE/.." && pwd)/funnel-drive-merge.settings.json"
+MERGE_OVERLAY="$(cd "$HERE/.." && pwd)/pipeline-drive-merge.settings.json"
 # A realistic single code drive (a tick is drive-capped to ~one drive).
 CODE1='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":101,"kind":"code","emit":"/build"}]}]'
 
-# ── 6: FUNNEL_DRIVE_MERGE=1 drives the code tier via /funnel-drive-merge ───────
-echo "--- test 6: gate ON → the code drive is executed via /funnel-drive-merge ---"
+# ── 6: PIPELINE_DRIVE_MERGE=1 drives the code tier via /pipeline-drive-merge ───────
+echo "--- test 6: gate ON → the code drive is executed via /pipeline-drive-merge ---"
 C6="$TMP/c6"; mkdir -p "$C6"; D6="$(make_merge_double "$C6")"
 OUT6="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D6" CAP_DIR="$C6" \
-        FUNNEL_DRIVE_MERGE=1 FUNNEL_DRIVE_MERGE_MODEL="merge-model-test" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 PIPELINE_DRIVE_MERGE_MODEL="merge-model-test" bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT6")" = "ran" ] && ok "gate on + code drive → status=ran" || bad "t6.status" "got $(jq -r '.status' <<<"$OUT6")"
 [ "$(jq -r '.merge_driven' <<<"$OUT6")" = "1" ] && ok "merge_driven=1 (code item handed to the merge driver)" || bad "t6.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT6")"
 [ "$(jq -r '.merged_pr' <<<"$OUT6")" = "1" ] && ok "merged_pr=1 (driver reported one real merge)" || bad "t6.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT6")"
 [ "$(jq -r '.skipped_merge' <<<"$OUT6")" = "0" ] && ok "skipped_merge=0 (nothing left for operator)" || bad "t6.skipped" "got $(jq -r '.skipped_merge' <<<"$OUT6")"
 [ "$(jq -r '.merge_result.merged' <<<"$OUT6")" = "1" ] && ok "merge driver summary passed through (.merge_result.merged=1)" || bad "t6.mresult" "got $(jq -r '.merge_result.merged // "none"' <<<"$OUT6")"
-grep -q '^/funnel-drive-merge ' "$C6/argv.txt" && ok "claude invoked with the /funnel-drive-merge command" || bad "t6.cmd" "no /funnel-drive-merge in argv"
+grep -q '^/pipeline-drive-merge ' "$C6/argv.txt" && ok "claude invoked with the /pipeline-drive-merge command" || bad "t6.cmd" "no /pipeline-drive-merge in argv"
 grep -qx "merge-model-test" "$C6/argv.txt" && ok "merge driver used the configured merge model" || bad "t6.model" "merge model not passed"
 grep -qxF "$MERGE_OVERLAY" "$C6/argv.txt" && ok "merge driver launched under the merge-allowing overlay" || bad "t6.overlay" "merge overlay path not in argv"
-grep -q '^opabsent=1 ' "$C6/calls.txt" && ok "merge driver ran with FUNNEL_OPERATOR_ABSENT=1 (build's operator-absent regime)" || bad "t6.opabsent" "FUNNEL_OPERATOR_ABSENT not set for the merge call"
+grep -q '^opabsent=1 ' "$C6/calls.txt" && ok "merge driver ran with PIPELINE_OPERATOR_ABSENT=1 (build's operator-absent regime)" || bad "t6.opabsent" "PIPELINE_OPERATOR_ABSENT not set for the merge call"
 grep -q "dangerously-skip-permissions" "$C6/argv.txt" && bad "t6.no-bypass" "--dangerously-skip-permissions was passed" || ok "merge driver NOT invoked with --dangerously-skip-permissions"
-# Merge payload shape: rung 5c, the cap, the code action, and the scoped hard rules.
-[ "$(jq -r '.rung' "$C6/merge-payload.json")" = "5c" ] && ok "merge payload rung=5c" || bad "t6.payload-rung" "got $(jq -r '.rung' "$C6/merge-payload.json")"
+# Merge payload shape: level 5c, the cap, the code action, and the scoped hard rules.
+[ "$(jq -r '.layer' "$C6/merge-payload.json")" = "5c" ] && ok "merge payload layer=5c" || bad "t6.payload-layer" "got $(jq -r '.layer' "$C6/merge-payload.json")"
 [ "$(jq -c '[.actions[].issue]' "$C6/merge-payload.json")" = "[101]" ] && ok "merge payload carries the code drive (101)" || bad "t6.payload-actions" "got $(jq -c '[.actions[].issue]' "$C6/merge-payload.json")"
 jq -e '[.hard_rules[]] | any(test("Merge ONLY through /build"))' "$C6/merge-payload.json" >/dev/null \
   && ok "merge payload carries the 'merge only through /build' hard rule" || bad "t6.rule" "no /build-only rule in merge payload"
@@ -334,13 +334,13 @@ jq -e '[.hard_rules[]] | any(test("never force-merge"))' "$C6/merge-payload.json
   && ok "merge payload carries the 'never force-merge a risky set' hard rule" || bad "t6.rule2" "no force-merge prohibition in merge payload"
 
 # ── 7: the per-tick cap bounds how many code items are driven ─────────────────
-echo "--- test 7: FUNNEL_DRIVE_MERGE_CAP caps the merge tier ---"
+echo "--- test 7: PIPELINE_DRIVE_MERGE_CAP caps the merge tier ---"
 CODE2='[{"tick":"done","actions":[
   {"action":"drive-ready","board":"3","repo":"r","issue":101,"kind":"code","emit":"/build"},
   {"action":"drive-ready","board":"3","repo":"r","issue":102,"kind":"code","emit":"/build"}]}]'
 C7="$TMP/c7"; mkdir -p "$C7"; D7="$(make_merge_double "$C7")"
 OUT7="$(printf '%s' "$CODE2" | env CLAUDE_BIN="$D7" CAP_DIR="$C7" \
-        FUNNEL_DRIVE_MERGE=1 FUNNEL_DRIVE_MERGE_CAP=1 bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 PIPELINE_DRIVE_MERGE_CAP=1 bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT7")" = "1" ] && ok "cap=1 → merge_driven=1 (only one handed to the driver)" || bad "t7.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT7")"
 [ "$(jq -r '.skipped_merge' <<<"$OUT7")" = "1" ] && ok "the over-cap code item is reported skipped_merge=1" || bad "t7.skipped" "got $(jq -r '.skipped_merge' <<<"$OUT7")"
 [ "$(jq -c '[.actions[].issue]' "$C7/merge-payload.json")" = "[101]" ] && ok "merge payload sliced to the cap (only 101)" || bad "t7.payload" "got $(jq -c '[.actions[].issue]' "$C7/merge-payload.json")"
@@ -348,28 +348,28 @@ OUT7="$(printf '%s' "$CODE2" | env CLAUDE_BIN="$D7" CAP_DIR="$C7" \
 [ "$(jq -c '[.merge[].issue]|sort' <<<"$OUT7")" = "[101,102]" ] && ok "both code items still surfaced in merge[]" || bad "t7.merge-surface" "got $(jq -c '[.merge[].issue]|sort' <<<"$OUT7")"
 
 # ── 8: gate OFF (default) → the merge tier is NOT driven ──────────────────────
-echo "--- test 8: with FUNNEL_DRIVE_MERGE unset, a code drive is surfaced, not driven ---"
+echo "--- test 8: with PIPELINE_DRIVE_MERGE unset, a code drive is surfaced, not driven ---"
 C8="$TMP/c8"; mkdir -p "$C8"; D8="$(make_merge_double "$C8")"
 # The full mixed fixture (safe + code). Default gate ⇒ safe driven, merge untouched.
 OUT8="$(printf '%s' "$PLANS" | env CLAUDE_BIN="$D8" CAP_DIR="$C8" bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT8")" = "0" ] && ok "gate off → merge_driven=0" || bad "t8.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT8")"
 [ "$(jq -r '.merged_pr' <<<"$OUT8")" = "0" ] && ok "gate off → merged_pr=0 (definitive, merge tier never ran)" || bad "t8.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT8")"
 [ "$(jq -r '.merge_result' <<<"$OUT8")" = "null" ] && ok "gate off → merge_result is null (no merge driver)" || bad "t8.mresult" "got $(jq -r '.merge_result' <<<"$OUT8")"
-grep -q '^/funnel-drive-merge ' "$C8/argv.txt" && bad "t8.spawn" "/funnel-drive-merge spawned with the gate off" || ok "no /funnel-drive-merge spawned with the gate off"
+grep -q '^/pipeline-drive-merge ' "$C8/argv.txt" && bad "t8.spawn" "/pipeline-drive-merge spawned with the gate off" || ok "no /pipeline-drive-merge spawned with the gate off"
 [ "$(jq -r '.skipped_merge' <<<"$OUT8")" = "1" ] && ok "the code drive is left for the operator (skipped_merge=1)" || bad "t8.skipped" "got $(jq -r '.skipped_merge' <<<"$OUT8")"
 
 # ── 9: a missing merge overlay fails CLOSED (no spawn) ────────────────────────
 echo "--- test 9: gate on + missing merge overlay → status=error, no merge spawn ---"
 C9="$TMP/c9"; mkdir -p "$C9"; D9="$(make_merge_double "$C9")"
 OUT9="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D9" CAP_DIR="$C9" \
-        FUNNEL_DRIVE_MERGE=1 FUNNEL_DRIVE_MERGE_SETTINGS="$TMP/no-merge-overlay.json" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 PIPELINE_DRIVE_MERGE_SETTINGS="$TMP/no-merge-overlay.json" bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT9")" = "error" ] && ok "missing merge overlay → status=error (fail-closed)" || bad "t9.status" "got $(jq -r '.status' <<<"$OUT9")"
 jq -e '.merge_result.reason | test("merge settings overlay missing")' <<<"$OUT9" >/dev/null \
   && ok "the error names the missing merge overlay" || bad "t9.reason" "got $(jq -c '.merge_result' <<<"$OUT9")"
 [ ! -f "$C9/calls.txt" ] && ok "no claude spawned with a missing merge overlay (never runs uncontained)" || bad "t9.spawn" "merge driver spawned despite missing overlay"
 
 # ── 10: the merge overlay grants the gh pr/merge/push surface (and denies none) ─
-echo "--- test 10: funnel-drive-merge.settings.json ALLOWS the merge surface ---"
+echo "--- test 10: pipeline-drive-merge.settings.json ALLOWS the merge surface ---"
 [ -f "$MERGE_OVERLAY" ] && ok "merge overlay policy file exists" || bad "t10.exists" "missing at $MERGE_OVERLAY"
 for entry in "Bash(gh pr:*)" "Bash(gh pr merge:*)" "Bash(git push:*)"; do
   jq -e --arg e "$entry" '.permissions.allow | index($e)' "$MERGE_OVERLAY" >/dev/null \
@@ -381,7 +381,7 @@ jq -e '.permissions | has("deny") | not' "$MERGE_OVERLAY" >/dev/null \
 # ── 11: --dry-run with the gate on previews the merge drive WITHOUT spawning ──
 echo "--- test 11: gate on + --dry-run previews the merge tiering, no spawn ---"
 C11="$TMP/c11"; mkdir -p "$C11"; D11="$(make_merge_double "$C11")"
-OUT11="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D11" CAP_DIR="$C11" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE" --dry-run)"
+OUT11="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D11" CAP_DIR="$C11" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE" --dry-run)"
 [ "$(jq -r '.status' <<<"$OUT11")" = "dry-run" ] && ok "gate on + --dry-run → status=dry-run" || bad "t11.status" "got $(jq -r '.status' <<<"$OUT11")"
 [ "$(jq -r '.merge_driven' <<<"$OUT11")" = "1" ] && ok "dry-run reports merge_driven=1 (what WOULD be handed to the driver)" || bad "t11.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT11")"
 [ "$(jq -r '.merged_pr' <<<"$OUT11")" = "0" ] && ok "dry-run merged_pr=0 (a preview merges nothing)" || bad "t11.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT11")"
@@ -390,12 +390,12 @@ OUT11="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D11" CAP_DIR="$C11" FUNNEL_DRIV
 # ── 12: both tiers in one tick — safe AND merge drivers run ───────────────────
 echo "--- test 12: a mixed plan + gate on drives BOTH the safe and merge tiers ---"
 C12="$TMP/c12"; mkdir -p "$C12"; D12="$(make_merge_double "$C12")"
-OUT12="$(printf '%s' "$PLANS" | env CLAUDE_BIN="$D12" CAP_DIR="$C12" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT12="$(printf '%s' "$PLANS" | env CLAUDE_BIN="$D12" CAP_DIR="$C12" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT12")" = "ran" ] && ok "mixed plan + gate on → status=ran" || bad "t12.status" "got $(jq -r '.status' <<<"$OUT12")"
 [ "$(jq -r '.driven' <<<"$OUT12")" = "4" ] && ok "safe tier still driven (driven=4; drain-clarification joins #657)" || bad "t12.driven" "got $(jq -r '.driven' <<<"$OUT12")"
 [ "$(jq -r '.merge_driven' <<<"$OUT12")" = "1" ] && ok "merge tier also driven (merge_driven=1)" || bad "t12.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT12")"
-grep -q '^/funnel-drive ' "$C12/argv.txt" && ok "the safe /funnel-drive command ran" || bad "t12.safe-cmd" "no /funnel-drive in argv"
-grep -q '^/funnel-drive-merge ' "$C12/argv.txt" && ok "the merge /funnel-drive-merge command ran" || bad "t12.merge-cmd" "no /funnel-drive-merge in argv"
+grep -q '^/pipeline-drive ' "$C12/argv.txt" && ok "the safe /pipeline-drive command ran" || bad "t12.safe-cmd" "no /pipeline-drive in argv"
+grep -q '^/pipeline-drive-merge ' "$C12/argv.txt" && ok "the merge /pipeline-drive-merge command ran" || bad "t12.merge-cmd" "no /pipeline-drive-merge in argv"
 [ -f "$C12/safe-payload.json" ] && [ "$(jq -c '[.actions[].issue]|sort' "$C12/safe-payload.json")" = "[42,43,46,102]" ] \
   && ok "safe payload = the safe set (code drive excluded)" || bad "t12.safe-payload" "got $(jq -c '[.actions[].issue]|sort' "$C12/safe-payload.json" 2>/dev/null)"
 [ -f "$C12/merge-payload.json" ] && [ "$(jq -c '[.actions[].issue]' "$C12/merge-payload.json")" = "[101]" ] \
@@ -408,9 +408,9 @@ grep -q '^/funnel-drive-merge ' "$C12/argv.txt" && ok "the merge /funnel-drive-m
 # park looked like a merge in the soak telemetry.
 echo "--- test 13: a parked drive → merge_driven=1 but merged_pr=0 (#620) ---"
 C13="$TMP/c13"; mkdir -p "$C13"; D13="$(make_merge_double "$C13")"
-PARK_SUMMARY='{"driver":"funnel-drive-merge","rung":"5c","merged":0,"parked":1,"failed":0,"refused":0,"results":[{"action":"drive-ready","issue":101,"status":"parked","pr":null}]}'
+PARK_SUMMARY='{"driver":"pipeline-drive-merge","layer":"5c","merged":0,"parked":1,"failed":0,"refused":0,"results":[{"action":"drive-ready","issue":101,"status":"parked","pr":null}]}'
 OUT13="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D13" CAP_DIR="$C13" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$PARK_SUMMARY" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$PARK_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT13")" = "1" ] && ok "parked item still counts as driven (merge_driven=1)" || bad "t13.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT13")"
 [ "$(jq -r '.merged_pr' <<<"$OUT13")" = "0" ] && ok "parked item did NOT merge (merged_pr=0) — the #620 fix" || bad "t13.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT13")"
 [ "$(jq -r '.parked' <<<"$OUT13")" = "1" ] && ok "the park is surfaced (parked=1)" || bad "t13.parked" "got $(jq -r '.parked' <<<"$OUT13")"
@@ -423,7 +423,7 @@ OUT13="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D13" CAP_DIR="$C13" \
 echo "--- test 14: merged_pr parsed from a fenced summary in the claude envelope ---"
 C14="$TMP/c14"; mkdir -p "$C14"; D14="$(make_merge_double "$C14")"
 OUT14="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D14" CAP_DIR="$C14" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_WRAP=1 MERGE_SUMMARY="$PARK_SUMMARY" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 MERGE_WRAP=1 MERGE_SUMMARY="$PARK_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.merged_pr' <<<"$OUT14")" = "0" ] && ok "merged_pr=0 extracted from the fenced envelope" || bad "t14.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT14")"
 [ "$(jq -r '.parked' <<<"$OUT14")" = "1" ] && ok "parked=1 extracted from the fenced envelope" || bad "t14.parked" "got $(jq -r '.parked' <<<"$OUT14")"
 [ "$(jq -r '.merge_driven' <<<"$OUT14")" = "1" ] && ok "merge_driven=1 (production-shape result)" || bad "t14.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT14")"
@@ -434,13 +434,13 @@ OUT14="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D14" CAP_DIR="$C14" \
 echo "--- test 15: unparseable merge output → merged_pr=null (unknown, not a false 0) ---"
 C15="$TMP/c15"; mkdir -p "$C15"; D15="$(make_merge_double "$C15")"
 OUT15="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D15" CAP_DIR="$C15" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
 [ "$(jq -r '.merged_pr' <<<"$OUT15")" = "null" ] && ok "garbage merge output → merged_pr=null (unknown)" || bad "t15.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT15")"
 [ "$(jq -r '.merge_driven' <<<"$OUT15")" = "1" ] && ok "the attempt is still recorded (merge_driven=1)" || bad "t15.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT15")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ foundation #622 — refused/failed items are ROUTED to the operator, not    │
-# │ left as a dead-end. The merge driver only reports; funnel-drive.sh assigns │
+# │ left as a dead-end. The merge driver only reports; pipeline-drive.sh assigns │
 # │ + labels `funnel-escalated` (its OWN gate since #697 — not the shared     │
 # │ `needs-clarification`) + comments (deterministic, shell-side).            │
 # ╰──────────────────────────────────────────────────────────────────────────╯
@@ -518,14 +518,14 @@ UNCLAIMDOUBLE
   printf '%s' "$f"
 }
 
-REFUSE_SUMMARY='{"driver":"funnel-drive-merge","rung":"5c","merged":0,"parked":0,"failed":0,"refused":1,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"refused","pr":null,"note":"manual ops secret rotation"}]}'
+REFUSE_SUMMARY='{"driver":"pipeline-drive-merge","layer":"5c","merged":0,"parked":0,"failed":0,"refused":1,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"refused","pr":null,"note":"manual ops secret rotation"}]}'
 
 # ── 16: a refused drive is routed to the operator (assign + label + comment) ───
 echo "--- test 16: refused → assigned + funnel-escalated + comment (#622/#697) ---"
 C16="$TMP/c16"; mkdir -p "$C16"; D16="$(make_merge_double "$C16")"; G16="$(make_gh_double "$C16")"
-OUT16="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16" FUNNEL_GH_BIN="$G16" CAP_DIR="$C16" \
-        FUNNEL_OPERATOR=@towhead \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+OUT16="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16" PIPELINE_GH_BIN="$G16" CAP_DIR="$C16" \
+        PIPELINE_OPERATOR=@towhead \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.refused' <<<"$OUT16")" = "1" ] && ok "refused=1 surfaced" || bad "t16.refused" "got $(jq -r '.refused' <<<"$OUT16")"
 [ "$(jq -r '.merged_pr' <<<"$OUT16")" = "0" ] && ok "merged_pr=0 (nothing merged)" || bad "t16.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT16")"
 [ "$(jq -r '.routed' <<<"$OUT16")" = "1" ] && ok "routed=1 (item handed to the operator)" || bad "t16.routed" "got $(jq -r '.routed' <<<"$OUT16")"
@@ -534,7 +534,7 @@ grep -qx "issue edit 101 -R Towheads/stageFind --add-assignee towhead --add-labe
 # The refused-route comment must NOT carry the retired merge-escalation marker (#697).
 grep -q '^issue comment 101 ' "$C16/gh-calls.txt" \
   && ok "gh posted a routing comment on the refused issue" || bad "t16.comment" "no issue comment in $(cat "$C16/gh-calls.txt" 2>/dev/null || echo none)"
-grep -qF 'funnel:merge-escalation' "$C16/gh-argv.txt" 2>/dev/null \
+grep -qF 'pipeline:merge-escalation' "$C16/gh-argv.txt" 2>/dev/null \
   && bad "t16.marker" "escalation comment still carries the retired merge-escalation marker" \
   || ok "escalation comment carries NO merge-escalation marker (retired by #697)"
 
@@ -543,12 +543,12 @@ grep -qF 'funnel:merge-escalation' "$C16/gh-argv.txt" 2>/dev/null \
 # timeline event), the item re-enters the drive pool, is re-refused, and the driver
 # used to RE-APPLY the label + re-comment every tick. With the guard it is suppressed.
 # (#697: the disposition now keys on the OWN `funnel-escalated` label, not the shared
-# `needs-clarification` — and since the funnel never drains this label, a single
+# `needs-clarification` — and since the pipeline never drains this label, a single
 # un-label IS the operator, no U>D accounting needed.)
 echo "--- test 16b: refused + prior operator un-label of funnel-escalated → suppressed (#910/#697) ---"
 C16B="$TMP/c16b"; mkdir -p "$C16B"; D16B="$(make_merge_double "$C16B")"; G16B="$(make_gh_double "$C16B")"
-OUT16B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16B" FUNNEL_GH_BIN="$G16B" CAP_DIR="$C16B" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" \
+OUT16B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16B" PIPELINE_GH_BIN="$G16B" CAP_DIR="$C16B" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" \
         GH_TIMELINE_JSON='[{"event":"unlabeled","label":{"name":"funnel-escalated"}}]' bash "$DRIVE")"
 [ "$(jq -r '.route_suppressed' <<<"$OUT16B")" = "1" ] && ok "route_suppressed=1 (operator disposition detected)" || bad "t16b.suppressed" "got $(jq -r '.route_suppressed' <<<"$OUT16B")"
 [ "$(jq -r '.routed' <<<"$OUT16B")" = "0" ] && ok "routed=0 (not re-handed to the operator)" || bad "t16b.routed" "got $(jq -r '.routed' <<<"$OUT16B")"
@@ -558,15 +558,15 @@ OUT16B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16B" FUNNEL_GH_BIN="$G16B" CA
 # NO `funnel-escalated` un-label still routes first-time (regression guard). ──────
 echo "--- test 16c: refused + timeline without an un-label event → routes as before (#910) ---"
 C16C="$TMP/c16c"; mkdir -p "$C16C"; D16C="$(make_merge_double "$C16C")"; G16C="$(make_gh_double "$C16C")"
-OUT16C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16C" FUNNEL_GH_BIN="$G16C" CAP_DIR="$C16C" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" \
+OUT16C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16C" PIPELINE_GH_BIN="$G16C" CAP_DIR="$C16C" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" \
         GH_TIMELINE_JSON='[{"event":"labeled","label":{"name":"funnel-escalated"}},{"event":"commented"}]' bash "$DRIVE")"
 [ "$(jq -r '.routed' <<<"$OUT16C")" = "1" ] && ok "routed=1 (first-time route still fires)" || bad "t16c.routed" "got $(jq -r '.routed' <<<"$OUT16C")"
 [ "$(jq -r '.route_suppressed' <<<"$OUT16C")" = "0" ] && ok "route_suppressed=0 (no prior disposition)" || bad "t16c.suppressed" "got $(jq -r '.route_suppressed' <<<"$OUT16C")"
 grep -q '^issue edit 101 ' "$C16C/gh-calls.txt" && ok "gh re-applied the label (no prior operator disposition)" || bad "t16c.edit" "no issue edit in $(cat "$C16C/gh-calls.txt" 2>/dev/null || echo none)"
 
 # ── 16d: #697 — the disposition gate is DECOUPLED from `needs-clarification`. ─────
-# A `needs-clarification` un-label (a funnel clarification drain on the OTHER label,
+# A `needs-clarification` un-label (a pipeline clarification drain on the OTHER label,
 # #657) is NOT a `funnel-escalated` disposition: the two labels are independent since
 # the #697 split, so a refused code item still routes even when the timeline carries a
 # needs-clarification drain + its clarified-marker ack. (This replaces the retired
@@ -574,34 +574,34 @@ grep -q '^issue edit 101 ' "$C16C/gh-calls.txt" && ok "gh re-applied the label (
 # one label; the split removed it.)
 echo "--- test 16d: refused + a needs-clarification drain un-label → still routes (decoupled, #697) ---"
 C16D="$TMP/c16d"; mkdir -p "$C16D"; D16D="$(make_merge_double "$C16D")"; G16D="$(make_gh_double "$C16D")"
-OUT16D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16D" FUNNEL_GH_BIN="$G16D" CAP_DIR="$C16D" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" \
-        GH_TIMELINE_JSON='[{"event":"unlabeled","label":{"name":"needs-clarification"}},{"event":"commented","body":"<!-- funnel:clarification-drained --> Clarified (funnel): operator answer consumed — released to drive."}]' bash "$DRIVE")"
+OUT16D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D16D" PIPELINE_GH_BIN="$G16D" CAP_DIR="$C16D" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" \
+        GH_TIMELINE_JSON='[{"event":"unlabeled","label":{"name":"needs-clarification"}},{"event":"commented","body":"<!-- funnel:clarification-drained --> Clarified (pipeline): operator answer consumed — released to drive."}]' bash "$DRIVE")"
 [ "$(jq -r '.routed' <<<"$OUT16D")" = "1" ] && ok "routed=1 (a needs-clarification drain is not a funnel-escalated disposition)" || bad "t16d.routed" "got $(jq -r '.routed' <<<"$OUT16D")"
 [ "$(jq -r '.route_suppressed' <<<"$OUT16D")" = "0" ] && ok "route_suppressed=0 (the two labels are decoupled since #697)" || bad "t16d.suppressed" "got $(jq -r '.route_suppressed' <<<"$OUT16D")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ foundation #1053 — a REFUSED route-foundational (the 5b driver refused an  │
 # │ epic that already has an approved/executing plan) is routed to the         │
-# │ operator's DECISION queue (assign + `decision` + comment), so funnel-tick's│
+# │ operator's DECISION queue (assign + `decision` + comment), so pipeline-tick's│
 # │ existing route-already-assigned guard parks it instead of re-emitting      │
 # │ route-foundational every tick (the #951 spin). #1045 needs no separate fix.│
 # ╰──────────────────────────────────────────────────────────────────────────╯
 ROUTE_FND='[{"tick":"done","actions":[{"phase":"route","action":"route-foundational","board":"4","repo":"Towheads/foundation","issue":951,"title":"Epic: knowledge-store migration","mode":"prep"}]}]'
-SAFE_REFUSE_RF='{"driver":"funnel-drive","rung":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"route-foundational","issue":951,"board":"4","status":"refused","note":"already-prepped: Plans/2026-07-04 obsidian knowledge-store migration is executing"}]}'
+SAFE_REFUSE_RF='{"driver":"pipeline-drive","layer":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"route-foundational","issue":951,"board":"4","status":"refused","note":"already-prepped: Plans/2026-07-04 obsidian knowledge-store migration is executing"}]}'
 
 # ── 16e: a refused route-foundational → assigned + `decision` + comment (#1053) ──
 echo "--- test 16e: refused route-foundational → decision-queue park (#1053, subsumes #1045) ---"
 C16E="$TMP/c16e"; mkdir -p "$C16E"; D16E="$(make_merge_double "$C16E")"; G16E="$(make_gh_double "$C16E")"
-OUT16E="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16E" FUNNEL_GH_BIN="$G16E" CAP_DIR="$C16E" \
-        FUNNEL_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_REFUSE_RF" bash "$DRIVE")"
+OUT16E="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16E" PIPELINE_GH_BIN="$G16E" CAP_DIR="$C16E" \
+        PIPELINE_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_REFUSE_RF" bash "$DRIVE")"
 [ "$(jq -r '.safe_refused' <<<"$OUT16E")" = "1" ] && ok "safe_refused=1 surfaced" || bad "t16e.refused" "got $(jq -r '.safe_refused' <<<"$OUT16E")"
 [ "$(jq -r '.routed' <<<"$OUT16E")" = "1" ] && ok "routed=1 (parked to the operator)" || bad "t16e.routed" "got $(jq -r '.routed' <<<"$OUT16E")"
 grep -qx "issue edit 951 -R Towheads/foundation --add-assignee towhead --add-label decision" "$C16E/gh-calls.txt" \
-  && ok "gh assigned the operator + added the \`decision\` label (funnel-tick's park guard)" || bad "t16e.edit" "got $(cat "$C16E/gh-calls.txt" 2>/dev/null || echo none)"
+  && ok "gh assigned the operator + added the \`decision\` label (pipeline-tick's park guard)" || bad "t16e.edit" "got $(cat "$C16E/gh-calls.txt" 2>/dev/null || echo none)"
 grep -q '^issue comment 951 ' "$C16E/gh-calls.txt" \
   && ok "gh posted a decision-queue park comment on the refused epic" || bad "t16e.comment" "no issue comment in $(cat "$C16E/gh-calls.txt" 2>/dev/null || echo none)"
-# The park MUST use `decision` (funnel-tick's route-already-assigned guard), NOT the
+# The park MUST use `decision` (pipeline-tick's route-already-assigned guard), NOT the
 # merge tier's `funnel-escalated` (which the guard treats as an open/failed-PR code item).
 if grep -qF 'funnel-escalated' "$C16E/gh-argv.txt" 2>/dev/null; then
   bad "t16e.label" "route-foundational park wrongly used funnel-escalated, not decision"
@@ -611,26 +611,26 @@ fi
 
 # ── 16f: filter is route-foundational-SPECIFIC — a refused drain-* is NOT decision-parked ─
 echo "--- test 16f: a refused drain action is NOT routed to the decision queue (#1053 filter) ---"
-SAFE_REFUSE_DRAIN='{"driver":"funnel-drive","rung":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"drain-parse-miss","issue":951,"board":"4","status":"refused","note":"unparseable reply"}]}'
+SAFE_REFUSE_DRAIN='{"driver":"pipeline-drive","layer":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"drain-parse-miss","issue":951,"board":"4","status":"refused","note":"unparseable reply"}]}'
 C16F="$TMP/c16f"; mkdir -p "$C16F"; D16F="$(make_merge_double "$C16F")"; G16F="$(make_gh_double "$C16F")"
-OUT16F="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16F" FUNNEL_GH_BIN="$G16F" CAP_DIR="$C16F" \
-        FUNNEL_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_REFUSE_DRAIN" bash "$DRIVE")"
+OUT16F="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16F" PIPELINE_GH_BIN="$G16F" CAP_DIR="$C16F" \
+        PIPELINE_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_REFUSE_DRAIN" bash "$DRIVE")"
 [ "$(jq -r '.routed' <<<"$OUT16F")" = "0" ] && ok "routed=0 (a refused drain-* is not a route-foundational park)" || bad "t16f.routed" "got $(jq -r '.routed' <<<"$OUT16F")"
 [ ! -f "$C16F/gh-calls.txt" ] && ok "no gh edit/comment — the drain refusal keeps its own handling" || bad "t16f.gh" "gh was called: $(cat "$C16F/gh-calls.txt")"
 
 # ── 16g: an EXECUTED route-foundational runs operator-ABSENT to a non-failed ──
-# terminal state (#329). Root cause: the safe tier spawned /funnel-drive with
+# terminal state (#329). Root cause: the safe tier spawned /pipeline-drive with
 # opabsent=0, so the inline /assess hit an unanswerable modal AskUserQuestion and
 # recorded status:failed. With the fix the safe tier spawns opabsent=1, so /assess
 # takes its operator-absent branches and route-foundational reaches `executed`.
 echo "--- test 16g: executed route-foundational spawns opabsent=1, terminal=ran (#329) ---"
-SAFE_EXEC_RF='{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[{"action":"route-foundational","issue":951,"board":"4","status":"executed","note":"prepped draft plan + routed to decision queue"}]}'
+SAFE_EXEC_RF='{"driver":"pipeline-drive","layer":"5b","executed":1,"failed":0,"refused":0,"results":[{"action":"route-foundational","issue":951,"board":"4","status":"executed","note":"prepped draft plan + routed to decision queue"}]}'
 C16G="$TMP/c16g"; mkdir -p "$C16G"; D16G="$(make_merge_double "$C16G")"; G16G="$(make_gh_double "$C16G")"
-OUT16G="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16G" FUNNEL_GH_BIN="$G16G" CAP_DIR="$C16G" \
-        FUNNEL_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_EXEC_RF" bash "$DRIVE")"
-# The #329 root-cause proof: the safe tier spawned the /funnel-drive driver operator-ABSENT.
-grep -q '^opabsent=1 prompt=/funnel-drive ' "$C16G/calls.txt" \
-  && ok "safe tier ran /funnel-drive with FUNNEL_OPERATOR_ABSENT=1 (#329 — inline /assess takes its operator-absent branches)" \
+OUT16G="$(printf '%s' "$ROUTE_FND" | env CLAUDE_BIN="$D16G" PIPELINE_GH_BIN="$G16G" CAP_DIR="$C16G" \
+        PIPELINE_OPERATOR=@towhead SAFE_SUMMARY="$SAFE_EXEC_RF" bash "$DRIVE")"
+# The #329 root-cause proof: the safe tier spawned the /pipeline-drive driver operator-ABSENT.
+grep -q '^opabsent=1 prompt=/pipeline-drive ' "$C16G/calls.txt" \
+  && ok "safe tier ran /pipeline-drive with PIPELINE_OPERATOR_ABSENT=1 (#329 — inline /assess takes its operator-absent branches)" \
   || bad "t16g.opabsent" "safe tier not operator-absent: $(cat "$C16G/calls.txt" 2>/dev/null || echo none)"
 [ "$(jq -r '.safe_executed' <<<"$OUT16G")" = "1" ] && ok "safe_executed=1 (route-foundational reached a non-failed terminal state)" || bad "t16g.exec" "got $(jq -r '.safe_executed' <<<"$OUT16G")"
 [ "$(jq -r '.safe_failed' <<<"$OUT16G")" = "0" ] && ok "safe_failed=0 (no status:failed wall)" || bad "t16g.failed" "got $(jq -r '.safe_failed' <<<"$OUT16G")"
@@ -639,8 +639,8 @@ grep -q '^opabsent=1 prompt=/funnel-drive ' "$C16G/calls.txt" \
 # ── 17: a clean merge is NOT routed (no operator hand-off, no stray gh edits) ──
 echo "--- test 17: a merged drive is not routed (#622) ---"
 C17="$TMP/c17"; mkdir -p "$C17"; D17="$(make_merge_double "$C17")"; G17="$(make_gh_double "$C17")"
-OUT17="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D17" FUNNEL_GH_BIN="$G17" CAP_DIR="$C17" \
-        FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"   # default summary = one clean merge
+OUT17="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D17" PIPELINE_GH_BIN="$G17" CAP_DIR="$C17" \
+        PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"   # default summary = one clean merge
 [ "$(jq -r '.merged_pr' <<<"$OUT17")" = "1" ] && ok "merged_pr=1 (clean merge)" || bad "t17.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT17")"
 [ "$(jq -r '.routed' <<<"$OUT17")" = "0" ] && ok "routed=0 (a merge needs no operator hand-off)" || bad "t17.routed" "got $(jq -r '.routed' <<<"$OUT17")"
 [ ! -f "$C17/gh-calls.txt" ] && ok "no gh issue edit/comment on a clean merge" || bad "t17.gh" "gh was called: $(cat "$C17/gh-calls.txt")"
@@ -648,39 +648,39 @@ OUT17="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D17" FUNNEL_GH_BIN="$G17" CAP_D
 # ── 18: routing fires off the PRODUCTION fenced-envelope shape too ────────────
 echo "--- test 18: refused routing works from the fenced claude envelope (#622) ---"
 C18="$TMP/c18"; mkdir -p "$C18"; D18="$(make_merge_double "$C18")"; G18="$(make_gh_double "$C18")"
-OUT18="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D18" FUNNEL_GH_BIN="$G18" CAP_DIR="$C18" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_WRAP=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+OUT18="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D18" PIPELINE_GH_BIN="$G18" CAP_DIR="$C18" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_WRAP=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.routed' <<<"$OUT18")" = "1" ] && ok "routed=1 extracted from the fenced envelope" || bad "t18.routed" "got $(jq -r '.routed' <<<"$OUT18")"
 grep -q '^issue edit 101 ' "$C18/gh-calls.txt" && ok "gh routing fired from the production-shape result" || bad "t18.edit" "no issue edit in $(cat "$C18/gh-calls.txt" 2>/dev/null || echo none)"
 
 # ── 19: a failed drive is routed to the operator too (same dead-end risk) ─────
 echo "--- test 19: a failed drive is also routed (#622) ---"
 C19="$TMP/c19"; mkdir -p "$C19"; D19="$(make_merge_double "$C19")"; G19="$(make_gh_double "$C19")"
-FAIL_SUMMARY='{"driver":"funnel-drive-merge","rung":"5c","merged":0,"parked":0,"failed":1,"refused":0,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"failed","pr":null,"note":"build error"}]}'
-OUT19="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D19" FUNNEL_GH_BIN="$G19" CAP_DIR="$C19" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$FAIL_SUMMARY" bash "$DRIVE")"
+FAIL_SUMMARY='{"driver":"pipeline-drive-merge","layer":"5c","merged":0,"parked":0,"failed":1,"refused":0,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"failed","pr":null,"note":"build error"}]}'
+OUT19="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D19" PIPELINE_GH_BIN="$G19" CAP_DIR="$C19" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$FAIL_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.failed' <<<"$OUT19")" = "1" ] && ok "failed=1 surfaced" || bad "t19.failed" "got $(jq -r '.failed' <<<"$OUT19")"
 [ "$(jq -r '.routed' <<<"$OUT19")" = "1" ] && ok "routed=1 (a failed drive is handed to the operator)" || bad "t19.routed" "got $(jq -r '.routed' <<<"$OUT19")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ foundation #624 — cross-tick merge hand-off. A one-shot `claude -p` merge  │
 # │ drive opens a PR but the session ends before CI greens + the merge gate    │
-# │ fires. funnel-drive.sh GROUND-TRUTH probes for an open unmerged PR and      │
+# │ fires. pipeline-drive.sh GROUND-TRUTH probes for an open unmerged PR and      │
 # │ labels the issue funnel-merge-pending so the NEXT tick RESUMES, not         │
 # │ re-drives (a fresh drive would open a duplicate PR).                        │
 # ╰──────────────────────────────────────────────────────────────────────────╯
 
 # A summary with NO terminal outcome for the item (it opened a PR but the session
 # ended) — the realistic hand-off shape the driver emits when CI outlasts the run.
-HANDOFF_SUMMARY='{"driver":"funnel-drive-merge","rung":"5c","merged":0,"handed_off":1,"parked":0,"failed":0,"refused":0,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"handed-off","pr":857,"note":"PR #857 opened, CI pending"}]}'
+HANDOFF_SUMMARY='{"driver":"pipeline-drive-merge","layer":"5c","merged":0,"handed_off":1,"parked":0,"failed":0,"refused":0,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"handed-off","pr":857,"note":"PR #857 opened, CI pending"}]}'
 # An open PR (#857) whose body closes #101 — what the ground-truth probe sees.
 OPEN_PR_101='[{"number":857,"body":"Adds the thing.\n\nCloses #101\n"}]'
 
 # ── 20: a hand-off (open PR, not merged) is labeled for resume next tick ───────
 echo "--- test 20: handed-off drive → funnel-merge-pending label + handed_off=1 (#624) ---"
 C20="$TMP/c20"; mkdir -p "$C20"; D20="$(make_merge_double "$C20")"; G20="$(make_gh_double "$C20")"
-OUT20="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D20" FUNNEL_GH_BIN="$G20" CAP_DIR="$C20" \
-        GH_PR_LIST_JSON="$OPEN_PR_101" FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+OUT20="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D20" PIPELINE_GH_BIN="$G20" CAP_DIR="$C20" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.merged_pr' <<<"$OUT20")" = "0" ] && ok "merged_pr=0 (nothing merged this tick)" || bad "t20.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT20")"
 [ "$(jq -r '.handed_off' <<<"$OUT20")" = "1" ] && ok "handed_off=1 (PR opened, not merged)" || bad "t20.handed_off" "got $(jq -r '.handed_off' <<<"$OUT20")"
 [ "$(jq -r '.routed' <<<"$OUT20")" = "0" ] && ok "routed=0 (a hand-off is not an operator route)" || bad "t20.routed" "got $(jq -r '.routed' <<<"$OUT20")"
@@ -693,8 +693,8 @@ C21="$TMP/c21"; mkdir -p "$C21"; D21="$(make_merge_double "$C21")"; G21="$(make_
 # Default summary = one clean merge; the merged PR is CLOSED, so the ground-truth
 # probe returns no open PR → no label. (merged is NOT skipped before the probe — the
 # probe is the source of truth — but for a real merge it correctly finds nothing.)
-OUT21="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D21" FUNNEL_GH_BIN="$G21" CAP_DIR="$C21" \
-        GH_PR_LIST_JSON='[]' FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT21="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D21" PIPELINE_GH_BIN="$G21" CAP_DIR="$C21" \
+        GH_PR_LIST_JSON='[]' PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.merged_pr' <<<"$OUT21")" = "1" ] && ok "merged_pr=1 (clean merge)" || bad "t21.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT21")"
 [ "$(jq -r '.handed_off' <<<"$OUT21")" = "0" ] && ok "handed_off=0 (merged → probe finds no open PR → nothing to resume)" || bad "t21.handed_off" "got $(jq -r '.handed_off' <<<"$OUT21")"
 [ ! -f "$C21/gh-calls.txt" ] && ok "no gh issue edit on a clean merge (probe found no open PR)" || bad "t21.gh" "gh called: $(cat "$C21/gh-calls.txt")"
@@ -705,8 +705,8 @@ OUT21="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D21" FUNNEL_GH_BIN="$G21" CAP_D
 # resume — so `merged` must NOT short-circuit the probe (the MAJOR the reviewer found).
 echo "--- test 21b: merged self-report + still-open PR → handed_off=1 (trust the probe) ---"
 C21B="$TMP/c21b"; mkdir -p "$C21B"; D21B="$(make_merge_double "$C21B")"; G21B="$(make_gh_double "$C21B")"
-OUT21B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D21B" FUNNEL_GH_BIN="$G21B" CAP_DIR="$C21B" \
-        GH_PR_LIST_JSON="$OPEN_PR_101" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"   # default summary = merged:1
+OUT21B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D21B" PIPELINE_GH_BIN="$G21B" CAP_DIR="$C21B" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"   # default summary = merged:1
 [ "$(jq -r '.merged_pr' <<<"$OUT21B")" = "1" ] && ok "the self-report still says merged_pr=1" || bad "t21b.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT21B")"
 [ "$(jq -r '.handed_off' <<<"$OUT21B")" = "1" ] && ok "handed_off=1 (probe overrides the false merge claim)" || bad "t21b.handed_off" "got $(jq -r '.handed_off' <<<"$OUT21B")"
 grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending" "$C21B/gh-calls.txt" \
@@ -718,33 +718,33 @@ grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending"
 # is what detects the hand-off — otherwise the next tick re-drives into a dup PR.
 echo "--- test 22: garbage summary + open PR → handed_off=1 off the ground-truth probe (#624) ---"
 C22="$TMP/c22"; mkdir -p "$C22"; D22="$(make_merge_double "$C22")"; G22="$(make_gh_double "$C22")"
-OUT22="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D22" FUNNEL_GH_BIN="$G22" CAP_DIR="$C22" \
-        GH_PR_LIST_JSON="$OPEN_PR_101" FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
+OUT22="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D22" PIPELINE_GH_BIN="$G22" CAP_DIR="$C22" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
 [ "$(jq -r '.merged_pr' <<<"$OUT22")" = "null" ] && ok "merged_pr=null (summary unparseable — unknown)" || bad "t22.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT22")"
 [ "$(jq -r '.handed_off' <<<"$OUT22")" = "1" ] && ok "handed_off=1 (probe found the open PR despite no summary)" || bad "t22.handed_off" "got $(jq -r '.handed_off' <<<"$OUT22")"
 grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending" "$C22/gh-calls.txt" \
   && ok "the death-path drive is still labeled for resume" || bad "t22.label" "got $(cat "$C22/gh-calls.txt" 2>/dev/null || echo none)"
 
 # ── 23: a PARKED drive with an open PR is NOT handed off (operator owns it) ────
-# /build parked it for a blocking-now decision (it queued the operator). Even with an
+# /build parked it for an ask-now decision (it queued the operator). Even with an
 # open PR, it must NOT be auto-resumed — the operator decision gates it. status=parked
 # beats the probe.
 echo "--- test 23: parked + open PR → handed_off=0 (operator decision owns it) (#624) ---"
 C23="$TMP/c23"; mkdir -p "$C23"; D23="$(make_merge_double "$C23")"; G23="$(make_gh_double "$C23")"
-OUT23="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D23" FUNNEL_GH_BIN="$G23" CAP_DIR="$C23" \
-        GH_PR_LIST_JSON="$OPEN_PR_101" FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$PARK_SUMMARY" bash "$DRIVE")"
+OUT23="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D23" PIPELINE_GH_BIN="$G23" CAP_DIR="$C23" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$PARK_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.parked' <<<"$OUT23")" = "1" ] && ok "parked=1 surfaced" || bad "t23.parked" "got $(jq -r '.parked' <<<"$OUT23")"
 [ "$(jq -r '.handed_off' <<<"$OUT23")" = "0" ] && ok "handed_off=0 (parked is operator-owned, not resumed)" || bad "t23.handed_off" "got $(jq -r '.handed_off' <<<"$OUT23")"
 [ ! -f "$C23/gh-calls.txt" ] && ok "no funnel-merge-pending label on a parked item" || bad "t23.gh" "gh called: $(cat "$C23/gh-calls.txt")"
 
 # ── 24: a resume action carries mode:"resume" into the merge payload ──────────
-# funnel-tick.sh sets mode:resume on a hand-off-labeled item; funnel-drive.sh must
+# pipeline-tick.sh sets mode:resume on a hand-off-labeled item; pipeline-drive.sh must
 # pass it through to the merge driver so it re-attaches instead of re-driving.
 echo "--- test 24: a mode:resume drive-ready flows mode into the merge payload (#624) ---"
 RESUME1='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":101,"kind":"code","mode":"resume","emit":"/build"}]}]'
 C24="$TMP/c24"; mkdir -p "$C24"; D24="$(make_merge_double "$C24")"
-OUT24="$(printf '%s' "$RESUME1" | env CLAUDE_BIN="$D24" CAP_DIR="$C24" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT24="$(printf '%s' "$RESUME1" | env CLAUDE_BIN="$D24" CAP_DIR="$C24" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT24")" = "1" ] && ok "the resume item is handed to the merge driver" || bad "t24.merge_driven" "got $(jq -r '.merge_driven' <<<"$OUT24")"
 [ "$(jq -r '.actions[0].mode' "$C24/merge-payload.json")" = "resume" ] \
   && ok "merge payload carries mode:resume" || bad "t24.mode" "got $(jq -r '.actions[0].mode // "none"' "$C24/merge-payload.json" 2>/dev/null)"
@@ -778,7 +778,7 @@ make_safe_double() {  # $1 = capture dir
 #!/usr/bin/env bash
 set -euo pipefail
 summary="${SAFE_SUMMARY:-}"
-[ -z "$summary" ] && summary='{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
+[ -z "$summary" ] && summary='{"driver":"pipeline-drive","layer":"5b","executed":1,"failed":0,"refused":0,"results":[]}'
 if [ "${SAFE_WRAP:-0}" = "1" ]; then
   # Production envelope: a per-action fence FIRST, then the summary fence LAST —
   # the precise shape the #449 refusal took (summary is the trailing fence).
@@ -795,7 +795,7 @@ SAFEDOUBLE
 # A single spike drive (a real tick is drive-capped to ~one drive) → n_safe=1.
 SPIKE1='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":449,"kind":"spike","emit":"drive the spike to its verdict"}]}]'
-REFUSE_SAFE='{"driver":"funnel-drive","rung":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"drive-ready","issue":449,"status":"refused","note":"single spike, not an epic"}]}'
+REFUSE_SAFE='{"driver":"pipeline-drive","layer":"5b","executed":0,"failed":0,"refused":1,"results":[{"action":"drive-ready","issue":449,"status":"refused","note":"single spike, not an epic"}]}'
 
 # ── 26: a SAFE refusal is counted as refused, NOT as a successful drive (#636) ─
 # The 2026-06-29 #449 regression: latest.json showed driven=1/refused:0 while the
@@ -821,7 +821,7 @@ OUT27="$(printf '%s' "$SPIKE1" | env CLAUDE_BIN="$S27" SAFE_WRAP=1 SAFE_SUMMARY=
 echo "--- test 28: a clean safe drive → safe_executed matches, safe_refused=0 (#636) ---"
 C28="$TMP/c28"; mkdir -p "$C28"; S28="$(make_safe_double "$C28")"
 OUT28="$(printf '%s' "$SPIKE1" | env CLAUDE_BIN="$S28" \
-        SAFE_SUMMARY='{"driver":"funnel-drive","rung":"5b","executed":1,"failed":0,"refused":0,"results":[]}' bash "$DRIVE")"
+        SAFE_SUMMARY='{"driver":"pipeline-drive","layer":"5b","executed":1,"failed":0,"refused":0,"results":[]}' bash "$DRIVE")"
 [ "$(jq -r '.safe_executed' <<<"$OUT28")" = "1" ] && ok "safe_executed=1 (the spike drove to a verdict)" || bad "t28.safe_executed" "got $(jq -r '.safe_executed' <<<"$OUT28")"
 [ "$(jq -r '.safe_refused' <<<"$OUT28")" = "0" ] && ok "safe_refused=0 (clean)" || bad "t28.safe_refused" "got $(jq -r '.safe_refused' <<<"$OUT28")"
 
@@ -844,7 +844,7 @@ OUT30="$(printf '%s' "$PLANS" | bash "$DRIVE" --dry-run)"
 # │ F#655 — the merge tier drives each board IN that board's checkout.         │
 # │ Regression: with boards `3 4 5` the merge agent ran from the foundation    │
 # │ cwd and refused every board-3 item (merges 5/day → 0). The driver now      │
-# │ groups by board and cd's into FUNNEL_CHECKOUT_<n> before spawning.         │
+# │ groups by board and cd's into PIPELINE_CHECKOUT_<n> before spawning.         │
 # ╰──────────────────────────────────────────────────────────────────────────╯
 
 # ── 31: a board-3 merge drive runs IN the board-3 checkout (the cd fix) ───────
@@ -852,12 +852,12 @@ echo "--- test 31: merge driver spawns cd'd into the target board's checkout (#6
 C31="$TMP/c31"; mkdir -p "$C31"; D31="$(make_merge_double "$C31")"
 B3CODE='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":101,"kind":"code","emit":"/build"}]}]'
-OUT31="$(printf '%s' "$B3CODE" | env CLAUDE_BIN="$D31" CAP_DIR="$C31" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT31="$(printf '%s' "$B3CODE" | env CLAUDE_BIN="$D31" CAP_DIR="$C31" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT31")" = "1" ] && ok "merge_driven=1" || bad "t31.driven" "got $(jq -r '.merge_driven' <<<"$OUT31")"
 [ "$(jq -r '.merged_pr' <<<"$OUT31")" = "1" ] && ok "merged_pr=1 (built in the right checkout → merged)" || bad "t31.merged" "got $(jq -r '.merged_pr' <<<"$OUT31")"
 # The headless driver's cwd was the board-3 checkout, NOT the launching cwd.
-grep -q "^$CO3"$'\t'"/funnel-drive-merge" "$C31/pwd.txt" \
-  && ok "driver ran with cwd = FUNNEL_CHECKOUT_3 ($CO3)" || bad "t31.cwd" "pwd log: $(cat "$C31/pwd.txt" 2>/dev/null)"
+grep -q "^$CO3"$'\t'"/pipeline-drive-merge" "$C31/pwd.txt" \
+  && ok "driver ran with cwd = PIPELINE_CHECKOUT_3 ($CO3)" || bad "t31.cwd" "pwd log: $(cat "$C31/pwd.txt" 2>/dev/null)"
 
 # ── 32: a mixed board-3 + board-4 cap drives each in its OWN checkout ─────────
 echo "--- test 32: mixed-board cap → one driver per board, each cd'd in, counts combined (#655) ---"
@@ -866,13 +866,13 @@ MIXED='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":201,"kind":"code","emit":"/build"},
   {"phase":"drive","action":"drive-ready","board":"4","repo":"Towheads/foundation","issue":202,"kind":"code","emit":"/build"}]}]'
 OUT32="$(printf '%s' "$MIXED" | env CLAUDE_BIN="$D32" CAP_DIR="$C32" \
-        FUNNEL_DRIVE_MERGE=1 FUNNEL_DRIVE_MERGE_CAP=2 bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 PIPELINE_DRIVE_MERGE_CAP=2 bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT32")" = "2" ] && ok "merge_driven=2 (both boards handed to a driver)" || bad "t32.driven" "got $(jq -r '.merge_driven' <<<"$OUT32")"
 [ "$(jq -r '.merged_pr' <<<"$OUT32")" = "2" ] && ok "merged_pr=2 (per-board summaries combined)" || bad "t32.merged" "got $(jq -r '.merged_pr' <<<"$OUT32")"
 # Two distinct spawns, one per checkout.
 grep -q "^$CO3"$'\t' "$C32/pwd.txt" && ok "a driver ran in the board-3 checkout" || bad "t32.cwd3" "no board-3 cwd: $(cat "$C32/pwd.txt")"
 grep -q "^$CO4"$'\t' "$C32/pwd.txt" && ok "a driver ran in the board-4 checkout" || bad "t32.cwd4" "no board-4 cwd: $(cat "$C32/pwd.txt")"
-[ "$(grep -c '/funnel-drive-merge' "$C32/pwd.txt")" = "2" ] && ok "exactly two merge spawns (one per board)" || bad "t32.spawns" "got $(grep -c '/funnel-drive-merge' "$C32/pwd.txt")"
+[ "$(grep -c '/pipeline-drive-merge' "$C32/pwd.txt")" = "2" ] && ok "exactly two merge spawns (one per board)" || bad "t32.spawns" "got $(grep -c '/pipeline-drive-merge' "$C32/pwd.txt")"
 # Each per-board payload carries only that board's action.
 [ "$(jq -r '[.actions[].board]|unique|join(",")' "$C32/merge-payload.json" 2>/dev/null)" != "" ] && ok "a per-board merge payload was written" || bad "t32.payload" "no merge payload captured"
 
@@ -887,8 +887,8 @@ GHX
 chmod +x "$GH33"; GHCAP33="$TMP/ghcap33"; mkdir -p "$GHCAP33"
 NOCO='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"9","repo":"Towheads/nowhere","issue":301,"kind":"code","emit":"/build"}]}]'
-OUT33="$(printf '%s' "$NOCO" | env CLAUDE_BIN="$D33" CAP_DIR="$C33" GH_CAP="$GHCAP33" FUNNEL_GH_BIN="$GH33" \
-        FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT33="$(printf '%s' "$NOCO" | env CLAUDE_BIN="$D33" CAP_DIR="$C33" GH_CAP="$GHCAP33" PIPELINE_GH_BIN="$GH33" \
+        PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.merge_driven' <<<"$OUT33")" = "1" ] && ok "merge_driven=1 (item was in the cap)" || bad "t33.driven" "got $(jq -r '.merge_driven' <<<"$OUT33")"
 [ "$(jq -r '.failed' <<<"$OUT33")" = "1" ] && ok "failed=1 (no checkout → synthesized failed, not built)" || bad "t33.failed" "got $(jq -r '.failed' <<<"$OUT33")"
 [ "$(jq -r '.merged_pr' <<<"$OUT33")" = "0" ] && ok "merged_pr=0 (the wrong repo was never built)" || bad "t33.merged" "got $(jq -r '.merged_pr' <<<"$OUT33")"
@@ -906,13 +906,13 @@ SAFE2='[{"tick":"done","actions":[
 OUT34="$(printf '%s' "$SAFE2" | env CLAUDE_BIN="$D34" CAP_DIR="$C34" bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT34")" = "ran" ] && ok "status=ran" || bad "t34.status" "got $(jq -r '.status' <<<"$OUT34")"
 [ "$(jq -r '.safe_executed' <<<"$OUT34")" = "2" ] && ok "safe_executed=2 (both spike drives combined)" || bad "t34.executed" "got $(jq -r '.safe_executed' <<<"$OUT34")"
-grep -q "^$CO3"$'\t'"/funnel-drive " "$C34/pwd.txt" && ok "board-3 spike ran in the board-3 checkout" || bad "t34.cwd3" "$(cat "$C34/pwd.txt")"
-grep -q "^$CO4"$'\t'"/funnel-drive " "$C34/pwd.txt" && ok "board-4 spike ran in the board-4 checkout" || bad "t34.cwd4" "$(cat "$C34/pwd.txt")"
+grep -q "^$CO3"$'\t'"/pipeline-drive " "$C34/pwd.txt" && ok "board-3 spike ran in the board-3 checkout" || bad "t34.cwd3" "$(cat "$C34/pwd.txt")"
+grep -q "^$CO4"$'\t'"/pipeline-drive " "$C34/pwd.txt" && ok "board-4 spike ran in the board-4 checkout" || bad "t34.cwd4" "$(cat "$C34/pwd.txt")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ foundation #665 — a merge-pending PR whose required `checks` gate is        │
 # │ TERMINALLY red cannot be merged by re-resuming (the merge tier pushes no    │
-# │ fixes). funnel-drive.sh probes the required check on the resume path and,   │
+# │ fixes). pipeline-drive.sh probes the required check on the resume path and,   │
 # │ when it has COMPLETED with FAILURE, ESCALATES to the operator (drop the     │
 # │ merge-pending label, assign + funnel-escalated — #697) instead of looping   │
 # │ it forever — while a still-running check is left to resume, never escalated. │
@@ -927,10 +927,10 @@ ROLLUP_PENDING='{"statusCheckRollup":[{"name":"checks","status":"IN_PROGRESS","c
 # ── 35: merge-pending PR with a TERMINALLY-red required check → escalated ──────
 echo "--- test 35: open PR + terminal-red checks → escalated to operator, not resumed (#665) ---"
 C35="$TMP/c35"; mkdir -p "$C35"; D35="$(make_merge_double "$C35")"; G35="$(make_gh_double "$C35")"
-OUT35="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D35" FUNNEL_GH_BIN="$G35" CAP_DIR="$C35" \
-        FUNNEL_OPERATOR=@towhead \
+OUT35="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D35" PIPELINE_GH_BIN="$G35" CAP_DIR="$C35" \
+        PIPELINE_OPERATOR=@towhead \
         GH_PR_LIST_JSON="$OPEN_PR_101" GH_PR_VIEW_JSON="$ROLLUP_RED" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.escalated' <<<"$OUT35")" = "1" ] && ok "escalated=1 (terminal-red PR handed to the operator)" || bad "t35.escalated" "got $(jq -r '.escalated' <<<"$OUT35")"
 [ "$(jq -r '.handed_off' <<<"$OUT35")" = "0" ] && ok "handed_off=0 (NOT re-queued for resume)" || bad "t35.handed_off" "got $(jq -r '.handed_off' <<<"$OUT35")"
 grep -qx "issue edit 101 -R Towheads/stageFind --remove-label funnel-merge-pending --add-assignee towhead --add-label funnel-escalated" "$C35/gh-calls.txt" \
@@ -943,9 +943,9 @@ grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending"
 # ── 36: merge-pending PR whose required check is still RUNNING → resumed, not escalated ─
 echo "--- test 36: open PR + pending checks → handed_off (resume), escalated=0 (#665) ---"
 C36="$TMP/c36"; mkdir -p "$C36"; D36="$(make_merge_double "$C36")"; G36="$(make_gh_double "$C36")"
-OUT36="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D36" FUNNEL_GH_BIN="$G36" CAP_DIR="$C36" \
+OUT36="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D36" PIPELINE_GH_BIN="$G36" CAP_DIR="$C36" \
         GH_PR_LIST_JSON="$OPEN_PR_101" GH_PR_VIEW_JSON="$ROLLUP_PENDING" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.escalated' <<<"$OUT36")" = "0" ] && ok "escalated=0 (a running check is not terminal — give CI time)" || bad "t36.escalated" "got $(jq -r '.escalated' <<<"$OUT36")"
 [ "$(jq -r '.handed_off' <<<"$OUT36")" = "1" ] && ok "handed_off=1 (still resumed next tick)" || bad "t36.handed_off" "got $(jq -r '.handed_off' <<<"$OUT36")"
 grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending" "$C36/gh-calls.txt" \
@@ -965,8 +965,8 @@ echo "--- test 37: dirty checkout → merge items routed to operator, no spawn (
 C37="$TMP/c37"; mkdir -p "$C37"; D37="$(make_merge_double "$C37")"; G37="$(make_gh_double "$C37")"
 CODIRTY="$TMP/co-dirty"; mk_repo "$CODIRTY"
 : > "$CODIRTY/uncommitted.txt"   # untracked file → `git status --porcelain` non-empty → dirty
-OUT37="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D37" FUNNEL_GH_BIN="$G37" CAP_DIR="$C37" \
-        FUNNEL_CHECKOUT_3="$CODIRTY" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT37="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D37" PIPELINE_GH_BIN="$G37" CAP_DIR="$C37" \
+        PIPELINE_CHECKOUT_3="$CODIRTY" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.failed' <<<"$OUT37")" = "1" ] && ok "failed=1 (dirty checkout → synthesized failed, not built)" || bad "t37.failed" "got $(jq -r '.failed' <<<"$OUT37")"
 [ "$(jq -r '.merged_pr' <<<"$OUT37")" = "0" ] && ok "merged_pr=0 (nothing merged from a doomed checkout)" || bad "t37.merged" "got $(jq -r '.merged_pr' <<<"$OUT37")"
 [ ! -f "$C37/pwd.txt" ] && ok "no merge driver spawned into the dirty checkout" || bad "t37.spawn" "a driver ran: $(cat "$C37/pwd.txt")"
@@ -978,8 +978,8 @@ jq -e '.merge_result.results[0].note | test("clean-on-main.*dirty")' <<<"$OUT37"
 echo "--- test 38: feature-branch checkout → merge items routed, no spawn (F#687) ---"
 C38="$TMP/c38"; mkdir -p "$C38"; D38="$(make_merge_double "$C38")"; G38="$(make_gh_double "$C38")"
 COFEAT="$TMP/co-feat"; mk_repo "$COFEAT" "fix/some-branch"
-OUT38="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D38" FUNNEL_GH_BIN="$G38" CAP_DIR="$C38" \
-        FUNNEL_CHECKOUT_3="$COFEAT" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT38="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D38" PIPELINE_GH_BIN="$G38" CAP_DIR="$C38" \
+        PIPELINE_CHECKOUT_3="$COFEAT" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.failed' <<<"$OUT38")" = "1" ] && ok "failed=1 (feature branch → not built)" || bad "t38.failed" "got $(jq -r '.failed' <<<"$OUT38")"
 [ ! -f "$C38/pwd.txt" ] && ok "no merge driver spawned into the feature-branch checkout" || bad "t38.spawn" "a driver ran: $(cat "$C38/pwd.txt")"
 jq -e '.merge_result.results[0].note | test("clean-on-main.*not main")' <<<"$OUT38" >/dev/null \
@@ -988,9 +988,9 @@ jq -e '.merge_result.results[0].note | test("clean-on-main.*not main")' <<<"$OUT
 # ── 39: a CLEAN-on-main board checkout still spawns + merges (no regression) ───
 echo "--- test 39: clean-on-main checkout is unaffected — merge still spawns (F#687) ---"
 C39="$TMP/c39"; mkdir -p "$C39"; D39="$(make_merge_double "$C39")"
-OUT39="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D39" CAP_DIR="$C39" FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"
+OUT39="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D39" CAP_DIR="$C39" PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"
 [ "$(jq -r '.merged_pr' <<<"$OUT39")" = "1" ] && ok "merged_pr=1 (clean-on-main CO3 still spawns + merges)" || bad "t39.merged" "got $(jq -r '.merged_pr' <<<"$OUT39")"
-grep -q '/funnel-drive-merge' "$C39/pwd.txt" 2>/dev/null && ok "a merge driver DID spawn for the clean checkout" || bad "t39.spawn" "no spawn: $(cat "$C39/pwd.txt" 2>/dev/null || echo none)"
+grep -q '/pipeline-drive-merge' "$C39/pwd.txt" 2>/dev/null && ok "a merge driver DID spawn for the clean checkout" || bad "t39.spawn" "no spawn: $(cat "$C39/pwd.txt" 2>/dev/null || echo none)"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ F#641 — routing / hand-off gh SIDE-EFFECTS used to swallow failures with a  │
@@ -1003,9 +1003,9 @@ grep -q '/funnel-drive-merge' "$C39/pwd.txt" 2>/dev/null && ok "a merge driver D
 # ── 40: a failed ROUTING edit is recorded, not swallowed (#641) ────────────────
 echo "--- test 40: refused-route gh edit fails → recorded in gh_errors, fail-open (#641) ---"
 C40="$TMP/c40"; mkdir -p "$C40"; D40="$(make_merge_double "$C40")"; G40="$(make_gh_double "$C40")"
-OUT40="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D40" FUNNEL_GH_BIN="$G40" CAP_DIR="$C40" \
+OUT40="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D40" PIPELINE_GH_BIN="$G40" CAP_DIR="$C40" \
         GH_FAIL_MATCH="issue edit 101" GH_FAIL_RC=7 \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.status' <<<"$OUT40")" = "ran" ] && ok "tick still completed (fail-open — a gh blip did not abort)" || bad "t40.status" "got $(jq -r '.status' <<<"$OUT40")"
 [ "$(jq -r '.routed' <<<"$OUT40")" = "1" ] && ok "routed=1 (routing counter still advances)" || bad "t40.routed" "got $(jq -r '.routed' <<<"$OUT40")"
 [ "$(jq -r '.gh_error_count >= 1' <<<"$OUT40")" = "true" ] && ok "gh_error_count>=1 (the failed edit was recorded)" || bad "t40.count" "got $(jq -r '.gh_error_count' <<<"$OUT40")"
@@ -1016,9 +1016,9 @@ OUT40="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D40" FUNNEL_GH_BIN="$G40" CAP_D
 # This is the duplicate-PR hole: without the marker the next tick re-drives fresh.
 echo "--- test 41: hand-off label add fails → recorded as phase=handoff (#641) ---"
 C41="$TMP/c41"; mkdir -p "$C41"; D41="$(make_merge_double "$C41")"; G41="$(make_gh_double "$C41")"
-OUT41="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D41" FUNNEL_GH_BIN="$G41" CAP_DIR="$C41" \
+OUT41="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D41" PIPELINE_GH_BIN="$G41" CAP_DIR="$C41" \
         GH_FAIL_MATCH="--add-label funnel-merge-pending" \
-        GH_PR_LIST_JSON="$OPEN_PR_101" FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.handed_off' <<<"$OUT41")" = "1" ] && ok "handed_off=1 (counter still advances on fail-open)" || bad "t41.handed_off" "got $(jq -r '.handed_off' <<<"$OUT41")"
 [ "$(jq -r 'any(.gh_errors[]?; .phase=="handoff" and (.issue|tostring)=="101")' <<<"$OUT41")" = "true" ] \
   && ok "gh_errors carries the failed hand-off label under phase=handoff" || bad "t41.detail" "got $(jq -c '.gh_errors' <<<"$OUT41")"
@@ -1026,23 +1026,23 @@ OUT41="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D41" FUNNEL_GH_BIN="$G41" CAP_D
 # ── 42: NO gh failure → gh_errors stays empty, gh_error_count=0 (no false noise) ─
 echo "--- test 42: clean tick → gh_error_count=0, gh_errors=[] (#641) ---"
 C42="$TMP/c42"; mkdir -p "$C42"; D42="$(make_merge_double "$C42")"; G42="$(make_gh_double "$C42")"
-OUT42="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42" FUNNEL_GH_BIN="$G42" CAP_DIR="$C42" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+OUT42="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42" PIPELINE_GH_BIN="$G42" CAP_DIR="$C42" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.gh_error_count' <<<"$OUT42")" = "0" ] && ok "gh_error_count=0 (no failures on a clean tick)" || bad "t42.count" "got $(jq -r '.gh_error_count' <<<"$OUT42")"
 [ "$(jq -c '.gh_errors' <<<"$OUT42")" = "[]" ] && ok "gh_errors=[] (empty, no false noise)" || bad "t42.empty" "got $(jq -c '.gh_errors' <<<"$OUT42")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ F#640 — record ENRICHMENT: the drive record logged COUNTS (routed,          │
 # │ handed_off) but not WHICH issues, so a soak reviewer could not cross-check   │
-# │ the funnel's board mutations. Now it carries per-side-effect issue arrays    │
+# │ the pipeline's board mutations. Now it carries per-side-effect issue arrays    │
 # │ (routed_issues / handed_off_issues / escalated_issues) + a drive duration.   │
 # ╰──────────────────────────────────────────────────────────────────────────╯
 
 # ── 43: a routed item's issue number is in routed_issues (mutation audit) ─────
 echo "--- test 43: routed_issues carries the acted-on issue number (#640) ---"
 C43="$TMP/c43"; mkdir -p "$C43"; D43="$(make_merge_double "$C43")"; G43="$(make_gh_double "$C43")"
-OUT43="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D43" FUNNEL_GH_BIN="$G43" CAP_DIR="$C43" \
-        FUNNEL_NOW_EPOCH=1000 FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+OUT43="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D43" PIPELINE_GH_BIN="$G43" CAP_DIR="$C43" \
+        PIPELINE_NOW_EPOCH=1000 PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -c '.routed_issues' <<<"$OUT43")" = "[101]" ] && ok "routed_issues=[101] (the routed issue is auditable)" || bad "t43.routed_issues" "got $(jq -c '.routed_issues' <<<"$OUT43")"
 [ "$(jq -c '.handed_off_issues' <<<"$OUT43")" = "[]" ] && ok "handed_off_issues=[] (nothing handed off on a refuse)" || bad "t43.handoff_issues" "got $(jq -c '.handed_off_issues' <<<"$OUT43")"
 [ "$(jq -r '.routed' <<<"$OUT43")" = "1" ] && ok "routed count still agrees with the array length" || bad "t43.count" "got $(jq -r '.routed' <<<"$OUT43")"
@@ -1050,15 +1050,15 @@ OUT43="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D43" FUNNEL_GH_BIN="$G43" CAP_D
 # ── 44: a handed-off item's issue number is in handed_off_issues ──────────────
 echo "--- test 44: handed_off_issues carries the resumed issue number (#640) ---"
 C44="$TMP/c44"; mkdir -p "$C44"; D44="$(make_merge_double "$C44")"; G44="$(make_gh_double "$C44")"
-OUT44="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D44" FUNNEL_GH_BIN="$G44" CAP_DIR="$C44" \
-        GH_PR_LIST_JSON="$OPEN_PR_101" FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+OUT44="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D44" PIPELINE_GH_BIN="$G44" CAP_DIR="$C44" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
 [ "$(jq -c '.handed_off_issues' <<<"$OUT44")" = "[101]" ] && ok "handed_off_issues=[101]" || bad "t44.handoff_issues" "got $(jq -c '.handed_off_issues' <<<"$OUT44")"
 
 # ── 45: the drive record carries a duration_ms timing field ───────────────────
 echo "--- test 45: drive record carries duration_ms (#640 timing) ---"
 C45="$TMP/c45"; mkdir -p "$C45"; D45="$(make_merge_double "$C45")"; G45="$(make_gh_double "$C45")"
-OUT45="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D45" FUNNEL_GH_BIN="$G45" CAP_DIR="$C45" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+OUT45="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D45" PIPELINE_GH_BIN="$G45" CAP_DIR="$C45" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r 'has("duration_ms")' <<<"$OUT45")" = "true" ] && ok "record has duration_ms" || bad "t45.has" "got $(jq -c '.' <<<"$OUT45")"
 [ "$(jq -r '.duration_ms >= 0 and (.duration_ms|type)=="number"' <<<"$OUT45")" = "true" ] && ok "duration_ms is a non-negative number" || bad "t45.num" "got $(jq -r '.duration_ms' <<<"$OUT45")"
 
@@ -1067,7 +1067,7 @@ OUT45="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D45" FUNNEL_GH_BIN="$G45" CAP_D
 # │  (1) merge_status enum disambiguates a `merged_pr` value (reported /        │
 # │      unparseable / not-run) so a bare null no longer reads as "field        │
 # │      absent" to a soak reviewer.                                            │
-# │  (2) reconciled_merged (+ audit) counts funnel-opened PRs that merged       │
+# │  (2) reconciled_merged (+ audit) counts pipeline-opened PRs that merged       │
 # │      ASYNC — the merge-pending issue is now CLOSED — and RETIRES the label. │
 # │  (3) merge_pending (+ audit) is the standing ground-truth open set, the     │
 # │      cross-check for the same-tick handed_off.                              │
@@ -1076,8 +1076,8 @@ OUT45="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D45" FUNNEL_GH_BIN="$G45" CAP_D
 # ── 46: merge_status="reported" on a clean parsed merge (merged_pr is a real count) ─
 echo "--- test 46: merge_status=reported when the driver summary parses (#718) ---"
 C46="$TMP/c46"; mkdir -p "$C46"; D46="$(make_merge_double "$C46")"; G46="$(make_gh_double "$C46")"
-OUT46="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D46" FUNNEL_GH_BIN="$G46" CAP_DIR="$C46" \
-        FUNNEL_DRIVE_MERGE=1 bash "$DRIVE")"   # default summary = one clean merge
+OUT46="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D46" PIPELINE_GH_BIN="$G46" CAP_DIR="$C46" \
+        PIPELINE_DRIVE_MERGE=1 bash "$DRIVE")"   # default summary = one clean merge
 [ "$(jq -r '.merge_status' <<<"$OUT46")" = "reported" ] && ok "merge_status=reported (summary parsed)" || bad "t46.status" "got $(jq -r '.merge_status' <<<"$OUT46")"
 [ "$(jq -r '.merged_pr' <<<"$OUT46")" = "1" ] && ok "merged_pr=1 is a real count under merge_status=reported" || bad "t46.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT46")"
 
@@ -1086,41 +1086,41 @@ OUT46="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D46" FUNNEL_GH_BIN="$G46" CAP_D
 # merged_pr:null is now SELF-DESCRIBING (unparseable), not indistinguishable from absent.
 echo "--- test 47: unparseable merge summary → merge_status=unparseable, merged_pr=null (#718) ---"
 C47="$TMP/c47"; mkdir -p "$C47"; D47="$(make_merge_double "$C47")"; G47="$(make_gh_double "$C47")"
-OUT47="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D47" FUNNEL_GH_BIN="$G47" CAP_DIR="$C47" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
+OUT47="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D47" PIPELINE_GH_BIN="$G47" CAP_DIR="$C47" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
 [ "$(jq -r '.merge_status' <<<"$OUT47")" = "unparseable" ] && ok "merge_status=unparseable (ran but no parseable summary)" || bad "t47.status" "got $(jq -r '.merge_status' <<<"$OUT47")"
 [ "$(jq -r '.merged_pr' <<<"$OUT47")" = "null" ] && ok "merged_pr=null (unknown, NOT a false 0) — now labeled by merge_status" || bad "t47.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT47")"
 
 # ── 48: merge tier not driven → merge_status="not-run", merged_pr=0 (a definitive 0) ─
-# CODE1 is a kind:code item; with FUNNEL_DRIVE_MERGE off it is surfaced-not-driven, so the
+# CODE1 is a kind:code item; with PIPELINE_DRIVE_MERGE off it is surfaced-not-driven, so the
 # merge tier never runs and merged_pr=0 is a TRUE zero — distinct from the null above.
 echo "--- test 48: merge tier off → merge_status=not-run, merged_pr=0 (#718) ---"
 C48="$TMP/c48"; mkdir -p "$C48"; D48="$(make_merge_double "$C48")"; G48="$(make_gh_double "$C48")"
-OUT48="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D48" FUNNEL_GH_BIN="$G48" CAP_DIR="$C48" bash "$DRIVE")"
+OUT48="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D48" PIPELINE_GH_BIN="$G48" CAP_DIR="$C48" bash "$DRIVE")"
 [ "$(jq -r '.merge_status' <<<"$OUT48")" = "not-run" ] && ok "merge_status=not-run (merge tier did not run)" || bad "t48.status" "got $(jq -r '.merge_status' <<<"$OUT48")"
 [ "$(jq -r '.merged_pr' <<<"$OUT48")" = "0" ] && ok "merged_pr=0 is a definitive zero under merge_status=not-run" || bad "t48.merged_pr" "got $(jq -r '.merged_pr' <<<"$OUT48")"
 
-# ── 49: an async-merged funnel PR is RECONCILED — pending issue now CLOSED (#718) ──
-# The core F#718 fix: the funnel opened a PR on a prior tick (issue 701 labeled
+# ── 49: an async-merged pipeline PR is RECONCILED — pending issue now CLOSED (#718) ──
+# The core F#718 fix: the pipeline opened a PR on a prior tick (issue 701 labeled
 # funnel-merge-pending); it merged via the queue/async since. Its `Closes #701` closed the
 # issue, so the reconciliation probe sees state=CLOSED → counts reconciled_merged and
 # RETIRES the label so it is never recounted. Reconcilable from the telemetry ALONE.
-echo "--- test 49: async-merged funnel PR (pending issue closed) → reconciled_merged + label retired (#718) ---"
+echo "--- test 49: async-merged pipeline PR (pending issue closed) → reconciled_merged + label retired (#718) ---"
 C49="$TMP/c49"; mkdir -p "$C49"; D49="$(make_merge_double "$C49")"; G49="$(make_gh_double "$C49")"
-OUT49="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D49" FUNNEL_GH_BIN="$G49" CAP_DIR="$C49" \
+OUT49="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D49" PIPELINE_GH_BIN="$G49" CAP_DIR="$C49" \
         GH_PENDING_JSON='[{"number":701,"state":"CLOSED"}]' bash "$DRIVE")"
-[ "$(jq -r '.reconciled_merged' <<<"$OUT49")" = "1" ] && ok "reconciled_merged=1 (async merge of a funnel-opened PR seen)" || bad "t49.count" "got $(jq -r '.reconciled_merged' <<<"$OUT49")"
+[ "$(jq -r '.reconciled_merged' <<<"$OUT49")" = "1" ] && ok "reconciled_merged=1 (async merge of a pipeline-opened PR seen)" || bad "t49.count" "got $(jq -r '.reconciled_merged' <<<"$OUT49")"
 [ "$(jq -c '.reconciled_merged_issues' <<<"$OUT49")" = "[701]" ] && ok "reconciled_merged_issues=[701] (reconcilable from telemetry alone)" || bad "t49.audit" "got $(jq -c '.reconciled_merged_issues' <<<"$OUT49")"
 [ "$(jq -r '.merge_pending' <<<"$OUT49")" = "0" ] && ok "merge_pending=0 (the closed one left the standing set)" || bad "t49.pending" "got $(jq -r '.merge_pending' <<<"$OUT49")"
 grep -qx "issue edit 701 -R Towheads/stageFind --remove-label funnel-merge-pending" "$C49/gh-calls.txt" \
   && ok "label retired on the reconciled issue (bounded set, no recount next tick)" || bad "t49.retire" "got $(cat "$C49/gh-calls.txt" 2>/dev/null || echo none)"
 
-# ── 50: a still-open funnel PR is counted in the standing merge_pending set (#718) ─
+# ── 50: a still-open pipeline PR is counted in the standing merge_pending set (#718) ─
 # The symptom-3 cross-check: issue 702 is labeled funnel-merge-pending and STILL OPEN, so
 # the "opened-but-not-yet-merged" set is visible in telemetry — the label is KEPT (no write).
-echo "--- test 50: still-open pending funnel PR → merge_pending, label kept (#718) ---"
+echo "--- test 50: still-open pending pipeline PR → merge_pending, label kept (#718) ---"
 C50="$TMP/c50"; mkdir -p "$C50"; D50="$(make_merge_double "$C50")"; G50="$(make_gh_double "$C50")"
-OUT50="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D50" FUNNEL_GH_BIN="$G50" CAP_DIR="$C50" \
+OUT50="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D50" PIPELINE_GH_BIN="$G50" CAP_DIR="$C50" \
         GH_PENDING_JSON='[{"number":702,"state":"OPEN"}]' bash "$DRIVE")"
 [ "$(jq -r '.merge_pending' <<<"$OUT50")" = "1" ] && ok "merge_pending=1 (standing open set surfaced)" || bad "t50.count" "got $(jq -r '.merge_pending' <<<"$OUT50")"
 [ "$(jq -c '.merge_pending_issues' <<<"$OUT50")" = "[702]" ] && ok "merge_pending_issues=[702] (auditable)" || bad "t50.audit" "got $(jq -c '.merge_pending_issues' <<<"$OUT50")"
@@ -1130,7 +1130,7 @@ OUT50="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D50" FUNNEL_GH_BIN="$G50" CAP_D
 # ── 51: reconciliation splits a MIXED pending set correctly (closed vs open) ──────
 echo "--- test 51: mixed pending set → reconciled the closed one, kept the open one (#718) ---"
 C51="$TMP/c51"; mkdir -p "$C51"; D51="$(make_merge_double "$C51")"; G51="$(make_gh_double "$C51")"
-OUT51="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D51" FUNNEL_GH_BIN="$G51" CAP_DIR="$C51" \
+OUT51="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D51" PIPELINE_GH_BIN="$G51" CAP_DIR="$C51" \
         GH_PENDING_JSON='[{"number":701,"state":"CLOSED"},{"number":702,"state":"OPEN"}]' bash "$DRIVE")"
 [ "$(jq -r '.reconciled_merged' <<<"$OUT51")" = "1" ] && ok "reconciled_merged=1 (only the closed one)" || bad "t51.reconciled" "got $(jq -r '.reconciled_merged' <<<"$OUT51")"
 [ "$(jq -r '.merge_pending' <<<"$OUT51")" = "1" ] && ok "merge_pending=1 (only the open one)" || bad "t51.pending" "got $(jq -r '.merge_pending' <<<"$OUT51")"
@@ -1140,14 +1140,14 @@ OUT51="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D51" FUNNEL_GH_BIN="$G51" CAP_D
 # ── 52: reconciliation is SIDE-EFFECT-FREE under --dry-run (no gh probe/write) ────
 echo "--- test 52: --dry-run makes no reconciliation gh calls (#718 dry-run purity) ---"
 C52="$TMP/c52"; mkdir -p "$C52"; D52="$(make_merge_double "$C52")"; G52="$(make_gh_double "$C52")"
-OUT52="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D52" FUNNEL_GH_BIN="$G52" CAP_DIR="$C52" \
-        FUNNEL_DRIVE_MERGE=1 GH_PENDING_JSON='[{"number":701,"state":"CLOSED"}]' bash "$DRIVE" --dry-run)"
+OUT52="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D52" PIPELINE_GH_BIN="$G52" CAP_DIR="$C52" \
+        PIPELINE_DRIVE_MERGE=1 GH_PENDING_JSON='[{"number":701,"state":"CLOSED"}]' bash "$DRIVE" --dry-run)"
 [ "$(jq -r '.status' <<<"$OUT52")" = "dry-run" ] && ok "status=dry-run" || bad "t52.status" "got $(jq -r '.status' <<<"$OUT52")"
 [ "$(jq -r '.reconciled_merged' <<<"$OUT52")" = "0" ] && ok "reconciled_merged=0 (no probe on dry-run)" || bad "t52.reconciled" "got $(jq -r '.reconciled_merged' <<<"$OUT52")"
 [ ! -f "$C52/gh-calls.txt" ] && ok "no gh side-effects on dry-run (label not retired)" || bad "t52.nowrite" "gh was called: $(cat "$C52/gh-calls.txt")"
 
 # ── 53: boards.conf registry seam (foundation #770) — _board_repo honors an override ─
-# _board_repo is the funnel mirror of board.sh's board_repo() (#718's inlined-map
+# _board_repo is the pipeline mirror of board.sh's board_repo() (#718's inlined-map
 # comment). #770 taught both to resolve an optional boards.conf FIRST, falling back
 # to the byte-identical built-in map when no conf exists. _reconcile_pending's
 # `-R "$repo"` label-remove write is the one observable side-effect that carries
@@ -1158,7 +1158,7 @@ CONF53="$TMP/c53-boards.conf"
 cat > "$CONF53" <<'EOF'
 board.3.repo=Conf/board3-override
 EOF
-OUT53="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D53" FUNNEL_GH_BIN="$G53" CAP_DIR="$C53" \
+OUT53="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D53" PIPELINE_GH_BIN="$G53" CAP_DIR="$C53" \
         BOARDS_CONF_REPO_LOCAL="$CONF53" BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
         GH_PENDING_JSON='[{"number":701,"state":"CLOSED"}]' bash "$DRIVE")"
 [ "$(jq -r '.reconciled_merged' <<<"$OUT53")" = "1" ] && ok "reconciled_merged=1 (conf-resolved repo still drives the probe)" || bad "t53.reconciled" "got $(jq -r '.reconciled_merged' <<<"$OUT53")"
@@ -1168,7 +1168,7 @@ grep -qx "issue edit 701 -R Conf/board3-override --remove-label funnel-merge-pen
 
 echo "--- test 53b: with NO boards.conf, _board_repo falls back to the byte-identical built-in map ---"
 C53B="$TMP/c53b"; mkdir -p "$C53B"; D53B="$(make_merge_double "$C53B")"; G53B="$(make_gh_double "$C53B")"
-printf '%s' "$CODE1" | env CLAUDE_BIN="$D53B" FUNNEL_GH_BIN="$G53B" CAP_DIR="$C53B" \
+printf '%s' "$CODE1" | env CLAUDE_BIN="$D53B" PIPELINE_GH_BIN="$G53B" CAP_DIR="$C53B" \
         BOARDS_CONF_REPO_LOCAL="$TMP/no-such-boards.conf" BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
         GH_PENDING_JSON='[{"number":701,"state":"CLOSED"}]' bash "$DRIVE" >/dev/null
 grep -qx "issue edit 701 -R Towheads/stageFind --remove-label funnel-merge-pending" "$C53B/gh-calls.txt" \
@@ -1186,8 +1186,8 @@ grep -qx "issue edit 701 -R Towheads/stageFind --remove-label funnel-merge-pendi
 # ── 54a: abandonment (unparseable, no PR, issue open) → released to Ready ──────
 echo "--- test 54a: abandoned claim (no PR, no terminal status, issue open) → reclaimed (#1157) ---"
 C54A="$TMP/c54a"; mkdir -p "$C54A"; D54A="$(make_merge_double "$C54A")"; G54A="$(make_gh_double "$C54A")"; U54A="$(make_unclaim_double "$C54A")"
-OUT54A="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54A" FUNNEL_GH_BIN="$G54A" FUNNEL_UNCLAIM_BIN="$U54A" CAP_DIR="$C54A" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
+OUT54A="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54A" PIPELINE_GH_BIN="$G54A" PIPELINE_UNCLAIM_BIN="$U54A" CAP_DIR="$C54A" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" bash "$DRIVE")"
 [ "$(jq -r '.merge_status' <<<"$OUT54A")" = "unparseable" ] && ok "sanity: the abandoned session's summary is unparseable" || bad "t54a.status" "got $(jq -r '.merge_status' <<<"$OUT54A")"
 [ "$(jq -r '.reclaimed' <<<"$OUT54A")" = "1" ] && ok "reclaimed=1 (the stranded claim was released)" || bad "t54a.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54A")"
 [ "$(jq -c '.reclaimed_issues' <<<"$OUT54A")" = "[101]" ] && ok "reclaimed_issues=[101] (audit)" || bad "t54a.audit" "got $(jq -c '.reclaimed_issues' <<<"$OUT54A")"
@@ -1197,8 +1197,8 @@ grep -qx "101 --board 3" "$C54A/unclaim-calls.txt" && ok "unclaim.sh released #1
 # ── 54b: an open PR exists → hand-off, NOT reclaimed (disjointness) ────────────
 echo "--- test 54b: unparseable BUT an open PR closes the issue → hand-off, not reclaimed (#1157) ---"
 C54B="$TMP/c54b"; mkdir -p "$C54B"; D54B="$(make_merge_double "$C54B")"; G54B="$(make_gh_double "$C54B")"; U54B="$(make_unclaim_double "$C54B")"
-OUT54B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54B" FUNNEL_GH_BIN="$G54B" FUNNEL_UNCLAIM_BIN="$U54B" CAP_DIR="$C54B" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" \
+OUT54B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54B" PIPELINE_GH_BIN="$G54B" PIPELINE_UNCLAIM_BIN="$U54B" CAP_DIR="$C54B" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" \
         GH_PR_LIST_JSON='[{"number":555,"body":"Closes #101"}]' bash "$DRIVE")"
 [ "$(jq -r '.reclaimed' <<<"$OUT54B")" = "0" ] && ok "reclaimed=0 (an item with an open PR is never reclaimed)" || bad "t54b.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54B")"
 [ "$(jq -r '.handed_off' <<<"$OUT54B")" = "1" ] && ok "handed_off=1 (the open PR routes it to the resume path instead)" || bad "t54b.handoff" "got $(jq -r '.handed_off' <<<"$OUT54B")"
@@ -1207,8 +1207,8 @@ OUT54B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54B" FUNNEL_GH_BIN="$G54B" FU
 # ── 54c: a reported terminal status (refused) → NOT reclaimed (condition a) ────
 echo "--- test 54c: a refused item (reported terminal status) → routed, not reclaimed (#1157 cond a) ---"
 C54C="$TMP/c54c"; mkdir -p "$C54C"; D54C="$(make_merge_double "$C54C")"; G54C="$(make_gh_double "$C54C")"; U54C="$(make_unclaim_double "$C54C")"
-OUT54C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54C" FUNNEL_GH_BIN="$G54C" FUNNEL_UNCLAIM_BIN="$U54C" CAP_DIR="$C54C" \
-        FUNNEL_OPERATOR=@towhead FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+OUT54C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54C" PIPELINE_GH_BIN="$G54C" PIPELINE_UNCLAIM_BIN="$U54C" CAP_DIR="$C54C" \
+        PIPELINE_OPERATOR=@towhead PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
 [ "$(jq -r '.reclaimed' <<<"$OUT54C")" = "0" ] && ok "reclaimed=0 (a reported terminal is owned by _route_refused, not reclaimed)" || bad "t54c.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54C")"
 [ "$(jq -r '.routed' <<<"$OUT54C")" = "1" ] && ok "routed=1 (the refused item still goes to the operator)" || bad "t54c.routed" "got $(jq -r '.routed' <<<"$OUT54C")"
 [ ! -f "$C54C/unclaim-calls.txt" ] && ok "unclaim.sh NOT called for a refused item" || bad "t54c.unclaim" "unclaim was called: $(cat "$C54C/unclaim-calls.txt")"
@@ -1216,13 +1216,13 @@ OUT54C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54C" FUNNEL_GH_BIN="$G54C" FU
 # ── 54d: a CLOSED issue (merged mid-cascade) → NOT reclaimed (condition d) ─────
 echo "--- test 54d: unparseable + no PR but the issue is CLOSED → not reclaimed (#1157 cond d) ---"
 C54D="$TMP/c54d"; mkdir -p "$C54D"; D54D="$(make_merge_double "$C54D")"; G54D="$(make_gh_double "$C54D")"; U54D="$(make_unclaim_double "$C54D")"
-OUT54D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54D" FUNNEL_GH_BIN="$G54D" FUNNEL_UNCLAIM_BIN="$U54D" CAP_DIR="$C54D" \
-        FUNNEL_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" \
+OUT54D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D54D" PIPELINE_GH_BIN="$G54D" PIPELINE_UNCLAIM_BIN="$U54D" CAP_DIR="$C54D" \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="not json at all" \
         GH_ISSUE_STATE="CLOSED" bash "$DRIVE")"
 [ "$(jq -r '.reclaimed' <<<"$OUT54D")" = "0" ] && ok "reclaimed=0 (a closed issue is not stranded — the cascade takes it to Done)" || bad "t54d.reclaimed" "got $(jq -r '.reclaimed' <<<"$OUT54D")"
 [ ! -f "$C54D/unclaim-calls.txt" ] && ok "unclaim.sh NOT called for a closed issue" || bad "t54d.unclaim" "unclaim was called: $(cat "$C54D/unclaim-calls.txt")"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
-echo "funnel-drive tests: $pass passed, $fail failed"
+echo "pipeline-drive tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

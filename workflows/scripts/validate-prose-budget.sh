@@ -16,13 +16,13 @@
 # — this script re-implements NEITHER the compose-seam invocation nor the
 # per-file `wc` walk (ADR 0015, "one compose seam"). It only PARSES that
 # report and compares the two numbers it already carries against the two cap
-# knobs. This is also why this gate is exactly as host-deterministic as
+# settings. This is also why this gate is exactly as host-deterministic as
 # count-prose.sh itself (see that script's own header) — nothing here adds a
 # second, independently-driftable counting path.
 #
 # Ratchet: PROSE_BUDGET_TIER1_CAP / PROSE_BUDGET_TIER2_FILE_CAP (defaulted in
 # workflows/scripts/build/build.config.sh, registered in
-# workflows/scripts/config/knob-registry.tsv) are seeded at the measured
+# workflows/scripts/config/setting-registry.tsv) are seeded at the measured
 # baseline, so this gate is green on the unmodified tree by construction and
 # blocks no unrelated PR. A cap is lowered again only by a later config PR
 # (after a subtraction pass actually shrinks the prose) or raised by a config
@@ -32,8 +32,8 @@
 # Failure message contract (epic #719 Contract, Produces #4): every
 # violation names the FILE, its COUNT, its CAP, and both remediation paths
 # (trim the prose, or open a config PR raising the cap — build.config.sh's
-# knob default AND its knob-registry.tsv row, in the SAME PR, per
-# check-knob-registry.sh's equality lint). A TIER-1 failure additionally
+# setting default AND its setting-registry.tsv row, in the SAME PR, per
+# check-setting-registry.sh's equality lint). A TIER-1 failure additionally
 # prints the full TIER-2 per-file breakdown alongside the composed total, so
 # a seam-only regression (composed count grows, every per-file count stays
 # flat) is attributable on sight, with no second investigation step.
@@ -58,7 +58,7 @@
 # Env overrides (fixture-driven tests):
 #   CITATION_REGISTRY_FILE path to the citation registry TSV (default: the
 #                          tracked workflows/scripts/config/
-#                          citation-registry.tsv). knob:exempt — fixture
+#                          citation-registry.tsv). setting:exempt — fixture
 #                          seam, same rationale as COUNT_PROSE_BIN.
 #   COUNT_PROSE_ROOT       forwarded verbatim to count-prose.sh (its own
 #                          test/fixture root override — see that script's
@@ -70,15 +70,15 @@
 #                          count stays exactly the baseline value.
 #   COUNT_PROSE_BIN        path to the count-prose.sh script itself (default:
 #                          the sibling count-prose.sh next to this script).
-#                          knob:exempt — test-double seam, not an
+#                          setting:exempt — test-double seam, not an
 #                          operator-facing config-precedence default (mirrors
 #                          count-prose.sh's own COUNT_PROSE_ROOT rationale).
 #   PROSE_BUDGET_TIER1_CAP, PROSE_BUDGET_TIER2_FILE_CAP   override the
-#                          build.config.sh knob defaults directly — the
+#                          build.config.sh setting defaults directly — the
 #                          fixture red/green demonstrations use this to
 #                          exercise a deliberate overage without editing
-#                          build.config.sh (rung 2, env, always outranks
-#                          rung 5's tracked default per the six-rung ladder).
+#                          build.config.sh (layer 2, env, always outranks
+#                          layer 5's tracked default per the six-layer ladder).
 #
 # Kept bash-3.2-portable (no associative arrays, no mapfile) so it runs on
 # the macOS dev shell as well as Linux CI, matching every other
@@ -92,22 +92,22 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # knob:exempt — forwarded verbatim to count-prose.sh, whose own identical seam carries this same marker (test/fixture root override, not an operator-facing config-precedence default)
-: "${COUNT_PROSE_BIN:=$SCRIPT_DIR/count-prose.sh}"  # knob:exempt — test-double seam (fixture: a modified compose seam under a scratch COUNT_PROSE_ROOT tree)
-: "${CITATION_REGISTRY_FILE:=$REPO_ROOT/workflows/scripts/config/citation-registry.tsv}"  # knob:exempt — fixture seam (a scratch registry against a scratch COUNT_PROSE_ROOT tree), not an operator-facing config-precedence default
+: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # setting:exempt — forwarded verbatim to count-prose.sh, whose own identical seam carries this same marker (test/fixture root override, not an operator-facing config-precedence default)
+: "${COUNT_PROSE_BIN:=$SCRIPT_DIR/count-prose.sh}"  # setting:exempt — test-double seam (fixture: a modified compose seam under a scratch COUNT_PROSE_ROOT tree)
+: "${CITATION_REGISTRY_FILE:=$REPO_ROOT/workflows/scripts/config/citation-registry.tsv}"  # setting:exempt — fixture seam (a scratch registry against a scratch COUNT_PROSE_ROOT tree), not an operator-facing config-precedence default
 
 [ -f "$COUNT_PROSE_BIN" ] || { echo "validate-prose-budget: counting script not found: $COUNT_PROSE_BIN" >&2; exit 1; }
 
-# Cap knobs: sourced from build.config.sh (tracked-repo rung 5) unless a
-# caller already exported them (rung 2 — an env override — wins per the
-# normal six-rung precedence ladder; this is exactly the seam the fixture
+# Cap settings: sourced from build.config.sh (tracked-repo layer 5) unless a
+# caller already exported them (layer 2 — an env override — wins per the
+# normal six-layer precedence ladder; this is exactly the seam the fixture
 # red/green demonstrations below use).
 if [ -f "$REPO_ROOT/workflows/scripts/build/build.config.sh" ]; then
   # shellcheck source=workflows/scripts/build/build.config.sh
   source "$REPO_ROOT/workflows/scripts/build/build.config.sh"
 fi
-: "${PROSE_BUDGET_TIER1_CAP:?PROSE_BUDGET_TIER1_CAP is unset — build.config.sh missing, or the knob was removed}"
-: "${PROSE_BUDGET_TIER2_FILE_CAP:?PROSE_BUDGET_TIER2_FILE_CAP is unset — build.config.sh missing, or the knob was removed}"
+: "${PROSE_BUDGET_TIER1_CAP:?PROSE_BUDGET_TIER1_CAP is unset — build.config.sh missing, or the setting was removed}"
+: "${PROSE_BUDGET_TIER2_FILE_CAP:?PROSE_BUDGET_TIER2_FILE_CAP is unset — build.config.sh missing, or the setting was removed}"
 case "$PROSE_BUDGET_TIER1_CAP" in ''|*[!0-9]*) echo "validate-prose-budget: PROSE_BUDGET_TIER1_CAP is not a positive integer: '$PROSE_BUDGET_TIER1_CAP'" >&2; exit 1 ;; esac
 case "$PROSE_BUDGET_TIER2_FILE_CAP" in ''|*[!0-9]*) echo "validate-prose-budget: PROSE_BUDGET_TIER2_FILE_CAP is not a positive integer: '$PROSE_BUDGET_TIER2_FILE_CAP'" >&2; exit 1 ;; esac
 
@@ -209,7 +209,7 @@ while [ "$i" -lt "${#tier2_files[@]}" ]; do
     fail=1
     violations=$((violations + 1))
     echo "PROSE-BUDGET TIER-2: $f: $c lines exceeds the per-file cap of $PROSE_BUDGET_TIER2_FILE_CAP lines (PROSE_BUDGET_TIER2_FILE_CAP)"
-    echo "  Remediation: trim $f back under the cap, OR open a config PR raising PROSE_BUDGET_TIER2_FILE_CAP in workflows/scripts/build/build.config.sh (+ its workflows/scripts/config/knob-registry.tsv row, in the SAME PR)"
+    echo "  Remediation: trim $f back under the cap, OR open a config PR raising PROSE_BUDGET_TIER2_FILE_CAP in workflows/scripts/build/build.config.sh (+ its workflows/scripts/config/setting-registry.tsv row, in the SAME PR)"
   fi
   i=$((i + 1))
 done
@@ -219,7 +219,7 @@ if [ "$tier1_count" -gt "$PROSE_BUDGET_TIER1_CAP" ]; then
   violations=$((violations + 1))
   [ "$violations" -gt 1 ] && echo
   echo "PROSE-BUDGET TIER-1: composed kernel-authored render is $tier1_count lines, exceeding the cap of $PROSE_BUDGET_TIER1_CAP lines (PROSE_BUDGET_TIER1_CAP)"
-  echo "  Remediation: trim claude/CLAUDE.kernel.md (or whatever compose-seam change inflated the render) back under the cap, OR open a config PR raising PROSE_BUDGET_TIER1_CAP in workflows/scripts/build/build.config.sh (+ its workflows/scripts/config/knob-registry.tsv row, in the SAME PR)"
+  echo "  Remediation: trim claude/CLAUDE.kernel.md (or whatever compose-seam change inflated the render) back under the cap, OR open a config PR raising PROSE_BUDGET_TIER1_CAP in workflows/scripts/build/build.config.sh (+ its workflows/scripts/config/setting-registry.tsv row, in the SAME PR)"
   echo
   echo "  Full TIER-2 per-file breakdown, for seam-attribution — every count here matching a prior green run means this IS a compose-seam-only regression (zero per-file prose change), not a per-file overage:"
   printf '%s\n' "$report" | sed -n '/^TIER-2 per-file line counts/,$p' | sed 's/^/  /'
@@ -314,7 +314,7 @@ for f in "${tier2_files[@]}"; do
   while IFS= read -r cand; do
     [ -z "$cand" ] && continue
     lineno="${cand%%	*}"
-    # strip backtick code spans first (same rationale as check-knob-prose.sh):
+    # strip backtick code spans first (same rationale as check-setting-prose.sh):
     # a `<!-- cite:` shown in code font is a quotation, never a live marker.
     # The quoting is a literal sed program, not a missed expansion.
     # shellcheck disable=SC2016

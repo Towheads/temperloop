@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build CI poll — the deterministic-spine script that owns the 3g
+# build CI poll — the deterministic-machinery script that owns the 3g
 # CI-monitoring step of /build (epic #253, spike #245). Watching a PR's
 # check-runs to completion is a pure function of observable machine state with
 # a closed outcome set, so it moves from prose in build.md to code here.
@@ -153,7 +153,7 @@ sha=""
 interval=30
 timeout=3600
 exit_nonzero_on_failure=0
-# NO_CI grace window (temperloop#605) — an env knob, not a new flag, mirroring
+# NO_CI grace window (temperloop#605) — an env setting, not a new flag, mirroring
 # the CI_POLL_API_MAX_ATTEMPTS/CI_POLL_API_RETRY_BACKOFF convention above.
 # Default 120s (four 30s intervals) is long enough to absorb ordinary
 # CI-trigger startup lag without meaningfully delaying the zero-CI verdict

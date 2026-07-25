@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# funnel-schedule-gate.sh — the autonomous funnel driver's OPERATOR-EDITABLE
+# pipeline-schedule-gate.sh — the autonomous pipeline driver's OPERATOR-EDITABLE
 # schedule gate (foundation #596). A standalone, testable predicate: it reads an
 # operator-owned vault file and decides whether THIS hour's cron wake may spend
 # tokens. The OS cron is dumb and constant (a fixed hourly launchd wake); ALL
-# timing intelligence lives in the file, so the operator dials *when* the funnel
+# timing intelligence lives in the file, so the operator dials *when* the pipeline
 # runs by editing a note — no crontab edit, no redeploy. See
-# `Decisions/foundation - Funnel cron hourly-wake + vault schedule-file gate`.
+# `Decisions/foundation - Pipeline cron hourly-wake + vault schedule-file gate`.
 #
-#   funnel-schedule-gate.sh            # read the schedule file, print one verdict
+#   pipeline-schedule-gate.sh            # read the schedule file, print one verdict
 #
 # Verdict JSON (stdout, one line) + EXIT CODE (the contract the wrapper composes):
 #   {"action":"run","hour":H,"boards":"<list-or-empty>"}   exit 0  → run this hour
@@ -23,34 +23,34 @@
 # or any non-integer / out-of-range token → **skip** (exit 1), never run. The
 # file's existence + `enabled: yes` is the explicit opt-in; deleting it or setting
 # `enabled: no` is the kill switch. A sync hiccup or a typo therefore quiets the
-# funnel rather than silently re-enabling autonomous hourly spend.
+# pipeline rather than silently re-enabling autonomous hourly spend.
 #
 # Schedule file = a normal Obsidian note carrying ONE machine-readable fenced
 # block the gate greps (everything outside it is free prose for the operator):
-#   ```funnel-schedule
+#   ```pipeline-schedule
 #   enabled: yes
 #   hours: 9 12 15 18      # local host time, 0–23 — THE token dial
-#   boards: 3              # optional; default = the wrapper's FUNNEL_ENABLED_BOARDS
+#   boards: 3              # optional; default = the wrapper's PIPELINE_ENABLED_BOARDS
 #   note: free-text why
 #   ```
 # The `hours:` list IS the token-allocation lever: more hours = more autonomous
 # runs = more spend; fewer / `enabled: no` = quiet.
 #
 # Config (env overrides win; defaults centralized in build.config.sh):
-#   FUNNEL_SCHEDULE_FILE  the operator-controls schedule note — an ADR §2.3a
+#   PIPELINE_SCHEDULE_FILE  the operator-controls schedule note — an ADR §2.3a
 #                         kind-3 control (docs/config-precedence.md §
 #                         "operator controls"): vault-resident, operator-
 #                         flipped, commit-free. UNSET default resolution
-#                         probes <ks_root>/Controls/foundation - funnel
+#                         probes <ks_root>/Controls/foundation - pipeline
 #                         schedule.md first, falling back to the legacy
-#                         <ks_root>/Context/foundation - funnel schedule.md
+#                         <ks_root>/Context/foundation - pipeline schedule.md
 #                         when Controls/ is absent — the fallback keeps this
 #                         gate firing through the overlay's vault-side move
 #                         window (temperloop#226/#232; ks_root's default is
 #                         seeded in build.config.sh, see
 #                         knowledge_store.contract.md). An EXPLICIT override
-#                         (any higher rung) is used verbatim, no probing.
-#   FUNNEL_NOW_HOUR       test seam: override "now" hour 0–23 (default: date +%H)
+#                         (any higher layer) is used verbatim, no probing.
+#   PIPELINE_NOW_HOUR       test seam: override "now" hour 0–23 (default: date +%H)
 
 set -euo pipefail
 
@@ -71,17 +71,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Controls/ is the ADR §2.3a operator-controls home going forward; Context/ is
 # kept as a probed fallback for the overlay's vault-side move window (the note
 # itself hasn't moved yet as of temperloop#232) — see docs/config-precedence.md
-# § "operator controls". Duplicated verbatim in funnel-overlap.sh (same
+# § "operator controls". Duplicated verbatim in pipeline-overlap.sh (same
 # non-vendoring-checkout-fallback convention as this repo's other byte-
-# identical duplicate knob defaults, e.g. FUNNEL_OPERATOR) — keep both in sync.
-_funnel_schedule_file_default() {
+# identical duplicate setting defaults, e.g. PIPELINE_OPERATOR) — keep both in sync.
+_pipeline_schedule_file_default() {
   local root controls
   root="$(ks_root 2>/dev/null || true)"
-  controls="$root/Controls/foundation - funnel schedule.md"
+  controls="$root/Controls/foundation - pipeline schedule.md"
   [ -r "$controls" ] && { printf '%s' "$controls"; return; }
-  printf '%s' "$root/Context/foundation - funnel schedule.md"
+  printf '%s' "$root/Context/foundation - pipeline schedule.md"
 }
-: "${FUNNEL_SCHEDULE_FILE:=$(_funnel_schedule_file_default)}"
+: "${PIPELINE_SCHEDULE_FILE:=$(_pipeline_schedule_file_default)}"
 
 # Emit a skip verdict (fail-closed) and exit 1. Defined as a function so every
 # bail-out path is one call; `now_hour` may be unset on the earliest failures, so
@@ -89,23 +89,23 @@ _funnel_schedule_file_default() {
 # that check can use it.
 skip() { jq -nc --arg r "$1" --argjson h "${now_hour:-0}" '{action:"skip",reason:$r,hour:$h}'; exit 1; }
 
-# Current hour 0–23. FUNNEL_NOW_HOUR is the offline test seam (so the gate
-# unit-tests deterministically with no real clock, exactly like funnel-tick.sh's
+# Current hour 0–23. PIPELINE_NOW_HOUR is the offline test seam (so the gate
+# unit-tests deterministically with no real clock, exactly like pipeline-tick.sh's
 # fixtures). `10#` forces base-10 so a leading-zero `date +%H` (e.g. "09") is not
 # read as octal.
-now_hour="${FUNNEL_NOW_HOUR:-$(date +%H)}"
+now_hour="${PIPELINE_NOW_HOUR:-$(date +%H)}"
 case "$now_hour" in
   ''|*[!0-9]*) skip "current hour not numeric: '$now_hour'" ;;
 esac
 now_hour=$(( 10#$now_hour ))
 
-[ -r "$FUNNEL_SCHEDULE_FILE" ] || skip "schedule file missing/unreadable: $FUNNEL_SCHEDULE_FILE"
+[ -r "$PIPELINE_SCHEDULE_FILE" ] || skip "schedule file missing/unreadable: $PIPELINE_SCHEDULE_FILE"
 
-# Extract the fenced ```funnel-schedule … ``` block body (same awk idiom as
-# funnel-tick.sh parse_reply's decision-block extraction). Only the FIRST block
+# Extract the fenced ```pipeline-schedule … ``` block body (same awk idiom as
+# pipeline-tick.sh parse_reply's decision-block extraction). Only the FIRST block
 # is read; lines outside it are ignored prose.
-block="$(awk '/^```funnel-schedule[[:space:]]*$/{f=1;next} f&&/^```/{exit} f' "$FUNNEL_SCHEDULE_FILE" 2>/dev/null || true)"
-[ -n "$block" ] || skip "no \`\`\`funnel-schedule block found in $FUNNEL_SCHEDULE_FILE"
+block="$(awk '/^```pipeline-schedule[[:space:]]*$/{f=1;next} f&&/^```/{exit} f' "$PIPELINE_SCHEDULE_FILE" 2>/dev/null || true)"
+[ -n "$block" ] || skip "no \`\`\`pipeline-schedule block found in $PIPELINE_SCHEDULE_FILE"
 
 # Pull one `key:` value out of the block (first match; strips a trailing `#`
 # comment, CR, and surrounding whitespace). The grep is isolated in its own
@@ -131,7 +131,7 @@ hours="$(field hours)"
 [ -n "$hours" ] || skip "enabled but \`hours:\` is empty/missing (fail-closed)"
 
 # Strict validation: EVERY hours token must be an integer 0–23, else fail-closed
-# (a typo quiets the funnel rather than running at an unintended hour).
+# (a typo quiets the pipeline rather than running at an unintended hour).
 in_list=0
 for h in $hours; do
   case "$h" in
@@ -157,19 +157,19 @@ fi
 
 [ "$in_list" -eq 1 ] || skip "hour $now_hour not in scheduled hours ($hours)"
 
-# Optional per-tick DRIVE CAP override (#642) — how many items the funnel drives
+# Optional per-tick DRIVE CAP override (#642) — how many items the pipeline drives
 # per tick. UNLIKE hours:/boards:, a bad cap does NOT fail closed: the cap is a
-# throughput knob, not a spend gate (the spend safety is the hours: list + the
+# throughput setting, not a spend gate (the spend safety is the hours: list + the
 # quota gate), so a missing/malformed cap must not quiet the whole hour. Absent →
-# emit empty (the wrapper falls back to its FUNNEL_DRIVE_CAP code default). A
+# emit empty (the wrapper falls back to its PIPELINE_DRIVE_CAP code default). A
 # present-but-malformed cap (non-integer or < 1) → emit empty + a one-line stderr
 # note, so we don't silently run at an unintended cap but still run the hour.
 cap="$(field cap)"
 if [ -n "$cap" ]; then
   case "$cap" in
-    *[!0-9]*) echo "funnel-schedule-gate: ignoring non-integer cap '$cap' (falling back to code default)" >&2; cap="" ;;
+    *[!0-9]*) echo "pipeline-schedule-gate: ignoring non-integer cap '$cap' (falling back to code default)" >&2; cap="" ;;
     *) if [ "$(( 10#$cap ))" -lt 1 ]; then
-         echo "funnel-schedule-gate: ignoring cap '$cap' < 1 (falling back to code default)" >&2; cap=""
+         echo "pipeline-schedule-gate: ignoring cap '$cap' < 1 (falling back to code default)" >&2; cap=""
        else cap="$(( 10#$cap ))"; fi ;;
   esac
 fi

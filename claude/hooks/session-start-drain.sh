@@ -23,7 +23,7 @@ set -uo pipefail
 # Sessions/_inbox via the vault's REST API — the interface's `ks_root` is
 # documented as MEANINGLESS for the obsidian backend, see
 # knowledge_store_obsidian.sh, so it is deliberately NOT used here), so the
-# config it borrows is the obsidian backend's own knobs
+# config it borrows is the obsidian backend's own settings
 # (KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE) — their defaults already
 # resolve to today's vault path/URL in that ONE file, not duplicated here. The
 # transport itself (raw curl PUT, not ks_write) is unchanged — see the header

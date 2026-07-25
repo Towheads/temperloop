@@ -144,7 +144,7 @@
 #   sandbox_preflight_links <foundation_root> [<links_lib_override>]
 #     Write PREFLIGHT: sources links.sh (default
 #     <foundation_root>/workflows/scripts/install/links.sh; pass an
-#     alternate path as the 2nd arg — a test-double seam, not a knob) and
+#     alternate path as the 2nd arg — a test-double seam, not a setting) and
 #     runs its links_enumerate INSIDE the sandbox env (sandbox_run, so
 #     links_enumerate's own $HOME-relative target computation resolves
 #     against $SANDBOX_HOME), then asserts every emitted target path falls

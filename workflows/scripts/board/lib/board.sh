@@ -69,8 +69,8 @@ BOARD_FIELD_COMPONENT="Component"
 #      BOARDS_CONF_MACHINE.
 #   1b. composed-tree consumer-root conf (temperloop#494): in a self-hosting
 #      checkout that vendors this kernel as a `kernel/` subtree and symlinks
-#      workflows/scripts/board into it (foundation), the rung-2 repo-local path
-#      below physically lands inside kernel/. This rung — between machine-level
+#      workflows/scripts/board into it (foundation), the layer-2 repo-local path
+#      below physically lands inside kernel/. This layer — between machine-level
 #      and repo-local — probes the CONSUMER ROOT (the directory containing
 #      kernel/, located from board.sh's own physical path) for a real
 #      workflows/scripts/board/boards.conf OUTSIDE kernel/, giving that tree a
@@ -102,7 +102,7 @@ BOARD_FIELD_COMPONENT="Component"
 # workflows/scripts/board/boards.conf.example for the documented format.
 _BOARD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Default machine-level conf path (rung 3), with the temperloop#165 rename
+# Default machine-level conf path (layer 3), with the temperloop#165 rename
 # window: prefer $XDG_CONFIG_HOME/temperloop/boards.conf; when that does not
 # exist but a legacy $XDG_CONFIG_HOME/foundation/boards.conf does, use the
 # legacy file (read-old — silent by design: board.sh runs on every board op,
@@ -116,7 +116,7 @@ _board_machine_conf_default() {
   new_f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
   old_f="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   if [ ! -f "$new_f" ] && [ -f "$old_f" ]; then
-    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
       echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.17.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
     else
       printf '%s' "$old_f"
@@ -127,10 +127,10 @@ _board_machine_conf_default() {
 }
 
 # Composed-tree consumer-root conf (temperloop#494). A self-hosting composed
-# checkout (foundation, the funnel driver) vendors this kernel as a `kernel/`
+# checkout (foundation, the pipeline driver) vendors this kernel as a `kernel/`
 # subtree and exposes `workflows/scripts/board` as a DIRECTORY SYMLINK into it —
 # so the symlink-resolved repo-local location ($_BOARD_LIB_DIR/../boards.conf,
-# the rung-2 path in _board_conf_file/_board_conf_files below) physically lands
+# the layer-2 path in _board_conf_file/_board_conf_files below) physically lands
 # INSIDE kernel/, where a committed consumer-owned conf trips kernel-drift-check
 # and conflicts with every subtree pull. That is exactly why foundation — alone
 # among the consumers — could not commit its driver-side backend-flip entries
@@ -145,7 +145,7 @@ _board_machine_conf_default() {
 # inside kernel/ (i.e. the consumer really does own a physical board dir there,
 # not merely a whole-directory symlink into the subtree). That guard is what
 # keeps the current whole-`board`-symlink layout falling straight through to
-# rung 2 unchanged, and lights up only once the consumer materialises a real
+# layer 2 unchanged, and lights up only once the consumer materialises a real
 # consumer-owned boards.conf at that path.
 #
 # ADR 0005's "boards.conf is never vendored" rule is preserved: this file lives
@@ -153,7 +153,7 @@ _board_machine_conf_default() {
 # the vendored subtree. A synced-directory consumer (stageFind/ssmobile/
 # subsetwiki, whose `workflows/scripts/board` is a real banner-stamped copy, not
 # a subtree symlink) and the kernel repo itself are NOT inside a `/kernel/`
-# subtree, so this returns rc 1 and their existing rung-2 path is used verbatim.
+# subtree, so this returns rc 1 and their existing layer-2 path is used verbatim.
 # rc 0 + the path on a hit; rc 1 on any miss (not a composed tree, no file, or
 # a file that resolves back inside kernel/).
 _board_consumer_root_conf() {
@@ -202,7 +202,7 @@ _board_conf_files() {
   local f
   f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
   [ -f "$f" ] && printf '%s\n' "$f"
-  # composed-tree consumer-root conf, same rung/precedence as in
+  # composed-tree consumer-root conf, same layer/precedence as in
   # _board_conf_file (between machine-level and symlink-resolved repo-local) so
   # the per-key backend fallthrough walked by _board_conf_get_layered() sees it
   # too (#494).
@@ -273,7 +273,7 @@ board_repo() {
   esac
 }
 
-# The registered logical board numbers — the SINGLE SOURCE OF TRUTH every
+# The registered board ids — the SINGLE SOURCE OF TRUTH every
 # caller's repo->board reverse-lookup probe iterates, instead of a hardcoded
 # `3 4 5 6` literal duplicated across command specs that silently drifts each
 # time a board is onboarded. That drift was temperloop#352: board 7 was added to
@@ -309,21 +309,21 @@ board_owner() {
   esac
 }
 
-# logical board number -> the gh project NUMBER under board_owner(). Migrating a
+# board id -> the gh project NUMBER under board_owner(). Migrating a
 # board into an org restarts project numbering, so the migrated board carries its
 # real org project number here (or in boards.conf) while every caller keeps
-# using the stable logical `--board N`. Boards 3/4 were copied into the org
+# using the stable `--board N` board id. Boards 3/4 were copied into the org
 # (#330) where they landed as org projects #4 and #3 respectively (the order is
 # incidental — the seam absorbs it). Twin of board_repo() — the per-board
 # "which project" registry to board_repo()'s "which repo". Contains all
 # renumbering churn inside this one function (the cross-process cache stays
-# keyed on the LOGICAL number, so renumbering causes zero cache churn).
+# keyed on the board id, so renumbering causes zero cache churn).
 board_project_number() {
   local v
   v="$(_board_conf_get "$1" project)" && { printf '%s\n' "$v"; return 0; }
   case "$1" in
-    3) echo 4 ;;   # logical stageFind  -> org project #4
-    4) echo 3 ;;   # logical foundation -> org project #3
+    3) echo 4 ;;   # stageFind (board 3)  -> org project #4
+    4) echo 3 ;;   # foundation (board 4) -> org project #3
     *) echo "$1" ;; # boards 5 (ssmobile) / 6 (subsetwiki) -> org project #5 / #6 (identity, incidental)
   esac
 }
@@ -384,7 +384,7 @@ _board_is_issues_only() {
 }
 
 # --- board NAME aliases for --board (temperloop #95) ----------------------
-# Every --board switch accepts a board NAME as well as its logical number, so a
+# Every --board switch accepts a board NAME as well as its board id, so a
 # human never has to touch the private number space (the number stays the SOLE
 # internal key; names resolve to a number at the CLI/entrypoint boundary and
 # nothing downstream is name-aware). Two name sources, checked in this order —
@@ -402,7 +402,7 @@ _board_is_issues_only() {
 # passes straight through untouched (the cheap, dominant internal path — no conf
 # read). An unknown name errors to stderr WITH the known-names list, rc 2.
 
-# Built-in name -> logical number. Lowercased input; rc 1 on miss.
+# Built-in name -> board id. Lowercased input; rc 1 on miss.
 # A stranger's fork edits this map (or ships boards.conf board.<N>.name= lines).
 _board_builtin_name_to_number() {
   case "$1" in
@@ -452,7 +452,7 @@ _board_known_names() {
   printf '%s' "$names"
 }
 
-# board_resolve_name <name-or-number> -> canonical logical NUMBER on stdout.
+# board_resolve_name <name-or-number> -> canonical board id on stdout.
 # The ONE shared resolver every --board switch and every lib entrypoint routes a
 # board argument through. A bare integer passes through unchanged (backward
 # compatible — the sole internal key is still the number). A name resolves via
@@ -479,10 +479,10 @@ board_resolve_name() {
 # read-side, not conf): `board.<N>.cache=on`. Default (omitted, or any value
 # other than "on") is OFF — the whole-board issues-only read stays exactly the
 # live `gh issue list` call it always was (see _board_issues_item_list below).
-# This is deliberately an ENABLE/DISABLE switch only — every TUNING knob for
+# This is deliberately an ENABLE/DISABLE switch only — every TUNING setting for
 # the store itself (root dir, TTL) stays an env var on lib/cache.sh
 # (CACHE_STORE_ROOT / CACHE_STORE_TTL), never a second boards.conf axis (see
-# cache.sh's own "Tuning knobs" comment). Turning this on has NO effect unless
+# cache.sh's own "Tuning settings" comment). Turning this on has NO effect unless
 # the caller has ALSO sourced lib/cache.sh in the same process — board.sh
 # itself never sources cache.sh (kept a one-way, additive-only layering; see
 # cache.sh's own header) — _board_issues_item_list checks `declare -F
@@ -499,7 +499,7 @@ _board_cache_store_enabled() {
 # Every board `gh` call goes through here. Production runs real gh; tests
 # override this after sourcing (e.g. `_board_gh() { fake_gh "$@"; }`) to replay
 # fixtures. Mirrors lib/claim_marker.sh's `_claim_marker_tmux`.
-_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }  # knob:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default
+_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }  # setting:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default
 
 # --- cross-process read cache (Projects-v2 GraphQL relief) ----------------
 # Every board read is a Projects-v2 GraphQL call against a 5,000-points/hr budget
@@ -555,8 +555,8 @@ BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-${TMPDIR:-/tmp}}"
 # an 'unbound variable' error under set -u — the capture.sh --repo kernel path runs set -u
 # and was stranding freshly-captured issues off-board (temperloop#602). The `+x` guard
 # assigns only when unset, so a resolve already run in this process is never clobbered by a
-# defensive re-source; the plain-assignment form (not the ${VAR:-} knob idiom) keeps these
-# internal cache globals out of the knob-registry ${VAR:-} seam sweep.
+# defensive re-source; the plain-assignment form (not the ${VAR:-} setting idiom) keeps these
+# internal cache globals out of the setting-registry ${VAR:-} seam sweep.
 [ -n "${BOARD_ITEMS_JSON+x}" ]  || BOARD_ITEMS_JSON=""
 [ -n "${BOARD_FIELDS_JSON+x}" ] || BOARD_FIELDS_JSON=""
 
@@ -565,7 +565,7 @@ BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-${TMPDIR:-/tmp}}"
 # `project` and `fields` (board structure, invariant under item edits).
 #
 # STRUCTURE kinds (project/fields) fold the RESOLVED owner + project-number into
-# the name; items keeps the bare logical key. This is the #341 durable fix: a
+# the name; items keeps the bare board-id key. This is the #341 durable fix: a
 # renumber/migration (board_project_number / board_owner change) shifts the
 # structure key, so the next resolve naturally MISSES the old cache and re-fetches
 # live — instead of serving a stale project id for up to BOARD_STRUCTURE_TTL (24h)
@@ -573,7 +573,7 @@ BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-${TMPDIR:-/tmp}}"
 # on ANY pull or in-place adapter edit, no board_bust_structure needed (deploy-mini
 # still busts as belt-and-suspenders). The old resolved-key files (e.g.
 # `<cachekey>-board-4-<oldowner>-4-project.json`) are simply never read again post-rename;
-# they age out of TMPDIR. items/* stay logical-keyed: their short TTL +
+# they age out of TMPDIR. items/* stay board-id-keyed: their short TTL +
 # write-invalidation already cover the renumber window, and the historical
 # `subset-board-<n>-items.json` name (and its tests) stay stable.
 _board_cache_file() {
@@ -751,13 +751,13 @@ _board_file_age() {
 
 # Build the `gh project item-list` argv for a WHOLE-BOARD read into the global
 # array _BOARD_IL_ARGV (bash can't return arrays; both whole-board sites share this
-# one builder so the knobs/order never drift). It filters to the ACTIVE (non-Done)
+# one builder so the settings/order never drift). It filters to the ACTIVE (non-Done)
 # slice server-side via the Projects `--query` syntax: board 3 crossed 200 TOTAL
 # items (GH #168), and `gh project item-list --limit N` only ever returns the first
 # page, so an unfiltered read silently truncated the active slice. Every whole-board
 # consumer (board_resolve / worklist / reconcile / milestone / board_create_many)
 # operates ONLY on non-Done items, so the Done tail is pure payload — dropping it
-# keeps the active set well inside one page. Two knobs (matching the ${VAR:-default}
+# keeps the active set well inside one page. Two settings (matching the ${VAR:-default}
 # idiom used for BOARD_CACHE_TTL):
 #   BOARD_ITEM_LIMIT  (default 500) — page cap; gh paginates internally to reach it,
 #                       so GraphQL cost scales with RETURNED items, not the ceiling.
@@ -996,8 +996,8 @@ _board_issues_label_prefix() {
 #     unslugging (which lowercases) would corrupt a mixed-case hostname and
 #     silently break the foreign-host comparison board_claim_contended /
 #     reconcile.sh rely on. The stamp is stored and read back VERBATIM.
-#   labels: the RAW label-name array (foundation #801, split 3/3 — the funnel-
-#     integration "D3 seam" fix). A caller like funnel-tick.sh reads a Ready
+#   labels: the RAW label-name array (foundation #801, split 3/3 — the pipeline-
+#     integration "D3 seam" fix). A caller like pipeline-tick.sh reads a Ready
 #     item's ordinary GitHub labels directly (`spike`, `Foundational`,
 #     `needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — none
 #     of them `fnd:`-namespaced) to classify/gate it; the Projects-v2 path
@@ -1007,13 +1007,13 @@ _board_issues_label_prefix() {
 #     see board_item_list's header comment), and board.sh reshapes NONE of it.
 #     Before this fix the issues-only reshape below extracted only the
 #     `fnd:`-prefixed labels into status/component/host-session and DROPPED
-#     every other label — so a live funnel-tick against an issues-only board
+#     every other label — so a live pipeline-tick against an issues-only board
 #     could never see `spike`/`Foundational`/etc. and every Ready item
 #     silently misclassified as a fresh Operational kind:code drive. Emitting
 #     the full, unfiltered label-name list here (fnd: ones included — harmless,
 #     since a `. == "spike"` equality check never matches `"fnd:status:ready"`)
 #     makes the issues-only item shape a byte-for-byte structural match for the
-#     Projects-v2 one on this key too. See ISSUES-ONLY-BACKEND.md § Funnel
+#     Projects-v2 one on this key too. See ISSUES-ONLY-BACKEND.md § Pipeline
 #     integration and tests/test_board_dual_adapter.sh (the parity proof).
 #   milestone: the item's release-phase milestone as { title } (temperloop#154 —
 #     the same class of dropped-field bug the #801 labels passthrough fixed).
@@ -1088,7 +1088,7 @@ _board_issues_item_list() {
       # degradation contract — one stderr notice, never fabricated data) and
       # this function does not layer a second live fallback on top of that.
       # Snapshot rows are ALL states; filter to open here (mirrors the live
-      # arm's `--state open`) — note BOARD_ITEM_LIMIT is a live-arm-only knob:
+      # arm's `--state open`) — note BOARD_ITEM_LIMIT is a live-arm-only setting:
       # the store is not paginated/truncated (a later perf pass can add a cap
       # if an issues-only repo's corpus ever makes this the bottleneck).
       raw="$(cache_read "$repo")" || return 1
@@ -1185,7 +1185,7 @@ _board_issues_set_field() {
   local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0 removal_failed=0
 
   issue="${item_id#ISSUE_}"
-  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # setting:exempt — internal already-resolved board state, not an operator default
     echo "board: _board_issues_set_field — no current board (call board_resolve_item first)" >&2
     return 1
   }
@@ -1276,7 +1276,7 @@ _board_issues_stamp_field() {
   local issue repo prefix target_label issue_json cur l already_present=0 removal_failed=0
 
   issue="${item_id#ISSUE_}"
-  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # setting:exempt — internal already-resolved board state, not an operator default
     echo "board: _board_issues_stamp_field — no current board (call board_resolve_item first)" >&2
     return 1
   }
@@ -2165,10 +2165,10 @@ board_create_many() {
     # failure mode #1225 reported: issues created, budget exhausted mid-burst,
     # cards left off-board with no loud signal until someone tripped over it 45
     # minutes later. This can't be a second `${BOARD_BUDGET_GUARD:-1}` literal
-    # (the equality-checked knob registry pins ONE default per name per
+    # (the equality-checked setting registry pins ONE default per name per
     # owning-script — board_resolve's own `${BOARD_BUDGET_GUARD:-0}` inside
     # _board_budget_guard already owns that seam), so a SEPARATE registered
-    # knob, BOARD_CREATE_BUDGET_GUARD (default 1), supplies the fallback: only
+    # setting, BOARD_CREATE_BUDGET_GUARD (default 1), supplies the fallback: only
     # when the caller has NOT already set BOARD_BUDGET_GUARD at all (the `+x`
     # existence test — never a `:-`/`-` default on BOARD_BUDGET_GUARD itself)
     # do we set it from that fallback for THIS call, so an explicit caller

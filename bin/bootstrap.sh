@@ -40,7 +40,7 @@
 #      $TEMPERLOOP_BIN_DIR/foundation (the shim is removed in v0.17.0).
 #   3. Prints a PATH reminder if $TEMPERLOOP_BIN_DIR isn't on it already.
 #
-# ENV KNOBS + RENAME WINDOW (temperloop#165, v0.15.0): TEMPERLOOP_KERNEL_REPO,
+# ENV SETTINGS + RENAME WINDOW (temperloop#165, v0.15.0): TEMPERLOOP_KERNEL_REPO,
 # TEMPERLOOP_HOME, and TEMPERLOOP_BIN_DIR are the canonical override names,
 # renamed from the pre-rename FOUNDATION_* prefix. Read-old-write-new: a
 # legacy FOUNDATION_* var still works while its TEMPERLOOP_* twin is unset
@@ -69,7 +69,7 @@ set -eu
 # testable before the removal release ships.
 _tl_legacy_notice() {
   # $1 = legacy var name (set in the caller's environment), $2 = new name
-  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
     echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.15.0 and the legacy name was removed in v0.17.0. Set \$$2 and re-run." >&2
     exit 1
   fi

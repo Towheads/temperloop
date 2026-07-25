@@ -10,7 +10,7 @@ Canonical schema for plan notes consumed by `/build` and produced by `/assess`. 
 2. **Body structure** — the note template (`## Problem` / `## Summary` / `## Items`), then each item field in detail:
    - Problem & Summary · Item fields at a glance (the scannable field index) · Item identifier · Branch field · `repo:` (optional) · Acceptance
    - Optional item fields: `gh_issue:` · `also_closes:` · `kind:` · `keystone:` · `model:` · Edges (`depends-on:` / `after:`) · `epic:` · `split_from:` · `gate_check:` · `activation:` · `cost:` · orchestrator-written `pr:` / `pushed_sha:`
-3. **Orchestrator-written sections** — `## Questions` (batch-at-gate deferrals) · `## Merge gate log` (merge consent) · `## Run scope` (keystone-spike halt)
+3. **Orchestrator-written sections** — `## Questions` (ask-at-gate deferrals) · `## Merge gate log` (merge consent) · `## Run scope` (keystone-spike halt)
 4. **Status sentinels** — the six in-band `[ ]` / `[~]` / `[m]` / `[x]` / `[v]` / `[-]` states
 5. **Validation rules** — the 16 checks `/build` enforces before execution
 6. **Worked example** · **Cross-references**
@@ -233,7 +233,7 @@ Mechanics (`/build` spike kind-fork, `claude/commands/build.md`): the run splits
 - **RUN 1 (spike):** process levels up to and including the keystone spike's level; the spike captures its `[v]` verdict as normal, then — because it is `keystone: true` **and** non-terminal items remain — `/build` records the halt in `## Run scope` and **stops without advancing** to dependent levels. The plan stays `status: executing` so a later run resumes.
 - **RUN 2 (build):** the operator reviews the verdict note and **re-runs `/build`**. On resume the keystone spike is already `[v]` at start (it did not transition *this* run), so no halt fires — RUN 2 builds the dependent levels normally. Re-running `/build` **is** the operator's approval to proceed; if the verdict says the plan should change, the operator edits the plan (or abandons it) instead of re-running.
 
-This gate is **`blocking-now`** (no safe default — a contract-reshaping verdict is exactly what a human must see) and is therefore **NOT skippable by an `--unattended` approval poll.** `--unattended` controls the *start*, never a mid-run gate: an operator-absent run that hits the keystone halt parks the plan (`status: executing`), posts a verdict-review decision issue on the epic (operator-absent backend), and stops the tick — it never auto-proceeds into dependent builds on silence. Routine spikes (`keystone:` absent) keep today's autonomous path unchanged.
+This gate is **`ask-now`** (no safe default — a contract-reshaping verdict is exactly what a human must see) and is therefore **NOT skippable by an `--unattended` approval poll.** `--unattended` controls the *start*, never a mid-run gate: an operator-absent run that hits the keystone halt parks the plan (`status: executing`), posts a verdict-review decision issue on the epic (operator-absent backend), and stops the tick — it never auto-proceeds into dependent builds on silence. Routine spikes (`keystone:` absent) keep today's autonomous path unchanged.
 
 Author a keystone spike exactly like any other spike — its own isolated level via `after:` edges — and add the one `keystone: true` line. See `Decisions/temperloop - Keystone-spike review gate`.
 
@@ -347,13 +347,13 @@ An **inline shorthand** is accepted for a hand-authored one-liner: `- cost: agen
 
 `/build` writes these onto an item as it works — authors don't set them. `pr:` (the open PR number) and `pushed_sha:` (the worker commit pushed to the branch) are recorded at PR-create time (3f), *before* the CI watch, so a crash leaves a recoverable pointer: Step 1 resume re-attaches to `pr:` instead of re-spawning a worker, and Step 0.5 reconciles open PRs against it.
 
-## Orchestrator-written `## Questions` section (batch-at-gate deferred decisions)
+## Orchestrator-written `## Questions` section (ask-at-gate deferred decisions)
 
-**Rule:** `/build` writes this section (authors don't) — the **in-run, ephemeral** queue for `batch-at-gate` decisions (non-blocking mid-run choices that carry an obvious default). The orchestrator appends an entry and proceeds on its default, then surfaces the whole batch as ONE question at the next level merge gate. <!-- cite: PS.12 guard:claude/commands/build.md -->
+**Rule:** `/build` writes this section (authors don't) — the **in-run, ephemeral** queue for `ask-at-gate` decisions (non-blocking mid-run choices that carry an obvious default). The orchestrator appends an entry and proceeds on its default, then surfaces the whole batch as ONE question at the next level merge gate. <!-- cite: PS.12 guard:claude/commands/build.md -->
 
-`/build` writes this section onto the plan note as it runs — authors don't author it; it is created on demand the first time a deferrable in-run decision arises. It is the **in-run, ephemeral queue** for **`batch-at-gate`** decisions: non-blocking choices that arise *during an active run* (e.g. "create N tracking issues?", "auto-fix the safe reconcile divergences?", a per-PR conflict disposition) which carry an **obvious default** and so need not interrupt the level. Instead of issuing an interrupting `AskUserQuestion` mid-level, the orchestrator **appends one entry here** and proceeds on the default; the whole batch is then surfaced as ONE question at the next **level merge gate** (Step 4), before merge consent is recorded. See the severity taxonomy `[[Context/foundation - AskUserQuestion severity taxonomy]]` for which sites defer here vs. stay blocking.
+`/build` writes this section onto the plan note as it runs — authors don't author it; it is created on demand the first time a deferrable in-run decision arises. It is the **in-run, ephemeral queue** for **`ask-at-gate`** decisions: non-blocking choices that arise *during an active run* (e.g. "create N tracking issues?", "auto-fix the safe reconcile divergences?", a per-PR conflict disposition) which carry an **obvious default** and so need not interrupt the level. Instead of issuing an interrupting `AskUserQuestion` mid-level, the orchestrator **appends one entry here** and proceeds on the default; the whole batch is then surfaced as ONE question at the next **level merge gate** (Step 4), before merge consent is recorded. See the severity taxonomy `[[Context/foundation - AskUserQuestion severity taxonomy]]` for which sites defer here vs. stay blocking.
 
-This section is **distinct** from the unattended/ritual pending-decisions surface (#236): that one is cross-run, durable, and read at the daily ritual; this one is per-run, drained at *this* run's next gate. The only thing the two share is the convention below (default-if-unanswered) — a contract, not a schema.
+This section is **distinct** from the unattended/check-in pending-decisions surface (#236): that one is cross-run, durable, and read at the daily check-in; this one is per-run, drained at *this* run's next gate. The only thing the two share is the convention below (default-if-unanswered) — a contract, not a schema.
 
 ### Shape
 
@@ -372,7 +372,7 @@ Each entry is **one line** with a checkbox sentinel plus a `## Questions`-local 
 - **Checkbox** — `[ ]` unanswered (default still pending), `[x]` answered/resolved (default overridden or confirmed at the gate).
 - **`step:`** (required) — the originating build step that deferred the question (e.g. `2.5`, `2.6`, `0.5`, `4c`), so the gate can route the answer back to the right action.
 - **`item:`** / `pr:` (optional) — the plan-item slug or PR number the question is scoped to, when per-item; omitted for run-wide questions.
-- **The question text**, then **`default: <value>`** in bold — the value taken if the entry is unanswered when the gate resolves. **Every entry MUST state its default** — a `batch-at-gate` entry with no default is a defect (it cannot be deferred, because deferral needs a value to proceed with meanwhile). This is the pinned convention from the severity taxonomy.
+- **The question text**, then **`default: <value>`** in bold — the value taken if the entry is unanswered when the gate resolves. **Every entry MUST state its default** — a `ask-at-gate` entry with no default is a defect (it cannot be deferred, because deferral needs a value to proceed with meanwhile). This is the pinned convention from the severity taxonomy.
 - **`auto-proceed:` sub-line** (required) — one line spelling out what taking the default does, so an unanswered entry resolving at the gate is legible after the fact.
 
 ### Lifecycle
@@ -400,7 +400,7 @@ One line per consent event, four fields:
 
 - **`level <k>`** — the dependency level the consent covers.
 - **Timestamp** — ISO-8601 UTC, the moment consent was recorded.
-- **`mode:`** — how consent arose: `modal-approved` (explicit operator approval at the modal gate) | `timed-elapsed` (timed window elapsed with no objection) | `headless-immediate` (`FUNNEL_OPERATOR_ABSENT=1` immediate-merge branch, re-poll passed).
+- **`mode:`** — how consent arose: `modal-approved` (explicit operator approval at the modal gate) | `timed-elapsed` (timed window elapsed with no objection) | `headless-immediate` (`PIPELINE_OPERATOR_ABSENT=1` immediate-merge branch, re-poll passed).
 - **`PRs:`** — the **exact** consented PR list. Consent pins this list: a PR not in it (or work re-pushed under a new PR number) is **not** covered and must earn consent at a fresh gate. A level gated more than once (e.g. an EJECTED item re-parked and re-gated) appends a **new** line — lines are append-only, never edited.
 
 ## Orchestrator-written `## Run scope` section (keystone-spike halt boundary)

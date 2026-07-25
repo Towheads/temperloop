@@ -1,16 +1,16 @@
 ---
-description: Rung-5c EXECUTOR of the autonomous funnel driver — the MERGING tier. Headless (`claude -p`) layer that auto-executes the kind:code drives 5b deliberately leaves for the operator, by driving each through `/build --unattended` and letting /build's OWN timed/modal merge gate decide the merge. Spawned by funnel-drive.sh under a merge-allowing containment overlay, gated by FUNNEL_DRIVE_MERGE=1 and a per-tick cap. It merges ONLY via /build's gated path — never by hand.
-argument-hint: "<payload-file>  (a JSON file: {rung, cap, hard_rules, actions[]} written by funnel-drive.sh)"
+description: Level 5c EXECUTOR of the autonomous pipeline driver — the MERGING tier. Headless (`claude -p`) layer that auto-executes the kind:code drives 5b deliberately leaves for the operator, by driving each through `/build --unattended` and letting /build's OWN timed/modal merge gate decide the merge. Spawned by pipeline-drive.sh under a merge-allowing containment overlay, gated by PIPELINE_DRIVE_MERGE=1 and a per-tick cap. It merges ONLY via /build's gated path — never by hand.
+argument-hint: "<payload-file>  (a JSON file: {layer, cap, hard_rules, actions[]} written by pipeline-drive.sh)"
 ---
 
-You are running the **funnel-drive-merge** command — the **rung-5c executor** of the
-autonomous funnel driver, the **merging tier**. `funnel-tick.sh` decided a tick plan;
-`funnel-drive.sh` filtered it to the **kind:code drives** (the ones 5b leaves for the
+You are running the **pipeline-drive-merge** command — the **level-5c executor** of the
+autonomous pipeline driver, the **merging tier**. `pipeline-tick.sh` decided a tick plan;
+`pipeline-drive.sh` filtered it to the **kind:code drives** (the ones 5b leaves for the
 operator), capped it, and is invoking you headlessly to **drive each to a merged PR**
 through the existing pipeline. You re-implement nothing: the merge safety lives in
 `/build --unattended`, not here. See
-[[Decisions/foundation - Funnel rung 5c supervised auto-merge tier]] and the parent
-[[Decisions/foundation - Funnel rung 5b: headless safe-actions-only auto-drive]].
+[[Decisions/foundation - Pipeline level 5c supervised auto-merge tier]] and the parent
+[[Decisions/foundation - Pipeline level 5b: headless safe-actions-only auto-drive]].
 
 This is the autonomy step 5b deferred: 5b auto-executed only actions that can never
 merge code; 5c drives `kind:code` items — but **only by handing them to `/build`,
@@ -21,7 +21,7 @@ whose timed/modal merge gate is the human-supervised checkpoint**.
 1. **Merge ONLY through `/build --unattended`.** Never run `gh pr merge`, `gh pr
    create`, `git push`, or any merge/enqueue yourself. `/build` owns the branch →
    PR → CI → merge lifecycle; you only *invoke* it. If you find yourself about to
-   type a `gh pr` or `git push` command directly, STOP — that is `/build`'s job. <!-- cite: FDM.1 guard:workflows/scripts/build/funnel-drive.sh -->
+   type a `gh pr` or `git push` command directly, STOP — that is `/build`'s job. <!-- cite: FDM.1 guard:workflows/scripts/build/pipeline-drive.sh -->
 2. **Honor `/build`'s merge gate — never force a risky set.** `/build --unattended` <!-- cite: FDM.2 guard:claude/commands/build.md -->
    auto-merges only a clean, disjoint, independent set after its timed window; a
    **structurally-risky** set hard-blocks for explicit approval (and, operator-absent,
@@ -32,14 +32,14 @@ whose timed/modal merge gate is the human-supervised checkpoint**.
 4. **Execute each action independently.** A failure on one action is recorded and you
    continue to the next; one bad drive never aborts the batch.
 5. **Stay on the action's own board/repo — your cwd is already that checkout.** Same
-   board/cwd discipline as `funnel-drive.md` HARD RULE 5 (spawned inside the target
+   board/cwd discipline as `pipeline-drive.md` HARD RULE 5 (spawned inside the target
    board's checkout — foundation #655; pass `--board <board>` and `-R <repo>`/`--repo
    <repo>` for the action's own board/repo; never touch another). **Merge-specific:** if
    a `/build` invocation reports it cannot find the target repo from here, do **not**
    `cd` to fix it — record the action as failed and continue; a cwd/checkout mismatch is
    the driver's bug to fix, not yours to route around.
 
-`funnel-drive.sh` already pre-filtered to the merge tier and capped it; these rules are
+`pipeline-drive.sh` already pre-filtered to the merge tier and capped it; these rules are
 the second, independent guard on top of the structural pre-filter and the
 merge-allowing containment overlay (which scopes you to `/build`'s surface, not raw
 merges of arbitrary PRs).
@@ -49,7 +49,7 @@ merges of arbitrary PRs).
 Your argument (`$ARGUMENTS`) is a path to a JSON file. Read it. Shape:
 
 ```json
-{ "rung": "5c",
+{ "layer": "5c",
   "cap": N,                       // the per-tick merge cap (actions already sliced to it)
   "hard_rules": [ … ],            // the in-band restatement of the rules above
   "actions": [ { "action": "drive-ready", "kind": "code", "mode": "fresh|resume",
@@ -89,16 +89,16 @@ Process `actions` in order. Each is a `drive-ready` with `kind == "code"`. Branc
     the per-tick cap) — drive only this issue. The merge still happens **only** through
     that gated path, never by hand.
 - `/build --unattended` carries the run from worktree → agent → push → PR → CI-watch →
-  **its merge gate**. It runs operator-absent (the cron sets `FUNNEL_OPERATOR_ABSENT=1`),
-  so a `blocking-now` decision is posted to the decision queue and the item parks —
+  **its merge gate**. It runs operator-absent (the cron sets `PIPELINE_OPERATOR_ABSENT=1`),
+  so a `ask-now` decision is posted to the decision queue and the item parks —
   it does **not** hang. Let `/build` reach its own terminal state; do not intervene in
   its gate.
 - **Let `/build` block synchronously through CI-watch and the merge gate — do NOT <!-- cite: FDM.4 incident:F#626 -->
   dispatch a background poll and yield (#626).** This headless run has no
   re-invoke-on-background-completion loop, so a backgrounded CI watch or a
   `ScheduleWakeup` merge window would simply end the session before the merge fires —
-  the bug that left every funnel PR green-but-unmerged. `/build`'s headless branch
-  (selected by the `FUNNEL_OPERATOR_ABSENT=1` this driver runs under) already handles
+  the bug that left every pipeline PR green-but-unmerged. `/build`'s headless branch
+  (selected by the `PIPELINE_OPERATOR_ABSENT=1` this driver runs under) already handles
   this correctly: it runs `ci-poll.sh` in the **foreground** (bounded, blocking) and,
   on a clean green set, **merges immediately with no objection window**, then polls for
   `MERGED` in the foreground. Let it run to a merged PR **in this one session** — the
@@ -142,8 +142,8 @@ Process `actions` in order. Each is a `drive-ready` with `kind == "code"`. Branc
 
 **Do not edit the issue yourself on `refused` or `failed`** (no `gh issue edit`, no <!-- cite: FDM.5 incident:F#697 -->
 assign, no label, no comment). Just report the status and a one-line `note` with the
-reason. `funnel-drive.sh` deterministically ROUTES every refused/failed item to the
-operator — assigns the operator (`$FUNNEL_OPERATOR`), adds `funnel-escalated` (its own gate since #697 — not
+reason. `pipeline-drive.sh` deterministically ROUTES every refused/failed item to the
+operator — assigns the operator (`$PIPELINE_OPERATOR`), adds `funnel-escalated` (its own gate since #697 — not
 `needs-clarification`, which is for open *questions*; a 5c escalation is a stuck code
 item awaiting a manual merge/close, and the label removes it from the next tick's
 drive-ready pool), and posts your `note` as the comment. If you also
@@ -153,17 +153,17 @@ executor. (This does not apply to the merge *itself* — that still happens only
 
 After each action, record `{action, issue, board, status: "merged"|"handed-off"|"parked"|"failed"|"refused", pr, note}`.
 On `handed-off`, ALWAYS set `pr` to the open PR's number — that is the token the next
-tick's resume re-attaches to. (`funnel-drive.sh` independently confirms the open PR via
+tick's resume re-attaches to. (`pipeline-drive.sh` independently confirms the open PR via
 a ground-truth probe and applies the hand-off label, so the resume fires even if this
 session died before emitting this summary — but report it when you can.)
 
 ## Step 3 — Emit the summary
 
-Print exactly one JSON object on stdout (this is your return value — `funnel-drive.sh`
+Print exactly one JSON object on stdout (this is your return value — `pipeline-drive.sh`
 folds it into the wake record; it is not a human-facing message):
 
 ```json
-{ "driver": "funnel-drive-merge", "rung": "5c",
+{ "driver": "pipeline-drive-merge", "layer": "5c",
   "merged": <count>, "handed_off": <count>, "parked": <count>,
   "failed": <count>, "refused": <count>,
   "results": [ { "action": "drive-ready", "issue": N, "board": "...",

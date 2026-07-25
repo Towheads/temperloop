@@ -37,7 +37,7 @@ repository content (tokens, credentials, hostnames, private issue/PR text,
 logs from a non-public checkout), and a stated acknowledgment of what
 happens next — the issue lands in Backlog under `fnd:status:backlog` and is
 swept the next time `/triage` runs, with a pointer to
-`docs/features/funnel-driver.md` for the optional scheduled-tick machinery
+`docs/features/pipeline-driver.md` for the optional scheduled-tick machinery
 some checkouts run this under. This is the documented-cadence route rather
 than a promised SLA or an auto-ack bot, because this repo makes no promise
 of a fixed response time — only that nothing filed through the form is

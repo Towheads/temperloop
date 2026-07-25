@@ -26,7 +26,7 @@ body:
         `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`). It's picked up
         the next time `/triage` sweeps that Backlog — every issue filed
         this way is swept, not just the ones a maintainer happens to
-        notice; see `docs/features/funnel-driver.md` for the (optional,
+        notice; see `docs/features/pipeline-driver.md` for the (optional,
         maintainer-side) scheduled-tick machinery some checkouts run this
         under. There's no fixed response-time SLA, but nothing filed here
         is silently dropped.

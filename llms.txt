@@ -29,8 +29,8 @@ licensed; see [`LICENSE`](LICENSE).
 - [Managed merge queue](docs/managed-merge-queue.md): running the
   build/sweep merge ladder end-to-end on a repo with no native GitHub merge
   queue available.
-- [Config precedence](docs/config-precedence.md): the six-rung config
-  resolution ladder every tunable knob in this repo follows.
+- [Config precedence](docs/config-precedence.md): the six-layer config
+  resolution ladder every tunable setting in this repo follows.
 - [Contributing](docs/CONTRIBUTING.md): how to contribute a failure-mode
   chapter, or a new knowledge-store or issue-tracker adapter.
 

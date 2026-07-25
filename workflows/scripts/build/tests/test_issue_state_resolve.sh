@@ -4,7 +4,7 @@
 # (temperloop #635, epic #627 `/fix` targeted single-item fix driver).
 #
 # Entirely OFFLINE via the --dry-run --fixture harness (mirrors
-# test_funnel_tick.sh's convention): each case seeds a fixture directory
+# test_pipeline_tick.sh's convention): each case seeds a fixture directory
 # with $FIXTURE/issue-<n>.json (+ open-pr-<n>.txt / pr-<n>.json as needed)
 # and asserts on the emitted route-verdict JSON. Zero network, zero `gh`.
 #

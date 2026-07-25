@@ -11,7 +11,7 @@
 # error (exit 2), posture assembly (config.json carries every no-mutation
 # key from the spike verdict, BEFORE the first index; the belt-and-suspenders
 # env var reaches the subprocess), corpus-root binding (project registration
-# always uses ks_root, no independent path knob), a successful hybrid-search
+# always uses ks_root, no independent path setting), a successful hybrid-search
 # round-trip reshaped into JSONL, the backend-error path (subprocess exits
 # non-zero / emits unparseable output -> exit 4), the reindex entry point,
 # and the legible-degradation path (no `uvx` on PATH -> exit 3, "skipped —"

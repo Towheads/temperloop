@@ -10,7 +10,7 @@
 # PR's diff (across ALL git-tracked files, not just the manifest) and FAILS the
 # merge when a personal/private token or a secret appears in newly-added
 # content — the mechanical backstop to the authoring discipline, the same way
-# validate-live-drain.sh backstops the live/drain rule.
+# validate-capture-backstop.sh backstops the capture/backstop rule.
 #
 # It is deliberately DRY with the whole-tree check: it reads the SAME
 # personal-token-denylist.tsv (deny patterns), the SAME

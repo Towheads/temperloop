@@ -68,7 +68,7 @@ below) — the states here scope your *critiques*, not your executed runs:
 - **downstream sync** — atypical for you (you rarely vendor kernel content
   into a second repo), but if invoked in this state: does whatever you
   copied stay in sync, or silently drift?
-- **unattended** — you have no cron/funnel automation of your own; if asked
+- **unattended** — you have no cron/pipeline automation of your own; if asked
   to evaluate this state, judge it as "would a hobbyist ever run this
   unattended at all," and say so plainly if the honest answer is no.
 

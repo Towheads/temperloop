@@ -59,7 +59,7 @@ does) only so each template's mode-mapping below is self-contained:
 2. **Live conversational narration** — slash commands mid-session
 3. **Blocking questions** — `AskUserQuestion` / `decision_sink_ask(...)`
 4. **Return-cold summaries** — completion summary, resume recap, parking notes
-5. **Unattended/deferred surfaces** — pending-decisions, digests, funnel-tick reports
+5. **Unattended/deferred surfaces** — pending-decisions, digests, pipeline-tick reports
 6. **Durable review artifacts** — PR bodies, issue/epic contracts, plan notes, decision notes
 7. **Newcomer/docs surface** — README, `bin/README`, generated docs site
 
@@ -249,7 +249,7 @@ Variant-specific:
   present to decide directly.
 - **Deferred variant** (mode 5): a **default is required** — this is the
   existing convention in `claude/plan-schema.md` § Orchestrator-written
-  `## Questions` section ("every `batch-at-gate` entry MUST state its
+  `## Questions` section ("every `ask-at-gate` entry MUST state its
   default") and in the pending-decisions surface; this template names both
   as the canonical deferred-variant instances rather than re-specifying
   their frozen grammar.

@@ -102,13 +102,13 @@
 #                             (knowledge_store.sh) — the mcp_obsidian EOL
 #                             cutover gate. ALARM if any.
 #  16. controls              — cross-references $ROOT/Controls/ against
-#                             knob-registry.tsv's `path`-typed rows (the
+#                             setting-registry.tsv's `path`-typed rows (the
 #                             registry-reachability rule,
 #                             docs/config-precedence.md § The
 #                             registry-reachability rule): a Controls/ file
 #                             named by no row is orphaned; a file whose
 #                             matching row's owning-script doesn't exist on
-#                             disk is a dead dial; a knob-registry path row
+#                             disk is a dead dial; a setting-registry path row
 #                             whose referenced file physically lives outside
 #                             Controls/ (e.g. a legacy fallback path that
 #                             still holds the real file) is flagged too.
@@ -254,7 +254,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../lib/knowledge_store.sh"
 
 # ── Tunable caps (no machine cap existed before this script — foundation #959) ──
-# INBOX_MAX_STUBS / INBOX_MAX_AGE_H are registered knobs (knob-registry.tsv) —
+# INBOX_MAX_STUBS / INBOX_MAX_AGE_H are registered settings (setting-registry.tsv) —
 # tidy.md's own prose names them symbolically rather than restating the
 # values (prose-tunables-migration, temperloop#164/#169 D3 follow-up).
 : "${INBOX_MAX_STUBS:=20}"    # alarm above this many Sessions/_inbox stubs
@@ -312,16 +312,16 @@ STALE_PLAN_DAYS=30   # Plans/ note with status draft|approved untouched this lon
 # ── Read-path-lint tunables (temperloop#239) ─────────────────────────────────
 # "New" window for the missing-trigger lint (check 14) — same recency-window
 # shape as STALE_PLAN_DAYS/FRICTION_RECENT_DAYS above/below; not an
-# operator-overridable knob (a plain assignment, not a `:=` seam), mirroring
+# operator-overridable setting (a plain assignment, not a `:=` seam), mirroring
 # those two siblings.
 PATTERN_TRIGGER_RECENT_DAYS=30
 # Compose-plane T0 inventory artifact (temperloop#235, ADR §2.5 capture point
 # 3) the orphan-pattern lint (check 13) reads — see install-claude-md.sh's
 # own header for the format/generation contract. This IS a registered,
-# operator-overridable knob (knob-registry.tsv) since the real path is a
+# operator-overridable setting (setting-registry.tsv) since the real path is a
 # function of wherever `make install-claude`'s <target> argument lands on a
 # given machine; the default mirrors the same `$HOME/.claude/...` convention
-# already used by CLAUDE_PROJECTS_DIR/BUILD_QUOTA_CACHE/FUNNEL_LOG_DIR in the
+# already used by CLAUDE_PROJECTS_DIR/BUILD_QUOTA_CACHE/PIPELINE_LOG_DIR in the
 # registry. Read-only: this script never regenerates or writes this file.
 : "${T0_INVENTORY_FILE:=$HOME/.claude/t0-inventory.txt}"
 
@@ -375,7 +375,7 @@ file_mtime() {
   printf '%s\n' "$m"
 }
 # Current epoch without Date.now()-style pitfalls — plain `date` is fine here.
-# HYG_NOW_EPOCH is the test seam (mirrors FUNNEL_NOW_EPOCH / _reconcile_now
+# HYG_NOW_EPOCH is the test seam (mirrors PIPELINE_NOW_EPOCH / _reconcile_now
 # elsewhere in this repo): a test that asserts an exact day-count staleness must
 # pin `now` against a fixed anchor, otherwise a real-wall-clock `now` read a
 # beat after the fixture dates were written can cross a midnight boundary and
@@ -882,7 +882,7 @@ register_check check_repeat_mistake
 
 # ── Check 12: read-log telemetry surfacing (temperloop#238) ─────────────────
 # Tallies the knowledge-store read log (KNOWLEDGE_READ_LOG, resolved via
-# knowledge_store.sh's `_ks_read_log_path` — the ONE knob for this path; see
+# knowledge_store.sh's `_ks_read_log_path` — the ONE setting for this path; see
 # that file) into the metrics /tidy's Vault hygiene step records, and that
 # the (overlay) `/telemetry` brief renderer can quote when present. Both the
 # script-plane emitter (`ks__read_log_emit`, PR #249) and the agent-plane
@@ -1205,7 +1205,7 @@ check_telemetry_coverage() {
 register_check check_telemetry_coverage
 
 # ── Check 16: controls (temperloop#239 — ADR §2.3a/§2.4/§2.8) ────────────────
-# Cross-references $ROOT/Controls/ against knob-registry.tsv's `path`-typed
+# Cross-references $ROOT/Controls/ against setting-registry.tsv's `path`-typed
 # rows — the mechanical enforcement of docs/config-precedence.md's
 # "registry-reachability rule" ("every file under Controls/ ... MUST be
 # pointed at by a path-typed row ... a file dropped into Controls/ with no
@@ -1222,9 +1222,9 @@ register_check check_telemetry_coverage
 #                        moved).
 #
 # Matching a Controls/ file to "the row that names it" is NECESSARILY a
-# heuristic: knob-registry.tsv's `default` column is frequently a dynamic
-# `$(...)` call (e.g. FUNNEL_SCHEDULE_FILE's own row) rather than a static
-# literal, and knob-registry-lib.sh deliberately never sources or evals a
+# heuristic: setting-registry.tsv's `default` column is frequently a dynamic
+# `$(...)` call (e.g. PIPELINE_SCHEDULE_FILE's own row) rather than a static
+# literal, and setting-registry-lib.sh deliberately never sources or evals a
 # registry row (parsed with grep/cut only — see that file's own header) —
 # resolving a dynamic default would mean executing arbitrary registry-named
 # shell, which this lint will not do. So the mechanical, documented
@@ -1258,20 +1258,20 @@ check_controls() {
     add "- ok controls: 0 (no Controls/ folder)"
     return 0
   fi
-  local kr_lib="$HERE/../config/knob-registry-lib.sh"
+  local kr_lib="$HERE/../config/setting-registry-lib.sh"
   if [ ! -f "$kr_lib" ]; then
-    add "- ok controls: 0 (knob-registry-lib.sh not found in this checkout — skipped)"
+    add "- ok controls: 0 (setting-registry-lib.sh not found in this checkout — skipped)"
     return 0
   fi
-  # shellcheck source=workflows/scripts/config/knob-registry-lib.sh
+  # shellcheck source=workflows/scripts/config/setting-registry-lib.sh
   . "$kr_lib"
   local kernel_repo_root
   kernel_repo_root="$(cd "$HERE/../../.." 2>/dev/null && pwd)" || kernel_repo_root=""
 
   local rows row rtype kname owning ref
   local controls_names=() controls_scripts=()
-  local outside_refs=() outside_knobs=() outside_owners=()
-  rows="$(knob_registry_rows 2>/dev/null || true)"
+  local outside_refs=() outside_settings=() outside_owners=()
+  rows="$(setting_registry_rows 2>/dev/null || true)"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     rtype="$(cut -f3 <<<"$row")"
@@ -1287,7 +1287,7 @@ check_controls() {
           ;;
         */*)
           outside_refs+=("$ref")
-          outside_knobs+=("$kname")
+          outside_settings+=("$kname")
           outside_owners+=("$owning")
           ;;
       esac
@@ -1322,7 +1322,7 @@ EOF
     done
     if [ "$found" -eq 0 ]; then
       count=$((count + 1))
-      add "- ⚠️ controls: Controls/${base} — no knob-registry.tsv path row points at it (orphaned control — docs/config-precedence.md § The registry-reachability rule)"
+      add "- ⚠️ controls: Controls/${base} — no setting-registry.tsv path row points at it (orphaned control — docs/config-precedence.md § The registry-reachability rule)"
       inc
     fi
   done <<EOF
@@ -1335,7 +1335,7 @@ EOF
     ref="${outside_refs[$i]}"
     if [ -f "$ROOT/$ref" ]; then
       count=$((count + 1))
-      add "- ⚠️ controls: ${ref} — machine-read store file outside Controls/ (registered by ${outside_knobs[$i]} in ${outside_owners[$i]})"
+      add "- ⚠️ controls: ${ref} — machine-read store file outside Controls/ (registered by ${outside_settings[$i]} in ${outside_owners[$i]})"
       inc
     fi
     i=$((i + 1))

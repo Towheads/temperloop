@@ -11,7 +11,7 @@
 # THIS SCRIPT PERFORMS AN EXTERNAL-SYSTEM WRITE (a `gh issue create` against
 # the kernel's own tracker) -- the one class of action in this CLI that
 # leaves the operator's machine. Per the kernel's own severity taxonomy, an
-# external-system write with no live operator present is `blocking-now`: it
+# external-system write with no live operator present is `ask-now`: it
 # is NEVER auto-taken, and a timeout or a flag can never substitute for a
 # real human answering a real prompt. Concretely:
 #
@@ -100,7 +100,7 @@ FEEDBACK_TARGET_REPO="${TEMPERLOOP_FEEDBACK_REPO:-Towheads/temperloop}"  # denyl
 # the embedded VERSION and EXPORTS it (temperloop#677), so a normal
 # `temperloop feedback` invocation inherits the shipped version here; this
 # literal seam is the standalone/registry-recorded fallback and stays the
-# knob-registry owning-script default for both names.
+# setting-registry owning-script default for both names.
 TEMPERLOOP_VERSION="${TEMPERLOOP_VERSION:-${FOUNDATION_VERSION:-dev}}"
 
 usage() {
@@ -204,7 +204,7 @@ trap cleanup EXIT
   echo "---"
   echo "temperloop version: $TEMPERLOOP_VERSION"
   echo "source repo (git origin, sanitized): $repo_context"
-  echo "platform: $os_context (bash ${BASH_VERSION:-unknown})"  # knob:exempt — BASH_VERSION is a bash builtin special variable, never an operator default
+  echo "platform: $os_context (bash ${BASH_VERSION:-unknown})"  # setting:exempt — BASH_VERSION is a bash builtin special variable, never an operator default
   echo "composed: $ts"
 } > "$PAYLOAD_FILE"
 
@@ -308,8 +308,8 @@ fi
 # consent, and there is no flag that overrides this.
 # ---------------------------------------------------------------------------
 _feedback_attended() {
-  case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — standard CI-ecosystem ambient signal, not an operator default this repo defines
-  case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — GitHub Actions' own ambient signal, not an operator default this repo defines
+  case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # setting:exempt — standard CI-ecosystem ambient signal, not an operator default this repo defines
+  case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # setting:exempt — GitHub Actions' own ambient signal, not an operator default this repo defines
   if [ -t 0 ]; then return 0; fi
   [ "${TEMPERLOOP_FEEDBACK_ASSUME_TTY:-0}" = "1" ] && return 0
   return 1

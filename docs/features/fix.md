@@ -70,12 +70,12 @@ dependency levels — is refused and redirected to `/triage` → `/assess`
 `/fix` reuses the shared single-issue state probe and PR-revalidation
 helper built for this driver, the same per-issue build mechanics `/sweep`
 invokes as a one-item unit, and the same worktree lifecycle, board
-adapter, PR, and CI-poll spine every other execution path depends on —
+adapter, PR, and CI-poll machinery every other execution path depends on —
 there is no parallel implementation of any of them. Its merge approval
 routes through the same operator-decision seam `/build` uses for its
-gates. On any terminal disposition of an adopted or funnel-touched target
+gates. On any terminal disposition of an adopted or pipeline-touched target
 it clears stale routing labels so the item does not re-surface to
-`/check-in`'s recommender or the autonomous funnel (`funnel-driver`) as
+`/check-in`'s recommender or the autonomous pipeline (`pipeline-driver`) as
 still-stuck. It
 is a slash command, live only once installed to the running Claude Code
 configuration — a change to its spec is inert until redeployed.

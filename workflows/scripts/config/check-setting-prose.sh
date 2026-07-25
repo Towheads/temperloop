@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
 #
-# check-knob-prose.sh — "prose names knobs, never values" lint (D3,
+# check-setting-prose.sh — "prose names settings, never values" lint (D3,
 # temperloop#164/#169, item registry-config-lints).
 #
 # Fails when running prose in the kernel's command specs (claude/commands/
-# *.md) or claude/CLAUDE.kernel.md restates a REGISTERED knob's literal
-# default VALUE near the knob's NAME — e.g. "BUILD_MERGE_GATE_WINDOW,
-# default 300" — instead of just naming the knob and letting the registry
+# *.md) or claude/CLAUDE.kernel.md restates a REGISTERED setting's literal
+# default VALUE near the setting's NAME — e.g. "BUILD_MERGE_GATE_WINDOW,
+# default 300" — instead of just naming the setting and letting the registry
 # (or the shell literal itself) be the single source of truth for the
 # current value. A doc that repeats "default 300" drifts silently the next
-# time someone changes the shell literal; a doc that only names the knob
+# time someone changes the shell literal; a doc that only names the setting
 # never can.
 #
 # ── The heuristic (documented per this lint's own acceptance bar: "keep the
 #    matching conservative enough to avoid false positives") ────────────────
-# For each REGISTERED knob whose `default` is a SIMPLE literal (no
+# For each REGISTERED setting whose `default` is a SIMPLE literal (no
 # `$`/`(`/`)`/`{`/`}`/`` ` `` — i.e. no variable/command-substitution syntax;
 # a value like `$HOME/.claude/funnel/log` or `$(hostname -s)` could never appear
 # verbatim as prose anyway, so there's nothing there to false-positive on)
 # and non-empty, a line is a violation iff BOTH:
-#   1. the knob's bare NAME appears anywhere on the line (inside or outside
-#      backtick code spans — naming the knob, even in code font, is exactly
+#   1. the setting's bare NAME appears anywhere on the line (inside or outside
+#      backtick code spans — naming the setting, even in code font, is exactly
 #      what D3 wants, so this half is deliberately permissive); AND
-#   2. the knob's exact `default` VALUE appears in the line's PROSE portion
+#   2. the setting's exact `default` VALUE appears in the line's PROSE portion
 #      — i.e. with all backtick-delimited code spans stripped first, since a
 #      value shown inside a code span (`` `${VAR:-300}` ``) is a legitimate
 #      code demonstration of the real seam, not a prose restatement — with a
 #      word boundary on the left always, and on the right too UNLESS the
-#      knob's `type` is int/seconds/pct, in which case the right boundary
+#      setting's `type` is int/seconds/pct, in which case the right boundary
 #      only excludes a following DIGIT (so "300s"/"300ms"/"10%"-style unit
 #      suffixes immediately after a numeric value still count as the same
 #      restatement, matching how these docs actually write durations/
@@ -36,10 +36,10 @@
 # toggles the state) is skipped entirely, same rationale as code spans.
 # Requiring the co-occurring NAME first is the primary precision lever — a
 # short generic default (`0`, `1`, `gh`, `auto`) only ever gets checked on
-# lines that ALREADY name that exact knob, not the whole file.
+# lines that ALREADY name that exact setting, not the whole file.
 #
 # ── Allow-marker ────────────────────────────────────────────────────────
-# A line carrying the literal substring `<!-- knob-prose:allow` anywhere on
+# A line carrying the literal substring `<!-- setting-prose:allow` anywhere on
 # it (an HTML comment — renders invisibly in Markdown, so it's safe to leave
 # in published docs) is never scanned. Mirrors check-personal-token-
 # denylist.sh's `# denylist:allow` convention, adapted to Markdown's comment
@@ -48,10 +48,10 @@
 # transplant verbatim, hence the different marker syntax).
 #
 # ── Burn-down baseline ──────────────────────────────────────────────────
-# knob-prose-baseline.tsv (sibling file) lists (file, name, default, exact
+# setting-prose-baseline.tsv (sibling file) lists (file, name, default, exact
 # line content) rows for pre-existing violations — this lint's registered
-# knobs were already used in prose before this lint existed, so day one
-# isn't green without a baseline (contrast check-knob-registry.sh, which IS
+# settings were already used in prose before this lint existed, so day one
+# isn't green without a baseline (contrast check-setting-registry.sh, which IS
 # baseline-free because the registry was populated to already match the
 # tree). A hit matching a baseline row is suppressed once per row (same
 # consumed-once semantics as personal-token-denylist-baseline.tsv); a NEW
@@ -60,15 +60,15 @@
 # baselined line to name-only and empties this file.
 #
 # Usage:
-#   check-knob-prose.sh
+#   check-setting-prose.sh
 #
 # Env overrides (fixture-driven tests):
-#   KNOB_REGISTRY_FILE, KNOB_REGISTRY_OVERLAY_FILE   (knob-registry-lib.sh's
+#   SETTING_REGISTRY_FILE, SETTING_REGISTRY_OVERLAY_FILE   (setting-registry-lib.sh's
 #     own seams)
-#   KNOB_PROSE_SCAN_ROOT   root that claude/commands/*.md and
+#   SETTING_PROSE_SCAN_ROOT   root that claude/commands/*.md and
 #     claude/CLAUDE.kernel.md are resolved against (default: this repo)
-#   KNOB_PROSE_BASELINE_FILE   path to the burn-down baseline TSV (default:
-#     sibling knob-prose-baseline.tsv)
+#   SETTING_PROSE_BASELINE_FILE   path to the burn-down baseline TSV (default:
+#     sibling setting-prose-baseline.tsv)
 #
 # Kept bash-3.2-portable (no associative arrays, no mapfile) so it runs on
 # the macOS dev shell as well as Linux CI, matching every other
@@ -80,11 +80,11 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-: "${KNOB_PROSE_SCAN_ROOT:=$REPO_ROOT}"
-: "${KNOB_PROSE_BASELINE_FILE:=$SCRIPT_DIR/knob-prose-baseline.tsv}"
+: "${SETTING_PROSE_SCAN_ROOT:=$REPO_ROOT}"
+: "${SETTING_PROSE_BASELINE_FILE:=$SCRIPT_DIR/setting-prose-baseline.tsv}"
 
-# shellcheck source=workflows/scripts/config/knob-registry-lib.sh
-source "$SCRIPT_DIR/knob-registry-lib.sh"
+# shellcheck source=workflows/scripts/config/setting-registry-lib.sh
+source "$SCRIPT_DIR/setting-registry-lib.sh"
 
 _kp_ere_escape() {
   # Bracket-expression char order matters here: `]` first (literal close-
@@ -114,11 +114,11 @@ while IFS=$'\t' read -r name default type _layer _owning doc; do
   cand_defaults+=("$default")
   cand_types+=("$type")
 done <<EOF
-$(knob_registry_rows)
+$(setting_registry_rows)
 EOF
 
 if [ "${#cand_names[@]}" -eq 0 ]; then
-  echo "check-knob-prose: zero restatable candidate knobs — nothing to check" >&2
+  echo "check-setting-prose: zero restatable candidate settings — nothing to check" >&2
   exit 1
 fi
 
@@ -128,7 +128,7 @@ baseline_names=()
 baseline_defaults=()
 baseline_lines=()
 baseline_used=()
-if [ -f "$KNOB_PROSE_BASELINE_FILE" ]; then
+if [ -f "$SETTING_PROSE_BASELINE_FILE" ]; then
   while IFS=$'\t' read -r bfile bname bdefault bline || [ -n "${bfile:-}" ]; do
     [ -z "${bfile:-}" ] && continue
     case "$bfile" in \#*) continue ;; esac
@@ -137,7 +137,7 @@ if [ -f "$KNOB_PROSE_BASELINE_FILE" ]; then
     baseline_defaults+=("$bdefault")
     baseline_lines+=("$bline")
     baseline_used+=(0)
-  done <"$KNOB_PROSE_BASELINE_FILE"
+  done <"$SETTING_PROSE_BASELINE_FILE"
 fi
 
 _kp_take_baseline() {
@@ -156,17 +156,17 @@ _kp_take_baseline() {
 
 # --- target files ------------------------------------------------------------
 targets=()
-if [ -d "$KNOB_PROSE_SCAN_ROOT/claude/commands" ]; then
+if [ -d "$SETTING_PROSE_SCAN_ROOT/claude/commands" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] && targets+=("$f")
-  done < <(find "$KNOB_PROSE_SCAN_ROOT/claude/commands" -maxdepth 1 -name '*.md' | sort)
+  done < <(find "$SETTING_PROSE_SCAN_ROOT/claude/commands" -maxdepth 1 -name '*.md' | sort)
 fi
-if [ -f "$KNOB_PROSE_SCAN_ROOT/claude/CLAUDE.kernel.md" ]; then
-  targets+=("$KNOB_PROSE_SCAN_ROOT/claude/CLAUDE.kernel.md")
+if [ -f "$SETTING_PROSE_SCAN_ROOT/claude/CLAUDE.kernel.md" ]; then
+  targets+=("$SETTING_PROSE_SCAN_ROOT/claude/CLAUDE.kernel.md")
 fi
 
 if [ "${#targets[@]}" -eq 0 ]; then
-  echo "check-knob-prose: no target files found under $KNOB_PROSE_SCAN_ROOT" >&2
+  echo "check-setting-prose: no target files found under $SETTING_PROSE_SCAN_ROOT" >&2
   exit 1
 fi
 
@@ -193,7 +193,7 @@ _kp_line_in_fence() {
 # loop this replaces spawned a subprocess per pair per LINE (~400k for the
 # real tree) and took minutes; this shape is a few hundred greps total.
 for path in "${targets[@]}"; do
-  rel="${path#"$KNOB_PROSE_SCAN_ROOT"/}"
+  rel="${path#"$SETTING_PROSE_SCAN_ROOT"/}"
   # fence-delimiter linenos, space-separated (a trimmed-leading-whitespace
   # line starting ``` toggles fence state).
   fence_markers="$(grep -nE '^[[:space:]]*```' "$path" | cut -d: -f1 | tr '\n' ' ')"
@@ -214,9 +214,9 @@ for path in "${targets[@]}"; do
     esac
 
     # word-bounded NAME check on the FULL line (in or out of code spans —
-    # naming the knob in code font is fine, see header). Word-bounded, not
-    # substring, so FUNNEL_OPERATOR does not match inside
-    # FUNNEL_OPERATOR_ABSENT (a different, longer identifier).
+    # naming the setting in code font is fine, see header). Word-bounded, not
+    # substring, so PIPELINE_OPERATOR does not match inside
+    # PIPELINE_OPERATOR_ABSENT (a different, longer identifier).
     while IFS= read -r hit; do
       [ -z "$hit" ] && continue
       lineno="${hit%%:*}"
@@ -224,12 +224,12 @@ for path in "${targets[@]}"; do
       name_hits=$((name_hits + 1))
       _kp_line_in_fence "$lineno" "$fence_markers" && continue
       case "$line" in
-        *'<!-- knob-prose:allow'*) continue ;;
+        *'<!-- setting-prose:allow'*) continue ;;
       esac
       # strip backtick code spans AND HTML comments (`<!-- ... -->`) —
       # neither is prose. Comments cover the same-line citation markers
       # (claude/citation-schema.md): a marker's row id / ref digits (e.g.
-      # `<!-- cite: SW.3 ... -->` on a line naming a knob whose default is
+      # `<!-- cite: SW.3 ... -->` on a line naming a setting whose default is
       # 3) would otherwise false-positive as a restated value. The comment
       # ERE is the full body-aware form (`[^-]|-[^-]|--[^>]`), not a naive
       # `[^>]*`, so a comment whose body legitimately contains `>` (the
@@ -243,10 +243,10 @@ for path in "${targets[@]}"; do
           baselined=$((baselined + 1))
           continue
         fi
-        if [ "${KNOB_PROSE_EMIT_BASELINE:-0}" = "1" ]; then
+        if [ "${SETTING_PROSE_EMIT_BASELINE:-0}" = "1" ]; then
           # maintenance mode: print ready-to-append baseline TSV rows
           # instead of violation text (used to seed/regenerate
-          # knob-prose-baseline.tsv; still exits non-zero so it can't be
+          # setting-prose-baseline.tsv; still exits non-zero so it can't be
           # mistaken for a passing lint run).
           printf '%s\t%s\t%s\t%s\n' "$rel" "$name" "$default" "$line"
         else
@@ -261,7 +261,7 @@ done
 
 echo
 if [ "$violations" -gt 0 ]; then
-  echo "FAIL: $violations knob-prose violation(s) across ${#targets[@]} file(s), $name_hits knob-name-bearing line(s) checked ($baselined pre-existing hit(s) suppressed via burn-down baseline)" >&2
+  echo "FAIL: $violations setting-prose violation(s) across ${#targets[@]} file(s), $name_hits setting-name-bearing line(s) checked ($baselined pre-existing hit(s) suppressed via burn-down baseline)" >&2
   exit 1
 fi
-echo "OK — 0 new knob-prose violations across ${#targets[@]} file(s), $name_hits knob-name-bearing line(s) checked ($baselined pre-existing hit(s) suppressed via burn-down baseline; see knob-prose-baseline.tsv)"
+echo "OK — 0 new setting-prose violations across ${#targets[@]} file(s), $name_hits setting-name-bearing line(s) checked ($baselined pre-existing hit(s) suppressed via burn-down baseline; see setting-prose-baseline.tsv)"

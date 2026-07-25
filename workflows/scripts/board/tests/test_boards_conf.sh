@@ -189,7 +189,7 @@ echo "PASS: board_registered_boards is the built-in set (incl. board 7) unioned 
 # $_BOARD_LIB_DIR resolves through the fixture's board symlink (the real
 # in-process $_BOARD_LIB_DIR points at this repo's own lib, which is not inside
 # a kernel/ subtree). Neither BOARDS_CONF_MACHINE nor BOARDS_CONF_REPO_LOCAL is
-# set — the consumer-root rung must fire on its own.
+# set — the consumer-root layer must fire on its own.
 CT="$WORK/composed"
 # kernel subtree: the real board.sh + a kernel-internal boards.conf (the path
 # the board symlink resolves to — must LOSE to the consumer-root file).
@@ -217,7 +217,7 @@ esac
 ct_repo="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
-  # A machine conf default that certainly does not exist, so rung 1 is inert
+  # A machine conf default that certainly does not exist, so layer 1 is inert
   # without depending on the host's real ~/.config.
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
@@ -251,7 +251,7 @@ echo "PASS: composed tree resolves the consumer-root boards.conf before the syml
 # When workflows/scripts/board is itself a whole-directory symlink into kernel/
 # (foundation's CURRENT layout, before it materialises a real board dir), the
 # consumer-root candidate resolves BACK inside kernel/ — it is not a committable
-# seam, so the probe must decline and fall through to rung 2 unchanged.
+# seam, so the probe must decline and fall through to layer 2 unchanged.
 CT2="$WORK/composed-symlink"
 mkdir -p "$CT2/kernel/workflows/scripts/board/lib"
 cp "$LIB_DIR/board.sh" "$CT2/kernel/workflows/scripts/board/lib/board.sh"
@@ -272,7 +272,7 @@ ct2_conf="$(
 [ "$ct2_conf" = "MISS" ] \
   || fail "whole-board-symlink layout should NOT yield a consumer-root seam (candidate resolves back into kernel/), got: $ct2_conf"
 
-# ...and _board_conf_file then falls through to the (kernel-internal) rung-2
+# ...and _board_conf_file then falls through to the (kernel-internal) layer-2
 # path unchanged — the pre-#494 behavior, so nothing regresses for a tree that
 # has not yet materialised a real consumer-owned board dir.
 ct2_repo="$(
@@ -284,9 +284,9 @@ ct2_repo="$(
   board_repo 4
 )"
 [ "$ct2_repo" = "Kernel/only" ] \
-  || fail "whole-board-symlink layout should fall through to the rung-2 symlink-resolved conf, got: $ct2_repo"
+  || fail "whole-board-symlink layout should fall through to the layer-2 symlink-resolved conf, got: $ct2_repo"
 
-echo "PASS: a whole-board-symlink layout declines the consumer-root seam and falls through to rung 2 unchanged (temperloop#494)"
+echo "PASS: a whole-board-symlink layout declines the consumer-root seam and falls through to layer 2 unchanged (temperloop#494)"
 
 # --- 10c: a synced-directory consumer is NOT a composed tree ---------------
 # stageFind/ssmobile/subsetwiki get a real (banner-stamped copy) board dir with

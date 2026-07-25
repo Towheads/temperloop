@@ -32,10 +32,10 @@ dispatcher (`bin/temperloop`) calls the helper once and **exports**
 `TEMPERLOOP_VERSION`, so subcommand child processes (e.g. `feedback.sh`'s
 payload stamp) inherit the embedded value; `feedback.sh` keeps its own literal
 `${TEMPERLOOP_VERSION:-…}` seam as the standalone fallback and as the
-knob-registry owning-script default for both names. An explicit env override
+setting-registry owning-script default for both names. An explicit env override
 still wins, so CI and test fixtures that set `TEMPERLOOP_VERSION` are unchanged.
 
-The version is embedded **as part of the release cut**: the ritual bumps
+The version is embedded **as part of the release cut**: the release routine bumps
 `VERSION` in the same commit that gets tagged (`kernel-repo-layout.md`
 § Release-tag convention). `workflows/scripts/tests/test_version_embedding.sh`
 guards the contract — VERSION is well-formed, `temperloop version` reports it

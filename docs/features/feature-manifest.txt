@@ -75,12 +75,12 @@ board-adapter workflows/scripts/board/*
 board-adapter workflows/scripts/board-sync-drift-check.sh
 board-adapter workflows/scripts/lib/tracker.contract.md
 
-# ── build-spine — /build pipeline: plan, worktree, workers, board mirror ────
-build-spine claude/commands/build.md
-build-spine claude/plan-schema.md
-build-spine claude/workflows/build-level.mjs
-build-spine workflows/scripts/build/*
-build-spine workflows/scripts/validate-activation-registry.sh
+# ── build-machinery — /build pipeline: plan, worktree, workers, board mirror ────
+build-machinery claude/commands/build.md
+build-machinery claude/plan-schema.md
+build-machinery claude/workflows/build-level.mjs
+build-machinery workflows/scripts/build/*
+build-machinery workflows/scripts/validate-activation-registry.sh
 
 # ── merge-gate — PR enqueue, CI poll, batched merge gate, protected main ────
 merge-gate docs/managed-merge-queue.md
@@ -101,10 +101,10 @@ next claude/commands/next.md
 check-in claude/commands/check-in.md
 check-in claude/decision-queue-contract.md
 
-# ── tidy — nightly drain: stub scan, findings, hygiene probes, live/drain ───
+# ── tidy — nightly drain: stub scan, findings, hygiene probes, capture/backstop ───
 tidy claude/commands/tidy.md
 tidy workflows/scripts/drain/*
-tidy workflows/scripts/validate-live-drain.sh
+tidy workflows/scripts/validate-capture-backstop.sh
 tidy workflows/scripts/env-hygiene-report.sh
 tidy workflows/scripts/tests/test_env_hygiene_report.sh
 tidy workflows/scripts/ready-pr-sweep.sh
@@ -124,12 +124,12 @@ telemetry workflows/scripts/validate-issue-touch-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
 
-# ── funnel-driver — autonomous funnel tick/drive/cron + work-class policy ───
-funnel-driver claude/commands/funnel-drive.md
-funnel-driver claude/commands/funnel-drive-merge.md
-funnel-driver claude/work-class-policy.md
-funnel-driver workflows/scripts/build/funnel-*
-funnel-driver workflows/scripts/build/tests/test_funnel_*
+# ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
+pipeline-driver claude/commands/pipeline-drive.md
+pipeline-driver claude/commands/pipeline-drive-merge.md
+pipeline-driver claude/work-class-policy.md
+pipeline-driver workflows/scripts/build/pipeline-*
+pipeline-driver workflows/scripts/build/tests/test_pipeline_*
 
 # ── hooks — PreToolUse/SessionStart/SessionEnd guard + logging hooks ────────
 hooks claude/hooks/*
@@ -220,7 +220,7 @@ knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
 command-declared workflows/scripts/lib/command_declared.sh
 command-declared workflows/scripts/lib/tests/test_command_declared.sh
 
-# ── quality-gates — the static gate set, lints, kernel scrubs, knob registry ─
+# ── quality-gates — the static gate set, lints, kernel scrubs, setting registry ─
 quality-gates .github/workflows/ci.yml
 quality-gates scripts/quality-gates.sh
 quality-gates workflows/scripts/lib/checkout-freshness.sh

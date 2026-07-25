@@ -2,7 +2,7 @@
 
 Sibling doc to `cache.sh` (F#988 Contract, epic "canonical-item cache layer").
 This is the schema/contract note a later consumer (a corpus renderer, a
-funnel driver, anything that wants to read "every issue in this repo" without
+pipeline driver, anything that wants to read "every issue in this repo" without
 re-paying GitHub every time) reads to know what's on disk and what it means.
 
 ## Why this exists, and how it differs from board.sh's own cache
@@ -112,7 +112,7 @@ Read (consumer-facing):
   whatever `details/<n>.json` currently holds; not staleness-aware itself
   (call `cache_refresh_details` first for a guaranteed-fresh read).
 
-## Tuning knobs (ENV VARS only — no boards.conf axis in cache.sh itself)
+## Tuning settings (ENV VARS only — no boards.conf axis in cache.sh itself)
 
 - `CACHE_STORE_ROOT` — store root (default `${XDG_CACHE_HOME:-$HOME/.cache}/temperloop`)
 - `CACHE_STORE_TTL` — max-stale window in seconds (default `3600`)
@@ -120,7 +120,7 @@ Read (consumer-facing):
 Deliberately environment-only in `cache.sh` itself: the per-board
 `board.<N>.cache` *enable/disable* axis lives in `board.sh` (a different
 concern — whether a board's whole-board issues-only read uses this store at
-all — from these tuning knobs, which govern the store's own behavior once in
+all — from these tuning settings, which govern the store's own behavior once in
 use). See § Read dispatch (board.sh integration) below.
 
 ## Read dispatch (board.sh integration, cache-read-dispatch item)

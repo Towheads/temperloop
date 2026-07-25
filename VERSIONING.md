@@ -27,12 +27,12 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Board adapter interface** | overlay scripts calling `board_resolve_item` / `board_resolve` / `board_item_list` / `board_set_*`, the `--board N` axis, board commands (`claim`/`release`/`worklist`/`reconcile`/`capture`/`milestone`) | `workflows/scripts/board/lib/board.sh`, `boards.conf` |
 | **Pipeline command contracts** | operators running the slash commands; their documented steps + `plan-schema.md` shape | `claude/commands/*.md`, `claude/plan-schema.md` |
 | **Hook names + signatures** | a machine's installed hooks; anything keying off their I/O contract | `claude/hooks/*.sh` |
-| **Quality-gate contract** | CI + local gate parity: the required job name `checks`, the `KERNEL_GATES` set, the Live/Drain + PR-body-lint registry formats | `scripts/quality-gates.sh`, `.github/workflows/ci.yml` |
+| **Quality-gate contract** | CI + local gate parity: the required job name `checks`, the `KERNEL_GATES` set, the Capture/Backstop + PR-body-lint registry formats | `scripts/quality-gates.sh`, `.github/workflows/ci.yml` |
 | **CLI surface** | callers of `bin/temperloop` and its subcommands (`init`, `eject`, `try`, `report`, `feedback`, `baseline-snapshot`, `configure`, `config`, `install`, `uninstall`, `update`) — plus, through the temperloop#165 rename window (removed in v0.17.0), the `bin/foundation` compat shim | `bin/temperloop`, `bin/foundation`, `bin/subcommands/*` |
 | **Shipped version stamp** | the release artifact's own version — the repo-root `VERSION` file (bare `x.y.z`) that `temperloop version` reports. **Bumped in the tagged commit** as part of the cut (kernel-repo-layout.md § Release-tag convention); `test_version_embedding.sh` fails the build if it drifts from the tag | `VERSION`, `bin/lib/common.sh` (`temperloop_resolve_version`) |
 | **Compose / pin seam** | the overlay's `install-claude` compose (`CLAUDE.kernel.md` + overlay), `.kernel-pin` format, the kernel-manifest classification | `workflows/scripts/install-claude-md.sh`, `.kernel-pin`, `kernel-manifest.txt` |
 | **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `tracker.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
-| **Knob registry** | callers reading `workflows/scripts/config/knob-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/knob-registry.tsv`, `workflows/scripts/config/knob-registry-lib.sh` |
+| **Setting registry** | callers reading `workflows/scripts/config/setting-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/setting-registry.tsv`, `workflows/scripts/config/setting-registry-lib.sh` |
 | **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
 | **Kernel engineering-principles criteria** | review agents and `/build` workers judging a diff against the declared cross-language criteria; a project's `§ Principles` section merging with (extending, replacing, or excluding from) the kernel set per the merge semantics stated in the file's own header | `claude/engineering-principles.md` |
 
@@ -77,19 +77,19 @@ optional `plan-schema` field, or a new gate that no existing overlay is
 required to satisfy is **additive**. Fixing a bug with none of the above is a
 **patch**.
 
-**Knob registry, specifically** (finer-grained than the generic rule above,
+**Setting registry, specifically** (finer-grained than the generic rule above,
 since a TSV row is itself structured data a caller can depend on at three
 different granularities): a **column change** (renaming/removing/reordering
 one of the six `name|default|type|layer|owning-script|doc` fields, or a
 parse-helper function signature/output-shape change) is **breaking** — every
-reader of the row shape must adapt. A **new knob row** (a name no reader
+reader of the row shape must adapt. A **new setting row** (a name no reader
 already depended on) is **additive**. A **default-value change on an
 existing row** is **minor** — a stranger who dot-sources the previous
 default should re-check it, so it is never a bare **patch**, but it doesn't
 change the row shape so it isn't breaking either.
 
 **Machine-surface install manifest, specifically** (same three-way split as
-the knob registry, applied to the manifest's own JSON shape): a **field/
+the setting registry, applied to the manifest's own JSON shape): a **field/
 column change** (renaming, removing, or reshaping `schema_version`,
 `state`, or `backup_path` on a path entry, or a `manifest.sh` helper
 function's signature/output-shape change) is **breaking** — every reader

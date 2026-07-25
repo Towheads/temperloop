@@ -10,7 +10,7 @@
 # under a throwaway tmpdir; never touches a real vault, XDG dir, or the
 # machine's real $HOME.
 #
-# Covers: log-path knob default + override, one normalized line per
+# Covers: log-path setting default + override, one normalized line per
 # ks_write/ks_read/ks_append/ks_list call (plain-files backend), one line
 # per ks_search call (op=search, query as the doc field), the
 # " · "-joined 5-field line shape, session-id present vs. "-" fallback when
@@ -51,7 +51,7 @@ trap 'rm -rf "$TMP"' EXIT
   source "$STORE_LIB"
   got="$(_ks_read_log_path)"
   [ "$got" = "$TMP/explicit-read.log" ] || fail "2: explicit KNOWLEDGE_READ_LOG must win (got $got)"
-  echo "PASS: 2 KNOWLEDGE_READ_LOG overrides the default (single config knob)"
+  echo "PASS: 2 KNOWLEDGE_READ_LOG overrides the default (single config setting)"
 )
 
 # From here on, all cases share one isolated store root + read log.

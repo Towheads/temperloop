@@ -65,7 +65,7 @@ ln -s kernel/claude/hooks "$REPO/hooks-dirlink"
 # stayed silent and let the kernel edit through; only the realpath-resolved
 # path lands under kernel/.
 mkdir -p "$REPO/kernel/workflows/scripts/build" "$REPO/workflows/scripts"
-echo "cron" >"$REPO/kernel/workflows/scripts/build/funnel-cron.sh"
+echo "cron" >"$REPO/kernel/workflows/scripts/build/pipeline-cron.sh"
 ln -s ../../kernel/workflows/scripts/build "$REPO/workflows/scripts/build"
 echo "overlay" >"$REPO/overlay-only/real.txt"
 echo "readme" >"$REPO/README.md"
@@ -111,13 +111,13 @@ check "compat symlink (dir-level) resolving into kernel/ -> ask" ask "$out"
 # and the kernel edit slipped through. The guard resolves the realpath BEFORE
 # matching, so it must ask. The `case` below asserts the load-bearing property
 # — that the input path genuinely lacks `kernel/`, i.e. only resolution trips it.
-alias_target="workflows/scripts/build/funnel-cron.sh"
+alias_target="workflows/scripts/build/pipeline-cron.sh"
 case "$alias_target" in
   *kernel/*) echo "FATAL: #130 fixture path unexpectedly contains kernel/ — assertion void" >&2; exit 1 ;;
 esac
 out="$(run_hook "$REPO" Edit "$alias_target")"
 check "build-dir alias (../../kernel up-and-back), raw path has no 'kernel/' -> ask [#130]" ask "$out"
-grep -q "$REPO_RP/kernel/workflows/scripts/build/funnel-cron.sh" <<<"$out" \
+grep -q "$REPO_RP/kernel/workflows/scripts/build/pipeline-cron.sh" <<<"$out" \
   || { fail=$((fail + 1)); printf '  ✗ #130: ask reason does not name the RESOLVED kernel path\n'; }
 
 # --- MultiEdit shape (edits[].file_path) -> ask ----------------------------

@@ -9,7 +9,7 @@
 # CI (which checks out the PR's merge with current main) and scans a stale/empty
 # leak-guard diff — so a green run in a stale checkout does NOT imply green CI.
 # That exact trap cost a 12-item /sweep four post-push CI round-trips: the
-# knob-registry / denylist / leak-guard gates the stale local run never exercised.
+# setting-registry / denylist / leak-guard gates the stale local run never exercised.
 #
 # This guard makes the divergence LEGIBLE rather than blocking it. A stale
 # checkout is sometimes legitimate (offline work, deliberately testing an old

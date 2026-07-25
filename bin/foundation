@@ -16,7 +16,7 @@
 # the legible failure below stays testable before the removal release ships.
 set -uo pipefail
 
-if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
   echo "foundation: this compat shim was removed in v0.17.0 — the CLI was renamed 'temperloop' in v0.15.0. Invoke 'temperloop' instead." >&2
   exit 1
 fi

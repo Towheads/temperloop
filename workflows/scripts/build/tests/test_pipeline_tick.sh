@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Tests for workflows/scripts/build/funnel-tick.sh — the autonomous funnel
+# Tests for workflows/scripts/build/pipeline-tick.sh — the autonomous pipeline
 # driver's per-board tick (foundation #569).
 #
-# funnel-tick is a THIN SCHEDULER: it CALLS /triage → /assess → /build and
+# pipeline-tick is a THIN SCHEDULER: it CALLS /triage → /assess → /build and
 # inherits their gates; it re-implements none. These tests exercise the
-# deterministic spine — the --dry-run --fixture path — entirely OFFLINE: each
+# deterministic machinery — the --dry-run --fixture path — entirely OFFLINE: each
 # case seeds a fixture tree (mock decision issues + answer comments + Ready
 # items with work-class labels) and asserts on the emitted tick-plan JSON. Zero
 # network, zero live board, zero `gh`.
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TICK="$HERE/../funnel-tick.sh"
+TICK="$HERE/../pipeline-tick.sh"
 
 pass=0
 fail=0
@@ -132,20 +132,20 @@ M="$(action_for <<<"$PLAN" '.action=="drain-parse-miss"')"
 # Must NOT have emitted a drain-answer (no silent default).
 [ -z "$(action_for <<<"$PLAN" '.action=="drain-answer"')" ] && ok "no drain-answer on a parse miss (no guess)" || bad "t5.no-guess" "a default was taken"
 
-# ── 5b: FUNNEL_OPERATOR override (tracker seam v0, #772) — non-default value
-# respected, proving the build.config.sh knob (not just its default) is live. The
+# ── 5b: PIPELINE_OPERATOR override (tracker seam v0, #772) — non-default value
+# respected, proving the build.config.sh setting (not just its default) is live. The
 # emitted reassign_to is a BARE login: the leading `@` is stripped (foundation #977 —
 # `--add-assignee "@someoneelse"` fails GitHub's replaceActorsForAssignable). ─
-echo "--- test 5b: FUNNEL_OPERATOR env override is respected + bared (#772, #977) ---"
+echo "--- test 5b: PIPELINE_OPERATOR env override is respected + bared (#772, #977) ---"
 FX="$TMP/t5b"; seed_board "$FX" 3
 cat > "$FX/board-3/decisions.json" <<'JSON'
 [{"number":502,"title":"a","body":"x","assignees":[],
   "comments":[{"createdAt":"2026-06-24T11:00:00Z","body":"do whichever, sounds good"}]}]
 JSON
 echo 0 > "$FX/board-3/assignees-502.txt"
-PLAN="$(FUNNEL_OPERATOR=@someoneelse BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(PIPELINE_OPERATOR=@someoneelse BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 M="$(action_for <<<"$PLAN" '.action=="drain-parse-miss"')"
-[ "$(jq -r '.reassign_to' <<<"$M")" = "someoneelse" ] && ok "FUNNEL_OPERATOR override respected + bared (#772, #977)" || bad "t5b.override" "got $(jq -r '.reassign_to' <<<"$M")"
+[ "$(jq -r '.reassign_to' <<<"$M")" = "someoneelse" ] && ok "PIPELINE_OPERATOR override respected + bared (#772, #977)" || bad "t5b.override" "got $(jq -r '.reassign_to' <<<"$M")"
 
 # ── 6: contention pre-check — re-assigned issue skipped this tick ────────────
 echo "--- test 6: contention pre-check skips a re-assigned decision issue ---"
@@ -166,13 +166,13 @@ FX="$TMP/t7"; seed_board "$FX" 3; seed_board "$FX" 4
 cat > "$FX/board-4/ready.json" <<'JSON'
 [{"number":701,"title":"foundation bug","labels":["Operational"]}]
 JSON
-# board 4 is NOT in the default FUNNEL_ENABLED_BOARDS (=3) → disabled
+# board 4 is NOT in the default PIPELINE_ENABLED_BOARDS (=3) → disabled
 PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 4)"
 [ "$(jq -r 'first(.actions[].action)' <<<"$PLAN")" = "board-disabled" ] \
   && ok "off board → board-disabled (no drive)" || bad "t7.off" "got $(jq -r 'first(.actions[].action)' <<<"$PLAN")"
 [ -z "$(action_for <<<"$PLAN" '.action=="drive-ready"')" ] && ok "no work on a disabled board" || bad "t7.no-work" "drove a disabled board"
 # Same board, but enabled via env override → it works.
-PLAN="$(FUNNEL_ENABLED_BOARDS="3 4" bash "$TICK" --dry-run --fixture "$FX" --board 4)"
+PLAN="$(PIPELINE_ENABLED_BOARDS="3 4" bash "$TICK" --dry-run --fixture "$FX" --board 4)"
 [ "$(jq -r 'first(.actions[]|select(.action=="drive-ready")|.issue)' <<<"$PLAN")" = "701" ] \
   && ok "env-enabled board now drives (#701)" || bad "t7.on" "got $(jq -r 'first(.actions[]|select(.action=="drive-ready")|.issue)' <<<"$PLAN")"
 
@@ -182,8 +182,8 @@ OUT="$(bash "$TICK" --list-enabled)"
 [ "$(jq -r '.enabled_boards[0]' <<<"$OUT")" = "3" ] && ok "--list-enabled shows board 3 (pilot)" || bad "t8.list" "got $OUT"
 [ "$(jq -r '.drive_concurrency' <<<"$OUT")" = "3" ] && ok "drive-concurrency default = 3" || bad "t8.conc" "got $(jq -r '.drive_concurrency' <<<"$OUT")"
 [ "$(jq -r '.drive_cap' <<<"$OUT")" = "1" ] && ok "drive cap default = 1 (per-tick emit cap, #642)" || bad "t8.drivecap" "got $(jq -r '.drive_cap' <<<"$OUT")"
-OUT3="$(FUNNEL_DRIVE_CAP=3 bash "$TICK" --list-enabled)"
-[ "$(jq -r '.drive_cap' <<<"$OUT3")" = "3" ] && ok "--list-enabled reflects FUNNEL_DRIVE_CAP=3" || bad "t8.drivecap3" "got $(jq -r '.drive_cap' <<<"$OUT3")"
+OUT3="$(PIPELINE_DRIVE_CAP=3 bash "$TICK" --list-enabled)"
+[ "$(jq -r '.drive_cap' <<<"$OUT3")" = "3" ] && ok "--list-enabled reflects PIPELINE_DRIVE_CAP=3" || bad "t8.drivecap3" "got $(jq -r '.drive_cap' <<<"$OUT3")"
 
 # ── 9: single-flight — two overlapping LIVE ticks do not double-act ──────────
 # The live path acquires a flock lockfile; a second concurrent tick gets a
@@ -208,8 +208,8 @@ sleep 0.5   # let the holder acquire
 # Point at board 3 with an empty fixture-less LIVE invocation guarded to never
 # reach the network: the lock check precedes every read, so a held lock returns
 # "skipped" before any `gh` call. We force the same lock path via env.
-SECOND="$(FUNNEL_LOCK_DIR="$LOCKDIR" FUNNEL_LOCK_FILE="$LOCKFILE" \
-          FUNNEL_ENABLED_BOARDS="999" bash "$TICK" --board 999 2>/dev/null || true)"
+SECOND="$(PIPELINE_LOCK_DIR="$LOCKDIR" PIPELINE_LOCK_FILE="$LOCKFILE" \
+          PIPELINE_ENABLED_BOARDS="999" bash "$TICK" --board 999 2>/dev/null || true)"
 kill "$holder" 2>/dev/null || true
 wait "$holder" 2>/dev/null || true
 if jq -e '.tick=="skipped"' <<<"$SECOND" >/dev/null 2>&1; then
@@ -219,8 +219,8 @@ else
 fi
 # And with the lock FREE, the same invocation no longer skips (board 999 is an
 # unknown/disabled board, so it is a clean no-op, but NOT a lock-skip).
-THIRD="$(FUNNEL_LOCK_DIR="$LOCKDIR" FUNNEL_LOCK_FILE="$LOCKFILE" \
-         FUNNEL_ENABLED_BOARDS="999" bash "$TICK" --board 999 2>/dev/null || true)"
+THIRD="$(PIPELINE_LOCK_DIR="$LOCKDIR" PIPELINE_LOCK_FILE="$LOCKFILE" \
+         PIPELINE_ENABLED_BOARDS="999" bash "$TICK" --board 999 2>/dev/null || true)"
 if jq -e '.tick=="skipped"' <<<"$THIRD" >/dev/null 2>&1; then
   bad "t9.lock-release" "lock not released after holder exit (still skipping)"
 else
@@ -231,11 +231,11 @@ fi   # end flock-available guard
 # ── 9b: flock-degradation notice squelched to once per run (#492) ─────────────
 # On stock macOS `flock` is absent, so the single-flight lock degrades to the
 # per-issue contention pre-check and emits a WARN. That WARN must fire AT MOST
-# ONCE per funnel run — not once per board/tick — or an unattended macOS host
+# ONCE per pipeline run — not once per board/tick — or an unattended macOS host
 # accrues a line every tick, forever. We force the degraded path deterministically
-# via FUNNEL_FLOCK_CMD=<nonexistent> (so this runs identically on a host that HAS
-# flock), then fire TWO ticks sharing one FUNNEL_RUN_ID + lock dir (the shape of
-# funnel-cron's per-board loop within one wake) and assert the notice appears
+# via PIPELINE_FLOCK_CMD=<nonexistent> (so this runs identically on a host that HAS
+# flock), then fire TWO ticks sharing one PIPELINE_RUN_ID + lock dir (the shape of
+# pipeline-cron's per-board loop within one wake) and assert the notice appears
 # exactly ONCE across both. Board 999 is unknown/disabled, so each tick is a clean
 # no-op that touches no network — the WARN emits from the lock step, before any
 # board read. The fallback locking behavior is unchanged: the tick still PROCEEDS
@@ -244,9 +244,9 @@ echo "--- test 9b: flock-degradation notice squelched to once per run (#492) ---
 LOCKDIR9B="$TMP/lock9b"; mkdir -p "$LOCKDIR9B"
 ERR9B="$TMP/t9b.err"; : > "$ERR9B"
 run_deg9b() {
-  FUNNEL_FLOCK_CMD="__no_such_flock_binary__" FUNNEL_RUN_ID="$1" \
-  FUNNEL_LOCK_DIR="$LOCKDIR9B" FUNNEL_LOCK_FILE="$LOCKDIR9B/tick.lock" \
-  FUNNEL_ENABLED_BOARDS="999" bash "$TICK" --board 999 >/dev/null 2>>"$ERR9B" || true
+  PIPELINE_FLOCK_CMD="__no_such_flock_binary__" PIPELINE_RUN_ID="$1" \
+  PIPELINE_LOCK_DIR="$LOCKDIR9B" PIPELINE_LOCK_FILE="$LOCKDIR9B/tick.lock" \
+  PIPELINE_ENABLED_BOARDS="999" bash "$TICK" --board 999 >/dev/null 2>>"$ERR9B" || true
 }
 run_deg9b "run-alpha"
 run_deg9b "run-alpha"
@@ -318,10 +318,10 @@ A2="$(action_for <<<"$PLAN" '.issue==112 and .action=="drain-already-applied"')"
 
 # ── 12: needs-clarification parks; spike drives (#594→#600, simplified #684) ─────
 # A Ready item carrying `needs-clarification` is blocked on the OPERATOR's answer
-# (it parks in Ready, #435). The funnel must NOT auto-drive it — and it PARKS it
+# (it parks in Ready, #435). The pipeline must NOT auto-drive it — and it PARKS it
 # unconditionally (route-already-assigned), regardless of assignment: the producer
 # that raised the question (/triage, /sweep, the 5c escalation) already assigned the
-# operator AT SOURCE (#684), so the funnel has nothing to assign — route-needs-input
+# operator AT SOURCE (#684), so the pipeline has nothing to assign — route-needs-input
 # is retired. A `spike`, by contrast, is NOT an operator-input gate (#594 wrongly
 # lumped it here): it is automatable read-only investigation whose verdict feeds a
 # decision AFTER it runs, so it DRIVES like any Operational item (#600).
@@ -361,7 +361,7 @@ NC="$(action_for <<<"$PLAN" '.issue==1201 and .action=="route-already-assigned"'
   && ok "Foundational+needs-clarification #1204 → route-already-assigned (park)" || bad "t12.found-park" "no route-already-assigned for #1204"
 
 # ── 12b: an already-assigned needs-clarification also parks (unchanged by #684) ──
-# The funnel fires hourly; a needs-clarification item — assigned or not — is in the
+# The pipeline fires hourly; a needs-clarification item — assigned or not — is in the
 # operator's court and must never be re-grabbed. Post-#684 the gate is unconditional:
 # assigned → route-already-assigned, exactly as unassigned does; never route-needs-input.
 echo "--- test 12b: already-assigned needs-clarification → route-already-assigned (#684) ---"
@@ -387,7 +387,7 @@ PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 # #2001 also sits in the Ready pool (an unassigned labeled item is in BOTH the drain
 # search and the Ready search); the tick must emit ONLY the drain for it, never ALSO
 # a route-already-assigned park (the double-emit guard).
-# (#697: a rung-5c CODE escalation now carries its OWN `funnel-escalated` label — never
+# (#697: a level-5c CODE escalation now carries its OWN `funnel-escalated` label — never
 # `needs-clarification` — so it can NEVER appear in this drain-list; #2005 below is the
 # Ready-loop park test that replaces the retired skip-merge-escalation case.)
 echo "--- test 12c: Phase-A2 drains answered needs-clarification (#657) ---"
@@ -398,7 +398,7 @@ cat > "$FX/board-3/clarifications.json" <<'JSON'
               {"createdAt":"2026-06-30T12:00:00Z","body":"Let's do B"}]},
  {"number":2003,"title":"already drained","body":"x","assignees":[],
   "comments":[{"createdAt":"2026-06-30T11:00:00Z","body":"Let's do A"},
-              {"createdAt":"2026-06-30T11:05:00Z","body":"<!-- funnel:clarification-drained --> Clarified (funnel): operator answer consumed — released to drive."}]},
+              {"createdAt":"2026-06-30T11:05:00Z","body":"<!-- funnel:clarification-drained --> Clarified (pipeline): operator answer consumed — released to drive."}]},
  {"number":2004,"title":"raced re-assign","body":"y","assignees":[],
   "comments":[{"createdAt":"2026-06-30T11:00:00Z","body":"go with X"}]}]
 JSON
@@ -406,7 +406,7 @@ echo 0 > "$FX/board-3/assignees-2001.txt"
 echo 0 > "$FX/board-3/assignees-2003.txt"
 echo 1 > "$FX/board-3/assignees-2004.txt"   # re-grabbed after the drain-list read
 # #2001 is also a Ready item (unassigned + labeled) — exercises the double-emit guard.
-# #2005 carries `funnel-escalated` (a parked rung-5c code item) — the #697 park gate.
+# #2005 carries `funnel-escalated` (a parked level-5c code item) — the #697 park gate.
 cat > "$FX/board-3/ready.json" <<'JSON'
 [{"number":2001,"title":"ambiguous fix","labels":["Operational","needs-clarification"]},
  {"number":2005,"title":"stuck 5c code item","labels":["Operational","funnel-escalated"]}]
@@ -442,8 +442,8 @@ jq -e '.label=="funnel-escalated"' <<<"$PK" >/dev/null \
 [ -z "$(action_for <<<"$PLAN" '.issue==2004 and .action=="drain-clarification"')" ] \
   && ok "re-assigned #2004 NOT drained (baton re-grabbed)" || bad "t12c.cont-drain" "drained a re-grabbed item"
 
-# ── 13: drive-ready carries kind (spike vs code) — the rung-5b filter key (#604) ─
-# funnel-drive.sh auto-executes only kind:spike drives (no PR); kind:code drives
+# ── 13: drive-ready carries kind (spike vs code) — the level-5b filter key (#604) ─
+# pipeline-drive.sh auto-executes only kind:spike drives (no PR); kind:code drives
 # stay emit-only for the operator. The scheduler classifies; the driver filters on
 # this field. A `spike`-labeled Operational item → kind:spike; otherwise kind:code.
 echo "--- test 13: drive-ready stamps kind=spike for a spike item (#604) ---"
@@ -477,7 +477,7 @@ DRIVE="$(action_for <<<"$PLAN" '.issue==1403 and .action=="drive-ready"')"
   && ok "unlabeled item → drive-ready kind=code" || bad "t13c.kind" "got $(jq -r '.kind' <<<"$DRIVE")"
 
 # ── 14: a hand-off-labeled item drives in RESUME mode, not fresh (#624) ───────
-# funnel-drive.sh labels an issue funnel-merge-pending when its drive opened a PR
+# pipeline-drive.sh labels an issue funnel-merge-pending when its drive opened a PR
 # but the one-shot session ended before merge. The next tick must RESUME that PR
 # (re-attach + merge gate), not re-drive it (which opens a duplicate PR). The
 # scheduler signals this by stamping mode:resume on the drive-ready.
@@ -589,12 +589,12 @@ COD="$(action_for <<<"$PLAN" '.action=="drive-ready" and .issue==1802')"
 jq -e '.emit | test("/assess --epic") and test("/build") and test("--unattended")' <<<"$COD" >/dev/null \
   && ok "code emit still drives the epic sequence (/assess --epic → /build --unattended)" || bad "t15b.epic" "got $(jq -r '.emit' <<<"$COD")"
 
-# ── 16: per-tick DRIVE CAP — FUNNEL_DRIVE_CAP gates Operational emits (#642) ──
-# The cap was a hardcoded one-per-tick (test 2). It is now the FUNNEL_DRIVE_CAP
+# ── 16: per-tick DRIVE CAP — PIPELINE_DRIVE_CAP gates Operational emits (#642) ──
+# The cap was a hardcoded one-per-tick (test 2). It is now the PIPELINE_DRIVE_CAP
 # counter, fed from the vault `cap:` by the cron. Default (unset) stays 1; setting
 # it to 3 lets a single tick emit up to 3 Operational drives. Foundational routing
 # is unaffected (it is routed, not driven, so it stays one-per-tick).
-echo "--- test 16: FUNNEL_DRIVE_CAP=3 emits up to 3 Operational drives ---"
+echo "--- test 16: PIPELINE_DRIVE_CAP=3 emits up to 3 Operational drives ---"
 FX="$TMP/t16"; seed_board "$FX" 3
 cat > "$FX/board-3/ready.json" <<'JSON'
 [{"number":1601,"title":"bug a","labels":["Operational"]},
@@ -604,7 +604,7 @@ cat > "$FX/board-3/ready.json" <<'JSON'
  {"number":1605,"title":"feature a","labels":["Foundational"]},
  {"number":1606,"title":"feature b","labels":["Foundational"]}]
 JSON
-PLAN="$(FUNNEL_DRIVE_CAP=3 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(PIPELINE_DRIVE_CAP=3 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")" = "3" ] \
   && ok "cap=3 → exactly 3 Operational drives" || bad "t16.cap3" "got $(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")"
 [ "$(jq '[.actions[]|select(.action=="route-foundational")]|length' <<<"$PLAN")" = "1" ] \
@@ -619,14 +619,14 @@ cat > "$FX/board-3/ready.json" <<'JSON'
 [{"number":1611,"title":"bug a","labels":["Operational"]},
  {"number":1612,"title":"bug b","labels":["Operational"]}]
 JSON
-PLAN="$(FUNNEL_DRIVE_CAP=3 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(PIPELINE_DRIVE_CAP=3 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")" = "2" ] \
   && ok "cap=3 with 2 items → 2 drives (clamps, no over-emit)" || bad "t16b.clamp" "got $(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")"
 
 echo "--- test 16c: default cap (unset) stays one-per-tick (behavior unchanged) ---"
 PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")" = "1" ] \
-  && ok "no FUNNEL_DRIVE_CAP → 1 drive (default preserved)" || bad "t16c.default" "got $(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")"
+  && ok "no PIPELINE_DRIVE_CAP → 1 drive (default preserved)" || bad "t16c.default" "got $(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")"
 
 echo "--- test 16d: spikes count toward the cap (mixed spike+code emits) ---"
 FX="$TMP/t16d"; seed_board "$FX" 3
@@ -636,7 +636,7 @@ cat > "$FX/board-3/ready.json" <<'JSON'
  {"number":1623,"title":"spike c","labels":["Operational","spike"]},
  {"number":1624,"title":"code d","labels":["Operational"]}]
 JSON
-PLAN="$(FUNNEL_DRIVE_CAP=2 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(PIPELINE_DRIVE_CAP=2 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")" = "2" ] \
   && ok "cap=2 → 2 drives regardless of kind (spike+code both count)" || bad "t16d.mixed" "got $(jq '[.actions[]|select(.action=="drive-ready")]|length' <<<"$PLAN")"
 [ "$(jq -c '[.actions[]|select(.action=="drive-ready")|.issue]' <<<"$PLAN")" = "[1621,1622]" ] \
@@ -644,19 +644,19 @@ PLAN="$(FUNNEL_DRIVE_CAP=2 bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 
 # ── 17: crash-signal intake phase (foundation #671, epic #637) ───────────────
 # /signal-intake is wired in as a Phase 0 pre-gate: it must run BEFORE the
-# tick's spend decisions (Phase A's drain loop, Phase B/C's FUNNEL_DRIVE_CAP
+# tick's spend decisions (Phase A's drain loop, Phase B/C's PIPELINE_DRIVE_CAP
 # gate), on EVERY tick (spend-open or spend-closed), and a failure must be
 # caught + logged without ever blocking the rest of the tick.
 
 echo "--- test 17a: intake call is code-inspectably BEFORE the spend-gate (drive-cap) block ---"
 INTAKE_LINE="$(grep -n 'run_intake_phase "\$board"' "$TICK" | head -1 | cut -d: -f1)"
 DRAIN_LINE="$(grep -n 'Phase A — drain answered' "$TICK" | head -1 | cut -d: -f1)"
-GATE_LINE="$(grep -n 'did_op" -lt "\$FUNNEL_DRIVE_CAP"' "$TICK" | head -1 | cut -d: -f1)"
+GATE_LINE="$(grep -n 'did_op" -lt "\$PIPELINE_DRIVE_CAP"' "$TICK" | head -1 | cut -d: -f1)"
 [ -n "$INTAKE_LINE" ] && ok "intake call site found (line $INTAKE_LINE)" || bad "t17a.found" "run_intake_phase call not found in $TICK"
 [ "$INTAKE_LINE" -lt "$DRAIN_LINE" ] \
   && ok "intake (L$INTAKE_LINE) is before Phase A drain (L$DRAIN_LINE)" || bad "t17a.before-drain" "intake L$INTAKE_LINE not before drain L$DRAIN_LINE"
 [ "$INTAKE_LINE" -lt "$GATE_LINE" ] \
-  && ok "intake (L$INTAKE_LINE) is before the FUNNEL_DRIVE_CAP spend-gate block (L$GATE_LINE)" \
+  && ok "intake (L$INTAKE_LINE) is before the PIPELINE_DRIVE_CAP spend-gate block (L$GATE_LINE)" \
   || bad "t17a.before-gate" "intake L$INTAKE_LINE not before drive-cap gate L$GATE_LINE"
 
 echo "--- test 17b: intake failure is caught + logged, tick proceeds (non-blocking) ---"
@@ -672,7 +672,7 @@ exit 3
 SH
 chmod +x "$FAIL_STUB"
 ERR17B="$TMP/t17b.err"
-PLAN="$(FUNNEL_INTAKE_CMD="$FAIL_STUB" bash "$TICK" --dry-run --fixture "$FX" --board 3 2>"$ERR17B")"
+PLAN="$(PIPELINE_INTAKE_CMD="$FAIL_STUB" bash "$TICK" --dry-run --fixture "$FX" --board 3 2>"$ERR17B")"
 grep -q "signal-intake failed for board 3" "$ERR17B" \
   && ok "intake failure logged to stderr (non-blocking)" || bad "t17b.logged" "no failure message in stderr: $(cat "$ERR17B")"
 grep -q "boom: simulated signal-intake failure" "$ERR17B" \
@@ -695,23 +695,23 @@ FX="$TMP/t17c-open"; seed_board "$FX" 3
 cat > "$FX/board-3/ready.json" <<'JSON'
 [{"number":1902,"title":"driven this tick","labels":["Operational"]}]
 JSON
-PLAN_OPEN="$(FUNNEL_INTAKE_CMD="$RECORD_STUB" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN_OPEN="$(PIPELINE_INTAKE_CMD="$RECORD_STUB" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -n "$(action_for <<<"$PLAN_OPEN" '.action=="drive-ready"')" ] \
   && ok "spend-open tick drove work (sanity check)" || bad "t17c.open-drove" "expected a drive-ready action"
 # Spend-closed: nothing to drain/drive/route (a clean no-op tick).
 FX="$TMP/t17c-closed"; seed_board "$FX" 3
-PLAN_CLOSED="$(FUNNEL_INTAKE_CMD="$RECORD_STUB" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN_CLOSED="$(PIPELINE_INTAKE_CMD="$RECORD_STUB" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq -r 'first(.actions[].action)' <<<"$PLAN_CLOSED")" = "no-op" ] \
   && ok "spend-closed tick is a clean no-op (sanity check)" || bad "t17c.closed-noop" "got $PLAN_CLOSED"
 [ "$(wc -l < "$MARKER" | tr -d ' ')" = "2" ] \
   && ok "intake invoked exactly once per tick, on BOTH the spend-open and spend-closed tick" \
   || bad "t17c.count" "expected 2 intake invocations, got: $(cat "$MARKER")"
 
-echo "--- test 17d: dry-run purity — default FUNNEL_INTAKE_CMD is never spawned under --dry-run ---"
+echo "--- test 17d: dry-run purity — default PIPELINE_INTAKE_CMD is never spawned under --dry-run ---"
 # Without an override, a --dry-run tick must never touch the real
 # signal-intake.sh (which hits Sentry/gh) — it stays offline like every other
 # fixture test. Proven negatively: no stderr noise and a clean plan, matching
-# tests 1-16 which never set FUNNEL_INTAKE_CMD and still pass with zero network.
+# tests 1-16 which never set PIPELINE_INTAKE_CMD and still pass with zero network.
 FX="$TMP/t17d"; seed_board "$FX" 3
 cat > "$FX/board-3/ready.json" <<'JSON'
 [{"number":1903,"title":"plain drive","labels":["Operational"]}]
@@ -726,7 +726,7 @@ PLAN="$(bash "$TICK" --dry-run --fixture "$FX" --board 3 2>"$ERR17D")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │ F#641 — the hand-off MARKER (funnel-merge-pending) drives the resume-vs-    │
-# │ fresh decision, but funnel-drive.sh's `--add-label` can FAIL silently. When │
+# │ fresh decision, but pipeline-drive.sh's `--add-label` can FAIL silently. When │
 # │ it does, the item looks fresh → a fresh re-drive opens a DUPLICATE PR. The  │
 # │ fresh kind:code path now ALSO consults a ground-truth open-PR probe, so a   │
 # │ lost marker is recovered to a resume instead of duplicating the PR.          │
@@ -853,7 +853,7 @@ CONF20="$TMP/t20-boards.conf"
 cat > "$CONF20" <<'EOF'
 board.999.repo=Conf/tick-override
 EOF
-PLAN20="$(FUNNEL_ENABLED_BOARDS="999" BOARDS_CONF_REPO_LOCAL="$CONF20" \
+PLAN20="$(PIPELINE_ENABLED_BOARDS="999" BOARDS_CONF_REPO_LOCAL="$CONF20" \
           BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
           bash "$TICK" --board 999 --dry-run --fixture "$FX")"
 [ "$(jq -r '.tick' <<<"$PLAN20")" = "done" ] && ok "tick completes for an otherwise-unmapped board once boards.conf resolves its repo" || bad "t20.tick" "got $(jq -r '.tick' <<<"$PLAN20")"
@@ -861,10 +861,10 @@ PLAN20="$(FUNNEL_ENABLED_BOARDS="999" BOARDS_CONF_REPO_LOCAL="$CONF20" \
 
 echo "--- test 20b: with NO boards.conf, an unmapped board still fails exactly as before (#770 byte-identical fallback) ---"
 FX="$TMP/t20b"; seed_board "$FX" 999
-ERR20B="$(FUNNEL_ENABLED_BOARDS="999" \
+ERR20B="$(PIPELINE_ENABLED_BOARDS="999" \
           BOARDS_CONF_REPO_LOCAL="$TMP/no-such-boards.conf" BOARDS_CONF_MACHINE="$TMP/no-such-machine.conf" \
           bash "$TICK" --board 999 --dry-run --fixture "$FX" 2>&1 1>/dev/null || true)"
-[ "$ERR20B" = "funnel-tick.sh: unknown board 999" ] && ok "no conf → unmapped board still errors byte-identically to pre-#770" || bad "t20b.err" "got: $ERR20B"
+[ "$ERR20B" = "pipeline-tick.sh: unknown board 999" ] && ok "no conf → unmapped board still errors byte-identically to pre-#770" || bad "t20b.err" "got: $ERR20B"
 
 # ── 21: route-foundational guard correctness (epic #970) + bare-login strip (#977) ──
 # 21a/21b: the already-decision-gated re-route guard (#834/#1002/#1009). A Ready
@@ -938,7 +938,7 @@ FX="$TMP/t21e"; seed_board "$FX" 3
 cat > "$FX/board-3/ready.json" <<'JSON'
 [{"number":7005,"title":"foundational needing an operator baton","labels":["Foundational"]}]
 JSON
-PLAN="$(FUNNEL_OPERATOR=@towhead BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(PIPELINE_OPERATOR=@towhead BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")" = "towhead" ] \
   && ok "route-foundational reassign_to bared to 'towhead' (#977)" || bad "t21e.bare" "got $(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")"
 
@@ -952,21 +952,21 @@ cat > "$FX/board-3/decisions.json" <<'JSON'
   "comments":[{"createdAt":"2026-06-24T11:00:00Z","body":"meh, whatever you think"}]}]
 JSON
 echo 0 > "$FX/board-3/assignees-7007.txt"
-PLAN="$(FUNNEL_OPERATOR=@me BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+PLAN="$(PIPELINE_OPERATOR=@me BUILD_CONFIG_LOCAL="$TMP/no-local.sh" bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")" = "@me" ] \
   && ok "route-foundational reassign_to preserves @me" || bad "t21f.route" "got $(jq -r 'first(.actions[]|select(.action=="route-foundational")|.reassign_to)' <<<"$PLAN")"
 [ "$(jq -r 'first(.actions[]|select(.action=="drain-parse-miss")|.reassign_to)' <<<"$PLAN")" = "@me" ] \
   && ok "drain-parse-miss reassign_to preserves @me" || bad "t21f.miss" "got $(jq -r 'first(.actions[]|select(.action=="drain-parse-miss")|.reassign_to)' <<<"$PLAN")"
 
 # ── 22: intake config-absent WARN (temperloop#330) ───────────────────────────
-# The intake pre-gate (run_intake_phase) used to invoke FUNNEL_INTAKE_CMD and
+# The intake pre-gate (run_intake_phase) used to invoke PIPELINE_INTAKE_CMD and
 # swallow the outcome — a MISSING backend or an UNSET/placeholder Sentry
 # credential made it silently no-op (observed no-op'ing ~19h unnoticed). It must
 # now surface ONE operator-visible WARN naming the reason, deduped ACROSS ticks
 # (each tick is a fresh process) via a per-board on-disk marker so it fires once
 # per condition, not once per poll — and must never regress the config-present path.
-# Isolation: a fresh FUNNEL_INTAKE_WARN_DIR per test + neutralized config-file
-# rungs so a real build.config.{machine,local}.sh on the host cannot inject a token.
+# Isolation: a fresh PIPELINE_INTAKE_WARN_DIR per test + neutralized config-file
+# layers so a real build.config.{machine,local}.sh on the host cannot inject a token.
 NOLOCAL="$TMP/no-local.sh"; NOMACHINE="$TMP/no-machine.sh"   # non-existent → sourced as no-ops
 PLACEHOLDER="REPLACE_WITH_READ_SCOPED_TOKEN"                 # the example-template placeholder value
 
@@ -978,7 +978,7 @@ JSON
 WARNDIR="$TMP/warn22a"; ERR="$TMP/t22a.err"; : > "$ERR"
 MISSING="$TMP/does-not-exist-intake.sh"   # never created → not executable → condition 1
 for _ in 1 2; do   # two ticks, same condition — the WARN must appear EXACTLY ONCE
-  FUNNEL_INTAKE_CMD="$MISSING" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+  PIPELINE_INTAKE_CMD="$MISSING" PIPELINE_INTAKE_WARN_DIR="$WARNDIR" \
     BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
     bash "$TICK" --dry-run --fixture "$FX" --board 3 2>>"$ERR" >/dev/null
 done
@@ -986,7 +986,7 @@ WC="$(grep -c 'WARN — signal-intake config absent for board 3' "$ERR" | tr -d 
 [ "$WC" = "1" ] && ok "backend-missing WARN emitted exactly once across two ticks" || bad "t22a.once" "expected 1, got $WC: $(cat "$ERR")"
 grep -q "backend script not found or not executable" "$ERR" \
   && ok "the WARN names the reason (backend not found/executable)" || bad "t22a.reason" "reason missing: $(cat "$ERR")"
-PLAN="$(FUNNEL_INTAKE_CMD="$MISSING" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" bash "$TICK" --dry-run --fixture "$FX" --board 3 2>/dev/null)"
+PLAN="$(PIPELINE_INTAKE_CMD="$MISSING" PIPELINE_INTAKE_WARN_DIR="$WARNDIR" BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" bash "$TICK" --dry-run --fixture "$FX" --board 3 2>/dev/null)"
 [ "$(jq -r 'first(.actions[]|select(.action=="drive-ready")|.issue)' <<<"$PLAN")" = "2201" ] \
   && ok "tick still drives Ready work despite the missing backend (non-blocking)" || bad "t22a.proceed" "got $PLAN"
 
@@ -1002,7 +1002,7 @@ SH
 chmod +x "$STUB"
 WARNDIR="$TMP/warn22b"; ERR="$TMP/t22b.err"; : > "$ERR"
 for _ in 1 2; do   # placeholder token (non-empty → survives any conf `:=`) simulates "absent"
-  SENTRY_AUTH_TOKEN="$PLACEHOLDER" FUNNEL_INTAKE_CMD="$STUB" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+  SENTRY_AUTH_TOKEN="$PLACEHOLDER" PIPELINE_INTAKE_CMD="$STUB" PIPELINE_INTAKE_WARN_DIR="$WARNDIR" \
     BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
     bash "$TICK" --dry-run --fixture "$FX" --board 3 2>>"$ERR" >/dev/null
 done
@@ -1022,7 +1022,7 @@ exit 0
 SH
 chmod +x "$STUB"
 WARNDIR="$TMP/warn22c"; ERR="$TMP/t22c.err"; : > "$ERR"
-SENTRY_AUTH_TOKEN="a-real-read-scoped-token" FUNNEL_INTAKE_CMD="$STUB" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+SENTRY_AUTH_TOKEN="a-real-read-scoped-token" PIPELINE_INTAKE_CMD="$STUB" PIPELINE_INTAKE_WARN_DIR="$WARNDIR" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3 2>"$ERR" >/dev/null
 [ ! -s "$ERR" ] && ok "no WARN when the credential is present (no spurious noise)" || bad "t22c.quiet" "unexpected stderr: $(cat "$ERR")"
@@ -1036,7 +1036,7 @@ exit 0
 SH
 chmod +x "$STUB"
 WARNDIR="$TMP/warn22d"; ERR="$TMP/t22d.err"; : > "$ERR"
-run22d() { SENTRY_AUTH_TOKEN="$1" FUNNEL_INTAKE_CMD="$STUB" FUNNEL_INTAKE_WARN_DIR="$WARNDIR" \
+run22d() { SENTRY_AUTH_TOKEN="$1" PIPELINE_INTAKE_CMD="$STUB" PIPELINE_INTAKE_WARN_DIR="$WARNDIR" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3 2>>"$ERR" >/dev/null; }
 run22d "$PLACEHOLDER"                 # absent → WARN
@@ -1050,7 +1050,7 @@ WC="$(grep -c 'WARN — signal-intake config absent for board 3' "$ERR" | tr -d 
 # THIN trigger: urgency was decided at MINT (#533), not here — the only
 # threshold this phase applies is the RETRO_MIN_INTERVAL debounce on the
 # oldest `retro-pending` tracker's age, unconditionally bypassed by a
-# `retro-urgent` tracker. Portable epoch<->ISO helpers (mirrors funnel-tick.sh's
+# `retro-urgent` tracker. Portable epoch<->ISO helpers (mirrors pipeline-tick.sh's
 # own GNU-then-BSD dialect guard) so these tests are deterministic regardless
 # of host and independent of any real machine build.config: every run below
 # pins BUILD_CONFIG_LOCAL/BUILD_CONFIG_MACHINE at the non-existent no-op files.
@@ -1066,7 +1066,7 @@ FX="$TMP/t23"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":901,"title":"Process retro: epic #800","createdAt":"$ROLD","labels":["retro-pending"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="retro-judge")]|length' <<<"$PLAN")" = "1" ] \
@@ -1083,7 +1083,7 @@ FX="$TMP/t24"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":905,"title":"Process retro: epic #810","createdAt":"$RFRESH","labels":["retro-pending","retro-urgent"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
@@ -1095,7 +1095,7 @@ FX="$TMP/t25"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":906,"title":"Process retro: epic #820","createdAt":"$RFRESH","labels":["retro-pending"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] && ok "no retro-judge — debounce not yet crossed" || bad "t25.nofire" "unexpectedly fired: $PLAN"
@@ -1107,7 +1107,7 @@ FX="$TMP/t26"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":907,"title":"Process retro: epic #830","createdAt":"$ROLD","labels":["retro-pending"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="" FUNNEL_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="skip-retro-judge")]|length' <<<"$PLAN")" = "1" ] \
@@ -1120,7 +1120,7 @@ cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":908,"title":"Process retro: epic #840 (already judged)","createdAt":"$ROLD","state":"closed","labels":["retro-judged"]},
  {"number":909,"title":"Process retro: epic #841 (already judged, still open)","createdAt":"$ROLD","labels":["retro-judged"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] \
@@ -1133,7 +1133,7 @@ cat > "$FX/board-3/retro-trackers.json" <<JSON
  {"number":911,"title":"epic #851","createdAt":"$ROLD","labels":["retro-pending"]},
  {"number":912,"title":"epic #852 (already judged)","createdAt":"$ROLD","labels":["retro-judged"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" FUNNEL_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="retro-judge")]|length' <<<"$PLAN")" = "1" ] \
@@ -1143,5 +1143,5 @@ RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
-echo "funnel-tick tests: $pass passed, $fail failed"
+echo "pipeline-tick tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

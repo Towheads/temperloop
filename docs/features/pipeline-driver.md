@@ -1,13 +1,13 @@
 ---
-title: funnel-driver
-slug: funnel-driver
+title: pipeline-driver
+slug: pipeline-driver
 ---
 
 ## Problem
 
 The bug→PR pipeline (triage → assess → build) is designed to run under an
 operator's direct approval at every gate. That's the right default for
-anything risky, but it means even the safest, most mechanical funnel actions
+anything risky, but it means even the safest, most mechanical pipeline actions
 — clearing a label after an operator already answered a question, routing an
 already-decomposed epic to its approval gate, driving a read-only spike to a
 verdict — still sit idle until a human happens to notice and run the right
@@ -15,7 +15,7 @@ command by hand. Left fully manual, throughput on routine, low-risk work is
 bottlenecked on operator attention even when there's no real judgment call
 left to make. But the opposite failure is worse: letting *any* automation
 merge code unsupervised is a real risk if the automation is wrong, so a
-funnel driver that doesn't structurally separate "safe to always automate"
+pipeline driver that doesn't structurally separate "safe to always automate"
 from "must stay gated" would either bottleneck on the safe cases or expose
 the codebase to ungated automated merges.
 
@@ -28,12 +28,12 @@ its design/plan-approval gate. The tick itself is a thin, deterministic
 scheduler: it re-uses the existing pipeline commands rather than
 re-implementing any of their logic, and it only ever *decides what to call*.
 
-Execution of that decision happens in three increasingly autonomous rungs:
+Execution of that decision happens in three increasingly autonomous layers:
 
-- **Rung 5a — emit + notify only.** The tick's decision is logged and the
+- **Level 5a — emit + notify only.** The tick's decision is logged and the
   operator is notified; a human executes every action by hand. This is the
   default, always-on baseline.
-- **Rung 5b — headless safe-tier auto-execution** (opt-in). A headless
+- **Level 5b — headless safe-tier auto-execution** (opt-in). A headless
   session auto-executes only the actions that can **never** merge code:
   routing a foundational item to its approval gate, applying an answered
   decision, re-assigning on an unparseable reply, clearing a cleared
@@ -44,7 +44,7 @@ Execution of that decision happens in three increasingly autonomous rungs:
   session ever sees it, and the session's own instructions independently
   forbid opening a PR or merging under any circumstance. Two guards, not
   one.
-- **Rung 5c — headless merging tier** (opt-in, gated separately from 5b, and
+- **Level 5c — headless merging tier** (opt-in, gated separately from 5b, and
   rides on top of it — 5b being enabled is 5c's precondition). This tier
   drives the actions 5b deliberately leaves for the operator: items ready to
   become code changes. It drives each through the existing unattended build
@@ -56,8 +56,8 @@ Execution of that decision happens in three increasingly autonomous rungs:
   command, no bypass of that gate.
 
 **The structural safe/merge split** is what makes this staged rollout safe
-to reason about: rung 5b's ceiling is "no PR, no merge" enforced two
-independent ways; rung 5c's ceiling is "only through the existing gated
+to reason about: level 5b's ceiling is "no PR, no merge" enforced two
+independent ways; level 5c's ceiling is "only through the existing gated
 build path," enforced by driving that path rather than re-implementing
 merge logic. Enabling the merging tier is a **separate flag** from enabling
 the safe tier specifically so that flipping one never silently flips the
@@ -89,7 +89,7 @@ existing gated build path, never directly.
 
 ## Resource impact
 
-Each headless drive session (a rung 5b or 5c invocation) costs its own
+Each headless drive session (a level 5b or 5c invocation) costs its own
 model-token spend proportional to how many actions it was handed that tick,
 separate from and in addition to the ordinary interactive pipeline spend.
 The merging tier's per-tick cap is the direct lever on both blast radius and
@@ -100,10 +100,10 @@ pipeline already performs; the driver adds no bulk board scans of its own.
 
 ## Telemetry
 
-Every scheduled wake appends one record to the funnel raw-lake stream,
+Every scheduled wake appends one record to the pipeline raw-lake stream,
 distinguishing a declined wake from an executed tick from a drive
 invocation, each carrying a wall-time duration. A drive outcome record
-additionally reports attempts separately from outcomes at both rungs — how
+additionally reports attempts separately from outcomes at both layers — how
 many actions were *handed to* the safe or merging driver that tick versus
 how many it actually executed, merged, handed off, parked, refused, or
 failed — plus the audited issue numbers each side-effect acted on, so a

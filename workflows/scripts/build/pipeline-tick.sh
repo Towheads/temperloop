@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# funnel-tick.sh — the autonomous funnel driver's per-board tick (foundation
+# pipeline-tick.sh — the autonomous pipeline driver's per-board tick (foundation
 # #569). A THIN SCHEDULER: it CALLS the existing `/triage → /assess → /build`
 # pipeline and inherits every hardened behavior (drive-concurrency governor, quota gate,
 # claim-first, timed merge gate, epic lifecycle) — it NEVER re-embeds any of it.
 # Re-implementing a pipeline step is a contract violation (see
-# `Decisions/foundation - Autonomous funnel driver + GitHub decision queue`
+# `Decisions/foundation - Autonomous pipeline driver + GitHub decision queue`
 # § Scheduler-not-pipeline + the CORRECTION).
 #
 # Each tick, per ENABLED board, runs these phases:
@@ -52,16 +52,16 @@
 # emitted plan and run by the Claude driver layer. This split is what keeps the
 # scheduler thin: this script decides WHAT to call; it never reimplements it.
 #
-#   funnel-tick.sh                              # live tick over enabled boards
-#   funnel-tick.sh --board 3                    # live tick, one board
-#   funnel-tick.sh --dry-run --fixture <dir>    # offline tick against a stub
-#   funnel-tick.sh --list-enabled               # print the ON boards, exit
+#   pipeline-tick.sh                              # live tick over enabled boards
+#   pipeline-tick.sh --board 3                    # live tick, one board
+#   pipeline-tick.sh --dry-run --fixture <dir>    # offline tick against a stub
+#   pipeline-tick.sh --list-enabled               # print the ON boards, exit
 #
 # --dry-run --fixture <dir> is the ACCEPTANCE path (off the live board): every
 # `gh`/board read is served from files under <dir> instead of the network, and
 # every mutation (label drop, assign, merge) is RECORDED to the emitted plan
 # rather than executed. The fixture layout is documented in
-# tests/test_funnel_tick.sh (the test seeds it).
+# tests/test_pipeline_tick.sh (the test seeds it).
 #
 # A `needs-clarification` item is an OPERATOR-INPUT gate, and ASSIGNMENT is the
 # baton (foundation#684/#657) — the two states are keyed on `no:assignee`:
@@ -69,9 +69,9 @@
 #     `route-already-assigned`. The producer that raised the question (`/triage` or
 #     `/sweep` park-on-question) already assigned the operator + posted the question
 #     AT SOURCE (#684), so the item is already in the operator's assigned-to-me queue
-#     and the funnel has nothing to assign — the label alone means "not autonomously
-#     actionable → park". (A rung-5c CODE escalation is a SEPARATE gate since #697: it
-#     carries its own `funnel-escalated` label, parked by the funnel_escalated gate,
+#     and the pipeline has nothing to assign — the label alone means "not autonomously
+#     actionable → park". (A level-5c CODE escalation is a SEPARATE gate since #697: it
+#     carries its own `funnel-escalated` label, parked by the pipeline_escalated gate,
 #     and is never drained. It is NOT a `needs-clarification` producer.) (This
 #     supersedes #600's `route-needs-input`, which existed only to do the assign the
 #     producers
@@ -107,7 +107,7 @@ set -euo pipefail
 # makes with its outermost context. `:-` preserves an already-set (outer) value,
 # so an autonomous driver's context wins over a nested command. See
 # workflows/scripts/gh-call-logger.sh.
-export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-tick}"
+export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-pipeline-tick}"
 
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq not found"}' >&2; exit 1; }
 
@@ -130,7 +130,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Model the Phase R retro-judge trigger spawns `claude -p "/retro --pending"`
 # under (temperloop#532/#535). SOURCE OF TRUTH is build.config.sh (sourced
 # above); this `:=` is only the non-vendoring-checkout fallback, exactly as
-# FUNNEL_OPERATOR's fallback line above it.
+# PIPELINE_OPERATOR's fallback line above it.
 : "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
 : "${RETRO_MIN_INTERVAL:=259200}"
 
@@ -139,13 +139,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # number here (space-separated) — that is the entire "board ON/OFF" mechanism:
 # enabled ⇒ the tick processes it, absent ⇒ the tick skips it. Operator-flippable
 # via the env override without editing the file.
-: "${FUNNEL_ENABLED_BOARDS:=3}"
+: "${PIPELINE_ENABLED_BOARDS:=3}"
 
 # Cron cadence is a CONFIG variable, not hardcoded (open operator question —
 # the operator finalizes it at the cron-install gate). This script does NOT
 # schedule itself; it runs ONE tick and exits. The cadence is consumed by the
 # (operator-installed) cron entry, surfaced here only so the default is visible.
-: "${FUNNEL_TICK_CADENCE:=daily}"
+: "${PIPELINE_TICK_CADENCE:=daily}"
 
 # The operator handle the async decision-issue backend assigns to (the baton).
 # This MUST be the operator's real GitHub collaborator LOGIN (verify with
@@ -156,42 +156,42 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # build.config.sh (sourced above); this `:=` is the non-vendoring-checkout
 # fallback (tracker seam v0, #772) — build.config.sh's own placeholder wins
 # here too since it's sourced first.
-: "${FUNNEL_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
+: "${PIPELINE_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
 
 # Drive-concurrency governor for the autonomous lane (temperloop#162): the bound
-# on concurrent drives the funnel lane keeps per tick. This is surfaced, not
+# on concurrent drives the pipeline lane keeps per tick. This is surfaced, not
 # enforced here — real per-item concurrency is INHERITED from /build's claim-first
 # gate, not re-embedded. SOURCE OF TRUTH is build.config.sh (sourced above); this
-# `:=` is only the non-vendoring-checkout fallback. (Formerly FUNNEL_WIP_CAP, which
+# `:=` is only the non-vendoring-checkout fallback. (Formerly PIPELINE_WIP_CAP, which
 # also doubled as the now-retired human "WIP cap = 3" governance prose — that human
-# cap was retired in temperloop#162; this knob is the mechanical governor only.)
-: "${FUNNEL_DRIVE_CONCURRENCY:=3}"
+# cap was retired in temperloop#162; this setting is the mechanical governor only.)
+: "${PIPELINE_DRIVE_CONCURRENCY:=3}"
 
 # Per-tick DRIVE CAP (#642): how many Operational drive-ready items this tick may
-# EMIT. Was a hardcoded one-per-tick; now the canonical operator knob, fed from the
-# vault `cap:` (the ```funnel-schedule block) by funnel-cron.sh and defaulted in
-# build.config.sh. A bare `funnel-tick.sh` run uses the =1 fallback. This bounds the
+# EMIT. Was a hardcoded one-per-tick; now the canonical operator setting, fed from the
+# vault `cap:` (the ```pipeline-schedule block) by pipeline-cron.sh and defaulted in
+# build.config.sh. A bare `pipeline-tick.sh` run uses the =1 fallback. This bounds the
 # EMIT; real concurrency is still governed by the claim-first gate downstream.
-: "${FUNNEL_DRIVE_CAP:=1}"
+: "${PIPELINE_DRIVE_CAP:=1}"
 
 # Single-flight lockfile (contract § 4). One tick per host at a time.
-: "${FUNNEL_LOCK_DIR:=/tmp/funnel-tick}"
-: "${FUNNEL_LOCK_FILE:=$FUNNEL_LOCK_DIR/tick.lock}"
+: "${PIPELINE_LOCK_DIR:=/tmp/funnel-tick}"
+: "${PIPELINE_LOCK_FILE:=$PIPELINE_LOCK_DIR/tick.lock}"
 
 # The flock binary name (temperloop#492). Stock macOS ships no `flock`, so the
 # single-flight lock degrades to the per-issue contention pre-check with a WARN.
-# Script-local like FUNNEL_LOCK_DIR (a binary name, not an operator knob); the
+# Script-local like PIPELINE_LOCK_DIR (a binary name, not an operator setting); the
 # override exists so a test can force the degraded path deterministically on a
 # host that DOES carry flock, and so a host with a differently-named binary can
 # point at it.
-: "${FUNNEL_FLOCK_CMD:=flock}"
+: "${PIPELINE_FLOCK_CMD:=flock}"
 
 # Run identity for the once-per-run flock-degradation notice (temperloop#492).
-# funnel-cron loops boards → many funnel-tick PROCESSES per wake, each emitting
+# pipeline-cron loops boards → many pipeline-tick PROCESSES per wake, each emitting
 # the flock-missing WARN independently; on stock macOS that accumulates one line
 # per board per tick, unattended, forever. The dedup keys off this shared run id
-# (funnel-cron.sh exports it for the whole wake), persisted in a marker so the
-# notice fires AT MOST ONCE per run. A bare/standalone funnel-tick.sh run has no
+# (pipeline-cron.sh exports it for the whole wake), persisted in a marker so the
+# notice fires AT MOST ONCE per run. A bare/standalone pipeline-tick.sh run has no
 # exported id and falls back to its own PID — one process, one acquisition, one
 # notice, exactly as before.
 
@@ -204,49 +204,49 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (drain-already-applied) instead of mis-parsing it as a parse-miss and spuriously
 # re-assigning the operator. The `Decision applied:` prose prefix is the fallback
 # for legacy confirmation comments posted before the sentinel existed.
-: "${FUNNEL_DELIVERED_MARKER:=<!-- funnel:decision-applied -->}"
+: "${PIPELINE_DELIVERED_MARKER:=<!-- funnel:decision-applied -->}"
 
 # Clarification-drain sentinel (foundation #657) — the SOURCE OF TRUTH is
 # build.config.sh (sourced above), so the writer/reader pair never drift; this
 # `:=` line is the non-vendoring-checkout fallback only, exactly as
-# FUNNEL_MERGE_PENDING_LABEL does. FUNNEL_CLARIFIED_MARKER is the ack the executor
+# PIPELINE_MERGE_PENDING_LABEL does. PIPELINE_CLARIFIED_MARKER is the ack the executor
 # posts on a drained item — the search index can re-list it before the label drop
 # propagates, so clarification_already_applied keys off this to skip a re-drain.
-: "${FUNNEL_CLARIFIED_MARKER:=<!-- funnel:clarification-drained -->}"
+: "${PIPELINE_CLARIFIED_MARKER:=<!-- funnel:clarification-drained -->}"
 
-# Rung-5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
-# marker). funnel-drive.sh applies THIS label — not `needs-clarification` — to a CODE
+# Level 5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
+# marker). pipeline-drive.sh applies THIS label — not `needs-clarification` — to a CODE
 # item it escalates to the operator (route-refused / terminally-red CI). Since those
 # items no longer carry `needs-clarification`, Phase A2's answer-drain search can never
-# list them (no marker scan / skip verb needed); the funnel_escalated park gate keeps
+# list them (no marker scan / skip verb needed); the pipeline_escalated park gate keeps
 # them out of the drive pool (duplicate-PR guard). SOURCE OF TRUTH is build.config.sh.
-: "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
+: "${PIPELINE_ESCALATED_LABEL:=funnel-escalated}"
 
-# Cross-tick merge hand-off marker (foundation #624). funnel-drive.sh applies this
+# Cross-tick merge hand-off marker (foundation #624). pipeline-drive.sh applies this
 # label to a Ready item whose headless merge drive left an OPEN, unmerged PR (the
 # one-shot `claude -p` session ended before CI greened + the merge gate fired). On
 # the next tick this script sees the label and emits a RESUME drive (re-attach to
 # the open PR + run /build's merge gate) instead of a FRESH one — which would open a
 # duplicate PR. Default centralized in build.config.sh; override via the env.
-: "${FUNNEL_MERGE_PENDING_LABEL:=funnel-merge-pending}"
+: "${PIPELINE_MERGE_PENDING_LABEL:=funnel-merge-pending}"
 
 # Crash-signal intake orchestrator (foundation #671, epic #637). The L2
 # `/signal-intake` script (crash-convergence/signal-intake.sh) — sourceable +
 # execute-guarded, so invoking it here just RUNS it, mirroring how the tick
 # calls the board adapter. Injectable so a test can point it at a stub instead
 # of the real Sentry/board-hitting script. Default resolved once, below.
-: "${FUNNEL_INTAKE_CMD:=$HERE/../crash-convergence/signal-intake.sh}"
+: "${PIPELINE_INTAKE_CMD:=$HERE/../crash-convergence/signal-intake.sh}"
 
 # Intake config-absent WARN dedup dir (temperloop#330). The intake pre-gate used
-# to invoke FUNNEL_INTAKE_CMD and swallow the outcome: on a host where the backend
+# to invoke PIPELINE_INTAKE_CMD and swallow the outcome: on a host where the backend
 # script is MISSING, or its Sentry credential is UNSET/placeholder, intake either
 # can't run or cleanly no-ops (rc=0) — so the tick saw "success", printed NOTHING,
 # and intake silently did nothing for ~19h unnoticed. run_intake_phase now surfaces
 # ONE operator-visible WARN naming the reason, deduped ACROSS ticks (each tick is a
 # fresh process) via a per-board marker file here — so it fires once per condition,
-# not once per poll. Script-local like FUNNEL_LOCK_DIR (an internal marker path, not
-# an operator knob); override only for a test seam. Defaults alongside the lockfile.
-: "${FUNNEL_INTAKE_WARN_DIR:=$FUNNEL_LOCK_DIR}"
+# not once per poll. Script-local like PIPELINE_LOCK_DIR (an internal marker path, not
+# an operator setting); override only for a test seam. Defaults alongside the lockfile.
+: "${PIPELINE_INTAKE_WARN_DIR:=$PIPELINE_LOCK_DIR}"
 
 # ── Arg parse ────────────────────────────────────────────────────────────────
 DRY_RUN=0
@@ -255,7 +255,7 @@ ONE_BOARD=""
 LIST_ENABLED=0
 
 usage() {
-  echo "usage: funnel-tick.sh [--board N] [--dry-run --fixture <dir>] [--list-enabled]" >&2
+  echo "usage: pipeline-tick.sh [--board N] [--dry-run --fixture <dir>] [--list-enabled]" >&2
   exit 2
 }
 
@@ -266,41 +266,41 @@ while [ $# -gt 0 ]; do
     --board)        ONE_BOARD="${2:?--board needs a value}"; shift 2 ;;
     --list-enabled) LIST_ENABLED=1; shift ;;
     -h|--help)      usage ;;
-    *) echo "funnel-tick.sh: unknown arg '$1'" >&2; usage ;;
+    *) echo "pipeline-tick.sh: unknown arg '$1'" >&2; usage ;;
   esac
 done
 
 if [ "$DRY_RUN" -eq 1 ] && [ -z "$FIXTURE" ]; then
-  echo "funnel-tick.sh: --dry-run requires --fixture <dir>" >&2
+  echo "pipeline-tick.sh: --dry-run requires --fixture <dir>" >&2
   exit 2
 fi
 if [ -n "$FIXTURE" ] && [ ! -d "$FIXTURE" ]; then
-  echo "funnel-tick.sh: fixture dir not found: $FIXTURE" >&2
+  echo "pipeline-tick.sh: fixture dir not found: $FIXTURE" >&2
   exit 2
 fi
 
 # ── Enabled-board set helpers (the ON/OFF flip) ──────────────────────────────
 board_enabled() {
   local b="$1" e
-  for e in $FUNNEL_ENABLED_BOARDS; do [ "$e" = "$b" ] && return 0; done
+  for e in $PIPELINE_ENABLED_BOARDS; do [ "$e" = "$b" ] && return 0; done
   return 1
 }
 
 if [ "$LIST_ENABLED" -eq 1 ]; then
   jq -cn \
-    --argjson boards "$(printf '%s\n' "$FUNNEL_ENABLED_BOARDS" | jq -R 'split(" ")|map(select(length>0))')" \
-    --arg cadence "$FUNNEL_TICK_CADENCE" \
-    --argjson conc "$FUNNEL_DRIVE_CONCURRENCY" \
-    --argjson cap "$FUNNEL_DRIVE_CAP" \
+    --argjson boards "$(printf '%s\n' "$PIPELINE_ENABLED_BOARDS" | jq -R 'split(" ")|map(select(length>0))')" \
+    --arg cadence "$PIPELINE_TICK_CADENCE" \
+    --argjson conc "$PIPELINE_DRIVE_CONCURRENCY" \
+    --argjson cap "$PIPELINE_DRIVE_CAP" \
     '{enabled_boards:$boards, cadence:$cadence, drive_concurrency:$conc, drive_cap:$cap}'
   exit 0
 fi
 
 # Emit the flock-missing single-flight degradation notice AT MOST ONCE per
-# funnel run (temperloop#492). The condition (no `flock` on stock macOS) is
+# pipeline run (temperloop#492). The condition (no `flock` on stock macOS) is
 # stable and holds on EVERY tick, so the raw echo below used to accumulate one
 # WARN line per board per tick on an unattended macOS host, drowning the log.
-# funnel-cron loops boards → a fresh funnel-tick PROCESS per board, so the
+# pipeline-cron loops boards → a fresh pipeline-tick PROCESS per board, so the
 # "already warned this run" state must persist on disk (mirrors _intake_warn_once,
 # #330). The marker records the RUN ID that last warned; a differing (or absent)
 # id re-warns — so each new run gets exactly one notice, never once-ever (a fresh
@@ -309,12 +309,12 @@ fi
 # reduction only — the fallback per-issue contention pre-check is unchanged and
 # remains the real double-act guard.
 _flock_degraded_warn_once() {
-  local run="${FUNNEL_RUN_ID:-$$}" marker prev=""
-  marker="$FUNNEL_LOCK_DIR/flock-degraded-warned"
+  local run="${PIPELINE_RUN_ID:-$$}" marker prev=""
+  marker="$PIPELINE_LOCK_DIR/flock-degraded-warned"
   [ -f "$marker" ] && prev="$(cat "$marker" 2>/dev/null || true)"
   [ "$prev" = "$run" ] && return 0
   echo '{"warning":"flock not found — single-flight lock skipped; relying on the per-issue contention pre-check"}' >&2
-  mkdir -p "$FUNNEL_LOCK_DIR" 2>/dev/null || true
+  mkdir -p "$PIPELINE_LOCK_DIR" 2>/dev/null || true
   printf '%s\n' "$run" > "$marker" 2>/dev/null || true
 }
 
@@ -323,11 +323,11 @@ _flock_degraded_warn_once() {
 # path acquires it; a second overlapping tick gets flock -n failure and exits 0
 # (a no-op tick, not an error). ────────────────────────────────────────────────
 if [ "$DRY_RUN" -eq 0 ]; then
-  if command -v "$FUNNEL_FLOCK_CMD" >/dev/null 2>&1; then
-    mkdir -p "$FUNNEL_LOCK_DIR"
-    exec 200>"$FUNNEL_LOCK_FILE"
-    if ! "$FUNNEL_FLOCK_CMD" -n 200; then
-      echo '{"tick":"skipped","reason":"funnel-tick already running (single-flight lock held)"}'
+  if command -v "$PIPELINE_FLOCK_CMD" >/dev/null 2>&1; then
+    mkdir -p "$PIPELINE_LOCK_DIR"
+    exec 200>"$PIPELINE_LOCK_FILE"
+    if ! "$PIPELINE_FLOCK_CMD" -n 200; then
+      echo '{"tick":"skipped","reason":"pipeline-tick already running (single-flight lock held)"}'
       exit 0
     fi
   else
@@ -363,7 +363,7 @@ _tick_conf_repo() {  # $1 = board number; rc 1 on any miss (no conf, or no key)
     # fall back to an existing legacy foundation/ one (removed in v0.17.0).
     f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
     lf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
-    if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # knob:exempt — test/simulation-only seam
+    if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # setting:exempt — test/simulation-only seam
       f="$lf"
     fi
   fi
@@ -422,7 +422,7 @@ decision_already_applied() {
   local body="$1"
   [ -z "$body" ] && return 1
   case "$body" in
-    *"$FUNNEL_DELIVERED_MARKER"*) return 0 ;;
+    *"$PIPELINE_DELIVERED_MARKER"*) return 0 ;;
   esac
   printf '%s\n' "$body" | grep -qiE '^[[:space:]]*Decision applied:'
 }
@@ -455,7 +455,7 @@ clarification_already_applied() {
   local body="$1"
   [ -z "$body" ] && return 1
   case "$body" in
-    *"$FUNNEL_CLARIFIED_MARKER"*) return 0 ;;
+    *"$PIPELINE_CLARIFIED_MARKER"*) return 0 ;;
   esac
   return 1
 }
@@ -490,14 +490,14 @@ read_assignee_count() {
 # never left In Progress when the one-shot session died after opening the PR (board
 # → Done fires only on merge). A Ready-only scan would therefore never see it, and
 # the funnel-merge-pending marker would be written but never read. So this also
-# enumerates **In-Progress items carrying FUNNEL_MERGE_PENDING_LABEL** — the only
-# In-Progress cards the funnel re-touches — so the resume gate downstream can fire.
+# enumerates **In-Progress items carrying PIPELINE_MERGE_PENDING_LABEL** — the only
+# In-Progress cards the pipeline re-touches — so the resume gate downstream can fire.
 # (A normal In-Progress card, unlabeled, is another session's active work and stays
 # invisible here.) Resume items are sorted FIRST so an in-flight PR finishes before
 # a fresh drive is started, within the one-drive-per-tick slot (finish-before-start).
 ready_items_from_json() {
   local json="$1" out
-  out="$(jq -c --arg lbl "$FUNNEL_MERGE_PENDING_LABEL" '[.items[]?
+  out="$(jq -c --arg lbl "$PIPELINE_MERGE_PENDING_LABEL" '[.items[]?
                  | select(.status == "Ready"
                           or (.status == "In Progress"
                               and ((.labels // []) | index($lbl)) != null))
@@ -532,7 +532,7 @@ read_ready_items() {
       # shellcheck source=/dev/null
       . "$lib"
       board_resolve "$board" >/dev/null 2>&1 || { echo '[]'; return; }
-      ready_items_from_json "${BOARD_ITEMS_JSON:-{\"items\":[]}}"  # knob:exempt — internal already-fetched board cache, not an operator default
+      ready_items_from_json "${BOARD_ITEMS_JSON:-{\"items\":[]}}"  # setting:exempt — internal already-fetched board cache, not an operator default
     else
       echo '[]'
     fi
@@ -603,44 +603,44 @@ needs_clarification() {
   printf 'needs-clarification\n'
 }
 
-# ── Rung-5c code-escalation gate (foundation #697) ────────────────────────────
+# ── Level 5c code-escalation gate (foundation #697) ────────────────────────────
 # A Ready item carrying `funnel-escalated` is a CODE item the merge tier could not
-# land (route-refused / terminally-red CI); funnel-drive.sh assigned the operator +
+# land (route-refused / terminally-red CI); pipeline-drive.sh assigned the operator +
 # applied this OWN label (not `needs-clarification` — #697's split). It has an open or
 # failed PR and awaits a MANUAL merge/close, so it must NEVER be auto-driven: a fresh
 # drive would open a DUPLICATE PR. This gate is the duplicate-PR guard the shared
 # `needs-clarification` label was silently providing before the split — it keeps the
 # item OUT of the drive pool (the Ready loop PARKS it as route-already-assigned). Same
 # rc contract as needs_clarification: rc 0 (prints the label) on a hit, rc 1 on a miss.
-funnel_escalated() {
+pipeline_escalated() {
   local labels_json="$1"
-  jq -e --arg l "$FUNNEL_ESCALATED_LABEL" 'any(.[]; . == $l)' <<<"$labels_json" >/dev/null 2>&1 || return 1
-  printf '%s\n' "$FUNNEL_ESCALATED_LABEL"
+  jq -e --arg l "$PIPELINE_ESCALATED_LABEL" 'any(.[]; . == $l)' <<<"$labels_json" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$PIPELINE_ESCALATED_LABEL"
 }
 
 # ── Cross-tick merge hand-off gate (foundation #624) ──────────────────────────
-# True when a Ready item carries FUNNEL_MERGE_PENDING_LABEL — its prior headless
+# True when a Ready item carries PIPELINE_MERGE_PENDING_LABEL — its prior headless
 # merge drive opened a PR but the one-shot session ended before the merge gate
-# fired (funnel-drive.sh applied the marker off a ground-truth open-PR probe). Such
+# fired (pipeline-drive.sh applied the marker off a ground-truth open-PR probe). Such
 # an item must be RESUMED (re-attach to the open PR + run /build's merge gate), not
 # re-driven from scratch (a fresh drive opens a duplicate PR). Returns rc 0 on a hit,
 # rc 1 on a miss; rc is the gate. Checked AFTER needs_clarification (an open operator
 # question outranks a resume) and only matters for an Operational drive-ready item.
 pending_merge() {
   local labels_json="$1"
-  jq -e --arg l "$FUNNEL_MERGE_PENDING_LABEL" 'any(.[]; . == $l)' <<<"$labels_json" >/dev/null 2>&1
+  jq -e --arg l "$PIPELINE_MERGE_PENDING_LABEL" 'any(.[]; . == $l)' <<<"$labels_json" >/dev/null 2>&1
 }
 
 # Ground-truth open-PR probe (foundation #641) — the belt-and-suspenders behind
-# pending_merge. The hand-off MARKER is trustworthy ONLY when funnel-drive.sh's
+# pending_merge. The hand-off MARKER is trustworthy ONLY when pipeline-drive.sh's
 # `gh issue edit --add-label` actually succeeded; if that gh call FAILED (auth /
 # rate-limit / repo mismatch) the label is silently absent, pending_merge returns
 # false, and a kind:code item would be re-driven FRESH → a DUPLICATE PR. So before
 # emitting a fresh code drive we ask GitHub directly: is there an OPEN PR whose body
 # closes this issue? Echoes the PR number if so (→ recover to resume), nothing
-# otherwise (→ genuinely fresh). Mirrors funnel-drive.sh's `_open_pr_for_issue`
-# (canonical there) but adapted to funnel-tick's DRY_RUN/fixture harness. Same-repo
-# bare `Closes #N` form (the funnel drives same-repo). Fail-open: any gh/jq error →
+# otherwise (→ genuinely fresh). Mirrors pipeline-drive.sh's `_open_pr_for_issue`
+# (canonical there) but adapted to pipeline-tick's DRY_RUN/fixture harness. Same-repo
+# bare `Closes #N` form (the pipeline drives same-repo). Fail-open: any gh/jq error →
 # nothing → fresh drive (never wedges the tick; the marker path already handled the
 # common resume, this only covers the lost-label edge).
 open_pr_for_issue() {  # $1=board  $2=repo  $3=issue
@@ -673,7 +673,7 @@ open_pr_for_issue() {  # $1=board  $2=repo  $3=issue
 # `.sub_issues_summary.total == 0` (no children → not an epic parent) AND the body
 # carries no `## Contract` heading (no pre-designed undecomposed Contract for /assess
 # to decompose — the #526 seam). Cap-bounded: fires only for a fresh kind:code
-# candidate, so at most FUNNEL_DRIVE_CAP times per tick (like open_pr_for_issue).
+# candidate, so at most PIPELINE_DRIVE_CAP times per tick (like open_pr_for_issue).
 #
 # FAIL-OPEN to the EPIC route (rc 1) on ANY gh/jq error, empty data, or missing
 # fixture — a genuine epic mis-routed to the singleton path would be silently skipped
@@ -760,7 +760,7 @@ retro_judge_due_reason() {
   local trackers="$1" now oldest="" epoch ts
   jq -e 'any(.[]; (.labels // []) | index("retro-urgent"))' <<<"$trackers" >/dev/null 2>&1 \
     && { echo "urgent"; return 0; }
-  now="${FUNNEL_NOW_EPOCH:-$(date -u +%s)}"
+  now="${PIPELINE_NOW_EPOCH:-$(date -u +%s)}"
   while IFS= read -r ts; do
     [ -z "$ts" ] && continue
     epoch="$(_retro_iso_to_epoch "$ts")" || continue
@@ -813,25 +813,25 @@ run_retro_phase() {
 # ── Phase 0 — crash-signal intake (foundation #671, epic #637) ───────────────
 # Runs /signal-intake (the L2 crash-convergence orchestrator) ONCE per board,
 # BEFORE any of the tick's spend decisions — Phase A's drain loop and Phase
-# B/C's FUNNEL_DRIVE_CAP-gated drive/route loop below (the closest thing this
+# B/C's PIPELINE_DRIVE_CAP-gated drive/route loop below (the closest thing this
 # scheduler has to a "spend gate": the counter that decides how much of this
 # tick's Ready work gets driven). Placing intake ahead of that gate is what
 # makes intake run on EVERY tick, including a tick that ends up driving/
 # routing nothing (a "spend-closed" tick) — not just ticks with drivable work.
 #
-# BEST-EFFORT AND NON-BLOCKING (the hard requirement): the funnel's core job
+# BEST-EFFORT AND NON-BLOCKING (the hard requirement): the pipeline's core job
 # is driving the board, and that must never fail because crash intake had a
 # problem — a missing SENTRY_AUTH_TOKEN, a Sentry API error, a board-adapter
 # hiccup. A non-zero exit from the orchestrator is caught, logged to stderr,
 # and swallowed; `set -e` never sees it (the `||` below absorbs the exit code
 # before it can propagate), so the tick always continues to Phase A.
 #
-# Dry-run purity (mirrors funnel-drive.sh's --dry-run guarantee, foundation
+# Dry-run purity (mirrors pipeline-drive.sh's --dry-run guarantee, foundation
 # #604/#615): a --dry-run tick must stay side-effect-free — no network, no
-# `gh`. So when DRY_RUN=1 AND FUNNEL_INTAKE_CMD is still its default (the real
+# `gh`. So when DRY_RUN=1 AND PIPELINE_INTAKE_CMD is still its default (the real
 # script), skip the call outright rather than actually invoking Sentry/board
 # calls. A test that wants to exercise the failure-handling path sets
-# FUNNEL_INTAKE_CMD to a stub — an explicit override runs even under --dry-run,
+# PIPELINE_INTAKE_CMD to a stub — an explicit override runs even under --dry-run,
 # since a stub has no side effects of its own.
 # Emit the config-absent WARN for $board with $reason AT MOST ONCE per condition
 # (temperloop#330): only when the reason differs from the one already recorded in
@@ -841,12 +841,12 @@ run_retro_phase() {
 # wedge the tick (the WARN already printed), so every fs op is `|| true`-guarded.
 _intake_warn_once() {
   local board="$1" reason="$2" marker prev=""
-  marker="$FUNNEL_INTAKE_WARN_DIR/intake-warned-$board"
+  marker="$PIPELINE_INTAKE_WARN_DIR/intake-warned-$board"
   [ -f "$marker" ] && prev="$(cat "$marker" 2>/dev/null || true)"
   if [ "$prev" != "$reason" ]; then
-    printf 'funnel-tick: WARN — signal-intake config absent for board %s: %s (emitted once per condition, not per tick)\n' \
+    printf 'pipeline-tick: WARN — signal-intake config absent for board %s: %s (emitted once per condition, not per tick)\n' \
       "$board" "$reason" >&2
-    mkdir -p "$FUNNEL_INTAKE_WARN_DIR" 2>/dev/null || true
+    mkdir -p "$PIPELINE_INTAKE_WARN_DIR" 2>/dev/null || true
     printf '%s\n' "$reason" > "$marker" 2>/dev/null || true
   fi
 }
@@ -854,12 +854,12 @@ _intake_warn_once() {
 # Clear a board's config-absent marker once config is PRESENT again, so the next
 # time it goes absent the WARN fires afresh (once-per-condition, never once-ever).
 _intake_warn_clear() {
-  rm -f "$FUNNEL_INTAKE_WARN_DIR/intake-warned-$1" 2>/dev/null || true
+  rm -f "$PIPELINE_INTAKE_WARN_DIR/intake-warned-$1" 2>/dev/null || true
 }
 
 run_intake_phase() {
   local board="$1"
-  if [ "$DRY_RUN" -eq 1 ] && [ "$FUNNEL_INTAKE_CMD" = "$HERE/../crash-convergence/signal-intake.sh" ]; then
+  if [ "$DRY_RUN" -eq 1 ] && [ "$PIPELINE_INTAKE_CMD" = "$HERE/../crash-convergence/signal-intake.sh" ]; then
     return 0
   fi
 
@@ -877,11 +877,11 @@ run_intake_phase() {
   # A recovered tick (backend present AND credential set) clears the marker so a
   # future re-absence warns again. The two reasons are distinct conditions, so a
   # transition between them (e.g. backend appears but token still absent) re-warns.
-  if [ ! -x "$FUNNEL_INTAKE_CMD" ]; then
-    _intake_warn_once "$board" "backend script not found or not executable: $FUNNEL_INTAKE_CMD"
+  if [ ! -x "$PIPELINE_INTAKE_CMD" ]; then
+    _intake_warn_once "$board" "backend script not found or not executable: $PIPELINE_INTAKE_CMD"
     return 0
   fi
-  case "${SENTRY_AUTH_TOKEN:-}" in # knob:exempt — credential presence-probe (unset/placeholder?), not a kernel default; the token is operator config in build.config.local.sh(.example)
+  case "${SENTRY_AUTH_TOKEN:-}" in # setting:exempt — credential presence-probe (unset/placeholder?), not a kernel default; the token is operator config in build.config.local.sh(.example)
     ''|REPLACE_WITH_READ_SCOPED_TOKEN)
       _intake_warn_once "$board" "SENTRY_AUTH_TOKEN unset or still the example placeholder — set it in build.config.local.sh (see build.config.local.sh.example); intake has nothing to poll" ;;
     *)
@@ -889,9 +889,9 @@ run_intake_phase() {
   esac
 
   local err rc=0
-  err="$("$FUNNEL_INTAKE_CMD" run --board "$board" 2>&1 >/dev/null)" || rc=$?
+  err="$("$PIPELINE_INTAKE_CMD" run --board "$board" 2>&1 >/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf 'funnel-tick: signal-intake failed for board %s (non-blocking, rc=%s): %s\n' \
+    printf 'pipeline-tick: signal-intake failed for board %s (non-blocking, rc=%s): %s\n' \
       "$board" "$rc" "$err" >&2
   fi
   return 0
@@ -903,7 +903,7 @@ add_action() { ACTIONS="$(jq -c --argjson a "$1" '. + [$a]' <<<"$ACTIONS")"; }
 
 tick_board() {
   local board="$1" repo
-  repo="$(tick_board_repo "$board")" || { echo "funnel-tick.sh: unknown board $board" >&2; return 1; }
+  repo="$(tick_board_repo "$board")" || { echo "pipeline-tick.sh: unknown board $board" >&2; return 1; }
 
   # Phase 0 — crash-signal intake, BEFORE Phase A/B/C's spend decisions (see
   # run_intake_phase's header comment). Runs every tick regardless of what (if
@@ -960,13 +960,13 @@ tick_board() {
     if [ -z "$chosen" ]; then
       # Parse miss → re-assign operator with a couldn't-parse note (no guess).
       # reassign_to is emitted as a BARE login (strip the leading `@`) — it feeds an
-      # `--add-assignee` call (funnel-drive.md) and GitHub's replaceActorsForAssignable
-      # cannot resolve an `@`-prefixed login (foundation #977; mirrors funnel-drive.sh's
-      # `${FUNNEL_OPERATOR#@}` strip at 555/633). The `@` stays in FUNNEL_OPERATOR for
+      # `--add-assignee` call (pipeline-drive.md) and GitHub's replaceActorsForAssignable
+      # cannot resolve an `@`-prefixed login (foundation #977; mirrors pipeline-drive.sh's
+      # `${PIPELINE_OPERATOR#@}` strip at 555/633). The `@` stays in PIPELINE_OPERATOR for
       # mention text; only the assignee target is bared. The literal `@me` token is
       # PRESERVED — gh special-cases it to the authenticated user, so stripping it to
       # `me` (a non-user) would re-break the very assign this fixes.
-      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$issue" --arg op "$FUNNEL_OPERATOR" \
+      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$issue" --arg op "$PIPELINE_OPERATOR" \
         '{phase:"drain",board:$b,repo:$r,issue:$n,action:"drain-parse-miss",
           reassign_to:(if $op == "@me" then $op else ($op | ltrimstr("@")) end),
           detail:"could not parse reply as a decision block or /command — re-assigned operator (closed-enum-or-escalate)"}')"
@@ -1002,11 +1002,11 @@ tick_board() {
     cnum="$(jq -r '.number' <<<"$c")"
     creply="$(latest_comment_body <<<"$c")"
 
-    # (#697 retired the merge-escalation guard that lived here: rung-5c CODE
+    # (#697 retired the merge-escalation guard that lived here: level-5c CODE
     # escalations now carry their OWN `funnel-escalated` label — never
     # `needs-clarification` — so read_answered_clarifications' search can no longer
     # list one. The exclusion is now the absence of the label at SEARCH time, not a
-    # per-item comment-history scan. The funnel_escalated park gate in the Ready loop
+    # per-item comment-history scan. The pipeline_escalated park gate in the Ready loop
     # keeps such an item out of the drive pool.)
 
     # Idempotency: latest comment is the executor's clarified-marker ack → the
@@ -1047,7 +1047,7 @@ tick_board() {
   local ready; ready="$(read_ready_items "$board")"
   local n_ready; n_ready="$(jq 'length' <<<"$ready")"
 
-  # Up to FUNNEL_DRIVE_CAP Operational drives + one Foundational route per tick
+  # Up to PIPELINE_DRIVE_CAP Operational drives + one Foundational route per tick
   # (#642). did_op is now a COUNTER, not a boolean: it gates how many Operational
   # drive-ready items this tick emits (vault `cap:` feeds the cap). The claim-first
   # lock still governs real per-item concurrency once items are claimed (INHERITED
@@ -1067,7 +1067,7 @@ tick_board() {
     # BEFORE classifying (classify_item would default it Operational and drive it).
     # The producer that raised the question (`/triage`, `/sweep` park-on-question)
     # already assigned the operator AT SOURCE, so the item is already in the
-    # operator's assigned-to-me queue and the funnel has nothing to assign — no
+    # operator's assigned-to-me queue and the pipeline has nothing to assign — no
     # assignee re-read, no `route-needs-input` (that step existed only to do the
     # assign the producers now own — #684). `spike` is NOT matched here (it drives —
     # #600). The loop continues, so a clean Operational item after a parked one is
@@ -1084,24 +1084,24 @@ tick_board() {
       esac
       add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" \
         '{phase:"route",board:$b,repo:$r,issue:$n,title:$t,action:"route-already-assigned",label:"needs-clarification",
-          detail:"Ready item carries `needs-clarification` — parked awaiting the operator answer; assignment + question owned at source by /triage//sweep, so the funnel does not re-assign (re-enters drive once /sweep Phase 1 / /assess clears the label) (foundation #684)"}')"
+          detail:"Ready item carries `needs-clarification` — parked awaiting the operator answer; assignment + question owned at source by /triage//sweep, so the pipeline does not re-assign (re-enters drive once /sweep Phase 1 / /assess clears the label) (foundation #684)"}')"
       did_route=1
       j=$((j+1)); continue
     fi
 
-    # Rung-5c code-escalation gate (#697): a Ready item carrying `funnel-escalated`
+    # Level 5c code-escalation gate (#697): a Ready item carrying `funnel-escalated`
     # is a code item the merge tier could not land (route-refused / terminally-red
-    # CI) — funnel-drive.sh assigned the operator + applied this OWN label. It has an
+    # CI) — pipeline-drive.sh assigned the operator + applied this OWN label. It has an
     # open/failed PR and awaits a MANUAL merge/close; auto-driving it fresh would open
     # a DUPLICATE PR. PARK it (`route-already-assigned`), gated BEFORE classify_item
     # exactly like needs_clarification — this is the duplicate-PR guard the shared
     # label used to provide before #697's split. The operator resolves it by merging/
     # closing the PR (which clears the label), not by answering a question — so unlike
     # needs-clarification it is NOT drained by Phase A2 (nothing lists it there).
-    if funnel_escalated "$labels" >/dev/null; then
-      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg l "$FUNNEL_ESCALATED_LABEL" \
+    if pipeline_escalated "$labels" >/dev/null; then
+      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg l "$PIPELINE_ESCALATED_LABEL" \
         '{phase:"route",board:$b,repo:$r,issue:$n,title:$t,action:"route-already-assigned",label:$l,
-          detail:"Ready item carries `funnel-escalated` — a rung-5c code item the merge tier could not land (has an open/failed PR); parked awaiting the operator manual merge/close, assigned at source by the 5c escalation, so the funnel does not re-drive (would duplicate the PR) (foundation #697)"}')"
+          detail:"Ready item carries `funnel-escalated` — a level-5c code item the merge tier could not land (has an open/failed PR); parked awaiting the operator manual merge/close, assigned at source by the 5c escalation, so the pipeline does not re-drive (would duplicate the PR) (foundation #697)"}')"
       did_route=1
       j=$((j+1)); continue
     fi
@@ -1132,7 +1132,7 @@ tick_board() {
 
     cls="$(classify_item "$labels")"
 
-    if [ "$cls" = "Operational" ] && [ "$did_op" -lt "$FUNNEL_DRIVE_CAP" ]; then
+    if [ "$cls" = "Operational" ] && [ "$did_op" -lt "$PIPELINE_DRIVE_CAP" ]; then
       # Phase B — EMIT the pipeline invocation. The driver CALLS /assess→/build;
       # it never assesses or builds. --unattended selects the async backend +
       # auto-merge-on-green (Operational does NOT ride the timed objection gate).
@@ -1141,16 +1141,16 @@ tick_board() {
       # automatable read-only investigation whose drive opens NO PR (build.md's
       # kind:spike path writes a verdict note + routes a follow-up — #600); a
       # plain Operational item is `code` (its drive ends in a PR + merge). The
-      # 5b headless driver (funnel-drive.sh) filters on this: it auto-executes
+      # 5b headless driver (pipeline-drive.sh) filters on this: it auto-executes
       # only `kind:spike` drives (no-merge), leaving `kind:code` drives emit-only
-      # for the operator to run manually (the merging tier waits for rung 5c). The
+      # for the operator to run manually (the merging tier waits for level 5c). The
       # scheduler classifies; the driver stays dumb.
       local kind="code"
       if jq -e 'any(.[]; . == "spike")' <<<"$labels" >/dev/null 2>&1; then kind="spike"; fi
       # Resume vs fresh (foundation #624): a kind:code item carrying the merge
       # hand-off marker already has an OPEN PR from a prior tick's drive — RESUME
       # the merge (re-attach + run /build's gate) rather than re-drive (a fresh
-      # drive opens a duplicate PR). The marker is set only by funnel-drive.sh off a
+      # drive opens a duplicate PR). The marker is set only by pipeline-drive.sh off a
       # ground-truth open-PR probe, so it is trustworthy. A spike never opens a PR,
       # so it is never pending; resume applies to the merge tier only.
       # Recover a LOST hand-off marker from ground truth (#641): a kind:code item
@@ -1164,7 +1164,7 @@ tick_board() {
         recovered_pr="$(open_pr_for_issue "$board" "$repo" "$num")"
       fi
       if [ "$kind" = "code" ] && pending_merge "$labels"; then
-        add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg k "$kind" --arg l "$FUNNEL_MERGE_PENDING_LABEL" \
+        add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg k "$kind" --arg l "$PIPELINE_MERGE_PENDING_LABEL" \
           '{phase:"drive",board:$b,repo:$r,issue:$n,title:$t,action:"drive-ready",class:"Operational",kind:$k,mode:"resume",label:$l,
             emit:("RESUME the in-flight merge for #"+($n|tostring)+": re-attach to its OPEN PR and run /build --unattended on the existing plan note (re-check the now-green CI + run /build'"'"'s merge gate). Do NOT re-assess or open a new PR. If no open PR is found, fall back to a fresh drive."),
             detail:"carries the merge hand-off marker — a prior tick opened a PR but the one-shot session ended before the merge gate; resume it via /build (foundation #624)"}')"
@@ -1172,7 +1172,7 @@ tick_board() {
         add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg k "$kind" --argjson pr "$recovered_pr" \
           '{phase:"drive",board:$b,repo:$r,issue:$n,title:$t,action:"drive-ready",class:"Operational",kind:$k,mode:"resume",recovered_pr:$pr,
             emit:("RESUME the in-flight merge for #"+($n|tostring)+": an OPEN PR (#"+($pr|tostring)+") already closes it. Re-attach to that PR and run /build --unattended on the existing plan note (re-check CI + run /build'"'"'s merge gate). Do NOT re-assess or open a new PR."),
-            detail:("NO hand-off marker but a ground-truth open-PR probe found #"+($pr|tostring)+" closing this issue — the prior tick'"'"'s hand-off label add failed (funnel-drive.sh #641); resuming (not re-driving) prevents a duplicate PR")}')"
+            detail:("NO hand-off marker but a ground-truth open-PR probe found #"+($pr|tostring)+" closing this issue — the prior tick'"'"'s hand-off label add failed (pipeline-drive.sh #641); resuming (not re-driving) prevents a duplicate PR")}')"
       else
         # Split the fresh emit by ROUTE (#635 + #717). Three shapes:
         #  - spike          → singleton verdict path (opens NO PR); the 5b safe tier
@@ -1226,14 +1226,14 @@ tick_board() {
       # prep behavior (never mis-routes an epic to the direct path).
       #
       # #977: emit `reassign_to` as a BARE login (strip the leading `@`) — it feeds an
-      # `--add-assignee` call (funnel-drive.md) and GitHub's replaceActorsForAssignable
-      # cannot resolve an `@`-prefixed login (`@example-operator`). Mirrors funnel-drive.sh's
-      # `${FUNNEL_OPERATOR#@}` strip (555/633); the `@` stays in FUNNEL_OPERATOR for
+      # `--add-assignee` call (pipeline-drive.md) and GitHub's replaceActorsForAssignable
+      # cannot resolve an `@`-prefixed login (`@example-operator`). Mirrors pipeline-drive.sh's
+      # `${PIPELINE_OPERATOR#@}` strip (555/633); the `@` stays in PIPELINE_OPERATOR for
       # mention text, only the assignee target is bared. The literal `@me` token is
       # PRESERVED (gh resolves it to the authenticated user; `me` alone is a non-user).
       local froute="prep"
       if bare_ready_singleton "$board" "$repo" "$num"; then froute="direct"; fi
-      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg op "$FUNNEL_OPERATOR" --arg mode "$froute" \
+      add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$num" --arg t "$title" --arg op "$PIPELINE_OPERATOR" --arg mode "$froute" \
         '{phase:"route",board:$b,repo:$r,issue:$n,title:$t,action:"route-foundational",class:"Foundational",mode:$mode,
           reassign_to:(if $op == "@me" then $op else ($op | ltrimstr("@")) end),
           emit:(if $mode=="direct"
@@ -1269,11 +1269,11 @@ if [ -n "$ONE_BOARD" ]; then
     # An explicit --board that is OFF: emit a disabled record, do nothing.
     jq -cn --arg b "$ONE_BOARD" \
       '{tick:"done",actions:[{phase:"tick",board:$b,action:"board-disabled",
-        detail:"board not in FUNNEL_ENABLED_BOARDS — driver OFF for it (pilot = stageFind only)"}]}'
+        detail:"board not in PIPELINE_ENABLED_BOARDS — driver OFF for it (pilot = stageFind only)"}]}'
     exit 0
   fi
 else
-  BOARDS_TO_RUN="$FUNNEL_ENABLED_BOARDS"
+  BOARDS_TO_RUN="$PIPELINE_ENABLED_BOARDS"
 fi
 
 for b in $BOARDS_TO_RUN; do

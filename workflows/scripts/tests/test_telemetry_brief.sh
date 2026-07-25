@@ -62,7 +62,7 @@ run_brief() {  # $1=lake dir, $2=read-log path, rest = extra args
   local lake="$1" rlog="$2"
   shift 2
   CMD_RUN_RAW_DIR="$lake" ISSUE_TOUCHES_RAW_DIR="$lake" CLAIMS_RAW_DIR="$lake" \
-  FUNNEL_RAW_DIR="$lake" GH_CALLS_RAW_DIR="$lake" KS_SEARCH_FALLBACK_RAW_DIR="$lake" \
+  PIPELINE_RAW_DIR="$lake" GH_CALLS_RAW_DIR="$lake" KS_SEARCH_FALLBACK_RAW_DIR="$lake" \
   TELEMETRY_RAW_DIR="$lake" KNOWLEDGE_READ_LOG="$rlog" \
     bash "$SCRIPT" "$@"
 }
@@ -81,14 +81,14 @@ out="$(run_brief "$TMP/empty" "$TMP/empty/absent-reads.log" 2>&1)"; rc=$?
 assert_rc0 "$rc" "exit 0 on empty lake"
 assert_has "$out" "DATA AGE: UNKNOWN" "leads with DATA AGE: UNKNOWN"
 assert_has "$out" "no data yet — command-runs stream is empty" "command-runs no-data line"
-assert_has "$out" "no data yet — funnel stream is empty" "funnel no-data line"
+assert_has "$out" "no data yet — pipeline stream is empty" "pipeline no-data line"
 assert_has "$out" "no data yet — gh-calls stream is empty" "gh-calls no-data line"
 assert_has "$out" "no data yet — issue-touches stream is empty" "issue-touches no-data line"
 assert_has "$out" "no data yet — claims stream is empty" "claims no-data line"
 assert_has "$out" "no data yet — knowledge-search-fallback stream is empty" "ks-fallback no-data line"
 assert_has "$out" "no data yet — ks read-log is empty" "read-log no-data line"
 assert_has "$out" "## 1. Attention" "renders Q1 heading"
-assert_has "$out" "## 2. Funnel health & trust" "renders Q2 heading"
+assert_has "$out" "## 2. Pipeline health & trust" "renders Q2 heading"
 assert_has "$out" "## 3. Spend" "renders Q3 heading"
 assert_has "$out" "## 4. Improvement" "renders Q4 heading"
 assert_has "$out" "## 5. Command effectiveness" "renders Q5 heading"
@@ -109,7 +109,7 @@ EOF
 cat > "$lake/claims-${month}.jsonl" <<EOF
 {"ts":"$now_ts","host":"h","session_id":"s1","board":3,"issue":1,"item_id":"PVTI_x"}
 EOF
-cat > "$lake/funnel-${month}.jsonl" <<EOF
+cat > "$lake/pipeline-${month}.jsonl" <<EOF
 {"event":"ran","date":"2026-07-16","boards":["3"],"nonop_actions":1,"duration_ms":900,"ts":"$now_ts"}
 {"event":"skipped","date":"2026-07-15","reason":"not-scheduled","ts":"$now_ts"}
 {"event":"drive","status":"error","date":"2026-07-16","duration_ms":100,"reason":"driver-failed","context":"boom","ts":"$now_ts"}
@@ -132,7 +132,7 @@ assert_has "$out" "DATA AGE: 0h" "data age computed from freshest record"
 assert_not_has "$out" "no data yet" "no spurious no-data lines with all streams populated"
 # Q1 — parked = 1 + 2 across 2 of 2 runs; 1 drive error
 assert_has "$out" "parked/deferred items (7d): 3 across 2 of 2 command runs" "Q1 parked reconciles with command-runs fixtures"
-assert_has "$out" "funnel drive errors (7d): 1" "Q1 drive errors reconcile with funnel fixtures"
+assert_has "$out" "pipeline drive errors (7d): 1" "Q1 drive errors reconcile with pipeline fixtures"
 # Q2 — 3 wakes: ran 1, skipped 1, drive 1 (errored 1); 1 fallback
 assert_has "$out" "wakes (7d): 3 (ran 1 · skipped 1 · drive 1, of which 1 errored)" "Q2 wake counts reconcile"
 assert_has "$out" "knowledge-search warm→cold fallbacks (7d): 1" "Q2 fallback count reconciles"
@@ -149,7 +149,7 @@ assert_has "$out" "sweep: 1 runs · 4 items · 3 merged · 1 parked · merge rat
 assert_has "$out" "triage: 1 runs · 6 items · 0 merged · 2 parked" "Q5 triage row reconciles"
 # every section names its source stream
 assert_has "$out" "source: command-runs-*.jsonl @ $lake" "Q1/Q5 name their source stream"
-assert_has "$out" "source: funnel-*.jsonl @ $lake" "Q2 names its source streams"
+assert_has "$out" "source: pipeline-*.jsonl @ $lake" "Q2 names its source streams"
 assert_has "$out" "ks read-log (knowledge_store.sh ks__read_log_emit) @ $rlog" "Q3 names the ks read-log emit"
 assert_has "$out" "issue-touches-*.jsonl @ $lake ∪ claims-*.jsonl @ $lake" "Q4 names the unioned streams"
 

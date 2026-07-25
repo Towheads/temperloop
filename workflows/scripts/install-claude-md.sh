@@ -18,8 +18,8 @@
 # Composition, in order:
 #   1. a generated-file banner (naming both sources — never hand-edit the
 #      target; edit the sources and re-run `make install-claude`)
-#   2. the kernel doc, with any `{{KNOB_NAME}}` placeholder tokens it contains
-#      substituted for a value resolved from config (see "Prose-resident knob
+#   2. the kernel doc, with any `{{SETTING_NAME}}` placeholder tokens it contains
+#      substituted for a value resolved from config (see "Named-setting convention
 #      rendering" below) — otherwise verbatim
 #   3. a rendered "## Knowledge store routing" section (see below)
 #   4. the overlay doc, verbatim
@@ -64,8 +64,8 @@
 # *source* prose so a new reference appears here on the next compose.
 #
 # Written to `<dirname target>/t0-inventory.txt` — a plain lowercase-derived
-# path (no new operator knob: it is wholly a function of the existing
-# `target` argument, so it needs no knob-registry.tsv row), sibling to the
+# path (no new operator setting: it is wholly a function of the existing
+# `target` argument, so it needs no setting-registry.tsv row), sibling to the
 # composed CLAUDE.md the same way plan-schema.md / message-schema.md /
 # decision-queue-contract.md already sit alongside it under `~/.claude/`.
 #
@@ -98,7 +98,7 @@ target="${3:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}
 # ── Render-only kernel-only seam (temperloop#722, item
 #    prose-baseline-measurement) ────────────────────────────────────────────
 # INSTALL_CLAUDE_MD_KERNEL_ONLY=1 emits ONLY render_kernel_doc's own
-# knob-substituted output — no generated-file banner, no rendered
+# setting-substituted output — no generated-file banner, no rendered
 # "## Knowledge store routing" section (host-rendered, never kernel-authored
 # prose), no overlay content appended, and (see below) NO T0-inventory write
 # either. This is the ONE compose seam workflows/scripts/count-prose.sh calls
@@ -110,7 +110,7 @@ target="${3:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}
 # `make install-claude` wrapper ever sets it, so the normal three-piece
 # compose (banner + kernel + knowledge-routing + overlay) is untouched by
 # this addition.
-: "${INSTALL_CLAUDE_MD_KERNEL_ONLY:=0}"  # knob:exempt — internal render-mode toggle for count-prose.sh's own kernel-only caller, not an operator-facing config-precedence default
+: "${INSTALL_CLAUDE_MD_KERNEL_ONLY:=0}"  # setting:exempt — internal render-mode toggle for count-prose.sh's own kernel-only caller, not an operator-facing config-precedence default
 
 [ -f "$kernel" ]  || { echo "install-claude-md: kernel doc not found: $kernel" >&2; exit 1; }
 if [ "$INSTALL_CLAUDE_MD_KERNEL_ONLY" != "1" ]; then
@@ -124,21 +124,21 @@ build_config="${foundation}/workflows/scripts/build/build.config.sh"
 ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
 
 # ---------------------------------------------------------------------------
-# ── Prose-resident knob rendering (temperloop#183, D3's "CLAUDE.md-resident
-#    knob" seam — claude/CLAUDE.kernel.md § Prose-resident knob convention) ──
-# A knob embedded in this file's own standing-rules prose (e.g. the epic-
+# ── Named-setting rendering (temperloop#183, D3's "CLAUDE.md-resident
+#    setting" seam — claude/CLAUDE.kernel.md § Named-setting convention) ──
+# A setting embedded in this file's own standing-rules prose (e.g. the epic-
 # decomposition sub-unit threshold)
 # has no Step-0 to source a config file from — the doc is read passively by
 # the agent, never executed — so it is rendered here instead, at compose
-# time, into a `{{KNOB_NAME}}` placeholder token the kernel doc's own text
+# time, into a `{{SETTING_NAME}}` placeholder token the kernel doc's own text
 # carries. SAME mechanism as § Knowledge store routing below (resolve a
 # value from build.config.sh in an isolated subshell, then substitute it into
 # the composed output) — this is one more resolved value fed through that
 # existing render pass, not a second templating engine.
 #
 # render_kernel_doc <kernel-file> — prints the kernel doc's content with every
-# known `{{KNOB_NAME}}` token substituted; unmatched tokens are left as-is
-# (surfacing a missing wiring loudly rather than silently blanking the knob).
+# known `{{SETTING_NAME}}` token substituted; unmatched tokens are left as-is
+# (surfacing a missing wiring loudly rather than silently blanking the setting).
 # ---------------------------------------------------------------------------
 render_kernel_doc() {
   local kernel_file="$1" content epic_subunit_floor display_tz

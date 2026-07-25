@@ -39,7 +39,7 @@ target list with descriptions. The ones an agent needs most:
 - `make quality-gates` — the full static gate set, identical to what CI's
   `checks` job runs (`scripts/quality-gates.sh`). Run this before opening a
   PR.
-- `make test-board` / `make test-build` — the board adapter / build-spine
+- `make test-board` / `make test-build` — the board adapter / build-machinery
   toolkit test suites (zero network).
 - `make docs` — renders the generated docs site to
   `workflows/scripts/docs/_site/` (gitignored; a build artifact).
@@ -79,7 +79,7 @@ something calling code branches on.
 
 `scripts/quality-gates.sh` is the single source of truth for this repo's
 static gate set — the board / build / install / hooks test suites, the
-Live/Drain and PR-body-lint registries, the kernel-manifest / personal-token
+Capture/Backstop and PR-body-lint registries, the kernel-manifest / personal-token
 / gitleaks scrub checks, and a whole-tree shellcheck. CI's one required job
 (`checks`, `.github/workflows/ci.yml`) runs exactly this script, so "green
 locally" and "green in CI" mean the same thing. Run `scripts/quality-gates.sh
@@ -105,7 +105,7 @@ quality-gates` to run them all.
 - `docs/managed-merge-queue.md` — the merge-backend seam (native vs.
   managed queue) that lets the build/sweep ladder run end-to-end even on a
   repo with no native merge queue available.
-- `docs/config-precedence.md` — the six-rung config precedence ladder
+- `docs/config-precedence.md` — the six-layer config precedence ladder
   (CLI flag > env var > machine conf > untracked repo-local conf > tracked
   repo conf > kernel built-in default) every tunable in this repo resolves
   through.

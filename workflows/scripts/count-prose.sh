@@ -34,24 +34,24 @@
 # macos-latest CI legs, matching whatever host authored the numbers):
 #   - BUILD_CONFIG_MACHINE and BUILD_CONFIG_LOCAL are pinned to /dev/null
 #     before invoking the compose seam. build.config.sh sources both paths
-#     (precedence rungs 3/4) only `if [ -f "$path" ]`; /dev/null is never a
+#     (precedence layers 3/4) only `if [ -f "$path" ]`; /dev/null is never a
 #     regular file, so both sourcing blocks silently no-op regardless of
 #     what a real host's XDG machine conf or a checkout's untracked
 #     build.config.local.sh contain. This neutralizes the two config-FILE
-#     rungs (3/4) to the TRACKED repo defaults (rung 5) only.
+#     layers (3/4) to the TRACKED repo defaults (layer 5) only.
 #   - THIS PROCESS'S OWN ENVIRONMENT is also scrubbed of every
-#     build.config.sh knob name before invoking the seam — rung 2 (an
-#     exported env var) OUTRANKS rung 5's tracked `:=` default, so an
-#     inherited `EPIC_MIN_SUBUNITS`/`DISPLAY_TZ` (e.g. from a funnel-drive
+#     build.config.sh setting name before invoking the seam — layer 2 (an
+#     exported env var) OUTRANKS layer 5's tracked `:=` default, so an
+#     inherited `EPIC_MIN_SUBUNITS`/`DISPLAY_TZ` (e.g. from a pipeline-drive
 #     session, or a caller's own shell) would otherwise flow straight
-#     through the `:=` idiom and perturb the render even with rungs 3/4
-#     neutralized above. `build-config-knobs.sh` is the SSOT-derived name
+#     through the `:=` idiom and perturb the render even with layers 3/4
+#     neutralized above. `build-config-settings.sh` is the SSOT-derived name
 #     list (temperloop#1241 — the same mechanism build-level.mjs's 3e.5 gate
-#     already uses to make `quality-gates.sh` hermetic under funnel-drive);
+#     already uses to make `quality-gates.sh` hermetic under pipeline-drive);
 #     unsetting every name it prints, rather than hand-listing
-#     EPIC_MIN_SUBUNITS/DISPLAY_TZ ourselves, means a future knob addition
+#     EPIC_MIN_SUBUNITS/DISPLAY_TZ ourselves, means a future setting addition
 #     to build.config.sh is covered here with no edit to this script.
-#   - Combined, the {{EPIC_MIN_SUBUNITS}} / {{DISPLAY_TZ}} knob substitution
+#   - Combined, the {{EPIC_MIN_SUBUNITS}} / {{DISPLAY_TZ}} setting substitution
 #     baked into the kernel doc's rendered text is identical on every host
 #     and every CI runner — no machine-specific override, checkout-local
 #     override, OR inherited-env override can perturb the tier-1 number.
@@ -68,7 +68,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # knob:exempt — test/fixture root override (mirrors FEATURE_DOCS_ROOT/KERNEL_MANIFEST_ROOT), not an operator-facing config-precedence default
+: "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # setting:exempt — test/fixture root override (mirrors FEATURE_DOCS_ROOT/KERNEL_MANIFEST_ROOT), not an operator-facing config-precedence default
 kernel_doc="$COUNT_PROSE_ROOT/claude/CLAUDE.kernel.md"
 install_script="$COUNT_PROSE_ROOT/workflows/scripts/install-claude-md.sh"
 
@@ -94,14 +94,14 @@ lines_in() {
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/count-prose.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
-# Scrub every build.config.sh knob NAME from this process's own environment
-# before invoking the seam (see the header determinism note above — rung 2
-# outranks the rung-3/4 file-pinning below, so an inherited exported knob
+# Scrub every build.config.sh setting NAME from this process's own environment
+# before invoking the seam (see the header determinism note above — layer 2
+# outranks the layer-3/4 file-pinning below, so an inherited exported setting
 # must be unset here too). A missing/older helper prints nothing -> `unset`
 # with no args is a harmless no-op.
-knobs_bin="$COUNT_PROSE_ROOT/workflows/scripts/build/build-config-knobs.sh"
-# shellcheck disable=SC2046  # intentional word-splitting: unset takes N bare NAME args, one per line from build-config-knobs.sh
-unset $(bash "$knobs_bin" 2>/dev/null)
+settings_bin="$COUNT_PROSE_ROOT/workflows/scripts/build/build-config-settings.sh"
+# shellcheck disable=SC2046  # intentional word-splitting: unset takes N bare NAME args, one per line from build-config-settings.sh
+unset $(bash "$settings_bin" 2>/dev/null)
 
 tier1_target="$scratch/kernel-only.md"
 # The overlay path is never read or existence-checked when

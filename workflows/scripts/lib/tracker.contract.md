@@ -28,7 +28,7 @@ Every board interaction routes through a single indirection seam,
 **sole network egress point** and the **fixture-replay test seam** (override
 it after sourcing to replay recorded `gh` output for zero-network testing).
 This is the direct analogue of `knowledge_store`'s backend-dispatch
-indirection: one place every call funnels through.
+indirection: one place every call pipelines through.
 
 ## Configuration
 
@@ -195,7 +195,7 @@ board_bust_structure [N]     # invalidate the structure cache after a manual
 ```
 
 The consuming scripts routed through this seam — `claim.sh`, `capture.sh`,
-`worklist.sh`, `reconcile.sh`, `funnel-tick.sh`, `funnel-drive.sh`, and the
+`worklist.sh`, `reconcile.sh`, `pipeline-tick.sh`, `pipeline-drive.sh`, and the
 `/build` board-mirror — carry **no backend branching**: the backend is
 chosen entirely inside these functions by `board_backend`.
 

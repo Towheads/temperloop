@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test_exec_bits.sh — guard for #628 (sibling of #476): every directly-invoked
-# build-spine script MUST be tracked with the executable bit (100755). A script
+# build-machinery script MUST be tracked with the executable bit (100755). A script
 # committed 100644 fails a bare-path `workflows/scripts/build/foo.sh` invocation
 # with permission-denied (exit 126) and forces an on-disk-copy fallback each run
 # — the recurring /build & /sweep friction #628 fixed for plan.sh + board-mirror.sh.
@@ -38,7 +38,7 @@ fail=0
 checked=0
 while IFS= read -r rel; do
   case "$rel" in */tests/*) continue ;; esac
-  # only build-spine scripts with a shebang carry executable intent
+  # only build-machinery scripts with a shebang carry executable intent
   head -1 "$REPO_ROOT/$rel" | grep -q '^#!' || continue
   base="$(basename "$rel")"
   is_sourced_only "$base" && continue
@@ -51,12 +51,12 @@ while IFS= read -r rel; do
 done < <(git -C "$REPO_ROOT" ls-files -- 'workflows/scripts/build/*.sh')
 
 if [ "$checked" -eq 0 ]; then
-  echo "FAIL: no build-spine scripts matched — pathspec/layout drift?"
+  echo "FAIL: no build-machinery scripts matched — pathspec/layout drift?"
   exit 1
 fi
 
 if [ "$fail" -ne 0 ]; then
-  echo "FAIL: one or more directly-invoked build-spine scripts lack the exec bit (see #628)"
+  echo "FAIL: one or more directly-invoked build-machinery scripts lack the exec bit (see #628)"
   exit 1
 fi
-echo "PASS: all $checked directly-invoked build-spine scripts are tracked 100755 (#628 guard)"
+echo "PASS: all $checked directly-invoked build-machinery scripts are tracked 100755 (#628 guard)"

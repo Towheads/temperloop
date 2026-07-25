@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
 # test_build_config_local.sh — build.config.sh's host-local override hook (#709)
-# and the six-rung config precedence ladder it's rung 4 of (temperloop#164/#169,
+# and the six-layer config precedence ladder it's layer 4 of (temperloop#164/#169,
 # see ../../../../docs/config-precedence.md).
 #
-# Asserts the properties /signal-intake's funnel wiring depends on, plus the
+# Asserts the properties /signal-intake's pipeline wiring depends on, plus the
 # ladder-order regression this file's Cases 4-6 exist to pin down:
 #   1. a PRESENT local override is sourced and its exports land in scope,
 #   2. an ABSENT local override is a silent no-op (never fatal under `set -e`),
 #   3. exported values PROPAGATE to a child process (signal-intake runs as a
-#      subprocess funnel-tick spawns, so a plain assignment would not reach it).
+#      subprocess pipeline-tick spawns, so a plain assignment would not reach it).
 #   4. an exported ENV VAR beats a value set in build.config.local.sh (the
 #      precedence-ladder fix — before it, this file was sourced LAST with
 #      plain assignments, so a local.sh value could beat an exported env var).
-#   5. a MACHINE conf ($XDG_CONFIG_HOME/temperloop/ rung, via the
+#   5. a MACHINE conf ($XDG_CONFIG_HOME/temperloop/ layer, via the
 #      BUILD_CONFIG_MACHINE test seam) is honored when neither env nor
 #      repo-local conf sets the var, and loses to an exported env var.
-#   6. machine conf beats repo-local conf (rung 3 > rung 4).
+#   6. machine conf beats repo-local conf (layer 3 > layer 4).
 #
 # The BUILD_CONFIG_LOCAL / BUILD_CONFIG_MACHINE seams point the hooks at temp
 # files so this test never depends on (or is polluted by) a real
@@ -62,8 +62,8 @@ out="$(BUILD_CONFIG_LOCAL="$tmp/local.sh" CONFIG="$CONFIG" bash -c '
 [ "$out" = "SENTRY_ORG=acme" ] || fail "export did not reach child env: '$out'"
 
 # Case 4 — an exported env var beats build.config.local.sh (the ladder fix).
-# Uses BUILD_QUOTA_PAUSE_PCT, a real `:=`-defaulted knob (default 10), so a
-# no-op local.sh sourcing order bug would silently let the wrong rung win.
+# Uses BUILD_QUOTA_PAUSE_PCT, a real `:=`-defaulted setting (default 10), so a
+# no-op local.sh sourcing order bug would silently let the wrong layer win.
 cat >"$tmp/local-quota.sh" <<'EOF'
 : "${BUILD_QUOTA_PAUSE_PCT:=55}"
 export BUILD_QUOTA_PAUSE_PCT
@@ -86,7 +86,7 @@ out="$(BUILD_CONFIG_LOCAL="$tmp/local-quota.sh" BUILD_CONFIG_MACHINE="$tmp/does-
 ')" || fail "sourcing config with only a local override aborted"
 [ "$out" = "55" ] || fail "local.sh override not applied with no env set: got '$out' (want 55)"
 
-# Case 5 — machine conf (rung 3) is honored when neither env nor repo-local
+# Case 5 — machine conf (layer 3) is honored when neither env nor repo-local
 # conf sets the var, and loses to an exported env var. BUILD_CONFIG_MACHINE
 # stands in for $XDG_CONFIG_HOME/temperloop/build.config.sh.
 cat >"$tmp/machine.sh" <<'EOF'
@@ -108,7 +108,7 @@ out="$(BUILD_MERGE_BACKEND=native BUILD_CONFIG_MACHINE="$tmp/machine.sh" BUILD_C
 ')" || fail "sourcing config with env + machine conf aborted"
 [ "$out" = "native" ] || fail "env var did not beat machine conf: got '$out' (want native)"
 
-# Case 6 — machine conf (rung 3) beats repo-local conf (rung 4).
+# Case 6 — machine conf (layer 3) beats repo-local conf (layer 4).
 cat >"$tmp/local-backend.sh" <<'EOF'
 : "${BUILD_MERGE_BACKEND:=native}"
 export BUILD_MERGE_BACKEND

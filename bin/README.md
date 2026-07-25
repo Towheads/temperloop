@@ -103,7 +103,7 @@ temperloop try --demo
 
 Everything above is read-only; `--demo` is the deliberate, isolated
 exception — the "aha moment" tick. It clones a disposable, already-seeded
-demo repo and drives ONE real safe-tier funnel tick (issue → PR) against it:
+demo repo and drives ONE real safe-tier pipeline tick (issue → PR) against it:
 claims one open demo-seed issue, gets a real (but still `--tools ""`,
 zero-tool-access) `claude -p` judgment call for the fix, and opens a PR via
 the tree-only proposal-PR generator — **never a direct push, never a
@@ -127,7 +127,7 @@ Bootstraps `.temperloop/config` in your repo and proposes any tree changes
 without review. Separately, and only with explicit per-action consent (an
 interactive `y/N` or an explicit `--yes-<action>` flag; the default is
 always "no"), it can apply API-state changes: a required `checks` status
-check, the `fnd:`/funnel label set, and — only on the further opt-in
+check, the `fnd:`/pipeline label set, and — only on the further opt-in
 `--provision-board` — a new Projects-v2 board. `--dry-run` skips that
 consented-apply step entirely and previews the tree-only PR with zero API
 calls of any kind.

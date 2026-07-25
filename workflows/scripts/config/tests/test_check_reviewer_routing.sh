@@ -7,7 +7,7 @@
 # form reappearing in build.md's 3e prose), and the GREEN path a clean tsv +
 # prose pair produces.
 #
-# Mirrors the sibling test_check_knob_prose.sh's plain mktemp-fixture style
+# Mirrors the sibling test_check_setting_prose.sh's plain mktemp-fixture style
 # (REVIEWER_ROUTING_TSV / REVIEWER_ROUTING_BUILD_MD env overrides point the
 # checker at a throwaway fixture pair, no git repo needed).
 

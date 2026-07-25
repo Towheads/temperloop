@@ -19,7 +19,7 @@
 #
 # Appends ONE JSONL line to:
 #   ${CMD_RUN_RAW_DIR:-<repo>/meta/data/raw}/command-runs-YYYY-MM.jsonl
-# (monthly rotation, matching the funnel-<YYYY-MM>.jsonl / session-YYYY-MM
+# (monthly rotation, matching the pipeline-<YYYY-MM>.jsonl / session-YYYY-MM
 # convention already used in meta/data/raw/).
 #
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
@@ -105,7 +105,7 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 month="$(date -u +%Y-%m)"
 session_id="${CLAUDE_CODE_SESSION_ID:-}"
 
-# Resolve the raw sink dir the same way funnel-cron.sh resolves FUNNEL_RAW_DIR:
+# Resolve the raw sink dir the same way pipeline-cron.sh resolves PIPELINE_RAW_DIR:
 # an explicit override env var first, else the repo this script lives in
 # (workflows/scripts/../../meta/data/raw), so it works from any checkout that
 # vendors this file, not just a hardcoded $HOME/dev/foundation path.

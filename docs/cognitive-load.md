@@ -17,7 +17,7 @@ mechanisms, grouped by the four kinds of load they reduce:
 - **what you have to remember** — tracking in-flight work,
 - **what you have to review** — approving change.
 
-These aren't ad-hoc. temperloop carries an explicit design spine for reader and
+These aren't ad-hoc. temperloop carries an explicit design backbone for reader and
 operator load — [`claude/message-schema.md`](../claude/message-schema.md),
 [`claude/presentation-plane.md`](../claude/presentation-plane.md), and
 [`claude/measurement-proxies.md`](../claude/measurement-proxies.md) — grounded
@@ -64,8 +64,8 @@ and recorded — so you engage on the genuinely risky calls, not the routine
 ones.
 
 - **A severity taxonomy gates every question.** Decisions are partitioned
-  `blocking-now` (no safe default → interrupts, every run), `batch-at-gate`
-  (defer to the next checkpoint), and `batch-at-ritual` (defer to a daily
+  `ask-now` (no safe default → interrupts, every run), `ask-at-gate`
+  (defer to the next checkpoint), and `ask-at-checkin` (defer to a daily
   review) — the routing axis that decides whether you're pulled in at all
   (behavior specified in [`claude/commands/build.md`](../claude/commands/build.md)
   Operating principles and [`claude/plan-schema.md`](../claude/plan-schema.md)).
@@ -79,7 +79,7 @@ ones.
   unanswered entry takes its default, never a silent stall
   ([`claude/plan-schema.md`](../claude/plan-schema.md)).
 - **Unattended runs record what they auto-took.** When a command runs with no
-  live operator, a `batch-at-ritual` choice takes its safe default to keep
+  live operator, a `ask-at-checkin` choice takes its safe default to keep
   moving *and* records the auto-disposition on a durable surface, so a defaulted
   decision never stands silently — you review the batch later in one place
   ([`claude/commands/check-in.md`](../claude/commands/check-in.md)).
@@ -106,12 +106,12 @@ in flight lives only in your head.
   one-line parking note (where it stands + the next step), never a silent drop
   — so the board stays a complete picture you can trust
   ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Task workflow).
-- **Session-start ritual.** At session start the machine lists the In-Progress
+- **Session-start routine.** At session start the machine lists the In-Progress
   set and asks which to resume, rather than making you recall what was open
   ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Task workflow).
 - **One daily review, `/check-in`.** Everything the overnight machinery parked
   — decisions, sensitivity flags, environment-hygiene drift, pending
-  activations that couldn't be confirmed at merge — is disposed in one ritual
+  activations that couldn't be confirmed at merge — is disposed in one routine
   that *leads with "what needs me,"* and alarms loudly (`DATA STALE`) if the
   telemetry it's showing you can't be trusted. You clear queues and set
   direction in one place instead of hunting across surfaces
@@ -151,7 +151,7 @@ judgment, not on reconstruction.
 
 ## The grounding — and the honest caveat
 
-The mechanisms above are applications of the design spine, not folk wisdom:
+The mechanisms above are applications of the design backbone, not folk wisdom:
 
 - [`claude/message-schema.md`](../claude/message-schema.md) models the reader's
   state (present vs absent, warm vs cold) against Grice's Quantity maxim and
@@ -184,4 +184,4 @@ operator load. That is the same honesty the [cost](cost-and-autonomy.md) and
 - [`claude/message-schema.md`](../claude/message-schema.md) /
   [`claude/presentation-plane.md`](../claude/presentation-plane.md) /
   [`claude/measurement-proxies.md`](../claude/measurement-proxies.md) — the
-  design spine behind this page.
+  design backbone behind this page.

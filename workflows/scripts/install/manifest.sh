@@ -38,9 +38,9 @@
 #
 # XDG_STATE_HOME itself is a generic OS/XDG passthrough var with no
 # project-specific override point of its own (see the "Inclusion rule" in
-# workflows/scripts/config/knob-registry.tsv's header, and its explicit
-# listing in check-knob-registry.sh's KNOB_REGISTRY_GENERIC_ALLOWLIST) — so
-# this file introduces NO new tunable knob; a caller who wants a different
+# workflows/scripts/config/setting-registry.tsv's header, and its explicit
+# listing in check-setting-registry.sh's SETTING_REGISTRY_GENERIC_ALLOWLIST) — so
+# this file introduces NO new tunable setting; a caller who wants a different
 # state root just sets XDG_STATE_HOME, same as any other XDG-respecting
 # tool. Tests point HOME/XDG_STATE_HOME at a throwaway tmpdir; there is no
 # separate override seam.

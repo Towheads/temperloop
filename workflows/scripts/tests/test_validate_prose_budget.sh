@@ -13,9 +13,9 @@
 # claim is actually true, not just asserted); the failure-message contract
 # (file/count/cap/both remediation paths named, tier-1 prints the full
 # tier-2 breakdown); and the input-validation error paths (non-numeric cap
-# knobs, a missing counting script, a failing count-prose.sh propagated
+# settings, a missing counting script, a failing count-prose.sh propagated
 # rather than swallowed, an unparseable report). Does NOT exercise a
-# missing/unset cap knob (`PROSE_BUDGET_TIER1_CAP`/`_TIER2_FILE_CAP`
+# missing/unset cap setting (`PROSE_BUDGET_TIER1_CAP`/`_TIER2_FILE_CAP`
 # unset entirely) — build.config.sh always sets both, so there is no
 # in-repo seam to unset one without also breaking every other consumer of
 # that file; the `:?` guard on each in validate-prose-budget.sh is
@@ -107,10 +107,10 @@ out2="$(PROSE_BUDGET_TIER2_FILE_CAP="$bad_cap" bash "$SCRIPT" 2>&1)"; rc2=$?
 assert_rc "$rc2" 1 "a per-file cap below the largest real file exits 1"
 assert_has "$out2" "PROSE-BUDGET TIER-2:" "failure names the TIER-2 violation"
 assert_has "$out2" "$real_tier2_max lines exceeds the per-file cap of $bad_cap lines" "failure message names the COUNT and the CAP"
-assert_has "$out2" "PROSE_BUDGET_TIER2_FILE_CAP" "failure message names the cap knob"
+assert_has "$out2" "PROSE_BUDGET_TIER2_FILE_CAP" "failure message names the cap setting"
 assert_has "$out2" "Remediation: trim" "failure message offers the trim remediation path"
 assert_has "$out2" "open a config PR raising PROSE_BUDGET_TIER2_FILE_CAP" "failure message offers the cap-raise-config-PR remediation path"
-assert_has "$out2" "knob-registry.tsv row, in the SAME PR" "failure message names the registry-row-in-same-PR requirement"
+assert_has "$out2" "setting-registry.tsv row, in the SAME PR" "failure message names the registry-row-in-same-PR requirement"
 # a TIER-2-only breach must NOT print the tier-1 seam-attribution breakdown
 # (that's reserved for an actual tier-1 breach — see test 4 below).
 assert_not_has "$out2" "PROSE-BUDGET TIER-1:" "a pure tier-2 breach does not also report a tier-1 violation"
@@ -122,7 +122,7 @@ out3="$(PROSE_BUDGET_TIER1_CAP="$bad_t1_cap" bash "$SCRIPT" 2>&1)"; rc3=$?
 assert_rc "$rc3" 1 "a tier-1 cap below the real composed count exits 1"
 assert_has "$out3" "PROSE-BUDGET TIER-1:" "failure names the TIER-1 violation"
 assert_has "$out3" "$real_tier1 lines, exceeding the cap of $bad_t1_cap lines" "failure message names the COUNT and the CAP"
-assert_has "$out3" "PROSE_BUDGET_TIER1_CAP" "failure message names the cap knob"
+assert_has "$out3" "PROSE_BUDGET_TIER1_CAP" "failure message names the cap setting"
 assert_has "$out3" "Full TIER-2 per-file breakdown" "a tier-1 failure prints the full per-file breakdown alongside the composed total"
 assert_has "$out3" "claude/CLAUDE.kernel.md" "the printed breakdown includes the kernel doc's own per-file line"
 assert_has "$out3" "TIER-2 total:" "the printed breakdown includes the tier-2 total line"

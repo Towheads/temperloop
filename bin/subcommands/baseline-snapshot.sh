@@ -63,7 +63,7 @@
 # Usage:
 #   baseline-snapshot.sh
 #
-#   No flags are read. Every knob below is an ENV VAR test seam only (never
+#   No flags are read. Every setting below is an ENV VAR test seam only (never
 #   set in production use, mirroring the INIT_GH_BIN / TRY_GH_BIN /
 #   REWORK_SNAPSHOT_NOW conventions already in this codebase):
 #     BASELINE_SNAPSHOT_GH_BIN      override the `gh` binary. Default: gh.
@@ -116,7 +116,7 @@ command -v git >/dev/null 2>&1 || { echo "baseline-snapshot.sh: git not found on
 command -v jq >/dev/null 2>&1 || { echo "baseline-snapshot.sh: jq not found on PATH" >&2; exit 1; }
 
 # Test-double seam (mirrors init.sh's INIT_GH_BIN / try.sh's TRY_GH_BIN /
-# funnel-drive.sh's FUNNEL_GH_BIN convention) — never overridden in
+# pipeline-drive.sh's PIPELINE_GH_BIN convention) — never overridden in
 # production use.
 : "${BASELINE_SNAPSHOT_GH_BIN:=gh}"
 GH_BIN="$BASELINE_SNAPSHOT_GH_BIN"
@@ -307,7 +307,7 @@ fi
 # ---------------------------------------------------------------------------
 foundation_dir="$repo_root/.temperloop"
 if [ ! -f "$foundation_dir/baseline.jsonl" ] && [ -f "$repo_root/.foundation/baseline.jsonl" ]; then
-  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
     echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.17.0 (renamed .temperloop/ in v0.15.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
     exit 1
   fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build merge-gate mechanics — the deterministic-spine script that owns the
+# build merge-gate mechanics — the deterministic-machinery script that owns the
 # 4a/4b/4c merge-gate steps of /build (epic #253, spike #245). Reading a
 # PR's mergeability/liveness, detecting strict-main, computing the mechanical
 # risk verdict over a selected PR set, queuing an --auto merge, nudging a
@@ -41,7 +41,7 @@
 #         merges directly. PER-PR MECHANICS ONLY — the whole-set loop,
 #         processing order, and stop/continue-past-an-eject policy stay in the
 #         orchestrator (build.md); a set-loop here would move merge-order
-#         policy into the spine.
+#         policy into the machinery.
 #   gate.sh diagnose-queue <owner>/<repo> <pr>
 #       → classify a STALLED native-queue poll (temperloop#1150): reads the two
 #         observability channels the bare `gh pr view` poll cannot — the GraphQL
@@ -587,7 +587,7 @@ _gate_ci_poll() {
 # head, merge on green, confirm MERGED. The whole-SET loop — processing order,
 # and whether to stop or continue past an ejected PR — is orchestrator policy
 # (build.md), deliberately NOT built here (a set-loop inside gate.sh would move
-# merge-order policy into the spine).
+# merge-order policy into the machinery).
 #
 # strict (default): update-branch → resolve the NEW head sha (never poll a
 # stale one — mirrors ci-poll.sh's own #254 guard) → SHA-pinned CI re-poll via
@@ -609,7 +609,7 @@ _gate_ci_poll() {
 # GATE_CI_POLL_INTERVAL/GATE_CI_POLL_TIMEOUT (default 30/3600, mirroring
 # ci-poll.sh's own defaults) and GATE_MERGE_POLL_INTERVAL/
 # GATE_MERGE_POLL_TIMEOUT (default 15/600, mirroring cmd_poll's own defaults)
-# are the zero-delay test knobs for this command's two poll loops — mirrors
+# are the zero-delay test settings for this command's two poll loops — mirrors
 # GATE_REPOLL_DELAY=0 above.
 cmd_managed_merge() {
   local owner_repo="$1" pr="$2" strict=1 out

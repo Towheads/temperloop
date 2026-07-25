@@ -62,13 +62,13 @@
 #     not a real failure — see the file header's detection contract.
 #   GH_CALL_CONTEXT default    — set to merged-detect ONLY when no outer context
 #     exists (`:-`), so a standalone prune reads `merged-detect` instead of null,
-#     while an outer driver (funnel-drive, worktree prune) keeps winning.
+#     while an outer driver (pipeline-drive, worktree prune) keeps winning.
 # See workflows/scripts/gh-call-logger.sh.
 _merged_detect_gh() {
   # GH_CALL_OP is a per-call attribution tag, not a static operator default, so
-  # it carries no knob-registry row — same as gh-call-logger.sh's own GH_CALL_OP
-  # handling; the trailing `# knob:exempt` marks it for check-knob-registry.sh.
-  GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-merged-detect}" GH_CALL_OP="${GH_CALL_OP:-merged-detect}" gh "$@"  # knob:exempt — per-call attribution tag, not a static operator default
+  # it carries no setting-registry row — same as gh-call-logger.sh's own GH_CALL_OP
+  # handling; the trailing `# setting:exempt` marks it for check-setting-registry.sh.
+  GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-merged-detect}" GH_CALL_OP="${GH_CALL_OP:-merged-detect}" gh "$@"  # setting:exempt — per-call attribution tag, not a static operator default
 }
 
 # Best-effort default-branch resolution (mirrors worktree.sh's own

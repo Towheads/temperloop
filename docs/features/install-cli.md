@@ -49,7 +49,7 @@ strictly more than the last:
    hard failure, and the command exits 0 either way.
 2. `temperloop try --demo` is the one deliberate, isolated mutating
    exception. It clones a disposable, already-seeded demo repo and drives
-   one real safe-tier funnel tick (issue -> PR) against it: claims one open
+   one real safe-tier pipeline tick (issue -> PR) against it: claims one open
    demo-seed issue, gets a real (still `--tools ""`) judgment call for the
    fix, and opens a PR via the tree-only proposal-PR generator — never a
    direct push, never a merge. If every seeded issue is already claimed or
@@ -61,7 +61,7 @@ strictly more than the last:
    review. Only with explicit per-action consent (an interactive `y/N`, or
    an explicit `--yes-<action>` flag — the default is always "no") does it
    additionally apply API-state changes: a required `checks` status check,
-   the `fnd:`/funnel label set, and, only on the further opt-in
+   the `fnd:`/pipeline label set, and, only on the further opt-in
    `--provision-board`, a new Projects-v2 board.
 
 **The safety contract.** The mutating step in the ladder is exactly one
@@ -96,7 +96,7 @@ yet.
 **Kernel/overlay compose.** `workflows/scripts/install-claude-md.sh`
 composes the installed `~/.claude/CLAUDE.md` from three pieces, in order: a
 generated-file banner, the kernel doc (`claude/CLAUDE.kernel.md`, with any
-`{{KNOB_NAME}}` placeholder tokens substituted from config), a rendered
+`{{SETTING_NAME}}` placeholder tokens substituted from config), a rendered
 "Knowledge store routing" section, and the personal overlay doc
 (`claude/CLAUDE.overlay.md`) verbatim. It is idempotent — composing the same
 sources twice on the same machine reproduces the target byte-for-byte — and
@@ -131,7 +131,7 @@ MB) plus a handful of negligible symlinks in `~/.local/bin`. API budget:
 `try` issues zero `gh` mutations and one bounded `claude -p` call with tools
 disabled; `try --demo` is hard-capped at `--demo-cap-usd` (default `$2.00`,
 ≈370,000 tokens at Claude Sonnet 5 list price), enforced before any spend,
-and mechanically bounded to a single funnel tick.
+and mechanically bounded to a single pipeline tick.
 Runtime: `doctor.sh` is pure shell and sub-second; `try` and `try --demo`
 each drive one `claude -p` invocation, so their wall time tracks that call.
 

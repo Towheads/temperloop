@@ -60,8 +60,8 @@ All four proxies below derive from artifacts `/workshop`, `/assess`, or <!-- cit
 
 If a future proxy genuinely needs a new stream, its schema must be
 documented in `meta/data/raw/README.md`'s shape **and** the extraction rule
-Live/Drain paired in the same change (`claude/commands/tidy.md`'s registry +
-`workflows/scripts/validate-live-drain.sh` green) — this file names no such
+Capture/Backstop paired in the same change (`claude/commands/tidy.md`'s registry +
+`workflows/scripts/validate-capture-backstop.sh` green) — this file names no such
 stream today because none of the four proxies requires one.
 
 ## Proxy 1 — Merge-gate failures on designed vs. hand-authored epics

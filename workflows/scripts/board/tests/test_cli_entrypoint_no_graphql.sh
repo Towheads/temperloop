@@ -38,7 +38,7 @@
 # correctness of what the library does with that data.
 #
 # HARNESS: the PATH-shadowing "logging shim" pattern already established by
-# test_board_dual_adapter.sh (the dual-adapter SAFE-TIER funnel-tick suite)
+# test_board_dual_adapter.sh (the dual-adapter SAFE-TIER pipeline-tick suite)
 # and test_capture.sh's `--repo kernel` section — a fake `gh` binary placed
 # first on PATH that appends every invocation's shell-quoted argv to a log
 # file and serves canned JSON for the small, closed set of REST calls the

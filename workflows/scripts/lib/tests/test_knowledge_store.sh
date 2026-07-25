@@ -5,7 +5,7 @@
 # storage under a throwaway tmpdir; never touches a real vault or the
 # machine's real XDG data dir.
 #
-# Covers: root resolution (default + override, ONE knob), doc-id
+# Covers: root resolution (default + override, ONE setting), doc-id
 # normalization (.md append, absolute/".." rejection, empty rejection),
 # write/read round-trip, write's default-overwrite vs --no-clobber
 # semantics, atomic write (no stray temp file survives), append
@@ -90,7 +90,7 @@ trap 'rm -rf "$TMP"' EXIT
   want="$TMP/xdg-closed/temperloop/knowledge"
   [ "$got" = "$want" ] || fail "2d: closed window must resolve to the new default (got $got want $want)"
   grep -q 'removed in v0.17.0' "$TMP/2d-note.txt" || fail "2d: closed-window resolution must name the removal legibly"
-  grep -q 'KNOWLEDGE_STORE_ROOT' "$TMP/2d-note.txt" || fail "2d: closed-window NOTE must name the migration/override knob"
+  grep -q 'KNOWLEDGE_STORE_ROOT' "$TMP/2d-note.txt" || fail "2d: closed-window NOTE must name the migration/override setting"
   echo "PASS: 2d closed window degrades legibly (new default + NOTE naming the stranded legacy store)"
 )
 
@@ -102,7 +102,7 @@ trap 'rm -rf "$TMP"' EXIT
   source "$LIB"
   got="$(ks_root)"
   [ "$got" = "$TMP/explicit-root" ] || fail "3: explicit KNOWLEDGE_STORE_ROOT must win (got $got)"
-  echo "PASS: 3 KNOWLEDGE_STORE_ROOT overrides the default (single config knob)"
+  echo "PASS: 3 KNOWLEDGE_STORE_ROOT overrides the default (single config setting)"
 )
 
 # From here on, all cases share one isolated store root.

@@ -10,7 +10,7 @@
 #
 # The five questions (order and names shared with the overlay renderer):
 #   1. Attention              — what needs you now
-#   2. Funnel health & trust  — is the autonomous machinery alive and honest
+#   2. Pipeline health & trust  — is the autonomous machinery alive and honest
 #   3. Spend                  — what the pipeline is costing (kernel-observable
 #                               spend: gh wall-time + knowledge-store op volume;
 #                               token-cost spend is an overlay enrichment)
@@ -24,7 +24,7 @@
 #   command-runs-<YYYY-MM>.jsonl               (emit-command-run.sh)
 #   issue-touches-<YYYY-MM>.jsonl              (emit-issue-touch.sh, capture.sh)
 #   claims-<YYYY-MM>.jsonl                     (board/claim.sh claim_log_emit)
-#   funnel-<YYYY-MM>.jsonl                     (build/funnel-cron.sh)
+#   pipeline-<YYYY-MM>.jsonl                     (build/pipeline-cron.sh)
 #   gh-calls-<YYYY-MM>.jsonl                   (gh-call-logger.sh lake stream)
 #   knowledge-search-fallback-<YYYY-MM>.jsonl  (lib/knowledge_search_mcp.sh)
 #   knowledge-reads.log                        (lib/knowledge_store.sh
@@ -38,22 +38,22 @@
 # inside the lookback window says so and names the freshest record it DID
 # find. jq missing degrades the whole brief to an honest one-liner, exit 0.
 # This script never mutates anything and always exits 0 (a status readout
-# must never block the ritual that reads it).
+# must never block the check-in that reads it).
 #
 # Usage:
 #   telemetry-brief.sh [--lookback-days N]
 #
-# Knobs (registered in workflows/scripts/config/knob-registry.tsv):
+# Settings (registered in workflows/scripts/config/setting-registry.tsv):
 #   TELEMETRY_LOOKBACK_DAYS  window for every windowed number (default 7;
 #                            the --lookback-days flag wins over the env var,
-#                            per docs/config-precedence.md rung 1 > rung 2)
+#                            per docs/config-precedence.md layer 1 > layer 2)
 #   TELEMETRY_RAW_DIR        the raw lake dir every stream falls back to when
 #                            its own emitter's *_RAW_DIR override is unset
 #                            (default: this checkout's meta/data/raw, resolved
 #                            BASH_SOURCE-relative like emit-command-run.sh)
 #   Per-stream overrides honored first, so the reader follows the emitters
 #   wherever they were pointed: CMD_RUN_RAW_DIR, ISSUE_TOUCHES_RAW_DIR,
-#   CLAIMS_RAW_DIR, FUNNEL_RAW_DIR, GH_CALLS_RAW_DIR,
+#   CLAIMS_RAW_DIR, PIPELINE_RAW_DIR, GH_CALLS_RAW_DIR,
 #   KS_SEARCH_FALLBACK_RAW_DIR (registered by their owning emit scripts), and
 #   KNOWLEDGE_READ_LOG (owning: lib/knowledge_store.sh — the fallback literal
 #   below is a byte-identical duplicate of that owning seam, per the registry
@@ -85,15 +85,15 @@ esac
 cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
-funnel_dir="${FUNNEL_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 gh_calls_dir="${GH_CALLS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 ks_fallback_dir="${KS_SEARCH_FALLBACK_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 read_log="${KNOWLEDGE_READ_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log}"
 
 # Human-facing "today" bucket renders in the operator's display timezone, not
 # UTC, so a late-evening run isn't filed under tomorrow's date (kernel doc §
-# Communication conventions). Belt-and-suspenders default per § Prose-resident
-# knob convention — respects an exported DISPLAY_TZ, else the build.config.sh
+# Communication conventions). Belt-and-suspenders default per § Named-setting convention
+# setting convention — respects an exported DISPLAY_TZ, else the build.config.sh
 # default. The interval math below (cutoff_iso / iso_to_epoch, epoch diffs) stays
 # UTC by design: absolute instants, unaffected by display zone.
 today="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date +%Y-%m-%d)"
@@ -164,7 +164,7 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "jq not found — the kernel raw streams cannot be parsed, so no numbers are rendered."
   echo "Install jq, then re-run. Streams this brief would read:"
   echo "  $cmd_run_dir/command-runs-*.jsonl · $issue_touch_dir/issue-touches-*.jsonl · $claims_dir/claims-*.jsonl"
-  echo "  $funnel_dir/funnel-*.jsonl · $gh_calls_dir/gh-calls-*.jsonl · $ks_fallback_dir/knowledge-search-fallback-*.jsonl"
+  echo "  $pipeline_dir/pipeline-*.jsonl · $gh_calls_dir/gh-calls-*.jsonl · $ks_fallback_dir/knowledge-search-fallback-*.jsonl"
   echo "  $read_log"
   exit 0
 fi
@@ -181,7 +181,7 @@ for pair in \
   "command-runs=$cmd_run_dir" \
   "issue-touches=$issue_touch_dir" \
   "claims=$claims_dir" \
-  "funnel=$funnel_dir" \
+  "pipeline=$pipeline_dir" \
   "gh-calls=$gh_calls_dir" \
   "knowledge-search-fallback=$ks_fallback_dir"; do
   s="${pair%%=*}"; d="${pair#*=}"
@@ -218,13 +218,13 @@ echo "Window: last $lookback days (records with ts >= $cutoff) · kernel raw str
 
 cmd_runs="$(window_records "$cmd_run_dir" "command-runs")"
 cmd_files="$(stream_files "$cmd_run_dir" "command-runs")"
-funnel_recs="$(window_records "$funnel_dir" "funnel")"
-funnel_files="$(stream_files "$funnel_dir" "funnel")"
+pipeline_recs="$(window_records "$pipeline_dir" "pipeline")"
+pipeline_files="$(stream_files "$pipeline_dir" "pipeline")"
 
 # ── 1. Attention ─────────────────────────────────────────────────────────────
 echo
 echo "## 1. Attention — what needs you now"
-echo "source: command-runs-*.jsonl @ $cmd_run_dir · funnel-*.jsonl @ $funnel_dir"
+echo "source: command-runs-*.jsonl @ $cmd_run_dir · pipeline-*.jsonl @ $pipeline_dir"
 attention_any=0
 if [ -n "$cmd_files" ]; then
   n="$(printf '%s' "$cmd_runs" | jq 'length')"
@@ -235,39 +235,39 @@ if [ -n "$cmd_files" ]; then
     attention_any=1
   fi
 fi
-if [ -n "$funnel_files" ]; then
-  n="$(printf '%s' "$funnel_recs" | jq 'length')"
+if [ -n "$pipeline_files" ]; then
+  n="$(printf '%s' "$pipeline_recs" | jq 'length')"
   if [ "$n" -gt 0 ]; then
-    drive_errs="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
-    echo "- funnel drive errors (${lookback}d): $drive_errs (drive records carrying an error reason)"
+    drive_errs="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
+    echo "- pipeline drive errors (${lookback}d): $drive_errs (drive records carrying an error reason)"
     attention_any=1
   fi
 fi
 if [ "$attention_any" -eq 0 ]; then
   if [ -z "$cmd_files" ]; then stream_empty_line "command-runs" "$cmd_run_dir"; fi
-  if [ -z "$funnel_files" ]; then stream_empty_line "funnel" "$funnel_dir"; fi
-  if [ -n "$cmd_files" ] || [ -n "$funnel_files" ]; then
+  if [ -z "$pipeline_files" ]; then stream_empty_line "pipeline" "$pipeline_dir"; fi
+  if [ -n "$cmd_files" ] || [ -n "$pipeline_files" ]; then
     echo "- no in-window attention signals (streams present, no records in the last $lookback days)"
   fi
 fi
-echo "note: parked \`/build\` items live in the active plan note's own item statuses, not a raw stream — check the plan note directly; the overlay brief adds funnel escalation/hand-off detail."
+echo "note: parked \`/build\` items live in the active plan note's own item statuses, not a raw stream — check the plan note directly; the overlay brief adds pipeline escalation/hand-off detail."
 
-# ── 2. Funnel health & trust ────────────────────────────────────────────────
+# ── 2. Pipeline health & trust ────────────────────────────────────────────────
 echo
-echo "## 2. Funnel health & trust"
-echo "source: funnel-*.jsonl @ $funnel_dir · knowledge-search-fallback-*.jsonl @ $ks_fallback_dir"
-if [ -z "$funnel_files" ]; then
-  stream_empty_line "funnel" "$funnel_dir"
+echo "## 2. Pipeline health & trust"
+echo "source: pipeline-*.jsonl @ $pipeline_dir · knowledge-search-fallback-*.jsonl @ $ks_fallback_dir"
+if [ -z "$pipeline_files" ]; then
+  stream_empty_line "pipeline" "$pipeline_dir"
 else
-  n="$(printf '%s' "$funnel_recs" | jq 'length')"
+  n="$(printf '%s' "$pipeline_recs" | jq 'length')"
   if [ "$n" -eq 0 ]; then
-    stale_note "funnel" "$funnel_dir" "$(stream_max_ts "$funnel_dir" "funnel")"
+    stale_note "pipeline" "$pipeline_dir" "$(stream_max_ts "$pipeline_dir" "pipeline")"
   else
-    ran="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "ran") ] | length')"
-    skipped="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "skipped") ] | length')"
-    drives="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "drive") ] | length')"
-    drive_errs="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
-    last_wake="$(printf '%s' "$funnel_recs" | jq -r '[ .[].ts ] | max // "unknown"')"
+    ran="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "ran") ] | length')"
+    skipped="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "skipped") ] | length')"
+    drives="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "drive") ] | length')"
+    drive_errs="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
+    last_wake="$(printf '%s' "$pipeline_recs" | jq -r '[ .[].ts ] | max // "unknown"')"
     echo "- wakes (${lookback}d): $n (ran $ran · skipped $skipped · drive $drives, of which $drive_errs errored) · last wake: $last_wake"
   fi
 fi

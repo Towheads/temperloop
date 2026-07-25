@@ -1,56 +1,56 @@
 #!/usr/bin/env bash
-# description: config subcommands — `config list` prints resolved value + winning precedence rung per registry knob
+# description: config subcommands — `config list` prints resolved value + winning precedence layer per registry setting
 #
 # config.sh — `temperloop config <subcommand>` (temperloop#262, item
 # configure-config-cli — ADR K164 D7). One subcommand today: `list`.
 #
-# WHY THIS EXISTS: the six-rung config precedence ladder
-# (docs/config-precedence.md) means a knob's EFFECTIVE value is never just
-# "the registry default" — it's whichever rung's file/env sets it first,
-# highest rung wins. An operator staring at knob-registry.tsv has no way to
+# WHY THIS EXISTS: the six-layer config precedence ladder
+# (docs/config-precedence.md) means a setting's EFFECTIVE value is never just
+# "the registry default" — it's whichever layer's file/env sets it first,
+# highest layer wins. An operator staring at setting-registry.tsv has no way to
 # see what actually WINS on their own machine/checkout without this.
 #
 # PINNED MECHANISM (design decision, temperloop#262 — do not redesign): the
 # ladder itself deliberately tracks no winner (docs/config-precedence.md is
-# a pure "highest-rung-wins by source order + `:=`" design with no runtime
-# bookkeeping), and knob_registry_get returns only the static registry
-# default. So `config list` RE-DERIVES value + winning rung per knob via
-# CLEAN-SUBSHELL RUNG PROBES, cheapest rung first:
-#   1. env    — is the knob's var already set in THIS process's real
-#               environment (rung 2)? No subshell needed — that's just
+# a pure "highest-layer-wins by source order + `:=`" design with no runtime
+# bookkeeping), and setting_registry_get returns only the static registry
+# default. So `config list` RE-DERIVES value + winning layer per setting via
+# CLEAN-SUBSHELL LAYER PROBES, cheapest layer first:
+#   1. env    — is the setting's var already set in THIS process's real
+#               environment (layer 2)? No subshell needed — that's just
 #               "was it exported before this script ran".
 #   2. machine-conf   — does SOURCING the machine-conf file
 #               ($BUILD_CONFIG_MACHINE, i.e. the same
 #               $XDG_CONFIG_HOME/temperloop/build.config.sh path
-#               build.config.sh itself resolves at rung 3) set the var, in
+#               build.config.sh itself resolves at layer 3) set the var, in
 #               a subshell that never touches this process's real state?
-#   3. repo-local     — same probe against $BUILD_CONFIG_LOCAL (rung 4,
+#   3. repo-local     — same probe against $BUILD_CONFIG_LOCAL (layer 4,
 #               build.config.sh's untracked sibling).
-#   4. tracked-repo   — same probe against build.config.sh itself (rung
+#   4. tracked-repo   — same probe against build.config.sh itself (layer
 #               5/6's one physical file in this repo). Reached only once
-#               rungs 1-3 have already been ruled out for this var, so
+#               layers 1-3 have already been ruled out for this var, so
 #               whatever build.config.sh's OWN sourcing pass resolves the
-#               var to at this point is unambiguously ITS rung — even
+#               var to at this point is unambiguously ITS layer — even
 #               though build.config.sh transparently re-sources the same
-#               rung-3/4 files internally (see its own header), those
-#               inner sources are provably no-ops here (rungs 1-3 already
+#               layer-3/4 files internally (see its own header), those
+#               inner sources are provably no-ops here (layers 1-3 already
 #               said "unset"), so nothing is double-counted.
 #   5. else    — no file set it: use the registry row's own recorded
 #               `default` field verbatim, and report ITS `layer` column as
-#               the winning rung. The D2 registry↔shell equality lint
+#               the winning layer. The D2 registry↔shell equality lint
 #               (registry-config-lints, a later item) is what makes this
 #               trustworthy without sourcing every individual OWNING
 #               SCRIPT (baseline-snapshot.sh, try.sh, ...) — the registry
 #               default is guaranteed to equal that script's real literal.
 #
-# Rung 1 (CLI flag) is NEVER a candidate winner here — there is no live
+# Layer 1 (CLI flag) is NEVER a candidate winner here — there is no live
 # invocation context to inspect at list-time (a flag only exists inside
 # some OTHER script's own arg parsing). This is reported once, in the
 # output header, rather than per-row.
 #
 # PERFORMANCE NOTE: probes 2-4 each source ONE file (machine-conf,
 # repo-local, tracked-repo) exactly ONCE TOTAL for the whole run — not once
-# per knob — capturing every registry-known var's resulting value from
+# per setting — capturing every registry-known var's resulting value from
 # that single source pass, then looking values up per-row out of that
 # captured snapshot. Sourcing build.config.sh (a few hundred lines, pure
 # `:=` assignments, no external commands beyond `dirname`/`pwd`/`hostname
@@ -61,14 +61,14 @@
 #   config.sh list [--format text|tsv]
 #
 #   list             Print every unioned registry row (kernel table +
-#                    overlay extension when present — knob-registry-lib.sh)
-#                    with its resolved value and winning rung.
+#                    overlay extension when present — setting-registry-lib.sh)
+#                    with its resolved value and winning layer.
 #   --format text    Human-readable aligned columns (default).
-#   --format tsv     Machine-parseable: name<TAB>rung<TAB>value<TAB>
+#   --format tsv     Machine-parseable: name<TAB>layer<TAB>value<TAB>
 #                    owning-script<TAB>doc, one row per line — same field
 #                    order as the registry's own row shape, with `default`
 #                    swapped for the resolved `value` and `layer` swapped
-#                    for the resolved `rung`.
+#                    for the resolved `layer`.
 #
 # Exit codes: 0 = printed successfully. 1 = broken kernel checkout (the
 # registry lib or build.config.sh is missing). 2 = invalid CLI usage.
@@ -93,18 +93,18 @@ set -uo pipefail
 SUBCOMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
 KERNEL_ROOT="$(cd "$BIN_DIR/.." && pwd)"
-REGISTRY_LIB="$KERNEL_ROOT/workflows/scripts/config/knob-registry-lib.sh"
+REGISTRY_LIB="$KERNEL_ROOT/workflows/scripts/config/setting-registry-lib.sh"
 TRACKED_REPO_FILE="$KERNEL_ROOT/workflows/scripts/build/build.config.sh"
 
 if [ ! -f "$REGISTRY_LIB" ]; then
-  echo "config.sh: knob-registry-lib.sh not found at $REGISTRY_LIB (broken kernel checkout)" >&2
+  echo "config.sh: setting-registry-lib.sh not found at $REGISTRY_LIB (broken kernel checkout)" >&2
   exit 1
 fi
 if [ ! -f "$TRACKED_REPO_FILE" ]; then
   echo "config.sh: build.config.sh not found at $TRACKED_REPO_FILE (broken kernel checkout)" >&2
   exit 1
 fi
-# shellcheck source=../../workflows/scripts/config/knob-registry-lib.sh
+# shellcheck source=../../workflows/scripts/config/setting-registry-lib.sh
 source "$REGISTRY_LIB"
 
 usage() {
@@ -152,10 +152,10 @@ case "$format" in
 esac
 
 # ---------------------------------------------------------------------------
-# Resolve the three FILE rungs. Reuses the SAME override knobs
+# Resolve the three FILE layers. Reuses the SAME override settings
 # build.config.sh itself already honors (BUILD_CONFIG_MACHINE /
-# BUILD_CONFIG_LOCAL, both already knob-registry.tsv rows) rather than
-# inventing a new registry knob just for this subcommand's own path
+# BUILD_CONFIG_LOCAL, both already setting-registry.tsv rows) rather than
+# inventing a new registry setting just for this subcommand's own path
 # resolution — so a host/checkout override that already works for
 # build.config.sh transparently works for `config list` too.
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ repo_local_file="${BUILD_CONFIG_LOCAL:-$(dirname "$TRACKED_REPO_FILE")/build.con
 # <file> (silent no-op if absent/unreadable), then name<TAB>value for every
 # given <name> that ended up SET after sourcing. One source call per
 # candidate file for the WHOLE run (see header perf note), not one per
-# knob.
+# setting.
 _config_list_bulk_source() {
   local file="$1"
   shift
@@ -206,13 +206,13 @@ EOF
   return 1
 }
 
-if ! knob_registry_validate >/dev/null 2>&1; then
-  echo "config.sh: warning — the knob registry reported malformed rows (run" >&2
-  echo "  workflows/scripts/config/knob-registry-lib.sh's knob_registry_validate" >&2
+if ! setting_registry_validate >/dev/null 2>&1; then
+  echo "config.sh: warning — the setting registry reported malformed rows (run" >&2
+  echo "  workflows/scripts/config/setting-registry-lib.sh's setting_registry_validate" >&2
   echo "  directly for details) — continuing with a best-effort union" >&2
 fi
 
-rows="$(knob_registry_rows)"
+rows="$(setting_registry_rows)"
 all_names="$(printf '%s\n' "$rows" | awk -F'\t' 'NF>0{print $1}' | sort -u)"
 
 # shellcheck disable=SC2086  # intentional word-split: a space-separated name list
@@ -223,46 +223,46 @@ repo_local_map="$(_config_list_bulk_source "$repo_local_file" $all_names)"
 tracked_repo_map="$(_config_list_bulk_source "$TRACKED_REPO_FILE" $all_names)"
 
 if [ "$format" = "tsv" ]; then
-  printf 'name\trung\tvalue\towning-script\tdoc\n'
+  printf 'name\tlayer\tvalue\towning-script\tdoc\n'
 else
-  echo "temperloop config list — resolved value + winning precedence rung per knob"
-  echo "(rung 1 \"cli\" is never resolved at list-time — always reported n/a here;"
-  echo " see docs/config-precedence.md for the full six-rung ladder)"
+  echo "temperloop config list — resolved value + winning precedence layer per setting"
+  echo "(layer 1 \"cli\" is never resolved at list-time — always reported n/a here;"
+  echo " see docs/config-precedence.md for the full six-layer ladder)"
   echo
-  printf '%-42s %-13s %-30s %s\n' "NAME" "RUNG" "VALUE" "OWNING-SCRIPT"
+  printf '%-42s %-13s %-30s %s\n' "NAME" "LAYER" "VALUE" "OWNING-SCRIPT"
 fi
 
 while IFS= read -r row; do
   [ -n "$row" ] || continue
-  _knob_split_row "$row"   # fork-free field split (lib helper); K305
+  _setting_split_row "$row"   # fork-free field split (lib helper); K305
   name="$KR_F1"
   default="$KR_F2"
   layer="$KR_F4"
   owning="$KR_F5"
   doc="$KR_F6"
 
-  value="" rung=""
+  value="" layer=""
   if [ -n "${!name+x}" ]; then
     value="${!name}"
-    rung="env"
+    layer="env"
   elif _config_list_lookup "$machine_conf_map" "$name"; then
     value="$CFG_LOOKUP_VAL"
-    rung="machine-conf"
+    layer="machine-conf"
   elif _config_list_lookup "$repo_local_map" "$name"; then
     value="$CFG_LOOKUP_VAL"
-    rung="repo-local"
+    layer="repo-local"
   elif _config_list_lookup "$tracked_repo_map" "$name"; then
     value="$CFG_LOOKUP_VAL"
-    rung="tracked-repo"
+    layer="tracked-repo"
   else
     value="$default"
-    rung="$layer"
+    layer="$layer"
   fi
 
   if [ "$format" = "tsv" ]; then
-    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$rung" "$value" "$owning" "$doc"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$layer" "$value" "$owning" "$doc"
   else
-    printf '%-42s %-13s %-30s %s\n' "$name" "$rung" "$value" "$owning"
+    printf '%-42s %-13s %-30s %s\n' "$name" "$layer" "$value" "$owning"
   fi
 done <<EOF
 $rows

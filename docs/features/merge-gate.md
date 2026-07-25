@@ -26,7 +26,7 @@ queue can simply take a while.
 
 ## How it works
 
-`workflows/scripts/build/gate.sh` is the deterministic-spine script that
+`workflows/scripts/build/gate.sh` is the deterministic-machinery script that
 owns the level-boundary merge-gate steps of `/build`: reading a PR's live
 mergeability, detecting whether the repo's default branch is under a
 *strict* status-check requirement, computing a mechanical risk verdict over
@@ -101,7 +101,7 @@ walks the batch through `gate.sh managed-merge` on the managed backend. The
 sweep pipeline reuses the same script for its own per-fix merges. Poll
 tunables (`GATE_CI_POLL_INTERVAL` / `GATE_CI_POLL_TIMEOUT`,
 `GATE_MERGE_POLL_INTERVAL` / `GATE_MERGE_POLL_TIMEOUT`) live in
-`build.config.sh` alongside every other build knob, so a slower or faster
+`build.config.sh` alongside every other build setting, so a slower or faster
 poll cadence is a single config edit rather than a script change.
 
 ## Resource impact

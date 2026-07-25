@@ -1,12 +1,12 @@
-# knob-prose-baseline.tsv — BURN-DOWN DEBT LEDGER for check-knob-prose.sh
+# setting-prose-baseline.tsv — BURN-DOWN DEBT LEDGER for check-setting-prose.sh
 # (temperloop#164/#169, item registry-config-lints), the prose counterpart to
 # workflows/scripts/kernel/personal-token-denylist-baseline.tsv (same
 # mechanism, same consumed-once semantics — see that file's header for the
 # exemption-vs-baseline distinction it inherits):
 #
-#   * the `<!-- knob-prose:allow -->` per-line marker is for PERMANENT,
+#   * the `<!-- setting-prose:allow -->` per-line marker is for PERMANENT,
 #     legitimately-literal prose (a doc line that must show a value);
-#   * THIS file is for PRE-EXISTING violations of the D3 "prose names knobs,
+#   * THIS file is for PRE-EXISTING violations of the D3 "prose names settings,
 #     never values" rule that are debt, not exceptions — every row here is
 #     meant to be fixed and removed. The follow-up item
 #     (prose-tunables-migration) rewrites each listed line to name-only
@@ -15,10 +15,10 @@
 #     new violations at source (or, if genuinely legitimate, mark the line
 #     with the allow-marker), don't grandfather them in.
 #
-# Format: <repo-relative path> TAB <knob name> TAB <registry default,
+# Format: <repo-relative path> TAB <setting name> TAB <registry default,
 #         verbatim> TAB <exact matched line content>
 #
-# Matching (check-knob-prose.sh): a hit is suppressed only when its (file,
+# Matching (check-setting-prose.sh): a hit is suppressed only when its (file,
 # name, default, line-content) tuple exactly matches a row here, and each
 # row suppresses exactly ONE occurrence — so a genuinely NEW violation
 # anywhere, including a new duplicate of an already-listed line, still fails
@@ -31,7 +31,7 @@
 # build.md, 1 in sweep.md — all BUILD_QUOTA_PAUSE_PCT / BUILD_MERGE_GATE_
 # WINDOW / BUILD_QUEUE_TIMEOUT / BUILD_MERGE_BACKEND / BUILD_HEADLESS_POLL_
 # TIMEOUT restatements) were rewritten to name-only prose and removed. Kept
-# as a zero-row file (not deleted) so check-knob-prose.sh's `-f` guard and
+# as a zero-row file (not deleted) so check-setting-prose.sh's `-f` guard and
 # this header's burn-down history stay visible; a future genuinely
 # pre-existing violation would be baselined here the same way, but new
 # violations should be fixed at source instead (see above).

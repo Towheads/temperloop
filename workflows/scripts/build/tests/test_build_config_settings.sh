@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# Tests for workflows/scripts/build/build-config-knobs.sh — the SSOT-derived
-# knob-name list build-level.mjs's 3e.5 gate `unset`s to run hermetically
+# Tests for workflows/scripts/build/build-config-settings.sh — the SSOT-derived
+# setting-name list build-level.mjs's 3e.5 gate `unset`s to run hermetically
 # (temperloop#1241).
 #
-# Covers: helper prints names · includes known VALUE knobs · EXCLUDES the two
+# Covers: helper prints names · includes known VALUE settings · EXCLUDES the two
 # config-file resolvers (BUILD_CONFIG_MACHINE/LOCAL, #1055's domain) · list ==
 # build.config.sh's own decls minus those two (SSOT coverage) · the load-bearing
-# behavior: after `unset $(helper)` a tracked default wins over an exported knob
+# behavior: after `unset $(helper)` a tracked default wins over an exported setting
 # — WITH a negative control proving the assertion is real (env wins without the
 # scrub). Zero network.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HELPER="$HERE/../build-config-knobs.sh"
+HELPER="$HERE/../build-config-settings.sh"
 CONFIG="$HERE/../build.config.sh"
 
 pass=0
@@ -25,10 +25,10 @@ bad() { echo "  FAIL  $1: $2"; fail=$((fail + 1)); }
 names="$(bash "$HELPER")"
 
 # 1. Prints a non-empty list.
-if [ -n "$names" ]; then ok "helper prints knob names"; else bad "helper prints knob names" "empty output"; fi
+if [ -n "$names" ]; then ok "helper prints setting names"; else bad "helper prints setting names" "empty output"; fi
 
-# 2. Includes representative VALUE knobs from each family the funnel exports.
-for k in BUILD_MERGE_GATE_WINDOW TIDY_SYNC_WAIT ASSESS_POLL_CADENCE FUNNEL_OPERATOR EPIC_MIN_SUBUNITS; do
+# 2. Includes representative VALUE settings from each family the pipeline exports.
+for k in BUILD_MERGE_GATE_WINDOW TIDY_SYNC_WAIT ASSESS_POLL_CADENCE PIPELINE_OPERATOR EPIC_MIN_SUBUNITS; do
   if printf '%s\n' "$names" | grep -qxF "$k"; then ok "includes $k"; else bad "includes $k" "absent from list"; fi
 done
 
@@ -46,10 +46,10 @@ if [ "$decls" = "$got" ]; then ok "list matches build.config.sh decls (SSOT)"; e
   bad "list matches build.config.sh decls (SSOT)" "diff: $(diff <(echo "$decls") <(echo "$got") | tr '\n' ' ')"; fi
 
 # 5. Behavior — hermeticity. Isolate from any host machine/local config file so
-#    the ONLY variable under test is the env-knob scrub.
+#    the ONLY variable under test is the env-setting scrub.
 empty="$(mktemp)"; trap 'rm -f "$empty"' EXIT
 
-# 5a. Negative control: WITHOUT the scrub, an exported knob wins the env rung.
+# 5a. Negative control: WITHOUT the scrub, an exported setting wins the env layer.
 ctrl="$(
   export BUILD_CONFIG_MACHINE="$empty" BUILD_CONFIG_LOCAL="$empty"
   export BUILD_MERGE_GATE_WINDOW=99999
@@ -57,14 +57,14 @@ ctrl="$(
   source "$CONFIG"
   echo "$BUILD_MERGE_GATE_WINDOW"
 )"
-if [ "$ctrl" = "99999" ]; then ok "negative control: exported knob wins without scrub"; else
-  bad "negative control: exported knob wins without scrub" "got '$ctrl' (expected 99999 — test would be vacuous)"; fi
+if [ "$ctrl" = "99999" ]; then ok "negative control: exported setting wins without scrub"; else
+  bad "negative control: exported setting wins without scrub" "got '$ctrl' (expected 99999 — test would be vacuous)"; fi
 
 # 5b. WITH the scrub, the tracked default (300) wins — the gate is hermetic.
 scrubbed="$(
   export BUILD_CONFIG_MACHINE="$empty" BUILD_CONFIG_LOCAL="$empty"
   export BUILD_MERGE_GATE_WINDOW=99999
-  # shellcheck disable=SC2046  # intentional word-split: unset the whole knob set
+  # shellcheck disable=SC2046  # intentional word-split: unset the whole setting set
   unset $(bash "$HELPER")
   # shellcheck disable=SC1090
   source "$CONFIG"
@@ -74,5 +74,5 @@ if [ "$scrubbed" = "300" ]; then ok "scrub yields tracked default (hermetic gate
   bad "scrub yields tracked default (hermetic gate)" "got '$scrubbed' (expected 300)"; fi
 
 echo ""
-echo "build-config-knobs: $pass passed, $fail failed"
+echo "build-config-settings: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

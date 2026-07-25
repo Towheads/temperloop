@@ -53,11 +53,11 @@ drain on schedule").
   learning can't be lost if the session ends first. This closes the
   contract-decomposition loop: every completed epic teaches the next
   decomposition.
-- **The other live rules are overlay/vault** — decision capture (→ `Decisions/`
+- **The other capture rules are overlay/vault** — decision capture (→ `Decisions/`
   notes), feedback memory, config-drift sync, session-optimization tracking (→
   `Patterns/`), and tooling-friction capture (→ the friction ledger,
   `Context/Session friction ledger.md`). The kernel doesn't ship the capture
-  *rules*, but it ships their nightly **drain backstops** (stage 3) and the CI
+  *rules*, but it ships their nightly **backstops** (stage 3) and the CI
   check that keeps the two halves paired (stage 6). One in-repo trace: a
   reviewer agent enforces config-drift sync — "a `claude/` change with no paired
   note update is config drift" ([`claude/agents/workflow-reviewer.md`](../claude/agents/workflow-reviewer.md)).
@@ -137,7 +137,7 @@ The escalation has a fixed shape ([`principles.md`](principles.md) #5, "Climb
 the maturity ladder on evidence"): **a rule starts as prose** (a habit stated in
 `CLAUDE.md`); **if it keeps leaking, it earns a mechanical backstop** (a
 PreToolUse hook that warns or asks); **only a backstop that keeps firing earns a
-hard, CI-enforced invariant.** Each rung is a response to an observed leak, not a
+hard, CI-enforced invariant.** Each layer is a response to an observed leak, not a
 guess at what might leak.
 
 The worked examples all began as repeated frictions and climbed to hooks:
@@ -153,18 +153,18 @@ The worked examples all began as repeated frictions and climbed to hooks:
   budget in a real session.
 
 Each is a *backstop*, not a replacement for the habit — it fails open and only
-nudges. The top rung of the ladder is a hard invariant (stage 6).
+nudges. The top layer of the ladder is a hard invariant (stage 6).
 
-### 6. Enforce that the loop stays whole — live/drain pairing
+### 6. Enforce that the loop stays whole — capture/backstop pairing
 
 The loop only works if a capture rule can't silently lose its backstop. So
 every live-capture rule must ship **paired** with a nightly drain rule,
-registered in a table, and [`workflows/scripts/validate-live-drain.sh`](../workflows/scripts/validate-live-drain.sh)
+registered in a table, and [`workflows/scripts/validate-capture-backstop.sh`](../workflows/scripts/validate-capture-backstop.sh)
 **fails the build** (it's part of the required `checks` gate) if any pair is
-half-present — a live anchor with no drain, or a drain with no live. That is the
+half-present — a capture anchor with no drain, or a drain with no live. That is the
 CI-enforced invariant at the top of the maturity ladder, guarding the loop
 against its own silent-loss failure mode ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md)
-§ Live/Drain pairing).
+§ Capture/Backstop pairing).
 
 ### 7. Operator disposes, and the loop is measured — `/check-in`
 
@@ -191,7 +191,7 @@ not proofs**. Same honesty as the cost and token-spend pages.
 
 | Half of the loop | Where it lives | Examples |
 |---|---|---|
-| Drain, enforcement, plumbing | **kernel (this repo)** | `/tidy`, `/check-in`, the session hooks, the drain scripts, the maturity-ladder guard hooks, `validate-live-drain.sh`, the findings schema |
+| Drain, enforcement, plumbing | **kernel (this repo)** | `/tidy`, `/check-in`, the session hooks, the drain scripts, the maturity-ladder guard hooks, `validate-capture-backstop.sh`, the findings schema |
 | Live-capture rules | **private overlay** | decision capture, feedback memory, config-drift sync, session-optimization tracking, tooling-friction capture (composed into `~/.claude/CLAUDE.md` at install) |
 | The retrospective *judge* | **private overlay** | `/retro` (the epic #916 retro-judge layer) — grades system performance across five axes and feeds `/check-in`'s retro-review surface; the judge counterpart to the kernel's `/tidy` extractor |
 | The knowledge store the loop reads and writes | **Obsidian vault** | the friction ledger, curated `Decisions/`/`Patterns/`/`Mistakes/`/`Context/`, the `Sessions/_inbox/` stubs, the pipeline disposition surfaces |
@@ -199,7 +199,7 @@ not proofs**. Same honesty as the cost and token-spend pages.
 So a bare kernel checkout has the machine that *processes and hardens*
 learnings; a full install adds the rules that *capture* them and the store that
 *holds* them. The pairing check (stage 6) is what keeps a downstream install
-from shipping a capture rule whose drain backstop went missing.
+from shipping a capture rule whose backstop went missing.
 
 ## Related
 

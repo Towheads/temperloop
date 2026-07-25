@@ -18,9 +18,9 @@
 #      call to `emit-command-run.sh` with `--command sweep` / `--command
 #      triage` respectively.
 #
-# This mirrors the validate-live-drain.sh shape (same script style, same
+# This mirrors the validate-capture-backstop.sh shape (same script style, same
 # hard-fail-on-half-present contract, wired into scripts/quality-gates.sh
-# the same way) — see workflows/scripts/validate-live-drain.sh for the sibling
+# the same way) — see workflows/scripts/validate-capture-backstop.sh for the sibling
 # pattern this one is modeled on.
 #
 # Usage: workflows/scripts/validate-command-run-emit.sh   (resolves the repo itself)

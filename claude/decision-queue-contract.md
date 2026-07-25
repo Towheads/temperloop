@@ -3,9 +3,9 @@
 > **Source of truth: `claude/decision-queue-contract.md`** in the foundation repo,
 > deployed to `~/.claude/decision-queue-contract.md` by `make install-claude`.
 > All pipeline commands that park or drain decision issues reference this file.
-> Rationale: `Decisions/foundation - Autonomous funnel driver + GitHub decision queue`.
+> Rationale: `Decisions/foundation - Autonomous pipeline driver + GitHub decision queue`.
 
-This contract defines the board-agnostic convention that every funnel item consumes.
+This contract defines the board-agnostic convention that every pipeline item consumes.
 It covers four things: the **assignee-baton** (the distributed lock), the **kind
 label** (the operator queue surface), the **typed reply grammar** (the answer format
 and parse-miss rule), and the **race rule** (the single-flight invariant). It does
@@ -23,7 +23,7 @@ stage. The baton has two states:
 | Assignee state | Meaning | Who acts |
 |---|---|---|
 | Assigned to the operator | Operator's turn — the item is parked, waiting for a human reply | Operator only |
-| Unassigned (or assigned to a bot user) | Driver's turn — the issue is workable by the funnel-tick | Driver |
+| Unassigned (or assigned to a bot user) | Driver's turn — the issue is workable by the pipeline-tick | Driver |
 
 **Handing the baton to the operator (parking).** The driver:
 1. Posts a comment describing the question, the offered options, and the expected
@@ -140,7 +140,7 @@ A parse-miss never silently defaults to any option. Closed-enum-or-escalate.
 
 ### Single-flight lockfile
 
-Only one `funnel-tick` run may be active at a time per host. The driver acquires a <!-- cite: DQ.3 class:double-driven-decision -->
+Only one `pipeline-tick` run may be active at a time per host. The driver acquires a <!-- cite: DQ.3 class:double-driven-decision -->
 lockfile before processing any board:
 
 ```sh
@@ -148,7 +148,7 @@ LOCK_DIR="/tmp/funnel-tick"
 LOCK_FILE="$LOCK_DIR/tick.lock"
 mkdir -p "$LOCK_DIR"
 exec 200>"$LOCK_FILE"
-flock -n 200 || { echo "funnel-tick already running — exiting" >&2; exit 0; }
+flock -n 200 || { echo "pipeline-tick already running — exiting" >&2; exit 0; }
 ```
 
 On exit (clean or crash) the lock is released automatically because the fd is
@@ -188,14 +188,14 @@ if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:manual"
 ```
 
 This is the existing `Host/Session` field value on the board item — not a new field.
-The funnel-tick does NOT introduce a separate claim mechanism; it calls `claim.sh`
+The pipeline-tick does NOT introduce a separate claim mechanism; it calls `claim.sh`
 for each item it works, exactly as `/build` does.
 
 ---
 
 ## 5. Worked example
 
-**Scenario.** An issue in the funnel has a design fork: should the merge gate use a
+**Scenario.** An issue in the pipeline has a design fork: should the merge gate use a
 timed objection window or require explicit approval? The driver can't resolve it —
 it parks the item into the decision queue.
 

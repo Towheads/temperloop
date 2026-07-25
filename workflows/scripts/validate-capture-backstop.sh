@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# validate-live-drain.sh — assert every Live/Drain pairing is whole.
+# validate-capture-backstop.sh — assert every Capture/Backstop pairing is whole.
 #
-# The live/drain pairing registry (see Patterns/Live-Drain pairing) is a set of
-# (live rule, drain backstop) pairs: each real-time extraction rule in a
+# The capture/backstop pairing registry (see Patterns/Capture-Backstop pairing) is a set of
+# (capture rule, backstop) pairs: each real-time extraction rule in a
 # CLAUDE.md is paired with a backstop step in /tidy, so a missed live
 # capture is caught at drain time. The registry is split across TWO tables
 # (foundation F#809, epic B "kernel routing"):
-#   - the "## Live/Drain pairings" table at the top of
+#   - the "## Capture/Backstop pairings" table at the top of
 #     claude/commands/tidy.md is the SINGLE SOURCE OF TRUTH for KERNEL
 #     pairs — rules generic enough that a stranger's kernel-only checkout
 #     needs them backstopped too;
-#   - claude/live-drain-registry.overlay.md (an overlay-only file, present
+#   - claude/capture-backstop-registry.overlay.md (an overlay-only file, present
 #     only in a composed/overlay checkout) carries a second
-#     "## Live/Drain pairings — overlay extension" table for pairs that
+#     "## Capture/Backstop pairings — overlay extension" table for pairs that
 #     reference Travis-personal (vault-backed) rules and have no meaning in
 #     a standalone kernel checkout.
 # This script parses the kernel table always, and UNIONS in the overlay
@@ -21,28 +21,28 @@
 # checkout validates the kernel table alone (self-contained, zero overlay
 # references needed to pass), while a composed checkout validates the full
 # union. Either way it FAILS (exit 1) if any pair, in either table, is
-# HALF-PRESENT — a live anchor present without its drain anchor, or vice
+# HALF-PRESENT — a capture anchor present without its backstop anchor, or vice
 # versa — which is the silent-loss failure mode the pairing pattern exists
 # to prevent.
 #
-# Verifiability of the live half varies by source:
+# Verifiability of the capture half varies by source:
 #   - foundation-local files (claude/CLAUDE.md, the repo root CLAUDE.md) are
 #     hard-checked. `claude/CLAUDE.md` itself no longer exists as a single
 #     tracked file (foundation Epic B "layered CLAUDE.md"): it is now
 #     COMPOSED at install time from claude/CLAUDE.kernel.md +
 #     claude/CLAUDE.overlay.md (workflows/scripts/install-claude-md.sh). A
-#     live anchor can land in either source file, so this script checks a
+#     capture anchor can land in either source file, so this script checks a
 #     throwaway concatenation of both — the composed real file under
 #     ~/.claude isn't something CI can rely on (machine-specific, generated),
 #     but the two tracked sources are always present in the checkout;
 #   - `system-prompt` is not a file (the auto-memory rule lives in the harness
-#     system prompt) — unverifiable, so ONLY the drain half is checked;
+#     system prompt) — unverifiable, so ONLY the backstop half is checked;
 #   - stageFind/CLAUDE.md lives in another repo — checked when that checkout is
 #     present (STAGEFIND_DIR, default ../stageFind), soft-skipped with a warning
 #     otherwise so foundation CI needs no stageFind checkout.
-# The drain half is always in tidy.md and is always hard-checked.
+# The backstop half is always in tidy.md and is always hard-checked.
 #
-# Usage: workflows/scripts/validate-live-drain.sh   (resolves the repo itself)
+# Usage: workflows/scripts/validate-capture-backstop.sh   (resolves the repo itself)
 # Kept POSIX-bash-3.2 friendly (no mapfile/associative arrays) so it runs on the
 # macOS dev shell as well as Linux CI.
 
@@ -50,16 +50,16 @@ set -euo pipefail
 
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DRAIN="$REPO/claude/commands/tidy.md"
-DRAIN_OVERLAY_EXT="$REPO/claude/live-drain-registry.overlay.md"
+DRAIN_OVERLAY_EXT="$REPO/claude/capture-backstop-registry.overlay.md"
 STAGEFIND_DIR="${STAGEFIND_DIR:-$REPO/../stageFind}"
 CLAUDE_MD_KERNEL="$REPO/claude/CLAUDE.kernel.md"
 CLAUDE_MD_OVERLAY="$REPO/claude/CLAUDE.overlay.md"
 CLAUDE_MD_COMBINED=""
 # Kernel-only checkout (foundation #803's seeded kernel repo: kernel half
 # present, overlay half never shipped there — not the pre-split legacy case,
-# which has neither). In this mode a live anchor absent from the kernel half
+# which has neither). In this mode a capture anchor absent from the kernel half
 # alone is UNVERIFIABLE, not a drift signal: it may legitimately live only in
-# the overlay half this checkout doesn't carry. See the live/drain loop below.
+# the overlay half this checkout doesn't carry. See the capture/backstop loop below.
 KERNEL_ONLY_MD=0
 if [ -f "$CLAUDE_MD_KERNEL" ] && [ ! -f "$CLAUDE_MD_OVERLAY" ]; then
   KERNEL_ONLY_MD=1
@@ -72,24 +72,24 @@ npairs=0
 cleanup() { [ -n "$CLAUDE_MD_COMBINED" ] && rm -f "$CLAUDE_MD_COMBINED"; return 0; }
 trap cleanup EXIT
 
-# Map a Live-location <source> token to a filesystem path, or "SKIP:<reason>"
+# Map a Capture-location <source> token to a filesystem path, or "SKIP:<reason>"
 # for an unverifiable or absent source.
 resolve_source() {
   case "$1" in
-    system-prompt)        printf 'SKIP:live half is the harness system prompt (unverifiable)' ;;
+    system-prompt)        printf 'SKIP:capture half is the harness system prompt (unverifiable)' ;;
     claude/CLAUDE.md)
       if [ -f "$CLAUDE_MD_KERNEL" ] && [ -f "$CLAUDE_MD_OVERLAY" ]; then
-        # A live anchor can land in either split source — check a throwaway
+        # A capture anchor can land in either split source — check a throwaway
         # concatenation of both (built once, reused across pairs).
         if [ -z "$CLAUDE_MD_COMBINED" ]; then
-          CLAUDE_MD_COMBINED="$(mktemp "${TMPDIR:-/tmp}/validate-live-drain-claude-md.XXXXXX")"
+          CLAUDE_MD_COMBINED="$(mktemp "${TMPDIR:-/tmp}/validate-capture-backstop-claude-md.XXXXXX")"
           cat "$CLAUDE_MD_KERNEL" "$CLAUDE_MD_OVERLAY" >"$CLAUDE_MD_COMBINED"
         fi
         printf '%s' "$CLAUDE_MD_COMBINED"
       elif [ "$KERNEL_ONLY_MD" = "1" ]; then
         # Kernel-only checkout: check the kernel half alone. The caller
         # downgrades an absent-anchor result to a skip for this case (see the
-        # live/drain loop) rather than treating it as a hard fail.
+        # capture/backstop loop) rather than treating it as a hard fail.
         printf '%s' "$CLAUDE_MD_KERNEL"
       else
         # Legacy single-file fallback (pre-split checkout).
@@ -141,34 +141,34 @@ EOF
 }
 
 # Extract the pairing-table data rows from <file> (drop the header +
-# separator rows). Matches any heading starting "## Live/Drain pairings" —
+# separator rows). Matches any heading starting "## Capture/Backstop pairings" —
 # so it works unchanged on both the kernel table's plain heading and the
-# overlay extension's "## Live/Drain pairings — overlay extension" heading.
+# overlay extension's "## Capture/Backstop pairings — overlay extension" heading.
 extract_pairing_rows() {
   awk '
-    /^## Live\/Drain pairings/ { insec = 1; next }
+    /^## (Capture\/Backstop|Live\/Drain) pairings/ { insec = 1; next }
     insec && /^## / { insec = 0 }
     insec && /^\|/ { print }
-  ' "$1" | grep -vE '^\|[[:space:]]*Live rule|^\|[[:space:]]*-' || true
+  ' "$1" | grep -vE '^\|[[:space:]]*(Capture rule|Live rule)|^\|[[:space:]]*-' || true
 }
 
 kernel_rows="$(extract_pairing_rows "$DRAIN")"
 if [ -z "$kernel_rows" ]; then
-  echo "FAIL: no '## Live/Drain pairings' table found in $DRAIN"
+  echo "FAIL: no '## Capture/Backstop pairings' table found in $DRAIN"
   exit 1
 fi
 
 # Union in the overlay extension table, only when present (a composed
 # checkout). A standalone kernel checkout (temperloop, or this
 # script's own scratch-clone simulation of it) has no
-# claude/live-drain-registry.overlay.md and validates the kernel table alone.
+# claude/capture-backstop-registry.overlay.md and validates the kernel table alone.
 composed=0
 overlay_ext_rows=""
 if [ -f "$DRAIN_OVERLAY_EXT" ]; then
   composed=1
   overlay_ext_rows="$(extract_pairing_rows "$DRAIN_OVERLAY_EXT")"
   if [ -z "$overlay_ext_rows" ]; then
-    echo "FAIL: $DRAIN_OVERLAY_EXT present but has no '## Live/Drain pairings' table"
+    echo "FAIL: $DRAIN_OVERLAY_EXT present but has no '## Capture/Backstop pairings' table"
     exit 1
   fi
 fi
@@ -192,7 +192,7 @@ while IFS= read -r row; do
   live_cell="$(printf '%s' "$row" | awk -F'|' '{print $3}')"
   drain_cell="$(printf '%s' "$row" | awk -F'|' '{print $4}')"
 
-  # --- live half ---
+  # --- capture half ---
   live_toks="$(tokens "$live_cell")"
   src="$(printf '%s\n' "$live_toks" | sed -n '1p')"
   live_anchors="$(printf '%s\n' "$live_toks" | sed -n '2,$p')"
@@ -212,7 +212,7 @@ while IFS= read -r row; do
           case "$live_state" in
             absent:*)
               live_state="skip"
-              live_note="live half unverifiable in a kernel-only checkout (no claude/CLAUDE.overlay.md); anchor not found in claude/CLAUDE.kernel.md alone, may live in the overlay half"
+              live_note="capture half unverifiable in a kernel-only checkout (no claude/CLAUDE.overlay.md); anchor not found in claude/CLAUDE.kernel.md alone, may live in the overlay half"
               ;;
           esac
         fi
@@ -220,7 +220,7 @@ while IFS= read -r row; do
     esac
   fi
 
-  # --- drain half ---
+  # --- backstop half ---
   drain_state="$(check_anchors "$DRAIN" "$(tokens "$drain_cell")")"
 
   # --- verdict ---
@@ -228,16 +228,16 @@ while IFS= read -r row; do
     present:present)
       echo "ok    $name" ;;
     skip:present)
-      echo "skip  $name (live half unverifiable: $live_note — drain half present)"
+      echo "skip  $name (capture half unverifiable: $live_note — backstop half present)"
       warn=$((warn + 1)) ;;
     present:absent:*)
-      echo "FAIL  $name (HALF-PRESENT: live present, drain anchor missing: ${drain_state#absent:})"
+      echo "FAIL  $name (HALF-PRESENT: live present, backstop anchor missing: ${drain_state#absent:})"
       fail=$((fail + 1)) ;;
     absent:*:present)
-      echo "FAIL  $name (HALF-PRESENT: drain present, live anchor missing: ${live_state#absent:})"
+      echo "FAIL  $name (HALF-PRESENT: drain present, capture anchor missing: ${live_state#absent:})"
       fail=$((fail + 1)) ;;
     skip:absent:*)
-      echo "FAIL  $name (drain anchor missing: ${drain_state#absent:}; live half unverifiable)"
+      echo "FAIL  $name (backstop anchor missing: ${drain_state#absent:}; capture half unverifiable)"
       fail=$((fail + 1)) ;;
     *)
       echo "FAIL  $name (live=$live_state drain=$drain_state)"
@@ -250,7 +250,7 @@ EOF
 echo "---"
 echo "pairs: $npairs | failures: $fail | warnings: $warn"
 if [ "$fail" -ne 0 ]; then
-  echo "validate-live-drain: FAIL"
+  echo "validate-capture-backstop: FAIL"
   exit 1
 fi
-echo "validate-live-drain: OK"
+echo "validate-capture-backstop: OK"

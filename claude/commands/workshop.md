@@ -1,12 +1,12 @@
 ---
-description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the funnel as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217); ADR emission at materialize landed with `design-adr-emission` (temperloop#219). Executing customer-persona agents shipped with `design-persona-agents` (temperloop#221).
+description: Facilitate a structured design conversation for INVENTED work (an idea born in conversation, not a discovered defect) against the coverage template in `claude/design-schema.md`, then ratify and materialize it into the pipeline as a board epic with a well-formed `## Contract`, draft ADRs for its architectural calls, a Decisions note, and a hand-off to `/assess --epic N`. Operator-present only — no unattended arm. Ships the full intake → coverage walk → review pass → ratify → materialize flow; Step 3's tier decision, adversarial panel, and capability probes landed with `design-review-machinery` (temperloop#217); ADR emission at materialize landed with `design-adr-emission` (temperloop#219). Executing customer-persona agents shipped with `design-persona-agents` (temperloop#221).
 argument-hint: "[<problem-statement> | <pointer-note>] [--board <N> | --project <name>]"
 ---
 
 You are running the **workshop** command (formerly `/design`; renamed — temperloop#354 — to avoid colliding with Claude Code's builtin `/design`). Goal: take an idea that was *invented* in
 conversation — not discovered as a Backlog defect — and walk it against a fixed
 coverage template until every dimension has an explicit disposition, then ratify
-and materialize it into the same funnel `/triage` feeds. This is the funnel's
+and materialize it into the same pipeline `/triage` feeds. This is the pipeline's
 **second front door**, for invented rather than discovered work
 (`Decisions/temperloop - design command as front door for invented work`):
 
@@ -74,7 +74,7 @@ Step 3 below — Steps 0–2 and 4–6 needed no change either for #217 or #219.
   interactive `AskUserQuestion` — never routed through `decision_sink_ask(...)`,
   because that seam's whole purpose is choosing between a live operator and an
   absent one, and there is never an absent-operator case to choose here. A
-  design ritual cannot run against an absent operator; that is a deliberate
+  design session cannot run against an absent operator; that is a deliberate
   property of this command, not a gap to fill later.
 - **Minimum-viable-output rule.** Whatever else is unavailable — no `gh` auth, <!-- cite: W.2 guard:docs/principles.md -->
   no repo, no registered board, no reviewer agents declared (Step 3) — the

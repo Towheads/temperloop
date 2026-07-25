@@ -1,6 +1,6 @@
 ---
-title: The build spine — worktree isolation, dependency levels, the quota gate, and the plan note as run record
-slug: build-spine
+title: The build machinery — worktree isolation, dependency levels, the quota gate, and the plan note as run record
+slug: build-machinery
 ---
 
 ## Problem
@@ -28,7 +28,7 @@ improvising shell commands turn by turn, four things reliably go wrong:
 
 ## How it works
 
-The build spine is a small set of deterministic scripts that own the parts
+The build machinery is a small set of deterministic scripts that own the parts
 of `/build` that are pure functions of observable state with a closed
 outcome set — every worktree operation, every CI poll, the quota check, and
 the plan-note read/write — so the LLM orchestrator invokes them and branches
@@ -113,7 +113,7 @@ resolves to `CLEAN`. Only a `CLEAN` union proceeds to enqueue — a collision is
 paid for once, as a local test run, instead of once per pull request as a
 queue round-trip. The check is **fail-open** (a setup failure resolves to a
 proceed, since the queue's own trial branch remains the backstop) and
-**opt-out** (a single knob disables it for a repository that would rather lean
+**opt-out** (a single setting disables it for a repository that would rather lean
 on the queue alone); a single-pull-request level skips it, having nothing to
 combine.
 
@@ -137,7 +137,7 @@ one authoritative list to read), and centralizing it is a feature, not the
 collision surface the convention targets.
 
 **Reaching the operator on a blocking halt.** `decision-notify.sh` runs on
-entry to every *blocking-now* decision gate — a design fork, a blocked worker, a
+entry to every *ask-now* decision gate — a design fork, a blocked worker, a
 failed item, a claim conflict, a structurally-risky merge set — and decides,
 purely from the halt's severity, whether to pull in the operator. These halts
 have no safe default, so they park the run and wait; the failure mode is not
@@ -187,14 +187,14 @@ these scripts, at the steps their own headers name (worktree create/remove
 at 3b/3h and the stranded-worktree sweep at Step 0.5; plan validate/toposort
 at Step 1 and writeback throughout; the CI poll at 3g; the combined-tree
 pre-check at the level merge gate before any enqueue; the operator-notify
-ping on entry to every blocking-now decision gate; the quota gate at
+ping on entry to every ask-now decision gate; the quota gate at
 each level boundary). `/sweep` reuses the quota gate the same way, after
 each individual fix rather than after a whole level. Every tunable each
 script reads — the quota pause threshold, poll intervals and timeouts, the
 CI-poll wait buffer — has its one default in `workflows/scripts/build/build.config.sh`,
-which every spine script (and the command steps that call them) sources
-before referencing the knob by name, so a value never has to be duplicated
-across scripts and any override applied at a higher precedence rung is
+which every machinery script (and the command steps that call them) sources
+before referencing the setting by name, so a value never has to be duplicated
+across scripts and any override applied at a higher precedence layer is
 honored everywhere at once.
 
 ## Resource impact

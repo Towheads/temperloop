@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build push + PR-open mechanics — the deterministic-spine script that owns
+# build push + PR-open mechanics — the deterministic-machinery script that owns
 # the 3f steps of /build (epic #253, spike #245): the closing-keyword
 # pre-push scan, the speculative base-currency check, push-by-SHA, and PR-body
 # assembly from the worker verdict JSON + plan fields. A step moved here iff
@@ -228,7 +228,7 @@ cmd_rebase() {
 # the requesting caller always passes --force. An unconditional --force on a
 # feature branch trips the git-destructive safety classifier in auto mode
 # non-deterministically, which silently parks/dead-ends an autonomous /sweep,
-# /build --unattended, or funnel-drive-merge run. So when --force is requested
+# /build --unattended, or pipeline-drive-merge run. So when --force is requested
 # we DOWNGRADE to a plain push whenever we can positively prove the local head
 # descends from the current remote tip (a pure fast-forward), and reserve the
 # real --force for a genuine rewrite (local head does NOT descend the tip) or an

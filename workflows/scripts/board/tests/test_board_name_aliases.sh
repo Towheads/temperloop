@@ -2,7 +2,7 @@
 #
 # Tests for board.sh's board NAME alias resolver (temperloop #95). Every --board
 # switch (and every lib resolve entrypoint) now accepts a board NAME as well as
-# its logical number, so a human never has to touch the private number space.
+# its board id, so a human never has to touch the private number space.
 # board_resolve_name is the ONE shared resolver: it maps a name -> number at the
 # boundary and passes a bare integer straight through unchanged (the number stays
 # the sole internal key — nothing downstream is name-aware).
@@ -26,7 +26,7 @@
 #
 # NOTE ON FIXTURES: this file is NOT on the personal-token-denylist exempt list,
 # so it must contain NO real org/identity tokens. Board APP names
-# (stagefind/foundation/…) and logical numbers are explicitly NOT denylisted
+# (stagefind/foundation/…) and board ids are explicitly NOT denylisted
 # (they are illustrative pipeline examples — see personal-token-denylist.tsv's
 # header); the boards.conf fixture uses the generic placeholder org `acme/widget`.
 set -euo pipefail

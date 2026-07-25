@@ -32,7 +32,7 @@ while IFS= read -r line; do
   echo "$line" | jq -e '.schema_version=="1" and .phase=="before" and .label=="t1" and .source=="bench"' >/dev/null \
     || fail "bad record: $line"
 done <"$LF"
-for oc in resolve_cold resolve_warm item_list resolve_item worklist reconcile_status funnel_read_emu rel_loop _run_total; do
+for oc in resolve_cold resolve_warm item_list resolve_item worklist reconcile_status pipeline_read_emu rel_loop _run_total; do
   grep -q "\"op_class\":\"$oc\"" "$LF" || fail "missing op_class $oc in lake"
 done
 echo "$out" | grep -q "^op_class" || fail "table header not printed"

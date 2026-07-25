@@ -16,7 +16,7 @@
 #          ... --labels --apply         also deletes/strips the candidates.
 #          ... --labels --unattended    implies --apply, AND records the
 #                                       auto-taken apply to the pending-
-#                                       decisions surface (batch-at-ritual).
+#                                       decisions surface (ask-at-checkin).
 #
 # ─── Lens 1: marker drift (default) ──────────────────────────────────────────
 # scripts/claim.sh stamps BOTH the board (Status=In Progress +
@@ -108,7 +108,7 @@
 #       at all (temperloop#376). Status is emulated by that label, so such an
 #       issue reads as `.status = ""` in board_item_list — and /triage's
 #       Backlog intake (Adapter A keeps only `.status == Backlog`) SILENTLY
-#       SKIPS it, so a genuine defect falls out of the funnel with no error.
+#       SKIPS it, so a genuine defect falls out of the pipeline with no error.
 #       The capture path (capture.sh → board_capture_item) already stamps
 #       fnd:status:backlog on everything it files; this class is the backstop
 #       for an issue that reached the tracker by any OTHER route (a hand
@@ -577,7 +577,7 @@ status_reconcile_main() {
 }
 
 # --- Lens 3: label hygiene (board LABEL drift on the issues-only backend) ----
-# Best-effort append of a `batch-at-ritual` pending-decision entry recording an
+# Best-effort append of a `ask-at-checkin` pending-decision entry recording an
 # UNATTENDED label-hygiene apply (`claude/CLAUDE.md` § Unattended
 # pending-decisions surface). Routes through workflows/scripts/lib/
 # knowledge_store.sh's `ks_read`/`ks_append` — the SCRIPT-plane seam (portable
@@ -623,7 +623,7 @@ _label_reconcile_append_pending_decision() {
   # Human-facing heading stamp on the pending-decisions review surface renders in
   # the operator's display timezone (kernel doc § Communication conventions); %Z
   # names the zone explicitly so a reader never has to guess. Belt-and-suspenders
-  # default per § Prose-resident knob convention — this board script is vendored
+  # default per § Named-setting convention — this board script is vendored
   # into consumer repos that may not carry build.config.sh. The reconcile epoch
   # math (_reconcile_now) stays UTC — absolute instants, unaffected.
   ts="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date '+%Y-%m-%d %H:%M %Z')"

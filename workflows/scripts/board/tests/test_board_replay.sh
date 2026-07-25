@@ -425,7 +425,7 @@ echo "PASS: board_item_list issues a single active-set item-list call"
 # board 3 crossed 200 TOTAL items; `gh project item-list --limit N` only returns
 # the first page, so an unfiltered read silently truncated the active slice. The
 # fix filters to the active (non-Done) set server-side via `--query -status:Done`
-# AND raises the page cap, both via knobs. Guard the filter, the cap, the escape
+# AND raises the page cap, both via settings. Guard the filter, the cap, the escape
 # hatch, and the fresh-path (board_create_many's index-wait) so a future edit
 # can't quietly drop them and reintroduce the truncation.
 : >"$CALLS"
@@ -441,7 +441,7 @@ if grep -q -- '--query' "$CALLS"; then fail "#168: empty BOARD_ITEM_QUERY must o
 grep -q 'gh project item-list 4 --owner Towheads --limit 500 --format json' "$CALLS" \
   || fail "#168: empty-query argv wrong: $(last_call)"
 
-# knob: BOARD_ITEM_LIMIT overrides the cap.
+# setting: BOARD_ITEM_LIMIT overrides the cap.
 : >"$CALLS"
 BOARD_ITEM_LIMIT=999 board_item_list 3 >/dev/null
 grep -q -- '--limit 999' "$CALLS" || fail "#168: BOARD_ITEM_LIMIT must override the cap"

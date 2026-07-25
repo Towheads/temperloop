@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build combined-tree pre-check — the deterministic-spine script that owns the
+# build combined-tree pre-check — the deterministic-machinery script that owns the
 # Step-4 level-merge-gate UNION check of /build (temperloop#865). When a level
 # parks more than one PR, the orchestrator must know BEFORE it enqueues the set
 # whether the parked branches merge together cleanly AND still pass the full

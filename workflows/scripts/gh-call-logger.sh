@@ -34,7 +34,7 @@
 #   code — the after-side instrument for the tracker migration for free.
 #
 #   Attribution comes from two optional env vars set by callers:
-#     GH_CALL_CONTEXT  outermost command (worklist / reconcile / funnel-tick / ...)
+#     GH_CALL_CONTEXT  outermost command (worklist / reconcile / pipeline-tick / ...)
 #     GH_CALL_OP       fine-grained op — the board adapter auto-tags its calling
 #                      function at the _board_gh seam.
 #   GraphQL/REST/porcelain CLASSIFICATION is derived at REPORT time from `args`;
@@ -193,15 +193,15 @@ dur_ms=$(( end_ms - start_ms ))
   # args is the LAST column and is sanitized (tabs/newlines -> space) so a
   # GraphQL query arg can never split or corrupt the row (a latent v1 bug).
   args_clean="$(printf '%s' "$*" | tr '\t\n' '  ')"
-  # Read the two attribution env vars ONCE into plain (lowercase, non-knob-
+  # Read the two attribution env vars ONCE into plain (lowercase, non-setting-
   # shaped) locals and reuse them for both sinks below — GH_CALL_OP has no
   # registry row (a per-call attribution tag, not a static operator default;
-  # knob:exempt), so a single read here keeps check-knob-registry.sh's
+  # setting:exempt), so a single read here keeps check-setting-registry.sh's
   # unregistered-seam sweep to exactly one exempted occurrence instead of one
   # per sink. GH_CALL_CONTEXT is registered (owning script capture.sh; this
   # is a byte-identical duplicate seam elsewhere, allowed name-only).
   call_context="${GH_CALL_CONTEXT:-}"
-  call_op="${GH_CALL_OP:-}"  # knob:exempt — per-call attribution tag, not a static operator default
+  call_op="${GH_CALL_OP:-}"  # setting:exempt — per-call attribution tag, not a static operator default
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$start_ms" "$dur_ms" "$code" "$$" "$PPID" \
     "$tool" "$call_context" "$call_op" "$PWD" "$args_clean" >>"$LOG"
@@ -213,8 +213,8 @@ dur_ms=$(( end_ms - start_ms ))
     lake_host="${SUBSET_HOST_LABEL:-}"
     if [ -z "$lake_host" ]; then
       # $HOSTNAME is bash's own automatic variable (generic OS/harness-
-      # injected runtime value, KNOB_REGISTRY_GENERIC_ALLOWLIST category —
-      # same class as HOME/PATH/SHELL, not an operator-tunable knob).
+      # injected runtime value, SETTING_REGISTRY_GENERIC_ALLOWLIST category —
+      # same class as HOME/PATH/SHELL, not an operator-tunable setting).
       if [ -n "${HOSTNAME:-}" ]; then
         lake_host="${HOSTNAME%%.*}"
       else

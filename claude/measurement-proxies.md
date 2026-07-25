@@ -40,7 +40,7 @@ self-contained:
 2. **Live conversational narration** — slash commands mid-session
 3. **Blocking questions** — `AskUserQuestion` / `decision_sink_ask(...)`
 4. **Return-cold summaries** — completion summary, resume recap, parking notes
-5. **Unattended/deferred surfaces** — pending-decisions, digests, funnel-tick reports
+5. **Unattended/deferred surfaces** — pending-decisions, digests, pipeline-tick reports
 6. **Durable review artifacts** — PR bodies, issue/epic contracts, plan notes, decision notes
 7. **Newcomer/docs surface** — README, `bin/README`, generated docs site
 
@@ -78,7 +78,7 @@ this rides:
 **Baseline capture method.** Before `message-schema.md` lands: pull the last
 N (suggest N≥20) `decision`-labeled issues closed in the async backend, compute
 the assign→unassign count per originating plan item (a `[ ]`-parked-then-answered
-`## Questions` entry, or a `blocking-now` gate) and the parse-miss rate as a
+`## Questions` entry, or a `ask-now` gate) and the parse-miss rate as a
 fraction of total round-trips. Record median round-trips/item and parse-miss %
 as the pre-template baseline. For the modal path, manually sample N recent
 `/build`/`/assess` sessions (via the overlay session archive, where available)
@@ -171,7 +171,7 @@ the closest kernel-native analog available to check that design decision
 against reality once it ships.*
 
 **What it measures.** How long a park-to-operator decision (Mode 5: pending
-decision, digest entry, funnel-tick report) sits before the operator disposes
+decision, digest entry, pipeline-tick report) sits before the operator disposes
 of it — a proxy for whether the digest/summary cadence is landing at a natural
 breakpoint (fast, low-friction resolution) versus interrupting badly (slow,
 or requiring the parse-miss retry loop in Proxy 1).

@@ -179,7 +179,7 @@ workflows/scripts/
   board/        board adapter (worklist/claim/release/capture/reconcile/milestone
                 + lib/board.sh) — issues-only or Projects-v2, see
                 board/ISSUES-ONLY-BACKEND.md
-  build/        build deterministic-spine toolkit (worktree, ci-poll, pr, gate, …)
+  build/        build deterministic-machinery toolkit (worktree, ci-poll, pr, gate, …)
   install/      install surface — doctor.sh (machine-link verify),
                 project-agents.sh (review-agent deploy), install-claude-md.sh
   demo/         the disposable demo-repo seeder `temperloop try --demo` ticks
@@ -213,7 +213,7 @@ llms.txt        machine-readable project index (llmstxt.org convention)
 | `/next` | Advisory "what do I do now" — reads the board + plan notes, recommends the next command. Never mutates anything. |
 | `/tidy` | Nightly unattended: processes the session-stub backlog (extracts learnings, archives transcripts, snapshots the vault) and parks anything needing human judgment on durable review surfaces. |
 | `/check-in` | Daily human review: renders the telemetry brief, disposes the surfaces `/tidy` parked overnight, and sets the `/next` priorities per project. |
-| `/funnel-drive`, `/funnel-drive-merge` | Headless (`claude -p`) executors of the autonomous funnel driver — the unattended scheduler that runs the triage→build pipeline on a timer ([`docs/features/funnel-driver.md`](docs/features/funnel-driver.md)). The first runs the safe, structurally no-merge tier of a tick; the second (a separate opt-in) drives code items through `/build --unattended`, merging only via build's own gated path. |
+| `/pipeline-drive`, `/pipeline-drive-merge` | Headless (`claude -p`) executors of the autonomous pipeline driver — the unattended scheduler that runs the triage→build pipeline on a timer ([`docs/features/pipeline-driver.md`](docs/features/pipeline-driver.md)). The first runs the safe, structurally no-merge tier of a tick; the second (a separate opt-in) drives code items through `/build --unattended`, merging only via build's own gated path. |
 | `/init` | Bootstraps a new project's `CLAUDE.md` + context. |
 
 ### Review agents (definitions in `claude/agents/`)
@@ -306,10 +306,10 @@ and [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) (§ 7):
 
 - [`docs/managed-merge-queue.md`](docs/managed-merge-queue.md) — the
   merge-backend seam § 9 summarises.
-- [`docs/config-precedence.md`](docs/config-precedence.md) — the six-rung
+- [`docs/config-precedence.md`](docs/config-precedence.md) — the six-layer
   precedence ladder (CLI flag > env var > machine conf > untracked
   repo-local conf > tracked repo conf > kernel built-in default) every
-  config knob in this repo resolves through, and how `build.config.sh`
+  config setting in this repo resolves through, and how `build.config.sh`
   implements it.
 - [`docs/cost-and-autonomy.md`](docs/cost-and-autonomy.md) — what running
   it costs and what it does on its own (the pre-quickstart read, § 3).

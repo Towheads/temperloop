@@ -23,7 +23,7 @@
 # read stand-alone / rendered into public docs; this header is implementation
 # commentary.
 #
-# ── Config: ONE knob for the root, ONE knob for the backend ────────────────
+# ── Config: ONE setting for the root, ONE setting for the backend ────────────────
 #   KNOWLEDGE_STORE_ROOT     store root directory (absolute path). Default:
 #                            ${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge
 #                            (renamed from .../foundation/knowledge in
@@ -32,7 +32,7 @@
 #                            rename window; see _ks_default_root below.
 #                            Legacy fallback removed in v0.17.0.)
 #                            This is the ONLY place the root is configured —
-#                            no second path knob exists anywhere in this file
+#                            no second path setting exists anywhere in this file
 #                            or its callers.
 #   KNOWLEDGE_STORE_BACKEND  backend name, kebab-case. Default: plain-files
 #                            (the only backend this file implements). A
@@ -67,7 +67,7 @@ _ks_default_root() {
   new_root="${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge"
   old_root="${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge"
   if [ ! -d "$new_root" ] && [ -d "$old_root" ]; then
-    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
       printf 'knowledge_store: NOTE — a legacy store exists at %s but the legacy default-root fallback was removed in v0.17.0; the default root is now %s. Move the store (mv "%s" "%s") or set KNOWLEDGE_STORE_ROOT.\n' \
         "$old_root" "$new_root" "$old_root" "$new_root" >&2
     else
@@ -96,7 +96,7 @@ ks_root() {
 # `tool_name` values the agent-plane read-telemetry hook
 # (claude/hooks/ks-agent-read-log.sh) treats as knowledge-store MCP calls —
 # the transport-layer counterpart to KNOWLEDGE_STORE_BACKEND just above
-# (that knob selects the SCRIPT-plane backend; this one tells the
+# (that setting selects the SCRIPT-plane backend; this one tells the
 # AGENT-plane hook which MCP tool namespaces count as "reading the
 # knowledge store" today).
 #
@@ -106,7 +106,7 @@ ks_root() {
 # (not JSON/YAML) so it stays a single `${VAR:=...}` shell literal that a
 # machine-readable lint (the telemetry-coverage lint named in the epic's
 # Contract) can parse with a trivial `for pat in $VAR` loop — the same shape
-# as every other space-separated knob in this tree (e.g. FUNNEL_DRIVEN_PATHS
+# as every other space-separated setting in this tree (e.g. PIPELINE_DRIVEN_PATHS
 # in build.config.sh).
 : "${KNOWLEDGE_READ_LOG_AGENT_MATCHERS:=mcp__obsidian* mcp__obsidian-builtin*}"
 
@@ -161,7 +161,7 @@ ks__dispatch() {
 #                        script-plane callers of the seam) — an agent-plane
 #                        hook is a LATER, separate item per the epic
 #                        contract, and will call ks__read_log_emit with
-#                        plane="agent" rather than get a new knob here.
+#                        plane="agent" rather than get a new setting here.
 #   op                   read | write | append | list | search | sync
 #                        (sync — the optional capability, temperloop#430 —
 #                        carries its SUB-op, e.g. "push", in the
@@ -175,8 +175,8 @@ ks__dispatch() {
 # (agent-plane hook, SessionEnd one-liner, /tidy tally) — do not change the
 # field order/count/separator without updating every consumer.
 #
-# Knob: KNOWLEDGE_READ_LOG (path). ONE override point for the log's
-# location, same "one knob" shape as KNOWLEDGE_STORE_ROOT above. Default
+# Setting: KNOWLEDGE_READ_LOG (path). ONE override point for the log's
+# location, same "one setting" shape as KNOWLEDGE_STORE_ROOT above. Default
 # follows the XDG state-dir convention (this is runtime/operational log
 # output, not user data — XDG_STATE_HOME is the correct base per the XDG
 # base-directory spec, distinct from KNOWLEDGE_STORE_ROOT's XDG_DATA_HOME).

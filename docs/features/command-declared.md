@@ -56,7 +56,7 @@ surface-2-only true as "declared in source, not necessarily installed."
 
 Cited by the `/retro`-gating surfaces of the unified-retrospection epic
 (temperloop#528): the retrospection mint's state-label choice
-(`claude/commands/build.md`'s 4d-retro step), the funnel retro-judge trigger,
+(`claude/commands/build.md`'s 4d-retro step), the pipeline retro-judge trigger,
 and `/check-in`'s retro gating. Each sources this lib and calls
 `command_declared retro` rather than improvising a file check. It is a
 **distinct** predicate from the subagent capability-probe

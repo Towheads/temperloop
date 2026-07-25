@@ -11,7 +11,7 @@
 #
 #   (A) SCHEMA CITATION CHECK — claude/design-schema.md's own "Enforcing gate"
 #       table column cites gates/scripts/docs by backtick-quoted path (e.g.
-#       `workflows/scripts/validate-live-drain.sh`). design-schema.md § Kernel
+#       `workflows/scripts/validate-capture-backstop.sh`). design-schema.md § Kernel
 #       dimension list says explicitly: "The 'Enforcing gate' column's own
 #       citations are not themselves lint-checked today ... the forthcoming
 #       brief-conformance lint (temperloop#216) is chartered to also resolve

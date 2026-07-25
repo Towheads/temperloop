@@ -28,7 +28,7 @@
 # declared tree-diff exclusion set below is sized for exactly that surface.
 # A COMPOSED overlay checkout (foundation, stageFind, ssmobile, subsetwiki —
 # claude/CLAUDE.kernel.md + claude/CLAUDE.overlay.md both present, per
-# workflows/scripts/validate-live-drain.sh's own KERNEL_ONLY_MD detection
+# workflows/scripts/validate-capture-backstop.sh's own KERNEL_ONLY_MD detection
 # idiom) additionally enumerates env/* dotfiles, a real settings.json, and a
 # composed CLAUDE.md — a different managed-path surface this suite's
 # exclusion set does not model, so it self-scopes out with a legible SKIP
@@ -67,7 +67,7 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 #
 # Detection, two independent signals (either fires -> composed):
 #   1. claude/CLAUDE.overlay.md present beside claude/CLAUDE.kernel.md — the
-#      same idiom workflows/scripts/validate-live-drain.sh's own
+#      same idiom workflows/scripts/validate-capture-backstop.sh's own
 #      KERNEL_ONLY_MD check already uses (composed = overlay present).
 #   2. A kernel/ subtree present at the repo root, itself recognizably a
 #      vendored kernel checkout (carries its own bin/temperloop or

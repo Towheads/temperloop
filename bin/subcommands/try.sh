@@ -41,7 +41,7 @@
 # SEPARATE mode: the "aha moment" tick. It scratch-clones a disposable,
 # already-seeded demo repo (kernel/workflows/scripts/demo/seed-demo-repo.sh
 # maintains it; falsifiable one-file defects, `demo-seed`-labeled issues)
-# and drives ONE real safe-tier funnel tick — issue -> PR — against it:
+# and drives ONE real safe-tier pipeline tick — issue -> PR — against it:
 #   1. claims one open demo-seed issue via the issues-only tracker adapter
 #      (kernel/workflows/scripts/board/lib/board.sh, board_backend=issues;
 #      NO Projects-v2 board is ever provisioned — a throwaway scratch
@@ -53,7 +53,7 @@
 #   3. opens the PR via kernel/workflows/scripts/proposal/proposal-pr.sh
 #      (never a direct push — branch==base is structurally refused there).
 # It stops at an OPENED pull request — never a merge (the safe/merging
-# tier split, foundation #604's SAFE rung never merges).
+# tier split, foundation #604's SAFE layer never merges).
 # SPEND GUARD: prints a DIRECTIONAL cost estimate, requires an explicit y/N
 # confirmation (or --yes — refused outright on a non-tty stdin with no
 # --yes, so a curious stranger cannot silently burn spend), and enforces a
@@ -169,7 +169,7 @@ TRY_CLAUDE_TIMEOUT_SECS=180
 # call above. Non-flag-configurable, same rationale as TRY_CLAUDE_TIMEOUT_SECS.
 TRY_DEMO_CLAUDE_TIMEOUT_SECS=300
 
-# Test-double seams (mirror funnel-drive.sh's CLAUDE_BIN / FUNNEL_GH_BIN
+# Test-double seams (mirror pipeline-drive.sh's CLAUDE_BIN / PIPELINE_GH_BIN
 # convention) — never overridden in production use.
 : "${CLAUDE_BIN:=claude}"
 : "${TRY_GH_BIN:=gh}"
@@ -250,7 +250,7 @@ run_demo() {
   high="$TRY_DEMO_TICK_HIGH_USD"
   echo "Cost estimate (DIRECTIONAL — hardcoded constants, not a live pricing lookup;"
   echo "  see kernel/bin/lib/cost-estimates.conf): \$$low - \$$high for ONE real"
-  echo "  safe-tier funnel tick (issue -> PR) against $demo_repo."
+  echo "  safe-tier pipeline tick (issue -> PR) against $demo_repo."
   echo "Hard spend cap for this run: \$$demo_cap_usd (--demo-cap-usd; enforced on the"
   echo "  live judgment call via --max-budget-usd — DIRECTIONAL, an approval-time"
   echo "  decision; tighten when real calibration exists)."

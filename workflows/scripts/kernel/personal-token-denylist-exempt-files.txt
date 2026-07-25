@@ -4,7 +4,7 @@
 #
 # Every entry here is a fixture-replay TEST that exercises the boards.conf
 # built-in fallback map (workflows/scripts/board/lib/board.sh,
-# workflows/scripts/build/funnel-tick.sh, workflows/scripts/build/funnel-drive.sh
+# workflows/scripts/build/pipeline-tick.sh, workflows/scripts/build/pipeline-drive.sh
 # — see those files' own `# denylist:allow` markers) with literal mock `gh`
 # JSON/CLI-call data matching that map's real values. Scrubbing the literal
 # strings in these tests would not remove anything the already-exempted
@@ -22,8 +22,8 @@ workflows/scripts/board/tests/test_milestone.sh
 workflows/scripts/board/tests/test_parent_issue.sh
 workflows/scripts/board/tests/fixtures/fake_gh.sh
 workflows/scripts/board/tests/fixtures/project_view.json
-workflows/scripts/build/tests/test_funnel_drive.sh
-workflows/scripts/build/tests/test_funnel_tick.sh
+workflows/scripts/build/tests/test_pipeline_drive.sh
+workflows/scripts/build/tests/test_pipeline_tick.sh
 workflows/scripts/build/tests/test_gate.sh
 workflows/scripts/build/tests/test_pr.sh
 workflows/scripts/build/tests/test_ci_poll.sh

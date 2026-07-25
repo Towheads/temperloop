@@ -7,13 +7,13 @@ slug: workshop
 
 ## Problem
 
-`/triage` is the funnel's front door for **discovered** work — a Backlog
+`/triage` is the pipeline's front door for **discovered** work — a Backlog
 item, a sweep finding, something already sitting there waiting for logical
 judgment. It has no path for work that is *invented* mid-conversation: an
 idea that starts as "we should build X," with no Backlog item behind it. Two
 epics (K94, K131) were hand-authored this way before `/workshop` existed — a
 rich `## Contract` body typed straight into a GitHub issue, with no coverage
-checklist run against it and no ritual forcing the hard questions (does this
+checklist run against it and no routine forcing the hard questions (does this
 change a contract surface? what's the uninstall story? what's the telemetry
 proxy?) to get asked before the epic exists. `/workshop` closes that gap: it
 gives invented work the same kind of structured, checklist-driven front door
@@ -26,7 +26,7 @@ would otherwise have to catch late, or never.
 `/workshop` walks a fixed sequence — intake, coverage walk, review pass,
 ratify, materialize — against the coverage template in
 `claude/design-schema.md`. It is modal by construction: there is no
-unattended arm, because a design ritual has no meaning without a live
+unattended arm, because a design session has no meaning without a live
 operator to make the calls.
 
 1. **Intake.** Establish the problem statement, the customer-visible
@@ -86,7 +86,7 @@ other dependency degrades legibly instead of blocking the walk.
 
 ## Integration
 
-`/workshop` is the funnel's **second front door**, a peer to `/triage` rather
+`/workshop` is the pipeline's **second front door**, a peer to `/triage` rather
 than a patch on top of it:
 
 ```
@@ -123,7 +123,7 @@ lose its provenance or slip through the wrong door:
   proceed with the hand-authored Contract as-is, or park and run `/workshop`
   first. Unattended runs take the safe default (proceed) and log it to the
   pending-decisions surface rather than blocking.
-- **`/tidy`'s drain backstop.** A provenance-less epic that the live
+- **`/tidy`'s backstop.** A provenance-less epic that the live
   `/assess` check never caught (or whose ask went unanswered) is swept up by
   `/tidy`'s own provenance sweep, so the gap doesn't depend on a single
   live session catching it.
@@ -132,7 +132,7 @@ lose its provenance or slip through the wrong door:
 
 `/workshop` is **operator-present only** — there is no unattended arm, no
 `ScheduleWakeup` poll, and no async decision-issue backend, because a design
-ritual has no meaning without a live operator making the calls. Cost is
+routine has no meaning without a live operator making the calls. Cost is
 therefore conversational: the coverage-walk conversation itself, plus
 whichever review-agent passes the operator picks (a brief pass spawns two
 standing lenses; a full pass adds a red-team lens, a persona pass, and — when
@@ -151,7 +151,7 @@ rather than a dedicated stream:
 
 - **Merge-gate failure rate, designed vs. hand-authored epics.** Whether an
   epic that went through the coverage walk trips fewer merge-time gates
-  (leak guard, live/drain pairing, feature-docs coverage, and so on) than a
+  (leak guard, capture/backstop pairing, feature-docs coverage, and so on) than a
   hand-authored one — the loop the design-schema dimensions are built
   around (each dimension names the merge-time gate it pre-answers).
 - **Mid-build rework rate.** Whether a designed epic's plan items need fewer

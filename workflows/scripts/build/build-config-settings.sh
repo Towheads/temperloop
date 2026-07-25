@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# build-config-knobs.sh — print the names of the VALUE knobs build.config.sh
+# build-config-settings.sh — print the names of the VALUE settings build.config.sh
 # defines, one per line (temperloop#1241).
 #
 # SSOT-derived: the list is parsed from build.config.sh's own
-# `: "${NAME:=default}"` declarations, so a newly-added knob is covered here
-# with NO edit to this script — there is exactly one place knob names live.
+# `: "${NAME:=default}"` declarations, so a newly-added setting is covered here
+# with NO edit to this script — there is exactly one place setting names live.
 #
 # CONSUMER: build-level.mjs's 3e.5 acceptance gate. The gate runs
-# `quality-gates.sh` against the worker's worktree, but under the funnel-drive
-# session it inherits that session's ~40 EXPORTED build.config.sh knobs. The
+# `quality-gates.sh` against the worker's worktree, but under the pipeline-drive
+# session it inherits that session's ~40 EXPORTED build.config.sh settings. The
 # config-precedence tests the gate runs (test_config.sh / test_stranger_config.sh
-# / test_funnel_cron.sh) assert rung precedence (env > machine-conf > repo-local
-# > tracked-default); with the knobs exported the ENV rung wins and those
+# / test_pipeline_cron.sh) assert layer precedence (env > machine-conf > repo-local
+# > tracked-default); with the settings exported the ENV layer wins and those
 # assertions false-fail — GATE_FAIL on a change CI's `checks` passes green.
 # The gate `unset`s the names this script prints before running the suite, so it
 # runs hermetically at tracked defaults, exactly as CI does.
@@ -30,9 +30,9 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config="$here/build.config.sh"
 
-[ -r "$config" ] || { echo "build-config-knobs.sh: cannot read $config" >&2; exit 1; }
+[ -r "$config" ] || { echo "build-config-settings.sh: cannot read $config" >&2; exit 1; }
 
-# Match the documented knob idiom `: "${NAME:=...}"` (§ build.config.sh header),
+# Match the documented setting idiom `: "${NAME:=...}"` (§ build.config.sh header),
 # then drop the two config-file resolvers (see EXCLUDES above).
 sed -nE 's/^: "\$\{([A-Z_][A-Z0-9_]*):=.*/\1/p' "$config" \
   | grep -vxE 'BUILD_CONFIG_MACHINE|BUILD_CONFIG_LOCAL'

@@ -151,12 +151,12 @@ COMP_103="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '.items[] | select(.content.
 [ "$STATUS_103" = "In Progress" ] || fail "status for #103 wrong: $STATUS_103 (fnd:status:in-progress must unslug to 'In Progress')"
 [ "$COMP_103" = "Ingest" ] || fail "component for #103 wrong: $COMP_103 (fnd:component:ingest must unslug to 'Ingest')"
 
-# foundation #801 (split 3/3, funnel integration "D3 seam"): the reshape must
+# foundation #801 (split 3/3, pipeline integration "D3 seam"): the reshape must
 # ALSO pass through the raw, UNFILTERED label-name list (fnd:-prefixed ones
 # included) — not just the fnd: labels it extracts into status/component. This
-# is what lets a caller like funnel-tick.sh see an ordinary work-class label
+# is what lets a caller like pipeline-tick.sh see an ordinary work-class label
 # (`spike`, `Foundational`, `needs-clarification`, …) on an issues-only board;
-# see ISSUES-ONLY-BACKEND.md § Funnel integration and test_board_dual_adapter.sh.
+# see ISSUES-ONLY-BACKEND.md § Pipeline integration and test_board_dual_adapter.sh.
 LABELS_101="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -c '.items[] | select(.content.number==101) | .labels')"
 [ "$(jq -e 'any(.[]; . == "spike")' <<<"$LABELS_101" >/dev/null 2>&1 && echo yes || echo no)" = "yes" ] \
   || fail "labels for #101 should include the raw 'spike' label, got: $LABELS_101"

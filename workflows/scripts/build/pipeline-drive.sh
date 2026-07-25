@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# funnel-drive.sh — the autonomous funnel driver's RUNG-5b + 5c EXECUTOR
-# (foundation #604, #615). Rung 5a is EMIT-ONLY: funnel-tick.sh decides a tick
-# plan, funnel-cron.sh logs + notifies, and the OPERATOR executes by hand. 5b
+# pipeline-drive.sh — the autonomous pipeline driver's LAYER-5b + 5c EXECUTOR
+# (foundation #604, #615). Level 5a is EMIT-ONLY: pipeline-tick.sh decides a tick
+# plan, pipeline-cron.sh logs + notifies, and the OPERATOR executes by hand. 5b
 # auto-executes the emitted actions — but ONLY the SAFE tier that can never merge
-# code — by handing them to a headless `claude -p "/funnel-drive …"` driver
-# (claude/commands/funnel-drive.md). 5c (opt-in, a SEPARATE gate) additionally
-# auto-executes the MERGING tier via `claude -p "/funnel-drive-merge …"`, which
+# code — by handing them to a headless `claude -p "/pipeline-drive …"` driver
+# (claude/commands/pipeline-drive.md). 5c (opt-in, a SEPARATE gate) additionally
+# auto-executes the MERGING tier via `claude -p "/pipeline-drive-merge …"`, which
 # drives each kind:code item through /build's own gated merge. See
-# `Decisions/foundation - Funnel rung 5b: headless safe-actions-only auto-drive`
-# and `Decisions/foundation - Funnel rung 5c supervised auto-merge tier`.
+# `Decisions/foundation - Pipeline level 5b: headless safe-actions-only auto-drive`
+# and `Decisions/foundation - Pipeline level 5c supervised auto-merge tier`.
 #
 # THE SAFE/MERGING SPLIT:
 #
@@ -21,16 +21,16 @@
 #      operator answered + unassigned: a label remove + ack comment, no PR/merge,
 #      so it belongs in the safe tier alongside drain-answer.)
 #     (route-needs-input retired in #684: `needs-clarification` producers now
-#      assign the operator at source, so the funnel only parks — see below.)
+#      assign the operator at source, so the pipeline only parks — see below.)
 #     (retro-judge — epic #528, temperloop#535 — the KERNEL trigger half of the
-#      mint-then-judge design: funnel-tick.sh emits it when a `retro-pending`
+#      mint-then-judge design: pipeline-tick.sh emits it when a `retro-pending`
 #      tracker (build.md 4d-retro's mint, #533) is due. It spawns the OVERLAY
 #      `/retro --pending` judge — a nested headless session, no PR/merge of its
 #      own — so it belongs in the safe tier alongside the other no-merge drains.)
 #
 #   MERGING — drive-ready WHERE kind == "code" (→ /build --unattended → PR →
 #     merge). Surfaced-but-not-driven by default; DRIVEN only when
-#     FUNNEL_DRIVE_MERGE=1 (rung 5c), capped at FUNNEL_DRIVE_MERGE_CAP per tick,
+#     PIPELINE_DRIVE_MERGE=1 (level 5c), capped at PIPELINE_DRIVE_MERGE_CAP per tick,
 #     under the merge-ALLOWING containment overlay. The merge itself is /build's
 #     timed/modal gate, never a raw `gh pr merge` here.
 #
@@ -40,32 +40,32 @@
 #     · skip-contention · skip-retro-judge · no-op · board-disabled
 #     (route-already-assigned covers every parked `needs-clarification` item — #684 —
 #      AND every parked `funnel-escalated` 5c code escalation — #697; the operator was
-#      already assigned at source in both cases, so there is nothing for the funnel to
+#      already assigned at source in both cases, so there is nothing for the pipeline to
 #      do but drop it. #697 retired the skip-merge-escalation verb: a `funnel-escalated`
 #      item no longer carries `needs-clarification`, so the drain never lists it.
-#      skip-retro-judge — funnel-tick.sh's own legible record that no overlay
+#      skip-retro-judge — pipeline-tick.sh's own legible record that no overlay
 #      `/retro` judge is declared — there is nothing here to drive either.)
 #
-# 5b safety = STRUCTURALLY incapable of merging: with FUNNEL_DRIVE_MERGE off
+# 5b safety = STRUCTURALLY incapable of merging: with PIPELINE_DRIVE_MERGE off
 # (default) the merging tier is filtered OUT before the headless Claude sees it,
-# and funnel-drive.md independently forbids merging. 5c safety = the merge runs
+# and pipeline-drive.md independently forbids merging. 5c safety = the merge runs
 # ONLY through /build's gate: the cap bounds blast radius, /build's timed gate
 # (and operator-absent decision queue) supervises each merge, and
-# funnel-drive-merge.md forbids merging outside /build. Two guards per tier.
+# pipeline-drive-merge.md forbids merging outside /build. Two guards per tier.
 #
-# Like funnel-tick.sh this is a THIN executor: it CALLS the existing pipeline
+# Like pipeline-tick.sh this is a THIN executor: it CALLS the existing pipeline
 # commands via the prose driver and re-implements none of them. The deterministic
 # half — flatten plans, classify each action into the SAFE/MERGING/no-op tier —
 # lives HERE; the judgment half (running a prose command) is the Claude layer.
 #
-#   echo "$plans" | funnel-drive.sh                 # live: filter → headless drive
-#   echo "$plans" | funnel-drive.sh --dry-run       # preview the tiering; NO claude spawn
-#   funnel-drive.sh --plans-file <f>                 # read the plan array from a file
+#   echo "$plans" | pipeline-drive.sh                 # live: filter → headless drive
+#   echo "$plans" | pipeline-drive.sh --dry-run       # preview the tiering; NO claude spawn
+#   pipeline-drive.sh --plans-file <f>                 # read the plan array from a file
 #
-# Input: the tick-plan ARRAY funnel-cron.sh collects — a JSON array of per-board
+# Input: the tick-plan ARRAY pipeline-cron.sh collects — a JSON array of per-board
 # `{tick:"done", actions:[…]}` objects — on stdin or via --plans-file.
 #
-# Output (stdout, one JSON object): the drive outcome funnel-cron.sh folds into
+# Output (stdout, one JSON object): the drive outcome pipeline-cron.sh folds into
 # the wake record —
 #   {event:"drive", driven:<n>, safe_executed:<n|null>, safe_refused:<n|null>,
 #    safe_failed:<n|null>, merge_driven:<n>, merged_pr:<n|null>, merge_status:<enum>,
@@ -76,13 +76,13 @@
 #    routed_issues:[…], handed_off_issues:[…], escalated_issues:[…],  (#640 audit)
 #    reconciled_merged_issues:[…], merge_pending_issues:[…],  (#718 audit)
 #    reclaimed_issues:[…],  (#1157 audit)
-#    duration_ms:<n>,  (#640 timing; second-granularity — see funnel-cron.sh _epoch_s)
+#    duration_ms:<n>,  (#640 timing; second-granularity — see pipeline-cron.sh _epoch_s)
 #    gh_error_count:<n>, gh_errors:[…],  (#641)
 #    safe:[…], merge:[…], result:<safe driver summary | null>,
 #    merge_result:<merge driver summary | null>, status:"ran|empty|dry-run|error"}
 # `routed_issues`/`handed_off_issues`/`escalated_issues` are the mutation AUDIT (#640):
 # the issue numbers each side-effect acted on, so a soak reviewer can cross-check the
-# funnel's board mutations against the board's actual state (the counts alone cannot).
+# pipeline's board mutations against the board's actual state (the counts alone cannot).
 # `duration_ms` is this drive's wall time.
 # The SAFE tier (5b) reports attempts-vs-outcomes exactly like the merge tier does,
 # so a soak review never reads a refusal as a success (foundation #636):
@@ -101,7 +101,7 @@
 #                    parked/refused drive counts in `merge_driven` but NOT in `merged_pr`.
 #                    null = the merge tier ran but its summary was unparseable (unknown —
 #                    never a false 0). It CANNOT see an async/queue/`/build`-later merge of
-#                    a PR the funnel opened on a prior tick — that is `reconciled_merged`.
+#                    a PR the pipeline opened on a prior tick — that is `reconciled_merged`.
 #   `merge_status` = enum disambiguating a `merged_pr` value for a soak reviewer (#718):
 #                    "reported"    = merge tier ran, summary parsed → merged_pr is a real count.
 #                    "unparseable" = merge tier ran but the one-shot session died / emitted no
@@ -114,18 +114,18 @@
 # queue instead of re-refusing every tick (#622).
 # `handed_off` = code drives THAT TICK that opened a PR but did NOT merge this tick (the
 # one-shot `claude -p` session ended before CI greened + /build's merge gate fired);
-# each is labeled FUNNEL_MERGE_PENDING_LABEL off a ground-truth open-PR probe so the
+# each is labeled PIPELINE_MERGE_PENDING_LABEL off a ground-truth open-PR probe so the
 # NEXT tick RESUMES the merge rather than re-driving into a duplicate PR (#624). It is a
 # same-tick counter — its ground-truth standing-set companion is `merge_pending`.
-# `reconciled_merged` (+ `reconciled_merged_issues` audit) = PRs the funnel OPENED on a
-# prior tick (still carrying FUNNEL_MERGE_PENDING_LABEL) that have since merged ASYNC —
+# `reconciled_merged` (+ `reconciled_merged_issues` audit) = PRs the pipeline OPENED on a
+# prior tick (still carrying PIPELINE_MERGE_PENDING_LABEL) that have since merged ASYNC —
 # via the merge queue / a later `/build` / an operator merge — detected by the item's
 # issue now being CLOSED (its `Closes #N` fired). This is the F#718 fix for the blind
-# spot `merged_pr` (same-tick only) could never see: it reconciles funnel-opened throughput
+# spot `merged_pr` (same-tick only) could never see: it reconciles pipeline-opened throughput
 # against ground truth, not the synchronous driver summary. The label is RETIRED on each
 # reconciled issue so the standing set stays bounded and no merge is recounted next tick.
 # `merge_pending` (+ `merge_pending_issues` audit) = the standing ground-truth set of
-# FUNNEL_MERGE_PENDING_LABEL issues whose PR is STILL OPEN (opened-but-not-yet-merged) —
+# PIPELINE_MERGE_PENDING_LABEL issues whose PR is STILL OPEN (opened-but-not-yet-merged) —
 # the cross-check `handed_off` (same-tick) alone could not surface (#718). Both are
 # computed by _reconcile_pending on every real tick, independent of whether a merge was
 # driven this tick (an async merge lands on ticks with no new drives).
@@ -148,12 +148,12 @@
 # --dry-run stays side-effect-free (it never spawns a real claude).
 #
 # Config (env overrides win; defaults in build.config.sh):
-#   FUNNEL_DRIVE_MODEL          safe-tier model (default claude-sonnet-5 —
+#   PIPELINE_DRIVE_MODEL          safe-tier model (default claude-sonnet-5 —
 #                               the safe actions are mechanical/low-judgment)
-#   FUNNEL_DRIVE_MERGE          1 = also drive the kind:code merge tier (rung 5c)
-#   FUNNEL_DRIVE_MERGE_CAP      max code items driven to merge per tick (default 1)
-#   FUNNEL_DRIVE_MERGE_MODEL    merge-tier model (default claude-opus-4-8)
-#   FUNNEL_DRIVE_MERGE_SETTINGS merge-tier containment overlay (merge-allowing)
+#   PIPELINE_DRIVE_MERGE          1 = also drive the kind:code merge tier (level 5c)
+#   PIPELINE_DRIVE_MERGE_CAP      max code items driven to merge per tick (default 1)
+#   PIPELINE_DRIVE_MERGE_MODEL    merge-tier model (default claude-opus-4-8)
+#   PIPELINE_DRIVE_MERGE_SETTINGS merge-tier containment overlay (merge-allowing)
 #   CLAUDE_BIN                  the claude binary (default `claude` from PATH); the
 #                               test-double injection seam (mirrors workflow-eval.sh)
 set -euo pipefail
@@ -167,13 +167,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Attribution for the gh call-logger shim (F#988 / foundation#1265): tag every
 # gh call this command makes with its outermost context. `:-` preserves an
 # already-set (outer) value, so a nested command's context isn't clobbered.
-# funnel-tick.sh already does this; funnel-drive.sh (the 5b/5c executor) never
+# pipeline-tick.sh already does this; pipeline-drive.sh (the 5b/5c executor) never
 # did, leaving its `pr list --json number,body` / `issue list --label
 # funnel-merge-pending` polls in the shim's `unattributed` bucket. See
 # workflows/scripts/gh-call-logger.sh.
-export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-drive}"
+export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-pipeline-drive}"
 
-: "${FUNNEL_DRIVE_MODEL:=claude-sonnet-5}"
+: "${PIPELINE_DRIVE_MODEL:=claude-sonnet-5}"
 : "${CLAUDE_BIN:=claude}"
 # Permission containment overlay handed to the headless `claude -p` (--settings):
 # a deny-list (gh pr:*, git push:*) that the safe tier never needs — so the model
@@ -185,53 +185,53 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-drive}"
 # permission evaluation, so this holds over the ambient config). The structural
 # pre-filter below remains the PRIMARY merge-safety guarantee; the deny is the
 # backstop. Repo-relative default → portable across checkouts (mini + macbook).
-: "${FUNNEL_DRIVE_SETTINGS:=$HERE/funnel-drive.settings.json}"
+: "${PIPELINE_DRIVE_SETTINGS:=$HERE/pipeline-drive.settings.json}"
 
-# Rung 5c (merge tier) defaults. The merge driver gets a STRONGER model (code
+# Level 5c (merge tier) defaults. The merge driver gets a STRONGER model (code
 # drives are high-judgment) and the INVERSE containment overlay — one that ALLOWS
 # the scoped gh pr / merge / push surface /build needs (still no
 # --dangerously-skip-permissions). Gate + cap default in build.config.sh.
-: "${FUNNEL_DRIVE_MERGE_MODEL:=claude-opus-4-8}"
-: "${FUNNEL_DRIVE_MERGE_SETTINGS:=$HERE/funnel-drive-merge.settings.json}"
+: "${PIPELINE_DRIVE_MERGE_MODEL:=claude-opus-4-8}"
+: "${PIPELINE_DRIVE_MERGE_SETTINGS:=$HERE/pipeline-drive-merge.settings.json}"
 
 # Operator handle the merge tier routes un-driveable items to (foundation #622).
-# Must match funnel-tick.sh's FUNNEL_OPERATOR (the assignee baton) — a refused/failed
+# Must match pipeline-tick.sh's PIPELINE_OPERATOR (the assignee baton) — a refused/failed
 # code drive is assigned here and lands in the SAME assigned-to-me queue the
 # `needs-clarification` producers (/triage, /sweep) assign into at source (#684).
 # `gh` wants the bare login, so the leading @ is
-# stripped at use. FUNNEL_GH_BIN is the test-double seam for the routing gh calls
+# stripped at use. PIPELINE_GH_BIN is the test-double seam for the routing gh calls
 # (mirrors CLAUDE_BIN for the driver spawn).
 # SOURCE OF TRUTH is build.config.sh (sourced above); this `:=` is the
 # non-vendoring-checkout fallback (tracker seam v0, #772) — build.config.sh's
 # own placeholder wins here too since it's sourced first.
-: "${FUNNEL_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
-: "${FUNNEL_GH_BIN:=gh}"
+: "${PIPELINE_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
+: "${PIPELINE_GH_BIN:=gh}"
 
 # Board CLI used by the #1157 abandonment reclaim to release a stranded claim back
 # to Ready (In Progress → Ready). Shelling out to the CLI — rather than sourcing
 # board.sh here — keeps this driver adapter-free (the adapter loads in unclaim.sh's
 # own process, exactly as the CLAIM is made by a subprocess CLI via
-# /build→build-level.mjs→claim.sh). FUNNEL_UNCLAIM_BIN is the test-double seam
-# (mirrors FUNNEL_GH_BIN / CLAUDE_BIN).
-: "${FUNNEL_UNCLAIM_BIN:=$HERE/../board/unclaim.sh}"
+# /build→build-level.mjs→claim.sh). PIPELINE_UNCLAIM_BIN is the test-double seam
+# (mirrors PIPELINE_GH_BIN / CLAUDE_BIN).
+: "${PIPELINE_UNCLAIM_BIN:=$HERE/../board/unclaim.sh}"
 
-# Rung-5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
+# Level 5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
 # marker). This script applies THIS label — not `needs-clarification` — to every CODE
 # item it escalates to the operator (route-refused + terminally-red CI). Because those
-# items never carry `needs-clarification`, funnel-tick's Phase-A2 answer-drain
+# items never carry `needs-clarification`, pipeline-tick's Phase-A2 answer-drain
 # (`label:needs-clarification … no:assignee`) can never match them: no hidden marker,
-# no per-item comment scan, no skip verb. funnel-tick's park gate keeps them out of the
+# no per-item comment scan, no skip verb. pipeline-tick's park gate keeps them out of the
 # drive pool (duplicate-PR guard). SOURCE OF TRUTH is build.config.sh (sourced above);
 # this `:=` is the non-vendoring-checkout fallback.
-: "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
+: "${PIPELINE_ESCALATED_LABEL:=funnel-escalated}"
 
 # Cross-tick merge hand-off marker (foundation #624). A headless `claude -p` merge
 # drive is ONE-SHOT — it opens a PR but the session ends before CI greens and the
 # merge gate fires. So after the drive we GROUND-TRUTH probe each item for an open,
 # unmerged PR and, when one exists (and the item did not park/refuse/fail/merge),
 # label the issue with this so the NEXT tick RESUMES the merge instead of re-driving
-# (a fresh drive would open a duplicate PR). funnel-tick.sh reads the same label.
-: "${FUNNEL_MERGE_PENDING_LABEL:=funnel-merge-pending}"
+# (a fresh drive would open a duplicate PR). pipeline-tick.sh reads the same label.
+: "${PIPELINE_MERGE_PENDING_LABEL:=funnel-merge-pending}"
 
 # Required CI gate name a merge-pending PR must clear to merge (foundation #665).
 # Every build repo names its required ci.yml job `checks` (global CLAUDE.md § Branch
@@ -240,7 +240,7 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-drive}"
 # does not push fixes — so it is escalated to the operator instead of looped forever.
 # SOURCE OF TRUTH is build.config.sh (sourced above); this `:=` is the
 # non-vendoring-checkout fallback (tracker seam v0, #772).
-: "${FUNNEL_REQUIRED_CHECK:=checks}"
+: "${PIPELINE_REQUIRED_CHECK:=checks}"
 
 # ── Board → local checkout the headless driver MUST run IN (foundation #655) ──
 # /build (and the kind:spike path) derive BOTH repoRoot and the board from the
@@ -249,7 +249,7 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-drive}"
 # single enabled board the cron cwd happened to match the only target; widening to
 # boards `3 4 5` broke that — board-3 code items handed to a foundation-cwd merge
 # agent were all refused (merges 5/day → 0). The map is env-overridable per board
-# (FUNNEL_CHECKOUT_<n>); defaults track a deploy host's ~/dev sibling-checkout layout.
+# (PIPELINE_CHECKOUT_<n>); defaults track a deploy host's ~/dev sibling-checkout layout.
 # Board 4 uses the plain foundation checkout (NOT the cron's self-updating
 # foundation.cron, whose per-tick hard-reset would fight a live /build worktree).
 # Because that plain checkout can be dirty / on a feature branch (an active session,
@@ -257,20 +257,20 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-funnel-drive}"
 # clean-on-main and routes the board's drives to the operator when it isn't, rather
 # than spawning a session that /build --unattended Step 0.1 would only hard-abort
 # (F#687 — the counterpart to the no-checkout policy below).
-: "${FUNNEL_CHECKOUT_3:=$HOME/dev/stageFind}"
-: "${FUNNEL_CHECKOUT_4:=$HOME/dev/foundation}"
-: "${FUNNEL_CHECKOUT_5:=$HOME/dev/ssmobile}"
-: "${FUNNEL_CHECKOUT_6:=$HOME/dev/subsetwiki}"
+: "${PIPELINE_CHECKOUT_3:=$HOME/dev/stageFind}"
+: "${PIPELINE_CHECKOUT_4:=$HOME/dev/foundation}"
+: "${PIPELINE_CHECKOUT_5:=$HOME/dev/ssmobile}"
+: "${PIPELINE_CHECKOUT_6:=$HOME/dev/subsetwiki}"
 # Default checkout for cwd-AGNOSTIC safe actions (route/drain shell out to gh with
 # an explicit --repo, so any valid git checkout serves) whose board has no local
 # checkout. Foundation is always present where the cron runs.
-: "${FUNNEL_DEFAULT_CHECKOUT:=${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}}"
+: "${PIPELINE_DEFAULT_CHECKOUT:=${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}}"
 
 # Echo the checkout dir for a board if it exists, else nothing — the caller owns
 # the no-checkout policy (merge tier fails the item so it can't build the wrong
 # repo; safe tier falls back to the default checkout).
 _board_checkout() {  # $1 = board number
-  local var="FUNNEL_CHECKOUT_$1" dir
+  local var="PIPELINE_CHECKOUT_$1" dir
   dir="${!var:-}"
   # Echo the dir on a hit, nothing on a miss — but ALWAYS return 0, so the caller's
   # `co="$(_board_checkout …)"` assignment never trips `set -e` on the miss path.
@@ -278,9 +278,9 @@ _board_checkout() {  # $1 = board number
   return 0
 }
 
-# repo slug (owner/name) for a board — inlined mirror of funnel-tick.sh's
+# repo slug (owner/name) for a board — inlined mirror of pipeline-tick.sh's
 # tick_board_repo so the #718 reconciliation probe needs no adapter sourcing.
-# Resolves the same boards.conf registry funnel-tick.sh and board.sh's
+# Resolves the same boards.conf registry pipeline-tick.sh and board.sh's
 # board_repo() do (machine-level conf, then the repo-local
 # workflows/scripts/board/boards.conf override, then the built-in map below —
 # foundation #770; byte-identical to the pre-#770 map) before falling back.
@@ -295,7 +295,7 @@ _drive_conf_repo() {  # $1 = board number; rc 1 on any miss (no conf, or no key)
     # fall back to an existing legacy foundation/ one (removed in v0.17.0).
     f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
     lf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
-    if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # knob:exempt — test/simulation-only seam
+    if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # setting:exempt — test/simulation-only seam
       f="$lf"
     fi
   fi
@@ -348,7 +348,7 @@ _checkout_clean_on_main() {  # $1 = checkout dir; echoes reason + rc 1 if unclea
 # Spawn ONE headless driver IN a given checkout (#655). The `cd` is in a subshell so
 # the parent cwd is untouched; the scratch payload + settings overlay are absolute
 # paths, so they survive the cd. Echoes the driver's raw stdout; sets _spawn_rc.
-# $2=1 exports FUNNEL_OPERATOR_ABSENT=1 (the merge tier's operator-absent regime).
+# $2=1 exports PIPELINE_OPERATOR_ABSENT=1 (the merge tier's operator-absent regime).
 _spawn_rc=0
 _spawn_in_checkout() {  # $1 checkout  $2 opabsent(0|1)  $3 prompt  $4 model  $5 settings
   local checkout="$1" opabsent="$2" prompt="$3" model="$4" settings="$5" out rc
@@ -356,7 +356,7 @@ _spawn_in_checkout() {  # $1 checkout  $2 opabsent(0|1)  $3 prompt  $4 model  $5
   [ -n "$settings" ] && args+=(--settings "$settings")
   set +e
   if [ "$opabsent" = "1" ]; then
-    out="$( cd "$checkout" && FUNNEL_OPERATOR_ABSENT=1 "$CLAUDE_BIN" "${args[@]}" 2>/dev/null )"
+    out="$( cd "$checkout" && PIPELINE_OPERATOR_ABSENT=1 "$CLAUDE_BIN" "${args[@]}" 2>/dev/null )"
   else
     out="$( cd "$checkout" && "$CLAUDE_BIN" "${args[@]}" 2>/dev/null )"
   fi
@@ -384,8 +384,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --plans-file) PLANS_FILE="${2:?--plans-file needs a path}"; shift 2 ;;
-    -h|--help) echo "usage: funnel-drive.sh [--dry-run] [--plans-file <f>]  (else reads plans on stdin)" >&2; exit 2 ;;
-    *) echo "funnel-drive.sh: unknown arg '$1'" >&2; exit 2 ;;
+    -h|--help) echo "usage: pipeline-drive.sh [--dry-run] [--plans-file <f>]  (else reads plans on stdin)" >&2; exit 2 ;;
+    *) echo "pipeline-drive.sh: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
 
@@ -399,9 +399,9 @@ fi
 jq -e . >/dev/null 2>&1 <<<"$plans" || plans='[]'
 
 # Enabled-board set for the #718 reconciliation pass — every board that appears in this
-# tick's plans. funnel-cron ticks ALL enabled boards each wake and every plan carries at
+# tick's plans. pipeline-cron ticks ALL enabled boards each wake and every plan carries at
 # least one action stamped with its board (a no-op / board-disabled action still has one),
-# so this is the full enabled set — the repos to probe for async-merged funnel PRs.
+# so this is the full enabled set — the repos to probe for async-merged pipeline PRs.
 reconcile_boards="$(jq -r '[.[]?.actions[]?.board // empty] | map(tostring) | unique | .[]' <<<"$plans" 2>/dev/null | tr '\n' ' ')"
 
 # ── Tier each action: SAFE (auto-execute) vs MERGING (leave for the operator) ─
@@ -427,9 +427,9 @@ merge="$(jq -c '[.[]?.actions[]? | select(
 n_safe="$(jq 'length' <<<"$safe" 2>/dev/null || echo 0)"
 n_merge="$(jq 'length' <<<"$merge" 2>/dev/null || echo 0)"
 
-# ── Rung 5c: decide whether to DRIVE the merge tier this tick ─────────────────
-# Driven only when FUNNEL_DRIVE_MERGE=1 (a SEPARATE gate from the cron's
-# FUNNEL_DRIVE), capped at FUNNEL_DRIVE_MERGE_CAP. Default OFF ⇒ capped_merge is
+# ── Level 5c: decide whether to DRIVE the merge tier this tick ─────────────────
+# Driven only when PIPELINE_DRIVE_MERGE=1 (a SEPARATE gate from the cron's
+# PIPELINE_DRIVE), capped at PIPELINE_DRIVE_MERGE_CAP. Default OFF ⇒ capped_merge is
 # empty, the merge tier is surfaced-but-not-driven, and every path below reduces
 # to byte-identical 5b behavior.
 do_merge=0
@@ -439,25 +439,25 @@ n_routed=0   # refused/failed code items routed to the operator this tick (#622)
 n_route_suppressed=0   # refused items NOT re-routed because the operator already dispositioned them (#910)
 n_handed_off=0   # code drives that opened a PR but did not merge this tick → resumed next tick (#624)
 n_escalated=0   # merge-pending PRs with terminally-red CI escalated to the operator instead of looped (#665)
-n_reconciled_merged=0   # funnel-opened PRs that merged ASYNC (issue now closed) — reconciled + label retired (#718)
+n_reconciled_merged=0   # pipeline-opened PRs that merged ASYNC (issue now closed) — reconciled + label retired (#718)
 n_merge_pending=0   # standing set of merge-pending issues whose PR is still open this tick (#718)
 n_reclaimed=0   # abandoned claims released back to Ready this tick (#1157 — driven, no PR, session died)
 n_gh_errors=0   # routing/hand-off gh side-effect calls that FAILED this tick — recorded, not swallowed (#641)
 gh_errors_json='[]'   # per-failure detail {phase,issue,repo,gh_op,exit} accumulated by _gh_sideeffect (#641)
 # Mutation audit (#640): WHICH issues each side-effect acted on — the counters alone
 # (n_routed/n_handed_off/n_escalated) cannot be cross-checked against the board's
-# actual state, so a soak reviewer could not verify the funnel's mutations. These
+# actual state, so a soak reviewer could not verify the pipeline's mutations. These
 # arrays carry the issue numbers so the record is auditable, not just countable.
 routed_issues_json='[]'
 handed_off_issues_json='[]'
 escalated_issues_json='[]'
-reconciled_merged_issues_json='[]'   # #718 audit: funnel-opened issues reconciled as async-merged
+reconciled_merged_issues_json='[]'   # #718 audit: pipeline-opened issues reconciled as async-merged
 merge_pending_issues_json='[]'       # #718 audit: merge-pending issues still open this tick
 reclaimed_issues_json='[]'           # #1157 audit: abandoned claims released back to Ready this tick
-drive_start_s="${FUNNEL_NOW_EPOCH:-$(date +%s)}"   # tick wall-clock start (#640 timing)
-if [ "${FUNNEL_DRIVE_MERGE:-0}" = "1" ] && [ "${n_merge:-0}" -gt 0 ]; then
+drive_start_s="${PIPELINE_NOW_EPOCH:-$(date +%s)}"   # tick wall-clock start (#640 timing)
+if [ "${PIPELINE_DRIVE_MERGE:-0}" = "1" ] && [ "${n_merge:-0}" -gt 0 ]; then
   do_merge=1
-  capped_merge="$(jq -c --argjson cap "${FUNNEL_DRIVE_MERGE_CAP:-1}" '.[0:$cap]' <<<"$merge" 2>/dev/null || echo '[]')"
+  capped_merge="$(jq -c --argjson cap "${PIPELINE_DRIVE_MERGE_CAP:-1}" '.[0:$cap]' <<<"$merge" 2>/dev/null || echo '[]')"
   n_merge_driven="$(jq 'length' <<<"$capped_merge" 2>/dev/null || echo 0)"
 fi
 # Merges left for the operator: all of them in 5b, only those beyond the cap in 5c.
@@ -530,14 +530,14 @@ _safe_summary_json() {  # stdin: the safe_result blob
 
 # Ground truth (#910): has a HUMAN already dispositioned this issue by REMOVING
 # `funnel-escalated`? Returns 0 (true) iff the issue timeline carries an `unlabeled`
-# event for `funnel-escalated`. Since #697 the funnel escalates CODE items under this
-# OWN label — and the funnel only ever ADDS it (never removes it: no drain touches
+# event for `funnel-escalated`. Since #697 the pipeline escalates CODE items under this
+# OWN label — and the pipeline only ever ADDS it (never removes it: no drain touches
 # `funnel-escalated`, unlike `needs-clarification` which #657's drain-clarification
 # removes). So any `unlabeled` event for it is definitionally an operator action: the
 # operator saw the escalated item and cleared the label. Without this guard, clearing
-# the label re-admits a not-auto-driveable item to the drive pool (funnel-tick.sh:
+# the label re-admits a not-auto-driveable item to the drive pool (pipeline-tick.sh:
 # label absent ⇒ drive-ready), it is re-refused, and _route_refused RE-APPLIES the
-# label + re-comments every tick — the #712/#910 label-thrash loop. Because the funnel
+# label + re-comments every tick — the #712/#910 label-thrash loop. Because the pipeline
 # never drains this label, no U>D accounting is needed (the #657 complication that
 # forced it applied only to the shared `needs-clarification` label — retired here by
 # #697's split): a single un-label IS the operator. Fail-open toward routing: any
@@ -545,9 +545,9 @@ _safe_summary_json() {  # stdin: the safe_result blob
 # legitimate first-time route. Same fetch-then-jq shape as _open_pr_for_issue.
 _operator_dispositioned() {  # $1=repo  $2=issue
   local repo="$1" issue="$2" json u
-  json="$("$FUNNEL_GH_BIN" api "repos/$repo/issues/$issue/timeline" --paginate 2>/dev/null)" || return 1
+  json="$("$PIPELINE_GH_BIN" api "repos/$repo/issues/$issue/timeline" --paginate 2>/dev/null)" || return 1
   [ -z "$json" ] && return 1
-  u="$(jq -r --arg l "$FUNNEL_ESCALATED_LABEL" '[.[]? | select(.event == "unlabeled" and (.label.name // "") == $l)] | length' <<<"$json" 2>/dev/null)" || return 1
+  u="$(jq -r --arg l "$PIPELINE_ESCALATED_LABEL" '[.[]? | select(.event == "unlabeled" and (.label.name // "") == $l)] | length' <<<"$json" 2>/dev/null)" || return 1
   [ -n "$u" ] && [ "$u" -gt 0 ] 2>/dev/null
 }
 
@@ -562,7 +562,7 @@ _operator_dispositioned() {  # $1=repo  $2=issue
 _gh_sideeffect() {
   local phase="$1" issue="$2" repo="$3"; shift 3
   local op="${1:-} ${2:-}"   # e.g. "issue edit" / "issue comment" — the gh subcommand
-  "$FUNNEL_GH_BIN" "$@" >/dev/null 2>&1 && return 0
+  "$PIPELINE_GH_BIN" "$@" >/dev/null 2>&1 && return 0
   local rc=$?               # captured before any other command resets $?
   n_gh_errors=$((n_gh_errors + 1))
   gh_errors_json="$(jq -c --argjson arr "$gh_errors_json" \
@@ -587,7 +587,7 @@ _audit_add() {  # $1 = current json array  $2 = issue number
 # dead-end loop, and the operator never receives it. So this escalation is itself a
 # `funnel-escalated` PRODUCER and owns the full hand-off AT SOURCE (#684, relabeled by
 # #697): assign the operator + add `funnel-escalated` (its OWN gate — not the shared
-# `needs-clarification` — which funnel-tick's park gate PARKS as route-already-assigned
+# `needs-clarification` — which pipeline-tick's park gate PARKS as route-already-assigned
 # so the item leaves the auto-drive pool) + post the driver's one-line reason as a comment.
 # Deterministic + shell-side (not model-driven) so it is reliable and unit-testable.
 # Fail-open: a gh error on one item is swallowed and never aborts the tick.
@@ -597,7 +597,7 @@ _route_refused() {  # $1 = merge_result blob
   local msum op rows issue note repo
   msum="$(printf '%s' "${1:-null}" | _merge_summary_json)"
   [ -z "$msum" ] && return 0
-  op="${FUNNEL_OPERATOR#@}"
+  op="${PIPELINE_OPERATOR#@}"
   rows="$(jq -r '.results[]? | select(.status=="refused" or .status=="failed")
                  | "\(.issue)\t\(.note // "")"' <<<"$msum" 2>/dev/null)" || return 0
   [ -z "$rows" ] && return 0
@@ -615,9 +615,9 @@ _route_refused() {  # $1 = merge_result blob
       continue
     fi
     _gh_sideeffect route "$issue" "$repo" issue edit "$issue" -R "$repo" \
-      --add-assignee "$op" --add-label "$FUNNEL_ESCALATED_LABEL"
+      --add-assignee "$op" --add-label "$PIPELINE_ESCALATED_LABEL"
     _gh_sideeffect route "$issue" "$repo" issue comment "$issue" -R "$repo" \
-      -b "_funnel-drive-merge (rung 5c)_: routed to @${op} — not autonomously driveable to a merged PR via /build, so assigned to you and labeled \`${FUNNEL_ESCALATED_LABEL}\` (it leaves the auto-drive queue until you act). Reason: ${note:-no reason recorded}"
+      -b "_pipeline-drive-merge (level 5c)_: routed to @${op} — not autonomously driveable to a merged PR via /build, so assigned to you and labeled \`${PIPELINE_ESCALATED_LABEL}\` (it leaves the auto-drive queue until you act). Reason: ${note:-no reason recorded}"
     n_routed=$((n_routed + 1))
     routed_issues_json="$(_audit_add "$routed_issues_json" "$issue")"
   done <<<"$rows"
@@ -625,20 +625,20 @@ _route_refused() {  # $1 = merge_result blob
 
 # Safe-tier analog of _route_refused (F#1053): route a REFUSED route-foundational to
 # the operator's DECISION queue. The 5b driver refuses a route-foundational when the
-# epic already has an approved/executing plan note (funnel-drive.md) — re-running
+# epic already has an approved/executing plan note (pipeline-drive.md) — re-running
 # /assess would collide on the plan-schema filename ask (unresolvable headless) and
 # mint a duplicate gate comment. A refused route-foundational has NO side effect, so it
-# sits Ready and funnel-tick re-emits route-foundational every tick → re-refused forever
+# sits Ready and pipeline-tick re-emits route-foundational every tick → re-refused forever
 # (the #951 hourly spin). Applying the `decision` label + an operator assignee lands it
-# in funnel-tick's EXISTING route-already-assigned guard (`decision` + assignees>0 ⇒
+# in pipeline-tick's EXISTING route-already-assigned guard (`decision` + assignees>0 ⇒
 # parked), so it leaves the route-foundational path — reusing that guard, no new label
-# or self-heal machinery (this is why F#1045, the "funnel-tick shouldn't re-emit" half,
+# or self-heal machinery (this is why F#1045, the "pipeline-tick shouldn't re-emit" half,
 # needs no separate change: the marker + the existing guard together prevent re-emission).
 # `decision` — NOT the merge tier's `funnel-escalated` — is the right queue: the epic is
 # prepped and the operator owns the RESUME (run /build on the existing plan once its gate
-# lifts), which is exactly what funnel-tick's decision-guard detail already says. Any
+# lifts), which is exactly what pipeline-tick's decision-guard detail already says. Any
 # OTHER refusal reason routes the same way (parking beats re-firing); the driver's `note`
-# is surfaced verbatim as the reason. Idempotency is STRUCTURAL: once parked, funnel-tick
+# is surfaced verbatim as the reason. Idempotency is STRUCTURAL: once parked, pipeline-tick
 # stops emitting route-foundational for it, so it never re-enters the safe tier and this
 # never re-comments — so no #910-style disposition guard is needed here. Deterministic +
 # shell-side (not model-driven) so it is unit-testable. Fail-open per _gh_sideeffect.
@@ -647,7 +647,7 @@ _route_safe_refused() {  # $1 = safe_result blob
   local ssum op rows issue note repo
   ssum="$(printf '%s' "${1:-null}" | _safe_summary_json)"
   [ -z "$ssum" ] && return 0
-  op="${FUNNEL_OPERATOR#@}"
+  op="${PIPELINE_OPERATOR#@}"
   # Only route-foundational refusals — a refused drain-*/spike action has its own
   # handling and must NOT be dragged into the decision queue.
   rows="$(jq -r '.results[]? | select((.action // "") == "route-foundational" and .status == "refused")
@@ -662,7 +662,7 @@ _route_safe_refused() {  # $1 = safe_result blob
     _gh_sideeffect route "$issue" "$repo" issue edit "$issue" -R "$repo" \
       --add-assignee "$op" --add-label decision
     _gh_sideeffect route "$issue" "$repo" issue comment "$issue" -R "$repo" \
-      -b "_funnel-drive (rung 5b)_: route-foundational for #${issue} was refused (${note:-already prepped}). Parked to your decision queue — assigned to @${op} + labeled \`decision\` — so the funnel stops re-emitting route-foundational for it every tick. You own the resume (e.g. run /build on the existing plan once its gate lifts); the funnel will not re-route it while it stays assigned."
+      -b "_pipeline-drive (level 5b)_: route-foundational for #${issue} was refused (${note:-already prepped}). Parked to your decision queue — assigned to @${op} + labeled \`decision\` — so the pipeline stops re-emitting route-foundational for it every tick. You own the resume (e.g. run /build on the existing plan once its gate lifts); the pipeline will not re-route it while it stays assigned."
     n_routed=$((n_routed + 1))
     routed_issues_json="$(_audit_add "$routed_issues_json" "$issue")"
   done <<<"$rows"
@@ -672,7 +672,7 @@ _route_safe_refused() {  # $1 = safe_result blob
 # number if so, nothing otherwise. The merge-tier drive's `Closes #<issue>` (build.md
 # 3f) is the durable linkage; we read it back rather than trust the model's summary,
 # so the hand-off is detected even when the one-shot session died without emitting a
-# clean Step-3 summary (the F#624 case). Same-repo bare `Closes #N` form (the funnel
+# clean Step-3 summary (the F#624 case). Same-repo bare `Closes #N` form (the pipeline
 # drives same-repo). Fail-open (a gh error → no PR found).
 #
 # We list the open-PR set DIRECTLY and body-match client-side — NOT via `--search`.
@@ -683,7 +683,7 @@ _route_safe_refused() {  # $1 = safe_result blob
 # once; the exact `Closes #N` filter then runs on the body we already pull.
 _open_pr_for_issue() {  # $1=repo  $2=issue
   local repo="$1" issue="$2" json
-  json="$("$FUNNEL_GH_BIN" pr list -R "$repo" --state open \
+  json="$("$PIPELINE_GH_BIN" pr list -R "$repo" --state open \
             --json number,body --limit 100 2>/dev/null)" || return 0
   [ -z "$json" ] && return 0
   jq -r --arg n "$issue" '
@@ -693,7 +693,7 @@ _open_pr_for_issue() {  # $1=repo  $2=issue
 }
 
 # Ground truth (#665): is the PR's required `checks` gate TERMINALLY red? Returns 0
-# (true) iff its status-check rollup carries a `$FUNNEL_REQUIRED_CHECK` entry that has
+# (true) iff its status-check rollup carries a `$PIPELINE_REQUIRED_CHECK` entry that has
 # COMPLETED with conclusion FAILURE. A still-running / queued / pending check is NOT
 # terminal → returns 1 (false), so a freshly-opened PR (CI not yet finished) and a PR
 # whose CI is re-running after an operator fix are both left to resume, never escalated
@@ -702,8 +702,8 @@ _open_pr_for_issue() {  # $1=repo  $2=issue
 # transient probe failure can never wrongly escalate. The merge tier does not push
 # fixes, so a terminal-red required check has no autonomous path to merge.
 _required_check_failed() {  # $1=repo  $2=pr
-  local repo="$1" pr="$2" json check="${FUNNEL_REQUIRED_CHECK:-checks}"
-  json="$("$FUNNEL_GH_BIN" pr view "$pr" -R "$repo" --json statusCheckRollup 2>/dev/null)" || return 1
+  local repo="$1" pr="$2" json check="${PIPELINE_REQUIRED_CHECK:-checks}"
+  json="$("$PIPELINE_GH_BIN" pr view "$pr" -R "$repo" --json statusCheckRollup 2>/dev/null)" || return 1
   [ -z "$json" ] && return 1
   jq -e --arg c "$check" '
     [ (.statusCheckRollup // [])[]
@@ -714,18 +714,18 @@ _required_check_failed() {  # $1=repo  $2=pr
 }
 
 # Escalate a merge-pending PR whose required CI is terminally red to the operator
-# (#665) — the same exit _route_refused uses: drop FUNNEL_MERGE_PENDING_LABEL (so the
+# (#665) — the same exit _route_refused uses: drop PIPELINE_MERGE_PENDING_LABEL (so the
 # next tick stops resuming it), assign the operator + add `funnel-escalated` (its own
-# gate since #697, so funnel-tick's park gate sees route-already-assigned and it leaves
+# gate since #697, so pipeline-tick's park gate sees route-already-assigned and it leaves
 # the auto-drive queue), and comment naming the failed check. Deterministic + shell-side;
 # fail-open per gh call.
 _escalate_stuck_pr() {  # $1=repo  $2=issue  $3=pr
-  local repo="$1" issue="$2" pr="$3" op="${FUNNEL_OPERATOR#@}"
+  local repo="$1" issue="$2" pr="$3" op="${PIPELINE_OPERATOR#@}"
   _gh_sideeffect escalate "$issue" "$repo" issue edit "$issue" -R "$repo" \
-    --remove-label "$FUNNEL_MERGE_PENDING_LABEL" \
-    --add-assignee "$op" --add-label "$FUNNEL_ESCALATED_LABEL"
+    --remove-label "$PIPELINE_MERGE_PENDING_LABEL" \
+    --add-assignee "$op" --add-label "$PIPELINE_ESCALATED_LABEL"
   _gh_sideeffect escalate "$issue" "$repo" issue comment "$issue" -R "$repo" \
-    -b "_funnel-drive-merge (rung 5c)_: escalated to @${op} — PR #${pr}'s required \`${FUNNEL_REQUIRED_CHECK:-checks}\` check is terminally failing, so resuming the merge cannot land it (the merge tier does not push fixes). Removed \`${FUNNEL_MERGE_PENDING_LABEL}\` and assigned you; it leaves the auto-drive queue until the PR's CI is fixed (or the PR/issue is closed)."
+    -b "_pipeline-drive-merge (level 5c)_: escalated to @${op} — PR #${pr}'s required \`${PIPELINE_REQUIRED_CHECK:-checks}\` check is terminally failing, so resuming the merge cannot land it (the merge tier does not push fixes). Removed \`${PIPELINE_MERGE_PENDING_LABEL}\` and assigned you; it leaves the auto-drive queue until the PR's CI is fixed (or the PR/issue is closed)."
   n_escalated=$((n_escalated + 1))
   escalated_issues_json="$(_audit_add "$escalated_issues_json" "$issue")"
 }
@@ -739,7 +739,7 @@ _escalate_stuck_pr() {  # $1=repo  $2=issue  $3=pr
 #   parked         → /build queued an operator decision; the operator owns it; skip.
 #   everything else (merged / handed-off / absent / unparseable summary) → the
 #                    ground-truth probe DECIDES: if an open PR still closes the issue,
-#                    apply FUNNEL_MERGE_PENDING_LABEL so funnel-tick.sh resumes it.
+#                    apply PIPELINE_MERGE_PENDING_LABEL so pipeline-tick.sh resumes it.
 # `merged` is deliberately NOT skipped — #624's thesis is "trust the probe, not the
 # model report", and a `merged` self-report can be wrong (a merge-queue rejection on
 # the second `checks` run leaves the PR OPEN). A genuinely-merged PR is closed, so the
@@ -769,23 +769,23 @@ _record_handoff() {  # $1 = merge_result blob
       continue
     fi
     # A FAILED hand-off label is the duplicate-PR hole (#641): without the marker the
-    # next tick's funnel-tick classifier sees no `pending_merge` → re-drives fresh →
+    # next tick's pipeline-tick classifier sees no `pending_merge` → re-drives fresh →
     # opens a duplicate PR. Record it under the distinct `handoff` phase so a soak
-    # reviewer can spot it; funnel-tick's fresh-path ground-truth probe (#641) is the
+    # reviewer can spot it; pipeline-tick's fresh-path ground-truth probe (#641) is the
     # belt-and-suspenders that prevents the duplicate even when this label is lost.
     _gh_sideeffect handoff "$issue" "$repo" issue edit "$issue" -R "$repo" \
-      --add-label "$FUNNEL_MERGE_PENDING_LABEL"
+      --add-label "$PIPELINE_MERGE_PENDING_LABEL"
     n_handed_off=$((n_handed_off + 1))
     handed_off_issues_json="$(_audit_add "$handed_off_issues_json" "$issue")"
   done < <(jq -r '.[]? | "\(.issue)\t\(.repo)"' <<<"$capped_merge" 2>/dev/null)
 }
 
-# Reclaim an ABANDONED claim (#1157). The rung-5c one-shot merge session claims each
+# Reclaim an ABANDONED claim (#1157). The level-5c one-shot merge session claims each
 # item In Progress (via /build → build-level.mjs 3a → claim.sh) as its FIRST action.
-# When that session DISOBEYS the synchronous-block guardrail (funnel-drive-merge.md
+# When that session DISOBEYS the synchronous-block guardrail (pipeline-drive-merge.md
 # :96-112) — backgrounds a wait and ends its turn — the headless process exits
 # mid-drive, leaving the item stranded In Progress with NO branch and NO PR. Seven
-# such strandings on 2026-07-12 exceeded the WIP cap and jammed the whole funnel.
+# such strandings on 2026-07-12 exceeded the WIP cap and jammed the whole pipeline.
 #
 # The synchronous-block guardrail stays the PRIMARY fix; this is the mechanical
 # BACKSTOP that makes its failure self-healing (release → re-drive next tick) instead
@@ -830,20 +830,20 @@ _reclaim_abandoned() {  # $1 = merge_result blob
     pr="$(_open_pr_for_issue "$repo" "$issue")"
     [ -n "$pr" ] && continue
     # (d) skip a CLOSED issue — a merged item mid-cascade is not stranded.
-    state="$("$FUNNEL_GH_BIN" issue view "$issue" -R "$repo" --json state --jq '.state' 2>/dev/null || echo "")"
+    state="$("$PIPELINE_GH_BIN" issue view "$issue" -R "$repo" --json state --jq '.state' 2>/dev/null || echo "")"
     [ "$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')" = "OPEN" ] || continue
     # Release to Ready via the board CLI (its idempotent In-Progress-only guard is
     # condition (c)). Fail-open: an error never aborts the tick, just skips the item.
-    if "$FUNNEL_UNCLAIM_BIN" "$issue" --board "$board" >/dev/null 2>&1; then
+    if "$PIPELINE_UNCLAIM_BIN" "$issue" --board "$board" >/dev/null 2>&1; then
       n_reclaimed=$((n_reclaimed + 1))
       reclaimed_issues_json="$(_audit_add "$reclaimed_issues_json" "$issue")"
     fi
   done < <(jq -r '.[]? | "\(.issue)\t\(.repo)\t\(.board)"' <<<"$capped_merge" 2>/dev/null)
 }
 
-# Reconcile the funnel's STANDING merge-pending set against ground truth (#718). The
-# funnel labels every hand-off issue FUNNEL_MERGE_PENDING_LABEL (#624), so that label
-# set IS "PRs the funnel opened that had not merged yet." We read it back each real tick
+# Reconcile the pipeline's STANDING merge-pending set against ground truth (#718). The
+# pipeline labels every hand-off issue PIPELINE_MERGE_PENDING_LABEL (#624), so that label
+# set IS "PRs the pipeline opened that had not merged yet." We read it back each real tick
 # and split it by the issue's live state — the `Closes #N` linkage the drive emits means
 # a merged PR CLOSES its issue, so the issue's state is the merge ground truth:
 #   CLOSED → the PR merged ASYNC (queue / a later /build / an operator merge) since we
@@ -861,7 +861,7 @@ _reconcile_pending() {  # $1 = space-separated board numbers
   local boards="$1" b repo listing issue state
   for b in $boards; do
     repo="$(_board_repo "$b")" || continue
-    listing="$("$FUNNEL_GH_BIN" issue list -R "$repo" --label "$FUNNEL_MERGE_PENDING_LABEL" \
+    listing="$("$PIPELINE_GH_BIN" issue list -R "$repo" --label "$PIPELINE_MERGE_PENDING_LABEL" \
                  --state all --json number,state --limit 100 2>/dev/null)" || continue
     [ -z "$listing" ] && continue
     while IFS=$'\t' read -r issue state; do
@@ -870,7 +870,7 @@ _reconcile_pending() {  # $1 = space-separated board numbers
       case "$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')" in
         CLOSED)
           _gh_sideeffect reconcile "$issue" "$repo" issue edit "$issue" -R "$repo" \
-            --remove-label "$FUNNEL_MERGE_PENDING_LABEL"
+            --remove-label "$PIPELINE_MERGE_PENDING_LABEL"
           n_reconciled_merged=$((n_reconciled_merged + 1))
           reconciled_merged_issues_json="$(_audit_add "$reconciled_merged_issues_json" "$issue")"
           ;;
@@ -945,7 +945,7 @@ emit_outcome() {  # $1=status  $2=safe_result(json|null)  $3=merge_result(json|n
     --argjson reconciled_merged_issues "${reconciled_merged_issues_json:-[]}" \
     --argjson merge_pending_issues "${merge_pending_issues_json:-[]}" \
     --argjson reclaimed_issues "${reclaimed_issues_json:-[]}" \
-    --argjson duration_ms "$(( ( ${FUNNEL_NOW_EPOCH:-$(date +%s)} - drive_start_s ) * 1000 ))" \
+    --argjson duration_ms "$(( ( ${PIPELINE_NOW_EPOCH:-$(date +%s)} - drive_start_s ) * 1000 ))" \
     --argjson safe "$safe" --argjson merge "$merge" \
     --arg status "$1" --argjson result "${2:-null}" --argjson merge_result "$mr" \
     '{event:"drive", driven:$driven,
@@ -965,7 +965,7 @@ emit_outcome() {  # $1=status  $2=safe_result(json|null)  $3=merge_result(json|n
 
 # Nothing to drive on either tier → clean no-op (still report any skipped merges).
 # Still reconcile the standing merge-pending set on a REAL empty tick (#718): a PR the
-# funnel opened earlier can merge async on a tick that drives nothing new. Dry-run stays
+# pipeline opened earlier can merge async on a tick that drives nothing new. Dry-run stays
 # side-effect-free (no gh calls).
 if [ "${n_safe:-0}" -eq 0 ] && [ "$do_merge" -eq 0 ]; then
   [ "$DRY_RUN" -eq 0 ] && _reconcile_pending "$reconcile_boards"
@@ -984,10 +984,10 @@ fi
 SCRATCH_DIR=""
 trap '[ -n "$SCRATCH_DIR" ] && rm -rf "$SCRATCH_DIR"' EXIT
 
-# ── SAFE tier (rung 5b) — drive the no-merge actions via /funnel-drive ────────
+# ── SAFE tier (level 5b) — drive the no-merge actions via /pipeline-drive ────────
 # The payload carries the SAFE actions AND the hard rules, written to a scratch
-# file the headless Claude reads via /funnel-drive's argument. The hard rules are
-# the in-band, defense-in-depth restatement of funnel-drive.md's HARD RULES — so
+# file the headless Claude reads via /pipeline-drive's argument. The hard rules are
+# the in-band, defense-in-depth restatement of pipeline-drive.md's HARD RULES — so
 # even a payload inspected in isolation declares the merge prohibition.
 #
 # #655: actions are GROUPED BY BOARD and each group is driven in that board's
@@ -1000,11 +1000,11 @@ if [ "${n_safe:-0}" -gt 0 ]; then
   # Containment overlay must exist before we spawn — a configured-but-missing
   # settings file means we'd otherwise launch the driver UNCONTAINED, so fail
   # closed (report error, spawn nothing) rather than run without the deny-list.
-  if [ -n "$FUNNEL_DRIVE_SETTINGS" ] && [ ! -f "$FUNNEL_DRIVE_SETTINGS" ]; then
-    emit_outcome "error" "$(jq -cn --arg s "$FUNNEL_DRIVE_SETTINGS" '{reason:"settings overlay missing",settings:$s}')" null
+  if [ -n "$PIPELINE_DRIVE_SETTINGS" ] && [ ! -f "$PIPELINE_DRIVE_SETTINGS" ]; then
+    emit_outcome "error" "$(jq -cn --arg s "$PIPELINE_DRIVE_SETTINGS" '{reason:"settings overlay missing",settings:$s}')" null
     exit 0
   fi
-  [ -z "$SCRATCH_DIR" ] && SCRATCH_DIR="$(mktemp -d -t funnel-drive.XXXXXX)"
+  [ -z "$SCRATCH_DIR" ] && SCRATCH_DIR="$(mktemp -d -t pipeline-drive.XXXXXX)"
   safe_hard_rules='[
       "NEVER open a pull request.",
       "NEVER merge anything.",
@@ -1016,10 +1016,10 @@ if [ "${n_safe:-0}" -gt 0 ]; then
   safe_raws=""
   for b in $(jq -r '[.[].board // "?"] | unique[]' <<<"$safe"); do
     acts_b="$(jq -c --arg b "$b" '[.[] | select((.board // "?") == $b)]' <<<"$safe")"
-    co="$(_board_checkout "$b")"; [ -z "$co" ] && co="$FUNNEL_DEFAULT_CHECKOUT"
+    co="$(_board_checkout "$b")"; [ -z "$co" ] && co="$PIPELINE_DEFAULT_CHECKOUT"
     pf="$SCRATCH_DIR/safe-$b.json"
     jq -cn --argjson actions "$acts_b" --argjson hr "$safe_hard_rules" \
-      '{rung:"5b", hard_rules:$hr, actions:$actions}' > "$pf"
+      '{layer:"5b", hard_rules:$hr, actions:$actions}' > "$pf"
     # CLAUDE_BIN is the test-double seam; the overlay (--settings, NEVER
     # --dangerously-skip-permissions) contains it. Fail-open: a per-board driver
     # error is reported as a tier error (the cron wraps the whole drive).
@@ -1030,7 +1030,7 @@ if [ "${n_safe:-0}" -gt 0 ]; then
     # AskUserQuestion and recording status:failed (#329). The other safe actions
     # (drain-answer/parse-miss/clarification, spike) are deterministic gh mutations
     # or open no PR, so they are unaffected by the flag. Mirrors the merge tier below.
-    driver_out="$(_spawn_in_checkout "$co" 1 "/funnel-drive $pf" "$FUNNEL_DRIVE_MODEL" "$FUNNEL_DRIVE_SETTINGS")"
+    driver_out="$(_spawn_in_checkout "$co" 1 "/pipeline-drive $pf" "$PIPELINE_DRIVE_MODEL" "$PIPELINE_DRIVE_SETTINGS")"
     if [ "$_spawn_rc" -ne 0 ]; then
       emit_outcome "error" "$(jq -cn --arg rc "$_spawn_rc" --arg b "$b" '{driver_exit:($rc|tonumber),board:$b}')" null
       exit 0
@@ -1056,20 +1056,20 @@ if [ "${n_safe:-0}" -gt 0 ]; then
   _route_safe_refused "$safe_result"
 fi
 
-# ── MERGING tier (rung 5c) — drive the capped kind:code items via /funnel-drive-merge ─
+# ── MERGING tier (level 5c) — drive the capped kind:code items via /pipeline-drive-merge ─
 # The merge driver hands each code item to /build --unattended and lets /build's
-# OWN timed/modal gate decide the merge; FUNNEL_OPERATOR_ABSENT=1 selects /build's
+# OWN timed/modal gate decide the merge; PIPELINE_OPERATOR_ABSENT=1 selects /build's
 # operator-absent regime (timed gate + decision queue) so a blocking decision
 # parks rather than hangs. It runs under the merge-ALLOWING containment overlay.
 merge_result=null
 if [ "$do_merge" -eq 1 ]; then
   # Merge-allowing overlay must exist before we spawn — fail closed (a missing
   # overlay would launch the merge driver UNCONTAINED over the merge surface).
-  if [ -n "$FUNNEL_DRIVE_MERGE_SETTINGS" ] && [ ! -f "$FUNNEL_DRIVE_MERGE_SETTINGS" ]; then
-    emit_outcome "error" "$safe_result" "$(jq -cn --arg s "$FUNNEL_DRIVE_MERGE_SETTINGS" '{reason:"merge settings overlay missing",settings:$s}')"
+  if [ -n "$PIPELINE_DRIVE_MERGE_SETTINGS" ] && [ ! -f "$PIPELINE_DRIVE_MERGE_SETTINGS" ]; then
+    emit_outcome "error" "$safe_result" "$(jq -cn --arg s "$PIPELINE_DRIVE_MERGE_SETTINGS" '{reason:"merge settings overlay missing",settings:$s}')"
     exit 0
   fi
-  [ -z "$SCRATCH_DIR" ] && SCRATCH_DIR="$(mktemp -d -t funnel-drive.XXXXXX)"
+  [ -z "$SCRATCH_DIR" ] && SCRATCH_DIR="$(mktemp -d -t pipeline-drive.XXXXXX)"
   merge_hard_rules='[
       "Merge ONLY through /build --unattended — never run gh pr merge / gh pr create / git push yourself.",
       "Honor the /build timed and modal merge gate; never force-merge a structurally-risky set.",
@@ -1095,7 +1095,7 @@ if [ "$do_merge" -eq 1 ]; then
       # failed result per item so _route_refused routes it to the operator.
       bsum="$(jq -cn --argjson acts "$acts_b" '{merged:0,parked:0,failed:($acts|length),refused:0,
         results:[$acts[] | {issue:.issue, status:"failed",
-          note:("no local checkout configured for board " + (.board|tostring) + " — funnel cannot drive /build here (F#655); set FUNNEL_CHECKOUT_" + (.board|tostring))}]}')"
+          note:("no local checkout configured for board " + (.board|tostring) + " — pipeline cannot drive /build here (F#655); set PIPELINE_CHECKOUT_" + (.board|tostring))}]}')"
       merge_parsed_any=1
       merge_combined="$(_combine_summary "$merge_combined" "$bsum" "merged parked failed refused")"
       continue
@@ -1109,15 +1109,15 @@ if [ "$do_merge" -eq 1 ]; then
       # it to the operator) instead of spawning a session that can only fail.
       bsum="$(jq -cn --argjson acts "$acts_b" --arg reason "$co_reason" --arg co "$co" '{merged:0,parked:0,failed:($acts|length),refused:0,
         results:[$acts[] | {issue:.issue, status:"failed",
-          note:($reason + " [" + $co + "] — funnel skipped this board'"'"'s merge drives (F#687); resolve the checkout or let deploy-mini reset it to clean-on-main")}]}')"
+          note:($reason + " [" + $co + "] — pipeline skipped this board'"'"'s merge drives (F#687); resolve the checkout or let deploy-mini reset it to clean-on-main")}]}')"
       merge_parsed_any=1
       merge_combined="$(_combine_summary "$merge_combined" "$bsum" "merged parked failed refused")"
       continue
     fi
     pf="$SCRATCH_DIR/merge-$b.json"
-    jq -cn --argjson actions "$acts_b" --argjson cap "${FUNNEL_DRIVE_MERGE_CAP:-1}" --argjson hr "$merge_hard_rules" \
-      '{rung:"5c", cap:$cap, hard_rules:$hr, actions:$actions}' > "$pf"
-    merge_out="$(_spawn_in_checkout "$co" 1 "/funnel-drive-merge $pf" "$FUNNEL_DRIVE_MERGE_MODEL" "$FUNNEL_DRIVE_MERGE_SETTINGS")"
+    jq -cn --argjson actions "$acts_b" --argjson cap "${PIPELINE_DRIVE_MERGE_CAP:-1}" --argjson hr "$merge_hard_rules" \
+      '{layer:"5c", cap:$cap, hard_rules:$hr, actions:$actions}' > "$pf"
+    merge_out="$(_spawn_in_checkout "$co" 1 "/pipeline-drive-merge $pf" "$PIPELINE_DRIVE_MERGE_MODEL" "$PIPELINE_DRIVE_MERGE_SETTINGS")"
     # Fail-SOFT (unlike the safe tier): a merge-driver error on one board records a
     # driver_exit for that board and continues; the tick is never wedged.
     if [ "$_spawn_rc" -ne 0 ]; then
@@ -1154,7 +1154,7 @@ if [ "$do_merge" -eq 1 ]; then
 fi
 
 # Reconcile the standing merge-pending set against ground truth (#718): count PRs the
-# funnel opened on a prior tick that have since merged async (issue now closed → retire
+# pipeline opened on a prior tick that have since merged async (issue now closed → retire
 # the label) vs those still open. Runs on every REAL tick (dry-run exited above),
 # independent of whether a merge was driven this tick.
 _reconcile_pending "$reconcile_boards"
