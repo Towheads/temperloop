@@ -371,6 +371,43 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
   Done, by the jq reshape's own precedence (`if $state == "closed" then
   {status:"Done"}` is checked FIRST, before any label).
 
+### What close DOES have to clear: the claim stamp (temperloop#744)
+
+The "no cascade needed" claim above holds for **Status** — but not for the
+**claim lock**. `fnd:host/session:<host>:<sess8>` is a real piece of state that
+outlives the close: unlike `fnd:status:*`, no reader shadows it with a
+closed-state precedence rule, so a stamp left on a closed issue is a
+cross-session lock that can never be released. `issue-state.sh resolve` derives
+`claimed-elsewhere` from exactly that label; `reconcile.sh --status`'s
+foreign-claim bucket and `board_claim_contended` read it the same way. A closed
+issue wearing one is indistinguishable from a live claim.
+
+Two halves, both shipped:
+
+- **Root cause — the adapter's own Done write clears it.**
+  `_board_issues_set_field`'s Done arm strips every `fnd:host/session:*` label
+  alongside the `fnd:status:*` label before closing, under the same
+  retry-once/never-swallow contract. Reaching Done ends the claim by
+  construction. A NON-Done target deliberately leaves the stamp alone — a park
+  back to Ready/Backlog is exactly the case where the claim may legitimately
+  still be held (kernel doc § Claim held until Done).
+- **Backstop — the sweep, for every close that bypasses the adapter.** The
+  dominant close path in this pipeline is a merged PR's native `Closes #N`,
+  which runs no adapter code at all (same adapter-bypass leak that strands
+  `fnd:status:*`), and there is no server-side automation on this backend to
+  hook. So `reconcile.sh --labels` owns the residue as class **(j)**: a
+  `fnd:host/session:*` label ON a closed issue, stripped per-issue by
+  `--apply`. This is NOT covered by class (g) (orphaned repo *label objects*):
+  (g) deletes a label object only when it is attached to zero OPEN issues, so
+  while any open issue still wears the same stamp the object is correctly kept
+  — and every closed issue wearing it stays stranded forever. One documented
+  command sweeps the accumulated backlog:
+
+  ```sh
+  workflows/scripts/board/reconcile.sh --board 7 --labels          # report
+  workflows/scripts/board/reconcile.sh --board 7 --labels --apply  # + strip
+  ```
+
 ## Read cache staleness bound (cache-read-dispatch item)
 
 The claim above — "this path has no cache at all" — was true before this
