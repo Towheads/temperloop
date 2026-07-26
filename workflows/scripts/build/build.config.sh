@@ -406,29 +406,35 @@ fi
 # second counting implementation — one compose seam). RATCHET: both caps are
 # seeded at the FRESH baseline measured against the tree this item actually
 # merges against — never a number recorded earlier and trusted stale. This
-# item was seeded twice for exactly that reason: once at initial landing
-# (338/1057, already past the epic's own earlier-recorded artifact by a few
-# lines), and again (340/1057) after a rebase onto a newer main picked up an
-# unrelated ~2-line growth in claude/CLAUDE.kernel.md — re-measuring and
-# re-seeding at merge-time state, rather than patching the gate to tolerate
-# the old number, is the ratchet's own "green by construction" rule applied
-# literally: whatever the tree looks like right before this PR merges IS the
-# baseline, full stop. A cap is lowered again only by a later config PR,
-# after a subtraction pass actually shrinks the prose (never raised/lowered
-# by hand-editing prose to dodge the gate — see the setting-registry.tsv row
-# for the same two settings, which must stay verbatim-equal to these two
-# literals).
+# item was seeded three times for exactly that reason: once at initial
+# landing (338/1057, already past the epic's own earlier-recorded artifact
+# by a few lines), again (340/1057) after a rebase onto a newer main picked
+# up an unrelated ~2-line growth in claude/CLAUDE.kernel.md, and again
+# (335/1057) by the epic's tighten-caps item (temperloop#730) after a
+# subtraction pass (pointer-collapse + apply-approved-deletions) actually
+# shrank the tier-1 render — re-measuring and re-seeding at merge-time
+# state, rather than patching the gate to tolerate the old number, is the
+# ratchet's own "green by construction" rule applied literally: whatever the
+# tree looks like right before this PR merges IS the baseline, full stop.
+# The tier-2 per-file figure held constant across all three seedings —
+# claude/commands/build.md sits exactly at 1057 lines again at this
+# tightening, so there is zero headroom to remove and the cap stays put
+# rather than manufacturing a reduction. A cap is lowered again only by a
+# later config PR, after a subtraction pass actually shrinks the prose
+# (never raised/lowered by hand-editing prose to dodge the gate — see the
+# setting-registry.tsv row for the same two settings, which must stay
+# verbatim-equal to these two literals).
 #
 # TIER-1: caps the composed KERNEL-AUTHORED render only (claude/
 # CLAUDE.kernel.md rendered via install-claude-md.sh's
 # INSTALL_CLAUDE_MD_KERNEL_ONLY seam — never the kernel+overlay total).
-: "${PROSE_BUDGET_TIER1_CAP:=340}"
+: "${PROSE_BUDGET_TIER1_CAP:=335}"
 # TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
 # (agent charters included) — deliberately a single setting, not a per-file
 # table (a per-file value would just be a relocated exemption mechanism,
 # which this item has none of). Seeded to clear the largest tracked file at
-# landing time (claude/commands/build.md, 1057 lines, unchanged across both
-# seedings) — every other file already sits well under this cap, by
+# landing time (claude/commands/build.md, 1057 lines, unchanged across all
+# three seedings) — every other file already sits well under this cap, by
 # construction of "uniform".
 : "${PROSE_BUDGET_TIER2_FILE_CAP:=1057}"
 
