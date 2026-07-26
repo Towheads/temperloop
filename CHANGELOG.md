@@ -14,7 +14,59 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-26
+
+### Added
+
+- **`reconcile`: `--fix` gains a marker-lens repair (temperloop#748).** The
+  marker lens could name a stale local claim marker every run forever without
+  ever being able to clear one — `--fix` was `--status`-only. It now also
+  applies one narrowly-scoped repair on the default marker lens: it clears
+  **this window's** claim marker, via the same `claim_marker_clear` primitive
+  `release.sh` uses, and only when that marker is `marker-without-board` drift
+  **and** its issue is provably terminal (`CLOSED`/`MERGED` on GitHub). Still
+  opt-in — without `--fix` the lens only reports. Deliberately never repaired:
+  a marker whose issue is still open, any window other than the caller's own
+  (the GH #297 doctrine), and the entire `board-without-marker` class, which
+  temperloop#719 showed produces false stranded-claim signals. `--fix` remains
+  rejected with `--labels` (that lens applies via `--apply`/`--unattended`).
+  K#275 is untouched: `release.sh <n>` still refuses a non-latest claim, now
+  pinned by `workflows/scripts/board/tests/test_release.sh`.
+
 ### Fixed
+
+- **`ks_root()` resolves the rung-3 machine conf in the bare-env plane
+  (temperloop#771, foundation#1328).** The store root resolved *differently*
+  depending on whether the caller had sourced `build.config.sh`. A process that
+  sources only `knowledge_store.sh` skipped the operator's rung-3 machine conf
+  entirely and fell through to the kernel XDG default
+  (`~/.local/share/foundation/knowledge`), while one that sourced
+  `build.config.sh` resolved the real store — a split-brain that made the same
+  helper return two different roots on one host. `ks_root()` now consults
+  `KNOWLEDGE_STORE_MACHINE_CONF` (an isolated-subshell read, so the tracked
+  `build.config.sh` is never sourced and no ordering is disturbed) between the
+  env rung and the kernel default, so both planes agree. **Live impact:** this
+  is the gap `session-start-drain.sh` fell into on every interactive session
+  start — its vault path derives transitively from `ks_root()` via
+  `KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE` — silently failing **218 session
+  drains across 16 consecutive days** on the reporting host before it was
+  found. The new setting is registered in `setting-registry.tsv`;
+  `knowledge_store.sh` test cases 3b–3f pin the rung (env still wins, machine
+  conf beats the XDG default, and a missing/malformed/erroring conf falls
+  through cleanly), and `test_stranger_config.sh` §§ G/H now pin
+  `XDG_CONFIG_HOME` so their sandbox isolation is structural rather than
+  accidental.
+
+- **`doctor`'s knowledge-root check can actually see a split (temperloop#774,
+  foundation#1332).** The check was degenerate: it compared `ks_root()` against
+  a root *derived from* `KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE`, whose own
+  default is itself `$(ks_root)/…` — so it compared a value with itself and
+  could never fail, including throughout the 16-day outage above. It now
+  compares the two resolution planes directly (plane A, via `build.config.sh`,
+  vs plane B, bare-env) and reports a genuine divergence. Covered by
+  `test_doctor_knowledge_root.sh`; `docs/features/knowledge-store.md`'s
+  "Agent-plane vs. script-plane routing" prose is updated to describe the
+  plane-A/plane-B comparison instead of the retired key-file derivation.
 
 - **`pipeline-schedule-gate.sh`: an unresolvable store root no longer reads as
   the operator's kill switch (foundation#1329).** Every skip verdict was
@@ -52,25 +104,6 @@ reads that marker; a stranger greps for it before pulling.
   stranded. Sweep the accumulated backlog with one command —
   `workflows/scripts/board/reconcile.sh --board 7 --labels --apply` (or
   `--labels` alone for the zero-write report).
-
-### Added
-
-- **`reconcile`: `--fix` gains a marker-lens repair (temperloop#748).** The
-  marker lens could name a stale local claim marker every run forever without
-  ever being able to clear one — `--fix` was `--status`-only. It now also
-  applies one narrowly-scoped repair on the default marker lens: it clears
-  **this window's** claim marker, via the same `claim_marker_clear` primitive
-  `release.sh` uses, and only when that marker is `marker-without-board` drift
-  **and** its issue is provably terminal (`CLOSED`/`MERGED` on GitHub). Still
-  opt-in — without `--fix` the lens only reports. Deliberately never repaired:
-  a marker whose issue is still open, any window other than the caller's own
-  (the GH #297 doctrine), and the entire `board-without-marker` class, which
-  temperloop#719 showed produces false stranded-claim signals. `--fix` remains
-  rejected with `--labels` (that lens applies via `--apply`/`--unattended`).
-  K#275 is untouched: `release.sh <n>` still refuses a non-latest claim, now
-  pinned by `workflows/scripts/board/tests/test_release.sh`.
-
-### Fixed
 
 - **Retargeted the temperloop#165 `.foundation/` rename-window close from
   v0.17.0 to v0.19.0 (temperloop#764).** ~86 markers across the tree stated the
