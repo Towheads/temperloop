@@ -218,6 +218,13 @@ knowledge-store workflows/scripts/lib/issue-corpus.sh
 knowledge-store workflows/scripts/lib/issue-marker-probe.sh
 knowledge-store workflows/scripts/lib/tests/test_issue_corpus.sh
 knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
+# doctor.sh's check_knowledge_root lives in install-cli's own file
+# (workflows/scripts/install/doctor.sh, already covered by that feature's
+# `workflows/scripts/install/*` glob above), but its subject matter is this
+# feature's plane-A/plane-B root-resolution invariant, not install/doctor
+# machinery generally — same exact-path carve-out style as
+# review-agents' test_doctor_reviewer_coverage.sh claim below.
+knowledge-store workflows/scripts/tests/test_doctor_knowledge_root.sh
 
 # ── command-declared — slash-command availability probe (ADR 0008) ──────────
 # The command-side peer of the subagent capability-probe: `command_declared

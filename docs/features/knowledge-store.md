@@ -87,11 +87,19 @@ stays on Obsidian's own MCP tools whenever the configured store root
 actually *is* an Obsidian vault — independent of whatever
 `KNOWLEDGE_STORE_BACKEND` is configured — so the two planes can diverge if
 misconfigured. `doctor.sh`'s (`bash workflows/scripts/install/doctor.sh`)
-knowledge-store root check exists
-specifically to catch that split: it derives the Obsidian MCP vault root
-mechanically (from the Local REST API plugin's fixed on-disk config path)
-and compares it against `ks_root`, failing loudly on a mismatch rather than
-letting the two planes silently write into different corpora.
+knowledge-store root check exists specifically to catch that split — but not
+by deriving an independent "vault root" signal (an earlier version compared
+`ks_root` against a value that was itself derived from `ks_root`, so its
+mismatch branch could never fire). It instead resolves `ks_root()` from two
+INDEPENDENT starting points and fails loudly when they disagree: plane A
+(script-plane) sources `build.config.sh` — which directly sources the
+rung-3 machine conf — then `knowledge_store.sh`; plane B (bare-env) sources
+`knowledge_store.sh` ALONE, exactly as a bare hook (e.g.
+`session-start-drain.sh`) or a launchd agent does, exercising `ks_root()`'s
+own `_ks_machine_conf_root || _ks_default_root` fallback. A live agent
+session's Obsidian MCP vault tracks plane A in practice (both derive from
+the same machine-conf-configured root), so a plane A/B mismatch is a real
+signal that the two planes would silently write into different corpora.
 
 ## Integration
 
