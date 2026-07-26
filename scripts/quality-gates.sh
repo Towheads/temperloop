@@ -148,6 +148,14 @@ KERNEL_GATES=(
   # direct-`bash` form as the sibling reviewer gates above (kernel Makefile
   # is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh"
+  # Knowledge-store root split-brain guard (foundation#1332):
+  # workflows/scripts/install/doctor.sh's check_knowledge_root() — resolves
+  # two independent planes (script-plane via build.config.sh, bare-env via
+  # knowledge_store.sh alone) and fails when they disagree, replacing a
+  # prior self-comparison whose MISMATCH branch was unreachable dead code.
+  # Same direct-`bash` form as the sibling doctor/reviewer gates above
+  # (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_doctor_knowledge_root.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"

@@ -106,77 +106,92 @@ classify_entry() {
 
 # ---------------------------------------------------------------------------
 # check_knowledge_root — foundation Epic B "layered CLAUDE.md" / the Epic A
-# (#762) knowledge_store split-brain guard: the agent-plane Obsidian MCP
-# vault (what a live Claude session actually reads/writes via mcp__obsidian*)
-# must be the SAME directory as KNOWLEDGE_STORE_ROOT (the script-plane
-# document-I/O seam, workflows/scripts/build/build.config.sh). A mismatch
-# means the two planes silently split the corpus: the agent writes decisions
-# into one vault while hooks/scripts read/write knowledge_store documents in
-# another.
+# (#762) knowledge_store split-brain guard: EVERY consumer of ks_root() must
+# resolve the SAME KNOWLEDGE_STORE_ROOT regardless of which files it happens
+# to source first. A mismatch means the two planes silently split the
+# corpus: e.g. a script-plane consumer that sources build.config.sh writes
+# into one directory while a bare-env consumer (a hook, a launchd agent —
+# session-start-drain.sh is the motivating case) that sources only
+# knowledge_store.sh reads/writes another.
 #
-# The Obsidian MCP vault root is not itself exposed as a config value — it is
-# derived MECHANICALLY from KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE
-# (workflows/scripts/lib/knowledge_store_obsidian.sh), whose default is
-# always "<vault>/.obsidian/plugins/obsidian-local-rest-api/data.json" (the
-# Local REST API plugin's fixed on-disk layout) — stripping that fixed
-# suffix recovers <vault> with no hardcoded path literal in this script.
+# REWRITTEN (foundation#1332): the prior version of this check compared
+# ks_root() against a root derived from KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE
+# (workflows/scripts/lib/knowledge_store_obsidian.sh) — but that setting's
+# ONLY default is itself "$(ks_root)/.obsidian/plugins/.../data.json", and
+# nothing in this tree ever sets it independently. So the old check compared
+# a value to itself: its MISMATCH branch was dead code that could never
+# fire. Worse, its resolution subshell sourced build.config.sh FIRST, which
+# directly sources the operator's rung-3 machine conf (BUILD_CONFIG_MACHINE)
+# into scope before ks_root() ever ran its own `:=` — so the old check could
+# only ever observe the ALREADY-correct plane, never the bare-env plane it
+# was nominally guarding. This is exactly how a 218-drain, 16-consecutive-day
+# split-brain outage (temperloop#1328/foundation#1328, fixed for real
+# consumers by temperloop#771's _ks_machine_conf_root()) ran with this check
+# reporting green the whole time.
 #
-# Runs fully offline: sourcing build.config.sh / knowledge_store_obsidian.sh
-# does no network I/O (only their functions, never called here, would).
+# The rewrite compares TWO independently-resolved planes instead:
+#
+#   Plane A (script-plane) — sources build.config.sh, then knowledge_store.sh,
+#     then calls ks_root(). build.config.sh directly sources the rung-3
+#     machine conf into this subshell's scope, so this is the root any
+#     consumer that goes through the full build/sweep stack sees — the same
+#     value install-claude-md.sh renders as the vault "Store root:" line.
+#
+#   Plane B (bare-env) — sources ONLY knowledge_store.sh, then calls
+#     ks_root(). This is exactly what a bare hook or launchd agent sees: no
+#     build.config.sh in the chain, so ks_root()'s own `_ks_machine_conf_root
+#     || _ks_default_root` fallback (temperloop#771) is what resolves it.
+#
+# A mismatch here is real and actionable: it means the rung-3 machine conf
+# (or its KNOWLEDGE_STORE_MACHINE_CONF pointer) is broken or inconsistent
+# with whatever build.config.sh itself sees, so the bare-env plane silently
+# resolves a different root than the script-plane one.
+#
+# Runs fully offline: sourcing build.config.sh / knowledge_store.sh does no
+# network I/O (only functions never called here would).
 # ---------------------------------------------------------------------------
 check_knowledge_root() {
   local build_config="${FOUNDATION}/workflows/scripts/build/build.config.sh"
   local ks_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_store.sh"
-  local ks_obsidian="${FOUNDATION}/workflows/scripts/lib/knowledge_store_obsidian.sh"
-  local suffix="/.obsidian/plugins/obsidian-local-rest-api/data.json"
 
   printf '\nKnowledge-store root check:\n'
 
-  if [[ ! -f "$build_config" || ! -f "$ks_lib" || ! -f "$ks_obsidian" ]]; then
+  if [[ ! -f "$build_config" || ! -f "$ks_lib" ]]; then
     printf '  SKIPPED (config files not found under %s)\n' "$FOUNDATION"
     return 0
   fi
 
-  local resolved store_root api_key_file obsidian_root
-  resolved="$(
+  local plane_a plane_b
+  plane_a="$(
     set -e
     # shellcheck source=/dev/null
     source "$build_config"
-    # knowledge_store_obsidian.sh's own API-key-file default is DERIVED from
-    # ks_root (knowledge_store.sh) — source it first, per that file's own
-    # documented "source AFTER knowledge_store.sh" requirement.
     # shellcheck source=/dev/null
     source "$ks_lib"
+    ks_root
+  )" || { printf '  FAIL — could not resolve build.config.sh / knowledge_store.sh (plane A, script-plane)\n'; return 1; }
+
+  plane_b="$(
+    set -e
     # shellcheck source=/dev/null
-    source "$ks_obsidian"
-    printf '%s\n%s\n' "$(ks_root)" "$KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE"
-  )" || { printf '  FAIL — could not resolve build.config.sh / knowledge_store.sh / knowledge_store_obsidian.sh\n'; return 1; }
-  store_root="$(sed -n '1p' <<<"$resolved")"
-  api_key_file="$(sed -n '2p' <<<"$resolved")"
+    source "$ks_lib"
+    ks_root
+  )" || { printf '  FAIL — could not resolve knowledge_store.sh (plane B, bare-env)\n'; return 1; }
 
-  case "$api_key_file" in
-    *"$suffix")
-      obsidian_root="${api_key_file%"$suffix"}"
-      ;;
-    *)
-      printf '  FAIL — could not derive the Obsidian vault root from KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE=%s\n' "$api_key_file"
-      printf '        (expected it to end in %s)\n' "$suffix"
-      return 1
-      ;;
-  esac
+  printf '  Plane A (script-plane, via build.config.sh)  = %s\n' "$plane_a"
+  printf '  Plane B (bare-env, knowledge_store.sh alone) = %s\n' "$plane_b"
 
-  printf '  KNOWLEDGE_STORE_ROOT              = %s\n' "$store_root"
-  printf '  Obsidian MCP vault root (derived) = %s\n' "$obsidian_root"
-
-  if [[ "$store_root" == "$obsidian_root" ]]; then
-    printf '  OK — knowledge store and Obsidian MCP vault agree.\n'
+  if [[ "$plane_a" == "$plane_b" ]]; then
+    printf '  OK — script-plane and bare-env knowledge-store root agree.\n'
     return 0
   fi
 
-  printf '  MISMATCH — the agent-plane Obsidian MCP vault and the script-plane\n'
-  printf '  KNOWLEDGE_STORE_ROOT point at DIFFERENT directories. Fix by setting\n'
-  printf '  KNOWLEDGE_STORE_ROOT (env, or workflows/scripts/build/build.config.local.sh)\n'
-  printf '  to match the vault root, or vice versa.\n'
+  printf '  MISMATCH — a consumer that sources build.config.sh (plane A) resolves\n'
+  printf '  KNOWLEDGE_STORE_ROOT to a DIFFERENT directory than a bare consumer that\n'
+  printf '  sources only knowledge_store.sh (plane B, e.g. a hook or launchd agent).\n'
+  printf '  Fix the rung-3 machine conf (see docs/config-precedence.md, default path\n'
+  printf '  under XDG_CONFIG_HOME or HOME/.config, temperloop/build.config.sh) or\n'
+  printf '  repoint KNOWLEDGE_STORE_MACHINE_CONF at it so both planes agree.\n'
   return 1
 }
 
