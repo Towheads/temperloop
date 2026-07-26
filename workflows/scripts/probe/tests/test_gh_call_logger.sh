@@ -115,9 +115,9 @@ echo "  [ok] GH_CALL_LOG=0 zero-overhead passthrough, no row"
 
 # --- 5: context + op attribution --------------------------------------------
 L="$WORK/log5.tsv"
-GH_CALL_CONTEXT=funnel-tick GH_CALL_OP="board:_board_item_list_fresh" \
+GH_CALL_CONTEXT=pipeline-tick GH_CALL_OP="board:_board_item_list_fresh" \
   run_shim gh "$L" -- issue list >/dev/null || fail "attribution run failed"
-[ "$(field "$L" 7)" = "funnel-tick" ] || fail "context column wrong: $(field "$L" 7)"
+[ "$(field "$L" 7)" = "pipeline-tick" ] || fail "context column wrong: $(field "$L" 7)"
 [ "$(field "$L" 8)" = "board:_board_item_list_fresh" ] || fail "op column wrong: $(field "$L" 8)"
 echo "  [ok] GH_CALL_CONTEXT + GH_CALL_OP columns"
 
@@ -145,7 +145,7 @@ echo "  [ok] size-cap rotation to <log>.1"
 # --- 9: lake dual-write — well-formed JSONL record lands alongside the TSV --
 month_now="$(date -u +%Y-%m)"
 L="$WORK/log9.tsv"; LAKE9="$WORK/lake9"
-GH_CALLS_RAW_DIR="$LAKE9" GH_CALL_CONTEXT=funnel-tick GH_CALL_OP="board:_board_item_list_fresh" \
+GH_CALLS_RAW_DIR="$LAKE9" GH_CALL_CONTEXT=pipeline-tick GH_CALL_OP="board:_board_item_list_fresh" \
   run_shim gh "$L" -- issue list --repo o/r >/dev/null || fail "lake dual-write run failed"
 LAKE_FILE="$LAKE9/gh-calls-${month_now}.jsonl"
 [ -f "$LAKE_FILE" ] || fail "no lake file at $LAKE_FILE"
@@ -155,7 +155,7 @@ if command -v jq >/dev/null 2>&1; then
   [ "$(jq -r '.schema_version' "$LAKE_FILE")" = "1" ] || fail "schema_version should be \"1\""
   [ "$(jq -r '.tool' "$LAKE_FILE")" = "gh" ] || fail "lake tool field wrong"
   [ "$(jq -r '.exit_code' "$LAKE_FILE")" = "0" ] || fail "lake exit_code field wrong"
-  [ "$(jq -r '.context' "$LAKE_FILE")" = "funnel-tick" ] || fail "lake context field wrong"
+  [ "$(jq -r '.context' "$LAKE_FILE")" = "pipeline-tick" ] || fail "lake context field wrong"
   [ "$(jq -r '.op' "$LAKE_FILE")" = "board:_board_item_list_fresh" ] || fail "lake op field wrong"
   [ "$(jq -r '.args' "$LAKE_FILE")" = "issue list --repo o/r" ] || fail "lake args field wrong"
   [ "$(jq -r '.host' "$LAKE_FILE")" != "" ] || fail "lake host field empty"

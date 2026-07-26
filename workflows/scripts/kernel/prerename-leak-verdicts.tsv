@@ -45,15 +45,15 @@
 # working through the window — see that script's header for the two
 # unconditional-pass rules.
 
-env	FOUNDATION_HOME	windowed	Env-var prefix migration (temperloop#165): canonical TEMPERLOOP_HOME since v0.15.0; FOUNDATION_HOME still read as fallback (bin/bootstrap.sh, bin/lib/common.sh, knob-registry.tsv); legacy read removed in v0.17.0 — delete this row at window close.
+env	FOUNDATION_HOME	windowed	Env-var prefix migration (temperloop#165): canonical TEMPERLOOP_HOME since v0.15.0; FOUNDATION_HOME still read as fallback (bin/bootstrap.sh, bin/lib/common.sh, setting-registry.tsv); legacy read removed in v0.17.0 — delete this row at window close.
 env	FOUNDATION_BIN_DIR	windowed	Env-var prefix migration: canonical TEMPERLOOP_BIN_DIR since v0.15.0; legacy read removed in v0.17.0 — delete this row at window close.
 env	FOUNDATION_KERNEL_REPO	windowed	Env-var prefix migration: canonical TEMPERLOOP_KERNEL_REPO since v0.15.0; legacy read removed in v0.17.0 — delete this row at window close.
 env	FOUNDATION_VERSION	windowed	Env-var prefix migration: canonical TEMPERLOOP_VERSION since v0.15.0 (bin/subcommands/feedback.sh, bin/temperloop); legacy read removed in v0.17.0 — delete this row at window close.
 env	FOUNDATION_CLI_HOME_DEFAULT	windowed	bin/lib/common.sh's internal constant name mirroring FOUNDATION_HOME's old default value (bootstrap hand-synced triplication site, acceptance 2); removed in v0.17.0 alongside the rest of the compat shim — delete this row at window close.
 env	FOUNDATION_CLI_BIN_DEFAULT	windowed	bin/lib/common.sh's internal constant name mirroring FOUNDATION_BIN_DIR's old default value (bootstrap hand-synced triplication site, acceptance 2); removed in v0.17.0 — delete this row at window close.
-env	FOUNDATION_BIN	no-action	bin/subcommands/tests/test_report_offer.sh's own test-local shell variable naming the path to its bin/foundation shim fixture; a test's internal naming choice, not a stranger-facing config knob.
-env	FOUNDATION_ROOT	no-action	workflows/scripts/kernel/tests/test_check_producer_egress.sh's own test-local shell variable naming a directory one level up in that test's scratch layout; not a stranger-facing config knob.
-env	FOUNDATION_LINKS_SH_LOADED	no-action	workflows/scripts/install/links.sh's own private include-guard variable (`_FOUNDATION_LINKS_SH_LOADED`, matched without its leading underscore) preventing double-sourcing; never read or set by anything outside this one file, not a stranger-facing config knob.
+env	FOUNDATION_BIN	no-action	bin/subcommands/tests/test_report_offer.sh's own test-local shell variable naming the path to its bin/foundation shim fixture; a test's internal naming choice, not a stranger-facing config setting.
+env	FOUNDATION_ROOT	no-action	workflows/scripts/kernel/tests/test_check_producer_egress.sh's own test-local shell variable naming a directory one level up in that test's scratch layout; not a stranger-facing config setting.
+env	FOUNDATION_LINKS_SH_LOADED	no-action	workflows/scripts/install/links.sh's own private include-guard variable (`_FOUNDATION_LINKS_SH_LOADED`, matched without its leading underscore) preventing double-sourcing; never read or set by anything outside this one file, not a stranger-facing config setting.
 
 path-leaf	boards.conf	windowed	BOARDS_CONF_MACHINE (PR #487 verdict table): migrate-with-read-old — new default $XDG_CONFIG_HOME/temperloop/boards.conf; existing legacy $XDG_CONFIG_HOME/foundation/boards.conf read as fallback at all 7 reader sites; legacy read removed in v0.17.0 — delete this row at window close.
 path-leaf	knowledge	windowed	KNOWLEDGE_STORE_ROOT (PR #487 verdict table): migrate-with-read-old — new default .../temperloop/knowledge; an existing legacy .../foundation/knowledge store is still found through the window; legacy fallback removed in v0.17.0 — delete this row at window close.

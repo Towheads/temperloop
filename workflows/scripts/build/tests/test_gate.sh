@@ -432,7 +432,7 @@ unset BUILD_MERGE_BACKEND
 
 # --- managed-merge: green STRICT path ----------------------------------------
 # update-branch called → new head sha resolved → SHA-pinned CI re-poll GREEN →
-# merge → confirmed MERGED. Zero-delay poll knobs (mirrors GATE_REPOLL_DELAY).
+# merge → confirmed MERGED. Zero-delay poll settings (mirrors GATE_REPOLL_DELAY).
 export GATE_CI_POLL_INTERVAL=0 GATE_CI_POLL_TIMEOUT=5
 export GATE_MERGE_POLL_INTERVAL=0 GATE_MERGE_POLL_TIMEOUT=5
 rm -f "$TMP/mm_calls"

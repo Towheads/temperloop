@@ -10,7 +10,7 @@
 # [[Decisions/stageFind - Process-invariant SSOT strategy]].
 #
 # Scope: the fast, repo-wide, zero-network gates CI runs on every PR — the board
-# / build / install / telemetry / sessions test suites, the Live/Drain +
+# / build / install / telemetry / sessions test suites, the Capture/Backstop +
 # PR-body-lint registries, the validator/corpus lints, and a whole-tree static
 # shell lint. Each gate is a `make` target (the shell-lint pipeline lives behind
 # the `make shellcheck` target) so this file stays a flat, splittable command
@@ -26,7 +26,7 @@
 #     install have this make target?" — yes: none of them reference
 #     foundation-private subject matter (Travis's telemetry/dashboard, the
 #     Obsidian-vault session archive, the Sentry crash-convergence
-#     integration, the funnel cost-rollup, or the workflow-eval corpus).
+#     integration, the pipeline cost-rollup, or the workflow-eval corpus).
 #     Typed inline below — this IS the kernel repo's future gate list.
 #
 #   OVERLAY_GATES — appended by every scripts/quality-gates.d/*.sh file
@@ -64,14 +64,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # entries). Each entry is a full command line (a `make` target).
 KERNEL_GATES=(
   "make test-board"
-  # Dual-adapter SAFE-TIER funnel integration suite (foundation #801, split
-  # 3/3 of the issues-only tracker adapter, Epic B #763): runs funnel-tick.sh
+  # Dual-adapter SAFE-TIER pipeline integration suite (foundation #801, split
+  # 3/3 of the issues-only tracker adapter, Epic B #763): runs pipeline-tick.sh
   # LIVE against both the Projects-v2 and issues-only backends and proves
   # parity + zero merge-capable gh calls. A new kernel-side test_*.sh file is
   # auto-covered by kernel CI's own glob-based `test-board` recipe (F#836);
   # this line is the explicit registration in FOUNDATION's own gate set (the
   # one scripts/quality-gates.sh actually runs — see
-  # workflows/scripts/board/ISSUES-ONLY-BACKEND.md § Funnel integration).
+  # workflows/scripts/board/ISSUES-ONLY-BACKEND.md § Pipeline integration).
   "make test-board-dual-adapter"
   # test-ci-poll-retry (temperloop#386): ci-poll.sh's gh_retry() transient-
   # API-hiccup absorption — a bounded, backoff-retried gh api call rather
@@ -91,7 +91,7 @@ KERNEL_GATES=(
   # knowledge-store notes reachable from the composed CLAUDE.md's own
   # rules — wikilink + backtick-literal store-path extraction, dedup,
   # sort, idempotence, and the empty-store no-error path. Same direct-
-  # `bash` form as the knob-registry gates below (kernel Makefile is
+  # `bash` form as the setting-registry gates below (kernel Makefile is
   # generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_install_claude_md_t0_inventory.sh"
   # Machine-surface install manifest library (temperloop#261, ADR K164 D7):
@@ -151,7 +151,7 @@ KERNEL_GATES=(
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
-  "make validate-live-drain"
+  "make validate-capture-backstop"
   "make validate-command-run-emit"
   "make validate-issue-touch-emit"
   # Kernel telemetry-brief renderer (temperloop#431): the five-question brief
@@ -170,12 +170,12 @@ KERNEL_GATES=(
   # overlay override name (when an overlay message-schema is present) does
   # too; and every contract-frozen row in claude/presentation-plane.md's
   # kernel table names a resolvable owner file/section — the
-  # validate-live-drain.sh mold applied to the presentation-plane registry.
+  # validate-capture-backstop.sh mold applied to the presentation-plane registry.
   "make validate-template-refs"
   # Class-A "static-second-surface" activation-registry lint (temperloop
   # plan item activation-registry-validator, Class-A subset of the
   # activation-completeness contract, temperloop#317 Level 1): the
-  # validate-live-drain.sh mold applied to Plans-archive/*.md's `activation:`
+  # validate-capture-backstop.sh mold applied to Plans-archive/*.md's `activation:`
   # blocks — for each `class: A` block whose `proof:` reduces to a
   # recognized static file-check idiom (grep/test/[/stat/ls/cat/find), both
   # the item's declared `files:` surface and the proof's activating-surface
@@ -263,31 +263,36 @@ KERNEL_GATES=(
   # below. Same direct-`bash` form as the knowledge_search/portable-timeout
   # gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_changelog.sh"
-  # Knob registry (temperloop#164/#169 D2): parse/union tests for
-  # workflows/scripts/config/knob-registry-lib.sh — parses the real kernel
+  # Setting registry (temperloop#164/#169 D2): parse/union tests for
+  # workflows/scripts/config/setting-registry-lib.sh — parses the real kernel
   # TSV clean, unions a synthetic overlay fixture (add + redefault rows),
   # and rejects malformed rows (bad field count, unknown type, an overlay
   # add/kernel-name collision, an orphaned redefault). Same direct-`bash`
   # form as the knowledge_search gates above (new workflows/scripts/<dir>
   # lib, no Makefile target needed — the kernel Makefile is generator-owned).
-  "bash workflows/scripts/config/tests/test_knob_registry.sh"
+  "bash workflows/scripts/config/tests/test_setting_registry.sh"
   # Registry-driven config lints (temperloop#164/#169, item
   # registry-config-lints, D2/D3). Two live lints + their fixture suites,
   # mirroring test-kernel-denylist's live-check-then-fixture-tests shape as
   # direct `bash` gates (kernel Makefile is generator-owned, same as the
-  # knob-registry gate above):
-  #   - check-knob-registry.sh: layer-aware registry↔shell equality lint +
-  #     unregistered-knob sweep. NO baseline — strictly green on the
+  # setting-registry gate above):
+  #   - check-setting-registry.sh: layer-aware registry↔shell equality lint +
+  #     unregistered-setting sweep. NO baseline — strictly green on the
   #     committed tree by construction (the registry records the literals
   #     verbatim); a red run is real drift or a missing registry row.
-  #   - check-knob-prose.sh: D3 "prose names knobs, never values" lint over
+  #   - check-setting-prose.sh: D3 "prose names settings, never values" lint over
   #     claude/commands/*.md + claude/CLAUDE.kernel.md, with the
-  #     <!-- knob-prose:allow --> marker and a burn-down baseline
-  #     (knob-prose-baseline.tsv) the prose-tunables-migration item empties.
-  "bash workflows/scripts/config/check-knob-registry.sh"
-  "bash workflows/scripts/config/tests/test_check_knob_registry.sh"
-  "bash workflows/scripts/config/check-knob-prose.sh"
-  "bash workflows/scripts/config/tests/test_check_knob_prose.sh"
+  #     <!-- setting-prose:allow --> marker and a burn-down baseline
+  #     (setting-prose-baseline.tsv) the prose-tunables-migration item empties.
+  "bash workflows/scripts/config/check-setting-registry.sh"
+  "bash workflows/scripts/config/tests/test_check_setting_registry.sh"
+  "bash workflows/scripts/config/check-setting-prose.sh"
+  "bash workflows/scripts/config/tests/test_check_setting_prose.sh"
+  # v0.17.0 terminology-rename legacy window (temperloop#729): READ-OLD-WRITE-NEW
+  # for FUNNEL_*->PIPELINE_* / KNOB_*->SETTING_* env seams, the forwarding
+  # stubs at the old script paths, and the knob-registry-lib source-forwarder.
+  # Removed with the window in v0.19.0.
+  "bash workflows/scripts/tests/test_terminology_rename_compat.sh"
   # Reviewer-routing extension/glob-axis drift lint (ADR 0008,
   # docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md): compares the
   # extension/glob SET between workflows/scripts/config/reviewer-routing.tsv
@@ -295,7 +300,7 @@ KERNEL_GATES=(
   # claude/commands/build.md's 3e routing prose — a tsv key's literal
   # backtick-quoted form reappearing in the prose fails, catching a silent
   # reintroduction of the old inline extension list. Same direct-`bash`
-  # form, same check-knob-prose.sh shape, as the two gates above.
+  # form, same check-setting-prose.sh shape, as the two gates above.
   "bash workflows/scripts/config/check-reviewer-routing.sh"
   "bash workflows/scripts/config/tests/test_check_reviewer_routing.sh"
   # Feature-docs coverage gate (temperloop#132, docs-site epic #131): the
@@ -307,7 +312,7 @@ KERNEL_GATES=(
   # docs/features/backfill-exempt.txt ratchet (stale / exempt-but-documented
   # lines fail). Path claims are never exempted — new unclaimed code fails
   # from day one. Fixture suite alongside. Same direct-`bash` form as the
-  # knob-registry gates above (kernel Makefile is generator-owned).
+  # setting-registry gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/validate-feature-docs.sh"
   "bash workflows/scripts/tests/test_validate_feature_docs.sh"
   # Prose-plane baseline counter (temperloop#719, item
@@ -321,7 +326,7 @@ KERNEL_GATES=(
   # host-determinism — a machine-conf/repo-local-conf fixture that perturbs
   # EPIC_MIN_SUBUNITS/DISPLAY_TZ must not move the tier-1 count — running on
   # both the ubuntu-latest and macos-latest CI legs, same direct-`bash` form
-  # as the knob-registry/feature-docs gates above.
+  # as the setting-registry/feature-docs gates above.
   "bash workflows/scripts/count-prose.sh"
   "bash workflows/scripts/tests/test_count_prose.sh"
   # Two-tier prose-budget gate (temperloop#719, item prose-budget-gate /
@@ -330,8 +335,8 @@ KERNEL_GATES=(
   # claude/**/*.md file (tier-2, one uniform per-file cap — never a per-file
   # table) past its cap, via count-prose.sh's own report (never a second,
   # duplicated counting implementation). Caps are seeded as
-  # PROSE_BUDGET_TIER1_CAP/PROSE_BUDGET_TIER2_FILE_CAP knobs in
-  # build.config.sh + their knob-registry.tsv rows, at the FRESH baseline
+  # PROSE_BUDGET_TIER1_CAP/PROSE_BUDGET_TIER2_FILE_CAP settings in
+  # build.config.sh + their setting-registry.tsv rows, at the FRESH baseline
   # this item measured (338 / 1057 lines) rather than the epic's earlier
   # recorded artifact — main had already drifted a few lines past that
   # artifact by landing time, and seeding from a stale number would have
@@ -366,7 +371,7 @@ KERNEL_GATES=(
   # refuse-and-propose conflict path for hand-authored content. Hermetic
   # (mktemp fake vaults, no real vault, no network). Direct `bash` form (no
   # Makefile target) — the kernel Makefile is generator-owned (seeded from
-  # foundation; see its header), same as the knob-registry/knowledge_search
+  # foundation; see its header), same as the setting-registry/knowledge_search
   # gates above.
   "bash workflows/scripts/drain/tests/test_generate_moc.sh"
   # Recent-findings tally (foundation #960): the drain "Recurrence → promotion"
@@ -380,7 +385,7 @@ KERNEL_GATES=(
   # env-reconcile.sh-missing and not-executable fail-open paths.
   "make test-env-hygiene-report"
   # ready-pr sweep (temperloop#721): the read-only complete-but-unmerged-PR
-  # classifier /tidy's § Ready-but-unmerged PRs step invokes — the drain half
+  # classifier /tidy's § Ready-but-unmerged PRs step invokes — the backstop half
   # of the orphaned-PR net. Hermetic (stub gh replaying JSON fixtures, stub
   # board lib for the registry seam, no network); also covers the fail-open
   # erroring-repo, nothing-when-clean, and read-only (pr-list-only) contracts.
@@ -403,7 +408,7 @@ KERNEL_GATES=(
   # kernel/ subtree) — green on a fully-classified subtree, red+named-path
   # on an unclassified one — while the classic own-.git-root invocation
   # (make test-kernel-manifest above) stays unaffected. Same direct-`bash`
-  # form as the knob-registry/knowledge_search gates above (kernel Makefile
+  # form as the setting-registry/knowledge_search gates above (kernel Makefile
   # is generator-owned; a new tests/ file needs no new Makefile target).
   "bash workflows/scripts/kernel/tests/test_check_kernel_manifest.sh"
   # Symlinked-vendored-kernel resolution for kernel_lib_resolve_for_classify
@@ -429,11 +434,17 @@ KERNEL_GATES=(
   # sanctioned. Same live-check-then-fixture-tests shape as
   # test-kernel-denylist above.
   "make test-kernel-prerename"
+  # v0.17.0 terminology-rename leak gate (temperloop#729): the same closed-set
+  # discipline for the coined-identifier renames — the legacy env prefixes,
+  # old script paths, and coined severity/pairing tokens cannot
+  # silently re-enter; only the reviewed exempt set (the compat window's own
+  # surfaces + records) may carry them.
+  "make test-kernel-terminology"
   # Diff-scoped public-repo leak guard (temperloop #74): the sibling of the two
   # whole-tree kernel scrubs above. Scans the ADDED lines of a PR's diff (all
   # tracked files, not just the kernel manifest) for personal/private tokens +
   # secrets and fails the merge — the mechanical backstop to the kernel/overlay
-  # authoring rule, the way validate-live-drain backstops the live/drain rule.
+  # authoring rule, the way validate-capture-backstop backstops the capture/backstop rule.
   # Riding KERNEL_GATES (not a new CI job) makes it part of the already-required
   # `checks` status, so it gates pull_request AND merge_group with no
   # branch-protection reconfiguration. On a feature-branch checkout it diffs the
@@ -544,7 +555,7 @@ KERNEL_GATES=(
   # citations (briefs live in the knowledge store, outside this repo — CI
   # has no vault to read); the fixture suite alongside exercises the
   # brief-conformance path against in-repo fixtures. Same direct-`bash`
-  # form as the knob-registry/feature-docs gates above (kernel Makefile is
+  # form as the setting-registry/feature-docs gates above (kernel Makefile is
   # generator-owned).
   "bash workflows/scripts/validate-design-brief.sh"
   "bash workflows/scripts/tests/test_validate_design_brief.sh"
@@ -657,7 +668,7 @@ cd "$REPO_ROOT" || exit 1
 # checkout that is BEHIND origin/<default> silently runs a SMALLER gate set than
 # CI (which checks out the PR's merge with current main) and scans a stale/empty
 # leak-guard diff — a green run here then does NOT imply green CI. That exact
-# trap cost a 12-item /sweep four post-push CI round-trips (the knob-registry /
+# trap cost a 12-item /sweep four post-push CI round-trips (the setting-registry /
 # denylist / leak-guard gates the stale local run never exercised). The guard
 # (in the sourced lib) turns that silent divergence into a LOUD but NON-FATAL
 # banner: a stale checkout is sometimes legitimate (offline work, deliberately

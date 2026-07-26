@@ -33,7 +33,7 @@
 #
 # Split-brain guard: every rendered file is written via ks_write, whose only
 # target is ks_root (knowledge_store.sh) — there is no independent corpus-
-# path knob here, mirroring ks_search's own "always ks_root" contract.
+# path setting here, mirroring ks_search's own "always ks_root" contract.
 #
 # ── On-disk shape rendered ───────────────────────────────────────────────
 #   $(ks_root)/issues/<owner>-<repo>/<number>-<slug>.md

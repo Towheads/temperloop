@@ -60,7 +60,7 @@
 #      covers both known transports and stays quiet; a non-Obsidian-backed
 #      root is a quiet no-op regardless of the matcher list.
 #  14. Controls lint (temperloop#239, ADR §2.3a/§2.4/§2.8) → against a
-#      fixture knob-registry.tsv (KNOB_REGISTRY_FILE override): a dead dial
+#      fixture setting-registry.tsv (SETTING_REGISTRY_FILE override): a dead dial
 #      (matched row's owning-script missing), an orphaned control (no row
 #      names the file), and a machine-read file living outside Controls/ all
 #      fire; a healthy registry-matched control never fires; no Controls/
@@ -581,17 +581,17 @@ echo "orphan" > "$CV/Controls/temperloop - orphan dial.md"
 # literal resolves to a file that physically exists there).
 echo "outside" > "$CV/Context/temperloop - outside dial.md"
 
-fixture_registry="$CV/knob-registry.tsv"
+fixture_registry="$CV/setting-registry.tsv"
 cat > "$fixture_registry" <<EOF
 CTRL_GOOD	Controls/temperloop - good dial.md	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Points at \`Controls/temperloop - good dial.md\` — a healthy, reachable control (fixture).
 CTRL_DEAD	Controls/temperloop - dead dial.md	path	kernel	workflows/scripts/does/not/exist.sh	Points at \`Controls/temperloop - dead dial.md\` but its consumer script is missing (fixture dead-dial case).
 CTRL_OUTSIDE	Context/temperloop - outside dial.md	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Legacy path: defaults to \`Controls/temperloop - outside dial.md\`, falling back to \`Context/temperloop - outside dial.md\` during the overlay move window (fixture).
 EOF
 
-cvreport="$(KNOB_REGISTRY_FILE="$fixture_registry" bash "$SCRIPT" --root "$CV")"
+cvreport="$(SETTING_REGISTRY_FILE="$fixture_registry" bash "$SCRIPT" --root "$CV")"
 assert_missing "$cvreport" "controls: Controls/temperloop - good dial.md" "healthy, registry-matched control with a real consumer script is never flagged"
 assert_has     "$cvreport" "controls: Controls/temperloop - dead dial.md — named consumer script missing" "dead dial (missing consumer script) fires"
-assert_has     "$cvreport" "controls: Controls/temperloop - orphan dial.md — no knob-registry.tsv path row points at it" "orphaned control (no row names it) fires"
+assert_has     "$cvreport" "controls: Controls/temperloop - orphan dial.md — no setting-registry.tsv path row points at it" "orphaned control (no row names it) fires"
 assert_has     "$cvreport" "controls: Context/temperloop - outside dial.md — machine-read store file outside Controls/" "machine-read file outside Controls/ fires"
 assert_has     "$cvreport" "ALARM:" "controls fixture trips an alarm"
 rm -rf "$CV"

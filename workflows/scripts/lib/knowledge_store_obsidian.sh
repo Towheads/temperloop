@@ -32,7 +32,7 @@
 # backend. The vault IS the root — a normalized doc-id (e.g.
 # "Decisions/foo.md") is used directly as the REST API's vault-relative path
 # ("/vault/Decisions/foo.md"). `ks_root` still exists and still resolves the
-# filesystem knob, but that value is meaningless for this backend; do not
+# filesystem setting, but that value is meaningless for this backend; do not
 # call it to build obsidian paths.
 #
 # Test seam: every HTTP call routes through `_ks_backend_obsidian_curl` — a

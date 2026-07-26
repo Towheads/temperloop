@@ -12,6 +12,135 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
+## [0.17.0] - 2026-07-25 — BREAKING
+
+One-shot pre-GA terminology consolidation (temperloop#729, epic #719
+(prose-plane subtraction and budget), ADR 0017): one name per concept,
+plain words over coinages, applied as a single rename so adopters relearn
+once instead of per-release. **An overlay or consuming checkout must
+migrate by the map below before pulling** — `update-kernel` requires the
+usual breaking ack (`KERNEL_ALLOW_BREAKING=1` or the interactive confirm).
+A legacy read window (env vars, old script paths, the old overlay-registry
+filename, the old telemetry month-file glob) forwards with deprecation
+NOTEs until **v0.19.0**.
+
+### Changed — the full rename map
+
+**Vocabulary (one name per concept, everywhere):**
+
+| Old term | New term |
+|---|---|
+| funnel (the bug→PR flow; the autonomous driver) | pipeline |
+| knob (a tunable config value) | setting |
+| `blocking-now` severity | `ask-now` |
+| `batch-at-gate` severity | `ask-at-gate` |
+| `batch-at-ritual` severity | `ask-at-checkin` |
+| ritual | contextual, not 1:1 — check-in where it names the daily `/check-in` review; otherwise routine / review / step / session as the sentence requires |
+| build spine (the shared build scripts) | build machinery |
+| design spine (docs/cognitive-load.md only) | design backbone |
+| precedence rung (config ladder) | precedence layer |
+| funnel rung 5a/5b/5c (autonomy ladder) | autonomy level 5a/5b/5c |
+| Live/Drain pairing (live half / drain backstop) | Capture/Backstop pairing (capture half / backstop) |
+| logical board number | board id |
+
+**Env / setting names (prefix rule — every var, registry-listed or not):**
+
+- `FUNNEL_<NAME>` → `PIPELINE_<NAME>` (44 registry rows, plus e.g.
+  `FUNNEL_OPERATOR_ABSENT` → `PIPELINE_OPERATOR_ABSENT`)
+- `KNOB_<NAME>` → `SETTING_<NAME>` (the registry/prose-lint seams:
+  `KNOB_REGISTRY_*` → `SETTING_REGISTRY_*`, `KNOB_PROSE_*` → `SETTING_PROSE_*`)
+- Legacy env reads keep working through v0.19.0 via
+  `workflows/scripts/lib/rename-compat-0170.sh` (NEW > OLD > default; one
+  NOTE per legacy var used), sourced by `build.config.sh` and
+  `setting-registry-lib.sh`.
+
+**Renamed files (forwarding stubs at every old executable/sourceable path
+through v0.19.0):**
+
+- `workflows/scripts/build/funnel-cron.sh` → `pipeline-cron.sh`
+- `workflows/scripts/build/funnel-drive.sh` → `pipeline-drive.sh`
+- `workflows/scripts/build/funnel-tick.sh` → `pipeline-tick.sh`
+- `workflows/scripts/build/funnel-overlap.sh` → `pipeline-overlap.sh`
+- `workflows/scripts/build/funnel-schedule-gate.sh` → `pipeline-schedule-gate.sh`
+- `workflows/scripts/build/funnel-drive.settings.json` → `pipeline-drive.settings.json` (no stub — data)
+- `workflows/scripts/build/funnel-drive-merge.settings.json` → `pipeline-drive-merge.settings.json` (no stub — data)
+- `workflows/scripts/build/build-config-knobs.sh` → `build-config-settings.sh`
+- `workflows/scripts/config/knob-registry.tsv` → `setting-registry.tsv` (no stub — the lib resolves it)
+- `workflows/scripts/config/knob-registry-lib.sh` → `setting-registry-lib.sh` (source-forwarder keeps the old path AND the old public `knob_registry_*` function names working)
+- `workflows/scripts/config/knob-registry-exempt-files.txt` → `setting-registry-exempt-files.txt`
+- `workflows/scripts/config/knob-prose-baseline.tsv` → `setting-prose-baseline.tsv`
+- `workflows/scripts/config/check-knob-registry.sh` → `check-setting-registry.sh`
+- `workflows/scripts/config/check-knob-prose.sh` → `check-setting-prose.sh`
+- `workflows/scripts/validate-live-drain.sh` → `validate-capture-backstop.sh`
+- `claude/commands/funnel-drive.md` → `pipeline-drive.md`
+- `claude/commands/funnel-drive-merge.md` → `pipeline-drive-merge.md`
+- `docs/features/build-spine.md` → `build-machinery.md`
+- `docs/features/funnel-driver.md` → `pipeline-driver.md`
+- test suites renamed alongside their subjects (`test_funnel_*` →
+  `test_pipeline_*`, `test_build_config_knobs.sh` →
+  `test_build_config_settings.sh`, `test_knob_registry.sh` →
+  `test_setting_registry.sh`, `test_check_knob_*` → `test_check_setting_*`)
+- **telemetry stream**: the pipeline tick's raw-lake month-files are now
+  written `pipeline-<YYYY-MM>.jsonl` (previously `funnel-<YYYY-MM>.jsonl`).
+  Writers emit only the new name; readers (`telemetry-brief.sh`, and
+  `pipeline-cron.sh --backfill`) union the legacy `funnel-*.jsonl`
+  month-files in read-only, with a one-line NOTE, through v0.19.0 — an
+  existing install's accumulated history stays visible. Legacy files are
+  never renamed in place.
+
+**Pipeline command contracts:** the slash commands `/funnel-drive` and
+`/funnel-drive-merge` are now `/pipeline-drive` and `/pipeline-drive-merge`.
+
+**Message-schema template names: NONE renamed.** All five (`PR-body
+skeleton`, `Parking note`, `Digest entry`, `Question block`, `Degradation
+notice`) were already plain words — an overlay's named-template overrides
+need no change.
+
+**Parsed / structural surfaces:**
+
+- `claude/CLAUDE.kernel.md` § `Prose-resident knob convention` →
+  § `Named-setting convention` (every § pointer updated).
+- `claude/commands/tidy.md`'s registry table: `## Live/Drain pairings` →
+  `## Capture/Backstop pairings`, columns `Live rule | Live location |
+  Drain backstop` → `Capture rule | Capture location | Backstop`.
+  `validate-capture-backstop.sh` parses **both** spellings through v0.19.0.
+- Overlay extension registry file: `claude/live-drain-registry.overlay.md`
+  → `claude/capture-backstop-registry.overlay.md` (the validator reads the
+  legacy filename with a NOTE when the new one is absent, through v0.19.0).
+- `temperloop config list`: TSV column 2 renamed `rung` → `layer` (text
+  header `RUNG` → `LAYER`) — aligns the CLI with the registry's own
+  `layer` column.
+- Annotations: `# knob:exempt` → `# setting:exempt`;
+  `<!-- knob-prose:allow -->` → `<!-- setting-prose:allow -->`.
+- Make targets: `validate-live-drain` → `validate-capture-backstop`.
+
+### Added
+
+- `make test-kernel-terminology` — leak gate
+  (`workflows/scripts/kernel/check-terminology-leak-guard.sh`, in
+  `KERNEL_GATES`): pre-rename identifiers cannot silently re-enter a
+  stranger surface; only the reviewed exempt set (the compat window's own
+  files + records) may carry them.
+- `workflows/scripts/tests/test_terminology_rename_compat.sh` — the legacy
+  window's behavior contract (6 hermetic cases), in `KERNEL_GATES`.
+
+### Deliberately NOT renamed (migration note)
+
+- **Persisted external state keeps its pre-rename values** (the temperloop#165
+  `.foundation/` precedent — renaming them would orphan live state): the
+  `funnel-merge-pending` / `funnel-escalated` GitHub labels, the
+  `<!-- funnel:clarification-drained -->` / `<!-- funnel:decision-applied -->`
+  issue markers, `~/.claude/funnel/*` state paths, and the
+  `/tmp/funnel-tick` lock dir. Setting *names* renamed; *values* stable.
+- `workflows/scripts/drain/` and the `session-start-drain.sh` hook —
+  "drain a queue" is literal English there, and hook names are a contract
+  surface with no confusion evidence.
+- `claim`/`release`, `worktree`, `merge queue`, `sweep`, `gate` — already
+  plain or industry-standard.
+- Historical records (this CHANGELOG's earlier sections, `docs/adr/`,
+  archived plans, knowledge-store notes) keep old terms — they are
+  records, not live contracts.
+
 ## [0.16.0] - 2026-07-25
 
 Non-breaking minor bump: several additive capabilities across the pipeline

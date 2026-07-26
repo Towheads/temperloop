@@ -22,7 +22,7 @@
 #   - refreshes the PATH board symlinks (make install-board);
 #   - busts the board STRUCTURE cache when a pulled adapter actually changed, so a
 #     board renumber/migration can't leave stale project/field ids that break WRITES
-#     (the cache is logical-board-keyed with a 24h TTL — reads stay live, but a
+#     (the cache is board-id-keyed with a 24h TTL — reads stay live, but a
 #     post-renumber write hits "item does not exist in the project"; foundation #341);
 #   - VERIFIES the #128 guard is present in every board.sh a session could source,
 #     exiting non-zero if any is missing (e.g. a sync PR that was never merged).
@@ -91,8 +91,8 @@ for co in "${CHECKOUTS[@]}"; do
   branch="$(git -C "$co" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [ "$branch" != "main" ]; then
     # F#1098: a checkout stranded on an ALREADY-MERGED feature branch (its PR merged,
-    # nothing unmerged) used to be SKIPPED here forever — silently blocking the funnel's
-    # clean-on-main merge tier for days (funnel-drive.sh refuses to merge from a non-main
+    # nothing unmerged) used to be SKIPPED here forever — silently blocking the pipeline's
+    # clean-on-main merge tier for days (pipeline-drive.sh refuses to merge from a non-main
     # tree, and nothing ever reset the checkout — F#687). Auto-recover ONLY the provably
     # safe case: a clean tree whose HEAD is fully contained in origin/main
     # (`--is-ancestor` = every commit already merged) → switch to main and fall through to
@@ -183,7 +183,7 @@ if [ "${DEPLOY_MINI_SKIP_INSTALL:-0}" != 1 ]; then
 fi
 
 # --- 2.5 bust the board structure cache IF a pulled adapter changed (#341) ----
-# The structure cache (project id + field/option ids) is keyed on the LOGICAL board
+# The structure cache (project id + field/option ids) is keyed on the board id
 # number under a 24h TTL, so after a board renumber/migration a freshly-pulled
 # adapter keeps serving the OLD project's ids until the TTL lapses — reads pass
 # (item-list is always live) but WRITES fail with "item does not exist in the
@@ -236,7 +236,7 @@ for co in "${CHECKOUTS[@]}"; do
     # consumer-root conf, and honors BOARDS_CONF_REPO_LOCAL (else the
     # $bsh-relative repo-local) — so a single BOARDS_CONF_* override now
     # hermeticizes deploy-mini exactly as it does board.sh / board-mirror /
-    # funnel-tick, closing the per-consumer divergence that made the #592/#614
+    # pipeline-tick, closing the per-consumer divergence that made the #592/#614
     # test-hermeticity leaks possible (temperloop#591 fixed only deploy-mini's
     # BOARDS_CONF_MACHINE handling — this routes the whole discovery through the
     # shared seam so nothing is reimplemented here at all). Sourced from the

@@ -4,8 +4,8 @@
 // per-item loop out of the conversational orchestrator and into a bounded
 // Workflow process, so the orchestrator's context stays pinned to ONE small
 // {parked, escalations} object per dependency level — regardless of how many
-// items or spine calls the level contains. The orchestrator invokes this once
-// per level (via the Workflow tool), the workflow drives every item's spine +
+// items or machinery calls the level contains. The orchestrator invokes this once
+// per level (via the Workflow tool), the workflow drives every item's machinery +
 // worker, and returns only what to write back. The orchestrator still owns the
 // MERGE GATE (Step 4) — this workflow never merges and never writes the plan
 // note.
@@ -14,12 +14,12 @@
 // DESIGN NOTES (read before editing — these three decisions are load-bearing)
 // -----------------------------------------------------------------------------
 //
-// 1. THE runSpine BRIDGE (spike #421 verdict §1).
-//    The deterministic bash spine (worktree.sh / pr.sh / ci-poll.sh /
+// 1. THE runMachinery BRIDGE (spike #421 verdict §1).
+//    The deterministic bash machinery (worktree.sh / pr.sh / ci-poll.sh /
 //    quality-gates.sh / board claim.sh) is the source of truth for every
 //    mechanical step. But the Workflow runtime has NO filesystem, NO Node, NO
 //    shell in the script body — so there is no `sh()` primitive. The bridge:
-//    every spine call becomes ONE `agent({schema})` whose entire job is "run
+//    every machinery call becomes ONE `agent({schema})` whose entire job is "run
 //    exactly this one command, return its single closed-outcome JSON line as a
 //    validated object." The runtime's agent() hook gives a subagent the normal
 //    Bash tool and (with a schema) returns a validated object, not free text —
@@ -38,8 +38,8 @@
 //
 // 2. THE CI-POLL LOOP (spike #421 verdict §1 "ci-poll caveat").
 //    ci-poll.sh can poll up to 1h, but an agent()'s foreground Bash has a
-//    ~10-min cap — so we must NOT runSpine a single long poll (it would die
-//    mid-poll). Instead we loop runSpine over SHORT-timeout polls
+//    ~10-min cap — so we must NOT runMachinery a single long poll (it would die
+//    mid-poll). Instead we loop runMachinery over SHORT-timeout polls
 //    (CI_POLL_SLICE_SECS, default 240s) until the outcome resolves to CI_GREEN
 //    or CI_FAILED, bounded by a total wall budget (CI_POLL_TOTAL_SECS). The
 //    short poll returns TIMEOUT when the slice elapses with checks still
@@ -56,7 +56,7 @@
 //    <repoRoot>.wt/<slug> that pr.sh / quality-gates / the verification-surface
 //    file all reference; (b) the .build-guard write-jail marker that arms
 //    the PreToolUse guard per-worktree; (c) push-by-SHA on the plan's branch.
-//    So we runSpine('worktree.sh create …') first, then tell the worker (in its
+//    So we runMachinery('worktree.sh create …') first, then tell the worker (in its
 //    prompt) that its cwd IS that deterministic path. The worker's writes are
 //    confined by the .build-guard hook — the intended jail.
 //
@@ -70,10 +70,10 @@
 //       ownerRepo, claimCmd, verdicts, onlySlugs }
 //
 //     repoRoot   — the parent checkout's top-level path; worktrees live at
-//                  `<repoRoot>.wt/<slug>` and spine scripts at
+//                  `<repoRoot>.wt/<slug>` and machinery scripts at
 //                  `<repoRoot>/workflows/scripts/build/`.
 //     planLink   — the plan note's vault link (passed to pr.sh --plan-link).
-//     board      — logical board number (3/4) or null/false when board is OFF.
+//     board      — board id (3/4) or null/false when board is OFF.
 //     items      — this level's FULL item array (the onlySlugs filter, below,
 //                  selects the active subset on a continuation). Per item,
 //                  `dependsOn` is an array of { slug, sha } — the merged head
@@ -123,7 +123,7 @@
 export const meta = {
   name: 'build-level',
   description:
-    "Drive ONE build dependency level's items (3a-3h) through the bash spine + worker, returning {parked, escalations}. Never merges, never writes the plan note.",
+    "Drive ONE build dependency level's items (3a-3h) through the bash machinery + worker, returning {parked, escalations}. Never merges, never writes the plan note.",
   version: '1.0.0',
 };
 
@@ -138,7 +138,7 @@ const input = typeof args === 'string' ? JSON.parse(args) : (args ?? {});
 // -----------------------------------------------------------------------------
 
 // SPINE_OUTCOME_SCHEMA — one permissive object keyed on `outcome` (the union of
-// every spine script's closed set) plus passthrough fields. The .mjs branches
+// every machinery script's closed set) plus passthrough fields. The .mjs branches
 // on `.outcome` exactly as each script's header documents. Permissive on the
 // passthrough so one schema covers worktree.sh / pr.sh / ci-poll.sh /
 // quality-gates / claim outcomes without a per-script schema.
@@ -149,7 +149,7 @@ const SPINE_OUTCOME_SCHEMA = {
   properties: {
     outcome: {
       type: 'string',
-      // The union of the spine's closed outcome sets (worktree / pr / ci-poll /
+      // The union of the machinery's closed outcome sets (worktree / pr / ci-poll /
       // gate) plus the gate-pass/fail and claim markers we synthesize below.
       enum: [
         'CREATED', 'REMOVED', 'NOT_FOUND', 'PRUNED', 'SKIPPED_DIRTY', 'SKIPPED_UNMERGED',
@@ -164,7 +164,7 @@ const SPINE_OUTCOME_SCHEMA = {
         'ERROR',
       ],
     },
-    // Common passthrough fields the spine emits (any subset, depending on cmd).
+    // Common passthrough fields the machinery emits (any subset, depending on cmd).
     path: { type: 'string' },
     branch: { type: 'string' },
     base: { type: 'string' },
@@ -240,7 +240,7 @@ const CI_FAIL_RETRY_BUDGET = 1;   // re-spawn+force-push+re-poll attempts on CI_
 // runs >2min; the executor's Bash tool defaults to 120_000ms, so the suite was
 // SIGTERM'd at 2:00 → a false GATE_FAIL on every drive. 480_000ms (8min) clears
 // the suite with margin and stays under the executor agent's ~10-min Bash cap
-// (== the Bash tool's 600_000ms max). Threaded to the gate runSpine call only.
+// (== the Bash tool's 600_000ms max). Threaded to the gate runMachinery call only.
 const GATE_BASH_TIMEOUT_MS = 480_000;
 
 // -----------------------------------------------------------------------------
@@ -256,7 +256,7 @@ function sq(value) {
   return `'${s.split("'").join(`'\\''`)}'`;
 }
 
-// spineBin — resolve a build-SPINE script (worktree.sh / pr.sh / ci-poll.sh),
+// machineryBin — resolve a build-SPINE script (worktree.sh / pr.sh / ci-poll.sh),
 // which lives in the FOUNDATION repo (workflows/scripts/build/). A consuming repo
 // (stageFind) normally reaches it via a dev-local `workflows/` symlink into
 // foundation — but that symlink is NOT guaranteed in every checkout (#560: a
@@ -272,25 +272,25 @@ function sq(value) {
 // temperloop#406; the legacy FOUNDATION_HOME name is read as a fallback
 // through the rename window, removed in v0.17.0). If none resolve, the
 // emitted path points at the missing
-// repo-local dir and the spine script's own "not found" (exit 127) surfaces
+// repo-local dir and the machinery script's own "not found" (exit 127) surfaces
 // loudly. NOTE:
-// only spine scripts route through here; the project's OWN vendored gate
+// only machinery scripts route through here; the project's OWN vendored gate
 // (scripts/quality-gates.sh) is repo-local and is resolved directly against
 // the WORKTREE checkout (see 3e.5, temperloop#626), never via this fallback.
-function spineBin(repoRoot, name) {
+function machineryBin(repoRoot, name) {
   // De-obfuscated fast path (temperloop#72). When the orchestrator has already
-  // resolved the build-spine directory in its OWN shell (build.md Step 0) and
-  // passed it as input.spineBinDir, emit a PLAIN quoted absolute path. The
-  // executed spine command line then carries NO nested `$(readlink …)`
+  // resolved the build-machinery directory in its OWN shell (build.md Step 0) and
+  // passed it as input.machineryBinDir, emit a PLAIN quoted absolute path. The
+  // executed machinery command line then carries NO nested `$(readlink …)`
   // command-substitution — the very construct the auto-mode safety classifier
-  // read (together with the runSpine "run exactly" instruction) as an
-  // obfuscated-command bypass, denying every push/worktree spine step on
-  // --unattended/funnel runs. A literal path reads as an ordinary script call.
-  if (typeof input.spineBinDir === 'string' && input.spineBinDir.length > 0) {
-    return sq(input.spineBinDir + '/' + name);
+  // read (together with the runMachinery "run exactly" instruction) as an
+  // obfuscated-command bypass, denying every push/worktree machinery step on
+  // --unattended/pipeline runs. A literal path reads as an ordinary script call.
+  if (typeof input.machineryBinDir === 'string' && input.machineryBinDir.length > 0) {
+    return sq(input.machineryBinDir + '/' + name);
   }
   // Fallback (no pre-resolved dir — older invocations, or a consuming repo that
-  // does not yet pass spineBinDir): resolve in BASH, exactly as before (#560).
+  // does not yet pass machineryBinDir): resolve in BASH, exactly as before (#560).
   const local = sq(repoRoot + '/workflows/scripts/build');
   return '"$(d=' + local + '; ' +
     'if [ ! -d "$d" ]; then for c in ' +
@@ -307,21 +307,21 @@ function spineBin(repoRoot, name) {
 // '' → ERROR, so the orchestrator MUST pass it (Step 0 probe). See the I/O note.
 
 // -----------------------------------------------------------------------------
-// runSpine — the sh() replacement (spike §1).
+// runMachinery — the sh() replacement (spike §1).
 // -----------------------------------------------------------------------------
-// Spawns a one-shot executor agent that runs EXACTLY one spine command via Bash
+// Spawns a one-shot executor agent that runs EXACTLY one machinery command via Bash
 // and returns its single closed-outcome JSON line, schema-validated. No model
 // override beyond haiku (cheapest tier — the executor does no reasoning); NO
-// isolation:'worktree' (the spine scripts manage their own worktrees, §5).
-async function runSpine(cmd, { label, slug, bashTimeoutMs } = {}) {
-  // Wording (temperloop#72): describe the command as a KNOWN build-spine helper
+// isolation:'worktree' (the machinery scripts manage their own worktrees, §5).
+async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
+  // Wording (temperloop#72): describe the command as a KNOWN build-machinery helper
   // script that self-reports its result, rather than telling the sub-agent to
   // "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
   // with the nested-readlink path resolution, read to the auto-mode safety
   // classifier as an instruction to blindly execute an obfuscated command.
   const out = await agent(
     [
-      'Run this single build-spine helper command with the Bash tool, exactly as written.',
+      'Run this single build-machinery helper command with the Bash tool, exactly as written.',
       'It is a known project script (worktree.sh / pr.sh / ci-poll.sh / claim.sh); do not add flags, chain extra commands, or rewrite it.',
       // temperloop#115: for a legitimately long-running command (the 3e.5 gate),
       // raise the Bash TOOL's timeout parameter — NOT the command text — so the
@@ -337,8 +337,8 @@ async function runSpine(cmd, { label, slug, bashTimeoutMs } = {}) {
       cmd,
     ].filter(Boolean).join('\n'),
     {
-      label: label ?? `spine:${cmd.split(' ').slice(0, 2).join(' ')}`,
-      phase: 'spine',
+      label: label ?? `machinery:${cmd.split(' ').slice(0, 2).join(' ')}`,
+      phase: 'machinery',
       agentType: 'general-purpose',
       model: 'haiku',
       schema: SPINE_OUTCOME_SCHEMA,
@@ -350,7 +350,7 @@ async function runSpine(cmd, { label, slug, bashTimeoutMs } = {}) {
   // Every consumer below dereferences `.outcome`, so a raw null crashed the
   // whole level with `null is not an object`. Normalize it to a closed
   // SPINE_DENIED sentinel — a well-formed outcome object every call site can
-  // detect (via spineDenied()) and turn into a parkable `spine-denied`
+  // detect (via machineryDenied()) and turn into a parkable `machinery-denied`
   // escalation instead of a TypeError.
   return out == null ? { outcome: 'SPINE_DENIED', denied: true } : out;
 }
@@ -468,14 +468,14 @@ function park(slug, pr, pushedSha, acceptanceResults, noCi) {
   };
 }
 
-// spineDenied — a spine step returned no usable outcome. runSpine already
+// machineryDenied — a machinery step returned no usable outcome. runMachinery already
 // normalizes agent()'s null (auto-mode classifier DENIED the command / user
 // skip / terminal API error) to a SPINE_DENIED sentinel; this recognizes both
 // that sentinel and a bare null. Either means "the mechanical step did not run"
-// — so the caller escalates `spine-denied` (a clean, parkable escalation the
+// — so the caller escalates `machinery-denied` (a clean, parkable escalation the
 // orchestrator can drive to a human) instead of dereferencing `.outcome` on a
 // null/absent result and crashing the level (temperloop#72).
-function spineDenied(out) {
+function machineryDenied(out) {
   return out == null || out.outcome === 'SPINE_DENIED';
 }
 
@@ -514,7 +514,7 @@ async function driveItem(item) {
     // The CLAIM entrypoint + --board are resolved by the orchestrator's Step 0
     // probe and passed in input.claimCmd (an absolute path to claim.sh).
     const claimBin = input.claimCmd ?? 'claim.sh';
-    const claimOut = await runSpine(
+    const claimOut = await runMachinery(
       // claim.sh exits 0 on success; we wrap a contention/no-op check into the
       // executor by asking it to emit a CLAIMED/CLAIM_CONFLICT line. The
       // orchestrator's claim.sh itself sets In Progress + stamps Host/Session.
@@ -522,8 +522,8 @@ async function driveItem(item) {
         `echo '{"outcome":"CLAIMED"}' || echo '{"outcome":"CLAIM_CONFLICT"}'`,
       { label: `claim:${item.slug}`, slug: item.slug },
     );
-    if (spineDenied(claimOut)) {
-      return escalate(item.slug, 'spine-denied', { step: 'claim', out: claimOut });
+    if (machineryDenied(claimOut)) {
+      return escalate(item.slug, 'machinery-denied', { step: 'claim', out: claimOut });
     }
     if (claimOut.outcome === 'CLAIM_CONFLICT' || claimOut.outcome === 'ERROR') {
       return escalate(item.slug, 'claim-conflict', { claimOut });
@@ -584,13 +584,13 @@ async function driveItem(item) {
     ? []
     : (item.dependsOn ?? []).map((d) => d && d.sha).filter(Boolean);
   if (depShas.length > 0) {
-    const wtGateBin = spineBin(repoRoot, 'worktree.sh');
-    const depOut = await runSpine(
+    const wtGateBin = machineryBin(repoRoot, 'worktree.sh');
+    const depOut = await runMachinery(
       `${wtGateBin} deps-merged ${sq(repoRoot)} ${sq(depShas.join(','))}`,
       { label: `depcheck:${item.slug}`, slug: item.slug },
     );
-    if (spineDenied(depOut)) {
-      return escalate(item.slug, 'spine-denied', { step: 'deps-merged', out: depOut });
+    if (machineryDenied(depOut)) {
+      return escalate(item.slug, 'machinery-denied', { step: 'deps-merged', out: depOut });
     }
     if (depOut.outcome !== 'DEPS_MERGED') {
       // A depended-on PR has NOT merged to origin/<default>. Do NOT create the
@@ -610,13 +610,13 @@ async function driveItem(item) {
   // plus the human's decision, exactly the escalation-resume contract.
   let wt = worktreePath;
   if (!isContinuation) {
-    const wtBin = spineBin(repoRoot, 'worktree.sh');
-    const wtOut = await runSpine(
+    const wtBin = machineryBin(repoRoot, 'worktree.sh');
+    const wtOut = await runMachinery(
       `${wtBin} create ${sq(repoRoot)} ${sq(item.slug)}`,
       { label: `worktree:${item.slug}`, slug: item.slug },
     );
-    if (spineDenied(wtOut)) {
-      return escalate(item.slug, 'spine-denied', { step: 'worktree', out: wtOut });
+    if (machineryDenied(wtOut)) {
+      return escalate(item.slug, 'machinery-denied', { step: 'worktree', out: wtOut });
     }
     if (wtOut.outcome !== 'CREATED') {
       return escalate(item.slug, 'worktree-failed', { wtOut });
@@ -688,20 +688,20 @@ async function driveItem(item) {
   // merge. The worktree is a full checkout of the branch, so this copy always
   // exists whenever repoRoot's would (GATE_ABSENT still fires for a repo with
   // no vendored gate). Only build-SPINE scripts (worktree.sh / pr.sh / …) route
-  // through spineBin's foundation fallback; the repo-local gate resolves
+  // through machineryBin's foundation fallback; the repo-local gate resolves
   // directly against the worktree.
   const qgBin = `${wt}/scripts/quality-gates.sh`;
-  // temperloop#1241: SCRUB the pipeline's own build.config.sh knobs from the
-  // gate's environment before running the suite. Under funnel-drive the session
-  // exports ~40 build.config.sh knobs; the config-precedence tests the gate runs
-  // (test_config.sh / test_stranger_config.sh / test_funnel_cron.sh) assert rung
+  // temperloop#1241: SCRUB the pipeline's own build.config.sh settings from the
+  // gate's environment before running the suite. Under pipeline-drive the session
+  // exports ~40 build.config.sh settings; the config-precedence tests the gate runs
+  // (test_config.sh / test_stranger_config.sh / test_pipeline_cron.sh) assert layer
   // precedence (env > machine-conf > repo-local > tracked-default), so an
-  // inherited knob wins the env rung and false-FAILs a change CI's `checks`
-  // passes green. `build-config-knobs.sh` prints the (SSOT-derived) knob names;
+  // inherited setting wins the env layer and false-FAILs a change CI's `checks`
+  // passes green. `build-config-settings.sh` prints the (SSOT-derived) setting names;
   // unsetting them makes the gate hermetic — tracked defaults, matching CI. A
   // missing/older helper prints nothing → `unset` no-op → prior behavior.
-  const knobsBin = `${wt}/workflows/scripts/build/build-config-knobs.sh`;
-  const gateOut = await runSpine(
+  const settingsBin = `${wt}/workflows/scripts/build/build-config-settings.sh`;
+  const gateOut = await runMachinery(
     // If the script is missing → GATE_ABSENT (no-op). Else run it in the
     // worktree; exit 0 → GATE_PASS, non-zero → GATE_FAIL.
     //
@@ -715,15 +715,15 @@ async function driveItem(item) {
     // no-op. With pipefail set, the gate's own non-zero exit propagates and
     // GATE_FAIL is still emitted — the runtime match for the documented rule.
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-      `else ( cd ${sq(wt)} && unset $(bash ${sq(knobsBin)} 2>/dev/null) && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
+      `else ( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
       `&& echo '{"outcome":"GATE_PASS"}' || echo '{"outcome":"GATE_FAIL"}'; fi`,
     // temperloop#115: the full quality-gates.sh suite runs >2min; without an
     // explicit timeout the executor's Bash tool kills it at 120s → false
     // GATE_FAIL. GATE_BASH_TIMEOUT_MS gives the suite room to finish.
     { label: `gate:${item.slug}`, slug: item.slug, bashTimeoutMs: GATE_BASH_TIMEOUT_MS },
   );
-  if (spineDenied(gateOut)) {
-    return escalate(item.slug, 'spine-denied', { step: 'gate', out: gateOut });
+  if (machineryDenied(gateOut)) {
+    return escalate(item.slug, 'machinery-denied', { step: 'gate', out: gateOut });
   }
   if (gateOut.outcome === 'GATE_FAIL') {
     return escalate(item.slug, 'acceptance-gate-failed', { gateOut });
@@ -731,7 +731,7 @@ async function driveItem(item) {
   // GATE_PASS or GATE_ABSENT → proceed.
 
   // --- 3f. Push and open the PR --------------------------------------------
-  const prBin = spineBin(repoRoot, 'pr.sh');
+  const prBin = machineryBin(repoRoot, 'pr.sh');
 
   // 3f-0a. Rebase onto fresh origin/<default> — the unconditional stale-base
   // guard (#525). EVERY worker (not just speculative ones) branched off the
@@ -742,12 +742,12 @@ async function driveItem(item) {
   // replays the worker's commits onto its tip (a no-op when already current).
   // On REBASE_CONFLICT it has already `git rebase --abort`ed (worktree left
   // clean, NEVER a silent revert) → escalate as a rebase conflict for a human.
-  const rebaseOut = await runSpine(`${prBin} rebase ${sq(wt)}`, {
+  const rebaseOut = await runMachinery(`${prBin} rebase ${sq(wt)}`, {
     label: `rebase:${item.slug}`,
     slug: item.slug,
   });
-  if (spineDenied(rebaseOut)) {
-    return escalate(item.slug, 'spine-denied', { step: 'rebase', out: rebaseOut });
+  if (machineryDenied(rebaseOut)) {
+    return escalate(item.slug, 'machinery-denied', { step: 'rebase', out: rebaseOut });
   }
   if (rebaseOut.outcome === 'REBASE_CONFLICT') {
     return escalate(item.slug, 'rebase-conflict', { rebaseOut });
@@ -757,12 +757,12 @@ async function driveItem(item) {
   }
 
   // 3f-0. Closing-keyword pre-push scan.
-  const scanOut = await runSpine(`${prBin} scan ${sq(wt)}`, {
+  const scanOut = await runMachinery(`${prBin} scan ${sq(wt)}`, {
     label: `scan:${item.slug}`,
     slug: item.slug,
   });
-  if (spineDenied(scanOut)) {
-    return escalate(item.slug, 'spine-denied', { step: 'scan', out: scanOut });
+  if (machineryDenied(scanOut)) {
+    return escalate(item.slug, 'machinery-denied', { step: 'scan', out: scanOut });
   }
   if (scanOut.outcome === 'SCAN_BLOCKED') {
     // A worker commit carries a closing keyword (the ec8d5fd class). Don't push
@@ -774,12 +774,12 @@ async function driveItem(item) {
   }
 
   // 3f-1. Push-by-SHA on the plan's branch.
-  const pushOut = await runSpine(
+  const pushOut = await runMachinery(
     `${prBin} push ${sq(wt)} ${sq(item.branch)}`,
     { label: `push:${item.slug}`, slug: item.slug },
   );
-  if (spineDenied(pushOut)) {
-    return escalate(item.slug, 'spine-denied', { step: 'push', out: pushOut });
+  if (machineryDenied(pushOut)) {
+    return escalate(item.slug, 'machinery-denied', { step: 'push', out: pushOut });
   }
   if (pushOut.outcome === 'PUSH_REJECTED') {
     // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
@@ -812,13 +812,13 @@ async function driveItem(item) {
     `--verification-surface-file ${sq(`${wt}/.build-verification.md`)} ` +
     `--plan-link ${sq(planLink)} --source ${sq(item.source ?? '')}; ` +
     `rc=$?; rm -f "$vf"; exit $rc`;
-  const openOut = await runSpine(openCmd, { label: `pr-open:${item.slug}`, slug: item.slug });
+  const openOut = await runMachinery(openCmd, { label: `pr-open:${item.slug}`, slug: item.slug });
   // EXISTS means the branch already had an open PR (a create-retry after a
   // succeeded first attempt). Treat it as PR_OPENED — adopt the existing PR and
   // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is a
   // genuine failure and escalates as pr-open-failed.
-  if (spineDenied(openOut)) {
-    return escalate(item.slug, 'spine-denied', { step: 'pr-open', out: openOut });
+  if (machineryDenied(openOut)) {
+    return escalate(item.slug, 'machinery-denied', { step: 'pr-open', out: openOut });
   }
   if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
     return escalate(item.slug, 'pr-open-failed', { openOut });
@@ -841,7 +841,7 @@ async function driveItem(item) {
 // -----------------------------------------------------------------------------
 // ciPollLoop — bounded short-slice CI poll (DESIGN NOTE 2).
 // -----------------------------------------------------------------------------
-// Loops runSpine over CI_POLL_SLICE_SECS-timeout ci-poll.sh calls until the
+// Loops runMachinery over CI_POLL_SLICE_SECS-timeout ci-poll.sh calls until the
 // outcome resolves. TIMEOUT on a slice = "still pending, poll again" (NOT a
 // failure) — we keep looping while the total budget remains. On CI_FAILED,
 // within CI_FAIL_RETRY_BUDGET, we re-spawn the worker + force-push + re-poll
@@ -855,7 +855,7 @@ async function driveItem(item) {
 
 // MERGE_STATE_SCHEMA — minimal schema for the gh pr view merge-state check.
 // A separate schema (not SPINE_OUTCOME_SCHEMA) so we do NOT alter the closed
-// spine outcome enum (#543: "Do NOT touch SPINE_OUTCOME_SCHEMA").
+// machinery outcome enum (#543: "Do NOT touch SPINE_OUTCOME_SCHEMA").
 const MERGE_STATE_SCHEMA = {
   type: 'object',
   required: [],
@@ -874,7 +874,7 @@ function mergeStateCmd(ownerRepo, pr) {
 }
 
 function ciPollCmd(ownerRepo, pr, sha) {
-  const ciBin = spineBin(input.repoRoot, 'ci-poll.sh');
+  const ciBin = machineryBin(input.repoRoot, 'ci-poll.sh');
   // --sha pins the head (REQUIRED on a re-poll after a force-push; harmless on
   // the first poll where it equals the pushed head). --timeout is the SLICE.
   return (
@@ -924,13 +924,13 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       };
     }
 
-    const out = await runSpine(ciPollCmd(ownerRepo, pr, sha), {
+    const out = await runMachinery(ciPollCmd(ownerRepo, pr, sha), {
       label: `ci-poll:${item.slug}#${slice}`,
       slug: item.slug,
     });
 
-    if (spineDenied(out)) {
-      return { escalation: 'spine-denied', payload: { step: 'ci-poll', out, sha } };
+    if (machineryDenied(out)) {
+      return { escalation: 'machinery-denied', payload: { step: 'ci-poll', out, sha } };
     }
 
     if (out.outcome === 'CI_GREEN') {
@@ -1000,13 +1000,13 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       // the plain push surfaces as a visible PUSH_REJECTED outcome (triaged
       // below), not an opaque SPINE_DENIED. (pr.sh's --force→plain downgrade is
       // retained for other callers that legitimately rewrite history — #335.)
-      const prBin = spineBin(input.repoRoot, 'pr.sh');
-      const fpush = await runSpine(
+      const prBin = machineryBin(input.repoRoot, 'pr.sh');
+      const fpush = await runMachinery(
         `${prBin} push ${sq(wt)} ${sq(item.branch)}`,
         { label: `push-retry:${item.slug}`, slug: item.slug },
       );
-      if (spineDenied(fpush)) {
-        return { escalation: 'spine-denied', payload: { step: 'push-retry', out: fpush, sha } };
+      if (machineryDenied(fpush)) {
+        return { escalation: 'machinery-denied', payload: { step: 'push-retry', out: fpush, sha } };
       }
       if (fpush.outcome !== 'PUSHED') {
         return { escalation: 'ci-failed', payload: { fpush, sha } };

@@ -5,7 +5,7 @@ temperloop#13. GitHub's **native merge queue** (the platform feature
 **organization-owned repo on a paid plan** — a personal account, or a free
 org, can enable branch protection and required checks, but cannot arm a
 merge queue. Until this contract existed, that was a hard wall: the
-merge-gated build/sweep ladder (`/build`, `/sweep`, the funnel merge tier)
+merge-gated build/sweep ladder (`/build`, `/sweep`, the pipeline merge tier)
 assumed a native queue was always available, so the whole pipeline simply
 didn't work on a free personal repo.
 

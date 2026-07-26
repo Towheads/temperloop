@@ -127,7 +127,7 @@ Everything the tsv does not model — a change *kind* with no extension
 (`architectural` → architecture-reviewer), the broader stranger-facing-prose
 `*.md` fallback, the `claude/commands/*.md` → workflow-reviewer exception, a
 per-item `review:` override, and the run-both multi-match rule — stays
-prose-resident in `build.md` by design; the tsv's scope is deliberately
+resident in `build.md`'s prose by design; the tsv's scope is deliberately
 narrower than "all routing."
 
 **The coverage scan.** `workflows/scripts/install/reviewer-activation-coverage.sh`
@@ -216,7 +216,7 @@ The language-reviewer catalog integrates through the same capability-probe
 seam plus one more resolution step: `/build`'s 3e pre-push review
 (`claude/commands/build.md`) resolves a changed file's reviewer from
 `reviewer-routing.tsv`'s extension/glob axis (falling back to the
-prose-resident non-extension routing described above), then runs the same
+in-prose non-extension routing described above), then runs the same
 capability probe and `skipped — <agent> unavailable` degradation as
 `architecture-reviewer`/`workflow-reviewer`/`docs-reviewer`. Getting a
 catalog reviewer into that resolvable state runs through the opt-in

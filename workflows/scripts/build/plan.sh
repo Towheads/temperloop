@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build plan-note mechanics — the deterministic-spine script that owns the
+# build plan-note mechanics — the deterministic-machinery script that owns the
 # Step-1 plan parse/validate + dependency-level toposort and the in-band
 # sentinel writeback of /build (epic #253, spike #245). These are pure
 # functions of the plan note's text with closed outcome sets, so they move from
@@ -107,7 +107,7 @@ usage() {
 # vault path/URL in that ONE file (knowledge_store_obsidian.sh), so plan.sh no
 # longer repeats the literal here. PLAN_API_BASE / PLAN_API_KEY_FILE remain the
 # names tests/callers override (unchanged surface) — they now fall back to the
-# seam's own knobs instead of a hardcoded default.
+# seam's own settings instead of a hardcoded default.
 PLAN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 if [ -f "$PLAN_LIB_DIR/knowledge_store.sh" ]; then
   # shellcheck source=workflows/scripts/lib/knowledge_store.sh
@@ -125,7 +125,7 @@ PLAN_API_KEY_FILE="${PLAN_API_KEY_FILE:-${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:
 # no REST config, the caller falls soft to a filesystem write). Resolution
 # order, most-specific first (#342):
 #   1. PLAN_API_KEY_FILE — the caller/test override, itself defaulted from the
-#      knowledge_store seam's KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE knob (which
+#      knowledge_store seam's KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE setting (which
 #      derives from KNOWLEDGE_STORE_ROOT — the "actual knowledge-store root").
 #   2. The vault root RESOLVED from the plan note's own absolute on-disk path:
 #      the parent of its `/Plans/` segment. This is what makes writeback work in

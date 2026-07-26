@@ -3,7 +3,7 @@
 # seed-demo-repo.sh — idempotent, script-generated seeder for the PRIVATE
 # scratch demo repo (default: `<your-gh-login>/temperloop-demo`, derived from
 # your authenticated gh identity — foundation#871) that
-# `foundation try --demo` runs one real safe-tier funnel tick against
+# `foundation try --demo` runs one real safe-tier pipeline tick against
 # (foundation #765 Epic D, item `demo-repo-seed` / foundation #851).
 #
 # WHAT IT DOES

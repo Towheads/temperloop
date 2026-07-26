@@ -16,7 +16,7 @@
 #      nothing is ever committed straight to the default branch.
 #   3. a CONSENTED APPLY STEP, owned by this script (there is no landed
 #      generator for it): explicit, per-action confirmation before any
-#      API-STATE write — a required status check, the `fnd:`/funnel label
+#      API-STATE write — a required status check, the `fnd:`/pipeline label
 #      set, and (only on the separate --provision-board opt-in) a
 #      Projects-v2 board. Each is a plain `gh` call; --dry-run or a denied
 #      prompt performs zero of them.
@@ -151,7 +151,7 @@
 #   --remote NAME           Forwarded to the proposal generator. Default: origin.
 #   --tracker-mode MODE     "issues" (default) or "projects". Only "issues"
 #                          needs no further opt-in — see --provision-board.
-#   --board N               Logical board number the rendered boards.conf
+#   --board N               Board id the rendered boards.conf
 #                          entry uses. Default: carried forward from an
 #                          existing .temperloop/config, else 1.
 #   --provision-board       Explicit opt-in to ALSO offer provisioning a
@@ -213,8 +213,8 @@ fi
 command -v jq >/dev/null 2>&1 || { echo "init.sh: jq not found on PATH" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "init.sh: git not found on PATH" >&2; exit 1; }
 
-# Test-double seam (mirrors try.sh's TRY_GH_BIN / funnel-drive.sh's
-# FUNNEL_GH_BIN convention) — never overridden in production use.
+# Test-double seam (mirrors try.sh's TRY_GH_BIN / pipeline-drive.sh's
+# PIPELINE_GH_BIN convention) — never overridden in production use.
 : "${INIT_GH_BIN:=gh}"
 
 usage() {
@@ -380,7 +380,7 @@ legacy_config_rel=".foundation/config"
 read_config_rel="$config_rel"
 read_config_path="$config_path"
 if [ ! -f "$config_path" ] && [ -f "$repo_dir/$legacy_config_rel" ]; then
-  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
     echo "init.sh: ERROR — found legacy $legacy_config_rel, whose read support was removed in v0.17.0 (the config renamed to .temperloop/config in v0.15.0). Rename the directory (git mv .foundation .temperloop) or run 'temperloop eject' with a pre-v0.17.0 release, then re-run init." >&2
     exit 1
   fi
@@ -424,7 +424,7 @@ boards_conf_entry="$(render_boards_conf_entry "$tracker_mode" "$board_num" "$gh_
 
 # ---------------------------------------------------------------------------
 # Step 3 — the CONSENTED APPLY STEP: API-state changes only (required
-# check, fnd:/funnel labels, opt-in board). Explicit per-action
+# check, fnd:/pipeline labels, opt-in board). Explicit per-action
 # confirmation; default is ALWAYS "no" absent an explicit yes (interactive
 # prompt or a --yes-<action> flag). --dry-run skips this whole step.
 # ---------------------------------------------------------------------------
@@ -495,9 +495,9 @@ else
     fi
   fi
 
-  # --- fnd:/funnel label set -------------------------------------------
+  # --- fnd:/pipeline label set -------------------------------------------
   if _init_confirm "labels" "$consent_labels" \
-      "Create the fnd:/funnel label set on $gh_repo (fnd:status:backlog/ready/in-progress, needs-clarification, funnel-escalated, decision)?"; then
+      "Create the fnd:/pipeline label set on $gh_repo (fnd:status:backlog/ready/in-progress, needs-clarification, funnel-escalated, decision)?"; then
     existing_label_names="$("$INIT_GH_BIN" label list -R "$gh_repo" --json name -q '.[].name' 2>/dev/null || true)"
     for spec in \
       "fnd:status:backlog|ededed|Tracker status (issues-only backend) — mirrors board.sh Status=Backlog" \
@@ -561,8 +561,8 @@ else
   # signal or closed stdin both mean "no live operator to ask" — degrade to
   # a legible skip, never a hang and never a silent "decline".
   _init_first_epic_attended() {
-    case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — standard CI-ecosystem ambient signal, not an operator default this repo defines
-    case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # knob:exempt — GitHub Actions' own ambient signal, not an operator default this repo defines
+    case "${CI:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # setting:exempt — standard CI-ecosystem ambient signal, not an operator default this repo defines
+    case "${GITHUB_ACTIONS:-}" in [Tt]rue|1|[Yy]es) return 1 ;; esac  # setting:exempt — GitHub Actions' own ambient signal, not an operator default this repo defines
     [ -t 0 ] && return 0
     return 1
   }

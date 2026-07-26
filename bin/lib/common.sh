@@ -34,7 +34,7 @@ FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 
 # ── Env-var rename window (temperloop#165, v0.15.0) ─────────────────────────
 # TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR / TEMPERLOOP_KERNEL_REPO /
-# TEMPERLOOP_VERSION are the canonical env knobs; the pre-rename
+# TEMPERLOOP_VERSION are the canonical env settings; the pre-rename
 # FOUNDATION_* names are read as fallbacks through the migration window and
 # removed in v0.17.0 (VERSIONING.md pre-1.0 bump rules; the v0.15.0
 # CHANGELOG BREAKING entry carries the migration note).
@@ -65,7 +65,7 @@ temperloop_env_compat() {
     eval "new_set=\${${new}+x}"
     eval "legacy_val=\${${legacy}:-}"
     if [ -n "$legacy_set" ] && [ -z "$new_set" ] && [ -n "$legacy_val" ]; then
-      if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
+      if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
         echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.15.0 and the legacy name was removed in v0.17.0. Set \$$new and re-run." >&2
         return 1
       fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build worktree lifecycle — the deterministic-spine script that owns the
+# build worktree lifecycle — the deterministic-machinery script that owns the
 # per-item worktree create / remove / prune steps of /build (3b / 3h / 0.5).
 # Epic #253 (spike #245): these steps are pure functions of observable git
 # state with a closed outcome set, so they move from prose in build.md to
@@ -172,7 +172,7 @@ cmd_create() {
   # merges delete-vs-delete cleanly, and once the repo's main is clean this is a
   # no-op. Targets only the surface artifact — .build-guard is never committed
   # (jq-written above + excluded). The guard hook gates the worker's Edit/Write,
-  # not spine git ops, so it does not interfere.
+  # not machinery git ops, so it does not interfere.
   git -C "$wt_path" rm -q --cached --ignore-unmatch .build-verification.md 2>/dev/null || true
   if ! git -C "$wt_path" diff --cached --quiet; then
     git -C "$wt_path" commit -q \

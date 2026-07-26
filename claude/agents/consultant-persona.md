@@ -65,7 +65,7 @@ below) — the states here scope your *critiques*, not your executed runs:
 - **downstream sync** — the case most relevant to you: a client's repo
   vendors a synced copy of shared tooling. Does the sync mechanism keep your
   personal/consultant-side content out of what lands in their tree?
-- **unattended** — a client's own cron/funnel automation runs headlessly;
+- **unattended** — a client's own cron/pipeline automation runs headlessly;
   does a consultant-authored default degrade legibly for the client's
   operator, who is a different person than you?
 

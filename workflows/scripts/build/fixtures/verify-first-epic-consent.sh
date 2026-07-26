@@ -220,7 +220,7 @@ assert_eq() {
 }
 
 # --- the one real gh-write-issuing wrapper — every genuine GitHub WRITE in
-# this harness funnels through here, so scenario C's "zero writes" assertion
+# this harness pipelines through here, so scenario C's "zero writes" assertion
 # has a single, honest counter to check (never inferred from absence of
 # errors).
 gh_write() {
@@ -421,7 +421,7 @@ assert_eq "PR#$PR_A pre-merge checks digest is NONE (no producer -> nothing requ
 # all — the genuine zero-CI case: no producer will EVER post a check-run to
 # this head sha. Drives ci-poll.sh DIRECTLY (never gate.sh's own inline
 # _gate_ci_poll re-poll used by managed-merge below — this leg is specifically
-# about the deterministic-spine script that owns /build's real 3g step, per
+# about the deterministic-machinery script that owns /build's real 3g step, per
 # ci-poll.sh's own header) against PR#A's head sha, with a short --timeout and
 # a low CI_POLL_NOCI_GRACE_SECS grace so the NO_CI verdict (temperloop#605)
 # fires in seconds, not the full poll window. Proves the first-epic L0 PR
@@ -570,13 +570,13 @@ PLAN "--- Composed admin packet (Contract f3 evidence) ---"
 jq . <<<"$ADMIN_PACKET"
 
 # L0/L2-local-only posture note (documented scope, per criterion 4 — the
-# actual funnel run through /assess+/build is out of this harness's scope;
+# actual pipeline run through /assess+/build is out of this harness's scope;
 # what's asserted here is only that these levels need no GitHub write at
 # all, so an admin-rights probe result never blocks them):
 PLAN ""
 PLAN "L0 (principles recorded to the adopter's own repo files) and L2's local-gates posture require"
 PLAN "NO GitHub write at all -- both are unaffected by rights_probe's result by construction. Running"
-PLAN "the full epic through the real funnel (/assess + /build) is out of this harness's scope; that"
+PLAN "the full epic through the real pipeline (/assess + /build) is out of this harness's scope; that"
 PLAN "is first-epic-offer's own build-time acceptance, not re-proven here."
 
 # ============================================================================

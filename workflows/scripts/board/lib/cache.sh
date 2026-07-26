@@ -9,7 +9,7 @@
 # is a SEPARATE, narrower mechanism (in-memory item-state relief for a single
 # board resolve); this one is a durable, cross-session, two-layer on-disk
 # store of the full issue corpus (title/body/state/labels/parent linkage +
-# comments) a later corpus renderer or funnel driver can read without ever
+# comments) a later corpus renderer or pipeline driver can read without ever
 # hitting GitHub. See CACHE-STORE.md (sibling file) for the full on-disk
 # layout, schema, and design rationale.
 #
@@ -50,7 +50,7 @@
 # (no directories created, no network) — every write happens lazily inside a
 # cache_refresh*/cache_read call.
 
-# --- tuning knobs: ENV VARS only (no boards.conf axis here — the per-board
+# --- tuning settings: ENV VARS only (no boards.conf axis here — the per-board
 # `board.<N>.cache` enable/disable axis lives in board.sh, which is the sole
 # reader of boards.conf; cache.sh stays boards.conf-agnostic, only ever
 # governed by env vars and by whichever caller decides to source+call it)

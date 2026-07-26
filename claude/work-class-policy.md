@@ -1,9 +1,9 @@
 # Work-class taxonomy: Operational vs Foundational
 
-Every issue/epic processed by the autonomous funnel driver carries one of two <!-- cite: WC.1 incident:F#567 -->
+Every issue/epic processed by the autonomous pipeline driver carries one of two <!-- cite: WC.1 incident:F#567 -->
 **work-class labels**, which determines the driver's autonomy policy for that item.
 
-> **Canonical source:** `Decisions/foundation - Autonomous funnel driver + GitHub decision queue`
+> **Canonical source:** `Decisions/foundation - Autonomous pipeline driver + GitHub decision queue`
 > (vault note, sections "Work-class taxonomy" + "Settled policy details").
 
 ---

@@ -8,8 +8,8 @@ extraction). This is the contract the other two splits build on:
   dependency edges, and the close→Done cascade, for a board that has no
   Projects-v2 fields to stamp. See § Claim lock, § Parent/child and
   dependency edges, and § Close→Done cascade below.
-- **split 3/3 (funnel integration)** — wiring `funnel-tick.sh` /
-  `funnel-drive.sh` to drive an issues-only repo.
+- **split 3/3 (pipeline integration)** — wiring `pipeline-tick.sh` /
+  `pipeline-drive.sh` to drive an issues-only repo.
 
 Both consume the vocabulary and function-level interface below. **Do not
 invent a second label scheme or a second set of adapter functions** — extend
@@ -158,7 +158,7 @@ close). An **open** issue with no `fnd:status:*` label reads as unstatused
 
 Because an unstatused open issue reads as `.status = ""`, **`/triage`'s Backlog
 intake silently skips it** (Adapter A keeps only `.status == Backlog`), so a
-genuine defect can fall out of the funnel with no error (temperloop#376). The
+genuine defect can fall out of the pipeline with no error (temperloop#376). The
 capture path (`capture.sh` → `board_capture_item`) already stamps
 `fnd:status:backlog` on every issue it files — so the normal front door never
 produces one — but an issue reaching the tracker by any *other* route (a hand
@@ -189,7 +189,7 @@ convention, not a bug).
 Every adapter function a caller already uses works **unchanged** — same
 name, same signature, same return semantics — selected purely by
 `board_backend`. A consuming script (claim.sh, capture.sh, worklist.sh,
-board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
+board-mirror.sh, pipeline-tick.sh, …) needs **zero branching** on backend.
 
 | Function | Issues-only behavior |
 |---|---|
@@ -215,7 +215,7 @@ The item shape produced by the issues-only reshape:
 ```
 
 — identical keys to the Projects-v2 shape (`id`, `content.number/title/type`,
-flattened field values, **`labels`** — see § Funnel integration below — **and
+flattened field values, **`labels`** — see § Pipeline integration below — **and
 `milestone`** — see § Milestone read passthrough below),
 so every existing jq-based reader of `BOARD_ITEMS_JSON` works without
 modification. The `milestone` key is present only when the issue carries one
@@ -253,7 +253,7 @@ an unmilestoned one reads empty and carries no `.milestone` key).
   free — see § Parent/child and dependency edges) — see that section.
 - **No Seq ordering.** Retired by design, not deferred (ADR 0006) — see
   `board_set_number` above.
-- **No funnel wiring.** That's the funnel-integration split (3/3).
+- **No pipeline wiring.** That's the pipeline-integration split (3/3).
 
 ## Claim lock (Host/Session-equivalent, foundation #800)
 
@@ -402,7 +402,7 @@ read path specifically:
   LOOSER bound than the Projects-v2 90s figure it supersedes for this path,
   by deliberate design: the store trades a longer worst-case staleness
   window for a durable, cross-session, zero-GraphQL corpus cache serving a
-  fundamentally different consumer (a corpus renderer / funnel driver reading
+  fundamentally different consumer (a corpus renderer / pipeline driver reading
   "every issue", not a single board's live Status page).
 - **The always-live paths are unaffected regardless of this axis**:
   `board_resolve_item` (the claim lock) never reads through any cache on
@@ -414,20 +414,20 @@ read path specifically:
 
 Operationally: a consumer that wants a tighter bound than the 3600s default
 overrides `CACHE_STORE_TTL` (an env var, never a `boards.conf` key — see
-`CACHE-STORE.md`'s "Tuning knobs"), or simply doesn't source `lib/cache.sh`
+`CACHE-STORE.md`'s "Tuning settings"), or simply doesn't source `lib/cache.sh`
 and stays on the always-synchronous live-read arm.
 
-## Funnel integration (foundation #801, split 3/3)
+## Pipeline integration (foundation #801, split 3/3)
 
-The final split: wiring `funnel-tick.sh` to drive an issues-only repo, and
-proving it via a dual-adapter test suite. `funnel-tick.sh` itself needed
+The final split: wiring `pipeline-tick.sh` to drive an issues-only repo, and
+proving it via a dual-adapter test suite. `pipeline-tick.sh` itself needed
 **zero backend branching** — it already only ever touches `BOARD_ITEMS_JSON`
 through `board.sh`'s public accessors — but its Ready-item classification
-(`classify_item`, `needs_clarification`, `funnel_escalated`, `pending_merge`)
+(`classify_item`, `needs_clarification`, `pipeline_escalated`, `pending_merge`)
 reads a Ready item's **raw GitHub labels** directly (`spike`, `Foundational`,
 `needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — every one
 of them a PLAIN label, never `fnd:`-namespaced). That is the "D3 seam": the
-funnel's Ready-item read depends on `BOARD_ITEMS_JSON` carrying a `labels`
+pipeline's Ready-item read depends on `BOARD_ITEMS_JSON` carrying a `labels`
 key, not just `status`/`component`.
 
 **The gap split 1/3 left (now fixed).** The Projects-v2 path always had this
@@ -437,7 +437,7 @@ carries a top-level `labels` array for Issue content, and `board_item_list` /
 strip PR cards and control characters). The issues-only `issue_item()` jq
 def, by contrast, extracted ONLY the `fnd:`-prefixed labels into
 `status`/`component`/`host/Session` and silently dropped every other label —
-so a live funnel-tick against an issues-only board could never see `spike` /
+so a live pipeline-tick against an issues-only board could never see `spike` /
 `Foundational` / `needs-clarification`, and every Ready item would
 misclassify as a fresh Operational `kind:code` drive (worse: probing for an
 open PR via `gh pr list`, a step that must never fire in a SAFE-tier-only
@@ -448,12 +448,12 @@ too; harmless, since an equality check like `. == "spike"` never matches
 match for the Projects-v2 one on this key, the same way it already was for
 `status`/`component`/`host/Session`.
 
-**What "SAFE-TIER" means here.** funnel-drive.sh's rung-5b executor
+**What "SAFE-TIER" means here.** pipeline-drive.sh's level-5b executor
 auto-runs only route-*/drain-*/a `kind:spike` drive — never a merge
 (foundation #604's SAFE/MERGING tier split). A full safe-tier tick therefore
 never needs to open a PR, so proving it against an issues-only repo needs no
 merge-capable adapter surface at all — only the read path (`board_resolve` /
-`board_item_list`) plus the plain-REST reads `funnel-tick.sh` already made
+`board_item_list`) plus the plain-REST reads `pipeline-tick.sh` already made
 directly (`gh issue list --search …`, `gh issue view --json assignees`),
 which were already backend-agnostic (per-issue/per-search REST, no Projects
 call either way).
@@ -548,7 +548,7 @@ to memorize board 7:
 
 - `--repo kernel` — routes to board 7 outright (overrides `--board`). Use
   when the capture IS kernel-domain machinery (board adapter, build/sweep
-  spine, install/doctor, quality gates — the "stranger test" the routing
+  machinery, install/doctor, quality gates — the "stranger test" the routing
   rule names).
 - `--repo ambiguous` — routes to the SAME board 7, for the routing rule's
   **ambiguity clause**: "Ambiguous foundation-domain captures default to
@@ -593,7 +593,7 @@ Projects-v2 board to pin the cross-backend parity), `board_sub_issues`, and
 
 `workflows/scripts/board/tests/test_board_dual_adapter.sh` (registered as its
 own `make test-board-dual-adapter` gate — see `scripts/quality-gates.sh`) is
-the split-3/3 (#801) suite: it runs `funnel-tick.sh` LIVE (not
+the split-3/3 (#801) suite: it runs `pipeline-tick.sh` LIVE (not
 `--dry-run --fixture`, which bypasses `board.sh` entirely and so can never
 catch a reshape gap like the one above) against the SAME scenario twice — once
 with the board configured `backend=projects`, once `backend=issues` — and

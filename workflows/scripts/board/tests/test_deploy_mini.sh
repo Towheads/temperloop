@@ -99,7 +99,7 @@ echo "$out" | grep -q "not main" || fail "unmerged feature branch should report 
 # --- 3b. MERGED/contained feature branch → RECOVERED to main + ff (F#1098) ----
 # The failure this fixes: a checkout stranded on an already-merged branch (its tip
 # fully contained in origin/main) used to be skipped forever, silently blocking the
-# funnel's clean-on-main merge tier. It must now be switched back to main and pulled.
+# pipeline's clean-on-main merge tier. It must now be switched back to main and pulled.
 setup_repo featrecover yes; advance featrecover
 GIT -C "$WORK/featrecover" checkout -q -b feature/merged   # at c1, an ancestor of origin/main (c2)
 out="$(run "$WORK/featrecover")" || fail "merged-branch recovery run should exit 0"

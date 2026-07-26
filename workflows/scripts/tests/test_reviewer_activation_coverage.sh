@@ -41,8 +41,8 @@ pass() { echo "PASS: $1"; }
 [ -x "$RAC_SH" ] || fail "0: script not found or not executable at $RAC_SH"
 
 # Resolve the REAL REVIEWER_SCAN_MIN_FILES default from build.config.sh
-# (the knob's single source of truth) rather than hardcoding a literal here,
-# so this test tracks the knob if it's ever retuned.
+# (the setting's single source of truth) rather than hardcoding a literal here,
+# so this test tracks the setting if it's ever retuned.
 min_files="$(bash -c "source '$CONFIG_SH' >/dev/null 2>&1; echo \"\${REVIEWER_SCAN_MIN_FILES:-3}\"")"
 case "$min_files" in
   ''|*[!0-9]*) fail "0: could not resolve a numeric REVIEWER_SCAN_MIN_FILES (got '$min_files')" ;;

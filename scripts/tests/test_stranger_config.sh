@@ -8,13 +8,13 @@
 # adopter's kernel-only install can run this repo's pipeline with none of
 # Travis's org/repo/operator/vault literals baked in. This is the first test
 # that builds a FULL synthetic non-Towheads identity — fake owner/repo/project
-# number, non-default KNOWLEDGE_STORE_ROOT, non-default FUNNEL_OPERATOR /
-# FUNNEL_REQUIRED_CHECK — and drives every seam through it AT ONCE, proving the
+# number, non-default KNOWLEDGE_STORE_ROOT, non-default PIPELINE_OPERATOR /
+# PIPELINE_REQUIRED_CHECK — and drives every seam through it AT ONCE, proving the
 # seams compose rather than just each surviving its own single-axis unit test.
 #
-# Zero network, zero live `gh`/`claude` — every board/funnel-tick/funnel-drive
-# path below is either --dry-run or driven against a mocked FUNNEL_GH_BIN
-# double (the same test-injection idiom test_funnel_drive.sh already uses for
+# Zero network, zero live `gh`/`claude` — every board/pipeline-tick/pipeline-drive
+# path below is either --dry-run or driven against a mocked PIPELINE_GH_BIN
+# double (the same test-injection idiom test_pipeline_drive.sh already uses for
 # its #718 reconciliation-probe tests). Real $HOME, real ~/dev/mind, and real
 # ~/.claude are never read or written — every path below resolves under a
 # throwaway tmpdir standing in for a stranger's fresh $HOME/XDG layout.
@@ -22,28 +22,28 @@
 # Sections:
 #   A. sandbox setup — synthetic stranger identity (board 42 -> a fake
 #      owner/repo/project via boards.conf; fake $HOME/XDG; non-default
-#      KNOWLEDGE_STORE_ROOT/FUNNEL_OPERATOR/FUNNEL_REQUIRED_CHECK)
+#      KNOWLEDGE_STORE_ROOT/PIPELINE_OPERATOR/PIPELINE_REQUIRED_CHECK)
 #   B. regression baseline — the existing board suite (test_boards_conf.sh)
 #      and the existing knowledge_store suite (test_knowledge_store.sh) still
 #      pass, unmodified, run in a clean subshell with none of this file's
 #      stranger env leaked in (partial-conf coexistence, #770's guarantee)
 #   C. board.sh: board_repo/board_owner/board_project_number resolve the
 #      stranger identity for board 42, and built-in boards 3-6 are unaffected
-#   D. funnel-tick.sh --dry-run under the stranger config: every emitted
+#   D. pipeline-tick.sh --dry-run under the stranger config: every emitted
 #      action's repo is the stranger repo, drain-parse-miss reassigns the
 #      stranger operator, and the raw plan JSON carries no "Towheads" or
 #      "@towhead" literal
-#   E. funnel-drive.sh --dry-run tiering: the stranger repo passes through the
+#   E. pipeline-drive.sh --dry-run tiering: the stranger repo passes through the
 #      safe/merge tiering untouched, no Towheads substituted
-#   F. funnel-drive.sh's _board_repo mirror (the #718 reconciliation probe,
-#      exercised via a mocked FUNNEL_GH_BIN double — never live gh) resolves
+#   F. pipeline-drive.sh's _board_repo mirror (the #718 reconciliation probe,
+#      exercised via a mocked PIPELINE_GH_BIN double — never live gh) resolves
 #      board 42 to the stranger repo, not the built-in Towheads/stageFind
 #   G. knowledge_store.sh: ks_root/ks_write/ks_read/ks_list round-trip under
 #      a non-default KNOWLEDGE_STORE_ROOT, never touching the real vault
 #   H. knowledge_search.sh binds to the same ks_root (no independent corpus
 #      path) and its BM_HOME resolves under the stranger XDG_STATE_HOME
 #   I. build.config.sh: an exported stranger KNOWLEDGE_STORE_ROOT /
-#      FUNNEL_OPERATOR / FUNNEL_REQUIRED_CHECK survive sourcing (the `:=`
+#      PIPELINE_OPERATOR / PIPELINE_REQUIRED_CHECK survive sourcing (the `:=`
 #      idiom means the file's own foundation-specific defaults never win)
 
 set -uo pipefail
@@ -52,8 +52,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 BOARD_LIB="$REPO_ROOT/workflows/scripts/board/lib/board.sh"
-TICK="$REPO_ROOT/workflows/scripts/build/funnel-tick.sh"
-DRIVE="$REPO_ROOT/workflows/scripts/build/funnel-drive.sh"
+TICK="$REPO_ROOT/workflows/scripts/build/pipeline-tick.sh"
+DRIVE="$REPO_ROOT/workflows/scripts/build/pipeline-drive.sh"
 BUILD_CONFIG="$REPO_ROOT/workflows/scripts/build/build.config.sh"
 KS_LIB="$REPO_ROOT/workflows/scripts/lib/knowledge_store.sh"
 KS_SEARCH_LIB="$REPO_ROOT/workflows/scripts/lib/knowledge_search.sh"
@@ -73,19 +73,19 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/stranger-config-test-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # ── Hermeticity: neutralize any host-local build.config.local.sh (#1055) ─────
-# build.config.sh (sourced by funnel-tick.sh/funnel-drive.sh, and directly in
+# build.config.sh (sourced by pipeline-tick.sh/pipeline-drive.sh, and directly in
 # Section I) sources $BUILD_CONFIG_LOCAL when it exists — its documented test
 # seam. On a developer's PRIMARY checkout that sibling file is present and
-# hard-`export`s a real FUNNEL_OPERATOR (@towhead), which leaks past the injected
+# hard-`export`s a real PIPELINE_OPERATOR (@towhead), which leaks past the injected
 # STRANGER_OPERATOR and fails Section D's reassign assertion (`got towhead`). A
 # fresh checkout / CI has no such file and passes, so the break only surfaces
 # on a real dev machine. Point the seam at a guaranteed-absent path so no
 # host-local config is ever sourced, keeping the test hermetic regardless of the
-# running checkout. Exported so every subshell (the funnel-tick / build.config
+# running checkout. Exported so every subshell (the pipeline-tick / build.config
 # invocations below) inherits it.
 #
 # The same neutralization is applied to BUILD_CONFIG_MACHINE (build.config.sh
-# precedence rung 3, `$XDG_CONFIG_HOME/temperloop/build.config.sh`): a host that
+# precedence layer 3, `$XDG_CONFIG_HOME/temperloop/build.config.sh`): a host that
 # carries a machine-level build config would leak it identically, and a fresh
 # worktree / CI masks that just the same. One nonexistent-path sentinel per
 # seam; an absent file is a silent no-op (build.config.sh guards both with
@@ -163,7 +163,7 @@ get() { printf '%s\n' "$BOARD_OUT" | sed -n "s/^$1=//p"; }
 [ "$(get owner3)" = "Towheads" ] && ok "C: board_owner 3 still falls back unaffected" \
   || bad "C.owner3" "got $(get owner3)"
 
-echo "=== Section D: funnel-tick.sh --dry-run under the stranger config ==="
+echo "=== Section D: pipeline-tick.sh --dry-run under the stranger config ==="
 
 FX="$WORK/fixture"
 mkdir -p "$FX/board-42"
@@ -179,13 +179,13 @@ echo 0 > "$FX/board-42/assignees-9002.txt"
 TICK_PLAN="$(
   BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf" \
   BOARDS_CONF_MACHINE="$NO_MACHINE_CONF" \
-  FUNNEL_ENABLED_BOARDS=42 \
-  FUNNEL_OPERATOR="$STRANGER_OPERATOR" \
+  PIPELINE_ENABLED_BOARDS=42 \
+  PIPELINE_OPERATOR="$STRANGER_OPERATOR" \
   bash "$TICK" --dry-run --fixture "$FX" --board 42
 )"
 
 if [ -z "$TICK_PLAN" ] || ! jq -e . >/dev/null 2>&1 <<<"$TICK_PLAN"; then
-  bad "D.parse" "funnel-tick.sh did not emit valid JSON: $TICK_PLAN"
+  bad "D.parse" "pipeline-tick.sh did not emit valid JSON: $TICK_PLAN"
 else
   [ "$(jq -r '.dry_run' <<<"$TICK_PLAN")" = "true" ] && ok "D: dry_run flag set" \
     || bad "D.dry_run" "got $(jq -r '.dry_run' <<<"$TICK_PLAN")"
@@ -199,10 +199,10 @@ else
 
   MISS="$(jq -c 'first(.actions[] | select(.action=="drain-parse-miss"))' <<<"$TICK_PLAN")"
   [ -n "$MISS" ] && [ "$MISS" != "null" ] && ok "D: drain-parse-miss produced" || bad "D.miss" "no drain-parse-miss action: $TICK_PLAN"
-  # reassign_to is the BARE login — the leading `@` of FUNNEL_OPERATOR is stripped
+  # reassign_to is the BARE login — the leading `@` of PIPELINE_OPERATOR is stripped
   # for the `--add-assignee` target (foundation #977); the `@` is kept only for
   # mention/config-resolution (asserted separately below on the build.config.sh output).
-  [ "$(jq -r '.reassign_to' <<<"$MISS")" = "${STRANGER_OPERATOR#@}" ] && ok "D: parse-miss reassigns the stranger FUNNEL_OPERATOR (bared, #977)" \
+  [ "$(jq -r '.reassign_to' <<<"$MISS")" = "${STRANGER_OPERATOR#@}" ] && ok "D: parse-miss reassigns the stranger PIPELINE_OPERATOR (bared, #977)" \
     || bad "D.reassign" "got $(jq -r '.reassign_to // "MISSING"' <<<"$MISS")"
 
   DRIVE_ACT="$(jq -c 'first(.actions[] | select(.action=="drive-ready"))' <<<"$TICK_PLAN")"
@@ -221,17 +221,17 @@ else
   fi
 fi
 
-echo "=== Section E: funnel-drive.sh --dry-run tiering carries the stranger repo through ==="
+echo "=== Section E: pipeline-drive.sh --dry-run tiering carries the stranger repo through ==="
 
 STRANGER_TIER_PLAN="$(jq -cn --arg r "$STRANGER_REPO" '[{"tick":"done","actions":[
   {"phase":"drain","action":"drain-answer","board":"42","repo":$r,"issue":9002,"chosen":"chosen-x"},
   {"phase":"drive","action":"drive-ready","board":"42","repo":$r,"issue":9003,"kind":"spike","emit":"/assess"}
 ]}]')"
 
-DRIVE_DRY_OUT="$(printf '%s' "$STRANGER_TIER_PLAN" | env FUNNEL_GH_BIN="/usr/bin/false" bash "$DRIVE" --dry-run)"
+DRIVE_DRY_OUT="$(printf '%s' "$STRANGER_TIER_PLAN" | env PIPELINE_GH_BIN="/usr/bin/false" bash "$DRIVE" --dry-run)"
 
 if [ -z "$DRIVE_DRY_OUT" ] || ! jq -e . >/dev/null 2>&1 <<<"$DRIVE_DRY_OUT"; then
-  bad "E.parse" "funnel-drive.sh --dry-run did not emit valid JSON: $DRIVE_DRY_OUT"
+  bad "E.parse" "pipeline-drive.sh --dry-run did not emit valid JSON: $DRIVE_DRY_OUT"
 else
   [ "$(jq -r '.status' <<<"$DRIVE_DRY_OUT")" = "dry-run" ] && ok "E: status=dry-run (no claude spawn)" \
     || bad "E.status" "got $(jq -r '.status' <<<"$DRIVE_DRY_OUT")"
@@ -246,14 +246,14 @@ else
   fi
 fi
 
-echo "=== Section F: funnel-drive.sh's _board_repo mirror (mocked gh, #718 reconcile probe) ==="
+echo "=== Section F: pipeline-drive.sh's _board_repo mirror (mocked gh, #718 reconcile probe) ==="
 
 # A single kind:code drive so n_safe=0 (code never lands in the safe tier) and,
-# with FUNNEL_DRIVE_MERGE left at its default-off, do_merge=0 too -> the
+# with PIPELINE_DRIVE_MERGE left at its default-off, do_merge=0 too -> the
 # "empty" fast path runs _reconcile_pending, which is the ONE place
-# funnel-drive.sh's own _board_repo mirror actually resolves a repo (dry-run
+# pipeline-drive.sh's own _board_repo mirror actually resolves a repo (dry-run
 # skips reconciliation entirely, so this mocked-gh live-but-offline path is
-# how the mirror itself gets exercised, per test_funnel_drive.sh's existing
+# how the mirror itself gets exercised, per test_pipeline_drive.sh's existing
 # #718 test idiom — never real gh, never network).
 CODE_PLAN='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"42","repo":"whatever/ignored","issue":9010,"kind":"code","emit":"/build"}]}]'
@@ -274,7 +274,7 @@ chmod +x "$GH_DOUBLE"
 
 RECONCILE_OUT="$(
   printf '%s' "$CODE_PLAN" | env \
-    FUNNEL_GH_BIN="$GH_DOUBLE" CAP_DIR="$CAP" \
+    PIPELINE_GH_BIN="$GH_DOUBLE" CAP_DIR="$CAP" \
     BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf" BOARDS_CONF_MACHINE="$NO_MACHINE_CONF" \
     GH_PENDING_JSON='[{"number":9010,"state":"CLOSED"}]' \
     bash "$DRIVE"
@@ -357,19 +357,19 @@ echo "=== Section I: build.config.sh — stranger overrides win over its own fou
 BUILD_CFG_OUT="$(
   BUILD_CONFIG_LOCAL="$WORK/no-such-local.sh" \
   KNOWLEDGE_STORE_ROOT="$STRANGER_KS_ROOT" \
-  FUNNEL_OPERATOR="$STRANGER_OPERATOR" \
-  FUNNEL_REQUIRED_CHECK="$STRANGER_CHECK" \
-  bash -c '. "$1"; printf "root=%s\nop=%s\ncheck=%s\n" "$KNOWLEDGE_STORE_ROOT" "$FUNNEL_OPERATOR" "$FUNNEL_REQUIRED_CHECK"' _ "$BUILD_CONFIG"
+  PIPELINE_OPERATOR="$STRANGER_OPERATOR" \
+  PIPELINE_REQUIRED_CHECK="$STRANGER_CHECK" \
+  bash -c '. "$1"; printf "root=%s\nop=%s\ncheck=%s\n" "$KNOWLEDGE_STORE_ROOT" "$PIPELINE_OPERATOR" "$PIPELINE_REQUIRED_CHECK"' _ "$BUILD_CONFIG"
 )"
 
 printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "root=$STRANGER_KS_ROOT" \
   && ok "I: KNOWLEDGE_STORE_ROOT override survives build.config.sh (not overwritten to \$HOME/dev/mind)" \
   || bad "I.root" "got: $BUILD_CFG_OUT"
 printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "op=$STRANGER_OPERATOR" \
-  && ok "I: FUNNEL_OPERATOR override survives build.config.sh (not overwritten to @towhead)" \
+  && ok "I: PIPELINE_OPERATOR override survives build.config.sh (not overwritten to @towhead)" \
   || bad "I.op" "got: $BUILD_CFG_OUT"
 printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "check=$STRANGER_CHECK" \
-  && ok "I: FUNNEL_REQUIRED_CHECK override survives build.config.sh" \
+  && ok "I: PIPELINE_REQUIRED_CHECK override survives build.config.sh" \
   || bad "I.check" "got: $BUILD_CFG_OUT"
 
 echo

@@ -16,7 +16,7 @@ interface into scope. It sets no shell options; the sourcing script owns
 ## Configuration
 
 Exactly one environment variable selects the store root, and one selects the
-backend. There is no second path knob — every operation resolves its target
+backend. There is no second path setting — every operation resolves its target
 location through `ks_root` (directly or via a backend's own call to it).
 
 | Variable | Default | Meaning |
@@ -202,9 +202,9 @@ for the established base-URL/auth/TLS conventions this backend reuses
 verbatim, rather than inventing new plumbing).
 
 **Root mapping: the vault itself is the root, not `KNOWLEDGE_STORE_ROOT`.**
-This is the one deliberate deviation from the "ONE knob for the root"
+This is the one deliberate deviation from the "ONE setting for the root"
 framing at the top of this file — `KNOWLEDGE_STORE_ROOT` is a *filesystem*
-path knob and is simply not consulted by this backend. A normalized
+path setting and is simply not consulted by this backend. A normalized
 `doc-id` (e.g. `Decisions/foo.md`) is used directly as the REST API's
 vault-relative path (`/vault/Decisions/foo.md`); `ks_root` still resolves
 to its filesystem default/override but that value is meaningless for this
@@ -213,7 +213,7 @@ sub-vault "store root" concept — every doc-id addresses a path relative to
 the vault's own root.
 
 Additional config, specific to this backend (beyond the two universal
-knobs):
+settings):
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -390,7 +390,7 @@ shape, fields joined by `" · "`:
   `knowledge_search.sh`. The agent-plane read-telemetry hook
   (`claude/hooks/ks-agent-read-log.sh`, temperloop#236) calls the SAME
   `ks__read_log_emit` function with `plane=agent` rather than getting a new
-  knob.
+  setting.
 - `op` — `read` | `write` | `append` | `list` | `search` | `sync` (the
   optional sync capability's dispatches, temperloop#430 — its
   `doc-path-or-query` field carries the sub-op, e.g. `push`), plus `other` from
@@ -418,7 +418,7 @@ that appends the same-format line for a knowledge-store MCP tool call. Which
 (space-separated `case`-glob patterns, defined right next to
 `KNOWLEDGE_STORE_BACKEND` in this file) — today `mcp__obsidian*
 mcp__obsidian-builtin*`; enabling a future `mcp__basic-memory__*` transport
-at the `mcp__obsidian__*` EOL cutover is a one-line edit to that knob, no
+at the `mcp__obsidian__*` EOL cutover is a one-line edit to that setting, no
 hook change. The hook sources this file (`knowledge_store.sh`) to resolve
 both that matcher list and `ks__read_log_emit` itself; on a checkout where
 this file isn't reachable (no knowledge-store config at all) the hook is
@@ -448,7 +448,7 @@ shell library — `source knowledge_search.sh` after `source knowledge_store.sh`
 (it calls `ks_root`, so `knowledge_store.sh` must already be sourced). It
 sets no shell options of its own.
 
-### Corpus binding — no independent path knob
+### Corpus binding — no independent path setting
 
 `ks_search`'s corpus is **always** the store's resolved root, `ks_root`
 (defined by `knowledge_store.sh`). There is no `KNOWLEDGE_SEARCH_ROOT` or

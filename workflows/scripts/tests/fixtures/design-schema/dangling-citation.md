@@ -11,5 +11,5 @@ DANGLING-CITATION failure this lint exists to catch.
 
 | # | Dimension | What it answers | Enforcing gate |
 |---|---|---|---|
-| 1 | **Fixture dimension one** | Fixture question one. | `workflows/scripts/validate-live-drain.sh` — a real, tracked path; must resolve clean. |
+| 1 | **Fixture dimension one** | Fixture question one. | `workflows/scripts/validate-capture-backstop.sh` — a real, tracked path; must resolve clean. |
 | 2 | **Fixture dimension two** | Fixture question two. | `workflows/scripts/validate-nonexistent-thing.sh` — deliberately fake; must fail as DANGLING-CITATION. |

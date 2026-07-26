@@ -23,7 +23,7 @@
 #      checkout (this repo) ships no overlay, so this check is parameterized
 #      over an overlay path (MESSAGE_SCHEMA_OVERLAY, default
 #      claude/message-schema.overlay.md — the natural sibling of the
-#      existing claude/live-drain-registry.overlay.md pattern) that is
+#      existing claude/capture-backstop-registry.overlay.md pattern) that is
 #      typically ABSENT here: absent -> zero overrides to check -> trivial
 #      pass, not an error. When a downstream composed checkout ships that
 #      file, this check activates automatically.
@@ -36,12 +36,12 @@
 #      numeric range like "2-3", both of which name non-heading targets this
 #      script does not attempt to resolve) must resolve to a heading or
 #      bold-label anchor in the file it follows — the same anchor_present
-#      contract validate-live-drain.sh already uses for the Live/Drain
+#      contract validate-capture-backstop.sh already uses for the Capture/Backstop
 #      registry, applied here to presentation-plane.md's registry instead.
-#      This is the "live-drain-validator mold" the acceptance criteria name.
+#      This is the "capture-backstop-validator mold" the acceptance criteria name.
 #
 # Kept POSIX-bash-3.2 friendly (no mapfile/associative arrays) so it runs on
-# the macOS dev shell as well as Linux CI, matching validate-live-drain.sh's
+# the macOS dev shell as well as Linux CI, matching validate-capture-backstop.sh's
 # own portability contract.
 #
 # Usage: workflows/scripts/validate-template-refs.sh   (resolves the repo itself)
@@ -70,7 +70,7 @@ done
 
 # anchor_present <file> <anchor> -> 0 if the anchor appears in the file as a
 # markdown heading ("## Anchor...") or a bold label ("**Anchor"). Identical
-# contract to validate-live-drain.sh's own anchor_present, reused here so the
+# contract to validate-capture-backstop.sh's own anchor_present, reused here so the
 # two registry validators agree on what "resolvable" means.
 anchor_present() {
   local file="$1" anchor="$2"
@@ -242,7 +242,7 @@ while IFS= read -r row; do
     # skipped, per this script's header.
     # SC2016: the backticks in the regex are literal (match `...` spans), not
     # a command substitution — single quotes are intentional (same rationale
-    # as validate-live-drain.sh's tokens() helper).
+    # as validate-capture-backstop.sh's tokens() helper).
     # shellcheck disable=SC2016
     seg_files="$(printf '%s' "$seg" | grep -oE '`[^`]*/[^`]*`' | tr -d '`' || true)"
     last_file=""

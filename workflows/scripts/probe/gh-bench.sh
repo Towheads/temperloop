@@ -131,11 +131,11 @@ _run_section() {
     resolve_item) for i in $ISSUES; do board_resolve_item "$board" "$i" >/dev/null 2>&1 || true; done ;;
     worklist)     "$HERE/../board/worklist.sh" --board "$board" --all >/dev/null 2>&1 || true ;;
     reconcile_status) "$HERE/../board/reconcile.sh" --board "$board" --status >/dev/null 2>&1 || true ;;
-    funnel_read_emu)
-      # emulate funnel-tick's read fan-out: two label searches + a per-issue view
-      GH_CALL_OP="bench:funnel_emu" gh issue list --repo "$REPO" --search "label:fnd:status:in-progress" --limit 20 >/dev/null 2>&1 || true
-      GH_CALL_OP="bench:funnel_emu" gh issue list --repo "$REPO" --search "is:open" --limit 20 >/dev/null 2>&1 || true
-      for i in $ISSUES; do GH_CALL_OP="bench:funnel_emu" gh issue view "$i" --repo "$REPO" --json number,labels,state >/dev/null 2>&1 || true; done
+    pipeline_read_emu)
+      # emulate pipeline-tick's read fan-out: two label searches + a per-issue view
+      GH_CALL_OP="bench:pipeline_emu" gh issue list --repo "$REPO" --search "label:fnd:status:in-progress" --limit 20 >/dev/null 2>&1 || true
+      GH_CALL_OP="bench:pipeline_emu" gh issue list --repo "$REPO" --search "is:open" --limit 20 >/dev/null 2>&1 || true
+      for i in $ISSUES; do GH_CALL_OP="bench:pipeline_emu" gh issue view "$i" --repo "$REPO" --json number,labels,state >/dev/null 2>&1 || true; done
       ;;
     rel_loop)     for i in $ISSUES; do board_blocked_by_open "$board" "$i" >/dev/null 2>&1 || true; board_sub_issues "$board" "$i" >/dev/null 2>&1 || true; done ;;
     mutation_noop)
@@ -154,7 +154,7 @@ case "$mode" in
   warm) SECTIONS="resolve_warm" ;;
   both) SECTIONS="resolve_cold resolve_warm" ;;
 esac
-SECTIONS="$SECTIONS item_list resolve_item worklist reconcile_status funnel_read_emu rel_loop"
+SECTIONS="$SECTIONS item_list resolve_item worklist reconcile_status pipeline_read_emu rel_loop"
 [ "$with_mutations" -eq 1 ] && SECTIONS="$SECTIONS mutation_noop"
 
 # --- run --------------------------------------------------------------------

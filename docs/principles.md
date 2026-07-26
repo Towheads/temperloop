@@ -60,8 +60,8 @@ Projects provisioning) is a **cross-session lock**, not a status display.
 Claiming an item — marking it In Progress and stamping the owning
 session — is the first action before investigation even starts, because
 investigation itself is duplicate-able work the lock is meant to prevent.
-On the autonomous lane, the funnel's drive-concurrency governor
-(`FUNNEL_DRIVE_CONCURRENCY`) bounds how many drives a tick launches; the
+On the autonomous lane, the pipeline's drive-concurrency governor
+(`PIPELINE_DRIVE_CONCURRENCY`) bounds how many drives a tick launches; the
 human WIP-cap governance rule was retired (temperloop#162) once it proved to
 double a mechanical governor as a cross-session bound the claim-first lock
 already provides per item.
@@ -127,8 +127,8 @@ guess at what might leak.
   "adapter-first" habit — both described as backstops, not replacements,
   in `claude/CLAUDE.kernel.md` §§ "Fetch ground truth before building" and
   "GitHub Projects boards"
-- The hardest rung — a CI-enforced invariant that fails the build outright:
-  `workflows/scripts/validate-live-drain.sh`
+- The hardest layer — a CI-enforced invariant that fails the build outright:
+  `workflows/scripts/validate-capture-backstop.sh`
 
 ### 6. Automate the reversible; human-gate the irreversible
 
@@ -217,10 +217,10 @@ summary that might never happen. Every such live capture rule ships with a
 paired backstop in the nightly drain, and a registry check fails the build
 if either half of a pair ships without the other.
 
-- The live/drain pairing rule and its registry table:
-  `claude/commands/tidy.md` (the "Live/Drain pairings" table)
+- The capture/backstop pairing rule and its registry table:
+  `claude/commands/tidy.md` (the "Capture/Backstop pairings" table)
 - The CI check that fails on a half-shipped pair:
-  `workflows/scripts/validate-live-drain.sh`
+  `workflows/scripts/validate-capture-backstop.sh`
 
 ### 13. The stranger test
 

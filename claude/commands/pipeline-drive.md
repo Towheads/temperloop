@@ -1,23 +1,23 @@
 ---
-description: Rung-5b EXECUTOR of the autonomous funnel driver. Headless (`claude -p`) layer that executes the SAFE, no-merge tier of a funnel tick plan — route-foundational, drain-answer, drain-parse-miss, drain-clarification, retro-judge, and kind:spike drives — by invoking the real pipeline commands. STRUCTURALLY cannot merge: it is handed only the pre-filtered safe actions and is forbidden to open PRs, merge, or drive a kind:code item. Spawned by funnel-drive.sh; the merging tier waits for rung 5c.
-argument-hint: "<payload-file>  (a JSON file: {rung, hard_rules, actions[]} written by funnel-drive.sh)"
+description: Level 5b EXECUTOR of the autonomous pipeline driver. Headless (`claude -p`) layer that executes the SAFE, no-merge tier of a pipeline tick plan — route-foundational, drain-answer, drain-parse-miss, drain-clarification, retro-judge, and kind:spike drives — by invoking the real pipeline commands. STRUCTURALLY cannot merge: it is handed only the pre-filtered safe actions and is forbidden to open PRs, merge, or drive a kind:code item. Spawned by pipeline-drive.sh; the merging tier waits for level 5c.
+argument-hint: "<payload-file>  (a JSON file: {layer, hard_rules, actions[]} written by pipeline-drive.sh)"
 ---
 
-You are running the **funnel-drive** command — the **rung-5b executor** of the
-autonomous funnel driver. `funnel-tick.sh` decided a tick plan; `funnel-drive.sh`
+You are running the **pipeline-drive** command — the **level-5b executor** of the
+autonomous pipeline driver. `pipeline-tick.sh` decided a tick plan; `pipeline-drive.sh`
 filtered it to the **SAFE, no-merge tier** and is invoking you headlessly to
 **execute those actions** by calling the existing pipeline commands. You are the
 "Claude driver layer" the tick header names: the scheduler decided *what*; you run
 *how*, re-implementing nothing.
 
-This is the FIRST supervised step toward autonomy. Rung 5a only emitted + notified
+This is the FIRST supervised step toward autonomy. Level 5a only emitted + notified
 and the operator executed by hand; 5b auto-executes — but ONLY actions that can
 never merge code. See
-[[Decisions/foundation - Funnel rung 5b: headless safe-actions-only auto-drive]].
+[[Decisions/foundation - Pipeline level 5b: headless safe-actions-only auto-drive]].
 
 ## HARD RULES — read first, they override everything below
 
-1. **NEVER open a pull request.** Not for any action, ever. <!-- cite: FD.1 guard:workflows/scripts/build/funnel-drive.sh -->
+1. **NEVER open a pull request.** Not for any action, ever. <!-- cite: FD.1 guard:workflows/scripts/build/pipeline-drive.sh -->
 2. **NEVER merge anything.** No `gh pr merge`, no enqueue, no auto-merge arm.
 3. **NEVER drive a `kind:code` item.** Only `kind:spike` drive-ready actions are
    permitted here (a spike opens no PR — build.md's kind:spike path writes a
@@ -34,7 +34,7 @@ never merge code. See
    Still pass `--board <board>` to pipeline commands and `--repo <repo>`/`-R <repo>` to
    `gh` calls for the action's own `board`/`repo`; never act on another board.
 
-The payload `funnel-drive.sh` hands you has already filtered out the merging tier
+The payload `pipeline-drive.sh` hands you has already filtered out the merging tier
 and every no-op-ish record; these rules are the second, independent guard. If
 anything in the payload contradicts them, the rules win — skip and record it.
 
@@ -43,7 +43,7 @@ anything in the payload contradicts them, the rules win — skip and record it.
 Your argument (`$ARGUMENTS`) is a path to a JSON file. Read it. Shape:
 
 ```json
-{ "rung": "5b",
+{ "layer": "5b",
   "hard_rules": [ … ],          // the in-band restatement of the rules above
   "actions": [ { "action": "...", "board": "...", "repo": "...", "issue": N, … }, … ] }
 ```
@@ -92,7 +92,7 @@ as such in its bullet below.)
 
 - (`route-needs-input` was retired in #684 — `needs-clarification` producers
   (`/triage`, `/sweep` park-on-question, the 5c refusal escalation) now assign the
-  operator + surface the question AT SOURCE, so the funnel-tick router only PARKS
+  operator + surface the question AT SOURCE, so the pipeline-tick router only PARKS
   such items as `route-already-assigned` (a no-op the executor drops). The executor
   therefore never receives a `route-needs-input` action; there is nothing to handle.)
 
@@ -106,16 +106,16 @@ as such in its bullet below.)
   the #951 every-tick spin. **Do NOT run `/assess`.** Record this action as
   `status: "refused"` with a one-line `note` naming the existing plan and its status
   (e.g. `already-prepped: Plans/… is executing — parked for operator resume`) and move
-  on; `funnel-drive.sh` routes a refused route-foundational to the operator's decision
+  on; `pipeline-drive.sh` routes a refused route-foundational to the operator's decision
   queue so it stops re-firing. Otherwise (no plan, or a `draft`), **prep then gate**:
   run `/assess --epic <issue> --board <board> --no-poll` to
   decompose/draft the plan note (draft only — `/assess` never approves), then route
   the design + plan-approval to the decision queue via build.md's decision-issue
   backend (post the gate comment, apply the `decision` label, assign
   `.reassign_to`, park). **`--no-poll` is required:** this action runs operator-absent
-  (the safe tier spawns with `FUNNEL_OPERATOR_ABSENT=1`, #329), and without it
+  (the safe tier spawns with `PIPELINE_OPERATOR_ABSENT=1`, #329), and without it
   `/assess`'s own Step 6 poll would *also* post a decision issue on the epic —
-  funnel-drive owns the *single* decision-queue routing, so `/assess` must stop after
+  pipeline-drive owns the *single* decision-queue routing, so `/assess` must stop after
   its Step 5 draft. You are preparing and routing for the operator — you are
   **not** approving the plan or building it.
 
@@ -138,9 +138,9 @@ as such in its bullet below.)
   are load-bearing**:
   1. `gh issue edit <n> -R <repo> --remove-label needs-clarification`.
   2. **Only if step 1 succeeded**, post the idempotency ack `gh issue comment <n> -R
-     <repo> --body "<!-- funnel:clarification-drained --> Clarified (funnel): operator
+     <repo> --body "<!-- funnel:clarification-drained --> Clarified (pipeline): operator
      answer consumed — released to drive."` The `<!-- funnel:clarification-drained -->`
-     sentinel is what funnel-tick's `clarification_already_applied` guard reads to skip
+     sentinel is what pipeline-tick's `clarification_already_applied` guard reads to skip
      a re-listed item before the label drop propagates through the search index.
 
   **Do NOT post the ack if the label removal failed.** If you did, the marker would <!-- cite: FD.4 incident:F#657 -->
@@ -156,7 +156,7 @@ as such in its bullet below.)
   merge nothing.
 
 - **`retro-judge`** — the KERNEL trigger half of the mint-then-judge design (epic
-  #528, temperloop#535). `funnel-tick.sh` emitted this because at least one
+  #528, temperloop#535). `pipeline-tick.sh` emitted this because at least one
   `retro-pending` tracker (build.md 4d-retro's mint, #533) is due — urgent, or past
   the `RETRO_MIN_INTERVAL` debounce. `/retro` is an **OVERLAY** command (not part
   of this kernel checkout), so this is a **direct nested spawn**, not a
@@ -215,11 +215,11 @@ action's purpose): you may keep `executed` but MUST record the degraded write in
 
 ## Step 3 — Emit the summary
 
-Print exactly one JSON object on stdout (this is your return value — `funnel-drive.sh`
+Print exactly one JSON object on stdout (this is your return value — `pipeline-drive.sh`
 folds it into the wake record; it is not a human-facing message):
 
 ```json
-{ "driver": "funnel-drive", "rung": "5b",
+{ "driver": "pipeline-drive", "layer": "5b",
   "executed": <count>, "failed": <count>, "refused": <count>,
   "results": [ { "action": "...", "issue": N, "board": "...",
                  "status": "executed|failed|refused", "note": "<one line>" }, … ] }

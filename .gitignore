@@ -1,6 +1,6 @@
 .DS_Store
 /Makefile.local
-# Host-local funnel/build override + secrets (#709): sourced by build.config.sh
+# Host-local pipeline/build override + secrets (#709): sourced by build.config.sh
 # if present, gitignored so credentials (e.g. SENTRY_* for /signal-intake) never
 # commit. Template: workflows/scripts/build/build.config.local.sh.example.
 /workflows/scripts/build/build.config.local.sh
@@ -26,7 +26,7 @@ meta/data/*
 # The raw-lake sink-spec stub (kernel #29) IS committed — it's the doc the
 # emit-site headers point at, not a generated/host-local artifact — while
 # every actual raw-lake data file (command-runs-*.jsonl, issue-touches-*.jsonl,
-# claims-*.jsonl, funnel-*.jsonl) under meta/data/raw/ stays gitignored, same
+# claims-*.jsonl, pipeline-*.jsonl) under meta/data/raw/ stays gitignored, same
 # nested-negation shape as the docs/_site/.gitkeep precedent below.
 !meta/data/raw/
 meta/data/raw/*
@@ -40,8 +40,8 @@ workflows/scripts/docs/_site/*
 !workflows/scripts/docs/_site/.gitkeep
 mind_snapshot/
 __pycache__/
-# Build-spine dev-local artifacts (#529): the per-item verification surface a
-# /build worker writes, and the write-jail marker. Never committed — the spine
+# Build-machinery dev-local artifacts (#529): the per-item verification surface a
+# /build worker writes, and the write-jail marker. Never committed — the machinery
 # keeps them out via .git/info/exclude (worktree.sh exclude_marker); listing them
 # here is the committed, self-documenting belt for non-build clones.
 .build-verification.md

@@ -22,7 +22,7 @@ figures, derivations, and provenance for every claim.
   itself, not just printed advice.
 - **Past onboarding, there is no dollar ceiling by default.** Ordinary
   interactive work (`/triage`, `/assess`, `/build`, `/sweep`) and the
-  unattended funnel driver have no fixed cost or cap — your own Claude Code
+  unattended pipeline driver have no fixed cost or cap — your own Claude Code
   usage view is the source of truth. The only built-in throttle is a
   **usage-quota** gate (pauses when your plan's 5-hour rolling window runs
   low), not a **dollar** one.
@@ -38,14 +38,14 @@ figures, derivations, and provenance for every claim.
   and decision-capture that temperloop adds are *designed* to make the
   expensive mistakes cheaper — see § Why the overhead is supposed to save
   money for the cost/benefit argument.
-- **Autonomy is off by default.** The unattended tiers (`FUNNEL_DRIVE`,
-  `FUNNEL_DRIVE_MERGE`) don't run until you flip them on. Once on: a safe
+- **Autonomy is off by default.** The unattended tiers (`PIPELINE_DRIVE`,
+  `PIPELINE_DRIVE_MERGE`) don't run until you flip them on. Once on: a safe
   tier can route/apply/clear/spike but is structurally incapable of
   merging code; a merge tier can auto-merge a clean, disjoint, low-risk
   change set after a timed window, but a structurally risky set is
   **always** a modal human approval — never a timeout.
 - **Maintenance is a small, roughly fixed floor — on the order of ~0.5M
-  tokens/day.** Nightly `/tidy`, daily `/check-in`, and the funnel ticks
+  tokens/day.** Nightly `/tidy`, daily `/check-in`, and the pipeline ticks
   (which cost **≈$0 of Claude when they drive nothing**) are the recurring
   "keep-the-lights-on" spend; on-demand `/build`/`/sweep` work scales with
   what you actually ask for — see § Maintenance vs. on-demand build spend.
@@ -72,9 +72,9 @@ is.**
 | `try --demo` — per issue→PR tick | 9K–74K | $0.05–$0.40 | $0.08–$0.67 | **$2.00/tick** ✅ (flag) |
 | `configure` — per config value judged | up to ~83K † | ≤ $0.25 | ≤ $0.25 † | **$0.25/call** ✅ |
 | `/tidy` — nightly drain | 0.3–0.5M | ~$1.48 | ~$2.47 | none |
-| `/check-in` — daily ritual | ~0.1–0.3M ‡ | ~$0.30–$0.90 ‡ | ~$0.50–$1.50 ‡ | none |
-| Funnel tick — **idle** (drives nothing) | ~0 Claude | **~$0** | **~$0** | per-tick item cap |
-| Funnel tick — **driving** | scales w/ actions | proportional | ~1.67× the Sonnet cost | per-tick item cap |
+| `/check-in` — daily check-in | ~0.1–0.3M ‡ | ~$0.30–$0.90 ‡ | ~$0.50–$1.50 ‡ | none |
+| Pipeline tick — **idle** (drives nothing) | ~0 Claude | **~$0** | **~$0** | per-tick item cap |
+| Pipeline tick — **driving** | scales w/ actions | proportional | ~1.67× the Sonnet cost | per-tick item cap |
 | `/triage` · `/assess` · `/build` · `/sweep` | scales w/ the work | no fixed figure | no fixed figure | none by default |
 
 ✅ = a hard USD cap **enforced by the tool**, not printed advice. The cap is
@@ -164,7 +164,7 @@ basis, ≈50,000 at Opus rates, mostly input). That's the cheap end; a full
 `/build` level driving several PRs through CI is materially more, bounded
 only by how much work you asked for.
 
-**Tier 3 — unattended (the autonomous funnel driver, nightly `/tidy`, any
+**Tier 3 — unattended (the autonomous pipeline driver, nightly `/tidy`, any
 `claude -p` cron invocation).** These run without you watching, so they're
 the tier most worth having a real number for. One concrete data point: a
 real headless `/tidy` invocation — a full nightly drain pass over a
@@ -173,12 +173,12 @@ session-stub backlog — was hand-observed at **$1.48** for that one run
 at Opus rates; the range reflects the same directional uncertainty as the
 dollar figure). This repo doesn't yet emit a per-run dollar-cost log a
 reader could check themselves
-([`meta/data/raw/`](../meta/data/raw/README.md) tracks command/issue/funnel
+([`meta/data/raw/`](../meta/data/raw/README.md) tracks command/issue/pipeline
 *events*, not spend), so treat this as a real but single, unlogged data
 point, not a guaranteed average — cost scales with backlog size like any
-other tier. The autonomous funnel driver adds its own per-tick spend on top
+other tier. The autonomous pipeline driver adds its own per-tick spend on top
 of ordinary interactive use, proportional to how many actions it was handed
-that tick ([`docs/features/funnel-driver.md`](features/funnel-driver.md)
+that tick ([`docs/features/pipeline-driver.md`](features/pipeline-driver.md)
 § Resource impact) — the per-tick item cap (below) is the direct lever on
 how large that can get. A tick that drives **nothing** costs essentially
 nothing in Claude spend — see § Maintenance vs. on-demand build spend.
@@ -246,7 +246,7 @@ ROI:
   (see [`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Decision
   capture) are recalled, not re-derived — turning a recurring per-session
   cost into a one-time write.
-- **Alignment with original intent is the whole point.** The funnel keeps a
+- **Alignment with original intent is the whole point.** The pipeline keeps a
   unit tied to its issue, its contract, and its verification surface from
   intake to merge, so what lands is what was asked for. The most expensive
   failure mode in any AI-assisted pipeline is confidently shipping the wrong
@@ -263,14 +263,14 @@ spirit as the cost figures above.
 ### Maintenance vs. on-demand build spend — how much is upkeep?
 
 A natural follow-up: of everything above, how much is **maintenance** — the
-recurring background/ritual commands (nightly `/tidy`, daily `/check-in`,
-funnel ticks) — as opposed to **on-demand build work** that scales with
+recurring background commands (nightly `/tidy`, daily `/check-in`,
+pipeline ticks) — as opposed to **on-demand build work** that scales with
 what you actually ask `/build`/`/sweep` to do?
 
 **What's actually measurable, checked directly for this page:** this
 repo's own telemetry ([`meta/data/raw/`](../meta/data/raw/README.md)) does
 not log dollar spend for any command. On a fresh checkout, the
-`command-runs` and `funnel` streams have no files at all yet (nothing has
+`command-runs` and `pipeline` streams have no files at all yet (nothing has
 emitted them on this host); `issue-touches` has records, but they carry
 counts and timestamps, not cost. There is no logged data here — or, by
 construction, on any bare checkout — that could support computing a real
@@ -284,21 +284,21 @@ grounded per-run figures that do exist, not a measured ratio:
 - **Daily `/check-in`** is an ordinary interactive Tier-2 session. It has no
   logged per-run figure; a rough estimate is **~0.1–0.3M tokens
   (~$0.30–$0.90 Sonnet, ~$0.50–$1.50 Opus)** — lighter than a full `/tidy`
-  drain because it reads and reviews the ritual surfaces rather than
+  drain because it reads and reviews the check-in surfaces rather than
   draining a whole backlog. Treat it as an order of magnitude, not an
   observation.
-- **Funnel ticks (rungs 5b/5c) cost ≈$0 of Claude when they drive nothing.**
+- **Pipeline ticks (levels 5b/5c) cost ≈$0 of Claude when they drive nothing.**
   This is the key structural fact for anyone running the driver on a
   schedule: a tick's *decision* layer is deterministic shell — the schedule
   gate makes zero network calls, and the tick plan is computed with `jq`
   over board state
-  ([`workflows/scripts/build/funnel-tick.sh`](../workflows/scripts/build/funnel-tick.sh)
+  ([`workflows/scripts/build/pipeline-tick.sh`](../workflows/scripts/build/pipeline-tick.sh)
   emits a plan; it does not invoke `claude -p`). A headless `claude -p`
   driver is spawned **only** when the tick has drive-ready work to hand it
-  ([`workflows/scripts/build/funnel-drive.sh`](../workflows/scripts/build/funnel-drive.sh)),
+  ([`workflows/scripts/build/pipeline-drive.sh`](../workflows/scripts/build/pipeline-drive.sh)),
   and its spend is proportional to the actions handed over that tick,
-  bounded by the per-tick item caps (`FUNNEL_DRIVE_CAP` /
-  `FUNNEL_DRIVE_MERGE_CAP`, default 1 each). So **running the driver 12× a
+  bounded by the per-tick item caps (`PIPELINE_DRIVE_CAP` /
+  `PIPELINE_DRIVE_MERGE_CAP`, default 1 each). So **running the driver 12× a
   day on an idle backlog costs approximately nothing** — the model isn't
   invoked on a wake that drives nothing. (One caveat: a crash-signal intake
   phase runs on every tick, but it is config-gated — with no Sentry
@@ -312,7 +312,7 @@ figure (~$1.48/night, ~$2.47 on Opus) and no logged total build spend to use
 as the other side of the fraction, this page cannot state "maintenance is
 X% of spend" without fabricating the denominator. What's true qualitatively
 instead: the recurring maintenance floor — nightly `/tidy` plus daily
-`/check-in`, since idle funnel ticks add ~$0 — lands **on the order of
+`/check-in`, since idle pipeline ticks add ~$0 — lands **on the order of
 ~0.5M tokens/day**, a small and roughly fixed cost that recurs whether or
 not you build anything that day; on-demand `/build`/`/sweep` spend scales
 with how much you actually ask for. A week with several PRs through CI will
@@ -330,12 +330,12 @@ Split answer, and this is the fact to know before you run anything:
   is deliberate: a curious stranger's very first command should not require
   reading a budget flag to be protected.
 - **No, not for anything past that, by default.** Once you're doing
-  ordinary interactive pipeline work, or you opt into the unattended funnel
+  ordinary interactive pipeline work, or you opt into the unattended pipeline
   driver, there is **no dollar ceiling shipped by default**. The only
   built-in throttle at that point is the **5-hour usage-quota gate**
   (`BUILD_QUOTA_PAUSE_PCT` in
   [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh),
-  see [`docs/features/build-spine.md`](features/build-spine.md)) — it pauses
+  see [`docs/features/build-machinery.md`](features/build-machinery.md)) — it pauses
   a run when your Claude plan's own rolling 5-hour usage window is running
   low, and auto-resumes after it resets. That's a **usage-quota**
   protection, not a **dollar** one — it stops you from getting cut off
@@ -346,19 +346,19 @@ Split answer, and this is the fact to know before you run anything:
 
 ### Autonomy: what it may do without asking, and what always blocks
 
-The unattended tiers (`FUNNEL_DRIVE`, `FUNNEL_DRIVE_MERGE` in
+The unattended tiers (`PIPELINE_DRIVE`, `PIPELINE_DRIVE_MERGE` in
 [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh))
 are **both off by default** on a fresh install — nothing runs unattended
 until you flip them on yourself. Once you do:
 
-- **What it may do on its own.** A "safe tier" (rung 5b — see
-  [`docs/features/funnel-driver.md`](features/funnel-driver.md)) can route a
+- **What it may do on its own.** A "safe tier" (level 5b — see
+  [`docs/features/pipeline-driver.md`](features/pipeline-driver.md)) can route a
   decomposed epic to its approval gate, apply an already-answered decision,
   clear an already-cleared clarification label, and drive a read-only spike
   to a verdict — all **structurally incapable of opening a PR or merging
   code**, enforced two independent ways (the actions it's handed never
   include a merge, and its own instructions forbid one). A separate "merge
-  tier" (rung 5c, gated by `FUNNEL_DRIVE_MERGE` and only reachable when the
+  tier" (level 5c, gated by `PIPELINE_DRIVE_MERGE` and only reachable when the
   safe tier is also on) drives code changes through the *same* gated build
   path a human would use — including its merge gate. A **clean, disjoint,
   low-risk change set auto-merges after a timed window**
@@ -380,13 +380,13 @@ until you flip them on yourself. Once you do:
   temperloop#428 (consent-gated feedback submit)); nothing repo-derived
   transmits silently, unattended or not.
 
-The knobs above are named symbolically on purpose (`FUNNEL_DRIVE`,
-`FUNNEL_DRIVE_MERGE`, `BUILD_MERGE_GATE_WINDOW`, plus the per-tick item caps,
-`FUNNEL_DRIVE_CAP` / `FUNNEL_DRIVE_MERGE_CAP`, which bound blast radius
+The settings above are named symbolically on purpose (`PIPELINE_DRIVE`,
+`PIPELINE_DRIVE_MERGE`, `BUILD_MERGE_GATE_WINDOW`, plus the per-tick item caps,
+`PIPELINE_DRIVE_CAP` / `PIPELINE_DRIVE_MERGE_CAP`, which bound blast radius
 independent of how large the ready backlog is) — check
 [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh)
 for current defaults; never trust a hardcoded number in prose, since a
-knob's value can change without this page being touched.
+setting's value can change without this page being touched.
 
 ### The merge gate is free on any repo — and its CI cost
 
@@ -413,10 +413,10 @@ own account's usage view.
 
 - [`token-spend.md`](token-spend.md) — the operator/contributor companion:
   every lever temperloop uses to reduce model spend (model-tier routing,
-  caps, quota gates) and what it tracks, with the exact knobs and files.
-- [`docs/features/funnel-driver.md`](features/funnel-driver.md) — the full
-  autonomy-tier mechanics (rungs 5a/5b/5c) and their resource impact.
-- [`docs/features/build-spine.md`](features/build-spine.md) — the 5-hour
+  caps, quota gates) and what it tracks, with the exact settings and files.
+- [`docs/features/pipeline-driver.md`](features/pipeline-driver.md) — the full
+  autonomy-tier mechanics (levels 5a/5b/5c) and their resource impact.
+- [`docs/features/build-machinery.md`](features/build-machinery.md) — the 5-hour
   quota gate in full.
 - [`docs/features/merge-gate.md`](features/merge-gate.md) — the merge-gate
   CI-cost profile, native vs. managed.

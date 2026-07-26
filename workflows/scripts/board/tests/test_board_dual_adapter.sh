@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# test_board_dual_adapter.sh — the dual-adapter SAFE-TIER funnel-tick
+# test_board_dual_adapter.sh — the dual-adapter SAFE-TIER pipeline-tick
 # integration suite (foundation #801, split 3/3 of the issues-only tracker
 # adapter, Epic B #763). This is the "D3 seam" proof.
 #
-# THE SEAM: funnel-tick.sh's LIVE (non `--dry-run`) board read
+# THE SEAM: pipeline-tick.sh's LIVE (non `--dry-run`) board read
 # (read_ready_items -> sources board.sh -> board_resolve) must classify Ready
 # work IDENTICALLY no matter which tracker backend the board is configured
-# for (boards.conf's `backend` axis, foundation #799/#800). funnel-tick.sh
+# for (boards.conf's `backend` axis, foundation #799/#800). pipeline-tick.sh
 # itself carries zero backend branching — the whole seam lives inside
 # board.sh's board_resolve/board_item_list dispatch. This suite is the
 # end-to-end proof that the seam actually holds, by running ONE scenario
@@ -15,19 +15,19 @@
 # `backend=projects` board, once against a `backend=issues` board — and
 # asserting parity: the identical SAFE-TIER action set comes out either way.
 #
-# Why LIVE mode, not `--dry-run --fixture`: funnel-tick's dry-run path reads
+# Why LIVE mode, not `--dry-run --fixture`: pipeline-tick's dry-run path reads
 # PRE-PROJECTED fixture files directly (ready.json / decisions.json) and never
-# touches board.sh at all — see funnel-tick.sh's own read_ready_items, which
+# touches board.sh at all — see pipeline-tick.sh's own read_ready_items, which
 # only sources board.sh on the live branch. A dry-run test can never catch a
 # board.sh reshape gap because it never calls board.sh. This suite fills that
-# blind spot: it shadows `gh` on PATH and runs `funnel-tick.sh --board 30`
+# blind spot: it shadows `gh` on PATH and runs `pipeline-tick.sh --board 30`
 # for real (no --dry-run), so the ACTUAL board_resolve dispatch executes.
 #
 # THE GAP THIS CAUGHT (and now pins): board.sh's issues-only `issue_item()`
 # reshape (#799) carried status/component/host-Session but silently DROPPED
 # every ordinary GitHub label (spike / Foundational / needs-clarification /
 # funnel-escalated / funnel-merge-pending — none of them `fnd:`-namespaced).
-# funnel-tick.sh's classify_item/needs_clarification/funnel_escalated/
+# pipeline-tick.sh's classify_item/needs_clarification/pipeline_escalated/
 # pending_merge all read a Ready item's raw `.labels` array; on the
 # Projects-v2 path this was always present for free (gh's own `project
 # item-list --format json` output already carries a top-level `labels` array
@@ -37,12 +37,12 @@
 # spikes would never route to the safe verdict path, Foundational items would
 # never gate to the decision queue, needs-clarification items would never
 # park. Fixed by adding a `labels` passthrough to `issue_item()` (see
-# board.sh's own comment there, and ISSUES-ONLY-BACKEND.md § Funnel
+# board.sh's own comment there, and ISSUES-ONLY-BACKEND.md § Pipeline
 # integration). This suite is the regression lock: run it against a
 # pre-fix checkout and the `issues` arm fails on drive-ready/route assertions.
 #
 # SAFE-TIER, no merges: the scenario below exercises exactly the action set
-# funnel-drive.sh's rung-5b executor auto-runs (route-*/drain-*/a kind:spike
+# pipeline-drive.sh's level-5b executor auto-runs (route-*/drain-*/a kind:spike
 # drive — never a merge, foundation #604's SAFE/MERGING split) — and this
 # suite asserts, directly against the recorded gh call log, that NOT ONE
 # PR/merge/write-capable gh call ever fires in either arm. That is the
@@ -56,7 +56,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TICK="$HERE/../../build/funnel-tick.sh"
+TICK="$HERE/../../build/pipeline-tick.sh"
 
 pass=0
 fail=0
@@ -180,7 +180,7 @@ JSON
 
 # ---------------------------------------------------------------------------
 # boards.conf — ONE board number (30), rewritten per arm. Read by BOTH
-# board.sh's _board_conf_get AND funnel-tick.sh's own _tick_conf_repo (same
+# board.sh's _board_conf_get AND pipeline-tick.sh's own _tick_conf_repo (same
 # BOARDS_CONF_REPO_LOCAL / BOARDS_CONF_MACHINE env names, same discovery
 # order) — so the two never disagree on which repo board 30 is.
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ EOF
 }
 
 # A stub intake command (Phase 0). This is a LIVE (non --dry-run) tick, so
-# funnel-tick's dry-run intake skip does not apply — Phase 0 would otherwise
+# pipeline-tick's dry-run intake skip does not apply — Phase 0 would otherwise
 # try to run the real crash-convergence signal-intake.sh. Stub exits 0, no
 # side effects, so it never disturbs the SAFE-TIER action count below.
 INTAKE_STUB="$TMP/intake-stub.sh"
@@ -216,13 +216,13 @@ run_arm() {  # $1 = backend (projects|issues)  ->  prints the tick-plan JSON on 
   PATH="$BIN:$PATH" \
   BOARDS_CONF_REPO_LOCAL="$CONF" BOARDS_CONF_MACHINE="$TMP/no-such-machine-conf" \
   BOARD_CACHE_TTL=0 BOARD_BUDGET_GUARD_THRESHOLD=0 BOARD_CACHE_DIR="$cache" \
-  FUNNEL_ENABLED_BOARDS=30 FUNNEL_INTAKE_CMD="$INTAKE_STUB" \
-  FUNNEL_LOCK_DIR="$TMP/lock-$backend" \
+  PIPELINE_ENABLED_BOARDS=30 PIPELINE_INTAKE_CMD="$INTAKE_STUB" \
+  PIPELINE_LOCK_DIR="$TMP/lock-$backend" \
   bash "$TICK" --board 30
 }
 
 for BACKEND in projects issues; do
-  echo "--- test: SAFE-TIER live funnel tick against backend=$BACKEND ---"
+  echo "--- test: SAFE-TIER live pipeline tick against backend=$BACKEND ---"
   PLAN="$(run_arm "$BACKEND")"
   LOG="$TMP/gh-$BACKEND.log"
 

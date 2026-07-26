@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # build.config.sh — central defaults for the build / sweep
-# tunables (foundation #447). This is the ONE place a batch-pipeline knob's
-# default lives; `source` it (the spine scripts and the command Step 0 do) to
+# tunables (foundation #447). This is the ONE place a batch-pipeline setting's
+# default lives; `source` it (the machinery scripts and the command Step 0 do) to
 # pull every tunable into scope.
 #
 # Idiom: `: "${VAR:=default}"` assigns the default ONLY when VAR is unset, so a
@@ -12,13 +12,13 @@
 #
 # This file is sourced, never executed — it has no CLI and writes nothing.
 #
-# ── The six-rung config PRECEDENCE ladder (temperloop#164/#169) ────────────
-# NOTE: "precedence rung" here is unrelated to the funnel's own "rung-5b" /
-# "rung-5c" driver-tier terminology used later in this file (§ Funnel rung-5b
-# driver / § Funnel rung-5c merge tier below) — same word, two different
-# ladders; this section always says "precedence rung N" to keep them apart.
+# ── The six-layer config PRECEDENCE ladder (temperloop#164/#169) ────────────
+# NOTE: "precedence layer" here is unrelated to the pipeline autonomy
+# "level-5b" / "level-5c" driver-tier terminology used later in this file
+# (§ Pipeline level-5b driver / § Pipeline level-5c merge tier below) — two
+# different ladders; "layer" is always precedence, "level" always autonomy.
 #
-# Every knob this file governs resolves through the same precedence ladder,
+# Every setting this file governs resolves through the same precedence ladder,
 # highest to lowest:
 #
 #   1. CLI flag           — a caller's explicit `--flag value` (handled by the
@@ -36,21 +36,30 @@
 #   6. kernel built-in default — a matching `:=` fallback hardcoded directly
 #                            into an individual consumer script, for a
 #                            non-vendoring caller that never sources this file
-#                            at all (see e.g. FUNNEL_OPERATOR /
-#                            FUNNEL_MERGE_PENDING_LABEL below — several
-#                            spine scripts already keep one of these)
+#                            at all (see e.g. PIPELINE_OPERATOR /
+#                            PIPELINE_MERGE_PENDING_LABEL below — several
+#                            machinery scripts already keep one of these)
 #
-# Precedence rungs 5 and 6 are BOTH implemented by `:=` assignments, just in
+# Precedence layers 5 and 6 are BOTH implemented by `:=` assignments, just in
 # two different places (this file vs. an individual script) — a consuming
-# repo that vendors this file gets rung 5; a script invoked standalone
-# without it falls through to rung 6. Rungs 3 and 4 are sourced BELOW, before
-# rung 5's defaults, so that (per the `:=` idiom) a value they set is already
-# bound by the time rung 5 runs and its own `:=` becomes a no-op for that var
+# repo that vendors this file gets layer 5; a script invoked standalone
+# without it falls through to layer 6. Layers 3 and 4 are sourced BELOW, before
+# layer 5's defaults, so that (per the `:=` idiom) a value they set is already
+# bound by the time layer 5 runs and its own `:=` becomes a no-op for that var
 # — this is what makes source order double as precedence order. Full ladder
 # writeup, and how `boards.conf`'s XDG-then-repo-local discovery is an
 # INSTANCE of this same order: ../../../docs/config-precedence.md.
 #
-# ── Precedence rung 3: machine conf ─────────────────────────────────────────
+# ── v0.17.0 terminology-rename legacy window (temperloop#729) ────────────────
+# Legacy FUNNEL_*/KNOB_* env vars still drive the renamed PIPELINE_*/SETTING_*
+# settings (NEW > OLD > default, one NOTE per legacy var used) through v0.19.0.
+# Fail-open: a consuming repo that does not vendor the lib skips the shim.
+_rc0170="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/rename-compat-0170.sh"
+# shellcheck source=workflows/scripts/lib/rename-compat-0170.sh
+if [ -f "$_rc0170" ]; then . "$_rc0170"; fi
+unset _rc0170
+
+# ── Precedence layer 3: machine conf ─────────────────────────────────────────
 # Sourced FIRST (before repo-local and before this file's own defaults) so it
 # outranks both, per the ladder above. Absent file is a silent no-op. The
 # path is overridable via BUILD_CONFIG_MACHINE (a test seam / explicit
@@ -64,15 +73,15 @@ if [ -f "$BUILD_CONFIG_MACHINE" ]; then
   . "$BUILD_CONFIG_MACHINE"
 fi
 
-# ── Precedence rung 4: untracked repo-local conf (secrets / per-checkout override; #709) ──
+# ── Precedence layer 4: untracked repo-local conf (secrets / per-checkout override; #709) ──
 # Source an OPTIONAL, gitignored sibling `build.config.local.sh` for
 # checkout-local secrets and overrides that must NOT be committed — e.g. the
-# funnel's Sentry poll credentials (SENTRY_AUTH_TOKEN / SENTRY_ORG /
-# SENTRY_PROJECT) that /signal-intake reads via funnel-tick.sh Phase 0.
+# pipeline's Sentry poll credentials (SENTRY_AUTH_TOKEN / SENTRY_ORG /
+# SENTRY_PROJECT) that /signal-intake reads via pipeline-tick.sh Phase 0.
 # Sourced here, BEFORE this file's own `:=` defaults below, so it outranks
-# them — but AFTER precedence rung 3 (machine conf) above, so machine conf
+# them — but AFTER precedence layer 3 (machine conf) above, so machine conf
 # still wins. An absent file is a silent no-op (never fatal), and being untracked it
-# survives the funnel cron's self-update `git reset --hard`. The path is
+# survives the pipeline cron's self-update `git reset --hard`. The path is
 # overridable via BUILD_CONFIG_LOCAL (a test seam that also lets a host point
 # elsewhere). MUST itself use the `:=` idiom for every var it sets — a plain
 # assignment here would unconditionally win over an exported env var, which
@@ -85,9 +94,20 @@ if [ -f "$BUILD_CONFIG_LOCAL" ]; then
   . "$BUILD_CONFIG_LOCAL"
 fi
 
-# ── Precedence rung 5 / 6: tracked repo conf / kernel built-in defaults ─────
+# Second legacy-window pass (temperloop#729): layers 3/4 above may THEMSELVES
+# set pre-rename FUNNEL_*/KNOB_* names (a machine conf or local conf written
+# before the v0.17.0 rename). The first shim pass at the top of this file ran
+# before they were sourced, so forward again now — the shim is NEW > OLD, so
+# a renamed name already set (env, or the first pass) still wins, and only a
+# conf-supplied legacy var gains a new-name binding here (with its NOTE).
+if command -v _rename_compat_0170_apply >/dev/null 2>&1; then
+  _rename_compat_0170_apply "FUNNEL_" "PIPELINE_"
+  _rename_compat_0170_apply "KNOB_" "SETTING_"
+fi
+
+# ── Precedence layer 5 / 6: tracked repo conf / kernel built-in defaults ─────
 # Everything below is this file's own `:=` default set. It runs LAST, after
-# precedence rungs 3 and 4 above, so any var they already bound is left
+# precedence layers 3 and 4 above, so any var they already bound is left
 # untouched (its `:=` here is a no-op) — only a var still unset at this point
 # takes the value below.
 
@@ -108,7 +128,7 @@ fi
 # seconds — never act on a stale low reading from a long-dead session.
 : "${BUILD_QUOTA_MAX_AGE:=1800}"
 
-# ── Existing build knobs, centralized here (#447) ───────────────────────
+# ── Existing build settings, centralized here (#447) ───────────────────────
 # These predate this file; their defaults now live here. build.md prose
 # keeps its inline `${VAR:-default}` as a belt-and-suspenders fallback for callers
 # that did not source this file.
@@ -124,10 +144,10 @@ fi
 # the sole backstop. Single-PR levels skip it regardless (nothing to combine).
 : "${BUILD_COMBINED_TREE_PRECHECK:=on}"   # on|off — run the Step-4a.5 union pre-check
 
-# Operator-phone reach on a blocking-now halt (foundation#863). Every
-# `blocking-now` gate the /build orchestrator surfaces via `decision_sink_ask`
+# Operator-phone reach on an ask-now halt (foundation#863). Every
+# `ask-now` gate the /build orchestrator surfaces via `decision_sink_ask`
 # calls decision-notify.sh, which relays a one-line summary to the operator's
-# phone through the harness PushNotification tool. This knob is an OPTIONAL
+# phone through the harness PushNotification tool. This setting is an OPTIONAL
 # ADDITIONAL scriptable channel — an ntfy/pushover/terminal-notifier/webhook
 # command an operator wires for phone reach independent of Remote Control. It
 # receives the summary as a single argument (e.g. `ntfy pub my-topic`). Empty
@@ -136,23 +156,23 @@ fi
 # channel. Also the test-injection seam decision-notify.sh's own test drives.
 : "${BUILD_DECISION_NOTIFY_CMD:=}"        # optional scriptable operator-notify channel
 
-# Autonomous funnel drive-concurrency governor (temperloop#162, split out from the
+# Autonomous pipeline drive-concurrency governor (temperloop#162, split out from the
 # retired human "WIP cap" governance rule): at most this many concurrent drives the
-# autonomous funnel lane bounds per tick. SOURCE OF TRUTH for funnel-tick.sh's
+# autonomous pipeline lane bounds per tick. SOURCE OF TRUTH for pipeline-tick.sh's
 # autonomous-lane concurrency bound (which is explicitly INHERITED from this policy,
 # not re-embedded — see that file's own comment). This is the mechanical governor
 # ONLY — the former human "WIP cap = 3" cross-session governance rule it used to
 # double as was retired in temperloop#162 (the In-Progress gate + claim-first lock
 # in claude/CLAUDE.kernel.md's Task-workflow section stay; the numeric human cap is
-# gone). Change the funnel's concurrency bound here, once.
-: "${FUNNEL_DRIVE_CONCURRENCY:=3}"
+# gone). Change the pipeline's concurrency bound here, once.
+: "${PIPELINE_DRIVE_CONCURRENCY:=3}"
 
 # Epic-decomposition sub-unit threshold (prose-tunables-migration follow-up to
-# temperloop#183): a second "CLAUDE.md-resident knob" rendered at compose time
+# temperloop#183): a second "CLAUDE.md-resident setting" rendered at compose time
 # into claude/CLAUDE.kernel.md's Task-workflow section — "epic-sized" is
 # `{{EPIC_MIN_SUBUNITS}}`+ parallelizable sub-units (OR more than one
 # dependency level, which stays a structural/contract fact, not a separate
-# knob — see that section's own note). Rendered into the kernel doc at compose
+# setting — see that section's own note). Rendered into the kernel doc at compose
 # time by workflows/scripts/install-claude-md.sh.
 : "${EPIC_MIN_SUBUNITS:=3}"
 
@@ -161,7 +181,7 @@ fi
 # by-day breakdowns, telemetry-brief's "today" bucket, reconcile's status-line
 # stamps. An IANA name (NOT a fixed "PST"/"PDT") so DST is handled automatically
 # — reads PDT in summer, PST in winter, always matching the operator's wall clock.
-# A third "CLAUDE.md-resident knob" rendered at compose time into
+# A third "CLAUDE.md-resident setting" rendered at compose time into
 # claude/CLAUDE.kernel.md § Communication conventions as `{{DISPLAY_TZ}}` by
 # workflows/scripts/install-claude-md.sh.
 #
@@ -181,7 +201,7 @@ fi
 : "${BUILD_MERGE_BACKEND:=auto}"       # auto|native|managed
 
 # Per-Bash-call bound for the FOREGROUND CI / MERGED polls /build runs on a
-# HEADLESS one-shot path (FUNNEL_OPERATOR_ABSENT=1 — the funnel `claude -p` merge
+# HEADLESS one-shot path (PIPELINE_OPERATOR_ABSENT=1 — the pipeline `claude -p` merge
 # driver, which has no re-invoke-on-background-completion loop, so its waits must
 # block the single session in the foreground rather than dispatch-and-yield, #626).
 # Kept under the ~10-min Bash foreground cap; the session itself is un-timeout'd, so
@@ -190,15 +210,15 @@ fi
 # the run_in_background + ScheduleWakeup path).
 : "${BUILD_HEADLESS_POLL_TIMEOUT:=540}"  # foreground CI/MERGED poll bound (s), headless path
 
-# ── Command-spec prose knobs (prose-tunables-migration, temperloop#164/#169
+# ── Command-spec prose settings (prose-tunables-migration, temperloop#164/#169
 #    D3 follow-up) ──────────────────────────────────────────────────────────
-# These knobs back a value that previously lived ONLY in a command spec's
-# prose (no shell seam at all — the D3 "prose names a knob, never states its
+# These settings back a value that previously lived ONLY in a command spec's
+# prose (no shell seam at all — the D3 "prose names a setting, never states its
 # value" convention had nothing to point at). Each command spec now sources
 # THIS file at its own Step 0 (the same worked shape as build.md Step 0 item
 # 6) and references the symbolic name below instead of restating the
 # literal. Centralized here rather than a per-command config file — one
-# place, per § Prose-resident knob convention (`claude/CLAUDE.kernel.md`).
+# place, per § Named-setting convention (`claude/CLAUDE.kernel.md`).
 
 # assess.md Step 6 — the approval-poll ScheduleWakeup cadence/budget.
 : "${ASSESS_POLL_FIRST_WAKE:=270}"    # first wake (s) after arming the poll
@@ -225,7 +245,7 @@ fi
 # override) — this is a deliberate, Contract-pinned default from a ratified
 # design brief, not an oversight: detection is judgment work, and a missed
 # ambiguity that silently reaches Phase 2 is the costly failure mode, so
-# this knob does NOT default to a cheap tier the way FUNNEL_DRIVE_MODEL does
+# this setting does NOT default to a cheap tier the way PIPELINE_DRIVE_MODEL does
 # for mechanical drives (§ Cost-tier routing, claude/CLAUDE.kernel.md).
 : "${SWEEP_DETECT_MODEL:=}"
 
@@ -240,73 +260,73 @@ fi
 : "${SWEEP_BG_POLL_ATTEMPTS:=6}"      # bounded poll count before declaring the chunk dropped
 : "${SWEEP_BG_POLL_INTERVAL:=120}"    # seconds between polls
 
-# ── Funnel operator identity + required CI check (tracker seam v0, #772) ────
+# ── Pipeline operator identity + required CI check (tracker seam v0, #772) ────
 # The operator handle the async decision-issue backend, the merge-tier escalation
-# path, and funnel-tick's assignee baton all target. MUST be the operator's real
+# path, and pipeline-tick's assignee baton all target. MUST be the operator's real
 # GitHub collaborator LOGIN (verify with `gh api user -q .login` — a display
 # name or email-derived handle can differ from the real login, and a re-assign
 # to the wrong one targets nobody / fails, so the baton never reaches the
-# operator; foundation #588). Consuming scripts (funnel-tick.sh, funnel-drive.sh)
+# operator; foundation #588). Consuming scripts (pipeline-tick.sh, pipeline-drive.sh)
 # keep a matching `:=` fallback for a non-vendoring checkout, exactly as
-# FUNNEL_MERGE_PENDING_LABEL does; this file is the SOURCE OF TRUTH. `gh` wants
+# PIPELINE_MERGE_PENDING_LABEL does; this file is the SOURCE OF TRUTH. `gh` wants
 # the bare login, so the leading @ is stripped at each use site. The placeholder
 # below MUST be overridden — set the real value in the gitignored
-# build.config.local.sh (§ Precedence rung 4 above), never here.
-: "${FUNNEL_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
+# build.config.local.sh (§ Precedence layer 4 above), never here.
+: "${PIPELINE_OPERATOR:=@REPLACE_WITH_YOUR_GH_LOGIN}"
 
 # Required CI gate name a PR must clear to merge (foundation #665). Every build
 # repo names its required ci.yml job `checks` (global CLAUDE.md § Branch & PR
 # policy), so one default serves all boards.
-: "${FUNNEL_REQUIRED_CHECK:=checks}"
+: "${PIPELINE_REQUIRED_CHECK:=checks}"
 
-# ── Funnel-overlap predicate (#864) ─────────────────────────────────────────
-# The funnel's OPERATIONAL SURFACE — space-separated path prefixes that
-# funnel-overlap.sh intersects a plan's aggregate `files:` set against at
+# ── Pipeline-overlap predicate (#864) ─────────────────────────────────────────
+# The pipeline's OPERATIONAL SURFACE — space-separated path prefixes that
+# pipeline-overlap.sh intersects a plan's aggregate `files:` set against at
 # /build run start (Step 1.7). A plan that rewrites this machinery while the
-# funnel is live is the Epic B interference cascade (retro #847): the default
-# names the build spine + board toolkit + pipeline commands/hooks + quality
+# pipeline is live is the Epic B interference cascade (retro #847): the default
+# names the build machinery + board toolkit + pipeline commands/hooks + quality
 # gates + Makefile, under both the kernel/ vendored prefix and the compat
 # pre-split paths. Prefix match is textual, so both spellings must be listed.
-: "${FUNNEL_DRIVEN_PATHS:=kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile}"
+: "${PIPELINE_DRIVEN_PATHS:=kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile}"
 
-# ── Funnel rung-5b driver (#604) ────────────────────────────────────────────
-# The autonomous funnel driver's supervised auto-drive. Default OFF: the cron
-# stays pure 5a (emit + notify) until the operator opts in. Set FUNNEL_DRIVE=1
+# ── Pipeline level-5b driver (#604) ────────────────────────────────────────────
+# The autonomous pipeline driver's supervised auto-drive. Default OFF: the cron
+# stays pure 5a (emit + notify) until the operator opts in. Set PIPELINE_DRIVE=1
 # (a deploy host's LaunchAgent/cron plist sets it when the 5b soak begins) to make
-# funnel-cron.sh execute the SAFE, no-merge tier of each tick plan via a headless
-# funnel-drive.sh / `claude -p "/funnel-drive"` run. See funnel-drive.sh.
-: "${FUNNEL_DRIVE:=0}"                 # 1 = auto-execute the safe tier; 0 = emit-only (5a)
-# Per-tick DRIVE CAP — the canonical "how many items the funnel drives per tick"
-# knob (#642). funnel-tick.sh caps the number of Operational drive-ready actions it
-# EMITs per tick on this (was a hardcoded one-per-tick); funnel-cron.sh resolves the
-# operator's vault `cap:` (the ```funnel-schedule block) into it and ALSO maps it onto
-# FUNNEL_DRIVE_MERGE_CAP below, so one vault field governs both the emit cap and the
+# pipeline-cron.sh execute the SAFE, no-merge tier of each tick plan via a headless
+# pipeline-drive.sh / `claude -p "/pipeline-drive"` run. See pipeline-drive.sh.
+: "${PIPELINE_DRIVE:=0}"                 # 1 = auto-execute the safe tier; 0 = emit-only (5a)
+# Per-tick DRIVE CAP — the canonical "how many items the pipeline drives per tick"
+# setting (#642). pipeline-tick.sh caps the number of Operational drive-ready actions it
+# EMITs per tick on this (was a hardcoded one-per-tick); pipeline-cron.sh resolves the
+# operator's vault `cap:` (the ```pipeline-schedule block) into it and ALSO maps it onto
+# PIPELINE_DRIVE_MERGE_CAP below, so one vault field governs both the emit cap and the
 # merge blast-radius. The `:=1` here is only the fallback when the vault omits `cap:`
-# (and for a bare manual `funnel-tick.sh` run); the vault is the live source of truth.
-: "${FUNNEL_DRIVE_CAP:=1}"             # max Operational items driven per tick (vault `cap:` feeds this)
-: "${FUNNEL_DRIVE_MODEL:=claude-sonnet-5}"  # model for the headless driver (mechanical actions)
-: "${FUNNEL_DRIVE_SETTINGS:=}"         # --settings overlay for the headless driver (#606);
-                                       # empty here → funnel-drive.sh defaults it to its
-                                       # repo-relative funnel-drive.settings.json (deny gh pr/git
+# (and for a bare manual `pipeline-tick.sh` run); the vault is the live source of truth.
+: "${PIPELINE_DRIVE_CAP:=1}"             # max Operational items driven per tick (vault `cap:` feeds this)
+: "${PIPELINE_DRIVE_MODEL:=claude-sonnet-5}"  # model for the headless driver (mechanical actions)
+: "${PIPELINE_DRIVE_SETTINGS:=}"         # --settings overlay for the headless driver (#606);
+                                       # empty here → pipeline-drive.sh defaults it to its
+                                       # repo-relative pipeline-drive.settings.json (deny gh pr/git
                                        # push + a broad allow for the full safe tier — #609)
 
-# ── Funnel rung-5c merge tier (#615) ────────────────────────────────────────
+# ── Pipeline level-5c merge tier (#615) ────────────────────────────────────────
 # The merging tier of the autonomous driver: drive-ready WHERE kind=="code"
 # (→ /build --unattended → PR → CI → merge). 5b (above) leaves this for the
 # operator; 5c auto-executes it on /build's existing timed/modal merge gate.
-# A SEPARATE gate from FUNNEL_DRIVE — flipping the safe tier on must NOT flip
+# A SEPARATE gate from PIPELINE_DRIVE — flipping the safe tier on must NOT flip
 # merging on. The merge tier RIDES ON TOP of the safe tier: it runs only when
-# the cron already invokes funnel-drive.sh (FUNNEL_DRIVE=1) AND this is 1.
+# the cron already invokes pipeline-drive.sh (PIPELINE_DRIVE=1) AND this is 1.
 # Default OFF ⇒ the merge tier is surfaced-but-not-driven, exactly as in 5b.
-: "${FUNNEL_DRIVE_MERGE:=0}"           # 1 = also auto-execute the kind:code merge tier; 0 = leave for operator
+: "${PIPELINE_DRIVE_MERGE:=0}"           # 1 = also auto-execute the kind:code merge tier; 0 = leave for operator
 # Merge blast-radius bound. Since #642 this is FED from the vault `cap:` by
-# funnel-cron.sh (it exports FUNNEL_DRIVE_MERGE_CAP=$cap alongside FUNNEL_DRIVE_CAP),
+# pipeline-cron.sh (it exports PIPELINE_DRIVE_MERGE_CAP=$cap alongside PIPELINE_DRIVE_CAP),
 # so the operator sets it via the vault schedule, NOT the plist. The `:=1` here is
-# only the fallback when the cron does not resolve a cap (e.g. a bare funnel-drive.sh run).
-: "${FUNNEL_DRIVE_MERGE_CAP:=1}"       # max kind:code items driven to merge per tick (vault `cap:` feeds this)
-: "${FUNNEL_DRIVE_MERGE_MODEL:=claude-opus-4-8}"  # model for the merge driver (code drives are high-judgment)
-: "${FUNNEL_DRIVE_MERGE_SETTINGS:=}"   # --settings overlay for the merge driver; empty here →
-                                       # funnel-drive.sh defaults it to funnel-drive-merge.settings.json
+# only the fallback when the cron does not resolve a cap (e.g. a bare pipeline-drive.sh run).
+: "${PIPELINE_DRIVE_MERGE_CAP:=1}"       # max kind:code items driven to merge per tick (vault `cap:` feeds this)
+: "${PIPELINE_DRIVE_MERGE_MODEL:=claude-opus-4-8}"  # model for the merge driver (code drives are high-judgment)
+: "${PIPELINE_DRIVE_MERGE_SETTINGS:=}"   # --settings overlay for the merge driver; empty here →
+                                       # pipeline-drive.sh defaults it to pipeline-drive-merge.settings.json
                                        # (the inverse of the 5b overlay: ALLOWS the scoped gh pr/merge/push
                                        # surface /build needs, still never --dangerously-skip-permissions)
 
@@ -315,35 +335,35 @@ fi
 # FOREGROUND and the normal outcome is merged-in-session. This label covers the tail:
 # when /build's foreground CI/MERGED poll hits its BUILD_HEADLESS_POLL_TIMEOUT bound
 # before the merge lands (CI/queue slower than the session can foreground-wait), the
-# drive splits across ticks. funnel-drive.sh applies the label to an issue whose drive
+# drive splits across ticks. pipeline-drive.sh applies the label to an issue whose drive
 # left an OPEN, unmerged PR (ground-truth probe, not a model self-report), and
-# funnel-tick.sh, on seeing it, emits a RESUME drive (re-attach to the open PR + run
+# pipeline-tick.sh, on seeing it, emits a RESUME drive (re-attach to the open PR + run
 # /build's merge gate) instead of a FRESH one — which would open a duplicate PR. The
 # open PR remains the artifact work resumes on; the label is the cheap board pointer.
-: "${FUNNEL_MERGE_PENDING_LABEL:=funnel-merge-pending}"
+: "${PIPELINE_MERGE_PENDING_LABEL:=funnel-merge-pending}"
 
 # Clarification-drain sentinel (foundation #657) — centralized here so the
 # writer/reader pair share ONE source of truth (the drift the reviewer flagged):
-#   FUNNEL_CLARIFIED_MARKER — the ack the 5b executor posts on a drained
-#     `needs-clarification` item; funnel-tick's clarification_already_applied reads
-#     it for idempotency. (The prose writer /funnel-drive.md cannot source config,
+#   PIPELINE_CLARIFIED_MARKER — the ack the 5b executor posts on a drained
+#     `needs-clarification` item; pipeline-tick's clarification_already_applied reads
+#     it for idempotency. (The prose writer /pipeline-drive.md cannot source config,
 #     so that one literal stays hand-synced to this value.)
-: "${FUNNEL_CLARIFIED_MARKER:=<!-- funnel:clarification-drained -->}"
+: "${PIPELINE_CLARIFIED_MARKER:=<!-- funnel:clarification-drained -->}"
 
-# Rung-5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
+# Level 5c code-escalation label (foundation #697, supersedes the #657 merge-escalation
 # marker). A 5c CODE escalation (route-refused / terminally-red CI) carries THIS label
 # + an assignee — NOT `needs-clarification` — so the #657 answer-drain's
 # `label:needs-clarification … no:assignee` search can never match it (no marker, no
-# per-item comment scan, no skip verb needed). funnel-tick's park gate keeps such an
+# per-item comment scan, no skip verb needed). pipeline-tick's park gate keeps such an
 # item out of the drive pool (duplicate-PR guard). Consuming scripts keep a matching
-# `:=` fallback for a non-vendoring checkout, exactly as FUNNEL_MERGE_PENDING_LABEL does.
-: "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
+# `:=` fallback for a non-vendoring checkout, exactly as PIPELINE_MERGE_PENDING_LABEL does.
+: "${PIPELINE_ESCALATED_LABEL:=funnel-escalated}"
 
-# ── Unified-retrospection RETRO_* knobs (temperloop#532) ────────────────────
-# These five knobs are NAMED (in prose) by other items of the
-# unified-retrospection epic and VALUED only here, per § Prose-resident knob
+# ── Unified-retrospection RETRO_* settings (temperloop#532) ────────────────────
+# These five settings are NAMED (in prose) by other items of the
+# unified-retrospection epic and VALUED only here, per § Named-setting convention
 # convention (`claude/CLAUDE.kernel.md`) — a command spec (`build.md`'s
-# 4d-retro MINT step, the funnel tick's retro-judge emit, `/retro` itself)
+# 4d-retro MINT step, the pipeline tick's retro-judge emit, `/retro` itself)
 # references `$RETRO_*` symbolically and never restates the literal.
 
 # Master on/off for the `/build` 4d-retro MINT (files a per-epic retro
@@ -351,7 +371,7 @@ fi
 : "${RETRO_MINT_ENABLED:=1}"
 
 # Debounce: minimum age (s) of the oldest `retro-pending` tracker before the
-# funnel tick emits a retro-judge action. Default a 3-day cadence.
+# pipeline tick emits a retro-judge action. Default a 3-day cadence.
 : "${RETRO_MIN_INTERVAL:=259200}"
 
 # CI-retry count at/above which a retro tracker is stamped `retro-urgent` at
@@ -362,8 +382,8 @@ fi
 # processes (enforced judge-side).
 : "${RETRO_BATCH_SESSION_CAP:=5}"
 
-# Model the funnel runs `claude -p "/retro --pending"` under — its own named
-# model knob, distinct from FUNNEL_DRIVE_MODEL (same tier: the judge is a
+# Model the pipeline runs `claude -p "/retro --pending"` under — its own named
+# model setting, distinct from PIPELINE_DRIVE_MODEL (same tier: the judge is a
 # safe/standard drive, not a merge-tier high-judgment one).
 : "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
 
@@ -373,7 +393,7 @@ fi
 # activation only for a language that clears this floor — a repo with a
 # single stray `.rb` file should not be offered a Ruby reviewer it doesn't
 # need. This is INSTALL/DOCTOR-TIME machinery, not a batch-build-pipeline
-# knob (contrast FUNNEL_DRIVE_CONCURRENCY above). Default 3: low enough that
+# setting (contrast PIPELINE_DRIVE_CONCURRENCY above). Default 3: low enough that
 # a small-but-real component (a handful of shell scripts, a slim Python
 # helper) still gets offered its reviewer, high enough that a single
 # generated/vendored/example file doesn't trigger a false-positive offer.
@@ -395,8 +415,8 @@ fi
 # literally: whatever the tree looks like right before this PR merges IS the
 # baseline, full stop. A cap is lowered again only by a later config PR,
 # after a subtraction pass actually shrinks the prose (never raised/lowered
-# by hand-editing prose to dodge the gate — see the knob-registry.tsv row
-# for the same two knobs, which must stay verbatim-equal to these two
+# by hand-editing prose to dodge the gate — see the setting-registry.tsv row
+# for the same two settings, which must stay verbatim-equal to these two
 # literals).
 #
 # TIER-1: caps the composed KERNEL-AUTHORED render only (claude/
@@ -404,7 +424,7 @@ fi
 # INSTALL_CLAUDE_MD_KERNEL_ONLY seam — never the kernel+overlay total).
 : "${PROSE_BUDGET_TIER1_CAP:=340}"
 # TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
-# (agent charters included) — deliberately a single knob, not a per-file
+# (agent charters included) — deliberately a single setting, not a per-file
 # table (a per-file value would just be a relocated exemption mechanism,
 # which this item has none of). Seeded to clear the largest tracked file at
 # landing time (claude/commands/build.md, 1057 lines, unchanged across both
@@ -417,41 +437,41 @@ fi
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
 # `KNOWLEDGE_STORE_ROOT`'s KERNEL default (an XDG per-user data dir, correct
 # for a stranger's fresh install with no vault). THIS file — the kernel's own
-# tracked rung-5 default set — deliberately does NOT re-seed a different
+# tracked layer-5 default set — deliberately does NOT re-seed a different
 # default here: a personal vault path is exactly the kind of operator-
-# specific value the six-rung ladder's rungs 3/4 (machine conf /
+# specific value the six-layer ladder's layers 3/4 (machine conf /
 # build.config.local.sh, both sourced ABOVE this point) exist for, or —
 # for a downstream repo that vendors this file — its own edited copy of
-# this line (rung 5's own "consuming repo that vendors/edits its own copy"
+# this line (layer 5's own "consuming repo that vendors/edits its own copy"
 # case, per the ladder writeup above). An operator whose structured notes
-# live in a real vault sets `KNOWLEDGE_STORE_ROOT` at one of those rungs;
+# live in a real vault sets `KNOWLEDGE_STORE_ROOT` at one of those layers;
 # this kernel file simply leaves the var unset here and lets
 # `knowledge_store.sh`'s own generic default apply when nothing upstream
 # has claimed it. (Formerly this file hardcoded a personal vault path here
-# as a rung-5 default — removed as scrub debt; see git history on this
+# as a layer-5 default — removed as scrub debt; see git history on this
 # line for the prior literal.)
 
-# ── Funnel label provisioning (a repo-onboarding prerequisite) ───────────────
-# BOTH funnel labels above (`funnel-merge-pending`, `funnel-escalated`) must EXIST in
-# every repo the funnel drives. funnel-drive.sh applies them via `gh issue edit
+# ── Pipeline label provisioning (a repo-onboarding prerequisite) ───────────────
+# BOTH pipeline labels above (`funnel-merge-pending`, `funnel-escalated`) must EXIST in
+# every repo the pipeline drives. pipeline-drive.sh applies them via `gh issue edit
 # --add-label` wrapped in the fail-open `_gh_sideeffect` recorder — so on a repo MISSING
 # the label the add is swallowed, the item never parks, and it re-refuses/re-routes every
 # tick (a silent thrash; the operator never gets the hand-off). Currently provisioned on
 # the two driven repos. To onboard a THIRD repo,
 # create both first (idempotent — the `|| true` absorbs "already exists"):
-#   gh label create funnel-merge-pending -R <owner/repo> --color fbca04 --description "Funnel 5c: PR open, session ended pre-merge — resume next tick" || true
-#   gh label create funnel-escalated     -R <owner/repo> --color fbca04 --description "Funnel 5c: stuck code item (route-refused / red CI) — needs your manual merge or close" || true
+#   gh label create funnel-merge-pending -R <owner/repo> --color fbca04 --description "Pipeline 5c: PR open, session ended pre-merge — resume next tick" || true
+#   gh label create funnel-escalated     -R <owner/repo> --color fbca04 --description "Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close" || true
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK FUNNEL_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
+       BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
-       FUNNEL_OPERATOR FUNNEL_REQUIRED_CHECK \
-       FUNNEL_DRIVE FUNNEL_DRIVE_CAP FUNNEL_DRIVE_MODEL FUNNEL_DRIVE_SETTINGS \
-       FUNNEL_DRIVE_MERGE FUNNEL_DRIVE_MERGE_CAP FUNNEL_DRIVE_MERGE_MODEL FUNNEL_DRIVE_MERGE_SETTINGS \
-       FUNNEL_MERGE_PENDING_LABEL FUNNEL_CLARIFIED_MARKER FUNNEL_ESCALATED_LABEL \
+       PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
+       PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
+       PIPELINE_DRIVE_MERGE PIPELINE_DRIVE_MERGE_CAP PIPELINE_DRIVE_MERGE_MODEL PIPELINE_DRIVE_MERGE_SETTINGS \
+       PIPELINE_MERGE_PENDING_LABEL PIPELINE_CLARIFIED_MARKER PIPELINE_ESCALATED_LABEL \
        RETRO_MINT_ENABLED RETRO_MIN_INTERVAL RETRO_URGENT_CI_RETRIES \
        RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
        REVIEWER_SCAN_MIN_FILES \

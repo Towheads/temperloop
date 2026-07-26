@@ -6,7 +6,7 @@ slug: telemetry
 ## Problem
 
 Without a durable, structured record of what the pipeline actually did —
-which commands ran, which issues got touched, which funnel ticks fired,
+which commands ran, which issues got touched, which pipeline ticks fired,
 which extractions a drain pass produced, how expensive each `gh` call was —
 every question about pipeline health, cost, or effectiveness has to be
 answered by re-reading logs by hand or trusting anecdote. A regression in
@@ -31,7 +31,7 @@ Every stream that logs a unit of work carries the same **join key**: the
 raw, untruncated session identifier of the Claude Code session that produced
 the record (`null` for a manual/non-Claude-Code run). This is what lets a
 reader correlate events across streams for the same working session — e.g.
-matching a `command-run` record to the `issue-touches` and `funnel` activity
+matching a `command-run` record to the `issue-touches` and `pipeline` activity
 that happened in the same session — without a central event bus or a shared
 database.
 
@@ -51,7 +51,7 @@ The streams a bare checkout of this repo emits:
   time to give the full touch history for an issue (claims are deliberately
   kept separate from opens/merges/captures rather than folded into the same
   stream).
-- **`funnel`** (`funnel-<YYYY-MM>.jsonl`) — one record per autonomous-funnel
+- **`pipeline`** (`pipeline-<YYYY-MM>.jsonl`) — one record per autonomous-pipeline
   cron wake, heterogeneous by event type: a `skipped` wake (the schedule
   gate declined it), a `ran` wake (a tick actually executed, with per-board
   plans and a wall-time duration), or a `drive` wake (the auto-drive layer
@@ -93,7 +93,7 @@ operation being measured.
 
 Consumes: nothing external — each stream's emit site is called inline from
 the pipeline command or script whose activity it's recording (a build step,
-a drain pass, a funnel tick, a search-backend fallback path).
+a drain pass, a pipeline tick, a search-backend fallback path).
 
 Produces: the raw lake, which several downstream readers consume without
 any of them owning the schema — the kernel telemetry-brief renderer

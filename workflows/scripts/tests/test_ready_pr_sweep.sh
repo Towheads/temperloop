@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test_ready_pr_sweep.sh — tests for workflows/scripts/ready-pr-sweep.sh, the
-# read-only complete-but-unmerged-PR sweep (temperloop#721 — the drain half of
+# read-only complete-but-unmerged-PR sweep (temperloop#721 — the backstop half of
 # the orphaned-PR net; canonical caller: claude/commands/tidy.md Step 3
 # § Ready-but-unmerged PRs).
 #

@@ -5,7 +5,7 @@
 #
 # This is the source-side half of the dropped-bug capture net (GH #245): the
 # live "Capture at source" rule in CLAUDE.md says capture-don't-ask, and this
-# script is what makes that cheap. The drain backstop
+# script is what makes that cheap. The backstop
 # (~/.claude/commands/tidy.md § Unfiled defects) is the other half.
 #
 # Routing (per CLAUDE.md § Task workflow "Defect vs enhancement routing"):
@@ -33,11 +33,11 @@
 # kernel-vs-overlay routing rule — CLAUDE.kernel.md § Kernel vs overlay
 # routing rule). It overrides --board when given:
 #   --repo kernel       route to the temperloop ISSUES-ONLY tracker
-#                        (logical board 7 — registered in lib/board.sh's
+#                        (board id 7 — registered in lib/board.sh's
 #                        board_repo/board_backend built-in maps, see
 #                        ISSUES-ONLY-BACKEND.md) instead of a Projects-v2
 #                        board. Use when the capture IS kernel-domain
-#                        machinery (board adapter, build/sweep spine,
+#                        machinery (board adapter, build/sweep machinery,
 #                        install/doctor, quality gates — the "stranger test"
 #                        from the routing rule).
 #   --repo ambiguous     the capture is foundation-domain (foundation's own

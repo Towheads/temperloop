@@ -72,7 +72,7 @@
 #   REVIEWER_SCAN_MIN_FILES  the activation-offer floor (sourced from
 #                            workflows/scripts/build/build.config.sh when
 #                            present; falls back to 3 — see that file's own
-#                            knob comment, temperloop#538).
+#                            setting comment, temperloop#538).
 #
 # Excluded from every file-count scan: .git, node_modules, .venv, venv,
 # vendor, dist, build, target, .claude, __pycache__, .tox, .next — vendored/
@@ -96,11 +96,11 @@ KERNEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 : "${REVIEWER_ROUTING_TSV:=${KERNEL_ROOT}/workflows/scripts/config/reviewer-routing.tsv}"
 
-# Pull REVIEWER_SCAN_MIN_FILES from the tracked knob default when this kernel
-# checkout carries build.config.sh (rungs 3-5 of the precedence ladder); a
-# pre-set env value always wins (rung 2), and a non-vendoring caller that
+# Pull REVIEWER_SCAN_MIN_FILES from the tracked setting default when this kernel
+# checkout carries build.config.sh (layers 3-5 of the precedence ladder); a
+# pre-set env value always wins (layer 2), and a non-vendoring caller that
 # lacks build.config.sh entirely still gets the kernel built-in fallback
-# (rung 6) via the `:=` below.
+# (layer 6) via the `:=` below.
 if [ -f "${KERNEL_ROOT}/workflows/scripts/build/build.config.sh" ]; then
   # shellcheck source=/dev/null
   source "${KERNEL_ROOT}/workflows/scripts/build/build.config.sh"

@@ -66,7 +66,7 @@ below) — the states here scope your *critiques*, not your executed runs:
   kernel tooling; does the sync process distinguish "the team's shared
   config" from "your personal layer atop it," or does a sync silently
   clobber your customization?
-- **unattended** — the team's own cron/funnel automation runs headlessly;
+- **unattended** — the team's own cron/pipeline automation runs headlessly;
   does your personal customization (if any survives into automation) ever
   affect a run a teammate is relying on?
 

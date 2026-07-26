@@ -16,9 +16,9 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
 .PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard \
-	test-prune-branches validate-live-drain validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
+	test-prune-branches validate-capture-backstop validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
-	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-pr-leak-guard test-producer-egress docs \
+	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
 
 help:
@@ -26,14 +26,14 @@ help:
 	@echo "  quality-gates          Run the full static gate set (= CI's checks job)"
 	@echo "  shellcheck              Whole-tree shellcheck (production + hook scripts)"
 	@echo "  test-board              Board toolkit tests"
-	@echo "  test-build              Build deterministic-spine toolkit tests"
+	@echo "  test-build              Build deterministic-machinery toolkit tests"
 	@echo "  test-build-workflow     build-level.mjs offline harness"
 	@echo "  test-hooks              Claude Code hook tests"
 	@echo "  test-install            install-settings reconcile test"
 	@echo "  test-install-links      install-links helper tests"
 	@echo "  test-install-worktree-guard  Canonical-checkout guard tests"
 	@echo "  test-prune-branches     prune-merged-branches.sh tests"
-	@echo "  validate-live-drain     Live/Drain pairing registry lint"
+	@echo "  validate-capture-backstop     Capture/Backstop pairing registry lint"
 	@echo "  validate-activation-registry  Class-A static-second-surface activation registry lint"
 	@echo "  validate-command-run-emit  emit-command-run.sh presence/wiring lint"
 	@echo "  validate-issue-touch-emit  emit-issue-touch.sh presence/wiring lint"
@@ -46,6 +46,7 @@ help:
 	@echo "  test-kernel-denylist    Personal-token denylist check"
 	@echo "  test-kernel-gitleaks    gitleaks secret scan over the kernel set"
 	@echo "  test-kernel-prerename   Pre-rename (foundation->temperloop) identifier leak-gate sweep"
+	@echo "  test-kernel-terminology v0.17.0 terminology-rename identifier leak-gate sweep"
 	@echo "  test-pr-leak-guard      Diff-scoped public-repo leak guard (PR added lines)"
 	@echo "  test-producer-egress    Egress lint over the Epic E value-loop producers"
 	@echo "  docs                    Render the generated docs site"
@@ -89,7 +90,7 @@ test-board:
 	done
 
 test-board-dual-adapter:
-	@echo "==> Running dual-adapter SAFE-TIER funnel integration suite..."
+	@echo "==> Running dual-adapter SAFE-TIER pipeline integration suite..."
 	@bash $(BOARD_SRC)/tests/test_board_dual_adapter.sh
 
 test-build:
@@ -150,8 +151,8 @@ shellcheck:
 quality-gates:
 	@bash $(FOUNDATION)/scripts/quality-gates.sh
 
-validate-live-drain:
-	@bash $(FOUNDATION)/workflows/scripts/validate-live-drain.sh
+validate-capture-backstop:
+	@bash $(FOUNDATION)/workflows/scripts/validate-capture-backstop.sh
 
 validate-activation-registry:
 	@bash $(FOUNDATION)/workflows/scripts/validate-activation-registry.sh
@@ -198,6 +199,17 @@ test-kernel-prerename:
 	@bash $(FOUNDATION)/workflows/scripts/kernel/check-prerename-leak-guard.sh
 	@echo "==> Running check-prerename-leak-guard.sh fixture tests..."
 	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_prerename_leak_guard.sh
+
+# v0.17.0 terminology-rename identifier leak gate (temperloop#729): keeps the
+# renamed coined identifiers (the legacy env prefixes, the old script-file
+# names, and the coined severity/pairing tokens) from silently re-entering a
+# stranger surface — only the reviewed exempt set (compat window + records)
+# may carry them; anything else fails.
+test-kernel-terminology:
+	@echo "==> Running terminology-rename identifier leak-gate sweep..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/check-terminology-leak-guard.sh
+	@echo "==> Running check-terminology-leak-guard.sh fixture tests..."
+	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_terminology_leak_guard.sh
 
 # Diff-scoped public-repo leak guard (temperloop #74): scans the ADDED lines of
 # a PR's diff (all tracked files) for personal/private tokens + secrets and

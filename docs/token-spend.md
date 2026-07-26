@@ -16,7 +16,7 @@ Two framing facts carry over from the cost page:
   same token count on either model; dollars scale ~1.67× from Sonnet 5 to
   Opus 4.8. So "efficient" almost always means *do the same work with fewer
   tokens*, or *route those tokens to a cheaper model* — the levers below.
-- **Every knob named here has its value in
+- **Every setting named here has its value in
   [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh),
   not in this prose.** Defaults are quoted as a directional aid; the config
   file is the source of truth.
@@ -83,25 +83,25 @@ genuinely hard decisions (a merge, a design fork) get the strong one. The
 failure this prevents is a fan-out that silently launches every agent on the
 top tier for work that never needed it.
 
-- **The funnel splits its driver model by judgment level:**
-  `FUNNEL_DRIVE_MODEL` (default `claude-sonnet-5`) drives mechanical actions;
-  `FUNNEL_DRIVE_MERGE_MODEL` (default `claude-opus-4-8`) is reserved for the
+- **The pipeline splits its driver model by judgment level:**
+  `PIPELINE_DRIVE_MODEL` (default `claude-sonnet-5`) drives mechanical actions;
+  `PIPELINE_DRIVE_MERGE_MODEL` (default `claude-opus-4-8`) is reserved for the
   high-judgment code/merge tier.
   ([`build.config.sh`](../workflows/scripts/build/build.config.sh)).
 - **`/build`'s one-shot executors are pinned to Haiku** — the agents that just
-  run a spine command or a read-only merge-state query do no reasoning, so
+  run a machinery command or a read-only merge-state query do no reasoning, so
   they're the cheapest tier; the worker that *does* the build inherits the
   session model (`model: item.model`).
   ([`claude/workflows/build-level.mjs`](../claude/workflows/build-level.mjs)).
 - **The standing rule** that each fan-out set its worker's tier *explicitly*
   to the cheapest that fits — rather than defaulting all agents to the
   driver's tier — is [`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md)
-  § Subagent usage ("Cost-tier routing"). The two funnel knobs are its worked
+  § Subagent usage ("Cost-tier routing"). The two pipeline settings are its worked
   example; review seats are routed the same way (advisory reviewers →
   `sonnet`, locate-and-report fan-outs → `haiku`).
 
 > temperloop routes by **model tier**, not by a separate effort setting —
-> there is no effort-tier (`low`/`high`/`xhigh`) knob in the pipeline config
+> there is no effort-tier (`low`/`high`/`xhigh`) setting in the pipeline config
 > today. Model-tier selection is how the cost/quality tradeoff is expressed
 > here.
 
@@ -244,7 +244,7 @@ built-in data.
 - **Raw-lake event streams** under [`meta/data/raw/`](../meta/data/raw/README.md)
   (field reference in [`docs/features/telemetry.md`](features/telemetry.md)):
   `command-run` (items processed/merged/parked), `issue-touches`, `claims`,
-  `funnel` (each wake's event type + `duration_ms` + action counts), `gh-calls`
+  `pipeline` (each wake's event type + `duration_ms` + action counts), `gh-calls`
   (per-call wall-time `dur_ms` + exit code), `findings` (records the model's
   *identity*, useful for attribution, not its token count), and `gh-perf`
   (per-op latency percentiles). Every one records events, time, or counts —
@@ -296,9 +296,9 @@ the cost page reaches.
 - [`cost-and-autonomy.md`](cost-and-autonomy.md) — what a run costs and what it
   does unattended, plus the spend *ceilings* (caps, quota gate) this page
   deliberately leaves out.
-- [`docs/features/funnel-driver.md`](features/funnel-driver.md) — the autonomy
+- [`docs/features/pipeline-driver.md`](features/pipeline-driver.md) — the autonomy
   tiers whose model split this page describes.
 - [`docs/features/telemetry.md`](features/telemetry.md) — the raw-lake stream
   reference behind the tracking section.
 - [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh)
-  — the single source of truth for every knob value named above.
+  — the single source of truth for every setting value named above.

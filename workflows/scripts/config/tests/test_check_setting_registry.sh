@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 #
-# Tests for check-knob-registry.sh (temperloop#164/#169, item
+# Tests for check-setting-registry.sh (temperloop#164/#169, item
 # registry-config-lints): a synthetic fixture repo proves the RED path (a
-# default mismatch, a missing seam, an unregistered knob), the GREEN path
+# default mismatch, a missing seam, an unregistered setting), the GREEN path
 # (fixing each), every exemption mechanism (the `_`-prefix/generic-allowlist/
-# `*_NOW` pattern auto-exclusions, the same-line `# knob:exempt` marker, the
+# `*_NOW` pattern auto-exclusions, the same-line `# setting:exempt` marker, the
 # wholesale exempt-files list, and the RESERVED-row skip), and the
 # layer-aware overlay seam (a kernel row checked against the kernel table
 # alone; an overlay `add`/`redefault` row checked against its own
 # owning-script; an overlay-only name counted as registered for the
-# unregistered-knob sweep).
+# unregistered-setting sweep).
 #
 # Mirrors workflows/scripts/kernel/tests/test_check_personal_token_denylist.sh's
-# plain mktemp-fixture + real-git-repo style (check-knob-registry.sh's
-# unregistered-knob sweep shells out to list-kernel-set.sh, which itself
+# plain mktemp-fixture + real-git-repo style (check-setting-registry.sh's
+# unregistered-setting sweep shells out to list-kernel-set.sh, which itself
 # shells out to `git ls-files`).
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$(cd "$HERE/.." && pwd)"
-CHECKER="$CONFIG_DIR/check-knob-registry.sh"
+CHECKER="$CONFIG_DIR/check-setting-registry.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/knob-registry-checker-test-XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/setting-registry-checker-test-XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -41,13 +41,13 @@ EOF
 
 run_checker() {
   (
-    KNOB_REGISTRY_FILE="$WORK/kernel.tsv"
-    KNOB_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
-    KNOB_REGISTRY_SCAN_ROOT="$REPO"
-    KNOB_REGISTRY_MANIFEST_FILE="$MANIFEST"
-    KNOB_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
-    export KNOB_REGISTRY_FILE KNOB_REGISTRY_OVERLAY_FILE KNOB_REGISTRY_SCAN_ROOT
-    export KNOB_REGISTRY_MANIFEST_FILE KNOB_REGISTRY_EXEMPT_FILE
+    SETTING_REGISTRY_FILE="$WORK/kernel.tsv"
+    SETTING_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
+    SETTING_REGISTRY_SCAN_ROOT="$REPO"
+    SETTING_REGISTRY_MANIFEST_FILE="$MANIFEST"
+    SETTING_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
+    export SETTING_REGISTRY_FILE SETTING_REGISTRY_OVERLAY_FILE SETTING_REGISTRY_SCAN_ROOT
+    export SETTING_REGISTRY_MANIFEST_FILE SETTING_REGISTRY_EXEMPT_FILE
     bash "$CHECKER"
   )
 }
@@ -60,13 +60,13 @@ commit_repo() {
 # --- 1. clean kernel-only fixture: equality + sweep both pass -------------
 cat >"$REPO/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=10}"
-echo "$KNOB_A"
+: "${SETTING_A:=10}"
+echo "$SETTING_A"
 EOF
 echo "" >"$WORK/overlay.tsv"   # absent-equivalent (no rows) — but present so
 rm -f "$WORK/overlay.tsv"      # explicitly test the ABSENT-overlay path first
 cat >"$WORK/kernel.tsv" <<'EOF'
-KNOB_A	10	int	kernel	pkg/a.sh	first test knob
+SETTING_A	10	int	kernel	pkg/a.sh	first test setting
 EOF
 : >"$WORK/exempt.txt"
 commit_repo
@@ -78,14 +78,14 @@ echo "PASS: 1 clean kernel-only fixture (equality + sweep) passes"
 # --- 2. RED: default mismatch ----------------------------------------------
 cat >"$REPO/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=99}"
-echo "$KNOB_A"
+: "${SETTING_A:=99}"
+echo "$SETTING_A"
 EOF
 commit_repo
 out="$(run_checker 2>&1)" && fail "2: mismatched default should fail:
 $out"
 case "$out" in
-  *"EQUALITY: mismatch for KNOB_A"*) ;;
+  *"EQUALITY: mismatch for SETTING_A"*) ;;
   *) fail "2: expected an EQUALITY mismatch message, got:
 $out" ;;
 esac
@@ -94,8 +94,8 @@ echo "PASS: 2 default mismatch correctly flagged (RED)"
 # --- 3. GREEN again after reverting -----------------------------------------
 cat >"$REPO/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=10}"
-echo "$KNOB_A"
+: "${SETTING_A:=10}"
+echo "$SETTING_A"
 EOF
 commit_repo
 out="$(run_checker 2>&1)" || fail "3: reverted fixture should pass again:
@@ -105,13 +105,13 @@ echo "PASS: 3 clean again after reverting the mismatch (GREEN)"
 # --- 4. RED: seam missing entirely (owning-script no longer has it) -------
 cat >"$REPO/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "no knob here"
+echo "no setting here"
 EOF
 commit_repo
 out="$(run_checker 2>&1)" && fail "4: missing seam should fail:
 $out"
 case "$out" in
-  *"EQUALITY: no shell seam found for KNOB_A"*) ;;
+  *"EQUALITY: no shell seam found for SETTING_A"*) ;;
   *) fail "4: expected a 'no shell seam found' message, got:
 $out" ;;
 esac
@@ -120,52 +120,52 @@ echo "PASS: 4 missing seam correctly flagged (RED)"
 # --- 5. RESERVED row is skipped (no seam required) -------------------------
 cat >"$REPO/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=10}"
-echo "$KNOB_A"
+: "${SETTING_A:=10}"
+echo "$SETTING_A"
 EOF
 cat >"$WORK/kernel.tsv" <<'EOF'
-KNOB_A	10	int	kernel	pkg/a.sh	first test knob
-KNOB_RESERVED	future	string	kernel	pkg/nonexistent.sh	RESERVED — no reader yet
+SETTING_A	10	int	kernel	pkg/a.sh	first test setting
+SETTING_RESERVED	future	string	kernel	pkg/nonexistent.sh	RESERVED — no reader yet
 EOF
 commit_repo
 out="$(run_checker 2>&1)" || fail "5: a RESERVED row with no seam should not fail:
 $out"
 echo "PASS: 5 RESERVED row skipped (no seam required)"
 
-# --- 6. RED: unregistered knob-shaped seam ---------------------------------
+# --- 6. RED: unregistered setting-shaped seam ---------------------------------
 cat >"$REPO/pkg/b.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_B:=hello}"
-echo "$KNOB_B"
+: "${SETTING_B:=hello}"
+echo "$SETTING_B"
 EOF
 commit_repo
-out="$(run_checker 2>&1)" && fail "6: unregistered knob should fail:
+out="$(run_checker 2>&1)" && fail "6: unregistered setting should fail:
 $out"
 case "$out" in
-  *"UNREGISTERED: pkg/b.sh"*"KNOB_B"*) ;;
-  *) fail "6: expected an UNREGISTERED message for KNOB_B, got:
+  *"UNREGISTERED: pkg/b.sh"*"SETTING_B"*) ;;
+  *) fail "6: expected an UNREGISTERED message for SETTING_B, got:
 $out" ;;
 esac
-echo "PASS: 6 unregistered knob-shaped seam correctly flagged (RED)"
+echo "PASS: 6 unregistered setting-shaped seam correctly flagged (RED)"
 
-# --- 7. GREEN: registering KNOB_B fixes it ----------------------------------
+# --- 7. GREEN: registering SETTING_B fixes it ----------------------------------
 cat >"$WORK/kernel.tsv" <<'EOF'
-KNOB_A	10	int	kernel	pkg/a.sh	first test knob
-KNOB_RESERVED	future	string	kernel	pkg/nonexistent.sh	RESERVED — no reader yet
-KNOB_B	hello	string	kernel	pkg/b.sh	second test knob
+SETTING_A	10	int	kernel	pkg/a.sh	first test setting
+SETTING_RESERVED	future	string	kernel	pkg/nonexistent.sh	RESERVED — no reader yet
+SETTING_B	hello	string	kernel	pkg/b.sh	second test setting
 EOF
-out="$(run_checker 2>&1)" || fail "7: registering KNOB_B should clear the failure:
+out="$(run_checker 2>&1)" || fail "7: registering SETTING_B should clear the failure:
 $out"
-echo "PASS: 7 registering the knob clears the unregistered failure (GREEN)"
+echo "PASS: 7 registering the setting clears the unregistered failure (GREEN)"
 
 # --- 8. GREEN: exemption mechanisms (auto + marker + exempt-file) ----------
 cat >"$REPO/pkg/c.sh" <<'EOF'
 #!/usr/bin/env bash
-# a private, generic, test-clock, and marker-exempted "knob" each:
+# a private, generic, test-clock, and marker-exempted "setting" each:
 : "${_INTERNAL_C:=1}"
 : "${TMPDIR:-/tmp}"
 : "${SOME_THING_NOW:-1}"
-FOO="${MYSTERY_C:-42}"  # knob:exempt — test fixture, internal computed value
+FOO="${MYSTERY_C:-42}"  # setting:exempt — test fixture, internal computed value
 EOF
 cat >"$REPO/pkg/d.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -179,38 +179,38 @@ out="$(run_checker 2>&1)" || fail "8: every exemption mechanism should suppress 
 $out"
 echo "PASS: 8 auto-allowlist, *_NOW pattern, same-line marker, and wholesale exempt-file all suppress correctly (GREEN)"
 
-# --- 9. comment-only mention of a knob-shaped seam is never scanned -------
+# --- 9. comment-only mention of a setting-shaped seam is never scanned -------
 cat >"$REPO/pkg/e.sh" <<'EOF'
 #!/usr/bin/env bash
-# doc example: ${NOT_A_REAL_KNOB:=default}
+# doc example: ${NOT_A_REAL_SETTING:=default}
 echo ok
 EOF
 commit_repo
 out="$(run_checker 2>&1)" || fail "9: a comment-only mention should not be flagged:
 $out"
-echo "PASS: 9 comment-only mention of a knob-shaped seam is not scanned"
+echo "PASS: 9 comment-only mention of a setting-shaped seam is not scanned"
 
 # --- 10. layer-aware overlay: kernel row checked against kernel file alone,
 #         overlay add/redefault row checked against its own owning-script --
 rm -f "$REPO/pkg/e.sh"
 cat >"$REPO/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=10}"
-echo "$KNOB_A"
+: "${SETTING_A:=10}"
+echo "$SETTING_A"
 EOF
 cat >"$REPO/pkg/overlay_only.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=20}"
-: "${KNOB_OVERLAY_ONLY:=overlay-value}"
+: "${SETTING_A:=20}"
+: "${SETTING_OVERLAY_ONLY:=overlay-value}"
 EOF
 cat >"$WORK/kernel.tsv" <<'EOF'
-KNOB_A	10	int	kernel	pkg/a.sh	first test knob
-KNOB_RESERVED	future	string	kernel	pkg/nonexistent.sh	RESERVED — no reader yet
-KNOB_B	hello	string	kernel	pkg/b.sh	second test knob
+SETTING_A	10	int	kernel	pkg/a.sh	first test setting
+SETTING_RESERVED	future	string	kernel	pkg/nonexistent.sh	RESERVED — no reader yet
+SETTING_B	hello	string	kernel	pkg/b.sh	second test setting
 EOF
 cat >"$WORK/overlay.tsv" <<'EOF'
-KNOB_A	20	int	kernel	pkg/overlay_only.sh	overlay redefaults KNOB_A for its own call site	redefault
-KNOB_OVERLAY_ONLY	overlay-value	string	kernel	pkg/overlay_only.sh	overlay-only addition	add
+SETTING_A	20	int	kernel	pkg/overlay_only.sh	overlay redefaults SETTING_A for its own call site	redefault
+SETTING_OVERLAY_ONLY	overlay-value	string	kernel	pkg/overlay_only.sh	overlay-only addition	add
 EOF
 commit_repo
 out="$(run_checker 2>&1)" || fail "10: layer-aware overlay pass should be clean:
@@ -225,54 +225,54 @@ echo "PASS: 10 layer-aware overlay pass: kernel row (10) checked against pkg/a.s
 # --- 11. RED: overlay redefault mismatch is caught against its OWN file ---
 cat >"$REPO/pkg/overlay_only.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=999}"
-: "${KNOB_OVERLAY_ONLY:=overlay-value}"
+: "${SETTING_A:=999}"
+: "${SETTING_OVERLAY_ONLY:=overlay-value}"
 EOF
 commit_repo
 out="$(run_checker 2>&1)" && fail "11: overlay redefault mismatch should fail:
 $out"
 case "$out" in
-  *"EQUALITY: mismatch for KNOB_A (overlay row)"*) ;;
+  *"EQUALITY: mismatch for SETTING_A (overlay row)"*) ;;
   *) fail "11: expected an overlay-row EQUALITY mismatch, got:
 $out" ;;
 esac
 echo "PASS: 11 overlay redefault mismatch caught against its own owning-script (RED)"
 
-# --- 12. KNOB_REGISTRY_OVERLAY_SCAN_ROOT: composed-tree seam (temperloop#243)
-#         kernel rows resolve against KNOB_REGISTRY_SCAN_ROOT (pinned to a
+# --- 12. SETTING_REGISTRY_OVERLAY_SCAN_ROOT: composed-tree seam (temperloop#243)
+#         kernel rows resolve against SETTING_REGISTRY_SCAN_ROOT (pinned to a
 #         vendored kernel/ subtree); an overlay add/redefault row's
 #         owning-script lives OUTSIDE that subtree, at the composed root,
-#         and resolves against KNOB_REGISTRY_OVERLAY_SCAN_ROOT instead.
+#         and resolves against SETTING_REGISTRY_OVERLAY_SCAN_ROOT instead.
 mkdir -p "$REPO/kernel/pkg" "$REPO/overlay_pkg"
 cat >"$REPO/kernel/pkg/a.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_A:=10}"
-echo "$KNOB_A"
+: "${SETTING_A:=10}"
+echo "$SETTING_A"
 EOF
 cat >"$REPO/overlay_pkg/overlay_composed.sh" <<'EOF'
 #!/usr/bin/env bash
-: "${KNOB_OVERLAY_COMPOSED:=composed-value}"
+: "${SETTING_OVERLAY_COMPOSED:=composed-value}"
 EOF
 cat >"$WORK/kernel.tsv" <<'EOF'
-KNOB_A	10	int	kernel	pkg/a.sh	first test knob
+SETTING_A	10	int	kernel	pkg/a.sh	first test setting
 EOF
 cat >"$WORK/overlay.tsv" <<'EOF'
-KNOB_OVERLAY_COMPOSED	composed-value	string	kernel	overlay_pkg/overlay_composed.sh	overlay addition living outside the kernel subtree	add
+SETTING_OVERLAY_COMPOSED	composed-value	string	kernel	overlay_pkg/overlay_composed.sh	overlay addition living outside the kernel subtree	add
 EOF
 : >"$WORK/exempt.txt"
 commit_repo
 
 run_checker_composed() {
   (
-    KNOB_REGISTRY_FILE="$WORK/kernel.tsv"
-    KNOB_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
-    KNOB_REGISTRY_SCAN_ROOT="$REPO/kernel"
-    KNOB_REGISTRY_OVERLAY_SCAN_ROOT="$REPO"
-    KNOB_REGISTRY_MANIFEST_FILE="$MANIFEST"
-    KNOB_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
-    export KNOB_REGISTRY_FILE KNOB_REGISTRY_OVERLAY_FILE KNOB_REGISTRY_SCAN_ROOT
-    export KNOB_REGISTRY_OVERLAY_SCAN_ROOT
-    export KNOB_REGISTRY_MANIFEST_FILE KNOB_REGISTRY_EXEMPT_FILE
+    SETTING_REGISTRY_FILE="$WORK/kernel.tsv"
+    SETTING_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
+    SETTING_REGISTRY_SCAN_ROOT="$REPO/kernel"
+    SETTING_REGISTRY_OVERLAY_SCAN_ROOT="$REPO"
+    SETTING_REGISTRY_MANIFEST_FILE="$MANIFEST"
+    SETTING_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
+    export SETTING_REGISTRY_FILE SETTING_REGISTRY_OVERLAY_FILE SETTING_REGISTRY_SCAN_ROOT
+    export SETTING_REGISTRY_OVERLAY_SCAN_ROOT
+    export SETTING_REGISTRY_MANIFEST_FILE SETTING_REGISTRY_EXEMPT_FILE
     bash "$CHECKER"
   )
 }
@@ -280,35 +280,35 @@ run_checker_composed() {
 out="$(run_checker_composed 2>&1)" || fail "12: composed-tree overlay-scan-root seam should pass:
 $out"
 case "$out" in
-  *"EQUALITY: no shell seam found for KNOB_OVERLAY_COMPOSED"*) fail "12: overlay row should have resolved against KNOB_REGISTRY_OVERLAY_SCAN_ROOT, not the kernel-pinned scan root:
+  *"EQUALITY: no shell seam found for SETTING_OVERLAY_COMPOSED"*) fail "12: overlay row should have resolved against SETTING_REGISTRY_OVERLAY_SCAN_ROOT, not the kernel-pinned scan root:
 $out" ;;
 esac
-echo "PASS: 12 KNOB_REGISTRY_OVERLAY_SCAN_ROOT resolves an overlay row's owning-script outside a kernel-pinned scan root"
+echo "PASS: 12 SETTING_REGISTRY_OVERLAY_SCAN_ROOT resolves an overlay row's owning-script outside a kernel-pinned scan root"
 
-# --- 13. RED: without KNOB_REGISTRY_OVERLAY_SCAN_ROOT (unset, so it
+# --- 13. RED: without SETTING_REGISTRY_OVERLAY_SCAN_ROOT (unset, so it
 #         defaults to the kernel-pinned scan root), the same overlay row is
 #         structurally unresolvable — proving 12 actually exercises the seam
 #         and isn't passing for some other reason.
 run_checker_composed_no_overlay_root() {
   (
-    KNOB_REGISTRY_FILE="$WORK/kernel.tsv"
-    KNOB_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
-    KNOB_REGISTRY_SCAN_ROOT="$REPO/kernel"
-    KNOB_REGISTRY_MANIFEST_FILE="$MANIFEST"
-    KNOB_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
-    unset KNOB_REGISTRY_OVERLAY_SCAN_ROOT 2>/dev/null || true
-    export KNOB_REGISTRY_FILE KNOB_REGISTRY_OVERLAY_FILE KNOB_REGISTRY_SCAN_ROOT
-    export KNOB_REGISTRY_MANIFEST_FILE KNOB_REGISTRY_EXEMPT_FILE
+    SETTING_REGISTRY_FILE="$WORK/kernel.tsv"
+    SETTING_REGISTRY_OVERLAY_FILE="$WORK/overlay.tsv"
+    SETTING_REGISTRY_SCAN_ROOT="$REPO/kernel"
+    SETTING_REGISTRY_MANIFEST_FILE="$MANIFEST"
+    SETTING_REGISTRY_EXEMPT_FILE="$WORK/exempt.txt"
+    unset SETTING_REGISTRY_OVERLAY_SCAN_ROOT 2>/dev/null || true
+    export SETTING_REGISTRY_FILE SETTING_REGISTRY_OVERLAY_FILE SETTING_REGISTRY_SCAN_ROOT
+    export SETTING_REGISTRY_MANIFEST_FILE SETTING_REGISTRY_EXEMPT_FILE
     bash "$CHECKER"
   )
 }
-out="$(run_checker_composed_no_overlay_root 2>&1)" && fail "13: without KNOB_REGISTRY_OVERLAY_SCAN_ROOT, the composed-tree overlay row should fail to resolve:
+out="$(run_checker_composed_no_overlay_root 2>&1)" && fail "13: without SETTING_REGISTRY_OVERLAY_SCAN_ROOT, the composed-tree overlay row should fail to resolve:
 $out"
 case "$out" in
-  *"EQUALITY: no shell seam found for KNOB_OVERLAY_COMPOSED"*) ;;
-  *) fail "13: expected a 'no shell seam found' message for KNOB_OVERLAY_COMPOSED when the overlay-scan-root seam is unset, got:
+  *"EQUALITY: no shell seam found for SETTING_OVERLAY_COMPOSED"*) ;;
+  *) fail "13: expected a 'no shell seam found' message for SETTING_OVERLAY_COMPOSED when the overlay-scan-root seam is unset, got:
 $out" ;;
 esac
-echo "PASS: 13 unset KNOB_REGISTRY_OVERLAY_SCAN_ROOT correctly leaves the composed-tree overlay row unresolvable (proves 12 exercises the seam)"
+echo "PASS: 13 unset SETTING_REGISTRY_OVERLAY_SCAN_ROOT correctly leaves the composed-tree overlay row unresolvable (proves 12 exercises the seam)"
 
-echo "ALL PASS: check-knob-registry.sh"
+echo "ALL PASS: check-setting-registry.sh"

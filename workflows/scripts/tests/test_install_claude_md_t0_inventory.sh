@@ -34,7 +34,7 @@ mkdir -p "$TMP/dest"
 cat >"$kernel" <<'EOF'
 # Kernel doc
 See [[Decisions/foundation - Branch naming convention]] and
-[[Patterns/Live-Drain pairing|the pairing pattern]].
+[[Patterns/Capture-Backstop pairing|the pairing pattern]].
 Also [[Mistakes/foundation - updateProjectV2Field replaces single-select options#Some anchor]].
 Reference: `Context/pipeline - environment hygiene report.md` for details.
 A duplicate: [[Decisions/foundation - Branch naming convention]] again.
@@ -55,7 +55,7 @@ Context/pipeline - environment hygiene report
 Decisions/foundation - Branch naming convention
 Decisions/foundation - Vault provenance schema (note-level)
 Mistakes/foundation - updateProjectV2Field replaces single-select options
-Patterns/Live-Drain pairing"
+Patterns/Capture-Backstop pairing"
 
 actual="$(cat "$t0")"
 [ "$actual" = "$expected" ] || fail "1-3: unexpected T0 inventory content

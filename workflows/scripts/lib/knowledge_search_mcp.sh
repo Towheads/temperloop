@@ -51,7 +51,7 @@
 # This file is SOURCED — it sets no shell options (the caller owns set -euo).
 # Depends on: knowledge_search.sh (source FIRST), curl, jq.
 
-# ── Config knobs ──────────────────────────────────────────────────────────
+# ── Config settings ──────────────────────────────────────────────────────────
 #   KNOWLEDGE_SEARCH_BM_MCP_URL    daemon endpoint. Default is a loopback-only
 #                                  streamable-http address; override to match
 #                                  the supervised daemon's host/port/path.
@@ -71,7 +71,7 @@
 # when it ISN'T swallowed. This section adds a durable, de-duped signal that
 # survives a swallowed stderr, without changing the fail-open contract.
 #
-# Config knobs (tests only):
+# Config settings (tests only):
 #   KS_SEARCH_FALLBACK_RAW_DIR    override the raw-lake dir (default: the
 #                                 <repo>/meta/data/raw resolved from this file).
 #   KS_SEARCH_FALLBACK_STATE_DIR  override the de-dup marker dir (default:

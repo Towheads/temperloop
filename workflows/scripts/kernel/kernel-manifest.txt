@@ -5,7 +5,7 @@
 #
 # Definitions (from the epic contract):
 #   kernel  — anything a stranger needs for the process layer to work against
-#             their own org/values: board toolkit, build spine, funnel,
+#             their own org/values: board toolkit, build machinery, pipeline,
 #             quality gates, commands/skills, generic hooks, plan schema.
 #   overlay — anything personal or machine-specific: vault-specific content,
 #             mini/launchd deploy bits, personal dotfiles, telemetry data,
@@ -47,7 +47,7 @@
 # install-settings.sh). Same split-pending treatment extended here to
 # `claude/settings.json` (mixes kernel hook-wiring with Travis's personal
 # permission allowlist/model choice in one committed file) and `Makefile`
-# (kernel build-spine/board/install targets interleaved with overlay
+# (kernel build-machinery/board/install targets interleaved with overlay
 # telemetry/sessions/crash-convergence targets in one file, mirroring the
 # quality-gates.sh KERNEL_GATES/OVERLAY_GATES split but not yet itself split
 # the same way) — both need a real file-level split before physical
@@ -79,7 +79,7 @@ overlay iterm/*
 overlay meta/*
 # Single-file override (longest-pattern-wins, per the MATCH RULE above): the
 # raw-lake sink-spec stub (kernel #29) is the doc a bare kernel checkout's own
-# emit sites (emit-command-run.sh, emit-issue-touch.sh, funnel-cron.sh,
+# emit sites (emit-command-run.sh, emit-issue-touch.sh, pipeline-cron.sh,
 # board/capture.sh, board/claim.sh) point their "canonical sink spec:" header
 # comment at — it must ship with the kernel even though the actual runtime
 # data under meta/data/raw/ (gitignored JSONL) stays overlay-owned, matching
@@ -109,12 +109,12 @@ kernel bin/lib/*
 kernel claude/.gitkeep
 kernel claude/CLAUDE.kernel.md
 overlay claude/CLAUDE.overlay.md
-# Overlay extension of tidy.md's kernel Live/Drain pairing table
+# Overlay extension of tidy.md's kernel Capture/Backstop pairing table
 # (foundation F#809): personal/vault-backed pairs only, unioned in by
-# workflows/scripts/validate-live-drain.sh when this file is present. Deliberately
+# workflows/scripts/validate-capture-backstop.sh when this file is present. Deliberately
 # NOT under claude/commands/ (a bare .md there is discovered as a slash
 # command; this is a data/registry file, not a command).
-overlay claude/live-drain-registry.overlay.md
+overlay claude/capture-backstop-registry.overlay.md
 split claude/settings.json
 kernel claude/status-line.sh
 kernel claude/plan-schema.md
@@ -131,13 +131,13 @@ kernel claude/engineering-principles.md
 # of the adopter's first epic ("Set up <project> with temperloop",
 # ADR 0010). Deliberately NOT under claude/commands/ (a bare .md there is
 # discovered as a slash command; this is template data, not a command),
-# same reasoning as claude/live-drain-registry.overlay.md above.
+# same reasoning as claude/capture-backstop-registry.overlay.md above.
 kernel claude/templates/first-epic-setup.md
 kernel claude/agents/*
 kernel claude/workflows/*
 
-# claude/commands/ — pipeline skills. Generic bug->PR pipeline + funnel
-# driver are kernel; Travis's personal daily-planning rituals, his telemetry
+# claude/commands/ — pipeline skills. Generic bug->PR pipeline + pipeline
+# driver are kernel; Travis's personal daily-planning routines, his telemetry
 # brief, and the Sentry-backed crash-convergence intake are overlay (they
 # name overlay-only subject matter even though the *shape* is a slash
 # command like any other).
@@ -151,8 +151,8 @@ kernel claude/commands/next.md
 kernel claude/commands/sweep.md
 kernel claude/commands/triage.md
 kernel claude/commands/workshop.md
-kernel claude/commands/funnel-drive.md
-kernel claude/commands/funnel-drive-merge.md
+kernel claude/commands/pipeline-drive.md
+kernel claude/commands/pipeline-drive-merge.md
 overlay claude/commands/standup.md
 overlay claude/commands/telemetry.md
 overlay claude/commands/signal-intake.md
@@ -189,7 +189,7 @@ kernel workflows/scripts/build/*
 # issue-state.sh + lib/pr-linkage.sh (temperloop #635) are already covered by
 # the build/* catch-all above; these two explicit lines are the requested
 # by-name registration for the new `resolve` single-issue state probe and
-# its shared open-PR-linkage lib (both kernel: generic build-spine tooling,
+# its shared open-PR-linkage lib (both kernel: generic build-machinery tooling,
 # no org/personal content).
 kernel workflows/scripts/build/issue-state.sh
 kernel workflows/scripts/build/lib/pr-linkage.sh
@@ -204,8 +204,8 @@ overlay workflows/scripts/build/tests/test_rework_snapshot.sh
 kernel workflows/scripts/lib/*
 kernel workflows/scripts/drain/*
 kernel workflows/scripts/install/*
-# Knob registry (temperloop#164/#169 D2): the kernel TSV of every tunable
-# knob + the union-aware parse helper. A stranger's kernel-only checkout
+# Setting registry (temperloop#164/#169 D2): the kernel TSV of every tunable
+# setting + the union-aware parse helper. A stranger's kernel-only checkout
 # needs both the registry and the parser (a future `temperloop config list`
 # and CI equality lint both read it) — kernel content, no org/vault subject
 # matter.
@@ -320,6 +320,7 @@ kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/workflow-reviewer-coverage.sh
+kernel workflows/scripts/validate-capture-backstop.sh
 kernel workflows/scripts/validate-live-drain.sh
 kernel workflows/scripts/validate-template-refs.sh
 kernel workflows/scripts/validate-design-brief.sh
@@ -336,8 +337,8 @@ overlay workflows/scripts/build_eval_rollup.py
 overlay workflows/scripts/build_findings_rollup.py
 overlay workflows/scripts/test_docs_metrics.py
 overlay workflows/scripts/test_build_findings_rollup.py
-overlay workflows/scripts/build_funnel_rollup.py
-overlay workflows/scripts/test_build_funnel_rollup.py
+overlay workflows/scripts/build_pipeline_rollup.py
+overlay workflows/scripts/test_build_pipeline_rollup.py
 overlay workflows/scripts/build_rework_rollup.py
 overlay workflows/scripts/test_build_rework_rollup.py
 overlay workflows/scripts/build_rollups.py

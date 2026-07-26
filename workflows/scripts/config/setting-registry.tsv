@@ -1,9 +1,9 @@
-# knob-registry.tsv — the kernel's tunable-knob registry (temperloop#164/#169,
+# setting-registry.tsv — the kernel's tunable-setting registry (temperloop#164/#169,
 # design decision D2: "keep the shell literals, lint them for equality" — a
-# TSV of every existing knob, populated with defaults matching the shell
+# TSV of every existing setting, populated with defaults matching the shell
 # literals EXACTLY, so a future equality lint (a LATER item,
 # registry-config-lints) starts green with no baseline needed. This file is
-# read by workflows/scripts/config/knob-registry-lib.sh; see that file's
+# read by workflows/scripts/config/setting-registry-lib.sh; see that file's
 # header for the parse/union contract and the overlay extension format.
 #
 # ── Row shape ────────────────────────────────────────────────────────────
@@ -17,28 +17,28 @@
 #                field means the literal default IS the empty string.
 # type           closed set (see below) — the KIND of value, not its
 #                current default.
-# layer          closed set (see below) — which rung of the six-rung config
+# layer          closed set (see below) — which layer of the six-layer config
 #                precedence ladder (docs/config-precedence.md) this row's
 #                DEFAULT lives at. Almost every row is `kernel` (an
-#                individual script's own hardcoded rung-6 fallback) or
-#                `tracked-repo` (build.config.sh's own rung-5 `:=` default —
+#                individual script's own hardcoded layer-6 fallback) or
+#                `tracked-repo` (build.config.sh's own layer-5 `:=` default —
 #                that file IS the committed config a consuming repo vendors
 #                and edits, per its own header). A var whose default
-#                genuinely DIFFERS between two owning scripts (a real rung-5
-#                vs rung-6 divergence, not just a byte-identical duplicate
+#                genuinely DIFFERS between two owning scripts (a real layer-5
+#                vs layer-6 divergence, not just a byte-identical duplicate
 #                fallback — see below) gets TWO rows, one per layer.
 # owning-script  repo-relative path to the script whose `:=`/`:-` line this
-#                row transcribes. Several knobs have a BYTE-IDENTICAL `:=`
+#                row transcribes. Several settings have a BYTE-IDENTICAL `:=`
 #                fallback duplicated in more than one consuming script
 #                (documented in each duplicate site's own comment as
-#                "non-vendoring-checkout fallback" — e.g. FUNNEL_OPERATOR
-#                also has a matching literal in funnel-drive.sh and
-#                funnel-tick.sh); this registry records ONE row citing the
+#                "non-vendoring-checkout fallback" — e.g. PIPELINE_OPERATOR
+#                also has a matching literal in pipeline-drive.sh and
+#                pipeline-tick.sh); this registry records ONE row citing the
 #                script documented as the SOURCE OF TRUTH (build.config.sh
 #                where one exists) rather than one row per duplicate site,
 #                since the literals are identical and a future equality
 #                lint gains nothing from redundant rows.
-# doc            one-line description of what the knob controls.
+# doc            one-line description of what the setting controls.
 #
 # ── type (closed set) ───────────────────────────────────────────────────
 #   int      a plain integer count/limit/retry-budget
@@ -53,17 +53,17 @@
 #   marker   an HTML-comment idempotency marker embedded in issue/PR bodies
 #
 # ── layer (closed set) ──────────────────────────────────────────────────
-# The six-rung ladder's own tokens (docs/config-precedence.md). Rungs 1-2
-# (cli, env) never appear here — a registry row records a DEFAULT, and rungs
+# The six-layer ladder's own tokens (docs/config-precedence.md). Layers 1-2
+# (cli, env) never appear here — a registry row records a DEFAULT, and layers
 # 1-2 are call-site/environment inputs, never a hardcoded default:
-#   cli            rung 1 — CLI flag (never a registry row; listed for
+#   cli            layer 1 — CLI flag (never a registry row; listed for
 #                  vocabulary completeness)
-#   env            rung 2 — env var (never a registry row; ditto)
-#   machine-conf   rung 3 — a machine-wide conf file
-#   repo-local     rung 4 — an untracked, gitignored repo-local conf file
-#   tracked-repo   rung 5 — a COMMITTED config file's own `:=` default
+#   env            layer 2 — env var (never a registry row; ditto)
+#   machine-conf   layer 3 — a machine-wide conf file
+#   repo-local     layer 4 — an untracked, gitignored repo-local conf file
+#   tracked-repo   layer 5 — a COMMITTED config file's own `:=` default
 #                  (build.config.sh today — the file IS the tracked conf)
-#   kernel         rung 6 — a hardcoded `:=`/`:-` fallback in an individual
+#   kernel         layer 6 — a hardcoded `:=`/`:-` fallback in an individual
 #                  script, for a non-vendoring caller that never sources a
 #                  tracked-repo conf file at all
 #
@@ -74,12 +74,12 @@
 # (timestamps, loop counters, computed paths built from other already-
 # decided vars), dynamic call-site defaults (`${FUNCNAME[1]:-unknown}`),
 # environment-detection predicates (`${TMUX:-}` — "am I inside tmux?", not a
-# knob), private (`_`-prefixed) implementation state, harness-injected
+# setting), private (`_`-prefixed) implementation state, harness-injected
 # runtime values (`CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_SESSION_ID`), generic
 # OS/XDG passthrough vars with no project-specific override point of their
 # own (`TMPDIR`, bare `XDG_*_HOME`), and test/reproducibility-only seams
 # explicitly documented as such in their own script (`BUILD_QUOTA_NOW`,
-# `FUNNEL_NOW_*`). A "test-double seam for the <X> binary" row (e.g.
+# `PIPELINE_NOW_*`). A "test-double seam for the <X> binary" row (e.g.
 # `*_GH_BIN`) IS included — swapping the resolved binary is a real,
 # meaningful override, not merely a test's implementation detail.
 #
@@ -113,10 +113,10 @@
 #
 # A THIRD row used to live here — KNOWLEDGE_STORE_ROOT's build.config.sh
 # reseed to the operator's personal vault directory. kernel-literal-scrub
-# removed that reseed (build.config.sh no longer sets a rung-5 default for
-# this knob at all) rather than allow-marking it, so the row was deleted
+# removed that reseed (build.config.sh no longer sets a layer-5 default for
+# this setting at all) rather than allow-marking it, so the row was deleted
 # rather than converted — see the kernel-layer KNOWLEDGE_STORE_ROOT row
-# (owning-script knowledge_store.sh) below for the knob's one remaining
+# (owning-script knowledge_store.sh) below for the setting's one remaining
 # registry entry.
 #
 # ── Reserved ─────────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ BASELINE_SNAPSHOT_PR_LIMIT	500	int	kernel	bin/subcommands/baseline-snapshot.sh	M
 BASELINE_SNAPSHOT_ISSUE_LIMIT	500	int	kernel	bin/subcommands/baseline-snapshot.sh	Max issues fetched per snapshot
 EJECT_GH_BIN	gh	path	kernel	bin/subcommands/eject.sh	Test-double seam for the gh binary
 INIT_GH_BIN	gh	path	kernel	bin/subcommands/init.sh	Test-double seam for the gh binary
-CLAUDE_BIN	claude	path	kernel	workflows/scripts/build/funnel-drive.sh	Test-double seam for the claude CLI binary
+CLAUDE_BIN	claude	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the claude CLI binary
 TRY_GH_BIN	gh	path	kernel	bin/subcommands/try.sh	Test-double seam for the gh binary
 WFR_COVERAGE_GH_BIN	gh	path	kernel	workflows/scripts/workflow-reviewer-coverage.sh	Test-double seam for the gh binary
 TRY_DEMO_CLONE_URL	https://github.com/$demo_repo.git	url	kernel	bin/subcommands/try.sh	Scratch-clone source URL for `try --demo`
@@ -169,8 +169,8 @@ CLAIMS_RAW_DIR	$CLAIMS_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/claim
 DEPLOY_MINI_CHECKOUTS	$DEFAULT_CHECKOUTS	string	kernel	workflows/scripts/board/deploy-mini.sh	Space-separated checkouts deploy-mini.sh keeps current (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/scripts/board/deploy-mini.sh	Single-instance lock dir for deploy-mini.sh
 DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
-BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (rung 3). Default probes $XDG_CONFIG_HOME/temperloop/boards.conf, falling back to an existing legacy $XDG_CONFIG_HOME/foundation/boards.conf through the rename window (temperloop#165; legacy fallback removed in v0.17.0) — see docs/config-precedence.md
-BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (rung 4)
+BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (layer 3). Default probes $XDG_CONFIG_HOME/temperloop/boards.conf, falling back to an existing legacy $XDG_CONFIG_HOME/foundation/boards.conf through the rename window (temperloop#165; legacy fallback removed in v0.17.0) — see docs/config-precedence.md
+BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (layer 4)
 BOARD_CACHE_TTL	90	seconds	kernel	workflows/scripts/board/lib/board.sh	Item-state cross-process cache TTL
 BOARD_STRUCTURE_TTL	86400	seconds	kernel	workflows/scripts/board/lib/board.sh	Board structure (project/field schema) cache TTL
 BOARD_CACHE_DIR	${TMPDIR:-/tmp}	path	kernel	workflows/scripts/board/lib/board.sh	On-disk dir for the board.sh cross-process cache files
@@ -194,22 +194,22 @@ PLAN_ARCHIVE_BRANCH	chore/plan-archive	label	kernel	workflows/scripts/build/arch
 PLAN_ARCHIVE_GH	gh	path	kernel	workflows/scripts/build/archive-plan.sh	gh binary override fed into the shared land-on-protected-main kernel
 PLAN_ARCHIVE_REQUIRES_PR		bool	kernel	workflows/scripts/build/archive-plan.sh	Test seam forcing the protected-branch (PR) landing path
 STAGEFIND_HOST_LABEL	$(hostname -s)	string	kernel	workflows/scripts/build/board-mirror.sh	Legacy/back-compat host-label override, nested inside SUBSET_HOST_LABEL's own fallback (registry-maintenance fix, registry-config-lints — row was missing)
-BUILD_CONFIG_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh	path	kernel	workflows/scripts/build/build.config.sh	Machine-conf path (rung 3 discovery path; its own default is the rung-6 literal)
-BUILD_CONFIG_LOCAL	$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.config.local.sh	path	kernel	workflows/scripts/build/build.config.sh	Untracked repo-local conf path (rung 4 discovery path; its own default is the rung-6 literal; registry-maintenance fix, registry-config-lints — command substitution recorded verbatim, was placeholder-ized)
+BUILD_CONFIG_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh	path	kernel	workflows/scripts/build/build.config.sh	Machine-conf path (layer 3 discovery path; its own default is the layer-6 literal)
+BUILD_CONFIG_LOCAL	$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.config.local.sh	path	kernel	workflows/scripts/build/build.config.sh	Untracked repo-local conf path (layer 4 discovery path; its own default is the layer-6 literal; registry-maintenance fix, registry-config-lints — command substitution recorded verbatim, was placeholder-ized)
 BUILD_QUOTA_PAUSE_PCT	10	pct	tracked-repo	workflows/scripts/build/build.config.sh	Pause build/sweep when remaining 5h quota drops below this percent
 BUILD_QUOTA_CACHE	$HOME/.claude/rate-limits.json	path	tracked-repo	workflows/scripts/build/build.config.sh	Where status-line.sh persists the live rate-limit snapshot
 BUILD_QUOTA_WAIT_BUFFER	60	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Seconds waited past a quota window's reset before resuming
 BUILD_QUOTA_MAX_AGE	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Ignore a quota cache snapshot older than this (fail open)
 BUILD_MERGE_GATE_WINDOW	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Timed merge-gate window (0 = always modal)
 BUILD_QUEUE_TIMEOUT	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-PR native-merge-queue timeout
-FUNNEL_DRIVE_CONCURRENCY	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Autonomous funnel lane's concurrent-drive bound per tick (mechanical governor; formerly FUNNEL_WIP_CAP, split from the retired human WIP-cap rule)
+PIPELINE_DRIVE_CONCURRENCY	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Autonomous pipeline lane's concurrent-drive bound per tick (mechanical governor; formerly PIPELINE_WIP_CAP, split from the retired human WIP-cap rule)
 EPIC_MIN_SUBUNITS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Epic-decomposition sub-unit threshold (rendered into CLAUDE.kernel.md prose)
 DISPLAY_TZ	America/Los_Angeles	string	tracked-repo	workflows/scripts/build/build.config.sh	Human-facing display timezone (IANA name so DST is automatic); rendered into CLAUDE.kernel.md prose as {{DISPLAY_TZ}}, with belt-and-suspenders defaults in telemetry-brief.sh/reconcile.sh. Stored/parsed timestamps stay UTC.
 BUILD_MERGE_BACKEND	auto	enum	tracked-repo	workflows/scripts/build/build.config.sh	Merge-backend selection: auto probes for a merge_queue rule; native/managed override (auto|native|managed)
 BUILD_COMBINED_TREE_PRECHECK	on	enum	tracked-repo	workflows/scripts/build/build.config.sh	Combined-tree union pre-check at the level merge gate before enqueue (on|off); build.md Step 4a.5
-BUILD_DECISION_NOTIFY_CMD		string	tracked-repo	workflows/scripts/build/build.config.sh	Optional scriptable operator-notify channel for a blocking-now /build halt (foundation#863); receives the one-line summary as a single arg; empty = rely on the harness PushNotification relay alone; also decision-notify.sh's test-injection seam
+BUILD_DECISION_NOTIFY_CMD		string	tracked-repo	workflows/scripts/build/build.config.sh	Optional scriptable operator-notify channel for an ask-now /build halt (foundation#863); receives the one-line summary as a single arg; empty = rely on the harness PushNotification relay alone; also decision-notify.sh's test-injection seam
 COMBINED_TREE_SUITE_CMD	bash scripts/quality-gates.sh	string	kernel	workflows/scripts/build/combined-tree-precheck.sh	Gate-suite command the combined-tree pre-check runs against the merged worktree (test-injection seam)
-BUILD_HEADLESS_POLL_TIMEOUT	540	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Foreground CI/MERGED poll bound on the headless (funnel merge-driver) path
+BUILD_HEADLESS_POLL_TIMEOUT	540	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Foreground CI/MERGED poll bound on the headless (pipeline merge-driver) path
 ASSESS_POLL_FIRST_WAKE	270	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll first wake after arming
 ASSESS_POLL_CADENCE	1200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll wake cadence after the first wake
 ASSESS_POLL_BUDGET	7200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll give-up budget after arming
@@ -222,62 +222,62 @@ SWEEP_DETECT_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	
 SEED_DEMO_REPO		string	tracked-repo	workflows/scripts/demo/seed-demo-repo.sh	Host-local override for the demo seeder's target repo (foundation#871), OWNER/NAME. Empty (default) = derive the owner from the authenticated gh login (<login>/temperloop-demo), or require --repo / gh auth. Keeps the org-specific companion-repo value out of the kernel.
 SWEEP_BG_POLL_ATTEMPTS	6	int	tracked-repo	workflows/scripts/build/build.config.sh	sweep.md Step 3 tier-2 bounded-wait poll count on background chunk 1's completion notification before declaring the chunk a dropped-background escalation
 SWEEP_BG_POLL_INTERVAL	120	seconds	tracked-repo	workflows/scripts/build/build.config.sh	sweep.md Step 3 tier-2 bounded-wait seconds between background-chunk task-state polls
-FUNNEL_OPERATOR	@REPLACE_WITH_YOUR_GH_LOGIN	label	tracked-repo	workflows/scripts/build/build.config.sh	Operator's GitHub login the async decision/merge-escalation baton targets
-FUNNEL_REQUIRED_CHECK	checks	label	tracked-repo	workflows/scripts/build/build.config.sh	Required CI job name a PR must clear to merge
-FUNNEL_DRIVEN_PATHS	kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile	string	tracked-repo	workflows/scripts/build/build.config.sh	Path prefixes = the funnel's operational surface for the overlap predicate
-FUNNEL_DRIVE	0	bool	tracked-repo	workflows/scripts/build/build.config.sh	Auto-execute the safe (no-merge) tier of each funnel tick (rung-5b)
-FUNNEL_DRIVE_CAP	1	int	tracked-repo	workflows/scripts/build/build.config.sh	Max Operational drive-ready items emitted per tick
-FUNNEL_DRIVE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model for the headless rung-5b safe-tier driver
-FUNNEL_DRIVE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.config.sh	Rung-5 placeholder for the safe-tier --settings overlay; empty passes through to funnel-drive.sh's own rung-6 default
-FUNNEL_DRIVE_MERGE	0	bool	tracked-repo	workflows/scripts/build/build.config.sh	Auto-execute the kind:code merge tier (rung-5c)
-FUNNEL_DRIVE_MERGE_CAP	1	int	tracked-repo	workflows/scripts/build/build.config.sh	Max kind:code items driven to merge per tick
-FUNNEL_DRIVE_MERGE_MODEL	claude-opus-4-8	string	tracked-repo	workflows/scripts/build/build.config.sh	Model for the headless rung-5c merge-tier driver
-FUNNEL_DRIVE_MERGE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.config.sh	Rung-5 placeholder for the merge-tier --settings overlay; empty passes through to funnel-drive.sh's own rung-6 default
-FUNNEL_MERGE_PENDING_LABEL	funnel-merge-pending	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a cross-tick merge hand-off (open unmerged PR at session end)
-FUNNEL_CLARIFIED_MARKER	<!-- funnel:clarification-drained -->	marker	tracked-repo	workflows/scripts/build/build.config.sh	Idempotency marker posted when a needs-clarification item is drained
-FUNNEL_ESCALATED_LABEL	funnel-escalated	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a rung-5c CODE escalation (route-refused / terminally-red CI)
+PIPELINE_OPERATOR	@REPLACE_WITH_YOUR_GH_LOGIN	label	tracked-repo	workflows/scripts/build/build.config.sh	Operator's GitHub login the async decision/merge-escalation baton targets
+PIPELINE_REQUIRED_CHECK	checks	label	tracked-repo	workflows/scripts/build/build.config.sh	Required CI job name a PR must clear to merge
+PIPELINE_DRIVEN_PATHS	kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile	string	tracked-repo	workflows/scripts/build/build.config.sh	Path prefixes = the pipeline's operational surface for the overlap predicate
+PIPELINE_DRIVE	0	bool	tracked-repo	workflows/scripts/build/build.config.sh	Auto-execute the safe (no-merge) tier of each pipeline tick (level-5b)
+PIPELINE_DRIVE_CAP	1	int	tracked-repo	workflows/scripts/build/build.config.sh	Max Operational drive-ready items emitted per tick
+PIPELINE_DRIVE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model for the headless level-5b safe-tier driver
+PIPELINE_DRIVE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.config.sh	Layer-5 placeholder for the safe-tier --settings overlay; empty passes through to pipeline-drive.sh's own layer-6 default
+PIPELINE_DRIVE_MERGE	0	bool	tracked-repo	workflows/scripts/build/build.config.sh	Auto-execute the kind:code merge tier (level-5c)
+PIPELINE_DRIVE_MERGE_CAP	1	int	tracked-repo	workflows/scripts/build/build.config.sh	Max kind:code items driven to merge per tick
+PIPELINE_DRIVE_MERGE_MODEL	claude-opus-4-8	string	tracked-repo	workflows/scripts/build/build.config.sh	Model for the headless level-5c merge-tier driver
+PIPELINE_DRIVE_MERGE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.config.sh	Layer-5 placeholder for the merge-tier --settings overlay; empty passes through to pipeline-drive.sh's own layer-6 default
+PIPELINE_MERGE_PENDING_LABEL	funnel-merge-pending	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a cross-tick merge hand-off (open unmerged PR at session end)
+PIPELINE_CLARIFIED_MARKER	<!-- funnel:clarification-drained -->	marker	tracked-repo	workflows/scripts/build/build.config.sh	Idempotency marker posted when a needs-clarification item is drained
+PIPELINE_ESCALATED_LABEL	funnel-escalated	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a level-5c CODE escalation (route-refused / terminally-red CI)
 RETRO_MINT_ENABLED	1	bool	tracked-repo	workflows/scripts/build/build.config.sh	Master on/off for the /build 4d-retro MINT (files a per-epic retro tracker at epic close)
-RETRO_MIN_INTERVAL	259200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Debounce: minimum age of the oldest retro-pending tracker before the funnel tick emits a retro-judge action
+RETRO_MIN_INTERVAL	259200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Debounce: minimum age of the oldest retro-pending tracker before the pipeline tick emits a retro-judge action
 RETRO_URGENT_CI_RETRIES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	CI-retry count at/above which a retro tracker is stamped retro-urgent at mint time (bypasses the debounce)
 RETRO_BATCH_SESSION_CAP	5	int	tracked-repo	workflows/scripts/build/build.config.sh	Max number of retro trackers a single /retro --pending judge session processes (enforced judge-side)
-RETRO_JUDGE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model the funnel runs claude -p "/retro --pending" under (distinct from FUNNEL_DRIVE_MODEL)
+RETRO_JUDGE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model the pipeline runs claude -p "/retro --pending" under (distinct from PIPELINE_DRIVE_MODEL)
 REVIEWER_SCAN_MIN_FILES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Language-reviewer catalog install-time coverage scan / doctor check: minimum file count before a language is offered its reviewer (temperloop#538, ADR 0007/0008) — install/doctor-time, not the batch build pipeline
 PROSE_BUDGET_TIER1_CAP	340	int	tracked-repo	workflows/scripts/build/build.config.sh	Two-tier prose-budget gate (temperloop#719/#725, ADR 0015): cap on the composed kernel-authored render (count-prose.sh tier-1, INSTALL_CLAUDE_MD_KERNEL_ONLY seam) — never the kernel+overlay total. Ratchet: raised only by a config PR after a subtraction pass
-PROSE_BUDGET_TIER2_FILE_CAP	1057	int	tracked-repo	workflows/scripts/build/build.config.sh	Two-tier prose-budget gate (temperloop#719/#725, ADR 0015): ONE uniform per-file line cap over every tracked claude/**/*.md file (count-prose.sh tier-2) — a single knob, not a per-file table. Ratchet: raised only by a config PR after a subtraction pass
-FUNNEL_DRIVE_SETTINGS	$HERE/funnel-drive.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
-FUNNEL_DRIVE_MERGE_SETTINGS	$HERE/funnel-drive-merge.settings.json	path	kernel	workflows/scripts/build/funnel-drive.sh	Rung-6 real default used when build.config.sh's rung-5 placeholder is left empty
+PROSE_BUDGET_TIER2_FILE_CAP	1057	int	tracked-repo	workflows/scripts/build/build.config.sh	Two-tier prose-budget gate (temperloop#719/#725, ADR 0015): ONE uniform per-file line cap over every tracked claude/**/*.md file (count-prose.sh tier-2) — a single setting, not a per-file table. Ratchet: raised only by a config PR after a subtraction pass
+PIPELINE_DRIVE_SETTINGS	$HERE/pipeline-drive.settings.json	path	kernel	workflows/scripts/build/pipeline-drive.sh	Layer-6 real default used when build.config.sh's layer-5 placeholder is left empty
+PIPELINE_DRIVE_MERGE_SETTINGS	$HERE/pipeline-drive-merge.settings.json	path	kernel	workflows/scripts/build/pipeline-drive.sh	Layer-6 real default used when build.config.sh's layer-5 placeholder is left empty
 ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
 ENV_RECONCILE_AGENT_HEARTBEAT_DIR	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/agent-heartbeat	path	kernel	workflows/scripts/build/env-reconcile.sh	Dir of <label>.ran heartbeat markers a launchd job writes on success (freshness oracle)
 ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S	86400	seconds	kernel	workflows/scripts/build/env-reconcile.sh	Default expected cadence for a launchd agent with no explicit interval
 ENV_RECONCILE_CRON_CHECKOUTS	$DEFAULT_CRON_CHECKOUTS	string	kernel	workflows/scripts/build/env-reconcile.sh	Cron-role checkouts env-reconcile scans (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 ENV_RECONCILE_OPERATOR_CHECKOUTS	$DEFAULT_OPERATOR_CHECKOUTS	string	kernel	workflows/scripts/build/env-reconcile.sh	Operator-role checkouts env-reconcile scans (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
 ENV_RECONCILE_LAUNCHD_DIRS		string	kernel	workflows/scripts/build/env-reconcile.sh	Explicit launchd-agent dirs override (else derived from the checkout lists)
-FUNNEL_GATE_BIN	$HERE/funnel-schedule-gate.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the schedule-gate sub-script
-FUNNEL_TICK_BIN	$HERE/funnel-tick.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the tick sub-script
-FUNNEL_DRIVE_BIN	$HERE/funnel-drive.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the drive sub-script
-FUNNEL_ISSUE_META_BIN	$HERE/../issue-meta-snapshot.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the issue-meta-snapshot sub-script
-REWORK_SNAPSHOT_BIN	$HERE/../rework-snapshot.sh	path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for the rework-snapshot sub-script
-FUNNEL_ENABLED_BOARDS	3	string	kernel	workflows/scripts/build/funnel-cron.sh	Space-separated logical board numbers the funnel ticks
-FUNNEL_LOG_DIR	$HOME/.claude/funnel/log	path	kernel	workflows/scripts/build/funnel-cron.sh	Local (non-git-archived) funnel wake-record log dir
-FUNNEL_CRON_SELF_UPDATE	0	bool	kernel	workflows/scripts/build/funnel-cron.sh	Opt-in: fetch+hard-reset the checkout to origin/main and re-exec before ticking
-FOUNDATION	$(cd "$HERE/../../.." && pwd)	path	kernel	workflows/scripts/build/funnel-cron.sh	Root of the foundation/kernel checkout the funnel operates in
-FUNNEL_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/build/funnel-cron.sh	Canonical raw-lake sink dir for funnel telemetry (personal-path-verbatim)
-FUNNEL_OPERATOR_RESOLVE_BIN		path	kernel	workflows/scripts/build/funnel-cron.sh	Test-double seam for resolving the operator's gh login (else `gh api user`)
-FUNNEL_NOTIFY_CMD		path	kernel	workflows/scripts/build/funnel-cron.sh	Custom notify command for a non-no-op tick (else osascript, else stderr)
-FUNNEL_GH_BIN	gh	path	kernel	workflows/scripts/build/funnel-drive.sh	Test-double seam for the gh binary used by funnel-drive's routing calls
-FUNNEL_UNCLAIM_BIN	$HERE/../board/unclaim.sh	path	kernel	workflows/scripts/build/funnel-drive.sh	Test-double seam for the unclaim.sh board CLI the #1157 abandonment reclaim shells out to
-FUNNEL_CHECKOUT_3	$HOME/dev/stageFind	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 3 items in (personal-path-verbatim)
-FUNNEL_CHECKOUT_4	$HOME/dev/foundation	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 4 items in (personal-path-verbatim)
-FUNNEL_CHECKOUT_5	$HOME/dev/ssmobile	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 5 items in (personal-path-verbatim)
-FUNNEL_CHECKOUT_6	$HOME/dev/subsetwiki	path	kernel	workflows/scripts/build/funnel-drive.sh	Local checkout the headless driver runs board 6 items in (personal-path-verbatim)
-FUNNEL_DEFAULT_CHECKOUT	${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}	path	kernel	workflows/scripts/build/funnel-drive.sh	Default checkout for cwd-agnostic safe actions with no board-specific checkout
-FUNNEL_SCHEDULE_FILE	$(_funnel_schedule_file_default)	path	kernel	workflows/scripts/build/funnel-overlap.sh	Operator-controls schedule note (ADR §2.3a kind-3, docs/config-precedence.md § operator controls) funnel-schedule-gate/tick read — defaults to Controls/, falling back to legacy Context/ through the overlay move window (temperloop#226/#232; personal-path-verbatim — vault content path)
-FUNNEL_TICK_CADENCE	daily	enum	kernel	workflows/scripts/build/funnel-tick.sh	Documented cron cadence (surfaced only; cadence is enforced by the installed cron entry)
-FUNNEL_LOCK_DIR	/tmp/funnel-tick	path	kernel	workflows/scripts/build/funnel-tick.sh	Single-flight lockfile dir (one tick per host at a time)
-FUNNEL_LOCK_FILE	$FUNNEL_LOCK_DIR/tick.lock	path	kernel	workflows/scripts/build/funnel-tick.sh	Single-flight lockfile path
-FUNNEL_INTAKE_WARN_DIR	$FUNNEL_LOCK_DIR	path	kernel	workflows/scripts/build/funnel-tick.sh	Per-board dedup-marker dir for the signal-intake config-absent WARN (once per condition, not per poll)
-FUNNEL_DELIVERED_MARKER	<!-- funnel:decision-applied -->	marker	kernel	workflows/scripts/build/funnel-tick.sh	Idempotency marker for an already-applied answered decision
-FUNNEL_INTAKE_CMD	$HERE/../crash-convergence/signal-intake.sh	path	kernel	workflows/scripts/build/funnel-tick.sh	Crash-signal intake orchestrator invoked/injected by the tick
+PIPELINE_GATE_BIN	$HERE/pipeline-schedule-gate.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the schedule-gate sub-script
+PIPELINE_TICK_BIN	$HERE/pipeline-tick.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the tick sub-script
+PIPELINE_DRIVE_BIN	$HERE/pipeline-drive.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the drive sub-script
+PIPELINE_ISSUE_META_BIN	$HERE/../issue-meta-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the issue-meta-snapshot sub-script
+REWORK_SNAPSHOT_BIN	$HERE/../rework-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the rework-snapshot sub-script
+PIPELINE_ENABLED_BOARDS	3	string	kernel	workflows/scripts/build/pipeline-cron.sh	Space-separated board ids the pipeline ticks
+PIPELINE_LOG_DIR	$HOME/.claude/funnel/log	path	kernel	workflows/scripts/build/pipeline-cron.sh	Local (non-git-archived) pipeline wake-record log dir
+PIPELINE_CRON_SELF_UPDATE	0	bool	kernel	workflows/scripts/build/pipeline-cron.sh	Opt-in: fetch+hard-reset the checkout to origin/main and re-exec before ticking
+FOUNDATION	$(cd "$HERE/../../.." && pwd)	path	kernel	workflows/scripts/build/pipeline-cron.sh	Root of the foundation/kernel checkout the pipeline operates in
+PIPELINE_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/build/pipeline-cron.sh	Canonical raw-lake sink dir for pipeline telemetry (personal-path-verbatim)
+PIPELINE_OPERATOR_RESOLVE_BIN		path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for resolving the operator's gh login (else `gh api user`)
+PIPELINE_NOTIFY_CMD		path	kernel	workflows/scripts/build/pipeline-cron.sh	Custom notify command for a non-no-op tick (else osascript, else stderr)
+PIPELINE_GH_BIN	gh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the gh binary used by pipeline-drive's routing calls
+PIPELINE_UNCLAIM_BIN	$HERE/../board/unclaim.sh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the unclaim.sh board CLI the #1157 abandonment reclaim shells out to
+PIPELINE_CHECKOUT_3	$HOME/dev/stageFind	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 3 items in (personal-path-verbatim)
+PIPELINE_CHECKOUT_4	$HOME/dev/foundation	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 4 items in (personal-path-verbatim)
+PIPELINE_CHECKOUT_5	$HOME/dev/ssmobile	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 5 items in (personal-path-verbatim)
+PIPELINE_CHECKOUT_6	$HOME/dev/subsetwiki	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 6 items in (personal-path-verbatim)
+PIPELINE_DEFAULT_CHECKOUT	${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}	path	kernel	workflows/scripts/build/pipeline-drive.sh	Default checkout for cwd-agnostic safe actions with no board-specific checkout
+PIPELINE_SCHEDULE_FILE	$(_pipeline_schedule_file_default)	path	kernel	workflows/scripts/build/pipeline-overlap.sh	Operator-controls schedule note (ADR §2.3a kind-3, docs/config-precedence.md § operator controls) pipeline-schedule-gate/tick read — defaults to Controls/, falling back to legacy Context/ through the overlay move window (temperloop#226/#232; personal-path-verbatim — vault content path)
+PIPELINE_TICK_CADENCE	daily	enum	kernel	workflows/scripts/build/pipeline-tick.sh	Documented cron cadence (surfaced only; cadence is enforced by the installed cron entry)
+PIPELINE_LOCK_DIR	/tmp/funnel-tick	path	kernel	workflows/scripts/build/pipeline-tick.sh	Single-flight lockfile dir (one tick per host at a time)
+PIPELINE_LOCK_FILE	$PIPELINE_LOCK_DIR/tick.lock	path	kernel	workflows/scripts/build/pipeline-tick.sh	Single-flight lockfile path
+PIPELINE_INTAKE_WARN_DIR	$PIPELINE_LOCK_DIR	path	kernel	workflows/scripts/build/pipeline-tick.sh	Per-board dedup-marker dir for the signal-intake config-absent WARN (once per condition, not per poll)
+PIPELINE_DELIVERED_MARKER	<!-- funnel:decision-applied -->	marker	kernel	workflows/scripts/build/pipeline-tick.sh	Idempotency marker for an already-applied answered decision
+PIPELINE_INTAKE_CMD	$HERE/../crash-convergence/signal-intake.sh	path	kernel	workflows/scripts/build/pipeline-tick.sh	Crash-signal intake orchestrator invoked/injected by the tick
 GATE_REPOLL_DELAY	3	seconds	kernel	workflows/scripts/build/gate.sh	Sleep before one re-poll of an UNKNOWN/BEHIND mergeable state
 GATE_CI_POLL_INTERVAL	30	seconds	kernel	workflows/scripts/build/gate.sh	Interval between CI-status polls
 GATE_CI_POLL_TIMEOUT	3600	seconds	kernel	workflows/scripts/build/gate.sh	Max time to wait for CI to go green
@@ -285,15 +285,15 @@ GATE_MERGE_POLL_INTERVAL	15	seconds	kernel	workflows/scripts/build/gate.sh	Inter
 GATE_MERGE_POLL_TIMEOUT	600	seconds	kernel	workflows/scripts/build/gate.sh	Max time to wait for a merge to confirm
 PLAN_API_BASE	${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}	url	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API base URL for plan-note vault writes (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
 PLAN_API_KEY_FILE	${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}	path	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API key-file path for plan-note vault writes (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
-KNOB_REGISTRY_FILE	$_KNOB_REGISTRY_LIB_DIR/knob-registry.tsv	path	kernel	workflows/scripts/config/knob-registry-lib.sh	Override path to the kernel knob-registry TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
-KNOB_REGISTRY_OVERLAY_FILE	$_KNOB_REGISTRY_LIB_DIR/knob-registry.overlay.tsv	path	kernel	workflows/scripts/config/knob-registry-lib.sh	Override path to the overlay extension TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
-KNOB_REGISTRY_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-knob-registry.sh	Root the equality lint resolves owning-script paths / the kernel file set against (fixture-test seam)
-KNOB_REGISTRY_OVERLAY_SCAN_ROOT	$KNOB_REGISTRY_SCAN_ROOT	path	kernel	workflows/scripts/config/check-knob-registry.sh	Root the equality lint resolves OVERLAY-table (add/redefault) owning-script paths against; defaults to KNOB_REGISTRY_SCAN_ROOT so a standalone checkout is unaffected (temperloop#243 composed-tree seam)
-KNOB_REGISTRY_MANIFEST_FILE		path	kernel	workflows/scripts/config/check-knob-registry.sh	Manifest passed to list-kernel-set.sh for the unregistered-knob sweep (empty = that script's own default; fixture-test seam)
-KNOB_REGISTRY_EXEMPT_FILE	$SCRIPT_DIR/knob-registry-exempt-files.txt	path	kernel	workflows/scripts/config/check-knob-registry.sh	Path to the sweep's wholesale file-exemption list (fixture-test seam)
-KNOB_PROSE_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-knob-prose.sh	Root the prose lint resolves claude/commands/*.md + claude/CLAUDE.kernel.md against (fixture-test seam)
-KNOB_PROSE_BASELINE_FILE	$SCRIPT_DIR/knob-prose-baseline.tsv	path	kernel	workflows/scripts/config/check-knob-prose.sh	Path to the prose lint's burn-down baseline TSV (fixture-test seam)
-KNOB_PROSE_EMIT_BASELINE	0	bool	kernel	workflows/scripts/config/check-knob-prose.sh	Maintenance mode: print ready-to-append baseline TSV rows instead of violation text
+SETTING_REGISTRY_FILE	$_SETTING_REGISTRY_LIB_DIR/setting-registry.tsv	path	kernel	workflows/scripts/config/setting-registry-lib.sh	Override path to the kernel setting-registry TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
+SETTING_REGISTRY_OVERLAY_FILE	$_SETTING_REGISTRY_LIB_DIR/setting-registry.overlay.tsv	path	kernel	workflows/scripts/config/setting-registry-lib.sh	Override path to the overlay extension TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
+SETTING_REGISTRY_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-setting-registry.sh	Root the equality lint resolves owning-script paths / the kernel file set against (fixture-test seam)
+SETTING_REGISTRY_OVERLAY_SCAN_ROOT	$SETTING_REGISTRY_SCAN_ROOT	path	kernel	workflows/scripts/config/check-setting-registry.sh	Root the equality lint resolves OVERLAY-table (add/redefault) owning-script paths against; defaults to SETTING_REGISTRY_SCAN_ROOT so a standalone checkout is unaffected (temperloop#243 composed-tree seam)
+SETTING_REGISTRY_MANIFEST_FILE		path	kernel	workflows/scripts/config/check-setting-registry.sh	Manifest passed to list-kernel-set.sh for the unregistered-setting sweep (empty = that script's own default; fixture-test seam)
+SETTING_REGISTRY_EXEMPT_FILE	$SCRIPT_DIR/setting-registry-exempt-files.txt	path	kernel	workflows/scripts/config/check-setting-registry.sh	Path to the sweep's wholesale file-exemption list (fixture-test seam)
+SETTING_PROSE_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-setting-prose.sh	Root the prose lint resolves claude/commands/*.md + claude/CLAUDE.kernel.md against (fixture-test seam)
+SETTING_PROSE_BASELINE_FILE	$SCRIPT_DIR/setting-prose-baseline.tsv	path	kernel	workflows/scripts/config/check-setting-prose.sh	Path to the prose lint's burn-down baseline TSV (fixture-test seam)
+SETTING_PROSE_EMIT_BASELINE	0	bool	kernel	workflows/scripts/config/check-setting-prose.sh	Maintenance mode: print ready-to-append baseline TSV rows instead of violation text
 REVIEWER_ROUTING_TSV	$SCRIPT_DIR/reviewer-routing.tsv	path	kernel	workflows/scripts/config/check-reviewer-routing.sh	Path to the reviewer-routing tsv the drift lint compares against build.md's 3e prose (fixture-test seam)
 REVIEWER_ROUTING_BUILD_MD	$REPO_ROOT/claude/commands/build.md	path	kernel	workflows/scripts/config/check-reviewer-routing.sh	Path to build.md whose 3e section the drift lint scans (fixture-test seam)
 CMD_RUN_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-command-run.sh	Sink dir for the /sweep and /triage per-run telemetry stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
@@ -347,25 +347,25 @@ LAND_DEFAULT_BRANCH	main	label	kernel	workflows/scripts/lib/land-on-protected-ma
 LAND_REQUIRES_PR		bool	kernel	workflows/scripts/lib/land-on-protected-main.sh	Test seam forcing the protected-branch (PR) landing path
 GH_BENCH_EMIT_BIN	$HERE/../emit-gh-perf.sh	path	kernel	workflows/scripts/probe/gh-bench.sh	Test-double seam for the gh-perf emit sub-script
 GH_PERF_REPORT_EMIT_BIN	$HERE/../emit-gh-perf.sh	path	kernel	workflows/scripts/probe/gh-perf-report.sh	Test-double seam for the gh-perf emit sub-script
-STAGEFIND_DIR	$REPO/../stageFind	path	kernel	workflows/scripts/validate-live-drain.sh	stageFind checkout path checked for the cross-repo live-drain pairing (soft-skipped if absent)
+STAGEFIND_DIR	$REPO/../stageFind	path	kernel	workflows/scripts/validate-capture-backstop.sh	stageFind checkout path checked for the cross-repo capture-backstop pairing (soft-skipped if absent)
 MESSAGE_SCHEMA_OVERLAY	$REPO/claude/message-schema.overlay.md	path	kernel	workflows/scripts/validate-template-refs.sh	Overlay message-schema file unioned when present (same union pattern this item's parser follows)
-INBOX_MAX_STUBS	20	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm above this many Sessions/_inbox stubs (tidy.md § Vault hygiene names this knob)
-INBOX_MAX_AGE_H	48	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm if the oldest _inbox stub is older than this many hours (tidy.md § Vault hygiene names this knob)
+INBOX_MAX_STUBS	20	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm above this many Sessions/_inbox stubs (tidy.md § Vault hygiene names this setting)
+INBOX_MAX_AGE_H	48	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm if the oldest _inbox stub is older than this many hours (tidy.md § Vault hygiene names this setting)
 T0_INVENTORY_FILE	$HOME/.claude/t0-inventory.txt	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Compose-plane T0 inventory artifact (temperloop#235) the orphan-pattern lint (temperloop#239) reads to determine Patterns/ inbound-link reachability; absent = the lint degrades gracefully (skipped, never guesses)
 GATE_MAX_ATTEMPTS	3	int	kernel	scripts/quality-gates.sh	Bounded per-gate retry count in quality-gates.sh absorbing transient CI-runner flakiness (temperloop#403); set 1 to disable retries
 QUALITY_GATES_SKIP_FRESHNESS	0	bool	kernel	workflows/scripts/lib/checkout-freshness.sh	Disable the checkout-staleness guard (temperloop#591) that warns when quality-gates.sh runs against a checkout behind origin/<default> — a smaller gate set + stale leak-guard diff than CI; set 1 to silence
 CI_POLL_API_MAX_ATTEMPTS	5	int	kernel	workflows/scripts/build/ci-poll.sh	Bounded retry count for a single gh api call (head-SHA resolve or check-runs query) absorbing a transient non-JSON/HTTP-5xx gh hiccup (temperloop#386); set 1 to disable retries
 CI_POLL_API_RETRY_BACKOFF	2	seconds	kernel	workflows/scripts/build/ci-poll.sh	Graduated per-attempt sleep multiplier (backoff*attempt) between gh_retry attempts in ci-poll.sh (temperloop#386)
 CI_POLL_NOCI_GRACE_SECS	120	seconds	kernel	workflows/scripts/build/ci-poll.sh	Bounded grace window before zero-ever-seen check-runs on the head SHA resolves to the NO_CI verdict instead of TIMEOUT (temperloop#605); capped at --timeout when the timeout is shorter
-TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/knob-registry.tsv	RESERVED — named config profile switch; no reader exists yet (deferred, D2 Bucket C)
+TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/setting-registry.tsv	RESERVED — named config profile switch; no reader exists yet (deferred, D2 Bucket C)
 TEMPERLOOP_FEEDBACK_DENYLIST_FILE	$REPO_ROOT/workflows/scripts/kernel/personal-token-denylist.tsv	path	kernel	bin/subcommands/feedback.sh	Path to the personal-token denylist TSV the composed feedback payload is leak-scanned against (temperloop#428)
 TEMPERLOOP_FEEDBACK_REPO	Towheads/temperloop	label	kernel	bin/subcommands/feedback.sh	Target repo `temperloop feedback` opens its GitHub issue on (temperloop#428) — the kernel's own upstream tracker, its identity (denylist:allow — same category-1 rationale as feedback.sh's own marked constant)
 TEMPERLOOP_FEEDBACK_ASSUME_TTY	0	bool	kernel	bin/subcommands/feedback.sh	Test seam: treat stdin as attended even when it isn't a real TTY (temperloop#428) — never bypasses the CI/GITHUB_ACTIONS unattended signal, and never substitutes for the actual interactive "y" consent read
-TEMPERLOOP_VERSION	${FOUNDATION_VERSION:-dev}	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-knob check); canonical name since v0.15.0, reads the legacy var as fallback through the window
+TEMPERLOOP_VERSION	${FOUNDATION_VERSION:-dev}	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-setting check); canonical name since v0.15.0, reads the legacy var as fallback through the window
 FOUNDATION_VERSION	dev	string	kernel	bin/subcommands/feedback.sh	DEPRECATED — renamed TEMPERLOOP_VERSION in v0.15.0, read as fallback through the window, removed in v0.17.0
-FUNNEL_FLOCK_CMD	flock	path	kernel	workflows/scripts/build/funnel-tick.sh	Test-double seam for the flock binary — lets a host with a differently-named or absent flock point at a real one (once-per-run degradation notice, temperloop#492)
-FUNNEL_RUN_ID	$log_date-$$	string	kernel	workflows/scripts/build/funnel-cron.sh	Per-run identity for once-per-run dedup markers (flock-degradation warn); wake-unique = cron wake-date + PID so a later wake re-warns once (temperloop#492)
-FUNNEL_RUN_ID	$$	string	kernel	workflows/scripts/build/funnel-tick.sh	Per-run identity fallback when funnel-tick runs standalone with no cron-exported FUNNEL_RUN_ID; PID-scoped (temperloop#492)
+PIPELINE_FLOCK_CMD	flock	path	kernel	workflows/scripts/build/pipeline-tick.sh	Test-double seam for the flock binary — lets a host with a differently-named or absent flock point at a real one (once-per-run degradation notice, temperloop#492)
+PIPELINE_RUN_ID	$log_date-$$	string	kernel	workflows/scripts/build/pipeline-cron.sh	Per-run identity for once-per-run dedup markers (flock-degradation warn); wake-unique = cron wake-date + PID so a later wake re-warns once (temperloop#492)
+PIPELINE_RUN_ID	$$	string	kernel	workflows/scripts/build/pipeline-tick.sh	Per-run identity fallback when pipeline-tick runs standalone with no cron-exported PIPELINE_RUN_ID; PID-scoped (temperloop#492)
 ENV_RECONCILE_AGENT_INSTALL_DIR	$HOME/Library/LaunchAgents	path	kernel	workflows/scripts/build/env-reconcile.sh	Directory whose presence of a declared launchd plist marks this host as owning that agent role; empty of the declared agents = the "not my role" signal (temperloop#531)
 ENV_RECONCILE_AGENT_HOSTS		string	kernel	workflows/scripts/build/env-reconcile.sh	Explicit space-separated host-label allowlist that owns the launchd/cron roles; wins over install-marker auto-detect when set (temperloop#531)
 KERNEL_DENYLIST_LOCAL_FILE	${KERNEL_DENYLIST_FILE%.tsv}.local.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Test seam / override for the gitignored operator-personal denylist overlay path; defaults to the sibling .local.tsv of the tracked denylist (temperloop#438)

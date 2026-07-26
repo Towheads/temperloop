@@ -10,7 +10,7 @@
 # (v26, zero network). No modifications to the .mjs are needed.
 #
 # parallel() in the runtime maps to Promise.all — items in one level run
-# concurrently. The mock infrastructure therefore keys per-item spine/worker
+# concurrently. The mock infrastructure therefore keys per-item machinery/worker
 # response sequences by slug (extracted from opts.label), not by global
 # position in a flat queue. This makes the mock deterministic regardless of
 # which item's agent() calls land first.
@@ -108,9 +108,9 @@ run_node_case() {
 # Shared harness preamble injected at the start of every Node test case.
 #
 # Mock infrastructure design:
-#   - spineMap: Map<slug, outcome[]> — per-item ordered spine returns
+#   - machineryMap: Map<slug, outcome[]> — per-item ordered machinery returns
 #   - workerMap: Map<slug, verdict[]> — per-item ordered worker returns
-#   - agent() routes by opts.schema (spine) vs no schema (worker), extracting
+#   - agent() routes by opts.schema (machinery) vs no schema (worker), extracting
 #     slug from opts.label (format: "phase:slug[#extra]")
 #   - parallel() = Promise.all (matches runtime behaviour)
 #   - log(), phase() = no-ops
@@ -125,8 +125,8 @@ const MJS = process.env.MJS_PATH;
 
 const callLog = [];
 
-// spineMap: slug → [outcome, ...] — consumed in order per slug
-const spineMap = new Map();
+// machineryMap: slug → [outcome, ...] — consumed in order per slug
+const machineryMap = new Map();
 // workerMap: slug → [verdict, ...] — consumed in order per slug
 const workerMap = new Map();
 // mergeCheckMap: slug → [mergeState, ...] — consumed in order per slug.
@@ -135,8 +135,8 @@ const workerMap = new Map();
 const mergeCheckMap = new Map();
 
 function slugFromLabel(label) {
-  // Labels from runSpine: "worktree:slug", "gate:slug", "scan:slug", "push:slug",
-  // "pr-open:slug", "ci-poll:slug#N", "push-retry:slug", "spine:cmd ..."
+  // Labels from runMachinery: "worktree:slug", "gate:slug", "scan:slug", "push:slug",
+  // "pr-open:slug", "ci-poll:slug#N", "push-retry:slug", "machinery:cmd ..."
   // Labels from worker: "worker:slug", "worker-cifix:slug"
   // Labels from merge-check: "merge-check:slug#N"
   // Claim: "claim:slug"
@@ -153,16 +153,16 @@ function nextFromMap(map, slug, fallback) {
 }
 
 globalThis.callLog = callLog;
-globalThis.spineMap = spineMap;
+globalThis.machineryMap = machineryMap;
 globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model } });
   const slug = slugFromLabel(opts.label);
-  if (opts.phase === 'spine') {
-    // Spine call — one-shot executor, routed by slug
-    return nextFromMap(spineMap, slug, { outcome: 'ERROR', error: 'unexpected spine call for ' + slug });
+  if (opts.phase === 'machinery') {
+    // Machinery call — one-shot executor, routed by slug
+    return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
   }
   if (opts.phase === 'merge-check') {
     // Merge-state check — gh pr view mergeable/mergeStateStatus, routed by slug.
@@ -182,12 +182,12 @@ globalThis.phase = () => {};
 globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
 
 // Helpers to register sequences
-globalThis.setSpine = (slug, ...outcomes) => { spineMap.set(slug, outcomes); };
+globalThis.setMachinery = (slug, ...outcomes) => { machineryMap.set(slug, outcomes); };
 globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); };
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
 
-// Canonical happy-path spine sequence for a green item
-globalThis.happySpine = (slug, prNum, sha) => setSpine(slug,
+// Canonical happy-path machinery sequence for a green item
+globalThis.happyMachinery = (slug, prNum, sha) => setMachinery(slug,
   { outcome: 'CREATED', path: '/tmp/repo.wt/' + slug },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha },
@@ -240,9 +240,9 @@ export MJS_PATH="$MJS"
 run_node_case "happy: 3 green items → 3 parked, empty escalations, no plan-note write" "
 $PREAMBLE
 
-happySpine('item101', 101, 'sha1');
-happySpine('item102', 102, 'sha2');
-happySpine('item103', 103, 'sha3');
+happyMachinery('item101', 101, 'sha1');
+happyMachinery('item102', 102, 'sha2');
+happyMachinery('item103', 103, 'sha3');
 happyWorker('item101');
 happyWorker('item102');
 happyWorker('item103');
@@ -276,7 +276,7 @@ if (!p103 || p103.pr !== 103 || p103.pushed_sha !== 'sha3')
 
 // No plan-note write from inside the workflow (workflow only RETURNS; orchestrator writes)
 const planWrites = callLog.filter(c =>
-  c.opts.phase !== 'spine' && c.opts.phase !== 'worker' &&
+  c.opts.phase !== 'machinery' && c.opts.phase !== 'worker' &&
   (String(c.prompt).toLowerCase().includes('write the plan') || String(c.prompt).toLowerCase().includes('update the plan note'))
 );
 if (planWrites.length > 0)
@@ -291,10 +291,10 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "design-fork: one design-fork item → escalations[], siblings park" "
 $PREAMBLE
 
-happySpine('item-a', 201, 'sha-a');
-happySpine('item-b', 202, 'sha-b');
+happyMachinery('item-a', 201, 'sha-a');
+happyMachinery('item-b', 202, 'sha-b');
 // item-fork: CREATED only (worker escalates immediately after worktree step)
-setSpine('item-fork',
+setMachinery('item-fork',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-fork' }
 );
 happyWorker('item-a');
@@ -334,8 +334,8 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "failed verdict: one item returns failed → escalation, sibling parks" "
 $PREAMBLE
 
-happySpine('item-good', 301, 'sha-good');
-setSpine('item-bad', { outcome: 'CREATED', path: '/tmp/repo.wt/item-bad' });
+happyMachinery('item-good', 301, 'sha-good');
+setMachinery('item-bad', { outcome: 'CREATED', path: '/tmp/repo.wt/item-bad' });
 happyWorker('item-good');
 setWorker('item-bad', { status: 'failed', failure_reason: 'could not compile' });
 
@@ -367,7 +367,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "ci-failed within budget: re-spawn + force-push + re-poll CI_GREEN → parked" "
 $PREAMBLE
 
-setSpine('item-cifix',
+setMachinery('item-cifix',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-cifix' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
@@ -427,7 +427,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "ci-failed past budget: retries exhausted → ci-failed escalation" "
 $PREAMBLE
 
-setSpine('item-cibust',
+setMachinery('item-cibust',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-cibust' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-v1' },
@@ -468,7 +468,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "ci-poll TIMEOUT loop: multiple TIMEOUT slices then CI_GREEN → parked" "
 $PREAMBLE
 
-setSpine('item-timeout',
+setMachinery('item-timeout',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-timeout' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-t' },
@@ -500,7 +500,7 @@ console.log(JSON.stringify({ ok: true }));
 
 # ============================================================================
 # TEST 6b: NO_CI outcome → parked [m] with no_ci:true, NOT ci-failed (#605/#618)
-# A zero-CI repo's head SHA resolves NO_CI on the --workflow spine path; it must
+# A zero-CI repo's head SHA resolves NO_CI on the --workflow machinery path; it must
 # park like a green item (legible 'no CI configured' skip mirroring build.md 3g)
 # carrying the no_ci sentinel, never fall through to the escalate-ci-failed
 # catch-all.
@@ -508,7 +508,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "no-ci: NO_CI outcome → parked with no_ci:true, no escalation (#618)" "
 $PREAMBLE
 
-setSpine('item-noci',
+setMachinery('item-noci',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-noci' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-n' },
@@ -546,9 +546,9 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "claim-conflict: CLAIM_CONFLICT → claim-conflict escalation" "
 $PREAMBLE
 
-// Board ON + ghIssue → claim spine fires first (before worktree.sh).
+// Board ON + ghIssue → claim machinery fires first (before worktree.sh).
 // Label: 'claim:item-conflict'
-setSpine('item-conflict',
+setMachinery('item-conflict',
   { outcome: 'CLAIM_CONFLICT' }
 );
 
@@ -575,7 +575,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "push-rejected: PUSH_REJECTED → push-rejected escalation" "
 $PREAMBLE
 
-setSpine('item-rejected',
+setMachinery('item-rejected',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-rejected' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-r' },
@@ -607,7 +607,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "scan-blocked: SCAN_BLOCKED → closing-keyword escalation" "
 $PREAMBLE
 
-setSpine('item-scan',
+setMachinery('item-scan',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-scan' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-scan' },
@@ -641,11 +641,11 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "rebase-conflict: REBASE_CONFLICT → rebase-conflict escalation (#525)" "
 $PREAMBLE
 
-setSpine('item-rb',
+setMachinery('item-rb',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-rb' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASE_CONFLICT', base: 'b', tip: 't', error: 'CONFLICT (content): shared.txt' },
-  // No SCAN/PUSH entries: if the spine advanced past the conflict it would
+  // No SCAN/PUSH entries: if the machinery advanced past the conflict it would
   // consume an unexpected entry and desync — guarding that the escalation
   // halts the item at the rebase boundary.
 );
@@ -674,9 +674,9 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "spike kind: spike items park with null pr/pushed_sha (no push/PR/CI)" "
 $PREAMBLE
 
-// Spike path: worker is called directly (no spine calls).
-// spineMap for 'spike-item' is intentionally empty — any spine call is an error.
-setSpine('spike-item' /* empty — no calls expected */);
+// Spike path: worker is called directly (no machinery calls).
+// machineryMap for 'spike-item' is intentionally empty — any machinery call is an error.
+setMachinery('spike-item' /* empty — no calls expected */);
 setWorker('spike-item',
   { status: 'done', summary: 'spike verdict produced', acceptance_results: [{ criterion: 'verdict-written', passed: true, evidence: 'v.md' }], verification_surface_path: '/tmp/verdict.md' }
 );
@@ -685,7 +685,7 @@ globalThis.args = { ...baseArgs, items: [
   { slug: 'spike-item', branch: 'build/spike-item', title: 'Spike Item', kind: 'spike', acceptance: ['verdict-written'] },
 ]};
 
-const initialSpineSize = (spineMap.get('spike-item') || []).length;
+const initialMachinerySize = (machineryMap.get('spike-item') || []).length;
 
 const mod = await loadLevel();
 const result = await mod.default();
@@ -701,10 +701,10 @@ if (sp.pr !== null)
 if (sp.pushed_sha !== null)
   { console.log(JSON.stringify({ ok: false, reason: 'spike pushed_sha should be null: ' + sp.pushed_sha })); process.exit(0); }
 
-// Verify no spine calls were made for the spike item
-const spineCallsForSpike = callLog.filter(c => c.opts.schema && (c.opts.label||'').includes('spike-item'));
-if (spineCallsForSpike.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'spike made spine calls: ' + JSON.stringify(spineCallsForSpike.map(c=>c.opts.label)) })); process.exit(0); }
+// Verify no machinery calls were made for the spike item
+const machineryCallsForSpike = callLog.filter(c => c.opts.schema && (c.opts.label||'').includes('spike-item'));
+if (machineryCallsForSpike.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'spike made machinery calls: ' + JSON.stringify(machineryCallsForSpike.map(c=>c.opts.label)) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -718,8 +718,8 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "spike claim-first: 3a claim precedes the spike verdict-worker (#650)" "
 $PREAMBLE
 
-// Claim spine call for the spike returns CLAIMED (board ON, ghIssue present).
-setSpine('spike-claim', { outcome: 'CLAIMED' });
+// Claim machinery call for the spike returns CLAIMED (board ON, ghIssue present).
+setMachinery('spike-claim', { outcome: 'CLAIMED' });
 setWorker('spike-claim',
   { status: 'done', summary: 'spike verdict produced', acceptance_results: [{ criterion: 'verdict-written', passed: true, evidence: 'v.md' }], verification_surface_path: '/tmp/verdict.md' }
 );
@@ -756,7 +756,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "gate-fail: GATE_FAIL → acceptance-gate-failed escalation" "
 $PREAMBLE
 
-setSpine('item-gate',
+setMachinery('item-gate',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-gate' },
   { outcome: 'GATE_FAIL', detail: 'mypy found type errors' },
 );
@@ -789,13 +789,13 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "gate-timeout: 3e.5 gate prompt carries the Bash-timeout directive (#115)" "
 $PREAMBLE
 
-happySpine('item-gto', 115, 'sha-gto');
+happyMachinery('item-gto', 115, 'sha-gto');
 happyWorker('item-gto');
 
 // Wrap the mock agent to capture the FULL gate prompt (the shared callLog slices
 // to 120 chars, which truncates before the directive; mirror the continuation
-// case's full-prompt capture). Delegate every call to the original mock so spine
-// routing (GATE_PASS from happySpine) is unchanged.
+// case's full-prompt capture). Delegate every call to the original mock so machinery
+// routing (GATE_PASS from happyMachinery) is unchanged.
 let gatePromptSeen = null;
 const origAgent = globalThis.agent;
 globalThis.agent = async function(prompt, opts = {}) {
@@ -844,12 +844,12 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "gate-worktree: 3e.5 gate runs the worktree's quality-gates.sh, not repoRoot's (#626)" "
 $PREAMBLE
 
-happySpine('item-qgwt', 626, 'sha-qgwt');
+happyMachinery('item-qgwt', 626, 'sha-qgwt');
 happyWorker('item-qgwt');
 
 // Capture the FULL gate prompt (the shared callLog truncates to 120 chars,
 // which cuts off the script path; mirror 11b's full-prompt capture). Delegate
-// to the original mock so spine routing (GATE_PASS from happySpine) is intact.
+// to the original mock so machinery routing (GATE_PASS from happyMachinery) is intact.
 let gatePromptSeen = null;
 const origAgent = globalThis.agent;
 globalThis.agent = async function(prompt, opts = {}) {
@@ -874,7 +874,7 @@ if ((result.escalations ?? []).length !== 0)
 if (!gatePromptSeen)
   { console.log(JSON.stringify({ ok: false, reason: 'gate agent call never observed' })); process.exit(0); }
 
-// The mock repoRoot is '/tmp/repo'; the worktree (happySpine CREATED.path) is
+// The mock repoRoot is '/tmp/repo'; the worktree (happyMachinery CREATED.path) is
 // '/tmp/repo.wt/item-qgwt'. These two script paths are cleanly distinguishable
 // (the char after '/tmp/repo' is '/' vs '.'), so the buggy repoRoot copy is not
 // a substring of the correct worktree copy.
@@ -898,7 +898,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "worktree-failed: worktree.sh non-CREATED → worktree-failed escalation" "
 $PREAMBLE
 
-setSpine('item-wt',
+setMachinery('item-wt',
   { outcome: 'ERROR', error: 'repo root is not top-level' }
 );
 
@@ -926,14 +926,14 @@ run_node_case "2-level e2e smoke: two buildLevel() calls, each independent and s
 $PREAMBLE
 
 // Level 1: 2 green items
-happySpine('l1a', 701, 'sha-l1a');
-happySpine('l1b', 702, 'sha-l1b');
+happyMachinery('l1a', 701, 'sha-l1a');
+happyMachinery('l1b', 702, 'sha-l1b');
 happyWorker('l1a');
 happyWorker('l1b');
 
 // Level 2: 2 green items (different slugs)
-happySpine('l2a', 703, 'sha-l2a');
-happySpine('l2b', 704, 'sha-l2b');
+happyMachinery('l2a', 703, 'sha-l2a');
+happyMachinery('l2b', 704, 'sha-l2b');
 happyWorker('l2a');
 happyWorker('l2b');
 
@@ -989,8 +989,8 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "dep-merge gate (#108): DEPS_UNMERGED blocks worktree create + worker; DEPS_MERGED proceeds; sibling parks" "
 $PREAMBLE
 
-// l2ok: dep gate passes, then the normal green spine sequence.
-setSpine('l2ok',
+// l2ok: dep gate passes, then the normal green machinery sequence.
+setMachinery('l2ok',
   { outcome: 'DEPS_MERGED' },
   { outcome: 'CREATED', path: '/tmp/repo.wt/l2ok' },
   { outcome: 'GATE_PASS' },
@@ -1002,10 +1002,10 @@ setSpine('l2ok',
 );
 happyWorker('l2ok');
 
-// l2blocked: dep gate reports an unmerged dependency — the ONLY spine call it
+// l2blocked: dep gate reports an unmerged dependency — the ONLY machinery call it
 // should ever make. No CREATED registered: if the code wrongly reached
-// worktree.sh create, the spine mock would throw 'label exhausted'.
-setSpine('l2blocked', { outcome: 'DEPS_UNMERGED', unmerged: ['sha-dep-unmerged'] });
+// worktree.sh create, the machinery mock would throw 'label exhausted'.
+setMachinery('l2blocked', { outcome: 'DEPS_UNMERGED', unmerged: ['sha-dep-unmerged'] });
 
 globalThis.args = { ...baseArgs, items: [
   { slug: 'l2ok',      branch: 'build/l2ok',      title: 'L2 OK',      kind: 'impl', acceptance: ['c'],
@@ -1030,7 +1030,7 @@ if (escalations.length !== 1)
 if (escalations[0].slug !== 'l2blocked' || escalations[0].kind !== 'dep-not-merged')
   { console.log(JSON.stringify({ ok: false, reason: 'wrong escalation: ' + JSON.stringify(escalations[0]) })); process.exit(0); }
 
-// The gate is ORDERED before create: l2blocked must make its deps-merged spine
+// The gate is ORDERED before create: l2blocked must make its deps-merged machinery
 // call but NEVER a worktree:create call, and NEVER spawn a worker — nothing was
 // built against the pre-merge base.
 const blockedDepChecks = callLog.filter(c => c.opts.label === 'depcheck:l2blocked');
@@ -1089,11 +1089,11 @@ fi
 run_node_case "continuation: onlySlugs+verdicts → verdict injected, worktree reused, no re-claim" "
 $PREAMBLE
 
-// The continued item resumes at 3c (worker). Its spine sequence therefore has
+// The continued item resumes at 3c (worker). Its machinery sequence therefore has
 // NO 'CREATED' (worktree create is skipped) and NO claim — it begins at the
 // gate (3e.5). If driveItem wrongly ran worktree.sh create or claim.sh, it
-// would consume an extra spine entry here and the outcome would desync.
-setSpine('item-cont',
+// would consume an extra machinery entry here and the outcome would desync.
+setMachinery('item-cont',
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cont' },
   { outcome: 'SCAN_CLEAN' },
@@ -1108,7 +1108,7 @@ setWorker('item-cont',
 const VERDICT_BLOCK = '## Design verdict — item-cont\\nDecision: use option A (the seam interface).\\nRationale: keeps the contract stable.';
 
 // Capture the worker prompt to assert the verdict block is injected, and any
-// claim/worktree spine call to assert it was skipped.
+// claim/worktree machinery call to assert it was skipped.
 let workerPromptSeen = '';
 let sawCreateOrClaim = false;
 const origAgent = globalThis.agent;
@@ -1160,12 +1160,12 @@ if (!workerPromptSeen.includes('Design verdict — item-cont'))
 if (sawCreateOrClaim)
   { console.log(JSON.stringify({ ok: false, reason: 'continuation ran worktree.sh create or claim.sh (should reuse/skip)' })); process.exit(0); }
 
-// Belt-and-suspenders: no CREATED/CLAIMED spine outcome was consumed for the
-// continued slug (the spine sequence had neither).
+// Belt-and-suspenders: no CREATED/CLAIMED machinery outcome was consumed for the
+// continued slug (the machinery sequence had neither).
 const createCalls = callLog.filter(c =>
   (c.opts.label||'').match(/^(worktree|claim):item-cont/));
 if (createCalls.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'create/claim spine calls present: ' + JSON.stringify(createCalls.map(c=>c.opts.label)) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'create/claim machinery calls present: ' + JSON.stringify(createCalls.map(c=>c.opts.label)) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1176,7 +1176,7 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "acceptance-string: item.acceptance as a string → parks, no .map throw (#437)" "
 $PREAMBLE
-happySpine('strone', 201, 'shaS');
+happyMachinery('strone', 201, 'shaS');
 happyWorker('strone');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'strone', branch: 'build/strone', title: 'String acc', kind: 'impl', acceptance: '(self-verify the issue is resolved)' },
@@ -1217,8 +1217,8 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "null-worker-retry: agent returns null once, retries, parks on second call (#542)" "
 $PREAMBLE
-// Spine: normal happy path
-happySpine('retryitem', 10, 'sha-retry');
+// Machinery: normal happy path
+happyMachinery('retryitem', 10, 'sha-retry');
 // Worker: first call null (transient API error), second call done (retry succeeds)
 setWorker('retryitem',
   null,
@@ -1241,12 +1241,12 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 # TEST 19: null worker verdict — persistent null (both calls return null) must
 # escalate as worker-error, not throw a TypeError.
-# Spine must be seeded through worktree creation (3b) since that runs before 3c.
+# Machinery must be seeded through worktree creation (3b) since that runs before 3c.
 # ============================================================================
 run_node_case "null-worker-persistent: agent returns null twice → worker-error escalation, no TypeError (#542)" "
 $PREAMBLE
-// Spine: only worktree creation is needed; worker escalates before gate/scan/push/PR/CI
-setSpine('nullitem', { outcome: 'CREATED', path: '/tmp/repo.wt/nullitem' });
+// Machinery: only worktree creation is needed; worker escalates before gate/scan/push/PR/CI
+setMachinery('nullitem', { outcome: 'CREATED', path: '/tmp/repo.wt/nullitem' });
 // Worker: both initial call and the one auto-retry return null
 setWorker('nullitem', null, null);
 globalThis.args = { ...baseArgs, items: [
@@ -1271,7 +1271,7 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "null-spike: spike agent returns null → worker-error escalation (#542)" "
 $PREAMBLE
-// Spike: no spine calls (spikes skip all spine steps); worker returns null
+// Spike: no machinery calls (spikes skip all machinery steps); worker returns null
 setWorker('spikenull', null);
 globalThis.args = { ...baseArgs, items: [
   { slug: 'spikenull', branch: 'build/spikenull', title: 'Null spike', kind: 'spike', acceptance: ['c'] },
@@ -1295,10 +1295,10 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "null-cifix: ci-fix agent returns null → ci-failed escalation, no TypeError (#542)" "
 $PREAMBLE
-// Spine: normal path up to CI_FAILED, then fix-spawn (worker) returns null
-happySpine('cifixnull', 20, 'sha-cifix');
-// Override ci-poll in spineMap to return CI_FAILED
-spineMap.set('cifixnull', [
+// Machinery: normal path up to CI_FAILED, then fix-spawn (worker) returns null
+happyMachinery('cifixnull', 20, 'sha-cifix');
+// Override ci-poll in machineryMap to return CI_FAILED
+machineryMap.set('cifixnull', [
   { outcome: 'CREATED', path: '/tmp/repo.wt/cifixnull' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cifix' },
@@ -1338,8 +1338,8 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "merge-conflict: CONFLICTING PR escalates merge-conflict without spinning (#543)" "
 $PREAMBLE
 
-// Spine through push + PR open; NO ci-poll entry (merge-check fires first, escalates)
-setSpine('item-conflict543',
+// Machinery through push + PR open; NO ci-poll entry (merge-check fires first, escalates)
+setMachinery('item-conflict543',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-conflict543' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-cf' },
@@ -1347,7 +1347,7 @@ setSpine('item-conflict543',
   { outcome: 'PUSHED', sha: 'sha-cf', branch: 'build/item-conflict543' },
   { outcome: 'PR_OPENED', pr_number: 543 },
   // No CI_GREEN/CI_FAILED/TIMEOUT entries: if ci-poll.sh fires, it consumes
-  // from an exhausted spineMap → ERROR fallback → test would see ci-failed, not
+  // from an exhausted machineryMap → ERROR fallback → test would see ci-failed, not
   // merge-conflict. The absence of an entry here proves ci-poll was skipped.
 );
 happyWorker('item-conflict543');
@@ -1393,7 +1393,7 @@ run_node_case "merge-conflict: mergeStateStatus=DIRTY alone escalates merge-conf
 $PREAMBLE
 
 // Item that is DIRTY (mergeStateStatus only, mergeable field missing/UNKNOWN)
-setSpine('item-dirty',
+setMachinery('item-dirty',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-dirty' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-dirty' },
@@ -1405,7 +1405,7 @@ happyWorker('item-dirty');
 setMergeCheck('item-dirty', { mergeable: 'UNKNOWN', mergeStateStatus: 'DIRTY' });
 
 // Clean sibling parks normally
-happySpine('item-clean', 545, 'sha-clean');
+happyMachinery('item-clean', 545, 'sha-clean');
 happyWorker('item-clean');
 // No setMergeCheck → default { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
 
@@ -1444,7 +1444,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "pr-open EXISTS: EXISTS outcome routes to CI-poll/park-with-pr, not pr-open-failed (#544)" "
 $PREAMBLE
 
-setSpine('item-exists',
+setMachinery('item-exists',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-exists' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-exists' },
@@ -1487,7 +1487,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "pr-open ERROR: genuine pr-open failure still escalates pr-open-failed (not swallowed by #544)" "
 $PREAMBLE
 
-setSpine('item-prfail',
+setMachinery('item-prfail',
   { outcome: 'CREATED', path: '/tmp/repo.wt/item-prfail' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-prfail' },
@@ -1519,16 +1519,16 @@ console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
-# TEST 26: null spine return at the WORKTREE step (temperloop#72). When the
-# auto-mode safety classifier DENIES a spine command, agent() returns null and
-# runSpine normalizes it to a SPINE_DENIED sentinel. driveItem must escalate a
-# clean 'spine-denied' rather than dereference wtOut.outcome and crash with
+# TEST 26: null machinery return at the WORKTREE step (temperloop#72). When the
+# auto-mode safety classifier DENIES a machinery command, agent() returns null and
+# runMachinery normalizes it to a SPINE_DENIED sentinel. driveItem must escalate a
+# clean 'machinery-denied' rather than dereference wtOut.outcome and crash with
 # 'null is not an object'.
 # ============================================================================
-run_node_case "null-spine-worktree: worktree spine returns null → spine-denied escalation, no TypeError (#72)" "
+run_node_case "null-machinery-worktree: worktree machinery returns null → machinery-denied escalation, no TypeError (#72)" "
 $PREAMBLE
-// First spine call (worktree.sh create, board OFF) returns null (classifier denied).
-setSpine('wtdenied', null);
+// First machinery call (worktree.sh create, board OFF) returns null (classifier denied).
+setMachinery('wtdenied', null);
 happyWorker('wtdenied');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'wtdenied', branch: 'build/wtdenied', title: 'WT denied', kind: 'impl', acceptance: ['c'] },
@@ -1538,22 +1538,22 @@ const result = await mod.default();
 const parked = result.parked ?? [];
 const escalations = result.escalations ?? [];
 if (parked.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-worktree: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
-if (escalations.length !== 1 || escalations[0].kind !== 'spine-denied')
-  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-worktree: expected 1 spine-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-worktree: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
+if (escalations.length !== 1 || escalations[0].kind !== 'machinery-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-worktree: expected 1 machinery-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
 if (escalations[0].payload.step !== 'worktree')
-  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-worktree: expected payload.step=worktree, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-worktree: expected payload.step=worktree, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
 console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
-# TEST 27: null spine return at the PUSH step (temperloop#72). Same null-guard,
+# TEST 27: null machinery return at the PUSH step (temperloop#72). Same null-guard,
 # exercised at 3f-1 push after a clean worker+gate+rebase+scan. Guards the
 # second site the crash was reported at (~453/push).
 # ============================================================================
-run_node_case "null-spine-push: push spine returns null → spine-denied escalation, no TypeError (#72)" "
+run_node_case "null-machinery-push: push machinery returns null → machinery-denied escalation, no TypeError (#72)" "
 $PREAMBLE
-setSpine('pushdenied',
+setMachinery('pushdenied',
   { outcome: 'CREATED', path: '/tmp/repo.wt/pushdenied' },
   { outcome: 'GATE_PASS' },
   { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pd' },
@@ -1569,100 +1569,100 @@ const result = await mod.default();
 const parked = result.parked ?? [];
 const escalations = result.escalations ?? [];
 if (parked.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-push: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
-if (escalations.length !== 1 || escalations[0].kind !== 'spine-denied')
-  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-push: expected 1 spine-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
+if (escalations.length !== 1 || escalations[0].kind !== 'machinery-denied')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected 1 machinery-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
 if (escalations[0].payload.step !== 'push')
-  { console.log(JSON.stringify({ ok: false, reason: 'null-spine-push: expected payload.step=push, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected payload.step=push, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
 console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
-# TEST 28: spineBinDir de-obfuscation (temperloop#72, root cause 1). When the
-# orchestrator passes a pre-resolved input.spineBinDir, spineBin emits a PLAIN
+# TEST 28: machineryBinDir de-obfuscation (temperloop#72, root cause 1). When the
+# orchestrator passes a pre-resolved input.machineryBinDir, machineryBin emits a PLAIN
 # absolute path — the executed worktree/push command line must carry NO nested
 # \$(readlink …) command-substitution (what the classifier read as an obfuscated
-# bypass). We capture the spine prompts and assert the resolved path is present
+# bypass). We capture the machinery prompts and assert the resolved path is present
 # and no readlink substitution leaks into the executed line.
 # ============================================================================
-run_node_case "spineBinDir: pre-resolved dir → plain paths, no readlink in executed spine command (#72)" "
+run_node_case "machineryBinDir: pre-resolved dir → plain paths, no readlink in executed machinery command (#72)" "
 $PREAMBLE
-happySpine('deobf', 260, 'sha-deobf');
+happyMachinery('deobf', 260, 'sha-deobf');
 happyWorker('deobf');
-let spinePrompts = [];
+let machineryPrompts = [];
 const origAgent = globalThis.agent;
 globalThis.agent = async function(prompt, opts={}) {
-  if (opts.phase === 'spine') spinePrompts.push(String(prompt));
+  if (opts.phase === 'machinery') machineryPrompts.push(String(prompt));
   return origAgent(prompt, opts);
 };
-globalThis.args = { ...baseArgs, spineBinDir: '/resolved/spine/bin', items: [
+globalThis.args = { ...baseArgs, machineryBinDir: '/resolved/machinery/bin', items: [
   { slug: 'deobf', branch: 'build/deobf', title: 'Deobf', kind: 'impl', acceptance: ['c'] },
 ]};
 const mod = await loadLevel();
 const result = await mod.default();
 if ((result.parked ?? []).length !== 1)
-  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
-// The worktree + push spine commands must use the plain resolved dir...
-const wtPrompt = spinePrompts.find(p => p.includes('worktree.sh'));
-const pushPrompt = spinePrompts.find(p => p.includes('pr.sh') && p.includes(' push '));
-if (!wtPrompt || !wtPrompt.includes('/resolved/spine/bin/worktree.sh'))
-  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: worktree cmd missing plain resolved path: ' + (wtPrompt||'<none>').slice(0,300) })); process.exit(0); }
-if (!pushPrompt || !pushPrompt.includes('/resolved/spine/bin/pr.sh'))
-  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: push cmd missing plain resolved path: ' + (pushPrompt||'<none>').slice(0,300) })); process.exit(0); }
-// ...and NO nested readlink command-substitution in any spine command line.
-const leaked = spinePrompts.find(p => p.includes('readlink'));
+  { console.log(JSON.stringify({ ok: false, reason: 'machineryBinDir: expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+// The worktree + push machinery commands must use the plain resolved dir...
+const wtPrompt = machineryPrompts.find(p => p.includes('worktree.sh'));
+const pushPrompt = machineryPrompts.find(p => p.includes('pr.sh') && p.includes(' push '));
+if (!wtPrompt || !wtPrompt.includes('/resolved/machinery/bin/worktree.sh'))
+  { console.log(JSON.stringify({ ok: false, reason: 'machineryBinDir: worktree cmd missing plain resolved path: ' + (wtPrompt||'<none>').slice(0,300) })); process.exit(0); }
+if (!pushPrompt || !pushPrompt.includes('/resolved/machinery/bin/pr.sh'))
+  { console.log(JSON.stringify({ ok: false, reason: 'machineryBinDir: push cmd missing plain resolved path: ' + (pushPrompt||'<none>').slice(0,300) })); process.exit(0); }
+// ...and NO nested readlink command-substitution in any machinery command line.
+const leaked = machineryPrompts.find(p => p.includes('readlink'));
 if (leaked)
-  { console.log(JSON.stringify({ ok: false, reason: 'spineBinDir: readlink substitution leaked into executed spine command: ' + leaked.slice(0,300) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'machineryBinDir: readlink substitution leaked into executed machinery command: ' + leaked.slice(0,300) })); process.exit(0); }
 console.log(JSON.stringify({ ok: true }));
 "
 
 # ============================================================================
 # Root-cause-1 static guards (temperloop#72).
-# (1) spineBin must PREFER a pre-resolved input.spineBinDir (plain-path branch),
+# (1) machineryBin must PREFER a pre-resolved input.machineryBinDir (plain-path branch),
 #     so the executed pr.sh/worktree.sh line need not carry nested readlink.
-# (2) The runSpine / merge-check sub-agent instruction must no longer read as
+# (2) The runMachinery / merge-check sub-agent instruction must no longer read as
 #     'blindly execute an opaque command' — the 'Do NOT interpret it' phrasing
 #     that (with the readlink substitution) tripped the auto-mode classifier is
 #     gone.
-grep -q 'input.spineBinDir' "$MJS" \
-  || fail "#72: spineBin must prefer a pre-resolved input.spineBinDir (de-obfuscated plain-path branch)"
+grep -q 'input.machineryBinDir' "$MJS" \
+  || fail "#72: machineryBin must prefer a pre-resolved input.machineryBinDir (de-obfuscated plain-path branch)"
 if grep -q 'Do NOT interpret it' "$MJS"; then
   fail "#72: sub-agent instruction still reads as blind-execute ('Do NOT interpret it') — soften it"
 fi
-# (3) The null-guard must exist: a spineDenied() detector + a spine-denied escalation.
-grep -q 'function spineDenied(' "$MJS" \
-  || fail "#72: spineDenied() null/denied detector missing from build-level.mjs"
-grep -q "'spine-denied'" "$MJS" \
-  || fail "#72: no 'spine-denied' escalation emitted — a denied spine step must park, not crash"
-echo "PASS: #72 classifier-detrip + null-guard static guards — spineBinDir plain-path branch, softened instruction, spineDenied() + spine-denied escalation present"
+# (3) The null-guard must exist: a machineryDenied() detector + a machinery-denied escalation.
+grep -q 'function machineryDenied(' "$MJS" \
+  || fail "#72: machineryDenied() null/denied detector missing from build-level.mjs"
+grep -q "'machinery-denied'" "$MJS" \
+  || fail "#72: no 'machinery-denied' escalation emitted — a denied machinery step must park, not crash"
+echo "PASS: #72 classifier-detrip + null-guard static guards — machineryBinDir plain-path branch, softened instruction, machineryDenied() + machinery-denied escalation present"
 
 # ============================================================================
-# Spine-resolution regression guard (foundation #560).
+# Machinery-resolution regression guard (foundation #560).
 # build-level.mjs runs in the Workflow sandbox (no fs/Node API), so the
-# build-spine scripts (worktree.sh/pr.sh/ci-poll.sh) MUST be resolved via the
-# bash `spineBin` fallback (repo-local → foundation), never the old hardcoded
+# build-machinery scripts (worktree.sh/pr.sh/ci-poll.sh) MUST be resolved via the
+# bash `machineryBin` fallback (repo-local → foundation), never the old hardcoded
 # `${repoRoot}/workflows/scripts/build/<script>` template that broke in a
 # stageFind checkout lacking the workflows→foundation symlink. Static-assert the
 # fix stays in place. (The runtime behaviour of the emitted resolver is proven
 # separately in the PR's executed 4-scenario matrix.)
-grep -q '^function spineBin(' "$MJS" \
-  || fail "#560: spineBin() resolver missing from build-level.mjs"
-# The project's OWN vendored gate is resolved DIRECTLY (spineBin is spine-only) —
+grep -q '^function machineryBin(' "$MJS" \
+  || fail "#560: machineryBin() resolver missing from build-level.mjs"
+# The project's OWN vendored gate is resolved DIRECTLY (machineryBin is machinery-only) —
 # and against the WORKTREE checkout, not repoRoot, so quality-gates.sh's own
 # `cd "$REPO_ROOT"` stays in the worker's tree rather than jumping back to main
-# (temperloop#626). It still never routes through spineBin's foundation fallback.
+# (temperloop#626). It still never routes through machineryBin's foundation fallback.
 # shellcheck disable=SC2016  # grepping for the LITERAL ${wt} token in source
 grep -q 'const qgBin = `${wt}/scripts/quality-gates.sh`' "$MJS" \
-  || fail "#560/#626: qgBin (repo-local quality-gates) must resolve from the worktree (\${wt}), directly — never repoRoot, never spineBin"
-# No spine call site may regress to the hardcoded `.../workflows/scripts/build/<script>` template.
+  || fail "#560/#626: qgBin (repo-local quality-gates) must resolve from the worktree (\${wt}), directly — never repoRoot, never machineryBin"
+# No machinery call site may regress to the hardcoded `.../workflows/scripts/build/<script>` template.
 if grep -nE '\}/workflows/scripts/build/(worktree|pr|ci-poll)\.sh' "$MJS"; then
-  fail "#560: a spine script is still hardcoded to \${repoRoot}/workflows/scripts/build/ — route it through spineBin()"
+  fail "#560: a machinery script is still hardcoded to \${repoRoot}/workflows/scripts/build/ — route it through machineryBin()"
 fi
-# Every spine invocation (worktree/pr×2/ci-poll) must go through spineBin — 4 call sites + the def.
-sb_refs="$(grep -c 'spineBin(' "$MJS")"
+# Every machinery invocation (worktree/pr×2/ci-poll) must go through machineryBin — 4 call sites + the def.
+sb_refs="$(grep -c 'machineryBin(' "$MJS")"
 [ "$sb_refs" -ge 5 ] \
-  || fail "#560: expected >=5 spineBin references (1 def + 4 call sites), found $sb_refs"
-echo "PASS: #560 spine-resolution guard — spineBin() resolves all spine scripts; no hardcoded paths; qgBin stays repo-local"
+  || fail "#560: expected >=5 machineryBin references (1 def + 4 call sites), found $sb_refs"
+echo "PASS: #560 machinery-resolution guard — machineryBin() resolves all machinery scripts; no hardcoded paths; qgBin stays repo-local"
 
 # --- temperloop#68: the 3e.5 gate command must carry `set -o pipefail` so a RED
 # quality-gates run can never be swallowed by a downstream pipe/filter (the
@@ -1673,7 +1673,7 @@ grep -q 'set -o pipefail; if \[ ! -x' "$MJS" \
   || fail "#68: 3e.5 gate command must prefix 'set -o pipefail' (pipe-ate-exit guard)"
 echo "PASS: #68 gate-pipefail guard — 3e.5 gate invocation carries set -o pipefail"
 
-# --- temperloop#115: the 3e.5 gate runSpine call must pass an explicit Bash-tool
+# --- temperloop#115: the 3e.5 gate runMachinery call must pass an explicit Bash-tool
 # timeout. The full quality-gates.sh suite runs >2min; without a raised timeout
 # the executor's Bash tool SIGTERMs it at the default 120s → a false GATE_FAIL on
 # every drive. Guard both the named constant and that the gate call threads it,
@@ -1681,7 +1681,7 @@ echo "PASS: #68 gate-pipefail guard — 3e.5 gate invocation carries set -o pipe
 grep -q 'const GATE_BASH_TIMEOUT_MS' "$MJS" \
   || fail "#115: GATE_BASH_TIMEOUT_MS constant missing — 3e.5 gate would SIGTERM at 120s"
 grep -q 'bashTimeoutMs: GATE_BASH_TIMEOUT_MS' "$MJS" \
-  || fail "#115: 3e.5 gate runSpine call must pass bashTimeoutMs: GATE_BASH_TIMEOUT_MS"
+  || fail "#115: 3e.5 gate runMachinery call must pass bashTimeoutMs: GATE_BASH_TIMEOUT_MS"
 echo "PASS: #115 gate-timeout guard — 3e.5 gate carries an explicit long Bash-tool timeout"
 
 # ============================================================================
@@ -1693,7 +1693,7 @@ echo "PASS: #115 gate-timeout guard — 3e.5 gate carries an explicit long Bash-
 run_node_case "K712 prevention: workerPrompt embeds the FOREGROUND-ONLY (#1219) contract" "
 $PREAMBLE
 
-happySpine('fg-item', 900, 'shaFg');
+happyMachinery('fg-item', 900, 'shaFg');
 happyWorker('fg-item');
 globalThis.args = { ...baseArgs, items: [
   { slug: 'fg-item', branch: 'build/fg-item', title: 'FG item', kind: 'impl', acceptance: ['c'] },
@@ -1709,7 +1709,7 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "K712 cure: null verdict → retry prompt carries FOREGROUND_CURE, first does not → parked" "
 $PREAMBLE
 
-happySpine('cure-item', 901, 'shaCure');
+happyMachinery('cure-item', 901, 'shaCure');
 setWorker('cure-item', null, { status: 'done', summary: 'cured', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
 globalThis.args = { ...baseArgs, items: [
   { slug: 'cure-item', branch: 'build/cure-item', title: 'Cure item', kind: 'impl', acceptance: ['c'] },
@@ -1730,7 +1730,7 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 run_node_case "K712 regression: null verdict TWICE → worker-error escalation (unchanged)" "
 $PREAMBLE
 
-setSpine('err-item', { outcome: 'CREATED', path: '/tmp/repo.wt/err-item' });
+setMachinery('err-item', { outcome: 'CREATED', path: '/tmp/repo.wt/err-item' });
 setWorker('err-item', null, null);
 globalThis.args = { ...baseArgs, items: [
   { slug: 'err-item', branch: 'build/err-item', title: 'Err item', kind: 'impl', acceptance: ['c'] },

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # ready-pr-sweep.sh — READ-ONLY sweep for complete-but-unmerged PRs (#721),
-# the drain half of the orphaned-PR net.
+# the backstop half of the orphaned-PR net.
 #
 # Canonical caller/contract: claude/commands/tidy.md Step 3 § "Ready-but-unmerged
 # PRs" — this script is that step's detection substrate, the same relationship
@@ -30,7 +30,7 @@
 #                    not-rebase state (reason string names the actual state)
 #   ready            required checks green + mergeStateStatus CLEAN — an
 #                    enqueue candidate (auto-enqueue is deliberately OUT of
-#                    scope — a later autonomy rung; this script only reports)
+#                    scope — a later autonomy layer; this script only reports)
 #
 # READ-ONLY / FAIL-OPEN contract (mirrors env-reconcile.sh): it NEVER mutates a
 # PR — no merge, enqueue, close, rebase, comment, or label — and one repo
@@ -43,7 +43,7 @@
 #
 #   --format report   (default) human-readable per-PR classification + summary
 #   --format entry    a ready-to-append pending-decisions `### … Status: open`
-#                     block (the batch-at-ritual entry tidy appends verbatim)
+#                     block (the ask-at-checkin entry tidy appends verbatim)
 #                     IFF at least one ready/needs-rebase/needs-attention
 #                     candidate surfaced; NOTHING when clean (skip-only or
 #                     zero open PRs) — same nothing-when-clean contract as

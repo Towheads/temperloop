@@ -219,7 +219,7 @@ cat > "$TMP/verdict.json" <<'EOF'
 EOF
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
   --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" \
   --source "epic #253, spike #245 verdict" --body-only)"
 # Per-entry bare emission: exactly the two lines, each on its own line.
 [ "$(grep -c '^Closes #' <<<"$body")" -eq 2 ] || fail "expected exactly 2 Closes lines (body: $body)"
@@ -237,7 +237,7 @@ grep -qF -- '- [ ] legacy path unchanged — one diff remains' <<<"$body" \
 grep -qF '## Verification' <<<"$body" || fail "missing ## Verification"
 grep -qF 'After: 3 widgets rendered.' <<<"$body" || fail "verification_surface not in body"
 # Backlinks + footer.
-grep -qxF 'Tracked in: [[Plans/2026-06-09 foundation - spine#spine-pr-open]]' <<<"$body" \
+grep -qxF 'Tracked in: [[Plans/2026-06-09 foundation - machinery#machinery-pr-open]]' <<<"$body" \
   || fail "missing Tracked in backlink"
 grep -qxF 'Derived from: epic #253, spike #245 verdict' <<<"$body" \
   || fail "missing Derived from source ref"
@@ -288,16 +288,16 @@ echo "PASS: open falls back to the acceptance recap only when verification_surfa
 # the explicit --verification-surface-file flag are exercised.
 printf '%s\n' "Before: 0 widgets rendered." "After: 3 widgets rendered." > "$TMP/surface.md"
 inline_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" --source "epic #253" --body-only)"
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" --body-only)"
 # (a) verdict carries .verification_surface_path instead of the inline field
 jq --arg p "$TMP/surface.md" 'del(.verification_surface) | .verification_surface_path=$p' \
   "$TMP/verdict.json" > "$TMP/verdict-pathref.json"
 pathref_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-pathref.json" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" --source "epic #253" --body-only)"
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" --body-only)"
 [ "$pathref_body" = "$inline_body" ] || fail "path-key body not byte-identical to inline body"
 # (b) --verification-surface-file flag, verdict has neither surface field
 flag_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-nosurface.json" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" --source "epic #253" \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" \
   --verification-surface-file "$TMP/surface.md" --body-only)"
 [ "$flag_body" = "$inline_body" ] || fail "--verification-surface-file body not byte-identical to inline body"
 echo "PASS: verification surface by file-ref (path key + flag) == inline body, byte-identical"
@@ -333,7 +333,7 @@ chmod +x "$TMP/bin/gh"
 out="$(GH_STUB_ARGS="$TMP/gh-args" PATH="$TMP/bin:$PATH" bash "$SCRIPT" open \
   --verdict "$TMP/verdict.json" --repo "$REPO" --branch feat/widget \
   --title "feat: widget renderer" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" \
   --source "epic #253")"
 [ "$(jq -r .outcome <<<"$out")" = "PR_OPENED" ] || fail "open outcome (got: $out)"
 [ "$(jq -r .pr_number <<<"$out")" = "342" ] || fail "pr_number not parsed (got: $out)"

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# Tests for check-knob-prose.sh (temperloop#164/#169, item
+# Tests for check-setting-prose.sh (temperloop#164/#169, item
 # registry-config-lints): a synthetic fixture tree proves the RED path (a
-# knob name + its registered default restated in the same prose line), the
+# setting name + its registered default restated in the same prose line), the
 # GREEN paths (name-only prose; the value shown only inside a backtick code
 # span; the value inside a fenced code block; a name that is a substring of
-# a longer identifier), the `<!-- knob-prose:allow -->` marker, the numeric
+# a longer identifier), the `<!-- setting-prose:allow -->` marker, the numeric
 # unit-suffix catch ("300s" still counts as restating 300), and the
 # burn-down baseline's consumed-once semantics (a baselined line passes; a
 # NEW duplicate of that same line still fails).
 #
-# Mirrors the sibling test_check_knob_registry.sh's plain mktemp-fixture
-# style (no git repo needed here — check-knob-prose.sh scans a fixed
+# Mirrors the sibling test_check_setting_registry.sh's plain mktemp-fixture
+# style (no git repo needed here — check-setting-prose.sh scans a fixed
 # claude/commands/*.md + claude/CLAUDE.kernel.md set by path, not via
 # git ls-files).
 
@@ -19,11 +19,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$(cd "$HERE/.." && pwd)"
-CHECKER="$CONFIG_DIR/check-knob-prose.sh"
+CHECKER="$CONFIG_DIR/check-setting-prose.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/knob-prose-test-XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/setting-prose-test-XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -31,19 +31,19 @@ ROOT="$WORK/root"
 mkdir -p "$ROOT/claude/commands"
 
 cat >"$WORK/kernel.tsv" <<'EOF'
-KNOB_WINDOW	300	seconds	kernel	scripts/a.sh	timed window
-KNOB_MODE	auto	enum	kernel	scripts/a.sh	mode selector (auto|on|off)
-KNOB_INTERP	$SOME_DIR/file	path	kernel	scripts/a.sh	interpolated default — never a prose candidate
+SETTING_WINDOW	300	seconds	kernel	scripts/a.sh	timed window
+SETTING_MODE	auto	enum	kernel	scripts/a.sh	mode selector (auto|on|off)
+SETTING_INTERP	$SOME_DIR/file	path	kernel	scripts/a.sh	interpolated default — never a prose candidate
 EOF
 
 run_checker() {
   (
-    KNOB_REGISTRY_FILE="$WORK/kernel.tsv"
-    KNOB_REGISTRY_OVERLAY_FILE="$WORK/absent-overlay.tsv"
-    KNOB_PROSE_SCAN_ROOT="$ROOT"
-    KNOB_PROSE_BASELINE_FILE="$WORK/baseline.tsv"
-    export KNOB_REGISTRY_FILE KNOB_REGISTRY_OVERLAY_FILE
-    export KNOB_PROSE_SCAN_ROOT KNOB_PROSE_BASELINE_FILE
+    SETTING_REGISTRY_FILE="$WORK/kernel.tsv"
+    SETTING_REGISTRY_OVERLAY_FILE="$WORK/absent-overlay.tsv"
+    SETTING_PROSE_SCAN_ROOT="$ROOT"
+    SETTING_PROSE_BASELINE_FILE="$WORK/baseline.tsv"
+    export SETTING_REGISTRY_FILE SETTING_REGISTRY_OVERLAY_FILE
+    export SETTING_PROSE_SCAN_ROOT SETTING_PROSE_BASELINE_FILE
     bash "$CHECKER"
   )
 }
@@ -52,10 +52,10 @@ run_checker() {
 
 # --- 1. GREEN: name-only prose (the D3-compliant shape) --------------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The timed window is `KNOB_WINDOW` (see the knob registry for its default).
+The timed window is `SETTING_WINDOW` (see the setting registry for its default).
 EOF
 cat >"$ROOT/claude/CLAUDE.kernel.md" <<'EOF'
-Nothing knob-related here.
+Nothing setting-related here.
 EOF
 out="$(run_checker 2>&1)" || fail "1: name-only prose should pass:
 $out"
@@ -63,20 +63,20 @@ echo "PASS: 1 name-only prose passes (GREEN)"
 
 # --- 2. RED: name + default restated in the same prose line ----------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The timed window is `KNOB_WINDOW`, default 300 seconds.
+The timed window is `SETTING_WINDOW`, default 300 seconds.
 EOF
 out="$(run_checker 2>&1)" && fail "2: restated default should fail:
 $out"
 case "$out" in
-  *"PROSE: claude/commands/spec.md:1: KNOB_WINDOW"*) ;;
-  *) fail "2: expected a PROSE violation for KNOB_WINDOW, got:
+  *"PROSE: claude/commands/spec.md:1: SETTING_WINDOW"*) ;;
+  *) fail "2: expected a PROSE violation for SETTING_WINDOW, got:
 $out" ;;
 esac
 echo "PASS: 2 name + restated default correctly flagged (RED)"
 
 # --- 3. RED: numeric unit suffix still counts ("300s") ----------------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The timed window (`KNOB_WINDOW`, default 300s) auto-merges.
+The timed window (`SETTING_WINDOW`, default 300s) auto-merges.
 EOF
 out="$(run_checker 2>&1)" && fail "3: '300s' unit-suffixed restatement should fail:
 $out"
@@ -84,7 +84,7 @@ echo "PASS: 3 unit-suffixed numeric restatement (300s) correctly flagged (RED)"
 
 # --- 4. GREEN: value only inside a backtick code span ----------------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-Override the window via `KNOB_WINDOW=300` on the command line.
+Override the window via `SETTING_WINDOW=300` on the command line.
 EOF
 out="$(run_checker 2>&1)" || fail "4: value inside a code span should pass:
 $out"
@@ -92,10 +92,10 @@ echo "PASS: 4 value inside a backtick code span is not a violation (GREEN)"
 
 # --- 5. GREEN: value inside a fenced code block ------------------------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-Set the knob KNOB_WINDOW before running:
+Set the setting SETTING_WINDOW before running:
 
 ```sh
-KNOB_WINDOW=300 run-the-thing   # 300 is fine here
+SETTING_WINDOW=300 run-the-thing   # 300 is fine here
 ```
 EOF
 out="$(run_checker 2>&1)" || fail "5: value inside a fenced block should pass:
@@ -104,18 +104,18 @@ echo "PASS: 5 value inside a fenced code block is not a violation (GREEN)"
 
 # --- 6. GREEN: allow-marker suppresses a legitimate literal ------------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The timed window is `KNOB_WINDOW`, default 300 seconds. <!-- knob-prose:allow — this doc line is the worked example the marker exists for -->
+The timed window is `SETTING_WINDOW`, default 300 seconds. <!-- setting-prose:allow — this doc line is the worked example the marker exists for -->
 EOF
 out="$(run_checker 2>&1)" || fail "6: allow-marker line should pass:
 $out"
-echo "PASS: 6 <!-- knob-prose:allow --> marker suppresses the line (GREEN)"
+echo "PASS: 6 <!-- setting-prose:allow --> marker suppresses the line (GREEN)"
 
 # --- 7b. GREEN: a citation marker's digits are not a restated value --------
 # (claude/citation-schema.md markers are HTML comments — invisible metadata,
-# never prose; a row id like AB.300 on a knob-naming line must not
-# false-positive as the knob's default.)
+# never prose; a row id like AB.300 on a setting-naming line must not
+# false-positive as the setting's default.)
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The window knob is `KNOB_WINDOW`, named here symbolically. <!-- cite: AB.300 incident:K#300 -->
+The window setting is `SETTING_WINDOW`, named here symbolically. <!-- cite: AB.300 incident:K#300 -->
 EOF
 out="$(run_checker 2>&1)" || fail "7b: citation-marker digits should not count as a restated default:
 $out"
@@ -123,20 +123,20 @@ echo "PASS: 7b citation-marker digits are not a violation (GREEN)"
 
 # --- 7. GREEN: name-substring of a longer identifier doesn't count ---------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-`KNOB_MODE_EXTENDED` is a different knob entirely; auto is mentioned freely here.
+`SETTING_MODE_EXTENDED` is a different setting entirely; auto is mentioned freely here.
 EOF
 out="$(run_checker 2>&1)" || fail "7: longer-identifier substring should pass:
 $out"
-echo "PASS: 7 knob name as substring of a longer identifier is not a name hit (GREEN)"
+echo "PASS: 7 setting name as substring of a longer identifier is not a name hit (GREEN)"
 
 # --- 8. RED then GREEN: enum default ("auto") next to its name --------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-`KNOB_MODE` selects the backend, default auto.
+`SETTING_MODE` selects the backend, default auto.
 EOF
 out="$(run_checker 2>&1)" && fail "8a: enum default restatement should fail:
 $out"
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-`KNOB_MODE` selects the backend; see the registry for its default.
+`SETTING_MODE` selects the backend; see the registry for its default.
 EOF
 out="$(run_checker 2>&1)" || fail "8b: name-only rewrite should pass:
 $out"
@@ -144,11 +144,11 @@ echo "PASS: 8 enum default restatement RED, name-only rewrite GREEN"
 
 # --- 9. baseline suppression is consumed-once --------------------------------
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The timed window is `KNOB_WINDOW`, default 300 seconds.
+The timed window is `SETTING_WINDOW`, default 300 seconds.
 EOF
 printf '%s\t%s\t%s\t%s\n' \
-  "claude/commands/spec.md" "KNOB_WINDOW" "300" \
-  "The timed window is \`KNOB_WINDOW\`, default 300 seconds." \
+  "claude/commands/spec.md" "SETTING_WINDOW" "300" \
+  "The timed window is \`SETTING_WINDOW\`, default 300 seconds." \
   >"$WORK/baseline.tsv"
 out="$(run_checker 2>&1)" || fail "9a: baselined violation should pass:
 $out"
@@ -159,8 +159,8 @@ $out" ;;
 esac
 # a NEW duplicate of the same line (2 occurrences, 1 baseline row) still fails
 cat >"$ROOT/claude/commands/spec.md" <<'EOF'
-The timed window is `KNOB_WINDOW`, default 300 seconds.
-The timed window is `KNOB_WINDOW`, default 300 seconds.
+The timed window is `SETTING_WINDOW`, default 300 seconds.
+The timed window is `SETTING_WINDOW`, default 300 seconds.
 EOF
 out="$(run_checker 2>&1)" && fail "9b: a new duplicate beyond the baseline row should fail:
 $out"
@@ -172,15 +172,15 @@ cat >"$ROOT/claude/commands/spec.md" <<'EOF'
 Nothing here.
 EOF
 cat >"$ROOT/claude/CLAUDE.kernel.md" <<'EOF'
-The `KNOB_MODE` knob defaults to auto per the config.
+The `SETTING_MODE` setting defaults to auto per the config.
 EOF
 out="$(run_checker 2>&1)" && fail "10: CLAUDE.kernel.md violation should fail:
 $out"
 case "$out" in
-  *"PROSE: claude/CLAUDE.kernel.md:1: KNOB_MODE"*) ;;
+  *"PROSE: claude/CLAUDE.kernel.md:1: SETTING_MODE"*) ;;
   *) fail "10: expected a violation attributed to claude/CLAUDE.kernel.md, got:
 $out" ;;
 esac
 echo "PASS: 10 claude/CLAUDE.kernel.md is scanned (RED there too)"
 
-echo "ALL PASS: check-knob-prose.sh"
+echo "ALL PASS: check-setting-prose.sh"

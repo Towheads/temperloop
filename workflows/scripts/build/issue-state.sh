@@ -17,7 +17,7 @@
 #     the merge) — this is the adoption-safety check `/fix` runs before
 #     driving an existing PR through the merge gate. #636 (THIS arm).
 #
-# reattach is a PURE BASH op that COMPOSES the shared spine scripts — it does
+# reattach is a PURE BASH op that COMPOSES the shared machinery scripts — it does
 # NOT re-encode the CI poll loop or the #254 SHA-pin, and it does NOT touch
 # claude/workflows/build-level.mjs (the earlier spike note said "add a mode
 # to build-level.mjs"; that was CORRECTED — build-level.mjs is a Workflow-
@@ -34,13 +34,13 @@
 # `resolve`'s ground truth: `gh issue view` for issue state/labels, and the
 # shared `open_pr_for_issue` (workflows/scripts/build/lib/pr-linkage.sh) for
 # any open PR that closes the issue. Labels are read against the SAME
-# literal label vocabulary funnel-tick.sh classifies with — sourced from
-# build.config.sh's FUNNEL_* knobs, never a re-declared parallel taxonomy
+# literal label vocabulary pipeline-tick.sh classifies with — sourced from
+# build.config.sh's PIPELINE_* settings, never a re-declared parallel taxonomy
 # (see `resolve`'s own label-constant set below, and
 # tests/test_issue_state_label_subset.sh, the mechanical subset-lint against
-# funnel-tick.sh's label set).
+# pipeline-tick.sh's label set).
 #
-# DRY_RUN / $FIXTURE (offline test harness, mirrors funnel-tick.sh's own
+# DRY_RUN / $FIXTURE (offline test harness, mirrors pipeline-tick.sh's own
 # convention — read that file's header for the general shape):
 #   $FIXTURE/issue-<issue>.json    — the `gh issue view --json
 #                                     state,labels,assignees` shape:
@@ -85,7 +85,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq not found"}' >&2; exit 1; }
 
 # Attribution for the gh call-logger shim (F#988) — same convention every
-# build-spine entry point uses (funnel-tick.sh, funnel-drive.sh). See
+# build-machinery entry point uses (pipeline-tick.sh, pipeline-drive.sh). See
 # workflows/scripts/gh-call-logger.sh.
 export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-issue-state}"
 
@@ -93,23 +93,23 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-issue-state}"
 # shellcheck source=workflows/scripts/build/build.config.sh
 [ -f "$HERE/build.config.sh" ] && . "$HERE/build.config.sh"
 # Belt-and-suspenders fallback for a non-vendoring consuming checkout that
-# doesn't carry build.config.sh at all (precedence rung 6, per CLAUDE.md's
-# Prose-resident knob convention) — matches the literal defaults
+# doesn't carry build.config.sh at all (precedence layer 6, per CLAUDE.md's
+# Named-setting convention) — matches the literal defaults
 # build.config.sh itself ships.
-: "${FUNNEL_ESCALATED_LABEL:=funnel-escalated}"
-: "${FUNNEL_MERGE_PENDING_LABEL:=funnel-merge-pending}"
+: "${PIPELINE_ESCALATED_LABEL:=funnel-escalated}"
+: "${PIPELINE_MERGE_PENDING_LABEL:=funnel-merge-pending}"
 
 # shellcheck source=workflows/scripts/build/lib/pr-linkage.sh
 . "$HERE/lib/pr-linkage.sh"
 
 # ── resolve's own label-constant set (subset-lint target) ───────────────────
-# Every literal/knob this script reads to classify an issue's labels. The
+# Every literal/setting this script reads to classify an issue's labels. The
 # subset-lint (tests/test_issue_state_label_subset.sh) greps THIS block
-# mechanically and asserts every name here is also read by funnel-tick.sh —
+# mechanically and asserts every name here is also read by pipeline-tick.sh —
 # i.e. resolve introduces no parallel label taxonomy. Do not add a label
 # reference anywhere else in this file without adding it here too.
 ISSUE_STATE_LABEL_NEEDS_CLARIFICATION="needs-clarification"
-# The next three are vocabulary members funnel-tick.sh also reads but that
+# The next three are vocabulary members pipeline-tick.sh also reads but that
 # resolve does not branch routing on (spike/decision are surfaced only via
 # the raw labels[] pass-through below; funnel-escalated the same) — kept as
 # named constants purely so the subset-lint has a mechanical grep target,
@@ -120,8 +120,8 @@ ISSUE_STATE_LABEL_SPIKE="spike"
 # shellcheck disable=SC2034
 ISSUE_STATE_LABEL_DECISION="decision"
 # shellcheck disable=SC2034
-ISSUE_STATE_LABEL_FUNNEL_ESCALATED="$FUNNEL_ESCALATED_LABEL"
-ISSUE_STATE_LABEL_FUNNEL_MERGE_PENDING="$FUNNEL_MERGE_PENDING_LABEL"
+ISSUE_STATE_LABEL_PIPELINE_ESCALATED="$PIPELINE_ESCALATED_LABEL"
+ISSUE_STATE_LABEL_PIPELINE_MERGE_PENDING="$PIPELINE_MERGE_PENDING_LABEL"
 
 DRY_RUN=0
 FIXTURE=""
@@ -199,7 +199,7 @@ issue_state_get_pr() {
 }
 
 # find_worktree <repo> <issue> — BEST-EFFORT local worktree lookup. There is
-# no mechanical issue-number -> worktree mapping in this repo's build spine
+# no mechanical issue-number -> worktree mapping in this repo's build machinery
 # (worktree.sh names a worktree `<repo-root>.wt/<slug>` off a PLAN ITEM'S
 # `slug:` field — see CLAUDE.md § Branch & PR policy — with no issue number
 # recorded in `.build-guard`), so this is a heuristic, not a guarantee:
@@ -328,9 +328,9 @@ cmd_resolve() {
   elif [ "$pr_count" -eq 1 ]; then
     route="adopt"
     reason="one open PR (#$(jq -r '.[0].number' <<<"$open_prs_json")) links to this issue"
-  elif has_label "$ISSUE_STATE_LABEL_FUNNEL_MERGE_PENDING"; then
+  elif has_label "$ISSUE_STATE_LABEL_PIPELINE_MERGE_PENDING"; then
     route="adopt"
-    reason="labeled $ISSUE_STATE_LABEL_FUNNEL_MERGE_PENDING"
+    reason="labeled $ISSUE_STATE_LABEL_PIPELINE_MERGE_PENDING"
   else
     route="fresh"
     reason="open, unclaimed, no linked PR"
@@ -373,7 +373,7 @@ reattach_usage() {
   cat >&2 <<'USAGE'
 usage: issue-state.sh reattach <repo> <pr> [--dry-run --fixture <dir>]
 
-Revalidates an already-open PR by composing the shared spine scripts
+Revalidates an already-open PR by composing the shared machinery scripts
 (ci-poll.sh + the pr.sh rebase contract) and prints ONE ready/not-ready
 verdict JSON to stdout. It NEVER merges — the caller owns the merge. This is
 the adoption-safety check `/fix` runs before driving an existing PR through
@@ -454,7 +454,7 @@ reattach_ci_poll() {
 # check is a bigger, un-owned mutation). It therefore DEGRADES DELIBERATELY to a
 # NEEDS_UPDATE signal; the caller (`/fix`), which owns a local checkout, runs the
 # rebase (composing pr.sh rebase + pr.sh push --force + a `--sha`-pinned re-poll,
-# all already-tested spine scripts) and re-invokes reattach. The DRY_RUN path
+# all already-tested machinery scripts) and re-invokes reattach. The DRY_RUN path
 # above still exercises the rebase decision logic in full — see the design note
 # in the verification surface (task's sanctioned choice for the live case).
 reattach_rebase() {

@@ -61,10 +61,10 @@ A few things this diagram compresses that are worth naming explicitly:
 - **`/triage`** runs the logical decision tree — cull, root-cause collapse,
   group-by-meaning, value/priority — over a board's Backlog, then
   materialises survivors as board-native epics (parent issue + sub-issues)
-  or leaves an ungrouped survivor as a Ready singleton. This is the funnel's
+  or leaves an ungrouped survivor as a Ready singleton. This is the pipeline's
   front door for **discovered** work; nothing downstream re-decides what
   survives.
-- **`/workshop`** is the funnel's second front door, for **invented** work —
+- **`/workshop`** is the pipeline's second front door, for **invented** work —
   an idea that starts as "we should build X" with no Backlog item behind
   it. It walks a fixed coverage template (`claude/design-schema.md`)
   instead of triage's decision tree, then materializes a ratified brief
@@ -205,7 +205,7 @@ flowchart LR
         IssueTouch["emit-issue-touch.sh<br/>pr-open, merge"]
         Capture["capture.sh<br/>issue_touch_log_emit<br/>capture"]
         Claim["claim.sh<br/>claim_log_emit"]
-        FunnelCron["funnel-cron.sh<br/>each cron wake"]
+        PipelineCron["pipeline-cron.sh<br/>each cron wake"]
         Findings["tidy Step 3<br/>findings.py"]
         GhPerf["gh-bench.sh /<br/>gh-perf-report.sh"]
         KsFallback["knowledge_search_mcp.sh<br/>warm-to-cold fallback"]
@@ -215,7 +215,7 @@ flowchart LR
         CmdStream["command-runs-YYYY-MM.jsonl"]
         TouchStream["issue-touches-YYYY-MM.jsonl"]
         ClaimStream["claims-YYYY-MM.jsonl"]
-        FunnelStream["funnel-YYYY-MM.jsonl"]
+        PipelineStream["pipeline-YYYY-MM.jsonl"]
         FindingsStream["findings-YYYY-MM.jsonl"]
         GhPerfStream["gh-perf-YYYY-MM.jsonl"]
         KsStream["knowledge-search-fallback-YYYY-MM.jsonl"]
@@ -225,7 +225,7 @@ flowchart LR
     IssueTouch --> TouchStream
     Capture --> TouchStream
     Claim --> ClaimStream
-    FunnelCron --> FunnelStream
+    PipelineCron --> PipelineStream
     Findings --> FindingsStream
     GhPerf --> GhPerfStream
     KsFallback --> KsStream
@@ -233,7 +233,7 @@ flowchart LR
     CmdStream --> Telemetry["telemetry brief<br/>(five-question read side)"]
     TouchStream --> Telemetry
     ClaimStream --> Telemetry
-    FunnelStream --> Telemetry
+    PipelineStream --> Telemetry
     FindingsStream --> Telemetry
     GhPerfStream --> Telemetry
     KsStream --> Telemetry
@@ -246,7 +246,7 @@ flowchart LR
 - **`issue-touches`**, with its **`claims`** sibling stream (unioned at read
   time) — every `pr-open` / `merge` / `capture` touch on an issue, plus
   every board claim, giving a full touch history per issue.
-- **`funnel`** — one record per autonomous funnel cron wake, heterogeneous
+- **`pipeline`** — one record per autonomous pipeline cron wake, heterogeneous
   by `event` (`skipped`, `ran`, `drive`).
 - **`findings`** — one record per extraction `/tidy` Step 3 makes from a
   session stub, whether found via a lexicon tell or a model skim, with

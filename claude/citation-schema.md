@@ -4,7 +4,7 @@ Every registered standing kernel rule in `claude/**/*.md` carries a same-line **
 
 ## Grammar
 
-A marker is an HTML comment appended to an existing line (it renders invisibly in Markdown and adds **zero lines** — the prose-budget caps are untouched by construction; same mechanism as `check-knob-prose.sh`'s `<!-- knob-prose:allow -->`):
+A marker is an HTML comment appended to an existing line (it renders invisibly in Markdown and adds **zero lines** — the prose-budget caps are untouched by construction; same mechanism as `check-setting-prose.sh`'s `<!-- setting-prose:allow -->`):
 
 ```
 <!-- cite: <row-id> <class>:<ref> -->
@@ -21,7 +21,7 @@ Exactly one `class:ref` pair per marker — the *primary* citation. A rule with 
 - **`incident:<ref>`** — a concrete past failure: an issue/PR ref in the repo shorthand (`K#N` = temperloop#N, `F#N` = foundation#N, `S#N`/`M#N`/`W#N` per the kernel § Communication conventions), a `PR#N`, or a `commit-<sha>` token.
 - **`guard:<path>`** — an existing mechanical guard (script/hook/CI path) the rule narrates or sequences; the ref is the guard's repo-relative path.
 - **`class:<kebab-name>`** — a named catastrophic failure class the rule prophylactically prevents (prophylactic rules are legitimate; the name is a short kebab-case coinage, stable per row).
-- **`keep:<YYYY-MM-DD>`** — kept by explicit operator disposal on an otherwise-uncited rule; the ref is the disposal date recorded by the `/check-in` ritual (`claude/commands/check-in.md`), and the row id resolves which disposal.
+- **`keep:<YYYY-MM-DD>`** — kept by explicit operator disposal on an otherwise-uncited rule; the ref is the disposal date recorded by the `/check-in` review (`claude/commands/check-in.md`), and the row id resolves which disposal.
 
 ## The mechanical definition (what the check enforces)
 
@@ -37,7 +37,7 @@ Markers inside fenced code blocks or backtick code spans are ignored — a marke
 
 - Append the marker at the end of the rule's **first prose line** (or the single line the rule occupies) — and when that sentence hard-wraps, the end of the **logical** line, never a wrap point inside an inline code span that closes on the next physical line (CommonMark backtick content is literal, so a marker there renders as visible text inside the code).
 - **Never on a heading line** — heading-anchored tooling (compose seams, section detectors, patch targets) must keep matching pristine heading text.
-- **Never on a machine-parsed or frozen line** (`claude/presentation-plane.md`'s index — e.g. the live-drain registry table rows in `claude/commands/tidy.md`, frozen template lines): put the marker on the adjacent owning prose instead.
+- **Never on a machine-parsed or frozen line** (`claude/presentation-plane.md`'s index — e.g. the capture-backstop registry table rows in `claude/commands/tidy.md`, frozen template lines): put the marker on the adjacent owning prose instead.
 - **Never inside a fenced code block** — the scanner skips those, so a marker there is silently dead.
 
 ## Maintaining the set

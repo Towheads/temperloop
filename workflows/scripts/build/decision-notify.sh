@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# build decision-notify — reach the operator's phone on a blocking-now halt
+# build decision-notify — reach the operator's phone on an ask-now halt
 # (temperloop, foundation#863). The /build level runs unattended, but every
-# `blocking-now` human gate (a design-fork, a blocked worker, a failed item, a
+# `ask-now` human gate (a design-fork, a blocked worker, a failed item, a
 # claim conflict, the risky-set modal merge gate, the keystone-spike review
 # halt) parks the run on an operator decision with NO safe default — it must
 # keep interrupting, every run. The gap the Epic-B retro (F#847) logged: the
@@ -11,19 +11,19 @@
 # an interactive-but-idle session pings nothing off-screen.
 #
 # This helper is the single routing artifact for that reach. Every gate already
-# funnels through build.md's `decision_sink_ask(question, options, severity)`
+# pipelines through build.md's `decision_sink_ask(question, options, severity)`
 # seam; the orchestrator calls THIS script with the gate's severity + a
 # one-line summary, then relays the printed line to the operator's phone via the
-# harness `PushNotification` tool. Because ONLY `blocking-now` gates enter that
-# seam (the two batch severities — `batch-at-gate`, `batch-at-ritual` — defer to
+# harness `PushNotification` tool. Because ONLY `ask-now` gates enter that
+# seam (the two deferred severities — `ask-at-gate`, `ask-at-checkin` — defer to
 # the plan note's `## Questions` / the pending-decisions surface and never touch
 # it), routing the notify decision by severity here makes the
-# "notify on a blocking-now halt, NEVER on a timed gate or a non-blocking
+# "notify on an ask-now halt, NEVER on a timed gate or a non-blocking
 # question" contract structural rather than a thing the prose has to remember at
 # each of five call sites.
 #
 #   decision-notify.sh <severity> <summary>
-#       severity ∈ blocking-now | batch-at-gate | batch-at-ritual
+#       severity ∈ ask-now | ask-at-gate | ask-at-checkin
 #                  (the AskUserQuestion severity taxonomy — the closed enum;
 #                   an unrecognized value is a usage error, never a silent skip)
 #       summary  = the human one-line halt description the orchestrator composed
@@ -31,10 +31,10 @@
 #                   your decision"). Truncated to 200 chars (mobile OSes clip).
 #
 # Behavior — a CLOSED outcome set, branched on the EXIT CODE:
-#   blocking-now  → print the (truncated) summary on stdout,           exit 0
+#   ask-now  → print the (truncated) summary on stdout,           exit 0
 #                   AND run $BUILD_DECISION_NOTIFY_CMD "<summary>" if set.
 #                   The orchestrator relays the stdout line via PushNotification.
-#   batch-at-*    → print nothing, emit nothing,                       exit 10
+#   ask-at-*    → print nothing, emit nothing,                       exit 10
 #                   (a correctly-skipped non-blocking severity, NOT an error).
 #   bad args / unknown severity → message on stderr,                   exit 2
 #
@@ -48,7 +48,7 @@
 #      an operator can wire for phone reach independent of Remote Control (ntfy /
 #      pushover / terminal-notifier / a webhook). It is also the test-injection
 #      seam: a test points it at a marker-writer and asserts the marker is
-#      written on a blocking-now halt and absent on a batch severity. It is a
+#      written on an ask-now halt and absent on a deferred severity. It is a
 #      TRUSTED config string (never user input); the summary is passed as a
 #      single quoted argument, so a well-behaved command receives it verbatim.
 set -euo pipefail
@@ -56,7 +56,7 @@ set -euo pipefail
 readonly PUSH_MAX=200   # PushNotification's own documented body cap
 
 usage() {
-  echo "usage: decision-notify.sh <blocking-now|batch-at-gate|batch-at-ritual> <summary>" >&2
+  echo "usage: decision-notify.sh <ask-now|ask-at-gate|ask-at-checkin> <summary>" >&2
   exit 2
 }
 
@@ -66,8 +66,8 @@ summary="$2"
 [ -n "$summary" ] || { echo "decision-notify: empty summary" >&2; exit 2; }
 
 case "$severity" in
-  blocking-now) ;;                       # the one severity that reaches the operator
-  batch-at-gate|batch-at-ritual)
+  ask-now) ;;                       # the one severity that reaches the operator
+  ask-at-gate|ask-at-checkin)
     exit 10 ;;                           # a real severity, deliberately not notified
   *)
     echo "decision-notify: unknown severity '$severity'" >&2

@@ -31,7 +31,7 @@ with no pre-execution round of contract clarification the way an epic's
 members do. `/sweep` compensates with its own **Phase 1**: an upfront,
 one-time question sweep across the whole pool. The judgment of which
 unflagged issues are underspecified fans out across parallel read-only
-subagents, whose model tier is set by the `SWEEP_DETECT_MODEL` knob — its
+subagents, whose model tier is set by the `SWEEP_DETECT_MODEL` setting — its
 empty default deliberately inherits the session's own model, because
 ambiguity detection is judgment work and a missed ambiguity is the costly
 failure mode. Any issue that is flagged as needing clarification (whether

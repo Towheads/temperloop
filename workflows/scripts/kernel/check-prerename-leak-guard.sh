@@ -21,7 +21,7 @@
 # WHAT IS SCANNED (four identifier shapes):
 #   1. `FOUNDATION_<NAME>` env-var identifiers — looked up by EXACT token
 #      against prerename-leak-verdicts.tsv's `env` rows. An unknown token
-#      is a violation (a new, unreviewed FOUNDATION_-prefixed knob).
+#      is a violation (a new, unreviewed FOUNDATION_-prefixed setting).
 #   2. `.foundation/<leaf>` (any leaf) — the committed per-repo compat dir
 #      (verdict-table row "Committed .foundation/ per-repo dir": migrate,
 #      read-old). This is the compat shim's OWN intentional legacy literal
@@ -45,7 +45,7 @@
 #      separate, still-real, personal overlay/build repo that is itself
 #      named `foundation` (e.g. `foundation/workflows/...`,
 #      `~/dev/foundation/meta/sessions/archive/`, `Projects/foundation/...`
-#      vault paths, knob-registry.tsv's own `FOUNDATION` checkout-root knob)
+#      vault paths, setting-registry.tsv's own `FOUNDATION` checkout-root setting)
 #      — a completely different, currently-valid identifier that happens to
 #      share the old kernel name, not a pre-rename identifier of THIS
 #      kernel at all. Requiring an XDG-home anchor on the same line is what

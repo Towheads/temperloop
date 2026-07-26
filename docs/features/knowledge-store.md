@@ -45,7 +45,7 @@ exist yet.
 
 **Corpus pinning.** A search surface is layered on the same corpus, never a
 separate one: `ks_search` always targets `ks_root` — there is no
-independent search-corpus root knob anywhere in this seam. `issue-corpus.sh`
+independent search-corpus root setting anywhere in this seam. `issue-corpus.sh`
 renders a board's cached issues into the store via `ks_write` and then
 chains a `ks_search_reindex`, so the searchable corpus and the read/write
 corpus are structurally the same directory by construction, not by

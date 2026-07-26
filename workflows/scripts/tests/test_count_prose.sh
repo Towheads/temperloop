@@ -6,9 +6,9 @@
 #
 # Covers: the real-tree happy path (tier-1 + tier-2 report, tier-2 total
 # equals the sum of its own per-file lines), the host-determinism guarantee
-# across all THREE config-precedence rungs count-prose.sh must neutralize —
-# a machine-conf fixture (rung 3), a repo-local-conf fixture (rung 4), AND
-# an EXPORTED knob (rung 2 — outranks both file-based rungs, section 4,
+# across all THREE config-precedence layers count-prose.sh must neutralize —
+# a machine-conf fixture (layer 3), a repo-local-conf fixture (layer 4), AND
+# an EXPORTED setting (layer 2 — outranks both file-based layers, section 4,
 # using a newline-bearing value so a real scrub failure is distinguishable
 # from wc -l merely being insensitive to a plain-scalar perturbation) must
 # all have ZERO effect on the tier-1 count. This is the acceptance-2
@@ -87,7 +87,7 @@ sum_lines="$(printf '%s\n' "$out" | awk '/^TIER-2 per-file/{p=1;next} /^$/{p=0} 
 reported_total="$(printf '%s\n' "$out" | grep -oE 'TIER-2 total: [0-9]+' | sed -E 's/^TIER-2 total: //')"
 assert_eq "$sum_lines" "$reported_total" "tier-2 total equals the sum of its per-file lines"
 
-# ── 2. host-determinism: a machine-conf fixture perturbing the knobs must
+# ── 2. host-determinism: a machine-conf fixture perturbing the settings must
 #      have ZERO effect on the tier-1 count ─────────────────────────────────
 echo "--- 2. host-determinism (machine conf) ---"
 cat > "$TMP/machine.sh" <<'EOF'
@@ -99,7 +99,7 @@ assert_rc "$rc" 0 "perturbed-machine-conf run exits 0"
 tier1_perturbed="$(extract_tier1 "$out_perturbed")"
 assert_eq "$tier1_perturbed" "$tier1_count" "machine-conf perturbation does not move the tier-1 count"
 
-# ── 3. host-determinism: a repo-local-conf fixture perturbing the knobs must
+# ── 3. host-determinism: a repo-local-conf fixture perturbing the settings must
 #      also have ZERO effect ────────────────────────────────────────────────
 echo "--- 3. host-determinism (repo-local conf) ---"
 cat > "$TMP/local.sh" <<'EOF'
@@ -111,7 +111,7 @@ assert_rc "$rc" 0 "perturbed-repo-local-conf run exits 0"
 tier1_local="$(extract_tier1 "$out_local")"
 assert_eq "$tier1_local" "$tier1_count" "repo-local-conf perturbation does not move the tier-1 count"
 
-# ── 4. host-determinism: an EXPORTED knob (rung 2, outranks the rung-3/4
+# ── 4. host-determinism: an EXPORTED setting (layer 2, outranks the layer-3/4
 #      config-FILE pinning covered above) must ALSO have zero effect. Uses a
 #      newline-bearing value specifically — a plain scalar perturbation
 #      (e.g. "99") can't distinguish "the env var was actually scrubbed"
@@ -119,10 +119,10 @@ assert_eq "$tier1_local" "$tier1_count" "repo-local-conf perturbation does not m
 #      newline embedded IN the value, if it ever reached the render, would
 #      itself add a line to the rendered doc and move the wc -l count
 #      (caught in review: temperloop#722, the same case the reviewer
-#      demonstrated moves tier-1 338->341 without the rung-2 scrub) ────────
-echo "--- 4. host-determinism (exported knob, rung 2) ---"
+#      demonstrated moves tier-1 338->341 without the layer-2 scrub) ────────
+echo "--- 4. host-determinism (exported setting, layer 2) ---"
 out_env="$(EPIC_MIN_SUBUNITS=$'99\n99' bash "$SCRIPT" 2>&1)"; rc=$?
-assert_rc "$rc" 0 "perturbed-exported-knob run exits 0"
+assert_rc "$rc" 0 "perturbed-exported-setting run exits 0"
 tier1_env="$(extract_tier1 "$out_env")"
 assert_eq "$tier1_env" "$tier1_count" "an exported EPIC_MIN_SUBUNITS (with an embedded newline) does not move the tier-1 count"
 

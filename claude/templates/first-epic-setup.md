@@ -164,7 +164,7 @@ itself safe, not just each answer in isolation:
   to re-poll before merging, so the strict path's CI re-poll step would
   otherwise wait on a check-run that will never appear. On the `NATIVE`
   backend, no-Actions simply means the native queue's own required-status
-  list stays empty; there is no separate strict/non-strict knob to set
+  list stays empty; there is no separate strict/non-strict setting to set
   there.
 - **Static `checks`-name agreement.** Whatever job the Phase C scaffold
   writes, it is always literally named `checks` — the same required-status
@@ -182,7 +182,7 @@ itself safe, not just each answer in isolation:
 You confirm this composed set **once**, as a whole. No further
 write-by-write interruptions happen during apply (Phase C).
 
-## Phase C — Apply, as real funnel levels
+## Phase C — Apply, as real pipeline levels
 
 Once confirmed, the change-set applies through the actual pipeline —
 `/assess --epic <N>` decomposes this epic's `## Contract` into items across
@@ -201,7 +201,7 @@ work in the pipeline:
   the precise settings requests, the click-paths to make each one, and why
   each matters, for you to hand your repo admin. Nothing here is silently
   skipped and nothing is written without the rights to write it — the
-  funnel mechanics still demonstrate fully on the levels that don't need
+  pipeline mechanics still demonstrate fully on the levels that don't need
   elevated rights (L0, and L2's local-only posture when no-Actions was
   chosen).
 - **L2 — CI scaffold.** The Actions workflow from your A3 answers, with a
@@ -290,7 +290,7 @@ half-configured state:
 - **Non-admin fixture.** On a disposable **non-admin** fixture, the rights
   probe fires, L1 composes into an admin packet instead of any write, and
   the epic still completes its non-admin levels (L0, and L2's local-only
-  posture) through the real funnel — the demo claim is honestly re-scoped,
+  posture) through the real pipeline — the demo claim is honestly re-scoped,
   never faked.
 - **CI-level agreement.** The scaffolded workflow's job is named `checks`
   and matches the composed protection; the no-Actions choice records the
