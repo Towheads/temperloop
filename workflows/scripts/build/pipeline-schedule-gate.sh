@@ -25,6 +25,25 @@
 # `enabled: no` is the kill switch. A sync hiccup or a typo therefore quiets the
 # pipeline rather than silently re-enabling autonomous hourly spend.
 #
+# REASON VOCABULARY — resolution failure vs. operator kill switch (temperloop,
+# foundation#1329). Every skip below is fail-closed alike (same action, same
+# exit 1 — that invariant is unchanged), but the `reason` text must never let a
+# resolution bug read as the operator's deliberate off-switch, or vice versa.
+# Two tagged buckets, keyed on a literal substring every skip() message below
+# carries:
+#   - "store root did not resolve / control note unreachable" — the control
+#     note itself was never successfully read: missing/unreadable file, or no
+#     ```pipeline-schedule fenced block found in it. A PIPELINE_SCHEDULE_FILE
+#     resolution bug (a stale/renamed path — the concrete instance behind this
+#     item, temperloop#768) falls in THIS bucket. It is NEVER the kill switch.
+#   - "control note present, not a resolution failure" — the note WAS read and
+#     parsed, but `enabled:` is absent, malformed, or explicitly `no`. The
+#     explicit-`no` case additionally carries the literal "kill switch"
+#     substring the test suite locks on.
+# Keep every new skip() call's message tagged with the bucket it belongs to —
+# a message that drifts into the wrong bucket recreates exactly the
+# conflation this item fixes.
+#
 # Schedule file = a normal Obsidian note carrying ONE machine-readable fenced
 # block the gate greps (everything outside it is free prose for the operator):
 #   ```pipeline-schedule
@@ -99,13 +118,13 @@ case "$now_hour" in
 esac
 now_hour=$(( 10#$now_hour ))
 
-[ -r "$PIPELINE_SCHEDULE_FILE" ] || skip "schedule file missing/unreadable: $PIPELINE_SCHEDULE_FILE"
+[ -r "$PIPELINE_SCHEDULE_FILE" ] || skip "schedule file missing/unreadable — store root did not resolve / control note unreachable: $PIPELINE_SCHEDULE_FILE"
 
 # Extract the fenced ```pipeline-schedule … ``` block body (same awk idiom as
 # pipeline-tick.sh parse_reply's decision-block extraction). Only the FIRST block
 # is read; lines outside it are ignored prose.
 block="$(awk '/^```pipeline-schedule[[:space:]]*$/{f=1;next} f&&/^```/{exit} f' "$PIPELINE_SCHEDULE_FILE" 2>/dev/null || true)"
-[ -n "$block" ] || skip "no \`\`\`pipeline-schedule block found in $PIPELINE_SCHEDULE_FILE"
+[ -n "$block" ] || skip "no \`\`\`pipeline-schedule block found — store root did not resolve / control note unreachable: $PIPELINE_SCHEDULE_FILE"
 
 # Pull one `key:` value out of the block (first match; strips a trailing `#`
 # comment, CR, and surrounding whitespace). The grep is isolated in its own
@@ -122,9 +141,9 @@ field() {
 enabled="$(field enabled)"
 case "$enabled" in
   [Yy]|[Yy][Ee][Ss]) : ;;                       # enabled — proceed to the hour check
-  [Nn]|[Nn][Oo]) skip "enabled: no (kill switch)" ;;
-  '') skip "no \`enabled:\` field (fail-closed)" ;;
-  *)  skip "enabled: '$enabled' is not yes/no (fail-closed)" ;;
+  [Nn]|[Nn][Oo]) skip "enabled: no (kill switch — control note present, not a resolution failure)" ;;
+  '') skip "no \`enabled:\` field (control note present, not a resolution failure; fail-closed)" ;;
+  *)  skip "enabled: '$enabled' is not yes/no (control note present, not a resolution failure; fail-closed)" ;;
 esac
 
 hours="$(field hours)"

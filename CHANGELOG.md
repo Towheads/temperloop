@@ -16,6 +16,23 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`pipeline-schedule-gate.sh`: an unresolvable store root no longer reads as
+  the operator's kill switch (foundation#1329).** Every skip verdict was
+  already fail-closed alike, but a resolution bug (a stale/renamed
+  `PIPELINE_SCHEDULE_FILE` path — the concrete instance behind this fix,
+  temperloop#768) and the operator's deliberate `enabled: no` produced
+  `reason` text that was easy to mistake for one another at a glance, so the
+  live case went unnoticed: the pipeline was off for the wrong reason and
+  nothing in the log said so. The gate's skip messages now carry one of two
+  mutually-exclusive tags — `"store root did not resolve / control note
+  unreachable"` for a missing/unreadable file or a missing fenced block, vs.
+  `"control note present, not a resolution failure"` (with the existing
+  `"kill switch"` wording preserved for the explicit `enabled: no` case) — so
+  a resolution failure can never be reported as the kill switch, or vice
+  versa. Both branches remain fail-closed (exit 1, zero `gh` calls); only the
+  `reason` text changed. New gate 11 in `tests/test_pipeline_cron.sh` asserts
+  the two reasons are distinct and never cross-tagged.
+
 - **Issues-only backend: reaching Done clears the claim stamp
   (temperloop#744).** A closed issue kept its `fnd:host/session:<host>:<sess8>`
   label, so it read as permanently claimed — `issue-state.sh resolve` returns

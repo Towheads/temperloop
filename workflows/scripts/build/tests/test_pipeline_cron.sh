@@ -15,7 +15,10 @@
 #         · malformed fail-closed (no block / bad token) · boards: override
 #         · injected-hour determinism · (temperloop#226/#232) PIPELINE_SCHEDULE_FILE's
 #         UNSET-default resolution — Controls/ then legacy Context/ fallback,
-#         Controls/ winning when both exist, fail-closed when neither does.
+#         Controls/ winning when both exist, fail-closed when neither does
+#         · (foundation#1329) an unresolvable store root's skip `reason` is
+#         distinct from — and never reads as — the operator's `enabled: no`
+#         kill switch, and vice versa; both stay fail-closed (exit 1).
 #   WRAPPER: skip → exit 0, zero tick, skip log line · run → tick emits, day-jsonl
 #            + latest.json written · notify ONLY on a non-no-op run.
 
@@ -78,12 +81,22 @@ printf '%s\n' '```pipeline-schedule' 'enabled: no' 'hours: 9 14 20' '```' > "$F2
 run_gate env PIPELINE_NOW_HOUR=14 PIPELINE_SCHEDULE_FILE="$F2" bash "$GATE"
 [ "$VRC" -eq 1 ] && ok "enabled:no skips even on a listed hour" || bad "g4.rc" "exit=$VRC ($VOUT)"
 jq -e '.reason | test("kill switch")' <<<"$VOUT" >/dev/null && ok "skip reason names the kill switch" || bad "g4.reason" "$(jq -r '.reason' <<<"$VOUT")"
+# foundation#1329: the kill-switch reason must never ALSO read as a resolution
+# failure — it must not carry the "unreachable"-bucket tag.
+jq -e '.reason | test("unreachable") | not' <<<"$VOUT" >/dev/null \
+  && ok "kill-switch reason does not read as a resolution failure (#1329)" || bad "g4.notag" "$(jq -r '.reason' <<<"$VOUT")"
 
 # ── GATE 5: missing file → fail-closed skip ─────────────────────────────────
 echo "--- gate 5: missing file → fail-closed skip ---"
 run_gate env PIPELINE_NOW_HOUR=14 PIPELINE_SCHEDULE_FILE="$TMP/does-not-exist.md" bash "$GATE"
 [ "$VRC" -eq 1 ] && ok "missing file → exit 1 (fail-closed, never runs)" || bad "g5.rc" "exit=$VRC ($VOUT)"
 [ "$(jq -r '.action' <<<"$VOUT")" = "skip" ] && ok "missing file → action=skip" || bad "g5.action" "got $(jq -r '.action' <<<"$VOUT")"
+# foundation#1329: a missing/unreadable file is a RESOLUTION failure, and must
+# never read as the operator's kill switch.
+jq -e '.reason | test("unreachable")' <<<"$VOUT" >/dev/null \
+  && ok "missing-file reason names it as unreachable (#1329)" || bad "g5.tag" "$(jq -r '.reason' <<<"$VOUT")"
+jq -e '.reason | test("kill switch") | not' <<<"$VOUT" >/dev/null \
+  && ok "missing-file reason does not read as the kill switch (#1329)" || bad "g5.notag" "$(jq -r '.reason' <<<"$VOUT")"
 
 # ── GATE 6: malformed — no fenced block → fail-closed skip ──────────────────
 echo "--- gate 6: no pipeline-schedule block → fail-closed skip ---"
@@ -171,6 +184,44 @@ rm -f "$KROOT/Controls/foundation - pipeline schedule.md" "$KROOT/Context/founda
 run_gate env PIPELINE_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$KROOT" bash "$GATE"
 [ "$VRC" -eq 1 ] && ok "missing/unparseable at BOTH paths still fails closed" || bad "g10d.rc" "exit=$VRC ($VOUT)"
 [ "$(jq -r '.action' <<<"$VOUT")" = "skip" ] && ok "neither-path case verdict action=skip" || bad "g10d.action" "got $(jq -r '.action' <<<"$VOUT")"
+
+# ── GATE 11: an unresolvable store root vs. the operator's kill switch —
+#    foundation#1329. The confirmed live instance (temperloop#768): a
+#    KNOWLEDGE_STORE_ROOT that resolves to a root with no readable control
+#    note at either the Controls/ or legacy Context/ path (a stale/renamed
+#    path is exactly this shape) must be reported as a RESOLUTION failure,
+#    distinct from — and never confusable with — the operator's deliberate
+#    `enabled: no`. Both stay fail-closed (exit 1); only the `reason` differs.
+echo "--- gate 11: unresolvable store root vs. the operator's kill switch (#1329) ---"
+UNROOT="$TMP/no-such-store-root"   # never created — the store root itself doesn't resolve to anything readable
+run_gate env PIPELINE_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$UNROOT" bash "$GATE"
+[ "$VRC" -eq 1 ] && ok "unresolvable store root → exit 1 (fail-closed)" || bad "g11a.rc" "exit=$VRC ($VOUT)"
+[ "$(jq -r '.action' <<<"$VOUT")" = "skip" ] && ok "unresolvable store root → action=skip" || bad "g11a.action" "got $(jq -r '.action' <<<"$VOUT")"
+UNROOT_REASON="$(jq -r '.reason' <<<"$VOUT")"
+jq -e '.reason | test("unreachable")' <<<"$VOUT" >/dev/null \
+  && ok "unresolvable-root reason names it as a resolution failure (#1329)" || bad "g11a.tag" "$UNROOT_REASON"
+jq -e '.reason | test("kill switch") | not' <<<"$VOUT" >/dev/null \
+  && ok "unresolvable-root reason never reads as the kill switch (#1329)" || bad "g11a.notag" "$UNROOT_REASON"
+
+# Same board, but the control note IS present and the operator turned it off —
+# the reason must be the OTHER bucket, and the two reasons must not collide.
+KROOT11="$TMP/kstore11"
+mkdir -p "$KROOT11/Controls"
+printf '%s\n' '```pipeline-schedule' 'enabled: no' 'hours: 14' '```' > "$KROOT11/Controls/foundation - pipeline schedule.md"
+run_gate env PIPELINE_NOW_HOUR=14 KNOWLEDGE_STORE_ROOT="$KROOT11" bash "$GATE"
+[ "$VRC" -eq 1 ] && ok "present-but-disabled → exit 1 (fail-closed)" || bad "g11b.rc" "exit=$VRC ($VOUT)"
+DISABLED_REASON="$(jq -r '.reason' <<<"$VOUT")"
+jq -e '.reason | test("kill switch")' <<<"$VOUT" >/dev/null \
+  && ok "present-but-disabled reason names the kill switch (#1329)" || bad "g11b.tag" "$DISABLED_REASON"
+jq -e '.reason | test("unreachable") | not' <<<"$VOUT" >/dev/null \
+  && ok "present-but-disabled reason never reads as a resolution failure (#1329)" || bad "g11b.notag" "$DISABLED_REASON"
+[ "$UNROOT_REASON" != "$DISABLED_REASON" ] \
+  && ok "the two reasons are not the same string (#1329)" || bad "g11c.distinct" "both='$UNROOT_REASON'"
+# The spending-gate invariant this fix must not touch: neither branch ever
+# calls `gh` — the gate script contains no such invocation at all.
+! grep -Eq '(^|[^A-Za-z_])gh([[:space:]]|$)' "$GATE" \
+  && ok "gate script contains no gh invocation — both branches are zero-gh by construction (#1329)" \
+  || bad "g11d.nogh" "gate script appears to invoke gh"
 
 # ── Wrapper fixtures: a Ready item to drive + a notify stub ──────────────────
 mk_fixture() { local fx="$1"; mkdir -p "$fx/board-3"
