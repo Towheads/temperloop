@@ -6,7 +6,7 @@
 #      (default ~/.config/temperloop/boards.conf). Renamed from the legacy
 #      foundation/ subdir in v0.15.0 (temperloop#165): an existing
 #      ~/.config/foundation/boards.conf is still read as a fallback through
-#      the rename window, removed in v0.17.0 — move the file.
+#      the rename window, removed in v0.19.0 — move the file.
 #   2. repo-local override: workflows/scripts/board/boards.conf (next to this
 #      file)
 # If NEITHER exists, board.sh / pipeline-tick.sh / pipeline-drive.sh fall back to

@@ -103,7 +103,7 @@ migrated it (v0.15.0, read-old-write-new): when no file exists at the
 `temperloop/` path, an **existing** legacy
 `$XDG_CONFIG_HOME/foundation/boards.conf` is still read as a fallback
 through the migration window, and that legacy fallback is **removed in
-v0.17.0** — move the file (`mkdir -p ~/.config/temperloop && mv
+v0.19.0** — move the file (`mkdir -p ~/.config/temperloop && mv
 ~/.config/foundation/boards.conf ~/.config/temperloop/`) or set
 `BOARDS_CONF_MACHINE`. Any **new** machine-conf surface added after this
 ladder — including layer 3 above — uses the `temperloop` namespace from the

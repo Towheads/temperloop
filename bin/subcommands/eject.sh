@@ -9,7 +9,7 @@
 # `.temperloop/`; a pre-rename adoption used `.foundation/`. Every read
 # below prefers the new dir and falls back to the legacy one, and eject
 # removes BOTH — cleaning legacy residue stays supported even past the
-# v0.17.0 window close (it is exactly this subcommand's job). Comments
+# v0.19.0 window close (it is exactly this subcommand's job). Comments
 # below name only `.temperloop/` for brevity.
 #
 # `temperloop init` (kernel/bin/subcommands/init.sh) is documented as the

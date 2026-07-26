@@ -31,6 +31,21 @@ reads that marker; a stranger greps for it before pulling.
   K#275 is untouched: `release.sh <n>` still refuses a non-latest claim, now
   pinned by `workflows/scripts/board/tests/test_release.sh`.
 
+### Fixed
+
+- **Retargeted the temperloop#165 `.foundation/` rename-window close from
+  v0.17.0 to v0.19.0 (temperloop#764).** ~86 markers across the tree stated the
+  legacy `foundation`-named reads (the `bin/foundation` shim, `FOUNDATION_*`
+  env vars, `.foundation/config`, `.foundation/baseline.jsonl`, the legacy
+  machine `boards.conf` path, the legacy `foundation/knowledge` store) were
+  "removed in v0.17.0" — but v0.17.0 shipped as the #719 terminology release
+  without performing that removal, so every marker was stale. They now name the
+  real close version, **v0.19.0**, where #719's own legacy window also closes
+  (one adopter migration, not two). temperloop#764 stays **open** to track the
+  actual `.foundation/` removal at the v0.19.0 cut — this entry records only the
+  marker retarget. No behavior change — the legacy reads still resolve exactly as
+  before; only the documented close version moved.
+
 ## [0.17.0] - 2026-07-25 — BREAKING
 
 One-shot pre-GA terminology consolidation (temperloop#729, epic #719
@@ -260,6 +275,12 @@ VERSIONING.md's pre-1.0 rules: the foundation→temperloop identity rename
 keeps working through the migration window with a one-line deprecation
 notice, and the legacy reads are **removed in v0.17.0** — touch your
 overlay/config/env before that release, not necessarily before this pull.
+
+> **[Later correction — 2026-07]** The removal did **not** land in v0.17.0:
+> that version shipped as the epic #719 terminology release. The temperloop#165
+> `.foundation/` window was **retargeted to v0.19.0** (see the `[Unreleased]`
+> entry above; temperloop#764). The original v0.17.0 dates below are left intact
+> as the record of what was announced at v0.15.0.
 
 ### Changed
 
