@@ -152,7 +152,7 @@ discovered files — run `temperloop help` for the live list.
 `foundation <subcommand>` still works everywhere above — the CLI was renamed
 from `foundation` to `temperloop` at public launch (v0.15.0, see § 8), and
 `bin/foundation` is a thin compat shim that execs `temperloop`. The shim and
-the other legacy `foundation` names are scheduled for removal in v0.17.0.
+the other legacy `foundation` names are scheduled for removal in v0.19.0.
 
 Full flag reference, exit codes, and the safety contract behind each step
 (what "zero-write" and "tree-only" actually guarantee) live in
@@ -337,7 +337,7 @@ launch, `foundation-kernel`) during early development; both names still
 surface in older issues, commits, and URLs. TemperLoop is the ratified
 public name going forward — the CLI renamed at v0.15.0, with the legacy
 `foundation` names (including the `bin/foundation` compat shim) scheduled
-for removal in v0.17.0; see the v0.15.0 CHANGELOG `BREAKING` entry for the
+for removal in v0.19.0; see the v0.15.0 CHANGELOG `BREAKING` entry for the
 migration note. See `claude/CLAUDE.kernel.md`'s history for how this repo's
 own kernel/overlay split works if you're extracting a similar process layer
 out of your own personal automation.

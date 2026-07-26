@@ -5,7 +5,7 @@
 # rename, temperloop#165 / PR #487).
 #
 # The rename left every stranger-facing `foundation` name working through a
-# documented v0.17.0 read-old window, plus a small number of paths the
+# documented v0.19.0 read-old window, plus a small number of paths the
 # rename item deliberately did NOT migrate at all (allowlisted as legacy).
 # THIS gate is what keeps that a closed, reviewed set: it scans the same
 # stranger-surface file set the sibling scrubs already cover

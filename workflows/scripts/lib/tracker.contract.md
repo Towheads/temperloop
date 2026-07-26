@@ -61,7 +61,7 @@ can register data but never execute code (the security posture, mirroring how
 | `backend` | `issues` | tracker backend axis (default `projects`; see below). |
 | `cache` | `on` | issue-plane read-cache enable (default off; see Caching & egress). |
 
-**Rename-window note (v0.15.0 → removed in v0.17.0, temperloop#165).** The
+**Rename-window note (v0.15.0 → removed in v0.19.0, temperloop#165).** The
 per-repo state dir and the config namespace renamed `foundation/` →
 `temperloop/` (read-old-write-new). A machine-level conf at the legacy
 `$XDG_CONFIG_HOME/foundation/boards.conf` is honored during the window; a
