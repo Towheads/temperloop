@@ -14,6 +14,28 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Issues-only backend: reaching Done clears the claim stamp
+  (temperloop#744).** A closed issue kept its `fnd:host/session:<host>:<sess8>`
+  label, so it read as permanently claimed — `issue-state.sh resolve` returns
+  `claimed-elsewhere` off exactly that label, and nothing swept it. Fixed at
+  both altitudes. **Root cause:** `_board_issues_set_field`'s Done arm now
+  strips every `fnd:host/session:*` label alongside the `fnd:status:*` label
+  before closing (a non-Done status write still leaves the stamp alone — a park
+  back to Ready may legitimately still hold the claim). **Backstop:** the
+  dominant close path is a merged PR's native `Closes #N`, which runs no adapter
+  code at all, so `reconcile.sh --labels` gains class **(j)** — a
+  `fnd:host/session:*` label on a CLOSED issue, stripped per-issue by `--apply`,
+  with the same immediate re-check (an issue reopened in the scan→apply gap is
+  never stripped) and idempotence as the other classes. It is not reachable by
+  the existing orphaned-label class (g), which deletes a repo label *object*
+  only when it is attached to zero OPEN issues: while any open issue still wears
+  the stamp, the object is correctly kept and every closed issue wearing it stays
+  stranded. Sweep the accumulated backlog with one command —
+  `workflows/scripts/board/reconcile.sh --board 7 --labels --apply` (or
+  `--labels` alone for the zero-write report).
+
 ### Added
 
 - **`reconcile`: `--fix` gains a marker-lens repair (temperloop#748).** The

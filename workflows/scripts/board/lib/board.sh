@@ -1165,6 +1165,22 @@ _board_issues_ensure_label() {
 # ensure the label + REOPEN if the issue was closed. Both the close/reopen and
 # the label add/remove are read-before-write (one `gh api issues/<n>` fetch)
 # so an already-correct state is a no-op, not a redundant/erroring gh call.
+#
+# Done ALSO clears the claim stamp (temperloop#744). The `fnd:host/session:*`
+# label is the cross-session claim LOCK (see _board_issues_stamp_field below and
+# ISSUES-ONLY-BACKEND.md § Claim lock) — reaching Done is the end of the claim
+# by construction, so leaving the stamp on a closed issue publishes a lock that
+# can never be released, and a reader (issue-state.sh's `claimed-elsewhere`
+# derivation, reconcile.sh's foreign-claim bucket, board_claim_contended) cannot
+# tell it apart from a live claim. So the Done arm strips every
+# `fnd:host/session:*` label alongside the status label, under the same
+# retry-once/never-swallow contract as the status strip. Non-Done targets do NOT
+# touch the stamp — a Ready/Backlog park is exactly the case where the claim may
+# legitimately still be held (kernel doc § Claim held until Done), and claim.sh
+# re-stamps on its own. This closes only the ADAPTER-driven close path; a close
+# that bypasses the adapter entirely (a merged PR's native `Closes #N`, a hand
+# `gh issue close`, the web UI) never runs this code and is swept by
+# reconcile.sh's Lens 3 --labels backstop instead — see that file's class (j).
 # Best-effort write-through invalidation (F#988 Contract, cache-read-dispatch
 # item): dirty the canonical issue-cache store's entry for <repo> after a
 # SUCCESSFUL issues-only mutation, so a following whole-board read (when
@@ -1183,6 +1199,7 @@ _board_cache_dirty_after_write() {
 _board_issues_set_field() {
   local item_id="$1" field_name="$2" opt_name="$3"
   local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0 removal_failed=0
+  local hs_prefix hs_cur
 
   issue="${item_id#ISSUE_}"
   repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # setting:exempt — internal already-resolved board state, not an operator default
@@ -1228,6 +1245,22 @@ _board_issues_set_field() {
   # no-op at the gh-call level, not just idempotent at the label-set level).
   if [ "$is_done" -eq 0 ] && [ "$already_present" -eq 0 ]; then
     _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
+  fi
+
+  # Done clears the claim stamp too (temperloop#744) — see this function's
+  # header. Reads the ALREADY-FETCHED issue_json (no extra gh call) and reuses
+  # the same retry-once/never-swallow removal contract as the status strip.
+  if [ "$is_done" -eq 1 ]; then
+    hs_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_HOSTSESSION")"
+    hs_cur="$(printf '%s' "$issue_json" | jq -r --arg p "$hs_prefix" '.labels[]?.name | select(startswith($p))')"
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      if ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 \
+         && ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+        echo "board: _board_issues_set_field — failed to clear claim stamp '$l' on $repo#$issue" >&2
+        removal_failed=1
+      fi
+    done <<<"$hs_cur"
   fi
 
   if [ "$field_name" = "$BOARD_FIELD_STATUS" ]; then

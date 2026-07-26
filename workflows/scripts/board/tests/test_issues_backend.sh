@@ -253,6 +253,42 @@ grep -q '^gh issue close 105' "$CALLS" || fail "Done must close the issue"
 [ "$FAKE_LABELS" = "" ] || fail "no fnd:status:* label should remain after Done, got: '$FAKE_LABELS'"
 echo "PASS: board_set_status Done closes the issue and carries no label (contract: Done = closed)"
 
+# --- 6b: Done ALSO clears the fnd:host/session:* claim stamp (temperloop#744) --
+# Reaching Done ends the claim by construction; a stamp left on a closed issue
+# is a cross-session lock nothing can release (issue-state.sh resolve reads it
+# as `claimed-elsewhere`). A NON-Done target must NOT touch it — a park to
+# Ready/Backlog is exactly where the claim may legitimately still be held
+# (kernel doc § Claim held until Done).
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:in-progress fnd:host/session:mini:abcd1234"
+: >"$CALLS"
+board_set_status "ISSUE_105" "Done" || fail "board_set_status Done should succeed with a claim stamp present"
+grep -q -- '--remove-label fnd:status:in-progress' "$CALLS" \
+  || fail "Done must strip the residual status label"
+grep -q -- '--remove-label fnd:host/session:mini:abcd1234' "$CALLS" \
+  || fail "Done must clear the fnd:host/session:* claim stamp (temperloop#744)\n$(cat "$CALLS")"
+[ "$FAKE_STATE" = "closed" ] || fail "issue should be closed after Done"
+[ "$(printf '%s' "$FAKE_LABELS" | tr -d ' ')" = "" ] \
+  || fail "no fnd: label should remain after Done, got: '$FAKE_LABELS'"
+echo "PASS: board_set_status Done clears the fnd:host/session:* claim stamp too (temperloop#744)"
+
+# The converse: a NON-Done status write re-labels but leaves the claim stamp.
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:in-progress fnd:host/session:mini:abcd1234"
+: >"$CALLS"
+board_set_status "ISSUE_105" "Ready" || fail "board_set_status Ready should succeed with a claim stamp present"
+grep -q -- '--remove-label fnd:host/session:mini:abcd1234' "$CALLS" \
+  && fail "a NON-Done status write must NEVER clear the claim stamp\n$(cat "$CALLS")"
+case " $FAKE_LABELS " in
+  *" fnd:host/session:mini:abcd1234 "*) : ;;
+  *) fail "the claim stamp must survive a non-Done status write, got: '$FAKE_LABELS'" ;;
+esac
+echo "PASS: a non-Done status write leaves the fnd:host/session:* claim stamp intact"
+
+# Restore the precondition the next block expects (closed, no fnd: labels).
+FAKE_STATE="closed"
+FAKE_LABELS=""
+
 : >"$CALLS"
 board_set_status "ISSUE_105" "Ready" || fail "board_set_status Ready (from Done) should succeed"
 grep -q -- '--add-label fnd:status:ready' "$CALLS" || fail "expected the Ready label added"

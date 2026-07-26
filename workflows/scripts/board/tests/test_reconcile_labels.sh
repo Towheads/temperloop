@@ -447,4 +447,101 @@ echo "PASS: case 10 unattended apply records the backfill in the pending-decisio
 unset KNOWLEDGE_STORE_ROOT
 
 echo
+echo "=== Scan 2b: stranded fnd:host/session:* claim stamps on CLOSED issues (temperloop#744) ==="
+
+# Reset the scan-3 fixture so these cases surface no unstatused-open noise.
+OPEN_ISSUES_JSON="[]"
+
+# The motivating REAL shape (temperloop#744): one host/session stamp worn by BOTH
+# a live OPEN issue and a stale CLOSED one. Scan 1 must (correctly) refuse to
+# delete the label OBJECT — it is still backing a live claim — which is exactly
+# why the closed issue's copy needs its own per-issue strip.
+SHARED_STAMP="fnd:host/session:mini:322ce445"
+
+# =========================================================================
+# Case 11: dry-run reports a stranded claim stamp on a closed issue, and does
+# NOT list the (still-live) label object as an orphan-delete candidate.
+# =========================================================================
+LABEL_LIST_JSON='[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$SHARED_STAMP"
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]}'
+RACE_LABEL=""
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+  || fail "case11: expected the stranded-claim-stamp section\n$OUT"
+printf '%s' "$OUT" | grep -qF "#27 — $SHARED_STAMP" \
+  || fail "case11: expected #27's stranded stamp reported\n$OUT"
+printf '%s' "$OUT" | grep -q "^orphaned host/session labels" \
+  && fail "case11: a stamp still worn by a LIVE open claim must never be an orphan-delete candidate\n$OUT"
+[ ! -s "$DELETES" ] || fail "case11: dry-run must issue ZERO label deletes\n$(cat "$DELETES")"
+[ ! -s "$STRIPS" ] || fail "case11: dry-run must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 11 dry-run reports a stranded claim stamp scan 1 structurally cannot reach (temperloop#744)"
+
+# =========================================================================
+# Case 12: --apply strips the stamp from the CLOSED issue only — the label
+# OBJECT is never deleted (it still backs a live open claim), the issue's
+# non-fnd: labels are untouched, and the re-check skips an issue REOPENED in
+# the scan->apply gap.
+# =========================================================================
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]},{"number":28,"labels":[{"name":"'"$SHARED_STAMP"'"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]}'
+API_28_JSON='{"state":"open","labels":[{"name":"'"$SHARED_STAMP"'"}]}'   # reopened in the gap
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+printf '%s' "$OUT" | grep -qF "stripped: #27 $SHARED_STAMP" \
+  || fail "case12: expected #27's stranded stamp stripped\n$OUT"
+grep -qF "$(printf '27\t%s' "$SHARED_STAMP")" "$STRIPS" \
+  || fail "case12: expected #27 recorded in the strip log\n$(cat "$STRIPS")"
+printf '%s' "$OUT" | grep -qF "skip (no longer closed+labeled): #28 $SHARED_STAMP" \
+  || fail "case12: expected #28 (reopened in the gap) skipped by the re-check\n$OUT"
+grep -q "^28	" "$STRIPS" && fail "case12: a REOPENED issue's live claim must never be stripped\n$(cat "$STRIPS")"
+[ ! -s "$DELETES" ] || fail "case12: the label OBJECT must never be deleted by this class\n$(cat "$DELETES")"
+grep -q "bug" "$STRIPS" && fail "case12: a non-fnd: label must never be stripped\n$(cat "$STRIPS")"
+printf '%s' "$OUT" | grep -q "applied: deleted 0 label(s), stripped 0 status label(s), cleared 1 claim stamp(s)\." \
+  || fail "case12: expected the summary to name the cleared count\n$OUT"
+echo "PASS: case 12 --apply strips the stranded stamp from the closed issue only; the label object and a reopened claim survive"
+
+# =========================================================================
+# Case 13: idempotent — a second run against the POST-apply state reports the
+# in-sync all-clear and issues zero writes.
+# =========================================================================
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"bug"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"bug"}]}'
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+printf '%s' "$OUT" | grep -q "In sync" \
+  || fail "case13: expected in-sync on the idempotent re-run\n$OUT"
+[ ! -s "$STRIPS" ] || fail "case13: must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 13 the claim-stamp strip is idempotent — a second run reports in-sync, zero writes"
+
+# =========================================================================
+# Case 14: unattended apply records the cleared count + the claim-stamp
+# dimension in the pending-decisions entry.
+# =========================================================================
+KS_ROOT_14="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_14"
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"'"$SHARED_STAMP"'"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"'"$SHARED_STAMP"'"}]}'
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+LEGACY_DOC="$KS_ROOT_14/Context/pipeline - pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case14: expected the pending-decisions entry created at the legacy path\n$(find "$KS_ROOT_14" -type f)"
+grep -q "Default taken:\*\* applied — deleted 0 label(s), stripped 0 status label(s), cleared 1 claim stamp(s)" "$LEGACY_DOC" \
+  || fail "case14: entry missing the cleared count on the default-taken line\n$(cat "$LEGACY_DOC")"
+grep -q "clear stranded .fnd:host/session:\*. claim stamps from closed issues" "$LEGACY_DOC" \
+  || fail "case14: entry missing the claim-stamp mention on the decision line\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 14 unattended apply records the cleared claim stamps in the pending-decisions entry (temperloop#744)"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
 echo "PASS: all reconcile.sh --labels (label hygiene) assertions passed"
