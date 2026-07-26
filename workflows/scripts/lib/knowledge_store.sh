@@ -80,10 +80,89 @@ _ks_default_root() {
   printf '%s\n' "$new_root"
 }
 
+# ── Rung-3 machine-conf root (temperloop#1328, foundation#1328/#1327) ───────
+# The six-layer config ladder (docs/config-precedence.md) gives every
+# setting a rung-3 "machine conf" layer above the tracked/kernel defaults —
+# $XDG_CONFIG_HOME/temperloop/build.config.sh, the SAME path
+# build.config.sh's own layer-3 discovery (BUILD_CONFIG_MACHINE) already
+# sources. A process that sources build.config.sh (Plane A: build/sweep
+# machinery) already reads that layer, via build.config.sh itself, before
+# this file's own `:=` ever runs. A process that sources ONLY this file —
+# knowledge_store.sh — reaches neither build.config.sh nor its machine-conf
+# read at all: Plane B (a bare hook, e.g. session-start-drain.sh) and Plane C
+# (a launchd agent, which inherits only PATH/HOME) both fell straight
+# through to _ks_default_root() below and silently resolved the WRONG root
+# whenever the operator's real store lives at a machine-conf-configured
+# path — measured cost: 218 skipped drains across 16 consecutive days on the
+# operator's host (foundation#1328).
+#
+# _ks_machine_conf_root() closes that gap WITHOUT sourcing the TRACKED
+# build.config.sh (layer 5 — the committed repo conf). Reaching into that
+# tracked file from here would build exactly the cycle
+# pipeline-schedule-gate.sh:60-63 (sources build.config.sh, THEN this file)
+# would otherwise create, and would reintroduce the personal-path reseed
+# kernel-literal-scrub (temperloop#189) deliberately removed from
+# build.config.sh's own layer-5 defaults (see setting-registry.tsv's "A
+# THIRD row used to live here" note). Instead it reads the OPERATOR'S rung-3
+# machine conf directly — a file that merely shares build.config.sh's
+# basename by convention (docs/config-precedence.md), never the tracked file
+# itself.
+#
+# Isolation: the machine conf is sourced in a SUBSHELL with `set +eu`, so a
+# conf file written assuming an interactive/errexit-off shell (or one that
+# references an unset var of its own) can't abort the caller or leak stray
+# state, and with the source's own stdout/stderr silenced so only the ONE
+# value this function prints crosses back out. This is the same
+# isolated-subshell idiom already used at
+# workflows/scripts/install/doctor.sh's check_knowledge_root() (and, in the
+# foundation overlay, install-claude-md.sh) to read a sibling config file's
+# value without importing its other settings — no new machinery, the
+# existing idiom applied to a new caller. Only KNOWLEDGE_STORE_ROOT is read
+# back; every OTHER setting the machine conf might carry (PIPELINE_DRIVE,
+# BUILD_MERGE_GATE_WINDOW, ...) never reaches the calling process.
+#
+# Guards: the conf file must exist, and the value it yields must be an
+# absolute path — a missing file, an empty/unset value, a relative path, or
+# a sourcing error all return 1 and the caller falls back to
+# _ks_default_root(); never fatal.
+: "${KNOWLEDGE_STORE_MACHINE_CONF:=${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh}"
+
+# NOTE on the printf below: a bare "${KNOWLEDGE_STORE_ROOT}" reference (no
+# :-/:= fallback operator) is deliberate — this reads back whatever the
+# machine conf just set, not a second default-setting seam for
+# KNOWLEDGE_STORE_ROOT (the setting-registry equality lint,
+# check-setting-registry.sh, treats every := / :- occurrence for a
+# registered name in its owning-script as a default that must match the
+# registry row, and this file already carries the one real default seam for
+# KNOWLEDGE_STORE_ROOT, in ks_root() below). set +u above means an unset var
+# here is simply empty, not an error.
+#
+# No apostrophes/backticks in any comment INSIDE the v="$( ... )" subshell
+# below, on purpose: bash 3.2 (macOS system bash, /bin/bash — the shell a
+# launchd agent invokes under a bare PATH=/usr/bin:/bin) mis-parses a
+# comment containing a quote character when it sits inside a $(...) command
+# substitution, swallowing the rest of the file looking for a matching
+# quote. Confirmed against /bin/bash 3.2.57 while building this function;
+# keep every in-subshell comment quote-and-backtick-free.
+_ks_machine_conf_root() {
+  [ -f "$KNOWLEDGE_STORE_MACHINE_CONF" ] || return 1
+  local v
+  v="$(
+    set +eu
+    # shellcheck source=/dev/null
+    . "$KNOWLEDGE_STORE_MACHINE_CONF" >/dev/null 2>&1
+    printf '%s' "${KNOWLEDGE_STORE_ROOT}"
+  )"
+  case "$v" in
+    /*) printf '%s\n' "$v" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Prints the resolved store root (no trailing slash). Does not create it —
 # callers/backends create directories lazily on write.
 ks_root() {
-  : "${KNOWLEDGE_STORE_ROOT:=$(_ks_default_root)}"
+  : "${KNOWLEDGE_STORE_ROOT:=$(_ks_machine_conf_root || _ks_default_root)}"
   printf '%s\n' "$KNOWLEDGE_STORE_ROOT"
 }
 

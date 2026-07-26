@@ -21,6 +21,18 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ks-test-XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# ── Hermeticity: neutralize any host-local machine conf (temperloop#1328) ────
+# ks_root() now consults KNOWLEDGE_STORE_MACHINE_CONF's rung-3 machine conf
+# (default $XDG_CONFIG_HOME/temperloop/build.config.sh) before falling back to
+# the kernel default this file's tests below exercise. On a developer's real
+# machine that path commonly exists and sets a real KNOWLEDGE_STORE_ROOT —
+# exactly the fix this item ships — which would leak into every default-root
+# test below that doesn't itself override KNOWLEDGE_STORE_ROOT or HOME.
+# Neutralize the seam at a guaranteed-absent path here so this whole file
+# stays hermetic on any machine; the machine-conf-specific tests (3b-3f)
+# further below explicitly re-point this per-test to exercise the seam.
+export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/no-such-machine-conf-neutralized/build.config.sh"
+
 # --- 1. default root resolution (XDG_DATA_HOME override, no explicit ROOT) ---
 (
   unset KNOWLEDGE_STORE_ROOT
@@ -103,6 +115,99 @@ trap 'rm -rf "$TMP"' EXIT
   got="$(ks_root)"
   [ "$got" = "$TMP/explicit-root" ] || fail "3: explicit KNOWLEDGE_STORE_ROOT must win (got $got)"
   echo "PASS: 3 KNOWLEDGE_STORE_ROOT overrides the default (single config setting)"
+)
+
+# --- 3b. rung-2 env (KNOWLEDGE_STORE_ROOT already set) beats the rung-3
+# machine conf even when the machine conf ALSO sets KNOWLEDGE_STORE_ROOT
+# (temperloop#1328) — env always wins, the machine conf is never consulted
+# once KNOWLEDGE_STORE_ROOT is already bound. ---------------------------------
+(
+  mkdir -p "$TMP/machine-conf-3b"
+  cat > "$TMP/machine-conf-3b/build.config.sh" <<'EOF'
+: "${KNOWLEDGE_STORE_ROOT:=/machine-conf-should-not-win}"
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3b/build.config.sh"
+  export KNOWLEDGE_STORE_ROOT="$TMP/env-root"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  [ "$got" = "$TMP/env-root" ] || fail "3b: rung-2 env KNOWLEDGE_STORE_ROOT must beat the rung-3 machine conf (got $got)"
+  echo "PASS: 3b rung-2 env KNOWLEDGE_STORE_ROOT wins over a machine conf that also sets it"
+)
+
+# --- 3c. rung-3 machine conf beats the rung-6 XDG default when
+# KNOWLEDGE_STORE_ROOT is otherwise unset — the load-bearing bare-env-plane
+# fix (temperloop#1328): a process sourcing ONLY this file, never
+# build.config.sh, still resolves the operator's machine-conf-configured
+# root. -----------------------------------------------------------------------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  unset XDG_DATA_HOME
+  HOME="$TMP/home-3c"
+  mkdir -p "$TMP/machine-conf-3c" "$TMP/machine-conf-root-3c"
+  cat > "$TMP/machine-conf-3c/build.config.sh" <<EOF
+: "\${KNOWLEDGE_STORE_ROOT:=$TMP/machine-conf-root-3c}"
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3c/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  want="$TMP/machine-conf-root-3c"
+  [ "$got" = "$want" ] || fail "3c: rung-3 machine conf should win over the rung-6 XDG default (got $got want $want)"
+  echo "PASS: 3c rung-3 machine conf resolves the root for a bare-env process (no build.config.sh sourced)"
+)
+
+# --- 3d. a MISSING machine conf falls through cleanly to the XDG default -----
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-3d"
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/no-such-machine-conf-3d/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  want="$TMP/xdg-3d/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "3d: a missing machine conf should fall through to the XDG default (got $got want $want)"
+  echo "PASS: 3d missing machine conf falls through cleanly to the XDG default"
+)
+
+# --- 3e. a machine conf present but setting NOTHING (or a relative path)
+# also falls through cleanly, rather than binding a bad/empty root. ----------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-3e"
+  mkdir -p "$TMP/machine-conf-3e"
+  cat > "$TMP/machine-conf-3e/build.config.sh" <<'EOF'
+: "${KNOWLEDGE_STORE_ROOT:=relative/not-absolute}"
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3e/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  want="$TMP/xdg-3e/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "3e: a non-absolute machine-conf value should be rejected, falling through to the XDG default (got $got want $want)"
+  echo "PASS: 3e malformed (non-absolute) machine-conf value falls through cleanly to the XDG default"
+)
+
+# --- 3f. a machine conf that errors/exits mid-source does not abort the
+# caller — the isolation subshell absorbs it and resolution still falls
+# through to the XDG default. -------------------------------------------------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-3f"
+  mkdir -p "$TMP/machine-conf-3f"
+  cat > "$TMP/machine-conf-3f/build.config.sh" <<'EOF'
+echo "reference to an unset var: $SOME_UNSET_VAR_3F"
+exit 1
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3f/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  rc=$?
+  want="$TMP/xdg-3f/temperloop/knowledge"
+  [ "$rc" -eq 0 ] || fail "3f: ks_root should not itself fail when the machine conf errors (rc=$rc)"
+  [ "$got" = "$want" ] || fail "3f: an erroring machine conf should fall through to the XDG default (got $got want $want)"
+  echo "PASS: 3f an erroring/exiting machine conf is isolated and falls through cleanly"
 )
 
 # From here on, all cases share one isolated store root.

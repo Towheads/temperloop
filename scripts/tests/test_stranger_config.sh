@@ -301,6 +301,15 @@ KS_OUT="$(
   # environment would otherwise win the log path's default and leak test
   # entries into the real machine's state dir.
   export XDG_STATE_HOME="$STRANGER_HOME/.local/state"
+  # Pin XDG_CONFIG_HOME too (temperloop#1328): KNOWLEDGE_STORE_ROOT is
+  # exported above so ks_root rung-2 env win makes this a no-op for the
+  # assertions below, but without pinning it the sandbox isolation from a
+  # real machine conf at $XDG_CONFIG_HOME/temperloop/build.config.sh would be
+  # ACCIDENTAL (only holding because rung 2 short-circuits first) rather than
+  # structural. No apostrophes in this comment on purpose (bash 3.2
+  # mis-parses one inside a $(...) command substitution) -- now the sandbox
+  # is airtight regardless of rung order.
+  export XDG_CONFIG_HOME="$STRANGER_HOME/.config"
   # shellcheck source=/dev/null
   source "$KS_LIB"
   root="$(ks_root)"
@@ -331,6 +340,11 @@ KS_SEARCH_OUT="$(
   export KNOWLEDGE_STORE_ROOT="$STRANGER_KS_ROOT"
   export XDG_STATE_HOME="$STRANGER_HOME/.local/state"
   export HOME="$STRANGER_HOME"
+  # Pin XDG_CONFIG_HOME too (temperloop#1328) -- same rationale as the
+  # identical pin in Section G just above: structural isolation from a real
+  # machine conf, not merely accidental via rung-2 KNOWLEDGE_STORE_ROOT
+  # already winning.
+  export XDG_CONFIG_HOME="$STRANGER_HOME/.config"
   # shellcheck source=/dev/null
   source "$KS_LIB"
   # shellcheck source=/dev/null
