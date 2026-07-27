@@ -358,6 +358,21 @@ KERNEL_GATES=(
   # as the setting-registry/feature-docs gates above.
   "bash workflows/scripts/count-prose.sh"
   "bash workflows/scripts/tests/test_count_prose.sh"
+  # Contributor-manifest structural lint (temperloop#827, epic #810 P1):
+  # check-contributor-manifest.sh reconciles workflows/scripts/config/
+  # contributor-manifest.tsv (the tracked registry count-prose.sh's
+  # SESSION-START CONTRIBUTORS section reads) against the real tree — no
+  # duplicate/untracked/malformed row, every frontmatter:description row's
+  # file actually carries that field, and every tracked
+  # claude/commands/*.md + claude/agents/**/*.md file (plus the root
+  # CLAUDE.md pointer) has a row. This is STRUCTURAL only, never a byte
+  # budget — Phase A (this epic) ships no cap and nothing here can fail a
+  # PR merely for growing the surface; it only fails a manifest that has
+  # drifted out of sync with the tree (a new command/agent file added with
+  # no row, a row pointing at a path that no longer exists or was never
+  # tracked). Same direct-`bash` form as the count-prose gate above.
+  "bash workflows/scripts/config/check-contributor-manifest.sh"
+  "bash workflows/scripts/config/tests/test_check_contributor_manifest.sh"
   # Two-tier prose-budget gate (temperloop#719, item prose-budget-gate /
   # #725; ADR 0015): validate-prose-budget.sh fails a PR that grows the
   # composed kernel-authored render (tier-1) or any single tracked

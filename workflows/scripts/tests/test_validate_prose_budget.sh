@@ -239,7 +239,15 @@ assert_has "$out" "reconciled 1:1" "real-tree OK line claims the 1:1 contract"
 # each marker red path is demonstrated against a controlled tree (markers
 # are same-line, so none of these cases can perturb the size caps).
 MFIX="$TMP/marker-fixture"
-mkdir -p "$MFIX/claude" "$MFIX/workflows/scripts"
+mkdir -p "$MFIX/claude" "$MFIX/workflows/scripts/config"
+# count-prose.sh (temperloop#827) requires a contributor-manifest.tsv to
+# exist under any COUNT_PROSE_ROOT it is pointed at, independent of the
+# citation-marker mechanics this fixture otherwise exercises — a minimal,
+# single-row manifest pointing at the fixture's own kernel doc satisfies
+# that prerequisite without touching anything this section actually tests.
+cat >"$MFIX/workflows/scripts/config/contributor-manifest.tsv" <<'EOF'
+claude/CLAUDE.kernel.md	full	kernel-pointer	harness-auto
+EOF
 cat >"$MFIX/claude/CLAUDE.kernel.md" <<'EOF'
 # Fixture kernel doc
 

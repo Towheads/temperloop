@@ -63,6 +63,38 @@
 #     BSD `wc` prints (macOS) that GNU `wc` (Linux CI) does not, so the
 #     printed number is identical text on both OS families, not just
 #     numerically equal.
+#
+# SESSION-START CONTRIBUTORS (temperloop#827, epic #810 P1 — the "session-
+# start context budget" design brief): a THIRD report section, driven
+# entirely by the tracked manifest workflows/scripts/config/
+# contributor-manifest.tsv rather than by code — a new session-start
+# contributor is a manifest ROW, never a script change (unless it needs a
+# `unit` this script does not implement yet; see the tsv's own header for
+# the closed set). Reports each contributor in BYTES (not lines — the unit
+# temperloop#719/#722's own postmortem showed can move 0 lines on a
+# +2,260 B commit) plus a re-derived byte->token proxy ratio. This section
+# extends the determinism contract above to the new unit: `wc -c` (byte
+# counts) is trimmed of the same BSD-vs-GNU padding as `wc -l`; every
+# manifest path is read via `git ls-files`, never a live filesystem walk of
+# an installed target, so a HOST-STATE contributor (e.g. the machine-global
+# ~/.claude/agents install surface) structurally cannot enter this report —
+# check-contributor-manifest.sh's tracked-path invariant is what keeps the
+# manifest itself honest, but this script re-derives every byte count from
+# the tracked tree regardless, taking nothing on faith from the tsv beyond
+# which paths to read.
+#
+# LOAD-CLASS BUCKETING (temperloop#826 coverage spike): "session-start" is
+# not one load class. The spike verified empirically (Claude Code 2.1.220)
+# that AGENTS.md is NOT harness-auto-loaded — it arrives only on turn 1,
+# because the auto-loaded root CLAUDE.md's own prose instructs the agent to
+# read it. Summing a future `pointer-turn1` row into the same total as a
+# `harness-auto` row would move the number without moving the underlying
+# cost — the exact metric error ADR 0018 was written against. So this
+# report BUCKETS by the manifest's `load` column and only folds the
+# `harness-auto` bucket into "SESSION-START CONTRIBUTOR TOTAL" / the
+# byte->token ratio; every row shipped by this item is `harness-auto`, and
+# any other bucket that appears later (temperloop#836) gets its own labeled
+# subtotal, never silently merged in.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,6 +103,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 : "${COUNT_PROSE_ROOT:=$REPO_ROOT}"  # setting:exempt — test/fixture root override (mirrors FEATURE_DOCS_ROOT/KERNEL_MANIFEST_ROOT), not an operator-facing config-precedence default
 kernel_doc="$COUNT_PROSE_ROOT/claude/CLAUDE.kernel.md"
 install_script="$COUNT_PROSE_ROOT/workflows/scripts/install-claude-md.sh"
+: "${CONTRIBUTOR_MANIFEST_TSV:=$COUNT_PROSE_ROOT/workflows/scripts/config/contributor-manifest.tsv}"  # setting:exempt — same fixture-root class as COUNT_PROSE_ROOT itself, not an operator-facing config-precedence default
 
 [ -f "$kernel_doc" ] || { echo "count-prose: kernel doc not found: $kernel_doc" >&2; exit 1; }
 [ -f "$install_script" ] || { echo "count-prose: compose seam not found: $install_script" >&2; exit 1; }
@@ -78,6 +111,18 @@ if [ ! -d "$COUNT_PROSE_ROOT/.git" ] && [ ! -f "$COUNT_PROSE_ROOT/.git" ]; then
   echo "count-prose: $COUNT_PROSE_ROOT is not a git checkout" >&2
   exit 1
 fi
+# The contributor manifest is a SOFT dependency, unlike kernel_doc/
+# install_script/COUNT_PROSE_ROOT above: this script is also invoked by
+# validate-prose-budget.sh (directly, and via that script's own fixture
+# suite) against MINIMAL scratch COUNT_PROSE_ROOT trees that exercise only
+# TIER-1/TIER-2 and were never given a contributor-manifest.tsv or a
+# claude/commands+agents tree of their own — those callers care about
+# tier-1/tier-2 alone and must keep working unmodified. So a missing
+# manifest degrades the SESSION-START CONTRIBUTORS section to a skipped,
+# clearly-labeled no-op (never a script-wide exit 1) — contrast the three
+# checks above, which this script cannot run AT ALL without.
+contributor_manifest_available=1
+[ -f "$CONTRIBUTOR_MANIFEST_TSV" ] || contributor_manifest_available=0
 
 # lines_in <file> — echo a file's line count, trimmed. BSD `wc -l` (macOS)
 # right-pads its count with leading spaces; GNU `wc -l` (Linux) does not —
@@ -85,6 +130,47 @@ fi
 # just numerically equal counts.
 lines_in() {
   wc -l <"$1" | tr -d '[:space:]'
+}
+
+# bytes_in <file> — echo a file's byte count, trimmed. BSD `wc -c` (macOS)
+# right-pads its count exactly like BSD `wc -l` does — same trim, new unit.
+bytes_in() {
+  wc -c <"$1" | tr -d '[:space:]'
+}
+
+# bytes_of <string> — echo the byte length of a STRING (not a file), for a
+# value already extracted from a file (e.g. a frontmatter scalar) rather
+# than measured as a whole file. `printf '%s'` (never `echo`) so the value
+# is passed through with no added trailing newline of its own to count.
+bytes_of() {
+  printf '%s' "$1" | wc -c | tr -d '[:space:]'
+}
+
+# words_of <string> — echo the whitespace-delimited word count of a STRING.
+# The session-start byte->token proxy ratio (below) uses word count as its
+# token-count side: Phase A adds no tokenizer dependency (design brief
+# dimension 6 — "no network, no tokenizer"), and word count is a live,
+# content-dependent measure recomputed from the same text the byte count
+# comes from, never a fixed conversion constant.
+words_of() {
+  printf '%s' "$1" | wc -w | tr -d '[:space:]'
+}
+
+# frontmatter_description <file> — echo the single-line YAML scalar value
+# of a file's `description:` frontmatter field (between the leading `---`
+# fences). Every claude/commands/*.md and claude/agents/**/*.md file in this
+# repo keeps `description:` unfolded on one line (check-contributor-
+# manifest.sh's field-presence check keeps this true going forward — a
+# future fold/pipe block scalar would fail that lint rather than silently
+# under-counting here). Kept independent of check-contributor-manifest.sh's
+# own (presence-only) frontmatter scan — a lint and the report it feeds must
+# not share a single point of failure.
+frontmatter_description() {
+  awk '
+    NR==1 && $0=="---" { infm=1; next }
+    infm && $0=="---" { exit }
+    infm && /^description:/ { sub(/^description: ?/, ""); print; exit }
+  ' "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -175,3 +261,141 @@ for f in "${tier2_files[@]}"; do
 done
 echo
 echo "TIER-2 total: ${tier2_total} lines across ${#tier2_files[@]} files"
+
+# ---------------------------------------------------------------------------
+# SESSION-START CONTRIBUTORS (temperloop#827, epic #810 P1) — manifest-
+# driven byte report. workflows/scripts/config/contributor-manifest.tsv is
+# the single source of truth for WHICH tracked paths this counts; adding a
+# contributor is a row there, never a code change here (unless the row
+# needs a `unit` this script does not implement yet — the case arm below
+# is the closed set).
+# ---------------------------------------------------------------------------
+if [ "$contributor_manifest_available" -eq 0 ]; then
+  echo
+  echo "count-prose: contributor manifest not found: $CONTRIBUTOR_MANIFEST_TSV — skipping SESSION-START CONTRIBUTORS section" >&2
+  exit 0
+fi
+
+contrib_paths=()
+contrib_units=()
+contrib_labels=()
+contrib_loads=()
+contrib_bytes=()
+contrib_words=()
+
+while IFS=$'\t' read -r c_path c_unit c_label c_load || [ -n "${c_path:-}" ]; do
+  [ -z "${c_path:-}" ] && continue
+  case "$c_path" in \#*) continue ;; esac
+  if [ -z "${c_unit:-}" ] || [ -z "${c_label:-}" ] || [ -z "${c_load:-}" ]; then
+    echo "count-prose: malformed contributor-manifest row (need 4 tab-separated fields): $c_path" >&2
+    exit 1
+  fi
+
+  case "$c_unit" in
+    full)
+      [ -f "$c_path" ] || { echo "count-prose: contributor row '$c_path' (unit full) does not exist" >&2; exit 1; }
+      row_bytes="$(bytes_in "$c_path")"
+      row_words="$(wc -w <"$c_path" | tr -d '[:space:]')"
+      ;;
+    frontmatter:description)
+      [ -f "$c_path" ] || { echo "count-prose: contributor row '$c_path' (unit frontmatter:description) does not exist" >&2; exit 1; }
+      val="$(frontmatter_description "$c_path")"
+      [ -n "$val" ] || { echo "count-prose: contributor row '$c_path' has no description: frontmatter field" >&2; exit 1; }
+      row_bytes="$(bytes_of "$val")"
+      row_words="$(words_of "$val")"
+      ;;
+    *)
+      echo "count-prose: contributor row '$c_path' has unknown unit '$c_unit' (want: full | frontmatter:description)" >&2
+      exit 1
+      ;;
+  esac
+
+  contrib_paths+=("$c_path")
+  contrib_units+=("$c_unit")
+  contrib_labels+=("$c_label")
+  contrib_loads+=("$c_load")
+  contrib_bytes+=("$row_bytes")
+  contrib_words+=("$row_words")
+done <"$CONTRIBUTOR_MANIFEST_TSV"
+
+if [ "${#contrib_paths[@]}" -eq 0 ]; then
+  echo "count-prose: zero contributor rows parsed from $CONTRIBUTOR_MANIFEST_TSV" >&2
+  exit 1
+fi
+
+# Distinct load classes present, in first-seen order (bash-3.2-portable —
+# no associative arrays): almost always just "harness-auto" today, but a
+# future temperloop#836 row (e.g. AGENTS.md, "pointer-turn1") must get its
+# OWN bucket rather than being folded into this one, per the load-class note
+# above.
+load_classes=()
+_cp_seen_load() {
+  for l in "${load_classes[@]}"; do [ "$l" = "$1" ] && return 0; done
+  return 1
+}
+for l in "${contrib_loads[@]}"; do
+  _cp_seen_load "$l" || load_classes+=("$l")
+done
+
+echo
+echo "SESSION-START CONTRIBUTORS (bytes; workflows/scripts/config/contributor-manifest.tsv):"
+current_label=""
+for i in "${!contrib_paths[@]}"; do
+  if [ "${contrib_labels[$i]}" != "$current_label" ]; then
+    current_label="${contrib_labels[$i]}"
+    echo "  -- ${current_label} --"
+  fi
+  printf '%10d  %s\n' "${contrib_bytes[$i]}" "${contrib_paths[$i]}"
+done
+
+for load_class in "${load_classes[@]}"; do
+  class_total_bytes=0
+  class_total_words=0
+  class_rows=0
+  for i in "${!contrib_paths[@]}"; do
+    [ "${contrib_loads[$i]}" = "$load_class" ] || continue
+    class_total_bytes=$((class_total_bytes + contrib_bytes[i]))
+    class_total_words=$((class_total_words + contrib_words[i]))
+    class_rows=$((class_rows + 1))
+  done
+
+  echo
+  printf '[%s] SUBTOTAL: %d bytes across %d row(s)\n' "$load_class" "$class_total_bytes" "$class_rows"
+
+  # The byte->token proxy ratio is derived ONLY for the harness-auto bucket
+  # — the unconditional, session-start cost this item measures. A
+  # pointer-turn1 (or other) bucket gets its own byte subtotal above but no
+  # ratio here: it is a conditional cost (paid only if the agent complies
+  # with a read instruction), never pooled into the same estimate as the
+  # unconditional one (temperloop#826).
+  if [ "$load_class" != "harness-auto" ]; then
+    echo "  (not a session-start-prefix load class — no byte->token ratio derived for this bucket)"
+    continue
+  fi
+
+  if [ "$class_total_words" -le 0 ]; then
+    echo "count-prose: harness-auto contributor content has zero words — cannot derive a byte/word ratio" >&2
+    exit 1
+  fi
+
+  # The fixed-point scale for a 2-decimal byte/word ratio, kept off the
+  # ratio-computation line below — mirrors this kernel's own "prose names a
+  # setting, never states its value" convention (CLAUDE.md § Named-setting
+  # convention), applied here to a computed quantity rather than a prose
+  # rule, so the line that DERIVES the ratio names quantities only, never a
+  # literal.
+  ratio_scale=100
+
+  # RATIO LINE — temperloop#827 acceptance 4: re-derived at runtime from a
+  # live byte count (class_total_bytes) and a live word count
+  # (class_total_words, the token-count proxy this script uses in place of
+  # a tokenizer dependency). Deliberately zero numeric-literal characters on
+  # this exact line — test_count_prose.sh greps it for one.
+  ratio_scaled=$((class_total_bytes * ratio_scale / class_total_words))
+
+  printf '[%s] SESSION-START CONTRIBUTOR TOTAL: %d bytes across %d row(s)\n' \
+    "$load_class" "$class_total_bytes" "$class_rows"
+  printf '[%s] byte->token proxy ratio (bytes per whitespace-delimited word — no tokenizer dependency): bytes=%d words=%d ratio=%d.%02d\n' \
+    "$load_class" "$class_total_bytes" "$class_total_words" \
+    "$((ratio_scaled / ratio_scale))" "$((ratio_scaled % ratio_scale))"
+done

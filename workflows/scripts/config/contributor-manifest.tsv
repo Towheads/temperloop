@@ -1,0 +1,152 @@
+# contributor-manifest.tsv — the tracked registry of session-start
+# CONTRIBUTORS (temperloop#827, epic #810 P1, design brief
+# [[Designs/temperloop - session-start context budget]]): every file, or
+# file's frontmatter `description:` field, that Claude Code auto-loads into
+# a fresh session's context BEFORE the agent reads anything, for a BARE
+# kernel-only checkout — no overlay installed, no composed CLAUDE.md written
+# at all (a real `temperloop install --yes` on a kernel-only clone writes 24
+# managed paths and ZERO composed `~/.claude/CLAUDE.md` — `links_enumerate()`
+# emits the compose target only when both kernel and overlay files exist).
+# For THIS checkout, the always-loaded surface a stranger actually pays for
+# IS this manifest — not claude/CLAUDE.kernel.md's composed render, which is
+# workflows/scripts/count-prose.sh's separate TIER-1 concern (the render an
+# overlay-carrying DOWNSTREAM consumer, e.g. foundation, would compose).
+#
+# This file is read by count-prose.sh's "SESSION-START CONTRIBUTORS" report
+# section and reconciled by workflows/scripts/config/
+# check-contributor-manifest.sh (wired into scripts/quality-gates.sh).
+#
+# Adding a contributor is a ROW, never a code change (temperloop#827
+# acceptance 2) — the extraction MODE (column 2) is itself data, so a new
+# contributor category needs no new count-prose.sh logic as long as its
+# unit already exists below.
+#
+# ── Two distinct load classes (temperloop#826 coverage spike, empirically
+#    verified against Claude Code 2.1.220) ────────────────────────────────
+# "Session-start" is not one thing. The spike's scratch-dir probe (four
+# uniquely-marked files, a tool-free session asked which markers were in its
+# auto-loaded context) found `CLAUDE.md` / `.claude/CLAUDE.md` /
+# `CLAUDE.local.md` present but `AGENTS.md` ABSENT from the harness's own
+# auto-load — `AGENTS.md` instead enters on turn 1, because the auto-loaded
+# root `CLAUDE.md`'s own instruction 1 says "Read AGENTS.md first". Column 4
+# (`load`) below exists so this split never requires a schema migration:
+# summing a `pointer-turn1` row into the same total as a `harness-auto` row
+# would produce a number that moves without the underlying cost moving —
+# the exact metric error ADR 0018 was written against, reintroduced inside
+# the epic correcting it. Every row THIS item adds is `harness-auto` (the
+# unconditional prefix cost) — count-prose.sh's report buckets its
+# byte→token ratio over the `harness-auto` bucket only, for exactly this
+# reason. Emitting turn-1 rows (e.g. AGENTS.md, once temperloop#810 P7 rules
+# on it) is routed to temperloop#836 — explicitly NOT this item's job, only
+# a schema this item must not block.
+#
+# ── Row shape ────────────────────────────────────────────────────────────
+# TAB-separated, 4 columns, no header line consumed by tooling (this comment
+# block documents them):
+#
+#   1. path    repo-relative TRACKED path. check-contributor-manifest.sh
+#              verifies every row's path is a real `git ls-files` entry —
+#              this is what structurally keeps a HOST-STATE contributor
+#              (e.g. the machine-global ~/.claude/agents surface, which
+#              varies per machine/operator and would break the
+#              byte-identical-on-macOS-and-Linux-CI determinism contract
+#              outright) out of the manifest: a path outside this repo's
+#              own tracked tree can never satisfy the check.
+#   2. unit    extraction unit, one of:
+#                full                     the whole tracked file's bytes.
+#                frontmatter:description  ONLY the YAML frontmatter
+#                                          `description:` scalar's value
+#                                          bytes (single-line, unquoted,
+#                                          no folding — true of every row
+#                                          below; check-contributor-
+#                                          manifest.sh fails loudly if a
+#                                          future edit breaks this
+#                                          assumption for any row's file).
+#                                          Deliberately NOT the whole file:
+#                                          Claude Code's own command/agent
+#                                          listing surfaces only this one
+#                                          frontmatter field at session
+#                                          start, never the body. (Summing
+#                                          every frontmatter:description row
+#                                          below plus the one `full` row
+#                                          reconciles to the design brief's
+#                                          own reconciled ~14.1 KB / ~5.2k-
+#                                          token stranger footprint.)
+#   3. label   contributor category, for report grouping (free text, no
+#              tabs): kernel-pointer | command-listing | agent-listing.
+#   4. load    which load class this row belongs to (closed set):
+#                harness-auto    arrives unconditionally before the operator
+#                                types anything — the harness's own
+#                                auto-load (verified set: CLAUDE.md, the
+#                                composed ~/.claude/CLAUDE.md,
+#                                CLAUDE.local.md, plus the command/agent
+#                                listings every row below belongs to).
+#                pointer-turn1   arrives only if the agent complies with a
+#                                read instruction another already-loaded
+#                                file gives it (AGENTS.md's own class — not
+#                                used by any row in this item; reserved for
+#                                temperloop#836).
+#                none            a deliberate-absence row recording that a
+#                                candidate path is NOT a contributor at all
+#                                (reserved; not used by any row in this
+#                                item).
+#                n/a             the load-class question does not apply to
+#                                this row (reserved; not used by any row in
+#                                this item).
+#
+# ── Invariants (check-contributor-manifest.sh) ───────────────────────────
+#   - No path claimed by two rows.
+#   - Every row's path is git-tracked (`git ls-files`).
+#   - unit is one of the closed set named above.
+#   - load is one of the closed set named above.
+#   - A frontmatter:description row's file actually carries that field.
+#   - COMPLETENESS: every tracked claude/commands/*.md file, and every
+#     tracked claude/agents/**/*.md file (recursive — INCLUDING
+#     claude/agents/reviewers/*), has a row. The reviewers ARE included
+#     deliberately: temperloop#825's discovery-leak bug means these seven
+#     inert-catalog files are, today, recursively discovered into every
+#     session's agent listing despite being specified as "not deployed
+#     until opted in" — P1 measures the surface as it actually behaves, bug
+#     included; #825 removes these rows once the leak is fixed, not this
+#     item. The root CLAUDE.md pointer has a row too (unit `full`).
+#
+# ── Explicitly EXCLUDED ───────────────────────────────────────────────────
+#   - claude/CLAUDE.kernel.md itself — TIER-1's concern (the composed
+#     render), never auto-loaded verbatim in a kernel-only checkout.
+#   - AGENTS.md — temperloop#810 P7's own open disposition ("counted or
+#     explicitly scoped out — not silently uncounted"); this item does not
+#     decide it, so it stays out of this manifest until P7 lands its call
+#     (it would be a `pointer-turn1` row per the load-class note above, not
+#     `harness-auto`, so it must never be added as one more row summed into
+#     the same bucket as the rows below).
+#   - the machine-global ~/.claude/agents surface — HOST STATE (varies by
+#     machine/operator); structurally excluded by the tracked-path
+#     invariant above, never a special case in the checker.
+CLAUDE.md	full	kernel-pointer	harness-auto
+claude/commands/assess.md	frontmatter:description	command-listing	harness-auto
+claude/commands/build.md	frontmatter:description	command-listing	harness-auto
+claude/commands/check-in.md	frontmatter:description	command-listing	harness-auto
+claude/commands/fix.md	frontmatter:description	command-listing	harness-auto
+claude/commands/init.md	frontmatter:description	command-listing	harness-auto
+claude/commands/next.md	frontmatter:description	command-listing	harness-auto
+claude/commands/pipeline-drive-merge.md	frontmatter:description	command-listing	harness-auto
+claude/commands/pipeline-drive.md	frontmatter:description	command-listing	harness-auto
+claude/commands/sweep.md	frontmatter:description	command-listing	harness-auto
+claude/commands/tidy.md	frontmatter:description	command-listing	harness-auto
+claude/commands/triage.md	frontmatter:description	command-listing	harness-auto
+claude/commands/workshop.md	frontmatter:description	command-listing	harness-auto
+claude/agents/architecture-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/consultant-persona.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/docs-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/hobbyist-persona.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/red-team-lens.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/requirements-auditor.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/team-member-persona.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/workflow-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/go-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/java-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/python-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/rust-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/shell-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/swift-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/reviewers/typescript-reviewer.md	frontmatter:description	agent-listing	harness-auto

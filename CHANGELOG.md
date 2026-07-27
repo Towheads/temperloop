@@ -14,6 +14,36 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-contributor session-start surface measurement (temperloop#827, epic
+  #810 P1, additive).** `count-prose.sh` gains a third report section,
+  "SESSION-START CONTRIBUTORS", driven entirely by a new tracked manifest,
+  `workflows/scripts/config/contributor-manifest.tsv` (in the established
+  registry mold: `setting-registry.tsv`, `reviewer-routing.tsv`,
+  `citation-registry.tsv`) — every file (or file's YAML frontmatter
+  `description:` field) Claude Code auto-loads into a fresh session before
+  the agent reads anything, for a bare kernel-only checkout. Adding a
+  contributor is a manifest row, never a script change. Reports each
+  contributor in BYTES (not lines — the unit temperloop#719/#722 showed can
+  move zero lines on a multi-kilobyte commit) plus a byte->token proxy ratio
+  re-derived at runtime from a live byte count and a live word count (no
+  tokenizer, no network — Phase A of epic #810 per its design brief). A new
+  `check-contributor-manifest.sh` lint (wired into `scripts/quality-gates.sh`)
+  reconciles the manifest against the tree: no duplicate/untracked/malformed
+  row, every `frontmatter:description` row's field actually present, and
+  every tracked `claude/commands/*.md` + `claude/agents/**/*.md` file (plus
+  the root `CLAUDE.md` pointer) claimed by a row — this is a structural
+  lint only, never a byte budget: **Phase A ships no cap, no target, and no
+  gate that can fail a PR merely for growing the surface.** The manifest's
+  `load` column (`harness-auto` | `pointer-turn1` | `none` | `n/a`)
+  distinguishes the unconditional session-start-prefix cost from a
+  conditional turn-1 read (e.g. `AGENTS.md`, out of scope here per
+  temperloop#810 P7) so the two are never silently summed together
+  (temperloop#826). Additive: no existing row, column, gate name, or script
+  behavior changes: a downstream consumer that has not yet pulled this
+  kernel version has nothing that could fail the new lint.
+
 ### Changed
 
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →

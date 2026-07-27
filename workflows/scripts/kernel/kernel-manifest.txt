@@ -303,6 +303,13 @@ kernel workflows/scripts/tests/fixtures/design-schema/*
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
 kernel workflows/scripts/count-prose.sh
+# Contributor-manifest tsv + its structural lint (temperloop#827, epic #810
+# P1) — already covered by the `kernel workflows/scripts/config/*` glob
+# above (line ~212), listed explicitly here for discoverability alongside
+# the count-prose.sh flat-file entries this manifest feeds.
+kernel workflows/scripts/config/contributor-manifest.tsv
+kernel workflows/scripts/config/check-contributor-manifest.sh
+kernel workflows/scripts/config/tests/test_check_contributor_manifest.sh
 kernel workflows/scripts/validate-prose-budget.sh
 kernel workflows/scripts/tests/test_validate_prose_budget.sh
 kernel workflows/scripts/emit-command-run.sh
