@@ -14,13 +14,26 @@ The kernel's prose plane — the composed `CLAUDE.md` kernel half plus the
 command specs, schemas, and agent charters under `claude/` — is ~10,200
 lines and has only intake mechanisms (capture rules, live/drain pairing),
 no removal mechanism. The composed half loads into every session of every
-consuming repo, so growth is a permanent per-session token cost, and a
+repo that actually composes one, so growth there is a permanent
+per-session token cost for those repos.
+
+**Correction (see ADR 0018):** this paragraph originally continued "and a
 fresh clone must absorb the whole composed surface before its first
-session — which cuts against `docs/who-its-for.md`'s own "No org
-membership and no Projects provisioning step stand between 'clone' and
-'first tracked issue'" framing. Advisory pressure (a lean-authoring norm,
-standing prose reviewers) has existed throughout and accretion continued —
-the observed leak the maturity ladder (`docs/principles.md` § 5) requires
+session — which cuts against `docs/who-its-for.md`'s own 'No org
+membership and no Projects provisioning step stand between "clone" and
+"first tracked issue"' framing." That premise has since been measured
+false for the case it cites. `workflows/scripts/install/links.sh` §2b
+emits the composed-`CLAUDE.md` entry only when **both**
+`claude/CLAUDE.kernel.md` and `claude/CLAUDE.overlay.md` exist — a
+kernel-only checkout (this repo's own fresh clone) has no overlay file by
+construction, so its install writes no composed doc at all. A fresh
+clone's auto-loaded footprint is roughly 14 KB (a project-level pointer
+file plus agent and command descriptions in the two listings), not the
+~63 KB composed-surface figure this premise assumed. See ADR 0018 for the
+full measurement and its consequences; per that ADR's own Context, this
+ADR is not superseded. Advisory pressure (a lean-authoring norm, standing
+prose reviewers) has existed throughout and accretion continued — the
+observed leak the maturity ladder (`docs/principles.md` § 5) requires
 before a rule earns a mechanical gate.
 
 ## Decision
