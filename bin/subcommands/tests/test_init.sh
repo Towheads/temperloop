@@ -108,6 +108,15 @@ case "$1" in
         printf '[]'
         exit 0
         ;;
+      *search/issues*"design-brief: docs/adr/0010-onboarding-as-first-executed-epic.md"*)
+        # Idempotency probe for an already-filed first epic (temperloop#781
+        # handoff-lastness test). Real gh applies the caller's own --jq
+        # '.items[0].number // empty' to the raw search response; since this
+        # fake never runs jq, it just prints the number directly — the same
+        # thing that filter would have produced.
+        [ -n "${FAKE_EXISTING_EPIC_NUM:-}" ] && printf '%s' "$FAKE_EXISTING_EPIC_NUM"
+        exit 0
+        ;;
     esac
     exit 0
     ;;
@@ -179,6 +188,7 @@ run() {
     FAKE_OWNER="${FAKE_OWNER:-acme}" \
     FAKE_PROJECT_NUM="${FAKE_PROJECT_NUM:-42}" \
     FAKE_ISSUE_NUM="${FAKE_ISSUE_NUM:-77}" \
+    FAKE_EXISTING_EPIC_NUM="${FAKE_EXISTING_EPIC_NUM:-}" \
     HOME="${FAKE_HOME:-$HOME}" \
     CALL_LOG="$CALL_LOG" \
     bash "$INIT" "$@" </dev/null 2>&1)" && rc=0 || rc=$?
@@ -429,6 +439,36 @@ echo "$out" | grep -q "temperloop init: done" || fail "run did not reach its clo
 echo "PASS: --yes-first-epic files the epic, applies zero API state, and hands off with 'next step: /assess --epic <N>'"
 
 # =============================================================================
+# 8b. THE HANDOFF BOX IS THE TRUE LAST THING PRINTED (temperloop#781):
+#     `temperloop init: done` now prints BEFORE the closing handoff box, not
+#     after — so the operator's scrollback ends on the actionable handoff
+#     (a visually distinct "not finished" banner + the exact launch-Claude
+#     command + the exact `/assess --epic N` invocation + the full,
+#     never-truncated epic URL), never on the bare done marker. This
+#     inspects the actual TAIL of $out (reused from test 8 above, before
+#     any later run() call overwrites it) rather than just asserting
+#     presence anywhere in the output.
+# =============================================================================
+last_nonblank="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -1)"
+[ "$last_nonblank" != "temperloop init: done" ] \
+  || fail "'temperloop init: done' is the LAST line printed — the handoff box must be last (got tail: $last_nonblank)"
+printf '%s\n' "$last_nonblank" | grep -qF '====' \
+  || fail "the last non-blank line is not the handoff box's closing border (got: $last_nonblank)"
+done_line="$(printf '%s\n' "$out" | grep -n '^temperloop init: done$' | tail -1 | cut -d: -f1)"
+handoff_hdr_line="$(printf '%s\n' "$out" | grep -n '^-- 5\. Handoff --$' | tail -1 | cut -d: -f1)"
+[ -n "$done_line" ] && [ -n "$handoff_hdr_line" ] \
+  || fail "could not locate both 'temperloop init: done' and the Handoff header in output (got: $out)"
+[ "$done_line" -lt "$handoff_hdr_line" ] \
+  || fail "'temperloop init: done' (output line $done_line) does not precede the Handoff block (output line $handoff_hdr_line) — it must print BEFORE, never after"
+echo "$out" | grep -qF "    claude" \
+  || fail "handoff box missing the exact command to launch Claude Code in this repo (got: $out)"
+echo "$out" | grep -qF "Epic: https://github.com/acme/widget/issues/77" \
+  || fail "handoff box missing the full (never-truncated) epic URL (got: $out)"
+echo "$out" | grep -qi "NOT FINISHED" \
+  || fail "handoff box does not state that configuration is not finished (got: $out)"
+echo "PASS: the handoff box is the LAST thing printed — 'temperloop init: done' now precedes it, and the box carries the not-finished framing, the launch command, the exact /assess invocation, and the full epic URL"
+
+# =============================================================================
 # 9. Decline floor is the POINTER ALONE (temperloop#796, ADR 0010 amended):
 #    --no-first-epic files the durable re-offer pointer and runs NO inline
 #    principles interview — the interview is the epic's own L0, deferred.
@@ -501,6 +541,36 @@ mkdir -p "$WORK/not-a-repo"
 run 1 --dir "$WORK/not-a-repo"
 echo "$out" | grep -qi "not a git working tree" || fail "non-repo --dir error message unclear (got: $out)"
 echo "PASS: --dir pointing outside a git working tree is refused with exit 1"
+
+# =============================================================================
+# 13. THE HANDOFF RECOVERS ON THE IDEMPOTENT ALREADY-FILED PATH (temperloop
+#     #781): an operator who lost the first run's scrollback re-runs `init`
+#     and must get the SAME actionable handoff — not just a bare "already
+#     filed" notice. The search/issues idempotency probe (design-brief
+#     marker) reports the epic as already filed via FAKE_EXISTING_EPIC_NUM;
+#     `init` must recover the full epic URL (constructed from $gh_repo,
+#     since the idempotency probe only ever returns a NUMBER) and print the
+#     identical handoff box, with zero new 'issue create' calls.
+# =============================================================================
+REPO13="$(new_fixture_repo repo13)"
+FAKE_EXISTING_EPIC_NUM=77 FAKE_PR_NUM=29 \
+  run 0 --dir "$REPO13" --gh-repo acme/widget
+[ "$(call_count 'issue create')" -eq 0 ] \
+  || fail "idempotent already-filed path re-filed the epic: $(call_count 'issue create') 'issue create' call(s)"
+echo "$out" | grep -q "first-epic: already filed as #77" \
+  || fail "the already-filed idempotency notice did not fire (got: $out)"
+echo "$out" | grep -q "^next step: /assess --epic 77" \
+  || fail "idempotent re-run's handoff marker missing or does not name the existing epic (got: $out)"
+echo "$out" | grep -qF "Epic: https://github.com/acme/widget/issues/77" \
+  || fail "idempotent re-run did not recover the full epic URL for the recovery handoff (got: $out)"
+echo "$out" | grep -qF "    claude" \
+  || fail "idempotent re-run's handoff box missing the launch-Claude-Code command (got: $out)"
+last_nonblank13="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -1)"
+[ "$last_nonblank13" != "temperloop init: done" ] \
+  || fail "idempotent re-run: 'temperloop init: done' is the LAST line printed — the handoff box must be last"
+printf '%s\n' "$last_nonblank13" | grep -qF '====' \
+  || fail "idempotent re-run: the last non-blank line is not the handoff box's closing border (got: $last_nonblank13)"
+echo "PASS: the idempotent already-filed path recovers the same actionable handoff (full epic URL + launch command), last, with zero re-filed issues"
 
 echo
 echo "ALL PASS: test_init.sh"
