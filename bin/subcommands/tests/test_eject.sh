@@ -50,6 +50,11 @@
 #       .temperloop/config to keep only it, and exits 1 — the generic
 #       unknown-type path itself stays covered as its own class, not just
 #       the first_epic instance of it
+#     - a MIXED manifest (a first_epic entry + a genuinely-failing label
+#       entry): first_epic is dropped unconditionally and the unrelated
+#       failed label entry survives alone in the rewritten config, exit 1
+#       — proves the first_epic filter doesn't drop/reorder unrelated
+#       entries (a single-type batch can't exercise this)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -469,6 +474,33 @@ cfg="$(cat "$REPO13/.temperloop/config")"
 [ "$(jq -r '.installs[0].type' <<<"$cfg")" = "bogus_future_type" ] || fail "unresolved entry type mismatch (got: $(jq -c '.installs' <<<"$cfg"))"
 echo "$out" | grep -q "temperloop eject: incomplete" || fail "unknown-type run did not report incomplete (got: $out)"
 echo "PASS: a genuinely unknown install type still marks unresolved, rewrites .temperloop/config to keep it, and exits 1"
+
+# =============================================================================
+# 14. temperloop#794 — MIXED manifest: a first_epic entry alongside a label
+#     entry whose delete genuinely fails (label still exists per
+#     FAKE_EXISTING_LABELS, same failure fixture as test 7). Pins BOTH
+#     halves of the fix at once: the first_epic entry is dropped
+#     unconditionally (it must never "rescue" an unrelated failure into a
+#     false success), AND the config-rewrite filter that strips first_epic
+#     types doesn't drop or reorder the unrelated, genuinely-unresolved
+#     label entry sitting alongside it — the property a single-type batch
+#     (tests 12/13) can't exercise.
+# =============================================================================
+REPO14="$(new_fixture_repo repo14)"
+seed_config "$REPO14" '[
+  {"type":"first_epic","repo":"acme/widget","issue":501,"url":"https://github.com/acme/widget/issues/501"},
+  {"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}
+]'
+FAKE_LABEL_DELETE_RC=1 FAKE_EXISTING_LABELS="fnd:status:backlog" \
+  run 1 --dir "$REPO14" --yes
+echo "$out" | grep -q "informational only — not reverted" || fail "mixed-batch run did not drop the first_epic entry as informational-only (got: $out)"
+echo "$out" | grep -q "temperloop eject: incomplete" || fail "mixed-batch run (genuine label failure) did not report incomplete (got: $out)"
+[ -f "$REPO14/.temperloop/config" ] || fail "mixed-batch failure removed .temperloop/config (should be kept for retry)"
+cfg="$(cat "$REPO14/.temperloop/config")"
+[ "$(jq '.installs | length' <<<"$cfg")" -eq 1 ] || fail "mixed-batch config should keep exactly the one unresolved label entry, first_epic dropped (got: $(jq -c '.installs' <<<"$cfg"))"
+[ "$(jq -r '.installs[0].type' <<<"$cfg")" = "label" ] || fail "mixed-batch unresolved entry should be the label, not first_epic (got: $(jq -c '.installs' <<<"$cfg"))"
+[ "$(jq -r '.installs[0].name' <<<"$cfg")" = "fnd:status:backlog" ] || fail "mixed-batch unresolved label entry name mismatch (got: $(jq -c '.installs' <<<"$cfg"))"
+echo "PASS: a mixed manifest (first_epic + a genuinely-failing label) drops the first_epic entry unconditionally and keeps only the unrelated failed label entry — intact, alone — in the rewritten config, exit 1"
 
 echo
 echo "ALL PASS: test_eject.sh"
