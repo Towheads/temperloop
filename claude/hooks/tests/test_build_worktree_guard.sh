@@ -32,9 +32,33 @@
 # "silently never armed" — without it, a guard that had regressed to always-inert
 # would pass the entire ALLOW corpus while protecting nothing.
 #
-# Extending (plan items L1 verb->operand-model table, L2 redirect containment):
-# add a line to the corpus blocks below — `deny_bash`, `allow_bash`, `deny_file`,
-# `allow_file` each take <desc> <case> and handle log isolation themselves.
+# Extending (plan item L2 redirect containment): add a line to the corpus blocks
+# below — `deny_bash`, `allow_bash`, `deny_file`, `allow_file` each take <desc>
+# <case> and handle log isolation themselves.
+#
+# The guard's Bash arm is a verb -> operand-model TABLE (foundation#1354), so a
+# new destructive shape arrives as a table ROW plus a DENY/ALLOW pair here. The
+# three shapes past the flat rm/mv/dd list each have a DIFFERENT grammar, and
+# each needs BOTH polarities pinned — the arm predicate is as load-bearing as the
+# operand selector:
+#   rsync     destructive only under `--delete*`; only its LAST operand (the
+#             destination) is a target. A plain rsync must stay untouched.
+#   find      destructive only when the predicate run carries `-delete` or
+#             `-exec rm`; only its PRE-predicate paths are targets. Its
+#             predicate tokens routinely carry globs (`-name '*.pyc'`) that must
+#             NOT be read as non-literal path operands.
+#   git clean destructive under -x/-d/-f with NO target operand at all, so it is
+#             judged against the cd-context base.
+#
+# THIS CORPUS IS NOT SUFFICIENT ON ITS OWN. It proves the guard does what the
+# corpus says; it cannot prove the guard still does what it USED to do, because
+# a refactor that loses coverage tends to arrive with a corpus that ratifies the
+# loss. That is not hypothetical here: the first cut of the operand-model table
+# un-denied six shapes and pinned one of them (`find ... -exec rm {} \;`) as
+# intended ALLOW, so the suite was fully green over a regression. Run
+# `claude/hooks/tests/differential-guard-vs-ref.sh` (working copy vs a git ref,
+# failing on any `old=DENY new=allow`) alongside this file on any change to the
+# guard's Bash arm.
 #
 # shellcheck disable=SC2016
 # SC2016 ("expressions don't expand in single quotes") is disabled file-wide on
@@ -305,6 +329,87 @@ deny_bash "cd to a NON-LITERAL dir, then rm"             'cd "$(dirname "$PWD")"
 # refused. Documented in the guard header as preventive, not a complete sandbox.
 deny_bash "in-worktree glob is still unprovable"         'rm -rf node_modules/*'
 
+# --- the three post-flat-list operand models (foundation#1354) ---------------
+# rsync: LAST operand only, armed by --delete*.
+deny_bash "rsync --delete to a destination outside"      "rsync -a src/ $REPO/dest/ --delete"
+deny_bash "rsync --delete before the operands"           "rsync --delete src/ $REPO/dest/"
+deny_bash "rsync --delete-after (a --delete* variant)"   "rsync -a --delete-after src/ $REPO/dest/"
+deny_bash "rsync --delete to a NON-LITERAL destination"  'rsync -a --delete src/ "$HOME/dev/dest"'
+deny_bash "cd outside, then rsync --delete"              "cd $REPO && rsync -a --delete src/ dest/"
+# find: PRE-predicate paths only, armed by -delete / -exec rm. `-delete` must
+# NOT be swallowed by the leading-`-` flag skip that the flat list applied.
+deny_bash "find -delete on a path outside"               "find $REPO/parentdir -delete"
+deny_bash "find -exec rm on a path outside"              "find $REPO -name x -exec rm {} \;"
+deny_bash "find -exec rmdir on a path outside"           "find $REPO -type d -exec rmdir {} \;"
+deny_bash "find -delete on a NON-LITERAL path"           'find "$HOME/dev" -delete'
+deny_bash "find -delete after a leading -L option"       "find -L $REPO/parentdir -delete"
+deny_bash "cd outside, then find . -delete"              "cd $REPO && find . -name x -delete"
+# git clean: NO target operand — judged against the cd-context base. The ALLOW
+# twins for these live below ("read-only git clean"): the ARM predicate, not the
+# cd check, is what must separate `-xfd` from `--dry-run` at the same cd.
+deny_bash "git clean -xfd with a cd-context outside"     "cd $REPO && git clean -xfd"
+deny_bash "git clean -f with a cd-context outside"       "cd $REPO && git clean -f"
+deny_bash "git clean -X with a cd-context outside"       "cd $REPO && git clean -X"
+deny_bash "git clean --force with a cd-context outside"  "cd $REPO && git clean --force"
+deny_bash "git clean -xfd after a NON-LITERAL cd"        'cd "$(dirname "$PWD")" && git clean -xfd'
+
+# --- nested-verb + run-resume contracts (foundation#1354, review round 2) -----
+# An armed `find -exec rm` proves the guard KNOWS the command deletes; the
+# tokens saying WHAT it deletes are the -exec argv. Skipping the walker past the
+# consumed run discarded exactly those, re-admitting the F#932 shape in a find
+# hat. The nested verb must resolve through the table like any other. (`\;` and
+# `+` are never a bare `;`, so no glued-separator trick is needed — this is
+# idiomatic find, and :332 above does NOT cover it: that one denies on find's
+# own path, never on the rm's.)
+deny_bash "F#932 shape wearing a find -exec hat" \
+  'find . -name x -exec rm -rf $(dirname $(pwd)) \;'
+deny_bash "find -exec rm on an OUTSIDE path (find's own path in-worktree)" \
+  "find . -name x -exec rm -rf $REPO/parentdir \\;"
+deny_bash "find -exec rmdir on an OUTSIDE path (find's own path in-worktree)" \
+  "find . -name x -exec rmdir $REPO/parentdir \\;"
+deny_bash "find -exec rm on an OUTSIDE path, + terminator" \
+  "find . -name x -exec rm -rf $REPO/parentdir +"
+deny_bash "find -execdir rm on an OUTSIDE path" \
+  "find . -name x -execdir rm -rf $REPO/parentdir \\;"
+
+# ...and a verb's operand run must not become a hiding place for whatever
+# FOLLOWS it. Any select that is not ALL leaves tokens unemitted; consuming the
+# run anyway meant a later destructive verb was never reached. Note the rsync
+# case: that rsync is not even destructive — adding the ROW created the hiding
+# place, so every future row is one too. These pin the mechanism, not the verbs.
+deny_bash "an rsync run must not hide a following rm" \
+  "rsync -a src/ dist/; rm -rf $REPO/parentdir"
+deny_bash "a find run must not hide a following rm" \
+  "find . -delete; rm -rf $REPO/parentdir"
+deny_bash "a git clean run must not hide a following rm" \
+  "git clean -xfd; rm -rf $REPO/parentdir"
+deny_bash "a dd run must not hide a following rm" \
+  "dd if=/dev/zero of=out.bin; rm -rf $REPO/parentdir"
+deny_bash "an rsync run must not hide an && rm" \
+  "rsync -a src/ dist/ && rm -rf $REPO/parentdir"
+
+# LAST must survive a trailing option-WITH-ARGUMENT. The valueless trailing flag
+# at :324 passes without proving this — the failure is the option's ARGUMENT
+# being mistaken for the destination.
+deny_bash "rsync --delete with a trailing option-with-argument" \
+  "rsync -a --delete src/ $REPO/dest/ --exclude foo"
+deny_bash "rsync --delete, trailing --exclude, absolute outside dest" \
+  'rsync -a --delete src/ /etc/dest/ --exclude foo'
+deny_bash "rsync --del (delete-family alias) to an outside dest" \
+  "rsync -a --del src/ $REPO/dest/"
+deny_bash "rsync --remove-source-files to an outside dest" \
+  "rsync -a --remove-source-files src/ $REPO/dest/"
+
+# An armed row that selects ZERO targets still has a cd context to judge. The
+# containment check runs per emitted record, so with no record the cd was never
+# examined at all. GNU find's implicit-`.` path is the live instance.
+deny_bash "cd outside, then find with an IMPLICIT path -delete" \
+  "cd $REPO && find -name x -delete"
+# The `{}` relaxation below is scoped to find's placeholder, not to the cd it
+# runs in.
+deny_bash "cd outside, then find -exec rm {}" \
+  "cd $REPO && find . -name core -exec rm {} \\;"
+
 deny_file "Write into the parent checkout"    Write     "$REPO/leak.txt"
 deny_file "Edit  in the parent checkout"      Edit      "$REPO/f.txt"
 deny_file "Write via a relative .. escape"    Write     "../../leak.txt"
@@ -365,6 +470,56 @@ allow_bash "no destructive verb at all (git status)"     'git status --porcelain
 allow_bash "non-destructive read of an outside path"     "cat $REPO/f.txt"
 allow_bash "rm of a single in-worktree file"             'rm keep.txt'
 allow_bash "rm with flags before the operand"            'rm -r -f -- node_modules'
+
+# --- the three post-flat-list operand models, ALLOW half (foundation#1354) ----
+# These are ROUTINE worker commands. A guard that denies them gets disarmed, so
+# each polarity of each new row is pinned here as firmly as its DENY twin.
+# git clean: no target operand, judged against the cd context — which here is
+# the worktree itself, so it must stay silent.
+allow_bash "git clean -xfd inside the worktree"          'git clean -xfd'
+allow_bash "git clean -xfd after an in-worktree cd"      "cd $WT_RP/src && git clean -xfd"
+allow_bash "git clean -n (dry run — not armed)"          'git clean -n'
+# Read-only git clean, at the SAME outside cd its -xfd twin is denied at. This
+# is the pair that proves the ARM predicate is doing the work: the cd context is
+# identical, only the flags differ. It also pins the substring-vs-letter bug —
+# `index(tk,"d")` matched the 'd' inside `--dry-run` and denied a command that
+# deletes nothing, and a false deny is what gets the guard disarmed for good.
+allow_bash "git clean --dry-run at an OUTSIDE cd (read-only)" \
+  "cd $REPO && git clean --dry-run"
+allow_bash "git clean -n -d at an OUTSIDE cd (read-only)" \
+  "cd $REPO && git clean -n -d"
+allow_bash "git clean --exclude=build at an outside cd (no delete flag)" \
+  "cd $REPO && git clean --exclude=build"
+# find: the predicate run's glob is NOT a path operand — the pre-predicate paths
+# are, and here they are in-worktree.
+allow_bash "find . -name '*.pyc' -delete (in-worktree)"  "find . -name '*.pyc' -delete"
+allow_bash "find in-worktree subdir -delete"             "find $WT_RP/build -type f -delete"
+# DELIBERATE, and the one place this suite allows something origin/main denied.
+# `{}` is find's placeholder: it expands to a path UNDER find's search root, and
+# that root is exactly what the PRE selector already judged (in-worktree here).
+# The old guard denied this only because `{}` trips the non-literal BRACE test —
+# a false deny on a routine worker command. Two things make the relaxation safe,
+# and both have DENY twins above: the nested rm's REAL operands are still walked
+# through the table ("find -exec rm on an OUTSIDE path"), and `{}` is exempted
+# BY NAME rather than by discarding the argv, so the exemption cannot widen to
+# the rest of the command. It is also scoped to the placeholder, not to the cd
+# it runs in ("cd outside, then find -exec rm {}").
+allow_bash "find -exec rm {} inside the worktree (placeholder is exempt)" \
+  'find . -name core -exec rm {} \;'
+allow_bash "find -exec rm {} + inside the worktree"      'find . -name core -exec rm {} +'
+allow_bash "find with no destructive predicate"          "find $REPO -name '*.log' -print"
+# rsync: untouched without --delete*; with it, only the destination is checked.
+allow_bash "plain rsync (no --delete) to an outside dir" "rsync -a src/ $REPO/dest/"
+allow_bash "rsync --delete to an in-worktree destination" 'rsync -a --delete src/ dist/'
+allow_bash "rsync --delete to a /tmp destination"        'rsync -a --delete src/ /tmp/build-guard-scratch/'
+# --delay-updates shares a prefix with the delete family but deletes nothing. A
+# prefix test would arm on it and deny a plain transfer, which criterion 2
+# forbids ("a plain rsync with no --delete* is untouched") — hence exact
+# membership, pinned here.
+allow_bash "rsync --delay-updates (prefix lookalike, not a delete flag)" \
+  "rsync -a --delay-updates src/ $REPO/dest/"
+allow_bash "rsync --delete, trailing option-with-arg, IN-worktree dest" \
+  'rsync -a --delete src/ dist/ --exclude foo'
 
 allow_file "Write a new file at the worktree root"   Write "$WT_RP/new.txt"
 allow_file "Write a relative in-worktree path"       Write "newdir/new.txt"
