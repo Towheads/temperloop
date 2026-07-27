@@ -697,7 +697,7 @@ else
         echo "Decline, and nothing changes: $first_epic_project is untouched — its branch protection, CI, and"
         echo "merge queue stay unconfigured, though the kernel's review-principle defaults still apply"
         echo "automatically at point of use. We'll file a Backlog item tracking the gap so it's easy to pick"
-        echo "up later; you can also re-run this with --yes-first-epic whenever you're ready."
+        echo "up later — or open the epic by hand any time from claude/templates/first-epic-setup.md."
         printf 'Set up %s with temperloop as your first epic? [y/N] ' "$first_epic_project"
         first_epic_ans=""
         read -r first_epic_ans || first_epic_ans=""
