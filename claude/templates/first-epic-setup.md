@@ -255,29 +255,49 @@ half-configured state:
 
 ### Produces
 
-- Your project's `§ Principles` section, populated per your A1 answer
-  (kernel set extended, replaced, or with named exclusions per your choice;
-  or the point-of-use kernel default, unrecorded, if declined).
-- Default-branch protection (require-PR, no direct pushes) — consented and
-  applied directly, or degraded to an admin packet when the A0 rights probe
-  read `false`.
-- Head-branch auto-delete on merge — consented/admin-packeted the same way.
-- A merge-queue disposition: `NATIVE` armed, or `BUILD_MERGE_BACKEND=managed`
-  recorded — never a `checks` requirement with no producer (Phase B's
-  congruence rule).
-- A CI disposition: a scaffolded Actions workflow whose job is named
-  `checks` and matches the armed protection, or an explicit no-Actions
-  posture — local gates only, nothing armed, no job name invented.
-  **Decompose this seam as `kind: spike`, with no `model:` stamp.** Both of
-  its branches settle a *disposition* rather than committing code: the
-  no-Actions branch scaffolds nothing at all, and the Actions branch's
-  workflow file lands as a **consented change-set write** in Phase C — part
-  of the set you confirmed once as a whole, never a separate PR this item
-  opens. Decomposed as `kind: code` (the default) it would put a code worker
-  on a seam with nothing to commit, and open an empty PR on the no-Actions
-  branch, so the kind is fixed here rather than left to default.
-- A durable re-offer pointer (Backlog item) whenever any level was
-  declined, naming exactly what remains unconfigured.
+Each bullet below is **one** decomposed item, and the bolded slug is that
+item's **name** — reuse it verbatim rather than coining a new one, so the
+dependency edges in § Consumes resolve against items that actually exist.
+A bullet with nested sub-bullets is one item covering all of them, not one
+item per sub-bullet. The trailing level tag is the Phase C level that item
+applies.
+
+- **`record-principles`** *(Phase C L0)* — your project's `§ Principles`
+  section, populated per your A1 answer (kernel set extended, replaced, or
+  with named exclusions per your choice; or the point-of-use kernel default,
+  unrecorded, if declined).
+- **`github-substrate`** *(Phase C L1)* — the consented GitHub-writes seam.
+  One item covering all three writes below: they share a single
+  admin-rights probe, a single consent, and one composed change-set, so
+  splitting them would split that consent.
+  - Default-branch protection (require-PR, no direct pushes) — consented and
+    applied directly, or degraded to an admin packet when the A0 rights probe
+    read `false`.
+  - Head-branch auto-delete on merge — consented/admin-packeted the same way.
+  - A merge-queue disposition: `NATIVE` armed, or `BUILD_MERGE_BACKEND=managed`
+    recorded — never a `checks` requirement with no producer (Phase B's
+    congruence rule).
+- **`ci-disposition`** *(Phase C L2)* — a CI disposition: a scaffolded
+  Actions workflow whose job is named `checks` and matches the armed
+  protection, or an explicit no-Actions posture — local gates only, nothing
+  armed, no job name invented. **This item settles a disposition; it does
+  not commit code, so decompose it as a verdict item** — in plan-schema
+  terms, `kind: spike`, with no `model:` stamp. Both branches are
+  verdict-only: the no-Actions branch scaffolds nothing at all, and the
+  Actions branch's workflow file lands as a **consented change-set write**
+  in Phase C — part of the set you confirmed once as a whole, never a
+  separate PR this item opens. Decomposed as an ordinary code item (the
+  default) it would put a code worker on a seam with nothing to commit, and
+  open an empty PR on the no-Actions branch, so the kind is fixed here
+  rather than left to default.
+- **`zero-ci-run-check`** *(Phase C L3 — verification only)* — the zero-CI
+  execution verdict: evidence, on a live fixture, that a pre-CI item
+  completes through the legible `NO_CI` skip notice instead of hanging out
+  the poll window. It applies none of the change-set; it checks what the
+  levels above it applied, and runs after them (§ Consumes).
+- **`decline-pointer`** *(no level of its own — filed by whichever level was
+  declined)* — a durable re-offer pointer (Backlog item) whenever any level
+  was declined, naming exactly what remains unconfigured.
 
 ### Consumes
 
@@ -293,14 +313,24 @@ half-configured state:
   for Phase C's zero-CI-aware execution.
 - The adopter git-safety install surface (epic #565) — built on, never
   re-done.
-- **Sequencing — `zero-ci-run-check` runs `after: github-substrate`.** The
-  "no hang" that item asserts is *caused by* a required check with no
-  producer, and whether such a check exists at all is `github-substrate`'s
-  own disposition — so the verification cannot be scheduled ahead of the
-  substrate it verifies. This edge is normative, not advisory: without it
-  the check can run against an unconfigured substrate, where a green result
-  proves nothing. It is what moves `zero-ci-run-check` into a dependency
-  level of its own (§ Acceptance, Zero-CI execution).
+- **Sequencing — the edges that fix this epic's level order.** Both slugs on
+  each edge are defined in § Produces, so both edges resolve to real items:
+  - `ci-disposition` runs **`after: github-substrate`**. The scaffolded job
+    has to match the protection actually armed (Phase B's congruence rule),
+    and what is armed is `github-substrate`'s disposition.
+  - `zero-ci-run-check` runs **`after: ci-disposition`** — and so,
+    transitively, after `github-substrate` as well. The "no hang" it asserts
+    is *caused by* a required check with no producer: whether such a check
+    exists at all is `github-substrate`'s disposition, and whether the
+    zero-CI case even applies is `ci-disposition`'s.
+
+  These edges are normative, not advisory. Without them the check can be
+  scheduled ahead of the substrate it verifies, where it goes green against
+  an unconfigured repo and the result proves nothing. Together they place
+  `zero-ci-run-check` in a level of its own, strictly below **both** the
+  `github-substrate` level (Phase C L1) and the `ci-disposition` level
+  (Phase C L2) — which are themselves two distinct levels, not one shared
+  level (§ Acceptance, Zero-CI execution).
 
 ### Acceptance
 
@@ -340,12 +370,14 @@ half-configured state:
 - **Zero-CI execution.** *Gate scope: this clause states the required
   behavior (pre-CI items complete via the `NO_CI` skip notice, no
   poll-window hang). End-to-end verification of that behavior on a live
-  fixture is owned by `zero-ci-run-check`, which runs `after:
-  github-substrate` (§ Consumes) and therefore lands in a **dependency level
-  of its own, below the level carrying `github-substrate` and
-  `ci-disposition`** — a fourth level where the decomposition would
-  otherwise have three. It is not repeated as part of every other item's own
-  acceptance, and no item in an earlier level is failed by its verdict.*
+  fixture is owned by `zero-ci-run-check` (§ Produces), which runs after
+  `ci-disposition` and thereby after `github-substrate` too (§ Consumes). It
+  therefore lands in a level of its own, strictly below **both** the
+  `github-substrate` level (Phase C L1) **and** the `ci-disposition` level
+  (Phase C L2) — two distinct levels, not one shared level — making it Phase
+  C L3, the fourth level where the decomposition would otherwise have three.
+  It is not repeated as part of every other item's own acceptance, and no
+  item in an earlier level is failed by its verdict.*
 - **Decomposition fidelity.** `/assess --epic <N>` decomposes this
   Contract's `Produces` into seam-scoped items with **zero reshaping** —
   if a future edit to this template needs `/assess` to reshape it before
