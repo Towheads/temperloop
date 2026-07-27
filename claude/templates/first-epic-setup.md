@@ -56,11 +56,26 @@ configures your own system — the demo and the setup are the same work.
 design-brief: docs/adr/0010-onboarding-as-first-executed-epic.md
 author-provenance: [[Designs/temperloop - kernel starter engineering principles]]
 
-## Phase A — Interview (no writes)
+## Phase A — Interview (no substrate writes)
 
-No write happens anywhere in this phase — every item below is either a
+No **consented substrate mutation** happens anywhere in this phase — nothing
+in your repo's branch protection, auto-delete setting, merge queue, CI
+configuration, or tracked files is touched. Every item below is either a
 read-only probe or a question, and every question is priced by a probe
 before it's asked.
+
+Two writes are the **explicit exceptions**, and neither mutates the substrate
+this epic exists to configure:
+
+- **This epic's own tracking issue** — progress and verdict comments on the
+  epic you are running (`#<N>`, in your own repo). Bookkeeping on the work
+  item, not a change to your project.
+- **The decline Backlog pointer** (§ Decline floors) — filed only if you
+  decline, so the unconfigured gap stays tracked instead of vanishing.
+
+Naming them here is what keeps the claim honest. A leg asserting *zero*
+writes would be self-negating, because the interview has to be able to
+record its own progress and its own decline.
 
 ### A0. Upfront probes (read-only, price every question below)
 
@@ -195,8 +210,9 @@ write-by-write interruptions happen during apply (Phase C).
 
 Once confirmed, the change-set applies through the actual pipeline —
 `/assess --epic <N>` decomposes this epic's `## Contract` into items across
-three levels, and `/build` drives every one of them exactly like any other
-work in the pipeline:
+the three **apply** levels below — plus a fourth, verification-only level
+that carries `zero-ci-run-check` (§ Contract) — and `/build` drives every one
+of them exactly like any other work in the pipeline:
 
 - **L0 — Principles recorded.** Your A1 answer lands in your project's
   `§ Principles` section (`Projects/<project>/Priorities.md`, or the
@@ -248,21 +264,49 @@ half-configured state:
 
 ### Produces
 
-- Your project's `§ Principles` section, populated per your A1 answer
-  (kernel set extended, replaced, or with named exclusions per your choice;
-  or the point-of-use kernel default, unrecorded, if declined).
-- Default-branch protection (require-PR, no direct pushes) — consented and
-  applied directly, or degraded to an admin packet when the A0 rights probe
-  read `false`.
-- Head-branch auto-delete on merge — consented/admin-packeted the same way.
-- A merge-queue disposition: `NATIVE` armed, or `BUILD_MERGE_BACKEND=managed`
-  recorded — never a `checks` requirement with no producer (Phase B's
-  congruence rule).
-- A CI disposition: a scaffolded Actions workflow whose job is named
-  `checks` and matches the armed protection, or an explicit no-Actions
-  posture — local gates only, nothing armed, no job name invented.
-- A durable re-offer pointer (Backlog item) whenever any level was
-  declined, naming exactly what remains unconfigured.
+Each bullet below is **one** decomposed item, and the bolded slug is that
+item's **name** — reuse it verbatim rather than coining a new one, so the
+dependency edges in § Consumes resolve against items that actually exist.
+A bullet with nested sub-bullets is one item covering all of them, not one
+item per sub-bullet. The trailing level tag is the Phase C level that item
+applies.
+
+- **`record-principles`** *(Phase C L0)* — your project's `§ Principles`
+  section, populated per your A1 answer (kernel set extended, replaced, or
+  with named exclusions per your choice; or the point-of-use kernel default,
+  unrecorded, if declined).
+- **`github-substrate`** *(Phase C L1)* — the consented GitHub-writes seam.
+  One item covering all three writes below: they share a single
+  admin-rights probe, a single consent, and one composed change-set, so
+  splitting them would split that consent.
+  - Default-branch protection (require-PR, no direct pushes) — consented and
+    applied directly, or degraded to an admin packet when the A0 rights probe
+    read `false`.
+  - Head-branch auto-delete on merge — consented/admin-packeted the same way.
+  - A merge-queue disposition: `NATIVE` armed, or `BUILD_MERGE_BACKEND=managed`
+    recorded — never a `checks` requirement with no producer (Phase B's
+    congruence rule).
+- **`ci-disposition`** *(Phase C L2)* — a CI disposition: a scaffolded
+  Actions workflow whose job is named `checks` and matches the armed
+  protection, or an explicit no-Actions posture — local gates only, nothing
+  armed, no job name invented. **This item settles a disposition; it does
+  not commit code, so decompose it as a verdict item** — in plan-schema
+  terms, `kind: spike`, with no `model:` stamp. Both branches are
+  verdict-only: the no-Actions branch scaffolds nothing at all, and the
+  Actions branch's workflow file lands as a **consented change-set write**
+  in Phase C — part of the set you confirmed once as a whole, never a
+  separate PR this item opens. Decomposed as an ordinary code item (the
+  default) it would put a code worker on a seam with nothing to commit, and
+  open an empty PR on the no-Actions branch, so the kind is fixed here
+  rather than left to default.
+- **`zero-ci-run-check`** *(Phase C L3 — verification only)* — the zero-CI
+  execution verdict: evidence, on a live fixture, that a pre-CI item
+  completes through the legible `NO_CI` skip notice instead of hanging out
+  the poll window. It applies none of the change-set; it checks what the
+  levels above it applied, and runs after them (§ Consumes).
+- **`decline-pointer`** *(no level of its own — filed by whichever level was
+  declined)* — a durable re-offer pointer (Backlog item) whenever any level
+  was declined, naming exactly what remains unconfigured.
 
 ### Consumes
 
@@ -278,9 +322,37 @@ half-configured state:
   for Phase C's zero-CI-aware execution.
 - The adopter git-safety install surface (epic #565) — built on, never
   re-done.
+- **Sequencing — the edges that fix this epic's level order.** Both slugs on
+  each edge are defined in § Produces, so both edges resolve to real items:
+  - `ci-disposition` runs **`after: github-substrate`**. The scaffolded job
+    has to match the protection actually armed (Phase B's congruence rule),
+    and what is armed is `github-substrate`'s disposition.
+  - `zero-ci-run-check` runs **`after: ci-disposition`** — and so,
+    transitively, after `github-substrate` as well. The "no hang" it asserts
+    is *caused by* a required check with no producer: whether such a check
+    exists at all is `github-substrate`'s disposition, and whether the
+    zero-CI case even applies is `ci-disposition`'s.
+
+  These edges are normative, not advisory. Without them the check can be
+  scheduled ahead of the substrate it verifies, where it goes green against
+  an unconfigured repo and the result proves nothing. Together they place
+  `zero-ci-run-check` in a level of its own, strictly below **both** the
+  `github-substrate` level (Phase C L1) and the `ci-disposition` level
+  (Phase C L2) — which are themselves two distinct levels, not one shared
+  level (§ Acceptance, Zero-CI execution).
 
 ### Acceptance
 
+- **Interview write-scope.** Phase A completes having made **no consented
+  substrate mutation** — no branch-protection, auto-delete, merge-queue, CI,
+  or tracked-file change — with exactly two writes permitted as named
+  exceptions: progress/verdict comments on this epic's own tracking issue
+  (`#<N>`, in your own repo) and, on a decline, the Backlog re-offer pointer
+  (§ Decline floors). The leg is falsified by any *substrate* write during
+  Phase A, and is **not** falsified by either exception. Scope it this way
+  when decomposing: a leg asserting zero writes of any kind is self-negating
+  against the two writes this epic's own bookkeeping requires, and fails the
+  moment it is honestly evaluated.
 - **Principles-only completion.** A fresh install with no `§ Principles`
   section, offered this epic and completing L0 alone (GitHub/CI declined),
   ends with the project's `§ Principles` populated and a re-offer pointer
@@ -306,10 +378,15 @@ half-configured state:
   local-gates/`--non-strict` posture and scaffolds nothing.
 - **Zero-CI execution.** *Gate scope: this clause states the required
   behavior (pre-CI items complete via the `NO_CI` skip notice, no
-  poll-window hang) — end-to-end verification of that behavior on a live
-  fixture is owned by a later, separately-decomposed item
-  (`zero-ci-run-check`), not repeated as part of every other item's own
-  acceptance.*
+  poll-window hang). End-to-end verification of that behavior on a live
+  fixture is owned by `zero-ci-run-check` (§ Produces), which runs after
+  `ci-disposition` and thereby after `github-substrate` too (§ Consumes). It
+  therefore lands in a level of its own, strictly below **both** the
+  `github-substrate` level (Phase C L1) **and** the `ci-disposition` level
+  (Phase C L2) — two distinct levels, not one shared level — making it Phase
+  C L3, the fourth level where the decomposition would otherwise have three.
+  It is not repeated as part of every other item's own acceptance, and no
+  item in an earlier level is failed by its verdict.*
 - **Decomposition fidelity.** `/assess --epic <N>` decomposes this
   Contract's `Produces` into seam-scoped items with **zero reshaping** —
   if a future edit to this template needs `/assess` to reshape it before
