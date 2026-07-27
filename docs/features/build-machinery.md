@@ -41,7 +41,17 @@ adds `<repo-root>.wt/<slug>` on branch `build/<slug>` (based on the default
 branch) and drops a small marker file in the new worktree root that a
 pre-write guard hook checks before honoring any file write — a write whose
 resolved path falls outside the worktree it was issued in is rejected at the
-source, not merely detected afterward. `remove` and `prune` clean up a
+source, not merely detected afterward. Dropping that marker only arms a guard
+that is actually *reached*, though, and the ways it silently is not — an
+unregistered hook, a registration whose tool matcher never selects shell
+commands, a stale or inert hook body — all look identical to a working jail
+from the outside. So `create` immediately **proves** the arming rather than
+assuming it: it confirms the hook is registered for shell commands at all, then
+pipes a synthetic payload that must be refused at the registered hook and
+checks that a refusal actually comes back. The verdict rides the `create`
+outcome, and anything short of a proven-armed jail prints a loud warning. The
+probe never blocks a build — a check that can wedge the pipeline would be worse
+than the gap it closes. `remove` and `prune` clean up a
 finished or merged worktree and its marker together, and `deps-merged`
 answers a single yes/no question — are all of these SHAs actually merged
 into the default branch yet — which gates a dependent item's worker from
