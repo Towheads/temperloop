@@ -49,8 +49,8 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT_DEFAULT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-: "${CONTRIBUTOR_MANIFEST_TSV:=$SCRIPT_DIR/contributor-manifest.tsv}"
-: "${CONTRIBUTOR_MANIFEST_REPO_ROOT:=$REPO_ROOT_DEFAULT}"
+: "${CONTRIBUTOR_MANIFEST_TSV:=$SCRIPT_DIR/contributor-manifest.tsv}"  # setting:exempt — test/fixture tsv-path override, not an operator-facing config-precedence default
+: "${CONTRIBUTOR_MANIFEST_REPO_ROOT:=$REPO_ROOT_DEFAULT}"  # setting:exempt — test/fixture repo-root override, same class as count-prose.sh's own COUNT_PROSE_ROOT
 
 if [ ! -f "$CONTRIBUTOR_MANIFEST_TSV" ]; then
   echo "check-contributor-manifest: tsv not found at $CONTRIBUTOR_MANIFEST_TSV" >&2
