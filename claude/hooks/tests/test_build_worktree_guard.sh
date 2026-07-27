@@ -84,8 +84,20 @@ export GIT_CEILING_DIRECTORIES="$TMP"
 # pin $TMPDIR to a fixture dir, so the "$TMPDIR is allow-listed" case is exact.
 export XDG_STATE_HOME="$TMP/state"
 export TMPDIR="$TMP/tmpdir"
-LOG="$XDG_STATE_HOME/foundation/build-worktree-guard.log"
-mkdir -p "$XDG_STATE_HOME/foundation" "$TMPDIR"
+
+# The guard's state dir ends in a legacy product-name component that predates the
+# kernel rename. DERIVE it from the guard's own `XDG_STATE_DIR=` declaration
+# rather than restating the literal here: restating it would plant a second,
+# unreviewed copy of a pre-rename identifier (the kernel leak gate flags exactly
+# that), and would leave this test pointing at a dead path the day the rename
+# lands — every INERT assertion would then fail for a reason unrelated to the
+# guard's behavior. Exact and deterministic: one parsed value, asserted non-empty.
+GUARD_STATE_LEAF=$(sed -n 's|^XDG_STATE_DIR=.*/\([A-Za-z0-9._-][A-Za-z0-9._-]*\)"[[:space:]]*$|\1|p' "$HOOK" | head -1)
+[ -n "$GUARD_STATE_LEAF" ] || {
+  echo "FATAL: could not derive the guard's state-dir leaf from its XDG_STATE_DIR= line in $HOOK — has that declaration changed shape?" >&2
+  exit 1; }
+LOG="$XDG_STATE_HOME/$GUARD_STATE_LEAF/build-worktree-guard.log"
+mkdir -p "$XDG_STATE_HOME/$GUARD_STATE_LEAF" "$TMPDIR"
 
 # --- fixtures ----------------------------------------------------------------
 REPO="$TMP/repo"
