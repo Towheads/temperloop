@@ -7,28 +7,56 @@
 # a denied/dry-run action must leave ZERO mutating gh calls in the log),
 # zero network, structured-output assertions via jq.
 #
+# SCOPE-DOWN (temperloop#796): `init` no longer applies ANY API state. Its
+# job is bootstrap `.temperloop/config` (+ its proposal PR) -> offer/file the
+# first epic -> print the handoff -> stop. The flags that used to gate the
+# retired applies (--yes/--no-required-check, --yes/--no-labels,
+# --yes/--no-board, --provision-board, --tracker-mode projects) are RETAINED
+# as deprecated no-ops, each with a named removal window — an ADOPTER's own
+# wrapper script may pass any of them (VERSIONING.md's CLI-surface contract
+# row covers `bin/subcommands/*`), and init.sh exits 2 on an unknown arg, so
+# removing one early would hard-fail callers that cannot be enumerated from
+# inside this repo. Several cases below therefore assert the INVERSE of what
+# they once did: the flag parses, a deprecation notice fires, and ZERO
+# mutating gh calls result.
+#
 # Covers:
 #   - --dry-run + --no-network: tree-only preview, zero gh calls of any
 #     kind (no api/label/project/pr create), config committed locally only
-#   - non-interactive default-deny: no --yes-* flag + closed stdin ->
-#     every consented-apply action declines, zero mutating gh calls
-#   - consented apply (--yes-required-check --yes-labels): the exact gh
-#     calls fire, and every side effect lands in .temperloop/config's
-#     installs array (the "install manifest" acceptance criterion)
+#   - non-interactive: no --yes-* flag + closed stdin -> the first-epic
+#     offer skips, zero mutating gh calls, and a handoff line still prints
+#   - deprecated apply flags (--yes-required-check --yes-labels): each
+#     emits a deprecation notice naming where the step went, and NEITHER
+#     fires a single mutating gh call; installs[] carries only the
+#     proposal_pr entry
 #   - round-trip: re-running against the same repo re-reads the prior
-#     .temperloop/config (schema 1), carries its installs forward, and
-#     skips re-creating a label gh already reports present (no duplicate
-#     `label create` calls)
+#     .temperloop/config (schema 1) and carries a PRE-SCOPE-DOWN adopter's
+#     recorded label/required_check/board installs forward untouched, so
+#     `temperloop eject` can still revert them
 #   - boards.conf integration: when workflows/scripts/board/ exists in the
 #     target repo, the rendered board.<N>.* entry is proposed into its
 #     boards.conf; a second run with the entry already present leaves it
 #     untouched (idempotent)
-#   - --tracker-mode projects --provision-board (opt-in): the board
-#     action is OFFERED only then, and a consented run provisions +
-#     records it
-#   - --provision-board without --tracker-mode projects: board action is
-#     never offered (no gh project call)
-#   - invalid --tracker-mode -> usage error, exit 2
+#   - REGRESSION PIN (temperloop#793/#796): the rendered boards.conf entry
+#     is COMPLETE — `board.<N>.backend=issues` present, the literal
+#     "FILL IN" absent — in BOTH .tracker.boards_conf_entry and the
+#     proposed boards.conf. The retired `projects` arm emitted a commented
+#     `# board.<N>.project=<FILL IN ...>` placeholder before the apply step
+#     and never reassigned it, so a fully-consented run still shipped a
+#     dangling contract past a green suite.
+#   - --tracker-mode projects --provision-board --yes-board: all three are
+#     deprecated no-ops — ZERO `gh project create` calls, the notices fire,
+#     and tracker.mode is coerced to "issues"
+#   - --provision-board without --tracker-mode projects: same no-op
+#   - the scoped-down contract end to end: --yes-first-epic files the epic,
+#     applies zero API state, and hands off with the `next step:` marker
+#   - the decline floor is the durable re-offer pointer ALONE — no inline
+#     principles interview (it is the epic's own L0 now, deferred)
+#   - HANDOFF PREREQUISITE PROBE: a `prerequisite:` line appears when
+#     ~/.claude/commands/assess.md is absent and not when it is present,
+#     while the `next step:` marker itself stays byte-identical in both
+#     states (install-tier2.yml greps it on a runner that has no ~/.claude/)
+#   - invalid --tracker-mode -> usage error, exit 2 (still refused)
 #   - --dir not a git repo -> exit 1
 set -euo pipefail
 
@@ -104,6 +132,15 @@ case "$1" in
     esac
     exit 0
     ;;
+  issue)
+    case "$2" in
+      create)
+        echo "https://github.com/${FAKE_GH_REPO:-acme/widget}/issues/${FAKE_ISSUE_NUM:-77}"
+        exit 0
+        ;;
+    esac
+    exit 0
+    ;;
   pr)
     case "$2" in
       create)
@@ -141,6 +178,8 @@ run() {
     FAKE_EXISTING_LABELS="${FAKE_EXISTING_LABELS:-}" \
     FAKE_OWNER="${FAKE_OWNER:-acme}" \
     FAKE_PROJECT_NUM="${FAKE_PROJECT_NUM:-42}" \
+    FAKE_ISSUE_NUM="${FAKE_ISSUE_NUM:-77}" \
+    HOME="${FAKE_HOME:-$HOME}" \
     CALL_LOG="$CALL_LOG" \
     bash "$INIT" "$@" </dev/null 2>&1)" && rc=0 || rc=$?
   [ "$rc" -eq "$want" ] || fail "expected rc=$want got rc=$rc for: $* -- output:\n$out"
@@ -149,6 +188,35 @@ run() {
 call_count() {
   # call_count PATTERN — how many logged gh calls match (grep -c, fixed string)
   grep -Fc "$1" "$CALL_LOG" 2>/dev/null || true
+}
+
+# assert_no_mutating_gh LABEL — the scope-down's central invariant: `init`
+# writes ZERO API state, whatever deprecated apply flags it was handed. A
+# read-shaped `gh pr create` (the tree-only proposal step) and the
+# first-epic `search/issues` idempotency probes are not API-state writes and
+# are deliberately not covered here.
+assert_no_mutating_gh() {
+  local label="$1"
+  grep -q "^label create" "$CALL_LOG" \
+    && fail "$label: created a label (init applies no API state since temperloop#796)"
+  grep -q "required_status_checks" "$CALL_LOG" \
+    && fail "$label: wrote a required status check (init applies no API state since temperloop#796)"
+  grep -q "^project create" "$CALL_LOG" \
+    && fail "$label: provisioned a Projects-v2 board (dropped outright, temperloop#793)"
+  return 0
+}
+
+# assert_complete_boards_entry LABEL ENTRY BOARD — the temperloop#793/#796
+# regression pin. Every line the renderer emits must be a real,
+# adapter-readable assignment; a commented `<FILL IN>` placeholder is
+# exactly the dangling contract that survived a green suite before.
+assert_complete_boards_entry() {
+  local label="$1" entry="$2" board="$3"
+  printf '%s\n' "$entry" | grep -q "board\.$board\.backend=issues" \
+    || fail "$label: rendered entry missing board.$board.backend=issues (got: $entry)"
+  printf '%s\n' "$entry" | grep -q "FILL IN" \
+    && fail "$label: rendered entry still carries a 'FILL IN' placeholder (temperloop#793) (got: $entry)"
+  return 0
 }
 
 # =============================================================================
@@ -193,58 +261,83 @@ git -C "$REPO1" show HEAD:.temperloop/config >/dev/null 2>&1 \
 echo "PASS: --dry-run + --no-network is genuinely zero-write — no baseline.jsonl, no .temperloop/config, no commit, HEAD/branch/tree bit-identical before vs. after, zero gh calls"
 
 # =============================================================================
-# 2. Non-interactive default-deny: no --yes-* flag, closed stdin -> every
-#    action declines, zero MUTATING gh calls (api PATCH / label create /
-#    project create). A read-shaped `gh pr create` call still fires (the
-#    proposal step is independent of the consented-apply gate).
+# 2. Non-interactive: no --yes-* flag, closed stdin -> the first-epic offer
+#    skips (nobody answered, so nothing beyond the notice happens), zero
+#    MUTATING gh calls, and the run still prints its handoff line. A
+#    read-shaped `gh pr create` call still fires (the tree-only proposal
+#    step is independent of the offer).
 # =============================================================================
 REPO2="$(new_fixture_repo repo2)"
 FAKE_PR_NUM=20 run 0 --dir "$REPO2" --gh-repo acme/widget
-grep -q "^label create" "$CALL_LOG" && fail "default-deny still created a label"
-grep -q "required_status_checks" "$CALL_LOG" && fail "default-deny still wrote required-check"
-grep -q "^project create" "$CALL_LOG" && fail "default-deny still provisioned a board"
-echo "$out" | grep -q "required-check: no (skipped" || fail "required-check did not report default-deny (got: $out)"
-echo "$out" | grep -q "labels: no (skipped" || fail "labels did not report default-deny (got: $out)"
-echo "PASS: non-interactive, no --yes-* flags -> every consented-apply action defaults to no, zero mutating gh calls"
+assert_no_mutating_gh "non-interactive run"
+echo "$out" | grep -q "first-epic: skipped — no interactive operator detected" \
+  || fail "first-epic did not report the non-interactive skip (got: $out)"
+echo "$out" | grep -q "^next step: " \
+  || fail "run printed no handoff line (got: $out)"
+echo "PASS: non-interactive, no --yes-* flags -> the first-epic offer skips, zero mutating gh calls, handoff still printed"
 
 # =============================================================================
-# 3. Consented apply: --yes-required-check --yes-labels -> the calls fire,
-#    every side effect lands in .temperloop/config's installs[]
+# 3. Deprecated apply flags: --yes-required-check --yes-labels still PARSE
+#    (exit 0, never the exit-2 unknown-arg path), each emits a deprecation
+#    notice naming where the step went, and NEITHER applies anything. The
+#    only install this run mints is the proposal_pr self-record.
 # =============================================================================
 REPO3="$(new_fixture_repo repo3)"
 FAKE_PR_NUM=21 run 0 --dir "$REPO3" --gh-repo acme/widget \
   --yes-required-check --yes-labels
-[ "$(call_count 'required_status_checks')" -ge 1 ] || fail "required-check gh call missing"
-[ "$(call_count 'label create')" -eq 6 ] || fail "expected 6 label create calls, got $(call_count 'label create')"
+assert_no_mutating_gh "deprecated --yes-required-check/--yes-labels"
+echo "$out" | grep -q "DEPRECATED — --yes-required-check" \
+  || fail "--yes-required-check fired no deprecation notice (got: $out)"
+echo "$out" | grep -q "DEPRECATED — --yes-labels" \
+  || fail "--yes-labels fired no deprecation notice (got: $out)"
+echo "$out" | grep -q "first epic" \
+  || fail "the required-check deprecation notice does not name where the step went (got: $out)"
 echo "$out" | grep -q '"outcome": "PR_OPENED"' || fail "expected PR_OPENED outcome (got: $out)"
 
 cfg="$(cat "$REPO3/.temperloop/config")"
 [ "$(jq -r '.schema' <<<"$cfg")" = "1" ] || fail "landed config schema is not 1"
 [ "$(jq -r '.tracker.mode' <<<"$cfg")" = "issues" ] || fail "landed config tracker.mode wrong"
-[ "$(jq '[.installs[] | select(.type=="label")] | length' <<<"$cfg")" -eq 6 ] \
-  || fail "installs[] missing the 6 label entries (got: $(jq -c '.installs' <<<"$cfg"))"
-[ "$(jq '[.installs[] | select(.type=="required_check")] | length' <<<"$cfg")" -eq 1 ] \
-  || fail "installs[] missing the required_check entry"
+[ "$(jq '[.installs[] | select(.type=="label" or .type=="required_check" or .type=="board")] | length' <<<"$cfg")" -eq 0 ] \
+  || fail "installs[] recorded an API-state entry init no longer applies (got: $(jq -c '.installs' <<<"$cfg"))"
 [ "$(jq -r '.installs[] | select(.type=="proposal_pr") | .pr_number' <<<"$cfg")" = "21" ] \
   || fail "installs[] missing/wrong proposal_pr entry (self-record second pass) (got: $(jq -c '.installs' <<<"$cfg"))"
-echo "PASS: consented apply fires the right gh calls; every side effect (labels, required-check, the PR itself) is recorded in .temperloop/config installs[]"
+assert_complete_boards_entry "deprecated-flags run" "$(jq -r '.tracker.boards_conf_entry' <<<"$cfg")" 1
+echo "PASS: the deprecated apply flags parse, report where their step went, and apply nothing — installs[] carries only the proposal_pr self-record"
 
 # =============================================================================
-# 4. Round-trip: re-run against the SAME repo (now on the proposal branch
-#    with .temperloop/config present) — schema-1 re-read succeeds, prior
-#    installs are carried forward, and gh reporting the labels as already
-#    present means NO duplicate `label create` calls this time.
+# 4. Round-trip + PRE-SCOPE-DOWN manifest carry-forward. A repo initialised
+#    before temperloop#796 has real `label`/`required_check`/`board` entries
+#    in its installs[]; `.temperloop/config`'s schema stays 1 and those
+#    entries MUST survive a re-run untouched, because `temperloop eject`
+#    still keeps all four handlers and is the only thing that can revert
+#    that API state. Dropping them here would silently strand it.
 # =============================================================================
-FAKE_EXISTING_LABELS="fnd:status:backlog fnd:status:ready fnd:status:in-progress needs-clarification funnel-escalated decision" \
+legacy_cfg="$(jq -c '.installs = [
+    {type:"label", repo:"acme/widget", name:"fnd:status:backlog"},
+    {type:"required_check", repo:"acme/widget", branch:"main", name:"checks"},
+    {type:"board", owner:"acme", project_number:99, url:"https://example.invalid/p/99"}
+  ] + .installs' "$REPO3/.temperloop/config")"
+printf '%s\n' "$legacy_cfg" > "$REPO3/.temperloop/config"
+# Commit it: proposal-pr.sh re-creates the proposal branch fresh off the base
+# tip on every run, which would refuse to run over an uncommitted change to a
+# tracked file. init reads the config from the working tree before that.
+git -C "$REPO3" add .temperloop/config
+git -C "$REPO3" commit -q -m "seed a pre-scope-down install manifest"
+
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=21 \
   run 0 --dir "$REPO3" --gh-repo acme/widget --yes-required-check --yes-labels
 echo "$out" | grep -q "Found existing .temperloop/config (schema 1)" \
   || fail "round-trip did not detect+re-read the existing config (got: $out)"
-grep -q "^label create" "$CALL_LOG" && fail "round-trip re-created a label gh already reported present"
+assert_no_mutating_gh "round-trip re-run"
 cfg2="$(cat "$REPO3/.temperloop/config")"
-[ "$(jq '[.installs[] | select(.type=="label")] | length' <<<"$cfg2")" -eq 6 ] \
-  || fail "round-trip lost the carried-forward label installs (got: $(jq -c '.installs' <<<"$cfg2"))"
-echo "PASS: round-trip (probe -> config -> init re-reads it) — schema-1 re-read, installs carried forward, no duplicate creates"
+[ "$(jq -r '.schema' <<<"$cfg2")" = "1" ] || fail "round-trip changed the config schema (must stay 1)"
+[ "$(jq '[.installs[] | select(.type=="label")] | length' <<<"$cfg2")" -eq 1 ] \
+  || fail "round-trip dropped the pre-scope-down label install (got: $(jq -c '.installs' <<<"$cfg2"))"
+[ "$(jq '[.installs[] | select(.type=="required_check")] | length' <<<"$cfg2")" -eq 1 ] \
+  || fail "round-trip dropped the pre-scope-down required_check install (got: $(jq -c '.installs' <<<"$cfg2"))"
+[ "$(jq -r '.installs[] | select(.type=="board") | .project_number' <<<"$cfg2")" = "99" ] \
+  || fail "round-trip dropped the pre-scope-down board install (got: $(jq -c '.installs' <<<"$cfg2"))"
+echo "PASS: round-trip re-reads schema 1 and carries a PRE-SCOPE-DOWN adopter's label/required_check/board installs forward, so eject can still revert them"
 
 # =============================================================================
 # 5. boards.conf integration: board toolkit present -> proposes the entry;
@@ -259,50 +352,150 @@ mkdir -p "$REPO5/workflows/scripts/board"
 echo "# marker" > "$REPO5/workflows/scripts/board/marker.txt"
 git -C "$REPO5" add -A && git -C "$REPO5" commit -q -m "seed board toolkit"
 FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
-git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null | grep -q "board.1.repo=acme/widget" \
+proposed_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
+printf '%s\n' "$proposed_conf" | grep -q "board.1.repo=acme/widget" \
   || fail "boards.conf entry was not proposed when the board toolkit is present"
-git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null | grep -q "board.1.backend=issues" \
-  || fail "boards.conf entry missing backend=issues (issues-only default)"
+# REGRESSION PIN (temperloop#793/#796) — the PROPOSED boards.conf half.
+assert_complete_boards_entry "proposed boards.conf" "$proposed_conf" 1
+# ...and the .temperloop/config half, the surface an operator hand-applies
+# from when the board toolkit is NOT present. Both are pinned because the
+# retired projects arm poisoned both at once.
+assert_complete_boards_entry "config tracker.boards_conf_entry" \
+  "$(jq -r '.tracker.boards_conf_entry' "$REPO5/.temperloop/config")" 1
 
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
   run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
 echo "$out" | grep -q "already present — leaving" \
   || fail "second run did not detect the already-present boards.conf entry (got: $out)"
-echo "PASS: boards.conf integration proposes the rendered entry when the toolkit is present, idempotent on re-run"
+echo "PASS: boards.conf integration proposes a COMPLETE rendered entry (backend=issues, no 'FILL IN') into both the proposed boards.conf and .temperloop/config, idempotent on re-run"
 
 # =============================================================================
-# 6. --tracker-mode projects --provision-board (opt-in, consented): board
-#    action IS offered and, on consent, provisions + records it
+# 6. --tracker-mode projects --provision-board --yes-board: ALL THREE are
+#    deprecated no-ops (temperloop#793 dropped board provisioning from init
+#    outright). The flags still parse — exit 0, never the exit-2 unknown-arg
+#    path — each reports its deprecation, ZERO `gh project create` calls
+#    fire, `projects` is coerced to `issues`, and the rendered entry is
+#    complete. This is the case that used to provision a board AND emit a
+#    `<FILL IN>` placeholder in the same run.
 # =============================================================================
 REPO6="$(new_fixture_repo repo6)"
 FAKE_PR_NUM=23 FAKE_OWNER=acme FAKE_PROJECT_NUM=99 \
   run 0 --dir "$REPO6" --gh-repo acme/widget --tracker-mode projects --provision-board --yes-board
-[ "$(call_count 'project create')" -eq 1 ] || fail "opt-in board provisioning did not call gh project create"
+[ "$(call_count 'project create')" -eq 0 ] \
+  || fail "board provisioning still fired: $(call_count 'project create') 'project create' call(s) (temperloop#793 dropped it)"
+assert_no_mutating_gh "--tracker-mode projects --provision-board --yes-board"
+echo "$out" | grep -q "DEPRECATED — --tracker-mode projects" \
+  || fail "--tracker-mode projects fired no deprecation notice (got: $out)"
+echo "$out" | grep -q "DEPRECATED — --provision-board" \
+  || fail "--provision-board fired no deprecation notice (got: $out)"
+echo "$out" | grep -q "DEPRECATED — --yes-board" \
+  || fail "--yes-board fired no deprecation notice (got: $out)"
 cfg6="$(cat "$REPO6/.temperloop/config")"
-[ "$(jq -r '.installs[] | select(.type=="board") | .project_number' <<<"$cfg6")" = "99" ] \
-  || fail "board install entry missing/wrong project_number (got: $(jq -c '.installs' <<<"$cfg6"))"
-[ "$(jq -r '.tracker.mode' <<<"$cfg6")" = "projects" ] || fail "tracker.mode not recorded as projects"
-echo "PASS: --tracker-mode projects --provision-board (consented) provisions a board and records it in installs[]"
+[ "$(jq -r '.tracker.mode' <<<"$cfg6")" = "issues" ] \
+  || fail "--tracker-mode projects was not coerced to issues (got: $(jq -r '.tracker.mode' <<<"$cfg6"))"
+[ "$(jq '[.installs[] | select(.type=="board")] | length' <<<"$cfg6")" -eq 0 ] \
+  || fail "a board install entry was recorded (got: $(jq -c '.installs' <<<"$cfg6"))"
+assert_complete_boards_entry "coerced projects run" "$(jq -r '.tracker.boards_conf_entry' <<<"$cfg6")" 1
+echo "PASS: --tracker-mode projects / --provision-board / --yes-board all parse, report their deprecation, provision nothing, and coerce to a complete issues-only entry"
 
 # =============================================================================
-# 7. --provision-board WITHOUT --tracker-mode projects: never even offered
+# 7. --provision-board WITHOUT --tracker-mode projects: same no-op
 # =============================================================================
 REPO7="$(new_fixture_repo repo7)"
 FAKE_PR_NUM=24 run 0 --dir "$REPO7" --gh-repo acme/widget --provision-board --yes-board
-[ "$(call_count 'project create')" -eq 0 ] || fail "board provisioning fired despite tracker-mode staying issues"
-echo "$out" | grep -q "nothing to provision" || fail "expected a 'nothing to provision' skip message (got: $out)"
-echo "PASS: --provision-board is a no-op skip without --tracker-mode projects (issues-only stays the default)"
+[ "$(call_count 'project create')" -eq 0 ] || fail "board provisioning fired on the issues-only path"
+echo "$out" | grep -q "DEPRECATED — --provision-board" \
+  || fail "--provision-board fired no deprecation notice (got: $out)"
+echo "PASS: --provision-board on the issues-only path is the same legible no-op"
 
 # =============================================================================
-# 8. invalid --tracker-mode -> usage error, exit 2
+# 8. THE SCOPED-DOWN CONTRACT END TO END (temperloop#796): --yes-first-epic
+#    -> the epic is filed, the run HANDS OFF to /assess and STOPS. It must
+#    apply zero API state on the way, and the `next step:` handoff marker
+#    (what .github/workflows/install-tier2.yml greps for) must name the
+#    filed epic number.
 # =============================================================================
 REPO8="$(new_fixture_repo repo8)"
-run 2 --dir "$REPO8" --tracker-mode bogus
-echo "$out" | grep -qi "tracker-mode must be" || fail "invalid --tracker-mode error message unclear (got: $out)"
-echo "PASS: invalid --tracker-mode is refused with exit 2"
+FAKE_PR_NUM=25 FAKE_ISSUE_NUM=77 \
+  run 0 --dir "$REPO8" --gh-repo acme/widget --yes-first-epic
+[ "$(call_count 'issue create')" -eq 1 ] \
+  || fail "expected exactly 1 'issue create' (the first epic), got $(call_count 'issue create')"
+assert_no_mutating_gh "--yes-first-epic"
+echo "$out" | grep -q "first-epic: filed .*#77" \
+  || fail "first-epic was not reported as filed (got: $out)"
+echo "$out" | grep -q "^next step: /assess --epic 77" \
+  || fail "handoff line missing or does not name the filed epic (got: $out)"
+echo "$out" | grep -q "temperloop init: done" || fail "run did not reach its closing line (got: $out)"
+echo "PASS: --yes-first-epic files the epic, applies zero API state, and hands off with 'next step: /assess --epic <N>'"
 
 # =============================================================================
-# 9. --dir not a git repo -> exit 1
+# 9. Decline floor is the POINTER ALONE (temperloop#796, ADR 0010 amended):
+#    --no-first-epic files the durable re-offer pointer and runs NO inline
+#    principles interview — the interview is the epic's own L0, deferred.
+#    Closed stdin proves it: the retired inline interview read from stdin,
+#    so a run that still attempted it would take the empty-answer path and
+#    print its own interview banner.
+# =============================================================================
+REPO9="$(new_fixture_repo repo9)"
+FAKE_PR_NUM=26 FAKE_ISSUE_NUM=88 \
+  run 0 --dir "$REPO9" --gh-repo acme/widget --no-first-epic
+echo "$out" | grep -q "first-epic: declined" || fail "decline was not reported (got: $out)"
+echo "$out" | grep -q "filed durable re-offer pointer .*#88" \
+  || fail "decline did not file the durable re-offer pointer (got: $out)"
+echo "$out" | grep -q "Inline principles interview" \
+  && fail "decline still ran the retired INLINE principles interview banner (got: $out)"
+echo "$out" | grep -q "Do you have existing engineering conventions" \
+  && fail "decline still asked the retired inline A1 principles question (got: $out)"
+echo "$out" | grep -q "^next step: " || fail "decline printed no handoff line (got: $out)"
+echo "PASS: declining files the durable re-offer pointer as the WHOLE floor — no inline principles interview, handoff still printed"
+
+# =============================================================================
+# 10. HANDOFF PREREQUISITE PROBE. `/assess` and `/build` only exist on a
+#     machine that ran `temperloop install` (which symlinks claude/* into
+#     ~/.claude/), but the try -> try --demo -> init ladder otherwise needs
+#     no machine-wide setup — so a stranger can reach the handoff with no
+#     ~/.claude/commands/ at all. init probes for it and adds a
+#     `prerequisite:` line when it's missing.
+#
+#     The load-bearing assertion is the one that holds in BOTH states: the
+#     `next step: /assess --epic <N>` line is byte-identical either way.
+#     .github/workflows/install-tier2.yml greps exactly that line on a CI
+#     runner (where ~/.claude/ does NOT exist), so a probe that rewrote the
+#     marker instead of adding a line would silently break that gate.
+# =============================================================================
+REPO10A="$(new_fixture_repo repo10a)"
+FAKE_HOME="$WORK/home-no-install" && mkdir -p "$FAKE_HOME"
+FAKE_HOME="$FAKE_HOME" FAKE_PR_NUM=27 FAKE_ISSUE_NUM=91 \
+  run 0 --dir "$REPO10A" --gh-repo acme/widget --yes-first-epic
+handoff_uninstalled="$(printf '%s\n' "$out" | grep '^next step: ' || true)"
+printf '%s\n' "$out" | grep -q '^next step: /assess --epic 91' \
+  || fail "uninstalled probe changed the stable handoff marker (got: $out)"
+printf '%s\n' "$out" | grep -q '^prerequisite: .*temperloop install' \
+  || fail "no prerequisite line when ~/.claude/commands/assess.md is absent (got: $out)"
+
+REPO10B="$(new_fixture_repo repo10b)"
+FAKE_HOME_INSTALLED="$WORK/home-installed"
+mkdir -p "$FAKE_HOME_INSTALLED/.claude/commands"
+echo "# assess" > "$FAKE_HOME_INSTALLED/.claude/commands/assess.md"
+FAKE_HOME="$FAKE_HOME_INSTALLED" FAKE_PR_NUM=28 FAKE_ISSUE_NUM=91 \
+  run 0 --dir "$REPO10B" --gh-repo acme/widget --yes-first-epic
+handoff_installed="$(printf '%s\n' "$out" | grep '^next step: ' || true)"
+printf '%s\n' "$out" | grep -q '^prerequisite: ' \
+  && fail "prerequisite line printed even though ~/.claude/commands/assess.md exists (got: $out)"
+[ "$handoff_installed" = "$handoff_uninstalled" ] \
+  || fail "the 'next step:' marker differs between the installed and uninstalled probe states — install-tier2.yml greps it on a runner with no ~/.claude/:\n  installed:   $handoff_installed\n  uninstalled: $handoff_uninstalled"
+echo "PASS: the handoff names its \`temperloop install\` prerequisite when /assess isn't installed, and the 'next step:' marker itself is byte-identical in both states"
+
+# =============================================================================
+# 11. invalid --tracker-mode -> usage error, exit 2
+# =============================================================================
+REPO10="$(new_fixture_repo repo10)"
+run 2 --dir "$REPO10" --tracker-mode bogus
+echo "$out" | grep -qi "tracker-mode must be" || fail "invalid --tracker-mode error message unclear (got: $out)"
+echo "PASS: invalid --tracker-mode is refused with exit 2 (validation survives the deprecation)"
+
+# =============================================================================
+# 12. --dir not a git repo -> exit 1
 # =============================================================================
 mkdir -p "$WORK/not-a-repo"
 run 1 --dir "$WORK/not-a-repo"

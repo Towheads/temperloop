@@ -14,6 +14,118 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Changed
+
+- **`temperloop init` is scoped down to bootstrap → offer the first epic →
+  hand off (temperloop#796).** `init` no longer applies any API state of its
+  own. It bootstraps `.temperloop/config` (and its reviewable proposal PR),
+  offers the kernel-shipped first epic, prints a `next step:` handoff line,
+  and stops. Branch protection, head-branch auto-delete, the merge-queue
+  disposition, the required `checks` status context, CI, and the adopter's
+  review principles are all the first epic's work, applied later with
+  per-write consent via `/assess --epic N` → `/build` (ADR 0010, amended in
+  this release). Two of the retired applies were actively wrong where they
+  stood: `init`'s required-check apply armed a `checks` context with no
+  regard for whether a producer would ever post it — the self-brick the
+  epic's structural-congruence rule makes unreachable — and its `fnd:` label
+  pre-creation duplicated what the issues-only tracker backend already does
+  lazily at point of use.
+- **Issues-only is now the sole init-time tracker mode (temperloop#793).**
+  Board provisioning is dropped from `init`. The retired `projects` arm
+  rendered `# board.<N>.project=<FILL IN …>` into `boards.conf` *before* the
+  step that learned the project number and never reassigned it, so even a
+  fully-consented, successful run shipped a placeholder — and because it was
+  a comment, the adapter's `^board\.N\.axis=` lookup missed it and fell
+  through to a built-in default rather than failing loudly. The rendered
+  entry is now always complete, pinned by a regression test asserting
+  `board.<N>.backend=issues` present and `FILL IN` absent from both
+  `.temperloop/config`'s `tracker.boards_conf_entry` and the proposed
+  `boards.conf`. To run a real Projects-v2 board, create it and hand-write
+  its three `boards.conf` axes — see `docs/features/install-cli.md`
+  § "Manual Projects-v2 recipe".
+- **Declining the first epic files the durable re-offer pointer and nothing
+  else.** The inline principles interview `init` used to run on the decline
+  path is retired: it was a second copy of an interview the epic already
+  owns as its L0 (`record-principles`), asked by a different actor through a
+  different write seam. Declining now defers it. The kernel principle set
+  still applies at every review call site's point of use with zero
+  configuration, so declining costs only the *recorded* choice.
+- **`.temperloop/config` stays at schema 1.** A repo initialised before this
+  change keeps its recorded `label` / `required_check` / `board` install
+  entries: they are carried forward untouched on every re-run and
+  `temperloop eject` still reverts them, even though `init` no longer
+  creates any.
+- **The uninstall map gained a fifth scope, because a four-scope table that
+  presents itself as exhaustive now has a gap.** `bin/README.md` § Uninstall
+  and `eject.sh`'s on-every-run removal bullet both carry **scope (e), the
+  first-epic substrate** — branch protection, head-branch auto-delete, the
+  merge-queue disposition, any scaffolded CI workflow, and the recorded
+  `§ Principles` disposition. That state is applied by the first epic via
+  `/assess` → `/build`, never by `init`, so it is in no manifest and
+  `temperloop eject` does **not** revert it — and neither does reverting the
+  epic's own PRs, since API state is not a tracked file. Undo is manual, in
+  repo Settings; the step-by-step list is in
+  `docs/features/engineering-principles.md` § "Uninstall / removal".
+  Previously an adopter could eject, read `all N install(s) reverted` against
+  a complete-looking table, and walk away with a protected branch and an
+  armed merge queue nobody had told them eject would leave behind.
+- **The first epic's consent questions now disclose their undo path.** Each
+  A2 question and the A3 Actions branch in
+  `claude/templates/first-epic-setup.md` carries an explicit **`Undo:`**
+  clause naming the repo-settings path and stating that `temperloop eject`
+  does not revert it; § Decline floors scopes its "nothing can leave your
+  repo worse off" claim to match. ADR 0010's accepted-gap record resolves
+  this irreversibility by pointing at consent-time disclosure, so that
+  disclosure has to exist in the artifact the adopter actually reads, not
+  only in a maintainer-facing ADR.
+- **`init`'s handoff names its prerequisite.** `/assess` and `/build` are
+  Claude Code slash commands that reach a machine only via `temperloop
+  install`, while the `try` → `try --demo` → `init` ladder otherwise needs no
+  machine-wide setup — so a stranger could reach the handoff pointing at a
+  command they did not have, deferring all of this epic's value to a dead
+  pointer. `init` now probes for `~/.claude/commands/assess.md` and prints an
+  extra `prerequisite:` line when it is missing; `bin/README.md` and
+  `docs/features/install-cli.md` no longer imply step 3 is self-contained.
+  The `next step:` line itself is byte-identical either way (pinned by a
+  test), since it is the marker the tier-2 workflow greps on a runner that
+  has no `~/.claude/`.
+
+### Deprecated
+
+- **`init`'s apply-gating flags are no-ops with named removal windows, not
+  removals.** `--yes/--no-required-check`, `--yes/--no-labels`,
+  `--yes/--no-board`, `--provision-board`, and `--tracker-mode projects` all
+  still parse and still exit 0. Each now prints one line naming where its
+  step went **and the release it is removed in**, then is ignored
+  (`--tracker-mode projects` additionally coerces to `issues`);
+  `--tracker-mode <anything-else>` is still refused with exit 2. **Nothing
+  that passes them breaks** — this is deliberately not a breaking change.
+  They are retained because of `VERSIONING.md`'s **CLI surface** contract
+  row, which covers `bin/subcommands/*`: an *adopter's* own wrapper script,
+  Makefile, or CI job may pass any of them, `init.sh` exits 2 on an unknown
+  argument, and those callers cannot be enumerated from inside this repo.
+  (The in-repo call sites are not the argument — this same change rewrote
+  `install-tier2.yml` to stop passing them.) Two windows, because the flags
+  do not share one story:
+  - `--provision-board` and `--tracker-mode projects` are Projects-v2
+    tracker-backend surface, and ride the **ADR-0004 Projects-arm removal
+    release**.
+  - The three consent pairs `--yes/--no-required-check`, `--yes/--no-labels`
+    and `--yes/--no-board` gated a branch-protection PATCH and a label loop
+    that existed on the issues-only path too, so ADR-0004's removal would
+    never logically cover them — pinning them to it would leave them
+    permanent no-ops wearing a deprecation label. They are removed at
+    **v0.20.0, the pre-scope-down compat window**, together with `eject.sh`'s
+    pre-scope-down `required_check`/`label`/`board` read-compat handlers:
+    one window, because both halves serve exactly one cohort — a repo
+    adopted before this change, whose config may still record that API state
+    and whose wrapper scripts may still pass these flags.
+
+  The affirmative forms (`--yes-*`, which *request* an action that no longer
+  happens) warn and continue rather than exiting non-zero — a deliberate,
+  reversible call consistent with the script's fail-open posture, revisited
+  at the v0.20.0 removal.
+
 ## [0.18.0] - 2026-07-26
 
 ### Added

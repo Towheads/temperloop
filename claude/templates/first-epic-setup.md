@@ -130,25 +130,41 @@ Asked as direct-write questions only when the A0 admin-rights probe read
 from you, but the answer routes to the admin packet (Phase C's non-admin
 path) instead of a direct write.
 
+**Read the `Undo:` line on each question before you answer it.** Everything
+in A2 is **repository API state**, not a tracked file. That means two things
+worth knowing *before* you consent, not after: reverting the pull requests
+this epic opens will **not** switch any of it back off, and `temperloop
+eject` does not revert it either (`eject` only undoes what `temperloop init`
+recorded, and `init` does not apply any of this). Each one is a
+thirty-second change in your own repo settings — but it is a change **you**
+make, deliberately, not one a command makes for you.
+
 - *"Protect your default branch — require a pull request before merging,
   forbid direct pushes?"* **Consequence:** every future change, including
   your own, must go through a PR from here on — this is what makes the
   branch actually protected rather than a documented policy nobody
-  enforces.
+  enforces. **Undo:** repository Settings → Branches → remove or edit the
+  protection rule; `temperloop eject` does not revert this.
 - *"Auto-delete a PR's head branch on merge?"* **Consequence:** a merged
   branch cleans itself up automatically; you never need a manual branch
-  prune for anything this repo generates going forward.
+  prune for anything this repo generates going forward. **Undo:**
+  repository Settings → General → uncheck "Automatically delete head
+  branches"; `temperloop eject` does not revert this.
 - *"Enable a merge queue?"* — priced by the A0 `gate.sh backend` verdict:
   - **`NATIVE` verdict:** *"Arm GitHub's native merge queue?"*
     **Consequence:** every PR merges through the queue's own
     re-test-before-land semantics; `/build`/`/sweep` drive it via
-    `gate.sh queue`.
+    `gate.sh queue`. **Undo:** repository Settings → Branches → disable the
+    merge queue on the protection rule; `temperloop eject` does not revert
+    this.
   - **`MANAGED` verdict:** *"Your plan/ownership can't provision a native
     queue. Record the managed-merge fallback instead (`gate.sh
     managed-merge` — update-branch, re-poll, then merge, per PR)?"**
     **Consequence:** the same re-validate-then-merge safety without a paid
     queue, recorded as `BUILD_MERGE_BACKEND=managed` so `/build` never
-    tries to arm a queue that isn't there.
+    tries to arm a queue that isn't there. **Undo:** unset
+    `BUILD_MERGE_BACKEND` — this one is a config value in your own tree,
+    so unlike the three above, reverting the PR that set it *does* undo it.
 
 ### A3. CI integration — how builds get kicked off
 
@@ -158,7 +174,13 @@ path) instead of a direct write.
     test suite, a lint pass, both?"* **Consequence:** this workflow becomes
     the **sole producer** of the `checks` status context that Phase B is
     ever allowed to require; the job named here is scaffolded verbatim in
-    Phase C's L2, under the literal job name `checks`.
+    Phase C's L2, under the literal job name `checks`. **Undo:** two halves,
+    and they are not symmetric — the workflow *file* is tracked, so
+    reverting its PR (or deleting the file) removes it; but the `checks`
+    status this arms as **required** is branch-protection API state, undone
+    only in repository Settings → Branches. `temperloop eject` reverts
+    neither. Do both in one change, never the file alone — a required
+    status whose producer you just deleted blocks every future merge.
   - **No Actions** (first-class, never a lesser fallback): *"Skip CI
     configuration — rely on local gates only
     (`scripts/quality-gates.sh`) for now?"* **Consequence:** no `checks`
@@ -243,14 +265,24 @@ that will never appear.
 
 ## Decline floors
 
-Nothing here can leave your repo worse off, or in an ambiguous <!-- cite: TPL.3 incident:K#605 -->
-half-configured state:
+Nothing here can leave your repo broken, or in an ambiguous <!-- cite: TPL.3 incident:K#605 -->
+half-configured state. Note the precise claim: **not** that everything here
+is reversible by a command. What you consent to in A2/A3 is repository API
+state — you turn it back off in your own repo settings, per the `Undo:` line
+on each question, and neither a PR revert nor `temperloop eject` will do it
+for you (`bin/README.md` § Uninstall, scope (e)). "Worse off" is the thing
+ruled out here; "undone by hand" is disclosed, not avoided:
 
-- **Decline the whole epic** → you still get the inline principles
-  interview (A1, L0 content only) **plus** a durable re-offer pointer: a
-  Backlog item filed in your own repo naming exactly what remains
-  unconfigured (the substrate half), so the gap stays tracked rather than
-  vanishing.
+- **Decline the whole epic** → you get a durable re-offer pointer: a Backlog
+  item filed in your own repo naming exactly what remains unconfigured, so
+  the gap stays tracked rather than vanishing. That pointer is the whole
+  floor. The principles interview (A1) is **this epic's own L0**
+  (`record-principles` in § Contract), so declining the epic *defers* the
+  interview rather than running a second copy of it from `temperloop init` —
+  and you lose nothing meanwhile, because the kernel principle set already
+  applies at every review call site's point of use with zero configuration
+  (see the last bullet). Say yes later and the interview is waiting where it
+  belongs.
 - **Decline one level, keep the rest** → that level's skip is recorded on
   the epic; the other levels still apply as consented.
 - **Non-interactive run** (no operator to ask) → the whole epic skips with

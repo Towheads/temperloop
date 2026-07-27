@@ -145,18 +145,22 @@ reshaping).
   dependency levels. The principles disposition lands at **L0** — the
   earliest level, since it touches only the adopter's own repo files and
   runs regardless of what the GitHub/CI answers were.
-- **Decline floors.** Declining the whole epic still runs the inline
-  principles interview alone (the same A1 question, asked directly by
-  `temperloop init` rather than through the epic) and records whichever
-  disposition the adopter picks into `Projects/<project>/Priorities.md`'s
-  `§ Principles` section — or, if that too is declined, writes nothing at
-  all. Either way, the kernel default in this file still applies at the
-  review call sites' point of use: declining costs the adopter only the
-  *recorded* choice, never the criteria themselves. This is the
-  **non-admin-safe** floor — unlike the GitHub-integration concern (which
-  degrades to an admin packet when the adopter lacks repo-admin rights),
-  the principles concern needs no elevated rights at all, so it never
-  degrades and always completes in full, admin or not.
+- **Decline floors.** Declining the whole epic files a durable re-offer
+  pointer (a Backlog item in the adopter's own repo naming what remains
+  unconfigured) and **defers** the principles interview — it does not run
+  inline. `temperloop init` used to ask the A1 question itself on the
+  decline path and record the answer into
+  `Projects/<project>/Priorities.md`'s `§ Principles` section; that second,
+  parallel copy of an interview the epic already owns as its L0 was retired
+  with the `init` scope-down (temperloop#796, [ADR
+  0010](../adr/0010-onboarding-as-first-executed-epic.md) as amended). The
+  kernel default in this file still applies at the review call sites' point
+  of use regardless, so declining costs the adopter only the *recorded*
+  choice, never the criteria themselves. The principles concern remains the
+  **non-admin-safe** one — unlike the GitHub-integration concern (which
+  degrades to an admin packet when the adopter lacks repo-admin rights), it
+  needs no elevated rights at all, so whenever it runs it never degrades and
+  always completes in full, admin or not.
 
 ### Uninstall / removal — kernel-side and adopter-side, separately
 
@@ -175,7 +179,13 @@ different, independent paths:
 - **Adopter-side: the first-epic flow's own writes.** Everything the first
   epic (or its decline path) writes belongs to the adopter's own repo, not
   to this one, and each has its own undo path — none of it is silently
-  irreversible:
+  irreversible, but most of it is **manual**: this is scope (e) in
+  `bin/README.md` § Uninstall, the one scope with no command behind it.
+  `temperloop eject` reverts none of the list below, and neither does
+  reverting the pull requests that applied it — API state is not a tracked
+  file. Each write's `Undo:` path is disclosed at the moment the adopter
+  consents to it (`claude/templates/first-epic-setup.md` § A2/A3); this is
+  the same list, gathered in one place:
   - **The recorded `§ Principles` disposition** — delete or edit the
     `## Principles` section in `Projects/<project>/Priorities.md` (or the
     legacy `Priorities/<project>.md`) directly; the point-of-use kernel
@@ -183,6 +193,8 @@ different, independent paths:
   - **Branch protection** — unprotect the default branch (repo Settings →
     Branches → remove or edit the protection rule) to allow direct pushes
     again.
+  - **Head-branch auto-delete on merge** — repo Settings → General →
+    uncheck "Automatically delete head branches".
   - **The scaffolded CI workflow** — delete the generated GitHub Actions
     workflow file (and un-require its `checks` status from the branch
     protection rule in the same change, so a required status is never left

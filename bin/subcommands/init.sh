@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
-# description: bootstrap .temperloop/config; propose tree changes via PR; consented apply of API-state (required check, fnd: labels, opt-in board)
+# description: bootstrap .temperloop/config; propose tree changes via PR; offer the pre-designed first epic; print the handoff
 #
 # init.sh — `temperloop init`: opt-in, reviewable adoption (foundation #765
 # Epic D "newcomer experience", item foundation-init / #854).
+#
+# SCOPE (temperloop#796 — the init scope-down): bootstrap
+# `.temperloop/config` (and its proposal PR) -> offer/file the first epic ->
+# print the handoff -> STOP. Every *apply* of API STATE this script used to
+# perform under its own consent prompt — a required `checks` status check,
+# the `fnd:`/pipeline label set, a Projects-v2 board — now belongs to the
+# FIRST EPIC's own `## Contract`
+# (claude/templates/first-epic-setup.md, ADR 0010), applied later by
+# `/assess --epic N` -> `/build`. See "DEPRECATED FLAGS" below: the flags
+# that used to gate those applies still parse, and now emit a deprecation
+# notice naming where the step went instead of doing anything.
 #
 # Thin wiring over three landed seams — this script is their ONLY call
 # site, it adds no parallel logic of its own:
@@ -14,12 +25,81 @@
 #      repo's TREE. Every tree change (`.temperloop/config`, an optional
 #      `workflows/scripts/board/boards.conf` entry) rides a reviewable PR;
 #      nothing is ever committed straight to the default branch.
-#   3. a CONSENTED APPLY STEP, owned by this script (there is no landed
-#      generator for it): explicit, per-action confirmation before any
-#      API-STATE write — a required status check, the `fnd:`/pipeline label
-#      set, and (only on the separate --provision-board opt-in) a
-#      Projects-v2 board. Each is a plain `gh` call; --dry-run or a denied
-#      prompt performs zero of them.
+#   3. the FIRST-EPIC OFFER, owned by this script — the ONE consented
+#      action that remains, and the handoff into the real pipeline. It
+#      files an issue (never API state); --dry-run, --no-network, an absent
+#      `gh`, or a decline performs zero mutating `gh` calls beyond the
+#      decline path's own tracked re-offer pointer.
+#
+# WHY THE APPLIES MOVED (temperloop#793/#796, ADR 0010 amendment). Two
+# reasons, both structural rather than stylistic:
+#   - CONGRUENCE. This script's required-check apply was an unconditional
+#     `PATCH .../protection/required_status_checks` — it armed a required
+#     `checks` context with no regard for whether anything would ever POST
+#     that context. The first epic refuses exactly that (ADR 0010
+#     § "Structural congruence, not a naming convention"): the required
+#     status enters the composed change-set only when its producer was
+#     actually configured, so the self-brick failure mode is unreachable
+#     rather than merely untested.
+#   - REDUNDANCY. The `fnd:`/pipeline label set is created lazily at point
+#     of use by the issues-only tracker backend itself
+#     (`_board_issues_ensure_label`, workflows/scripts/board/lib/board.sh),
+#     memoized per process — pre-creating it here bought nothing and cost
+#     six API writes on a first run.
+#   - A DANGLING CONTRACT. The board arm rendered
+#     `# board.<N>.project=<FILL IN ...>` into boards.conf BEFORE the apply
+#     step and never reassigned it, so even a fully-consented, successful
+#     provisioning run emitted a placeholder the adapter cannot read.
+#     Issues-only is now the sole init-time tracker mode; a Projects-v2
+#     board is provisioned by hand (docs/features/install-cli.md
+#     § "Manual Projects-v2 recipe").
+#
+# DEPRECATED FLAGS (retained, each with a NAMED removal window).
+# `--yes/--no-required-check`, `--yes/--no-labels`, `--yes/--no-board`,
+# `--provision-board`, and `--tracker-mode projects` all still PARSE and all
+# still exit 0 — they emit a one-line deprecation notice naming where the
+# step went, then are ignored (`--tracker-mode projects` additionally
+# coerces to `issues`).
+#
+# WHY THEY ARE RETAINED. NOT because of the in-repo call sites: those are
+# all greppable, and the very change that deprecated these flags rewrote
+# .github/workflows/install-tier2.yml to stop passing them — a site this
+# repo can edit is not a breakage argument. The real reason is
+# VERSIONING.md's **CLI surface** contract row, which names
+# `bin/subcommands/*` and "callers of `bin/temperloop` and its
+# subcommands": an ADOPTER's own wrapper script, Makefile, or CI job may
+# pass any of these, and this script exits 2 on an unknown arg, so a
+# removal would hard-fail callers that cannot be enumerated from inside
+# this repo. Deprecate-then-remove-on-a-named-release is the contract that
+# row implies.
+#
+# TWO WINDOWS, because these flags do not all belong to one story:
+#   1. THE ADR-0004 PROJECTS-ARM REMOVAL — `--provision-board` and
+#      `--tracker-mode projects`. Both are Projects-v2 tracker-backend
+#      surface, exactly what
+#      docs/adr/0004-issues-only-default-backend.md's removal release is
+#      scoped to. They ride it.
+#   2. THE PRE-SCOPE-DOWN COMPAT WINDOW (v0.20.0) — the three CONSENT
+#      pairs `--yes/--no-required-check`, `--yes/--no-labels`, and
+#      `--yes/--no-board`. These gated a branch-protection PATCH and a
+#      label loop that existed on the ISSUES-ONLY path too, so ADR-0004's
+#      Projects-arm removal would never logically cover them; pinning them
+#      to it would leave them permanent no-ops wearing a deprecation label,
+#      which is a contradiction, not a window. They are removed instead at
+#      **v0.20.0**, together with `eject.sh`'s pre-scope-down
+#      `required_check`/`label`/`board` read-compat handlers — ONE window,
+#      because both halves serve the same cohort: a repo initialised BEFORE
+#      the temperloop#796 scope-down, whose `.temperloop/config` may still
+#      record that API state and whose wrapper scripts may still pass these
+#      flags. Neither half can go while that cohort is still supported, and
+#      neither has a reason to outlive it.
+#
+# The affirmative forms (`--yes-*`, which REQUEST an action that no longer
+# happens) still warn-and-continue rather than exiting non-zero. That is a
+# deliberate, reversible call, consistent with this script's fail-open
+# posture everywhere else: an adopter's unattended job should not start
+# failing because of a flag whose action was retired as redundant. Revisit
+# it at the v0.20.0 removal, not before.
 #
 # `temperloop init` is the SOLE WRITER of `.temperloop/config` — no other
 # subcommand (this repo's `eject`, once it lands, only READS it) ever
@@ -35,17 +115,18 @@
 # artifact the board adapter (workflows/scripts/board/lib/board.sh) reads
 # is `boards.conf`, in its own documented format and discovery path — see
 # `workflows/scripts/board/boards.conf.example`. This script only RENDERS
-# the `board.<N>.*` lines for the chosen mode and, when the target repo has
-# already adopted the board toolkit (a `workflows/scripts/board/` dir
-# exists), proposes appending them to that repo's `boards.conf` via the
-# SAME proposal-PR generator (still tree-only, still reviewable). When the
-# toolkit isn't present yet, the rendered entry is only recorded in
-# `.temperloop/config` (`tracker.boards_conf_entry`) for the operator to
-# apply by hand later — `.temperloop/config` itself is NEVER read by the
-# adapter, so there is no risk of two config stores disagreeing.
-# Issues-only (`board.<N>.backend=issues`) is the default tracker mode —
-# opt into a real Projects-v2 board with `--tracker-mode projects
-# --provision-board`.
+# the `board.<N>.*` lines and, when the target repo has already adopted the
+# board toolkit (a `workflows/scripts/board/` dir exists), proposes
+# appending them to that repo's `boards.conf` via the SAME proposal-PR
+# generator (still tree-only, still reviewable). When the toolkit isn't
+# present yet, the rendered entry is only recorded in `.temperloop/config`
+# (`tracker.boards_conf_entry`) for the operator to apply by hand later —
+# `.temperloop/config` itself is NEVER read by the adapter, so there is no
+# risk of two config stores disagreeing. Issues-only
+# (`board.<N>.backend=issues`) is now the SOLE init-time tracker mode
+# (temperloop#793), and the rendered entry is always COMPLETE — every line
+# is a real, adapter-readable assignment, never a commented placeholder the
+# adapter's `^board\.N\.axis=` grep would silently fall through.
 #
 # BOOTSTRAP ORDERING NOTE (a known, accepted limitation): the proposal PR
 # this script opens carries `.temperloop/config`'s content as committed
@@ -66,12 +147,14 @@
 # Absent -> "skipped — baseline-snapshot unavailable", and init continues
 # either way; this is a soft seam that never blocks init.
 #
-# FIRST-EPIC OFFER (temperloop#610, ADR 0010, item first-epic-offer): the
-# LAST thing the consented-apply step (Step 2) offers, gated behind the SAME
-# gh_repo/gh-binary/dry-run/no-network preconditions as required-check/
-# labels/board. Consumes the kernel-shipped template
-# (claude/templates/first-epic-setup.md) as pure data — this script never
-# restates its content, only extracts and substitutes <project>.
+# FIRST-EPIC OFFER (temperloop#610, ADR 0010, item first-epic-offer): since
+# the scope-down (temperloop#796) this is the WHOLE of Step 2 — the one
+# consented action this script performs, gated behind the same
+# gh_repo/gh-binary/dry-run/no-network preconditions the retired
+# required-check/labels/board applies used. Consumes the kernel-shipped
+# template (claude/templates/first-epic-setup.md) as pure data — this
+# script never restates its content, only extracts and substitutes
+# <project>.
 #   - IDEMPOTENT: probes issue BODIES (never titles) in the adopter's repo
 #     for a design-brief marker (accept already happened) or a decline
 #     marker (decline already happened + its re-offer pointer was filed)
@@ -82,32 +165,26 @@
 #     --yes-first-epic/--no-first-epic preset) SKIPS with a plain notice —
 #     nobody actually answered, so nothing beyond the notice happens. Only
 #     an ACTUAL "no" (typed at a real prompt, or an explicit
-#     --no-first-epic) triggers the decline floors below. This mirrors why
-#     _init_confirm's default-no is fine for required-check/labels/board
-#     (each of those has a safe, silent default — the substrate is simply
-#     absent) but is wrong here: a decline should leave a durable, tracked
-#     trace, which a merely-unattended run has no standing to create on the
-#     adopter's behalf.
-#   - DECLINE FLOORS (never a vanished gap): declining the whole epic still
-#     runs an INLINE principles interview — the L0 content only, extracted
-#     verbatim from the template's own "### A1." section (never restated —
-#     single-statement-site discipline) — and its resolution (extend /
-#     replace / exclude / adopt-as-is / declined-outright) is recorded into
-#     the knowledge-store priorities note (`Projects/<project>/Priorities.md`
-#     via workflows/scripts/lib/knowledge_store.sh) — the SAME doc-id
-#     claude/commands/assess.md Step 3 resolves at point of use, never a
-#     parallel location. A "declined outright" answer records nothing (the
-#     kernel default still applies at point of use, per the template's own
-#     Decline floors section — declining costs only the *recorded* choice).
-#     Alongside the interview, a durable re-offer pointer (a plain GitHub
-#     issue, `fnd:status:backlog` labelled) is filed in the ADOPTER's OWN
-#     repo naming exactly what remains unconfigured (branch protection,
-#     auto-delete, merge-queue disposition, CI disposition) — so the gap
-#     stays tracked rather than vanishing. The GitHub/CI Phase A/B/C
-#     interview itself is NOT run here — that only makes sense once the
-#     epic exists, and is driven later by /assess --epic N -> /build; this
-#     script's job ends at the offer + (on decline) the L0 fallback +
-#     the pointer.
+#     --no-first-epic) triggers the decline floor below. A decline should
+#     leave a durable, tracked trace, which a merely-unattended run has no
+#     standing to create on the adopter's behalf.
+#   - DECLINE FLOOR (never a vanished gap) — ONE floor, not two, since the
+#     scope-down (temperloop#796; ADR 0010's "Decline floors are durable"
+#     clause as amended): declining the epic files a durable re-offer
+#     pointer (a plain GitHub issue, `fnd:status:backlog` labelled) in the
+#     ADOPTER's OWN repo naming exactly what remains unconfigured (branch
+#     protection, auto-delete, merge-queue disposition, CI disposition), so
+#     the gap stays tracked rather than vanishing. That pointer IS the whole
+#     floor. The principles interview no longer runs INLINE here: it is the
+#     first epic's own L0 item (`record-principles`, template § Contract),
+#     so declining the epic DEFERS the interview rather than running a
+#     second, parallel copy of it from this script — and the kernel default
+#     (claude/engineering-principles.md) still applies at every review call
+#     site's point of use regardless, so declining costs the adopter only
+#     the *recorded* choice, never the criteria themselves. The GitHub/CI
+#     Phase A/B/C interview likewise only makes sense once the epic exists,
+#     and is driven later by /assess --epic N -> /build; this script's job
+#     ends at the offer + (on decline) the pointer + the handoff line.
 #
 # PARTIAL-RUN RECOVERY (temperloop#414): a run that dies anywhere from Step
 # 3's proposal-pr.sh call onward (killed process, failed push, failed `gh pr
@@ -125,13 +202,15 @@
 # Usage:
 #   init.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network] [--timeout SECS]
 #           [--branch NAME] [--base BRANCH] [--remote NAME]
-#           [--tracker-mode issues|projects] [--board N]
-#           [--provision-board]
+#           [--board N]
+#           [--yes-first-epic | --no-first-epic]
+#           [--dry-run]
+#
+#   Deprecated, still accepted, ignored (see "DEPRECATED FLAGS" above):
+#           [--tracker-mode issues|projects] [--provision-board]
 #           [--yes-required-check | --no-required-check]
 #           [--yes-labels | --no-labels]
 #           [--yes-board | --no-board]
-#           [--yes-first-epic | --no-first-epic]
-#           [--dry-run]
 #
 #   --dir DIR             Git checkout to initialize. Default: current dir.
 #   --gh-repo OWNER/REPO  Forwarded to the probe; also the repo this
@@ -149,33 +228,43 @@
 #   --base BRANCH          Forwarded to the proposal generator. Default:
 #                          the target repo's own default branch.
 #   --remote NAME           Forwarded to the proposal generator. Default: origin.
-#   --tracker-mode MODE     "issues" (default) or "projects". Only "issues"
-#                          needs no further opt-in — see --provision-board.
 #   --board N               Board id the rendered boards.conf
 #                          entry uses. Default: carried forward from an
 #                          existing .temperloop/config, else 1.
-#   --provision-board       Explicit opt-in to ALSO offer provisioning a
-#                          real Projects-v2 board via the consented apply
-#                          step. No-op unless --tracker-mode projects.
-#                          Absent this flag, board provisioning is never
-#                          even offered — the strongest form of "opt-in".
-#   --yes-<action> / --no-<action>
-#                          Pre-answer one of the four consented-apply
-#                          actions (required-check / labels / board /
-#                          first-epic) instead of an interactive prompt.
-#                          With none of these AND no interactive tty, the
-#                          default is "no" for every action — nothing
-#                          lands without explicit consent, ever. The one
-#                          exception is first-epic: a non-interactive run
-#                          with no --yes-first-epic/--no-first-epic preset
-#                          SKIPS the offer entirely (never asks, never
-#                          silently declines) — see Step "First epic
-#                          offer" below for why a silent skip and an
+#   --yes-first-epic / --no-first-epic
+#                          Pre-answer the first-epic offer instead of an
+#                          interactive prompt. A non-interactive run with
+#                          NEITHER flag SKIPS the offer entirely (never
+#                          asks, never silently declines) — see "FIRST-EPIC
+#                          OFFER" above for why a silent skip and an
 #                          explicit decline are kept distinct.
 #   --dry-run               Forwarded to the proposal generator (local
 #                          commit only, nothing pushed, no PR opened) AND
-#                          skips the consented-apply step entirely (zero
-#                          gh mutation calls of any kind).
+#                          skips the first-epic offer entirely (zero gh
+#                          mutation calls of any kind).
+#
+#   Deprecated (parsed, reported, then ignored — each with a named removal
+#   window; see "DEPRECATED FLAGS" above for the windows and why removing
+#   one early would break un-greppable adopter callers):
+#   --tracker-mode MODE     "issues" (the only mode) or "projects", which
+#                          now reports its deprecation and coerces to
+#                          "issues". Any other value is still refused with
+#                          exit 2. [removed: ADR-0004 Projects-arm release]
+#   --provision-board       Legible no-op. A Projects-v2 board is never
+#                          provisioned by `init` — see
+#                          docs/features/install-cli.md's manual
+#                          Projects-v2 recipe for the by-hand path.
+#                          [removed: ADR-0004 Projects-arm release]
+#   --yes-required-check / --no-required-check
+#   --yes-labels / --no-labels
+#   --yes-board / --no-board
+#                          Legible no-ops. The required `checks` status
+#                          check moved to the first epic; the `fnd:`/
+#                          pipeline labels are created lazily at point of
+#                          use by the issues-only tracker backend; board
+#                          provisioning was dropped outright.
+#                          [removed: v0.20.0, the pre-scope-down compat
+#                          window — see "DEPRECATED FLAGS" above]
 #
 # Exit codes: 0 = ran to completion (even if every apply action was
 # declined — that is a legible, successful run, not a failure). 1 = fatal
@@ -221,13 +310,15 @@ usage() {
   cat <<'EOF'
 usage: init.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network] [--timeout SECS]
                [--branch NAME] [--base BRANCH] [--remote NAME]
-               [--tracker-mode issues|projects] [--board N]
-               [--provision-board]
+               [--board N]
+               [--yes-first-epic | --no-first-epic]
+               [--dry-run]
+
+deprecated (still accepted, reported, then ignored):
+               [--tracker-mode issues|projects] [--provision-board]
                [--yes-required-check | --no-required-check]
                [--yes-labels | --no-labels]
                [--yes-board | --no-board]
-               [--yes-first-epic | --no-first-epic]
-               [--dry-run]
 EOF
 }
 
@@ -283,6 +374,54 @@ case "$tracker_mode" in
     exit 2
     ;;
 esac
+
+# ---------------------------------------------------------------------------
+# DEPRECATED-FLAG NOTICES (temperloop#796 — the init scope-down).
+#
+# Every flag below still PARSES (removing one would hard-fail the six
+# consumer sites the instant it landed — this script exits 2 on an unknown
+# arg — and would make an otherwise-safe release BREAKING). What each one
+# now does is: print ONE line naming where the step actually went, then get
+# ignored. The notices go to stderr so they can't be mistaken for the
+# step's own structured stdout, and they deliberately avoid the
+# "skipped — " / "FAILED" wording that .github/workflows/install-tier2.yml
+# content-scans for: a deprecated flag is neither a degraded step nor a
+# failure, and must not turn the tier-2 round trip red.
+# ---------------------------------------------------------------------------
+_init_deprecated() {
+  # _init_deprecated <flag> <removal-window> <where-it-went>
+  #
+  # The removal window is named on the line an adopter actually sees, not
+  # only in this file's header — a deprecation notice with no stated exit
+  # condition is indistinguishable from a permanent no-op.
+  echo "init.sh: DEPRECATED — $1 is accepted but ignored (removed in $2): $3" >&2
+}
+
+# The two named removal windows — see "DEPRECATED FLAGS" in the header.
+deprecated_window_projects="the ADR-0004 Projects-arm removal release"
+deprecated_window_consent="v0.20.0, the pre-scope-down compat window"
+
+deprecated_moved_required_check="the required \`checks\` status check is now applied by the first epic (claude/templates/first-epic-setup.md § Contract, item \`github-substrate\`; ADR 0010 § \"Structural congruence\"), which — unlike this step — refuses to arm a required status no producer will ever post. Run it via /assess --epic N -> /build."
+deprecated_moved_labels="the \`fnd:\`/pipeline label set is created lazily at point of use by the issues-only tracker backend itself (\`_board_issues_ensure_label\`, workflows/scripts/board/lib/board.sh) — there is nothing left to pre-create."
+deprecated_moved_board="board provisioning was dropped from \`init\` outright (temperloop#793); issues-only is the sole init-time tracker mode. Provision a Projects-v2 board by hand — see docs/features/install-cli.md § \"Manual Projects-v2 recipe\"."
+
+[ -n "$consent_required_check" ] \
+  && _init_deprecated "--${consent_required_check}-required-check" \
+       "$deprecated_window_consent" "$deprecated_moved_required_check"
+[ -n "$consent_labels" ] \
+  && _init_deprecated "--${consent_labels}-labels" \
+       "$deprecated_window_consent" "$deprecated_moved_labels"
+[ -n "$consent_board" ] \
+  && _init_deprecated "--${consent_board}-board" \
+       "$deprecated_window_consent" "$deprecated_moved_board"
+[ "$provision_board" -eq 1 ] \
+  && _init_deprecated "--provision-board" \
+       "$deprecated_window_projects" "$deprecated_moved_board"
+if [ "$tracker_mode" = "projects" ]; then
+  _init_deprecated "--tracker-mode projects" "$deprecated_window_projects" \
+    "coerced to 'issues', the sole init-time tracker mode (temperloop#793). $deprecated_moved_board"
+  tracker_mode="issues"
+fi
 
 # --- resolve --dir to a git toplevel (mirrors proposal-pr.sh's own
 # resolve_repo_dir, so both scripts agree on what "the repo" means) -------
@@ -352,9 +491,8 @@ if [ "$probe_schema" != "1" ]; then
 fi
 
 gh_repo="$(jq -r '.repo.gh_repo // empty' <<<"$probe_json")"
-target_default_branch="$(jq -r '.repo.default_branch // empty' <<<"$probe_json")"
 if [ -z "$gh_repo" ]; then
-  echo "init.sh: could not determine a GitHub owner/repo (no --gh-repo, no github.com origin remote) — the consented-apply step will skip every action" >&2
+  echo "init.sh: could not determine a GitHub owner/repo (no --gh-repo, no github.com origin remote) — the first-epic offer will skip" >&2
 fi
 echo
 
@@ -409,148 +547,61 @@ if [ -z "$board_num" ] && [ -n "$existing_config" ]; then
 fi
 [ -n "$board_num" ] || board_num=1
 
+# render_boards_conf_entry <board-id> [owner/repo]
+#
+# Issues-only is the SOLE init-time tracker mode (temperloop#793), so this
+# renders exactly one shape and every line it emits is a REAL, adapter-
+# readable assignment. The retired `projects` arm rendered a commented
+# `# board.<N>.project=<FILL IN ...>` line here, BEFORE the apply step that
+# would have learned the project number, and never reassigned it — so even
+# a fully-consented, successful provisioning run shipped a placeholder. And
+# because it was a COMMENT, the adapter's `^board\.N\.axis=` grep missed it
+# and fell through to its built-in maps rather than failing loudly. There is
+# no arm that can emit an incomplete entry any more; test_init.sh pins that
+# ("FILL IN" absent from both the config's `tracker.boards_conf_entry` and
+# the proposed boards.conf).
 render_boards_conf_entry() {
-  local mode="$1" board="$2" repo="${3:-<owner>/<repo>}"
-  case "$mode" in
-    issues)
-      printf 'board.%s.repo=%s\nboard.%s.backend=issues\n' "$board" "$repo" "$board"
-      ;;
-    projects)
-      printf 'board.%s.repo=%s\n# board.%s.project=<FILL IN — set after the consented board-provisioning apply step creates the project number>\n' "$board" "$repo" "$board"
-      ;;
-  esac
+  local board="$1" repo="${2:-<owner>/<repo>}"
+  printf 'board.%s.repo=%s\nboard.%s.backend=issues\n' "$board" "$repo" "$board"
 }
-boards_conf_entry="$(render_boards_conf_entry "$tracker_mode" "$board_num" "$gh_repo")"
+boards_conf_entry="$(render_boards_conf_entry "$board_num" "$gh_repo")"
 
 # ---------------------------------------------------------------------------
-# Step 3 — the CONSENTED APPLY STEP: API-state changes only (required
-# check, fnd:/pipeline labels, opt-in board). Explicit per-action
-# confirmation; default is ALWAYS "no" absent an explicit yes (interactive
-# prompt or a --yes-<action> flag). --dry-run skips this whole step.
+# Step 2 — the FIRST-EPIC OFFER: the ONE consented action `init` still
+# performs, and the handoff into the real pipeline (temperloop#796 — the
+# init scope-down). It files an ISSUE; it never writes API state. Every
+# API-state apply that used to live here (required check, `fnd:` labels,
+# Projects-v2 board) is now the first epic's own work — see the "SCOPE" and
+# "WHY THE APPLIES MOVED" header notes.
+#
+# $handoff_next is the single line every arm below sets, printed as the
+# closing handoff in the Summary. It is the marker
+# .github/workflows/install-tier2.yml greps to prove the live round trip
+# reached the handoff rather than degrading somewhere earlier.
 # ---------------------------------------------------------------------------
-echo "-- 2. Consented apply step (API-state changes; explicit per-action confirmation) --"
+echo "-- 2. First-epic offer (the one consented action; explicit confirmation, default no) --"
 
-new_installs="[]"
-add_install() {
-  new_installs="$(jq -c --argjson e "$1" '. + [$e]' <<<"$new_installs")"
-}
-
-# _init_confirm <action> <preset> <prompt-text>
-#   preset is "yes"/"no"/"" (unset). Prints the decision + why; returns 0
-#   for yes, 1 for no. Non-interactive with no preset ALWAYS decides "no"
-#   — the safe default (nothing lands without explicit consent).
-_init_confirm() {
-  local action="$1" preset="$2" prompt="$3"
-  case "$preset" in
-    yes) echo "$action: yes (--yes-$action)"; return 0 ;;
-    no)  echo "$action: no (--no-$action)"; return 1 ;;
-  esac
-  if [ -t 0 ]; then
-    local ans=""
-    printf '%s [y/N] ' "$prompt" >&2
-    read -r ans || ans=""
-    case "$ans" in
-      y|Y|yes|YES) echo "$action: yes (operator confirmed)"; return 0 ;;
-      *) echo "$action: no (operator declined)"; return 1 ;;
-    esac
-  fi
-  echo "$action: no (skipped — no explicit consent; non-interactive; pass --yes-$action to opt in)"
-  return 1
-}
+handoff_next=""
+handoff_prereq=""
+handoff_unoffered="run \`temperloop init\` interactively (or pass --yes-first-epic) to file the pre-designed first epic — it is what configures branch protection, head-branch auto-delete, the merge-queue disposition, CI, and your review principles."
 
 if [ "$dry_run" -eq 1 ]; then
-  echo "required-check: skipped (--dry-run — tree-only preview, no API writes)"
-  echo "labels: skipped (--dry-run)"
-  echo "board: skipped (--dry-run)"
   echo "first-epic: skipped (--dry-run — tree-only preview, no API writes)"
+  handoff_next="$handoff_unoffered"
 elif [ "$no_network" -eq 1 ]; then
-  echo "required-check: skipped (--no-network)"
-  echo "labels: skipped (--no-network)"
-  echo "board: skipped (--no-network)"
   echo "first-epic: skipped (--no-network)"
+  handoff_next="$handoff_unoffered"
 elif [ -z "$gh_repo" ]; then
-  echo "required-check: skipped (no resolved gh_repo)"
-  echo "labels: skipped (no resolved gh_repo)"
-  echo "board: skipped (no resolved gh_repo)"
   echo "first-epic: skipped (no resolved gh_repo)"
+  handoff_next="$handoff_unoffered"
 elif ! command -v "$INIT_GH_BIN" >/dev/null 2>&1; then
-  echo "required-check: skipped (gh CLI not found on PATH)"
-  echo "labels: skipped (gh CLI not found on PATH)"
-  echo "board: skipped (gh CLI not found on PATH)"
   echo "first-epic: skipped (gh CLI not found on PATH)"
+  handoff_next="$handoff_unoffered"
 else
-  # --- required status check ------------------------------------------
-  if _init_confirm "required-check" "$consent_required_check" \
-      "Add 'checks' as a required status check on $gh_repo@${target_default_branch:-<unknown default branch>}?"; then
-    if [ -z "$target_default_branch" ]; then
-      echo "required-check: FAILED — no default branch resolved"
-    elif apply_out="$("$INIT_GH_BIN" api --method PATCH \
-        "repos/$gh_repo/branches/$target_default_branch/protection/required_status_checks" \
-        -f strict=false -f 'contexts[]=checks' 2>&1)"; then
-      echo "required-check: applied (checks required on $target_default_branch)"
-      add_install "$(jq -cn --arg repo "$gh_repo" --arg branch "$target_default_branch" --arg name "checks" \
-        '{type:"required_check", repo:$repo, branch:$branch, name:$name}')"
-    else
-      echo "required-check: FAILED — $apply_out"
-    fi
-  fi
-
-  # --- fnd:/pipeline label set -------------------------------------------
-  if _init_confirm "labels" "$consent_labels" \
-      "Create the fnd:/pipeline label set on $gh_repo (fnd:status:backlog/ready/in-progress, needs-clarification, funnel-escalated, decision)?"; then
-    existing_label_names="$("$INIT_GH_BIN" label list -R "$gh_repo" --json name -q '.[].name' 2>/dev/null || true)"
-    for spec in \
-      "fnd:status:backlog|ededed|Tracker status (issues-only backend) — mirrors board.sh Status=Backlog" \
-      "fnd:status:ready|ededed|Tracker status (issues-only backend) — mirrors board.sh Status=Ready" \
-      "fnd:status:in-progress|ededed|Tracker status (issues-only backend) — mirrors board.sh Status=In Progress" \
-      "needs-clarification|fbca04|Open question blocking work — see the needs-clarification convention" \
-      "funnel-escalated|d93f0b|A stuck code item awaiting manual merge/close" \
-      "decision|c2e0c6|Awaiting an operator decision — see the decision-queue contract"
-    do
-      label_name="${spec%%|*}"
-      rest="${spec#*|}"
-      label_color="${rest%%|*}"
-      label_desc="${rest#*|}"
-      if printf '%s\n' "$existing_label_names" | grep -Fxq "$label_name"; then
-        echo "labels: '$label_name' already exists — skipped"
-        continue
-      fi
-      if "$INIT_GH_BIN" label create "$label_name" -R "$gh_repo" \
-          --color "$label_color" --description "$label_desc" >/dev/null 2>&1; then
-        echo "labels: created '$label_name'"
-        add_install "$(jq -cn --arg repo "$gh_repo" --arg name "$label_name" '{type:"label", repo:$repo, name:$name}')"
-      else
-        echo "labels: FAILED to create '$label_name'"
-      fi
-    done
-  fi
-
-  # --- Projects-v2 board (only ever OFFERED on explicit --provision-board) --
-  if [ "$provision_board" -eq 1 ] && [ "$tracker_mode" = "projects" ]; then
-    if _init_confirm "board" "$consent_board" \
-        "Provision a NEW GitHub Projects-v2 board for $gh_repo (explicit opt-in)?"; then
-      board_owner="${gh_repo%%/*}"
-      board_repo_name="${gh_repo#*/}"
-      if apply_out="$("$INIT_GH_BIN" project create --owner "$board_owner" --title "$board_repo_name board" 2>&1)"; then
-        project_url="$(printf '%s\n' "$apply_out" | grep -oE 'https?://[^[:space:]]+' | tail -1)"
-        project_number="$(printf '%s\n' "$project_url" | grep -oE '[0-9]+$' || true)"
-        echo "board: provisioned project #${project_number:-?} ($project_url)"
-        add_install "$(jq -cn --arg owner "$board_owner" --arg url "$project_url" --arg n "${project_number:-}" \
-          '{type:"board", owner:$owner, project_number:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
-      else
-        echo "board: FAILED — $apply_out"
-      fi
-    fi
-  elif [ "$provision_board" -eq 1 ]; then
-    echo "board: skipped (--provision-board given but --tracker-mode is 'issues' — nothing to provision)"
-  else
-    echo "board: skipped (not opted in — pass --provision-board to offer this)"
-  fi
-
   # --- first epic offer (temperloop#610, ADR 0010) ---------------------
   # See the "FIRST-EPIC OFFER" header comment (top of file) for the full
-  # design rationale — skip vs. decline, idempotency probes, decline
-  # floors. This block only ever runs once the surrounding gates above
+  # design rationale — skip vs. decline, idempotency probes, the decline
+  # floor. This block only ever runs once the surrounding gates above
   # (dry-run/no-network/gh_repo/gh-binary) already passed.
   first_epic_project="$(basename "$gh_repo")"
   first_epic_marker='design-brief: docs/adr/0010-onboarding-as-first-executed-epic.md'
@@ -567,8 +618,49 @@ else
     return 1
   }
 
+  # The one line the whole first-epic step exists to produce, once an epic
+  # is on the board: the pipeline handoff. Shared by the just-filed and the
+  # already-filed arms so a re-run hands off identically to a first run.
+  #
+  # NAMES ITS PREREQUISITE. `/assess` and `/build` are Claude Code slash
+  # commands, and they only reach a machine via `temperloop install`, which
+  # symlinks `claude/*` into `~/.claude/`
+  # (workflows/scripts/install/links.sh). The adoption ladder
+  # (try -> try --demo -> init) otherwise needs no machine-wide setup, so a
+  # stranger can very reasonably arrive here with no `~/.claude/commands/`
+  # at all — and a handoff naming a command they do not have would defer
+  # ALL of this epic's value to a dead pointer, inverting the very
+  # first-run experience it exists to fix.
+  #
+  # The probe is a plain file test against the path links.sh deploys
+  # (`~/.claude/commands/assess.md`, resolving through the directory
+  # symlink install creates). It only chooses WORDING — both branches name
+  # the same next command, and the un-installed branch is phrased so it
+  # stays correct even if the probe is wrong (a false negative reads as a
+  # redundant "if you haven't", never as a false instruction).
+  # The probe only ever ADDS a `prerequisite:` line; it never rewrites the
+  # `next step:` line itself. That split is deliberate: `next step: /assess
+  # --epic <N>` is a stable marker
+  # (.github/workflows/install-tier2.yml greps it, and so does this
+  # script's own test suite), so making its wording conditional on a
+  # machine-state probe would make the marker conditional too — a probe
+  # that silently moved the goalposts for every consumer of that line.
+  _init_assess_available() {
+    [ -f "${HOME:-}/.claude/commands/assess.md" ]
+  }
+  # Sets BOTH handoff globals directly rather than echoing for a `$(...)`
+  # capture — command substitution runs in a subshell, so a $handoff_prereq
+  # assigned in there would be silently discarded.
+  _init_set_handoff() {
+    handoff_next="$(printf '/assess --epic %s — then /build. That epic is what applies the substrate (branch protection, head-branch auto-delete, merge-queue disposition, CI disposition) and records your review principles.' "$1")"
+    if ! _init_assess_available; then
+      handoff_prereq="\`/assess\` and \`/build\` are Claude Code slash commands, installed into ~/.claude/ by \`temperloop install\` — run that first. (Nothing else in the try -> try --demo -> init ladder needs it; this step does.)"
+    fi
+  }
+
   if [ ! -f "$first_epic_template" ]; then
     echo "first-epic: skipped (template not found at $first_epic_template — broken kernel checkout)"
+    handoff_next="$handoff_unoffered"
   else
     # Idempotency probes — search issue BODIES (in:body, never in:title):
     # a prior accept already filed the epic (design-brief marker), or a
@@ -586,10 +678,13 @@ else
 
     if [ -n "$first_epic_existing_num" ]; then
       echo "first-epic: already filed as #$first_epic_existing_num — skipping offer (idempotent)"
+      _init_set_handoff "$first_epic_existing_num"
     elif [ -n "$first_epic_existing_pointer" ]; then
       echo "first-epic: previously declined — re-offer pointer #$first_epic_existing_pointer already tracks the gap — skipping re-offer"
+      handoff_next="the substrate is still unconfigured and tracked by #$first_epic_existing_pointer. Re-run \`temperloop init\` with --yes-first-epic (or open the epic by hand from claude/templates/first-epic-setup.md) when you want it."
     elif [ -z "$consent_first_epic" ] && ! _init_first_epic_attended; then
       echo "first-epic: skipped — no interactive operator detected (no TTY, or an unattended/CI signal is set); point-of-use principle defaults and the managed-merge floor still apply with zero configuration — pass --yes-first-epic/--no-first-epic to decide non-interactively"
+      handoff_next="$handoff_unoffered"
     else
       first_epic_decision="$consent_first_epic"
       if [ -z "$first_epic_decision" ]; then
@@ -618,6 +713,7 @@ else
             --body "$first_epic_body" 2>&1)"; then
           first_epic_num="$(basename "$first_epic_url")"
           echo "first-epic: filed $first_epic_url (#$first_epic_num) — next: /assess --epic $first_epic_num"
+          _init_set_handoff "$first_epic_num"
           # NOT recorded into installs[] (temperloop#794): filing this issue
           # is not a revertible API-state side effect the way a label/
           # required-check/board/proposal-branch is — `temperloop eject`
@@ -629,82 +725,27 @@ else
           # this type in case an older init already wrote one.)
         else
           echo "first-epic: FAILED to file — $first_epic_url"
+          handoff_next="$handoff_unoffered"
         fi
       else
-        echo "first-epic: declined — running the inline principles interview (L0) + filing a durable re-offer pointer"
-        echo
-        echo "-- Inline principles interview (L0 only — referencing claude/templates/first-epic-setup.md § A1, not restating it) --"
-        awk '/^### A1\./{p=1} p && /^### A2\./{exit} p' "$first_epic_template"
-        echo
-        printf 'Do you have existing engineering conventions to merge with the kernel set? [y/N] '
-        first_epic_have_own=""
-        read -r first_epic_have_own || first_epic_have_own=""
-        first_epic_principles_mode="declined"
-        case "$first_epic_have_own" in
-          y|Y|yes|YES)
-            printf 'Extend (add kernel set to yours, default), replace (drop kernel set), or exclude specific kernel principles? [extend/replace/exclude, default: extend] '
-            first_epic_choice=""
-            read -r first_epic_choice || first_epic_choice=""
-            case "$first_epic_choice" in
-              replace) first_epic_principles_mode="replace" ;;
-              exclude)
-                printf 'Which kernel principles should be excluded (comma-separated names)? '
-                first_epic_excl=""
-                read -r first_epic_excl || first_epic_excl=""
-                first_epic_principles_mode="exclude:$first_epic_excl"
-                ;;
-              *) first_epic_principles_mode="extend" ;;
-            esac
-            ;;
-          *)
-            printf 'Adopt the kernel set as-is? [Y/n] '
-            first_epic_adopt=""
-            read -r first_epic_adopt || first_epic_adopt=""
-            case "$first_epic_adopt" in
-              n|N|no|NO) first_epic_principles_mode="declined" ;;
-              *)         first_epic_principles_mode="adopt" ;;
-            esac
-            ;;
-        esac
-
-        if [ "$first_epic_principles_mode" = "declined" ]; then
-          echo "first-epic: principles recording declined — nothing written; the kernel default (claude/engineering-principles.md) still applies at point of use"
-        else
-          # Record the disposition into the knowledge-store priorities note
-          # — the SAME doc-id claude/commands/assess.md Step 3 resolves at
-          # point of use, never a parallel/ad-hoc location.
-          first_epic_ks_doc="Projects/$first_epic_project/Priorities.md"
-          # shellcheck source=../../workflows/scripts/lib/knowledge_store.sh
-          source "$KERNEL_ROOT/workflows/scripts/lib/knowledge_store.sh"
-          first_epic_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          case "$first_epic_principles_mode" in
-            extend)
-              first_epic_section="mode: extend (default) — kernel engineering-principles set (claude/engineering-principles.md) plus this project's own conventions. Recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
-              ;;
-            replace)
-              first_epic_section="mode: replace — kernel engineering-principles set discarded; this project's own conventions apply instead. Recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
-              ;;
-            exclude:*)
-              first_epic_section="mode: extend, excluding: ${first_epic_principles_mode#exclude:} — recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
-              ;;
-            adopt)
-              first_epic_section="kernel engineering-principles set (claude/engineering-principles.md) adopted as-is, empty project slot. Recorded by \`temperloop init\`'s first-epic offer (decline path, $first_epic_ts)."
-              ;;
-          esac
-          if first_epic_priorities="$(ks_read "$first_epic_ks_doc" 2>/dev/null)"; then
-            if printf '%s' "$first_epic_priorities" | grep -q '^## Principles'; then
-              echo "first-epic: $first_epic_ks_doc already has a ## Principles section — leaving it untouched (not overwriting an operator-authored section)"
-            elif printf '\n## Principles\n\n%s\n' "$first_epic_section" | ks_append "$first_epic_ks_doc"; then
-              echo "first-epic: recorded principles disposition ($first_epic_principles_mode) into $first_epic_ks_doc"
-            else
-              echo "first-epic: WARN — could not append principles disposition to $first_epic_ks_doc"
-            fi
-          elif printf '# %s\n\n## Principles\n\n%s\n' "$first_epic_project" "$first_epic_section" | ks_write "$first_epic_ks_doc"; then
-            echo "first-epic: recorded principles disposition ($first_epic_principles_mode) into new $first_epic_ks_doc"
-          else
-            echo "first-epic: WARN — could not create $first_epic_ks_doc"
-          fi
-        fi
+        # DECLINE FLOOR — ONE floor, not two (temperloop#796; ADR 0010's
+        # "Decline floors are durable" clause as amended). The durable
+        # re-offer pointer below IS the whole floor.
+        #
+        # What used to run here, and why it doesn't any more: an INLINE
+        # principles interview, extracted from the template's own "### A1."
+        # section and recorded into the knowledge-store priorities note.
+        # That was a SECOND, parallel copy of an interview the epic already
+        # owns as its L0 item (`record-principles`) — asked by a different
+        # actor (this bootstrap script rather than /assess -> /build),
+        # writing through a different seam, on the path where the adopter
+        # had just said "no". Declining the epic now DEFERS the interview
+        # instead of running a shadow of it, and the kernel default
+        # (claude/engineering-principles.md) still applies at every review
+        # call site's point of use regardless — so declining costs the
+        # adopter only the *recorded* choice, never the criteria
+        # themselves.
+        echo "first-epic: declined — filing a durable re-offer pointer (the whole decline floor; the principles interview is the epic's own L0, deferred rather than run inline)"
 
         # Durable re-offer pointer — a Backlog item in the ADOPTER's own
         # repo naming exactly what remains unconfigured, so the gap stays
@@ -730,6 +771,7 @@ $first_epic_decline_marker"
             --body "$first_epic_pointer_body" --label "fnd:status:backlog" 2>&1)"; then
           first_epic_pointer_num="$(basename "$first_epic_pointer_url")"
           echo "first-epic: filed durable re-offer pointer $first_epic_pointer_url (#$first_epic_pointer_num)"
+          handoff_next="the substrate is still unconfigured and tracked by #$first_epic_pointer_num. Re-run \`temperloop init\` with --yes-first-epic (or open the epic by hand from claude/templates/first-epic-setup.md) when you want it."
           # NOT recorded into installs[] (temperloop#794) — same reasoning
           # as the accept-path issue above: this pointer issue is a durable
           # tracked gap, not a revertible API-state side effect, and eject
@@ -737,6 +779,7 @@ $first_epic_decline_marker"
           # ($first_epic_decline_marker) is what prevents re-offering.
         else
           echo "first-epic: FAILED to file the re-offer pointer — $first_epic_pointer_url"
+          handoff_next="$handoff_unoffered"
         fi
       fi
     fi
@@ -744,10 +787,19 @@ $first_epic_decline_marker"
 fi
 echo
 
-# Merge this run's new installs into the carried-forward manifest, deduped
-# on the fields that identify an install uniquely.
-all_installs="$(jq -c -n --argjson a "$existing_installs" --argjson b "$new_installs" \
-  '($a + $b) | unique_by([.type, (.name // ""), (.branch // ""), (.repo // ""), (.url // "")])')"
+# Carry the prior run's install manifest forward, deduped on the fields
+# that identify an install uniquely.
+#
+# Since the scope-down (temperloop#796) this step contributes NOTHING of its
+# own: the only entry `init` still mints is the `proposal_pr` one, folded in
+# by the self-record second pass below. The carry-forward is deliberately
+# kept, and `.temperloop/config`'s schema stays **1**, precisely so an
+# EXISTING adopter's recorded `label` / `required_check` / `board` entries
+# survive a re-run and stay revertible — `temperloop eject` keeps all four
+# handlers, and dropping them from the manifest here would silently strand
+# API state it can no longer see.
+all_installs="$(jq -c 'unique_by([.type, (.name // ""), (.branch // ""), (.repo // ""), (.url // "")])' \
+  <<<"$existing_installs")"
 
 # ---------------------------------------------------------------------------
 # Step 4 — build .temperloop/config content and the tree-only proposal.
@@ -810,12 +862,15 @@ title="chore: temperloop init — .temperloop/config"
 body="Proposed by \`temperloop init\` (opt-in, reviewable — foundation #765 Epic D).
 
 This PR is TREE-ONLY: it never touches labels, branch protection, or
-Projects-v2 board state. Those are applied only via this run's separate
-CONSENTED APPLY STEP (explicit per-action confirmation), never through
-this PR.
+Projects-v2 board state. \`temperloop init\` does not apply API state at all
+any more (temperloop#796) — branch protection, head-branch auto-delete, the
+merge-queue disposition, the required \`checks\` status, and CI are the
+first epic's work, applied later with per-write consent via
+\`/assess --epic N\` -> \`/build\`.
 
-Tracker mode: **$tracker_mode** (default is issues-only; opt into a real
-Projects-v2 board with --tracker-mode projects --provision-board)."
+Tracker mode: **issues-only** (\`board.$board_num.backend=issues\`), the sole
+init-time tracker mode. A Projects-v2 board is provisioned by hand — see
+\`docs/features/install-cli.md\` § \"Manual Projects-v2 recipe\"."
 
 if [ "$dry_run" -eq 1 ]; then
   # --dry-run GATE (temperloop#413): genuinely zero-write — compute and
@@ -921,6 +976,17 @@ echo "tracker mode: $tracker_mode (board $board_num)"
 echo "boards.conf entry:"
 printf '%s\n' "$boards_conf_entry" | sed 's/^/  /'
 echo "config: $config_rel"
+echo
+
+# --- the handoff (temperloop#796) -----------------------------------------
+# `init`'s job ends HERE: bootstrap + propose + offer the first epic + hand
+# off. It applies no API state of its own — the epic does, under its own
+# per-write consent. `next step:` is the stable marker
+# .github/workflows/install-tier2.yml greps to prove the live round trip
+# actually reached the handoff.
+echo "-- 5. Handoff --"
+echo "next step: ${handoff_next:-$handoff_unoffered}"
+[ -n "$handoff_prereq" ] && echo "prerequisite: $handoff_prereq"
 echo
 echo "temperloop init: done"
 exit 0
