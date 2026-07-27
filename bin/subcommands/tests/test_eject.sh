@@ -41,6 +41,15 @@
 #       eject` restores the original branch, deletes the stray unmerged
 #       local branch, and removes .temperloop/ — byte-identical to before
 #       init ran
+#   - temperloop#794:
+#     - a config carrying `first_epic` / `first_epic_decline_pointer`
+#       install entries (the read-compat case: an older init wrote one of
+#       these before init.sh stopped recording them) no longer strands
+#       eject — zero gh calls for either type, .temperloop/ removed, exit 0
+#     - a genuinely UNKNOWN install type still marks unresolved, rewrites
+#       .temperloop/config to keep only it, and exits 1 — the generic
+#       unknown-type path itself stays covered as its own class, not just
+#       the first_epic instance of it
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -419,6 +428,47 @@ AFTER_FIND11="$(find "$REPO11" -mindepth 1 -not -path '*/.git*' | sort)"
 [ "$AFTER_FIND11" = "$BEFORE_FIND11" ] \
   || fail "eject left extra files behind (before:\n$BEFORE_FIND11\nafter:\n$AFTER_FIND11)"
 echo "PASS: a real 'temperloop init' run that dies after its branch switch (broken push, standing in for a killed process) leaves .temperloop/config committed + a recovery marker on the stray branch; 'temperloop eject' restores the original branch, deletes the stray unmerged branch, and removes .temperloop/ — byte-identical to before init ran"
+
+# =============================================================================
+# 12. temperloop#794 — a config carrying `first_epic` /
+#     `first_epic_decline_pointer` install entries (the read-compat case: a
+#     pre-fix init already wrote one of these) no longer strands eject.
+#     Neither type ever gets a `gh` call (eject must never touch epic-issue
+#     state); both are dropped as informational-only, .temperloop/ is
+#     removed, exit 0.
+# =============================================================================
+REPO12="$(new_fixture_repo repo12)"
+seed_config "$REPO12" '[
+  {"type":"first_epic","repo":"acme/widget","issue":501,"url":"https://github.com/acme/widget/issues/501"},
+  {"type":"first_epic_decline_pointer","repo":"acme/widget","issue":502,"url":"https://github.com/acme/widget/issues/502"}
+]'
+run 0 --dir "$REPO12" --yes
+[ ! -s "$CALL_LOG" ] || fail "first_epic/first_epic_decline_pointer entries made gh calls (eject must never touch epic-issue state):\n$(cat "$CALL_LOG")"
+echo "$out" | grep -q "informational only — not reverted" || fail "did not report the first_epic informational-only outcome (got: $out)"
+[ ! -e "$REPO12/.temperloop" ] || fail "eject did not remove .temperloop/ for a config containing only first_epic-type entries"
+echo "$out" | grep -q "temperloop eject: done" || fail "first_epic-only config did not report done (got: $out)"
+echo "PASS: first_epic / first_epic_decline_pointer install entries no longer strand eject — zero gh calls, dropped as informational-only, .temperloop/ removed, exit 0"
+
+# =============================================================================
+# 13. The generic UNKNOWN-install-type path itself (temperloop#794 — the
+#     defect class, not just the first_epic instance of it): a made-up
+#     future type still hits the fallback arm, gets mark_unresolved'd, and
+#     .temperloop/config is rewritten to keep only it, exit 1. Proves the
+#     four existing handlers + the new first_epic read-compat handler
+#     didn't accidentally widen the fallback into a silent no-op for
+#     everything.
+# =============================================================================
+REPO13="$(new_fixture_repo repo13)"
+seed_config "$REPO13" '[{"type":"bogus_future_type","repo":"acme/widget","name":"whatever"}]'
+run 1 --dir "$REPO13" --yes
+[ ! -s "$CALL_LOG" ] || fail "unknown install type made gh calls (should be zero):\n$(cat "$CALL_LOG")"
+echo "$out" | grep -q "unknown install type" || fail "did not report the unknown-type path (got: $out)"
+[ -f "$REPO13/.temperloop/config" ] || fail "unknown-type failure removed .temperloop/config (should be kept for retry)"
+cfg="$(cat "$REPO13/.temperloop/config")"
+[ "$(jq '.installs | length' <<<"$cfg")" -eq 1 ] || fail "unknown-type config should keep the one unresolved entry (got: $(jq -c '.installs' <<<"$cfg"))"
+[ "$(jq -r '.installs[0].type' <<<"$cfg")" = "bogus_future_type" ] || fail "unresolved entry type mismatch (got: $(jq -c '.installs' <<<"$cfg"))"
+echo "$out" | grep -q "temperloop eject: incomplete" || fail "unknown-type run did not report incomplete (got: $out)"
+echo "PASS: a genuinely unknown install type still marks unresolved, rewrites .temperloop/config to keep it, and exits 1"
 
 echo
 echo "ALL PASS: test_eject.sh"

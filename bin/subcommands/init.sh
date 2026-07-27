@@ -618,8 +618,15 @@ else
             --body "$first_epic_body" 2>&1)"; then
           first_epic_num="$(basename "$first_epic_url")"
           echo "first-epic: filed $first_epic_url (#$first_epic_num) — next: /assess --epic $first_epic_num"
-          add_install "$(jq -cn --arg repo "$gh_repo" --arg url "$first_epic_url" --arg n "${first_epic_num:-}" \
-            '{type:"first_epic", repo:$repo, issue:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
+          # NOT recorded into installs[] (temperloop#794): filing this issue
+          # is not a revertible API-state side effect the way a label/
+          # required-check/board/proposal-branch is — `temperloop eject`
+          # must never close or otherwise touch an epic issue an adopter may
+          # already be working, so there is no revert action to record. The
+          # idempotency probe above (search/issues on $first_epic_marker) is
+          # what keeps a re-run from re-offering; installs[] isn't needed for
+          # that. (eject.sh's dispatch keeps a read-compat no-op handler for
+          # this type in case an older init already wrote one.)
         else
           echo "first-epic: FAILED to file — $first_epic_url"
         fi
@@ -723,8 +730,11 @@ $first_epic_decline_marker"
             --body "$first_epic_pointer_body" --label "fnd:status:backlog" 2>&1)"; then
           first_epic_pointer_num="$(basename "$first_epic_pointer_url")"
           echo "first-epic: filed durable re-offer pointer $first_epic_pointer_url (#$first_epic_pointer_num)"
-          add_install "$(jq -cn --arg repo "$gh_repo" --arg url "$first_epic_pointer_url" --arg n "${first_epic_pointer_num:-}" \
-            '{type:"first_epic_decline_pointer", repo:$repo, issue:(if $n == "" then null else ($n|tonumber) end), url:$url}')"
+          # NOT recorded into installs[] (temperloop#794) — same reasoning
+          # as the accept-path issue above: this pointer issue is a durable
+          # tracked gap, not a revertible API-state side effect, and eject
+          # must never touch it. The idempotency probe above
+          # ($first_epic_decline_marker) is what prevents re-offering.
         else
           echo "first-epic: FAILED to file the re-offer pointer — $first_epic_pointer_url"
         fi
