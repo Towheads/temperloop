@@ -457,16 +457,15 @@ fi
 # as a layer-5 default — removed as scrub debt; see git history on this
 # line for the prior literal.)
 
-# ── Pipeline label provisioning (a repo-onboarding prerequisite) ───────────────
+# ── Pipeline label provisioning (temperloop#795) ───────────────────────────────
 # BOTH pipeline labels above (`funnel-merge-pending`, `funnel-escalated`) must EXIST in
-# every repo the pipeline drives. pipeline-drive.sh applies them via `gh issue edit
-# --add-label` wrapped in the fail-open `_gh_sideeffect` recorder — so on a repo MISSING
-# the label the add is swallowed, the item never parks, and it re-refuses/re-routes every
-# tick (a silent thrash; the operator never gets the hand-off). Currently provisioned on
-# the two driven repos. To onboard a THIRD repo,
-# create both first (idempotent — the `|| true` absorbs "already exists"):
-#   gh label create funnel-merge-pending -R <owner/repo> --color fbca04 --description "Pipeline 5c: PR open, session ended pre-merge — resume next tick" || true
-#   gh label create funnel-escalated     -R <owner/repo> --color fbca04 --description "Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close" || true
+# every repo the pipeline drives, or a silent-thrash failure results (see
+# pipeline-drive.sh's own "Pipeline label self-provisioning" comment for the failure
+# mode). This used to be a manual, onboarding-time `gh label create` step documented
+# here — now SELF-HEALING: pipeline-drive.sh ensures each label at its point of use
+# via the board adapter's memoized `_board_issues_ensure_label` (lib/board.sh:1149),
+# the same idiom capture.sh's self-healing `fnd:` labels use, so no third repo needs a
+# manual onboarding step here at all.
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \

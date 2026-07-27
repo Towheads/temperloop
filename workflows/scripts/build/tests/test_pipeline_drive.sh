@@ -1032,6 +1032,117 @@ OUT42="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42" PIPELINE_GH_BIN="$G42" CAP
 [ "$(jq -c '.gh_errors' <<<"$OUT42")" = "[]" ] && ok "gh_errors=[] (empty, no false noise)" || bad "t42.empty" "got $(jq -c '.gh_errors' <<<"$OUT42")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
+# │ temperloop#795 — pipeline label SELF-PROVISIONING at point of use. Before   │
+# │ this fix, init.sh created `fnd:status:*` but NEVER `funnel-merge-pending`/  │
+# │ `funnel-escalated` (build.config.sh only documented a MANUAL one-time `gh   │
+# │ label create` onboarding step) — so on a repo missing either label, the     │
+# │ `--add-label` calls below are silently swallowed by `_gh_sideeffect`'s      │
+# │ fail-open wrapper: the item never parks and re-routes/re-refuses every      │
+# │ tick with no trace (the documented silent thrash). Fixed by ensuring each   │
+# │ label via the board adapter's memoized `_board_issues_ensure_label` (the    │
+# │ same idiom capture.sh's self-healing `fnd:` labels use) immediately before  │
+# │ each add-label call. These tests assert the `gh label create` call is       │
+# │ actually MADE at each of the three point-of-use call sites — i.e. a repo   │
+# │ with NEITHER label pre-existing gets both created on demand, so the add     │
+# │ below can never hit a missing-label silent swallow.                        │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# ── 42b: hand-off (_record_handoff) ensures funnel-merge-pending before adding ──
+echo "--- test 42b: hand-off ensures funnel-merge-pending exists before labeling (#795) ---"
+C42B="$TMP/c42b"; mkdir -p "$C42B"; D42B="$(make_merge_double "$C42B")"; G42B="$(make_gh_double "$C42B")"
+OUT42B="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42B" PIPELINE_GH_BIN="$G42B" CAP_DIR="$C42B" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+[ "$(jq -r '.handed_off' <<<"$OUT42B")" = "1" ] && ok "sanity: handed_off=1" || bad "t42b.handed_off" "got $(jq -r '.handed_off' <<<"$OUT42B")"
+grep -qx 'label create funnel-merge-pending -R Towheads/stageFind --color fbca04 --description Pipeline 5c: PR open, session ended pre-merge — resume next tick' "$C42B/gh-calls.txt" \
+  && ok "gh label create funnel-merge-pending ran BEFORE the add-label (self-provisioned, no manual onboarding needed)" \
+  || bad "t42b.ensure" "got $(cat "$C42B/gh-calls.txt" 2>/dev/null || echo none)"
+# The ensure-create precedes the add-label edit for the SAME issue (ordering matters:
+# a create AFTER the add would not have prevented the swallow it exists to prevent).
+CREATE_LINE="$(grep -nx 'label create funnel-merge-pending -R Towheads/stageFind --color fbca04 --description Pipeline 5c: PR open, session ended pre-merge — resume next tick' "$C42B/gh-calls.txt" | cut -d: -f1)"
+ADD_LINE="$(grep -nx 'issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending' "$C42B/gh-calls.txt" | cut -d: -f1)"
+[ -n "$CREATE_LINE" ] && [ -n "$ADD_LINE" ] && [ "$CREATE_LINE" -lt "$ADD_LINE" ] \
+  && ok "ensure-create precedes the add-label edit (ordering: create-then-add, #795)" \
+  || bad "t42b.order" "create@$CREATE_LINE add@$ADD_LINE in $(cat "$C42B/gh-calls.txt")"
+
+# ── 42c: refused routing (_route_refused) ensures funnel-escalated before adding ─
+echo "--- test 42c: refused routing ensures funnel-escalated exists before labeling (#795) ---"
+C42C="$TMP/c42c"; mkdir -p "$C42C"; D42C="$(make_merge_double "$C42C")"; G42C="$(make_gh_double "$C42C")"
+OUT42C="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42C" PIPELINE_GH_BIN="$G42C" CAP_DIR="$C42C" \
+        PIPELINE_OPERATOR=@towhead PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$REFUSE_SUMMARY" bash "$DRIVE")"
+[ "$(jq -r '.routed' <<<"$OUT42C")" = "1" ] && ok "sanity: routed=1" || bad "t42c.routed" "got $(jq -r '.routed' <<<"$OUT42C")"
+grep -qx 'label create funnel-escalated -R Towheads/stageFind --color fbca04 --description Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close' "$C42C/gh-calls.txt" \
+  && ok "gh label create funnel-escalated ran BEFORE the add-label (self-provisioned)" \
+  || bad "t42c.ensure" "got $(cat "$C42C/gh-calls.txt" 2>/dev/null || echo none)"
+
+# ── 42d: stuck-PR escalation (_escalate_stuck_pr) ensures funnel-escalated too ──
+echo "--- test 42d: terminal-red-CI escalation ensures funnel-escalated exists (#795) ---"
+C42D="$TMP/c42d"; mkdir -p "$C42D"; D42D="$(make_merge_double "$C42D")"; G42D="$(make_gh_double "$C42D")"
+OUT42D="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42D" PIPELINE_GH_BIN="$G42D" CAP_DIR="$C42D" \
+        PIPELINE_OPERATOR=@towhead GH_PR_LIST_JSON="$OPEN_PR_101" GH_PR_VIEW_JSON='{"statusCheckRollup":[{"name":"checks","status":"COMPLETED","conclusion":"FAILURE"}]}' \
+        PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" bash "$DRIVE")"
+[ "$(jq -r '.escalated' <<<"$OUT42D")" = "1" ] && ok "sanity: escalated=1" || bad "t42d.escalated" "got $(jq -r '.escalated' <<<"$OUT42D")"
+grep -qx 'label create funnel-escalated -R Towheads/stageFind --color fbca04 --description Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close' "$C42D/gh-calls.txt" \
+  && ok "gh label create funnel-escalated ran BEFORE the terminal-red escalation edit (self-provisioned)" \
+  || bad "t42d.ensure" "got $(cat "$C42D/gh-calls.txt" 2>/dev/null || echo none)"
+
+# ── 42e: the ensure-create is MEMOIZED per repo|label — a burst of adds against the
+# same repo pays `gh label create` at most once (board.sh's own _board_issues_ensure_label
+# memo, reused as-is — #795 does not re-implement it).
+echo "--- test 42e: ensure-label is memoized — at most one create per repo|label per tick (#795) ---"
+REFUSE_SUMMARY_2='{"driver":"pipeline-drive-merge","layer":"5c","merged":0,"parked":0,"failed":0,"refused":2,"results":[{"action":"drive-ready","issue":101,"board":"3","status":"refused","note":"one"},{"action":"drive-ready","issue":102,"board":"3","status":"refused","note":"two"}]}'
+CODE2='[{"tick":"done","actions":[{"phase":"safe","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":101,"kind":"code"},{"phase":"safe","action":"drive-ready","board":"3","repo":"Towheads/stageFind","issue":102,"kind":"code"}]}]'
+C42E="$TMP/c42e"; mkdir -p "$C42E"; D42E="$(make_merge_double "$C42E")"; G42E="$(make_gh_double "$C42E")"
+OUT42E="$(printf '%s' "$CODE2" | env CLAUDE_BIN="$D42E" PIPELINE_GH_BIN="$G42E" CAP_DIR="$C42E" \
+        PIPELINE_OPERATOR=@towhead PIPELINE_DRIVE_MERGE=1 PIPELINE_DRIVE_MERGE_CAP=2 \
+        MERGE_SUMMARY="$REFUSE_SUMMARY_2" bash "$DRIVE")"
+[ "$(jq -r '.routed' <<<"$OUT42E")" = "2" ] && ok "sanity: both refused items routed" || bad "t42e.routed" "got $(jq -r '.routed' <<<"$OUT42E")"
+N_CREATES="$(grep -cx 'label create funnel-escalated -R Towheads/stageFind --color fbca04 --description Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close' "$C42E/gh-calls.txt")"
+[ "$N_CREATES" = "1" ] && ok "exactly ONE label-create call for two refused issues in the same repo (memoized)" || bad "t42e.memo" "got $N_CREATES creates in $(cat "$C42E/gh-calls.txt")"
+
+# ╭──────────────────────────────────────────────────────────────────────────╮
+# │ temperloop#801 (shell review of #795) — a missing board adapter must         │
+# │ DEGRADE, not ABORT the tick. A bare, unguarded `_board_issues_ensure_label`   │
+# │ call would be exit 127 (command not found) under `set -euo pipefail` if      │
+# │ board.sh failed to source — aborting the WHOLE TICK, misattributed as a       │
+# │ mystery 127 deep in a callee. That inverts #795's own point: a soft,         │
+# │ per-item failure (missing label → swallowed add, tick keeps running) must     │
+# │ never become STRICTLY WORSE (whole-tick abort) just because the adapter       │
+# │ itself is unavailable. Fixed: (1) PIPELINE_BOARD_LIB (the test-double seam,   │
+# │ mirrors PIPELINE_UNCLAIM_BIN) WARNS loudly and attributes the true cause      │
+# │ when board.sh is missing; (2) each of the three call sites is `declare -F`-   │
+# │ guarded (PIPELINE_UNCLAIM_BIN's own "if the optional dependency resolved"     │
+# │ idiom) to degrade to the pre-#795 behavior instead of crashing.               │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# ── 42f: a missing board adapter degrades — tick completes, WARNING attributes the
+# true cause, no 127 leaks, and the item is still processed (pre-#795 behavior) ────
+echo "--- test 42f: missing board.sh degrades (WARNING + tick completes, no 127) (#801) ---"
+C42F="$TMP/c42f"; mkdir -p "$C42F"; D42F="$(make_merge_double "$C42F")"; G42F="$(make_gh_double "$C42F")"
+set +e
+OUT42F="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42F" PIPELINE_GH_BIN="$G42F" CAP_DIR="$C42F" \
+        PIPELINE_BOARD_LIB="$TMP/no-such-board-lib-$$.sh" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" \
+        bash "$DRIVE" 2>"$C42F/stderr.txt")"
+RC42F=$?
+set -e
+[ "$RC42F" -eq 0 ] && ok "exit 0 (no 127 — the tick does not abort on a missing adapter)" || bad "t42f.exit" "got exit $RC42F, stderr: $(cat "$C42F/stderr.txt" 2>/dev/null || echo none)"
+[ "$(jq -r '.handed_off' <<<"$OUT42F" 2>/dev/null)" = "1" ] && ok "handed_off=1 (the tick still completes and processes the item)" || bad "t42f.handed_off" "got: $OUT42F"
+grep -qF 'WARNING: pipeline-drive.sh: board adapter not found' "$C42F/stderr.txt" \
+  && ok "WARNING attributes the TRUE cause (missing board adapter), not a bare 127" \
+  || bad "t42f.warning" "got $(cat "$C42F/stderr.txt" 2>/dev/null || echo none)"
+grep -qiF 'command not found' "$C42F/stderr.txt" \
+  && bad "t42f.no127" "a 'command not found' 127 leaked to stderr — the guard did not hold" \
+  || ok "no 'command not found' 127 on stderr (the declare -F guard held)"
+# Pre-#795 behavior restored: NO label-create call was made (adapter unavailable),
+# but the add-label edit still fires exactly as it did before #795 existed.
+grep -qx 'label create funnel-merge-pending -R Towheads/stageFind --color fbca04 --description Pipeline 5c: PR open, session ended pre-merge — resume next tick' "$C42F/gh-calls.txt" 2>/dev/null \
+  && bad "t42f.noensure" "a label-create call happened despite the missing adapter" \
+  || ok "no label-create call (adapter unavailable — self-provisioning correctly skipped)"
+grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending" "$C42F/gh-calls.txt" \
+  && ok "the add-label edit still fires (degraded to pre-#795 behavior, not crashed)" \
+  || bad "t42f.add" "got $(cat "$C42F/gh-calls.txt" 2>/dev/null || echo none)"
+
+# ╭──────────────────────────────────────────────────────────────────────────╮
 # │ F#640 — record ENRICHMENT: the drive record logged COUNTS (routed,          │
 # │ handed_off) but not WHICH issues, so a soak reviewer could not cross-check   │
 # │ the pipeline's board mutations. Now it carries per-side-effect issue arrays    │
