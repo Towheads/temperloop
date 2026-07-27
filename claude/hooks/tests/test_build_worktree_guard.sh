@@ -410,6 +410,40 @@ deny_bash "cd outside, then find with an IMPLICIT path -delete" \
 deny_bash "cd outside, then find -exec rm {}" \
   "cd $REPO && find . -name core -exec rm {} \\;"
 
+# --- OUTPUT REDIRECTS (foundation#1355) --------------------------------------
+# A redirect is a write the SHELL performs before the verb ever runs, so it is
+# contained on the same terms as a destructive operand. Both spellings of every
+# operator are pinned (BARE `> f` and GLUED `>f`), because only the bare form is
+# a token the separator test recognizes — they take different code paths.
+deny_bash "redirect > to a literal path outside"         "echo x > $REPO/leak.txt"
+deny_bash "redirect > outside, GLUED to the operator"    "echo x >$REPO/leak.txt"
+deny_bash "redirect >> (append) to a path outside"       "echo x >> $REPO/append.log"
+deny_bash "redirect 2> (stderr) to a path outside"       "echo x 2> $REPO/err.log"
+deny_bash "redirect 2>> (stderr append) outside"         "echo x 2>> $REPO/err.log"
+deny_bash "redirect > to a top-level path outside"       'echo x > /etc/passwd'
+deny_bash "redirect > to a NON-LITERAL target"           'echo x > "$HOME/leak"'
+deny_bash "redirect >> to a tilde target"                'echo x >> ~/leak'
+deny_bash "redirect 2> to a NON-LITERAL target"          'make test 2> "$LOGDIR/err"'
+deny_bash "redirect after a cd-context outside"          "cd $REPO && echo x > out.txt"
+# `>&WORD` names no file ONLY when WORD is an fd number. A non-numeric WORD is
+# bash's both-streams FILE redirect and must stay contained; a non-literal one is
+# unprovable. Treating every `>&` as an fd dup is the tempting wrong shortcut.
+deny_bash "redirect >& to a non-numeric (file) target outside" "ls >& $REPO/both.log"
+deny_bash "redirect 2>& to a NON-LITERAL fd/file word"   'rm -rf ./dist 2>&$FD'
+# Composed with a destructive verb: BOTH halves are judged, neither hides the
+# other. The last two are the run-integrity cases — a redirect must not swallow
+# what follows it, and (glued) must not end the argument list, or `rm -rf
+# 2>/dev/null <outside>` would delete <outside> unseen.
+deny_bash "in-worktree rm with a redirect escaping"      "rm -rf ./dist > $REPO/log"
+deny_bash "an in-worktree redirect must not hide a following rm" \
+  "echo x > out.txt; rm -rf $REPO/parentdir"
+deny_bash "a GLUED redirect must not hide the verb's own operand" \
+  "rm -rf 2>/dev/null $REPO/parentdir"
+# A trailing glued redirect must not be mistaken for rsync's destination — the
+# LAST selector used to pick `2>/dev/null` and miss the real (outside) dest.
+deny_bash "rsync --delete outside, trailing glued redirect" \
+  "rsync -a --delete src/ $REPO/dest/ 2>/dev/null"
+
 deny_file "Write into the parent checkout"    Write     "$REPO/leak.txt"
 deny_file "Edit  in the parent checkout"      Edit      "$REPO/f.txt"
 deny_file "Write via a relative .. escape"    Write     "../../leak.txt"
@@ -520,6 +554,36 @@ allow_bash "rsync --delay-updates (prefix lookalike, not a delete flag)" \
   "rsync -a --delay-updates src/ $REPO/dest/"
 allow_bash "rsync --delete, trailing option-with-arg, IN-worktree dest" \
   'rsync -a --delete src/ dist/ --exclude foo'
+
+# --- OUTPUT REDIRECTS, ALLOW half (foundation#1355) --------------------------
+# These are the most routine commands a worker issues. Redirect containment is
+# the newest tightening in this arm and therefore the likeliest source of a
+# false deny — and a false deny is what gets the guard disarmed, after which
+# coverage is zero. Every polarity of every operator is pinned here.
+allow_bash "redirect > to an in-worktree relative file"  'echo x > out.txt'
+allow_bash "redirect > GLUED to an in-worktree file"     'echo x >out.txt'
+allow_bash "redirect >> into a not-yet-existing subdir"  'cmd >> logs/run.log'
+allow_bash "redirect > to an absolute in-worktree path"  "echo x > $WT_RP/build/out.log"
+allow_bash "redirect > under /tmp (allow-listed)"        'echo x > /tmp/build-guard-scratch.log'
+allow_bash "redirect > under \$TMPDIR (allow-listed)"    "echo x > $TMPDIR/scratch.log"
+allow_bash "redirect after an in-worktree cd"            "cd $WT_RP/src && echo x > out.txt"
+# /dev/null is the single most routine idiom in a worker command line and writes
+# no tree. Allow-listed for REDIRECTS ONLY — its destructive-operand twin is
+# below. Without this the guard would deny half of every worker's commands.
+allow_bash "redirect 2> /dev/null (character-device sink)" 'make test 2>/dev/null'
+allow_bash "redirect > /dev/null with a 2>&1 fd dup"     'make test > /dev/null 2>&1'
+allow_bash "redirect 2>&1 into a pipe (fd dup, no file)" 'ls 2>&1 | tee out.txt'
+allow_bash "redirect >&- (fd close, names no file)"      'ls >&- '
+# `>(cmd)` is process substitution — a word belonging to the command line, not a
+# redirect. Reading it as one would deny a routine diff.
+allow_bash "process substitution is not a redirect"      'diff <(sort a) >(sort b)'
+# A quoted redirect character is an argument, not an operator: the quote is the
+# first character, so the operator test cannot match it.
+allow_bash "a quoted '>' is an argument, not a redirect" 'grep ">" src/a.ts'
+# The device-sink allow-list is scoped to redirect targets. A destructive verb
+# aimed at the same path is still judged as an ordinary out-of-tree operand.
+deny_bash "device sink is redirect-scoped: rm -rf /dev/null is still judged" \
+  'rm -rf /dev/null'
 
 allow_file "Write a new file at the worktree root"   Write "$WT_RP/new.txt"
 allow_file "Write a relative in-worktree path"       Write "newdir/new.txt"

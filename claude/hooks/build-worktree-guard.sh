@@ -24,11 +24,44 @@
 # literal path"), and it enforces the avoidance rule the incident post-mortem
 # named: destructive targets must be literal paths under the worktree.
 #
+# BASH ARM — OUTPUT REDIRECTS (foundation#1355). A redirect target is a write
+# the shell performs itself, before the verb ever runs: `> /Users/travis/dev/x`
+# truncates that file whatever the command is, so leaving it unparsed left an
+# uninspected write vector alongside the inspected delete vector. Redirect
+# targets are therefore containment-checked on the SAME terms as a destructive
+# verb's operand — non-literal is unprovable (deny), resolved-outside is an
+# escape (deny), the /tmp//$TMPDIR//gitignored allow-list applies unchanged — and
+# they are emitted through the same record stream, so the cd-context check covers
+# them for free. Three shape rules, each of them load-bearing:
+#   - BARE vs GLUED. `> f` and `>f` are the same redirect, but only the bare form
+#     is a token isSep() recognizes. The bare form keeps ending the preceding
+#     verb's operand run (unchanged, long-standing behavior); the GLUED form is
+#     skipped from that run WITHOUT ending it, because it does not end the
+#     argument list in a real shell either — `rm -rf 2>/dev/null <outside>` does
+#     delete <outside>, and terminating the run there would have hidden it.
+#   - `>&WORD` is an fd DUPLICATION, naming no file, ONLY when WORD is numeric or
+#     `-` (`2>&1`, `>&-`). A non-numeric WORD is bash's both-streams FILE
+#     redirect and stays a containment target — otherwise `2>&$FD` would slip
+#     through unchecked. `>(cmd)` is process substitution: a word, not a redirect.
+#   - CHARACTER-DEVICE SINKS (`/dev/null`, `/dev/stderr`, `/dev/fd/N`, …) are
+#     allow-listed FOR REDIRECTS ONLY. `2>/dev/null` is the single most routine
+#     idiom in a worker command line and it mutates no tree; denying it would
+#     have made the guard the thing operators disarm. `rm -rf /dev/null` is
+#     still judged as an ordinary destructive operand.
+#
 # BASH ARM — accepted fail-open gaps (documented, like the sibling guards):
-#   - Only tree-destructive verbs are inspected. Output redirections (`> file`,
-#     `>> file`), `tee`, and in-place edits (`sed -i`) are NOT parsed — the
-#     dominant catastrophic vector is tree deletion/move, and redirect parsing
-#     is noisy for little safety gain (write-lane-guard.sh makes the same call).
+#   - Only tree-destructive verbs and output-redirect targets are inspected.
+#     `tee` and in-place edits (`sed -i`) are NOT parsed — the dominant
+#     catastrophic vector is tree deletion/move, and those two remain a
+#     documented gap rather than a silent omission.
+#   - A BARE redirect operator still terminates the operand run it sits in, so a
+#     verb operand written AFTER one (`rm -rf 2> /dev/null <outside>`) is not
+#     collected. Long-standing behavior, deliberately left intact: it fails OPEN
+#     on an exotic ordering, never falsely denies.
+#   - Because the walker is line-oriented, a redirect inside a heredoc BODY is
+#     judged as if it were a command — the same pre-existing property that makes
+#     a heredoc'd `rm -rf $VAR` deny. Fails closed, and a heredoc body carrying
+#     an absolute out-of-tree redirect is rare.
 #   - Operand/cd containment is judged against a LEADING/most-recent `cd` context
 #     and whitespace tokenization; an exotic one-liner (verbs glued to `;`/`&&`
 #     with no spaces, a mid-pipeline subshell `cd`) may not be modelled — those
@@ -282,6 +315,19 @@ is_gitignored() {
   git -C "$worktree_root" check-ignore -q -- "$p" 2>/dev/null
 }
 
+# Character-device sinks a REDIRECT may legitimately target. `2>/dev/null` is the
+# most routine idiom in a worker command line, and writing a character device
+# mutates no tree — judging these "outside the worktree" would deny half of every
+# worker's commands, and a guard that falsely denies is a guard that gets
+# disarmed. Scoped to redirect targets: `rm -rf /dev/null` is still judged as an
+# ordinary destructive operand.
+is_device_sink() {
+  case "$1" in
+    /dev/null|/dev/zero|/dev/stdout|/dev/stderr|/dev/tty|/dev/fd/*) return 0 ;;
+  esac
+  return 1
+}
+
 # True iff a shell token is NON-LITERAL — it carries an expansion, command
 # substitution, glob, or brace whose runtime value the guard cannot resolve
 # statically. `..` is deliberately NOT here: it is literal and abspath's `pwd -P`
@@ -308,34 +354,46 @@ if [ "$tool" = "Bash" ]; then
 
   # Walk the command left-to-right. Track the active `cd`/`pushd` context, and
   # for each ARMED destructive verb emit one tab-delimited record per path
-  # operand its table row selects:
-  #   <baseKind>\t<baseVal>\t<verb>\t<opndVal>
+  # operand its table row selects — plus one record per OUTPUT REDIRECT target,
+  # which the shell writes on its own account:
+  #   <baseKind>\t<baseVal>\t<verb|redirect-operator>\t<opndVal>
   # baseKind: CWD (no cd — resolve against the worktree cwd) | LIT <dir> |
-  # NONLIT <dir> (a cd whose target the guard cannot resolve). Redirect
-  # operators and command separators end an operand run. Which tokens of that
-  # run become records is the row's `select`; whether the verb counts as
-  # destructive at all is its `arm`. See the operand-model table in the header.
+  # NONLIT <dir> (a cd whose target the guard cannot resolve). A verb name never
+  # contains `>`, so the operator in the third column is what tells the two
+  # record kinds apart downstream. Bare redirect operators and command
+  # separators end an operand run. Which tokens of that run become records is
+  # the row's `select`; whether the verb counts as destructive at all is its
+  # `arm`. See the operand-model table in the header.
   while IFS=$'\t' read -r bk bv verb op; do
     [ -n "$op" ] || continue
+
+    # One record stream, two record kinds. A verb name never contains `>`, so the
+    # redirect operator standing in the verb column is self-identifying — no
+    # extra field, no second loop. Both kinds run the SAME containment checks;
+    # only the wording of the refusal (and the device-sink exemption) differ.
+    case "$verb" in
+      *'>'*) is_redirect=1; what="an output redirect ('$verb')" ;;
+      *)     is_redirect=0; what="a destructive command ($verb)" ;;
+    esac
 
     # Resolve the base dir the operand is relative to (the active cd context).
     basedir="$cwd"
     if [ "$bk" = "NONLIT" ]; then
-      deny "build worktree guard (Bash): a destructive command ($verb) runs after 'cd $bv', whose target the guard cannot resolve statically (it contains an expansion, substitution, or glob), so it cannot prove the command stays inside the worktree root '$wt'. cd to a literal path under '$wt' first, or drop the cd. (foundation #1087/#932 — worker Bash must not escape the write-jail.)"
+      deny "build worktree guard (Bash): $what runs after 'cd $bv', whose target the guard cannot resolve statically (it contains an expansion, substitution, or glob), so it cannot prove the command stays inside the worktree root '$wt'. cd to a literal path under '$wt' first, or drop the cd. (foundation #1087/#932 — worker Bash must not escape the write-jail.)"
     fi
     if [ "$bk" = "LIT" ]; then
       bdir=$(abspath "$(strip_quotes "$bv")")
       case "$bdir" in
         "$wt"/*|"$wt") basedir="$bdir" ;;
         *) if is_allowlisted "$bdir"; then basedir="$bdir"
-           else deny "build worktree guard (Bash): a destructive command ($verb) runs after 'cd $bv' → '$bdir', which is OUTSIDE the active worktree root '$wt'. A build worker must operate only inside its own worktree (or /tmp). (foundation #1087/#932.)"
+           else deny "build worktree guard (Bash): $what runs after 'cd $bv' → '$bdir', which is OUTSIDE the active worktree root '$wt'. A build worker must operate only inside its own worktree (or /tmp). (foundation #1087/#932.)"
            fi ;;
       esac
     fi
 
     # A non-literal operand is unprovable → deny (the exact F#932 shape).
     if is_nonliteral "$op"; then
-      deny "build worktree guard (Bash): a destructive command ($verb) targets '$op', a NON-LITERAL path — it contains an expansion, command substitution, or glob whose value the guard cannot resolve, so it cannot prove the target stays inside the worktree root '$wt'. This is the F#932 failure shape ('rm -rf \"\$(dirname \"\$(pwd)\")\"' wiped ~/dev). Re-issue with a literal path typed in full under '$wt' (or /tmp/\$TMPDIR). (foundation #1087/#932.)"
+      deny "build worktree guard (Bash): $what targets '$op', a NON-LITERAL path — it contains an expansion, command substitution, or glob whose value the guard cannot resolve, so it cannot prove the target stays inside the worktree root '$wt'. This is the F#932 failure shape ('rm -rf \"\$(dirname \"\$(pwd)\")\"' wiped ~/dev). Re-issue with a literal path typed in full under '$wt' (or /tmp/\$TMPDIR). (foundation #1087/#932.)"
     fi
 
     ap=$(abspath "$(strip_quotes "$op")" "$basedir")
@@ -344,8 +402,13 @@ if [ "$tool" = "Bash" ]; then
     case "$ap" in "$wt"/*|"$wt") continue ;; esac
     is_allowlisted "$ap" && continue
     is_gitignored "$ap" && continue
+    # Redirect-only: a character-device sink writes no tree (see is_device_sink).
+    [ "$is_redirect" = 1 ] && is_device_sink "$ap" && continue
 
-    deny "build worktree guard (Bash): a destructive command ($verb) targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
+    if [ "$is_redirect" = 1 ]; then
+      deny "build worktree guard (Bash): $what writes '$ap', which is OUTSIDE the active worktree root '$wt'. The shell performs a redirect itself — it truncates/creates that file whatever the command is — so it is contained on the same terms as a destructive operand. Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, gitignored source copies, and character-device sinks such as /dev/null. (foundation #1355; #1087/#932.)"
+    fi
+    deny "build worktree guard (Bash): $what targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
   done < <(printf '%s' "$cmd" | awk '
     # --- the verb -> operand-model table (see the hook header for the schema).
     # "<select>|<arm>|<base>|<words>". A new destructive shape reusing an
@@ -393,6 +456,36 @@ if [ "$tool" = "Bash" ]; then
       return (s==";"||s=="|"||s=="||"||s=="&"||s=="&&"|| \
               s==">"||s==">>"||s=="<"||s=="2>"||s=="2>>")
     }
+    # --- OUTPUT REDIRECTS (foundation#1355) --------------------------------
+    # A redirect token is `[fd]>`, `[fd]>>`, `[fd]>&`, `&>` or `&>>`, either BARE
+    # (its target is the following token) or with the target GLUED on
+    # (`2>/dev/null`). No path operand can start with `>` or `&>`, so this test
+    # never steals a real operand; a QUOTED redirect character (a grep pattern,
+    # say) does not match either, because the quote is the first character.
+    # NB: this awk program is a single-quoted shell string — no apostrophes.
+    function isRedirTok(s){ return (s ~ /^[0-9]*>/ || s ~ /^&>/) }
+    # Split a redirect token into ROP (operator) and RTGT (glued target, "" when
+    # the target is the NEXT token). RAMP=1 marks the `>&` form, whose target may
+    # be an fd rather than a file — the caller decides via isFdDup, because for a
+    # BARE `>&` the deciding word is the next token.
+    function redirParse(s,   p){
+      ROP=""; RTGT=""; RAMP=0
+      if(!isRedirTok(s)) return 0
+      p=index(s,">")
+      if(substr(s,p+1,1)==">"){ ROP=substr(s,1,p+1); RTGT=substr(s,p+2) }
+      else if(substr(s,p+1,1)=="&"){ ROP=substr(s,1,p+1); RTGT=substr(s,p+2); RAMP=1 }
+      else { ROP=substr(s,1,p); RTGT=substr(s,p+1) }
+      # `>(cmd)` is process substitution — a WORD belonging to the command line,
+      # not a redirect, and never a path this guard can judge.
+      if(substr(RTGT,1,1)=="("){ ROP=""; RTGT=""; RAMP=0; return 0 }
+      return 1
+    }
+    # `>&WORD` names NO file only when WORD is an fd number or `-` (`2>&1`,
+    # `>&-`). A NON-numeric WORD is bash`s both-streams FILE redirect and stays a
+    # containment target — treating every `>&` as a dup would let `2>&$FD`
+    # through unchecked, which the old flat walker did catch (as a non-literal
+    # operand). This is the one place the redirect model must NOT relax.
+    function isFdDup(w){ return (w ~ /^[0-9]+$/ || w=="-") }
     # `find -exec CMD ... {} \;` — the placeholder and the run terminators are
     # find`s own grammar, not path operands of the nested verb. `{}` expands to
     # a path UNDER find`s search root, which the PRE selector already judged,
@@ -509,6 +602,26 @@ if [ "$tool" = "Bash" ]; then
         if(tok=="-exec"||tok=="-execdir"||tok=="-ok"||tok=="-okdir"){ execCtx=1; i++; continue }
         if(tok==";"||tok=="\\;"||tok=="+"){ execCtx=0; i++; continue }
 
+        # An output redirect is a write the SHELL performs, independent of the
+        # verb — so it is emitted as its own record against the active cd
+        # context, and the containment loop judges it on the same terms as an
+        # operand. Checked BEFORE the verb probe: a redirect token is never a
+        # verb key, and every token is reached here exactly once (the walker`s
+        # index only ever moves forward), so no record is emitted twice.
+        if(redirParse(tok)){
+          rop=ROP; rtgt=RTGT; ramp=RAMP
+          if(rtgt==""){
+            # Bare operator: the target is the next token — unless that token is
+            # a separator or another redirect, in which case the line is
+            # malformed and there is nothing to judge.
+            rj=i+1
+            while(rj<=n && t[rj]=="") rj++
+            if(rj<=n && !isSep(t[rj]) && !isRedirTok(t[rj])){ rtgt=t[rj]; i=rj }
+          }
+          if(rtgt!="" && !(ramp && isFdDup(rtgt))){ emit(baseKind,baseVal,rop,rtgt) }
+          i++; continue
+        }
+
         # Resolve the verb through the table. The probe grows one word at a time
         # up to MAXW (derived from the `words` column), and the LONGEST declared
         # match wins — so `git clean` beats a bare `git`, and a future 3-word row
@@ -532,6 +645,25 @@ if [ "$tool" = "Bash" ]; then
           x=t[j]
           if(x==""){ j++; continue }
           if(isSep(x)) break
+          # A GLUED redirect (`2>/dev/null`) is not a path operand of this verb —
+          # but it does NOT end the argument list either, and terminating the run
+          # on it would hide everything after it: `rm -rf 2>/dev/null <outside>`
+          # really does delete <outside>. So skip the redirect (and the target of
+          # a bare form isSep does not cover, e.g. `&>`, `>&`, `3>`) and KEEP
+          # COLLECTING. The BARE `>`/`>>`/`2>`/`2>>` forms still terminate the run
+          # via isSep above — long-standing behavior, deliberately unchanged.
+          # The main walker re-reaches this token and judges it as a redirect.
+          # redirParse (NOT the looser isRedirTok) is the predicate, so the two
+          # sites agree on what counts: `>(cmd)` is process substitution, stays
+          # an ordinary token here, and does not drop the token after it.
+          if(redirParse(x)){
+            j++
+            if(RTGT==""){
+              while(j<=n && t[j]=="") j++
+              if(j<=n && !isSep(t[j]) && !isRedirTok(t[j])) j++
+            }
+            continue
+          }
           m++; o[m]=x; j++
         }
 

@@ -209,13 +209,64 @@ probe "rm a single in-worktree file"   'rm keep.txt'
 probe "rm with flags first"            'rm -r -f -- node_modules'
 
 echo
+echo "-- REDIRECT-1: an output redirect is contained like an operand (#1355) --"
+# Routine worker redirects: these were allowed before and MUST stay allowed. A
+# redirect false-deny would hit almost every command a worker issues.
+probe "in-worktree redirect >"           'echo x > out.txt'
+probe "in-worktree redirect > (glued)"   'echo x >out.txt'
+probe "in-worktree redirect >> to a new subdir" 'cmd >> logs/run.log'
+probe "2>/dev/null (character-device sink)"     'make test 2>/dev/null'
+probe "> /dev/null with a 2>&1 fd dup"   'make test > /dev/null 2>&1'
+probe "2>&1 into a pipe (fd dup)"        'ls 2>&1 | tee out.txt'
+probe "process substitution is not a redirect"  'diff <(sort a) >(sort b)'
+probe "a quoted redirect char is an argument"   'grep ">" src/a.ts'
+# The tightenings. Each was silently ALLOWED before — the whole point of #1355.
+probe "redirect > to a literal path outside"    "echo x > $REPO/leak.txt"
+probe "redirect > outside, glued"               "echo x >$REPO/leak.txt"
+probe "redirect >> (append) outside"            "echo x >> $REPO/append.log"
+probe "redirect 2> (stderr) outside"            "echo x 2> $REPO/err.log"
+probe "redirect 2>> outside"                    "echo x 2>> $REPO/err.log"
+probe "redirect > to a top-level path outside"  'echo x > /etc/passwd'
+probe "redirect > to a NON-LITERAL target"      'echo x > "$HOME/leak"'
+probe "redirect >> to a tilde target"           'echo x >> ~/leak'
+probe "redirect after a cd-context outside"     "cd $REPO && echo x > out.txt"
+probe "redirect >& to a non-numeric (file) target outside" "ls >& $REPO/both.log"
+
+echo
+echo "-- REDIRECT-2: composed with a destructive verb — neither half hides the other --"
+# The failure mode this section exists for: making `>` a run terminator (so the
+# redirect gets checked) must not let the redirect SWALLOW the verb operands
+# around it. Each pair below has one half that the OLD guard already denied — if
+# the new walker loses it, that shows up here as a REGRESSION, not as a green
+# corpus.
+probe "rm -rf ./x with a redirect escaping"     "rm -rf ./dist > $REPO/log"
+probe "an in-worktree redirect must not hide a following rm" \
+  "echo x > out.txt; rm -rf $REPO/parentdir"
+probe "a GLUED redirect must not hide the verb's own operand" \
+  "rm -rf 2>/dev/null $REPO/parentdir"
+probe "a bare >& must not hide the operand after it" \
+  "rm -rf ./dist >& $REPO/both.log"
+probe "a non-literal fd/file word stays unprovable" \
+  'rm -rf ./dist 2>&$FD'
+probe "rsync --delete outside, trailing glued redirect" \
+  "rsync -a --delete src/ $REPO/dest/ 2>/dev/null"
+
+echo
 echo "-- deliberate relaxations (declared, not discovered) --"
-probe_ratified "find -exec rm {} (bare brace placeholder)" \
-  "{} expands to a path UNDER find's search root, and the PRE selector already judged that root. The old guard denied it only because {} trips the non-literal brace test — a FALSE deny on a routine worker command. The nested rm's real operands are still walked (see HIGH-1 above), and {} is exempted by name, not by discarding the argv." \
+# NONE currently apply against origin/main. The `{}` placeholder relaxation this
+# list was built for (foundation#1354) has since MERGED to origin/main, so it is
+# no longer a difference between the working copy and the ref — `probe_ratified`
+# correctly reported it as a STALE RATIFICATION, and per its own contract the
+# entry is retired rather than left asserting a delta that no longer exists. The
+# behavior itself is still pinned, in both polarities, by the ALLOW/DENY corpus
+# in test_build_worktree_guard.sh; only the working-copy-vs-ref claim is gone.
+# `probe_ratified` stays defined: it is the declared home for the NEXT deliberate
+# relaxation, and the redirect work below introduced none.
+probe "find -exec rm {} (placeholder exemption, now shipped)" \
   'find . -name core -exec rm {} \;'
-# The relaxation above is scoped to find's own placeholder, not to the cd
+# ...and that exemption is scoped to find's own placeholder, not to the cd
 # context it runs in — pin that it still escapes nothing.
-probe "cd outside && find -exec rm {} (relaxation stays scoped)" \
+probe "cd outside && find -exec rm {} (exemption stays scoped)" \
   "cd $REPO && find . -name core -exec rm {} \\;"
 
 echo
