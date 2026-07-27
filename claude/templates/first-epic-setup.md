@@ -31,10 +31,19 @@ itself.
 
 # Set up `<project>` with temperloop
 
-This is your first epic driven through the **real** temperloop pipeline
-(`/assess --epic <N>` → `/build`) — not a side setup script. It configures
-the three things a fresh install assumes but doesn't yet have: engineering
-review criteria, a working GitHub branch/PR/merge substrate, and CI.
+This epic's job is to give `<project>` the three guardrails that keep an
+agent's work from landing unreviewed: **review criteria** that say what
+"good" means in this repo, a **protected `main`** that nothing — human or
+agent — can push to directly, and **CI that has to pass** before anything
+merges. With those in place, every change — yours or an agent's — arrives
+as a reviewed, gated pull request you can audit.
+
+How much of that you turn on is your call, one question at a time: nothing
+below is applied without your consent, and anything you decline, or can't
+authorize yourself, is reported back rather than silently skipped.
+
+The work itself runs through temperloop's **real** pipeline
+(`/assess --epic <N>` → `/build`), not a side setup script.
 
 Shape: **interview-first → compose → disclose → apply.** Every question <!-- cite: TPL.2 guard:docs/adr/0010-onboarding-as-first-executed-epic.md -->
 below is asked *before* any external write; each write's consequence is
