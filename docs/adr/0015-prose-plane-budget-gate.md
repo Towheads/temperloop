@@ -17,21 +17,28 @@ no removal mechanism. The composed half loads into every session of every
 repo that actually composes one, so growth there is a permanent
 per-session token cost for those repos.
 
-**Correction (see ADR 0018):** this paragraph originally continued "and a
-fresh clone must absorb the whole composed surface before its first
-session — which cuts against `docs/who-its-for.md`'s own 'No org
-membership and no Projects provisioning step stand between "clone" and
-"first tracked issue"' framing." That premise has since been measured
-false for the case it cites. `workflows/scripts/install/links.sh` §2b
-emits the composed-`CLAUDE.md` entry only when **both**
-`claude/CLAUDE.kernel.md` and `claude/CLAUDE.overlay.md` exist — a
-kernel-only checkout (this repo's own fresh clone) has no overlay file by
-construction, so its install writes no composed doc at all. A fresh
-clone's auto-loaded footprint is roughly 14 KB (a project-level pointer
-file plus agent and command descriptions in the two listings), not the
-~63 KB composed-surface figure this premise assumed. See ADR 0018 for the
-full measurement and its consequences; per that ADR's own Context, this
-ADR is not superseded. Advisory pressure (a lean-authoring norm, standing
+**Correction (see [ADR 0018](0018-measure-session-cost-before-gating.md),
+which measures realized session cost before gating):** this paragraph
+originally continued "and a fresh clone must absorb the whole composed
+surface before its first session — which cuts against
+`docs/who-its-for.md`'s own 'No org membership and no Projects
+provisioning step stand between "clone" and "first tracked issue"'
+framing." That premise has since been measured false for the case it
+cites. `workflows/scripts/install/links.sh` §2b emits the
+composed-`CLAUDE.md` entry only when **both** `claude/CLAUDE.kernel.md`
+and `claude/CLAUDE.overlay.md` exist — a kernel-only checkout (this
+repo's own fresh clone) has no overlay file by construction, so its
+install writes no composed doc at all. But "auto-loaded" is not one
+number: a fresh clone's harness-prefix footprint — loaded before the
+operator types anything — is roughly 14 KB (the project-level pointer
+file plus agent and command descriptions in the two listings); that same
+pointer file's own imperative instructions (`CLAUDE.md` §§1-2) then cause
+`AGENTS.md` and `claude/CLAUDE.kernel.md` to load on turn 1, for a full
+pointer-closure total of ~74 KB — still well under the ~63 KB this
+premise assumed applied unconditionally, but not "14 KB" unqualified. See
+ADR 0018 for the full measurement and its consequences; per that ADR's
+own Decision, this ADR is not superseded. Advisory pressure (a
+lean-authoring norm, standing
 prose reviewers) has existed throughout and accretion continued — the
 observed leak the maturity ladder (`docs/principles.md` § 5) requires
 before a rule earns a mechanical gate.
