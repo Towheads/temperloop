@@ -166,15 +166,30 @@ out="$(COUNT_PROSE_ROOT="$NOTGIT" bash "$SCRIPT" 2>&1)"; rc=$?
 assert_rc "$rc" 1 "non-git root exits 1"
 assert_has "$out" "not a git checkout" "non-git root named"
 
-# 5d. kernel doc + compose seam + git checkout all present, but the
-# contributor-manifest.tsv is missing.
+# 5d. kernel doc + compose seam + a REAL git checkout (tier-1/tier-2 must
+# actually succeed, unlike 5a-5c above) all present, but the
+# contributor-manifest.tsv is missing. Unlike kernel_doc/install_script/
+# git-checkout above, a missing manifest is a SOFT dependency (count-prose.sh
+# is also invoked by validate-prose-budget.sh against minimal scratch trees
+# that exercise only tier-1/tier-2 and carry no contributor-manifest.tsv of
+# their own) — it degrades the SESSION-START CONTRIBUTORS section to a
+# skipped, clearly-labeled no-op on stderr, exit 0, never a script-wide
+# failure.
 NOMANIFEST="$TMP/no-manifest-repo"
-mkdir -p "$NOMANIFEST/.git" "$NOMANIFEST/claude" "$NOMANIFEST/workflows/scripts"
+mkdir -p "$NOMANIFEST/claude" "$NOMANIFEST/workflows/scripts"
 printf '# fixture kernel doc\n' > "$NOMANIFEST/claude/CLAUDE.kernel.md"
 cp "$REPO/workflows/scripts/install-claude-md.sh" "$NOMANIFEST/workflows/scripts/install-claude-md.sh"
+git -C "$NOMANIFEST" init -q
+git -C "$NOMANIFEST" config user.email test@example.com
+git -C "$NOMANIFEST" config user.name test
+git -C "$NOMANIFEST" add -A
+git -C "$NOMANIFEST" commit -q -m fixture
 out="$(COUNT_PROSE_ROOT="$NOMANIFEST" bash "$SCRIPT" 2>&1)"; rc=$?
-assert_rc "$rc" 1 "missing contributor manifest exits 1"
+assert_rc "$rc" 0 "missing contributor manifest degrades gracefully (exit 0, not a script-wide failure)"
+assert_has "$out" "TIER-1" "missing-manifest run still reports TIER-1 (the soft-dependency contract)"
+assert_has "$out" "TIER-2" "missing-manifest run still reports TIER-2 (the soft-dependency contract)"
 assert_has "$out" "contributor manifest not found" "missing contributor manifest named"
+assert_has "$out" "skipping SESSION-START CONTRIBUTORS section" "missing-manifest run names the section it skipped"
 
 # ── 6. SESSION-START CONTRIBUTORS: real-tree happy path ─────────────────────
 echo "--- 6. SESSION-START CONTRIBUTORS real-tree report ---"
