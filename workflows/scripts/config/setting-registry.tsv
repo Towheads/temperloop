@@ -375,3 +375,5 @@ RIGHTS_PROBE_OVERRIDE		enum	kernel	workflows/scripts/build/fixtures/verify-first
 READY_PR_SWEEP_BOARD_LIB	$SCRIPT_DIR/board/lib/board.sh	path	kernel	workflows/scripts/ready-pr-sweep.sh	Path to board.sh (the board registry seam for repo enumeration)
 READY_PR_SWEEP_LIMIT	100	int	kernel	workflows/scripts/ready-pr-sweep.sh	Per-repo open-PR page size passed to gh pr list
 READY_PR_SWEEP_REPOS		string	kernel	workflows/scripts/ready-pr-sweep.sh	Space-separated owner/repo override (bypasses board registry)
+ENV_RECONCILE_CANONICAL_HOOK_DIR	$DEFAULT_CANONICAL_HOOK_DIR	path	kernel	workflows/scripts/build/env-reconcile.sh	Canonical guard-hook dir the consumers' vendored .claude/hooks copies are compared against for STALE_VENDORED_HOOK; the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's "never pre-resolved" rule (empty = comparison skipped, fail-open) (foundation#1353)
+ENV_RECONCILE_VENDORED_HOOKS	build-worktree-guard.sh	string	kernel	workflows/scripts/build/env-reconcile.sh	Space-separated hook basenames whose vendored consumer copies are compared against canonical for STALE_VENDORED_HOOK drift (foundation#1353)
