@@ -233,6 +233,37 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-pipeline-drive}"
 # (a fresh drive would open a duplicate PR). pipeline-tick.sh reads the same label.
 : "${PIPELINE_MERGE_PENDING_LABEL:=funnel-merge-pending}"
 
+# ── Pipeline label self-provisioning (temperloop#795) ──────────────────────────
+# Both funnel-* labels above (PIPELINE_ESCALATED_LABEL, PIPELINE_MERGE_PENDING_LABEL)
+# must EXIST in the target repo before `_gh_sideeffect`'s `--add-label` calls run, or
+# the fail-open wrapper SWALLOWS the "label does not exist" gh error — the item never
+# parks, and pipeline-tick re-routes/re-refuses it every tick with no trace (the
+# silent-thrash failure this repo's own build.config.sh used to document as a manual
+# one-time `gh label create` onboarding step; deleted there in this same change now
+# that it's enforced here instead). Rather than re-implement that create-if-missing
+# dance a third time (build.config.sh's deleted prose was already a second copy of
+# init.sh's — see temperloop#795/#796), source the board adapter for its EXISTING
+# memoized `_board_issues_ensure_label` idiom (lib/board.sh:1149 — the same helper
+# capture.sh's self-healing `fnd:` labels use) and call it at each label's point of
+# use below, once per repo per tick (the memo is keyed `repo|label`, so a burst of
+# adds against the same repo pays `gh label create` at most once).
+#
+# This is NOT the #1157 reclaim's "stay adapter-free" tradeoff above (PIPELINE_UNCLAIM_BIN)
+# — that one avoids loading the adapter's board-STATE resolution (project/field/item
+# lookups) for a single claim release. `_board_issues_ensure_label` resolves no board
+# state at all; it is a standalone, side-effect-idempotent `gh label create || true`
+# wrapper, so sourcing board.sh here costs no adapter surface the reclaim path was
+# built to avoid.
+#
+# board.sh's own test-injection seam `_board_gh` (lib/board.sh:500) hard-codes bare
+# `gh`; redefine it AFTER sourcing to route through PIPELINE_GH_BIN instead (default
+# "gh", so production behavior is unchanged) so this script's existing fake-gh
+# test-double harness (PIPELINE_GH_BIN) covers the ensure-label calls too, exactly
+# like every other gh side-effect in this file.
+# shellcheck source=workflows/scripts/board/lib/board.sh
+[ -f "$HERE/../board/lib/board.sh" ] && source "$HERE/../board/lib/board.sh"
+_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" "$PIPELINE_GH_BIN" "$@"; }  # setting:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default (mirrors lib/board.sh:502)
+
 # Required CI gate name a merge-pending PR must clear to merge (foundation #665).
 # Every build repo names its required ci.yml job `checks` (global CLAUDE.md § Branch
 # & PR policy), so one default serves all boards. When a resumed merge-pending PR's
@@ -614,6 +645,12 @@ _route_refused() {  # $1 = merge_result blob
       n_route_suppressed=$((n_route_suppressed + 1))
       continue
     fi
+    # temperloop#795: ensure the label EXISTS before adding it — a missing label
+    # makes the add below a swallowed no-op (see the point-of-use comment above
+    # PIPELINE_MERGE_PENDING_LABEL's default). color/desc match the onboarding
+    # prose this call replaces (formerly build.config.sh's manual `gh label create`).
+    _board_issues_ensure_label "$repo" "$PIPELINE_ESCALATED_LABEL" "fbca04" \
+      "Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close"
     _gh_sideeffect route "$issue" "$repo" issue edit "$issue" -R "$repo" \
       --add-assignee "$op" --add-label "$PIPELINE_ESCALATED_LABEL"
     _gh_sideeffect route "$issue" "$repo" issue comment "$issue" -R "$repo" \
@@ -721,6 +758,12 @@ _required_check_failed() {  # $1=repo  $2=pr
 # fail-open per gh call.
 _escalate_stuck_pr() {  # $1=repo  $2=issue  $3=pr
   local repo="$1" issue="$2" pr="$3" op="${PIPELINE_OPERATOR#@}"
+  # temperloop#795: ensure funnel-escalated exists before adding it (see the
+  # point-of-use comment above PIPELINE_MERGE_PENDING_LABEL's default). No
+  # matching ensure for the --remove-label below — removing an absent/missing
+  # label is a harmless no-op, unlike a swallowed add.
+  _board_issues_ensure_label "$repo" "$PIPELINE_ESCALATED_LABEL" "fbca04" \
+    "Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close"
   _gh_sideeffect escalate "$issue" "$repo" issue edit "$issue" -R "$repo" \
     --remove-label "$PIPELINE_MERGE_PENDING_LABEL" \
     --add-assignee "$op" --add-label "$PIPELINE_ESCALATED_LABEL"
@@ -773,6 +816,10 @@ _record_handoff() {  # $1 = merge_result blob
     # opens a duplicate PR. Record it under the distinct `handoff` phase so a soak
     # reviewer can spot it; pipeline-tick's fresh-path ground-truth probe (#641) is the
     # belt-and-suspenders that prevents the duplicate even when this label is lost.
+    # temperloop#795: ensure the label EXISTS first — a missing label is exactly the
+    # "FAILED hand-off label" case the comment above just named, silently.
+    _board_issues_ensure_label "$repo" "$PIPELINE_MERGE_PENDING_LABEL" "fbca04" \
+      "Pipeline 5c: PR open, session ended pre-merge — resume next tick"
     _gh_sideeffect handoff "$issue" "$repo" issue edit "$issue" -R "$repo" \
       --add-label "$PIPELINE_MERGE_PENDING_LABEL"
     n_handed_off=$((n_handed_off + 1))
