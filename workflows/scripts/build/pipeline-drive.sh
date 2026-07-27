@@ -265,7 +265,7 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-pipeline-drive}"
 # PIPELINE_UNCLAIM_BIN / PIPELINE_GH_BIN) — a test points it at a nonexistent path
 # to exercise the missing-adapter degrade path below without a real broken checkout.
 : "${PIPELINE_BOARD_LIB:=$HERE/../board/lib/board.sh}"
-# temperloop#801 (shell review of #795): a bare, unguarded `_board_issues_ensure_label`
+# Shell review of temperloop#795: a bare, unguarded `_board_issues_ensure_label`
 # call at each point-of-use site below would be exit 127 (command not found) under
 # `set -euo pipefail` if board.sh failed to source — which ABORTS THE WHOLE TICK on a
 # missing/partial vendor of workflows/scripts/board/, misattributed as a mystery 127
