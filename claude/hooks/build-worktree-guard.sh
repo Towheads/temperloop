@@ -48,22 +48,60 @@
 #     select : which operands are containment-checked
 #              ALL  every non-flag token   (rm, rmdir, mv, shred, truncate)
 #              OF   the `of=` operand only (dd)
-#              LAST the last non-flag token — the destination (rsync)
+#              LAST the last non-flag token — the destination (rsync). Skips an
+#                   option's ARGUMENT via the OPTARG table, or a trailing
+#                   `--exclude foo` would be mistaken for the destination.
 #              PRE  the pre-predicate path operands (find)
 #              NONE no operand is a target (git clean)
 #     arm    : the predicate deciding whether THIS invocation is destructive
 #              ALWAYS      the verb is always destructive
-#              DELETEFLAG  a `--delete*` flag is present (rsync)
+#              RSYNCDEL    an exact member of rsync's delete family — `--del`,
+#                          `--delete`, `--delete-*`, `--remove-source-files`. A
+#                          prefix test would arm on `--delay-updates`, denying a
+#                          plain transfer that deletes nothing.
 #              FINDPRED    a `-delete` or `-exec rm`/`-exec rmdir` predicate (find)
-#              CLEANFLAG   an `-x`/`-d`/`-f` flag is present (git clean)
+#              CLEANFLAG   an `-x`/`-X`/`-d`/`-f` flag LETTER (git clean). Letters,
+#                          never substrings: `index(tok,"d")` matched `--dry-run`
+#                          and falsely denied a read-only command. An explicit
+#                          `-n`/`--dry-run` VETOES arming outright.
 #     base   : CWD = the active cd-context base dir is ITSELF an implicit target
 #              (empty = the base only resolves relative operands, as before)
-#     words  : how many tokens the verb name occupies (2 for `git clean`)
+#     words  : how many tokens the verb name occupies (2 for `git clean`). READ:
+#              the walker derives its key-probe length (MAXW) from this column,
+#              so a 3-word verb is a row, not walker surgery.
+#
+# Two invariants keep the table honest — both are regressions the first cut of
+# this refactor shipped, so they are stated as rules, not as commentary:
+#
+#   1. RESUME AT THE OPERANDS, NEVER PAST THEM. After a row is applied, the walk
+#      re-enters at the first operand token, not at the end of the run. Skipping
+#      the run discards every token the row's `select` did not pick — which hid a
+#      nested `find -exec rm <outside>` argv (the F#932 shape in a find hat) and
+#      hid anything sequenced after a non-ALL verb (`rsync -a s/ d/; rm -rf
+#      <outside>` — and that rsync is not even destructive, so the ROW ITSELF
+#      created the hiding place). Re-scanning costs nothing and makes a nested
+#      verb resolve through the table like any other.
+#   2. AN ARMED ROW ALWAYS EMITS AT LEAST ONE RECORD. The cd-containment check
+#      runs per emitted record, so a row that arms but selects zero targets would
+#      slip the check entirely. Zero selections therefore emit a synthetic "."
+#      against the active base — covering `base`=CWD verbs by construction and
+#      GNU `find -delete`'s implicit path.
+#
+# The one deliberate exemption is find's `-exec` placeholder: `{}` (and the `\;`
+# / `+` terminators) are find's grammar, not operands of the nested verb, and
+# `{}` expands to a path under the search root that PRE already judged. It is
+# exempted BY NAME inside an -exec context, never by discarding the argv.
 #
 # Adding a destructive shape that reuses an existing select/arm pair is a pure
 # TABLE ROW — no new branch. A shape needing a genuinely NEW operand model (a
 # new `select` or `arm` kind) is the signal that enumeration has hit its
 # ceiling; see the Decisions note named at the foot of this header.
+#
+# Coverage regressions in this arm are caught by
+# `claude/hooks/tests/differential-guard-vs-ref.sh`, which runs this guard and a
+# git ref's copy over the same payloads and fails on any `old=DENY new=allow`.
+# The DENY/ALLOW corpus alone provably cannot catch them: a refactor that loses
+# coverage tends to arrive with a corpus that ratifies the loss.
 #
 # CRITICAL SAFETY — INERT BY DEFAULT, ARMED BY A PER-WORKTREE MARKER. The
 # hook enforces ONLY when BOTH hold for the tool cwd's worktree toplevel
@@ -320,9 +358,30 @@ if [ "$tool" = "Bash" ]; then
       MODEL["shred"]     = "ALL|ALWAYS||1"
       MODEL["truncate"]  = "ALL|ALWAYS||1"
       MODEL["dd"]        = "OF|ALWAYS||1"
-      MODEL["rsync"]     = "LAST|DELETEFLAG||1"
+      MODEL["rsync"]     = "LAST|RSYNCDEL||1"
       MODEL["find"]      = "PRE|FINDPRED||1"
       MODEL["git clean"] = "NONE|CLEANFLAG|CWD|2"
+
+      # The verb-key probe length is DERIVED from the table`s own `words`
+      # column, so a three-word verb (`git submodule deinit`) is a row and not
+      # walker surgery. Read here, nowhere else.
+      MAXW=1
+      for(mk in MODEL){ split(MODEL[mk],mf,"|"); if(mf[4]+0>MAXW) MAXW=mf[4]+0 }
+
+      # Options that consume a FOLLOWING token. The LAST model must skip an
+      # option`s argument, or it mistakes that argument for the destination
+      # (`rsync --delete src/ DEST --exclude foo` picks `foo`, not DEST).
+      split("--exclude --include --exclude-from --include-from --files-from " \
+            "--filter -f --rsh -e --rsync-path --compare-dest --copy-dest " \
+            "--link-dest --partial-dir --temp-dir -T --backup-dir --suffix " \
+            "--chmod --chown --usermap --groupmap --copy-as --block-size -B " \
+            "--max-size --min-size --max-delete --bwlimit --timeout " \
+            "--contimeout --port --sockopts --address --password-file " \
+            "--write-batch --only-write-batch --read-batch --protocol --iconv " \
+            "--checksum-seed --log-file --log-file-format --out-format --info " \
+            "--debug --stderr --config --modify-window --remote-option -M " \
+            "--skip-compress --compress-level --outbuf", OA, " ")
+      for(oi in OA){ OPTARG[OA[oi]]=1 }
     }
     function nonlit(s){
       return (index(s,"$")||index(s,"`")||index(s,"*")||index(s,"?")|| \
@@ -334,41 +393,69 @@ if [ "$tool" = "Bash" ]; then
       return (s==";"||s=="|"||s=="||"||s=="&"||s=="&&"|| \
               s==">"||s==">>"||s=="<"||s=="2>"||s=="2>>")
     }
+    # `find -exec CMD ... {} \;` — the placeholder and the run terminators are
+    # find`s own grammar, not path operands of the nested verb. `{}` expands to
+    # a path UNDER find`s search root, which the PRE selector already judged,
+    # so it is allow-listed EXPLICITLY here rather than by discarding the argv.
+    function isExecNoise(s){ return (s=="{}"||s=="+"||s=="\\;"||s==";") }
     # Never emit an empty baseVal field: a tab-delimited shell read collapses
     # empty whitespace-run fields, which would shift op into bv. CWD uses a dash.
     function emit(bk,bv,vb,op){
       if(op==""){ return }
       if(bv==""){ bv="-" }
+      emitted++
       print bk "\t" bv "\t" vb "\t" op
     }
     # `arm`: is THIS invocation destructive at all? Reads the operand run o[1..m].
-    function armed(arm,   k){
+    function armed(arm,   k,tk,armv){
       if(arm=="ALWAYS"){ return 1 }
-      if(arm=="DELETEFLAG"){
-        for(k=1;k<=m;k++){ if(substr(o[k],1,8)=="--delete") return 1 }
+      if(arm=="RSYNCDEL"){
+        # Exact members of the delete family only. A prefix test would catch
+        # `--delay-updates` (harmless) and arm a plain transfer, which
+        # criterion 2 forbids: no --delete* flag, no inspection.
+        for(k=1;k<=m;k++){
+          tk=o[k]
+          if(tk=="--del"||tk=="--delete"||substr(tk,1,9)=="--delete-") return 1
+          if(tk=="--remove-source-files"||tk=="--remove-sent-files") return 1
+        }
         return 0
       }
       if(arm=="FINDPRED"){
         for(k=1;k<=m;k++){
           if(o[k]=="-delete"){ return 1 }
-          if(o[k]=="-exec"||o[k]=="-execdir"){
+          if(o[k]=="-exec"||o[k]=="-execdir"||o[k]=="-ok"||o[k]=="-okdir"){
             if(k<m && (o[k+1]=="rm"||o[k+1]=="rmdir")) return 1
           }
         }
         return 0
       }
       if(arm=="CLEANFLAG"){
+        # Match flag LETTERS, never substrings: `index(tk,"d")` armed on
+        # `--dry-run`, falsely denying a read-only command — and a false deny is
+        # what gets the guard disarmed. An explicit dry run VETOES arming
+        # outright, whatever else is present (git honors -n over -f too).
+        armv=0
         for(k=1;k<=m;k++){
-          if(isFlag(o[k]) && (index(o[k],"x")||index(o[k],"d")||index(o[k],"f"))) return 1
+          tk=o[k]
+          if(tk=="--dry-run"){ return 0 }
+          if(tk=="--force"||tk=="--directory"){ armv=1; continue }
+          if(tk ~ /^-[A-Za-z]+$/){
+            if(index(tk,"n")){ return 0 }
+            if(index(tk,"x")||index(tk,"X")||index(tk,"d")||index(tk,"f")){ armv=1 }
+          }
         }
-        return 0
+        return armv
       }
       return 0
     }
     # `select`: which tokens of the operand run o[1..m] are containment targets.
     function targets(sel,   k,last){
       if(sel=="ALL"){
-        for(k=1;k<=m;k++){ if(!isFlag(o[k])) emit(baseKind,baseVal,verb,o[k]) }
+        for(k=1;k<=m;k++){
+          if(isFlag(o[k])) continue
+          if(execCtx && isExecNoise(o[k])) continue
+          emit(baseKind,baseVal,verb,o[k])
+        }
         return
       }
       if(sel=="OF"){
@@ -376,8 +463,11 @@ if [ "$tool" = "Bash" ]; then
         return
       }
       if(sel=="LAST"){
-        last=""
-        for(k=1;k<=m;k++){ if(!isFlag(o[k])) last=o[k] }
+        last=""; k=1
+        while(k<=m){
+          if(isFlag(o[k])){ if(o[k] in OPTARG){ k+=2 } else { k++ } ; continue }
+          last=o[k]; k++
+        }
         emit(baseKind,baseVal,verb,last)
         return
       }
@@ -391,12 +481,12 @@ if [ "$tool" = "Bash" ]; then
         while(k<=m && !isFlag(o[k])){ emit(baseKind,baseVal,verb,o[k]); k++ }
         return
       }
-      # NONE: the verb takes no target operand (its base is the target — see
-      # the `base` field, handled by the caller).
+      # NONE: the verb takes no target operand — the caller emits the synthetic
+      # "." record that puts its cd-context base through the containment check.
     }
     {
       n=split($0,t,/[[:space:]]+/)
-      baseKind="CWD"; baseVal=""
+      baseKind="CWD"; baseVal=""; execCtx=0
       i=1
       while(i<=n){
         tok=t[i]
@@ -413,14 +503,28 @@ if [ "$tool" = "Bash" ]; then
           }
           i++; continue
         }
-        # Resolve the verb through the table: try the two-word form first
-        # (`git clean`), then the bare token.
-        j2=i+1
-        while(j2<=n && t[j2]=="") j2++
-        key2=(j2<=n) ? (tok " " t[j2]) : ""
-        if(key2!="" && (key2 in MODEL)){ verb=key2; runstart=j2+1 }
-        else if(tok in MODEL){ verb=tok; runstart=i+1 }
-        else { i++; continue }
+        # `find -exec`/-ok argv context: the nested verb is walked like any
+        # other (see the resume rule below), and only find`s own placeholder
+        # tokens are exempted from its operand selection.
+        if(tok=="-exec"||tok=="-execdir"||tok=="-ok"||tok=="-okdir"){ execCtx=1; i++; continue }
+        if(tok==";"||tok=="\\;"||tok=="+"){ execCtx=0; i++; continue }
+
+        # Resolve the verb through the table. The probe grows one word at a time
+        # up to MAXW (derived from the `words` column), and the LONGEST declared
+        # match wins — so `git clean` beats a bare `git`, and a future 3-word row
+        # needs no walker change.
+        verb=""; runstart=0; kkey=""; kw=0; kj=i
+        while(kw<MAXW && kj<=n){
+          if(t[kj]==""){ kj++; continue }
+          kkey=(kkey=="") ? t[kj] : (kkey " " t[kj])
+          kw++
+          if(kkey in MODEL){
+            split(MODEL[kkey],f,"|")
+            if(f[4]+0==kw){ verb=kkey; runstart=kj+1 }
+          }
+          kj++
+        }
+        if(verb==""){ i++; continue }
 
         # Collect the operand run (flags included — the `arm` predicate reads them).
         m=0; j=runstart
@@ -432,14 +536,26 @@ if [ "$tool" = "Bash" ]; then
         }
 
         split(MODEL[verb],f,"|")
+        emitted=0
         if(armed(f[2])){
           targets(f[1])
-          # `base`=CWD: the verb has no target operand, so the cd-context base
-          # dir is itself the thing being destroyed (git clean). "." resolves
-          # against that base through the same containment path as any operand.
-          if(f[3]=="CWD"){ emit(baseKind,baseVal,verb,".") }
+          # An armed row that selected NO target still has a base to judge:
+          # `base`=CWD verbs (git clean) have no target operand by construction,
+          # and a path-taking verb can be armed with its path implicit (GNU
+          # `find -delete`). Emit a synthetic "." so the cd-context check runs
+          # either way — otherwise an armed verb with zero records slips past
+          # the containment loop entirely.
+          if(emitted==0){ emit(baseKind,baseVal,verb,".") }
         }
-        i=j; continue
+
+        # RESUME AT THE OPERANDS, NOT PAST THEM. Advancing to `j` (the end of
+        # the run) discarded every token the row`s `select` did not pick — which
+        # hid a nested `find -exec rm <outside>` argv, and hid any command
+        # sequenced after a LAST/PRE/NONE/OF verb (`rsync -a s/ d/; rm -rf
+        # <outside>`). Re-entering at `runstart` re-scans the run through the
+        # same table, so a nested or following verb resolves like any other.
+        # Progress is guaranteed: runstart > i always.
+        i=runstart
       }
     }')
   exit 0
