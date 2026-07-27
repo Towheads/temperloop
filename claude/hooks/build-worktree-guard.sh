@@ -65,6 +65,16 @@
 # never blocks a write — the guard must never wedge a legitimate session.
 # See "Decisions/stageFind - Worker write-isolation guarantee.md" in the
 # operator's knowledge store (workflows/scripts/lib/knowledge_store.contract.md).
+#
+# OBSERVABILITY — every early exit logs `INERT: <reason>`. Because failing open
+# is silent, "the guard ran and allowed this" and "the guard never armed" look
+# identical from outside, so a regression to always-open is invisible. Each
+# early `exit 0` below therefore goes through `inert()`, which names the reason
+# in the log. Reading it: an INERT line = no judgment was made; NO INERT line on
+# an armed worktree = the guard ran and permitted. `claude/hooks/tests/
+# test_build_worktree_guard.sh` asserts both arms against DENY and ALLOW corpora,
+# and uses the absence of an INERT line to prove the ALLOW corpus was actually
+# judged rather than silently skipped.
 set -uo pipefail
 
 # Hook logs live in the XDG state dir (foundation #773), not ~/.claude/hooks/ —
@@ -73,6 +83,18 @@ XDG_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/foundation"
 mkdir -p "$XDG_STATE_DIR" 2>/dev/null || true
 LOG="$XDG_STATE_DIR/build-worktree-guard.log"
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG" 2>/dev/null || true; }
+
+# Exit WITHOUT having made a containment judgment, recording why.
+#
+# This guard's normal state is to allow silently, so an "allowed" outcome and a
+# "never armed / never reached" outcome are indistinguishable from the outside —
+# which is exactly how it could regress to always-open with nothing observable
+# changing (the F#932 blast radius). Every early exit therefore names its reason
+# in the log: an INERT line means the guard made NO judgment, and its ABSENCE on
+# an armed worktree means the guard ran and permitted. Diagnostics only — this
+# never writes stdout (the PreToolUse "empty stdout = allow" contract is
+# unchanged) and never converts a fail-open into a block.
+inert() { log "INERT: $1"; exit 0; }
 
 # Emit a PreToolUse deny verdict and exit. The reason is surfaced to Claude.
 deny() {
@@ -85,13 +107,16 @@ deny() {
 }
 
 INPUT=$(cat 2>/dev/null || true)
-[ -n "$INPUT" ] || exit 0
-command -v jq >/dev/null 2>&1 || exit 0   # fail open: no jq, no enforcement
+[ -n "$INPUT" ] || inert "empty hook input on stdin"
+# fail open: no jq, no enforcement
+command -v jq >/dev/null 2>&1 || inert "jq not found on PATH — cannot parse the hook payload"
 
 tool=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 case "$tool" in
   Bash|Edit|Write|MultiEdit) ;;
-  *) exit 0 ;;   # matcher should scope this, but double-check
+  # matcher should scope this, but double-check. An empty tool also lands here,
+  # which is how unparseable (non-JSON) input fails open.
+  *) inert "tool '$tool' is not one of Bash/Edit/Write/MultiEdit" ;;
 esac
 
 # The tool's working directory (where relative paths resolve, and where we
@@ -103,7 +128,7 @@ cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 # (cwd not in a repo), the hook is inert — we can't make a containment
 # judgment, and only build worktrees (always git checkouts) are guarded.
 worktree_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
-[ -n "$worktree_root" ] || exit 0
+[ -n "$worktree_root" ] || inert "cwd '$cwd' is not inside a git working tree"
 
 # Realpath the worktree root, so a symlinked cwd and a pwd -P'd target compare
 # on the same basis (and the .wt convention check below sees the real parent).
@@ -117,7 +142,7 @@ wt="${worktree_root%/}"
 # `workflows/scripts/build/worktree.sh create` drops. This is the single
 # most important safety property: globally installed, the hook is a no-op for
 # every interactive session.
-[ -f "$wt/.build-guard" ] || exit 0
+[ -f "$wt/.build-guard" ] || inert "no .build-guard marker at '$wt' — guard unarmed (the normal interactive-session state)"
 
 # Marker present but the toplevel is NOT under a `<repo>.wt/` dir — a stale or
 # hand-copied marker outside the build worktree convention. Warn and fail
@@ -127,7 +152,7 @@ case "$(dirname "$wt")" in
   *)
     echo "build-worktree-guard: marker '$wt/.build-guard' present but '$wt' is not under a '<repo>.wt/' worktree dir — stale marker? Failing OPEN (writes allowed). Remove the marker or recreate the worktree via workflows/scripts/build/worktree.sh." >&2
     log "WARN fail-open: marker outside .wt convention at $wt"
-    exit 0
+    inert "marker '$wt/.build-guard' present but '$wt' is not under a '<repo>.wt/' dir — stale or hand-copied marker, guard NOT armed"
     ;;
 esac
 
@@ -146,6 +171,10 @@ abspath() {
   dir=$(dirname -- "$p")
   leaf=$(basename -- "$p")
   if rdir=$(cd "$dir" 2>/dev/null && pwd -P); then
+    # A top-level path ("/tmp") has dirname "/", and re-appending the separator
+    # would yield "//tmp" — which matches NO allow-list root, so `cd /tmp && rm
+    # -rf x` was falsely DENIED. Drop the root's own slash before rejoining.
+    [ "$rdir" = "/" ] && rdir=""
     printf '%s/%s\n' "$rdir" "$leaf"
   else
     # Parent dir doesn't exist yet — return the lexically-joined path as-is.
@@ -206,7 +235,7 @@ strip_quotes() {
 # --- Bash arm: destructive filesystem verbs (foundation #1087 / F#932) --------
 if [ "$tool" = "Bash" ]; then
   cmd=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
-  [ -n "$cmd" ] || exit 0
+  [ -n "$cmd" ] || inert "Bash tool_input.command is absent or empty — nothing to inspect"
 
   # Walk the command left-to-right. Track the active `cd`/`pushd` context, and
   # for each destructive verb emit one tab-delimited record per path operand:
@@ -316,7 +345,7 @@ done < <(printf '%s' "$INPUT" | jq -r '
   | .[]' 2>/dev/null)
 
 # No parseable target → fail open.
-[ "${#targets[@]}" -gt 0 ] || exit 0
+[ "${#targets[@]}" -gt 0 ] || inert "no parseable write target in tool_input for tool '$tool'"
 
 for t in "${targets[@]}"; do
   ap=$(abspath "$t")
