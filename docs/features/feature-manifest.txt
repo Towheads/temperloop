@@ -123,6 +123,13 @@ telemetry workflows/scripts/validate-command-run-emit.sh
 telemetry workflows/scripts/validate-issue-touch-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
+# session-context — the realized-session-context probe (temperloop#828,
+# epic #810): the SessionEnd-seam raw-lake emit, its shared token-sum
+# helper (also called by claude/status-line.sh's display), and their tests.
+telemetry workflows/scripts/emit-session-context.sh
+telemetry workflows/scripts/lib/token_sum.sh
+telemetry workflows/scripts/lib/tests/test_token_sum.sh
+telemetry workflows/scripts/tests/test_emit_session_context.sh
 
 # ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
 pipeline-driver claude/commands/pipeline-drive.md

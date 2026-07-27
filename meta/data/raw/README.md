@@ -11,7 +11,8 @@ this kernel checkout emits.
 
 **Scope.** This stub documents only the streams a bare kernel checkout
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
-unioned at read time), `funnel`, `knowledge-search-fallback`, and `gh-calls`.
+unioned at read time), `funnel`, `knowledge-search-fallback`, `gh-calls`,
+and `session-context`.
 A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
@@ -34,6 +35,7 @@ meta/data/raw/<stream>-<YYYY-MM>.jsonl
 - `claims-<YYYY-MM>.jsonl`
 - `funnel-<YYYY-MM>.jsonl`
 - `gh-calls-<YYYY-MM>.jsonl`
+- `session-context-<YYYY-MM>.jsonl`
 
 Each file is newline-delimited JSON (JSONL), one record per line, strictly
 append-only — a reader unions across month-files as needed and never expects
@@ -270,4 +272,64 @@ Example record:
 
 ```json
 {"schema_version":"1","ts":"2026-07-10T18:22:47Z","host":"mini","start_ms":1783455767210,"dur_ms":143,"exit_code":0,"pid":41213,"ppid":41190,"tool":"gh","context":"worklist","op":"board:_board_item_list_fresh","cwd":"/home/dev/checkout","args":"issue list --repo o/r","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+```
+
+### `session-context` — `session-context-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/emit-session-context.sh` (temperloop#828, epic
+#810 "session-start context growth") — the **realized-session-context
+probe**. Its job is measuring the WHOLE session's realized context, not only
+the session-start prefix a prior scope measured: relocating content out of
+an always-loaded document improves a t0 (before-the-agent-reads-anything)
+metric *by construction*, whether or not the agent reads the relocated
+content two turns later. This stream is what makes a relocation's *real*
+value measurable instead of assumed.
+
+Sits at the SessionEnd hook seam (`claude/hooks/session-end-log.sh`), which
+calls the emit script with the transcript path ALREADY resolved through the
+compaction-rollover chain (a compaction rolls the conversation into a new
+`.jsonl`; re-deriving the path here would silently undercount exactly the
+long sessions this probe exists to measure) and the harness's
+`.context_window.*` fields already in hand — the emit script never resolves
+either itself.
+
+**Opt-in, default OFF** (setting-registry.tsv row `SESSION_CONTEXT_RAW_ENABLED`)
+— an explicit switch, never sink-presence used as an implicit one. The
+SessionEnd hook checks this gate before invoking the emit script at all; a
+stranger's fresh kernel install therefore writes nothing to this stream
+until they opt in.
+
+**One-off reading.** `emit-session-context.sh --transcript <path> --print-only`
+computes and prints the record to stdout without appending to the lake and
+without checking the opt-in gate above — a direct, explicit invocation is
+the consent for that one call. This is what lets another command (e.g. a
+design that wants to measure realized context around a specific
+intervention) take a single on-demand reading rather than only ever seeing
+this stream fire passively at SessionEnd.
+
+**Structural privacy.** Token counting is delegated entirely to
+`workflows/scripts/lib/token_sum.sh`'s `token_sum_transcript()`, whose only
+jq selector is `.message.usage.*` — never `.message.content` or any other
+transcript field. This is the SAME expression `claude/status-line.sh`'s
+"Tokens: NNk" display calls, so the displayed and recorded figures cannot
+drift apart.
+
+Record shape: `{schema_version, ts, session_id, host, project, cwd, transcript_tokens_total, context_window_size, context_window_remaining_pct}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams; `null` when the caller omitted it |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `hostname -s` |
+| `project` | string \| null | the caller's `--project` value (e.g. the session's `cwd` basename), or `null` |
+| `cwd` | string \| null | the caller's `--cwd` value, or `null` |
+| `transcript_tokens_total` | integer \| null | cumulative token sum (input + cache-creation + cache-read + output) across EVERY message in the whole (rollover-resolved) transcript — the realized-context figure this stream exists to record; `null` if no `--transcript` was passed |
+| `context_window_size` | integer \| null | the harness's `.context_window.context_window_size` at SessionEnd, passed through verbatim; `null` if absent |
+| `context_window_remaining_pct` | number \| null | the harness's `.context_window.remaining_percentage` at SessionEnd, passed through verbatim; `null` if absent |
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-07-27T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini","project":"temperloop","cwd":"/home/dev/temperloop","transcript_tokens_total":83659,"context_window_size":200000,"context_window_remaining_pct":58.2}
 ```

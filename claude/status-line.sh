@@ -1,6 +1,22 @@
 #!/bin/bash
 # Display: current folder path | model | context remaining progress bar
 
+# Shared token-sum helper (temperloop#828): the "Tokens: NNk" figure below and
+# the SessionEnd realized-context-probe emit (emit-session-context.sh) must
+# compute the exact same number from a transcript, or the displayed and
+# recorded figures can silently drift apart. BASH_SOURCE-relative resolution,
+# same pattern claude/hooks/*.sh already uses for workflows/scripts/lib
+# (claude/<this file> -> ../workflows/scripts/lib); a stripped-down tree with
+# no workflows/scripts/lib/ degrades to an inline zero rather than breaking
+# the status line.
+_STATUS_LINE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../workflows/scripts/lib" 2>/dev/null && pwd)"
+if [ -n "$_STATUS_LINE_LIB_DIR" ] && [ -f "$_STATUS_LINE_LIB_DIR/token_sum.sh" ]; then
+  # shellcheck source=../workflows/scripts/lib/token_sum.sh
+  . "$_STATUS_LINE_LIB_DIR/token_sum.sh"
+else
+  token_sum_transcript() { printf '0\n'; }
+fi
+
 input=$(cat)
 
 # Persist the live rate-limit snapshot for out-of-band consumers — the build
@@ -79,10 +95,7 @@ format_tokens() {
 build_tokens_part() {
   local transcript total
   transcript=$(echo "$input" | jq -r '.transcript_path // empty')
-  if [ -n "$transcript" ] && [ -f "$transcript" ]; then
-    total=$(jq -s 'map(.message.usage // {} | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0) + (.output_tokens // 0)) | add // 0' "$transcript" 2>/dev/null)
-  fi
-  [ -z "$total" ] || [ "$total" = "null" ] && total=0
+  total=$(token_sum_transcript "$transcript")
   printf "Tokens: %s" "$(format_tokens "$total")"
 }
 

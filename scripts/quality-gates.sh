@@ -272,6 +272,28 @@ KERNEL_GATES=(
   # stands in for the checkout-surface case). Same direct-`bash` form as the
   # issue-marker-probe gate above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_command_declared.sh"
+  # token_sum.sh (temperloop#828, epic #810 "realized-session-context
+  # probe"): the ONE shared jq expression claude/status-line.sh's "Tokens:
+  # NNk" display and workflows/scripts/emit-session-context.sh's SessionEnd
+  # emit both call, so the displayed and recorded figures can't drift
+  # apart. Covers the sum itself (missing fields default to 0; missing/
+  # empty/malformed transcripts degrade to "0") plus the STRUCTURAL privacy
+  # guarantee: a synthetic transcript with recognizable prose content still
+  # sums to exactly the expected total, and a static grep proves the
+  # filter's only selector is `.message.usage` (never `.message.content`/
+  # `.message.role`). Same direct-`bash` form as the command-declared gate
+  # above (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/lib/tests/test_token_sum.sh"
+  # emit-session-context.sh (temperloop#828, epic #810): the
+  # realized-session-context probe's raw-lake emit — print-only one-off
+  # reading vs. normal append-to-lake mode, record shape (schema_version/
+  # ts/session_id/host/project/cwd/transcript_tokens_total/
+  # context_window_size/context_window_remaining_pct), missing-transcript
+  # and unknown-arg tolerance (warn, never fail, always exit 0), and the
+  # same STRUCTURAL privacy proof as token_sum.sh's own suite, at this
+  # script's own call boundary. Same direct-`bash` form as the sibling
+  # lib-tests gates above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/tests/test_emit_session_context.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across
