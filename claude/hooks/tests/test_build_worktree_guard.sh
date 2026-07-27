@@ -149,6 +149,15 @@ NONREPO="$TMP/nonrepo"; mkdir -p "$NONREPO"    # not a git working tree at all
 
 WT_RP=$(cd "$WT" && pwd -P)
 
+# Multi-line commands. The guard's awk walker is LINE-oriented and carries no
+# heredoc state, so a heredoc BODY is walked as if each line were a command —
+# these two pin both sides of that. The markdown one is a DISCLOSED false
+# positive (a blockquote reads as a redirect to a non-literal target); pinning
+# it means a future change to the walker cannot flip it silently in either
+# direction. Built with $'...' so the newlines are real.
+HEREDOC_PLAIN=$'cat > README.md <<\'EOF\'\nplain prose line\nanother line\nEOF'
+HEREDOC_MARKDOWN=$'cat > README.md <<\'EOF\'\n> **Note:** see the docs\nEOF'
+
 # Assert the fixture's load-bearing shape before trusting a single result: the
 # armed worktree must sit under a `<repo>.wt/` parent and carry the marker.
 case "$(dirname "$WT_RP")" in
@@ -577,13 +586,98 @@ allow_bash "redirect >&- (fd close, names no file)"      'ls >&- '
 # `>(cmd)` is process substitution — a word belonging to the command line, not a
 # redirect. Reading it as one would deny a routine diff.
 allow_bash "process substitution is not a redirect"      'diff <(sort a) >(sort b)'
-# A quoted redirect character is an argument, not an operator: the quote is the
-# first character, so the operator test cannot match it.
+# A token carrying a quote is never re-split at an embedded `>`, because inside
+# quotes a `>` is data. That covers the GLUED case pinned here. It does NOT
+# cover a `>` standing alone inside a quoted phrase (`echo "route to > $X"`),
+# where whitespace splitting has already separated the operator — that reads as
+# a real redirect and denies. Fails closed; stated so the claim stays accurate.
 allow_bash "a quoted '>' is an argument, not a redirect" 'grep ">" src/a.ts'
-# The device-sink allow-list is scoped to redirect targets. A destructive verb
+allow_bash "quoted redirect chars are not re-split"      'grep "a>b" src/a.ts'
+allow_bash "redirect >| (force-truncate) to an in-worktree file" 'echo x >| out.txt'
+allow_bash "redirect >| GLUED to an in-worktree file"    'echo x >|out.txt'
+# Word-GLUED redirects: `>` is a bash metacharacter anywhere unquoted in a word,
+# so these are real redirects and their in-worktree half must stay silent.
+allow_bash "word-glued redirect to an in-worktree file"  'date>out.txt'
+allow_bash "word-glued redirect, arg then operator"      'echo x>out.txt'
+# The rest of the operator family the header treats as load-bearing.
+allow_bash "redirect &> (both streams) in-worktree"      'ls &> both.log'
+allow_bash "redirect &>> (both streams, append)"         'ls &>> both.log'
+allow_bash "redirect 1> (explicit stdout fd)"            'ls 1> o.log'
+allow_bash "redirect 3> (arbitrary fd)"                  'ls 3> o.log'
+allow_bash "redirect > /dev/zero (device sink)"          'echo x > /dev/zero'
+allow_bash "redirect > /dev/tty (device sink)"           'echo x > /dev/tty'
+allow_bash "redirect > /dev/stderr (device sink)"        'echo x > /dev/stderr'
+# A read-only command after an OUTSIDE cd whose only redirect is a device sink.
+# An absolute sink resolves without the base, so the cd must not condemn it —
+# `cd ../otherrepo && git log 2>/dev/null` is an ordinary worker move.
+allow_bash "device-sink redirect survives an OUTSIDE cd" "cd $REPO && ls 2>/dev/null"
+allow_bash "device-sink redirect survives an outside cd (git log)" \
+  "cd $REPO && git log 2>/dev/null"
+# NON-LITERAL redirect targets judged by their literal directory PREFIX. `>
+# "$VAR"` is an everyday idiom (~1,480 in this repo alone); denying all of them
+# is the false-positive class that gets a guard disarmed. The DENY twins below
+# pin exactly where the relief stops.
+allow_bash "redirect to \$TMPDIR (an allow-listed root the guard knows)" \
+  'echo x > "$TMPDIR/out.log"'
+allow_bash "redirect to \${TMPDIR} braced form"          'echo x > ${TMPDIR}/out.log'
+allow_bash "redirect to \$TMPDIR with a trailing 2>&1"   'make test > "$TMPDIR/out.log" 2>&1'
+allow_bash "redirect with an in-tree literal prefix + \$(...)" \
+  'cmd > logs/$(date +%F).log'
+allow_bash "redirect with an in-tree literal prefix + \$VAR" 'cmd > src/$X.log'
+# A heredoc BODY with no metacharacters is walked harmlessly.
+allow_bash "heredoc body with no redirect-looking line"  "$HEREDOC_PLAIN"
+
+# =============================================================================
+echo
+echo "== DENY: counter-cases to the ALLOW half above =="
+# Each of these is the DENY twin of a relief granted just above — the pair is
+# what proves a relief is SCOPED rather than a hole. They get their own banner:
+# an assertion that something is REFUSED does not belong under one promising
+# commands are permitted.
+#
+# The device-sink allow-list is scoped to redirect TARGETS. A destructive verb
 # aimed at the same path is still judged as an ordinary out-of-tree operand.
 deny_bash "device sink is redirect-scoped: rm -rf /dev/null is still judged" \
   'rm -rf /dev/null'
+# ...and the literal-PREFIX relief is redirect-scoped too. `rm -rf logs/$(date)`
+# removes a TREE at a computed path — the F#932 shape — and keeps denying.
+deny_bash "literal-prefix relief is redirect-scoped: rm -rf logs/\$(date)" \
+  'rm -rf logs/$(date +%F)'
+# ACCEPTED COLLATERAL, stated rather than discovered later: a redirect target
+# with no literal directory component gives the guard nothing to judge, so it
+# denies; a worker re-issues as `logs/$NAME`. This is the cost the prefix rule
+# buys, pinned so it stays a decision on the record and not an accident.
+deny_bash "ACCEPTED COLLATERAL: a bare \$VAR redirect target denies" \
+  'echo x > "$LOG"'
+deny_bash "a leaf-only expansion (no directory part) denies" 'echo x > out$X.log'
+# The prefix must be a real DIRECTORY that is itself contained.
+deny_bash "literal prefix resolving OUTSIDE the worktree"  'echo x > /etc/$USER/x'
+deny_bash "literal prefix climbing out via .."             'echo x > ../../$X/f'
+# /dev/fd/* is NOT a sink: it is platform-divergent (Linux resolves it through
+# /proc/self/fd), so it is excluded by design rather than matched unreliably.
+deny_bash "/dev/fd/N is not an allow-listed sink (platform-divergent)" \
+  'echo x > /dev/fd/3'
+# Word-glued redirects, the escaping half — the bypass this pairing closes.
+deny_bash "word-glued redirect to a path outside"        "date>$REPO/passwd"
+deny_bash "word-glued redirect, arg then operator, outside" "echo x>$REPO/leak"
+deny_bash "word-glued redirect with a space AFTER only"  "echo x> $REPO/leak"
+# bash's own fd rule: in `x2>/f` the `2` belongs to the WORD, not the operator.
+deny_bash "a non-fd digit prefix is part of the word, not the operator" \
+  "echo x2>$REPO/leak"
+deny_bash "two redirects glued into one word"            "date>/a>$REPO/b"
+# >| is a force-truncate: the same write, and it must not parse as target `|`.
+deny_bash "redirect >| (force-truncate) to a path outside" "echo x >| $REPO/passwd"
+deny_bash "redirect >| GLUED to a path outside"          "echo x >|$REPO/passwd"
+# The remaining operator family, escaping half.
+deny_bash "redirect &> to a path outside"                "ls &> $REPO/both"
+deny_bash "redirect &>> to a path outside"               "ls &>> $REPO/both"
+deny_bash "redirect 1> to a path outside"                "ls 1> $REPO/o"
+deny_bash "redirect 3> to a path outside"                "ls 3> $REPO/o"
+# DISCLOSED FALSE POSITIVE, pinned so a future change cannot flip it silently:
+# the walker is line-oriented and has no heredoc state, so a markdown blockquote
+# in a heredoc body reads as a redirect to a non-literal target. Fails CLOSED.
+deny_bash "DISCLOSED: a markdown blockquote in a heredoc body reads as a redirect" \
+  "$HEREDOC_MARKDOWN"
 
 allow_file "Write a new file at the worktree root"   Write "$WT_RP/new.txt"
 allow_file "Write a relative in-worktree path"       Write "newdir/new.txt"

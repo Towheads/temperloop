@@ -74,6 +74,11 @@ mkdir -p "$WT/src" "$WT/dist" "$WT/build"
 echo a >"$WT/src/a.ts"; echo k >"$WT/keep.txt"
 WT_RP=$(cd "$WT" && pwd -P)
 
+# Multi-line commands — the walker is line-oriented and has no heredoc state, so
+# a heredoc BODY is walked as if each line were a command. Both sides pinned.
+HEREDOC_PLAIN=$'cat > README.md <<\'EOF\'\nplain prose line\nanother line\nEOF'
+HEREDOC_MARKDOWN=$'cat > README.md <<\'EOF\'\n> **Note:** see the docs\nEOF'
+
 verdict() { # <hook> <cwd> <command> -> deny|allow
   local hook="$1" cwd="$2" cmd="$3" json out
   json=$(jq -cn --arg c "$cmd" --arg cwd "$cwd" \
@@ -250,6 +255,43 @@ probe "a non-literal fd/file word stays unprovable" \
   'rm -rf ./dist 2>&$FD'
 probe "rsync --delete outside, trailing glued redirect" \
   "rsync -a --delete src/ $REPO/dest/ 2>/dev/null"
+
+echo
+echo "-- REDIRECT-3: the spellings that bypassed containment (review round 2) --"
+# `>` is a bash metacharacter ANYWHERE unquoted in a word, so whitespace
+# splitting alone hid `date>/etc/passwd` — its record stream was EMPTY and the
+# write went unjudged. Word-glued forms are now re-split before the walk, and
+# `>|` (a force-truncate) no longer parses as operator `>` with target `|`.
+# These probe the FIX, not a regression: the old guard checked no redirects at
+# all, so every escaping shape here reads as `tightened`.
+probe "word-glued redirect outside"            "date>$REPO/passwd"
+probe "word-glued redirect, arg then operator" "echo x>$REPO/leak"
+probe "word-glued redirect, space AFTER only"  "echo x> $REPO/leak"
+probe "non-fd digit prefix belongs to the word" "echo x2>$REPO/leak"
+probe "two redirects glued into one word"      "date>/a>$REPO/b"
+probe "word-glued redirect, in-worktree"       'date>out.txt'
+probe "redirect >| (force-truncate) outside"   "echo x >| $REPO/passwd"
+probe "redirect >| glued, outside"             "echo x >|$REPO/passwd"
+probe "redirect >| in-worktree"                'echo x >| out.txt'
+probe "redirect &> outside"                    "ls &> $REPO/both"
+probe "redirect &>> outside"                   "ls &>> $REPO/both"
+probe "redirect 1> outside"                    "ls 1> $REPO/o"
+probe "redirect 3> outside"                    "ls 3> $REPO/o"
+
+echo
+echo "-- REDIRECT-4: false-positive relief must not leak into the verb arm --"
+# The literal-PREFIX and $TMPDIR reliefs are REDIRECT-ONLY. Their verb-arm twins
+# must keep denying: a relief leaking into the destructive arm would re-admit
+# the F#932 shape, and THAT is a coverage loss this harness exists to catch.
+probe "redirect to \$TMPDIR (allow-listed root)"     'echo x > "$TMPDIR/out.log"'
+probe "redirect with an in-tree literal prefix"      'cmd > logs/$(date +%F).log'
+probe "rm -rf at a computed path still denies"       'rm -rf logs/$(date +%F)'
+probe "rm -rf \$TMPDIR (spelling, not value) denies" 'rm -rf $TMPDIR/scratch'
+probe "bare \$VAR redirect target (accepted collateral)" 'echo x > "$LOG"'
+probe "device sink after an OUTSIDE cd"              "cd $REPO && ls 2>/dev/null"
+probe "device sink is redirect-scoped"               'rm -rf /dev/null'
+probe "heredoc body, plain prose"                    "$HEREDOC_PLAIN"
+probe "heredoc body, markdown blockquote"            "$HEREDOC_MARKDOWN"
 
 echo
 echo "-- deliberate relaxations (declared, not discovered) --"
