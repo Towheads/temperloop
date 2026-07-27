@@ -13,14 +13,40 @@
 # below name only `.temperloop/` for brevity.
 #
 # `temperloop init` (kernel/bin/subcommands/init.sh) is documented as the
-# SOLE WRITER of `.temperloop/config`, and records every API-state side
-# effect it produces (a label, a required-check setting, a proposal
-# branch/PR, a provisioned board) in that file's `installs[]` array. This
-# script is the ONLY reader of that manifest for the purpose of reverting
-# it — it inspects `.temperloop/config`, undoes exactly the recorded set,
-# and removes `.temperloop/` itself. Nothing here is inferred by namespace
-# grep (e.g. scanning for `fnd:`-prefixed labels) — a label the user created
-# independently, with no matching `installs[]` entry, is never touched.
+# SOLE WRITER of `.temperloop/config`, and records what it produces in that
+# file's `installs[]` array. This script is the ONLY reader of that manifest
+# for the purpose of reverting it — it inspects `.temperloop/config`, undoes
+# exactly the recorded set, and removes `.temperloop/` itself. Nothing here
+# is inferred by namespace grep (e.g. scanning for `fnd:`-prefixed labels) —
+# a label the user created independently, with no matching `installs[]`
+# entry, is never touched.
+#
+# WHAT IS ACTUALLY IN THAT MANIFEST, post-scope-down (temperloop#796):
+#   - What init STILL produces: a proposal branch/PR. That is the whole set
+#     for a repo adopted on or after the scope-down, because `init` no
+#     longer applies API state at all.
+#   - What a PRE-SCOPE-DOWN init produced, still revertible: a label, a
+#     required-check setting, a provisioned board. Those handlers are kept
+#     as READ-COMPAT (see the dispatch near the bottom of this file) so an
+#     adopter who ran an older `init` can still eject cleanly. They mint
+#     nothing new. Removal window: **v0.20.0**, the pre-scope-down compat
+#     window — the same release that drops init.sh's deprecated
+#     `--yes/--no-required-check`, `--yes/--no-labels`, `--yes/--no-board`
+#     flags, because both halves serve exactly that one cohort (see
+#     init.sh's "DEPRECATED FLAGS" header note).
+#
+# WHAT THIS SCRIPT DOES NOT REVERT, and cannot: the substrate the FIRST
+# EPIC applies (branch protection, head-branch auto-delete, the merge-queue
+# disposition, a scaffolded CI workflow, the recorded `§ Principles`
+# disposition). That is API state and adopter-repo content applied by
+# `/assess --epic N` -> `/build`, not by `init` — and `/build` deliberately
+# has no write channel into `.temperloop/config` (that would break init's
+# sole-writer contract), so none of it is ever recorded here for this
+# script to find. It is scope (e) in kernel/bin/README.md § Uninstall, it
+# is undone by hand, and print_uninstall_bullet() below says so on every
+# run rather than letting a clean `all N install(s) reverted` imply
+# otherwise. Undo steps: docs/features/engineering-principles.md
+# § "Uninstall / removal".
 #
 # NOT part of that revertible set: the first-epic issue (accept path) and
 # its decline re-offer pointer (decline path) init.sh's first-epic offer
@@ -146,7 +172,7 @@ EOF
 
 print_uninstall_bullet() {
   cat <<EOF
-Three separate removal scopes — this subcommand only handles (c); see
+Five separate removal scopes — this subcommand only handles (c); see
   kernel/bin/README.md § Uninstall for the full table:
   (a) Bootstrap footprint (predates any manifest — manual removal):
         rm -f "$FOUNDATION_CLI_BIN_DEFAULT" "${FOUNDATION_CLI_BIN_DEFAULT%/*}/foundation"
@@ -155,9 +181,21 @@ Three separate removal scopes — this subcommand only handles (c); see
       'temperloop install' wrote under \$HOME — a separate concern from
       (a) and (c)):
         temperloop uninstall
-  (c) THIS repo's .temperloop/config side effects (labels, required
-      checks, boards, proposal PRs; a pre-v0.15.0 init recorded them in
-      .foundation/config) — what 'temperloop eject' just did.
+  (c) THIS repo's .temperloop/config side effects (a proposal PR; plus
+      the labels, required checks and board a PRE-SCOPE-DOWN init
+      recorded — a pre-v0.15.0 init recorded them in .foundation/config)
+      — what 'temperloop eject' just did.
+  (d) Issue-cache store root (regenerable cache, deliberately untracked —
+      manual, optional):
+        rm -rf "\${CACHE_STORE_ROOT:-\${XDG_CACHE_HOME:-\$HOME/.cache}/temperloop}"
+  (e) FIRST-EPIC SUBSTRATE — branch protection, head-branch auto-delete,
+      the merge-queue disposition, any scaffolded CI workflow, and the
+      recorded principles disposition. Applied by the first epic via
+      /assess -> /build, NOT by init, so it is not in the manifest above
+      and 'temperloop eject' does NOT revert it. Undo by hand in your
+      repo's Settings -> Branches (and delete the workflow file); the
+      step-by-step list is in docs/features/engineering-principles.md
+      § "Uninstall / removal".
 EOF
 }
 

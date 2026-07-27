@@ -124,21 +124,54 @@ temperloop init              # for real, once you like the preview
 
 Bootstraps `.temperloop/config` in your repo and proposes any tree changes
 (e.g. a `boards.conf` entry) via a reviewable PR — nothing ever lands
-without review. Separately, and only with explicit per-action consent (an
-interactive `y/N` or an explicit `--yes-<action>` flag; the default is
-always "no"), it can apply API-state changes: a required `checks` status
-check, the `fnd:`/pipeline label set, and — only on the further opt-in
-`--provision-board` — a new Projects-v2 board. `--dry-run` skips that
-consented-apply step entirely and previews the tree-only PR with zero API
-calls of any kind.
+without review. Then it offers you the kernel-shipped **first epic** ("Set
+up `<project>` with temperloop"), prints a `next step:` handoff line, and
+stops. `--dry-run` previews the tree-only PR with zero API calls of any
+kind.
+
+**The handoff needs step 4 below.** `/assess` and `/build` are Claude Code
+slash commands, and they reach your machine only through `temperloop
+install`, which symlinks them into `~/.claude/`. Steps 1 and 2 genuinely
+need no machine-wide setup; **step 3's handoff does** — so if you have not
+run `temperloop install` yet, run it before acting on the `next step:` line.
+`init` itself detects this and prints a `prerequisite:` line when the
+command isn't installed, so you won't be left pointing at something that
+doesn't exist.
+
+`init` applies **no API state itself**. Branch protection, head-branch
+auto-delete, the merge-queue disposition, the required `checks` status
+check, CI, and your review principles are that first epic's work, applied
+later with per-write consent by driving it through the real pipeline
+(`/assess --epic N` → `/build`) — and note that what the epic applies is
+**not** undone by `temperloop eject` (§ Uninstall scope (e), below).
+
+The flags that used to gate `init`'s own applies still parse and still exit
+0; each now prints one line naming where its step went, plus the release it
+is removed in, and is then ignored. Nothing that passes them breaks. Where
+each one went:
+
+| Flag | Where its step went | Removed in |
+|---|---|---|
+| `--yes/--no-required-check` | the first epic — which, unlike `init`, refuses to require a `checks` status no workflow will post | v0.20.0 (the pre-scope-down compat window) |
+| `--yes/--no-labels` | nowhere — **retired as redundant**. The `fnd:`/pipeline labels are created lazily at point of use by the issues-only tracker backend, so there was never anything to pre-create | v0.20.0 (same) |
+| `--yes/--no-board` | nowhere — board provisioning was dropped outright | v0.20.0 (same) |
+| `--provision-board` | dropped outright; provision a Projects-v2 board by hand instead | the ADR-0004 Projects-arm removal release |
+| `--tracker-mode projects` | coerced to `issues`, the sole tracker mode `init` writes | the ADR-0004 Projects-arm removal release |
+
+For the by-hand Projects-v2 board, see § "Manual Projects-v2 recipe" in [the
+install-cli feature doc](../docs/features/install-cli.md).
 
 `foundation <subcommand>` runs the identical dispatch as `temperloop
 <subcommand>` throughout this ladder (the compat shim — see above).
 
 ### Verify: `temperloop install` + `doctor.sh`
 
-The three steps above work against a target repo and need no machine-wide
-setup. Separately, `temperloop install` wires up the **machine surface** —
+Steps 1 and 2 above work against a target repo and need no machine-wide
+setup. Step 3 is the exception worth calling out: `init` itself needs none
+either, but the `/assess --epic N` → `/build` handoff it ends on is Claude
+Code slash commands that only exist once you have run the install below —
+so treat this step as part of the adoption path, not an optional extra.
+`temperloop install` wires up the **machine surface** —
 the machine-wide `~/.claude/CLAUDE.md` / `settings.json`, the `gh`
 call-logger shim (§ Details below), and the other managed paths — and every
 run ends by printing the exact command to check what actually landed:
@@ -192,14 +225,28 @@ Background you don't need for the quickstart above, but will if you're
 uninstalling, auditing what `gh` calls get logged, or running this CLI
 across more than one client/engagement.
 
-### Uninstall — four separate scopes, don't conflate them
+### Uninstall — five separate scopes, don't conflate them
 
 | Scope | What it undoes | How |
 |---|---|---|
 | (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
 | (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
-| (c) **Target-repo side effects** | a label, required check, board, or proposal PR `temperloop init` produced in a repo you pointed it at, recorded in that repo's `.temperloop/config` (pre-v0.15.0 inits wrote `.foundation/config` — read through the rename window, removed in v0.19.0) | `temperloop eject` (run inside the target repo; cleans either dir) |
+| (c) **Target-repo side effects** | the proposal PR `temperloop init` produced in a repo you pointed it at — plus the label, required check, and board a **pre-scope-down** `init` recorded before it stopped applying API state — as recorded in that repo's `.temperloop/config` (pre-v0.15.0 inits wrote `.foundation/config` — read through the rename window, removed in v0.19.0) | `temperloop eject` (run inside the target repo; cleans either dir) |
 | (d) **Issue-cache store root** | `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"` |
+| (e) **First-epic substrate** | default-branch protection, head-branch auto-delete, the merge-queue disposition, any scaffolded CI workflow, and the recorded `§ Principles` disposition — applied by the **first epic** via `/assess --epic N` → `/build`, never by `init`, so none of it is in scope (c)'s manifest and **`temperloop eject` does not revert it** | manual: repo **Settings → Branches** (and delete the generated workflow file); step-by-step in [`docs/features/engineering-principles.md` § Uninstall / removal](../docs/features/engineering-principles.md) |
+
+Scope (e) is the one to read twice, because it is the only scope with no
+command behind it. Since the `init` scope-down, `init` itself writes no API
+state — everything that actually configures your repo is applied later, by
+the first epic, through ordinary consented PRs. That state is **your repo's
+own settings and content** from the moment it lands, exactly like any other
+change your PRs make, which is why no kernel manifest tracks it and why
+reverting those PRs does not undo it either: a protected branch stays
+protected and an armed queue stays armed until you turn them off. Each write
+is disclosed with its undo path at the moment you consent to it (see
+`claude/templates/first-epic-setup.md` § A2/A3), so this is a documented
+trade rather than a surprise — but a clean `temperloop eject` genuinely does
+not mean "back to how you found it."
 
 Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
 it or remove it — this is a deliberate stance, not a gap: inferring "this
@@ -267,9 +314,12 @@ global, per-machine** install — the machine-wide `~/.claude/CLAUDE.md`,
 at, not duplicated per repo. What *is* per-repo is `.temperloop/config`
 (pre-v0.15.0: `.foundation/config`, read through the rename window),
 written inside the target repo's own working tree by `temperloop init` (and
-reverted by `temperloop eject`, scope (c)) — labels, required checks, board
-wiring, and proposal PRs live there, scoped to that one repo, never in the
-global install.
+reverted by `temperloop eject`, scope (c)) — board wiring and proposal PRs
+live there, scoped to that one repo, never in the global install. A repo
+initialised before the `init` scope-down may also carry recorded labels and
+required checks in that manifest; those entries are carried forward
+untouched on every re-run and `eject` still reverts them, even though `init`
+no longer creates any.
 
 If you want an isolated instance per engagement instead of the one shared
 global install — the case for, say, a consultant running this across

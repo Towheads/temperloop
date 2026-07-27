@@ -80,11 +80,41 @@ Ship onboarding as a **kernel-shipped, pre-designed first epic** —
   write, or a faked demo level. The funnel mechanics still demonstrate on
   the levels that don't require elevated rights.
 - **Decline floors are durable, never a vanished gap.** Declining the whole
-  epic still yields the inline principles interview (kernel-default
-  point-of-use principles apply regardless) plus a durable re-offer
-  pointer — a tracked item in the adopter's own repo naming what remains
-  unconfigured. Each level is independently declinable with its skip
-  recorded. A non-interactive run skips with a notice.
+  epic still yields a durable re-offer pointer — a tracked item in the
+  adopter's own repo naming what remains unconfigured. Each level is
+  independently declinable with its skip recorded. A non-interactive run
+  skips with a notice.
+- **Amendment (temperloop#796, the `init` scope-down).** Two clauses above
+  are narrowed, and the reason is the same in both cases: `temperloop init`
+  is a *bootstrap*, and every setup action it performed itself was a second
+  implementation of something this epic already owns.
+  - **The decline floor is the pointer alone.** The clause above originally
+    read "still yields the inline principles interview … plus a durable
+    re-offer pointer". The interview half is withdrawn. `init` used to run
+    an inline copy of the principles interview on the decline path,
+    extracting the A1 text from the epic template and writing the answer
+    into the adopter's priorities note. That was a parallel interview asked
+    by a different actor, through a different write seam, on the one path
+    where the adopter had just said "no". It is now this epic's own L0 item
+    (`record-principles`): declining the epic **defers** the interview
+    rather than running a shadow of it. Nothing is lost, because the kernel
+    principle set ([ADR-0009](0009-kernel-engineering-principles-layer.md))
+    already applies at every review call site's point of use with zero
+    configuration — declining costs the adopter only the *recorded* choice,
+    never the criteria themselves. The durable re-offer pointer is the whole
+    floor, and it is unchanged.
+  - **`init` applies no API state at all.** It bootstraps
+    `.temperloop/config` and its proposal PR, offers this epic, prints the
+    handoff, and stops. Its own required-check apply is retired specifically
+    because it violated the **Structural congruence** clause above: it armed
+    a required `checks` context unconditionally, with no regard for whether
+    any producer would post it — exactly the self-brick this epic makes
+    unreachable. Its label pre-creation is retired as redundant (the
+    issues-only tracker backend already creates those labels lazily at point
+    of use), and its board provisioning is dropped outright (temperloop#793;
+    issues-only is the sole init-time tracker mode). The flags that gated
+    those applies are retained as deprecated no-ops rather than removed, so
+    no consumer breaks and the release stays non-breaking.
 - **Zero-CI awareness.** Until the pipeline's CI-poll defect is fixed
   (tracked separately), the epic's pre-CI items mark themselves so the CI
   poll is skipped with a legible "no CI configured yet" notice, never an
@@ -122,3 +152,41 @@ Ship onboarding as a **kernel-shipped, pre-designed first epic** —
 - This is an additive change (CHANGELOG additive, no BREAKING): existing
   operator repos are unaffected outside the epic they explicitly consent to
   run.
+- **Accepted gap: this epic's API-state writes are not revertible by a PR
+  revert, and `eject` does not cover them** (recorded with the
+  temperloop#796 amendment above). Everything this epic applies to GitHub —
+  default-branch protection, head-branch auto-delete on merge, and arming a
+  merge queue — is **API state on the remote repository**, not a tracked
+  file. Reverting the PRs `/build` opened for this epic restores the repo's
+  *files* and changes none of it: a protected branch stays protected, an
+  armed queue stays armed. Nor does `temperloop eject` revert it. `eject` is
+  manifest-driven — it reverts what is recorded in `.temperloop/config`'s
+  `installs` array, and `temperloop init` is that file's sole writer. This
+  epic's items run under `/build`, which deliberately has **no** write
+  channel into `.temperloop/config` (adding one would break its sole-writer
+  contract and open a back-channel from the build machinery into the
+  bootstrap layer), so nothing this epic applies is ever recorded there for
+  `eject` to find. State it plainly rather than implying otherwise:
+  **undoing this epic's GitHub writes is a manual operation** — turn off
+  branch protection, auto-delete, and the merge queue in the repository's
+  own settings. The mitigation is at consent time, not revert time: every
+  one of these writes is individually consented with its consequence
+  disclosed at the moment of asking, and composed into one change-set the
+  adopter confirms once as a whole (the two bullets above).
+
+  **That mitigation is implemented in the artifacts the adopter actually
+  reads, not merely asserted here** — an accepted gap disclosed only in a
+  maintainer-facing ADR is papering over it, not disclosing it. Three
+  surfaces carry it: each A2 question and the A3 Actions branch in
+  `claude/templates/first-epic-setup.md` carries an explicit **`Undo:`**
+  clause naming the repo-settings path and stating that `temperloop eject`
+  does not revert it; that template's § Decline floors scopes its "nothing
+  can leave your repo worse off" claim to match; and this state is
+  enumerated as its own **scope (e)** both in `bin/README.md` § Uninstall
+  and in `eject.sh`'s `print_uninstall_bullet`, which prints on *every*
+  successful eject — so a clean `all N install(s) reverted` can never be
+  read as "back to how you found it".
+
+  `eject` remains complete for the surface it *does* own — a pre-scope-down
+  `init`'s recorded labels, required checks, board, and proposal PRs, whose
+  entries stay in `.temperloop/config` at schema 1 and stay revertible.

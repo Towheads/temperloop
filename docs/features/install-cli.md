@@ -54,15 +54,68 @@ strictly more than the last:
    fix, and opens a PR via the tree-only proposal-PR generator — never a
    direct push, never a merge. If every seeded issue is already claimed or
    closed, it exits 0 with "no tick run" instead of failing.
-3. `temperloop init` opts a real repo in. `init --dry-run` previews the
-   tree-only proposal PR with zero API writes of any kind. `init` for real
-   bootstraps `.temperloop/config` and proposes tree changes (e.g. a
-   `boards.conf` entry) via a reviewable PR — nothing ever lands without
-   review. Only with explicit per-action consent (an interactive `y/N`, or
-   an explicit `--yes-<action>` flag — the default is always "no") does it
-   additionally apply API-state changes: a required `checks` status check,
-   the `fnd:`/pipeline label set, and, only on the further opt-in
-   `--provision-board`, a new Projects-v2 board.
+3. `temperloop init` opts a real repo in, then **hands off**. `init
+   --dry-run` previews the tree-only proposal PR with zero API writes of any
+   kind. `init` for real does exactly four things and stops: bootstraps
+   `.temperloop/config`, proposes any tree changes (e.g. a `boards.conf`
+   entry) via a reviewable PR — nothing ever lands without review — offers
+   the kernel-shipped **first epic** ("Set up `<project>` with temperloop",
+   [ADR 0010](../adr/0010-onboarding-as-first-executed-epic.md)), and prints
+   a `next step:` handoff line. It applies **no API state of its own**.
+   **This step's handoff is the one rung that needs `temperloop install`**:
+   `/assess` and `/build` are Claude Code slash commands, deployed into
+   `~/.claude/` by the install below, so unlike rungs 1 and 2 this one does
+   not end self-contained. `init` probes for the installed command and
+   prints an extra `prerequisite:` line when it is missing, rather than
+   handing the reader a pointer to something that isn't on their machine.
+
+**Where the setup writes went.** Branch protection, head-branch auto-delete,
+the merge-queue disposition, the required `checks` status context, the CI
+workflow, and the adopter's review principles are all applied by that first
+epic, driven through the real pipeline (`/assess --epic N` → `/build`) with
+per-write consent and consequences disclosed at the moment of asking. `init`
+used to apply a required check and a label set itself, under its own consent
+prompt; that was retired (temperloop#796) for two reasons worth naming:
+`init`'s required-check apply armed a `checks` context with no regard for
+whether anything would ever post it (the self-brick the epic's structural
+congruence rule makes unreachable), and the `fnd:`/pipeline labels are
+already created lazily at point of use by the issues-only tracker backend,
+so pre-creating them bought nothing. The flags that gated those applies
+(`--yes/--no-required-check`, `--yes/--no-labels`, `--yes/--no-board`,
+`--provision-board`, `--tracker-mode projects`) are **retained as deprecated
+no-ops**: each still parses, prints one line naming where its step went, and
+is ignored. Nothing that passes them breaks.
+
+**Tracker mode.** Issues-only (`board.<N>.backend=issues`) is now the sole
+init-time tracker mode (temperloop#793); `init` never provisions a GitHub
+Projects-v2 board.
+
+**Manual Projects-v2 recipe.** The capability is redirected, not removed —
+to run a real Projects board, do it by hand, once:
+
+1. Create the project: `gh project create --owner <owner> --title "<repo>
+   board"`. Note the project number in the URL it prints
+   (`.../projects/<N>`).
+2. Hand-write the board's axes into `workflows/scripts/board/boards.conf`,
+   replacing the `backend=issues` line `init` proposed for that board id:
+
+   ```conf
+   board.1.repo=<owner>/<repo>
+   board.1.owner=<owner>
+   board.1.project=<N>
+   ```
+
+3. Re-run whatever board command you were reaching for; the adapter reads
+   `boards.conf` directly.
+
+Doing it by hand is a deliberate trade. The retired automated arm rendered
+its `boards.conf` entry *before* the apply step that learned the project
+number, and never went back to fill it in — so even a fully consented,
+successful run shipped a commented `board.<N>.project=<FILL IN …>`
+placeholder. Because it was a comment, the adapter's `^board\.N\.axis=`
+lookup did not see it and silently fell through to a built-in default owner
+rather than failing loudly. A three-line hand edit you can read is better
+than an automated one that quietly emits a broken contract.
 
 **The safety contract.** The mutating step in the ladder is exactly one
 (`try --demo`), and it is bounded three separate ways: a spend guard prints
@@ -71,9 +124,10 @@ default `$2.00` — ≈370,000 tokens at Claude Sonnet 5 list price, see
 `docs/cost-and-autonomy.md` for the conversion basis) before anything runs; a non-interactive shell with no
 `--yes` is refused outright, so a curious stranger cannot silently burn API
 spend; and the tick itself touches only the disposable demo repo, never the
-caller's own. `init`'s API-state changes carry the same "explicit consent,
-default no" shape, and `--dry-run` sidesteps the consented-apply step
-entirely.
+caller's own. `init` writes no API state at all, so its only mutating calls
+are the tree-only proposal PR and the first-epic issue it offers to file
+(plus, if you decline, the one Backlog pointer that keeps the gap tracked);
+`--dry-run` skips even those.
 
 **`doctor.sh` link states.** Every managed install path
 (symlinks under `~/.claude/`, the composed `CLAUDE.md`, the `gh` logger
@@ -139,7 +193,9 @@ each drive one `claude -p` invocation, so their wall time tracks that call.
 
 None dedicated. Each subcommand's own printed output is the observable
 surface: `try`'s classification summary, `doctor`'s per-entry
-`OK`/`MISSING`/`DRIFT`/`SHADOWED`/`DANGLING` table and its exit code, and
-`init --dry-run`'s preview diff. A failure surfaces as a non-zero exit code
-plus an explicit `skipped — <reason>` or `FAIL —` line, never a silent
-no-op.
+`OK`/`MISSING`/`DRIFT`/`SHADOWED`/`DANGLING` table and its exit code,
+`init --dry-run`'s preview diff, and `init`'s closing `next step:` handoff
+line (the marker the tier-2 round-trip workflow greps to prove the live path
+reached the handoff rather than degrading earlier). A failure surfaces as a
+non-zero exit code plus an explicit `skipped — <reason>` or `FAIL —` line,
+never a silent no-op.
