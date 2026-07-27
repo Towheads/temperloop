@@ -162,7 +162,10 @@
 # `claude/hooks/tests/differential-guard-vs-ref.sh`, which runs this guard and a
 # git ref's copy over the same payloads and fails on any `old=DENY new=allow`.
 # The DENY/ALLOW corpus alone provably cannot catch them: a refactor that loses
-# coverage tends to arrive with a corpus that ratifies the loss.
+# coverage tends to arrive with a corpus that ratifies the loss. That harness is
+# a CI GATE, registered by full path in scripts/quality-gates.sh (foundation#1367)
+# — so a change here that silently un-denies a shape fails `checks`, and you do
+# not have to remember to run it.
 #
 # CRITICAL SAFETY — INERT BY DEFAULT, ARMED BY A PER-WORKTREE MARKER. The
 # hook enforces ONLY when BOTH hold for the tool cwd's worktree toplevel

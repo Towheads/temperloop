@@ -55,10 +55,13 @@
 # a refactor that loses coverage tends to arrive with a corpus that ratifies the
 # loss. That is not hypothetical here: the first cut of the operand-model table
 # un-denied six shapes and pinned one of them (`find ... -exec rm {} \;`) as
-# intended ALLOW, so the suite was fully green over a regression. Run
+# intended ALLOW, so the suite was fully green over a regression.
 # `claude/hooks/tests/differential-guard-vs-ref.sh` (working copy vs a git ref,
-# failing on any `old=DENY new=allow`) alongside this file on any change to the
-# guard's Bash arm.
+# failing on any `old=DENY new=allow`) is what closes that gap, and it runs
+# ALONGSIDE this suite automatically — it is its own CI gate in
+# scripts/quality-gates.sh (foundation#1367), not a hand-run companion. Note
+# that `make test-hooks` runs only THIS file: the differential harness is
+# reached by `make quality-gates` (and CI's `checks`), not by the test_*.sh glob.
 #
 # shellcheck disable=SC2016
 # SC2016 ("expressions don't expand in single quotes") is disabled file-wide on

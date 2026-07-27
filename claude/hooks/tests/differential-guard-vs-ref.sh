@@ -15,9 +15,25 @@
 # new=DENY` is a tightening and is reported, not failed (the whole point of the
 # table is to catch shapes the flat list missed).
 #
-# NOT named test_*.sh on purpose: `make test-hooks` globs test_*.sh, and this
-# needs a fetched git ref, so it must not be a hard CI gate. Run it by hand on
-# any change to the guard`s Bash arm:
+# THIS IS A CI GATE (foundation#1367). It is registered BY FULL PATH in
+# scripts/quality-gates.sh's KERNEL_GATES, so CI's `checks` job and a local
+# `make quality-gates` both run it. It was previously advisory — the decision
+# note called it "mandatory for any change to the Bash arm" while nothing
+# enforced that, which is the shape that decays silently.
+#
+# It stays OUT of the `test_*.sh` name that `make test-hooks` globs, for two
+# reasons that are about attribution, not about being optional:
+#   1. It needs a FETCHED `origin/main`, which `make test-hooks` does not
+#      guarantee. quality-gates.sh does: its check_checkout_freshness preflight
+#      runs a bounded `git fetch origin <default>` before any gate, and the
+#      ref-preflight below is the belt-and-suspenders fallback for a caller
+#      that skips it. CI checks out with fetch-depth: 0, so the ref is present
+#      there regardless.
+#   2. Its failure is a DISTINCT class — coverage LOSS, not a broken assertion
+#      — and a gate line of its own keeps that attributable in the run output
+#      instead of buried inside one `[ok] test-hooks` line.
+#
+# Run it by hand the same way:
 #
 #     bash claude/hooks/tests/differential-guard-vs-ref.sh [ref]     # default origin/main
 #
@@ -56,6 +72,27 @@ export GIT_CEILING_DIRECTORIES="$TMP"
 export XDG_STATE_HOME="$TMP/state"
 export TMPDIR="$TMP/tmpdir"
 mkdir -p "$TMPDIR"
+
+# Ref preflight. As a CI gate this must not go red merely because the
+# remote-tracking ref was never fetched — but it must also never SKIP, so an
+# unresolvable ref is still fatal below. quality-gates.sh's freshness preflight
+# normally fetches for us; this covers a caller that runs the harness bare.
+# Bounded via the shared portable-timeout shim so an unreachable remote can't
+# hang the gate; offline just leaves the ref as-is and the fatal below fires.
+if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "$REF^{commit}" >/dev/null; then
+  case "$REF" in
+    */*)
+      TIMEOUT_SHIM="$REPO_ROOT/workflows/scripts/lib/portable-timeout.sh"
+      # shellcheck source=workflows/scripts/lib/portable-timeout.sh
+      [ -f "$TIMEOUT_SHIM" ] && . "$TIMEOUT_SHIM"
+      if command -v run_with_timeout >/dev/null 2>&1; then
+        run_with_timeout 10 git -C "$REPO_ROOT" fetch --quiet "${REF%%/*}" "${REF#*/}" 2>/dev/null || true
+      else
+        git -C "$REPO_ROOT" fetch --quiet "${REF%%/*}" "${REF#*/}" 2>/dev/null || true
+      fi
+      ;;
+  esac
+fi
 
 OLD_HOOK="$TMP/old-build-worktree-guard.sh"
 git -C "$REPO_ROOT" show "$REF:$GUARD_REL" >"$OLD_HOOK" 2>/dev/null || {

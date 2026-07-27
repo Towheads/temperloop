@@ -85,6 +85,27 @@ KERNEL_GATES=(
   "make test-build"
   "make test-build-workflow"
   "make test-hooks"
+  # Write-jail guard COVERAGE-LOSS gate (foundation#1367). Runs
+  # build-worktree-guard.sh's working copy and origin/main's copy over the same
+  # synthetic PreToolUse payloads and fails on any `old=DENY new=allow`. This is
+  # a different question from `make test-hooks`: the DENY/ALLOW corpus proves the
+  # guard does what the corpus SAYS, and provably cannot prove it still does what
+  # it USED to do — a refactor that loses coverage arrives with a corpus that
+  # ratifies the loss. Not hypothetical: the first cut of the operand-model table
+  # shipped 80/80 corpus-green over SIX un-denied shapes, one of which the corpus
+  # pinned as intended ALLOW, and among them was the F#932 command that wiped
+  # ~/dev, wearing a `find` hat.
+  #
+  # A DIRECT `bash` gate, not a `make` target, per the kernel-Makefile-is-
+  # generator-owned convention the gates below already follow; and deliberately
+  # NOT renamed into `make test-hooks`'s `test_*.sh` glob, so a coverage-loss
+  # failure gets its own attributable gate line instead of vanishing inside one
+  # `[ok] test-hooks`. It compares against `origin/main` — for this repo that IS
+  # the PR base (every PR targets main, merge-queue included), so no CI-aware ref
+  # selection is needed. The ref is present because check_checkout_freshness
+  # (below) fetches it before any gate runs, CI checks out with fetch-depth: 0,
+  # and the harness carries its own bounded fetch fallback.
+  "bash claude/hooks/tests/differential-guard-vs-ref.sh"
   "make test-install"
   # Compose-plane T0 inventory (temperloop#235, ADR §2.5 capture point 3):
   # workflows/scripts/install-claude-md.sh's regenerated set of
