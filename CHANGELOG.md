@@ -84,8 +84,11 @@ reads that marker; a stranger greps for it before pulling.
   override, following the existing `<STREAM>_RAW_DIR` convention). **Not
   breaking**: the SessionEnd hook's stdin contract and output stub are
   unchanged, `status-line.sh`'s displayed figure is byte-identical to
-  before (same expression, now shared), and both new settings default to
-  off/inert for an adopter who never opts in — Phase A is measurement only,
+  before under a normal full-tree sync (same expression, now shared —
+  `status-line.sh` degrades to displaying `0` only under a hypothetical
+  partial vendoring that ships it without `workflows/scripts/lib/`, which
+  the kernel manifest already treats as one unit), and both new settings
+  default to off/inert for an adopter who never opts in — Phase A is measurement only,
   with no cap, target, or CI gate on the recorded figure itself.
 
 ### Changed

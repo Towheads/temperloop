@@ -277,21 +277,22 @@ Example record:
 ### `session-context` — `session-context-<YYYY-MM>.jsonl`
 
 Emitted by `workflows/scripts/emit-session-context.sh` (temperloop#828, epic
-#810 "session-start context growth") — the **realized-session-context
-probe**. Its job is measuring the WHOLE session's realized context, not only
-the session-start prefix a prior scope measured: relocating content out of
-an always-loaded document improves a t0 (before-the-agent-reads-anything)
-metric *by construction*, whether or not the agent reads the relocated
-content two turns later. This stream is what makes a relocation's *real*
-value measurable instead of assumed.
+#810 "session-start context growth") — **one record appended per session at
+the SessionEnd hook seam** (`claude/hooks/session-end-log.sh`), recording
+the whole session's realized token usage. This is the **realized-session-
+context probe**: its job is measuring the WHOLE session's realized context,
+not only the session-start prefix a prior scope measured — relocating
+content out of an always-loaded document improves a t0
+(before-the-agent-reads-anything) metric *by construction*, whether or not
+the agent reads the relocated content two turns later. This stream is what
+makes a relocation's *real* value measurable instead of assumed.
 
-Sits at the SessionEnd hook seam (`claude/hooks/session-end-log.sh`), which
-calls the emit script with the transcript path ALREADY resolved through the
-compaction-rollover chain (a compaction rolls the conversation into a new
-`.jsonl`; re-deriving the path here would silently undercount exactly the
-long sessions this probe exists to measure) and the harness's
-`.context_window.*` fields already in hand — the emit script never resolves
-either itself.
+The SessionEnd hook calls the emit script with the transcript path ALREADY
+resolved through the compaction-rollover chain (a compaction rolls the
+conversation into a new `.jsonl`; re-deriving the path here would silently
+undercount exactly the long sessions this probe exists to measure) and the
+harness's `.context_window.*` fields already in hand — the emit script
+never resolves either itself.
 
 **Opt-in, default OFF** (setting-registry.tsv row `SESSION_CONTEXT_RAW_ENABLED`)
 — an explicit switch, never sink-presence used as an implicit one. The
