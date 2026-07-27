@@ -1100,6 +1100,49 @@ N_CREATES="$(grep -cx 'label create funnel-escalated -R Towheads/stageFind --col
 [ "$N_CREATES" = "1" ] && ok "exactly ONE label-create call for two refused issues in the same repo (memoized)" || bad "t42e.memo" "got $N_CREATES creates in $(cat "$C42E/gh-calls.txt")"
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
+# │ temperloop#801 (shell review of #795) — a missing board adapter must         │
+# │ DEGRADE, not ABORT the tick. A bare, unguarded `_board_issues_ensure_label`   │
+# │ call would be exit 127 (command not found) under `set -euo pipefail` if      │
+# │ board.sh failed to source — aborting the WHOLE TICK, misattributed as a       │
+# │ mystery 127 deep in a callee. That inverts #795's own point: a soft,         │
+# │ per-item failure (missing label → swallowed add, tick keeps running) must     │
+# │ never become STRICTLY WORSE (whole-tick abort) just because the adapter       │
+# │ itself is unavailable. Fixed: (1) PIPELINE_BOARD_LIB (the test-double seam,   │
+# │ mirrors PIPELINE_UNCLAIM_BIN) WARNS loudly and attributes the true cause      │
+# │ when board.sh is missing; (2) each of the three call sites is `declare -F`-   │
+# │ guarded (PIPELINE_UNCLAIM_BIN's own "if the optional dependency resolved"     │
+# │ idiom) to degrade to the pre-#795 behavior instead of crashing.               │
+# ╰──────────────────────────────────────────────────────────────────────────╯
+
+# ── 42f: a missing board adapter degrades — tick completes, WARNING attributes the
+# true cause, no 127 leaks, and the item is still processed (pre-#795 behavior) ────
+echo "--- test 42f: missing board.sh degrades (WARNING + tick completes, no 127) (#801) ---"
+C42F="$TMP/c42f"; mkdir -p "$C42F"; D42F="$(make_merge_double "$C42F")"; G42F="$(make_gh_double "$C42F")"
+set +e
+OUT42F="$(printf '%s' "$CODE1" | env CLAUDE_BIN="$D42F" PIPELINE_GH_BIN="$G42F" CAP_DIR="$C42F" \
+        PIPELINE_BOARD_LIB="$TMP/no-such-board-lib-$$.sh" \
+        GH_PR_LIST_JSON="$OPEN_PR_101" PIPELINE_DRIVE_MERGE=1 MERGE_SUMMARY="$HANDOFF_SUMMARY" \
+        bash "$DRIVE" 2>"$C42F/stderr.txt")"
+RC42F=$?
+set -e
+[ "$RC42F" -eq 0 ] && ok "exit 0 (no 127 — the tick does not abort on a missing adapter)" || bad "t42f.exit" "got exit $RC42F, stderr: $(cat "$C42F/stderr.txt" 2>/dev/null || echo none)"
+[ "$(jq -r '.handed_off' <<<"$OUT42F" 2>/dev/null)" = "1" ] && ok "handed_off=1 (the tick still completes and processes the item)" || bad "t42f.handed_off" "got: $OUT42F"
+grep -qF 'WARNING: pipeline-drive.sh: board adapter not found' "$C42F/stderr.txt" \
+  && ok "WARNING attributes the TRUE cause (missing board adapter), not a bare 127" \
+  || bad "t42f.warning" "got $(cat "$C42F/stderr.txt" 2>/dev/null || echo none)"
+grep -qiF 'command not found' "$C42F/stderr.txt" \
+  && bad "t42f.no127" "a 'command not found' 127 leaked to stderr — the guard did not hold" \
+  || ok "no 'command not found' 127 on stderr (the declare -F guard held)"
+# Pre-#795 behavior restored: NO label-create call was made (adapter unavailable),
+# but the add-label edit still fires exactly as it did before #795 existed.
+grep -qx 'label create funnel-merge-pending -R Towheads/stageFind --color fbca04 --description Pipeline 5c: PR open, session ended pre-merge — resume next tick' "$C42F/gh-calls.txt" 2>/dev/null \
+  && bad "t42f.noensure" "a label-create call happened despite the missing adapter" \
+  || ok "no label-create call (adapter unavailable — self-provisioning correctly skipped)"
+grep -qx "issue edit 101 -R Towheads/stageFind --add-label funnel-merge-pending" "$C42F/gh-calls.txt" \
+  && ok "the add-label edit still fires (degraded to pre-#795 behavior, not crashed)" \
+  || bad "t42f.add" "got $(cat "$C42F/gh-calls.txt" 2>/dev/null || echo none)"
+
+# ╭──────────────────────────────────────────────────────────────────────────╮
 # │ F#640 — record ENRICHMENT: the drive record logged COUNTS (routed,          │
 # │ handed_off) but not WHICH issues, so a soak reviewer could not cross-check   │
 # │ the pipeline's board mutations. Now it carries per-side-effect issue arrays    │

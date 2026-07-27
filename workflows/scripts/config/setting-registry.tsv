@@ -266,6 +266,7 @@ PIPELINE_OPERATOR_RESOLVE_BIN		path	kernel	workflows/scripts/build/pipeline-cron
 PIPELINE_NOTIFY_CMD		path	kernel	workflows/scripts/build/pipeline-cron.sh	Custom notify command for a non-no-op tick (else osascript, else stderr)
 PIPELINE_GH_BIN	gh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the gh binary used by pipeline-drive's routing calls
 PIPELINE_UNCLAIM_BIN	$HERE/../board/unclaim.sh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the unclaim.sh board CLI the #1157 abandonment reclaim shells out to
+PIPELINE_BOARD_LIB	$HERE/../board/lib/board.sh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the board adapter path sourced for the #795 label self-provisioning (a missing/redirected file degrades per #801, never a 127)
 PIPELINE_CHECKOUT_3	$HOME/dev/stageFind	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 3 items in (personal-path-verbatim)
 PIPELINE_CHECKOUT_4	$HOME/dev/foundation	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 4 items in (personal-path-verbatim)
 PIPELINE_CHECKOUT_5	$HOME/dev/ssmobile	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 5 items in (personal-path-verbatim)

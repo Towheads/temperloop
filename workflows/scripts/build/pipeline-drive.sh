@@ -260,9 +260,31 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-pipeline-drive}"
 # "gh", so production behavior is unchanged) so this script's existing fake-gh
 # test-double harness (PIPELINE_GH_BIN) covers the ensure-label calls too, exactly
 # like every other gh side-effect in this file.
-# shellcheck source=workflows/scripts/board/lib/board.sh
-[ -f "$HERE/../board/lib/board.sh" ] && source "$HERE/../board/lib/board.sh"
-_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" "$PIPELINE_GH_BIN" "$@"; }  # setting:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default (mirrors lib/board.sh:502)
+#
+# PIPELINE_BOARD_LIB is the test-double seam for the adapter PATH (mirrors
+# PIPELINE_UNCLAIM_BIN / PIPELINE_GH_BIN) — a test points it at a nonexistent path
+# to exercise the missing-adapter degrade path below without a real broken checkout.
+: "${PIPELINE_BOARD_LIB:=$HERE/../board/lib/board.sh}"
+# temperloop#801 (shell review of #795): a bare, unguarded `_board_issues_ensure_label`
+# call at each point-of-use site below would be exit 127 (command not found) under
+# `set -euo pipefail` if board.sh failed to source — which ABORTS THE WHOLE TICK on a
+# missing/partial vendor of workflows/scripts/board/, misattributed as a mystery 127
+# deep in a callee. That inverts this item's own point: #795 exists to make a *soft*,
+# per-item failure (missing label → swallowed add, tick keeps running) strictly
+# better, never to make the missing-adapter case strictly WORSE (whole-tick abort).
+# Fix, two parts: (1) attribute the true cause LOUDLY, here, at the source, instead of
+# leaving it to surface as a 127 with no context; (2) each call site below is guarded
+# with `declare -F` (exactly PIPELINE_UNCLAIM_BIN's existing "if the optional binary
+# resolved, use it" idiom, ~line 884) so a missing adapter degrades to the PRE-#795
+# behavior (the label add may still swallow a "no such label" error, but the TICK
+# ITSELF keeps running) rather than crashing every item in the tick.
+if [ -f "$PIPELINE_BOARD_LIB" ]; then
+  # shellcheck source=workflows/scripts/board/lib/board.sh
+  source "$PIPELINE_BOARD_LIB"
+  _board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" "$PIPELINE_GH_BIN" "$@"; }  # setting:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default (mirrors lib/board.sh:502)
+else
+  echo "WARNING: pipeline-drive.sh: board adapter not found at $PIPELINE_BOARD_LIB — funnel label self-provisioning (temperloop#795) is DISABLED this tick. A missing funnel-merge-pending/funnel-escalated label will silently swallow its --add-label, exactly as it did before #795. Check workflows/scripts/board/ vendored alongside workflows/scripts/build/." >&2
+fi
 
 # Required CI gate name a merge-pending PR must clear to merge (foundation #665).
 # Every build repo names its required ci.yml job `checks` (global CLAUDE.md § Branch
@@ -649,7 +671,10 @@ _route_refused() {  # $1 = merge_result blob
     # makes the add below a swallowed no-op (see the point-of-use comment above
     # PIPELINE_MERGE_PENDING_LABEL's default). color/desc match the onboarding
     # prose this call replaces (formerly build.config.sh's manual `gh label create`).
-    _board_issues_ensure_label "$repo" "$PIPELINE_ESCALATED_LABEL" "fbca04" \
+    # `declare -F` guard (#801): a missing board.sh (see the top-of-file WARNING)
+    # leaves this function undefined — degrade to pre-#795 behavior, never a 127.
+    declare -F _board_issues_ensure_label >/dev/null 2>&1 && _board_issues_ensure_label \
+      "$repo" "$PIPELINE_ESCALATED_LABEL" "fbca04" \
       "Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close"
     _gh_sideeffect route "$issue" "$repo" issue edit "$issue" -R "$repo" \
       --add-assignee "$op" --add-label "$PIPELINE_ESCALATED_LABEL"
@@ -762,7 +787,10 @@ _escalate_stuck_pr() {  # $1=repo  $2=issue  $3=pr
   # point-of-use comment above PIPELINE_MERGE_PENDING_LABEL's default). No
   # matching ensure for the --remove-label below — removing an absent/missing
   # label is a harmless no-op, unlike a swallowed add.
-  _board_issues_ensure_label "$repo" "$PIPELINE_ESCALATED_LABEL" "fbca04" \
+  # `declare -F` guard (#801): degrade to pre-#795 behavior if board.sh is missing,
+  # never a 127 (see the top-of-file WARNING).
+  declare -F _board_issues_ensure_label >/dev/null 2>&1 && _board_issues_ensure_label \
+    "$repo" "$PIPELINE_ESCALATED_LABEL" "fbca04" \
     "Pipeline 5c: stuck code item (route-refused / red CI) — needs your manual merge or close"
   _gh_sideeffect escalate "$issue" "$repo" issue edit "$issue" -R "$repo" \
     --remove-label "$PIPELINE_MERGE_PENDING_LABEL" \
@@ -818,7 +846,10 @@ _record_handoff() {  # $1 = merge_result blob
     # belt-and-suspenders that prevents the duplicate even when this label is lost.
     # temperloop#795: ensure the label EXISTS first — a missing label is exactly the
     # "FAILED hand-off label" case the comment above just named, silently.
-    _board_issues_ensure_label "$repo" "$PIPELINE_MERGE_PENDING_LABEL" "fbca04" \
+    # `declare -F` guard (#801): degrade to pre-#795 behavior if board.sh is missing,
+    # never a 127 (see the top-of-file WARNING).
+    declare -F _board_issues_ensure_label >/dev/null 2>&1 && _board_issues_ensure_label \
+      "$repo" "$PIPELINE_MERGE_PENDING_LABEL" "fbca04" \
       "Pipeline 5c: PR open, session ended pre-merge — resume next tick"
     _gh_sideeffect handoff "$issue" "$repo" issue edit "$issue" -R "$repo" \
       --add-label "$PIPELINE_MERGE_PENDING_LABEL"
