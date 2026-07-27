@@ -32,9 +32,23 @@
 # "silently never armed" — without it, a guard that had regressed to always-inert
 # would pass the entire ALLOW corpus while protecting nothing.
 #
-# Extending (plan items L1 verb->operand-model table, L2 redirect containment):
-# add a line to the corpus blocks below — `deny_bash`, `allow_bash`, `deny_file`,
-# `allow_file` each take <desc> <case> and handle log isolation themselves.
+# Extending (plan item L2 redirect containment): add a line to the corpus blocks
+# below — `deny_bash`, `allow_bash`, `deny_file`, `allow_file` each take <desc>
+# <case> and handle log isolation themselves.
+#
+# The guard's Bash arm is a verb -> operand-model TABLE (foundation#1354), so a
+# new destructive shape arrives as a table ROW plus a DENY/ALLOW pair here. The
+# three shapes past the flat rm/mv/dd list each have a DIFFERENT grammar, and
+# each needs BOTH polarities pinned — the arm predicate is as load-bearing as the
+# operand selector:
+#   rsync     destructive only under `--delete*`; only its LAST operand (the
+#             destination) is a target. A plain rsync must stay untouched.
+#   find      destructive only when the predicate run carries `-delete` or
+#             `-exec rm`; only its PRE-predicate paths are targets. Its
+#             predicate tokens routinely carry globs (`-name '*.pyc'`) that must
+#             NOT be read as non-literal path operands.
+#   git clean destructive under -x/-d/-f with NO target operand at all, so it is
+#             judged against the cd-context base.
 #
 # shellcheck disable=SC2016
 # SC2016 ("expressions don't expand in single quotes") is disabled file-wide on
@@ -305,6 +319,26 @@ deny_bash "cd to a NON-LITERAL dir, then rm"             'cd "$(dirname "$PWD")"
 # refused. Documented in the guard header as preventive, not a complete sandbox.
 deny_bash "in-worktree glob is still unprovable"         'rm -rf node_modules/*'
 
+# --- the three post-flat-list operand models (foundation#1354) ---------------
+# rsync: LAST operand only, armed by --delete*.
+deny_bash "rsync --delete to a destination outside"      "rsync -a src/ $REPO/dest/ --delete"
+deny_bash "rsync --delete before the operands"           "rsync --delete src/ $REPO/dest/"
+deny_bash "rsync --delete-after (a --delete* variant)"   "rsync -a --delete-after src/ $REPO/dest/"
+deny_bash "rsync --delete to a NON-LITERAL destination"  'rsync -a --delete src/ "$HOME/dev/dest"'
+deny_bash "cd outside, then rsync --delete"              "cd $REPO && rsync -a --delete src/ dest/"
+# find: PRE-predicate paths only, armed by -delete / -exec rm. `-delete` must
+# NOT be swallowed by the leading-`-` flag skip that the flat list applied.
+deny_bash "find -delete on a path outside"               "find $REPO/parentdir -delete"
+deny_bash "find -exec rm on a path outside"              "find $REPO -name x -exec rm {} \;"
+deny_bash "find -exec rmdir on a path outside"           "find $REPO -type d -exec rmdir {} \;"
+deny_bash "find -delete on a NON-LITERAL path"           'find "$HOME/dev" -delete'
+deny_bash "find -delete after a leading -L option"       "find -L $REPO/parentdir -delete"
+deny_bash "cd outside, then find . -delete"              "cd $REPO && find . -name x -delete"
+# git clean: NO target operand — judged against the cd-context base.
+deny_bash "git clean -xfd with a cd-context outside"     "cd $REPO && git clean -xfd"
+deny_bash "git clean -f with a cd-context outside"       "cd $REPO && git clean -f"
+deny_bash "git clean -xfd after a NON-LITERAL cd"        'cd "$(dirname "$PWD")" && git clean -xfd'
+
 deny_file "Write into the parent checkout"    Write     "$REPO/leak.txt"
 deny_file "Edit  in the parent checkout"      Edit      "$REPO/f.txt"
 deny_file "Write via a relative .. escape"    Write     "../../leak.txt"
@@ -365,6 +399,25 @@ allow_bash "no destructive verb at all (git status)"     'git status --porcelain
 allow_bash "non-destructive read of an outside path"     "cat $REPO/f.txt"
 allow_bash "rm of a single in-worktree file"             'rm keep.txt'
 allow_bash "rm with flags before the operand"            'rm -r -f -- node_modules'
+
+# --- the three post-flat-list operand models, ALLOW half (foundation#1354) ----
+# These are ROUTINE worker commands. A guard that denies them gets disarmed, so
+# each polarity of each new row is pinned here as firmly as its DENY twin.
+# git clean: no target operand, judged against the cd context — which here is
+# the worktree itself, so it must stay silent.
+allow_bash "git clean -xfd inside the worktree"          'git clean -xfd'
+allow_bash "git clean -xfd after an in-worktree cd"      "cd $WT_RP/src && git clean -xfd"
+allow_bash "git clean -n (dry run — not armed)"          'git clean -n'
+# find: the predicate run's glob is NOT a path operand — the pre-predicate paths
+# are, and here they are in-worktree.
+allow_bash "find . -name '*.pyc' -delete (in-worktree)"  "find . -name '*.pyc' -delete"
+allow_bash "find in-worktree subdir -delete"             "find $WT_RP/build -type f -delete"
+allow_bash "find -exec rm inside the worktree"           'find . -name core -exec rm {} \;'
+allow_bash "find with no destructive predicate"          "find $REPO -name '*.log' -print"
+# rsync: untouched without --delete*; with it, only the destination is checked.
+allow_bash "plain rsync (no --delete) to an outside dir" "rsync -a src/ $REPO/dest/"
+allow_bash "rsync --delete to an in-worktree destination" 'rsync -a --delete src/ dist/'
+allow_bash "rsync --delete to a /tmp destination"        'rsync -a --delete src/ /tmp/build-guard-scratch/'
 
 allow_file "Write a new file at the worktree root"   Write "$WT_RP/new.txt"
 allow_file "Write a relative in-worktree path"       Write "newdir/new.txt"

@@ -14,7 +14,8 @@
 # anywhere. F#932: a worker ran `rm -rf "$(dirname "$(pwd)")"` from an
 # unexpected cwd, which resolved to `/Users/travis/dev` and wiped every checkout
 # and the local Obsidian vault. This hook now also inspects Bash commands and
-# DENIES a DESTRUCTIVE filesystem verb (rm, rmdir, mv, shred, truncate, dd of=)
+# DENIES a DESTRUCTIVE filesystem verb (rm, rmdir, mv, shred, truncate, dd of=,
+# rsync --delete, find -delete/-exec rm, git clean -xfd)
 # unless it can PROVE every path operand stays inside the worktree (or the
 # /tmp//$TMPDIR allow-list). The proof fails — so the command is denied — when an
 # operand (or a preceding `cd` target) is NON-LITERAL: it contains a `$`
@@ -33,6 +34,36 @@
 #     with no spaces, a mid-pipeline subshell `cd`) may not be modelled — those
 #     cases fail OPEN, never falsely deny. Preventive coverage of the common
 #     destructive shapes, not a complete shell sandbox.
+#
+# BASH ARM — THE VERB → OPERAND-MODEL TABLE (foundation#1354). The walker began
+# as a single flat list of destructive verbs, all sharing one grammar ("every
+# non-flag token is a path operand"). That shape does not generalize: `rsync` is
+# destructive only under `--delete*` and only at its LAST operand; `find` is
+# destructive only when its predicate run carries `-delete` / `-exec rm`, and
+# only its PRE-predicate paths are targets; `git clean` takes no target operand
+# at all and is destructive against the cd-context base itself. So the verb list
+# became a TABLE — one row per verb, four data fields, no per-verb control flow:
+#
+#   MODEL["<verb>"] = "<select>|<arm>|<base>|<words>"
+#     select : which operands are containment-checked
+#              ALL  every non-flag token   (rm, rmdir, mv, shred, truncate)
+#              OF   the `of=` operand only (dd)
+#              LAST the last non-flag token — the destination (rsync)
+#              PRE  the pre-predicate path operands (find)
+#              NONE no operand is a target (git clean)
+#     arm    : the predicate deciding whether THIS invocation is destructive
+#              ALWAYS      the verb is always destructive
+#              DELETEFLAG  a `--delete*` flag is present (rsync)
+#              FINDPRED    a `-delete` or `-exec rm`/`-exec rmdir` predicate (find)
+#              CLEANFLAG   an `-x`/`-d`/`-f` flag is present (git clean)
+#     base   : CWD = the active cd-context base dir is ITSELF an implicit target
+#              (empty = the base only resolves relative operands, as before)
+#     words  : how many tokens the verb name occupies (2 for `git clean`)
+#
+# Adding a destructive shape that reuses an existing select/arm pair is a pure
+# TABLE ROW — no new branch. A shape needing a genuinely NEW operand model (a
+# new `select` or `arm` kind) is the signal that enumeration has hit its
+# ceiling; see the Decisions note named at the foot of this header.
 #
 # CRITICAL SAFETY — INERT BY DEFAULT, ARMED BY A PER-WORKTREE MARKER. The
 # hook enforces ONLY when BOTH hold for the tool cwd's worktree toplevel
@@ -238,33 +269,35 @@ if [ "$tool" = "Bash" ]; then
   [ -n "$cmd" ] || inert "Bash tool_input.command is absent or empty — nothing to inspect"
 
   # Walk the command left-to-right. Track the active `cd`/`pushd` context, and
-  # for each destructive verb emit one tab-delimited record per path operand:
-  #   <baseKind>\t<baseVal>\t<opndVal>
+  # for each ARMED destructive verb emit one tab-delimited record per path
+  # operand its table row selects:
+  #   <baseKind>\t<baseVal>\t<verb>\t<opndVal>
   # baseKind: CWD (no cd — resolve against the worktree cwd) | LIT <dir> |
-  # NONLIT <dir> (a cd whose target the guard cannot resolve). Flags, redirect
-  # operators, and command separators end an operand list. For `dd`, only the
-  # `of=` operand is a write target.
-  while IFS=$'\t' read -r bk bv op; do
+  # NONLIT <dir> (a cd whose target the guard cannot resolve). Redirect
+  # operators and command separators end an operand run. Which tokens of that
+  # run become records is the row's `select`; whether the verb counts as
+  # destructive at all is its `arm`. See the operand-model table in the header.
+  while IFS=$'\t' read -r bk bv verb op; do
     [ -n "$op" ] || continue
 
     # Resolve the base dir the operand is relative to (the active cd context).
     basedir="$cwd"
     if [ "$bk" = "NONLIT" ]; then
-      deny "build worktree guard (Bash): a destructive command runs after 'cd $bv', whose target the guard cannot resolve statically (it contains an expansion, substitution, or glob), so it cannot prove the command stays inside the worktree root '$wt'. cd to a literal path under '$wt' first, or drop the cd. (foundation #1087/#932 — worker Bash must not escape the write-jail.)"
+      deny "build worktree guard (Bash): a destructive command ($verb) runs after 'cd $bv', whose target the guard cannot resolve statically (it contains an expansion, substitution, or glob), so it cannot prove the command stays inside the worktree root '$wt'. cd to a literal path under '$wt' first, or drop the cd. (foundation #1087/#932 — worker Bash must not escape the write-jail.)"
     fi
     if [ "$bk" = "LIT" ]; then
       bdir=$(abspath "$(strip_quotes "$bv")")
       case "$bdir" in
         "$wt"/*|"$wt") basedir="$bdir" ;;
         *) if is_allowlisted "$bdir"; then basedir="$bdir"
-           else deny "build worktree guard (Bash): a destructive command runs after 'cd $bv' → '$bdir', which is OUTSIDE the active worktree root '$wt'. A build worker must operate only inside its own worktree (or /tmp). (foundation #1087/#932.)"
+           else deny "build worktree guard (Bash): a destructive command ($verb) runs after 'cd $bv' → '$bdir', which is OUTSIDE the active worktree root '$wt'. A build worker must operate only inside its own worktree (or /tmp). (foundation #1087/#932.)"
            fi ;;
       esac
     fi
 
     # A non-literal operand is unprovable → deny (the exact F#932 shape).
     if is_nonliteral "$op"; then
-      deny "build worktree guard (Bash): a destructive command (rm/rmdir/mv/shred/truncate/dd) targets '$op', a NON-LITERAL path — it contains an expansion, command substitution, or glob whose value the guard cannot resolve, so it cannot prove the target stays inside the worktree root '$wt'. This is the F#932 failure shape ('rm -rf \"\$(dirname \"\$(pwd)\")\"' wiped ~/dev). Re-issue with a literal path typed in full under '$wt' (or /tmp/\$TMPDIR). (foundation #1087/#932.)"
+      deny "build worktree guard (Bash): a destructive command ($verb) targets '$op', a NON-LITERAL path — it contains an expansion, command substitution, or glob whose value the guard cannot resolve, so it cannot prove the target stays inside the worktree root '$wt'. This is the F#932 failure shape ('rm -rf \"\$(dirname \"\$(pwd)\")\"' wiped ~/dev). Re-issue with a literal path typed in full under '$wt' (or /tmp/\$TMPDIR). (foundation #1087/#932.)"
     fi
 
     ap=$(abspath "$(strip_quotes "$op")" "$basedir")
@@ -274,18 +307,93 @@ if [ "$tool" = "Bash" ]; then
     is_allowlisted "$ap" && continue
     is_gitignored "$ap" && continue
 
-    deny "build worktree guard (Bash): a destructive command (rm/rmdir/mv/shred/truncate/dd) targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
+    deny "build worktree guard (Bash): a destructive command ($verb) targets '$ap', which is OUTSIDE the active worktree root '$wt'. A build worker must delete/move only inside its own pre-created worktree (foundation #1087/#932 — worker Bash wiped ~/dev by escaping the write-jail). Re-issue with a path under '$wt'. Allowed exceptions: /tmp, \$TMPDIR, and gitignored source copies."
   done < <(printf '%s' "$cmd" | awk '
-    function isDestructive(s){
-      return s=="rm"||s=="rmdir"||s=="mv"||s=="shred"||s=="truncate"||s=="dd"
+    # --- the verb -> operand-model table (see the hook header for the schema).
+    # "<select>|<arm>|<base>|<words>". A new destructive shape reusing an
+    # existing select/arm pair is a ROW here and nothing else — the walker below
+    # dispatches on the data, never on the verb name.
+    BEGIN{
+      MODEL["rm"]        = "ALL|ALWAYS||1"
+      MODEL["rmdir"]     = "ALL|ALWAYS||1"
+      MODEL["mv"]        = "ALL|ALWAYS||1"
+      MODEL["shred"]     = "ALL|ALWAYS||1"
+      MODEL["truncate"]  = "ALL|ALWAYS||1"
+      MODEL["dd"]        = "OF|ALWAYS||1"
+      MODEL["rsync"]     = "LAST|DELETEFLAG||1"
+      MODEL["find"]      = "PRE|FINDPRED||1"
+      MODEL["git clean"] = "NONE|CLEANFLAG|CWD|2"
     }
     function nonlit(s){
       return (index(s,"$")||index(s,"`")||index(s,"*")||index(s,"?")|| \
               index(s,"[")||index(s,"~")||index(s,"{"))
     }
+    function isFlag(s){ return substr(s,1,1)=="-" }
+    # command separators / redirects end an operand run
+    function isSep(s){
+      return (s==";"||s=="|"||s=="||"||s=="&"||s=="&&"|| \
+              s==">"||s==">>"||s=="<"||s=="2>"||s=="2>>")
+    }
     # Never emit an empty baseVal field: a tab-delimited shell read collapses
     # empty whitespace-run fields, which would shift op into bv. CWD uses a dash.
-    function emit(bk,bv,op){ if(bv==""){bv="-"} print bk "\t" bv "\t" op }
+    function emit(bk,bv,vb,op){
+      if(op==""){ return }
+      if(bv==""){ bv="-" }
+      print bk "\t" bv "\t" vb "\t" op
+    }
+    # `arm`: is THIS invocation destructive at all? Reads the operand run o[1..m].
+    function armed(arm,   k){
+      if(arm=="ALWAYS"){ return 1 }
+      if(arm=="DELETEFLAG"){
+        for(k=1;k<=m;k++){ if(substr(o[k],1,8)=="--delete") return 1 }
+        return 0
+      }
+      if(arm=="FINDPRED"){
+        for(k=1;k<=m;k++){
+          if(o[k]=="-delete"){ return 1 }
+          if(o[k]=="-exec"||o[k]=="-execdir"){
+            if(k<m && (o[k+1]=="rm"||o[k+1]=="rmdir")) return 1
+          }
+        }
+        return 0
+      }
+      if(arm=="CLEANFLAG"){
+        for(k=1;k<=m;k++){
+          if(isFlag(o[k]) && (index(o[k],"x")||index(o[k],"d")||index(o[k],"f"))) return 1
+        }
+        return 0
+      }
+      return 0
+    }
+    # `select`: which tokens of the operand run o[1..m] are containment targets.
+    function targets(sel,   k,last){
+      if(sel=="ALL"){
+        for(k=1;k<=m;k++){ if(!isFlag(o[k])) emit(baseKind,baseVal,verb,o[k]) }
+        return
+      }
+      if(sel=="OF"){
+        for(k=1;k<=m;k++){ if(substr(o[k],1,3)=="of=") emit(baseKind,baseVal,verb,substr(o[k],4)) }
+        return
+      }
+      if(sel=="LAST"){
+        last=""
+        for(k=1;k<=m;k++){ if(!isFlag(o[k])) last=o[k] }
+        emit(baseKind,baseVal,verb,last)
+        return
+      }
+      if(sel=="PRE"){
+        # find [leading-options] [paths...] [predicates...] — the paths are the
+        # non-flag run BEFORE the first predicate. The leading options are the
+        # only flags allowed to precede a path.
+        k=1
+        while(k<=m && (o[k]=="-L"||o[k]=="-H"||o[k]=="-P"||o[k]=="-E"|| \
+                       o[k]=="-d"||o[k]=="-s"||o[k]=="-x")) k++
+        while(k<=m && !isFlag(o[k])){ emit(baseKind,baseVal,verb,o[k]); k++ }
+        return
+      }
+      # NONE: the verb takes no target operand (its base is the target — see
+      # the `base` field, handled by the caller).
+    }
     {
       n=split($0,t,/[[:space:]]+/)
       baseKind="CWD"; baseVal=""
@@ -305,26 +413,33 @@ if [ "$tool" = "Bash" ]; then
           }
           i++; continue
         }
-        if(isDestructive(tok)){
-          verb=tok
-          j=i+1
-          while(j<=n){
-            o=t[j]
-            if(o==""){ j++; continue }
-            # command separators / redirects end this operand list
-            if(o==";"||o=="|"||o=="||"||o=="&"||o=="&&"|| \
-               o==">"||o==">>"||o=="<"||o=="2>"||o=="2>>"){ break }
-            if(substr(o,1,1)=="-"){ j++; continue }   # a flag
-            if(verb=="dd"){
-              if(substr(o,1,3)=="of="){ emit(baseKind,baseVal,substr(o,4)) }
-              j++; continue
-            }
-            emit(baseKind,baseVal,o)
-            j++
-          }
-          i=j; continue
+        # Resolve the verb through the table: try the two-word form first
+        # (`git clean`), then the bare token.
+        j2=i+1
+        while(j2<=n && t[j2]=="") j2++
+        key2=(j2<=n) ? (tok " " t[j2]) : ""
+        if(key2!="" && (key2 in MODEL)){ verb=key2; runstart=j2+1 }
+        else if(tok in MODEL){ verb=tok; runstart=i+1 }
+        else { i++; continue }
+
+        # Collect the operand run (flags included — the `arm` predicate reads them).
+        m=0; j=runstart
+        while(j<=n){
+          x=t[j]
+          if(x==""){ j++; continue }
+          if(isSep(x)) break
+          m++; o[m]=x; j++
         }
-        i++
+
+        split(MODEL[verb],f,"|")
+        if(armed(f[2])){
+          targets(f[1])
+          # `base`=CWD: the verb has no target operand, so the cd-context base
+          # dir is itself the thing being destroyed (git clean). "." resolves
+          # against that base through the same containment path as any operand.
+          if(f[3]=="CWD"){ emit(baseKind,baseVal,verb,".") }
+        }
+        i=j; continue
       }
     }')
   exit 0
