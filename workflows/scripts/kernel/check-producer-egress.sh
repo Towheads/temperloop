@@ -35,8 +35,8 @@
 #     auto-offer check, _foundation_check_report_offer — see that
 #     function's own header comment in bin/temperloop) — renamed from
 #     bin/foundation in foundation #893; bin/foundation is scanned too
-#     (it's now just a thin exec shim, but scanning it is free and keeps
-#     this list honest if that ever changes)
+#     (since v0.19.0 it is only a refusal tombstone, but scanning it is free
+#     and keeps this list honest if that ever changes)
 #   - every regular file directly inside $OVERLAY_REPORT_D, if that
 #     directory is given and exists — the report.d/ drop-in seam's actual
 #     overlay producers (foundation's own `tokens` / `interventions` /

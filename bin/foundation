@@ -1,34 +1,30 @@
 #!/usr/bin/env bash
-# foundation — DEPRECATED compat shim (foundation #893; windowed by
-# temperloop#165). The CLI's public name is TemperLoop (binary `temperloop`,
-# see kernel/bin/temperloop and Decisions/foundation - Kernel public name
-# TemperLoop); this file exists only so an existing `foundation <sub>`
-# caller — a script, a shell alias, an already-bootstrapped install — keeps
-# working through the rename window. It resolves its own location
-# (following symlinks, so an already-installed `~/.local/bin/foundation`
-# symlink still works), prints a one-line deprecation notice, and execs the
-# real dispatcher next to it. New callers should use `temperloop`.
+# foundation — REMOVED compat shim (foundation #893; windowed by
+# temperloop#165, window closed in v0.19.0). The CLI's public name is
+# TemperLoop (binary `temperloop`, see kernel/bin/temperloop and
+# Decisions/foundation - Kernel public name TemperLoop).
 #
-# REMOVAL WINDOW: this shim is removed in v0.19.0 (VERSIONING.md pre-1.0
-# bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the migration
-# note). TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam
-# (never set in production use): =1 simulates the post-v0.19.0 removal so
-# the legible failure below stays testable before the removal release ships.
+# Through the v0.15.0 -> v0.19.0 rename window this file printed a
+# deprecation notice and execed `temperloop`, so an existing `foundation
+# <sub>` caller — a script, a shell alias, an already-bootstrapped install
+# — kept working. That forwarding is GONE: this refuses, always.
+#
+# The file itself stays, deliberately, as a legible tombstone. A
+# pre-v0.19.0 install left a `~/.local/bin/foundation` symlink pointing
+# here, and `temperloop update` moves the checkout underneath that symlink
+# — deleting this file would turn it into a dangling "no such file or
+# directory", an opaque failure at exactly the moment the operator needs to
+# be told the name changed. A fresh install never creates one
+# (bin/bootstrap.sh).
+#
+# Disposing of a stale symlink is MANUAL: `temperloop uninstall` does NOT
+# remove it — it PRINTS the `rm -f` to run. The symlink belongs to the
+# bootstrap footprint (scope (a) of bin/README.md § Uninstall), written by
+# bin/bootstrap.sh BEFORE any manifest existed, so uninstall's manifest has
+# no record of it and deliberately will not infer one. See
+# bin/subcommands/uninstall.sh's header and its
+# print_bootstrap_footprint_bullet.
 set -uo pipefail
 
-if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
-  echo "foundation: this compat shim was removed in v0.19.0 — the CLI was renamed 'temperloop' in v0.15.0. Invoke 'temperloop' instead." >&2
-  exit 1
-fi
-echo "foundation: NOTE — 'foundation' is a deprecated alias for 'temperloop' (renamed in v0.15.0); this shim is removed in v0.19.0." >&2
-
-_src="${BASH_SOURCE[0]}"
-while [ -L "$_src" ]; do
-  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
-  _src="$(readlink "$_src")"
-  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
-done
-_bin_dir="$(cd -P "$(dirname "$_src")" && pwd)"
-unset _src _dir
-
-exec "$_bin_dir/temperloop" "$@"
+echo "foundation: this compat shim was removed in v0.19.0 — the CLI was renamed 'temperloop' in v0.15.0. Invoke 'temperloop' instead." >&2
+exit 1

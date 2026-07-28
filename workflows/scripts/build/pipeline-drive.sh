@@ -340,17 +340,14 @@ _board_checkout() {  # $1 = board number
 # Echoes the slug on a hit + rc 0; nothing + rc 1 on an unmapped board (caller
 # skips it).
 _drive_conf_repo() {  # $1 = board number; rc 1 on any miss (no conf, or no key)
-  local f val lf
+  local f val
   f="${BOARDS_CONF_MACHINE:-}"
   if [ -z "$f" ]; then
-    # temperloop#165 rename window (mirrors board.sh's
-    # _board_machine_conf_default): prefer the temperloop/ machine conf,
-    # fall back to an existing legacy foundation/ one (removed in v0.19.0).
+    # Machine-level conf (mirrors board.sh's _board_machine_conf_default).
+    # The temperloop#165 legacy fallback was removed in v0.19.0; board.sh is
+    # the ONE site that still notices a stale legacy file and says so, so
+    # this mirror stays silent rather than double-printing the same NOTE.
     f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
-    lf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
-    if [ ! -f "$f" ] && [ -f "$lf" ] && [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" != "1" ]; then # setting:exempt — test/simulation-only seam
-      f="$lf"
-    fi
   fi
   [ -f "$f" ] || f="${BOARDS_CONF_REPO_LOCAL:-$HERE/../board/boards.conf}"
   [ -f "$f" ] || return 1

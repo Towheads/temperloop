@@ -6,7 +6,7 @@
 # this distinction); each now resolves through an optional external
 # `boards.conf` file BEFORE falling back to the built-in case map. Discovery
 # order (first hit wins): machine-level ($BOARDS_CONF_MACHINE, defaulting to
-# $XDG_CONFIG_HOME/foundation/boards.conf) -> repo-local override
+# $XDG_CONFIG_HOME/temperloop/boards.conf) -> repo-local override
 # ($BOARDS_CONF_REPO_LOCAL, defaulting to workflows/scripts/board/boards.conf)
 # -> the built-in map.
 #

@@ -7,11 +7,11 @@ operations (the board toolkit, the build/sweep pipeline, the quality gates)
 stay on `make` — this CLI does not duplicate a Makefile target.
 
 (The CLI was named `foundation` before foundation #893's rename to the
-project's ratified public name, TemperLoop. `foundation <sub>` still works
-through the rename window — `kernel/bin/foundation` is a thin compat shim
-that prints a one-line deprecation notice and execs `temperloop` — and is
-**removed in v0.19.0** along with the other legacy `foundation` names; see
-the v0.15.0 CHANGELOG `BREAKING` entry for the full migration note.)
+project's ratified public name, TemperLoop. `foundation <sub>` worked through
+a compat window that **closed in v0.19.0**: `kernel/bin/foundation` no longer
+execs `temperloop`, it refuses and names the replacement — see the v0.15.0
+CHANGELOG `BREAKING` entry for the migration note and the v0.19.0 entry for
+what each legacy name now does.)
 
 ## Prerequisites
 
@@ -58,9 +58,10 @@ ownership"):
   recovery (reinstall fresh, or move the clone to a tag by hand) rather than
   a silent pull or a dead end.
 
-Either way it also symlinks `~/.local/bin/temperloop` (and the `foundation`
-compat shim alongside it) to the entrypoints inside that checkout, and
-prints a `PATH` reminder if `~/.local/bin` isn't on it already. No shell-rc
+Either way it also symlinks `~/.local/bin/temperloop` to the entrypoint
+inside that checkout, and prints a `PATH` reminder if `~/.local/bin` isn't on
+it already. (A pre-v0.19.0 install also symlinked a `foundation` compat
+shim; that is no longer created.) No shell-rc
 edits, no `sudo`.
 
 Uninstalling is layered across **four separate scopes** — most people only
@@ -161,8 +162,9 @@ each one went:
 For the by-hand Projects-v2 board, see § "Manual Projects-v2 recipe" in [the
 install-cli feature doc](../docs/features/install-cli.md).
 
-`foundation <subcommand>` runs the identical dispatch as `temperloop
-<subcommand>` throughout this ladder (the compat shim — see above).
+`foundation <subcommand>` does **not** run any of this ladder — the compat
+shim was removed in v0.19.0 (see above) and now only refuses, naming
+`temperloop`.
 
 ### Verify: `temperloop install` + `doctor.sh`
 
@@ -229,9 +231,9 @@ across more than one client/engagement.
 
 | Scope | What it undoes | How |
 |---|---|---|
-| (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/bin/foundation` (the compat shim), `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
+| (a) **Bootstrap footprint** | `~/.local/bin/temperloop`, `~/.local/share/temperloop` — the bootstrap's entire footprint, written *before* any manifest existed — plus `~/.local/bin/foundation` if a **pre-v0.19.0** install left the compat-shim symlink behind (no new install creates one) | manual: `rm -f ~/.local/bin/temperloop ~/.local/bin/foundation && rm -rf ~/.local/share/temperloop` |
 | (b) **Machine-surface install manifest** | settings/config/symlinks a `temperloop install` wrote under `$HOME`, recorded in `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json` | `temperloop uninstall` |
-| (c) **Target-repo side effects** | the proposal PR `temperloop init` produced in a repo you pointed it at — plus the label, required check, and board a **pre-scope-down** `init` recorded before it stopped applying API state — as recorded in that repo's `.temperloop/config` (pre-v0.15.0 inits wrote `.foundation/config` — read through the rename window, removed in v0.19.0) | `temperloop eject` (run inside the target repo; cleans either dir) |
+| (c) **Target-repo side effects** | the proposal PR `temperloop init` produced in a repo you pointed it at — plus the label, required check, and board a **pre-scope-down** `init` recorded before it stopped applying API state — as recorded in that repo's `.temperloop/config` (pre-v0.15.0 inits wrote `.foundation/config`; that read was removed in v0.19.0 and `init` now refuses on one, but `eject` still cleans it) | `temperloop eject` (run inside the target repo; cleans either dir) |
 | (d) **Issue-cache store root** | `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}` — created by `temperloop install`, grown by ongoing board cache reads/refreshes; deliberately **not** tracked by the manifest (it's regenerable cache, not install state, so "restore its original content" is the wrong verb for it) | manual, optional: `rm -rf "${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"` |
 | (e) **First-epic substrate** | default-branch protection, head-branch auto-delete, the merge-queue disposition, any scaffolded CI workflow, and the recorded `§ Principles` disposition — applied by the **first epic** via `/assess --epic N` → `/build`, never by `init`, so none of it is in scope (c)'s manifest and **`temperloop eject` does not revert it** | manual: repo **Settings → Branches** (and delete the generated workflow file); step-by-step in [`docs/features/engineering-principles.md` § Uninstall / removal](../docs/features/engineering-principles.md) |
 
@@ -312,7 +314,8 @@ different repo/org, same as it would for a bare `gh` call.
 global, per-machine** install — the machine-wide `~/.claude/CLAUDE.md`,
 `settings.json`, and the rest are shared by every repo you point this CLI
 at, not duplicated per repo. What *is* per-repo is `.temperloop/config`
-(pre-v0.15.0: `.foundation/config`, read through the rename window),
+(pre-v0.15.0: `.foundation/config`; that read was removed in v0.19.0 —
+`init` refuses on one, `eject` still cleans it),
 written inside the target repo's own working tree by `temperloop init` (and
 reverted by `temperloop eject`, scope (c)) — board wiring and proposal PRs
 live there, scoped to that one repo, never in the global install. A repo
@@ -327,9 +330,10 @@ several unrelated client codebases — `bin/bootstrap.sh` honors two
 environment-variable overrides read *before* it clones anything:
 `TEMPERLOOP_HOME` (default `~/.local/share/temperloop`, where the checkout
 lives) and `TEMPERLOOP_BIN_DIR` (default `~/.local/bin`, where the
-`temperloop`/`foundation` entrypoints get symlinked). Set both to a
-client-specific path before running the bootstrap script to keep each
-engagement's install fully separate. (The pre-rename `FOUNDATION_HOME` /
-`FOUNDATION_BIN_DIR` / `FOUNDATION_KERNEL_REPO` names are still read as
-fallbacks through the rename window — with a one-line deprecation notice —
-and are removed in v0.19.0.)
+`temperloop` entrypoint gets symlinked). Set both to a client-specific path
+before running the bootstrap script to keep each engagement's install fully
+separate. (The pre-rename `FOUNDATION_HOME` / `FOUNDATION_BIN_DIR` /
+`FOUNDATION_KERNEL_REPO` names were read as fallbacks through the rename
+window and are **no longer read** as of v0.19.0: setting one without its
+`TEMPERLOOP_*` twin now fails with a message naming the replacement, rather
+than installing somewhere you did not ask for.)

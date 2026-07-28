@@ -596,7 +596,7 @@ KERNEL_GATES=(
   "make test-pr-leak-guard"
   # Mechanical egress lint over Epic E's before/after value-loop producers
   # (foundation #766, privacy/egress audit item): greps baseline-snapshot.sh,
-  # report.sh, bin/foundation's auto-offer check, and (in the composed-tree
+  # report.sh, bin/temperloop's auto-offer check, and (in the composed-tree
   # invocation via the root Makefile) the .temperloop/report.d/ overlay
   # drop-ins for network-call patterns beyond the one sanctioned `gh`
   # channel. See check-producer-egress.sh's header for the documented

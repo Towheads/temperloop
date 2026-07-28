@@ -269,8 +269,8 @@ function sq(value) {
 // readlink without -f just fails that candidate), or the TEMPERLOOP_HOME
 // bootstrap-clone convention (bin/bootstrap.sh's own default,
 // $HOME/.local/share/temperloop — never a hardcoded personal dev path,
-// temperloop#406; the legacy FOUNDATION_HOME name is read as a fallback
-// through the rename window, removed in v0.19.0). If none resolve, the
+// temperloop#406; the legacy FOUNDATION_HOME fallback was removed in
+// v0.19.0 with the rest of the temperloop#165 window). If none resolve, the
 // emitted path points at the missing
 // repo-local dir and the machinery script's own "not found" (exit 127) surfaces
 // loudly. NOTE:
@@ -296,7 +296,7 @@ function machineryBin(repoRoot, name) {
     'if [ ! -d "$d" ]; then for c in ' +
     '"${FOUNDATION:-}/workflows/scripts/build" ' +
     '"$(dirname "$(readlink -f "$HOME/.claude/workflows/build-level.mjs" 2>/dev/null)" 2>/dev/null)/../../workflows/scripts/build" ' +
-    '"${TEMPERLOOP_HOME:-${FOUNDATION_HOME:-$HOME/.local/share/temperloop}}/workflows/scripts/build"; ' +
+    '"${TEMPERLOOP_HOME:-$HOME/.local/share/temperloop}/workflows/scripts/build"; ' +
     'do [ -d "$c" ] && { d="$c"; break; }; done; fi; ' +
     "printf '%s' \"$d/" + name + '")"';
 }

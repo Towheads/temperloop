@@ -149,10 +149,12 @@ from its manifest, and `feedback` / `report` send a message to the
 maintainers / render your own local baseline metrics. Subcommands are
 discovered files — run `temperloop help` for the live list.
 
-`foundation <subcommand>` still works everywhere above — the CLI was renamed
-from `foundation` to `temperloop` at public launch (v0.15.0, see § 8), and
-`bin/foundation` is a thin compat shim that execs `temperloop`. The shim and
-the other legacy `foundation` names are scheduled for removal in v0.19.0.
+`foundation <subcommand>` no longer works — the CLI was renamed from
+`foundation` to `temperloop` at public launch (v0.15.0, see § 8), and its
+compat shim was removed in v0.19.0 along with the other legacy `foundation`
+names. Invoking `foundation` now prints a one-line message naming
+`temperloop` and exits non-zero, so an un-migrated script fails loudly rather
+than silently.
 
 Full flag reference, exit codes, and the safety contract behind each step
 (what "zero-write" and "tree-only" actually guarantee) live in
@@ -335,10 +337,10 @@ surface) is on its way as part of this project's public launch.
 This CLI and its checkout were called `foundation` (and, before public
 launch, `foundation-kernel`) during early development; both names still
 surface in older issues, commits, and URLs. TemperLoop is the ratified
-public name going forward — the CLI renamed at v0.15.0, with the legacy
-`foundation` names (including the `bin/foundation` compat shim) scheduled
-for removal in v0.19.0; see the v0.15.0 CHANGELOG `BREAKING` entry for the
-migration note. See `claude/CLAUDE.kernel.md`'s history for how this repo's
+public name going forward — the CLI renamed at v0.15.0, and the legacy
+`foundation` names (including the `bin/foundation` compat shim) were removed
+in v0.19.0; see the v0.15.0 CHANGELOG `BREAKING` entry for the migration
+note and the v0.19.0 entry for what each legacy name now does instead. See `claude/CLAUDE.kernel.md`'s history for how this repo's
 own kernel/overlay split works if you're extracting a similar process layer
 out of your own personal automation.
 

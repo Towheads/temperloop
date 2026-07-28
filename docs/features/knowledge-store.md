@@ -20,7 +20,8 @@ an executable) exposing four operations — `ks_read`, `ks_write`, `ks_append`,
 `ks_list` — none of which take a filesystem path directly. Every operation
 resolves its target through exactly one function, `ks_root`, which prints
 `KNOWLEDGE_STORE_ROOT` (default `${XDG_DATA_HOME:-$HOME/.local/share}/
-foundation/knowledge`) and creates nothing itself. Which implementation
+temperloop/knowledge` — renamed from `foundation/knowledge` in v0.15.0, whose
+fallback was removed in v0.19.0) and creates nothing itself. Which implementation
 actually moves bytes is selected by `KNOWLEDGE_STORE_BACKEND` (default
 `plain-files`): a backend is a set of four functions named
 `_ks_backend_<name>_{read,write,append,list}`, where `<name>` is the backend

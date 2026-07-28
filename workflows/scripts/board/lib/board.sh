@@ -61,12 +61,12 @@ BOARD_FIELD_COMPONENT="Component"
 #   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
 #      (default ~/.config/temperloop/boards.conf) — override BOARDS_CONF_MACHINE.
 #      The subdir renamed foundation/ -> temperloop/ in v0.15.0
-#      (temperloop#165, read-old-write-new): when no file exists at the new
-#      default, an EXISTING legacy ~/.config/foundation/boards.conf is used
-#      instead (see _board_machine_conf_default). The legacy fallback is
-#      removed in v0.19.0 — move the file (mkdir -p ~/.config/temperloop &&
-#      mv ~/.config/foundation/boards.conf ~/.config/temperloop/) or set
-#      BOARDS_CONF_MACHINE.
+#      (temperloop#165). The legacy ~/.config/foundation/boards.conf
+#      fallback was removed in v0.19.0 and is NO LONGER READ — an existing
+#      legacy file is named once on stderr instead of being used silently
+#      (see _board_machine_conf_default). Move it (mkdir -p
+#      ~/.config/temperloop && mv ~/.config/foundation/boards.conf
+#      ~/.config/temperloop/) or set BOARDS_CONF_MACHINE.
 #   1b. composed-tree consumer-root conf (temperloop#494): in a self-hosting
 #      checkout that vendors this kernel as a `kernel/` subtree and symlinks
 #      workflows/scripts/board into it (foundation), the layer-2 repo-local path
@@ -102,26 +102,21 @@ BOARD_FIELD_COMPONENT="Component"
 # workflows/scripts/board/boards.conf.example for the documented format.
 _BOARD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Default machine-level conf path (layer 3), with the temperloop#165 rename
-# window: prefer $XDG_CONFIG_HOME/temperloop/boards.conf; when that does not
-# exist but a legacy $XDG_CONFIG_HOME/foundation/boards.conf does, use the
-# legacy file (read-old — silent by design: board.sh runs on every board op,
-# so a per-call notice would be pure spam; docs/config-precedence.md and the
-# CHANGELOG carry the migration note). Legacy fallback removed in v0.19.0.
-# TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never set
-# in production use): =1 simulates the post-v0.19.0 removal — the legacy
-# file is then ignored with a one-line stderr notice, never silently.
+# Default machine-level conf path (layer 3): $XDG_CONFIG_HOME/temperloop/
+# boards.conf. The temperloop#165 read-old fallback to a legacy
+# $XDG_CONFIG_HOME/foundation/boards.conf was removed in v0.19.0 — the
+# legacy file is no longer used, but its mere PRESENCE is still reported
+# once on stderr rather than ignored silently: a stranger whose only conf
+# sits at the legacy path would otherwise see every board op fall through to
+# the built-in maps with no explanation at all. This NOTE is the whole
+# diagnostic (docs/config-precedence.md and the CHANGELOG carry the
+# migration instruction).
 _board_machine_conf_default() {
   local new_f old_f
   new_f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
   old_f="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   if [ ! -f "$new_f" ] && [ -f "$old_f" ]; then
-    if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
-      echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.19.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
-    else
-      printf '%s' "$old_f"
-      return 0
-    fi
+    echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.19.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
   fi
   printf '%s' "$new_f"
 }

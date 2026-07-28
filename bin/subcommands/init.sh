@@ -505,26 +505,19 @@ echo
 # ---------------------------------------------------------------------------
 config_rel=".temperloop/config"
 config_path="$repo_dir/$config_rel"
-# temperloop#165 rename window (read-old-write-new): a pre-v0.15.0 init
-# wrote .foundation/config. When no .temperloop/config exists, READ the
-# legacy file so a re-run still merges the old install manifest — but the
-# config this run WRITES always lands at .temperloop/config (write-new).
-# The legacy read is removed in v0.19.0; `temperloop eject` cleans either
-# dir throughout. TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY
-# seam (never set in production use): =1 simulates the post-v0.19.0
-# behavior — a legible refusal naming the migration, never a silent
-# fresh-manifest restart on top of forgotten legacy state.
+# temperloop#165: a pre-v0.15.0 init wrote .foundation/config. That legacy
+# READ was supported through the v0.15.0 -> v0.19.0 window and is now GONE
+# — but the legacy file is still DETECTED, and the detection is the
+# load-bearing half: silently ignoring it would restart from a fresh install
+# manifest on top of forgotten legacy state, re-applying steps the target
+# repo already carries. Refuse legibly instead, naming the migration.
+# `temperloop eject` still cleans either dir.
 legacy_config_rel=".foundation/config"
 read_config_rel="$config_rel"
 read_config_path="$config_path"
 if [ ! -f "$config_path" ] && [ -f "$repo_dir/$legacy_config_rel" ]; then
-  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
-    echo "init.sh: ERROR — found legacy $legacy_config_rel, whose read support was removed in v0.19.0 (the config renamed to .temperloop/config in v0.15.0). Rename the directory (git mv .foundation .temperloop) or run 'temperloop eject' with a pre-v0.19.0 release, then re-run init." >&2
-    exit 1
-  fi
-  echo "init.sh: NOTE — reading legacy $legacy_config_rel (renamed .temperloop/config in v0.15.0; legacy read removed in v0.19.0). This run's config will be written to $config_rel." >&2
-  read_config_rel="$legacy_config_rel"
-  read_config_path="$repo_dir/$legacy_config_rel"
+  echo "init.sh: ERROR — found legacy $legacy_config_rel, whose read support was removed in v0.19.0 (the config renamed to .temperloop/config in v0.15.0). Rename the directory (git mv .foundation .temperloop) or run 'temperloop eject' with a pre-v0.19.0 release, then re-run init." >&2
+  exit 1
 fi
 existing_config=""
 existing_installs="[]"

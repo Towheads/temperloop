@@ -110,8 +110,8 @@ print_bootstrap_footprint_bullet() {
 Bootstrap footprint (predates this manifest — 'temperloop uninstall' has no
   record of it and cannot remove it; scope (a) of bin/README.md's Uninstall
   section — manual removal):
-  rm -f "$FOUNDATION_CLI_BIN_DEFAULT" "${FOUNDATION_CLI_BIN_DEFAULT%/*}/foundation"
-  rm -rf "$FOUNDATION_CLI_HOME_DEFAULT"
+  rm -f "$TEMPERLOOP_CLI_BIN_DEFAULT" "${TEMPERLOOP_CLI_BIN_DEFAULT%/*}/foundation"
+  rm -rf "$TEMPERLOOP_CLI_HOME_DEFAULT"
 EOF
 }
 
@@ -144,8 +144,9 @@ EOF
 }
 
 # print_eject_reminder — scope (c): `temperloop init` side effects live in
-# a target REPO's .foundation/config, a wholly separate manifest this
-# machine-scoped script never reads (see header). There is no machine-level
+# a target REPO's .temperloop/config (pre-v0.15.0: .foundation/config), a
+# wholly separate manifest this machine-scoped script never reads (see
+# header). There is no machine-level
 # record of which repos init ever touched, so — mirroring the bootstrap-
 # footprint bullet's own always-print posture — this is a fixed reminder,
 # not a personalized one.

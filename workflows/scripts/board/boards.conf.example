@@ -4,9 +4,9 @@
 # one of two locations, in this order (first hit wins):
 #   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
 #      (default ~/.config/temperloop/boards.conf). Renamed from the legacy
-#      foundation/ subdir in v0.15.0 (temperloop#165): an existing
-#      ~/.config/foundation/boards.conf is still read as a fallback through
-#      the rename window, removed in v0.19.0 — move the file.
+#      foundation/ subdir in v0.15.0 (temperloop#165); the fallback to an
+#      existing ~/.config/foundation/boards.conf was removed in v0.19.0 —
+#      such a file is now NAMED on stderr, never read. Move it.
 #   2. repo-local override: workflows/scripts/board/boards.conf (next to this
 #      file)
 # If NEITHER exists, board.sh / pipeline-tick.sh / pipeline-drive.sh fall back to

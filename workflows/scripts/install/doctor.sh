@@ -223,17 +223,23 @@ check_cache_state() {
     return 0
   fi
 
-  # temperloop#165 rename window: temperloop/ machine conf preferred, an
-  # existing legacy foundation/ one read as fallback (removed in v0.19.0).
+  # temperloop#165: the machine conf's subdir renamed foundation/ ->
+  # temperloop/ in v0.15.0, and the legacy read was removed in v0.19.0 — the
+  # legacy path is no longer a fallback. But this is `doctor`, whose whole
+  # job is to explain why a tree isn't wired up the way its operator thinks,
+  # so a legacy file that still exists is REPORTED rather than passed over in
+  # silence (same disposition as board.sh's own promoted NOTE — and note this
+  # fires whether or not a repo-local conf then supplies the boards, since
+  # the operator's question is "why is my machine conf being ignored").
   local machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
   local machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   local repo_conf="${FOUNDATION}/workflows/scripts/board/boards.conf"
   local conf=""
+  if [[ ! -f "$machine_conf" && -f "$machine_conf_legacy" ]]; then
+    printf '  NOTE: a machine boards.conf exists only at the legacy path %s — the default moved to %s in v0.15.0 and the legacy read was removed in v0.19.0, so that file is IGNORED; move it.\n' "$machine_conf_legacy" "$machine_conf"
+  fi
   if [[ -f "$machine_conf" ]]; then
     conf="$machine_conf"
-  elif [[ -f "$machine_conf_legacy" ]]; then
-    conf="$machine_conf_legacy"
-    printf '  NOTE: machine boards.conf found at the legacy path %s — the default moved to %s in v0.15.0 (legacy read removed in v0.19.0); move the file.\n' "$machine_conf_legacy" "$machine_conf"
   elif [[ -f "$repo_conf" ]]; then
     conf="$repo_conf"
   fi

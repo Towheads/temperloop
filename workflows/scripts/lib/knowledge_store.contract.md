@@ -29,20 +29,19 @@ per-user data directory, not tied to any particular git checkout, so a
 plain-files store survives independent of which repo clone is active and
 does not risk being accidentally committed inside a project tree.
 
-**Legacy default-root window (v0.15.0 → removed in v0.19.0).** The default
-namespace renamed from `.../foundation/knowledge` to
-`.../temperloop/knowledge` in v0.15.0 (temperloop#165, read-old-write-new).
-When `KNOWLEDGE_STORE_ROOT` is unset, resolution probes the **new** default
-first; if nothing exists there but a store directory **exists at the legacy
-default**, the legacy store is used (with a one-line `NOTE` on stderr, at
-most once per process) so a pre-rename install keeps finding its notes. A
-fresh install — neither directory present — always resolves to the new
-default, so every new store is created under `temperloop/`. The legacy
-fallback is **removed in v0.19.0**: migrate with
+**Legacy default root (window CLOSED in v0.19.0).** The default namespace
+renamed from `.../foundation/knowledge` to `.../temperloop/knowledge` in
+v0.15.0 (temperloop#165). Through the v0.15.0 → v0.19.0 window, a store
+existing at the legacy default was resolved as a fallback; **that fallback is
+removed**. When `KNOWLEDGE_STORE_ROOT` is unset, resolution now always yields
+the **new** default. What survives is the *diagnostic*: if nothing exists at
+the new default but a store directory **exists at the legacy default**, one
+`NOTE` per process names the stranded store on stderr — without it a
+pre-rename install would silently resolve an empty new root and report "no
+notes found" while the real store sits one directory over. Migrate with
 `mv "${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge" "${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge"`
 (or pin `KNOWLEDGE_STORE_ROOT`). An explicitly set `KNOWLEDGE_STORE_ROOT`
-is always honored verbatim — the window logic applies to the *default*
-only.
+is always honored verbatim — this logic applies to the *default* only.
 
 ### `ks_root`
 

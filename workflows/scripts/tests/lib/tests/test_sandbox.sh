@@ -148,8 +148,11 @@ snapshot_path() {
 
 # The exact real-HOME paths bin/bootstrap.sh / init.sh / eject.sh would
 # write to if HOME/XDG_* were NOT re-pointed (bin/bootstrap.sh's own
-# FOUNDATION_HOME/FOUNDATION_BIN_DIR defaults + the CLI's own
-# XDG_CONFIG_HOME/XDG_STATE_HOME dismiss-state paths).
+# TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR defaults + the CLI's own
+# XDG_CONFIG_HOME/XDG_STATE_HOME dismiss-state paths). The two legacy
+# `foundation`-named entries below stay in the tripwire deliberately: the
+# temperloop#165 window closed in v0.19.0, so NOTHING should write them any
+# more, and that is precisely what makes them worth asserting.
 REAL_CANDIDATES=(
   "$REAL_HOME_BEFORE/.local/share/temperloop"
   "$REAL_HOME_BEFORE/.local/bin/temperloop"

@@ -34,60 +34,87 @@
 #      fails legibly with a stated recovery, never a silent pull or a dead
 #      end.
 #   2. Symlinks $TEMPERLOOP_HOME/bin/temperloop onto
-#      $TEMPERLOOP_BIN_DIR/temperloop — and, so an existing `foundation
-#      <sub>` caller keeps working through the rename window, also symlinks
-#      the checkout's kernel/bin/foundation compat shim onto
-#      $TEMPERLOOP_BIN_DIR/foundation (the shim is removed in v0.19.0).
+#      $TEMPERLOOP_BIN_DIR/temperloop.
 #   3. Prints a PATH reminder if $TEMPERLOOP_BIN_DIR isn't on it already.
 #
-# ENV SETTINGS + RENAME WINDOW (temperloop#165, v0.15.0): TEMPERLOOP_KERNEL_REPO,
-# TEMPERLOOP_HOME, and TEMPERLOOP_BIN_DIR are the canonical override names,
-# renamed from the pre-rename FOUNDATION_* prefix. Read-old-write-new: a
-# legacy FOUNDATION_* var still works while its TEMPERLOOP_* twin is unset
-# (precedence: new > old > built-in default) and prints a one-line
-# deprecation notice; the legacy names are removed in v0.19.0 (VERSIONING.md
-# pre-1.0 bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the
-# migration note).
+# ENV SETTINGS (temperloop#165, v0.15.0): TEMPERLOOP_KERNEL_REPO,
+# TEMPERLOOP_HOME, and TEMPERLOOP_BIN_DIR are the override names, renamed
+# from the pre-rename FOUNDATION_* prefix. The legacy FOUNDATION_* names
+# were read as fallbacks through the v0.15.0 -> v0.19.0 migration window and
+# are NO LONGER READ: a set legacy var now fails legibly, naming its
+# replacement, rather than being silently ignored (VERSIONING.md pre-1.0
+# bump rules; the v0.15.0 CHANGELOG BREAKING entry carries the migration
+# note).
 #
-# UNINSTALL: remove $TEMPERLOOP_BIN_DIR/temperloop, $TEMPERLOOP_BIN_DIR/foundation,
-# and $TEMPERLOOP_HOME — `temperloop eject` documents removal of anything
-# ELSE the CLI wrote to a target repo it was pointed at; this bootstrap's
-# own footprint is exactly those three paths, nothing more.
+# UNINSTALL: remove $TEMPERLOOP_BIN_DIR/temperloop and $TEMPERLOOP_HOME —
+# `temperloop eject` documents removal of anything ELSE the CLI wrote to a
+# target repo it was pointed at; this bootstrap's own footprint is exactly
+# those two paths, nothing more. (A pre-v0.19.0 install may also have a
+# stale $TEMPERLOOP_BIN_DIR/foundation shim symlink. `temperloop uninstall`
+# does NOT remove it — it PRINTS the manual `rm -f`: that symlink is part of
+# this bootstrap's own footprint, written before any manifest existed, so
+# uninstall has no record of it. See bin/subcommands/uninstall.sh scope (a).)
 #
 # NOTE for maintainers: the two default paths below are also stated in
-# kernel/bin/lib/common.sh (FOUNDATION_CLI_HOME_DEFAULT /
-# FOUNDATION_CLI_BIN_DEFAULT) and kernel/bin/README.md. This script runs
+# kernel/bin/lib/common.sh (TEMPERLOOP_CLI_HOME_DEFAULT /
+# TEMPERLOOP_CLI_BIN_DEFAULT) and kernel/bin/README.md. This script runs
 # BEFORE any of that repo exists on disk, so it cannot source or read
 # either — keep all three literal values in sync by hand if either default
 # ever changes.
 set -eu
 
-# --- legacy FOUNDATION_* env-var fallback window (removed in v0.19.0) ------
-# TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never set
-# in production use; same registry-exempt status as BUILD_QUOTA_NOW): =1
-# simulates the post-v0.19.0 removal so the legible failure below stays
-# testable before the removal release ships.
-_tl_legacy_notice() {
+# --- legacy FOUNDATION_* env-var names: no longer read --------------------
+# The v0.15.0 -> v0.19.0 read-old window is CLOSED. A legacy FOUNDATION_* var
+# is no longer adopted as its TEMPERLOOP_* twin's fallback — but it is still
+# DETECTED, because silently ignoring a var the caller deliberately set would
+# install to a different path than they asked for. Refuse legibly instead,
+# naming the replacement.
+#
+# SET-NESS vs NON-EMPTINESS — the guards below test `${VAR:+x}` (set AND
+# non-empty), NOT `${VAR+x}` (set at all), and that choice is load-bearing in
+# BOTH directions. It must mirror the RESOLUTION three lines down, which is
+# `:-` based and therefore treats "set but empty" as "no value given":
+#
+#   * NEW side (`[ -z "${TEMPERLOOP_HOME:+x}" ]` — unset OR empty).
+#     `TEMPERLOOP_HOME=` resolves to the built-in default, so an empty
+#     new-name value is NOT a value the caller asked for. A set-ness test
+#     (`+x`) would see "x", skip the refusal, and fall through to the default
+#     — SILENTLY DISCARDING a deliberately-set $FOUNDATION_HOME. That is
+#     verbatim the failure the comment above says this detection prevents.
+#   * LEGACY side (`[ -n "${FOUNDATION_HOME:+x}" ]` — set AND non-empty).
+#     `FOUNDATION_HOME=` carries no value to discard, so it must NOT
+#     hard-exit. This matches bin/lib/common.sh's temperloop_env_compat(),
+#     whose `legacy_val` check requires the legacy var be non-empty before
+#     refusing — so `bin/bootstrap.sh` and `bin/temperloop` agree on that
+#     input instead of one exiting 1 where the other returns 0.
+#
+# WHY `:+x` AND NOT THE PLAINER `${VAR:-}`: the two are equivalent inside
+# `[ -z ]`/`[ -n ]`, but `${VAR:-...}` is the DEFAULT-VALUE seam
+# workflows/scripts/config/check-setting-registry.sh parses (its seam regex
+# is `\$\{NAME:?[=-]`, which matches `:-` but not `:+`). Written as
+# `${TEMPERLOOP_HOME:-}` these guards read to that lint as "bootstrap.sh
+# declares TEMPERLOOP_HOME's default to be the empty string", contradicting
+# the real default on the resolution line below and registering the legacy
+# FOUNDATION_* names as unregistered settings. `:+x` states the same
+# predicate without declaring any default. Do not "simplify" it back.
+_tl_legacy_refuse() {
   # $1 = legacy var name (set in the caller's environment), $2 = new name
-  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
-    echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$2 and re-run." >&2
-    exit 1
-  fi
-  echo "bootstrap: NOTE — \$$1 is deprecated: renamed \$$2 in v0.15.0; the legacy name still works but is removed in v0.19.0. Set \$$2 instead." >&2
+  echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$2 and re-run." >&2
+  exit 1
 }
-if [ -z "${TEMPERLOOP_KERNEL_REPO+x}" ] && [ -n "${FOUNDATION_KERNEL_REPO+x}" ]; then
-  _tl_legacy_notice FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO
+if [ -z "${TEMPERLOOP_KERNEL_REPO:+x}" ] && [ -n "${FOUNDATION_KERNEL_REPO:+x}" ]; then
+  _tl_legacy_refuse FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO
 fi
-if [ -z "${TEMPERLOOP_HOME+x}" ] && [ -n "${FOUNDATION_HOME+x}" ]; then
-  _tl_legacy_notice FOUNDATION_HOME TEMPERLOOP_HOME
+if [ -z "${TEMPERLOOP_HOME:+x}" ] && [ -n "${FOUNDATION_HOME:+x}" ]; then
+  _tl_legacy_refuse FOUNDATION_HOME TEMPERLOOP_HOME
 fi
-if [ -z "${TEMPERLOOP_BIN_DIR+x}" ] && [ -n "${FOUNDATION_BIN_DIR+x}" ]; then
-  _tl_legacy_notice FOUNDATION_BIN_DIR TEMPERLOOP_BIN_DIR
+if [ -z "${TEMPERLOOP_BIN_DIR:+x}" ] && [ -n "${FOUNDATION_BIN_DIR:+x}" ]; then
+  _tl_legacy_refuse FOUNDATION_BIN_DIR TEMPERLOOP_BIN_DIR
 fi
 
-TEMPERLOOP_KERNEL_REPO="${TEMPERLOOP_KERNEL_REPO:-${FOUNDATION_KERNEL_REPO:-https://github.com/Towheads/temperloop.git}}"  # denylist:allow — the kernel repo's own clone URL is this script's load-bearing default (override via TEMPERLOOP_KERNEL_REPO); the repo's identity, not a personal-token leak
-TEMPERLOOP_HOME="${TEMPERLOOP_HOME:-${FOUNDATION_HOME:-$HOME/.local/share/temperloop}}"
-TEMPERLOOP_BIN_DIR="${TEMPERLOOP_BIN_DIR:-${FOUNDATION_BIN_DIR:-$HOME/.local/bin}}"
+TEMPERLOOP_KERNEL_REPO="${TEMPERLOOP_KERNEL_REPO:-https://github.com/Towheads/temperloop.git}"  # denylist:allow — the kernel repo's own clone URL is this script's load-bearing default (override via TEMPERLOOP_KERNEL_REPO); the repo's identity, not a personal-token leak
+TEMPERLOOP_HOME="${TEMPERLOOP_HOME:-$HOME/.local/share/temperloop}"
+TEMPERLOOP_BIN_DIR="${TEMPERLOOP_BIN_DIR:-$HOME/.local/bin}"
 
 if ! command -v git >/dev/null 2>&1; then
   echo "bootstrap: 'git' not found on PATH — install git and re-run." >&2
@@ -158,16 +185,12 @@ chmod +x "$TEMPERLOOP_HOME/bin/temperloop"
 ln -sf "$TEMPERLOOP_HOME/bin/temperloop" "$TEMPERLOOP_BIN_DIR/temperloop"
 echo "bootstrap: installed -> $TEMPERLOOP_BIN_DIR/temperloop (-> $TEMPERLOOP_HOME/bin/temperloop)"
 
-# Compat: also put the `foundation` shim on PATH (kernel/bin/foundation
-# execs temperloop) so an existing `foundation <sub>` caller — a script, a
-# shell alias, muscle memory — keeps working after a fresh install too.
-# Windowed with the rest of the rename (temperloop#165): the shim prints a
-# one-line deprecation notice per invocation and is removed in v0.19.0.
-if [ -f "$TEMPERLOOP_HOME/bin/foundation" ]; then
-  chmod +x "$TEMPERLOOP_HOME/bin/foundation"
-  ln -sf "$TEMPERLOOP_HOME/bin/foundation" "$TEMPERLOOP_BIN_DIR/foundation"
-  echo "bootstrap: installed -> $TEMPERLOOP_BIN_DIR/foundation (compat shim -> $TEMPERLOOP_HOME/bin/foundation; deprecated, removed in v0.19.0)"
-fi
+# No `foundation` compat symlink is installed any more (temperloop#165
+# window closed in v0.19.0): a fresh install puts exactly one name on PATH.
+# A PRE-v0.19.0 install's own stale `foundation` symlink is left alone here
+# — it now resolves to a shim that refuses legibly. Removing it is MANUAL:
+# `temperloop uninstall` prints the `rm -f` rather than running it (scope (a),
+# the bootstrap footprint that predates uninstall's manifest).
 
 case ":$PATH:" in
   *":$TEMPERLOOP_BIN_DIR:"*)

@@ -2,7 +2,8 @@
 # kernel/bin/lib/common.sh — shared helpers + constants for the `temperloop`
 # CLI and its subcommands (foundation #765 Epic D, item
 # cli-entrypoint-bootstrap / #849). Renamed from `foundation` to `temperloop`
-# in foundation #893 — kernel/bin/foundation remains a compat shim.
+# in foundation #893; kernel/bin/foundation's compat shim was removed in
+# v0.19.0 and now only refuses.
 #
 # This is the PINNED location for shared CLI lib/constants (see the epic's
 # plan note, "## Repo targeting"): a future item (e.g. foundation-try) drops
@@ -19,7 +20,7 @@
 
 # Machine-level install locations the curl bootstrap (bin/bootstrap.sh) uses.
 # Echoed back here (rather than re-typed) so the dispatcher's help text and
-# any future `foundation eject` uninstall doc all state the SAME path.
+# any future `temperloop eject` uninstall doc all state the SAME path.
 # bootstrap.sh runs BEFORE any of this repo exists on disk, so it cannot
 # source this file — its own copy of these two defaults must be kept
 # byte-identical by hand; see bootstrap.sh's header note.
@@ -28,30 +29,26 @@
 # linting this file in isolation, hence the disable, mirroring the
 # workflows/scripts/board/lib/board.sh BOARD_OWNER precedent.
 # shellcheck disable=SC2034
-FOUNDATION_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
+TEMPERLOOP_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
 # shellcheck disable=SC2034
-FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
+TEMPERLOOP_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 
-# ── Env-var rename window (temperloop#165, v0.15.0) ─────────────────────────
+# ── Legacy FOUNDATION_* env names: no longer read (temperloop#165) ──────────
 # TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR / TEMPERLOOP_KERNEL_REPO /
-# TEMPERLOOP_VERSION are the canonical env settings; the pre-rename
-# FOUNDATION_* names are read as fallbacks through the migration window and
-# removed in v0.19.0 (VERSIONING.md pre-1.0 bump rules; the v0.15.0
+# TEMPERLOOP_VERSION are the env settings. The pre-rename FOUNDATION_* names
+# were read as fallbacks through the v0.15.0 -> v0.19.0 migration window;
+# that window is CLOSED (VERSIONING.md pre-1.0 bump rules; the v0.15.0
 # CHANGELOG BREAKING entry carries the migration note).
 #
 # temperloop_env_compat
 #   Called once by the dispatcher (kernel/bin/temperloop) before any
-#   subcommand dispatch. For each legacy/new pair: when the TEMPERLOOP_*
-#   primary is unset and the legacy FOUNDATION_* var is set non-empty, adopt
-#   the legacy value (exported under the new name, so subcommand processes
-#   see it) and print a one-line deprecation notice to stderr. Precedence is
-#   always new > old > default — a set TEMPERLOOP_* var wins silently.
-#
-#   TEMPERLOOP_LEGACY_WINDOW_CLOSED is a TEST/SIMULATION-ONLY seam (never
-#   set in production use; same registry-exempt status as BUILD_QUOTA_NOW):
-#   =1 simulates the post-v0.19.0 removal — a set legacy var then fails
-#   legibly (returns 1 after a specific message) instead of being adopted,
-#   so the removal-release behavior is testable before it ships.
+#   subcommand dispatch. A legacy FOUNDATION_* var is no longer ADOPTED —
+#   but it is still DETECTED, and refusing on it is the whole point: an
+#   operator who set $FOUNDATION_HOME asked for a specific install root, and
+#   silently resolving a different one is precisely the silent miss this
+#   detection exists to prevent. Returns 1 after a specific message naming
+#   the replacement. A set TEMPERLOOP_* primary wins silently, exactly as
+#   before.
 temperloop_env_compat() {
   local pair legacy new legacy_set new_set legacy_val
   for pair in \
@@ -65,12 +62,8 @@ temperloop_env_compat() {
     eval "new_set=\${${new}+x}"
     eval "legacy_val=\${${legacy}:-}"
     if [ -n "$legacy_set" ] && [ -z "$new_set" ] && [ -n "$legacy_val" ]; then
-      if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # setting:exempt — test/simulation-only seam
-        echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$new and re-run." >&2
-        return 1
-      fi
-      export "$new=$legacy_val"
-      echo "temperloop: NOTE — \$$legacy is deprecated: renamed \$$new in v0.15.0; the legacy name still works but is removed in v0.19.0. Set \$$new instead." >&2
+      echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$new and re-run." >&2
+      return 1
     fi
   done
   return 0
@@ -80,8 +73,10 @@ temperloop_env_compat() {
 # temperloop_resolve_version
 #   Single source of truth for what `temperloop version` (and feedback.sh's
 #   telemetry) reports. Precedence:
-#     TEMPERLOOP_VERSION env  >  FOUNDATION_VERSION env (rename window)
-#       >  the shipped repo-root VERSION file  >  "dev".
+#     TEMPERLOOP_VERSION env  >  the shipped repo-root VERSION file  >  "dev".
+#   (The pre-rename FOUNDATION_VERSION fallback was removed in v0.19.0 with
+#   the rest of the temperloop#165 window; temperloop_env_compat above now
+#   refuses on a set legacy name rather than resolving it here.)
 #
 #   The VERSION file is the COMMITTED, shipped source of truth: a release cut
 #   bumps it in the tagged commit (kernel-repo-layout.md § Release-tag
@@ -99,10 +94,6 @@ temperloop_env_compat() {
 temperloop_resolve_version() {
   if [ -n "${TEMPERLOOP_VERSION:-}" ]; then
     printf '%s\n' "$TEMPERLOOP_VERSION"
-    return 0
-  fi
-  if [ -n "${FOUNDATION_VERSION:-}" ]; then
-    printf '%s\n' "$FOUNDATION_VERSION"
     return 0
   fi
   local _common_dir _version_file _v
