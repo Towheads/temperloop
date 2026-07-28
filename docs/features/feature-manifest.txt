@@ -305,6 +305,15 @@ quality-gates workflows/scripts/tests/test_chunk_redundancy_surface.sh
 quality-gates workflows/scripts/config/redundancy-fixtures.json
 quality-gates workflows/scripts/config/check-redundancy-fixtures.sh
 quality-gates workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
+# Declared-expiry check (temperloop#831, epic #810 P10): resolves whether a
+# standing rule's own declared expiry (the citation-marker `expires:`
+# extension above) has passed, over citation-registry.tsv intersected with
+# contributor-manifest.tsv (both already claimed by the config/* glob
+# above). Report-only, same quality-gates-family slug as the other
+# size/coverage validators — Phase A ships no cap and nothing here fails a
+# contributor's build.
+quality-gates workflows/scripts/declared-expiry-check.sh
+quality-gates workflows/scripts/tests/test_declared_expiry_check.sh
 
 # ── docs-generator — docs-site generator + published doc sources ────────────
 docs-generator .github/workflows/docs-pages.yml

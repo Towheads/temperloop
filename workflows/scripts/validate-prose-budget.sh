@@ -49,7 +49,10 @@
 # missing or duplicated in its file is red; a marker found in any tracked
 # claude/**/*.md file with no registry row for that file is red; any
 # `<!-- cite:` occurrence outside a fenced code block that does not parse
-# to the grammar is red. Markers are zero-line-growth by construction
+# to the grammar is red (the grammar optionally allows one trailing
+# `expires:<expiry>` field per marker — temperloop#831 — which this presence
+# check accepts but never resolves; see declared-expiry-check.sh). Markers
+# are zero-line-growth by construction
 # (same-line HTML comments), so this check never fights the size caps.
 #
 # Usage:
@@ -236,7 +239,14 @@ fi
 # Bash-3.2 portable: pair sets go through temp files + sort/comm/uniq, never
 # associative arrays.
 # ---------------------------------------------------------------------------
-marker_grammar='<!-- cite: [A-Z]+\.[0-9]+ (incident|guard|class|keep):[^[:space:]]+ -->'
+# The trailing `( expires:TOKEN)?` group is the declared-expiry extension
+# (temperloop#831, epic #810 P10, claude/citation-schema.md § Declaring an
+# expiry) — a second, independent, OPTIONAL field on the same marker, never
+# a second class:ref pair. This check only needs to accept the grammar so a
+# rule that adopts `expires:` is not flagged malformed; resolving whether a
+# declared expiry has PASSED is declared-expiry-check.sh's own job, entirely
+# separate from this presence/parse gate.
+marker_grammar='<!-- cite: [A-Z]+\.[0-9]+ (incident|guard|class|keep):[^[:space:]]+( expires:[^[:space:]]+)? -->'
 
 # mktemp failures MUST be loud: with `set -u` (no `-e`) an unchecked failure
 # would leave both pair files empty and the reconciliation below would print

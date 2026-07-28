@@ -135,6 +135,40 @@ reads that marker; a stranger greps for it before pulling.
   default to off/inert for an adopter who never opts in — Phase A is measurement only,
   with no cap, target, or CI gate on the recorded figure itself.
 
+- **Declared-expiry check (temperloop#831, epic #810's "P10" sub-item, added
+  by operator amendment at the epic's `/assess` gate).** A new report-only
+  script, `workflows/scripts/declared-expiry-check.sh`, finds standing
+  rules whose own stated end condition has already passed. A rule declares
+  an expiry in two forms — an absolute date, or a named retirement issue —
+  via a new optional `expires:<expiry>` field on its existing citation
+  marker (`claude/citation-schema.md` § Declaring an expiry extends the
+  marker grammar `validate-prose-budget.sh` already enforces; the field is
+  additive and fully optional, never a second `class:ref` pair). The date
+  form resolves with a plain lexical `YYYY-MM-DD` string comparison — 100%
+  offline, no `date` arithmetic at all; the issue form resolves via `gh
+  issue view` and degrades LEGIBLY when offline (an explicit UNRESOLVED
+  bucket, never a silent drop or a hard failure). The check's surface is
+  the intersection of `citation-registry.tsv` (the mechanical "standing
+  rule" definition) and `contributor-manifest.tsv` (temperloop#827's
+  always-loaded-file registry) — `claude/CLAUDE.kernel.md`'s own K.* rules
+  are explicitly out of scope for this reason, and every run's report names
+  the excluded file set rather than silently under-covering. **Reports
+  coverage, not precision**: a date/issue either has passed or it has not,
+  so resolution is exact within what the check can see, but its value is
+  bounded entirely by adoption — the report gives both how many in-scope
+  rules declare an expiry and how many read as temporary in prose (a
+  small, fixed keyword heuristic) yet declare nothing, then compares
+  measured adoption against a **pre-registered** threshold
+  (`DECLARED_EXPIRY_ADOPTION_THRESHOLD_PCT`, new setting-registry.tsv row,
+  default 50%, fixed before this item's own first real-tree measurement
+  ran) and prints a GO/NO-GO verdict on whether a future Phase-B gate is
+  warranted. States its own limit explicitly: an undeclared temporary rule
+  with no recognizable temporal language is invisible to this check by
+  construction. **Phase A ships no cap, no target, and no CI gate** — the
+  script always exits 0 on its own findings; it fails only if its own
+  required registry/manifest inputs are entirely absent, which never
+  happens on a normal checkout.
+
 ### Changed
 
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →

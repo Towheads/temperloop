@@ -8,13 +8,15 @@ A marker is an HTML comment appended to an existing line (it renders invisibly i
 
 ```
 <!-- cite: <row-id> <class>:<ref> -->
+<!-- cite: <row-id> <class>:<ref> expires:<expiry> -->
 
 row-id  ::=  [A-Z]+ "." [0-9]+          e.g. K.7, B.24, AG.6
 class   ::=  incident | guard | class | keep
 ref     ::=  one whitespace-free token (see the classes below)
+expiry  ::=  one whitespace-free token (see § Declaring an expiry below)
 ```
 
-Exactly one `class:ref` pair per marker — the *primary* citation. A rule with several supporting citations keeps the full set in the audit artifact (temperloop#719's epic-artifact comments), which the `row-id` resolves against.
+Exactly one `class:ref` pair per marker — the *primary* citation. A rule with several supporting citations keeps the full set in the audit artifact (temperloop#719's epic-artifact comments), which the `row-id` resolves against. The optional trailing `expires:<expiry>` is a **second, independent field**, not a second `class:ref` pair — it never changes which citation is primary, it only adds a machine-checkable end condition to a rule that has one. Omitting it is the default and remains fully valid; a marker with no `expires:` field declares no expiry at all (see § Declaring an expiry).
 
 ## Citation classes
 
@@ -22,6 +24,21 @@ Exactly one `class:ref` pair per marker — the *primary* citation. A rule with 
 - **`guard:<path>`** — an existing mechanical guard (script/hook/CI path) the rule narrates or sequences; the ref is the guard's repo-relative path.
 - **`class:<kebab-name>`** — a named catastrophic failure class the rule prophylactically prevents (prophylactic rules are legitimate; the name is a short kebab-case coinage, stable per row).
 - **`keep:<YYYY-MM-DD>`** — kept by explicit operator disposal on an otherwise-uncited rule; the ref is the disposal date recorded by the `/check-in` review (`claude/commands/check-in.md`), and the row id resolves which disposal.
+
+## Declaring an expiry
+
+A rule may optionally declare its own end condition — a point at which the rule is no longer expected to be true — by appending `expires:<expiry>` to its marker (temperloop#831, epic #810 P10). This extends the existing marker rather than inventing a parallel syntax: the same HTML comment, the same zero-line-growth guarantee, resolved by the same fence-aware scanner. There are exactly two forms:
+
+```
+expiry  ::=  date-expiry | issue-expiry
+date-expiry   ::=  YYYY-MM-DD                 e.g. expires:2026-09-01
+issue-expiry  ::=  [ owner "/" repo ] "#" digit+   e.g. expires:#956, expires:foundation/foundation#956
+```
+
+- **`date-expiry`** — an absolute ISO-8601 calendar date. The rule is expired once today's date is on or after it. Resolves **offline** — a plain lexical string comparison against two `YYYY-MM-DD` strings is correct without any date arithmetic, so no `date -d`/GNU-vs-BSD dialect concern applies.
+- **`issue-expiry`** — a named retirement issue. The rule is expired once that issue's state is `CLOSED`. A bare `#<N>` resolves against **this repo**; a cross-repo reference uses the fully-qualified `owner/repo#<N>` form — the same bare-vs-qualified convention the kernel's own `Closes #N` / `Closes owner/repo#N` issue-linkage rule already uses (never the personal `K#`/`F#`/`S#`/`M#`/`W#` board shorthand from the kernel's § Communication conventions, which is an operator convention for prose, not a mechanical grammar a stranger's checkout can resolve without that operator's board map).
+
+Declaring an expiry is **optional** — most standing rules have none, and that is a fully valid, unremarkable state. What the marker records is only whether the *authoring judgment* was "this rule is expected to become false at a specific, checkable point" — a genuinely permanent rule should carry no `expires:` field at all, never a fabricated far-future date. Resolving whether any declared expiry has *passed*, and reporting how many rules declare one at all, is `workflows/scripts/declared-expiry-check.sh`'s job, not this schema's — this file only fixes the grammar the check parses.
 
 ## The mechanical definition (what the check enforces)
 

@@ -295,6 +295,19 @@ out6="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_GREEN" bash "$SCRI
 assert_rc "$rc6" 0 "fixture green: markers reconcile 1:1 (fenced + code-span markers ignored)"
 assert_has "$out6" "citation markers: 2 registry row(s) reconciled 1:1" "fixture green OK line counts exactly the two registered rows"
 
+# declared-expiry extension (temperloop#831): a marker carrying the optional
+# trailing `expires:<expiry>` field parses as WELL-FORMED, not malformed —
+# the presence check only accepts the grammar here; resolving whether the
+# expiry has passed is declared-expiry-check.sh's own job.
+REG_EXPIRES="$TMP/registry-expires.tsv"
+cat "$REG_GREEN" >"$REG_EXPIRES"
+printf 'XP.1\tclaude/extra.md\n' >>"$REG_EXPIRES"
+printf 'A date-form expiry rule. <!-- cite: XP.1 incident:K#1 expires:2026-01-01 -->\n' >>"$MFIX/claude/extra.md"
+out6e="$(COUNT_PROSE_ROOT="$MFIX" CITATION_REGISTRY_FILE="$REG_EXPIRES" bash "$SCRIPT" 2>&1)"; rc6e=$?
+assert_rc "$rc6e" 0 "fixture green: a marker with an expires: field is well-formed, not malformed"
+assert_has "$out6e" "citation markers: 3 registry row(s) reconciled 1:1" "expires: marker reconciles alongside the two plain markers"
+git -C "$MFIX" checkout -- claude/extra.md 2>/dev/null || true
+
 # missing: a registered fixture rule lacking its marker is RED.
 REG_MISS="$TMP/registry-missing.tsv"
 cat "$REG_GREEN" >"$REG_MISS"
