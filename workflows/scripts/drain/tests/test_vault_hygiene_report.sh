@@ -402,6 +402,7 @@ rmreport="$(bash "$SCRIPT" --root "$RM")"
 assert_has "$rmreport" "repeat-mistake:"                                                  "seeded recurrence fires the flag"
 assert_has "$rmreport" "retrieval failure"                                                "flag names it a retrieval failure"
 assert_has "$rmreport" "Mistakes/temperloop - BSD stat flags break Linux CI.md"           "flag names the matching Mistakes/ note"
+assert_missing "$rmreport" "Mistakes/Mistakes/"                                           "no doubled Mistakes/ path prefix in the emitted repeat-mistake line (foundation#1307)"
 assert_has "$rmreport" "ALARM:"                                                           "seeded recurrence trips an alarm"
 rm -rf "$RM"
 
@@ -433,6 +434,59 @@ strangerreport="$(bash "$SCRIPT" --root "$RM4")"
 assert_has     "$strangerreport" "ok repeat-mistake:"    "no ledger / no Mistakes/ -> quiet no-op"
 assert_missing "$strangerreport" "repeat-mistake: 20"    "no ledger / no Mistakes/ -> never flags"
 rm -rf "$RM4"
+
+# 10e-10g: the three named false pairings from foundation#1307 — real
+# friction-ledger rows paired against real Mistakes/ note titles that share
+# only the project-name token (every row carries its own project; every
+# Mistakes/ note is filed "<project> - <title>.md") plus one incidental
+# generic word. That is 2 distinct shared tokens, which used to clear the
+# old >=2 floor; now that the floor is FRICTION_OVERLAP_MIN (3), none of the
+# three pairings fire, and they're pinned here as regressions.
+
+# 10e: 'plan.sh writeback failed (foundation-specific REST config path...)'
+# vs. 'foundation - A foundation path can be a symlink into the kernel
+# subtree' — shared tokens are only "foundation" (project name) + "path"
+# (generic); no third point of overlap.
+RM5="$(mktemp -d)"; mkdir -p "$RM5/Context" "$RM5/Mistakes"
+printf -- '---\ntags: [mistake, project/foundation]\n---\n# A foundation path can be a symlink into the kernel subtree\nbody\n' \
+  > "$RM5/Mistakes/foundation - A foundation path can be a symlink into the kernel subtree.md"
+today5="$(date +%Y-%m-%d)"
+echo "- ${today5} · temperloop · tool-misuse · plan.sh writeback failed (foundation-specific REST config path + repo-relative plan path) -> fell back to full-file vault_write for every /build sentinel flip (filed temperloop#342)" \
+  > "$RM5/Context/Session friction ledger.md"
+r5="$(bash "$SCRIPT" --root "$RM5")"
+assert_missing "$r5" "repeat-mistake: ${today5}" "foundation#1307 false pairing 1 (plan.sh writeback vs symlink-subtree note) no longer fires"
+assert_has     "$r5" "ok repeat-mistake:"        "foundation#1307 false pairing 1 leaves the check quiet"
+rm -rf "$RM5"
+
+# 10f: 'archive-session.sh got 29 stub paths as ONE arg (zsh word-splitting)'
+# vs. 'foundation - Bash cat does not satisfy Read-before-Write' — shared
+# tokens are only "foundation" (project name) + "bash" (generic).
+RM6="$(mktemp -d)"; mkdir -p "$RM6/Context" "$RM6/Mistakes"
+printf -- '---\ntags: [mistake, project/foundation, kernel-candidate]\n---\n# Bash cat does not satisfy the harness Read-before-Write requirement\nbody\n' \
+  > "$RM6/Mistakes/foundation - Bash cat does not satisfy Read-before-Write.md"
+today6="$(date +%Y-%m-%d)"
+echo "- ${today6} · foundation · tool-misuse · archive-session.sh got 29 stub paths as ONE arg — unquoted \`\$args\` doesn't word-split in zsh (Bash tool's shell); fixed with an array. [drain 1ad12257]" \
+  > "$RM6/Context/Session friction ledger.md"
+r6="$(bash "$SCRIPT" --root "$RM6")"
+assert_missing "$r6" "repeat-mistake: ${today6}" "foundation#1307 false pairing 2 (archive-session.sh vs Read-before-Write note) no longer fires"
+assert_has     "$r6" "ok repeat-mistake:"        "foundation#1307 false pairing 2 leaves the check quiet"
+rm -rf "$RM6"
+
+# 10g: 'ci-poll.sh dies on GitHub 503 (HTML body)' vs. 'foundation - Host
+# misidentification - read tailscale self from json' — this pairing was
+# driven by the OTHER defect (occurrence- not distinct-token counting: the
+# row says "json" twice, inflating one real overlap into two); fixed by
+# _hyg_token_overlap's dedup alone, independent of the threshold bump.
+RM7="$(mktemp -d)"; mkdir -p "$RM7/Context" "$RM7/Mistakes"
+printf -- '---\ntags: [mistake, project/foundation]\n---\n# Host misidentification: read tailscale self from --json, not the status table\nbody\n' \
+  > "$RM7/Mistakes/foundation - Host misidentification - read tailscale self from json.md"
+today7="$(date +%Y-%m-%d)"
+echo "- ${today7} · ssmobile · tool-misuse · ci-poll.sh check-runs query dies on GitHub 503 (HTML body -> \"invalid character '<'\"); gh statusCheckRollup/run-view --json survived — poller should retry non-JSON, not exit 1" \
+  > "$RM7/Context/Session friction ledger.md"
+r7="$(bash "$SCRIPT" --root "$RM7")"
+assert_missing "$r7" "repeat-mistake: ${today7}" "foundation#1307 false pairing 3 (ci-poll.sh 503 vs tailscale-host note) no longer fires"
+assert_has     "$r7" "ok repeat-mistake:"        "foundation#1307 false pairing 3 leaves the check quiet"
+rm -rf "$RM7"
 
 # ── Test 11: read-log telemetry surfacing (temperloop#238) ─────────────────
 echo "--- test 11: read-log telemetry surfacing ---"

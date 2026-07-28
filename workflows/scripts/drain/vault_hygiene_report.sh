@@ -789,14 +789,25 @@ register_check check_kind_misfile
 # at least one prior check-in/tidy cycle — not this check's concern).
 # Matching is deliberately simple and mechanical: lowercase + split on
 # non-alnum, drop tokens shorter than 4 chars and a small stopword list, then
-# count tokens shared between the row's text and a Mistakes/ note's title +
-# `trigger:` frontmatter (scalar `trigger: a, b` or YAML-list form); >=2
-# shared tokens is a match (1 alone is too weak — every row and every note
-# share the project name, e.g. "temperloop", so a 1-token floor would flag on
-# that alone). Propose-only: never edits the ledger or Mistakes/. Graceful
-# no-op when the ledger or Mistakes/ is absent (a bare kernel checkout has
+# count DISTINCT tokens shared between the row's text and a Mistakes/ note's
+# title + `trigger:` frontmatter (scalar `trigger: a, b` or YAML-list form);
+# >=FRICTION_OVERLAP_MIN (3) shared tokens is a match. A 2-token floor is
+# ALSO too weak, not just 1: every row's text carries its own project name
+# (e.g. "temperloop"), and every Mistakes/ note is filed as "<project> -
+# <title>.md", so a row and a same-project note collide on that one token for
+# free — pair it with a single incidental generic word (e.g. both mention
+# "path", or both happen to say "bash") and a 2-token floor fires on two
+# semantically unrelated incidents (temperloop#234's regression fixtures:
+# foundation#1307). 3 requires a genuine third point of overlap beyond that
+# free collision. Overlap counting is per-DISTINCT-token (`_hyg_token_overlap`)
+# — a token repeated within one row or note counts once, not once per
+# occurrence, so a duplicated word can no longer inflate two rows past the
+# floor on a single real point of overlap (foundation#1307's second,
+# independent defect). Propose-only: never edits the ledger or Mistakes/.
+# Graceful no-op when the ledger or Mistakes/ is absent (a bare kernel checkout has
 # neither).
 FRICTION_RECENT_DAYS=14
+FRICTION_OVERLAP_MIN=3
 _HYG_STOPWORDS=" this that with from have were what when where which should using used just been also into over than then still very more your "
 
 # YYYY-MM-DD -> epoch (GNU `date -d` vs BSD `date -j -f`); empty on failure.
@@ -816,10 +827,16 @@ _hyg_tokenize() {
   done
   printf '%s' "$out"
 }
-# set_a set_b (space-separated token lists) -> count of $1's tokens also in $2
+# set_a set_b (space-separated token lists) -> count of $1's DISTINCT tokens
+# also present in $2. Dedupes $1 first (via $seen) so a token repeated
+# within one ledger row or one note's title+trigger is counted once, not
+# once per occurrence — an occurrence-counting iteration would inflate a
+# single real point of overlap into a false multi-token match (foundation#1307).
 _hyg_token_overlap() {
-  local a match=0
+  local a match=0 seen=""
   for a in $1; do
+    case " $seen " in *" $a "*) continue ;; esac
+    seen="$seen $a"
     case " $2 " in *" $a "*) match=$((match + 1)) ;; esac
   done
   printf '%s' "$match"
@@ -863,8 +880,14 @@ check_repeat_mistake() {
       mtoks="$(_hyg_mistake_tokens "$mf")"
       [ -n "$mtoks" ] || continue
       overlap="$(_hyg_token_overlap "$rtoks" "$mtoks")"
-      if [ "$overlap" -ge 2 ]; then
-        add "- ⚠️ repeat-mistake: ${rdate} — ${rrest} — matches Mistakes/${mf#"$ROOT"/} (retrieval failure: recurrence despite an existing note)"
+      if [ "$overlap" -ge "$FRICTION_OVERLAP_MIN" ]; then
+        # $mf is already "$ROOT/Mistakes/<file>.md" — stripping $ROOT/ alone
+        # yields "Mistakes/<file>.md"; do NOT re-prepend a literal "Mistakes/"
+        # or the line reads "Mistakes/Mistakes/<file>.md" (foundation#1307).
+        # The heat-queue cross-reference (~check_heat_score's `[repeat-mistake]`
+        # tag) matches this exact "matches <rel-path> (" shape — keep both in
+        # sync if this line's wording ever changes.
+        add "- ⚠️ repeat-mistake: ${rdate} — ${rrest} — matches ${mf#"$ROOT"/} (retrieval failure: recurrence despite an existing note)"
         inc
         count=$((count + 1))
         break
@@ -1547,7 +1570,12 @@ check_heat_score() {
       tag=""
       case "$FINDINGS" in *"orphan-pattern: ${rel} "*) tag="${tag}[orphan-pattern]" ;; esac
       case "$FINDINGS" in *"stale plan: $(basename "$rel") ("*) tag="${tag}[stale-plan]" ;; esac
-      case "$FINDINGS" in *"matches Mistakes/${rel} ("*) tag="${tag}[repeat-mistake]" ;; esac
+      # $rel is already "Mistakes/<file>.md" for a candidate under Mistakes/
+      # (per HEAT_SCAN_FOLDERS) — check_repeat_mistake's line now emits a
+      # SINGLE "matches Mistakes/<file>.md (" (foundation#1307 fixed the
+      # doubled "Mistakes/Mistakes/" prefix), so this match string is
+      # "matches ${rel} (" with no extra literal "Mistakes/" prepended.
+      case "$FINDINGS" in *"matches ${rel} ("*) tag="${tag}[repeat-mistake]" ;; esac
 
       lines="${lines}$(printf '%d\t%s\t%d\t%d\t%d\t%s' "$priority" "$rel" "$heat" "$stale_days" "$reads" "$tag")"$'\n'
     done <<EOF
