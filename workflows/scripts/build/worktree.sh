@@ -36,7 +36,7 @@
 #              "guard":"ARMED"|"UNARMED"|"UNKNOWN","guard_detail":…}
 #   remove →  {"outcome":"REMOVED"|"NOT_FOUND","path":…,"branch":…}
 #   prune  →  one line per <repo>.wt/* worktree:
-#             {"outcome":"PRUNED"|"SKIPPED_DIRTY"|"SKIPPED_UNMERGED","path":…,"branch":…}
+#             {"outcome":"PRUNED"|"SKIPPED_FRESH"|"SKIPPED_DIRTY"|"SKIPPED_UNMERGED","path":…,"branch":…}
 #   deps-merged → {"outcome":"DEPS_MERGED"} | {"outcome":"DEPS_UNMERGED","unmerged":[…]}
 #   error  →  {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
@@ -585,13 +585,13 @@ cmd_prune() {
 
 prune_one() {
   local repo="$1" wt_path="$2" branch="$3" default="$4" force="$5" head merged
+  local base_tip head_is_base="false"
   head="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)" || head=""
 
   # Conservative gate 1: only a branch whose PR actually merged is removable —
   # an unmerged worktree holds unlanded work, --force or not. Try the cheap,
-  # network-free ancestor test first (covers the ordinary case, including a
-  # branch that is literally origin/<default> with zero commits ahead); only
-  # fall through to the merge-queue-safe helper (#171) when the tip is NOT an
+  # network-free ancestor test first (covers the ordinary case); only fall
+  # through to the merge-queue-safe helper (#171) when the tip is NOT an
   # ancestor — the squash/rebase-merge case the ancestor-only test misreads as
   # unmerged. Never weakens the floor: a genuinely-unmerged branch still fails
   # both checks and reports SKIPPED_UNMERGED.
@@ -599,6 +599,22 @@ prune_one() {
     merged="false"
   elif git -C "$repo" merge-base --is-ancestor "$head" "origin/$default" 2>/dev/null; then
     merged="true"
+    # …but ZERO COMMITS AHEAD is evidence of NO WORK YET, not of a merge
+    # (#891). `create` bases the new branch on origin/<default>, so from
+    # `create` until the worker's first commit a LIVE build worktree is
+    # ancestor-identical to a finished, merged one — and a concurrent prune
+    # from another session (prune is host-wide, not scoped to its caller's own
+    # worktrees) force-removed the directory and deleted build/<slug> out from
+    # under a running worker. A genuinely merged branch has commits of its own
+    # that are ancestors of origin/<default>, so its tip is NOT equal to it;
+    # `head == origin/<default>` cleanly separates "did work, then merged" from
+    # "has not started". Stateless — no marker file or timestamp heuristic
+    # (.build-guard is present in a live AND an abandoned worktree, so it does
+    # not discriminate; the commit test does).
+    base_tip="$(git -C "$repo" rev-parse "origin/$default" 2>/dev/null)" || base_tip=""
+    if [ -n "$base_tip" ] && [ "$head" = "$base_tip" ]; then
+      head_is_base="true"
+    fi
   else
     # `|| merged="false"` guards the caller-misuse return (2, e.g. an empty
     # branch name for a detached-HEAD worktree) from tripping `set -e` — the
@@ -607,6 +623,15 @@ prune_one() {
   fi
   if [ "$merged" != "true" ]; then
     jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"SKIPPED_UNMERGED", path:$path, branch:$branch}'
+    return 0
+  fi
+  # Conservative gate 1b (#891): a zero-commit worktree is spared on the
+  # DEFAULT path only. --force bypasses it exactly as it bypasses the dirty
+  # gate below, because an aborted `worktree.sh create` leaves a legitimate
+  # zero-commit worktree that must stay reapable — the guard protects the
+  # default path without making stale fresh worktrees immortal.
+  if [ "$head_is_base" = "true" ] && [ -z "$force" ]; then
+    jq -cn --arg path "$wt_path" --arg branch "$branch" '{outcome:"SKIPPED_FRESH", path:$path, branch:$branch}'
     return 0
   fi
   # Conservative gate 2: never touch uncommitted changes unless --force (the

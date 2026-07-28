@@ -76,12 +76,31 @@ out="$(bash "$SCRIPT" remove "$REPO" alpha)"
 [ "$(jq -r .outcome <<<"$out")" = "NOT_FOUND" ] || fail "second remove not NOT_FOUND (got: $out)"
 echo "PASS: remove cleans worktree+branch+marker (REMOVED), repeat is NOT_FOUND"
 
-# --- prune: merged+clean PRUNED; unmerged skipped; dirty skipped sans --force -
+# --- prune: merged+clean PRUNED; unmerged/dirty/fresh skipped sans --force ----
+# A GENUINELY merged branch has commits of its OWN that are ancestors of
+# origin/main — so its tip is NOT equal to origin/main. Build that shape for
+# `merged-clean` and `dirty`: land a commit on upstream main, advance main once
+# more, then point the build branch at the landed commit. (Before #891 these
+# fixtures were zero-commit worktrees, which the ancestor-only gate 1 read as
+# merged — exactly the live-worktree-reaping bug; that shape is now
+# SKIPPED_FRESH and is asserted separately below.)
 bash "$SCRIPT" create "$REPO" merged-clean >/dev/null
-bash "$SCRIPT" create "$REPO" unmerged >/dev/null
 bash "$SCRIPT" create "$REPO" dirty >/dev/null
+landedsha="$(git -C "$TMP/upstream" commit -q --allow-empty -m 'merged-clean work lands on main' && git -C "$TMP/upstream" rev-parse HEAD)"
+git -C "$TMP/upstream" commit -q --allow-empty -m 'main advances after that merge'
+git -C "$REPO" fetch -q origin main
+git -C "$REPO.wt/merged-clean" reset -q --hard "$landedsha"
+git -C "$REPO.wt/dirty" reset -q --hard "$landedsha"
+
+bash "$SCRIPT" create "$REPO" unmerged >/dev/null
 git -C "$REPO.wt/unmerged" commit -q --allow-empty -m "unlanded work"
 echo scratch > "$REPO.wt/dirty/junk.txt"
+# The #891 case: a worktree exactly as `create` leaves it — zero commits ahead,
+# tip == origin/main. This is a LIVE build worktree in the window between
+# `create` and its worker's first commit.
+bash "$SCRIPT" create "$REPO" fresh >/dev/null
+[ "$(git -C "$REPO.wt/fresh" rev-parse HEAD)" = "$(git -C "$REPO" rev-parse origin/main)" ] \
+  || fail "#891 test setup bug: fresh worktree tip must equal origin/main"
 
 out="$(bash "$SCRIPT" prune "$REPO")"
 oc() { jq -r --arg p "$REPO.wt/$1" 'select(.path==$p).outcome' <<<"$out"; }
@@ -95,11 +114,30 @@ git -C "$REPO" show-ref --verify --quiet refs/heads/build/merged-clean \
   && fail "branch build/merged-clean survived prune"
 echo "PASS: prune removes merged+clean only (PRUNED / SKIPPED_UNMERGED / SKIPPED_DIRTY)"
 
+# --- #891: a fresh, ZERO-COMMIT worktree survives a non-forced prune ---------
+# Zero commits ahead is evidence of NO WORK YET, not of a merge. Gate 1's
+# ancestor test alone cannot tell a live, just-created build worktree from a
+# finished merged one — `head != origin/<default>` can, and does.
+[ "$(oc fresh)" = "SKIPPED_FRESH" ] || fail "#891: zero-commit worktree not SKIPPED_FRESH (got: $out)"
+[ -e "$REPO.wt/fresh" ] || fail "#891: live zero-commit worktree dir was reaped by prune"
+[ -f "$REPO.wt/fresh/.build-guard" ] || fail "#891: fresh worktree's .build-guard marker was removed"
+git -C "$REPO" show-ref --verify --quiet refs/heads/build/fresh \
+  || fail "#891: branch build/fresh was deleted out from under a live worker"
+echo "PASS: prune spares a fresh, zero-commit worktree (SKIPPED_FRESH — #891)"
+
 out="$(bash "$SCRIPT" prune "$REPO" --force)"
 [ "$(oc dirty)" = "PRUNED" ] || fail "dirty not PRUNED under --force (got: $out)"
 [ ! -e "$REPO.wt/dirty" ] || fail "dirty dir survived prune --force"
 [ "$(oc unmerged)" = "SKIPPED_UNMERGED" ] || fail "--force pruned an UNMERGED worktree (got: $out)"
-echo "PASS: prune --force overrides dirty-skip but never removes unmerged work"
+# --force bypasses the #891 fresh guard exactly as it bypasses the dirty gate:
+# an aborted `create` leaves a legitimate zero-commit worktree that must stay
+# reapable, so the guard protects the default path without making stale fresh
+# worktrees immortal.
+[ "$(oc fresh)" = "PRUNED" ] || fail "#891: --force did not reap a fresh worktree (got: $out)"
+[ ! -e "$REPO.wt/fresh" ] || fail "#891: fresh dir survived prune --force"
+git -C "$REPO" show-ref --verify --quiet refs/heads/build/fresh \
+  && fail "#891: branch build/fresh survived prune --force"
+echo "PASS: prune --force overrides the dirty- and fresh-skips but never removes unmerged work"
 
 # --- prune: squash/rebase-merged branch (tip NOT an ancestor of origin/main) --
 # is still detected MERGED via the merge-queue-safe helper (#171/#173) and
