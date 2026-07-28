@@ -365,11 +365,24 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
 - **No separate "board card" to move.** There is no project item distinct
   from the issue to keep in sync — reading `.state` (open/closed) on the
   issue itself IS reading its board Status.
-- **No stale-Done detection needed** the way `reconcile.sh`'s Projects-v2
-  logic needs it (a card that says Ready/In-Progress but is actually
-  closed) — a closed issue on this backend can never report anything but
-  Done, by the jq reshape's own precedence (`if $state == "closed" then
-  {status:"Done"}` is checked FIRST, before any label).
+- **No stale-Done *read* is possible** the way it is on Projects-v2 (a card
+  that says Ready/In-Progress but is actually closed) — a closed issue on this
+  backend can never *report* anything but Done, by the jq reshape's own
+  precedence (`if $state == "closed" then {status:"Done"}` is checked FIRST,
+  before any label).
+
+  ⚠️ That is a statement about the READ, and it was once written here as "no
+  stale-Done *detection* needed" — which is false, and made
+  `reconcile.sh --status` structurally blind for a while (temperloop#1410). The
+  residual `fnd:status:*` label is still THERE on the closed issue; the reshape
+  only shadows it. And because the whole-board read is the OPEN issue set, such
+  an issue is *absent* from `board_item_list` entirely rather than misreported —
+  so a lens that classifies board items saw nothing at all and printed
+  "In sync" over real drift. Detection IS needed here; only its *shape* differs
+  from the Projects-v2 one, because the candidate population is the closed-issue
+  tail rather than a stale board card. `reconcile.sh --status` now scans that
+  tail as classes **(k)** residual status label and **(l)** stranded claim stamp
+  — see that file's "Lens 2, the CLOSED-ISSUE TAIL" header section.
 
 ### What close DOES have to clear: the claim stamp (temperloop#744)
 
