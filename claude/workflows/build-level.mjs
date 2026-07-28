@@ -152,7 +152,7 @@ const SPINE_OUTCOME_SCHEMA = {
       // The union of the machinery's closed outcome sets (worktree / pr / ci-poll /
       // gate) plus the gate-pass/fail and claim markers we synthesize below.
       enum: [
-        'CREATED', 'REMOVED', 'NOT_FOUND', 'PRUNED', 'SKIPPED_DIRTY', 'SKIPPED_UNMERGED',
+        'CREATED', 'REMOVED', 'NOT_FOUND', 'PRUNED', 'SKIPPED_FRESH', 'SKIPPED_DIRTY', 'SKIPPED_UNMERGED',
         'SCAN_CLEAN', 'SCAN_BLOCKED',
         'BASE_CURRENT', 'BASE_STALE',
         'REBASED', 'REBASE_CONFLICT',

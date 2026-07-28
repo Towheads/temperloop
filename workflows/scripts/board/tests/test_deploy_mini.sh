@@ -227,14 +227,23 @@ echo "$out" | grep -q "board 9 (store absent)" || \
 
 # --- 14. #168: a merged/orphaned <checkout>.wt/* worktree is swept -----------
 # per clean-on-main checkout, deploy-mini also runs worktree.sh prune. A
-# worktree whose branch is a plain ancestor of origin/main (trivially "merged" —
-# zero commits ahead) and clean must be removed; the dir + branch both go away
-# and deploy-mini reports it.
+# worktree whose branch is GENUINELY merged — it has commits of its own that ARE
+# ancestors of origin/main, so its tip is NOT origin/main — and clean must be
+# removed; the dir + branch both go away and deploy-mini reports it.
+# (#891: this fixture used to be a ZERO-COMMIT worktree, which the old
+# ancestor-only gate read as "trivially merged" — the very shape a LIVE build
+# worktree has before its worker's first commit. That shape is now SKIPPED_FRESH
+# and is asserted intact in case 15 below.)
 WTSH="$HERE/../../build/worktree.sh"
 setup_repo wtsweep yes
 bash "$WTSH" create "$WORK/wtsweep" mergedwt >/dev/null \
   || fail "test setup: worktree.sh create failed"
 [ -d "$WORK/wtsweep.wt/mergedwt" ] || fail "test setup: worktree not created"
+advance wtsweep
+landedwt="$(GIT -C "$WORK/wtsweep.seed" rev-parse HEAD)"
+advance wtsweep
+GIT -C "$WORK/wtsweep" fetch -q origin main
+GIT -C "$WORK/wtsweep.wt/mergedwt" reset -q --hard "$landedwt"
 out="$(run "$WORK/wtsweep")" || fail "wtsweep run should exit 0"
 [ ! -e "$WORK/wtsweep.wt/mergedwt" ] || fail "merged worktree must be pruned by deploy-mini"
 GIT -C "$WORK/wtsweep" show-ref --verify --quiet refs/heads/build/mergedwt \
@@ -242,7 +251,10 @@ GIT -C "$WORK/wtsweep" show-ref --verify --quiet refs/heads/build/mergedwt \
 echo "$out" | grep -q "worktree prune: 1 pruned" || fail "should report 'worktree prune: 1 pruned' (got: $out)"
 echo "PASS: #168 a merged/orphaned <checkout>.wt/* worktree is swept by deploy-mini's per-checkout worktree.sh prune"
 
-# --- 15. #168: a dirty or genuinely-unmerged worktree is left intact ---------
+# --- 15. #168: a dirty, genuinely-unmerged, or FRESH worktree is left intact --
+# The `freshwt` case is #891 (downstream: Towheads/foundation#1430): deploy-mini's session-start sweep is
+# host-wide, so a build worktree another session created seconds ago — zero
+# commits ahead, tip == origin/main — must survive it.
 setup_repo wtkeep yes
 bash "$WTSH" create "$WORK/wtkeep" unmergedwt >/dev/null \
   || fail "test setup: worktree.sh create (unmerged) failed"
@@ -250,11 +262,17 @@ GIT -C "$WORK/wtkeep.wt/unmergedwt" commit -q --allow-empty -m "unlanded work"
 bash "$WTSH" create "$WORK/wtkeep" dirtywt >/dev/null \
   || fail "test setup: worktree.sh create (dirty) failed"
 echo scratch >"$WORK/wtkeep.wt/dirtywt/junk.txt"
+bash "$WTSH" create "$WORK/wtkeep" freshwt >/dev/null \
+  || fail "test setup: worktree.sh create (fresh) failed"
 out="$(run "$WORK/wtkeep")" || fail "wtkeep run should exit 0"
 [ -e "$WORK/wtkeep.wt/unmergedwt" ] || fail "genuinely-unmerged worktree must NOT be pruned"
 [ -e "$WORK/wtkeep.wt/dirtywt" ] || fail "dirty worktree must NOT be pruned (no --force)"
+[ -e "$WORK/wtkeep.wt/freshwt" ] \
+  || fail "#891: a fresh zero-commit worktree must NOT be reaped by deploy-mini's sweep"
+GIT -C "$WORK/wtkeep" show-ref --verify --quiet refs/heads/build/freshwt \
+  || fail "#891: branch build/freshwt must survive deploy-mini's sweep"
 echo "$out" | grep -q "worktree prune: 1 pruned" && fail "no worktree here should have been pruned (got: $out)"
-echo "PASS: #168 a dirty or genuinely-unmerged worktree is left intact by deploy-mini's worktree sweep"
+echo "PASS: #168/#891 a dirty, genuinely-unmerged, or fresh worktree is left intact by deploy-mini's worktree sweep"
 
 # --- 16. #168: fail-open — a worktree.sh prune failure never aborts deploy-mini
 # Point $FOUNDATION's worktree.sh lookup at a stub that always fails; deploy-mini
