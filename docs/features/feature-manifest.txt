@@ -125,11 +125,14 @@ telemetry workflows/scripts/telemetry-brief.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
 # session-context — the realized-session-context probe (temperloop#828,
 # epic #810): the SessionEnd-seam raw-lake emit, its shared token-sum
-# helper (also called by claude/status-line.sh's display), and their tests.
+# helper (also called by claude/status-line.sh's display), and their tests
+# — including the suite covering how status-line.sh RESOLVES that helper
+# from its installed per-file-symlink location.
 telemetry workflows/scripts/emit-session-context.sh
 telemetry workflows/scripts/lib/token_sum.sh
 telemetry workflows/scripts/lib/tests/test_token_sum.sh
 telemetry workflows/scripts/tests/test_emit_session_context.sh
+telemetry workflows/scripts/tests/test_status_line_token_resolution.sh
 
 # ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
 pipeline-driver claude/commands/pipeline-drive.md
