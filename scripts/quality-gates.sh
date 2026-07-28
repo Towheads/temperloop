@@ -433,6 +433,30 @@ KERNEL_GATES=(
   # as the count-prose gate above.
   "bash workflows/scripts/validate-prose-budget.sh"
   "bash workflows/scripts/tests/test_validate_prose_budget.sh"
+  # Semantic-redundancy chunker (temperloop#854, half (a) of the P9
+  # semantic-redundancy probe split from #830; epic #810 contract amendment
+  # P9): chunks the manifest-driven always-loaded surface into rule-sized
+  # units and prints them as a JSONL stream (workflows/scripts/
+  # chunk-redundancy-surface.md is the format contract half (b), #855,
+  # consumes). Phase A scope discipline: no cap, no threshold, no verdict —
+  # this gate only proves the chunker itself runs and segments correctly
+  # (real-tree happy path, determinism, the boundary rule over a synthetic
+  # fixture: headings never become chunks, consecutive top-level bullets
+  # with no blank line still split, an indented sub-bullet does not, a
+  # fenced code block is opaque), never a judgment about the prose it
+  # chunks. Same direct-`bash` form as the count-prose gate above.
+  "bash workflows/scripts/chunk-redundancy-surface.sh"
+  "bash workflows/scripts/tests/test_chunk_redundancy_surface.sh"
+  # Labelled fixture corpus for the same probe (workflows/scripts/config/
+  # redundancy-fixtures.json): the structural lint mechanically enforces
+  # temperloop#854's own acceptance bullet — every `positive`-labelled pair
+  # shares NO common 10-consecutive-word run — rather than leaving it a
+  # comment-only claim. `negative` pairs are exempt from that property (a
+  # deliberate-pointer/hard-topical-near-miss pair may legitimately share
+  # surface language; what matters there is the rationale, not a shingle
+  # count). Same direct-`bash` form as the gates above.
+  "bash workflows/scripts/config/check-redundancy-fixtures.sh"
+  "bash workflows/scripts/config/tests/test_check_redundancy_fixtures.sh"
   # workflow-reviewer coverage rollup (temperloop#1007): hermetic gh-double suite
   # for the reporting script that measures the workflow-reviewer gate's coverage
   # over merged command-doc PRs. Reporting rollup, not a merge gate — its own

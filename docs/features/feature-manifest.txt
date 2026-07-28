@@ -289,6 +289,22 @@ quality-gates workflows/scripts/tests/test_validate_prose_budget.sh
 # (workflows/scripts/config/citation-registry.tsv, claimed by the config/*
 # glob above) validate-prose-budget.sh reconciles 1:1 against the tree.
 quality-gates claude/citation-schema.md
+# Semantic-redundancy chunker + labelled fixture corpus (temperloop#854,
+# half (a) of the P9 semantic-redundancy probe split from #830; epic #810
+# contract amendment P9): rule-sized chunker over the always-loaded surface
+# (contributor-manifest.tsv-driven, same manifest count-prose.sh reads) plus
+# the format contract doc that is the seam #855 (scoring half) consumes.
+# Ships no cap/gate — same measurement-tooling family as count-prose.sh
+# above, hence the same slug. The fixture corpus + its structural/shingle
+# lint are under workflows/scripts/config/ and already covered by the
+# `quality-gates workflows/scripts/config/*` glob above — listed explicitly
+# for discoverability alongside the chunker.
+quality-gates workflows/scripts/chunk-redundancy-surface.sh
+quality-gates workflows/scripts/chunk-redundancy-surface.md
+quality-gates workflows/scripts/tests/test_chunk_redundancy_surface.sh
+quality-gates workflows/scripts/config/redundancy-fixtures.json
+quality-gates workflows/scripts/config/check-redundancy-fixtures.sh
+quality-gates workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
 
 # ── docs-generator — docs-site generator + published doc sources ────────────
 docs-generator .github/workflows/docs-pages.yml

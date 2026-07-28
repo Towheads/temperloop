@@ -65,6 +65,50 @@ reads that marker; a stranger greps for it before pulling.
   item measures the surface as it actually behaves, leak included; #825
   removes these rows once the leak itself is fixed, not this item.
 
+- **Semantic-redundancy chunker + labelled fixture corpus (temperloop#854,
+  half (a) of the P9 semantic-redundancy probe split from #830; epic #810
+  contract amendment P9. Additive.).** A new `chunk-redundancy-surface.sh`
+  splits the SAME manifest-driven always-loaded surface
+  `count-prose.sh`'s SESSION-START CONTRIBUTORS section already reads
+  (`workflows/scripts/config/contributor-manifest.tsv`) into rule-sized
+  chunks and prints them as a JSON-Lines stream on stdout — one paragraph,
+  one top-level list item (indented sub-content swept in as a continuation
+  of its own item), or one opaque fenced code block per chunk; a markdown
+  heading is never itself a chunk, it only updates the `section`
+  breadcrumb every following chunk carries. The surface stays data, not
+  code: a new manifest row needs no chunker change. This half deliberately
+  does NOT score redundancy, compute similarity, or call an embedding/
+  LLM-judge — that is #855's job; this script's only output is the
+  segmentation itself, documented field-by-field in the companion
+  `chunk-redundancy-surface.md` (the seam #855 consumes), so the scoring
+  approach can change with zero changes to the chunker or its stream
+  shape. Deterministic (byte-identical on macOS and Linux CI), following
+  `count-prose.sh`'s own host-determinism technique (`LC_ALL=C`, tracked
+  manifest order rather than a filesystem glob, BSD/GNU `wc` padding
+  trimmed) — JSON construction itself goes through `jq -S -c` rather than
+  a hand-rolled escaper, so backslash/quote/embedded-newline/non-ASCII
+  prose bytes are never at risk of a bespoke-encoder bug.
+
+  Ships alongside a labelled fixture corpus,
+  `workflows/scripts/config/redundancy-fixtures.json`: a known-positive
+  paraphrase pair (states the same rule in fully reworded language, sharing
+  no 10-consecutive-word run — the exact case a verbatim-only detector
+  would miss) and a known-negative deliberate-pointer pair modelled on the
+  project `CLAUDE.md`'s own `## CI & branch policy` shape (names the
+  canonical rule, then states only what is repo-specific), plus a second
+  positive and a hard-topical-near-miss negative for a slightly richer
+  seed corpus. Every entry carries a one-line rationale. A new
+  `check-redundancy-fixtures.sh` lint (wired into `scripts/quality-gates.sh`)
+  mechanically enforces the corpus's own acceptance property — every
+  `positive`-labelled pair shares zero 10-word shingles — rather than
+  leaving it a comment-only claim, plus the usual structural checks
+  (required fields, closed label set, unique ids).
+
+  **Phase A scope discipline holds throughout: no cap, no threshold, no
+  redundancy verdict, nothing that can fail a contributor's build** — the
+  two new gates only prove the chunker and the fixture lint themselves run
+  correctly, never a judgment about any file's prose.
+
 - **Realized-session-context probe (temperloop#828, epic #810).** A new
   opt-in (default OFF) `session-context` raw-lake stream, emitted by
   `workflows/scripts/emit-session-context.sh` from the SessionEnd hook seam
