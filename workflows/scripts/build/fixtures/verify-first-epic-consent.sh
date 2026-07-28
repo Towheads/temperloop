@@ -425,28 +425,36 @@ section "Interview write-scope (pre-consent window)"
 WRITE_COUNT_BEFORE_INTERVIEW="$WRITE_CALL_COUNT"
 ADMIN_PACKET='[]'
 
-# read-only probe — mirrors A0's admin-rights probe; rights_probe() never
-# issues a gh_write call regardless of what it returns.
-INTERVIEW_ADMIN_PROBE="$(rights_probe "$REPO")"
-PLAN "pre-consent window: rights probe read '$INTERVIEW_ADMIN_PROBE' (read-only)"
+# read-only probe — mirrors A0's admin-rights probe. This evidence line uses
+# the DIRECT gh api read (same call as the baseline probe at :336), never the
+# injectable rights_probe() seam, so it can never print an override value
+# under a label that claims a genuine live read.
+INTERVIEW_ADMIN_PROBE="$(gh api "repos/$REPO" --jq '.permissions.admin')"
+PLAN "pre-consent window: rights probe read '$INTERVIEW_ADMIN_PROBE' (read-only, direct gh api)"
 
 # admin-packet composition — the enactable stand-in for A1-A3: dispatches
 # through l1_write_or_packet with a REAL write-fn (protection_apply) wired
 # in, but forces the non-admin branch via the injectable override so the
 # write-fn is reachable-but-never-reached — a genuine "could have written,
-# did not" step, not a vacuous no-op.
-RIGHTS_PROBE_OVERRIDE=false
-l1_write_or_packet "$REPO" \
+# did not" step, not a vacuous no-op. The override is prefixed to the call
+# itself (self-restoring for THIS invocation only) rather than
+# set-then-unset, so a caller-supplied RIGHTS_PROBE_OVERRIDE from the
+# environment survives this checkpoint intact.
+RIGHTS_PROBE_OVERRIDE=false l1_write_or_packet "$REPO" \
   "Require a pull request before merging; forbid direct pushes to main" \
   "Every future change, including your own, must go through a PR from here on." \
   "Settings -> Branches -> Add branch protection rule -> main -> Require a pull request before merging" \
   protection_apply "null" true
-unset RIGHTS_PROBE_OVERRIDE
 
 assert_eq "Interview write-scope: admin-packet composition reached (proves the write-fn was in-graph, not skipped)" \
   "$(jq 'length' <<<"$ADMIN_PACKET")" "1"
 assert_eq "Interview write-scope: zero real gh writes fired across the pre-consent window (probe + admin-packet composition only)" \
   "$WRITE_CALL_COUNT" "$WRITE_COUNT_BEFORE_INTERVIEW"
+
+# Leave ADMIN_PACKET exactly as this block found it (Scenario C below
+# re-initializes it before its own use, but this block's safety should not
+# depend on that).
+ADMIN_PACKET='[]'
 
 # ============================================================================
 # SCENARIO A — decline CI (no-Actions), consent protection + auto-delete
