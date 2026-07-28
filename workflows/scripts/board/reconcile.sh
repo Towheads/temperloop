@@ -10,7 +10,10 @@
 #                                       issue is provably closed/merged).
 #   reconcile.sh [--board N] --status   STATUS drift — board Status vs. GitHub
 #                                       reality (closed/merged backing issues/PRs,
-#                                       orphaned In-Progress). Read-only report.
+#                                       orphaned In-Progress, and — on the
+#                                       issues-only backend — the closed-issue
+#                                       tail the board read cannot see).
+#                                       Read-only report.
 #          ... --status --fix           also auto-applies the one SAFE repair
 #                                       (terminal-but-not-Done → Done).
 #   reconcile.sh [--board N] --labels   LABEL hygiene — orphaned issues-only
@@ -122,6 +125,42 @@
 #       the fetch cap). REPORT-ONLY.
 # REST list calls are flat-cost (2 per run, not per-item) and do NOT touch the
 # Projects-v2 GraphQL budget that single-item GraphQL would.
+#
+# ─── Lens 2, the CLOSED-ISSUE TAIL (temperloop#1410) ─────────────────────────
+# The five classes above all start from a BOARD ITEM. On the Projects-v2 backend
+# that is a complete candidate population for terminal drift: closing an issue
+# does not remove its project card, so a closed-but-not-Done issue is still in
+# `board_item_list` and class (a) catches it.
+#
+# On the ISSUES-ONLY backend it is NOT complete, and that made this lens
+# structurally blind. There, the board item IS the issue and the whole-board read
+# (`_board_issues_item_list`) is defined as the OPEN issue set — "Done" is not a
+# label, it is the issue being CLOSED. So a closed issue that still carries a
+# residual `fnd:status:in-progress` label, or a stranded `fnd:host/session:*`
+# claim stamp, is not merely misclassified: it is ABSENT from the item list
+# entirely, and `--status` happily reported "In sync" over it. That is exactly
+# the drift `claude/commands/build.md` 4d leans on this lens to catch after a
+# merged PR's bare `Closes #N` closes an issue behind the adapter's back.
+#
+# The fix is at the lens level, not per-board: the candidate population for
+# status drift is `board items ∪ the closed-issue tail`, and the tail is read
+# from the SAME `issue list --state all` call this lens already makes (no extra
+# gh call — it just asks for `labels,title` too). Two more classes, both
+# issues-only by construction (the `fnd:` label vocabulary only exists there):
+#   (k) residual status label on a closed issue — a `fnd:status:*` label on an
+#       issue that is CLOSED. Done on this backend is "closed + NO status label"
+#       (there is deliberately no `fnd:status:done`), so any status label on a
+#       closed issue is drift. This is class (a)'s issues-only analogue.
+#   (l) stranded claim stamp on a closed issue — a `fnd:host/session:*` label on
+#       a CLOSED issue: a cross-session claim lock that can never be released,
+#       indistinguishable from a live claim to `issue-state.sh resolve` and to
+#       the foreign-claim bucket above. This is the same population Lens 3's
+#       class (j) reports, surfaced here so `--status` cannot silently disagree
+#       with `--labels` about whether the board is clean.
+# Both are REPORT-ONLY here, deliberately: the repair already exists, exactly
+# once, in Lens 3 (`--labels --apply`, with its per-issue re-check immediately
+# before each write). `--status --fix` still applies only the terminal→Done
+# move; it never grows a second label-stripping implementation.
 #
 # ─── Lens 3: label hygiene (--labels) ────────────────────────────────────────
 # The issues-only backend (board_backend == "issues", e.g. board 7 — the kernel
@@ -600,7 +639,17 @@ status_reconcile_main() {
   # {"<number>":"<STATE>"} map. Route through _board_gh so a test can stub them.
   # updatedAt rides along on the SAME two reads (no extra call) — it ages foreign
   # claims for the GH #152 escalation. Two maps from one reduce: state + updatedAt.
-  issues_json="$(_board_gh issue list -R "$repo" --state all --limit "$STATE_LIMIT" --json number,state,updatedAt)"
+  #
+  # On the issues-only backend this same read ALSO feeds the closed-issue tail
+  # scan below (temperloop#1410), which needs each issue's labels + title — so it
+  # asks for two more fields rather than paying a second list call. The
+  # Projects-v2 argv is left byte-identical (those fields have no meaning there:
+  # the `fnd:` label vocabulary only exists on the issues-only backend).
+  local issue_fields="number,state,updatedAt"
+  if _board_is_issues_only "$PROJECT_NUMBER"; then
+    issue_fields="number,state,updatedAt,labels,title"
+  fi
+  issues_json="$(_board_gh issue list -R "$repo" --state all --limit "$STATE_LIMIT" --json "$issue_fields")"
   prs_json="$(_board_gh pr list -R "$repo" --state all --limit "$STATE_LIMIT" --json number,state,updatedAt)"
   state_map="$(jq -n --argjson i "$issues_json" --argjson p "$prs_json" '
     reduce (($i[]), ($p[])) as $x ({}; .[$x.number | tostring] = $x.state)')"
@@ -685,6 +734,43 @@ status_reconcile_main() {
     esac
   done < <(printf '%s\n' "$rows")
 
+  # --- the CLOSED-ISSUE TAIL (temperloop#1410) ------------------------------
+  # Every class above starts from a board item. On the issues-only backend the
+  # whole-board read is the OPEN issue set, so a closed issue still wearing a
+  # `fnd:status:*` label or a `fnd:host/session:*` claim stamp is invisible to it
+  # — the blindness this scan closes. See the "Lens 2, the CLOSED-ISSUE TAIL"
+  # header section for the full rationale and why it is backend-gated rather
+  # than board-gated. Both label prefixes are DERIVED from the same helpers the
+  # write path uses (never hardcoded), so they stay in lockstep with the `fnd:`
+  # vocabulary — exactly as Lens 3's scan 2b does.
+  local residual_status="" stranded_stamp=""
+  if _board_is_issues_only "$PROJECT_NUMBER"; then
+    local st_prefix hs_prefix closed_rows cls cnum clab ctitle
+    st_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_STATUS")"
+    hs_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_HOSTSESSION")"
+    # Reuses $issues_json — the SAME `--state all` read made above, no extra gh
+    # call. Emits TSV "<class>\t<number>\t<label>\t<title>"; a closed issue
+    # wearing both kinds of label emits one row per label, like Lens 3.
+    closed_rows="$(
+      printf '%s' "$issues_json" | jq -r --arg sp "$st_prefix" --arg hp "$hs_prefix" '
+        .[]
+        | select(((.state // "") | ascii_downcase) == "closed")
+        | .number as $n
+        | (.title // "") as $t
+        | ((.labels // []) | map(.name)) as $ls
+        | ( ($ls[] | select(startswith($sp)) | ["residual", ($n|tostring), ., $t]),
+            ($ls[] | select(startswith($hp)) | ["stranded", ($n|tostring), ., $t]) )
+        | @tsv'
+    )"
+    while IFS=$'\t' read -r cls cnum clab ctitle; do
+      [ -n "$cls" ] || continue
+      case "$cls" in
+        residual) residual_status+="  #$cnum — CLOSED but still labeled '$clab' (Done here is 'closed + no status label') — $ctitle"$'\n' ;;
+        stranded) stranded_stamp+="  #$cnum — CLOSED but still stamped '$clab' (reads as a live, unreleasable claim) — $ctitle"$'\n' ;;
+      esac
+    done < <(printf '%s\n' "$closed_rows")
+  fi
+
   echo "Status reconcile — board project $PROJECT_NUMBER ($repo)"
   echo
 
@@ -709,6 +795,16 @@ status_reconcile_main() {
       done < <(printf '%s\n' "$rows")
       echo "  fixed $fixed item(s)."
     fi
+    echo
+  fi
+
+  # Class (k) — the issues-only analogue of terminal-but-not-Done, printed right
+  # after it. REPORT-ONLY: the repair lives exactly once, in Lens 3.
+  if [ -n "$residual_status" ]; then
+    drift=1
+    echo "residual status labels on closed issues (work complete, tracker label not stripped):"
+    printf '%s' "$residual_status"
+    echo "  (repair: reconcile.sh --board $PROJECT_NUMBER --labels --apply)"
     echo
   fi
 
@@ -737,6 +833,17 @@ status_reconcile_main() {
     drift=1
     echo "foreign claims (STALE — escalate: owning host may be gone; verify there, then release.sh by hand):"
     printf '%s' "$foreign_stale"
+    echo
+  fi
+
+  # Class (l) — the closed-issue half of the claim-rot picture, printed with the
+  # other claim buckets. Same population Lens 3 class (j) reports, so --status
+  # and --labels can no longer disagree about whether the board is clean.
+  if [ -n "$stranded_stamp" ]; then
+    drift=1
+    echo "stranded claim stamps on closed issues (claim lock that can never be released):"
+    printf '%s' "$stranded_stamp"
+    echo "  (repair: reconcile.sh --board $PROJECT_NUMBER --labels --apply)"
     echo
   fi
 
