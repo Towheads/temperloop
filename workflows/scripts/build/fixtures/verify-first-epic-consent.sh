@@ -392,6 +392,63 @@ BACKEND_OUTCOME="$(jq -r .outcome <<<"$BACKEND_VERDICT")"
 assert_eq "gate.sh backend verdict (consumed, not reimplemented)" "$BACKEND_OUTCOME" "MANAGED"
 
 # ============================================================================
+# INTERVIEW WRITE-SCOPE — pre-consent window (Contract's `Interview
+# write-scope` acceptance bullet, claude/templates/first-epic-setup.md,
+# temperloop#846)
+# ============================================================================
+# Opens HERE, strictly AFTER "Setup" above has already run its own fixture
+# bookkeeping (repo create :332-334, the delete_branch_on_merge reset :342,
+# the content/branch resets, and the gate.sh backend probe just above) — every
+# gh_write call Setup itself issues was already counted into WRITE_CALL_COUNT
+# BEFORE the checkpoint below snapshots it, so Setup's writes fall outside
+# this window BY CONSTRUCTION, not by any filter invented on top of the
+# counter.
+#
+# WHAT THIS ENACTS: Phase A (A0-A3) is a CONVERSATIONAL interview — this
+# harness never runs it as code (it starts already past it, per this file's
+# own header). What IS honestly enactable, and what this checkpoint actually
+# exercises, is the harness's own stand-in for that interview: a real
+# read-only rights probe (mirrors the A0 admin-rights probe) plus a real
+# admin-packet composition pass through the SAME l1_write_or_packet
+# dispatcher exercised for real in Scenario C below, wired to a real
+# gh_write-issuing function (protection_apply) so the write path is
+# reachable in principle — the assertion is that it is never actually taken
+# here. That is what makes this window non-vacuous: a real write CAN happen
+# in this call graph, and does not.
+#
+# WHAT THIS DOES NOT ENACT: it does not, and cannot, observe a live agent's
+# actual Phase A conversation (the real A0-A3 question/answer exchange runs
+# conversationally, never as code) — this checkpoint is the pipeline-side
+# counterpart to that template's `Interview write-scope` acceptance bullet,
+# never a replacement for it.
+section "Interview write-scope (pre-consent window)"
+WRITE_COUNT_BEFORE_INTERVIEW="$WRITE_CALL_COUNT"
+ADMIN_PACKET='[]'
+
+# read-only probe — mirrors A0's admin-rights probe; rights_probe() never
+# issues a gh_write call regardless of what it returns.
+INTERVIEW_ADMIN_PROBE="$(rights_probe "$REPO")"
+PLAN "pre-consent window: rights probe read '$INTERVIEW_ADMIN_PROBE' (read-only)"
+
+# admin-packet composition — the enactable stand-in for A1-A3: dispatches
+# through l1_write_or_packet with a REAL write-fn (protection_apply) wired
+# in, but forces the non-admin branch via the injectable override so the
+# write-fn is reachable-but-never-reached — a genuine "could have written,
+# did not" step, not a vacuous no-op.
+RIGHTS_PROBE_OVERRIDE=false
+l1_write_or_packet "$REPO" \
+  "Require a pull request before merging; forbid direct pushes to main" \
+  "Every future change, including your own, must go through a PR from here on." \
+  "Settings -> Branches -> Add branch protection rule -> main -> Require a pull request before merging" \
+  protection_apply "null" true
+unset RIGHTS_PROBE_OVERRIDE
+
+assert_eq "Interview write-scope: admin-packet composition reached (proves the write-fn was in-graph, not skipped)" \
+  "$(jq 'length' <<<"$ADMIN_PACKET")" "1"
+assert_eq "Interview write-scope: zero real gh writes fired across the pre-consent window (probe + admin-packet composition only)" \
+  "$WRITE_CALL_COUNT" "$WRITE_COUNT_BEFORE_INTERVIEW"
+
+# ============================================================================
 # SCENARIO A — decline CI (no-Actions), consent protection + auto-delete
 # ============================================================================
 section "Scenario A — no-Actions branch: consent protection (no required status) + auto-delete; CI declined"

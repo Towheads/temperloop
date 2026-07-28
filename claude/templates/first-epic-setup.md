@@ -395,7 +395,19 @@ applies.
   Phase A, and is **not** falsified by either exception. Scope it this way
   when decomposing: a leg asserting zero writes of any kind is self-negating
   against the two writes this epic's own bookkeeping requires, and fails the
-  moment it is honestly evaluated.
+  moment it is honestly evaluated. *Gate scope: this clause states the
+  required behavior of Phase A itself — a conversational interview no
+  pipeline item runs as code, so no `§ Produces` item decomposes or
+  re-verifies it (§ Produces adds no item for this leg). The
+  pipeline-enactable counterpart is owned by the `Interview write-scope`
+  scenario in `workflows/scripts/build/fixtures/verify-first-epic-consent.sh`:
+  a pre-consent-window checkpoint, opened only after that harness's own
+  Setup bookkeeping completes, asserting zero real `gh` writes fire across
+  its read-only probes and admin-packet composition — the harness's
+  enactable stand-in for A0-A3, never a replacement for observing a live
+  agent's actual Phase A conversation. It is not repeated as part of any
+  `§ Produces` item's acceptance, and no decomposed item is failed by this
+  scenario's verdict.*
 - **Principles-only completion.** A fresh install with no `§ Principles`
   section, offered this epic and completing L0 alone (GitHub/CI declined),
   ends with the project's `§ Principles` populated and a re-offer pointer
