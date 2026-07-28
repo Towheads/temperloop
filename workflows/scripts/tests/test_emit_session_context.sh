@@ -129,6 +129,61 @@ RC6=$?
 check "unknown arg: still exits 0" test "$RC6" -eq 0
 check "unknown arg: WARN on stderr" grep -q WARN "$STDERR6"
 
+# --- 7. Valueless value-taking flag: TERMINATES, never spins ----------------
+# Both shapes an UNQUOTED empty variable produces at the documented one-off
+# call site (`--transcript $X --print-only`, $X empty). Before the value
+# guard, shape (a) HUNG at 100% CPU indefinitely: bash's `shift n` fails
+# silently when n > $#, this script runs without `set -e`, so the same case
+# arm re-matched forever. Every assertion here runs under run_with_timeout so
+# a regression FAILS the suite rather than wedging CI.
+# shellcheck source=../lib/portable-timeout.sh
+. "$HERE/../lib/portable-timeout.sh"
+
+# (a) trailing valueless flag
+STDERR7="$TMP/test7.stderr"
+OUT7=$(run_with_timeout 10 bash "$SCRIPT" --print-only --transcript 2>"$STDERR7")
+RC7=$?
+check "trailing valueless flag: terminates (does not hang)" test "$RC7" -ne 137
+check "trailing valueless flag: exits 0" test "$RC7" -eq 0
+check "trailing valueless flag: WARN names the flag" \
+  grep -q -- '--transcript requires a value' "$STDERR7"
+check "trailing valueless flag: --print-only still honored (record on stdout)" \
+  bash -c "printf '%s' '$OUT7' | jq -e '.transcript_tokens_total == null' >/dev/null"
+
+# (b) flag-shaped value — the quieter shape: `--transcript` swallowing the
+#     NEXT FLAG as its value meant --print-only was never honored and the
+#     record got APPENDED to the raw lake instead of printed.
+RAWDIR7="$TMP/raw7"
+STDERR7B="$TMP/test7b.stderr"
+OUT7B=$(SESSION_CONTEXT_RAW_DIR="$RAWDIR7" run_with_timeout 10 bash "$SCRIPT" \
+  --transcript --print-only 2>"$STDERR7B")
+RC7B=$?
+check "flag-shaped value: terminates" test "$RC7B" -ne 137
+check "flag-shaped value: exits 0" test "$RC7B" -eq 0
+check "flag-shaped value: WARN on stderr" grep -q WARN "$STDERR7B"
+check "flag-shaped value: --print-only NOT swallowed (record printed)" \
+  bash -c "printf '%s' '$OUT7B' | jq -e . >/dev/null"
+check "flag-shaped value: nothing written to the raw lake" \
+  bash -c "[ ! -d '$RAWDIR7' ] || [ -z \"\$(ls -A '$RAWDIR7' 2>/dev/null)\" ]"
+
+# (c) an EXPLICITLY QUOTED empty value is a real argv token — it passes the
+#     guard and still means "no transcript".
+OUT7C=$(run_with_timeout 10 bash "$SCRIPT" --transcript "" --print-only 2>/dev/null)
+check "quoted empty value: accepted, transcript_tokens_total null" \
+  test "$(printf '%s' "$OUT7C" | jq -r '.transcript_tokens_total')" = "null"
+
+# --- 8. Unreachable token_sum.sh -> null, NEVER a real 0 --------------------
+# A "0" here would land in the raw lake indistinguishable from a genuine
+# zero-token session, polluting the very dataset this probe exists to build.
+ISO="$TMP/isolated/workflows/scripts"
+mkdir -p "$ISO"
+cp "$SCRIPT" "$ISO/emit-session-context.sh"   # no sibling lib/ to source
+OUT8=$(bash "$ISO/emit-session-context.sh" --transcript "$T2" --print-only 2>/dev/null)
+RC8=$?
+check "unreachable token_sum.sh: exits 0" test "$RC8" -eq 0
+check "unreachable token_sum.sh: transcript_tokens_total is null, not 0" \
+  test "$(printf '%s' "$OUT8" | jq -r '.transcript_tokens_total')" = "null"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1

@@ -52,7 +52,10 @@
 #   cwd                          the caller's --cwd value, or null
 #   transcript_tokens_total       cumulative token sum across the WHOLE
 #                                 transcript (see STRUCTURAL PRIVACY below) —
-#                                 null if --transcript was never passed
+#                                 null if --transcript was never passed, and
+#                                 null (never 0) if the token_sum.sh helper
+#                                 could not be resolved, so an unknown is
+#                                 never recorded as a real zero
 #   context_window_size          the harness's `.context_window.context_window_size`
 #                                 at SessionEnd, passed through verbatim; null if absent
 #   context_window_remaining_pct  the harness's `.context_window.remaining_percentage`
@@ -97,13 +100,48 @@ cw_remaining=""
 print_only=0
 
 while [ $# -gt 0 ]; do
+  # VALUE GUARD, ahead of the dispatch below — both failure shapes an
+  # UNQUOTED empty variable produces at the documented one-off call site
+  # (`emit-session-context.sh --transcript $X --print-only` with $X empty):
+  #
+  #   1. TRAILING position (`... --print-only --transcript`) HUNG. Bash's
+  #      `shift n` FAILS and does not shift when n > $#, and this script
+  #      deliberately runs without `set -e`, so a bare `shift 2` left $1
+  #      unchanged and the same case arm re-matched forever.
+  #   2. MID-string (`--transcript --print-only`) silently swallowed the NEXT
+  #      FLAG as the value — so `--print-only` was never honored and the
+  #      record was appended to the raw lake instead of printed. Quieter than
+  #      the hang and worse: it writes where the caller asked it not to.
+  #
+  # Both are caught here: a value-taking flag needs a next argument that
+  # exists AND is not itself flag-shaped. Otherwise warn and drop the flag,
+  # matching the unknown-argument WARN-don't-fail posture below. Past this
+  # guard every `shift 2` is provably safe ($# >= 2), so "$2" needs no
+  # `:-` default. (An explicitly QUOTED empty value — `--transcript ""` — is
+  # a real argv token, passes this guard, and still means "no transcript".)
   case "$1" in
-    --transcript) transcript="${2:-}"; shift 2 ;;
-    --session-id) session_id="${2:-}"; shift 2 ;;
-    --project) project="${2:-}"; shift 2 ;;
-    --cwd) cwd="${2:-}"; shift 2 ;;
-    --context-window-size) cw_size="${2:-}"; shift 2 ;;
-    --context-window-remaining-pct) cw_remaining="${2:-}"; shift 2 ;;
+    --transcript | --session-id | --project | --cwd | --context-window-size | --context-window-remaining-pct)
+      if [ $# -lt 2 ]; then
+        printf '%s: WARN %s requires a value (ignored)\n' "$self" "$1" >&2
+        shift
+        continue
+      fi
+      case "${2}" in
+        --*)
+          printf '%s: WARN %s requires a value but was followed by %s (ignored)\n' "$self" "$1" "$2" >&2
+          shift
+          continue
+          ;;
+      esac
+      ;;
+  esac
+  case "$1" in
+    --transcript) transcript="$2"; shift 2 ;;
+    --session-id) session_id="$2"; shift 2 ;;
+    --project) project="$2"; shift 2 ;;
+    --cwd) cwd="$2"; shift 2 ;;
+    --context-window-size) cw_size="$2"; shift 2 ;;
+    --context-window-remaining-pct) cw_remaining="$2"; shift 2 ;;
     --print-only) print_only=1; shift ;;
     *)
       printf '%s: WARN unknown argument %s (ignored)\n' "$self" "$1" >&2
@@ -122,7 +160,12 @@ if [ -f "$lib" ]; then
   # shellcheck source=/dev/null
   . "$lib"
 else
-  token_sum_transcript() { printf '0\n'; }
+  # Helper unreachable: print an EMPTY value, never "0". A literal 0 would be
+  # written to the raw lake as a real number, indistinguishable from a
+  # genuine zero-token session — polluting the very dataset this probe exists
+  # to build. Empty maps to `null` in the record below, the same shape the
+  # record already uses for a missing --transcript.
+  token_sum_transcript() { printf '\n'; }
 fi
 
 tokens_total=""
@@ -169,7 +212,25 @@ fi
 # CMD_RUN_RAW_DIR: an explicit override env var first, else the repo this
 # script lives in (workflows/scripts/../.. -> meta/data/raw), so it works
 # from any checkout that vendors this file, not just a hardcoded path.
-raw_root="$(cd -P "$here/../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
+#
+# NO hardcoded personal-checkout default (temperloop#406: no shipped script
+# may fall back to someone's own ~/dev/... path). If neither the override nor
+# the BASH_SOURCE-relative climb resolves, WARN and skip the append — the
+# same warn-don't-drop posture as every other failure path here, never a
+# silent write into a stranger's tree.
+# NOTE the presence test below uses `:+`, deliberately, NOT `:-`. Only
+# `:=` / `:-` / `=` / `-` are setting-registry SEAMS, and
+# setting-registry.tsv records exactly ONE default per setting/owning-script
+# pair — a second `${SESSION_CONTEXT_RAW_DIR:-}` here would register as a
+# rival seam with an empty default and fail check-setting-registry.sh's
+# equality lint. `:+` reads presence without declaring a default, so the
+# canonical seam stays the single one on the raw_dir line.
+raw_root="$(cd -P "$here/../.." 2>/dev/null && pwd)"
+if [ -z "$raw_root" ] && [ -z "${SESSION_CONTEXT_RAW_DIR:+set}" ]; then
+  printf '%s: WARN could not resolve the raw-lake root from %s and SESSION_CONTEXT_RAW_DIR is unset — no record appended\n' \
+    "$self" "$here" >&2
+  exit 0
+fi
 raw_dir="${SESSION_CONTEXT_RAW_DIR:-$raw_root/meta/data/raw}"
 raw_file="$raw_dir/session-context-${month}.jsonl"
 

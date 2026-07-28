@@ -4,17 +4,53 @@
 # Shared token-sum helper (temperloop#828): the "Tokens: NNk" figure below and
 # the SessionEnd realized-context-probe emit (emit-session-context.sh) must
 # compute the exact same number from a transcript, or the displayed and
-# recorded figures can silently drift apart. BASH_SOURCE-relative resolution,
-# same pattern claude/hooks/*.sh already uses for workflows/scripts/lib
-# (claude/<this file> -> ../workflows/scripts/lib); a stripped-down tree with
-# no workflows/scripts/lib/ degrades to an inline zero rather than breaking
-# the status line.
-_STATUS_LINE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../workflows/scripts/lib" 2>/dev/null && pwd)"
-if [ -n "$_STATUS_LINE_LIB_DIR" ] && [ -f "$_STATUS_LINE_LIB_DIR/token_sum.sh" ]; then
+# recorded figures can silently drift apart.
+#
+# Resolution order:
+#   1. TOKEN_SUM_LIB_DIR env override — highest precedence, always wins
+#      (parity with the KS_LIB_DIR rung claude/hooks/session-start-drain.sh
+#      already offers; a vendoring/relocating install needs an escape hatch).
+#   2. BASH_SOURCE-relative, AFTER resolving this file's own symlink chain:
+#      claude/<this file> -> ../workflows/scripts/lib.
+#
+# Why step 2 must resolve the symlink first — this file's install shape is
+# NOT the hooks' install shape, even though the relative climb looks
+# identical. workflows/scripts/install/links.sh symlinks claude/hooks as a
+# whole DIRECTORY, so the OS resolves that symlinked dir before applying
+# "..", and a hook's `../../workflows/scripts/lib` climb lands back in the
+# real checkout. This file is installed by the same script's PER-FILE
+# `for f in "$foundation"/claude/*` loop, so it is a FILE symlink sitting in
+# the REAL directory ~/.claude: `dirname` yields ~/.claude, and the ".."
+# climb escapes to $HOME/workflows/scripts/lib, which does not exist. `cd -P`
+# does not help — the escape happens at the file symlink, which -P never
+# sees. Walking the symlink chain by hand (readlink, no `readlink -f`) is
+# both BSD-safe and bash-3.2-safe.
+#
+# A stripped-down tree with no workflows/scripts/lib/ degrades to an inline
+# UNKNOWN (rendered "Tokens: --") rather than breaking the status line.
+TOKEN_SUM_LIB_DIR="${TOKEN_SUM_LIB_DIR:-}"
+if [ -z "$TOKEN_SUM_LIB_DIR" ]; then
+  _sl_src="${BASH_SOURCE[0]}"
+  while [ -L "$_sl_src" ]; do
+    _sl_target="$(readlink "$_sl_src")"
+    case "$_sl_target" in
+      /*) _sl_src="$_sl_target" ;;
+      *) _sl_src="$(dirname "$_sl_src")/$_sl_target" ;;
+    esac
+  done
+  TOKEN_SUM_LIB_DIR="$(cd -P "$(dirname "$_sl_src")/../workflows/scripts/lib" 2>/dev/null && pwd)"
+  unset _sl_src _sl_target
+fi
+if [ -n "$TOKEN_SUM_LIB_DIR" ] && [ -f "$TOKEN_SUM_LIB_DIR/token_sum.sh" ]; then
   # shellcheck source=../workflows/scripts/lib/token_sum.sh
-  . "$_STATUS_LINE_LIB_DIR/token_sum.sh"
+  . "$TOKEN_SUM_LIB_DIR/token_sum.sh"
 else
-  token_sum_transcript() { printf '0\n'; }
+  # Helper unreachable: print an EMPTY value, never "0". build_tokens_part
+  # renders empty as "Tokens: --", matching this status line's existing
+  # unknown-value convention ("Context: --", "Quota [5h: --  7d: --]") — the
+  # fallback then ANNOUNCES itself instead of masquerading as a plausible
+  # zero-token session, which is exactly how it went unnoticed before.
+  token_sum_transcript() { printf '\n'; }
 fi
 
 input=$(cat)
@@ -96,7 +132,15 @@ build_tokens_part() {
   local transcript total
   transcript=$(echo "$input" | jq -r '.transcript_path // empty')
   total=$(token_sum_transcript "$transcript")
-  printf "Tokens: %s" "$(format_tokens "$total")"
+  # Only a genuine non-negative integer renders as a number. Anything else —
+  # the unreachable-helper fallback's empty string above, or a helper that
+  # somehow returned a non-integer — renders "--", this line's existing
+  # unknown-value marker. A real "0" is all-digits and still renders as 0, so
+  # a true zero-token session stays distinguishable from an unknown one.
+  case "$total" in
+    '' | *[!0-9]*) printf "Tokens: --" ;;
+    *) printf "Tokens: %s" "$(format_tokens "$total")" ;;
+  esac
 }
 
 # Build context remaining progress bar

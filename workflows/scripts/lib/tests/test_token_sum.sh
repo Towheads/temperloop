@@ -71,6 +71,21 @@ printf 'not valid json at all {{{\n' > "$T5"
 OUT5=$(token_sum_transcript "$T5")
 check "malformed transcript -> 0 (jq failure degrades cleanly)" test "$OUT5" = "0"
 
+# --- 5b. STRING usage fields -> still an integer -----------------------------
+# The "prints an integer" contract's sharpest edge: jq's `+` CONCATENATES
+# strings rather than erroring, so string-valued usage fields make `add`
+# return a QUOTED STRING that is neither empty nor the literal "null" — the
+# two cases the old guard checked. Both callers only neutralized that by
+# luck (jq's `tonumber? // null` on the emit side, awk's coercion on the
+# status-line side); this helper is the one place that must hold the line.
+T5B="$TMP/t5b.jsonl"
+jq -cn '{type:"assistant", message:{role:"assistant", usage:{
+  input_tokens:"100", cache_creation_input_tokens:"0",
+  cache_read_input_tokens:"0", output_tokens:"20"}}}' > "$T5B"
+OUT5B=$(token_sum_transcript "$T5B")
+check "string usage fields -> a bare integer, never a quoted/concatenated string" \
+  bash -c "case '$OUT5B' in ''|*[!0-9]*) exit 1 ;; *) exit 0 ;; esac"
+
 # --- 6. STRUCTURAL PRIVACY: recognizable content never perturbs the sum ------
 CANARY="SECRET-CANARY-DO-NOT-LEAK-9f3c2a"
 T6="$TMP/t6.jsonl"

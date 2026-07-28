@@ -62,9 +62,18 @@ token_sum_transcript() {
     | add // 0
   ' "$transcript" 2>/dev/null)
 
-  if [ -z "$total" ] || [ "$total" = "null" ]; then
-    total=0
-  fi
+  # Enforce the "prints an integer" half of this function's contract at the
+  # boundary, not at each caller. An empty result and the literal "null" are
+  # the common cases, but jq's `+` CONCATENATES strings rather than erroring,
+  # so a transcript whose `usage` fields are strings yields a quoted string
+  # from `add` that neither of those two checks would catch. Both callers
+  # happen to neutralize that today (jq's `tonumber? // null` on the emit
+  # side, awk's coercion on the status-line side) — by luck, not by design,
+  # and this helper is the ONE trustworthy boundary the whole design rests
+  # on. Anything that is not a bare run of digits collapses to 0.
+  case "$total" in
+    '' | *[!0-9]*) total=0 ;;
+  esac
 
   printf '%s\n' "$total"
 }
