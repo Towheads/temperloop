@@ -256,4 +256,97 @@ $out" ;;
 esac
 echo "PASS: 11 CLAUDE.md wrong-unit row correctly flagged (RED)"
 
+# --- 12. RED: a folded (`>`) YAML block scalar description ------------------
+# Regression test for the review-round finding: a presence-only check is
+# satisfied by `description: >` just as much as a real one-line value,
+# which would let count-prose.sh silently read only the indicator (or the
+# block's first continuation line) as the ENTIRE description — collapsing
+# a real ~400-byte description to ~1 byte and skewing the byte->token
+# ratio this item exists to establish.
+fresh_repo
+cat >"$REPO/claude/commands/build.md" <<'EOF'
+---
+description: >
+  This is a folded description spanning more than one physical line, which
+  a presence-only description: check would wrongly accept.
+argument-hint: <x>
+---
+
+Body.
+EOF
+commit_all
+clean_manifest
+out="$(run_checker 2>&1)" && fail "12: folded block-scalar description should fail:
+$out"
+case "$out" in
+  *"BLOCK-SCALAR DESCRIPTION: claude/commands/build.md uses a YAML block/folded scalar (description: >)"*) ;;
+  *) fail "12: expected a BLOCK-SCALAR DESCRIPTION violation naming '>', got:
+$out" ;;
+esac
+echo "PASS: 12 folded (>) block-scalar description correctly flagged (RED)"
+
+# --- 13. RED: a literal (`|-`) YAML block scalar description ----------------
+# Same class as 12, different indicator + explicit chomping modifier —
+# proves the regex isn't over-fit to a bare `>`.
+fresh_repo
+cat >"$REPO/claude/commands/build.md" <<'EOF'
+---
+description: |-
+  A literal block scalar, chomped.
+argument-hint: <x>
+---
+
+Body.
+EOF
+commit_all
+clean_manifest
+out="$(run_checker 2>&1)" && fail "13: literal block-scalar description should fail:
+$out"
+case "$out" in
+  *"BLOCK-SCALAR DESCRIPTION: claude/commands/build.md uses a YAML block/folded scalar (description: |-)"*) ;;
+  *) fail "13: expected a BLOCK-SCALAR DESCRIPTION violation naming '|-', got:
+$out" ;;
+esac
+echo "PASS: 13 literal (|-) block-scalar description correctly flagged (RED)"
+
+# --- 14. RED: an empty description: value ------------------------------------
+fresh_repo
+cat >"$REPO/claude/commands/build.md" <<'EOF'
+---
+description:
+argument-hint: <x>
+---
+
+Body.
+EOF
+commit_all
+clean_manifest
+out="$(run_checker 2>&1)" && fail "14: empty description value should fail:
+$out"
+case "$out" in
+  *"EMPTY DESCRIPTION FIELD: claude/commands/build.md"*) ;;
+  *) fail "14: expected an EMPTY DESCRIPTION FIELD violation, got:
+$out" ;;
+esac
+echo "PASS: 14 empty description: value correctly flagged (RED)"
+
+# --- 15. GREEN: a CRLF-terminated manifest row still parses and passes ------
+# Regression test for the review-round finding: `read -r` with
+# `IFS=$'\t'` trims neither trailing spaces nor a trailing CR, so a
+# CRLF-saved manifest would leave "harness-auto\r" on the last field —
+# a value that fails the closed-set `case` with a message that reads as
+# "harness-auto is not harness-auto" unless the CR is stripped at parse
+# time first.
+fresh_repo
+commit_all
+printf 'CLAUDE.md\tfull\tkernel-pointer\tharness-auto\r\nclaude/commands/build.md\tfrontmatter:description\tcommand-listing\tharness-auto\r\nclaude/agents/architecture-reviewer.md\tfrontmatter:description\tagent-listing\tharness-auto\r\n' >"$REPO/manifest.tsv"
+out="$(run_checker 2>&1)" || fail "15: CRLF-terminated manifest should still pass:
+$out"
+case "$out" in
+  *"OK — contributor-manifest.tsv (3 row(s))"*) ;;
+  *) fail "15: expected the OK summary line despite CRLF line endings, got:
+$out" ;;
+esac
+echo "PASS: 15 CRLF-terminated manifest rows parse cleanly (GREEN)"
+
 echo "test_check_contributor_manifest: OK"

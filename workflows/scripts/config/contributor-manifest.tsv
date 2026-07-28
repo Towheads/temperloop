@@ -1,5 +1,9 @@
 # contributor-manifest.tsv — the tracked registry of session-start
-# CONTRIBUTORS (temperloop#827, epic #810 P1, design brief
+# CONTRIBUTORS (temperloop#827, epic #810's sub-item "P1" — epic #810's OWN
+# numbering for its Produces list, e.g. "P1"/"P7"/"P9", is a DIFFERENT axis
+# from docs/adr/0018-measure-session-cost-before-gating.md's Phase A/Phase B
+# split of the SAME epic: every P-numbered item below belongs to Phase A:
+# nothing here is Phase B. Design brief:
 # [[Designs/temperloop - session-start context budget]]): every file, or
 # file's frontmatter `description:` field, that Claude Code auto-loads into
 # a fresh session's context BEFORE the agent reads anything, for a BARE
@@ -11,6 +15,20 @@
 # IS this manifest — not claude/CLAUDE.kernel.md's composed render, which is
 # workflows/scripts/count-prose.sh's separate TIER-1 concern (the render an
 # overlay-carrying DOWNSTREAM consumer, e.g. foundation, would compose).
+#
+# ── COVERAGE CLAIM, stated in checkable terms (temperloop#826) ────────────
+# This manifest, together with TIER-1, covers 100% of a KERNEL-ONLY
+# checkout's always-loaded surface and 0% of a CONSUMER checkout's (a
+# downstream repo with an installed overlay + its own project `CLAUDE.md` —
+# e.g. foundation). Read no further sentence in this file as implying
+# otherwise: "the render an overlay-carrying downstream consumer would
+# compose" (above) names WHERE that content lives, not a claim that this
+# manifest or TIER-1 measures it. DO NOT READ the
+# "SESSION-START CONTRIBUTOR TOTAL" line count-prose.sh prints below as a
+# consumer checkout's session cost — it is off by roughly an order of
+# magnitude for that case (the always-loaded overlay + project `CLAUDE.md`
+# are entirely uncounted here). A consumer-side measurement is future work,
+# not yet built.
 #
 # This file is read by count-prose.sh's "SESSION-START CONTRIBUTORS" report
 # section and reconciled by workflows/scripts/config/
@@ -36,9 +54,10 @@
 # the epic correcting it. Every row THIS item adds is `harness-auto` (the
 # unconditional prefix cost) — count-prose.sh's report buckets its
 # byte→token ratio over the `harness-auto` bucket only, for exactly this
-# reason. Emitting turn-1 rows (e.g. AGENTS.md, once temperloop#810 P7 rules
-# on it) is routed to temperloop#836 — explicitly NOT this item's job, only
-# a schema this item must not block.
+# reason. Emitting turn-1 rows (e.g. AGENTS.md, once temperloop#810's P7 —
+# the "AGENTS.md coverage decision" sub-item — rules on it) is routed to
+# temperloop#836 (turn-1 contributor rows, e.g. AGENTS.md) — explicitly NOT
+# this item's job, only a schema this item must not block.
 #
 # ── Row shape ────────────────────────────────────────────────────────────
 # TAB-separated, 4 columns, no header line consumed by tooling (this comment

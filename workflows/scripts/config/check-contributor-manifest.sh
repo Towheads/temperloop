@@ -20,8 +20,15 @@
 #      repo. This is what structurally keeps a HOST-STATE contributor (e.g.
 #      the machine-global ~/.claude/agents surface) out of the manifest — a
 #      path outside this repo's own tracked tree can never satisfy it.
-#   3. Field-presence: a `frontmatter:description` row's file actually
-#      carries a `description:` line inside its YAML frontmatter block.
+#   3. Field-presence + shape: a `frontmatter:description` row's file
+#      actually carries a `description:` line inside its YAML frontmatter
+#      block, with a NON-EMPTY, single-line, unquoted, unfolded scalar
+#      value — a bare YAML block (`|`) or folded (`>`) style indicator is
+#      REJECTED, not merely tolerated, because it would satisfy a
+#      presence-only check while count-prose.sh's single-line extraction
+#      reads only the indicator (or the block's first continuation line)
+#      as the entire value, silently collapsing a real description to ~1
+#      byte.
 #   4. Completeness: every tracked claude/commands/*.md file, and every
 #      tracked claude/agents/**/*.md file (recursive, including
 #      claude/agents/reviewers/*), has a row — so a new command/agent file
@@ -71,6 +78,20 @@ loads=()
 while IFS=$'\t' read -r c_path c_unit c_label c_load || [ -n "${c_path:-}" ]; do
   [ -z "${c_path:-}" ] && continue
   case "$c_path" in \#*) continue ;; esac
+
+  # `read -r` with `IFS=$'\t'` splits only on real tabs — it trims neither
+  # trailing spaces nor a trailing CR (a CRLF-saved manifest leaves `\r`
+  # glued onto c_load, the LAST field on the line). Strip both from every
+  # field, mirroring count-prose.sh's own parse-time sanitization — without
+  # this, "harness-auto\r" fails the closed-set case below with a
+  # diagnostic that reads as "harness-auto is not harness-auto" (an
+  # invisible character named nowhere), rather than the CR being visible or
+  # simply not mattering.
+  c_path="${c_path%$'\r'}"; c_path="${c_path%"${c_path##*[![:space:]]}"}"
+  c_unit="${c_unit%$'\r'}"; c_unit="${c_unit%"${c_unit##*[![:space:]]}"}"
+  c_label="${c_label%$'\r'}"; c_label="${c_label%"${c_label##*[![:space:]]}"}"
+  c_load="${c_load%$'\r'}"; c_load="${c_load%"${c_load##*[![:space:]]}"}"
+
   if [ -z "${c_unit:-}" ] || [ -z "${c_label:-}" ] || [ -z "${c_load:-}" ]; then
     echo "check-contributor-manifest: malformed row (need 4 tab-separated fields): $c_path" >&2
     exit 1
@@ -122,7 +143,16 @@ for i in "${!paths[@]}"; do
 done
 
 # --- 2. tracked-path: every row's path is a real git ls-files entry -------
-tracked_raw="$(git -C "$CONTRIBUTOR_MANIFEST_REPO_ROOT" ls-files)"
+# `-c core.quotePath=false` at every `git ls-files` call site in this file:
+# quotePath defaults true, which C-style-quotes ("\NNN" octal escapes) any
+# non-ASCII byte in a path — e.g. `claude/commands/café.md` would come back
+# as `"claude/commands/caf\303\251.md"`, literal backslashes and quotes
+# included, which can never string-equal a manifest row's plain UTF-8 path
+# and would misreport a real, correctly-tracked file as NOT TRACKED / a
+# real command file as MISSING ROW. Latent today (no non-ASCII path exists
+# in this repo yet) but would read as a manifest typo, not a git quoting
+# default, on the PR that first adds one.
+tracked_raw="$(git -c core.quotePath=false -C "$CONTRIBUTOR_MANIFEST_REPO_ROOT" ls-files)"
 _cm_is_tracked() {
   # $1 = path to test
   case $'\n'"$tracked_raw"$'\n' in
@@ -137,19 +167,29 @@ for i in "${!paths[@]}"; do
   fi
 done
 
-# --- 3. field-presence: a frontmatter:description row's file has the field
-_cm_has_description() {
-  # $1 = absolute file path -> exit 0 iff a `description:` line exists
-  # inside the file's YAML frontmatter block (between the first two `---`
-  # lines). Same extraction shape as count-prose.sh's own
-  # frontmatter_description() — kept independent (never sourced from one
-  # another) since a lint and the thing it reconciles against must not
-  # share a single point of failure.
+# --- 3. field-presence: a frontmatter:description row's file has the field,
+#        is non-empty, and is NOT a YAML block/folded scalar indicator ------
+# _cm_description_value <file> — prints "FOUND:<value>" (value may be the
+# empty string) if a `description:` line exists inside the file's YAML
+# frontmatter block (between the first two `---` lines), trailing
+# whitespace trimmed; prints NOTHING if no such line exists at all. The
+# `FOUND:` prefix is what lets the caller distinguish "field absent" from
+# "field present but empty" — both would otherwise be indistinguishable
+# empty strings. Same extraction shape as count-prose.sh's own
+# frontmatter_description() — kept independent (never sourced from one
+# another) since a lint and the thing it reconciles against must not share
+# a single point of failure.
+_cm_description_value() {
   awk '
     NR==1 && $0=="---" { infm=1; next }
     infm && $0=="---" { exit }
-    infm && /^description:/ { found=1; exit }
-    END { exit !found }
+    infm && /^description:/ {
+      val = $0
+      sub(/^description: ?/, "", val)
+      sub(/[ \t]+$/, "", val)
+      print "FOUND:" val
+      exit
+    }
   ' "$1"
 }
 for i in "${!paths[@]}"; do
@@ -161,9 +201,37 @@ for i in "${!paths[@]}"; do
     violations=$((violations + 1))
     continue
   fi
-  if ! _cm_has_description "$fpath"; then
+  raw="$(_cm_description_value "$fpath")"
+  if [ -z "$raw" ]; then
     printf 'NO DESCRIPTION FIELD: %s (row unit frontmatter:description) has no description: line in its frontmatter\n' \
       "${paths[$i]}"
+    violations=$((violations + 1))
+    continue
+  fi
+  desc_val="${raw#FOUND:}"
+  if [ -z "$desc_val" ]; then
+    printf 'EMPTY DESCRIPTION FIELD: %s (row unit frontmatter:description) has an empty description: value\n' \
+      "${paths[$i]}"
+    violations=$((violations + 1))
+    continue
+  fi
+  # A bare YAML block (`|`) or folded (`>`) style indicator — optionally
+  # followed by a chomping (`+`/`-`) and/or single-digit explicit
+  # indentation indicator, and nothing else — satisfies the presence check
+  # above just as much as a real one-line value, but count-prose.sh's
+  # single-line extraction would then read only the indicator (or the
+  # block's first continuation line) as the ENTIRE value: a ~400-byte
+  # description silently becomes ~1 byte, skewing both the byte total and
+  # the byte->token ratio this item exists to establish. Rejected here so
+  # the "every frontmatter:description row is a single-line unquoted
+  # scalar" closed-set claim (this file's header, point 3) is actually
+  # true, not merely asserted; count-prose.sh's own
+  # frontmatter:description case arm carries an independent copy of this
+  # same check as defense-in-depth (a lint and the report it feeds must not
+  # share a single point of failure).
+  if [[ "$desc_val" =~ ^[\|\>][+-]?[0-9]?$ ]]; then
+    printf 'BLOCK-SCALAR DESCRIPTION: %s uses a YAML block/folded scalar (description: %s) — only a single-line unquoted scalar is supported by count-prose.sh'"'"'s byte extraction\n' \
+      "${paths[$i]}" "$desc_val"
     violations=$((violations + 1))
   fi
 done
@@ -171,14 +239,21 @@ done
 # --- 4. completeness: every claude/commands/*.md + claude/agents/**/*.md.md
 #        file has a row; CLAUDE.md has exactly one `full` row -------------
 _cm_has_row() {
-  # $1 = path to test against the parsed manifest rows
+  # $1 = path to test against the parsed manifest rows. paths is guaranteed
+  # non-empty here (the ${#paths[@]} -eq 0 check near the top of this
+  # script exits 1 first), so this value-form array expansion is always
+  # safe under bash 3.2's set -u (an EMPTY array's "${arr[@]}" is an
+  # unbound-variable reference on bash 3.2 specifically — see
+  # count-prose.sh's _cp_seen_load for the guarded case where that isn't
+  # true).
+  local p
   for p in "${paths[@]}"; do
     [ "$p" = "$1" ] && return 0
   done
   return 1
 }
 
-if ! commands_raw="$(git -C "$CONTRIBUTOR_MANIFEST_REPO_ROOT" ls-files -- claude/commands | { grep '\.md$' || true; })"; then
+if ! commands_raw="$(git -c core.quotePath=false -C "$CONTRIBUTOR_MANIFEST_REPO_ROOT" ls-files -- claude/commands | { grep '\.md$' || true; })"; then
   echo "check-contributor-manifest: failed to enumerate claude/commands/*.md" >&2
   exit 1
 fi
@@ -190,7 +265,7 @@ while IFS= read -r f; do
   fi
 done <<<"$commands_raw"
 
-if ! agents_raw="$(git -C "$CONTRIBUTOR_MANIFEST_REPO_ROOT" ls-files -- claude/agents | { grep '\.md$' || true; })"; then
+if ! agents_raw="$(git -c core.quotePath=false -C "$CONTRIBUTOR_MANIFEST_REPO_ROOT" ls-files -- claude/agents | { grep '\.md$' || true; })"; then
   echo "check-contributor-manifest: failed to enumerate claude/agents/**/*.md" >&2
   exit 1
 fi

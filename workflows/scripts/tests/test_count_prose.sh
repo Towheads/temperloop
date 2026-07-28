@@ -56,6 +56,29 @@ assert_rc() {
   local got="$1" want="$2" name="$3"
   if [ "$got" -eq "$want" ]; then ok "$name"; else fail_test "$name" "expected exit $want, got $got"; fi
 }
+# assert_matches <value> <ere> <name> — the value must be NON-EMPTY and
+# match the given extended regex. This exists because every `grep -oE …
+# | sed …` extraction below degrades to an empty string when the line it
+# targets is simply ABSENT from the output (e.g. the SESSION-START
+# CONTRIBUTORS section silently missing, per the review round's bash-3.2
+# unbound-variable finding) — and `assert_eq ""` "" then reports `ok`,
+# indistinguishable from "the two runs produced identical real numbers".
+# Every numeric extraction a determinism/ratio assertion below depends on
+# is asserted non-empty-and-well-formed with this FIRST, so "identical" and
+# "both absent" can no longer read as the same result.
+assert_matches() {
+  local got="$1" ere="$2" name="$3"
+  case "$got" in
+    '') fail_test "$name" "value is EMPTY (the line this was extracted from is likely missing from the output entirely — not a format mismatch)" ;;
+    *)
+      if printf '%s' "$got" | grep -qE "^${ere}\$"; then
+        ok "$name"
+      else
+        fail_test "$name" "expected to match /$ere/, got '$got'"
+      fi
+      ;;
+  esac
+}
 
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
@@ -211,6 +234,7 @@ sum_contrib_bytes="$(printf '%s\n' "$out" | awk '
   END{print sum+0}
 ')"
 reported_contrib_total="$(printf '%s\n' "$out" | grep -oE '\[harness-auto\] SESSION-START CONTRIBUTOR TOTAL: [0-9]+' | sed -E 's/^.*TOTAL: //')"
+assert_matches "$reported_contrib_total" '[0-9]+' "harness-auto total line is present and numeric (not silently absent)"
 assert_eq "$sum_contrib_bytes" "$reported_contrib_total" "harness-auto contributor total equals the sum of its own per-row bytes"
 
 contrib_total_baseline="$reported_contrib_total"
@@ -221,14 +245,17 @@ contrib_total_baseline="$reported_contrib_total"
 echo "--- 7. SESSION-START CONTRIBUTORS host-determinism ---"
 out_c2="$(BUILD_CONFIG_MACHINE="$TMP/machine.sh" bash "$SCRIPT" 2>&1)"
 c2_total="$(printf '%s\n' "$out_c2" | grep -oE '\[harness-auto\] SESSION-START CONTRIBUTOR TOTAL: [0-9]+' | sed -E 's/^.*TOTAL: //')"
+assert_matches "$c2_total" '[0-9]+' "machine-conf run's harness-auto total line is present and numeric"
 assert_eq "$c2_total" "$contrib_total_baseline" "machine-conf perturbation does not move the contributor byte total"
 
 out_c3="$(BUILD_CONFIG_LOCAL="$TMP/local.sh" bash "$SCRIPT" 2>&1)"
 c3_total="$(printf '%s\n' "$out_c3" | grep -oE '\[harness-auto\] SESSION-START CONTRIBUTOR TOTAL: [0-9]+' | sed -E 's/^.*TOTAL: //')"
+assert_matches "$c3_total" '[0-9]+' "repo-local-conf run's harness-auto total line is present and numeric"
 assert_eq "$c3_total" "$contrib_total_baseline" "repo-local-conf perturbation does not move the contributor byte total"
 
 out_c4="$(EPIC_MIN_SUBUNITS=$'99\n99' bash "$SCRIPT" 2>&1)"
 c4_total="$(printf '%s\n' "$out_c4" | grep -oE '\[harness-auto\] SESSION-START CONTRIBUTOR TOTAL: [0-9]+' | sed -E 's/^.*TOTAL: //')"
+assert_matches "$c4_total" '[0-9]+' "exported-EPIC_MIN_SUBUNITS run's harness-auto total line is present and numeric"
 assert_eq "$c4_total" "$contrib_total_baseline" "an exported EPIC_MIN_SUBUNITS does not move the contributor byte total"
 
 # ── 8. byte->token ratio: re-derivable at runtime, no baked literal ─────────
@@ -239,9 +266,26 @@ echo "--- 8. byte->token ratio re-derivation + no-literal pin ---"
 # the number is genuinely derived from those two live counts, not a stale
 # or hardcoded figure.
 ratio_line="$(printf '%s\n' "$out" | grep -E '^\[harness-auto\] byte->token proxy ratio')"
+# The line itself must exist before any field is pulled out of it — a
+# missing line (e.g. bash 3.2's empty-array crash silently deleting the
+# whole SESSION-START CONTRIBUTORS section, the exact failure this
+# suite must catch) would otherwise make every extraction below an empty
+# string, and `expected_ratio`'s `awk` division would divide by an empty
+# `w` (== 0), printing `awk: division by zero` to STDERR while `$(...)`
+# still captures whatever partial stdout awk produced — the two empty/
+# malformed strings then compared equal and this test went green with the
+# section entirely absent (caught in review).
+if [ -z "$ratio_line" ]; then
+  fail_test "byte->token ratio line is present" "no line matching '^[harness-auto] byte->token proxy ratio' in the report — SESSION-START CONTRIBUTORS section likely missing entirely"
+else
+  ok "byte->token ratio line is present"
+fi
 ratio_bytes="$(printf '%s\n' "$ratio_line" | sed -E 's/^.*bytes=([0-9]+).*$/\1/')"
 ratio_words="$(printf '%s\n' "$ratio_line" | sed -E 's/^.*words=([0-9]+).*$/\1/')"
 reported_ratio="$(printf '%s\n' "$ratio_line" | sed -E 's/^.*ratio=([0-9]+\.[0-9]+).*$/\1/')"
+assert_matches "$ratio_bytes" '[0-9]+' "ratio line's bytes= field is present and numeric"
+assert_matches "$ratio_words" '[1-9][0-9]*' "ratio line's words= field is present and a positive integer (never zero — guards the recompute division below)"
+assert_matches "$reported_ratio" '[0-9]+\.[0-9]+' "ratio line's ratio= field is present and well-formed"
 expected_ratio="$(awk -v b="$ratio_bytes" -v w="$ratio_words" 'BEGIN{printf "%d.%02d", int(b*100/w)/100, int(b*100/w)%100}')"
 assert_eq "$reported_ratio" "$expected_ratio" "ratio recomputed from the report's own live byte+word counts matches the reported ratio"
 assert_eq "$ratio_bytes" "$contrib_total_baseline" "the ratio line's byte count matches the harness-auto total"

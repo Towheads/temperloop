@@ -240,14 +240,16 @@ assert_has "$out" "reconciled 1:1" "real-tree OK line claims the 1:1 contract"
 # are same-line, so none of these cases can perturb the size caps).
 MFIX="$TMP/marker-fixture"
 mkdir -p "$MFIX/claude" "$MFIX/workflows/scripts/config"
-# count-prose.sh (temperloop#827) requires a contributor-manifest.tsv to
-# exist under any COUNT_PROSE_ROOT it is pointed at, independent of the
-# citation-marker mechanics this fixture otherwise exercises — a minimal,
-# single-row manifest pointing at the fixture's own kernel doc satisfies
-# that prerequisite without touching anything this section actually tests.
-cat >"$MFIX/workflows/scripts/config/contributor-manifest.tsv" <<'EOF'
-claude/CLAUDE.kernel.md	full	kernel-pointer	harness-auto
-EOF
+# Deliberately NO contributor-manifest.tsv seeded here (a prior version of
+# this comment claimed count-prose.sh "requires" one under any
+# COUNT_PROSE_ROOT — that was true only briefly, mid-development, and was
+# reversed by this same item's later "graceful-degrade missing-manifest"
+# commit before it shipped: a missing manifest degrades the SESSION-START
+# CONTRIBUTORS section to a skipped, stderr-labeled no-op, never a
+# script-wide failure). Its absence here is therefore not a workaround —
+# it's this fixture incidentally exercising that same soft-dependency path
+# at a second call site, on top of test_count_prose.sh's own dedicated
+# coverage for it.
 cat >"$MFIX/claude/CLAUDE.kernel.md" <<'EOF'
 # Fixture kernel doc
 

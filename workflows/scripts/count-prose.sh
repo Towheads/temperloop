@@ -64,8 +64,11 @@
 #     printed number is identical text on both OS families, not just
 #     numerically equal.
 #
-# SESSION-START CONTRIBUTORS (temperloop#827, epic #810 P1 — the "session-
-# start context budget" design brief): a THIRD report section, driven
+# SESSION-START CONTRIBUTORS (temperloop#827, epic #810's sub-item "P1" —
+# epic #810's OWN Produces-list numbering, "P1"/"P7"/etc., a DIFFERENT axis
+# from docs/adr/0018-measure-session-cost-before-gating.md's Phase A/Phase B
+# split of the same epic; everything P-numbered belongs to Phase A — the
+# "session-start context budget" design brief): a THIRD report section, driven
 # entirely by the tracked manifest workflows/scripts/config/
 # contributor-manifest.tsv rather than by code — a new session-start
 # contributor is a manifest ROW, never a script change (unless it needs a
@@ -74,14 +77,18 @@
 # temperloop#719/#722's own postmortem showed can move 0 lines on a
 # +2,260 B commit) plus a re-derived byte->token proxy ratio. This section
 # extends the determinism contract above to the new unit: `wc -c` (byte
-# counts) is trimmed of the same BSD-vs-GNU padding as `wc -l`; every
-# manifest path is read via `git ls-files`, never a live filesystem walk of
-# an installed target, so a HOST-STATE contributor (e.g. the machine-global
-# ~/.claude/agents install surface) structurally cannot enter this report —
-# check-contributor-manifest.sh's tracked-path invariant is what keeps the
-# manifest itself honest, but this script re-derives every byte count from
-# the tracked tree regardless, taking nothing on faith from the tsv beyond
-# which paths to read.
+# counts) is trimmed of the same BSD-vs-GNU padding as `wc -l`, and `LC_ALL=C`
+# (set globally, below) pins `wc -w`'s locale-sensitive whitespace
+# classification the same way. THIS SCRIPT's own contributor loop reads each
+# manifest path straight off the working tree (`[ -f "$c_path" ]`, `wc -c`) —
+# it does NOT itself re-verify trackedness via `git ls-files`. The guarantee
+# that a HOST-STATE contributor (e.g. the machine-global ~/.claude/agents
+# install surface) can never enter this report belongs entirely to
+# check-contributor-manifest.sh's tracked-path invariant (wired into
+# scripts/quality-gates.sh) — a manifest row is only as trustworthy as that
+# lint having run and passed; this script takes the tsv's path list on
+# faith and re-derives only the BYTE COUNT at each of those paths, never the
+# path list itself.
 #
 # LOAD-CLASS BUCKETING (temperloop#826 coverage spike): "session-start" is
 # not one load class. The spike verified empirically (Claude Code 2.1.220)
@@ -93,9 +100,11 @@
 # report BUCKETS by the manifest's `load` column and only folds the
 # `harness-auto` bucket into "SESSION-START CONTRIBUTOR TOTAL" / the
 # byte->token ratio; every row shipped by this item is `harness-auto`, and
-# any other bucket that appears later (temperloop#836) gets its own labeled
-# subtotal, never silently merged in.
+# any other bucket that appears later (temperloop#836, turn-1 contributor
+# rows, e.g. AGENTS.md) gets its own labeled subtotal, never silently
+# merged in.
 set -euo pipefail
+export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -138,6 +147,13 @@ bytes_in() {
   wc -c <"$1" | tr -d '[:space:]'
 }
 
+# words_in <file> — echo a file's whitespace-delimited word count, trimmed.
+# Same BSD/GNU padding-trim contract as lines_in/bytes_in above, stated once
+# here rather than duplicated inline at each `wc -w` call site.
+words_in() {
+  wc -w <"$1" | tr -d '[:space:]'
+}
+
 # bytes_of <string> — echo the byte length of a STRING (not a file), for a
 # value already extracted from a file (e.g. a frontmatter scalar) rather
 # than measured as a whole file. `printf '%s'` (never `echo`) so the value
@@ -158,19 +174,45 @@ words_of() {
 
 # frontmatter_description <file> — echo the single-line YAML scalar value
 # of a file's `description:` frontmatter field (between the leading `---`
-# fences). Every claude/commands/*.md and claude/agents/**/*.md file in this
-# repo keeps `description:` unfolded on one line (check-contributor-
-# manifest.sh's field-presence check keeps this true going forward — a
-# future fold/pipe block scalar would fail that lint rather than silently
-# under-counting here). Kept independent of check-contributor-manifest.sh's
-# own (presence-only) frontmatter scan — a lint and the report it feeds must
-# not share a single point of failure.
+# fences), trailing whitespace trimmed. Every claude/commands/*.md and
+# claude/agents/**/*.md file in this repo keeps `description:` as an
+# unfolded, unquoted, single-line scalar — a YAML block (`|`) or folded
+# (`>`) style indicator on that line is REJECTED, not silently accepted: an
+# earlier version of this comment claimed check-contributor-manifest.sh's
+# field-presence check alone would catch that case, which was FALSE — a
+# presence-only check is satisfied by `description: >` just as much as by a
+# real one-line value, and only its FIRST continuation line would then be
+# read as the entire (usually ~1-byte) value, silently skewing both the
+# byte total and the byte->token ratio this item exists to establish. Two
+# independent guards now exist instead, deliberately not sharing a single
+# point of failure: check-contributor-manifest.sh's lint rejects a
+# block/folded row before it ever reaches this script, AND this script's own
+# caller (see the `frontmatter:description` case arm below) re-checks the
+# extracted value against the same bare-indicator pattern and fails loudly
+# rather than trusting the lint alone.
 frontmatter_description() {
   awk '
     NR==1 && $0=="---" { infm=1; next }
     infm && $0=="---" { exit }
-    infm && /^description:/ { sub(/^description: ?/, ""); print; exit }
+    infm && /^description:/ {
+      sub(/^description: ?/, "")
+      sub(/[ \t]+$/, "")
+      print
+      exit
+    }
   ' "$1"
+}
+
+# _cp_is_block_scalar <value> — bash-3.2-safe test (`[[ =~ ]]`, a builtin,
+# not an external tool) for whether a frontmatter scalar VALUE is a bare
+# YAML block (`|`) or folded (`>`) style indicator — optionally followed by
+# a chomping indicator (`+`/`-`) and/or a single-digit explicit indentation
+# indicator, and nothing else. This is the shape `description: >` /
+# `description: |-` / `description: >2` take once the leading
+# `description: ` prefix is stripped — a real one-line description never
+# legitimately consists of ONLY one of these two characters.
+_cp_is_block_scalar() {
+  [[ "$1" =~ ^[\|\>][+-]?[0-9]?$ ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -178,7 +220,24 @@ frontmatter_description() {
 # own render-only mode (never a duplicated render here).
 # ---------------------------------------------------------------------------
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/count-prose.XXXXXX")"
-trap 'rm -rf "$scratch"' EXIT
+# _count_prose_cleanup — preserves the script's real exit status through
+# cleanup. A bare `trap 'rm -rf "$scratch"' EXIT` replaces $? with `rm`'s
+# own (successful) exit code, so a genuine failure anywhere above (e.g. an
+# `unbound variable` under `set -u` on bash 3.2) would silently report exit
+# 0 to every caller, including scripts/quality-gates.sh's KERNEL_GATES
+# runner and validate-prose-budget.sh's rc check — exactly the silent-skip
+# failure mode this script's entire purpose (honest measurement) exists to
+# avoid. A NAMED function, rather than an inline `trap '…; exit $rc' EXIT`
+# string, sidesteps a shellcheck false positive (SC2154 "rc is referenced
+# but not assigned") that idiom triggers even though the assignment and
+# use are both present and correctly ordered — verified against a minimal
+# reproduction; this shape is shellcheck-clean.
+_count_prose_cleanup() {
+  local rc=$?
+  rm -rf "$scratch"
+  exit "$rc"
+}
+trap _count_prose_cleanup EXIT
 
 # Scrub every build.config.sh setting NAME from this process's own environment
 # before invoking the seam (see the header determinism note above — layer 2
@@ -286,21 +345,53 @@ contrib_words=()
 while IFS=$'\t' read -r c_path c_unit c_label c_load || [ -n "${c_path:-}" ]; do
   [ -z "${c_path:-}" ] && continue
   case "$c_path" in \#*) continue ;; esac
+
+  # `read -r` with `IFS=$'\t'` splits only on real tabs — it trims neither
+  # trailing spaces nor a trailing CR (a CRLF-saved manifest would leave
+  # `\r` glued onto c_load, the LAST field on the line, since a bare `\r`
+  # is ordinary line content up to the actual newline `read` strips). Strip
+  # both from every field so a CRLF/trailing-space manifest can never route
+  # a row into a foreign `load` bucket silently (the failure mode this
+  # exists to close: `"harness-auto\r" != "harness-auto"` would otherwise
+  # pass c_load's closed-set case below by falling through to a NEW,
+  # single-row bucket instead of failing loudly).
+  c_path="${c_path%$'\r'}"; c_path="${c_path%"${c_path##*[![:space:]]}"}"
+  c_unit="${c_unit%$'\r'}"; c_unit="${c_unit%"${c_unit##*[![:space:]]}"}"
+  c_label="${c_label%$'\r'}"; c_label="${c_label%"${c_label##*[![:space:]]}"}"
+  c_load="${c_load%$'\r'}"; c_load="${c_load%"${c_load##*[![:space:]]}"}"
+
   if [ -z "${c_unit:-}" ] || [ -z "${c_label:-}" ] || [ -z "${c_load:-}" ]; then
     echo "count-prose: malformed contributor-manifest row (need 4 tab-separated fields): $c_path" >&2
     exit 1
   fi
 
+  # load closed-set validation (mirrors check-contributor-manifest.sh's own
+  # `case "${loads[$i]}"` check) — this script must not accept a value the
+  # lint would reject, or a manifest that somehow slips past the lint (or a
+  # caller pointing CONTRIBUTOR_MANIFEST_TSV at an unlinted fixture) could
+  # route a row into a silently-created foreign bucket instead of failing.
+  case "$c_load" in
+    harness-auto | pointer-turn1 | none | n/a) ;;
+    *)
+      echo "count-prose: contributor row '$c_path' has unknown load class '$c_load' (want: harness-auto | pointer-turn1 | none | n/a)" >&2
+      exit 1
+      ;;
+  esac
+
   case "$c_unit" in
     full)
       [ -f "$c_path" ] || { echo "count-prose: contributor row '$c_path' (unit full) does not exist" >&2; exit 1; }
       row_bytes="$(bytes_in "$c_path")"
-      row_words="$(wc -w <"$c_path" | tr -d '[:space:]')"
+      row_words="$(words_in "$c_path")"
       ;;
     frontmatter:description)
       [ -f "$c_path" ] || { echo "count-prose: contributor row '$c_path' (unit frontmatter:description) does not exist" >&2; exit 1; }
       val="$(frontmatter_description "$c_path")"
       [ -n "$val" ] || { echo "count-prose: contributor row '$c_path' has no description: frontmatter field" >&2; exit 1; }
+      if _cp_is_block_scalar "$val"; then
+        echo "count-prose: contributor row '$c_path' has a YAML block/folded scalar (description: $val) — only a single-line unquoted scalar is supported" >&2
+        exit 1
+      fi
       row_bytes="$(bytes_of "$val")"
       row_words="$(words_of "$val")"
       ;;
@@ -325,12 +416,26 @@ fi
 
 # Distinct load classes present, in first-seen order (bash-3.2-portable —
 # no associative arrays): almost always just "harness-auto" today, but a
-# future temperloop#836 row (e.g. AGENTS.md, "pointer-turn1") must get its
-# OWN bucket rather than being folded into this one, per the load-class note
-# above.
+# future temperloop#836 row (turn-1 contributor rows, e.g. AGENTS.md,
+# "pointer-turn1") must get its OWN bucket rather than being folded into
+# this one, per the load-class note above.
 load_classes=()
+# _cp_seen_load — GUARD THE EMPTY-ARRAY CASE EXPLICITLY. Under `set -u`,
+# bash 3.2 (macOS's system bash, and what ci.yml's macos-latest leg runs)
+# treats `"${load_classes[@]}"` as an unbound-variable reference while the
+# array is still zero-length — bash >= 4.4 does not. The FIRST call here
+# always hits that case (load_classes starts empty), so an unguarded
+# expansion crashes this function on its very first invocation on bash 3.2
+# — and because the pre-existing `trap … EXIT` used to replace `$?` with
+# `rm`'s own successful exit code, that crash printed nothing at all and
+# still exited 0 (fixed above; the trap now propagates `$?`). The
+# `${#arr[@]}` COUNT form is 3.2-safe under `set -u` even on an empty
+# array, so it gates the loop instead of expanding the array directly.
 _cp_seen_load() {
-  for l in "${load_classes[@]}"; do [ "$l" = "$1" ] && return 0; done
+  local l
+  if [ "${#load_classes[@]}" -gt 0 ]; then
+    for l in "${load_classes[@]}"; do [ "$l" = "$1" ] && return 0; done
+  fi
   return 1
 }
 for l in "${contrib_loads[@]}"; do
