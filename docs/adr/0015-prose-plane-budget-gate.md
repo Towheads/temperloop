@@ -14,13 +14,37 @@ The kernel's prose plane — the composed `CLAUDE.md` kernel half plus the
 command specs, schemas, and agent charters under `claude/` — is ~10,200
 lines and has only intake mechanisms (capture rules, live/drain pairing),
 no removal mechanism. The composed half loads into every session of every
-consuming repo, so growth is a permanent per-session token cost, and a
-fresh clone must absorb the whole composed surface before its first
-session — which cuts against `docs/who-its-for.md`'s own "No org
-membership and no Projects provisioning step stand between 'clone' and
-'first tracked issue'" framing. Advisory pressure (a lean-authoring norm,
-standing prose reviewers) has existed throughout and accretion continued —
-the observed leak the maturity ladder (`docs/principles.md` § 5) requires
+repo that actually composes one, so growth there is a permanent
+per-session token cost for those repos.
+
+**Correction (see [ADR 0018](0018-measure-session-cost-before-gating.md),
+which measures realized session cost before gating):** this paragraph
+originally continued "and a fresh clone must absorb the whole composed
+surface before its first session — which cuts against
+`docs/who-its-for.md`'s own 'No org membership and no Projects
+provisioning step stand between "clone" and "first tracked issue"'
+framing." That premise has since been measured false for the case it
+cites. `workflows/scripts/install/links.sh` §2b emits the
+composed-`CLAUDE.md` entry only when **both** `claude/CLAUDE.kernel.md`
+and `claude/CLAUDE.overlay.md` exist — a kernel-only checkout (this
+repo's own fresh clone) has no overlay file by construction, so its
+install writes no composed doc at all. The premise's error was about
+mechanism and timing, not chiefly magnitude: a fresh clone's
+harness-prefix footprint — loaded before the operator types anything — is
+roughly 14 KB (the project-level pointer file plus agent and command
+descriptions in the two listings), far below what the premise assumed
+arrived up front. But that same pointer file's own imperative
+instructions (`CLAUDE.md` §§1-2) then cause `AGENTS.md` and
+`claude/CLAUDE.kernel.md` to load on turn 1 regardless, for a full
+pointer-closure total of ~74 KB — comparable to, and in fact ~16% more
+than, the ~63 KB the premise assumed, just arriving one turn later, by
+imperative-instruction chaining, rather than as the single composed
+artifact the premise named, which does not exist for this case. See ADR
+0018 for the full measurement and its consequences; per that ADR's own
+Decision, this ADR is not superseded. Advisory pressure (a
+lean-authoring norm, standing
+prose reviewers) has existed throughout and accretion continued — the
+observed leak the maturity ladder (`docs/principles.md` § 5) requires
 before a rule earns a mechanical gate.
 
 ## Decision
