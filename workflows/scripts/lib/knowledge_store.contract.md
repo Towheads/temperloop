@@ -128,6 +128,22 @@ because append's use case is incremental logs where "atomic whole-file
 replace" is the wrong cost/semantic for a call that may run many times
 against the same document.
 
+**Trailing-newline guarantee (temperloop#1308).** Appended content always
+begins on a fresh line — `ks_append` never lands a mid-line concatenation
+onto an unterminated last line. This matters concretely for a caller that
+appends a `### heading` block to a log-like document: a consumer that
+enumerates entries by matching `^### ` at line-start (e.g. a pending-
+decisions review scan) silently skips an entry whose heading got fused onto
+the previous line, because it is then no longer a real line-leading
+heading. The guarantee is **conditional, not unconditional**: a separating
+newline is inserted only when the target already exists, is non-empty, and
+its last byte is not itself a newline. Appending to an already
+well-terminated document is therefore byte-identical to appending without
+this guarantee — no stray blank line is ever introduced, and a caller that
+already emits its own leading `\n` (as most existing callers do) sees no
+behavior change. See the Backend matrix below for how each backend
+satisfies this.
+
 - **Exit 0** — appended (document created if it did not exist).
 - **Exit 2** — invalid `doc-id`.
 - **Exit 1** — other I/O failure.
@@ -167,12 +183,16 @@ Stores each document as a markdown file — optionally carrying a YAML
 frontmatter block at its top — under `ks_root`. The relative filesystem
 path of a document IS its `doc-id` (after normalization).
 
-The backend treats document content as **opaque bytes**: it moves content
-in and out via `read`/`write`/`append`, and does not parse, validate, or
-otherwise interpret any YAML frontmatter a caller chooses to put at the top
-of a document's content. Frontmatter-aware operations (e.g. "read just the
-`status:` field") are out of this seam's scope — a caller that needs that
-composes it on top of `ks_read`.
+The backend treats document content as **opaque bytes**: it does not parse,
+validate, or otherwise interpret any YAML frontmatter a caller chooses to
+put at the top of a document's content. Frontmatter-aware operations (e.g.
+"read just the `status:` field") are out of this seam's scope — a caller
+that needs that composes it on top of `ks_read`. This "opaque bytes" claim
+is about content *interpretation*, not about `ks_append` touching nothing
+but stdin: `ks_append`'s trailing-newline guarantee (above) does read the
+existing document's last byte before writing, purely to decide whether to
+insert a separating newline — it never inspects, parses, or reacts to
+anything else about the content (frontmatter, headings, structure).
 
 No locking is implemented — the atomic-rename write and O_APPEND append
 are each individually safe against a torn write, but there is no
@@ -227,7 +247,7 @@ Op-to-REST mapping:
 | `ks_read` | `GET /vault/<path>` | Body is the document content verbatim. |
 | `ks_write` | `PUT /vault/<path>` | Whole-file replace; Obsidian creates missing parent folders. |
 | `ks_write --no-clobber` | `GET` then `PUT` | The REST API has no native create-only verb, so `--no-clobber` is **emulated** with a pre-flight `GET`: exit 3 (untouched) if it returns 200, otherwise proceed to `PUT`. This is a check-then-act race under concurrent writers — no worse than this seam's documented "no locking" guarantee, but worth naming explicitly: two concurrent `--no-clobber` writers to the same `doc-id` can both pass the pre-flight check and both `PUT`. |
-| `ks_append` | `POST /vault/<path>` | Local REST API POST semantics are already create-or-append, matching this op exactly. |
+| `ks_append` | `POST /vault/<path>` | Local REST API POST semantics are already create-or-append, matching this op exactly. **Trailing-newline guarantee: inherited, not enforced by this adapter.** Whether an append lands on a fresh line is a property of the Local REST API server's own POST separator semantics — this backend does not pre-flight a `GET` to inspect the target's last byte and decide whether to inject a separator itself (unlike the deliberate `--no-clobber` pre-flight above, adding a network round trip and a check-then-act race here would only re-achieve a property the upstream POST already delivers for free). If a future Local REST API release changed its POST-append separator behavior, this adapter's conformance to the guarantee would change with it — that is an explicit, accepted upstream dependency, not a gap this seam silently papers over. |
 | `ks_list [prefix]` | `GET /vault/<dir>/` (recursive) | The REST API has no recursive-listing endpoint, only a per-directory `GET` returning `{"files":[...]}` (subfolder entries end in `/`); this backend walks the tree breadth-first, one request per directory, filtering to `*.md` entries. |
 
 Error-mode deviations from the plain-files table above (both driven by the
@@ -265,6 +285,7 @@ race noted in the table.
 | `ks_read` exit 1 | not found only | not found, OR any other read failure (incl. unreachable) |
 | `ks_write --no-clobber` | atomic filesystem check (`[ -e "$path" ]`) | emulated via pre-flight `GET` (TOCTOU race under concurrent writers) |
 | `ks_list` exit code | always 0 | 0 when the target dir 404s; **1** on any other failure mid-walk |
+| `ks_append` trailing-newline guarantee | enforced directly (conditional last-byte check + separator insert, see § `ks_append`) | **inherited** from the Local REST API's own POST-append semantics — not independently checked/enforced by this adapter (no pre-flight `GET`, no TOCTOU race added) |
 | Locking | none | none (plus the `--no-clobber` pre-flight race) |
 | Sync (optional capability, see § Sync) | implemented (git-backed, manual) | not implemented — `ks_sync` exits 3, `skipped — sync unavailable for backend obsidian` |
 

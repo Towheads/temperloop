@@ -457,10 +457,39 @@ _ks_backend_plain_files_write() {
 # through a temp file (a plain O_APPEND open) — appends are for incremental
 # logs, where "atomic full-file replace" isn't the desired semantic and
 # would be needlessly expensive for repeated small appends.
+#
+# Trailing-newline guarantee (temperloop#1308/foundation#1308): appended
+# content always begins on a fresh line. Without this, appending a
+# `### heading` line onto a target whose last line has no trailing newline
+# concatenates the heading mid-line — it is then no longer a real markdown
+# heading, and any consumer that enumerates entries by matching `^### ` at
+# line-start (e.g. /check-in's pending-decisions scan) silently skips it.
+# The observed corruptor was workflows/scripts/board/reconcile.sh's label-
+# hygiene entry, which (unlike its sibling callers) emits no leading `\n` of
+# its own.
+#
+# CONDITIONAL, not unconditional: a separating newline is inserted only when
+# the target already EXISTS, is non-empty, and its last byte is not already
+# a newline. Appending to a well-terminated document is therefore
+# byte-identical to before this change — no stray blank line is ever
+# introduced. This lives HERE, in the plain-files backend, and nowhere
+# higher (ks__dispatch/ks_append) — a dispatcher-level prefix would apply
+# unconditionally to every backend, which would corrupt the obsidian
+# backend's byte-exact POST payload (see knowledge_store_obsidian.sh; its
+# own test asserts an exact "appended line" body with no added bytes). The
+# obsidian backend's own fresh-line guarantee is a property of the Local
+# REST API's POST semantics, inherited rather than reimplemented here — see
+# knowledge_store.contract.md § `ks_append` / Backend matrix.
 _ks_backend_plain_files_append() {
-  local id="$1" doc_path   # `doc_path` not `path` — zsh PATH tie (temperloop#40)
+  local id="$1" doc_path last_byte   # `doc_path` not `path` — zsh PATH tie (temperloop#40)
   doc_path="$(_ks_backend_plain_files_path "$id")" || return $?
   mkdir -p "$(dirname "$doc_path")" || return 1
+  if [ -s "$doc_path" ]; then
+    last_byte="$(tail -c 1 -- "$doc_path")"
+    if [ -n "$last_byte" ]; then
+      printf '\n' >> "$doc_path"
+    fi
+  fi
   cat >> "$doc_path"
 }
 

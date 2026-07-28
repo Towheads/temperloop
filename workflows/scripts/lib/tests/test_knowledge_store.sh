@@ -266,6 +266,42 @@ want="$(printf 'line1\nline2')"
 [ "$got" = "$want" ] || fail "8: append semantics wrong (got: [$got] want: [$want])"
 echo "PASS: 8 append creates on first call, appends on subsequent calls"
 
+# --- 8c/8d. append trailing newline guarantee (temperloop#1308) — run
+# against a DEDICATED, isolated store root (not $ROOT) so the extra
+# documents these cases create never leak into test 12's exact whole-root
+# listing assertion below. Byte-exact comparison (via cmp), not a
+# $(...)-stripped string compare, because a stripped compare would hide the
+# very trailing-newline distinction these cases exist to prove.
+NL_ROOT="$TMP/nl-store"
+mkdir -p "$NL_ROOT/Scratch"
+
+# --- 8c. an UNTERMINATED target (last byte is not a newline) gets a
+# separating newline inserted before the appended content lands, so the
+# appended content always begins on a fresh line. The observed corruptor
+# (foundation#1308) was a `### heading` append concatenating mid-line onto
+# an unterminated last line — invisible to any `^### `-anchored consumer
+# (e.g. /check-in's pending-decisions scan). ---------------------------
+UNTERM_DOC="$NL_ROOT/Scratch/unterminated.md"
+printf 'no trailing newline' > "$UNTERM_DOC"
+printf '### new entry\n' | KNOWLEDGE_STORE_ROOT="$NL_ROOT" ks_append "Scratch/unterminated" \
+  || fail "8c: append to an unterminated target should succeed"
+printf 'no trailing newline\n### new entry\n' > "$TMP/8c-want"
+cmp -s "$UNTERM_DOC" "$TMP/8c-want" \
+  || fail "8c: trailing newline guarantee should insert a separator before appended content (got: $(od -c < "$UNTERM_DOC" | head -5))"
+echo "PASS: 8c append trailing newline guarantee inserts a separator when the target's last byte isn't already a newline"
+
+# --- 8d. a WELL-TERMINATED target (last byte already a newline) is a
+# byte-identical no-op for the guarantee itself — no stray blank line is
+# ever introduced on top of an already-terminated document. -------------
+TERM_DOC="$NL_ROOT/Scratch/terminated.md"
+printf 'already ends in newline\n' > "$TERM_DOC"
+printf 'appended cleanly\n' | KNOWLEDGE_STORE_ROOT="$NL_ROOT" ks_append "Scratch/terminated" \
+  || fail "8d: append to a well-terminated target should succeed"
+printf 'already ends in newline\nappended cleanly\n' > "$TMP/8d-want"
+cmp -s "$TERM_DOC" "$TMP/8d-want" \
+  || fail "8d: trailing newline guarantee must be a no-op on an already-terminated target, got: $(od -c < "$TERM_DOC" | head -5)"
+echo "PASS: 8d append trailing newline guarantee is a no-op on an already-terminated target (no stray blank line)"
+
 # --- 9. read a missing document -> exit 1, nothing on stdout -----------------
 set +e
 out="$(ks_read "Nope/does-not-exist" 2>/dev/null)"
