@@ -583,6 +583,14 @@ echo "-- 2. First-epic offer (the one consented action; explicit confirmation, d
 
 handoff_next=""
 handoff_prereq=""
+# handoff_epic_num/handoff_epic_url are set ONLY when an epic actually
+# exists to hand off to (freshly filed, or already filed on an idempotent
+# re-run) — temperloop#781. They gate the epic-specific launch/URL lines
+# in the closing handoff box (Section 5): every other arm (unoffered,
+# declined, failed-to-file) leaves them empty and the box falls back to
+# framing whatever $handoff_next says instead.
+handoff_epic_num=""
+handoff_epic_url=""
 handoff_unoffered="run \`temperloop init\` interactively (or pass --yes-first-epic) to file the pre-designed first epic — it is what configures branch protection, head-branch auto-delete, the merge-queue disposition, CI, and your review principles."
 
 if [ "$dry_run" -eq 1 ]; then
@@ -648,10 +656,21 @@ else
   _init_assess_available() {
     [ -f "${HOME:-}/.claude/commands/assess.md" ]
   }
-  # Sets BOTH handoff globals directly rather than echoing for a `$(...)`
+  # Sets handoff globals directly rather than echoing for a `$(...)`
   # capture — command substitution runs in a subshell, so a $handoff_prereq
-  # assigned in there would be silently discarded.
+  # (or $handoff_epic_num/$handoff_epic_url) assigned in there would be
+  # silently discarded.
+  #
+  # $2 (url) is optional: the fresh-filed call site already has the full
+  # URL `gh issue create` printed, and passes it straight through. The
+  # idempotent already-filed call site only ever recovers an issue NUMBER
+  # from its search/issues probe, so it omits $2 and this function
+  # constructs the URL itself from $gh_repo — same shape gh's own output
+  # uses, and always a full, never-truncated URL either way (temperloop#781
+  # acceptance: the epic URL must print in full on both paths).
   _init_set_handoff() {
+    handoff_epic_num="$1"
+    handoff_epic_url="${2:-https://github.com/$gh_repo/issues/$1}"
     handoff_next="$(printf '/assess --epic %s — then /build. That epic is what applies the substrate (branch protection, head-branch auto-delete, merge-queue disposition, CI disposition) and records your review principles.' "$1")"
     if ! _init_assess_available; then
       handoff_prereq="\`/assess\` and \`/build\` are Claude Code slash commands, installed into ~/.claude/ by \`temperloop install\` — run that first. (Nothing else in the try -> try --demo -> init ladder needs it; this step does.)"
@@ -718,7 +737,7 @@ else
             --body "$first_epic_body" 2>&1)"; then
           first_epic_num="$(basename "$first_epic_url")"
           echo "first-epic: filed $first_epic_url (#$first_epic_num) — next: /assess --epic $first_epic_num"
-          _init_set_handoff "$first_epic_num"
+          _init_set_handoff "$first_epic_num" "$first_epic_url"
           # NOT recorded into installs[] (temperloop#794): filing this issue
           # is not a revertible API-state side effect the way a label/
           # required-check/board/proposal-branch is — `temperloop eject`
@@ -983,15 +1002,52 @@ printf '%s\n' "$boards_conf_entry" | sed 's/^/  /'
 echo "config: $config_rel"
 echo
 
-# --- the handoff (temperloop#796) -----------------------------------------
+# --- the handoff (temperloop#796; box framing + lastness temperloop#781) --
 # `init`'s job ends HERE: bootstrap + propose + offer the first epic + hand
 # off. It applies no API state of its own — the epic does, under its own
-# per-write consent. `next step:` is the stable marker
-# .github/workflows/install-tier2.yml greps to prove the live round trip
-# actually reached the handoff.
+# per-write consent.
+#
+# `next step:` is the stable marker .github/workflows/install-tier2.yml
+# greps to prove the live round trip actually reached the handoff, and
+# test_init.sh pins its exact prefix — it stays a single, unindented,
+# never-wrapped line with that literal prefix. Everything else below is
+# framing AROUND it (never folded into a box border): a banner making the
+# "not finished" framing visually distinct, an epic-specific launch block
+# printed only when $handoff_epic_num is set (both the fresh-filed and the
+# idempotent already-filed call sites route through _init_set_handoff, so
+# an operator who lost the first run's scrollback gets the same recovery
+# instruction on a re-run), and a trailing "what happens next" line.
+#
+# `temperloop init: done` prints BEFORE this block, not after — the
+# handoff, not that marker, must be the true last thing this script prints
+# (temperloop#781 acceptance: nothing printed after the handoff).
+echo "temperloop init: done"
+echo
 echo "-- 5. Handoff --"
+echo "================================================================"
+echo "  CONFIGURATION IS NOT FINISHED — one step remains"
+echo "================================================================"
+echo
+echo "\`temperloop init\` created the plan of work; it did not apply it."
+if [ -n "$handoff_epic_num" ]; then
+  echo
+  echo "Launch Claude Code in this repo:"
+  echo
+  echo "    claude"
+  echo
+  echo "Then run the exact invocation below:"
+  echo
+  echo "    /assess --epic $handoff_epic_num"
+  echo
+  echo "Epic: $handoff_epic_url"
+fi
+echo
 echo "next step: ${handoff_next:-$handoff_unoffered}"
 [ -n "$handoff_prereq" ] && echo "prerequisite: $handoff_prereq"
-echo
-echo "temperloop init: done"
+if [ -n "$handoff_epic_num" ]; then
+  echo
+  echo "What happens next: /assess decomposes the epic into a reviewable plan;"
+  echo "/build then applies that plan, with your review at each step."
+fi
+echo "================================================================"
 exit 0
