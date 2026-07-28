@@ -421,7 +421,12 @@ applies.
 - **Principles-only completion.** A fresh install with no `§ Principles`
   section, offered this epic and completing `record-principles` alone
   (GitHub/CI declined), ends with the project's `§ Principles` populated and
-  a re-offer pointer filed naming the unconfigured substrate.
+  a re-offer pointer filed naming the unconfigured substrate. *Gate scope:
+  this clause spans two owners — the populated `§ Principles` half is
+  `record-principles`'s outcome; the filed re-offer pointer half is owned by
+  `decline-pointer` (§ Produces), the item any declined level files.
+  Decompose accordingly: `record-principles`'s acceptance carries only its
+  own half.*
 - **Admin fixture, consent + effect.** On a disposable **admin** fixture
   repo, every consented GitHub/CI write verifiably lands (protection,
   auto-delete, queue-or-managed, scaffolded workflow) and every declined
