@@ -185,7 +185,7 @@ make, deliberately, not one a command makes for you.
     test suite, a lint pass, both?"* **Consequence:** this workflow becomes
     the **sole producer** of the `checks` status context that Phase B is
     ever allowed to require; the job named here is scaffolded verbatim in
-    Phase C's L2, under the literal job name `checks`. **Undo:** two halves,
+    Phase C's L1, under the literal job name `checks`. **Undo:** two halves,
     and they are not symmetric — the workflow *file* is tracked, so
     reverting its PR (or deleting the file) removes it; but the `checks`
     status this arms as **required** is branch-protection API state, undone
@@ -243,15 +243,15 @@ write-by-write interruptions happen during apply (Phase C).
 
 Once confirmed, the change-set applies through the actual pipeline —
 `/assess --epic <N>` decomposes this epic's `## Contract` into items across
-the three **apply** levels below — plus a fourth, verification-only level
-that carries `zero-ci-run-check` (§ Contract) — and `/build` drives every one
+the two **apply** levels below (L0 carries the first two bullets, which are co-level) — plus
+a third, verification-only level that carries `zero-ci-run-check` (§ Contract) — and `/build` drives every one
 of them exactly like any other work in the pipeline:
 
 - **L0 — Principles recorded.** Your A1 answer lands in your project's
   `§ Principles` section (`Projects/<project>/Priorities.md`, or the
   legacy `Priorities/<project>.md`). No external write beyond your own
   repo's files; runs regardless of what the GitHub/CI answers were.
-- **L1 — Consented GitHub writes.** Branch protection and auto-delete per
+- **L0 — Consented GitHub writes.** Branch protection and auto-delete per
   the composed rules; the merge queue armed (`NATIVE`) or the managed
   backend recorded (`BUILD_MERGE_BACKEND=managed`) per your A2 answer.
   **Non-admin path:** if the A0 rights probe read `false`, this level's
@@ -259,18 +259,18 @@ of them exactly like any other work in the pipeline:
   the precise settings requests, the click-paths to make each one, and why
   each matters, for you to hand your repo admin. Nothing here is silently
   skipped and nothing is written without the rights to write it — the
-  pipeline mechanics still demonstrate fully on the levels that don't need
-  elevated rights (L0, and L2's local-only posture when no-Actions was
-  chosen).
-- **L2 — CI scaffold.** The Actions workflow from your A3 answers, with a
-  job literally named `checks` matching what L1's branch protection
+  pipeline mechanics still demonstrate fully on the work that doesn't need
+  elevated rights (`record-principles`, and `ci-disposition`'s local-only
+  posture when no-Actions was chosen).
+- **L1 — CI scaffold.** The Actions workflow from your A3 answers, with a
+  job literally named `checks` matching what the consented branch protection
   requires — or, on the no-Actions answer, nothing is scaffolded and no
   requirement is armed.
 
 **Zero-CI-aware execution.** Every pre-CI item in this epic (anything whose
-own completion doesn't depend on L2 already existing) marks itself so
-`/build`'s CI poll (`workflows/scripts/build/ci-poll.sh`) reads the legible
-`NO_CI` verdict (temperloop#605) and skips with a "no CI configured yet"
+own completion doesn't depend on the CI scaffold (L1) already existing) marks
+itself so `/build`'s CI poll (`workflows/scripts/build/ci-poll.sh`) reads the
+legible `NO_CI` verdict (temperloop#605) and skips with a "no CI configured yet"
 notice — never an apparent hang waiting out a timeout window for check-runs
 that will never appear.
 
@@ -287,7 +287,7 @@ ruled out here; "undone by hand" is disclosed, not avoided:
 - **Decline the whole epic** → you get a durable re-offer pointer: a Backlog
   item filed in your own repo naming exactly what remains unconfigured, so
   the gap stays tracked rather than vanishing. That pointer is the whole
-  floor. The principles interview (A1) is **this epic's own L0**
+  floor. The principles interview (A1) is **this epic's own L0 item**
   (`record-principles` in § Contract), so declining the epic *defers* the
   interview rather than running a second copy of it from `temperloop init` —
   and you lose nothing meanwhile, because the kernel principle set already
@@ -318,7 +318,7 @@ applies.
   section, populated per your A1 answer (kernel set extended, replaced, or
   with named exclusions per your choice; or the point-of-use kernel default,
   unrecorded, if declined).
-- **`github-substrate`** *(Phase C L1)* — the consented GitHub-writes seam.
+- **`github-substrate`** *(Phase C L0 — co-level with `record-principles`; nothing sequences it after the interview)* — the consented GitHub-writes seam.
   One item covering all three writes below: they share a single
   admin-rights probe, a single consent, and one composed change-set, so
   splitting them would split that consent.
@@ -329,7 +329,7 @@ applies.
   - A merge-queue disposition: `NATIVE` armed, or `BUILD_MERGE_BACKEND=managed`
     recorded — never a `checks` requirement with no producer (Phase B's
     congruence rule).
-- **`ci-disposition`** *(Phase C L2)* — a CI disposition: a scaffolded
+- **`ci-disposition`** *(Phase C L1)* — a CI disposition: a scaffolded
   Actions workflow whose job is named `checks` and matches the armed
   protection, or an explicit no-Actions posture — local gates only, nothing
   armed, no job name invented. **This item settles a disposition; it does
@@ -342,7 +342,7 @@ applies.
   default) it would put a code worker on a seam with nothing to commit, and
   open an empty PR on the no-Actions branch, so the kind is fixed here
   rather than left to default.
-- **`zero-ci-run-check`** *(Phase C L3 — verification only)* — the zero-CI
+- **`zero-ci-run-check`** *(Phase C L2 — verification only)* — the zero-CI
   execution verdict: evidence, on a live fixture, that a pre-CI item
   completes through the legible `NO_CI` skip notice instead of hanging out
   the poll window. It applies none of the change-set; it checks what the
@@ -360,7 +360,7 @@ applies.
   `workflows/scripts/lib/land-on-protected-main.sh`'s ruleset-probe shape
   (the same `rules/branches/<default>` read `gate.sh backend` itself uses).
 - `claude/engineering-principles.md` ([ADR-0009](../../docs/adr/0009-kernel-engineering-principles-layer.md))
-  as the kernel principle set this epic's L0 records into `§ Principles`.
+  as the kernel principle set `record-principles` records into `§ Principles`.
 - `workflows/scripts/build/ci-poll.sh`'s `NO_CI` verdict (temperloop#605)
   for Phase C's zero-CI-aware execution.
 - The adopter git-safety install surface (epic #565) — built on, never
@@ -380,8 +380,8 @@ applies.
   scheduled ahead of the substrate it verifies, where it goes green against
   an unconfigured repo and the result proves nothing. Together they place
   `zero-ci-run-check` in a level of its own, strictly below **both** the
-  `github-substrate` level (Phase C L1) and the `ci-disposition` level
-  (Phase C L2) — which are themselves two distinct levels, not one shared
+  `github-substrate` level (Phase C L0) and the `ci-disposition` level
+  (Phase C L1) — which are themselves two distinct levels, not one shared
   level (§ Acceptance, Zero-CI execution).
 
 ### Acceptance
@@ -397,9 +397,9 @@ applies.
   against the two writes this epic's own bookkeeping requires, and fails the
   moment it is honestly evaluated.
 - **Principles-only completion.** A fresh install with no `§ Principles`
-  section, offered this epic and completing L0 alone (GitHub/CI declined),
-  ends with the project's `§ Principles` populated and a re-offer pointer
-  filed naming the unconfigured substrate.
+  section, offered this epic and completing `record-principles` alone
+  (GitHub/CI declined), ends with the project's `§ Principles` populated and
+  a re-offer pointer filed naming the unconfigured substrate.
 - **Admin fixture, consent + effect.** On a disposable **admin** fixture
   repo, every consented GitHub/CI write verifiably lands (protection,
   auto-delete, queue-or-managed, scaffolded workflow) and every declined
@@ -412,10 +412,10 @@ applies.
   the no-Actions composition never arms the requirement, on any
   intermediate state, not only the final one.
 - **Non-admin fixture.** On a disposable **non-admin** fixture, the rights
-  probe fires, L1 composes into an admin packet instead of any write, and
-  the epic still completes its non-admin levels (L0, and L2's local-only
-  posture) through the real pipeline — the demo claim is honestly re-scoped,
-  never faked.
+  probe fires, `github-substrate` composes into an admin packet instead of
+  any write, and the epic still completes its non-admin work
+  (`record-principles`, and `ci-disposition`'s local-only posture) through
+  the real pipeline — the demo claim is honestly re-scoped, never faked.
 - **CI-level agreement.** The scaffolded workflow's job is named `checks`
   and matches the composed protection; the no-Actions choice records the
   local-gates/`--non-strict` posture and scaffolds nothing.
@@ -425,9 +425,9 @@ applies.
   fixture is owned by `zero-ci-run-check` (§ Produces), which runs after
   `ci-disposition` and thereby after `github-substrate` too (§ Consumes). It
   therefore lands in a level of its own, strictly below **both** the
-  `github-substrate` level (Phase C L1) **and** the `ci-disposition` level
-  (Phase C L2) — two distinct levels, not one shared level — making it Phase
-  C L3, the fourth level where the decomposition would otherwise have three.
+  `github-substrate` level (Phase C L0) **and** the `ci-disposition` level
+  (Phase C L1) — two distinct levels, not one shared level — making it Phase
+  C L2, the last of the decomposition's three levels.
   It is not repeated as part of every other item's own acceptance, and no
   item in an earlier level is failed by its verdict.*
 - **Decomposition fidelity.** `/assess --epic <N>` decomposes this
