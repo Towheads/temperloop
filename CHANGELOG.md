@@ -14,6 +14,57 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-contributor session-start surface measurement (temperloop#827, epic
+  #810's sub-item "P1" — epic #810's OWN Produces-list numbering, a
+  different axis from ADR 0018's Phase A/Phase B split of the same epic;
+  P1 is Phase A work. Additive.).** `count-prose.sh` gains a third report
+  section, "SESSION-START CONTRIBUTORS", driven entirely by a new tracked
+  manifest, `workflows/scripts/config/contributor-manifest.tsv` (in the
+  established registry mold: `setting-registry.tsv`, `reviewer-routing.tsv`,
+  `citation-registry.tsv`) — every file (or file's YAML frontmatter
+  `description:` field) Claude Code auto-loads into a fresh session before
+  the agent reads anything, for a bare kernel-only checkout. Adding a
+  contributor is a manifest row, never a script change. Reports each
+  contributor in BYTES (not lines — the unit temperloop#719/#722 showed can
+  move zero lines on a multi-kilobyte commit) plus a byte->token proxy ratio
+  re-derived at runtime from a live byte count and a live word count (no
+  tokenizer, no network — Phase A of epic #810 per its design brief). A new
+  `check-contributor-manifest.sh` lint (wired into `scripts/quality-gates.sh`)
+  reconciles the manifest against the tree: no duplicate/untracked/malformed
+  row, every `frontmatter:description` row's field actually present and a
+  single-line unquoted scalar (a YAML block/folded `|`/`>` indicator is
+  rejected, not silently truncated), and every tracked
+  `claude/commands/*.md` + `claude/agents/**/*.md` file (plus the root
+  `CLAUDE.md` pointer) claimed by a row — this is a structural lint only,
+  never a byte budget: **Phase A ships no cap, no target, and no gate that
+  can fail a PR merely for growing the surface.** The manifest's `load`
+  column (`harness-auto` | `pointer-turn1` | `none` | `n/a`) distinguishes
+  the unconditional session-start-prefix cost from a conditional turn-1 read
+  (e.g. `AGENTS.md`, out of scope here per epic #810's own "P7" sub-item,
+  the AGENTS.md coverage decision) so the two are never silently summed
+  together (temperloop#826). Additive: no existing row, column, gate name,
+  or script behavior changes: a downstream consumer that has not yet pulled
+  this kernel version has nothing that could fail the new lint.
+
+  **Coverage caveat, stated in checkable terms (temperloop#826):** this
+  manifest, together with TIER-1, covers 100% of a KERNEL-ONLY checkout's
+  always-loaded surface and 0% of a CONSUMER checkout's (a downstream repo
+  with an installed overlay + its own project `CLAUDE.md` — e.g.
+  foundation). Do not read the "SESSION-START CONTRIBUTOR TOTAL" this
+  section prints as a consumer checkout's session cost — it is off by
+  roughly an order of magnitude for that case. A consumer-side measurement
+  is future work, not yet built.
+
+  **Known, disclosed contradiction with ADR 0007 (not a bug):** the manifest
+  deliberately includes all seven `claude/agents/reviewers/*` inert-catalog
+  files, because temperloop#825's still-open discovery-leak bug means they
+  ARE, today, recursively discovered into every session's agent listing
+  despite ADR 0007 specifying them as "not deployed until opted in" — this
+  item measures the surface as it actually behaves, leak included; #825
+  removes these rows once the leak itself is fixed, not this item.
+
 ### Changed
 
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →
