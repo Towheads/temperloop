@@ -346,7 +346,14 @@ applies.
   execution verdict: evidence, on a live fixture, that a pre-CI item
   completes through the legible `NO_CI` skip notice instead of hanging out
   the poll window. It applies none of the change-set; it checks what the
-  levels above it applied, and runs after them (§ Consumes).
+  levels above it applied, and runs after them (§ Consumes). **This item
+  records a verdict; it does not commit code, so decompose it as a verdict
+  item** — in plan-schema terms, `kind: spike`, with no `model:` stamp.
+  What it produces is a run observation, and everything it observes was
+  already applied by the levels above, so there is nothing left for it to
+  write. Decomposed as an ordinary code item (the default) it would put a
+  code worker on a seam with nothing to commit, and open an empty PR, so
+  the kind is fixed here rather than left to default.
 - **`decline-pointer`** *(no level of its own — filed by whichever level was
   declined)* — a durable re-offer pointer (Backlog item) whenever any level
   was declined, naming exactly what remains unconfigured.
