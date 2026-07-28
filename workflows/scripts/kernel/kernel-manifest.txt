@@ -312,6 +312,19 @@ kernel workflows/scripts/config/check-contributor-manifest.sh
 kernel workflows/scripts/config/tests/test_check_contributor_manifest.sh
 kernel workflows/scripts/validate-prose-budget.sh
 kernel workflows/scripts/tests/test_validate_prose_budget.sh
+# Semantic-redundancy chunker + labelled fixture corpus (temperloop#854,
+# half (a) of the P9 semantic-redundancy probe split from #830; epic #810
+# contract amendment P9). The chunker script/doc live at the top level
+# (like count-prose.sh) so need their own explicit rows; the fixture
+# corpus + its lint are under workflows/scripts/config/ and are already
+# covered by the `kernel workflows/scripts/config/*` glob above — listed
+# explicitly here for discoverability alongside the chunker.
+kernel workflows/scripts/chunk-redundancy-surface.sh
+kernel workflows/scripts/chunk-redundancy-surface.md
+kernel workflows/scripts/tests/test_chunk_redundancy_surface.sh
+kernel workflows/scripts/config/redundancy-fixtures.json
+kernel workflows/scripts/config/check-redundancy-fixtures.sh
+kernel workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
 kernel workflows/scripts/emit-command-run.sh
 kernel workflows/scripts/emit-session-context.sh
 kernel workflows/scripts/env-hygiene-report.sh
