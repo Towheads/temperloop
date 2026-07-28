@@ -144,19 +144,27 @@ make, deliberately, not one a command makes for you.
   your own, must go through a PR from here on — this is what makes the
   branch actually protected rather than a documented policy nobody
   enforces. **Undo:** repository Settings → Branches → remove or edit the
-  protection rule; `temperloop eject` does not revert this.
+  protection rule; `temperloop eject` does not revert this. **Decline:**
+  nothing is written — your default branch stays exactly as unprotected as
+  it is today (direct pushes still possible for anyone with write access),
+  and this stays the unconfigured gap the § Decline floors pointer names.
 - *"Auto-delete a PR's head branch on merge?"* **Consequence:** a merged
   branch cleans itself up automatically; you never need a manual branch
   prune for anything this repo generates going forward. **Undo:**
   repository Settings → General → uncheck "Automatically delete head
-  branches"; `temperloop eject` does not revert this.
+  branches"; `temperloop eject` does not revert this. **Decline:** nothing
+  is written — merged branches keep piling up exactly as they do today,
+  and you prune them by hand (or with your own tooling) whenever you like;
+  the other two GitHub questions on this list are unaffected either way.
 - *"Enable a merge queue?"* — priced by the A0 `gate.sh backend` verdict:
   - **`NATIVE` verdict:** *"Arm GitHub's native merge queue?"*
     **Consequence:** every PR merges through the queue's own
     re-test-before-land semantics; `/build`/`/sweep` drive it via
     `gate.sh queue`. **Undo:** repository Settings → Branches → disable the
     merge queue on the protection rule; `temperloop eject` does not revert
-    this.
+    this. **Decline:** nothing is written — PRs merge the ordinary way (a
+    green `checks` run at merge time, no queue re-test), the same as before
+    this question was asked.
   - **`MANAGED` verdict:** *"Your plan/ownership can't provision a native
     queue. Record the managed-merge fallback instead (`gate.sh
     managed-merge` — update-branch, re-poll, then merge, per PR)?"**
@@ -165,6 +173,9 @@ make, deliberately, not one a command makes for you.
     tries to arm a queue that isn't there. **Undo:** unset
     `BUILD_MERGE_BACKEND` — this one is a config value in your own tree,
     so unlike the three above, reverting the PR that set it *does* undo it.
+    **Decline:** nothing is recorded — `/build` falls back to merging each
+    PR directly once `checks` is green, with no re-poll safety net against
+    a `main` that moved while CI ran.
 
 ### A3. CI integration — how builds get kicked off
 
