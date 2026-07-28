@@ -70,34 +70,45 @@ set -eu
 # install to a different path than they asked for. Refuse legibly instead,
 # naming the replacement.
 #
-# SET-NESS vs NON-EMPTINESS — the guards below test `${VAR:-}` (non-empty),
-# NOT `${VAR+x}` (set), and that choice is load-bearing in BOTH directions.
-# It must mirror the RESOLUTION three lines down, which is `:-` based:
+# SET-NESS vs NON-EMPTINESS — the guards below test `${VAR:+x}` (set AND
+# non-empty), NOT `${VAR+x}` (set at all), and that choice is load-bearing in
+# BOTH directions. It must mirror the RESOLUTION three lines down, which is
+# `:-` based and therefore treats "set but empty" as "no value given":
 #
-#   * NEW side (`[ -z "${TEMPERLOOP_HOME:-}" ]`). `TEMPERLOOP_HOME=` (set but
-#     empty) resolves to the built-in default, so an empty new-name value is
-#     NOT a value the caller asked for. A set-ness test would see "x", skip
-#     the refusal, and fall through to the default — SILENTLY DISCARDING a
-#     deliberately-set $FOUNDATION_HOME. That is verbatim the failure the
-#     comment above says this detection exists to prevent.
-#   * LEGACY side (`[ -n "${FOUNDATION_HOME:-}" ]`). `FOUNDATION_HOME=` (set
-#     but empty) carries no value to discard, so it must NOT hard-exit. This
-#     matches bin/lib/common.sh's temperloop_env_compat(), whose `legacy_val`
-#     check requires the legacy var be non-empty before refusing — so
-#     `bin/bootstrap.sh` and `bin/temperloop` agree on that input instead of
-#     one exiting 1 where the other returns 0.
+#   * NEW side (`[ -z "${TEMPERLOOP_HOME:+x}" ]` — unset OR empty).
+#     `TEMPERLOOP_HOME=` resolves to the built-in default, so an empty
+#     new-name value is NOT a value the caller asked for. A set-ness test
+#     (`+x`) would see "x", skip the refusal, and fall through to the default
+#     — SILENTLY DISCARDING a deliberately-set $FOUNDATION_HOME. That is
+#     verbatim the failure the comment above says this detection prevents.
+#   * LEGACY side (`[ -n "${FOUNDATION_HOME:+x}" ]` — set AND non-empty).
+#     `FOUNDATION_HOME=` carries no value to discard, so it must NOT
+#     hard-exit. This matches bin/lib/common.sh's temperloop_env_compat(),
+#     whose `legacy_val` check requires the legacy var be non-empty before
+#     refusing — so `bin/bootstrap.sh` and `bin/temperloop` agree on that
+#     input instead of one exiting 1 where the other returns 0.
+#
+# WHY `:+x` AND NOT THE PLAINER `${VAR:-}`: the two are equivalent inside
+# `[ -z ]`/`[ -n ]`, but `${VAR:-...}` is the DEFAULT-VALUE seam
+# workflows/scripts/config/check-setting-registry.sh parses (its seam regex
+# is `\$\{NAME:?[=-]`, which matches `:-` but not `:+`). Written as
+# `${TEMPERLOOP_HOME:-}` these guards read to that lint as "bootstrap.sh
+# declares TEMPERLOOP_HOME's default to be the empty string", contradicting
+# the real default on the resolution line below and registering the legacy
+# FOUNDATION_* names as unregistered settings. `:+x` states the same
+# predicate without declaring any default. Do not "simplify" it back.
 _tl_legacy_refuse() {
   # $1 = legacy var name (set in the caller's environment), $2 = new name
   echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$2 and re-run." >&2
   exit 1
 }
-if [ -z "${TEMPERLOOP_KERNEL_REPO:-}" ] && [ -n "${FOUNDATION_KERNEL_REPO:-}" ]; then
+if [ -z "${TEMPERLOOP_KERNEL_REPO:+x}" ] && [ -n "${FOUNDATION_KERNEL_REPO:+x}" ]; then
   _tl_legacy_refuse FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO
 fi
-if [ -z "${TEMPERLOOP_HOME:-}" ] && [ -n "${FOUNDATION_HOME:-}" ]; then
+if [ -z "${TEMPERLOOP_HOME:+x}" ] && [ -n "${FOUNDATION_HOME:+x}" ]; then
   _tl_legacy_refuse FOUNDATION_HOME TEMPERLOOP_HOME
 fi
-if [ -z "${TEMPERLOOP_BIN_DIR:-}" ] && [ -n "${FOUNDATION_BIN_DIR:-}" ]; then
+if [ -z "${TEMPERLOOP_BIN_DIR:+x}" ] && [ -n "${FOUNDATION_BIN_DIR:+x}" ]; then
   _tl_legacy_refuse FOUNDATION_BIN_DIR TEMPERLOOP_BIN_DIR
 fi
 
