@@ -5,11 +5,11 @@
 # init` (foundation #765 Epic D "newcomer experience", item foundation-eject
 # / #855).
 #
-# RENAME WINDOW (temperloop#165, v0.15.0): the per-repo dir is
+# LEGACY PER-REPO DIR (temperloop#165, v0.15.0): the per-repo dir is
 # `.temperloop/`; a pre-rename adoption used `.foundation/`. Every read
 # below prefers the new dir and falls back to the legacy one, and eject
-# removes BOTH — cleaning legacy residue stays supported even past the
-# v0.19.0 window close (it is exactly this subcommand's job). Comments
+# removes BOTH — cleaning legacy residue stays supported now that the
+# v0.19.0 window has closed (it is exactly this subcommand's job). Comments
 # below name only `.temperloop/` for brevity.
 #
 # `temperloop init` (kernel/bin/subcommands/init.sh) is documented as the
@@ -175,8 +175,8 @@ print_uninstall_bullet() {
 Five separate removal scopes — this subcommand only handles (c); see
   kernel/bin/README.md § Uninstall for the full table:
   (a) Bootstrap footprint (predates any manifest — manual removal):
-        rm -f "$FOUNDATION_CLI_BIN_DEFAULT" "${FOUNDATION_CLI_BIN_DEFAULT%/*}/foundation"
-        rm -rf "$FOUNDATION_CLI_HOME_DEFAULT"
+        rm -f "$TEMPERLOOP_CLI_BIN_DEFAULT" "${TEMPERLOOP_CLI_BIN_DEFAULT%/*}/foundation"
+        rm -rf "$TEMPERLOOP_CLI_HOME_DEFAULT"
   (b) Machine-surface install manifest (settings/config/symlinks a
       'temperloop install' wrote under \$HOME — a separate concern from
       (a) and (c)):
@@ -230,13 +230,14 @@ repo_dir="$(abs_dir "$repo_top")"
 echo "== temperloop eject =="
 echo
 
-# temperloop#165 rename window: `.temperloop/` is the canonical per-repo dir
+# temperloop#165 rename: `.temperloop/` is the canonical per-repo dir
 # (written by v0.15.0+ inits); a pre-rename adoption left `.foundation/`.
-# Eject CLEANS EITHER — deliberately in force even past the window close
-# (removing legacy residue is exactly this subcommand's job), so no
-# TEMPERLOOP_LEGACY_WINDOW_CLOSED arm exists here. Reads (config, recovery
-# marker) prefer the new dir and fall back to the legacy one; the
-# partial-failure rewrite goes back to whichever file was actually read.
+# Eject CLEANS EITHER — deliberately still in force now that the v0.19.0
+# window has closed, because removing legacy residue is exactly this
+# subcommand's job (the window governed which dir the CLI reads and writes
+# in normal operation, never which residue this cleanup can reach). Reads
+# (config, recovery marker) prefer the new dir and fall back to the legacy
+# one; the partial-failure rewrite goes back to whichever file was read.
 tl_dir="$repo_dir/.temperloop"
 legacy_dir="$repo_dir/.foundation"
 config_rel=".temperloop/config"

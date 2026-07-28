@@ -118,8 +118,9 @@ observation, rated above inspection in the literature, not an instance of it.
   outside that scratch dir.
 - Override `TEMPERLOOP_HOME` / `TEMPERLOOP_BIN_DIR` / `HOME` (and
   `TEMPERLOOP_KERNEL_REPO` for a local "fresh clone") so every write stays
-  inside the scratch dir. (Legacy `FOUNDATION_*` names work through the
-  rename window, removed in v0.19.0.)
+  inside the scratch dir. (The pre-rename `FOUNDATION_*` names are **no
+  longer read** as of v0.19.0 — setting one now fails with a message naming
+  its `TEMPERLOOP_*` replacement.)
 - **Run the sequence twice, with two separate scratch `$HOME`s standing in
   for two different clients**, and check for cross-bleed between them — the
   consultant-specific check nobody else runs: does anything from client A's

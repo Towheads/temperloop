@@ -223,7 +223,7 @@ links_apply_symlink() {
 #      file is parsed with grep/cut only — never sourced or eval'd").
 #
 # Discovery mirrors board.sh's own `_board_conf_file()` order exactly
-# (machine-level $XDG_CONFIG_HOME/foundation/boards.conf, then repo-local
+# (machine-level $XDG_CONFIG_HOME/temperloop/boards.conf, then repo-local
 # workflows/scripts/board/boards.conf next to board.sh) via grep/cut only —
 # no sourcing of board.sh needed, keeping links.sh's install-time posture
 # dependency-free. If neither conf exists, this only creates the store root
@@ -245,15 +245,17 @@ links_provision_cache_stores() {
   fi
   echo "  ✓ cache store root ready: ${store_root}"
 
-  # temperloop#165 rename window: temperloop/ machine conf preferred, an
-  # existing legacy foundation/ one read as fallback (removed in v0.19.0).
-  local machine_conf machine_conf_legacy conf=""
+  # The temperloop#165 legacy $XDG_CONFIG_HOME/foundation/ fallback was
+  # removed in v0.19.0. Nothing is reported here when a stale legacy file
+  # exists: this function only PRINTS OPT-IN HINTS for boards it finds, so a
+  # missed conf costs a hint, not a wrong action — and `make doctor`
+  # (check_cache_state) is the surface that already names the stale file for
+  # exactly this tree. Duplicating the diagnostic in the installer would say
+  # it twice in one `make install` run.
+  local machine_conf conf=""
   machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
-  machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   if [ -f "$machine_conf" ]; then
     conf="$machine_conf"
-  elif [ -f "$machine_conf_legacy" ]; then
-    conf="$machine_conf_legacy"
   elif [ -n "$foundation" ] && [ -f "${foundation}/workflows/scripts/board/boards.conf" ]; then
     conf="${foundation}/workflows/scripts/board/boards.conf"
   fi

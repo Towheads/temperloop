@@ -17,10 +17,13 @@ leave a repo half-configured with no easy way to check what actually landed.
 **Install.** A short bootstrap script (`bin/bootstrap.sh`, fetched over
 `curl` or inspected first) shallow-clones this repo into
 `~/.local/share/temperloop` (fast-forwarding it in place on re-run) and
-symlinks `~/.local/bin/temperloop` — plus a `foundation` compat shim, since
-the CLI was named `foundation` before its rename — to the entrypoints inside
-that checkout. No shell-rc edits, no `sudo`. Uninstalling means removing
-those three paths; that is the installer's entire footprint.
+symlinks `~/.local/bin/temperloop` to the entrypoint inside that checkout.
+No shell-rc edits, no `sudo`. Uninstalling means removing those two paths;
+that is the installer's entire footprint. (Through the v0.15.0 → v0.19.0
+rename window it also symlinked a `foundation` compat shim, since the CLI was
+named `foundation` before its rename. That symlink is no longer created; an
+install that predates v0.19.0 may still carry one, and `temperloop uninstall`
+removes it.)
 
 **Update.** `temperloop update` (ADR 0002 "Managed-clone state ownership") is
 the sole sanctioned way to move that managed clone's `HEAD` forward once it

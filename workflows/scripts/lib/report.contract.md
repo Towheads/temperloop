@@ -45,13 +45,19 @@ computed number -- never a crash, never a silently wrong number.
 
 ## Overlay drop-in contract
 
-**Legacy-dir window (v0.15.0 → removed in v0.19.0, temperloop#165):** the
-per-repo dir renamed `.foundation/` → `.temperloop/`. `report.sh` prefers
-`.temperloop/report.d/` and falls back to an existing legacy
-`.foundation/report.d/` when the new dir is absent — one dir wins, never a
-union, so a producer is never run twice. The legacy fallback is removed in
-v0.19.0 (`git mv .foundation/report.d .temperloop/report.d` — the dir is
-tracked). The baseline read follows the same new-then-legacy probe.
+**Legacy dir (temperloop#165):** the per-repo dir renamed `.foundation/` →
+`.temperloop/` in v0.15.0. `report.sh` prefers `.temperloop/report.d/` and
+falls back to an existing legacy `.foundation/report.d/` when the new dir is
+absent — one dir wins, never a union, so a producer is never run twice. The
+baseline read follows the same new-then-legacy probe. **These two reads
+deliberately SURVIVE the v0.19.0 window close.** What the window governed is
+which dir the CLI *resolves config from and writes to*, and those paths now
+refuse legibly (`init`, `baseline-snapshot`). `report` is read-only and
+reports on history it did not create, so refusing here would blind an
+un-migrated repo to its own past for no safety gain — the same reasoning that
+keeps `eject`/`uninstall` cleaning legacy residue. Migrating is still the
+right move (`git mv .foundation/report.d .temperloop/report.d` — the dir is
+tracked).
 
 Every executable file found directly inside the target repo's
 `.temperloop/report.d/` (a **tracked** dir -- meant to be committed to the

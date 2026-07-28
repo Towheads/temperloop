@@ -231,7 +231,7 @@ for co in "${CHECKOUTS[@]}"; do
     # reimplementing machine/repo-local discovery inline. _board_conf_files is
     # the single BOARDS_CONF_*-honoring discovery seam every other consumer
     # already routes through — it applies BOARDS_CONF_MACHINE + the temperloop#165
-    # XDG rename window (temperloop/ preferred, legacy foundation/ fallback,
+    # XDG rename (temperloop/ only; the legacy foundation/ fallback was
     # removed in v0.19.0) to the MACHINE layer, adds the #494 composed-tree
     # consumer-root conf, and honors BOARDS_CONF_REPO_LOCAL (else the
     # $bsh-relative repo-local) — so a single BOARDS_CONF_* override now

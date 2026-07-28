@@ -42,14 +42,14 @@ pass "VERSION file present and well-formed: $version"
 
 # ── Leg 2: `temperloop version` embeds the shipped VERSION (env unset) ───────
 [ -x "$TL_BIN" ] || fail "bin/temperloop not executable at $TL_BIN"
-out="$(env -u TEMPERLOOP_VERSION -u FOUNDATION_VERSION "$TL_BIN" version 2>/dev/null)" \
+out="$(env -u TEMPERLOOP_VERSION "$TL_BIN" version 2>/dev/null)" \
   || fail "temperloop version exited non-zero"
 [ "$out" = "temperloop $version" ] \
   || fail "temperloop version printed '$out', expected 'temperloop $version' — version not embedded from the shipped VERSION file"
 pass "temperloop version reports the embedded VERSION, not 'dev'"
 
 # ── Leg 3: an explicit env override still wins ──────────────────────────────
-out_override="$(env -u FOUNDATION_VERSION TEMPERLOOP_VERSION=9.9.9-test "$TL_BIN" version 2>/dev/null)" \
+out_override="$(env TEMPERLOOP_VERSION=9.9.9-test "$TL_BIN" version 2>/dev/null)" \
   || fail "temperloop version (with override) exited non-zero"
 [ "$out_override" = "temperloop 9.9.9-test" ] \
   || fail "TEMPERLOOP_VERSION override printed '$out_override', expected 'temperloop 9.9.9-test' — env no longer wins"

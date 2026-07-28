@@ -13,8 +13,9 @@ recorded, reversible undo, "uninstall" degrades into either a manual
 a namespace grep (risking an unrelated file that merely looks like it
 belongs to temperloop). Two other undo surfaces already exist and are
 deliberately **not** this one: `bin/bootstrap.sh`'s own footprint
-(`~/.local/bin/temperloop`, the `foundation` compat shim,
-`~/.local/share/temperloop`) predates any manifest — nothing recorded it —
+(`~/.local/bin/temperloop`, `~/.local/share/temperloop`, plus a
+`foundation` compat symlink if the install predates v0.19.0) predates any
+manifest — nothing recorded it —
 and `temperloop eject` undoes a *target repo's* `.temperloop/config` side
 effects (labels, required checks, boards), a wholly different manifest for
 a wholly different class of side effect. This item is the third, missing
@@ -49,8 +50,9 @@ unresolved subset; `uninstall.sh` needs no extra bookkeeping of its own for
 that convergence, and exits 1 to signal the incomplete run.
 
 `temperloop uninstall` explicitly does **not** remove the bootstrap
-footprint (`~/.local/bin/temperloop`, the `foundation` compat shim,
-`~/.local/share/temperloop`) — that footprint predates any manifest, so
+footprint (`~/.local/bin/temperloop`, `~/.local/share/temperloop`, plus a
+pre-v0.19.0 install's `foundation` compat symlink) — that footprint predates
+any manifest, so
 this manifest has no record of it and cannot know it's safe to remove.
 This is a deliberate stance, not a gap: inferring "this looks like a
 temperloop path, remove it too" would be exactly the namespace-grep

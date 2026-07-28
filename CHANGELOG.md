@@ -281,6 +281,77 @@ reads that marker; a stranger greps for it before pulling.
   reversible call consistent with the script's fail-open posture, revisited
   at the v0.20.0 removal.
 
+### Removed
+
+- **The `foundation` → `temperloop` rename compatibility window is CLOSED
+  (temperloop#165, temperloop#764).** The read-old-write-new window opened in
+  v0.15.0 with a stated v0.19.0 removal; this is that removal. Every legacy
+  read is gone. **Nothing degrades silently** — each removed read was replaced
+  by the legible refusal or diagnostic its window arm had already been
+  simulating, so a caller still on a legacy name is *told*, by name, what to
+  change:
+
+  - **Legacy `FOUNDATION_*` env vars are no longer read.**
+    `FOUNDATION_HOME`, `FOUNDATION_BIN_DIR`, `FOUNDATION_KERNEL_REPO`, and
+    `FOUNDATION_VERSION` no longer act as fallbacks for their `TEMPERLOOP_*`
+    twins in `bin/bootstrap.sh`, `bin/lib/common.sh`
+    (`temperloop_env_compat`, `temperloop_resolve_version`),
+    `bin/subcommands/feedback.sh`, or `claude/workflows/build-level.mjs`.
+    Setting one *without* its `TEMPERLOOP_*` twin now **exits non-zero**
+    naming the replacement — never a silent install at a path you did not ask
+    for. Precedence is otherwise unchanged: a set `TEMPERLOOP_*` primary
+    still wins **silently**, so a caller who has migrated but still carries a
+    stale legacy export is unaffected.
+    *Migration:* rename the variable (`FOUNDATION_HOME` → `TEMPERLOOP_HOME`,
+    and so on).
+  - **The `foundation` CLI shim no longer dispatches.** `bin/foundation`
+    stops forwarding to `temperloop` and now refuses on every invocation,
+    naming the replacement binary. The file itself is **deliberately kept**
+    as a tombstone: a pre-v0.19.0 install left a `~/.local/bin/foundation`
+    symlink pointing at it, and deleting the file would turn that symlink into
+    a dangling "no such file or directory" instead of a message. A fresh
+    `bootstrap.sh` install no longer creates the symlink at all; `temperloop
+    uninstall` still removes a stale one.
+    *Migration:* invoke `temperloop <sub>`.
+  - **`init` no longer reads a legacy `.foundation/config`.** It **refuses**
+    when one is present and no `.temperloop/config` exists, rather than
+    restarting from a fresh install manifest on top of forgotten legacy state.
+    *Migration:* `git mv .foundation .temperloop`.
+  - **`baseline-snapshot` no longer appends to a legacy
+    `.foundation/baseline.jsonl`.** It **refuses** when one exists, rather
+    than silently splitting one append-only history across two directories
+    (which truncates every later report's "before" anchor).
+    *Migration:* `mkdir -p .temperloop && mv .foundation/baseline.jsonl
+    .temperloop/`.
+  - **The legacy `$XDG_CONFIG_HOME/foundation/boards.conf` machine conf is no
+    longer read.** `board.sh` and `make doctor` now **name** a stranded legacy
+    file on stderr instead of using it (or instead of silently falling through
+    to the built-in maps with no explanation).
+    *Migration:* `mkdir -p ~/.config/temperloop && mv
+    ~/.config/foundation/boards.conf ~/.config/temperloop/`.
+  - **The legacy `$XDG_DATA_HOME/foundation/knowledge` store root is no longer
+    resolved.** `knowledge_store.sh` uses the `temperloop/` default and
+    **names** a stranded legacy store on stderr — the case that would
+    otherwise report "no notes found" against an empty new root while the real
+    store sits one directory over.
+    *Migration:* move the store, or set `KNOWLEDGE_STORE_ROOT`.
+
+  **Deliberately NOT removed** (migration aids for an existing install, not
+  window-scoped compat): `temperloop eject` / `temperloop uninstall` still
+  clean a legacy `.foundation/` per-repo dir and a stale `foundation` PATH
+  symlink, and the report auto-offer's read-only age probe still reads an
+  un-migrated repo's legacy baseline.
+
+  Registry/table follow-through in the same change: the four DEPRECATED
+  `FOUNDATION_*` rows in `workflows/scripts/config/setting-registry.tsv` are
+  removed and their four `TEMPERLOOP_*` twins' defaults no longer transcribe a
+  `${FOUNDATION_*:-…}` fallback; the 8 `windowed` rows in
+  `workflows/scripts/kernel/prerename-leak-verdicts.tsv` are removed and that
+  verdict is retired in favour of `refusal`, which records the identifiers
+  that legitimately survive *inside* the refusals and diagnostics above; and `bin/lib/common.sh`'s two internal
+  install-path constants are renamed to `TEMPERLOOP_CLI_HOME_DEFAULT` /
+  `TEMPERLOOP_CLI_BIN_DEFAULT`, dropping their pre-rename prefix.
+
 ## [0.18.0] - 2026-07-26
 
 ### Added

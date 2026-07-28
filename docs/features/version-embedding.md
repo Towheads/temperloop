@@ -6,7 +6,7 @@ slug: version-embedding
 ## Problem
 
 A release must contain its own version. Before this, `temperloop version`
-resolved only `${TEMPERLOOP_VERSION:-${FOUNDATION_VERSION:-dev}}` and nothing
+resolved only `${TEMPERLOOP_VERSION:-dev}` and nothing
 set that variable on a real install: there was no `VERSION` file, no
 `git describe`, and while `bin/bootstrap.sh` pins a fresh install to the latest
 release tag it never records which version that is. So a tag-pinned install
@@ -22,8 +22,7 @@ A committed repo-root **`VERSION`** file (a bare `x.y.z`, no `v` prefix) is the
 source of truth. `temperloop_resolve_version` in `bin/lib/common.sh` resolves
 the reported version with the precedence:
 
-    TEMPERLOOP_VERSION env  >  FOUNDATION_VERSION env (rename window)
-      >  the VERSION file  >  "dev"
+    TEMPERLOOP_VERSION env  >  the VERSION file  >  "dev"
 
 The file is read relative to `common.sh`'s own real location (repo root is two
 levels up from `bin/lib/`), so it resolves whether the dispatcher or a
@@ -32,7 +31,7 @@ dispatcher (`bin/temperloop`) calls the helper once and **exports**
 `TEMPERLOOP_VERSION`, so subcommand child processes (e.g. `feedback.sh`'s
 payload stamp) inherit the embedded value; `feedback.sh` keeps its own literal
 `${TEMPERLOOP_VERSION:-…}` seam as the standalone fallback and as the
-setting-registry owning-script default for both names. An explicit env override
+setting-registry owning-script default. An explicit env override
 still wins, so CI and test fixtures that set `TEMPERLOOP_VERSION` are unchanged.
 
 The version is embedded **as part of the release cut**: the release routine bumps

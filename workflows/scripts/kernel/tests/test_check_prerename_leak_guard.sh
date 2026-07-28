@@ -6,7 +6,7 @@
 # shapes (env-var, path-leaf, and the XDG-anchor requirement that tells a
 # real legacy subdir apart from a same-named-but-unrelated prose mention),
 # the GREEN path (removing it passes), and that every verdict-table entry
-# (windowed, allowlist, no-action) and both compat-shim "always allowed"
+# (refusal, allowlist, no-action) and both compat-shim "always allowed"
 # literals (.foundation/ and bin/foundation) are genuinely suppressed rather
 # than the check silently matching nothing.
 #
@@ -43,9 +43,9 @@ EOF
 
 VERDICTS="$WORK/verdicts.tsv"
 cat > "$VERDICTS" <<'EOF'
-env	FOUNDATION_HOME	windowed	synthetic windowed env fixture
+env	FOUNDATION_HOME	refusal	synthetic refusal env fixture
 env	FOUNDATION_TESTVAR	no-action	synthetic no-action env fixture
-path-leaf	boards.conf	windowed	synthetic windowed path-leaf fixture
+path-leaf	boards.conf	refusal	synthetic refusal path-leaf fixture
 path-leaf	agent-heartbeat	allowlist	synthetic allowlist path-leaf fixture
 EOF
 
@@ -84,11 +84,11 @@ git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
 # --- 3: GREEN — a KNOWN env token (on the verdict table) passes ------------
 # shellcheck disable=SC2016  # single-quoted: fixture text written verbatim, not expansion
 echo 'echo "$FOUNDATION_HOME"' >> "$REPO/kernel_dir/clean.sh"
-git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "reference a windowed env var"
+git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "reference a refusal-verdict env var"
 if ! run_check >/dev/null 2>&1; then
-  fail "3: a verdict-table-known env token (FOUNDATION_HOME, windowed) should pass"
+  fail "3: a verdict-table-known env token (FOUNDATION_HOME, refusal) should pass"
 fi
-echo "PASS: 3 a windowed verdict-table env token is suppressed"
+echo "PASS: 3 a refusal-verdict verdict-table env token is suppressed"
 
 # --- 4: GREEN — a no-action verdict env token passes too -------------------
 echo 'FOUNDATION_TESTVAR=1' >> "$REPO/kernel_dir/clean.sh"
@@ -114,14 +114,14 @@ esac
 echo "PASS: 5 unreviewed path-leaf leak is caught (red demonstration)"
 git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
 
-# --- 6: GREEN — a KNOWN path-leaf (windowed) passes, XDG-anchored ----------
+# --- 6: GREEN — a KNOWN path-leaf (refusal) passes, XDG-anchored ----------
 # shellcheck disable=SC2016  # single-quoted: fixture text written verbatim, not expansion
 echo 'CONF="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"' >> "$REPO/kernel_dir/clean.sh"
-git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "reference the windowed boards.conf leaf"
+git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "reference the refusal-verdict boards.conf leaf"
 if ! run_check >/dev/null 2>&1; then
-  fail "6: a verdict-table-known path-leaf (boards.conf, windowed) should pass"
+  fail "6: a verdict-table-known path-leaf (boards.conf, refusal) should pass"
 fi
-echo "PASS: 6 a windowed verdict-table path-leaf is suppressed"
+echo "PASS: 6 a refusal-verdict verdict-table path-leaf is suppressed"
 git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
 
 # --- 7: GREEN — a KNOWN path-leaf (allowlist) passes -----------------------
@@ -150,9 +150,9 @@ git -C "$REPO" -c core.hooksPath=/dev/null revert --no-edit HEAD >/dev/null
 # --- 9: GREEN — the compat shim's own two always-allowed literals ---------
 # (.foundation/<any leaf>, and bin/foundation) never need a verdict-table row.
 cat >> "$REPO/kernel_dir/clean.sh" <<'EOF'
-# reads .foundation/config through the window
+# eject still cleans .foundation/ residue past the window close
 CFG=".foundation/some-new-leaf-nobody-reviewed"
-# bin/foundation still dispatches through the window
+# bin/foundation still ships as a refusal tombstone past the window close
 EOF
 git -C "$REPO" -c core.hooksPath=/dev/null commit -aq -m "reference the compat shim's own literals"
 if ! run_check >/dev/null 2>&1; then

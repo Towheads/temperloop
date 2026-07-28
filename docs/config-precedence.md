@@ -99,13 +99,14 @@ even though the two don't share an implementation.
 namespace as layer 3 above. `boards.conf` was built (foundation #770) before
 this repo's public rename from `foundation` to `temperloop` and was
 grandfathered under `$XDG_CONFIG_HOME/foundation/` until temperloop#165
-migrated it (v0.15.0, read-old-write-new): when no file exists at the
-`temperloop/` path, an **existing** legacy
-`$XDG_CONFIG_HOME/foundation/boards.conf` is still read as a fallback
-through the migration window, and that legacy fallback is **removed in
-v0.19.0** — move the file (`mkdir -p ~/.config/temperloop && mv
-~/.config/foundation/boards.conf ~/.config/temperloop/`) or set
-`BOARDS_CONF_MACHINE`. Any **new** machine-conf surface added after this
+migrated it (v0.15.0, read-old-write-new). That legacy fallback was
+**removed in v0.19.0**: an **existing**
+`$XDG_CONFIG_HOME/foundation/boards.conf` is **no longer read** — instead
+`board.sh` and `make doctor` NAME it on stderr, so a machine whose only conf
+sits at the legacy path is told why its boards look unconfigured rather than
+silently falling through to the built-in maps. Move the file (`mkdir -p
+~/.config/temperloop && mv ~/.config/foundation/boards.conf
+~/.config/temperloop/`) or set `BOARDS_CONF_MACHINE`. Any **new** machine-conf surface added after this
 ladder — including layer 3 above — uses the `temperloop` namespace from the
 start; `foundation` never appears in a new one.
 

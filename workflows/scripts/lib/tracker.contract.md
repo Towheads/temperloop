@@ -61,11 +61,14 @@ can register data but never execute code (the security posture, mirroring how
 | `backend` | `issues` | tracker backend axis (default `projects`; see below). |
 | `cache` | `on` | issue-plane read-cache enable (default off; see Caching & egress). |
 
-**Rename-window note (v0.15.0 → removed in v0.19.0, temperloop#165).** The
-per-repo state dir and the config namespace renamed `foundation/` →
-`temperloop/` (read-old-write-new). A machine-level conf at the legacy
-`$XDG_CONFIG_HOME/foundation/boards.conf` is honored during the window; a
-fresh install always writes the new path. See `VERSIONING.md § CLI surface`.
+**Rename note (window CLOSED in v0.19.0, temperloop#165).** The per-repo
+state dir and the config namespace renamed `foundation/` → `temperloop/`. A
+machine-level conf at the legacy `$XDG_CONFIG_HOME/foundation/boards.conf`
+was honored through the window and is **no longer read**: `board.sh` (and
+`make doctor`) now NAME such a file on stderr instead, so a machine whose only
+conf sits at the legacy path is told why its boards look unconfigured rather
+than silently falling through to the built-in maps. See `VERSIONING.md § CLI
+surface`.
 
 ## Backend selection
 
