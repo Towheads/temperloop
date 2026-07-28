@@ -475,6 +475,28 @@ KERNEL_GATES=(
   # count). Same direct-`bash` form as the gates above.
   "bash workflows/scripts/config/check-redundancy-fixtures.sh"
   "bash workflows/scripts/config/tests/test_check_redundancy_fixtures.sh"
+  # Declared-expiry check (temperloop#831, epic #810 P10, Phase A: measurement
+  # only): declared-expiry-check.sh resolves whether a standing rule's own
+  # declared expiry — an absolute date, or a named retirement issue, per
+  # claude/citation-schema.md's `expires:` marker extension — has PASSED, over
+  # the in-scope surface (citation-registry.tsv rows whose file is also a
+  # contributor-manifest.tsv row). REPORTS COVERAGE, NOT PRECISION and NEVER
+  # FAILS on its own findings (no cap, no gate) — this line runs it every
+  # `checks` pass purely so the report stays visible, same convention as the
+  # count-prose.sh gate above (a report, not a lint). Degrades legibly (an
+  # explicit UNRESOLVED bucket, never a silent drop or a crash) when an
+  # issue-form expiry's `gh` call is offline; the date form always resolves
+  # with zero network. Fixture suite proves all three of the acceptance's
+  # required demonstrations (a date-form and an issue-form known-positive,
+  # both flagged EXPIRED; a known-negative future-dated rule, NOT flagged),
+  # the surface-scoping intersection, the reads-as-temporary heuristic
+  # bucket, the coverage/adoption arithmetic against the pre-registered
+  # DECLARED_EXPIRY_ADOPTION_THRESHOLD_PCT threshold, and the genuine
+  # offline-gh-failure degrade path via a PATH-shadowing fake `gh` binary.
+  # Same direct-`bash` form as the count-prose/validate-prose-budget gates
+  # above.
+  "bash workflows/scripts/declared-expiry-check.sh"
+  "bash workflows/scripts/tests/test_declared_expiry_check.sh"
   # workflow-reviewer coverage rollup (temperloop#1007): hermetic gh-double suite
   # for the reporting script that measures the workflow-reviewer gate's coverage
   # over merged command-doc PRs. Reporting rollup, not a merge gate — its own

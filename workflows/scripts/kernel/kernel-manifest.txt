@@ -325,6 +325,13 @@ kernel workflows/scripts/tests/test_chunk_redundancy_surface.sh
 kernel workflows/scripts/config/redundancy-fixtures.json
 kernel workflows/scripts/config/check-redundancy-fixtures.sh
 kernel workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
+# Declared-expiry check (temperloop#831, epic #810 P10): resolves whether a
+# standing rule's own declared expiry (claude/citation-schema.md's marker
+# extension) has passed, over the surface citation-registry.tsv (already
+# covered by the `kernel workflows/scripts/config/*` glob above) intersected
+# with contributor-manifest.tsv. Report-only — Phase A ships no gate.
+kernel workflows/scripts/declared-expiry-check.sh
+kernel workflows/scripts/tests/test_declared_expiry_check.sh
 kernel workflows/scripts/emit-command-run.sh
 kernel workflows/scripts/emit-session-context.sh
 kernel workflows/scripts/env-hygiene-report.sh
