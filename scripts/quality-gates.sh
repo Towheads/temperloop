@@ -223,6 +223,24 @@ KERNEL_GATES=(
   # some CI runners) and proves the dispatch preserves PATH.
   "bash scripts/lint-zsh-param-tie.sh"
   "bash workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh"
+  # Main knowledge_store interface + plain-files backend suite (foundation
+  # #771) — root resolution, doc-id normalization, write/read round-trip,
+  # --no-clobber, atomic write, list, and (temperloop#1308) the ks_append
+  # trailing-newline guarantee's conditional insert/no-op cases. Previously
+  # ungated on its own (only reachable indirectly via test_stranger_config.sh's
+  # clean-subshell rerun). Zero network, throwaway tmpdir. Same direct-`bash`
+  # form as the zsh-tie gate above (kernel Makefile is generator-owned).
+  "bash workflows/scripts/lib/tests/test_knowledge_store.sh"
+  # Obsidian backend suite for the same interface (foundation #775) — mocked
+  # curl subprocess (_ks_backend_obsidian_curl override), zero network, never
+  # a real vault/REST endpoint. Gated alongside test_knowledge_store.sh above
+  # so the trailing-newline guarantee's backend split (enforced in
+  # plain-files, inherited/documented-not-enforced in obsidian per
+  # knowledge_store.contract.md) is proven on both sides in the same run —
+  # in particular this suite's byte-exact POST-payload assertion is what
+  # confirms the guarantee lives in the plain-files backend only, never at
+  # dispatch. Same direct-`bash` form as the gate above.
+  "bash workflows/scripts/lib/tests/test_knowledge_store_obsidian.sh"
   # Main knowledge_search backend suite (interface + basic-memory adapter, mocked
   # uvx subprocess, offline). Previously ungated — gated here alongside the F#946
   # .bmignore / KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES seam it now covers. Same direct-
