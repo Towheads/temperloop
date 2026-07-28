@@ -117,6 +117,60 @@ done
 pass "1: each legacy FOUNDATION_* env var refuses legibly at bootstrap (names replacement + v0.19.0, installs nothing)"
 
 # ===========================================================================
+# 1b. SET-BUT-EMPTY boundary — the guards test NON-EMPTINESS, not set-ness,
+#     mirroring bootstrap.sh's own `${VAR:-default}` resolution.
+#
+#     Case A (the serious one): TEMPERLOOP_HOME='' + FOUNDATION_HOME=<path>.
+#     An empty new-name value resolves to the built-in default, so it is NOT
+#     a value the caller asked for. Under a set-ness guard (`${VAR+x}`) the
+#     refusal does NOT fire, bootstrap falls through to
+#     $HOME/.local/share/temperloop, and the path the operator deliberately
+#     set is SILENTLY DISCARDED — verbatim the failure bin/bootstrap.sh's
+#     legacy-env comment says the detection exists to prevent. Must refuse.
+#
+#     Case B (the mirror): FOUNDATION_HOME='' + TEMPERLOOP_HOME unset. A
+#     set-but-empty LEGACY var carries no value to discard, so a hard exit 1
+#     would be wrong — and would disagree with bin/lib/common.sh's
+#     temperloop_env_compat(), whose `legacy_val` check requires the legacy
+#     var be non-empty. Must NOT refuse on the legacy var.
+# ===========================================================================
+caseA_err="$SANDBOX_ROOT/boot-caseA.err"
+CASEA_HOME="$SANDBOX_HOME/caseA-asked-for"
+rc=0
+env "${SANDBOX_ENV_ARGS[@]}" \
+    TEMPERLOOP_KERNEL_REPO="file://$FIXTURE_UPSTREAM" \
+    TEMPERLOOP_HOME= \
+    FOUNDATION_HOME="$CASEA_HOME" \
+    sh "$FIXTURE_UPSTREAM/bin/bootstrap.sh" >/dev/null 2>"$caseA_err" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "1b/A: TEMPERLOOP_HOME='' with FOUNDATION_HOME set must REFUSE — a set-ness guard falls through to the default and silently discards the path the caller asked for (stderr: $(cat "$caseA_err"))"
+grep -q 'FOUNDATION_HOME is no longer read' "$caseA_err" \
+  || fail "1b/A: the refusal must name \$FOUNDATION_HOME (stderr: $(cat "$caseA_err"))"
+grep -q 'TEMPERLOOP_HOME' "$caseA_err" \
+  || fail "1b/A: the refusal must name the replacement \$TEMPERLOOP_HOME"
+[ ! -d "$CASEA_HOME" ] \
+  || fail "1b/A: a refused bootstrap must install nothing at the legacy path"
+[ ! -d "$SANDBOX_HOME/.local/share/temperloop" ] \
+  || fail "1b/A: bootstrap must NOT have fallen through to the built-in default — that is the silent-discard failure this leg pins"
+pass "1b/A: TEMPERLOOP_HOME='' + FOUNDATION_HOME=<path> refuses instead of silently discarding the asked-for path"
+
+caseB_err="$SANDBOX_ROOT/boot-caseB.err"
+CASEB_HOME="$SANDBOX_HOME/caseB-install/share"
+CASEB_BIN="$SANDBOX_HOME/caseB-install/bin"
+rc=0
+env "${SANDBOX_ENV_ARGS[@]}" \
+    TEMPERLOOP_KERNEL_REPO="file://$FIXTURE_UPSTREAM" \
+    TEMPERLOOP_HOME="$CASEB_HOME" \
+    TEMPERLOOP_BIN_DIR="$CASEB_BIN" \
+    FOUNDATION_HOME= \
+    sh "$FIXTURE_UPSTREAM/bin/bootstrap.sh" >/dev/null 2>"$caseB_err" || rc=$?
+[ "$rc" -eq 0 ] \
+  || fail "1b/B: a set-but-EMPTY \$FOUNDATION_HOME carries no value to discard and must NOT hard-exit (bin/lib/common.sh's legacy_val check agrees) — rc=$rc, stderr: $(cat "$caseB_err")"
+grep -q 'FOUNDATION_HOME is no longer read' "$caseB_err" \
+  && fail "1b/B: an empty legacy var must not trigger the refusal (stderr: $(cat "$caseB_err"))"
+pass "1b/B: a set-but-empty \$FOUNDATION_HOME does not refuse (agrees with bin/temperloop's temperloop_env_compat)"
+
+# ===========================================================================
 # 2. New-env install: TEMPERLOOP_* wins — zero deprecation noise, and no
 #    `foundation` compat symlink on PATH any more. A legacy FOUNDATION_HOME
 #    is ALSO set here on purpose: precedence is unchanged (a set TEMPERLOOP_*

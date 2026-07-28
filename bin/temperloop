@@ -210,6 +210,7 @@ _foundation_check_report_offer() {
   local cmd="$1"
   local repo_root baseline_file first_record generated_at
   local now_epoch gen_epoch age_days dismiss_key dismiss_dir dismiss_file
+  local baseline_is_legacy=0 migrate_hint=""
 
   command -v jq >/dev/null 2>&1 || return 0
 
@@ -222,7 +223,10 @@ _foundation_check_report_offer() {
   # paths now refuse legibly, see init.sh / baseline-snapshot.sh), never
   # whether an un-migrated repo's existing history can still be looked at.
   baseline_file="$repo_root/.temperloop/baseline.jsonl"
-  [ -f "$baseline_file" ] || baseline_file="$repo_root/.foundation/baseline.jsonl"
+  if [ ! -f "$baseline_file" ]; then
+    baseline_file="$repo_root/.foundation/baseline.jsonl"
+    baseline_is_legacy=1
+  fi
   [ -f "$baseline_file" ] || return 0
 
   first_record="$(head -n1 "$baseline_file" 2>/dev/null)"
@@ -246,7 +250,16 @@ _foundation_check_report_offer() {
   dismiss_file="$dismiss_dir/$dismiss_key"
   [ -f "$dismiss_file" ] && return 0
 
-  echo "temperloop: your baseline snapshot is ${age_days} days old — run 'temperloop baseline-snapshot && temperloop report' to see your before/after value (won't ask again for this repo)." >&2
+  # This offer is ONE-SHOT (the dismiss marker below fires in the same call),
+  # so the action it names has to work the FIRST time. When the age probe read
+  # a legacy .foundation/baseline.jsonl, `baseline-snapshot` REFUSES on that
+  # exact file (bin/subcommands/baseline-snapshot.sh) — so naming the bare
+  # command would spend the single offer on a step that cannot succeed. Carry
+  # the migration inline instead, matching that refusal's own wording.
+  if [ "$baseline_is_legacy" -eq 1 ]; then
+    migrate_hint="first migrate the legacy dir (mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/), then "
+  fi
+  echo "temperloop: your baseline snapshot is ${age_days} days old — ${migrate_hint}run 'temperloop baseline-snapshot && temperloop report' to see your before/after value (won't ask again for this repo)." >&2
 
   mkdir -p "$dismiss_dir" 2>/dev/null && : > "$dismiss_file" 2>/dev/null
   return 0

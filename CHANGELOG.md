@@ -12,7 +12,7 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased]
+## [Unreleased] — BREAKING
 
 ### Added
 
@@ -281,10 +281,25 @@ reads that marker; a stranger greps for it before pulling.
   reversible call consistent with the script's fail-open posture, revisited
   at the v0.20.0 removal.
 
-### Removed
+### Removed — BREAKING
 
-- **The `foundation` → `temperloop` rename compatibility window is CLOSED
-  (temperloop#165, temperloop#764).** The read-old-write-new window opened in
+<!-- The `BREAKING` token appears TWICE for this release on purpose — on the
+     `## [Unreleased]` heading above AND on this `### Removed` sub-heading.
+     `changelog_breaking_sections()` (workflows/scripts/lib/changelog.sh) sets
+     its `brk` flag ONLY from a heading line: `$0 ~ /BREAKING/` on the
+     `## [x.y.z]` line, or `/^#+ .*BREAKING/` on a sub-heading. BODY TEXT
+     NEVER SETS IT. So the sub-heading marker is the belt-and-suspenders half:
+     it survives a release cut that rewrites `## [Unreleased]` into
+     `## [0.19.0] - <date>` without carrying the ` — BREAKING` suffix across.
+     Without at least one of these, `scripts/update-kernel.sh`'s acknowledgment
+     gate (its `migration=` computation) and `bin/subcommands/update.sh`'s
+     BREAKING warning both silently no-op, and a downstream overlay
+     subtree-updates straight through this break with no acknowledgment.
+     Keep BOTH markers when cutting v0.19.0. -->
+
+- **BREAKING — the `foundation` → `temperloop` rename compatibility window is
+  CLOSED (temperloop#165, temperloop#764).** The read-old-write-new window
+  opened in
   v0.15.0 with a stated v0.19.0 removal; this is that removal. Every legacy
   read is gone. **Nothing degrades silently** — each removed read was replaced
   by the legible refusal or diagnostic its window arm had already been
@@ -310,9 +325,15 @@ reads that marker; a stranger greps for it before pulling.
     as a tombstone: a pre-v0.19.0 install left a `~/.local/bin/foundation`
     symlink pointing at it, and deleting the file would turn that symlink into
     a dangling "no such file or directory" instead of a message. A fresh
-    `bootstrap.sh` install no longer creates the symlink at all; `temperloop
-    uninstall` still removes a stale one.
-    *Migration:* invoke `temperloop <sub>`.
+    `bootstrap.sh` install no longer creates the symlink at all. Disposing of
+    an existing stale one is **manual**: `temperloop uninstall` does *not*
+    remove it — it **prints the `rm -f` to run**, because the symlink is part
+    of the bootstrap footprint (scope (a) of `bin/README.md` § Uninstall),
+    written before any manifest existed, so uninstall has no record of it and
+    deliberately will not infer one.
+    *Migration:* invoke `temperloop <sub>`; to retire the old name on PATH,
+    run the `rm -f ~/.local/bin/foundation` that `temperloop uninstall`
+    prints.
   - **`init` no longer reads a legacy `.foundation/config`.** It **refuses**
     when one is present and no `.temperloop/config` exists, rather than
     restarting from a fresh install manifest on top of forgotten legacy state.

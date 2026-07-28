@@ -50,8 +50,10 @@
 # `temperloop eject` documents removal of anything ELSE the CLI wrote to a
 # target repo it was pointed at; this bootstrap's own footprint is exactly
 # those two paths, nothing more. (A pre-v0.19.0 install may also have a
-# stale $TEMPERLOOP_BIN_DIR/foundation shim symlink; `temperloop uninstall`
-# still removes it.)
+# stale $TEMPERLOOP_BIN_DIR/foundation shim symlink. `temperloop uninstall`
+# does NOT remove it — it PRINTS the manual `rm -f`: that symlink is part of
+# this bootstrap's own footprint, written before any manifest existed, so
+# uninstall has no record of it. See bin/subcommands/uninstall.sh scope (a).)
 #
 # NOTE for maintainers: the two default paths below are also stated in
 # kernel/bin/lib/common.sh (TEMPERLOOP_CLI_HOME_DEFAULT /
@@ -67,18 +69,35 @@ set -eu
 # DETECTED, because silently ignoring a var the caller deliberately set would
 # install to a different path than they asked for. Refuse legibly instead,
 # naming the replacement.
+#
+# SET-NESS vs NON-EMPTINESS — the guards below test `${VAR:-}` (non-empty),
+# NOT `${VAR+x}` (set), and that choice is load-bearing in BOTH directions.
+# It must mirror the RESOLUTION three lines down, which is `:-` based:
+#
+#   * NEW side (`[ -z "${TEMPERLOOP_HOME:-}" ]`). `TEMPERLOOP_HOME=` (set but
+#     empty) resolves to the built-in default, so an empty new-name value is
+#     NOT a value the caller asked for. A set-ness test would see "x", skip
+#     the refusal, and fall through to the default — SILENTLY DISCARDING a
+#     deliberately-set $FOUNDATION_HOME. That is verbatim the failure the
+#     comment above says this detection exists to prevent.
+#   * LEGACY side (`[ -n "${FOUNDATION_HOME:-}" ]`). `FOUNDATION_HOME=` (set
+#     but empty) carries no value to discard, so it must NOT hard-exit. This
+#     matches bin/lib/common.sh's temperloop_env_compat(), whose `legacy_val`
+#     check requires the legacy var be non-empty before refusing — so
+#     `bin/bootstrap.sh` and `bin/temperloop` agree on that input instead of
+#     one exiting 1 where the other returns 0.
 _tl_legacy_refuse() {
   # $1 = legacy var name (set in the caller's environment), $2 = new name
   echo "bootstrap: ERROR — \$$1 is no longer read: it was renamed \$$2 in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$2 and re-run." >&2
   exit 1
 }
-if [ -z "${TEMPERLOOP_KERNEL_REPO+x}" ] && [ -n "${FOUNDATION_KERNEL_REPO+x}" ]; then
+if [ -z "${TEMPERLOOP_KERNEL_REPO:-}" ] && [ -n "${FOUNDATION_KERNEL_REPO:-}" ]; then
   _tl_legacy_refuse FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO
 fi
-if [ -z "${TEMPERLOOP_HOME+x}" ] && [ -n "${FOUNDATION_HOME+x}" ]; then
+if [ -z "${TEMPERLOOP_HOME:-}" ] && [ -n "${FOUNDATION_HOME:-}" ]; then
   _tl_legacy_refuse FOUNDATION_HOME TEMPERLOOP_HOME
 fi
-if [ -z "${TEMPERLOOP_BIN_DIR+x}" ] && [ -n "${FOUNDATION_BIN_DIR+x}" ]; then
+if [ -z "${TEMPERLOOP_BIN_DIR:-}" ] && [ -n "${FOUNDATION_BIN_DIR:-}" ]; then
   _tl_legacy_refuse FOUNDATION_BIN_DIR TEMPERLOOP_BIN_DIR
 fi
 
@@ -158,8 +177,9 @@ echo "bootstrap: installed -> $TEMPERLOOP_BIN_DIR/temperloop (-> $TEMPERLOOP_HOM
 # No `foundation` compat symlink is installed any more (temperloop#165
 # window closed in v0.19.0): a fresh install puts exactly one name on PATH.
 # A PRE-v0.19.0 install's own stale `foundation` symlink is left alone here
-# — it now resolves to a shim that refuses legibly, and `temperloop
-# uninstall` removes it.
+# — it now resolves to a shim that refuses legibly. Removing it is MANUAL:
+# `temperloop uninstall` prints the `rm -f` rather than running it (scope (a),
+# the bootstrap footprint that predates uninstall's manifest).
 
 case ":$PATH:" in
   *":$TEMPERLOOP_BIN_DIR:"*)

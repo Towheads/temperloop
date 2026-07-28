@@ -41,15 +41,32 @@ printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$' \
 pass "VERSION file present and well-formed: $version"
 
 # ── Leg 2: `temperloop version` embeds the shipped VERSION (env unset) ───────
+#
+# HERMETICITY, not window scaffolding: the `-u FOUNDATION_*` clears below are
+# NOT leftovers from the temperloop#165 read-old window and must NOT be
+# dropped with it — closing the window made them MORE load-bearing, not less.
+# Pre-v0.19.0 a stale legacy export was silently adopted; now
+# temperloop_env_compat() (bin/lib/common.sh) REFUSES on one, and the
+# dispatcher exits 1 before ever reaching `version`. So a contributor still
+# carrying a stale `FOUNDATION_VERSION` (or FOUNDATION_HOME / _BIN_DIR) in
+# their shell — precisely this release's target cohort — would get a red
+# `checks` pointing nowhere near the cause. Clear the whole refusal family so
+# this leg tests the VERSION file, never the caller's environment.
 [ -x "$TL_BIN" ] || fail "bin/temperloop not executable at $TL_BIN"
-out="$(env -u TEMPERLOOP_VERSION "$TL_BIN" version 2>/dev/null)" \
+out="$(env -u TEMPERLOOP_VERSION -u FOUNDATION_VERSION -u FOUNDATION_HOME \
+           -u FOUNDATION_BIN_DIR "$TL_BIN" version 2>/dev/null)" \
   || fail "temperloop version exited non-zero"
 [ "$out" = "temperloop $version" ] \
   || fail "temperloop version printed '$out', expected 'temperloop $version' — version not embedded from the shipped VERSION file"
 pass "temperloop version reports the embedded VERSION, not 'dev'"
 
 # ── Leg 3: an explicit env override still wins ──────────────────────────────
-out_override="$(env TEMPERLOOP_VERSION=9.9.9-test "$TL_BIN" version 2>/dev/null)" \
+# Same hermeticity clears as leg 2. A set TEMPERLOOP_VERSION shadows a stale
+# FOUNDATION_VERSION, but FOUNDATION_HOME / FOUNDATION_BIN_DIR have no
+# new-name value set here, so either one would still refuse at the dispatcher
+# and redden this leg for a reason unrelated to what it asserts.
+out_override="$(env -u FOUNDATION_VERSION -u FOUNDATION_HOME -u FOUNDATION_BIN_DIR \
+                    TEMPERLOOP_VERSION=9.9.9-test "$TL_BIN" version 2>/dev/null)" \
   || fail "temperloop version (with override) exited non-zero"
 [ "$out_override" = "temperloop 9.9.9-test" ] \
   || fail "TEMPERLOOP_VERSION override printed '$out_override', expected 'temperloop 9.9.9-test' — env no longer wins"

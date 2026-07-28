@@ -14,8 +14,16 @@
 # here, and `temperloop update` moves the checkout underneath that symlink
 # — deleting this file would turn it into a dangling "no such file or
 # directory", an opaque failure at exactly the moment the operator needs to
-# be told the name changed. `temperloop uninstall` removes the stale
-# symlink; a fresh install never creates one (bin/bootstrap.sh).
+# be told the name changed. A fresh install never creates one
+# (bin/bootstrap.sh).
+#
+# Disposing of a stale symlink is MANUAL: `temperloop uninstall` does NOT
+# remove it — it PRINTS the `rm -f` to run. The symlink belongs to the
+# bootstrap footprint (scope (a) of bin/README.md § Uninstall), written by
+# bin/bootstrap.sh BEFORE any manifest existed, so uninstall's manifest has
+# no record of it and deliberately will not infer one. See
+# bin/subcommands/uninstall.sh's header and its
+# print_bootstrap_footprint_bullet.
 set -uo pipefail
 
 echo "foundation: this compat shim was removed in v0.19.0 — the CLI was renamed 'temperloop' in v0.15.0. Invoke 'temperloop' instead." >&2

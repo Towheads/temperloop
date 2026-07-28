@@ -154,9 +154,19 @@ if [ "$do_refresh" -eq 1 ]; then
   echo
 fi
 
-# temperloop#165 rename window: .temperloop/ preferred, an existing legacy
-# .foundation/baseline.jsonl read as fallback (removed in v0.19.0 — see
-# baseline-snapshot.sh's continue-in-place note).
+# temperloop#165 rename dir: .temperloop/ preferred, an existing legacy
+# .foundation/baseline.jsonl read as fallback.
+#
+# THIS READ DELIBERATELY SURVIVES THE v0.19.0 WINDOW CLOSE — do NOT delete it
+# as window leftover. The window governed which dir the CLI RESOLVES CONFIG
+# FROM AND WRITES TO, and those paths now refuse legibly (`init`,
+# `baseline-snapshot`). `report` is read-only and reports on history it did
+# not create, so refusing here would blind an un-migrated repo to its own
+# past for no safety gain — the same reasoning that keeps `eject`/`uninstall`
+# cleaning legacy residue. Migrating is still the right move
+# (`mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/`).
+# Canonical statement: kernel/workflows/scripts/lib/report.contract.md
+# § Overlay drop-in contract.
 baseline_file="$repo_root/.temperloop/baseline.jsonl"
 [ -f "$baseline_file" ] || baseline_file="$repo_root/.foundation/baseline.jsonl"
 if [ ! -f "$baseline_file" ]; then
@@ -289,10 +299,18 @@ echo
 # Overlay tier -- the drop-in seam (.temperloop/report.d/). See this file's
 # header comment + kernel/workflows/scripts/lib/report.contract.md's
 # "Overlay drop-in contract" section for the full rule.
-# temperloop#165 rename window: .temperloop/report.d/ preferred; an existing
+# temperloop#165 rename dir: .temperloop/report.d/ preferred; an existing
 # legacy .foundation/report.d/ (a TRACKED dir in adopter repos) is used as
-# fallback when the new one is absent (removed in v0.19.0 -- git mv the
-# dir). Never unioned: one dir wins, so a producer is never run twice.
+# fallback when the new one is absent. Never unioned: one dir wins, so a
+# producer is never run twice.
+#
+# THIS READ DELIBERATELY SURVIVES THE v0.19.0 WINDOW CLOSE — do NOT delete it
+# as window leftover. Same reasoning as the baseline read above: `report` is
+# read-only and reports on drop-ins it did not create, so refusing here would
+# blind an un-migrated repo to its own producers for no safety gain.
+# Migrating is still the right move (`git mv .foundation/report.d
+# .temperloop/report.d` -- the dir is tracked). Canonical statement:
+# kernel/workflows/scripts/lib/report.contract.md § Overlay drop-in contract.
 # ---------------------------------------------------------------------------
 echo "-- Overlay-tier: repo drop-ins (.temperloop/report.d/) --"
 report_d="$repo_root/.temperloop/report.d"
