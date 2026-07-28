@@ -65,6 +65,32 @@ reads that marker; a stranger greps for it before pulling.
   item measures the surface as it actually behaves, leak included; #825
   removes these rows once the leak itself is fixed, not this item.
 
+- **Realized-session-context probe (temperloop#828, epic #810).** A new
+  opt-in (default OFF) `session-context` raw-lake stream, emitted by
+  `workflows/scripts/emit-session-context.sh` from the SessionEnd hook seam
+  (`claude/hooks/session-end-log.sh`), records the WHOLE session's realized
+  token usage — not only the session-start prefix a prior scope measured —
+  so a prose relocation's real value becomes measurable rather than
+  assumed. The token-sum expression `claude/status-line.sh`'s "Tokens: NNk"
+  display already computed is lifted verbatim into a new shared helper,
+  `workflows/scripts/lib/token_sum.sh`, so the displayed and recorded
+  figures cannot drift apart; its only jq selector is `.message.usage.*`
+  (never message content), a structural privacy guarantee proven by a
+  synthetic-recognizable-content fixture rather than merely asserted. The
+  emit script also supports a one-off `--print-only` reading, independent of
+  the passive opt-in gate, for a caller that needs a single on-demand
+  measurement. New setting-registry.tsv rows: `SESSION_CONTEXT_RAW_ENABLED`
+  (bool, default `0`) and `SESSION_CONTEXT_RAW_DIR` (the stream's sink-dir
+  override, following the existing `<STREAM>_RAW_DIR` convention). **Not
+  breaking**: the SessionEnd hook's stdin contract and output stub are
+  unchanged, `status-line.sh`'s displayed figure is byte-identical to
+  before under a normal full-tree sync (same expression, now shared —
+  `status-line.sh` degrades to displaying `0` only under a hypothetical
+  partial vendoring that ships it without `workflows/scripts/lib/`, which
+  the kernel manifest already treats as one unit), and both new settings
+  default to off/inert for an adopter who never opts in — Phase A is measurement only,
+  with no cap, target, or CI gate on the recorded figure itself.
+
 ### Changed
 
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →
