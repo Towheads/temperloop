@@ -97,7 +97,12 @@ A few things this diagram compresses that are worth naming explicitly:
   automatically once its issue closes (via the PR's `Closes #N`); an epic
   closes itself once its last open sub-issue closes. Neither is a step a
   command performs by hand — both are consequences of the issue graph
-  reaching a terminal state.
+  reaching a terminal state. The cascade is a **Projects-v2 built-in**,
+  though: on the issues-only backend there is no such automation and nowhere
+  to hook one, so the adapter's own Done write (which strips the residual
+  `fnd:status:*` label and `fnd:host/session:*` claim stamp) is the primary
+  mechanism there, with `reconcile.sh` sweeping the closes that bypassed it —
+  see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade.
 
 ## 2. Actor and guard map
 

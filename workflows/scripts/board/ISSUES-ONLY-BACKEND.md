@@ -348,12 +348,42 @@ automation to move the linked project *item*'s Status to Done, which
 `_board_cache_bust`/the 90s items-cache TTL eventually observes (foundation
 #589's accepted residual staleness gap).
 
-On an issues-only board there is no such automation, and **none is needed**:
-"Done" is not a separate field that has to be kept in sync with "closed" — it
-IS closed, by construction (`issue_item`'s jq reshape reports
-`status: "Done"` for any closed issue regardless of labels; `board_set_status
-… Done` closes the issue directly, no automation round-trip). Concretely,
-what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
+On an issues-only board there is **no such automation, and nowhere to hook
+one**. There is no project *item* for a board automation to move, and GitHub
+exposes no native "on issue close, strip a label" rule for a plain Issues repo
+— the GH #340 cascade has exactly one implementation, the Projects-v2 built-in,
+and [ADR 0004](../../../docs/adr/0004-issues-only-default-backend.md) retires
+the arm it lives on. **On this backend the cascade is not a mechanism that can
+be relied on, because it does not exist** (temperloop#902: 9 of 9 closures
+across two runs left `fnd:status:backlog` standing on the closed issue — which
+is precisely what "no cascade" looks like from the outside).
+
+What stands in for it is the adapter's own Done write, and the substitution is
+only partial, because the two halves of "Done" come apart here:
+
+- **The READ half needs no cascade.** "Done" is not a separate field that has
+  to be kept in sync with "closed" — it IS closed, by construction
+  (`issue_item`'s jq reshape reports `status: "Done"` for any closed issue
+  regardless of labels). *Any* close, by *any* route, makes the item read Done
+  immediately, with no automation round-trip.
+- **The LABEL half has no automation at all.** Done on this backend is defined
+  as *closed with **no** `fnd:status:*` label* (§ Status vocabulary above).
+  Only `board_set_status <item> Done` strips that label — and the
+  `fnd:host/session:*` claim stamp with it (`_board_issues_set_field`'s Done
+  arm). A close that **bypasses the adapter** — a merged PR's native
+  `Closes #N`, a hand `gh issue close`, a web-UI close — closes the issue and
+  leaves both labels standing.
+
+**So on this backend `board_set_status … Done` is the PRIMARY mechanism, not a
+redundant backstop** — the exact inverse of the Projects-v2 posture, and
+`claude/CLAUDE.kernel.md` § Board hygiene is part of the gate now states that
+split rather than the Projects-v2 case alone. A caller that closes an item by
+any other route owes it the adapter Done write; `reconcile.sh` is the sweep for
+the closes that skip it (classes **(h)**/**(k)** for the status label,
+**(j)**/**(l)** for the claim stamp — below).
+
+Concretely, what the GH #340 cascade does on Projects-v2 that this backend does
+not need **for the read**:
 
 - **No async lag for a WRITE made through this adapter.** A Projects-v2
   close→Done is eventually-consistent (the automation fires, then the cache
@@ -386,8 +416,8 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
 
 ### What close DOES have to clear: the claim stamp (temperloop#744)
 
-The "no cascade needed" claim above holds for **Status** — but not for the
-**claim lock**. `fnd:host/session:<host>:<sess8>` is a real piece of state that
+The read-half argument above ("any close makes the item read Done") holds for
+**Status** — but not for the **claim lock**. `fnd:host/session:<host>:<sess8>` is a real piece of state that
 outlives the close: unlike `fnd:status:*`, no reader shadows it with a
 closed-state precedence rule, so a stamp left on a closed issue is a
 cross-session lock that can never be released. `issue-state.sh resolve` derives
