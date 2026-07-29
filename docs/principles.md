@@ -160,16 +160,23 @@ anticipate.
 ### 8. Subtraction over mechanism
 
 The default instinct is to fit the existing mechanism, or remove a
-redundant one, before adding a new one. A card's board status is driven by
-the same GitHub close-cascade that already fires on merge, rather than a
-second write nothing else needs; a merge queue prefers GitHub's own native
-queue and only falls back to hand-rolled mechanics on a repo tier where the
-native feature isn't provisionable at all.
+redundant one, before adding a new one. On a Projects-v2 board a card's
+status is driven by the same GitHub close-cascade that already fires on
+merge, rather than a second write nothing else needs; a merge queue prefers
+GitHub's own native queue and only falls back to hand-rolled mechanics on a
+repo tier where the native feature isn't provisionable at all.
+
+The principle also says when *not* to subtract: where no existing mechanism
+covers the job, the write is not redundant. The issues-only backend has no
+close-cascade and nowhere to hook one, so there the adapter's Done write is
+the primary mechanism rather than a removable second write — and the rule
+below is stated per backend rather than as a blanket "rely on the cascade".
 
 - The redundant-step rule, in prose: `claude/CLAUDE.kernel.md` §§ "Trust
-  confirmed state" and "Board hygiene is part of the gate" ("a manual
-  `board_set_status … Done` is a redundant backstop, not the primary
-  mechanism")
+  confirmed state" and "Board hygiene is part of the gate" (Projects-v2: "a
+  manual `board_set_status … Done` is a redundant backstop, not the primary
+  mechanism"; issues-only: the inverse — see
+  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade)
 - The fallback-only-when-native-is-absent seam: `docs/managed-merge-queue.md`,
   `workflows/scripts/build/gate.sh`
 

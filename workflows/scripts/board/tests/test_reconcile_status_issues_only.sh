@@ -283,5 +283,67 @@ run_status
   || fail "case4b: exactly ONE issue-state read per run — the tail scan must not add a second\n$(cat "$STATE_READ_JSON")"
 echo "PASS: case 4b the tail scan rides the existing issue-state read (zero extra gh calls)"
 
+# =========================================================================
+# Case 5: the temperloop#902 shape — a closed issue wearing ONLY a residual
+# `fnd:status:*` label and NO claim stamp.
+#
+# Why this is not already covered: case 1 flags an issue carrying BOTH labels
+# and case 3 flags a stamp-ONLY issue, so nothing yet proves class (k) fires
+# INDEPENDENTLY of class (l). That is exactly the #902 population — the board-7
+# closes there ran through /triage culls and merged PRs' bare `Closes #N`, which
+# strand `fnd:status:backlog` while leaving no host/session stamp behind (9 of 9
+# closures across two runs; the evidence block names #802/#809/#864/#821). If the
+# residual-status class were reachable only via a co-present stamp, every one of
+# those would still read "In sync".
+#
+# Also pins the exact observed label value: `fnd:status:backlog`, not the
+# `fnd:status:in-progress` the other cases use — Done on this backend is "closed
+# with NO fnd:status:* label" (ISSUES-ONLY-BACKEND.md § Close→Done cascade), so
+# EVERY status value is drift on a closed issue, not just the in-progress one.
+# And it asserts --status (class k) and --labels (class h) name the same issues
+# from the same read, the status-label twin of case 3's stamp-side agreement.
+# =========================================================================
+PROJECT_NUMBER=7
+BACKLOG_LABEL="fnd:status:backlog"
+ALL_ISSUES_JSON='[
+  {"number":10,"state":"OPEN","updatedAt":"2026-06-06T00:00:00Z","title":"Live ready item","labels":[{"name":"fnd:status:ready"}]},
+  {"number":802,"state":"CLOSED","updatedAt":"2026-06-06T00:00:00Z","title":"Culled by triage","labels":[{"name":"Operational"},{"name":"'"$BACKLOG_LABEL"'"}]},
+  {"number":809,"state":"CLOSED","updatedAt":"2026-06-06T00:00:00Z","title":"Collapse-absorbed","labels":[{"name":"bug"},{"name":"Operational"},{"name":"'"$BACKLOG_LABEL"'"}]},
+  {"number":864,"state":"CLOSED","updatedAt":"2026-06-06T00:00:00Z","title":"Collapse-absorbed","labels":[{"name":"Operational"},{"name":"'"$BACKLOG_LABEL"'"}]},
+  {"number":821,"state":"CLOSED","updatedAt":"2026-06-06T00:00:00Z","title":"Collapse-absorbed","labels":[{"name":"bug"},{"name":"'"$BACKLOG_LABEL"'"}]}
+]'
+PR_LIST_JSON='[]'
+LABEL_LIST_JSON='[{"name":"'"$BACKLOG_LABEL"'"},{"name":"bug"},{"name":"Operational"}]'
+OPEN_ATTACHED_LABELS=""
+FIX=1   # class (k) stays report-only even under --fix (repair lives in --labels --apply)
+run_status
+FIX=0
+
+printf '%s' "$OUT" | grep -q "In sync" \
+  && fail "case5: a closed issue wearing only a residual status label must NOT report 'In sync'\n$OUT"
+printf '%s' "$OUT" | grep -q "residual status labels on closed issues" \
+  || fail "case5: expected the residual-status section with no claim stamp present\n$OUT"
+for n in 802 809 864 821; do
+  printf '%s' "$OUT" | grep -qF "#$n — CLOSED but still labeled '$BACKLOG_LABEL'" \
+    || fail "case5: #$n's residual '$BACKLOG_LABEL' should be named exactly\n$OUT"
+done
+printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+  && fail "case5: no fnd:host/session:* stamp exists here — class (k) must fire without class (l)\n$OUT"
+printf '%s' "$OUT" | grep -q "#10" \
+  && fail "case5: the live open Ready item must not be flagged\n$OUT"
+[ ! -s "$WRITES" ] \
+  || fail "case5: --status --fix must write NOTHING for class (k)\n$(cat "$WRITES")"
+
+# Cross-lens agreement: --labels class (h) must name the same four issues.
+LABELS_APPLY=0; LABELS_UNATTENDED=0
+run_labels
+printf '%s' "$OUT" | grep -q "stale status labels on closed issues" \
+  || fail "case5: --labels (class h) must flag the same residual status labels\n$OUT"
+for n in 802 809 864 821; do
+  printf '%s' "$OUT" | grep -qF "#$n — $BACKLOG_LABEL" \
+    || fail "case5: --labels should name #$n's residual '$BACKLOG_LABEL'\n$OUT"
+done
+echo "PASS: case 5 a closed issue wearing ONLY fnd:status:backlog is drift on both lenses (temperloop#902)"
+
 echo
 echo "ALL PASS: reconcile --status closed-issue tail (issues-only backend)"

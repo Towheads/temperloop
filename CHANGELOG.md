@@ -171,6 +171,31 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **The close→Done cascade is stated per backend; on issues-only the adapter's
+  Done write is the PRIMARY mechanism, not a backstop (temperloop#902).** The
+  cascade (GH #340) is a GitHub **Projects-v2 built-in** — it has no
+  implementation in this repo, and on the issues-only backend (the default,
+  ADR 0004) there is no such automation and nowhere to hook one: no project
+  item for an automation to move, and no native GitHub "on issue close, strip
+  a label" rule for a plain Issues repo. A close therefore makes the item
+  *read* Done (the reshape's closed-state precedence) while leaving the
+  residual `fnd:status:*` label — and the `fnd:host/session:*` claim stamp —
+  standing, which is what left 9 of 9 board-7 closures across two runs still
+  labelled `fnd:status:backlog`. Rather than wire a cascade with no hook
+  point, the contract is corrected where it was inverted:
+  `claude/CLAUDE.kernel.md` § Board hygiene is part of the gate,
+  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade,
+  `docs/principles.md` § 8, and `docs/architecture.md` now state the split
+  explicitly, and `/build` 4d + `/fix` Step 6 item 3 make the
+  `board_set_status … Done` write **backend-conditional** (`board_backend`):
+  omitted on Projects-v2 exactly as before, issued on issues-only after a
+  **confirmed `MERGED`** (REST, no GraphQL budget, warn-and-continue on a
+  non-zero return, and still gated on confirmed-merged so the #130
+  premature-Done surface stays closed). Detection is unchanged and already
+  shipped — `reconcile.sh --status` classes (k)/(l) and `--labels` classes
+  (h)/(j) — and now carries a regression case for the exact reported shape: a
+  closed issue wearing ONLY `fnd:status:backlog` and no claim stamp, flagged
+  by both lenses.
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →
   hand off (temperloop#796).** `init` no longer applies any API state of its
   own. It bootstraps `.temperloop/config` (and its reviewable proposal PR),
