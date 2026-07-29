@@ -12,7 +12,160 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased] — BREAKING
+## [Unreleased]
+
+_Nothing yet._
+
+## [0.19.0] - 2026-07-29 — BREAKING
+
+### Migration — read this first
+
+This release **closes both open compatibility windows at once** — the
+`foundation` → `temperloop` rename window (opened v0.15.0, temperloop#165 /
+temperloop#764) and the v0.17.0 terminology-consolidation window (opened
+v0.17.0, epic temperloop#719 / temperloop#767). Both stated a v0.19.0 removal;
+this is that removal. One adopter migration, not two.
+
+**Who has to act.** Anyone whose machine, overlay, or scripts still name a
+pre-rename identifier. If you installed or configured this kernel at v0.14.x or
+earlier you almost certainly do. **The `boards.conf` item below has been
+observed silently breaking a live host — do that one even if you believe you
+are already migrated.**
+
+The two lists below are **derived, one line per entry**, from the two
+machine-readable window tables this release deletes:
+`workflows/scripts/kernel/prerename-leak-verdicts.tsv`'s eight `windowed` rows
+(plus the two legacy FORMS that file's own header records as always-sanctioned
+by pattern rather than enumerated as rows), and
+`workflows/scripts/kernel/terminology-leak-exempt-files.txt`'s thirteen-file
+`window` class. Nothing here is hand-picked: if an entry was in a table, it has
+a line.
+
+#### A. `foundation` → `temperloop` names — 10 entries
+
+Derived from `prerename-leak-verdicts.tsv`, verdict `windowed`. Every one of
+these was a **read-old** fallback; each has been replaced by a legible refusal
+or a named diagnostic, so nothing in this group degrades silently — **except
+A7**, which has its own call-out below.
+
+| # | Deleted window entry | What to do |
+|---|---|---|
+| A1 | env `FOUNDATION_HOME` | Rename the export to `TEMPERLOOP_HOME`. Setting only the legacy name now **exits non-zero** naming the replacement. |
+| A2 | env `FOUNDATION_BIN_DIR` | Rename the export to `TEMPERLOOP_BIN_DIR`. Same refusal. |
+| A3 | env `FOUNDATION_KERNEL_REPO` | Rename the export to `TEMPERLOOP_KERNEL_REPO`. Same refusal. |
+| A4 | env `FOUNDATION_VERSION` | Rename the export to `TEMPERLOOP_VERSION`. Same refusal. |
+| A5 | `bin/lib/common.sh`'s internal install-path *home* constant (legacy-prefixed spelling) | Now `TEMPERLOOP_CLI_HOME_DEFAULT`. Nothing to do unless you patch or source `bin/lib/common.sh` and reference the constant by name — then rename your reference. |
+| A6 | `bin/lib/common.sh`'s internal install-path *bin* constant (legacy-prefixed spelling) | Now `TEMPERLOOP_CLI_BIN_DEFAULT`. Same. |
+| A7 | machine conf leaf `boards.conf` — the legacy `~/.config/foundation/boards.conf` read | `mkdir -p ~/.config/temperloop && mv ~/.config/foundation/boards.conf ~/.config/temperloop/` — **read the call-out below before skipping this.** |
+| A8 | knowledge-store root leaf `knowledge` — the legacy `~/.local/share/foundation/knowledge` store | `mkdir -p ~/.local/share/temperloop && mv ~/.local/share/foundation/knowledge ~/.local/share/temperloop/`, or point `KNOWLEDGE_STORE_ROOT` at the existing store. `knowledge_store.sh` **names** a stranded legacy store on stderr instead of reporting "no notes found" against an empty new root. |
+| A9 | the committed per-repo `.foundation/` dir (`.foundation/config`, `.foundation/baseline.jsonl`, …) — sanctioned by pattern in the verdict table's header, never a row | Run `git mv .foundation .temperloop` in each repo. `temperloop init` **refuses** while a legacy `.foundation/config` is present and no `.temperloop/config` exists; `baseline-snapshot` **refuses** while a legacy `.foundation/baseline.jsonl` exists, rather than splitting one append-only history across two directories. |
+| A10 | `bin/foundation`, the CLI compat shim — sanctioned by pattern in the verdict table's header, never a row | Invoke `temperloop <sub>`. **Forwarding is removed; the file is retained as a refusing tombstone** (see below), so the old name still *answers* — it just refuses and names the replacement. To retire the old name from your `PATH`, run `rm -f ~/.local/bin/foundation` **yourself**. |
+
+**A10, precisely: `bin/foundation` is NOT deleted.** Its forwarding is removed
+and the file is retained as a **refusing tombstone**. A pre-v0.19.0 install left
+a `~/.local/bin/foundation` symlink pointing at that file, and `temperloop
+update` moves the checkout underneath that symlink — so deleting the file would
+turn the symlink into a dangling "no such file or directory" at exactly the
+moment the operator needs to be *told* the name changed. A fresh `bootstrap.sh`
+install no longer creates the symlink at all.
+
+**Removing the stale symlink is MANUAL.** `temperloop uninstall` **prints** the
+`rm -f ~/.local/bin/foundation` for you to run; it cannot remove it itself. The
+symlink belongs to the bootstrap footprint (scope (a) of `bin/README.md`
+§ Uninstall), written before any install manifest existed, so uninstall has no
+record of it and deliberately will not infer one (`uninstall.sh:22-31`). Run the
+`rm -f` by hand.
+
+#### A7 in full — the machine `boards.conf`. Do this one first.
+
+This is the **one migration in this release that fails silently**, and it has
+already bitten a live host.
+
+- **Exact old path (no longer read):** `~/.config/foundation/boards.conf`
+  (`$XDG_CONFIG_HOME/foundation/boards.conf`)
+- **Exact new path (the only one read):** `~/.config/temperloop/boards.conf`
+  (`$XDG_CONFIG_HOME/temperloop/boards.conf`)
+- **Fix:**
+  `mkdir -p ~/.config/temperloop && mv ~/.config/foundation/boards.conf ~/.config/temperloop/`
+
+**The failure is SILENT — no error, no log line, no non-zero exit.** Every
+`--board N` simply resolves against the built-in maps instead of your conf, so
+the boards quietly come up on the **wrong backend**. Nothing tells you. Measured
+on the driver host during this very release cut (temperloop#908): that legacy
+file was the *only* record of a four-board backend cutover
+(`board.{3,4,5,6}.backend=issues`, temperloop#470–473), and a v0.19.0-era
+checkout beside a v0.18.0 one read boards 3/4/5/6 as `projects` where the older
+checkout read `issues` — a **silently reverted** cutover that would have put
+every fleet board read and write back onto the Projects-v2 GraphQL path and back
+into contention for the shared 5,000-pt/hr budget. It was found by hand, not by
+any gate.
+
+Do not rely on `board.sh`'s stderr `NOTE` to catch this for you. That note fires
+only in the narrow case where **no** `~/.config/temperloop/boards.conf` exists at
+all — a partially-migrated host with both files gets nothing — and library
+stderr is routinely swallowed by the sourcing caller and by unattended runs.
+
+#### B. v0.17.0 terminology names — 13 entries
+
+Derived from `terminology-leak-exempt-files.txt`'s deleted `window` class, one
+line per file. Unlike group A these arms **fail open by construction** — a
+forwarding stub is invoked *by path* and the env shim was sourced under
+`[ -f ]` — so there is no refusal to leave behind: a caller still on a legacy
+name now gets "no such file or directory" from its own shell, or simply no
+binding at all. The v0.17.0 `BREAKING` entry carries the full rename map.
+
+| # | Deleted window file | What to do |
+|---|---|---|
+| B1 | `workflows/scripts/lib/rename-compat-0170.sh` (the env shim, plus **both** of its `[ -f ]`-guarded source blocks in `build.config.sh` and `setting-registry-lib.sh`) | Rename every variable you set: `FUNNEL_<NAME>` → `PIPELINE_<NAME>`, `KNOB_<NAME>` → `SETTING_<NAME>`. A pre-rename name now binds nothing and prints nothing — including one set from a layer-3 machine conf or a layer-4 repo-local conf. |
+| B2 | `workflows/scripts/build/funnel-cron.sh` | Invoke `workflows/scripts/build/pipeline-cron.sh`. **Also repoint any installed launchd plist / cron entry** — the *installed* copy is what runs, not the repo file. |
+| B3 | `workflows/scripts/build/funnel-drive.sh` | Invoke `workflows/scripts/build/pipeline-drive.sh`. |
+| B4 | `workflows/scripts/build/funnel-tick.sh` | Invoke `workflows/scripts/build/pipeline-tick.sh`. |
+| B5 | `workflows/scripts/build/funnel-overlap.sh` | Invoke `workflows/scripts/build/pipeline-overlap.sh`. |
+| B6 | `workflows/scripts/build/funnel-schedule-gate.sh` | Invoke `workflows/scripts/build/pipeline-schedule-gate.sh`. |
+| B7 | `workflows/scripts/build/build-config-knobs.sh` | Invoke `workflows/scripts/build/build-config-settings.sh`. |
+| B8 | `workflows/scripts/config/check-knob-registry.sh` | Invoke `workflows/scripts/config/check-setting-registry.sh`. Update any overlay gate list naming the old path. |
+| B9 | `workflows/scripts/config/check-knob-prose.sh` | Invoke `workflows/scripts/config/check-setting-prose.sh`. Update any overlay gate list naming the old path. |
+| B10 | `workflows/scripts/config/knob-registry-lib.sh` (the source-forwarder, which also re-exposed the `knob_registry_*` function names) | Source `workflows/scripts/config/setting-registry-lib.sh` and call the `setting_registry_*` names. |
+| B11 | `workflows/scripts/validate-live-drain.sh` | Invoke `workflows/scripts/validate-capture-backstop.sh` (or `make validate-capture-backstop`). |
+| B12 | `workflows/scripts/validate-capture-backstop.sh`'s legacy **registry-filename** resolution and table spellings | Rename the overlay registry file `claude/live-drain-registry.overlay.md` → `claude/capture-backstop-registry.overlay.md`, its heading `## Live/Drain pairings` → `## Capture/Backstop pairings`, and its table's first column header `Live rule` → `Capture rule`. **This is the one arm in group B that degrades quietly:** an overlay still shipping the old filename now reads as "no overlay extension present", so its pairs are simply **not validated** and the gate stays green. |
+| B13 | `workflows/scripts/tests/test_terminology_rename_compat.sh` | Nothing to do. The file is not deleted — it is inverted in place from a read-old-write-new proof into a window-**stays-shut** regression test. |
+
+#### Contract surfaces this release touches
+
+Five of the surfaces `VERSIONING.md` § The contract surface enumerates change
+here. **Hook names and signatures are untouched** — the hook changes in this
+release are behavior-only, inside the same I/O contract.
+
+1. **CLI surface** — `bin/foundation`'s forwarding is removed and the file is
+   retained as a refusing tombstone (A10); the four legacy `FOUNDATION_*` env
+   vars now make `bin/temperloop` refuse rather than silently install at a path
+   you did not ask for (A1–A4); `init` and `baseline-snapshot` refuse on legacy
+   `.foundation/` state (A9).
+2. **Board adapter interface** — the machine-level `boards.conf` layer reads one
+   path only (A7). No `board_*` function name, argument, or `--board N` value
+   changes; only where the layer-3 conf is read from.
+3. **Setting registry** — **four rows are removed** (the four DEPRECATED
+   legacy-prefixed env rows superseded by their `TEMPERLOOP_*` twins in
+   v0.15.0), and the four surviving twins' `default` fields no longer transcribe
+   a `${…:-…}` fallback to the legacy name. Row removal is now classified
+   explicitly in `VERSIONING.md`'s setting-registry paragraph — it is
+   **breaking**. No column changes, so the row *shape* readers parse is
+   unchanged.
+4. **Published schemas/contracts** — the capture/backstop overlay registry's
+   filename, heading, and column header are now single-spelled (B12);
+   `knowledge_store.contract.md`'s default store root no longer has a legacy
+   fallback (A8); `docs/config-precedence.md` records the single `boards.conf`
+   machine path.
+5. **Quality-gate contract** — `KERNEL_GATES` **shrinks by 2**: the two gate
+   entries that were still invocable at their pre-rename script paths
+   (`check-knob-registry.sh`, `check-knob-prose.sh`) now exist only under their
+   renamed spellings (B8, B9), so an overlay gate list naming either old path
+   fails with "no such file or directory". Alongside them,
+   `make validate-capture-backstop`'s script no longer answers to
+   `validate-live-drain.sh` (B11), and the terminology-leak gate's exempt list
+   drops two whole classes (`window`, `registry`) — so `make
+   test-kernel-terminology` now guards surfaces the window used to be allowed to
+   carry.
 
 ### Added
 
@@ -169,6 +322,36 @@ reads that marker; a stranger greps for it before pulling.
   required registry/manifest inputs are entirely absent, which never
   happens on a normal checkout.
 
+- **`env-reconcile` reports a consumer carrying an out-of-date vendored guard
+  (foundation#1353). Additive.** `workflows/scripts/build/env-reconcile.sh`
+  gains a `STALE_VENDORED_HOOK:<hook>` drift class on its operator/consumer
+  checkout role: a consumer repo whose vendored
+  `.claude/hooks/build-worktree-guard.sh` differs from this kernel's canonical
+  `claude/hooks/build-worktree-guard.sh` is now **reported**, with the exact
+  command that re-syncs it. This closes a real blind spot rather than a
+  hypothetical one — when the kernel's write-jail grew its Bash arm, the three
+  consumers kept the pre-Bash-arm copy and *nothing* said so, which is how a
+  worker's `rm -rf "$(dirname "$(pwd)")"` reached outside its worktree
+  (foundation#932). Design choices that keep it from going stale itself: it
+  compares **content**, not a version stamp, so it needs no kernel-side
+  coordination; the sync's provenance banner lines are excluded from the
+  comparison (counting them would mark every correctly-synced consumer
+  permanently drifted); and the remedy string is read from the vendored copy's
+  own banner, which already names the target that produced it, so there is no
+  repo→target mapping table to drift. Emitted in **both** probe formats, so
+  `/tidy` routes it to the environment-hygiene report for `/check-in` like any
+  other cross-lane drift. Deliberately **not** a `make doctor` check: doctor's
+  pinned contract is "non-zero → run `make install` to heal", and a stale hook
+  in a *foreign* checkout is not healable by `make install`, so a class there
+  would pin doctor non-zero forever and bury its real MISSING/DANGLING signal.
+  Read-only and fail-open — an absent or unreadable checkout, a consumer that
+  vendors no copy, or an unresolvable canonical reference is skipped silently,
+  never an error. Detection half only; auto-sync on kernel merge
+  (foundation#694) remains the durable fix and is referenced, not duplicated.
+  Both new seams are registered in `setting-registry.tsv`
+  (`ENV_RECONCILE_CANONICAL_HOOK_DIR`, `ENV_RECONCILE_VENDORED_HOOKS`) — new
+  rows only, so nothing existing changes shape.
+
 ### Changed
 
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →
@@ -245,6 +428,62 @@ reads that marker; a stranger greps for it before pulling.
   test), since it is the marker the tier-2 workflow greps on a runner that
   has no `~/.claude/`.
 
+- **The build-worktree write-jail now contains output redirects, not just
+  destructive verbs (foundation#1355).** An output redirect is a write the
+  *shell* performs before the verb ever runs — `> <path>` truncates that file
+  whatever command follows — so the Bash arm's verb-only inspection left a
+  whole write vector uninspected beside the inspected delete vector. Redirect
+  targets (`>`, `>>`, `2>`, `2>>`, `&>`, `>|`, and the word-glued spellings) are
+  now judged on the same terms as a destructive verb's path operand: a
+  non-literal target is unprovable and denied, a target resolving outside the
+  worktree root is an escape and denied, and the existing
+  `/tmp`/`$TMPDIR`/gitignored allow-list applies unchanged — so the cd-context
+  check covers redirects for free. Three shape rules carry the behavior: a
+  **bare** operator still ends the preceding verb's operand run while a
+  **glued** one does not (it does not end the argument list in a real shell
+  either, and `rm -rf 2>/dev/null <outside>` really does delete `<outside>`);
+  `>&WORD` names no file only when WORD is an fd number or `-`, so `2>&$FD`
+  stays contained and `>(cmd)` is correctly read as process substitution; and
+  character-device sinks (`/dev/null`, `/dev/stderr`, `/dev/fd/N`, …) are
+  allow-listed **for redirects only**, because `2>/dev/null` is the most
+  routine idiom on a worker command line and denying it is how a guard gets
+  disarmed — `rm -rf /dev/null` is still judged normally. Hook **name and I/O
+  signature are unchanged**; this is a widening of what the same hook denies.
+  Verified against the differential harness (working copy vs. `origin/main`,
+  failing on any `old=DENY new=allow`): 62 same, 12 tightened, 0 regressions.
+  One incidental tightening falls out — `rsync`'s last-selector used to pick a
+  trailing `2>/dev/null` as the destination and miss the real one. The harness
+  itself is now a `KERNEL_GATES` entry
+  (`claude/hooks/tests/differential-guard-vs-ref.sh`, foundation#1367), so a
+  refactor that loses coverage can no longer arrive with a corpus that ratifies
+  the loss.
+
+- **The write-jail's operand walker is now a verb-to-operand-model table
+  (foundation#1354).** The Bash arm modelled every destructive verb with one
+  grammar — "every non-flag token is a path operand", plus a hand-branch for
+  `dd`'s `of=` — which does not generalize past the flat
+  `rm`/`rmdir`/`mv`/`shred`/`truncate` list, leaving three common
+  worker-destructive shapes entirely unmodelled. The flat verb list is replaced
+  by a MODEL table keyed by verb, each row carrying four data fields: which
+  operands are targets, the predicate deciding whether the invocation is
+  destructive at all, whether the cd-context directory is itself an implicit
+  target, and the verb's token count. The walker dispatches on that data — no
+  verb name appears in control flow — so a new shape reusing an existing
+  select/arm pair is a table row and nothing else. Three rows added, each a
+  different grammar: **`rsync`** is destructive only under `--delete*` and only
+  its last operand (the destination) is checked; **`find`** is destructive only
+  when its predicate run carries `-delete` or `-exec rm`/`rmdir`, and only the
+  pre-predicate path operands are checked (`-delete` was previously swallowed
+  by the leading-`-` flag skip); **`git clean`** has no target operand at all
+  and is judged against the cd-context base. `rm`/`rmdir`/`mv`/`shred`/
+  `truncate`/`dd` behavior is unchanged and the hook's I/O signature is
+  untouched; deny reasons now name the offending verb instead of a hardcoded
+  verb list. Corpus grew by 15 DENY cases and 10 ALLOW cases — the ALLOW side
+  pinning that `git clean -xfd` and `find . -name '*.pyc' -delete` *inside* the
+  worktree stay silent, since they are routine worker commands. A follow-on fix
+  in the same window (`0077a46`) extends the walker to nested and following
+  verbs so the table cannot lose coverage at a shell-operator boundary.
+
 ### Deprecated
 
 - **`init`'s apply-gating flags are no-ops with named removal windows, not
@@ -295,7 +534,9 @@ reads that marker; a stranger greps for it before pulling.
      gate (its `migration=` computation) and `bin/subcommands/update.sh`'s
      BREAKING warning both silently no-op, and a downstream overlay
      subtree-updates straight through this break with no acknowledgment.
-     Keep BOTH markers when cutting v0.19.0. -->
+     The v0.19.0 cut kept BOTH markers, and this section is what
+     `changelog_breaking_sections v0.18.0 v0.19.0 CHANGELOG.md` prints — do
+     not strip either one when editing history. -->
 
 - **BREAKING — the `foundation` → `temperloop` rename compatibility window is
   CLOSED (temperloop#165, temperloop#764).** The read-old-write-new window
