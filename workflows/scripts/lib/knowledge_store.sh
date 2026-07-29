@@ -244,6 +244,51 @@ ks__dispatch() {
 # (agent-plane hook, SessionEnd one-liner, /tidy tally) — do not change the
 # field order/count/separator without updating every consumer.
 #
+# ── Additive OUTCOME fields (foundation#1449, epic foundation#1443) ────────
+# ks_search (knowledge_search.sh — the ONE entrypoint shared by both the cold
+# "basic-memory" backend and the warm "basic-memory-mcp" daemon backend in
+# knowledge_search_mcp.sh, selected via KNOWLEDGE_SEARCH_BACKEND) passes SIX
+# extra positional args to ks__read_log_emit, appended after the 5-field
+# prefix above with the SAME " · " separator:
+#
+#   <ts> · <sess> · <plane> · search · <query> · <result_count> · <top_score>
+#     · <abstained> · <rg_fallback> · <mode> · <wall_ms>
+#
+#   result_count   number of results the caller actually received (post
+#                  re-rank, post rg-fallback) — an integer, "0" on a
+#                  genuine no-match.
+#   top_score      the FIRST result's .score field verbatim (query-relative,
+#                  per _ks_bm_rerank's trap 1 — never compared across
+#                  queries), or "-" when result_count is 0.
+#   abstained      always "0" today — no abstention mechanism ships yet
+#                  (a possible future L5 item). Emitted now so the record
+#                  SHAPE is stable before that lands; a real abstain signal
+#                  will replace the value, never add a new field.
+#   rg_fallback    "1" when the score:0 ripgrep lexical fallback
+#                  (ks_search__rg_fallback, foundation#950) fired and
+#                  surfaced a hit; "0" otherwise (including "ran but found
+#                  nothing", which is indistinguishable from "never ran"
+#                  from the caller's perspective — both are zero fallback
+#                  results reaching the caller).
+#   mode           the retrieval path actually taken: "hybrid" (the only
+#                  mode this adapter implements), "hybrid+rerank" when
+#                  KNOWLEDGE_SEARCH_RERANK=1 actually ran, or "rg-fallback"
+#                  when the lexical fallback is what answered the query
+#                  (overrides the hybrid/rerank labels — the caller received
+#                  a lexical match, not a semantic one).
+#   wall_ms        wall-clock milliseconds the backend dispatch call took
+#                  (perl Time::HiRes when available, whole-second*1000
+#                  fallback — see knowledge_search.sh's _ks_now_ms).
+#
+# ONLY ks_search's post-dispatch call passes these — every ks__dispatch call
+# (ks_read/ks_write/ks_append/ks_list, every backend) and the agent-plane
+# hook (claude/hooks/ks-agent-read-log.sh) still call this function with
+# exactly 3 args, so their lines are byte-identical to the pre-#1449 5-field
+# shape (additive compatibility: a consumer keyed on field position, e.g.
+# telemetry-brief.sh's `$4`/`NF>=4` or vault_hygiene_report.sh's `NF<5{next}`,
+# is unaffected either way — extra trailing fields on a search line, or none
+# at all on every other op).
+#
 # Setting: KNOWLEDGE_READ_LOG (path). ONE override point for the log's
 # location, same "one setting" shape as KNOWLEDGE_STORE_ROOT above. Default
 # follows the XDG state-dir convention (this is runtime/operational log
@@ -254,14 +299,22 @@ _ks_read_log_path() {
   printf '%s\n' "$KNOWLEDGE_READ_LOG"
 }
 
-# <plane> <op> <doc-path-or-query> -> appends one normalized read-log line.
+# <plane> <op> <doc-path-or-query> [outcome-field ...] -> appends one
+# normalized read-log line. The three required args are the pre-#1449
+# 5-field prefix (with timestamp/session-id computed here); any further args
+# are additive OUTCOME fields (foundation#1449 — see the header above),
+# appended in the order given with the same " · " separator and the same
+# tab/newline sanitization as the doc-path-or-query field. Zero extra args
+# (every ks__dispatch / agent-plane-hook call site) reproduces the original
+# 5-field line exactly.
 # NEVER fails the caller: every failure mode (mkdir, append) is swallowed
 # and WARNed to stderr, mirroring claim.sh/capture.sh's raw-lake emit
 # guards — read-log telemetry must never be the reason a real
 # ks_read/ks_write/ks_append/ks_list/ks_search call fails (fail-open, always
 # returns 0).
 ks__read_log_emit() {
-  local plane="$1" op="$2" doc="$3" log ts sess clean log_dir
+  local plane="$1" op="$2" doc="$3" log ts sess clean log_dir dot sep line outcome_field
+  shift 3
   log="$(_ks_read_log_path)"
   log_dir="$(dirname "$log")"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -275,7 +328,18 @@ ks__read_log_emit() {
   # printf escape rather than the literal glyph so the separator survives a
   # non-UTF-8-aware editor/diff/grep untouched — a byte pinned exactly, since
   # every consumer of this log greps/splits on it.
-  printf '%s \xc2\xb7 %s \xc2\xb7 %s \xc2\xb7 %s \xc2\xb7 %s\n' "$ts" "$sess" "$plane" "$op" "$clean" >>"$log" 2>/dev/null \
+  dot="$(printf '\xc2\xb7')"
+  sep=" ${dot} "
+  line="${ts}${sep}${sess}${sep}${plane}${sep}${op}${sep}${clean}"
+  # Additive outcome fields (foundation#1449): appended ONLY when the caller
+  # passes them — see the header above. "$@" is empty for every
+  # ks__dispatch / agent-plane-hook call, so this loop is a no-op there and
+  # `line` stays the exact pre-#1449 5-field string.
+  for outcome_field in "$@"; do
+    outcome_field="$(printf '%s' "$outcome_field" | tr '\t\n' '  ')"
+    line="${line}${sep}${outcome_field}"
+  done
+  printf '%s\n' "$line" >>"$log" 2>/dev/null \
     || printf 'knowledge_store: WARN failed to append read-log record to %s (dispatch unaffected)\n' "$log" >&2
   return 0
 }

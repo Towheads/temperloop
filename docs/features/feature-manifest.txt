@@ -121,6 +121,7 @@ telemetry workflows/scripts/emit-command-run.sh
 telemetry workflows/scripts/emit-issue-touch.sh
 telemetry workflows/scripts/validate-command-run-emit.sh
 telemetry workflows/scripts/validate-issue-touch-emit.sh
+telemetry workflows/scripts/validate-knowledge-search-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
 # session-context — the realized-session-context probe (temperloop#828,

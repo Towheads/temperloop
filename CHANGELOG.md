@@ -14,7 +14,27 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Per-query OUTCOME fields on the knowledge-search read-log (foundation#1449,
+  foundation epic #1443). Additive; existing consumers unaffected.** `ks_search`
+  (the one entrypoint shared by both the cold `basic-memory` backend and the
+  warm `basic-memory-mcp` daemon backend) now appends six fields after its
+  existing `" · "`-joined 5-field read-log line: `result_count`, `top_score`,
+  `abstained`, `rg_fallback`, `mode`, and `wall_ms`. `mode` names the retrieval
+  path actually taken — `hybrid` or `hybrid+rerank` (reflecting whether the
+  temperloop#1446 post-fetch re-rank ran for that query), `rg-fallback` when
+  the score-0 ripgrep lexical fallback (foundation#950) answered instead, or
+  `error:<rc>` on a backend dispatch error. `abstained` is always `0` for
+  now — no abstention mechanism ships yet, but the field is emitted so the
+  record shape is stable before a future item adds one. Every other read-log
+  call site (`ks_read`/`ks_write`/`ks_append`/`ks_list`, every backend, and the
+  agent-plane hook) is unchanged — only `ks_search`'s line grows, and only at
+  the end, so any consumer keyed on field position (the SessionEnd one-liner,
+  `/tidy`'s tally, `telemetry-brief.sh`) reads exactly as before.
+  `workflows/scripts/validate-knowledge-search-emit.sh` is the new presence
+  lint guarding this wiring (the `validate-issue-touch-emit.sh` mold applied
+  to a pure-library emit with no markdown orchestration step).
 
 ## [0.20.0] - 2026-07-29
 

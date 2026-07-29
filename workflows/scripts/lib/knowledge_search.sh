@@ -118,53 +118,122 @@
 #       degradation, never a silent empty result.
 #   4 — backend error: the subprocess ran but exited non-zero, or its
 #       output could not be parsed as the expected JSON shape.
+# Epoch milliseconds, for the read-log OUTCOME field `wall_ms` (foundation#1449).
+# Mirrors gh-call-logger.sh's `_now_ms` idiom exactly (same fallback, same
+# rationale): prefer perl's Time::HiRes (ms resolution, perl ships on macOS +
+# CI); degrade to whole-second precision (×1000) if perl is unavailable —
+# coarse but never fatal, and never a reason a search call fails.
+_ks_now_ms() {
+  local ms
+  if ms="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null)" \
+     && [ -n "$ms" ]; then
+    printf '%s' "$ms"
+  else
+    printf '%s000' "$(date +%s 2>/dev/null || echo 0)"
+  fi
+}
+
 ks_search() {
   local query="${1:-}"
   if [ -z "$query" ]; then
     echo "knowledge_search: usage: ks_search <query> [--limit N]" >&2
     return 2
   fi
-  # Read-log telemetry (temperloop#229): this is "the search entrypoint" the
-  # knowledge_store.sh read-log contract names — ks__read_log_emit is
-  # defined there (sourced before this file, per this file's own header),
-  # logged here with op="search" and the query as the doc-path-or-query
-  # field, in the exact same line format ks__dispatch uses for read/write/
-  # append/list. An empty query already returned above, so every call
-  # reaching this point carries a real query — never an empty one.
-  #
-  # Gated on the backend's availability probe (the same "available" op
-  # ks_search_available exposes publicly; dispatched directly here, stdout/
-  # stderr suppressed for THIS probe only so its "skipped —" notice isn't
-  # printed twice) — mirrors ks__dispatch's own "only log a call that's
-  # actually dispatchable" behavior: an unavailable backend (no uvx on PATH)
-  # never really searches, so it shouldn't log a search attempt either, and
-  # the probe itself is a zero-subprocess `command -v` check, so this gate
-  # never depends on PATH carrying anything beyond that (the exact condition
-  # ks_search's own "no uvx" legible-degradation path is tested under).
-  if ks_search__dispatch available >/dev/null 2>/dev/null; then
-    ks__read_log_emit script search "$query"
-  fi
   shift || true
+
+  # Read-log telemetry (temperloop#229, OUTCOME fields added by
+  # foundation#1449 — see knowledge_store.sh's ks__read_log_emit header for
+  # the full field contract): this is "the search entrypoint" the
+  # knowledge_store.sh read-log contract names. Emission is deferred to AFTER
+  # the dispatch below (outcome fields — result count, top score,
+  # rg-fallback, mode, wall-time — are only known once the call completes),
+  # gated the same way the pre-#1449 code gated its pre-dispatch emit: on the
+  # backend's availability probe (the same "available" op ks_search_available
+  # exposes publicly; dispatched directly here, stdout/stderr suppressed for
+  # THIS probe only so its "skipped —" notice isn't printed twice) — an
+  # unavailable backend (no uvx on PATH) never really searches, so it
+  # shouldn't log a search attempt either, and the probe itself is a
+  # zero-subprocess `command -v` check, so this gate never depends on PATH
+  # carrying anything beyond that.
+  local do_log=0
+  ks_search__dispatch available >/dev/null 2>/dev/null && do_log=1
 
   # Dispatch to the backend, capturing stdout so a legitimate ZERO-result
   # (exit 0, empty stream) can trigger a ripgrep fallback over the corpus
   # (foundation#950). A backend error (exit 4) or unavailable backend (exit 3)
   # is NOT masked — its legible-degradation contract (stderr notice, exit code)
   # is preserved: only the exit-0-empty case falls back. Result sets are bounded
-  # by --limit, so buffering the happy path in a var is cheap.
-  local out rc=0
+  # by --limit, so buffering the happy path in a var is cheap. Timed for the
+  # wall_ms outcome field — this measures the BACKEND DISPATCH only (not any
+  # rg-fallback below), which is the number worth watching for regression.
+  local out rc=0 t0 t1 wall_ms
+  t0="$(_ks_now_ms)"
   out="$(ks_search__dispatch search "$query" "$@")" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    return "$rc"
-  fi
-  if [ -n "$out" ]; then
-    printf '%s\n' "$out"
-    return 0
-  fi
+  t1="$(_ks_now_ms)"
+  wall_ms=$(( t1 - t0 ))
+  [ "$wall_ms" -ge 0 ] 2>/dev/null || wall_ms=0   # guard against clock skew / fallback rounding
+
   # Backend returned a genuine zero-result. A query class the semantic/hybrid
   # backend ranked to nothing may still have a literal match — try ripgrep so
   # the answer is degraded-but-answered rather than silently empty (foundation#950).
-  ks_search__rg_fallback "$query" "$@"
+  # Only on a clean rc=0 empty result — a dispatch ERROR (rc 3/4) below is NOT
+  # masked by a fallback attempt, exactly as the pre-#1449 code never masked it.
+  local rg_fired=0
+  if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    out="$(ks_search__rg_fallback "$query" "$@")"
+    [ -n "$out" ] && rg_fired=1
+  fi
+
+  # Log the OUTCOME regardless of success/error — matching the pre-#1449
+  # gate's count semantics exactly (it logged once per available-gated call,
+  # independent of what the dispatch below returned): an errored dispatch is
+  # itself a countable outcome (a real backend failure on a real query), not
+  # something to drop from the tally just because it has no result set.
+  if [ "$do_log" -eq 1 ]; then
+    local result_count top_score mode
+    if [ "$rc" -ne 0 ]; then
+      # Dispatch errored (3=unavailable mid-flight, 4=backend error) — no
+      # result set to describe; name the failure in `mode` instead of
+      # guessing a result shape.
+      result_count="-"
+      top_score="-"
+      mode="error:${rc}"
+    elif [ -n "$out" ]; then
+      result_count="$(printf '%s\n' "$out" | grep -c '^' 2>/dev/null)" || result_count=0
+      top_score="$(printf '%s\n' "$out" | head -n1 | jq -r '.score // "-"' 2>/dev/null)" || top_score="-"
+      [ -n "$top_score" ] || top_score="-"
+    else
+      result_count=0
+      top_score="-"
+    fi
+    if [ "$rc" -eq 0 ]; then
+      if [ "$rg_fired" -eq 1 ]; then
+        # The score:0 lexical fallback answered the query — this OVERRIDES
+        # the hybrid/rerank labels below: the caller received a lexical, not
+        # a semantic, match (see _ks_bm_rerank's trap 2 on this sentinel).
+        mode="rg-fallback"
+      else
+        # "hybrid" is the only retrieval mode this adapter implements (both
+        # backends pin --hybrid / search_type:"hybrid"); "+rerank" reflects
+        # whether the post-fetch re-rank (temperloop#1446) actually ran for
+        # this query — outcome fields record the POST-re-rank result, so
+        # this names what the caller actually received, not just the
+        # configured default.
+        mode="hybrid"
+        [ "${KNOWLEDGE_SEARCH_RERANK:-1}" = "1" ] && mode="hybrid+rerank"
+      fi
+    fi
+    # abstained: always "0" — no abstention mechanism ships yet (a possible
+    # future L5 item per the epic). Emitted now so the record shape is
+    # stable before that lands (see ks__read_log_emit's header).
+    ks__read_log_emit script search "$query" \
+      "$result_count" "$top_score" 0 "$rg_fired" "$mode" "$wall_ms"
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+  [ -n "$out" ] && printf '%s\n' "$out"
   return 0
 }
 

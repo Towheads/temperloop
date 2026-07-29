@@ -17,6 +17,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 .PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
+	validate-knowledge-search-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
@@ -37,6 +38,7 @@ help:
 	@echo "  validate-activation-registry  Class-A static-second-surface activation registry lint"
 	@echo "  validate-command-run-emit  emit-command-run.sh presence/wiring lint"
 	@echo "  validate-issue-touch-emit  emit-issue-touch.sh presence/wiring lint"
+	@echo "  validate-knowledge-search-emit  ks_search read-log outcome-field presence/wiring lint"
 	@echo "  validate-lexicon        drain-mind tell-lexicon lint"
 	@echo "  validate-template-refs  Message-template reference-integrity + registry-completeness lint"
 	@echo "  test-scan-stub          Session-stub scanner tests"
@@ -162,6 +164,9 @@ validate-command-run-emit:
 
 validate-issue-touch-emit:
 	@bash $(FOUNDATION)/workflows/scripts/validate-issue-touch-emit.sh
+
+validate-knowledge-search-emit:
+	@bash $(FOUNDATION)/workflows/scripts/validate-knowledge-search-emit.sh
 
 validate-lexicon:
 	@bash $(FOUNDATION)/workflows/scripts/drain/validate-lexicon.sh
