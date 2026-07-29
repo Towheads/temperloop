@@ -51,13 +51,11 @@ set -euo pipefail
 REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DRAIN="$REPO/claude/commands/tidy.md"
 DRAIN_OVERLAY_EXT="$REPO/claude/capture-backstop-registry.overlay.md"
-# v0.17.0 rename legacy window (temperloop#729): a downstream overlay checkout
-# may still ship the pre-rename overlay filename until it migrates — read-old
-# (with a NOTE) when the new name is absent; removed in v0.19.0.
-if [ ! -f "$DRAIN_OVERLAY_EXT" ] && [ -f "$REPO/claude/live-drain-registry.overlay.md" ]; then
-  DRAIN_OVERLAY_EXT="$REPO/claude/live-drain-registry.overlay.md"
-  echo "NOTE: claude/live-drain-registry.overlay.md was renamed claude/capture-backstop-registry.overlay.md in v0.17.0 (temperloop#729); reading the legacy filename through v0.19.0." >&2
-fi
+# (The v0.17.0 terminology-rename legacy window also resolved the pre-rename
+# overlay FILENAME here when the renamed one was absent. That window CLOSED in
+# v0.19.0, temperloop#767 — an overlay checkout that still ships the old
+# filename now reads as "no overlay extension present", i.e. its rows are not
+# validated at all, so migrating the filename is the fix.)
 STAGEFIND_DIR="${STAGEFIND_DIR:-$REPO/../stageFind}"
 CLAUDE_MD_KERNEL="$REPO/claude/CLAUDE.kernel.md"
 CLAUDE_MD_OVERLAY="$REPO/claude/CLAUDE.overlay.md"
@@ -151,12 +149,14 @@ EOF
 # separator rows). Matches any heading starting "## Capture/Backstop pairings" —
 # so it works unchanged on both the kernel table's plain heading and the
 # overlay extension's "## Capture/Backstop pairings — overlay extension" heading.
+# (The pre-rename heading/column spelling this also used to accept was dropped
+# with the v0.17.0 legacy window in v0.19.0, temperloop#767.)
 extract_pairing_rows() {
   awk '
-    /^## (Capture\/Backstop|Live\/Drain) pairings/ { insec = 1; next }
+    /^## Capture\/Backstop pairings/ { insec = 1; next }
     insec && /^## / { insec = 0 }
     insec && /^\|/ { print }
-  ' "$1" | grep -vE '^\|[[:space:]]*(Capture rule|Live rule)|^\|[[:space:]]*-' || true
+  ' "$1" | grep -vE '^\|[[:space:]]*Capture rule|^\|[[:space:]]*-' || true
 }
 
 kernel_rows="$(extract_pairing_rows "$DRAIN")"

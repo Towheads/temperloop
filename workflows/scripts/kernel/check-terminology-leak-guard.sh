@@ -7,11 +7,12 @@
 #
 # The one-shot terminology consolidation renamed every coined identifier
 # surface (FUNNEL_*->PIPELINE_*, KNOB_*->SETTING_*, the funnel-*/knob-*
-# script family, validate-live-drain.sh, the batch-at-*/blocking-now
-# severity tokens, the live-drain pairing tokens, build-spine.md /
-# funnel-driver.md). THIS gate keeps the pre-rename identifiers a closed,
-# reviewed set: it scans every git-tracked file for the old identifier
-# SHAPES and fails on any occurrence outside:
+# script family, the pre-rename capture/backstop validator path, the
+# batch-at-*/blocking-now severity tokens, the pre-rename pairing tokens,
+# build-spine.md / funnel-driver.md). THIS gate keeps the pre-rename
+# identifiers a closed, reviewed set: it scans every git-tracked file for the
+# old identifier SHAPES (the `SHAPES` alternation below is the ONE place they
+# are still written out) and fails on any occurrence outside:
 #
 #   a) the ALLOWED persisted-state literals — external state the rename
 #      deliberately kept stable (the K165 `.foundation/` precedent):
@@ -23,10 +24,11 @@
 #      FUNNEL_*-named identifier on the same line still trips the gate.
 #
 #   b) the WHOLESALE-EXEMPT files (terminology-leak-exempt-files.txt,
-#      sibling) — the compat window's own surfaces (the env shim, the
-#      forwarding stubs, the legacy-filename fallback in
-#      validate-capture-backstop.sh), the records that legitimately keep
-#      old terms (CHANGELOG.md, docs/adr/), and this gate's own family.
+#      sibling) — the records that legitimately keep old terms
+#      (CHANGELOG.md, docs/adr/, Plans-archive/, meta/) and this gate's own
+#      family. The compat window's own surfaces used to be exempt here too;
+#      the window CLOSED in v0.19.0 (temperloop#767) and that whole class was
+#      deleted, so the exempt set is now records + self alone.
 #
 # A brand-new FUNNEL_/KNOB_ env var, a reference to a renamed script's old
 # path, or a coined severity/pairing token therefore can't silently

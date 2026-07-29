@@ -167,13 +167,11 @@ install-cli workflows/scripts/lib/changelog.sh
 install-cli workflows/scripts/lib/tests/test_changelog.sh
 install-cli workflows/scripts/tests/test_update_subcommand.sh
 install-cli workflows/scripts/tests/test_rename_compat.sh
-# v0.17.0 terminology-consolidation legacy window (temperloop#729) — the env
-# shim, its gate test, and the forwarding stub at the old validator path
-# (the other stubs ride their features' existing dir globs). Removed with the
-# window in v0.19.0.
-install-cli workflows/scripts/lib/rename-compat-0170.sh
+# v0.17.0 terminology-consolidation window-CLOSED regression test
+# (temperloop#767): the env shim, the forwarding stubs, and the stub's own
+# manifest claim went away with the window in v0.19.0; this test is what
+# remains, asserting the window stays shut.
 install-cli workflows/scripts/tests/test_terminology_rename_compat.sh
-tidy workflows/scripts/validate-live-drain.sh
 # bin/bootstrap.sh tag-pinning + delegate-to-update (temperloop#434, ADR
 # 0002): the fixture suite doesn't match any existing install-cli glob
 # either (same reasoning as the three lines above it).

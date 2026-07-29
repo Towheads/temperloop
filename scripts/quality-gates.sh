@@ -370,10 +370,13 @@ KERNEL_GATES=(
   "bash workflows/scripts/config/tests/test_check_setting_registry.sh"
   "bash workflows/scripts/config/check-setting-prose.sh"
   "bash workflows/scripts/config/tests/test_check_setting_prose.sh"
-  # v0.17.0 terminology-rename legacy window (temperloop#729): READ-OLD-WRITE-NEW
-  # for FUNNEL_*->PIPELINE_* / KNOB_*->SETTING_* env seams, the forwarding
-  # stubs at the old script paths, and the knob-registry-lib source-forwarder.
-  # Removed with the window in v0.19.0.
+  # v0.17.0 terminology-rename legacy window, CLOSED in v0.19.0
+  # (temperloop#767): the env shim, the forwarding stubs at the old script
+  # paths, the source-forwarder, and the pre-rename overlay-filename read are
+  # deleted. This gate is the window-STAYS-SHUT regression test — a
+  # pre-rename env name must bind nothing and say nothing, and no window file
+  # may reappear. Its lockstep sibling is `make test-kernel-terminology`
+  # below, which owns the identifier-leak half.
   "bash workflows/scripts/tests/test_terminology_rename_compat.sh"
   # Reviewer-routing extension/glob-axis drift lint (ADR 0008,
   # docs/adr/0008-reviewer-routing-tsv-extension-axis-scope.md): compares the
@@ -580,8 +583,10 @@ KERNEL_GATES=(
   # v0.17.0 terminology-rename leak gate (temperloop#729): the same closed-set
   # discipline for the coined-identifier renames — the legacy env prefixes,
   # old script paths, and coined severity/pairing tokens cannot
-  # silently re-enter; only the reviewed exempt set (the compat window's own
-  # surfaces + records) may carry them.
+  # silently re-enter; only the reviewed exempt set may carry them. Since the
+  # window closed in v0.19.0 (temperloop#767) that set is records + this
+  # gate's own family alone — the `window` and `registry` exempt classes went
+  # away with the files they covered.
   "make test-kernel-terminology"
   # Diff-scoped public-repo leak guard (temperloop #74): the sibling of the two
   # whole-tree kernel scrubs above. Scans the ADDED lines of a PR's diff (all
