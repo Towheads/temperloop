@@ -60,6 +60,15 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # the lib and calls the accessors with NO resolve first.
 (
   set -euo pipefail
+  # A `source=` directive scopes to the NEXT source only, so line 49's does not cover
+  # this one. Suppress rather than point it at the lib: pointing it lets the linter
+  # follow board.sh INTO this subshell, which trades 1 SC1091 for 25 SC2031 (measured
+  # -- temperloop#905). `disable` matches the `-e SC1091` posture this repo's own lint
+  # target already takes. Load-bearing for CONSUMERS, not for us: our gate excludes
+  # */tests/* and passes -e SC1091, but stageFind/ssmobile/subsetwiki lint the vendored
+  # toolkit wholesale with defaults, where this finding is a red `checks`.
+  # (Keep prose off any line starting `# shellcheck ` -- it is parsed as a directive.)
+  # shellcheck disable=SC1091
   source "$LIB_DIR/board.sh"
   [ -z "$(board_item_id 123)" ]                        || exit 11
   [ -z "$(board_option_id Status Ready 2>/dev/null)" ] || exit 12
