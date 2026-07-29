@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-29
+
 ### Added
 
 - **Per-query OUTCOME fields on the knowledge-search read-log (foundation#1449,
