@@ -67,6 +67,29 @@
 #                                rank fusion. Default 1.0 (equal). 0 disables
 #                                the lexical contribution without disabling
 #                                the deeper fetch.
+#   KNOWLEDGE_SEARCH_ABSTAIN     1 = abstain (return the same genuine
+#                                zero-result shape a backend-empty query
+#                                gets) when the FINAL, post-re-rank result set
+#                                would otherwise be answered by a candidate
+#                                that clears neither measured floor below; 0
+#                                = never abstain via this lever (DEFAULT --
+#                                opt-in; see CHANGELOG [Unreleased] and
+#                                foundation#1450 for the measured floor this
+#                                gates, and why it ships off by default).
+#   KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR
+#                                floor on the TOP-RANKED (post-re-rank)
+#                                candidate's own backend `.score`. Default
+#                                0.72 -- measured on the 213-query
+#                                engine-neutral golden-query bench against
+#                                the SHIPPED hybrid+rerank surface (see "##
+#                                Abstention floor" below).
+#   KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR
+#                                floor on that same top-ranked candidate's
+#                                lexical-coverage feature (the re-rank's own
+#                                title/path term-agreement score, `L` below).
+#                                Default 0.10. BOTH floors must fail (AND, not
+#                                OR) for the candidate to abstain -- neither
+#                                alone measurably separates.
 #   KNOWLEDGE_SEARCH_BM_PYTHON   pinned CPython version passed to
 #                                `uvx --python <version>` (point 5's
 #                                companion pin). The bm version pin alone
@@ -173,13 +196,33 @@ ks_search() {
   wall_ms=$(( t1 - t0 ))
   [ "$wall_ms" -ge 0 ] 2>/dev/null || wall_ms=0   # guard against clock skew / fallback rounding
 
+  # Abstention floor (foundation#1450): _ks_bm_rerank emits this ONE sentinel
+  # line in place of the normal JSONL stream when every candidate failed the
+  # measured floor (KNOWLEDGE_SEARCH_ABSTAIN=1). Detected and consumed HERE,
+  # not inside the rerank, because only ks_search knows whether the rg
+  # fallback below is allowed to run: the ratified L1 semantics (clause 4)
+  # say the fallback stays suppressed whenever the backend returned a
+  # non-empty candidate set, and a floor-triggered abstention is exactly
+  # that — a POST-re-rank empty, never a backend-empty. So this is checked
+  # BEFORE the backend-empty branch below, and clears $out to the genuine
+  # empty-result shape without ever letting the sentinel itself leak past
+  # this function.
+  local abstained=0
+  if [ "$rc" -eq 0 ] && [ "$out" = '{"__ks_abstain":true}' ]; then
+    abstained=1
+    out=""
+  fi
+
   # Backend returned a genuine zero-result. A query class the semantic/hybrid
   # backend ranked to nothing may still have a literal match — try ripgrep so
   # the answer is degraded-but-answered rather than silently empty (foundation#950).
   # Only on a clean rc=0 empty result — a dispatch ERROR (rc 3/4) below is NOT
   # masked by a fallback attempt, exactly as the pre-#1449 code never masked it.
+  # A floor-triggered abstention (abstained=1) is NOT a backend-empty (the
+  # backend returned candidates; the floor discarded them) so it must NOT
+  # fall into this branch either — guarded by `abstained` staying 0 here.
   local rg_fired=0
-  if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+  if [ "$abstained" -eq 0 ] && [ "$rc" -eq 0 ] && [ -z "$out" ]; then
     out="$(ks_search__rg_fallback "$query" "$@")"
     [ -n "$out" ] && rg_fired=1
   fi
@@ -223,11 +266,11 @@ ks_search() {
         [ "${KNOWLEDGE_SEARCH_RERANK:-1}" = "1" ] && mode="hybrid+rerank"
       fi
     fi
-    # abstained: always "0" — no abstention mechanism ships yet (a possible
-    # future L5 item per the epic). Emitted now so the record shape is
-    # stable before that lands (see ks__read_log_emit's header).
+    # abstained: "1" when the KNOWLEDGE_SEARCH_ABSTAIN floor fired for this
+    # query (foundation#1450), "0" otherwise — the live misfire monitor for
+    # the feature (rationale: knowledge_store.sh's ks__read_log_emit header).
     ks__read_log_emit script search "$query" \
-      "$result_count" "$top_score" 0 "$rg_fired" "$mode" "$wall_ms"
+      "$result_count" "$top_score" "$abstained" "$rg_fired" "$mode" "$wall_ms"
   fi
 
   if [ "$rc" -ne 0 ]; then
@@ -571,6 +614,64 @@ _ks_bm_project_add() {
 : "${KNOWLEDGE_SEARCH_RERANK:=1}"
 : "${KNOWLEDGE_SEARCH_RERANK_DEPTH:=20}"
 : "${KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT:=1.0}"
+
+# ── Abstention floor (foundation#1450, epic foundation#1443) ──────────────
+# Below a MEASURED floor on the shipped hybrid+rerank surface, return the
+# adapter's existing genuine-zero-result shape instead of confident-looking
+# hits on a query the store cannot actually answer.
+#
+# ── WHY NOT RAW `.score` ALONE, AND WHY NOT THE FUSION SCORE ALONE ────────
+# The two obvious single-surface floors were measured and REJECTED:
+#  * Raw backend `.score` is query-relative (trap 1 above) -- on the 213-query
+#    engine-neutral bench, the 9 correct-abstention queries' top-ranked
+#    candidate scored 0.65-0.76, which sits INSIDE genuine hits' own range
+#    (0.58-1.28, median 0.79). A floor tight enough to catch most abstention
+#    cases drops 30%+ of genuine top-5 hits.
+#  * The fusion score `.f` this file computes is RRF-based and dominated by
+#    RANK, not relevance: the top-ranked candidate's semantic term alone is a
+#    near-constant 1/(rrfk+0) on EVERY query, answerable or not, so `.f`
+#    alone carries almost no separating signal (measured: overlaps entirely).
+# What DOES separate, measured on that same corpus (two independent runs,
+# byte-identical results -- the fused candidate order is deterministic, only
+# TIE-BREAKING among near-equal ranks jitters): the CONJUNCTION of the
+# top-ranked candidate's raw score AND its own lexical-coverage feature `L`
+# (query-term agreement with that candidate's title/path, already computed
+# below for the fusion). Neither alone separates; requiring BOTH to be low
+# does, because a genuine hit is either a strong semantic match (high score)
+# or a strong lexical match (high L) almost without exception in this corpus.
+# Measured result at the shipped defaults (0.72 / 0.10): 4/9 correct
+# abstentions gained, 0/186 labeled top-5 hits lost -- see CHANGELOG.
+#
+# ── SMALL-n CAVEAT ─────────────────────────────────────────────────────────
+# The corpus carries exactly 9 correct-abstention examples -- the only ones
+# that exist -- so these floors are CALIBRATED to, not validated against a
+# held-out set of, unanswerable queries. The zero-measured-cost claim (186/186
+# preserved, confirmed on two independent runs) is the load-bearing safety
+# property; the 4/9 recall figure is a directional floor, not a guarantee for
+# novel unanswerable queries. Ships opt-in (KNOWLEDGE_SEARCH_ABSTAIN=0 default)
+# pending broader live validation.
+#
+# ── SCOPE: the main fusion branch only ────────────────────────────────────
+# The floor applies ONLY where this function actually computes `L`/`.f` --
+# the real-query fusion branch below. It does NOT reach the score-0 sentinel
+# bypass (trap 2 -- a fallback set is never a candidate for abstention
+# scoring, it already IS the degraded-answer path), the empty-candidate-set
+# bypass, or the no-usable-query-terms bypass (no lexical feature exists to
+# gate on there); those three edge paths are unchanged.
+#
+# Signaling: when every candidate fails the gate, this function emits ONE
+# sentinel line, `{"__ks_abstain":true}`, in place of the normal JSONL
+# stream. ks_search (knowledge_search.sh) is the ONE place that consumes it --
+# it converts the sentinel to the genuine empty-result shape, sets the
+# `abstained` outcome field, and (per the ratified L1 mode-sweep semantics,
+# clause 4) suppresses the score-0 rg lexical fallback, because the backend
+# itself returned a non-empty candidate set: an abstention here is a
+# POST-re-rank empty, never a backend-empty, and the fallback fires only on
+# the latter. The sentinel never reaches a real caller.
+: "${KNOWLEDGE_SEARCH_ABSTAIN:=0}"
+: "${KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR:=0.72}"
+: "${KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR:=0.10}"
+
 _ks_bm_rerank() {
   local query="$1" k="$2"
   # Disabled -> exact pre-#1446 behavior: the backend's own order, untouched.
@@ -598,7 +699,10 @@ _ks_bm_rerank() {
     --arg q "$query" --argjson k "$k" \
     --argjson rrfk 10 --argjson w_title 1.0 --argjson w_path 0.4 \
     --argjson w_phrase 1.0 \
-    --argjson w_lex "${KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT:-1.0}" '
+    --argjson w_lex "${KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT:-1.0}" \
+    --argjson abstain "$([ "${KNOWLEDGE_SEARCH_ABSTAIN:-0}" = "1" ] && echo true || echo false)" \
+    --argjson abstain_score_floor "${KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR:-0.72}" \
+    --argjson abstain_lex_floor "${KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR:-0.10}" '
     def norm: ascii_downcase | gsub("[^a-z0-9]+"; " ") | sub("^ +"; "") | sub(" +$"; "");
     # Single characters are dropped: they carry no retrieval signal and match
     # far too much. Digits are KEPT (issue refs like 1443 are strong known-item
@@ -700,8 +804,17 @@ _ks_bm_rerank() {
                                 | if $lr == null then 0 else 1 / ($rrfk + $lr) end))
           ]
         | sort_by(-.f, .r)
-        | .[0:$k][]
-        | .d
+        # Abstention floor (foundation#1450): gate on the TOP-ranked (best
+        # available) candidate only -- if even the best one fails both
+        # floors, none of the rest can pass either (see the comment block
+        # above this function for why BOTH must fail, and the measured
+        # 0/186-cost result). Off by default ($abstain false) -> untouched.
+        | if ($abstain and (length > 0)
+              and (.[0].d.score < $abstain_score_floor)
+              and (.[0].L < $abstain_lex_floor))
+          then {__ks_abstain: true}
+          else (.[0:$k][] | .d)
+          end
       end
   '
 }

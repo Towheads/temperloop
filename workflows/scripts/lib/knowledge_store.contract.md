@@ -450,10 +450,11 @@ foundation#1443 "obs-outcome-emit"), same `" · "` separator:
 - `top_score` — the first result's `.score` field verbatim (query-relative —
   never compared across queries, per `_ks_bm_rerank`'s trap 1), or `-` when
   `result_count` is `0` or `-`.
-- `abstained` — always `0` today. No abstention mechanism ships yet (a
-  possible future item); the field is emitted now so the record SHAPE is
-  stable before that lands — a real signal replaces the value, never adds a
-  new field.
+- `abstained` — `1` when the `KNOWLEDGE_SEARCH_ABSTAIN` floor
+  (foundation#1450, off by default) dropped every candidate below the
+  measured floor and `ks_search` returned the genuine empty-result shape
+  instead of a low-confidence hit; `0` otherwise. See "### Abstention floor"
+  below.
 - `rg_fallback` — `1` when the score:0 ripgrep lexical fallback
   (`ks_search__rg_fallback`, foundation#950) fired and surfaced a hit; `0`
   otherwise.
@@ -600,6 +601,62 @@ Three invariants the implementation is built around, each pinned by a test in
 
 Set `KNOWLEDGE_SEARCH_RERANK=0` to restore the backend's own ordering; the fetch
 depth then collapses back to `--limit`, making the off-switch a true no-op.
+
+### Abstention floor
+
+`ks_search` can decline to answer a query at all: below a **measured** floor on
+the shipped hybrid+rerank surface, it returns the same genuine
+**zero-result** shape a backend-empty query gets, instead of confident-looking
+low-relevance hits (foundation#1450, epic foundation#1443). **Off by default**
+— set `KNOWLEDGE_SEARCH_ABSTAIN=1` to enable it.
+
+The gate looks only at the **top-ranked, post-re-rank candidate** (if the best
+one fails, none of the rest can pass either) and requires **both** of the
+following to fail — a conjunction, not either surface alone:
+
+| Setting | Default | What it gates |
+|---|---|---|
+| `KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR` | `0.72` | the candidate's own backend `.score` |
+| `KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR` | `0.10` | the candidate's lexical-coverage feature `L` (the re-rank's own title/path term-agreement score) |
+
+**Why a conjunction, and why these two surfaces.** Two single-surface floors
+were measured and rejected on the 213-query engine-neutral golden-query bench
+(foundation's `workflows/scripts/evals/golden-queries/`, 204 labeled + 9
+correct-abstention queries): raw `.score` alone is query-relative (the
+re-rank's own trap 1) and the 9 correct-abstention queries' top score
+(0.65–0.76) sits inside genuine hits' own range (0.58–1.28); the re-rank's RRF
+fusion score `.f` is rank-dominated and near-constant for every query's
+top-ranked candidate regardless of relevance, so it carries almost no
+separating signal either. The conjunction of raw score AND lexical coverage
+does separate, because a genuine hit in this corpus is almost always a strong
+semantic match, a strong lexical match, or both.
+
+**Measured result** (two independent runs, byte-identical — the fused
+candidate order is deterministic here; only *tie-breaking* among near-equal
+ranks jitters, per trap 3): at the shipped defaults, **4 of the 9
+correct-abstention queries newly abstain, and 0 of the 186 labeled top-5 hits
+are lost.** See the CHANGELOG `[Unreleased]` entry for the full numbers and
+the small-*n* caveat (only 9 correct-abstention examples exist at all, so the
+floors are calibrated to, not validated against a held-out set of, them — the
+zero-measured-cost property is the load-bearing safety claim; the 4/9 recall
+figure is directional).
+
+**The rg-fallback interaction (ratified L1 mode-sweep semantics).** An
+abstention here is a **post-re-rank empty**, never a **backend-empty** — the
+backend returned real candidates; the floor discarded them. The score-0
+ripgrep lexical fallback (`ks_search__rg_fallback`, foundation#950) fires
+*only* on a genuine backend-empty, so it stays **suppressed** on a
+floor-triggered abstention even when a literal corpus match exists
+(`abstained=1`, `rg_fallback=0`) — returning nothing is the intended,
+scored-correct outcome, not a fallback opportunity.
+
+Internally, `_ks_bm_rerank` signals an abstention with one sentinel line,
+`{"__ks_abstain":true}`, in place of its normal JSONL stream; `ks_search` is
+the one place that consumes it, converts it to the real empty-result shape,
+sets the `abstained` outcome field, and suppresses the rg fallback. The
+sentinel never reaches a caller. Both backends share this — one
+implementation (`_ks_bm_rerank`), reused by the warm `basic-memory-mcp` path
+exactly as the re-rank itself is.
 
 ### Backend registration seam
 

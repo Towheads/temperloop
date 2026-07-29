@@ -260,10 +260,13 @@ ks__dispatch() {
 #   top_score      the FIRST result's .score field verbatim (query-relative,
 #                  per _ks_bm_rerank's trap 1 — never compared across
 #                  queries), or "-" when result_count is 0.
-#   abstained      always "0" today — no abstention mechanism ships yet
-#                  (a possible future L5 item). Emitted now so the record
-#                  SHAPE is stable before that lands; a real abstain signal
-#                  will replace the value, never add a new field.
+#   abstained      "1" when the KNOWLEDGE_SEARCH_ABSTAIN floor
+#                  (foundation#1450, off by default) dropped every candidate
+#                  below the measured score/lexical-coverage floor and
+#                  ks_search returned the genuine empty-result shape instead
+#                  of a low-confidence hit; "0" otherwise. This is the live
+#                  misfire monitor for that feature — see
+#                  knowledge_search.sh's "## Abstention floor" comment.
 #   rg_fallback    "1" when the score:0 ripgrep lexical fallback
 #                  (ks_search__rg_fallback, foundation#950) fired and
 #                  surfaced a hit; "0" otherwise (including "ran but found

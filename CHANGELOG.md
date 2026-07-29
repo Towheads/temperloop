@@ -25,9 +25,11 @@ reads that marker; a stranger greps for it before pulling.
   path actually taken — `hybrid` or `hybrid+rerank` (reflecting whether the
   temperloop#1446 post-fetch re-rank ran for that query), `rg-fallback` when
   the score-0 ripgrep lexical fallback (foundation#950) answered instead, or
-  `error:<rc>` on a backend dispatch error. `abstained` is always `0` for
-  now — no abstention mechanism ships yet, but the field is emitted so the
-  record shape is stable before a future item adds one. Every other read-log
+  `error:<rc>` on a backend dispatch error. `abstained` was always `0` at the
+  time this landed — no abstention mechanism shipped yet, the field was
+  emitted so the record shape would be stable before one did (see the
+  foundation#1450 entry below, in this same release, for the mechanism that
+  now sets it). Every other read-log
   call site (`ks_read`/`ks_write`/`ks_append`/`ks_list`, every backend, and the
   agent-plane hook) is unchanged — only `ks_search`'s line grows, and only at
   the end, so any consumer keyed on field position (the SessionEnd one-liner,
@@ -35,6 +37,70 @@ reads that marker; a stranger greps for it before pulling.
   `workflows/scripts/validate-knowledge-search-emit.sh` is the new presence
   lint guarding this wiring (the `validate-issue-touch-emit.sh` mold applied
   to a pure-library emit with no markdown orchestration step).
+
+- **Abstention floor below a measured per-mode score/lexical-coverage floor
+  (foundation#1450, foundation epic #1443). Opt-in, both backends, off by
+  default.** `ks_search` can now decline to answer a query at all: below a
+  measured floor on the shipped hybrid+rerank surface (temperloop#1446), it
+  returns the existing genuine-zero-result shape instead of confident-looking
+  low-relevance hits. Set `KNOWLEDGE_SEARCH_ABSTAIN=1` to enable it (default
+  `0` — see rationale below); `KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR` (default
+  `0.72`) and `KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR` (default `0.10`) tune the
+  two floors. The gate looks only at the top-ranked, post-re-rank candidate
+  and requires **both** floors to fail — a conjunction, not either surface
+  alone.
+
+  **Why a conjunction, not a single floor.** Measured on the 213-query
+  engine-neutral golden-query bench (foundation's
+  `workflows/scripts/evals/golden-queries/`; 204 labeled + 9
+  correct-abstention queries), two single-surface floors were rejected first:
+  raw `.score` is query-relative (the re-rank's own trap 1) and the 9
+  correct-abstention queries' top score (0.65–0.76) sits *inside* genuine
+  hits' own range (0.58–1.28, median 0.79) — a floor tight enough to catch
+  most abstention cases costs 30%+ of genuine top-5 hits. The re-rank's own
+  RRF fusion score is rank-dominated (its leading term is a near-constant
+  `1/(rrfk+0)` for every query's top-ranked candidate, answerable or not) and
+  carries almost no separating signal alone either. What separates, measured
+  on that corpus, is the **conjunction** of the top-ranked candidate's raw
+  score AND its lexical-coverage feature `L` (the re-rank's own title/path
+  term-agreement score, already computed for the fusion) — because in this
+  corpus a genuine hit is almost always a strong semantic match, a strong
+  lexical match, or both, so requiring BOTH to be simultaneously weak is what
+  isolates the unanswerable queries.
+
+  **Measured result, two independent runs (byte-identical — the fused
+  candidate order is deterministic; only *tie-breaking* among near-equal
+  ranks jitters per trap 3):** at the shipped defaults, correct-abstention
+  moved from the pre-existing 0/9 baseline to **4/9**, with **0/186** labeled
+  top-5 hits lost (aggregate hit@5 unchanged — well inside the ~3% jitter
+  budget). Ships opt-in rather than default-on because this is judged
+  BREAKING-adjacent: it changes the result set an existing caller receives on
+  any live query that happens to land in the low-score/low-lexical-coverage
+  region, and the calibration set is small (all 9 correct-abstention examples
+  that exist in the corpus — there is no held-out set to validate recall
+  against). The zero-measured-cost property is the load-bearing safety claim
+  here; the 4/9 recall figure is directional, not a guarantee against novel
+  unanswerable queries.
+
+  **The rg-fallback interaction (ratified L1 mode-sweep semantics, consumed
+  here, not re-decided).** An abstention is a **post-re-rank empty**, never a
+  **backend-empty** — the backend returned real candidates; the floor
+  discarded them. The score-0 ripgrep lexical fallback (foundation#950) fires
+  only on a genuine backend-empty, so it stays **suppressed** on a
+  floor-triggered abstention even when a literal corpus match exists on disk
+  (`abstained=1`, `rg_fallback=0` — both verified by test). Wires the
+  previously-hardcoded `abstained` outcome field (foundation#1449) from `0`
+  to `1` when this fires — its live misfire monitor.
+
+  Implementation is a single shared point: `_ks_bm_rerank` (one
+  implementation reused by both the cold `basic-memory` backend and the warm
+  `basic-memory-mcp` daemon backend) signals an abstention with one sentinel
+  line in place of its normal JSONL stream; `ks_search` is the one place that
+  consumes it, converts it to the real empty-result shape, and suppresses the
+  rg fallback — the sentinel never reaches a caller. The `ks_search` JSONL
+  output shape and exit-code contract are byte-unchanged for every
+  non-abstaining query, and off by default (`KNOWLEDGE_SEARCH_ABSTAIN=0`) is
+  a true no-op, identical to pre-#1450 behavior.
 
 ## [0.20.0] - 2026-07-29
 
