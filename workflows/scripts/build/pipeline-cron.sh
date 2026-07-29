@@ -156,9 +156,12 @@ _pipeline_backfill() {
   mkdir -p "$to"
   found=0
   shopt -s nullglob
-  # v0.17.0 rename legacy window (temperloop#729): a pre-rename lake carries
-  # funnel-<YYYY-MM>.jsonl month-files — migrate them too (kept under their
-  # original basenames; the readers' legacy glob unions them through v0.19.0).
+  # PERMANENT legacy-prefix read (temperloop#767 kept this when the rest of
+  # the v0.17.0 rename window closed): a pre-rename lake carries
+  # funnel-<YYYY-MM>.jsonl month-files — backfill them too, kept under their
+  # ORIGINAL basenames, since the lake is append-only immutable history. The
+  # readers' legacy glob unions them in permanently (telemetry-brief.sh
+  # stream_files; meta/data/raw/README.md § `pipeline`).
   for f in "$from"/pipeline-*.jsonl "$from"/funnel-*.jsonl; do
     found=1
     base="$(basename "$f")"

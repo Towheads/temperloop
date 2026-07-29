@@ -11,8 +11,9 @@ this kernel checkout emits.
 
 **Scope.** This stub documents only the streams a bare kernel checkout
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
-unioned at read time), `funnel`, `knowledge-search-fallback`, `gh-calls`,
-and `session-context`.
+unioned at read time), `pipeline` (plus its pre-rename `funnel-*` month-files,
+also unioned at read time — see that stream below), `knowledge-search-fallback`,
+`gh-calls`, and `session-context`.
 A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
@@ -24,7 +25,7 @@ rather than replacing it.
 ## Lake path convention
 
 Every stream lands in this directory (or wherever `<STREAM>_RAW_DIR` /
-`FUNNEL_RAW_DIR` overrides point, tests only) as one file per calendar month:
+`PIPELINE_RAW_DIR` overrides point, tests only) as one file per calendar month:
 
 ```
 meta/data/raw/<stream>-<YYYY-MM>.jsonl
@@ -33,7 +34,9 @@ meta/data/raw/<stream>-<YYYY-MM>.jsonl
 - `command-runs-<YYYY-MM>.jsonl`
 - `issue-touches-<YYYY-MM>.jsonl`
 - `claims-<YYYY-MM>.jsonl`
-- `funnel-<YYYY-MM>.jsonl`
+- `pipeline-<YYYY-MM>.jsonl` (plus, on a lake that predates the v0.17.0
+  rename, `funnel-<YYYY-MM>.jsonl` — a **permanent legacy-prefix read**, see
+  below)
 - `gh-calls-<YYYY-MM>.jsonl`
 - `session-context-<YYYY-MM>.jsonl`
 
@@ -50,7 +53,7 @@ optional field is not a breaking change and does not require a bump).
 
 Not every stream carries the field explicitly yet. `issue-touches` is the
 precedent: every record explicitly carries `schema_version: "1"`. Streams
-that don't yet emit the field (`command-run`, `claims`, `funnel`) are
+that don't yet emit the field (`command-run`, `claims`, `pipeline`) are
 implicitly at their initial, unversioned shape — the convention going forward
 is that the *first* breaking change to any of those streams is also the
 change that introduces its `schema_version` field (starting at `"1"`), rather
@@ -153,13 +156,25 @@ sink — `$HOME/dev/foundation/meta/data/raw/claims-*.jsonl` — directly, union
 with its own local lake. (In a composed/foundation checkout, the overlay
 `/retro` command's Step 1 performs exactly this union — foundation#1216.)
 
-### `funnel` — `funnel-<YYYY-MM>.jsonl`
+### `pipeline` — `pipeline-<YYYY-MM>.jsonl` (+ the permanent legacy prefix)
 
-Emitted by `workflows/scripts/build/funnel-cron.sh` (foundation #596), one
+Emitted by `workflows/scripts/build/pipeline-cron.sh` (foundation #596), one
 record per cron wake — every wake writes exactly one record via the script's
 `emit_record` chokepoint, which stamps a shared `ts` onto whatever event
 record Steps 1–4 built. Records are heterogeneous by `event`; the fields
 below `event`/`ts` vary by event type.
+
+**Permanent legacy-prefix read.** Before the v0.17.0 terminology
+consolidation (temperloop#729) this stream was named `funnel-<YYYY-MM>.jsonl`.
+The lake is **append-only immutable history**, so those month-files are never
+rewritten under the new prefix — readers union both prefixes, read-only,
+**permanently**. This deliberately survived the v0.19.0 close of the rest of
+that rename's compat window (temperloop#767): the window's env shim and
+forwarding stubs are gone, but this read is not part of the window. It is
+self-limiting — writers emit only `pipeline-*`, so no new legacy month-file is
+ever created — and it is exercised by `workflows/scripts/telemetry-brief.sh`
+(`stream_files`) and preserved across lake moves by `pipeline-cron.sh
+--backfill`.
 
 Base shape: `{event, ts, ...event-specific fields}`
 
@@ -167,7 +182,7 @@ Base shape: `{event, ts, ...event-specific fields}`
 |---|---|---|
 | `skipped` | the schedule gate declined this wake | `date`, `reason`, optional `context` (gate error) |
 | `ran` | the gate allowed the wake and a tick ran | `date`, `boards` (array), `nonop_actions` (integer), `duration_ms`, `plans` (array of per-board tick plans) |
-| `drive` | rung 5b/5c auto-drive executed (only when `FUNNEL_DRIVE=1` and the tick found non-no-op work) | `status`, `date`, `duration_ms`, and on error: `reason`, `context` (captured driver stderr) |
+| `drive` | rung 5b/5c auto-drive executed (only when `PIPELINE_DRIVE=1` and the tick found non-no-op work) | `status`, `date`, `duration_ms`, and on error: `reason`, `context` (captured driver stderr) |
 
 Any record may also carry a `self_update` object (foundation #598's
 self-update sandbox outcome) when a self-update was attempted that wake.
@@ -262,7 +277,7 @@ Record shape: `{schema_version, ts, host, start_ms, dur_ms, exit_code, pid, ppid
 | `exit_code` | integer | the wrapped call's verbatim exit code, including 128+N signal deaths (e.g. Ctrl-C → 130) |
 | `pid` / `ppid` | integer | the shim process's own pid / parent pid |
 | `tool` | string | `"gh"` or `"git-bug"` — this shim's own install basename (basename-generic: the same script installed as either name logs+dispatches that same name) |
-| `context` | string \| null | `$GH_CALL_CONTEXT` — the outermost command (`worklist` / `reconcile` / `funnel-tick` / …), `null` when unset |
+| `context` | string \| null | `$GH_CALL_CONTEXT` — the outermost command (`worklist` / `reconcile` / `pipeline-tick` / …), `null` when unset |
 | `op` | string \| null | `$GH_CALL_OP` — fine-grained per-call attribution tag (e.g. the board adapter's calling function), `null` when unset |
 | `cwd` | string | `$PWD` at call time |
 | `args` | string | the wrapped call's arguments, space-joined, with embedded tabs/newlines flattened to spaces (same sanitization as the TSV's `args` column, so a GraphQL query arg can never split or corrupt the record) |

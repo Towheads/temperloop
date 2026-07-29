@@ -197,10 +197,12 @@ else
   fail_test "check-in.md names telemetry-brief.sh specifically" "reference missing"
 fi
 
-# ── 7. v0.17.0 legacy stream read (temperloop#729): funnel-*.jsonl unioned ──
+# ── 7. legacy stream read (temperloop#729): funnel-*.jsonl unioned ──────────
 # A pre-rename install's lake has only funnel-<YYYY-MM>.jsonl history — the
 # renderer must still see it (read-only legacy glob, NOTE on stderr) so the
-# accumulated telemetry does not go dark at upgrade. Window closes v0.19.0.
+# accumulated telemetry does not go dark at upgrade. This read is PERMANENT:
+# it deliberately survived the v0.19.0 terminology-window close
+# (temperloop#767) because the raw lake is append-only immutable history.
 legacy_lake="$TMP/legacy-lake"
 mkdir -p "$legacy_lake"
 cat > "$legacy_lake/funnel-${month}.jsonl" <<EOF

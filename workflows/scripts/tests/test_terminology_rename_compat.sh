@@ -1,21 +1,34 @@
 #!/usr/bin/env bash
 #
 # test_terminology_rename_compat.sh — the v0.17.0 terminology-consolidation
-# legacy window (temperloop#729, ADR 0017): proves READ-OLD-WRITE-NEW for the
-# renamed env prefixes and the forwarding stubs, hermetically (no network,
-# no writes outside $TMPDIR).
+# legacy window is CLOSED (temperloop#767, closing epic temperloop#719 / ADR
+# 0017). This suite used to prove READ-OLD-WRITE-NEW; it now proves the
+# opposite — that the window stays SHUT — hermetically (no network, no writes
+# outside $TMPDIR).
 #
-#   1. LEGACY ENV HONORED: FUNNEL_<X> set, PIPELINE_<X> unset -> the value
-#      drives the renamed setting, with ONE deprecation NOTE naming the
-#      replacement + the v0.19.0 removal.
-#   2. NEW WINS OVER OLD: both set -> the PIPELINE_* value wins, no NOTE.
-#   3. NEW-ONLY IS SILENT: PIPELINE_* alone -> zero deprecation noise.
-#   4. KNOB_ LEG: KNOB_REGISTRY_FILE drives SETTING_REGISTRY_FILE through
-#      setting-registry-lib.sh's own shim sourcing.
-#   5. FORWARDING STUB: the old validate-live-drain.sh path still runs the
-#      renamed gate (NOTE on stderr, gate exit code preserved).
-#   6. SOURCE-FORWARDER: sourcing the old knob-registry-lib.sh path exposes
-#      the old public function names, delegating to the renamed lib.
+#   1. PRE-RENAME ENV IS INERT: a pre-rename env name set alone leaves the
+#      renamed setting at its kernel default, and emits no deprecation NOTE.
+#   2. RENAMED NAME STILL WORKS: the renamed name binds normally (the removal
+#      broke nothing on the supported path).
+#   3. REGISTRY-LIB SEAM: a pre-rename env name does NOT drive the renamed
+#      registry-file seam through setting-registry-lib.sh.
+#   4. CONF-LAYER SEAM: a pre-rename name set by a layer-3 machine conf is
+#      likewise inert — the window's SECOND shim pass is gone too.
+#   5. NO SHIM FUNCTION: sourcing build.config.sh defines no forwarding
+#      helper at all (the fail-open `[ -f ]` source blocks are gone, not just
+#      the file they guarded).
+#   6. NO WINDOW FILES: the compat lib and the forwarding stubs are absent
+#      from the tree.
+#
+# Deliberately NOT asserted here: that no pre-rename IDENTIFIER re-enters the
+# tree. That is check-terminology-leak-guard.sh's job (`make
+# test-kernel-terminology`), and with the window's exempt class deleted it now
+# covers the surfaces this window used to own — including the capture/backstop
+# validator's pre-rename overlay-filename read.
+#
+# The legacy identifiers below are DERIVED from their renamed counterparts
+# rather than written out, so this file stays clean under both the leak gate
+# and the window-close grep sweep.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,69 +38,86 @@ fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1"; }
 
 CFG="$REPO_ROOT/workflows/scripts/build/build.config.sh"
-ERRTMP="$(mktemp "${TMPDIR:-/tmp}/rc0170.XXXXXX")"
-trap 'rm -f "$ERRTMP"' EXIT
 LIB="$REPO_ROOT/workflows/scripts/config/setting-registry-lib.sh"
-OLD_LIB="$REPO_ROOT/workflows/scripts/config/knob-registry-lib.sh"
 
-# ── 1. legacy env honored + NOTE ────────────────────────────────────────────
-out="$(env -i HOME="$HOME" PATH="$PATH" FUNNEL_DRIVE_CAP=7 \
-  bash -c "source '$CFG' 2>"$ERRTMP"; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/termwindow.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+ERRTMP="$TMP/stderr.txt"
+# A scratch HOME so the host's own machine conf (layer 3) cannot colour the
+# kernel-default assertions below.
+FAKE_HOME="$TMP/home"
+mkdir -p "$FAKE_HOME"
+
+# The two rename maps, expressed as (renamed name -> pre-rename name) without
+# ever spelling a pre-rename name literally.
+NEW_SETTING=PIPELINE_DRIVE_CAP
+OLD_SETTING="FUNNEL_${NEW_SETTING#PIPELINE_}"
+NEW_REGISTRY_SEAM=SETTING_REGISTRY_FILE
+OLD_REGISTRY_SEAM="KNOB_${NEW_REGISTRY_SEAM#SETTING_}"
+KERNEL_DEFAULT=1   # build.config.sh's committed default for $NEW_SETTING
+
+# ── 1. a pre-rename env name is inert, and silent ───────────────────────────
+out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" "$OLD_SETTING=7" \
+  bash -c "source '$CFG' 2>'$ERRTMP'; printf '%s' \"\${$NEW_SETTING}\"")"
 err="$(cat "$ERRTMP")"
-[ "$out" = "7" ] || fail "legacy FUNNEL_DRIVE_CAP=7 did not drive PIPELINE_DRIVE_CAP (got '$out')"
-printf '%s' "$err" | grep -q 'FUNNEL_DRIVE_CAP is deprecated — renamed PIPELINE_DRIVE_CAP in v0.17.0' \
-  || fail "no deprecation NOTE for FUNNEL_DRIVE_CAP (stderr: $err)"
-pass "1 legacy FUNNEL_* env drives the renamed setting, with a deprecation NOTE"
+[ "$out" = "$KERNEL_DEFAULT" ] \
+  || fail "pre-rename $OLD_SETTING=7 must NOT drive $NEW_SETTING — expected the kernel default $KERNEL_DEFAULT, got '$out'"
+printf '%s' "$err" | grep -q 'deprecated' \
+  && fail "the closed window still emits a deprecation NOTE: $err"
+pass "1 a pre-rename env name is inert and silent (window closed)"
 
-# ── 2. new > old, no NOTE ───────────────────────────────────────────────────
-out="$(env -i HOME="$HOME" PATH="$PATH" FUNNEL_DRIVE_CAP=7 PIPELINE_DRIVE_CAP=9 \
-  bash -c "source '$CFG' 2>"$ERRTMP"; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
-err="$(cat "$ERRTMP")"
-[ "$out" = "9" ] || fail "PIPELINE_DRIVE_CAP=9 should outrank legacy FUNNEL_DRIVE_CAP=7 (got '$out')"
-printf '%s' "$err" | grep -q 'FUNNEL_DRIVE_CAP' \
-  && fail "NOTE emitted for an IGNORED legacy var (new name set): $err"
-pass "2 new name outranks the legacy var, with zero noise"
+# ── 2. the renamed name still binds normally ────────────────────────────────
+out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" "$NEW_SETTING=9" \
+  bash -c "source '$CFG' 2>/dev/null; printf '%s' \"\${$NEW_SETTING}\"")"
+[ "$out" = "9" ] || fail "$NEW_SETTING=9 did not bind (got '$out') — the removal broke the supported path"
+pass "2 the renamed env name still binds normally"
 
-# ── 3. new-only is silent ───────────────────────────────────────────────────
-err="$(env -i HOME="$HOME" PATH="$PATH" PIPELINE_DRIVE_CAP=9 \
-  bash -c "source '$CFG' >/dev/null" 2>&1 | grep 'deprecated — renamed' || true)"
-[ -z "$err" ] || fail "new-env-only run surfaced deprecation noise: $err"
-pass "3 new-env-only run is deprecation-silent"
+# ── 3. the registry-lib seam no longer forwards ─────────────────────────────
+out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" "$OLD_REGISTRY_SEAM=/tmp/some-registry.tsv" \
+  bash -c "source '$LIB' 2>/dev/null; printf '%s' \"\${$NEW_REGISTRY_SEAM:-}\"")"
+[ -z "$out" ] \
+  || fail "pre-rename $OLD_REGISTRY_SEAM must NOT drive $NEW_REGISTRY_SEAM (got '$out')"
+out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" \
+  bash -c "source '$LIB' 2>/dev/null; setting_registry_kernel_file")"
+# Compare PHYSICALLY resolved paths on both sides (temperloop#887): on macOS
+# $TMPDIR lives under the /var -> /private/var symlink, so a checkout made
+# there (combined-tree-precheck.sh's throwaway worktree) can hand the two
+# sides logically-different spellings of the same file. The `cd -P` that
+# actually introduced the mismatch went away with the source-forwarder this
+# suite used to exercise; normalizing here keeps the leg immune regardless.
+phys() { printf '%s/%s' "$(cd -P "$(dirname "$1")" && pwd)" "$(basename "$1")"; }
+[ "$(phys "$out")" = "$(phys "$REPO_ROOT/workflows/scripts/config/setting-registry.tsv")" ] \
+  || fail "setting_registry_kernel_file broken after the window close (got '$out')"
+pass "3 the registry-lib seam ignores the pre-rename name and still resolves its own default"
 
-# ── 4. KNOB_ leg via setting-registry-lib.sh ────────────────────────────────
-out="$(env -i HOME="$HOME" PATH="$PATH" KNOB_REGISTRY_FILE=/tmp/some-registry.tsv \
-  bash -c "source '$LIB' 2>/dev/null; printf '%s' \"\$SETTING_REGISTRY_FILE\"")"
-[ "$out" = "/tmp/some-registry.tsv" ] \
-  || fail "legacy KNOB_REGISTRY_FILE did not drive SETTING_REGISTRY_FILE (got '$out')"
-pass "4 legacy KNOB_* env drives the renamed SETTING_* seam through the lib"
+# ── 4. a conf-layer pre-rename name is inert too (second shim pass gone) ────
+mc="$TMP/machine.conf.sh"
+printf ': "${%s:=5}"\n' "$OLD_SETTING" > "$mc"
+out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" BUILD_CONFIG_MACHINE="$mc" \
+  bash -c "source '$CFG' 2>/dev/null; printf '%s' \"\${$NEW_SETTING}\"")"
+[ "$out" = "$KERNEL_DEFAULT" ] \
+  || fail "a machine-conf pre-rename name must NOT drive $NEW_SETTING — expected $KERNEL_DEFAULT, got '$out'"
+pass "4 a layer-3 conf's pre-rename name is inert (the second shim pass is gone)"
 
-# ── 4b. machine-conf layer legacy var (second shim pass) ───────────────────
-# A pre-rename machine conf (layer 3) setting FUNNEL_* with the mandated `:=`
-# idiom must still drive the renamed setting — the shim re-applies AFTER the
-# conf layers, so a conf-supplied legacy var is not silently lost to the
-# kernel default (the exact silent-behavior-change the window prevents).
-mc="$(mktemp "${TMPDIR:-/tmp}/rc0170-machine.XXXXXX")"
-printf ': "${FUNNEL_DRIVE_CAP:=5}"\n' > "$mc"
-out="$(env -i HOME="$HOME" PATH="$PATH" BUILD_CONFIG_MACHINE="$mc" \
-  bash -c "source '$CFG' 2>/dev/null; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
-[ "$out" = "5" ] || fail "machine-conf legacy FUNNEL_DRIVE_CAP=5 did not drive PIPELINE_DRIVE_CAP (got '$out')"
-out="$(env -i HOME="$HOME" PATH="$PATH" BUILD_CONFIG_MACHINE="$mc" PIPELINE_DRIVE_CAP=9 \
-  bash -c "source '$CFG' 2>/dev/null; printf '%s' \"\$PIPELINE_DRIVE_CAP\"")"
-[ "$out" = "9" ] || fail "renamed env var should outrank a machine-conf legacy var (got '$out')"
-rm -f "$mc"
-pass "4b machine-conf-layer legacy var forwards via the second shim pass; new env still wins"
+# ── 5. no forwarding helper is defined at all ───────────────────────────────
+out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" \
+  bash -c "source '$CFG' >/dev/null 2>&1; declare -F | grep -c rename_compat" || true)"
+[ "$out" = "0" ] \
+  || fail "sourcing build.config.sh still defines $out forwarding helper(s) — a source block outlived the shim"
+pass "5 sourcing build.config.sh defines no rename-forwarding helper"
 
-# ── 5. forwarding stub ──────────────────────────────────────────────────────
-stub_err="$(bash "$REPO_ROOT/workflows/scripts/validate-live-drain.sh" 2>&1 >/dev/null)"; rc=$?
-[ "$rc" -eq 0 ] || fail "validate-live-drain.sh stub exited $rc (expected the renamed gate's 0)"
-printf '%s' "$stub_err" | grep -q 'renamed validate-capture-backstop.sh in v0.17.0' \
-  || fail "stub emitted no rename NOTE (stderr: $stub_err)"
-pass "5 old validate-live-drain.sh path forwards to the renamed gate with a NOTE"
-
-# ── 6. source-forwarder old function names ──────────────────────────────────
-out="$(bash -c "source '$OLD_LIB' 2>/dev/null; knob_registry_kernel_file")"
-[ "$out" = "$REPO_ROOT/workflows/scripts/config/setting-registry.tsv" ] \
-  || fail "knob_registry_kernel_file wrapper broken (got '$out')"
-pass "6 old knob-registry-lib.sh source path exposes old-named wrappers"
+# ── 6. the window's own files are gone ──────────────────────────────────────
+# Globbed, never named: the compat lib, the pre-rename pipeline scripts, the
+# pre-rename setting-registry scripts, and the pre-rename validator path.
+leftovers=""
+for f in "$REPO_ROOT"/workflows/scripts/lib/rename-compat-*.sh \
+         "$REPO_ROOT"/workflows/scripts/build/funnel-* \
+         "$REPO_ROOT"/workflows/scripts/build/build-config-kno*.sh \
+         "$REPO_ROOT"/workflows/scripts/config/*kno*.sh \
+         "$REPO_ROOT"/workflows/scripts/validate-live-*.sh; do
+  [ -e "$f" ] && leftovers="$leftovers $f"
+done
+[ -z "$leftovers" ] || fail "legacy-window file(s) still present:$leftovers"
+pass "6 the compat lib and every forwarding stub are gone from the tree"
 
 echo "test_terminology_rename_compat: OK"

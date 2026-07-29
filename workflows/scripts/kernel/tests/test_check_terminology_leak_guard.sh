@@ -6,7 +6,7 @@
 #
 #   1. clean fixture -> green
 #   2. a NEW FUNNEL_* env identifier -> red, names the file + token
-#   3. an old renamed-script path reference (validate-live-drain.sh) -> red
+#   3. an old renamed-file reference (the pre-rename driver doc) -> red
 #   4. a coined severity token (blocking-now) -> red
 #   5. an ALLOWED persisted-state literal (funnel-merge-pending,
 #      funnel:decision-applied, /tmp/funnel-tick) alone -> green
@@ -48,12 +48,16 @@ printf '%s' "$out" | grep -q 'FUNNEL_NEW_THING' || fail "red output does not sho
 pass "2 a new FUNNEL_* identifier trips the gate, naming file + token"
 rm "$FIX/bad-env.sh"
 
-# 3 old script path
-printf 'bash workflows/scripts/validate-live-drain.sh\n' > "$FIX/bad-path.sh"
+# 3 old renamed-file path. Uses the pre-rename DRIVER DOC rather than one of
+# the deleted stub scripts: the v0.19.0 window close (temperloop#767) made
+# every stub basename grep-clean outside the historical records, and this
+# fixture would otherwise reintroduce one. The shape family is the same.
+printf 'see claude/commands/funnel-driver.md\n' > "$FIX/bad-path.md"
 git -C "$FIX" add -A
-out="$(run_gate)" && fail "old validate-live-drain.sh path not caught"
-pass "3 an old renamed-script path reference trips the gate"
-rm "$FIX/bad-path.sh"
+out="$(run_gate)" && fail "old renamed-file reference not caught"
+printf '%s' "$out" | grep -q 'bad-path.md' || fail "red output does not name the file: $out"
+pass "3 an old renamed-file path reference trips the gate"
+rm "$FIX/bad-path.md"
 
 # 4 coined severity token
 printf 'this halt is blocking-now severity\n' > "$FIX/bad-term.md"

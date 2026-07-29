@@ -373,6 +373,74 @@ reads that marker; a stranger greps for it before pulling.
   install-path constants are renamed to `TEMPERLOOP_CLI_HOME_DEFAULT` /
   `TEMPERLOOP_CLI_BIN_DEFAULT`, dropping their pre-rename prefix.
 
+- **BREAKING — the v0.17.0 terminology-consolidation compatibility window is
+  CLOSED (epic temperloop#719, temperloop#767).** The read-old-write-new
+  window opened in v0.17.0 with a stated v0.19.0 removal; this is that
+  removal. The env shim, every forwarding stub at an old script path, the
+  source-forwarder, and the legacy registry-filename resolution are deleted.
+  Unlike the `foundation` → `temperloop` window above, these arms **fail
+  silently by construction** — a stub is invoked by path and an env shim is
+  sourced under `[ -f ]` — so there is no refusal to leave behind: a caller
+  still on a legacy name now gets "no such file or directory" from its own
+  shell, or simply no binding. The v0.17.0 `BREAKING` entry carries the full
+  rename map; what is gone as of this release:
+
+  - **Legacy `FUNNEL_*` / `KNOB_*` env vars are no longer read.**
+    `workflows/scripts/lib/rename-compat-0170.sh` is deleted, along with
+    **both** of its `[ -f ]`-guarded source blocks — the two in
+    `workflows/scripts/build/build.config.sh` (including the second,
+    post-conf-layer forwarding pass) and the one in
+    `workflows/scripts/config/setting-registry-lib.sh`. A pre-rename env name
+    now binds nothing and prints nothing, including one set by a layer-3
+    machine conf or a layer-4 repo-local conf.
+    *Migration:* rename the variable (`FUNNEL_<NAME>` → `PIPELINE_<NAME>`,
+    `KNOB_<NAME>` → `SETTING_<NAME>`).
+  - **The ten forwarding stubs at the old script paths are deleted.**
+    `workflows/scripts/build/funnel-{cron,drive,tick,overlap,schedule-gate}.sh`,
+    `workflows/scripts/build/build-config-knobs.sh`,
+    `workflows/scripts/config/check-knob-{registry,prose}.sh`,
+    `workflows/scripts/config/knob-registry-lib.sh` (the source-forwarder,
+    which also re-exposed the `knob_registry_*` function names), and
+    `workflows/scripts/validate-live-drain.sh`.
+    *Migration:* invoke the renamed sibling (`pipeline-*.sh`,
+    `build-config-settings.sh`, `check-setting-*.sh`,
+    `setting-registry-lib.sh` + the `setting_registry_*` names, and
+    `validate-capture-backstop.sh`).
+  - **The legacy registry FILENAME and table spellings are no longer read.**
+    `validate-capture-backstop.sh` stops resolving a pre-rename
+    `claude/live-drain-registry.overlay.md` when the renamed
+    `claude/capture-backstop-registry.overlay.md` is absent, and its table
+    parser stops accepting the pre-rename `## Live/Drain pairings` heading and
+    `| Live rule` column header. **This is the one arm that can degrade
+    quietly:** an overlay checkout still shipping the old filename now reads
+    as "no overlay extension present", so its rows are simply not validated.
+    *Migration:* rename the file and its table heading/column.
+
+  **Deliberately NOT removed** (not window-scoped compat): the
+  `funnel-<YYYY-MM>.jsonl` telemetry read-union in
+  `workflows/scripts/telemetry-brief.sh` and `pipeline-cron.sh --backfill`.
+  The raw lake is append-only immutable history, so a pre-rename install's
+  month-files can never be rewritten under the renamed prefix — that read is
+  **permanent** and self-limiting (writers emit only `pipeline-*`), and is now
+  documented as such in `meta/data/raw/README.md`. Also unchanged, exactly as
+  the v0.17.0 rename promised: the persisted-state literal VALUES —
+  the `funnel-merge-pending` / `funnel-escalated` GitHub labels, the
+  `<!-- funnel:clarification-drained -->` / `<!-- funnel:decision-applied -->`
+  issue markers, the `~/.claude/funnel/*` state paths, and the
+  `/tmp/funnel-tick` lock dir.
+
+  Registry follow-through in the same change (the fail-open arms above mean a
+  half-removal fails nothing, so every registry that named a deleted path is
+  pruned in lockstep): the `window` and `registry` exempt classes are deleted
+  from `workflows/scripts/kernel/terminology-leak-exempt-files.txt`, leaving
+  `record` + `self` — so `make test-kernel-terminology` now guards the
+  surfaces the window used to own; `docs/features/feature-manifest.txt` and
+  `workflows/scripts/kernel/kernel-manifest.txt` drop their claims on the
+  deleted paths; and `workflows/scripts/tests/test_terminology_rename_compat.sh`
+  is inverted from a READ-OLD-WRITE-NEW proof into a window-STAYS-SHUT
+  regression test (a pre-rename name must bind nothing and say nothing, and no
+  window file may reappear).
+
 ## [0.18.0] - 2026-07-26
 
 ### Added

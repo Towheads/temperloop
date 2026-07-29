@@ -50,14 +50,14 @@
 # writeup, and how `boards.conf`'s XDG-then-repo-local discovery is an
 # INSTANCE of this same order: ../../../docs/config-precedence.md.
 #
-# ── v0.17.0 terminology-rename legacy window (temperloop#729) ────────────────
-# Legacy FUNNEL_*/KNOB_* env vars still drive the renamed PIPELINE_*/SETTING_*
-# settings (NEW > OLD > default, one NOTE per legacy var used) through v0.19.0.
-# Fail-open: a consuming repo that does not vendor the lib skips the shim.
-_rc0170="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/rename-compat-0170.sh"
-# shellcheck source=workflows/scripts/lib/rename-compat-0170.sh
-if [ -f "$_rc0170" ]; then . "$_rc0170"; fi
-unset _rc0170
+# ── v0.17.0 terminology-rename legacy window: CLOSED in v0.19.0 ─────────────
+# The window's env shim (which forwarded the pre-rename FUNNEL_*/KNOB_* env
+# prefixes onto the renamed PIPELINE_*/SETTING_* settings, NEW > OLD > default)
+# was deleted with the rest of the window in v0.19.0 (temperloop#767, ADR
+# 0017). A pre-rename env name is now simply UNREAD — it binds nothing and
+# emits nothing. The v0.17.0 CHANGELOG BREAKING entry carries the full rename
+# map; persisted external state (labels, issue markers, state paths, the lock
+# dir) was deliberately never remapped and is unaffected.
 
 # ── Precedence layer 3: machine conf ─────────────────────────────────────────
 # Sourced FIRST (before repo-local and before this file's own defaults) so it
@@ -94,16 +94,11 @@ if [ -f "$BUILD_CONFIG_LOCAL" ]; then
   . "$BUILD_CONFIG_LOCAL"
 fi
 
-# Second legacy-window pass (temperloop#729): layers 3/4 above may THEMSELVES
-# set pre-rename FUNNEL_*/KNOB_* names (a machine conf or local conf written
-# before the v0.17.0 rename). The first shim pass at the top of this file ran
-# before they were sourced, so forward again now — the shim is NEW > OLD, so
-# a renamed name already set (env, or the first pass) still wins, and only a
-# conf-supplied legacy var gains a new-name binding here (with its NOTE).
-if command -v _rename_compat_0170_apply >/dev/null 2>&1; then
-  _rename_compat_0170_apply "FUNNEL_" "PIPELINE_"
-  _rename_compat_0170_apply "KNOB_" "SETTING_"
-fi
+# (The legacy window's SECOND shim pass stood here — it re-forwarded
+# pre-rename names that a layer-3/4 conf had set ITSELF, after those confs
+# were sourced. It closed with the window in v0.19.0, temperloop#767: a
+# machine conf or repo-local conf written before the v0.17.0 rename must now
+# set the renamed names directly, or its values are ignored.)
 
 # ── Precedence layer 5 / 6: tracked repo conf / kernel built-in defaults ─────
 # Everything below is this file's own `:=` default set. It runs LAST, after

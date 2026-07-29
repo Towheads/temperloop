@@ -86,12 +86,16 @@ cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}"
-# v0.17.0 rename legacy window (temperloop#729): NOTE once per run when legacy
-# funnel-<YYYY-MM>.jsonl month-files are present (stream_files unions them in,
-# read-only, through v0.19.0 — writers emit only pipeline-*.jsonl).
+# PERMANENT legacy-prefix read (temperloop#767 confirmed this survives the
+# v0.19.0 window close, unlike the env shim and the forwarding stubs): the
+# raw lake is append-only immutable history, so a pre-rename install's
+# funnel-<YYYY-MM>.jsonl month-files can never be rewritten into the renamed
+# prefix — stream_files unions them in READ-ONLY and forever (writers emit
+# only pipeline-*.jsonl). NOTE once per run when any are present. See
+# meta/data/raw/README.md § `pipeline`.
 for _lf in "$pipeline_dir"/funnel-*.jsonl; do
   if [ -e "$_lf" ]; then
-    echo "NOTE: reading legacy funnel-*.jsonl telemetry (renamed pipeline-*.jsonl in v0.17.0, temperloop#729; legacy read closes in v0.19.0)" >&2
+    echo "NOTE: reading legacy funnel-*.jsonl telemetry (the pipeline stream was renamed pipeline-*.jsonl in v0.17.0, temperloop#729; this read is permanent — the lake is append-only)" >&2
     break
   fi
 done
@@ -126,10 +130,13 @@ cutoff="$(cutoff_iso "$lookback")"
 stream_files() {  # $1=dir $2=stream-prefix -> matching month-files, one per line
   [ -d "$1" ] || return 0
   local f
-  # v0.17.0 rename legacy window (temperloop#729): the pipeline stream was
-  # named funnel-<YYYY-MM>.jsonl before the terminology consolidation. Union
-  # the legacy month-files in (read-only — writers emit only the new name)
-  # through v0.19.0, so an existing install's history does not go dark.
+  # PERMANENT legacy-prefix read (temperloop#729 renamed the stream;
+  # temperloop#767 kept THIS read when the rest of the window closed): the
+  # pipeline stream was named funnel-<YYYY-MM>.jsonl before the terminology
+  # consolidation, and the lake is append-only immutable history — those
+  # month-files can never be renamed, so union them in read-only, forever, or
+  # an existing install's accumulated history goes dark. Writers emit only
+  # the new name. Self-limiting: no new legacy file is ever created.
   if [ "$2" = "pipeline" ]; then
     for f in "$1/funnel"-*.jsonl; do
       [ -e "$f" ] && printf '%s\n' "$f"
