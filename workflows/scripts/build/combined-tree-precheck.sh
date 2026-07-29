@@ -39,7 +39,8 @@
 #   {"outcome":"CLEAN","branches":[…]}                                exit 0
 #   {"outcome":"SKIP","reason":"fewer-than-two-branches","branches":N} exit 0
 #   {"outcome":"CONFLICT","branch":"<ref>","branches":[…]}            exit 3
-#   {"outcome":"GATE_FAILED","exit_code":N,"output":"<tail>","branches":[…]} exit 4
+#   {"outcome":"GATE_FAILED","exit_code":N,"output":"<failing gate's own
+#     section>","failed_gates":[…],"suite_log":"<path>","branches":[…]} exit 4
 #   {"outcome":"ERROR","error":…}                                     exit 1
 # Exit codes: 0 CLEAN/SKIP; 1 ERROR (bad input / setup failure); 3 CONFLICT (a
 # branch would not merge into the accumulating union — a textual conflict); 4
@@ -48,6 +49,18 @@
 # names the FIRST branch that failed to merge; a batched union means a later
 # branch's conflict may be attributable to any earlier one, so the name is the
 # offending merge, not a root-cause claim.
+#
+# GATE_FAILED reason surfacing (temperloop#880). quality-gates.sh prints each
+# gate's output INLINE under a `=== <gate> ===` banner AS IT RUNS, and its
+# `FAILED n/N quality gate(s):` roll-up LAST. So on a ~2100-line suite log a
+# blind `tail -N` of the stream captures the roll-up — the failing gate's NAME —
+# and discards that gate's own `FAIL:` reason, hundreds of lines upstream: the
+# gate cried wolf without saying why. Instead this script keeps the WHOLE log
+# (outside the throwaway worktree, which the EXIT trap deletes), reads the
+# roll-up's named gates back out of it, and returns each named gate's OWN
+# section as `.output`, alongside `.failed_gates` (the names, machine-readable)
+# and `.suite_log` (the retained full log's path). An unexpected suite-output
+# shape falls back to the old tail rather than an empty reason.
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
@@ -88,6 +101,65 @@ resolve_repo() {
 
 # Build a JSON array of the branch list once, reused across every outcome line.
 _branches_json() { printf '%s\n' "$@" | jq -R . | jq -cs .; }
+
+# --- GATE_FAILED reason extraction (temperloop#880) --------------------------
+# Budgets, deliberately plain constants rather than operator settings: the JSON
+# is a diagnostic hand-off, and the FULL log is always retained at `.suite_log`,
+# so there is nothing here an operator would need to tune per repo.
+_CTP_TAIL_LINES=40          # the pre-#880 blind tail — now the FALLBACK only
+_CTP_SECTION_MAX_LINES=160  # per-gate section budget inside the JSON
+_CTP_SECTION_HEAD_LINES=10  # ... kept from the head when a section is elided
+
+# Read a whole suite log on stdin; report on the gate(s) the trailing
+# `FAILED n/N quality gate(s):` roll-up names.
+#   $1 = names     → one failing gate name per line
+#   $1 = sections  → each failing gate's own inline `=== <gate> ===` section,
+#                    blank-line separated, each capped at _CTP_SECTION_MAX_LINES
+#                    (head kept + tail kept, the elision marked inline — the
+#                    untruncated text is always in the retained log).
+# Prints NOTHING and exits 1 when the log carries no recognizable roll-up, or
+# when no named gate's banner can be found back in the log. That is the caller's
+# cue to fall back to the blind tail, so an unexpected suite-output shape
+# degrades to the pre-#880 behaviour instead of an empty reason.
+_ctp_gate_report() {
+  awk -v mode="$1" -v max="$_CTP_SECTION_MAX_LINES" -v keephead="$_CTP_SECTION_HEAD_LINES" '
+    { line[NR] = $0 }
+    END {
+      # The roll-up is the LAST such line — a nested suite run inside a gate
+      # could print one of its own, and the outermost one is ours.
+      for (i = NR; i >= 1; i--)
+        if (line[i] ~ /^FAILED [0-9]+\/[0-9]+ quality gate\(s\):$/) { summary = i; break }
+      if (!summary) exit 1
+      for (i = summary + 1; i <= NR; i++) {
+        if (line[i] !~ /^  - /) break
+        gate[++n] = substr(line[i], 5)
+      }
+      if (!n) exit 1
+      if (mode == "names") { for (g = 1; g <= n; g++) print gate[g]; exit 0 }
+      for (g = 1; g <= n; g++) {
+        # Exact string match, never a regex: a gate name is a full command line
+        # and may carry regex metacharacters.
+        hdr = "=== " gate[g] " ==="
+        start = 0
+        for (i = 1; i < summary; i++) if (line[i] == hdr) { start = i; break }
+        if (!start) continue
+        end = summary - 1
+        for (i = start + 1; i < summary; i++) if (line[i] ~ /^=== .+ ===$/) { end = i - 1; break }
+        while (end > start && line[end] == "") end--
+        if (emitted++) print ""
+        span = end - start + 1
+        if (span > max) {
+          for (i = start; i < start + keephead; i++) print line[i]
+          printf "... [%d line(s) elided — the untruncated section is in the retained suite log] ...\n", span - max
+          for (i = end - max + keephead + 1; i <= end; i++) print line[i]
+        } else {
+          for (i = start; i <= end; i++) print line[i]
+        }
+      }
+      if (!emitted) exit 1
+    }
+  '
+}
 
 # Throwaway-worktree teardown. The paths live at SCRIPT scope (not as
 # cmd_precheck locals) so the EXIT trap — which fires AFTER cmd_precheck has
@@ -164,10 +236,35 @@ cmd_precheck() {
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
-    local tail_out
-    tail_out="$(printf '%s' "$suiteout" | tail -40)"
-    jq -cn --arg out "$tail_out" --argjson code "$rc" --argjson brs "$brs_json" \
-      '{outcome:"GATE_FAILED", exit_code:$code, output:$out, branches:$brs}'
+    local logfile gate_names gates_json out_text
+    # Persist the WHOLE suite log OUTSIDE the throwaway worktree. _ctp_cleanup
+    # removes $wt on EXIT, so a log written under it would be gone by the time
+    # anyone followed the path we return — hence TMPDIR, not $wt. This file is
+    # deliberately LEFT BEHIND (it is the hand-off); the OS reaps TMPDIR.
+    logfile="$(mktemp "${TMPDIR:-/tmp}/combined-tree-suite.XXXXXX" 2>/dev/null)" || logfile=""
+    if [ -n "$logfile" ]; then
+      printf '%s\n' "$suiteout" > "$logfile" 2>/dev/null || logfile=""
+    fi
+
+    # The failing gate's OWN section, not a blind tail of the stream (see the
+    # header's "GATE_FAILED reason surfacing" note).
+    gate_names="$(printf '%s\n' "$suiteout" | _ctp_gate_report names)" || gate_names=""
+    out_text="$(printf '%s\n' "$suiteout" | _ctp_gate_report sections)" || out_text=""
+    if [ -z "$out_text" ]; then
+      # Graceful fallback: no recognizable roll-up, or a named gate whose banner
+      # isn't in the log (a suite that isn't quality-gates.sh, a test fixture, a
+      # future output-shape change). Old behaviour beats an empty reason.
+      out_text="$(printf '%s' "$suiteout" | tail -"$_CTP_TAIL_LINES")"
+    fi
+    gates_json="$(printf '%s' "$gate_names" | jq -R . | jq -cs 'map(select(. != ""))')"
+
+    # New fields are strictly ADDITIVE — `outcome`/`exit_code`/`output`/
+    # `branches` and exit 4 are unchanged, so /build Step 4a.5 and gate.sh keep
+    # working untouched. `suite_log` is "" when the log could not be persisted.
+    jq -cn --arg out "$out_text" --argjson code "$rc" --argjson brs "$brs_json" \
+      --argjson gates "$gates_json" --arg log "$logfile" \
+      '{outcome:"GATE_FAILED", exit_code:$code, output:$out, branches:$brs,
+        failed_gates:$gates, suite_log:$log}'
     return 4
   fi
 
