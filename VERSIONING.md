@@ -28,7 +28,7 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Pipeline command contracts** | operators running the slash commands; their documented steps + `plan-schema.md` shape | `claude/commands/*.md`, `claude/plan-schema.md` |
 | **Hook names + signatures** | a machine's installed hooks; anything keying off their I/O contract | `claude/hooks/*.sh` |
 | **Quality-gate contract** | CI + local gate parity: the required job name `checks`, the `KERNEL_GATES` set, the Capture/Backstop + PR-body-lint registry formats | `scripts/quality-gates.sh`, `.github/workflows/ci.yml` |
-| **CLI surface** | callers of `bin/temperloop` and its subcommands (`init`, `eject`, `try`, `report`, `feedback`, `baseline-snapshot`, `configure`, `config`, `install`, `uninstall`, `update`) (the `bin/foundation` compat shim rode this row through the temperloop#165 rename window and was removed in v0.19.0; the file remains only as a refusal) | `bin/temperloop`, `bin/foundation`, `bin/subcommands/*` |
+| **CLI surface** | callers of `bin/temperloop` and its subcommands (`init`, `eject`, `try`, `report`, `feedback`, `baseline-snapshot`, `configure`, `config`, `install`, `uninstall`, `update`) (the `bin/foundation` compat shim rode this row through the temperloop#165 rename window; at v0.19.0 its **forwarding removed; file retained as a refusing tombstone** — never say "removed": a pre-v0.19.0 install left a `~/.local/bin/foundation` symlink pointing at that file, and `temperloop update` moves the checkout underneath the symlink, so deleting the file would yield a dangling ENOENT exactly where the operator needs to be told the name changed. Retiring the stale symlink is MANUAL — `temperloop uninstall` *prints* the `rm -f` but cannot remove it, since the symlink is bootstrap footprint predating the install manifest) | `bin/temperloop`, `bin/foundation` (the refusing tombstone — retained, not deleted), `bin/subcommands/*` |
 | **Shipped version stamp** | the release artifact's own version — the repo-root `VERSION` file (bare `x.y.z`) that `temperloop version` reports. **Bumped in the tagged commit** as part of the cut (kernel-repo-layout.md § Release-tag convention); `test_version_embedding.sh` fails the build if it drifts from the tag | `VERSION`, `bin/lib/common.sh` (`temperloop_resolve_version`) |
 | **Compose / pin seam** | the overlay's `install-claude` compose (`CLAUDE.kernel.md` + overlay), `.kernel-pin` format, the kernel-manifest classification | `workflows/scripts/install-claude-md.sh`, `.kernel-pin`, `kernel-manifest.txt` |
 | **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `tracker.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
@@ -78,7 +78,7 @@ required to satisfy is **additive**. Fixing a bug with none of the above is a
 **patch**.
 
 **Setting registry, specifically** (finer-grained than the generic rule above,
-since a TSV row is itself structured data a caller can depend on at three
+since a TSV row is itself structured data a caller can depend on at four
 different granularities): a **column change** (renaming/removing/reordering
 one of the six `name|default|type|layer|owning-script|doc` fields, or a
 parse-helper function signature/output-shape change) is **breaking** — every
@@ -86,7 +86,18 @@ reader of the row shape must adapt. A **new setting row** (a name no reader
 already depended on) is **additive**. A **default-value change on an
 existing row** is **minor** — a stranger who dot-sources the previous
 default should re-check it, so it is never a bare **patch**, but it doesn't
-change the row shape so it isn't breaking either.
+change the row shape so it isn't breaking either. **Removing an existing
+row** — retiring a setting *name* — is **breaking**, and is the case the
+other three do not cover: unlike a column change it leaves the row *shape*
+completely intact, so nothing a shape-reader parses fails, yet every caller
+that sets or reads that name silently gets nothing back. It therefore must
+mark its CHANGELOG section `BREAKING` and carry a migration line naming the
+replacement name (or stating plainly that there is none). v0.19.0 is the
+worked example: closing the two compatibility windows removed **four** rows
+— the four DEPRECATED legacy-prefixed env rows superseded by their
+`TEMPERLOOP_*` twins in v0.15.0 — with no column change at all.
+(`setting-registry.tsv`'s own header already classified its removal this
+way, deferring to "the rule above"; this is that rule, now stated.)
 
 **Machine-surface install manifest, specifically** (same three-way split as
 the setting registry, applied to the manifest's own JSON shape): a **field/
