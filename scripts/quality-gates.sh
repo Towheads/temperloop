@@ -261,6 +261,11 @@ KERNEL_GATES=(
   # (fake `uvx` for the ks_search case, mirrors test_knowledge_search.sh).
   # Same direct-`bash` form as the knowledge_search gates above.
   "bash workflows/scripts/lib/tests/test_knowledge_read_log.sh"
+  # Presence-lint for ks_search's read-log OUTCOME-field emit (foundation#1449,
+  # epic foundation#1443 "obs-outcome-emit"): validate-knowledge-search-emit.sh
+  # — the validate-issue-touch-emit.sh mold applied to a pure-library emit (no
+  # markdown orchestration step to guard here; see that script's own header).
+  "make validate-knowledge-search-emit"
   # Issue-corpus renderer + ks_search reindex chain (plan item
   # "cache-search-corpus"): the first production caller of knowledge_search's
   # dormant ks_search seam. Fake `_cache_gh` (mirrors test_cache_store.sh) +

@@ -432,6 +432,56 @@ This line format is a stable contract — later telemetry items (a SessionEnd
 one-liner, a `/tidy` tally) are documented to consume it as-is; changing the
 field order/count/separator means updating every consumer.
 
+### Additive outcome fields (search only)
+
+`ks_search` (`knowledge_search.sh` — the ONE entrypoint shared by both the
+cold `basic-memory` backend and the warm `basic-memory-mcp` daemon backend in
+`knowledge_search_mcp.sh`, selected via `KNOWLEDGE_SEARCH_BACKEND`) appends
+SIX further fields after the 5-field prefix above (foundation#1449, epic
+foundation#1443 "obs-outcome-emit"), same `" · "` separator:
+
+```
+<timestamp> · <session-id> · <plane> · search · <query> · <result_count> · <top_score> · <abstained> · <rg_fallback> · <mode> · <wall_ms>
+```
+
+- `result_count` — number of results the caller actually received (post
+  re-rank, post rg-fallback). An integer, `0` on a genuine no-match, or `-`
+  when the dispatch itself errored (no result set to describe).
+- `top_score` — the first result's `.score` field verbatim (query-relative —
+  never compared across queries, per `_ks_bm_rerank`'s trap 1), or `-` when
+  `result_count` is `0` or `-`.
+- `abstained` — always `0` today. No abstention mechanism ships yet (a
+  possible future item); the field is emitted now so the record SHAPE is
+  stable before that lands — a real signal replaces the value, never adds a
+  new field.
+- `rg_fallback` — `1` when the score:0 ripgrep lexical fallback
+  (`ks_search__rg_fallback`, foundation#950) fired and surfaced a hit; `0`
+  otherwise.
+- `mode` — the retrieval path actually taken: `hybrid` (the only mode this
+  adapter implements) or `hybrid+rerank` when `KNOWLEDGE_SEARCH_RERANK=1`
+  actually ran (outcome fields record the POST-re-rank result); `rg-fallback`
+  when the lexical fallback is what answered the query instead (overrides the
+  hybrid/rerank label); or `error:<rc>` when the backend dispatch itself
+  errored (`rc` 3 = unavailable mid-flight, 4 = backend error).
+- `wall_ms` — wall-clock milliseconds the backend dispatch call took (perl
+  `Time::HiRes` when available, whole-second×1000 fallback).
+
+Only `ks_search`'s call passes these — every `ks__dispatch` call
+(`ks_read`/`ks_write`/`ks_append`/`ks_list`, every backend) and the
+agent-plane hook still call `ks__read_log_emit` with exactly the 3-field
+prefix, so their lines are byte-identical to the pre-#1449 5-field shape.
+This is additive by construction: a consumer keyed on field position (e.g.
+`telemetry-brief.sh`'s `$4`/`NF>=4`, or `vault_hygiene_report.sh`'s
+`NF<5{next}` reassembly of the doc field from `$5..NF`, which only runs on
+`op=="read"` lines and so never sees a search line's extra fields) is
+unaffected either way.
+
+`ks_search` logs exactly once per call it dispatches (gated on the same
+backend-availability probe the pre-#1449 code used) — including a call whose
+dispatch errors, so the pre-#1449 count semantics (one line per
+available-gated call) are unchanged; a dispatch error is itself a countable
+outcome (`mode=error:<rc>`), not one dropped from the tally.
+
 **Agent plane.** `claude/hooks/ks-agent-read-log.sh` is a PostToolUse hook
 that appends the same-format line for a knowledge-store MCP tool call. Which
 `tool_name` values count is read from `KNOWLEDGE_READ_LOG_AGENT_MATCHERS`
