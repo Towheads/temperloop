@@ -510,6 +510,47 @@ Exit codes (both `ks_search` and `ks_search_reindex`):
 before calling either (exit 0 = ready, exit 3 = the same "skipped —"
 notice on stderr, no stdout either way).
 
+### Post-fetch re-rank
+
+`ks_search` does not return the backend's own ordering unchanged. It asks the
+backend for a **deeper** candidate set than the caller requested
+(`KNOWLEDGE_SEARCH_RERANK_DEPTH`, default 20), re-orders those candidates, and
+returns exactly `--limit` of them. The extra depth is **internal**: a caller
+that asks for 5 still receives 5.
+
+This is the ranking lever chosen by the mode-sweep verdict (foundation#1445):
+on that corpus the right document was inside the backend's top-20 for 94.6% of
+queries but inside its top-5 for only 86.8%, while MRR stayed flat across the
+same depth increase — so depth was buying coverage the returned window threw
+away.
+
+What the re-rank is allowed to change, and what it is not:
+
+| | |
+|---|---|
+| **May change** | the ORDER of results, and therefore WHICH `--limit` candidates survive |
+| **Never changes** | the record shape, the field set, the `score` values, or any exit code — each surviving record is passed through byte-for-byte as the backend's reshape emitted it |
+
+Three invariants the implementation is built around, each pinned by a test in
+`tests/test_knowledge_search.sh` (case 15) and
+`tests/test_knowledge_search_mcp.sh` (case 4):
+
+1. **It never reads `score` as evidence.** basic-memory's hybrid scores are
+   normalised **within each query's own result set**, so they are query-relative
+   and not comparable across queries or against any fixed threshold. The
+   re-ranker therefore fuses **rank lists** (reciprocal-rank fusion), which is
+   scale-free.
+2. **The `score: 0` rg-fallback sentinel is never reordered.** A `0` there is a
+   *provenance marker* (a ripgrep lexical hit surfaced when the backend found
+   nothing), not a relevance value. A candidate set containing one is passed
+   through in backend order.
+3. **Both backends apply the same re-rank.** The cold `basic-memory` CLI path
+   and the warm `basic-memory-mcp` daemon path share one implementation, so
+   they cannot drift apart in ranking.
+
+Set `KNOWLEDGE_SEARCH_RERANK=0` to restore the backend's own ordering; the fetch
+depth then collapses back to `--limit`, making the off-switch a true no-op.
+
 ### Backend registration seam
 
 Mirrors `knowledge_store`'s: `KNOWLEDGE_SEARCH_BACKEND` (kebab-case,
