@@ -16,6 +16,70 @@ reads that marker; a stranger greps for it before pulling.
 
 _Nothing yet._
 
+## [0.20.0] - 2026-07-29
+
+### Added
+
+- **Post-fetch re-rank on both knowledge-search backends (temperloop#1446,
+  foundation epic #1443's ranking lever). Additive; off-switch provided.**
+  `ks_search` now asks the backend for a deeper candidate set than the caller
+  requested (`KNOWLEDGE_SEARCH_RERANK_DEPTH`, default 20), re-orders those
+  candidates with a thin deterministic re-ranker, and returns exactly `--limit`
+  of them — the extra depth is internal, so a caller asking for 5 still gets 5.
+  This is the lever the foundation#1445 mode-sweep verdict selected over every
+  retrieval-mode alternative (a different default mode, intent routing, and
+  multi-mode fusion were each measured and rejected): on that corpus the right
+  document sat inside the backend's top-20 for 94.6% of queries but inside its
+  top-5 for only 86.8%, so depth was buying coverage the returned window threw
+  away. The re-ranker is jq-only — no cross-encoder, no model download, no new
+  dependency — and scores each candidate on query-term agreement with its own
+  title and path, weighted by how RARE each term is among that query's own
+  candidates, with a bonus for a verbatim query match. A minimal suffix stemmer
+  unifies inflections ("editor"/"Editing", "plan"/"Plans-archive") that an exact
+  matcher could not see. Measured on the 214-query engine-neutral bench corpus
+  against a same-index control: known-item hit@5 0.8056 -> 0.8611 and known-item
+  MRR 0.5833 -> 0.7972, with no category regressing. **The published
+  `{doc_id,title,score,snippet}` JSONL shape and the exit-code contract are
+  unchanged** — the re-rank alters only the ORDER and therefore which `--limit`
+  candidates survive; each surviving record is passed through byte-for-byte.
+  Three invariants are test-pinned: it never reads `score` as evidence (hybrid
+  scores are normalised within each query's own result set, so they are
+  query-relative and no fixed threshold is well-founded — the fusion is over
+  RANK lists instead); the `score: 0` rg-fallback sentinel is provenance, not
+  relevance, and a candidate set carrying one is never reordered; and the cold
+  CLI path and warm bm-mcp daemon path share ONE implementation so they cannot
+  drift apart in ranking. Set `KNOWLEDGE_SEARCH_RERANK=0` to restore the
+  backend's own ordering — the fetch depth then collapses back to `--limit`,
+  making the off-switch a true no-op.
+
+### Changed
+
+- **The close→Done cascade is stated per backend; on issues-only the adapter's
+  Done write is the PRIMARY mechanism, not a backstop (temperloop#902).** The
+  cascade (GH #340) is a GitHub **Projects-v2 built-in** — it has no
+  implementation in this repo, and on the issues-only backend (the default,
+  ADR 0004) there is no such automation and nowhere to hook one: no project
+  item for an automation to move, and no native GitHub "on issue close, strip
+  a label" rule for a plain Issues repo. A close therefore makes the item
+  *read* Done (the reshape's closed-state precedence) while leaving the
+  residual `fnd:status:*` label — and the `fnd:host/session:*` claim stamp —
+  standing, which is what left 9 of 9 board-7 closures across two runs still
+  labelled `fnd:status:backlog`. Rather than wire a cascade with no hook
+  point, the contract is corrected where it was inverted:
+  `claude/CLAUDE.kernel.md` § Board hygiene is part of the gate,
+  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade,
+  `docs/principles.md` § 8, and `docs/architecture.md` now state the split
+  explicitly, and `/build` 4d + `/fix` Step 6 item 3 make the
+  `board_set_status … Done` write **backend-conditional** (`board_backend`):
+  omitted on Projects-v2 exactly as before, issued on issues-only after a
+  **confirmed `MERGED`** (REST, no GraphQL budget, warn-and-continue on a
+  non-zero return, and still gated on confirmed-merged so the #130
+  premature-Done surface stays closed). Detection is unchanged and already
+  shipped — `reconcile.sh --status` classes (k)/(l) and `--labels` classes
+  (h)/(j) — and now carries a regression case for the exact reported shape: a
+  closed issue wearing ONLY `fnd:status:backlog` and no claim stamp, flagged
+  by both lenses.
+
 ## [0.19.0] - 2026-07-29 — BREAKING
 
 ### Migration — read this first
@@ -169,37 +233,6 @@ release are behavior-only, inside the same I/O contract.
 
 ### Added
 
-- **Post-fetch re-rank on both knowledge-search backends (temperloop#1446,
-  foundation epic #1443's ranking lever). Additive; off-switch provided.**
-  `ks_search` now asks the backend for a deeper candidate set than the caller
-  requested (`KNOWLEDGE_SEARCH_RERANK_DEPTH`, default 20), re-orders those
-  candidates with a thin deterministic re-ranker, and returns exactly `--limit`
-  of them — the extra depth is internal, so a caller asking for 5 still gets 5.
-  This is the lever the foundation#1445 mode-sweep verdict selected over every
-  retrieval-mode alternative (a different default mode, intent routing, and
-  multi-mode fusion were each measured and rejected): on that corpus the right
-  document sat inside the backend's top-20 for 94.6% of queries but inside its
-  top-5 for only 86.8%, so depth was buying coverage the returned window threw
-  away. The re-ranker is jq-only — no cross-encoder, no model download, no new
-  dependency — and scores each candidate on query-term agreement with its own
-  title and path, weighted by how RARE each term is among that query's own
-  candidates, with a bonus for a verbatim query match. A minimal suffix stemmer
-  unifies inflections ("editor"/"Editing", "plan"/"Plans-archive") that an exact
-  matcher could not see. Measured on the 214-query engine-neutral bench corpus
-  against a same-index control: known-item hit@5 0.8056 -> 0.8611 and known-item
-  MRR 0.5833 -> 0.7972, with no category regressing. **The published
-  `{doc_id,title,score,snippet}` JSONL shape and the exit-code contract are
-  unchanged** — the re-rank alters only the ORDER and therefore which `--limit`
-  candidates survive; each surviving record is passed through byte-for-byte.
-  Three invariants are test-pinned: it never reads `score` as evidence (hybrid
-  scores are normalised within each query's own result set, so they are
-  query-relative and no fixed threshold is well-founded — the fusion is over
-  RANK lists instead); the `score: 0` rg-fallback sentinel is provenance, not
-  relevance, and a candidate set carrying one is never reordered; and the cold
-  CLI path and warm bm-mcp daemon path share ONE implementation so they cannot
-  drift apart in ranking. Set `KNOWLEDGE_SEARCH_RERANK=0` to restore the
-  backend's own ordering — the fetch depth then collapses back to `--limit`,
-  making the off-switch a true no-op.
 - **Per-contributor session-start surface measurement (temperloop#827, epic
   #810's sub-item "P1" — epic #810's OWN Produces-list numbering, a
   different axis from ADR 0018's Phase A/Phase B split of the same epic;
@@ -385,31 +418,6 @@ release are behavior-only, inside the same I/O contract.
 
 ### Changed
 
-- **The close→Done cascade is stated per backend; on issues-only the adapter's
-  Done write is the PRIMARY mechanism, not a backstop (temperloop#902).** The
-  cascade (GH #340) is a GitHub **Projects-v2 built-in** — it has no
-  implementation in this repo, and on the issues-only backend (the default,
-  ADR 0004) there is no such automation and nowhere to hook one: no project
-  item for an automation to move, and no native GitHub "on issue close, strip
-  a label" rule for a plain Issues repo. A close therefore makes the item
-  *read* Done (the reshape's closed-state precedence) while leaving the
-  residual `fnd:status:*` label — and the `fnd:host/session:*` claim stamp —
-  standing, which is what left 9 of 9 board-7 closures across two runs still
-  labelled `fnd:status:backlog`. Rather than wire a cascade with no hook
-  point, the contract is corrected where it was inverted:
-  `claude/CLAUDE.kernel.md` § Board hygiene is part of the gate,
-  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade,
-  `docs/principles.md` § 8, and `docs/architecture.md` now state the split
-  explicitly, and `/build` 4d + `/fix` Step 6 item 3 make the
-  `board_set_status … Done` write **backend-conditional** (`board_backend`):
-  omitted on Projects-v2 exactly as before, issued on issues-only after a
-  **confirmed `MERGED`** (REST, no GraphQL budget, warn-and-continue on a
-  non-zero return, and still gated on confirmed-merged so the #130
-  premature-Done surface stays closed). Detection is unchanged and already
-  shipped — `reconcile.sh --status` classes (k)/(l) and `--labels` classes
-  (h)/(j) — and now carries a regression case for the exact reported shape: a
-  closed issue wearing ONLY `fnd:status:backlog` and no claim stamp, flagged
-  by both lenses.
 - **`temperloop init` is scoped down to bootstrap → offer the first epic →
   hand off (temperloop#796).** `init` no longer applies any API state of its
   own. It bootstraps `.temperloop/config` (and its reviewable proposal PR),
