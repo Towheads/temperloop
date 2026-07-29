@@ -109,6 +109,15 @@ case "$sub" in
           echo '{"results":[],"current_page":1,"page_size":10,"total":0,"has_more":false}'
           exit 0
           ;;
+        low_conf)
+          # Both candidates fail the abstention floor's DEFAULT thresholds
+          # (score < 0.72, and titles share no query terms so L == 0 < 0.10)
+          # — used to exercise KNOWLEDGE_SEARCH_ABSTAIN (foundation#1450).
+          cat <<'JSON'
+{"results":[{"title":"unrelated thing","type":"entity","score":0.65,"content":"c1","matched_chunk":"c1","file_path":"Decisions/unrelated-thing.md","metadata":{},"entity_id":1},{"title":"another unrelated","type":"entity","score":0.60,"content":"c2","matched_chunk":"c2","file_path":"Decisions/another-unrelated.md","metadata":{},"entity_id":2}],"current_page":1,"page_size":10,"total":0,"has_more":false}
+JSON
+          exit 0
+          ;;
         register_then_ok)
           # Fail until the project has been registered (marker present), then
           # return results — the #996 lazy-on-miss cold/reset path.
@@ -539,5 +548,69 @@ PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=0 \
 grep -q -- "--page-size 5" "$FAKE_UVX_LOG" \
   || fail "15e: with the re-rank off, fetch depth must collapse back to --limit (log: $(cat "$FAKE_UVX_LOG"))"
 echo "PASS: 15e fetch depth is RERANK_DEPTH when on and the caller's --limit when off"
+
+# --- 16. abstention floor (foundation#1450, epic foundation#1443) ------------
+# Below the measured floor (both the top-ranked candidate's score AND its
+# lexical-coverage feature L must fail — see knowledge_search.sh's
+# "## Abstention floor" comment for the measured rationale), _ks_bm_rerank
+# emits the {"__ks_abstain":true} sentinel instead of the normal stream.
+
+abstain_low_in() {
+  printf '%s\n' \
+    '{"doc_id":"Decisions/unrelated thing.md","title":"unrelated thing","score":0.65,"snippet":"a"}' \
+    '{"doc_id":"Decisions/another unrelated.md","title":"another unrelated","score":0.60,"snippet":"b"}'
+}
+
+# 16a. default (KNOWLEDGE_SEARCH_ABSTAIN unset) is a true no-op — byte-identical
+# to pre-#1450 behavior even when every candidate is low-confidence.
+out16a="$(abstain_low_in | _ks_bm_rerank "widget install guide" 5)"
+[ "$out16a" = "$(abstain_low_in)" ] \
+  || fail "16a: KNOWLEDGE_SEARCH_ABSTAIN unset must be a true no-op (got: $out16a)"
+echo "PASS: 16a abstention floor is a true no-op when KNOWLEDGE_SEARCH_ABSTAIN is unset (default)"
+
+# 16b. enabled + both floors fail -> the sentinel, and ONLY the sentinel.
+out16b="$(abstain_low_in | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$out16b" = '{"__ks_abstain":true}' ] \
+  || fail "16b: both floors failing should abstain (got: $out16b)"
+echo "PASS: 16b enabled + both floors fail -> the {__ks_abstain:true} sentinel"
+
+# 16c. enabled but the SCORE floor clears -> no abstain (score alone is enough
+# to save a candidate; the gate is a conjunction, not a single surface).
+out16c="$(printf '%s\n' \
+    '{"doc_id":"Decisions/unrelated thing.md","title":"unrelated thing","score":0.90,"snippet":"a"}' \
+    '{"doc_id":"Decisions/another unrelated.md","title":"another unrelated","score":0.60,"snippet":"b"}' \
+  | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$(printf '%s' "$out16c" | head -1 | jq -r '.doc_id')" = "Decisions/unrelated thing.md" ] \
+  || fail "16c: a cleared score floor must not abstain (got: $out16c)"
+echo "PASS: 16c enabled + score floor clears -> no abstain"
+
+# 16d. enabled but the LEX floor clears (title agrees with the query) -> no
+# abstain, even though the score is low.
+out16d="$(printf '%s\n' \
+    '{"doc_id":"Decisions/widget install guide.md","title":"widget install guide","score":0.65,"snippet":"a"}' \
+    '{"doc_id":"Decisions/another unrelated.md","title":"another unrelated","score":0.60,"snippet":"b"}' \
+  | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$(printf '%s' "$out16d" | head -1 | jq -r '.doc_id')" = "Decisions/widget install guide.md" ] \
+  || fail "16d: a cleared lexical floor must not abstain (got: $out16d)"
+echo "PASS: 16d enabled + lexical floor clears -> no abstain"
+
+# 16e. TRAP 2 still holds with the gate enabled: a score-0 rg-sentinel set is
+# the bypass branch, never reaches the abstention gate at all.
+out16e="$(printf '%s\n' '{"doc_id":"z.md","title":"zzz nothing","score":0,"snippet":"a"}' \
+  | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$(printf '%s' "$out16e" | jq -r '.doc_id')" = "z.md" ] \
+  || fail "16e: the score-0 sentinel bypass must never reach the abstention gate (got: $out16e)"
+echo "PASS: 16e the abstention gate never touches the score-0 rg-fallback bypass"
+
+# 16f. FULL ks_search integration: the sentinel never leaks to a real caller —
+# enabled + failing floors returns genuine empty stdout, exit 0, via the
+# fake uvx's low_conf canned response.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out16f="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=low_conf KNOWLEDGE_SEARCH_ABSTAIN=1 \
+  ks_search "widget install guide" --limit 5)"
+rc16f=$?
+[ "$rc16f" -eq 0 ] || fail "16f: an abstained ks_search call must still exit 0 (got $rc16f)"
+[ -z "$out16f" ] || fail "16f: the sentinel must never reach a real ks_search caller (got: $out16f)"
+echo "PASS: 16f ks_search never leaks the abstention sentinel; exit 0 with empty stdout"
 
 echo "ALL PASS: knowledge_search.sh (interface + basic-memory backend, mocked subprocess)"

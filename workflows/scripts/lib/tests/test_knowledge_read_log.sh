@@ -260,6 +260,13 @@ case "$sub" in
           echo "fake-uvx: simulated backend crash" >&2
           exit 1
           ;;
+        low_conf)
+          # Both candidates fail the abstention floor's DEFAULT thresholds
+          # (score < 0.72; titles share no query terms so L == 0 < 0.10) --
+          # foundation#1450 outcome-field wiring (cases 17-18 below).
+          echo '{"results":[{"title":"unrelated thing","score":0.65,"matched_chunk":"c1","file_path":"Decisions/unrelated-thing.md"},{"title":"another unrelated","score":0.60,"matched_chunk":"c2","file_path":"Decisions/another-unrelated.md"}]}'
+          exit 0
+          ;;
       esac
     fi
     ;;
@@ -435,5 +442,68 @@ if command -v curl >/dev/null 2>&1; then
 else
   echo "SKIP: 16 warm basic-memory-mcp outcome-field assertion (curl not installed)"
 fi
+
+# --- 17. abstention floor wires the `abstained` outcome field (foundation#1450) ---
+# Reuses the same OUT_TMP fixture; a new FAKE_UVX_MODE returns two candidates
+# that fail BOTH abstention floors for the query below (unrelated titles ->
+# L==0; scores 0.65/0.60 < the 0.72 default). A literal-match file is ALSO
+# planted so this proves the ratified L1 semantics (clause 4): the rg
+# fallback stays SUPPRESSED because the backend returned a non-empty
+# candidate set — an abstention is a post-re-rank empty, never a
+# backend-empty, so it must not fall into the rg-fallback branch at all.
+if command -v rg >/dev/null 2>&1; then
+  mkdir -p "$OUT_TMP/store/Decisions"
+  printf 'this note literally says widget install guide steps\n' > "$OUT_TMP/store/Decisions/literal-match.md"
+  (
+    export KNOWLEDGE_STORE_ROOT="$OUT_TMP/store"
+    export KNOWLEDGE_SEARCH_BM_HOME="$OUT_TMP/bm-home"
+    export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
+    export KNOWLEDGE_READ_LOG="$OUT_LOG"
+    export PATH="$OUT_TMP/bin:$PATH"
+    export FAKE_UVX_MODE="low_conf"
+    export KNOWLEDGE_SEARCH_ABSTAIN=1
+    unset CLAUDE_CODE_SESSION_ID || true
+    # shellcheck source=/dev/null
+    source "$STORE_LIB"
+    # shellcheck source=/dev/null
+    source "$SEARCH_LIB"
+    stdout="$(ks_search "widget install guide" --limit 5 2>"$OUT_TMP/stderr17")"
+    rc=$?
+    [ "$rc" -eq 0 ] || fail "17: an abstained ks_search call must exit 0 (got $rc)"
+    [ -z "$stdout" ] || fail "17: an abstained ks_search call must yield empty stdout (got: $stdout)"
+    grep -q "rg-fallback" "$OUT_TMP/stderr17" \
+      && fail "17: the rg-fallback notice must NOT fire on a floor-triggered abstention (backend was non-empty)"
+    :
+  )
+  line="$(tail -n1 "$OUT_LOG")"
+  [ "$(field_n "$line" 6)" = "0" ] || fail "17: expected result_count=0 on an abstained query (got: $(field_n "$line" 6))"
+  [ "$(field_n "$line" 7)" = "-" ] || fail "17: expected top_score=- on an abstained query (got: $(field_n "$line" 7))"
+  [ "$(field_n "$line" 8)" = "1" ] || fail "17: expected abstained=1 (got: $(field_n "$line" 8))"
+  [ "$(field_n "$line" 9)" = "0" ] || fail "17: expected rg_fallback=0 -- suppressed per the L1 ratified semantics (got: $(field_n "$line" 9))"
+  echo "PASS: 17 the abstention floor sets abstained=1, result_count=0/top_score=-, and suppresses the rg fallback even though a literal match exists on disk"
+else
+  echo "SKIP: 17 abstention-floor rg-suppression assertion (ripgrep not installed)"
+fi
+
+# --- 18. abstention floor is OFF by default -- byte-identical outcome fields --
+(
+  export KNOWLEDGE_STORE_ROOT="$OUT_TMP/store"
+  export KNOWLEDGE_SEARCH_BM_HOME="$OUT_TMP/bm-home"
+  export KNOWLEDGE_SEARCH_BM_PROJECT="outcome-test"
+  export KNOWLEDGE_READ_LOG="$OUT_LOG"
+  export PATH="$OUT_TMP/bin:$PATH"
+  export FAKE_UVX_MODE="low_conf"
+  unset KNOWLEDGE_SEARCH_ABSTAIN || true
+  unset CLAUDE_CODE_SESSION_ID || true
+  # shellcheck source=/dev/null
+  source "$STORE_LIB"
+  # shellcheck source=/dev/null
+  source "$SEARCH_LIB"
+  ks_search "widget install guide" --limit 5 >/dev/null
+)
+line="$(tail -n1 "$OUT_LOG")"
+[ "$(field_n "$line" 6)" = "2" ] || fail "18: KNOWLEDGE_SEARCH_ABSTAIN unset must not change result_count (got: $(field_n "$line" 6))"
+[ "$(field_n "$line" 8)" = "0" ] || fail "18: KNOWLEDGE_SEARCH_ABSTAIN unset must leave abstained=0 (got: $(field_n "$line" 8))"
+echo "PASS: 18 the abstention floor is off by default -- low-confidence results still return normally"
 
 echo "ALL PASS: read-log telemetry (ks__dispatch + ks_search entrypoint, incl. outcome fields on both backends)"
