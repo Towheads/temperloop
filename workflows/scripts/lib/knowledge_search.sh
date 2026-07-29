@@ -52,6 +52,21 @@
 #                                Default: 0.22.1 (the spike-verdict pin —
 #                                upgrades are a deliberate adapter change to
 #                                this default, not silent drift).
+#   KNOWLEDGE_SEARCH_RERANK      1 = re-rank the backend's candidate set
+#                                before returning (default); 0 = return the
+#                                backend's own order untouched. See
+#                                "## Post-fetch re-rank" below.
+#   KNOWLEDGE_SEARCH_RERANK_DEPTH
+#                                how many candidates to FETCH from the backend
+#                                per query before re-ranking down to the
+#                                caller's --limit. Default 20. Internal: the
+#                                caller still receives exactly --limit results.
+#   KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT
+#                                relative weight of the lexical rank list
+#                                against the backend's own rank list in the
+#                                rank fusion. Default 1.0 (equal). 0 disables
+#                                the lexical contribution without disabling
+#                                the deeper fetch.
 #   KNOWLEDGE_SEARCH_BM_PYTHON   pinned CPython version passed to
 #                                `uvx --python <version>` (point 5's
 #                                companion pin). The bm version pin alone
@@ -441,6 +456,187 @@ _ks_bm_project_add() {
   return 0
 }
 
+# ── Post-fetch re-rank (temperloop#1446, epic foundation#1443) ────────────
+# THE ranking lever, per the keystone mode-sweep verdict ([[Decisions/foundation
+# - mode-sweep verdict (retrieval-mode architecture)]], foundation#1445). That
+# sweep measured, on a 768d substrate over 204 labeled queries, that hybrid's
+# hit@20 is 0.9461 against a hit@5 of 0.8676 while MRR stays flat across the
+# same 4x depth increase: the right document is almost always ALREADY in the
+# candidate set the backend returns, just not in the top 5. Depth buys
+# coverage, not ranking. So the lever is not a different retrieval mode (every
+# alternative — a better single default, intent routing, multi-mode fusion —
+# was measured and rejected there); it is to FETCH DEEPER and re-order.
+#
+# Deliberately THIN: no cross-encoder, no model download, no new dependency —
+# jq only, the idiom this file already speaks. Features are computed from the
+# candidate's own {doc_id,title} against the query.
+#
+# ── The three traps this implementation is built around ───────────────────
+#  1. SCORES ARE QUERY-RELATIVE, NEVER CORPUS-ABSOLUTE. basic-memory's hybrid
+#     fuses as max(v,f) + 0.3*min(v,f) AFTER normalising the lexical half by the
+#     maximum within that query's OWN result set (observed range 0.5702-1.2845,
+#     exceeding 1.0). A global score threshold is therefore not well-founded and
+#     cross-candidate score arithmetic is invalid. So this re-ranker NEVER reads
+#     .score: it fuses two RANK lists (reciprocal-rank fusion), which is
+#     scale-free by construction.
+#  2. THE score:0 rg-FALLBACK SENTINEL MUST NEVER BE REORDERED. score 0 is a
+#     PROVENANCE MARKER (a ripgrep lexical hit surfaced when the backend found
+#     nothing), not a relevance value — and because lexical modes emit NEGATIVE
+#     scores while hybrid emits ~[0.57,1.28], a raw 0 sorts above everything in
+#     one context and below everything in another. Structurally, fallback hits
+#     can never reach this function (ks_search runs the fallback only AFTER the
+#     backend returned an empty set, downstream of every call site here); the
+#     explicit sentinel guard below is belt-and-suspenders on top of that
+#     separation, and it degrades to identity rather than guessing.
+#  3. THE CANDIDATE SET INHERITS HYBRID'S TIE-JITTER (~3.7% of top-5 lists
+#     reorder between identical runs). Every ordering step below breaks ties on
+#     the backend's own rank, so the re-rank adds no instability of its own.
+#
+# Contract: this changes the ORDER of results and which k survive. It NEVER
+# changes the record shape — each surviving candidate object is passed through
+# byte-for-byte as the reshape stage emitted it (the {doc_id,title,score,snippet}
+# JSONL contract and the exit-code contract are frozen surfaces).
+#
+# <query> <k> : reads reshaped JSONL candidates (backend rank order) on stdin,
+#               writes the re-ranked top-<k> as JSONL on stdout.
+: "${KNOWLEDGE_SEARCH_RERANK:=1}"
+: "${KNOWLEDGE_SEARCH_RERANK_DEPTH:=20}"
+: "${KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT:=1.0}"
+_ks_bm_rerank() {
+  local query="$1" k="$2"
+  # Disabled -> exact pre-#1446 behavior: the backend's own order, untouched.
+  # (The fetch depth also collapses to --limit at the call sites, so "off" is a
+  # true no-op, not a truncated deep fetch.)
+  if [ "${KNOWLEDGE_SEARCH_RERANK:-1}" != "1" ]; then
+    cat
+    return 0
+  fi
+  # Feature weights are deliberately NOT settings: they are ordering constants
+  # of the lexical feature, selected on the #1443 bench corpus, and exposing
+  # five knobs would be mechanism where one balance knob
+  # (KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT) suffices.
+  #   w_title  1.0  query-term coverage of the candidate's TITLE
+  #   w_path   0.4  coverage of its full doc_id PATH (directory segments are
+  #                 weaker evidence than the title — "Decisions/" matches the
+  #                 word "decision" in a way that means nothing)
+  #   w_phrase 1.0  bonus when the normalised query appears VERBATIM inside the
+  #                 title or path — the near-verbatim recall that IS the
+  #                 known-item case ("the board adapter cache split note")
+  #   rrfk     10   reciprocal-rank-fusion constant. The textbook 60 is tuned
+  #                 for lists of thousands; over a 20-candidate set it flattens
+  #                 every rank to near-equal and the fusion stops discriminating.
+  jq -cs \
+    --arg q "$query" --argjson k "$k" \
+    --argjson rrfk 10 --argjson w_title 1.0 --argjson w_path 0.4 \
+    --argjson w_phrase 1.0 \
+    --argjson w_lex "${KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT:-1.0}" '
+    def norm: ascii_downcase | gsub("[^a-z0-9]+"; " ") | sub("^ +"; "") | sub(" +$"; "");
+    # Single characters are dropped: they carry no retrieval signal and match
+    # far too much. Digits are KEPT (issue refs like 1443 are strong known-item
+    # evidence).
+    def toks: norm | split(" ") | map(select(length > 1));
+    # Deliberately minimal suffix stemmer, applied to BOTH sides so a query term
+    # and a title term reach the same root. It exists because the measured
+    # known-item misses were dominated by inflection mismatches the exact-token
+    # matcher could not see -- "editor"/"Editing", "plan"/"Plans-archive". Each
+    # rule is length-guarded so it cannot chew a short word down to a stub, and
+    # the plural rule skips a double-s ("process" stays "process"). It is NOT a
+    # linguistic stemmer and does not try to be: over-merging costs precision,
+    # so only inflections that actually appeared in the corpus are handled.
+    def stem:
+      (if (test("(ing|ers|ors|ed)$") and (length > 5)) then sub("(ing|ers|ors|ed)$"; "") else . end)
+      | (if (test("(er|or)$") and (length > 4)) then sub("(er|or)$"; "") else . end)
+      | (if (test("[^s]s$") and (length > 3)) then sub("s$"; "") else . end);
+    def stems: toks | map(stem) | unique;
+    def stop: ["the","a","an","of","for","in","on","to","and","or","is","are",
+               "was","were","be","been","being","what","how","why","where",
+               "when","which","who","whom","that","this","these","those","with",
+               "do","does","did","doing","my","we","our","us","it","its","by",
+               "from","at","as","not","but","if","then","than","so","about",
+               "into","out","up","down","over","under","all","any","some","no",
+               "can","will","would","should","could","you","your","me","there",
+               "their","them","they","have","has","had","get","got","use","used",
+               "using","vs","via","re"];
+
+    . as $all
+    | ($q | toks | map(stem)) as $qraw
+    # A query made ENTIRELY of stopwords keeps its raw terms rather than
+    # collapsing to an empty term set (which would silently disable the lever).
+    | (($qraw - (stop | map(stem))) as $s
+       | (if ($s | length) > 0 then $s else $qraw end) | unique) as $qt
+    | ($q | norm) as $qn
+    | if ($all | length) == 0 then empty
+      # Trap 2: any score-0 provenance marker in the set -> pass through
+      # untouched. Never reorder a fallback hit against backend results.
+      elif ([ $all[] | select(.score == 0) ] | length) > 0 then $all[0:$k][]
+      # No usable query terms -> nothing to re-rank on; keep backend order.
+      elif ($qt | length) == 0 then $all[0:$k][]
+      else
+        [ $all
+          | to_entries[]
+          | .key as $r
+          | .value as $d
+          | { r: $r, d: $d,
+              tt: (($d.title // "") | stems),
+              pt: ((($d.doc_id // "") | sub("\\.md$"; "")) | stems),
+              ph: (if ((($d.title // "") | norm) | contains($qn))
+                      or ((($d.doc_id // "") | norm) | contains($qn))
+                   then 1 else 0 end) }
+        ] as $c
+        # Per-query term rarity (IDF over THIS query candidate set, never a
+        # corpus statistic). A term carried by most candidates -- "subset",
+        # "epic", a project name -- discriminates nothing here, while a term in
+        # one or two candidates is exactly the known-item signal. Computing it
+        # over the returned set keeps it query-relative, which is what trap 1
+        # requires; a corpus-wide IDF would also mean a second index to maintain.
+        | ($c | length) as $n
+        | ( reduce $c[] as $x ({};
+              reduce (($x.tt + $x.pt) | unique)[] as $t (.; .[$t] = ((.[$t] // 0) + 1)))
+          ) as $df
+        | ( [ $qt[] | { key: ., value: (($n / (($df[.] // 0) + 0.5)) | log) } ]
+            | from_entries ) as $idf
+        # A term absent from every candidate gets the largest weight but can
+        # never be matched, so it only ever sits in the denominator. Weights are
+        # floored at 0 so a term present in every candidate contributes nothing
+        # rather than going negative.
+        | ( [ $qt[] | (if ($idf[.] // 0) > 0 then $idf[.] else 0 end) ] | add ) as $wtot
+        | [ $c[]
+            | . as $x
+            | ( [ $qt[] | select(. as $t | $x.tt | index($t))
+                        | (if ($idf[.] // 0) > 0 then $idf[.] else 0 end) ] | add // 0 ) as $twt
+            | ( [ $qt[] | select(. as $t | $x.pt | index($t))
+                        | (if ($idf[.] // 0) > 0 then $idf[.] else 0 end) ] | add // 0 ) as $pwt
+            # Fall back to plain coverage when every query term is equally
+            # common (wtot == 0), so the feature degrades instead of dividing
+            # by zero.
+            | (if $wtot > 0
+               then { t: ($twt / $wtot), p: ($pwt / $wtot) }
+               else { t: (([ $qt[] | select(. as $t | $x.tt | index($t)) ] | length) / ($qt | length)),
+                      p: (([ $qt[] | select(. as $t | $x.pt | index($t)) ] | length) / ($qt | length)) }
+               end) as $cv
+            | { r: $x.r, d: $x.d,
+                L: ($w_title * $cv.t + $w_path * $cv.p + $w_phrase * $x.ph) }
+          ] as $c2
+        # The lexical rank list contains ONLY candidates with real lexical
+        # evidence (L > 0). A candidate with zero query-term agreement gets no
+        # lexical term at all, rather than a middling rank that would inject
+        # noise into the fusion. Ties break on backend rank (trap 3).
+        | ([ $c2[] | select(.L > 0) ] | sort_by(-.L, .r)) as $lex
+        | ($lex | to_entries
+                | map({ key: (.value.r | tostring), value: .key })
+                | from_entries) as $lexrank
+        | [ $c2[]
+            | .f = (1 / ($rrfk + .r)
+                    + $w_lex * (($lexrank[(.r | tostring)]) as $lr
+                                | if $lr == null then 0 else 1 / ($rrfk + $lr) end))
+          ]
+        | sort_by(-.f, .r)
+        | .[0:$k][]
+        | .d
+      end
+  '
+}
+
 # Reshape basic-memory's SearchResponse JSON ({results:[...]}) read on stdin
 # into this file's JSONL contract on stdout — one {doc_id,title,score,snippet}
 # object per line. The output-shape contract has ONE owner here: the cold
@@ -473,6 +669,16 @@ _ks_search_backend_basic_memory_search() {
   root="$(ks_root)"
   project="$KNOWLEDGE_SEARCH_BM_PROJECT"
 
+  # Post-fetch re-rank (#1446): ask the backend for a DEEPER candidate set than
+  # the caller wants, then re-rank down to --limit. Internal by construction —
+  # the caller still receives exactly `limit` records. With the re-rank off,
+  # depth collapses to limit and this is a no-op.
+  local depth="$limit"
+  if [ "${KNOWLEDGE_SEARCH_RERANK:-1}" = "1" ] \
+     && [ "${KNOWLEDGE_SEARCH_RERANK_DEPTH:-20}" -gt "$limit" ]; then
+    depth="${KNOWLEDGE_SEARCH_RERANK_DEPTH:-20}"
+  fi
+
   # foundation#996: try the search FIRST and register the project lazily only on
   # a miss. The per-query `basic-memory project add` is a ~1.9s subprocess (~45%
   # of search latency, F#992) yet a no-op on an already-registered project, so
@@ -480,7 +686,7 @@ _ks_search_backend_basic_memory_search() {
   # instead of two. `|| rc=$?` (not a bare trailing `$?` read) so a failing
   # command substitution doesn't trip the CALLER's `set -e` before rc is
   # captured — this file is sourced into scripts that own that option.
-  raw="$(_ks_bm_run tool search-notes "$query" --hybrid --project "$project" --page-size "$limit" 2>/dev/null)" || rc=$?
+  raw="$(_ks_bm_run tool search-notes "$query" --hybrid --project "$project" --page-size "$depth" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
     # Miss: the project isn't registered yet (first use), or a `basic-memory
     # reset` dropped the DB while config still lists it (the idempotency caveat
@@ -500,7 +706,7 @@ _ks_search_backend_basic_memory_search() {
     # `_ks_bm_project_add` applies (an opaque "failed" with no cause is
     # undiagnosable).
     local search_err; search_err="$(mktemp "${TMPDIR:-/tmp}/ks-search-err.XXXXXX" 2>/dev/null)" || search_err=/dev/null
-    raw="$(_ks_bm_run tool search-notes "$query" --hybrid --project "$project" --page-size "$limit" 2>"$search_err")" || rc=$?
+    raw="$(_ks_bm_run tool search-notes "$query" --hybrid --project "$project" --page-size "$depth" 2>"$search_err")" || rc=$?
     if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
       echo "knowledge_search: basic-memory search-notes failed (exit $rc)" >&2
       [ "$search_err" != /dev/null ] && { tail -n 15 "$search_err" >&2; rm -f "$search_err"; }
@@ -509,7 +715,7 @@ _ks_search_backend_basic_memory_search() {
     [ "$search_err" != /dev/null ] && rm -f "$search_err"
   fi
 
-  printf '%s' "$raw" | _ks_bm_reshape_results \
+  printf '%s' "$raw" | _ks_bm_reshape_results | _ks_bm_rerank "$query" "$limit" \
     || { echo "knowledge_search: could not parse basic-memory search output" >&2; return 4; }
 }
 

@@ -474,4 +474,70 @@ else
   echo "SKIP: 14c set -e no-match survival (ripgrep not installed)"
 fi
 
+# --- 15. post-fetch re-rank (temperloop#1446) ---------------------------------
+# The re-rank is the ranking lever from the #1445 mode-sweep verdict: fetch
+# deeper than the caller asked for, reorder, return exactly --limit. These cases
+# pin the three properties the frozen contract depends on — record shape is
+# passed through untouched, the score-0 rg sentinel is NEVER reordered, and the
+# off-switch restores byte-identical pre-#1446 behavior — plus the fetch-depth
+# wiring on the cold CLI path.
+rr_in() {
+  printf '%s\n' \
+    '{"doc_id":"Decisions/unrelated thing.md","title":"unrelated thing","score":1.28,"snippet":"a"}' \
+    '{"doc_id":"Decisions/board adapter cache split.md","title":"board adapter cache split","score":0.61,"snippet":"b"}'
+}
+
+# 15a. a title-agreeing candidate is promoted over a higher-SCORING one. This is
+# the whole point of the lever, and it also proves the re-ranker never reads
+# .score (trap 1: hybrid scores are query-relative, so 1.28 > 0.61 must not be
+# treated as evidence across candidates).
+out15a="$(rr_in | _ks_bm_rerank "board adapter cache split" 5)"
+[ "$(printf '%s' "$out15a" | head -1 | jq -r '.doc_id')" = "Decisions/board adapter cache split.md" ] \
+  || fail "15a: the title-agreeing candidate should re-rank to the top (got: $out15a)"
+echo "PASS: 15a re-rank promotes a title-agreeing candidate over a higher-scoring one"
+
+# 15b. RECORD SHAPE IS FROZEN — each surviving record must come out byte-for-byte
+# as it went in (only the ORDER and which k survive may change). A re-ranker that
+# rebuilt records instead of passing them through would silently break the
+# published {doc_id,title,score,snippet} JSONL contract.
+in15b="$(rr_in)"
+out15b="$(rr_in | _ks_bm_rerank "board adapter cache split" 5 | sort)"
+[ "$out15b" = "$(printf '%s' "$in15b" | sort)" ] \
+  || fail "15b: re-rank altered record bytes; the JSONL contract is frozen (got: $out15b)"
+echo "PASS: 15b re-rank preserves every record byte-for-byte (order-only change)"
+
+# 15c. TRAP 2 — the score-0 rg-fallback sentinel is a PROVENANCE marker, not a
+# relevance value. A set carrying one is passed through in backend order, so a
+# fallback hit can never be reordered against (or above) backend results.
+out15c="$(printf '%s\n' \
+  '{"doc_id":"z.md","title":"zzz nothing","score":0,"snippet":"a"}' \
+  '{"doc_id":"board adapter.md","title":"board adapter","score":0,"snippet":"b"}' \
+  | _ks_bm_rerank "board adapter" 5)"
+[ "$(printf '%s' "$out15c" | head -1 | jq -r '.doc_id')" = "z.md" ] \
+  || fail "15c: a score-0 sentinel set must NOT be reordered (got: $out15c)"
+echo "PASS: 15c the score-0 rg-fallback sentinel is never reordered"
+
+# 15d. the off-switch is a true no-op, and k truncation still applies.
+out15d="$(rr_in | KNOWLEDGE_SEARCH_RERANK=0 _ks_bm_rerank "board adapter cache split" 5)"
+[ "$out15d" = "$in15b" ] \
+  || fail "15d: KNOWLEDGE_SEARCH_RERANK=0 must return the backend order untouched (got: $out15d)"
+n15d="$(rr_in | _ks_bm_rerank "board adapter cache split" 1 | wc -l | tr -d ' ')"
+[ "$n15d" = "1" ] || fail "15d: re-rank must return exactly k records (got $n15d)"
+echo "PASS: 15d re-rank off-switch is a no-op; on, it returns exactly k records"
+
+# 15e. FETCH DEPTH reaches the subprocess: the caller asks for 5, the backend is
+# asked for KNOWLEDGE_SEARCH_RERANK_DEPTH. Asserted against the fake uvx's own
+# argv log, so this pins the wiring rather than the intent.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=1 KNOWLEDGE_SEARCH_RERANK_DEPTH=20 \
+  ks_search "hybrid probe" --limit 5 >/dev/null 2>&1 || true
+grep -q -- "--page-size 20" "$FAKE_UVX_LOG" \
+  || fail "15e: cold path must fetch RERANK_DEPTH (20), not the caller's --limit (log: $(cat "$FAKE_UVX_LOG"))"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=0 \
+  ks_search "hybrid probe" --limit 5 >/dev/null 2>&1 || true
+grep -q -- "--page-size 5" "$FAKE_UVX_LOG" \
+  || fail "15e: with the re-rank off, fetch depth must collapse back to --limit (log: $(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 15e fetch depth is RERANK_DEPTH when on and the caller's --limit when off"
+
 echo "ALL PASS: knowledge_search.sh (interface + basic-memory backend, mocked subprocess)"
