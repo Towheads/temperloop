@@ -462,12 +462,12 @@ they accept at each stop, never whether content is shown.
 ## Step 3 — Review pass
 
 Runs after Step 2's coverage walk completes (every dimension carries a
-disposition) and before Step 4 (ratify). Five parts, in order: **3.1** tier
+disposition), and before Step 3.5's congruence pass hands a reviewed brief
+to Step 4 (ratify). Four parts, in order: **3.1** tier
 decision, stated to the operator before any reviewer is spawned; **3.2** the
 install-surface first-run/uninstall mandate; **3.3** capability-probed
-adversarial panel execution; **3.4** findings fold-back into the brief;
-**3.5** the congruence pass and the operator walkthrough that closes the
-review. A brief that skips this step never reaches ratify — Step 4.1's
+adversarial panel execution; **3.4** findings fold-back into the brief. A
+brief that skips this step never reaches ratify — Step 4.1's
 dimension-completeness check is unchanged, Step 4.1b re-checks that every
 finding this step produced was actually disposed of, and Step 4.3's ratify
 question then follows a brief that has actually been reviewed, not merely
@@ -687,13 +687,13 @@ walked.
    rather than evaporating (dimension-level completeness alone can't
    catch it — every dimension already carried a disposition before the
    panel ran).
-5. **Only then does 3.5 run.** This step does not re-open Step 2's walk
+5. **Only then does Step 3.5 run.** This step does not re-open Step 2's walk
    order or re-litigate the tier picked in 3.1 — it is strictly the
    apply-findings-then-proceed step between review and the congruence pass.
 
-### 3.5 — Congruence pass + walkthrough (before ratify)
+## Step 3.5 — Congruence pass + walkthrough
 
-Runs once 3.4 has settled every finding, and before Step 4. Per-dimension
+Runs once Step 3.4 has settled every finding, before Step 4. Per-dimension
 completeness is not congruence: a brief can carry a valid disposition on
 every dimension and still contradict itself *across* two of them —
 dimension 4 promising an Acceptance check dimension 8 says is manual-only.
