@@ -264,9 +264,18 @@ foundation that later shifts underneath it.
      plain-files store); on the **drop** path it is folded into that path's
      single full-file rewrite (below), which also flips the frontmatter.
 
-   - **(iii) Offer the decision — `AskUserQuestion`.** The offered option set
-     is **conditioned on this brief's reshape marker** (see the `reshape`
-     bullet): on the **first** encounter this pass, present all three —
+   - **(iii) Offer the decision — `AskUserQuestion`.** Present it as
+     `claude/message-schema.md`'s **Decision presentation** template requires,
+     under that template's plain-language rule — the decision in plain terms,
+     the proposed answer, the reasoning, alternatives considered and why they
+     lost, and what accepting constrains downstream (parts (i) and (ii) above
+     supply the case-against and the elicited justification those slots draw
+     on). **Apply it by reference; never restate its parts here** — it owns
+     their shape, and it is **not overridable by an overlay** (that file's
+     § Overrides), so no local variant can exist to drift from it. The offered
+     option set is **conditioned on this brief's reshape marker** (see the
+     `reshape` bullet): on the **first** encounter this pass, present all
+     three —
      `proceed` / `reshape` / `drop`; **once the reshape marker is set**,
      present only two — `proceed` / `drop` (reshape is spent). This is the
      bounded-ceremony rule, stated once here so the "exactly three" and "two
