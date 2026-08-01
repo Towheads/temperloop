@@ -70,17 +70,22 @@ this list and its order; an overlay may **add** dimensions but never
 remove or reorder a kernel one (§ Overlay extensibility). Each entry below
 states what the dimension must answer and the mechanism — if any — that
 checks the promise at merge time. The "Enforcing gate" column's own
-citations are not themselves lint-checked today (no lint scans this file's
-gate references); the forthcoming brief-conformance lint (temperloop#216)
-is chartered to also resolve this doc's gate citations, closing that gap.
+citations ARE lint-checked: `workflows/scripts/validate-design-brief.sh`'s
+schema-citation check (its bare-invocation mode, run in CI via
+`scripts/quality-gates.sh`) resolves every backtick-quoted,
+extension-terminated path in this column against the tracked tree and
+fails the build on a dangling one — the brief-conformance lint
+(temperloop#216) shipped 2026-07-11; this is one of its two checks
+(§ Disposition grammar's No-silent-skips rule covers the other, the
+per-brief `--brief` check).
 
 | # | Dimension | What it answers | Enforcing gate |
 |---|---|---|---|
 | 0 | **Premise & null hypothesis** | The do-nothing cost, the strongest subtraction/existing-surface alternative, and the operator's justification for proceeding (or the kill rationale) — the case *against* this design existing at all, made and answered before any other dimension is walked. **`filled`-only**: `n/a` and `deferred` are not valid dispositions for this dimension (§ Disposition grammar) — a deferred premise is exactly the gap this dimension exists to close. | The `/workshop` Step 1.3b premise gate (temperloop#509, forthcoming) — composes the case against citing `docs/principles.md`, elicits and records the operator's justification into this dimension, and offers proceed/reshape/drop; a drop flips the brief's `status` to `dropped` with this dimension carrying the kill rationale. |
 | 1 | **Problem & outcome (stranger standpoint)** | The problem and the customer-visible outcome, stated from a stranger's point of view — never the implementation's. Decides the stranger test (kernel vs overlay routing, `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule). | Advisory — no mechanical gate; the stranger-test call is reviewed by the adversarial panel and, downstream, by whichever repo the resulting code actually lands in. |
-| 2 | **Audience & interaction modes** | Who the feature is for (live operator, unattended run, both) and which `claude/message-schema.md` interaction modes it uses. | Advisory today — briefs live in the knowledge store, outside the repo, so no repo CI lint can scan one (`workflows/scripts/validate-template-refs.sh` scans only `claude/CLAUDE.kernel.md` + `claude/commands/*.md`, never a brief); brief-side template/mode reference checking routes to the forthcoming brief-conformance lint (temperloop#216), which runs at ratify time in a session that can read the knowledge store. |
+| 2 | **Audience & interaction modes** | Who the feature is for (live operator, unattended run, both) and which `claude/message-schema.md` interaction modes it uses. | Advisory today — briefs live in the knowledge store, outside the repo, so no repo CI lint can scan one automatically (`workflows/scripts/validate-template-refs.sh` scans only `claude/CLAUDE.kernel.md` + `claude/commands/*.md`, never a brief); brief-side template/mode reference checking is coverable by the brief-conformance lint's on-demand `--brief FILE` mode (`workflows/scripts/validate-design-brief.sh`, temperloop#216, shipped 2026-07-11) when run against an exported brief — nothing wires that invocation into the pipeline automatically yet. |
 | 3 | **Alignment (guiding principles / routing)** | How the feature advances a guiding principle, and the kernel-vs-overlay routing decision with its rationale. | Advisory at design time (reviewed by architecture-reviewer); the routing call is checked downstream when code lands — a kernel-routed dimension implemented as overlay code (or vice versa) trips `workflows/scripts/kernel/check-kernel-manifest.sh`'s path classification at merge. |
-| 4 | **Contract seams (Produces / Consumes / Acceptance)** | The epic-shaped contract this design will materialize into (§ Materialization contract) — what the resulting work produces, what it depends on, and how completion is checked. | No static lint yet (forthcoming brief-conformance lint, temperloop#216); functionally enforced today by `/assess`'s epic-decomposition mode (foundation#526), which asks/fails when Produces/Consumes/Acceptance aren't well-formed enough to decompose without reshaping. |
+| 4 | **Contract seams (Produces / Consumes / Acceptance)** | The epic-shaped contract this design will materialize into (§ Materialization contract) — what the resulting work produces, what it depends on, and how completion is checked. | The brief-conformance lint's `--brief` mode (`workflows/scripts/validate-design-brief.sh`, temperloop#216, shipped 2026-07-11) checks disposition shape/presence only, not content quality; content-level enforcement is `/assess`'s epic-decomposition mode (foundation#526), which asks/fails when Produces/Consumes/Acceptance aren't well-formed enough to decompose without reshaping. |
 | 5 | **Command/mechanism shape** | A steps sketch for the resulting workflow (if the design produces a command or routine) — enough for a reviewer to judge shape, not the final grammar. | If the design produces a prose workflow spec (`claude/commands/*.md`), the `workflow-reviewer` agent covers every edit to it going forward — advisory, standing review, not merge-blocking. |
 | 6 | **Scalability & resource impact** | Token/API cost, and — when the design touches board writes — GraphQL budget impact; the cost tier stated up front. | Advisory — no dedicated gate for the write-up; a design that adds direct Projects-v2 queries is caught at implementation time by `board-adapter-guard.sh`'s prompt-on-raw-query backstop. |
 | 7 | **Maintainability** | Coupling this design introduces (which gates/contracts must move together), and whether it introduces a new live-capture rule needing a backstop. | `workflows/scripts/validate-capture-backstop.sh` — CI-enforced; fails the build if a new capture/backstop pair is only half-shipped. |
@@ -109,6 +114,18 @@ not — a brief that "defers" its own premise justification has produced
 exactly the unexamined-idea gap the premise gate exists to close, so the
 gate (`/workshop` Step 1.3b, temperloop#509) never accepts anything but a
 real answer or an honest kill.
+
+**Dimension-0 walk-verdict note.** Dimension 0 is seeded at the Step 1.3b <!-- cite: DS.9 class:gate-satisfiability-deadlock -->
+premise gate rather than walked in Step 2's per-remaining-dimension loop
+(`/workshop` Step 2.2 walks only the dimensions not already seeded from
+Step 1). **A Step-1-seeded dimension's Step-1 confirm counts as that
+dimension's `walk` verdict** — see § Challenge record's `step-1-seed`
+source — so a downstream gate requiring a `walk` verdict for every kernel
+dimension before ratify stays satisfiable for every brief. Without this
+rule, dimensions 0, 1, and 3 (all three seeded in Step 1, per `/workshop`
+Step 2.2) would structurally never carry a Step-2 `walk` stop line, and any
+gate checking "walk verdict present for all 17 dimensions" would deadlock
+on every single brief, not just an unusual one.
 
 > **Provisional — pending temperloop#224.** Dimension 5's coverage-**walk <!-- cite: DS.7 incident:K#224 -->
 > structure** (the order dimensions are walked in, and whether a bounded
@@ -162,30 +179,84 @@ its only valid disposition.** `n/a` and `deferred` are both invalid for
 dimension 0 — there is no design for which "should this exist at all" is
 inapplicable, and deferring the premise justification is the exact gap
 the premise gate (§ Kernel dimension list, row 0) exists to close. A
-dimension-0 section carrying `n/a` or `deferred` fails the brief-conformance
-lint (temperloop#216) once it lands, and is an authoring-standard violation
-today the same way any other missing disposition is (§ No-silent-skips
-rule below).
+dimension-0 section carrying `n/a` or `deferred` is an authoring-standard
+violation, checked today by the review tier (`/workshop` Step 3/Step 4) the
+same way any other missing disposition is (§ No-silent-skips rule below).
+The shipped brief-conformance lint (`workflows/scripts/validate-design-brief.sh
+--brief`, temperloop#216) checks dimension 0's *presence* and every
+dimension's disposition-line *shape* today, but does not yet special-case
+this dimension's `filled`-only value restriction: a syntactically
+well-formed `n/a — <reason>` on dimension 0 passes the lint's generic
+shape check even though it is a grammar violation per this section — the
+value restriction remains authoring-standard-only until the lint is
+extended to special-case it.
 
 **No-silent-skips rule.** A brief with an undispositioned dimension fails
-the brief-conformance lint. The lint itself ships as a separate item
-(temperloop#216, forthcoming) — until it lands, this rule is an authoring
-standard enforced by the review tier (`/workshop` Step 3), not yet a
-mechanical gate; `/workshop`'s ratify step (Step 4) must not flip
-`status: draft → ratified` while any dimension lacks a disposition,
-regardless of whether the lint exists yet.
+the brief-conformance lint's `--brief` mode check
+(`workflows/scripts/validate-design-brief.sh --brief FILE`, temperloop#216,
+shipped 2026-07-11) — a mechanical check now exists, callable on demand
+against any brief exported to a file. Because briefs live in the knowledge
+store outside this repo (§ File location), nothing here wires that check
+into an automatic CI run; the operational enforcement point today remains
+the review tier (`/workshop` Step 3), and `/workshop`'s ratify step
+(Step 4) must not flip `status: draft → ratified` while any dimension
+lacks a disposition, whether the gap is caught by a manual `--brief` run
+or by review.
+
+## Congruence seams
+
+Per-dimension completeness (§ Disposition grammar) only proves every
+dimension carries *a* disposition — it says nothing about whether two
+dimensions' content actually **agrees**. A brief can pass every disposition
+check and still be internally incongruent: dimension 4's Acceptance
+criteria naming a check dimension 8 doesn't actually cover, or dimension
+16's adoption story solving a different problem than the one dimension 1
+states. A **congruence seam** is a named pairing of dimensions whose
+content must agree, not merely both be filled — checked at Step 3.4
+(findings fold-back) and Step 4 (ratify), the same review tier that
+enforces § Disposition grammar's No-silent-skips rule today.
+
+Named-minimum checklist — five seams, kernel-owned:
+
+| Seam | Dimensions | What must agree |
+|---|---|---|
+| contract↔mechanism-shape | 4 ↔ 5 | Dimension 5's steps sketch actually implements dimension 4's Produces/Consumes — a mechanism sketch that visibly doesn't produce what the contract promises is incongruent even though both dimensions are individually `filled`. |
+| adoption↔problem-statement | 16 ↔ 1 | Dimension 16's displacement story follows from dimension 1's stated problem/outcome — an adoption story solving a different problem than the one dimension 1 names is incongruent. |
+| acceptance↔testability | 4 ↔ 8 | Dimension 4's Acceptance criteria are actually coverable by what dimension 8 says is mechanically gated vs. advisory — an Acceptance clause with no corresponding testability path is a promise the brief can't keep. |
+| deferred-refs-resolve | any `deferred` dimension ↔ its ref | Every `deferred → <ref>` disposition (§ Disposition grammar) names a ref that resolves to a real, open tracking item — a dangling or already-closed ref is incongruent with the "real gap, tracked elsewhere" claim `deferred` makes. |
+| cost↔scope | 6 ↔ 4 | Dimension 6's stated cost tier is consistent with dimension 4's Produces/Consumes scope — a "low cost" dimension 6 paired with a Produces clause that plainly implies a multi-repo, multi-agent build is incongruent. |
+
+This list is a **floor, not a ceiling** — the same add-only discipline <!-- cite: DS.8 class:cross-dimension-incongruence -->
+§ Overlay extensibility applies to the dimension list applies here: a
+design may surface a congruence gap the five seams above don't name, and
+a later kernel change (or an overlay, for an org-specific pairing) may add
+a seam to this table, but never remove or weaken one of the five above
+without an upstream, `CHANGELOG.md`-marked kernel change (§ Overlay
+extensibility's own removal rule applies verbatim to this list too).
+
+No mechanical checker exists for these seams today — the same maturity
+stage § Disposition grammar's No-silent-skips rule was in before its own
+lint shipped (temperloop#216). They are reviewed as an authoring standard
+at Step 3.4/Step 4 until a future lint extends `workflows/scripts/validate-design-brief.sh`
+(or a successor) to check them mechanically.
 
 ## Overlay extensibility — add-only
 
 The kernel owns the seventeen-dimension default list (§ Kernel dimension <!-- cite: DS.5 class:overlay-dimension-collision -->
 list) and its order. An overlay **may add** dimensions — an org-specific
 concern with no meaning in a stranger's kernel-only checkout — but **may
-never remove or weaken** a kernel dimension. This is the same
-kernel-precedence shape `claude/message-schema.md` § Overlay override
-status establishes for its named templates (an overlay may extend a
-sanctioned surface, never contradict a kernel contract), applied here to a
-list rather than a template body: appending is sanctioned, subtracting is
-not. The override *mechanism* itself — how an overlay declares an added
+never remove or weaken** a kernel dimension. This is a **narrow,
+dimension-list-specific carve-out** — not an invocation of
+`claude/message-schema.md` § Overlay override status, whose named-template
+exception is scoped explicitly to that file's own named templates
+(`claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule: "it does not
+license an overlay to diverge from any other kernel contract"). The two
+carve-outs share only a family resemblance — both let an overlay extend a
+fixed kernel surface without licensing subtraction — never assume one
+authorizes the other; a narrower carve-out for this doc's own list, if one
+lands, is its own explicit sentence here, never inherited from
+message-schema.md's grant. Here, on this list's own terms: appending is
+sanctioned, subtracting is not. The override *mechanism* itself — how an overlay declares an added
 dimension and how precedence resolves — is deferred to the override-seam
 pattern (temperloop#112); the numbering namespace is reserved now:
 overlay-added dimensions are letter-suffixed on the kernel dimension they
@@ -231,6 +302,113 @@ epic. A well-formed epic produced this way carries:
   findings); the epic is the operational tracker; a paired `Decisions/`
   note is the short personal-capture cross-link. Three artifacts, one
   deliberation, no duplication.
+
+## Challenge record
+
+`/workshop` Step 3 (review pass) and Step 2 (coverage walk) both produce
+per-dimension verdicts — a lens accepted a dimension as walked, challenged
+it, or the operator edited past a challenge. § Disposition grammar records
+only the dimension's *final* content-disposition (`filled` / `n/a` /
+`deferred`); it has no place to record *how many stops that dimension took
+to get there, from what source, or in the operator's own words*. The
+**challenge record** is that grammar.
+
+**Home section.** The challenge record lives in the brief's `## Working
+notes` section — a free-form, non-dimension provenance area for the
+review pass's own bookkeeping (the tier record and per-lens coverage
+record `/workshop` Step 3.1.4 already keeps there, the Step 1.3b
+`premise-gate: reshaped once` marker, and this record). `## Working notes`
+is not one of the 17 kernel dimensions and carries no disposition line —
+it is provenance *about* the walk, not brief content itself. § Worked
+example below adds this section; earlier ratified briefs that predate it
+carry no `## Working notes` at all, which is the same grandfather shape
+§ Frontmatter's `status: ratified` immutability already gives dimension 0
+(a ratified brief is never retrofitted).
+
+**Record-start marker and its absence.** The first line under a
+`### Challenge record` subheading is a bare marker line:
+
+```
+challenge-record-start: <YYYY-MM-DD>
+```
+
+Its presence commits to "at least one stop line follows below, before the
+next heading." Its **absence has two distinct readings, and they are not <!-- cite: DS.10 class:silently-incomplete-review-record -->
+interchangeable**: no `### Challenge record` subheading at all under
+`## Working notes` means *zero stops were recorded this pass* — every
+dimension's first look sailed through as an implicit accept with nothing
+worth logging, which is a valid, common, non-defective state, never
+grounds to infer "review didn't happen" (that is instead what the Step
+3.1.4 tier/coverage record — a separate line in the same `## Working
+notes` section — attests to). A `### Challenge record` heading whose
+`challenge-record-start:` marker is present but **zero stop lines follow
+it** before the next heading is the other case, and it *is* a defect: a
+record announced but never populated.
+
+**Per-stop line shape.** One stop is one dimension (or a same-verdict
+cluster of dimensions, see below) reaching one verdict from one source, at
+one point in the walk or review pass:
+
+```
+<dim-list> [<kind>] <source>: <verdict>[ — response: "<verbatim text>"]
+
+dim-list ::= <dim-ref> ("," <dim-ref>)*
+dim-ref  ::= digit+ [a-z]?              (a kernel dimension, optionally
+                                          letter-suffixed per § Overlay
+                                          extensibility, e.g. `8`, `16a`)
+kind     ::= "walk" | "walkthrough"
+source   ::= "step-1-seed" | <review-lens-or-persona-name>
+verdict  ::= "accepted"
+           | "challenged → revised ×" digit+
+           | "operator-edited"
+response ::= present only when the operator's own verbatim words are what
+             decided the verdict (e.g. Step 3.4.3's contested-finding
+             resolution) — quoted, never paraphrased or summarized
+```
+
+**Clustering.** `dim-list` legitimately holds more than one `dim-ref` —
+several dimensions that share the identical `kind`, `source`, and
+`verdict` (most commonly a clean panel-wide `accepted` sweep from one
+lens) collapse onto one line rather than repeating a line per dimension.
+Clustering is a compression of `dim-list`, not a distinct line shape: a
+one-dimension stop and a five-dimension cluster parse identically past the
+comma-split.
+
+**Walk-vs-walkthrough discriminator.** `kind` distinguishes which pass
+produced the verdict: `walk` = Step 2's coverage walk (per-dimension
+content authored and dispositioned); `walkthrough` = Step 3's review pass
+— the adversarial lens panel (3.3) and/or the executed first-run/uninstall
+persona run (3.2), i.e. cognitive-walkthrough-shaped review, never the
+coverage walk itself. A dimension may carry a `walk` line, a `walkthrough`
+line, or both — dimension 12 on an install-surface-touching design gets
+both (Step 2's content, then Step 3.2's mandatory executed run); a
+dimension no panel lens reached (one skipped per its capability probe)
+carries only a `walk` line.
+
+**Seeded dimensions count their Step-1 confirm as their walk verdict.**
+Dimensions 0, 1, and 3 are seeded in Step 1 rather than walked in Step 2's
+per-remaining-dimension loop (§ Kernel dimension list's dimension-0
+walk-verdict note; `/workshop` Step 2.2). Their `walk` stop line uses
+`source: step-1-seed` and is written at the point Step 1 confirms that
+dimension's content (the Step 1.3b premise-gate proceed for dimension 0;
+the Step 1 intake confirm for dimensions 1 and 3) — this is the mechanism
+that realizes the walk-verdict note's rule, not a separate concept from it.
+
+**Verdict vocabulary.**
+
+- `accepted` — the source reviewed the dimension's existing content and
+  found it sufficient as written; nothing changed.
+- `challenged → revised ×<N>` — the source raised a finding, the finding
+  was folded in (`/workshop` Step 3.4's `folded` disposal), and the
+  dimension's content changed as a result; `N` counts the number of
+  distinct revision rounds this stop went through (almost always `1`;
+  greater than `1` only when a revision itself drew a further challenge
+  within the same pass).
+- `operator-edited` — the change came from the operator's own hand, not
+  from folding in the source's finding verbatim (e.g. Step 3.4.3's
+  contested-finding resolution overriding the lens's proposed fix, or a
+  direct operator rewrite mid-walk) — distinguished from `challenged →
+  revised` by *whose* edit produced the final content.
 
 ## Worked example (skeleton)
 
@@ -317,7 +495,30 @@ disposition: filled
 ## 16. Adoption & enforcement
 disposition: filled
 <how this displaces the default it replaces, or states it changes no default>
+
+## Working notes
+
+### Challenge record
+challenge-record-start: 2026-08-01
+
+0 [walk] step-1-seed: accepted
+1,3 [walk] step-1-seed: accepted
+8 [walk] requirements-auditor: accepted
+12 [walkthrough] first-run-uninstall persona: challenged → revised ×1 — response: "yes, the uninstall step needs its own confirm prompt — add it"
 ```
+
+`## Working notes` is not a numbered kernel dimension (no digit prefix, no
+disposition line) — it is the § Challenge record's home section, plus a
+home for the review-tier/per-lens coverage record `/workshop` Step 3.1.4
+keeps and the Step 1.3b `premise-gate: reshaped once` marker. The four
+lines above exercise every production the § Challenge record grammar
+defines: `challenge-record-start:` (the record-start marker), a
+single-dimension `walk` stop (`8 [walk] requirements-auditor: accepted`),
+a clustered `walk` stop across two dimensions sharing the identical
+`step-1-seed` source and `accepted` verdict (`1,3 [walk] step-1-seed:
+accepted` — the same mechanism dimension 0's own line demonstrates for the
+seeded-dimension walk-verdict rule), and a `walkthrough` stop carrying a
+verbatim `response:` field.
 
 ## Cross-references
 
@@ -325,8 +526,8 @@ disposition: filled
   design brief in the knowledge store's `Designs/` folder.
 - Grounding: the L0 design-methodology spike verdict (Context note),
   temperloop#224 (walk-structure follow-up), temperloop#225 (lens-panel
-  yield + failure-modes framing follow-up), temperloop#216 (forthcoming
-  brief-conformance lint).
+  yield + failure-modes framing follow-up), temperloop#216 (brief-conformance
+  lint, `workflows/scripts/validate-design-brief.sh`, shipped 2026-07-11).
 - Peer schema: `claude/plan-schema.md`.
 - Kernel routing: `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule.
 - Overlay-extension precedent: `claude/message-schema.md` § Overlay override
