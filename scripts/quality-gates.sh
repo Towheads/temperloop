@@ -201,6 +201,16 @@ KERNEL_GATES=(
   # kernel table names a resolvable owner file/section — the
   # validate-capture-backstop.sh mold applied to the presentation-plane registry.
   "make validate-template-refs"
+  # Its fixture suite (temperloop#928, plan item
+  # `decision-presentation-template`): proves the NON-OVERRIDABLE template set
+  # in BOTH states — RED on an overlay redeclaring an excluded template
+  # (`### Decision presentation`), GREEN on the tree and on an overlay
+  # redeclaring a sanctioned one. The gate above only ever runs the green
+  # arm (this repo ships no overlay), so without this suite the exclusion
+  # that makes claude/CLAUDE.kernel.md's overlay carve-out bounded would be
+  # shipped unproven. Same direct-`bash` form as the sibling test gates above
+  # (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_validate_template_refs.sh"
   # Class-A "static-second-surface" activation-registry lint (temperloop
   # plan item activation-registry-validator, Class-A subset of the
   # activation-completeness contract, temperloop#317 Level 1): the

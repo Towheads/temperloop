@@ -42,8 +42,11 @@ a second, driftable copy of a rule the kernel file already owns (the
 contract-by-pointer risk `claude/presentation-plane.md` warns against for
 parsed surfaces applies just as much to prose rules split across two files).
 
-The five templates authored here: **PR-body skeleton**, **parking note**,
-**digest entry**, **question block**, **degradation notice**. Rewriting
+The six templates authored here: **PR-body skeleton**, **parking note**,
+**digest entry**, **question block**, **decision presentation**,
+**degradation notice**. Five of the six are the sanctioned overlay-override
+surface; **decision presentation** is explicitly excluded from it and may not
+be redeclared by an overlay at all (§ Overrides). Rewriting
 `CLAUDE.kernel.md`'s existing communication rules to be *instances of* this
 model is a separate, later plan item (`kernel-guides-unify`) — not performed
 by this file. The overlay override mechanism itself was a separate, later
@@ -83,10 +86,10 @@ axes is what "as much as this exchange requires" cashes out to.
 |---|---|---|---|---|---|
 | 1 | CLI terminal output | present | operator, stranger | *(none — style-free CLI text is unauthored; structured `.outcome` JSON is frozen, see `presentation-plane.md`)* | — |
 | 2 | Live conversational narration | present | operator | Degradation notice (minimal form) | Mode-2 conciseness must be *structurally* enforced (locked) |
-| 3 | Blocking questions | present | operator | Question block (blocking variant) | Amershi G3/G10 (locked) |
+| 3 | Blocking questions | present | operator | Question block (blocking variant); decision presentation (which fills that block's Context slot) | Amershi G3/G10 (locked) |
 | 4 | Return-cold summaries | cold | operator | Parking note | Endsley skeleton (locked-structural; effectiveness provisional) |
 | 5 | Unattended/deferred surfaces | absent | operator | Digest entry; question block (deferred variant) | Endsley skeleton + Lee & See calibrated trust (locked); Iqbal & Bailey ~90s anchor (locked) |
-| 6 | Durable review artifacts | cold, absent | operator, stranger, parser | PR-body skeleton; degradation notice (recorded form) | ETRA-2025 title/desc/labels + mandatory Purpose + commit What+Why (all locked) |
+| 6 | Durable review artifacts | cold, absent | operator, stranger, parser | PR-body skeleton; degradation notice (recorded form); decision presentation (recorded form — its challenge-record line) | ETRA-2025 title/desc/labels + mandatory Purpose + commit What+Why (all locked) |
 | 7 | Newcomer/docs surface | absent | stranger | *(none — the docs-generator surface, out of scope for this file)* | Expertise reversal (locked): the same text cannot optimally serve mode 1 and mode 7 |
 
 Mode 6 spans two presence states and all three reader types deliberately — a
@@ -259,6 +262,52 @@ Orchestrator-written `## Questions` section (checkbox/step/default/
 auto-proceed grammar); `claude/decision-queue-contract.md` § 3 (typed reply
 grammar, ` ```decision ` block, `/choose`/`/approve`).
 
+### Decision presentation
+
+**Mode(s):** 3 (blocking, present-reader) — a `/workshop` coverage-walk stop, <!-- cite: MS.10 incident:K#923 -->
+a pre-ratify walkthrough step, or the premise-gate ask; the same content
+recorded into the brief's challenge record is that instance read cold and
+absently later, i.e. mode 6.
+
+**Composes with § Question block — it does not replace it.** A walk stop *is*
+a Question block whose **Context** slot is a decision presentation (and whose
+**Options** slot carries the stop's named choices, where the stop offers a
+closed set). Stating the composition here is what keeps neither template's
+slots dangling: § Question block still owns Context/Options/Routing and the
+blocking-vs-deferred variant split; this template owns what a *decision*
+specifically must contain before an operator can fairly contest it.
+
+Five required parts, in order:
+
+1. **The decision, in plain terms** — what is actually being decided, stated
+   so a reader carrying none of the surrounding spec in their head can
+   evaluate it.
+2. **The proposed answer** — the facilitator's recommendation, offered as a
+   proposal to be contested, never as an accomplished fact.
+3. **The reasoning** — why this answer rather than another.
+4. **Alternatives considered, and why they lost** — each named with the
+   reason it was set aside. "None considered" is a legitimate value and must
+   be said outright; an empty slot is not the same statement.
+5. **What accepting constrains downstream** — what the decision forecloses,
+   commits, or makes expensive to reverse later.
+
+**Plain-language rule (required, and it governs all five parts).** A
+spec-internal reference or piece of jargon — a step number, a slug, an issue
+ref, a schema section name, an internal coinage — must be explained inline at
+its point of use, never assumed. The counterexample is citable rather than
+hypothetical: the premise gate of the very design brief that produced this
+template first fired as a context-free, jargon-dense question the operator
+could not evaluate ("I don't have context on this question so I have to
+challenge you to understand what's hidden from me") — the failure
+demonstrated inside its own intake (temperloop#923). The rule does **not**
+lapse once the challenge phase ends: it governs the walkthrough steps' gists
+and delta summaries too, which is precisely where compression makes jargon
+cheapest to reach for.
+
+**Not overridable by an overlay.** Alone among the templates in this file,
+this one is excluded from the sanctioned overlay-override surface — see
+§ Overrides for the exclusion and the lint that enforces it.
+
 ### Degradation notice
 
 **Mode(s):** 2 (live, minimal form) and 6 (recorded, fuller form when the
@@ -369,20 +418,39 @@ but none of the following may be authored as a firm, load-bearing rule:
 ## Overlay override status
 
 The named templates in this file are the sanctioned surface an overlay may
-override — see the carve-out added to `claude/CLAUDE.kernel.md` § Kernel vs
-overlay routing rule in this same change. § Overrides below specifies the
-mechanism (redeclaration precedence, dangling-override detection): "sanctioned
-surface" means a future override of one of these five templates by name is
-not, by itself, a violation of "overlay may extend, never contradict",
-resolved per that mechanism.
+override — see the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs overlay
+routing rule — **with one exclusion**: of the six templates authored here,
+**five are overridable and § Decision presentation is not**. § Overrides below
+specifies the mechanism (redeclaration precedence, dangling-override
+detection, and the non-overridable set): "sanctioned surface" means an
+override of one of those five templates by name is not, by itself, a
+violation of "overlay may extend, never contradict", resolved per that
+mechanism. It has never meant *every* template here, and the exclusion is
+enforced by a lint rather than left to prose.
 
 ## Overrides
 
 This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs <!-- cite: MS.9 class:drifting-delta-divergence -->
-overlay routing rule points at. It governs only the five named templates
-this file authors (§ Templates) — no other kernel contract is overridable by
-this or any other route.
+overlay routing rule points at. It governs only the **five overridable** of
+the six named templates this file authors (§ Templates) — no other kernel
+contract is overridable by this or any other route.
 
+- **Non-overridable set — an enforced exclusion, not a convention.** <!-- cite: MS.11 guard:workflows/scripts/validate-template-refs.sh -->
+  **§ Decision presentation may not be redeclared by an overlay at all.** It
+  is a challenge-gate contract: a sanctioned redeclaration would let an
+  overlay quietly shrink its five parts or drop its plain-language rule, and
+  a walk stop that no longer has to be intelligible is exactly the
+  overlay-weakens-kernel back-channel `CLAUDE.kernel.md` § Kernel vs overlay
+  routing rule forbids. This is enforced, not asserted:
+  `workflows/scripts/validate-template-refs.sh` carries the exclusion set and
+  **fails** an overlay that redeclares a listed name — without that check the
+  exclusion would be inert, since a redeclaration of a template this file
+  defines otherwise passes the dangling-override rule below cleanly (the name
+  *is* canonical). Maintaining the set is a two-site change made in one PR —
+  this bullet and that script's `NON_OVERRIDABLE_TEMPLATES` — and the script
+  self-checks that every name it excludes is still a template § Templates
+  defines, so renaming or retiring one here reds CI instead of silently
+  disarming the exclusion.
 - **Whole-template redeclaration by name, not a delta.** An overlay overrides
   a template by writing out the **entire template again under the same
   name** — not a structured patch/delta against the kernel's version (no
@@ -418,10 +486,13 @@ this or any other route.
   has no such residue when absent.)
 - **Dangling-override rule.** Every overlay-defined override name MUST match
   the name of a template this file defines (§ Templates) — an overlay may
-  not "override" a template that doesn't exist here. Checking this
-  mechanically is the job of the `template-lints` plan item (L4); this file
-  states the rule, `template-lints` implements the check. Do not re-implement
-  or duplicate that check here or elsewhere.
+  not "override" a template that doesn't exist here. This is checked
+  mechanically by `workflows/scripts/validate-template-refs.sh` (shipped by
+  the `template-lints` plan item); this file states the rule, that script
+  implements the check. Do not re-implement or duplicate it here or
+  elsewhere. Note the two checks are complements, not duplicates: this one
+  rejects a name § Templates does **not** define, the non-overridable-set
+  check above rejects one specific name it **does**.
 - **Per-template staleness detection is out of scope.** Whole-template
   redeclaration means a kernel update to a template's *content* (wording,
   slots, grounding) is silently shadowed wherever an overlay has redeclared
@@ -463,7 +534,10 @@ this or any other route.
   research verdicts (#100)` (vault note)
 - Later plan items that build on this file: `kernel-guides-unify` (rewrites
   `CLAUDE.kernel.md`'s prose against this schema, retires the refs legend),
-  `overlay-adoption` (foundation's adoption), `template-lints` (CI
-  conformance checks, including the § Overrides dangling-override rule).
-  `override-seam` (specified the override mechanism, § Overrides above) has
-  landed.
+  `overlay-adoption` (foundation's adoption). `template-lints` (CI
+  conformance checks, including the § Overrides dangling-override rule),
+  `override-seam` (specified the override mechanism, § Overrides above), and
+  `decision-presentation-template` (§ Decision presentation plus the enforced
+  non-overridable set, temperloop#928) have landed.
+- Design brief this template answers to: `Designs/temperloop - workshop
+  collaborative decision walk` (ratified 2026-08-01), epic temperloop#923
