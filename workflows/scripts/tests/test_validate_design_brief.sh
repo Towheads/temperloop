@@ -271,6 +271,53 @@ out="$(DESIGN_SCHEMA_ROOT="$BIG" bash "$SCRIPT" --schema "$SCRATCH/schema-bare-c
 assert_rc "$rc" 0 "10b: bare-filename citation resolves in a >64KiB tree"
 assert_lacks "$out" "DANGLING-CITATION" "10c: no false DANGLING-CITATION from a SIGPIPE'd producer"
 
+# ── 11. check (C) — challenge-record completeness (temperloop item
+#        brief-record-completeness-lint) ────────────────────────────────────
+# design-schema.md § Challenge record / § Record completeness is the source
+# of truth check (C) reads; these fixtures exercise its grammar check, its
+# two completeness rules, and the migration carve-out — the SAME carve-out
+# semantics `/workshop` Step 4.1c's future in-session ratify gate must reuse
+# verbatim (the two migration fixtures below are the ones it consumes).
+
+echo "--- 11a. --brief on challenge-record-migration-exempt (ratified, no record at all) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-migration-exempt.md"
+assert_rc "$rc" 0 "migration-exempt fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "migration-exempt fixture says OK"
+assert_has "$out" "no '### Challenge record' section (exempt; status=ratified)" "exempt path named"
+assert_lacks "$out" "MISSING-WALK-VERDICT" "no completeness failure for a pre-epic ratified brief"
+
+echo "--- 11b. --brief on challenge-record-walk-missing (ratified, marker present, dim 6 missing walk) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-walk-missing.md"
+assert_rc "$rc" 1 "walk-missing fixture exits 1"
+assert_has "$out" "MISSING-WALK-VERDICT  challenge-record-walk-missing.md — kernel dimension 6" "dimension 6 named missing a walk verdict"
+
+echo "--- 11c. --brief on challenge-record-complete (ratified, full walk+walkthrough coverage) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-complete.md"
+assert_rc "$rc" 0 "complete fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "complete fixture says OK"
+assert_has "$out" "7 stop line(s) parsed, status=ratified" "all 7 stop lines parsed"
+
+echo "--- 11d. --brief on challenge-record-empty (marker present, zero stop lines) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-empty.md"
+assert_rc "$rc" 1 "empty-record fixture exits 1"
+assert_has "$out" "EMPTY-CHALLENGE-RECORD  challenge-record-empty.md" "empty-record defect named"
+
+echo "--- 11e. --brief on challenge-record-bad-grammar (verdict 'skipped' not in the grammar) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-bad-grammar.md"
+assert_rc "$rc" 1 "bad-grammar-record fixture exits 1"
+assert_has "$out" "BAD-CHALLENGE-LINE  challenge-record-bad-grammar.md — '6 [walk] step-1-seed: skipped'" "malformed stop line named"
+
+echo "--- 11f. --brief on challenge-record-missing-response (operator-edited, no response:) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-missing-response.md"
+assert_rc "$rc" 1 "missing-response fixture exits 1"
+assert_has "$out" "MISSING-RESPONSE  challenge-record-missing-response.md dimension(s) 5" "dimension 5 named missing a response field"
+
+echo "--- 11g. --brief on challenge-record-draft-partial (draft, partial coverage, not held to completeness) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-draft-partial.md"
+assert_rc "$rc" 0 "draft-partial fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "draft-partial fixture says OK"
+assert_lacks "$out" "MISSING-WALK-VERDICT" "in-flight draft not held to the ratify-time completeness bar"
+
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"
 echo "pass: $pass | fail: $fail"

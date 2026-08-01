@@ -313,6 +313,10 @@ only the dimension's *final* content-disposition (`filled` / `n/a` /
 to get there, from what source, or in the operator's own words*. The
 **challenge record** is that grammar.
 
+| Section | Enforcing gate |
+|---|---|
+| § Challenge record (this section's grammar, the record-start marker/empty-record guard, and § Record completeness below) | `workflows/scripts/validate-design-brief.sh`'s brief-conformance check (C) |
+
 **Home section.** The challenge record lives in the brief's `## Working
 notes` section — a free-form, non-dimension provenance area for the
 review pass's own bookkeeping (the tier record and per-lens coverage
@@ -409,6 +413,36 @@ that realizes the walk-verdict note's rule, not a separate concept from it.
   contested-finding resolution overriding the lens's proposed fix, or a
   direct operator rewrite mid-walk) — distinguished from `challenged →
   revised` by *whose* edit produced the final content.
+
+**Record completeness.** Grammar shape (above) says how a stop line reads; <!-- cite: DS.11 guard:workflows/scripts/validate-design-brief.sh -->
+it says nothing about whether the record, taken as a whole, is *done*. Before
+a brief may ratify, a challenge record that is present at all (see the
+migration carve-out below) must satisfy two structural rules — both
+mechanically checked by `workflows/scripts/validate-design-brief.sh`'s
+brief-conformance check (C), and this is the single source of truth
+`/workshop` Step 4.1c's in-session ratify gate reuses verbatim rather than
+restating, so the two can never diverge: **(1)** every kernel dimension
+0..16 carries at least one `walk` stop line — the coverage-walk requirement
+the dimension-0 walk-verdict note (above) already establishes is satisfiable
+for every brief via the seeded-dimension rule; `walkthrough` coverage stays
+opportunistic, exactly as the walk-vs-walkthrough discriminator above
+describes ("a dimension no panel lens reached ... carries only a `walk`
+line"), and is never required for every dimension. **(2)** every
+`operator-edited` stop line carries a verbatim `response:` field — the
+verdict's own definition ("the operator's own hand ... not from folding in
+the source's finding verbatim") means the record is incomplete without
+capturing what that hand actually wrote.
+
+**Migration carve-out.** A `ratified` brief carrying no `### Challenge <!-- cite: DS.12 class:ratified-record-silent-mutation -->
+record` subheading at all predates this record — challenge records did not
+exist when it ratified — and is EXEMPT from rule (1) above, never flagged,
+by the same per-brief `status:` signal § Disposition grammar's dimension-0
+requirement already keys on (temperloop#512), never a global version flip.
+A non-ratified (draft or dropped) brief is never held to rule (1) or (2)
+either — its record is still being built. Only a `ratified` brief whose
+`### Challenge record` subheading is present is checked for completeness;
+the record-start-marker-present-but-empty defect (above) is independent of
+ratification and applies regardless of status.
 
 ## Worked example (skeleton)
 
