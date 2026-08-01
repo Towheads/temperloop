@@ -14,6 +14,37 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Changed
+
+- **`build-level.mjs` batches its mechanical machinery calls instead of
+  spawning one agent per shell command (temperloop#942).** The `--workflow`
+  path wrapped EVERY mechanical step in its own `agent({schema})` executor: a
+  measured L0 level of 3 items spawned **40 agents** (3 real workers + 37 haiku
+  micro-agents), each paying ~160K cache-read tokens and 4 API round-trips to
+  run one shell one-liner — including 7 separate `ci-poll.sh` spawns and 8
+  separate `gh pr view` merge-state spawns at one level. Mechanically-adjacent
+  steps now ride ONE executor each via the new `runMachineryBatch()`:
+  `prelude:<slug>` (claim + deps-merged + worktree create), `pr-batch:<slug>`
+  (rebase + scan + push + pr-open), and `ci-batch:<slug>#n` (the interleaved
+  merge-state probe + CI poll slices). The same L0 shape now costs **15 agent
+  spawns** (3 workers + 4 machinery executors per item). The 3e.5 quality gate
+  deliberately stays a solo call — its own runtime is minutes-scale (measured
+  6:05 for this repo's suite), so batching it would put a single Bash
+  invocation within reach of the executor's ~10-minute cap.
+  **No behavior change:** the batched executor returns `{results:[…]}` — one
+  closed-outcome JSON object per step that ran — and every branching decision
+  (`SCAN_BLOCKED`, `PUSH_REJECTED`, `REBASE_CONFLICT`, `CI_GREEN`/`CI_FAILED`/
+  `NO_CI`/`TIMEOUT`, `DEPS_MERGED`, `CLAIM_CONFLICT`, `GATE_FAIL`, `EXISTS`,
+  the `RECOVER_*` ladder) still lives in legible `.mjs`, never in an agent
+  prompt; the bash short-circuit is only a stop-early mirror of those branches.
+  DESIGN NOTE 1's bridge contract and DESIGN NOTE 2's CI-poll cap are updated in
+  the file header, and the cap is now enforced **arithmetically**:
+  `CI_POLL_SLICES_PER_BATCH` is derived from `CI_POLL_MAX_BATCH_WALL_MS`, so no
+  retuning of the slice length can produce a batch that outlives the Bash cap.
+  Six new `test_workflow.sh` cases lock the reduced spawn count, the prelude
+  batching, the CI-poll reuse, the cap invariant, the `sq()` quoting of every
+  batched argument, and the in-`.mjs` legibility of every branch.
+
 ## [0.21.0] - 2026-07-29
 
 ### Added

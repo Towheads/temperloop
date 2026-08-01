@@ -135,14 +135,51 @@ const workerMap = new Map();
 const mergeCheckMap = new Map();
 
 function slugFromLabel(label) {
-  // Labels from runMachinery: "worktree:slug", "gate:slug", "scan:slug", "push:slug",
-  // "pr-open:slug", "ci-poll:slug#N", "push-retry:slug", "machinery:cmd ..."
+  // Labels from runMachineryBatch (temperloop#942): "prelude:slug",
+  // "pr-batch:slug", "ci-batch:slug#N".
+  // Labels from the remaining solo runMachinery calls: "gate:slug",
+  // "recover-probe:slug", "push-retry:slug", "machinery:cmd ..."
   // Labels from worker: "worker:slug", "worker-cifix:slug"
-  // Labels from merge-check: "merge-check:slug#N"
-  // Claim: "claim:slug"
   if (!label) return null;
   const m = label.match(/^[^:]+:([^#\s]+)/);
   return m ? m[1] : null;
+}
+
+// --- temperloop#942: batched-machinery mock ---------------------------------
+// The driver now sends SEVERAL machinery commands per executor agent
+// (`prelude:` / `pr-batch:` / `ci-batch:` labels) and the agent returns
+// { results: [...] } — ONE object per step that actually RAN (shorter than the
+// step list whenever the real bash short-circuit stopped the sequence).
+//
+// The mock replays the SAME flat per-slug outcome queue the solo path uses: one
+// entry per step, stopping where bash would. BATCH_CONTINUE_ON is the harness's
+// own INDEPENDENT restatement of each step kind's continue rule — deliberately
+// not read from the .mjs, so if production's `continueOutcomes` and this table
+// ever diverge a case desyncs and fails, which is the point.
+const BATCH_CONTINUE_ON = {
+  claim: ['CLAIMED'],
+  'deps-merged': ['DEPS_MERGED'],
+  worktree: null,   // terminal within the prelude
+  rebase: ['REBASED'],
+  scan: ['SCAN_CLEAN'],
+  push: ['PUSHED'],
+  'pr-open': null,  // terminal within the pr-batch
+  'ci-poll': ['TIMEOUT'],
+};
+
+// machineryStepLog — every batched step the mock actually RAN, in order:
+// { slug, kind }. This is the batching-era replacement for the old per-command
+// label assertions (there is no longer a `worktree:`/`depcheck:`/`ci-poll:`
+// agent label to filter callLog on — the step lives inside one batch).
+const machineryStepLog = [];
+globalThis.machineryStepLog = machineryStepLog;
+globalThis.stepsRun = (slug) => machineryStepLog.filter(s => s.slug === slug).map(s => s.kind);
+
+// The prompt's own `Steps: a, b, c` manifest identifies a batched call and names
+// its steps in order.
+function batchStepKinds(prompt) {
+  const m = String(prompt).match(/^Steps: (.+)$/m);
+  return m ? m[1].split(', ') : null;
 }
 
 function nextFromMap(map, slug, fallback) {
@@ -161,13 +198,34 @@ globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model } });
   const slug = slugFromLabel(opts.label);
   if (opts.phase === 'machinery') {
-    // Machinery call — one-shot executor, routed by slug
-    return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
-  }
-  if (opts.phase === 'merge-check') {
-    // Merge-state check — gh pr view mergeable/mergeStateStatus, routed by slug.
-    // Default is non-conflicting so existing tests need no changes.
-    return nextFromMap(mergeCheckMap, slug, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
+    const kinds = batchStepKinds(prompt);
+    if (!kinds) {
+      // Solo executor (gate / recover-probe / push-retry) — routed by slug.
+      return nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery call for ' + slug });
+    }
+    // Batched executor (temperloop#942): consume one queued outcome per step and
+    // stop exactly where the emitted bash `case` gate would.
+    const results = [];
+    for (const kind of kinds) {
+      // The merge-state probe is `gh pr view`, not a machinery script — it keeps
+      // its own map (default non-conflicting) so pre-batching cases that call
+      // setMergeCheck() need no changes.
+      const r = kind === 'merge-state'
+        ? nextFromMap(mergeCheckMap, slug, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' })
+        : nextFromMap(machineryMap, slug, { outcome: 'ERROR', error: 'unexpected machinery step ' + kind + ' for ' + slug });
+      machineryStepLog.push({ slug, kind });
+      // A queued null models the auto-mode classifier DENYING the command: the
+      // whole executor call comes back null, not a partial results array.
+      if (r === null) return null;
+      results.push(r);
+      if (kind === 'merge-state') {
+        if (r.mergeable === 'CONFLICTING' || r.mergeStateStatus === 'DIRTY') break;
+      } else {
+        const cont = BATCH_CONTINUE_ON[kind];
+        if (cont && !cont.includes(r.outcome)) break;
+      }
+    }
+    return { results };
   }
   if (opts.phase === 'worker') {
     // Worker call — implementation agent, routed by slug.
@@ -749,15 +807,20 @@ if ((result.parked ?? []).length !== 1)
 if ((result.escalations ?? []).length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'unexpected escalation: ' + JSON.stringify(result) })); process.exit(0); }
 
-// Ordering assertion: the claim call MUST appear in callLog before the worker.
-const claimIdx = callLog.findIndex(c => (c.opts.label||'') === 'claim:spike-claim');
+// Ordering assertion: the claim MUST run before the worker. The claim now rides
+// the batched prelude executor (temperloop#942), so assert on the prelude call
+// and on the step the mock actually ran inside it.
+const claimIdx = callLog.findIndex(c => (c.opts.label||'') === 'prelude:spike-claim');
 const workerIdx = callLog.findIndex(c => (c.opts.label||'') === 'worker:spike-claim');
 if (claimIdx === -1)
-  { console.log(JSON.stringify({ ok: false, reason: 'no claim call for spike: ' + JSON.stringify(callLog.map(c=>c.opts.label)) })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'no prelude (claim) call for spike: ' + JSON.stringify(callLog.map(c=>c.opts.label)) })); process.exit(0); }
 if (workerIdx === -1)
   { console.log(JSON.stringify({ ok: false, reason: 'no worker call for spike: ' + JSON.stringify(callLog.map(c=>c.opts.label)) })); process.exit(0); }
 if (!(claimIdx < workerIdx))
   { console.log(JSON.stringify({ ok: false, reason: 'claim did not precede worker: claimIdx=' + claimIdx + ' workerIdx=' + workerIdx })); process.exit(0); }
+// A SPIKE's prelude is the claim ALONE — it must never create a worktree.
+if (JSON.stringify(stepsRun('spike-claim')) !== JSON.stringify(['claim']))
+  { console.log(JSON.stringify({ ok: false, reason: 'spike prelude steps wrong (expected [claim]): ' + JSON.stringify(stepsRun('spike-claim')) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1042,23 +1105,28 @@ if (escalations.length !== 1)
 if (escalations[0].slug !== 'l2blocked' || escalations[0].kind !== 'dep-not-merged')
   { console.log(JSON.stringify({ ok: false, reason: 'wrong escalation: ' + JSON.stringify(escalations[0]) })); process.exit(0); }
 
-// The gate is ORDERED before create: l2blocked must make its deps-merged machinery
-// call but NEVER a worktree:create call, and NEVER spawn a worker — nothing was
-// built against the pre-merge base.
-const blockedDepChecks = callLog.filter(c => c.opts.label === 'depcheck:l2blocked');
-if (blockedDepChecks.length !== 1)
-  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 depcheck for l2blocked, got ' + blockedDepChecks.length })); process.exit(0); }
-const blockedCreate = callLog.filter(c => c.opts.label === 'worktree:l2blocked');
-if (blockedCreate.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'l2blocked created a worktree despite unmerged dep: ' + JSON.stringify(blockedCreate) })); process.exit(0); }
+// The gate is ORDERED before create and SHORT-CIRCUITS it: l2blocked must run its
+// deps-merged step but NEVER the worktree-create step, and NEVER spawn a worker
+// — nothing was built against the pre-merge base. Both steps now ride ONE
+// prelude executor (temperloop#942), so this asserts on the steps the batch
+// actually RAN rather than on per-command agent labels.
+const blockedSteps = stepsRun('l2blocked');
+if (JSON.stringify(blockedSteps) !== JSON.stringify(['deps-merged']))
+  { console.log(JSON.stringify({ ok: false, reason: 'l2blocked must run deps-merged and STOP (no worktree create): ' + JSON.stringify(blockedSteps) })); process.exit(0); }
+const blockedPrelude = callLog.filter(c => c.opts.label === 'prelude:l2blocked');
+if (blockedPrelude.length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 1 prelude executor for l2blocked, got ' + blockedPrelude.length })); process.exit(0); }
 const blockedWorker = callLog.filter(c => c.opts.label === 'worker:l2blocked');
 if (blockedWorker.length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'l2blocked spawned a worker despite unmerged dep: ' + JSON.stringify(blockedWorker) })); process.exit(0); }
 
-// And the gate runs BEFORE create for the passing item too (depcheck precedes worktree).
-const okLabels = callLog.filter(c => c.opts.label === 'depcheck:l2ok' || c.opts.label === 'worktree:l2ok').map(c => c.opts.label);
-if (okLabels[0] !== 'depcheck:l2ok' || okLabels[1] !== 'worktree:l2ok')
-  { console.log(JSON.stringify({ ok: false, reason: 'gate not ordered before create for l2ok: ' + JSON.stringify(okLabels) })); process.exit(0); }
+// And the gate runs BEFORE create for the passing item too — in ONE prelude
+// executor whose steps are ordered deps-merged → worktree.
+const okSteps = stepsRun('l2ok').slice(0, 2);
+if (JSON.stringify(okSteps) !== JSON.stringify(['deps-merged', 'worktree']))
+  { console.log(JSON.stringify({ ok: false, reason: 'gate not ordered before create for l2ok: ' + JSON.stringify(okSteps) })); process.exit(0); }
+if (callLog.filter(c => c.opts.label === 'prelude:l2ok').length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'l2ok prelude must be ONE executor call, not one per command' })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1129,7 +1197,10 @@ globalThis.agent = async function(prompt, opts={}) {
   if (opts.phase === 'worker' && label.startsWith('worker:item-cont')) {
     workerPromptSeen = String(prompt);
   }
-  if (label.startsWith('worktree:item-cont') || label.startsWith('claim:item-cont')) {
+  // temperloop#942: claim + worktree create ride the batched prelude executor.
+  // A continuation must emit NO prelude executor at all (both its steps are
+  // skipped, so the step list is empty and runMachineryBatch spawns nothing).
+  if (label.startsWith('prelude:item-cont')) {
     sawCreateOrClaim = true;
   }
   return origAgent(prompt, opts);
@@ -1170,14 +1241,13 @@ if (!workerPromptSeen.includes('Design verdict — item-cont'))
 
 // The existing worktree must be REUSED: no worktree.sh create, no claim.sh.
 if (sawCreateOrClaim)
-  { console.log(JSON.stringify({ ok: false, reason: 'continuation ran worktree.sh create or claim.sh (should reuse/skip)' })); process.exit(0); }
+  { console.log(JSON.stringify({ ok: false, reason: 'continuation ran a prelude executor (worktree create / claim) — should reuse/skip' })); process.exit(0); }
 
-// Belt-and-suspenders: no CREATED/CLAIMED machinery outcome was consumed for the
-// continued slug (the machinery sequence had neither).
-const createCalls = callLog.filter(c =>
-  (c.opts.label||'').match(/^(worktree|claim):item-cont/));
-if (createCalls.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'create/claim machinery calls present: ' + JSON.stringify(createCalls.map(c=>c.opts.label)) })); process.exit(0); }
+// Belt-and-suspenders: no claim/worktree STEP ran for the continued slug — an
+// empty prelude step list means runMachineryBatch spawns no executor at all.
+const preludeSteps = stepsRun('item-cont').filter(k => k === 'claim' || k === 'worktree' || k === 'deps-merged');
+if (preludeSteps.length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'continuation ran prelude steps: ' + JSON.stringify(preludeSteps) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1399,10 +1469,15 @@ if (escalations[0].payload.mergeable !== 'CONFLICTING')
 if (escalations[0].payload.pr !== 543)
   { console.log(JSON.stringify({ ok: false, reason: 'merge-conflict: payload.pr wrong: ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
 
-// Confirm ci-poll was NOT called (no entry consumed after PR_OPENED)
-const ciPollCalls = callLog.filter(c => (c.opts.label||'').startsWith('ci-poll:item-conflict543'));
-if (ciPollCalls.length !== 0)
-  { console.log(JSON.stringify({ ok: false, reason: 'merge-conflict: ci-poll.sh was called (should be skipped): ' + JSON.stringify(ciPollCalls.map(c=>c.opts.label)) })); process.exit(0); }
+// Confirm ci-poll was NOT run. The merge-state probe and the poll slices share
+// ONE ci-batch executor now (temperloop#942), so the assertion is on the STEPS
+// the batch actually ran: the conflicting merge-state must short-circuit the
+// batch before any ci-poll.sh slice burns 4 minutes.
+const ciSteps = stepsRun('item-conflict543');
+if (ciSteps.includes('ci-poll'))
+  { console.log(JSON.stringify({ ok: false, reason: 'merge-conflict: ci-poll.sh ran (should be short-circuited): ' + JSON.stringify(ciSteps) })); process.exit(0); }
+if (!ciSteps.includes('merge-state'))
+  { console.log(JSON.stringify({ ok: false, reason: 'merge-conflict: merge-state probe never ran: ' + JSON.stringify(ciSteps) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1572,6 +1647,11 @@ console.log(JSON.stringify({ ok: true }));
 # TEST 27: null machinery return at the PUSH step (temperloop#72). Same null-guard,
 # exercised at 3f-1 push after a clean worker+gate+rebase+scan. Guards the
 # second site the crash was reported at (~453/push).
+#
+# temperloop#942: rebase/scan/push/pr-open now ride ONE 'pr-batch' executor, and a
+# classifier denial denies the WHOLE executor call — so the escalation names the
+# batch plus its step list rather than a single command. The guard is the same:
+# a denied machinery step must park as 'machinery-denied', never crash.
 # ============================================================================
 run_node_case "null-machinery-push: push machinery returns null → machinery-denied escalation, no TypeError (#72)" "
 $PREAMBLE
@@ -1594,8 +1674,15 @@ if (parked.length !== 0)
   { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected 0 parked, got ' + JSON.stringify(parked) })); process.exit(0); }
 if (escalations.length !== 1 || escalations[0].kind !== 'machinery-denied')
   { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected 1 machinery-denied escalation, got ' + JSON.stringify(escalations) })); process.exit(0); }
-if (escalations[0].payload.step !== 'push')
-  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected payload.step=push, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+if (escalations[0].payload.step !== 'pr-batch')
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: expected payload.step=pr-batch, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+// The denial must still name WHICH steps were in flight — otherwise the operator
+// cannot tell a denied push from a denied rebase.
+if (!(escalations[0].payload.steps || []).includes('push'))
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: payload.steps must name the batched steps, got ' + JSON.stringify(escalations[0].payload) })); process.exit(0); }
+// And the mock DID reach the push step before returning null.
+if (!stepsRun('pushdenied').includes('push'))
+  { console.log(JSON.stringify({ ok: false, reason: 'null-machinery-push: push step never reached: ' + JSON.stringify(stepsRun('pushdenied')) })); process.exit(0); }
 console.log(JSON.stringify({ ok: true }));
 "
 
@@ -1837,7 +1924,10 @@ else if (!(parked[0].acceptance_results || []).every(r => String(r.evidence||'')
 else if (callLog.filter(c => c.opts.phase === 'worker').length !== 1) reason = 'worker was re-spawned after a recovered return (must not be)';
 else if (callLog.some(c => String(c.opts.label||'').includes('#retry'))) reason = 'retry worker spawned despite observable side-effects';
 // No second PR: the open call went out and pr.sh answered EXISTS (adopted).
-else if (callLog.filter(c => String(c.opts.label||'').startsWith('pr-open:')).length !== 1) reason = 'expected exactly one pr-open call';
+// No second PR: the pr-open step ran exactly once and pr.sh answered EXISTS.
+else if (stepsRun('prose-budget-headroom').filter(k => k === 'pr-open').length !== 1) reason = 'expected exactly one pr-open step';
+// An already-pushed recovery must NOT rebase (the plain push would be rejected).
+else if (stepsRun('prose-budget-headroom').includes('rebase')) reason = 'an already-pushed recovery must NOT rebase';
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
@@ -1866,7 +1956,9 @@ const mod = await loadLevel();
 const result = await mod.default();
 const parked = result.parked ?? [];
 const esc = result.escalations ?? [];
-const openCall = callLog.find(c => String(c.opts.label||'').startsWith('pr-open:'));
+// temperloop#942: rebase/scan/push/pr-open share ONE 'pr-batch' executor, so the
+// pr-open command text is inspected on that call's prompt.
+const openCall = callLog.find(c => String(c.opts.label||'').startsWith('pr-batch:'));
 let reason = null;
 if (esc.length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(esc);
 else if (parked.length !== 1) reason = 'expected 1 parked, got ' + JSON.stringify(result);
@@ -1874,7 +1966,7 @@ else if (parked[0].pr !== 941) reason = 'pr not adopted from the recovery open: 
 else if (parked[0].recovered_from !== 'RECOVER_COMMITTED') reason = 'recovered_from wrong: ' + parked[0].recovered_from;
 else if (parked[0].acceptance_unverified !== true) reason = 'acceptance_unverified flag missing';
 // The rebase step DID run for the unpushed stage.
-else if (!callLog.some(c => String(c.opts.label||'').startsWith('rebase:'))) reason = 'RECOVER_COMMITTED must still rebase (nothing pushed yet)';
+else if (!stepsRun('brief-record-completeness-lint').includes('rebase')) reason = 'RECOVER_COMMITTED must still rebase (nothing pushed yet)';
 // No surface file existed → the flag must be dropped, and an inline synthesized
 // surface handed to pr.sh instead (a given-but-missing file is a hard ERROR).
 else if (!openCall) reason = 'no pr-open call logged';
@@ -1903,12 +1995,13 @@ globalThis.args = { ...baseArgs, items: [
 const mod = await loadLevel();
 const result = await mod.default();
 const parked = result.parked ?? [];
-const openCall = callLog.find(c => String(c.opts.label||'').startsWith('pr-open:'));
+const openCall = callLog.find(c => String(c.opts.label||'').startsWith('pr-batch:'));
 let reason = null;
 if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(result.escalations);
 else if (parked.length !== 1 || parked[0].pr !== 950) reason = 'expected 1 parked at PR 950: ' + JSON.stringify(result);
 else if (parked[0].recovered_from !== 'RECOVER_PUSHED') reason = 'recovered_from wrong: ' + parked[0].recovered_from;
-else if (callLog.some(c => String(c.opts.label||'').startsWith('rebase:'))) reason = 'an already-pushed branch must NOT be rebased (the push would be rejected)';
+else if (stepsRun('pushed-item').includes('rebase')) reason = 'an already-pushed branch must NOT be rebased (the push would be rejected)';
+else if (!/^Steps: scan, push, pr-open$/m.test(String(openCall && openCall.promptFull || ''))) reason = 'the pr-batch must DROP the rebase step for an already-pushed recovery: ' + String(openCall && openCall.promptFull || '').split('\n').find(l => l.startsWith('Steps:'));
 else if (!openCall || !openCall.promptFull.includes('--verification-surface-file')) reason = 'surface-file flag must be kept when the probe saw .build-verification.md';
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
@@ -1969,6 +2062,304 @@ echo "PASS: #939 honesty guard — a recovered parked record flags acceptance_un
 grep -q 'async function callWorker' "$MJS" \
   || fail "#939: the worker spawn must be wrapped so a THROWN lost-return (StructuredOutput absent) is caught, not propagated as worker-error"
 echo "PASS: #939 throw guard — callWorker() normalizes a thrown lost return"
+
+# ============================================================================
+# TEST (K942): batched machinery. build-level.mjs used to spawn ONE haiku
+# executor agent per mechanical shell command — an L0 level of 3 items measured
+# 40 agents (3 real workers + 37 micro-agents), each paying ~160K cache-read
+# tokens and 4 API round-trips to run one one-liner (temperloop#942). The
+# mechanically-adjacent steps are now batched into one executor each, WITHOUT
+# moving any branching decision out of the .mjs.
+# ============================================================================
+
+run_node_case "K942 spawn count: an L0-shaped 3-item level spends 4 machinery executors per item, not one per command" "
+$PREAMBLE
+
+// Board ON + ghIssue → the full L0 shape: claim, worktree, gate, rebase, scan,
+// push, pr-open, then a CI poll that needs two slices (TIMEOUT then CI_GREEN).
+for (const [slug, pr, sha] of [['a1', 11, 'sha-a1'], ['a2', 12, 'sha-a2'], ['a3', 13, 'sha-a3']]) {
+  setMachinery(slug,
+    { outcome: 'CLAIMED' },
+    { outcome: 'CREATED', path: '/tmp/repo.wt/' + slug },
+    { outcome: 'GATE_PASS' },
+    { outcome: 'REBASED', base: 'b', tip: 't', sha },
+    { outcome: 'SCAN_CLEAN' },
+    { outcome: 'PUSHED', sha, branch: 'build/' + slug },
+    { outcome: 'PR_OPENED', pr_number: pr },
+    { outcome: 'TIMEOUT' },
+    { outcome: 'CI_GREEN' },
+  );
+  happyWorker(slug);
+}
+
+globalThis.args = { ...baseArgs, board: 3, claimCmd: '/fake/claim.sh', items: [
+  { slug: 'a1', branch: 'build/a1', title: 'A1', kind: 'impl', ghIssue: 1, acceptance: ['c'] },
+  { slug: 'a2', branch: 'build/a2', title: 'A2', kind: 'impl', ghIssue: 2, acceptance: ['c'] },
+  { slug: 'a3', branch: 'build/a3', title: 'A3', kind: 'impl', ghIssue: 3, acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+let reason = null;
+if ((result.parked ?? []).length !== 3) reason = 'expected 3 parked, got ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(result.escalations);
+
+const machineryCalls = callLog.filter(c => c.opts.phase === 'machinery');
+const workerCalls = callLog.filter(c => c.opts.phase === 'worker');
+
+// The number of agent spawns the OLD one-agent-per-command bridge would have
+// paid for exactly this run: one per batched step actually executed, plus one
+// per solo (unbatched) machinery call. Derived from the run, not hardcoded.
+const soloCalls = machineryCalls.filter(c => !/^Steps: /m.test(c.promptFull)).length;
+const unbatched = machineryStepLog.length + soloCalls;
+
+if (!reason && workerCalls.length !== 3) reason = 'expected 3 worker spawns, got ' + workerCalls.length;
+// 4 machinery executors per item: prelude, gate, pr-batch, ci-batch.
+if (!reason && machineryCalls.length !== 12) reason = 'expected 12 machinery executors (4/item), got ' + machineryCalls.length + ': ' + JSON.stringify(machineryCalls.map(c => c.opts.label));
+if (!reason && callLog.length !== 15) reason = 'expected 15 total agent spawns for the level, got ' + callLog.length;
+// …and that is a real reduction against the un-batched equivalent of this run.
+if (!reason && unbatched !== 33) reason = 'expected the un-batched equivalent to be 33 spawns, got ' + unbatched;
+if (!reason && !(machineryCalls.length < unbatched)) reason = 'batching did not reduce machinery spawns: ' + machineryCalls.length + ' vs ' + unbatched;
+
+// Per item, the executors are exactly these four, in this order.
+for (const slug of ['a1', 'a2', 'a3']) {
+  const labels = machineryCalls.filter(c => (c.opts.label||'').includes(slug)).map(c => c.opts.label);
+  const want = ['prelude:' + slug, 'gate:' + slug, 'pr-batch:' + slug, 'ci-batch:' + slug + '#0'];
+  if (!reason && JSON.stringify(labels) !== JSON.stringify(want))
+    reason = slug + ' machinery executors wrong: ' + JSON.stringify(labels);
+  // Every mechanical step still RAN — batching removed spawns, not work.
+  const want2 = ['claim','worktree','rebase','scan','push','pr-open','merge-state','ci-poll','merge-state','ci-poll'];
+  if (!reason && JSON.stringify(stepsRun(slug)) !== JSON.stringify(want2))
+    reason = slug + ' batched steps wrong: ' + JSON.stringify(stepsRun(slug));
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K942 prelude batching: claim + deps-merged + worktree ride ONE executor, each still branched in .mjs" "
+$PREAMBLE
+
+// All three prelude steps present, all green → ONE executor, three steps.
+setMachinery('pre-ok',
+  { outcome: 'CLAIMED' },
+  { outcome: 'DEPS_MERGED' },
+  { outcome: 'CREATED', path: '/tmp/repo.wt/pre-ok' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-pre' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-pre', branch: 'build/pre-ok' },
+  { outcome: 'PR_OPENED', pr_number: 942 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('pre-ok');
+
+// Claim conflict inside the SAME batch: the .mjs must still make the
+// claim-conflict decision, and the batch must never reach worktree create.
+setMachinery('pre-claimfail', { outcome: 'CLAIM_CONFLICT' });
+
+globalThis.args = { ...baseArgs, board: 3, claimCmd: '/fake/claim.sh', items: [
+  { slug: 'pre-ok', branch: 'build/pre-ok', title: 'Pre OK', kind: 'impl', ghIssue: 10, acceptance: ['c'],
+    dependsOn: [{ slug: 'dep', sha: 'sha-dep' }] },
+  { slug: 'pre-claimfail', branch: 'build/pre-claimfail', title: 'Pre claim fail', kind: 'impl', ghIssue: 11, acceptance: ['c'],
+    dependsOn: [{ slug: 'dep', sha: 'sha-dep' }] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const preludeCalls = callLog.filter(c => (c.opts.label||'').startsWith('prelude:'));
+const okPrelude = preludeCalls.find(c => c.opts.label === 'prelude:pre-ok');
+let reason = null;
+if ((result.parked ?? []).length !== 1 || result.parked[0].slug !== 'pre-ok') reason = 'pre-ok should park: ' + JSON.stringify(result);
+else if ((result.escalations ?? []).length !== 1 || result.escalations[0].kind !== 'claim-conflict') reason = 'expected 1 claim-conflict escalation: ' + JSON.stringify(result.escalations);
+// ONE executor per item covers the whole prelude — not three.
+else if (preludeCalls.length !== 2) reason = 'expected exactly 2 prelude executors (1/item), got ' + preludeCalls.length;
+else if (JSON.stringify(stepsRun('pre-ok').slice(0,3)) !== JSON.stringify(['claim','deps-merged','worktree'])) reason = 'pre-ok prelude steps wrong: ' + JSON.stringify(stepsRun('pre-ok'));
+// The failing claim short-circuits the batch — worktree create never runs.
+else if (JSON.stringify(stepsRun('pre-claimfail')) !== JSON.stringify(['claim'])) reason = 'a CLAIM_CONFLICT must stop the prelude before deps/worktree: ' + JSON.stringify(stepsRun('pre-claimfail'));
+// The executor prompt names its steps and tells the executor an early stop is expected.
+else if (!/^Steps: claim, deps-merged, worktree$/m.test(okPrelude.promptFull)) reason = 'prelude prompt missing the Steps manifest';
+else if (!/STOPS EARLY/.test(okPrelude.promptFull)) reason = 'prelude prompt must tell the executor an early stop is expected, not an error';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K942 ci-poll reuse: 5 poll slices cost 3 ci-batch executors, not 5 polls + 5 merge-checks" "
+$PREAMBLE
+
+setMachinery('slow-ci',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/slow-ci' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-slow' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-slow', branch: 'build/slow-ci' },
+  { outcome: 'PR_OPENED', pr_number: 700 },
+  { outcome: 'TIMEOUT' },
+  { outcome: 'TIMEOUT' },
+  { outcome: 'TIMEOUT' },
+  { outcome: 'TIMEOUT' },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('slow-ci');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'slow-ci', branch: 'build/slow-ci', title: 'Slow CI', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const ciBatches = callLog.filter(c => (c.opts.label||'').startsWith('ci-batch:'));
+const polls = stepsRun('slow-ci').filter(k => k === 'ci-poll').length;
+const probes = stepsRun('slow-ci').filter(k => k === 'merge-state').length;
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked after 5 slices: ' + JSON.stringify(result);
+else if (polls !== 5) reason = 'expected 5 ci-poll slices to run, got ' + polls;
+// #543 interleaving is PRESERVED: one merge-state probe immediately before EVERY slice.
+else if (probes !== 5) reason = 'expected one merge-state probe per slice (5), got ' + probes;
+// …but 5 slices + 5 probes cost only ceil(5/2)=3 executor spawns, not 10.
+else if (ciBatches.length !== 3) reason = 'expected 3 ci-batch executors for 5 slices, got ' + ciBatches.length + ': ' + JSON.stringify(ciBatches.map(c=>c.opts.label));
+else if (!(ciBatches.length < polls + probes)) reason = 'ci polling did not reduce spawns';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K942 cap invariant: no ci-batch may ask a single Bash invocation to outlive the ~10-min cap (DESIGN NOTE 2)" "
+$PREAMBLE
+
+happyMachinery('cap-item', 800, 'sha-cap');
+happyWorker('cap-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'cap-item', branch: 'build/cap-item', title: 'Cap item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+
+const AGENT_BASH_CAP_MS = 600000; // the Bash tool's own maximum timeout
+let reason = null;
+const batches = callLog.filter(c => (c.opts.label||'').startsWith('ci-batch:'));
+if (batches.length === 0) reason = 'no ci-batch executor observed';
+for (const b of batches) {
+  if (reason) break;
+  const p = b.promptFull;
+  // Only the emitted COMMAND body counts — the standing instruction lines above
+  // it name ci-poll.sh too, and those are prose, not invocations.
+  const body = p.slice(p.indexOf('\nCommand:\n'));
+  // Every ci-poll.sh invocation in the batch carries its OWN short --timeout…
+  const slices = (body.match(/ci-poll\.sh/g) || []).length;
+  const timeouts = [...body.matchAll(/--timeout '(\\d+)'/g)].map(m => Number(m[1]));
+  if (slices === 0) { reason = 'ci-batch runs no ci-poll.sh'; break; }
+  if (timeouts.length !== slices) { reason = 'every ci-poll.sh slice must carry its own --timeout: ' + slices + ' slices, ' + timeouts.length + ' timeouts'; break; }
+  const worst = timeouts.reduce((a, b2) => a + b2, 0) * 1000; // whole batch, worst case
+  if (worst >= AGENT_BASH_CAP_MS) { reason = 'batched poll wall ' + worst + 'ms reaches the ' + AGENT_BASH_CAP_MS + 'ms Bash cap (slices=' + slices + ', timeouts=' + JSON.stringify(timeouts) + ')'; break; }
+  // …and no single slice is itself a long poll.
+  if (timeouts.some(t => t * 1000 >= AGENT_BASH_CAP_MS)) { reason = 'a single poll slice reaches the Bash cap: ' + JSON.stringify(timeouts); break; }
+  // The Bash-tool timeout the executor is told to use must cover the poll wall
+  // and still stay at or under the cap.
+  const m = p.match(/\`timeout\` parameter to (\\d+)/);
+  if (!m) { reason = 'ci-batch prompt does not set an explicit Bash-tool timeout — the default 120s would kill a 240s slice'; break; }
+  const declared = Number(m[1]);
+  if (declared > AGENT_BASH_CAP_MS) { reason = 'declared Bash timeout ' + declared + ' exceeds the cap'; break; }
+  if (declared < worst) { reason = 'declared Bash timeout ' + declared + ' is under the batch poll wall ' + worst; break; }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K942 quoting: every interpolated value in a BATCHED command is still sq()-quoted" "
+$PREAMBLE
+
+// Spaced repo root / plan link / branch, and an apostrophe in the title — the
+// live-probe shapes DESIGN NOTE 1 marks CRITICAL. Batching joins the same
+// per-step command strings, so the quoting must survive verbatim.
+const WT = '/tmp/re po.wt/q-item';
+setMachinery('q-item',
+  { outcome: 'CLAIMED' },
+  { outcome: 'DEPS_MERGED' },
+  { outcome: 'CREATED', path: WT },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-q' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-q', branch: 'feat/spaced branch' },
+  { outcome: 'PR_OPENED', pr_number: 942 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('q-item');
+
+globalThis.args = {
+  ...baseArgs,
+  repoRoot: '/tmp/re po',
+  planLink: 'Plans/2026-08-01 kernel - batch machinery.md',
+  board: 3,
+  claimCmd: '/fake/cl aim.sh',
+  machineryBinDir: '/mb dir',
+  items: [
+    { slug: 'q-item', branch: 'feat/spaced branch', title: \"It's a spaced title\", kind: 'impl', ghIssue: 942, acceptance: ['c'],
+      dependsOn: [{ slug: 'dep', sha: 'sha dep' }] },
+  ],
+};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+const pre = callLog.find(c => c.opts.label === 'prelude:q-item');
+const prb = callLog.find(c => c.opts.label === 'pr-batch:q-item');
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked: ' + JSON.stringify(result);
+else if (!pre || !prb) reason = 'missing batched executor calls';
+else {
+  const need = [
+    [pre, \"'/fake/cl aim.sh'\"],
+    [pre, \"'/mb dir/worktree.sh'\"],
+    [pre, \"'/tmp/re po'\"],
+    [prb, \"'/mb dir/pr.sh'\"],
+    [prb, \"'\" + WT + \"'\"],
+    [prb, \"'feat/spaced branch'\"],
+    [prb, \"'It'\\\\''s a spaced title'\"],
+    [prb, \"'Plans/2026-08-01 kernel - batch machinery.md'\"],
+  ];
+  for (const [call, frag] of need) {
+    if (!call.promptFull.includes(frag)) { reason = 'batched command lost the sq() quoting for: ' + frag; break; }
+  }
+  // Nothing may appear UNQUOTED: a bare spaced path in the command body would
+  // split into two argv words and run the wrong command.
+  if (!reason) {
+    for (const [call, bare] of [[pre, ' /tmp/re po '], [prb, ' feat/spaced branch '], [pre, ' /mb dir/worktree.sh ']]) {
+      if (call.promptFull.includes(bare)) { reason = 'an interpolated value appears UNQUOTED in a batched command: ' + JSON.stringify(bare); break; }
+    }
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K942 static lockstep guards (same tail-guard idiom as the K712/K939 blocks).
+# These lock the SHAPE the batching depends on so a future edit cannot silently
+# regress to one-agent-per-command or break the cap derivation. -----------------
+grep -q 'async function runMachineryBatch(' "$MJS" \
+  || fail "#942: runMachineryBatch() missing — the batched executor bridge"
+grep -q 'function batchStep(' "$MJS" \
+  || fail "#942: batchStep() missing — the driver must read EACH step's own outcome object out of the batch, not a single collapsed verdict"
+echo "PASS: #942 batch-bridge guard — runMachineryBatch() + per-step batchStep() accessor present"
+# The three batch sites must exist by label.
+for lbl in 'prelude:' 'pr-batch:' 'ci-batch:'; do
+  grep -q "label: \`${lbl}" "$MJS" \
+    || fail "#942: batch site '${lbl}' missing — a mechanical sequence regressed to one agent per command"
+done
+echo "PASS: #942 batch-site guard — prelude / pr-batch / ci-batch executors all present"
+# The cap invariant is DERIVED, never a literal: the slices-per-batch count must
+# be computed from the max batch wall, so retuning the slice length can't produce
+# a batch that outlives the agent's Bash cap (DESIGN NOTE 2).
+grep -q 'CI_POLL_SLICES_PER_BATCH = Math.max(' "$MJS" \
+  || fail "#942/DESIGN NOTE 2: CI_POLL_SLICES_PER_BATCH must be DERIVED from CI_POLL_MAX_BATCH_WALL_MS, not a hardcoded count"
+grep -q 'CI_POLL_MAX_BATCH_WALL_MS / (CI_POLL_SLICE_SECS \* 1000)' "$MJS" \
+  || fail "#942/DESIGN NOTE 2: the slices-per-batch derivation must divide the max batch wall by the slice length"
+grep -q 'AGENT_BASH_CAP_MS' "$MJS" \
+  || fail "#942/DESIGN NOTE 2: AGENT_BASH_CAP_MS ceiling missing — batch timeouts must be clamped to the Bash tool's max"
+echo "PASS: #942 cap-derivation guard — the CI batch's slice count is derived from the Bash-cap budget, not hardcoded"
+# The branching must NOT have moved into the agent prompt (DESIGN NOTE 1's real
+# invariant): every closed-outcome decision still appears as .mjs source.
+for tok in "outcome === 'SCAN_BLOCKED'" "outcome === 'PUSH_REJECTED'" "outcome === 'REBASE_CONFLICT'" "outcome === 'CI_GREEN'" "outcome === 'CI_FAILED'" "outcome === 'NO_CI'" "outcome === 'TIMEOUT'" "outcome !== 'DEPS_MERGED'" "outcome !== 'CREATED'" "outcome === 'CLAIM_CONFLICT'" "outcome === 'GATE_FAIL'" "outcome !== 'EXISTS'"; do
+  grep -qF "$tok" "$MJS" \
+    || fail "#942: branching decision \"$tok\" is no longer in legible .mjs — a batch must never collapse decisions into an opaque agent verdict"
+done
+echo "PASS: #942 legibility guard — every machinery branch (SCAN_BLOCKED / PUSH_REJECTED / REBASE_CONFLICT / CI_* / DEPS_MERGED / CREATED / CLAIM_CONFLICT / GATE_FAIL / EXISTS) still lives in .mjs"
 
 echo ""
 echo "All test_workflow.sh cases passed."
