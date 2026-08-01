@@ -41,7 +41,7 @@ something durable gets committed. Each one:
   workflow (and ultimately a human) to act on; it never mutates state
   itself, and authority runs one direction only.
 
-Three agents currently make up the family:
+Five agents currently make up the family:
 
 - **architecture-reviewer** — an independent check on boundary, layering,
   and contract decisions before they are locked in: a new component, a
@@ -59,6 +59,25 @@ Three agents currently make up the family:
   automated tests and fail silently when an invariant is violated, so this
   agent's job is to catch an invariant violation the author, mid-edit,
   would not see.
+- **docs-reviewer** — an independent review for stranger-facing documentation
+  prose (`docs/**`, READMEs, and other prose `*.md` content), scored against
+  named communication rules (BLUF, the reference-token rule, unproxied
+  efficacy claims, audience fit) rather than taste. Used in `/build`'s 3e
+  pre-push review for a PR touching documentation.
+- **congruence-lens** (`claude/agents/congruence-lens.md`) — a cold-read
+  textual-consistency check for a single `/workshop` design brief: it reads
+  exactly one target brief document and reports contradictions between its
+  own dimensions (a claim in one dimension the brief's own text disagrees
+  with elsewhere), quoting both passages and naming the seam. It differs
+  from the other four in shape as well as target: the other four review
+  code, prose, or decomposition output already in this repo; congruence-lens
+  reviews a single knowledge-store design-brief document, and its charter is
+  explicit that it is **not** an independent-priors reviewer — a same-model
+  fresh-context re-read catches self-contradiction in the *text*, not a
+  flawed premise the whole document agrees with. The operator remains the
+  only independent reviewer in the flow. Intended use is `/workshop`'s
+  congruence pass (a forthcoming step); the agent is usable standalone
+  against any design brief today.
 
 Each agent's own spec states which model tier it should run on and why: an
 agent whose findings gate something downstream (nothing else double-checks
