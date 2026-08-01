@@ -170,8 +170,15 @@ globalThis.agent = async function agent(prompt, opts = {}) {
     return nextFromMap(mergeCheckMap, slug, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
   }
   if (opts.phase === 'worker') {
-    // Worker call — implementation agent, routed by slug
-    return nextFromMap(workerMap, slug, { status: 'done', summary: 'default', acceptance_results: [], commits: [] });
+    // Worker call — implementation agent, routed by slug.
+    // temperloop#939: a queued { __throw: '<msg>' } entry makes agent() THROW
+    // instead of returning — faithfully simulating the real runtime when a
+    // subagent completes without calling StructuredOutput, or blows the
+    // StructuredOutput retry cap. That is an EXCEPTION, not a null return, so a
+    // mock that can only return null cannot exercise the #939 path at all.
+    const v = nextFromMap(workerMap, slug, { status: 'done', summary: 'default', acceptance_results: [], commits: [] });
+    if (v && v.__throw) throw new Error(v.__throw);
+    return v;
   }
   // Fallback (should not happen in well-formed test cases)
   return nextFromMap(workerMap, slug, { status: 'done', summary: 'fallback', acceptance_results: [], commits: [] });
@@ -185,6 +192,11 @@ globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
 globalThis.setMachinery = (slug, ...outcomes) => { machineryMap.set(slug, outcomes); };
 globalThis.setWorker = (slug, ...verdicts) => { workerMap.set(slug, verdicts); };
 globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states); };
+// temperloop#939 mock shorthands.
+// throwingWorker(msg) — the #939 return-channel failure (agent() throws).
+globalThis.throwingWorker = (msg) => ({ __throw: msg || 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)' });
+// noSideEffects — the recover-probe answer for a genuinely-failed worker.
+globalThis.noSideEffects = () => ({ outcome: 'RECOVER_NONE', commits_ahead: 0, pushed: false, verification_surface_present: false });
 
 // Canonical happy-path machinery sequence for a green item
 globalThis.happyMachinery = (slug, prNum, sha) => setMachinery(slug,
@@ -1217,8 +1229,18 @@ console.log(JSON.stringify({ ok: true }));
 # ============================================================================
 run_node_case "null-worker-retry: agent returns null once, retries, parks on second call (#542)" "
 $PREAMBLE
-// Machinery: normal happy path
-happyMachinery('retryitem', 10, 'sha-retry');
+// Machinery: normal happy path, plus the temperloop#939 recover-probe that now
+// runs on the null return BEFORE the retry (RECOVER_NONE → retry exactly as before).
+setMachinery('retryitem',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/retryitem' },
+  noSideEffects(),
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-retry' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-retry', branch: 'build/retryitem' },
+  { outcome: 'PR_OPENED', pr_number: 10 },
+  { outcome: 'CI_GREEN' },
+);
 // Worker: first call null (transient API error), second call done (retry succeeds)
 setWorker('retryitem',
   null,
@@ -1709,7 +1731,18 @@ console.log(JSON.stringify({ ok: true }));
 run_node_case "K712 cure: null verdict → retry prompt carries FOREGROUND_CURE, first does not → parked" "
 $PREAMBLE
 
-happyMachinery('cure-item', 901, 'shaCure');
+// temperloop#939: the null verdict now runs a recover-probe BEFORE the retry, so
+// the machinery sequence carries a RECOVER_NONE (no side-effects → retry as before).
+setMachinery('cure-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/cure-item' },
+  noSideEffects(),
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaCure' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'shaCure', branch: 'build/cure-item' },
+  { outcome: 'PR_OPENED', pr_number: 901 },
+  { outcome: 'CI_GREEN' },
+);
 setWorker('cure-item', null, { status: 'done', summary: 'cured', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
 globalThis.args = { ...baseArgs, items: [
   { slug: 'cure-item', branch: 'build/cure-item', title: 'Cure item', kind: 'impl', acceptance: ['c'] },
@@ -1730,7 +1763,13 @@ console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 run_node_case "K712 regression: null verdict TWICE → worker-error escalation (unchanged)" "
 $PREAMBLE
 
-setMachinery('err-item', { outcome: 'CREATED', path: '/tmp/repo.wt/err-item' });
+// Two nulls with a RECOVER_NONE probe after each (temperloop#939) — no
+// observable side-effects, so the escalation path is unchanged.
+setMachinery('err-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/err-item' },
+  noSideEffects(),
+  noSideEffects(),
+);
 setWorker('err-item', null, null);
 globalThis.args = { ...baseArgs, items: [
   { slug: 'err-item', branch: 'build/err-item', title: 'Err item', kind: 'impl', acceptance: ['c'] },
@@ -1753,6 +1792,183 @@ grep -q 'const FOREGROUND_CURE' "$MJS" \
 grep -q 'withCure(verdictSection)' "$MJS" \
   || fail "#712: main-worker null-retry must append the cure via withCure(verdictSection) so the retry prompt differs"
 echo "PASS: #712 cure guard — null-verdict re-spawn appends FOREGROUND_CURE (retry prompt differs from first)"
+
+# ============================================================================
+# TEST (K939): lost-return recovery — a worker that completed WITHOUT calling
+# StructuredOutput must not manufacture a `worker-error` escalation for work
+# that demonstrably landed. Covers all three observable stages plus the
+# genuine-failure case (which stays exactly as it was).
+# ============================================================================
+
+run_node_case "K939 L0 shape: throw + RECOVER_PR_OPEN → parked from ground truth, no escalation, no re-spawn" "
+$PREAMBLE
+
+// The #939 L0 incident: commit authored, branch pushed, PR #936 open, CI green
+// — and the worker's agent() threw because it never called StructuredOutput.
+setMachinery('prose-budget-headroom',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/prose-budget-headroom' },
+  { outcome: 'RECOVER_PR_OPEN', sha: 'bca3824', commits_ahead: 1, pushed: true, remote_sha: 'bca3824', pr_number: 936, verification_surface_present: true },
+  { outcome: 'GATE_PASS' },
+  // NOTE: no REBASED entry — the branch is already on origin, so 3f-0a is skipped.
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'bca3824', branch: 'chore/prose-budget-headroom' },
+  { outcome: 'EXISTS', pr_number: 936 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('prose-budget-headroom', throwingWorker());
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'prose-budget-headroom', branch: 'chore/prose-budget-headroom', title: 'Prose budget headroom', kind: 'impl', acceptance: ['crit one', 'crit two'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const esc = result.escalations ?? [];
+let reason = null;
+if (esc.length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(esc);
+else if (parked.length !== 1) reason = 'expected 1 parked, got ' + JSON.stringify(result);
+else if (parked[0].pr !== 936) reason = 'pr not reconstructed from ground truth: ' + JSON.stringify(parked[0]);
+else if (parked[0].pushed_sha !== 'bca3824') reason = 'pushed_sha not reconstructed: ' + JSON.stringify(parked[0]);
+else if (parked[0].acceptance_unverified !== true) reason = 'parked record must flag acceptance_unverified';
+else if (parked[0].recovered_from !== 'RECOVER_PR_OPEN') reason = 'recovered_from stage missing/wrong: ' + parked[0].recovered_from;
+else if ((parked[0].acceptance_results || []).some(r => r.passed === true)) reason = 'recovered acceptance results must NEVER read as passing';
+else if (!(parked[0].acceptance_results || []).every(r => String(r.evidence||'').includes('UNVERIFIED'))) reason = 'every recovered acceptance result must be marked UNVERIFIED';
+// No re-spawn: exactly ONE worker call, and no #retry label.
+else if (callLog.filter(c => c.opts.phase === 'worker').length !== 1) reason = 'worker was re-spawned after a recovered return (must not be)';
+else if (callLog.some(c => String(c.opts.label||'').includes('#retry'))) reason = 'retry worker spawned despite observable side-effects';
+// No second PR: the open call went out and pr.sh answered EXISTS (adopted).
+else if (callLog.filter(c => String(c.opts.label||'').startsWith('pr-open:')).length !== 1) reason = 'expected exactly one pr-open call';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K939 L1 shape: throw + RECOVER_COMMITTED → rebase/push/open run, parked unverified" "
+$PREAMBLE
+
+// The #939 L1 variant: work committed in the worktree, NOT pushed, no PR. The
+// recovery must complete the machinery (rebase IS run here — nothing is on the
+// remote yet) rather than escalating.
+setMachinery('brief-record-completeness-lint',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/brief-record-completeness-lint' },
+  { outcome: 'RECOVER_COMMITTED', sha: '140fc64', commits_ahead: 1, pushed: false, remote_sha: '', verification_surface_present: false },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: '140fc64' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: '140fc64', branch: 'feat/brief-record-completeness-lint' },
+  { outcome: 'PR_OPENED', pr_number: 941 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('brief-record-completeness-lint', throwingWorker('StructuredOutput retry cap (5) exceeded — 5 failed calls with no valid output'));
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'brief-record-completeness-lint', branch: 'feat/brief-record-completeness-lint', title: 'Brief record completeness lint', kind: 'impl', acceptance: ['crit one'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const esc = result.escalations ?? [];
+const openCall = callLog.find(c => String(c.opts.label||'').startsWith('pr-open:'));
+let reason = null;
+if (esc.length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(esc);
+else if (parked.length !== 1) reason = 'expected 1 parked, got ' + JSON.stringify(result);
+else if (parked[0].pr !== 941) reason = 'pr not adopted from the recovery open: ' + JSON.stringify(parked[0]);
+else if (parked[0].recovered_from !== 'RECOVER_COMMITTED') reason = 'recovered_from wrong: ' + parked[0].recovered_from;
+else if (parked[0].acceptance_unverified !== true) reason = 'acceptance_unverified flag missing';
+// The rebase step DID run for the unpushed stage.
+else if (!callLog.some(c => String(c.opts.label||'').startsWith('rebase:'))) reason = 'RECOVER_COMMITTED must still rebase (nothing pushed yet)';
+// No surface file existed → the flag must be dropped, and an inline synthesized
+// surface handed to pr.sh instead (a given-but-missing file is a hard ERROR).
+else if (!openCall) reason = 'no pr-open call logged';
+else if (openCall.promptFull.includes('--verification-surface-file')) reason = 'surface-file flag must be dropped when the probe saw no .build-verification.md';
+else if (!openCall.promptFull.includes('verification_surface')) reason = 'recovery must hand pr.sh a synthesized inline verification_surface';
+else if (!openCall.promptFull.includes('temperloop#939')) reason = 'recovered PR body must name its recovered provenance';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K939 RECOVER_PUSHED: surface file present → flag kept, rebase skipped, PR opened" "
+$PREAMBLE
+
+setMachinery('pushed-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/pushed-item' },
+  { outcome: 'RECOVER_PUSHED', sha: 'shaP', commits_ahead: 2, pushed: true, remote_sha: 'shaP', verification_surface_present: true },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'shaP', branch: 'build/pushed-item' },
+  { outcome: 'PR_OPENED', pr_number: 950 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('pushed-item', throwingWorker());
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'pushed-item', branch: 'build/pushed-item', title: 'Pushed item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const openCall = callLog.find(c => String(c.opts.label||'').startsWith('pr-open:'));
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1 || parked[0].pr !== 950) reason = 'expected 1 parked at PR 950: ' + JSON.stringify(result);
+else if (parked[0].recovered_from !== 'RECOVER_PUSHED') reason = 'recovered_from wrong: ' + parked[0].recovered_from;
+else if (callLog.some(c => String(c.opts.label||'').startsWith('rebase:'))) reason = 'an already-pushed branch must NOT be rebased (the push would be rejected)';
+else if (!openCall || !openCall.promptFull.includes('--verification-surface-file')) reason = 'surface-file flag must be kept when the probe saw .build-verification.md';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K939 genuine failure: throw + RECOVER_NONE twice → worker-error escalation (unchanged)" "
+$PREAMBLE
+
+setMachinery('dead-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/dead-item' },
+  noSideEffects(),
+  noSideEffects(),
+);
+setWorker('dead-item', throwingWorker(), throwingWorker());
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'dead-item', branch: 'build/dead-item', title: 'Dead item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'a no-side-effect worker must not park';
+else if (esc.length !== 1 || esc[0].kind !== 'worker-error') reason = 'expected 1 worker-error escalation, got ' + JSON.stringify(esc);
+else if (!String(esc[0].payload && esc[0].payload.reason || '').includes('StructuredOutput')) reason = 'escalation payload must carry the real return-channel error: ' + JSON.stringify(esc[0].payload);
+// The retry DID happen (nothing landed, so the #1219 cure still applies).
+else if (!callLog.some(c => String(c.opts.label||'').includes('#retry'))) reason = 'with no side-effects the #1219 cure retry must still run';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K939 probe unusable (denied/ERROR) → falls back to the unchanged worker-error escalation" "
+$PREAMBLE
+
+// A broken probe must never manufacture a recovery — fail CLOSED to the old path.
+setMachinery('probe-broken',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/probe-broken' },
+  { outcome: 'ERROR', error: 'pr.sh: recover-probe not found' },
+  { outcome: 'ERROR', error: 'pr.sh: recover-probe not found' },
+);
+setWorker('probe-broken', throwingWorker(), throwingWorker());
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'probe-broken', branch: 'build/probe-broken', title: 'Probe broken', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'an unusable probe must not park anything';
+else if (esc.length !== 1 || esc[0].kind !== 'worker-error') reason = 'expected worker-error, got ' + JSON.stringify(esc);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K939 static lockstep guards (same tail-guard idiom as the K712 block) -----
+grep -q 'recover-probe' "$MJS" \
+  || fail "#939: driveItem must probe observable side-effects via 'pr.sh recover-probe' before classifying a lost worker return"
+echo "PASS: #939 probe guard — build-level.mjs runs the staged recover-probe"
+grep -q 'acceptance_unverified' "$MJS" \
+  || fail "#939: a recovered parked record must carry acceptance_unverified (its acceptance results are UNKNOWN, never 'pass')"
+echo "PASS: #939 honesty guard — a recovered parked record flags acceptance_unverified"
+grep -q 'async function callWorker' "$MJS" \
+  || fail "#939: the worker spawn must be wrapped so a THROWN lost-return (StructuredOutput absent) is caught, not propagated as worker-error"
+echo "PASS: #939 throw guard — callWorker() normalizes a thrown lost return"
 
 echo ""
 echo "All test_workflow.sh cases passed."

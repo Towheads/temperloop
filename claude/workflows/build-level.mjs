@@ -112,6 +112,13 @@
 //     { parked:      [{ slug, pr, pushed_sha, acceptance_results }],
 //       escalations: [{ slug, kind, payload }] }
 //
+//   A parked record MAY additionally carry `acceptance_unverified: true` +
+//   `recovered_from: <RECOVER_* stage>` (temperloop#939). That pair means the
+//   worker's return channel failed and this record was RECONSTRUCTED from
+//   observable side-effects: the PR and SHA are ground truth, but the acceptance
+//   results are UNKNOWN — never treat them as passing. The orchestrator MUST
+//   re-verify that item's acceptance itself before the Step 4 merge gate.
+//
 //   The workflow NEVER writes the plan note (race-safety: the orchestrator
 //   serializes all plan-note writeback at the level boundary). It only RETURNS
 //   what to write. Escalations leave the worktree INTACT (the orchestrator
@@ -161,11 +168,26 @@ const SPINE_OUTCOME_SCHEMA = {
         'CI_GREEN', 'CI_FAILED', 'NO_CI', 'TIMEOUT',
         'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT',
         'CLAIMED', 'CLAIM_CONFLICT',
+        // worktree.sh deps-merged (3b-0) — its outcomes were consumed at the
+        // call site (~line 595) but never listed here; an omitted outcome is
+        // schema-invalid, so name them alongside the rest of the closed set.
+        'DEPS_MERGED', 'DEPS_UNMERGED',
+        // pr.sh recover-probe (3c lost-return recovery, temperloop#939) — the
+        // staged observable-side-effect ladder: nothing / committed / pushed /
+        // PR already open.
+        'RECOVER_NONE', 'RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN',
         'ERROR',
       ],
     },
     // Common passthrough fields the machinery emits (any subset, depending on cmd).
+    // (recover-probe adds commits_ahead / pushed / remote_sha /
+    // verification_surface_present; `additionalProperties: true` already admits
+    // them, and the ones the .mjs branches on are declared below.)
     path: { type: 'string' },
+    commits_ahead: { type: ['number', 'string'] },
+    pushed: { type: 'boolean' },
+    remote_sha: { type: 'string' },
+    verification_surface_present: { type: 'boolean' },
     branch: { type: 'string' },
     base: { type: 'string' },
     sha: { type: 'string' },
@@ -358,14 +380,20 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
 // -----------------------------------------------------------------------------
 // Worker prompt assembly (3c).
 // -----------------------------------------------------------------------------
-function workerPrompt(item, worktreePath, extraSection) {
-  // `acceptance` may be an array of bullets (the /build plan path) OR a single
-  // string (/sweep passes one string) — normalize to an array (#437).
-  const accList = Array.isArray(item.acceptance)
+// acceptanceList — `acceptance` may be an array of bullets (the /build plan
+// path) OR a single string (/sweep passes one string) — normalize to an array
+// (#437). Shared by workerPrompt and the #939 recovery record, so the criteria
+// a recovered record marks UNVERIFIED are exactly the ones the worker was given.
+function acceptanceList(item) {
+  return Array.isArray(item.acceptance)
     ? item.acceptance
     : item.acceptance
       ? [item.acceptance]
       : [];
+}
+
+function workerPrompt(item, worktreePath, extraSection) {
+  const accList = acceptanceList(item);
   const accBullets = accList
     .map((a) => `  - ${typeof a === 'string' ? a : JSON.stringify(a)}`)
     .join('\n');
@@ -445,6 +473,126 @@ function withCure(section) {
 }
 
 // -----------------------------------------------------------------------------
+// Lost-return recovery (temperloop#939).
+// -----------------------------------------------------------------------------
+// The 3c worker can die in TWO different ways that look identical from here:
+//   (a) it genuinely failed — nothing was built, and escalating is correct;
+//   (b) it did the whole job and only the RETURN CHANNEL failed — the subagent
+//       completed without calling StructuredOutput, or blew the StructuredOutput
+//       retry cap, so `agent({schema})` THROWS (it does not return null).
+// Case (b) is not hypothetical: in the #939 run it hit 2 of 5 workers. One had
+// committed, pushed, opened PR #936 and gone green; the other had committed but
+// not pushed. Both were reported as `worker-error` — a `ask-now` halt over work
+// that had already landed, with a live risk of re-spawning a worker onto a
+// worktree that already held the finished commit (a second PR, a stacked commit).
+//
+// The fix is to STOP GUESSING from the exception and go LOOK: probe the
+// observable side-effects (commit / push / PR) before classifying. What we can
+// never recover is the worker's own self-verification — so a recovered record is
+// honest about that and marks its acceptance results UNVERIFIED rather than
+// letting them read as passing.
+
+const RECOVERY_UNVERIFIED =
+  'UNVERIFIED — the worker completed without returning a verdict (temperloop#939); ' +
+  'this criterion was NOT self-verified and must be re-verified before merge.';
+
+// The recover-probe outcomes that mean "work landed" (anything but RECOVER_NONE).
+const RECOVER_STAGES = ['RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN'];
+
+// callWorker — spawn the implementation worker so a lost return channel can
+// never escape as a throw. agent({schema}) THROWS on a StructuredOutput-absent
+// / retry-cap-exceeded subagent and returns null on a skip / terminal API error;
+// both are the same thing to the caller ("no verdict"), and neither is evidence
+// about the work. Normalize both into { verdict, error } so driveItem decides
+// what they MEAN only after the side-effect probe has run.
+async function callWorker(item, wt, extraSection, label) {
+  try {
+    const v = await agent(workerPrompt(item, wt, extraSection), {
+      label,
+      phase: 'worker',
+      model: item.model, // undefined → inherit session model
+      schema: WORKER_VERDICT_SCHEMA,
+    });
+    return { verdict: v ?? null, error: v == null ? 'agent returned null' : null };
+  } catch (err) {
+    return { verdict: null, error: String((err && err.message) || err) };
+  }
+}
+
+// probeSideEffects — run the staged pr.sh recover-probe (its own header owns the
+// ladder) and normalize it. Returns { landed, stage, sha, pushed, pr,
+// surfacePresent, probeOut }. `landed:false` covers BOTH the genuine-failure
+// case (RECOVER_NONE) and an unusable probe (denied / ERROR): either way the
+// caller falls through to the unchanged `worker-error` escalation, so a broken
+// probe can never manufacture a recovery.
+async function probeSideEffects(item, wt) {
+  const prBin = machineryBin(input.repoRoot, 'pr.sh');
+  const out = await runMachinery(
+    `${prBin} recover-probe ${sq(wt)} ${sq(item.branch)}`,
+    { label: `recover-probe:${item.slug}`, slug: item.slug },
+  );
+  if (machineryDenied(out) || !RECOVER_STAGES.includes(out.outcome)) {
+    return { landed: false, probeOut: out };
+  }
+  return {
+    landed: true,
+    stage: out.outcome,
+    sha: out.sha,
+    // A PR implies a push even if ls-remote was somehow unhelpful.
+    pushed: out.pushed === true || out.outcome === 'RECOVER_PR_OPEN',
+    pr: out.pr_number ?? null,
+    surfacePresent: out.verification_surface_present === true,
+    probeOut: out,
+  };
+}
+
+// recoveredVerdict — reconstruct the verdict object the worker never returned,
+// from ground truth plus an explicit UNVERIFIED marker on every acceptance
+// criterion. Deliberately carries NO `passed` key: pr.sh renders each result as
+// `- [ ]` (unchecked) and driveItem's `passed === false` check does not trip, so
+// the item flows on WITHOUT ever being reported as passing. The synthesized
+// `verification_surface` is the fallback for a worker that died before writing
+// `.build-verification.md` (pr.sh's `open` prefers the real file when one exists).
+function recoveredVerdict(item, probe, reason) {
+  const criteria = acceptanceList(item);
+  const results = (criteria.length ? criteria : ['(no acceptance criteria carried on this plan item)']).map(
+    (c) => ({
+      criterion: typeof c === 'string' ? c : JSON.stringify(c),
+      evidence: RECOVERY_UNVERIFIED,
+    }),
+  );
+  const summary =
+    `**Recovered record (temperloop#939) — acceptance NOT self-verified.** The worker for ` +
+    `\`${item.slug}\` completed without returning a verdict (${reason ?? 'no verdict'}), so this ` +
+    `PR was reconstructed from observable side-effects (probe stage: ${probe.stage}, ` +
+    `HEAD ${probe.sha ?? 'unknown'}). The work itself is real and present on this branch; what was ` +
+    `lost is the worker's own acceptance self-check. Re-verify every criterion below before merging.`;
+  return {
+    status: 'done',
+    recovered: true,
+    summary,
+    acceptance_results: results,
+    verification_surface: [
+      '### Recovered — verification NOT performed by the worker',
+      '',
+      `The implementation worker for \`${item.slug}\` finished its run but never returned a`,
+      'verdict (temperloop#939 — the StructuredOutput return channel failed). The branch content',
+      'below is ground truth read back from the worktree and the remote; the acceptance results',
+      'are **unknown**, not passing.',
+      '',
+      `- probe stage: \`${probe.stage}\``,
+      `- worktree HEAD: \`${probe.sha ?? 'unknown'}\``,
+      `- branch on origin: ${probe.pushed ? 'yes' : 'no (pushed by the recovery path)'}`,
+      `- open PR at probe time: ${probe.pr ? `#${probe.pr}` : 'none (opened by the recovery path)'}`,
+      `- worker verification surface written: ${probe.surfacePresent ? 'yes' : 'no'}`,
+      '',
+      '**Reviewer action required:** verify each acceptance criterion above directly — do not',
+      'read the unchecked boxes as failures, and do not read this PR as self-verified.',
+    ].join('\n'),
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Per-item driver (3a–3h for ONE item). Returns either a `parked` record or an
 // `escalation` record — NEVER both. The pipeline collects these.
 // -----------------------------------------------------------------------------
@@ -453,8 +601,17 @@ function withCure(section) {
 function escalate(slug, kind, payload) {
   return { _kind: 'escalation', slug, escalation: { slug, kind, payload } };
 }
-function park(slug, pr, pushedSha, acceptanceResults, noCi) {
+function park(slug, pr, pushedSha, acceptanceResults, noCi, recovery) {
   const parked = { slug, pr, pushed_sha: pushedSha, acceptance_results: acceptanceResults ?? [] };
+  // temperloop#939: a record reconstructed from observable side-effects after a
+  // lost worker return carries its provenance EXPLICITLY. `acceptance_unverified`
+  // is the load-bearing half — the acceptance results in this record are
+  // UNKNOWN, not passing, and the orchestrator must verify them itself before
+  // the merge gate rather than assuming the 3d self-check ran.
+  if (recovery) {
+    parked.acceptance_unverified = true;
+    parked.recovered_from = recovery.stage;
+  }
   // temperloop#605/#618: a NO_CI-outcome item parks identically to a green one,
   // but carries a durable `no_ci` marker so the orchestrator stamps the
   // `  - no_ci: true` sub-line (build.md 3h) and renders `CI —  (no CI
@@ -631,28 +788,44 @@ async function driveItem(item) {
   // ## User answers) as the worker's extra section so it sees the decision
   // instead of re-forking forever (MAJOR fix). On a fresh drive verdictSection
   // is undefined → workerPrompt emits no extra section, unchanged behavior.
-  let verdict = await agent(workerPrompt(item, wt, verdictSection), {
-    label: `worker:${item.slug}`,
-    phase: 'worker',
-    model: item.model, // undefined → inherit session model
-    schema: WORKER_VERDICT_SCHEMA,
-  });
+  let recovery = null; // temperloop#939 — set only on a lost-return recovery
+  let w = await callWorker(item, wt, verdictSection, `worker:${item.slug}`);
+  let verdict = w.verdict;
   if (verdict == null) {
-    // agent() returned null — user skip, transient API error (e.g. 5xx), OR the
-    // #1219 background-stall (worker backgrounded the gate and yielded no verdict).
-    // Auto-retry exactly once, appending FOREGROUND_CURE so the retry prompt
-    // DIFFERS from the first — a byte-identical retry re-stalls identically. A 5xx
-    // is transient (the extra section is harmless); a stall is cured by it.
-    log(`[${item.slug}] worker returned null — retrying once (foreground cure #1219)`);
-    verdict = await agent(workerPrompt(item, wt, withCure(verdictSection)), {
-      label: `worker:${item.slug}#retry`,
-      phase: 'worker',
-      model: item.model,
-      schema: WORKER_VERDICT_SCHEMA,
-    });
+    // No verdict — either agent() returned null (user skip, transient 5xx, or the
+    // #1219 background-stall) or it THREW (StructuredOutput absent / retry cap
+    // blown). Neither tells us anything about the WORK, so before doing anything
+    // else, LOOK (temperloop#939): probe the observable side-effects. This runs
+    // BEFORE the retry deliberately — re-spawning a worker onto a worktree that
+    // already holds the finished commit is the duplicate-PR / stacked-commit
+    // hazard #939 names, and it costs a full worker run to discover.
+    let probe = await probeSideEffects(item, wt);
+    if (probe.landed) {
+      recovery = probe;
+    } else {
+      // Nothing landed → this is the ordinary stall. Retry exactly once,
+      // appending FOREGROUND_CURE so the retry prompt DIFFERS from the first — a
+      // byte-identical retry re-stalls identically. A 5xx is transient (the extra
+      // section is harmless); a stall is cured by it.
+      log(`[${item.slug}] worker returned no verdict, no side-effects — retrying once (foreground cure #1219)`);
+      w = await callWorker(item, wt, withCure(verdictSection), `worker:${item.slug}#retry`);
+      verdict = w.verdict;
+      if (verdict == null) {
+        // The retry may itself have built and lost its return — probe again.
+        probe = await probeSideEffects(item, wt);
+        if (probe.landed) recovery = probe;
+      }
+    }
     if (verdict == null) {
-      // Still null after one retry — escalate cleanly rather than throw.
-      return escalate(item.slug, 'worker-error', { retryable: true, reason: 'agent returned null after one retry (main worker)' });
+      if (!recovery) {
+        // GENUINELY nothing observable — the unchanged escalation path.
+        return escalate(item.slug, 'worker-error', {
+          retryable: true,
+          reason: w.error ?? 'agent returned no verdict after one retry (main worker)',
+        });
+      }
+      log(`[${item.slug}] worker return lost (${w.error}) — recovered from side-effects at ${recovery.stage}; acceptance UNVERIFIED`);
+      verdict = recoveredVerdict(item, recovery, w.error);
     }
   }
 
@@ -742,18 +915,30 @@ async function driveItem(item) {
   // replays the worker's commits onto its tip (a no-op when already current).
   // On REBASE_CONFLICT it has already `git rebase --abort`ed (worktree left
   // clean, NEVER a silent revert) → escalate as a rebase conflict for a human.
-  const rebaseOut = await runMachinery(`${prBin} rebase ${sq(wt)}`, {
-    label: `rebase:${item.slug}`,
-    slug: item.slug,
-  });
-  if (machineryDenied(rebaseOut)) {
-    return escalate(item.slug, 'machinery-denied', { step: 'rebase', out: rebaseOut });
-  }
-  if (rebaseOut.outcome === 'REBASE_CONFLICT') {
-    return escalate(item.slug, 'rebase-conflict', { rebaseOut });
-  }
-  if (rebaseOut.outcome !== 'REBASED') {
-    return escalate(item.slug, 'rebase-error', { rebaseOut });
+  //
+  // SKIPPED on a recovery whose branch is ALREADY on origin (temperloop#939).
+  // The rebase rewrites the worker's commits, so the plain (non-force) push
+  // below would then be a non-fast-forward and come back PUSH_REJECTED —
+  // converting a clean recovery of already-landed work into a spurious
+  // escalation, which is the exact class of failure #939 is about. The
+  // RECOVER_COMMITTED stage has pushed nothing yet, so it still rebases
+  // normally; so does every non-recovery drive.
+  if (!(recovery && recovery.pushed)) {
+    const rebaseOut = await runMachinery(`${prBin} rebase ${sq(wt)}`, {
+      label: `rebase:${item.slug}`,
+      slug: item.slug,
+    });
+    if (machineryDenied(rebaseOut)) {
+      return escalate(item.slug, 'machinery-denied', { step: 'rebase', out: rebaseOut });
+    }
+    if (rebaseOut.outcome === 'REBASE_CONFLICT') {
+      return escalate(item.slug, 'rebase-conflict', { rebaseOut });
+    }
+    if (rebaseOut.outcome !== 'REBASED') {
+      return escalate(item.slug, 'rebase-error', { rebaseOut });
+    }
+  } else {
+    log(`[${item.slug}] recovery (${recovery.stage}) — skipping 3f-0a rebase (branch already on origin)`);
   }
 
   // 3f-0. Closing-keyword pre-push scan.
@@ -800,16 +985,29 @@ async function driveItem(item) {
     status: 'done',
     summary: verdict.summary ?? '',
     acceptance_results: verdict.acceptance_results ?? [],
+    // temperloop#939: a recovered verdict carries a synthesized inline surface.
+    // pr.sh resolves the surface by precedence (file flag → path key → inline),
+    // so this is used ONLY when no real `.build-verification.md` exists.
+    ...(verdict.verification_surface ? { verification_surface: verdict.verification_surface } : {}),
   });
   const ghIssueFlag = item.ghIssue ? ` --gh-issue ${sq(item.ghIssue)}` : '';
   const alsoClosesFlag = item.alsoCloses?.length
     ? ` --also-closes ${sq(item.alsoCloses.join(','))}`
     : '';
+  // The surface-file flag is DROPPED on a recovery whose probe saw no
+  // `.build-verification.md` (temperloop#939): pr.sh treats a given-but-missing
+  // surface file as a hard ERROR by contract, so passing it for a worker that
+  // died before writing one would turn the recovery into a pr-open-failed
+  // escalation. Without the flag pr.sh falls back to the synthesized inline
+  // surface above. Every non-recovery drive passes the flag exactly as before.
+  const surfaceFlag =
+    recovery && !recovery.surfacePresent
+      ? ''
+      : ` --verification-surface-file ${sq(`${wt}/.build-verification.md`)}`;
   const openCmd =
     `vf=$(mktemp) && printf %s ${sq(verdictJson)} > "$vf" && ` +
     `${prBin} open --repo ${sq(repoRoot)} --branch ${sq(item.branch)} ` +
-    `--title ${sq(item.title)} --verdict "$vf"${ghIssueFlag}${alsoClosesFlag} ` +
-    `--verification-surface-file ${sq(`${wt}/.build-verification.md`)} ` +
+    `--title ${sq(item.title)} --verdict "$vf"${ghIssueFlag}${alsoClosesFlag}${surfaceFlag} ` +
     `--plan-link ${sq(planLink)} --source ${sq(item.source ?? '')}; ` +
     `rc=$?; rm -f "$vf"; exit $rc`;
   const openOut = await runMachinery(openCmd, { label: `pr-open:${item.slug}`, slug: item.slug });
@@ -834,8 +1032,8 @@ async function driveItem(item) {
   // --- 3h. Park as [m] (the workflow returns the record; orchestrator writes)
   // A NO_CI resolution (temperloop#605/#618) parks the same, but the returned
   // record carries `no_ci: true` so the orchestrator stamps the sentinel.
-  log(`[${item.slug}] parked — PR #${pr} ${ciResult.noCi ? 'no CI configured (skipped)' : 'CI green'}`);
-  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true);
+  log(`[${item.slug}] parked — PR #${pr} ${ciResult.noCi ? 'no CI configured (skipped)' : 'CI green'}${recovery ? ' (RECOVERED — acceptance unverified)' : ''}`);
+  return park(item.slug, pr, ciResult.finalSha ?? pushedSha, verdict.acceptance_results, ciResult.noCi === true, recovery);
 }
 
 // -----------------------------------------------------------------------------

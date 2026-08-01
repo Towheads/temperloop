@@ -16,6 +16,9 @@
 #     never combined, never backticked); acceptance recap; ## Verification;
 #     backlinks + footer; fallback-to-recap when verification_surface absent
 #   - open (stubbed gh): PR_OPENED with parsed pr_number; body/head passed to gh
+#   - recover-probe (temperloop#939): the staged lost-return ladder — RECOVER_NONE
+#     / _COMMITTED / _PUSHED / _PR_OPEN across the four real fixture states, plus
+#     the fail-soft degradation when `gh` errors
 #   - error: structured ERROR + non-zero exit on bad inputs
 set -euo pipefail
 
@@ -370,7 +373,74 @@ out="$(PATH="$TMP/bin-exists:$PATH" bash "$SCRIPT" open \
   || fail "url not parsed from already-exists message (got: $out)"
 echo "PASS: open returns EXISTS{pr_number,url} when gh reports a PR already exists (#544)"
 
+# --- recover-probe: the staged lost-return side-effect ladder (temperloop#939) ----
+# Drives all four stages against the real fixture, bottom to top, on a branch of
+# its own so the earlier push tests' remote state cannot mask a stage transition.
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -b build/recov origin/main
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_NONE" ] \
+  || fail "no commits + no PR must be RECOVER_NONE (got: $out)"
+[ "$(jq -r .commits_ahead <<<"$out")" = "0" ] || fail "commits_ahead should be 0 (got: $out)"
+[ "$(jq -r .pushed <<<"$out")" = "false" ] || fail "pushed should be false (got: $out)"
+jq -e 'has("pr_number") | not' <<<"$out" >/dev/null || fail "pr_number must be absent with no PR (got: $out)"
+echo "PASS: recover-probe → RECOVER_NONE when nothing observable landed (the genuine-failure case)"
+
+git -C "$REPO" commit -q --allow-empty -m "worker work that never returned a verdict"
+recov_sha="$(git -C "$REPO" rev-parse HEAD)"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_COMMITTED" ] \
+  || fail "a commit ahead of base with no push must be RECOVER_COMMITTED (got: $out)"
+[ "$(jq -r .sha <<<"$out")" = "$recov_sha" ] || fail "probe sha mismatch (got: $out)"
+[ "$(jq -r .commits_ahead <<<"$out")" = "1" ] || fail "commits_ahead should be 1 (got: $out)"
+[ "$(jq -r .verification_surface_present <<<"$out")" = "false" ] \
+  || fail "verification_surface_present should be false (got: $out)"
+echo "PASS: recover-probe → RECOVER_COMMITTED on an unpushed worktree commit (the #939 L1 shape)"
+
+bash "$SCRIPT" push "$REPO" feat/recov >/dev/null
+: > "$REPO/.build-verification.md"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_PUSHED" ] \
+  || fail "a pushed branch with no PR must be RECOVER_PUSHED (got: $out)"
+[ "$(jq -r .pushed <<<"$out")" = "true" ] || fail "pushed should be true (got: $out)"
+[ "$(jq -r .remote_sha <<<"$out")" = "$recov_sha" ] || fail "remote_sha mismatch (got: $out)"
+[ "$(jq -r .verification_surface_present <<<"$out")" = "true" ] \
+  || fail "verification_surface_present must report the worker's .build-verification.md (got: $out)"
+echo "PASS: recover-probe → RECOVER_PUSHED once the branch is on origin (+ surface-file presence)"
+
+mkdir -p "$TMP/bin-prlist"
+cat > "$TMP/bin-prlist/gh" <<'EOF'
+#!/usr/bin/env bash
+echo '[{"number":936,"url":"https://github.com/Towheads/temperloop/pull/936"}]'
+EOF
+chmod +x "$TMP/bin-prlist/gh"
+out="$(PATH="$TMP/bin-prlist:$PATH" bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_PR_OPEN" ] \
+  || fail "an open PR for the branch must be RECOVER_PR_OPEN (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "936" ] || fail "pr_number not adopted from gh (got: $out)"
+[ "$(jq -r .url <<<"$out")" = "https://github.com/Towheads/temperloop/pull/936" ] \
+  || fail "url not adopted from gh (got: $out)"
+echo "PASS: recover-probe → RECOVER_PR_OPEN{pr_number,url} when an open PR exists (the #939 L0 shape)"
+
+# Fail-soft: a broken/erroring gh degrades to "no PR observed" rather than
+# failing the whole recovery (the caller's `open` then returns EXISTS and adopts).
+mkdir -p "$TMP/bin-ghfail"
+cat > "$TMP/bin-ghfail/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh: could not determine repository" >&2
+exit 1
+EOF
+chmod +x "$TMP/bin-ghfail/gh"
+out="$(PATH="$TMP/bin-ghfail:$PATH" bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_PUSHED" ] \
+  || fail "an erroring gh must degrade to the push-stage answer, not fail (got: $out)"
+echo "PASS: recover-probe degrades fail-soft when gh errors (no PR observed, push stage still reported)"
+rm -f "$REPO/.build-verification.md"
+
 # --- error: closed ERROR outcome + non-zero exit ----------------------------------
+rc=0; out="$(bash "$SCRIPT" recover-probe "$TMP/nonexistent" feat/recov 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "recover-probe on missing path not structured ERROR (got: $out)"
 rc=0; out="$(bash "$SCRIPT" scan "$TMP/nonexistent" 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
   || fail "scan on missing path not structured ERROR (got: $out)"
