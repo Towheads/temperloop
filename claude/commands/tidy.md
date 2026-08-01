@@ -30,6 +30,7 @@ Every step in this command has a real-time counterpart that runs during the live
 | Per-epic retro mint | `claude/commands/build.md` § `Mint the per-epic retro tracker` | `Retro mint backstop` |
 | Route a conversational fix request through /fix | `claude/CLAUDE.md` § `Route a conversational fix request through /fix` | `Unlinked fix PRs` |
 | Disconfirm a root-cause diagnosis before institutionalizing it | `claude/CLAUDE.md` § `Disconfirm a root-cause diagnosis before institutionalizing it` | `Un-disconfirmed diagnoses` |
+| Coverage-walk collaborative engagement | `claude/commands/workshop.md` § `Step 2 — Coverage walk` | `All-accepted-untouched briefs` |
 
 ## Step 0 — Verify environment and acquire the drain lock
 
@@ -255,6 +256,28 @@ For each hit, append one `### open` entry to the pending-decisions surface (`Pip
 Skip an epic already recorded by a prior sweep (match on board + issue number under an existing `open` entry) — don't re-append the same finding every run.
 
 **Default to silence.** If a board has no such epics, surface nothing. Same report-only stance as § Stale board claims above — this sweep proposes a review, it never edits an epic; `/check-in` disposes it (confirm the epic is fine as hand-authored, or run `/workshop` retroactively and materialize the marker onto it).
+
+### All-accepted-untouched briefs
+
+Backstop for the live `/workshop` Step 2 coverage-walk rule (`claude/commands/workshop.md` § Step 2 — Coverage walk): the walk is "collaborative by construction — every decision that reaches the brief is presented with its reasoning and can be contested before it is recorded — there is no minimal-interaction path." Nothing live can force genuine engagement at each stop, though — an operator who accepts every stop without ever contesting one is, in the moment, indistinguishable from one who engaged and simply found nothing to challenge. This sweep is the periodic, out-of-band tell: it reads each **ratified** brief's challenge record (the `### Challenge record` subheading, `claude/design-schema.md` § Challenge record) and flags the pattern that shape would leave — every single stop line's verdict reading bare `accepted`, with zero `challenged → revised` or `operator-edited` verdicts anywhere in the record. That pattern is not itself a defect (a genuinely sound design can legitimately draw no challenges), but it is worth a human glance.
+
+**Scope — ratified briefs with a populated record only.** List `Designs/*.md` in the knowledge store (`mcp__obsidian__list_vault_files` or `mcp__obsidian-builtin__vault_list`) and read each brief's frontmatter. Skip any `status: draft` or `status: dropped` brief (the record isn't finished, or the case is closed). Skip a ratified brief with **no** `### Challenge record` subheading at all — the schema's own migration carve-out: either a pre-record brief, or one where every dimension's first look sailed through with nothing worth logging at all (a valid, non-defective state per that section) — either way there are no per-stop verdicts to inspect for the ALL-ACCEPTED pattern.
+
+**Detect the pattern.** For a ratified brief that DOES carry a `### Challenge record` with at least one stop line, parse every stop line's `verdict` token (`claude/design-schema.md` § Challenge record's per-stop line shape). If **every** line's verdict is bare `accepted` — none reads `challenged → revised ×<N>` or `operator-edited` — the brief is **ALL-ACCEPTED-UNTOUCHED**.
+
+For each newly-found hit, append one `### open` entry to the pending-decisions surface (`Pipeline/pending decisions.md` vs the legacy `Context/pipeline - pending decisions.md` — target pinned by the append-target resolution rule of the path fallback convention, `claude/commands/check-in.md`; in the knowledge store) via `mcp__obsidian-builtin__vault_append`:
+
+```markdown
+### <YYYY-MM-DD HH:MM> · tidy all-accepted-untouched sweep · Designs/<note>
+- **Decision:** brief "<note>" ratified with every coverage-walk stop `accepted` and zero challenges — genuinely engaged, or rubber-stamped?
+- **Default taken:** leave as-is (report-only; brief not edited, not reopened, not blocked)
+- **Disposition:** auto-taken (unattended; no live operator)
+- **Status:** open
+```
+
+Skip a brief already recorded by a prior sweep (match on the `Designs/<note>` path under an existing `open` entry) — don't re-append the same finding every run.
+
+**Default to silence.** If no ratified brief matches the pattern, surface nothing. Same report-only stance as § Provenance-less epics above — this sweep never edits a brief, reopens it, or blocks anything; `/check-in` disposes it (spot-check the reasoning, or take no action if the design genuinely warranted no pushback).
 
 ### Retro mint backstop
 
