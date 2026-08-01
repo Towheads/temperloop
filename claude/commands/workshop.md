@@ -308,19 +308,53 @@ foundation that later shifts underneath it.
 
 ## Step 2 — Coverage walk
 
-1. Read `claude/design-schema.md` § Kernel dimension list — the 17 kernel
-   dimensions — plus any overlay-added dimensions from
-   `claude/design-schema.overlay.md` if this checkout carries one (letter-suffixed,
-   e.g. `16a`, per that file's § Overlay extensibility — add-only; a kernel-only
-   checkout like this one has none).
-2. Walk each **remaining** dimension (1 and 3 are already seeded from Step 1)
-   conversationally with the operator. The schema's own order is the default
-   walk order; the operator may reorder freely — nothing here enforces a
-   sequence — but every dimension must be reached before Step 4. For each
-   dimension, elicit its content and record **exactly one** of the three
-   dispositions defined in `claude/design-schema.md` § Disposition grammar,
-   quoted here verbatim (this command applies the grammar; it does not
-   restate a variant of it):
+Collaborative by construction: every decision that reaches the brief is
+presented with its reasoning and can be contested before it is recorded —
+there is no minimal-interaction path. The operator's speed lever is how fast
+they accept at each stop, never whether content is shown.
+
+1. Read `claude/design-schema.md` § Kernel dimension list, plus any
+   overlay-added dimensions from `claude/design-schema.overlay.md` if this
+   checkout carries one (letter-suffixed, e.g. `16a`, per that file's
+   § Overlay extensibility — add-only; a kernel-only checkout like this one
+   has none). **The walk's size is that list as it stands, never a count
+   cached here.**
+2. **Tier-split proposal — the walk's first stop, and its first challengeable
+   decision.** Before walking anything, propose the split: which dimensions
+   are **load-bearing for this design** (each gets its own stop) and which are
+   **mechanical** (clustered 2–4 to a stop, every dimension's full content
+   still shown — a cluster compresses the *asking*, never the *showing*).
+   Present it per item 3, stating in the proposal itself:
+   - **the total stop count** the split commits this session to, so the
+     operator sees the interaction cost before accepting it and can time-box
+     or re-split against it; and
+   - **every dimension from item 1, each assigned exactly one tier —
+     including the Step-1-seeded dimensions 0, 1 and 3.** They are seeded (0
+     by the Step 1.3b premise gate, 1 and 3 by Step 1's intake), not exempt:
+     their stop is a **confirm-or-challenge** over content that already
+     exists, and a confirm is a real verdict — it records a `walk` stop line
+     with `source: step-1-seed` (`claude/design-schema.md` § Challenge
+     record, "Seeded dimensions count their Step-1 confirm as their walk
+     verdict"). Leave them out and the problem statement and the routing call
+     are the only calls in the brief the operator never formally accepted.
+
+   The split is a proposal: the operator may move a dimension between tiers,
+   re-cluster, or reject it — item 4's loop applies here as at any stop, and no
+   content stop opens until it is accepted. The schema's order is the default
+   walk order and the operator may reorder freely, but every dimension in the
+   split must be reached before Step 3. This sets *walk* granularity only;
+   Step 3.1's brief/full **review** tier is a separate axis.
+3. **Each stop: a decision presentation, then exactly one disposition per
+   dimension.** Present every stop — a load-bearing dimension, a mechanical
+   cluster, or item 2's split itself — as `claude/message-schema.md`'s
+   **Decision presentation** template requires, under that template's
+   plain-language rule. **Apply it by reference; never restate its parts
+   here** — it owns their shape, and it is **not overridable by an overlay**
+   (that file's § Overrides), so no local variant can exist to drift from.
+   Then record, for each dimension the stop covered, **exactly one** of the
+   three dispositions defined in `claude/design-schema.md` § Disposition
+   grammar, quoted here verbatim (this command applies the grammar; it does
+   not restate a variant of it):
 
    ```
    filled                         — the dimension is answered in the brief body
@@ -328,76 +362,102 @@ foundation that later shifts underneath it.
    deferred → <tracking ref>      — real but out of scope for this brief; ref is an issue/epic that owns it
    ```
 
-3. **No-silent-skips rule.** A dimension left without one of the three
-   dispositions above is incomplete — do not let the walk move past it
-   unaddressed. Until the brief-conformance lint (temperloop#216, forthcoming)
-   lands, this is enforced here as an **authoring standard**, not yet a
-   mechanical gate; Step 4 (ratify) re-checks it regardless of whether the
-   lint exists, per `claude/design-schema.md`'s own "No-silent-skips rule".
-4. **Dimension 4 (Contract seams) gets special care.** Its `Produces` /
-   `Consumes` / `Acceptance` content is what Step 5 copies **verbatim** into
-   the epic's `## Contract` — write it as the actual contract text, not a
-   summary of one; `/assess`'s epic-decomposition mode must be able to
-   decompose `Produces` with zero changes (`claude/design-schema.md` §
-   Materialization contract).
-5. **Walk-structure note — provisional, do not cite Double Diamond.** The <!-- cite: W.16 incident:K#224 -->
+   - **No-silent-skips rule.** A dimension left without one of the three
+     dispositions is incomplete — never let the walk move past it.
+     `workflows/scripts/validate-design-brief.sh --brief FILE` (temperloop#216,
+     shipped 2026-07-11) checks this on demand, and its brief-conformance
+     check (C) checks the challenge record (item 5) too; briefs live outside
+     CI in the knowledge store, so Step 4 re-checks both in-session anyway.
+   - **Dimension 4 (Contract seams) gets special care.** Its `Produces` /
+     `Consumes` / `Acceptance` is what Step 5 copies **verbatim** into the
+     epic's `## Contract` — write the actual contract text, not a summary of
+     one; `/assess`'s epic-decomposition mode must decompose `Produces` with
+     zero changes (the schema's § Materialization contract).
+4. **Bounded challenge loop — three free rounds, then an explicit fork.** When
+   the operator challenges a stop, fold the challenge in, revise, and
+   re-present (item 3's shape, naming what changed). Rounds one through three
+   loop freely; a **fourth** does not loop — it escalates to a fork the
+   operator picks from explicitly: **accept as-is** (content stands, verdict
+   recorded); **`deferred → <tracking ref>`** (real but not resolvable this
+   session — the ref owns the gap; never available for dimension 0, whose only
+   legal disposition is `filled`); or **park the walk** (stop the command,
+   brief left `status: draft` — record and dispositions persist, and a later
+   run adopts the draft at Step 1's probe and resumes here). A non-converging
+   stop is therefore a visible operator choice, never an invisible grind
+   (`docs/principles.md` principle 11, applied to review effort).
+5. **Append to the challenge record as each stop closes.** Write the stop's
+   line(s) into the brief's `## Working notes` → `### Challenge record` per
+   `claude/design-schema.md` § Challenge record — that section owns the line
+   shape, verdict vocabulary, clustering rule, `walk`/`walkthrough`
+   discriminator and record-start marker, applied by reference, never
+   re-copied here. What this walk owes it:
+   - **`kind` is `walk`** at every Step 2 stop; `walkthrough` belongs to
+     Step 3's review pass.
+   - **A clustered stop carries one verdict per dimension in the cluster** —
+     N verdicts, never one collapsed cluster verdict. Dimensions share a line
+     only when they genuinely share the identical verdict (that section's
+     clustering rule); a mixed cluster splits into as many lines as it has
+     distinct verdicts.
+   - **An `operator-edited` verdict carries the operator's verbatim words**
+     in its `response:` field — quoted from their own `AskUserQuestion`
+     answer, never a facilitator paraphrase.
+   - **The pass's first stop also writes the `challenge-record-start:
+     <today>` marker** when no `### Challenge record` subheading exists yet —
+     in the *same* write as that first stop line, so the record is never
+     announced-but-empty (that section's record-start defect). It is what lets
+     a resume tell a post-change crash from a pre-change brief.
+
+   **Walk-structure note — provisional, do not cite Double Diamond.** The <!-- cite: W.16 incident:K#224 -->
    walk above is a **convergent inspection checklist**: dimensions applied in
-   a fixed default order, each dispositioned, with no divergent /
-   alternatives-generation phase anywhere in it. This is the grounding the L0
-   methodology spike confirmed (`Context/temperloop - design methodology
-   spike verdict.md`) — Double Diamond's diverge-then-converge framing was
-   evaluated against this walk and **rejected**; never cite it for the walk's
-   structure. Whether a bounded alternatives-generation moment should be
-   *added* to the walk is still open — **provisional — pending temperloop#224**
-   — this command makes no change either way until that item resolves.
+   a default order, each presented, challenged and dispositioned, with no
+   divergent / alternatives-generation phase in it (item 3's alternatives part
+   reports alternatives already weighed; it generates none). This is the
+   grounding the L0 methodology spike confirmed (`Context/temperloop - design
+   methodology spike verdict.md`) — Double Diamond's diverge-then-converge
+   framing was evaluated against this walk and **rejected**; never cite it for
+   the walk's structure. Whether to *add* a bounded alternatives-generation
+   moment is still open — **provisional — pending temperloop#224**.
 6. **Persist as you go.** Write each dimension's content into the brief note
-   incrementally — after each dimension (or small cluster) is dispositioned,
-   not in one end-of-walk rewrite — so a crashed walk loses at most the
-   dimension in flight. The write primitive differs by backend:
-   - **Obsidian-backed store:** a small append/patch per dimension (the
-     vault's write-small convention), falling back to a full-file rewrite
-     whenever a heading path isn't safely `vault_patch`-able (the vault
-     safe-targeting contract).
+   incrementally — as each stop closes, not in one end-of-walk rewrite — so a
+   crashed walk loses at most the stop in flight. By backend:
+   - **Obsidian-backed store:** a small append/patch per dimension (the vault's
+     write-small convention), falling back to a full-file rewrite whenever a
+     heading path isn't safely `vault_patch`-able (the safe-targeting contract).
    - **Plain-files store:** the backend has **no mid-file patch primitive** —
      the `knowledge_store` interface offers only `ks_write` (whole-file
      replace) and `ks_append` (end-of-file). So each dimension update is a
      **full-file rewrite via `ks_write`** (read → modify in memory → write).
-     **Never** persist dimensions as per-dimension `ks_append` calls: the
-     walk is operator-reorderable (Step 2.2), so appends land out of
-     dimension order and corrupt the note's numbered-section structure.
+     **Never** persist dimensions as per-dimension `ks_append` calls: the walk
+     is operator-reorderable (Step 2.2), so appends land out of dimension
+     order and corrupt the note's numbered-section structure.
 7. **Persist-then-ask ordering — dual-surface before any gate.** Step 2.6 <!-- cite: W.8 incident:K#670 -->
    requires the incremental *write*; this fixes its **ordering** relative to
-   any operator gate. Never open an accept/object (or any approval)
-   `AskUserQuestion` over drafted dimension content until that content is
-   **both**:
-   - **(a) persisted to the brief note** via Step 2.6's write primitive —
-     the note is the **artifact of record**, the durable surface the
-     operator (and every later step) reads. A write's OK return is **not**
-     proof it landed: an Obsidian `vault_patch` can silently misfire (the
-     vault safe-targeting contract — duplicate-heading synthesis, a stale
-     document map), so **confirm the persist with a read-back** (or take the
-     full-file-rewrite path, which is misfire-free) before treating (a) as
-     satisfied — the same read-back discipline Steps 1.3b and 4.4 already
-     require for this silent-drop class; **and**
-   - **(b) echoed in chat** — a readable presentation of the same content,
-     for in-line review.
+   any operator gate. Never open a stop's accept/challenge question (or any
+   approval question) over drafted content until that content is **both**:
+   - **(a) persisted to the brief note** via Step 2.6's write primitive — the
+     note is the **artifact of record**, the durable surface the operator and
+     every later step read. A write's OK return is **not** proof it landed: an
+     Obsidian `vault_patch` can silently misfire (the vault safe-targeting
+     contract — duplicate-heading synthesis, a stale document map), so
+     **confirm the persist with a read-back**, or take the misfire-free
+     full-file-rewrite path — the same read-back discipline Steps 1.3b and 4.4
+     already require for this silent-drop class; **and**
+   - **(b) presented in chat** — item 3's decision presentation over that
+     same content, for in-line review.
 
-   Both surfaces must be **current** — reflecting exactly the content the
-   gate asks about — *before* the question is posed. A batched draft is
-   still fine: you may walk and disposition several dimensions, then persist
-   and echo the batch, then ask once over it. What is forbidden is asking
-   the operator to accept or object to content that exists **only** as a
-   transient chat bullet list with **no** persisted note behind it — the
-   observed failure (temperloop#670: a 13-dimension draft gated for
-   approval while the brief note was still empty, leaving the operator no
-   reviewable artifact). The chat echo is for review convenience; the note
-   is what makes the review *possible* on the next read. Ask over neither
-   surface alone — over both, current.
+   Both surfaces must be **current** — reflecting exactly the content the gate
+   asks about — *before* the question is posed; neither alone is enough.
+   Gating over content that exists **only** as a transient chat bullet list
+   with **no** persisted note behind it is forbidden: that is the observed
+   failure (temperloop#670 — a 13-dimension draft gated for approval while the
+   brief note was still empty, leaving no reviewable artifact).
 
-   **Scope:** this ordering governs the gates *inside* the coverage walk
-   (Step 2) and the findings fold-back (Step 3.4). Step 4.3's ratify ask is
-   **exempt** — its precondition, Step 4.1's dimension-completeness check,
-   already guarantees the note is current, so no re-echo is required there.
+   **Scope: every gate over brief content, no exemptions.** This ordering
+   governs the walk's own stops (Step 2), the findings fold-back (Step 3.4)
+   and the ratify ask (Step 4) alike. Nor is there an ad-hoc grouping license:
+   the only sanctioned way to ask once over several dimensions is a mechanical
+   cluster the operator accepted at item 2 — every dimension still shown, every
+   dimension separately verdicted.
 
 ## Step 3 — Review pass
 
@@ -934,5 +994,5 @@ last line of the response.
   `Designs/temperloop - design command design brief.md`; the epic plan,
   `Plans/2026-07-08 temperloop - design command front door.md`.
 - Kernel routing: `claude/CLAUDE.kernel.md` § Kernel vs overlay routing rule.
-- Message templates used here: `claude/message-schema.md` § Degradation
-  notice.
+- Message templates used here: `claude/message-schema.md` § Decision
+  presentation (every Step 2 stop) and § Degradation notice.
