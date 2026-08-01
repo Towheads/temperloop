@@ -2,11 +2,11 @@
 
 # AI Congruency Factory: A New Approach to SDLC
 
-I wanted to use my spare time to build an N-tier music event discovery app, temperloop, but ended up compulsively building an AI "congruency factory" alongside it. 
+I wanted to use my spare time to build an N-tier music event discovery app but ended up compulsively building an AI "congruency factory" alongside it. 
 
 I found the constant code reviews and clarifications of AI-assisted development to be mind-numbing and repetitive. Unless I was hyper-vigilant, the agents regularly drifted, producing misaligned and poor-quality work.
 
-**My thesis:** If I embed my 20+ years of SDLC experience into a set of tools, I can create an automated development experience that meets or exceeds my own standards. 
+**My thesis:** If I embed my 20+ years of SDLC experience into a set of tools, I should be able to create an development experience that meets or exceeds my own standards. 
 
 Those standards require an architecture that:
 
