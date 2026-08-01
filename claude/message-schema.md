@@ -436,8 +436,8 @@ the six named templates this file authors (§ Templates) — no other kernel
 contract is overridable by this or any other route.
 
 - **Non-overridable set — an enforced exclusion, not a convention.** <!-- cite: MS.11 guard:workflows/scripts/validate-template-refs.sh -->
-  **§ Decision presentation may not be redeclared by an overlay at all.** It
-  is a challenge-gate contract: a sanctioned redeclaration would let an
+  § **Decision presentation** may not be redeclared by an overlay **at all**.
+  It is a challenge-gate contract: a sanctioned redeclaration would let an
   overlay quietly shrink its five parts or drop its plain-language rule, and
   a walk stop that no longer has to be intelligible is exactly the
   overlay-weakens-kernel back-channel `CLAUDE.kernel.md` § Kernel vs overlay
