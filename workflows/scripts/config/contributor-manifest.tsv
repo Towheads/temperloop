@@ -155,6 +155,7 @@ claude/commands/tidy.md	frontmatter:description	command-listing	harness-auto
 claude/commands/triage.md	frontmatter:description	command-listing	harness-auto
 claude/commands/workshop.md	frontmatter:description	command-listing	harness-auto
 claude/agents/architecture-reviewer.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/congruence-lens.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/consultant-persona.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/docs-reviewer.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/hobbyist-persona.md	frontmatter:description	agent-listing	harness-auto

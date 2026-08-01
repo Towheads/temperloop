@@ -339,6 +339,7 @@ presentation-plane workflows/scripts/validate-template-refs.sh
 # ── review-agents — advisory review subagent definitions ────────────────────
 review-agents claude/agents/*
 review-agents workflows/scripts/tests/fixtures/docs-reviewer/*
+review-agents workflows/scripts/tests/fixtures/congruence-lens/*
 review-agents workflows/scripts/workflow-reviewer-coverage.sh
 review-agents workflows/scripts/tests/test_workflow_reviewer_coverage.sh
 review-agents workflows/scripts/install/reviewer-activation-coverage.sh
