@@ -335,6 +335,7 @@ branch-hygiene workflows/scripts/build/tests/test_merged_detect.sh
 presentation-plane claude/message-schema.md
 presentation-plane claude/presentation-plane.md
 presentation-plane workflows/scripts/validate-template-refs.sh
+presentation-plane workflows/scripts/tests/test_validate_template_refs.sh
 
 # ── review-agents — advisory review subagent definitions ────────────────────
 review-agents claude/agents/*
