@@ -423,7 +423,21 @@ fi
 # TIER-1: caps the composed KERNEL-AUTHORED render only (claude/
 # CLAUDE.kernel.md rendered via install-claude-md.sh's
 # INSTALL_CLAUDE_MD_KERNEL_ONLY seam — never the kernel+overlay total).
-: "${PROSE_BUDGET_TIER1_CAP:=335}"
+#
+# RAISED 2026-08-01 (item prose-budget-headroom, temperloop#925, epic #923
+# "workshop collaborative decision walk") from 335 → 347. The prior seeding
+# left ZERO headroom (335/335); this epic's `decision-presentation-template`
+# item (#928) is the only item in the epic that touches CLAUDE.kernel.md —
+# it qualifies the § Kernel vs overlay routing rule's "named message
+# templates" carve-out (kernel.md:45–56) so it no longer reads as a blanket
+# license once `### Decision presentation` is carved OUT of overlay-
+# redeclaration by message-schema.md's own § Overrides. That qualifier was
+# drafted against the live file to measure it, not estimated: 10 net-new
+# lines. +20% estimation contingency (drafts precede the actual authored
+# PR and typically grow under review) = 2 lines, ceiling. 335 + 10 + 2 =
+# 347. See the sibling TIER-2 comment below for why this item bundles both
+# caps in one config PR instead of four items each fighting their own gate.
+: "${PROSE_BUDGET_TIER1_CAP:=347}"
 # TIER-2: ONE uniform per-file cap over every tracked claude/**/*.md file
 # (agent charters included) — deliberately a single setting, not a per-file
 # table (a per-file value would just be a relocated exemption mechanism,
@@ -431,7 +445,34 @@ fi
 # landing time (claude/commands/build.md, 1057 lines, unchanged across all
 # three seedings) — every other file already sits well under this cap, by
 # construction of "uniform".
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1057}"
+#
+# RAISED 2026-08-01 (item prose-budget-headroom, temperloop#925, epic #923
+# "workshop collaborative decision walk") from 1057 → 1128. `build.md`
+# stays the largest file at 1057 and is untouched by this epic — the new
+# binding file is `claude/commands/workshop.md` (938/1057 at measurement
+# time, 119 lines of headroom), which FOUR items in this epic all grow:
+# `premise-gate-presentation` (#931), `workshop-coverage-walk` (#930),
+# `workshop-congruence-walkthrough` (#932), and `workshop-ratify-gate`
+# (#934). Each region was drafted against the live file to get a real
+# line count rather than an estimate pulled from the epic's own ~6–8-stop
+# guess:
+#   - Step 1.3b(iii) presentation re-point (premise-gate-presentation):  +7
+#   - Step 2 full rewrite, old 93 lines → new 143 (workshop-coverage-walk): +50
+#   - new Step 3.5 block (workshop-congruence-walkthrough):               +70
+#   - Step 3.1.4 coverage-record tie-in (workshop-congruence-walkthrough): +4
+#   - Step 4.1b finding-disposal tie-in (workshop-congruence-walkthrough): +4
+#   - new Step 4.1c gate + migration carve-out (workshop-ratify-gate):    +23
+#                                                                  subtotal: 158
+# 938 + 158 = 1096. +20% estimation contingency on the 158 (drafts precede
+# the actual authored PRs, which typically grow under review) = 32,
+# ceiling. 1096 + 32 = 1128. This is a GLOBAL consequence, stated plainly
+# per the operator's 2026-08-01 decision: TIER-2 is one uniform cap over
+# every tracked claude/**/*.md file, so raising it to fund workshop.md
+# relaxes the budget for every other kernel doc too — the alternative
+# (a subtraction pass shrinking workshop.md first) was considered and not
+# taken; see the epic's plan note § Re-triage signal 3 and this item's own
+# Decisions-note record for the full rationale.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1128}"
 
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
