@@ -472,7 +472,29 @@ fi
 # (a subtraction pass shrinking workshop.md first) was considered and not
 # taken; see the epic's plan note § Re-triage signal 3 and this item's own
 # Decisions-note record for the full rationale.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1128}"
+#
+# SECOND RAISE, 1128 → 1154 (2026-08-01, temperloop#947, same epic). The
+# first of the four items above has now landed and the estimate ran hot:
+# `workshop-coverage-walk` (#930, PR #946) came in at +60 against its
+# drafted +50 — 938 → 998, a 1.20 overrun factor. Re-projecting the three
+# remaining items at that observed factor:
+#   - premise-gate-presentation (#931):        +7  → 9
+#   - workshop-congruence-walkthrough (#932): +78  → 94
+#   - workshop-ratify-gate (#934):            +23  → 28
+#                                        subtotal: 130
+# 998 + 130 = 1128 — EXACTLY the cap set above, i.e. zero slack. That is
+# the number worth acting on: three items grow this one file, so whichever
+# merges last absorbs every earlier item's overrun and reds on someone
+# else's estimate. +20% contingency on the 130 (same convention as the
+# first raise) = 26, ceiling. 1128 + 26 = 1154.
+# The global consequence stated above is UNCHANGED and applies again: this
+# is one uniform cap, so a second relaxation loosens every tracked kernel
+# doc a second time. That the cap needed raising twice inside one epic is
+# itself signal that `workshop.md` carries real growth pressure a
+# subtraction pass will eventually have to address; the operator decided
+# 2026-08-01 to raise rather than run that pass on a file three in-flight
+# items are concurrently editing.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1154}"
 
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
