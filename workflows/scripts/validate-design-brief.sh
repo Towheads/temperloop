@@ -479,18 +479,25 @@ check_challenge_record() {
     return
   fi
 
-  local -a lines
+  # NOTE (bash 3.2 / macOS /bin/bash): every array below is initialised to ()
+  # and every expansion uses the `${arr[@]+"${arr[@]}"}` guard. Under `set -u`,
+  # bash 3.2 treats "${arr[@]}" on an EMPTY array as an unbound-variable error
+  # (fixed upstream in 4.4) — and the empty case is REACHABLE here: a record
+  # carrying only its start marker leaves stop_lines empty, which is exactly
+  # the EMPTY-CHALLENGE-RECORD state below. Dropping the guard passes on
+  # Homebrew bash 5 and fails only on macOS CI.
+  local -a lines=()
   while IFS= read -r ln; do
     [[ -n "$(printf '%s' "$ln" | tr -d '[:space:]')" ]] && lines+=("$ln")
   done <<EOF
 $record_section
 EOF
 
-  local -a stop_lines
+  local -a stop_lines=()
   if (( ${#lines[@]} == 0 )) || [[ ! "${lines[0]}" =~ $CHALLENGE_MARKER_RE ]]; then
     failures+=("MALFORMED-RECORD-MARKER  $label — '### Challenge record' subheading found but its first non-blank line is not 'challenge-record-start: <YYYY-MM-DD>' (design-schema.md § Record-start marker and its absence)")
-    stop_lines=("${lines[@]}")
-  else
+    stop_lines=(${lines[@]+"${lines[@]}"})
+  elif (( ${#lines[@]} > 1 )); then
     stop_lines=("${lines[@]:1}")
   fi
 
@@ -499,7 +506,7 @@ EOF
   fi
 
   local walk_dims=" " sl
-  for sl in "${stop_lines[@]}"; do
+  for sl in ${stop_lines[@]+"${stop_lines[@]}"}; do
     if [[ ! "$sl" =~ $CHALLENGE_STOP_RE ]]; then
       failures+=("BAD-CHALLENGE-LINE  $label — '$sl' matches none of the § Challenge record grammar's stop-line forms")
       continue
