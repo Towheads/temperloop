@@ -462,11 +462,12 @@ they accept at each stop, never whether content is shown.
 ## Step 3 — Review pass
 
 Runs after Step 2's coverage walk completes (every dimension carries a
-disposition) and before Step 4 (ratify). Four parts, in order: **3.1** tier
+disposition) and before Step 4 (ratify). Five parts, in order: **3.1** tier
 decision, stated to the operator before any reviewer is spawned; **3.2** the
 install-surface first-run/uninstall mandate; **3.3** capability-probed
-adversarial panel execution; **3.4** findings fold-back into the brief. A
-brief that skips this step never reaches ratify — Step 4.1's
+adversarial panel execution; **3.4** findings fold-back into the brief;
+**3.5** the congruence pass and the operator walkthrough that closes the
+review. A brief that skips this step never reaches ratify — Step 4.1's
 dimension-completeness check is unchanged, Step 4.1b re-checks that every
 finding this step produced was actually disposed of, and Step 4.3's ratify
 question then follows a brief that has actually been reviewed, not merely
@@ -514,6 +515,14 @@ walked.
    brief whose entire panel skipped is indistinguishable in the artifact
    from a fully-reviewed one, which is exactly the miscalibrated-trust
    failure the degradation-notice template exists to prevent.
+
+   **One coverage record, every lens in it — 3.3's panel and 3.5's
+   congruence lens alike.** The cold-read congruence lens (3.5.2) is not a
+   separate accounting: extend this same line again when 3.5 completes,
+   recording whether `congruence-lens` ran (and with how many flags) or was
+   skipped, in the form item 1a selects. Its absence is the easiest of all
+   to mistake for a clean bill of health, so a brief it never read says so
+   in the artifact, not only in the live transcript.
 
 ### 3.2 — Install-surface first-run/uninstall mandate (spec-presence only)
 
@@ -678,9 +687,125 @@ walked.
    rather than evaporating (dimension-level completeness alone can't
    catch it — every dimension already carried a disposition before the
    panel ran).
-5. **Only then does Step 4 run.** This step does not re-open Step 2's walk
+5. **Only then does 3.5 run.** This step does not re-open Step 2's walk
    order or re-litigate the tier picked in 3.1 — it is strictly the
-   apply-findings-then-proceed step between review and ratify.
+   apply-findings-then-proceed step between review and the congruence pass.
+
+### 3.5 — Congruence pass + walkthrough (before ratify)
+
+Runs once 3.4 has settled every finding, and before Step 4. Per-dimension
+completeness is not congruence: a brief can carry a valid disposition on
+every dimension and still contradict itself *across* two of them —
+dimension 4 promising an Acceptance check dimension 8 says is manual-only.
+Three parts, in order — the seam checklist (item 1), the cold-read lens
+(item 2), and the tier-mirrored walkthrough (item 3) that puts both, plus
+everything 3.3 and 3.4 changed, in front of the operator one dimension at a
+time.
+
+1. **Run the congruence seam checklist.** Work the named-minimum seam table
+   in `claude/design-schema.md` § Congruence seams — that section owns the
+   seams, what must agree at each, and its floor-not-ceiling extension
+   rule. **Apply it by reference; never restate the table here**, the same
+   discipline Step 2.3 applies to the disposition grammar. The checklist is
+   **facilitator-run and unconditional**: no agent, no probe, no network —
+   so it runs on every brief in every checkout, including one where item
+   2's lens is unavailable. Record each seam as **held** or **flagged**; a
+   flagged seam names both dimensions and the single claim their two
+   passages disagree about, quoting each. A congruence gap outside the
+   named minimum is still a flag — call it an unnamed seam rather than
+   forcing it into a table row.
+2. **Spawn the cold-read congruence lens.** Probe `congruence-lens` per
+   3.3.1's availability predicate, then spawn it read-only and advisory
+   against **exactly one document — this brief, and nothing else**. Its
+   charter (`claude/agents/congruence-lens.md`) binds that read set
+   mechanically: hand it the brief's path (or full text) and never a second
+   note, a sibling brief, or repo source — the one-document bound is what
+   makes the pass honestly fresh-context.
+   - **Say what the lens is, and is not, when reporting its result.** It
+     is a fresh-context textual-consistency check, not an
+     independent-priors reviewer — the same model family that drafted the
+     brief, in a different hat. A clean pass means the text does not
+     contradict itself, **never** that the brief is sound; the operator
+     remains the only independent reviewer here. Report a clean pass in
+     those terms, not as "reviewed, no problems found".
+   - **Unavailable is expected, and it takes the remedy-bearing form.**
+     `congruence-lens` **ships as source** under `claude/agents/`, so a
+     checkout where it isn't resolvable live is the
+     shipped-but-not-installed case item 1a defines, and its skip line is
+     that variant verbatim: `skipped — congruence-lens available as
+     source; run workflows/scripts/install/project-agents.sh to enable`.
+     Narrate it live (Mode 2 degradation notice,
+     `claude/message-schema.md` § Degradation notice), **stamp it into the
+     3.1.4 coverage record**, and name what was lost: items 1 and 3 both
+     still run, so the pass degrades rather than collapses, but the
+     fresh-context cross-check on the facilitator's own narration is gone
+     and does not silently come back.
+   - **Its flags are findings, disposed under the existing vocabulary.** <!-- cite: W.17 class:parallel-finding-ledger -->
+     Every flag this lens raises — and every seam item 1 flagged — enters
+     3.4's disposal path and is recorded against the **same** 3.1.4
+     coverage record under the **same** three-way vocabulary (`folded` /
+     `deferred → <ref>` / `declined — <note>`) 3.4.4 already owns. Neither
+     these flags nor item 3's walkthrough verdicts open a second disposal
+     ledger: Step 4.1b re-checks one record, and a parallel one is just a
+     place for a finding to sit undisposed while the checked record shows
+     nothing missing.
+3. **Tier-mirrored walkthrough — every dimension, one verdict each.** It
+   mirrors the **walk** tier split the operator accepted at Step 2.2 (that
+   axis, not Step 3.1's brief/full *review* tier — the two are independent
+   and compose freely): each load-bearing dimension gets its own step, each
+   mechanical cluster steps through as the cluster it was walked in. **The
+   step count derives from the schema's dimension list as it stands** —
+   § Kernel dimension list plus any overlay additions, as read at Step 2.1
+   — and the accepted split. Never a count cached here, never a hardcoded
+   seventeen.
+   - **Individually listed, delta-flagged, individually verdicted.** <!-- cite: W.18 class:cluster-collapsed-verdicts -->
+     Clustering compresses the *asking* only — never the showing, never
+     the verdicting. A cluster step lists each of its dimensions on its
+     own line and closes with **one walkthrough verdict per dimension in
+     it**: N verdicts, never one collapsed cluster verdict (Step 2.5's
+     N-verdict rule for walk stops). This is what stops a load-bearing
+     decision tier-split into a mechanical cluster from reaching ratify
+     without a second look of its own.
+   - **What each step shows, per dimension:** its **final disposition**; a
+     **gist** of the content as it now stands; the **delta since the
+     operator last saw it** — what 3.3's panel and 3.4's fold-back changed,
+     named concretely, or an explicit `no change since your walk verdict`;
+     and any **congruence flags** items 1–2 raised against it, quoted. The
+     § Decision presentation template's plain-language rule **governs the
+     gists and deltas too** — compression is where jargon is cheapest to
+     reach for, and the rule does not lapse when the challenge phase ends.
+   - **Persist-then-ask applies unchanged** (Step 2.7 — every gate over
+     brief content, no exemptions): a step's question opens only over
+     content already written into the note, read-back-confirmed, *and*
+     echoed in chat. 3.4's fold-back edits are exactly what these steps
+     review, so they land in the note before the step that reviews them.
+   - **Verdicts, and the time-boxing valve.** Each dimension's verdict
+     comes from § Challenge record's vocabulary (`accepted` / `challenged
+     → revised ×N` / `operator-edited`). A dimension the operator wants
+     changed re-enters 3.4 for that edit and its step re-presents; Step
+     2.4's three-free-rounds-then-explicit-fork bound applies here as at
+     any stop. **Any non-premise dimension may instead resolve `deferred →
+     <tracking ref>` at its step** — the sanctioned time-boxing valve for
+     a session that has to end — provided the ref names a real, open item
+     (§ Congruence seams' `deferred-refs-resolve` seam checks that, so
+     re-run it for a ref minted here). **Dimension 0 is excluded**:
+     `filled` is its only legal disposition, so a premise the operator can
+     no longer accept routes back to the premise gate (Step 1.3b) or
+     leaves the brief `draft` — never a `deferred` the schema forbids.
+   - **Append to the challenge record as each step closes** — same write
+     discipline as Step 2.5, per `claude/design-schema.md` § Challenge
+     record, applied by reference and never re-copied. What this step owes
+     it: **`kind` is `walkthrough`** at every step here (`walk` belongs to
+     Step 2); one line per distinct verdict, so a mixed cluster splits;
+     and an `operator-edited` verdict carries the operator's **verbatim**
+     words in its `response:` field, never a facilitator paraphrase. A
+     verdict a lens flag drove names `congruence-lens` as its `source`;
+     this file mints no new `source` token of its own — that production
+     belongs to § Challenge record.
+4. **Then Step 4 runs.** This step neither ratifies nor blocks ratify —
+   Step 4.1's checks are Step 4's. What it guarantees is that by the time
+   the ratify question is asked, every dimension has been shown once more
+   with its deltas and congruence flags, and carries a verdict of its own.
 
 ## Step 4 — Ratify
 
@@ -704,12 +829,18 @@ walked.
    carried a disposition when Step 2 ended, so a brief that silently
    dropped a finding still passes check 1. Re-check the coverage record
    in the brief's working notes (3.1.4): every finding each 3.3 lens
-   returned must carry exactly one disposal — `folded`, `deferred →
-   <tracking ref>`, or `declined — <note>` (3.4.4's vocabulary). List
-   any finding without one and stop, same shape as check 1: return to
+   returned **and every congruence flag 3.5 raised** — a flagged seam
+   from 3.5.1, a contradiction from the 3.5.2 lens — must carry exactly
+   one disposal: `folded`, `deferred → <tracking ref>`, or `declined —
+   <note>` (3.4.4's vocabulary, which 3.5 reuses rather than parallels —
+   one record, one vocabulary, one check). List any finding without one
+   and stop, same shape as check 1: return to
    Step 3.4 and dispose of it, never ratify past it. A lens's `skipped —
    <agent> unavailable` entry satisfies this trivially (no findings to
-   dispose); a lens that ran with zero findings records `no findings`.
+   dispose) — including `congruence-lens`, whose skip takes the
+   remedy-bearing form per § 3.3 item 1a; a lens that ran with zero
+   findings records `no findings`, a clean checklist records its seams
+   held.
 2. **Contract sanity.** Re-read dimension 4's `Produces` / `Consumes` /
    `Acceptance`. If it reads as a summary rather than an actual contract —
    the kind of content `/assess`'s epic-decomposition mode would need to
@@ -938,14 +1069,18 @@ last line of the response.
   persisted (read-back-confirmed) *and* echoed in chat — this is the
   temperloop#670 failure, and its subtler belief-vs-actual-persistence
   variant one layer down.
-- **A reviewer, red-team lens, or persona agent is unavailable (Step
-  3.2–3.3).** Not a failure of the command — the capability-probe predicate
+- **A reviewer, red-team lens, persona agent, or the congruence lens is
+  unavailable (Steps 3.2–3.3, 3.5.2).** Not a failure of the command — the
+  capability-probe predicate
   ([[Decisions/foundation - Project capability probes]]) makes this an
   expected outcome in a checkout with no `.claude/agents/` declared. Emit
   the per-lens skip line — the not-shipped vs shipped-but-not-installed form
   per § 3.3 item 1a — live, and continue the panel with whatever's available;
   an unmet install-surface first-run mandate (3.2) is stamped into
-  dimension 15 rather than silently satisfied. The shipped-but-not-installed
+  dimension 15 rather than silently satisfied. A missing `congruence-lens`
+  (3.5.2) never stops 3.5: the seam checklist and the operator walkthrough
+  both still run, the skip is stamped into the 3.1.4 coverage record, and
+  the lost fresh-context cross-check is named. The shipped-but-not-installed
   form is the common one: in a fresh standalone clone the agents ship as
   source under `claude/agents/` but no live `.claude/` exists, so its skip
   line already names the remedy on the live line — run the project-scoped
@@ -974,7 +1109,9 @@ last line of the response.
   disclaims pre-designed epics).
 - Consumer, unchanged: `claude/commands/assess.md`'s epic-decomposition mode
   (a `## Contract`-bearing epic with no sub-issues).
-- Template + grammar this command applies: `claude/design-schema.md`.
+- Template + grammar this command applies: `claude/design-schema.md`
+  (Step 3.5 applies its § Congruence seams and § Challenge record by
+  reference); cold-read lens charter: `claude/agents/congruence-lens.md`.
 - ADR process Step 5c conforms to: `docs/adr/0000-adr-process.md`
   (MADR-lite format, append-only numbering, kernel-public routing rule).
 - Review-tier machinery (Step 3): shipped by `design-review-machinery`,
