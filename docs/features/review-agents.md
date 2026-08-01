@@ -75,9 +75,9 @@ Five agents currently make up the family:
   explicit that it is **not** an independent-priors reviewer — a same-model
   fresh-context re-read catches self-contradiction in the *text*, not a
   flawed premise the whole document agrees with. The operator remains the
-  only independent reviewer in the flow. Intended use is `/workshop`'s
-  congruence pass (a forthcoming step); the agent is usable standalone
-  against any design brief today.
+  only independent reviewer in the flow. It runs in `/workshop`'s congruence
+  pass (Step 3.5); the agent is also usable standalone against any design
+  brief.
 
 Each agent's own spec states which model tier it should run on and why: an
 agent whose findings gate something downstream (nothing else double-checks

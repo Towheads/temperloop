@@ -24,7 +24,8 @@ would otherwise have to catch late, or never.
 ## How it works
 
 `/workshop` walks a fixed sequence — intake, coverage walk, review pass,
-ratify, materialize — against the coverage template in
+congruence pass and walkthrough, ratify, materialize — against the
+coverage template in
 `claude/design-schema.md`. It is modal by construction: there is no
 unattended arm, because a design routine has no meaning without a live
 operator to make the calls.
@@ -53,12 +54,36 @@ operator to make the calls.
    <agent> unavailable` line rather than a silent no-op. Every finding is
    then folded into the brief, converted to a `deferred` disposition, or
    explicitly declined — nothing is left dangling.
-4. **Ratify.** Confirm every dimension carries a disposition, confirm
+4. **Congruence pass and walkthrough** (Step 3.5). Every dimension carrying
+   a disposition does not mean the dimensions *agree* with each other — a
+   brief can promise an acceptance check in dimension 4 that dimension 8
+   says is manual-only, and pass every completeness check anyway. So before
+   ratify is offered, three things happen. The facilitator works the
+   **congruence seam checklist** (`claude/design-schema.md` § Congruence
+   seams — five named seams, a floor rather than a ceiling), recording each
+   as held or flagged; this needs no agent and runs in every checkout. A
+   **cold-read congruence lens** (`claude/agents/congruence-lens.md`) then
+   reads the brief with no memory of it having been written and reports
+   contradictions between its dimensions, quoting both passages. The lens
+   is capability-probed like any other, and because it ships as source
+   under `claude/agents/`, an uninstalled checkout gets the remedy-bearing
+   skip line naming the one-command fix — stamped into the brief's coverage
+   record, so a brief the lens never read is distinguishable from one it
+   cleared. Finally the operator gets a **walkthrough**: every dimension is
+   listed with its final disposition, a plain-language gist, the delta since
+   they last saw it, and any congruence flags — and every dimension gets its
+   own verdict. Steps mirror the walk's own tier split, so load-bearing
+   dimensions get individual steps and mechanical ones step through in their
+   clusters, but a cluster never collapses several dimensions into one
+   verdict. A dimension that cannot be resolved in the session can take a
+   `deferred → <tracking ref>` here — the sanctioned way to time-box —
+   except dimension 0, whose premise can only be `filled`.
+5. **Ratify.** Confirm every dimension carries a disposition, confirm
    dimension 4 reads as a real contract rather than a summary, then ask the
    operator directly: ratify this brief? On approval, the brief's frontmatter
    flips `status: draft → ratified` and becomes immutable — a later change is
    a new, superseding brief, never an edit in place.
-5. **Materialize.** A ratified brief turns into four distinct artifacts, no
+6. **Materialize.** A ratified brief turns into four distinct artifacts, no
    content duplicated across them:
    - **The epic** — a board issue carrying the `## Contract` copied forward
      from dimension 4, plus a `design-brief: [[Designs/<note>]]` provenance
@@ -94,7 +119,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   intake → coverage walk → review pass → congruence pass + walkthrough → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -136,7 +161,8 @@ routine has no meaning without a live operator making the calls. Cost is
 therefore conversational: the coverage-walk conversation itself, plus
 whichever review-agent passes the operator picks (a brief pass spawns two
 standing lenses; a full pass adds a red-team lens, a persona pass, and — when
-the install surface is touched — an executed first-run/uninstall run). At
+the install surface is touched — an executed first-run/uninstall run), plus
+one congruence-lens spawn at Step 3.5 on every brief regardless of tier. At
 materialize time there are a handful of one-shot board/API writes (the epic,
 its board mirroring if a board is registered) and knowledge-store writes (the
 brief, the Decisions note, any draft ADRs) — none of it recurring or
