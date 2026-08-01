@@ -88,10 +88,14 @@ top tier for work that never needed it.
   `PIPELINE_DRIVE_MERGE_MODEL` (default `claude-opus-4-8`) is reserved for the
   high-judgment code/merge tier.
   ([`build.config.sh`](../workflows/scripts/build/build.config.sh)).
-- **`/build`'s one-shot executors are pinned to Haiku** — the agents that just
-  run a machinery command or a read-only merge-state query do no reasoning, so
-  they're the cheapest tier; the worker that *does* the build inherits the
-  session model (`model: item.model`).
+- **`/build`'s machinery executors are pinned to Haiku, and batched** — the
+  agents that just run machinery commands do no reasoning, so they're the
+  cheapest tier; the worker that *does* the build inherits the session model
+  (`model: item.model`). Mechanically-adjacent steps also share **one** executor
+  spawn instead of one per shell command (`prelude` / `pr-batch` / `ci-batch`),
+  which cut an L0-shaped 3-item level from 40 agent spawns to 15 — each spawn
+  had been paying ~160K cache-read tokens to run a single one-liner
+  (temperloop#942).
   ([`claude/workflows/build-level.mjs`](../claude/workflows/build-level.mjs)).
 - **The standing rule** that each fan-out set its worker's tier *explicitly*
   to the cheapest that fits — rather than defaulting all agents to the

@@ -14,40 +14,81 @@
 // DESIGN NOTES (read before editing — these three decisions are load-bearing)
 // -----------------------------------------------------------------------------
 //
-// 1. THE runMachinery BRIDGE (spike #421 verdict §1).
+// 1. THE runMachinery BRIDGE (spike #421 verdict §1; BATCHED per temperloop#942).
 //    The deterministic bash machinery (worktree.sh / pr.sh / ci-poll.sh /
 //    quality-gates.sh / board claim.sh) is the source of truth for every
 //    mechanical step. But the Workflow runtime has NO filesystem, NO Node, NO
 //    shell in the script body — so there is no `sh()` primitive. The bridge:
-//    every machinery call becomes ONE `agent({schema})` whose entire job is "run
-//    exactly this one command, return its single closed-outcome JSON line as a
+//    a machinery call becomes an `agent({schema})` whose entire job is "run
+//    exactly this command text, return each step's closed-outcome JSON line as a
 //    validated object." The runtime's agent() hook gives a subagent the normal
 //    Bash tool and (with a schema) returns a validated object, not free text —
-//    so an agent that runs one command IS the missing sh(). The branching logic
-//    (if SCAN_BLOCKED → escalate, if PUSH_REJECTED → escalate) stays in legible
-//    .mjs here, not buried in an opaque agent prompt. The cost — ~6 trivial
-//    executor spawns + 1 worker per item — lands entirely in THIS discardable
-//    workflow process, never the orchestrator's context. That is the whole
-//    point: orchestrator growth is bounded to one summary object per level.
+//    so an agent that runs a command IS the missing sh().
+//
+//    WHAT THE BRIDGE'S INVARIANT ACTUALLY IS: the BRANCHING LOGIC (if
+//    SCAN_BLOCKED → escalate, if PUSH_REJECTED → escalate) stays in legible .mjs
+//    here, never buried in an opaque agent prompt that returns a single verdict.
+//    It is NOT "one agent per command" — that was only the cheapest way to keep
+//    each step's outcome individually visible. temperloop#942 measured the cost
+//    of taking it literally: an L0 level of 3 items spawned 40 agents (3 real
+//    workers + 37 haiku micro-agents), each paying ~160K cache-read tokens and 4
+//    API round-trips to execute one shell one-liner.
+//
+//    So mechanically-adjacent steps are now BATCHED into one executor agent via
+//    `runMachineryBatch()`: one Bash invocation runs the steps in sequence and
+//    prints ONE JSON line per step, and the agent returns them as
+//    `{results:[…]}` — so the driver still sees EVERY step's own closed-outcome
+//    object and branches on each of them, one `if` at a time, right here in .mjs.
+//    The bash wrapper's only added logic is a `case` short-circuit that stops the
+//    sequence when a step's outcome means the remaining steps must not run (a
+//    stop-early mirror, never the decision: the .mjs re-reads the same JSON and
+//    makes the authoritative call, and a truncated results array simply means the
+//    .mjs already escalated on the earlier step). Three batch sites:
+//      • `prelude:<slug>`  — 3a claim + 3b-0 deps-merged + 3b worktree create
+//      • `pr-batch:<slug>` — 3f-0a rebase + 3f-0 scan + 3f-1 push + 3f-2 pr open
+//      • `ci-batch:<slug>#n` — the interleaved merge-state probe + CI poll slices
+//    The 3e.5 quality gate stays a SOLO call on purpose — it is the one machinery
+//    step whose own runtime is minutes-scale (measured 6:05 for this repo's
+//    suite), so folding it into a batch would put a single Bash invocation within
+//    reach of the agent's ~10-min cap. See DESIGN NOTE 2.
+//
+//    The cost — ~4 executor spawns + 1 worker per item — lands entirely in THIS
+//    discardable workflow process, never the orchestrator's context. That is the
+//    whole point: orchestrator growth is bounded to one summary object per level.
 //
 //    CRITICAL (from the live probe in the spike): shell-quote every argument.
 //    A spaced path (e.g. a vault plan path "Plans/2026-06-13 foo - bar.md")
 //    MUST be single-quoted in the command string or the one-shot executor runs
 //    the wrong command. Every command this file builds goes through `sq()` for
-//    each interpolated value.
+//    each interpolated value — and batching does NOT relax that: a batch is
+//    literally the same per-step command strings joined by fixed shell syntax,
+//    so every argument is still sq()-quoted exactly as before.
 //
 // 2. THE CI-POLL LOOP (spike #421 verdict §1 "ci-poll caveat").
 //    ci-poll.sh can poll up to 1h, but an agent()'s foreground Bash has a
 //    ~10-min cap — so we must NOT runMachinery a single long poll (it would die
-//    mid-poll). Instead we loop runMachinery over SHORT-timeout polls
-//    (CI_POLL_SLICE_SECS, default 240s) until the outcome resolves to CI_GREEN
-//    or CI_FAILED, bounded by a total wall budget (CI_POLL_TOTAL_SECS). The
-//    short poll returns TIMEOUT when the slice elapses with checks still
-//    pending — that is the signal to poll again, NOT a failure. On CI_FAILED
-//    within a small retry budget we re-spawn the worker, force-push, and
-//    re-poll PINNED to the new SHA (the #254 false-green guard — never let the
-//    poll re-resolve the head from the PR API after a force-push). Past the
-//    budget without resolution → escalate `ci-failed` so a human drives it.
+//    mid-poll). Instead we drive SHORT-timeout polls (CI_POLL_SLICE_SECS,
+//    default 240s) until the outcome resolves to CI_GREEN or CI_FAILED, bounded
+//    by a total wall budget (CI_POLL_TOTAL_SECS). The short poll returns TIMEOUT
+//    when the slice elapses with checks still pending — that is the signal to
+//    poll again, NOT a failure. On CI_FAILED within a small retry budget we
+//    re-spawn the worker, force-push, and re-poll PINNED to the new SHA (the #254
+//    false-green guard — never let the poll re-resolve the head from the PR API
+//    after a force-push). Past the budget without resolution → escalate
+//    `ci-failed` so a human drives it.
+//
+//    temperloop#942 stopped spawning a FRESH agent per poll cycle (the measured
+//    L0 run burned 7 ci-poll spawns + 8 `gh pr view` spawns at one level) — but
+//    the ~10-min cap is unchanged and is now enforced ARITHMETICALLY rather than
+//    by comment. One `ci-batch` agent runs CI_POLL_SLICES_PER_BATCH slices in one
+//    Bash invocation, and that count is DERIVED: it is
+//    floor(CI_POLL_MAX_BATCH_WALL_MS / CI_POLL_SLICE_SECS), so the poll wall a
+//    single Bash invocation may occupy can never exceed CI_POLL_MAX_BATCH_WALL_MS
+//    (< the AGENT_BASH_CAP_MS ceiling) no matter how the slice length is retuned.
+//    Each individual ci-poll.sh invocation still carries its own
+//    CI_POLL_SLICE_SECS `--timeout`; the batch never asks for one long poll.
+//    The batch also short-circuits the moment a slice resolves, so a green PR
+//    does not sit through the remaining slices.
 //
 // 3. DROP isolation:'worktree' (spike #421 verdict §5).
 //    The worker agent() runs WITHOUT isolation:'worktree'. build has its
@@ -205,6 +246,39 @@ const SPINE_OUTCOME_SCHEMA = {
   },
 };
 
+// STEP_OUTCOME_SCHEMA — one element of a BATCH's results array (temperloop#942).
+// Same permissive shape as SPINE_OUTCOME_SCHEMA (whose `properties` it reuses
+// verbatim — #543's "do NOT touch SPINE_OUTCOME_SCHEMA" still holds; this derives
+// from it, it does not mutate it) with two differences:
+//   - `outcome` is NOT required, because one batched step is the read-only
+//     merge-state probe (`gh pr view --json mergeable,mergeStateStatus`), whose
+//     object carries no `outcome` key at all. When `outcome` IS present the
+//     closed enum still applies.
+//   - the merge-state fields are declared so the .mjs can branch on them.
+const STEP_OUTCOME_SCHEMA = {
+  type: 'object',
+  required: [],
+  additionalProperties: true,
+  properties: {
+    ...SPINE_OUTCOME_SCHEMA.properties,
+    mergeable: { type: 'string' },
+    mergeStateStatus: { type: 'string' },
+  },
+};
+
+// SPINE_BATCH_SCHEMA — the batched executor's return: the ordered array of the
+// JSON lines the batched command printed, ONE PER STEP THAT RAN. Shorter than
+// the step list whenever the bash short-circuit stopped the sequence early (the
+// normal, expected case — see DESIGN NOTE 1).
+const SPINE_BATCH_SCHEMA = {
+  type: 'object',
+  required: ['results'],
+  additionalProperties: true,
+  properties: {
+    results: { type: 'array', items: STEP_OUTCOME_SCHEMA },
+  },
+};
+
 // WORKER_VERDICT_SCHEMA — matches build.md §3c's return contract. The
 // worker owns only these fields (never branch/pr/pushed_sha — orchestrator-
 // owned). `status` is a closed enum, 1:1 with the 3d handling branches.
@@ -264,6 +338,35 @@ const CI_FAIL_RETRY_BUDGET = 1;   // re-spawn+force-push+re-poll attempts on CI_
 // the suite with margin and stays under the executor agent's ~10-min Bash cap
 // (== the Bash tool's 600_000ms max). Threaded to the gate runMachinery call only.
 const GATE_BASH_TIMEOUT_MS = 480_000;
+
+// --- Batched-machinery budgets (temperloop#942) ------------------------------
+// AGENT_BASH_CAP_MS — the executor agent's foreground Bash ceiling (== the Bash
+// tool's own 600_000ms maximum). NOTHING this file emits may ask a single Bash
+// invocation to run longer; every batch timeout below is clamped to it.
+const AGENT_BASH_CAP_MS = 600_000;
+// BATCH_BASH_TIMEOUT_MS — the FAST batches (prelude, pr-batch). Every step there
+// is a seconds-scale git/gh call, so 5 minutes is generous and far inside the
+// cap. (Each of these commands previously ran alone under the Bash tool's 120s
+// DEFAULT; batching several into one invocation would otherwise creep up on it,
+// so the timeout is made explicit rather than inherited.)
+const BATCH_BASH_TIMEOUT_MS = 300_000;
+// CI_POLL_MAX_BATCH_WALL_MS / CI_POLL_SLICES_PER_BATCH — DESIGN NOTE 2's cap
+// invariant, expressed as arithmetic instead of a comment. A ci-batch may occupy
+// at most CI_POLL_MAX_BATCH_WALL_MS of POLLING in one Bash invocation; the number
+// of CI_POLL_SLICE_SECS slices it runs is derived from that, so retuning the
+// slice length can never produce a batch that outlives the agent's Bash cap
+// (a 600s slice would simply yield 1 slice per batch).
+const CI_POLL_MAX_BATCH_WALL_MS = 480_000;
+const CI_POLL_SLICES_PER_BATCH = Math.max(
+  1,
+  Math.floor(CI_POLL_MAX_BATCH_WALL_MS / (CI_POLL_SLICE_SECS * 1000)),
+);
+// The ci-batch's Bash-tool timeout: its poll wall plus headroom for the
+// interleaved `gh pr view` probes and process startup, clamped to the cap.
+const CI_BATCH_BASH_TIMEOUT_MS = Math.min(
+  AGENT_BASH_CAP_MS,
+  CI_POLL_SLICES_PER_BATCH * CI_POLL_SLICE_SECS * 1000 + 90_000,
+);
 
 // -----------------------------------------------------------------------------
 // Command-building helpers — EVERY interpolated value goes through sq().
@@ -375,6 +478,129 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
   // detect (via machineryDenied()) and turn into a parkable `machinery-denied`
   // escalation instead of a TypeError.
   return out == null ? { outcome: 'SPINE_DENIED', denied: true } : out;
+}
+
+// -----------------------------------------------------------------------------
+// runMachineryBatch — the BATCHED sh() replacement (temperloop#942).
+// -----------------------------------------------------------------------------
+// Runs SEVERAL machinery commands inside ONE executor agent (one Bash
+// invocation), returning each step's own closed-outcome JSON object so the
+// driver keeps branching per-step in .mjs. See DESIGN NOTE 1 for why this does
+// not weaken the bridge's invariant.
+//
+// A step is { kind, cmd, continueOutcomes?, stopGlobs? }:
+//   kind             — a short name; it appears in the prompt's `Steps:` manifest
+//                      and in a denial payload, and is what the .mjs indexes by.
+//   cmd              — the fully sq()-quoted command text, byte-identical to what
+//                      the un-batched runMachinery call used to send.
+//   continueOutcomes — the outcome(s) that permit the NEXT step to run. Anything
+//                      else stops the sequence (the .mjs then branches on this
+//                      step's object and escalates, exactly as before).
+//   stopGlobs        — the inverse form, for a step with no `outcome` key (the
+//                      merge-state probe): raw substrings that, if present, stop
+//                      the sequence.
+// The last step needs neither — nothing follows it.
+//
+// The bash short-circuit is a STOP-EARLY MIRROR, not the decision: it only
+// avoids running steps whose result the .mjs is about to discard anyway. The
+// authoritative branch is always the `if` in .mjs reading the same JSON.
+
+// globPat — a `case` pattern matching any line CONTAINING `sub`. The literal is
+// single-quoted (via sq) so the shell never glob-expands the JSON punctuation.
+function globPat(sub) {
+  return `*${sq(sub)}*`;
+}
+
+// batchCommand — join the steps into ONE shell script: run, echo, gate, repeat.
+// Each command's stdout is captured with `$( … )` (stderr flows through to the
+// executor's transcript untouched, as before) and echoed verbatim, so the
+// machinery's own "single JSON line" contract is preserved per step.
+function batchCommand(steps) {
+  const lines = [];
+  steps.forEach((s, i) => {
+    const v = `__o${i}`;
+    lines.push(`${v}=$( ${s.cmd} )`);
+    lines.push(`printf '%s\\n' "$${v}"`);
+    if (i === steps.length - 1) return; // nothing follows — no gate needed
+    if (s.stopGlobs && s.stopGlobs.length > 0) {
+      lines.push(`case "$${v}" in ${s.stopGlobs.map(globPat).join('|')}) exit 0 ;; esac`);
+    } else if (s.continueOutcomes && s.continueOutcomes.length > 0) {
+      const pats = s.continueOutcomes.map((o) => globPat(`"outcome":"${o}"`)).join('|');
+      lines.push(`case "$${v}" in ${pats}) ;; *) exit 0 ;; esac`);
+    }
+  });
+  return lines.join('\n');
+}
+
+// runMachineryBatch — returns { denied, results, steps, out }. `results[i]` is
+// step i's object; the array is SHORTER than `steps` whenever the sequence
+// short-circuited (expected). `denied:true` is the batched twin of
+// machineryDenied() — agent() returned null (auto-mode classifier DENIED the
+// command / user skip / terminal API error) or gave back no usable array.
+async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
+  if (!steps || steps.length === 0) {
+    return { denied: false, results: [], steps: [] };
+  }
+  const kinds = steps.map((s) => s.kind);
+  const out = await agent(
+    [
+      'Run this build-machinery command sequence with the Bash tool, exactly as written, in ONE Bash invocation.',
+      'It is a short shell script that calls known project helper scripts (worktree.sh / pr.sh / ci-poll.sh / claim.sh / gh) one after another; do not add flags, reorder or split the steps, or rewrite it.',
+      `Steps: ${kinds.join(', ')}`,
+      // temperloop#115 rationale, applied per batch: for a legitimately
+      // long-running sequence raise the Bash TOOL's timeout parameter — NOT the
+      // command text — so the executor does not kill it at the default 2 minutes.
+      bashTimeoutMs
+        ? `This sequence runs longer than usual. When you invoke the Bash tool, set its \`timeout\` parameter to ${bashTimeoutMs} (milliseconds). That is a Bash tool parameter only — do NOT alter the command text — and it prevents the default 2-minute timeout from killing the run.`
+        : null,
+      'Each helper prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
+      "The script deliberately STOPS EARLY when a step's result means the remaining steps must not run. FEWER JSON lines than steps is expected and correct — never an error, never something to re-run, retry, or work around.",
+      'Return every JSON object it printed on stdout, in stdout order, as {"results": [ ... ]}. Copy each object VERBATIM — do not merge, summarise, reorder, add, drop, or invent entries — and ignore any non-JSON output.',
+      'If a step exits non-zero it STILL prints its JSON line; include it.',
+      '',
+      'Command:',
+      batchCommand(steps),
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    {
+      label: label ?? `machinery-batch:${kinds.join('+')}`,
+      phase: 'machinery',
+      agentType: 'general-purpose',
+      model: 'haiku',
+      schema: SPINE_BATCH_SCHEMA,
+      // NB: deliberately NO isolation:'worktree' — see DESIGN NOTE 3.
+    },
+  );
+  if (out == null || !Array.isArray(out.results)) {
+    return {
+      denied: true,
+      results: [],
+      steps: kinds,
+      out: out ?? { outcome: 'SPINE_DENIED', denied: true },
+    };
+  }
+  return { denied: false, results: out.results, steps: kinds, out };
+}
+
+// batchStep — step i's outcome object, or a closed ERROR sentinel when the batch
+// returned nothing for it. A missing entry normally means the .mjs has ALREADY
+// escalated on an earlier step (the short-circuit); the sentinel exists so a
+// malformed executor return degrades into the step's own error branch rather
+// than a TypeError on `.outcome`.
+function batchStep(batch, i) {
+  const r = batch.results[i];
+  return r == null
+    ? { outcome: 'ERROR', error: `machinery step '${batch.steps[i] ?? i}' produced no result` }
+    : r;
+}
+
+// batchDeniedStep — what to name in a `machinery-denied` payload. A one-step
+// batch names its only step (so a solo worktree/gate denial reads exactly as it
+// did before batching); a multi-step batch names the batch itself and carries
+// the full step list alongside.
+function batchDeniedStep(batch, batchName) {
+  return batch.steps.length === 1 ? batch.steps[0] : batchName;
 }
 
 // -----------------------------------------------------------------------------
@@ -657,13 +883,29 @@ async function driveItem(item) {
     ? input.verdicts?.[item.slug]?.verdict_section
     : undefined;
 
-  // --- 3a. Claim (claim-first), board ON only ------------------------------
+  // --- PRELUDE (3a claim + 3b-0 deps-merged + 3b worktree create) ------------
+  // ONE batched executor agent for the whole per-item mechanical prelude
+  // (temperloop#942) instead of one agent spawn per command. Ordering, skip
+  // conditions and every branch below are unchanged — only the transport is.
+  // The batch's own bash short-circuit refuses to run a later step once an
+  // earlier one's outcome means it must not (a failed claim never reaches
+  // worktree create; an unmerged dep never creates a worktree), so the results
+  // array is simply shorter and the .mjs escalates on the step that stopped it.
+  const preludeSteps = [];
+  const preludeAt = {}; // kind → index into preludeSteps / batch.results
+  const addPrelude = (kind, cmd, continueOutcomes) => {
+    preludeAt[kind] = preludeSteps.length;
+    preludeSteps.push({ kind, cmd, continueOutcomes });
+  };
+
+  // 3a. Claim (claim-first), board ON only.
   // Claim-first applies to EVERY kind, spike included (build.md L312: "For a
-  // spike: run 3a (claim, mark `[~]`), then spawn a read-only worker"). This
-  // block therefore runs BEFORE the kind:spike verdict-park below so a
-  // spike-labeled item takes the cross-session board lock before any
-  // investigation begins — without it, two concurrent drivers could each pull
-  // and investigate the same spike with no lock (temperloop#650).
+  // spike: run 3a (claim, mark `[~]`), then spawn a read-only worker"). It is
+  // therefore the FIRST step of the prelude and is branched on BEFORE the
+  // kind:spike verdict-park below, so a spike-labeled item takes the
+  // cross-session board lock before any investigation begins — without it, two
+  // concurrent drivers could each pull and investigate the same spike with no
+  // lock (temperloop#650).
   // Skipped on a continuation: the issue is already claimed by this run (the
   // escalation never released it), and a re-claim is at best a self-owned
   // no-op (spec 3d-esc step 4: "does NOT re-run 3a").
@@ -671,17 +913,78 @@ async function driveItem(item) {
     // The CLAIM entrypoint + --board are resolved by the orchestrator's Step 0
     // probe and passed in input.claimCmd (an absolute path to claim.sh).
     const claimBin = input.claimCmd ?? 'claim.sh';
-    const claimOut = await runMachinery(
+    addPrelude(
+      'claim',
       // claim.sh exits 0 on success; we wrap a contention/no-op check into the
       // executor by asking it to emit a CLAIMED/CLAIM_CONFLICT line. The
       // orchestrator's claim.sh itself sets In Progress + stamps Host/Session.
       `${sq(claimBin)} ${sq(item.ghIssue)} --board ${sq(board)} && ` +
         `echo '{"outcome":"CLAIMED"}' || echo '{"outcome":"CLAIM_CONFLICT"}'`,
-      { label: `claim:${item.slug}`, slug: item.slug },
+      ['CLAIMED'],
     );
-    if (machineryDenied(claimOut)) {
-      return escalate(item.slug, 'machinery-denied', { step: 'claim', out: claimOut });
-    }
+  }
+
+  // 3b-0 / 3b are prelude steps only for a NON-spike item: a spike is read-only
+  // and skips 3b–3h entirely, so it must never create a worktree. Its prelude is
+  // the claim alone (or nothing at all when the board is OFF).
+  //
+  // 3b-0. Dep-merge precondition gate (#108).
+  // A `depends-on` edge REQUIRES its target be [x] MERGED before this item's
+  // worker starts — the worker must build and self-verify against the merged
+  // dependency code, NOT a pre-merge base. The orchestrator's level ordering
+  // (it runs level k's merge gate before invoking build-level for level k+1) is
+  // the primary guarantee; this is the mechanical backstop that refuses to
+  // create the worktree until every depended-on PR has actually landed in
+  // origin/<default> (guarding a resume race, a partial merge, an ordering bug).
+  // Without it, worktree.sh create bases the branch on an origin/<default> that
+  // LACKS the dep, the worker self-verifies against stale code, and the 3f
+  // unconditional rebase (#525) only repairs the branch TEXTUALLY at push —
+  // too late for the worker's own build/verify. item.dependsOn is [{slug,sha}]
+  // (each dep's merged head SHA, from the plan note's pushed_sha:); an
+  // absent/empty list (level-0 or after:-only deps) is a no-op. Skipped on a
+  // continuation — the worktree already exists and its base was gated at first
+  // create; re-gating would need SHAs the continuation input does not carry.
+  const depShas = isContinuation
+    ? []
+    : (item.dependsOn ?? []).map((d) => d && d.sha).filter(Boolean);
+  if (item.kind !== 'spike' && depShas.length > 0) {
+    const wtGateBin = machineryBin(repoRoot, 'worktree.sh');
+    addPrelude(
+      'deps-merged',
+      `${wtGateBin} deps-merged ${sq(repoRoot)} ${sq(depShas.join(','))}`,
+      ['DEPS_MERGED'],
+    );
+  }
+
+  // 3b. Pre-create the deterministic worktree (worktree.sh create).
+  // On a continuation we REUSE the existing worktree (MINOR fix): the escalated
+  // item's worktree + its committed build + the .build-guard marker are all
+  // intact, and worktree.sh create force-removes-and-re-adds (worktree.sh:113),
+  // which would DISCARD the escalated build. So skip create entirely and resume
+  // against the deterministic path. The injected verdict (3c) makes resuming on
+  // the existing worktree correct — the worker builds on its own prior work
+  // plus the human's decision, exactly the escalation-resume contract.
+  if (item.kind !== 'spike' && !isContinuation) {
+    const wtBin = machineryBin(repoRoot, 'worktree.sh');
+    addPrelude('worktree', `${wtBin} create ${sq(repoRoot)} ${sq(item.slug)}`, ['CREATED']);
+  }
+
+  const prelude = await runMachineryBatch(preludeSteps, {
+    label: `prelude:${item.slug}`,
+    slug: item.slug,
+    bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+  });
+  if (prelude.denied) {
+    return escalate(item.slug, 'machinery-denied', {
+      step: batchDeniedStep(prelude, 'prelude'),
+      steps: prelude.steps,
+      out: prelude.out,
+    });
+  }
+
+  // 3a branch — unchanged decisions, read off the batch's first result.
+  if (preludeAt.claim !== undefined) {
+    const claimOut = batchStep(prelude, preludeAt.claim);
     if (claimOut.outcome === 'CLAIM_CONFLICT' || claimOut.outcome === 'ERROR') {
       return escalate(item.slug, 'claim-conflict', { claimOut });
     }
@@ -721,60 +1024,25 @@ async function driveItem(item) {
     return park(item.slug, null, null, verdict.acceptance_results);
   }
 
-  // --- 3b-0. Dep-merge precondition gate (#108) ----------------------------
-  // A `depends-on` edge REQUIRES its target be [x] MERGED before this item's
-  // worker starts — the worker must build and self-verify against the merged
-  // dependency code, NOT a pre-merge base. The orchestrator's level ordering
-  // (it runs level k's merge gate before invoking build-level for level k+1) is
-  // the primary guarantee; this is the mechanical backstop that refuses to
-  // create the worktree until every depended-on PR has actually landed in
-  // origin/<default> (guarding a resume race, a partial merge, an ordering bug).
-  // Without it, worktree.sh create bases the branch on an origin/<default> that
-  // LACKS the dep, the worker self-verifies against stale code, and the 3f
-  // unconditional rebase (#525) only repairs the branch TEXTUALLY at push —
-  // too late for the worker's own build/verify. item.dependsOn is [{slug,sha}]
-  // (each dep's merged head SHA, from the plan note's pushed_sha:); an
-  // absent/empty list (level-0 or after:-only deps) is a no-op. Skipped on a
-  // continuation — the worktree already exists and its base was gated at first
-  // create; re-gating would need SHAs the continuation input does not carry.
-  const depShas = isContinuation
-    ? []
-    : (item.dependsOn ?? []).map((d) => d && d.sha).filter(Boolean);
-  if (depShas.length > 0) {
-    const wtGateBin = machineryBin(repoRoot, 'worktree.sh');
-    const depOut = await runMachinery(
-      `${wtGateBin} deps-merged ${sq(repoRoot)} ${sq(depShas.join(','))}`,
-      { label: `depcheck:${item.slug}`, slug: item.slug },
-    );
-    if (machineryDenied(depOut)) {
-      return escalate(item.slug, 'machinery-denied', { step: 'deps-merged', out: depOut });
-    }
+  // --- 3b-0 branch. Dep-merge precondition gate (#108) ---------------------
+  // The gate itself ran as prelude step `deps-merged` above; the DECISION is
+  // here, in .mjs, reading that step's own DEPS_MERGED/DEPS_UNMERGED object.
+  if (preludeAt['deps-merged'] !== undefined) {
+    const depOut = batchStep(prelude, preludeAt['deps-merged']);
     if (depOut.outcome !== 'DEPS_MERGED') {
       // A depended-on PR has NOT merged to origin/<default>. Do NOT create the
       // worktree and do NOT spawn a worker — surface it so the orchestrator/human
-      // resolves the ordering. Nothing is built against a stale base.
+      // resolves the ordering. Nothing is built against a stale base. (The batch's
+      // own short-circuit already refused to run the worktree-create step, so
+      // nothing was built against the pre-merge base either.)
       return escalate(item.slug, 'dep-not-merged', { depOut });
     }
   }
 
-  // --- 3b. Pre-create the deterministic worktree (worktree.sh create) ------
-  // On a continuation we REUSE the existing worktree (MINOR fix): the escalated
-  // item's worktree + its committed build + the .build-guard marker are all
-  // intact, and worktree.sh create force-removes-and-re-adds (worktree.sh:113),
-  // which would DISCARD the escalated build. So skip create entirely and resume
-  // against the deterministic path. The injected verdict (3c) makes resuming on
-  // the existing worktree correct — the worker builds on its own prior work
-  // plus the human's decision, exactly the escalation-resume contract.
+  // --- 3b branch. The deterministic worktree (worktree.sh create) ----------
   let wt = worktreePath;
-  if (!isContinuation) {
-    const wtBin = machineryBin(repoRoot, 'worktree.sh');
-    const wtOut = await runMachinery(
-      `${wtBin} create ${sq(repoRoot)} ${sq(item.slug)}`,
-      { label: `worktree:${item.slug}`, slug: item.slug },
-    );
-    if (machineryDenied(wtOut)) {
-      return escalate(item.slug, 'machinery-denied', { step: 'worktree', out: wtOut });
-    }
+  if (preludeAt.worktree !== undefined) {
+    const wtOut = batchStep(prelude, preludeAt.worktree);
     if (wtOut.outcome !== 'CREATED') {
       return escalate(item.slug, 'worktree-failed', { wtOut });
     }
@@ -903,8 +1171,20 @@ async function driveItem(item) {
   }
   // GATE_PASS or GATE_ABSENT → proceed.
 
-  // --- 3f. Push and open the PR --------------------------------------------
+  // --- 3f. Push and open the PR (ONE batched executor — temperloop#942) -----
+  // rebase → scan → push → pr-open are four adjacent, seconds-scale machinery
+  // calls that used to cost four agent spawns. They now ride ONE
+  // `pr-batch:<slug>` executor: the shell runs them in order and prints each
+  // script's own JSON line, and every branch below still reads that step's own
+  // object here in .mjs. The batch's `case` gates mirror those branches so a
+  // REBASE_CONFLICT / SCAN_BLOCKED / PUSH_REJECTED never lets a later step run.
   const prBin = machineryBin(repoRoot, 'pr.sh');
+  const prSteps = [];
+  const prAt = {};
+  const addPrStep = (kind, cmd, continueOutcomes) => {
+    prAt[kind] = prSteps.length;
+    prSteps.push({ kind, cmd, continueOutcomes });
+  };
 
   // 3f-0a. Rebase onto fresh origin/<default> — the unconditional stale-base
   // guard (#525). EVERY worker (not just speculative ones) branched off the
@@ -924,56 +1204,16 @@ async function driveItem(item) {
   // RECOVER_COMMITTED stage has pushed nothing yet, so it still rebases
   // normally; so does every non-recovery drive.
   if (!(recovery && recovery.pushed)) {
-    const rebaseOut = await runMachinery(`${prBin} rebase ${sq(wt)}`, {
-      label: `rebase:${item.slug}`,
-      slug: item.slug,
-    });
-    if (machineryDenied(rebaseOut)) {
-      return escalate(item.slug, 'machinery-denied', { step: 'rebase', out: rebaseOut });
-    }
-    if (rebaseOut.outcome === 'REBASE_CONFLICT') {
-      return escalate(item.slug, 'rebase-conflict', { rebaseOut });
-    }
-    if (rebaseOut.outcome !== 'REBASED') {
-      return escalate(item.slug, 'rebase-error', { rebaseOut });
-    }
+    addPrStep('rebase', `${prBin} rebase ${sq(wt)}`, ['REBASED']);
   } else {
     log(`[${item.slug}] recovery (${recovery.stage}) — skipping 3f-0a rebase (branch already on origin)`);
   }
 
   // 3f-0. Closing-keyword pre-push scan.
-  const scanOut = await runMachinery(`${prBin} scan ${sq(wt)}`, {
-    label: `scan:${item.slug}`,
-    slug: item.slug,
-  });
-  if (machineryDenied(scanOut)) {
-    return escalate(item.slug, 'machinery-denied', { step: 'scan', out: scanOut });
-  }
-  if (scanOut.outcome === 'SCAN_BLOCKED') {
-    // A worker commit carries a closing keyword (the ec8d5fd class). Don't push
-    // it as-is — escalate so the orchestrator re-words and re-drives.
-    return escalate(item.slug, 'closing-keyword', { scanOut });
-  }
-  if (scanOut.outcome !== 'SCAN_CLEAN') {
-    return escalate(item.slug, 'scan-error', { scanOut });
-  }
+  addPrStep('scan', `${prBin} scan ${sq(wt)}`, ['SCAN_CLEAN']);
 
   // 3f-1. Push-by-SHA on the plan's branch.
-  const pushOut = await runMachinery(
-    `${prBin} push ${sq(wt)} ${sq(item.branch)}`,
-    { label: `push:${item.slug}`, slug: item.slug },
-  );
-  if (machineryDenied(pushOut)) {
-    return escalate(item.slug, 'machinery-denied', { step: 'push', out: pushOut });
-  }
-  if (pushOut.outcome === 'PUSH_REJECTED') {
-    // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
-    return escalate(item.slug, 'push-rejected', { pushOut });
-  }
-  if (pushOut.outcome !== 'PUSHED') {
-    return escalate(item.slug, 'push-error', { pushOut });
-  }
-  const pushedSha = pushOut.sha;
+  addPrStep('push', `${prBin} push ${sq(wt)} ${sq(item.branch)}`, ['PUSHED']);
 
   // 3f-2. Open the PR. The verification surface is read from the deterministic
   // file path (--verification-surface-file) so its body never enters context.
@@ -1010,14 +1250,60 @@ async function driveItem(item) {
     `--title ${sq(item.title)} --verdict "$vf"${ghIssueFlag}${alsoClosesFlag}${surfaceFlag} ` +
     `--plan-link ${sq(planLink)} --source ${sq(item.source ?? '')}; ` +
     `rc=$?; rm -f "$vf"; exit $rc`;
-  const openOut = await runMachinery(openCmd, { label: `pr-open:${item.slug}`, slug: item.slug });
+  addPrStep('pr-open', openCmd); // terminal step — nothing gates after it
+
+  const prb = await runMachineryBatch(prSteps, {
+    label: `pr-batch:${item.slug}`,
+    slug: item.slug,
+    bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+  });
+  if (prb.denied) {
+    return escalate(item.slug, 'machinery-denied', {
+      step: batchDeniedStep(prb, 'pr-batch'),
+      steps: prb.steps,
+      out: prb.out,
+    });
+  }
+
+  // 3f-0a branch — the rebase decision, unchanged, read off the batch.
+  if (prAt.rebase !== undefined) {
+    const rebaseOut = batchStep(prb, prAt.rebase);
+    if (rebaseOut.outcome === 'REBASE_CONFLICT') {
+      return escalate(item.slug, 'rebase-conflict', { rebaseOut });
+    }
+    if (rebaseOut.outcome !== 'REBASED') {
+      return escalate(item.slug, 'rebase-error', { rebaseOut });
+    }
+  }
+
+  // 3f-0 branch — the closing-keyword scan decision, unchanged.
+  const scanOut = batchStep(prb, prAt.scan);
+  if (scanOut.outcome === 'SCAN_BLOCKED') {
+    // A worker commit carries a closing keyword (the ec8d5fd class). Don't push
+    // it as-is — escalate so the orchestrator re-words and re-drives.
+    return escalate(item.slug, 'closing-keyword', { scanOut });
+  }
+  if (scanOut.outcome !== 'SCAN_CLEAN') {
+    return escalate(item.slug, 'scan-error', { scanOut });
+  }
+
+  // 3f-1 branch — the push decision, unchanged.
+  const pushOut = batchStep(prb, prAt.push);
+  if (pushOut.outcome === 'PUSH_REJECTED') {
+    // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
+    return escalate(item.slug, 'push-rejected', { pushOut });
+  }
+  if (pushOut.outcome !== 'PUSHED') {
+    return escalate(item.slug, 'push-error', { pushOut });
+  }
+  const pushedSha = pushOut.sha;
+
+  // 3f-2 branch — the PR-open decision, unchanged.
   // EXISTS means the branch already had an open PR (a create-retry after a
   // succeeded first attempt). Treat it as PR_OPENED — adopt the existing PR and
   // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is a
   // genuine failure and escalates as pr-open-failed.
-  if (machineryDenied(openOut)) {
-    return escalate(item.slug, 'machinery-denied', { step: 'pr-open', out: openOut });
-  }
+  const openOut = batchStep(prb, prAt['pr-open']);
   if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
     return escalate(item.slug, 'pr-open-failed', { openOut });
   }
@@ -1039,11 +1325,23 @@ async function driveItem(item) {
 // -----------------------------------------------------------------------------
 // ciPollLoop — bounded short-slice CI poll (DESIGN NOTE 2).
 // -----------------------------------------------------------------------------
-// Loops runMachinery over CI_POLL_SLICE_SECS-timeout ci-poll.sh calls until the
-// outcome resolves. TIMEOUT on a slice = "still pending, poll again" (NOT a
-// failure) — we keep looping while the total budget remains. On CI_FAILED,
-// within CI_FAIL_RETRY_BUDGET, we re-spawn the worker + force-push + re-poll
-// PINNED to the new SHA (#254 false-green guard). Returns:
+// Drives CI_POLL_SLICE_SECS-timeout ci-poll.sh calls until the outcome resolves.
+// TIMEOUT on a slice = "still pending, poll again" (NOT a failure) — we keep
+// looping while the total budget remains. On CI_FAILED, within
+// CI_FAIL_RETRY_BUDGET, we re-spawn the worker + force-push + re-poll PINNED to
+// the new SHA (#254 false-green guard).
+//
+// temperloop#942: the slices no longer cost an agent spawn EACH. One
+// `ci-batch:<slug>#n` executor runs CI_POLL_SLICES_PER_BATCH
+// (merge-state probe → poll slice) PAIRS in a single Bash invocation and returns
+// all their JSON lines; this loop then consumes them one slice at a time from a
+// buffer and branches on each exactly as it did when each came from its own
+// agent. Interleaving is preserved: the merge-state probe still runs immediately
+// before EVERY poll slice (#543), not once per batch. The buffer is FLUSHED
+// whenever the head SHA changes (a CI-fix re-push), because buffered results are
+// pinned to the OLD sha — keeping the #254 false-green guard intact. And the
+// batch never runs one long poll: see DESIGN NOTE 2 for the derived slice count.
+// Returns:
 //   { ok:true, finalSha }                         — CI green
 //   { ok:true, finalSha, noCi:true }              — NO_CI (temperloop#605/#618):
 //        no CI configured on this repo/SHA — a legible skip mirroring build.md
@@ -1051,24 +1349,25 @@ async function driveItem(item) {
 //   { escalation:'ci-failed', payload:{...} }      — budget exhausted / hard fail
 //   { escalation:'merge-conflict', payload:{...} } — PR is CONFLICTING/DIRTY
 
-// MERGE_STATE_SCHEMA — minimal schema for the gh pr view merge-state check.
-// A separate schema (not SPINE_OUTCOME_SCHEMA) so we do NOT alter the closed
-// machinery outcome enum (#543: "Do NOT touch SPINE_OUTCOME_SCHEMA").
-const MERGE_STATE_SCHEMA = {
-  type: 'object',
-  required: [],
-  additionalProperties: true,
-  properties: {
-    mergeable:       { type: 'string' },
-    mergeStateStatus: { type: 'string' },
-    error:           { type: 'string' },
-  },
-};
+// MERGE_CONFLICT_GLOBS — the substrings that make the batched merge-state probe
+// stop the sequence early. This is the STOP-EARLY MIRROR of the .mjs branch
+// below (`mergeable === 'CONFLICTING' || mergeStateStatus === 'DIRTY'`), NOT the
+// decision: it only spares a CONFLICTING PR the 4-minute poll slice that would
+// otherwise run before the .mjs read the same object and escalated. The
+// authoritative branch is, as always, the `if` in .mjs.
+const MERGE_CONFLICT_GLOBS = ['"mergeable":"CONFLICTING"', '"mergeStateStatus":"DIRTY"'];
 
 function mergeStateCmd(ownerRepo, pr) {
   // gh pr view returns JSON; if it fails (e.g. auth error) the executor catches
   // non-zero exit and returns whatever gh printed — the caller handles missing fields.
-  return `gh pr view ${sq(pr)} --repo ${sq(ownerRepo)} --json mergeable,mergeStateStatus`;
+  //
+  // `tr -d ' \n'` COMPACTS the object onto one line (temperloop#942). gh may
+  // pretty-print `--json` output, and a batched step's result must be a single
+  // JSON line for both the executor's line-per-step contract and the `case`
+  // stop-early glob above (which would miss `"mergeable": "CONFLICTING"` with a
+  // space). Only `mergeable`/`mergeStateStatus` are requested and both are
+  // space-free enum values, so stripping spaces cannot corrupt a value.
+  return `gh pr view ${sq(pr)} --repo ${sq(ownerRepo)} --json mergeable,mergeStateStatus | tr -d ' \\n'`;
 }
 
 function ciPollCmd(ownerRepo, pr, sha) {
@@ -1088,29 +1387,64 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
   // clock (slices * slice-secs ≈ total budget). Integer ceil.
   const maxSlices = Math.ceil(CI_POLL_TOTAL_SECS / CI_POLL_SLICE_SECS);
 
+  // Buffered slices from the current ci-batch: one { mergeState, out } pair per
+  // slice the batch actually ran. Refilled whenever it empties; FLUSHED whenever
+  // `sha` changes (buffered results are pinned to the previous head — #254).
+  let buffer = [];
+  let batchIdx = 0;
+
   for (let slice = 0; slice < maxSlices; slice++) {
+    if (buffer.length === 0) {
+      // One executor agent, CI_POLL_SLICES_PER_BATCH (merge-state, ci-poll)
+      // pairs, one Bash invocation. Never more slices than the budget has left.
+      const nSlices = Math.min(CI_POLL_SLICES_PER_BATCH, maxSlices - slice);
+      const steps = [];
+      for (let k = 0; k < nSlices; k++) {
+        steps.push({
+          kind: 'merge-state',
+          cmd: mergeStateCmd(ownerRepo, pr),
+          stopGlobs: MERGE_CONFLICT_GLOBS,
+        });
+        steps.push({
+          kind: 'ci-poll',
+          cmd: ciPollCmd(ownerRepo, pr, sha),
+          continueOutcomes: ['TIMEOUT'], // only a still-pending slice polls again
+        });
+      }
+      const batch = await runMachineryBatch(steps, {
+        label: `ci-batch:${item.slug}#${batchIdx++}`,
+        slug: item.slug,
+        bashTimeoutMs: CI_BATCH_BASH_TIMEOUT_MS,
+      });
+      if (batch.denied) {
+        return {
+          escalation: 'machinery-denied',
+          payload: { step: 'ci-batch', steps: batch.steps, out: batch.out, sha },
+        };
+      }
+      for (let k = 0; k < nSlices; k++) {
+        const ms = batch.results[2 * k];
+        const po = batch.results[2 * k + 1];
+        if (ms === undefined && po === undefined) break; // short-circuited here
+        buffer.push({ mergeState: ms ?? null, out: po });
+      }
+      if (buffer.length === 0) {
+        // The executor came back with an empty results array — it ran nothing we
+        // can read. Escalate rather than spin the remaining budget on a batch
+        // that produces nothing.
+        return { escalation: 'ci-failed', payload: { reason: 'ci poll batch returned no results', sha } };
+      }
+    }
+
+    const bufferedSlice = buffer.shift();
+    const mergeState = bufferedSlice.mergeState;
+
     // --- CONFLICTING/DIRTY early-exit (#543) ---------------------------------
     // GitHub never creates a CI check-suite for a PR whose merge ref can't be
     // computed (CONFLICTING/DIRTY), so ci-poll.sh returns TIMEOUT indefinitely.
-    // Check merge state BEFORE each poll slice; if CONFLICTING/DIRTY, escalate
+    // The merge state is probed BEFORE each poll slice (it is the batched step
+    // immediately preceding this slice's poll); if CONFLICTING/DIRTY, escalate
     // immediately rather than spinning the full CI_POLL_TOTAL_SECS budget.
-    const mergeState = await agent(
-      [
-        'Run this single read-only status command with the Bash tool, exactly as written — do not add flags or extra commands.',
-        'It queries the PR merge state (a `gh pr view`) and prints a JSON object; return it verbatim as your result.',
-        'If the command exits non-zero, return { "error": "<stderr>" }.',
-        '',
-        'Command:',
-        mergeStateCmd(ownerRepo, pr),
-      ].join('\n'),
-      {
-        label: `merge-check:${item.slug}#${slice}`,
-        phase: 'merge-check',
-        agentType: 'general-purpose',
-        model: 'haiku',
-        schema: MERGE_STATE_SCHEMA,
-      },
-    );
     if (
       mergeState != null &&
       (mergeState.mergeable === 'CONFLICTING' || mergeState.mergeStateStatus === 'DIRTY')
@@ -1122,14 +1456,13 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       };
     }
 
-    const out = await runMachinery(ciPollCmd(ownerRepo, pr, sha), {
-      label: `ci-poll:${item.slug}#${slice}`,
-      slug: item.slug,
-    });
-
-    if (machineryDenied(out)) {
-      return { escalation: 'machinery-denied', payload: { step: 'ci-poll', out, sha } };
-    }
+    // This slice's own ci-poll.sh object. Absent only if the batch truncated
+    // without the merge-state gate firing (a malformed executor return) — the
+    // ERROR sentinel then falls into the catch-all escalation at the bottom of
+    // the loop rather than being silently skipped.
+    const out =
+      bufferedSlice.out ??
+      { outcome: 'ERROR', error: 'ci-poll step produced no result in its batch' };
 
     if (out.outcome === 'CI_GREEN') {
       return { ok: true, finalSha: sha };
@@ -1210,6 +1543,11 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         return { escalation: 'ci-failed', payload: { fpush, sha } };
       }
       sha = fpush.sha; // authoritative — pin the next poll to it (NOT the PR API)
+      // FLUSH any slices still buffered from the pre-fix batch: they were polled
+      // against the OLD head and reading them now would re-resolve CI on a stale
+      // SHA — exactly the #254 false-green the --sha pin exists to prevent. The
+      // next iteration refills the buffer with polls pinned to the new sha.
+      buffer = [];
       continue;
     }
 
