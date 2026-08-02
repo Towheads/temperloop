@@ -153,10 +153,13 @@ table read is a **local file read only, no network**. The pricing table is
 **absent by default**: the kernel ships no prices, so a stranger opts in by
 writing their own table. (This used to add "just as it ships no `tokens`
 producer" — no longer true as of temperloop#958: the kernel repo now carries
-its own `.temperloop/report.d/tokens`, a transcript-derived spend reader
-wrapping `workflows/scripts/pipeline-spend-report.sh`. That changes nothing
-here — the producer emits `by_model` in DIRECTIONAL cost-weighted units, and
-the pricing table remains the separate, hand-written, opt-in half.)
+its own `tokens` producer, `workflows/scripts/report-producers/tokens`, a
+transcript-derived spend reader wrapping
+`workflows/scripts/pipeline-spend-report.sh`; `.temperloop/report.d/tokens`
+is the locator shim that finds the installed kernel and `exec`s that
+producer. That changes nothing here — the producer emits `by_model` in
+DIRECTIONAL cost-weighted units, and the pricing table remains the separate,
+hand-written, opt-in half.)
 
 Every degradation is one legible line, never an error: **no** `by_model` →
 no dollar line; `by_model` present but **no** `pricing.json` → a one-line
