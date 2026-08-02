@@ -51,6 +51,12 @@ FAKE="$WORK/repo"
 mkdir -p "$FAKE/scripts" "$FAKE/workflows/scripts/lib"
 cp "$REPO_ROOT/workflows/scripts/lib/checkout-freshness.sh" "$FAKE/workflows/scripts/lib/"
 cp "$REPO_ROOT/workflows/scripts/lib/gate-retry.sh" "$FAKE/workflows/scripts/lib/"
+# quality-gates.sh sources this one too (temperloop#1024's diff-scoped selection),
+# so the hermetic copy needs it for the same reason it needs the two above. With
+# no GITHUB_EVENT_NAME in this fixture's environment the selector resolves to
+# mode=full, so every case below still sees all six synthetic gates — this file
+# tests the SLICE seam, and scoping is deliberately inert here.
+cp "$REPO_ROOT/workflows/scripts/lib/gate-selection.sh" "$FAKE/workflows/scripts/lib/"
 
 # Six synthetic gates: each records that it ran, then sleeps ~1s so a wall-clock
 # budget is actually reachable in a test. g4 is the one a case can turn RED by

@@ -30,6 +30,35 @@ name: CI
 # which is the exact context name branch protection requires; deleting
 # the matrix would rename the context to plain `checks` and the required
 # check would then never report. Do not "simplify" it away.
+#
+# WHICH GATES RUN, BY EVENT (temperloop#1024) — the workflow itself is
+# unchanged here; the split lives inside scripts/quality-gates.sh, so the
+# job name, the matrix, the required context `checks (ubuntu-latest)`, and
+# the single `run:` step below are all exactly as they were:
+#
+#   pull_request  DIFF-SCOPED. Only the gates the PR's changed paths can
+#                 affect, per workflows/scripts/config/gate-paths.tsv. This
+#                 is where the ~5.5 min flat cost was being paid on every
+#                 PR (measured 2026-08-02 across the last 20 runs) for a
+#                 diff that usually touches one directory.
+#   merge_group   FULL SET. This is the run that actually gates `main` —
+#                 nothing merges without it — so it is deliberately NOT
+#                 scoped. Whole-set coverage of the default branch is
+#                 therefore identical to before diff-scoping existed.
+#   push: main    FULL SET (belt and braces on the merged result).
+#   nightly       FULL SET on macos-latest (nightly-macos.yml).
+#
+# So a narrowing bug can, at worst, let a PR go green early — it can never
+# let an unproven commit reach `main`, because the merge queue re-runs
+# everything. The selector additionally defaults to the FULL set on any
+# unrecognised changed path, unresolvable base, or unusable map; see
+# workflows/scripts/lib/gate-selection.sh's header for the four defenses,
+# and workflows/scripts/config/check-gate-paths.sh (itself a gate) for the
+# map's completeness + reachability validation.
+#
+# Nothing new is passed in for this: GitHub Actions already exports
+# GITHUB_EVENT_NAME, and the base SHA is REUSED from the LEAK_GUARD_BASE
+# export below rather than derived a second way.
 
 on:
   pull_request:

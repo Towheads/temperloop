@@ -68,6 +68,40 @@ reads that marker; a stranger greps for it before pulling.
   meaning, or parse changes, so an in-flight plan note written by an older
   kernel resumes unaffected.
 
+- **Diff-scoped CI gate selection — a `pull_request` run of
+  `scripts/quality-gates.sh` now executes only the suites its changed paths can
+  affect (temperloop#1024).** The `checks` job ran the whole ~110-gate set on
+  every `pull_request` and again on `merge_group` — ~5.5 min flat (measured
+  2026-08-02 across the last 20 runs), so every merged PR paid >=11 min of CI
+  even for a one-file docs change. A new registry,
+  `workflows/scripts/config/gate-paths.tsv`, maps each gate to the path globs
+  that reach it; `workflows/scripts/lib/gate-selection.sh` (sourced by
+  `quality-gates.sh`, the same seam as `gate-retry.sh` /
+  `checkout-freshness.sh`) narrows the run accordingly. A docs-only diff now
+  selects 12 of 112 gates.
+  **Nothing about what gates `main` changes:** scoping applies to the
+  `pull_request` event ONLY, so `merge_group` — the run a PR must clear to
+  merge — `push: main`, the nightly macOS leg, and `/build`'s 3e.5 acceptance
+  gate all still run the full set. The required status-check context
+  `checks (ubuntu-latest)` is unchanged (same job, same single-entry matrix,
+  same one `run:` step); `.github/workflows/ci.yml`'s header now documents the
+  by-event arrangement. The base SHA is REUSED from the existing
+  `LEAK_GUARD_BASE` export rather than derived a second way.
+  Against the silent-green class the map could otherwise reopen, every
+  degradation resolves toward MORE coverage: an unrecognised changed path, an
+  unresolvable base, an empty diff, or a missing/malformed map all fall back to
+  the full set (announced, never silent); an explicit `ALL` row escalates
+  outright for paths whose blast radius is the gate machinery itself; and a
+  gate with no row runs unconditionally. The map ships its own gate,
+  `workflows/scripts/config/check-gate-paths.sh`, which fails the build on a
+  gate with no row, a row naming a gate that no longer exists, a literal path
+  not in the tree, or — the load-bearing one — a row whose globs match no
+  tracked path, i.e. a gate orphaned behind an unmatchable glob that would
+  otherwise be skipped on every scoped run forever. Validator and selector
+  share ONE glob matcher, so what is validated is byte-for-byte what is
+  consumed. New settings: `QUALITY_GATES_SCOPE` (`auto`|`full`|`diff`) plus the
+  `GATE_PATHS_*` fixture seams; new `--list-selected` flag prints the set an
+  invocation would run, with its reason, without running it.
 - **`VERSIONING.md` § Cutting a release — the ordered release procedure
   (temperloop#1015).** The kernel had version *policy* (this file's bump rules)
   and tag *conventions* (`kernel-repo-layout.md` § Release-tag convention) but

@@ -283,6 +283,13 @@ quality-gates scripts/tests/test_quality_gates_freshness.sh
 quality-gates workflows/scripts/lib/gate-retry.sh
 quality-gates scripts/tests/test_quality_gates_retry.sh
 quality-gates scripts/tests/test_quality_gates_slice.sh
+# Diff-scoped gate SELECTION (temperloop#1024) — the selector that narrows a
+# `pull_request` run to the suites its diff can affect. Its map
+# (workflows/scripts/config/gate-paths.tsv) and the map's completeness/
+# reachability lint (check-gate-paths.sh) ride the `workflows/scripts/config/*`
+# claim below; the selector lib and its suite are claimed here.
+quality-gates workflows/scripts/lib/gate-selection.sh
+quality-gates workflows/scripts/lib/tests/test_gate_selection.sh
 quality-gates scripts/lint-zsh-param-tie.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh
