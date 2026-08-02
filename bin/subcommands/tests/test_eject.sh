@@ -65,6 +65,19 @@
 #     eject run over a repo whose only .temperloop/ content is the
 #     preserved pricing.json is a true no-op — the second-run idempotency
 #     contract the directory-recreation carve-out could otherwise break.
+#     A failed mktemp/mv stash aborts BEFORE the rm -rf runs, with no
+#     false "kept" line (skipped under root, where chmod 555 is a no-op).
+#     A SECOND review pass then found three more defects in the fix
+#     itself: a broken pricing.json symlink survives the plain,
+#     non-interrupted removal path (the restore helper's own `[ -e ]`
+#     guard, distinct from the `-f`/`-L` pair used at every call site,
+#     used to miss it 100% of the time); and a repo path containing both
+#     an apostrophe and a space ejects cleanly end to end (a regression
+#     lock for the quoting throughout eject_remove_dirs — the interrupt-
+#     only defect class this path shape originally exposed, a
+#     command-injection hole via unsafely-interpolated trap strings, has
+#     no safe deterministic CI repro; it was verified live instead — see
+#     that item's own verdict notes).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,7 +92,17 @@ export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test \
        GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eject-test-XXXXXX")"
-cleanup() { rm -rf "$WORK"; }
+# CHMOD_555_DIRS -- populated by any test that strips write permission off a
+# fixture dir (e.g. 15f below, to force a real mktemp/mv failure) so the
+# EXIT trap's own `rm -rf "$WORK"` can still remove it. Restored HERE,
+# never inline in the test that set it, so a mid-test `fail` (which itself
+# `exit`s) can't skip the restore and leave a stray 555 dir behind (review
+# finding, second pass).
+CHMOD_555_DIRS=""
+cleanup() {
+  for d in $CHMOD_555_DIRS; do chmod 755 "$d" 2>/dev/null || true; done
+  rm -rf "$WORK"
+}
 trap cleanup EXIT
 
 # --- config-hermetic git env, no background gc/maintenance (temperloop#400) --
@@ -576,22 +599,31 @@ echo "PASS: with no pricing.json present, eject removes .temperloop/ exactly as 
 # --- 15f: a FAILED stash (mktemp/mv can't write beside .temperloop/, e.g.
 #     an unwritable repo root) must abort BEFORE the rm -rf runs -- nothing
 #     removed, pricing.json untouched in place, and NO false "kept" line
-#     (BLOCKING 1 from review: this script runs under `set -uo pipefail`,
-#     not `-e`, so an unchecked mktemp/mv previously fell through silently
-#     and could report "kept" over a file that was actually gone) --------
-REPO15F="$(new_fixture_repo repo15f)"
-seed_config "$REPO15F" '[]'
-printf '%s' "$PRICING_CONTENT" > "$REPO15F/.temperloop/pricing.json"
-chmod 555 "$REPO15F"
-run 1 --dir "$REPO15F" --yes
-chmod 755 "$REPO15F"
-[ -d "$REPO15F/.temperloop" ] || fail "15f: a failed stash still removed .temperloop/ (should be untouched)"
-[ -f "$REPO15F/.temperloop/pricing.json" ] || fail "15f: a failed stash lost pricing.json (should be untouched in place)"
-[ "$(cat "$REPO15F/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
-  || fail "15f: pricing.json content changed despite the aborted stash"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15f: a failed stash still printed a false 'kept' line (got: $out)"
-echo "$out" | grep -q "temperloop eject: incomplete" || fail "15f: a failed stash did not report incomplete (got: $out)"
-echo "PASS: a failed mktemp/mv stash aborts BEFORE the rm -rf -- .temperloop/ and pricing.json untouched, no false 'kept' claim, exit 1"
+#     (BLOCKING 1 from the FIRST review pass: this script runs under
+#     `set -uo pipefail`, not `-e`, so an unchecked mktemp/mv previously
+#     fell through silently and could report "kept" over a file that was
+#     actually gone). Skipped under root, where chmod 555 doesn't actually
+#     block root's own writes, so the forced failure this test depends on
+#     wouldn't occur -- not a false pass, a genuine inapplicability.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "SKIP: 15f (running as root -- chmod 555 doesn't block root's own writes)"
+else
+  REPO15F="$(new_fixture_repo repo15f)"
+  seed_config "$REPO15F" '[]'
+  printf '%s' "$PRICING_CONTENT" > "$REPO15F/.temperloop/pricing.json"
+  chmod 555 "$REPO15F"
+  CHMOD_555_DIRS="$CHMOD_555_DIRS $REPO15F"  # restored by cleanup() even on a mid-test fail, not inline here
+  run 1 --dir "$REPO15F" --yes
+  chmod 755 "$REPO15F"
+  [ -d "$REPO15F/.temperloop" ] || fail "15f: a failed stash still removed .temperloop/ (should be untouched)"
+  [ -f "$REPO15F/.temperloop/pricing.json" ] || fail "15f: a failed stash lost pricing.json (should be untouched in place)"
+  [ "$(cat "$REPO15F/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+    || fail "15f: pricing.json content changed despite the aborted stash"
+  echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15f: a failed stash still printed a false 'kept' line (got: $out)"
+  echo "$out" | grep -qF "FAILED to create a stash location" || fail "15f: did not print the specific stash-creation-failure line (got: $out)"
+  echo "$out" | grep -q "temperloop eject: incomplete" || fail "15f: a failed stash did not report incomplete (got: $out)"
+  echo "PASS: a failed mktemp/mv stash aborts BEFORE the rm -rf -- .temperloop/ and pricing.json untouched, no false 'kept' claim, exit 1"
+fi
 
 # --- 15e: idempotency -- a SECOND eject run over a repo whose only
 #     .temperloop/ content is the preserved pricing.json must be a true
@@ -616,6 +648,98 @@ run 0 --dir "$REPO15E" --yes
 echo "$out" | grep -q "no-op" || fail "15e: second run over a preserved-pricing.json repo did not report no-op (got: $out)"
 echo "$out" | grep -q "Already ejected" || fail "15e: second run did not report the already-ejected state (got: $out)"
 echo "PASS: a second 'eject' run over a repo whose only .temperloop/ content is the preserved pricing.json is a true no-op -- matches the documented second-run idempotency contract"
+
+# =============================================================================
+# 16. temperloop#985, SECOND review pass -- BLOCKING 3: an intentionally
+#     BROKEN pricing.json symlink (`-L` true, `-e`/`-f` false) must survive
+#     eject. `_eject_restore_pricing_stash`'s own guard used to be a bare
+#     `[ -e ]`, which FOLLOWS a symlink and is false for a broken one -- so
+#     the stash (itself a broken symlink once mv'd aside) was never
+#     recognized as present and the restore silently no-op'd, 100% of the
+#     time, on the plain non-interrupted removal path -- no interrupt or
+#     race required to reproduce this one.
+# =============================================================================
+REPO16="$(new_fixture_repo repo16)"
+seed_config "$REPO16" '[]'
+ln -s "nonexistent-target-$$" "$REPO16/.temperloop/pricing.json"
+[ -L "$REPO16/.temperloop/pricing.json" ] || fail "16: test setup -- symlink was not created"
+[ -e "$REPO16/.temperloop/pricing.json" ] && fail "16: test setup -- symlink must be broken (target must not exist)"
+LINK_TARGET_BEFORE="$(readlink "$REPO16/.temperloop/pricing.json")"
+run 0 --dir "$REPO16" --yes
+[ -L "$REPO16/.temperloop/pricing.json" ] || fail "16: a broken pricing.json symlink did not survive eject"
+[ "$(readlink "$REPO16/.temperloop/pricing.json" 2>/dev/null)" = "$LINK_TARGET_BEFORE" ] \
+  || fail "16: restored symlink's target string changed (before: $LINK_TARGET_BEFORE, after: $(readlink "$REPO16/.temperloop/pricing.json" 2>/dev/null))"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "16: no kept-pricing.json notice printed for the broken-symlink case (got: $out)"
+echo "PASS: an intentionally broken pricing.json symlink survives eject on the plain (non-interrupted) removal path, target string intact"
+
+# =============================================================================
+# 17. temperloop#985, SECOND review pass -- BLOCKING 1: a repo path
+#     containing BOTH an apostrophe and a space (the review's own
+#     quote-mismatch/injection repro shape) must eject cleanly. The FIRST
+#     fix built the interrupt-window trap by interpolating
+#     `$pricing_stash`/`$pricing_src`/`$tl_mode` (derived from the repo
+#     path) into a double-quoted trap STRING -- `trap`'s argument is
+#     RE-PARSED as shell source when it fires, so those values were being
+#     spliced into source code: a path containing `'$(...)'` executed on
+#     interrupt, and an ordinary apostrophe silently mis-paired the quotes
+#     across arguments and produced a no-op restore. The current fix
+#     promotes those three variables to SCRIPT scope and uses a
+#     single-quoted trap string (plus a bare, function-name-only trap for
+#     the INT/TERM/HUP handler) so no repo-path value is EVER spliced into
+#     trap source text at all -- this test exercises the ordinary
+#     (non-interrupted) removal path end to end over such a path, which
+#     already passed even under the vulnerable code (review: "the bug is
+#     only observable on the interrupt and restore-failure paths") -- it
+#     is a regression lock for the quoting throughout eject_remove_dirs
+#     (mktemp/mv/stat all take this same path), not a reproduction of the
+#     interrupt-only defect itself, which has no safe deterministic CI
+#     repro (see this item's own verdict notes for the live manual
+#     verification of the interrupt path against this exact path shape).
+# =============================================================================
+REPO17="$(new_fixture_repo "repo has a quote's space")"
+seed_config "$REPO17" '[{"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}]'
+printf '%s' "$PRICING_CONTENT" > "$REPO17/.temperloop/pricing.json"
+run 0 --dir "$REPO17" --yes
+[ -f "$REPO17/.temperloop/pricing.json" ] || fail "17: pricing.json lost in a repo path containing an apostrophe and a space"
+[ "$(cat "$REPO17/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+  || fail "17: pricing.json corrupted in a repo path containing an apostrophe and a space"
+[ ! -e "$REPO17/.temperloop/config" ] || fail "17: full-revert removal left config behind (apostrophe+space path)"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "17: no kept-pricing.json notice printed (apostrophe+space path, got: $out)"
+echo "PASS: a repo path containing both an apostrophe and a space ejects cleanly through the full-revert path"
+
+# =============================================================================
+# 18. temperloop#985, SECOND review pass -- BLOCKING 2's second requirement:
+#     `rm -rf`'s OWN exit status must be checked and folded into a failure
+#     report, so a partial removal (e.g. a real permissions/disk error --
+#     not necessarily a signal) can never be silently reported as "kept" +
+#     "done". Deterministic: a fake `rm` that simply exits 1, no signal or
+#     timing involved -- isolates this specific fold-in logic from the
+#     signal-interrupt half of the same finding, which is inherently racy
+#     to reproduce deterministically in an automated suite and was instead
+#     verified live (both a killed-mid-tree `rm -rf` and a signal landing
+#     only on the eject.sh process itself, both confirmed to never resume
+#     into a false "done" over an incompletely removed tree -- see this
+#     item's own verdict notes for the exact repro and result of each).
+# =============================================================================
+REPO18="$(new_fixture_repo repo18)"
+seed_config "$REPO18" '[]'
+printf '%s' "$PRICING_CONTENT" > "$REPO18/.temperloop/pricing.json"
+FAILRM="$WORK/failbin-rm18"
+mkdir -p "$FAILRM"
+cat > "$FAILRM/rm" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAILRM/rm"
+rc18=0
+out18="$(PATH="$FAILRM:$BIN:$PATH" EJECT_GH_BIN=gh bash "$EJECT" --dir "$REPO18" --yes </dev/null 2>&1)" || rc18=$?
+[ "$rc18" -eq 1 ] || fail "18: a failing rm -rf did not produce exit 1 (got rc=$rc18): $out18"
+echo "$out18" | grep -qF "kept: .temperloop/pricing.json" && fail "18: a failing rm -rf still printed a false 'kept' line (got: $out18)"
+echo "$out18" | grep -q "temperloop eject: done" && fail "18: a failing rm -rf still reported 'done' (got: $out18)"
+echo "$out18" | grep -qF "FAILED to fully remove .temperloop/" || fail "18: did not report the rm -rf failure (got: $out18)"
+echo "$out18" | grep -q "temperloop eject: incomplete" || fail "18: a failing rm -rf did not report incomplete (got: $out18)"
+[ -f "$REPO18/.temperloop/pricing.json" ] || fail "18: pricing.json was not restored despite the reported rm -rf failure -- the restore itself is independent of the removal succeeding"
+echo "PASS: rm -rf's own exit status is checked -- a failed removal is reported as incomplete, never a false 'kept'+'done', even though pricing.json itself is still safely restored"
 
 echo
 echo "ALL PASS: test_eject.sh"
