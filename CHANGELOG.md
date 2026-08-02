@@ -14,6 +14,51 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Release classification for the remaining epic-#923 items — MINOR
+
+The `workshop collaborative decision walk` epic (temperloop#923) shipped its
+first nine items in **0.22.0, marked BREAKING** — `/workshop`'s coverage walk
+lost its minimal-interaction path under a hard cutover. Its **two trailing
+items classify MINOR**, and the aggregate call for the epic therefore stands at
+BREAKING on the strength of 0.22.0 alone; nothing below adds to it.
+
+Why these two are MINOR: the new ratify gate is satisfiable by every brief that
+walks normally (the seeded-dimension rule gives dimensions 0, 1 and 3 their
+`walk` verdict from Step 1's own confirms), and the migration carve-out exempts
+every brief authored before the record existed. **No adopter config changes and
+no existing brief is invalidated** — which is the test `VERSIONING.md` applies.
+
+### Added
+
+- **`/workshop` Step 4 gains check 4.1c — challenge-record completeness at
+  ratify (temperloop#934).** Runs after 1b and gates the ratify ask, so ratify
+  becomes the terminal act of the walkthrough. It enforces exactly the two
+  rules in `claude/design-schema.md` § Record completeness **by reference, never
+  by restatement**, so the in-session gate and `validate-design-brief.sh`'s
+  check (C) cannot drift: every kernel dimension 0..16 carries at least one
+  `walk` stop line, and every `operator-edited` stop line carries its verbatim
+  `response:` field. The migration carve-out is semantically identical to the
+  validator's — a `ratified` brief with no `### Challenge record` at all is
+  exempt and never flagged, keyed on a per-brief `status:` signal rather than a
+  global version flip; a draft or dropped brief is never held to either rule.
+  The record-start-marker-present-but-empty defect is independent of status and
+  applies regardless, which is the loophole that stops a crashed walk from
+  masquerading as a migration case.
+
+### Fixed
+
+- **`walk`-only, not both verdicts — a superseded premise purged from the
+  0.22.0 entry above (temperloop#934, temperloop#935).** The 0.22.0 entry for
+  check (C) described it as requiring "**both** a `walk` and a `walkthrough`
+  verdict" for every dimension. **That was never what shipped, and it is not
+  satisfiable:** a dimension no review lens reached cannot acquire a
+  `walkthrough` verdict, so the stated rule would deadlock every brief. The
+  shipped validator emits `MISSING-WALK-VERDICT` and checks `walk` lines only,
+  exactly as `design-schema.md` § Record completeness specifies
+  (`walkthrough` coverage "stays opportunistic … and is never required for
+  every dimension"). The 0.22.0 line is corrected in place with its prior
+  wording quoted, rather than silently rewritten.
+
 ## [0.22.0] - 2026-08-01 — BREAKING
 
 ### Migration — read this first
@@ -128,8 +173,11 @@ or removed, so nothing that parses the registry needs to adapt.
 
 - **`validate-design-brief.sh` check (C) — challenge-record completeness, in CI
   (temperloop#929).** The record is now enforced by the validator, not only by
-  `/workshop` at ratify time: every dimension must carry **both** a `walk` and a
-  `walkthrough` verdict, verdict lines must match the § Challenge record
+  `/workshop` at ratify time: every dimension must carry a `walk` verdict
+  (`walkthrough` coverage stays opportunistic and is **not** required per
+  dimension — corrected below under Unreleased; this line originally read
+  "both a `walk` and a `walkthrough` verdict", which never shipped),
+  verdict lines must match the § Challenge record
   grammar, and an `operator-edited` verdict must carry its verbatim `response:`
   field. The grammar is **read from** `design-schema.md` § Challenge record,
   never re-encoded locally — the same discipline checks (A) and (B) already
