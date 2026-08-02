@@ -55,6 +55,13 @@
 #       failed label entry survives alone in the rewritten config, exit 1
 #       — proves the first_epic filter doesn't drop/reorder unrelated
 #       entries (a single-type batch can't exercise this)
+#   - temperloop#985: a hand-authored .temperloop/pricing.json survives
+#     EVERY removal path that actually does an `rm -rf .temperloop` — not
+#     just the happy "all installs resolved" one: the partial-init-residue
+#     path, the empty-install-manifest path, AND the fully-resolved-revert
+#     path each get their own test, byte-identical content and a one-line
+#     "kept:" notice at each. With no pricing.json present, eject removes
+#     .temperloop/ exactly as before and prints no extra line.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -501,6 +508,67 @@ cfg="$(cat "$REPO14/.temperloop/config")"
 [ "$(jq -r '.installs[0].type' <<<"$cfg")" = "label" ] || fail "mixed-batch unresolved entry should be the label, not first_epic (got: $(jq -c '.installs' <<<"$cfg"))"
 [ "$(jq -r '.installs[0].name' <<<"$cfg")" = "fnd:status:backlog" ] || fail "mixed-batch unresolved label entry name mismatch (got: $(jq -c '.installs' <<<"$cfg"))"
 echo "PASS: a mixed manifest (first_epic + a genuinely-failing label) drops the first_epic entry unconditionally and keeps only the unrelated failed label entry — intact, alone — in the rewritten config, exit 1"
+
+# =============================================================================
+# 15. temperloop#985 — a hand-authored .temperloop/pricing.json survives
+#     EVERY eject removal path, not just the happy path. THE TRAP this test
+#     guards against: a carve-out wired into only the final "all installs
+#     reverted" success path would pass a naive single-path test and still
+#     silently delete pricing.json on the partial-init-residue or
+#     empty-manifest paths — so each of the three `rm -rf .temperloop`
+#     call sites gets its own sub-test here (15a/15b/15c), plus the
+#     no-pricing.json control (15d) proving the carve-out is invisible in
+#     the common case.
+# =============================================================================
+PRICING_CONTENT='{"claude-opus-4-8": 18.00, "claude-sonnet-5": 5.00}'
+
+# --- 15a: partial-init residue path (site 1 — mirrors test 10's fixture,
+#     no .temperloop/config at all) --------------------------------------
+REPO15A="$(new_fixture_repo repo15a)"
+mkdir -p "$REPO15A/.temperloop"
+printf 'baseline.jsonl\n' > "$REPO15A/.temperloop/.gitignore"
+printf '%s' "$PRICING_CONTENT" > "$REPO15A/.temperloop/pricing.json"
+run 0 --dir "$REPO15A" --yes
+[ -f "$REPO15A/.temperloop/pricing.json" ] || fail "15a: partial-init-residue removal deleted pricing.json (site 1)"
+[ "$(cat "$REPO15A/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+  || fail "15a: pricing.json not byte-identical after partial-init-residue removal (site 1)"
+[ ! -e "$REPO15A/.temperloop/.gitignore" ] || fail "15a: partial-init-residue removal left other .temperloop/ residue behind"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "15a: no kept-pricing.json notice printed (site 1, got: $out)"
+echo "PASS: pricing.json survives the partial-init-residue removal path (site 1), byte-identical, one-line notice"
+
+# --- 15b: empty-install-manifest path (site 2 — n_installs==0) ---------
+REPO15B="$(new_fixture_repo repo15b)"
+seed_config "$REPO15B" '[]'
+printf '%s' "$PRICING_CONTENT" > "$REPO15B/.temperloop/pricing.json"
+run 0 --dir "$REPO15B" --yes
+[ ! -s "$CALL_LOG" ] || fail "15b: empty-manifest removal made gh calls (should be zero)"
+[ -f "$REPO15B/.temperloop/pricing.json" ] || fail "15b: empty-manifest removal deleted pricing.json (site 2)"
+[ "$(cat "$REPO15B/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+  || fail "15b: pricing.json not byte-identical after empty-manifest removal (site 2)"
+[ ! -e "$REPO15B/.temperloop/config" ] || fail "15b: empty-manifest removal left config behind"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "15b: no kept-pricing.json notice printed (site 2, got: $out)"
+echo "PASS: pricing.json survives the empty-install-manifest removal path (site 2), byte-identical, one-line notice"
+
+# --- 15c: fully-resolved-revert path (site 3 — mirrors test 4) ---------
+REPO15C="$(new_fixture_repo repo15c)"
+seed_config "$REPO15C" '[{"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}]'
+printf '%s' "$PRICING_CONTENT" > "$REPO15C/.temperloop/pricing.json"
+run 0 --dir "$REPO15C" --yes
+[ -f "$REPO15C/.temperloop/pricing.json" ] || fail "15c: full-revert removal deleted pricing.json (site 3)"
+[ "$(cat "$REPO15C/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+  || fail "15c: pricing.json not byte-identical after full-revert removal (site 3)"
+[ ! -e "$REPO15C/.temperloop/config" ] || fail "15c: full-revert removal left config behind"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "15c: no kept-pricing.json notice printed (site 3, got: $out)"
+echo "PASS: pricing.json survives the fully-resolved-revert removal path (site 3), byte-identical, one-line notice"
+
+# --- 15d: no pricing.json present -> carve-out is invisible, normal ----
+#     removal, no extra line
+REPO15D="$(new_fixture_repo repo15d)"
+seed_config "$REPO15D" '[]'
+run 0 --dir "$REPO15D" --yes
+[ ! -e "$REPO15D/.temperloop" ] || fail "15d: no-pricing-json removal did not remove .temperloop/"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15d: no-pricing-json removal printed a kept-pricing.json notice when none existed (got: $out)"
+echo "PASS: with no pricing.json present, eject removes .temperloop/ exactly as before and prints no extra line"
 
 echo
 echo "ALL PASS: test_eject.sh"

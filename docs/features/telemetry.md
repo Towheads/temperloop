@@ -119,6 +119,38 @@ gives `temperloop report` its `tokens_spent` headline. See
 script's own header for the four correctness traps it encodes — chief among
 them deduping by `requestId`, without which the totals inflate ~2x.
 
+### Removal — `temperloop eject` owns the `tokens` shim; never `pricing.json`
+
+`temperloop eject` (`bin/subcommands/eject.sh`) is the sole remover of a
+target repo's `.temperloop/report.d/tokens` locator shim: it carries no
+manifest entry of its own (it isn't an `installs[]` side effect — see
+eject.sh's own header), so it comes out the same way everything else under
+`.temperloop/` does, as a side effect of removing that whole directory. No
+separate revert logic exists or is needed for it.
+
+**`.temperloop/pricing.json`, if present, is the one thing eject does NOT
+remove (temperloop#985).** It is a hand-authored `{model: $/Mtok}` price
+table an operator maintains themselves for `temperloop report`'s directional
+dollar line (see "Token spend" above and `docs/token-spend.md`) — operator
+data, not a `temperloop`-managed artifact, so uninstalling temperloop must
+not delete it. `eject` preserves it byte-identical across every removal path
+and prints one line naming the file it left behind; with no `pricing.json`
+present, removal is unchanged from before this carve-out existed.
+
+**This is not a claim of a clean sweep.** `eject` only ever touches the
+*local checkout* it's run in — it never rewrites another branch or another
+teammate's clone. If the `report.d/tokens` shim (or any other
+`.temperloop/config`-recorded proposal PR) reached the default branch by
+being **merged**, that merge is explicitly out of eject's revert scope (see
+eject.sh's own `proposal_pr` handling), so the shim stays on the default
+branch for every teammate after the merge — a local `eject` run removes it
+only from the one checkout it ran in, and leaves that checkout's own
+now-untracked deletion uncommitted. "No residue" therefore holds for an
+**unmerged** proposal PR (declined or abandoned, eject cleans it up
+completely) but not for a merged one, where the shim's removal is itself a
+tree change that has to be proposed and merged like any other, not something
+`eject` can retroactively erase from history.
+
 ## Integration
 
 Consumes: nothing external — each stream's emit site is called inline from

@@ -66,6 +66,22 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
 
 ### Fixed
 
+- **`temperloop eject` no longer deletes a hand-authored
+  `.temperloop/pricing.json` (temperloop#985).** Previously `eject` removed
+  the whole `.temperloop/` directory unconditionally at all three of its
+  removal sites (partial-init residue, an empty install manifest, and a
+  fully resolved revert) — including a `pricing.json` price table an
+  operator maintains by hand for `temperloop report`'s directional dollar
+  line, even though nothing in `eject`'s install-manifest model ever
+  produced that file. `pricing.json` is now preserved, byte-identical,
+  across every one of those three removal paths, and `eject` prints one
+  line naming the file it kept; with no `pricing.json` present, behavior is
+  unchanged. `temperloop uninstall`'s eject reminder is updated to match —
+  it now also names the `report.d/tokens` producer shim (removed by
+  `eject`, same as before) and states explicitly that `pricing.json` is not
+  among what `eject` removes. See `docs/features/telemetry.md` § Removal
+  for the full disposition, including the honest scoping of "no residue" to
+  an unmerged proposal PR.
 - **`report.sh` now checks `jq`'s exit status when parsing the `tokens`
   producer's `tokens_spent` field (temperloop#981).** Previously the parse
   only tested `[ -n "$parsed" ]`; on stdout that mixed a valid JSON document

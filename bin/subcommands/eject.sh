@@ -72,6 +72,18 @@
 #     an interactive y/N), and a legible skip when offline / `gh` missing /
 #     no resolvable repo — never a silent partial revert.
 #
+# PRICING.JSON IS NEVER REMOVED (temperloop#985): a hand-authored
+# `.temperloop/pricing.json` (the operator's own $/Mtok price table, read by
+# `temperloop report` -- see report.sh) is operator data, not a temperloop
+# artifact -- nothing in `installs[]` ever produces it, so nothing in this
+# script's revert model removes it either. `eject_remove_dirs()` below is
+# the ONE place `.temperloop/` (+ legacy `.foundation/`) is actually
+# removed, at all three call sites (partial-init residue, an empty install
+# manifest, and a fully resolved revert) -- it stashes pricing.json before
+# the `rm -rf` and restores it after, printing one line naming the file
+# when it did. Silent (a bare `rm -rf`, same as before this change) when no
+# pricing.json is present.
+#
 # proposal_pr entries get special handling: a `type":"proposal_pr"` install
 # records the branch init.sh's proposal-pr.sh call opened. If that PR was
 # MERGED, its tree changes (`.temperloop/config`, an optional
@@ -323,6 +335,38 @@ restore_original_branch() {
   return 0
 }
 
+# eject_remove_dirs REPO_DIR — the ONE place `.temperloop/` (+ legacy
+# `.foundation/`) is actually removed; every removal site below (there are
+# three: partial-init residue, an empty install manifest, and a fully
+# resolved revert) calls this instead of a bare `rm -rf` (temperloop#985).
+#
+# A hand-authored `.temperloop/pricing.json` (the operator's own $/Mtok
+# price table `temperloop report` reads — see report.sh) is operator data,
+# not temperloop state: nothing in this script's install-manifest model
+# ever produced it, so nothing in the revert model should delete it either,
+# regardless of WHICH of the three removal sites fires. It is stashed
+# beside `.temperloop/` (same filesystem, so the two `mv`s are plain
+# renames — no copy, so the file is trivially byte-identical afterward),
+# the directories are removed exactly as before, and then — only if there
+# was something to restore — it is moved back and one line names it. With
+# no pricing.json present this is silent: a bare `rm -rf`, same as before
+# this change, so the common case is unaffected.
+eject_remove_dirs() {
+  local dir="$1"
+  local pricing_src="$dir/.temperloop/pricing.json"
+  local pricing_stash=""
+  if [ -f "$pricing_src" ]; then
+    pricing_stash="$(mktemp "$dir/.eject-pricing.XXXXXX")"
+    mv "$pricing_src" "$pricing_stash"
+  fi
+  rm -rf "${dir:?}/.temperloop" "${dir:?}/.foundation"
+  if [ -n "$pricing_stash" ]; then
+    mkdir -p "$dir/.temperloop"
+    mv "$pricing_stash" "$pricing_src"
+    echo "kept: .temperloop/pricing.json (hand-authored pricing table -- not a temperloop-managed file, eject never removes it)"
+  fi
+}
+
 # _eject_confirm PROMPT — mirrors init.sh's _init_confirm default: nothing
 # reverted without explicit consent (--yes, or an interactive y/N). This is
 # the revert-direction twin of that same rule; a non-interactive run with
@@ -386,7 +430,7 @@ if [ ! -f "$config_path" ]; then
 
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  rm -rf "${repo_dir:?}/.temperloop" "${repo_dir:?}/.foundation"
+  eject_remove_dirs "$repo_dir"
   echo "partial init residue removed ($tl_dirs_desc)"
   echo
   print_uninstall_bullet
@@ -449,7 +493,7 @@ fi
 if [ "$n_installs" -eq 0 ]; then
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  rm -rf "${repo_dir:?}/.temperloop" "${repo_dir:?}/.foundation"
+  eject_remove_dirs "$repo_dir"
   echo "nothing recorded to revert — $config_rel removed"
   echo
   print_uninstall_bullet
@@ -670,7 +714,7 @@ echo "-- Summary --"
 if [ "$n_unresolved" -eq 0 ]; then
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  rm -rf "${repo_dir:?}/.temperloop" "${repo_dir:?}/.foundation"
+  eject_remove_dirs "$repo_dir"
   echo "all $n_installs install(s) reverted; $config_rel removed"
   echo
   print_uninstall_bullet
