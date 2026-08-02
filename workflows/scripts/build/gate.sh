@@ -139,9 +139,20 @@ validate_pr() {
 # Read mergeable (MERGEABLE/CONFLICTING/UNKNOWN), mergeStateStatus
 # (CLEAN/BEHIND/BLOCKED/DIRTY), state, and the statusCheckRollup digest for a
 # PR. GitHub computes mergeable lazily, so a fresh read can return UNKNOWN (not
-# yet computed) or a transient BEHIND; re-poll ONCE after ~3s before letting the
-# caller classify on a stale value. `gh pr view --json` is REST-backed, not the
-# GraphQL Projects bucket. _gate_view emits the four scalar fields, tab-joined.
+# yet computed) or a transient BEHIND; re-poll ONCE after $GATE_REPOLL_DELAY
+# before letting the caller classify on a stale value. `gh pr view --json` is
+# REST-backed, not the GraphQL Projects bucket. _gate_view emits the four scalar
+# fields, tab-joined.
+#
+# temperloop#976 retry-loop inventory — CAP: exactly one re-poll, and no
+# transient-vs-deterministic classification step applies: the ONLY states that
+# re-poll (UNKNOWN, a lone BEHIND) are BY DEFINITION not-yet-computed server-side
+# values, i.e. structurally transient. Every deterministic answer — CONFLICTING,
+# DIRTY, a resolved MERGEABLE — is returned on the first read and never re-issued,
+# and a `gh` ERROR dies immediately rather than retrying. The `poll` and
+# managed-merge CI re-poll loops further down are likewise bounded WAITS on
+# external state (each carries its own --interval/--timeout deadline), not
+# re-attempts of a failed operation.
 _gate_view() {
   local owner_repo="$1" pr="$2" raw
   raw="$(_gate_gh pr view "$pr" -R "$owner_repo" \

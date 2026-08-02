@@ -333,8 +333,54 @@ const WORKER_VERDICT_SCHEMA = {
 };
 
 // -----------------------------------------------------------------------------
+// RETRY-LOOP INVENTORY (temperloop#976)
+// -----------------------------------------------------------------------------
+// Every loop in this file that can RE-ATTEMPT something, with its hard cap and
+// its transient-vs-deterministic disposition. Repeating a deterministically-
+// failing operation cannot change its outcome, so a loop either classifies
+// before retrying or states why classification does not apply. The audit is
+// kept HERE, beside the budgets, so a new loop cannot be added without a
+// reviewer seeing the shape it has to satisfy.
+//
+//   1. ciPollLoop slice loop — CAP: maxSlices = ceil(CI_POLL_TOTAL_SECS /
+//      CI_POLL_SLICE_SECS). NOT A RETRY: each slice waits on external state
+//      (pending check-runs) that genuinely changes between polls, and every
+//      terminal verdict (CI_GREEN / CI_FAILED / NO_CI) exits the loop on the
+//      spot. The deterministic cases it MUST not spin on are already short-
+//      circuited by name, not by budget: CONFLICTING/DIRTY escalates
+//      merge-conflict immediately (#543), a NO_CI SHA resolves through
+//      ci-poll.sh's bounded grace window (temperloop#605), and any ERROR
+//      escalates rather than re-polls. No classification step applies.
+//   2. CI_FAILED worker re-spawn — CAP: CI_FAIL_RETRY_BUDGET (below), past
+//      which the item escalates `ci-failed` for a human. NOT A RETRY EITHER, in
+//      the sense that matters here: the re-attempt does not re-issue the failed
+//      operation, it spawns a worker to FIX the failure and pushes a NEW SHA, so
+//      the input to the next CI run differs by construction. That is what makes
+//      a classify-before-retry step inapplicable — and the budget is already at
+//      its floor of one, so a deterministic repeat cannot cost a second one.
+//   3. null-verdict main-worker re-spawn (driveItem, ~1145) — CAP: exactly one,
+//      and CLASSIFIED BEFORE IT FIRES on both axes: the recover-probe runs FIRST
+//      and adopts any work that already landed (so a lost return is never re-
+//      built), and the retry prompt is deliberately DIFFERENT from the first
+//      (FOREGROUND_CURE appended) because a byte-identical retry re-stalls
+//      identically. The read-only spike worker's null escalates with NO retry.
+//   4. pr.sh `EXISTS` adoption (3f) — not a loop: a create-retry whose first
+//      attempt in fact succeeded is ADOPTED as PR_OPENED rather than re-issued.
+//
+// The two loops this file DELEGATES to carry their own caps + classification
+// and are documented in their own scripts, not restated here: ci-poll.sh's
+// gh_retry (CI_POLL_API_MAX_ATTEMPTS / _RETRY_BACKOFF / _DETERMINISTIC_PATTERN)
+// and quality-gates.sh's per-gate retry via workflows/scripts/lib/gate-retry.sh
+// (GATE_MAX_ATTEMPTS / GATE_RETRY_BACKOFF / GATE_DETERMINISTIC_PATTERN). The
+// 3e.5 acceptance gate itself does NOT retry: a GATE_FAIL escalates
+// `acceptance-gate-failed` on the first failure.
+//
+// -----------------------------------------------------------------------------
 // Tunables (no Date.now()/Math.random() — those THROW in the runtime; all
 // budgets are expressed as counts/seconds the executor agent enforces itself).
+// The Workflow runtime has no shell, so these stay named constants here rather
+// than build.config.sh settings — the same structural constraint that forces
+// machinerySoloModel/machineryBatchModel through build.md's Step-0 hand-off.
 // -----------------------------------------------------------------------------
 const CI_POLL_SLICE_SECS = 240;   // one ci-poll.sh slice; < the ~10-min agent Bash cap
 const CI_POLL_TOTAL_SECS = 3600;  // total wall budget across slices before escalating
