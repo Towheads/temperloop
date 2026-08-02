@@ -10,6 +10,14 @@
 # Sentry slug, vault path) live in this untracked overlay, which the leak-guard
 # reads when present and degrades legibly when absent. Never committed.
 /workflows/scripts/kernel/personal-token-denylist.local.tsv
+# 'temperloop eject' (bin/subcommands/eject.sh, temperloop#985) briefly
+# stashes a hand-authored .temperloop/pricing.json beside .temperloop/
+# under this name while it removes/recreates the directory. A trap covers
+# the normal interrupt cases (Ctrl-C, SIGTERM, SIGHUP), but a genuinely
+# unrecoverable failure (a killed process, a power loss) can still leave
+# one behind -- gitignored so an orphan never gets silently swept into a
+# later `git add -A` instead of being noticed and recovered by hand.
+.eject-pricing.*
 .mind/
 .claude/settings.local.json
 .claude/*.lock

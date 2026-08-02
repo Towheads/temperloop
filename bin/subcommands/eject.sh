@@ -80,9 +80,15 @@
 # the ONE place `.temperloop/` (+ legacy `.foundation/`) is actually
 # removed, at all three call sites (partial-init residue, an empty install
 # manifest, and a fully resolved revert) -- it stashes pricing.json before
-# the `rm -rf` and restores it after, printing one line naming the file
-# when it did. Silent (a bare `rm -rf`, same as before this change) when no
-# pricing.json is present.
+# the `rm -rf`, restores it after, and gates its one-line "kept" notice on
+# the file actually being back (never on stash bookkeeping) -- and arms a
+# trap across the window so an interrupted run puts it back too, rather
+# than leaving it under an undiscoverable stash name once .temperloop/ is
+# already gone. A failed stash aborts the whole removal instead of
+# proceeding over a file it can't guarantee is safe -- callers check
+# eject_remove_dirs's return value. Silent (a bare `rm -rf`, same as before
+# this change) when no pricing.json is present. See that function's own
+# header for the full contract.
 #
 # proposal_pr entries get special handling: a `type":"proposal_pr"` install
 # records the branch init.sh's proposal-pr.sh call opened. If that PR was
@@ -273,8 +279,12 @@ fi
 # baseline.jsonl, written BEFORE the config exists) with no config ever
 # written, and that residue must still be recognized as something to eject
 # — see the dedicated branch below. This check is also the SECOND-RUN
-# idempotency path: a fully successful revert removes both dirs entirely as
-# its last step, so a re-run finds nothing here and no-ops.
+# idempotency path FOR A REPO WITH NO PRESERVED pricing.json: a fully
+# successful revert removes both dirs entirely as its last step, so a
+# re-run finds nothing here and no-ops. When pricing.json WAS preserved,
+# `.temperloop/` is NOT empty after that revert (eject_remove_dirs
+# recreates it solely to hold that one file back) — Step 0b immediately
+# below is what recognizes THAT state as the equivalent no-op.
 # ---------------------------------------------------------------------------
 if [ ! -d "$tl_dir" ] && [ ! -d "$legacy_dir" ]; then
   echo "No .temperloop/ (or legacy .foundation/) found in $repo_dir — nothing to eject (already ejected, or"
@@ -284,6 +294,33 @@ if [ ! -d "$tl_dir" ] && [ ! -d "$legacy_dir" ]; then
   echo
   echo "temperloop eject: done (no-op)"
   exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 0b — the ONLY thing left under .temperloop/ is the pricing.json a
+# prior 'eject' run deliberately preserved (temperloop#985 review finding):
+# no legacy .foundation/, no .temperloop/config (of either name), and
+# .temperloop/'s sole entry is pricing.json. This IS the second-run
+# idempotency state for a repo that has one — recreating .temperloop/ to
+# hold pricing.json back means "nothing under .temperloop/ at all" is no
+# longer reachable for such a repo, so this widens Step 0's no-op
+# recognition to match rather than letting a re-run fall through to the
+# partial-init-residue branch below and "remove" a file that was never
+# residue in the first place. Anything else present (a config, a
+# report.d/, a .recovery.json) still falls through to the normal handling
+# unchanged.
+# ---------------------------------------------------------------------------
+if [ -d "$tl_dir" ] && [ ! -d "$legacy_dir" ] && [ ! -f "$config_path" ]; then
+  tl_only_entry="$(find "$tl_dir" -mindepth 1 -maxdepth 1 2>/dev/null)"
+  if [ "$tl_only_entry" = "$tl_dir/pricing.json" ]; then
+    echo "Already ejected — .temperloop/ holds only the preserved pricing.json"
+    echo "  (kept: .temperloop/pricing.json); nothing else to remove."
+    echo
+    print_uninstall_bullet
+    echo
+    echo "temperloop eject: done (no-op)"
+    exit 0
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -335,6 +372,26 @@ restore_original_branch() {
   return 0
 }
 
+# _eject_restore_pricing_stash STASH DEST DIR_MODE — moves STASH back to
+# DEST, recreating DEST's parent dir if needed and best-effort restoring
+# its captured mode. Used both by eject_remove_dirs's own normal-path
+# restore below AND by the trap it sets across the removal window, so it
+# must be IDEMPOTENT: a no-op once STASH no longer exists, which is true
+# both after a successful normal-path restore already moved it away, and
+# for a trap firing when nothing was ever stashed. Never fails loudly —
+# `mv` errors are swallowed here because the caller determines success by
+# checking the OBSERVED end state (does DEST exist now?), never by this
+# function's return value (temperloop#985 review finding: reporting
+# "kept" from stash bookkeeping rather than the file's actual presence is
+# exactly how an operator was told a file survived when it hadn't).
+_eject_restore_pricing_stash() {
+  local stash="$1" dest="$2" dir_mode="$3"
+  [ -n "$stash" ] && [ -e "$stash" ] || return 0
+  mkdir -p "$(dirname "$dest")" 2>/dev/null
+  [ -z "$dir_mode" ] || chmod "$dir_mode" "$(dirname "$dest")" 2>/dev/null
+  mv "$stash" "$dest" 2>/dev/null
+}
+
 # eject_remove_dirs REPO_DIR — the ONE place `.temperloop/` (+ legacy
 # `.foundation/`) is actually removed; every removal site below (there are
 # three: partial-init residue, an empty install manifest, and a fully
@@ -344,27 +401,88 @@ restore_original_branch() {
 # price table `temperloop report` reads — see report.sh) is operator data,
 # not temperloop state: nothing in this script's install-manifest model
 # ever produced it, so nothing in the revert model should delete it either,
-# regardless of WHICH of the three removal sites fires. It is stashed
-# beside `.temperloop/` (same filesystem, so the two `mv`s are plain
-# renames — no copy, so the file is trivially byte-identical afterward),
-# the directories are removed exactly as before, and then — only if there
-# was something to restore — it is moved back and one line names it. With
-# no pricing.json present this is silent: a bare `rm -rf`, same as before
-# this change, so the common case is unaffected.
+# regardless of WHICH of the three removal sites fires. When present (a
+# plain file OR a symlink — `-L` so an intentionally broken symlink is
+# preserved too, not silently dropped by a `-f` check that only follows
+# live links), it is stashed beside `.temperloop/` (same filesystem, so the
+# `mv`s are plain renames — no copy, so content is trivially byte-identical
+# afterward) BEFORE the `rm -rf` runs, never after — a failed stash aborts
+# the whole removal rather than proceeding over a file we couldn't
+# guarantee is safe. With no pricing.json present this is silent: a bare
+# `rm -rf`, same as before this change, so the common case is unaffected.
+#
+# Two failure classes review caught, both now handled:
+#   - unchecked mktemp/mv: this script runs under `set -uo pipefail`, NOT
+#     `-e`, so a failed `mktemp` or `mv` previously fell through silently —
+#     in the worst case the stash variable held a path to nothing, the real
+#     rm -rf deleted the file, and the restore branch still fired (a
+#     non-empty path string, not an actual restored file) and printed
+#     "kept" over a file that was gone. Every step below is checked, the
+#     `rm -rf` never runs if the stash failed, and the "kept" line is
+#     gated on `_eject_restore_pricing_stash` having actually put the file
+#     back — checked by re-testing `$pricing_src`, not by inferring success
+#     from stash bookkeeping.
+#   - no interrupt handling: eject is interactive by design (_eject_confirm
+#     prompts y/N), so a Ctrl-C/SIGTERM/SIGHUP mid-window is an ordinary
+#     event, not exotic — and init.sh already solves exactly this shape of
+#     problem for its own branch switch via a durable recovery marker (see
+#     this file's own restore_original_branch reader above). A trap across
+#     the stash window here puts pricing.json back on an interrupt instead
+#     of leaving it under an undiscoverable random-suffixed stash name with
+#     `.temperloop/` already gone.
+#
+# Returns 0 on a clean end state (pricing.json — if any — actually restored
+# and reported, or nothing to restore at all). Returns 1 if the file could
+# not be safely stashed (nothing was removed — .temperloop/ is untouched)
+# or could not be restored after removal (a WARNING names the stash so it
+# can be recovered by hand) — callers must check this and report failure
+# rather than the normal success message.
 eject_remove_dirs() {
   local dir="$1"
   local pricing_src="$dir/.temperloop/pricing.json"
   local pricing_stash=""
-  if [ -f "$pricing_src" ]; then
-    pricing_stash="$(mktemp "$dir/.eject-pricing.XXXXXX")"
-    mv "$pricing_src" "$pricing_stash"
+  local tl_mode=""
+
+  if [ -f "$pricing_src" ] || [ -L "$pricing_src" ]; then
+    tl_mode="$(stat -f '%Lp' "$dir/.temperloop" 2>/dev/null || stat -c '%a' "$dir/.temperloop" 2>/dev/null || true)"
+    if ! pricing_stash="$(mktemp "$dir/.eject-pricing.XXXXXX" 2>/dev/null)"; then
+      echo "eject: FAILED to create a stash location for .temperloop/pricing.json -- aborting, .temperloop/ left untouched" >&2
+      return 1
+    fi
+    if ! mv "$pricing_src" "$pricing_stash" 2>/dev/null; then
+      echo "eject: FAILED to stash .temperloop/pricing.json -- aborting, .temperloop/ left untouched" >&2
+      rm -f "$pricing_stash"
+      return 1
+    fi
+    # Covers an interrupt anywhere between the stash above and the restore
+    # below. Idempotent (see the helper's own header), so it is safe to
+    # leave armed through a normal EXIT too — cleared explicitly once we
+    # know the restore below actually succeeded.
+    # shellcheck disable=SC2064  # deliberate: expand paths NOW, not at trap time (the locals are gone by then)
+    trap "_eject_restore_pricing_stash '$pricing_stash' '$pricing_src' '$tl_mode'" EXIT INT TERM HUP
   fi
+
   rm -rf "${dir:?}/.temperloop" "${dir:?}/.foundation"
-  if [ -n "$pricing_stash" ]; then
-    mkdir -p "$dir/.temperloop"
-    mv "$pricing_stash" "$pricing_src"
-    echo "kept: .temperloop/pricing.json (hand-authored pricing table -- not a temperloop-managed file, eject never removes it)"
+
+  if [ -z "$pricing_stash" ]; then
+    return 0
   fi
+
+  _eject_restore_pricing_stash "$pricing_stash" "$pricing_src" "$tl_mode"
+
+  if [ -f "$pricing_src" ] || [ -L "$pricing_src" ]; then
+    trap - EXIT INT TERM HUP
+    echo "kept: .temperloop/pricing.json (hand-authored pricing table -- not a temperloop-managed file, eject never removes it)"
+    return 0
+  fi
+
+  # Restore failed even though the stash step above succeeded (e.g. a
+  # permissions problem recreating .temperloop/). Leave the trap armed as
+  # a last-resort retry at process exit and tell the operator exactly
+  # where to look — never claim success over a file we can't confirm is
+  # back.
+  echo "eject: WARNING -- .temperloop/pricing.json could not be restored after removal; check for a stray $pricing_stash" >&2
+  return 1
 }
 
 # _eject_confirm PROMPT — mirrors init.sh's _init_confirm default: nothing
@@ -430,13 +548,24 @@ if [ ! -f "$config_path" ]; then
 
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  eject_remove_dirs "$repo_dir"
-  echo "partial init residue removed ($tl_dirs_desc)"
+  dirs_failed=0
+  eject_remove_dirs "$repo_dir" || dirs_failed=1
+  if [ "$dirs_failed" -eq 1 ]; then
+    echo "partial init residue removal did NOT complete cleanly — see above"
+  else
+    echo "partial init residue removed ($tl_dirs_desc)"
+  fi
   echo
   print_uninstall_bullet
   echo
-  if [ "$recovery_failed" -eq 1 ]; then
+  if [ "$recovery_failed" -eq 1 ] && [ "$dirs_failed" -eq 1 ]; then
+    echo "temperloop eject: incomplete (branch restore AND pricing.json handling both failed — see above)"
+    exit 1
+  elif [ "$recovery_failed" -eq 1 ]; then
     echo "temperloop eject: incomplete (branch restore failed — see above)"
+    exit 1
+  elif [ "$dirs_failed" -eq 1 ]; then
+    echo "temperloop eject: incomplete (pricing.json handling failed — see above)"
     exit 1
   fi
   echo "temperloop eject: done"
@@ -493,13 +622,24 @@ fi
 if [ "$n_installs" -eq 0 ]; then
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  eject_remove_dirs "$repo_dir"
-  echo "nothing recorded to revert — $config_rel removed"
+  dirs_failed=0
+  eject_remove_dirs "$repo_dir" || dirs_failed=1
+  if [ "$dirs_failed" -eq 1 ]; then
+    echo "nothing recorded to revert, but removal did NOT complete cleanly — see above"
+  else
+    echo "nothing recorded to revert — $config_rel removed"
+  fi
   echo
   print_uninstall_bullet
   echo
-  if [ "$recovery_failed" -eq 1 ]; then
+  if [ "$recovery_failed" -eq 1 ] && [ "$dirs_failed" -eq 1 ]; then
+    echo "temperloop eject: incomplete (branch restore AND pricing.json handling both failed — see above)"
+    exit 1
+  elif [ "$recovery_failed" -eq 1 ]; then
     echo "temperloop eject: incomplete (branch restore failed — see above)"
+    exit 1
+  elif [ "$dirs_failed" -eq 1 ]; then
+    echo "temperloop eject: incomplete (pricing.json handling failed — see above)"
     exit 1
   fi
   echo "temperloop eject: done"
@@ -714,13 +854,24 @@ echo "-- Summary --"
 if [ "$n_unresolved" -eq 0 ]; then
   recovery_failed=0
   restore_original_branch || recovery_failed=1
-  eject_remove_dirs "$repo_dir"
-  echo "all $n_installs install(s) reverted; $config_rel removed"
+  dirs_failed=0
+  eject_remove_dirs "$repo_dir" || dirs_failed=1
+  if [ "$dirs_failed" -eq 1 ]; then
+    echo "all $n_installs install(s) reverted, but removal did NOT complete cleanly — see above"
+  else
+    echo "all $n_installs install(s) reverted; $config_rel removed"
+  fi
   echo
   print_uninstall_bullet
   echo
-  if [ "$recovery_failed" -eq 1 ]; then
+  if [ "$recovery_failed" -eq 1 ] && [ "$dirs_failed" -eq 1 ]; then
+    echo "temperloop eject: incomplete (branch restore AND pricing.json handling both failed — see above)"
+    exit 1
+  elif [ "$recovery_failed" -eq 1 ]; then
     echo "temperloop eject: incomplete (branch restore failed — see above)"
+    exit 1
+  elif [ "$dirs_failed" -eq 1 ]; then
+    echo "temperloop eject: incomplete (pricing.json handling failed — see above)"
     exit 1
   fi
   echo "temperloop eject: done"

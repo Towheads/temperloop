@@ -63,6 +63,13 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   The record-start-marker-present-but-empty defect is independent of status and
   applies regardless, which is the loophole that stops a crashed walk from
   masquerading as a migration case.
+- **`temperloop init` now proposes the `tokens` `report.d` producer shim
+  (temperloop#984).** A fresh `init` run's existing proposal PR now also
+  adds `.temperloop/report.d/tokens` (mode `755`) alongside its other tree
+  changes, so a newly adopted repo gets `temperloop report`'s
+  `tokens_spent` headline without a manual step; a repo that already has a
+  producer at that path is left alone. See `docs/features/telemetry.md` §
+  "Token spend" for what the shim does once in place.
 
 ### Fixed
 

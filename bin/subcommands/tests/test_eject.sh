@@ -61,7 +61,10 @@
 #     path, the empty-install-manifest path, AND the fully-resolved-revert
 #     path each get their own test, byte-identical content and a one-line
 #     "kept:" notice at each. With no pricing.json present, eject removes
-#     .temperloop/ exactly as before and prints no extra line.
+#     .temperloop/ exactly as before and prints no extra line. A SECOND
+#     eject run over a repo whose only .temperloop/ content is the
+#     preserved pricing.json is a true no-op — the second-run idempotency
+#     contract the directory-recreation carve-out could otherwise break.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -569,6 +572,50 @@ run 0 --dir "$REPO15D" --yes
 [ ! -e "$REPO15D/.temperloop" ] || fail "15d: no-pricing-json removal did not remove .temperloop/"
 echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15d: no-pricing-json removal printed a kept-pricing.json notice when none existed (got: $out)"
 echo "PASS: with no pricing.json present, eject removes .temperloop/ exactly as before and prints no extra line"
+
+# --- 15f: a FAILED stash (mktemp/mv can't write beside .temperloop/, e.g.
+#     an unwritable repo root) must abort BEFORE the rm -rf runs -- nothing
+#     removed, pricing.json untouched in place, and NO false "kept" line
+#     (BLOCKING 1 from review: this script runs under `set -uo pipefail`,
+#     not `-e`, so an unchecked mktemp/mv previously fell through silently
+#     and could report "kept" over a file that was actually gone) --------
+REPO15F="$(new_fixture_repo repo15f)"
+seed_config "$REPO15F" '[]'
+printf '%s' "$PRICING_CONTENT" > "$REPO15F/.temperloop/pricing.json"
+chmod 555 "$REPO15F"
+run 1 --dir "$REPO15F" --yes
+chmod 755 "$REPO15F"
+[ -d "$REPO15F/.temperloop" ] || fail "15f: a failed stash still removed .temperloop/ (should be untouched)"
+[ -f "$REPO15F/.temperloop/pricing.json" ] || fail "15f: a failed stash lost pricing.json (should be untouched in place)"
+[ "$(cat "$REPO15F/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+  || fail "15f: pricing.json content changed despite the aborted stash"
+echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15f: a failed stash still printed a false 'kept' line (got: $out)"
+echo "$out" | grep -q "temperloop eject: incomplete" || fail "15f: a failed stash did not report incomplete (got: $out)"
+echo "PASS: a failed mktemp/mv stash aborts BEFORE the rm -rf -- .temperloop/ and pricing.json untouched, no false 'kept' claim, exit 1"
+
+# --- 15e: idempotency -- a SECOND eject run over a repo whose only
+#     .temperloop/ content is the preserved pricing.json must be a true
+#     no-op (temperloop#985 review finding: eject_remove_dirs's `mkdir -p`
+#     to hold pricing.json back left .temperloop/ non-empty after a full
+#     revert, which -- unfixed -- made a re-run fall into the
+#     partial-init-residue branch instead: re-prompting to "remove"
+#     content that was never residue and was already fully ejected, and
+#     making eject.sh:275-277's documented "a re-run finds nothing and
+#     no-ops" claim false for any repo with a preserved pricing.json) ----
+REPO15E="$(new_fixture_repo repo15e)"
+seed_config "$REPO15E" '[{"type":"label","repo":"acme/widget","name":"fnd:status:backlog"}]'
+printf '%s' "$PRICING_CONTENT" > "$REPO15E/.temperloop/pricing.json"
+run 0 --dir "$REPO15E" --yes
+[ -f "$REPO15E/.temperloop/pricing.json" ] || fail "15e: first eject run deleted pricing.json"
+
+run 0 --dir "$REPO15E" --yes
+[ ! -s "$CALL_LOG" ] || fail "15e: second eject run made gh calls (should be zero -- a no-op):\n$(cat "$CALL_LOG")"
+[ -f "$REPO15E/.temperloop/pricing.json" ] || fail "15e: second eject run deleted the preserved pricing.json"
+[ "$(cat "$REPO15E/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
+  || fail "15e: pricing.json not byte-identical after the idempotent second run"
+echo "$out" | grep -q "no-op" || fail "15e: second run over a preserved-pricing.json repo did not report no-op (got: $out)"
+echo "$out" | grep -q "Already ejected" || fail "15e: second run did not report the already-ejected state (got: $out)"
+echo "PASS: a second 'eject' run over a repo whose only .temperloop/ content is the preserved pricing.json is a true no-op -- matches the documented second-run idempotency contract"
 
 echo
 echo "ALL PASS: test_eject.sh"
