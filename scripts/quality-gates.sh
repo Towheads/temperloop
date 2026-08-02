@@ -359,6 +359,23 @@ KERNEL_GATES=(
   # as the sibling gates above (kernel Makefile is generator-owned; no new
   # target added here).
   "bash workflows/scripts/tests/test_pipeline_spend_report.sh"
+  # Per-merged-item efficiency emit (temperloop#943):
+  # workflows/scripts/emit-item-efficiency.sh — the overhead-per-shipped-change
+  # record written at build.md's 4d merge seam (tokens by phase, wall-clock by
+  # leg, agent counts by role), plus the per-class raw_tokens/wall_ms/api_calls
+  # fields it reads out of the spend profiler above. The load-bearing check is
+  # COMPOSITION: each token figure in a record must equal the corresponding
+  # field of `pipeline-spend-report.sh --format json` over the same run filter,
+  # asserted against live profiler output AND re-proved through the profiler's
+  # own duplicated-usage fixture — so the dedupe-by-requestId trap is shown to
+  # survive composition rather than being silently re-derived (and re-broken)
+  # here. Also pins the "an unmeasured leg is null, never 0" contract, the
+  # exit-0 degradations (no profiler / no gh / no slug), and the build.md 4d
+  # wiring presence check (folded in here rather than shipped as a fourth
+  # near-identical validate-*-emit.sh script). Synthetic fixtures in a tmpdir;
+  # never reads the operator's real ~/.claude corpus; `gh` is stubbed, never
+  # called. Same direct-`bash` form as the sibling gates above.
+  "bash workflows/scripts/tests/test_item_efficiency.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across
@@ -571,6 +588,24 @@ KERNEL_GATES=(
   # erroring-repo, nothing-when-clean, and read-only (pr-list-only) contracts.
   "bash workflows/scripts/tests/test_ready_pr_sweep.sh"
   "make lint-pr-body-test"
+  # CHANGELOG `## [Unreleased]` completeness gate (temperloop#960): the second
+  # diff-scoped gate in this set, alongside test-pr-leak-guard above. Fails a
+  # change that touches CONTRACT SURFACE (parsed live out of VERSIONING.md
+  # § The contract surface's own table — never a second copy of that
+  # definition) but adds nothing under CHANGELOG.md's `## [Unreleased]`, with
+  # an EXPLICIT, reason-bearing opt-out (a `no-changelog` PR label, a
+  # `Changelog: none` PR-body line, or the same line as a commit trailer).
+  # Riding KERNEL_GATES makes it part of the already-required `checks` status,
+  # so it gates the PR with no branch-protection reconfiguration and no second
+  # required job. Inside CI it enforces on the `pull_request` event only (the
+  # opt-out channels are absent from the merge_group/push payloads) and prints
+  # a legible skip otherwise; with no resolvable base it skips cleanly, so a
+  # push:main / worker / local run stays green. Detection is proven
+  # deterministically by the fixture suite on the next line regardless of base
+  # — the same live-check-then-fixture-tests shape as the leak-guard and
+  # setting-registry gates.
+  "bash workflows/scripts/check-changelog-entry.sh"
+  "bash workflows/scripts/tests/test_check_changelog_entry.sh"
   "make test-stranger-config"
   # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite
   # for kernel/workflows/scripts/demo/seed-demo-repo.sh, fake `gh` on PATH,

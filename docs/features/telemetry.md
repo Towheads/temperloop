@@ -77,6 +77,18 @@ The streams a bare checkout of this repo emits:
   degraded search daemon is silently slowing every search in a session,
   which would otherwise only ever surface as a per-query stderr line a
   caller typically swallows.
+- **`item-efficiency`** (`item-efficiency-<YYYY-MM>.jsonl`) — one record per
+  plan item confirmed merged: what that one shipped change cost, split by
+  pipeline phase (design, build-driver prep, item worker, mechanical
+  orchestration), each phase carrying both a cost-weighted total and the raw
+  output / cache-creation / cache-read split, plus wall-clock per leg (worker,
+  CI, merge-group, gate-wait, end-to-end) and agent counts by role. Its token
+  figures are **selected out of the spend profiler below, never re-derived**,
+  and any wall-clock leg nobody measured is recorded as `null` rather than
+  zero — an absent measurement and a zero measurement mean opposite things to
+  a reader asking whether ceremony is growing. This is the stream that turns
+  "the pipeline feels like it spends more on preamble than on the change"
+  into a number that can be watched and ratcheted.
 
 A downstream, composed checkout of this repo may layer additional
 overlay-only streams on top (e.g. richer issue-metadata snapshots,
@@ -118,6 +130,16 @@ gives `temperloop report` its `tokens_spent` headline. See
 [`docs/token-spend.md`](../token-spend.md) for the fuller picture, and that
 script's own header for the four correctness traps it encodes — chief among
 them deduping by `requestId`, without which the totals inflate ~2x.
+
+Its other consumer is the `item-efficiency` stream above:
+[`workflows/scripts/emit-item-efficiency.sh`](../../workflows/scripts/emit-item-efficiency.sh)
+invokes this same profiler once per phase run-group and attributes the result
+to a merged item. That is deliberate composition rather than a second reader —
+phase totals computed independently would fork those four traps the first time
+one of them was retuned, so the emit opens no transcript at all and degrades
+its phases to `null` when the profiler is unreachable. The per-class
+`raw_tokens` / `wall_ms` / `api_calls` fields the profiler's JSON carries on
+its `machinery` and `item_workers` blocks exist for exactly that consumer.
 
 #### How the producer reaches your repo
 

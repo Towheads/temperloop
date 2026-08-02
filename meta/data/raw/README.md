@@ -13,7 +13,7 @@ this kernel checkout emits.
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
 unioned at read time), `pipeline` (plus its pre-rename `funnel-*` month-files,
 also unioned at read time — see that stream below), `knowledge-search-fallback`,
-`gh-calls`, and `session-context`.
+`gh-calls`, `session-context`, and `item-efficiency`.
 A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
@@ -39,6 +39,7 @@ meta/data/raw/<stream>-<YYYY-MM>.jsonl
   below)
 - `gh-calls-<YYYY-MM>.jsonl`
 - `session-context-<YYYY-MM>.jsonl`
+- `item-efficiency-<YYYY-MM>.jsonl`
 
 Each file is newline-delimited JSON (JSONL), one record per line, strictly
 append-only — a reader unions across month-files as needed and never expects
@@ -348,4 +349,50 @@ Example record:
 
 ```json
 {"schema_version":"1","ts":"2026-07-27T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini","project":"temperloop","cwd":"/home/dev/temperloop","transcript_tokens_total":83659,"context_window_size":200000,"context_window_remaining_pct":58.2}
+```
+
+### `item-efficiency` — `item-efficiency-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/emit-item-efficiency.sh` (temperloop#943), **one
+record per plan item confirmed MERGED** — written from `claude/commands/build.md`
+Step 4d, the same seam that emits the `merge` issue-touch. This is the
+**overhead-per-shipped-change** stream: what one merged item actually cost in
+tokens, wall-clock, and agent count, split by pipeline *phase*, so ceremony
+growth is a number rather than a hunch (epic #923 spent ~55M tokens on
+`/workshop`+`/assess` prep before a single worker ran, and nothing surfaced it).
+
+**Composed, never re-derived.** Every token figure is selected out of
+`workflows/scripts/pipeline-spend-report.sh --format json`, which owns the
+cost-weighted per-agent transcript analysis *and* its four documented
+correctness traps (dedupe-by-requestId above all). The emit script opens no
+transcript and computes no token total of its own; when the profiler is
+unreachable the phases are `null`, never a locally recomputed substitute.
+
+Record shape: `{schema_version, ts, host, session_id, repo, slug, epic, issue, pr, level, phases, agent_counts, wall_ms, runs, spend_source}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `hostname -s` |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams |
+| `repo` | string \| null | `"owner/repo"` the item merged in |
+| `slug` | string | the plan item's `slug:` — the per-item identity |
+| `epic` | number \| string \| null | the epic issue number, the per-EPIC rollup key |
+| `issue` / `pr` | number \| null | the item's `gh_issue:` and its merged PR |
+| `level` | number \| null | the plan's dependency level, the per-LEVEL rollup key |
+| `phases` | object | `{design, driver_prep, worker, mechanical}`; each is `null` (un-attributed) or `{agents, api_calls, units, wall_ms, tokens:{output, cache_create, cache_read, input}}`. `units` is cost-weighted; `tokens` is raw, so the cheap-cache-read distortion stays visible. `worker`/`mechanical` are the profiler's OWN `SPEND_MACHINERY_MAX_CALLS` class split, reused verbatim |
+| `agent_counts` | object | `{worker, mechanical}` — agent counts by role, taken from the same class split, so counts and tokens can never disagree |
+| `wall_ms` | object | `{worker, ci, merge_group, gate_wait, end_to_end}`, each an integer or `null`. **`null` means UNMEASURED, never zero** — the two mean opposite things to a reader deciding whether ceremony grew |
+| `runs` | object | `{design, driver_prep, build}` — the workflow run ids each phase was attributed from, so any figure here is reproducible with `pipeline-spend-report.sh --run <id>` |
+| `spend_source` | string | `"pipeline-spend-report.sh"` — the provenance marker |
+
+Reader: `workflows/scripts/telemetry-brief.sh` § 3 Spend renders overhead per
+merged item, the phase split, wall-clock medians, agent counts by role, and a
+per-epic rollup — the surface `/telemetry` and `/check-in` Part 1 both show.
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-08-02T19:51:53Z","host":"mini","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","repo":"acme/widgets","slug":"telemetry-efficiency-metric","epic":923,"issue":943,"pr":1500,"level":1,"phases":{"design":{"agents":1,"api_calls":20,"units":6170,"wall_ms":1140000,"tokens":{"output":600,"cache_create":1000,"cache_read":18000,"input":120}},"driver_prep":null,"worker":{"agents":1,"api_calls":8,"units":2232,"wall_ms":420000,"tokens":{"output":160,"cache_create":800,"cache_read":4000,"input":32}},"mechanical":{"agents":3,"api_calls":9,"units":186,"wall_ms":120000,"tokens":{"output":30,"cache_create":0,"cache_read":300,"input":6}}},"agent_counts":{"worker":1,"mechanical":3},"wall_ms":{"worker":420000,"ci":300000,"merge_group":180000,"gate_wait":60000,"end_to_end":1800000},"runs":{"design":["wf_d-001"],"driver_prep":[],"build":["wf_b-001"]},"spend_source":"pipeline-spend-report.sh"}
 ```

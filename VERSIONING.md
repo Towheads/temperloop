@@ -36,6 +36,18 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
 | **Kernel engineering-principles criteria** | review agents and `/build` workers judging a diff against the declared cross-language criteria; a project's `§ Principles` section merging with (extending, replacing, or excluding from) the kernel set per the merge semantics stated in the file's own header | `claude/engineering-principles.md` |
 
+**This table is machine-read.** `workflows/scripts/check-changelog-entry.sh`
+(the `## [Unreleased]` completeness gate in `scripts/quality-gates.sh`'s
+`KERNEL_GATES`, temperloop#960) parses the backticked paths out of the **"Where
+it lives"** column at run time and uses exactly that set to decide whether a
+change touches contract surface and therefore owes a CHANGELOG entry. It reads
+this table rather than keeping a second copy of the definition, so **adding a
+row here extends the gate for free** — and restructuring the table, renaming the
+`### The contract surface` heading, or moving the paths out of the last column
+will make the gate fail loudly (it refuses to run against a table it cannot
+parse rather than silently enforce nothing). Keep the shape: one row per
+surface, path patterns backticked in the final column.
+
 ### "Vendored" vs. "installed" — two different senses (ADR K164 D7)
 
 This document's own "the kernel is **vendored, not installed**" framing
@@ -173,6 +185,101 @@ surface is still moving (v0.4→v0.6 in days). The trigger to cut `1.0.0`:
 Until then, a stranger reads `0.x` as "stable semantics, surface still
 settling — read the CHANGELOG `BREAKING` markers before you pull," which is a
 real, usable signal rather than SemVer's blanket pre-1.0 disclaimer.
+
+## Cutting a release
+
+The ordered procedure. The *conventions* it applies — annotated tag, `VERSION`
+bumped in the tagged commit, Keep-a-Changelog section shape — belong to
+`workflows/scripts/kernel/kernel-repo-layout.md` § Release-tag convention and
+are referenced here, not restated. This section owns the **steps and their
+order**, so a cut is followed rather than reconstructed from memory.
+
+**The cut is ONE pull request.** Not one per concern. `main` is protected, so
+every cut costs a merge-queue round-trip (~11 min: the `checks` run, then the
+queue's second run); splitting the cut across two PRs doubles that for no
+structural reason. The v0.23.0 cut split a CHANGELOG backfill from the version
+bump and spent an extra cycle on it.
+
+### 1. Verify the CHANGELOG is complete
+
+Every merged PR since the last tag should already have its `## [Unreleased]`
+entry. Check before you cut, because a gap found here is the whole reason a cut
+turns into two PRs:
+
+```sh
+git log v<last>..HEAD --merges --format='%H %s' | while read -r sha subj; do
+  pr=$(echo "$subj" | sed -nE 's/.*Merge pull request #([0-9]+).*/\1/p')
+  [ -z "$pr" ] && continue
+  git diff --name-only "$sha^1" "$sha^2" | grep -q '^CHANGELOG.md$' || echo "unlogged #$pr"
+done
+```
+
+Backfill anything it names **into the same cut PR** — never a separate one.
+(temperloop#960 tracks the gate that makes this step vacuous by requiring the
+entry at PR time; until it lands, this check is the backstop.)
+
+### 2. Rewrite the heading and bump `VERSION` — in one commit
+
+Turn `## [Unreleased]` into `## [x.y.z] - YYYY-MM-DD`, open a fresh empty
+`## [Unreleased]` above it, and set `VERSION` to bare `x.y.z`. The
+`test_version_embedding.sh` gate fails the build if `VERSION` disagrees with
+the tag, so these must move together.
+
+> **⚠ Carry the `BREAKING` marker across the rewrite.**
+> `changelog_breaking_sections()` (`workflows/scripts/lib/changelog.sh`) sets
+> its breaking flag **only from a heading line** — `BREAKING` on the
+> `## [x.y.z]` line, or `/^#+ .*BREAKING/` on a sub-heading. **Body prose never
+> sets it.** So rewriting `## [Unreleased] — BREAKING` into a bare
+> `## [0.23.0] - 2026-08-02` silently drops the release's breaking signal, and
+> both `update-kernel`'s acknowledgment gate and `temperloop update`'s BREAKING
+> warning no-op without telling anyone. Keep the suffix on the version heading,
+> and keep the ` — BREAKING` sub-heading (e.g. `### Changed — BREAKING`) as the
+> belt-and-suspenders half that survives a botched rewrite.
+
+> **⚠ `## [Unreleased] — BREAKING` occurs more than once in the file.** The live
+> heading is near the top; historical entries quote the same string in their
+> body prose. A `replace_all` edit rewrites history. Anchor on a unique
+> neighbouring line instead.
+
+Verify before pushing — a non-empty result means the gate will fire rather than
+silently pass:
+
+```sh
+source workflows/scripts/lib/changelog.sh
+changelog_breaking_sections v<last> v<new> CHANGELOG.md | wc -c   # args: cur, tgt, FILE
+```
+
+### 3. Merge, then tag the merge commit
+
+Enqueue via `pr-enqueue` (or a bare `gh pr merge` — the queue owns the
+strategy; passing `--merge` is rejected). Wait for confirmed `MERGED`, pull, and
+tag **that** commit — not the branch tip:
+
+```sh
+git checkout main && git pull --ff-only
+git tag -a v<new> -m "<subject>"   # subject: 'v<new>' or 'v<new> — BREAKING'
+git push origin v<new>
+```
+
+The tag body follows the shape of the previous tags: subject line, one line on
+how many PRs/commits it covers, the BREAKING pointer if applicable, then a short
+`Highlights:` list drawn from the CHANGELOG section. `git tag -l --format=
+'%(contents)' v<last>` shows the house style.
+
+### 4. Propagate to consuming repos
+
+A tag alone changes nothing downstream — each overlay vendors on its own:
+
+```sh
+cd <consuming-repo> && make update-kernel KERNEL_TAG=v<new>
+```
+
+This is worktree-isolated: it pushes a `chore/kernel-v<new>` branch and opens a
+PR, leaving the caller clean-on-main. **Read its output** — it runs the gate
+wiring check and will name any gate the new kernel adds that the overlay does
+not satisfy yet, then open the PR anyway. Wire those before merging or CI blocks
+(foundation#1508 tracks automating this). Merge the vendor PR, then
+`git pull && make install` in that repo to make the release live.
 
 ## Summary for a stranger
 
