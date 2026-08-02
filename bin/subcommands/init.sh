@@ -219,12 +219,14 @@
 #     them; a 644 producer renders as "skipped -- tokens: producer
 #     unavailable" and the headline silently degrades. proposal-pr.sh
 #     validates the per-entry mode (644|755) itself, so nothing here has to.
-#   - NEVER OVERWRITTEN, and never prompted about. `init` stays entirely
-#     non-interactive on this path: a producer already at that path belongs
-#     to the adopter (hand-written, or edited after an earlier `init`), and
-#     silently clobbering it would destroy work with no undo. Present ->
-#     leave it byte-for-byte alone and say so. Same shape as the
-#     already-present arm of the boards.conf step.
+#   - NEVER OVERWRITTEN AND NEVER DROPPED, and never prompted about. `init`
+#     stays entirely non-interactive on this path: a producer already at
+#     that path belongs to the adopter (hand-written, or edited after an
+#     earlier `init`), and silently clobbering it would destroy work with no
+#     undo — while silently OMITTING it deletes that same work just as
+#     surely, because the proposal branch is re-cut off base every run. Both
+#     directions are governed by the three-rule base-tip decision documented
+#     at "THE BASE TIP" below, which the boards.conf step shares.
 #   - COPIED VERBATIM from this kernel checkout's own shim, pure data
 #     extraction exactly like the first-epic template — this script never
 #     restates the shim's resolver logic, so there is no second copy to
@@ -863,6 +865,93 @@ all_installs="$(jq -c 'unique_by([.type, (.name // ""), (.branch // ""), (.repo 
   <<<"$existing_installs")"
 
 # ---------------------------------------------------------------------------
+# THE BASE TIP — the only tree a manifest decision may be made against.
+#
+# WHY THIS EXISTS (a HIGH defect this replaced, reproduced in both
+# directions). proposal-pr.sh always re-creates the proposal branch FRESH off
+# the base tip (`git checkout -q -B "$branch" "$base_ref"`), so the manifest
+# is a diff against the BASE, never against whatever the caller happens to
+# have checked out. Every optional-entry decision below used to read the
+# WORKING TREE instead, which is wrong in both directions:
+#   - AN IDEMPOTENT RE-RUN DELETED THE FILE IT CLAIMED TO PRESERVE. After run
+#     1 the checkout sits on the proposal branch, which carries the file. Run
+#     2's working-tree probe saw it, "skipped", and omitted the manifest
+#     entry — then the branch was re-cut off base, which does NOT carry it,
+#     so git removed it and the force-push regressed an already-open PR. The
+#     operator was told "leaving it untouched" at the exact moment the file
+#     was deleted under them.
+#   - AN ADOPTER'S OWN FILE WAS OVERWRITTEN. When the file exists on the base
+#     branch but not in the local checkout (a stale clone, a checkout on an
+#     older commit, or --base naming a branch other than the one checked
+#     out), the working-tree probe found nothing, proposed ours, and the
+#     generator's `printf > "$abs"` replaced theirs.
+# Both are ONE root cause: probing a tree that is not the one being diffed.
+#
+# THE RULE every optional entry below now follows — decide against the base
+# tip, and never drop content you can see:
+#   1. on the base tip already -> propose nothing (the fresh branch inherits
+#      it verbatim, so there is nothing to add and nothing to overwrite);
+#   2. in the working tree but NOT on the base tip -> carry THAT FILE'S OWN
+#      BYTES into the manifest (never ours), so a re-run neither clobbers nor
+#      drops it;
+#   3. in neither -> propose ours.
+#
+# NO SECOND RESOLVER. `$base` is resolved HERE and then passed to
+# proposal-pr.sh explicitly, rather than each side working it out
+# independently — two copies of a default-branch resolver drifting apart
+# would reintroduce exactly the bug above, one layer deeper and harder to
+# see. init decides; the generator is told.
+# ---------------------------------------------------------------------------
+
+# Mirrors proposal-pr.sh's own default_branch() — kept identical on purpose,
+# and rendered harmless by init passing the RESULT to that script (above), so
+# the two can never disagree about which ref they mean.
+init_default_branch() {
+  local ref b
+  if ref="$(git -C "$repo_dir" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null)"; then
+    printf '%s\n' "${ref#"$remote"/}"
+    return 0
+  fi
+  for b in main master; do
+    if git -C "$repo_dir" show-ref --verify --quiet "refs/remotes/$remote/$b"; then
+      printf '%s\n' "$b"
+      return 0
+    fi
+  done
+  return 1
+}
+
+[ -n "$base" ] || base="$(init_default_branch || true)"
+
+# Same best-effort fetch + same ref preference order proposal-pr.sh uses, so
+# the tip this script INSPECTS is the tip that script BRANCHES FROM. Skipped
+# on --dry-run, which is contractually zero-write to $repo_dir (temperloop
+# #413) — a fetch writes refs under .git/. A dry run's preview is therefore
+# computed against whatever base ref is already local, which is the honest
+# thing for a preview that is explicitly not talking to the network.
+base_ref=""
+if [ -n "$base" ]; then
+  [ "$dry_run" -eq 1 ] || git -C "$repo_dir" fetch "$remote" "$base" >/dev/null 2>&1 || true
+  if git -C "$repo_dir" show-ref --verify --quiet "refs/remotes/$remote/$base"; then
+    base_ref="refs/remotes/$remote/$base"
+  elif git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$base"; then
+    base_ref="refs/heads/$base"
+  fi
+fi
+
+# base_has <repo-relative-path> — does the base tip carry this path? False
+# whenever the base could not be resolved at all, which degrades SAFELY: rule
+# 2 then governs anything already in the working tree (carry its own bytes),
+# and proposal-pr.sh refuses the run on its own for the same reason.
+base_has() {
+  [ -n "$base_ref" ] && git -C "$repo_dir" cat-file -e "$base_ref:$1" 2>/dev/null
+}
+# base_show <repo-relative-path> — that path's bytes at the base tip.
+base_show() {
+  git -C "$repo_dir" show "$base_ref:$1" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
 # Step 4 — build .temperloop/config content and the tree-only proposal.
 # ---------------------------------------------------------------------------
 now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -902,20 +991,46 @@ manifest_entries+=("$(jq -cn --arg p "$config_rel" --arg c "$config_json" '{path
 title_parts="$config_rel"
 
 board_toolkit_dir="$repo_dir/workflows/scripts/board"
-if [ -d "$board_toolkit_dir" ]; then
-  boards_conf_target="workflows/scripts/board/boards.conf"
+boards_conf_target="workflows/scripts/board/boards.conf"
+# The toolkit-presence probe reads base ∪ tree for the same reason every
+# decision below does: on a re-run the checkout sits on the proposal branch,
+# cut off a base that may not carry the toolkit dir, and a tree-only probe
+# would then answer "no toolkit here" and silently drop boards.conf from the
+# manifest — the same deletion bug, one question earlier.
+if [ -d "$board_toolkit_dir" ] || base_has "workflows/scripts/board"; then
   boards_conf_abs="$repo_dir/$boards_conf_target"
-  current_conf=""
-  [ -f "$boards_conf_abs" ] && current_conf="$(cat "$boards_conf_abs")"
+  # What the base tip carries today — the thing the proposal is a diff
+  # AGAINST, and the only safe baseline for "is there anything to do".
+  base_conf=""
+  base_conf_present=0
+  if base_has "$boards_conf_target"; then
+    base_conf="$(base_show "$boards_conf_target")"
+    base_conf_present=1
+  fi
+  # The most current content we can see: the working tree when it has the
+  # file (it may carry board entries not yet on base — including, on a
+  # re-run, the very entry this script proposed last time), else the base
+  # tip's. Reading ONLY the tree is what used to clobber an adopter's
+  # boards.conf that existed on base but not in a stale local checkout.
+  current_conf="$base_conf"
+  if [ -f "$boards_conf_abs" ] && [ -r "$boards_conf_abs" ]; then
+    current_conf="$(cat "$boards_conf_abs")"
+  fi
   if printf '%s\n' "$current_conf" | grep -Fq "board.$board_num."; then
-    echo "boards.conf: board.$board_num.* already present — leaving $boards_conf_target untouched"
+    desired_conf="$current_conf"
+  elif [ -n "$current_conf" ]; then
+    desired_conf="$current_conf"$'\n\n'"$boards_conf_entry"
   else
-    if [ -n "$current_conf" ]; then
-      new_conf="$current_conf"$'\n\n'"$boards_conf_entry"
-    else
-      new_conf="$boards_conf_entry"
-    fi
-    manifest_entries+=("$(jq -cn --arg p "$boards_conf_target" --arg c "$new_conf" '{path:$p, content:$c}')")
+    desired_conf="$boards_conf_entry"
+  fi
+  # Propose only when the base tip does not ALREADY say exactly this. That
+  # single comparison covers every case at once: nothing to do once the
+  # entry has landed on base, a carry-forward on a re-run (base lacks the
+  # file, the tree has it), and a genuine first proposal.
+  if [ "$base_conf_present" -eq 1 ] && [ "$desired_conf" = "$base_conf" ]; then
+    echo "boards.conf: board.$board_num.* already on ${base:-the base branch} — leaving $boards_conf_target untouched"
+  else
+    manifest_entries+=("$(jq -cn --arg p "$boards_conf_target" --arg c "$desired_conf" '{path:$p, content:$c}')")
     title_parts="$title_parts + boards.conf"
   fi
 else
@@ -924,10 +1039,12 @@ else
 fi
 
 # --- the `tokens` report.d producer shim (temperloop#984) ------------------
-# See "TOKENS PRODUCER SHIM" in the header for the full rationale. This is
-# the whole placement path: no prompt (the arms below never read stdin), no
-# overwrite (an existing file wins outright), no `installs[]` entry (a tree
-# artifact rides the manifest), and a legible skip when the shim is missing.
+# See "TOKENS PRODUCER SHIM" in the header for the full rationale, and "THE
+# BASE TIP" above for the three-rule decision the arms below implement (the
+# same one the boards.conf step just used). This is the whole placement
+# path: no prompt (no arm reads stdin), no overwrite and no drop, no
+# `installs[]` entry (a tree artifact rides the manifest), and a legible
+# skip when the shim itself is unusable.
 producer_target=".temperloop/report.d/tokens"
 producer_abs="$repo_dir/$producer_target"
 # Set only on the arm that actually proposes the file — a reviewer seeing a
@@ -935,20 +1052,54 @@ producer_abs="$repo_dir/$producer_target"
 # may do, and a body that claimed one on a run that placed nothing would be
 # worse than saying nothing at all.
 producer_body_note=""
-if [ -e "$producer_abs" ] || [ -L "$producer_abs" ]; then
-  # NEVER OVERWRITTEN — the adopter owns whatever is already at that path.
+producer_source=""
+if base_has "$producer_target"; then
+  # RULE 1 — already on the base tip. The proposal branch is cut FROM base,
+  # so it inherits the adopter's file verbatim: there is nothing to add and,
+  # crucially, nothing of theirs for us to overwrite. This is the arm that
+  # fixes the stale-clone direction, where a working-tree probe saw nothing
+  # and proposed ours straight over theirs.
+  echo "report.d producer: $producer_target already on ${base:-the base branch} — leaving it untouched (never overwritten)"
+elif [ -e "$producer_abs" ] || [ -L "$producer_abs" ]; then
+  # RULE 2 — in the working tree but NOT on base. This is the idempotent
+  # re-run (the checkout is sitting on the proposal branch that carries it),
+  # and also an adopter who wrote their own but has not merged it to the
+  # default branch yet. Carry THAT FILE'S OWN BYTES, never the shim's:
+  # omitting the entry here is what used to DELETE the file on re-run, and
+  # substituting the shim's bytes is what would overwrite a hand-written one.
+  #
   # `-e`, not `-f`, because a directory or a symlink sitting there is equally
   # not ours to replace; `|| -L` because `-e` FOLLOWS symlinks and so misses
   # a DANGLING one — which is the case that would actually have been
   # clobbered, since the generator's own `printf > "$abs"` follows the link
   # too and would silently write through to its missing target.
-  echo "report.d producer: $producer_target already present — leaving it untouched (never overwritten)"
-elif [ ! -f "$PRODUCER_SHIM" ]; then
+  if [ -f "$producer_abs" ] && [ -r "$producer_abs" ]; then
+    producer_source="$producer_abs"
+    echo "report.d producer: carrying the existing $producer_target forward unchanged (present here, not yet on ${base:-the base branch})"
+  else
+    # Unreadable, or not a regular file. We cannot copy bytes we cannot
+    # read, so this one case genuinely cannot be carried — say so LOUDLY on
+    # stderr rather than printing a soothing "leaving it untouched" line
+    # while the branch re-cut drops it.
+    echo "init.sh: WARNING — $producer_target exists but is not a readable regular file; it cannot be carried into the proposal, and re-creating the proposal branch off ${base:-the base branch} may remove it. Commit it to ${base:-the base branch}, or make it readable, then re-run." >&2
+  fi
+elif [ ! -f "$PRODUCER_SHIM" ] || [ ! -r "$PRODUCER_SHIM" ] || [ ! -s "$PRODUCER_SHIM" ]; then
   # Soft seam (see the header): a broken/partial kernel checkout costs the
   # adopter one `temperloop report` headline, never their whole bootstrap.
+  # `-r` and `-s`, not just `-f`: this script runs WITHOUT `set -e`, so an
+  # unreadable or empty shim would otherwise sail past a bare `-f`, leave
+  # `$(cat …)` empty, and commit a ZERO-BYTE mode-755 file into the
+  # adopter's PR — which `report.sh` then execs to exit 0 with no output and
+  # no `skipped` line anywhere. That is precisely the failure this arm
+  # exists to make legible, arriving illegibly.
   echo "report.d producer: skipped — shim unavailable at $PRODUCER_SHIM"
 else
-  # The landed copy is the shim's bytes MINUS its final newline: every
+  # RULE 3 — on neither side. Propose ours.
+  producer_source="$PRODUCER_SHIM"
+fi
+
+if [ -n "$producer_source" ]; then
+  # The landed copy is the source's bytes MINUS its final newline: every
   # manifest entry loses one, because proposal-pr.sh re-reads its own
   # `.content` through a `$(…)` capture (which strips trailing newlines)
   # before writing it with a bare `printf '%s'`. Deliberately not worked
@@ -957,11 +1108,22 @@ else
   # script whose last line lacks a newline exactly as it runs one that has
   # it. Adding a newline back at THIS call site would be a no-op that reads
   # like a fix.
-  producer_content="$(cat "$PRODUCER_SHIM")"
-  manifest_entries+=("$(jq -cn --arg p "$producer_target" --arg c "$producer_content" \
-    '{path:$p, content:$c, mode:"755"}')")
-  title_parts="$title_parts + report.d/tokens"
-  producer_body_note="
+  producer_content="$(cat "$producer_source")"
+  if [ -z "$producer_content" ]; then
+    # Belt-and-braces for the same no-`set -e` hazard as the soft-seam arm
+    # above: a read that succeeded the file tests and STILL came back empty
+    # (a race, a vanished file) must not become a zero-byte executable in
+    # someone's PR. Guarding the append is what makes that structural.
+    echo "init.sh: WARNING — read $producer_source but got no content; not proposing $producer_target (refusing to commit a zero-byte executable)" >&2
+  else
+    manifest_entries+=("$(jq -cn --arg p "$producer_target" --arg c "$producer_content" \
+      '{path:$p, content:$c, mode:"755"}')")
+    title_parts="$title_parts + report.d/tokens"
+    # The body note describes OUR shim, so it is set only when that is what
+    # we are actually proposing. On the carry-forward arm the file is the
+    # adopter's own and we have no standing to describe its behavior.
+    if [ "$producer_source" = "$PRODUCER_SHIM" ]; then
+      producer_body_note="
 
 \`$producer_target\` is a **drop-in report producer** (mode 755, executable —
 \`temperloop report\` runs every executable in \`.temperloop/report.d/\`). It is
@@ -970,7 +1132,9 @@ kernel's own implementation, which reads local Claude Code transcripts to
 report token spend. It makes no network calls of its own, and it exits 0 with
 a one-line \`skipped\` notice on any host with no kernel installed. Deleting
 it costs you only \`temperloop report\`'s tokens-spent headline."
-  echo "report.d producer: proposing $producer_target (mode 755) — the drop-in that gives \`temperloop report\` its tokens-spent headline"
+      echo "report.d producer: proposing $producer_target (mode 755) — the drop-in that gives \`temperloop report\` its tokens-spent headline"
+    fi
+  fi
 fi
 echo
 
@@ -1019,6 +1183,13 @@ if [ "$dry_run" -eq 1 ]; then
 else
   proposal_args=(open --repo-dir "$repo_dir" --branch "$branch" --title "$title" \
     --body "$body" --files-manifest - --remote "$remote" --force)
+  # ALWAYS pass the base we resolved (never leave the generator to work it
+  # out again): $base is filled in above from init_default_branch() when the
+  # caller gave no --base, so this now pins the generator to the SAME ref the
+  # manifest decisions above were made against. Two independent resolvers
+  # drifting apart is exactly how a manifest gets diffed against a different
+  # tree than the one it was decided from. Still conditional only for the
+  # unresolvable-base case, which proposal-pr.sh refuses on its own terms.
   [ -n "$base" ] && proposal_args+=(--base "$base")
 
   # --- recovery marker (temperloop#414) ------------------------------------
