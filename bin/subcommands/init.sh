@@ -103,13 +103,18 @@
 #
 # `temperloop init` is the SOLE WRITER of `.temperloop/config` — no other
 # subcommand (this repo's `eject`, once it lands, only READS it) ever
-# creates or edits that file. Every side effect this script produces (a
-# label, a required-check setting, a proposal branch/PR, a board) is
-# recorded in `.temperloop/config`'s `installs` array — the exact set
-# `temperloop eject` reverts. Re-running this script MERGES into that
-# array rather than clobbering it (see "round-trip" below), and an install
-# already recorded from a prior run (or already present on the remote,
-# e.g. a label that already existed) is never re-recorded or re-applied.
+# creates or edits that file. Every API-STATE side effect this script
+# produces (a label, a required-check setting, a proposal branch/PR, a
+# board) is recorded in `.temperloop/config`'s `installs` array — the exact
+# set `temperloop eject` reverts via `gh`. Re-running this script MERGES
+# into that array rather than clobbering it (see "round-trip" below), and an
+# install already recorded from a prior run (or already present on the
+# remote, e.g. a label that already existed) is never re-recorded or
+# re-applied. TREE artifacts are the other half of that split and do NOT
+# enter `installs[]`: a file this script proposes rides the FILES MANIFEST
+# and is reverted by the tree, not by an API call — the split `eject.sh`'s
+# own header defends. `.temperloop/config` itself and the `tokens` producer
+# shim below are both tree artifacts in exactly that sense.
 #
 # TRACKER MODE is a THIN RENDER, not a second config store: the functional
 # artifact the board adapter (workflows/scripts/board/lib/board.sh) reads
@@ -198,6 +203,39 @@
 # stray `proposal_branch` when it finds the marker and the checkout is still
 # sitting on that branch. A run whose HEAD is detached, or that never
 # switches branch (already on it), writes no marker — nothing to restore.
+#
+# TOKENS PRODUCER SHIM (temperloop#984). `temperloop report`'s headline
+# metric — tokens spent vs items merged — comes from a DROP-IN PRODUCER the
+# target repo carries at `.temperloop/report.d/tokens`
+# (workflows/scripts/lib/report.contract.md § "Overlay drop-in contract").
+# Nothing placed that file before this item, so the headline was silently
+# unavailable in every repo except this kernel checkout itself; Step 4 now
+# adds it to the SAME files manifest `.temperloop/config` already rides.
+# Four properties, each load-bearing:
+#   - MANIFEST, NOT `installs[]`. A tree artifact is reverted by the tree;
+#     `installs[]` is the API-state set `eject` reverts via `gh`. See the
+#     sole-writer note above and eject.sh's own header for that split.
+#   - MODE 755, because the contract EXECs producers rather than sourcing
+#     them; a 644 producer renders as "skipped -- tokens: producer
+#     unavailable" and the headline silently degrades. proposal-pr.sh
+#     validates the per-entry mode (644|755) itself, so nothing here has to.
+#   - NEVER OVERWRITTEN, and never prompted about. `init` stays entirely
+#     non-interactive on this path: a producer already at that path belongs
+#     to the adopter (hand-written, or edited after an earlier `init`), and
+#     silently clobbering it would destroy work with no undo. Present ->
+#     leave it byte-for-byte alone and say so. Same shape as the
+#     already-present arm of the boards.conf step.
+#   - COPIED VERBATIM from this kernel checkout's own shim, pure data
+#     extraction exactly like the first-epic template — this script never
+#     restates the shim's resolver logic, so there is no second copy to
+#     drift. The shim is a thin locator that finds an installed kernel and
+#     `exec`s the real implementation at
+#     workflows/scripts/report-producers/tokens, which is why copying it
+#     into an adopter's tree does NOT freeze the implementation the way
+#     copying the producer itself once did (temperloop#980).
+# A missing shim is a SOFT SEAM, same posture as the baseline-snapshot step:
+# it reports a legible skip and `init` continues. An unplaceable report
+# headline is never worth failing an adopter's bootstrap over.
 #
 # Usage:
 #   init.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network] [--timeout SECS]
@@ -289,6 +327,12 @@ KERNEL_ROOT="$(cd "$BIN_DIR/.." && pwd)"
 PROBE="$KERNEL_ROOT/workflows/scripts/probe/conventions-probe.sh"
 PROPOSAL="$KERNEL_ROOT/workflows/scripts/proposal/proposal-pr.sh"
 BASELINE_SNAPSHOT="$SUBCOMMAND_DIR/baseline-snapshot.sh"
+# The `tokens` drop-in producer's LOCATOR SHIM, copied verbatim into an
+# adopter's tree by Step 4's files manifest (see the "TOKENS PRODUCER SHIM"
+# header note). This kernel checkout's own copy is the canonical one —
+# claimed by workflows/scripts/kernel/kernel-manifest.txt and
+# docs/features/feature-manifest.txt — so there is no second copy to drift.
+PRODUCER_SHIM="$KERNEL_ROOT/.temperloop/report.d/tokens"
 
 if [ ! -f "$PROBE" ]; then
   echo "init.sh: conventions-probe.sh not found at $PROBE (broken kernel checkout)" >&2
@@ -850,6 +894,12 @@ config_json="$(build_config_json "$all_installs")"
 
 manifest_entries=()
 manifest_entries+=("$(jq -cn --arg p "$config_rel" --arg c "$config_json" '{path:$p, content:$c}')")
+# The PR title names what this manifest actually carries. Built up alongside
+# the entries rather than inferred from `${#manifest_entries[@]}`: with more
+# than one optional entry, a count no longer identifies WHICH ones are
+# present, and the old two-branch form would have titled a config-plus-
+# producer proposal "+ boards.conf".
+title_parts="$config_rel"
 
 board_toolkit_dir="$repo_dir/workflows/scripts/board"
 if [ -d "$board_toolkit_dir" ]; then
@@ -866,16 +916,66 @@ if [ -d "$board_toolkit_dir" ]; then
       new_conf="$boards_conf_entry"
     fi
     manifest_entries+=("$(jq -cn --arg p "$boards_conf_target" --arg c "$new_conf" '{path:$p, content:$c}')")
+    title_parts="$title_parts + boards.conf"
   fi
 else
   echo "boards.conf: workflows/scripts/board/ not present in this repo — rendered entry recorded in $config_rel only:"
   printf '%s\n' "$boards_conf_entry" | sed 's/^/  /'
 fi
+
+# --- the `tokens` report.d producer shim (temperloop#984) ------------------
+# See "TOKENS PRODUCER SHIM" in the header for the full rationale. This is
+# the whole placement path: no prompt (the arms below never read stdin), no
+# overwrite (an existing file wins outright), no `installs[]` entry (a tree
+# artifact rides the manifest), and a legible skip when the shim is missing.
+producer_target=".temperloop/report.d/tokens"
+producer_abs="$repo_dir/$producer_target"
+# Set only on the arm that actually proposes the file — a reviewer seeing a
+# new EXECUTABLE in the diff deserves a sentence on what it is and what it
+# may do, and a body that claimed one on a run that placed nothing would be
+# worse than saying nothing at all.
+producer_body_note=""
+if [ -e "$producer_abs" ] || [ -L "$producer_abs" ]; then
+  # NEVER OVERWRITTEN — the adopter owns whatever is already at that path.
+  # `-e`, not `-f`, because a directory or a symlink sitting there is equally
+  # not ours to replace; `|| -L` because `-e` FOLLOWS symlinks and so misses
+  # a DANGLING one — which is the case that would actually have been
+  # clobbered, since the generator's own `printf > "$abs"` follows the link
+  # too and would silently write through to its missing target.
+  echo "report.d producer: $producer_target already present — leaving it untouched (never overwritten)"
+elif [ ! -f "$PRODUCER_SHIM" ]; then
+  # Soft seam (see the header): a broken/partial kernel checkout costs the
+  # adopter one `temperloop report` headline, never their whole bootstrap.
+  echo "report.d producer: skipped — shim unavailable at $PRODUCER_SHIM"
+else
+  # The landed copy is the shim's bytes MINUS its final newline: every
+  # manifest entry loses one, because proposal-pr.sh re-reads its own
+  # `.content` through a `$(…)` capture (which strips trailing newlines)
+  # before writing it with a bare `printf '%s'`. Deliberately not worked
+  # around here — `.temperloop/config` and `boards.conf` already land the
+  # same way, this file is a manifest entry like any other, and bash runs a
+  # script whose last line lacks a newline exactly as it runs one that has
+  # it. Adding a newline back at THIS call site would be a no-op that reads
+  # like a fix.
+  producer_content="$(cat "$PRODUCER_SHIM")"
+  manifest_entries+=("$(jq -cn --arg p "$producer_target" --arg c "$producer_content" \
+    '{path:$p, content:$c, mode:"755"}')")
+  title_parts="$title_parts + report.d/tokens"
+  producer_body_note="
+
+\`$producer_target\` is a **drop-in report producer** (mode 755, executable —
+\`temperloop report\` runs every executable in \`.temperloop/report.d/\`). It is
+a thin LOCATOR: it finds an installed temperloop kernel and \`exec\`s that
+kernel's own implementation, which reads local Claude Code transcripts to
+report token spend. It makes no network calls of its own, and it exits 0 with
+a one-line \`skipped\` notice on any host with no kernel installed. Deleting
+it costs you only \`temperloop report\`'s tokens-spent headline."
+  echo "report.d producer: proposing $producer_target (mode 755) — the drop-in that gives \`temperloop report\` its tokens-spent headline"
+fi
 echo
 
 echo "-- 3. Proposal PR (tree-only; nothing lands without review) --"
-title="chore: temperloop init — .temperloop/config"
-[ "${#manifest_entries[@]}" -gt 1 ] && title="chore: temperloop init — .temperloop/config + boards.conf"
+title="chore: temperloop init — $title_parts"
 body="Proposed by \`temperloop init\` (opt-in, reviewable — foundation #765 Epic D).
 
 This PR is TREE-ONLY: it never touches labels, branch protection, or
@@ -887,7 +987,7 @@ first epic's work, applied later with per-write consent via
 
 Tracker mode: **issues-only** (\`board.$board_num.backend=issues\`), the sole
 init-time tracker mode. A Projects-v2 board is provisioned by hand — see
-\`docs/features/install-cli.md\` § \"Manual Projects-v2 recipe\"."
+\`docs/features/install-cli.md\` § \"Manual Projects-v2 recipe\".$producer_body_note"
 
 if [ "$dry_run" -eq 1 ]; then
   # --dry-run GATE (temperloop#413): genuinely zero-write — compute and

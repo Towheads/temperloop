@@ -56,12 +56,26 @@
 #     ~/.claude/commands/assess.md is absent and not when it is present,
 #     while the `next step:` marker itself stays byte-identical in both
 #     states (install-tier2.yml greps it on a runner that has no ~/.claude/)
+#   - TOKENS PRODUCER PLACEMENT (temperloop#984): a repo with no
+#     .temperloop/report.d/tokens gets the kernel's locator shim proposed
+#     into the SAME files manifest as .temperloop/config — verbatim, mode
+#     755, executable on disk, honoring the drop-in contract (exit 0 + one
+#     skip line) when run in a stranger's repo with no kernel installed —
+#     and NO new installs[] entry type appears (a tree artifact rides the
+#     manifest; installs[] is API state eject reverts via gh)
+#   - PRODUCER NEVER OVERWRITTEN: a pre-existing (adopter-owned) producer at
+#     that path is byte-identical after `init`, and the proposal commit does
+#     not touch it at all
 #   - invalid --tracker-mode -> usage error, exit 2 (still refused)
 #   - --dir not a git repo -> exit 1
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INIT="$HERE/../init.sh"
+# The kernel checkout's own copy of the shim — the canonical source `init`
+# copies verbatim (bin/subcommands/init.sh § "TOKENS PRODUCER SHIM").
+KERNEL_SRC="$(cd "$HERE/../../.." && pwd)"
+SHIM_SRC="$KERNEL_SRC/.temperloop/report.d/tokens"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
@@ -571,6 +585,113 @@ last_nonblank13="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -1)"
 printf '%s\n' "$last_nonblank13" | grep -qF '====' \
   || fail "idempotent re-run: the last non-blank line is not the handoff box's closing border (got: $last_nonblank13)"
 echo "PASS: the idempotent already-filed path recovers the same actionable handoff (full epic URL + launch command), last, with zero re-filed issues"
+
+# =============================================================================
+# 14. THE TOKENS PRODUCER IS PLACED (temperloop#984). `temperloop report`'s
+#     headline metric comes from a drop-in producer at
+#     .temperloop/report.d/tokens; nothing placed it before this item, so
+#     the headline was silently unavailable in every repo except the kernel
+#     checkout itself. `init` now proposes it in the SAME files manifest
+#     .temperloop/config already rides.
+#
+#     Four things are pinned, because each has its own way of silently
+#     half-working: the content is a VERBATIM copy of the kernel's shim (a
+#     restated second copy would drift); the git mode is 100755 and the file
+#     is executable ON DISK (report.sh only runs executables — a 644
+#     producer renders as "skipped" and the headline degrades with no
+#     error); the placed copy actually SATISFIES the drop-in contract when
+#     run in a stranger's repo with no kernel installed (exit 0, one skip
+#     line, nothing else); and installs[] gains NO new entry type (a tree
+#     artifact is reverted by the tree — installs[] is the API-state set
+#     eject reverts via `gh`).
+#
+#     Non-interactivity needs no separate assertion: run() closes stdin, so
+#     a prompt added anywhere on this path would hang or take an empty
+#     answer, and this whole test runs under --no-network (the first-epic
+#     offer, the one interactive step init has, is skipped outright).
+# =============================================================================
+REPO14="$(new_fixture_repo repo14)"
+FAKE_PR_NUM=30 run 0 --dir "$REPO14" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens (mode 755)" \
+  || fail "init did not report proposing the tokens producer (got: $out)"
+
+P14="$REPO14/.temperloop/report.d/tokens"
+[ -f "$P14" ] || fail "init did not place .temperloop/report.d/tokens into the target repo"
+git -C "$REPO14" show "HEAD:.temperloop/report.d/tokens" > "$WORK/landed14" 2>/dev/null \
+  || fail "the tokens producer was not committed by the proposal (not in HEAD)"
+# Compared through `$(…)`, which strips trailing newlines on BOTH sides —
+# deliberately, not laziness. proposal-pr.sh re-reads every manifest entry's
+# content through its own `$(…)` capture, so the landed copy is always the
+# source minus its final newline; `.temperloop/config` and `boards.conf`
+# already land that way. This asserts the part that matters (verbatim
+# content, no restated second copy) without pinning a generator-wide
+# behavior that is not this item's to own.
+[ "$(cat "$WORK/landed14")" = "$(cat "$SHIM_SRC")" ] \
+  || fail "the landed producer is not a verbatim copy of the kernel shim at $SHIM_SRC"
+
+mode14="$(git -C "$REPO14" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode14" = "100755" ] \
+  || fail "the landed producer is not committed executable (git mode $mode14, want 100755) — report.sh only runs executables"
+[ -x "$P14" ] || fail "the landed producer is not executable on disk"
+
+# The placed copy honors the drop-in contract in a STRANGER's repo: no
+# TEMPERLOOP_HOME, a PATH with no `temperloop`, and no workflows/ tree for
+# the shim's self-checkout resolver to find -> exit 0 and exactly the
+# contract's skip line, never a stack trace or a non-zero exit.
+prc=0
+producer_out="$(cd "$REPO14" && env -u TEMPERLOOP_HOME PATH=/usr/bin:/bin \
+  ./.temperloop/report.d/tokens 2>&1)" || prc=$?
+[ "$prc" -eq 0 ] \
+  || fail "the placed producer exited $prc in a kernel-less repo (the drop-in contract requires exit 0) — output: $producer_out"
+printf '%s\n' "$producer_out" | grep -qF "skipped -- tokens: producer unavailable" \
+  || fail "the placed producer did not emit the contract's skip line in a kernel-less repo (got: $producer_out)"
+
+[ "$(jq '[.installs[] | select(.type != "proposal_pr")] | length' "$REPO14/.temperloop/config")" -eq 0 ] \
+  || fail "placing the producer minted a non-proposal_pr installs[] entry — a TREE artifact rides the files manifest, never installs[] (got: $(jq -c '.installs' "$REPO14/.temperloop/config"))"
+echo "PASS: init proposes the tokens producer shim verbatim at mode 755, executable, contract-honoring in a kernel-less repo, with no new installs[] entry type"
+
+# =============================================================================
+# 15. AN EXISTING PRODUCER IS NEVER OVERWRITTEN (temperloop#984). A producer
+#     already at that path belongs to the ADOPTER — hand-written, or edited
+#     after an earlier `init`. Silently clobbering it would destroy work
+#     `init` has no standing to touch, with no undo. Present -> leave it
+#     byte-for-byte alone, say so, and don't even include it in the
+#     proposal commit.
+#
+#     The sentinel is pushed to the fixture's origin/main on purpose:
+#     proposal-pr.sh re-creates the proposal branch fresh off the BASE tip
+#     (preferring refs/remotes/origin/<base>), so a seed that only existed
+#     as a local commit would vanish from the working tree for a reason
+#     that has nothing to do with overwriting — and the test would pass or
+#     fail for the wrong reason.
+# =============================================================================
+REPO15="$(new_fixture_repo repo15)"
+mkdir -p "$REPO15/.temperloop/report.d"
+cat > "$REPO15/.temperloop/report.d/tokens" <<'ADOPTER_PRODUCER_EOF'
+#!/usr/bin/env bash
+# An adopter's OWN tokens producer. `temperloop init` must never touch this.
+echo '{"tokens_spent": 4242}'
+ADOPTER_PRODUCER_EOF
+chmod 755 "$REPO15/.temperloop/report.d/tokens"
+cp "$REPO15/.temperloop/report.d/tokens" "$WORK/producer15.before"
+git -C "$REPO15" add -A
+git -C "$REPO15" commit -q -m "seed an adopter-owned tokens producer"
+git -C "$REPO15" push -q origin main 2>/dev/null
+git -C "$REPO15" fetch -q origin
+
+FAKE_PR_NUM=31 run 0 --dir "$REPO15" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "report.d producer: .temperloop/report.d/tokens already present — leaving it untouched" \
+  || fail "init did not report skipping the pre-existing producer (got: $out)"
+echo "$out" | grep -qF "report.d producer: proposing" \
+  && fail "init proposed the producer even though one was already present (got: $out)"
+
+cmp -s "$WORK/producer15.before" "$REPO15/.temperloop/report.d/tokens" \
+  || fail "init OVERWROTE a pre-existing tokens producer — it must be byte-identical after the run"
+git -C "$REPO15" show --name-only --format= HEAD | grep -qF ".temperloop/report.d/tokens" \
+  && fail "the proposal commit touched the pre-existing tokens producer (it must not appear in the diff at all)"
+mode15="$(git -C "$REPO15" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode15" = "100755" ] || fail "the pre-existing producer's mode changed (git mode $mode15, want 100755)"
+echo "PASS: a pre-existing tokens producer is byte-identical after init, absent from the proposal commit, and its mode is unchanged"
 
 echo
 echo "ALL PASS: test_init.sh"
