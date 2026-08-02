@@ -884,5 +884,137 @@ git -C "$REPO18B" show "HEAD:.temperloop/report.d/tokens" >/dev/null 2>&1 \
   || fail "an EMPTY shim left a zero-byte producer in the working tree"
 echo "PASS: an unusable shim (missing OR empty) degrades to the legible skip, never commits a zero-byte executable, and never fails the run"
 
+# =============================================================================
+# 19. `--base` IS VALIDATED BEFORE IT REACHES git (command injection).
+#
+#     `--base` parses unvalidated, and the base-tip probe made init the FIRST
+#     consumer of it — `git fetch "$remote" "$base"`. git honors
+#     option-shaped arguments, so `--base '--upload-pack=<cmd>'` EXECUTED.
+#     proposal-pr.sh does reject the name, but only AFTER init's own fetch had
+#     already run it: downstream refusal is not a guard. This asserts the
+#     ORDERING, not merely the refusal — the marker file must never appear.
+# =============================================================================
+REPO19="$(new_fixture_repo repo19)"
+PWNED_MARKER="$WORK/PWNED-marker"
+rm -f "$PWNED_MARKER"
+run 2 --dir "$REPO19" --gh-repo acme/widget --no-network \
+  --base "--upload-pack=touch $PWNED_MARKER; git-upload-pack"
+[ ! -e "$PWNED_MARKER" ] \
+  || fail "COMMAND INJECTION: --base reached git and executed its --upload-pack payload before anything validated it"
+echo "$out" | grep -qF "is not a valid git branch name" \
+  || fail "a malformed --base was not refused with a clear message (got: $out)"
+# ...and the guard is not merely "reject everything": an explicit, valid
+# --base must still drive a normal run.
+FAKE_PR_NUM=36 run 0 --dir "$REPO19" --gh-repo acme/widget --no-network --base main
+echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+  || fail "an explicit, valid --base was refused by the new guard (got: $out)"
+echo "PASS: a malformed --base is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --base still runs"
+
+# =============================================================================
+# 20. boards.conf UNION: the base tip's board entries survive a STALE local
+#     checkout that knows fewer of them.
+#
+#     The boards.conf mirror of test 17, and the half the earlier fix missed.
+#     That cut let the working tree's whole-file bytes REPLACE base's, which
+#     only looked safe because the sole covered case was "tree lacks the file
+#     entirely". A stale clone carrying a STALE boards.conf still won outright
+#     and deleted every board.<N>.* base had and the tree didn't.
+#
+#     Reproduced exactly: base carries board.1 + board.2, the local checkout
+#     knows only board.1, and init adds board.3. All three must survive.
+# =============================================================================
+REPO20="$(new_fixture_repo repo20)"
+mkdir -p "$REPO20/workflows/scripts/board"
+printf '%s\n' 'board.1.repo=acme/widget' 'board.1.backend=issues' \
+  > "$REPO20/workflows/scripts/board/boards.conf"
+git -C "$REPO20" add -A
+git -C "$REPO20" commit -q -m "seed boards.conf with board.1 only"
+git -C "$REPO20" push -q origin main || fail "could not push the board.1-only boards.conf"
+
+# A second clone adds board.2 and pushes — origin/main now knows more than
+# REPO20's working tree does.
+OTHER20="$WORK/repo20-other"
+git clone -q "$WORK/repo20-upstream.git" "$OTHER20" 2>/dev/null
+printf '%s\n' 'board.1.repo=acme/widget' 'board.1.backend=issues' '' \
+  'board.2.repo=acme/other' 'board.2.backend=issues' \
+  > "$OTHER20/workflows/scripts/board/boards.conf"
+git -C "$OTHER20" add -A
+git -C "$OTHER20" commit -q -m "another adopter adds board.2"
+git -C "$OTHER20" push -q origin main || fail "could not push board.2 from the second clone"
+
+# REPO20 learns the new tip but never merges it: a stale working tree.
+git -C "$REPO20" fetch -q origin
+grep -q "board.2." "$REPO20/workflows/scripts/board/boards.conf" \
+  && fail "fixture bug: REPO20's working tree already knows board.2, so this test proves nothing"
+
+FAKE_PR_NUM=37 run 0 --dir "$REPO20" --gh-repo acme/widget --no-network --board 3
+union_conf="$(git -C "$REPO20" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
+printf '%s\n' "$union_conf" | grep -q "board.2.repo=acme/other" \
+  || fail "THE UNION DROPPED board.2 — an entry that exists on the base branch but not in the stale local checkout:\n$union_conf"
+printf '%s\n' "$union_conf" | grep -q "board.1.repo=acme/widget" \
+  || fail "the union dropped board.1 (got:\n$union_conf)"
+printf '%s\n' "$union_conf" | grep -q "board.3.repo=acme/widget" \
+  || fail "the union did not add the newly requested board.3 (got:\n$union_conf)"
+assert_complete_boards_entry "union boards.conf" "$union_conf" 3
+echo "$out" | grep -qF "keeping every board main already defines" \
+  || fail "the propose branch did not narrate what it was preserving (got: $out)"
+echo "PASS: boards.conf is a real union — every board the base tip defines survives a stale local checkout, and the new entry is added alongside"
+
+# =============================================================================
+# 21. RULE 2 PRESERVES THE ADOPTER'S MODE, it does not re-arm it.
+#
+#     The carry-forward arm hardcoded mode 755 regardless of what it carried.
+#     644 is a MEANINGFUL state for a producer — report.sh only runs
+#     executables, so a non-executable one renders as "skipped -- tokens:
+#     producer unavailable". That makes `chmod 644` a plausible deliberate
+#     DISABLE, which forcing 755 silently re-armed while printing "unchanged".
+# =============================================================================
+REPO21="$(new_fixture_repo repo21)"
+mkdir -p "$REPO21/.temperloop/report.d"
+printf '%s\n' '#!/usr/bin/env bash' 'echo DELIBERATELY-DISABLED' \
+  > "$REPO21/.temperloop/report.d/tokens"
+chmod 644 "$REPO21/.temperloop/report.d/tokens"
+cp "$REPO21/.temperloop/report.d/tokens" "$WORK/producer21.before"
+
+FAKE_PR_NUM=38 run 0 --dir "$REPO21" --gh-repo acme/widget --no-network
+mode21="$(git -C "$REPO21" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode21" = "100644" ] \
+  || fail "rule 2 re-armed a deliberately non-executable producer (git mode $mode21, want 100644)"
+[ ! -x "$REPO21/.temperloop/report.d/tokens" ] \
+  || fail "rule 2 made a 644 producer executable on disk"
+# Newline-tolerant, unlike test 15's `cmp -s`. Test 15's file rides through
+# on the base tip and is never rewritten, so it stays byte-exact; a rule-2
+# carry-forward is re-written THROUGH the manifest and so loses its final
+# newline exactly like every other entry (proposal-pr.sh re-reads `.content`
+# via a `$(…)` capture). That is why the run's own line claims "content and
+# mode", not "bytes" — asserting cmp here would be asserting a claim the
+# generator makes impossible.
+[ "$(cat "$WORK/producer21.before")" = "$(cat "$REPO21/.temperloop/report.d/tokens")" ] \
+  || fail "rule 2 changed the carried-forward producer's content"
+echo "$out" | grep -qF "mode (644) preserved" \
+  || fail "the carry-forward line did not name the mode it preserved (got: $out)"
+echo "$out" | grep -qF "bytes and mode" \
+  && fail "the carry-forward line overclaims byte-exactness, which the generator's newline strip makes impossible (got: $out)"
+echo "PASS: rule 2 carries the adopter's own mode (644 stays 644, content unchanged) instead of forcing 755"
+
+# =============================================================================
+# 22. THE --dry-run PREVIEW IS RELATIVE TO THE BASE TIP, and says so.
+#
+#     A real run commits onto a branch cut fresh off base, so base is what
+#     "would create / unchanged" is relative to. Comparing against the working
+#     tree made the preview lie routinely once rule 2's carry-forward existed:
+#     REPO16 has already had two real runs, so its tree carries the producer
+#     while origin/main still does not — the old preview printed `unchanged`
+#     for a path a real run would CREATE.
+# =============================================================================
+run 0 --dir "$REPO16" --gh-repo acme/widget --no-network --dry-run
+printf '%s\n' "$out" | grep -qE '^  would create: \.temperloop/report\.d/tokens$' \
+  || fail "the dry-run preview did not report the producer as a CREATE against the base tip (got: $out)"
+printf '%s\n' "$out" | grep -qF "unchanged:    .temperloop/report.d/tokens" \
+  && fail "the dry-run preview still compares against the working tree — it called a base-tip CREATE 'unchanged' (got: $out)"
+printf '%s\n' "$out" | grep -qF "NOT refreshed (--dry-run performs no fetch" \
+  || fail "the dry-run preview did not disclose that its base ref was not refreshed (got: $out)"
+echo "PASS: the --dry-run preview diffs against the base tip a real run would branch from, and discloses that it skipped the fetch"
+
 echo
 echo "ALL PASS: test_init.sh"

@@ -901,11 +901,24 @@ all_installs="$(jq -c 'unique_by([.type, (.name // ""), (.branch // ""), (.repo 
 # independently — two copies of a default-branch resolver drifting apart
 # would reintroduce exactly the bug above, one layer deeper and harder to
 # see. init decides; the generator is told.
+#
+# WHAT THAT DOES AND DOES NOT GUARANTEE. It pins the ref NAME both scripts
+# mean — that much is by construction. It does NOT pin the ref TIP: this
+# script fetches and probes, then proposal-pr.sh fetches again before cutting
+# the branch, so a push landing between the two moves the tip out from under
+# the decisions made above. The residual race is a stale-by-seconds manifest
+# (an entry proposed against a base that just gained the file), not a wrong
+# TREE — the failure this section exists to prevent — and the generator's own
+# diff-against-base is what settles it: a redundant entry becomes NO_CHANGES.
+# Narrowing it further would mean passing a resolved SHA rather than a branch
+# name, which the generator's interface does not take today.
 # ---------------------------------------------------------------------------
 
-# Mirrors proposal-pr.sh's own default_branch() — kept identical on purpose,
-# and rendered harmless by init passing the RESULT to that script (above), so
-# the two can never disagree about which ref they mean.
+# Mirrors proposal-pr.sh's own default_branch(). What passing the RESULT to
+# that script guarantees is agreement on the resolved NAME — not that the two
+# scripts do the same things in the same order with it. proposal-pr.sh
+# validates the name BEFORE it invokes git; this script must do the same, and
+# for a while did not (see "VALIDATE BEFORE ACTING" below).
 init_default_branch() {
   local ref b
   if ref="$(git -C "$repo_dir" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null)"; then
@@ -923,12 +936,36 @@ init_default_branch() {
 
 [ -n "$base" ] || base="$(init_default_branch || true)"
 
+# ---------------------------------------------------------------------------
+# VALIDATE BEFORE ACTING — `--base` is an UNVALIDATED CLI string, and the
+# fetch below is its first consumer.
+#
+# `--base` parses as a bare `base="${2:?…}"` with no checking, and `git fetch`
+# honors option-shaped arguments: a value like
+# `--upload-pack=touch /tmp/PWNED; git-upload-pack` EXECUTES at the fetch.
+# Before the base-tip probe existed this script never invoked git with `$base`
+# at all — it only forwarded the string, and proposal-pr.sh's own
+# validate_branch() rejected it before that script's fetch. Introducing a
+# fetch here inverted that ordering: the generator still refuses, but only
+# AFTER the command has already run. Downstream refusal is not a guard.
+#
+# This is documented CLI surface (VERSIONING.md's CLI-surface row) that
+# adopter wrapper scripts and CI jobs pass, so the value is not always a
+# human's own keystroke. Validate once, HERE, before the first git invocation
+# — one guard then covers the fetch, both show-refs, every cat-file/show in
+# base_has/base_show, and the message interpolations.
+# ---------------------------------------------------------------------------
+if [ -n "$base" ] && ! git check-ref-format "refs/heads/$base" 2>/dev/null; then
+  echo "init.sh: --base '$base' is not a valid git branch name" >&2
+  exit 2
+fi
+
 # Same best-effort fetch + same ref preference order proposal-pr.sh uses, so
 # the tip this script INSPECTS is the tip that script BRANCHES FROM. Skipped
 # on --dry-run, which is contractually zero-write to $repo_dir (temperloop
 # #413) — a fetch writes refs under .git/. A dry run's preview is therefore
-# computed against whatever base ref is already local, which is the honest
-# thing for a preview that is explicitly not talking to the network.
+# computed against whatever base ref is already local; Step 4's preview says
+# so out loud rather than leaving the operator to infer it.
 base_ref=""
 if [ -n "$base" ]; then
   [ "$dry_run" -eq 1 ] || git -C "$repo_dir" fetch "$remote" "$base" >/dev/null 2>&1 || true
@@ -999,39 +1036,119 @@ boards_conf_target="workflows/scripts/board/boards.conf"
 # manifest — the same deletion bug, one question earlier.
 if [ -d "$board_toolkit_dir" ] || base_has "workflows/scripts/board"; then
   boards_conf_abs="$repo_dir/$boards_conf_target"
-  # What the base tip carries today — the thing the proposal is a diff
-  # AGAINST, and the only safe baseline for "is there anything to do".
+
+  # --- A REAL UNION, not a preference -------------------------------------
+  # An earlier cut of this arm let the working tree's whole-file bytes
+  # REPLACE the base tip's, and called that a union. It is not: a stale clone
+  # carrying a stale boards.conf then won outright and DELETED every
+  # board.<N>.* the base had and the tree didn't — force-pushed over the open
+  # PR, silently. Fixing "the tree lacks the file entirely" closed only half
+  # the hole; this closes the other half.
+  #
+  # THE RULE: the base tip is authoritative and is preserved BYTE-FOR-BYTE as
+  # the foundation. The working tree may only ADD board sections base does
+  # not already define. So the proposal is always a superset of base — never
+  # a rewrite of it — and the invariant is asserted below rather than merely
+  # intended, because "I meant a union" is exactly the claim that was wrong.
+  #
+  # When base has no boards.conf at all there is nothing of base's to
+  # preserve, so the tree's bytes are kept VERBATIM instead of being
+  # reconstructed from sections — that keeps an adopter's comments and
+  # layout, which section extraction would quietly discard.
+
+  # boards_conf_ids <content> — the distinct board ids a body assigns.
+  boards_conf_ids() {
+    printf '%s\n' "$1" | awk -F. '/^board\./ { if (NF >= 3) print $2 }' | sort -u
+  }
+  # boards_conf_section <content> <id> — one board id's assignment lines.
+  # Exact prefix compare via awk `index`, never a regex: a board id is
+  # caller data and must not be interpolated into a pattern.
+  boards_conf_section() {
+    printf '%s\n' "$1" | awk -v p="board.$2." 'index($0, p) == 1'
+  }
+  boards_conf_has_id() {
+    printf '%s\n' "$1" | grep -Fxq "$2"
+  }
+
+  boards_conf_unsafe=0
   base_conf=""
   base_conf_present=0
   if base_has "$boards_conf_target"; then
-    base_conf="$(base_show "$boards_conf_target")"
-    base_conf_present=1
+    # CHECK the capture (this script has no `set -e`): an unchecked read that
+    # came back empty would make base look like it holds nothing, and the
+    # "union" would then propose a file that erases it.
+    if base_conf="$(base_show "$boards_conf_target")"; then
+      base_conf_present=1
+    else
+      boards_conf_unsafe=1
+      echo "init.sh: WARNING — $boards_conf_target exists at ${base:-the base branch} but could not be read; not proposing boards.conf (refusing to risk overwriting entries this run cannot see)" >&2
+    fi
   fi
-  # The most current content we can see: the working tree when it has the
-  # file (it may carry board entries not yet on base — including, on a
-  # re-run, the very entry this script proposed last time), else the base
-  # tip's. Reading ONLY the tree is what used to clobber an adopter's
-  # boards.conf that existed on base but not in a stale local checkout.
-  current_conf="$base_conf"
+  tree_conf=""
   if [ -f "$boards_conf_abs" ] && [ -r "$boards_conf_abs" ]; then
-    current_conf="$(cat "$boards_conf_abs")"
+    if ! tree_conf="$(cat "$boards_conf_abs")"; then
+      boards_conf_unsafe=1
+      echo "init.sh: WARNING — could not read $boards_conf_target from the working tree; not proposing boards.conf (its board entries cannot be preserved unread)" >&2
+    fi
   fi
-  if printf '%s\n' "$current_conf" | grep -Fq "board.$board_num."; then
-    desired_conf="$current_conf"
-  elif [ -n "$current_conf" ]; then
-    desired_conf="$current_conf"$'\n\n'"$boards_conf_entry"
-  else
-    desired_conf="$boards_conf_entry"
-  fi
-  # Propose only when the base tip does not ALREADY say exactly this. That
-  # single comparison covers every case at once: nothing to do once the
-  # entry has landed on base, a carry-forward on a re-run (base lacks the
-  # file, the tree has it), and a genuine first proposal.
-  if [ "$base_conf_present" -eq 1 ] && [ "$desired_conf" = "$base_conf" ]; then
-    echo "boards.conf: board.$board_num.* already on ${base:-the base branch} — leaving $boards_conf_target untouched"
-  else
-    manifest_entries+=("$(jq -cn --arg p "$boards_conf_target" --arg c "$desired_conf" '{path:$p, content:$c}')")
-    title_parts="$title_parts + boards.conf"
+
+  if [ "$boards_conf_unsafe" -eq 0 ]; then
+    if [ "$base_conf_present" -eq 1 ]; then
+      # Base is the foundation, kept verbatim; the tree may only add ids it
+      # does not already define.
+      base_ids="$(boards_conf_ids "$base_conf")"
+      desired_conf="$base_conf"
+      for tree_id in $(boards_conf_ids "$tree_conf"); do
+        boards_conf_has_id "$base_ids" "$tree_id" && continue
+        tree_section="$(boards_conf_section "$tree_conf" "$tree_id")"
+        [ -n "$tree_section" ] || continue
+        desired_conf="$desired_conf"$'\n\n'"$tree_section"
+      done
+    else
+      # Nothing on base to preserve — keep the tree's own bytes verbatim.
+      desired_conf="$tree_conf"
+    fi
+
+    # Our own entry, only if no one has already defined this board id.
+    if ! boards_conf_has_id "$(boards_conf_ids "$desired_conf")" "$board_num"; then
+      if [ -n "$desired_conf" ]; then
+        desired_conf="$desired_conf"$'\n\n'"$boards_conf_entry"
+      else
+        desired_conf="$boards_conf_entry"
+      fi
+    fi
+
+    # ASSERT the superset invariant before proposing anything. This is the
+    # backstop for the claim above: every board id the base tip defines must
+    # still be defined by what we are about to propose. A violation means the
+    # union logic is wrong, so refuse and say so rather than force-push a
+    # deletion over the adopter's open PR.
+    boards_conf_lost=""
+    desired_ids="$(boards_conf_ids "$desired_conf")"
+    for base_id in $(boards_conf_ids "$base_conf"); do
+      boards_conf_has_id "$desired_ids" "$base_id" \
+        || boards_conf_lost="$boards_conf_lost board.$base_id.*"
+    done
+    if [ -n "$boards_conf_lost" ]; then
+      echo "init.sh: WARNING — not proposing $boards_conf_target: it would drop$boards_conf_lost, which ${base:-the base branch} defines. This is a bug in init's boards.conf merge; the rendered entry is still recorded in $config_rel for you to apply by hand." >&2
+    elif [ -z "$desired_conf" ]; then
+      # Same no-`set -e` hazard the producer arm guards twice: never propose
+      # an empty file over a path that is supposed to carry configuration.
+      echo "init.sh: WARNING — computed an empty $boards_conf_target; not proposing it" >&2
+    elif [ "$base_conf_present" -eq 1 ] && [ "$desired_conf" = "$base_conf" ]; then
+      echo "boards.conf: board.$board_num.* already on ${base:-the base branch} — leaving $boards_conf_target untouched"
+    else
+      manifest_entries+=("$(jq -cn --arg p "$boards_conf_target" --arg c "$desired_conf" '{path:$p, content:$c}')")
+      title_parts="$title_parts + boards.conf"
+      # Narrate the propose branch too. It used to be the ONLY silent
+      # decision in this script — the operator saw nothing at all while
+      # their board entries were being rewritten.
+      if [ "$base_conf_present" -eq 1 ]; then
+        echo "boards.conf: proposing $boards_conf_target — keeping every board ${base:-the base branch} already defines and adding board.$board_num.*"
+      else
+        echo "boards.conf: proposing $boards_conf_target — adding board.$board_num.* (not yet on ${base:-the base branch})"
+      fi
+    fi
   fi
 else
   echo "boards.conf: workflows/scripts/board/ not present in this repo — rendered entry recorded in $config_rel only:"
@@ -1053,6 +1170,7 @@ producer_abs="$repo_dir/$producer_target"
 # worse than saying nothing at all.
 producer_body_note=""
 producer_source=""
+producer_mode=""
 if base_has "$producer_target"; then
   # RULE 1 — already on the base tip. The proposal branch is cut FROM base,
   # so it inherits the adopter's file verbatim: there is nothing to add and,
@@ -1075,7 +1193,26 @@ elif [ -e "$producer_abs" ] || [ -L "$producer_abs" ]; then
   # too and would silently write through to its missing target.
   if [ -f "$producer_abs" ] && [ -r "$producer_abs" ]; then
     producer_source="$producer_abs"
-    echo "report.d producer: carrying the existing $producer_target forward unchanged (present here, not yet on ${base:-the base branch})"
+    # PRESERVE THEIR MODE, don't re-arm it. Hardcoding 755 on this arm was
+    # wrong: the file is the ADOPTER's, and 644 is a MEANINGFUL state here —
+    # report.sh only runs executables, so a non-executable producer renders
+    # as "skipped -- tokens: producer unavailable". That makes chmod 644 a
+    # plausible deliberate DISABLE, and forcing 755 silently re-armed it
+    # while the line below said "unchanged". 755 belongs to rule 3, where
+    # the bytes really are ours.
+    if [ -x "$producer_abs" ]; then producer_mode="755"; else producer_mode="644"; fi
+    # Say what is and is not preserved. `-f` above follows symlinks, so a
+    # symlinked producer is carried as a regular file holding its target's
+    # bytes — the link itself does not survive the manifest, and an operator
+    # who deliberately symlinked it should know that.
+    #
+    # NOT byte-exact, and the message must not claim it is: like every
+    # manifest entry, this one loses its FINAL NEWLINE on the way through
+    # proposal-pr.sh (see the capture note below). "Content and mode" is the
+    # honest claim; "bytes" would not be.
+    producer_carry_note=""
+    [ -L "$producer_abs" ] && producer_carry_note=", flattened from a symlink to a regular file"
+    echo "report.d producer: carrying the existing $producer_target forward — content and mode ($producer_mode) preserved$producer_carry_note (present here, not yet on ${base:-the base branch})"
   else
     # Unreadable, or not a regular file. We cannot copy bytes we cannot
     # read, so this one case genuinely cannot be carried — say so LOUDLY on
@@ -1094,8 +1231,10 @@ elif [ ! -f "$PRODUCER_SHIM" ] || [ ! -r "$PRODUCER_SHIM" ] || [ ! -s "$PRODUCER
   # exists to make legible, arriving illegibly.
   echo "report.d producer: skipped — shim unavailable at $PRODUCER_SHIM"
 else
-  # RULE 3 — on neither side. Propose ours.
+  # RULE 3 — on neither side. Propose ours, and only here is a hardcoded 755
+  # ours to choose: these are the kernel's bytes, and the shim is exec'd.
   producer_source="$PRODUCER_SHIM"
+  producer_mode="755"
 fi
 
 if [ -n "$producer_source" ]; then
@@ -1117,7 +1256,7 @@ if [ -n "$producer_source" ]; then
     echo "init.sh: WARNING — read $producer_source but got no content; not proposing $producer_target (refusing to commit a zero-byte executable)" >&2
   else
     manifest_entries+=("$(jq -cn --arg p "$producer_target" --arg c "$producer_content" \
-      '{path:$p, content:$c, mode:"755"}')")
+      --arg m "${producer_mode:-755}" '{path:$p, content:$c, mode:$m}')")
     title_parts="$title_parts + report.d/tokens"
     # The body note describes OUR shim, so it is set only when that is what
     # we are actually proposing. On the carry-forward arm the file is the
@@ -1163,19 +1302,50 @@ if [ "$dry_run" -eq 1 ]; then
   # the second half of #413's bug report (a dry run left the checkout on
   # foundation-init/config instead of the caller's original branch). So a
   # dry run never calls it at all; this preview is computed locally and
-  # read-only, against whatever branch/HEAD the caller already has
-  # checked out — it is never switched, and nothing is written to disk.
+  # read-only — nothing is switched and nothing is written to disk.
+  #
+  # COMPARED AGAINST THE BASE TIP, not the working tree. A real run commits
+  # onto a branch cut fresh off base, so base is what "would create / would
+  # update / unchanged" is actually relative to. Comparing against the
+  # working tree made the preview LIE routinely once rule 2's carry-forward
+  # existed: after one real run it printed `unchanged: .temperloop/report.d/
+  # tokens` while base did not carry that path at all — the run would in fact
+  # CREATE it. Fall back to the tree only when no base ref resolved, and
+  # label that explicitly rather than presenting it as the same answer.
   echo "dry-run — tree-only preview; zero writes to $repo_dir (no branch switch, no commit, no push, no PR)"
+  if [ -n "$base_ref" ]; then
+    # Name the ref AND the staleness: --dry-run deliberately skips the fetch
+    # (a fetch writes refs under .git/, and this mode promises zero writes),
+    # so every assertive line above and below is relative to whatever this
+    # checkout last saw — not to what is on the remote right now.
+    echo "  comparing against $base_ref — NOT refreshed (--dry-run performs no fetch, so this may be behind the remote)"
+  else
+    # With no base ref there is nothing to diff against, and proposal-pr.sh —
+    # the thing that would REFUSE the run for this very reason — is never
+    # invoked on this path. Without this line a dry run prints a confident
+    # first-time-proposal preview and no refusal at all.
+    echo "  base unresolved — preview assumes an EMPTY base; a real run would be refused until --base resolves"
+  fi
   for entry in "${manifest_entries[@]}"; do
     entry_path="$(jq -r '.path' <<<"$entry")"
     entry_content="$(jq -r '.content' <<<"$entry")"
-    entry_abs="$repo_dir/$entry_path"
-    if [ ! -e "$entry_abs" ]; then
-      echo "  would create: $entry_path"
-    elif [ "$(cat "$entry_abs" 2>/dev/null)" = "$entry_content" ]; then
-      echo "  unchanged:    $entry_path"
+    if [ -n "$base_ref" ]; then
+      if ! base_has "$entry_path"; then
+        echo "  would create: $entry_path"
+      elif [ "$(base_show "$entry_path")" = "$entry_content" ]; then
+        echo "  unchanged:    $entry_path"
+      else
+        echo "  would update: $entry_path"
+      fi
     else
-      echo "  would update: $entry_path"
+      entry_abs="$repo_dir/$entry_path"
+      if [ ! -e "$entry_abs" ]; then
+        echo "  would create: $entry_path (vs. local tree — base unresolved)"
+      elif [ "$(cat "$entry_abs" 2>/dev/null)" = "$entry_content" ]; then
+        echo "  unchanged:    $entry_path (vs. local tree — base unresolved)"
+      else
+        echo "  would update: $entry_path (vs. local tree — base unresolved)"
+      fi
     fi
   done
   outcome="DRY_RUN"
