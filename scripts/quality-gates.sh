@@ -933,6 +933,15 @@ fi
 qg_uint() { case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
 QG_START_AT="$(qg_uint "${QUALITY_GATES_START_AT:-0}")"
 QG_BUDGET_SECS="$(qg_uint "${QUALITY_GATES_BUDGET_SECS:-0}")"
+# …then DROP them from the environment, so no gate this run spawns inherits the
+# harness's own slicing state. The caller sets them as a command-prefix
+# assignment (`QUALITY_GATES_START_AT=50 … quality-gates.sh`), which exports them
+# to every descendant — and a gate that itself exercises this seam would then run
+# against the parent's indices instead of its own fixture. Caught live: under a
+# sliced run, scripts/tests/test_quality_gates_slice.sh inherited
+# START_AT=50/BUDGET=240 and failed. Same hermeticity concern the build.config.sh
+# scrub addresses at the other end (temperloop#1241).
+unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS
 
 # Run gates from the repo root so the `make` targets resolve regardless of the
 # caller's CWD (build 3e.5 runs this from a throwaway worker checkout).

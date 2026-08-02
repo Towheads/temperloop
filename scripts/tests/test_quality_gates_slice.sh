@@ -25,6 +25,15 @@
 
 set -uo pipefail
 
+# Control our own env. This suite may itself run AS A GATE inside a sliced
+# quality-gates.sh run, which sets these as a command-prefix assignment and so
+# exports them to every gate it spawns — leaking the parent's indices into every
+# fixture invocation below. quality-gates.sh now unsets them after reading them
+# for exactly this reason; clearing them here too keeps this suite hermetic even
+# against an older caller that doesn't. (Same shape as
+# test_quality_gates_freshness.sh's QUALITY_GATES_SKIP_FRESHNESS unset.)
+unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SRC="$REPO_ROOT/scripts/quality-gates.sh"
@@ -51,6 +60,9 @@ for i in 1 2 3 4 5 6; do
   cat >"$FAKE/g$i.sh" <<EOF
 #!/usr/bin/env bash
 echo "g$i" >> "\$QG_SLICE_MARK"
+# Record what THIS gate inherited of the harness's slicing state — case 11
+# asserts it is nothing (see the unset in quality-gates.sh).
+echo "start=\${QUALITY_GATES_START_AT-unset} budget=\${QUALITY_GATES_BUDGET_SECS-unset}" >> "\$QG_SLICE_MARK.env"
 sleep 1
 if [ "$i" = 4 ] && [ -f "\$(dirname "\$0")/g4.red" ]; then echo "g4 is red"; exit 1; fi
 exit 0
@@ -239,6 +251,22 @@ if [ "$RUN_RC" -eq 0 ] && [ "$(grep -c '^\[kernel\]' <<<"$RUN_OUT")" = "$N_GATES
   pass "--list ignores the slice seam and lists every gate"
 else
   fail "--list: rc=$RUN_RC out=$RUN_OUT"
+fi
+
+# --------------------------------------------------------------------------
+# 11. The harness's slicing state does NOT leak into the gates it runs. The
+#     caller sets these as a command-prefix assignment, which exports them to
+#     every descendant — so a gate that itself exercises this seam would run
+#     against the PARENT's indices. Caught live: this very suite, running as a
+#     gate inside a sliced run, inherited START_AT=50 and failed. Same
+#     hermeticity concern as the build.config.sh scrub (temperloop#1241).
+# --------------------------------------------------------------------------
+M="$WORK/m11"; : >"$M"; rm -f "$M.env"
+run_qg "$M" QUALITY_GATES_BUDGET_SECS=2 QUALITY_GATES_START_AT=1
+if [ -s "$M.env" ] && ! grep -qv 'start=unset budget=unset' "$M.env"; then
+  pass "the harness's slice state is unset for every gate it spawns (no leak into nested runs)"
+else
+  fail "slice state leaked into a gate's environment: $(cat "$M.env" 2>/dev/null)"
 fi
 
 echo
