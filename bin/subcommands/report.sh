@@ -311,6 +311,19 @@ echo
 # Migrating is still the right move (`git mv .foundation/report.d
 # .temperloop/report.d` -- the dir is tracked). Canonical statement:
 # kernel/workflows/scripts/lib/report.contract.md § Overlay drop-in contract.
+#
+# CWD CONTRACT (temperloop#983 review, BLOCKING finding 2): report.contract.md
+# states a drop-in is invoked with "cwd = the target repo", but until this
+# fix that was documentation only -- the loop below never actually `cd`'d,
+# so a producer ran with WHATEVER cwd this process inherited, not $repo_root.
+# That silently broke `temperloop report --dir /some/other/repo` run from a
+# THIRD location: a producer deriving anything from its own cwd (the
+# `tokens` producer's repo-scoping, temperloop#983, is exactly such a
+# consumer) would scope itself to the CALLER's cwd instead of the repo being
+# reported on -- a fresh instance of the very "wrong corpus" bug that item
+# exists to kill, just one level up. Fixed below by `cd`-ing to $repo_root
+# INSIDE the same command-substitution subshell that already isolates each
+# producer invocation, so this process's own cwd is never touched.
 # ---------------------------------------------------------------------------
 echo "-- Overlay-tier: repo drop-ins (.temperloop/report.d/) --"
 report_d="$repo_root/.temperloop/report.d"
@@ -338,7 +351,7 @@ else
       echo
       continue
     fi
-    out="$(run_with_timeout "$timeout_secs" "$f" 2>/dev/null)"
+    out="$(cd "$repo_root" && run_with_timeout "$timeout_secs" "$f" 2>/dev/null)"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       if [ "$rc" -eq 137 ]; then

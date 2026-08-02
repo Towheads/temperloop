@@ -432,6 +432,303 @@ EOF
     bash -c "! grep -nE '(^|[^A-Za-z0-9_])(curl|wget|nc|netcat|ssh|scp|rsync|telnet|ftp)([ \\t]|\$)|/dev/(tcp|udp)/' '$PRODUCER' | grep -vE '^[0-9]+:[[:space:]]*#'"
   check "PRODUCER: never calls gh either (this producer reads local files only)" \
     bash -c "! grep -nE '(^|[^A-Za-z0-9_])gh ' '$PRODUCER' | grep -vE '^[0-9]+:[[:space:]]*#'"
+
+  # =========================================================================
+  # 9e-9k. CORPUS SCOPING (temperloop#983) — "fix what corpus the token
+  # number is drawn from, and say so in the report". Hardened per TWO shell
+  # review rounds: round 1 found two BLOCKING issues in the first cut (a
+  # silent zero under a "THIS git checkout" notice when the derived root
+  # doesn't exist; report.sh never actually cd'ing to the target repo) plus
+  # several secondary findings; round 2 found the LC_ALL=C locale pin
+  # measurably moved AWAY from correctness (removed, see the producer's own
+  # header) and a missing 200-character encoded-name cap (9k below), plus
+  # the drift-guard and 9i-discrimination fixes above and below (see git log
+  # for both review rounds this addresses).
+  #
+  #   9e: the producer, run from a real (fixture) git checkout with a
+  #       POPULATED project directory, scopes --root to THAT checkout's own
+  #       Claude Code project directory and excludes a DECOY corpus placed
+  #       under a different project directory on the same fake $HOME -- the
+  #       important half, per this item's own acceptance bullet: a test that
+  #       only checked the notice string renders would pass even if the
+  #       number were still machine-wide.
+  #   9f: an explicit SPEND_TRANSCRIPT_ROOT override to a value OTHER than
+  #       its own default still wins over repo-scoping.
+  #   9g: end-to-end through `bin/subcommands/report.sh` (i.e. `temperloop
+  #       report` itself) -- the comparability caveat actually renders inline
+  #       with the tokens headline, not just in the producer's own stdout.
+  #   9h: the two previously-untested degrade arms -- a non-git cwd, and an
+  #       unset $HOME -- both fall back to the GENERIC machine-wide notice,
+  #       never a false "THIS git checkout" claim.
+  #   9i: BLOCKING finding 1 -- a derived root that does not exist (a fresh
+  #       checkout, a linked worktree, a CI runner) must render the
+  #       path-naming notice, never a silent "0 tokens" under a
+  #       THIS-checkout claim; discriminated with a decoy corpus so a
+  #       nonzero total proves the fallback actually ran, not just that a
+  #       path was empty.
+  #   9j: ALSO-FIX finding 3 -- $SPEND_TRANSCRIPT_ROOT exported at its OWN
+  #       documented default (exactly what every session that sources
+  #       build.config.sh at its own Step 0 inherits) must NOT be treated as
+  #       an override; repo-scoping must still engage.
+  #   9k: review round 2, finding 2 -- an encoded name over Claude Code's
+  #       200-character cap must render its OWN distinct notice (no path
+  #       named -- the untruncated path structurally cannot exist), not the
+  #       path-naming notice from 9i; same decoy-discrimination shape as 9i.
+  #
+  # Every negative assertion below ("does not claim X") is paired with a
+  # positive assertion on what the notice DOES say, in the SAME jq
+  # expression where practical -- a bare `! ... | grep -q X` passes
+  # vacuously on empty output or a jq error, which is exactly the failure
+  # mode for the two assertions guarding the notice from lying (review
+  # finding 7).
+  # =========================================================================
+
+  # ---------------------------------------------------------------------
+  # DRIFT GUARD (temperloop#983 review round 2, finding 3): the producer
+  # hardcodes its own copy of build.config.sh's SPEND_TRANSCRIPT_ROOT
+  # default (`default_transcript_root="${HOME:-}/.claude/projects"`,
+  # workflows/scripts/report-producers/tokens) so it can tell an EXPLICIT
+  # caller override apart from the value every /build session inherits
+  # merely by sourcing build.config.sh (ALSO-FIX finding 3, already fixed).
+  # There is no live link between the two literals -- if build.config.sh's
+  # own default ever changes, the producer's comparison silently INVERTS:
+  # every /build session's exported (new) default now reads as a
+  # "different" value, gets classified as an override, and repo-scoping is
+  # silently disabled again -- re-arming the exact bug ALSO-FIX 3 closed,
+  # from a one-line edit in a completely different file that would have no
+  # reason to touch this test. Caught here by EXPANDING both literals under
+  # a synthetic $HOME and asserting the results agree -- semantic agreement,
+  # not a brittle string diff (the two sides use different shell syntax,
+  # `$HOME/...` vs `${HOME:-}/...`, which are equivalent once expanded).
+  # ---------------------------------------------------------------------
+  expand_under_home() { # expand_under_home <raw-shell-expr> <home-value>
+    HOME="$2" bash -c "printf '%s' \"$1\""
+  }
+  BUILD_CONFIG_SH="$REPO_ROOT/workflows/scripts/build/build.config.sh"
+  build_default_raw="$(grep -oE 'SPEND_TRANSCRIPT_ROOT:=[^}]+' "$BUILD_CONFIG_SH" | head -1 | sed 's/^SPEND_TRANSCRIPT_ROOT:=//')"
+  producer_default_raw="$(grep -oE 'default_transcript_root="[^"]+"' "$PRODUCER" | head -1 | sed 's/^default_transcript_root="//; s/"$//')"
+  check "DRIFT SETUP: both the build.config.sh default and the producer's own copy of it were found (a miss here means one side's literal shape changed and this drift guard itself needs updating, not a pass)" \
+    bash -c "[ -n '$build_default_raw' ] && [ -n '$producer_default_raw' ]"
+  SYNTHETIC_HOME_FOR_DRIFT="/synthetic-home-983-drift-check"
+  build_default_expanded="$(expand_under_home "$build_default_raw" "$SYNTHETIC_HOME_FOR_DRIFT")"
+  producer_default_expanded="$(expand_under_home "$producer_default_raw" "$SYNTHETIC_HOME_FOR_DRIFT")"
+  check_eq "DRIFT: build.config.sh's SPEND_TRANSCRIPT_ROOT default and the producer's own default_transcript_root literal expand to the SAME value under a synthetic \$HOME -- a mismatch here means the two literals have drifted apart and repo-scoping's override-detection is silently disabled again" \
+    "$build_default_expanded" "$producer_default_expanded"
+
+  FAKE_HOME="$TMP/fake-home-983"
+  FAKEREPO="$TMP/fake-repo-983"
+  mkdir -p "$FAKEREPO"
+  git -C "$FAKEREPO" init -q
+  REAL_FAKEREPO_ROOT="$(git -C "$FAKEREPO" rev-parse --show-toplevel 2>/dev/null)"
+
+  # Review finding 9: a git-init/rev-parse failure here used to be silently
+  # swallowed (`|| true`), so the ENTIRE 9e-9j block -- everything that
+  # proves this item's core fix -- could vanish from the suite without ever
+  # failing it. Make that LOUD: route it through `check` (counts toward
+  # $fail) instead of a bare informational skip line.
+  check "SCOPE SETUP: the fixture checkout initializes and resolves its own git toplevel (required for 9e-9j; a failure here is a broken test environment, not a legitimate skip)" \
+    test -n "$REAL_FAKEREPO_ROOT"
+
+  if [ -n "$REAL_FAKEREPO_ROOT" ]; then
+    ENC="$(printf '%s' "$REAL_FAKEREPO_ROOT" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
+    INSCOPE_ROOT="$FAKE_HOME/.claude/projects/$ENC"
+    DECOY_ROOT="$FAKE_HOME/.claude/projects/-some-other-unrelated-repo"
+
+    # in-scope: 1 call. units = 1000*0.1 + 200*1.25 + 40*5 + 8*1 = 558
+    { usage_line reqS1 2026-07-10T10:00:00.000Z claude-opus-5 1000 200 40 8 text; } \
+      | mkagent "$INSCOPE_ROOT" wf_scope-001 s0001
+    # decoy: a DIFFERENT project's spend on the same machine -- must NOT be
+    # counted. units = 9000*0.1 + 9000*1.25 + 900*5 + 90*1 = 16740. If it
+    # leaked in, the total would be 558+16740=17298, not 558.
+    { usage_line reqD1 2026-07-10T10:00:00.000Z claude-opus-5 9000 9000 900 90 text; } \
+      | mkagent "$DECOY_ROOT" wf_decoy-001 d0001
+
+    RUN_PRODUCER_SCOPED() { # extra args forwarded to env
+      (cd "$FAKEREPO" && env -u SPEND_TRANSCRIPT_ROOT HOME="$FAKE_HOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 \
+        SPEND_WEIGHT_OUTPUT=5 SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+        BASELINE_SNAPSHOT_LOOKBACK_DAYS=36500 "$@")
+    }
+
+    OUT9E="$(RUN_PRODUCER_SCOPED "$PRODUCER")"
+    check_eq "SCOPE 9e: repo-scoped tokens_spent counts ONLY this checkout's own transcripts (558) -- the decoy project's spend on the same machine is excluded" \
+      "558" "$(printf '%s' "$OUT9E" | jq -r '.tokens_spent')"
+    check "SCOPE 9e: ...i.e. the total is NOT the sum of both corpora (would be 17298 if the decoy leaked in)" \
+      bash -c "printf '%s' '$OUT9E' | jq -e '.tokens_spent != 17298' >/dev/null"
+    check "SCOPE 9e: the notice states THIS-checkout-only scoping AND does not also claim machine-wide (one combined check: both halves must hold on the SAME parse, so a jq error or empty notice fails this too, not just the grep half)" \
+      bash -c "printf '%s' '$OUT9E' | jq -e '(.notice | type) == \"string\" and (.notice | test(\"THIS git checkout\")) and ((.notice | test(\"every Claude Code project\")) | not)' >/dev/null"
+
+    # --- 9f: an explicit SPEND_TRANSCRIPT_ROOT override to a DIFFERENT root
+    # (not its own default -- see 9j below for the defaulted case) still
+    # wins over repo-scoping.
+    OUT9F="$(cd "$FAKEREPO" && SPEND_TRANSCRIPT_ROOT="$R1" "$PRODUCER")"
+    check "SCOPE 9f: an explicit, non-default SPEND_TRANSCRIPT_ROOT override still produces a usable object, and its notice is the GENERIC machine-wide caveat, NOT a false this-checkout claim (one combined check)" \
+      bash -c "printf '%s' '$OUT9F' | jq -e '((.tokens_spent | type) == \"number\") and (.notice | type) == \"string\" and (.notice | test(\"every Claude Code project\")) and ((.notice | test(\"THIS git checkout\")) | not)' >/dev/null"
+
+    # --- 9g: end-to-end through report.sh (`temperloop report`) -- the
+    # notice must actually RENDER inline with the tokens headline, using the
+    # REAL kernel-side producer (not a stub), so this proves the shipped
+    # wiring, not just the producer's own stdout.
+    REPORT_SH="$REPO_ROOT/bin/subcommands/report.sh"
+    check "SCOPE SETUP: bin/subcommands/report.sh exists and is executable (required for 9g's end-to-end render; a failure here is a broken checkout, not a legitimate skip)" \
+      test -x "$REPORT_SH"
+    if [ -x "$REPORT_SH" ]; then
+      mkdir -p "$FAKEREPO/.temperloop/report.d"
+      printf '%s\n' '{"generated_at":"2026-07-10T00:00:00Z","lookback_days":90,"repo":{"gh_repo":"x/y"},"metrics":{"available":true,"pr_throughput":{"merged_count":1},"time_to_merge_hours":{"median":1},"review_latency_hours":{"median":1},"issue_backlog":{"median_age_days":1}}}' \
+        > "$FAKEREPO/.temperloop/baseline.jsonl"
+      cat > "$FAKEREPO/.temperloop/report.d/tokens" <<EOF
+#!/usr/bin/env bash
+exec "$PRODUCER"
+EOF
+      chmod +x "$FAKEREPO/.temperloop/report.d/tokens"
+
+      # Written to a file rather than captured into a shell var + re-embedded
+      # in a quoted bash -c string: report.sh's own kernel-tier prose
+      # legitimately contains single quotes (e.g. "'temperloop
+      # baseline-snapshot'"), which would break the single-quote-embedding
+      # trick this file's other checks rely on. grep the file directly.
+      E2E_FILE="$TMP/e2e-983-report-out.txt"
+      RUN_PRODUCER_SCOPED bash "$REPORT_SH" >"$E2E_FILE" 2>&1
+      check "SCOPE 9g E2E: temperloop report renders the tokens headline" \
+        grep -q "Tokens spent vs items merged" "$E2E_FILE"
+      check "SCOPE 9g E2E: temperloop report renders the repo-scoping comparability notice inline with the headline" \
+        grep -q "notice: directional cost-weighted token spend, scoped to THIS git checkout" "$E2E_FILE"
+      check "SCOPE 9g E2E: the rendered ratio uses the REPO-SCOPED total (558), not the combined-with-decoy total" \
+        grep -q "558 tokens / 1 merged" "$E2E_FILE"
+    fi
+
+    # =======================================================================
+    # 9h: previously-untested degrade arms (review finding 8) -- a non-git
+    # cwd, and an unset $HOME. Both must exit 0, use the GENERIC
+    # machine-wide notice, and must NOT claim "THIS git checkout".
+    # =======================================================================
+    NONGIT="$TMP/nongit-983"
+    mkdir -p "$NONGIT"
+    NOSUCHHOME="$TMP/no-such-home-983"
+    OUT9H1="$(cd "$NONGIT" && env -u SPEND_TRANSCRIPT_ROOT HOME="$NOSUCHHOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 "$PRODUCER")"
+    rc9h1=$?
+    check "SCOPE 9h: a non-git cwd still exits 0" test "$rc9h1" -eq 0
+    check "SCOPE 9h: ...its notice is the GENERIC machine-wide caveat, and does NOT claim THIS-checkout scoping it never did (one combined check)" \
+      bash -c "printf '%s' '$OUT9H1' | jq -e '(.notice | type) == \"string\" and (.notice | test(\"every Claude Code project\")) and ((.notice | test(\"THIS git checkout\")) | not)' >/dev/null"
+
+    # A genuinely unset $HOME (not merely nonexistent, as in 9h1 above) is a
+    # DIFFERENT degrade path from the notice-bearing ones: this producer's
+    # own `[ -n "${HOME:-}" ]` guard correctly skips repo-scoping, but the
+    # FALLBACK machine-wide profiler invocation then ALSO needs $HOME to
+    # resolve build.config.sh's own `${SPEND_TRANSCRIPT_ROOT:=$HOME/...}`
+    # default -- under that script's `set -u`, a truly-unset $HOME is a
+    # hard "unbound variable" error, not a soft default. So the profiler
+    # itself fails, and this producer's PRE-EXISTING top-level `|| skip`
+    # catches it exactly like any other profiler failure: the contract's
+    # skip line, exit 0 -- never a crash, never partial JSON. Empirically
+    # confirmed while writing this test (not assumed): asserted directly
+    # here rather than expecting a notice-bearing object that this arm does
+    # not actually produce.
+    OUT9H2="$(cd "$FAKEREPO" && env -u SPEND_TRANSCRIPT_ROOT -u HOME \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 "$PRODUCER")"
+    rc9h2=$?
+    check "SCOPE 9h: an unset \$HOME (inside an otherwise-real git checkout) still exits 0" test "$rc9h2" -eq 0
+    check_eq "SCOPE 9h: ...and degrades to the contract's own skip line (the profiler itself cannot resolve build.config.sh's HOME-keyed default with no \$HOME at all) -- never a crash, never a false THIS-checkout claim" \
+      "skipped -- tokens: producer unavailable" "$OUT9H2"
+
+    # =======================================================================
+    # 9i: BLOCKING finding 1 -- a derived repo-scoped root that does NOT
+    # exist (a fresh checkout, a linked worktree that has never itself run a
+    # workflow, a CI runner, any $HOME differing from the session that
+    # recorded the transcripts) must render the path-naming notice -- never
+    # a silent "0 tokens" dressed up as "THIS git checkout".
+    #
+    # Review round 2, "also (small)" finding: an EMPTY fake $HOME makes both
+    # the pre-fix bug (0 under a false THIS-checkout claim) and the fixed
+    # behavior (0 under the honest fallback notice) report the SAME number
+    # -- so a bare `tokens_spent == 0` check passes identically whether or
+    # not the fix actually engaged; only the notice text discriminates. Give
+    # this fake $HOME a DECOY project dir under a DIFFERENT (non-$ENC) name
+    # holding a KNOWN non-zero corpus, so a passing tokens_spent assertion
+    # PROVES the fallback branch actually walked the machine-wide corpus,
+    # not just that some path happened to be empty.
+    # =======================================================================
+    EMPTY_FAKE_HOME="$TMP/fake-home-983-empty"
+    mkdir -p "$EMPTY_FAKE_HOME"
+    DECOY9I_ROOT="$EMPTY_FAKE_HOME/.claude/projects/-some-other-unrelated-repo-9i"
+    # units = 3000*0.1 + 800*1.25 + 150*5 + 30*1 = 300 + 1000 + 750 + 30 = 2080
+    { usage_line reqD9I 2026-07-10T10:00:00.000Z claude-opus-5 3000 800 150 30 text; } \
+      | mkagent "$DECOY9I_ROOT" wf_decoy9i-001 d9i0001
+    EXPECTED_MISSING_PATH="$EMPTY_FAKE_HOME/.claude/projects/$ENC"
+    OUT9I="$(cd "$FAKEREPO" && env -u SPEND_TRANSCRIPT_ROOT HOME="$EMPTY_FAKE_HOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 "$PRODUCER")"
+    rc9i=$?
+    check "SCOPE 9i: a nonexistent repo-scoped root still exits 0 (a genuinely-empty checkout is real, not an error)" \
+      test "$rc9i" -eq 0
+    check_eq "SCOPE 9i: ...and tokens_spent is the DECOY's 2080 -- proving the fallback branch actually walked the machine-wide corpus under this fake \$HOME, not just that the repo-scoped path was empty (0 would pass identically under the pre-fix bug)" \
+      "2080" "$(printf '%s' "$OUT9I" | jq -r '.tokens_spent')"
+    check "SCOPE 9i: ...and the notice names the EXACT repo-scoped path it looked for (so the operator can diff it against their own 'ls ~/.claude/projects'), and is neither of the other notice variants (one combined check)" \
+      bash -c "printf '%s' '$OUT9I' | jq -e --arg p \"$EXPECTED_MISSING_PATH\" '(.notice | type) == \"string\" and (.notice | contains(\$p)) and (.notice | test(\"no Claude Code transcripts recorded\")) and ((.notice | test(\"THIS git checkout\")) | not) and ((.notice | test(\"every Claude Code project\")) | not) and ((.notice | test(\"200-character\")) | not)' >/dev/null"
+
+    # =======================================================================
+    # 9j: ALSO-FIX finding 3 -- $SPEND_TRANSCRIPT_ROOT exported at its OWN
+    # documented default ($HOME/.claude/projects, exactly what every session
+    # that sources build.config.sh at its own Step 0 inherits per the
+    # kernel's § Named-setting convention) must NOT be treated as a caller
+    # override. Without this, the fix silently no-ops under /build itself.
+    # Reuses 9e's populated FAKE_HOME/INSCOPE_ROOT so a correct pass proves
+    # repo-scoping actually re-engaged (558), not just that SOME number came
+    # back.
+    # =======================================================================
+    OUT9J="$(cd "$FAKEREPO" && env HOME="$FAKE_HOME" SPEND_TRANSCRIPT_ROOT="$FAKE_HOME/.claude/projects" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 BASELINE_SNAPSHOT_LOOKBACK_DAYS=36500 "$PRODUCER")"
+    check_eq "SCOPE 9j: SPEND_TRANSCRIPT_ROOT exported at exactly its own default value does NOT block repo-scoping -- still 558, not the combined-with-decoy 17298 a defeated fix would report" \
+      "558" "$(printf '%s' "$OUT9J" | jq -r '.tokens_spent')"
+    check "SCOPE 9j: ...and the notice confirms repo-scoping actually re-engaged (THIS git checkout), not the machine-wide fallback" \
+      bash -c "printf '%s' '$OUT9J' | jq -e '(.notice | type) == \"string\" and (.notice | test(\"THIS git checkout\"))' >/dev/null"
+
+    # =======================================================================
+    # 9k: review round 2, finding 2 -- Claude Code caps an encoded project
+    # name at 200 characters (truncate + unreproducible hash beyond that);
+    # this script must NOT claim the untruncated path exists, since it
+    # structurally cannot under Claude Code's own naming rule. A fixture
+    # checkout whose absolute path encodes to well over 200 characters
+    # (built with dynamic padding so it clears the bar regardless of how
+    # long this machine's own tmp root happens to be), pointed at a fake
+    # $HOME holding ONLY a decoy corpus under a DIFFERENT name -- same
+    # discriminating shape as 9i: a passing tokens_spent proves the cap
+    # check actually fell through to the machine-wide fallback, not that it
+    # coincidentally returned 0.
+    # =======================================================================
+    PAD_LEN=220
+    LONGPAD="$(printf 'a%.0s' $(seq 1 "$PAD_LEN"))"
+    LONGREPO="$TMP/longpath-983/$LONGPAD"
+    mkdir -p "$LONGREPO"
+    git -C "$LONGREPO" init -q
+    REAL_LONGREPO_ROOT="$(git -C "$LONGREPO" rev-parse --show-toplevel 2>/dev/null)"
+    ENC_LONG="$(printf '%s' "$REAL_LONGREPO_ROOT" | sed 's/[^A-Za-z0-9]/-/g')"
+    enc_long_len=${#ENC_LONG}
+    check "SCOPE 9k SETUP: the fixture checkout's encoded name actually exceeds 200 characters (required to exercise the cap; a failure here means PAD_LEN needs to grow on this machine, not a legitimate skip)" \
+      test "$enc_long_len" -gt 200
+
+    LONGCAP_HOME="$TMP/fake-home-983-longcap"
+    mkdir -p "$LONGCAP_HOME"
+    LONGCAP_DECOY_ROOT="$LONGCAP_HOME/.claude/projects/-decoy-longcap-9k"
+    # units = 1000*0.1 + 500*1.25 + 60*5 + 12*1 = 100 + 625 + 300 + 12 = 1037
+    { usage_line reqLC9K 2026-07-10T10:00:00.000Z claude-opus-5 1000 500 60 12 text; } \
+      | mkagent "$LONGCAP_DECOY_ROOT" wf_longcap-001 lc9k0001
+
+    OUT9K="$(cd "$LONGREPO" && env -u SPEND_TRANSCRIPT_ROOT HOME="$LONGCAP_HOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 "$PRODUCER")"
+    rc9k=$?
+    check "SCOPE 9k: a checkout path whose encoded name exceeds the 200-char cap still exits 0" \
+      test "$rc9k" -eq 0
+    check_eq "SCOPE 9k: ...and tokens_spent reflects the machine-wide DECOY corpus (1037) -- proving the cap check actually fell through to the fallback, not that it coincidentally returned 0" \
+      "1037" "$(printf '%s' "$OUT9K" | jq -r '.tokens_spent')"
+    check "SCOPE 9k: ...and the notice is the 200-CAP variant -- names the cap, NOT a specific path (the untruncated path cannot exist under Claude Code's own naming rule), and is none of the other three notice variants (one combined check)" \
+      bash -c "printf '%s' '$OUT9K' | jq -e '(.notice | type) == \"string\" and (.notice | test(\"200-character\")) and (.notice | test(\"exceeds\")) and ((.notice | test(\"THIS git checkout\")) | not) and ((.notice | test(\"no Claude Code transcripts recorded\")) | not) and ((.notice | test(\"every Claude Code project\")) | not)' >/dev/null"
+  fi
 else
   printf '  - skipped: workflows/scripts/report-producers/tokens not present or not executable\n'
 fi
