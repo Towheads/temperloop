@@ -70,7 +70,8 @@ present-but-non-executable file, a non-zero exit, or a timeout are **not**
 errors -- each renders as one line, `skipped -- <name>: producer
 unavailable`, and the run continues. The producer named exactly `tokens`
 carries one additional, stricter rule used only for the headline below: its
-stdout must **also** parse as a single JSON object with a numeric
+stdout must **also** parse as exactly one JSON object and nothing else —
+leading or trailing non-JSON text disqualifies it — with a numeric
 `tokens_spent` field (directional token/dollar spend attributable to the
 same lookback window) for `report.sh` to compute "tokens spent vs items
 merged" as the headline -- an absent, failing, non-executable, or
@@ -80,6 +81,54 @@ optional `by_model` object (`{"<model-id>": <tokens>, ...}`) — the model
 attribution that feeds the directional dollar line (see "Pricing table &
 dollar framing" below). `by_model` is purely optional: an absent or
 non-object `by_model` just means no dollar line, never an error.
+
+**Reserved top-level keys (temperloop#981).** `notice` below is the first
+point in this contract where a producer's stdout is interpreted rather than
+only echoed verbatim, regardless of the producer's own name — so the scoping
+needs to be explicit. The kernel reserves top-level JSON keys on **any**
+producer's stdout for its own use; `notice` is the first one. This is a
+**global** reservation, unlike `tokens_spent`/`by_model`, which stay scoped
+to the producer literally named `tokens` — a producer of any name should
+treat an unrecognized top-level key it did not itself define as potentially
+kernel-owned, and avoid colliding with `notice`.
+
+**stderr is discarded (temperloop#981).** `report.sh` invokes every producer
+with stderr redirected away (`2>/dev/null`) and never inspects it — any
+diagnostic or informational text a producer writes to stderr is invisible to
+a human reading the report. This has always been the actual behavior; it is
+stated explicitly here because it is exactly the trap a producer that wants
+to say something to a human falls into — **stderr is not a channel.** Use
+`notice` below instead.
+
+**`notice` field (temperloop#981) — and when it's the right channel.** For a
+producer whose stdout is otherwise unconstrained plain text, plain verbatim
+stdout already **is** the human channel — every character reaches the reader
+unmodified, under the producer's own heading. Such a producer gains nothing
+from switching to JSON just to carry a `notice`: `report.sh`'s verbatim
+`echo` still dumps the raw JSON above the notice line, so the human sees the
+message twice. `notice` exists for the opposite case — a producer whose
+stdout is contractually constrained to exactly one JSON document, where no
+unconstrained plain-text channel exists. Today that means `tokens`; any
+future headline-feeding producer bound by the same kind of single-JSON-object
+rule is the other intended user. Such a producer's stdout MAY carry a
+top-level string `notice` field alongside its other fields — e.g.
+`{"tokens_spent": 1234, "notice": "<text>"}` — independent of, and in
+addition to, the `tokens`-only `tokens_spent`/`by_model` rules above.
+
+`report.sh` renders a present `notice` as a `notice: <text>` line — that
+exact `notice: ` prefix is the published surface, not an implementation
+detail — positioned immediately after the producer's verbatim stdout block
+and before the trailing blank line / next producer's heading. `notice` must
+be a single-line string on stdout that is exactly one JSON document; an
+embedded newline in the string, or two JSON documents each carrying their
+own `notice`, is **undefined** rendering (it may show as one prefixed line
+followed by a bare, unprefixed continuation line) — a producer author should
+avoid both. `{"notice": ""}` is a valid string and renders nothing (an empty
+`notice: ` line is never printed). None of the following are errors, and
+none render a notice line: an absent `notice` field, a `notice` present but
+not a string (e.g. `{"notice": 42}` — `jq`'s type guard drops it exactly
+like an absent field), or stdout that does not parse as a JSON object at
+all.
 
 ## Pricing table & dollar framing (foundation#882)
 
@@ -104,10 +153,13 @@ table read is a **local file read only, no network**. The pricing table is
 **absent by default**: the kernel ships no prices, so a stranger opts in by
 writing their own table. (This used to add "just as it ships no `tokens`
 producer" — no longer true as of temperloop#958: the kernel repo now carries
-its own `.temperloop/report.d/tokens`, a transcript-derived spend reader
-wrapping `workflows/scripts/pipeline-spend-report.sh`. That changes nothing
-here — the producer emits `by_model` in DIRECTIONAL cost-weighted units, and
-the pricing table remains the separate, hand-written, opt-in half.)
+its own `tokens` producer, `workflows/scripts/report-producers/tokens`, a
+transcript-derived spend reader wrapping
+`workflows/scripts/pipeline-spend-report.sh`; `.temperloop/report.d/tokens`
+is the locator shim that finds the installed kernel and `exec`s that
+producer. That changes nothing here — the producer emits `by_model` in
+DIRECTIONAL cost-weighted units, and the pricing table remains the separate,
+hand-written, opt-in half.)
 
 Every degradation is one legible line, never an error: **no** `by_model` →
 no dollar line; `by_model` present but **no** `pricing.json` → a one-line

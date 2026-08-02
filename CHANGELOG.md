@@ -30,6 +30,25 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
 
 ### Added
 
+- **`report.d` producers gain a `notice` string-field channel, and
+  `report.sh`'s stderr-discard behavior is now documented
+  (temperloop#981).** Any `.temperloop/report.d/` producer's stdout may
+  optionally parse as a JSON object carrying a string `notice` field; when
+  present, `report.sh` renders it as its own line under that producer's `--
+  report.d/<name> --` heading, alongside its normal verbatim stdout. This is
+  the first documented way for a drop-in — the `tokens` producer's planned
+  first-run disclosure (epic #972) being the motivating case — to address a
+  human without colliding with the `tokens` name's stricter
+  `tokens_spent`-only JSON rule; it is a contract-level field, not a
+  `tokens` special case, so any current or future producer can carry one.
+  `report.contract.md`'s "Overlay drop-in contract" section also now states
+  explicitly that `report.sh` discards every producer's stderr and never
+  inspects it — always true, previously undocumented, and exactly the trap a
+  producer writing to stderr for a human's benefit fell into. Additive, for
+  the `notice` half of this change specifically: existing producers with no
+  `notice` field render exactly as before. (The companion `jq`-exit-status
+  fix below is a separate change with its own, narrower behavior delta — see
+  that entry.)
 - **`/workshop` Step 4 gains check 4.1c — challenge-record completeness at
   ratify (temperloop#934).** Runs after 1b and gates the ratify ask, so ratify
   becomes the terminal act of the walkthrough. It enforces exactly the two
@@ -47,6 +66,21 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
 
 ### Fixed
 
+- **`report.sh` now checks `jq`'s exit status when parsing the `tokens`
+  producer's `tokens_spent` field (temperloop#981).** Previously the parse
+  only tested `[ -n "$parsed" ]`; on stdout that mixed a valid JSON document
+  with extra non-JSON text, `jq` could emit output for the first valid
+  document and still exit non-zero once it hit the invalid remainder — so
+  trailing garbage after a clean JSON object "accidentally" still drove the
+  tokens headline, while the same shape with the garbage leading instead
+  produced no output at all and silently fell back to the kernel-tier
+  headline. Both now require `jq`'s exit status to be `0`, so leading and
+  trailing malformed stdout degrade the same, deterministic way — the
+  kernel-tier headline, never a partial or inconsistent read. **Migration:**
+  if your `tokens` producer emitted text alongside its JSON object, its
+  headline will now fall back to the kernel tier — emit exactly one JSON
+  object and move the text into `notice` (see the `notice` field entry
+  above).
 - **`walk`-only, not both verdicts — a superseded premise purged from the
   0.22.0 entry above (temperloop#934, temperloop#935).** The 0.22.0 entry for
   check (C) described it as requiring "**both** a `walk` and a `walkthrough`
