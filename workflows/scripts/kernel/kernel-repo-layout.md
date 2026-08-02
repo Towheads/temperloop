@@ -25,6 +25,12 @@ trying to avoid.
   the canonical bump rules — when a bump is breaking vs additive vs a fix, and
   the `BREAKING` CHANGELOG-marker convention that carries the breaking signal
   pre-1.0.
+- **This section states the tag *conventions*; the ordered *procedure* for
+  cutting a release lives in [`VERSIONING.md`](../../../VERSIONING.md)
+  § Cutting a release** — completeness check, the one-PR rule, the
+  BREAKING-marker preservation trap, the tag body, and downstream propagation.
+  Follow that section when actually cutting; this one when you need the
+  conventions it applies.
 - **Bump the shipped `VERSION` file in the commit you tag** (temperloop#677).
   The repo-root `VERSION` file (a bare `x.y.z`, no `v`) is the source of truth
   `temperloop version` reports, so the release *artifact contains its own

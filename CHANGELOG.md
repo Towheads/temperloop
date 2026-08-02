@@ -14,6 +14,29 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- **`VERSIONING.md` § Cutting a release — the ordered release procedure
+  (temperloop#1015).** The kernel had version *policy* (this file's bump rules)
+  and tag *conventions* (`kernel-repo-layout.md` § Release-tag convention) but
+  no ordered **procedure**, so the steps were reconstructed from memory each
+  cut and some were skipped or deferred to the next one. The new section owns
+  the steps and their order, referencing the conventions rather than restating
+  them: the CHANGELOG-completeness check against merged PRs since the last tag,
+  the **one-PR rule** (`main` is protected, so each cut costs a ~11-minute
+  merge-queue round-trip — the v0.23.0 cut split a backfill from the version
+  bump and paid an extra cycle for it), the heading rewrite plus `VERSION` bump
+  in one commit, tagging the merge commit, and downstream propagation via
+  `make update-kernel`. Two hazards are called out explicitly because both are
+  silent: `changelog_breaking_sections()` sets its flag **only from a heading
+  line**, so rewriting `## [Unreleased] — BREAKING` into a bare
+  `## [x.y.z] - <date>` drops the release's breaking signal and makes both
+  `update-kernel`'s acknowledgment gate and `temperloop update`'s warning no-op;
+  and `## [Unreleased] — BREAKING` occurs more than once in this file (the live
+  heading plus historical body prose), so a `replace_all` edit rewrites history.
+  `kernel-repo-layout.md` § Release-tag convention gains a pointer to the new
+  section. Documentation only — no behavior, no gate, no contract surface moves.
+
 ### Fixed
 
 - **`temperloop eject` no longer deletes a hand-authored
