@@ -12,7 +12,26 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased]
+## [Unreleased] — BREAKING
+
+### Migration — read this first
+
+One migration, and it is narrow: **`/build`'s Step 3 within-level loop now runs
+the per-level Workflow path by default.** If you drive `/build`, or your overlay
+documents its conversational two-sweep orchestration, read
+`### Changed — BREAKING` below before pulling. Pass **`--no-workflow`** to keep
+the previous behavior. Everything else in this release is additive or a fix.
+
+**Who has to act.** Only an operator, wrapper, or overlay that depends on
+`/build`'s Step 3 running conversationally — most concretely anyone relying on
+**speculative next-level execution**, which is a conversational-path-only
+NON-GOAL under the Workflow path and is therefore now off by default. Nothing
+else moves: `--workflow` is still accepted (it now selects the default and is a
+no-op), the board adapter interface, hook names and signatures, the `checks`
+gate contract, `bin/temperloop`'s subcommand set, the `.kernel-pin`/compose
+seam, and the setting-registry row shape are all untouched — and no setting
+default changed, because the flip lives in the command spec, not in
+`build.config.sh`.
 
 ### Release classification for the remaining epic-#923 items — MINOR
 
@@ -20,7 +39,10 @@ The `workshop collaborative decision walk` epic (temperloop#923) shipped its
 first nine items in **0.22.0, marked BREAKING** — `/workshop`'s coverage walk
 lost its minimal-interaction path under a hard cutover. Its **two trailing
 items classify MINOR**, and the aggregate call for the epic therefore stands at
-BREAKING on the strength of 0.22.0 alone; nothing below adds to it.
+BREAKING on the strength of 0.22.0 alone; nothing below adds to *that epic's*
+call. (The release-level `BREAKING` on the `## [Unreleased]` heading above comes
+from a different change — the `/build` workflow-path default flip, temperloop#998
+— not from these two items.)
 
 Why these two are MINOR: the new ratify gate is satisfiable by every brief that
 walks normally (the seeded-dimension rule gives dimensions 0, 1 and 3 their
@@ -63,6 +85,52 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   The record-start-marker-present-but-empty defect is independent of status and
   applies regardless, which is the loophole that stops a crashed walk from
   masquerading as a migration case.
+
+### Changed — BREAKING
+
+<!-- The `BREAKING` token appears TWICE for this release on purpose — on the
+     `## [Unreleased]` heading above AND on this `### Changed` sub-heading.
+     `changelog_breaking_sections()` (workflows/scripts/lib/changelog.sh) sets
+     its `brk` flag ONLY from a heading line: `$0 ~ /BREAKING/` on the
+     `## [x.y.z]` line, or `/^#+ .*BREAKING/` on a sub-heading. BODY TEXT
+     NEVER SETS IT. The sub-heading marker is the belt-and-suspenders half: it
+     survives a release cut that rewrites `## [Unreleased]` into
+     `## [0.23.0] - <date>` without carrying the ` — BREAKING` suffix across.
+     Without at least one of these, scripts/update-kernel.sh's acknowledgment
+     gate and bin/subcommands/update.sh's BREAKING warning both silently no-op.
+     Do not strip either one when editing history. -->
+
+- **BREAKING — `/build`'s per-level Workflow path is now the DEFAULT for Step 3;
+  `--no-workflow` is the opt-out (temperloop#998).** `claude/commands/build.md`
+  previously documented `--workflow` as **Default OFF**, so Step 3's
+  within-level loop ran the conversational two-sweep orchestration unless the
+  operator opted in. That is inverted: with no flag, Step 3 now runs the
+  per-level Workflow (`claude/workflows/build-level.mjs`), and the new
+  **`--no-workflow`** flag selects the conversational two-sweep loop.
+  `--workflow` itself is **retained and still accepted as a no-op** — it now
+  asks for what `/build` already does — so an existing invocation, wrapper, or
+  muscle-memory command line that passes it explicitly does not break. The
+  mechanics of the two paths are unchanged (`build-level.mjs` was not touched);
+  both still call the same deterministic machinery scripts, and the orchestrator
+  still owns Step 4, all plan-note writeback, and escalation resolution on both.
+  **Why:** the Workflow path's batched machinery executors (temperloop#942) cut
+  mechanical weighted token spend **32.8%** (468,283 → 314,801 units) and raw
+  tokens **56.9%** on a 1-item level — worth **-6.6% per build level** — but
+  because the path was Default OFF that saving reached only opt-in runs, so
+  #942's shipped benefit was ~0% corpus-wide. Duration impact is ~1%: this is a
+  token change, not a speed change. **Classified BREAKING** per `VERSIONING.md`
+  — `claude/commands/*.md` is the "Pipeline command contracts" published
+  surface, and a *default*-behavior change is breaking by that document's own
+  test ("a downstream overlay or a stranger's config must change to keep
+  working"): an adopter who changes nothing gets different orchestration, and
+  must add a flag to keep the old one. **Migration:** append **`--no-workflow`**
+  to your `/build` invocation (or your wrapper's) to keep the conversational
+  two-sweep loop. Do this in particular if you use **speculative next-level
+  execution** — cross-level speculative overlap is a documented
+  conversational-path-only NON-GOAL under the Workflow path in v1, so flipping
+  the default **disables speculative overlap by default**, and `--no-workflow`
+  is the only way to get it back. Lifting that NON-GOAL is separate work and is
+  still deferred past v1.
 
 ### Fixed
 
