@@ -44,8 +44,11 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   `report.contract.md`'s "Overlay drop-in contract" section also now states
   explicitly that `report.sh` discards every producer's stderr and never
   inspects it — always true, previously undocumented, and exactly the trap a
-  producer writing to stderr for a human's benefit fell into. Additive:
-  existing producers with no `notice` field render exactly as before.
+  producer writing to stderr for a human's benefit fell into. Additive, for
+  the `notice` half of this change specifically: existing producers with no
+  `notice` field render exactly as before. (The companion `jq`-exit-status
+  fix below is a separate change with its own, narrower behavior delta — see
+  that entry.)
 - **`/workshop` Step 4 gains check 4.1c — challenge-record completeness at
   ratify (temperloop#934).** Runs after 1b and gates the ratify ask, so ratify
   becomes the terminal act of the walkthrough. It enforces exactly the two
@@ -73,7 +76,11 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   produced no output at all and silently fell back to the kernel-tier
   headline. Both now require `jq`'s exit status to be `0`, so leading and
   trailing malformed stdout degrade the same, deterministic way — the
-  kernel-tier headline, never a partial or inconsistent read.
+  kernel-tier headline, never a partial or inconsistent read. **Migration:**
+  if your `tokens` producer emitted text alongside its JSON object, its
+  headline will now fall back to the kernel tier — emit exactly one JSON
+  object and move the text into `notice` (see the `notice` field entry
+  above).
 - **`walk`-only, not both verdicts — a superseded premise purged from the
   0.22.0 entry above (temperloop#934, temperloop#935).** The 0.22.0 entry for
   check (C) described it as requiring "**both** a `walk` and a `walkthrough`
