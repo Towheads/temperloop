@@ -53,23 +53,97 @@
 # clean, so no caller revert is needed there.)
 #
 # This file is SOURCED — it sets no shell options (the caller owns set -euo).
+#
+# Helpers a DRIVER may also call directly (archive-session.sh calls land__requires_pr
+# as a standalone predicate before land_run): land__requires_pr, land__nwo,
+# land__gh_pr. Every one of them is anchored to $LAND_ROOT, never the caller's cwd.
 
 # Does the target repo have an `origin` remote?
 land__has_remote() { git -C "$LAND_ROOT" remote get-url origin >/dev/null 2>&1; }
 
+# --- Target-repo resolution (#873) -------------------------------------------
+# `gh` resolves WHICH REPO it acts on from the CALLER's $PWD unless told otherwise,
+# but this lib lands into $LAND_ROOT — routinely NOT the caller's cwd (the nightly
+# drain invokes the archiver from the knowledge store, which is not a git repo at
+# all). So every gh call here is anchored to $LAND_ROOT's own `origin` instead, and
+# a probe that cannot answer says so on stderr rather than branching in silence
+# (#873: `gh repo view` with no -R failed from a non-repo cwd, land__requires_pr
+# returned false, the direct path was taken, and the archive stalled 44h with no
+# diagnostic beyond "direct push to main rejected").
+
+# One-line diagnostic on stderr. Advisory only — never changes an exit status, so a
+# `set -e` caller is unaffected and the caller's own status line still rules.
+land__warn() { printf 'land: %s\n' "$*" >&2; }
+
+# `<owner>/<repo>` for $LAND_ROOT's origin, or "" when origin is not a forge URL
+# (a local-path origin — the hermetic tests — or a non-GitHub remote). Parsed from
+# the remote URL rather than `gh repo view` so the answer is cwd-independent AND
+# free (no API call). Cached per LAND_ROOT.
+land__nwo() {
+  if [ "${LAND__NWO_ROOT:-}" = "${LAND_ROOT:-}" ]; then printf '%s' "${LAND__NWO:-}"; return 0; fi
+  local url slug="" repo rest
+  url="$(git -C "$LAND_ROOT" remote get-url origin 2>/dev/null || true)"
+  case "$url" in
+    ""|file://*) ;;                     # local path: no forge slug to resolve
+    *://*|*@*:*)                        # scheme URL, or scp-like host:path
+      slug="${url%.git}"; slug="${slug%/}"
+      slug="${slug#*://}"               # strip scheme
+      slug="${slug#*@}"                 # strip user@
+      slug="${slug/:/\/}"               # host:port | host:path -> host/...
+      case "$slug" in
+        */*/*) repo="${slug##*/}"; rest="${slug%/*}"; rest="${rest##*/}"
+               slug="$rest/$repo"
+               case "$slug" in ""|/*|*/) slug="" ;; esac ;;
+        *)     slug="" ;;
+      esac
+      ;;
+  esac
+  LAND__NWO_ROOT="$LAND_ROOT"; LAND__NWO="$slug"
+  printf '%s' "$slug"
+}
+
+# Run a `gh pr …` call against the TARGET repo instead of the caller's cwd. When the
+# slug is unresolvable (local-path origin) the call runs unqualified, as before.
+land__gh_pr() {  # <gh args...>
+  local nwo; nwo="$(land__nwo)"
+  if [ -n "$nwo" ]; then "$LAND_GH" "$@" -R "$nwo"; else "$LAND_GH" "$@"; fi
+}
+
 # Does the default branch require a PR (branch protection / merge-queue ruleset),
-# i.e. is a direct push rejected? Probe once, read-only, via the branch's
-# effective rules. A probe failure returns false → the direct path runs and
-# self-guards (it reports uncommitted, not committed, if the push is rejected).
+# i.e. is a direct push rejected? Probe once, read-only, via the branch's effective
+# rules, resolved from $LAND_ROOT (#873).
+#
+# Fail-open, but LOUD. A probe that errors still returns false → the direct path —
+# because the direct path SELF-GUARDS (a rejected push is undone and reported as
+# `uncommitted`, never a false "committed"), and failing closed would strand every
+# legitimate unprotected-main / gh-less repo on a PR path it cannot complete. What
+# changes in #873 is that "couldn't tell" is no longer indistinguishable from
+# "confirmed unprotected": it names the failure on stderr, the same
+# confirmed-vs-couldn't-tell split gate.sh's sibling probe makes with `probe_failed`.
 land__requires_pr() {
+  : "${LAND_GH:=gh}"                              # callable before land_run's defaults
+  : "${LAND_DEFAULT_BRANCH:=main}"
   [ "${LAND_REQUIRES_PR:-}" = "1" ] && return 0   # test seam
-  land__has_remote || return 1
-  local nwo
-  nwo="$("$LAND_GH" repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || return 1
-  [ -n "$nwo" ] || return 1
-  "$LAND_GH" api "repos/$nwo/rules/branches/$LAND_DEFAULT_BRANCH" \
-    --jq 'any(.[]; .type=="merge_queue" or .type=="pull_request")' 2>/dev/null \
-    | grep -q true
+  land__has_remote || return 1                    # no remote: nothing to be protected
+  local nwo out
+  nwo="$(land__nwo)"
+  if [ -z "$nwo" ]; then
+    land__warn "protection probe: cannot resolve owner/repo from origin in $LAND_ROOT ('$(git -C "$LAND_ROOT" remote get-url origin 2>/dev/null)') — falling back to the DIRECT path; a rejected push will report uncommitted"
+    return 1
+  fi
+  if ! out="$("$LAND_GH" api "repos/$nwo/rules/branches/$LAND_DEFAULT_BRANCH" \
+                --jq 'any(.[]; .type=="merge_queue" or .type=="pull_request")' 2>&1)"; then
+    out="${out//$'\n'/ }"
+    land__warn "protection probe: 'gh api repos/$nwo/rules/branches/$LAND_DEFAULT_BRANCH' failed (${out:0:200}) — falling back to the DIRECT path; a rejected push will report uncommitted"
+    return 1
+  fi
+  case "$out" in
+    true)  return 0 ;;                            # answered: protected
+    false) return 1 ;;                            # answered: not protected
+  esac
+  # Exit 0 but no verdict (empty body, an unexpected shape): still a couldn't-tell.
+  land__warn "protection probe: unreadable answer from 'gh api repos/$nwo/rules/branches/$LAND_DEFAULT_BRANCH' ('${out:0:200}') — falling back to the DIRECT path; a rejected push will report uncommitted"
+  return 1
 }
 
 # Set the four output vars in one place. (Assigned here, read by the caller in
@@ -101,8 +175,9 @@ land__finish_wt() {  # <wt>
 # the diff-against-origin short-circuit converge repeated runs onto ONE PR, then
 # auto-flip to `committed (already on origin)` once it merges.
 land__via_pr() {  # <populate_fn>
-  local populate_fn="$1" branch wt rev pr
+  local populate_fn="$1" branch wt rev pr nwo
   branch="$LAND_BRANCH"
+  nwo="$(land__nwo)"   # for the diagnostics below; land__gh_pr resolves it itself
   git -C "$LAND_ROOT" worktree prune >/dev/null 2>&1 || true
   git -C "$LAND_ROOT" fetch -q origin "$LAND_DEFAULT_BRANCH" 2>/dev/null || true
   wt="$(mktemp -d "${TMPDIR:-/tmp}/land-wt-XXXXXX")/wt"
@@ -144,21 +219,27 @@ land__via_pr() {  # <populate_fn>
   #      trailing `[0-9]+$`, which a digit at the end of the title/body can satisfy.
   #   3. `pr view <branch>` — authoritative head-ref lookup with no search index in
   #      the path; adopts a PR tier 1 could not yet see.
-  pr="$("$LAND_GH" pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
+  #
+  # Every tier goes through land__gh_pr, which appends `-R <owner>/<repo>` resolved
+  # from $LAND_ROOT — without it these three calls resolve the CALLER's cwd like the
+  # old probe did (#873), so a fixed probe would just move the silent failure one
+  # step later, into "could not open or find the PR".
+  pr="$(land__gh_pr pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null || true)"
   if [ -z "$pr" ]; then
-    pr="$("$LAND_GH" pr create --base "$LAND_DEFAULT_BRANCH" --head "$branch" \
+    pr="$(land__gh_pr pr create --base "$LAND_DEFAULT_BRANCH" --head "$branch" \
             --title "$LAND_PR_TITLE" --body "$LAND_PR_BODY" 2>&1 \
             | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+$' | tail -1 || true)"
   fi
   if [ -z "$pr" ]; then
-    pr="$("$LAND_GH" pr view "$branch" --json number -q .number 2>/dev/null || true)"
+    pr="$(land__gh_pr pr view "$branch" --json number -q .number 2>/dev/null || true)"
   fi
   land__finish_wt "$wt"
   if [ -z "$pr" ]; then
+    land__warn "PR resolve failed for branch '$branch' in ${LAND_ROOT}${nwo:+ ($nwo)} — the commit is on that branch but no PR carries it"
     land__set uncommitted "" "" "could not open or find the PR for branch '$branch'"
     return 0
   fi
-  "$LAND_GH" pr merge "$pr" --auto >/dev/null 2>&1 || true   # queue-ON incantation (queue owns strategy + branch)
+  land__gh_pr pr merge "$pr" --auto >/dev/null 2>&1 || true   # queue-ON incantation (queue owns strategy + branch)
   land__set pr-queued "" "$pr" "enqueued"
   return 0
 }
@@ -189,6 +270,10 @@ land__direct() {  # <populate_fn>
     git -C "$LAND_ROOT" reset -q --soft HEAD~1 2>/dev/null || true
     git -C "$LAND_ROOT" restore --staged --worktree -- "${LAND_PATHS[@]}" >/dev/null 2>&1 || true
     git -C "$LAND_ROOT" clean -fdq -- "${LAND_PATHS[@]}" >/dev/null 2>&1 || true
+    # Name the contradiction the #873 stall hid: the probe routed here, so it either
+    # said "unprotected" or could not tell (it printed its own reason above) — yet the
+    # push was rejected. Nothing landed; the change is preserved for the next run.
+    land__warn "direct push to $LAND_DEFAULT_BRANCH in $LAND_ROOT was REJECTED though the protection probe routed to the direct path — nothing landed; if a probe diagnostic appeared above, fix that first"
     land__set uncommitted "" "" "direct push to $LAND_DEFAULT_BRANCH rejected (branch likely protected)"
     return 0
   fi
