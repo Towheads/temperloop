@@ -667,8 +667,8 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } 
       // per-call (it fires only when a caller passes `timeoutOutcome`) and it
       // interpolates a dynamic outcome name, so it cannot live in the static
       // machinery-executor.md agent definition the lean prompt relies on.
-      // Without this the
-      // executor, having been killed by the Bash tool before any JSON line was
+      // Without this line the executor, having been killed by the Bash tool
+      // before any JSON line was
       // printed, picks the closest failure-shaped enum member it knows — which
       // for the gate is GATE_FAIL. That silently reported a GREEN suite as
       // BROKEN and made a budget-exhaustion escalation indistinguishable from a
