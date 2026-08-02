@@ -121,9 +121,12 @@ them deduping by `requestId`, without which the totals inflate ~2x.
 
 #### How the producer reaches your repo
 
-`temperloop init` places it. The shim rides the same tree-only proposal PR as
-`.temperloop/config` — one more file in that PR's diff, marked executable
-(mode 755, because `temperloop report` runs the files in `.temperloop/report.d/`
+`temperloop init` places it. It rides the same
+[tree-only proposal PR](install-cli.md) that carries `.temperloop/config`,
+`init`'s own bootstrap file — *tree-only* meaning it changes files and nothing
+else: never a label, never branch protection, never any other GitHub API
+state. The shim is one more file in that PR's diff, marked executable (mode
+755, because `temperloop report` runs the files in `.temperloop/report.d/`
 rather than sourcing them). Nothing is applied directly: you review and merge
 the PR like any other, and until you do, your repo is unchanged.
 
