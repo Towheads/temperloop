@@ -78,6 +78,35 @@ the pull request, a marker line in its body, or the same marker as a commit
 trailer — with a reason required in the marker forms, so a skip is always a
 decision someone made rather than something nobody noticed.
 
+**The per-gate retry policy** lives in `workflows/scripts/lib/gate-retry.sh`,
+sourced by the script (the same seam it already uses for the checkout-freshness
+guard) so the policy can be tested without running the whole gate list. A gate
+that fails is retried up to `GATE_MAX_ATTEMPTS` times, because the hosted macOS
+runner intermittently fails unrelated hermetic gates under load — but a retry
+only ever helps a *transient* failure, so the policy classifies before it
+retries:
+
+- **Deterministic signature.** The failed attempt's output matches
+  `GATE_DETERMINISTIC_PATTERN` (an ERE; the shipped default names a static-lint
+  finding code). The gate is not retried at all — it fails straight to
+  escalation on the first attempt.
+- **Byte-identical output.** The attempt printed exactly what the previous
+  failed attempt printed. Nothing about the run changed, so nothing about the
+  next one will either. This is the general net beneath the signature
+  classifier: it needs no per-lint pattern and caps *every* deterministic gate
+  at two attempts regardless of what it prints.
+- **Otherwise** the failure is presumed transient and the retry fires — spaced
+  by a graduated `GATE_RETRY_BACKOFF`-per-attempt sleep, so a slow-clearing
+  transient actually gets time to clear rather than having the whole budget
+  burned back-to-back inside a fraction of a second.
+
+Every attempt, retry, and deterministic short-circuit is logged as it happens
+and again in an end-of-run summary beside the pass/fail verdict, so neither a
+masked flake nor a saved retry is invisible. All three settings are declared
+with their defaults in `workflows/scripts/build/build.config.sh`; the script
+keeps byte-identical fallbacks so it still runs standalone in a consuming repo
+that never sources that file.
+
 ## Integration
 
 The CI workflow's `checks` job (`.github/workflows/ci.yml`) runs one step:
