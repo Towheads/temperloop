@@ -281,18 +281,35 @@ command -v jq >/dev/null 2>&1 || skip
 # --- per-person disable + first-run notice state (temperloop#986) ----------
 # See the header comment above for the full rationale. Mirrors bin/
 # temperloop's own `_foundation_check_report_offer` expression
-# (`${XDG_STATE_HOME:-$HOME/.local/state}`), with one addition: bin/
-# temperloop runs with no `set -u`, so its bare `$HOME` reference is safe
-# even when $HOME is unset. THIS file runs under `set -uo pipefail` (defect
-# class 4 -- a derived path used without an existence/definedness check), so
-# the same bare reference would abort with "unbound variable" the moment
-# $XDG_STATE_HOME is unset and bash has to evaluate the $HOME fallback --
-# exactly what test_pipeline_spend_report.sh's "SCOPE 9h: an unset $HOME"
-# fixture caught. `${HOME:-}` nested inside the outer default clause keeps
-# this expression safe under -u in both directions, matching this file's own
-# existing `default_transcript_root="${HOME:-}/.claude/projects"` line
-# above.
-state_home="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
+# (`${XDG_STATE_HOME:-$HOME/.local/state}`), with two corrections review
+# caught that the bare mirror gets wrong:
+#
+# 1. UNSET-$HOME SAFETY: bin/temperloop runs with no `set -u`, so its bare
+#    `$HOME` reference is safe even when $HOME is unset. THIS file runs
+#    under `set -uo pipefail` (defect class 4 -- a derived path used without
+#    an existence/definedness check), so the same bare reference would abort
+#    with "unbound variable" the moment $XDG_STATE_HOME is unset and bash
+#    has to evaluate the $HOME fallback -- exactly what
+#    test_pipeline_spend_report.sh's "SCOPE 9h: an unset $HOME" fixture
+#    caught. `${HOME:-}` keeps that fallback safe under -u.
+#
+# 2. RELATIVE $XDG_STATE_HOME REJECTED (BLOCKING 1, review round 2): the XDG
+#    Base Directory spec requires a RELATIVE $XDG_STATE_HOME be treated as
+#    invalid and ignored -- `${VAR:-default}` alone only guards unset/empty,
+#    not relative. report.sh runs every producer with cwd = the TARGET
+#    repo's own root, so an operator with a relative $XDG_STATE_HOME set
+#    (however that happened -- their own shell rc, a stale export) would
+#    otherwise make this producer write producer state INSIDE that repo's
+#    working tree the moment it runs there -- exactly the repo-tracked-path
+#    outcome the whole XDG-marker design exists to rule out (AC#2/AC#4). A
+#    leading `/` is the one portable, dependency-free relative-vs-absolute
+#    test in POSIX shell. See test 17 in the test suite for the regression
+#    coverage (a relative $XDG_STATE_HOME run from inside this very repo
+#    must not create anything in the working tree).
+case "${XDG_STATE_HOME:-}" in
+  /*) state_home="$XDG_STATE_HOME" ;;
+  *) state_home="${HOME:-}/.local/state" ;;
+esac
 producer_state_dir="$state_home/temperloop/tokens-producer"
 disable_marker="$producer_state_dir/disabled"
 notice_marker="$producer_state_dir/first-run-notice-shown"
@@ -452,15 +469,32 @@ fi
 # contract requires notice stay a single-line string -- no embedded
 # newline), never a second stdout line, so it can never defeat the
 # tokens_spent JSON parse.
+#
+# UNEXPANDED COMMAND, NOT AN INTERPOLATED PATH (BLOCKING 2, review round 2):
+# the disable command below is printed for a HUMAN TO PASTE INTO THEIR OWN
+# SHELL -- a second, distinct quoting boundary from anything checked
+# elsewhere in this file. An earlier cut interpolated the RESOLVED
+# $producer_state_dir/$disable_marker paths into single quotes; any
+# apostrophe anywhere in $HOME or $XDG_STATE_HOME (a real, observed path
+# shape -- e.g. .../o'brien dev/...) closes that quote early. The pasted
+# command then still exits 0, but does something other than what it claims:
+# creates the wrong directories, never writes the real marker, and the
+# operator walks away believing they opted out while the producer stays
+# fully enabled -- the worst failure shape available for a privacy control.
+# Printing the LITERAL, UNEXPANDED `${XDG_STATE_HOME:-$HOME/.local/state}`
+# form instead (identical to what docs/features/telemetry.md already shows,
+# closing that code/doc divergence too) has no shell metacharacters of
+# $HOME's or $XDG_STATE_HOME's own to break out of -- the operator's shell
+# resolves it safely in their own environment, whatever that path contains.
+# See test 18 for the regression coverage: it extracts this exact command
+# from a first-run notice, evaluates it under a synthetic $HOME containing
+# an apostrophe AND a space, and confirms the disable round-trips end to
+# end (the marker lands, and the NEXT run is actually suppressed).
+first_run=0
 if [ ! -f "$notice_marker" ]; then
-  first_run_notice="first run of the temperloop tokens producer: it reads Claude Code transcript files under \$SPEND_TRANSCRIPT_ROOT (see scope below) and makes NO network call; to disable it on this machine, run: mkdir -p '$producer_state_dir' && touch '$disable_marker' (a per-machine marker file, never committed to this repo)."
+  first_run=1
+  first_run_notice='first run of the temperloop tokens producer: it reads Claude Code transcript files under $SPEND_TRANSCRIPT_ROOT (see scope below) and makes NO network call; to disable it on this machine, run: mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer" && touch "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/disabled" (a per-machine marker file, never committed to this repo).'
   scope_notice="$first_run_notice $scope_notice"
-  # Best-effort marker write (defect class 1: checked, not assumed --
-  # chained with && so a mkdir failure never lets the touch run and get
-  # mis-credited as success). A failed write just means the disclosure
-  # repeats on the next run too -- harmless, self-correcting, never a false
-  # "won't show again" claim in the text above.
-  mkdir -p "$producer_state_dir" 2>/dev/null && : > "$notice_marker" 2>/dev/null
 fi
 
 # Zero-unit models are dropped from by_model: they add nothing to a priced
@@ -484,3 +518,34 @@ out="$(printf '%s' "$raw" | jq -c --arg notice "$scope_notice" '
 
 [ -n "$out" ] || skip
 printf '%s\n' "$out"
+
+# Record "shown" only AFTER the disclosure has actually reached stdout
+# (SHOULD FIX 5, review round 2): two more `|| skip` exits remain between
+# the merge above and here (the jq-shaping call, and the empty-$out guard).
+# Writing the marker at merge time meant a run that hit either of those
+# later skips would still mark itself "shown" while never having printed
+# the disclosure -- a permanently unreachable one-time notice for that
+# person. skip() calls `exit 0` immediately, so if this line is reached the
+# disclosure text above was genuinely the stdout this run produced.
+#
+# Best-effort marker write (defect class 1: checked, not assumed -- chained
+# with && so a mkdir failure never lets the touch run and get mis-credited
+# as success). A failed write just means the disclosure repeats on the next
+# run too -- harmless, self-correcting, never a false "won't show again"
+# claim in the notice text above.
+#
+# `if ... fi`, NOT a bare `[ cond ] && { ... }` (a real bug caught while
+# verifying this exact fix): this block is the LAST thing in the script, and
+# under no `-e`, a script's own exit status is whatever its last command
+# returned. A bare `[ "$first_run" -eq 1 ] && { ... }` returns the TEST's
+# own exit status (1) on every run where $first_run is 0 -- i.e. EVERY run
+# after the first -- which would have silently broken this producer's
+# "always exit 0" contract (report.contract.md's Overlay drop-in contract)
+# on the normal, common case. `if` returns 0 when its condition is false and
+# the body never runs; the explicit `exit 0` below is the second,
+# belt-and-suspenders guarantee that this file's own contractual exit code
+# never depends on this best-effort write's outcome either way.
+if [ "$first_run" -eq 1 ]; then
+  mkdir -p "$producer_state_dir" 2>/dev/null && : > "$notice_marker" 2>/dev/null
+fi
+exit 0

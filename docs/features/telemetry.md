@@ -145,52 +145,86 @@ Two properties worth knowing before you merge it:
 
 ### First-run notice and local disable (temperloop#986)
 
-`init` only ever reaches whoever ran it. A teammate who inherits the
-`.temperloop/report.d/tokens` shim by a plain `git pull` — never having run
-`init` themselves — has no other way to learn that a `temperloop report` run
-in this repo reads their own Claude Code transcripts, so the disclosure
-fires **producer-side** instead, on that teammate's own first run:
+On its first run per person per machine, the `tokens` producer folds a
+one-time disclosure into the same `notice` field it already emits every run
+(see
+[`workflows/scripts/lib/report.contract.md`](../../workflows/scripts/lib/report.contract.md)
+§ `notice` field) — never a second line of output, so the `tokens_spent`
+headline renders exactly as it would on any other run:
 
 ```
 notice: first run of the temperloop tokens producer: it reads Claude Code
 transcript files under $SPEND_TRANSCRIPT_ROOT (see scope below) and makes NO
-network call; to disable it on this machine, run: mkdir -p '<state-dir>' &&
-touch '<state-dir>/disabled' (a per-machine marker file, never committed to
-this repo). <the same repo-scoping notice this run already resolved>
+network call; to disable it on this machine, run: mkdir -p
+"${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer" && touch
+"${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/disabled"
+(a per-machine marker file, never committed to this repo). <the same
+repo-scoping notice this run already resolved>
 ```
 
 It names three things: **what is read** (transcripts under
 `$SPEND_TRANSCRIPT_ROOT`, at whichever true scope that run actually resolved
 — the same scope-detection this producer already performs, see "Token
 spend" above), that it makes **no network call**, and the exact command to
-**disable it locally**. This text rides the `notice` field `report.sh`
-already reserves on the `tokens` producer's stdout (see
-[`workflows/scripts/lib/report.contract.md`](../../workflows/scripts/lib/report.contract.md)
-§ `notice` field) — never a second line of output — so a first run's
-`tokens_spent` headline renders exactly as it would on any other run.
+**disable it locally**. The disable command is printed **unexpanded** —
+literally `${XDG_STATE_HOME:-$HOME/.local/state}/...`, not the
+already-resolved path — because this text is meant for a human to select
+and paste into their own shell, a second quoting boundary distinct from
+anything inside the script itself: interpolating the resolved path would
+break (silently, exit 0, with the disable never actually taking) the moment
+that path contained a shell-special character such as an apostrophe.
 
-**The disable is per-person, never a commit.** Both the "already shown" and
-"disabled" states live under
+**Why this fires producer-side rather than at `init`.** `init`'s own
+proposal-PR flow (see "How the producer reaches your repo" above) only ever
+reaches whoever ran `init`. A teammate
+who inherits the `.temperloop/report.d/tokens` shim by a plain `git pull` —
+never having run `init` themselves — has no other way to learn that a
+`temperloop report` run in this repo reads their own Claude Code
+transcripts, so the disclosure has to fire on that teammate's own first
+invocation instead.
+
+**The disable is per-person, per-machine, never a commit — and never a bare
+env var either.** Both the "already shown" and "disabled" states live under
 `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/` — the
-same XDG-state convention the CLI dispatcher's own 14-day report offer
+same XDG-state *convention* the CLI dispatcher's own 14-day report offer
 (`_foundation_check_report_offer` in
-[`bin/temperloop`](../../bin/temperloop)) uses for its dismiss marker —
-never inside the git tree. A committed dismissal or disable file would
-silently disable the
-producer for every collaborator who clones the repo, which defeats the
-point; instead, disabling is one command a person runs for themselves:
+[`bin/temperloop`](../../bin/temperloop)) uses for its dismiss marker, never
+inside the git tree, so nothing here can silently disable the producer for
+every collaborator who clones the repo. The two markers are **not**
+analogous in *scope*, though: `bin/temperloop`'s dismiss marker is keyed by
+repo path (`dismiss_key="${repo_root//\//_}"`) — dismissing the report offer
+in one repo doesn't dismiss it in another. The `tokens` producer's disable
+marker carries **no repo component** — disabling it in one adopted repo
+disables it in **every** repo this same producer runs in on this machine,
+matching the item's "per user/machine" scope. An env var was considered and
+rejected for the *durable* half of this: `export`ing something in one shell
+vanishes the moment that shell closes, so a cron tick or a second terminal
+would silently go back to reading transcripts with no further signal — the
+opposite of a disable that's supposed to stay off until someone turns it
+back on. The XDG marker is what makes the disable last past the shell that
+set it; disabling is one command a person runs for themselves:
 
 ```sh
 mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer" \
   && touch "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/disabled"
 ```
 
-Once that marker exists, the producer stops reading transcripts entirely —
-`temperloop report` renders exactly as it would with no `tokens` producer
-installed at all (the kernel-tier merged-items/day headline, no
-`tokens_spent` line) — until the marker is removed. A second, un-disabled
-run after the first simply omits the disclosure prefix; the repo-scoping
-notice keeps rendering every run as before.
+Once that marker exists, the producer stops reading transcripts entirely and
+degrades via the same path an unavailable producer already uses — but this
+is **not** identical to the producer being genuinely absent. `report.sh`
+still finds the `.temperloop/report.d/tokens` shim, still runs it, still
+gets a clean exit 0, and so still renders its own
+`-- report.d/tokens --` heading followed by the shim's
+`skipped -- tokens: producer unavailable` line — a block that never appears
+at all when no `tokens` producer is installed in the first place. What
+disabling actually guarantees is narrower and headline-only: because that
+skip line isn't JSON, it doesn't parse as `{tokens_spent: <number>, ...}`,
+so `report.sh`'s **headline** falls back to the kernel-tier numbers
+(merged-items/day and time-to-merge deltas only, no `tokens_spent` line) —
+exactly the headline a genuinely absent producer would also produce, even
+though the rendered report body is not byte-identical. A second,
+un-disabled run after the first simply omits the disclosure prefix; the
+repo-scoping notice keeps rendering every run as before.
 
 ### Removal — `temperloop eject` owns the `tokens` shim; never `pricing.json`
 
