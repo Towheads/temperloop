@@ -366,6 +366,10 @@ kernel workflows/scripts/gh-call-logger.sh
 kernel workflows/scripts/install-settings.sh
 kernel workflows/scripts/install-claude-md.sh
 kernel workflows/scripts/lint-pr-body.sh
+# CHANGELOG [Unreleased] completeness gate (temperloop#960) — the PR-hygiene
+# sibling of lint-pr-body.sh above. Kernel: it derives "contract surface" from
+# VERSIONING.md's own table and names no personal path or org-specific value.
+kernel workflows/scripts/check-changelog-entry.sh
 kernel workflows/scripts/telemetry-brief.sh
 # Pipeline spend profiler (temperloop#958) — reads Claude Code's own workflow
 # agent transcripts and reports cost-weighted spend. Kernel: it derives from a

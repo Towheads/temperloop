@@ -571,6 +571,24 @@ KERNEL_GATES=(
   # erroring-repo, nothing-when-clean, and read-only (pr-list-only) contracts.
   "bash workflows/scripts/tests/test_ready_pr_sweep.sh"
   "make lint-pr-body-test"
+  # CHANGELOG `## [Unreleased]` completeness gate (temperloop#960): the second
+  # diff-scoped gate in this set, alongside test-pr-leak-guard above. Fails a
+  # change that touches CONTRACT SURFACE (parsed live out of VERSIONING.md
+  # § The contract surface's own table — never a second copy of that
+  # definition) but adds nothing under CHANGELOG.md's `## [Unreleased]`, with
+  # an EXPLICIT, reason-bearing opt-out (a `no-changelog` PR label, a
+  # `Changelog: none` PR-body line, or the same line as a commit trailer).
+  # Riding KERNEL_GATES makes it part of the already-required `checks` status,
+  # so it gates the PR with no branch-protection reconfiguration and no second
+  # required job. Inside CI it enforces on the `pull_request` event only (the
+  # opt-out channels are absent from the merge_group/push payloads) and prints
+  # a legible skip otherwise; with no resolvable base it skips cleanly, so a
+  # push:main / worker / local run stays green. Detection is proven
+  # deterministically by the fixture suite on the next line regardless of base
+  # — the same live-check-then-fixture-tests shape as the leak-guard and
+  # setting-registry gates.
+  "bash workflows/scripts/check-changelog-entry.sh"
+  "bash workflows/scripts/tests/test_check_changelog_entry.sh"
   "make test-stranger-config"
   # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite
   # for kernel/workflows/scripts/demo/seed-demo-repo.sh, fake `gh` on PATH,

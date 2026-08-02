@@ -54,6 +54,30 @@ target correctly). `--list` prints every gate's full command line prefixed
 `[kernel]` or `[overlay]`, without running anything — useful for auditing
 exactly what a run will execute before it executes it.
 
+**Diff-scoped gates.** Most gates read the working tree as it stands. Two
+read the *change* instead — the added lines of a pull request's diff (the
+public-repo leak guard) and the set of files it touches (the changelog
+gate). Both resolve a base ref the same way (an explicitly supplied base,
+else `origin/main`, else `main`, else a clean skip with a notice), and both
+ride this same gate set rather than a second CI job, so they gate on the
+already-required status with no branch-protection change.
+
+The changelog gate answers one question: does this change touch **contract
+surface** — the seams a downstream adopter couples to — and if so, does it
+add anything under `## [Unreleased]`? That matters because pre-1.0 the
+breaking signal rides the changelog rather than the version number: the
+kernel updater decides whether a downstream pull needs explicit
+acknowledgment by scanning changelog sections for a `BREAKING` marker, and
+an entry that was never written cannot carry one. The definition of
+"contract surface" is not typed a second time here — it is parsed at run
+time out of the versioning policy's own table, so extending that table
+extends the gate, and a table the gate cannot parse fails the run loudly
+instead of quietly enforcing nothing. Genuinely non-shipping work (a prose
+chore, a comment rewording) opts out by *recording* the choice — a label on
+the pull request, a marker line in its body, or the same marker as a commit
+trailer — with a reason required in the marker forms, so a skip is always a
+decision someone made rather than something nobody noticed.
+
 ## Integration
 
 The CI workflow's `checks` job (`.github/workflows/ci.yml`) runs one step:

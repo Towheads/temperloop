@@ -36,6 +36,18 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
 | **Kernel engineering-principles criteria** | review agents and `/build` workers judging a diff against the declared cross-language criteria; a project's `§ Principles` section merging with (extending, replacing, or excluding from) the kernel set per the merge semantics stated in the file's own header | `claude/engineering-principles.md` |
 
+**This table is machine-read.** `workflows/scripts/check-changelog-entry.sh`
+(the `## [Unreleased]` completeness gate in `scripts/quality-gates.sh`'s
+`KERNEL_GATES`, temperloop#960) parses the backticked paths out of the **"Where
+it lives"** column at run time and uses exactly that set to decide whether a
+change touches contract surface and therefore owes a CHANGELOG entry. It reads
+this table rather than keeping a second copy of the definition, so **adding a
+row here extends the gate for free** — and restructuring the table, renaming the
+`### The contract surface` heading, or moving the paths out of the last column
+will make the gate fail loudly (it refuses to run against a table it cannot
+parse rather than silently enforce nothing). Keep the shape: one row per
+surface, path patterns backticked in the final column.
+
 ### "Vendored" vs. "installed" — two different senses (ADR K164 D7)
 
 This document's own "the kernel is **vendored, not installed**" framing
