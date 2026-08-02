@@ -34,8 +34,17 @@
 #     existing worktree reused (no create/claim), only continued slug driven
 set -euo pipefail
 
-MJS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)/claude/workflows/build-level.mjs"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)"
+MJS="$REPO_ROOT/claude/workflows/build-level.mjs"
 [ -f "$MJS" ] || { echo "FAIL: build-level.mjs not found at $MJS" >&2; exit 1; }
+
+# temperloop#1014: the machinery executors run as the `machinery-executor` agent,
+# whose definition carries the standing contract the lean prompt no longer
+# restates. The suite asserts against that file, so its absence is a hard fail
+# (the driver would silently fall back to general-purpose and the context win
+# would vanish unnoticed).
+AGENT_DEF="$REPO_ROOT/claude/agents/machinery-executor.md"
+[ -f "$AGENT_DEF" ] || { echo "FAIL: machinery-executor agent definition not found at $AGENT_DEF" >&2; exit 1; }
 
 # Node preflight (#436): this harness runs build-level.mjs under Node. Without it
 # the suite fails mid-case with a cryptic "node: command not found"; fail LOUDLY and
@@ -123,6 +132,15 @@ read -r -d '' PREAMBLE << 'PREAMBLE_END' || true
 import { readFileSync } from 'fs';
 const MJS = process.env.MJS_PATH;
 
+// temperloop#1014: the machinery executor's STANDING contract (run it verbatim,
+// one JSON line per step, an early stop is expected) lives in the executor
+// agent's own definition, so the lean per-call prompt no longer restates it. A
+// test that asserts the contract reaches the executor must therefore look at
+// whichever surface carries it on the path under test — this prompt for the
+// general-purpose fallback, this file for the lean default.
+const AGENT_DEF = readFileSync(process.env.AGENT_DEF_PATH, 'utf8');
+globalThis.AGENT_DEF = AGENT_DEF;
+
 const callLog = [];
 
 // machineryMap: slug → [outcome, ...] — consumed in order per slug
@@ -195,7 +213,7 @@ globalThis.workerMap = workerMap;
 globalThis.mergeCheckMap = mergeCheckMap;
 
 globalThis.agent = async function agent(prompt, opts = {}) {
-  callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model } });
+  callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
   const slug = slugFromLabel(opts.label);
   if (opts.phase === 'machinery') {
     const kinds = batchStepKinds(prompt);
@@ -303,6 +321,7 @@ globalThis.baseArgs = baseArgs;
 PREAMBLE_END
 
 export MJS_PATH="$MJS"
+export AGENT_DEF_PATH="$AGENT_DEF"
 
 # ============================================================================
 # TEST 1: happy — 3 green items → 3 parked, empty escalations, no plan-note write
@@ -2200,9 +2219,12 @@ else if (preludeCalls.length !== 2) reason = 'expected exactly 2 prelude executo
 else if (JSON.stringify(stepsRun('pre-ok').slice(0,3)) !== JSON.stringify(['claim','deps-merged','worktree'])) reason = 'pre-ok prelude steps wrong: ' + JSON.stringify(stepsRun('pre-ok'));
 // The failing claim short-circuits the batch — worktree create never runs.
 else if (JSON.stringify(stepsRun('pre-claimfail')) !== JSON.stringify(['claim'])) reason = 'a CLAIM_CONFLICT must stop the prelude before deps/worktree: ' + JSON.stringify(stepsRun('pre-claimfail'));
-// The executor prompt names its steps and tells the executor an early stop is expected.
+// The executor prompt names its steps, and the executor is told an early stop is
+// expected — by its own definition on the lean default (temperloop#1014), by the
+// per-call prompt on the general-purpose fallback.
 else if (!/^Steps: claim, deps-merged, worktree$/m.test(okPrelude.promptFull)) reason = 'prelude prompt missing the Steps manifest';
-else if (!/STOPS EARLY/.test(okPrelude.promptFull)) reason = 'prelude prompt must tell the executor an early stop is expected, not an error';
+else if (okPrelude.opts.agentType !== 'machinery-executor') reason = 'prelude executor should run as machinery-executor, got ' + okPrelude.opts.agentType;
+else if (!/stops early/i.test(AGENT_DEF + okPrelude.promptFull)) reason = 'the executor must be told an early stop is expected, not an error';
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
@@ -2491,6 +2513,141 @@ if grep -qF "?? 'haiku'" "$MJS"; then
   fail "#982: found a lingering \`?? 'haiku'\` — this must be \`|| 'haiku'\` (the empty-string-safety BLOCKING fix); \`??\` lets an empty-string input defeat the fallback"
 fi
 echo "PASS: #982 haiku-literal-retained guard — found $haikuHits '|| '\''haiku'\''' fallback site(s), no lingering '?? '\''haiku'\'''"
+
+# ============================================================================
+# temperloop#1014 — machinery executors carry a LEAN context
+# ============================================================================
+
+run_node_case "K1014 lean default: every machinery executor runs as machinery-executor, with the standing contract dropped from the prompt but the #72 framing and the Bash timeout kept" "
+$PREAMBLE
+happyMachinery('lean1', 1014, 'sha-lean1');
+happyWorker('lean1');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'lean1', branch: 'build/lean1', title: 'Lean', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const mach = callLog.filter(c => c.opts.phase === 'machinery');
+const gate = mach.find(c => c.opts.label === 'gate:lean1');
+const ci = mach.find(c => (c.opts.label||'').startsWith('ci-batch:lean1'));
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked, got ' + JSON.stringify(result);
+else if (mach.length === 0) reason = 'no machinery executors spawned';
+else if (mach.some(c => c.opts.agentType !== 'machinery-executor')) reason = 'every machinery executor must run as machinery-executor, got ' + JSON.stringify(mach.map(c => c.opts.agentType));
+// The two #72 classifier-facing framing lines survive on the lean path — the
+// classifier reads the PROMPT, never the agent definition.
+else if (!/^Run this single build-machinery helper command with the Bash tool, exactly as written\.$/m.test(gate.promptFull)) reason = 'lean solo prompt lost the #72 opening framing line';
+else if (!/known project script/.test(gate.promptFull)) reason = 'lean solo prompt lost the #72 known-project-script framing line';
+else if (!/^It is a short shell script that calls known project helper scripts/m.test(ci.promptFull)) reason = 'lean batch prompt lost the #72 framing line';
+else if (!/^Steps: /m.test(ci.promptFull)) reason = 'lean batch prompt lost the Steps manifest';
+// #115 stays enforced: the long-running gate still names an explicit Bash-tool timeout.
+else if (!/Set the Bash tool \`timeout\` parameter to [0-9]+\./.test(gate.promptFull)) reason = 'lean solo prompt lost the explicit Bash-tool timeout instruction';
+else if (!/Set the Bash tool \`timeout\` parameter to [0-9]+\./.test(ci.promptFull)) reason = 'lean batch prompt lost the explicit Bash-tool timeout instruction';
+// The standing contract is gone from the prompt — it lives in the definition.
+else if (/prints a SINGLE JSON line/.test(gate.promptFull)) reason = 'lean solo prompt still restates the standing JSON-line contract';
+else if (/STOPS EARLY|Copy each object VERBATIM/.test(ci.promptFull)) reason = 'lean batch prompt still restates the standing verbatim/stop-early contract';
+else if (!/JSON line/.test(AGENT_DEF) || !/verbatim/i.test(AGENT_DEF)) reason = 'the machinery-executor definition must carry the standing JSON-line/verbatim contract';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1014 fallback: an unresolvable machinery-executor re-issues ONCE as general-purpose with the FULL prompt, and the level completes unchanged" "
+$PREAMBLE
+happyMachinery('fb1', 1015, 'sha-fb1');
+happyWorker('fb1');
+// Simulate a checkout where the agent definition was never deployed: the runtime
+// rejects the agentType at RESOLUTION time, before any subagent runs.
+const origAgent = globalThis.agent;
+let rejected = 0;
+globalThis.agent = async function(prompt, opts = {}) {
+  if (opts.agentType === 'machinery-executor') {
+    rejected++;
+    callLog.push({ prompt: String(prompt).slice(0,120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType, rejected: true } });
+    throw new Error(\"agent({agentType}): agent type 'machinery-executor' not found. Available agents: general-purpose\");
+  }
+  return origAgent(prompt, opts);
+};
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'fb1', branch: 'build/fb1', title: 'Fallback', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const served = callLog.filter(c => c.opts.phase === 'machinery' && !c.opts.rejected);
+const gate = served.find(c => c.opts.label === 'gate:fb1');
+const ci = served.find(c => (c.opts.label||'').startsWith('ci-batch:fb1'));
+let reason = null;
+if ((result.parked ?? []).length !== 1 || result.parked[0].pr !== 1015) reason = 'the level must complete unchanged under fallback: ' + JSON.stringify(result);
+// Sticky: exactly ONE rejected probe for the whole level, not one per call.
+else if (rejected !== 1) reason = 'the unavailable agent type must be probed once and then pinned, got ' + rejected + ' rejections';
+else if (served.some(c => c.opts.agentType !== 'general-purpose')) reason = 'every served machinery call must fall back to general-purpose, got ' + JSON.stringify(served.map(c => c.opts.agentType));
+// The fallback prompt restates the standing contract, exactly as before #1014.
+else if (!/prints a SINGLE JSON line/.test(gate.promptFull)) reason = 'fallback solo prompt must restate the standing JSON-line contract';
+else if (!/STOPS EARLY/.test(ci.promptFull) || !/Copy each object VERBATIM/.test(ci.promptFull)) reason = 'fallback batch prompt must restate the standing stop-early/verbatim contract';
+else if (!/This command runs longer than usual/.test(gate.promptFull)) reason = 'fallback solo prompt must restate the long-form #115 timeout instruction';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1014 narrow catch: a NON-resolution executor failure propagates — the fallback never re-runs a machinery command" "
+$PREAMBLE
+happyMachinery('nar1', 1017, 'sha-nar1');
+happyWorker('nar1');
+// A mid-agent failure (the #939 StructuredOutput-cap shape): the subagent DID
+// run, so re-issuing the command under another agent type would re-execute a
+// non-idempotent machinery step. It must propagate, not fall back.
+const origAgent = globalThis.agent;
+let attempts = 0;
+globalThis.agent = async function(prompt, opts = {}) {
+  if (opts.phase === 'machinery') {
+    attempts++;
+    callLog.push({ prompt: '', promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, agentType: opts.agentType } });
+    throw new Error('agent({schema}): StructuredOutput retry cap (3) exceeded');
+  }
+  return origAgent(prompt, opts);
+};
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'nar1', branch: 'build/nar1', title: 'Narrow', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if (attempts !== 1) reason = 'a non-resolution failure must NOT be retried under another agent type, got ' + attempts + ' machinery attempts';
+else if ((result.escalations ?? []).length !== 1 || result.escalations[0].kind !== 'worker-error') reason = 'the throw must surface as a worker-error escalation: ' + JSON.stringify(result);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1014 pin: input.machineryAgentType='general-purpose' reproduces the pre-#1014 executor prompts byte-identically, with no probe spawn" "
+$PREAMBLE
+happyMachinery('pin1', 1016, 'sha-pin1');
+happyWorker('pin1');
+globalThis.args = { ...baseArgs, machineryAgentType: 'general-purpose', items: [
+  { slug: 'pin1', branch: 'build/pin1', title: 'Pin', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const mach = callLog.filter(c => c.opts.phase === 'machinery');
+const gate = mach.find(c => c.opts.label === 'gate:pin1');
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked, got ' + JSON.stringify(result);
+else if (mach.some(c => c.opts.agentType !== 'general-purpose')) reason = 'an explicit pin must be honoured with no lean attempt, got ' + JSON.stringify(mach.map(c => c.opts.agentType));
+else if (!/prints a SINGLE JSON line/.test(gate.promptFull) || !/This command runs longer than usual/.test(gate.promptFull)) reason = 'a pinned general-purpose run must send the full pre-#1014 prompt';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# Static guard: the executor agent definition must stay Bash-only — the whole
+# context win is the tool surface it does NOT carry, and a widened `tools:` line
+# silently gives it back (plus hands a mechanical executor the file-editing
+# powers the bridge deliberately does not want it to have).
+defTools="$(awk '/^---$/{n++; next} n==1 && /^tools:/' "$AGENT_DEF" | head -1)"
+if [ "$defTools" != "tools: Bash" ]; then
+  fail "#1014: claude/agents/machinery-executor.md must declare exactly 'tools: Bash' (found: '${defTools:-<none>}')"
+fi
+# Exactly ONE `agentType: 'general-purpose'` may remain — machineryAgent()'s
+# fallback re-issue. A second one is an executor call site that bypassed the
+# resolved type and would keep paying the full-context spawn forever.
+gpHits="$(grep -c "agentType: 'general-purpose'" "$MJS" || true)"
+if [ "$gpHits" -ne 1 ]; then
+  fail "#1014: expected exactly 1 \`agentType: 'general-purpose'\` (machineryAgent()'s fallback re-issue), found $gpHits — every executor call site must route through machineryAgent()'s resolved type"
+fi
+echo "PASS: #1014 lean-executor guards — machinery-executor is Bash-only; the only general-purpose executor type is machineryAgent()'s fallback"
 
 echo ""
 echo "All test_workflow.sh cases passed."

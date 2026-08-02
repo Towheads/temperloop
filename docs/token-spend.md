@@ -97,6 +97,21 @@ top tier for work that never needed it.
   had been paying ~160K cache-read tokens to run a single one-liner
   (temperloop#942).
   ([`claude/workflows/build-level.mjs`](../claude/workflows/build-level.mjs)).
+- **…and they carry a lean context, because context size is what a cache miss
+  costs.** Two of those executors exceed the ~300s prompt-cache TTL *by
+  construction* — the CI poll (waiting is its whole job) and the minutes-scale
+  3e.5 acceptance gate — so their post-wait call re-*writes* the whole context at
+  weight 1.25 instead of re-*reading* it at 0.1. The excess is therefore
+  proportional to the agent's **context size**, not to the length of the wait, so
+  machinery executors run as the Bash-only
+  [`machinery-executor`](../claude/agents/machinery-executor.md) agent rather than
+  a `general-purpose` one, and that definition carries the standing "run it
+  verbatim, return each step's JSON line" contract the per-call prompt used to
+  restate. Measured first-call `cache_creation`, same prompts and machine:
+  37,428 → 30,856 tokens for a CI-poll batch and 37,201 → 30,734 for the gate
+  (−17.5%; −56% of the context that is not the installed CLAUDE.md, which the
+  harness injects into every non-built-in agent and no agent definition can
+  decline) (temperloop#1014).
 - **The standing rule** that each fan-out set its worker's tier *explicitly*
   to the cheapest that fits — rather than defaulting all agents to the
   driver's tier — is [`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md)

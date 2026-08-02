@@ -159,6 +159,7 @@ claude/agents/congruence-lens.md	frontmatter:description	agent-listing	harness-a
 claude/agents/consultant-persona.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/docs-reviewer.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/hobbyist-persona.md	frontmatter:description	agent-listing	harness-auto
+claude/agents/machinery-executor.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/red-team-lens.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/requirements-auditor.md	frontmatter:description	agent-listing	harness-auto
 claude/agents/team-member-persona.md	frontmatter:description	agent-listing	harness-auto
