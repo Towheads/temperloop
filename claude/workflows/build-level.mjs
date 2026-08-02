@@ -220,7 +220,14 @@ const SPINE_OUTCOME_SCHEMA = {
         'PUSHED', 'PUSH_REJECTED',
         'PR_OPENED', 'EXISTS',
         'CI_GREEN', 'CI_FAILED', 'NO_CI', 'TIMEOUT',
-        'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT',
+        // The 3e.5 acceptance gate. GATE_SLICE / GATE_TIMEOUT are temperloop#1021:
+        // a budget-exhausted run is its OWN outcome and must never collapse into
+        // GATE_FAIL — GATE_SLICE says "budget spent, gates remain, resume at
+        // resumeAt"; GATE_TIMEOUT says "the executor's Bash tool killed the run
+        // before it could report", which is a BUDGET fact, not evidence about the
+        // tree. Collapsing either into GATE_FAIL is what made an escalation
+        // payload indistinguishable from real breakage.
+        'GATE_PASS', 'GATE_FAIL', 'GATE_ABSENT', 'GATE_SLICE', 'GATE_TIMEOUT',
         'CLAIMED', 'CLAIM_CONFLICT',
         // worktree.sh deps-merged (3b-0) — its outcomes were consumed at the
         // call site (~line 595) but never listed here; an omitted outcome is
@@ -262,6 +269,14 @@ const SPINE_OUTCOME_SCHEMA = {
     failed_run_ids: { type: 'array', items: { type: ['number', 'string'] } },
     // free-form detail the executor may pass through (e.g. gate output tail)
     detail: { type: 'string' },
+    // 3e.5 sliced-gate fields (temperloop#1021). resumeAt — the 0-based gate
+    // index the NEXT slice starts at; failed — failures seen in THIS slice (the
+    // driver accumulates); elapsedSecs / budgetSecs — the margin pair that makes
+    // suite growth observable on every run, not only when it blows a budget.
+    resumeAt: { type: ['number', 'string'] },
+    failed: { type: ['number', 'string'] },
+    elapsedSecs: { type: ['number', 'string'] },
+    budgetSecs: { type: ['number', 'string'] },
   },
 };
 
@@ -393,16 +408,13 @@ const WORKER_VERDICT_SCHEMA = {
 // The Workflow runtime has no shell, so these stay named constants here rather
 // than build.config.sh settings — the same structural constraint that forces
 // machinerySoloModel/machineryBatchModel through build.md's Step-0 hand-off.
+// A tunable that genuinely needs to be operator-configurable rides that SAME
+// Step-0 hand-off (an `input.*` key with an in-file default), never a config
+// read from inside this file: GATE_SLICE_SECS below is the worked example.
 // -----------------------------------------------------------------------------
 const CI_POLL_SLICE_SECS = 240;   // one ci-poll.sh slice; < the ~10-min agent Bash cap
 const CI_POLL_TOTAL_SECS = 3600;  // total wall budget across slices before escalating
 const CI_FAIL_RETRY_BUDGET = 1;   // re-spawn+force-push+re-poll attempts on CI_FAILED
-// 3e.5 gate Bash-tool timeout (temperloop#115). The full quality-gates.sh suite
-// runs >2min; the executor's Bash tool defaults to 120_000ms, so the suite was
-// SIGTERM'd at 2:00 → a false GATE_FAIL on every drive. 480_000ms (8min) clears
-// the suite with margin and stays under the executor agent's ~10-min Bash cap
-// (== the Bash tool's 600_000ms max). Threaded to the gate runMachinery call only.
-const GATE_BASH_TIMEOUT_MS = 480_000;
 
 // --- Batched-machinery budgets (temperloop#942) ------------------------------
 // AGENT_BASH_CAP_MS — the executor agent's foreground Bash ceiling (== the Bash
@@ -432,6 +444,66 @@ const CI_BATCH_BASH_TIMEOUT_MS = Math.min(
   AGENT_BASH_CAP_MS,
   CI_POLL_SLICES_PER_BATCH * CI_POLL_SLICE_SECS * 1000 + 90_000,
 );
+
+// --- 3e.5 acceptance-gate budget (temperloop#1021) ---------------------------
+// HISTORY, because the shape of this block IS the fix. The gate used to carry a
+// single flat Bash-tool timeout for the WHOLE quality-gates.sh suite:
+// temperloop#115 raised it 120_000 -> 480_000ms when a 2-minute suite was
+// SIGTERM'd mid-run and reported as GATE_FAIL on a green tree; temperloop#1021
+// is the identical failure again, because the suite outgrew 480s too. A third
+// raise is not available: AGENT_BASH_CAP_MS is a HARD ceiling this file cannot
+// exceed, and the suite is already near it — so "raise the number" is the patch
+// that is already known to decay, twice.
+//
+// So the budget stops being a deadline for the suite and becomes the length of
+// ONE SLICE, exactly as CI_POLL_SLICE_SECS is for the CI poll (DESIGN NOTE 2).
+// quality-gates.sh runs gates until its own soft budget is spent, stops CLEANLY
+// BETWEEN GATES, and reports where to resume; 3e.5 loops slices until the suite
+// finishes. TOTAL suite runtime is therefore unbounded by the agent's Bash cap,
+// and gate-list growth can no longer manufacture a false GATE_FAIL — the decay
+// path is closed structurally rather than deferred to the next raise.
+//
+// GATE_SLICE_SECS is a NAMED SETTING (BUILD_GATE_SLICE_SECS), handed in by the
+// orchestrator at Step 0 exactly like machinerySoloModel/machineryBatchModel —
+// the Workflow runtime has no shell or filesystem, so it cannot source
+// build.config.sh itself (DESIGN NOTE 1). `||`, not `??`, for the same
+// empty-string-safety reason documented at the model settings: an orchestrator
+// that resolves an unset setting to "" must land on the in-file default, not
+// pass a literal empty string through.
+const GATE_SLICE_SECS_DEFAULT = 300;
+// GATE_SLICE_OVERRUN_MS — the budget is checked only BETWEEN gates, so a slice's
+// real wall time is its budget PLUS however long the gate that crossed it takes
+// to finish, plus process startup. This is the headroom for that tail; it is what
+// keeps the emitted Bash-tool timeout an outer BACKSTOP rather than the thing
+// that routinely fires.
+const GATE_SLICE_OVERRUN_MS = 240_000;
+// Clamp: a slice budget large enough that budget+overrun would exceed the agent's
+// Bash cap is silently reduced, so no operator setting can reintroduce the
+// hard-kill failure this item removes.
+const GATE_SLICE_SECS_MAX = Math.floor((AGENT_BASH_CAP_MS - GATE_SLICE_OVERRUN_MS) / 1000);
+const GATE_SLICE_SECS = Math.max(
+  30,
+  Math.min(
+    GATE_SLICE_SECS_MAX,
+    Number(input.gateSliceSecs) > 0 ? Math.floor(Number(input.gateSliceSecs)) : GATE_SLICE_SECS_DEFAULT,
+  ),
+);
+// The gate executor's Bash-tool timeout — derived, never typed twice. Kept under
+// this name because it is still exactly that: the tool-level timeout threaded to
+// the gate runMachinery call (and only that call).
+const GATE_BASH_TIMEOUT_MS = Math.min(
+  AGENT_BASH_CAP_MS,
+  GATE_SLICE_SECS * 1000 + GATE_SLICE_OVERRUN_MS,
+);
+// GATE_MAX_SLICES — a bound, not a target: a suite that cannot finish in this
+// many slices is escalated as a TIMEOUT (honestly named) rather than looped on
+// forever. At the default slice budget this is ~40 minutes of gate wall time,
+// several times today's suite.
+const GATE_MAX_SLICES = 8;
+// Warn when a completed run used at least this fraction of the slice budget —
+// the DECAY SIGNAL. Growth becomes visible as a margin warning on green runs,
+// long before it becomes a blown budget (the thing #115 had no way to see).
+const GATE_MARGIN_WARN_RATIO = 0.75;
 
 // -----------------------------------------------------------------------------
 // Command-building helpers — EVERY interpolated value goes through sq().
@@ -563,7 +635,7 @@ async function machineryAgent(promptFor, opts) {
 // and returns its single closed-outcome JSON line, schema-validated. No model
 // override beyond haiku (cheapest tier — the executor does no reasoning); NO
 // isolation:'worktree' (the machinery scripts manage their own worktrees, §5).
-async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
+async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } = {}) {
   // Wording (temperloop#72): describe the command as a KNOWN build-machinery helper
   // script that self-reports its result, rather than telling the sub-agent to
   // "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
@@ -590,6 +662,22 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
       lean ? null : 'It prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
       lean ? null : 'Return that JSON object verbatim as your result — the schema captures it.',
       lean ? null : 'If the command exits non-zero it STILL prints its JSON line; return that line.',
+      // temperloop#1021: name the TIMEOUT case explicitly. NOT lean-guarded, and
+      // deliberately so: unlike the three standing lines above, this one is
+      // per-call (it fires only when a caller passes `timeoutOutcome`) and it
+      // interpolates a dynamic outcome name, so it cannot live in the static
+      // machinery-executor.md agent definition the lean prompt relies on.
+      // Without this the
+      // executor, having been killed by the Bash tool before any JSON line was
+      // printed, picks the closest failure-shaped enum member it knows — which
+      // for the gate is GATE_FAIL. That silently reported a GREEN suite as
+      // BROKEN and made a budget-exhaustion escalation indistinguishable from a
+      // real gate failure. The timeout is a fact about the BUDGET, never about
+      // the tree, so it gets its own outcome and the executor is told to use it
+      // rather than guess.
+      timeoutOutcome
+        ? `If the Bash tool's own timeout kills the command BEFORE it prints any JSON line, do NOT guess a failure outcome and do NOT re-run it: return exactly {"outcome":"${timeoutOutcome}"}. A timeout means the time budget ran out — it is NOT evidence that anything failed, and reporting it as a failure is a known defect (temperloop#1021).`
+        : null,
       '',
       'Command:',
       cmd,
@@ -1402,34 +1490,114 @@ async function driveItem(item) {
   // unsetting them makes the gate hermetic — tracked defaults, matching CI. A
   // missing/older helper prints nothing → `unset` no-op → prior behavior.
   const settingsBin = `${wt}/workflows/scripts/build/build-config-settings.sh`;
-  const gateOut = await runMachinery(
-    // If the script is missing → GATE_ABSENT (no-op). Else run it in the
-    // worktree; exit 0 → GATE_PASS, non-zero → GATE_FAIL.
-    //
-    // `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
-    // The gate verdict is derived from the subshell's exit via `&& … || …`; the
-    // subshell here is redirected (`>log 2>&1`), not piped, so today the exit
-    // reaches the `||` cleanly. pipefail is the durable guard: should a future
-    // edit ever route the gate through a downstream filter/`tee` to capture its
-    // output (e.g. `qgBin | tee log`), a bare pipe's status reflects the LAST
-    // stage (tee's 0), swallowing a RED gate and degrading 3e.5 to a silent
-    // no-op. With pipefail set, the gate's own non-zero exit propagates and
-    // GATE_FAIL is still emitted — the runtime match for the documented rule.
+  // gateCmd(startAt) — one SLICE of the suite (temperloop#1021).
+  //
+  // The budget is handed to quality-gates.sh as ENV VARS, deliberately not
+  // flags: a consuming repo vendoring an OLDER quality-gates.sh ignores an
+  // unknown env var and runs the whole suite in one go (today's exact behavior,
+  // and still correct), whereas an unknown FLAG would exit 2 "usage" and read
+  // back here as a gate failure. So this is compatible with every vendored copy
+  // in the fleet with no probing.
+  //
+  // Exit-code protocol: 0 = finished green, 75 = budget spent with gates
+  // remaining (the script printed QUALITY_GATES_RESUME_AT= / QUALITY_GATES_FAILED=),
+  // anything else = red. Note the 75 arm is only ever taken by a slice-aware
+  // script, so an older copy can only ever produce GATE_PASS / GATE_FAIL.
+  //
+  // `set -o pipefail` is LOAD-BEARING (temperloop#68 — see build.md §3e.5).
+  // The gate verdict is derived from the subshell's own exit status; the
+  // subshell here is redirected (`>log 2>&1`), not piped, so today the exit
+  // reaches `$?` cleanly. pipefail is the durable guard: should a future
+  // edit ever route the gate through a downstream filter/`tee` to capture its
+  // output (e.g. `qgBin | tee log`), a bare pipe's status reflects the LAST
+  // stage (tee's 0), swallowing a RED gate and degrading 3e.5 to a silent
+  // no-op. With pipefail set, the gate's own non-zero exit propagates and
+  // GATE_FAIL is still emitted — the runtime match for the documented rule.
+  //
+  // The log is truncated on the first slice and APPENDED to thereafter, so
+  // /tmp/qg-<slug>.log stays the single artifact an operator reads, carrying the
+  // union of every slice exactly as an unsliced run's log did.
+  const gateLog = `/tmp/qg-${item.slug}.log`;
+  const gateCmd = (startAt) =>
     `set -o pipefail; if [ ! -x ${sq(qgBin)} ]; then echo '{"outcome":"GATE_ABSENT"}'; ` +
-      `else ( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ${sq(qgBin)} ) >/tmp/qg-${item.slug}.log 2>&1 ` +
-      `&& echo '{"outcome":"GATE_PASS"}' || echo '{"outcome":"GATE_FAIL"}'; fi`,
-    // temperloop#115: the full quality-gates.sh suite runs >2min; without an
-    // explicit timeout the executor's Bash tool kills it at 120s → false
-    // GATE_FAIL. GATE_BASH_TIMEOUT_MS gives the suite room to finish.
-    { label: `gate:${item.slug}`, slug: item.slug, bashTimeoutMs: GATE_BASH_TIMEOUT_MS },
-  );
-  if (machineryDenied(gateOut)) {
-    return escalate(item.slug, 'machinery-denied', { step: 'gate', out: gateOut });
+    `else ( cd ${sq(wt)} && unset $(bash ${sq(settingsBin)} 2>/dev/null) && ` +
+    `QUALITY_GATES_START_AT=${startAt} QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ` +
+    `${startAt === 0 ? '>' : '>>'}${gateLog} 2>&1; __rc=$?; ` +
+    `__el=$(sed -n 's/.*passed in \\([0-9]*\\)s.*/\\1/p;s/.*of [0-9]* in \\([0-9]*\\)s.*/\\1/p' ${gateLog} | tail -1); ` +
+    `__f=$(sed -n 's/^QUALITY_GATES_FAILED=//p' ${gateLog} | tail -1); ` +
+    `__r=$(sed -n 's/^QUALITY_GATES_RESUME_AT=//p' ${gateLog} | tail -1); ` +
+    `if [ "$__rc" = 75 ] && [ -n "$__r" ]; then ` +
+    `printf '{"outcome":"GATE_SLICE","resumeAt":%s,"failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "$__r" "\${__f:-0}" "\${__el:-0}"; ` +
+    `elif [ "$__rc" = 0 ]; then ` +
+    `printf '{"outcome":"GATE_PASS","failed":0,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__el:-0}"; ` +
+    `else printf '{"outcome":"GATE_FAIL","failed":%s,"elapsedSecs":%s,"budgetSecs":${GATE_SLICE_SECS}}\\n' "\${__f:-1}" "\${__el:-0}"; fi; fi`;
+
+  // Drive slices until the suite finishes. GATE_SLICE is the ONLY outcome that
+  // continues the loop; everything else is terminal on the first pass, so a
+  // repo whose suite fits in one slice (or whose vendored gate predates the
+  // seam) behaves exactly as it did before — one call, one outcome.
+  let gateOut = null;
+  let gateStartAt = 0;
+  let gateElapsed = 0;
+  let gateFailed = 0;
+  let gateSlices = 0;
+  for (; gateSlices < GATE_MAX_SLICES; gateSlices++) {
+    gateOut = await runMachinery(gateCmd(gateStartAt), {
+      label: `gate:${item.slug}`,
+      slug: item.slug,
+      // temperloop#115/#1021: without an explicit timeout the executor's Bash
+      // tool kills the suite at its 120s default. GATE_BASH_TIMEOUT_MS is now
+      // DERIVED from the slice budget (see the tunables block) and is an outer
+      // BACKSTOP — the slice's own soft budget is what normally ends a slice.
+      bashTimeoutMs: GATE_BASH_TIMEOUT_MS,
+      // …and if that backstop DOES fire, the executor reports GATE_TIMEOUT, not
+      // a guessed GATE_FAIL. This is the acceptance criterion of #1021: a
+      // budget-exhausted run must be distinguishable from real breakage.
+      timeoutOutcome: 'GATE_TIMEOUT',
+    });
+    if (machineryDenied(gateOut)) {
+      return escalate(item.slug, 'machinery-denied', { step: 'gate', out: gateOut });
+    }
+    gateElapsed += Number(gateOut.elapsedSecs) || 0;
+    gateFailed += Number(gateOut.failed) || 0;
+    if (gateOut.outcome !== 'GATE_SLICE') break;
+    gateStartAt = Number(gateOut.resumeAt) || 0;
+    log(`[${item.slug}] 3e.5 gate slice ${gateSlices + 1}/${GATE_MAX_SLICES} spent its ${GATE_SLICE_SECS}s budget — resuming at gate ${gateStartAt}`);
   }
-  if (gateOut.outcome === 'GATE_FAIL') {
-    return escalate(item.slug, 'acceptance-gate-failed', { gateOut });
+
+  // A TIMEOUT is NOT a gate failure — its own escalation kind, so an operator
+  // (or the pipeline's escalation router) can tell "the budget ran out" from
+  // "this branch is broken" without reading a log. Same for exhausting the
+  // slice cap: the suite did not finish, which says nothing about the tree.
+  if (gateOut.outcome === 'GATE_TIMEOUT' || gateOut.outcome === 'GATE_SLICE') {
+    return escalate(item.slug, 'acceptance-gate-timeout', {
+      gateOut,
+      reason: gateOut.outcome === 'GATE_TIMEOUT'
+        ? `the quality-gates slice was killed by the executor's ${GATE_BASH_TIMEOUT_MS}ms Bash-tool timeout before it could report — a BUDGET exhaustion, NOT a gate failure; the suite's verdict is unknown`
+        : `the suite did not finish within ${GATE_MAX_SLICES} slices of ${GATE_SLICE_SECS}s (~${Math.round(GATE_MAX_SLICES * GATE_SLICE_SECS / 60)} min of gate wall time) — a BUDGET exhaustion, NOT a gate failure`,
+      slices: gateSlices + 1,
+      elapsedSecs: gateElapsed,
+      sliceBudgetSecs: GATE_SLICE_SECS,
+      remedy: 'raise BUILD_GATE_SLICE_SECS (bounded by the agent Bash cap) or split the gate list; re-run the gate to get a real verdict',
+      log: gateLog,
+    });
   }
-  // GATE_PASS or GATE_ABSENT → proceed.
+  // A genuinely RED suite still escalates exactly as before — unchanged. Note
+  // gateFailed is accumulated ACROSS slices, so a failure found in slice 1 is
+  // not lost when slice 2 finishes green.
+  if (gateOut.outcome === 'GATE_FAIL' || gateFailed > 0) {
+    return escalate(item.slug, 'acceptance-gate-failed', { gateOut, failedGates: gateFailed, log: gateLog });
+  }
+  // GATE_PASS or GATE_ABSENT → proceed. Report the MARGIN, not just the verdict:
+  // this is the decay signal that #115's bare number never had. A run that ate
+  // most of its slice budget, or needed several slices, says so on a GREEN run —
+  // before it becomes the next false failure.
+  if (gateOut.outcome === 'GATE_PASS') {
+    const marginNote = gateSlices > 0 || gateElapsed >= GATE_SLICE_SECS * GATE_MARGIN_WARN_RATIO
+      ? ` — NOTE: approaching the per-slice budget; raise BUILD_GATE_SLICE_SECS or split the gate list before it costs a re-slice`
+      : '';
+    log(`[${item.slug}] 3e.5 gate PASS — ${gateSlices + 1} slice(s), ${gateElapsed}s of gate wall time (slice budget ${GATE_SLICE_SECS}s, cap ${GATE_MAX_SLICES} slices)${marginNote}`);
+  }
 
   // --- 3f. Push and open the PR (ONE batched executor — temperloop#942) -----
   // rebase → scan → push → pr-open are four adjacent, seconds-scale machinery

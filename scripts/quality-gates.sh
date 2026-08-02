@@ -843,6 +843,15 @@ KERNEL_GATES+=("bash scripts/tests/test_quality_gates_freshness.sh")
 # tmpdir, never this file's real gate list. Same direct-`bash` form as the
 # freshness gate above (kernel Makefile is generator-owned).
 KERNEL_GATES+=("bash scripts/tests/test_quality_gates_retry.sh")
+# SLICED execution (temperloop#1021): the QUALITY_GATES_START_AT /
+# QUALITY_GATES_BUDGET_SECS seam this very script implements below — the exit-75
+# partial protocol and `QUALITY_GATES_RESUME_AT=` / `QUALITY_GATES_FAILED=`
+# markers /build's §3e.5 gate resumes on. Proves a bare run is unchanged, that a
+# slice loop covers every gate exactly once, and that a genuinely RED suite still
+# exits non-zero. Hermetic: a patched copy of this file with synthetic one-second
+# "gates" under a tmpdir, never this file's real gate list. Same direct-`bash`
+# form as the retry gate above (kernel Makefile is generator-owned).
+KERNEL_GATES+=("bash scripts/tests/test_quality_gates_slice.sh")
 
 # The overlay gate set — empty by default; populated only by drop-ins.
 OVERLAY_GATES=()
@@ -884,6 +893,47 @@ if [[ $# -gt 0 ]]; then
   exit 2
 fi
 
+# --- SLICED EXECUTION (temperloop#1021) --------------------------------------
+# The suite's caller may be under a HARD wall-clock ceiling it cannot raise —
+# /build's §3e.5 acceptance gate runs this script inside one executor-agent Bash
+# invocation, and that tool's own maximum is ~10 minutes. Before this seam the
+# gate's only lever was a bigger timeout number, which decayed twice (2min ->
+# 8min at temperloop#115, then 8min -> exceeded again at temperloop#1021) as the
+# gate list grew; a third raise would hit the agent's ceiling and stop working
+# permanently. So the budget stops being a deadline for the WHOLE suite and
+# becomes the length of ONE SLICE: this script runs gates until its own budget is
+# spent, then stops CLEANLY BETWEEN GATES and tells the caller where to resume.
+# Total suite runtime is then unbounded by any single invocation's ceiling, so
+# gate-list growth cannot re-create the false-GATE_FAIL failure.
+#
+# The interface is ENV VARS, deliberately NOT flags: a consuming repo vendoring an
+# OLDER quality-gates.sh simply ignores an unknown env var and runs the whole
+# suite in one go — today's exact behavior — whereas an unknown FLAG would exit 2
+# ("usage") and read to the caller as a gate failure. Same degrade-silently
+# rationale as the existing QUALITY_GATES_SKIP_FRESHNESS knob.
+#
+#   QUALITY_GATES_START_AT     0-based index into the unioned gate list to begin
+#                              at (default 0 = the whole list, unchanged).
+#   QUALITY_GATES_BUDGET_SECS  soft per-invocation budget in seconds; after each
+#                              gate finishes, if elapsed >= budget and gates
+#                              remain, stop (default 0 = no budget, unchanged).
+#
+# Partial-run protocol (only ever emitted when a budget is set AND gates remain):
+#   stdout marker  QUALITY_GATES_RESUME_AT=<next 0-based index>
+#   stdout marker  QUALITY_GATES_FAILED=<failures seen in THIS slice>
+#   exit code      75   (EX_TEMPFAIL — distinct from 0 pass and 1 fail, so a
+#                        caller can never confuse "budget spent" with "red")
+# The caller accumulates QUALITY_GATES_FAILED across slices; a slice that found
+# failures still exits 75 rather than 1, so the remaining gates still run and the
+# script keeps its collect-all-failures property across the sliced run.
+#
+# BARE INVOCATION IS BYTE-IDENTICAL: with both vars unset the start index is 0,
+# the budget check is disabled, no marker is printed and the exit codes are the
+# unchanged 0/1. CI, `make quality-gates` and a human run are untouched.
+qg_uint() { case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac; }
+QG_START_AT="$(qg_uint "${QUALITY_GATES_START_AT:-0}")"
+QG_BUDGET_SECS="$(qg_uint "${QUALITY_GATES_BUDGET_SECS:-0}")"
+
 # Run gates from the repo root so the `make` targets resolve regardless of the
 # caller's CWD (build 3e.5 runs this from a throwaway worker checkout).
 cd "$REPO_ROOT" || exit 1
@@ -908,7 +958,13 @@ CHECKOUT_BEHIND=0
 CHECKOUT_BEHIND_REF=""
 # shellcheck source=workflows/scripts/lib/checkout-freshness.sh
 source "$REPO_ROOT/workflows/scripts/lib/checkout-freshness.sh"
-check_checkout_freshness "$REPO_ROOT"
+# Slice 2..N of a sliced run skips it: the freshness of a checkout cannot change
+# between slices of one gate run, so re-fetching per slice buys nothing and costs
+# a network round-trip plus a repeated banner. Slice 1 (START_AT 0) — and every
+# bare, unsliced invocation — checks it exactly as before.
+if (( QG_START_AT == 0 )); then
+  check_checkout_freshness "$REPO_ROOT"
+fi
 
 # Name every surface-conditional gate that did not register (temperloop#488)
 # up front, so a composed consumer tree's run shows the skip explicitly.
@@ -947,7 +1003,16 @@ gate_retry_init
 failures=()
 retried=()
 deterministic=()
+qg_started="$(date +%s)"
+qg_resume_at=""
+qg_index=0
 for gate in "${GATES[@]}"; do
+  # Sliced resume (temperloop#1021): skip everything before the caller's start
+  # index. Unset/0 START_AT makes this a no-op on the first pass.
+  if (( qg_index < QG_START_AT )); then
+    qg_index=$(( qg_index + 1 ))
+    continue
+  fi
   printf '\n=== %s ===\n' "$gate"
   gate_run_with_retry "$gate" || true
   case "$GATE_RUN_STATUS" in
@@ -965,6 +1030,17 @@ for gate in "${GATES[@]}"; do
       failures+=("$gate")
       ;;
   esac
+  qg_index=$(( qg_index + 1 ))
+  # Soft budget, checked only BETWEEN gates so no gate is ever killed mid-run
+  # (that is what made the old hard-timeout design report a green suite as red).
+  # Stop only if gates actually remain — a budget spent on the LAST gate is a
+  # completed run, not a partial one.
+  if (( QG_BUDGET_SECS > 0 )) && (( qg_index < ${#GATES[@]} )); then
+    if (( $(date +%s) - qg_started >= QG_BUDGET_SECS )); then
+      qg_resume_at=$qg_index
+      break
+    fi
+  fi
 done
 
 echo
@@ -990,9 +1066,40 @@ if (( ${#deterministic[@]} > 0 )); then
   printf '  - %s\n' "${deterministic[@]}"
   echo
 fi
+qg_elapsed=$(( $(date +%s) - qg_started ))
+
+# --- Partial (budget-spent) run: hand the caller a resume point --------------
+# Emitted ONLY on a sliced run that still has gates left. Failures found in this
+# slice are reported as a COUNT the caller accumulates — the slice still exits 75
+# rather than 1, so the remaining gates still run and the sliced run keeps this
+# script's collect-all-failures property. The per-gate failure names are already
+# in this slice's own output above; the caller's log is the union of the slices.
+if [[ -n "$qg_resume_at" ]]; then
+  if (( ${#failures[@]} > 0 )); then
+    printf 'FAILED %d quality gate(s) in this slice:\n' "${#failures[@]}"
+    printf '  - %s\n' "${failures[@]}"
+  fi
+  printf 'PARTIAL — ran gates %s..%s of %s in %ss (budget %ss); resuming at %s\n' \
+    "$QG_START_AT" "$(( qg_resume_at - 1 ))" "${#GATES[@]}" "$qg_elapsed" "$QG_BUDGET_SECS" "$qg_resume_at"
+  printf 'QUALITY_GATES_FAILED=%d\n' "${#failures[@]}"
+  printf 'QUALITY_GATES_RESUME_AT=%s\n' "$qg_resume_at"
+  exit 75
+fi
+
 if (( ${#failures[@]} > 0 )); then
   printf 'FAILED %d/%d quality gate(s):\n' "${#failures[@]}" "${#GATES[@]}"
   printf '  - %s\n' "${failures[@]}"
+  printf 'QUALITY_GATES_FAILED=%d\n' "${#failures[@]}"
   exit 1
 fi
-printf 'OK — all %d quality gate(s) passed\n' "${#GATES[@]}"
+# The elapsed figure is the DECAY SIGNAL (temperloop#1021): it is what makes the
+# suite's growth against any caller's budget observable on every green run,
+# instead of only becoming visible the day it blows a deadline.
+if (( QG_START_AT > 0 )); then
+  # Final slice of a sliced run — say so, so the line is never misread as "the
+  # whole suite passed" when earlier slices ran (and may have failed) elsewhere.
+  printf 'OK — gates %s..%s of %s passed in %ss (final slice)\n' \
+    "$QG_START_AT" "$(( ${#GATES[@]} - 1 ))" "${#GATES[@]}" "$qg_elapsed"
+else
+  printf 'OK — all %d quality gate(s) passed in %ss\n' "${#GATES[@]}" "$qg_elapsed"
+fi

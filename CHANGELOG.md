@@ -207,6 +207,43 @@ reads that marker; a stranger greps for it before pulling.
   the worktree) can no longer destroy uncommitted work unseen. `RECOVER_NONE`
   keeps its unchanged one-retry-then-escalate handling.
 
+- **A `/build` acceptance-gate TIMEOUT is no longer reported as a gate FAILURE,
+  and the gate's budget is now a named setting rather than a hardcoded literal
+  (temperloop#1021).** `claude/workflows/build-level.mjs`'s §3e.5 gate carried a
+  single flat `480_000ms` Bash-tool timeout for the whole `scripts/quality-gates.sh`
+  suite. Once the gate list outgrew it, every drive on this repo SIGTERM'd the
+  suite mid-run and escalated `acceptance-gate-failed` — on a tree whose suite,
+  re-run uncapped, was green. Two defects in one: the wasted round-trip, and
+  (the dangerous half) an escalation payload that could not be told apart from
+  real breakage. **This was a recurrence:** temperloop#115 already raised the
+  same number once, `2min → 8min`, for the same failure, and it decayed again —
+  so a third raise is the patch already known to fail, and it is not even
+  available, since the executor agent's ~10-minute Bash ceiling cannot be
+  raised. Three changes. **(1)** A budget-exhausted run gets its own outcomes
+  (`GATE_TIMEOUT` / `GATE_SLICE`) and its own escalation kind,
+  `acceptance-gate-timeout`, whose payload states that the suite's verdict is
+  UNKNOWN; the `runMachinery` executor prompt now names `GATE_TIMEOUT`
+  explicitly, so a killed run stops being narrated as the nearest
+  failure-shaped outcome. A genuinely red suite still escalates
+  `acceptance-gate-failed`, unchanged. **(2)** `scripts/quality-gates.sh` gains
+  a SLICED mode (`QUALITY_GATES_START_AT` / `QUALITY_GATES_BUDGET_SECS`, an
+  exit-75 partial protocol and `QUALITY_GATES_RESUME_AT=` /
+  `QUALITY_GATES_FAILED=` markers): it runs gates until its budget is spent,
+  stops cleanly *between* gates, and reports where to resume, so the driver
+  loops slices and total suite runtime is no longer bounded by any one Bash
+  invocation. Growth therefore can no longer manufacture a false failure — the
+  decay path is closed structurally, not deferred to the next raise. **(3)** The
+  budget becomes the named setting `BUILD_GATE_SLICE_SECS`, registered in
+  `setting-registry.tsv` and handed to the Workflow runtime by `build.md` /
+  `fix.md` / `sweep.md` Step 0 as `input.gateSliceSecs` (the same hand-off
+  `machinerySoloModel` uses, for the same reason: the Workflow runtime has no
+  shell to source `build.config.sh`), clamped so no value can push the derived
+  Bash timeout past the agent cap. Green runs now report elapsed time and slice
+  count — the decay signal the bare number never had. Backward compatible in
+  both directions: the two `quality-gates.sh` knobs are ENV VARS, so a consuming
+  repo vendoring an older copy ignores them and runs the whole suite exactly as
+  before, and a caller that omits `gateSliceSecs` lands on the `.mjs`'s in-file
+  default.
 - **`temperloop eject` no longer deletes a hand-authored
   `.temperloop/pricing.json` (temperloop#985).** Previously `eject` removed
   the whole `.temperloop/` directory unconditionally at all three of its
