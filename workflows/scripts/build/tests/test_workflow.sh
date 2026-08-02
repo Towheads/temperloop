@@ -1880,6 +1880,29 @@ grep -q 'withCure(verdictSection)' "$MJS" \
   || fail "#712: main-worker null-retry must append the cure via withCure(verdictSection) so the retry prompt differs"
 echo "PASS: #712 cure guard — null-verdict re-spawn appends FOREGROUND_CURE (retry prompt differs from first)"
 
+# --- K997 static lockstep guards: the worker must NOT be told to run the bare,
+# repo-wide quality-gates.sh in its own context (a minutes-long blocking turn
+# blows the ~5-min prompt-cache TTL and re-writes the worker's whole context).
+# Both surfaces build.md §3c names — workerPrompt()'s FOREGROUND-ONLY section and
+# FOREGROUND_CURE — must carry the ban AND the non-authority caveat, so a future
+# edit cannot quietly reinstate the bare run on either. Runtime shape (that the
+# prompt actually reaches the worker) is already covered by the K712 prevention
+# case above, which asserts the same section is present in promptFull. ---------
+qg_ban_hits="$(grep -ci 'bare, repo-wide `scripts/quality-gates.sh`' "$MJS")"
+[ "$qg_ban_hits" -ge 2 ] \
+  || fail "#997: expected the bare-repo-wide-gate ban in BOTH workerPrompt()'s FOREGROUND-ONLY section and FOREGROUND_CURE (found $qg_ban_hits)"
+grep -q 'FAST LOCAL FEEDBACK ONLY — it is NOT the acceptance authority' "$MJS" \
+  || fail "#997: worker prompt must state the path-scoped subset is fast local feedback only, NOT the acceptance authority (3e.5 is)"
+grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
+  || fail "#997: worker prompt must tell the worker how to report a criterion naming the bare repo-wide suite (passed:true + deferred evidence, never passed:false)"
+# The #997 narrowing applies to the WORKER only — 3e.5's parent-side gate stays
+# bare and repo-wide (the PR #309 silent-red lesson). Guard that the gate command
+# still invokes the script with no path arguments appended.
+# shellcheck disable=SC2016  # grepping for the LITERAL ${sq(qgBin)} token in source
+grep -q '&& ${sq(qgBin)} ) >/tmp/qg-' "$MJS" \
+  || fail "#997/#309: the 3e.5 parent-side gate must still invoke quality-gates.sh BARE (no path scoping) — it is the acceptance authority"
+echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide run; 3e.5 stays bare and repo-wide"
+
 # ============================================================================
 # TEST (K939): lost-return recovery — a worker that completed WITHOUT calling
 # StructuredOutput must not manufacture a `worker-error` escalation for work

@@ -673,17 +673,43 @@ function workerPrompt(item, worktreePath, extraSection) {
     // AND spike, both route through workerPrompt) is told up front to foreground
     // the gate. Without this the worker backgrounds quality-gates.sh, yields, and
     // returns no verdict (build.md §3c/§3d must stay in lockstep with this block).
+    //
+    // temperloop#997 adds the SCOPE half of the same contract: the worker must not
+    // run the BARE, repo-wide suite in its own context at all. That run is minutes-
+    // scale, and one blocking turn that long blows the ~5-min prompt-cache TTL — the
+    // worker's whole ~213K-token context is then re-WRITTEN (weight 1.25) instead of
+    // re-READ (0.1) on the next call. The bare repo-wide run stays parent-side at
+    // 3e.5 (unchanged, still the authority — the PR #309 silent-red lesson). The two
+    // halves live in ONE section on purpose: foreground-only governs HOW the worker
+    // runs its checks, #997 governs WHICH checks it runs, and dropping either one
+    // re-opens a measured defect. build.md §3c carries both in lockstep.
     '## Quality gate & long-running work — FOREGROUND ONLY (#1219)',
-    '- Run EVERY verification command in the FOREGROUND (a blocking Bash call): the',
-    '  `quality-gates.sh` acceptance gate above all, plus any eval / build / sweep.',
+    '- Run EVERY verification command you DO run in the FOREGROUND (a blocking Bash',
+    '  call): the path-scoped gate subset below, plus any eval / build / sweep.',
     '- NEVER launch one with `run_in_background: true`, and never end your turn awaiting',
     '  a Monitor / background-task notification. A subagent has NO re-invoke-on-completion',
     '  loop: a backgrounded process is reaped when you yield and the notification never',
     '  reaches you — you hang and return NO verdict. A turn that ends while awaiting a',
     '  background task is the #1219 bug, not a valid return.',
-    '- If a single command would exceed the ~10-min Bash foreground cap, NARROW or split',
-    '  it, or return `blocked` / `failed` and let the orchestrator run it parent-side —',
-    '  never background-and-wait.',
+    '- Do NOT run the BARE, repo-wide `scripts/quality-gates.sh` (or a whole-suite `make`',
+    '  equivalent) in your own context (#997). That suite is minutes-scale, and one',
+    '  blocking turn that long blows the ~5-minute prompt-cache TTL: your ENTIRE',
+    '  accumulated context is then re-written instead of re-read on the very next call,',
+    '  a 12.5x token penalty. Run a PATH-SCOPED subset instead —',
+    '  `scripts/quality-gates.sh --list` prints every gate as `[layer] <make target>`;',
+    '  run only the few targets that cover the files you touched, keeping EACH call to',
+    '  seconds. If you cannot cheaply tell which gates apply, run none and say so.',
+    '- That subset is FAST LOCAL FEEDBACK ONLY — it is NOT the acceptance authority.',
+    '  The orchestrator runs the bare, repo-wide suite parent-side (build.md §3e.5) and',
+    '  THAT run is the authority; a red there comes back to you as a re-spawn. So when',
+    '  an acceptance criterion names the bare repo-wide suite, do NOT run it: report it',
+    '  `passed: true` only if your targeted subset is green, and state plainly in its',
+    '  `evidence` that the bare repo-wide run was DEFERRED to the parent-side 3e.5 gate.',
+    '  Never report `passed: false` for a merely DEFERRED criterion — that reads as',
+    '  blocked and stalls the whole level on a check you were never meant to run.',
+    '- If a single command would exceed the ~10-min Bash foreground cap — or the tighter',
+    '  ~5-min cache-TTL budget above — NARROW or split it, or return `blocked` / `failed`',
+    '  and let the orchestrator run it parent-side — never background-and-wait.',
     '',
     extraSection ?? '',
     '',
@@ -704,13 +730,19 @@ function workerPrompt(item, worktreePath, extraSection) {
 // identically). Names the failure explicitly; the workerPrompt foreground block
 // above is prevention, this is the backstop cure. build.md §3d must stay in
 // lockstep. Kept as its own section so the test can assert its presence.
+// Carries the #997 scope half too: the cure must not re-issue the very directive
+// (a bare repo-wide gate run) the prevention block just removed.
 const FOREGROUND_CURE = [
   '## Re-spawn cure (#1219) — your previous turn returned NO verdict',
   'Your previous attempt ended without a parseable verdict. The usual cause is',
   'backgrounding the quality gate (`run_in_background: true`) or awaiting a Monitor',
-  'notification a subagent never receives. Run EVERY command — the `quality-gates.sh`',
-  'gate above all — in the FOREGROUND, never `run_in_background` / Monitor, and END',
-  'this turn with exactly the fenced verdict JSON and nothing after it.',
+  'notification a subagent never receives. Run EVERY command you DO run — the',
+  'path-scoped gate subset above all — in the FOREGROUND, never `run_in_background` /',
+  'Monitor, and END this turn with exactly the fenced verdict JSON and nothing after',
+  'it. Do NOT run the bare, repo-wide `scripts/quality-gates.sh` here either (#997) —',
+  'that run is the orchestrator\'s, parent-side at build.md 3e.5, and it is the',
+  'acceptance authority; a minutes-long blocking turn is what blows the prompt-cache',
+  'TTL. A stall is never cured by running MORE gate.',
 ].join('\n');
 
 // Compose the retry `extraSection` = the original section (if any) + the cure.
