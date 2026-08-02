@@ -396,6 +396,25 @@ if [ -x "$PRODUCER" ]; then
   check "PRODUCER: ...and still exits 0 (a skip is never an error)" \
     bash -c "printf '%s' '$OUT9B' | grep -q 'rc=0'"
 
+  # Degradation: an unrecognized record shape from the profiler (units_total
+  # present but not a number) -- the producer's own `select((.units_total |
+  # type) == "number")` filter drops it, so $out is empty and it skips.
+  FAKEROOT="$TMP/fake-profiler-kernel/workflows/scripts"
+  mkdir -p "$FAKEROOT/report-producers"
+  cp "$PRODUCER" "$FAKEROOT/report-producers/tokens"
+  chmod +x "$FAKEROOT/report-producers/tokens"
+  cat > "$FAKEROOT/pipeline-spend-report.sh" <<'EOF'
+#!/usr/bin/env bash
+# fixture: emits a record whose units_total is NOT a number (bad shape)
+echo '{"units_total":"not-a-number","by_model":{}}'
+EOF
+  chmod +x "$FAKEROOT/pipeline-spend-report.sh"
+  OUT9D="$("$FAKEROOT/report-producers/tokens"; echo "rc=$?")"
+  check "PRODUCER: an unrecognized record shape (non-numeric units_total) prints the skip line" \
+    bash -c "printf '%s' '$OUT9D' | grep -q 'skipped -- tokens: producer unavailable'"
+  check "PRODUCER: ...and still exits 0" \
+    bash -c "printf '%s' '$OUT9D' | grep -q 'rc=0'"
+
   # Degradation: no jq on PATH.
   mkdir -p "$TMP/emptybin"
   OUT9C="$(PATH="$TMP/emptybin:/usr/bin:/bin" bash -c "command -v jq >/dev/null 2>&1 && echo HASJQ || '$PRODUCER'" 2>/dev/null)"
