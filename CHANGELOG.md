@@ -16,6 +16,28 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **One-time first-run disclosure and a per-person local disable for the
+  `tokens` report producer (temperloop#986).** The producer at
+  `.temperloop/report.d/tokens` is a *committed* artifact, so a teammate who
+  inherited it by a plain `git pull` never saw an `init` prompt and had no way
+  to learn that `temperloop report` reads their own Claude Code transcripts.
+  On that person's first run the producer now emits a one-time disclosure
+  naming what it reads, that it makes **no network call**, and the exact
+  command to switch it off. The disclosure rides the existing `notice` field
+  (`report.contract.md`, temperloop#981) rather than a second stdout line, so
+  it cannot defeat the `tokens_spent` parse — the headline still renders on
+  the run where the notice fires. The disable is a marker file under
+  `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/`,
+  **never a committed file**: a committed dismissal would silently disable the
+  producer for every collaborator who clones the repo, and a bare env var
+  would vanish between shells, so a cron tick or a second terminal would
+  re-read transcripts anyway. Note the marker carries **no repo component** —
+  it is global to you on this machine, so disabling it in one repo disables it
+  in every adopted repo on that machine. A disabled run degrades through the
+  ordinary `skip()` path, so only the *headline* matches an absent producer;
+  the `-- report.d/tokens --` block itself still appears, carrying the skip
+  line. See `docs/features/telemetry.md` § First-run notice and local disable.
+
 - **`VERSIONING.md` § Cutting a release — the ordered release procedure
   (temperloop#1015).** The kernel had version *policy* (this file's bump rules)
   and tag *conventions* (`kernel-repo-layout.md` § Release-tag convention) but
