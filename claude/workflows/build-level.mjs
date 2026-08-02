@@ -466,11 +466,19 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
       phase: 'machinery',
       agentType: 'general-purpose',
       // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
-      // read (this runtime has no shell — DESIGN NOTE 1). Absent input.machineryModel
-      // (build.md Step 0 didn't resolve BUILD_MACHINERY_MODEL, or it was empty) →
-      // 'haiku', UNCHANGED from before this setting existed — the byte-identical-
-      // when-unset contract this item ships under.
-      model: input.machineryModel ?? 'haiku',
+      // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` —
+      // `??` only falls through on null/undefined, and a caller (or an
+      // omitted-vs-empty prose mistake upstream) can easily hand this an
+      // empty string, which `??` would pass straight through as a literal
+      // "" model and silently defeat the fallback. `||` collapses BOTH the
+      // absent-input case (build.md didn't resolve BUILD_MACHINERY_SOLO_MODEL,
+      // or the key was omitted) AND an empty-string input to the same
+      // 'haiku' default — UNCHANGED from before this setting existed, the
+      // byte-identical-when-unset contract this item ships under. This is the
+      // load-bearing invariant; it lives here (the consumer), not in the
+      // orchestrator prose (the producer), so it holds regardless of how
+      // build.md/sweep.md/fix.md construct the input.
+      model: input.machinerySoloModel || 'haiku',
       schema: SPINE_OUTCOME_SCHEMA,
       // NB: deliberately NO isolation:'worktree' — see DESIGN NOTE 3.
     },
@@ -573,12 +581,13 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
       phase: 'machinery',
       agentType: 'general-purpose',
       // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
-      // read (this runtime has no shell — DESIGN NOTE 1). Absent
-      // input.machineryBatchModel (build.md Step 0 didn't resolve
-      // BUILD_MACHINERY_BATCH_MODEL, or it was empty) → 'haiku', UNCHANGED from
-      // before this setting existed — the byte-identical-when-unset contract
-      // this item ships under.
-      model: input.machineryBatchModel ?? 'haiku',
+      // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` — see
+      // the twin runMachinery() comment above for why: `??` lets an
+      // empty-string input sail through as a literal "" model, silently
+      // defeating the fallback; `||` collapses both absent AND empty-string
+      // input to 'haiku', UNCHANGED from before this setting existed. The
+      // invariant lives here (the consumer), not in orchestrator prose.
+      model: input.machineryBatchModel || 'haiku',
       schema: SPINE_BATCH_SCHEMA,
       // NB: deliberately NO isolation:'worktree' — see DESIGN NOTE 3.
     },
@@ -747,7 +756,16 @@ async function callWorker(item, wt, extraSection, label) {
     const v = await agent(workerPrompt(item, wt, extraSection), {
       label,
       phase: 'worker',
-      model: item.model, // undefined → inherit session model
+      // temperloop#982: item.model || undefined, NOT bare item.model — an
+      // empty-string item.model (e.g. an orchestrator that resolved
+      // SWEEP_WORKER_MODEL/FIX_WORKER_MODEL to "" and passed it through
+      // unfiltered) must collapse to undefined here, the sentinel the agent()
+      // hook reads as "inherit session model" — a bare "" would instead be
+      // sent as a literal (invalid) model name. undefined/absent item.model
+      // already coerces to undefined via `||`, so this is a strict
+      // widening (covers "" too), never a behavior change for the existing
+      // undefined case.
+      model: item.model || undefined, // "" or undefined → inherit session model
       schema: WORKER_VERDICT_SCHEMA,
     });
     return { verdict: v ?? null, error: v == null ? 'agent returned null' : null };
@@ -1018,7 +1036,10 @@ async function driveItem(item) {
       {
         label: `worker:${item.slug}`,
         phase: 'worker',
-        model: item.model, // undefined → inherit session model
+        // temperloop#982: item.model || undefined — see callWorker()'s
+        // identical comment above; an empty-string item.model must collapse
+        // to the inherit-session sentinel, not ride through as a literal "".
+        model: item.model || undefined, // "" or undefined → inherit session model
         schema: WORKER_VERDICT_SCHEMA,
       },
     );

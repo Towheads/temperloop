@@ -266,21 +266,34 @@ fi
 
 # claude/workflows/build-level.mjs — model tier for the TWO machinery-executor
 # agent spawns that bridge the deterministic bash machinery into the Workflow
-# runtime (runMachinery = the solo executor; runMachineryBatch = the batched
-# prelude/pr-batch/ci-batch executor — see that file's own DESIGN NOTE 1).
+# runtime: BUILD_MACHINERY_SOLO_MODEL for runMachinery (the SOLO executor —
+# the 3e.5 quality gate, recover-probe, push-retry), BUILD_MACHINERY_BATCH_MODEL
+# for runMachineryBatch (the BATCHED prelude/pr-batch/ci-batch executor — see
+# that file's own DESIGN NOTE 1). Named as a pair, not a general-case-plus-
+# carve-out — each covers exactly half of build-level.mjs's four machinery
+# call sites, so neither name is the "default" the other overrides; setting
+# only one leaves the other half of the machinery spawns untouched, by design.
 # UNLIKE every setting above, build-level.mjs itself never sources this file —
 # the Workflow runtime has no filesystem, no Node, and no shell (DESIGN NOTE 1
 # again), so there is no Step-0-source shell seam available inside the .mjs.
-# Instead, `claude/commands/build.md` Step 0 sources THIS file (as it already
-# does for every other setting here) and passes the resolved value as an
-# orchestrator-supplied WORKFLOW INPUT — `input.machineryModel` /
-# `input.machineryBatchModel` — alongside the existing `input.machineryBinDir`
-# / `input.claimCmd` hand-off precedent (build.md Step 3's args table). Never a
-# config-file read from inside the .mjs. Sentinel: empty means the orchestrator
-# omits the input key entirely, so the .mjs's own `?? 'haiku'` fallback wins —
-# its hardcoded 'haiku' literal is the deliberate, UNCHANGED default (the
-# byte-identical-when-unset contract this item ships under; temperloop#982).
-: "${BUILD_MACHINERY_MODEL:=}"
+# Instead, EVERY command that invokes build-level.mjs (`claude/commands/
+# build.md`, `sweep.md`, `fix.md` — all three source this file at their own
+# Step 0 already) resolves these two and passes them as orchestrator-supplied
+# WORKFLOW INPUT — `input.machinerySoloModel` / `input.machineryBatchModel` —
+# alongside the existing `input.machineryBinDir` / `input.claimCmd` hand-off
+# precedent (build.md Step 3's args table is the worked example; sweep.md/
+# fix.md mirror it). Never a config-file read from inside the .mjs. The
+# EMPTY-STRING SAFETY is owned by the CONSUMER, not the producer: the .mjs
+# reads `input.machinerySoloModel || 'haiku'` / `input.machineryBatchModel ||
+# 'haiku'` (`||`, not `??` — `??` only falls through on null/undefined and
+# would let an orchestrator that resolves this to `""` and forgets to omit
+# the key pass a literal empty-string model through; `||` collapses BOTH
+# absent-input AND empty-string-input to the same fallback). Sentinel:
+# empty here means every consumer either omits the key or passes it through
+# unfiltered — either way the .mjs's own hardcoded 'haiku' literal wins,
+# the deliberate, UNCHANGED default (the byte-identical-when-unset contract
+# this item ships under; temperloop#982).
+: "${BUILD_MACHINERY_SOLO_MODEL:=}"
 : "${BUILD_MACHINERY_BATCH_MODEL:=}"
 
 # sweep.md Step 3 tier-2 composition — the BOUNDED wait on background chunk 1's
@@ -645,7 +658,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
-       FIX_WORKER_MODEL BUILD_MACHINERY_MODEL BUILD_MACHINERY_BATCH_MODEL \
+       FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
        PIPELINE_DRIVE_MERGE PIPELINE_DRIVE_MERGE_CAP PIPELINE_DRIVE_MERGE_MODEL PIPELINE_DRIVE_MERGE_SETTINGS \
