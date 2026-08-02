@@ -14,6 +14,159 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-01 — BREAKING
+
+### Migration — read this first
+
+One migration, and it is narrow: **`/workshop`'s coverage walk no longer has a
+minimal-interaction path.** Two documented behaviors were deleted under a hard
+cutover — the ad-hoc batch-approval grouping license, and Step 4's exemption
+from persist-then-ask — so if you drive `/workshop`, or your overlay documents
+a lighter-touch design walk on top of it, read `### Removed — BREAKING` below
+before pulling. Everything else in this release is additive.
+
+**Who has to act.** Only an operator or overlay that relied on `/workshop`
+Step 2's "draft several dimensions, then ask once over the batch" shortcut, or
+on the ratify ask skipping the persist-and-re-present step. Nothing else moves:
+the board adapter interface, hook names and signatures, the `checks` gate
+contract, `bin/temperloop`'s subcommand set, the `.kernel-pin`/compose seam, and
+the setting-registry **row shape** are all untouched. Two setting *defaults*
+changed (both prose-budget caps — see `### Changed`); no row was added, renamed,
+or removed, so nothing that parses the registry needs to adapt.
+
+### Added
+
+- **`/workshop` gains `## Step 3.5 — Congruence pass + walkthrough`
+  (temperloop#932).** A third pass between the review panel and ratify, in
+  three parts: (1) a facilitator-run, **agentless and unconditional**
+  congruence seam checklist applied by reference from `claude/design-schema.md`
+  § Congruence seams — it runs even when every agent is unavailable, so a
+  probe-less checkout still gets the cross-dimension consistency check; (2) a
+  capability-probed `congruence-lens` spawn against exactly one document, whose
+  skip takes the **remedy-bearing** degradation form (`skipped — <agent>
+  available as source; run workflows/scripts/install/project-agents.sh to
+  enable`) rather than a bare dead-end; and (3) a tier-mirrored walkthrough
+  whose step count **derives from the schema's current dimension list**, never
+  a hardcoded count, where every dimension — clustered or not — is individually
+  listed, delta-flagged and individually verdicted (N verdicts per cluster
+  line), with the `deferred → <ref>` time-boxing valve open to every
+  non-premise dimension and closed to dimension 0. Step 3.5's findings dispose
+  under Step 4.1b's **existing** folded / `deferred → <ref>` / declined
+  vocabulary — one record, one vocabulary, one check, no second ledger. Step
+  3.1.4 now also registers the cold-read lens in the same per-lens coverage
+  record the 3.3 panel uses, so a skip is stamped into the artifact instead of
+  only narrated. **For an adopter:** a `/workshop` run costs one more pass, and
+  a checkout that has not run `project-agents.sh` is told how to fix that on
+  the live line. New standing rules `W.17` (parallel-finding-ledger) and `W.18`
+  (cluster-collapsed-verdicts) ship with matching citation-registry rows.
+
+- **`congruence-lens` — a fifth read-only advisory review agent
+  (temperloop#927).** `claude/agents/congruence-lens.md` reads **exactly one**
+  target document per invocation and reports internal contradictions between
+  its parts, quoting both passages verbatim and naming the seam they cross. Its
+  charter frames it honestly as a **fresh-context textual-consistency check,
+  not an independent-priors reviewer** — the operator remains the only
+  independent reviewer, stated in the agent's own text so a reader cannot
+  mistake its verdict for independent judgment. Registered in
+  `docs/features/review-agents.md`, `docs/features/feature-manifest.txt` and
+  `workflows/scripts/config/contributor-manifest.tsv`, and exercised against a
+  new planted-contradiction fixture brief
+  (`workflows/scripts/tests/fixtures/congruence-lens/`) by the real deployed
+  agent, not a simulation. **For an adopter:** like every other kernel review
+  agent it ships as *source* — it is available to `/workshop` Step 3.5 only
+  after `workflows/scripts/install/project-agents.sh` installs it; until then
+  the step degrades legibly rather than silently.
+
+- **`claude/design-schema.md` gains two contract grammars — § Congruence seams
+  and § Challenge record (temperloop#926).** § Congruence seams is a five-row
+  **named-minimum** table of cross-dimension consistency pairs
+  (`contract↔mechanism-shape`, `adoption↔problem-statement`,
+  `acceptance↔testability`, `deferred-refs-resolve`, `cost↔scope`), explicitly
+  a floor and not a ceiling, add-only in the same sense § Overlay extensibility
+  already is. § Challenge record pins the verdict vocabulary (`accepted` /
+  `challenged → revised ×N` / `operator-edited`), the per-stop line grammar,
+  the `walk` vs `walkthrough` kind discriminator, the verbatim `response:`
+  field, the `challenge-record-start: <date>` marker with **both** readings of
+  its absence (no section at all = nothing recorded yet; marker present with
+  zero stop lines = a defect), and its home section `## Working notes`. It also
+  resolves a gate-satisfiability deadlock outright: a Step-1-seeded dimension's
+  (0, 1, 3) Step-1 confirm **counts as** that dimension's `walk` verdict
+  (`source: step-1-seed`) — without which every brief would fail the completeness
+  check below. Six stale "temperloop#216, forthcoming" sites were corrected to
+  the shipped `validate-design-brief.sh`, being precise about what it does and
+  does not yet check rather than overclaiming, and § Overlay extensibility's
+  class-level override claim was narrowed so it no longer reads as an
+  invocation of `message-schema.md`'s named-template carve-out. **For an
+  adopter:** an `design-schema.overlay.md` dimension list is unaffected (the
+  add-only rule is unchanged); briefs written before this release carry no
+  challenge record and stay exempt — see check (C) below.
+
+- **`claude/message-schema.md` gains `### Decision presentation`, and a
+  **non-overridable** template set that CI enforces (temperloop#928).** The new
+  mode-6 template pins the five required parts of any decision put to the
+  operator — the decision in plain terms, the proposed answer, the reasoning,
+  the alternatives and why they lost (with "none considered" named as a
+  legitimate value), and what accepting it constrains downstream — under a
+  governing plain-language rule. Because those parts *are* a challenge gate, a
+  redeclaration could hollow the gate out, so the template is excluded from the
+  overlay-override surface — and the exclusion is **mechanical, not prose**:
+  `workflows/scripts/validate-template-refs.sh` now carries
+  `NON_OVERRIDABLE_TEMPLATES`, tests it **before** the canonical-name check
+  (the order is load-bearing — reversed, an excluded name reports `ok`), and
+  self-checks that every excluded name is still a template `§ Templates`
+  defines, so a rename in the doc reds CI instead of silently disarming the
+  exclusion. `CLAUDE.kernel.md`'s § Kernel vs overlay routing rule carve-out is
+  qualified to match ("most of them, not all"), and a 219-line test suite plus
+  a `quality-gates.sh` entry ship with it. **For an adopter:** an overlay that
+  redeclares `### Decision presentation` in its own message-schema overlay now
+  fails the `checks` job. **Deliberately not tagged `BREAKING`** — the
+  exclusion set currently holds exactly one name, and that name is the template
+  introduced in this same release, so no existing overlay can already have
+  redeclared it; the contract-surface shrink is vacuous in practice. Adding a
+  *pre-existing* template name to that set later would be breaking and must be
+  marked as such.
+
+- **`validate-design-brief.sh` check (C) — challenge-record completeness, in CI
+  (temperloop#929).** The record is now enforced by the validator, not only by
+  `/workshop` at ratify time: every dimension must carry **both** a `walk` and a
+  `walkthrough` verdict, verdict lines must match the § Challenge record
+  grammar, and an `operator-edited` verdict must carry its verbatim `response:`
+  field. The grammar is **read from** `design-schema.md` § Challenge record,
+  never re-encoded locally — the same discipline checks (A) and (B) already
+  apply to the dimension list and the disposition grammar, so the schema stays
+  the single source of truth. **Migration carve-out for existing briefs:** a
+  brief with no `### Challenge record` subheading is **exempt at any status**,
+  implemented as a per-brief signal rather than a global flag — so every brief
+  authored before this release passes untouched, and only briefs that already
+  have a record are held to it. Seven fixtures (complete / empty / bad-grammar
+  / missing-response / draft-partial / migration-exempt / walk-missing) lock
+  both verdicts, including the negative state that closes the loophole the
+  record-start marker exists for.
+
+- **`/tidy` Step 3 gains the `### All-accepted-untouched briefs` sweep
+  (temperloop#933).** The drain now reads each ratified brief's challenge
+  record and flags any brief whose coverage-walk stops are **all** bare
+  `accepted` — zero `challenged → revised`, zero `operator-edited` — to the
+  pending-decisions surface for `/check-in` to dispose. The tell it is after:
+  a walk that never actually engaged the operator looks identical to a walk
+  that converged, except in the record. Registered as a Capture/Backstop pair
+  in `tidy.md`'s own kernel registry table (capture anchor: `workshop.md`
+  § `Step 2 — Coverage walk`), so `validate-capture-backstop.sh` fails the
+  build if either half is ever removed alone. **For an adopter:** one new
+  `### open` entry class appears on the pending-decisions surface; nothing
+  else changes.
+
+- **`pr.sh recover-probe <worktree> <branch>` — a read-only staged
+  side-effect probe (temperloop#939).** A new subcommand on the shipped
+  `workflows/scripts/build/pr.sh`, additive to its CLI surface: it walks a
+  three-stage ladder — commits ahead of base (`git rev-list --count`), branch
+  present on origin (`git ls-remote --heads`), open PR for the branch
+  (`gh pr list --head`) — and reports the furthest stage reached as a closed
+  `RECOVER_*` outcome. It writes nothing. Its consumer is the recovery path in
+  `### Fixed` below, but it stands on its own as the deterministic answer to
+  "did this worktree's work actually land?" Five new `test_pr.sh` cases cover
+  every rung.
+
 ### Changed
 
 - **`build-level.mjs` batches its mechanical machinery calls instead of
@@ -44,6 +197,125 @@ reads that marker; a stranger greps for it before pulling.
   Six new `test_workflow.sh` cases lock the reduced spawn count, the prelude
   batching, the CI-poll reuse, the cap invariant, the `sq()` quoting of every
   batched argument, and the in-`.mjs` legibility of every branch.
+
+- **`/workshop` Step 2 is now a collaborative, challenge-driven coverage walk
+  (temperloop#930, temperloop#931).** The walk is collaborative *by
+  construction*: every decision that reaches the brief is presented with its
+  reasoning and can be contested before it is recorded, and the operator's
+  speed lever is how fast they accept at each stop — never whether content is
+  shown. Four structural changes. **(1) A tier-split proposal is the walk's
+  first stop and its first challengeable decision**: it names which dimensions
+  are load-bearing (own stop) and which are mechanical (clustered 2–4 to a
+  stop, every dimension's full content still shown — a cluster compresses the
+  *asking*, never the *showing*), states the **total stop count** it commits
+  the session to so the operator can time-box against it, and assigns **every**
+  dimension a tier including the Step-1-seeded 0, 1 and 3, whose
+  confirm-or-challenge stop records a real `walk` verdict with `source:
+  step-1-seed`. Leave those out and the problem statement and the routing call
+  are the only calls in the brief the operator never formally accepted.
+  **(2) Every stop is presented by reference to `message-schema.md`'s
+  **Decision presentation** template**, never a restated local copy — and
+  Step 1.3b(iii)'s premise-gate ask is re-pointed at the same template
+  (temperloop#931), so the two gates cannot drift apart. **(3) A bounded
+  challenge loop**: rounds one through three fold in and re-present freely; a
+  fourth does not loop, it escalates to an explicit operator fork — accept
+  as-is, `deferred → <tracking ref>` (never available for dimension 0), or park
+  the walk with the brief left `status: draft` and a later run resuming from
+  the persisted record. A non-converging stop is a visible operator choice, not
+  an invisible grind. **(4) Per-stop challenge-record appends** applied by
+  reference to `design-schema.md` § Challenge record, with one verdict **per
+  dimension** on a clustered stop and the record-start marker written in the
+  same write as the first stop line. The hardcoded 17-dimension count is gone —
+  the walk's size is the schema's list as it stands. **For an adopter:** the
+  interaction shape changes and two documented shortcuts are removed; see
+  `### Removed — BREAKING` below, which is the half that requires action.
+
+- **Both prose-budget caps raised: `PROSE_BUDGET_TIER1_CAP` 335 → 347 and
+  `PROSE_BUDGET_TIER2_FILE_CAP` 1057 → 1186 (temperloop#925, temperloop#947,
+  temperloop#954).** Three sequential raises across the release, each sized
+  from measurement rather than re-guessed — the third one re-derived from the
+  whole landed level after the first two had sized off one- and zero-item
+  samples (blended observed overrun 1.53×, driven by the congruence-walkthrough
+  item at 1.76×). These are **default-value changes on two existing
+  setting-registry rows** — no row added, renamed, removed, and no column
+  change — which `VERSIONING.md` § Setting registry classes as **minor, never a
+  bare patch**: an adopter who dot-sources the previous default should re-check
+  it. **The consequence worth stating plainly:** `PROSE_BUDGET_TIER2_FILE_CAP`
+  is ONE uniform cap over every tracked `claude/**/*.md` file — there is no
+  per-file exemption table — so raising it to fund `claude/commands/workshop.md`
+  relaxes the per-file budget for **every** kernel doc, not that one file.
+  Recorded as debt rather than glossed: three raises inside a single epic is
+  itself the signal, `workshop.md` at 1144 lines is now the largest tracked
+  kernel doc, and the subtraction pass those raises deferred is owed before a
+  fourth.
+
+### Removed — BREAKING
+
+<!-- The `BREAKING` token appears TWICE for this release on purpose — on the
+     `## [0.22.0]` heading above AND on this `### Removed` sub-heading. See the
+     long comment on v0.19.0's own `### Removed — BREAKING` section below for
+     why both are required: `changelog_breaking_sections()`
+     (workflows/scripts/lib/changelog.sh) sets its `brk` flag ONLY from a
+     heading line, never from body text, and the sub-heading marker is the half
+     that survives a release cut rewriting `## [Unreleased]`. Do not strip
+     either one when editing history. -->
+
+- **BREAKING — `/workshop` Step 2's ad-hoc batch-approval license is removed.**
+  The old Step 2.7 explicitly permitted it: "A batched draft is still fine: you
+  may walk and disposition several dimensions, then persist and echo the batch,
+  then ask once over it." That sentence is gone, and the new Step 2.7 closes
+  the door by name — "Nor is there an ad-hoc grouping license." **Migration:**
+  the only sanctioned way to ask once over several dimensions is now a
+  **mechanical cluster the operator accepted at the tier-split stop** (Step 2
+  item 2) — every dimension still shown, every dimension separately verdicted.
+  If you drive `/workshop` by hand, or your overlay documents a
+  batch-then-ask-once shortcut, move it onto the accepted-cluster path; an
+  unaccepted grouping is no longer a legal way to reach the operator.
+
+- **BREAKING — Step 4's ratify ask is no longer exempt from persist-then-ask.**
+  The old Step 2.7 carried a Scope carve-out: "Step 4.3's ratify ask is
+  **exempt** — its precondition, Step 4.1's dimension-completeness check,
+  already guarantees the note is current, so no re-echo is required there."
+  That exemption is deleted. Persist-then-ask now governs **every** gate over
+  brief content — the walk's own stops, the findings fold-back, and the ratify
+  ask alike — with no exemptions, and both surfaces (the persisted note,
+  read-back-confirmed; and the in-chat decision presentation over that same
+  content) must be current before the question is posed. **Migration:** a
+  ratify ask must re-persist and re-present the content it gates rather than
+  relying on the completeness check having left the note current. An overlay
+  that restated the exemption must drop it — it now contradicts a kernel
+  contract.
+
+### Fixed
+
+- **A completed worker whose return channel failed no longer produces a
+  spurious `worker-error` escalation — or risks a duplicate PR
+  (temperloop#939).** `build-level.mjs`'s 3c worker spawn is now wrapped in
+  `callWorker()`, because the real failure mode is an **exception, not a
+  null**: `agent({schema})` *throws* on a StructuredOutput-absent subagent, so
+  the pre-existing null-guard never saw it and the run fell through to the
+  catch-all escalation even when the work had fully landed. On any absent
+  verdict the driver now runs `pr.sh recover-probe` (see `### Added`)
+  **before** anything else. If the work landed, the `{slug, pr, pushed_sha}`
+  parked record is reconstructed from that ground truth and the machinery
+  finishes from whatever stage the worker actually reached — adopting the
+  existing PR via `pr.sh`'s `EXISTS` outcome (**never** a second PR) and never
+  re-spawning the worker onto a worktree that already holds the finished
+  commit. If nothing landed (`RECOVER_NONE`), or the probe is denied or errors,
+  the pre-existing worker-error path is untouched: it **fails closed**.
+  **The recovery stays honest, which is the part an adopter must not miss.** A
+  recovered verdict carries **no `passed` key at all**, marks every acceptance
+  criterion `UNVERIFIED`, synthesizes a PR verification surface that says so,
+  and the parked record carries `acceptance_unverified: true` and
+  `recovered_from: <stage>`; `build.md` 3h/4a require the orchestrator to stamp
+  it, render it distinctly from a self-reported verdict, and **re-verify before
+  the merge gate**. A recovered item is a rescued record, never a passed one.
+  Two non-obvious traps are handled: an already-pushed recovery skips the 3f-0a
+  rebase (whose rewrite would make the following push a non-fast-forward and
+  manufacture a *fresh* spurious escalation), and `--verification-surface-file`
+  is dropped when the probe saw no `.build-verification.md` (a given-but-missing
+  file is a hard `pr.sh` ERROR). The pre-existing but undeclared `DEPS_MERGED` /
+  `DEPS_UNMERGED` outcomes are named in the same enum.
 
 ## [0.21.0] - 2026-07-29
 
