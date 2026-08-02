@@ -2361,5 +2361,113 @@ for tok in "outcome === 'SCAN_BLOCKED'" "outcome === 'PUSH_REJECTED'" "outcome =
 done
 echo "PASS: #942 legibility guard — every machinery branch (SCAN_BLOCKED / PUSH_REJECTED / REBASE_CONFLICT / CI_* / DEPS_MERGED / CREATED / CLAIM_CONFLICT / GATE_FAIL / EXISTS) still lives in .mjs"
 
+# ============================================================================
+# TEST (temperloop#982): machinerySoloModel / machineryBatchModel model-tier
+# overrides, plus the item.model worker seat. build.md/sweep.md/fix.md Step 0
+# resolve BUILD_MACHINERY_SOLO_MODEL / BUILD_MACHINERY_BATCH_MODEL and pass
+# them as input.machinerySoloModel / input.machineryBatchModel — NOT a
+# config-file read from inside the .mjs (the Workflow runtime has no shell,
+# DESIGN NOTE 1). Three things to prove, across THREE seats (gate: = solo
+# runMachinery, prelude: = batched runMachineryBatch, worker: = item.model):
+#   (a) when SET, the override reaches the spawned agent's opts.model at
+#       each of the three seats;
+#   (b) when UNSET (omitted from args — the default), all three seats spawn
+#       at their pre-existing default — 'haiku' for gate:/prelude:, undefined
+#       (inherit session) for worker: — byte-identical to before this item;
+#   (c) when set to an EMPTY STRING (not omitted — the failure mode a
+#       careless caller can trivially produce), all three seats STILL fall
+#       back to their default, never spawn with a literal '' model. This is
+#       the load-bearing case: build-level.mjs reads `|| 'haiku'` /
+#       `|| undefined`, not `?? 'haiku'` / `item.model` bare, specifically so
+#       an empty string collapses the same as an absent value — `??` alone
+#       would let '' sail through as a literal (invalid) model name.
+# ============================================================================
+run_node_case "machinerySoloModel/machineryBatchModel/item.model SET → override reaches gate:/prelude:/worker: agent().opts.model (#982)" "
+$PREAMBLE
+happyMachinery('mtier', 270, 'sha-mtier');
+happyWorker('mtier');
+globalThis.args = { ...baseArgs, machinerySoloModel: 'opus', machineryBatchModel: 'sonnet', items: [
+  { slug: 'mtier', branch: 'build/mtier', title: 'Mtier', kind: 'impl', acceptance: ['c'], model: 'haiku-worker-tier' },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+const gateCall = callLog.find(c => c.opts.label === 'gate:mtier');
+const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtier');
+const workerCall = callLog.find(c => c.opts.phase === 'worker' && c.opts.label === 'worker:mtier');
+if (!gateCall) { console.log(JSON.stringify({ ok: false, reason: 'no gate:mtier call recorded' })); process.exit(0); }
+if (!preludeCall) { console.log(JSON.stringify({ ok: false, reason: 'no prelude:mtier call recorded' })); process.exit(0); }
+if (!workerCall) { console.log(JSON.stringify({ ok: false, reason: 'no worker:mtier call recorded' })); process.exit(0); }
+if (gateCall.opts.model !== 'opus')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate: (runMachinery/machinerySoloModel) opts.model=' + gateCall.opts.model + ', expected opus' })); process.exit(0); }
+if (preludeCall.opts.model !== 'sonnet')
+  { console.log(JSON.stringify({ ok: false, reason: 'prelude: (runMachineryBatch/machineryBatchModel) opts.model=' + preludeCall.opts.model + ', expected sonnet' })); process.exit(0); }
+if (workerCall.opts.model !== 'haiku-worker-tier')
+  { console.log(JSON.stringify({ ok: false, reason: 'worker: (item.model) opts.model=' + workerCall.opts.model + ', expected haiku-worker-tier' })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "machinerySoloModel/machineryBatchModel/item.model UNSET (omitted) → gate:/prelude: 'haiku', worker: undefined (inherit session), byte-identical (#982)" "
+$PREAMBLE
+happyMachinery('mtierdef', 271, 'sha-mtierdef');
+happyWorker('mtierdef');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'mtierdef', branch: 'build/mtierdef', title: 'Mtierdef', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+const gateCall = callLog.find(c => c.opts.label === 'gate:mtierdef');
+const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtierdef');
+const workerCall = callLog.find(c => c.opts.phase === 'worker' && c.opts.label === 'worker:mtierdef');
+if (!gateCall || gateCall.opts.model !== 'haiku')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate: opts.model=' + (gateCall && gateCall.opts.model) + ', expected unchanged haiku default' })); process.exit(0); }
+if (!preludeCall || preludeCall.opts.model !== 'haiku')
+  { console.log(JSON.stringify({ ok: false, reason: 'prelude: opts.model=' + (preludeCall && preludeCall.opts.model) + ', expected unchanged haiku default' })); process.exit(0); }
+if (!workerCall || workerCall.opts.model !== undefined)
+  { console.log(JSON.stringify({ ok: false, reason: 'worker: opts.model=' + JSON.stringify(workerCall && workerCall.opts.model) + ', expected undefined (inherit session)' })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "machinerySoloModel/machineryBatchModel/item.model set to EMPTY STRING → all three seats still fall back to their default, never spawn at '' (#982 BLOCKING fix)" "
+$PREAMBLE
+happyMachinery('mtierempty', 272, 'sha-mtierempty');
+happyWorker('mtierempty');
+globalThis.args = { ...baseArgs, machinerySoloModel: '', machineryBatchModel: '', items: [
+  { slug: 'mtierempty', branch: 'build/mtierempty', title: 'Mtierempty', kind: 'impl', acceptance: ['c'], model: '' },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+const gateCall = callLog.find(c => c.opts.label === 'gate:mtierempty');
+const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtierempty');
+const workerCall = callLog.find(c => c.opts.phase === 'worker' && c.opts.label === 'worker:mtierempty');
+console.log('EMPTY-STRING PROBE  gate.model=' + JSON.stringify(gateCall && gateCall.opts.model) + '  prelude.model=' + JSON.stringify(preludeCall && preludeCall.opts.model) + '  worker.model=' + JSON.stringify(workerCall && workerCall.opts.model));
+if (!gateCall || gateCall.opts.model !== 'haiku')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate: opts.model=' + JSON.stringify(gateCall && gateCall.opts.model) + ', expected haiku (empty string must collapse to the default, not ride through as \"\")' })); process.exit(0); }
+if (!preludeCall || preludeCall.opts.model !== 'haiku')
+  { console.log(JSON.stringify({ ok: false, reason: 'prelude: opts.model=' + JSON.stringify(preludeCall && preludeCall.opts.model) + ', expected haiku (empty string must collapse to the default, not ride through as \"\")' })); process.exit(0); }
+if (!workerCall || workerCall.opts.model !== undefined)
+  { console.log(JSON.stringify({ ok: false, reason: 'worker: opts.model=' + JSON.stringify(workerCall && workerCall.opts.model) + ', expected undefined (empty string must collapse to inherit-session, not ride through as \"\")' })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# Static guard: the 'haiku' literal must remain at BOTH machinery-executor
+# sites as the absent/empty-input default (epic Contract clause superseded —
+# #982 acceptance). Matches the `||` form (NOT `??` — `??` does not close the
+# empty-string hole the BLOCKING fix above exists to close, so a guard that
+# still matched `?? 'haiku'` would silently stop guarding the real invariant).
+haikuHits="$(grep -c "|| 'haiku'" "$MJS" || true)"
+if [ "$haikuHits" -lt 2 ]; then
+  fail "#982: expected 'haiku' literal to remain as the absent/empty-input default (via \`|| 'haiku'\`) at BOTH runMachinery/runMachineryBatch sites (found $haikuHits, want >=2)"
+fi
+if grep -qF "?? 'haiku'" "$MJS"; then
+  fail "#982: found a lingering \`?? 'haiku'\` — this must be \`|| 'haiku'\` (the empty-string-safety BLOCKING fix); \`??\` lets an empty-string input defeat the fallback"
+fi
+echo "PASS: #982 haiku-literal-retained guard — found $haikuHits '|| '\''haiku'\''' fallback site(s), no lingering '?? '\''haiku'\'''"
+
 echo ""
 echo "All test_workflow.sh cases passed."
