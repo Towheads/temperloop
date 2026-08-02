@@ -119,6 +119,30 @@ gives `temperloop report` its `tokens_spent` headline. See
 script's own header for the four correctness traps it encodes — chief among
 them deduping by `requestId`, without which the totals inflate ~2x.
 
+#### How the producer reaches your repo
+
+`temperloop init` places it. It rides the same
+[tree-only proposal PR](install-cli.md) that carries `.temperloop/config`,
+`init`'s own bootstrap file — *tree-only* meaning it changes files and nothing
+else: never a label, never branch protection, never any other GitHub API
+state. The shim is one more file in that PR's diff, marked executable (mode
+755, because `temperloop report` runs the files in `.temperloop/report.d/`
+rather than sourcing them). Nothing is applied directly: you review and merge
+the PR like any other, and until you do, your repo is unchanged.
+
+Two properties worth knowing before you merge it:
+
+- **It is a locator, not the logic.** The file committed to your repo only
+  finds an installed temperloop kernel and hands off to that kernel's copy of
+  the real producer. So the transcript-reading logic keeps improving with
+  `temperloop update`, without a stale copy frozen in your tree — and on a
+  machine with no kernel installed the shim exits cleanly with a one-line
+  `skipped` notice instead of failing your report.
+- **An existing producer is never touched.** If `.temperloop/report.d/tokens`
+  already exists — you wrote your own, or you edited the one an earlier `init`
+  proposed — `init` leaves it byte-for-byte alone, says so, and omits it from
+  the PR. It does not ask, and it does not overwrite; that file is yours.
+
 ## Integration
 
 Consumes: nothing external — each stream's emit site is called inline from
