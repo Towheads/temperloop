@@ -130,6 +130,38 @@ not a string (e.g. `{"notice": 42}` — `jq`'s type guard drops it exactly
 like an absent field), or stdout that does not parse as a JSON object at
 all.
 
+## Kernel-shipped `tokens` producer's transcript scope (temperloop#983)
+
+The kernel's own `tokens` producer (`workflows/scripts/report-producers/
+tokens`, exec'd via the `.temperloop/report.d/tokens` locator shim — see
+"Pricing table & dollar framing" below for where it's introduced) reads
+Claude Code's own per-project transcript directories under
+`$SPEND_TRANSCRIPT_ROOT` (default `$HOME/.claude/projects`, a layer-5
+tracked-repo setting resolved from `workflows/scripts/build/
+build.config.sh`). By **default** it scopes that read to the invoking
+checkout's own project directory rather than every project this operator
+has ever run Claude Code against on this machine — see that script's own
+header for the full derivation and its degrade paths (a checkout whose path
+exceeds Claude Code's own 200-character project-name cap, a repo-scoped
+directory that hasn't recorded anything yet, cwd not being a git working
+tree). Whichever corpus a given run actually walks, the `notice` field
+above states that scope in plain language.
+
+**Overriding the scope.** `SPEND_TRANSCRIPT_ROOT` is an ordinary layer-2
+override (`docs/config-precedence.md`'s six-layer ladder): export it to a
+different path and the producer treats that as an explicit choice and skips
+repo-scoping entirely, falling back to walking whatever root you gave it.
+The one documented exception is exporting it to **exactly** its own default
+value (`$HOME/.claude/projects`) — that is indistinguishable from never
+having touched it (every `/build` session inherits precisely that value
+merely by sourcing `build.config.sh` at its own Step 0), so the producer
+treats it as the un-set case and repo-scopes anyway. An operator who wants
+to force the literal machine-wide default has no separate opt-out flag
+today; they can still get it by pointing `SPEND_TRANSCRIPT_ROOT` at any
+value that differs textually from the default but resolves to the same
+directory (a trailing slash, a symlink), or by editing
+`workflows/scripts/report-producers/tokens` directly.
+
 ## Pricing table & dollar framing (foundation#882)
 
 The tokens headline can render a **directional dollar estimate** when two
