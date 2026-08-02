@@ -254,7 +254,10 @@ globalThis.setMergeCheck = (slug, ...states) => { mergeCheckMap.set(slug, states
 // throwingWorker(msg) — the #939 return-channel failure (agent() throws).
 globalThis.throwingWorker = (msg) => ({ __throw: msg || 'agent({schema}): subagent completed without calling StructuredOutput (after in-conversation nudge)' });
 // noSideEffects — the recover-probe answer for a genuinely-failed worker.
-globalThis.noSideEffects = () => ({ outcome: 'RECOVER_NONE', commits_ahead: 0, pushed: false, verification_surface_present: false });
+globalThis.noSideEffects = () => ({ outcome: 'RECOVER_NONE', commits_ahead: 0, pushed: false, dirty: false, dirty_files: 0, verification_surface_present: false });
+// temperloop#993 shorthand — dirtyStall(n): the recover-probe answer for a worker
+// reaped mid-flight by a backgrounded gate: n uncommitted paths, ZERO commits.
+globalThis.dirtyStall = (n) => ({ outcome: 'RECOVER_DIRTY', commits_ahead: 0, pushed: false, dirty: true, dirty_files: n ?? 8, verification_surface_present: false });
 
 // Canonical happy-path machinery sequence for a green item
 globalThis.happyMachinery = (slug, prNum, sha) => setMachinery(slug,
@@ -1868,6 +1871,115 @@ if (esc.length !== 1 || esc[0].kind !== 'worker-error') { console.log(JSON.strin
 console.log(JSON.stringify({ ok: true }));
 "
 
+# ============================================================================
+# TEST (K993): the backgrounded-gate stall is detected MECHANICALLY and
+# auto-resumed — worker returned NO verdict AND its worktree is dirty with ZERO
+# commits (the #982/#983 shape). The probe reports RECOVER_DIRTY; driveItem must
+# resume the SAME worktree with the foreground cure PLUS a dirty-resume note
+# naming the uncommitted count, rather than escalating "nothing happened".
+# ============================================================================
+run_node_case "K993 auto-resume: null verdict + RECOVER_DIRTY → resume prompt carries the dirty-resume note → parked" "
+$PREAMBLE
+
+setMachinery('stall-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/stall-item' },
+  dirtyStall(8),                       // the #982 shape: 8 modified files, 0 commits
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaStall' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'shaStall', branch: 'build/stall-item' },
+  { outcome: 'PR_OPENED', pr_number: 993 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('stall-item', null, { status: 'done', summary: 'resumed', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'stall-item', branch: 'build/stall-item', title: 'Stall item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const esc = result.escalations ?? [];
+const first = callLog.find(c => (c.opts.label||'') === 'worker:stall-item');
+const retry = callLog.find(c => (c.opts.label||'') === 'worker:stall-item#retry');
+let reason = null;
+if (!retry) reason = 'no auto-resume call after the RECOVER_DIRTY probe';
+else if (!retry.promptFull.includes('Re-spawn cure (#1219)')) reason = 'resume prompt missing FOREGROUND_CURE';
+else if (!retry.promptFull.includes('UNCOMMITTED work in this worktree (#993)')) reason = 'resume prompt missing the #993 dirty-resume note';
+else if (!retry.promptFull.includes('8 uncommitted path(s)')) reason = 'dirty-resume note must name the uncommitted file count from the probe';
+else if (first && first.promptFull.includes('UNCOMMITTED work in this worktree (#993)')) reason = 'first prompt must NOT carry the dirty-resume note';
+else if (esc.length !== 0) reason = 'auto-resume must not escalate, got ' + JSON.stringify(esc.map(e => e.kind));
+else if (parked.length !== 1) reason = 'expected 1 parked item after the auto-resume, got ' + parked.length;
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K993 split: a CLEAN RECOVER_NONE stall gets the cure but NOT the dirty-resume note" "
+$PREAMBLE
+
+setMachinery('clean-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/clean-item' },
+  noSideEffects(),
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'shaClean' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'shaClean', branch: 'build/clean-item' },
+  { outcome: 'PR_OPENED', pr_number: 994 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('clean-item', null, { status: 'done', summary: 'ok', acceptance_results: [{ criterion: 'c', passed: true, evidence: 'e' }], commits: [] });
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'clean-item', branch: 'build/clean-item', title: 'Clean item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+await mod.default();
+const retry = callLog.find(c => (c.opts.label||'') === 'worker:clean-item#retry');
+let reason = null;
+if (!retry) reason = 'no retry call after the RECOVER_NONE probe';
+else if (!retry.promptFull.includes('Re-spawn cure (#1219)')) reason = 'retry prompt missing FOREGROUND_CURE';
+else if (retry.promptFull.includes('UNCOMMITTED work in this worktree (#993)')) reason = 'a CLEAN worktree must NOT get the dirty-resume note';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K993 escalation: resume also returns null + still dirty → worker-error names shape/dirty_files/worktree" "
+$PREAMBLE
+
+setMachinery('stuck-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/stuck-item' },
+  dirtyStall(3),                       // the #983 shape: 3 modified files, 0 commits
+  dirtyStall(3),
+);
+setWorker('stuck-item', null, null);
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'stuck-item', branch: 'build/stuck-item', title: 'Stuck item', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = result.escalations ?? [];
+let reason = null;
+if (esc.length !== 1 || esc[0].kind !== 'worker-error') reason = 'expected 1 worker-error escalation, got ' + JSON.stringify(esc.map(e => e.kind));
+else {
+  const p = esc[0].payload ?? {};
+  if (p.shape !== 'foreground-stall') reason = 'escalation payload must carry shape:foreground-stall, got ' + JSON.stringify(p.shape);
+  else if (p.dirty_files !== 3) reason = 'escalation payload must carry the uncommitted count, got ' + JSON.stringify(p.dirty_files);
+  else if (p.worktree !== '/tmp/repo.wt/stuck-item') reason = 'escalation payload must name the worktree holding the uncommitted work, got ' + JSON.stringify(p.worktree);
+  else if (!String(p.reason || '').includes('skip prunes it')) reason = 'escalation reason must warn that skip prunes the worktree';
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K993 static lockstep guards: the mechanical half of the #993 pair. build.md
+# §3c pairs the prose foreground clause with THIS detection; a future edit that
+# drops the RECOVER_DIRTY rung or the dirty-resume cure leaves only the rotting
+# prose behind. -------------------------------------------------------------
+grep -q "'RECOVER_DIRTY'" "$MJS" \
+  || fail "#993: SPINE_OUTCOME_SCHEMA must admit RECOVER_DIRTY (the probe's stall rung)"
+grep -q 'function dirtyResumeCure' "$MJS" \
+  || fail "#993: dirtyResumeCure() missing — the auto-resume must tell the worker its uncommitted work is still on disk"
+grep -q 'withCure(verdictSection, probe.dirtyFiles)' "$MJS" \
+  || fail "#993: the auto-resume must thread the probe's dirty-file count into the cure"
+grep -q "shape: 'foreground-stall'" "$MJS" \
+  || fail "#993: an uncured stall must escalate with shape:foreground-stall so the worktree's uncommitted work is not silently pruned"
+echo "PASS: #993 detection guard — RECOVER_DIRTY rung + dirty-resume cure + stall-shaped escalation"
+
 # --- K712 static lockstep guards (grep the MJS source directly, matching the
 # tail-guard idiom above). These lock the code SHAPE build.md §3c/§3d cite, so a
 # future edit cannot silently drop the prevention section or the retry cure. -----
@@ -1876,8 +1988,11 @@ grep -q 'FOREGROUND ONLY (#1219)' "$MJS" \
 echo "PASS: #712 prevention guard — workerPrompt embeds the foreground-only gate contract"
 grep -q 'const FOREGROUND_CURE' "$MJS" \
   || fail "#712: FOREGROUND_CURE constant missing — null-retry cure"
-grep -q 'withCure(verdictSection)' "$MJS" \
-  || fail "#712: main-worker null-retry must append the cure via withCure(verdictSection) so the retry prompt differs"
+# (temperloop#993 widened the call to withCure(verdictSection, probe.dirtyFiles);
+# this guard matches the prefix so it survives that added argument — the #993
+# guard above pins the argument itself.)
+grep -q 'withCure(verdictSection' "$MJS" \
+  || fail "#712: main-worker null-retry must append the cure via withCure(verdictSection, …) so the retry prompt differs"
 echo "PASS: #712 cure guard — null-verdict re-spawn appends FOREGROUND_CURE (retry prompt differs from first)"
 
 # --- K997 static lockstep guards: the worker must NOT be told to run the bare,

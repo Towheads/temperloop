@@ -19,6 +19,9 @@
 #   - recover-probe (temperloop#939): the staged lost-return ladder — RECOVER_NONE
 #     / _COMMITTED / _PUSHED / _PR_OPEN across the four real fixture states, plus
 #     the fail-soft degradation when `gh` errors
+#   - recover-probe (temperloop#993): the RECOVER_DIRTY rung — a dirty worktree
+#     with ZERO commits (the backgrounded-gate stall) is distinguished from a
+#     clean RECOVER_NONE, and dirty/dirty_files ride every outcome
 #   - error: structured ERROR + non-zero exit on bad inputs
 set -euo pipefail
 
@@ -384,7 +387,43 @@ out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
 [ "$(jq -r .commits_ahead <<<"$out")" = "0" ] || fail "commits_ahead should be 0 (got: $out)"
 [ "$(jq -r .pushed <<<"$out")" = "false" ] || fail "pushed should be false (got: $out)"
 jq -e 'has("pr_number") | not' <<<"$out" >/dev/null || fail "pr_number must be absent with no PR (got: $out)"
+[ "$(jq -r .dirty <<<"$out")" = "false" ] || fail "a clean worktree must report dirty:false (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "0" ] || fail "a clean worktree must report dirty_files:0 (got: $out)"
 echo "PASS: recover-probe → RECOVER_NONE when nothing observable landed (the genuine-failure case)"
+
+# --- recover-probe: the DIRTY rung (temperloop#993) -------------------------------
+# Same zero-commit, no-PR state as RECOVER_NONE above — but with real work left on
+# disk. That is the backgrounded-gate stall (#982: 8 modified files / 0 commits;
+# #983: 3 / 0), and it must NOT read as "nothing happened": the caller resumes the
+# worker on THIS worktree instead of escalating. Both index-staged and untracked
+# paths count toward the porcelain tally.
+printf 'staged work\n' > "$REPO/staged-work.txt"
+git -C "$REPO" add staged-work.txt
+printf 'untracked work\n' > "$REPO/untracked-work.txt"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_DIRTY" ] \
+  || fail "a dirty worktree with 0 commits must be RECOVER_DIRTY, not RECOVER_NONE (got: $out)"
+[ "$(jq -r .commits_ahead <<<"$out")" = "0" ] \
+  || fail "RECOVER_DIRTY must still report commits_ahead 0 (got: $out)"
+[ "$(jq -r .pushed <<<"$out")" = "false" ] || fail "RECOVER_DIRTY must report pushed:false (got: $out)"
+[ "$(jq -r .dirty <<<"$out")" = "true" ] || fail "dirty must be true on a dirty worktree (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "2" ] \
+  || fail "dirty_files must count BOTH the staged and the untracked path (got: $out)"
+echo "PASS: recover-probe → RECOVER_DIRTY on uncommitted work with zero commits (the #993 stall shape)"
+git -C "$REPO" rm -q --cached staged-work.txt >/dev/null
+rm -f "$REPO/staged-work.txt" "$REPO/untracked-work.txt"
+
+# `.build-guard` is worktree.sh's OWN marker, not worker work: it must not count
+# toward the dirty tally, or every freshly-created worktree would read
+# RECOVER_DIRTY in a consuming repo that has not gitignored it.
+printf '{"slug":"x"}\n' > "$REPO/.build-guard"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_NONE" ] \
+  || fail "the .build-guard marker alone must not make a worktree read dirty (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "0" ] \
+  || fail ".build-guard must be excluded from the dirty tally (got: $out)"
+echo "PASS: recover-probe excludes worktree.sh's own .build-guard marker from the dirty tally (#993)"
+rm -f "$REPO/.build-guard"
 
 git -C "$REPO" commit -q --allow-empty -m "worker work that never returned a verdict"
 recov_sha="$(git -C "$REPO" rev-parse HEAD)"
