@@ -180,7 +180,10 @@ itself is absent.
 the plan against its schema before a run starts; `toposort` computes
 dependency levels (above); `writeback` flips an item's checkbox sentinel —
 `[ ]` untouched → `[~]` in progress → `[m]` merge-pending (CI green, parked
-for the batch merge gate) → `[x]` merged, with `[v]` (verdict-captured, no
+for the batch merge gate, awaiting consent) → `[x]` merged, with `[>]` as the
+alternate penultimate state for an item that took its consent and merged at
+its own green instead of at the level boundary (consented, merge in flight,
+not yet confirmed landed), and `[v]` (verdict-captured, no
 PR) and `[-]` (skipped) as the two non-merge terminal states — and stamps
 sub-lines recording the item's PR number, pushed SHA, and a human-readable
 run-status line. Because every one of these writes goes through the same

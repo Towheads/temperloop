@@ -677,6 +677,25 @@ grep -q '^- \[ \] \*\*Base change\*\* `slug: base`' "$TMP/put-body" \
   || fail "writeback disturbed an unrelated item's sentinel"
 echo "PASS: writeback flips the target sentinel, stamps pr/pushed_sha/Run-status, leaves others untouched (→ WRITTEN)"
 
+# --- writeback: the as-you-go merging sentinel [>] (temperloop#1026) -----------
+# `[>]` is a DISTINCT state from `[m]` — consent recorded and the merge issued at
+# Step 3h.5, awaiting confirmed MERGED — so writeback must accept it in BOTH the
+# bracketed and the bare-char form and land it on the item header line. A silent
+# rejection here would force /build to repurpose `[m]` for merge-in-flight, the
+# exact conflation this sentinel exists to prevent.
+cp "$TMP/valid.md" "$TMP/wb-ayg.md"
+out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+  bash "$SCRIPT" writeback "$TMP/wb-ayg.md" --slug builds-on --sentinel '[>]' --pr 1026)"
+[ "$(jq -r .outcome <<<"$out")" = "WRITTEN" ] || fail "writeback [>] not WRITTEN (got: $out)"
+[ "$(jq -r .sentinel <<<"$out")" = "[>]" ] || fail "writeback [>] sentinel not echoed (got: $out)"
+grep -q '^- \[>\] \*\*Builds on base\*\* `slug: builds-on`' "$TMP/put-body" \
+  || fail "PUT body did not flip the builds-on sentinel to [>]"
+cp "$TMP/valid.md" "$TMP/wb-ayg2.md"
+out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+  bash "$SCRIPT" writeback "$TMP/wb-ayg2.md" --slug base --sentinel '>')"
+[ "$(jq -r .sentinel <<<"$out")" = "[>]" ] || fail "bare-char '>' not normalized to [>] (got: $out)"
+echo "PASS: writeback accepts the as-you-go merging sentinel [>], bracketed and bare (#1026)"
+
 # --- writeback: plan filename with spaces → URL-encoded PUT path (#364) --------
 # Every real plan filename has spaces ('Plans/<date> <project> - <title>.md'), so
 # the PUT URL MUST percent-encode the path segments — a raw space makes curl

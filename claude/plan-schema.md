@@ -11,7 +11,7 @@ Canonical schema for plan notes consumed by `/build` and produced by `/assess`. 
    - Problem & Summary · Item fields at a glance (the scannable field index) · Item identifier · Branch field · `repo:` (optional) · Acceptance
    - Optional item fields: `gh_issue:` · `also_closes:` · `kind:` · `keystone:` · `model:` · Edges (`depends-on:` / `after:`) · `epic:` · `split_from:` · `gate_check:` · `activation:` · `cost:` · orchestrator-written `pr:` / `pushed_sha:`
 3. **Orchestrator-written sections** — `## Questions` (ask-at-gate deferrals) · `## Merge gate log` (merge consent) · `## Run scope` (keystone-spike halt)
-4. **Status sentinels** — the six in-band `[ ]` / `[~]` / `[m]` / `[x]` / `[v]` / `[-]` states
+4. **Status sentinels** — the seven in-band `[ ]` / `[~]` / `[m]` / `[>]` / `[x]` / `[v]` / `[-]` states
 5. **Validation rules** — the 16 checks `/build` enforces before execution
 6. **Worked example** · **Cross-references**
 
@@ -257,7 +257,7 @@ The principle is **tier by verification, not difficulty**: a seat takes a cheape
 
 Two distinct ordering fields, both comma-separated slug lists:
 
-- **`depends-on:`** is a **merge-safety** edge — use it only when out-of-order merging would break (items share schema or identical lines). The dependent's worker starts only after the dep is `[x]` **merged** (it builds on the dep's merged code). `[m]` does **not** satisfy a `depends-on`.
+- **`depends-on:`** is a **merge-safety** edge — use it only when out-of-order merging would break (items share schema or identical lines). The dependent's worker starts only after the dep is `[x]` **merged** (it builds on the dep's merged code). Neither `[m]` nor `[>]` satisfies a `depends-on` — `[>]` is a merge in flight, not a landed one.
 - **`after:`** is a **logical-order** edge — the dependent shares no code with its antecedent but must follow it (e.g. a fix that must follow a spike's verdict). It only sequences the item into a later level, and is satisfied once the antecedent reaches **any** terminal state (`[x]`, `[-]`, or `[v]`) — so a spike satisfies an `after:` edge with no merge.
 
 `/build` builds dependency levels from the **union** of both fields, but applies the "must be merged first" precondition only to `depends-on`. Reach for `after:` whenever the edge is purely about order, not merge conflict — keeping `depends-on` honest is what lets a level fan out safely.
@@ -403,6 +403,8 @@ One line per consent event, four fields:
 - **`mode:`** — how consent arose: `modal-approved` (explicit operator approval at the modal gate) | `timed-elapsed` (timed window elapsed with no objection) | `headless-immediate` (`PIPELINE_OPERATOR_ABSENT=1` immediate-merge branch, re-poll passed).
 - **`PRs:`** — the **exact** consented PR list. Consent pins this list: a PR not in it (or work re-pushed under a new PR number) is **not** covered and must earn consent at a fresh gate. A level gated more than once (e.g. an EJECTED item re-parked and re-gated) appends a **new** line — lines are append-only, never edited.
 
+**As-you-go consent uses this same line, not a second grammar** (`/build` Step 3h.5, temperloop#1026). An item that merges at its own green rather than at the level boundary records a consent line with the *same* four fields and the *same* `mode:` vocabulary — its `level <k>` is the level the item belongs to and its `PRs:` list is the single PR consented. Because a level can then carry several consent lines (one per as-you-go merge, plus one for whatever the boundary gate consents), the append-only rule is what keeps them all readable, and the resume routing is unchanged: an item is covered iff *some* line for its level names its PR. A `[>]` item with no covering line is a corrupted state and takes a fresh gate.
+
 ## Orchestrator-written `## Run scope` section (keystone-spike halt boundary)
 
 **Rule:** `/build` writes this (authors don't), only for a plan carrying a `keystone: true` spike — it records the RUN 1 (spike) halt / RUN 2 (build) resume boundary. Its job is **audit legibility, not resume control** (resume rides the spike's own `[v]` sentinel). <!-- cite: PS.14 incident:K#526 -->
@@ -428,18 +430,19 @@ One line per run boundary:
 
 ## Status sentinels (in-band tracking)
 
-`/build` mutates the plan note as it goes. Six states:
+`/build` mutates the plan note as it goes. Seven states:
 
 ```markdown
 - [ ] <title> ...        # untouched
 - [~] <title> ...        # in-progress (worker active, or PR opened but CI not green)
-- [m] <title> ...        # merge-pending (PR open, CI green, parked for batch gate)
+- [m] <title> ...        # merge-pending (PR open, CI green, parked for batch gate — awaiting consent)
+- [>] <title> ...        # merging as-you-go (consent recorded, merge issued, awaiting confirmed MERGED)
 - [x] <title> — merged in #142 (2026-05-17)
 - [v] <title> — verdict-captured 2026-05-17 (kind: spike — note written + issue routed; no PR)
 - [-] <title> — skipped 2026-05-17: <reason>, see [[Sessions/...]]
 ```
 
-`[m]` is set by `/build` when an item reaches CI-green inside a dependency-level batch; it transitions to `[x]` (merged) or stays `[m]` (left open at the gate) when the level's batch merge gate fires. `[v]` is the terminal state for `kind: spike` items — set on verdict-capture (note written + issue routed), it never enters the merge gate. Grep `\- \[~\]\|\- \[m\]` across the vault to find anything in flight.
+`[m]` is set by `/build` when an item reaches CI-green inside a dependency-level batch; it transitions to `[x]` (merged) or stays `[m]` (left open at the gate) when the level's batch merge gate fires. `[>]` is the **as-you-go merging** state (`/build` Step 3h.5, temperloop#1026) — set when an item the level gate's *own* regime partition already classes clean-disjoint records its consent and issues its merge without waiting for the level boundary; it transitions to `[x]` on confirmed `MERGED`, or is demoted back to `[m]` if the merge times out, ejects, or conflicts. It is a **distinct** state, never a re-used `[m]`: `[m]` means *parked, awaiting consent*, `[>]` means *consented, in flight*, and the level gate re-consents the former but only confirms the latter. `[v]` is the terminal state for `kind: spike` items — set on verdict-capture (note written + issue routed), it never enters the merge gate. Grep `\- \[~\]\|\- \[m\]\|\- \[>\]` across the vault to find anything in flight.
 
 ## Validation rules (enforced by `/build` before execution)
 
@@ -449,7 +452,7 @@ Fail fast if any of:
 2. Any item has no `acceptance:` block — workers need a self-check signal.
 3. Any item has no `slug:` — required for stable `depends-on` references.
 4. Any item's `branch:` doesn't match `<type>/<slug>` where type ∈ {feat, fix, chore, refactor, docs, test}.
-5. `depends-on` references a slug that doesn't exist in this plan, or one that is not yet in `[x]` state when the dependent item is about to start. (`[m]` does not satisfy a `depends-on` — the dep must be merged into main before the dependent's worker can build on top of it.)
+5. `depends-on` references a slug that doesn't exist in this plan, or one that is not yet in `[x]` state when the dependent item is about to start. (neither `[m]` nor `[>]` satisfies a `depends-on` — the dep must be merged into main, not merely consented and in flight, before the dependent's worker can build on top of it.)
 6. A `source:` wikilink target doesn't resolve (analysis doc was moved/renamed since planning).
 7. `gh_issue:` (when present) must be a positive integer — fail otherwise; do not silently coerce.
 8. `after:` references a slug that doesn't exist in this plan, OR the union of `depends-on` + `after` edges contains a cycle. (Unlike `depends-on`, an `after:` edge is satisfied by *any* terminal state — `[x]`, `[-]`, or `[v]` — not only `[x]` merged.)

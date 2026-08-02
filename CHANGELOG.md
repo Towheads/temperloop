@@ -38,6 +38,36 @@ reads that marker; a stranger greps for it before pulling.
   the `-- report.d/tokens --` block itself still appears, carrying the skip
   line. See `docs/features/telemetry.md` § First-run notice and local disable.
 
+- **`/build` merges each clean-disjoint PR as it goes green, instead of parking
+  every item until the level boundary (temperloop#1026).** New Step 3h.5 in
+  `claude/commands/build.md`, governed by the new `BUILD_MERGE_AS_YOU_GO`
+  setting (`build.config.sh`, default on; `0` restores pure level batching).
+  Measured motivation: three PRs opened together took 68/69/145 min
+  open-to-merge against 10–33 min for solo PRs — level batching converted
+  within-level parallelism into a merge-queue pileup. **Scoped, not a
+  loosening:** eligibility reuses the *existing* Step-4a regime partition and
+  is strictly narrower than it — the item's own `gate.sh risk` verdict must be
+  clean, and it must be path-disjoint from every non-terminal sibling in its
+  level, where a sibling that has not pushed yet counts as UNKNOWN and
+  therefore *not* disjoint. Anything else parks `[m]` for the unchanged
+  level-boundary gate, and a risky / structurally-overlapping set still
+  hard-blocks modally there byte-identically to before. Consent does not move:
+  an eligible item is a clean-disjoint set of one and takes the existing 4b
+  timed/headless consent path, recording the same `## Merge gate log` line. The
+  level boundary remains a dependency barrier for *starting* the next level.
+  Because each as-you-go merge is its own invocation of `gate.sh queue`/`gate.sh
+  managed-merge`, the stale-base re-validation now runs **per merge** rather
+  than once per level — which is what an early merge moving the base under its
+  still-open siblings requires. **New plan-note sentinel `[>]`** (merging
+  as-you-go: consent recorded, merge issued, awaiting confirmed `MERGED`) —
+  additive, deliberately *not* a repurposing of `[m]`, which keeps its
+  "parked, awaiting consent" meaning. `plan.sh writeback` accepts it in
+  bracketed and bare-char form; `plan-schema.md`, `presentation-plane.md`,
+  `docs/architecture.md`, `docs/features/build-machinery.md`, and
+  `docs/features/merge-gate.md` are reconciled. No existing sentinel's bytes,
+  meaning, or parse changes, so an in-flight plan note written by an older
+  kernel resumes unaffected.
+
 - **`VERSIONING.md` § Cutting a release — the ordered release procedure
   (temperloop#1015).** The kernel had version *policy* (this file's bump rules)
   and tag *conventions* (`kernel-repo-layout.md` § Release-tag convention) but

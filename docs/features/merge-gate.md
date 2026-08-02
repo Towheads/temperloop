@@ -27,7 +27,8 @@ queue can simply take a while.
 ## How it works
 
 `workflows/scripts/build/gate.sh` is the deterministic-machinery script that
-owns the level-boundary merge-gate steps of `/build`: reading a PR's live
+owns the merge-gate steps of `/build` — at the level boundary, and per item
+as each PR goes green: reading a PR's live
 mergeability, detecting whether the repo's default branch is under a
 *strict* status-check requirement, computing a mechanical risk verdict over
 a batch of PRs, queuing a merge, nudging a stale branch, and polling until a
@@ -114,8 +115,19 @@ steps) is the sole caller: it reads each candidate PR's state with `gate.sh
 read`, checks strictness with `gate.sh strict`, computes the batch's risk
 verdict with `gate.sh risk` before asking for consent, and — once consent is
 given — either queues a native merge (`gate.sh queue` + `gate.sh poll`) or
-walks the batch through `gate.sh managed-merge` on the managed backend. The
-sweep pipeline reuses the same script for its own per-fix merges. Poll
+walks the batch through `gate.sh managed-merge` on the managed backend.
+
+It also calls that identical sequence **per item, as each PR goes green**
+(build.md Step 3h.5), over a *one-PR* set — but only for an item the same
+`gate.sh risk` predicate already classes clean and disjoint, so a level's
+merges spread over its duration instead of arriving as one burst. A risky
+verdict is never landed this way; it waits for the batched gate. Because
+each such merge is its own invocation of the per-PR mechanics, the
+re-validate-against-the-current-tip step runs once per merge rather than
+once per level — which matters precisely because an early merge moves the
+base out from under its still-open siblings.
+
+The sweep pipeline reuses the same script for its own per-fix merges. Poll
 tunables (`GATE_CI_POLL_INTERVAL` / `GATE_CI_POLL_TIMEOUT`,
 `GATE_MERGE_POLL_INTERVAL` / `GATE_MERGE_POLL_TIMEOUT`) live in
 `build.config.sh` alongside every other build setting, so a slower or faster
