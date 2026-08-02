@@ -149,6 +149,27 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`/build` now detects the backgrounded-quality-gate stall mechanically and
+  auto-resumes the worker on its own worktree (temperloop#993).** A worker that
+  ran `scripts/quality-gates.sh` in the background and yielded its turn was
+  reaped before the gate finished: it returned real work on disk, ZERO commits
+  and no verdict block (observed twice in one run — #982 with 8 modified files,
+  #983 with 3). The `#1219` prose clause in the worker prompt is prevention only,
+  and prose rots, so it is now paired with a machine check that needs no worker
+  cooperation. `pr.sh recover-probe` splits its stage-0 bucket: **`RECOVER_DIRTY`**
+  (no verdict, worktree dirty, zero commits, no PR) is now distinguished from
+  `RECOVER_NONE` (nothing anywhere), and `dirty` / `dirty_files` ride every probe
+  outcome. On `RECOVER_DIRTY`, `build-level.mjs` auto-resumes the item on the
+  **same worktree** — the only inheritable context, since the harness has no
+  resume-this-agent seam — with the foreground cure plus a dirty-resume note
+  naming the uncommitted file count and telling the worker to read
+  `git status`/`git diff` and continue from that work rather than rebuild it.
+  If the resume still returns no verdict with the tree still dirty, the
+  `worker-error` escalation payload carries `shape: "foreground-stall"`,
+  `dirty_files` and `worktree`, so the escalation's **skip** option (which prunes
+  the worktree) can no longer destroy uncommitted work unseen. `RECOVER_NONE`
+  keeps its unchanged one-retry-then-escalate handling.
+
 - **`temperloop eject` no longer deletes a hand-authored
   `.temperloop/pricing.json` (temperloop#985).** Previously `eject` removed
   the whole `.temperloop/` directory unconditionally at all three of its

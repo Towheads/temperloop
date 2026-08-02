@@ -227,20 +227,26 @@ const SPINE_OUTCOME_SCHEMA = {
         // schema-invalid, so name them alongside the rest of the closed set.
         'DEPS_MERGED', 'DEPS_UNMERGED',
         // pr.sh recover-probe (3c lost-return recovery, temperloop#939) — the
-        // staged observable-side-effect ladder: nothing / committed / pushed /
-        // PR already open.
-        'RECOVER_NONE', 'RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN',
+        // staged observable-side-effect ladder: nothing / uncommitted work on
+        // disk / committed / pushed / PR already open. RECOVER_DIRTY
+        // (temperloop#993) splits the old stage-0 bucket: it is NOT a landed
+        // stage (nothing is committed), it is the backgrounded-gate stall whose
+        // cure is a foreground re-spawn on the SAME worktree.
+        'RECOVER_NONE', 'RECOVER_DIRTY', 'RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN',
         'ERROR',
       ],
     },
     // Common passthrough fields the machinery emits (any subset, depending on cmd).
-    // (recover-probe adds commits_ahead / pushed / remote_sha /
-    // verification_surface_present; `additionalProperties: true` already admits
-    // them, and the ones the .mjs branches on are declared below.)
+    // (recover-probe adds commits_ahead / pushed / remote_sha / dirty /
+    // dirty_files / verification_surface_present; `additionalProperties: true`
+    // already admits them, and the ones the .mjs branches on are declared below.)
     path: { type: 'string' },
     commits_ahead: { type: ['number', 'string'] },
     pushed: { type: 'boolean' },
     remote_sha: { type: 'string' },
+    // temperloop#993 — uncommitted work on disk at the probe (the stall shape).
+    dirty: { type: 'boolean' },
+    dirty_files: { type: ['number', 'string'] },
     verification_surface_present: { type: 'boolean' },
     branch: { type: 'string' },
     base: { type: 'string' },
@@ -881,9 +887,31 @@ const FOREGROUND_CURE = [
   'TTL. A stall is never cured by running MORE gate.',
 ].join('\n');
 
-// Compose the retry `extraSection` = the original section (if any) + the cure.
-function withCure(section) {
-  return [section, FOREGROUND_CURE].filter(Boolean).join('\n\n');
+// DIRTY_RESUME_CURE (temperloop#993) — appended ON TOP of FOREGROUND_CURE when
+// the recover-probe confirmed the stall shape: zero commits, no PR, but real work
+// left on disk. The re-spawn is a FRESH agent (the harness has no resume-this-
+// agent seam), so its only inheritance is the worktree — and without being told,
+// it re-derives the change from scratch, discarding or duplicating what is
+// already there. Naming the state explicitly is what makes the re-spawn a
+// continuation rather than a restart. Rendered as a function because the file
+// count is run state, not a constant.
+function dirtyResumeCure(dirtyFiles) {
+  return [
+    '## Resume — your previous attempt left UNCOMMITTED work in this worktree (#993)',
+    `The worktree already holds ${dirtyFiles} uncommitted path(s) from your previous`,
+    'attempt (`git status --porcelain`), and ZERO commits. That is the signature of a',
+    'turn that ended while a backgrounded gate was still running. The work is still',
+    'there: START by reading `git status` and `git diff` in your worktree, KEEP what',
+    'is already correct rather than rebuilding it, then finish, verify in the',
+    'FOREGROUND, COMMIT, and return the verdict JSON.',
+  ].join('\n');
+}
+
+// Compose the retry `extraSection` = the original section (if any) + the cure,
+// plus the dirty-resume note when the probe saw uncommitted work (#993).
+function withCure(section, dirtyFiles) {
+  const dirty = Number(dirtyFiles) > 0 ? dirtyResumeCure(Number(dirtyFiles)) : null;
+  return [section, FOREGROUND_CURE, dirty].filter(Boolean).join('\n\n');
 }
 
 // -----------------------------------------------------------------------------
@@ -955,7 +983,19 @@ async function probeSideEffects(item, wt) {
     { label: `recover-probe:${item.slug}`, slug: item.slug },
   );
   if (machineryDenied(out) || !RECOVER_STAGES.includes(out.outcome)) {
-    return { landed: false, probeOut: out };
+    // Not landed — but temperloop#993 splits this bucket. RECOVER_DIRTY means the
+    // worker left uncommitted work behind (the backgrounded-gate stall); the
+    // caller resumes it on this worktree with the dirty-resume cure instead of
+    // treating it like a worker that touched nothing. A denied/ERROR probe
+    // reports neither flag and falls through to the unchanged escalation.
+    const dirtyFiles = machineryDenied(out) ? 0 : Number(out.dirty_files ?? 0) || 0;
+    return {
+      landed: false,
+      stage: machineryDenied(out) ? null : out.outcome,
+      stalled: !machineryDenied(out) && out.outcome === 'RECOVER_DIRTY',
+      dirtyFiles,
+      probeOut: out,
+    };
   }
   return {
     landed: true,
@@ -1271,12 +1311,25 @@ async function driveItem(item) {
     if (probe.landed) {
       recovery = probe;
     } else {
-      // Nothing landed → this is the ordinary stall. Retry exactly once,
+      // Nothing COMMITTED → this is the ordinary stall. Retry exactly once,
       // appending FOREGROUND_CURE so the retry prompt DIFFERS from the first — a
       // byte-identical retry re-stalls identically. A 5xx is transient (the extra
       // section is harmless); a stall is cured by it.
-      log(`[${item.slug}] worker returned no verdict, no side-effects — retrying once (foreground cure #1219)`);
-      w = await callWorker(item, wt, withCure(verdictSection), `worker:${item.slug}#retry`);
+      //
+      // temperloop#993 — MECHANICAL detection of the incomplete-return shape:
+      // no verdict AND the worktree dirty with zero commits is the backgrounded-
+      // gate stall specifically (not a worker that never started). The probe
+      // reports it as RECOVER_DIRTY, and the auto-resume carries the dirty-resume
+      // note on top of the cure so the re-spawn CONTINUES on the work already in
+      // the worktree instead of rebuilding it. Detection is mechanical here so the
+      // prose clause in the worker prompt (prevention) is not the only guard —
+      // build.md §3c/§3d stay in lockstep with this block.
+      if (probe.stalled) {
+        log(`[${item.slug}] worker returned no verdict; ${probe.dirtyFiles} uncommitted path(s), 0 commits — the #993 backgrounded-gate stall: auto-resuming on the same worktree (foreground cure)`);
+      } else {
+        log(`[${item.slug}] worker returned no verdict, no side-effects — retrying once (foreground cure #1219)`);
+      }
+      w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles), `worker:${item.slug}#retry`);
       verdict = w.verdict;
       if (verdict == null) {
         // The retry may itself have built and lost its return — probe again.
@@ -1286,10 +1339,17 @@ async function driveItem(item) {
     }
     if (verdict == null) {
       if (!recovery) {
-        // GENUINELY nothing observable — the unchanged escalation path.
+        // GENUINELY nothing committed — the unchanged escalation path. When the
+        // probe still sees a dirty worktree (temperloop#993), say so in the
+        // payload: the auto-resume did not cure it, and whoever disposes this
+        // escalation must know there is UNCOMMITTED WORK in the worktree before
+        // choosing "skip" (which prunes the worktree and destroys it).
         return escalate(item.slug, 'worker-error', {
           retryable: true,
-          reason: w.error ?? 'agent returned no verdict after one retry (main worker)',
+          reason: probe.stalled
+            ? `worker returned no verdict after a foreground-instructed re-spawn; ${probe.dirtyFiles} uncommitted path(s) and 0 commits remain in the worktree (temperloop#993) — inspect the worktree before skipping (skip prunes it)`
+            : (w.error ?? 'agent returned no verdict after one retry (main worker)'),
+          ...(probe.stalled ? { shape: 'foreground-stall', dirty_files: probe.dirtyFiles, worktree: wt } : {}),
         });
       }
       log(`[${item.slug}] worker return lost (${w.error}) — recovered from side-effects at ${recovery.stage}; acceptance UNVERIFIED`);

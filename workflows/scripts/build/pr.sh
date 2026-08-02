@@ -50,10 +50,11 @@
 #   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…} |
 #                {"outcome":"EXISTS","pr_number":…,"url":…}
 #                (EXISTS when gh reports a PR for that branch already exists — adopt it)
-#   recover-probe → {"outcome":"RECOVER_NONE"|"RECOVER_COMMITTED"|"RECOVER_PUSHED"
-#                    |"RECOVER_PR_OPEN","sha":…,"branch":…,"commits_ahead":N,
-#                    "pushed":bool,"remote_sha":…,"verification_surface_present":bool
-#                    [,"pr_number":N,"url":…]}
+#   recover-probe → {"outcome":"RECOVER_NONE"|"RECOVER_DIRTY"|"RECOVER_COMMITTED"
+#                    |"RECOVER_PUSHED"|"RECOVER_PR_OPEN","sha":…,"branch":…,
+#                    "commits_ahead":N,"pushed":bool,"remote_sha":…,
+#                    "dirty":bool,"dirty_files":N,
+#                    "verification_surface_present":bool[,"pr_number":N,"url":…]}
 #   error      → {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
 
@@ -286,6 +287,20 @@ cmd_push() {
 # reconstructs the parked record from these fields instead of escalating, and
 # resumes the machinery at the right stage rather than re-spawning the worker.
 #
+# RECOVER_DIRTY (temperloop#993) splits stage 0 in two. A worker that backgrounds
+# the quality gate and yields is reaped mid-flight: it has REAL WORK ON DISK and
+# ZERO commits (observed twice in one run — #982 with 8 modified files, #983 with
+# 3), which is a materially different state from a worker that died having touched
+# nothing. Both were RECOVER_NONE before, so the caller could not tell "resume the
+# same worktree, the work is still there" from "nothing happened". `dirty` /
+# `dirty_files` (a `git status --porcelain` line count, tracked edits AND untracked
+# files) are reported on EVERY outcome; the RECOVER_DIRTY outcome fires only where
+# it changes the answer — nothing committed, no PR, but the tree is dirty. It is
+# NOT a "landed" stage: nothing is committed, so there is nothing to push or open a
+# PR from — the caller's recovery ladder must keep treating it as not-landed and
+# resume the WORKER (build-level.mjs's foreground-cure re-spawn), never
+# reconstruct a parked record from it.
+#
 # `verification_surface_present` reports whether the worker got as far as writing
 # `.build-verification.md`, so the caller knows whether it may pass
 # --verification-surface-file to `open` (a given-but-missing surface file is a
@@ -297,6 +312,7 @@ cmd_push() {
 # whole recovery. Only an unusable worktree/branch argument is a structured ERROR.
 cmd_recover_probe() {
   local wt branch default ahead sha remote_sha pr_number url outcome surface out
+  local dirty_files dirty
   wt="$(resolve_worktree "$1")"
   branch="$2"
   validate_branch "$branch"
@@ -326,8 +342,24 @@ cmd_recover_probe() {
   surface=false
   if [ -f "$wt/.build-verification.md" ]; then surface=true; fi
 
+  # Uncommitted work on disk (tracked edits + untracked files). Reported on every
+  # outcome; only stage 0 branches on it (temperloop#993). `.build-guard` is
+  # EXCLUDED by pathspec: worktree.sh's `create` drops that marker itself, so it
+  # is orchestrator machinery, never worker work — counting it would make every
+  # freshly-created worktree read dirty and collapse RECOVER_NONE into
+  # RECOVER_DIRTY wherever a consuming repo has not gitignored it (this repo has;
+  # the exclusion is what makes the rung correct where it hasn't).
+  dirty_files="$(git -C "$wt" status --porcelain -- ':(exclude).build-guard' 2>/dev/null | wc -l | tr -d ' ')"
+  case "$dirty_files" in ''|*[!0-9]*) dirty_files=0 ;; esac
+  dirty=false
+  if [ "$dirty_files" -gt 0 ]; then dirty=true; fi
+
   if [ -n "$pr_number" ]; then
     outcome="RECOVER_PR_OPEN"
+  elif [ "$ahead" -eq 0 ] && [ "$dirty_files" -gt 0 ]; then
+    # Nothing committed, no PR — but the worker left real work on disk. The
+    # #993 backgrounded-gate stall: resume the worker on THIS worktree.
+    outcome="RECOVER_DIRTY"
   elif [ "$ahead" -eq 0 ]; then
     # Nothing committed and no PR — the worker died with no observable trace.
     outcome="RECOVER_NONE"
@@ -340,8 +372,10 @@ cmd_recover_probe() {
   jq -cn --arg outcome "$outcome" --arg sha "$sha" --arg branch "$branch" \
      --argjson ahead "$ahead" --arg remote_sha "$remote_sha" \
      --arg pr "$pr_number" --arg url "$url" --argjson surface "$surface" \
+     --argjson dirty "$dirty" --argjson dirty_files "$dirty_files" \
      '{outcome:$outcome, sha:$sha, branch:$branch, commits_ahead:$ahead,
        pushed:($remote_sha != ""), remote_sha:$remote_sha,
+       dirty:$dirty, dirty_files:$dirty_files,
        verification_surface_present:$surface}
       + (if $pr == "" then {} else {pr_number:($pr|tonumber), url:$url} end)'
 }
