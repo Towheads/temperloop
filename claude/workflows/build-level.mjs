@@ -168,10 +168,17 @@
 // =============================================================================
 
 // `meta` MUST be a PURE literal — no vars, calls, or spreads (runtime constraint).
+// Consequence (temperloop#903): `description` can NEVER carry run context — it is
+// the same bytes on every run. So it is written for the operator as a plain
+// statement of what the run DOES; the run-IDENTIFYING half (repo, items, issues)
+// rides the one dynamic surface there is, the phase() title — see
+// levelPhaseTitle() near the entry point. Return shape, the never-merges rule and
+// the never-writes-the-plan-note rule are contract detail and live in the I/O
+// CONTRACT block above; do not re-state them here.
 export const meta = {
   name: 'build-level',
   description:
-    "Drive ONE build dependency level's items (3a-3h) through the bash machinery + worker, returning {parked, escalations}. Never merges, never writes the plan note.",
+    'Drives one dependency level of an approved /build plan: claims each item on the board, builds it in its own isolated worktree, runs the acceptance gate, opens its PR and watches CI.',
   version: '1.0.0',
 };
 
@@ -1625,11 +1632,56 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 }
 
 // =============================================================================
+// levelPhaseTitle — the run-identifying progress-row heading (temperloop#903).
+// =============================================================================
+// The Workflow progress UI renders one row per workflow (labelled from the PURE
+// LITERAL `meta.description`, which by runtime constraint is byte-identical on
+// every run) plus a group heading per phase(). phase() is therefore the ONLY
+// surface that can carry run context — and it used to read `build level — N
+// item(s)`, which identifies nothing: not the repo, not the items, not the
+// issues. Two concurrent spine runs (routine: one /fix session drives several
+// back to back) rendered indistinguishable rows.
+//
+// The heading now names, from context already in scope at the call site:
+//   <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
+// e.g.  build level — Towheads/foundation · 1 item · spine-progress-row-903 (#903)
+//
+// BOUNDED BY CONSTRUCTION: a level can hold many items, so at most
+// PHASE_TITLE_MAX_ITEMS slugs are named and the rest collapse to `+K more` — a
+// 20-item level can never emit a 20-slug heading that swamps the progress row.
+// Every field is optional-safe (a missing ownerRepo / ghIssue simply drops its
+// segment) because this is a cosmetic display string: it must never be the thing
+// that throws and takes a level down.
+const PHASE_TITLE_MAX_ITEMS = 3;
+
+// itemTag — `<slug> (#<issue>)`, or the bare slug when the item has no issue
+// (kind:spike items and board-OFF runs legitimately carry no ghIssue).
+function itemTag(item) {
+  const slug = (item && item.slug) || '(unnamed)';
+  const issue = item && item.ghIssue;
+  return issue ? `${slug} (#${issue})` : slug;
+}
+
+function levelPhaseTitle(list) {
+  const items = Array.isArray(list) ? list : [];
+  const parts = [];
+  if (typeof input.ownerRepo === 'string' && input.ownerRepo.length > 0) {
+    parts.push(input.ownerRepo);
+  }
+  parts.push(`${items.length} item${items.length === 1 ? '' : 's'}`);
+  const named = items.slice(0, PHASE_TITLE_MAX_ITEMS).map(itemTag);
+  if (named.length > 0) {
+    const rest = items.length - named.length;
+    parts.push(named.join(', ') + (rest > 0 ? ` +${rest} more` : ''));
+  }
+  return `build level — ${parts.join(' · ')}`;
+}
+
+// =============================================================================
 // Entry point — drive the level, return {parked, escalations}.
 // =============================================================================
 async function buildLevel() {
   const items = input.items ?? [];
-  phase(`build level — ${items.length} item(s)`);
   log(`repoRoot=${input.repoRoot} board=${input.board ?? 'OFF'} plan=${input.planLink}`);
 
   // onlySlugs — optional continuation filter (escalation-resume loop).
@@ -1647,6 +1699,13 @@ async function buildLevel() {
   if (slugFilter) {
     log(`continuation mode — onlySlugs=[${[...slugFilter].join(',')}] active=${activeItems.length}/${items.length}`);
   }
+
+  // Name the run in the progress row (temperloop#903). Set AFTER the onlySlugs
+  // filter on purpose: on a continuation the heading must name the slugs actually
+  // being re-driven, not the level's full membership (whose siblings are already
+  // parked and untouched). Nothing above this point awaits, so the row is never
+  // observed unlabelled.
+  phase(levelPhaseTitle(activeItems));
 
   // Drive every active item through 3a–3h. The items in one level are
   // independent by construction (no merge edge between them), so we fan them
