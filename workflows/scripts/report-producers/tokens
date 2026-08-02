@@ -203,6 +203,65 @@
 # (`-Users-travis-dev-batch-temperloop--claude-worktrees-feat-activation-
 # class-a-build-gate`), and a deeper org path plus a long branch slug
 # reaches 200 — latent, not exotic.
+#
+# --- first-run disclosure notice + per-person local disable (temperloop#986)
+# -----------------------------------------------------------------------------
+# WHY: this producer is a COMMITTED, shared-repo artifact (the shim at
+# .temperloop/report.d/tokens is tracked) — a teammate who inherits it by a
+# plain `git pull` has never seen an `init` prompt and has no other way to
+# learn that a report run silently reads their own Claude Code transcripts.
+# The `init` prompt only ever reaches whoever ran `init`; it can't reach
+# someone who just pulled the file, so the disclosure has to live
+# producer-side, firing on that teammate's own first invocation instead.
+#
+# STATE, NEVER REPO-TRACKED: both the "already shown" and "disabled" states
+# ride a marker file under
+# `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/` —
+# the same XDG-state convention (and the same non-repo rationale) as
+# bin/temperloop's own `_foundation_check_report_offer` dismiss marker (see
+# that function's header). A COMMITTED dismissal/disable file would silently
+# disable the producer for every collaborator who clones the repo, which is
+# the exact opposite of "per-person" — so this never writes inside the git
+# tree, and a disable is a plain `mkdir -p ... && touch ...` a person runs
+# for themselves, never a flag threaded through config.
+#
+# TWO MARKERS, TWO PURPOSES (checked in this order, at two different points
+# below): `disabled` short-circuits the ENTIRE producer (checked first, right
+# after the cheap prerequisite checks, before any transcript scoping or
+# reading happens — "suppresses the producer entirely" per the item's own
+# acceptance criteria) via the ordinary `skip()` path, so a disabled producer
+# renders identically to an absent/unavailable one and `report.sh` falls back
+# to the kernel-tier headline with no special-casing on its end.
+# `first-run-notice-shown` gates the ONE-TIME disclosure text folded into the
+# `notice` field below — it does not suppress output, it only stops the
+# disclosure prefix from repeating on every subsequent run.
+#
+# THE NOTICE CHANNEL, NOT A SECOND STDOUT LINE: this producer's stdout is
+# contractually constrained to exactly one JSON object (report.contract.md §
+# Overlay drop-in contract) — printing the disclosure as a second line of
+# plain text would break `report.sh`'s `tokens_spent` parse and silently
+# fall the whole headline back to the kernel tier, which is worse than the
+# problem this item exists to fix. So the one-time disclosure text is folded
+# into the SAME `notice` string this file already emits every run for repo-
+# scoping (report.contract.md § `notice` field, temperloop#981) — prefixed
+# on a first run, otherwise absent — never a second top-level key, never
+# extra stdout.
+#
+# WHAT THE NOTICE NAMES (three things, per the item's acceptance criteria):
+# what this producer reads (transcripts under $SPEND_TRANSCRIPT_ROOT, at
+# whichever TRUE scope this same run resolved — the disclosure prefix is
+# glued onto the SAME $scope_notice string computed below, so it never
+# states a scope other than the one this run actually used), that it makes
+# no network call (true by construction — see the file-level EGRESS
+# comment above), and the literal `mkdir -p ... && touch ...` command that
+# disables it locally.
+#
+# BEST-EFFORT MARKER WRITE (defect class 1 — checked exit status, not
+# assumed): the mkdir+touch below is chained with `&&`, so a failure to
+# create the state dir or the marker file is never silently treated as
+# success — worst case on a failed write, the disclosure simply repeats on
+# the NEXT run too (a harmless, self-correcting degrade), never a false
+# claim in the notice text that it "won't show again".
 
 set -uo pipefail
 
@@ -218,6 +277,30 @@ profiler="$self_dir/../pipeline-spend-report.sh"
 
 [ -f "$profiler" ] || skip
 command -v jq >/dev/null 2>&1 || skip
+
+# --- per-person disable + first-run notice state (temperloop#986) ----------
+# See the header comment above for the full rationale. Mirrors bin/
+# temperloop's own `_foundation_check_report_offer` expression
+# (`${XDG_STATE_HOME:-$HOME/.local/state}`), with one addition: bin/
+# temperloop runs with no `set -u`, so its bare `$HOME` reference is safe
+# even when $HOME is unset. THIS file runs under `set -uo pipefail` (defect
+# class 4 -- a derived path used without an existence/definedness check), so
+# the same bare reference would abort with "unbound variable" the moment
+# $XDG_STATE_HOME is unset and bash has to evaluate the $HOME fallback --
+# exactly what test_pipeline_spend_report.sh's "SCOPE 9h: an unset $HOME"
+# fixture caught. `${HOME:-}` nested inside the outer default clause keeps
+# this expression safe under -u in both directions, matching this file's own
+# existing `default_transcript_root="${HOME:-}/.claude/projects"` line
+# above.
+state_home="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
+producer_state_dir="$state_home/temperloop/tokens-producer"
+disable_marker="$producer_state_dir/disabled"
+notice_marker="$producer_state_dir/first-run-notice-shown"
+
+# Disabled short-circuits the ENTIRE producer -- checked before any
+# transcript scoping or reading happens, via the ordinary skip() path, so a
+# disabled producer degrades identically to an absent/unavailable one.
+[ -f "$disable_marker" ] && skip
 
 # Match the baseline's own lookback window, so "tokens spent vs items merged"
 # divides two numbers drawn from the SAME period. BASELINE_SNAPSHOT_LOOKBACK_DAYS
@@ -358,6 +441,27 @@ else
   fi
 fi
 [ -n "$raw" ] || skip
+
+# --- first-run disclosure, folded into $scope_notice (temperloop#986) ------
+# One-time only: gated on the SAME notice_marker computed above, near the
+# disable check. Names the three required things -- what is read (the same
+# $scope_notice text this run already resolved, whichever of the four
+# branches above it came from, so the scope claim is always the TRUE one for
+# THIS run), that there is no network call, and the exact command to disable
+# locally. Glued onto the front of $scope_notice with a single space (the
+# contract requires notice stay a single-line string -- no embedded
+# newline), never a second stdout line, so it can never defeat the
+# tokens_spent JSON parse.
+if [ ! -f "$notice_marker" ]; then
+  first_run_notice="first run of the temperloop tokens producer: it reads Claude Code transcript files under \$SPEND_TRANSCRIPT_ROOT (see scope below) and makes NO network call; to disable it on this machine, run: mkdir -p '$producer_state_dir' && touch '$disable_marker' (a per-machine marker file, never committed to this repo)."
+  scope_notice="$first_run_notice $scope_notice"
+  # Best-effort marker write (defect class 1: checked, not assumed --
+  # chained with && so a mkdir failure never lets the touch run and get
+  # mis-credited as success). A failed write just means the disclosure
+  # repeats on the next run too -- harmless, self-correcting, never a false
+  # "won't show again" claim in the text above.
+  mkdir -p "$producer_state_dir" 2>/dev/null && : > "$notice_marker" 2>/dev/null
+fi
 
 # Zero-unit models are dropped from by_model: they add nothing to a priced
 # total and would only surface in report.sh's "excluded, no matching price"

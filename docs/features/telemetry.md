@@ -143,6 +143,54 @@ Two properties worth knowing before you merge it:
   proposed — `init` leaves it byte-for-byte alone, says so, and omits it from
   the PR. It does not ask, and it does not overwrite; that file is yours.
 
+### First-run notice and local disable (temperloop#986)
+
+`init` only ever reaches whoever ran it. A teammate who inherits the
+`.temperloop/report.d/tokens` shim by a plain `git pull` — never having run
+`init` themselves — has no other way to learn that a `temperloop report` run
+in this repo reads their own Claude Code transcripts, so the disclosure
+fires **producer-side** instead, on that teammate's own first run:
+
+```
+notice: first run of the temperloop tokens producer: it reads Claude Code
+transcript files under $SPEND_TRANSCRIPT_ROOT (see scope below) and makes NO
+network call; to disable it on this machine, run: mkdir -p '<state-dir>' &&
+touch '<state-dir>/disabled' (a per-machine marker file, never committed to
+this repo). <the same repo-scoping notice this run already resolved>
+```
+
+It names three things: **what is read** (transcripts under
+`$SPEND_TRANSCRIPT_ROOT`, at whichever true scope that run actually resolved
+— the same scope-detection this producer already performs, see "Token
+spend" above), that it makes **no network call**, and the exact command to
+**disable it locally**. This text rides the `notice` field `report.sh`
+already reserves on the `tokens` producer's stdout (see
+[`workflows/scripts/lib/report.contract.md`](../../workflows/scripts/lib/report.contract.md)
+§ `notice` field) — never a second line of output — so a first run's
+`tokens_spent` headline renders exactly as it would on any other run.
+
+**The disable is per-person, never a commit.** Both the "already shown" and
+"disabled" states live under
+`${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/` — the
+same XDG-state convention the CLI dispatcher's own 14-day report offer
+(`_foundation_check_report_offer` in
+[`bin/temperloop`](../../bin/temperloop)) uses for its dismiss marker —
+never inside the git tree. A committed dismissal or disable file would
+silently disable the
+producer for every collaborator who clones the repo, which defeats the
+point; instead, disabling is one command a person runs for themselves:
+
+```sh
+mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer" \
+  && touch "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/disabled"
+```
+
+Once that marker exists, the producer stops reading transcripts entirely —
+`temperloop report` renders exactly as it would with no `tokens` producer
+installed at all (the kernel-tier merged-items/day headline, no
+`tokens_spent` line) — until the marker is removed. A second, un-disabled
+run after the first simply omits the disclosure prefix; the repo-scoping
+notice keeps rendering every run as before.
 
 ### Removal — `temperloop eject` owns the `tokens` shim; never `pricing.json`
 
