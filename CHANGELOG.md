@@ -78,6 +78,32 @@ reads that marker; a stranger greps for it before pulling.
   `_SKIP_LABEL`). New rows only — no column change, no existing default
   moved.
 
+### Changed
+
+<!-- Non-breaking changes only. The `### Changed — BREAKING` section below is
+     the one `changelog_breaking_sections()` keys on; do NOT merge these two
+     sections, and do NOT add ` — BREAKING` to this heading for a change that
+     is not breaking. -->
+
+- **`/build`'s machinery executors now run as a Bash-only `machinery-executor`
+  agent instead of `general-purpose` (temperloop#1014).** temperloop#997 removed
+  the prompt-cache TTL misses from the *worker*; the waste relocated to the
+  mechanical agents that exceed the ~300s TTL **by construction** — the CI poll
+  (waiting is its whole job) and the minutes-scale 3e.5 gate. Their post-wait
+  call re-*writes* the whole context at weight 1.25 instead of re-*reading* it at
+  0.1, so the excess is proportional to **context size**, not to the length of
+  the wait. The new `claude/agents/machinery-executor.md` carries a Bash-only
+  tool surface and the standing "run it verbatim, return each step's JSON line"
+  contract the per-call prompt used to restate. Measured first-call
+  `cache_creation`, same prompts and machine: **37,428 → 30,856** tokens for a
+  CI-poll batch and **37,201 → 30,734** for the 3e.5 gate (−17.5%; −56% of the
+  context that is not the installed CLAUDE.md, which the harness injects into
+  every non-built-in agent and no agent definition can decline). Behavior is
+  unchanged — same commands, same JSON, same Bash-tool timeout, same escalation
+  branches — and a checkout that has not run
+  `workflows/scripts/install/project-agents.sh` falls back automatically, once
+  per run, to the previous `general-purpose` executor with its full prompt.
+
 ### Fixed
 
 - **`temperloop eject` no longer deletes a hand-authored

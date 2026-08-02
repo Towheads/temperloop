@@ -131,6 +131,12 @@
 //                  WITHOUT it every CI poll gets '' → ERROR.
 //     claimCmd   — absolute path to the board claim.sh entrypoint (Step 0 CLAIM
 //                  probe). Used by 3a; defaults to bare 'claim.sh' if absent.
+//     machineryAgentType
+//                — optional override for the executor agent type. Absent (the
+//                  norm) means 'machinery-executor', with an automatic one-time
+//                  fallback to 'general-purpose' in a checkout that has not
+//                  deployed the agent definition. Pass 'general-purpose' to pin
+//                  the pre-#1014 behavior. See machineryAgent() below.
 //     verdicts   — escalation-continuation map. Empty/absent on a fresh level;
 //                  on a 3d-esc continuation, keyed by slug:
 //                    { [slug]: { kind, verdict_section } }
@@ -439,6 +445,66 @@ function machineryBin(repoRoot, name) {
 // '' → ERROR, so the orchestrator MUST pass it (Step 0 probe). See the I/O note.
 
 // -----------------------------------------------------------------------------
+// THE EXECUTOR AGENT TYPE — context size is the machinery agents' cost (#1014).
+// -----------------------------------------------------------------------------
+// A machinery executor's whole job is one Bash call, but a `general-purpose`
+// agent carries the FULL harness surface to make it: every tool schema, the
+// skill listing, the deferred-tool listing. That is dead weight on every spawn
+// and it is charged TWICE for the two executors that exceed the ~300s
+// prompt-cache TTL by construction — the CI poll (waiting IS its job) and the
+// minutes-scale 3e.5 gate. Their post-wait call is a total cache miss: the whole
+// context is re-WRITTEN at weight 1.25 instead of re-READ at 0.1, so the excess
+// is proportional to CONTEXT SIZE, not to the length of the wait (#1014).
+//
+// So machinery executors run as `machinery-executor` (claude/agents/), whose
+// tool surface is Bash alone (+ the runtime's own StructuredOutput, appended
+// automatically when a schema is passed) and whose system prompt carries the
+// standing "run it verbatim, return each step's JSON line" contract that every
+// per-call prompt used to restate. Measured on this harness, same prompts, same
+// machine (temperloop#1014): ci-batch 37,428 -> 30,856 first-call
+// cache_creation tokens, 3e.5 gate 37,201 -> 30,734 (-17.5%). The residual is
+// almost entirely the installed CLAUDE.md (measured at 25,714 tokens, identical
+// under both agent types) — which the harness injects into every non-built-in
+// agent and NO agent definition can decline, so it is out of this file's reach.
+// Of the context this file CAN reach, the lean type removes 56%.
+//
+// FALLBACK, NOT A DEPENDENCY. A checkout that has not deployed the agent
+// definition (`workflows/scripts/install/project-agents.sh`) must still build.
+// agent() rejects an unresolvable (or permission-denied) agentType at RESOLUTION
+// time — before any subagent is spawned, so nothing has run and re-issuing the
+// call is safe — with a message naming `agent({agentType})` and the type it could
+// not resolve. machineryAgent() catches exactly that shape once, pins the type to
+// 'general-purpose' for the rest of the run, and re-issues with the full prompt.
+// Any OTHER failure propagates untouched: a blind retry of a machinery command is
+// NEVER safe (push / pr-create are not idempotent), so the match is deliberately
+// narrow — two independent markers of a resolution failure, never a catch-all.
+// An explicit input.machineryAgentType (orchestrator-supplied) overrides the
+// default and disables the probe.
+const MACHINERY_RESOLUTION_ERR = /agent\(\{agentType\}\)|agent type '[^']*' (?:not found|is denied)/;
+const MACHINERY_AGENT_TYPE_DEFAULT = 'machinery-executor';
+let machineryAgentType =
+  typeof input.machineryAgentType === 'string' && input.machineryAgentType.length > 0
+    ? input.machineryAgentType
+    : MACHINERY_AGENT_TYPE_DEFAULT;
+
+// machineryAgent — spawn a machinery executor. `promptFor(lean)` builds the
+// prompt for the resolved agent type: `lean` is true when the executor's own
+// definition already carries the standing contract, false for the
+// general-purpose fallback, which needs it spelled out per call as before.
+async function machineryAgent(promptFor, opts) {
+  const wanted = machineryAgentType;
+  try {
+    return await agent(promptFor(wanted !== 'general-purpose'), { ...opts, agentType: wanted });
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (wanted === 'general-purpose' || !MACHINERY_RESOLUTION_ERR.test(msg)) throw err;
+    log(`machinery executor '${wanted}' unavailable — using general-purpose (${msg})`);
+    machineryAgentType = 'general-purpose';
+    return await agent(promptFor(false), { ...opts, agentType: 'general-purpose' });
+  }
+}
+
+// -----------------------------------------------------------------------------
 // runMachinery — the sh() replacement (spike §1).
 // -----------------------------------------------------------------------------
 // Spawns a one-shot executor agent that runs EXACTLY one machinery command via Bash
@@ -451,7 +517,10 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
   // "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
   // with the nested-readlink path resolution, read to the auto-mode safety
   // classifier as an instruction to blindly execute an obfuscated command.
-  const out = await agent(
+  // BOTH framing lines stay in the LEAN prompt too: the auto-mode classifier
+  // sees the prompt (and the agent type), never the agent's system prompt, so
+  // the #72 framing is not something the executor definition can absorb.
+  const promptFor = (lean) =>
     [
       'Run this single build-machinery helper command with the Bash tool, exactly as written.',
       'It is a known project script (worktree.sh / pr.sh / ci-poll.sh / claim.sh); do not add flags, chain extra commands, or rewrite it.',
@@ -459,19 +528,25 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
       // raise the Bash TOOL's timeout parameter — NOT the command text — so the
       // executor does not kill it at the default 2 minutes.
       bashTimeoutMs
-        ? `This command runs longer than usual. When you invoke the Bash tool, set its \`timeout\` parameter to ${bashTimeoutMs} (milliseconds). That is a Bash tool parameter only — do NOT alter the command text — and it prevents the default 2-minute timeout from killing the run.`
+        ? lean
+          ? `Set the Bash tool \`timeout\` parameter to ${bashTimeoutMs}.`
+          : `This command runs longer than usual. When you invoke the Bash tool, set its \`timeout\` parameter to ${bashTimeoutMs} (milliseconds). That is a Bash tool parameter only — do NOT alter the command text — and it prevents the default 2-minute timeout from killing the run.`
         : null,
-      'It prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
-      'Return that JSON object verbatim as your result — the schema captures it.',
-      'If the command exits non-zero it STILL prints its JSON line; return that line.',
+      // The three lines below are the executor's STANDING contract, identical on
+      // every call — claude/agents/machinery-executor.md carries them, so the
+      // lean prompt omits them (#1014).
+      lean ? null : 'It prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
+      lean ? null : 'Return that JSON object verbatim as your result — the schema captures it.',
+      lean ? null : 'If the command exits non-zero it STILL prints its JSON line; return that line.',
       '',
       'Command:',
       cmd,
-    ].filter(Boolean).join('\n'),
+    ].filter(Boolean).join('\n');
+  const out = await machineryAgent(
+    promptFor,
     {
       label: label ?? `machinery:${cmd.split(' ').slice(0, 2).join(' ')}`,
       phase: 'machinery',
-      agentType: 'general-purpose',
       // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
       // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` —
       // `??` only falls through on null/undefined, and a caller (or an
@@ -562,7 +637,10 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
     return { denied: false, results: [], steps: [] };
   }
   const kinds = steps.map((s) => s.kind);
-  const out = await agent(
+  // Lean vs full prompt: see machineryAgent() above (#1014). The two #72 framing
+  // lines and the `Steps:` manifest stay on BOTH paths — the classifier reads
+  // the prompt, and the manifest is per-call, not standing contract.
+  const promptFor = (lean) =>
     [
       'Run this build-machinery command sequence with the Bash tool, exactly as written, in ONE Bash invocation.',
       'It is a short shell script that calls known project helper scripts (worktree.sh / pr.sh / ci-poll.sh / claim.sh / gh) one after another; do not add flags, reorder or split the steps, or rewrite it.',
@@ -571,22 +649,27 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
       // long-running sequence raise the Bash TOOL's timeout parameter — NOT the
       // command text — so the executor does not kill it at the default 2 minutes.
       bashTimeoutMs
-        ? `This sequence runs longer than usual. When you invoke the Bash tool, set its \`timeout\` parameter to ${bashTimeoutMs} (milliseconds). That is a Bash tool parameter only — do NOT alter the command text — and it prevents the default 2-minute timeout from killing the run.`
+        ? lean
+          ? `Set the Bash tool \`timeout\` parameter to ${bashTimeoutMs}.`
+          : `This sequence runs longer than usual. When you invoke the Bash tool, set its \`timeout\` parameter to ${bashTimeoutMs} (milliseconds). That is a Bash tool parameter only — do NOT alter the command text — and it prevents the default 2-minute timeout from killing the run.`
         : null,
-      'Each helper prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
-      "The script deliberately STOPS EARLY when a step's result means the remaining steps must not run. FEWER JSON lines than steps is expected and correct — never an error, never something to re-run, retry, or work around.",
-      'Return every JSON object it printed on stdout, in stdout order, as {"results": [ ... ]}. Copy each object VERBATIM — do not merge, summarise, reorder, add, drop, or invent entries — and ignore any non-JSON output.',
-      'If a step exits non-zero it STILL prints its JSON line; include it.',
+      // Standing contract — carried by claude/agents/machinery-executor.md on
+      // the lean path, restated per call on the general-purpose fallback.
+      lean ? null : 'Each helper prints a SINGLE JSON line on stdout describing its own result (a closed `outcome` set).',
+      lean ? null : "The script deliberately STOPS EARLY when a step's result means the remaining steps must not run. FEWER JSON lines than steps is expected and correct — never an error, never something to re-run, retry, or work around.",
+      lean ? null : 'Return every JSON object it printed on stdout, in stdout order, as {"results": [ ... ]}. Copy each object VERBATIM — do not merge, summarise, reorder, add, drop, or invent entries — and ignore any non-JSON output.',
+      lean ? null : 'If a step exits non-zero it STILL prints its JSON line; include it.',
       '',
       'Command:',
       batchCommand(steps),
     ]
       .filter(Boolean)
-      .join('\n'),
+      .join('\n');
+  const out = await machineryAgent(
+    promptFor,
     {
       label: label ?? `machinery-batch:${kinds.join('+')}`,
       phase: 'machinery',
-      agentType: 'general-purpose',
       // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
       // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` — see
       // the twin runMachinery() comment above for why: `??` lets an
