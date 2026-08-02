@@ -37,6 +37,47 @@ reads that marker; a stranger greps for it before pulling.
   `kernel-repo-layout.md` § Release-tag convention gains a pointer to the new
   section. Documentation only — no behavior, no gate, no contract surface moves.
 
+- **A `checks` gate now requires a `## [Unreleased]` entry from any change
+  that touches contract surface (temperloop#960).**
+  `workflows/scripts/check-changelog-entry.sh`, registered in
+  `scripts/quality-gates.sh`'s `KERNEL_GATES`, fails a change that edits a
+  contract-surface path but adds nothing under `## [Unreleased]`. This closes
+  a hole in the pre-1.0 breaking signal rather than a tidiness gap: the
+  downstream acknowledgment gate in `scripts/update-kernel.sh` /
+  `bin/subcommands/update.sh` decides whether a pull needs an explicit
+  `KERNEL_ALLOW_BREAKING=1` by scanning the CHANGELOG range for a `BREAKING`
+  marker, and an entry that was never written cannot carry one — so a breaking
+  change merged without a CHANGELOG entry shipped with that gate silently
+  passing. At the v0.22.0 cut, 1 of 14 merged PRs had touched `CHANGELOG.md`.
+  - **"Contract surface" is not defined twice.** The gate parses the
+    backticked paths out of `VERSIONING.md` § The contract surface's own
+    "Where it lives" column at run time, so adding a row there extends the
+    gate for free; a table it cannot parse fails the run loudly rather than
+    silently enforcing nothing. `VERSIONING.md` now says so beside the table.
+  - **Opting out is explicit and reason-bearing, never inferred.** A
+    genuinely non-shipping change opts out with the `no-changelog` PR label,
+    a `Changelog: none - <reason>` line in the PR body, or that same line as
+    a commit-message trailer (the channel that works before a PR exists and
+    inside a merge queue). The reason is required — the point is that a skip
+    is a recorded choice.
+  - **Where it runs.** Inside the existing required `checks` job, never a
+    second required status. In CI it enforces on the `pull_request` event
+    only and prints a legible skip on `merge_group`/`push`, because the
+    opt-out channels are absent from those payloads. With no resolvable diff
+    base, or in a tree carrying no `VERSIONING.md`/`CHANGELOG.md`, it skips
+    cleanly with a notice.
+- **`workflows/scripts/lib/changelog.sh` gains `changelog_unreleased_body()`
+  and `changelog_version_headings()`** — the Unreleased-section body
+  extractor and the version-heading lister the gate above diffs across a
+  change's merge-base and head (the latter is what lets a release cut, which
+  legitimately empties `## [Unreleased]`, pass without an opt-out). Additive:
+  the three existing helpers are untouched.
+- **Six `CHANGELOG_GATE_*` rows in
+  `workflows/scripts/config/setting-registry.tsv`** for the new gate's
+  seams (`CHANGELOG_GATE_ROOT`, `_HEAD`, `_BASE`, `_PR_BODY`, `_PR_LABELS`,
+  `_SKIP_LABEL`). New rows only — no column change, no existing default
+  moved.
+
 ### Fixed
 
 - **`temperloop eject` no longer deletes a hand-authored

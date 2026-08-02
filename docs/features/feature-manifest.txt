@@ -286,6 +286,10 @@ quality-gates workflows/scripts/config/*
 quality-gates workflows/scripts/kernel/*
 quality-gates workflows/scripts/lint-pr-body.sh
 quality-gates workflows/scripts/tests/test_lint_pr_body.sh
+# CHANGELOG [Unreleased] completeness gate (temperloop#960) — the PR-hygiene
+# sibling of the lint above, and the second diff-scoped gate in KERNEL_GATES.
+quality-gates workflows/scripts/check-changelog-entry.sh
+quality-gates workflows/scripts/tests/test_check_changelog_entry.sh
 quality-gates workflows/scripts/validate-feature-docs.sh
 quality-gates workflows/scripts/tests/test_validate_feature_docs.sh
 quality-gates workflows/scripts/validate-design-brief.sh

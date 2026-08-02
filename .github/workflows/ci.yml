@@ -51,8 +51,23 @@ jobs:
     # against. Hand it the base SHA from the event payload — pull_request and
     # merge_group both carry one, so the guard's live scan runs in BOTH gating
     # events; on push:main it stays empty and the guard skips the live scan.
+    #
+    # The CHANGELOG [Unreleased] gate (workflows/scripts/check-changelog-entry.sh,
+    # also run inside quality-gates.sh — temperloop#960) needs three things from
+    # the event payload: the same base SHA, plus the two channels an author can
+    # record an EXPLICIT opt-out on — the PR's labels and its body. Both exist
+    # only on the `pull_request` event, which is exactly why that gate enforces
+    # on `pull_request` only and prints a legible skip on merge_group/push (an
+    # author's recorded opt-out would otherwise be invisible in the merge queue
+    # and a legitimately-exempt PR would fail there after passing on the PR).
+    # Passing the body through `env:` rather than interpolating it into a `run:`
+    # block is deliberate — it is untrusted user input and must never reach a
+    # shell as script text.
     env:
       LEAK_GUARD_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+      CHANGELOG_GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+      CHANGELOG_GATE_PR_BODY: ${{ github.event.pull_request.body }}
+      CHANGELOG_GATE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
     steps:
       # fetch-depth: 0 so the base commit above is present in the local history
       # for `git diff <base>...HEAD` (a shallow depth-1 checkout has no base).
