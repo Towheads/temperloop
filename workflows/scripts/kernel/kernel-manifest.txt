@@ -358,6 +358,14 @@ kernel workflows/scripts/telemetry-brief.sh
 # path, and is what feeds the kernel's own `.temperloop/report.d/tokens`
 # drop-in above.
 kernel workflows/scripts/pipeline-spend-report.sh
+# report-producers/ — kernel-side IMPLEMENTATIONS a .temperloop/report.d/
+# locator shim execs into (temperloop#980 "producer-kernel-side-relocation").
+# `tokens` moved here from `.temperloop/report.d/tokens` (now just a thin
+# locator + exec shim, still claimed by the `.temperloop/*` entry above) so
+# the real transcript-parsing logic updates with the kernel checkout and
+# stays inside check-producer-egress.sh's reach (see that script's own
+# report-producers/ scan, added in the same change).
+kernel workflows/scripts/report-producers/*
 kernel workflows/scripts/validate-activation-registry.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh

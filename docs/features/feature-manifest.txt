@@ -146,7 +146,14 @@ telemetry workflows/scripts/tests/test_status_line_token_resolution.sh
 # question the rest of this feature does, read from a different source.
 telemetry workflows/scripts/pipeline-spend-report.sh
 telemetry workflows/scripts/tests/test_pipeline_spend_report.sh
+# `.temperloop/report.d/tokens` is now a thin locator + exec SHIM
+# (temperloop#980 "producer-kernel-side-relocation"); the real
+# transcript-parsing implementation lives at
+# workflows/scripts/report-producers/tokens, and the shim's own reachability
+# is asserted by bin/subcommands/tests/test_tokens_producer.sh.
 telemetry .temperloop/report.d/tokens
+telemetry workflows/scripts/report-producers/tokens
+telemetry bin/subcommands/tests/test_tokens_producer.sh
 
 # ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
 pipeline-driver claude/commands/pipeline-drive.md
