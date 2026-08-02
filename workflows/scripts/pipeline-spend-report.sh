@@ -121,13 +121,35 @@
 #                "dedupe_ratio":n, "first_date":<str|null>, "last_date":<str|null>},
 #     "raw_tokens": {"cache_read":n, "cache_create":n, "output":n, "input":n},
 #     "units_total": n,
-#     "machinery":    {"agents":n, "units":n, "pct":n},
-#     "item_workers": {"agents":n, "units":n, "pct":n},
+#     "machinery":    {"agents":n, "units":n, "pct":n, "api_calls":n,
+#                      "wall_ms":n|null, "raw_tokens":{...}},
+#     "item_workers": {"agents":n, "units":n, "pct":n, "api_calls":n,
+#                      "wall_ms":n|null, "raw_tokens":{...}},
 #     "worker_profile": {"n":n, "median_api_calls":n,
 #                        "median_peak_context":n, "median_units":n},
 #     "by_model": {"<model-id>": <units>, ...},
-#     "by_run":   [{"run":"<wf_id>", "agents":n, "api_calls":n, "units":n}, ...]
+#     "by_run":   [{"run":"<wf_id>", "agents":n, "api_calls":n, "units":n,
+#                   "wall_ms":n|null}, ...]
 #   }
+#
+#   The per-class `api_calls` / `wall_ms` / `raw_tokens` sub-fields on
+#   `machinery` and `item_workers` (temperloop#943) are PURELY ADDITIVE — the
+#   pre-existing `agents`/`units`/`pct` keys are byte-unchanged, so no
+#   `schema_version` bump (meta/data/raw/README.md's schema-version
+#   convention). They exist so a consumer can see the OUTPUT vs CACHE_READ vs
+#   CACHE_CREATE split PER CLASS: a corpus-wide `raw_tokens` hides the fact
+#   that a mechanical agent's spend is nearly all cheap cache_read while a
+#   worker's is output+cache_create, which is exactly the distortion trap 2's
+#   cost weighting exists to correct for.
+#
+#   `wall_ms` semantics — MAX, NEVER A SUM. A class's `wall_ms` is the span of
+#   the LONGEST SINGLE AGENT in it (its last recorded API call minus its
+#   first), not the sum of every agent's span: /build runs item workers in
+#   PARALLEL within a dependency level, so a sum would overstate the level's
+#   real wall-clock by the fan-out width. `null` when no agent in the class
+#   carried a parsable timestamp. This is a within-agent span, so it excludes
+#   any time the agent spent before its first API call or after its last —
+#   directional, like every other figure here.
 #   Every token/unit figure is DIRECTIONAL cost-weighted units, never a
 #   dollar amount and never a precise unit cost — the same stance
 #   workflows/scripts/lib/report.contract.md's § Non-goals takes. No price
@@ -296,8 +318,17 @@ fi
 # agent across a midnight boundary.
 #
 # Emits two record kinds on one stream, split by the shell below:
-#   A <run> <agent> <date> <calls> <cr> <cc> <out> <in> <peak> <units>
+#   A <run> <agent> <date> <calls> <cr> <cc> <out> <in> <peak> <units> \
+#     <naive_lines> <naive_units> <span_ms>
 #   M <model> <units>
+#
+# <span_ms> (temperloop#943) is the agent's own wall-clock span — its LAST
+# recorded usage-line timestamp minus its FIRST, in milliseconds — or -1 when
+# no line carried a parsable timestamp. It is computed over EVERY usage line,
+# before trap 1's requestId dedupe, because a repeated line still proves the
+# agent was alive at that instant; deduping first would shorten the span for
+# no reason. TRAP 4 (BSD dialect): the ISO-8601 -> epoch conversion is done in
+# pure awk (days_from_civil), never `date -d` and never GNU awk's mktime().
 # ---------------------------------------------------------------------------
 records="$tmpdir/records.tsv"
 awk -F'\t' \
@@ -312,6 +343,29 @@ function units(k) {
   # arithmetic identical (see this script header s Provenance note).
   return int(cr[k]*w_cr + cc[k]*w_cc + out[k]*w_out + inp[k]*w_in)
 }
+# days_from_civil (the standard proleptic-Gregorian algorithm): days since
+# 1970-01-01 for a civil y/m/d. Pure arithmetic — no locale, no date(1), no
+# gawk mktime(), so it behaves identically on the macOS dev shell and Linux CI.
+function civil_days(y, m, d,   era, yoe, doy, doe) {
+  if (m <= 2) y -= 1
+  era = (y >= 0 ? int(y/400) : int((y-399)/400))
+  yoe = y - era*400
+  doy = int((153*(m + (m > 2 ? -3 : 9)) + 2)/5) + d - 1
+  doe = yoe*365 + int(yoe/4) - int(yoe/100) + doy
+  return era*146097 + doe - 719468
+}
+# iso_ms: "2026-07-10T10:00:00.000Z" -> epoch milliseconds, or -1 when the
+# string is not a parsable ISO-8601 instant. The result (~1.8e12) is exactly
+# representable in a double, and only DIFFERENCES of it are ever printed.
+function iso_ms(s,   y, mo, d, h, mi, sec, ms) {
+  if (length(s) < 19) return -1
+  y = substr(s,1,4) + 0; mo = substr(s,6,2) + 0; d = substr(s,9,2) + 0
+  h = substr(s,12,2) + 0; mi = substr(s,15,2) + 0; sec = substr(s,18,2) + 0
+  if (y < 1970 || mo < 1 || mo > 12 || d < 1 || d > 31) return -1
+  ms = 0
+  if (substr(s,20,1) == ".") ms = substr(s,21,3) + 0
+  return (((civil_days(y,mo,d)*24 + h)*60 + mi)*60 + sec)*1000 + ms
+}
 {
   # NOTE (awk has no lexical scope — every variable is global): use distinct
   # names in the main block and END. The #953 investigation lost a whole
@@ -325,6 +379,14 @@ function units(k) {
   key = run "\t" agent
   d = substr($2, 1, 10)
   if (d != "" && (!(key in mind) || d < mind[key])) mind[key] = d
+
+  # Wall-clock span bookkeeping, BEFORE the dedupe below: a repeated usage
+  # line still proves the agent was alive at that instant.
+  tms = iso_ms($2)
+  if (tms >= 0) {
+    if (!(key in minms) || tms < minms[key]) minms[key] = tms
+    if (!(key in maxms) || tms > maxms[key]) maxms[key] = tms
+  }
 
   # The NAIVE per-line rollup, kept alongside the deduped one purely so the
   # report can show what trap 1 costs on this corpus (#953 measured 2.16x).
@@ -349,9 +411,10 @@ END {
     if (since != "" && mind[k] < since) continue
     if (until_ != "" && mind[k] > until_) continue
     keep[k] = 1
-    printf "A\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", \
+    span = (k in minms) ? int(maxms[k] - minms[k]) : -1
+    printf "A\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", \
       k, (mind[k] == "" ? "unknown" : mind[k]), calls[k], cr[k], cc[k], out[k], inp[k], peak[k], units(k), \
-      nlines[k], int(ncr[k]*w_cr + ncc[k]*w_cc + nout[k]*w_out + ninp[k]*w_in)
+      nlines[k], int(ncr[k]*w_cr + ncc[k]*w_cc + nout[k]*w_out + ninp[k]*w_in), span
   }
   for (mk in mcr) {
     # mkey is `<run>\t<agent>` SUBSEP `<model>` — the agent key carries a TAB
@@ -381,18 +444,33 @@ summary="$(awk -F'\t' -v mach_max="$SPEND_MACHINERY_MAX_CALLS" '
   cr += $5; cc += $6; out += $7; inp += $8
   units_total += $10
   naive_lines += $11; naive_units += $12
-  if ($4 <= mach_max) { mach_agents++; mach_units += $10 }
-  else                { work_agents++; work_units += $10 }
+  # Per-class rollups (temperloop#943): the same machinery/item-worker split
+  # the units attribution already draws, extended to API calls, the raw token
+  # classes, and wall-clock. wall_ms is a MAX (parallel fan-out — a sum would
+  # overstate); a span of -1 means "no parsable timestamp" and never competes.
+  if ($4 <= mach_max) {
+    mach_agents++; mach_units += $10; mach_calls += $4
+    mcr += $5; mcc += $6; mout += $7; minp += $8
+    if ($13 + 0 >= 0) { mach_span_n++; if ($13 + 0 > mach_wall) mach_wall = $13 + 0 }
+  } else {
+    work_agents++; work_units += $10; work_calls += $4
+    wcr += $5; wcc += $6; wout += $7; winp += $8
+    if ($13 + 0 >= 0) { work_span_n++; if ($13 + 0 > work_wall) work_wall = $13 + 0 }
+  }
   if (first == "" || ($3 != "unknown" && $3 < first)) first = $3
   if ($3 != "unknown" && $3 > last) last = $3
 }
 END {
   nruns = 0; for (r in runs) nruns++
-  printf "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\n", \
+  printf "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d", \
     nruns, agents+0, calls_total+0, cr+0, cc+0, out+0, inp+0, units_total+0, \
     mach_agents+0, mach_units+0, work_agents+0, work_units+0, \
     (first == "" ? "-" : first), (last == "" ? "-" : last), \
     naive_lines+0, naive_units+0
+  printf "\t%d\t%d\t%d\t%d\t%d\t%d", \
+    mach_calls+0, mcr+0, mcc+0, mout+0, minp+0, (mach_span_n+0 > 0 ? mach_wall+0 : -1)
+  printf "\t%d\t%d\t%d\t%d\t%d\t%d\n", \
+    work_calls+0, wcr+0, wcc+0, wout+0, winp+0, (work_span_n+0 > 0 ? work_wall+0 : -1)
 }' "$agents_tsv")"
 
 n_runs="$(printf '%s' "$summary" | cut -f1)"
@@ -411,6 +489,23 @@ first_date="$(printf '%s' "$summary" | cut -f13)"
 last_date="$(printf '%s' "$summary" | cut -f14)"
 usage_lines="$(printf '%s' "$summary" | cut -f15)"
 naive_units="$(printf '%s' "$summary" | cut -f16)"
+mach_calls="$(printf '%s' "$summary" | cut -f17)"
+mach_cr="$(printf '%s' "$summary" | cut -f18)"
+mach_cc="$(printf '%s' "$summary" | cut -f19)"
+mach_out="$(printf '%s' "$summary" | cut -f20)"
+mach_in="$(printf '%s' "$summary" | cut -f21)"
+mach_wall="$(printf '%s' "$summary" | cut -f22)"
+work_calls="$(printf '%s' "$summary" | cut -f23)"
+work_cr="$(printf '%s' "$summary" | cut -f24)"
+work_cc="$(printf '%s' "$summary" | cut -f25)"
+work_out="$(printf '%s' "$summary" | cut -f26)"
+work_in="$(printf '%s' "$summary" | cut -f27)"
+work_wall="$(printf '%s' "$summary" | cut -f28)"
+
+# A -1 wall span means "no agent in this class carried a parsable timestamp" —
+# render it as JSON null rather than a fabricated 0 (the degradation contract:
+# never a made-up number).
+ms_or_null() { case "${1:-}" in ''|-1) printf 'null' ;; *) printf '%s' "$1" ;; esac; }
 
 pct() { # pct <part> <whole> -> one decimal place, "0.0" when whole is 0
   awk -v p="$1" -v w="$2" 'BEGIN { printf "%.1f", (w+0 == 0 ? 0 : 100*p/w) }'
@@ -440,7 +535,14 @@ prof_units="$(median 10)"
 
 # Per-run rollup, richest first.
 runs_tsv="$tmpdir/runs.tsv"
-awk -F'\t' '{ a[$1]++; c[$1] += $4; u[$1] += $10 } END { for (r in a) printf "%s\t%d\t%d\t%d\n", r, a[r], c[r], u[r] }' "$agents_tsv" \
+awk -F'\t' '
+{
+  a[$1]++; c[$1] += $4; u[$1] += $10
+  # Same MAX-not-sum rule as the class rollup above: a run fans its item
+  # workers out in parallel, so the run wall span is the longest agent in it.
+  if ($13 + 0 >= 0) { n[$1]++; if ($13 + 0 > w[$1]) w[$1] = $13 + 0 }
+}
+END { for (r in a) printf "%s\t%d\t%d\t%d\t%d\n", r, a[r], c[r], u[r], (n[r] + 0 > 0 ? w[r] + 0 : -1) }' "$agents_tsv" \
   | sort -t'	' -k4,4nr >"$runs_tsv"
 
 # ---------------------------------------------------------------------------
@@ -469,8 +571,12 @@ if [ "$format" = "json" ]; then
   printf '  "raw_tokens": {"cache_read": %s, "cache_create": %s, "output": %s, "input": %s},\n' \
     "$tok_cr" "$tok_cc" "$tok_out" "$tok_in"
   printf '  "units_total": %s,\n' "$units_total"
-  printf '  "machinery": {"agents": %s, "units": %s, "pct": %s},\n' "$mach_agents" "$mach_units" "$mach_pct"
-  printf '  "item_workers": {"agents": %s, "units": %s, "pct": %s},\n' "$work_agents" "$work_units" "$work_pct"
+  printf '  "machinery": {"agents": %s, "units": %s, "pct": %s, "api_calls": %s, "wall_ms": %s, "raw_tokens": {"cache_read": %s, "cache_create": %s, "output": %s, "input": %s}},\n' \
+    "$mach_agents" "$mach_units" "$mach_pct" "$mach_calls" "$(ms_or_null "$mach_wall")" \
+    "$mach_cr" "$mach_cc" "$mach_out" "$mach_in"
+  printf '  "item_workers": {"agents": %s, "units": %s, "pct": %s, "api_calls": %s, "wall_ms": %s, "raw_tokens": {"cache_read": %s, "cache_create": %s, "output": %s, "input": %s}},\n' \
+    "$work_agents" "$work_units" "$work_pct" "$work_calls" "$(ms_or_null "$work_wall")" \
+    "$work_cr" "$work_cc" "$work_out" "$work_in"
   printf '  "worker_profile": {"n": %s, "median_api_calls": %s, "median_peak_context": %s, "median_units": %s},\n' \
     "$prof_n" "$prof_calls" "$prof_peak" "$prof_units"
   # by_model / by_run are rendered by awk rather than a shell read-loop so the
@@ -482,7 +588,7 @@ if [ "$format" = "json" ]; then
   awk -F'\t' '{ k=$1; gsub(/\\/, "\\\\", k); gsub(/"/, "\\\"", k); printf "%s\"%s\": %s", (NR>1 ? ", " : ""), k, $2 }' "$models_tsv"
   printf '},\n'
   printf '  "by_run": [\n'
-  awk -F'\t' '{ k=$1; gsub(/\\/, "\\\\", k); gsub(/"/, "\\\"", k); printf "%s    {\"run\": \"%s\", \"agents\": %s, \"api_calls\": %s, \"units\": %s}", (NR>1 ? ",\n" : ""), k, $2, $3, $4 } END { if (NR > 0) printf "\n" }' "$runs_tsv"
+  awk -F'\t' '{ k=$1; gsub(/\\/, "\\\\", k); gsub(/"/, "\\\"", k); printf "%s    {\"run\": \"%s\", \"agents\": %s, \"api_calls\": %s, \"units\": %s, \"wall_ms\": %s}", (NR>1 ? ",\n" : ""), k, $2, $3, $4, ($5 == "-1" ? "null" : $5) } END { if (NR > 0) printf "\n" }' "$runs_tsv"
   printf '  ]\n}\n'
   exit 0
 fi
@@ -518,6 +624,15 @@ printf '  total units           %s\n' "$units_total"
 printf '  (undeduped would be   %s — %sx, the requestId-dedupe trap)\n' "$naive_units" "$naive_inflation"
 printf '  machinery (<= %s calls)   %6s agents  %14s units  %5s%%\n' "$SPEND_MACHINERY_MAX_CALLS" "$mach_agents" "$mach_units" "$mach_pct"
 printf '  item workers (> %s calls) %6s agents  %14s units  %5s%%\n' "$SPEND_MACHINERY_MAX_CALLS" "$work_agents" "$work_units" "$work_pct"
+printf '\n'
+# Per-class raw-token + wall-clock detail (temperloop#943): the cost-weighted
+# percentages above hide WHICH token class each side spends in, which is the
+# whole cheap-cache-read distortion this report exists to correct for. Show it.
+ms_show() { case "${1:-}" in ''|-1) printf 'unknown' ;; *) printf '%ss' "$(( $1 / 1000 ))" ;; esac; }
+printf 'per-class detail (raw tokens; wall span = LONGEST single agent, never a sum)\n'
+printf '  %-13s %8s %13s %13s %13s %11s %9s\n' "class" "calls" "output" "cache_create" "cache_read" "input" "wall"
+printf '  %-13s %8s %13s %13s %13s %11s %9s\n' "machinery" "$mach_calls" "$mach_out" "$mach_cc" "$mach_cr" "$mach_in" "$(ms_show "$mach_wall")"
+printf '  %-13s %8s %13s %13s %13s %11s %9s\n' "item workers" "$work_calls" "$work_out" "$work_cc" "$work_cr" "$work_in" "$(ms_show "$work_wall")"
 printf '\n'
 printf 'typical item worker (>= %s API calls, n=%s)\n' "$SPEND_WORKER_PROFILE_MIN_CALLS" "$prof_n"
 printf '  median API calls      %s\n' "$prof_calls"

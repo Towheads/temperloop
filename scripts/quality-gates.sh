@@ -359,6 +359,23 @@ KERNEL_GATES=(
   # as the sibling gates above (kernel Makefile is generator-owned; no new
   # target added here).
   "bash workflows/scripts/tests/test_pipeline_spend_report.sh"
+  # Per-merged-item efficiency emit (temperloop#943):
+  # workflows/scripts/emit-item-efficiency.sh — the overhead-per-shipped-change
+  # record written at build.md's 4d merge seam (tokens by phase, wall-clock by
+  # leg, agent counts by role), plus the per-class raw_tokens/wall_ms/api_calls
+  # fields it reads out of the spend profiler above. The load-bearing check is
+  # COMPOSITION: each token figure in a record must equal the corresponding
+  # field of `pipeline-spend-report.sh --format json` over the same run filter,
+  # asserted against live profiler output AND re-proved through the profiler's
+  # own duplicated-usage fixture — so the dedupe-by-requestId trap is shown to
+  # survive composition rather than being silently re-derived (and re-broken)
+  # here. Also pins the "an unmeasured leg is null, never 0" contract, the
+  # exit-0 degradations (no profiler / no gh / no slug), and the build.md 4d
+  # wiring presence check (folded in here rather than shipped as a fourth
+  # near-identical validate-*-emit.sh script). Synthetic fixtures in a tmpdir;
+  # never reads the operator's real ~/.claude corpus; `gh` is stubbed, never
+  # called. Same direct-`bash` form as the sibling gates above.
+  "bash workflows/scripts/tests/test_item_efficiency.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across

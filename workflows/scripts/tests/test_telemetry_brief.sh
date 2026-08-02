@@ -63,6 +63,7 @@ run_brief() {  # $1=lake dir, $2=read-log path, rest = extra args
   shift 2
   CMD_RUN_RAW_DIR="$lake" ISSUE_TOUCHES_RAW_DIR="$lake" CLAIMS_RAW_DIR="$lake" \
   PIPELINE_RAW_DIR="$lake" GH_CALLS_RAW_DIR="$lake" KS_SEARCH_FALLBACK_RAW_DIR="$lake" \
+  ITEM_EFFICIENCY_RAW_DIR="$lake" \
   TELEMETRY_RAW_DIR="$lake" KNOWLEDGE_READ_LOG="$rlog" \
     bash "$SCRIPT" "$@"
 }
@@ -86,6 +87,7 @@ assert_has "$out" "no data yet — gh-calls stream is empty" "gh-calls no-data l
 assert_has "$out" "no data yet — issue-touches stream is empty" "issue-touches no-data line"
 assert_has "$out" "no data yet — claims stream is empty" "claims no-data line"
 assert_has "$out" "no data yet — knowledge-search-fallback stream is empty" "ks-fallback no-data line"
+assert_has "$out" "no data yet — item-efficiency stream is empty" "item-efficiency no-data line (temperloop#943)"
 assert_has "$out" "no data yet — ks read-log is empty" "read-log no-data line"
 assert_has "$out" "## 1. Attention" "renders Q1 heading"
 assert_has "$out" "## 2. Pipeline health & trust" "renders Q2 heading"
@@ -121,6 +123,21 @@ EOF
 cat > "$lake/knowledge-search-fallback-${month}.jsonl" <<EOF
 {"schema_version":"1","ts":"$now_ts","session_id":"s1","host":"h","backend":"basic-memory-mcp","reason":"unreachable","detail":"d","url":"u","project":"p"}
 EOF
+# temperloop#943 — two merged items on ONE epic. Item `a` has every phase and
+# every wall-clock leg measured; item `b` has design/driver-prep unattributed
+# (null) and three unmeasured wall-clock legs, so the same fixture exercises
+# both the arithmetic and the "an absent measurement is not a zero" contract.
+# Hand-checked arithmetic the assertions below reconcile against:
+#   units:  design 6000 · driver-prep 2000 · worker 2232+9000=11232 · mech 186+300=486
+#           total 19718 -> 9859 units/item; shares 30/10/56/2, ceremony 43%
+#   raw:    output 970 · cache_create 2050 · cache_read 35900 per item
+#   medians (2 records -> mean of the two): worker (420000+900000)/2 = 660000ms = 11m
+#           end-to-end (1800000+2400000)/2 = 2100000ms = 35m
+#           CI: only ONE measured (300000) -> median 300000 = 5m, NOT 150000
+cat > "$lake/item-efficiency-${month}.jsonl" <<EOF
+{"schema_version":"1","ts":"$now_ts","host":"h","session_id":"s1","repo":"o/r","slug":"a","epic":923,"issue":1,"pr":10,"level":0,"phases":{"design":{"agents":1,"api_calls":20,"units":6000,"wall_ms":1000,"tokens":{"output":600,"cache_create":1000,"cache_read":18000,"input":120}},"driver_prep":{"agents":1,"api_calls":10,"units":2000,"wall_ms":500,"tokens":{"output":200,"cache_create":300,"cache_read":9000,"input":50}},"worker":{"agents":1,"api_calls":8,"units":2232,"wall_ms":420000,"tokens":{"output":160,"cache_create":800,"cache_read":4000,"input":32}},"mechanical":{"agents":3,"api_calls":9,"units":186,"wall_ms":120000,"tokens":{"output":30,"cache_create":0,"cache_read":300,"input":6}}},"agent_counts":{"worker":1,"mechanical":3},"wall_ms":{"worker":420000,"ci":300000,"merge_group":180000,"gate_wait":60000,"end_to_end":1800000},"runs":{"design":["wf_d"],"driver_prep":["wf_p"],"build":["wf_b"]},"spend_source":"pipeline-spend-report.sh"}
+{"schema_version":"1","ts":"$now_ts","host":"h","session_id":"s2","repo":"o/r","slug":"b","epic":923,"issue":2,"pr":11,"level":1,"phases":{"design":null,"driver_prep":null,"worker":{"agents":1,"api_calls":40,"units":9000,"wall_ms":900000,"tokens":{"output":900,"cache_create":2000,"cache_read":40000,"input":100}},"mechanical":{"agents":4,"api_calls":12,"units":300,"wall_ms":100000,"tokens":{"output":50,"cache_create":0,"cache_read":500,"input":10}}},"agent_counts":{"worker":1,"mechanical":4},"wall_ms":{"worker":900000,"ci":null,"merge_group":null,"gate_wait":null,"end_to_end":2400000},"runs":{"design":[],"driver_prep":[],"build":["wf_b2"]},"spend_source":"pipeline-spend-report.sh"}
+EOF
 rlog="$TMP/reads.log"
 printf '%s \xc2\xb7 s1 \xc2\xb7 script \xc2\xb7 read \xc2\xb7 Decisions/foo.md\n' "$now_ts" > "$rlog"
 printf '%s \xc2\xb7 s1 \xc2\xb7 script \xc2\xb7 search \xc2\xb7 some query\n' "$now_ts" >> "$rlog"
@@ -140,6 +157,13 @@ assert_has "$out" "knowledge-search warm→cold fallbacks (7d): 1" "Q2 fallback 
 assert_has "$out" "gh/git-bug calls (7d): 2, 3s total wall-time, 1 non-zero exits" "Q3 gh-calls reconcile"
 assert_has "$out" "worklist (1 calls, 2s)" "Q3 top context named"
 assert_has "$out" "knowledge-store ops (7d): 3" "Q3 ks read-log total reconciles"
+# Q3b — overhead per merged item (temperloop#943)
+assert_has "$out" "overhead per merged item (7d): 2 merged item(s) · 9859 cost-weighted units/item" "Q3b units/item reconciles with the fixture records"
+assert_has "$out" "design 30% · driver-prep 10% · worker 56% · mechanical 2% → ceremony (everything but the worker) 43%" "Q3b phase split reconciles"
+assert_has "$out" "970 output · 2050 cache-create · 35900 cache-read" "Q3b raw token split is shown UNWEIGHTED (the cheap-cache-read distortion stays visible)"
+assert_has "$out" "worker 11m · CI 5m · merge-group 3m · gate-wait 1m · end-to-end 35m" "Q3b wall-clock medians reconcile — and CI's median is the ONE measured value (5m), never diluted toward 0 by the unmeasured record"
+assert_has "$out" "agents per merged item (7d, median): 1 worker · 3.5 mechanical" "Q3b agent counts by role reconcile"
+assert_has "$out" "per epic #923: 2 item(s) · 9859 units/item · end-to-end 35m/item · levels 0,1" "Q3b rolls up per EPIC as well as per item"
 assert_has "$out" "read=2" "Q3 ks per-op breakdown (read)"
 assert_has "$out" "search=1" "Q3 ks per-op breakdown (search)"
 # Q4 — 1 merge, 1 pr-open, 1 capture, 1 claim
@@ -151,6 +175,7 @@ assert_has "$out" "triage: 1 runs · 6 items · 0 merged · 2 parked" "Q5 triage
 assert_has "$out" "source: command-runs-*.jsonl @ $lake" "Q1/Q5 name their source stream"
 assert_has "$out" "source: pipeline-*.jsonl @ $lake" "Q2 names its source streams"
 assert_has "$out" "ks read-log (knowledge_store.sh ks__read_log_emit) @ $rlog" "Q3 names the ks read-log emit"
+assert_has "$out" "item-efficiency-*.jsonl @ $lake (emit-item-efficiency.sh, token figures composed from pipeline-spend-report.sh)" "Q3b names its source stream verbatim, and names the profiler it composes"
 assert_has "$out" "issue-touches-*.jsonl @ $lake ∪ claims-*.jsonl @ $lake" "Q4 names the unioned streams"
 
 # ── 3. stale streams (records exist, none in window) ────────────────────────
@@ -213,6 +238,38 @@ assert_rc0 "$rc" "legacy-only lake renders (rc 0)"
 assert_has "$out" "pipeline drive errors" "legacy funnel-*.jsonl records are counted as the pipeline stream"
 assert_not_has "$out" "no data yet — pipeline stream is empty" "pipeline stream is NOT reported empty on a legacy-only lake"
 assert_has "$(cat "$TMP/legacy-stderr.txt")" "reading legacy funnel-*.jsonl telemetry" "legacy read surfaces the one-line NOTE on stderr"
+
+
+# ── 8. item-efficiency degradation (temperloop#943) ─────────────────────────
+# Three arms the metric MUST get right, because a ceremony-cost number that
+# quietly fabricates zeros is worse than no number at all:
+#   8a. records exist but all fall outside the window -> the stale note, never
+#       a rendered 0-units-per-item headline;
+#   8b. a record whose phases and wall_ms legs are ALL null -> every wall-clock
+#       leg renders "—", never "0m";
+#   8c. a torn trailing line -> skipped, the intact record still renders.
+echo "item-efficiency degradation:"
+ie_stale="$TMP/ie-stale"
+mkdir -p "$ie_stale"
+cat > "$ie_stale/item-efficiency-${old_month}.jsonl" <<EOF
+{"schema_version":"1","ts":"$old_ts","slug":"old","epic":1,"level":0,"phases":{"design":null,"driver_prep":null,"worker":null,"mechanical":null},"agent_counts":{"worker":null,"mechanical":null},"wall_ms":{"worker":null,"ci":null,"merge_group":null,"gate_wait":null,"end_to_end":null},"runs":{"design":[],"driver_prep":[],"build":[]}}
+EOF
+out="$(run_brief "$ie_stale" "$TMP/ie-stale/absent-reads.log" 2>&1)"; rc=$?
+assert_rc0 "$rc" "8a exit 0 on a stale item-efficiency lake"
+assert_has "$out" "no item-efficiency records in the last 7 days (freshest: $old_ts)" "8a stale item-efficiency names its freshest record"
+assert_not_has "$out" "overhead per merged item" "8a no out-of-window overhead headline rendered as current"
+
+ie_null="$TMP/ie-null"
+mkdir -p "$ie_null"
+{
+  printf '{"schema_version":"1","ts":"%s","slug":"x","epic":null,"level":null,"phases":{"design":null,"driver_prep":null,"worker":null,"mechanical":null},"agent_counts":{"worker":null,"mechanical":null},"wall_ms":{"worker":null,"ci":null,"merge_group":null,"gate_wait":null,"end_to_end":null},"runs":{}}\n' "$now_ts"
+  printf '{"schema_version":"1","ts":"%s","slug":"tor\n' "$now_ts"
+} > "$ie_null/item-efficiency-${month}.jsonl"
+out="$(run_brief "$ie_null" "$TMP/ie-null/absent-reads.log" 2>&1)"; rc=$?
+assert_rc0 "$rc" "8b/8c exit 0 with all-null phases and a torn trailing line"
+assert_has "$out" "overhead per merged item (7d): 1 merged item(s)" "8c torn line skipped, the intact record still counted"
+assert_has "$out" "worker — · CI — · merge-group — · gate-wait — · end-to-end —" "8b an unmeasured wall-clock leg renders — , never a fabricated 0m"
+assert_has "$out" "per epic (unattributed):" "8b a record with no epic rolls up under (unattributed), not under a made-up epic"
 
 echo
 echo "test_telemetry_brief: $pass passed, $fail failed"

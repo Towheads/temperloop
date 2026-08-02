@@ -362,6 +362,12 @@ kernel workflows/scripts/env-hygiene-report.sh
 kernel workflows/scripts/ready-pr-sweep.sh
 kernel workflows/scripts/emit-gh-perf.sh
 kernel workflows/scripts/emit-issue-touch.sh
+# Per-merged-item efficiency emit (temperloop#943) — kernel for the same
+# reason pipeline-spend-report.sh below is: it derives from harness-owned
+# workflow agent transcripts every Claude Code user has (via that profiler,
+# which it composes rather than reimplements), names no personal path, and
+# hangs off build.md's own 4d merge seam.
+kernel workflows/scripts/emit-item-efficiency.sh
 kernel workflows/scripts/gh-call-logger.sh
 kernel workflows/scripts/install-settings.sh
 kernel workflows/scripts/install-claude-md.sh
