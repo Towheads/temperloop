@@ -12,7 +12,26 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased]
+## [Unreleased] — BREAKING
+
+### Migration — read this first
+
+One migration, and it is narrow: **`/build`'s Step 3 within-level loop now runs
+the per-level Workflow path by default.** If you drive `/build`, or your overlay
+documents its conversational two-sweep orchestration, read
+`### Changed — BREAKING` below before pulling. Pass **`--no-workflow`** to keep
+the previous behavior. Everything else in this release is additive or a fix.
+
+**Who has to act.** Only an operator, wrapper, or overlay that depends on
+`/build`'s Step 3 running conversationally — most concretely anyone relying on
+**speculative next-level execution**, which is a conversational-path-only
+NON-GOAL under the Workflow path and is therefore now off by default. Nothing
+else moves: `--workflow` is still accepted (it now selects the default and is a
+no-op), the board adapter interface, hook names and signatures, the `checks`
+gate contract, `bin/temperloop`'s subcommand set, the `.kernel-pin`/compose
+seam, and the setting-registry row shape are all untouched — and no setting
+default changed, because the flip lives in the command spec, not in
+`build.config.sh`.
 
 ### Release classification for the remaining epic-#923 items — MINOR
 
@@ -20,7 +39,10 @@ The `workshop collaborative decision walk` epic (temperloop#923) shipped its
 first nine items in **0.22.0, marked BREAKING** — `/workshop`'s coverage walk
 lost its minimal-interaction path under a hard cutover. Its **two trailing
 items classify MINOR**, and the aggregate call for the epic therefore stands at
-BREAKING on the strength of 0.22.0 alone; nothing below adds to it.
+BREAKING on the strength of 0.22.0 alone; nothing below adds to *that epic's*
+call. (The release-level `BREAKING` on the `## [Unreleased]` heading above comes
+from a different change — the `/build` workflow-path default flip, temperloop#998
+— not from these two items.)
 
 Why these two are MINOR: the new ratify gate is satisfiable by every brief that
 walks normally (the seeded-dimension rule gives dimensions 0, 1 and 3 their
@@ -63,6 +85,34 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   The record-start-marker-present-but-empty defect is independent of status and
   applies regardless, which is the loophole that stops a crashed walk from
   masquerading as a migration case.
+- **Pipeline spend profiler + the `.temperloop/report.d/tokens` drop-in
+  producer (temperloop#958).** New `workflows/scripts/pipeline-spend-report.sh`
+  — a cost-weighted spend profiler over Claude Code workflow-agent transcripts,
+  with `--since` / `--until` / `--run` / `--root` / `--format json` / `--top` —
+  plus the `tokens` producer that gives `temperloop report` a live
+  `tokens_spent` headline. Validated byte-exactly against the #953 reference
+  corpus: over the same 1,622 agents it reports 180,608,852 weighted units
+  (the 180.6M baseline exactly) and 2.16x undeduped inflation (390,212,000 →
+  180,608,852, matching #953's figure to the digit), splitting machinery 31.8%
+  / item workers 68.2%. Note **two** call-count thresholds, not one:
+  `SPEND_MACHINERY_MAX_CALLS` (6) drives the machinery-vs-worker attribution
+  split, and `SPEND_WORKER_PROFILE_MIN_CALLS` (40) is a separate, higher floor
+  for the typical-worker profile — a single threshold provably cannot produce
+  both stated baselines.
+- **Four plan-less model-tier literals are now named settings
+  (temperloop#982).** `SWEEP_WORKER_MODEL` and `FIX_WORKER_MODEL` join the
+  Named-setting shell seam in `build.config.sh` (read symbolically by
+  `sweep.md` and `fix.md` Step 0.4); `BUILD_MACHINERY_SOLO_MODEL` and
+  `BUILD_MACHINERY_BATCH_MODEL` ride the **orchestrator→workflow input** seam
+  instead — resolved at `build.md` Step 0 and passed as
+  `machinerySoloModel` / `machineryBatchModel`, because a config-file read is
+  structurally impossible inside the Workflow runtime (no filesystem, Node, or
+  shell — DESIGN NOTE 1). **No default moves:** the `'haiku'` literal remains
+  at both `build-level.mjs` sites as the absent-input default, and the fallback
+  uses `||` rather than `??` so an empty-string input collapses to the default
+  too. Model selection is byte-identical when nothing is set, which is what the
+  MINOR classification rests on.
+
 - **`temperloop init` now proposes the `tokens` `report.d` producer shim
   (temperloop#984).** A fresh `init` run's existing proposal PR now also
   adds `.temperloop/report.d/tokens` (mode `755`) alongside its other tree
@@ -70,6 +120,102 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   `tokens_spent` headline without a manual step; a repo that already has a
   producer at that path is left alone. See `docs/features/telemetry.md` §
   "Token spend" for what the shim does once in place.
+
+
+### Changed — BREAKING
+
+<!-- The `BREAKING` token appears TWICE for this release on purpose — on the
+     `## [Unreleased]` heading above AND on this `### Changed` sub-heading.
+     `changelog_breaking_sections()` (workflows/scripts/lib/changelog.sh) sets
+     its `brk` flag ONLY from a heading line: `$0 ~ /BREAKING/` on the
+     `## [x.y.z]` line, or `/^#+ .*BREAKING/` on a sub-heading. BODY TEXT
+     NEVER SETS IT. The sub-heading marker is the belt-and-suspenders half: it
+     survives a release cut that rewrites `## [Unreleased]` into
+     `## [0.23.0] - <date>` without carrying the ` — BREAKING` suffix across.
+     Without at least one of these, scripts/update-kernel.sh's acknowledgment
+     gate and bin/subcommands/update.sh's BREAKING warning both silently no-op.
+     Do not strip either one when editing history. -->
+
+- **BREAKING — `/build`'s per-level Workflow path is now the DEFAULT for Step 3;
+  `--no-workflow` is the opt-out (temperloop#998).** `claude/commands/build.md`
+  previously documented `--workflow` as **Default OFF**, so Step 3's
+  within-level loop ran the conversational two-sweep orchestration unless the
+  operator opted in. That is inverted: with no flag, Step 3 now runs the
+  per-level Workflow (`claude/workflows/build-level.mjs`), and the new
+  **`--no-workflow`** flag selects the conversational two-sweep loop.
+  `--workflow` itself is **retained and still accepted as a no-op** — it now
+  asks for what `/build` already does — so an existing invocation, wrapper, or
+  muscle-memory command line that passes it explicitly does not break. The
+  mechanics of the two paths are unchanged (`build-level.mjs` was not touched);
+  both still call the same deterministic machinery scripts, and the orchestrator
+  still owns Step 4, all plan-note writeback, and escalation resolution on both.
+  **Why:** the Workflow path's batched machinery executors (temperloop#942) cut
+  mechanical weighted token spend **32.8%** (468,283 → 314,801 units) and raw
+  tokens **56.9%** on a 1-item level — worth **-6.6% per build level** — but
+  because the path was Default OFF that saving reached only opt-in runs, so
+  #942's shipped benefit was ~0% corpus-wide. Duration impact is ~1%: this is a
+  token change, not a speed change. **Classified BREAKING** per `VERSIONING.md`
+  — `claude/commands/*.md` is the "Pipeline command contracts" published
+  surface, and a *default*-behavior change is breaking by that document's own
+  test ("a downstream overlay or a stranger's config must change to keep
+  working"): an adopter who changes nothing gets different orchestration, and
+  must add a flag to keep the old one. **Migration:** append **`--no-workflow`**
+  to your `/build` invocation (or your wrapper's) to keep the conversational
+  two-sweep loop. Do this in particular if you use **speculative next-level
+  execution** — cross-level speculative overlap is a documented
+  conversational-path-only NON-GOAL under the Workflow path in v1, so flipping
+  the default **disables speculative overlap by default**, and `--no-workflow`
+  is the only way to get it back. Lifting that NON-GOAL is separate work and is
+  still deferred past v1.
+
+### Changed
+
+<!-- Non-breaking changes only. The `### Changed — BREAKING` section above is
+     the one `changelog_breaking_sections()` keys on; do NOT merge these two
+     sections, and do NOT add ` — BREAKING` to this heading for a change that
+     is not breaking. -->
+
+- **Build workers no longer run the bare, repo-wide quality gate in their own
+  context (temperloop#997).** The minutes-long blocking turn exceeded the
+  ~5-min prompt-cache TTL and forced a full-context cache re-write — a 12.5x
+  penalty measured at **4.84% of all workflow-agent spend**. The worker now
+  runs a **path-scoped subset** via `quality-gates.sh --list`, for fast local
+  feedback only and **explicitly labelled NOT the acceptance authority**;
+  `/build` 3e.5's own bare, repo-wide gate run is untouched and remains the
+  sole authority. Both worker surfaces moved in lockstep per `build.md`'s
+  schema↔prose mandate (`build.md` 3c and `build-level.mjs`'s
+  `workerPrompt()`), and new static guards in `test_workflow.sh` bind both
+  directions — the ban must appear in *both* worker surfaces, and 3e.5 must
+  still invoke the gate bare. Trade accepted: the alternative (re-spawning the
+  worker on a parent-side red) pays its cost on every red, commonly a
+  seconds-to-catch lint slip, whereas the cache miss was paid on every item.
+- **The `/build` spine's progress row now names its run (temperloop#903).**
+  `build-level.mjs`'s `phase()` title carried an item *count* and nothing else,
+  so concurrent spine runs rendered identical rows in the progress UI — a
+  single `/fix` session drove three indistinguishable `build-level`
+  invocations. It now emits repo, count, and per-item slug + issue:
+  `build level — Towheads/foundation · 1 item · migrate-off-legacy-funnel-names-1419 (#1419)`.
+  Bounded to 3 named slugs with `+K more`; every segment optional-safe (a
+  missing `ownerRepo`/`ghIssue` drops its own segment rather than rendering
+  `undefined`); and set **after** the `onlySlugs` filter, so a continuation
+  names the slugs actually being re-driven. `meta.description` — a
+  runtime-enforced pure literal that can never carry run context — was
+  rewritten operator-facing, dropping return-shape detail that already lives
+  in the file's I/O CONTRACT header. The `{parked, escalations}` return
+  contract and every per-agent label (`worker:<slug>`, `gate:<slug>`,
+  `ci-poll:<slug>#<slice>`, …) are untouched.
+- **Pre-merge CI gates on ubuntu only; macOS coverage moved to a nightly run
+  (temperloop#963).** `ci.yml`'s `checks` job keeps its `strategy.matrix` — a
+  single entry `os: [ubuntu-latest]` — so **the required status context stays
+  exactly `checks (ubuntu-latest)`** and no branch-protection change is needed.
+  New `.github/workflows/nightly-macos.yml` runs the same gate script on
+  `macos-latest` (`schedule: "17 9 * * *"` — 09:17 UTC, ~02:17
+  America/Los_Angeles under PDT — plus `workflow_dispatch`); its job context is
+  `nightly-macos`, non-matrix, so branch protection cannot latch onto it, and a
+  Verdict step writes a `$GITHUB_STEP_SUMMARY` block plus an `::error::`
+  annotation on failure. **Trade stated honestly:** ubuntu gates merges, so a
+  **BSD-dialect regression can now reach `main`** and is caught within a day
+  rather than at the gate.
 
 ### Fixed
 

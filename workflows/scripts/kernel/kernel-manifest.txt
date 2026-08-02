@@ -337,6 +337,18 @@ kernel workflows/scripts/tests/test_chunk_redundancy_surface.sh
 kernel workflows/scripts/config/redundancy-fixtures.json
 kernel workflows/scripts/config/check-redundancy-fixtures.sh
 kernel workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
+# Semantic-redundancy SCORER (temperloop#855, half (b) of the same P9 probe):
+# consumes half (a)'s chunk stream through its documented interface, scores
+# pairs, and records the pre-registered precision go/no-go. Same top-level
+# placement as the chunker, hence the same explicit rows; the hand-labelled
+# precision sample under workflows/scripts/config/ is already covered by the
+# `kernel workflows/scripts/config/*` glob above — listed explicitly here for
+# discoverability alongside the scorer.
+kernel workflows/scripts/score-redundancy.sh
+kernel workflows/scripts/score-redundancy.py
+kernel workflows/scripts/score-redundancy.md
+kernel workflows/scripts/tests/test_score_redundancy.sh
+kernel workflows/scripts/config/redundancy-precision-labels.tsv
 # Declared-expiry check (temperloop#831, epic #810 P10): resolves whether a
 # standing rule's own declared expiry (claude/citation-schema.md's marker
 # extension) has passed, over the surface citation-registry.tsv (already

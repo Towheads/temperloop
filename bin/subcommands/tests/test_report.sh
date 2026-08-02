@@ -355,4 +355,35 @@ chmod +x "$REPO9/.temperloop/report.d/tokens"
 out9d="$(bash "$REPORT" --dir "$REPO9")"
 echo "$out9d" | grep -q "Kernel-tier headline" || fail "trailing non-JSON tokens stdout must also degrade to the kernel-tier headline (jq exit status now checked)"
 
+# --- 10: CWD CONTRACT (temperloop#983 review, BLOCKING finding 2) -----------
+# report.contract.md's "Overlay drop-in contract" documents a drop-in as
+# invoked with "cwd = the target repo" -- but before this fix report.sh
+# never actually `cd`'d before running one, so a producer ran with WHATEVER
+# cwd this process itself inherited, not $repo_root. That silently breaks
+# any producer that derives something from its own cwd (the kernel-side
+# `tokens` producer's repo-scoping, temperloop#983, is exactly such a
+# consumer) whenever `temperloop report --dir X` is invoked from somewhere
+# OTHER than X. Proven with a probe producer that reports its own resolved
+# cwd via `pwd -P`, invoked from a THIRD location that is neither the
+# fixture repo nor this test's own execution directory.
+REPO10="$WORK/repo10-cwd-contract"
+mk_repo "$REPO10"
+mkdir -p "$REPO10/.temperloop/report.d"
+cat > "$REPO10/.temperloop/baseline.jsonl" <<'JSONL'
+{"schema":1,"generated_at":"2026-06-01T00:00:00Z","lookback_days":90,"repo":{"gh_repo":"test-owner/test-repo"},"metrics":{"available":true,"reason":null,"pr_throughput":{"merged_count":1},"time_to_merge_hours":{"median":1.0,"sample_size":1},"review_latency_hours":{"median":1.0,"sample_size":1},"issue_backlog":{"open_count":1,"median_age_days":1.0}}}
+JSONL
+cat > "$REPO10/.temperloop/report.d/cwd-probe" <<'EOF'
+#!/usr/bin/env bash
+printf '{"notice": "cwd=%s"}\n' "$(pwd -P)"
+EOF
+chmod +x "$REPO10/.temperloop/report.d/cwd-probe"
+
+THIRD_LOCATION="$WORK/third-location-unrelated"
+mkdir -p "$THIRD_LOCATION"
+REAL_REPO10="$(cd "$REPO10" && pwd -P)"
+out10="$(cd "$THIRD_LOCATION" && bash "$REPORT" --dir "$REPO10")"
+echo "$out10" | grep -qF "notice: cwd=$REAL_REPO10" \
+  || fail "report.sh must cd to the target repo before running a drop-in producer (report.contract.md: cwd = the target repo) -- expected notice: cwd=$REAL_REPO10, got: $(echo "$out10" | grep 'notice: cwd=')"
+echo "OK 10: report.sh cd's to \$repo_root before invoking a drop-in producer, even when --dir differs from this process's own cwd"
+
 echo "OK: test_report.sh"

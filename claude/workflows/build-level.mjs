@@ -168,10 +168,17 @@
 // =============================================================================
 
 // `meta` MUST be a PURE literal — no vars, calls, or spreads (runtime constraint).
+// Consequence (temperloop#903): `description` can NEVER carry run context — it is
+// the same bytes on every run. So it is written for the operator as a plain
+// statement of what the run DOES; the run-IDENTIFYING half (repo, items, issues)
+// rides the one dynamic surface there is, the phase() title — see
+// levelPhaseTitle() near the entry point. Return shape, the never-merges rule and
+// the never-writes-the-plan-note rule are contract detail and live in the I/O
+// CONTRACT block above; do not re-state them here.
 export const meta = {
   name: 'build-level',
   description:
-    "Drive ONE build dependency level's items (3a-3h) through the bash machinery + worker, returning {parked, escalations}. Never merges, never writes the plan note.",
+    'Drives one dependency level of an approved /build plan: claims each item on the board, builds it in its own isolated worktree, runs the acceptance gate, opens its PR and watches CI.',
   version: '1.0.0',
 };
 
@@ -673,17 +680,43 @@ function workerPrompt(item, worktreePath, extraSection) {
     // AND spike, both route through workerPrompt) is told up front to foreground
     // the gate. Without this the worker backgrounds quality-gates.sh, yields, and
     // returns no verdict (build.md §3c/§3d must stay in lockstep with this block).
+    //
+    // temperloop#997 adds the SCOPE half of the same contract: the worker must not
+    // run the BARE, repo-wide suite in its own context at all. That run is minutes-
+    // scale, and one blocking turn that long blows the ~5-min prompt-cache TTL — the
+    // worker's whole ~213K-token context is then re-WRITTEN (weight 1.25) instead of
+    // re-READ (0.1) on the next call. The bare repo-wide run stays parent-side at
+    // 3e.5 (unchanged, still the authority — the PR #309 silent-red lesson). The two
+    // halves live in ONE section on purpose: foreground-only governs HOW the worker
+    // runs its checks, #997 governs WHICH checks it runs, and dropping either one
+    // re-opens a measured defect. build.md §3c carries both in lockstep.
     '## Quality gate & long-running work — FOREGROUND ONLY (#1219)',
-    '- Run EVERY verification command in the FOREGROUND (a blocking Bash call): the',
-    '  `quality-gates.sh` acceptance gate above all, plus any eval / build / sweep.',
+    '- Run EVERY verification command you DO run in the FOREGROUND (a blocking Bash',
+    '  call): the path-scoped gate subset below, plus any eval / build / sweep.',
     '- NEVER launch one with `run_in_background: true`, and never end your turn awaiting',
     '  a Monitor / background-task notification. A subagent has NO re-invoke-on-completion',
     '  loop: a backgrounded process is reaped when you yield and the notification never',
     '  reaches you — you hang and return NO verdict. A turn that ends while awaiting a',
     '  background task is the #1219 bug, not a valid return.',
-    '- If a single command would exceed the ~10-min Bash foreground cap, NARROW or split',
-    '  it, or return `blocked` / `failed` and let the orchestrator run it parent-side —',
-    '  never background-and-wait.',
+    '- Do NOT run the BARE, repo-wide `scripts/quality-gates.sh` (or a whole-suite `make`',
+    '  equivalent) in your own context (#997). That suite is minutes-scale, and one',
+    '  blocking turn that long blows the ~5-minute prompt-cache TTL: your ENTIRE',
+    '  accumulated context is then re-written instead of re-read on the very next call,',
+    '  a 12.5x token penalty. Run a PATH-SCOPED subset instead —',
+    '  `scripts/quality-gates.sh --list` prints every gate as `[layer] <make target>`;',
+    '  run only the few targets that cover the files you touched, keeping EACH call to',
+    '  seconds. If you cannot cheaply tell which gates apply, run none and say so.',
+    '- That subset is FAST LOCAL FEEDBACK ONLY — it is NOT the acceptance authority.',
+    '  The orchestrator runs the bare, repo-wide suite parent-side (build.md §3e.5) and',
+    '  THAT run is the authority; a red there comes back to you as a re-spawn. So when',
+    '  an acceptance criterion names the bare repo-wide suite, do NOT run it: report it',
+    '  `passed: true` only if your targeted subset is green, and state plainly in its',
+    '  `evidence` that the bare repo-wide run was DEFERRED to the parent-side 3e.5 gate.',
+    '  Never report `passed: false` for a merely DEFERRED criterion — that reads as',
+    '  blocked and stalls the whole level on a check you were never meant to run.',
+    '- If a single command would exceed the ~10-min Bash foreground cap — or the tighter',
+    '  ~5-min cache-TTL budget above — NARROW or split it, or return `blocked` / `failed`',
+    '  and let the orchestrator run it parent-side — never background-and-wait.',
     '',
     extraSection ?? '',
     '',
@@ -704,13 +737,19 @@ function workerPrompt(item, worktreePath, extraSection) {
 // identically). Names the failure explicitly; the workerPrompt foreground block
 // above is prevention, this is the backstop cure. build.md §3d must stay in
 // lockstep. Kept as its own section so the test can assert its presence.
+// Carries the #997 scope half too: the cure must not re-issue the very directive
+// (a bare repo-wide gate run) the prevention block just removed.
 const FOREGROUND_CURE = [
   '## Re-spawn cure (#1219) — your previous turn returned NO verdict',
   'Your previous attempt ended without a parseable verdict. The usual cause is',
   'backgrounding the quality gate (`run_in_background: true`) or awaiting a Monitor',
-  'notification a subagent never receives. Run EVERY command — the `quality-gates.sh`',
-  'gate above all — in the FOREGROUND, never `run_in_background` / Monitor, and END',
-  'this turn with exactly the fenced verdict JSON and nothing after it.',
+  'notification a subagent never receives. Run EVERY command you DO run — the',
+  'path-scoped gate subset above all — in the FOREGROUND, never `run_in_background` /',
+  'Monitor, and END this turn with exactly the fenced verdict JSON and nothing after',
+  'it. Do NOT run the bare, repo-wide `scripts/quality-gates.sh` here either (#997) —',
+  'that run is the orchestrator\'s, parent-side at build.md 3e.5, and it is the',
+  'acceptance authority; a minutes-long blocking turn is what blows the prompt-cache',
+  'TTL. A stall is never cured by running MORE gate.',
 ].join('\n');
 
 // Compose the retry `extraSection` = the original section (if any) + the cure.
@@ -1593,11 +1632,56 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 }
 
 // =============================================================================
+// levelPhaseTitle — the run-identifying progress-row heading (temperloop#903).
+// =============================================================================
+// The Workflow progress UI renders one row per workflow (labelled from the PURE
+// LITERAL `meta.description`, which by runtime constraint is byte-identical on
+// every run) plus a group heading per phase(). phase() is therefore the ONLY
+// surface that can carry run context — and it used to read `build level — N
+// item(s)`, which identifies nothing: not the repo, not the items, not the
+// issues. Two concurrent spine runs (routine: one /fix session drives several
+// back to back) rendered indistinguishable rows.
+//
+// The heading now names, from context already in scope at the call site:
+//   <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
+// e.g.  build level — Towheads/foundation · 1 item · spine-progress-row-903 (#903)
+//
+// BOUNDED BY CONSTRUCTION: a level can hold many items, so at most
+// PHASE_TITLE_MAX_ITEMS slugs are named and the rest collapse to `+K more` — a
+// 20-item level can never emit a 20-slug heading that swamps the progress row.
+// Every field is optional-safe (a missing ownerRepo / ghIssue simply drops its
+// segment) because this is a cosmetic display string: it must never be the thing
+// that throws and takes a level down.
+const PHASE_TITLE_MAX_ITEMS = 3;
+
+// itemTag — `<slug> (#<issue>)`, or the bare slug when the item has no issue
+// (kind:spike items and board-OFF runs legitimately carry no ghIssue).
+function itemTag(item) {
+  const slug = (item && item.slug) || '(unnamed)';
+  const issue = item && item.ghIssue;
+  return issue ? `${slug} (#${issue})` : slug;
+}
+
+function levelPhaseTitle(list) {
+  const items = Array.isArray(list) ? list : [];
+  const parts = [];
+  if (typeof input.ownerRepo === 'string' && input.ownerRepo.length > 0) {
+    parts.push(input.ownerRepo);
+  }
+  parts.push(`${items.length} item${items.length === 1 ? '' : 's'}`);
+  const named = items.slice(0, PHASE_TITLE_MAX_ITEMS).map(itemTag);
+  if (named.length > 0) {
+    const rest = items.length - named.length;
+    parts.push(named.join(', ') + (rest > 0 ? ` +${rest} more` : ''));
+  }
+  return `build level — ${parts.join(' · ')}`;
+}
+
+// =============================================================================
 // Entry point — drive the level, return {parked, escalations}.
 // =============================================================================
 async function buildLevel() {
   const items = input.items ?? [];
-  phase(`build level — ${items.length} item(s)`);
   log(`repoRoot=${input.repoRoot} board=${input.board ?? 'OFF'} plan=${input.planLink}`);
 
   // onlySlugs — optional continuation filter (escalation-resume loop).
@@ -1615,6 +1699,13 @@ async function buildLevel() {
   if (slugFilter) {
     log(`continuation mode — onlySlugs=[${[...slugFilter].join(',')}] active=${activeItems.length}/${items.length}`);
   }
+
+  // Name the run in the progress row (temperloop#903). Set AFTER the onlySlugs
+  // filter on purpose: on a continuation the heading must name the slugs actually
+  // being re-driven, not the level's full membership (whose siblings are already
+  // parked and untouched). Nothing above this point awaits, so the row is never
+  // observed unlabelled.
+  phase(levelPhaseTitle(activeItems));
 
   // Drive every active item through 3a–3h. The items in one level are
   // independent by construction (no merge edge between them), so we fan them

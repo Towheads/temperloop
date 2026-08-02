@@ -68,7 +68,21 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/tokens-producer-test-XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
-control_out="$("$IMPL")" || fail "control run of the kernel-side implementation failed"
+# Pinned, non-existent transcript root (temperloop#983): this suite tests
+# the SHIM's RESOLUTION mechanics, not corpus scoping (that's
+# workflows/scripts/tests/test_pipeline_spend_report.sh's job, see this
+# file's own header). Since #983 the kernel-side implementation scopes its
+# transcript --root to the invoking cwd's own git checkout whenever
+# $SPEND_TRANSCRIPT_ROOT is NOT already set -- and several fixtures below
+# deliberately vary cwd (a git checkout here, a plain non-git $ORPHAN dir
+# there) purely to exercise shim resolution, which would otherwise make
+# control vs. shim output diverge on corpus scope alone, unrelated to what
+# this suite checks. Pinning $SPEND_TRANSCRIPT_ROOT on every invocation
+# below holds corpus scope constant (and empty) so this suite's only
+# variable is shim resolution, exactly as documented.
+SPEND_TRANSCRIPT_ROOT="$WORK/no-transcripts-983"
+
+control_out="$(SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" "$IMPL")" || fail "control run of the kernel-side implementation failed"
 echo "$control_out" | jq -e 'type == "object" and (.tokens_spent | type) == "number"' >/dev/null \
   || fail "control run's stdout did not parse as {tokens_spent: <number>}"
 
@@ -95,7 +109,7 @@ ln -s "$FAKEKERNEL2/bin/temperloop" "$FAKEBIN2/temperloop"
 # `temperloop` anywhere on PATH. This is the exact scenario an earlier cut
 # of this shim regressed on (no self-checkout resolver at all -> permanent
 # skip in this repo on any host with no installed CLI).
-out1="$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SHIM")" \
+out1="$(env -i HOME="$HOME" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" PATH="/usr/bin:/bin" "$SHIM")" \
   || fail "1: shim invocation (self-checkout) failed"
 [ "$out1" = "$control_out" ] || fail "1: shim in place (self-checkout, no \$TEMPERLOOP_HOME, no PATH temperloop) did not match the control output.
   control: $control_out
@@ -104,7 +118,7 @@ echo "PASS: 1 SELF-CHECKOUT — shim in place resolves with no \$TEMPERLOOP_HOME
 
 # --- 2: resolution ORDER 2>3 — self-checkout wins over a different
 # PATH-discoverable temperloop. ----------------------------------------------
-out2="$(env -i HOME="$HOME" PATH="$FAKEBIN2:/usr/bin:/bin" "$SHIM")" \
+out2="$(env -i HOME="$HOME" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" PATH="$FAKEBIN2:/usr/bin:/bin" "$SHIM")" \
   || fail "2: shim invocation failed"
 [ "$out2" = "$control_out" ] || fail "2: self-checkout should win over a different PATH-found kernel, but output was: $out2"
 echo "$out2" | grep -q 424242 && fail "2: self-checkout should have won over the PATH-found fake-kernel-2, but fake-kernel-2's output leaked through"
@@ -119,7 +133,7 @@ chmod +x "$ORPHAN/.temperloop/report.d/tokens"
 [ -d "$ORPHAN/workflows" ] && fail "test setup bug: orphan repo must have no workflows/ dir"
 
 # --- 3: copy in a workflows/-less repo, resolved via $TEMPERLOOP_HOME ------
-out3="$(cd "$ORPHAN" && env -u TEMPERLOOP_BIN_DIR TEMPERLOOP_HOME="$REPO_ROOT" PATH="/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
+out3="$(cd "$ORPHAN" && env -u TEMPERLOOP_BIN_DIR TEMPERLOOP_HOME="$REPO_ROOT" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" PATH="/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
   || fail "3: shim invocation failed"
 [ "$out3" = "$control_out" ] || fail "3: shim (via \$TEMPERLOOP_HOME) output did not match the kernel checkout's own control output.
   control: $control_out
@@ -131,7 +145,7 @@ FAKEBIN="$WORK/fakebin"
 mkdir -p "$FAKEBIN"
 ln -s "$REAL_TEMPERLOOP_BIN" "$FAKEBIN/temperloop"
 
-out4="$(cd "$ORPHAN" && env -i HOME="$HOME" PATH="$FAKEBIN:/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
+out4="$(cd "$ORPHAN" && env -i HOME="$HOME" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" PATH="$FAKEBIN:/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
   || fail "4: shim invocation (PATH fallback) failed"
 [ "$out4" = "$control_out" ] || fail "4: shim (via 'command -v temperloop' PATH fallback) output did not match the control output.
   control: $control_out
@@ -140,7 +154,7 @@ echo "PASS: 4 shim with no \$TEMPERLOOP_HOME resolves via 'command -v temperloop
 
 # --- 5: resolution ORDER 1>3 — $TEMPERLOOP_HOME (real checkout) wins over a
 # DIFFERENT PATH-found kernel. ------------------------------------------------
-out5="$(cd "$ORPHAN" && env -i HOME="$HOME" TEMPERLOOP_HOME="$REPO_ROOT" PATH="$FAKEBIN2:/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
+out5="$(cd "$ORPHAN" && env -i HOME="$HOME" TEMPERLOOP_HOME="$REPO_ROOT" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" PATH="$FAKEBIN2:/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
   || fail "5: shim invocation failed"
 [ "$out5" = "$control_out" ] || fail "5: with BOTH \$TEMPERLOOP_HOME (real) and a different PATH-found kernel set, \$TEMPERLOOP_HOME should win, but output was: $out5"
 echo "$out5" | grep -q 424242 && fail "5: \$TEMPERLOOP_HOME should have won over the PATH-found fake-kernel-2, but fake-kernel-2's output leaked through"
@@ -203,7 +217,7 @@ echo "PASS: 11a shim's exec line forwards \"\$@\""
 # Dynamic: an extra CLI arg (the contract is "invoked with no arguments"
 # today, so this just proves passthrough doesn't break resolution -- the
 # kernel-side implementation takes no flags and silently ignores it).
-out11="$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SHIM" --an-arg-nobody-asked-for)" \
+out11="$(env -i HOME="$HOME" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" PATH="/usr/bin:/bin" "$SHIM" --an-arg-nobody-asked-for)" \
   || fail "11: shim invocation with an extra arg failed"
 [ "$out11" = "$control_out" ] || fail "11: shim invoked with an extra arg should still match the control output; got: $out11"
 echo "PASS: 11b shim invoked with an extra arg still resolves and matches the control output"
