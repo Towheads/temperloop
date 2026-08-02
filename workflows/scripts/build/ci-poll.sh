@@ -86,6 +86,16 @@
 # payload (not just `.outcome`) can tell "gh/API never came back" apart from
 # a hard argument/config error. The closed outcome set itself (CI_GREEN /
 # CI_FAILED / TIMEOUT / ERROR) is unchanged — no new outcome was added.
+#
+# Classify-before-retry (temperloop#976): gh_retry now inspects the failure
+# BEFORE spending an attempt on it. A failure matching
+# CI_POLL_API_DETERMINISTIC_PATTERN (a permanent HTTP 4xx / auth / argument
+# error — NOT HTTP 429, which is transient and keeps its retries) is
+# DETERMINISTIC: re-issuing the identical request cannot change the answer, so
+# it dies immediately with `deterministic_failure:true` and burns neither
+# attempts nor backoff seconds. Only unclassified (presumed-transient) failures
+# reach the bounded retry above. Still ERROR — the closed outcome set is
+# unchanged; the two boolean fields distinguish the three ERROR shapes.
 set -euo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
@@ -109,6 +119,21 @@ die_transient_exhausted() {
   exit 1
 }
 
+# die_deterministic() — same ERROR shape as die(), plus a
+# deterministic_failure:true field (temperloop#976). Emitted when gh_retry
+# CLASSIFIES a failure as deterministic (see below) and therefore spends NO
+# retries on it. Distinct from transient_retries_exhausted:true, which means the
+# opposite — "we retried to the cap and gh/API never came back". A caller
+# inspecting the payload can now tell the three ERROR shapes apart: a hard
+# argument/config error (neither field), a permanent remote error we refused to
+# re-issue (this one), and an exhausted transient (that one). The closed
+# `.outcome` enum itself is unchanged.
+die_deterministic() {
+  jq -cn --arg error "$1" \
+    '{outcome:"ERROR", error:$error, deterministic_failure:true}' >&3
+  exit 1
+}
+
 # gh_retry <description> <gh-argv...> — runs the given `gh` invocation,
 # capturing combined stdout+stderr. On success, prints the captured output
 # (via stdout) and returns 0 — the normal, silent, common-case path. On
@@ -120,8 +145,21 @@ die_transient_exhausted() {
 # GATE_MAX_ATTEMPTS). Exhausting every attempt calls die_transient_exhausted
 # (never returns). This is what absorbs a transient non-JSON/HTTP-5xx `gh`
 # hiccup (temperloop#386) instead of the caller escalating on the first one.
+#
+# CLASSIFY BEFORE RETRYING (temperloop#976). Not every `gh` failure is a
+# hiccup: a 404 on a repo that does not exist, a 401/403 auth failure, or an
+# `unknown flag` argument error is DETERMINISTIC — re-issuing the identical
+# request cannot change the answer, so every retry (and every backoff second) is
+# pure burn before an ERROR the caller was always going to get. A failure whose
+# combined output matches $CI_POLL_API_DETERMINISTIC_PATTERN therefore dies
+# immediately via die_deterministic, with NO retry and NO sleep. The default
+# pattern deliberately EXCLUDES HTTP 429 (rate limiting): that IS transient and
+# must keep its bounded, backed-off retries. Set the pattern EMPTY to restore the
+# pre-#976 "retry every failure regardless of shape" behavior.
 CI_POLL_API_MAX_ATTEMPTS="${CI_POLL_API_MAX_ATTEMPTS:-5}"
 CI_POLL_API_RETRY_BACKOFF="${CI_POLL_API_RETRY_BACKOFF:-2}"
+# `-` (unset-only), NOT `:-`: an explicitly EMPTY value must survive as "off".
+CI_POLL_API_DETERMINISTIC_PATTERN="${CI_POLL_API_DETERMINISTIC_PATTERN-HTTP 40[0-9]|HTTP 41[0-9]|Not Found|Could not resolve to a|Bad credentials|Resource not accessible|unknown flag}"
 gh_retry() {
   local desc="$1"; shift
   local attempt=1 out
@@ -129,6 +167,10 @@ gh_retry() {
     if out="$("$@" 2>&1)"; then
       printf '%s' "$out"
       return 0
+    fi
+    if [ -n "$CI_POLL_API_DETERMINISTIC_PATTERN" ] \
+      && printf '%s\n' "$out" | grep -Eq -- "$CI_POLL_API_DETERMINISTIC_PATTERN"; then
+      die_deterministic "$desc failed DETERMINISTICALLY on attempt $attempt — not retried (temperloop#976): $out"
     fi
     if [ "$attempt" -ge "$CI_POLL_API_MAX_ATTEMPTS" ]; then
       die_transient_exhausted "$desc failed after $CI_POLL_API_MAX_ATTEMPTS attempts (temperloop#386): $out"

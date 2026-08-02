@@ -90,6 +90,23 @@ be mistaken for landed work — closing a tracking issue or moving a board
 card only happens after this confirmation, never on the strength of the
 merge call alone.
 
+**Classify before retrying.** The CI poll (`ci-poll.sh`) absorbs a transient
+`gh`/API hiccup — an HTML error page, a 5xx — by re-issuing the same call up to
+`CI_POLL_API_MAX_ATTEMPTS` times with a graduated `CI_POLL_API_RETRY_BACKOFF`
+between attempts, instead of surfacing a blip as an immediate `ERROR` the
+orchestrator would escalate like a genuine CI failure. But it inspects the
+failure *first*: one matching `CI_POLL_API_DETERMINISTIC_PATTERN` — a permanent
+HTTP 4xx, an auth failure, a bad argument — cannot change on a re-issue, so it
+dies at once carrying `deterministic_failure: true` and spends neither attempts
+nor backoff seconds. The default pattern deliberately excludes HTTP 429, which
+*is* transient and keeps its retries. The three `ERROR` shapes are therefore
+distinguishable by field: a hard argument error (neither flag), a permanent
+remote error refused a retry (`deterministic_failure`), and an outage that
+outlasted every attempt (`transient_retries_exhausted`). The mergeability read's
+single re-poll needs no such classifier — the only states it re-polls
+(`UNKNOWN`, a lone `BEHIND`) are by definition not-yet-computed server-side
+values, and every deterministic answer is returned on the first read.
+
 ## Integration
 
 `/build`'s batch merge gate (`claude/commands/build.md`, the level-boundary

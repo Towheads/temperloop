@@ -151,6 +151,63 @@ fi
 # channel. Also the test-injection seam decision-notify.sh's own test drives.
 : "${BUILD_DECISION_NOTIFY_CMD:=}"        # optional scriptable operator-notify channel
 
+# ── Retry caps & transient-vs-deterministic classification (temperloop#976) ──
+# The operator-facing home for every RETRY bound in /build's gate + CI-poll
+# machinery. Repeating a DETERMINISTICALLY failing operation cannot change its
+# outcome — it is pure burn (live evidence: the 3e.5 acceptance gate re-ran a
+# deterministically-failing shellcheck three times in the epic #1443 run). Each
+# loop below therefore carries three knobs: a hard attempt CAP, a graduated
+# inter-attempt BACKOFF (so a legitimately transient failure gets real time to
+# clear — Towheads/foundation#1297: retries fired back-to-back within a fraction
+# of a second defeat a slow-clearing transient), and a DETERMINISTIC-signature
+# pattern that fails fast with no retry at all.
+#
+# DUPLICATE LAYER-6 FALLBACKS — deliberate. `scripts/quality-gates.sh` and
+# `workflows/scripts/build/ci-poll.sh` each keep a BYTE-IDENTICAL `:-` fallback
+# for their own settings (the six-layer ladder's layer 6, § header above), because
+# both must run standalone in a consuming repo that never sources this file — and
+# because /build's 3e.5 acceptance gate deliberately SCRUBS this file's settings
+# (build-config-settings.sh) so the suite runs hermetically at tracked defaults,
+# exactly as CI's `checks` job does. Consequence to know: a value set HERE governs
+# a hand-run or CI gate invocation, while the 3e.5 gate run always uses the
+# script's own identical fallback. Keep the two literals in sync — the setting
+# registry pins this file's copy.
+
+# Per-gate retry cap in quality-gates.sh (temperloop#403): absorbs transient
+# CI-runner flakiness. Set to 1 to disable retries entirely (e.g. when hunting a
+# real intermittent bug).
+: "${GATE_MAX_ATTEMPTS:=3}"
+
+# Graduated per-attempt sleep (backoff*attempt seconds) between quality-gates.sh
+# retry attempts (Towheads/foundation#1297). 0 = retry immediately (the pre-#1297
+# behavior); the default gives a slow-clearing transient real time to clear.
+: "${GATE_RETRY_BACKOFF:=5}"
+
+# ERE matched against a FAILED gate attempt's captured output. A match classifies
+# the failure DETERMINISTIC — the gate is NOT retried and fails straight to
+# escalation. The default matches a shellcheck finding code (the #1443 case);
+# widen it for other static-lint signatures, or set it EMPTY to disable
+# signature-based classification (the byte-identical-output short-circuit still
+# applies, so a deterministic failure is still capped at two attempts).
+: "${GATE_DETERMINISTIC_PATTERN:=SC[0-9][0-9][0-9][0-9]}"
+
+# Bounded retry count for ONE `gh api` call in ci-poll.sh — the head-SHA resolve
+# or a check-runs query (temperloop#386). Absorbs a transient non-JSON/HTTP-5xx
+# hiccup instead of false-escalating it as a CI failure. Set to 1 to disable.
+: "${CI_POLL_API_MAX_ATTEMPTS:=5}"
+
+# Graduated per-attempt sleep (backoff*attempt seconds) between ci-poll.sh
+# gh_retry attempts (temperloop#386).
+: "${CI_POLL_API_RETRY_BACKOFF:=2}"
+
+# ERE matched against a failed `gh` invocation's combined output in ci-poll.sh.
+# A match classifies the failure DETERMINISTIC — no retry, immediate legible
+# ERROR carrying `deterministic_failure:true` (temperloop#976). The default names
+# permanent HTTP 4xx / auth / argument errors and deliberately EXCLUDES HTTP 429
+# (rate limiting), which IS transient and must keep its backed-off retries. Set
+# EMPTY to retry every failure regardless of shape (the pre-#976 behavior).
+: "${CI_POLL_API_DETERMINISTIC_PATTERN:=HTTP 40[0-9]|HTTP 41[0-9]|Not Found|Could not resolve to a|Bad credentials|Resource not accessible|unknown flag}"
+
 # Autonomous pipeline drive-concurrency governor (temperloop#162, split out from the
 # retired human "WIP cap" governance rule): at most this many concurrent drives the
 # autonomous pipeline lane bounds per tick. SOURCE OF TRUTH for pipeline-tick.sh's

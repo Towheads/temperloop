@@ -36,6 +36,49 @@ reads that marker; a stranger greps for it before pulling.
   heading plus historical body prose), so a `replace_all` edit rewrites history.
   `kernel-repo-layout.md` § Release-tag convention gains a pointer to the new
   section. Documentation only — no behavior, no gate, no contract surface moves.
+- `GATE_RETRY_BACKOFF`, `GATE_DETERMINISTIC_PATTERN` and
+  `CI_POLL_API_DETERMINISTIC_PATTERN` settings, plus
+  `workflows/scripts/build/build.config.sh` declarations for the existing
+  `GATE_MAX_ATTEMPTS` / `CI_POLL_API_MAX_ATTEMPTS` /
+  `CI_POLL_API_RETRY_BACKOFF` caps, so every retry bound in the gate and
+  CI-poll machinery has one operator-facing home (temperloop#976). The
+  consuming scripts keep byte-identical layer-6 fallbacks, so a repo that never
+  sources `build.config.sh` behaves exactly as before.
+- `scripts/tests/test_quality_gates_retry.sh`, registered in the kernel gate
+  set: covers the cap, both classifiers, the backoff actually spacing attempts,
+  and the wiring between `quality-gates.sh` and the new lib.
+
+### Changed
+
+- **Retry loops in `/build`'s gate and CI-poll machinery now classify before
+  they retry, and back off between the retries that remain** (temperloop#976,
+  with `Towheads/foundation#1297`). Re-running a *deterministically* failing
+  operation cannot change its outcome; the live case was `/build`'s acceptance
+  gate re-running a failing `shellcheck` three times before an operator
+  intervened. Two loops changed:
+  - `scripts/quality-gates.sh` — the per-gate retry policy moved into a new
+    sourced lib, `workflows/scripts/lib/gate-retry.sh`, which now (a) fails a
+    gate fast, with **no** retry, when its output matches
+    `GATE_DETERMINISTIC_PATTERN` (a static-lint finding signature); (b)
+    short-circuits any gate whose failure output is **byte-identical** to its
+    previous failed attempt, capping every deterministic gate at two attempts
+    regardless of what it prints; and (c) spaces the retries that *do* fire by
+    a graduated `GATE_RETRY_BACKOFF`-per-attempt sleep, instead of firing the
+    whole budget back-to-back too fast to outlast any real transient. Every
+    short-circuit is logged per-attempt and summarised beside the verdict.
+  - `workflows/scripts/build/ci-poll.sh` — `gh_retry()` now inspects a failure
+    before spending an attempt on it. One matching
+    `CI_POLL_API_DETERMINISTIC_PATTERN` (a permanent HTTP 4xx / auth / argument
+    error; HTTP 429 is deliberately excluded, being transient) dies immediately
+    with a new `deterministic_failure: true` field rather than retrying. The
+    closed `.outcome` set is unchanged.
+
+  No default's value changed, and `GATE_MAX_ATTEMPTS=1` still disables gate
+  retries entirely. `claude/workflows/build-level.mjs` gained a documented
+  retry-loop inventory beside its budgets — each loop's cap plus either its
+  classification step or a stated reason none applies — and
+  `workflows/scripts/build/gate.sh` records the same for its single
+  mergeability re-poll.
 
 - **A `checks` gate now requires a `## [Unreleased]` entry from any change
   that touches contract surface (temperloop#960).**

@@ -834,6 +834,15 @@ fi
 # Hermetic: throwaway git repos with a bare origin, no network. Same direct-`bash`
 # form as the update-kernel gate above (kernel Makefile is generator-owned).
 KERNEL_GATES+=("bash scripts/tests/test_quality_gates_freshness.sh")
+# Per-gate retry POLICY (temperloop#403 cap, temperloop#976 classification,
+# Towheads/foundation#1297 backoff): the loop this very script runs its gates
+# through — workflows/scripts/lib/gate-retry.sh. Proves a deterministically-
+# failing gate (a static-lint signature, or output byte-identical to the previous
+# attempt) is NOT re-run, that a genuine flake still is, and that the retries
+# which do fire are actually SPACED. Hermetic: throwaway scripted "gates" under a
+# tmpdir, never this file's real gate list. Same direct-`bash` form as the
+# freshness gate above (kernel Makefile is generator-owned).
+KERNEL_GATES+=("bash scripts/tests/test_quality_gates_retry.sh")
 
 # The overlay gate set — empty by default; populated only by drop-ins.
 OVERLAY_GATES=()
@@ -912,37 +921,50 @@ fi
 # Run all gates (don't fail-fast) so one run surfaces every failure, then exit
 # non-zero if any failed — friendlier locally than CI's step-by-step halt while
 # still giving CI a single non-zero exit to gate on.
-# Bounded per-gate retry to absorb transient macOS-runner flakiness
-# (temperloop#403): the GitHub macos-latest runner intermittently fails
-# unrelated hermetic gates (fork/exec/IO under runner load) that pass locally
-# and on ubuntu — e.g. test_eject.sh and test_validate_design_brief.sh, which
-# share no code. A real breakage fails all attempts and still gates; a flake
-# clears on a retry. Retries are LOGGED (per-attempt + an end-of-run summary)
-# so a flake stays visible rather than silently masked. Set GATE_MAX_ATTEMPTS=1
-# to disable (e.g. when hunting a real intermittent bug).
-GATE_MAX_ATTEMPTS="${GATE_MAX_ATTEMPTS:-3}"
+# Bounded, CLASSIFIED, BACKED-OFF per-gate retry. The policy itself lives in
+# workflows/scripts/lib/gate-retry.sh (sourced below, same seam as
+# checkout-freshness.sh above) so it can be exercised by a test without running
+# this file's ~100-target gate list — see scripts/tests/test_quality_gates_retry.sh.
+# In one line each:
+#   * CAP        $GATE_MAX_ATTEMPTS attempts, absorbing transient macOS-runner
+#                flakiness (temperloop#403 — the GitHub macos-latest runner
+#                intermittently fails unrelated hermetic gates under load).
+#   * CLASSIFY   a DETERMINISTIC failure (a static-lint signature, or output
+#                byte-identical to the previous failed attempt) is NOT retried at
+#                all — re-running it cannot change the outcome (temperloop#976;
+#                the epic #1443 gate re-ran a failing shellcheck three times).
+#   * BACK OFF   the retries that ARE legitimate are spaced by
+#                $GATE_RETRY_BACKOFF * attempt seconds, instead of firing
+#                back-to-back too fast to outlast anything
+#                (Towheads/foundation#1297).
+# Every attempt, every retry and every deterministic short-circuit is LOGGED
+# (per-attempt on stderr + an end-of-run summary below), so neither a flake nor a
+# saved retry is silently masked.
+# shellcheck source=workflows/scripts/lib/gate-retry.sh
+source "$REPO_ROOT/workflows/scripts/lib/gate-retry.sh"
+gate_retry_init
+
 failures=()
 retried=()
+deterministic=()
 for gate in "${GATES[@]}"; do
   printf '\n=== %s ===\n' "$gate"
-  # Each GATES entry is a full command line; split it into argv (no eval).
-  read -ra cmd <<< "$gate"
-  attempt=1
-  while true; do
-    if "${cmd[@]}"; then
-      if (( attempt > 1 )); then
-        retried+=("$gate (green on attempt $attempt/$GATE_MAX_ATTEMPTS)")
+  gate_run_with_retry "$gate" || true
+  case "$GATE_RUN_STATUS" in
+    pass)
+      # A note is set only when the pass took more than one attempt.
+      if [[ -n "$GATE_RUN_NOTE" ]]; then
+        retried+=("$gate ($GATE_RUN_NOTE)")
       fi
-      break
-    fi
-    if (( attempt >= GATE_MAX_ATTEMPTS )); then
+      ;;
+    deterministic)
       failures+=("$gate")
-      break
-    fi
-    printf '\n::: gate failed on attempt %d/%d — retrying (transient-flake tolerance, temperloop#403): %s\n' \
-      "$attempt" "$GATE_MAX_ATTEMPTS" "$gate" >&2
-    attempt=$(( attempt + 1 ))
-  done
+      deterministic+=("$gate ($GATE_RUN_NOTE)")
+      ;;
+    *)
+      failures+=("$gate")
+      ;;
+  esac
 done
 
 echo
@@ -957,6 +979,15 @@ fi
 if (( ${#retried[@]} > 0 )); then
   printf 'NOTE: %d gate(s) passed only after a retry (transient flake — see temperloop#403):\n' "${#retried[@]}"
   printf '  - %s\n' "${retried[@]}"
+  echo
+fi
+# Deterministic short-circuits are surfaced next to the verdict too
+# (temperloop#976): a gate that failed the same way twice, or matched a
+# static-lint signature, spent NO further attempts on an outcome that could not
+# change — say so, so the saved retries are visible rather than silent.
+if (( ${#deterministic[@]} > 0 )); then
+  printf 'NOTE: %d gate failure(s) classified DETERMINISTIC and NOT retried (temperloop#976):\n' "${#deterministic[@]}"
+  printf '  - %s\n' "${deterministic[@]}"
   echo
 fi
 if (( ${#failures[@]} > 0 )); then

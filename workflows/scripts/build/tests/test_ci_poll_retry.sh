@@ -25,6 +25,13 @@
 #     infinite spin), exit 1
 #   - persistent garbage on the head-SHA (pulls) resolve → same legible
 #     ERROR/exhausted contract, and the check-runs endpoint is never reached
+#   - CLASSIFY-BEFORE-RETRY (temperloop#976): a DETERMINISTIC gh failure (a
+#     permanent HTTP 4xx / auth / argument error, which re-issuing cannot
+#     change) is classified and NOT retried — exactly one attempt, an ERROR
+#     carrying `deterministic_failure:true` and NOT the exhausted-transient
+#     field, and no retry notices logged
+#   - the classifier is a real seam: an EMPTY CI_POLL_API_DETERMINISTIC_PATTERN
+#     restores the pre-#976 "retry everything" behavior on that same failure
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ci-poll.sh"
@@ -46,6 +53,16 @@ cat > "$TMP/bin/gh" <<'STUB'
 set -euo pipefail
 STATE="${GH_STUB_STATE:?gh stub needs GH_STUB_STATE}"
 echo "$*" >> "$STATE/calls.log"
+
+# Deterministic-failure mode (temperloop#976): emit a PERMANENT gh error
+# (an HTTP 4xx / auth / argument failure) on stderr and exit non-zero, exactly
+# as real `gh` does — bypassing the jq path entirely, because a deterministic
+# error's TEXT is the whole point of the case (it is what gh_retry classifies
+# on) and a jq parse error would replace it with jq's own message.
+if [ -f "$STATE/deterministic" ]; then
+  cat "$STATE/deterministic" >&2
+  exit 1
+fi
 
 jq_expr=""
 rest=()
@@ -152,3 +169,38 @@ esac
 grep -q 'check-runs' "$TMP/state/calls.log" \
   && fail "check-runs endpoint should never be reached when head-SHA resolve is exhausted"
 echo "PASS: persistent non-JSON head-SHA (pulls) resolve exhausts CI_POLL_API_MAX_ATTEMPTS(3), legible ERROR + transient_retries_exhausted:true, check-runs never reached"
+
+# --- DETERMINISTIC failure → classified, NOT retried (temperloop#976) --------
+# A permanent gh error (HTTP 404 / auth / bad argument) cannot change on a
+# re-issue, so gh_retry must spend ZERO retries and ZERO backoff seconds on it,
+# dying immediately with `deterministic_failure:true` — the opposite field from
+# the exhausted-transient case above, so a caller can tell the two apart.
+reset_state
+printf 'gh: Not Found (HTTP 404)\n' > "$TMP/state/deterministic"
+rc=0; out="$(bash "$SCRIPT" example-org/example-repo 42 2>"$TMP/stderr.4.log")" || rc=$?
+[ "$rc" -eq 1 ] || fail "deterministic gh failure must exit 1 like any other ERROR (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "deterministic gh failure not ERROR (got: $out)"
+[ "$(jq -r .deterministic_failure <<<"$out")" = "true" ] \
+  || fail "expected deterministic_failure:true (got: $out)"
+[ "$(jq -r '.transient_retries_exhausted // "absent"' <<<"$out")" = "absent" ] \
+  || fail "a deterministic failure must NOT claim exhausted transient retries (got: $out)"
+[ "$(grep -c 'api repos/example-org/example-repo/pulls/42' "$TMP/state/calls.log")" -eq 1 ] \
+  || fail "expected EXACTLY 1 attempt on a deterministic failure (no retries), got $(grep -c 'api repos/example-org/example-repo/pulls/42' "$TMP/state/calls.log")"
+[ "$(grep -c 'retrying (transient gh/API hiccup' "$TMP/stderr.4.log")" -eq 0 ] \
+  || fail "a deterministic failure must log no retry notices"
+echo "PASS: deterministic gh failure (HTTP 404) classified and NOT retried — 1 attempt, deterministic_failure:true, exit 1"
+
+# --- an EMPTY pattern restores the pre-#976 retry-everything behavior ---------
+# Proves the classifier is a real, disable-able seam rather than a hardcoded
+# rule: with no pattern, the same permanent 404 falls through to the bounded
+# transient retry and exhausts it.
+reset_state
+printf 'gh: Not Found (HTTP 404)\n' > "$TMP/state/deterministic"
+rc=0
+out="$(CI_POLL_API_DETERMINISTIC_PATTERN= bash "$SCRIPT" example-org/example-repo 42 2>/dev/null)" || rc=$?
+[ "$rc" -eq 1 ] || fail "empty-pattern run must still exit 1 (got rc=$rc)"
+[ "$(jq -r .transient_retries_exhausted <<<"$out")" = "true" ] \
+  || fail "with the pattern empty the 404 should exhaust the transient retries (got: $out)"
+[ "$(grep -c 'api repos/example-org/example-repo/pulls/42' "$TMP/state/calls.log")" -eq 3 ] \
+  || fail "empty pattern should spend all CI_POLL_API_MAX_ATTEMPTS(3), got $(grep -c 'api repos/example-org/example-repo/pulls/42' "$TMP/state/calls.log")"
+echo "PASS: empty CI_POLL_API_DETERMINISTIC_PATTERN restores the pre-#976 retry-everything behavior"
