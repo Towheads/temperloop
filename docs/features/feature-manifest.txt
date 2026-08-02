@@ -48,6 +48,7 @@ none docs/who-its-for.md
 none docs/cost-and-autonomy.md
 none docs/self-learning-loop.md
 none docs/token-spend.md
+none docs/model-fanout-inventory.md
 none docs/cognitive-load.md
 # The ≤1-page postable pitch (temperloop#432): a stranger-shareable summary
 # derived from docs/who-its-for.md + README.md § 1, same "none" treatment as
