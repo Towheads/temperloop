@@ -258,6 +258,11 @@ command-declared workflows/scripts/lib/tests/test_command_declared.sh
 
 # ── quality-gates — the static gate set, lints, kernel scrubs, setting registry ─
 quality-gates .github/workflows/ci.yml
+# The nightly macOS leg of the SAME gate script (temperloop#963): ci.yml
+# gates merges on ubuntu, nightly-macos.yml re-runs scripts/quality-gates.sh
+# on macos-latest against main. Same feature, second cadence — not its own
+# slug.
+quality-gates .github/workflows/nightly-macos.yml
 quality-gates scripts/quality-gates.sh
 quality-gates workflows/scripts/lib/checkout-freshness.sh
 quality-gates scripts/tests/test_quality_gates_freshness.sh

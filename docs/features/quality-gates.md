@@ -57,7 +57,15 @@ exactly what a run will execute before it executes it.
 ## Integration
 
 The CI workflow's `checks` job (`.github/workflows/ci.yml`) runs one step:
-`bash scripts/quality-gates.sh`. A contributor's local pre-merge check runs
+`bash scripts/quality-gates.sh`, on `ubuntu-latest` only — that is the
+required status check merges gate on. macOS coverage runs the *identical*
+step on a nightly schedule against the default branch instead
+(`.github/workflows/nightly-macos.yml`, plus a manual `workflow_dispatch`
+trigger), a deliberate trade of gate-time BSD-dialect safety for pre-merge
+latency: a macOS-only regression can land and is caught within a day rather
+than blocked at the gate, and it surfaces only as a red run in the Actions
+tab plus GitHub's built-in scheduled-failure email to the repository's
+default recipients. A contributor's local pre-merge check runs
 the identical invocation. The automated build pipeline's own parent-side
 acceptance step, before it will consider a plan item's changes ready to
 merge, also shells out to this same script rather than re-implementing any
