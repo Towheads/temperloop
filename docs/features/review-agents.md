@@ -273,6 +273,44 @@ working repo (adopting the kernel's review lenses there) with
 `--project-dir DIR`; preview with `--dry-run`. Once it has run, the capability
 probe resolves and the review lenses execute instead of skipping.
 
+**Build worktrees resolve the lenses automatically.** `.claude/agents/` is
+gitignored by design (ADR 0007 — one teammate's opt-in is never imposed on the
+rest of the repo by a stray `git add -A`), and the direct consequence is that it
+is *absent from every fresh git worktree*: tracked content rides into a
+worktree, gitignored content does not. So every `/build` worker — which runs in
+an isolated `<repo>.wt/<slug>` worktree — used to see the probe evaluate FALSE
+for every lens and degrade its whole review step to `skipped — <agent>
+unavailable`, including the `workflow-reviewer` pass `/build` 3e marks
+*mandatory* for a `claude/commands/*.md` diff (temperloop#1005, worker-worktree
+review gap).
+
+`workflows/scripts/build/worktree.sh create` therefore materializes the flat
+`claude/agents/*.md` catalog into the new worktree's own `.claude/agents/` as
+**relative** symlinks (`../../claude/agents/<name>.md`) — the same link shape
+`project-agents.sh` deploys in-tree, resolving against the worktree's *own*
+tracked source, so a worker reads the charter at the commit its branch is based
+on rather than whatever the parent checkout happens to have. Nothing has to be
+run inside the worktree. Four properties keep it safe:
+
+- **Flat catalog only.** `claude/agents/reviewers/` stays inert (ADR 0007) — a
+  per-language reviewer is still opt-in through `reviewer-activate.sh`.
+- **Never clobbers.** Anything already at a target is left alone, so a repo that
+  tracks its own `.claude/agents/<name>.md` override always wins.
+- **Writes no `.gitignore`.** The exclusion rides the shared `info/exclude`
+  instead, so the step can never leak an unrelated hunk into the worker's PR.
+  That exclusion is load-bearing rather than cosmetic: an un-ignored `.claude/`
+  reads as untracked, which would make every live worktree `SKIPPED_DIRTY` at
+  prune time.
+- **Fail-open.** Any failure degrades to a stderr note and `create` still emits
+  its `CREATED` line — review coverage is advisory and must never block a build.
+
+Declaring the roster in the tracked `CLAUDE.md § Subagents` instead was the
+rejected alternative: a declaration is a *claim* about availability, a symlink
+*is* availability. Declaring would flip the probe TRUE even in a fresh clone
+where nothing has ever deployed `.claude/agents/`, so the review call would fail
+hard instead of taking the legible `skipped — … available as source; run
+workflows/scripts/install/project-agents.sh to enable` path above.
+
 ## Resource impact
 
 Each invocation is a single subagent call scoped to read-only tools, priced

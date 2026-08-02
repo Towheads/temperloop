@@ -259,3 +259,89 @@ rc=0; out="$(bash "$SCRIPT" deps-merged "$REPO" "" 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "#108: deps-merged with an empty sha list did not exit non-zero"
 [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "#108: empty sha list not ERROR (got: $out)"
 echo "PASS: deps-merged with an empty sha list emits structured ERROR + non-zero exit"
+
+# --- review-agent propagation into the worktree (#1005) -----------------------
+# `.claude/agents/` is gitignored (ADR 0007) so it never rides into a fresh
+# worktree, and the capability probe resolves an agent iff a file sits at
+# `.claude/agents/<name>.md` — so before #1005 every worker-side review pass
+# read as `skipped — <agent> unavailable`, including build.md 3e's MANDATORY
+# workflow-reviewer pass for a `claude/commands/*.md` diff (#1007). `create`
+# must now materialize the FLAT catalog itself.
+git init -q --initial-branch=main "$TMP/up1005"
+mkdir -p "$TMP/up1005/claude/agents/reviewers"
+printf -- '---\nname: workflow-reviewer\n---\nspec review lens\n' \
+  > "$TMP/up1005/claude/agents/workflow-reviewer.md"
+printf -- '---\nname: docs-reviewer\n---\nprose review lens\n' \
+  > "$TMP/up1005/claude/agents/docs-reviewer.md"
+# The opt-in per-language catalog lives one dir DOWN and stays inert (ADR 0007).
+printf -- '---\nname: python-reviewer\n---\nopt-in only\n' \
+  > "$TMP/up1005/claude/agents/reviewers/python-reviewer.md"
+git -C "$TMP/up1005" add -A
+git -C "$TMP/up1005" commit -q -m "kernel-shaped agent catalog"
+git clone -q "$TMP/up1005" "$TMP/repo1005"
+REPO1005="$(cd "$TMP/repo1005" && pwd -P)"
+
+bash "$SCRIPT" create "$REPO1005" lenses >/dev/null
+WT1005="$REPO1005.wt/lenses"
+for a in workflow-reviewer docs-reviewer; do
+  [ -L "$WT1005/.claude/agents/$a.md" ] \
+    || fail "#1005: .claude/agents/$a.md not materialized as a symlink in a fresh worktree"
+  [ "$(readlink "$WT1005/.claude/agents/$a.md")" = "../../claude/agents/$a.md" ] \
+    || fail "#1005: $a.md link is not the relative in-worktree target (got: $(readlink "$WT1005/.claude/agents/$a.md"))"
+  # The link must RESOLVE — a dangling link fails the probe just as an absent
+  # file does, and an ABSOLUTE link back into the parent checkout would serve
+  # the worker a charter from the wrong commit.
+  [ -f "$WT1005/.claude/agents/$a.md" ] \
+    || fail "#1005: $a.md link does not resolve inside the worktree"
+  grep -q "review lens" "$WT1005/.claude/agents/$a.md" \
+    || fail "#1005: $a.md link does not resolve to the tracked claude/agents/ source"
+done
+echo "PASS: create materializes the flat claude/agents/ catalog into the worktree's .claude/agents/ (#1005)"
+
+# ADR 0007: the per-language catalog under claude/agents/reviewers/ is opt-in
+# via reviewer-activate.sh and must NEVER be bulk-deployed by this step.
+[ ! -e "$WT1005/.claude/agents/python-reviewer.md" ] \
+  || fail "#1005/ADR 0007: an opt-in catalog reviewer was flat-deployed into the worktree"
+[ ! -e "$WT1005/.claude/agents/reviewers" ] \
+  || fail "#1005/ADR 0007: claude/agents/reviewers/ was propagated into the worktree"
+echo "PASS: create leaves the opt-in reviewers/ catalog inert (ADR 0007)"
+
+# The materialized tree must stay git-status-invisible even in a repo whose own
+# .gitignore says nothing about .claude/ (this fixture has no .gitignore at
+# all): an untracked .claude/ would both leak into a worker's `git add -A` and
+# make every LIVE worktree read SKIPPED_DIRTY at prune time.
+[ -z "$(git -C "$WT1005" status --porcelain)" ] \
+  || fail "#1005: materialized .claude/agents/ leaked into git status (got: $(git -C "$WT1005" status --porcelain))"
+[ -z "$(git -C "$REPO1005" status --porcelain)" ] \
+  || fail "#1005: materialization dirtied the parent checkout (.gitignore must not be written)"
+echo "PASS: materialized .claude/agents/ is git-status-invisible and writes no .gitignore (#1005)"
+
+# Never clobber: a repo that TRACKS its own .claude/agents/<name>.md wins.
+git init -q --initial-branch=main "$TMP/up1005own"
+mkdir -p "$TMP/up1005own/claude/agents" "$TMP/up1005own/.claude/agents"
+printf 'kernel source\n' > "$TMP/up1005own/claude/agents/docs-reviewer.md"
+printf 'kernel source\n' > "$TMP/up1005own/claude/agents/workflow-reviewer.md"
+printf 'PROJECT OVERRIDE\n' > "$TMP/up1005own/.claude/agents/docs-reviewer.md"
+git -C "$TMP/up1005own" add -A
+git -C "$TMP/up1005own" commit -q -m "repo tracks its own docs-reviewer override"
+git clone -q "$TMP/up1005own" "$TMP/repo1005own"
+REPO1005OWN="$(cd "$TMP/repo1005own" && pwd -P)"
+bash "$SCRIPT" create "$REPO1005OWN" own >/dev/null
+WT1005OWN="$REPO1005OWN.wt/own"
+[ ! -L "$WT1005OWN/.claude/agents/docs-reviewer.md" ] \
+  || fail "#1005: a repo's own tracked .claude/agents/ entry was clobbered by a link"
+grep -q 'PROJECT OVERRIDE' "$WT1005OWN/.claude/agents/docs-reviewer.md" \
+  || fail "#1005: the repo's own tracked agent content did not survive create"
+[ -L "$WT1005OWN/.claude/agents/workflow-reviewer.md" ] \
+  || fail "#1005: the un-conflicting agent was not materialized alongside the tracked one"
+[ -z "$(git -C "$WT1005OWN" status --porcelain)" ] \
+  || fail "#1005: materializing alongside a tracked .claude/agents/ dirtied the worktree"
+echo "PASS: create never clobbers a repo's own tracked .claude/agents/ entry (#1005)"
+
+# A repo with no claude/agents/ source at all is a clean no-op — no .claude/ is
+# invented, and create still emits CREATED.
+out="$(bash "$SCRIPT" create "$REPO" nosrc)"
+[ "$(jq -r .outcome <<<"$out")" = "CREATED" ] || fail "#1005: no-source create not CREATED (got: $out)"
+[ ! -e "$REPO.wt/nosrc/.claude" ] \
+  || fail "#1005: a repo with no claude/agents/ source got a spurious .claude/ directory"
+echo "PASS: create is a clean no-op in a repo with no claude/agents/ source (#1005)"
