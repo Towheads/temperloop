@@ -231,14 +231,17 @@ test-pr-leak-guard:
 # Mechanical egress lint over Epic E's before/after value-loop producers
 # (foundation #766, privacy/egress audit item): greps the named producer
 # scripts for network-call patterns beyond the one sanctioned `gh` channel.
-# Standalone-kernel-checkout invocation — no --overlay-report-d, since a
-# kernel-only checkout has no .temperloop/report.d/ of its own; see this
-# repo's own root Makefile for the composed-tree invocation that also
-# scans the overlay drop-ins. See check-producer-egress.sh's header for
-# the documented (today: empty) opt-in egress surface.
+# --overlay-report-d is passed (temperloop#958): this repo DOES now carry its
+# own .temperloop/report.d/, holding the kernel's `tokens` spend producer, so
+# that drop-in is scanned by the same lint as the named producers rather than
+# being the one file in the loop nothing checks. The flag is a glob over
+# whatever the dir holds, so a future drop-in is covered with zero
+# maintenance here, and an absent dir is a silent, legible skip — the arg
+# stays correct in a checkout that has none. See check-producer-egress.sh's
+# header for the documented (today: empty) opt-in egress surface.
 test-producer-egress:
 	@echo "==> Running producer egress check..."
-	@bash $(FOUNDATION)/workflows/scripts/kernel/check-producer-egress.sh --kernel-root $(FOUNDATION)
+	@bash $(FOUNDATION)/workflows/scripts/kernel/check-producer-egress.sh --kernel-root $(FOUNDATION) --overlay-report-d $(FOUNDATION)/.temperloop/report.d
 	@echo "==> Running check-producer-egress.sh fixture tests..."
 	@bash $(FOUNDATION)/workflows/scripts/kernel/tests/test_check_producer_egress.sh
 

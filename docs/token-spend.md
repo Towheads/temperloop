@@ -237,11 +237,17 @@ efficiency rule, says "don't spend tokens you don't have to":
 
 ## How temperloop tracks spend — and where the gaps are
 
-The honest headline, confirmed by reading the telemetry directly: **this repo
-does not log dollar spend, and does not log token counts, per command.** What
-it captures is *work events* — counts, timestamps, and wall-time — not cost.
-Knowing that is the point: it tells you what you can and can't answer from the
-built-in data.
+The honest headline, confirmed by reading the telemetry directly: **this repo's
+own telemetry does not log dollar spend, and does not log token counts, per
+command.** What it captures is *work events* — counts, timestamps, and
+wall-time — not cost. Knowing that is the point: it tells you what you can and
+can't answer from the built-in data.
+
+But temperloop is not the only thing keeping records. **Claude Code itself
+already persists per-agent token `usage`**, and reading *that* retroactively
+answers the token question without temperloop emitting anything — see
+[§ Reading token spend out of the harness's own transcripts](#reading-token-spend-out-of-the-harnesss-own-transcripts)
+below.
 
 ### What's captured natively (kernel)
 
@@ -268,32 +274,87 @@ built-in data.
   rate-limit state to `~/.claude/rate-limits.json` at zero token cost, feeding
   the 5-hour quota gate — rolling-window *headroom*, again not dollars.
 
-### The honest gap — and the two empty slots left for it
+### The remaining gap — one empty slot left, one now filled
 
-Per-command **token counts** and **dollar spend**, and **cost-per-epic**, are
-not captured kernel-side. They exist only as (a) the hardcoded directional
-constants above and (b) an **overlay** rollup pipeline
-(`meta/data/rollups/*` + `workflows/scripts/build_telemetry_brief.py`) that is
-*not present in a bare kernel checkout* — `/check-in` guards it with an
-`if [ -f … ]` and notes it's unavailable when absent
+Per-command **dollar spend** and **cost-per-epic** are still not captured
+kernel-side. They exist only as (a) the hardcoded directional constants above
+and (b) an **overlay** rollup pipeline (`meta/data/rollups/*` +
+`workflows/scripts/build_telemetry_brief.py`) that is *not present in a bare
+kernel checkout* — `/check-in` guards it with an `if [ -f … ]` and notes it's
+unavailable when absent
 ([`claude/commands/check-in.md`](../claude/commands/check-in.md)).
 
-The kernel deliberately ships **two empty slots** where real spend data would
-plug in, rather than pretending to have it:
+The kernel shipped **two empty slots** where real spend data would plug in,
+rather than pretending to have it. **One of them is now filled:**
 
-- A `tokens` drop-in producer for `temperloop report` at
-  `.temperloop/report.d/tokens` — if it emits `{"tokens_spent": <n>}`, the
-  report headline becomes `tokens_spent / merged_count`. No such producer
-  ships; the design non-goal is stated as "no precise cost accounting."
+- ✅ **`tokens` drop-in producer** for `temperloop report` at
+  [`.temperloop/report.d/tokens`](../.temperloop/report.d/tokens) — **shipped**
+  (temperloop#958). It emits `{"tokens_spent": <n>, "by_model": {…}}` derived
+  from the harness's own transcripts (next section), so the report headline is
+  now `tokens_spent / merged_count`, and — given a hand-written
+  `.temperloop/pricing.json` — a directional `~$<total>` line beside it. The
+  "no precise cost accounting" non-goal is unchanged: the number is
+  **directional cost-weighted units**, never a billed amount
   ([`workflows/scripts/lib/report.contract.md`](../workflows/scripts/lib/report.contract.md)).
-- The overlay `build_telemetry_brief.py` guard in `/check-in`, which would add
-  the cost-per-epic / token-cost digest the kernel streams can't derive.
+- ⬜ **The overlay `build_telemetry_brief.py` guard** in `/check-in`, which
+  would add the cost-per-epic / token-cost digest the kernel streams can't
+  derive. Still empty.
 
-**What would close the gap:** a per-run token/dollar emitter (the `claude -p`
-calls could write their `usage` totals to a new raw-lake stream), which both
-empty slots are already shaped to consume. Until then, your own Claude Code
-usage view remains the source of truth for actual spend — the same conclusion
-the cost page reaches.
+**What would close the rest of the gap — and what turned out *not* to be
+needed.** This page used to say the fix was *"a per-run token/dollar emitter
+(the `claude -p` calls could write their `usage` totals to a new raw-lake
+stream)"*. **That was wrong, and building it would have been wasted work:**
+Claude Code **already** persists a per-agent `usage` block for every workflow
+subagent, in transcripts on disk. An emitter would have duplicated data the
+harness writes anyway — and, being an emitter, would only ever have covered
+runs made *after* it shipped. Reading the existing transcripts instead works
+**retroactively, over all of history**, which is the property that actually
+answers "did that change save anything?". So the remaining empty slot needs
+the *cost-per-epic attribution* layer, not a new emitter.
+
+### Reading token spend out of the harness's own transcripts
+
+[`workflows/scripts/pipeline-spend-report.sh`](../workflows/scripts/pipeline-spend-report.sh)
+walks `~/.claude/projects/**/subagents/workflows/wf_*/agent-*.jsonl` and
+reports cost-weighted spend. Local files only — no network, no API, no `gh`.
+
+```sh
+workflows/scripts/pipeline-spend-report.sh                       # whole corpus
+workflows/scripts/pipeline-spend-report.sh --since 2026-07-20    # a date window
+workflows/scripts/pipeline-spend-report.sh --run wf_423b8a39-a02 # one workflow run
+workflows/scripts/pipeline-spend-report.sh --format json         # machine-readable
+```
+
+It reports the corpus (runs, agents, deduped API calls), raw tokens per class,
+total cost-weighted units, the **machinery vs item worker** split, a typical
+item worker's profile, and per-model attribution. The machinery/worker split
+is what makes lever 2's claims checkable: `--since` before and after a
+machinery-batching change is a two-command before/after, rather than a
+projection nobody measured.
+
+Two things worth knowing before you trust a number from it:
+
+- **Units are cost-weighted, not raw tokens.** The four class weights
+  (`SPEND_WEIGHT_INPUT`, `SPEND_WEIGHT_CACHE_READ`, `SPEND_WEIGHT_CACHE_CREATE`,
+  `SPEND_WEIGHT_OUTPUT`) live in
+  [`build.config.sh`](../workflows/scripts/build/build.config.sh), never in
+  the script. This matters more than it sounds: `cache_creation` bills ~12.5×
+  `cache_read`, so ranking by *raw* cache-read put the machinery agents at
+  ~10% of spend when cost-weighted they are ~32%.
+- **One API response spans several transcript lines**, each repeating the same
+  `usage` block, so the tool dedupes by `requestId`. Summing per line inflated
+  the measured corpus **2.16×**. The report prints the undeduped figure beside
+  the real one so the correction is visible rather than assumed, and the
+  property is pinned by a fixture test
+  ([`workflows/scripts/tests/test_pipeline_spend_report.sh`](../workflows/scripts/tests/test_pipeline_spend_report.sh)).
+
+The script's own header documents these plus two further traps it deliberately
+encodes — why it derives **no** tool-call-parallelism metric (the transcript
+format structurally cannot express it), and the BSD/macOS dialect constraints.
+
+Your Claude Code usage view remains the source of truth for actual **dollars**;
+this tool answers *where the tokens went*, which is the question the levers on
+this page are trying to move.
 
 ## Related
 
@@ -303,6 +364,12 @@ the cost page reaches.
 - [`docs/features/pipeline-driver.md`](features/pipeline-driver.md) — the autonomy
   tiers whose model split this page describes.
 - [`docs/features/telemetry.md`](features/telemetry.md) — the raw-lake stream
-  reference behind the tracking section.
+  reference behind the tracking section, and the feature page the spend
+  profiler is documented under.
+- [`workflows/scripts/pipeline-spend-report.sh`](../workflows/scripts/pipeline-spend-report.sh)
+  — the profiler itself; its header carries the four correctness traps and the
+  `--format json` schema.
+- [`workflows/scripts/lib/report.contract.md`](../workflows/scripts/lib/report.contract.md)
+  — the `report.d/` drop-in contract the `tokens` producer satisfies.
 - [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh)
   — the single source of truth for every setting value named above.
