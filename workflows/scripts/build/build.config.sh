@@ -494,7 +494,39 @@ fi
 # subtraction pass will eventually have to address; the operator decided
 # 2026-08-01 to raise rather than run that pass on a file three in-flight
 # items are concurrently editing.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1154}"
+#
+# THIRD RAISE, 1154 → 1186 (2026-08-01, temperloop#954, same epic). The
+# second raise undershot because it sized off a ONE-ITEM sample. With the
+# whole L3 level landed, all four items are measured, and the drafted
+# estimates ran hot by far more than the 1.20 the second raise assumed:
+#   - workshop-coverage-walk (#930, PR #946):        +50 drafted →  +60  (1.20)
+#   - premise-gate-presentation (#931, PR #950):      +7 drafted →   +9  (1.29)
+#   - workshop-congruence-walkthrough (#932, PR #952):
+#                                                    +78 drafted → +137  (1.76)
+#                                        blended: 135 drafted → 206 (1.53)
+# The congruence item is the outlier that broke the second estimate: its
+# drafted +78 only ever priced the NEW Step 3.5, never the two other
+# regions it also had to touch (Step 3.1.4, Step 4.1b) nor the
+# docs/features/workshop.md update. Post-L3 merged `main` measures 1144 —
+# ground truth read off the combined-tree pre-check worktree, not computed
+# — leaving 10 lines under the 1154 cap. The one remaining item cannot fit:
+#   - workshop-ratify-gate (#934): +23 drafted → +35 at the blended 1.53
+# 1144 + 35 = 1179. +20% contingency on the 35 (same convention as both
+# earlier raises) = 7, ceiling. 1144 + 42 = 1186.
+# The global consequence stated above is UNCHANGED and applies a THIRD
+# time. Two alternatives were considered and declined by the operator
+# 2026-08-01: (a) a subtraction pass on workshop.md first — declined as an
+# unplanned item on the critical path that would edit the very file
+# workshop-ratify-gate then rewrites; (b) a per-file cap for workshop.md —
+# declined because validate-prose-budget.sh's own header pins "ONE uniform
+# per-file cap, never a per-file table (a per-file value would just be a
+# relocated exemption mechanism; this gate has none)", so it is a contract
+# change, not a tuning. NOTE FOR THE NEXT EDITOR: workshop.md at 1144 is
+# now the LARGEST tracked kernel doc (past build.md at 1061), and this cap
+# has been raised three times in one day to fund it. The subtraction pass
+# is real debt, filed as its own follow-up — do not raise a fourth time
+# without running it first.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1186}"
 
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
