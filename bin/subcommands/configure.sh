@@ -129,6 +129,20 @@ source "$REGISTRY_LIB"
 # site; see setting-registry.tsv's own header on why that means no new row).
 : "${CLAUDE_BIN:=claude}"
 
+# Model tier for this script's ONE `claude -p` seat, the AI-guided suggestion
+# pass below (temperloop#978). Sourced best-effort from the kernel's single
+# settings home — build.config.sh is where $CONFIGURE_AI_MODEL's default lives
+# and this file only NAMES it (§ Named-setting convention). A checkout missing
+# the config file still runs: the `${VAR:-}` expansion then yields empty, which
+# is the same inherit-the-session-model behavior this script had before the
+# setting existed. The default is deliberately the inherit sentinel — see
+# build.config.sh's header for the measured reason a cheap tier loses here.
+CONFIGURE_BUILD_CONFIG="$KERNEL_ROOT/workflows/scripts/build/build.config.sh"
+if [ -f "$CONFIGURE_BUILD_CONFIG" ]; then
+  # shellcheck source=../../workflows/scripts/build/build.config.sh
+  . "$CONFIGURE_BUILD_CONFIG" >/dev/null 2>&1 || true
+fi
+
 # Non-flag-configurable — a single suggestion turn, deliberately short
 # (mirrors try.sh's TRY_CLAUDE_TIMEOUT_SECS: a fixed constant, not a CLI
 # setting, so a first-run stranger never has to discover a timeout flag).
@@ -348,8 +362,20 @@ PROMPT_EOF
   # pipefail` only (`-e` was never on), so `ai_rc` is checked explicitly
   # below rather than relying on errexit (mirrors try.sh's own rationale
   # for its analogous judgment-call capture).
+  # Tier for this seat: $CONFIGURE_AI_MODEL. Emit `--model` only when the
+  # setting is non-empty — an empty setting means inherit, which is expressed by
+  # passing NO flag at all, never a literal empty model argument. The
+  # `${a[@]+...}` guard is required, not decorative: macOS ships bash 3.2, where
+  # expanding an EMPTY array as "${a[@]}" under `set -u` is an unbound-variable
+  # error, and this seat's default IS empty.
+  ai_model_args=()
+  if [ -n "${CONFIGURE_AI_MODEL:-}" ]; then
+    ai_model_args=(--model "$CONFIGURE_AI_MODEL")
+  fi
+
   ai_out="$(run_with_timeout "$CONFIGURE_CLAUDE_TIMEOUT_SECS" \
     "$CLAUDE_BIN" -p "$prompt" \
+    ${ai_model_args[@]+"${ai_model_args[@]}"} \
     --tools "" \
     --output-format text \
     --no-session-persistence \
