@@ -108,9 +108,13 @@ workflows/scripts/pipeline-spend-report.sh --format json         # machine-reada
 It splits spend into **machinery** agents (the cheap executors that just run
 shell commands) and **item workers**, by deduped API-call count, which is
 what makes a before/after comparison of a machinery-batching change one
-command. Its consumer inside this repo is the
-[`.temperloop/report.d/tokens`](../../.temperloop/report.d/tokens) drop-in
-that gives `temperloop report` its `tokens_spent` headline. See
+command. Its consumer inside this repo is
+[`workflows/scripts/report-producers/tokens`](../../workflows/scripts/report-producers/tokens)
+— the kernel-side `tokens` `report.d` producer implementation
+(temperloop#980 "producer-kernel-side-relocation"), reached via the thin
+locator + `exec` shim committed to an adopter's own
+[`.temperloop/report.d/tokens`](../../.temperloop/report.d/tokens) — that
+gives `temperloop report` its `tokens_spent` headline. See
 [`docs/token-spend.md`](../token-spend.md) for the fuller picture, and that
 script's own header for the four correctness traps it encodes — chief among
 them deduping by `requestId`, without which the totals inflate ~2x.

@@ -42,10 +42,19 @@
 #     overlay producers (foundation's own `tokens` / `interventions` /
 #     `improvement` today). A glob, not a hardcoded name list, so a future
 #     drop-in is covered automatically with zero maintenance here.
+#   - every regular file directly inside $KERNEL_ROOT/workflows/scripts/
+#     report-producers/ — the kernel-side IMPLEMENTATIONS a report.d/ shim
+#     execs into (temperloop#980 "producer-kernel-side-relocation": the
+#     `tokens` drop-in's real transcript-parsing logic moved here so it
+#     updates with the kernel and stays inside this lint's reach; the file
+#     actually committed to an adopter's .temperloop/report.d/tokens is now
+#     just a locator + exec shim, covered by the $OVERLAY_REPORT_D glob
+#     above). Unconditional (kernel-root-relative, no flag needed) and, like
+#     the overlay glob, a directory scan rather than a name list.
 #
-#   A missing file or absent overlay dir is a silent, legible skip — this
-#   is a lint over whatever producers actually exist in the checkout it's
-#   run from (a standalone kernel-only checkout has no
+#   A missing file or absent dir (overlay OR report-producers) is a silent,
+#   legible skip — this is a lint over whatever producers actually exist in
+#   the checkout it's run from (a standalone kernel-only checkout has no
 #   `.temperloop/report.d/` of its own — see the OVERLAY_REPORT_D default
 #   below), not a presence/coverage check (that is kernel-manifest's job).
 #
@@ -157,6 +166,17 @@ done
 
 if [ -n "$overlay_dir" ] && [ -d "$overlay_dir" ]; then
   for f in "$overlay_dir"/*; do
+    [ -e "$f" ] || continue
+    [ -f "$f" ] || continue
+    files+=("$f")
+  done
+fi
+
+# Kernel-side report-producers/ — unconditional (kernel-root-relative), a
+# missing dir is a silent skip same as the overlay glob above.
+report_producers_dir="$kernel_root/workflows/scripts/report-producers"
+if [ -d "$report_producers_dir" ]; then
+  for f in "$report_producers_dir"/*; do
     [ -e "$f" ] || continue
     [ -f "$f" ] || continue
     files+=("$f")

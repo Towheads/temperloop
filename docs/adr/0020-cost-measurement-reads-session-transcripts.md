@@ -36,10 +36,14 @@ run — including interactive ones.
 **Token-spend measurement reads Claude Code's session transcripts. No new
 telemetry stream is emitted, and no model call site changes.**
 
-The producer at `.temperloop/report.d/tokens` derives its corpus from the
-target repo's own working directory, sums `usage` by `model`, and emits the
-`report.d` contract's `{"tokens_spent": …, "by_model": {…}}` shape. It reads
-local files only — no network, no API, no `gh`.
+The producer implementation at `workflows/scripts/report-producers/tokens`
+(reached via the `.temperloop/report.d/tokens` locator shim — temperloop#980
+"producer-kernel-side-relocation" moved the implementation kernel-side so it
+updates with the kernel and stays inside `check-producer-egress.sh`'s reach)
+derives its corpus from the target repo's own working directory, sums
+`usage` by `model`, and emits the `report.d` contract's `{"tokens_spent":
+…, "by_model": {…}}` shape. It reads local files only — no network, no API,
+no `gh`.
 
 Extraction is **allowlist-shaped**: only `.message.usage` and `.message.model`
 are read, and only integers and model-id strings are emitted. Never message

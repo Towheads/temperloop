@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Tests for workflows/scripts/pipeline-spend-report.sh and the
-# .temperloop/report.d/tokens drop-in producer (temperloop#958).
+# Tests for workflows/scripts/pipeline-spend-report.sh and the kernel-side
+# `tokens` report.d producer implementation at
+# workflows/scripts/report-producers/tokens (temperloop#958; relocated out
+# of .temperloop/report.d/tokens by temperloop#980
+# "producer-kernel-side-relocation" -- that path is now a thin locator +
+# exec shim, tested separately by
+# bin/subcommands/tests/test_tokens_producer.sh).
 #
 # Synthetic transcript fixtures under a throwaway tmpdir, pointed at with
 # --root. Zero network, zero reads of the operator's real ~/.claude corpus,
@@ -27,7 +32,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$HERE/../../.." && pwd)
 BIN="$REPO_ROOT/workflows/scripts/pipeline-spend-report.sh"
-PRODUCER="$REPO_ROOT/.temperloop/report.d/tokens"
+PRODUCER="$REPO_ROOT/workflows/scripts/report-producers/tokens"
 [ -f "$BIN" ] || { echo "FATAL: pipeline-spend-report.sh not found at $BIN" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required for this test" >&2; exit 1; }
 
@@ -364,7 +369,11 @@ check "STATIC: no GNU-only \`date -d\`" bash -c "! grep -qE \"date [^|]*-d \" '$
 check "STATIC: no GNU sed label/branch loop" bash -c "! grep -qE 'sed .*:[a-z]+;' '$BIN'"
 
 # ===========================================================================
-# 9. The .temperloop/report.d/tokens drop-in producer.
+# 9. The kernel-side `tokens` report.d producer implementation
+#    (workflows/scripts/report-producers/tokens -- relocated out of
+#    .temperloop/report.d/tokens by temperloop#980; that path is now a
+#    locator + exec shim only, see bin/subcommands/tests/test_tokens_producer.sh
+#    for ITS coverage).
 # ===========================================================================
 if [ -x "$PRODUCER" ]; then
   OUT9="$(SPEND_TRANSCRIPT_ROOT="$R1" "$PRODUCER")"
@@ -376,15 +385,35 @@ if [ -x "$PRODUCER" ]; then
     bash -c "printf '%s' '$OUT9' | jq -e '(has(\"by_model\") | not) or ((.by_model | type) == \"object\")' >/dev/null"
   check "PRODUCER: exits 0" bash -c "SPEND_TRANSCRIPT_ROOT='$R1' '$PRODUCER' >/dev/null"
 
-  # Degradation: relocate a copy so its ../../ climb finds no profiler.
-  mkdir -p "$TMP/orphan/.temperloop/report.d"
-  cp "$PRODUCER" "$TMP/orphan/.temperloop/report.d/tokens"
-  chmod +x "$TMP/orphan/.temperloop/report.d/tokens"
-  OUT9B="$("$TMP/orphan/.temperloop/report.d/tokens"; echo "rc=$?")"
+  # Degradation: relocate a lone copy (no sibling pipeline-spend-report.sh)
+  # so its dirname-relative sibling lookup finds no profiler.
+  mkdir -p "$TMP/orphan"
+  cp "$PRODUCER" "$TMP/orphan/tokens"
+  chmod +x "$TMP/orphan/tokens"
+  OUT9B="$("$TMP/orphan/tokens"; echo "rc=$?")"
   check "PRODUCER: with no profiler reachable, prints the contract's skip line" \
     bash -c "printf '%s' '$OUT9B' | grep -q 'skipped -- tokens: producer unavailable'"
   check "PRODUCER: ...and still exits 0 (a skip is never an error)" \
     bash -c "printf '%s' '$OUT9B' | grep -q 'rc=0'"
+
+  # Degradation: an unrecognized record shape from the profiler (units_total
+  # present but not a number) -- the producer's own `select((.units_total |
+  # type) == "number")` filter drops it, so $out is empty and it skips.
+  FAKEROOT="$TMP/fake-profiler-kernel/workflows/scripts"
+  mkdir -p "$FAKEROOT/report-producers"
+  cp "$PRODUCER" "$FAKEROOT/report-producers/tokens"
+  chmod +x "$FAKEROOT/report-producers/tokens"
+  cat > "$FAKEROOT/pipeline-spend-report.sh" <<'EOF'
+#!/usr/bin/env bash
+# fixture: emits a record whose units_total is NOT a number (bad shape)
+echo '{"units_total":"not-a-number","by_model":{}}'
+EOF
+  chmod +x "$FAKEROOT/pipeline-spend-report.sh"
+  OUT9D="$("$FAKEROOT/report-producers/tokens"; echo "rc=$?")"
+  check "PRODUCER: an unrecognized record shape (non-numeric units_total) prints the skip line" \
+    bash -c "printf '%s' '$OUT9D' | grep -q 'skipped -- tokens: producer unavailable'"
+  check "PRODUCER: ...and still exits 0" \
+    bash -c "printf '%s' '$OUT9D' | grep -q 'rc=0'"
 
   # Degradation: no jq on PATH.
   mkdir -p "$TMP/emptybin"
@@ -404,7 +433,7 @@ if [ -x "$PRODUCER" ]; then
   check "PRODUCER: never calls gh either (this producer reads local files only)" \
     bash -c "! grep -nE '(^|[^A-Za-z0-9_])gh ' '$PRODUCER' | grep -vE '^[0-9]+:[[:space:]]*#'"
 else
-  printf '  - skipped: .temperloop/report.d/tokens not present or not executable\n'
+  printf '  - skipped: workflows/scripts/report-producers/tokens not present or not executable\n'
 fi
 
 echo
