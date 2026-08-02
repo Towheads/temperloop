@@ -329,6 +329,17 @@ quality-gates workflows/scripts/tests/test_chunk_redundancy_surface.sh
 quality-gates workflows/scripts/config/redundancy-fixtures.json
 quality-gates workflows/scripts/config/check-redundancy-fixtures.sh
 quality-gates workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
+# Semantic-redundancy SCORER (temperloop#855, half (b) of the same P9 probe):
+# scores the chunk pairs half (a) emits, ranks them by duplicated-byte weight,
+# and records the pre-registered precision go/no-go. Report-only, same
+# measurement-tooling family (and so the same slug) as count-prose.sh and the
+# chunker above — it is deliberately NOT wired into scripts/quality-gates.sh:
+# this item ships no CI gate, so nothing here can turn a contributor's PR red.
+quality-gates workflows/scripts/score-redundancy.sh
+quality-gates workflows/scripts/score-redundancy.py
+quality-gates workflows/scripts/score-redundancy.md
+quality-gates workflows/scripts/tests/test_score_redundancy.sh
+quality-gates workflows/scripts/config/redundancy-precision-labels.tsv
 # Declared-expiry check (temperloop#831, epic #810 P10): resolves whether a
 # standing rule's own declared expiry (the citation-marker `expires:`
 # extension above) has passed, over citation-registry.tsv intersected with
