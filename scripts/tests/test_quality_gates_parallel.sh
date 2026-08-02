@@ -37,6 +37,11 @@
 #      honored, and garbage degrades to 1 (serial) rather than to a guess
 #  10. WIRING: quality-gates.sh really sources this lib, drives it, keeps a
 #      serial fallback, and keeps CI on a single non-matrix job
+#  11. UNCHANGED EXECUTION ENVIRONMENT: a gate still sees the DEFAULT SIGINT
+#      disposition, so a suite that asserts on signal death gets the same
+#      answer it did under the serial loop — the CI regression that made
+#      test_gh_call_logger.sh's "Ctrl-C -> 130" case observe 0 — and the pool
+#      leaves the caller's own `set -m` state untouched
 #
 # Usage: scripts/tests/test_quality_gates_parallel.sh
 
@@ -70,6 +75,8 @@ source "$LIB"
 #   det:<name>              → verdict deterministic
 #   nometa:<name>           → exits 0 having written NO verdict (fail-closed)
 #   boom:<name>             → dies on an unbound variable under `set -u`
+#   sig:<name>              → runs a child that kills ITSELF with SIGINT and
+#                             records the exit code it observed to $WORK/sigcode
 #
 # Every invocation appends `<name> start`/`<name> end` to $WORK/trace with a
 # timestamp, which is how the overlap assertions below are made.
@@ -94,8 +101,31 @@ tw() {
     det) printf 'deterministic\t1\tsignature match\n' >"$GATE_POOL_META"; return 1 ;;
     nometa) return 0 ;;
     boom) echo "${THIS_IS_NOT_SET_ON_PURPOSE}"; return 0 ;;
+    sig)
+      local sigcode=0
+      "$WORK/selfint.sh" || sigcode=$?
+      printf '%s\n' "$sigcode" >"$WORK/sigcode"
+      if [ "$sigcode" -eq 130 ]; then
+        printf 'pass\t1\t\n' >"$GATE_POOL_META"
+        return 0
+      fi
+      printf 'fail\t1\tSIGINT observed as %s\n' "$sigcode" >"$GATE_POOL_META"
+      return 1
+      ;;
   esac
 }
+
+# The `sig` fixture: a script that kills itself with SIGINT, exactly as
+# workflows/scripts/probe/tests/test_gh_call_logger.sh's fake tool does. Under
+# the default (job-control-off) `&` fork this is a NO-OP, because bash
+# hard-ignores SIGINT in an asynchronous child and the disposition is inherited
+# through exec — which is how a real gate silently changed verdict.
+cat >"$WORK/selfint.sh" <<'SELFINT'
+#!/usr/bin/env bash
+kill -INT $$
+sleep 1
+SELFINT
+chmod +x "$WORK/selfint.sh"
 
 # run_case <jobs> <lanes-csv> <gate>... — set up the pool arrays, run, capture
 # stdout. <lanes-csv> is a comma-separated lane per gate, positionally ("" =
@@ -337,6 +367,43 @@ if [ -f "$CI" ]; then
     fail "CI's job/matrix shape changed — the required 'checks (ubuntu-latest)' context may have moved"
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# 11. UNCHANGED EXECUTION ENVIRONMENT — the signal-disposition regression.
+#
+#     A parallel runner may not change what a gate OBSERVES, or "identical
+#     pass/fail semantics" is a claim rather than a fact. bash sets SIGINT and
+#     SIGQUIT to SIG_IGN in an asynchronous child when job control is off, and
+#     hard-ignores them, so the disposition is inherited through fork AND exec
+#     by the entire gate subtree and cannot be reset from inside it. That made
+#     workflows/scripts/probe/tests/test_gh_call_logger.sh's fixture — the same
+#     `kill -INT $$` shape used here — observe 0 instead of 130, failing the
+#     `make test-conventions-probe` gate in CI deterministically.
+#
+#     This case is a SEMANTICS assertion, not a signal-handling curiosity: it
+#     pins that a gate runs with the default disposition, exactly as it did
+#     under the serial loop.
+# ---------------------------------------------------------------------------
+rm -f "$WORK/sigcode"
+run_case 2 "" "pass:presig" "sig:selfkill"
+sig_observed="$(cat "$WORK/sigcode" 2>/dev/null)"
+if [ "$sig_observed" = "130" ]; then
+  pass "a gate still sees the DEFAULT SIGINT disposition (self-kill observed as 130, not 0)"
+else
+  fail "SIGINT disposition changed by the pool: gate observed [$sig_observed], expected 130 — an asynchronous child is inheriting SIG_IGN (see _gate_pool_spawn's 'set -m')"
+fi
+if [ "${GATE_POOL_STATUS[1]}" = "pass" ] && [ "$CASE_RC" -eq 0 ]; then
+  pass "the signal-asserting gate reaches its own verdict through the pool"
+else
+  fail "signal-asserting gate verdict=[${GATE_POOL_STATUS[1]}] rc=$CASE_RC note=[${GATE_POOL_NOTE[1]}]"
+fi
+
+# The job control the fix relies on is scoped to the fork — a sourced lib must
+# not leave the caller's shell in a mode it never asked for.
+case "$-" in
+  *m*) fail "gate_pool_run left job control (set -m) enabled in the caller's shell" ;;
+  *) pass "the pool restores the caller's job-control setting after forking" ;;
+esac
 
 echo "---"
 if [ "$fail_count" -eq 0 ]; then

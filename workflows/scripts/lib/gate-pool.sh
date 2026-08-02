@@ -43,7 +43,19 @@
 #      shows the same blocks in the same order. A one-line `[ok]`/`[FAIL]`
 #      progress marker goes to stderr as each gate is reaped, so a long run is
 #      not silent.
-#   3. SHARED MUTABLE STATE. Gates that contend over one resource (a shared
+#   3. A CHANGED EXECUTION ENVIRONMENT. A gate must observe the SAME process
+#      environment it did under the serial loop, or "identical pass/fail
+#      semantics" is a claim rather than a fact. One divergence is not obvious
+#      and bit this change in CI: bash sets SIGINT and SIGQUIT to SIG_IGN in an
+#      ASYNCHRONOUS child when job control is off, and marks them hard-ignored,
+#      so the disposition is inherited by the gate's whole process tree and
+#      cannot be reset from inside it. Any suite that asserts on signal death
+#      then silently sees the wrong answer — test_gh_call_logger.sh's
+#      "Ctrl-C -> 130" case observed 0, because its fixture's `kill -INT $$`
+#      had become a no-op. _gate_pool_spawn therefore forks under job control
+#      (`set -m`), the documented condition under which bash does NOT install
+#      that ignore; see its own comment for the full contract.
+#   4. SHARED MUTABLE STATE. Gates that contend over one resource (a shared
 #      binary cache, a whole-tree scan racing a whole-tree write) must not run
 #      concurrently WITH EACH OTHER. Rather than serialize the whole run, this
 #      scheduler runs them in ONE dedicated SERIAL LANE: lane gates are mutually
@@ -191,10 +203,15 @@ gate_pool_init() {
 _gate_pool_cleanup() {
   # Kill anything still running first — an interrupted run must not leave
   # orphaned `make` subtrees chewing on the checkout after the parent is gone.
+  #
+  # The GROUP is killed, not just the child: _gate_pool_spawn forks under job
+  # control, so each child leads its own process group and `kill -- -<pid>`
+  # reaches the whole `make` subtree beneath it. `kill <pid>` remains as the
+  # fallback for the (unexpected) case where the group no longer exists.
   local pid
   # shellcheck disable=SC2086  # deliberate word-split of the space-separated pid list
   for pid in $_gate_pool_running_pids; do
-    kill "$pid" 2>/dev/null || true
+    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
   done
   [ -n "${_gate_pool_tmpdir:-}" ] && rm -rf "$_gate_pool_tmpdir"
   [ -n "${_gate_retry_tmpdir:-}" ] && rm -rf "$_gate_retry_tmpdir"
@@ -234,10 +251,49 @@ _gate_pool_child() {
 }
 
 # _gate_pool_spawn <idx> <worker_fn> — fork one gate.
+#
+# JOB CONTROL IS LOAD-BEARING, not a style choice (hazard 3 above). When job
+# control is OFF — the default in a script — bash runs every asynchronous
+# command with SIGINT and SIGQUIT set to SIG_IGN, *and* marks them hard-ignored,
+# so:
+#   * the ignore is inherited across fork AND exec, i.e. by `make`, by the
+#     suite it forks, and by every fixture below that;
+#   * nothing inside the gate can undo it — `trap - INT` cannot restore a
+#     disposition bash considers ignored-on-entry.
+# A gate that asserts on signal death therefore gets a DIFFERENT answer than it
+# did under the serial loop (where gates ran in the foreground and kept the
+# default disposition). That is not a hypothetical: it turned
+# test_gh_call_logger.sh's `kill -INT $$` fixture into a no-op, so the shim's
+# "signal death propagates as 130" case saw 0 and the gate failed in CI —
+# deterministically, twice, which is exactly the class of divergence the
+# "identical pass/fail semantics" contract exists to forbid.
+#
+# `set -m` is the fix because bash installs that ignore only in the job-control-
+# off branch. Verified on bash 3.2 (macOS system bash) and bash 5.x, with and
+# without a controlling terminal: no job-status notices are printed in a
+# non-interactive shell, and `wait` still yields the child's exit status.
+#
+# Two consequences, both handled:
+#   * each child becomes its own process-group leader — which is why
+#     _gate_pool_cleanup can now kill the child's whole GROUP and finally reap
+#     the `make` subtree an interrupted run used to orphan;
+#   * a background process group that reads the terminal is stopped by SIGTTIN,
+#     which would wedge the poll — so a child's stdin is pinned to /dev/null.
+#     No gate reads stdin (in CI it is already /dev/null), and a gate that tried
+#     would be unusable under ANY concurrency, competing for the operator's
+#     keystrokes with every other worker.
+#
+# The prior `-m` state is restored so this stays invisible to the caller.
 _gate_pool_spawn() {
-  local idx="$1" worker="$2"
-  ( _gate_pool_child "$idx" "$worker" "$_gate_pool_tmpdir" ) &
+  local idx="$1" worker="$2" restore_m=""
+  case "$-" in
+    *m*) ;;
+    *) restore_m=1 ;;
+  esac
+  set -m
+  ( _gate_pool_child "$idx" "$worker" "$_gate_pool_tmpdir" ) </dev/null &
   _gate_pool_last_pid=$!
+  if [ -n "$restore_m" ]; then set +m; fi
   _gate_pool_running_pids="$_gate_pool_running_pids $_gate_pool_last_pid"
 }
 

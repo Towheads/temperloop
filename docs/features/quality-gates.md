@@ -119,6 +119,46 @@ whole job timeout and report nothing — worse than any red gate). If the
 scheduler cannot allocate its scratch directory it says so and falls back to the
 serial loop, which is always correct.
 
+**The unchanged-execution-environment invariant — and the signal trap it hid.**
+"Identical pass/fail semantics" covers more than the gate list: a gate must also
+*observe* the same process environment it did in the foreground, or a suite can
+change verdict without anyone changing the suite. Backgrounding is not
+transparent in bash, and one divergence broke a gate in CI:
+
+- When job control is off — the default in a script — bash runs every
+  asynchronous command with `SIGINT` and `SIGQUIT` set to `SIG_IGN`, and marks
+  them *hard-ignored*. The disposition is inherited through both `fork` and
+  `exec`, so it reaches `make`, the suite `make` forks, and every fixture below
+  that; nothing inside the gate can undo it (`trap - INT` cannot restore a
+  disposition bash considers ignored-on-entry).
+- `workflows/scripts/probe/tests/test_gh_call_logger.sh` asserts that the
+  `gh` timing shim propagates a signal death as 130, using a fake tool that
+  `kill -INT $$`es itself. Under the pool that `kill` became a no-op, the fake
+  exited 0, and `make test-conventions-probe` failed — deterministically, on
+  both attempts, on a suite that is green serially. Note the shape of the near
+  miss: the failure was *loud*, but the same mechanism applied to an assertion
+  written the other way round (expecting a survival, not a death) would have
+  been a silent false green.
+- The fix is to fork **under job control** (`set -m` in `_gate_pool_spawn`),
+  which is precisely the condition under which bash does not install that
+  ignore — verified on bash 3.2 and 5.x, with and without a controlling
+  terminal, with no job-status notices in a non-interactive shell. It is
+  regression-pinned by case 11 of `scripts/tests/test_quality_gates_parallel.sh`
+  (a synthetic gate that self-kills and asserts it observes 130), which fails
+  if the `set -m` is ever removed.
+- Two consequences, both deliberate. Each child now leads its own process
+  group, so the cleanup trap kills the child's **group** and finally reaps the
+  `make` subtree an interrupted run used to orphan. And a background process
+  group that reads the terminal would be stopped by `SIGTTIN` and wedge the
+  poll, so a child's stdin is pinned to `/dev/null` — which also removes a
+  pre-existing local-only trap where `scripts/update-kernel.sh`'s `[ -t 0 ]`
+  interactive prompt could block a run started from a terminal.
+
+An audit of the rest of the set for the same class found no other exposure:
+`test_gh_call_logger.sh` is the only suite that sends a signal and asserts on
+the resulting status, none inspects its own process group, and the only
+stdin-reading path is the `[ -t 0 ]`-guarded prompt above.
+
 **The shared-state audit.** Concurrency is only safe for suites that do not
 contend over shared mutable state, so the set was audited rather than assumed
 independent. What the audit found:

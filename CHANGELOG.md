@@ -141,14 +141,29 @@ reads that marker; a stranger greps for it before pulling.
   writer loses a `SIGPIPE` race, which is invisible on an idle machine and
   ~5% likely at width 8 — documented but deliberately **not** papered over by
   the retry machinery; it is widespread (596 sites across 77 files) and is its
-  own item.
+  own item. The pool forks each gate **under job control** (`set -m`), which is
+  load-bearing rather than cosmetic: with job control off, bash sets `SIGINT`
+  and `SIGQUIT` to `SIG_IGN` in an asynchronous child and hard-ignores them, so
+  the disposition is inherited through `fork` *and* `exec` by the gate's whole
+  process tree and cannot be reset from inside it. That silently turned
+  `workflows/scripts/probe/tests/test_gh_call_logger.sh`'s `kill -INT $$`
+  fixture into a no-op and failed `make test-conventions-probe` on a suite that
+  is green serially — the one *observable* instance of the broader invariant a
+  parallel run must hold, that a gate sees the same process environment it did
+  in the foreground. Two deliberate consequences: each child now leads its own
+  process group, so the cleanup trap kills the child's **group** and reaps the
+  `make` subtree an interrupted run used to orphan; and a child's stdin is
+  pinned to `/dev/null`, since a background process group that read the
+  terminal would be stopped by `SIGTTIN` and wedge the poll.
 - `scripts/tests/test_quality_gates_parallel.sh`, registered in the kernel gate
   set: covers exit-code integrity (a failing gate still returns non-zero and is
   attributed correctly; a verdict-less or abruptly-dying worker is recorded as
   a failure, never a pass, and never hangs the run), list-order replay, the
   serial lane's mutual exclusion, the slow-dispatch hint, real concurrency, the
-  jobs-resolution degradations, and the wiring — including that CI is still a
-  single non-matrix job.
+  jobs-resolution degradations, the unchanged execution environment (a gate
+  still observes the default `SIGINT` disposition, and the pool leaves the
+  caller's own `set -m` state alone), and the wiring — including that CI is
+  still a single non-matrix job.
 - The pool **composes with the sliced execution seam** (temperloop#1021) by
   selection: the slice window picks the run set and the pool is handed exactly
   that array, with the soft budget checked between **chunks** of
