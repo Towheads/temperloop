@@ -146,6 +146,12 @@ telemetry workflows/scripts/tests/test_status_line_token_resolution.sh
 # question the rest of this feature does, read from a different source.
 telemetry workflows/scripts/pipeline-spend-report.sh
 telemetry workflows/scripts/tests/test_pipeline_spend_report.sh
+# per-merged-item efficiency (temperloop#943): the overhead-per-shipped-change
+# emit at build.md's 4d merge seam. It COMPOSES the spend profiler above rather
+# than re-deriving any token number, so it is the same feature read at a
+# different grain — per merged item and per epic, instead of per corpus.
+telemetry workflows/scripts/emit-item-efficiency.sh
+telemetry workflows/scripts/tests/test_item_efficiency.sh
 # `.temperloop/report.d/tokens` is now a thin locator + exec SHIM
 # (temperloop#980 "producer-kernel-side-relocation"); the real
 # transcript-parsing implementation lives at

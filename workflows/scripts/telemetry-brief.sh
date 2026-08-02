@@ -26,6 +26,9 @@
 #   claims-<YYYY-MM>.jsonl                     (board/claim.sh claim_log_emit)
 #   pipeline-<YYYY-MM>.jsonl                     (build/pipeline-cron.sh)
 #   gh-calls-<YYYY-MM>.jsonl                   (gh-call-logger.sh lake stream)
+#   item-efficiency-<YYYY-MM>.jsonl            (emit-item-efficiency.sh — the
+#                                               per-merged-item overhead record,
+#                                               temperloop#943)
 #   knowledge-search-fallback-<YYYY-MM>.jsonl  (lib/knowledge_search_mcp.sh)
 #   knowledge-reads.log                        (lib/knowledge_store.sh
 #                                               ks__read_log_emit — the ks
@@ -54,6 +57,7 @@
 #   Per-stream overrides honored first, so the reader follows the emitters
 #   wherever they were pointed: CMD_RUN_RAW_DIR, ISSUE_TOUCHES_RAW_DIR,
 #   CLAIMS_RAW_DIR, PIPELINE_RAW_DIR, GH_CALLS_RAW_DIR,
+#   ITEM_EFFICIENCY_RAW_DIR,
 #   KS_SEARCH_FALLBACK_RAW_DIR (registered by their owning emit scripts), and
 #   KNOWLEDGE_READ_LOG (owning: lib/knowledge_store.sh — the fallback literal
 #   below is a byte-identical duplicate of that owning seam, per the registry
@@ -101,6 +105,7 @@ for _lf in "$pipeline_dir"/funnel-*.jsonl; do
 done
 unset _lf
 gh_calls_dir="${GH_CALLS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+item_eff_dir="${ITEM_EFFICIENCY_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 ks_fallback_dir="${KS_SEARCH_FALLBACK_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 read_log="${KNOWLEDGE_READ_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log}"
 
@@ -191,6 +196,7 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "Install jq, then re-run. Streams this brief would read:"
   echo "  $cmd_run_dir/command-runs-*.jsonl · $issue_touch_dir/issue-touches-*.jsonl · $claims_dir/claims-*.jsonl"
   echo "  $pipeline_dir/pipeline-*.jsonl · $gh_calls_dir/gh-calls-*.jsonl · $ks_fallback_dir/knowledge-search-fallback-*.jsonl"
+  echo "  $item_eff_dir/item-efficiency-*.jsonl"
   echo "  $read_log"
   exit 0
 fi
@@ -209,6 +215,7 @@ for pair in \
   "claims=$claims_dir" \
   "pipeline=$pipeline_dir" \
   "gh-calls=$gh_calls_dir" \
+  "item-efficiency=$item_eff_dir" \
   "knowledge-search-fallback=$ks_fallback_dir"; do
   s="${pair%%=*}"; d="${pair#*=}"
   ts="$(stream_max_ts "$d" "$s")"
@@ -309,7 +316,7 @@ fi
 # ── 3. Spend ─────────────────────────────────────────────────────────────────
 echo
 echo "## 3. Spend — kernel-observable cost"
-echo "source: gh-calls-*.jsonl @ $gh_calls_dir · ks read-log (knowledge_store.sh ks__read_log_emit) @ $read_log"
+echo "source: gh-calls-*.jsonl @ $gh_calls_dir · ks read-log (knowledge_store.sh ks__read_log_emit) @ $read_log · item-efficiency-*.jsonl @ $item_eff_dir (emit-item-efficiency.sh, token figures composed from pipeline-spend-report.sh)"
 gh_files="$(stream_files "$gh_calls_dir" "gh-calls")"
 if [ -z "$gh_files" ]; then
   stream_empty_line "gh-calls" "$gh_calls_dir"
@@ -347,7 +354,52 @@ else
     echo "- knowledge-store ops (${lookback}d): $ks_total ($ks_by_op)"
   fi
 fi
-echo "note: token-cost spend (cost-per-epic) requires the overlay rollup pipeline — not available kernel-side."
+
+# ── 3b. Overhead per merged item (temperloop#943) ────────────────────────────
+# The ceremony-cost number: what one SHIPPED change cost in tokens, wall-clock
+# and agent count, split by phase, rolled up per epic. Every figure below is a
+# field of the item-efficiency record — this section never re-derives a token
+# number, so it cannot disagree with pipeline-spend-report.sh.
+ie_files="$(stream_files "$item_eff_dir" "item-efficiency")"
+if [ -z "$ie_files" ]; then
+  stream_empty_line "item-efficiency" "$item_eff_dir"
+else
+  ie_recs="$(window_records "$item_eff_dir" "item-efficiency")"
+  n="$(printf '%s' "$ie_recs" | jq 'length')"
+  if [ "$n" -eq 0 ]; then
+    stale_note "item-efficiency" "$item_eff_dir" "$(stream_max_ts "$item_eff_dir" "item-efficiency")"
+  else
+    printf '%s' "$ie_recs" | jq -r --argjson lb "$lookback" '
+      # An un-measured leg is null and STAYS null through every aggregate: a
+      # median over [] renders "—", never 0. A 0 would read as "this cost
+      # nothing", which is the opposite of "nobody measured it".
+      def med: map(select(. != null)) | sort
+        | if length == 0 then null
+          elif (length % 2) == 1 then .[((length - 1) / 2)]
+          else ((.[(length / 2) - 1] + .[length / 2]) / 2) end;
+      def mins: if . == null then "—" else "\(((. / 60000) | floor))m" end;
+      def share($p; $t): if ($t | not) or $t == 0 then 0 else (($p * 100 / $t) | floor) end;
+      def units($k): map(.phases[$k].units // 0) | add // 0;
+      def toks($k): map(.phases | to_entries | map(.value.tokens[$k] // 0) | add // 0) | add // 0;
+
+      length as $n
+      | units("design") as $d | units("driver_prep") as $p
+      | units("worker") as $w | units("mechanical") as $m
+      | ($d + $p + $w + $m) as $tot
+      | ([ "- overhead per merged item (\($lb)d): \($n) merged item(s) · \((($tot / $n) | floor)) cost-weighted units/item · phase split design \(share($d; $tot))% · driver-prep \(share($p; $tot))% · worker \(share($w; $tot))% · mechanical \(share($m; $tot))% → ceremony (everything but the worker) \(share($d + $p + $m; $tot))%",
+           "- raw tokens per merged item (\($lb)d): \(((toks("output") / $n) | floor)) output · \(((toks("cache_create") / $n) | floor)) cache-create · \(((toks("cache_read") / $n) | floor)) cache-read (shown unweighted so the cheap-cache-read distortion stays visible next to the cost-weighted units above)",
+           "- wall-clock per merged item (\($lb)d, median): worker \(map(.wall_ms.worker) | med | mins) · CI \(map(.wall_ms.ci) | med | mins) · merge-group \(map(.wall_ms.merge_group) | med | mins) · gate-wait \(map(.wall_ms.gate_wait) | med | mins) · end-to-end \(map(.wall_ms.end_to_end) | med | mins)   (\"—\" = not measured, never 0)",
+           "- agents per merged item (\($lb)d, median): \(map(.agent_counts.worker) | med // "—") worker · \(map(.agent_counts.mechanical) | med // "—") mechanical"
+         ]
+         + (group_by(.epic)
+            | map(. as $g
+                  | ($g | units("design") + units("driver_prep") + units("worker") + units("mechanical")) as $gt
+                  | "- per epic \(if $g[0].epic == null then "(unattributed)" else "#\($g[0].epic)" end): \($g | length) item(s) · \((($gt / ($g | length)) | floor)) units/item · end-to-end \($g | map(.wall_ms.end_to_end) | med | mins)/item · levels \($g | map(.level) | map(select(. != null) | tostring) | unique | if length == 0 then "unrecorded" else join(",") end)"))
+        )[]' 2>/dev/null \
+      || echo "- item-efficiency records present but unreadable (malformed JSON in $item_eff_dir/item-efficiency-*.jsonl) — no numbers rendered"
+  fi
+fi
+echo "note: token-cost spend (cost-per-epic) beyond the per-item records above requires the overlay rollup pipeline — not available kernel-side."
 
 # ── 4. Improvement ───────────────────────────────────────────────────────────
 echo
