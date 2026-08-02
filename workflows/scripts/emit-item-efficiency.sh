@@ -56,8 +56,11 @@
 #   merge_group_ms  the merge-queue run span        (--merge-group-ms, or
 #                                                    derived from
 #                                                    --merge-group-sha)
-#   gate_wait_ms    time the item sat parked `[m]` awaiting the level's merge
-#                   gate (--gate-wait-ms)
+#   gate_wait_ms    time the item waited between CI-green (3h) and the merge
+#                   that landed it (--gate-wait-ms) — parked `[m]` until the
+#                   level's batch gate, or the far shorter `[>]` wait of a
+#                   3h.5 as-you-go merge (temperloop#1026). Deliberately ONE
+#                   metric across both paths: it is what measures that change.
 #   end_to_end_ms   claim -> confirmed MERGED (--end-to-end-ms)
 # Anything not supplied and not derivable is `null`. NEVER a fabricated or
 # back-computed number: an absent measurement and a zero measurement mean

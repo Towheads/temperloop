@@ -139,6 +139,21 @@ fi
 # the sole backstop. Single-PR levels skip it regardless (nothing to combine).
 : "${BUILD_COMBINED_TREE_PRECHECK:=on}"   # on|off — run the Step-4a.5 union pre-check
 
+# Step-3h.5 as-you-go merging (temperloop#1026): whether an item that the
+# EXISTING Step-4a regime partition already puts in the clean-disjoint tier may
+# merge the moment ITS OWN PR goes green, instead of parking `[m]` until the
+# level-boundary batch gate. Scoped to that tier only — a risky /
+# structurally-overlapping set is untouched and still takes the modal Step-4
+# gate at the level boundary. Level boundaries remain a dependency barrier for
+# STARTING the next level either way.
+# Measured motivation (2026-08-02): three PRs opened together took 68/69/145
+# min open-to-merge against 10-33 min for solo PRs — level batching converts
+# within-level parallelism into a merge-queue pileup.
+# Default ON, deliberately: the issue's acceptance criterion is only observable
+# while the behavior is active, and a single value here reverts the whole
+# change in one flip (0 restores pure level-boundary batching).
+: "${BUILD_MERGE_AS_YOU_GO:=1}"           # 1|0 — merge each clean-disjoint PR as it greens
+
 # Operator-phone reach on an ask-now halt (foundation#863). Every
 # `ask-now` gate the /build orchestrator surfaces via `decision_sink_ask`
 # calls decision-notify.sh, which relays a one-line summary to the operator's
@@ -782,7 +797,8 @@ fi
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
-       BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
+       BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK BUILD_MERGE_AS_YOU_GO \
+       PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \

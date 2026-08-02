@@ -78,8 +78,13 @@ A few things this diagram compresses that are worth naming explicitly:
   acceptance check) rather than an implementation.
 - **`/build`** executes an approved plan note one dependency level at a
   time: every item in a level is isolated into its own worktree and worker,
-  runs concurrently within the level, and parks at CI-green for a single
-  **batched merge gate** at the end of the level — not a gate per item.
+  runs concurrently within the level, and reaches CI-green. An item the
+  merge gate's own risk partition already classes **clean and disjoint** may
+  then take its consent and land immediately; anything else parks for a
+  single **batched merge gate** at the end of the level. Either way the
+  level boundary stays a dependency barrier for *starting* the next level,
+  and a risky or structurally-overlapping set is always decided at that one
+  batched gate — never per item.
 - **`/sweep`** is the singleton-path peer to `/build`: it drains Ready
   issues that are *not* a sub-issue of any epic, one at a time, reusing the
   same per-item worktree/worker/PR/CI mechanics but with no dependency

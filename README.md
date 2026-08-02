@@ -209,7 +209,7 @@ llms.txt        machine-readable project index (llmstxt.org convention)
 | `/triage` | Front door for **discovered** work: sweeps a board's Backlog, runs cull → root-cause collapse → group-by-meaning → value/priority, materialises survivors as board epics. |
 | `/workshop` | Second front door, for **invented** work (an idea born in conversation): a structured design conversation against the coverage template, ratified and materialised as a board epic with a `## Contract`. Operator-present only. |
 | `/assess --epic N` | Decomposes a triaged epic into a dependency-ordered plan note in `Plans/`. |
-| `/build` | Executes an approved plan: isolates a worktree per item, spawns an agent, opens a PR, monitors CI, batches the merge gate per dependency level. |
+| `/build` | Executes an approved plan: isolates a worktree per item, spawns an agent, opens a PR, monitors CI, merges each clean-disjoint PR as it goes green, and batches whatever still needs a decision into one merge gate per dependency level. |
 | `/sweep` | Drains a board's Ready singletons (issues triage left ungrouped): batches all clarifying questions up front, then fixes each through `/build`'s per-issue workflow. |
 | `/fix` | Drives ONE named target — an issue number or a free-text description — from wherever it stands to merged + closed. The single-item peer to `/build` and `/sweep`; can also adopt an existing open PR. |
 | `/next` | Advisory "what do I do now" — reads the board + plan notes, recommends the next command. Never mutates anything. |

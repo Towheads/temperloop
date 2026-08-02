@@ -26,7 +26,8 @@
 # dependency levels — level 0 = items with neither depends-on nor after — over
 # the UNION of both edge sets, and emits `{"levels":[["a","b"],["c"]]}` on stdout.
 #
-# `writeback` flips an item's checkbox sentinel ([ ]→[~]→[m]→[x], plus [v]/[-])
+# `writeback` flips an item's checkbox sentinel ([ ]→[~]→[m]→[x], the as-you-go
+# variant [ ]→[~]→[>]→[x] (temperloop#1026), plus [v]/[-])
 # and stamps sub-lines (pr:, pushed_sha:, speculative:, Run-status:) on the plan
 # note. It is the SOLE sentinel-writeback path: ALL vault writes route through a
 # single `_plan_vault_write` indirection (mirrors board.sh's `_board_gh`),
@@ -83,7 +84,7 @@ die() {
 }
 
 usage() {
-  die "usage: plan.sh validate <planFile> | toposort <planFile> | writeback <planFile> --slug <slug> --sentinel <[ ]|[~]|[m]|[x]|[v]|[-]> [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]"
+  die "usage: plan.sh validate <planFile> | toposort <planFile> | writeback <planFile> --slug <slug> --sentinel <[ ]|[~]|[m]|[>]|[x]|[v]|[-]> [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]"
 }
 
 # --- the ONE test-injection seam ---------------------------------------------
@@ -716,9 +717,9 @@ cmd_writeback() {
   [ -n "$sentinel" ] || die "writeback requires --sentinel"
   [ -f "$file" ]     || die "plan file '$file' does not exist"
   case "$sentinel" in
-    ' '|~|m|x|v|-) sentinel="[$sentinel]" ;;        # bare char form
-    '[ ]'|'[~]'|'[m]'|'[x]'|'[v]'|'[-]') : ;;       # bracketed form
-    *) die "invalid sentinel '$sentinel' (one of: [ ] [~] [m] [x] [v] [-])" ;;
+    ' '|~|m|'>'|x|v|-) sentinel="[$sentinel]" ;;         # bare char form
+    '[ ]'|'[~]'|'[m]'|'[>]'|'[x]'|'[v]'|'[-]') : ;;      # bracketed form
+    *) die "invalid sentinel '$sentinel' (one of: [ ] [~] [m] [>] [x] [v] [-])" ;;
   esac
 
   # Confirm the slug exists.
