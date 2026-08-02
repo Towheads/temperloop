@@ -161,3 +161,104 @@ Stated so a reader can audit the pre-registration rather than take it on faith.
 **Not known:** any label, any true/false-positive verdict on any real-surface
 pair, and any precision figure. No pair over the real surface had been labelled
 under PR-5's protocol when PR-2 and PR-3 were fixed.
+
+---
+
+## Method
+
+*Written after § Pre-registration was committed and before the labels were
+applied. Nothing here changes a pre-registered parameter; it records how the
+detector arrived at a score.*
+
+### M-1 — What the approach is, and what it deliberately is not
+
+The acceptance left the approach unspecified — "embedding similarity, an
+LLM-judge pass, or a hybrid ... discoverable only by trying". What shipped is
+**none of those**: a deterministic, offline, stdlib-only lexical-semantic
+scorer. The reason is a constraint the epic's other Phase-A tooling already
+lives under and this half inherits — `count-prose.sh`, the chunker, and the
+declared-expiry check are all byte-identical across macOS and Linux CI, run
+with no network, and add no model dependency. An embedding or LLM-judge pass
+would have bought a better paraphrase signal at the cost of a non-deterministic,
+network-bound, credential-bearing dependency in a measurement whose entire
+purpose is to decide whether a *gate* is warranted. That trade is recorded here
+rather than hidden, because it plausibly explains part of the result in
+§ Findings: **a stronger detector might clear the bar this one missed.** What
+that would take is named in F-6.
+
+### M-2 — Normalisation
+
+Each chunk's `text` becomes a token multiset: lowercased, markdown punctuation
+stripped, split on non-alphanumerics, English number-words folded to digits
+(`forty` → `40`), stopwords dropped, and a crude longest-suffix-first stem
+applied. Every step is a generic English/markdown transformation. There is **no
+synonym table** — one hand-fitted to the fixture pairs would inflate the fixture
+pass and say nothing about the real surface.
+
+### M-3 — Relaxed matching, which is what makes paraphrase register at all
+
+Two stems match when they are equal, **or** when one is a ≥4-character prefix
+or substring of the other. That single relaxation is what lets a paraphrase
+score above noise without a synonym list: `feat`~`feature`, `fix`~`bugfix`,
+`doc`~`documentation`, `test`~`testing`. It is blunt and it over-matches
+(`cap`~`capture`), which is a real contributor to the false-positive rate in
+§ Findings rather than a footnote.
+
+### M-4 — The pair score
+
+- `d(A→B)` = the share of A's **IDF-weighted** token mass that finds a relaxed
+  match in B; `d(B→A)` likewise. IDF is computed over the corpus being scored,
+  so a pair cannot rank on shared house vocabulary alone.
+- `overlap` = `min(d(A→B), d(B→A))` — symmetric and deliberately conservative.
+- `verbatim` = 5-gram shingle containment, which catches straight copy-paste
+  that the IDF path could under-rate.
+- `score` = `max(overlap, verbatim)`.
+- **`dup_bytes` = `min(d(A→B)·bytes(A), d(B→A)·bytes(B))`** — the duplicated
+  byte mass, taken as the smaller of the two sides' matched mass: the bytes
+  recoverable whichever member a maintainer chooses to cut. **This, not the
+  score, is the ranking key**, per the acceptance's "ranked by the byte weight
+  of the duplication". It is an estimate from matched IDF share, not an exact
+  diff — F-4 reports how close the estimate actually landed.
+
+### M-5 — Deliberate-pointer suppression
+
+A chunk that **defers by name** to a canonical rule and states only what is
+specific to its own context is not a restatement. A pair either of whose
+members carries a *strong* deference marker (`not repeated here`, `rather than
+restating`, `described in`, `defers to`, `see X for`, `thin pointer`, …) is
+moved to a **reported** suppressed bucket, never silently dropped. The weak
+topical word "canonical" alone does **not** qualify — a rule may legitimately
+call itself canonical while being the thing restated elsewhere.
+
+This is a separate mechanism from the score, because the deliberate-pointer
+negative is not a *low-similarity* case: on #854's corpus it scores 0.185,
+**above** the lower of the two positives (0.181). Ranking alone cannot separate
+them; naming the deferral can.
+
+### M-6 — Fixture calibration of the candidate floor (PR-4's calibration, done)
+
+Scored against #854's corpus alone, at fixture-corpus IDF:
+
+| fixture | label | score | outcome |
+|---|---|---|---|
+| `positive-branch-naming-paraphrase` | positive | 0.181 | flagged |
+| `positive-board-adapter-budget-paraphrase` | positive | 0.228 | flagged |
+| `negative-ci-branch-policy-pointer` | negative | 0.185 | suppressed as a deliberate pointer |
+| `negative-token-rules-near-miss` | negative | 0.134 | below floor |
+
+The floor is set by a **stated rule**, not a hand-picked number: the midpoint
+between the highest-scoring *unsuppressed* negative (0.134) and the
+lowest-scoring positive (0.181), rounded to the nearest whole percent → **16%**
+(`REDUNDANCY_SCORE_FLOOR_PCT`). All four fixtures classify correctly there, and
+every positive pair does so with a **verbatim 5-gram score of exactly 0.000** —
+they are carried entirely by the paraphrase path, which is the acceptance
+bullet "paraphrase, not just copy-paste" in its checkable form.
+
+**A stated limit of this calibration:** the fixture corpus is 8 short synthetic
+documents and the real surface is 32 real ones, so the two IDF distributions
+differ. The floor transfers as a ratio, not as a guarantee — the same pair
+scores somewhat differently under the two corpora. Calibrating on the surface
+instead would be the tuning PR-4 forbids, so this is an accepted, disclosed
+imprecision rather than a fixed one.
+
+---
