@@ -12,7 +12,9 @@ release that changes the contract surface in a way an overlay must adapt to
 **tags its section `BREAKING`** and includes a migration note. `update-kernel`
 reads that marker; a stranger greps for it before pulling.
 
-## [Unreleased] — BREAKING
+## [Unreleased]
+
+## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first
 
