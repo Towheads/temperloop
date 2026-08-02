@@ -56,12 +56,26 @@
 #     ~/.claude/commands/assess.md is absent and not when it is present,
 #     while the `next step:` marker itself stays byte-identical in both
 #     states (install-tier2.yml greps it on a runner that has no ~/.claude/)
+#   - TOKENS PRODUCER PLACEMENT (temperloop#984): a repo with no
+#     .temperloop/report.d/tokens gets the kernel's locator shim proposed
+#     into the SAME files manifest as .temperloop/config — verbatim, mode
+#     755, executable on disk, honoring the drop-in contract (exit 0 + one
+#     skip line) when run in a stranger's repo with no kernel installed —
+#     and NO new installs[] entry type appears (a tree artifact rides the
+#     manifest; installs[] is API state eject reverts via gh)
+#   - PRODUCER NEVER OVERWRITTEN: a pre-existing (adopter-owned) producer at
+#     that path is byte-identical after `init`, and the proposal commit does
+#     not touch it at all
 #   - invalid --tracker-mode -> usage error, exit 2 (still refused)
 #   - --dir not a git repo -> exit 1
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INIT="$HERE/../init.sh"
+# The kernel checkout's own copy of the shim — the canonical source `init`
+# copies verbatim (bin/subcommands/init.sh § "TOKENS PRODUCER SHIM").
+KERNEL_SRC="$(cd "$HERE/../../.." && pwd)"
+SHIM_SRC="$KERNEL_SRC/.temperloop/report.d/tokens"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
@@ -373,11 +387,37 @@ assert_complete_boards_entry "proposed boards.conf" "$proposed_conf" 1
 assert_complete_boards_entry "config tracker.boards_conf_entry" \
   "$(jq -r '.tracker.boards_conf_entry' "$REPO5/.temperloop/config")" 1
 
+# IDEMPOTENT RE-RUN. This assertion used to read `grep "already present —
+# leaving"` and nothing else — it asserted a LOG LINE while the file it
+# claimed was being left alone was in fact being deleted (the manifest
+# omitted it, and the branch re-cut off a base that never carried it dropped
+# it). Assert the substantive invariant instead: after a second run the
+# proposed boards.conf is still there and still byte-identical. Test 16
+# covers the same property for both optional entries together.
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
   run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
-echo "$out" | grep -q "already present — leaving" \
-  || fail "second run did not detect the already-present boards.conf entry (got: $out)"
-echo "PASS: boards.conf integration proposes a COMPLETE rendered entry (backend=issues, no 'FILL IN') into both the proposed boards.conf and .temperloop/config, idempotent on re-run"
+reproposed_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
+[ -n "$reproposed_conf" ] \
+  || fail "the second run DROPPED boards.conf from the proposal (got: $out)"
+[ "$reproposed_conf" = "$proposed_conf" ] \
+  || fail "the second run changed boards.conf instead of carrying it forward verbatim:\n  run1: $proposed_conf\n  run2: $reproposed_conf"
+assert_complete_boards_entry "re-proposed boards.conf" "$reproposed_conf" 1
+
+# ...and the genuine nothing-to-do case, which is the entry being on the BASE
+# tip (not merely in the working tree): push the proposal to main and re-run.
+# Only here is "leaving it untouched" the truthful thing to print, because
+# only here does the freshly-cut proposal branch already carry it.
+git -C "$REPO5" push -q origin "HEAD:main" \
+  || fail "could not push the proposed boards.conf to the fixture's origin/main"
+git -C "$REPO5" fetch -q origin
+FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
+  run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "already on main — leaving workflows/scripts/board/boards.conf untouched" \
+  || fail "with the entry already on the base branch, init did not report leaving boards.conf untouched (got: $out)"
+settled_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
+[ "$settled_conf" = "$proposed_conf" ] \
+  || fail "boards.conf changed once the entry was already on the base branch"
+echo "PASS: boards.conf integration proposes a COMPLETE rendered entry, carries it forward verbatim on a re-run (never dropping it), and reports nothing-to-do only once it is on the base tip"
 
 # =============================================================================
 # 6. --tracker-mode projects --provision-board --yes-board: ALL THREE are
@@ -571,6 +611,410 @@ last_nonblank13="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -1)"
 printf '%s\n' "$last_nonblank13" | grep -qF '====' \
   || fail "idempotent re-run: the last non-blank line is not the handoff box's closing border (got: $last_nonblank13)"
 echo "PASS: the idempotent already-filed path recovers the same actionable handoff (full epic URL + launch command), last, with zero re-filed issues"
+
+# =============================================================================
+# 14. THE TOKENS PRODUCER IS PLACED (temperloop#984). `temperloop report`'s
+#     headline metric comes from a drop-in producer at
+#     .temperloop/report.d/tokens; nothing placed it before this item, so
+#     the headline was silently unavailable in every repo except the kernel
+#     checkout itself. `init` now proposes it in the SAME files manifest
+#     .temperloop/config already rides.
+#
+#     Four things are pinned, because each has its own way of silently
+#     half-working: the content is a VERBATIM copy of the kernel's shim (a
+#     restated second copy would drift); the git mode is 100755 and the file
+#     is executable ON DISK (report.sh only runs executables — a 644
+#     producer renders as "skipped" and the headline degrades with no
+#     error); the placed copy actually SATISFIES the drop-in contract when
+#     run in a stranger's repo with no kernel installed (exit 0, one skip
+#     line, nothing else); and installs[] gains NO new entry type (a tree
+#     artifact is reverted by the tree — installs[] is the API-state set
+#     eject reverts via `gh`).
+#
+#     Non-interactivity needs no separate assertion: run() closes stdin, so
+#     a prompt added anywhere on this path would hang or take an empty
+#     answer, and this whole test runs under --no-network (the first-epic
+#     offer, the one interactive step init has, is skipped outright).
+# =============================================================================
+REPO14="$(new_fixture_repo repo14)"
+FAKE_PR_NUM=30 run 0 --dir "$REPO14" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens (mode 755)" \
+  || fail "init did not report proposing the tokens producer (got: $out)"
+
+P14="$REPO14/.temperloop/report.d/tokens"
+[ -f "$P14" ] || fail "init did not place .temperloop/report.d/tokens into the target repo"
+git -C "$REPO14" show "HEAD:.temperloop/report.d/tokens" > "$WORK/landed14" 2>/dev/null \
+  || fail "the tokens producer was not committed by the proposal (not in HEAD)"
+# Compared through `$(…)`, which strips trailing newlines on BOTH sides —
+# deliberately, not laziness. proposal-pr.sh re-reads every manifest entry's
+# content through its own `$(…)` capture, so the landed copy is always the
+# source minus its final newline; `.temperloop/config` and `boards.conf`
+# already land that way. This asserts the part that matters (verbatim
+# content, no restated second copy) without pinning a generator-wide
+# behavior that is not this item's to own.
+[ "$(cat "$WORK/landed14")" = "$(cat "$SHIM_SRC")" ] \
+  || fail "the landed producer is not a verbatim copy of the kernel shim at $SHIM_SRC"
+
+mode14="$(git -C "$REPO14" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode14" = "100755" ] \
+  || fail "the landed producer is not committed executable (git mode $mode14, want 100755) — report.sh only runs executables"
+[ -x "$P14" ] || fail "the landed producer is not executable on disk"
+
+# The placed copy honors the drop-in contract in a STRANGER's repo: no
+# TEMPERLOOP_HOME, a PATH with no `temperloop`, and no workflows/ tree for
+# the shim's self-checkout resolver to find -> exit 0 and exactly the
+# contract's skip line, never a stack trace or a non-zero exit.
+prc=0
+producer_out="$(cd "$REPO14" && env -u TEMPERLOOP_HOME PATH=/usr/bin:/bin \
+  ./.temperloop/report.d/tokens 2>&1)" || prc=$?
+[ "$prc" -eq 0 ] \
+  || fail "the placed producer exited $prc in a kernel-less repo (the drop-in contract requires exit 0) — output: $producer_out"
+printf '%s\n' "$producer_out" | grep -qF "skipped -- tokens: producer unavailable" \
+  || fail "the placed producer did not emit the contract's skip line in a kernel-less repo (got: $producer_out)"
+
+[ "$(jq '[.installs[] | select(.type != "proposal_pr")] | length' "$REPO14/.temperloop/config")" -eq 0 ] \
+  || fail "placing the producer minted a non-proposal_pr installs[] entry — a TREE artifact rides the files manifest, never installs[] (got: $(jq -c '.installs' "$REPO14/.temperloop/config"))"
+echo "PASS: init proposes the tokens producer shim verbatim at mode 755, executable, contract-honoring in a kernel-less repo, with no new installs[] entry type"
+
+# =============================================================================
+# 15. AN EXISTING PRODUCER IS NEVER OVERWRITTEN (temperloop#984). A producer
+#     already at that path belongs to the ADOPTER — hand-written, or edited
+#     after an earlier `init`. Silently clobbering it would destroy work
+#     `init` has no standing to touch, with no undo. Present -> leave it
+#     byte-for-byte alone, say so, and don't even include it in the
+#     proposal commit.
+#
+#     The sentinel is pushed to the fixture's origin/main on purpose:
+#     proposal-pr.sh re-creates the proposal branch fresh off the BASE tip
+#     (preferring refs/remotes/origin/<base>), so a seed that only existed
+#     as a local commit would vanish from the working tree for a reason
+#     that has nothing to do with overwriting — and the test would pass or
+#     fail for the wrong reason.
+# =============================================================================
+REPO15="$(new_fixture_repo repo15)"
+mkdir -p "$REPO15/.temperloop/report.d"
+cat > "$REPO15/.temperloop/report.d/tokens" <<'ADOPTER_PRODUCER_EOF'
+#!/usr/bin/env bash
+# An adopter's OWN tokens producer. `temperloop init` must never touch this.
+echo '{"tokens_spent": 4242}'
+ADOPTER_PRODUCER_EOF
+chmod 755 "$REPO15/.temperloop/report.d/tokens"
+cp "$REPO15/.temperloop/report.d/tokens" "$WORK/producer15.before"
+git -C "$REPO15" add -A
+git -C "$REPO15" commit -q -m "seed an adopter-owned tokens producer"
+# No `2>/dev/null` here: this push is load-bearing for the test's validity
+# (see the comment above), and under `set -euo pipefail` a swallowed failure
+# would abort the whole suite with no diagnostic at all.
+git -C "$REPO15" push -q origin main \
+  || fail "could not push the seeded producer to the fixture's origin/main (the test's own precondition)"
+git -C "$REPO15" fetch -q origin
+
+FAKE_PR_NUM=31 run 0 --dir "$REPO15" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "report.d producer: .temperloop/report.d/tokens already on main — leaving it untouched" \
+  || fail "init did not report skipping the pre-existing producer (got: $out)"
+echo "$out" | grep -qF "report.d producer: proposing" \
+  && fail "init proposed the producer even though one was already present (got: $out)"
+
+cmp -s "$WORK/producer15.before" "$REPO15/.temperloop/report.d/tokens" \
+  || fail "init OVERWROTE a pre-existing tokens producer — it must be byte-identical after the run"
+git -C "$REPO15" show --name-only --format= HEAD | grep -qF ".temperloop/report.d/tokens" \
+  && fail "the proposal commit touched the pre-existing tokens producer (it must not appear in the diff at all)"
+mode15="$(git -C "$REPO15" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode15" = "100755" ] || fail "the pre-existing producer's mode changed (git mode $mode15, want 100755)"
+echo "PASS: a pre-existing tokens producer is byte-identical after init, absent from the proposal commit, and its mode is unchanged"
+
+# =============================================================================
+# 16. THE IDEMPOTENT RE-RUN KEEPS WHAT RUN 1 PROPOSED (the blocking defect).
+#
+#     proposal-pr.sh re-creates the proposal branch FRESH off the base tip
+#     every run, so the manifest is a diff against BASE, not against whatever
+#     is checked out. Deciding an optional entry from the WORKING TREE
+#     therefore deleted it on run 2: after run 1 the checkout sits on the
+#     proposal branch carrying the file, run 2's tree probe saw it, "skipped"
+#     it out of the manifest, and the re-cut branch (off a base that never
+#     had it) dropped it — while printing "leaving it untouched", and
+#     force-pushing that regression over the open PR.
+#
+#     Both optional entries had the bug and both are asserted here, because
+#     they now share one base-tip decision path: the producer AND boards.conf
+#     must still be present, byte-identical, and in the proposal commit after
+#     a second consecutive `init` in the same repo. No test covered a second
+#     run in one repo before, which is exactly why the suite couldn't see it.
+# =============================================================================
+REPO16="$(new_fixture_repo repo16)"
+mkdir -p "$REPO16/workflows/scripts/board"
+echo "# marker" > "$REPO16/workflows/scripts/board/marker.txt"
+git -C "$REPO16" add -A
+git -C "$REPO16" commit -q -m "seed board toolkit"
+git -C "$REPO16" push -q origin main \
+  || fail "could not push the seeded board toolkit to the fixture's origin/main"
+git -C "$REPO16" fetch -q origin
+
+# --- run 1: proposes both optional entries -------------------------------
+FAKE_PR_NUM=32 run 0 --dir "$REPO16" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens" \
+  || fail "run 1 did not propose the producer (got: $out)"
+git -C "$REPO16" show "HEAD:.temperloop/report.d/tokens" > "$WORK/run1-producer" 2>/dev/null \
+  || fail "run 1 did not commit the producer"
+git -C "$REPO16" show "HEAD:workflows/scripts/board/boards.conf" > "$WORK/run1-boards" 2>/dev/null \
+  || fail "run 1 did not commit boards.conf"
+
+# --- run 2: the same repo, now sitting on the proposal branch -------------
+FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=32 \
+  run 0 --dir "$REPO16" --gh-repo acme/widget --no-network
+
+P16="$REPO16/.temperloop/report.d/tokens"
+[ -f "$P16" ] \
+  || fail "RE-RUN DELETED THE PRODUCER: it is gone from the working tree after a second init"
+git -C "$REPO16" show "HEAD:.temperloop/report.d/tokens" > "$WORK/run2-producer" 2>/dev/null \
+  || fail "RE-RUN DROPPED THE PRODUCER from the proposal commit"
+cmp -s "$WORK/run1-producer" "$WORK/run2-producer" \
+  || fail "the re-run changed the producer's committed bytes (it must be carried forward verbatim)"
+mode16="$(git -C "$REPO16" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode16" = "100755" ] || fail "the re-run lost the producer's executable bit (git mode $mode16, want 100755)"
+
+# The boards.conf half of the same root cause.
+git -C "$REPO16" show "HEAD:workflows/scripts/board/boards.conf" > "$WORK/run2-boards" 2>/dev/null \
+  || fail "RE-RUN DROPPED boards.conf from the proposal commit"
+cmp -s "$WORK/run1-boards" "$WORK/run2-boards" \
+  || fail "the re-run changed boards.conf (it must be carried forward verbatim, not reverted to the base tip)"
+assert_complete_boards_entry "re-run boards.conf" "$(cat "$WORK/run2-boards")" 1
+echo "PASS: a second consecutive init keeps BOTH optional entries — producer and boards.conf still present, byte-identical, executable, and in the proposal commit"
+
+# =============================================================================
+# 17. BASE/WORKING-TREE DIVERGENCE: an adopter's producer that exists on the
+#     BASE BRANCH but not in the local checkout is NOT overwritten.
+#
+#     The opposite direction of the same root cause, and the one the earlier
+#     fixtures were structurally unable to see (they seeded tree and base
+#     together, so the two never disagreed). Reproduce the disagreement
+#     directly: commit the adopter's producer to origin/main via a SEPARATE
+#     clone, then leave the local checkout on an older commit that has never
+#     seen it. The old working-tree probe found nothing and proposed ours
+#     straight over theirs; the base-tip probe must leave it alone.
+# =============================================================================
+REPO17="$(new_fixture_repo repo17)"
+OTHER17="$WORK/repo17-other"
+git clone -q "$WORK/repo17-upstream.git" "$OTHER17" 2>/dev/null
+mkdir -p "$OTHER17/.temperloop/report.d"
+printf '%s\n' '#!/usr/bin/env bash' 'echo ADOPTER-OWNED-PRODUCER' \
+  > "$OTHER17/.temperloop/report.d/tokens"
+chmod 755 "$OTHER17/.temperloop/report.d/tokens"
+cp "$OTHER17/.temperloop/report.d/tokens" "$WORK/producer17.onbase"
+git -C "$OTHER17" add -A
+git -C "$OTHER17" commit -q -m "adopter commits their own tokens producer"
+git -C "$OTHER17" push -q origin main \
+  || fail "could not push the adopter's producer from the second clone"
+
+# REPO17's working tree has never seen it — a stale clone, exactly the shape
+# the reviewer reproduced. (The fetch only moves the remote-tracking ref;
+# the checkout stays on the older commit.)
+git -C "$REPO17" fetch -q origin
+[ ! -e "$REPO17/.temperloop/report.d/tokens" ] \
+  || fail "fixture bug: REPO17's working tree already has the producer, so this test proves nothing"
+
+FAKE_PR_NUM=33 run 0 --dir "$REPO17" --gh-repo acme/widget --no-network
+echo "$out" | grep -qF "report.d producer: proposing" \
+  && fail "init proposed its own shim over a producer that exists on the base branch (got: $out)"
+echo "$out" | grep -qF "already on main — leaving it untouched" \
+  || fail "init did not detect the base-branch producer (got: $out)"
+git -C "$REPO17" show --name-only --format= HEAD | grep -qF ".temperloop/report.d/tokens" \
+  && fail "the proposal commit touched the adopter's base-branch producer"
+git -C "$REPO17" show "HEAD:.temperloop/report.d/tokens" > "$WORK/producer17.after" 2>/dev/null \
+  || fail "the adopter's producer vanished from the proposal branch"
+cmp -s "$WORK/producer17.onbase" "$WORK/producer17.after" \
+  || fail "init OVERWROTE an adopter's producer that existed on the base branch but not in the local checkout"
+echo "PASS: a producer present on the base branch but absent locally is left byte-identical — the stale-clone overwrite direction is closed"
+
+# =============================================================================
+# 18. THE SOFT-SEAM ARM: an unusable shim degrades legibly and, above all,
+#     never commits a ZERO-BYTE mode-755 file.
+#
+#     init.sh runs WITHOUT `set -e`, so a bare `[ -f ]` let an unreadable or
+#     empty shim through: `$(cat …)` returned empty, the manifest append ran
+#     anyway, and an empty executable landed in the adopter's PR — which
+#     report.sh then execs to exit 0 with no output and no `skipped` line, the
+#     exact failure this arm exists to make legible arriving illegibly. Both
+#     unusable shapes are covered by pointing PRODUCER_SHIM's own lookup at a
+#     throwaway kernel root: a MISSING shim, and a present-but-EMPTY one.
+# =============================================================================
+# init.sh resolves the shim relative to its own location, so a fake kernel
+# root is a directory holding a copy of init.sh at bin/subcommands/ with no
+# (or an empty) .temperloop/report.d/tokens beside it. Everything else it
+# needs (the probe, the generator) is symlinked back to the real checkout.
+make_fake_kernel() {
+  local root="$1"
+  mkdir -p "$root/bin/subcommands" "$root/workflows/scripts"
+  cp "$INIT" "$root/bin/subcommands/init.sh"
+  ln -s "$KERNEL_SRC/workflows/scripts/probe" "$root/workflows/scripts/probe"
+  ln -s "$KERNEL_SRC/workflows/scripts/proposal" "$root/workflows/scripts/proposal"
+  ln -s "$KERNEL_SRC/claude" "$root/claude"
+}
+
+# 18a — the shim file is absent entirely.
+FAKE_KERNEL_MISSING="$WORK/fake-kernel-missing"
+make_fake_kernel "$FAKE_KERNEL_MISSING"
+REPO18A="$(new_fixture_repo repo18a)"
+INIT_SAVED="$INIT"
+INIT="$FAKE_KERNEL_MISSING/bin/subcommands/init.sh"
+FAKE_PR_NUM=34 run 0 --dir "$REPO18A" --gh-repo acme/widget --no-network
+INIT="$INIT_SAVED"
+echo "$out" | grep -qF "report.d producer: skipped — shim unavailable" \
+  || fail "a missing shim did not report the legible soft-seam skip (got: $out)"
+git -C "$REPO18A" show "HEAD:.temperloop/report.d/tokens" >/dev/null 2>&1 \
+  && fail "a missing shim still committed a producer into the proposal"
+echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+  || fail "a missing shim blocked the rest of init (the soft seam must never fail the run) (got: $out)"
+
+# 18b — the shim exists but is EMPTY (the zero-byte-executable trap).
+FAKE_KERNEL_EMPTY="$WORK/fake-kernel-empty"
+make_fake_kernel "$FAKE_KERNEL_EMPTY"
+mkdir -p "$FAKE_KERNEL_EMPTY/.temperloop/report.d"
+: > "$FAKE_KERNEL_EMPTY/.temperloop/report.d/tokens"
+chmod 755 "$FAKE_KERNEL_EMPTY/.temperloop/report.d/tokens"
+REPO18B="$(new_fixture_repo repo18b)"
+INIT="$FAKE_KERNEL_EMPTY/bin/subcommands/init.sh"
+FAKE_PR_NUM=35 run 0 --dir "$REPO18B" --gh-repo acme/widget --no-network
+INIT="$INIT_SAVED"
+echo "$out" | grep -qF "report.d producer: skipped — shim unavailable" \
+  || fail "an EMPTY shim did not report the legible soft-seam skip (got: $out)"
+git -C "$REPO18B" show "HEAD:.temperloop/report.d/tokens" >/dev/null 2>&1 \
+  && fail "an EMPTY shim committed a ZERO-BYTE mode-755 file into the adopter's proposal"
+[ ! -e "$REPO18B/.temperloop/report.d/tokens" ] \
+  || fail "an EMPTY shim left a zero-byte producer in the working tree"
+echo "PASS: an unusable shim (missing OR empty) degrades to the legible skip, never commits a zero-byte executable, and never fails the run"
+
+# =============================================================================
+# 19. `--base` IS VALIDATED BEFORE IT REACHES git (command injection).
+#
+#     `--base` parses unvalidated, and the base-tip probe made init the FIRST
+#     consumer of it — `git fetch "$remote" "$base"`. git honors
+#     option-shaped arguments, so `--base '--upload-pack=<cmd>'` EXECUTED.
+#     proposal-pr.sh does reject the name, but only AFTER init's own fetch had
+#     already run it: downstream refusal is not a guard. This asserts the
+#     ORDERING, not merely the refusal — the marker file must never appear.
+# =============================================================================
+REPO19="$(new_fixture_repo repo19)"
+PWNED_MARKER="$WORK/PWNED-marker"
+rm -f "$PWNED_MARKER"
+run 2 --dir "$REPO19" --gh-repo acme/widget --no-network \
+  --base "--upload-pack=touch $PWNED_MARKER; git-upload-pack"
+[ ! -e "$PWNED_MARKER" ] \
+  || fail "COMMAND INJECTION: --base reached git and executed its --upload-pack payload before anything validated it"
+echo "$out" | grep -qF "is not a valid git branch name" \
+  || fail "a malformed --base was not refused with a clear message (got: $out)"
+# ...and the guard is not merely "reject everything": an explicit, valid
+# --base must still drive a normal run.
+FAKE_PR_NUM=36 run 0 --dir "$REPO19" --gh-repo acme/widget --no-network --base main
+echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+  || fail "an explicit, valid --base was refused by the new guard (got: $out)"
+echo "PASS: a malformed --base is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --base still runs"
+
+# =============================================================================
+# 20. boards.conf UNION: the base tip's board entries survive a STALE local
+#     checkout that knows fewer of them.
+#
+#     The boards.conf mirror of test 17, and the half the earlier fix missed.
+#     That cut let the working tree's whole-file bytes REPLACE base's, which
+#     only looked safe because the sole covered case was "tree lacks the file
+#     entirely". A stale clone carrying a STALE boards.conf still won outright
+#     and deleted every board.<N>.* base had and the tree didn't.
+#
+#     Reproduced exactly: base carries board.1 + board.2, the local checkout
+#     knows only board.1, and init adds board.3. All three must survive.
+# =============================================================================
+REPO20="$(new_fixture_repo repo20)"
+mkdir -p "$REPO20/workflows/scripts/board"
+printf '%s\n' 'board.1.repo=acme/widget' 'board.1.backend=issues' \
+  > "$REPO20/workflows/scripts/board/boards.conf"
+git -C "$REPO20" add -A
+git -C "$REPO20" commit -q -m "seed boards.conf with board.1 only"
+git -C "$REPO20" push -q origin main || fail "could not push the board.1-only boards.conf"
+
+# A second clone adds board.2 and pushes — origin/main now knows more than
+# REPO20's working tree does.
+OTHER20="$WORK/repo20-other"
+git clone -q "$WORK/repo20-upstream.git" "$OTHER20" 2>/dev/null
+printf '%s\n' 'board.1.repo=acme/widget' 'board.1.backend=issues' '' \
+  'board.2.repo=acme/other' 'board.2.backend=issues' \
+  > "$OTHER20/workflows/scripts/board/boards.conf"
+git -C "$OTHER20" add -A
+git -C "$OTHER20" commit -q -m "another adopter adds board.2"
+git -C "$OTHER20" push -q origin main || fail "could not push board.2 from the second clone"
+
+# REPO20 learns the new tip but never merges it: a stale working tree.
+git -C "$REPO20" fetch -q origin
+grep -q "board.2." "$REPO20/workflows/scripts/board/boards.conf" \
+  && fail "fixture bug: REPO20's working tree already knows board.2, so this test proves nothing"
+
+FAKE_PR_NUM=37 run 0 --dir "$REPO20" --gh-repo acme/widget --no-network --board 3
+union_conf="$(git -C "$REPO20" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
+printf '%s\n' "$union_conf" | grep -q "board.2.repo=acme/other" \
+  || fail "THE UNION DROPPED board.2 — an entry that exists on the base branch but not in the stale local checkout:\n$union_conf"
+printf '%s\n' "$union_conf" | grep -q "board.1.repo=acme/widget" \
+  || fail "the union dropped board.1 (got:\n$union_conf)"
+printf '%s\n' "$union_conf" | grep -q "board.3.repo=acme/widget" \
+  || fail "the union did not add the newly requested board.3 (got:\n$union_conf)"
+assert_complete_boards_entry "union boards.conf" "$union_conf" 3
+echo "$out" | grep -qF "keeping every board main already defines" \
+  || fail "the propose branch did not narrate what it was preserving (got: $out)"
+echo "PASS: boards.conf is a real union — every board the base tip defines survives a stale local checkout, and the new entry is added alongside"
+
+# =============================================================================
+# 21. RULE 2 PRESERVES THE ADOPTER'S MODE, it does not re-arm it.
+#
+#     The carry-forward arm hardcoded mode 755 regardless of what it carried.
+#     644 is a MEANINGFUL state for a producer — report.sh only runs
+#     executables, so a non-executable one renders as "skipped -- tokens:
+#     producer unavailable". That makes `chmod 644` a plausible deliberate
+#     DISABLE, which forcing 755 silently re-armed while printing "unchanged".
+# =============================================================================
+REPO21="$(new_fixture_repo repo21)"
+mkdir -p "$REPO21/.temperloop/report.d"
+printf '%s\n' '#!/usr/bin/env bash' 'echo DELIBERATELY-DISABLED' \
+  > "$REPO21/.temperloop/report.d/tokens"
+chmod 644 "$REPO21/.temperloop/report.d/tokens"
+cp "$REPO21/.temperloop/report.d/tokens" "$WORK/producer21.before"
+
+FAKE_PR_NUM=38 run 0 --dir "$REPO21" --gh-repo acme/widget --no-network
+mode21="$(git -C "$REPO21" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$mode21" = "100644" ] \
+  || fail "rule 2 re-armed a deliberately non-executable producer (git mode $mode21, want 100644)"
+[ ! -x "$REPO21/.temperloop/report.d/tokens" ] \
+  || fail "rule 2 made a 644 producer executable on disk"
+# Newline-tolerant, unlike test 15's `cmp -s`. Test 15's file rides through
+# on the base tip and is never rewritten, so it stays byte-exact; a rule-2
+# carry-forward is re-written THROUGH the manifest and so loses its final
+# newline exactly like every other entry (proposal-pr.sh re-reads `.content`
+# via a `$(…)` capture). That is why the run's own line claims "content and
+# mode", not "bytes" — asserting cmp here would be asserting a claim the
+# generator makes impossible.
+[ "$(cat "$WORK/producer21.before")" = "$(cat "$REPO21/.temperloop/report.d/tokens")" ] \
+  || fail "rule 2 changed the carried-forward producer's content"
+echo "$out" | grep -qF "mode (644) preserved" \
+  || fail "the carry-forward line did not name the mode it preserved (got: $out)"
+echo "$out" | grep -qF "bytes and mode" \
+  && fail "the carry-forward line overclaims byte-exactness, which the generator's newline strip makes impossible (got: $out)"
+echo "PASS: rule 2 carries the adopter's own mode (644 stays 644, content unchanged) instead of forcing 755"
+
+# =============================================================================
+# 22. THE --dry-run PREVIEW IS RELATIVE TO THE BASE TIP, and says so.
+#
+#     A real run commits onto a branch cut fresh off base, so base is what
+#     "would create / unchanged" is relative to. Comparing against the working
+#     tree made the preview lie routinely once rule 2's carry-forward existed:
+#     REPO16 has already had two real runs, so its tree carries the producer
+#     while origin/main still does not — the old preview printed `unchanged`
+#     for a path a real run would CREATE.
+# =============================================================================
+run 0 --dir "$REPO16" --gh-repo acme/widget --no-network --dry-run
+printf '%s\n' "$out" | grep -qE '^  would create: \.temperloop/report\.d/tokens$' \
+  || fail "the dry-run preview did not report the producer as a CREATE against the base tip (got: $out)"
+printf '%s\n' "$out" | grep -qF "unchanged:    .temperloop/report.d/tokens" \
+  && fail "the dry-run preview still compares against the working tree — it called a base-tip CREATE 'unchanged' (got: $out)"
+printf '%s\n' "$out" | grep -qF "NOT refreshed (--dry-run performs no fetch" \
+  || fail "the dry-run preview did not disclose that its base ref was not refreshed (got: $out)"
+echo "PASS: the --dry-run preview diffs against the base tip a real run would branch from, and discloses that it skipped the fetch"
 
 echo
 echo "ALL PASS: test_init.sh"
