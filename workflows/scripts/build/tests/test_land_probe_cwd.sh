@@ -81,7 +81,6 @@ probe() {  # <cwd> <root>
   : > "$GHLOG"
   ERRF="$WORK/err.txt"
   LAND_ROOT="$2"
-  unset LAND__NWO_ROOT LAND__NWO || true          # per-case, so each parse is fresh
   set +e
   ( cd "$1" && land__requires_pr ) 2>"$ERRF"
   RC=$?
@@ -161,7 +160,6 @@ check_slug() {  # <label> <origin-url> <expected>
   local dir got
   dir="$(mkrepo "slug-$1" "$2")"
   LAND_ROOT="$dir"
-  unset LAND__NWO_ROOT LAND__NWO || true
   got="$(cd "$NOTAREPO" && land__nwo)"
   [ "$got" = "$3" ] || fail "7/$1: '$2' resolved to '$got', expected '$3'"
 }
@@ -174,13 +172,11 @@ pass "origin URL shapes: scp, ssh://, trailing slash resolve; a local path resol
 # --- 8. gh pr calls are anchored with -R -------------------------------------
 : > "$GHLOG"
 LAND_ROOT="$HTTPS_REPO"
-unset LAND__NWO_ROOT LAND__NWO || true
 land__gh_pr pr list --head chore/x --state open >/dev/null 2>&1 || true
 grep -q -- "-R example-org/example-repo" "$GHLOG" \
   || fail "8: 'gh pr list' not anchored to LAND_ROOT's repo (log: $(cat "$GHLOG"))"
 : > "$GHLOG"
 LAND_ROOT="$LOCAL_REPO"
-unset LAND__NWO_ROOT LAND__NWO || true
 land__gh_pr pr list --head chore/x >/dev/null 2>&1 || true
 grep -q -- "-R" "$GHLOG" \
   && fail "8: an unresolvable slug must not produce a bare '-R' (log: $(cat "$GHLOG"))"

@@ -78,9 +78,11 @@ land__warn() { printf 'land: %s\n' "$*" >&2; }
 # `<owner>/<repo>` for $LAND_ROOT's origin, or "" when origin is not a forge URL
 # (a local-path origin — the hermetic tests — or a non-GitHub remote). Parsed from
 # the remote URL rather than `gh repo view` so the answer is cwd-independent AND
-# free (no API call). Cached per LAND_ROOT.
+# free (no API call): a local `git remote get-url` per call, deliberately NOT memoized
+# — every caller reads it as `$(land__nwo)`, so any cache the function set would land
+# in that command substitution's subshell and never be seen again. A cache here would
+# be dead state that merely LOOKS load-bearing.
 land__nwo() {
-  if [ "${LAND__NWO_ROOT:-}" = "${LAND_ROOT:-}" ]; then printf '%s' "${LAND__NWO:-}"; return 0; fi
   local url slug="" repo rest
   url="$(git -C "$LAND_ROOT" remote get-url origin 2>/dev/null || true)"
   case "$url" in
@@ -98,7 +100,6 @@ land__nwo() {
       esac
       ;;
   esac
-  LAND__NWO_ROOT="$LAND_ROOT"; LAND__NWO="$slug"
   printf '%s' "$slug"
 }
 
