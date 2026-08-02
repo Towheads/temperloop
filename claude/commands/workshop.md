@@ -824,14 +824,16 @@ time.
    disposition. List any gap and stop; do not proceed to ratify a brief with
    an undispositioned dimension. This is the enforcement point
    `claude/design-schema.md` § Disposition grammar's "No-silent-skips rule"
-   names as living here (in the review tier, until temperloop#216's
-   mechanical lint lands) — Step 3's review tier existing does not relax
-   this check; it only adds a source of new dispositions for it to catch.
-   One per-dimension invariant this check also holds until #216's lint
-   lands: **dimension 0's only legal disposition is `filled`** (`n/a` and
-   `deferred` are both invalid for it — `claude/design-schema.md` §
-   Disposition grammar), so a dimension 0 carrying `deferred` (e.g. from a
-   mishandled fold-back) is a gap here, not a passing disposition.
+   names as living here (in the review tier, now also mechanically checked
+   on demand by `workflows/scripts/validate-design-brief.sh --brief`,
+   temperloop#216, shipped 2026-07-11) — Step 3's review tier existing does
+   not relax this check; it only adds a source of new dispositions for it
+   to catch. One per-dimension invariant this check also holds, which the
+   shipped lint does not yet special-case: **dimension 0's only legal
+   disposition is `filled`** (`n/a` and `deferred` are both invalid for it —
+   `claude/design-schema.md` § Disposition grammar), so a dimension 0
+   carrying `deferred` (e.g. from a mishandled fold-back) is a gap here, not
+   a passing disposition.
 
    1b. **Finding-disposal check.** Dimension-level completeness alone
    cannot catch a dropped review finding — every dimension already
@@ -850,6 +852,41 @@ time.
    remedy-bearing form per § 3.3 item 1a; a lens that ran with zero
    findings records `no findings`, a clean checklist records its seams
    held.
+
+   1c. **Challenge-record completeness check** (cross-referenced elsewhere
+   as Step 4.1c). Runs immediately after 1b, before check 2, and gates the
+   Ask (item 3 below) — ratify becomes the terminal act of the walkthrough
+   only once this passes. Re-read the
+   brief's `### Challenge record` (working notes, 3.1.4) and enforce
+   `claude/design-schema.md` § Record completeness's two rules verbatim —
+   the single source of truth this check reuses rather than restates, so
+   the two can never diverge: **(1)** every kernel dimension 0..16 carries
+   at least one `walk` stop line (dimensions 0, 1, and 3 satisfy this via
+   their Step-1 seed — `source: step-1-seed`, written at the Step 1.3b
+   premise-gate proceed for dimension 0 and the Step 1 intake confirm for
+   1 and 3, per § "Seeded dimensions count their Step-1 confirm as their
+   walk verdict" — never a second carve-out); **(2)** every
+   `operator-edited` stop line carries a verbatim `response:` field.
+   `walkthrough` coverage stays opportunistic and is never required per
+   dimension. List any gap and stop, same shape as checks 1 and 1b: return
+   to Step 2 or 3.4 and complete the record before ratifying.
+
+   **Migration carve-out.** A brief with NO `### Challenge record`
+   subheading at all is exempt from rule (1) — never flagged — keyed on
+   the per-brief `status:` signal (temperloop#512), never a global
+   version flip; a non-ratified (draft/dropped) brief is never held to
+   (1) or (2) either. The record-start-marker-present-but-empty defect is
+   independent of ratification status and applies regardless. Fixture
+   `workflows/scripts/tests/fixtures/design-briefs/challenge-record-migration-exempt.md`
+   (ratified, no `### Challenge record` section at all) ratifies under
+   this carve-out.
+
+   **Not excused.** Fixture
+   `workflows/scripts/tests/fixtures/design-briefs/challenge-record-walk-missing.md`
+   (ratified, `challenge-record-start:` marker present, dimension 6's
+   `walk` line omitted) is NOT excused by the carve-out and IS blocked —
+   the loophole the record-start marker exists to close: a crashed
+   post-change walk masquerading as a migration case.
 2. **Contract sanity.** Re-read dimension 4's `Produces` / `Consumes` /
    `Acceptance`. If it reads as a summary rather than an actual contract —
    the kind of content `/assess`'s epic-decomposition mode would need to

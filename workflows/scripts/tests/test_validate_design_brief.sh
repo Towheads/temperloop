@@ -276,8 +276,8 @@ assert_lacks "$out" "DANGLING-CITATION" "10c: no false DANGLING-CITATION from a 
 # design-schema.md § Challenge record / § Record completeness is the source
 # of truth check (C) reads; these fixtures exercise its grammar check, its
 # two completeness rules, and the migration carve-out — the SAME carve-out
-# semantics `/workshop` Step 4.1c's future in-session ratify gate must reuse
-# verbatim (the two migration fixtures below are the ones it consumes).
+# semantics `/workshop` Step 4.1c's in-session ratify gate reuses verbatim
+# (the two migration fixtures below are the ones it consumes).
 
 echo "--- 11a. --brief on challenge-record-migration-exempt (ratified, no record at all) ---"
 run --brief "$BRIEF_FIXTURES/challenge-record-migration-exempt.md"
