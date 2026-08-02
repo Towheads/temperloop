@@ -853,9 +853,10 @@ time.
    findings records `no findings`, a clean checklist records its seams
    held.
 
-   1c. **Challenge-record completeness check.** Runs immediately after 1b,
-   before check 2, and gates the Ask (item 3 below) — ratify becomes the
-   terminal act of the walkthrough only once this passes. Re-read the
+   1c. **Challenge-record completeness check** (cross-referenced elsewhere
+   as Step 4.1c). Runs immediately after 1b, before check 2, and gates the
+   Ask (item 3 below) — ratify becomes the terminal act of the walkthrough
+   only once this passes. Re-read the
    brief's `### Challenge record` (working notes, 3.1.4) and enforce
    `claude/design-schema.md` § Record completeness's two rules verbatim —
    the single source of truth this check reuses rather than restates, so
