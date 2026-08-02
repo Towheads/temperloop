@@ -99,15 +99,65 @@
 # a single directory).
 #
 # DEGRADE, NOT GUESS: if this cwd is not inside a git working tree (`git
-# rev-parse` fails) — or if the CALLER already overrode
-# $SPEND_TRANSCRIPT_ROOT (layer 2 of docs/config-precedence.md's six-layer
-# ladder; test fixtures rely on this) — this script does not pass --root at
-# all and lets the profiler fall back to its own default, machine-wide by
-# construction. Whichever corpus is actually walked, the `notice` field
-# below (workflows/scripts/lib/report.contract.md's notice channel,
-# temperloop#981) states that TRUE scope, never a hardcoded claim — see the
-# scope_notice assignment below, which is set from the SAME branch that
-# decides whether --root is passed.
+# rev-parse` fails), or the derived path does not exist, or the CALLER
+# already overrode $SPEND_TRANSCRIPT_ROOT to something OTHER than its own
+# default — this script does not pass --root at all and lets the profiler
+# fall back to its default, machine-wide by construction. Whichever corpus
+# is actually walked, the `notice` field below (workflows/scripts/lib/
+# report.contract.md's notice channel, temperloop#981) states that TRUE
+# scope, never a hardcoded claim — see the scope_notice assignment below,
+# which is set from the SAME branch that decides whether --root is passed.
+# THREE distinct notices, not two (temperloop#983 review): repo-scoped
+# success; repo-scoping unavailable (not a git tree, or an explicit
+# non-default override) → generic machine-wide; and repo-scoping SUCCEEDED
+# at deriving a path but that path doesn't exist yet (a genuinely fresh or
+# empty checkout) → a THIRD notice naming the exact path, because silently
+# falling back to machine-wide there would look identical to a real,
+# populated repo-scoped zero — an undetectable wrong number is worse than
+# the bug this item exists to fix. See the `scoped_root_missing` branch
+# below.
+#
+# "OVERRIDE" DETECTION (temperloop#983 review, finding 3): naively treating
+# any non-empty $SPEND_TRANSCRIPT_ROOT as an explicit override defeats this
+# whole fix in the most common real invocation path — every command spec
+# that follows the kernel's § Named-setting convention sources
+# build.config.sh at its own Step 0, which does `:
+# "${SPEND_TRANSCRIPT_ROOT:=$HOME/.claude/projects}"` and EXPORTS it (see
+# that file's own `export SPEND_TRANSCRIPT_ROOT ...` line), so by the time
+# this producer runs as a child of such a session, $SPEND_TRANSCRIPT_ROOT is
+# ALREADY non-empty with the machine-wide DEFAULT, not a caller's deliberate
+# choice. So: only a value that DIFFERS from that documented default counts
+# as an override (test fixtures naturally clear this bar — they point at a
+# throwaway tmpdir). This is a heuristic, not a perfect signal — an operator
+# who explicitly re-asserts the literal default value is indistinguishable
+# from one who never touched it, and this script does not try to
+# distinguish them; there is no separate opt-out flag today.
+#
+# CWD-KEYING CAVEAT (temperloop#983 review, finding 6): Claude Code keys a
+# project's transcript directory on the SESSION'S OWN LAUNCH cwd, which this
+# script approximates with `git rev-parse --show-toplevel` (the git
+# TOPLEVEL of our cwd), not the literal cwd itself. Those two can diverge —
+# a session launched from a SUBDIRECTORY of a checkout gets its own,
+# different project directory that this encoding will never find (this
+# machine carries a real example: `foundation-cron/workflows`, 34
+# transcripts, invisible to a toplevel-keyed encode of `foundation-cron`).
+# This is a known, accepted UNDER-count, not a bug to chase: pattern-
+# matching or globbing for such subdirectory variants would reintroduce the
+# exact reverse-decode ambiguity this script deliberately refuses (see
+# "THE FIX" above) — it is latent today only because no such divergent
+# directory happens to carry workflow transcripts, not because the risk
+# doesn't exist structurally.
+#
+# LOCALE (temperloop#983 review, finding 4): the encode step below pins
+# `LC_ALL=C` on its one `sed` call so the character class matches per-BYTE
+# regardless of the ambient locale (a UTF-8 locale would match per-character
+# instead, and cron/launchd/CI commonly already run under `LC_ALL=C` — an
+# inconsistent locale between the encoder and Claude Code's own JS-side
+# per-UTF-16-code-unit encoding would silently produce the WRONG directory
+# name for an astral-plane character in a checkout path). Practically: a
+# checkout path containing only ASCII is unaffected either way; a non-ASCII
+# checkout path is UNSUPPORTED (falls through to the "doesn't exist" branch
+# below, degrading legibly rather than silently miscounting).
 
 set -uo pipefail
 
@@ -147,22 +197,54 @@ if [ -n "$today" ]; then
 fi
 
 # --- repo scoping (temperloop#983) -----------------------------------------
-# See the header comment above for the full rationale. Compute this repo's
-# own Claude Code project directory by FORWARD-encoding a path we already
-# know for certain (git's own toplevel of our cwd) — never by pattern-
-# matching or decoding existing ~/.claude/projects/ entries, which is lossy.
+# See the header comment above for the full rationale, including the three-
+# notice shape and the override-detection heuristic. Compute this repo's own
+# Claude Code project directory by FORWARD-encoding a path we already know
+# for certain (git's own toplevel of our cwd) — never by pattern-matching or
+# decoding existing ~/.claude/projects/ entries, which is lossy.
 #
-# The layer-2 override check (`SPEND_TRANSCRIPT_ROOT` already exported) MUST
-# come first and win: repo-scoping is this script's own DEFAULT, not a
-# stronger claim than an explicit caller override (docs/config-precedence.md
-# six-layer ladder) — and test fixtures depend on being able to point the
-# profiler at a throwaway root via that exact env var.
+# override detection: only a $SPEND_TRANSCRIPT_ROOT that DIFFERS from its
+# own documented default counts as a caller override (see header finding 3)
+# — the mere presence of the var, exported at its default by any session
+# that sourced build.config.sh, must not defeat repo-scoping.
+transcript_root_overridden=0
+default_transcript_root="${HOME:-}/.claude/projects"
+if [ -n "${SPEND_TRANSCRIPT_ROOT:-}" ] && [ "$SPEND_TRANSCRIPT_ROOT" != "$default_transcript_root" ]; then
+  transcript_root_overridden=1
+fi
+
 scoped_root=""
-if [ -z "${SPEND_TRANSCRIPT_ROOT:-}" ]; then
+scoped_root_missing=""
+if [ "$transcript_root_overridden" -eq 0 ]; then
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root=""
   if [ -n "$repo_root" ] && [ -n "${HOME:-}" ]; then
-    encoded="$(printf '%s' "$repo_root" | sed 's/[^A-Za-z0-9]/-/g')"
-    scoped_root="$HOME/.claude/projects/$encoded"
+    # LC_ALL=C pinned on this one call (header finding 4): per-BYTE matching,
+    # independent of the ambient locale.
+    encoded="$(printf '%s' "$repo_root" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
+    # Guard `encoded` non-empty (header finding 5): an empty encode would
+    # make the candidate literally "$HOME/.claude/projects/" -- which
+    # EXISTS, so the missing-dir check below would never catch it, and this
+    # script would silently walk the whole machine while claiming
+    # repo-scoping. Not reachable today (sed on a non-empty input always
+    # emits SOME output), but the failure mode of a silent gap here is
+    # exactly the lying notice this whole review round exists to kill.
+    if [ -n "$encoded" ]; then
+      candidate_root="$HOME/.claude/projects/$encoded"
+      # Existence check (header finding 1, BLOCKING): a derived root that
+      # does not exist must NOT be passed to --root silently. The profiler
+      # (pipeline-spend-report.sh) treats a nonexistent --root as a
+      # legitimate empty corpus -- valid JSON, units_total: 0, exit 0 -- so
+      # without this check a fresh clone, a linked worktree, a CI runner, or
+      # any $HOME that differs from the session that recorded the
+      # transcripts would silently render "0 tokens" under a "THIS git
+      # checkout" notice: a wrong number that asserts its own correctness,
+      # strictly worse than the machine-wide number it replaced.
+      if [ -d "$candidate_root" ]; then
+        scoped_root="$candidate_root"
+      else
+        scoped_root_missing="$candidate_root"
+      fi
+    fi
   fi
 fi
 
@@ -173,11 +255,25 @@ if [ -n "$scoped_root" ]; then
   else
     raw="$(bash "$profiler" --format json --root "$scoped_root" 2>/dev/null)" || skip
   fi
+elif [ -n "$scoped_root_missing" ]; then
+  # The THIRD notice (header finding 1): repo-scoping succeeded at deriving
+  # a path, but nothing has ever been recorded there -- a genuinely empty or
+  # fresh checkout is real, so this is not an error, but it must be named
+  # explicitly rather than silently substituting the machine-wide corpus
+  # under a claim of repo-scoping. The exact path is included so the
+  # operator can diff it against their own `ls ~/.claude/projects`.
+  scope_notice="no Claude Code transcripts recorded for this checkout ($scoped_root_missing); reporting machine-wide instead -- not comparable across teammates or machines."
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+  fi
 else
-  # Machine-wide fallback -- either repo-scoping was unavailable (not a git
-  # working tree) or the caller already chose a root via SPEND_TRANSCRIPT_ROOT
-  # (in which case we don't second-guess it, but we also can't claim it's
-  # scoped to this repo).
+  # Machine-wide fallback -- repo-scoping was never attempted at all (not a
+  # git working tree, or the caller genuinely overrode
+  # $SPEND_TRANSCRIPT_ROOT to something other than its own default; either
+  # way we don't second-guess an explicit override, but we also can't claim
+  # it's scoped to this repo).
   scope_notice="directional cost-weighted token spend across every Claude Code project on this machine -- not comparable across teammates or machines."
   # An unresolvable window is not a failure — report the whole corpus rather
   # than nothing, and let the report's own DIRECTIONAL label carry the caveat.
