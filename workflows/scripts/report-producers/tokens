@@ -56,6 +56,58 @@
 # precision. `by_model` is reported in the SAME cost-weighted units as
 # `tokens_spent`, so the two are internally consistent (the parts sum to the
 # whole).
+#
+# CORPUS SCOPE (temperloop#983): the profiler's --root defaults to
+# $SPEND_TRANSCRIPT_ROOT, i.e. the WHOLE of $HOME/.claude/projects — every
+# repo this operator has ever run Claude Code against on this machine, not
+# just the one that is invoking `temperloop report`. Left unset, that made
+# `tokens_spent / merged_count` divide EVERY project's spend on this
+# machine by only THIS repo's merged-item count — invisible in the kernel's
+# own dogfooding (one repo dominates the corpus here) but wrong for any
+# other adopter.
+#
+# THE FIX: scope --root to THIS checkout's own Claude Code project
+# directory, computed FORWARD from a known real path — never decoded
+# backward. Claude Code names a project's transcript directory by taking the
+# checkout's absolute path and replacing every non-alphanumeric character
+# ('/' and '.' alike) with '-' (verified against this machine's real
+# ~/.claude/projects/ listing during #983's investigation: e.g.
+# /Users/x/dev/batch/foundation.wt/some-slug encodes to
+# -Users-x-dev-batch-foundation-wt-some-slug). That transform is lossy in
+# the REVERSE direction — "...repo.wt.slug..." and "...repo--claude-
+# worktrees.slug..." are indistinguishable once collapsed to dashes — so
+# this script never tries to pattern-match or enumerate existing
+# ~/.claude/projects/ entries. It only ever encodes ONE path it already
+# knows for certain: `git rev-parse --show-toplevel` of its own cwd, which
+# report.contract.md's Overlay drop-in contract fixes as "the target repo".
+#
+# WHY THIS IS ENOUGH, NOT JUST "CLOSE ENOUGH": Claude Code writes a
+# subagent's transcript under the ORCHESTRATING session's own project
+# directory (keyed by that session's cwd at spawn time) — never under
+# whatever directory the subagent itself later `cd`s into. A `/build` item
+# worker launched from this checkout, that does its actual work inside an
+# isolated LINKED worktree elsewhere on disk, still leaves its transcript
+# under this checkout's own project directory. #983 confirmed this
+# empirically on this machine: the checkout's own project dir carried
+# hundreds of workflow agent transcripts while six sibling per-worktree
+# project dirs for the same repo carried zero. A genuinely DIFFERENT
+# checkout or clone of the same repo (a separate `git clone`, not a linked
+# worktree of this one) gets its own, unrelated project directory and is
+# correctly EXCLUDED — that is a different corpus, not this checkout's
+# spend, and this machine carries three such independent temperloop clones
+# with wildly different transcript counts (evidence a single "repo" is not
+# a single directory).
+#
+# DEGRADE, NOT GUESS: if this cwd is not inside a git working tree (`git
+# rev-parse` fails) — or if the CALLER already overrode
+# $SPEND_TRANSCRIPT_ROOT (layer 2 of docs/config-precedence.md's six-layer
+# ladder; test fixtures rely on this) — this script does not pass --root at
+# all and lets the profiler fall back to its own default, machine-wide by
+# construction. Whichever corpus is actually walked, the `notice` field
+# below (workflows/scripts/lib/report.contract.md's notice channel,
+# temperloop#981) states that TRUE scope, never a hardcoded claim — see the
+# scope_notice assignment below, which is set from the SAME branch that
+# decides whether --root is passed.
 
 set -uo pipefail
 
@@ -94,12 +146,46 @@ if [ -n "$today" ]; then
   fi
 fi
 
-# An unresolvable window is not a failure — report the whole corpus rather
-# than nothing, and let the report's own DIRECTIONAL label carry the caveat.
-if [ -n "$since" ]; then
-  raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+# --- repo scoping (temperloop#983) -----------------------------------------
+# See the header comment above for the full rationale. Compute this repo's
+# own Claude Code project directory by FORWARD-encoding a path we already
+# know for certain (git's own toplevel of our cwd) — never by pattern-
+# matching or decoding existing ~/.claude/projects/ entries, which is lossy.
+#
+# The layer-2 override check (`SPEND_TRANSCRIPT_ROOT` already exported) MUST
+# come first and win: repo-scoping is this script's own DEFAULT, not a
+# stronger claim than an explicit caller override (docs/config-precedence.md
+# six-layer ladder) — and test fixtures depend on being able to point the
+# profiler at a throwaway root via that exact env var.
+scoped_root=""
+if [ -z "${SPEND_TRANSCRIPT_ROOT:-}" ]; then
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root=""
+  if [ -n "$repo_root" ] && [ -n "${HOME:-}" ]; then
+    encoded="$(printf '%s' "$repo_root" | sed 's/[^A-Za-z0-9]/-/g')"
+    scoped_root="$HOME/.claude/projects/$encoded"
+  fi
+fi
+
+if [ -n "$scoped_root" ]; then
+  scope_notice="directional cost-weighted token spend, scoped to THIS git checkout on this machine only -- not comparable across teammates, machines, or other clones/checkouts of this repo."
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" --root "$scoped_root" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json --root "$scoped_root" 2>/dev/null)" || skip
+  fi
 else
-  raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+  # Machine-wide fallback -- either repo-scoping was unavailable (not a git
+  # working tree) or the caller already chose a root via SPEND_TRANSCRIPT_ROOT
+  # (in which case we don't second-guess it, but we also can't claim it's
+  # scoped to this repo).
+  scope_notice="directional cost-weighted token spend across every Claude Code project on this machine -- not comparable across teammates or machines."
+  # An unresolvable window is not a failure — report the whole corpus rather
+  # than nothing, and let the report's own DIRECTIONAL label carry the caveat.
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+  fi
 fi
 [ -n "$raw" ] || skip
 
@@ -107,12 +193,18 @@ fi
 # total and would only surface in report.sh's "excluded, no matching price"
 # list as noise (Claude Code records a `<synthetic>` pseudo-model for
 # locally-generated messages that cost nothing).
-out="$(printf '%s' "$raw" | jq -c '
+#
+# `notice` (workflows/scripts/lib/report.contract.md's notice channel,
+# temperloop#981) always carries the comparability caveat, and its wording
+# is set from the SAME branch above that decided whether --root was passed
+# -- so the text always describes the corpus this run actually walked, not
+# a hardcoded claim.
+out="$(printf '%s' "$raw" | jq -c --arg notice "$scope_notice" '
   select((.units_total | type) == "number")
   | (if (.by_model | type) == "object"
      then (.by_model | with_entries(select((.value | type) == "number" and .value > 0)))
      else {} end) as $bm
-  | {tokens_spent: .units_total}
+  | {tokens_spent: .units_total, notice: $notice}
     + (if ($bm | length) > 0 then {by_model: $bm} else {} end)
 ' 2>/dev/null)" || skip
 

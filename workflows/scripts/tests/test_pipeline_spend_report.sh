@@ -432,6 +432,107 @@ EOF
     bash -c "! grep -nE '(^|[^A-Za-z0-9_])(curl|wget|nc|netcat|ssh|scp|rsync|telnet|ftp)([ \\t]|\$)|/dev/(tcp|udp)/' '$PRODUCER' | grep -vE '^[0-9]+:[[:space:]]*#'"
   check "PRODUCER: never calls gh either (this producer reads local files only)" \
     bash -c "! grep -nE '(^|[^A-Za-z0-9_])gh ' '$PRODUCER' | grep -vE '^[0-9]+:[[:space:]]*#'"
+
+  # =========================================================================
+  # 9e-9g. CORPUS SCOPING (temperloop#983) — "fix what corpus the token
+  # number is drawn from, and say so in the report".
+  #
+  # Prior to #983 the producer never passed --root, so `tokens_spent` was
+  # ALWAYS every project's transcripts on the machine ($SPEND_TRANSCRIPT_ROOT
+  # unfiltered). This block proves the fix two ways:
+  #   9e: the producer, run from a real (fixture) git checkout, scopes --root
+  #       to THAT checkout's own Claude Code project directory and excludes a
+  #       DECOY corpus placed under a different project directory on the same
+  #       fake $HOME -- the important half, per this item's own acceptance
+  #       bullet: a test that only checked the notice string renders would
+  #       pass even if the number were still machine-wide.
+  #   9f: an explicit SPEND_TRANSCRIPT_ROOT override (layer 2 of
+  #       docs/config-precedence.md) still wins over repo-scoping, and the
+  #       notice never claims a scoping it didn't do.
+  #   9g: end-to-end through `bin/subcommands/report.sh` (i.e. `temperloop
+  #       report` itself) -- the comparability caveat actually renders inline
+  #       with the tokens headline, not just in the producer's own stdout.
+  # =========================================================================
+  FAKE_HOME="$TMP/fake-home-983"
+  FAKEREPO="$TMP/fake-repo-983"
+  mkdir -p "$FAKEREPO"
+  git -C "$FAKEREPO" init -q >/dev/null 2>&1 || true
+  REAL_FAKEREPO_ROOT="$(git -C "$FAKEREPO" rev-parse --show-toplevel 2>/dev/null)"
+
+  if [ -n "$REAL_FAKEREPO_ROOT" ]; then
+    ENC="$(printf '%s' "$REAL_FAKEREPO_ROOT" | sed 's/[^A-Za-z0-9]/-/g')"
+    INSCOPE_ROOT="$FAKE_HOME/.claude/projects/$ENC"
+    DECOY_ROOT="$FAKE_HOME/.claude/projects/-some-other-unrelated-repo"
+
+    # in-scope: 1 call. units = 1000*0.1 + 200*1.25 + 40*5 + 8*1 = 558
+    { usage_line reqS1 2026-07-10T10:00:00.000Z claude-opus-5 1000 200 40 8 text; } \
+      | mkagent "$INSCOPE_ROOT" wf_scope-001 s0001
+    # decoy: a DIFFERENT project's spend on the same machine -- must NOT be
+    # counted. units = 9000*0.1 + 9000*1.25 + 900*5 + 90*1 = 16740. If it
+    # leaked in, the total would be 558+16740=17298, not 558.
+    { usage_line reqD1 2026-07-10T10:00:00.000Z claude-opus-5 9000 9000 900 90 text; } \
+      | mkagent "$DECOY_ROOT" wf_decoy-001 d0001
+
+    RUN_PRODUCER_SCOPED() { # extra args forwarded to env
+      (cd "$FAKEREPO" && env -u SPEND_TRANSCRIPT_ROOT HOME="$FAKE_HOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 \
+        SPEND_WEIGHT_OUTPUT=5 SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+        BASELINE_SNAPSHOT_LOOKBACK_DAYS=36500 "$@")
+    }
+
+    OUT9E="$(RUN_PRODUCER_SCOPED "$PRODUCER")"
+    check_eq "SCOPE 9e: repo-scoped tokens_spent counts ONLY this checkout's own transcripts (558) -- the decoy project's spend on the same machine is excluded" \
+      "558" "$(printf '%s' "$OUT9E" | jq -r '.tokens_spent')"
+    check "SCOPE 9e: ...i.e. the total is NOT the sum of both corpora (would be 17298 if the decoy leaked in)" \
+      bash -c "printf '%s' '$OUT9E' | jq -e '.tokens_spent != 17298' >/dev/null"
+    check "SCOPE 9e: the notice states THIS-checkout-only scoping" \
+      bash -c "printf '%s' '$OUT9E' | jq -e '(.notice | type) == \"string\" and (.notice | test(\"THIS git checkout\"))' >/dev/null"
+    check "SCOPE 9e: ...and does NOT claim machine-wide scope, since repo-scoping actually succeeded" \
+      bash -c "! printf '%s' '$OUT9E' | jq -r '.notice' | grep -q 'every Claude Code project'"
+
+    # --- 9f: an explicit SPEND_TRANSCRIPT_ROOT override wins over
+    # repo-scoping (layer 2 beats this producer's own default), and the
+    # notice is honest about NOT having repo-scoped in that case.
+    OUT9F="$(cd "$FAKEREPO" && SPEND_TRANSCRIPT_ROOT="$R1" "$PRODUCER")"
+    check "SCOPE 9f: an explicit SPEND_TRANSCRIPT_ROOT override still produces a usable object" \
+      bash -c "printf '%s' '$OUT9F' | jq -e '(.tokens_spent | type) == \"number\"' >/dev/null"
+    check "SCOPE 9f: ...and the notice does not falsely claim this-checkout-only scoping" \
+      bash -c "! printf '%s' '$OUT9F' | jq -r '.notice' | grep -q 'THIS git checkout'"
+
+    # --- 9g: end-to-end through report.sh (`temperloop report`) -- the
+    # notice must actually RENDER inline with the tokens headline, using the
+    # REAL kernel-side producer (not a stub), so this proves the shipped
+    # wiring, not just the producer's own stdout.
+    REPORT_SH="$REPO_ROOT/bin/subcommands/report.sh"
+    if [ -x "$REPORT_SH" ]; then
+      mkdir -p "$FAKEREPO/.temperloop/report.d"
+      printf '%s\n' '{"generated_at":"2026-07-10T00:00:00Z","lookback_days":90,"repo":{"gh_repo":"x/y"},"metrics":{"available":true,"pr_throughput":{"merged_count":1},"time_to_merge_hours":{"median":1},"review_latency_hours":{"median":1},"issue_backlog":{"median_age_days":1}}}' \
+        > "$FAKEREPO/.temperloop/baseline.jsonl"
+      cat > "$FAKEREPO/.temperloop/report.d/tokens" <<EOF
+#!/usr/bin/env bash
+exec "$PRODUCER"
+EOF
+      chmod +x "$FAKEREPO/.temperloop/report.d/tokens"
+
+      # Written to a file rather than captured into a shell var + re-embedded
+      # in a quoted bash -c string: report.sh's own kernel-tier prose
+      # legitimately contains single quotes (e.g. "'temperloop
+      # baseline-snapshot'"), which would break the single-quote-embedding
+      # trick this file's other checks rely on. grep the file directly.
+      E2E_FILE="$TMP/e2e-983-report-out.txt"
+      RUN_PRODUCER_SCOPED bash "$REPORT_SH" >"$E2E_FILE" 2>&1
+      check "SCOPE 9g E2E: temperloop report renders the tokens headline" \
+        grep -q "Tokens spent vs items merged" "$E2E_FILE"
+      check "SCOPE 9g E2E: temperloop report renders the repo-scoping comparability notice inline with the headline" \
+        grep -q "notice: directional cost-weighted token spend, scoped to THIS git checkout" "$E2E_FILE"
+      check "SCOPE 9g E2E: the rendered ratio uses the REPO-SCOPED total (558), not the combined-with-decoy total" \
+        grep -q "558 tokens / 1 merged" "$E2E_FILE"
+    else
+      printf '  - skipped: SCOPE 9g E2E (bin/subcommands/report.sh not found)\n'
+    fi
+  else
+    printf '  - skipped: SCOPE 9e-9g (could not git-init a fixture checkout to derive a real toplevel)\n'
+  fi
 else
   printf '  - skipped: workflows/scripts/report-producers/tokens not present or not executable\n'
 fi
