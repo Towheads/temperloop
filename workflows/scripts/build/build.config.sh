@@ -353,6 +353,31 @@ fi
 : "${BUILD_MACHINERY_SOLO_MODEL:=}"
 : "${BUILD_MACHINERY_BATCH_MODEL:=}"
 
+# claude/workflows/build-level.mjs §3e.5 — the per-SLICE wall-clock budget, in
+# seconds, for the parent-side acceptance gate's `scripts/quality-gates.sh` run.
+#
+# WHY A SLICE AND NOT A DEADLINE. The gate runs inside ONE executor-agent Bash
+# invocation whose tool ceiling (~10 min) this repo cannot raise. Treating that
+# ceiling as a deadline for the WHOLE suite decayed twice: temperloop#115 raised
+# a flat timeout 2min -> 8min after a green suite was SIGTERM'd and reported as
+# GATE_FAIL, and temperloop#1021 is the identical failure again once the gate
+# list outgrew 8min. So this value bounds ONE slice, not the suite:
+# quality-gates.sh (via QUALITY_GATES_BUDGET_SECS) runs gates until the budget is
+# spent, stops CLEANLY BETWEEN GATES, and reports a resume index; build-level.mjs
+# loops slices. Total suite runtime is therefore unbounded by the agent's cap, and
+# gate-list growth can no longer manufacture a false failure — which is why this
+# setting should almost never need raising. Raise it only to cut the NUMBER of
+# slices (each costs one cheap executor spawn), never to "make the suite fit".
+#
+# Handed to build-level.mjs the same way the two model settings above are — as
+# orchestrator-supplied WORKFLOW INPUT `input.gateSliceSecs`, resolved at
+# build.md / sweep.md / fix.md Step 0 — because the Workflow runtime has no
+# shell to source this file (DESIGN NOTE 1). The .mjs keeps its OWN in-file
+# default and CLAMPS the value so the derived Bash-tool timeout can never exceed
+# the agent's hard ~10-min cap; an un-updated caller that omits the key, or one
+# that resolves it to an empty string, lands on that default unchanged.
+: "${BUILD_GATE_SLICE_SECS:=300}"
+
 # sweep.md Step 3 tier-2 composition — the BOUNDED wait on background chunk 1's
 # completion notification. After the Phase-1 question batch resolves, if chunk 1's
 # `<task-notification>` has not arrived, the driver polls the chunk's task state
@@ -761,7 +786,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
-       FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL \
+       FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
        PIPELINE_DRIVE_MERGE PIPELINE_DRIVE_MERGE_CAP PIPELINE_DRIVE_MERGE_MODEL PIPELINE_DRIVE_MERGE_SETTINGS \

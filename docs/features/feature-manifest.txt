@@ -282,6 +282,7 @@ quality-gates workflows/scripts/lib/checkout-freshness.sh
 quality-gates scripts/tests/test_quality_gates_freshness.sh
 quality-gates workflows/scripts/lib/gate-retry.sh
 quality-gates scripts/tests/test_quality_gates_retry.sh
+quality-gates scripts/tests/test_quality_gates_slice.sh
 quality-gates scripts/lint-zsh-param-tie.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh

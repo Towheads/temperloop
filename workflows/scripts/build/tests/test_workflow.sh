@@ -916,12 +916,21 @@ if ((result.escalations ?? []).length !== 0)
 
 // The core regression: the gate executor prompt MUST carry the long Bash-tool
 // timeout (temperloop#115) — both the numeric value and the 'timeout' framing.
+// The VALUE is now DERIVED from the slice budget (temperloop#1021), not typed:
+// the default 300s slice + 240s single-gate overrun headroom = 540000ms, still
+// under the agent's 600000ms Bash cap.
 if (!gatePromptSeen)
   { console.log(JSON.stringify({ ok: false, reason: 'gate agent call never observed' })); process.exit(0); }
-if (!gatePromptSeen.includes('480000'))
-  { console.log(JSON.stringify({ ok: false, reason: 'gate prompt missing 480000 Bash timeout: ' + gatePromptSeen })); process.exit(0); }
+if (!gatePromptSeen.includes('540000'))
+  { console.log(JSON.stringify({ ok: false, reason: 'gate prompt missing the derived 540000 Bash timeout: ' + gatePromptSeen })); process.exit(0); }
 if (!/timeout/i.test(gatePromptSeen))
   { console.log(JSON.stringify({ ok: false, reason: 'gate prompt missing timeout directive: ' + gatePromptSeen })); process.exit(0); }
+// temperloop#1021: the prompt must ALSO name GATE_TIMEOUT as the answer when the
+// Bash tool's timeout fires. Without it the executor picks the nearest
+// failure-shaped enum member — GATE_FAIL — and a GREEN suite escalates as
+// broken. That conflation is the dangerous half of #1021, not the wasted time.
+if (!gatePromptSeen.includes('GATE_TIMEOUT'))
+  { console.log(JSON.stringify({ ok: false, reason: '#1021: gate prompt does not name GATE_TIMEOUT for the Bash-timeout case: ' + gatePromptSeen })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -985,6 +994,226 @@ if (!gatePromptSeen.includes(worktreeQg))
 // jump back to main and defeat the worktree validation).
 if (gatePromptSeen.includes(repoRootQg))
   { console.log(JSON.stringify({ ok: false, reason: 'gate still references repoRoot quality-gates.sh (' + repoRootQg + '), which validates main not the worktree: ' + gatePromptSeen })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11d (temperloop#1021): a gate TIMEOUT is NOT a gate FAILURE.
+#   The dangerous half of #1021: a budget-exhausted 3e.5 run and a genuinely red
+#   suite both collapsed to {"outcome":"GATE_FAIL"} → `acceptance-gate-failed`,
+#   so an escalation payload could not be told apart from real breakage. A
+#   GATE_TIMEOUT must escalate under its OWN kind, with a payload that says the
+#   suite's verdict is UNKNOWN rather than implying the tree is broken.
+# ============================================================================
+run_node_case "1021 timeout: GATE_TIMEOUT → acceptance-gate-timeout (NOT acceptance-gate-failed)" "
+$PREAMBLE
+
+setMachinery('item-gt1021',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-gt1021' },
+  { outcome: 'GATE_TIMEOUT' },
+);
+happyWorker('item-gt1021');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gt1021', branch: 'build/item-gt1021', title: 'Gate Timeout', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+const esc = result.escalations[0];
+if (esc.kind !== 'acceptance-gate-timeout')
+  { console.log(JSON.stringify({ ok: false, reason: 'timeout escalated as \'' + esc.kind + '\', not acceptance-gate-timeout' })); process.exit(0); }
+// The payload must SAY it is a budget fact, so a reader (human or router) never
+// has to infer 'green suite vs broken tree' from the kind alone.
+if (!/BUDGET/.test(esc.payload?.reason ?? ''))
+  { console.log(JSON.stringify({ ok: false, reason: 'timeout payload does not name the budget cause: ' + JSON.stringify(esc.payload) })); process.exit(0); }
+// And it must NOT push a branch on an unknown verdict.
+if ((result.parked ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 0 parked: ' + JSON.stringify(result) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11e (temperloop#1021): the SLICE loop — a suite too big for one budget
+#   still passes the gate. GATE_SLICE resumes at the reported index and the item
+#   parks green. This is what makes 'the budget decayed again' structurally
+#   impossible: total suite runtime is no longer bounded by one Bash invocation.
+# ============================================================================
+run_node_case "1021 slice: GATE_SLICE → resume → GATE_PASS parks green" "
+$PREAMBLE
+
+setMachinery('item-gs1021',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-gs1021' },
+  { outcome: 'GATE_SLICE', resumeAt: 47, failed: 0, elapsedSecs: 301 },
+  { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 120 },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gs' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-gs', branch: 'build/item-gs1021' },
+  { outcome: 'PR_OPENED', pr_number: 1021 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('item-gs1021');
+
+const gatePrompts = [];
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts = {}) {
+  if ((opts.label || '').startsWith('gate:item-gs1021')) gatePrompts.push(String(prompt));
+  return origAgent(prompt, opts);
+};
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gs1021', branch: 'build/item-gs1021', title: 'Gate Slice', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'unexpected escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked: ' + JSON.stringify(result) })); process.exit(0); }
+if (gatePrompts.length !== 2)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected exactly 2 gate slices, saw ' + gatePrompts.length })); process.exit(0); }
+// Slice 1 starts at 0 and TRUNCATES the log; slice 2 resumes at the reported
+// index and APPENDS, so /tmp/qg-<slug>.log carries the union of both slices.
+if (!gatePrompts[0].includes('QUALITY_GATES_START_AT=0'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice 1 does not start at 0: ' + gatePrompts[0] })); process.exit(0); }
+if (!gatePrompts[1].includes('QUALITY_GATES_START_AT=47'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice 2 does not resume at the reported index 47: ' + gatePrompts[1] })); process.exit(0); }
+if (!gatePrompts[0].includes('>/tmp/qg-item-gs1021.log') || gatePrompts[0].includes('>>/tmp/qg-item-gs1021.log'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice 1 must TRUNCATE the gate log: ' + gatePrompts[0] })); process.exit(0); }
+if (!gatePrompts[1].includes('>>/tmp/qg-item-gs1021.log'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice 2 must APPEND to the gate log: ' + gatePrompts[1] })); process.exit(0); }
+// The budget must reach the script as an ENV VAR (an older vendored
+// quality-gates.sh ignores an unknown env var and runs the whole suite; an
+// unknown FLAG would exit 2 and read back as a gate failure).
+if (!gatePrompts[0].includes('QUALITY_GATES_BUDGET_SECS=300'))
+  { console.log(JSON.stringify({ ok: false, reason: 'slice does not carry the budget env var: ' + gatePrompts[0] })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11f (temperloop#1021): a failure found in slice 1 is NOT lost when a
+#   later slice finishes green. Slicing must preserve quality-gates.sh's
+#   collect-all-failures property — otherwise the fix would silently WEAKEN the
+#   gate, which acceptance criterion 5 forbids.
+# ============================================================================
+run_node_case "1021 slice: a failure in an early slice still escalates acceptance-gate-failed" "
+$PREAMBLE
+
+setMachinery('item-gsf1021',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-gsf1021' },
+  { outcome: 'GATE_SLICE', resumeAt: 12, failed: 1, elapsedSecs: 300 },
+  { outcome: 'GATE_PASS', failed: 0, elapsedSecs: 60 },
+);
+happyWorker('item-gsf1021');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gsf1021', branch: 'build/item-gsf1021', title: 'Gate Slice Fail', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 escalation: ' + JSON.stringify(result) })); process.exit(0); }
+if (result.escalations[0].kind !== 'acceptance-gate-failed')
+  { console.log(JSON.stringify({ ok: false, reason: 'early-slice failure escalated as \'' + result.escalations[0].kind + '\', not acceptance-gate-failed' })); process.exit(0); }
+if ((result.parked ?? []).length !== 0)
+  { console.log(JSON.stringify({ ok: false, reason: 'a red suite must never park/push: ' + JSON.stringify(result) })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11g (temperloop#1021): the slice loop is BOUNDED. A suite that never
+#   finishes escalates as a TIMEOUT (honestly named) rather than looping
+#   forever — and still never as a gate failure.
+# ============================================================================
+run_node_case "1021 slice: exhausting the slice cap escalates acceptance-gate-timeout, not -failed" "
+$PREAMBLE
+
+const slices = [];
+for (let i = 0; i < 30; i++) slices.push({ outcome: 'GATE_SLICE', resumeAt: i + 1, failed: 0, elapsedSecs: 300 });
+setMachinery('item-gsc1021',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/item-gsc1021' },
+  ...slices,
+);
+happyWorker('item-gsc1021');
+
+const gateCalls = [];
+const origAgent = globalThis.agent;
+globalThis.agent = async function(prompt, opts = {}) {
+  if ((opts.label || '').startsWith('gate:item-gsc1021')) gateCalls.push(1);
+  return origAgent(prompt, opts);
+};
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'item-gsc1021', branch: 'build/item-gsc1021', title: 'Gate Slice Cap', kind: 'impl', acceptance: ['c'] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+if ((result.escalations ?? []).length !== 1 || result.escalations[0].kind !== 'acceptance-gate-timeout')
+  { console.log(JSON.stringify({ ok: false, reason: 'expected one acceptance-gate-timeout: ' + JSON.stringify(result) })); process.exit(0); }
+if (gateCalls.length !== 8)
+  { console.log(JSON.stringify({ ok: false, reason: 'slice loop is not bounded at 8: ran ' + gateCalls.length })); process.exit(0); }
+
+console.log(JSON.stringify({ ok: true }));
+"
+
+# ============================================================================
+# TEST 11h (temperloop#1021): the gate budget is a NAMED SETTING handed in via
+#   the Step-0 seam (input.gateSliceSecs), not a literal in this file — and it
+#   is CLAMPED so no operator value can push the derived Bash-tool timeout past
+#   the agent's hard 600000ms cap (which would trade a legible timeout for an
+#   opaque agent death).
+# ============================================================================
+run_node_case "1021 setting: input.gateSliceSecs drives the budget and is clamped to the agent Bash cap" "
+$PREAMBLE
+
+async function budgetAndTimeoutFor(sliceSecs, slug) {
+  happyMachinery(slug, 1, 'sha-' + slug);
+  happyWorker(slug);
+  let seen = null;
+  const origAgent = globalThis.agent;
+  globalThis.agent = async function(prompt, opts = {}) {
+    if ((opts.label || '').startsWith('gate:' + slug)) seen = String(prompt);
+    return origAgent(prompt, opts);
+  };
+  globalThis.args = { ...baseArgs, gateSliceSecs: sliceSecs, items: [
+    { slug, branch: 'build/' + slug, title: 'x', kind: 'impl', acceptance: ['c'] },
+  ]};
+  const mod = await loadLevel();
+  await mod.default();
+  globalThis.agent = origAgent;
+  const budget = (seen.match(/QUALITY_GATES_BUDGET_SECS=(\\d+)/) || [])[1];
+  const timeout = (seen.match(/\`timeout\` parameter to (\\d+)/) || [])[1];
+  return { budget: Number(budget), timeout: Number(timeout) };
+}
+
+// An explicit setting is honored end to end.
+const a = await budgetAndTimeoutFor(120, 'setting-a');
+if (a.budget !== 120 || a.timeout !== 120 * 1000 + 240000)
+  { console.log(JSON.stringify({ ok: false, reason: 'setting not honored: ' + JSON.stringify(a) })); process.exit(0); }
+
+// An absurdly large setting is CLAMPED — the derived Bash-tool timeout must
+// never exceed AGENT_BASH_CAP_MS (600000).
+const b = await budgetAndTimeoutFor(99999, 'setting-b');
+if (b.timeout > 600000)
+  { console.log(JSON.stringify({ ok: false, reason: 'clamp failed — derived Bash timeout ' + b.timeout + ' exceeds the 600000ms agent cap' })); process.exit(0); }
+
+// Unset/empty falls back to the in-file default, so an un-updated caller works.
+const c = await budgetAndTimeoutFor('', 'setting-c');
+if (c.budget !== 300)
+  { console.log(JSON.stringify({ ok: false, reason: 'empty setting did not fall back to the in-file default: ' + JSON.stringify(c) })); process.exit(0); }
 
 console.log(JSON.stringify({ ok: true }));
 "
@@ -1815,6 +2044,33 @@ grep -q 'bashTimeoutMs: GATE_BASH_TIMEOUT_MS' "$MJS" \
   || fail "#115: 3e.5 gate runMachinery call must pass bashTimeoutMs: GATE_BASH_TIMEOUT_MS"
 echo "PASS: #115 gate-timeout guard — 3e.5 gate carries an explicit long Bash-tool timeout"
 
+# --- temperloop#1021: the gate budget is a NAMED SETTING, not a bare literal, and
+# EVERY caller wires it. The Workflow runtime has no shell, so the .mjs cannot
+# source build.config.sh itself — the setting rides the same Step-0 hand-off as
+# machinerySoloModel/machineryBatchModel, which means all THREE orchestrators must
+# resolve and pass it or the seam silently reverts to the in-file default for that
+# caller. Guard the consumer, the config seam, and each producer. ---------------
+grep -qF 'input.gateSliceSecs' "$MJS" \
+  || fail "#1021: build-level.mjs must read the gate budget from the orchestrator hand-off (input.gateSliceSecs), not a bare literal"
+grep -q 'const GATE_MAX_SLICES' "$MJS" \
+  || fail "#1021: the 3e.5 slice loop must be BOUNDED (GATE_MAX_SLICES) so a never-finishing suite escalates instead of looping forever"
+grep -qF "escalate(item.slug, 'acceptance-gate-timeout'" "$MJS" \
+  || fail "#1021: a budget-exhausted 3e.5 run must escalate its OWN kind (acceptance-gate-timeout), never collapse into acceptance-gate-failed"
+grep -qF "escalate(item.slug, 'acceptance-gate-failed'" "$MJS" \
+  || fail "#1021: a genuinely RED suite must STILL escalate acceptance-gate-failed — the timeout split must not weaken the gate"
+_cfg="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)/workflows/scripts/build/build.config.sh"
+grep -q 'BUILD_GATE_SLICE_SECS' "$_cfg" \
+  || fail "#1021: BUILD_GATE_SLICE_SECS must be declared in build.config.sh (the named-setting seam)"
+for _md in build fix sweep; do
+  _p="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../../.. && pwd)/claude/commands/$_md.md"
+  grep -q 'BUILD_GATE_SLICE_SECS' "$_p" \
+    || fail "#1021: $_md.md Step 0 must resolve BUILD_GATE_SLICE_SECS (every build-level.mjs caller wires it, not /build alone)"
+  grep -q 'gateSliceSecs' "$_p" \
+    || fail "#1021: $_md.md must pass gateSliceSecs in its build-level.mjs args"
+done
+unset _md _p _cfg
+echo "PASS: #1021 gate-budget guard — named setting, bounded slice loop, timeout/fail split, all three callers wired"
+
 # ============================================================================
 # TEST (K712): worker background-gate stall — prevention + cure
 #   The worker prompt MUST embed the FOREGROUND-ONLY contract (prevention), and
@@ -2031,10 +2287,17 @@ grep -q 'DEFERRED to the parent-side 3e.5 gate' "$MJS" \
   || fail "#997: worker prompt must tell the worker how to report a criterion naming the bare repo-wide suite (passed:true + deferred evidence, never passed:false)"
 # The #997 narrowing applies to the WORKER only — 3e.5's parent-side gate stays
 # bare and repo-wide (the PR #309 silent-red lesson). Guard that the gate command
-# still invokes the script with no path arguments appended.
+# still invokes the script with no path arguments appended: the subshell must
+# CLOSE immediately after the script path. temperloop#1021 prepends the sliced-run
+# ENV VARS (which scope the run in TIME, never in PATH — the gate list is still
+# the whole repo-wide set, just walked across slices), so the guard pins the
+# budget-env prefix and the bare, argument-free invocation together.
 # shellcheck disable=SC2016  # grepping for the LITERAL ${sq(qgBin)} token in source
-grep -q '&& ${sq(qgBin)} ) >/tmp/qg-' "$MJS" \
+grep -q 'QUALITY_GATES_BUDGET_SECS=${GATE_SLICE_SECS} ${sq(qgBin)} ) ' "$MJS" \
   || fail "#997/#309: the 3e.5 parent-side gate must still invoke quality-gates.sh BARE (no path scoping) — it is the acceptance authority"
+# shellcheck disable=SC2016  # literal-token grep
+grep -q 'QUALITY_GATES_START_AT=${startAt}' "$MJS" \
+  || fail "#1021: the 3e.5 gate must pass its resume index as an ENV VAR (a FLAG would exit 2 'usage' on an older vendored quality-gates.sh and read back as a gate failure)"
 echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide run; 3e.5 stays bare and repo-wide"
 
 # ============================================================================
