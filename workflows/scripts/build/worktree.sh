@@ -24,6 +24,12 @@
 # host-wide value would mis-target across sessions). `remove` and `prune`
 # clean the marker up with the worktree.
 #
+# Review agents (#1005): `.claude/agents/` is gitignored (ADR 0007) and so is
+# absent from every fresh worktree, which made the capability probe read every
+# review lens as unavailable worker-side. `create` therefore materializes the
+# flat `claude/agents/*.md` catalog into the worktree's own `.claude/agents/`
+# as relative symlinks — see § Review-agent propagation below.
+#
 # Arming self-test (foundation#1352): dropping the marker only ARMS a hook that
 # is actually REACHED, so `create` immediately PROVES the jail rather than
 # assuming it — see § Write-jail arming self-test below. The verdict rides the
@@ -121,6 +127,96 @@ exclude_marker() {
     grep -qxF "$f" "$common/info/exclude" 2>/dev/null \
       || echo "$f" >> "$common/info/exclude"
   done
+}
+
+# --- Review-agent propagation into the worktree (#1005) ----------------------
+#
+# THE GAP. The capability-probe predicate (docs/features/review-agents.md
+# § "The capability probe") resolves a review agent iff the project declares it
+# in `CLAUDE.md § Subagents` OR a file exists at `.claude/agents/<name>.md`.
+# But `.claude/agents/` is GITIGNORED by construction (ADR 0007 — a teammate's
+# opt-in is never imposed by a `git add -A`), so it is ABSENT from every fresh
+# worktree `create` hands a worker. Result: every worker-side review pass
+# degraded to `skipped — <agent> unavailable`, including the review that
+# build.md 3e marks MANDATORY for a `claude/commands/*.md` diff (#1007).
+#
+# THE FIX. Materialize the flat catalog into the worktree's own
+# `.claude/agents/` as RELATIVE symlinks back to the worktree's OWN tracked
+# `claude/agents/<name>.md` — the same link shape
+# workflows/scripts/install/project-agents.sh deploys in-tree, so the charter a
+# worker reads is the one at the commit its branch is based on, never the
+# parent checkout's.
+#
+# WHY NOT declare `## Subagents` in the tracked CLAUDE.md instead (the other
+# candidate #1005 lists): a declaration is a CLAIM about availability, a
+# symlink IS availability. Declaring flips the predicate TRUE everywhere —
+# including a fresh clone where nothing has ever deployed `.claude/agents/`, so
+# `Task(subagent_type: workflow-reviewer)` would fail hard instead of taking
+# the legible `skipped — … available as source; run
+# workflows/scripts/install/project-agents.sh to enable` path #290 built. It
+# would also change `CLAUDE.md`'s session-start byte count, which
+# workflows/scripts/config/check-contributor-manifest.sh tracks.
+#
+# Deliberately conservative:
+#   - FLAT `claude/agents/*.md` only. `claude/agents/reviewers/` stays inert by
+#     default (ADR 0007) — a per-language reviewer is opt-in via
+#     reviewer-activate.sh, never bulk-deployed here.
+#   - NEVER clobbers. Anything already at a target is left alone, so a repo
+#     that tracks its own `.claude/agents/` always wins.
+#   - No `.gitignore` write (project-agents.sh may append one; dirtying the
+#     worktree would leak an unrelated hunk into the worker's PR). The
+#     exclusion rides the shared info/exclude instead, which is untracked by
+#     construction. That exclusion is load-bearing, not cosmetic: an
+#     un-ignored `.claude/` would read as untracked in `git status`, which
+#     makes every live worktree SKIPPED_DIRTY at prune time.
+#   - FAIL-OPEN. Any failure degrades to a stderr note; `create` still emits
+#     its CREATED line. Review coverage is advisory and must never block a
+#     build.
+materialize_agents() {
+  local wt="$1" src_dir dest common src name target linked=0 failed=0
+
+  src_dir="$wt/claude/agents"
+  [ -d "$src_dir" ] || return 0
+
+  # Keep `.claude/agents/` out of `git status` first — before anything is
+  # written there. Skipped when the repo's own .gitignore already covers it
+  # (the kernel case), so this never appends a redundant line.
+  if ! git -C "$wt" check-ignore -q -- ".claude/agents/.probe" 2>/dev/null; then
+    common="$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)" || common=""
+    if [ -n "$common" ]; then
+      case "$common" in /*) ;; *) common="$wt/$common" ;; esac
+      mkdir -p "$common/info" 2>/dev/null || true
+      grep -qxF '.claude/agents/' "$common/info/exclude" 2>/dev/null \
+        || echo '.claude/agents/' >> "$common/info/exclude" 2>/dev/null || true
+    fi
+  fi
+
+  dest="$wt/.claude/agents"
+  if ! mkdir -p "$dest" 2>/dev/null; then
+    printf '!! worktree.sh: could not create %s — review agents will read as UNAVAILABLE in this worktree (#1005)\n' \
+      "$dest" >&2
+    return 0
+  fi
+
+  for src in "$src_dir"/*.md; do
+    [ -f "$src" ] || continue          # no-match glob, or a stray non-file
+    name="$(basename "$src")"
+    target="$dest/$name"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      continue                          # pre-existing / already linked — never clobber
+    fi
+    if ln -s "../../claude/agents/$name" "$target" 2>/dev/null; then
+      linked=$((linked + 1))
+    else
+      failed=$((failed + 1))
+    fi
+  done
+
+  if [ "$failed" -gt 0 ]; then
+    printf '!! worktree.sh: %d review-agent link(s) failed under %s (%d linked) — those lenses will read as UNAVAILABLE (#1005)\n' \
+      "$failed" "$dest" "$linked" >&2
+  fi
+  return 0
 }
 
 # Tear down whatever occupies the deterministic path (registered worktree,
@@ -487,6 +583,12 @@ cmd_create() {
   jq -cn --arg slug "$slug" --arg branch "$branch" --arg created "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '{slug:$slug, branch:$branch, created:$created}' > "$wt_path/.build-guard"
   exclude_marker "$repo"
+
+  # Make the review lenses resolvable to the worker that will run here (#1005).
+  # `|| true` for the same reason guard_probe carries one: a future edit that
+  # leaves this returning non-zero must never abort cmd_create under `set -e`
+  # and suppress the CREATED line.
+  materialize_agents "$wt_path" || true
 
   # PROVE the jail is armed before this worktree is handed to a worker — the
   # marker is now in place, so the hook (if it is reached at all) must deny.
