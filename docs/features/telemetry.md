@@ -143,6 +143,44 @@ Two properties worth knowing before you merge it:
   proposed — `init` leaves it byte-for-byte alone, says so, and omits it from
   the PR. It does not ask, and it does not overwrite; that file is yours.
 
+
+### Removal — `temperloop eject` owns the `tokens` shim; never `pricing.json`
+
+`temperloop eject` (`bin/subcommands/eject.sh`) is the sole remover of a
+target repo's `.temperloop/report.d/tokens` locator shim: the shim carries
+no entry of its own in the per-repo **install manifest** (`.temperloop/config`
+— the record `temperloop init` writes of everything it set up, and the one
+thing `eject` reads to know what to revert), so it comes out the same way
+everything else under `.temperloop/` does, as a side effect of `eject`
+removing that whole directory. No separate revert logic exists or is needed
+for it.
+
+**`.temperloop/pricing.json`, if present, is the one thing `eject` does NOT
+remove (temperloop#985).** It is a hand-authored `{model: $/Mtok}` price
+table an operator maintains themselves for `temperloop report`'s directional
+dollar line (see "Token spend" above and `docs/token-spend.md`) — operator
+data, not a `temperloop`-managed artifact, so **`eject`** (removing
+temperloop from a repo) must not delete it. `eject` preserves it
+byte-identical across every removal path and prints one line naming the
+file it left behind; with no `pricing.json` present, removal is unchanged
+from before this carve-out existed.
+
+**This is not a claim of a clean sweep.** `eject` only ever touches the
+*local checkout* it's run in — it never rewrites another branch or another
+teammate's clone. `temperloop init` proposes its tree changes as a
+reviewable [proposal PR](install-cli.md#how-it-works) rather than pushing
+directly; if the `report.d/tokens` shim (or any other change that same PR
+carried) reached the default branch by being **merged**, undoing that merge
+is explicitly out of `eject`'s scope (see eject.sh's own handling of a
+merged proposal PR), so the shim stays on the default branch for every
+teammate after the merge — a local `eject` run removes it only from the one
+checkout it ran in, and leaves that checkout's own now-untracked deletion
+uncommitted. "No residue" therefore holds for an **unmerged** proposal PR
+(declined or abandoned, `eject` cleans it up completely) but not for a
+merged one, where the shim's removal is itself a tree change that has to be
+proposed and merged like any other, not something `eject` can retroactively
+erase from history.
+
 ## Integration
 
 Consumes: nothing external — each stream's emit site is called inline from

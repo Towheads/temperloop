@@ -149,14 +149,25 @@ EOF
 # header). There is no machine-level
 # record of which repos init ever touched, so — mirroring the bootstrap-
 # footprint bullet's own always-print posture — this is a fixed reminder,
-# not a personalized one.
+# not a personalized one. Names the `report.d/tokens` producer shim
+# explicitly (temperloop#985) alongside the manifest-recorded install
+# types, since removing IT is also `eject`'s job (deleting
+# .temperloop/report.d/ along with the rest of .temperloop/) even though
+# this machine-scoped uninstall has no manifest entry for it either — a
+# reader following this reminder should land on the one verb that actually
+# removes it, not conclude there's nothing left to do once labels/checks/
+# boards/PRs are handled.
 print_eject_reminder() {
   cat <<EOF
 Ran 'temperloop init' in one or more target repos? Their side effects
   (labels, required checks, boards, proposal PRs, recorded in that repo's
-  .temperloop/config — or .foundation/config from a pre-v0.15.0 init) are
-  scope (c) — a separate manifest this script never touches. Run
-  'temperloop eject' inside each such repo if you want those reverted too.
+  .temperloop/config — or .foundation/config from a pre-v0.15.0 init; PLUS
+  the .temperloop/report.d/tokens producer shim, which carries no manifest
+  entry of its own but is removed the same way) are scope (c) — a separate
+  manifest this script never touches. Run 'temperloop eject' inside each
+  such repo if you want those reverted too. (A hand-authored
+  .temperloop/pricing.json in that repo is NOT among them — 'temperloop
+  eject' preserves it.)
 EOF
 }
 

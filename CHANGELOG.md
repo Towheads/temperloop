@@ -14,6 +14,25 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`temperloop eject` no longer deletes a hand-authored
+  `.temperloop/pricing.json` (temperloop#985).** Previously `eject` removed
+  the whole `.temperloop/` directory unconditionally at all three of its
+  removal sites (partial-init residue, an empty install manifest, and a
+  fully resolved revert) — including a `pricing.json` price table an
+  operator maintains by hand for `temperloop report`'s directional dollar
+  line, even though nothing in `eject`'s install-manifest model ever
+  produced that file. `pricing.json` is now preserved, byte-identical,
+  across every one of those three removal paths, and `eject` prints one
+  line naming the file it kept; with no `pricing.json` present, behavior is
+  unchanged. `temperloop uninstall`'s eject reminder is updated to match —
+  it now also names the `report.d/tokens` producer shim (removed by
+  `eject`, same as before) and states explicitly that `pricing.json` is not
+  among what `eject` removes. See `docs/features/telemetry.md` § Removal
+  for the full disposition, including the honest scoping of "no residue" to
+  an unmerged proposal PR.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first
@@ -114,6 +133,15 @@ no existing brief is invalidated** — which is the test `VERSIONING.md` applies
   uses `||` rather than `??` so an empty-string input collapses to the default
   too. Model selection is byte-identical when nothing is set, which is what the
   MINOR classification rests on.
+
+- **`temperloop init` now proposes the `tokens` `report.d` producer shim
+  (temperloop#984).** A fresh `init` run's existing proposal PR now also
+  adds `.temperloop/report.d/tokens` (mode `755`) alongside its other tree
+  changes, so a newly adopted repo gets `temperloop report`'s
+  `tokens_spent` headline without a manual step; a repo that already has a
+  producer at that path is left alone. See `docs/features/telemetry.md` §
+  "Token spend" for what the shim does once in place.
+
 
 ### Changed — BREAKING
 
