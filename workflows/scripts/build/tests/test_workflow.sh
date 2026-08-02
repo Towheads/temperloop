@@ -2361,5 +2361,71 @@ for tok in "outcome === 'SCAN_BLOCKED'" "outcome === 'PUSH_REJECTED'" "outcome =
 done
 echo "PASS: #942 legibility guard — every machinery branch (SCAN_BLOCKED / PUSH_REJECTED / REBASE_CONFLICT / CI_* / DEPS_MERGED / CREATED / CLAIM_CONFLICT / GATE_FAIL / EXISTS) still lives in .mjs"
 
+# ============================================================================
+# TEST (temperloop#982): machineryModel / machineryBatchModel model-tier
+# overrides. build.md Step 0 resolves BUILD_MACHINERY_MODEL /
+# BUILD_MACHINERY_BATCH_MODEL and passes them as input.machineryModel /
+# input.machineryBatchModel — NOT a config-file read from inside the .mjs
+# (the Workflow runtime has no shell, DESIGN NOTE 1). Two things to prove:
+#   (a) when set, the override reaches the spawned executor agent's
+#       opts.model — the solo gate:<slug> call (runMachinery) for
+#       machineryModel, the batched prelude:<slug> call (runMachineryBatch)
+#       for machineryBatchModel;
+#   (b) when UNSET (omitted from args, the default), both sites still spawn
+#       at 'haiku' — the byte-identical-when-unset contract this item ships
+#       under (the .mjs's own hardcoded fallback, unchanged).
+# ============================================================================
+run_node_case "machineryModel/machineryBatchModel SET → override reaches gate: and prelude: agent().opts.model (#982)" "
+$PREAMBLE
+happyMachinery('mtier', 270, 'sha-mtier');
+happyWorker('mtier');
+globalThis.args = { ...baseArgs, machineryModel: 'opus', machineryBatchModel: 'sonnet', items: [
+  { slug: 'mtier', branch: 'build/mtier', title: 'Mtier', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+const gateCall = callLog.find(c => c.opts.label === 'gate:mtier');
+const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtier');
+if (!gateCall)
+  { console.log(JSON.stringify({ ok: false, reason: 'no gate:mtier call recorded' })); process.exit(0); }
+if (!preludeCall)
+  { console.log(JSON.stringify({ ok: false, reason: 'no prelude:mtier call recorded' })); process.exit(0); }
+if (gateCall.opts.model !== 'opus')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate: (runMachinery/machineryModel) opts.model=' + gateCall.opts.model + ', expected opus' })); process.exit(0); }
+if (preludeCall.opts.model !== 'sonnet')
+  { console.log(JSON.stringify({ ok: false, reason: 'prelude: (runMachineryBatch/machineryBatchModel) opts.model=' + preludeCall.opts.model + ', expected sonnet' })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+run_node_case "machineryModel/machineryBatchModel UNSET → gate: and prelude: still spawn at 'haiku', byte-identical (#982)" "
+$PREAMBLE
+happyMachinery('mtierdef', 271, 'sha-mtierdef');
+happyWorker('mtierdef');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'mtierdef', branch: 'build/mtierdef', title: 'Mtierdef', kind: 'impl', acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+if ((result.parked ?? []).length !== 1)
+  { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
+const gateCall = callLog.find(c => c.opts.label === 'gate:mtierdef');
+const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtierdef');
+if (!gateCall || gateCall.opts.model !== 'haiku')
+  { console.log(JSON.stringify({ ok: false, reason: 'gate: opts.model=' + (gateCall && gateCall.opts.model) + ', expected unchanged haiku default' })); process.exit(0); }
+if (!preludeCall || preludeCall.opts.model !== 'haiku')
+  { console.log(JSON.stringify({ ok: false, reason: 'prelude: opts.model=' + (preludeCall && preludeCall.opts.model) + ', expected unchanged haiku default' })); process.exit(0); }
+console.log(JSON.stringify({ ok: true }));
+"
+
+# Static guard: the 'haiku' literal must remain at BOTH sites as the
+# absent-input default (epic Contract clause superseded — #982 acceptance).
+haikuHits="$(grep -c "?? 'haiku'" "$MJS" || true)"
+if [ "$haikuHits" -lt 2 ]; then
+  fail "#982: expected 'haiku' literal to remain as the absent-input default at BOTH runMachinery/runMachineryBatch sites (found $haikuHits, want >=2)"
+fi
+echo "PASS: #982 haiku-literal-retained guard — found $haikuHits '?? '\''haiku'\''' fallback site(s)"
+
 echo ""
 echo "All test_workflow.sh cases passed."

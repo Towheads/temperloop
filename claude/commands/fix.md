@@ -44,7 +44,7 @@ Run in parallel:
 1. `gh auth status` — must list the **`project`** scope (board claim reads/writes need it). Missing → stop with the `gh auth refresh -s project` hint.
 2. **Board + machinery probe.** Set `BOARD_LIB` = the first of `scripts/lib/board.sh` or `workflows/scripts/board/lib/board.sh` that exists; `source "$BOARD_LIB"`. Resolve the target repo: `--repo` if given, else `repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"` (a full `owner/repo#N` target overrides). Infer the board from that repo the way `/sweep` Step 0.2 does — iterate `board_registered_boards`, match on `board_repo`; **board 7 is temperloop's issues-only tracker** (`fnd:status:*` labels, no Projects-v2 board — `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`). Print `target repo <repo> (board <N>)` before any read. An unmapped repo with a non-existing target issue → stop (nothing to drive and no board to file against); an unmapped repo is otherwise fine for a description target only if you can still create the issue there.
 3. **Resolve the workflow-invocation context** (passed to the per-item `build-level.mjs` call, identical to `/sweep` Step 0.3): `repoRoot="$(git rev-parse --show-toplevel)"`, `ownerRepo="$repo"`, `claimCmd` = absolute path to `claim.sh`, and `workflowPath="$HOME/.claude/workflows/build-level.mjs"` (invoked by **`scriptPath`**, never `name:` — #437).
-4. **Source the batch-pipeline config** — `source workflows/scripts/build/build.config.sh` (bare repo-relative) — pulls `EPIC_MIN_SUBUNITS` (the epic-size threshold used by the epic-refusal gate) and the merge-gate settings into scope. Absent in a non-vendoring checkout → proceed with the belt-and-suspenders `${SETTING:-default}` forms.
+4. **Source the batch-pipeline config** — `source workflows/scripts/build/build.config.sh` (bare repo-relative) — pulls `EPIC_MIN_SUBUNITS` (the epic-size threshold used by the epic-refusal gate), the merge-gate settings, and **`FIX_WORKER_MODEL`** (the Step 4 single-issue WORKER model tier; empty = inherit the session model) into scope. Absent in a non-vendoring checkout → proceed with the belt-and-suspenders `${SETTING:-default}` forms.
 
 **Deploy caution:** if this `/fix` invocation is the first since this spec was edited, confirm it was re-installed (`make install`) — an un-redeployed edit runs the *old* spec. If any Step-0 check fails, surface it in one line and stop.
 
@@ -113,7 +113,8 @@ Workflow({ scriptPath: workflowPath, args: {
     kind: <'spike' if the issue carries the spike label, else 'code'>,
     ghIssue: <issue>, // → the workflow's pr.sh open emits a bare `Closes #<issue>`
     alsoCloses: [],
-    model: <undef>,  // no plan size → inherit the session model (top tier; safe)
+    model: <$FIX_WORKER_MODEL, or omit the key (undefined → inherit the session model, top tier; safe)
+                     //   when it is empty — sourced in Step 0.4, empty is the sentinel/default, unchanged>,
     acceptance: <checkable bullets from the issue body; else "(self-verify the issue is resolved)">,
     source: "#<issue>",
     scope: <the issue title / first body line>,

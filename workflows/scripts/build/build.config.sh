@@ -244,6 +244,45 @@ fi
 # for mechanical drives (§ Cost-tier routing, claude/CLAUDE.kernel.md).
 : "${SWEEP_DETECT_MODEL:=}"
 
+# sweep.md Step 3 — model tier for the Phase-2 fix-issue WORKER agent (the
+# item.model field on each build-level.mjs items[] entry). Distinct from
+# SWEEP_DETECT_MODEL above (Phase-1 detection): this is the implementation
+# worker, not the ambiguity-detection fanout. Sentinel: an EMPTY value means
+# INHERIT THE SESSION'S OWN model — today's hardcoded behavior, unchanged by
+# this setting's addition (temperloop#982; the epic's own default-flip is
+# tracked separately, temperloop#971 — this item ships NO default change).
+# A /sweep singleton has no plan item to derive a tier from (unlike /build,
+# which reads a plan-item `model:` field), which is why this lever didn't
+# exist before.
+: "${SWEEP_WORKER_MODEL:=}"
+
+# fix.md Step 4 — model tier for the single-issue WORKER agent /fix spawns
+# (the item.model field on its one-item build-level.mjs items[] entry). Same
+# sentinel convention as SWEEP_WORKER_MODEL above and the same rationale: a
+# /fix target has no plan item to derive a tier from either. Sentinel: empty
+# = inherit the session's own model (today's hardcoded behavior, unchanged;
+# temperloop#982).
+: "${FIX_WORKER_MODEL:=}"
+
+# claude/workflows/build-level.mjs — model tier for the TWO machinery-executor
+# agent spawns that bridge the deterministic bash machinery into the Workflow
+# runtime (runMachinery = the solo executor; runMachineryBatch = the batched
+# prelude/pr-batch/ci-batch executor — see that file's own DESIGN NOTE 1).
+# UNLIKE every setting above, build-level.mjs itself never sources this file —
+# the Workflow runtime has no filesystem, no Node, and no shell (DESIGN NOTE 1
+# again), so there is no Step-0-source shell seam available inside the .mjs.
+# Instead, `claude/commands/build.md` Step 0 sources THIS file (as it already
+# does for every other setting here) and passes the resolved value as an
+# orchestrator-supplied WORKFLOW INPUT — `input.machineryModel` /
+# `input.machineryBatchModel` — alongside the existing `input.machineryBinDir`
+# / `input.claimCmd` hand-off precedent (build.md Step 3's args table). Never a
+# config-file read from inside the .mjs. Sentinel: empty means the orchestrator
+# omits the input key entirely, so the .mjs's own `?? 'haiku'` fallback wins —
+# its hardcoded 'haiku' literal is the deliberate, UNCHANGED default (the
+# byte-identical-when-unset contract this item ships under; temperloop#982).
+: "${BUILD_MACHINERY_MODEL:=}"
+: "${BUILD_MACHINERY_BATCH_MODEL:=}"
+
 # sweep.md Step 3 tier-2 composition — the BOUNDED wait on background chunk 1's
 # completion notification. After the Phase-1 question batch resolves, if chunk 1's
 # `<task-notification>` has not arrived, the driver polls the chunk's task state
@@ -605,7 +644,8 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
-       SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
+       SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
+       FIX_WORKER_MODEL BUILD_MACHINERY_MODEL BUILD_MACHINERY_BATCH_MODEL \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
        PIPELINE_DRIVE_MERGE PIPELINE_DRIVE_MERGE_CAP PIPELINE_DRIVE_MERGE_MODEL PIPELINE_DRIVE_MERGE_SETTINGS \

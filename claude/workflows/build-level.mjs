@@ -465,7 +465,12 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs } = {}) {
       label: label ?? `machinery:${cmd.split(' ').slice(0, 2).join(' ')}`,
       phase: 'machinery',
       agentType: 'general-purpose',
-      model: 'haiku',
+      // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
+      // read (this runtime has no shell — DESIGN NOTE 1). Absent input.machineryModel
+      // (build.md Step 0 didn't resolve BUILD_MACHINERY_MODEL, or it was empty) →
+      // 'haiku', UNCHANGED from before this setting existed — the byte-identical-
+      // when-unset contract this item ships under.
+      model: input.machineryModel ?? 'haiku',
       schema: SPINE_OUTCOME_SCHEMA,
       // NB: deliberately NO isolation:'worktree' — see DESIGN NOTE 3.
     },
@@ -567,7 +572,13 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
       label: label ?? `machinery-batch:${kinds.join('+')}`,
       phase: 'machinery',
       agentType: 'general-purpose',
-      model: 'haiku',
+      // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
+      // read (this runtime has no shell — DESIGN NOTE 1). Absent
+      // input.machineryBatchModel (build.md Step 0 didn't resolve
+      // BUILD_MACHINERY_BATCH_MODEL, or it was empty) → 'haiku', UNCHANGED from
+      // before this setting existed — the byte-identical-when-unset contract
+      // this item ships under.
+      model: input.machineryBatchModel ?? 'haiku',
       schema: SPINE_BATCH_SCHEMA,
       // NB: deliberately NO isolation:'worktree' — see DESIGN NOTE 3.
     },
