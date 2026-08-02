@@ -290,6 +290,8 @@ quality-gates scripts/tests/test_quality_gates_slice.sh
 # claim below; the selector lib and its suite are claimed here.
 quality-gates workflows/scripts/lib/gate-selection.sh
 quality-gates workflows/scripts/lib/tests/test_gate_selection.sh
+quality-gates workflows/scripts/lib/gate-pool.sh
+quality-gates scripts/tests/test_quality_gates_parallel.sh
 quality-gates scripts/lint-zsh-param-tie.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh

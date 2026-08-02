@@ -206,6 +206,15 @@ fi
 # applies, so a deterministic failure is still capped at two attempts).
 : "${GATE_DETERMINISTIC_PATTERN:=SC[0-9][0-9][0-9][0-9]}"
 
+# How many quality gates scripts/quality-gates.sh runs CONCURRENTLY
+# (temperloop#1025). `auto` resolves to the detected core count, clamped to a
+# ceiling the scheduler owns; an explicit integer overrides it. Set to 1 to
+# restore the exact pre-parallel serial loop — the right mode for bisecting a
+# gate or hunting an order-dependent flake, since it removes concurrency as a
+# variable. This is a WITHIN-JOB worker pool, so changing it never affects the
+# required `checks (ubuntu-latest)` status-check context.
+: "${QUALITY_GATES_JOBS:=auto}"
+
 # Bounded retry count for ONE `gh api` call in ci-poll.sh — the head-SHA resolve
 # or a check-runs query (temperloop#386). Absorbs a transient non-JSON/HTTP-5xx
 # hiccup instead of false-escalating it as a CI failure. Set to 1 to disable.

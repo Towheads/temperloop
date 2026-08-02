@@ -57,6 +57,27 @@
 # push:main, nightly, /build's 3e.5 gate, any local run — the FULL set runs
 # exactly as before, so what gates `main` is unchanged. See the "Diff-scoped
 # gate selection" block below and workflows/scripts/lib/gate-selection.sh.
+# PARALLELISM (temperloop#1025): the gate set is ~109 INDEPENDENT suites, and
+# the `checks` job's ~5.5 min wall time was almost entirely the cost of running
+# them one after another (measured 2026-08-02: test-try 56s, test-build 55s,
+# the whole-tree shell lint 29s, test-board 21s, prose-budget ~20s, then a long
+# tail of 1–5s suites — no dominant gate, only concurrency recovers it). They run
+# through a bounded worker pool (workflows/scripts/lib/gate-pool.sh) instead of
+# a bare `for` loop. Three things are deliberately unchanged:
+#
+#   * the gate LIST and the pass/fail SEMANTICS — the same commands run, every
+#     failure is still collected (no fail-fast), and the run still exits
+#     non-zero iff at least one gate failed;
+#   * the LOG SHAPE — each gate's output is replayed whole, in list order, under
+#     the same `=== <gate> ===` header, so a failing suite is exactly as easy to
+#     find as before;
+#   * the CI JOB — still ONE job. This is a within-job pool, NOT a build matrix:
+#     splitting `checks` into a matrix would rename/multiply the required status
+#     context (`checks (ubuntu-latest)`) and silently un-gate the branch.
+#
+# $QUALITY_GATES_JOBS controls the worker count (`auto` = detected cores, capped;
+# `1` restores the exact pre-parallel serial loop, which is what a bisect or a
+# flake hunt should use).
 #
 # Usage:
 #   scripts/quality-gates.sh          run the applicable gate set; exit non-zero if any fail
@@ -879,6 +900,17 @@ KERNEL_GATES+=("bash scripts/tests/test_quality_gates_slice.sh")
 KERNEL_GATES+=("bash workflows/scripts/config/check-gate-paths.sh")
 KERNEL_GATES+=("bash workflows/scripts/config/tests/test_check_gate_paths.sh")
 KERNEL_GATES+=("bash workflows/scripts/lib/tests/test_gate_selection.sh")
+# Bounded-concurrency SCHEDULER (temperloop#1025): the pool this very script now
+# runs its gate list through — workflows/scripts/lib/gate-pool.sh. Proves the
+# properties a parallel runner has to earn before it may replace a serial loop:
+# a failing gate still returns non-zero and is attributed to the right gate, a
+# worker that writes no verdict (or dies outright) is recorded as a FAILURE
+# rather than silently passing, output replays in list order, serial-lane pins
+# never overlap each other, and an abruptly-dying worker cannot hang the run.
+# Hermetic: scripted throwaway "gates" under a tmpdir, never this file's real
+# gate list. Same direct-`bash` form as the retry gate above (kernel Makefile is
+# generator-owned).
+KERNEL_GATES+=("bash scripts/tests/test_quality_gates_parallel.sh")
 
 # The overlay gate set — empty by default; populated only by drop-ins.
 OVERLAY_GATES=()
@@ -897,6 +929,67 @@ GATES=("${KERNEL_GATES[@]}")
 if [[ ${#OVERLAY_GATES[@]} -gt 0 ]]; then
   GATES+=("${OVERLAY_GATES[@]}")
 fi
+
+# ─── Concurrency classification (temperloop#1025) ─────────────────────────────
+# Two hand-audited pin lists, matched by EXACT command line (never a regex — a
+# pattern that silently stops matching a renamed gate would un-pin it without a
+# word). Both are read by the scheduler in workflows/scripts/lib/gate-pool.sh;
+# both are applied to WHATEVER gate list is being run, so a future diff-scoped
+# subset (temperloop#1024) inherits the classification for free — the lists key
+# off the gate's own command line, not off a position in the full set.
+#
+# SERIAL_LANE_PINS — gates that contend over ONE shared, mutable resource and so
+# must never run concurrently WITH EACH OTHER. They are not serialized against
+# the whole run: the pool gives them a single dedicated lane that still overlaps
+# every other gate, so pinning costs (almost) no wall time. This list is the
+# product of a real audit of the ~109-gate set, not an assumption of
+# independence — the rest of that audit's findings (why the other gates are
+# safe) are recorded in docs/features/quality-gates.md § Parallel execution.
+SERIAL_LANE_PINS=(
+  # Both resolve the PINNED shellcheck through scripts/ensure-shellcheck.sh,
+  # which downloads and `mv`s the binary into ONE shared cache path
+  # (<repo>/.cache/shellcheck/<version>/shellcheck). On a cold cache — which is
+  # every CI run, since nothing restores that cache — two concurrent resolvers
+  # would race to `mv` over the same file, and the loser can observe a
+  # half-installed or busy binary. Same lane = never concurrent.
+  "make shellcheck"
+  "bash scripts/tests/test_ensure_shellcheck.sh"
+  # `make docs` rmtree's and rebuilds workflows/scripts/docs/_site in the live
+  # checkout, while the whole-tree shell lint above walks every *.sh under the
+  # repo root with find(1). A whole-tree write racing a whole-tree walk is the
+  # classic transient "No such file or directory" — and docs is the ONLY
+  # tree-mutating gate in the set, so sharing a lane with the only
+  # whole-tree-walking gate closes it completely.
+  "make docs"
+)
+# SLOW_DISPATCH_HINTS — pure scheduling hints, no correctness meaning. Makespan
+# is max(total/jobs, longest-gate-start + its length), so a ~1 min gate sitting
+# near the END of the list straggles long after every other worker went idle.
+# These are the measured long poles (2026-08-02 baseline in the header above);
+# the pool dispatches them first. A stale entry here costs nothing but a little
+# scheduling efficiency — it can never change a verdict.
+SLOW_DISPATCH_HINTS=(
+  "make test-try"
+  "make test-build"
+  "make test-board"
+  "bash workflows/scripts/validate-prose-budget.sh"
+  "bash workflows/scripts/tests/test_validate_prose_budget.sh"
+  "make test-board-dual-adapter"
+  "bash workflows/scripts/tests/test_install_lifecycle.sh"
+  "bash workflows/scripts/tests/test_install_cli.sh"
+)
+
+# gate_lane_of <gate> — echo the scheduler lane for one gate command line.
+gate_lane_of() {
+  local gate="$1" pin
+  for pin in "${SERIAL_LANE_PINS[@]}"; do
+    [[ "$gate" == "$pin" ]] && { printf 'serial\n'; return 0; }
+  done
+  for pin in "${SLOW_DISPATCH_HINTS[@]}"; do
+    [[ "$gate" == "$pin" ]] && { printf 'slow\n'; return 0; }
+  done
+  printf 'pool\n'
+}
 
 if [[ "${1:-}" == "--list" ]]; then
   for gate in "${KERNEL_GATES[@]}"; do
@@ -947,9 +1040,22 @@ fi
 #
 #   QUALITY_GATES_START_AT     0-based index into the unioned gate list to begin
 #                              at (default 0 = the whole list, unchanged).
-#   QUALITY_GATES_BUDGET_SECS  soft per-invocation budget in seconds; after each
-#                              gate finishes, if elapsed >= budget and gates
-#                              remain, stop (default 0 = no budget, unchanged).
+#   QUALITY_GATES_BUDGET_SECS  soft per-invocation budget in seconds; once a
+#                              whole gate (serially) or a whole CHUNK of gates
+#                              (under the pool) has finished, if elapsed >=
+#                              budget and gates remain, stop (default 0 = no
+#                              budget, unchanged).
+#
+# HOW THE BUDGET COMPOSES WITH THE POOL (temperloop#1025). A budgeted run
+# dispatches in chunks of QUALITY_GATES_JOBS and checks the deadline BETWEEN
+# chunks; an unbudgeted run is a single chunk (full overlap, the CI path). The
+# stop is therefore still on a gate boundary and never mid-gate, and the resume
+# index is still a whole number of gates into the list. Checking between chunks
+# rather than teaching the pool a deadline of its own is deliberate: the pool's
+# fail-closed guarantee is "exactly one verdict per gate handed in", and a
+# deadline inside the pool would have to weaken that to "per gate DISPATCHED" —
+# the assertion standing between a silently-dropped gate and a green CI run.
+# A budgeted run therefore trades one sync barrier per chunk for keeping it.
 #
 # Partial-run protocol (only ever emitted when a budget is set AND gates remain):
 #   stdout marker  QUALITY_GATES_RESUME_AT=<next 0-based index>
@@ -1091,50 +1197,227 @@ fi
 source "$REPO_ROOT/workflows/scripts/lib/gate-retry.sh"
 gate_retry_init
 
+# Bounded-concurrency SCHEDULER (temperloop#1025) — see the § PARALLELISM note in
+# this file's header for what it does and does not change. Sourced AFTER
+# gate-retry.sh on purpose: bash traps are per-signal rather than stacked, so
+# gate_pool_init's EXIT trap replaces gate_retry_init's and takes over cleaning
+# up BOTH scratch dirs (gate-pool.sh's own header pins that ordering).
+# shellcheck source=workflows/scripts/lib/gate-pool.sh
+source "$REPO_ROOT/workflows/scripts/lib/gate-pool.sh"
+
+# LAYER 6 of the six-layer config ladder — a byte-identical fallback to the
+# QUALITY_GATES_JOBS declaration in
+# workflows/scripts/build/build.config.sh, because this script must run
+# standalone in a consuming repo that never sources that file (and because
+# /build's 3e.5 acceptance gate deliberately scrubs it). Keep the two in sync —
+# the setting registry pins them.
+QUALITY_GATES_JOBS="${QUALITY_GATES_JOBS:-auto}"
+# Degrade to serial OUT LOUD if the scheduler lib did not load. This script runs
+# under `set -uo pipefail` with no `-e`, so a failed `source` above leaves
+# gate_pool_resolve_jobs undefined and every later call is a bare `command not
+# found` on stderr — the run still completes, serially and correctly, but it
+# does so silently enough that a test fixture which forgot to copy the lib
+# passed for a while while exercising none of the parallel path (caught by
+# temperloop#1025's own slice-fixture bug). Same say-it-out-loud rule the
+# mktemp-failure fallback below already follows.
+if ! type -t gate_pool_resolve_jobs >/dev/null 2>&1; then
+  printf 'NOTE: workflows/scripts/lib/gate-pool.sh did not load — running the gate set SERIALLY.\n' >&2
+  gate_jobs=1
+else
+  gate_jobs="$(gate_pool_resolve_jobs "$QUALITY_GATES_JOBS")"
+fi
+
 failures=()
 retried=()
 deterministic=()
 qg_started="$(date +%s)"
 qg_resume_at=""
-qg_index=0
-for gate in "${GATES[@]}"; do
-  # Sliced resume (temperloop#1021): skip everything before the caller's start
-  # index. Unset/0 START_AT makes this a no-op on the first pass.
-  if (( qg_index < QG_START_AT )); then
-    qg_index=$(( qg_index + 1 ))
-    continue
-  fi
-  printf '\n=== %s ===\n' "$gate"
-  gate_run_with_retry "$gate" || true
-  case "$GATE_RUN_STATUS" in
-    pass)
-      # A note is set only when the pass took more than one attempt.
-      if [[ -n "$GATE_RUN_NOTE" ]]; then
-        retried+=("$gate ($GATE_RUN_NOTE)")
-      fi
-      ;;
-    deterministic)
-      failures+=("$gate")
-      deterministic+=("$gate ($GATE_RUN_NOTE)")
-      ;;
-    *)
-      failures+=("$gate")
-      ;;
-  esac
-  qg_index=$(( qg_index + 1 ))
-  # Soft budget, checked only BETWEEN gates so no gate is ever killed mid-run
-  # (that is what made the old hard-timeout design report a green suite as red).
-  # Stop only if gates actually remain — a budget spent on the LAST gate is a
-  # completed run, not a partial one.
-  if (( QG_BUDGET_SECS > 0 )) && (( qg_index < ${#GATES[@]} )); then
-    if (( $(date +%s) - qg_started >= QG_BUDGET_SECS )); then
-      qg_resume_at=$qg_index
-      break
-    fi
-  fi
+
+# The SLICE WINDOW (temperloop#1021) and the bounded-concurrency POOL
+# (temperloop#1025) compose by SELECTION, not by either one knowing about the
+# other: the window picks the run set, and whichever executor runs below is
+# handed exactly that array. #1024's diff-scoped selection narrows this same
+# array, which is why the classification is keyed off each gate's own command
+# line rather than its position in the full list.
+qg_run_gates=()
+for ((gi = QG_START_AT; gi < ${#GATES[@]}; gi++)); do
+  qg_run_gates+=("${GATES[$gi]}")
 done
 
+# qg_pool_worker <gate> — the pool's per-gate child body.
+#
+# Runs one gate through the SAME gate_run_with_retry policy the serial loop
+# uses (there is exactly one retry implementation, not one per mode), then
+# hands the verdict back over the pool's meta-file channel. $GATE_POOL_LOG_TAG
+# is the per-gate unique tag that keeps concurrent gates from sharing one
+# attempt-capture file — without it the byte-identical-output classifier would
+# compare one gate's output against a DIFFERENT gate's.
+qg_pool_worker() {
+  local gate="$1" rc=0
+  gate_run_with_retry "$gate" "$GATE_POOL_LOG_TAG" || rc=$?
+  printf '%s\t%s\t%s\n' "$GATE_RUN_STATUS" "$GATE_RUN_ATTEMPTS" "$GATE_RUN_NOTE" \
+    >"$GATE_POOL_META"
+  return "$rc"
+}
+
+# Serial when asked for (QUALITY_GATES_JOBS=1 — the bisect/flake-hunt mode), and
+# serial when the pool cannot allocate its scratch dir. The fallback direction is
+# deliberate: serial execution is ALWAYS correct, so a scheduler that cannot set
+# itself up degrades to the slower-but-right path rather than to a weaker
+# guarantee — and it says so out loud rather than silently.
+gate_pool_ready=0
+if [[ "$gate_jobs" -gt 1 ]] && (( ${#qg_run_gates[@]} > 0 )); then
+  if gate_pool_init; then
+    gate_pool_ready=1
+  else
+    printf 'NOTE: could not allocate scheduler scratch (mktemp failed) — running the gate set SERIALLY.\n' >&2
+  fi
+fi
+
+# gate_pool_run RESETS its GATE_POOL_* result arrays on every call, and a
+# budgeted run calls it once per chunk — so the figures the TIMING line reports
+# are accumulated here rather than read off the last chunk.
+qg_pool_wall_total=0
+qg_pool_serial_total=0
+qg_pool_secs=()
+qg_ran=0
+
+if [[ "$gate_pool_ready" -eq 1 ]]; then
+  lane_pinned=0
+  for gate in "${qg_run_gates[@]}"; do
+    [[ "$(gate_lane_of "$gate")" == "serial" ]] && lane_pinned=$((lane_pinned + 1))
+  done
+
+  # CHUNKING — how the budget seam and the pool compose.
+  #
+  # UNBUDGETED (CI, `make quality-gates`, a human run) is ONE chunk: the whole
+  # window dispatched at once, the maximum-overlap case the measured speedup is
+  # about. Nothing about that path changes.
+  #
+  # A BUDGETED caller (/build's §3e.5 slice loop) instead gets chunks of
+  # `gate_jobs`, with the deadline checked BETWEEN chunks. That keeps #1021's
+  # guarantee literally — no gate is ever killed mid-run; the run stops cleanly
+  # at a gate boundary — while leaving gate-pool.sh's fail-closed invariant
+  # untouched: every gate handed to a chunk is one that chunk actually runs, so
+  # "exactly one verdict per gate handed in" still holds verbatim. The cost is
+  # one sync barrier per chunk, paid ONLY on budgeted runs.
+  #
+  # Deliberately NOT done by teaching the pool a deadline of its own: that would
+  # mean relaxing that assertion to "one verdict per gate DISPATCHED", and that
+  # assertion is precisely what stands between a silently-dropped gate and a
+  # green CI run. The barrier is the cheaper thing to spend.
+  qg_chunk=${#qg_run_gates[@]}
+  if (( QG_BUDGET_SECS > 0 )); then
+    qg_chunk=$gate_jobs
+    printf 'Running %d gate(s) with %d parallel worker(s) in chunks of %d (budget %ss); %d pinned to the serial lane.\n' \
+      "${#qg_run_gates[@]}" "$gate_jobs" "$qg_chunk" "$QG_BUDGET_SECS" "$lane_pinned"
+  else
+    printf 'Running %d gate(s) with %d parallel worker(s); %d pinned to the serial lane.\n' \
+      "${#qg_run_gates[@]}" "$gate_jobs" "$lane_pinned"
+  fi
+  if [[ "$lane_pinned" -gt 0 ]]; then
+    for gate in "${SERIAL_LANE_PINS[@]}"; do
+      printf '  serial lane: %s\n' "$gate"
+    done
+  fi
+
+  while (( qg_ran < ${#qg_run_gates[@]} )); do
+    GATE_POOL_GATES=()
+    GATE_POOL_LANE=()
+    for ((gi = qg_ran; gi < qg_ran + qg_chunk && gi < ${#qg_run_gates[@]}; gi++)); do
+      GATE_POOL_GATES+=("${qg_run_gates[$gi]}")
+      GATE_POOL_LANE+=("$(gate_lane_of "${qg_run_gates[$gi]}")")
+    done
+    gate_pool_run "$gate_jobs" qg_pool_worker || true
+    qg_pool_wall_total=$(( qg_pool_wall_total + GATE_POOL_WALL ))
+    qg_pool_serial_total=$(( qg_pool_serial_total + GATE_POOL_SERIAL_SUM ))
+    for ((ci = 0; ci < ${#GATE_POOL_GATES[@]}; ci++)); do
+      gate="${GATE_POOL_GATES[$ci]}"
+      qg_pool_secs+=("${GATE_POOL_SECONDS[$ci]}")
+      case "${GATE_POOL_STATUS[$ci]}" in
+        pass)
+          if [[ -n "${GATE_POOL_NOTE[$ci]}" ]]; then
+            retried+=("$gate (${GATE_POOL_NOTE[$ci]})")
+          fi
+          ;;
+        deterministic)
+          failures+=("$gate")
+          deterministic+=("$gate (${GATE_POOL_NOTE[$ci]})")
+          ;;
+        *)
+          failures+=("$gate")
+          ;;
+      esac
+    done
+    qg_ran=$(( qg_ran + ${#GATE_POOL_GATES[@]} ))
+    # Soft budget, checked only BETWEEN chunks — every gate inside a chunk runs
+    # to completion. Stop only if gates actually remain: a budget spent on the
+    # LAST chunk is a completed run, not a partial one.
+    if (( QG_BUDGET_SECS > 0 )) && (( qg_ran < ${#qg_run_gates[@]} )); then
+      if (( $(date +%s) - qg_started >= QG_BUDGET_SECS )); then
+        qg_resume_at=$(( QG_START_AT + qg_ran ))
+        break
+      fi
+    fi
+  done
+elif (( ${#qg_run_gates[@]} > 0 )); then
+  for gate in "${qg_run_gates[@]}"; do
+    printf '\n=== %s ===\n' "$gate"
+    gate_run_with_retry "$gate" || true
+    case "$GATE_RUN_STATUS" in
+      pass)
+        # A note is set only when the pass took more than one attempt.
+        if [[ -n "$GATE_RUN_NOTE" ]]; then
+          retried+=("$gate ($GATE_RUN_NOTE)")
+        fi
+        ;;
+      deterministic)
+        failures+=("$gate")
+        deterministic+=("$gate ($GATE_RUN_NOTE)")
+        ;;
+      *)
+        failures+=("$gate")
+        ;;
+    esac
+    qg_ran=$(( qg_ran + 1 ))
+    # Soft budget, checked only BETWEEN gates so no gate is ever killed mid-run
+    # (that is what made the old hard-timeout design report a green suite as red).
+    # Stop only if gates actually remain — a budget spent on the LAST gate is a
+    # completed run, not a partial one.
+    if (( QG_BUDGET_SECS > 0 )) && (( qg_ran < ${#qg_run_gates[@]} )); then
+      if (( $(date +%s) - qg_started >= QG_BUDGET_SECS )); then
+        qg_resume_at=$(( QG_START_AT + qg_ran ))
+        break
+      fi
+    fi
+  done
+fi
+
 echo
+# Measured speedup, printed next to the verdict (temperloop#1025, kernel
+# § Measure the delta, don't assume it). qg_pool_serial_total is the sum of the
+# per-gate wall times — which IS what a serial run of the same set costs, since
+# the serial loop's only other cost is the loop itself — so the ratio below is a
+# measurement of this run, never an estimate. The slowest-gate list is the
+# actionable half: it names whatever is currently setting the makespan floor.
+#
+# All three figures are the accumulators, not the last gate_pool_run's globals:
+# a budgeted run chunks, and gate_pool_run resets those globals per chunk. They
+# are indexed over the RUN SET (the slice window), never the full gate list, so
+# a sliced run reports its own slice's timings rather than mis-indexing them.
+if [[ "$gate_pool_ready" -eq 1 ]] && (( qg_pool_wall_total > 0 )); then
+  printf 'TIMING: %ds wall with %d worker(s); %ds of gate time (a serial run of the same set) => %s.%sx.\n' \
+    "$qg_pool_wall_total" "$gate_jobs" "$qg_pool_serial_total" \
+    "$(( qg_pool_serial_total / qg_pool_wall_total ))" \
+    "$(( (qg_pool_serial_total * 10 / qg_pool_wall_total) % 10 ))"
+  printf '  slowest gates (these set the floor):\n'
+  for ((gi = 0; gi < ${#qg_pool_secs[@]}; gi++)); do
+    printf '%6d\t%s\n' "${qg_pool_secs[$gi]}" "${qg_run_gates[$gi]}"
+  done | sort -rn | head -5 | while IFS=$'\t' read -r secs name; do
+    printf '    %4ss  %s\n' "$secs" "$name"
+  done
+  echo
+fi
 # Re-surface the staleness warning at the END too (temperloop#591): a 75-gate run
 # scrolls the top banner far off-screen, and the whole point is that the operator
 # does not trust a green result from a stale checkout — so repeat it next to the

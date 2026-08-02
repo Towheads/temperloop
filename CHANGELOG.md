@@ -102,6 +102,70 @@ reads that marker; a stranger greps for it before pulling.
   consumed. New settings: `QUALITY_GATES_SCOPE` (`auto`|`full`|`diff`) plus the
   `GATE_PATHS_*` fixture seams; new `--list-selected` flag prints the set an
   invocation would run, with its reason, without running it.
+- **`scripts/quality-gates.sh` now runs its gate set through a bounded worker
+  pool instead of one gate at a time (temperloop#1025).** The set is ~109
+  *independent* suites and the `checks` job's ~5.5 min wall time was almost
+  entirely that serialization — the measured baseline has no dominant gate
+  (`test-try` 56s, `test-build` 55s, the whole-tree shell lint 29s,
+  `test-board` 21s, prose budget ~20s, then a long tail of 1–5s suites), so
+  only concurrency could recover it. New sourced lib
+  `workflows/scripts/lib/gate-pool.sh` owns the scheduling; the new
+  `QUALITY_GATES_JOBS` setting sets the width (`auto` = detected cores,
+  clamped; `1` restores the exact pre-parallel serial loop for bisecting a
+  gate or hunting an order-dependent flake). Unchanged by design: the gate
+  **list**, the pass/fail **semantics** (every gate runs, every failure is
+  collected, the run exits non-zero iff one failed), the **log shape** (each
+  gate's output replayed whole, in list order, under the same
+  `=== <gate> ===` header), and the **CI job** — this is a within-job pool,
+  *not* a build matrix, because a matrix would rename and multiply the
+  required `checks (ubuntu-latest)` status context and silently un-gate the
+  branch. Exit-code integrity is fail-closed throughout: each child reports
+  its verdict over two independent channels that must agree, a missing or
+  disagreeing verdict is recorded as a **failure**, the parent asserts it
+  recorded one verdict per gate handed in, completion markers are published
+  from the child's `EXIT` trap so an abruptly-dying worker cannot wedge the
+  run, and a scheduler that cannot allocate its scratch falls back — out loud
+  — to the always-correct serial loop. Three gates that contend over one
+  shared mutable resource (`make shellcheck` /
+  `scripts/tests/test_ensure_shellcheck.sh` over the pinned-shellcheck cache,
+  and `make docs` over the tree it rebuilds) are pinned to a dedicated serial
+  lane that keeps them mutually exclusive with each other while still
+  overlapping the pool; the shared-state audit behind that list is recorded in
+  `docs/features/quality-gates.md` § Parallel execution. The auto-width cap is
+  set at a **measured** knee rather than a guessed one: on a 10-core machine
+  width 8 was both slower (176s vs 162s) *and* flakier (three gates failed
+  their first attempt and only passed on retry, versus none at width 4), so
+  oversubscription costs speed and correctness signal together. That audit also
+  surfaced a pre-existing latent defect in the test suites themselves — the
+  `echo "$x" | grep -q P` shape under `set -o pipefail` returns 141 when the
+  writer loses a `SIGPIPE` race, which is invisible on an idle machine and
+  ~5% likely at width 8 — documented but deliberately **not** papered over by
+  the retry machinery; it is widespread (596 sites across 77 files) and is its
+  own item.
+- `scripts/tests/test_quality_gates_parallel.sh`, registered in the kernel gate
+  set: covers exit-code integrity (a failing gate still returns non-zero and is
+  attributed correctly; a verdict-less or abruptly-dying worker is recorded as
+  a failure, never a pass, and never hangs the run), list-order replay, the
+  serial lane's mutual exclusion, the slow-dispatch hint, real concurrency, the
+  jobs-resolution degradations, and the wiring — including that CI is still a
+  single non-matrix job.
+- The pool **composes with the sliced execution seam** (temperloop#1021) by
+  selection: the slice window picks the run set and the pool is handed exactly
+  that array, with the soft budget checked between **chunks** of
+  `QUALITY_GATES_JOBS` rather than between individual gates. A partial run
+  therefore still stops on a gate boundary and still resumes at a whole number
+  of gates in, while an unbudgeted run (CI, `make quality-gates`, a human run)
+  stays a single full-overlap chunk. Chunking was chosen over giving the pool
+  its own deadline specifically to avoid relaxing its fail-closed *one verdict
+  per gate handed in* assertion to *per gate dispatched* — the check standing
+  between a silently-dropped gate and a green CI run. Landing this also closed
+  a latent hole in `scripts/tests/test_quality_gates_slice.sh`: its fixture
+  never copied `gate-pool.sh` into the fake repo, so the `source` failed, every
+  `gate_pool_*` call was a `command not found`, and the suite passed while
+  exercising **none** of the parallel path it shares a run loop with. The
+  fixture now copies the lib, the script announces that degradation instead of
+  falling through silently, and two new cases cover the chunked partial and a
+  full pooled slice loop.
 - **`VERSIONING.md` § Cutting a release — the ordered release procedure
   (temperloop#1015).** The kernel had version *policy* (this file's bump rules)
   and tag *conventions* (`kernel-repo-layout.md` § Release-tag convention) but
