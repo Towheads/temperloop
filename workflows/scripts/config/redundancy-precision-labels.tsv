@@ -1,0 +1,58 @@
+# redundancy-precision-labels.tsv — the hand-labelled precision sample for the
+# P9 semantic-redundancy probe (temperloop#855, half (b); epic #810).
+#
+# WHAT THIS IS. workflows/scripts/score-redundancy.sh ranks every chunk pair
+# over the always-loaded surface by duplicated-byte weight. This file carries a
+# human verdict on the TOP `REDUNDANCY_LABEL_SAMPLE_N` of that ranking; the
+# script joins it back on by pair id and reports precision = TP / labelled,
+# with the sample size stated beside the figure. Without this file there is no
+# precision figure — only a ranking.
+#
+# THE LABELLING PROTOCOL IS PRE-REGISTERED, NOT CHOSEN HERE. Every verdict
+# below applies workflows/scripts/score-redundancy.md § Pre-registration PR-5,
+# which was committed BEFORE this detector existed and before any pair over the
+# real surface had been scored. Its rule, in one line: a pair is a TRUE POSITIVE
+# iff (1) the overlapping portion states the same rule/constraint/fact in both
+# chunks, and (2) a maintainer could cut that content from one member — outright
+# or by replacing it with a reference to the other — without the surface losing
+# anything it carries today. PR-5 also disposes, in advance, the four recurring
+# hard cases (deliberate pointer; same subject different rule; shared frame with
+# differing slots; adjacent chunks of one continued thought), so none of them was
+# decided after a number was visible. Do not re-derive a verdict here — apply
+# PR-5, and if PR-5 does not settle a case, that is a gap to record in the doc,
+# not a judgment call to make silently in this file.
+#
+# ── Row shape ────────────────────────────────────────────────────────────
+#   id_a<TAB>id_b<TAB>tp|fp<TAB>rationale
+#
+# id_a / id_b  chunk ids exactly as chunk-redundancy-surface.sh emits them
+#              (`<path>#<chunk_index>`). Order is irrelevant — the scorer keys
+#              on the unordered pair.
+# tp | fp      the PR-5 verdict. tp = genuine redundancy the detector found;
+#              fp = the detector flagged something that is not redundancy.
+# rationale    one line, mandatory in practice: it is what makes the precision
+#              figure auditable rather than a bare ratio.
+#
+# ── Staleness ────────────────────────────────────────────────────────────
+# A pair id can go stale when the surface changes (a chunk index shifts, a
+# description is reworded). The scorer reports a labelled pair that is no
+# longer in the top-N in an explicit STALE LABELS bucket and excludes it from
+# the figure — it never silently counts a stale row, and never treats an
+# UNLABELLED top-N pair as a true positive.
+#
+# ── Sample provenance ────────────────────────────────────────────────────
+# The 12 rows below are the top 12 candidates by duplicated-byte weight as
+# ranked on 2026-08-02 against the surface at that commit. They were labelled in
+# one pass, in rank order, before the precision figure was computed.
+claude/agents/consultant-persona.md#1	claude/agents/team-member-persona.md#1	tp	~300 B of byte-identical rule text in both: the two-variant EXECUTING/OPINING contract, the /workshop Step 3.2/3.3 routing, the value-set-derives-from-who-its-for rule, and executing-outranks-opining. Cuttable from one with a pointer to the other; only the archetype clause is genuinely per-file.
+claude/agents/hobbyist-persona.md#1	claude/agents/team-member-persona.md#1	tp	Same shared rule block as the consultant/team-member pair — the identical four rules stated a third time. PR-5 criterion 2 holds: replaceable by "same contract as consultant-persona, for the hobbyist archetype".
+claude/agents/consultant-persona.md#1	claude/agents/hobbyist-persona.md#1	tp	Third instance of the same byte-identical rule block. Not a frame with differing slots (PR-5 case 3): the shared text carries four rules in its own right, not scaffolding.
+claude/commands/pipeline-drive-merge.md#1	claude/commands/pipeline-drive.md#1	fp	PR-5 cases 2+3: one subject (the pipeline-drive executor tiers), two OPPOSITE rules — 5b structurally cannot merge, 5c merges only via /build's gated path. What is shared is the frame ("Level N EXECUTOR ... Headless (claude -p) layer ... Spawned by pipeline-drive.sh"), not a restated rule.
+claude/commands/fix.md#1	claude/commands/sweep.md#1	fp	PR-5 case 2: two different commands (a single named target vs a board's whole singleton pool). The overlap is shared pipeline vocabulary (claim, isolated worker, PR, CI) plus each naming the other as a peer — cross-reference, not restatement.
+claude/agents/reviewers/go-reviewer.md#1	claude/agents/reviewers/swift-reviewer.md#1	tp	Byte-identical boilerplate stating four rules in both: independent/read-only/advisory, scored against the language's own idioms and tooling never taste, an inert catalog reviewer an adopter opts into, scoped to a PR touching the extension. Only the language and its smell list differ.
+claude/commands/assess.md#1	claude/commands/workshop.md#1	fp	PR-5 case 2: two different commands. Overlap is shared epic/Contract/board vocabulary plus each naming the other in its own hand-off sentence — the cross-reference is what a well-linked surface looks like, not duplication.
+claude/commands/assess.md#1	claude/commands/triage.md#1	fp	PR-5 case 2: decomposing an epic into a plan note versus sweeping a Backlog and materialising epics. Shared board/epic/sub-issue vocabulary only; no rule is stated twice.
+claude/commands/sweep.md#1	claude/commands/triage.md#1	fp	PR-5 case 2: draining a Ready singleton pool versus triaging a Backlog. Both describe board work in the same house vocabulary, which is what the detector actually matched on.
+claude/agents/reviewers/go-reviewer.md#1	claude/agents/reviewers/java-reviewer.md#1	tp	Same four-rule byte-identical reviewer boilerplate as the go/swift pair, second instance. Cuttable to "same contract as go-reviewer, for Java".
+claude/agents/reviewers/java-reviewer.md#1	claude/agents/reviewers/swift-reviewer.md#1	tp	Third instance of the reviewer boilerplate. The seven language reviewers restate one contract seven times over; any two of them satisfy both PR-5 criteria.
+claude/agents/reviewers/java-reviewer.md#1	claude/agents/reviewers/typescript-reviewer.md#1	tp	Fourth instance of the same reviewer boilerplate.

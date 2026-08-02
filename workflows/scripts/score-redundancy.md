@@ -262,3 +262,143 @@ instead would be the tuning PR-4 forbids, so this is an accepted, disclosed
 imprecision rather than a fixed one.
 
 ---
+
+## Findings
+
+*Measured 2026-08-02 against the always-loaded surface at this commit. The
+threshold and protocol these are judged against were fixed before the detector
+existed — see § Pre-registration and `git log` on this file.*
+
+### F-1 — The recorded verdict
+
+> **NO-GO.** Measured precision **58.3% (7 true positives of 12 hand-labelled
+> pairs, n=12)**, against a pre-registered threshold of 80% over a minimum
+> sample of 10.
+>
+> A Phase-B redundancy gate is **not warranted on this detector**. Per PR-6 the
+> detector was **not** re-tuned against these labels and re-measured.
+
+This is the outcome PR-6 and the acceptance both anticipated ("if no approach
+reaches the threshold, that is recorded as a finding and passes"), and it is
+the same shape as temperloop#831's pre-registered NO-GO. The ranked findings
+below are shipped regardless: they are useful as a **report**, which is exactly
+the disposition a sub-threshold precision figure supports.
+
+### F-2 — The surface, and what the detector found on it
+
+32 chunks over 29 files, **14,624 B** total — 496 unordered pairs scored. Of
+those: **46 candidates** above the 16% floor, **2 pointer-suppressed**, **0
+verbatim-identical** pairs (nothing on this surface is a straight copy-paste;
+every finding is a paraphrase or template finding).
+
+Both suppressed pairs are inside the root `CLAUDE.md`, which is by its own
+first sentence "a thin pointer, not the contract itself" — suppressing pairs
+within it is the mechanism working, not a miss.
+
+### F-3 — The ranked findings (top 12, the hand-labelled sample)
+
+Rank / duplicated bytes / score / verdict under PR-5. Rationales for each are
+in `workflows/scripts/config/redundancy-precision-labels.tsv`; the live listing
+is `workflows/scripts/score-redundancy.sh`.
+
+| # | ~dup B | score | pair | PR-5 |
+|---|---|---|---|---|
+| 1 | 502 | 0.734 | `consultant-persona` ↔ `team-member-persona` | **TP** |
+| 2 | 472 | 0.730 | `hobbyist-persona` ↔ `team-member-persona` | **TP** |
+| 3 | 464 | 0.730 | `consultant-persona` ↔ `hobbyist-persona` | **TP** |
+| 4 | 210 | 0.415 | `pipeline-drive-merge` ↔ `pipeline-drive` | FP |
+| 5 | 174 | 0.242 | `fix` ↔ `sweep` | FP |
+| 6 | 162 | 0.460 | `go-reviewer` ↔ `swift-reviewer` | **TP** |
+| 7 | 154 | 0.194 | `assess` ↔ `workshop` | FP |
+| 8 | 150 | 0.182 | `assess` ↔ `triage` | FP |
+| 9 | 149 | 0.180 | `sweep` ↔ `triage` | FP |
+| 10 | 146 | 0.481 | `go-reviewer` ↔ `java-reviewer` | **TP** |
+| 11 | 144 | 0.410 | `java-reviewer` ↔ `swift-reviewer` | **TP** |
+| 12 | 142 | 0.404 | `java-reviewer` ↔ `typescript-reviewer` | **TP** |
+
+**The two real duplication clusters, which are worth acting on whatever the
+gate decision is** (Phase B subtraction, and per #855's own note not blocked
+behind `phase-b-backtest` — a rule stated twice is waste under any policy):
+
+- **The three customer-persona descriptions** (1,970 B, 13.5% of the surface).
+  Any two of them share **507 bytes of byte-identical text in runs of ≥20
+  characters, the longest a single unbroken 318-character run**: the two-variant
+  EXECUTING/OPINING contract, the `/workshop` Step 3.2/3.3 routing, the
+  value-set provenance rule, and executing-outranks-opining — four rules stated
+  three times over. Only the archetype clause is genuinely per-file.
+- **The seven language-reviewer descriptions** (2,436 B, 16.7% of the surface).
+  Each restates the same four rules — independent/read-only/advisory, scored
+  against the language's own idioms and tooling never taste, an inert catalog
+  reviewer an adopter opts into, scoped to a PR touching the extension — with
+  148–190 bytes of identical runs between any two.
+
+Together those two clusters are **30.2% of everything a stranger's session
+loads before typing a word**, and most of that share is one contract stated
+three or seven times.
+
+### F-4 — The ranking key is sound even though the classifier is not
+
+Worth separating, because it decides what the NO-GO does and does not condemn.
+Against an exact longest-common-substring measurement, the estimated
+`dup_bytes` was close on the true positives: 502 estimated vs 507 actual for
+the top persona pair, 146 vs 148 for `go`↔`java`. **Ranking by duplicated-byte
+weight put the genuinely largest duplication first** — ranks 1–3 are the
+biggest real duplication on the surface, and a reader handed this report reads
+the right rows first.
+
+What failed is **discrimination in the middle of the ranking**, not the
+ordering.
+
+### F-5 — Where the five false positives came from
+
+All five are the same error, and PR-5 disposed of that error class in advance
+(cases 2 and 3): **two chunks about one subject, stating different rules**.
+Ranks 4, 5, 7, 8 and 9 are all pairs of sibling pipeline commands — `assess`↔
+`triage`, `sweep`↔`triage`, `fix`↔`sweep`, `assess`↔`workshop`, and the two
+`pipeline-drive` tiers — that share house vocabulary (board, epic, claim,
+isolated worker, PR, CI) and frequently name each other as peers, while
+governing genuinely different actions. Rank 4 is the sharpest case: 5b
+**structurally cannot merge** and 5c **merges only via `/build`'s gated path**,
+which is close to the opposite rule, scored at 0.415.
+
+IDF weighting was supposed to prevent exactly this and did not: on a 32-chunk
+corpus where most chunks *are* pipeline-command descriptions, "board" and
+"epic" are not rare enough to be discounted, and M-3's relaxed prefix matching
+widens the collision. A cross-reference between two commands — the thing a
+well-linked surface is *supposed* to have — is indistinguishable to this
+detector from a restatement.
+
+### F-6 — What would have to change for a future GO
+
+Named so this NO-GO routes a re-scope rather than closing the question, and so
+a later attempt gets its own pre-registration (PR-6) instead of inheriting this
+one:
+
+1. **A predicate-level signal, not a bag of terms.** Every false positive
+   shares a subject and differs in the *action* governed. A detector that
+   compared the deontic clause (what is required, forbidden, permitted) rather
+   than the term distribution would separate all five without touching the
+   seven true positives.
+2. **An embedding or LLM-judge pass** would very likely clear 80% here — the
+   cases are easy for a reader — at the determinism and dependency cost M-1
+   declined. If Phase B ever wants the gate, that trade is the decision to
+   revisit, and it should be measured, not assumed.
+3. **A bigger labelled sample.** n=12 is the pre-registered minimum plus two.
+   The surface only affords 46 candidates in total, so a materially larger
+   sample needs a larger surface — which the consumer-checkout measurement
+   (`contributor-manifest.tsv`'s own "future work, not yet built") would supply.
+
+### F-7 — Stated limits of this measurement
+
+- **Precision only, no recall.** Nothing here measures what the detector
+  *missed*. A pair that states one rule twice in wholly unrelated vocabulary
+  scores below the floor and is invisible to this figure.
+- **One surface, one point in time.** 32 chunks of a kernel-only checkout. A
+  consumer checkout carrying an installed overlay and its own project
+  `CLAUDE.md` is roughly an order of magnitude larger and is **not** measured
+  here (`contributor-manifest.tsv` § coverage claim).
+- **One labeller, one pass.** No second rater, so no inter-rater agreement
+  figure. PR-5's protocol and the per-row rationales are what make the labels
+  auditable instead; a reader who disagrees with a verdict can see exactly
+  which criterion it turned on.
+- **The floor transfers imprecisely between the two corpora** (M-6).
