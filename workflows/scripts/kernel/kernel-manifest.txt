@@ -68,9 +68,12 @@ overlay .claude/*
 # `temperloop init` creates in an adopter's repo). Only TRACKED members are
 # classified here; `.temperloop/baseline.jsonl` and `.recovery.json` are
 # gitignored runtime data (see .temperloop/.gitignore) and never reach this
-# walk. `report.d/tokens` is the kernel's own `tokens` drop-in producer
-# (temperloop#958) — a generic, transcript-derived spend reader with nothing
-# personal in it, which is exactly the stranger test.
+# walk. `report.d/tokens` is the kernel's own `tokens` drop-in producer's
+# LOCATOR SHIM (temperloop#958; temperloop#980 "producer-kernel-side-relocation"
+# moved the real transcript-derived spend reader kernel-side to
+# workflows/scripts/report-producers/tokens, see that entry below) — a
+# generic locate-and-exec with nothing personal in it, which is exactly the
+# stranger test.
 kernel .temperloop/*
 
 kernel scripts/quality-gates.sh

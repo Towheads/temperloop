@@ -36,6 +36,19 @@
 # this loop's egress surface as EMPTY, and whose named-file list covers this
 # exact path since temperloop#980).
 #
+# SETTINGS RESOLUTION BOUNDARY (temperloop#980): this file execs the sibling
+# ../pipeline-spend-report.sh, which resolves build.config.sh from its OWN
+# `$SCRIPT_DIR/../..` — always the KERNEL checkout now, never the invoking
+# repo's own copy (pre-#980, when this logic lived at
+# .temperloop/report.d/tokens inside the invoking repo, that same climb
+# landed on the invoking repo's build.config.sh instead). So
+# SPEND_TRANSCRIPT_ROOT, the SPEND_WEIGHT_* cost weights, and
+# BASELINE_SNAPSHOT_LOOKBACK_DAYS (read a few lines below) now come
+# unconditionally from the kernel's own layer-5 tracked-repo config; an
+# adopter repo can still override any of them, but only at layer 2 (an
+# exported env var) per docs/config-precedence.md's ladder — layer 5 no
+# longer reads the adopter's own file.
+#
 # WHAT tokens_spent MEANS: DIRECTIONAL cost-weighted units, not dollars and
 # not raw tokens — see ../pipeline-spend-report.sh's header for the
 # weighting and the four correctness traps it encodes, and

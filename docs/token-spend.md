@@ -287,11 +287,16 @@ unavailable when absent
 The kernel shipped **two empty slots** where real spend data would plug in,
 rather than pretending to have it. **One of them is now filled:**
 
-- ✅ **`tokens` drop-in producer** for `temperloop report` at
+- ✅ **`tokens` drop-in producer** for `temperloop report`, reached at
   [`.temperloop/report.d/tokens`](../.temperloop/report.d/tokens) — **shipped**
-  (temperloop#958). It emits `{"tokens_spent": <n>, "by_model": {…}}` derived
-  from the harness's own transcripts (next section), so the report headline is
-  now `tokens_spent / merged_count`, and — given a hand-written
+  (temperloop#958). That path is a thin locator + `exec` shim (temperloop#980
+  "producer-kernel-side-relocation": moving the real logic kernel-side is
+  what lets a producer *committed into an adopter's own repo* update when the
+  kernel updates); the shim resolves and execs into the implementation at
+  [`workflows/scripts/report-producers/tokens`](../workflows/scripts/report-producers/tokens),
+  which emits `{"tokens_spent": <n>, "by_model": {…}}` derived from the
+  harness's own transcripts (next section), so the report headline is now
+  `tokens_spent / merged_count`, and — given a hand-written
   `.temperloop/pricing.json` — a directional `~$<total>` line beside it. The
   "no precise cost accounting" non-goal is unchanged: the number is
   **directional cost-weighted units**, never a billed amount

@@ -340,8 +340,12 @@ KERNEL_GATES=(
   # the TOKEN_SUM_LIB_DIR override, and that an unreachable helper renders
   # "--" while a genuine zero still renders "0".
   "bash workflows/scripts/tests/test_status_line_token_resolution.sh"
-  # Pipeline spend profiler + its .temperloop/report.d/tokens drop-in
-  # producer (temperloop#958). The load-bearing check is the requestId
+  # Pipeline spend profiler + its kernel-side `tokens` report.d producer
+  # implementation at workflows/scripts/report-producers/tokens (temperloop#958;
+  # temperloop#980 "producer-kernel-side-relocation" moved the implementation
+  # here from .temperloop/report.d/tokens, which is now a locator + exec shim
+  # tested separately by bin/subcommands/tests/test_tokens_producer.sh, part
+  # of the make test-try gate below). The load-bearing check is the requestId
   # DEDUPE fixture: one API response split across three transcript lines that
   # each repeat the same `usage` block must yield ONE call and the undoubled
   # total — summing per line inflated the temperloop#953 corpus 2.16x, and a
