@@ -47,9 +47,46 @@ reads that marker; a stranger greps for it before pulling.
 - `scripts/tests/test_quality_gates_retry.sh`, registered in the kernel gate
   set: covers the cap, both classifiers, the backoff actually spacing attempts,
   and the wiring between `quality-gates.sh` and the new lib.
+- **`docs/model-fanout-inventory.md` — every model-spawning site in the repo,
+  each classified as explicit setting / justified inherit / silent inherit
+  (temperloop#978).** The complement to temperloop#972, which wired levers at
+  four *known* sites: this enumerates the seats nobody had listed. The find was
+  three headless `claude -p` seats under `bin/subcommands/` that spawned with
+  **no `--model` flag at all**, so each ran on whatever tier the invoking
+  operator's CLI defaults to — the top tier, on a stranger's very first
+  command. Each now names a setting whose default lives only in
+  `build.config.sh` and is registered in `setting-registry.tsv`:
+  `TRY_TRIAGE_MODEL` (`try.sh` Step 3 shadow triage), `TRY_DEMO_FIX_MODEL`
+  (`try.sh --demo`'s live fix call) and `CONFIGURE_AI_MODEL` (`configure.sh`'s
+  AI-guided suggestions). The doc also adopts **whole-job accounting** as the
+  standing decision rule for any re-tier — a cheaper tier stays only if
+  job-*including-repairs* beats the strong tier — and records the measurement
+  gap rather than working around it: all three seats pass
+  `--no-session-persistence`, so they write no transcript and the
+  `.temperloop/report.d/tokens` producer structurally cannot see them.
 
 ### Changed
 
+- **`temperloop try`'s shadow-triage pass now runs on an explicitly cheaper
+  tier by default (temperloop#978).** `TRY_TRIAGE_MODEL` defaults to a cheap
+  tier rather than inheriting the operator's CLI default. This is the one seat
+  of the three that is re-tiered, and the choice is measured rather than
+  assumed: the pass emits free-form text the script prints verbatim, so there
+  is no JSON contract to violate and no downstream parse a weaker model can
+  fail; it is a zero-write dry run; and it is a stranger's *first* command,
+  billed to the stranger's own account. Whole-job measurement: a valid,
+  correctly-prefixed report 2/2 with no repair path invoked, ~5.5x cheaper per
+  call in dollars. Stated honestly — the cost-*weighted*-unit delta is within
+  noise on n=2, because the cheap tier is chattier and output carries the
+  heavier weight, so the win is claimed on the dollar axis only. Set
+  `TRY_TRIAGE_MODEL` to empty to restore the previous inherit behavior. The
+  other two seats (`TRY_DEMO_FIX_MODEL`, `CONFIGURE_AI_MODEL`) keep inheriting
+  and now carry a written justification instead of an accident —
+  `configure.sh` in particular was measured and **refused**: the cheap tier is
+  ~2.4x cheaper per seat but fenced its JSON on 4 of 4 runs, which makes `jq`
+  exit 5 and silently drops every setting to the plain-prompt fallback. 2.4x
+  cheaper, 0% of the job — the exact inversion whole-job accounting exists to
+  catch, and one per-seat accounting would have scored a win.
 - **Retry loops in `/build`'s gate and CI-poll machinery now classify before
   they retry, and back off between the retries that remain** (temperloop#976,
   with `Towheads/foundation#1297`). Re-running a *deterministically* failing

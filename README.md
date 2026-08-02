@@ -317,6 +317,9 @@ and [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) (§ 7):
   it costs and what it does on its own (the pre-quickstart read, § 3).
 - [`docs/token-spend.md`](docs/token-spend.md) — how TemperLoop tracks
   and manages token spend.
+- [`docs/model-fanout-inventory.md`](docs/model-fanout-inventory.md) — every
+  site that spawns a model seat, which tier setting governs it, and the
+  whole-job accounting rule for re-tiering one.
 - [`docs/cognitive-load.md`](docs/cognitive-load.md) — what TemperLoop
   keeps out of the operator's head.
 - [`docs/self-learning-loop.md`](docs/self-learning-loop.md) — how

@@ -5,6 +5,20 @@ tools: Read, Grep, Glob, Bash
 model: inherit
 ---
 
+This seat deliberately runs on the **session model** (`model: inherit`), unlike
+the five adopter-catalog language reviewers beside it (`go`/`java`/`rust`/
+`swift`/`typescript`), which declare `sonnet`. The split is the kernel-native
+vs. adopter-catalog distinction this file's own description already draws:
+Python is one of the kernel's **own** implementation languages — the telemetry
+rollups and transcript parsers that produce every spend figure the pipeline
+reasons about are `.py` — so this seat reviews machinery the pipeline's own
+measurements depend on, and a false negative here corrupts the numbers later
+decisions are priced against rather than one adopter's opted-in language. There
+is no second reviewer behind it. Same reasoning as
+`claude/agents/architecture-reviewer.md`'s inherit justification; recorded here
+by the model-fan-out inventory (`docs/model-fanout-inventory.md`,
+temperloop#978), which found this seat declaring `inherit` with no stated reason.
+
 You are an independent Python reviewer. You load cold each time — no memory <!-- cite: AG.7 guard:workflows/scripts/install/project-agents.sh -->
 of prior reviews. You are **read-only and advisory**: you surface
 Python-specific correctness, idiom, and tooling findings for the author to
