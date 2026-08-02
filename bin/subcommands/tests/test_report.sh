@@ -25,6 +25,13 @@
 #   7. --refresh appends a real baseline record via a fake gh, then renders.
 #   8. CLI hygiene: unknown arg is exit 2; -h is exit 0; a nonexistent --dir
 #      is exit 1.
+#   9. notice channel (temperloop#981): a present `notice` field renders on
+#      its own line under a producer's heading; a `tokens` producer whose
+#      stdout is leading non-JSON + JSON degrades to the kernel-tier headline
+#      (jq's exit status is now checked, not just `-n "$parsed"`); a clean
+#      single-JSON-object `tokens` producer still yields the tokens headline
+#      (with notice rendering alongside it, undisturbed); bonus: trailing
+#      non-JSON now degrades too, symmetric with the leading case.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -290,5 +297,62 @@ bash "$REPORT" -h >/dev/null || fail "-h should exit 0"
 if bash "$REPORT" --dir "$WORK/does-not-exist" >/dev/null 2>&1; then
   fail "a nonexistent --dir should exit non-zero"
 fi
+
+# --- 9: notice channel (temperloop#981) --------------------------------------
+REPO9="$WORK/repo9"
+mk_repo "$REPO9"
+mkdir -p "$REPO9/.temperloop/report.d"
+cp "$REPO1/.temperloop/baseline.jsonl" "$REPO9/.temperloop/baseline.jsonl"
+
+# 9a: a plain (non-tokens) producer emitting a `notice` field renders it as
+# its own line under its heading, alongside its normal verbatim stdout.
+cat > "$REPO9/.temperloop/report.d/hello" <<'EOF'
+#!/usr/bin/env bash
+echo '{"notice": "first-run disclosure: this producer is new"}'
+EOF
+chmod +x "$REPO9/.temperloop/report.d/hello"
+out9a="$(bash "$REPORT" --dir "$REPO9")"
+echo "$out9a" | grep -q "report.d/hello" || fail "notice-emitting producer should still render its own heading"
+echo "$out9a" | grep -q 'notice: first-run disclosure: this producer is new' || fail "a present notice field should render on its own line"
+
+# 9b: a `tokens` producer whose stdout is leading non-JSON text ahead of the
+# JSON blob must degrade to the kernel-tier headline -- one legible line --
+# rather than crashing or silently misbehaving.
+cat > "$REPO9/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo "NOTICE: legacy pre-notice-channel producer text"
+echo '{"tokens_spent": 4200}'
+EOF
+chmod +x "$REPO9/.temperloop/report.d/tokens"
+out9b="$(bash "$REPORT" --dir "$REPO9")"
+echo "$out9b" | grep -q "Kernel-tier headline" || fail "leading non-JSON tokens stdout should degrade to the kernel-tier headline"
+echo "$out9b" | grep -q "temperloop report: done" || fail "leading non-JSON tokens producer must not crash the report"
+
+# 9c: a clean, single-JSON-object tokens producer -- the designed shape,
+# carrying `notice` alongside `tokens_spent` in the SAME object -- still
+# yields the tokens headline; the notice channel must not interfere with the
+# existing tokens_spent parse, and both render together.
+cat > "$REPO9/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": 4200, "notice": "directional spend, see report.contract.md"}'
+EOF
+chmod +x "$REPO9/.temperloop/report.d/tokens"
+out9c="$(bash "$REPORT" --dir "$REPO9")"
+echo "$out9c" | grep -q "Tokens spent vs items merged" || fail "a clean JSON tokens producer (with a notice alongside it) should still drive the tokens headline"
+echo "$out9c" | grep -q "4200 tokens / 18 merged item" || fail "tokens headline should still cite the raw tokens_spent"
+echo "$out9c" | grep -q 'notice: directional spend, see report.contract.md' || fail "the tokens producer's own notice should render alongside its headline-driving JSON"
+
+# 9d (bonus regression guard): trailing non-JSON tokens stdout must ALSO
+# degrade now -- before the jq-exit-status check this "accidentally" drove
+# the headline off jq's partial output for the first valid document; now it
+# is symmetric with the leading case in 9b.
+cat > "$REPO9/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": 4200}'
+echo "trailing non-JSON garbage"
+EOF
+chmod +x "$REPO9/.temperloop/report.d/tokens"
+out9d="$(bash "$REPORT" --dir "$REPO9")"
+echo "$out9d" | grep -q "Kernel-tier headline" || fail "trailing non-JSON tokens stdout must also degrade to the kernel-tier headline (jq exit status now checked)"
 
 echo "OK: test_report.sh"

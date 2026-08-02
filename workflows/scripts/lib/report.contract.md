@@ -81,6 +81,28 @@ attribution that feeds the directional dollar line (see "Pricing table &
 dollar framing" below). `by_model` is purely optional: an absent or
 non-object `by_model` just means no dollar line, never an error.
 
+**stderr is discarded (temperloop#981).** `report.sh` invokes every producer
+with stderr redirected away (`2>/dev/null`) and never inspects it — any
+diagnostic or informational text a producer writes to stderr is invisible to
+a human reading the report. This has always been the actual behavior; it is
+stated explicitly here because it is exactly the trap a producer that wants
+to say something to a human falls into — **stderr is not a channel.** Use
+`notice` below instead.
+
+**`notice` field (temperloop#981).** Any producer's stdout MAY optionally
+parse as a JSON object carrying a string `notice` field —
+`{"notice": "<text>", ...}` — independent of, and in addition to, the
+`tokens`-only `tokens_spent`/`by_model` rules above. When a producer's stdout
+parses this way, `report.sh` renders the `notice` text as its own line under
+that producer's own `-- report.d/<name> --` heading, alongside (not instead
+of) the producer's normal verbatim stdout block. This is the one documented
+channel for a `report.d` drop-in — `tokens` or any future producer — to
+address a human directly (a first-run disclosure, a degraded-mode warning,
+anything that must not be silently dropped): a **contract-level field, not a
+`tokens` special case**, so any producer, present or future, can carry one.
+An absent `notice` field, or stdout that does not parse as a JSON object at
+all, is not an error — it simply means no notice line renders.
+
 ## Pricing table & dollar framing (foundation#882)
 
 The tokens headline can render a **directional dollar estimate** when two

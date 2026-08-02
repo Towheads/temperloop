@@ -351,10 +351,32 @@ else
     fi
     echo "-- report.d/$name --"
     echo "$out"
+    # notice channel (temperloop#981): ANY producer's stdout MAY additionally
+    # parse as a JSON object carrying a string `notice` field -- when it
+    # does, render it as its own line here, alongside (not instead of) the
+    # verbatim stdout block above. This is the one documented channel for a
+    # drop-in to address a human directly -- report.sh discards stderr
+    # entirely (see report.contract.md "Overlay drop-in contract"), so a
+    # notice written to stderr would be silently lost. Non-JSON, non-object,
+    # or notice-less stdout is not an error -- it just means no notice line.
+    notice="$(jq -e -r 'if (.notice | type) == "string" then .notice else empty end' <<<"$out" 2>/dev/null)"
+    notice_rc=$?
+    if [ "$notice_rc" -eq 0 ] && [ -n "$notice" ]; then
+      echo "notice: $notice"
+    fi
     echo
     if [ "$name" = "tokens" ]; then
+      # jq's exit status MUST be checked (temperloop#981), not just
+      # `[ -n "$parsed" ]`: on multi-document/trailing-garbage stdout jq can
+      # emit output for an earlier valid document and still exit non-zero
+      # once it hits the invalid tail -- trusting `$parsed` alone let that
+      # partial output "accidentally" drive the headline while a
+      # leading-garbage variant of the same malformed shape silently fell
+      # back with no such accident. Requiring rc==0 makes both forms degrade
+      # the same, deterministic way.
       parsed="$(jq -e -r 'if (.tokens_spent | type) == "number" then .tokens_spent else empty end' <<<"$out" 2>/dev/null)"
-      if [ -n "$parsed" ]; then
+      parsed_rc=$?
+      if [ "$parsed_rc" -eq 0 ] && [ -n "$parsed" ]; then
         tokens_spent="$parsed"
         tokens_ok=1
         # Optional per-model breakdown (foundation#882). An object of
