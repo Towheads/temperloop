@@ -21,6 +21,10 @@
 # ── none — repo meta, claimed by no single feature ──────────────────────────
 none .gitignore
 none .gitattributes
+# The per-repo value-loop dir's own ignore file — repo meta, not a feature
+# surface (its one feature-bearing member, report.d/tokens, is claimed by
+# `telemetry` below and wins on longest-pattern).
+none .temperloop/.gitignore
 none CHANGELOG.md
 none LICENSE
 none NOTICE
@@ -134,6 +138,15 @@ telemetry workflows/scripts/lib/token_sum.sh
 telemetry workflows/scripts/lib/tests/test_token_sum.sh
 telemetry workflows/scripts/tests/test_emit_session_context.sh
 telemetry workflows/scripts/tests/test_status_line_token_resolution.sh
+# pipeline spend profiler (temperloop#958): the retroactive, cost-weighted
+# token-spend reader over Claude Code's own workflow agent transcripts, plus
+# the `.temperloop/report.d/tokens` drop-in producer that feeds `temperloop
+# report`'s tokens headline. Claimed by `telemetry` rather than a slug of its
+# own — it answers the same "what does this cost / where do the tokens go"
+# question the rest of this feature does, read from a different source.
+telemetry workflows/scripts/pipeline-spend-report.sh
+telemetry workflows/scripts/tests/test_pipeline_spend_report.sh
+telemetry .temperloop/report.d/tokens
 
 # ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
 pipeline-driver claude/commands/pipeline-drive.md

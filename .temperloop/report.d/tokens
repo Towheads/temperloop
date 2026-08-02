@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# .temperloop/report.d/tokens — the `tokens` drop-in producer for
+# `temperloop report` (temperloop#958). Fills the first of the two empty
+# slots docs/token-spend.md § "The honest gap" documents.
+#
+# CONTRACT (workflows/scripts/lib/report.contract.md § Overlay drop-in
+# contract): invoked with no arguments, cwd = the target repo, under
+# report.sh's per-run watchdog. It must exit 0 and print a self-contained
+# block of stdout. For the `tokens` name specifically, that stdout must ALSO
+# parse as a single JSON object carrying a numeric `tokens_spent` for
+# report.sh to render the "tokens spent vs items merged" headline; an
+# optional `by_model` object feeds the directional dollar line when the repo
+# also carries a hand-written `.temperloop/pricing.json`.
+#
+# DEGRADATION: every failure path prints the contract's own one-line
+# `skipped -- tokens: producer unavailable` and exits 0 — never a non-zero
+# exit, never a stack trace, never a partially-written JSON object. report.sh
+# then renders that line verbatim and falls back to the kernel-tier headline,
+# exactly as it would for an absent producer.
+#
+# EGRESS: none. Everything below is a local file read (the sibling profiler
+# walks $SPEND_TRANSCRIPT_ROOT) plus `jq`. No curl, no gh, no API — this file
+# is scanned by `make test-producer-egress`
+# (workflows/scripts/kernel/check-producer-egress.sh, whose header documents
+# the loop's egress surface as EMPTY).
+#
+# WHAT tokens_spent MEANS: DIRECTIONAL cost-weighted units, not dollars and
+# not raw tokens — see workflows/scripts/pipeline-spend-report.sh's header
+# for the weighting and the four correctness traps it encodes, and
+# report.contract.md § Non-goals for why this loop never claims precision.
+# `by_model` is reported in the SAME cost-weighted units as `tokens_spent`,
+# so the two are internally consistent (the parts sum to the whole).
+
+set -uo pipefail
+
+skip() { echo "skipped -- tokens: producer unavailable"; exit 0; }
+
+producer_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || skip
+repo_root="$(cd "$producer_dir/../.." 2>/dev/null && pwd)" || skip
+profiler="$repo_root/workflows/scripts/pipeline-spend-report.sh"
+
+[ -f "$profiler" ] || skip
+command -v jq >/dev/null 2>&1 || skip
+
+# Match the baseline's own lookback window, so "tokens spent vs items merged"
+# divides two numbers drawn from the SAME period. BASELINE_SNAPSHOT_LOOKBACK_DAYS
+# is bin/subcommands/baseline-snapshot.sh's registered setting; the literal
+# here is its documented byte-identical non-vendoring fallback, the same
+# convention PIPELINE_OPERATOR's duplicate seams use.
+lookback="${BASELINE_SNAPSHOT_LOOKBACK_DAYS:-90}"
+case "$lookback" in ''|*[!0-9]*) lookback=90 ;; esac
+
+# Portable "N days before today" — GNU coreutils on Linux CI, BSD date on
+# macOS. Same two-branch shape as baseline-snapshot.sh's own
+# _baseline_date_sub_days; never a bare `date -d`, which is GNU-only and
+# silently fails on macOS.
+today="$(date -u +%Y-%m-%d 2>/dev/null)" || today=""
+since=""
+if [ -n "$today" ]; then
+  if date --version >/dev/null 2>&1; then
+    since="$(date -u -d "$today -${lookback} days" +%Y-%m-%d 2>/dev/null || true)"
+  else
+    since="$(date -u -j -v-"${lookback}"d -f "%Y-%m-%d" "$today" +%Y-%m-%d 2>/dev/null || true)"
+  fi
+fi
+
+# An unresolvable window is not a failure — report the whole corpus rather
+# than nothing, and let the report's own DIRECTIONAL label carry the caveat.
+if [ -n "$since" ]; then
+  raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+else
+  raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+fi
+[ -n "$raw" ] || skip
+
+# Zero-unit models are dropped from by_model: they add nothing to a priced
+# total and would only surface in report.sh's "excluded, no matching price"
+# list as noise (Claude Code records a `<synthetic>` pseudo-model for
+# locally-generated messages that cost nothing).
+out="$(printf '%s' "$raw" | jq -c '
+  select((.units_total | type) == "number")
+  | (if (.by_model | type) == "object"
+     then (.by_model | with_entries(select((.value | type) == "number" and .value > 0)))
+     else {} end) as $bm
+  | {tokens_spent: .units_total}
+    + (if ($bm | length) > 0 then {by_model: $bm} else {} end)
+' 2>/dev/null)" || skip
+
+[ -n "$out" ] || skip
+printf '%s\n' "$out"

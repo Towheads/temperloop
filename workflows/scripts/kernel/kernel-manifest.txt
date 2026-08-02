@@ -64,6 +64,15 @@ kernel .gitattributes
 kernel .github/*
 overlay .claude/*
 
+# .temperloop/ — this repo's OWN per-repo value-loop dir (the same dir
+# `temperloop init` creates in an adopter's repo). Only TRACKED members are
+# classified here; `.temperloop/baseline.jsonl` and `.recovery.json` are
+# gitignored runtime data (see .temperloop/.gitignore) and never reach this
+# walk. `report.d/tokens` is the kernel's own `tokens` drop-in producer
+# (temperloop#958) — a generic, transcript-derived spend reader with nothing
+# personal in it, which is exactly the stranger test.
+kernel .temperloop/*
+
 kernel scripts/quality-gates.sh
 kernel scripts/prune-merged-branches.sh
 kernel scripts/lint-zsh-param-tie.sh
@@ -343,6 +352,12 @@ kernel workflows/scripts/install-settings.sh
 kernel workflows/scripts/install-claude-md.sh
 kernel workflows/scripts/lint-pr-body.sh
 kernel workflows/scripts/telemetry-brief.sh
+# Pipeline spend profiler (temperloop#958) — reads Claude Code's own workflow
+# agent transcripts and reports cost-weighted spend. Kernel: it derives from a
+# harness-owned data source every Claude Code user has, names no personal
+# path, and is what feeds the kernel's own `.temperloop/report.d/tokens`
+# drop-in above.
+kernel workflows/scripts/pipeline-spend-report.sh
 kernel workflows/scripts/validate-activation-registry.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh

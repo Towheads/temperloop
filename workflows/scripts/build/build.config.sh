@@ -528,6 +528,49 @@ fi
 # without running it first.
 : "${PROSE_BUDGET_TIER2_FILE_CAP:=1186}"
 
+# ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
+# Settings for `workflows/scripts/pipeline-spend-report.sh` and its
+# `.temperloop/report.d/tokens` drop-in producer. That script resolves each
+# of these with a `:?` (never a duplicated `:=` literal), so THIS FILE is the
+# only place any of these values exists — which is what makes "no weight
+# literal in the script" a structural fact rather than a review promise
+# (kernel CLAUDE.md § Named-setting convention).
+#
+# COST WEIGHTS. A raw token count ranks spend WRONGLY, because the four token
+# classes do not bill alike. These are relative multipliers normalized on
+# ordinary input tokens (input = 1), not prices — no dollar constant lives
+# anywhere in this loop (workflows/scripts/lib/report.contract.md § Non-goals,
+# "no precise cost accounting"). The ratio that matters most is
+# cache_create : cache_read, ~12.5:1 — during temperloop#953 ranking by RAW
+# cache-read said the machinery agents were ~10% of spend; cost-weighted they
+# are 31.8%. Re-derive these from the model's published per-class rates if
+# they ever move; do not tune them to make a number look better.
+: "${SPEND_WEIGHT_INPUT:=1}"
+: "${SPEND_WEIGHT_CACHE_READ:=0.1}"
+: "${SPEND_WEIGHT_CACHE_CREATE:=1.25}"
+: "${SPEND_WEIGHT_OUTPUT:=5}"
+#
+# CLASSIFICATION THRESHOLDS, in deduped API calls per agent. Two of them, on
+# purpose — see pipeline-spend-report.sh's header for why one cannot serve
+# both jobs. SPEND_MACHINERY_MAX_CALLS is the spend-ATTRIBUTION split: at or
+# below it an agent is /build machinery (a prelude / pr-batch / ci-batch
+# executor that runs shell commands and reasons about nothing); above it, an
+# item worker. SPEND_WORKER_PROFILE_MIN_CALLS is the floor for the "typical
+# item worker" PROFILE, set higher so the long tail of short-lived helper
+# agents on the item-worker side of the attribution split doesn't drag the
+# median away from the thing an operator means by "an item worker".
+# Both are seeded at the values that reproduce the temperloop#953 baselines
+# over that investigation's 1,622-agent corpus (machinery 31.8% / item
+# workers 68.2%; median profiled worker 61 calls, ~161K peak context).
+: "${SPEND_MACHINERY_MAX_CALLS:=6}"
+: "${SPEND_WORKER_PROFILE_MIN_CALLS:=40}"
+#
+# Transcript root. Claude Code's own per-project state dir; the profiler walks
+# `$SPEND_TRANSCRIPT_ROOT/**/subagents/workflows/wf_*/agent-*.jsonl` under it
+# and reads nothing else. Point it at a fixture tree to test, or at a synced
+# copy of another host's transcripts to profile that host.
+: "${SPEND_TRANSCRIPT_ROOT:=$HOME/.claude/projects}"
+
 # ── knowledge_store root (foundation #777, Epic A #762 "kernel split";
 #    kernel-literal-scrub, temperloop#189) ──────────────────────────────────
 # `workflows/scripts/lib/knowledge_store.sh` (the document-I/O seam) owns
@@ -571,4 +614,6 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
        REVIEWER_SCAN_MIN_FILES \
        PROSE_BUDGET_TIER1_CAP PROSE_BUDGET_TIER2_FILE_CAP \
+       SPEND_WEIGHT_INPUT SPEND_WEIGHT_CACHE_READ SPEND_WEIGHT_CACHE_CREATE SPEND_WEIGHT_OUTPUT \
+       SPEND_MACHINERY_MAX_CALLS SPEND_WORKER_PROFILE_MIN_CALLS SPEND_TRANSCRIPT_ROOT \
        KNOWLEDGE_STORE_ROOT

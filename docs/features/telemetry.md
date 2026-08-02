@@ -89,6 +89,32 @@ error and exits successfully. A telemetry emit must never fail the caller
 it's instrumenting — losing one record is always cheaper than breaking the
 operation being measured.
 
+### Token spend, read from the harness instead of emitted
+
+None of the streams above records tokens or dollars. That gap is filled
+without adding a stream at all: Claude Code already persists a per-agent
+`usage` block for every workflow subagent it runs, so
+[`workflows/scripts/pipeline-spend-report.sh`](../../workflows/scripts/pipeline-spend-report.sh)
+reads those transcripts **retroactively** and reports cost-weighted spend —
+over history, with no emitter needing to have been installed beforehand.
+
+```sh
+workflows/scripts/pipeline-spend-report.sh                       # whole corpus
+workflows/scripts/pipeline-spend-report.sh --since 2026-07-20    # a window
+workflows/scripts/pipeline-spend-report.sh --run wf_423b8a39-a02 # one run
+workflows/scripts/pipeline-spend-report.sh --format json         # machine-readable
+```
+
+It splits spend into **machinery** agents (the cheap executors that just run
+shell commands) and **item workers**, by deduped API-call count, which is
+what makes a before/after comparison of a machinery-batching change one
+command. Its consumer inside this repo is the
+[`.temperloop/report.d/tokens`](../../.temperloop/report.d/tokens) drop-in
+that gives `temperloop report` its `tokens_spent` headline. See
+[`docs/token-spend.md`](../token-spend.md) for the fuller picture, and that
+script's own header for the four correctness traps it encodes — chief among
+them deduping by `requestId`, without which the totals inflate ~2x.
+
 ## Integration
 
 Consumes: nothing external — each stream's emit site is called inline from

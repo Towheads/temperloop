@@ -340,6 +340,21 @@ KERNEL_GATES=(
   # the TOKEN_SUM_LIB_DIR override, and that an unreachable helper renders
   # "--" while a genuine zero still renders "0".
   "bash workflows/scripts/tests/test_status_line_token_resolution.sh"
+  # Pipeline spend profiler + its .temperloop/report.d/tokens drop-in
+  # producer (temperloop#958). The load-bearing check is the requestId
+  # DEDUPE fixture: one API response split across three transcript lines that
+  # each repeat the same `usage` block must yield ONE call and the undoubled
+  # total — summing per line inflated the temperloop#953 corpus 2.16x, and a
+  # regression there would silently double every spend figure this tool feeds
+  # `temperloop report`. Also pins the two "never do this" traps by static
+  # grep (no weight literal in the script body — the weights are settings; no
+  # tool-call-parallelism metric, which the transcript format structurally
+  # cannot support) and the producer's exit-0 `skipped -- tokens: producer
+  # unavailable` degradation. Synthetic fixtures in a tmpdir; never reads the
+  # operator's real ~/.claude corpus, zero network. Same direct-`bash` form
+  # as the sibling gates above (kernel Makefile is generator-owned; no new
+  # target added here).
+  "bash workflows/scripts/tests/test_pipeline_spend_report.sh"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across
