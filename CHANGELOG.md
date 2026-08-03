@@ -781,6 +781,30 @@ reads that marker; a stranger greps for it before pulling.
   by a new `workflows/scripts/build/tests/test_workflow.sh` case pinning both
   the bare and qualified forms in one level.
 
+- **`board_owner()` now fails legibly, instead of silently borrowing this
+  kernel checkout's own org, for a `boards.conf` board that sets `repo=` or
+  `project=` but omits `owner=` (temperloop#798).** Any board id outside the
+  built-in 3-6 case map (an adopter's own board) fell through `board_owner()`'s
+  `*)` branch to `$BOARD_OWNER` — this repo's own `"Towheads"` — whenever the
+  adopter's `boards.conf` entry forgot the `owner=` line, so `gh project …
+  --owner Towheads` silently targeted a **foreign org's project** instead of
+  erroring: a cross-tenant misdirection with no diagnostic. `board_owner()` now
+  checks whether the board actually has a `repo=`/`project=` entry in
+  `boards.conf` before falling back; if it does and `owner=` is still missing,
+  it prints `board.sh: board N sets repo=/project= in boards.conf but no
+  resolvable owner= …` to stderr and returns non-zero instead of guessing. A
+  board with **no** `boards.conf` entry at all (repo, project, and owner all
+  absent — e.g. board 7, the temperloop tracker itself, whose repo/backend
+  come from the built-in maps per #808) is unaffected and still resolves
+  `$BOARD_OWNER` exactly as before. `board_project_number()`'s sibling
+  `*) echo "$1"` identity fallback is deliberately left ungated — its own
+  updated comment names why (a same-tenant wrong-project-number risk, not the
+  cross-tenant misdirection `board_owner()` guards against) and its failure
+  mode. Pinned by two new cases in `test_boards_conf.sh`. Not breaking: no
+  correctly-configured `boards.conf` entry changes behavior — only a board
+  that was already misconfigured (repo=/project= with no owner=) now fails
+  instead of silently doing the wrong thing.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first

@@ -371,4 +371,51 @@ export BOARDS_CONF_MACHINE="$WORK/machine-9-explicit.conf"
 
 echo "PASS: the backend axis falls through a silent machine-level conf to repo-local, while an explicit machine-level value still wins"
 
+# --- 11: board_owner FAILS LEGIBLY for a boards.conf board that declares
+# repo=/project= but no resolvable owner= (temperloop#798). Before this item,
+# an adopter's own board id (not one of this repo's own 3-6) silently
+# borrowed $BOARD_OWNER ("Towheads", THIS kernel checkout's own org) whenever
+# they forgot an owner= line — a CROSS-TENANT MISDIRECTION: `gh project …
+# --owner Towheads` would resolve to a foreign org's project instead of
+# erroring. board_owner() now refuses instead of guessing.
+cat > "$WORK/board11-no-owner.conf" <<'EOF'
+board.11.repo=Acme/eleventh
+board.11.project=11
+EOF
+export BOARDS_CONF_REPO_LOCAL="$WORK/board11-no-owner.conf"
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-11"
+
+if owner_out="$(board_owner 11 2>"$WORK/board11-stderr.txt")"; then
+  fail "board_owner 11 (repo=/project= set, no owner=) should FAIL, got: $owner_out"
+fi
+grep -q "board 11" "$WORK/board11-stderr.txt" \
+  || fail "board_owner 11 failure message should name the board, got: $(cat "$WORK/board11-stderr.txt")"
+grep -q "owner=" "$WORK/board11-stderr.txt" \
+  || fail "board_owner 11 failure message should point at the missing owner= line, got: $(cat "$WORK/board11-stderr.txt")"
+
+# board_project_number 11 still resolves fine (project= IS set in this
+# conf) — board_owner's new gate is independent and does not disturb the
+# other axes.
+[ "$(board_project_number 11)" = "11" ] \
+  || fail "board_project_number 11 should still resolve from conf despite board_owner's new gate"
+
+echo "PASS: board_owner fails legibly for a boards.conf board that sets repo=/project= but no owner= (temperloop#798)"
+
+# --- 11b: the new gate only fires when repo=/project= IS declared without a
+# matching owner= — a board with NO boards.conf entry at all (repo, project,
+# AND owner all absent) is unaffected and still falls back to $BOARD_OWNER.
+export BOARDS_CONF_REPO_LOCAL="$WORK/no-such-repo-local-conf-11b"
+export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-11b"
+[ "$(board_owner 12)" = "Towheads" ] \
+  || fail "board_owner 12 (no boards.conf entry at all) should still fall back to \$BOARD_OWNER, got: $(board_owner 12)"
+
+# ...and board 7 (the temperloop tracker, F#808) specifically still resolves
+# unaffected: it has no boards.conf entry in this scenario, so the new gate
+# never fires for it (see board_owner's own comment on why board 7 never
+# actually reaches this lookup in practice — issues-only backend).
+[ "$(board_owner 7)" = "Towheads" ] \
+  || fail "board_owner 7 (kernel tracker, no boards.conf entry) should still resolve \$BOARD_OWNER unchanged, got: $(board_owner 7)"
+
+echo "PASS: the owner= gate only fires for a boards.conf board that declares repo=/project=; an unconfigured board (incl. board 7) is unaffected"
+
 echo "ALL PASS: test_boards_conf.sh"

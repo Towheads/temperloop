@@ -300,7 +300,30 @@ board_owner() {
   v="$(_board_conf_get "$1" owner)" && { printf '%s\n' "$v"; return 0; }
   case "$1" in
     3 | 4 | 5 | 6) echo "Towheads" ;; # all boards live in the org (#330; 6 onboarded)  # denylist:allow — this repo's own real value, see board_repo() comment above
-    *) echo "$BOARD_OWNER" ;;     # fallback for an unknown board
+    *)
+      # No owner= for this board, and it isn't one of the built-in boards
+      # above. If boards.conf declares repo= or project= for this board (an
+      # ADOPTER's own custom board id, not one of this repo's own 3-6),
+      # silently returning $BOARD_OWNER here would be a CROSS-TENANT
+      # MISDIRECTION (temperloop#798): $BOARD_OWNER is THIS kernel checkout's
+      # own org ("Towheads"), so `gh project … --owner Towheads` on an
+      # adopter's board would silently resolve to a FOREIGN org's project
+      # instead of erroring. Fail loudly instead — the adopter is missing a
+      # `board.<N>.owner=` line and needs to add one, not have the request
+      # silently misrouted to this repo's own org.
+      if _board_conf_get "$1" repo >/dev/null 2>&1 || _board_conf_get "$1" project >/dev/null 2>&1; then
+        echo "board.sh: board $1 sets repo=/project= in boards.conf but no resolvable owner= — add 'board.$1.owner=<login-or-org>' to boards.conf (refusing to silently fall back to this kernel checkout's own org)" >&2
+        return 1
+      fi
+      # No boards.conf entry AT ALL for this board (repo, project, AND
+      # owner all absent) — e.g. board 7, the temperloop tracker itself,
+      # whose repo/backend resolve from board_repo()/board_backend()'s own
+      # built-in maps rather than boards.conf (#808), and which never
+      # reaches this owner lookup in practice since it runs the
+      # issues-only backend (no Projects board, owner/project meaningless —
+      # see boards.conf.example's `backend` axis comment). The pre-#798
+      # fallback stays unchanged for this genuinely-unconfigured case.
+      echo "$BOARD_OWNER" ;;
   esac
 }
 
@@ -313,6 +336,23 @@ board_owner() {
 # "which project" registry to board_repo()'s "which repo". Contains all
 # renumbering churn inside this one function (the cross-process cache stays
 # keyed on the board id, so renumbering causes zero cache churn).
+#
+# --- identity fallback for an unregistered board (documented, not gated —
+# #798). Unlike board_owner() above, the `*) echo "$1"` fallback below is
+# deliberately NOT gated behind a repo=/project= boards.conf check. Rationale:
+# this fallback numbers a board's PROJECT the same as its BOARD ID, which is
+# a same-tenant mistake at worst — the wrong PROJECT NUMBER under whatever
+# owner board_owner() resolves — never the cross-tenant org misdirection
+# board_owner() guards against above. board_owner() already fails loudly
+# first for any boards.conf board that sets repo=/project= without owner=,
+# so by the time a caller reaches this fallback the owner half has either
+# resolved deliberately (built-in map or boards.conf) or already errored
+# out. Named failure mode if a custom board relies on this identity
+# fallback: `gh project <board-id> --owner <owner>` silently targets
+# WHATEVER project happens to be numbered <board-id> under that owner (a
+# numeric coincidence, not a guarantee) — an adopter onboarding a custom
+# board should set project= explicitly in boards.conf rather than lean on
+# this identity coincidence.
 board_project_number() {
   local v
   v="$(_board_conf_get "$1" project)" && { printf '%s\n' "$v"; return 0; }
