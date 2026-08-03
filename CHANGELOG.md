@@ -32,6 +32,29 @@ reads that marker; a stranger greps for it before pulling.
   was already claimed in both governance manifests, so no registry edit was
   needed.
 
+- **`temperloop report` now says so when a `tokens` producer's stdout fails
+  the headline parse, instead of degrading silently (temperloop#988).** A
+  `tokens` drop-in that is present, executable, and exits 0 but whose stdout
+  is not exactly one JSON object with a numeric `tokens_spent` field used to
+  fall through to the kernel-tier headline with **no line explaining why** —
+  the asymmetry temperloop#981 left behind when it added a `notice` channel
+  for messages "that must not be silently dropped" while enlarging this mute
+  population (checking `jq`'s exit status pulled JSON-plus-trailing-text
+  stdout, which previously kept its headline by accident, into the
+  falling-back set). `report.sh` now renders one line in the **existing
+  per-producer skipped-line channel**, inside that producer's own `--
+  report.d/tokens --` block: `skipped -- tokens: stdout did not parse as a
+  single JSON object with a numeric tokens_spent field (headline fell back to
+  the kernel tier -- not an error; see report.contract.md)`. **Not a
+  tightening:** the kernel-tier fallback is byte-identical to before, the run
+  still exits 0, and a non-conforming producer is still a legible degradation
+  rather than an error. One suppression keeps the common path quiet — stdout
+  whose first line already opens with `skipped -- ` (the shape the kernel's
+  own shim prints when unresolvable or locally disabled) self-declared
+  already, so it gets one skip line, not two. `report.contract.md` §
+  "Overlay drop-in contract" / "Headline selection" state the new line and
+  its exception.
+
 - **One-time first-run disclosure and a per-person local disable for the
   `tokens` report producer (temperloop#986).** The producer at
   `.temperloop/report.d/tokens` is a *committed* artifact, so a teammate who

@@ -32,6 +32,16 @@
 #      single-JSON-object `tokens` producer still yields the tokens headline
 #      (with notice rendering alongside it, undisturbed); bonus: trailing
 #      non-JSON now degrades too, symmetric with the leading case.
+#  10. cwd contract: a drop-in runs with cwd = the target repo.
+#  11. tokens parse-failure notice (temperloop#988): a `tokens` producer that
+#      exits 0 with stdout failing the single-JSON-object/numeric-
+#      tokens_spent parse renders an explicit `skipped -- tokens: stdout did
+#      not parse ...` line in the existing per-producer skipped-line channel,
+#      under its own heading -- leading garbage, trailing garbage, and a
+#      non-numeric tokens_spent alike; a producer that already self-declared
+#      with its own `skipped -- ` line gets exactly one line, not two; a
+#      conforming producer and a non-`tokens` producer get none; the
+#      kernel-tier fallback and exit 0 are unchanged.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -354,6 +364,105 @@ EOF
 chmod +x "$REPO9/.temperloop/report.d/tokens"
 out9d="$(bash "$REPORT" --dir "$REPO9")"
 echo "$out9d" | grep -q "Kernel-tier headline" || fail "trailing non-JSON tokens stdout must also degrade to the kernel-tier headline (jq exit status now checked)"
+
+# --- 11: tokens parse-failure notice (temperloop#988) ------------------------
+# The fallback in 9b/9d above used to be entirely MUTE: a `tokens` producer
+# present, executable, exit 0, but non-conforming stdout dropped to the
+# kernel-tier headline with no line saying so. It now renders one line in the
+# SAME per-producer skipped-line channel as the not-executable / non-zero /
+# timeout cases, inside the producer's own block.
+REPO11="$WORK/repo11-tokens-parse-notice"
+mk_repo "$REPO11"
+mkdir -p "$REPO11/.temperloop/report.d"
+cp "$REPO1/.temperloop/baseline.jsonl" "$REPO11/.temperloop/baseline.jsonl"
+
+# 11a: the acceptance shape -- one valid JSON object followed by trailing
+# text. This is exactly the population temperloop#981 pulled into the
+# falling-back set when it started checking jq's exit status.
+cat > "$REPO11/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": 4200}'
+echo "...and a trailing human sentence the producer author forgot to drop"
+EOF
+chmod +x "$REPO11/.temperloop/report.d/tokens"
+out11a="$(bash "$REPORT" --dir "$REPO11")"
+echo "$out11a" | grep -q "skipped -- tokens: stdout did not parse as a single JSON object with a numeric tokens_spent field" \
+  || fail "11a: a JSON-plus-trailing-text tokens producer must render the explicit parse-failure skipped line, not fall back silently"
+echo "$out11a" | grep -q "Kernel-tier headline" \
+  || fail "11a: the kernel-tier headline fallback itself must be unchanged"
+bash "$REPORT" --dir "$REPO11" >/dev/null 2>&1 \
+  || fail "11a: a non-conforming tokens producer must still exit 0 -- the notice is a degradation, never an error"
+# The line belongs to the producer's own block, i.e. AFTER its heading.
+head_line11="$(echo "$out11a" | grep -n -- '-- report.d/tokens --' | cut -d: -f1)"
+skip_line11="$(echo "$out11a" | grep -n 'skipped -- tokens: stdout did not parse' | cut -d: -f1)"
+[ -n "$head_line11" ] && [ -n "$skip_line11" ] && [ "$skip_line11" -gt "$head_line11" ] \
+  || fail "11a: the parse-failure line must render under the producer's own '-- report.d/tokens --' heading (heading=$head_line11 skip=$skip_line11)"
+
+# 11b: leading non-JSON text (the 9b shape) gets the same explicit line --
+# leading and trailing garbage degrade identically, notice included.
+cat > "$REPO11/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo "NOTICE: legacy pre-notice-channel producer text"
+echo '{"tokens_spent": 4200}'
+EOF
+chmod +x "$REPO11/.temperloop/report.d/tokens"
+out11b="$(bash "$REPORT" --dir "$REPO11")"
+echo "$out11b" | grep -q "skipped -- tokens: stdout did not parse" \
+  || fail "11b: leading non-JSON tokens stdout must get the same parse-failure line as the trailing case"
+
+# 11c: valid JSON, but no numeric tokens_spent -- still a headline the
+# producer cannot drive, so still announced.
+cat > "$REPO11/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": "lots"}'
+EOF
+chmod +x "$REPO11/.temperloop/report.d/tokens"
+out11c="$(bash "$REPORT" --dir "$REPO11")"
+echo "$out11c" | grep -q "skipped -- tokens: stdout did not parse" \
+  || fail "11c: a non-numeric tokens_spent must also announce the fallback"
+
+# 11d: a producer that ALREADY self-declared via the skip channel (the shape
+# the kernel's own shim prints when unresolvable or locally disabled) must
+# NOT gain a second, redundant skip line under the same heading.
+cat > "$REPO11/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo "skipped -- tokens: producer unavailable"
+EOF
+chmod +x "$REPO11/.temperloop/report.d/tokens"
+out11d="$(bash "$REPORT" --dir "$REPO11")"
+n11d="$(echo "$out11d" | grep -c 'skipped -- tokens' || true)"
+[ "$n11d" -eq 1 ] \
+  || fail "11d: a self-declaring 'skipped -- tokens: producer unavailable' producer must render exactly one skip line, got $n11d"
+echo "$out11d" | grep -q "Kernel-tier headline" \
+  || fail "11d: a self-declared skip must still fall back to the kernel-tier headline"
+
+# 11e: the happy path stays clean -- a conforming producer renders NO
+# parse-failure line at all.
+cat > "$REPO11/.temperloop/report.d/tokens" <<'EOF'
+#!/usr/bin/env bash
+echo '{"tokens_spent": 3600}'
+EOF
+chmod +x "$REPO11/.temperloop/report.d/tokens"
+out11e="$(bash "$REPORT" --dir "$REPO11")"
+echo "$out11e" | grep -q "Tokens spent vs items merged" \
+  || fail "11e: a conforming tokens producer must still drive the tokens headline"
+if echo "$out11e" | grep -q "skipped -- tokens"; then
+  fail "11e: a conforming tokens producer must render no skipped line at all"
+fi
+
+# 11f: the rule is scoped to the producer named exactly `tokens` -- a
+# differently-named producer with unparseable stdout is unconstrained plain
+# text and must never gain a parse-failure line.
+cat > "$REPO11/.temperloop/report.d/plain" <<'EOF'
+#!/usr/bin/env bash
+echo "just some prose, not JSON at all"
+EOF
+chmod +x "$REPO11/.temperloop/report.d/plain"
+out11f="$(bash "$REPORT" --dir "$REPO11")"
+if echo "$out11f" | grep -q "skipped -- plain"; then
+  fail "11f: a non-tokens producer's plain-text stdout is contractually fine and must never be announced as a parse failure"
+fi
+echo "OK 11: tokens parse failure announces itself through the per-producer skipped-line channel (temperloop#988)"
 
 # --- 10: CWD CONTRACT (temperloop#983 review, BLOCKING finding 2) -----------
 # report.contract.md's "Overlay drop-in contract" documents a drop-in as

@@ -56,7 +56,13 @@
 # field, the headline is "tokens spent vs items merged" (always labeled
 # directional -- see the contract file). Otherwise the headline falls back
 # to the kernel-tier numbers alone: merged-items/day delta + time-to-merge
-# delta.
+# delta. That fallback is NOT silent (temperloop#988): a `tokens` producer
+# that ran and exited 0 but whose stdout failed the parse renders one
+# explicit "skipped -- tokens: stdout did not parse ..." line in the same
+# per-producer skipped-line channel, under its own heading -- unless its
+# stdout already opens with `skipped -- ` (the kernel shim's own
+# unresolvable/disabled line), in which case the second line is suppressed
+# as redundant. The fallback itself is unchanged and still never an error.
 #   DOLLAR FRAMING (foundation#882): the `tokens` producer may additionally
 #   emit a `by_model` object ({model: tokens}); if the target repo also
 #   carries a user-supplied .temperloop/pricing.json ({model: USD-per-Mtok}),
@@ -377,7 +383,6 @@ else
     if [ "$notice_rc" -eq 0 ] && [ -n "$notice" ]; then
       echo "notice: $notice"
     fi
-    echo
     if [ "$name" = "tokens" ]; then
       # jq's exit status MUST be checked (temperloop#981), not just
       # `[ -n "$parsed" ]`: on multi-document/trailing-garbage stdout jq can
@@ -396,8 +401,36 @@ else
         # {model: tokens}; anything else (absent, non-object) stays "{}".
         by_model="$(jq -c 'if (.by_model | type) == "object" then .by_model else {} end' <<<"$out" 2>/dev/null)"
         [ -n "$by_model" ] && tokens_by_model="$by_model"
+      else
+        # PARSE-FAILURE NOTICE (temperloop#988). Until this, a `tokens`
+        # producer that was present, executable, and exited 0 but whose
+        # stdout failed the single-JSON-object/numeric-tokens_spent parse
+        # dropped straight through to the kernel-tier headline with NO line
+        # saying so -- the exact asymmetry temperloop#981 created when it
+        # added a `notice` channel "for messages that must not be silently
+        # dropped" while leaving this degradation mute (and enlarged, since
+        # checking jq's exit status pulled trailing-garbage stdout into the
+        # falling-back population). It reuses the SAME per-producer
+        # skipped-line channel as the not-executable / non-zero-exit /
+        # timeout cases above, rendered inside this producer's own block so
+        # a reader sees the cause next to the stdout that caused it. The
+        # kernel-tier fallback itself is unchanged and still not an error.
+        #
+        # ONE EXCEPTION -- a producer that already self-declared. The
+        # kernel's own `tokens` shim prints exactly `skipped -- tokens:
+        # producer unavailable` (and exits 0) when it cannot resolve a
+        # kernel or when a person has locally disabled it; that bare line is
+        # not JSON, so it lands here. Adding a second skip line under the
+        # same heading would be redundant noise on the most common degrade
+        # path, so stdout whose first line already opens the skip channel
+        # suppresses this one. Documented in report.contract.md.
+        case "$out" in
+          "skipped -- "*) : ;;
+          *) echo "skipped -- $name: stdout did not parse as a single JSON object with a numeric tokens_spent field (headline fell back to the kernel tier -- not an error; see report.contract.md)" ;;
+        esac
       fi
     fi
+    echo
   done
   if [ "$found_any" -eq 0 ]; then
     echo "skipped -- ${report_d#"$repo_root"/} exists but is empty (no producers registered)"
