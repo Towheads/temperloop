@@ -67,6 +67,7 @@ export BOARD_CACHE_DIR
 trap 'rm -rf "$BOARD_CACHE_DIR"' EXIT
 
 # shellcheck source=scripts/reconcile.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/reconcile.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }

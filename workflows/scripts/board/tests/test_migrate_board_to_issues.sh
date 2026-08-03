@@ -40,6 +40,7 @@ SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 FIX="$HERE/fixtures"
 
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -68,6 +69,7 @@ export BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf"
 export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf"
 
 # shellcheck source=scripts/migrate-board-to-issues.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/migrate-board-to-issues.sh"
 
 # ============================================================================
@@ -177,6 +179,7 @@ _fake_set_labels() { case "$1" in 201) FAKE_L_201="$2" ;; 202) FAKE_L_202="$2" ;
 _fake_labels_json() {
   local labels; labels="$(_fake_get_labels "$1")"
   if [ -z "$labels" ]; then printf '[]'; return; fi
+  # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
   printf '%s\n' $labels | jq -R . | jq -s 'map({name:.})'
 }
 
@@ -203,6 +206,7 @@ _board_gh() {
       shift 3
       cur="$(_fake_get_labels "$n")"
       for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         case "$prev" in
           --remove-label) cur="$(printf '%s\n' $cur | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label)    cur="$cur $a" ;;

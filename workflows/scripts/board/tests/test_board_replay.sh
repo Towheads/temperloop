@@ -27,9 +27,11 @@ FIX="$HERE/fixtures"
 # Source the shared replay component for _fake_gh_log_argv (argv-log-v1).
 # FAKE_GH_SOURCE=1 suppresses exec-time side-effects; only the helper is loaded.
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 # This suite pins the LIVE gh call contract (exact counts + argv per accessor).

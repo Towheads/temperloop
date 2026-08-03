@@ -59,6 +59,7 @@ BOARD_CACHE_DIR="$(mktemp -d)"; export BOARD_CACHE_DIR
 CLAIMS_LOG_DIR="$(mktemp -d)"; export CLAIMS_RAW_DIR="$CLAIMS_LOG_DIR"
 
 # shellcheck source=scripts/claim.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/claim.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }

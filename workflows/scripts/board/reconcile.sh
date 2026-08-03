@@ -285,12 +285,14 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 # The marker-repair path (--fix on Lens 1) clears markers through the SAME
 # primitive release.sh uses — claim_marker_clear — rather than reimplementing a
 # second marker-clearing code path. claim_marker_peek reads this window's marker
 # without clearing it, for the safety gates. Sourcing is side-effect-free.
 # shellcheck source=scripts/lib/claim_marker.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/claim_marker.sh"
 
 # reconcile is the board↔marker CONSISTENCY check — its whole job is to surface

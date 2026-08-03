@@ -55,8 +55,10 @@ export BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf"
 export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 # shellcheck source=scripts/lib/cache.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
 
 board_calls() { grep -c '.' "$BOARD_CALLS" 2>/dev/null || true; }
@@ -163,6 +165,7 @@ echo "PASS: degradation path (cache.sh not sourced) falls back to live for both 
 
 # Restore cache.sh (courtesy, in case a future case is appended to this file).
 # shellcheck source=scripts/lib/cache.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
 
 echo

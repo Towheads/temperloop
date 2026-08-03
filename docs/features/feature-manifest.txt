@@ -78,6 +78,7 @@ workshop claude/commands/workshop.md
 # ── board-adapter — Projects-v2/issues-only board adapter + board commands ──
 board-adapter workflows/scripts/board/*
 board-adapter workflows/scripts/board-sync-drift-check.sh
+board-adapter workflows/scripts/board-consumer-shellcheck.sh
 board-adapter workflows/scripts/lib/tracker.contract.md
 
 # ── build-machinery — /build pipeline: plan, worktree, workers, board mirror ────

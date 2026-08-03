@@ -31,6 +31,7 @@ LIB_DIR="$(cd "$HERE/../lib" && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/board-conf-test-XXXXXX")"
@@ -219,6 +220,9 @@ ct_repo="$(
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
   # A machine conf default that certainly does not exist, so layer 1 is inert
   # without depending on the host's real ~/.config.
+  # Deliberately scoped to this subshell only -- never meant to
+  # leak into the parent script's environment.
+  # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
   source "$CT/workflows/scripts/board/lib/board.sh"
@@ -231,6 +235,9 @@ ct_repo="$(
 ct_conf="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  # Deliberately scoped to this subshell only -- never meant to
+  # leak into the parent script's environment.
+  # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
   source "$CT/workflows/scripts/board/lib/board.sh"
@@ -264,6 +271,9 @@ ln -s "../../kernel/workflows/scripts/board" "$CT2/workflows/scripts/board"
 ct2_conf="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  # Deliberately scoped to this subshell only -- never meant to
+  # leak into the parent script's environment.
+  # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
   source "$CT2/workflows/scripts/board/lib/board.sh"
@@ -278,6 +288,9 @@ ct2_conf="$(
 ct2_repo="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  # Deliberately scoped to this subshell only -- never meant to
+  # leak into the parent script's environment.
+  # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
   source "$CT2/workflows/scripts/board/lib/board.sh"
@@ -302,6 +315,9 @@ EOF
 ct3_repo="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
+  # Deliberately scoped to this subshell only -- never meant to
+  # leak into the parent script's environment.
+  # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
   source "$CT3/workflows/scripts/board/lib/board.sh"

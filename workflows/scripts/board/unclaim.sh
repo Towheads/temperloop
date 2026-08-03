@@ -60,6 +60,7 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
 # Module-level state, set by the execute-guard (direct run) or by a sourcing test

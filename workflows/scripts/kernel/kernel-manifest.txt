@@ -315,6 +315,7 @@ kernel workflows/scripts/tests/fixtures/design-schema/*
 # validate-issue-meta-snapshot, telemetry-test, sessions-test) in
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
+kernel workflows/scripts/board-consumer-shellcheck.sh
 kernel workflows/scripts/count-prose.sh
 # Contributor-manifest tsv + its structural lint (temperloop#827, epic #810
 # P1) — already covered by the `kernel workflows/scripts/config/*` glob

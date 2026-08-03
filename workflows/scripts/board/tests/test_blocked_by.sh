@@ -29,6 +29,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$(cd "$HERE/../lib" && pwd)"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }

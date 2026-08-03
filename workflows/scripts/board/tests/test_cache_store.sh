@@ -49,6 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 # shellcheck source=scripts/lib/cache.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }

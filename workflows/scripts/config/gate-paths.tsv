@@ -134,6 +134,14 @@ bash workflows/scripts/config/check-gate-paths.sh	ALWAYS
 
 # ── Board / build toolkits ──────────────────────────────────────────────────
 make test-board	workflows/scripts/board/**
+# Consumer-parity shellcheck (temperloop#915, follow-up to #905): lints the
+# SYNCED board file set (workflows/scripts/board/**) at the same defaults
+# stageFind/ssmobile/subsetwiki actually lint their vendored copy with — no
+# */tests/* exclusion, no -e SC1091 — so a finding invisible to `make
+# shellcheck`'s repo-wide `*.sh -e SC1091` posture still fails at source.
+# Also depends on the pinned shellcheck resolver (same one `make shellcheck`
+# uses, temperloop#567) so both lints stay on the identical binary.
+bash workflows/scripts/board-consumer-shellcheck.sh	workflows/scripts/board/** scripts/ensure-shellcheck.sh
 make test-board-dual-adapter	workflows/scripts/board/** workflows/scripts/build/**
 make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/scripts/lib/**
 make test-build-workflow	workflows/scripts/build/** claude/workflows/**

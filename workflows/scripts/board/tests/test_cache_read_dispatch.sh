@@ -44,6 +44,7 @@ LIB_DIR="$(cd "$HERE/../lib" && pwd)"
 FIX="$HERE/fixtures"
 
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 REPO="Acme/kernel-cache-dispatch-test"   # denylist:allow — generic placeholder org/repo, no personal token
@@ -84,8 +85,10 @@ export BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf"
 export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 # shellcheck source=scripts/lib/cache.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
 
 board_calls() { grep -c '^gh ' "$BOARD_CALLS" 2>/dev/null || true; }
@@ -144,7 +147,9 @@ echo "PASS: board.<N>.cache absent is inert (live read, zero cache.sh calls, no 
 # --- 1b: axis ON (board 40), cold store -> ONE cache.sh bulk call, ZERO
 # board.sh live gh calls -------------------------------------------------
 reset_calls
-OUT_COLD="$(board_item_list 40 2>"$STDERR_LOG")"
+# Output discarded on purpose -- this case asserts call COUNTS (below), not
+# the returned JSON itself.
+board_item_list 40 >/dev/null 2>"$STDERR_LOG"
 [ "$(board_calls)" -eq 0 ] || fail "board_item_list 40 (cache on, cold) must make ZERO board.sh gh calls, got $(board_calls): $(cat "$BOARD_CALLS")"
 [ "$(list_calls)" -eq 1 ] || fail "board_item_list 40 (cold store) should trigger exactly 1 cache.sh bulk list call, got $(list_calls)"
 echo "PASS: board.<N>.cache=on (cold store) reads via cache.sh, zero board.sh live gh calls"
@@ -186,6 +191,7 @@ echo "PASS: degradation path (cache.sh not sourced) falls back to the live read,
 
 # Restore cache.sh for the remaining tests.
 # shellcheck source=scripts/lib/cache.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
 
 # --- 2a: board_resolve_item stays ALWAYS-LIVE regardless of the cache axis
@@ -199,6 +205,9 @@ grep -q "api repos/$REPO/issues/205" "$BOARD_CALLS" || fail "board_resolve_item 
 echo "PASS: board_resolve_item (issues-only) stays always-live regardless of board.<N>.cache / a warm store"
 
 # --- 2b: grep-audit — every issues-only write path calls cache_dirty -------
+# Single-quoted on purpose: this is a grep PATTERN matching the literal text
+# `"$repo"` in board.sh's source, not a shell expansion.
+# shellcheck disable=SC2016
 DIRTY_CALLSITES="$(grep -c '_board_cache_dirty_after_write "\$repo"' "$LIB_DIR/board.sh")"
 [ "$DIRTY_CALLSITES" -eq 2 ] || fail "expected exactly 2 _board_cache_dirty_after_write call sites in board.sh (set_field + stamp_field), found $DIRTY_CALLSITES"
 grep -q '^_board_cache_dirty_after_write() {' "$LIB_DIR/board.sh" || fail "_board_cache_dirty_after_write helper definition missing from board.sh"
@@ -224,6 +233,7 @@ _board_gh() {
       shift 2
       local prev="" a
       for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         case "$prev" in
           --remove-label) FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;
@@ -236,6 +246,8 @@ _board_gh() {
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
+# Read by board_set_status (sourced board.sh) below, not in this file.
+# shellcheck disable=SC2034
 BOARD_CURRENT=40
 cache_stale "$REPO" && fail "setup: store should be fresh (just warmed above) before the write"
 board_set_status "ISSUE_206" "In Progress" || fail "board_set_status ISSUE_206 should succeed"

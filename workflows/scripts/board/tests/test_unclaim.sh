@@ -18,9 +18,9 @@
 #   5) issue not on the board → NO edit (idempotent no-op).
 #
 # The board_resolve_item override sets BOARD_* globals that unclaim.sh / board.sh
-# accessors read in OTHER functions — shellcheck can't see that cross-function use,
-# so silence SC2034 file-wide (mirrors test_claim.sh). CI excludes tests/ from
-# shellcheck anyway; this keeps a whole-tree local run clean.
+# accessors read in OTHER functions — ShellCheck can't see that cross-function use,
+# so silence SC2034 file-wide (mirrors test_claim.sh). (Keep prose off any line
+# starting `# shellcheck ` -- it is parsed as a directive.)
 # shellcheck disable=SC2034
 set -euo pipefail
 
@@ -31,6 +31,7 @@ export SUBSET_HOST_LABEL="testhost"
 BOARD_CACHE_DIR="$(mktemp -d)"; export BOARD_CACHE_DIR
 
 # shellcheck source=scripts/unclaim.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/unclaim.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
