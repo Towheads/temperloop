@@ -280,6 +280,12 @@ if [ "$INSTALL_CLAUDE_MD_KERNEL_ONLY" = "1" ]; then
   # caller ever sees is the one the full (default) compose below writes.
   rm -f "$target"
   mv -f "$tmp" "$target"
+  # $t0_tmp above is never consumed on this arm (no T0 write, per the
+  # comment above) — the `trap - EXIT` below clears the cleanup trap before
+  # exit, so an un-rm'd $t0_tmp here leaks one empty
+  # install-claude-md-t0.XXXXXX into TMPDIR per kernel-only render. Remove
+  # it explicitly rather than relying on the (cleared) trap.
+  rm -f "$t0_tmp"
 else
   # T0 inventory: derived from the fully composed doc just assembled in $tmp —
   # regenerated every run, written next to $target (see the "Compose-plane T0
