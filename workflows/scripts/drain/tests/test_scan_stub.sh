@@ -1199,6 +1199,72 @@ fi
 
 rm -rf "$TMPDIR17"
 
+# ── Test 18: stub.model field (temperloop#761) ────────────────────────────────
+#
+# scan-report-schema.md / findings-schema.md require `report.stub.model`,
+# read from the stub frontmatter's `model:` line (session-end-log.sh). A stub
+# WITH a model: line must produce that value; a stub WITHOUT one must degrade
+# to an explicit `null` (never an omitted key, never "") — the distinction
+# that keeps "genuinely no model" from reading as "the scanner never emitted
+# this field".
+
+echo "--- test 18: stub.model field (present + absent, temperloop#761) ---"
+
+TMPDIR18=$(mktemp -d)
+
+# Present case: frontmatter carries model: claude-opus-4-8.
+TMP_STUB18A="$TMPDIR18/with_model.md"
+cat > "$TMP_STUB18A" << 'STUBEOF'
+---
+date: 2026-06-01
+time: "1600"
+project: testproject
+cwd: /tmp
+session_id: aabbccdd-test-model-00000001
+transcript: /nonexistent
+model: claude-opus-4-8
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+hello
+
+STUBEOF
+
+report18a=$(scan "$TMP_STUB18A") || true
+model_present=$(printf '%s' "$report18a" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('stub', {}).get('model'))
+" 2>/dev/null)
+if [ "${model_present:-}" = "claude-opus-4-8" ]; then
+  ok "stub.model: frontmatter model: line → 'claude-opus-4-8' in report"
+else
+  fail_test "stub.model present" "expected 'claude-opus-4-8', got '${model_present:-}'"
+fi
+
+# Absent case: SAMPLE_STUB carries no model: line → key present, value null
+# (not omitted, not empty string).
+report18b=$(scan "$SAMPLE_STUB" --jsonl "$SAMPLE_JSONL") || true
+model_absent=$(printf '%s' "$report18b" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+stub = d.get('stub', {})
+present = 'model' in stub
+print('%s %s' % (present, stub.get('model') is None))
+" 2>/dev/null)
+if [ "$model_absent" = "True True" ]; then
+  ok "stub.model: no model: line → key present, value explicit null"
+else
+  fail_test "stub.model absent" "expected 'True True' (key present, value None), got '${model_absent:-}'"
+fi
+
+rm -rf "$TMPDIR18"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo "---"

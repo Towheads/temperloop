@@ -27,6 +27,7 @@ every field marked **required**; optional fields may be absent.
 | `project`    | string | required | Project name (from frontmatter `project:`). |
 | `date`       | string | optional | Session date `YYYY-MM-DD`. |
 | `time`       | string | optional | Session time `HHMM`. |
+| `model`      | string \| null | required | The model(s) that ran the session, read from frontmatter `model:` (the session-end hook's comma-joined model set — see `~/.claude/hooks/session-end-log.sh`). `null` when the stub's frontmatter carries no `model:` line. This key is **always present** in the object — `scan_stub.py` populates it on every scan, so `null` unambiguously means "the frontmatter genuinely has no model:", never "the scanner never emitted this field" (the distinction temperloop#761 exists to preserve). Consumed by `findings-schema.md`'s `subject_model` (`report.stub.model`) and `tidy.md`'s vault-provenance `source_model` stamp. |
 
 ---
 

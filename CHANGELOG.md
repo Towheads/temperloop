@@ -16,6 +16,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`scan_stub.py` emits `stub.model` in the scan report (temperloop#761),**
+  satisfying two downstream contracts that already documented it:
+  `findings-schema.md`'s `subject_model` ("taken from the stub's `model:`
+  field (`report.stub.model`)") and `tidy.md`'s vault-provenance
+  `source_model` stamp. Read from the stub frontmatter's `model:` line
+  (written by the SessionEnd hook). The `model` key is now **always present**
+  on `report.stub` — present-case: the frontmatter value; absent-case: an
+  explicit `null`, never an omitted key or empty string — so a genuinely-
+  absent model and a never-emitted field can no longer look identical
+  downstream. `scan-report-schema.md` documents the new field; both the
+  present and absent cases are covered by
+  `workflows/scripts/drain/tests/test_scan_stub.sh`.
+
 - **`scan_stub.py` gains two soft-error signatures (temperloop#770), promoted
   from the candidate-tells surface: `Unknown JSON field` (a `gh --json` query
   naming a field the installed `gh` rejects — the query "succeeds" at the
