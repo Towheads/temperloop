@@ -402,6 +402,62 @@ fi
 # that resolves it to an empty string, lands on that default unchanged.
 : "${BUILD_GATE_SLICE_SECS:=300}"
 
+# claude/workflows/build-level.mjs — the per-STEP WALL-CLOCK LIVENESS BOUND on a
+# machinery-executor step (the `prelude` / `pr-batch` / `ci-batch` batches and the
+# solo `gate` / `recover-probe` / `push-retry` calls), in seconds.
+#
+# WHY IT EXISTS (temperloop#1071). A `pr-batch` machinery agent ran 35,362,333ms
+# — 9h49m — on TWO tool calls: one Bash invocation blocked, then completed
+# successfully (all four steps green, the PR opened). Every bound that was
+# supposed to make that unreachable failed to fire: the Bash tool's own `timeout`
+# parameter is capped at 600,000ms and the emitted prompt asks for less than that,
+# and NOTHING else bounded the call. The ROOT CAUSE of the stall is NOT
+# established (candidate hypotheses — a network-bound `gh` call on a half-open
+# socket, git lock contention across linked worktrees sharing one object store, a
+# harness timeout not enforced across host suspend — are recorded as candidates,
+# never acted on without a disconfirming probe). This setting is therefore the
+# ROOT-CAUSE-AGNOSTIC defensive seam: a bound that holds no matter WHICH of those
+# is true, because it lives INSIDE the invoked shell rather than in the harness
+# layer that demonstrably did not fire.
+#
+# CEILING, NOT A DEADLINE — it must never fire on healthy work. Normal machinery
+# steps in the observed sweep completed in seconds to a couple of minutes; the
+# longest legitimate single step is a CI poll slice (CI_POLL_SLICE_SECS, 240s in
+# the .mjs) or one 3e.5 gate slice ($BUILD_GATE_SLICE_SECS plus its overrun tail).
+# The default sits comfortably above all of them AND above the Bash tool's own
+# 600s hard cap, so this bound is a BACKSTOP behind the tool timeout, never a
+# competitor to it. Raise it only if a legitimate step genuinely needs longer;
+# lowering it below the gate slice budget would manufacture false timeouts.
+#
+# WHAT HAPPENS WHEN IT FIRES: the step is killed and reports its own
+# `{"outcome":"STEP_TIMEOUT",...}` line, and build-level.mjs treats the step as
+# LOST — it runs the EXISTING `pr.sh recover-probe <worktree> <branch>` side-effect
+# probe (temperloop#939's ladder, the same disposal seam temperloop#1067 uses for
+# the adjacent lost-return case) before deciding anything. A PR the timed-out step
+# already opened is ADOPTED, never re-opened; nothing is ever blind-retried, so a
+# bounded step cannot double-push or double-open a PR.
+#
+# Handed to build-level.mjs on the SAME orchestrator→workflow input seam as the
+# two model settings and BUILD_GATE_SLICE_SECS above (`input.machineryStepCeilingSecs`,
+# resolved at build.md / sweep.md / fix.md Step 0) — the Workflow runtime has no
+# shell to source this file, and no `Date.now()` either, which is exactly why the
+# bound is enforced in the emitted shell rather than in the .mjs's own control flow.
+: "${BUILD_MACHINERY_STEP_CEILING_SECS:=900}"
+
+# claude/workflows/build-level.mjs — the OBSERVABILITY half of the same seam: a
+# batched machinery step that takes at least this many seconds emits its own
+# `{"outcome":"STEP_SLOW",...}` notice line alongside its real result, which the
+# driver turns into a `log()` line. A step that is merely slow is NOT lost and is
+# NOT disposed — the notice exists so a long stall is VISIBLE well before it
+# reaches BUILD_MACHINERY_STEP_CEILING_SECS, instead of being the silent 9.8h the
+# #1071 incident was. Set to 0 to disable the notice entirely.
+#
+# The default sits just above the longest legitimate single batched step (the
+# CI_POLL_SLICE_SECS poll slice) so a healthy ci-batch stays quiet. It is
+# deliberately NOT applied to the SOLO executor calls: those return exactly ONE
+# JSON object by contract, so a second notice line there would break the schema.
+: "${BUILD_MACHINERY_STEP_SLOW_SECS:=300}"
+
 # sweep.md Step 3 tier-2 composition — the BOUNDED wait on background chunk 1's
 # completion notification. After the Phase-1 question batch resolves, if chunk 1's
 # `<task-notification>` has not arrived, the driver polls the chunk's task state
@@ -823,6 +879,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        NEXT_SEQ_STALE_AFTER TIDY_SYNC_WAIT TIDY_LOCK_STALE_AFTER CHECKIN_PRUNE_DAYS \
        SWEEP_FANOUT_WIDTH SWEEP_DETECT_MODEL SWEEP_WORKER_MODEL SWEEP_BG_POLL_ATTEMPTS SWEEP_BG_POLL_INTERVAL \
        FIX_WORKER_MODEL BUILD_MACHINERY_SOLO_MODEL BUILD_MACHINERY_BATCH_MODEL BUILD_GATE_SLICE_SECS \
+       BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS \
        PIPELINE_OPERATOR PIPELINE_REQUIRED_CHECK \
        PIPELINE_DRIVE PIPELINE_DRIVE_CAP PIPELINE_DRIVE_MODEL PIPELINE_DRIVE_SETTINGS \
        PIPELINE_DRIVE_MERGE PIPELINE_DRIVE_MERGE_CAP PIPELINE_DRIVE_MERGE_MODEL PIPELINE_DRIVE_MERGE_SETTINGS \

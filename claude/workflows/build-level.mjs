@@ -253,6 +253,16 @@ const SPINE_OUTCOME_SCHEMA = {
         // stage (nothing is committed), it is the backgrounded-gate stall whose
         // cure is a foreground re-spawn on the SAME worktree.
         'RECOVER_NONE', 'RECOVER_DIRTY', 'RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN',
+        // The WORKFLOW-LEVEL step liveness bound (temperloop#1071). Neither of
+        // these comes from a machinery script — both are emitted by the shell
+        // watchdog THIS file wraps every machinery step in (see
+        // stepBoundPreamble()). STEP_TIMEOUT: the step outlived
+        // STEP_CEILING_SECS and was killed, so its result is LOST (never
+        // "failed" — the ceiling says nothing about the work, exactly as
+        // GATE_TIMEOUT says nothing about the tree). STEP_SLOW: an ADVISORY
+        // notice riding alongside a step's real result, never a result itself —
+        // runMachineryBatch partitions it out and logs it.
+        'STEP_TIMEOUT', 'STEP_SLOW',
         'ERROR',
       ],
     },
@@ -290,6 +300,13 @@ const SPINE_OUTCOME_SCHEMA = {
     failed: { type: ['number', 'string'] },
     elapsedSecs: { type: ['number', 'string'] },
     budgetSecs: { type: ['number', 'string'] },
+    // temperloop#1071 step-liveness fields, carried by STEP_TIMEOUT / STEP_SLOW.
+    // `step` is the batch step's own `kind` (or 'solo'), so an escalation payload
+    // names WHICH machinery call the ceiling bounded without any correlation work.
+    step: { type: 'string' },
+    ceiling_secs: { type: ['number', 'string'] },
+    elapsed_secs: { type: ['number', 'string'] },
+    slow_secs: { type: ['number', 'string'] },
   },
 };
 
@@ -406,6 +423,14 @@ const WORKER_VERDICT_SCHEMA = {
 //      identically. The read-only spike worker's null escalates with NO retry.
 //   4. pr.sh `EXISTS` adoption (3f) — not a loop: a create-retry whose first
 //      attempt in fact succeeded is ADOPTED as PR_OPENED rather than re-issued.
+//   5. STEP_TIMEOUT disposal (temperloop#1071) — NOT A RETRY AT ALL, and named
+//      here so a future edit cannot quietly make it one. A machinery step killed
+//      by the workflow liveness ceiling is CLASSIFIED FIRST (pr.sh recover-probe,
+//      the same ladder rule 3 uses) and then either ADOPTED (rule 4's shape: an
+//      already-opened PR is taken, never re-opened) or ESCALATED. There is no arm
+//      that re-issues the bounded step — push and pr-create are not idempotent,
+//      and the ceiling firing is precisely the case where you cannot know whether
+//      the first attempt landed.
 //
 // The two loops this file DELEGATES to carry their own caps + classification
 // and are documented in their own scripts, not restated here: ci-poll.sh's
@@ -508,6 +533,78 @@ const GATE_BASH_TIMEOUT_MS = Math.min(
   AGENT_BASH_CAP_MS,
   GATE_SLICE_SECS * 1000 + GATE_SLICE_OVERRUN_MS,
 );
+// --- Machinery-step LIVENESS BOUND (temperloop#1071) -------------------------
+// THE FAILURE THIS BOUNDS. A `pr-batch` machinery agent ran 35,362,333ms — 9h49m
+// — on TWO tool calls and 45k tokens. Not a retry loop, not a runaway: ONE Bash
+// invocation blocked and then completed successfully (all four steps green, the
+// PR opened). Every bound that should have made that unreachable failed: the
+// Bash tool's `timeout` parameter is capped at AGENT_BASH_CAP_MS and the prompt
+// above asks for less than that, so a 9.8h call is not supposed to exist — and
+// NOTHING ELSE bounded it. The root cause is NOT established (candidates exist;
+// none is acted on here without a disconfirming probe), so this is deliberately
+// a ROOT-CAUSE-AGNOSTIC seam: a bound that holds regardless of WHICH hypothesis
+// is true.
+//
+// WHY IT LIVES IN THE EMITTED SHELL, NOT IN THIS FILE'S CONTROL FLOW. Two hard
+// runtime facts. (a) `Date.now()` THROWS in the Workflow runtime (see the
+// tunables header above), so this file cannot measure elapsed time at all — a
+// `Promise.race` deadline is not expressible here, there is no timer primitive
+// to race against. (b) The thing that failed to fire IS the harness's own
+// tool-timeout layer, so putting the new bound in that same layer would inherit
+// the failure. So the ceiling is compiled INTO the command text every machinery
+// step already runs through: a bash + `sleep` + `kill` watchdog, modelled on
+// `workflows/scripts/lib/portable-timeout.sh`'s dependency-free fallback tier
+// (its pipe-leak redirect included, verbatim in spirit — see stepBoundPreamble).
+// It is still a WORKFLOW-LEVEL bound: this file decides it, this file emits it,
+// this file branches on the STEP_TIMEOUT it produces, and it applies to every
+// machinery executor (`prelude` / `pr-batch` / `ci-batch` / solo `gate`) rather
+// than to any one script.
+//
+// WHY NOT run_with_timeout(1) ITSELF. `portable-timeout.sh`'s preferred backends
+// are `timeout`/`gtimeout`, which `exec` a BINARY — they cannot run a shell
+// FUNCTION, and a batched step body is exactly that (a multi-command shell
+// snippet with `&&`, `;`, redirections and command substitutions). Re-wrapping
+// each body as `bash -c '<quoted script>'` to reach those backends would also
+// re-introduce the nested-quoting shape temperloop#72 found the auto-mode safety
+// classifier reads as an obfuscated command — the class of failure that denied
+// every push/worktree step on unattended runs. So the fallback tier is
+// reproduced inline, with its provenance named here.
+//
+// The two settings are NAMED SETTINGS (BUILD_MACHINERY_STEP_CEILING_SECS /
+// BUILD_MACHINERY_STEP_SLOW_SECS), handed in by the orchestrator at Step 0 on
+// the SAME seam as gateSliceSecs above, and for the same structural reason. `||`
+// vs `??`: same empty-string safety documented at the model settings.
+const STEP_CEILING_SECS_DEFAULT = 900;
+const STEP_SLOW_SECS_DEFAULT = 300;
+// FLOOR — a ceiling below the longest LEGITIMATE single step would manufacture
+// false timeouts on healthy work, which is strictly worse than the stall it
+// bounds. The longest legitimate step is one CI poll slice or one gate slice, so
+// the floor is the larger of the two plus headroom; no operator value can go
+// under it. (Derived, never typed twice — retuning either slice length carries.)
+const STEP_CEILING_FLOOR_SECS = Math.max(CI_POLL_SLICE_SECS, GATE_SLICE_SECS) + 300;
+const STEP_CEILING_SECS = Math.max(
+  STEP_CEILING_FLOOR_SECS,
+  Number(input.machineryStepCeilingSecs) > 0
+    ? Math.floor(Number(input.machineryStepCeilingSecs))
+    : STEP_CEILING_SECS_DEFAULT,
+);
+// The SLOW threshold is advisory, so it only needs to be sane: non-negative (0
+// disables the notice) and never at/above the ceiling, where it could never fire.
+// The explicit blank check is NOT redundant with the `> 0` form used above: 0 is
+// a MEANINGFUL value here (disable), and `Number('')` is 0 — so an orchestrator
+// that resolves an unset setting to "" would otherwise silently disable the
+// notice instead of landing on the in-file default. Same empty-vs-absent hazard
+// the model settings' `||` guards, spelled out because `>= 0` cannot collapse it.
+const stepSlowInput = input.machineryStepSlowSecs;
+const stepSlowGiven =
+  stepSlowInput !== undefined && stepSlowInput !== null && String(stepSlowInput).trim() !== '';
+const STEP_SLOW_SECS = Math.min(
+  STEP_CEILING_SECS - 1,
+  stepSlowGiven && Number(stepSlowInput) >= 0
+    ? Math.floor(Number(stepSlowInput))
+    : STEP_SLOW_SECS_DEFAULT,
+);
+
 // GATE_MAX_SLICES — a bound, not a target: a suite that cannot finish in this
 // many slices is escalated as a TIMEOUT (honestly named) rather than looped on
 // forever. At the default slice budget this is ~40 minutes of gate wall time,
@@ -529,6 +626,92 @@ const GATE_MARGIN_WARN_RATIO = 0.75;
 function sq(value) {
   const s = String(value);
   return `'${s.split("'").join(`'\\''`)}'`;
+}
+
+// -----------------------------------------------------------------------------
+// The step LIVENESS BOUND, compiled into the command text (temperloop#1071).
+// -----------------------------------------------------------------------------
+// See the STEP_CEILING_SECS block above for WHY the bound lives in the emitted
+// shell rather than in this file's control flow (no Date.now(), no timer, and
+// the layer that failed to fire IS the tool-timeout layer). These three helpers
+// are the HOW.
+//
+// stepBoundPreamble(slowSecs) — the prologue every bounded command carries: the
+// two budgets as plain shell variables, then `__lb`, which runs ONE step body
+// under them. `__lb` is the dependency-free fallback tier of
+// `workflows/scripts/lib/portable-timeout.sh`, reproduced here (that library's
+// preferred `timeout`/`gtimeout` backends `exec` a BINARY and cannot run a shell
+// FUNCTION, which is what a step body is). Two details are load-bearing and both
+// come straight from that file's header:
+//   • the watchdog subshell is redirected AT THE SUBSHELL BOUNDARY
+//     (`) </dev/null >/dev/null 2>&1 &`). Without it, its `sleep` grandchild
+//     inherits the caller's `$( … )` pipe write-end and every FAST, successful
+//     step stalls for the full ceiling waiting on EOF (foundation #861).
+//   • the watchdog is killed AND reaped on the fast path, so a completed step
+//     leaves nothing behind.
+// The kill is best-effort DEEP: direct children first (`pkill -P`, so the helper
+// script dies before the subshell that owns it), then the subshell itself. A
+// deeper grandchild (a `gh` inside a `pr.sh`) can still outlive the bound — which
+// is exactly why a timed-out step is disposed through the recover-probe rather
+// than blind-retried: the workflow stops WAITING on it without ever assuming it
+// did nothing.
+//
+// The step body's own stdout is untouched — it flows to wherever the caller put
+// it (a `$( … )` capture in a batch, the script's stdout for a solo call), so the
+// machinery's "one JSON line per step" contract is preserved byte for byte on
+// every healthy run. `__lb` only ADDS a line, and only in the two abnormal cases:
+// STEP_TIMEOUT (replacing a result the kill destroyed) and STEP_SLOW (an advisory
+// riding alongside a real result — hence `slowSecs` is 0 on the SOLO path, whose
+// schema admits exactly one object).
+function stepBoundPreamble(slowSecs) {
+  return [
+    `__lb_ceil=${STEP_CEILING_SECS}; __lb_slow=${slowSecs}`,
+    '__lb() {',
+    '  __lbk=$1; shift',
+    '  __lbt=$(date +%s)',
+    '  "$@" &',
+    '  __lbp=$!',
+    // Kill ORDER is load-bearing, and the obvious order is wrong. Killing the
+    // step's children FIRST unblocks the step body — which then races ahead and
+    // runs its NEXT command (printing a result the workflow must not believe)
+    // before the kill of the body itself lands. Measured, not theorised: with
+    // children-first, a `sleep 30; printf …` step still printed its `printf`.
+    // So: SNAPSHOT the direct children, kill the body, THEN kill the snapshot
+    // (once the body dies its children reparent, and `pgrep -P` can no longer
+    // find them — hence the snapshot rather than a second lookup).
+    '  ( sleep "$__lb_ceil" 2>/dev/null; __lbc=$(pgrep -P "$__lbp" 2>/dev/null); kill -9 "$__lbp" 2>/dev/null; [ -n "$__lbc" ] && kill -9 $__lbc 2>/dev/null ) </dev/null >/dev/null 2>&1 &',
+    '  __lbw=$!',
+    '  wait "$__lbp" 2>/dev/null; __lbr=$?',
+    '  kill "$__lbw" 2>/dev/null; wait "$__lbw" 2>/dev/null',
+    '  __lbe=$(( $(date +%s) - __lbt ))',
+    // Timed out iff BOTH the step died by SIGNAL and the wall clock actually
+    // reached the ceiling. The second test is what keeps a step that legitimately
+    // exits on a signal of its own from being mislabelled LOST.
+    '  if [ "$__lbr" -ge 128 ] && [ "$__lbe" -ge "$__lb_ceil" ]; then',
+    `    printf '{"outcome":"STEP_TIMEOUT","step":"%s","ceiling_secs":%s,"elapsed_secs":%s}\\n' "$__lbk" "$__lb_ceil" "$__lbe"`,
+    '    return 137',
+    '  fi',
+    '  if [ "$__lb_slow" -gt 0 ] && [ "$__lbe" -ge "$__lb_slow" ]; then',
+    `    printf '{"outcome":"STEP_SLOW","step":"%s","elapsed_secs":%s,"slow_secs":%s,"ceiling_secs":%s}\\n' "$__lbk" "$__lbe" "$__lb_slow" "$__lb_ceil"`,
+    '  fi',
+    '  return "$__lbr"',
+    '}',
+  ].join('\n');
+}
+
+// stepFnDef — wrap a step's command text VERBATIM in a shell function, so `__lb`
+// can background it as one unit. The body is placed on its own line (never
+// `{ <cmd>; }`) precisely so a command that already ends in `;` or `fi` stays
+// valid, and so not one byte of the sq()-quoted command text is rewritten.
+function stepFnDef(name, cmd) {
+  return `${name}() {\n${cmd}\n}`;
+}
+
+// stepBoundInvoke — the call itself. `kind` is the batch step's own name (or the
+// solo call's phase), and it rides through to the STEP_TIMEOUT payload so an
+// escalation names WHICH step the ceiling bounded.
+function stepBoundInvoke(name, kind) {
+  return `__lb ${sq(kind)} ${name}`;
 }
 
 // machineryBin — resolve a build-SPINE script (worktree.sh / pr.sh / ci-poll.sh),
@@ -649,6 +832,17 @@ async function machineryAgent(promptFor, opts) {
 // override beyond haiku (cheapest tier — the executor does no reasoning); NO
 // isolation:'worktree' (the machinery scripts manage their own worktrees, §5).
 async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } = {}) {
+  // temperloop#1071: the command runs under the workflow's own wall-clock
+  // ceiling. `slowSecs` is 0 on this path — a solo executor returns exactly ONE
+  // object by schema, so an advisory second line has nowhere to go. The step
+  // `kind` is the label's phase ('gate' / 'recover-probe' / 'push-retry'), which
+  // is what a STEP_TIMEOUT payload then names.
+  const soloKind = String(label ?? '').split(':')[0] || 'solo';
+  const boundedCmd = [
+    stepBoundPreamble(0),
+    stepFnDef('__s0', cmd),
+    stepBoundInvoke('__s0', soloKind),
+  ].join('\n');
   // Wording (temperloop#72): describe the command as a KNOWN build-machinery helper
   // script that self-reports its result, rather than telling the sub-agent to
   // "run exactly / do NOT interpret" an opaque line. The old phrasing, paired
@@ -661,6 +855,11 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } 
     [
       'Run this single build-machinery helper command with the Bash tool, exactly as written.',
       'It is a known project script (worktree.sh / pr.sh / ci-poll.sh / claim.sh); do not add flags, chain extra commands, or rewrite it.',
+      // temperloop#1071: the emitted text now opens with a few lines of inline
+      // `sleep`/`kill` watchdog before the helper call. Name it, so the executor
+      // reads the wrapper as part of the command rather than as noise to strip
+      // (the same #72 lesson that made the two framing lines above explicit).
+      'It opens with a small inline wall-clock watchdog (a `sleep`/`kill` guard) that bounds how long the helper may run; that guard is PART of the command — run the whole thing, do not strip or shorten it.',
       // temperloop#115: for a legitimately long-running command (the 3e.5 gate),
       // raise the Bash TOOL's timeout parameter — NOT the command text — so the
       // executor does not kill it at the default 2 minutes.
@@ -693,7 +892,7 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } 
         : null,
       '',
       'Command:',
-      cmd,
+      boundedCmd,
     ].filter(Boolean).join('\n');
   const out = await machineryAgent(
     promptFor,
@@ -764,14 +963,26 @@ function globPat(sub) {
 // executor's transcript untouched, as before) and echoed verbatim, so the
 // machinery's own "single JSON line" contract is preserved per step.
 function batchCommand(steps) {
-  const lines = [];
+  // temperloop#1071: every step runs under the workflow's wall-clock ceiling, and
+  // the batch path DOES carry the STEP_SLOW advisory (its schema is an ARRAY of
+  // objects, so an extra notice line has somewhere to go — runMachineryBatch
+  // partitions it back out before the driver ever indexes a step).
+  const lines = [stepBoundPreamble(STEP_SLOW_SECS)];
   steps.forEach((s, i) => {
     const v = `__o${i}`;
-    lines.push(`${v}=$( ${s.cmd} )`);
+    const fn = `__s${i}`;
+    lines.push(stepFnDef(fn, s.cmd));
+    lines.push(`${v}=$( ${stepBoundInvoke(fn, s.kind)} )`);
     lines.push(`printf '%s\\n' "$${v}"`);
     if (i === steps.length - 1) return; // nothing follows — no gate needed
     if (s.stopGlobs && s.stopGlobs.length > 0) {
-      lines.push(`case "$${v}" in ${s.stopGlobs.map(globPat).join('|')}) exit 0 ;; esac`);
+      // A timed-out step stops the sequence on BOTH gate forms. The
+      // continueOutcomes form gets it for free (STEP_TIMEOUT is not a continue
+      // outcome); the stopGlobs form is a stop-LIST, so the bound's own outcome
+      // has to be named in it or a bounded merge-state probe would let the poll
+      // slice behind it run against a step whose result was destroyed.
+      const stops = [...s.stopGlobs.map(globPat), globPat('"outcome":"STEP_TIMEOUT"')];
+      lines.push(`case "$${v}" in ${stops.join('|')}) exit 0 ;; esac`);
     } else if (s.continueOutcomes && s.continueOutcomes.length > 0) {
       const pats = s.continueOutcomes.map((o) => globPat(`"outcome":"${o}"`)).join('|');
       lines.push(`case "$${v}" in ${pats}) ;; *) exit 0 ;; esac`);
@@ -843,7 +1054,27 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
       out: out ?? { outcome: 'SPINE_DENIED', denied: true },
     };
   }
-  return { denied: false, results: out.results, steps: kinds, out };
+  // temperloop#1071 — PARTITION the advisory notices out of the results array
+  // BEFORE anyone indexes it. A STEP_SLOW line is emitted alongside a real
+  // result, not in place of one, so leaving it in would shift every later step's
+  // index by one and silently mis-branch the whole batch. Filtering here (once,
+  // at the transport) is what lets every `batchStep(batch, i)` call site below
+  // stay exactly as it was.
+  const notices = out.results.filter((r) => r && r.outcome === 'STEP_SLOW');
+  const results = out.results.filter((r) => !(r && r.outcome === 'STEP_SLOW'));
+  // …and LOG them. This is the observable-progress half of the bound: a step
+  // that outran its expected duration but has NOT hit the ceiling is not lost
+  // and is not disposed — it is simply made visible, which is the one thing the
+  // 9h49m stall never was.
+  for (const n of notices) {
+    log(
+      `[${slug ?? label ?? 'level'}] machinery step '${n.step ?? '?'}' took ${n.elapsed_secs ?? '?'}s ` +
+      `— over the ${n.slow_secs ?? STEP_SLOW_SECS}s expected-duration mark, still under the ` +
+      `${n.ceiling_secs ?? STEP_CEILING_SECS}s liveness ceiling (temperloop#1071). Not lost, not retried — ` +
+      `raise BUILD_MACHINERY_STEP_SLOW_SECS if this step is legitimately this slow.`,
+    );
+  }
+  return { denied: false, results, steps: kinds, out };
 }
 
 // batchStep — step i's outcome object, or a closed ERROR sentinel when the batch
@@ -1116,6 +1347,90 @@ async function probeSideEffects(item, wt) {
   };
 }
 
+// -----------------------------------------------------------------------------
+// Step-liveness disposal (temperloop#1071).
+// -----------------------------------------------------------------------------
+// timedOutStep — the first STEP_TIMEOUT in a batch's results, or null. A batch
+// stops at the timed-out step (both `case` gate forms treat STEP_TIMEOUT as a
+// stop), so there is at most one.
+function timedOutStep(results) {
+  return (results ?? []).find((r) => r && r.outcome === 'STEP_TIMEOUT') ?? null;
+}
+
+// disposeStepTimeout — what happens when the ceiling fires.
+//
+// THE RULE: a bounded-out step is LOST, never FAILED and never RE-ISSUED. The
+// ceiling proves the workflow stopped waiting; it proves nothing about what the
+// step did or did not do before it was killed — a `push` may have completed on
+// the remote, a `pr-open` may have created the PR (the #1071 incident's own
+// 9h49m step in fact finished ALL FOUR steps green and opened PR #1070). So the
+// disposal is the same side-effect probe the lost-return path already owns:
+// `pr.sh recover-probe` (temperloop#939's staged ladder, and the seam
+// temperloop#1067 covers for the adjacent lost-return case — deliberately ONE
+// disposal path, not a second one invented here).
+//
+// Two dispositions, no third:
+//   • the probe finds an OPEN PR → ADOPT it (`adopt`), exactly as 3f-2 adopts
+//     pr.sh's own `EXISTS`. This is the case that must never be re-run: blindly
+//     re-issuing the batch would double-push or double-open.
+//   • anything else → a legible `machinery-step-timeout` escalation carrying the
+//     probe's verdict, for a human/orchestrator to drive. Still no retry.
+// `adoptable:false` (the CI-poll path) keeps the probe — its stage is real
+// evidence for the payload — while refusing the adopt arm, because "a PR exists"
+// is not, and must never become, evidence that CI passed.
+async function disposeStepTimeout(item, wt, to, where, { adoptable = true } = {}) {
+  log(
+    `[${item.slug}] ${where} step '${to.step ?? '?'}' exceeded the ${to.ceiling_secs ?? STEP_CEILING_SECS}s ` +
+    `liveness ceiling after ${to.elapsed_secs ?? '?'}s and was killed (temperloop#1071). Treating it as LOST — ` +
+    `probing for side effects before disposing; it is NEVER blind-retried.`,
+  );
+  const payload = { step: to.step ?? null, where, timeoutOut: to, adoptable };
+  if (!wt) {
+    // No worktree exists yet (a prelude step timed out before/at worktree
+    // creation), so there is nothing for recover-probe to read. Say so in the
+    // payload rather than running a probe whose answer is structurally 'ERROR'.
+    return {
+      escalation: escalate(item.slug, 'machinery-step-timeout', {
+        ...payload,
+        probed: false,
+        reason: 'the step outlived the workflow liveness ceiling before a worktree existed — nothing to recover, nothing re-issued',
+        remedy: 'inspect the host for a stuck process, then re-drive the item; raise BUILD_MACHINERY_STEP_CEILING_SECS only if the step is legitimately this long',
+      }),
+    };
+  }
+  const probe = await probeSideEffects(item, wt);
+  const probed = {
+    ...payload,
+    probed: true,
+    probeStage: probe.stage ?? null,
+    pushed: probe.pushed === true,
+    sha: probe.sha ?? null,
+    pr: probe.pr ?? null,
+  };
+  // `probe.sha` is REQUIRED for the adopt arm, not optional: the CI poll that
+  // follows is PINNED to a SHA (#254's false-green guard), so adopting a PR whose
+  // head we could not read would poll an unpinned ref. No SHA → escalate instead.
+  if (adoptable && probe.stage === 'RECOVER_PR_OPEN' && probe.pr && probe.sha) {
+    log(
+      `[${item.slug}] recover-probe found PR #${probe.pr} already opened by the timed-out '${to.step ?? '?'}' step — ` +
+      `ADOPTING it (no re-push, no re-open) and continuing.`,
+    );
+    return { adopt: { pr: probe.pr, sha: probe.sha ?? null, probe } };
+  }
+  return {
+    escalation: escalate(item.slug, 'machinery-step-timeout', {
+      ...probed,
+      reason:
+        `the '${to.step ?? '?'}' machinery step outlived the ${to.ceiling_secs ?? STEP_CEILING_SECS}s workflow ` +
+        `liveness ceiling and was killed. Its result is UNKNOWN, not failed — recover-probe reports ` +
+        `${probe.stage ?? 'no usable answer'}. Nothing was re-issued, so no double-push/double-open is possible.`,
+      remedy:
+        'read the probe stage above to see what actually landed, then re-drive or finish by hand; ' +
+        'raise BUILD_MACHINERY_STEP_CEILING_SECS only if the step is legitimately this long',
+    }),
+  };
+}
+
 // recoveredVerdict — reconstruct the verdict object the worker never returned,
 // from ground truth plus an explicit UNVERIFIED marker on every acceptance
 // criterion. Deliberately carries NO `passed` key: pr.sh renders each result as
@@ -1324,6 +1639,15 @@ async function driveItem(item) {
       steps: prelude.steps,
       out: prelude.out,
     });
+  }
+  // temperloop#1071 — a prelude step that outlived the liveness ceiling. Probed
+  // with NO worktree path on purpose: the prelude is what CREATES the worktree,
+  // so at this point there is nothing for recover-probe to read (and no push or
+  // PR could exist yet). Escalates rather than re-running claim/worktree, either
+  // of which would be a blind retry of a non-idempotent step.
+  const preludeTimeout = timedOutStep(prelude.results);
+  if (preludeTimeout) {
+    return (await disposeStepTimeout(item, null, preludeTimeout, 'prelude')).escalation;
   }
 
   // 3a branch — unchanged decisions, read off the batch's first result.
@@ -1577,6 +1901,15 @@ async function driveItem(item) {
     if (machineryDenied(gateOut)) {
       return escalate(item.slug, 'machinery-denied', { step: 'gate', out: gateOut });
     }
+    // temperloop#1071 — the gate slice outlived the workflow liveness ceiling.
+    // Distinct from GATE_TIMEOUT (the Bash tool's own timeout, which #1021 gave
+    // its own outcome): this is the backstop BEHIND that one, for the case where
+    // the tool timeout does not fire at all. Disposed through the same probe as
+    // every other bounded step, and NOT re-sliced — re-running a gate slice whose
+    // process may still be alive is exactly the blind retry the rule forbids.
+    if (gateOut.outcome === 'STEP_TIMEOUT') {
+      return (await disposeStepTimeout(item, wt, gateOut, 'gate', { adoptable: false })).escalation;
+    }
     gateElapsed += Number(gateOut.elapsedSecs) || 0;
     gateFailed += Number(gateOut.failed) || 0;
     if (gateOut.outcome !== 'GATE_SLICE') break;
@@ -1730,49 +2063,72 @@ async function driveItem(item) {
     });
   }
 
-  // 3f-0a branch — the rebase decision, unchanged, read off the batch.
-  if (prAt.rebase !== undefined) {
-    const rebaseOut = batchStep(prb, prAt.rebase);
-    if (rebaseOut.outcome === 'REBASE_CONFLICT') {
-      return escalate(item.slug, 'rebase-conflict', { rebaseOut });
+  // temperloop#1071 — a pr-batch step that outlived the liveness ceiling. THIS is
+  // the incident's own shape: the 9h49m call was a `pr-batch` whose steps all in
+  // fact completed (PR #1070 opened) while the workflow sat waiting. So the
+  // disposal probes for exactly that — an already-opened PR is ADOPTED and the
+  // item flows straight on to CI, never re-pushed and never re-opened. Any other
+  // probe stage escalates. Either way, the rebase/scan/push/pr-open branches
+  // below are SKIPPED: their step objects were destroyed by the kill, and
+  // re-deriving them from a truncated batch is how a double-push happens.
+  const prTimeout = timedOutStep(prb.results);
+  let adopted = null;
+  if (prTimeout) {
+    const disp = await disposeStepTimeout(item, wt, prTimeout, 'pr-batch');
+    if (disp.escalation) return disp.escalation;
+    adopted = disp.adopt;
+  }
+
+  let pr;
+  let pushedSha;
+  if (adopted) {
+    pr = adopted.pr;
+    pushedSha = adopted.sha ?? null;
+  } else {
+    // 3f-0a branch — the rebase decision, unchanged, read off the batch.
+    if (prAt.rebase !== undefined) {
+      const rebaseOut = batchStep(prb, prAt.rebase);
+      if (rebaseOut.outcome === 'REBASE_CONFLICT') {
+        return escalate(item.slug, 'rebase-conflict', { rebaseOut });
+      }
+      if (rebaseOut.outcome !== 'REBASED') {
+        return escalate(item.slug, 'rebase-error', { rebaseOut });
+      }
     }
-    if (rebaseOut.outcome !== 'REBASED') {
-      return escalate(item.slug, 'rebase-error', { rebaseOut });
+
+    // 3f-0 branch — the closing-keyword scan decision, unchanged.
+    const scanOut = batchStep(prb, prAt.scan);
+    if (scanOut.outcome === 'SCAN_BLOCKED') {
+      // A worker commit carries a closing keyword (the ec8d5fd class). Don't push
+      // it as-is — escalate so the orchestrator re-words and re-drives.
+      return escalate(item.slug, 'closing-keyword', { scanOut });
     }
-  }
+    if (scanOut.outcome !== 'SCAN_CLEAN') {
+      return escalate(item.slug, 'scan-error', { scanOut });
+    }
 
-  // 3f-0 branch — the closing-keyword scan decision, unchanged.
-  const scanOut = batchStep(prb, prAt.scan);
-  if (scanOut.outcome === 'SCAN_BLOCKED') {
-    // A worker commit carries a closing keyword (the ec8d5fd class). Don't push
-    // it as-is — escalate so the orchestrator re-words and re-drives.
-    return escalate(item.slug, 'closing-keyword', { scanOut });
-  }
-  if (scanOut.outcome !== 'SCAN_CLEAN') {
-    return escalate(item.slug, 'scan-error', { scanOut });
-  }
+    // 3f-1 branch — the push decision, unchanged.
+    const pushOut = batchStep(prb, prAt.push);
+    if (pushOut.outcome === 'PUSH_REJECTED') {
+      // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
+      return escalate(item.slug, 'push-rejected', { pushOut });
+    }
+    if (pushOut.outcome !== 'PUSHED') {
+      return escalate(item.slug, 'push-error', { pushOut });
+    }
+    pushedSha = pushOut.sha;
 
-  // 3f-1 branch — the push decision, unchanged.
-  const pushOut = batchStep(prb, prAt.push);
-  if (pushOut.outcome === 'PUSH_REJECTED') {
-    // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
-    return escalate(item.slug, 'push-rejected', { pushOut });
+    // 3f-2 branch — the PR-open decision, unchanged.
+    // EXISTS means the branch already had an open PR (a create-retry after a
+    // succeeded first attempt). Treat it as PR_OPENED — adopt the existing PR and
+    // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is a
+    // genuine failure and escalates as pr-open-failed.
+    const openOut = batchStep(prb, prAt['pr-open']);
+    if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
+      return escalate(item.slug, 'pr-open-failed', { openOut });
+    }
+    pr = openOut.pr_number;
   }
-  if (pushOut.outcome !== 'PUSHED') {
-    return escalate(item.slug, 'push-error', { pushOut });
-  }
-  const pushedSha = pushOut.sha;
-
-  // 3f-2 branch — the PR-open decision, unchanged.
-  // EXISTS means the branch already had an open PR (a create-retry after a
-  // succeeded first attempt). Treat it as PR_OPENED — adopt the existing PR and
-  // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is a
-  // genuine failure and escalates as pr-open-failed.
-  const openOut = batchStep(prb, prAt['pr-open']);
-  if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
-    return escalate(item.slug, 'pr-open-failed', { openOut });
-  }
-  const pr = openOut.pr_number;
 
   // --- 3g. CI poll (the bounded short-slice loop — DESIGN NOTE 2) ----------
   const ciResult = await ciPollLoop(item, ownerRepo, pr, pushedSha, wt);
@@ -1885,6 +2241,19 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         return {
           escalation: 'machinery-denied',
           payload: { step: 'ci-batch', steps: batch.steps, out: batch.out, sha },
+        };
+      }
+      // temperloop#1071 — a ci-batch step that outlived the liveness ceiling.
+      // `adoptable:false` is load-bearing here: the probe still runs (its stage is
+      // real evidence for the payload), but "an open PR exists" is NOT and must
+      // never become evidence that CI passed, so there is no adopt arm on this
+      // path — a bounded-out poll always escalates rather than resolving green.
+      const ciTimeout = timedOutStep(batch.results);
+      if (ciTimeout) {
+        const disp = await disposeStepTimeout(item, wt, ciTimeout, 'ci-batch', { adoptable: false });
+        return {
+          escalation: 'machinery-step-timeout',
+          payload: { ...disp.escalation.escalation.payload, sha },
         };
       }
       for (let k = 0; k < nSlices; k++) {
@@ -2003,6 +2372,19 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       );
       if (machineryDenied(fpush)) {
         return { escalation: 'machinery-denied', payload: { step: 'push-retry', out: fpush, sha } };
+      }
+      // temperloop#1071 — the force-push outlived the liveness ceiling. It is the
+      // single most dangerous step to guess about (a re-issue could push a second
+      // time over work the first push may already have landed), so it takes the
+      // probe-then-escalate disposal and never the retry the `ci-failed` arm
+      // below would otherwise imply. `adoptable:false`: this loop is polling a PR
+      // it already has — there is nothing to adopt, only a SHA to establish.
+      if (fpush.outcome === 'STEP_TIMEOUT') {
+        const disp = await disposeStepTimeout(item, wt, fpush, 'push-retry', { adoptable: false });
+        return {
+          escalation: 'machinery-step-timeout',
+          payload: { ...disp.escalation.escalation.payload, sha },
+        };
       }
       if (fpush.outcome !== 'PUSHED') {
         return { escalation: 'ci-failed', payload: { fpush, sha } };

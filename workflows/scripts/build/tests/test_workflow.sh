@@ -3093,5 +3093,255 @@ if (!reason) {
 console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
 "
 
+# ============================================================================
+# TEST: temperloop#1071 — the machinery-step WALL-CLOCK LIVENESS BOUND.
+#
+# The incident: a `pr-batch` machinery agent ran 35,362,333ms (9h49m) on TWO
+# tool calls. One Bash invocation blocked and then completed successfully (all
+# four steps green, the PR opened). The Bash tool's own `timeout` is capped at
+# 600,000ms, so a 9.8h call is supposed to be unreachable — it did not fire, and
+# nothing else bounded the call.
+#
+# The seam under test is deliberately ROOT-CAUSE-AGNOSTIC (the stall's cause is
+# NOT established): a per-step ceiling compiled into the emitted shell, plus a
+# disposal that treats a bounded-out step as LOST and routes it through the
+# EXISTING pr.sh recover-probe rather than re-issuing a non-idempotent command.
+# ============================================================================
+
+run_node_case "K1071 adopt: a timed-out pr-batch step whose PR already opened is ADOPTED, never re-opened" "
+$PREAMBLE
+// The #1071 shape exactly: the batch's push step outlives the ceiling and is
+// killed, but the work in fact LANDED (this is what the real incident did — the
+// 9h49m call opened PR #1070). recover-probe sees the open PR, so the item must
+// adopt it and flow on to CI — never re-push, never re-open.
+setMachinery('to-item',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/to-item' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-to' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'STEP_TIMEOUT', step: 'push', ceiling_secs: 900, elapsed_secs: 35362 },
+  { outcome: 'RECOVER_PR_OPEN', pr_number: 1070, sha: 'sha-to', pushed: true, verification_surface_present: true },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('to-item');
+globalThis.args = { ...baseArgs, items: [{ slug: 'to-item', branch: 'b/to', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const steps = stepsRun('to-item');
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'a recoverable step timeout must NOT escalate: ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1) reason = 'expected the item to park on the adopted PR: ' + JSON.stringify(result);
+else if (parked[0].pr !== 1070) reason = 'must park on the PR the timed-out step actually opened, got ' + parked[0].pr;
+else if (steps.includes('pr-open')) reason = 'DOUBLE-OPEN: pr-open ran after the batch was bounded out at push';
+else if (!callLog.some(c => c.opts.label === 'recover-probe:to-item')) reason = 'disposal must go through the EXISTING pr.sh recover-probe path';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1071 escalate: a timed-out step with NO landed side-effect escalates machinery-step-timeout, never retries" "
+$PREAMBLE
+setMachinery('to2',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/to2' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha2' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'STEP_TIMEOUT', step: 'push', ceiling_secs: 900, elapsed_secs: 901 },
+  noSideEffects(),
+);
+happyWorker('to2');
+globalThis.args = { ...baseArgs, items: [{ slug: 'to2', branch: 'b/to2', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const esc = (result.escalations ?? [])[0];
+const steps = stepsRun('to2');
+let reason = null;
+if (!esc) reason = 'expected an escalation: ' + JSON.stringify(result);
+else if (esc.kind !== 'machinery-step-timeout') reason = 'wrong escalation kind: ' + esc.kind;
+else if (esc.payload.step !== 'push') reason = 'the payload must name WHICH step the ceiling bounded, got ' + JSON.stringify(esc.payload.step);
+else if (esc.payload.probeStage !== 'RECOVER_NONE') reason = 'the payload must carry the recover-probe verdict, got ' + JSON.stringify(esc.payload.probeStage);
+else if (steps.filter(k => k === 'push').length !== 1) reason = 'BLIND RETRY: push ran more than once';
+else if (steps.includes('pr-open')) reason = 'pr-open must not run after a bounded-out push';
+else if ((result.parked ?? []).length !== 0) reason = 'a bounded-out step must never park as though it succeeded';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1071 notice: a STEP_SLOW advisory is logged and PARTITIONED OUT — step indices must not shift" "
+$PREAMBLE
+// STEP_SLOW rides ALONGSIDE a real result, so if it were left in the results
+// array every later step's index would shift by one and the driver would branch
+// on the wrong object (here: 'scan' would read the notice and escalate
+// scan-error). The item parking green IS the assertion.
+const logged = [];
+globalThis.log = (m) => logged.push(String(m));
+globalThis.agent = async (prompt, opts = {}) => {
+  const label = opts.label || '';
+  if (opts.phase === 'worker') return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
+  if (label.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/sl' }] };
+  if (label.startsWith('gate:')) return { outcome: 'GATE_PASS' };
+  if (label.startsWith('pr-batch:')) return { results: [
+    { outcome: 'REBASED', sha: 'x' },
+    { outcome: 'STEP_SLOW', step: 'rebase', elapsed_secs: 420, slow_secs: 300, ceiling_secs: 900 },
+    { outcome: 'SCAN_CLEAN' },
+    { outcome: 'PUSHED', sha: 'x' },
+    { outcome: 'PR_OPENED', pr_number: 77 },
+  ] };
+  if (label.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
+  return null;
+};
+globalThis.args = { ...baseArgs, items: [{ slug: 'sl', branch: 'b/sl', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'the advisory leaked into the results array and shifted the step indices: ' + JSON.stringify(result.escalations);
+else if ((result.parked ?? [])[0]?.pr !== 77) reason = 'expected a clean park on PR 77: ' + JSON.stringify(result);
+else if (!logged.some(m => /machinery step 'rebase' took 420s/.test(m))) reason = 'the slow step must emit an observable log() progress notice; logged: ' + JSON.stringify(logged);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1071 setting: input.machineryStepCeilingSecs drives the ceiling and is floored, never below one slice" "
+$PREAMBLE
+// The ceiling reaches the emitted command text (it is a SHELL variable there —
+// this runtime has no Date.now() to measure with), and a too-small operator
+// value is floored rather than honoured: a ceiling under one legitimate slice
+// would manufacture false timeouts on healthy work, which is worse than the
+// stall it bounds.
+const seen = [];
+globalThis.agent = async (prompt, opts = {}) => {
+  seen.push({ label: opts.label, prompt: String(prompt) });
+  if (opts.phase === 'worker') return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
+  const l = opts.label || '';
+  if (l.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/c' }] };
+  if (l.startsWith('gate:')) return { outcome: 'GATE_PASS' };
+  if (l.startsWith('pr-batch:')) return { results: [{ outcome: 'REBASED', sha: 'x' }, { outcome: 'SCAN_CLEAN' }, { outcome: 'PUSHED', sha: 'x' }, { outcome: 'PR_OPENED', pr_number: 9 }] };
+  if (l.startsWith('ci-batch:')) return { results: [{ mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, { outcome: 'CI_GREEN' }] };
+  return null;
+};
+globalThis.args = { ...baseArgs, machineryStepCeilingSecs: 4321, items: [{ slug: 'c', branch: 'b/c', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+await mod.default();
+const prb = seen.find(c => (c.label || '').startsWith('pr-batch:'));
+let reason = null;
+if (!prb) reason = 'no pr-batch call';
+else if (!/__lb_ceil=4321\b/.test(prb.prompt)) reason = 'the orchestrator-supplied ceiling did not reach the emitted command text';
+else if (!/__lb\(\) \{/.test(prb.prompt)) reason = 'the emitted command carries no watchdog at all';
+else {
+  // Second load: a 1-second ceiling must be FLOORED, not honoured.
+  seen.length = 0;
+  globalThis.args = { ...baseArgs, machineryStepCeilingSecs: 1, items: [{ slug: 'c', branch: 'b/c', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+  const mod2 = await loadLevel();
+  await mod2.default();
+  const prb2 = seen.find(c => (c.label || '').startsWith('pr-batch:'));
+  const m = /__lb_ceil=([0-9]+)/.exec(prb2 ? prb2.prompt : '');
+  if (!m) reason = 'no ceiling in the second run';
+  else if (Number(m[1]) < 300) reason = 'a 1s operator ceiling was honoured instead of floored (got ' + m[1] + 's) — that manufactures false timeouts';
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1071 EMITTED-SHELL behavioural probe -------------------------------------
+# The bound is enforced by shell the .mjs GENERATES, so asserting on the .mjs
+# alone would prove nothing about whether it actually bounds anything. Generate
+# the real preamble from the real source and RUN it.
+_lb_gen="$WF_TEST_TMPDIR/lb-gen.mjs"
+cat > "$_lb_gen" <<'LBGEN'
+import { readFileSync, writeFileSync } from 'fs';
+globalThis.args = JSON.stringify({ repoRoot: '/tmp/repo', ownerRepo: 'o/r', items: [] });
+globalThis.agent = async () => null;
+globalThis.log = () => {};
+globalThis.phase = () => {};
+globalThis.parallel = async (fns) => Promise.all(fns.map(f => f()));
+const src = readFileSync(process.env.MJS_PATH, 'utf8')
+  .replace(/^export const meta/m, 'const meta')
+  .replace('const GATE_MAX_SLICES = 8;',
+    'const GATE_MAX_SLICES = 8;\nglobalThis.__p = { pre: stepBoundPreamble, def: stepFnDef, inv: stepBoundInvoke, batch: batchCommand };');
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+await new AsyncFunction(src)();
+const P = globalThis.__p;
+const out = process.env.LB_OUT;
+// A step that BLOCKS forever, under a 2s ceiling (the preamble's own ceiling is
+// rewritten below — the point is the watchdog's behaviour, not its budget).
+writeFileSync(out + '/stall.sh', [P.pre(0), P.def('__s0', "sleep 60; printf '{\"outcome\":\"PUSHED\"}\\n'"), P.inv('__s0', 'push')].join('\n'));
+// A fast step: must NOT be delayed by the watchdog (the #861 pipe-leak trap).
+writeFileSync(out + '/fast.sh', [P.pre(0), P.def('__s0', "printf '{\"outcome\":\"PUSHED\",\"sha\":\"abc\"}\\n'"), P.inv('__s0', 'push')].join('\n'));
+// A batch whose SECOND step stalls: the third step must never run.
+writeFileSync(out + '/batch.sh', P.batch([
+  { kind: 'scan', cmd: "printf '{\"outcome\":\"SCAN_CLEAN\"}\\n'", continueOutcomes: ['SCAN_CLEAN'] },
+  { kind: 'push', cmd: "sleep 60; printf '{\"outcome\":\"PUSHED\"}\\n'", continueOutcomes: ['PUSHED'] },
+  { kind: 'pr-open', cmd: "printf '{\"outcome\":\"PR_OPENED\",\"pr_number\":7}\\n'" },
+]));
+LBGEN
+_lb_out="$WF_TEST_TMPDIR/lb"; mkdir -p "$_lb_out"
+MJS_PATH="$MJS" LB_OUT="$_lb_out" node "$_lb_gen" \
+  || fail "#1071: could not generate the emitted watchdog shell from build-level.mjs"
+for _f in stall.sh fast.sh batch.sh; do
+  sed 's/^__lb_ceil=[0-9]*/__lb_ceil=2/' "$_lb_out/$_f" > "$_lb_out/t-$_f"
+  bash -n "$_lb_out/t-$_f" || fail "#1071: the emitted watchdog shell is not valid bash ($_f)"
+done
+
+# NB `|| true`: a bounded-out step exits 137 BY CONTRACT (the watchdog SIGKILLs
+# it), and this suite runs under `set -e` — without the guard the suite itself
+# would die with the very exit code the feature is supposed to produce.
+_lb_start=$(date +%s)
+_lb_stall="$(bash "$_lb_out/t-stall.sh" 2>/dev/null || true)"
+_lb_elapsed=$(( $(date +%s) - _lb_start ))
+[ "$_lb_elapsed" -lt 20 ] \
+  || fail "#1071: a stalled step was NOT bounded — it ran ${_lb_elapsed}s against a 2s ceiling (this is the 9h49m bug)"
+case "$_lb_stall" in
+  *'"outcome":"STEP_TIMEOUT"'*) : ;;
+  *) fail "#1071: a bounded-out step must report STEP_TIMEOUT, got: $_lb_stall" ;;
+esac
+case "$_lb_stall" in
+  *'"outcome":"PUSHED"'*) fail "#1071: the killed step still printed a result the driver would have believed: $_lb_stall" ;;
+esac
+echo "PASS: K1071 emitted shell: a stalled step is killed at the ceiling and reports STEP_TIMEOUT, not a result"
+
+# The fast path must be FAST: portable-timeout.sh's #861 pipe-leak (the watchdog's
+# `sleep` grandchild holding the caller's `$( … )` pipe open) turns every quick,
+# successful step into a full-ceiling stall. Regression-guard it directly.
+_lb_start=$(date +%s)
+_lb_fast="$(bash "$_lb_out/t-fast.sh" 2>/dev/null || true)"
+_lb_elapsed=$(( $(date +%s) - _lb_start ))
+[ "$_lb_elapsed" -lt 2 ] \
+  || fail "#1071: a FAST step took ${_lb_elapsed}s under a 2s ceiling — the watchdog is holding the pipe open (#861 pipe-leak regression)"
+case "$_lb_fast" in
+  '{"outcome":"PUSHED","sha":"abc"}') : ;;
+  *) fail "#1071: a healthy step's output must pass through byte-identically, got: $_lb_fast" ;;
+esac
+echo "PASS: K1071 emitted shell: a healthy step is neither delayed nor altered by the bound"
+
+_lb_batch="$(bash "$_lb_out/t-batch.sh" 2>/dev/null || true)"
+case "$_lb_batch" in
+  *'"outcome":"PR_OPENED"'*) fail "#1071: DOUBLE-OPEN — pr-open ran after the batch was bounded out at push: $_lb_batch" ;;
+esac
+case "$_lb_batch" in
+  *'"outcome":"STEP_TIMEOUT","step":"push"'*) : ;;
+  *) fail "#1071: the batch must stop at the timed-out step and name it, got: $_lb_batch" ;;
+esac
+echo "PASS: K1071 emitted shell: a bounded-out batch step stops the sequence — no step after it runs"
+
+# --- K1071 static lockstep guards ---------------------------------------------
+grep -q 'input.machineryStepCeilingSecs' "$MJS" \
+  || fail "#1071: build-level.mjs must read the step ceiling from the orchestrator hand-off (input.machineryStepCeilingSecs), not a bare literal"
+grep -q 'function stepBoundPreamble(' "$MJS" \
+  || fail "#1071: the emitted-shell watchdog (stepBoundPreamble) is missing — the bound would live only in the Bash tool timeout that already failed to fire"
+grep -q 'async function disposeStepTimeout(' "$MJS" \
+  || fail "#1071: disposeStepTimeout() missing — a bounded-out step has no disposal"
+grep -q "recover-probe \${sq(wt)}" "$MJS" \
+  || fail "#1071: the timeout disposal must reuse the EXISTING pr.sh recover-probe path, not invent a second one"
+_cfg1071="$REPO_ROOT/workflows/scripts/build/build.config.sh"
+for _s in BUILD_MACHINERY_STEP_CEILING_SECS BUILD_MACHINERY_STEP_SLOW_SECS; do
+  grep -q "$_s" "$_cfg1071" \
+    || fail "#1071: $_s must be declared in build.config.sh (the named-setting seam)"
+  for _md in build sweep fix; do
+    grep -q "$_s" "$REPO_ROOT/claude/commands/$_md.md" \
+      || fail "#1071: $_md.md Step 0 must resolve $_s (every build-level.mjs caller wires it, not /build alone)"
+  done
+done
+for _md in build sweep fix; do
+  grep -q 'machineryStepCeilingSecs' "$REPO_ROOT/claude/commands/$_md.md" \
+    || fail "#1071: $_md.md must pass machineryStepCeilingSecs in its build-level.mjs args"
+done
+echo "PASS: #1071 liveness-bound guard — named settings, emitted watchdog, recover-probe disposal, all three callers wired"
+
 echo ""
 echo "All test_workflow.sh cases passed."

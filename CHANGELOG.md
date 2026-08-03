@@ -16,6 +16,42 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **Machinery-step wall-clock liveness bound — a stalled `/build` machinery
+  step is now bounded and disposed, not waited on (temperloop#1071).** A
+  `pr-batch` machinery agent was observed running 35,362,333ms — **9h49m** — on
+  two tool calls: one Bash invocation blocked and then completed successfully
+  (all four steps green, the PR opened). The Bash tool's own `timeout` parameter
+  is capped at 600,000ms and `build-level.mjs` asks for less, so that call was
+  structurally unreachable — the tool timeout simply did not fire, and nothing
+  else bounded it. The root cause is **not** established, so the fix is
+  deliberately root-cause-agnostic: a bound that holds regardless of which
+  hypothesis is true. `claude/workflows/build-level.mjs` now compiles a per-step
+  wall-clock **ceiling into the machinery command text itself** — a `sleep`/`kill`
+  watchdog running *inside* the invoked shell (the dependency-free fallback tier
+  of `workflows/scripts/lib/portable-timeout.sh`, pipe-leak redirect included),
+  independent of and additional to the harness layer that failed. It applies to
+  every machinery executor: the `prelude` / `pr-batch` / `ci-batch` batches and
+  the solo `gate` / `recover-probe` / `push-retry` calls. A step that outlives the
+  ceiling is killed, reports its own `STEP_TIMEOUT` line, and is treated as
+  **LOST — never failed and never re-issued**: the driver runs the *existing*
+  `pr.sh recover-probe` side-effect ladder (temperloop#939, the same disposal
+  seam temperloop#1067 covers for the adjacent lost-return case), **adopts** a PR
+  the timed-out step already opened rather than re-opening it, and otherwise
+  escalates a legible `machinery-step-timeout` carrying the probe's verdict — so
+  no bounded step can double-push or double-open. The observability half: a step
+  slower than a second threshold emits a `STEP_SLOW` advisory that the driver
+  partitions out of the results array and turns into a `log()` line, so a long
+  stall becomes **visible** long before it reaches the ceiling instead of being
+  the silent 9h49m the incident was. Both budgets are named settings —
+  `BUILD_MACHINERY_STEP_CEILING_SECS` / `BUILD_MACHINERY_STEP_SLOW_SECS` in
+  `workflows/scripts/build/build.config.sh` — resolved at `build.md` / `sweep.md`
+  / `fix.md` Step 0 and handed in as `input.machineryStepCeilingSecs` /
+  `input.machineryStepSlowSecs` on the same orchestrator→workflow seam
+  `gateSliceSecs` uses (the Workflow runtime has no shell to source config, and
+  no `Date.now()` to measure with — which is exactly why the bound lives in the
+  emitted shell). The `.mjs` floors the ceiling at no less than one CI-poll/gate
+  slice, so no operator value can manufacture a false timeout on healthy work.
+
 - **Legacy host-config preflight — a registry-driven gate that asserts a
   removed legacy consumable ON THE HOST, not the repo artifact that merely
   describes it (temperloop#908).** New
