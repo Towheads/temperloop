@@ -141,11 +141,15 @@ tracked-repo setting resolved from `workflows/scripts/build/
 build.config.sh`). By **default** it scopes that read to the invoking
 checkout's own project directory rather than every project this operator
 has ever run Claude Code against on this machine — see that script's own
-header for the full derivation and its degrade paths (a checkout whose path
-exceeds Claude Code's own 200-character project-name cap, a repo-scoped
+header for the full derivation and its degrade paths (a repo-scoped
 directory that hasn't recorded anything yet, cwd not being a git working
-tree). Whichever corpus a given run actually walks, the `notice` field
-above states that scope in plain language.
+tree). A checkout whose path exceeds Claude Code's own 200-character
+project-name cap — which Claude Code stores under a truncated name plus an
+unreproducible hash suffix — is resolved by matching that 200-character
+prefix (temperloop#995), and degrades to machine-wide only when the prefix
+matches zero directories or more than one. Whichever corpus a given run
+actually walks, the `notice` field above states that scope in plain
+language.
 
 **Overriding the scope.** `SPEND_TRANSCRIPT_ROOT` is an ordinary layer-2
 override (`docs/config-precedence.md`'s six-layer ladder): export it to a
