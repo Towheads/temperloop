@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-03
+
 ### Added
 
 - **`clarification-rework` — a seventh friction-ledger category, so
