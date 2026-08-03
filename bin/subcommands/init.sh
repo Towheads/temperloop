@@ -422,6 +422,38 @@ case "$tracker_mode" in
 esac
 
 # ---------------------------------------------------------------------------
+# VALIDATE BEFORE ACTING — `--remote`, the sibling of the `--base` guard
+# further down (see "VALIDATE BEFORE ACTING" near init_default_branch).
+#
+# `--remote` parses as a bare `remote="${2:?…}"` and is then spliced straight
+# into `git fetch "$remote" "$base"` as that command's FIRST POSITIONAL — the
+# position git parses as an option whenever the word begins with `-`. So a
+# value like `--upload-pack=touch /tmp/PWNED; git-upload-pack` EXECUTES at the
+# fetch, exactly the injection the `--base` guard closed on the other argument
+# of the same call. Downstream refusal is not a guard: proposal-pr.sh
+# validates the remote it is handed, but only AFTER this script's own fetch
+# has already run it.
+#
+# This is documented CLI surface (VERSIONING.md's CLI-surface row) that
+# adopter wrapper scripts and CI jobs pass, so the value is not always a
+# human's own keystroke. Unlike `--base` — which may be empty here and is only
+# resolved once init_default_branch has run — `--remote` always holds its
+# final value the instant parsing ends, so it is validated HERE, at parse
+# time, strictly before the first git invocation that consumes it. One guard
+# then covers init_default_branch's symbolic-ref/show-ref probes, the fetch,
+# the base-ref show-refs, and the value forwarded to proposal-pr.sh.
+case "$remote" in
+  -*)
+    echo "init.sh: --remote '$remote' must not begin with '-' (git would read it as an option, not a remote)" >&2
+    exit 2
+    ;;
+esac
+if ! git check-ref-format "refs/remotes/$remote/HEAD" 2>/dev/null; then
+  echo "init.sh: --remote '$remote' is not a valid git remote name" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
 # DEPRECATED-FLAG NOTICES (temperloop#796 — the init scope-down).
 #
 # Every flag below still PARSES (removing one would hard-fail the six

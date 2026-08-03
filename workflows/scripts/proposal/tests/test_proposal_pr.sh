@@ -13,6 +13,9 @@
 #     files land in the pushed tree with correct content/mode
 #   - never-direct-push guard: --branch == base -> ERROR, non-zero exit,
 #     no mutation
+#   - --remote is validated BEFORE any git subprocess: an option-shaped value
+#     (`--upload-pack=<cmd>`) is refused, its payload never runs, and no
+#     proposal branch is cut; a valid --remote still runs
 #   - manifest path safety: absolute path / ".." traversal -> ERROR
 #   - manifest entry validation: content+content_file both set, neither set
 #     (and not delete) -> ERROR; empty manifest -> ERROR
@@ -85,6 +88,44 @@ out="$(bash "$SCRIPT" open --repo-dir "$REPO" --branch main \
 grep -qi 'differ from the base' <<<"$(jq -r .error <<<"$out")" \
   || fail "branch==base error message unclear (got: $out)"
 echo "PASS: --branch equal to base is refused (never-direct-push guard)"
+
+# --- --remote IS VALIDATED BEFORE IT REACHES git (command injection) --------
+# `--remote` is the FIRST POSITIONAL of `git fetch "$remote" "$base"` (and of
+# the later push), the position git parses as an OPTION when the word begins
+# with '-' — so `--remote '--upload-pack=<cmd>'` reached git and ran <cmd>.
+# This asserts the ORDERING, not merely the refusal: the marker file must
+# never appear AND the proposal branch must never be cut, which together pin
+# the guard ahead of every git invocation the run would otherwise make.
+PWNED_MARKER="$TMP/PWNED-remote-marker"
+rm -f "$PWNED_MARKER"
+rc=0
+out="$(bash "$SCRIPT" open --repo-dir "$REPO" --branch feat/remote-guard \
+  --title "x" --body "y" --files-manifest "$TMP/m1.json" --base main \
+  --remote "--upload-pack=touch $PWNED_MARKER; git-upload-pack" --dry-run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an option-shaped --remote did not fail"
+[ ! -e "$PWNED_MARKER" ] \
+  || fail "COMMAND INJECTION: --remote reached git and executed its --upload-pack payload before anything validated it"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "option-shaped --remote not structured ERROR (got: $out)"
+grep -qF "must not begin with '-'" <<<"$(jq -r .error <<<"$out")" \
+  || fail "option-shaped --remote error message unclear (got: $out)"
+if git -C "$REPO" show-ref --verify --quiet refs/heads/feat/remote-guard; then
+  fail "a refused --remote still cut the proposal branch — the guard ran AFTER git, not before"
+fi
+# A remote name git itself would reject is refused too (same guard, non-'-' arm).
+rc=0
+out="$(bash "$SCRIPT" open --repo-dir "$REPO" --branch feat/remote-guard2 \
+  --title "x" --body "y" --files-manifest "$TMP/m1.json" --base main \
+  --remote "bad remote" --dry-run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "a malformed --remote was not a structured ERROR (got: $out)"
+# ...and the guard is not merely "reject everything": a valid --remote runs.
+out="$(bash "$SCRIPT" open --repo-dir "$REPO" --branch feat/remote-ok \
+  --title "x" --body "y" --files-manifest "$TMP/m1.json" --base main \
+  --remote origin --dry-run)"
+[ "$(jq -r .outcome <<<"$out")" = "DRY_RUN" ] \
+  || fail "a valid --remote was refused by the new guard (got: $out)"
+echo "PASS: an option-shaped --remote is refused (structured ERROR) BEFORE any git invocation — no payload executes, no branch is cut"
 
 # --- manifest path safety: absolute + traversal ----------------------------
 echo '[{"path":"/etc/passwd","content":"x"}]' > "$TMP/m-abs.json"
