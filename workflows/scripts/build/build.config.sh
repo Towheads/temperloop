@@ -457,6 +457,31 @@ fi
 # deliberately NOT applied to the SOLO executor calls: those return exactly ONE
 # JSON object by contract, so a second notice line there would break the schema.
 : "${BUILD_MACHINERY_STEP_SLOW_SECS:=300}"
+# claude/workflows/build-level.mjs §3c worker return contract — WORD BOUNDS on
+# the two free-prose slots of the worker's structured verdict (temperloop#1080).
+#
+# WHY BOUNDS AT ALL. The verdict's SHAPE is already machine-enforced
+# (WORKER_VERDICT_SCHEMA), but a JSON schema cannot bound a string's LENGTH, so
+# the two prose slots were unbounded in practice: measured across 83 real
+# /build worker verdicts, `summary` ran to a median 119 words (max 557) and
+# per-criterion `evidence` to a median 33 words (max 244) against a spec that
+# asked for "1-3 sentences" and "<file:line or test name>". Every one of those
+# words is an OUTPUT token (weight 5, the most expensive class) that the
+# orchestrator then ingests. The bound is not information loss: the detail
+# belongs in `.build-verification.md`, which the worker already writes to a
+# FILE and which pr.sh splices into the PR body's `## Verification` section
+# WITHOUT it ever entering orchestrator context — so a bounded verdict moves
+# prose off the expensive path rather than deleting it.
+#
+# Handed to build-level.mjs on the SAME seam as BUILD_GATE_SLICE_SECS above —
+# orchestrator-supplied WORKFLOW INPUT `input.workerSummaryMaxWords` /
+# `input.workerEvidenceMaxWords`, resolved at build.md Step 0 — because the
+# Workflow runtime has no shell to source this file (DESIGN NOTE 1). The .mjs
+# keeps its OWN in-file defaults, so a caller that omits the keys (sweep.md /
+# fix.md today) still emits a BOUNDED worker prompt: the shape is inherited by
+# every caller of the shared workerPrompt(), only the tuning is build.md's.
+: "${BUILD_WORKER_SUMMARY_MAX_WORDS:=60}"
+: "${BUILD_WORKER_EVIDENCE_MAX_WORDS:=30}"
 
 # sweep.md Step 3 tier-2 composition — the BOUNDED wait on background chunk 1's
 # completion notification. After the Phase-1 question batch resolves, if chunk 1's

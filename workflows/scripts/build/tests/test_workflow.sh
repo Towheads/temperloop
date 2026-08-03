@@ -2301,6 +2301,84 @@ grep -q 'QUALITY_GATES_START_AT=${startAt}' "$MJS" \
 echo "PASS: #997 worker-gate-scope guard — worker prompt + cure ban the bare repo-wide run; 3e.5 stays bare and repo-wide"
 
 # ============================================================================
+# TEST (K1080): worker return-value OUTPUT SHAPE reaches the prompt, and its
+#   bounds come from the orchestrator hand-off (Step 0) — not a hardcoded
+#   literal. Runtime twin of the static guards below: the static half proves the
+#   source interpolates the constants, this half proves an operator-supplied
+#   input.workerSummaryMaxWords / workerEvidenceMaxWords actually lands in the
+#   prompt the worker reads, and that an OMITTED key still yields a bounded
+#   prompt (the /sweep + /fix inheritance path).
+# ============================================================================
+run_node_case "K1080: output-shape bounds ride input.* into the worker prompt; omitted keys fall back to the in-file defaults" "
+$PREAMBLE
+
+happyMachinery('os-item', 900, 'shaOs');
+happyWorker('os-item');
+globalThis.args = { ...baseArgs, workerSummaryMaxWords: 41, workerEvidenceMaxWords: 23, items: [
+  { slug: 'os-item', branch: 'build/os-item', title: 'OS item', kind: 'impl', acceptance: ['c'] },
+]};
+let mod = await loadLevel();
+await mod.default();
+let w = callLog.find(c => (c.opts.label||'') === 'worker:os-item');
+let reason = null;
+if (!w) reason = 'no worker call logged';
+else if (!w.promptFull.includes('## Output shape')) reason = 'worker prompt missing the Output shape section';
+else if (!w.promptFull.includes('No process narration anywhere in the return value')) reason = 'worker prompt missing the process-narration ban';
+else if (!w.promptFull.includes('at most 41 words')) reason = 'summary bound did not come from input.workerSummaryMaxWords';
+else if (!w.promptFull.includes('at most 23 words')) reason = 'evidence bound did not come from input.workerEvidenceMaxWords';
+if (reason) { console.log(JSON.stringify({ ok: false, reason })); process.exit(0); }
+
+// Second pass, keys OMITTED — sweep.md/fix.md today. Still bounded.
+callLog.length = 0;
+happyMachinery('os2-item', 901, 'shaOs2');
+happyWorker('os2-item');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'os2-item', branch: 'build/os2-item', title: 'OS2 item', kind: 'impl', acceptance: ['c'] },
+]};
+mod = await loadLevel();
+await mod.default();
+w = callLog.find(c => (c.opts.label||'') === 'worker:os2-item');
+if (!w) reason = 'no worker call logged (defaults pass)';
+else if (!w.promptFull.includes('## Output shape')) reason = 'omitted-keys prompt lost the Output shape section';
+else if (!/\`summary\`: at most [0-9]+ words/.test(w.promptFull)) reason = 'omitted-keys prompt carries no summary bound';
+else if (!/evidence\`: at most [0-9]+ words/.test(w.promptFull)) reason = 'omitted-keys prompt carries no evidence bound';
+else if (w.promptFull.includes('at most 41 words')) reason = 'omitted-keys prompt leaked the previous run\\'s override';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1080 static guards: worker return-value OUTPUT SHAPE -------------------
+# The verdict's SHAPE is schema-enforced; its SIZE is not (a JSON schema cannot
+# bound a string's length), so workerPrompt() must carry an explicit `## Output
+# shape` section stating the two word bounds and banning process narration. The
+# bounds must be INTERPOLATED from the named-setting constants, never typed as
+# literals in the prompt text — a literal would drift from build.config.sh the
+# first time the setting is retuned. build.md §3c carries the same contract, so
+# both surfaces are pinned here (the runtime half — that the section actually
+# reaches the worker — rides the K712 prevention case's promptFull assertion).
+grep -q '## Output shape — your return value is a REPORT, not a transcript' "$MJS" \
+  || fail "#1080: workerPrompt() must embed the '## Output shape' section (the SIZE half of the 3c return contract)"
+grep -q 'No process narration anywhere in the return value' "$MJS" \
+  || fail "#1080: worker prompt must ban process narration in the return value"
+# shellcheck disable=SC2016  # grepping for the LITERAL ${WORKER_*_MAX_WORDS} tokens in source
+grep -q '${WORKER_SUMMARY_MAX_WORDS} words' "$MJS" \
+  || fail "#1080: the summary bound must be INTERPOLATED from WORKER_SUMMARY_MAX_WORDS, never a literal in the prompt text"
+# shellcheck disable=SC2016  # literal-token grep
+grep -q '${WORKER_EVIDENCE_MAX_WORDS} words' "$MJS" \
+  || fail "#1080: the evidence bound must be INTERPOLATED from WORKER_EVIDENCE_MAX_WORDS, never a literal in the prompt text"
+grep -q 'input.workerSummaryMaxWords' "$MJS" \
+  || fail "#1080: WORKER_SUMMARY_MAX_WORDS must read the orchestrator-supplied input.workerSummaryMaxWords (Step-0 hand-off seam)"
+grep -q 'input.workerEvidenceMaxWords' "$MJS" \
+  || fail "#1080: WORKER_EVIDENCE_MAX_WORDS must read the orchestrator-supplied input.workerEvidenceMaxWords (Step-0 hand-off seam)"
+K1080_BUILD_MD="$REPO_ROOT/claude/commands/build.md"
+if [ -f "$K1080_BUILD_MD" ]; then
+  grep -q 'BUILD_WORKER_SUMMARY_MAX_WORDS' "$K1080_BUILD_MD" \
+    || fail "#1080: build.md §3c must NAME BUILD_WORKER_SUMMARY_MAX_WORDS (prose names the setting, never its value)"
+  grep -q 'BUILD_WORKER_EVIDENCE_MAX_WORDS' "$K1080_BUILD_MD" \
+    || fail "#1080: build.md §3c must NAME BUILD_WORKER_EVIDENCE_MAX_WORDS (prose names the setting, never its value)"
+fi
+echo "PASS: #1080 output-shape guard — workerPrompt bounds summary/evidence from named settings and bans process narration; build.md §3c in lockstep"
+
+# ============================================================================
 # TEST (K939): lost-return recovery — a worker that completed WITHOUT calling
 # StructuredOutput must not manufacture a `worker-error` escalation for work
 # that demonstrably landed. Covers all three observable stages plus the

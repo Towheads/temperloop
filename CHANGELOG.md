@@ -559,6 +559,36 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`/build`'s worker return value is now SIZE-bounded, not just
+  shape-validated (temperloop#1080).** The worker verdict's shape has always
+  been machine-enforced (`WORKER_VERDICT_SCHEMA`), but a JSON schema cannot
+  bound a string's length, so its two free-prose slots were bounded by nothing.
+  Measured across **83 real worker verdicts** recovered from subagent
+  transcripts, `summary` ran to a median 119 words (max 557) against a spec
+  asking for "1-3 sentences", and each `acceptance_results[].evidence` to a
+  median 33 words (max 244) against a spec asking for "`file:line` or test
+  name" — every word an output token (the weight-5 class) that the orchestrator
+  then ingests. `claude/workflows/build-level.mjs`'s shared `workerPrompt()`
+  now carries an `## Output shape` section stating both bounds and banning
+  process narration outright, and the verdict schema's free-prose fields carry
+  `description`s fixing what each slot is *for* (`evidence` is a **pointer**,
+  not the argument). The bounds are the new named settings
+  **`BUILD_WORKER_SUMMARY_MAX_WORDS`** / **`BUILD_WORKER_EVIDENCE_MAX_WORDS`**
+  in `workflows/scripts/build/build.config.sh` (registered in
+  `setting-registry.tsv`), resolved at `build.md` Step 0 item 6 and handed in
+  as `input.workerSummaryMaxWords` / `input.workerEvidenceMaxWords` on the same
+  seam `gateSliceSecs` uses — with in-file `.mjs` defaults, so `/sweep` and
+  `/fix`, which do not resolve the settings, still inherit the bounded prompt.
+  **Not information loss:** the worker already writes its full argument to
+  `.build-verification.md`, which `pr.sh` splices into the PR body's
+  `## Verification` section *by path*, so bounding the verdict moves prose off
+  the expensive path rather than deleting it. A projected shrink of ~42% on the
+  median verdict and ~75% on the largest observed one, with every reviewer-
+  facing fact preserved. New static lockstep guards in
+  `workflows/scripts/build/tests/test_workflow.sh` pin the prompt section, the
+  narration ban, the interpolated (never hardcoded) bounds, and `build.md`
+  §3c's matching prose.
+
 - **`claude/commands/workshop.md` trimmed by a subtraction pass, and
   `PROSE_BUDGET_TIER2_FILE_CAP` lowered 1186 → 1100 (temperloop#956).**
   `workshop.md` had become the largest tracked kernel doc and had funded
