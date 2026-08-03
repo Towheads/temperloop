@@ -503,6 +503,26 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`build.md` §3e.5/§3e.6's acceptance-gate exit capture is now dialect-safe
+  (temperloop#801).** The prior prose named only `${PIPESTATUS[0]}` — a BASH
+  array — as the fallback when the gate is piped, but this harness's Bash
+  tool executes through **zsh** on macOS, where the equivalent variable is
+  `$pipestatus`, lowercase AND 1-indexed; under zsh `${PIPESTATUS[0]}`
+  silently expands to the **empty string**, not the gate's exit code. A
+  caller following the old prose literally reads that empty value as
+  "not a failure" and passes a red gate through — the exact silent-red class
+  (temperloop#68 / PR #309) the rule exists to prevent, reintroduced on this
+  platform. Both sites now **prefer the un-piped form** (branch on the gate's
+  direct exit — dialect-agnostic) and, where piping is unavoidable, name
+  **both** `${PIPESTATUS[0]}` (bash) and `${pipestatus[1]}` (zsh) together
+  with the platform caveat, rather than one bash-only variable. Cites the
+  kernel's existing § Tool invocation discipline rule ("check the platform's
+  dialect before leaning on a flag or regex feature"), which already covers
+  this class. `claude/workflows/build-level.mjs`'s own §3e.5 invocation was
+  checked and needs no change: it captures the gate's exit via a redirect
+  (`>gateLog 2>&1`), not a pipe, so its `$?` reaches the gate's own exit
+  cleanly on any shell. No other kernel prose site names `${PIPESTATUS[0]}`.
+
 - **`/check-in`'s in-place `Status`-line rewrite now preserves (or restores)
   a pipeline surface's trailing newline (temperloop#853), the agent-plane
   half of foundation#1308 — the store-seam half (`ks_append`'s own
