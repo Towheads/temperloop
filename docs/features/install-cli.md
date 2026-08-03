@@ -145,10 +145,17 @@ when every entry is `OK`, 1 otherwise (`temperloop install` also prints this
 exact command at the end of its own run — see § Verify in `bin/README.md`).
 It separately reports a
 knowledge-store root check (does the agent-plane Obsidian MCP vault agree
-with the script-plane `KNOWLEDGE_STORE_ROOT`?) and, when a `boards.conf` is
-present, the per-board issue-cache store state — both read-only, both
-`SKIPPED`-not-`FAIL` when the underlying pieces simply aren't configured
-yet.
+with the script-plane `KNOWLEDGE_STORE_ROOT`?), a cross-checkout
+install-source check (does the real, symlink-resolved location of a
+representative installed surface —
+`~/.claude/hooks/session-start-drain.sh` — belong to the SAME checkout
+doctor is running from, or has `~/.claude` silently been bound to a
+different clone entirely? A mismatch names both real paths and both
+`.kernel-pin` tags), and, when a `boards.conf` is present, the per-board
+issue-cache store state — all read-only, all `SKIPPED`-not-`FAIL` when the
+underlying pieces simply aren't configured yet (the knowledge-store and
+cross-checkout checks additionally FAIL — not just report — on a genuine
+mismatch, contributing to doctor's exit code).
 
 **Kernel/overlay compose.** `workflows/scripts/install-claude-md.sh`
 composes the installed `~/.claude/CLAUDE.md` from three pieces, in order: a

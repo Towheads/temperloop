@@ -196,6 +196,132 @@ check_knowledge_root() {
 }
 
 # ---------------------------------------------------------------------------
+# check_cross_checkout_split — temperloop#777: the CROSS-checkout counterpart
+# to check_knowledge_root() above. #774's plane-A/plane-B comparison STAYS —
+# it is correct — but it is scoped to THIS checkout ($FOUNDATION): it sources
+# build.config.sh / knowledge_store.sh straight from $FOUNDATION, so it can
+# never observe a split where ~/.claude itself is bound to a DIFFERENT
+# checkout entirely. Live evidence 2026-07-26: after vendoring v0.18.0 into
+# ~/dev/foundation, `readlink -f ~/.claude/hooks/session-start-drain.sh`
+# resolved into an unrelated checkout — clean-on-main, but still pinned to
+# v0.17.0 — whose ks_root() returned the WRONG root, causing 25 drain skips
+# in one day. #774's check reported OK in BOTH checkouts the entire time; it
+# was never wrong about what it measured, it just wasn't measuring this.
+#
+# Resolves a REPRESENTATIVE installed surface —
+# ~/.claude/hooks/session-start-drain.sh, the exact file the incident above
+# traced through (links.sh's own "claude/* -> ~/.claude/*" enumeration
+# symlinks the whole claude/hooks/ DIRECTORY, so resolving this one file's
+# physical parent dir is enough to reveal which checkout ~/.claude/hooks is
+# actually bound to) — to its real (symlink-resolved) physical path, then
+# asks git which checkout OWNS that path (`git -C <dir> rev-parse
+# --show-toplevel`) and compares it against the checkout doctor itself is
+# running in ($FOUNDATION). A mismatch names BOTH paths and BOTH .kernel-pin
+# tags, reusing kernel_pin_tag_of() from env-reconcile.sh rather than
+# reimplementing the same 8-line file read — sourced in a SUBSHELL only
+# (never doctor.sh's own top level), so its globals / arg-parse loop can
+# never leak into or fight with doctor.sh's own (mirrors check_knowledge_
+# root's own build.config.sh/knowledge_store.sh subshell-sourcing above).
+# env-reconcile.sh's own header documents this as safe: its main-enumeration
+# body is guarded behind a direct-invocation check (`BASH_SOURCE[0] == $0`)
+# that is never true under `source`, so sourcing it only ever defines
+# functions and returns — never runs the reconciler or trips one of its
+# `exit`s.
+#
+# Degrades to SKIPPED (never a hard failure) when:
+#   - the installed surface doesn't exist yet (a fresh install / stranger's
+#     clone that hasn't run `make install-claude` at all);
+#   - it exists on disk but doesn't resolve into ANY git checkout (a real,
+#     unmanaged/SHADOWED copy rather than a symlink into a checkout —
+#     classify_entry's own SHADOWED case already flags that separately, so
+#     this check staying silent here does not lose the signal).
+#
+# Runs fully offline: readlink/pwd -P/git rev-parse do no network I/O.
+# ---------------------------------------------------------------------------
+_cross_checkout_kernel_pin_tag() {
+  local checkout="$1"
+  local env_reconcile="${SCRIPT_DIR}/../build/env-reconcile.sh"
+  local tag
+
+  if [[ ! -f "$env_reconcile" ]]; then
+    printf '(unknown — env-reconcile.sh not found)\n'
+    return 0
+  fi
+
+  tag="$(
+    # env-reconcile.sh's own arg-parse loop reads "$@" — and since this
+    # function was itself CALLED with an argument (checkout), that argument
+    # is still $1 here, not empty. Left un-cleared, `source` inherits it as
+    # env-reconcile.sh's own positional params, its arg-parse loop treats
+    # the checkout path as an unrecognized flag, and it `exit 2`s before
+    # kernel_pin_tag_of is ever defined (silently — the caller only sees an
+    # empty, rc!=0 command substitution). Scoped to THIS subshell only, so
+    # the enclosing function's own "$@"/"$1" is untouched.
+    set --
+    # shellcheck source=/dev/null
+    source "$env_reconcile" 2>/dev/null
+    kernel_pin_tag_of "$checkout" 2>/dev/null
+  )" || tag=""
+
+  if [[ -n "$tag" ]]; then
+    printf '%s\n' "$tag"
+  else
+    printf '(no .kernel-pin)\n'
+  fi
+}
+
+check_cross_checkout_split() {
+  local home claude_dir surface base
+  home="${HOME:-$(eval echo ~)}"
+  claude_dir="${home}/.claude"
+  surface="${claude_dir}/hooks/session-start-drain.sh"
+  base="$(basename "$surface")"
+
+  printf '\nCross-checkout install-source check (temperloop#777):\n'
+
+  if [[ ! -e "$surface" && ! -L "$surface" ]]; then
+    printf '  SKIPPED (no installed surface at %s — fresh install, or make install-claude not yet run)\n' "$surface"
+    return 0
+  fi
+
+  local real_dir real_path
+  real_dir="$(cd "$(dirname "$surface")" 2>/dev/null && pwd -P)" || real_dir=""
+  if [[ -z "$real_dir" || ! -f "${real_dir}/${base}" ]]; then
+    printf '  SKIPPED (%s does not resolve to a real file on disk — broken/dangling install)\n' "$surface"
+    return 0
+  fi
+  real_path="${real_dir}/${base}"
+
+  local installed_root this_root
+  installed_root="$(git -C "$real_dir" rev-parse --show-toplevel 2>/dev/null)" || {
+    printf '  SKIPPED (%s does not resolve into any git checkout — not a symlink into a kernel repo)\n' "$real_path"
+    return 0
+  }
+  installed_root="$(cd "$installed_root" 2>/dev/null && pwd -P)" || return 0
+  this_root="$(cd "$FOUNDATION" 2>/dev/null && pwd -P)" || return 0
+
+  if [[ "$installed_root" == "$this_root" ]]; then
+    printf '  OK — installed surface (%s) resolves into THIS checkout (%s).\n' "$real_path" "$this_root"
+    return 0
+  fi
+
+  local this_tag installed_tag
+  this_tag="$(_cross_checkout_kernel_pin_tag "$this_root")"
+  installed_tag="$(_cross_checkout_kernel_pin_tag "$installed_root")"
+
+  printf '  MISMATCH — %s\n' "$surface"
+  printf '  resolves (real path) to %s\n' "$real_path"
+  printf '  which is owned by a DIFFERENT checkout than the one doctor is running from:\n'
+  printf '    doctor checkout : %s  [.kernel-pin tag: %s]\n' "$this_root" "$this_tag"
+  printf '    installed from  : %s  [.kernel-pin tag: %s]\n' "$installed_root" "$installed_tag"
+  printf '  ~/.claude is bound to a DIFFERENT checkout than this one — edits here under\n'
+  printf '  claude/hooks/... are NOT what the installed hooks actually run. Re-run\n'
+  printf '  "make install-claude" from %s to repoint ~/.claude at THIS checkout,\n' "$this_root"
+  printf '  or confirm %s is the intended install source.\n' "$installed_root"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # check_cache_state — report the canonical-layer issue-cache store's state
 # per board (F#988/#1026): whether a board has opted in (`board.<N>.cache=on`
 # in boards.conf) and whether its on-disk store is present/stale/absent.
@@ -414,6 +540,9 @@ printf 'OK: %d   Non-OK: %d\n' "$ok" "$non_ok"
 knowledge_root_status=0
 check_knowledge_root || knowledge_root_status=$?
 
+cross_checkout_status=0
+check_cross_checkout_split || cross_checkout_status=$?
+
 check_cache_state || true
 
 check_reviewer_coverage || true
@@ -424,7 +553,7 @@ if (( non_ok > 0 )); then
   printf '  %s\n' "${non_ok_entries[@]}"
 fi
 
-if (( non_ok > 0 || knowledge_root_status != 0 )); then
+if (( non_ok > 0 || knowledge_root_status != 0 || cross_checkout_status != 0 )); then
   echo
   exit 1
 fi
