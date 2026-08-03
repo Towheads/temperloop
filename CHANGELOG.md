@@ -712,6 +712,28 @@ reads that marker; a stranger greps for it before pulling.
   whose files were placed by an earlier `init` sees a one-byte diff per file on
   the next run, adding the newline that should always have been there.
 
+- **`/build` and `plan-schema.md` now state the `<repo-root>` default the SAME
+  way — the plan's home repo, never assumed to be the launch checkout
+  (temperloop#835).** `build.md` 3b claimed the default was "the plan's own
+  checkout (the orchestrator's parent tree)" while `plan-schema.md`'s `repo:`
+  field (twice) already read "absent = the plan's home repo" — a genuine
+  disagreement, not a wording nit: the parenthetical is only true when
+  `/build` happens to run *from* the plan's home checkout, and the live
+  incident this fixes (building `Plans/2026-07-27 temperloop - session-start
+  context measurement`, epic #810, from a **foundation** session) had to be
+  resolved by hand on 2026-07-27 because nothing in the doc said the home
+  repo could differ from cwd. `build.md` 3b now drops the parenthetical and
+  points at a new Step 0 resolution (folded into the existing board-probe
+  item 5, no new numbered step): when the plan frontmatter carries `epic:`,
+  `/build` resolves the epic's actual home repo by probing each registered
+  board (`board_resolve_item` per board, then `board_repo`), and if it
+  differs from the launch checkout's own repo, prints one `NOTE:` at run
+  start — the same legibility bar Step 0's build-machinery-staleness check
+  already sets. **Not a hard block:** cross-checkout invocation is legitimate
+  (a plan can be built from any session) and the existing per-item `repo:`
+  honor point (3b) already handles routing an item to a different checkout
+  when set.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first
