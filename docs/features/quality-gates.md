@@ -78,6 +78,47 @@ the pull request, a marker line in its body, or the same marker as a commit
 trailer — with a reason required in the marker forms, so a skip is always a
 decision someone made rather than something nobody noticed.
 
+**Diff-scoped gate *selection*.** The gates above describe *what* runs; a
+second layer decides *which of them* runs. Running every suite on every pull
+request charged each one a flat several minutes, and because a merged change is
+validated twice — once on the pull request and again in the merge queue — every
+merge paid that bill twice, even when the diff was a single documentation file
+no suite could possibly be affected by. So on a pull-request event with a
+resolvable base commit, the run is narrowed to the gates the changed paths can
+actually reach, using a registry that maps each gate to the path globs that
+affect it. Everywhere else — the merge queue, a push to the default branch, the
+nightly run, the build pipeline's acceptance step, any local run — the full set
+runs exactly as before. **The run that gates the default branch is never
+scoped**, so a narrowing bug can at worst let a pull request go green early; it
+cannot let an unproven commit land.
+
+That is only safe if the map cannot quietly fall behind, which is the whole
+design problem: a map that misses a dependency runs a smaller set and still
+reports green. Four properties prevent it, and all four resolve *toward* more
+coverage:
+
+- A changed path matching no glob anywhere in the map escalates the run to the
+  full set. Narrowing is opt-in per path; the fallback is never a smaller run.
+- Any resolution failure — no base commit, a base the repository cannot
+  resolve, an empty diff, a missing or malformed map — falls back to the full
+  set and says so on stdout, next to the verdict as well as at the top, since
+  "all gates passed" means something different on a scoped run.
+- Paths whose blast radius is the gate machinery itself (the gate script, the
+  selector, the map, the build file, the CI workflows, the tree-classification
+  manifest) are listed explicitly and force the full set outright.
+- A gate the map does not mention runs unconditionally, so a stale map
+  over-runs rather than under-runs.
+
+The map ships with its own gate. It fails the build if any gate lacks a row, if
+a row names a gate that no longer exists, if a literal path in a row is not in
+the tree, or — the one that matters most — if a row's globs match *nothing*,
+because a gate orphaned behind an unmatchable glob would otherwise be skipped
+on every scoped run forever with nothing else in the repository noticing. The
+validator and the selector share one glob matcher rather than each carrying
+their own, so the patterns that are validated are byte-for-byte the patterns
+that are consumed. `--list-selected` prints the set a given invocation would
+run, with its one-line reason, without running anything.
+
 **The per-gate retry policy** lives in `workflows/scripts/lib/gate-retry.sh`,
 sourced by the script (the same seam it already uses for the checkout-freshness
 guard) so the policy can be tested without running the whole gate list. A gate
@@ -139,11 +180,22 @@ be reordered or run in any order without changing which ones pass.
 Overlay drop-ins add to this linearly as well — an overlay carrying no
 drop-ins costs nothing beyond the one directory-existence check.
 
+Pull-request runs no longer pay that full linear cost: the selection layer
+above reduces them to the affected subset, which for a documentation-only
+change is a small fraction of the whole set (the handful of whole-tree
+scanners, plus the documentation-site build and its coverage validator). The
+selection itself costs one `git diff --name-only` and a linear scan of the map,
+both negligible against any single gate. Merge-queue and nightly runs are
+unaffected and still pay the full cost, by design.
+
 ## Telemetry
 
 None as a dedicated stream. The script's own stdout is the observable
-surface: each gate prints a `=== <command> ===` banner as it runs, and a
-failing run ends with an explicit `FAILED N/M quality gate(s)` summary
+surface: the run opens by naming which set it is about to execute and why
+(diff-scoped with a count, or full with the reason it declined to narrow), each
+gate prints a `=== <command> ===` banner as it runs, a scoped run repeats its
+scope beside the verdict, and a failing run ends with an explicit
+`FAILED N/M quality gate(s)` summary
 naming every gate that failed (not just the first) — that summary, and CI's
 own red `checks` status derived from the script's non-zero exit, are how a
 broken gate is noticed.

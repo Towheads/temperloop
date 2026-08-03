@@ -51,9 +51,19 @@
 # below already runs every gate regardless of earlier failures, so reordering
 # changes nothing about which gates run or what fails.
 #
+# DIFF-SCOPED SELECTION (temperloop#1024): on a GitHub `pull_request` event with
+# a resolvable base SHA, the run is narrowed to the gates the diff can affect,
+# per workflows/scripts/config/gate-paths.tsv. Everywhere else — merge_group,
+# push:main, nightly, /build's 3e.5 gate, any local run — the FULL set runs
+# exactly as before, so what gates `main` is unchanged. See the "Diff-scoped
+# gate selection" block below and workflows/scripts/lib/gate-selection.sh.
+#
 # Usage:
-#   scripts/quality-gates.sh          run every gate; exit non-zero if any fail
-#   scripts/quality-gates.sh --list   print "[layer] command" for every gate
+#   scripts/quality-gates.sh          run the applicable gate set; exit non-zero if any fail
+#   scripts/quality-gates.sh --list   print "[layer] command" for every gate (always the FULL set)
+#   scripts/quality-gates.sh --list-selected
+#                                     print the gate set THIS invocation would run,
+#                                     with the one-line selection reason (dry run)
 
 set -uo pipefail
 
@@ -852,6 +862,23 @@ KERNEL_GATES+=("bash scripts/tests/test_quality_gates_retry.sh")
 # "gates" under a tmpdir, never this file's real gate list. Same direct-`bash`
 # form as the retry gate above (kernel Makefile is generator-owned).
 KERNEL_GATES+=("bash scripts/tests/test_quality_gates_slice.sh")
+# Diff-scoped gate SELECTION (temperloop#1024) — the path->gate map that lets a
+# `pull_request` run of this script execute only the suites its diff can affect,
+# plus the two suites that keep it honest:
+#   * check-gate-paths.sh — the map's own COMPLETENESS + REACHABILITY lint. Every
+#     kernel gate must have exactly one row, no row may name a gate that no
+#     longer exists, and every row's globs must match at least one tracked path.
+#     That last check IS the anti-silent-green guarantee: a gate orphaned behind
+#     a glob that can never match would otherwise be skipped on every scoped run
+#     forever, and nothing else in the tree would notice.
+#   * test_gate_selection.sh — the selector's own fixture suite (default-to-full
+#     on an unmapped path / unresolvable base / malformed map, the ALL
+#     escalation, the ALWAYS floor, an unmapped GATE still running).
+# Same direct-`bash` form as the sibling gates above (kernel Makefile is
+# generator-owned; no new target added here).
+KERNEL_GATES+=("bash workflows/scripts/config/check-gate-paths.sh")
+KERNEL_GATES+=("bash workflows/scripts/config/tests/test_check_gate_paths.sh")
+KERNEL_GATES+=("bash workflows/scripts/lib/tests/test_gate_selection.sh")
 
 # The overlay gate set — empty by default; populated only by drop-ins.
 OVERLAY_GATES=()
@@ -888,8 +915,14 @@ if [[ "${1:-}" == "--list" ]]; then
   exit 0
 fi
 
+LIST_SELECTED=0
+if [[ "${1:-}" == "--list-selected" ]]; then
+  LIST_SELECTED=1
+  shift
+fi
+
 if [[ $# -gt 0 ]]; then
-  echo "usage: $(basename "$0") [--list]" >&2
+  echo "usage: $(basename "$0") [--list|--list-selected]" >&2
   exit 2
 fi
 
@@ -946,6 +979,55 @@ unset QUALITY_GATES_START_AT QUALITY_GATES_BUDGET_SECS
 # Run gates from the repo root so the `make` targets resolve regardless of the
 # caller's CWD (build 3e.5 runs this from a throwaway worker checkout).
 cd "$REPO_ROOT" || exit 1
+
+# --- Diff-scoped gate selection (temperloop#1024) -----------------------------
+# The `checks` job ran this whole list on every `pull_request` AND again on
+# `merge_group` — ~5.5 min flat (measured 2026-08-02 across the last 20 runs),
+# so every merged PR paid >=11 min of CI even for a one-file docs change.
+#
+# On a `pull_request` event with a resolvable base SHA, the selector below
+# narrows the run to the gates the diff can actually affect, per the
+# workflows/scripts/config/gate-paths.tsv map. EVERYWHERE ELSE the full set runs
+# byte-for-byte as before: `merge_group` (the run that actually gates `main`),
+# `push:main`, the nightly macOS workflow, /build's 3e.5 acceptance gate, and
+# every local run. Full-set coverage of the default branch is therefore
+# unchanged — see .github/workflows/ci.yml's header for the arrangement.
+#
+# The base SHA is REUSED, not re-derived: ci.yml already exports
+# $LEAK_GUARD_BASE for the PR leak guard, and both diff-scoped consumers now
+# diff `<base>...HEAD` from that same value.
+#
+# Every degradation path (no base, an unresolvable base, an empty diff, a
+# missing/malformed map, an unmapped changed path, an unmapped gate) resolves
+# TOWARD MORE coverage, never less — see gate-selection.sh's header for the
+# four structural defenses against the silent-green class.
+# shellcheck source=workflows/scripts/lib/gate-selection.sh
+source "$REPO_ROOT/workflows/scripts/lib/gate-selection.sh"
+GATE_SELECTION_ROOT="$REPO_ROOT"
+GATE_SELECTION_MAP_FILE="$REPO_ROOT/workflows/scripts/config/gate-paths.tsv"
+GATE_SELECTION_ALL_GATES="$(printf '%s\n' "${GATES[@]}")"
+GATE_SELECTION_BASE="${LEAK_GUARD_BASE:-}"  # setting:exempt — reused verbatim from ci.yml's existing export (owning script: check-pr-leak-guard.sh)
+gate_selection_resolve
+if [[ "$GATE_SELECTION_MODE" == "diff" && -n "$GATE_SELECTION_SELECTED" ]]; then
+  SELECTED_GATES=()
+  while IFS= read -r _sel_gate; do
+    [[ -n "$_sel_gate" ]] || continue
+    SELECTED_GATES+=("$_sel_gate")
+  done <<<"$GATE_SELECTION_SELECTED"
+  GATES=("${SELECTED_GATES[@]}")
+  unset _sel_gate
+fi
+
+if [[ $LIST_SELECTED -eq 1 ]]; then
+  printf 'selection: %s\n' "$GATE_SELECTION_REASON"
+  printf '%s\n' "${GATES[@]}"
+  exit 0
+fi
+
+# Always SAY which set is running, next to the run itself — a scoped run that
+# did not announce itself is indistinguishable from a full one that silently
+# lost gates (the legible-degradation rule).
+printf 'gate selection: %s\n' "$GATE_SELECTION_REASON"
 
 # --- Checkout-freshness guard (temperloop#591) --------------------------------
 # This script runs whatever gate LIST the checked-out tree contains, and the
@@ -1075,6 +1157,17 @@ if (( ${#deterministic[@]} > 0 )); then
   printf '  - %s\n' "${deterministic[@]}"
   echo
 fi
+# Re-surface the SCOPE next to the verdict too, for the same reason the
+# staleness banner is repeated above: "all gates passed" means something
+# different on a diff-scoped run, and the reader decides at the verdict.
+# Printed BEFORE the partial-run block below so a budget-spent slice
+# (temperloop#1021, which exits 75 right there) still announces its scope
+# rather than exiting silently on it.
+if [[ "$GATE_SELECTION_MODE" == "diff" ]]; then
+  printf 'NOTE: this was a DIFF-SCOPED run — %s. The full set still runs on merge_group (temperloop#1024).\n\n' \
+    "$GATE_SELECTION_REASON"
+fi
+
 qg_elapsed=$(( $(date +%s) - qg_started ))
 
 # --- Partial (budget-spent) run: hand the caller a resume point --------------
