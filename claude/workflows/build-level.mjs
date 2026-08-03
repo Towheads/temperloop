@@ -346,28 +346,52 @@ const SPINE_BATCH_SCHEMA = {
 // WORKER_VERDICT_SCHEMA — matches build.md §3c's return contract. The
 // worker owns only these fields (never branch/pr/pushed_sha — orchestrator-
 // owned). `status` is a closed enum, 1:1 with the 3d handling branches.
+//
+// Output shape (temperloop#1080): the `description` on each free-prose field
+// states what that field is FOR, so the shape rule reaches the worker on the
+// schema surface too, not only in the prompt. Deliberately NO word numbers
+// here — a JSON schema cannot enforce a string length, so the numeric bounds
+// live in exactly one place (the WORKER_*_MAX_WORDS constants, interpolated
+// into the prompt's `## Output shape` section) rather than being restated in a
+// second surface that could drift. The two surfaces are complementary: the
+// schema fixes the SHAPE (machine-validated), the prompt fixes the SIZE.
 const WORKER_VERDICT_SCHEMA = {
   type: 'object',
   required: ['status'],
   additionalProperties: true,
   properties: {
     status: { type: 'string', enum: ['done', 'blocked', 'design-fork', 'failed'] },
-    summary: { type: 'string' },
+    summary: {
+      type: 'string',
+      description:
+        'What changed and why it satisfies the item. Outcome only — never a narration of how you got there (what you read, what you ruled out, what you tried first). Word-bounded; see the prompt\'s "Output shape" section. Detail belongs in the verification-surface FILE, not here.',
+    },
     acceptance_results: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: true,
         properties: {
-          criterion: { type: 'string' },
+          criterion: {
+            type: 'string',
+            description: 'The acceptance bullet, verbatim — quoted, never re-worded or summarized.',
+          },
           passed: { type: 'boolean' },
-          evidence: { type: 'string' },
+          evidence: {
+            type: 'string',
+            description:
+              'A POINTER to where the criterion is verifiable: file:line, test name, or command + its verdict. Not the argument for it — that belongs in the verification-surface FILE. Word-bounded; see the prompt\'s "Output shape" section.',
+          },
         },
       },
     },
     commits: { type: 'array', items: { type: 'string' } },
     verification_surface_path: { type: 'string' },
-    questions: { type: 'array', items: { type: 'string' } },
+    questions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'One self-contained question per entry — the missing FACT you need, stated as a question. No preamble, no recap of what you already did.',
+    },
     design_fork: {
       type: 'object',
       additionalProperties: true,
@@ -385,7 +409,10 @@ const WORKER_VERDICT_SCHEMA = {
         evidence: { type: 'string' },
       },
     },
-    failure_reason: { type: 'string' },
+    failure_reason: {
+      type: 'string',
+      description: 'Why the item cannot be completed AS SPECIFIED — the blocking fact, not a transcript of the attempt. Word-bounded; see the prompt\'s "Output shape" section.',
+    },
   },
 };
 
@@ -614,6 +641,49 @@ const GATE_MAX_SLICES = 8;
 // the DECAY SIGNAL. Growth becomes visible as a margin warning on green runs,
 // long before it becomes a blown budget (the thing #115 had no way to see).
 const GATE_MARGIN_WARN_RATIO = 0.75;
+
+// --- 3c worker return-value output-shape bounds (temperloop#1080) ------------
+// The verdict's SHAPE is already machine-enforced (WORKER_VERDICT_SCHEMA below,
+// passed to every worker agent({schema}) call) — but a JSON schema can constrain
+// a field's TYPE and never its LENGTH, so the two free-prose slots were bounded
+// by nothing but the worker's judgment. Measured across 83 real /build worker
+// verdicts recovered from subagent transcripts: `summary` ran to a median 119
+// words (mean 145, max 557) against a spec asking for "1-3 sentences", and each
+// `acceptance_results[].evidence` to a median 33 words (max 244) against a spec
+// asking for "<file:line or test name>". Every one of those words is an OUTPUT
+// token — the weight-5 class, the most expensive token this pipeline emits — and
+// the orchestrator then ingests all of them.
+//
+// The bound is NOT information loss, and that is the whole reason it is safe:
+// the worker already writes its full argument to `.build-verification.md`, a
+// FILE whose path (not content) rides the verdict, and pr.sh splices that file
+// into the PR body's `## Verification` section by path (`--verification-surface-
+// file`) so it reaches the human reviewer WITHOUT ever entering orchestrator
+// context. Bounding the verdict moves prose off the expensive path; it does not
+// delete it. What must NOT survive anywhere is process narration — the worker's
+// route to the answer ("first I read X, then ruled out Y") is not a finding.
+//
+// NAMED SETTINGS (BUILD_WORKER_SUMMARY_MAX_WORDS / BUILD_WORKER_EVIDENCE_MAX_
+// WORDS), handed in by the orchestrator at Step 0 exactly like GATE_SLICE_SECS
+// above — the Workflow runtime has no shell to source build.config.sh itself
+// (DESIGN NOTE 1). `||`, not `??`, for the documented empty-string reason. A
+// caller that omits the keys (sweep.md / fix.md today) still emits a BOUNDED
+// prompt: the shape is inherited by every caller of the shared workerPrompt(),
+// only the tuning is build.md's.
+const WORKER_SUMMARY_MAX_WORDS_DEFAULT = 60;
+const WORKER_EVIDENCE_MAX_WORDS_DEFAULT = 30;
+const WORKER_SUMMARY_MAX_WORDS = Math.max(
+  20,
+  Number(input.workerSummaryMaxWords) > 0
+    ? Math.floor(Number(input.workerSummaryMaxWords))
+    : WORKER_SUMMARY_MAX_WORDS_DEFAULT,
+);
+const WORKER_EVIDENCE_MAX_WORDS = Math.max(
+  10,
+  Number(input.workerEvidenceMaxWords) > 0
+    ? Math.floor(Number(input.workerEvidenceMaxWords))
+    : WORKER_EVIDENCE_MAX_WORDS_DEFAULT,
+);
 
 // -----------------------------------------------------------------------------
 // Command-building helpers — EVERY interpolated value goes through sq().
@@ -1192,6 +1262,35 @@ function workerPrompt(item, worktreePath, extraSection) {
     '  and let the orchestrator run it parent-side — never background-and-wait.',
     '',
     extraSection ?? '',
+    '',
+    // ## Output shape (temperloop#1080) — the SIZE half of the return contract.
+    // The schema below fixes the shape; nothing fixed the length, and measured
+    // across 83 real worker verdicts the two prose slots ran 2-4x past what the
+    // spec asked for. Stated as an explicit bound here — the one surface the
+    // worker actually reads — with the routing rule that makes the bound safe:
+    // detail goes to the verification-surface FILE, which reaches the PR body
+    // without entering orchestrator context. build.md §3c carries the same
+    // contract; the two must stay in lockstep (static guard in test_workflow.sh).
+    '## Output shape — your return value is a REPORT, not a transcript',
+    'Everything you return is an output token the orchestrator then ingests, so the',
+    'verdict stays small on purpose. It is not a place to show your work — you already',
+    'have one, and it is free: the verification-surface FILE above never enters the',
+    'orchestrator\'s context and is spliced verbatim into the PR body for a human. So:',
+    '- **No process narration anywhere in the return value.** What you read, what you',
+    '  ruled out, which approach you tried first, how long something took — none of it',
+    '  belongs in the JSON. Report the OUTCOME and where it is checkable. If you feel a',
+    '  step deserves recording, record it in the verification-surface file.',
+    `- **\`summary\`: at most ${WORKER_SUMMARY_MAX_WORDS} words.** What changed and why it satisfies the item.`,
+    '  Prose is unavoidable here, so the bound is the shape. Anything longer is detail —',
+    '  put it in the verification-surface file, where the reviewer will actually read it.',
+    `- **\`acceptance_results[].evidence\`: at most ${WORKER_EVIDENCE_MAX_WORDS} words EACH, and a POINTER, not an argument.**`,
+    '  `file:line`, a test name, or a command plus its verdict. The reasoning that makes',
+    '  the pointer convincing goes in the verification-surface file. `criterion` is the',
+    '  acceptance bullet VERBATIM — quote it, never re-word or summarize it.',
+    `- **\`failure_reason\` / \`design_fork\` free-text slots: at most ${WORKER_EVIDENCE_MAX_WORDS} words each**, and`,
+    '  `questions[]`: one self-contained question per entry, no preamble and no recap.',
+    '- **Never pad a slot to reach its bound.** These are ceilings, not targets — a',
+    '  one-line `summary` and a bare `file:line` evidence pointer are ideal returns.',
     '',
     '## Return contract — your FINAL message must be EXACTLY this JSON and nothing after:',
     'Return the smallest object your status requires (status ALWAYS; the rest per status).',
