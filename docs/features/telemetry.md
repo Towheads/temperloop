@@ -172,8 +172,9 @@ ruling. The **asking** happens one step later, in the first epic
 interview question offers the producer — naming what it reads (your own
 machine's Claude Code transcript files) and that it makes no network call —
 and the answer composes into the Phase B change-set. Opting in places it;
-declining places nothing and removes the shim `init` proposed if that PR is
-still unmerged. That is the **adopter half** of the consent; the first-run
+declining places nothing and removes the copy `init` put in front of them,
+whether that copy is still in an unmerged proposal PR or already on their
+default branch. That is the **adopter half** of the consent; the first-run
 notice below is the **inheritor half**, and the two are complementary, not
 substitutes — see the next section's "Why this fires producer-side rather
 than at `init`" for why an interview cannot do the notice's job.

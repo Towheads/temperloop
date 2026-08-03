@@ -240,10 +240,15 @@ the numbers land only in your own `temperloop report` output. Enable it?"*
   the change-set. **Consequence:** nothing in this repo reads a transcript
   on anyone's behalf, and `temperloop report` keeps exactly the kernel-tier
   headline it has today (merged-items/day and time-to-merge, with no
-  `tokens_spent` line). If `temperloop init`'s
-  tree-only proposal PR already proposed the shim and you have not merged
-  it, the composed set carries its **removal** instead — so a decline here
-  is never quietly overridden by a PR you merge afterwards. Nothing else
+  `tokens_spent` line). If `temperloop init` already put the shim in front
+  of you — whichever of the A0 probe's two "already there" readings applies,
+  an unmerged proposal PR **or** a copy you have since merged to your
+  default branch — the composed set carries its **removal** instead. Both
+  readings, because a decline that only covered the unmerged one would be
+  silently overridden by a PR you merge afterwards, and one that only
+  covered the merged one would leave the producer to arrive later anyway.
+  (The exception is the next bullet: bytes that are *yours* are never
+  removed either, only left alone.) Nothing else
   depends on the answer: no other question, no Phase C level, and no
   `§ Contract` item consumes the producer, so declining leaves no dangling
   reference. The § Decline floors pointer names it as unconfigured, and you
@@ -302,8 +307,8 @@ itself safe, not just each answer in isolation:
 - **Token metering enters the set only on opt-in.** The
   `.temperloop/report.d/tokens` producer is in the composed change-set
   **only when** A4 was answered yes. A declined A4 contributes nothing to
-  the set — or, when `temperloop init`'s proposal PR already proposed the
-  shim and it is not yet on your default branch, contributes its
+  the set — or, wherever `init` already put a copy of the *kernel's* shim
+  (an unmerged proposal PR, or your default branch), contributes its
   **removal**, so a decline stays a decline. This is the congruence rule
   above applied to a tracked file rather than a required status: nothing is
   placed that your answers did not ask for, and nothing else in the set
@@ -407,8 +412,8 @@ applies.
   `record-principles`; nothing sequences it, and nothing sequences after
   it)* — the token-metering disposition per your A4 answer: the
   `.temperloop/report.d/tokens` locator placed on opt-in, nothing placed on
-  a decline (plus the removal of an `init`-proposed shim not yet on your
-  default branch), and an existing producer of your own left byte-for-byte
+  a decline (plus the removal of an `init`-placed copy of the kernel's shim,
+  wherever it sits), and an existing producer of your own left byte-for-byte
   alone on either answer. **This item settles a disposition; it does not
   commit code, so decompose it as a verdict item** — in plan-schema terms,
   `kind: spike`, with no `model:` stamp — for the same reason
@@ -559,9 +564,13 @@ applies.
   `.temperloop/report.d/tokens` (mode 755), into the change-set and nothing
   else; the A4 decline path composes none, and the epic still completes with
   no dangling reference to a producer — no other composed entry and no
-  `§ Produces` item fails for its absence. Re-run on a fixture whose tree
-  already carries a producer, that file is byte-identical afterwards on
-  **both** answers. This bullet needs no admin rights and no GitHub write:
+  `§ Produces` item fails for its absence. Two re-runs on a fixture that
+  already carries a producer separate the two cases the A0 probe separates:
+  where the bytes are an **`init`-placed copy of the kernel's shim**, the
+  decline path removes it — from the proposal PR or from the default branch,
+  whichever holds it; where the bytes are **adopter-authored**, the file is
+  byte-identical afterwards on **both** answers. This bullet needs no admin
+  rights and no GitHub write:
   it is a tracked-file claim, verifiable on the same fixtures the bullets
   above use, and it is falsified by any producer placed on a decline or any
   adopter-authored producer modified on either answer. *Out of scope,

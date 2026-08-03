@@ -48,10 +48,13 @@ reads that marker; a stranger greps for it before pulling.
   question names what is read (your own machine's Claude Code transcript files)
   and that no network call is made, and the answer composes into the Phase B
   change-set — so the producer is **placed on opt-in** rather than placed and
-  disclosed. Declining is first-class: nothing is placed, an `init`-proposed
-  shim not yet on the default branch is *removed* by the same set, and nothing
-  else in the epic consumes the producer, so no dangling reference survives a
-  decline. Phase C gains a co-level L0 `tokens-producer-disposition` item
+  disclosed. Declining is first-class: nothing is placed, an `init`-placed copy
+  of the kernel's shim is *removed* by the same set wherever it sits (an
+  unmerged proposal PR **or** the default branch — covering only the first
+  would let a PR merged afterwards silently override the decline), an
+  adopter-authored producer is left byte-for-byte alone on either answer, and
+  nothing else in the epic consumes the producer, so no dangling reference
+  survives a decline. Phase C gains a co-level L0 `tokens-producer-disposition` item
   (`kind: spike`, mirroring `ci-disposition`'s reasoning — the file lands as a
   consented change-set write, so a code worker would have nothing to commit and
   would open an empty PR on the decline branch), with its own § Consumes and
