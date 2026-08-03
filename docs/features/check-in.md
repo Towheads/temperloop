@@ -87,8 +87,10 @@ Cost is proportional to the number of open entries across the six review
 surfaces, not to overall pipeline volume — a quiet night costs a handful of
 reads that each report "no open entries." Each disposition is a small,
 targeted edit (a status-line patch or a short append), not a full-file
-rewrite. The priorities review is bounded by the number of active projects,
-each a small note read-and-confirm.
+rewrite — followed by a cheap trailing-newline check (temperloop#853) so a
+status-line patch landing on the file's last line can never leave it
+unterminated for the next appender. The priorities review is bounded by the
+number of active projects, each a small note read-and-confirm.
 
 ## Telemetry
 

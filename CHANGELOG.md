@@ -503,6 +503,31 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`/check-in`'s in-place `Status`-line rewrite now preserves (or restores)
+  a pipeline surface's trailing newline (temperloop#853), the agent-plane
+  half of foundation#1308 — the store-seam half (`ks_append`'s own
+  fresh-line-on-append guarantee in `workflows/scripts/lib/knowledge_store.sh`)
+  was already fixed there and stays separate, as recommended during
+  `/assess --epic 1324`.** A plain substring `Edit` only touches the bytes
+  it matches, so patching a `Status:` line that happened to sit at the
+  literal end of the file — routinely true, since the entry being resolved
+  is usually the newest, i.e. last, thing appended — left the file exactly
+  as unterminated as it started. The next appender then glued its
+  `### heading` onto the end of that same line instead of starting a fresh
+  one, silently arming an entry no `^### `-anchored scan would ever match
+  (observed at `Context/pipeline - pending decisions.md` line 344, written
+  by check-in's own rewrite). `claude/commands/check-in.md`'s Part 2
+  preamble now requires one cheap, idempotent check after **every**
+  `Status`-line `Edit` in the command — `[ -z "$(tail -c1 "<file>")" ] ||
+  printf '\n' >> "<file>"` — the same conditional idiom the store seam
+  already relies on for the identical byte. Pinned by the new
+  `workflows/scripts/tests/test_checkin_status_trailing_newline.sh`
+  (registered in `scripts/quality-gates.sh` / `gate-paths.tsv`), which
+  reproduces the exact corruption unguarded and proves the guard prevents
+  it: restores a missing trailing newline, is a true no-op on an
+  already-terminated file, and — composed with a subsequent append — keeps
+  the new heading on its own `^### `-matchable line.
+
 - **`temperloop init --no-network` no longer attempts a `git push`
   (temperloop#969).** The flag gated Step 2's first-epic offer and nothing
   else, so a run in a repo with no reachable remote still invoked
