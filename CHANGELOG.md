@@ -412,6 +412,35 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`temperloop init --no-network` no longer attempts a `git push`
+  (temperloop#969).** The flag gated Step 2's first-epic offer and nothing
+  else, so a run in a repo with no reachable remote still invoked
+  `proposal-pr.sh` at Step 3: it force-created and switched to
+  `foundation-init/config`, committed onto it, and only then died on the push
+  with a raw `fatal: 'origin' does not appear to be a git repository` — exiting
+  non-zero and never reaching the Step 4/5 summary + handoff. A stranger was
+  left parked on an unfamiliar branch, with a git error and no recovery
+  guidance, by a flag whose name promises the opposite. Step 3 now carries the
+  **same `no_network` gate, in the same shape, as the Step 2 offer already
+  did**: one `skipped — network disabled (--no-network): no proposal branch, no
+  commit, no push, no PR …` line in the kernel degradation-notice form (wording
+  aligned with `conventions-probe.sh`'s own network-gated skips), then the run
+  continues and prints its summary and handoff normally. The skip is the
+  **whole step**, not just the push — `proposal-pr.sh` has no commit-locally-
+  but-don't-push mode other than its own `--dry-run`, which still performs a
+  real local checkout + commit, so suppressing only the push would have fixed
+  the error message while leaving the stranded-branch half of the report
+  standing. The run's other network reach, the best-effort base-tip
+  `git fetch`, is gated on the same flag for the same reason. **Behaviour
+  change to note:** `--no-network` now means what it says end to end, so a
+  caller that passed it merely to keep the first-epic offer quiet no longer
+  gets a proposal PR — closed stdin (or `--no-first-epic`) is the way to
+  suppress the offer alone. `test_init.sh` gains the reproduction as coverage
+  (exit 0, neither raw git-push string, the notice, the summary + `next step:`
+  marker, original branch and HEAD untouched, no `foundation-init/*` branch,
+  zero `pr create` calls) plus two controls: the same skip fires in a repo that
+  *does* have a remote, and dropping the flag still opens the PR.
+
 - **A parked item's claim stamp no longer strands on an open issue —
   `release.sh` clears its own, and `reconcile.sh --labels` sweeps the rest
   (temperloop#979).** On the issues-only backend, parking a claimed item back to

@@ -258,7 +258,13 @@
 #                          inferred by the probe from the origin remote.
 #   --no-network           Forwarded to the probe; ALSO forces every
 #                          consented-apply action to skip (no gh_repo
-#                          resolution is trustworthy offline).
+#                          resolution is trustworthy offline) AND skips
+#                          every step of this script that itself reaches
+#                          the network — the base-tip fetch and the Step 3
+#                          proposal PR (no branch, no commit, no push, no
+#                          PR), each with a `skipped — network disabled`
+#                          notice. The run still completes and still prints
+#                          the Step 4/5 summary + handoff (temperloop#969).
 #   --timeout SECS         Forwarded to the probe. Default: 10.
 #   --branch NAME           Proposal branch name. Default:
 #                          "foundation-init/config" — a single stable,
@@ -998,9 +1004,17 @@ fi
 # #413) — a fetch writes refs under .git/. A dry run's preview is therefore
 # computed against whatever base ref is already local; Step 4's preview says
 # so out loud rather than leaving the operator to infer it.
+#
+# ...and skipped on --no-network for the same reason the Step 3 proposal is
+# (temperloop#969): this fetch is the run's OTHER network reach, and a flag
+# named --no-network that still dials out is the very defect that issue
+# reports. Purely a suppression of the call — under --no-network the Step 3
+# arm never consumes $base_ref (only the --dry-run preview does, and that
+# arm already skips the fetch), so the resolution below simply reads
+# whatever refs are already local.
 base_ref=""
 if [ -n "$base" ]; then
-  [ "$dry_run" -eq 1 ] || git -C "$repo_dir" fetch "$remote" "$base" >/dev/null 2>&1 || true
+  [ "$dry_run" -eq 1 ] || [ "$no_network" -eq 1 ] || git -C "$repo_dir" fetch "$remote" "$base" >/dev/null 2>&1 || true
   if git -C "$repo_dir" show-ref --verify --quiet "refs/remotes/$remote/$base"; then
     base_ref="refs/remotes/$remote/$base"
   elif git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$base"; then
@@ -1383,6 +1397,37 @@ if [ "$dry_run" -eq 1 ]; then
     fi
   done
   outcome="DRY_RUN"
+  echo
+elif [ "$no_network" -eq 1 ]; then
+  # --no-network GATE (temperloop#969): the SAME gate Step 2's first-epic
+  # offer already applies (`elif [ "$no_network" -eq 1 ]` -> one skip line,
+  # then carry on), applied to the one remaining step that reaches the
+  # network. Before this arm existed the flag suppressed Step 2 and NOT
+  # this one, so `temperloop init --no-network` in a remote-less repo ran
+  # proposal-pr.sh anyway, which force-created and switched to $branch,
+  # committed onto it, and only THEN died on `git push` — surfacing a raw
+  # `fatal: 'origin' does not appear to be a git repository`, exiting
+  # non-zero through the `proposal_rc` check below, and never reaching the
+  # Step 4/5 summary + handoff. A stranger was left on an unfamiliar
+  # branch with a git error and no recovery guidance, from a flag whose
+  # name promises the opposite.
+  #
+  # WHOLE-STEP SKIP, not a push-only suppression. proposal-pr.sh has no
+  # "commit locally but do not push" mode other than its own --dry-run,
+  # and taking that route would still leave the checkout parked on
+  # $branch — i.e. it would fix the error message and keep the branch half
+  # of the reported harm. Skipping the invocation outright is both the
+  # shape Step 2 already uses and the only shape that leaves the operator
+  # where they started.
+  #
+  # DEGRADATION-NOTICE SHAPE: the kernel's `skipped — <what>` form, worded
+  # to match conventions-probe.sh's own network-gated skips ("skipped —
+  # network disabled (--no-network)") so one vocabulary covers every
+  # network-gated step of a run. It deliberately keeps the `skipped — `
+  # prefix .github/workflows/install-tier2.yml content-scans for: this IS
+  # a degraded step, unlike the deprecated-flag notices above.
+  echo "skipped — network disabled (--no-network): no proposal branch, no commit, no push, no PR — re-run without --no-network to open the tree-only proposal PR for $config_rel"
+  outcome="NO_NETWORK"
   echo
 else
   proposal_args=(open --repo-dir "$repo_dir" --branch "$branch" --title "$title" \

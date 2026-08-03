@@ -173,6 +173,18 @@ case "$1" in
         esac
         ;;
       *"git/refs/heads/"*) exit 0 ;;
+      # conventions-probe.sh's two network-gated reads, reached only by
+      # test 11's real `init` run. That run used to pass --no-network, which
+      # made the probe skip both; since temperloop#969 that flag also skips
+      # the Step 3 proposal the fixture needs init to reach, so the run drops
+      # it and these endpoints are live. A bare `exit 0` with EMPTY stdout is
+      # NOT a usable answer — the probe pipes it into jq and the empty result
+      # blows up the final --argjson assembly (exit 2, before Step 3). Fail
+      # them instead: the probe has an explicit degrade-with-a-reason arm for
+      # a non-zero gh, which is also the honest answer here (test 11 deletes
+      # the upstream, so nothing about this repo is reachable).
+      *"/protection"*) exit 1 ;;
+      *"/labels"*) exit 1 ;;
     esac
     exit 0
     ;;
@@ -440,7 +452,11 @@ BEFORE_FIND11="$(find "$REPO11" -mindepth 1 -not -path '*/.git*' | sort)"
 # resolution inside proposal-pr.sh still succeeds; only the push fails).
 rm -rf "$BARE11"
 
-run_init --dir "$REPO11" --gh-repo acme/widget --no-network
+# NO --no-network here, deliberately: since temperloop#969 that flag SKIPS the
+# Step 3 proposal outright (branch switch and all), which is the very thing
+# this fixture needs init to reach and die inside. The first-epic offer stays
+# quiet anyway because run_init closes stdin — the non-attended skip arm.
+run_init --dir "$REPO11" --gh-repo acme/widget
 [ "$init_rc" -ne 0 ] || fail "test setup: expected the broken-push init run to fail (got rc=0): $init_out"
 echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
 [ "$(git -C "$REPO11" branch --show-current)" = "foundation-init/config" ] \

@@ -23,6 +23,13 @@
 # Covers:
 #   - --dry-run + --no-network: tree-only preview, zero gh calls of any
 #     kind (no api/label/project/pr create), config committed locally only
+#   - --no-network gates the Step 3 proposal PR (temperloop#969): a
+#     remote-less repo gets a `skipped — network disabled` notice and a
+#     completed run, not a raw `git push failed` abort on an unfamiliar
+#     branch. NOTE this is why the cases below that merely want the
+#     first-epic offer out of the way no longer pass --no-network: closed
+#     stdin already skips that offer (test 2's arm), and the flag now
+#     suppresses the very proposal step most of them assert on.
 #   - non-interactive: no --yes-* flag + closed stdin -> the first-epic
 #     offer skips, zero mutating gh calls, and a handoff line still prints
 #   - deprecated apply flags (--yes-required-check --yes-labels): each
@@ -379,7 +386,7 @@ REPO5="$(new_fixture_repo repo5)"
 mkdir -p "$REPO5/workflows/scripts/board"
 echo "# marker" > "$REPO5/workflows/scripts/board/marker.txt"
 git -C "$REPO5" add -A && git -C "$REPO5" commit -q -m "seed board toolkit"
-FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget
 proposed_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
 printf '%s\n' "$proposed_conf" | grep -q "board.1.repo=acme/widget" \
   || fail "boards.conf entry was not proposed when the board toolkit is present"
@@ -399,7 +406,7 @@ assert_complete_boards_entry "config tracker.boards_conf_entry" \
 # proposed boards.conf is still there and still byte-identical. Test 16
 # covers the same property for both optional entries together.
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
-  run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
+  run 0 --dir "$REPO5" --gh-repo acme/widget
 reproposed_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
 [ -n "$reproposed_conf" ] \
   || fail "the second run DROPPED boards.conf from the proposal (got: $out)"
@@ -415,7 +422,7 @@ git -C "$REPO5" push -q origin "HEAD:main" \
   || fail "could not push the proposed boards.conf to the fixture's origin/main"
 git -C "$REPO5" fetch -q origin
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
-  run 0 --dir "$REPO5" --gh-repo acme/widget --no-network
+  run 0 --dir "$REPO5" --gh-repo acme/widget
 echo "$out" | grep -qF "already on main — leaving workflows/scripts/board/boards.conf untouched" \
   || fail "with the entry already on the base branch, init did not report leaving boards.conf untouched (got: $out)"
 settled_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
@@ -637,11 +644,12 @@ echo "PASS: the idempotent already-filed path recovers the same actionable hando
 #
 #     Non-interactivity needs no separate assertion: run() closes stdin, so
 #     a prompt added anywhere on this path would hang or take an empty
-#     answer, and this whole test runs under --no-network (the first-epic
-#     offer, the one interactive step init has, is skipped outright).
+#     answer, and closed stdin is itself what makes the first-epic offer —
+#     the one interactive step init has — skip outright (the same
+#     "no interactive operator detected" arm test 2 pins).
 # =============================================================================
 REPO14="$(new_fixture_repo repo14)"
-FAKE_PR_NUM=30 run 0 --dir "$REPO14" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=30 run 0 --dir "$REPO14" --gh-repo acme/widget
 echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens (mode 755)" \
   || fail "init did not report proposing the tokens producer (got: $out)"
 
@@ -715,7 +723,7 @@ git -C "$REPO15" push -q origin main \
   || fail "could not push the seeded producer to the fixture's origin/main (the test's own precondition)"
 git -C "$REPO15" fetch -q origin
 
-FAKE_PR_NUM=31 run 0 --dir "$REPO15" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=31 run 0 --dir "$REPO15" --gh-repo acme/widget
 echo "$out" | grep -qF "report.d producer: .temperloop/report.d/tokens already on main — leaving it untouched" \
   || fail "init did not report skipping the pre-existing producer (got: $out)"
 echo "$out" | grep -qF "report.d producer: proposing" \
@@ -757,7 +765,7 @@ git -C "$REPO16" push -q origin main \
 git -C "$REPO16" fetch -q origin
 
 # --- run 1: proposes both optional entries -------------------------------
-FAKE_PR_NUM=32 run 0 --dir "$REPO16" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=32 run 0 --dir "$REPO16" --gh-repo acme/widget
 echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens" \
   || fail "run 1 did not propose the producer (got: $out)"
 git -C "$REPO16" show "HEAD:.temperloop/report.d/tokens" > "$WORK/run1-producer" 2>/dev/null \
@@ -767,7 +775,7 @@ git -C "$REPO16" show "HEAD:workflows/scripts/board/boards.conf" > "$WORK/run1-b
 
 # --- run 2: the same repo, now sitting on the proposal branch -------------
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=32 \
-  run 0 --dir "$REPO16" --gh-repo acme/widget --no-network
+  run 0 --dir "$REPO16" --gh-repo acme/widget
 
 P16="$REPO16/.temperloop/report.d/tokens"
 [ -f "$P16" ] \
@@ -819,7 +827,7 @@ git -C "$REPO17" fetch -q origin
 [ ! -e "$REPO17/.temperloop/report.d/tokens" ] \
   || fail "fixture bug: REPO17's working tree already has the producer, so this test proves nothing"
 
-FAKE_PR_NUM=33 run 0 --dir "$REPO17" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=33 run 0 --dir "$REPO17" --gh-repo acme/widget
 echo "$out" | grep -qF "report.d producer: proposing" \
   && fail "init proposed its own shim over a producer that exists on the base branch (got: $out)"
 echo "$out" | grep -qF "already on main — leaving it untouched" \
@@ -863,7 +871,7 @@ make_fake_kernel "$FAKE_KERNEL_MISSING"
 REPO18A="$(new_fixture_repo repo18a)"
 INIT_SAVED="$INIT"
 INIT="$FAKE_KERNEL_MISSING/bin/subcommands/init.sh"
-FAKE_PR_NUM=34 run 0 --dir "$REPO18A" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=34 run 0 --dir "$REPO18A" --gh-repo acme/widget
 INIT="$INIT_SAVED"
 echo "$out" | grep -qF "report.d producer: skipped — shim unavailable" \
   || fail "a missing shim did not report the legible soft-seam skip (got: $out)"
@@ -880,7 +888,7 @@ mkdir -p "$FAKE_KERNEL_EMPTY/.temperloop/report.d"
 chmod 755 "$FAKE_KERNEL_EMPTY/.temperloop/report.d/tokens"
 REPO18B="$(new_fixture_repo repo18b)"
 INIT="$FAKE_KERNEL_EMPTY/bin/subcommands/init.sh"
-FAKE_PR_NUM=35 run 0 --dir "$REPO18B" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=35 run 0 --dir "$REPO18B" --gh-repo acme/widget
 INIT="$INIT_SAVED"
 echo "$out" | grep -qF "report.d producer: skipped — shim unavailable" \
   || fail "an EMPTY shim did not report the legible soft-seam skip (got: $out)"
@@ -903,7 +911,7 @@ echo "PASS: an unusable shim (missing OR empty) degrades to the legible skip, ne
 REPO19="$(new_fixture_repo repo19)"
 PWNED_MARKER="$WORK/PWNED-marker"
 rm -f "$PWNED_MARKER"
-run 2 --dir "$REPO19" --gh-repo acme/widget --no-network \
+run 2 --dir "$REPO19" --gh-repo acme/widget \
   --base "--upload-pack=touch $PWNED_MARKER; git-upload-pack"
 [ ! -e "$PWNED_MARKER" ] \
   || fail "COMMAND INJECTION: --base reached git and executed its --upload-pack payload before anything validated it"
@@ -911,7 +919,7 @@ echo "$out" | grep -qF "is not a valid git branch name" \
   || fail "a malformed --base was not refused with a clear message (got: $out)"
 # ...and the guard is not merely "reject everything": an explicit, valid
 # --base must still drive a normal run.
-FAKE_PR_NUM=36 run 0 --dir "$REPO19" --gh-repo acme/widget --no-network --base main
+FAKE_PR_NUM=36 run 0 --dir "$REPO19" --gh-repo acme/widget --base main
 echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
   || fail "an explicit, valid --base was refused by the new guard (got: $out)"
 echo "PASS: a malformed --base is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --base still runs"
@@ -953,7 +961,7 @@ git -C "$REPO20" fetch -q origin
 grep -q "board.2." "$REPO20/workflows/scripts/board/boards.conf" \
   && fail "fixture bug: REPO20's working tree already knows board.2, so this test proves nothing"
 
-FAKE_PR_NUM=37 run 0 --dir "$REPO20" --gh-repo acme/widget --no-network --board 3
+FAKE_PR_NUM=37 run 0 --dir "$REPO20" --gh-repo acme/widget --board 3
 union_conf="$(git -C "$REPO20" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
 printf '%s\n' "$union_conf" | grep -q "board.2.repo=acme/other" \
   || fail "THE UNION DROPPED board.2 — an entry that exists on the base branch but not in the stale local checkout:\n$union_conf"
@@ -982,7 +990,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo DELIBERATELY-DISABLED' \
 chmod 644 "$REPO21/.temperloop/report.d/tokens"
 cp "$REPO21/.temperloop/report.d/tokens" "$WORK/producer21.before"
 
-FAKE_PR_NUM=38 run 0 --dir "$REPO21" --gh-repo acme/widget --no-network
+FAKE_PR_NUM=38 run 0 --dir "$REPO21" --gh-repo acme/widget
 mode21="$(git -C "$REPO21" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
 [ "$mode21" = "100644" ] \
   || fail "rule 2 re-armed a deliberately non-executable producer (git mode $mode21, want 100644)"
@@ -1037,22 +1045,115 @@ echo "PASS: the --dry-run preview diffs against the base tip a real run would br
 REPO23="$(new_fixture_repo repo23)"
 PWNED_REMOTE_MARKER="$WORK/PWNED-remote-marker"
 rm -f "$PWNED_REMOTE_MARKER"
-run 2 --dir "$REPO23" --gh-repo acme/widget --no-network --base main \
+run 2 --dir "$REPO23" --gh-repo acme/widget --base main \
   --remote "--upload-pack=touch $PWNED_REMOTE_MARKER; git-upload-pack"
 [ ! -e "$PWNED_REMOTE_MARKER" ] \
   || fail "COMMAND INJECTION: --remote reached git and executed its --upload-pack payload before anything validated it"
 echo "$out" | grep -qF "must not begin with '-'" \
   || fail "an option-shaped --remote was not refused with a clear message (got: $out)"
 # A remote name git itself would reject is refused too (same guard, non-'-' arm).
-run 2 --dir "$REPO23" --gh-repo acme/widget --no-network --remote "bad remote"
+run 2 --dir "$REPO23" --gh-repo acme/widget --remote "bad remote"
 echo "$out" | grep -qF "is not a valid git remote name" \
   || fail "a malformed --remote was not refused with a clear message (got: $out)"
 # ...and the guard is not merely "reject everything": an explicit, valid
 # --remote must still drive a normal run.
-FAKE_PR_NUM=39 run 0 --dir "$REPO23" --gh-repo acme/widget --no-network --remote origin
+FAKE_PR_NUM=39 run 0 --dir "$REPO23" --gh-repo acme/widget --remote origin
 echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
   || fail "an explicit, valid --remote was refused by the new guard (got: $out)"
 echo "PASS: a malformed --remote is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --remote still runs"
+
+# =============================================================================
+# 25. --no-network GATES THE STEP 3 PROPOSAL PR (temperloop#969).
+#
+#     The flag suppressed Step 2's first-epic offer and NOT Step 3, so
+#     `temperloop init --dir . --no-network --base master` in a REMOTE-LESS
+#     repo invoked proposal-pr.sh anyway: it force-created and switched to
+#     foundation-init/config, committed onto it, and only THEN died on
+#     `git push` with a raw `fatal: 'origin' does not appear to be a git
+#     repository` — exiting non-zero and never reaching the Step 4/5
+#     summary + handoff. A stranger was left on an unfamiliar branch, with
+#     a git error and no recovery guidance, by a flag whose name promises
+#     the opposite.
+#
+#     Four halves, asserted together because each is satisfiable without
+#     the others (suppressing the error alone, or the push alone, would
+#     each still leave part of the report standing):
+#       (a) exit 0, and NEITHER raw git-push string in the output;
+#       (b) the degradation notice — the kernel's `skipped — ` prefix, the
+#           reason, and what did not happen;
+#       (c) Step 4's summary AND the `next step:` handoff marker still
+#           print, i.e. the run CONTINUES rather than aborting;
+#       (d) the checkout never leaves its original branch and NO
+#           foundation-init/* branch is created at all. This is the half a
+#           push-only suppression would not fix: proposal-pr.sh's own
+#           --dry-run mode still performs a real local checkout + commit,
+#           so routing through it would silence the error and strand the
+#           operator on the branch exactly as before.
+#
+#     Then the two controls that keep this from being a vacuous pass: the
+#     same skip fires in a repo that DOES have a reachable remote (the gate
+#     is the FLAG, not the absence of a remote — the old behavior differed
+#     only by which error you got), and dropping the flag on that very repo
+#     still opens the PR (the gate is not "refuse everything").
+# =============================================================================
+REPO24="$WORK/repo24-no-remote"
+git init -q --initial-branch=master "$REPO24"
+git -C "$REPO24" commit -q --allow-empty -m init
+[ -z "$(git -C "$REPO24" remote)" ] \
+  || fail "fixture bug: REPO24 has a remote, so it cannot reproduce the remote-less push failure"
+R24_HEAD="$(git -C "$REPO24" rev-parse HEAD)"
+
+# Deliberately NO --gh-repo: the issue's verbatim reproduction command.
+run 0 --dir "$REPO24" --no-network --base master
+
+# (a) the raw git failure is gone — both halves of the reported string.
+for pusherr in "git push failed" "does not appear to be a git repository"; do
+  if printf '%s\n' "$out" | grep -qF "$pusherr"; then
+    fail "--no-network still reached the push: raw git error '$pusherr' surfaced (got: $out)"
+  fi
+done
+
+# (b) the degradation notice names what was skipped and why.
+printf '%s\n' "$out" | grep -qF "skipped — network disabled (--no-network)" \
+  || fail "no degradation notice for the network-gated proposal step (got: $out)"
+printf '%s\n' "$out" | grep -qF "no proposal branch, no commit, no push, no PR" \
+  || fail "the skip notice does not name what did not happen (got: $out)"
+
+# (c) the run CONTINUES — summary and handoff both still print.
+printf '%s\n' "$out" | grep -qF -- "-- 4. Summary --" \
+  || fail "the run aborted before the Step 4 summary (got: $out)"
+printf '%s\n' "$out" | grep -q "^next step: " \
+  || fail "the run aborted before the Step 5 handoff marker (got: $out)"
+
+# (d) the checkout is where the operator left it — no stray proposal branch.
+[ "$(git -C "$REPO24" branch --show-current)" = "master" ] \
+  || fail "--no-network switched the checkout off its original branch (now: $(git -C "$REPO24" branch --show-current))"
+[ "$(git -C "$REPO24" rev-parse HEAD)" = "$R24_HEAD" ] \
+  || fail "--no-network committed to the checkout (HEAD moved $R24_HEAD -> $(git -C "$REPO24" rev-parse HEAD))"
+if git -C "$REPO24" rev-parse --verify --quiet "refs/heads/foundation-init/config" >/dev/null; then
+  fail "--no-network created the foundation-init/config branch it must never reach"
+fi
+[ "$(call_count "pr create")" -eq 0 ] \
+  || fail "--no-network reached GitHub: $(call_count "pr create") 'pr create' call(s) logged"
+
+# CONTROL 1: a repo WITH a reachable remote skips identically — the gate is
+# the flag, not a missing remote.
+REPO24B="$(new_fixture_repo repo24b)"
+R24B_HEAD="$(git -C "$REPO24B" rev-parse HEAD)"
+FAKE_PR_NUM=40 run 0 --dir "$REPO24B" --gh-repo acme/widget --no-network
+printf '%s\n' "$out" | grep -qF "skipped — network disabled (--no-network)" \
+  || fail "--no-network did not skip the proposal in a repo that HAS a remote (got: $out)"
+[ "$(git -C "$REPO24B" rev-parse HEAD)" = "$R24B_HEAD" ] \
+  || fail "--no-network committed to a remote-having checkout instead of skipping"
+[ "$(call_count "pr create")" -eq 0 ] \
+  || fail "--no-network opened a PR in a repo that has a remote"
+
+# CONTROL 2: the gate is not "refuse everything" — the same repo, same
+# invocation minus the flag, still opens the proposal PR.
+FAKE_PR_NUM=40 run 0 --dir "$REPO24B" --gh-repo acme/widget
+printf '%s\n' "$out" | grep -qF '"outcome": "PR_OPENED"' \
+  || fail "dropping --no-network no longer opens the proposal PR (got: $out)"
+echo "PASS: --no-network skips the Step 3 proposal PR with a degradation notice instead of failing on a raw git push — no branch switch, no commit, no PR, and the summary + handoff still print"
 
 echo
 echo "ALL PASS: test_init.sh"
