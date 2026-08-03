@@ -75,8 +75,30 @@ leading or trailing non-JSON text disqualifies it — with a numeric
 `tokens_spent` field (directional token/dollar spend attributable to the
 same lookback window) for `report.sh` to compute "tokens spent vs items
 merged" as the headline -- an absent, failing, non-executable, or
-non-JSON-conforming `tokens` producer simply falls back to the kernel-tier
-headline, never an error. The `tokens` producer **may** additionally emit an
+non-JSON-conforming `tokens` producer falls back to the kernel-tier
+headline, never an error.
+
+**That fallback is announced, not silent (temperloop#988).** When the
+`tokens` producer was present, executable, and exited 0 but its stdout
+failed the parse above, `report.sh` renders one line in the **same
+per-producer skipped-line channel** the not-executable / non-zero-exit /
+timeout cases already use, positioned inside that producer's own `--
+report.d/tokens --` block (after the verbatim stdout and any `notice` line,
+before the trailing blank line):
+
+```
+skipped -- tokens: stdout did not parse as a single JSON object with a numeric tokens_spent field (headline fell back to the kernel tier -- not an error; see report.contract.md)
+```
+
+Two things this does **not** change: the kernel-tier headline fallback
+itself is byte-identical to before, and the run still exits 0 -- a
+non-conforming `tokens` producer remains a legible degradation, never an
+error. **One exception, for a producer that already self-declared:** stdout
+whose first line already begins with `skipped -- ` (the shape the kernel's
+own `tokens` shim prints, and exits 0 with, when it cannot resolve a kernel
+or when a person has locally disabled it -- see `docs/features/telemetry.md`)
+suppresses this line rather than printing a second, redundant skip under the
+same heading. The `tokens` producer **may** additionally emit an
 optional `by_model` object (`{"<model-id>": <tokens>, ...}`) — the model
 attribution that feeds the directional dollar line (see "Pricing table &
 dollar framing" below). `by_model` is purely optional: an absent or
@@ -218,7 +240,11 @@ empty) opt-in egress surface for this whole value loop.
   the headline additionally renders a directional `~$<total>` dollar line
   (see "Pricing table & dollar framing" above).
 - **Else**: the headline is the kernel-tier numbers alone -- the
-  merged-items/day delta plus the median-time-to-merge delta.
+  merged-items/day delta plus the median-time-to-merge delta. When the
+  `tokens` producer *ran* (exit 0) but its stdout failed that parse, the
+  overlay-tier block additionally carries the explicit `skipped -- tokens:
+  stdout did not parse ...` line described under "Overlay drop-in contract"
+  above, so the fallback is never silent.
 
 ## Non-goals of this seam (deliberately out of scope)
 
