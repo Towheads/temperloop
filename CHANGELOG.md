@@ -412,6 +412,40 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **A parked item's claim stamp no longer strands on an open issue —
+  `release.sh` clears its own, and `reconcile.sh --labels` sweeps the rest
+  (temperloop#979).** On the issues-only backend, parking a claimed item back to
+  Ready left a live `fnd:host/session:<host>:<sess8>` label on the open issue,
+  and NOTHING swept it: `release.sh` was local-only (no `host/session` or
+  backend awareness at all) and `reconcile.sh --labels` classes (g)/(h)/(j) are
+  scoped to closed issues or to label objects with zero open-issue attachments —
+  so the item read as claimed by a session that is gone while both the release
+  path and the reconcile sweep reported success (reproduced on foundation#1483).
+  Both halves of the issue's fix landed. **`release.sh`**, when passed BOTH an
+  `<issue#>` and `--board <N>`, now also clears that stamp via
+  `board_stamp <item> Host/Session ""` — the adapter's one existing clearing
+  implementation, never a second label-strip path — behind four deliberate
+  guards: issues-only backend, item **not In Progress** (an In-Progress stamp is
+  a live claim HELD until Done, K#275 — left in place with a notice), **this
+  session's own** stamp only (a foreign stamp is reported and routed to
+  `reconcile.sh`, so a peer's in-flight claim — the owner is stamped *before*
+  the status flips — can never be erased), and never changing `release.sh`'s
+  exit status (a park must never fail on a release; every board-side failure
+  degrades to a stderr notice). The board half runs **before** the marker half,
+  so neither the expected K#275 non-latest refusal nor an absent marker on a
+  headless run can suppress it. Without `--board`, behaviour is byte-identical
+  to before — zero `gh` calls — so `/build` 3h's `release.sh <n>` is untouched.
+  **`reconcile.sh --labels`** gains class **(m)**: a `fnd:host/session:*` label
+  on an OPEN issue whose `fnd:status:*` is not in-progress — reported by
+  default, stripped by `--apply`, with the same immediate per-issue re-check
+  every other class uses (still open, still labeled, still not In Progress, so a
+  re-claim or close landing in the scan→apply gap is never undone). It reuses
+  the existing open-issue bulk read (zero extra `gh` calls) and the now-shared
+  `_label_reconcile_strip_rows` helper, never deletes the label OBJECT (still
+  class (g)'s job), and records its count in the `--unattended`
+  pending-decisions entry. This is the more robust half by construction: it
+  catches the drift whether or not anyone ran `release.sh`.
+
 - **`/build` now detects the backgrounded-quality-gate stall mechanically and
   auto-resumes the worker on its own worktree (temperloop#993).** A worker that
   ran `scripts/quality-gates.sh` in the background and yielded its turn was

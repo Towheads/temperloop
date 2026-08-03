@@ -25,16 +25,14 @@
 #                                       decisions surface (ask-at-checkin).
 #
 # ─── Lens 1: marker drift (default) ──────────────────────────────────────────
-# scripts/claim.sh stamps BOTH the board (Status=In Progress +
-# Host/Session=`<host>:<sess8>`) AND a per-window tmux marker (@claimed_issue).
-# scripts/release.sh clears ONLY the marker and deliberately does NOT un-claim
-# the board ("Park, don't abandon"). So the two can legitimately drift, and until
-# now nothing surfaced that drift. This does — for the current host only.
 # Background. scripts/claim.sh stamps BOTH the board (Status=In Progress +
 # Host/Session=`<host>:<sess8>`) AND a per-window tmux marker (@claimed_issue).
-# scripts/release.sh clears ONLY the marker and deliberately does NOT un-claim
-# the board ("Park, don't abandon"). So the two can legitimately drift, and until
-# now nothing surfaced that drift. This command does — for the current host only.
+# scripts/release.sh clears the marker and — since temperloop#979, ONLY on an
+# issues-only board, ONLY when passed `<issue#> --board <N>`, and ONLY for a
+# PARKED (not In-Progress) item this same session stamped — that item's claim
+# stamp; it still never un-claims the board STATUS ("Park, don't abandon").
+# So the two can legitimately drift, and until now nothing surfaced that drift.
+# This command does — for the current host only.
 #
 # It reports two drift directions, plus an all-clear when neither applies:
 #
@@ -166,7 +164,7 @@
 # The issues-only backend (board_backend == "issues", e.g. board 7 — the kernel
 # tracker itself) rides ALL item state on `fnd:`-namespaced repo labels rather
 # than Projects-v2 fields (see lib/board.sh's issues-only-backend section and
-# ISSUES-ONLY-BACKEND.md). Four label classes accumulate cruft over the
+# ISSUES-ONLY-BACKEND.md). Five label classes accumulate cruft over the
 # tracker's lifetime that nothing else sweeps (lib/board.sh's
 # `_board_issues_stamp_field` header documented the first of them):
 #
@@ -200,6 +198,27 @@
 #       BYPASSES the adapter (a merged PR's native `Closes #N`, a hand
 #       `gh issue close`, the web UI) — the same adapter-bypass leak (h) exists
 #       for, and the reason a root-cause-only fix would not sweep the backlog.
+#   (m) PARKED claim stamps on OPEN issues — a `fnd:host/session:*` label on an
+#       OPEN issue whose `fnd:status:*` is NOT in-progress (temperloop#979).
+#       The park path's blind spot, and the one class none of (g)/(h)/(j) can
+#       reach: the issue is OPEN, so (h)/(j) — both scoped to CLOSED issues —
+#       skip it, while the label object still has an open-issue attachment (this
+#       very one), so (g) correctly refuses to delete it. Yet a claim stamp on a
+#       Ready/Backlog item is drift BY CONSTRUCTION: the board reads it as owned
+#       by a session that is gone — the cross-session-lock confusion the stamp
+#       exists to prevent — and `issue-state.sh resolve` cannot tell it from a
+#       live claim. Deliberately NOT extended to an In-Progress issue: there the
+#       stamp is a LIVE claim HELD until Done (K#275), the sanctioned flow, not
+#       drift. --apply STRIPS the label from the OPEN issue (a per-issue `issue
+#       edit --remove-label`, behind the same immediate re-check every other
+#       class uses — the issue must still be open, still carry that exact label,
+#       and still not be In Progress); it NEVER deletes the label OBJECT, which
+#       stays (g)'s job. The root-cause half is `release.sh`'s own board-side
+#       clear (temperloop#979); this class is the backstop for every park that
+#       never ran it — or ran it from a LATER session, whose foreign stamp
+#       release.sh deliberately refuses to touch — the same report-then-sweep
+#       shape (h)/(j) have for adapter-bypassing closes, and the reason the
+#       issue named it the more robust of the two halves.
 #   (i) unstatused open issues — an OPEN issue carrying NO `fnd:status:*` label
 #       at all (temperloop#376). Status is emulated by that label, so such an
 #       issue reads as `.status = ""` in board_item_list — and /triage's
@@ -874,9 +893,9 @@ status_reconcile_main() {
 # (`Pipeline/…`) / legacy (`Context/pipeline - …`) paths already exists,
 # preferring the new path when both do, and create at the legacy path when
 # neither exists yet.
-#   _label_reconcile_append_pending_decision <board#> <repo> <deleted> <stripped> [<backfilled>] [<cleared>]
+#   _label_reconcile_append_pending_decision <board#> <repo> <deleted> <stripped> [<backfilled>] [<cleared>] [<parked>]
 _label_reconcile_append_pending_decision() {
-  local board="$1" repo="$2" deleted="$3" stripped="$4" backfilled="${5:-0}" cleared="${6:-0}"
+  local board="$1" repo="$2" deleted="$3" stripped="$4" backfilled="${5:-0}" cleared="${6:-0}" parked="${7:-0}"
   local ks_lib doc new_doc legacy_doc ts host decision_extra taken_extra
 
   ks_lib="$SCRIPT_DIR/../lib/knowledge_store.sh"
@@ -912,15 +931,21 @@ _label_reconcile_append_pending_decision() {
   # math (_reconcile_now) stays UTC — absolute instants, unaffected.
   ts="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date '+%Y-%m-%d %H:%M %Z')"
   host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
-  # Only name the claim-stamp (temperloop#744) / backfill (temperloop#376)
-  # dimensions when each actually acted, so a sweep that deleted/stripped but
-  # cleared and backfilled nothing keeps its prior wording verbatim. Same
-  # cleared-then-backfilled order as the on-screen applied: summary.
+  # Only name the claim-stamp (temperloop#744) / parked-claim-stamp
+  # (temperloop#979) / backfill (temperloop#376) dimensions when each actually
+  # acted, so a sweep that deleted/stripped but cleared and backfilled nothing
+  # keeps its prior wording verbatim. Same cleared → parked → backfilled order
+  # as the on-screen applied: summary.
   decision_extra=""; taken_extra=""
   if [ "${cleared:-0}" -gt 0 ]; then
     # shellcheck disable=SC2016  # literal markdown span, not expansion
     decision_extra=' and clear stranded `fnd:host/session:*` claim stamps from closed issues'
     taken_extra="$(printf ', cleared %s claim stamp(s)' "$cleared")"
+  fi
+  if [ "${parked:-0}" -gt 0 ]; then
+    # shellcheck disable=SC2016  # literal markdown span, not expansion
+    decision_extra+=' and clear parked `fnd:host/session:*` claim stamps from open issues that are not In Progress'
+    taken_extra+="$(printf ', cleared %s parked claim stamp(s)' "$parked")"
   fi
   if [ "${backfilled:-0}" -gt 0 ]; then
     # shellcheck disable=SC2016  # literal markdown span, not expansion
@@ -941,32 +966,49 @@ _label_reconcile_append_pending_decision() {
   return 0
 }
 
-# Strip a set of `<issue#>\t<fnd-label>` rows from CLOSED issues — the ONE
-# implementation both Lens 3 strip classes share: (h) stale `fnd:status:*` and
-# (j) stranded `fnd:host/session:*` claim stamps (temperloop#744). Each row is
-# RE-CHECKED immediately before its write (a fresh single-issue `api` read, not
-# the scan's bulk snapshot), so a status write, a re-claim, or a REOPEN landing
-# in the scan→apply gap is never undone — the issue must still be closed AND
-# still carry that exact label. Only the named label is removed; the issue's
-# other labels (fnd: or not) are never read for candidacy or touched.
+# Strip a set of `<issue#>\t<fnd-label>` rows — the ONE implementation all THREE
+# Lens 3 strip classes share: (h) stale `fnd:status:*` and (j) stranded
+# `fnd:host/session:*` claim stamps, both on CLOSED issues (temperloop#744), and
+# (m) PARKED `fnd:host/session:*` claim stamps on OPEN, not-In-Progress issues
+# (temperloop#979). Each row is RE-CHECKED immediately before its write (a fresh
+# single-issue `api` read, not the scan's bulk snapshot), so a status write, a
+# re-claim, a REOPEN, or a CLOSE landing in the scan→apply gap is never undone —
+# the issue must still be in <want-state> AND still carry that exact label AND
+# (when <forbid-label> is given) still NOT carry that label. Only the named
+# label is removed; the issue's other labels (fnd: or not) are never read for
+# candidacy or touched.
+#
+# <want-state> defaults to "closed" and <forbid-label> to empty, so the two
+# pre-existing (h)/(j) call sites are byte-identical to before — including their
+# "skip (no longer closed+labeled)" notice, which the open arm renames rather
+# than reuses so a reader can tell WHICH re-check refused.
 #
 # Publishes the applied count in $_LABEL_STRIP_APPLIED rather than returning it,
 # because the loop must run in the CALLER's shell (its `echo`s are part of the
 # report, and a command-substitution subshell would swallow the counter anyway).
-#   _label_reconcile_strip_closed <owner/repo> <rows>
+#   _label_reconcile_strip_rows <owner/repo> <rows> [<want-state>] [<forbid-label>]
 _LABEL_STRIP_APPLIED=0
-_label_reconcile_strip_closed() {
-  local repo="$1" rows="$2"
-  local n l issue_json state has_label
+_label_reconcile_strip_rows() {
+  local repo="$1" rows="$2" want_state="${3:-closed}" forbid_label="${4:-}"
+  local n l issue_json state has_label has_forbid skip_why
   _LABEL_STRIP_APPLIED=0
   [ -n "$rows" ] || return 0
+  if [ "$want_state" = "closed" ]; then
+    skip_why="skip (no longer closed+labeled)"
+  else
+    skip_why="skip (no longer open+parked+labeled)"
+  fi
   while IFS=$'\t' read -r n l; do
     [ -n "$n" ] || continue
     issue_json="$(_board_gh api "repos/$repo/issues/$n" 2>/dev/null)"
     state="$(printf '%s' "$issue_json" | jq -r '.state // "open"')"
     has_label="$(printf '%s' "$issue_json" | jq -r --arg l "$l" '([.labels[]?.name] | index($l)) != null')"
-    if [ "$state" != "closed" ] || [ "$has_label" != "true" ]; then
-      echo "  skip (no longer closed+labeled): #$n $l"
+    has_forbid=false
+    if [ -n "$forbid_label" ]; then
+      has_forbid="$(printf '%s' "$issue_json" | jq -r --arg l "$forbid_label" '([.labels[]?.name] | index($l)) != null')"
+    fi
+    if [ "$state" != "$want_state" ] || [ "$has_label" != "true" ] || [ "$has_forbid" = "true" ]; then
+      echo "  $skip_why: #$n $l"
       continue
     fi
     if _board_gh issue edit "$n" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
@@ -984,10 +1026,10 @@ _label_reconcile_strip_closed() {
 # $LABELS_UNATTENDED, and drive it offline. Always exits 0.
 label_reconcile_main() {
   local repo hs_labels_json hs_labels orphan_hs_labels closed_json strip_rows
-  local label recheck_count deleted=0 stripped=0 cleared=0 backfilled=0
+  local label recheck_count deleted=0 stripped=0 cleared=0 backfilled=0 parked=0
   local n l issue_json state has_status
   local open_json unstatused_rows backlog_label
-  local hs_prefix hs_strip_rows
+  local hs_prefix hs_strip_rows inprogress_label parked_stamp_rows
 
   if ! _board_is_issues_only "$PROJECT_NUMBER"; then
     echo "Board label hygiene — board $PROJECT_NUMBER is not the issues-only backend (fnd: labels only exist there) — nothing to sweep"
@@ -1001,6 +1043,9 @@ label_reconcile_main() {
   # helpers the write path uses (_board_issues_set_field) so it stays in lockstep
   # with the fnd: vocabulary — "fnd:status:backlog".
   backlog_label="$(_board_issues_label_prefix "$BOARD_FIELD_STATUS")$(_board_issues_slug "$BOARD_OPT_BACKLOG")"
+  # The In-Progress status label, derived the same way (never hardcoded) — the
+  # ONE thing that makes a claim stamp on an open issue legitimate (class m).
+  inprogress_label="$(_board_issues_label_prefix "$BOARD_FIELD_STATUS")$(_board_issues_slug "$BOARD_OPT_INPROGRESS")"
 
   # --- scan 1: orphaned fnd:host/session:* repo labels ------------------------
   # Every repo label carrying the prefix, filtered LOCALLY (jq startswith) to
@@ -1073,6 +1118,22 @@ label_reconcile_main() {
     '
   )"
 
+  # --- scan 3b: PARKED fnd:host/session:* stamps on OPEN issues (#979) ---------
+  # Class (m) — see this file's Lens 3 header. Reuses scan 3's SAME bulk read
+  # (zero extra gh calls): the open-issue set is the whole candidate population,
+  # narrowed to those carrying a claim stamp while NOT In Progress. Both the
+  # stamp prefix and the in-progress label are DERIVED from the same helpers the
+  # write path uses (computed above), never hardcoded.
+  parked_stamp_rows="$(
+    printf '%s' "$open_json" | jq -r --arg p "$hs_prefix" --arg ip "$inprogress_label" '
+      .[]
+      | select(([ .labels[]?.name | select(. == $ip) ] | length) == 0)
+      | .number as $n
+      | (.labels[]? | .name | select(startswith($p))) as $l
+      | [ ($n|tostring), $l ] | @tsv
+    '
+  )"
+
   # --- report -------------------------------------------------------------
   echo "Board label hygiene — board $PROJECT_NUMBER ($repo)"
   echo
@@ -1102,6 +1163,15 @@ label_reconcile_main() {
     done <<<"$hs_strip_rows"
     echo
   fi
+  if [ -n "$parked_stamp_rows" ]; then
+    drift=1
+    echo "parked claim stamps on open issues (not In Progress — read as claimed by a session that is gone):"
+    while IFS=$'\t' read -r n l; do
+      [ -n "$n" ] || continue
+      echo "  #$n — $l"
+    done <<<"$parked_stamp_rows"
+    echo
+  fi
   if [ -n "$unstatused_rows" ]; then
     drift=1
     echo "unstatused open issues (no fnd:status:* label — invisible to /triage Backlog intake):"
@@ -1112,7 +1182,7 @@ label_reconcile_main() {
     echo
   fi
   if [ "$drift" -eq 0 ]; then
-    echo "In sync: no orphaned host/session labels, no stale status labels or stranded claim stamps on closed issues, no unstatused open issues."
+    echo "In sync: no orphaned host/session labels, no stale status labels or stranded claim stamps on closed issues, no parked claim stamps on open issues, no unstatused open issues."
     return 0
   fi
 
@@ -1145,12 +1215,18 @@ label_reconcile_main() {
     fi
   done <<<"$orphan_hs_labels"
 
-  # Strip each stale status label (class h), then each stranded claim stamp
-  # (class j) — one shared implementation, see _label_reconcile_strip_closed.
-  _label_reconcile_strip_closed "$repo" "$strip_rows"
+  # Strip each stale status label (class h), then each stranded claim stamp on a
+  # closed issue (class j), then each PARKED claim stamp on an open, not-In-
+  # Progress issue (class m, temperloop#979) — one shared implementation, see
+  # _label_reconcile_strip_rows. The class-m call passes the open state and the
+  # in-progress label as the re-check's forbidden label, so a stamp that became
+  # a LIVE claim in the scan→apply gap is never erased.
+  _label_reconcile_strip_rows "$repo" "$strip_rows"
   stripped="$_LABEL_STRIP_APPLIED"
-  _label_reconcile_strip_closed "$repo" "$hs_strip_rows"
+  _label_reconcile_strip_rows "$repo" "$hs_strip_rows"
   cleared="$_LABEL_STRIP_APPLIED"
+  _label_reconcile_strip_rows "$repo" "$parked_stamp_rows" open "$inprogress_label"
+  parked="$_LABEL_STRIP_APPLIED"
 
   # Backfill fnd:status:backlog on each unstatused open issue — RE-CHECKED
   # immediately before the write (a fresh single-issue `api` read, not the
@@ -1177,16 +1253,17 @@ label_reconcile_main() {
   done <<<"$unstatused_rows"
 
   echo
-  # Only name the claim-stamp / backfill dimensions when their scan actually
-  # found candidates, so a sweep with nothing to clear or backfill prints its
-  # prior byte-identical summary line.
+  # Only name the claim-stamp / parked-claim-stamp / backfill dimensions when
+  # their scan actually found candidates, so a sweep with nothing to clear or
+  # backfill prints its prior byte-identical summary line.
   local applied_summary="applied: deleted $deleted label(s), stripped $stripped status label(s)"
   [ -n "$hs_strip_rows" ] && applied_summary+="$(printf ', cleared %s claim stamp(s)' "$cleared")"
+  [ -n "$parked_stamp_rows" ] && applied_summary+="$(printf ', cleared %s parked claim stamp(s)' "$parked")"
   [ -n "$unstatused_rows" ] && applied_summary+="$(printf ', backfilled %s status label(s)' "$backfilled")"
   echo "$applied_summary."
 
-  if [ "$LABELS_UNATTENDED" = 1 ] && { [ "$deleted" -gt 0 ] || [ "$stripped" -gt 0 ] || [ "$cleared" -gt 0 ] || [ "$backfilled" -gt 0 ]; }; then
-    _label_reconcile_append_pending_decision "$PROJECT_NUMBER" "$repo" "$deleted" "$stripped" "$backfilled" "$cleared"
+  if [ "$LABELS_UNATTENDED" = 1 ] && { [ "$deleted" -gt 0 ] || [ "$stripped" -gt 0 ] || [ "$cleared" -gt 0 ] || [ "$parked" -gt 0 ] || [ "$backfilled" -gt 0 ]; }; then
+    _label_reconcile_append_pending_decision "$PROJECT_NUMBER" "$repo" "$deleted" "$stripped" "$backfilled" "$cleared" "$parked"
   fi
   return 0
 }

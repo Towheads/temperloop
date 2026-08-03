@@ -544,4 +544,118 @@ echo "PASS: case 14 unattended apply records the cleared claim stamps in the pen
 unset KNOWLEDGE_STORE_ROOT
 
 echo
+echo "=== Scan 3b: PARKED fnd:host/session:* claim stamps on OPEN issues (temperloop#979) ==="
+
+# The motivating REAL shape (temperloop#979, reproduced on foundation#1483):
+# claim.sh stamps the owner + flips In Progress; the item is parked back to
+# Ready; release.sh (pre-#979) cleared only the local marker. The stamp then
+# sits on an OPEN, Ready issue reading as a live claim by a dead session, and
+# NOTHING swept it: (h)/(j) are scoped to CLOSED issues, and (g) correctly
+# refuses to delete a label object still attached to an open issue — this one.
+PARKED_STAMP="fnd:host/session:mini:9f90bef1"
+CLOSED_ISSUES_JSON='[]'
+LABEL_LIST_JSON='[{"name":"'"$PARKED_STAMP"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$PARKED_STAMP"
+RACE_LABEL=""
+
+# =========================================================================
+# Case 15: dry-run reports the parked stamp on the READY issue, and NEVER
+# reports the one on an In-Progress issue — that stamp is a live claim held
+# until Done (K#275), the sanctioned flow, not drift. Zero writes.
+# =========================================================================
+OPEN_ISSUES_JSON='[
+  {"number":40,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"},{"name":"bug"}]},
+  {"number":41,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:in-progress"}]}
+]'
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+printf '%s' "$OUT" | grep -q "parked claim stamps on open issues" \
+  || fail "case15: expected the parked-claim-stamp section\n$OUT"
+printf '%s' "$OUT" | grep -qF "#40 — $PARKED_STAMP" \
+  || fail "case15: expected #40's parked stamp reported\n$OUT"
+printf '%s' "$OUT" | grep -qF "#41 — $PARKED_STAMP" \
+  && fail "case15: an In-Progress issue's stamp is a LIVE claim held until Done — never a candidate\n$OUT"
+printf '%s' "$OUT" | grep -q "^orphaned host/session labels" \
+  && fail "case15: a stamp still attached to an open issue must never be an orphan-delete candidate\n$OUT"
+printf '%s' "$OUT" | grep -q "(dry-run" \
+  || fail "case15: expected the dry-run notice\n$OUT"
+[ ! -s "$STRIPS" ] || fail "case15: dry-run must issue ZERO strips\n$(cat "$STRIPS")"
+[ ! -s "$DELETES" ] || fail "case15: dry-run must issue ZERO deletes\n$(cat "$DELETES")"
+echo "PASS: case 15 dry-run reports a parked claim stamp on an open, not-In-Progress issue (temperloop#979)"
+
+# =========================================================================
+# Case 16: --apply strips the parked stamp from the OPEN issue only. The
+# label OBJECT is never deleted, an In-Progress issue is never touched, and
+# the immediate re-check skips an issue that was RE-CLAIMED (gained
+# fnd:status:in-progress) or CLOSED in the scan->apply gap.
+# =========================================================================
+OPEN_ISSUES_JSON='[
+  {"number":40,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"},{"name":"bug"}]},
+  {"number":41,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:in-progress"}]},
+  {"number":42,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]},
+  {"number":43,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]}
+]'
+API_40_JSON='{"state":"open","labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"},{"name":"bug"}]}'
+API_42_JSON='{"state":"open","labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:in-progress"}]}'  # re-claimed in the gap
+API_43_JSON='{"state":"closed","labels":[{"name":"'"$PARKED_STAMP"'"}]}'                                   # closed in the gap
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+printf '%s' "$OUT" | grep -qF "stripped: #40 $PARKED_STAMP" \
+  || fail "case16: expected #40's parked stamp stripped\n$OUT"
+grep -qF "$(printf '40\t%s' "$PARKED_STAMP")" "$STRIPS" \
+  || fail "case16: expected #40 recorded in the strip log\n$(cat "$STRIPS")"
+grep -q "^41	" "$STRIPS" \
+  && fail "case16: an In-Progress issue's live claim must NEVER be stripped\n$(cat "$STRIPS")"
+printf '%s' "$OUT" | grep -qF "skip (no longer open+parked+labeled): #42 $PARKED_STAMP" \
+  || fail "case16: expected #42 (re-claimed in the gap) skipped by the re-check\n$OUT"
+printf '%s' "$OUT" | grep -qF "skip (no longer open+parked+labeled): #43 $PARKED_STAMP" \
+  || fail "case16: expected #43 (closed in the gap) skipped by the re-check\n$OUT"
+grep -q "^42	" "$STRIPS" && fail "case16: a re-claimed issue must never be stripped\n$(cat "$STRIPS")"
+grep -q "^43	" "$STRIPS" && fail "case16: an issue closed in the gap must never be stripped here\n$(cat "$STRIPS")"
+[ ! -s "$DELETES" ] || fail "case16: the label OBJECT must never be deleted by this class\n$(cat "$DELETES")"
+grep -q "bug" "$STRIPS" && fail "case16: a non-fnd: label must never be stripped\n$(cat "$STRIPS")"
+printf '%s' "$OUT" | grep -q "applied: deleted 0 label(s), stripped 0 status label(s), cleared 1 parked claim stamp(s)\." \
+  || fail "case16: expected the summary to name the parked-cleared count\n$OUT"
+echo "PASS: case 16 --apply strips the parked stamp only; a live In-Progress claim, a re-claim, and a close in the gap all survive"
+
+# =========================================================================
+# Case 17: idempotent — a second run against the POST-apply state reports the
+# in-sync all-clear and issues zero writes.
+# =========================================================================
+OPEN_ISSUES_JSON='[{"number":40,"labels":[{"name":"fnd:status:ready"},{"name":"bug"}]}]'
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+printf '%s' "$OUT" | grep -q "In sync" \
+  || fail "case17: expected in-sync on the idempotent re-run\n$OUT"
+[ ! -s "$STRIPS" ] || fail "case17: must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 17 the parked-stamp strip is idempotent — a second run reports in-sync, zero writes"
+
+# =========================================================================
+# Case 18: unattended apply records the parked-cleared count + its own
+# dimension in the pending-decisions entry.
+# =========================================================================
+KS_ROOT_18="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_18"
+OPEN_ISSUES_JSON='[{"number":40,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]}]'
+API_40_JSON='{"state":"open","labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]}'
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+LEGACY_DOC="$KS_ROOT_18/Context/pipeline - pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case18: expected the pending-decisions entry created at the legacy path\n$(find "$KS_ROOT_18" -type f)"
+grep -q "Default taken:\*\* applied — deleted 0 label(s), stripped 0 status label(s), cleared 1 parked claim stamp(s)" "$LEGACY_DOC" \
+  || fail "case18: entry missing the parked-cleared count on the default-taken line\n$(cat "$LEGACY_DOC")"
+grep -q "clear parked .fnd:host/session:\*. claim stamps from open issues that are not In Progress" "$LEGACY_DOC" \
+  || fail "case18: entry missing the parked-claim-stamp mention on the decision line\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 18 unattended apply records the parked claim stamps in the pending-decisions entry (temperloop#979)"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
 echo "PASS: all reconcile.sh --labels (label hygiene) assertions passed"
