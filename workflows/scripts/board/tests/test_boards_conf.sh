@@ -219,9 +219,9 @@ ct_repo="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
   # A machine conf default that certainly does not exist, so layer 1 is inert
-  # without depending on the host's real ~/.config.
+  # without depending on the real ~/.config of the host.
   # Deliberately scoped to this subshell only -- never meant to
-  # leak into the parent script's environment.
+  # leak into the environment of the parent script.
   # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
@@ -236,7 +236,7 @@ ct_conf="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
   # Deliberately scoped to this subshell only -- never meant to
-  # leak into the parent script's environment.
+  # leak into the environment of the parent script.
   # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
@@ -272,7 +272,7 @@ ct2_conf="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
   # Deliberately scoped to this subshell only -- never meant to
-  # leak into the parent script's environment.
+  # leak into the environment of the parent script.
   # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
@@ -289,7 +289,7 @@ ct2_repo="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
   # Deliberately scoped to this subshell only -- never meant to
-  # leak into the parent script's environment.
+  # leak into the environment of the parent script.
   # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null
@@ -316,7 +316,7 @@ ct3_repo="$(
   set -euo pipefail
   unset BOARDS_CONF_MACHINE BOARDS_CONF_REPO_LOCAL
   # Deliberately scoped to this subshell only -- never meant to
-  # leak into the parent script's environment.
+  # leak into the environment of the parent script.
   # shellcheck disable=SC2030,SC2031
   export XDG_CONFIG_HOME="$WORK/no-such-xdg"
   # shellcheck source=/dev/null

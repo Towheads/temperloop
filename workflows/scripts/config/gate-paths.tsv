@@ -274,5 +274,13 @@ bash workflows/scripts/tests/test_check_changelog_entry.sh	workflows/scripts/che
 
 # ── Whole-tree shell lints ──────────────────────────────────────────────────
 bash scripts/lint-zsh-param-tie.sh	*.sh
+# The bash-3.2 hidden-apostrophe lint (temperloop#1098) covers the WHOLE tracked
+# shell set, which is wider than `*.sh`: it also reads extensionless tracked files
+# carrying an sh/bash shebang (bin/temperloop, bin/foundation, the report
+# producers), plus the `*/tests/*` files `make shellcheck` excludes — the #1098
+# sweep found workflows/scripts/board/tests/test_boards_conf.sh broken too, so a
+# tests-excluding scope would have left half the known breakage ungated.
+bash scripts/lint-bash32-cmdsubst-comment.sh	*.sh bin/** .temperloop/** workflows/scripts/report-producers/**
+bash scripts/tests/test_lint_bash32_cmdsubst_comment.sh	scripts/lint-bash32-cmdsubst-comment.sh scripts/tests/test_lint_bash32_cmdsubst_comment.sh
 make shellcheck	*.sh
 bash scripts/tests/test_ensure_shellcheck.sh	scripts/ensure-shellcheck.sh scripts/tests/test_ensure_shellcheck.sh

@@ -249,14 +249,19 @@ _cross_checkout_kernel_pin_tag() {
   fi
 
   tag="$(
-    # env-reconcile.sh's own arg-parse loop reads "$@" — and since this
+    # NOTE — no apostrophes in these comments: they sit inside a $( ... ) and
+    # bash 3.2 (macOS /bin/bash) would read one as an opening quote and swallow
+    # the closing paren. Guarded by scripts/lint-bash32-cmdsubst-comment.sh
+    # (temperloop#1098).
+    #
+    # The env-reconcile.sh arg-parse loop reads "$@" — and since this
     # function was itself CALLED with an argument (checkout), that argument
     # is still $1 here, not empty. Left un-cleared, `source` inherits it as
-    # env-reconcile.sh's own positional params, its arg-parse loop treats
+    # the env-reconcile.sh positional params, its arg-parse loop treats
     # the checkout path as an unrecognized flag, and it `exit 2`s before
     # kernel_pin_tag_of is ever defined (silently — the caller only sees an
     # empty, rc!=0 command substitution). Scoped to THIS subshell only, so
-    # the enclosing function's own "$@"/"$1" is untouched.
+    # the enclosing function keeps its own "$@"/"$1" untouched.
     set --
     # shellcheck source=/dev/null
     source "$env_reconcile" 2>/dev/null

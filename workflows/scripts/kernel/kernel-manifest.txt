@@ -79,6 +79,7 @@ kernel .temperloop/*
 kernel scripts/quality-gates.sh
 kernel scripts/prune-merged-branches.sh
 kernel scripts/lint-zsh-param-tie.sh
+kernel scripts/lint-bash32-cmdsubst-comment.sh
 kernel scripts/update-kernel.sh
 kernel scripts/ensure-shellcheck.sh
 kernel scripts/tests/*
