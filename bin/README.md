@@ -250,6 +250,13 @@ is disclosed with its undo path at the moment you consent to it (see
 trade rather than a surprise — but a clean `temperloop eject` genuinely does
 not mean "back to how you found it."
 
+One first-epic answer is deliberately **not** in scope (e): the § A4
+token-metering opt-in places a **tracked file**,
+`.temperloop/report.d/tokens`, not API state. Reverting the PR that placed
+it removes it, and `temperloop eject` removes it too — as scope (c), with
+the rest of `.temperloop/`. The "eject does not revert it" warning above is
+about repository *settings*; it does not extend to that file.
+
 Scope (a) predates any manifest, so `temperloop uninstall` cannot know about
 it or remove it — this is a deliberate stance, not a gap: inferring "this
 looks like a temperloop path, remove it too" would be exactly the

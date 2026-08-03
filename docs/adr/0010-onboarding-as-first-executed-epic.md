@@ -115,6 +115,26 @@ Ship onboarding as a **kernel-shipped, pre-designed first epic** —
     issues-only is the sole init-time tracker mode). The flags that gated
     those applies are retained as deprecated no-ops rather than removed, so
     no consumer breaks and the release stays non-breaking.
+- **Amendment (temperloop#1088, the token-metering opt-in).** "Three
+  concerns, one epic" gains a fourth *question* — not a fourth guardrail.
+  The `tokens` `report.d` producer reads the operator's own Claude Code
+  transcript files, and `temperloop init` proposes it in its tree-only
+  proposal PR unconditionally, disclosing it only afterwards (via the
+  producer's own first-run notice, temperloop#986). Placement is therefore
+  moved behind consent: a Phase A question (§ A4 in the template) whose
+  answer composes into the same Phase B change-set, so the producer is
+  **placed on opt-in** rather than placed and disclosed. It rides the
+  existing shape rather than adding a mechanism — the same
+  interview → compose → confirm-once → apply path, and the same congruence
+  logic ("nothing enters the set that the answers did not ask for") applied
+  to a tracked file instead of a required status. Two clauses of this ADR
+  are deliberately **not** disturbed: `init` stays non-interactive (the
+  interview is the first epic's, driven by `/assess`→`/build`), and the
+  producer's first-run notice stays unconditional — an interview question,
+  like a prompt, reaches only whoever runs the flow, so it structurally
+  cannot reach a teammate who inherits the committed producer by `git pull`.
+  The two are complementary halves of one consent answer (adopter half here,
+  inheritor half in the notice), never substitutes.
 - **Zero-CI awareness.** Until the pipeline's CI-poll defect is fixed
   (tracked separately), the epic's pre-CI items mark themselves so the CI
   poll is skipped with a legible "no CI configured yet" notice, never an
