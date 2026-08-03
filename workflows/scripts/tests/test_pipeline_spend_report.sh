@@ -470,10 +470,20 @@ EOF
   #       documented default (exactly what every session that sources
   #       build.config.sh at its own Step 0 inherits) must NOT be treated as
   #       an override; repo-scoping must still engage.
-  #   9k: review round 2, finding 2 -- an encoded name over Claude Code's
-  #       200-character cap must render its OWN distinct notice (no path
-  #       named -- the untruncated path structurally cannot exist), not the
-  #       path-naming notice from 9i; same decoy-discrimination shape as 9i.
+  #   9k: review round 2, finding 2 (+ temperloop#995) -- an encoded name
+  #       over Claude Code's 200-character cap whose truncated prefix
+  #       matches NO project directory must render its OWN distinct notice
+  #       (naming the prefix GLOB it searched, never the untruncated path,
+  #       which structurally cannot exist), not the path-naming notice from
+  #       9i; same decoy-discrimination shape as 9i.
+  #   9l: temperloop#995 -- the RESOLUTION half: an over-cap encoded name
+  #       whose truncated prefix matches EXACTLY ONE project directory is
+  #       repo-scoped to that directory (the decoy on the same fake $HOME
+  #       is excluded), under a notice that says the directory was resolved
+  #       by prefix match rather than by full name.
+  #   9m: temperloop#995 -- an over-cap prefix matching MORE THAN ONE
+  #       project directory is ambiguous: it must degrade to machine-wide
+  #       naming the match count, never silently pick one of them.
   #
   # Every negative assertion below ("does not claim X") is paired with a
   # positive assertion on what the notice DOES say, in the SAME jq
@@ -689,16 +699,19 @@ EOF
 
     # =======================================================================
     # 9k: review round 2, finding 2 -- Claude Code caps an encoded project
-    # name at 200 characters (truncate + unreproducible hash beyond that);
-    # this script must NOT claim the untruncated path exists, since it
-    # structurally cannot under Claude Code's own naming rule. A fixture
-    # checkout whose absolute path encodes to well over 200 characters
-    # (built with dynamic padding so it clears the bar regardless of how
-    # long this machine's own tmp root happens to be), pointed at a fake
-    # $HOME holding ONLY a decoy corpus under a DIFFERENT name -- same
-    # discriminating shape as 9i: a passing tokens_spent proves the cap
-    # check actually fell through to the machine-wide fallback, not that it
-    # coincidentally returned 0.
+    # name at 200 characters (truncate + unreproducible hash beyond that).
+    # Since temperloop#995 the producer RESOLVES that case by matching the
+    # truncated prefix (9l below); this arm is the NO-MATCH one -- nothing
+    # under the fake $HOME starts with that prefix, so it must degrade to
+    # machine-wide under a notice that names the GLOB it searched, and must
+    # still never claim the untruncated path exists (it structurally cannot
+    # under Claude Code's own naming rule). A fixture checkout whose
+    # absolute path encodes to well over 200 characters (built with dynamic
+    # padding so it clears the bar regardless of how long this machine's own
+    # tmp root happens to be), pointed at a fake $HOME holding ONLY a decoy
+    # corpus under a DIFFERENT name -- same discriminating shape as 9i: a
+    # passing tokens_spent proves the cap branch actually fell through to
+    # the machine-wide fallback, not that it coincidentally returned 0.
     # =======================================================================
     PAD_LEN=220
     LONGPAD="$(printf 'a%.0s' $(seq 1 "$PAD_LEN"))"
@@ -728,6 +741,100 @@ EOF
       "1037" "$(printf '%s' "$OUT9K" | jq -r '.tokens_spent')"
     check "SCOPE 9k: ...and the notice is the 200-CAP variant -- names the cap, NOT a specific path (the untruncated path cannot exist under Claude Code's own naming rule), and is none of the other three notice variants (one combined check)" \
       bash -c "printf '%s' '$OUT9K' | jq -e '(.notice | type) == \"string\" and (.notice | test(\"200-character\")) and (.notice | test(\"exceeds\")) and ((.notice | test(\"THIS git checkout\")) | not) and ((.notice | test(\"no Claude Code transcripts recorded\")) | not) and ((.notice | test(\"every Claude Code project\")) | not)' >/dev/null"
+    # temperloop#995: the no-match arm must name the PREFIX GLOB it actually
+    # searched -- a real, pasteable `ls` the operator can run against their
+    # own ~/.claude/projects -- and say that nothing matched, so it reads
+    # differently from the ambiguous arm (9m) on sight. `contains`, not
+    # `test`: the glob's trailing `-*` is regex-significant to test().
+    #
+    # ASSERTED FROM A FILE, NOT THE `printf '%s' '$OUT'` EMBEDDING the older
+    # checks above use: that idiom re-embeds captured stdout inside a
+    # single-quoted `bash -c` string, so it only survives an output with an
+    # EVEN number of apostrophes (the pairs cancel and the apostrophes are
+    # merely deleted). These #995 notices carry an ODD count -- one "Claude
+    # Code's" -- which flips the rest of the string OUT of quotes, exposing
+    # it to word-splitting, `$` expansion, and glob expansion on the very
+    # `-*` this assertion is about. Writing stdout to a file and passing the
+    # jq program as ordinary argv to `check` removes the whole shell-quoting
+    # layer instead of trying to escape through it.
+    LONG_PREFIX="${ENC_LONG:0:200}"
+    EXPECTED_CAP_GLOB="$LONGCAP_HOME/.claude/projects/$LONG_PREFIX-*"
+    OUT9K_FILE="$TMP/out-9k.json"
+    printf '%s' "$OUT9K" > "$OUT9K_FILE"
+    check "SCOPE 9k: ...and that notice names the exact prefix GLOB it searched and says NOTHING matched it (temperloop#995 -- the operator can paste it straight into an ls)" \
+      jq -e --arg g "$EXPECTED_CAP_GLOB" \
+        '(.notice | contains($g)) and (.notice | test("no project directory matches"))' "$OUT9K_FILE"
+
+    # =======================================================================
+    # 9l: temperloop#995 -- the RESOLUTION half of the 200-char cap. Claude
+    # Code stores an over-cap project under `<first-200-chars>-<hash>`, and
+    # its OWN reverse lookup finds that directory by the 200-character
+    # prefix rather than by recomputing the hash (which shell cannot). So a
+    # fake $HOME carrying exactly ONE directory under that prefix must be
+    # repo-scoped to it -- with a decoy corpus under a DIFFERENT name on the
+    # same $HOME, so a passing number proves the prefix match actually
+    # scoped (1116) rather than the fallback walking everything (17856).
+    #
+    # The `-<hash>` suffix here is deliberately arbitrary: the whole point
+    # is that this producer never reproduces or parses it, only the prefix.
+    # =======================================================================
+    RESOLVE_HOME="$TMP/fake-home-995-resolve"
+    RESOLVE_MATCH_ROOT="$RESOLVE_HOME/.claude/projects/$LONG_PREFIX-1a2b3c"
+    RESOLVE_DECOY_ROOT="$RESOLVE_HOME/.claude/projects/-decoy-995-resolve"
+    # in-scope: units = 2000*0.1 + 400*1.25 + 80*5 + 16*1 = 200+500+400+16 = 1116
+    { usage_line reqR1 2026-07-10T10:00:00.000Z claude-opus-5 2000 400 80 16 text; } \
+      | mkagent "$RESOLVE_MATCH_ROOT" wf_resolve-001 r9950001
+    # decoy: units = 9000*0.1 + 9000*1.25 + 900*5 + 90*1 = 16740 (combined would be 17856)
+    { usage_line reqR2 2026-07-10T10:00:00.000Z claude-opus-5 9000 9000 900 90 text; } \
+      | mkagent "$RESOLVE_DECOY_ROOT" wf_resolvedecoy-001 r9950002
+
+    OUT9L="$(cd "$LONGREPO" && env -u SPEND_TRANSCRIPT_ROOT HOME="$RESOLVE_HOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+        BASELINE_SNAPSHOT_LOOKBACK_DAYS=36500 "$PRODUCER")"
+    rc9l=$?
+    OUT9L_FILE="$TMP/out-9l.json"
+    printf '%s' "$OUT9L" > "$OUT9L_FILE"
+    check "SCOPE 9l: an over-cap checkout whose truncated prefix matches exactly one project directory still exits 0" \
+      test "$rc9l" -eq 0
+    check_eq "SCOPE 9l: ...and tokens_spent is the PREFIX-MATCHED directory's own 1116 -- not the machine-wide 17856 the pre-#995 cap degrade would have reported, and not 0" \
+      "1116" "$(jq -r '.tokens_spent' "$OUT9L_FILE")"
+    check "SCOPE 9l: ...and the notice claims THIS-checkout scoping (it genuinely is scoped) while stating the directory was resolved by the 200-char prefix match, and is none of the three fallback variants (one combined check)" \
+      jq -e --arg g "$RESOLVE_HOME/.claude/projects/$LONG_PREFIX-*" \
+        '(.notice | type) == "string" and (.notice | test("THIS git checkout")) and (.notice | test("200-character")) and (.notice | contains($g)) and ((.notice | test("no project directory matches")) | not) and ((.notice | test("no Claude Code transcripts recorded")) | not) and ((.notice | test("every Claude Code project")) | not)' "$OUT9L_FILE"
+
+    # =======================================================================
+    # 9m: temperloop#995 -- AMBIGUITY. Two checkouts identical across their
+    # first 200 encoded characters both land under the same prefix, and the
+    # hash suffix that would tell them apart is exactly what this producer
+    # cannot reproduce. Picking one would be a silent wrong number, so the
+    # ambiguous case must degrade to machine-wide and SAY it was ambiguous.
+    # The two matching directories are left EMPTY and the corpus lives in a
+    # decoy under a different name, so the expected total (2080) is
+    # reachable ONLY through the machine-wide fallback.
+    # =======================================================================
+    AMBIG_HOME="$TMP/fake-home-995-ambig"
+    mkdir -p "$AMBIG_HOME/.claude/projects/$LONG_PREFIX-1a2b3c" \
+             "$AMBIG_HOME/.claude/projects/$LONG_PREFIX-9z8y7x"
+    AMBIG_DECOY_ROOT="$AMBIG_HOME/.claude/projects/-decoy-995-ambig"
+    # units = 3000*0.1 + 800*1.25 + 150*5 + 30*1 = 300 + 1000 + 750 + 30 = 2080
+    { usage_line reqA1 2026-07-10T10:00:00.000Z claude-opus-5 3000 800 150 30 text; } \
+      | mkagent "$AMBIG_DECOY_ROOT" wf_ambig-001 a9950001
+
+    OUT9M="$(cd "$LONGREPO" && env -u SPEND_TRANSCRIPT_ROOT HOME="$AMBIG_HOME" \
+        SPEND_WEIGHT_INPUT=1 SPEND_WEIGHT_CACHE_READ=0.1 SPEND_WEIGHT_CACHE_CREATE=1.25 SPEND_WEIGHT_OUTPUT=5 \
+        SPEND_MACHINERY_MAX_CALLS=6 SPEND_WORKER_PROFILE_MIN_CALLS=1 \
+        BASELINE_SNAPSHOT_LOOKBACK_DAYS=36500 "$PRODUCER")"
+    rc9m=$?
+    OUT9M_FILE="$TMP/out-9m.json"
+    printf '%s' "$OUT9M" > "$OUT9M_FILE"
+    check "SCOPE 9m: an ambiguous over-cap prefix (two matching project directories) still exits 0" \
+      test "$rc9m" -eq 0
+    check_eq "SCOPE 9m: ...and tokens_spent is the machine-wide DECOY corpus (2080) -- proving it declined BOTH candidates rather than silently scoping to whichever the glob listed first" \
+      "2080" "$(jq -r '.tokens_spent' "$OUT9M_FILE")"
+    check "SCOPE 9m: ...and the notice says the prefix was AMBIGUOUS, names how many directories matched (2) and the glob, and never claims THIS-checkout scoping (one combined check)" \
+      jq -e --arg g "$AMBIG_HOME/.claude/projects/$LONG_PREFIX-*" \
+        '(.notice | type) == "string" and (.notice | test("ambiguous")) and (.notice | test("2 project directories match")) and (.notice | contains($g)) and (.notice | test("200-character")) and ((.notice | test("THIS git checkout")) | not) and ((.notice | test("no Claude Code transcripts recorded")) | not) and ((.notice | test("every Claude Code project")) | not)' "$OUT9M_FILE"
   fi
 else
   printf '  - skipped: workflows/scripts/report-producers/tokens not present or not executable\n'

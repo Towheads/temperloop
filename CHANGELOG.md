@@ -248,6 +248,28 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **The `tokens` report producer now RESOLVES checkouts whose encoded path
+  exceeds Claude Code's 200-character project-name cap, instead of degrading
+  to machine-wide (temperloop#995).** Claude Code stores such a project under
+  its first 200 encoded characters plus a `-<hash>` suffix that shell cannot
+  reproduce, so since temperloop#983 those checkouts fell back to the
+  machine-wide corpus under an honestly-labeled notice — correct, but never
+  scoped. The producer now takes the same route Claude Code's own reverse
+  lookup takes: it globs
+  `$HOME/.claude/projects/<first-200-chars-of-encoded>-*` and scopes to the
+  match. This is **not** the ambiguous reverse-decode the producer still
+  refuses — the prefix is forward-encoded from a path it already knows (git's
+  own toplevel); only the hash tail is unknown, and the tail is never guessed.
+  **Exactly one match is scoped**; zero matches, or more than one (two
+  checkouts identical across their first 200 encoded characters), still
+  degrade to machine-wide rather than picking one — under a notice that now
+  names the prefix **glob** it searched and says which of the two happened, so
+  the operator can paste it straight into an `ls`. A successful prefix
+  resolution says so in its own notice too, so a surprising number is
+  attributable to the route that produced it. Five notice variants now, not
+  four; see `workflows/scripts/lib/report.contract.md` § Kernel-shipped
+  `tokens` producer's transcript scope.
+
 - **`temperloop try`'s shadow-triage pass now runs on an explicitly cheaper
   tier by default (temperloop#978).** `TRY_TRIAGE_MODEL` defaults to a cheap
   tier rather than inheriting the operator's CLI default. This is the one seat

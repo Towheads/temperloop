@@ -107,19 +107,22 @@
 # report.contract.md's notice channel, temperloop#981) states that TRUE
 # scope, never a hardcoded claim — see the scope_notice assignment below,
 # which is set from the SAME branch that decides whether --root is passed.
-# FOUR distinct notices, not two (temperloop#983 review, expanded round 2):
-# repo-scoped success; repo-scoping unavailable (not a git tree, or an
-# explicit non-default override) → generic machine-wide; repo-scoping
-# SUCCEEDED at deriving a path but that path doesn't exist yet (a genuinely
-# fresh or empty checkout) → a notice naming the exact path, because
-# silently falling back to machine-wide there would look identical to a
-# real, populated repo-scoped zero — an undetectable wrong number is worse
-# than the bug this item exists to fix (see the `scoped_root_missing`
-# branch below); and the encoded name exceeds Claude Code's 200-character
-# cap (see the LOCALE/200-CAP header paragraphs below) → a notice that does
-# NOT name a path, because the un-truncated path this script would compute
-# structurally cannot exist under that name (see `scoped_root_capped`
-# below).
+# FIVE distinct notices, not two (temperloop#983 review round 2; a fifth
+# added by temperloop#995): repo-scoped success; repo-scoped success
+# reached via the over-cap PREFIX MATCH (see the 200-CAP paragraph below),
+# which says so, because that route resolves the directory by its first 200
+# encoded characters rather than by its full name; repo-scoping unavailable
+# (not a git tree, or an explicit non-default override) → generic
+# machine-wide; repo-scoping SUCCEEDED at deriving a path but that path
+# doesn't exist yet (a genuinely fresh or empty checkout) → a notice naming
+# the exact path, because silently falling back to machine-wide there would
+# look identical to a real, populated repo-scoped zero — an undetectable
+# wrong number is worse than the bug this item exists to fix (see the
+# `scoped_root_missing` branch below); and the encoded name exceeds Claude
+# Code's 200-character cap AND the prefix match did not resolve to exactly
+# one directory — zero matches, or an ambiguous several — → a notice naming
+# the PREFIX GLOB that was searched and which of those two it was (see
+# `scoped_root_capped` below).
 #
 # "OVERRIDE" DETECTION (temperloop#983 review, finding 3): naively treating
 # any non-empty $SPEND_TRANSCRIPT_ROOT as an explicit override defeats this
@@ -181,28 +184,46 @@
 # already-covered gap, not a new one: a purely-ASCII checkout path (the
 # overwhelming majority) is unaffected by locale either way.
 #
-# THE REMAINING GAP (temperloop#983 review round 2, finding 2): Claude
-# Code's real encoder additionally caps the encoded name at 200 characters
-# (`iRt = 200` in the shipped bundle) — a name that would encode LONGER than
-# that is instead truncated to its first 200 characters plus a `-<hash>`
-# suffix the hash algorithm of which is not reproducible in shell. This
-# script does NOT implement that suffix (see the length check below): past
-# 200 encoded characters, repo-scoping degrades to a DISTINCT, honestly-
-# named reason rather than claiming a path that structurally cannot exist.
-# The known route to closing this gap, noted here so it isn't rediscovered
-# from scratch: Claude Code's OWN reverse lookup for an over-cap name uses a
-# PREFIX match (`<first-200-chars>-*`) rather than the unreproducible hash
-# itself — a future version of this script could glob
-# `$HOME/.claude/projects/<first-200-chars-of-encoded>-*` the same way. Not
-# done here (deliberately, per review) because it is a bigger change than
-# this item's scope and carries its own precision question (a prefix glob
-# could in principle match more than one directory); filed as a follow-up
-# rather than grown into this commit. Reachability today: the longest
-# encoded project name on this machine is 106 characters (well under the
-# cap), but a real one already reads 87 characters
-# (`-Users-travis-dev-batch-temperloop--claude-worktrees-feat-activation-
-# class-a-build-gate`), and a deeper org path plus a long branch slug
-# reaches 200 — latent, not exotic.
+# THE 200-CAP (temperloop#983 review round 2, finding 2; RESOLVED by
+# temperloop#995): Claude Code's real encoder additionally caps the encoded
+# name at 200 characters (`iRt = 200` in the shipped bundle) — a name that
+# would encode LONGER than that is instead truncated to its first 200
+# characters plus a `-<hash>` suffix the hash algorithm of which is not
+# reproducible in shell. #983 closed the HONESTY half only: past 200 encoded
+# characters it degraded to a distinct, honestly-named reason rather than
+# claiming a path that structurally cannot exist under that name. #995
+# closes the RESOLUTION half, by the route #983's own header recorded so it
+# wouldn't be rediscovered from scratch — Claude Code's OWN reverse lookup
+# for an over-cap name uses a PREFIX match (`<first-200-chars>-*`) rather
+# than the unreproducible hash itself, and this script now globs
+# `$HOME/.claude/projects/<first-200-chars-of-encoded>-*` the same way (see
+# the length check below).
+#
+# WHY THIS IS NOT THE REVERSE-DECODE THIS FILE REFUSES (see "THE FIX"
+# above): the prefix is FORWARD-encoded from a path this script already
+# knows for certain (git's own toplevel), exactly like the un-capped case —
+# nothing is decoded backward, and no ~/.claude/projects/ entry is
+# interpreted as anything but an opaque name to compare a known prefix
+# against. Only the hash TAIL is unknown, and the tail is never guessed.
+#
+# EXACTLY ONE MATCH, OR DEGRADE (the precision question #983 deferred on):
+# a prefix glob can in principle match more than one directory — it takes
+# two checkouts identical across their first 200 encoded characters, rare
+# but not impossible (two long sibling worktree paths differing only in a
+# trailing slug). "Rare" is not "safe to guess between", and the hash that
+# WOULD disambiguate them is precisely what this script cannot compute — so
+# ZERO matches and MORE THAN ONE match both degrade to the machine-wide
+# corpus under a notice that names the glob it searched and says which of
+# the two happened. Only a single, unambiguous match is scoped, and even
+# then the notice says the directory was resolved by prefix rather than by
+# full name (see the `scoped_via_prefix` notice below) — a caller who sees
+# a surprising number can tell at a glance which route produced it.
+#
+# Reachability today: the longest encoded project name on this machine is
+# 106 characters (well under the cap), but a real one already reads 87
+# characters (`-Users-travis-dev-batch-temperloop--claude-worktrees-feat-
+# activation-class-a-build-gate`), and a deeper org path plus a long branch
+# slug reaches 200 — latent, not exotic.
 #
 # --- first-run disclosure notice + per-person local disable (temperloop#986)
 # -----------------------------------------------------------------------------
@@ -361,6 +382,10 @@ fi
 scoped_root=""
 scoped_root_missing=""
 scoped_root_capped=0
+scoped_via_prefix=0
+capped_glob=""
+capped_matches=0
+capped_match=""
 # Claude Code's own cap (temperloop#983 review round 2, finding 2): an
 # encoded name longer than this is truncated-plus-hashed upstream, a suffix
 # this script cannot reproduce (see the header's 200-CAP paragraph). Named
@@ -383,13 +408,41 @@ if [ "$transcript_root_overridden" -eq 0 ]; then
     # exactly the lying notice this whole review round exists to kill.
     if [ -n "$encoded" ]; then
       if [ "${#encoded}" -gt "$encoded_name_cap" ]; then
-        # 200-CAP (header finding 2, round 2): Claude Code would have
-        # truncated-and-hashed this name; this script cannot reproduce that
-        # hash, so it must NOT claim the untruncated path -- that path
-        # structurally cannot exist under this name, unlike the
-        # scoped_root_missing case below (a real path that just happens to
-        # be empty so far).
-        scoped_root_capped=1
+        # 200-CAP RESOLUTION (temperloop#995; see the header's 200-CAP
+        # paragraph): Claude Code truncated this name to its first
+        # $encoded_name_cap characters and appended a `-<hash>` suffix this
+        # script cannot reproduce -- so rather than claim the untruncated
+        # path (which structurally cannot exist under this name), look for
+        # the directory whose name begins with that same forward-encoded
+        # prefix plus the separating dash, exactly as Claude Code's own
+        # reverse lookup does.
+        capped_prefix="${encoded:0:$encoded_name_cap}"
+        capped_glob="$HOME/.claude/projects/$capped_prefix-*"
+        # Counted with a loop, not an array: bash 3.2 (the macOS default,
+        # and this repo's floor) errors on `${arr[@]}` of an EMPTY array
+        # under `set -u`, and zero matches is the common case here. A
+        # non-matching glob leaves the literal pattern in the loop var,
+        # which the -d test rejects -- so no `nullglob` dependency either.
+        # $encoded is [A-Za-z0-9-] only by construction (the sed above), so
+        # the prefix can carry no glob metacharacter of its own.
+        for capped_candidate in "$HOME/.claude/projects/$capped_prefix"-*; do
+          [ -d "$capped_candidate" ] || continue
+          capped_matches=$((capped_matches + 1))
+          capped_match="$capped_candidate"
+        done
+        if [ "$capped_matches" -eq 1 ]; then
+          # Exactly one match: unambiguous, and it exists by construction
+          # (the -d test above), so no second existence check is needed.
+          scoped_root="$capped_match"
+          scoped_via_prefix=1
+        else
+          # ZERO or MORE THAN ONE -- degrade, never guess. The hash suffix
+          # that would disambiguate two same-prefix checkouts is exactly
+          # what this script cannot compute (header, "EXACTLY ONE MATCH, OR
+          # DEGRADE"). $capped_matches is carried into the notice below so
+          # the two cases read differently to the operator.
+          scoped_root_capped=1
+        fi
       else
         candidate_root="$HOME/.claude/projects/$encoded"
         # Existence check (header finding 1, BLOCKING): a derived root that
@@ -412,18 +465,33 @@ if [ "$transcript_root_overridden" -eq 0 ]; then
 fi
 
 if [ -n "$scoped_root" ]; then
-  scope_notice="directional cost-weighted token spend, scoped to THIS git checkout on this machine only -- not comparable across teammates, machines, or other clones/checkouts of this repo."
+  if [ "$scoped_via_prefix" -eq 1 ]; then
+    # Prefix-resolved success (temperloop#995): scoped, but by the first
+    # $encoded_name_cap encoded characters rather than the full name, since
+    # Claude Code truncated-and-hashed this one. Say so -- the number is
+    # repo-scoped either way, but a reader who sees a surprising total can
+    # tell which of the two routes produced it without reading this file.
+    scope_notice="directional cost-weighted token spend, scoped to THIS git checkout on this machine only -- its path exceeds Claude Code's ${encoded_name_cap}-character project-name cap, so its project directory was resolved by the single unambiguous match for $capped_glob -- not comparable across teammates, machines, or other clones/checkouts of this repo."
+  else
+    scope_notice="directional cost-weighted token spend, scoped to THIS git checkout on this machine only -- not comparable across teammates, machines, or other clones/checkouts of this repo."
+  fi
   if [ -n "$since" ]; then
     raw="$(bash "$profiler" --format json --since "$since" --root "$scoped_root" 2>/dev/null)" || skip
   else
     raw="$(bash "$profiler" --format json --root "$scoped_root" 2>/dev/null)" || skip
   fi
 elif [ "$scoped_root_capped" -eq 1 ]; then
-  # 200-CAP notice (header finding 2, round 2): does NOT name a path -- the
-  # untruncated path this script would otherwise compute cannot exist under
-  # Claude Code's own naming rule, so naming it would send the operator
-  # hunting for something that was never going to be there.
-  scope_notice="this checkout's path exceeds Claude Code's ${encoded_name_cap}-character project-name cap; repo-scoping unavailable -- reporting machine-wide instead -- not comparable across teammates or machines."
+  # 200-CAP unresolved notice (temperloop#995): the prefix match ran and did
+  # NOT land on exactly one directory. It names the GLOB it searched, never
+  # the untruncated path -- that path cannot exist under Claude Code's own
+  # naming rule, so naming it would send the operator hunting for something
+  # that was never going to be there, whereas the glob is a real, pasteable
+  # search they can run themselves against their own ~/.claude/projects.
+  if [ "$capped_matches" -eq 0 ]; then
+    scope_notice="this checkout's path exceeds Claude Code's ${encoded_name_cap}-character project-name cap and no project directory matches its truncated prefix ($capped_glob); reporting machine-wide instead -- not comparable across teammates or machines."
+  else
+    scope_notice="this checkout's path exceeds Claude Code's ${encoded_name_cap}-character project-name cap and its truncated prefix is ambiguous -- $capped_matches project directories match $capped_glob and the hash suffix that would tell them apart is not reproducible here, so repo-scoping is declined rather than guessed; reporting machine-wide instead -- not comparable across teammates or machines."
+  fi
   if [ -n "$since" ]; then
     raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
   else
