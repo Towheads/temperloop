@@ -304,9 +304,27 @@ writes anything — no extra `gh` call):
   claim and refuses (non-zero, no writes) rather than silently overwriting.
   On a Projects-v2 board this always reports "not contended" — the
   historical silent-overwrite behavior is completely unchanged there.
-- **Release stays local-only, unchanged.** `release.sh` never touched the
-  board on either backend — it only clears the terminal marker — so it needed
-  no changes here.
+- **Release is local-only PLUS one narrow board-side clear (temperloop#979).**
+  `release.sh` originally never touched the board on either backend — it only
+  cleared the terminal marker. That left a hole on exactly this backend's
+  **park** path: the claim owner lives in a `fnd:host/session:*` LABEL, an item
+  parked back to Ready never reaches Done (whose write is what strips the
+  stamp), and `reconcile.sh --labels` swept only CLOSED issues — so the stamp
+  sat on an open, Ready issue reading as a live claim by a session that is
+  gone. `release.sh` now also clears that stamp, but only when **all** of:
+  an `<issue#>` **and** `--board <N>` were passed, the board is issues-only,
+  the item is **not In Progress** (an In-Progress stamp is a live claim HELD
+  until Done — K#275 — and is left in place with a notice), and the stamp is
+  **this session's own** (a foreign stamp is reported and routed to
+  `reconcile.sh --labels`, never erased from here, so a peer's in-flight claim
+  — `claim.sh` stamps the owner *before* it flips the status — can never be
+  lost). It clears through `board_stamp <item> Host/Session ""`, the adapter's
+  one existing clearing implementation, and it never changes `release.sh`'s
+  exit status: every board-side failure degrades to a stderr notice, because a
+  park must never fail on a release. It still never moves the board STATUS —
+  that stays `unclaim.sh` or a deliberate park. The backstop for every park
+  that did NOT run it (or ran it from a later session, whose foreign stamp it
+  refuses to touch) is `reconcile.sh --labels`' class (m).
 
 ## Parent/child and dependency edges (foundation #800)
 
