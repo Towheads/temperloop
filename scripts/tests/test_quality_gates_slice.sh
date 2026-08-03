@@ -57,6 +57,13 @@ cp "$REPO_ROOT/workflows/scripts/lib/gate-retry.sh" "$FAKE/workflows/scripts/lib
 # mode=full, so every case below still sees all six synthetic gates — this file
 # tests the SLICE seam, and scoping is deliberately inert here.
 cp "$REPO_ROOT/workflows/scripts/lib/gate-selection.sh" "$FAKE/workflows/scripts/lib/"
+# gate-pool.sh too (temperloop#1025). Without it the fixture's `source` fails and
+# every gate_pool_* call is a `command not found`, so the script silently
+# degrades to the serial loop — and this suite would pass while exercising NONE
+# of the parallel path it now shares its run loop with. Copying it is what makes
+# the budget cases below run the real chunked-pool code instead of a
+# broken-install fallback.
+cp "$REPO_ROOT/workflows/scripts/lib/gate-pool.sh" "$FAKE/workflows/scripts/lib/"
 
 # Six synthetic gates: each records that it ran, then sleeps ~1s so a wall-clock
 # budget is actually reachable in a test. g4 is the one a case can turn RED by
@@ -142,9 +149,15 @@ fi
 # --------------------------------------------------------------------------
 # 3. BUDGETED run stops cleanly between gates: exit 75, resume marker in range,
 #    zero failures reported, and only the gates up to the stop point ran.
+#
+#    Pinned to JOBS=1 on purpose. This case is about the slice ARITHMETIC and
+#    the partial protocol, which are width-independent; at the default width the
+#    pool finishes all six 1s gates well inside a 2s budget, so no partial fires
+#    and the case would be asserting a stop that correctly never happened. The
+#    chunked-pool partial is covered separately in case 12.
 # --------------------------------------------------------------------------
 M="$WORK/m3"; : >"$M"
-run_qg "$M" QUALITY_GATES_BUDGET_SECS=2
+run_qg "$M" QUALITY_GATES_BUDGET_SECS=2 QUALITY_GATES_JOBS=1
 resume="$(marker QUALITY_GATES_RESUME_AT)"
 if [ "$RUN_RC" -eq 75 ] && [ -n "$resume" ] && [ "$resume" -gt 0 ] && [ "$resume" -lt "$N_GATES" ] \
    && [ "$(marker QUALITY_GATES_FAILED)" = "0" ] \
@@ -172,11 +185,16 @@ fi
 #    non-75 exit must run every gate EXACTLY ONCE, in order, with no gap and no
 #    repeat. This is the property that makes total suite runtime unbounded by
 #    any single invocation's ceiling.
+#
+#    JOBS=1 (cases 3/7's reason): this case additionally asserts the loop took
+#    more than ONE slice, and at the default width the pool finishes all six
+#    gates inside the budget — a correct outcome that would fail a `slices > 1`
+#    assertion. Case 13 drives the same exactly-once property through the pool.
 # --------------------------------------------------------------------------
 M="$WORK/m5"; : >"$M"
 start=0; slices=0
 while :; do
-  run_qg "$M" QUALITY_GATES_BUDGET_SECS=2 QUALITY_GATES_START_AT="$start"
+  run_qg "$M" QUALITY_GATES_BUDGET_SECS=2 QUALITY_GATES_START_AT="$start" QUALITY_GATES_JOBS=1
   slices=$(( slices + 1 ))
   [ "$RUN_RC" -eq 75 ] || break
   start="$(marker QUALITY_GATES_RESUME_AT)"
@@ -209,9 +227,13 @@ fi
 #    still exits 75 (so the remaining gates still run — collect-all-failures is
 #    preserved across a sliced run) but carries QUALITY_GATES_FAILED=1 so the
 #    caller can accumulate it and fail at the end.
+#
+#    JOBS=1 for the same reason as case 3: the property under test is that a
+#    failure found in a PARTIAL slice is carried rather than masked, and forcing
+#    the partial deterministically is what makes the assertion meaningful.
 # --------------------------------------------------------------------------
 M="$WORK/m7"; : >"$M"
-run_qg "$M" QUALITY_GATES_BUDGET_SECS=1 QUALITY_GATES_START_AT=3
+run_qg "$M" QUALITY_GATES_BUDGET_SECS=1 QUALITY_GATES_START_AT=3 QUALITY_GATES_JOBS=1
 if [ "$RUN_RC" -eq 75 ] && [ "$(marker QUALITY_GATES_FAILED)" = "1" ] \
    && [ "$(marker QUALITY_GATES_RESUME_AT)" = "4" ]; then
   pass "red gate in a partial slice: exit 75 with QUALITY_GATES_FAILED=1 (failure carried, not masked)"
@@ -273,6 +295,51 @@ if [ -s "$M.env" ] && ! grep -qv 'start=unset budget=unset' "$M.env"; then
   pass "the harness's slice state is unset for every gate it spawns (no leak into nested runs)"
 else
   fail "slice state leaked into a gate's environment: $(cat "$M.env" 2>/dev/null)"
+fi
+
+# --------------------------------------------------------------------------
+# 12. The slice seam composes with the PARALLEL pool (temperloop#1021 x #1025).
+#     The budget is checked between CHUNKS rather than between gates, so a
+#     partial must still stop on a gate boundary, report a resume index that is
+#     a whole number of gates in, and never report a gate it did not run.
+#     Width 2 with a 1s budget over six 1s gates: chunk 1 (g1,g2) lands at ~1s,
+#     the budget is spent, four gates remain -> partial at index 2.
+# --------------------------------------------------------------------------
+M="$WORK/m12"; : >"$M"
+run_qg "$M" QUALITY_GATES_BUDGET_SECS=1 QUALITY_GATES_JOBS=2
+resume12="$(marker QUALITY_GATES_RESUME_AT)"
+if [ "$RUN_RC" -eq 75 ] && [ -n "$resume12" ] \
+   && [ "$resume12" -gt 0 ] && [ "$resume12" -lt "$N_GATES" ] \
+   && [ "$(ran_count "$M")" = "$resume12" ] \
+   && grep -q 'parallel worker(s) in chunks of 2' <<<"$RUN_OUT"; then
+  pass "pooled partial: chunked run stops on a gate boundary, RESUME_AT=$resume12, $resume12 gate(s) ran"
+else
+  fail "pooled partial: rc=$RUN_RC resume='$resume12' ran=$(ran_count "$M") out=$RUN_OUT"
+fi
+
+# --------------------------------------------------------------------------
+# 13. The full slice loop AT POOL WIDTH still covers every gate exactly once.
+#     This is case 5's property — no gap, no repeat — but driven through the
+#     chunked pool, which is the path /build's §3e.5 slice loop actually takes
+#     now. A chunk boundary that mis-reported its resume index would show up
+#     here as a duplicated or skipped gate.
+# --------------------------------------------------------------------------
+M="$WORK/m13"; : >"$M"
+start=0; slices=0
+while :; do
+  run_qg "$M" QUALITY_GATES_BUDGET_SECS=1 QUALITY_GATES_START_AT="$start" QUALITY_GATES_JOBS=2
+  slices=$(( slices + 1 ))
+  [ "$RUN_RC" -eq 75 ] || break
+  start="$(marker QUALITY_GATES_RESUME_AT)"
+  [ -n "$start" ] || { fail "pooled slice loop: exit 75 with no RESUME_AT marker"; break; }
+  [ "$slices" -lt 20 ] || { fail "pooled slice loop: did not terminate"; break; }
+done
+expected13="$(printf 'g%s\n' 1 2 3 4 5 6)"
+if [ "$RUN_RC" -eq 0 ] && [ "$slices" -gt 1 ] \
+   && [ "$(sort "$M" | tr -d ' ')" = "$(printf '%s\n' "$expected13" | sort | tr -d ' ')" ]; then
+  pass "pooled slice loop: $slices slices ran all $N_GATES gates exactly once (no gap, no repeat)"
+else
+  fail "pooled slice loop: rc=$RUN_RC slices=$slices ran='$(cat "$M")'"
 fi
 
 echo

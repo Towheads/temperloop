@@ -43,7 +43,7 @@
 # ── ALL — paths whose blast radius is the gate machinery itself ─────────────
 # A change to any of these can alter which gates exist, what they run, or how
 # the tree is classified, so no narrower selection can be trusted.
-ALL	scripts/quality-gates.sh scripts/quality-gates.d/** workflows/scripts/lib/gate-selection.sh workflows/scripts/lib/gate-retry.sh workflows/scripts/lib/checkout-freshness.sh workflows/scripts/config/gate-paths.tsv workflows/scripts/config/check-gate-paths.sh Makefile .github/workflows/** workflows/scripts/kernel/kernel-manifest.txt workflows/scripts/kernel/list-kernel-set.sh .gitignore .gitattributes
+ALL	scripts/quality-gates.sh scripts/quality-gates.d/** workflows/scripts/lib/gate-selection.sh workflows/scripts/lib/gate-retry.sh workflows/scripts/lib/gate-pool.sh workflows/scripts/lib/checkout-freshness.sh workflows/scripts/config/gate-paths.tsv workflows/scripts/config/check-gate-paths.sh Makefile .github/workflows/** workflows/scripts/kernel/kernel-manifest.txt workflows/scripts/kernel/list-kernel-set.sh .gitignore .gitattributes
 
 # ── none — recognised paths that no gate reads ──────────────────────────────
 none	LICENSE NOTICE SECURITY.md .github/ISSUE_TEMPLATE/** meta/** .temperloop/.gitignore
@@ -160,6 +160,12 @@ bash scripts/tests/test_quality_gates_retry.sh	workflows/scripts/lib/gate-retry.
 # escalates to the full set regardless. The only OTHER path that can affect this
 # gate is its own fixture, which is what this row names.
 bash scripts/tests/test_quality_gates_slice.sh	scripts/tests/test_quality_gates_slice.sh
+# The bounded-concurrency scheduler (temperloop#1025) lives in
+# workflows/scripts/lib/gate-pool.sh, which is an ALL-escalation path above —
+# a change to the scheduler itself affects every gate, so it widens to the full
+# set rather than narrowing to this suite. This row names the only OTHER path
+# that can affect this gate: its own fixture.
+bash scripts/tests/test_quality_gates_parallel.sh	scripts/tests/test_quality_gates_parallel.sh
 
 # ── Drain / vault-side maintenance ──────────────────────────────────────────
 make test-scan-stub	workflows/scripts/drain/**

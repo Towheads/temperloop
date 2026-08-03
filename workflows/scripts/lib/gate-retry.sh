@@ -51,11 +51,25 @@
 # ── Interface ────────────────────────────────────────────────────────────
 #   gate_retry_init                  — allocate the per-attempt capture scratch
 #                                      (idempotent; fail-open if mktemp fails)
-#   gate_run_with_retry <cmdline>    — run one gate command line to a verdict
+#   gate_run_with_retry <cmdline> [log-tag]
+#                                    — run one gate command line to a verdict
 #
 # gate_run_with_retry takes the gate's FULL command line as a single string
 # (exactly as quality-gates.sh's GATES array stores it), splits it into argv
-# with `read -ra` (never `eval`), and sets three globals:
+# with `read -ra` (never `eval`), and sets three globals.
+#
+# The OPTIONAL second argument is a per-caller LOG TAG naming the scratch file
+# this call captures its attempts into (default `attempt`). It exists for the
+# PARALLEL scheduler (workflows/scripts/lib/gate-pool.sh, temperloop#1025): the
+# byte-identical-output classifier compares THIS gate's attempt N against THIS
+# gate's attempt N-1, so concurrent gates sharing one capture file would compare
+# each other's output and mis-classify a genuine flake as deterministic (or
+# worse, mask one gate's failure signature with another's). Each concurrent
+# caller passes a tag unique to itself; the serial caller passes none and keeps
+# the pre-parallel single-file behavior byte for byte. The tag is used as a
+# FILENAME, so callers pass an integer index — never a raw gate command line.
+#
+# The three globals it sets:
 #
 #   GATE_RUN_STATUS    pass | fail | deterministic
 #   GATE_RUN_ATTEMPTS  how many attempts were actually spent
@@ -118,6 +132,12 @@ gate_output_digest() {
 # shellcheck disable=SC2034
 gate_run_with_retry() {
   local gate="$1"
+  # Per-caller capture-file tag (see the Interface note above). Sanitized to a
+  # safe filename so a caller that passes something unexpected can never write
+  # outside the scratch dir.
+  local tag="${2:-attempt}"
+  tag="$(printf '%s' "$tag" | tr -c 'A-Za-z0-9._-' '_')"
+  [ -n "$tag" ] || tag="attempt"
   local attempt=1 prev_digest="" digest rc log=""
   local -a cmd
   # Each gate entry is a full command line; split it into argv (no eval).
@@ -126,7 +146,7 @@ gate_run_with_retry() {
   GATE_RUN_STATUS="fail"
   GATE_RUN_ATTEMPTS=0
   GATE_RUN_NOTE=""
-  [ -n "$_gate_retry_tmpdir" ] && log="$_gate_retry_tmpdir/attempt.log"
+  [ -n "$_gate_retry_tmpdir" ] && log="$_gate_retry_tmpdir/$tag.log"
 
   while :; do
     GATE_RUN_ATTEMPTS="$attempt"
