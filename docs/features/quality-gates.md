@@ -301,6 +301,42 @@ their own, so the patterns that are validated are byte-for-byte the patterns
 that are consumed. `--list-selected` prints the set a given invocation would
 run, with its one-line reason, without running anything.
 
+**The same map, applied to a local working tree.** Continuous-integration runs
+are not where most of the gate time is actually spent. Across a corpus of build
+workers, verification was 79% of all shell wall-clock and gate runs were 85% of
+that — a distribution with a median of three seconds but a ninetieth percentile
+of two minutes and a maximum of ten, because a worker checking a three-file
+change had no way to ask for less than everything. `--scoped` gives it one: the
+same selector, the same map, the same four defenses, fed the *local* changed
+set instead of a pull request's diff. That set is the union of what has been
+committed on the branch, what is staged, what is edited but unstaged, and what
+is newly created and never added — because this mode runs *mid*-work, and a
+brand-new file is exactly the code most likely to need a gate. Ignored files
+are excluded, so the build harness's own scratch never widens the run.
+
+Two things keep this from being a way to go green cheaply. First, it is
+strictly a *fast-feedback* mode: the build pipeline's parent-side acceptance
+step and every continuous-integration invocation remain bare and repo-wide, and
+that run is the authority. Second, a scoped run is made impossible to mistake
+for a full one — it names every gate it did not run and why, before the run and
+again beside the verdict, and stamps the verdict line itself, so even a
+one-line grep of a worker's log reads `[SCOPED SUBSET — NOT a full-suite pass]`
+rather than an unqualified success. If no base commit resolves, or the working
+tree is not a checkout at all, it says so and runs everything.
+
+**What may never be scoped away.** Some gates are whole-tree *scanners*: they
+read every tracked file, so every change is in scope for them by construction.
+A second group is subtler and matters more here — gates whose verdict is a
+*whole-surface claim* rather than a per-file one: is this registry complete, do
+these two files still agree, is this total under its cap. A path glob can
+enumerate a gate's inputs; it cannot keep a completeness claim true when the
+thing that breaks it lands somewhere the map never thought to look. Both groups
+are enumerated explicitly in the map, each with its reason written next to it,
+and both run on every scoped run. Reports that cannot fail on their own
+findings are deliberately left out of that floor: skipping one costs a report,
+never a false pass, and a floor that collects everything would erase the very
+saving it is guarding.
+
 **The per-gate retry policy** lives in `workflows/scripts/lib/gate-retry.sh`,
 sourced by the script (the same seam it already uses for the checkout-freshness
 guard) so the policy can be tested without running the whole gate list. A gate

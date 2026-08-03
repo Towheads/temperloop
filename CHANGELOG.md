@@ -16,6 +16,33 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`scripts/quality-gates.sh --scoped` — a changed-file-scoped run for a
+  `/build` item worker's iterative mid-work verification (temperloop#957).**
+  Verification was measured at **79% of all item-worker shell wall-clock**
+  (10.4h of 13.2h across 141 workers) with gates 85% of that — p90 **122s**,
+  max **600s** — because a worker checking a three-file change had no way to
+  ask for less than the whole suite. `--scoped` applies temperloop#1024's
+  existing selector and `gate-paths.tsv` map to the **local working tree**
+  (committed ∪ staged ∪ unstaged ∪ untracked, ignored files excluded) instead
+  of a pull-request diff. **Wall-clock only — it saves approximately zero
+  tokens**; the API call still happens, it just returns sooner. Nothing about
+  the runs that gate `main` changes: the bare, repo-wide invocation — CI's
+  `checks` job and `/build` §3e.5's parent-side acceptance gate — is
+  byte-identical, and only the flag opts in. Every resolution failure (no base,
+  not a checkout, an unmapped path, an `ALL` path, a malformed map) widens to
+  the **full** set. A scoped run **names every gate it skipped and why**, twice
+  (before the run and beside the verdict), and stamps its verdict line
+  `[SCOPED SUBSET — NOT a full-suite pass]` so a one-line grep of a worker's
+  log cannot read as a full-suite pass. `gate-paths.tsv` gains an enumerated,
+  individually-justified **global-by-nature floor** — capture/backstop pairing,
+  cross-file template-reference integrity, prose-budget totals, and
+  manifest/registry completeness (contributor manifest, setting registry,
+  activation registry, and the gate-path map's own lint) — which now `ALWAYS`
+  runs on *every* scoped run, PR-scoped and worker-scoped alike; reports that
+  cannot fail on their own findings are deliberately excluded, and the
+  exclusion is justified in the map. New gate:
+  `scripts/tests/test_quality_gates_scoped.sh`.
+
 - **Two draft ADRs recording the toolkit-provenance design's architectural
   calls (temperloop#1047).** `docs/adr/0021-toolkit-provenance-is-derived-not-declared.md`
   records that whether the running toolkit code matches its release is

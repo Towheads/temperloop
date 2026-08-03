@@ -29,6 +29,18 @@
 #  14. End-to-end against a REAL git repo: a two-commit repo, a real
 #      `git diff base...HEAD`, and a real narrowing decision.
 #  15. Globs are never pathname-expanded against the working directory.
+#
+# temperloop#957 added a SECOND consumer — `quality-gates.sh --scoped`, the
+# /build item worker's mid-work run — and with it two more things that must be
+# proven, since a worker's run is read by a model rather than a CI dashboard:
+#  16. `GATE_SELECTION_SKIPPED` is the EXACT complement of `_SELECTED` (the
+#      scoped run can name everything it did not run).
+#  17. A full run reports an EMPTY skip list.
+#  18. `gate_selection_local_changed` unions committed + staged + unstaged +
+#      untracked paths, and excludes ignored ones.
+#  19. No resolvable default-branch base -> non-zero, so the caller runs the
+#      FULL set rather than narrowing on the working-tree half alone.
+#  20. A non-git directory -> non-zero (never an empty, silently-narrowing set).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -251,5 +263,96 @@ GATE_SELECTION_CHANGED='docs/never/created/on/disk.md'
 ( cd "$REPO" && gate_selection_resolve && [ "$GATE_SELECTION_MODE" = "diff" ] ) \
   || fail "15: a glob must be matched as a pattern, not pathname-expanded against the CWD"
 echo "PASS: 15 globs are matched as patterns, never expanded against the working directory"
+
+# --- 16. _SKIPPED is the exact complement of _SELECTED -----------------------
+# The scoped run's whole safety story is that it can NAME what it did not run
+# (temperloop#957). If _SKIPPED were computed loosely — or drifted from
+# _SELECTED — a gate could be silently absent from both lists and a reader
+# would have no way to notice. Assert the partition exactly.
+reset_env
+QUALITY_GATES_SCOPE=diff
+GATE_SELECTION_CHANGED='docs/a.md'
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "diff" ] || fail "16: expected a diff-scoped run"
+expected_skipped='make test-lib
+make test-cli'
+[ "$GATE_SELECTION_SKIPPED" = "$expected_skipped" ] || fail "16: wrong skipped set:
+got:
+$GATE_SELECTION_SKIPPED
+want:
+$expected_skipped"
+union="$(printf '%s\n%s\n' "$GATE_SELECTION_SELECTED" "$GATE_SELECTION_SKIPPED" | sort)"
+all_sorted="$(printf '%s\n' "$ALL_GATES" | sort)"
+[ "$union" = "$all_sorted" ] || fail "16: selected+skipped must partition the full gate list exactly"
+echo "PASS: 16 _SKIPPED names every un-run gate and partitions the list with _SELECTED"
+
+# --- 17. a FULL run reports nothing skipped ----------------------------------
+# A full run has nothing to disclose, and a stale _SKIPPED left over from a
+# previous call would make one look scoped.
+reset_env
+QUALITY_GATES_SCOPE=diff
+GATE_SELECTION_CHANGED='Makefile'
+gate_selection_resolve
+[ "$GATE_SELECTION_MODE" = "full" ] || fail "17: expected the ALL escalation"
+[ -z "$GATE_SELECTION_SKIPPED" ] || fail "17: a full run must report an EMPTY skip list (got: $GATE_SELECTION_SKIPPED)"
+echo "PASS: 17 a full run reports an empty skip list"
+
+# --- 18. gate_selection_local_changed: commits + staged + unstaged + new -----
+# The mid-work case (temperloop#957): a worker's changes are a MIX, and any
+# source it misses is a gate it silently under-runs. Real git, real worktree.
+LOCAL="$TMP/local"
+mkdir -p "$LOCAL"
+git -C "$LOCAL" init -q
+git -C "$LOCAL" config user.email t@example.com
+git -C "$LOCAL" config user.name t
+mkdir -p "$LOCAL/src"
+echo base >"$LOCAL/README.md"
+git -C "$LOCAL" add -A && git -C "$LOCAL" commit -qm base
+git -C "$LOCAL" branch -M main
+git -C "$LOCAL" checkout -qb feature
+echo committed >"$LOCAL/src/committed.sh"
+git -C "$LOCAL" add -A && git -C "$LOCAL" commit -qm work
+echo staged >"$LOCAL/src/staged.sh"
+git -C "$LOCAL" add "$LOCAL/src/staged.sh"
+echo unstaged >>"$LOCAL/README.md"
+echo brand-new >"$LOCAL/src/untracked.sh"
+printf 'ignored\n' >"$LOCAL/.gitignore"
+git -C "$LOCAL" add "$LOCAL/.gitignore" && git -C "$LOCAL" commit -qm ignore
+echo junk >"$LOCAL/ignored"
+got="$(gate_selection_local_changed "$LOCAL")" || fail "18: local changed-set resolution failed"
+for want in src/committed.sh src/staged.sh README.md src/untracked.sh; do
+  case "$got" in *"$want"*) : ;; *) fail "18: local changed set is missing $want:
+$got" ;; esac
+done
+case "$got" in *ignored*) fail "18: an IGNORED file must not enter the changed set:
+$got" ;; esac
+echo "PASS: 18 the local changed set unions committed, staged, unstaged and untracked (never ignored) paths"
+
+# --- 19. no resolvable base -> non-zero (caller degrades to the FULL set) ----
+# The one degradation that matters here: with no default-branch base, the
+# committed half of the worker's change is invisible. Returning the
+# working-tree half alone would be a SILENT NARROWING — the exact class this
+# lib's four defenses exist for — so it must fail instead.
+ORPHAN="$TMP/orphan"
+mkdir -p "$ORPHAN"
+git -C "$ORPHAN" init -q
+git -C "$ORPHAN" config user.email t@example.com
+git -C "$ORPHAN" config user.name t
+git -C "$ORPHAN" checkout -qb sidetrack 2>/dev/null || true
+echo x >"$ORPHAN/x.txt"
+git -C "$ORPHAN" add -A && git -C "$ORPHAN" commit -qm x
+if gate_selection_local_changed "$ORPHAN" >/dev/null 2>"$TMP/err19"; then
+  fail "19: a checkout with no default-branch base must NOT report a changed set"
+fi
+case "$(cat "$TMP/err19")" in *merge-base*) : ;; *) fail "19: the failure should name the missing merge-base (got: $(cat "$TMP/err19"))" ;; esac
+echo "PASS: 19 an unresolvable default-branch base fails loudly instead of narrowing on the working tree alone"
+
+# --- 20. not a git checkout -> non-zero, named ------------------------------
+NOTREPO="$TMP/notrepo"
+mkdir -p "$NOTREPO"
+if ( cd "$NOTREPO" && gate_selection_local_changed "$NOTREPO" >/dev/null 2>"$TMP/err20" ); then
+  fail "20: a non-repo directory must not report a changed set"
+fi
+echo "PASS: 20 a non-git directory fails instead of reporting an empty (= narrowing) changed set"
 
 echo "OK — gate-selection.sh: all cases passed"
