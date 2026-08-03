@@ -106,6 +106,7 @@ fix claude/commands/fix.md
 next claude/commands/next.md
 check-in claude/commands/check-in.md
 check-in claude/decision-queue-contract.md
+check-in workflows/scripts/tests/test_checkin_status_trailing_newline.sh
 
 # ── tidy — nightly drain: stub scan, findings, hygiene probes, capture/backstop ───
 tidy claude/commands/tidy.md
