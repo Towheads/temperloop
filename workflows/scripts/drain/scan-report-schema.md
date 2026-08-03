@@ -172,6 +172,30 @@ tool's timeout does **not** appear here.
 | `content`   | string | required | Error content (truncated at 300 chars). |
 | `location`  | string | required | `"jsonl line N"`. |
 
+### `tool_events.repeated_denials[]`
+
+Structural detector (temperloop #770-5). A Bash tool_result matching `/has
+been denied/i` — a permission-policy denial of a command a command SPEC
+requires. Distinguishes a **designed guard that structurally cannot run on
+this host** from a transient, one-off failure. An **isolated** denial is
+noise, so this is deliberately gated by cross-run state rather than folded
+into the unconditional `_ERROR_SIGNATURES` list: an entry appears here **only**
+once the same command text has been denied across **two or more distinct
+sessions** (`_DENIED_MIN_SESSIONS`). Cross-run state is a small on-disk JSON
+map of `{command: [session_id, ...]}`, default path
+`${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/scan-stub-denied-commands.json`
+— overridable via `$SCAN_STUB_DENIED_STATE_PATH` or `scan_stub.py`'s
+`--denied-state` flag (tests point this at a tmpdir so scans stay hermetic).
+Scanning the same stub/session twice is idempotent (an already-recorded
+session_id is a no-op), preserving the determinism guarantee below.
+
+| Field           | Type   | R/O      | Description |
+|-----------------|--------|----------|-------------|
+| `command`       | string | required | The exact Bash command text that was denied. |
+| `content`       | string | required | Error content of the first hit this session (truncated at 300 chars). |
+| `location`      | string | required | `"jsonl line N"` of the first hit this session. |
+| `session_count` | int    | required | Distinct sessions (this one included) this command has been denied in (≥ 2). |
+
 ---
 
 ## Determinism guarantee

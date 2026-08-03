@@ -1025,6 +1025,180 @@ done
 
 rm -rf "$TMPDIR15"
 
+# ── Test 16: `Unknown JSON field` promoted soft-error signature (temperloop#770) ──
+#
+# A `gh --json` query naming a field the installed gh CLI rejects — the query
+# "succeeds" at the shell level and the wrong branch is silently taken (the
+# soft-error class F#444 built this detector for). Verbatim gh CLI string →
+# case-sensitive (no IGNORECASE), same precedent as InputValidationError /
+# `Key "..." does not exist` above.
+
+echo "--- test 16: 'Unknown JSON field' promoted soft-error signature (#770) ---"
+
+TMPDIR16=$(mktemp -d)
+TMP_JSONL16="$TMPDIR16/unknown_field.jsonl"
+cat > "$TMP_JSONL16" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_gh1","name":"Bash","input":{"command":"gh pr view 357 --json isInMergeQueue"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_gh1","content":[{"type":"text","text":"gh: Unknown JSON field: \"isInMergeQueue\""}]}]}}
+JSONLEOF
+
+report16=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL16") || true
+uf_count=$(printf '%s' "$report16" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len([e for e in te.get('errors', []) if e.get('kind') == 'soft']))
+" 2>/dev/null)
+if [ "${uf_count:-0}" -eq 1 ]; then
+  ok "'Unknown JSON field': gh --json rejection → 1 soft error captured"
+else
+  fail_test "'Unknown JSON field'" "expected 1 soft error, got ${uf_count:-0}"
+fi
+
+# Precision: lower-cased prose must NOT match (verbatim gh CLI string, no IGNORECASE).
+TMP_JSONL16B="$TMPDIR16/lowercase.jsonl"
+cat > "$TMP_JSONL16B" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_gh2","name":"Bash","input":{"command":"echo note"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_gh2","content":[{"type":"text","text":"there was an unknown json field somewhere in that blob, unrelated to gh"}]}]}}
+JSONLEOF
+
+report16b=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL16B") || true
+uf_benign=$(printf '%s' "$report16b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('errors', [])))
+" 2>/dev/null)
+if [ "${uf_benign:-1}" -eq 0 ]; then
+  ok "'Unknown JSON field' precision: lower-cased prose → 0 errors (case-sensitive)"
+else
+  fail_test "'Unknown JSON field' precision" "expected 0 errors on lower-cased prose, got $uf_benign"
+fi
+
+rm -rf "$TMPDIR16"
+
+# ── Test 17: `has been denied` cross-run same-command dedup (temperloop#770) ─────
+#
+# A Bash permission-policy denial of a command a command SPEC requires. A
+# single ISOLATED denial (one session) must produce NO finding — only the
+# SAME command denied across TWO OR MORE DISTINCT SESSIONS promotes to a
+# finding (cross-run state on disk, never a bare substring match). Uses a
+# dedicated --denied-state tmp path so this stays hermetic and never touches
+# real cross-session state.
+
+echo "--- test 17: 'has been denied' cross-run same-command dedup (#770) ---"
+
+TMPDIR17=$(mktemp -d)
+DENIED_STATE="$TMPDIR17/denied-state.json"
+
+TMP_JSONL17="$TMPDIR17/denied.jsonl"
+cat > "$TMP_JSONL17" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_deny1","name":"Bash","input":{"command":"gh pr list --repo org/repo --search 'archived:true'"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_deny1","is_error":true,"content":[{"type":"text","text":"Bash command \"gh pr list --repo org/repo --search 'archived:true'\" has been denied by the user's permission policy."}]}]}}
+JSONLEOF
+
+mk_stub_with_session() {
+  # $1 = target path, $2 = session_id
+  cat > "$1" << STUBEOF
+---
+date: 2026-07-25
+time: "0900"
+project: testproject
+cwd: /tmp
+session_id: $2
+transcript: /nonexistent
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+run the tidy sweep
+
+STUBEOF
+}
+
+TMP_STUB17A="$TMPDIR17/session_a.md"
+TMP_STUB17B="$TMPDIR17/session_b.md"
+mk_stub_with_session "$TMP_STUB17A" "aabbccdd-denytest-000000a1"
+mk_stub_with_session "$TMP_STUB17B" "aabbccdd-denytest-000000b2"
+
+# Run 1 (session A): first sighting of this denied command → 0 findings.
+report17a=$(scan "$TMP_STUB17A" --jsonl "$TMP_JSONL17" --denied-state "$DENIED_STATE") || true
+deny_count_a=$(printf '%s' "$report17a" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_a:-1}" -eq 0 ]; then
+  ok "denial dedup: single isolated denial (session A) → 0 findings"
+else
+  fail_test "denial dedup isolated" "expected 0 findings on first sighting, got $deny_count_a"
+fi
+
+# Re-running the SAME session (idempotency / determinism) must still be 0 —
+# re-adding an already-recorded session_id is a no-op.
+report17a_again=$(scan "$TMP_STUB17A" --jsonl "$TMP_JSONL17" --denied-state "$DENIED_STATE") || true
+deny_count_a_again=$(printf '%s' "$report17a_again" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_a_again:-1}" -eq 0 ]; then
+  ok "denial dedup: re-scanning the SAME session → still 0 findings (idempotent)"
+else
+  fail_test "denial dedup idempotency" "expected 0 findings re-scanning the same session, got $deny_count_a_again"
+fi
+
+# Run 2 (session B, a DIFFERENT session, same command, same state path): the
+# same command denied on a second distinct run → 1 finding, session_count 2.
+report17b=$(scan "$TMP_STUB17B" --jsonl "$TMP_JSONL17" --denied-state "$DENIED_STATE") || true
+deny_count_b=$(printf '%s' "$report17b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_b:-0}" -eq 1 ]; then
+  ok "denial dedup: same command denied on a SECOND distinct session → 1 finding"
+else
+  fail_test "denial dedup cross-run" "expected 1 finding on the second distinct session, got ${deny_count_b:-0}"
+fi
+
+deny_session_count=$(printf '%s' "$report17b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+d = te.get('repeated_denials', [])
+print(d[0].get('session_count', 0) if d else 0)
+" 2>/dev/null)
+if [ "${deny_session_count:-0}" -eq 2 ]; then
+  ok "denial dedup: finding carries session_count == 2"
+else
+  fail_test "denial dedup session_count" "expected session_count 2, got ${deny_session_count:-0}"
+fi
+
+# Precision: a DIFFERENT command, never denied before, against the SAME
+# populated state path → 0 findings (dedup is per-command, not a global flag).
+TMP_JSONL17C="$TMPDIR17/other_command.jsonl"
+cat > "$TMP_JSONL17C" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_deny2","name":"Bash","input":{"command":"gh issue list --repo org/repo"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_deny2","is_error":true,"content":[{"type":"text","text":"Bash command \"gh issue list --repo org/repo\" has been denied by the user's permission policy."}]}]}}
+JSONLEOF
+TMP_STUB17C="$TMPDIR17/session_c.md"
+mk_stub_with_session "$TMP_STUB17C" "aabbccdd-denytest-000000c3"
+report17c=$(scan "$TMP_STUB17C" --jsonl "$TMP_JSONL17C" --denied-state "$DENIED_STATE") || true
+deny_count_c=$(printf '%s' "$report17c" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_c:-1}" -eq 0 ]; then
+  ok "denial dedup precision: a different, never-before-denied command → 0 findings"
+else
+  fail_test "denial dedup precision" "expected 0 findings for a distinct first-sighting command, got $deny_count_c"
+fi
+
+rm -rf "$TMPDIR17"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo "---"
