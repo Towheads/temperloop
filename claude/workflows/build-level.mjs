@@ -106,7 +106,7 @@
 // -----------------------------------------------------------------------------
 //   Input  (via global `args`):
 //     { repoRoot, planLink, board, items:[{ slug, branch, title, kind,
-//        ghIssue, alsoCloses, model, acceptance, source, scope, notes,
+//        ghIssue, alsoCloses, repo, model, acceptance, source, scope, notes,
 //        dependsOn }],
 //       ownerRepo, claimCmd, verdicts, onlySlugs }
 //
@@ -125,10 +125,23 @@
 //                  worker builds and self-verifies against merged dependency
 //                  code, not a pre-merge base. Absent/empty for level-0 items or
 //                  items whose only cross-item edges are `after:` (no merge dep).
+//                  `repo` is the item's plan-schema `repo:` field (owner/repo,
+//                  absent for the common same-repo case) — the ONLY thing it
+//                  drives today is the 3f cross-repo `Closes` qualification
+//                  below (temperloop#852); it does NOT yet retarget worktree
+//                  creation/`repoRoot` or CI polling per item, a separate,
+//                  larger gap this fix does not attempt.
 //     ownerRepo  — "owner/repo" for ci-poll.sh / gh ops. The workflow has no
 //                  shell to derive it, so the orchestrator passes it in (Step 0
 //                  probe: `gh repo view --json nameWithOwner -q .nameWithOwner`).
-//                  WITHOUT it every CI poll gets '' → ERROR.
+//                  WITHOUT it every CI poll gets '' → ERROR. This is also the
+//                  qualifier used for a cross-repo item's `Closes` line (3f,
+//                  temperloop#852): `gh_issue:`/`also_closes:` numbers are
+//                  tracked wherever the item was triaged — the plan's HOME repo
+//                  (this value), not necessarily `item.repo` — so when
+//                  `item.repo` is set and differs from `ownerRepo`, the issue
+//                  ref is qualified as `<ownerRepo>#<N>` rather than emitted
+//                  bare (build.md 3f "Cross-repo `repo:` honor point").
 //     claimCmd   — absolute path to the board claim.sh entrypoint (Step 0 CLAIM
 //                  probe). Used by 3a; defaults to bare 'claim.sh' if absent.
 //     machineryAgentType
@@ -1664,9 +1677,27 @@ async function driveItem(item) {
     // so this is used ONLY when no real `.build-verification.md` exists.
     ...(verdict.verification_surface ? { verification_surface: verdict.verification_surface } : {}),
   });
-  const ghIssueFlag = item.ghIssue ? ` --gh-issue ${sq(item.ghIssue)}` : '';
+  // Cross-repo `Closes` qualification (temperloop#852, build.md 3f "Cross-repo
+  // `repo:` honor point"). `item.repo` (plan-schema.md § Optional `repo:`
+  // field) names the repo THIS item's PR opens against; it is absent for the
+  // common same-repo case. `gh_issue:`/`also_closes:` numbers are tracked
+  // wherever the item was triaged — the plan's HOME repo, i.e. `ownerRepo` —
+  // NOT necessarily `item.repo` (the kernel-classified-item case is the
+  // mirror image of the `repo:` case: the PR lands in the kernel repo but the
+  // issue was triaged, and stays tracked, in the plan's home repo). So a
+  // cross-repo item (`item.repo` set AND different from `ownerRepo`) must
+  // emit the fully-qualified `owner/repo#N` form — a bare `Closes #N` is
+  // same-repo only and would resolve against the wrong repo (or nothing) once
+  // pushed. pr.sh's `closes_line()`/`validate_issue()` already accept either
+  // shape verbatim (do not change pr.sh) — the qualification decision belongs
+  // here, at the one call site that knows both repos. A same-repo item (no
+  // `repo:`, or `repo:` equal to `ownerRepo`) is unaffected: bare `Closes #N`
+  // exactly as before.
+  const crossRepo = Boolean(item.repo && ownerRepo && item.repo !== ownerRepo);
+  const qualifyIssueRef = (n) => (crossRepo ? `${ownerRepo}#${n}` : `${n}`);
+  const ghIssueFlag = item.ghIssue ? ` --gh-issue ${sq(qualifyIssueRef(item.ghIssue))}` : '';
   const alsoClosesFlag = item.alsoCloses?.length
-    ? ` --also-closes ${sq(item.alsoCloses.join(','))}`
+    ? ` --also-closes ${sq(item.alsoCloses.map(qualifyIssueRef).join(','))}`
     : '';
   // The surface-file flag is DROPPED on a recovery whose probe saw no
   // `.build-verification.md` (temperloop#939): pr.sh treats a given-but-missing

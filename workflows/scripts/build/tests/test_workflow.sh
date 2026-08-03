@@ -3027,5 +3027,71 @@ if [ "$gpHits" -ne 1 ]; then
 fi
 echo "PASS: #1014 lean-executor guards — machinery-executor is Bash-only; the only general-purpose executor type is machineryAgent()'s fallback"
 
+# ============================================================================
+# TEST (temperloop#852): cross-repo `Closes` qualification. build.md 3f's
+# "Cross-repo `repo:` honor point" requires a fully-qualified `owner/repo#N`
+# Closes ref whenever an item's `gh_issue:`/`also_closes:` numbers are tracked
+# in a DIFFERENT repo than the one the PR opens against — pr.sh itself already
+# handles either shape verbatim (closes_line()/validate_issue()); the defect
+# was build-level.mjs always passing the bare number to --gh-issue/
+# --also-closes regardless of `item.repo`. Three items, one level:
+#   - 'same-repo'  — no `repo:` field  → bare Closes #N (unchanged default)
+#   - 'same-explicit' — `repo:` EQUAL to ownerRepo → still bare (exact-match,
+#     not merely "repo: present")
+#   - 'cross-repo' — `repo:` DIFFERENT from ownerRepo → qualified
+#     `owner/repo#N` on BOTH --gh-issue and --also-closes
+# ============================================================================
+run_node_case "temperloop#852: item.repo != ownerRepo qualifies --gh-issue/--also-closes as owner/repo#N; same-repo (absent or equal repo:) stays bare" "
+$PREAMBLE
+happyMachinery('same-repo', 852, 'sha-same');
+happyMachinery('same-explicit', 853, 'sha-same2');
+happyMachinery('cross-repo', 854, 'sha-cross');
+happyWorker('same-repo');
+happyWorker('same-explicit');
+happyWorker('cross-repo');
+
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'same-repo', branch: 'build/same-repo', title: 'Same Repo', kind: 'impl', acceptance: ['c'],
+    ghIssue: 500, alsoCloses: [501, 502] },
+  { slug: 'same-explicit', branch: 'build/same-explicit', title: 'Same Explicit', kind: 'impl', acceptance: ['c'],
+    repo: 'owner/repo', ghIssue: 550, alsoCloses: [551] },
+  { slug: 'cross-repo', branch: 'build/cross-repo', title: 'Cross Repo', kind: 'impl', acceptance: ['c'],
+    repo: 'other/repo', ghIssue: 600, alsoCloses: [601, 602] },
+]};
+
+const mod = await loadLevel();
+const result = await mod.default();
+
+let reason = null;
+if ((result.parked ?? []).length !== 3) reason = 'expected 3 parked: ' + JSON.stringify(result);
+if (!reason) {
+  const sameCall = callLog.find(c => c.opts.label === 'pr-batch:same-repo');
+  const sameExplicitCall = callLog.find(c => c.opts.label === 'pr-batch:same-explicit');
+  const crossCall = callLog.find(c => c.opts.label === 'pr-batch:cross-repo');
+  if (!sameCall || !sameExplicitCall || !crossCall) { reason = 'missing pr-batch executor call(s)'; }
+  else {
+    // The qualifier is ownerRepo (the plan's HOME repo, where the issue was
+    // triaged) — NOT item.repo (the repo the PR opens against). See the #852
+    // build.md 3f honor-point rationale quoted at the .mjs call site.
+    const checks = [
+      [sameCall, \"--gh-issue '500'\", true],
+      [sameCall, \"--also-closes '501,502'\", true],
+      [sameCall, \"'owner/repo#\", false],
+      [sameExplicitCall, \"--gh-issue '550'\", true],
+      [sameExplicitCall, \"--also-closes '551'\", true],
+      [sameExplicitCall, \"'owner/repo#\", false],
+      [crossCall, \"--gh-issue 'owner/repo#600'\", true],
+      [crossCall, \"--also-closes 'owner/repo#601,owner/repo#602'\", true],
+      [crossCall, \"--gh-issue '600'\", false],
+    ];
+    for (const [call, frag, want] of checks) {
+      const has = call.promptFull.includes(frag);
+      if (has !== want) { reason = (want ? 'missing expected ' : 'unexpectedly found ') + JSON.stringify(frag) + ' in ' + call.opts.label; break; }
+    }
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
 echo ""
 echo "All test_workflow.sh cases passed."
