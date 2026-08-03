@@ -1415,7 +1415,7 @@ qg_pool_worker() {
 # forced on outside Actions.
 qg_write_step_summary_timing() {
   local i os_label
-  os_label="${RUNNER_OS:-$(uname -s)}"
+  os_label="${RUNNER_OS:-$(uname -s)}" # setting:exempt — GitHub Actions injects RUNNER_OS; a harness-provided fact, not a tunable this repo owns (uname -s is the off-CI fallback)
   {
     printf '## Quality gates — per-gate wall-clock (%s)\n\n' "$os_label"
     printf 'Total: %ds wall, %d worker(s), %ds serial-equivalent (%s.%sx speedup).\n\n' \
@@ -1594,7 +1594,10 @@ if [[ "$gate_pool_ready" -eq 1 ]] && (( qg_pool_wall_total > 0 )); then
   # Opt-in full-table publication for the macOS/ubuntu comparison
   # (temperloop#968) — see QUALITY_GATES_STEP_SUMMARY in the ENV VAR
   # interface note above and qg_write_step_summary_timing's own header.
-  if [[ "${QUALITY_GATES_STEP_SUMMARY:-0}" == "1" ]] && [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  # setting:exempt — GITHUB_STEP_SUMMARY is GitHub-injected (the step-summary
+  # sink path), not a tunable; QUALITY_GATES_STEP_SUMMARY on the same line IS
+  # registered in setting-registry.tsv, so nothing here is silently unowned.
+  if [[ "${QUALITY_GATES_STEP_SUMMARY:-0}" == "1" ]] && [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then # setting:exempt
     qg_write_step_summary_timing || true
   fi
 fi
