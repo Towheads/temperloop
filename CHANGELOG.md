@@ -759,6 +759,28 @@ reads that marker; a stranger greps for it before pulling.
   honor point (3b) already handles routing an item to a different checkout
   when set.
 
+- **`/build`'s default Workflow path now qualifies a cross-repo item's
+  `Closes` line, matching the conversational path (temperloop#852).**
+  `claude/workflows/build-level.mjs`'s 3f pr-open call passed an item's
+  `gh_issue:`/`also_closes:` numbers to `pr.sh --gh-issue`/`--also-closes`
+  **verbatim**, always as bare digits — so an item whose `repo:` field routed
+  its PR to a *different* repo than the plan's home (the kernel-classified-item
+  case: a foundation-triaged issue, work landing in `Towheads/temperloop`)
+  emitted a bare `Closes #N` into that PR. GitHub's `Closes #N` is same-repo
+  only, so the home-repo issue never closed — silently, since the PR still
+  merged clean. build.md 3f's own "Cross-repo `repo:` honor point" already
+  documented the fix (pass the fully-qualified `owner/repo#N` form) for the
+  conversational path; the Workflow path just never implemented it. Fixed at
+  the one call site that knows both repos: when `item.repo` is set and differs
+  from the level's `ownerRepo` (the plan's home repo — where the issue is
+  tracked, since `gh_issue:` normally lives wherever the item was triaged),
+  both flags now qualify each number as `<ownerRepo>#<N>` instead of bare;
+  `pr.sh` itself needed no change — its `closes_line()`/`validate_issue()`
+  already accept either shape. A same-repo item (no `repo:`, or `repo:` equal
+  to `ownerRepo`) is unaffected — bare `Closes #N` exactly as before. Covered
+  by a new `workflows/scripts/build/tests/test_workflow.sh` case pinning both
+  the bare and qualified forms in one level.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first
