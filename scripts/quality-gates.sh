@@ -233,6 +233,17 @@ KERNEL_GATES=(
   # the T0-inventory/manifest gates above (kernel Makefile is
   # generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_telemetry_brief.sh"
+  # check-in.md Part 2 Status-line trailing-newline safety (temperloop#853,
+  # the agent-plane half of foundation#1308 — the store-seam half, ks_append's
+  # own fresh-line-on-append guarantee, is covered by test_knowledge_store.sh
+  # below and deliberately untouched here). Pins the guard command check-in.md
+  # now requires after every Status-line Edit: it restores a missing trailing
+  # newline, is a true no-op on an already-terminated file, and — composed
+  # with a subsequent append — prevents the named corruption (a `### heading`
+  # glued mid-line onto an unterminated Status line, invisible to any
+  # `^### `-anchored scan). Same direct-`bash` form as the sibling test gates
+  # above (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_checkin_status_trailing_newline.sh"
   "make validate-lexicon"
   # Message-template reference-integrity + registry-completeness lint
   # (temperloop#94, plan item `template-lints`): every by-name template
