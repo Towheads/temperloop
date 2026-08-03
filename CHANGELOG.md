@@ -16,6 +16,24 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **Multiline-safe absence proofs plus red-at-merge-base validation
+  (temperloop#944).** A `class: A` absence-asserting `proof:` predicate
+  (`! grep -q '<phrase>' <file>`) silently passes on an untouched tree the
+  moment the target phrase line-wraps — grep is strictly line-oriented, so a
+  wrapped phrase can never match and the negated grep reads Pass whether or
+  not the removal happened (demonstrated live: `! grep -q 'batched draft is
+  still fine' claude/commands/workshop.md`, temperloop#930, passed on
+  `main@f41a93a` before any work, because the phrase wrapped across lines
+  386/387). Two fixes, both landed: (1) `plan-schema.md` § activation now
+  documents the verified-portable, wrap-immune idiom — `! tr '\n' ' ' <
+  <file> | tr -s ' ' | grep -q '<phrase>'` — for authoring an absence proof;
+  (2) `build.md` § 3e.6 now runs any absence-asserting `proof:` against the
+  item's merge-base first and fails the item
+  (`absence-proof-vacuous-at-merge-base`) if it already passes there — a
+  proof green before the work happened is by definition not proving the
+  work. No code/schema changes; both fixes are prose-contract updates to
+  `claude/commands/build.md` and `claude/plan-schema.md`.
+
 - **`scan_stub.py` emits `stub.model` in the scan report (temperloop#761),**
   satisfying two downstream contracts that already documented it:
   `findings-schema.md`'s `subject_model` ("taken from the stub's `model:`
