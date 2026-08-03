@@ -314,6 +314,11 @@ quality-gates scripts/tests/test_quality_gates_parallel.sh
 # claims its own suite.
 quality-gates scripts/tests/test_quality_gates_scoped.sh
 quality-gates scripts/lint-zsh-param-tie.sh
+# bash-3.2 hidden-apostrophe lint (temperloop#1098) — the static guard for a
+# defect class that is invisible to shellcheck AND to `bash -n` on the ubuntu-only
+# pre-merge leg, so it has to be a textual lint rather than a parser invocation.
+quality-gates scripts/lint-bash32-cmdsubst-comment.sh
+quality-gates scripts/tests/test_lint_bash32_cmdsubst_comment.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh
 quality-gates workflows/scripts/config/*

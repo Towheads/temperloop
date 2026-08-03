@@ -298,8 +298,8 @@ KS_OUT="$(
   export HOME="$STRANGER_HOME"
   # Pin the read-log (temperloop#229) into the stranger sandbox: HOME is
   # overridden above, but an inherited XDG_STATE_HOME from the outer
-  # environment would otherwise win the log path's default and leak test
-  # entries into the real machine's state dir.
+  # environment would otherwise win the default log path and leak test
+  # entries into the real machine state dir.
   export XDG_STATE_HOME="$STRANGER_HOME/.local/state"
   # Pin XDG_CONFIG_HOME too (temperloop#1328): KNOWLEDGE_STORE_ROOT is
   # exported above so ks_root rung-2 env win makes this a no-op for the

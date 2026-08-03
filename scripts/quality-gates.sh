@@ -318,6 +318,20 @@ KERNEL_GATES=(
   # some CI runners) and proves the dispatch preserves PATH.
   "bash scripts/lint-zsh-param-tie.sh"
   "bash workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh"
+  # bash-3.2 hidden-apostrophe guard + its regression (temperloop#1098). Same
+  # direct-`bash` form and same reason as the zsh-tie pair above. An apostrophe in
+  # a `#` comment inside a `$( ... )` makes bash 3.2 — every macOS /bin/bash —
+  # swallow the closing paren; doctor.sh shipped exactly that to `main` and was
+  # completely non-functional on macOS while staying green here. Nothing already
+  # in this list could have caught it: shellcheck exits 0 on the pattern, and a
+  # `bash -n` gate would too, because bash 4.0 fixed the bug and the pre-merge leg
+  # is ubuntu-only (temperloop#963) with no bash 3.2 installable from apt. Hence a
+  # STATIC lint that recognises the pattern textually, so it fires the same on
+  # ubuntu bash 5.2 as on macOS. Its test asserts the lint rejects the actual
+  # pre-fix doctor.sh — a lint never shown to fire on the known-bad input is the
+  # very failure #1098 is about.
+  "bash scripts/lint-bash32-cmdsubst-comment.sh"
+  "bash scripts/tests/test_lint_bash32_cmdsubst_comment.sh"
   # Main knowledge_store interface + plain-files backend suite (foundation
   # #771) — root resolution, doc-id normalization, write/read round-trip,
   # --no-clobber, atomic write, list, and (temperloop#1308) the ks_append

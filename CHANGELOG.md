@@ -14,6 +14,48 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`doctor.sh` parses again on macOS — and the class that broke it is now
+  gated (temperloop#1098).** bash 3.2 (every macOS `/bin/bash`) does not treat
+  `#` as starting a comment while it scans for the `)` that closes a
+  `$( … )` command substitution, so an apostrophe inside such a comment reads as
+  an *opening* quote and swallows the closing paren. A comment added in
+  `workflows/scripts/install/doctor.sh` tripped exactly that, and the file was
+  **completely unparseable — and therefore `make doctor` completely
+  non-functional — for every macOS user on `main`**:
+  `line 251: unexpected EOF while looking for matching ')'`, plus a bogus
+  `line 611: syntax error` that names nothing useful. Reworded to drop the
+  apostrophes. A tree-wide sweep found one sibling with the same break
+  (`workflows/scripts/board/tests/test_boards_conf.sh`, failing at line 283) and
+  one latent near-miss (`scripts/tests/test_stranger_config.sh`, saved only by an
+  accidental even apostrophe count); both are fixed too, and **all 330 tracked
+  shell scripts now parse clean under bash 3.2.57**.
+
+### Added
+
+- **`scripts/lint-bash32-cmdsubst-comment.sh` — a static lint for the
+  hidden-apostrophe class above, plus its regression suite
+  (temperloop#1098).** Registered in `scripts/quality-gates.sh` and
+  `gate-paths.tsv`. It is deliberately a **textual** lint and not a parser
+  invocation, because all three obvious detectors are blind here: `shellcheck`
+  exits 0 on the pattern, `bash -n` under bash 5.x exits 0 (the bug was fixed in
+  bash 4.0), and although `bash -n` under bash 3.2 *does* catch it, the
+  pre-merge leg is ubuntu-only (temperloop#963) where bash 5.2 ships and bash
+  3.2 is not installable — so a `bash -n` gate would pass unconditionally and
+  read as coverage while never firing. Instead a small shell lexer tracks `$(`
+  nesting through quotes, escapes, nested substitutions and here-docs. Two rules,
+  for a reason spelled out in the script header: a `#` comment inside `$( … )`
+  is **strict** (any apostrophe fails — comments are trivially rewordable, and
+  an even-parity pair is only accidentally valid), while a here-doc body is
+  **parity**-checked (odd count per region fails), so the LLM-prompt prose in
+  `bin/subcommands/try.sh` / `bin/subcommands/configure.sh` is not mangled to
+  satisfy a lint. The suite's load-bearing test feeds the lint the real pre-fix
+  `doctor.sh` region and requires a non-zero exit — a lint asserted but never
+  shown to fire on its known-bad input is the same failure over again — and,
+  where a bash 3.x is present, re-measures every fixture against the real parser
+  so the recorded BREAKS/PARSES expectations cannot silently rot.
+
 ## [0.24.0] - 2026-08-03
 
 ### Added
