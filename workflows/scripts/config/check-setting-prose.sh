@@ -192,26 +192,68 @@ _kp_line_in_fence() {
 # marker/code-span/default checks. The inverted per-line × per-candidate
 # loop this replaces spawned a subprocess per pair per LINE (~400k for the
 # real tree) and took minutes; this shape is a few hundred greps total.
+#
+# PER-CANDIDATE REGEX PRECOMPUTE (temperloop#968). The escaped NAME regex and
+# the escaped-DEFAULT `pat` depend ONLY on the candidate (its name, default,
+# and type) — never on the file being scanned — but they used to be rebuilt
+# inside the per-file loop, so each was recomputed once per (file, candidate)
+# PAIR. `_kp_ere_escape` is a `printf | sed` pipeline (two processes per call),
+# so on the real tree (13 target files × 195 candidates) that was 5,070 escape
+# calls ≈ 10,140 processes — about 77% of every process this lint spawned, all
+# of it recomputing 390 distinct strings. Hoisting the escape out of the file
+# loop makes it 390 calls ≈ 780 processes, with byte-identical results.
+#
+# This matters disproportionately on macOS, where `fork`/`exec` is materially
+# more expensive than on Linux: this gate measured 56s on the macos-latest CI
+# leg vs 23s on ubuntu-latest (2.43×), one of the largest single contributors
+# to the macOS/ubuntu gate-time gap (temperloop#968's measurement comment).
+cand_name_escs=()
+cand_pats=()
+for i in "${!cand_names[@]}"; do
+  _name_esc="$(_kp_ere_escape "${cand_names[$i]}")"
+  _esc="$(_kp_ere_escape "${cand_defaults[$i]}")"
+  cand_name_escs+=("(^|[^0-9A-Za-z_])${_name_esc}([^0-9A-Za-z_]|\$)")
+  case "${cand_types[$i]}" in
+    int | seconds | pct)
+      cand_pats+=("(^|[^0-9A-Za-z_])${_esc}([^0-9]|\$)")
+      ;;
+    *)
+      cand_pats+=("(^|[^0-9A-Za-z_])${_esc}([^0-9A-Za-z_]|\$)")
+      ;;
+  esac
+done
+unset _name_esc _esc
+
 for path in "${targets[@]}"; do
   rel="${path#"$SETTING_PROSE_SCAN_ROOT"/}"
   # fence-delimiter linenos, space-separated (a trimmed-leading-whitespace
   # line starting ``` toggles fence state).
   fence_markers="$(grep -nE '^[[:space:]]*```' "$path" | cut -d: -f1 | tr '\n' ' ')"
 
+  # Whole-file text, read ONCE per file, used only as a fork-free prefilter
+  # for the per-candidate grep below (temperloop#968).
+  file_text="$(<"$path")"
+
   for i in "${!cand_names[@]}"; do
     name="${cand_names[$i]}"
     default="${cand_defaults[$i]}"
-    type="${cand_types[$i]}"
-    name_esc="$(_kp_ere_escape "$name")"
-    esc="$(_kp_ere_escape "$default")"
-    case "$type" in
-      int | seconds | pct)
-        pat="(^|[^0-9A-Za-z_])${esc}([^0-9]|\$)"
-        ;;
-      *)
-        pat="(^|[^0-9A-Za-z_])${esc}([^0-9A-Za-z_]|\$)"
-        ;;
-    esac
+    # name_pat / pat were escaped once per candidate above, before this file
+    # loop — see the PER-CANDIDATE REGEX PRECOMPUTE note.
+    name_pat="${cand_name_escs[$i]}"
+    pat="${cand_pats[$i]}"
+
+    # Fork-free prefilter (temperloop#968). The `grep -nE` below matches the
+    # setting's name WORD-BOUNDED, so the bare name appearing as a plain
+    # substring somewhere in the file is a strict PRECONDITION of any match it
+    # could report: skipping when the substring is absent can never skip a real
+    # hit, and when it is present the grep still runs and remains the sole
+    # arbiter (this test is deliberately weaker than the grep, never a
+    # replacement for it). Most candidates appear in most files zero times —
+    # 13 files × 195 candidates = 2,535 greps, of which only a couple hundred
+    # can match anything — so this turns the great majority of those forks into
+    # a bash builtin string test. Same macOS fork-cost rationale as the
+    # precompute above.
+    [[ "$file_text" == *"$name"* ]] || continue
 
     # word-bounded NAME check on the FULL line (in or out of code spans —
     # naming the setting in code font is fine, see header). Word-bounded, not
@@ -255,7 +297,7 @@ for path in "${targets[@]}"; do
         fi
         violations=$((violations + 1))
       fi
-    done < <(grep -nE -- "(^|[^0-9A-Za-z_])${name_esc}([^0-9A-Za-z_]|\$)" "$path" 2>/dev/null || true)
+    done < <(grep -nE -- "$name_pat" "$path" 2>/dev/null || true)
   done
 done
 

@@ -328,19 +328,56 @@ for f in "${tier2_files[@]}"; do
     # a `<!-- cite:` shown in code font is a quotation, never a live marker.
     # The quoting is a literal sed program, not a missed expansion.
     # shellcheck disable=SC2016
-    ltext="$(printf '%s' "${cand#*	}" | sed -E 's/`[^`]*`//g')"
-    raw_n="$(printf '%s' "$ltext" | grep -o '<!-- cite:' | wc -l | tr -d '[:space:]')"
-    parsed="$(printf '%s' "$ltext" | grep -oE "$marker_grammar" || true)"
+    # BUILTIN-ONLY PER-MARKER PARSE (temperloop#968). This body used to run
+    # ~11 processes per candidate line (a `printf|sed` code-span strip, a
+    # `printf|grep -o|wc -l|tr` raw count, a `printf|grep -oE` parse, a
+    # `printf|grep -c|tr` recount, and a `printf|sed` per parsed marker). The
+    # tracked tree carries ~296 citation markers, so that was ~3.3k processes
+    # per run of this script — and `test_validate_prose_budget.sh` invokes the
+    # script four times. The equivalent work below uses only bash string
+    # operators and `[[ =~ ]]`, spawning ZERO processes per line, which is why
+    # this gate and its test were two of the largest macOS/ubuntu gate-time
+    # gaps (20s vs 8s and 73s vs 33s — temperloop#968's measurement comment);
+    # macOS pays materially more per `fork`/`exec` than Linux does.
+    #
+    # Bash-3.2 portable, matching this file's existing constraint (see the
+    # "Bash-3.2 portable" note above): `[[ =~ ]]` + BASH_REMATCH are 3.0+, the
+    # regex is held in an UNQUOTED variable (the portable form — quoting it
+    # would match literally on 3.2), and no associative arrays are used.
+    ltext="${cand#*	}"
+    # strip backtick code spans — the builtin equivalent of `s/`[^`]*`//g`:
+    # repeatedly excise from the first backtick through the next one. A lone
+    # unpaired trailing backtick leaves the loop (two are required), exactly as
+    # the sed program left it in place.
+    while [[ "$ltext" == *'`'*'`'* ]]; do
+      _pre="${ltext%%\`*}"
+      _rest="${ltext#*\`}"
+      ltext="$_pre${_rest#*\`}"
+    done
+
+    raw_n=0
+    _scan="$ltext"
+    while [[ "$_scan" == *'<!-- cite:'* ]]; do
+      raw_n=$((raw_n + 1))
+      _scan="${_scan#*<!-- cite:}"
+    done
+
     parsed_n=0
-    if [ -n "$parsed" ]; then
-      parsed_n="$(printf '%s\n' "$parsed" | grep -c . | tr -d '[:space:]')"
-      while IFS= read -r m; do
-        rid="$(printf '%s' "$m" | sed -E 's/^<!-- cite: ([A-Z]+\.[0-9]+) .*$/\1/')"
-        printf '%s\t%s\n' "$rid" "$f" >>"$found_pairs"
-      done <<PARSED_EOF
-$parsed
-PARSED_EOF
-    fi
+    _scan="$ltext"
+    while [[ "$_scan" =~ $marker_grammar ]]; do
+      m="${BASH_REMATCH[0]}"
+      parsed_n=$((parsed_n + 1))
+      # row-id extraction; the fallback mirrors the old sed's behaviour of
+      # leaving the text unchanged when the substitution did not apply (it
+      # cannot here — $m already matched the grammar — but keep it faithful).
+      if [[ "$m" =~ ^\<!--\ cite:\ ([A-Z]+\.[0-9]+)\  ]]; then
+        rid="${BASH_REMATCH[1]}"
+      else
+        rid="$m"
+      fi
+      printf '%s\t%s\n' "$rid" "$f" >>"$found_pairs"
+      _scan="${_scan#*"$m"}"
+    done
     if [ "$raw_n" -ne "$parsed_n" ]; then
       fail=1
       violations=$((violations + 1))
