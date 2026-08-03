@@ -1109,6 +1109,26 @@ done
 #                              (under the pool) has finished, if elapsed >=
 #                              budget and gates remain, stop (default 0 = no
 #                              budget, unchanged).
+#   QUALITY_GATES_STEP_SUMMARY set to 1 to additionally APPEND a full per-gate
+#                              wall-clock table to $GITHUB_STEP_SUMMARY
+#                              (temperloop#968). A no-op unless BOTH this is
+#                              "1" AND GitHub Actions has set
+#                              $GITHUB_STEP_SUMMARY — so any local run, `make
+#                              quality-gates`, and every OTHER caller that
+#                              leaves the var unset are unaffected. Default 0
+#                              (off), and deliberately never set by ci.yml
+#                              (the merge-gating leg) — only
+#                              nightly-macos.yml's macOS job and its ubuntu
+#                              comparison job opt in, so the two runners' own
+#                              per-gate breakdowns land in the SAME workflow
+#                              run's summary page, directly comparable,
+#                              without adding any per-PR cost or behavior
+#                              change to the job that actually gates `main`.
+#                              Requires the bounded-concurrency pool (the path
+#                              that already records per-gate seconds); a
+#                              serial fallback run (QUALITY_GATES_JOBS=1, or no
+#                              mktemp) has no per-gate timing to publish and
+#                              stays silent on this var.
 #
 # HOW THE BUDGET COMPOSES WITH THE POOL (temperloop#1025). A budgeted run
 # dispatches in chunks of QUALITY_GATES_JOBS and checks the deadline BETWEEN
@@ -1376,6 +1396,44 @@ qg_pool_worker() {
   return "$rc"
 }
 
+# qg_write_step_summary_timing — append a full per-gate wall-clock table to
+# $GITHUB_STEP_SUMMARY (temperloop#968). See the QUALITY_GATES_STEP_SUMMARY
+# entry in the ENV VAR interface note above for the opt-in contract; the
+# caller (the TIMING block below) already gates the call on that var being
+# "1" and $GITHUB_STEP_SUMMARY being set, so this function assumes both.
+#
+# Reads the run's own qg_run_gates / qg_pool_secs / qg_pool_wall_total /
+# qg_pool_serial_total / gate_jobs globals — the EXACT figures the stdout
+# TIMING line is built from, so the published table can never diverge from
+# what a human watching the log already saw. This is what makes the macOS and
+# ubuntu legs comparable: both runners execute this same function over their
+# own gate_pool timings, so the table's shape (and the arithmetic that fills
+# it) is identical on both, and only the numbers and the "%s" OS label differ.
+#
+# `RUNNER_OS` is a GitHub-Actions-supplied env var ("macOS" / "Linux" / …);
+# falls back to `uname -s` for a human running with QUALITY_GATES_STEP_SUMMARY
+# forced on outside Actions.
+qg_write_step_summary_timing() {
+  local i os_label
+  os_label="${RUNNER_OS:-$(uname -s)}" # setting:exempt — GitHub Actions injects RUNNER_OS; a harness-provided fact, not a tunable this repo owns (uname -s is the off-CI fallback)
+  {
+    printf '## Quality gates — per-gate wall-clock (%s)\n\n' "$os_label"
+    printf 'Total: %ds wall, %d worker(s), %ds serial-equivalent (%s.%sx speedup).\n\n' \
+      "$qg_pool_wall_total" "$gate_jobs" "$qg_pool_serial_total" \
+      "$(( qg_pool_serial_total / qg_pool_wall_total ))" \
+      "$(( (qg_pool_serial_total * 10 / qg_pool_wall_total) % 10 ))"
+    printf '| Seconds | Gate |\n'
+    printf '|---:|:---|\n'
+    for ((i = 0; i < ${#qg_pool_secs[@]}; i++)); do
+      printf '%d\t%s\n' "${qg_pool_secs[$i]}" "${qg_run_gates[$i]}"
+    done | sort -rn | while IFS=$'\t' read -r secs name; do
+      # shellcheck disable=SC2016  # literal Markdown backticks, not command substitution
+      printf '| %s | `%s` |\n' "$secs" "$name"
+    done
+    printf '\n'
+  } >>"$GITHUB_STEP_SUMMARY"
+}
+
 # Serial when asked for (QUALITY_GATES_JOBS=1 — the bisect/flake-hunt mode), and
 # serial when the pool cannot allocate its scratch dir. The fallback direction is
 # deliberate: serial execution is ALWAYS correct, so a scheduler that cannot set
@@ -1533,6 +1591,15 @@ if [[ "$gate_pool_ready" -eq 1 ]] && (( qg_pool_wall_total > 0 )); then
     printf '    %4ss  %s\n' "$secs" "$name"
   done
   echo
+  # Opt-in full-table publication for the macOS/ubuntu comparison
+  # (temperloop#968) — see QUALITY_GATES_STEP_SUMMARY in the ENV VAR
+  # interface note above and qg_write_step_summary_timing's own header.
+  # setting:exempt — GITHUB_STEP_SUMMARY is GitHub-injected (the step-summary
+  # sink path), not a tunable; QUALITY_GATES_STEP_SUMMARY on the same line IS
+  # registered in setting-registry.tsv, so nothing here is silently unowned.
+  if [[ "${QUALITY_GATES_STEP_SUMMARY:-0}" == "1" ]] && [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then # setting:exempt
+    qg_write_step_summary_timing || true
+  fi
 fi
 # Re-surface the staleness warning at the END too (temperloop#591): a 75-gate run
 # scrolls the top banner far off-screen, and the whole point is that the operator

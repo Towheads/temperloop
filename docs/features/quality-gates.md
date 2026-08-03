@@ -78,6 +78,17 @@ end-of-run summary reports measured wall time against the summed per-gate time
 (which *is* what a serial run of the same set costs) plus the five slowest
 gates, so the speedup is measured rather than assumed.
 
+**Per-gate wall-clock publication (temperloop#968).** `QUALITY_GATES_STEP_SUMMARY=1`
+appends the *full* per-gate table (every gate, not just the five slowest) to
+`$GITHUB_STEP_SUMMARY` — off by default, and a no-op unless GitHub Actions has
+actually set that path. `ci.yml`'s merge-gating `checks` job never sets it, so
+this adds no cost or behavior change to the leg that gates `main`. Only
+`nightly-macos.yml`'s macOS job and its ubuntu comparison job opt in, which is
+what makes the two runners' breakdowns land in the *same* workflow run's
+summary page — the localisation surface the macOS-vs-ubuntu slowdown
+investigation needs (#968's first deliverable: measurement before any
+matrix/branch-protection change).
+
 This is a **within-job pool, not a build matrix**. Splitting `checks` into a
 matrix would rename and multiply the required status-check context
 (`checks (ubuntu-latest)`) and silently un-gate the branch; the single-entry
@@ -377,8 +388,14 @@ trigger), a deliberate trade of gate-time BSD-dialect safety for pre-merge
 latency: a macOS-only regression can land and is caught within a day rather
 than blocked at the gate, and it surfaces only as a red run in the Actions
 tab plus GitHub's built-in scheduled-failure email to the repository's
-default recipients. A contributor's local pre-merge check runs
-the identical invocation. The automated build pipeline's own parent-side
+default recipients. The same workflow also runs a second, non-gating
+`ubuntu-timing` job — same script, same `ubuntu-latest` runner the merge gate
+already uses, with `QUALITY_GATES_STEP_SUMMARY=1` set on both jobs
+(temperloop#968) — purely so a night's macOS and ubuntu per-gate breakdowns
+land in the same run's summary page for direct comparison; it produces no
+`checks (...)`-shaped context and is not required by branch protection. A
+contributor's local pre-merge check runs the identical invocation. The
+automated build pipeline's own parent-side
 acceptance step, before it will consider a plan item's changes ready to
 merge, also shells out to this same script rather than re-implementing any
 part of the gate list. Adding, removing, or changing a gate is a one-line
