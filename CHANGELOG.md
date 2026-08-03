@@ -271,6 +271,22 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **The basic-memory config written by `ks_search` now carries
+  `semantic_embedding_dimensions` alongside `semantic_embedding_model`, as one
+  coupled setting (temperloop#907).** `_ks_bm_ensure_config` pinned the
+  embedding model but left its vector width to basic-memory's default, so a
+  future model flip would have written a model/width mismatch — which does not
+  error: the index builds, every vector is zero, and every semantic search
+  quietly returns nothing. The pair now has a single definition site: the model
+  is authored once (`_ks_bm_embedding_model`) and the width is *derived* from
+  it through a model→width table (`_ks_bm_embedding_dimensions`, `384` for the
+  pinned `bge-small-en-v1.5`), which fails loudly rather than guessing for a
+  model it has no width for. Setting one without the other is therefore
+  unrepresentable, not merely discouraged. The write-once early return on an
+  existing `config.json` is unchanged — an already-written config is still
+  never touched, so this affects only freshly-created state dirs.
+  `knowledge_store.contract.md` posture point 7 documents the coupling.
+
 - **The `tokens` report producer now RESOLVES checkouts whose encoded path
   exceeds Claude Code's 200-character project-name cap, instead of degrading
   to machine-wide (temperloop#995).** Claude Code stores such a project under

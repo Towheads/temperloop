@@ -392,6 +392,38 @@ _ks_bm_ignore_path() { printf '%s/.bmignore\n' "$(_ks_bm_config_dir)"; }
 # home, not the machine's shared HF/fastembed cache.
 _ks_bm_cache_dir()   { printf '%s/embedding-cache\n' "$(_ks_bm_home)"; }
 
+# point 7: THE embedding-model pin — the single site where the model name is
+# authored. Nothing else in this file may spell a model name; the config
+# writer and the dimensions derivation below both read it from here.
+_ks_bm_embedding_model() { printf 'bge-small-en-v1.5\n'; }
+
+# point 7 (cont'd, temperloop#907): the model's vector dimensionality is
+# DERIVED from the pin above, never authored independently. basic-memory
+# writes `semantic_embedding_dimensions` into the vector column definition;
+# a config that names a model but leaves the dimensions at a mismatched
+# value silently produces a zero-embedding index — the index builds, every
+# search returns nothing, and no error is raised anywhere. Deriving the
+# number from the model name is what makes that unrepresentable: a future
+# model flip edits ONE literal (_ks_bm_embedding_model) and this table
+# re-derives the matching width, or fails loudly if the new model is not in
+# it. Adding a model here means adding its width in the same edit — that
+# coupling IS the guard. Widths are the published dimensionality of each
+# bge-*-en-v1.5 checkpoint.
+_ks_bm_embedding_dimensions() {
+  local model
+  model="${1:-$(_ks_bm_embedding_model)}"
+  case "$model" in
+    bge-small-en-v1.5) printf '384\n' ;;
+    bge-base-en-v1.5)  printf '768\n' ;;
+    bge-large-en-v1.5) printf '1024\n' ;;
+    *)
+      printf 'ks_search: no embedding dimensions known for model "%s" — add its width to _ks_bm_embedding_dimensions (temperloop#907)\n' \
+        "$model" >&2
+      return 1
+      ;;
+  esac
+}
+
 # point 1: uvx/basic-memory presence is the sole availability gate — bm
 # itself is fetched on demand by uvx, so "installed" here means "uvx is on
 # PATH", not "basic-memory is pre-installed". This IS the dispatch target
@@ -492,7 +524,12 @@ BMIGNORE
 #   point 6 — semantic_embedding_cache_dir pinned inside the isolated home
 #   point 7 — semantic_embedding_model: bge-small-en-v1.5 (the default —
 #             pinned explicitly here so it can never drift to a non-bge
-#             model and reintroduce upstream #1023's normalization bug)
+#             model and reintroduce upstream #1023's normalization bug),
+#             PLUS the semantic_embedding_dimensions that model requires.
+#             Both come from _ks_bm_embedding_model / _ks_bm_embedding_
+#             dimensions — one pin, one derivation — so the pair can never
+#             be written half-updated (temperloop#907; a mismatched width
+#             yields a silent zero-embedding index).
 # NOTE: no local here (or anywhere in this file) may be named `path`, `cdpath`,
 # `fpath`, or `mailpath`. Under zsh those identifiers are tied to the colon-array
 # side of the corresponding uppercase env var (`path` <-> `PATH`), so a
@@ -502,7 +539,7 @@ BMIGNORE
 # 4). bash treats `path` as an ordinary variable, so this is invisible under
 # bash and under CI. Use `cfg_path`/`proj_path`/`doc_path` instead. (temperloop#40)
 _ks_bm_ensure_config() {
-  local dir cfg_path cache
+  local dir cfg_path cache model dims
   dir="$(_ks_bm_config_dir)"
   cfg_path="$(_ks_bm_config_path)"
   cache="$(_ks_bm_cache_dir)"
@@ -512,6 +549,12 @@ _ks_bm_ensure_config() {
   # idempotent and independent of config.json's presence.
   _ks_bm_ensure_ignore || return 1
   [ -f "$cfg_path" ] && return 0
+  # point 7: model and dimensions resolved as a PAIR from the single pin —
+  # AFTER the early return, so an existing config still short-circuits
+  # untouched. A model with no known width fails here rather than writing a
+  # config that would index every note to a zero vector.
+  model="$(_ks_bm_embedding_model)"
+  dims="$(_ks_bm_embedding_dimensions "$model")" || return 1
   mkdir -p "$dir" "$cache" || return 1
   cat > "$cfg_path" <<JSON
 {
@@ -522,7 +565,8 @@ _ks_bm_ensure_config() {
   "kebab_filenames": false,
   "sync_changes": false,
   "auto_update": false,
-  "semantic_embedding_model": "bge-small-en-v1.5",
+  "semantic_embedding_model": "$model",
+  "semantic_embedding_dimensions": $dims,
   "semantic_embedding_cache_dir": "$cache"
 }
 JSON

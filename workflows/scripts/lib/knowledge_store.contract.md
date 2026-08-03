@@ -710,7 +710,19 @@ The adapter's required posture, every point implemented in
    the fastembed model download lands under the pinned cache dir, not the
    machine's shared HF cache).
 7. **`semantic_embedding_model: bge-small-en-v1.5`** kept as the default
-   explicitly (avoids upstream #1023's non-bge normalization bug).
+   explicitly (avoids upstream #1023's non-bge normalization bug) — written
+   together with the **`semantic_embedding_dimensions`** that model requires
+   (`384`). The two are a **single setting with two config keys**, not two
+   independent literals: the model is authored once
+   (`_ks_bm_embedding_model`) and the width is *derived* from it through a
+   model→width table (`_ks_bm_embedding_dimensions`), which fails loudly on
+   a model it has no width for. A config that names a model but carries a
+   mismatched (or absent, hence defaulted) width silently produces a
+   **zero-embedding index** — it builds without error and every semantic
+   search then returns nothing — so a model flip that could set one without
+   the other is structurally prevented rather than caught by review
+   (temperloop#907). Flipping the model means editing one literal and adding
+   its width to that table in the same edit.
 8. **CI caching guidance**: cache `memory.db` and the fastembed model cache
    (`semantic_embedding_cache_dir`) as build artifacts across CI runs.
    Approximate cost, from basic-memory's own documentation: a cold rebuild
