@@ -735,6 +735,32 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **The `trust-rupture` lexicon category now has a named `/tidy` consumer
+  (temperloop#1090).** `workflows/scripts/drain/lexicon.tsv`'s largest
+  user-turn category — 19 patterns for user pushback and expressed doubt — was
+  fully wired on the *extraction* side (declared in the header, allowlisted in
+  `validate-lexicon.sh`, emitted into `report.lexicon_matches[]` every run) and
+  consumed by nothing: zero hits in `claude/commands/`, and none of its tells
+  appeared even implicitly in `tidy.md`'s illustrative lists, so the matches
+  were computed and dropped on every drain. `claude/commands/tidy.md`
+  § Feedback memories — semantically the right home, but four lines of prose
+  with no lexicon anchor at all — now carries the same
+  `report.lexicon_matches[]` adjudication instruction its sibling extractors
+  have (§ Tooling friction's `friction-slug`/`state-collision`, § Unfiled
+  defects' `worked-around-defect`, § Self-correction moments'
+  `self-correction`), and routes the category's **three distinct failure
+  modes** to distinct destinations: a *correctness challenge* to a
+  `feedback_<topic>.md` memory; a *repeat-offence* to that memory **plus** a
+  rule-promotion candidate via the existing `feedback` findings record that
+  § Recurrence → promotion already tallies; and a *communication failure* —
+  the "I don't understand" / "is jargon" subset — explicitly **out of scope
+  and deferred to temperloop#1089**, so the two issues never claim the same
+  tells. Default-to-silence is preserved (a stub with no pushback produces no
+  artifact) and every artifact must carry the verbatim transcript line as
+  evidence. Prose-only change to one command spec: no lexicon pattern was
+  edited, no new friction-ledger category added, and no capture/backstop
+  registry row is needed (the routing targets are all existing artifacts).
+
 - **`build.md`'s five misattributed issue citations now name the right tracker
   (temperloop#733).** Five incident references in `claude/commands/build.md`
   carried a `temperloop#` prefix for issues that live on the **foundation**
