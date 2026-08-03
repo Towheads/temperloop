@@ -907,6 +907,27 @@ reads that marker; a stranger greps for it before pulling.
   that was already misconfigured (repo=/project= with no owner=) now fails
   instead of silently doing the wrong thing.
 
+### Fixed
+
+- **`install-claude-md.sh`'s `INSTALL_CLAUDE_MD_KERNEL_ONLY=1` render arm no
+  longer leaks a `t0` tmpfile per invocation (temperloop#742).** That arm
+  moves `$tmp` to `$target` but never consumes `$t0_tmp` (T0 is deliberately
+  not written on a kernel-only render — its scope is the fully composed doc),
+  and the script's final `trap - EXIT` clears the cleanup trap before exit
+  without removing it, so every kernel-only render — the seam
+  `count-prose.sh` calls for its tier-1 count — left one empty
+  `install-claude-md-t0.XXXXXX` in `TMPDIR`. Verified at filing time: 6
+  leaked files across one `test_validate_prose_budget.sh` run. Fixed with an
+  explicit `rm -f "$t0_tmp"` on that arm, right after the `$target` move —
+  same shape as the arm's existing explicit `rm -f "$target"` before its own
+  move, not the temperloop#753 subshell-defeated-trap fix (that one restored
+  a lost `EXIT`-trap visibility across a command substitution; here the trap
+  fires correctly, it is just cleared before it can act on a file this arm
+  never claims). The composed (non-kernel-only) arm is untouched. Verified
+  with 5 consecutive kernel-only renders leaking 0 files (was 1 each), and
+  `test_install_claude_md_t0_inventory.sh` / `test_validate_prose_budget.sh`
+  staying green.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first
