@@ -77,19 +77,37 @@ npairs=0
 cleanup() { [ -n "$CLAUDE_MD_COMBINED" ] && rm -f "$CLAUDE_MD_COMBINED"; return 0; }
 trap cleanup EXIT
 
+# Build the composed claude/CLAUDE.md throwaway concatenation ONCE, here, at
+# top level — eagerly, before the pairing loop, and OUTSIDE any command
+# substitution. resolve_source() below used to do this lazily, on first use,
+# via `if [ -z "$CLAUDE_MD_COMBINED" ]; then CLAUDE_MD_COMBINED="$(mktemp …)"`
+# — but resolve_source() is always invoked as `path="$(resolve_source ...)"`,
+# a command substitution that runs the WHOLE function body in a subshell. Any
+# assignment to CLAUDE_MD_COMBINED made inside that subshell is invisible to
+# this parent shell once the subshell exits, so that lazy build (a) never
+# actually cached anything — every pair re-ran mktemp and got its own temp
+# file, defeating the "built once, reused across pairs" intent — and (b) left
+# the parent's CLAUDE_MD_COMBINED permanently empty, so cleanup()'s EXIT trap
+# above never removed any of them: one leaked temp file per composed
+# claude/CLAUDE.md pair, every run. Doing it here instead means the
+# assignment lands directly in this top-level shell — the same shell the EXIT
+# trap runs in — so the cache persists and cleanup actually sees it. Only a
+# composed checkout (both split halves present) needs this; a kernel-only or
+# legacy single-file checkout leaves CLAUDE_MD_COMBINED empty, unaffected.
+if [ -f "$CLAUDE_MD_KERNEL" ] && [ -f "$CLAUDE_MD_OVERLAY" ]; then
+  CLAUDE_MD_COMBINED="$(mktemp "${TMPDIR:-/tmp}/validate-capture-backstop-claude-md.XXXXXX")"
+  cat "$CLAUDE_MD_KERNEL" "$CLAUDE_MD_OVERLAY" >"$CLAUDE_MD_COMBINED"
+fi
+
 # Map a Capture-location <source> token to a filesystem path, or "SKIP:<reason>"
 # for an unverifiable or absent source.
 resolve_source() {
   case "$1" in
     system-prompt)        printf 'SKIP:capture half is the harness system prompt (unverifiable)' ;;
     claude/CLAUDE.md)
-      if [ -f "$CLAUDE_MD_KERNEL" ] && [ -f "$CLAUDE_MD_OVERLAY" ]; then
-        # A capture anchor can land in either split source — check a throwaway
-        # concatenation of both (built once, reused across pairs).
-        if [ -z "$CLAUDE_MD_COMBINED" ]; then
-          CLAUDE_MD_COMBINED="$(mktemp "${TMPDIR:-/tmp}/validate-capture-backstop-claude-md.XXXXXX")"
-          cat "$CLAUDE_MD_KERNEL" "$CLAUDE_MD_OVERLAY" >"$CLAUDE_MD_COMBINED"
-        fi
+      if [ -n "$CLAUDE_MD_COMBINED" ]; then
+        # A capture anchor can land in either split source — check the
+        # throwaway concatenation of both, built once at top level above.
         printf '%s' "$CLAUDE_MD_COMBINED"
       elif [ "$KERNEL_ONLY_MD" = "1" ]; then
         # Kernel-only checkout: check the kernel half alone. The caller
