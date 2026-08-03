@@ -223,12 +223,12 @@ transcript files — the conversation logs Claude Code already writes under
 your own home directory. It makes no network call: nothing is uploaded, and
 the numbers land only in your own `temperloop report` output. Enable it?"*
 
-- **Enable:** **Consequence:** one executable file,
-  `.temperloop/report.d/tokens`, joins the Phase B change-set — a thin
-  *locator* that hands off to your installed kernel's implementation, not
-  the transcript-reading logic itself. From then on, `temperloop report` run
-  in this repo grows a `tokens_spent` headline, computed on whichever
-  machine runs it from that machine's own transcripts. **Undo:** unlike
+- **Enable:** the Phase B change-set gains one executable file,
+  `.temperloop/report.d/tokens` — a thin *locator* that hands off to your
+  installed kernel's implementation, not the transcript-reading logic
+  itself. **Consequence:** from then on, `temperloop report` run in this
+  repo grows a `tokens_spent` headline, computed on whichever machine runs
+  it from that machine's own transcripts. **Undo:** unlike
   everything in A2/A3, this one is a **tracked file** — delete
   `.temperloop/report.d/tokens`, or revert the PR that placed it, and it is
   gone; `temperloop eject` removes it too, with the rest of `.temperloop/`.
@@ -236,11 +236,11 @@ the numbers land only in your own `temperloop report` output. Enable it?"*
   machine**, without touching this repo or anyone else's copy, via the
   per-machine disable marker the producer's own notice prints
   (`docs/features/telemetry.md` § First-run notice and local disable).
-- **Decline:** **Consequence:** nothing is placed — no
-  `.temperloop/report.d/tokens` enters the change-set, so nothing in this
-  repo reads a transcript on anyone's behalf, and `temperloop report` keeps
-  exactly the kernel-tier headline it has today (merged-items/day and
-  time-to-merge, with no `tokens_spent` line). If `temperloop init`'s
+- **Decline:** nothing is placed — no `.temperloop/report.d/tokens` enters
+  the change-set. **Consequence:** nothing in this repo reads a transcript
+  on anyone's behalf, and `temperloop report` keeps exactly the kernel-tier
+  headline it has today (merged-items/day and time-to-merge, with no
+  `tokens_spent` line). If `temperloop init`'s
   tree-only proposal PR already proposed the shim and you have not merged
   it, the composed set carries its **removal** instead — so a decline here
   is never quietly overridden by a PR you merge afterwards. Nothing else
@@ -274,7 +274,7 @@ conditional on this answer has broken the inheritor half and is wrong.
 ## Phase B — Composed change-set (confirm once, as a whole)
 
 Every answer from Phase A composes into **one** change-set, shown back to
-you in full — before anything applies. Two rules make the *composition*
+you in full — before anything applies. These rules make the *composition*
 itself safe, not just each answer in isolation:
 
 - **Structural congruence, not a naming convention.** The required-`checks`
