@@ -725,12 +725,23 @@ fi
 # declined because validate-prose-budget.sh's own header pins "ONE uniform
 # per-file cap, never a per-file table (a per-file value would just be a
 # relocated exemption mechanism; this gate has none)", so it is a contract
-# change, not a tuning. NOTE FOR THE NEXT EDITOR: workshop.md at 1144 is
-# now the LARGEST tracked kernel doc (past build.md at 1061), and this cap
-# has been raised three times in one day to fund it. The subtraction pass
-# is real debt, filed as its own follow-up — do not raise a fourth time
-# without running it first.
-: "${PROSE_BUDGET_TIER2_FILE_CAP:=1186}"
+# change, not a tuning. workshop.md at 1144 became the LARGEST tracked
+# kernel doc (past build.md at 1061), and this cap was raised three times
+# in one day to fund it — the subtraction pass deferred above was filed as
+# its own follow-up (temperloop#956).
+#
+# LOWERED, 1186 → 1100 (2026-08-02, temperloop#956, the deferred subtraction
+# pass). Ran the subtraction on workshop.md itself: removals and
+# consolidations only (never a behavior deletion — every step, gate, and
+# named rule stayed specified, restated by reference instead of copied
+# where it duplicated `claude/design-schema.md`/`claude/message-schema.md`
+# content already covered elsewhere in the file) took it from 1181 lines to
+# 1041. `claude/commands/build.md` is now the largest tracked file again, at
+# 1100 lines — untouched by this item. Same "zero headroom, seeded to the
+# largest tracked file" convention as the very first seeding of this cap:
+# 1100. The ratchet moves both ways — a future raise still needs its own
+# measured justification, never a restored high-water mark.
+: "${PROSE_BUDGET_TIER2_FILE_CAP:=1100}"
 
 # ── Pipeline spend profiler (temperloop#958) ───────────────────────────────
 # Settings for `workflows/scripts/pipeline-spend-report.sh` and its
