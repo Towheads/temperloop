@@ -649,15 +649,17 @@ P14="$REPO14/.temperloop/report.d/tokens"
 [ -f "$P14" ] || fail "init did not place .temperloop/report.d/tokens into the target repo"
 git -C "$REPO14" show "HEAD:.temperloop/report.d/tokens" > "$WORK/landed14" 2>/dev/null \
   || fail "the tokens producer was not committed by the proposal (not in HEAD)"
-# Compared through `$(…)`, which strips trailing newlines on BOTH sides —
-# deliberately, not laziness. proposal-pr.sh re-reads every manifest entry's
-# content through its own `$(…)` capture, so the landed copy is always the
-# source minus its final newline; `.temperloop/config` and `boards.conf`
-# already land that way. This asserts the part that matters (verbatim
-# content, no restated second copy) without pinning a generator-wide
-# behavior that is not this item's to own.
-[ "$(cat "$WORK/landed14")" = "$(cat "$SHIM_SRC")" ] \
-  || fail "the landed producer is not a verbatim copy of the kernel shim at $SHIM_SRC"
+# BYTE-EXACT, `cmp` not `$(…)` (temperloop#992). This used to compare through
+# a pair of `$(…)` captures that stripped trailing newlines on both sides,
+# because proposal-pr.sh re-read every manifest entry's content through its
+# own capture and wrote it with a bare `printf '%s'` — so the landed copy was
+# always the source MINUS its final newline. The generator now normalizes each
+# entry to exactly one final newline, and the shim source ends in exactly one,
+# so "verbatim copy" is now literally true and the assertion says so —
+# including the final byte a stranger's first proposal diff used to flag with
+# "\ No newline at end of file".
+cmp -s "$WORK/landed14" "$SHIM_SRC" \
+  || fail "the landed producer is not a byte-exact copy of the kernel shim at $SHIM_SRC (tail: $(od -c < "$WORK/landed14" | tail -3))"
 
 mode14="$(git -C "$REPO14" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
 [ "$mode14" = "100755" ] \

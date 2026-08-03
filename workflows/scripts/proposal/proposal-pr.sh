@@ -58,6 +58,17 @@
 #                        MUST NOT escape the repo (no leading "/", no ".."
 #                        segment, not under ".git/") — validated before any
 #                        write.
+#                        TRAILING-NEWLINE NORMALIZATION (temperloop#992):
+#                        whatever trailing newlines a `content`/
+#                        `content_file` value carries — none, one, or
+#                        several — the file that LANDS ends in EXACTLY ONE
+#                        "\n". Callers therefore need not (and must not)
+#                        hand-append one; an adopter's first proposal diff
+#                        never shows "\ No newline at end of file". The one
+#                        carve-out is EMPTY content, which lands as a
+#                        0-byte file rather than a lone newline (git
+#                        reports no missing-newline marker for an empty
+#                        blob, so there is nothing to normalize).
 #   --base BRANCH        Base branch to propose against. Default: the
 #                        target repo's own default branch (origin/HEAD,
 #                        falling back to main/master).
@@ -302,7 +313,32 @@ cmd_open() {
         die "manifest entry '$path' has neither content, content_file, nor delete=true"
       fi
       mkdir -p "$(dirname "$abs")" || die "cannot create directory for '$path'"
-      printf '%s' "$content" > "$abs" || die "cannot write '$path'"
+      # NEWLINE-TERMINATE (temperloop#992). Both readers above are `$(…)`
+      # captures, and command substitution strips EVERY trailing newline —
+      # so `$content` is already normalized to "no trailing newline at all",
+      # whether the manifest said "a", "a\n", or "a\n\n\n". A bare
+      # `printf '%s'` therefore wrote a file with NO final newline, every
+      # time, for every entry: an adopter's very first temperloop PR showed
+      # "\ No newline at end of file" on every file in the diff. Adding the
+      # "\n" here — at the single write site, not at each call site — is
+      # what makes "exactly one trailing newline" a property of the
+      # generator rather than something every caller must remember.
+      #
+      # EMPTY CONTENT is the deliberate carve-out: `printf '%s\n' ""` would
+      # turn a requested zero-byte file into a 1-byte one, and git reports
+      # no missing-newline marker for an empty blob — there is nothing to
+      # fix, so leave it 0 bytes.
+      #
+      # NO_CHANGES is unaffected in mechanism and strictly better in
+      # outcome: the idempotence check below is `git diff --cached --quiet`
+      # against the base tree, so a base already carrying the
+      # newline-terminated file now compares EQUAL (before this fix the
+      # stripped write manufactured a one-byte diff on every re-run).
+      if [ -n "$content" ]; then
+        printf '%s\n' "$content" > "$abs" || die "cannot write '$path'"
+      else
+        : > "$abs" || die "cannot write '$path'"
+      fi
       if [ "$mode" = "755" ]; then chmod 755 "$abs"; else chmod 644 "$abs"; fi
     fi
     touched+=("$path")

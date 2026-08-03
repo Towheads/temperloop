@@ -508,6 +508,31 @@ reads that marker; a stranger greps for it before pulling.
   refusal: the payload's marker file must never appear and no proposal branch
   may be cut.
 
+- **`proposal-pr.sh` now lands every file it proposes newline-terminated
+  (temperloop#992).** Both manifest readers are `$(…)` captures, and command
+  substitution strips *every* trailing newline — so a bare `printf '%s'` at
+  the single write site wrote each file with **no** final newline, whatever
+  the manifest said. An adopter's very first `temperloop init` PR therefore
+  showed `\ No newline at end of file` on every file in the diff
+  (`.temperloop/config`, `boards.conf`, and — since temperloop#984 —
+  `.temperloop/report.d/tokens`): harmless to execution, but the first
+  impression the install path makes. The write is now **normalized to exactly
+  one** trailing newline, so a `content` of `"a"`, `"a\n"`, or `"a\n\n\n"` all
+  land identically and callers neither need nor should hand-append one. Two
+  deliberate edges: **empty content still lands as a 0-byte file** rather than
+  a lone newline (git reports no missing-newline marker for an empty blob), and
+  a source ending in several blank lines has them collapsed to one — which is
+  why `init`'s carry-forward line still claims "content and mode preserved"
+  rather than "bytes". `NO_CHANGES` is unaffected in mechanism (still
+  `git diff --cached --quiet` against the base tree) and strictly better in
+  outcome: a base already carrying the correctly-terminated file now compares
+  equal instead of manufacturing a one-byte diff on every re-run — asserted
+  both ways in `workflows/scripts/proposal/tests/test_proposal_pr.sh`, and
+  `test_init.sh`'s landed-shim check is tightened from a newline-stripping
+  `$(…)` comparison to a byte-exact `cmp`. **One-time adopter effect:** a repo
+  whose files were placed by an earlier `init` sees a one-byte diff per file on
+  the next run, adding the newline that should always have been there.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first

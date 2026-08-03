@@ -1238,10 +1238,12 @@ elif [ -e "$producer_abs" ] || [ -L "$producer_abs" ]; then
     # bytes — the link itself does not survive the manifest, and an operator
     # who deliberately symlinked it should know that.
     #
-    # NOT byte-exact, and the message must not claim it is: like every
-    # manifest entry, this one loses its FINAL NEWLINE on the way through
-    # proposal-pr.sh (see the capture note below). "Content and mode" is the
-    # honest claim; "bytes" would not be.
+    # Byte-exact for any normal file, but the message still says "content
+    # and mode" rather than "bytes": since temperloop#992 proposal-pr.sh
+    # normalizes every manifest entry to EXACTLY ONE final newline (see the
+    # capture note below), so a source ending in two or more blank lines is
+    # carried with those collapsed to one. "Content and mode" stays the
+    # honest claim across every input.
     producer_carry_note=""
     [ -L "$producer_abs" ] && producer_carry_note=", flattened from a symlink to a regular file"
     echo "report.d producer: carrying the existing $producer_target forward — content and mode ($producer_mode) preserved$producer_carry_note (present here, not yet on ${base:-the base branch})"
@@ -1270,15 +1272,15 @@ else
 fi
 
 if [ -n "$producer_source" ]; then
-  # The landed copy is the source's bytes MINUS its final newline: every
-  # manifest entry loses one, because proposal-pr.sh re-reads its own
-  # `.content` through a `$(…)` capture (which strips trailing newlines)
-  # before writing it with a bare `printf '%s'`. Deliberately not worked
-  # around here — `.temperloop/config` and `boards.conf` already land the
-  # same way, this file is a manifest entry like any other, and bash runs a
-  # script whose last line lacks a newline exactly as it runs one that has
-  # it. Adding a newline back at THIS call site would be a no-op that reads
-  # like a fix.
+  # `$(…)` strips every trailing newline, so `$producer_content` carries
+  # none — and that is fine, because since temperloop#992 proposal-pr.sh
+  # NORMALIZES each manifest entry on write to exactly one final newline.
+  # The landed copy is therefore the source's bytes for any normally-
+  # terminated file (a source ending in several blank lines has them
+  # collapsed to one). Do NOT re-append a newline at THIS call site: the
+  # generator owns the invariant for `.temperloop/config`, `boards.conf`,
+  # and this file alike, and a second newline here would only add a blank
+  # line the generator cannot tell from intent.
   producer_content="$(cat "$producer_source")"
   if [ -z "$producer_content" ]; then
     # Belt-and-braces for the same no-`set -e` hazard as the soft-seam arm
