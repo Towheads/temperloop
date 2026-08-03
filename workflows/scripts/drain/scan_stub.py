@@ -943,6 +943,13 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
             "project": project,
             "date": meta.get("date", ""),
             "time": meta.get("time", ""),
+            # Explicit `None` (never "") when the frontmatter carries no
+            # `model:` line — this scanner ALWAYS populates this key going
+            # forward, so `null` here unambiguously means "the stub's
+            # frontmatter genuinely has no model:", never "the scanner didn't
+            # emit this field" (findings-schema.md `subject_model`,
+            # temperloop#761).
+            "model": meta.get("model") or None,
         },
         "lexicon_matches": matches,
         "spec_authoring_context": spec_authoring,
