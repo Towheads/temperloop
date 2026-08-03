@@ -160,4 +160,27 @@ printf '%s\n' "$section3" | grep -q 'SKIPPED (no installed surface at' \
   || fail "3: expected SKIPPED when no installed surface exists — got: $section3"
 pass "3: an absent installed surface degrades to SKIPPED, never a hard failure"
 
+# ---------------------------------------------------------------------------
+# Test 4: SKIPPED (never a hard failure) when the installed surface exists on
+# disk but does NOT resolve into any git checkout — e.g. a real, unmanaged
+# copy someone dropped in by hand rather than a symlink into a repo. This is
+# the SECOND of the acceptance's two named degrade conditions (absent, or not
+# a symlink into any checkout) — distinct from test 3's "absent" case.
+# ---------------------------------------------------------------------------
+HOME4="${TMP}/home4"
+mkdir -p "${HOME4}/.claude/hooks-real"
+printf '#!/usr/bin/env bash\necho "not a checkout, just a file"\n' \
+  >"${HOME4}/.claude/hooks-real/session-start-drain.sh"
+ln -s "${HOME4}/.claude/hooks-real" "${HOME4}/.claude/hooks"
+# Deliberately NOT git-initialized — plain files, no .git anywhere above them.
+
+set +e
+out4="$(_run_doctor "$HOME4" "$FOUND_A")"
+set -e
+
+section4="$(_section "$out4")"
+printf '%s\n' "$section4" | grep -q 'SKIPPED (.*does not resolve into any git checkout' \
+  || fail "4: expected SKIPPED when the installed surface resolves to a real file outside any git checkout — got: $section4"
+pass "4: an installed surface that isn't a symlink into any git checkout degrades to SKIPPED, never a hard failure"
+
 echo "All doctor cross-checkout-split tests passed."
