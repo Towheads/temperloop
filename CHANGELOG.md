@@ -442,6 +442,27 @@ reads that marker; a stranger greps for it before pulling.
   for the full disposition, including the honest scoping of "no residue" to
   an unmerged proposal PR.
 
+- **`--remote` is validated before it reaches `git` in `temperloop init` and
+  the proposal-PR generator (temperloop#996).** `--remote` parsed unvalidated
+  in both `bin/subcommands/init.sh` and
+  `workflows/scripts/proposal/proposal-pr.sh` and was then spliced into
+  `git fetch "$remote" "$base"` as that call's **first positional** — the
+  position git parses as an *option* whenever the word begins with `-`. A
+  value like `--upload-pack=touch /tmp/PWNED; git-upload-pack` therefore
+  EXECUTED at the fetch: the same injection the earlier `--base` guard
+  (temperloop#413-era) closed on the *other* argument of the very same
+  command, left open on this one. `--remote` is documented CLI surface
+  (VERSIONING.md's CLI-surface row) that adopter wrapper scripts and CI jobs
+  pass, so the value is not always a human's own keystroke, and downstream
+  refusal was not a guard — `proposal-pr.sh` did reject the name, but only
+  *after* `init`'s own fetch had already run it. Both scripts now refuse an
+  option-shaped or otherwise malformed `--remote` **at parse time**, strictly
+  before the first git invocation that consumes it (`init` exits 2;
+  `proposal-pr.sh` emits its usual structured `ERROR`). A valid `--remote` is
+  unaffected. Tests in both suites assert the *ordering*, not merely the
+  refusal: the payload's marker file must never appear and no proposal branch
+  may be cut.
+
 ## [0.23.0] - 2026-08-02 — BREAKING
 
 ### Migration — read this first

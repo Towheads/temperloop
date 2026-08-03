@@ -68,6 +68,10 @@
 #     not touch it at all
 #   - invalid --tracker-mode -> usage error, exit 2 (still refused)
 #   - --dir not a git repo -> exit 1
+#   - ARGUMENT VALIDATION ORDERING: --base and --remote are BOTH refused
+#     before the first git invocation that consumes them, so an
+#     option-shaped `--upload-pack=<cmd>` payload on either argument of
+#     `git fetch "$remote" "$base"` never executes
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1015,6 +1019,38 @@ printf '%s\n' "$out" | grep -qF "unchanged:    .temperloop/report.d/tokens" \
 printf '%s\n' "$out" | grep -qF "NOT refreshed (--dry-run performs no fetch" \
   || fail "the dry-run preview did not disclose that its base ref was not refreshed (got: $out)"
 echo "PASS: the --dry-run preview diffs against the base tip a real run would branch from, and discloses that it skipped the fetch"
+
+# =============================================================================
+# 23. `--remote` IS VALIDATED BEFORE IT REACHES git (command injection).
+#
+#     The sibling of test 19. `--remote` parses unvalidated and is spliced
+#     into `git fetch "$remote" "$base"` as that call's FIRST POSITIONAL —
+#     the position git parses as an OPTION when the word begins with '-'. So
+#     `--remote '--upload-pack=<cmd>'` EXECUTED, exactly like the `--base`
+#     payload test 19 closed on the OTHER argument of the same command.
+#     proposal-pr.sh does reject the name, but only after init's own fetch has
+#     already run it: downstream refusal is not a guard. Asserts the ORDERING
+#     — the marker file must never appear — not merely the refusal.
+# =============================================================================
+REPO23="$(new_fixture_repo repo23)"
+PWNED_REMOTE_MARKER="$WORK/PWNED-remote-marker"
+rm -f "$PWNED_REMOTE_MARKER"
+run 2 --dir "$REPO23" --gh-repo acme/widget --no-network --base main \
+  --remote "--upload-pack=touch $PWNED_REMOTE_MARKER; git-upload-pack"
+[ ! -e "$PWNED_REMOTE_MARKER" ] \
+  || fail "COMMAND INJECTION: --remote reached git and executed its --upload-pack payload before anything validated it"
+echo "$out" | grep -qF "must not begin with '-'" \
+  || fail "an option-shaped --remote was not refused with a clear message (got: $out)"
+# A remote name git itself would reject is refused too (same guard, non-'-' arm).
+run 2 --dir "$REPO23" --gh-repo acme/widget --no-network --remote "bad remote"
+echo "$out" | grep -qF "is not a valid git remote name" \
+  || fail "a malformed --remote was not refused with a clear message (got: $out)"
+# ...and the guard is not merely "reject everything": an explicit, valid
+# --remote must still drive a normal run.
+FAKE_PR_NUM=39 run 0 --dir "$REPO23" --gh-repo acme/widget --no-network --remote origin
+echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+  || fail "an explicit, valid --remote was refused by the new guard (got: $out)"
+echo "PASS: a malformed --remote is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --remote still runs"
 
 echo
 echo "ALL PASS: test_init.sh"

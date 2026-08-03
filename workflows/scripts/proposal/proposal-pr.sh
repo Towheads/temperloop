@@ -143,6 +143,24 @@ validate_branch() {
     || die "$label '$branch' is not a valid git branch name"
 }
 
+# Remote names are the FIRST POSITIONAL of `git fetch`/`git push` — the
+# position git parses as an OPTION whenever the word begins with `-`. A value
+# like `--upload-pack=touch /tmp/PWNED; git-upload-pack` therefore EXECUTES at
+# the fetch. `--remote` is documented CLI surface that adopter wrappers and
+# init.sh pass through, so it is not always a human's own keystroke. Same
+# validate-before-act ordering as validate_branch above: refuse at parse time,
+# before the first git invocation that consumes it — which here is
+# default_branch()'s own symbolic-ref/show-ref probes, not just the fetch.
+validate_remote() {
+  local remote="$1" label="$2"
+  [ -n "$remote" ] || die "$label is empty"
+  case "$remote" in
+    -*) die "$label '$remote' must not begin with '-' (git would read it as an option, not a remote)" ;;
+  esac
+  git check-ref-format "refs/remotes/$remote/HEAD" >/dev/null 2>&1 \
+    || die "$label '$remote' is not a valid git remote name"
+}
+
 # validate_manifest_path <path> — refuse anything that could write outside
 # the target repo: empty, absolute (leading "/"), a ".." path segment, or
 # under ".git/". This is a safety guard, NOT a namespace-convention check
@@ -197,6 +215,12 @@ cmd_open() {
     die "--body and --body-file are mutually exclusive"
   fi
   [ -n "$body" ] || [ -n "$body_file" ] || die "open requires --body or --body-file"
+
+  # Parse-time, before ANY git subprocess in this run — see validate_remote's
+  # own comment. `--remote` always holds its final value here (it defaults to
+  # "origin"), unlike `--base`, which may still need default_branch() to
+  # resolve it and so is validated a few lines further down.
+  validate_remote "$remote" "--remote"
 
   if [ -n "$body_file" ]; then
     if [ "$body_file" = "-" ]; then
