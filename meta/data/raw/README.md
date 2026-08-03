@@ -82,29 +82,73 @@ run did not do. A `/triage --feedback` run (sweep **plus** queue walk) still
 emits one `"triage"` record for its sweep; giving its queue walk counters of
 its own is a follow-on, not covered here.
 
-Record shape: `{ts, session_id, command, board, items_processed, merged, parked, epic?}`
+Record shape: `{ts, session_id, command, board, items_processed, merged, resolved, parked, epic?}`
 
 | field | type | notes |
 |---|---|---|
 | `ts` | string | ISO-8601 UTC, `Z` suffix |
 | `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — the join key other raw/ streams key on; `null` for a non-Claude-Code/manual run |
-| `command` | string | `"sweep"` \| `"triage"` \| `"triage-feedback"`, verbatim from `--command`. `"triage-feedback"` is a `/triage --feedback-only` run (queue walk, no sweep — see above); purely additive, no `schema_version` bump, but note a reader filtering on `command == "triage"` will **not** see these runs, which is intended |
+| `command` | string | `"sweep"` \| `"triage"` \| `"triage-feedback"` \| `"fix"`, verbatim from `--command`. `"triage-feedback"` is a `/triage --feedback-only` run (queue walk, no sweep — see above); purely additive, no `schema_version` bump, but note a reader filtering on `command == "triage"` will **not** see these runs, which is intended |
 | `board` | number \| string \| null | the logical board number (`--board`), or `null` if omitted |
 | `items_processed` | integer | how many items the run drove/considered |
-| `merged` | integer | how many reached a successful terminal outcome |
+| `merged` | integer | how many landed a merged PR |
+| `resolved` | integer, **absent on pre-#1084 records** | how many reached a terminal outcome that is **not** a merge — a `kind: spike` closed on its verdict (`/sweep`, `/fix`), a culled or decision-routed candidate (`/triage`). See the absent-means-unknown caveat below |
 | `parked` | integer | how many were parked/deferred/escalated |
 | `epic` | number \| string, OPTIONAL | the epic issue number the run drove against (e.g. `/assess --epic N`, or `/build` on a plan note with an `epic:` frontmatter field), from `--epic`. ABSENT from the record entirely (not `null`) when the caller doesn't pass `--epic` — purely additive, no `schema_version` bump |
+
+**Invariant: `merged + resolved + parked == items_processed`.** Every item a
+run drives reaches exactly one terminal disposition, so the three counts
+partition the total. `emit-command-run.sh` asserts this and **exits 2** on a
+mismatch (after appending the record anyway, so the inconsistency is preserved
+in the stream rather than swallowed). The invariant is what makes a *missing*
+disposition loud: if a command grows a fourth terminal outcome and nobody adds
+a field for it, the arithmetic breaks on the very next run instead of silently
+under-reporting. That silent under-report is what temperloop#1084 was filed
+for — a 30-item `/sweep` emitting `{items_processed:30, merged:27, parked:1}`,
+with the two verdict-resolved spikes expressible nowhere.
+
+⚠ **`resolved` is absent on records written before temperloop#1084, and absent
+means UNKNOWN — never `0`.** This stream is strictly append-only and is
+**never backfilled**, so historical records keep their original shape. A
+consumer MUST distinguish:
+
+- **no `resolved` key** — a pre-#1084 record. Its `merged` count may silently
+  include verdict-resolved items (`/sweep` folded them in), or the record may
+  simply not add up at all; the invariant above does **not** hold for it, and
+  neither does `resolved == 0`.
+- **`"resolved": 0`** — a post-#1084 run that genuinely resolved nothing.
+
+Every record written from #1084 on carries the field explicitly, so its
+absence is a reliable pre-#1084 marker. Read it defensively — e.g. in jq,
+`(.resolved // 0)` is fine for a *sum*, but `has("resolved")` is what you need
+before asserting the invariant or reporting a rate.
+
+This is a **purely additive** change (a new optional field, no field removed,
+no type or meaning changed), so per the schema-version convention above it does
+**not** bump `schema_version`, and this stream stays implicitly at its initial
+unversioned shape. `merged`'s *documented* meaning did narrow from "reached a
+successful terminal outcome" to "landed a merged PR" — but that is a
+clarification of what the callers already emitted in the merge-carrying case,
+not a re-typing of the field, and the absence marker above is what lets a
+reader tell the two eras apart without a version bump.
 
 Example record:
 
 ```json
-{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1}
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1}
 ```
 
 Example record, run against an epic (`--epic` passed):
 
 ```json
-{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1,"epic":42}
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1,"epic":42}
+```
+
+Example pre-#1084 record (no `resolved` key — the counts do **not** reconcile,
+and that is the defect, preserved as written):
+
+```json
+{"ts":"2026-08-03T02:14:55Z","session_id":"e9d363cd-0000-0000-0000-000000000000","command":"sweep","board":7,"items_processed":30,"merged":27,"parked":1}
 ```
 
 ### `issue-touches` — `issue-touches-<YYYY-MM>.jsonl`

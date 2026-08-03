@@ -52,6 +52,50 @@ reads that marker; a stranger greps for it before pulling.
   emitted shell). The `.mjs` floors the ceiling at no less than one CI-poll/gate
   slice, so no operator value can manufacture a false timeout on healthy work.
 
+- **`resolved` — a verdict-resolved disposition count on the `command-run`
+  telemetry stream, plus the accounting assertion it makes possible
+  (temperloop#1084).** `workflows/scripts/emit-command-run.sh` accepted only
+  `--merged` and `--parked`, but `/sweep` and `/fix` both define a *third*
+  terminal disposition — `resolved (verdict)`, a `kind: spike` closed on its
+  verdict — which the record could not express. A 30-item sweep therefore
+  emitted `{items_processed:30, merged:27, parked:1}`: two items simply
+  unaccounted for, and no way for a reader to tell "resolved by verdict" from
+  "silently dropped" or "lost to a crash" — the exact distinction the
+  pre-report terminal-state assertion exists to make. New `--resolved <N>` →
+  a `resolved` field, and the emitter now asserts
+  **`merged + resolved + parked == items_processed`**, exiting **2** with the
+  arithmetic named when it doesn't hold — *after* appending the record anyway,
+  so an inconsistent record is preserved in the stream rather than dropped (a
+  dropped record reopens the absent-stream ambiguity this emitter exists to
+  close). Infrastructure failure (no `jq`, an unwritable sink, a malformed
+  count) still warns and exits 0, so the emit never blocks its caller. All
+  three callers updated: `claude/commands/sweep.md` Step 3.6 stops folding
+  verdict resolutions into `--merged`; `claude/commands/fix.md` Step 6.4 gains
+  the spike arm; and `claude/commands/triage.md` Step 4.9 gains `--resolved
+  <C+D>` for its culled + decision-routed candidates, which had no field at
+  all and so under-reported every run that culled anything by exactly the cull
+  count. `workflows/scripts/validate-command-run-emit.sh` is extended with a
+  **content-derived** check — any command doc whose prose declares the
+  `resolved (verdict)` disposition must pass `--resolved`, so a doc that
+  *gains* that disposition later is caught without editing the linter — plus
+  assertions that the emitter still parses `--resolved` and still carries the
+  sum check. New behaviour test at
+  `workflows/scripts/tests/test_command_run_emit.sh` (registered in
+  `scripts/quality-gates.sh`'s `KERNEL_GATES`), and
+  `workflows/scripts/telemetry-brief.sh` Q5 renders the new count.
+
+  **Consumer note — purely additive, so no `schema_version` bump** (per
+  `meta/data/raw/README.md`'s convention: a new optional field is not a
+  breaking change). But the stream is append-only and is **never backfilled**,
+  so ⚠ **an ABSENT `resolved` field on a pre-#1084 record means UNKNOWN, never
+  `0`** — that record's `merged` count may silently include verdict-resolved
+  items, and the partition invariant does not hold for it. Every record
+  written from now on carries the field explicitly, so its absence is a
+  reliable pre-#1084 marker; read it with `has("resolved")`, not
+  `(.resolved // 0)`, before asserting the invariant or reporting a rate. The
+  brief's Q5 row does exactly that, printing "resolved unknown for N pre-#1084
+  run(s)" rather than implying those runs resolved nothing.
+
 - **Legacy host-config preflight — a registry-driven gate that asserts a
   removed legacy consumable ON THE HOST, not the repo artifact that merely
   describes it (temperloop#908).** New

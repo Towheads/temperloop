@@ -247,6 +247,15 @@ KERNEL_GATES=(
   "make test-prune-branches"
   "make validate-capture-backstop"
   "make validate-command-run-emit"
+  # command-run emitter BEHAVIOUR (temperloop#1084) — validate-command-run-emit
+  # above lints PRESENCE only. This covers the `--resolved` disposition count,
+  # the `merged + resolved + parked == items_processed` assertion (loud
+  # non-zero exit, record still appended), the warn-and-exit-0 infrastructure
+  # arm, the absent-means-UNKNOWN caveat in the sink spec, and the
+  # presence-lint's own red/green behaviour against a tampered fixture tree.
+  # Same direct-`bash` form as the sibling emitter gates (the kernel Makefile
+  # is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_command_run_emit.sh"
   "make validate-issue-touch-emit"
   # Kernel telemetry-brief renderer (temperloop#431): the five-question brief
   # rendered from kernel-only raw streams, wired into claude/commands/

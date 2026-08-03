@@ -189,12 +189,17 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
 ```bash
 "$(git rev-parse --show-toplevel)/workflows/scripts/emit-command-run.sh" \
   --command triage --board "$BOARD" \
-  --items-processed <K+M+Q — total candidates intook, Step 0.6/Step 1> \
+  --items-processed <K+M+Q — total candidates considered, Step 0.6/Step 1 (the full Backlog scan, INCLUDING the N the intake filter deferred)> \
   --merged <S — survivors promoted to Ready (active phase), Step 4.7> \
+  --resolved <C+D — culled (Step 4.8) + decisions routed off-board (Step 4.8)> \
   --parked <I+N+B — left in Backlog on an inactive phase (Step 4.7) + deferred at intake (Step 1) + blocked on an open blocked_by (Step 1)>
 ```
 
-`merged`/`parked` are triage's closest analogues to /build's "landed" vs. "held back": a promoted survivor is triage's terminal-success outcome (it reaches `Ready`, the next stage's intake), while everything left in `Backlog` for any reason (inactive phase, intake deferral, an open blocker) is held back exactly like a `sweep` park. Resolve the script bare repo-relative — if absent from a non-vendoring checkout, treat the failed path resolution as a no-op and continue (never let a missing/failing emit block or delay Step 5). The script itself is `|| true`-safe: a write failure warns to stderr and exits 0.
+`merged`/`resolved`/`parked` are triage's analogues of /build's "landed" / "settled without a merge" / "held back": a promoted survivor is triage's terminal-success outcome (it reaches `Ready`, the next stage's intake); a **culled or decision-routed** candidate is genuinely finished but never merges anything, which is exactly what `resolved` means in this stream (temperloop#1084 added it for `/sweep`'s spike verdicts — the same shape); and everything left in `Backlog` for any reason (inactive phase, intake deferral, an open blocker) is held back exactly like a `sweep` park.
+
+**The three counts MUST partition `--items-processed`**, and the emitter enforces it (`merged + resolved + parked == items_processed`, else a non-zero exit naming the arithmetic). This is why `--resolved` is mandatory here even though `/triage` has no spike-verdict disposition of its own: without it, `C+D` had no field and every run that culled anything under-reported its own total by exactly the cull count. If the counters don't add up, an item reached an outcome this record cannot express — fix the counters or add a field; never pad `--items-processed` to close the arithmetic.
+
+Resolve the script bare repo-relative — if absent from a non-vendoring checkout, treat the failed path resolution as a no-op and continue (never let a missing/failing emit block or delay Step 5). The script stays `|| true`-safe for *infrastructure* failure: a write failure warns to stderr and exits 0. Exit 2 is the one loud case — the accounting mismatch above.
 
 ## Step 5 — Summarise
 
@@ -353,6 +358,8 @@ So a `--feedback-only` run emits its own record under a **distinct `command` val
   --merged <A+B+F — clarifications answered + decisions answered + escalations disposed> \
   --parked <G — deferred, left in the queue>
 ```
+
+`--resolved` is legitimately omitted here (it defaults to `0`): a queue walk's outcomes are "answered/disposed" or "deferred", with no third settled-without-a-merge bucket. The partition still holds — `A+B+F+G == Q` by construction, since every queue member is either disposed or deferred — so the emitter's `merged + resolved + parked == items_processed` assertion (temperloop#1084) passes with `resolved = 0`.
 
 Same resolution and failure posture as Step 4.9: resolve the script bare repo-relative, treat a failed path resolution in a non-vendoring checkout as a no-op, and never let a missing or failing emit block the 6.4 summary (the script is `|| true`-safe — a write failure warns to stderr and exits 0).
 

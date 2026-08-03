@@ -101,8 +101,11 @@ lake="$TMP/lake"
 mkdir -p "$lake"
 cat > "$lake/command-runs-${month}.jsonl" <<EOF
 {"ts":"$now_ts","session_id":"s1","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1}
-{"ts":"$now_ts","session_id":"s2","command":"triage","board":4,"items_processed":6,"merged":0,"parked":2}
+{"ts":"$now_ts","session_id":"s2","command":"triage","board":4,"items_processed":6,"merged":0,"resolved":4,"parked":2}
 EOF
+# ↑ deliberately MIXED eras (temperloop#1084): the sweep row is a pre-#1084
+#   record with NO `resolved` key (absent = UNKNOWN, never 0), the triage row
+#   is post-#1084 and carries it. Q5 must render both without conflating them.
 cat > "$lake/issue-touches-${month}.jsonl" <<EOF
 {"schema_version":"1","ts":"$now_ts","repo":"o/r","issue":1,"session_id":"s1","host":"h","kind":"pr-open"}
 {"schema_version":"1","ts":"$now_ts","repo":"o/r","issue":1,"session_id":"s1","host":"h","kind":"merge"}
@@ -169,8 +172,9 @@ assert_has "$out" "search=1" "Q3 ks per-op breakdown (search)"
 # Q4 — 1 merge, 1 pr-open, 1 capture, 1 claim
 assert_has "$out" "issue touches (7d): 1 merged · 1 PRs opened · 1 captured · 1 claimed" "Q4 touch counts reconcile"
 # Q5 — per-command rollup with merge rate
-assert_has "$out" "sweep: 1 runs · 4 items · 3 merged · 1 parked · merge rate 75%" "Q5 sweep row reconciles"
-assert_has "$out" "triage: 1 runs · 6 items · 0 merged · 2 parked" "Q5 triage row reconciles"
+assert_has "$out" "sweep: 1 runs · 4 items · 3 merged · 0 resolved · 1 parked · merge rate 75% (resolved unknown for 1 pre-#1084 run(s))" "Q5 sweep row reconciles, and flags the pre-#1084 record's absent resolved as UNKNOWN rather than 0"
+assert_has "$out" "triage: 1 runs · 6 items · 0 merged · 4 resolved · 2 parked" "Q5 triage row reconciles with an explicit resolved count"
+assert_not_has "$out" "triage: 1 runs · 6 items · 0 merged · 4 resolved · 2 parked · merge rate 0% (resolved unknown" "a post-#1084 record never gets the unknown suffix"
 # every section names its source stream
 assert_has "$out" "source: command-runs-*.jsonl @ $lake" "Q1/Q5 name their source stream"
 assert_has "$out" "source: pipeline-*.jsonl @ $lake" "Q2 names its source streams"
@@ -201,13 +205,13 @@ cat > "$torn/command-runs-${month}.jsonl" <<EOF
 EOF
 out="$(run_brief "$torn" "$TMP/torn/absent-reads.log" 2>&1)"; rc=$?
 assert_rc0 "$rc" "exit 0 with a torn line"
-assert_has "$out" "sweep: 1 runs · 1 items · 1 merged · 0 parked" "torn line skipped, intact record rendered"
+assert_has "$out" "sweep: 1 runs · 1 items · 1 merged · 0 resolved · 0 parked" "torn line skipped, intact record rendered"
 
 # ── 5. lookback flag override ────────────────────────────────────────────────
 echo "lookback flag:"
 out="$(run_brief "$stale" "$TMP/stale/absent-reads.log" --lookback-days 60 2>&1)"; rc=$?
 assert_rc0 "$rc" "exit 0 with --lookback-days"
-assert_has "$out" "sweep: 1 runs · 2 items · 2 merged · 0 parked" "60-day window picks up the 30-day-old record"
+assert_has "$out" "sweep: 1 runs · 2 items · 2 merged · 0 resolved · 0 parked" "60-day window picks up the 30-day-old record"
 
 # ── 6. check-in wiring (the contract this renderer exists to satisfy) ───────
 echo "check-in wiring:"
