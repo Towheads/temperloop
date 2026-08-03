@@ -16,6 +16,16 @@
 #            (CHANGELOG history + the 0.17.0 migration map itself, ADRs,
 #            archived plans, session/meta data).
 #   self   — this gate's own family (the shapes/allowlist live here).
+#   detector — a migration-CHECKING tool that must name a pre-rename
+#            identifier because that identifier is what it SEARCHES FOR on
+#            the host. Same reasoning as `self`: the string is the tool's
+#            subject matter, not a leaked usage. Scoped narrowly — a file
+#            qualifies only if it detects an UNMIGRATED host referencing a
+#            deleted artifact, never merely because it mentions one.
+#            (temperloop#908: the preflight's whole job is spotting an
+#            installed launchd plist still invoking the deleted
+#            funnel-cron.sh stub, so renaming the literal would silently
+#            break the detection it exists to perform.)
 
 # record
 CHANGELOG.md
@@ -27,3 +37,7 @@ meta/
 workflows/scripts/kernel/check-terminology-leak-guard.sh
 workflows/scripts/kernel/terminology-leak-exempt-files.txt
 workflows/scripts/kernel/tests/test_check_terminology_leak_guard.sh
+
+# detector
+workflows/scripts/install/legacy-host-preflight.sh
+workflows/scripts/tests/test_legacy_host_preflight.sh
