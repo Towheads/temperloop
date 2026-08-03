@@ -327,6 +327,25 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`claude/commands/workshop.md` trimmed by a subtraction pass, and
+  `PROSE_BUDGET_TIER2_FILE_CAP` lowered 1186 → 1100 (temperloop#956).**
+  `workshop.md` had become the largest tracked kernel doc and had funded
+  **three** raises of the uniform tier-2 cap in a single day (temperloop#925,
+  #947, #954) — and because the cap is one value across all 42 tracked docs,
+  each raise loosened the budget for every other doc purely to fund one file.
+  This reverses that erosion: 1181 → 1041 lines (−11.9%) by consolidation and
+  removal of restatement, never by deleting specified behavior — every step,
+  sub-step, gate, disposition, and named rule the file specified before is
+  still specified, and all 18 citation markers (`W.1`–`W.18`) survive
+  unchanged. The repeated `vault_patch` frontmatter-scalar warning is now
+  stated once and cross-referenced; the Failure-modes section is a one-line
+  index back into each step rather than a second full restatement. The
+  load-bearing `§ Step 2 — Coverage walk` heading — cited **by name** from
+  `tidy.md`'s capture/backstop registry row (temperloop#933) — survives
+  verbatim. The cap is reseeded to `build.md`'s current 1100 lines, the same
+  zero-headroom convention it was originally seeded with, so the ratchet has
+  now moved **down** for the first time.
+
 - **The basic-memory config written by `ks_search` now carries
   `semantic_embedding_dimensions` alongside `semantic_embedding_model`, as one
   coupled setting (temperloop#907).** `_ks_bm_ensure_config` pinned the
