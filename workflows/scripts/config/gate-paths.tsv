@@ -165,6 +165,7 @@ bash workflows/scripts/tests/test_reviewer_activate.sh	workflows/scripts/install
 bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh	workflows/scripts/install/** workflows/scripts/tests/test_doctor_reviewer_coverage.sh
 bash workflows/scripts/tests/test_doctor_knowledge_root.sh	workflows/scripts/install/** workflows/scripts/lib/knowledge_store*.sh workflows/scripts/build/build.config.sh workflows/scripts/tests/test_doctor_knowledge_root.sh
 bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh	workflows/scripts/install/** workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_doctor_cross_checkout_split.sh
+bash workflows/scripts/tests/test_legacy_host_preflight.sh	workflows/scripts/install/** workflows/scripts/tests/test_legacy_host_preflight.sh
 make test-install-links	workflows/scripts/install/** claude/** bin/** workflows/scripts/tests/test_install_links.sh
 make test-install-worktree-guard	workflows/scripts/install/** claude/hooks/** workflows/scripts/tests/test_install_worktree_guard.sh
 bash workflows/scripts/tests/test_install_cli.sh	bin/** workflows/scripts/install/** workflows/scripts/tests/** VERSION

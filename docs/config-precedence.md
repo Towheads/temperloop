@@ -104,7 +104,16 @@ migrated it (v0.15.0, read-old-write-new). That legacy fallback was
 `$XDG_CONFIG_HOME/foundation/boards.conf` is **no longer read** — instead
 `board.sh` and `make doctor` NAME it on stderr, so a machine whose only conf
 sits at the legacy path is told why its boards look unconfigured rather than
-silently falling through to the built-in maps. Move the file (`mkdir -p
+silently falling through to the built-in maps. That NAME-on-stderr posture is
+advisory only — it depends on someone watching stderr, and (temperloop#908)
+the same gap let this exact case go unnoticed on a real host once nothing
+was there to read the new location either, silently reverting board.{3,4,5,6}
+to the Projects-v2 backend. `make doctor`'s `check_legacy_host_config()`
+(`workflows/scripts/install/legacy-host-preflight.sh`) now additionally
+GATES on it: a legacy `boards.conf` present with no
+`$XDG_CONFIG_HOME/temperloop/boards.conf` successor fails `make doctor`'s
+(and therefore `temperloop update`'s) exit code outright, not just a
+stderr NOTE. Move the file (`mkdir -p
 ~/.config/temperloop && mv ~/.config/foundation/boards.conf
 ~/.config/temperloop/`) or set `BOARDS_CONF_MACHINE`. Any **new** machine-conf surface added after this
 ladder — including layer 3 above — uses the `temperloop` namespace from the
