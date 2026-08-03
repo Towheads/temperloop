@@ -127,11 +127,20 @@
 # switch's outcome is known (success either way) — see init.sh's own header
 # note. This script is the marker's reader: when it finds the marker AND
 # the checkout is still sitting on the branch it names, it restores the
-# recorded original branch and deletes the stray one as part of the same
-# consented revert this script already gates everything else behind (never
-# on `--dry-run`, never without --yes/an interactive confirm) — so ejecting
-# a partial run leaves the repo exactly as it was: no `.temperloop/`
-# residue, original branch restored, no stray unmerged branch.
+# recorded original branch, deletes the stray LOCAL branch, and (temperloop
+# #967) makes a best-effort attempt to delete the same branch on the REMOTE
+# too — proposal-pr.sh pushes BEFORE it opens the PR, so a run that dies at
+# or after the push (a failed `gh pr create`, a killed process) can leave
+# the branch sitting on the remote with no PR ever opened to record it in
+# `installs[]`. That remote attempt is unconditional and best-effort (there
+# is no way to tell from the marker alone whether the push landed), gated by
+# the same --no-network/gh-availability checks as every other API-state
+# action, and never itself treated as fatal — see restore_original_branch()
+# below. All of this rides the same consented revert this script already
+# gates everything else behind (never on `--dry-run`, never without --yes/an
+# interactive confirm) — so ejecting a partial run leaves the repo exactly
+# as it was: no `.temperloop/` residue, original branch restored, no stray
+# unmerged branch either locally or on the remote.
 #
 # Usage:
 #   eject.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network]
@@ -205,9 +214,14 @@ Five separate removal scopes — this subcommand only handles (c); see
       'temperloop install' wrote under \$HOME — a separate concern from
       (a) and (c)):
         temperloop uninstall
-  (c) THIS repo's .temperloop/config side effects (a proposal PR; plus
-      the labels, required checks and board a PRE-SCOPE-DOWN init
-      recorded — a pre-v0.15.0 init recorded them in .foundation/config)
+  (c) THIS repo's .temperloop/config side effects (a proposal PR, including
+      the local AND remote 'foundation-init/*' branch it opened — whether
+      the PR merged, is still open, was closed unmerged, or the run never
+      reached a PR at all (a killed process, a failed push, a failed
+      'gh pr create') and only left the branch behind, restored via the
+      .temperloop/.recovery.json marker; plus the labels, required checks
+      and board a PRE-SCOPE-DOWN init recorded — a pre-v0.15.0 init
+      recorded them in .foundation/config)
       — what 'temperloop eject' just did.
   (d) Issue-cache store root (regenerable cache, deliberately untracked —
       manual, optional):
@@ -370,10 +384,39 @@ restore_original_branch() {
   fi
   echo "branch: restored '$recovery_original_branch' (was on stray '$recovery_proposal_branch' from an interrupted init run)"
   if git -C "$repo_dir" branch -D "$recovery_proposal_branch" >/dev/null 2>&1; then
-    echo "branch: deleted stray '$recovery_proposal_branch'"
+    echo "branch: deleted stray '$recovery_proposal_branch' (local)"
   else
-    echo "branch: FAILED to delete stray '$recovery_proposal_branch'"
+    echo "branch: FAILED to delete stray '$recovery_proposal_branch' (local)"
     return 1
+  fi
+
+  # --- best-effort REMOTE cleanup (temperloop#967) --------------------------
+  # proposal-pr.sh commits, THEN pushes, THEN opens the PR — a run that dies
+  # at or after the push (a failed `gh pr create`, a killed process) can
+  # leave $recovery_proposal_branch sitting on the remote with no PR ever
+  # opened to surface it in installs[] (a `proposal_pr` entry is only folded
+  # in once PR_OPENED/EXISTS is known — see init.sh's "BOOTSTRAP ORDERING
+  # NOTE"). The recovery marker alone can't tell us whether the push actually
+  # landed before the run died, so this attempt is UNCONDITIONAL and silently
+  # no-ops when there is nothing there to delete — the same best-effort shape
+  # the CLOSED-state cleanup in revert_proposal_pr below already uses for an
+  # unmerged PR's branch. Gated exactly like every other API-state action in
+  # this script (a legible skip under --no-network / no resolved gh_repo / no
+  # gh binary) but never treated as fatal on its own — a skip or a "nothing
+  # there" here is the expected, common case (the push itself failed, so
+  # nothing was ever pushed), not a sign the revert is incomplete.
+  local remote_repo="${gh_repo:-}"
+  if [ "$no_network" -eq 1 ]; then
+    echo "branch: remote cleanup of '$recovery_proposal_branch' skipped (--no-network)"
+  elif [ -z "$remote_repo" ]; then
+    echo "branch: remote cleanup of '$recovery_proposal_branch' skipped (no resolved gh_repo — pass --gh-repo)"
+  elif ! command -v "$EJECT_GH_BIN" >/dev/null 2>&1; then
+    echo "branch: remote cleanup of '$recovery_proposal_branch' skipped (gh CLI not found on PATH)"
+  elif "$EJECT_GH_BIN" api --method DELETE \
+      "repos/$remote_repo/git/refs/heads/$recovery_proposal_branch" >/dev/null 2>&1; then
+    echo "branch: deleted stray '$recovery_proposal_branch' (remote, $remote_repo — in case the push landed before the run died)"
+  else
+    echo "branch: remote '$recovery_proposal_branch' ($remote_repo) already absent, or could not be deleted — skipped (harmless if the push never landed)"
   fi
   return 0
 }
