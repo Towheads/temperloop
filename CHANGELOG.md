@@ -156,6 +156,30 @@ reads that marker; a stranger greps for it before pulling.
   "Overlay drop-in contract" / "Headline selection" state the new line and
   its exception.
 
+- **Git stale-branch-guard hook test coverage expanded (temperloop#776,
+  refiled from foundation#1138): regression test for the exact shape of
+  a subsetwiki incident (18-commit stale branch, silent bypass of the
+  guard) and install-verification fixtures.** Investigation of a 2026-07-10
+  incident found that subsetwiki's project-level `.claude/settings.json` (a
+  valid, intentional declaration skipping global hook re-declaration per
+  Claude Code's documented hook-merge semantics) could not shadow the guard's
+  global registration. The real root cause was prior to commit fe86e11
+  (2026-07-25): the guard's awk parser had no case for `git worktree add -b`
+  and silently skipped that branch-creation verb, even though subsetwiki's
+  `/build` workflow uses worktree-based branching. The parser gap is already
+  closed by an earlier commit in this tree, so this ticket closes the
+  remaining **test coverage gap** rather than a logic gap: a fixture
+  reproducing the subsetwiki shape (project-level `~/.claude/settings.json`
+  declaring only `Edit|Write|MultiEdit` hooks) proves the guard still fires
+  there (install-verification leg), and a behind-by-18 fixture reproduces the
+  incident's exact behind-count rather than an arbitrary N (explicit regression
+  naming the reason string's behind-by-N count, not just ask vs silent). New
+  `check_reason()` helper in the test asserts both decision *and* the
+  behind-count textually. Upstream: this test surface is outside the kernel
+  proper (kernel #49, write-lane guard hook test file — part of the
+  test-surface system Travis added, not part of the generic kernel shipped to
+  strangers).
+
 - **One-time first-run disclosure and a per-person local disable for the
   `tokens` report producer (temperloop#986).** The producer at
   `.temperloop/report.d/tokens` is a *committed* artifact, so a teammate who
