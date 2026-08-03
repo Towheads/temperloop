@@ -16,6 +16,22 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **Two draft ADRs recording the toolkit-provenance design's architectural
+  calls (temperloop#1047).** `docs/adr/0021-toolkit-provenance-is-derived-not-declared.md`
+  records that whether the running toolkit code matches its release is
+  **derived** from git at read time rather than declared as stored state — no
+  marker file, no mode flag, no added pin field — so nothing can go stale and
+  removal is a pure deletion. `docs/adr/0022-provenance-baseline-is-the-subtree-split.md`
+  records that the baseline for a vendoring consumer is the **recorded-versus-
+  recomputed subtree split sha**, and that the seemingly-obvious alternative
+  (diffing from the commit that last touched `.kernel-pin`) is rejected: the
+  update tool writes the pin in a *separate, later* commit and skips it
+  entirely on an idempotent re-run, which was shown in a sandbox to report a
+  hand-edited tree as unmodified. Both are `Proposed`; accepting them is a
+  separate human act. Documents only — no behaviour change, and `docs/adr/*`
+  was already claimed in both governance manifests, so no registry edit was
+  needed.
+
 - **One-time first-run disclosure and a per-person local disable for the
   `tokens` report producer (temperloop#986).** The producer at
   `.temperloop/report.d/tokens` is a *committed* artifact, so a teammate who
