@@ -79,12 +79,23 @@
 # `1` restores the exact pre-parallel serial loop, which is what a bisect or a
 # flake hunt should use).
 #
+# CHANGED-FILE SCOPING FOR A LOCAL, MID-WORK RUN (temperloop#957): `--scoped`
+# applies the same selector to the LOCAL working tree — committed, staged,
+# unstaged and untracked changes vs. the default-branch merge-base — so a
+# /build item worker's ITERATIVE verification runs only the gates its own
+# changes can reach. It is a fast-feedback mode ONLY: /build's §3e.5 parent-side
+# acceptance gate and every pre-push/CI invocation stay BARE and repo-wide, and
+# a `--scoped` run says loudly, in three places, that it is not a full run.
+#
 # Usage:
 #   scripts/quality-gates.sh          run the applicable gate set; exit non-zero if any fail
 #   scripts/quality-gates.sh --list   print "[layer] command" for every gate (always the FULL set)
 #   scripts/quality-gates.sh --list-selected
 #                                     print the gate set THIS invocation would run,
 #                                     with the one-line selection reason (dry run)
+#   scripts/quality-gates.sh --scoped run only the gates the LOCAL working-tree
+#                                     changes reach, plus the always-run floor
+#                                     (combinable with --list-selected)
 
 set -uo pipefail
 
@@ -900,6 +911,17 @@ KERNEL_GATES+=("bash scripts/tests/test_quality_gates_slice.sh")
 KERNEL_GATES+=("bash workflows/scripts/config/check-gate-paths.sh")
 KERNEL_GATES+=("bash workflows/scripts/config/tests/test_check_gate_paths.sh")
 KERNEL_GATES+=("bash workflows/scripts/lib/tests/test_gate_selection.sh")
+# CHANGED-FILE-SCOPED local runs (temperloop#957) — the `--scoped` flag this
+# very script implements below, i.e. the mid-work mode a /build item worker runs
+# instead of the minutes-scale full suite. Proves the properties that make it
+# safe to trust: the BARE invocation (CI `checks`, /build §3e.5) is unchanged, a
+# scoped run NAMES every gate it skipped (twice, and on the verdict line
+# itself), an uncommitted/untracked file is in scope, every resolution failure
+# widens to the full set, and a red gate is still red. Hermetic: a patched copy
+# of this file over four synthetic gates in a throwaway git repo, never this
+# file's real gate list. Same direct-`bash` form as the slice/parallel gates
+# above (kernel Makefile is generator-owned).
+KERNEL_GATES+=("bash scripts/tests/test_quality_gates_scoped.sh")
 # Bounded-concurrency SCHEDULER (temperloop#1025): the pool this very script now
 # runs its gate list through — workflows/scripts/lib/gate-pool.sh. Proves the
 # properties a parallel runner has to earn before it may replace a serial loop:
@@ -1009,15 +1031,17 @@ if [[ "${1:-}" == "--list" ]]; then
 fi
 
 LIST_SELECTED=0
-if [[ "${1:-}" == "--list-selected" ]]; then
-  LIST_SELECTED=1
-  shift
-fi
-
-if [[ $# -gt 0 ]]; then
-  echo "usage: $(basename "$0") [--list|--list-selected]" >&2
-  exit 2
-fi
+SCOPED=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list-selected) LIST_SELECTED=1; shift ;;
+    --scoped)        SCOPED=1; shift ;;
+    *)
+      echo "usage: $(basename "$0") [--list|--list-selected] [--scoped]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # --- SLICED EXECUTION (temperloop#1021) --------------------------------------
 # The suite's caller may be under a HARD wall-clock ceiling it cannot raise —
@@ -1113,7 +1137,47 @@ GATE_SELECTION_ROOT="$REPO_ROOT"
 GATE_SELECTION_MAP_FILE="$REPO_ROOT/workflows/scripts/config/gate-paths.tsv"
 GATE_SELECTION_ALL_GATES="$(printf '%s\n' "${GATES[@]}")"
 GATE_SELECTION_BASE="${LEAK_GUARD_BASE:-}"  # setting:exempt — reused verbatim from ci.yml's existing export (owning script: check-pr-leak-guard.sh)
+# --- `--scoped`: the LOCAL, mid-work changed-file mode (temperloop#957) -------
+# The CI path above needs a pushed head and an exported base. A /build item
+# worker has neither — it is mid-work in a throwaway worktree — which is why its
+# self-verification had to be a hand-picked subset of `--list` output, chosen by
+# a model's judgment about which gates its files touch (claude/commands/build.md
+# §3c). `--scoped` replaces that judgment call with THIS map: the same selector,
+# the same silent-green defenses, fed the local working-tree changed set instead
+# of a PR diff. Everything it cannot resolve degrades to the full set.
+GATE_SELECTION_LOCAL_BASE=""
+if (( SCOPED )); then
+  QUALITY_GATES_SCOPE="diff"   # setting:exempt — the flag's whole meaning is "force a scoped attempt"; a caller's own value is deliberately overridden by the explicit flag
+  # A caller-supplied GATE_SELECTION_CHANGED wins (the fixture seam), so a test
+  # can exercise this mode without a git tree to stage changes in.
+  if [[ -z "${GATE_SELECTION_CHANGED+x}" ]]; then
+    if _qg_local_changed="$(gate_selection_local_changed "$REPO_ROOT")"; then
+      GATE_SELECTION_CHANGED="$_qg_local_changed"
+    else
+      printf 'NOTE: --scoped could not resolve a local changed set — running the FULL set.\n' >&2
+    fi
+    unset _qg_local_changed
+  fi
+fi
 gate_selection_resolve
+
+# qg_print_skipped_gates — name every gate the selection left out, and why.
+# A no-op on a full run (nothing was skipped) and on an older gate-selection.sh
+# that predates the _SKIPPED out-param, so the two files can be vendored out of
+# lockstep without this turning into an error.
+qg_print_skipped_gates() {
+  local skipped="${GATE_SELECTION_SKIPPED:-}" n gate  # setting:exempt — internal call-interface global set by gate-selection.sh, not an operator setting
+  [[ "$GATE_SELECTION_MODE" == "diff" ]] || return 0
+  [[ -n "$skipped" ]] || return 0
+  n="$(printf '%s\n' "$skipped" | grep -c . || true)"
+  printf 'SCOPED RUN — %s gate(s) NOT run: no changed path reaches them per workflows/scripts/config/gate-paths.tsv.\n' "$n"
+  while IFS= read -r gate; do
+    [[ -n "$gate" ]] || continue
+    printf '  not run (out of scope): %s\n' "$gate"
+  done <<<"$skipped"
+  printf 'A green SCOPED run is NOT a green full run — the authority is the BARE, repo-wide invocation (CI checks job, /build 3e.5).\n'
+}
+
 if [[ "$GATE_SELECTION_MODE" == "diff" && -n "$GATE_SELECTION_SELECTED" ]]; then
   SELECTED_GATES=()
   while IFS= read -r _sel_gate; do
@@ -1127,6 +1191,7 @@ fi
 if [[ $LIST_SELECTED -eq 1 ]]; then
   printf 'selection: %s\n' "$GATE_SELECTION_REASON"
   printf '%s\n' "${GATES[@]}"
+  qg_print_skipped_gates
   exit 0
 fi
 
@@ -1134,6 +1199,17 @@ fi
 # did not announce itself is indistinguishable from a full one that silently
 # lost gates (the legible-degradation rule).
 printf 'gate selection: %s\n' "$GATE_SELECTION_REASON"
+if (( SCOPED )) && [[ -n "$GATE_SELECTION_LOCAL_BASE" ]]; then
+  printf 'scoped against local working tree (base %s): %s changed path(s).\n' \
+    "${GATE_SELECTION_LOCAL_BASE:0:12}" \
+    "$(printf '%s\n' "${GATE_SELECTION_CHANGED:-}" | grep -c . || true)"  # setting:exempt — internal call-interface global (this script's own scoped-mode input), not an operator setting
+fi
+# NAME WHAT WAS SKIPPED, AND WHY (temperloop#957). A scoped run that reports
+# only what it RAN is one scroll away from being read as a green full run; the
+# whole safety case for scoping rests on the reader being unable to make that
+# mistake. So the un-run gates are listed by name, with the one reason that
+# applies to all of them, BEFORE the run and again at the verdict.
+qg_print_skipped_gates
 
 # --- Checkout-freshness guard (temperloop#591) --------------------------------
 # This script runs whatever gate LIST the checked-out tree contains, and the
@@ -1447,8 +1523,13 @@ fi
 # (temperloop#1021, which exits 75 right there) still announces its scope
 # rather than exiting silently on it.
 if [[ "$GATE_SELECTION_MODE" == "diff" ]]; then
-  printf 'NOTE: this was a DIFF-SCOPED run — %s. The full set still runs on merge_group (temperloop#1024).\n\n' \
+  printf 'NOTE: this was a DIFF-SCOPED run — %s. The full set still runs on merge_group (temperloop#1024).\n' \
     "$GATE_SELECTION_REASON"
+  # The skip list, repeated at the verdict for the same reason the staleness
+  # banner is (temperloop#957): the reader decides here, and "all gates passed"
+  # means something different on a scoped run.
+  qg_print_skipped_gates
+  echo
 fi
 
 qg_elapsed=$(( $(date +%s) - qg_started ))
@@ -1471,8 +1552,15 @@ if [[ -n "$qg_resume_at" ]]; then
   exit 75
 fi
 
+qg_scope_suffix=""
+if [[ "$GATE_SELECTION_MODE" == "diff" ]]; then
+  # The verdict LINE ITSELF carries the scope, so even a one-line grep of a
+  # worker's log ("OK — all N quality gate(s) passed") cannot be mistaken for a
+  # full-suite pass (temperloop#957).
+  qg_scope_suffix=" [SCOPED SUBSET — NOT a full-suite pass]"
+fi
 if (( ${#failures[@]} > 0 )); then
-  printf 'FAILED %d/%d quality gate(s):\n' "${#failures[@]}" "${#GATES[@]}"
+  printf 'FAILED %d/%d quality gate(s)%s:\n' "${#failures[@]}" "${#GATES[@]}" "$qg_scope_suffix"
   printf '  - %s\n' "${failures[@]}"
   printf 'QUALITY_GATES_FAILED=%d\n' "${#failures[@]}"
   exit 1
@@ -1483,8 +1571,8 @@ fi
 if (( QG_START_AT > 0 )); then
   # Final slice of a sliced run — say so, so the line is never misread as "the
   # whole suite passed" when earlier slices ran (and may have failed) elsewhere.
-  printf 'OK — gates %s..%s of %s passed in %ss (final slice)\n' \
-    "$QG_START_AT" "$(( ${#GATES[@]} - 1 ))" "${#GATES[@]}" "$qg_elapsed"
+  printf 'OK — gates %s..%s of %s passed in %ss (final slice)%s\n' \
+    "$QG_START_AT" "$(( ${#GATES[@]} - 1 ))" "${#GATES[@]}" "$qg_elapsed" "$qg_scope_suffix"
 else
-  printf 'OK — all %d quality gate(s) passed in %ss\n' "${#GATES[@]}" "$qg_elapsed"
+  printf 'OK — all %d quality gate(s) passed in %ss%s\n' "${#GATES[@]}" "$qg_elapsed" "$qg_scope_suffix"
 fi

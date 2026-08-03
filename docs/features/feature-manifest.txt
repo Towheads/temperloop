@@ -292,6 +292,12 @@ quality-gates workflows/scripts/lib/gate-selection.sh
 quality-gates workflows/scripts/lib/tests/test_gate_selection.sh
 quality-gates workflows/scripts/lib/gate-pool.sh
 quality-gates scripts/tests/test_quality_gates_parallel.sh
+# Changed-file-scoped LOCAL runs (temperloop#957) — the `--scoped` flag a
+# /build item worker's mid-work verification uses. The flag itself and the
+# local changed-set resolver live in two files already claimed above
+# (scripts/quality-gates.sh, workflows/scripts/lib/gate-selection.sh); this
+# claims its own suite.
+quality-gates scripts/tests/test_quality_gates_scoped.sh
 quality-gates scripts/lint-zsh-param-tie.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh

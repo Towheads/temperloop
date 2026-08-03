@@ -75,21 +75,43 @@
 #   GATE_SELECTION_BASE        base ref/sha to diff against (caller passes
 #                              $LEAK_GUARD_BASE — ci.yml already supplies it,
 #                              so no second base-derivation path exists)
-#   GATE_SELECTION_CHANGED     OPTIONAL test seam: newline-delimited changed
-#                              paths to use verbatim instead of running git
+#   GATE_SELECTION_CHANGED     OPTIONAL caller-supplied changed-path set:
+#                              newline-delimited paths used verbatim instead of
+#                              running git. Two real callers: this suite's own
+#                              fixture tests, and quality-gates.sh's `--scoped`
+#                              mode, which hands in the LOCAL working-tree set
+#                              gate_selection_local_changed() computes below.
 #
 # Outputs (globals):
 #   GATE_SELECTION_MODE        full | diff
 #   GATE_SELECTION_REASON      one human-readable line explaining the mode
 #   GATE_SELECTION_SELECTED    newline-delimited selected gates, in the input
 #                              order (mode=diff only; empty when mode=full)
+#   GATE_SELECTION_SKIPPED     newline-delimited gates the selection LEFT OUT,
+#                              in the input order (mode=diff only). The
+#                              complement of _SELECTED, computed here rather
+#                              than re-derived by each caller, so a scoped run
+#                              can NAME what it did not run — a green scoped
+#                              run that cannot say what it skipped is
+#                              indistinguishable from a green full one
+#                              (temperloop#957).
 #   GATE_SELECTION_MATCHED     newline-delimited changed paths that were
 #                              recognised (diagnostics)
+#   GATE_SELECTION_LOCAL_BASE  set by gate_selection_local_changed(): the base
+#                              commit that resolution settled on (diagnostics)
+#
+# Second entry point:
+#   gate_selection_local_changed <root>
+#                              print the LOCAL working-tree changed set (see
+#                              its own comment block). Non-zero, with a stderr
+#                              line, when no base resolves — the caller must
+#                              then degrade to the full set.
 #
 # Settings:
 #   QUALITY_GATES_SCOPE  auto (default) | full | diff.  `auto` scopes only on a
 #     GitHub `pull_request` event; `full` disables scoping outright; `diff`
-#     forces an attempt regardless of event (the local/CI test seam).
+#     forces an attempt regardless of event (the local/CI test seam, and what
+#     quality-gates.sh's `--scoped` flag sets).
 #
 # Kept bash-3.2-portable (macOS default shell): no associative arrays, no
 # mapfile, no `${v,,}`.
@@ -155,6 +177,61 @@ _gs_changed_paths() {
   git -C "$root" diff --name-only "${base}...HEAD" 2>/dev/null || return 1
 }
 
+# --- LOCAL working-tree changed set (temperloop#957) --------------------------
+# The CI path above diffs a PUSHED head against a supplied base. A /build item
+# worker asking for a mid-work gate run has neither: its work is a mix of
+# committed, staged, unstaged and brand-new files in a throwaway worktree, and
+# nothing exports a base for it. So this helper resolves the base itself and
+# unions the four sources — anything less would UNDER-run:
+#
+#   1. <merge-base(origin/<default>, HEAD)>...HEAD   the worker's commits
+#   2. `git diff --name-only HEAD`                   staged + unstaged edits
+#   3. `git ls-files --others --exclude-standard`    new, not-yet-added files
+#
+# (2) and (3) are what make this usable MID-work rather than only after a
+# commit, and (3) is why a brand-new source file cannot hide from the selector.
+# Ignored files are deliberately excluded via --exclude-standard: the build
+# harness drops its own scratch (`.build-guard`, `.build-verification.md`) into
+# the worktree root, and those are not changes to the tree under test.
+#
+# BASE RESOLUTION IS MANDATORY. If no base resolves, this returns non-zero and
+# the caller degrades to the full set — it does NOT fall back to "the
+# working-tree changes alone", which would silently hide every committed change
+# and is exactly the silent-green class defense (2) in the header exists for.
+# GATE_SELECTION_LOCAL_BASE is an OUT-PARAM read by the sourcing caller (the
+# base this resolution settled on, reported in the run's own scope line), so
+# the static linter's "appears unused" is a false positive — same blanket
+# disable as gate_selection_resolve below.
+# shellcheck disable=SC2034
+gate_selection_local_changed() {
+  local root="${1:-.}" default_ref="" base=""
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || {
+    printf 'gate-selection: %s is not a git checkout — cannot resolve a local changed set\n' "$root" >&2
+    return 1
+  }
+  # origin/HEAD when the remote advertises one, else the conventional names.
+  default_ref="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  local cand
+  for cand in "$default_ref" origin/main origin/master main master; do
+    [[ -n "$cand" ]] || continue
+    if base="$(git -C "$root" merge-base "$cand" HEAD 2>/dev/null)" && [[ -n "$base" ]]; then
+      break
+    fi
+    base=""
+  done
+  if [[ -z "$base" ]]; then
+    printf 'gate-selection: no default-branch merge-base resolvable in %s\n' "$root" >&2
+    return 1
+  fi
+  GATE_SELECTION_LOCAL_BASE="$base"
+  {
+    git -C "$root" diff --name-only "${base}...HEAD" 2>/dev/null
+    git -C "$root" diff --name-only HEAD 2>/dev/null
+    git -C "$root" ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u | grep -v '^$'
+  return 0
+}
+
 # --- membership over a newline-delimited set ---------------------------------
 _gs_in_list() {
   local needle="$1" list="$2" item
@@ -174,6 +251,7 @@ gate_selection_resolve() {
   GATE_SELECTION_MODE="full"
   GATE_SELECTION_REASON=""
   GATE_SELECTION_SELECTED=""
+  GATE_SELECTION_SKIPPED=""
   GATE_SELECTION_MATCHED=""
 
   local scope="${QUALITY_GATES_SCOPE:-auto}"
@@ -273,7 +351,7 @@ gate_selection_resolve() {
 
   # Emit in the caller's run order, and keep any gate the map does not mention
   # (defense 4 in the header: an unmapped gate over-runs, never under-runs).
-  local gate ordered="" mapped always keep
+  local gate ordered="" left_out="" mapped always keep
   while IFS= read -r gate; do
     [[ -n "$gate" ]] || continue
     mapped=0
@@ -295,11 +373,16 @@ gate_selection_resolve() {
     elif _gs_in_list "$gate" "$selected"; then
       keep=1                       # selected by a changed path
     fi
-    [[ $keep -eq 1 ]] && ordered="${ordered:+$ordered$'\n'}$gate"
+    if [[ $keep -eq 1 ]]; then
+      ordered="${ordered:+$ordered$'\n'}$gate"
+    else
+      left_out="${left_out:+$left_out$'\n'}$gate"
+    fi
   done <<<"$all"
 
   GATE_SELECTION_MODE="diff"
   GATE_SELECTION_SELECTED="$ordered"
+  GATE_SELECTION_SKIPPED="$left_out"
   GATE_SELECTION_MATCHED="$matched"
   local n_changed n_sel n_all
   n_changed="$(printf '%s\n' "$changed" | grep -c . || true)"
