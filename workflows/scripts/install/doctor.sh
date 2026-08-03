@@ -513,6 +513,52 @@ check_reviewer_coverage() {
 }
 
 # ---------------------------------------------------------------------------
+# check_legacy_host_config — HOST-STATE preflight for legacy host-config
+# paths a release has REMOVED (temperloop#908). Delegates entirely to the
+# registry-driven workflows/scripts/install/legacy-host-preflight.sh (see
+# that file's own header for the full rationale and the two instances that
+# motivated it — foundation#1419's stranded funnel-cron.plist and
+# temperloop#165's unmigrated legacy boards.conf).
+#
+# Unlike check_cache_state's advisory NOTE (which never affects doctor's
+# exit code — a legacy machine conf that's merely unread might still be
+# harmless if a repo-local conf covers the same boards), this check is a
+# GATE: a registry entry that comes back LIVE-UNMIGRATED means a host
+# consumable a release removed is both still present AND has no successor
+# in place, which is never a benign state — it is the exact silent-and-
+# wrong failure both motivating instances produced. Non-zero here fails
+# `make doctor`, and therefore fails the `temperloop update` post-checkout
+# doctor run (bin/subcommands/update.sh run_post_checkout()) — the point a
+# release actually lands on an operator's host.
+#
+# Degrades to SKIPPED (never a hard failure) when legacy-host-preflight.sh
+# itself is absent — a stranger's fresh clone at a kernel version that
+# predates this check, or a vendored tree that hasn't pulled this far yet.
+# ---------------------------------------------------------------------------
+check_legacy_host_config() {
+  local preflight_sh="${FOUNDATION}/workflows/scripts/install/legacy-host-preflight.sh"
+
+  printf '\nLegacy host-config preflight (temperloop#908):\n'
+
+  if [[ ! -f "$preflight_sh" ]]; then
+    printf '  SKIPPED (legacy-host-preflight.sh not found under %s)\n' "$FOUNDATION"
+    return 0
+  fi
+
+  # shellcheck source=legacy-host-preflight.sh
+  if ! source "$preflight_sh" 2>/dev/null; then
+    printf '  SKIPPED (could not source legacy-host-preflight.sh)\n'
+    return 0
+  fi
+
+  if ! legacy_host_preflight_run; then
+    printf '  one or more legacy host-config paths are LIVE and UNMIGRATED — see above.\n'
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main — enumerate and classify every managed entry.
 # ---------------------------------------------------------------------------
 ok=0
@@ -547,13 +593,16 @@ check_cache_state || true
 
 check_reviewer_coverage || true
 
+legacy_host_status=0
+check_legacy_host_config || legacy_host_status=$?
+
 if (( non_ok > 0 )); then
   echo
   echo "Non-OK entries:"
   printf '  %s\n' "${non_ok_entries[@]}"
 fi
 
-if (( non_ok > 0 || knowledge_root_status != 0 || cross_checkout_status != 0 )); then
+if (( non_ok > 0 || knowledge_root_status != 0 || cross_checkout_status != 0 || legacy_host_status != 0 )); then
   echo
   exit 1
 fi

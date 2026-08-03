@@ -186,6 +186,10 @@ install-cli workflows/scripts/install-settings.sh
 install-cli workflows/scripts/install/*
 install-cli workflows/scripts/tests/test_install_*
 install-cli workflows/scripts/tests/test_project_agents_*
+# The legacy-host preflight lives under workflows/scripts/install/ (claimed by
+# the glob above), but its test doesn't match test_install_*, so it needs the
+# same exact-path claim the test_doctor_* files below get (temperloop#908).
+install-cli workflows/scripts/tests/test_legacy_host_preflight.sh
 # doctor.sh's own test_doctor_* files don't match test_install_* above, so
 # each gets an exact-path claim — same exact-path style as the knowledge-store
 # / review-agents test_doctor_* carve-outs elsewhere in this file. Unlike

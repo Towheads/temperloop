@@ -16,6 +16,42 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **Legacy host-config preflight — a registry-driven gate that asserts a
+  removed legacy consumable ON THE HOST, not the repo artifact that merely
+  describes it (temperloop#908).** New
+  `workflows/scripts/install/legacy-host-preflight.sh`: a small registry of
+  `id -> checker-function` rows, one per removed legacy host-config path,
+  each checker inspecting host state directly and reporting `ABSENT`
+  (never installed on this host — never a failure), `MIGRATED` (present but
+  superseded), or `LIVE-UNMIGRATED` (present with no successor — the
+  failure case). Wired into `workflows/scripts/install/doctor.sh`'s new
+  `check_legacy_host_config()`, so it rides both `make doctor` and
+  `temperloop update`'s post-checkout doctor run
+  (`bin/subcommands/update.sh`) — the two points a release actually lands
+  on an operator's host — and fails the overall exit code on any
+  `LIVE-UNMIGRATED` entry. The registry ships two rows covering the two
+  instances that motivated it: an installed
+  `~/Library/LaunchAgents/com.foundation.funnel-cron.plist` still invoking
+  the deleted `funnel-cron.sh` stub (foundation#1419 — the repo plist was
+  repointed at `pipeline-cron.sh`, but the gate that would have caught the
+  installed copy tested the repo file, not the host); and a legacy
+  `$XDG_CONFIG_HOME/foundation/boards.conf` with no
+  `$XDG_CONFIG_HOME/temperloop/boards.conf` successor in place
+  (temperloop#165, v0.19.0 — the failure mode both instances share: a
+  pre-removal advisory (`board.sh`'s "NOTE — legacy machine conf … is no
+  longer read", `pipeline-cron.sh`'s "NOTE: … is deprecated") only fires
+  from the deprecated-but-still-working state and disappears once the
+  removal actually lands, flipping the failure from noisy-and-working to
+  silent-and-wrong at exactly the moment nobody is warned anymore). A
+  future removal extends coverage by adding one registry row plus its own
+  `legacy_check_<id>` predicate — no other file changes. Demonstrated
+  against reconstructed unmigrated fixtures for both instances (not merely
+  asserted), plus a regression fixture proving a plist header comment that
+  merely *names* the installer script `infra/launchd/install-funnel-cron.sh`
+  does not false-positive a migrated plist — see
+  `workflows/scripts/tests/test_legacy_host_preflight.sh`, registered in
+  `scripts/quality-gates.sh`'s `KERNEL_GATES`.
+
 - **Multiline-safe absence proofs plus red-at-merge-base validation
   (temperloop#944).** A `class: A` absence-asserting `proof:` predicate
   (`! grep -q '<phrase>' <file>`) silently passes on an untouched tree the

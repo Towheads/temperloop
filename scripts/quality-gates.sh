@@ -230,6 +230,18 @@ KERNEL_GATES=(
   # $FOUNDATION. Same direct-`bash` form as the sibling doctor gates above
   # (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh"
+  # Legacy host-config preflight (temperloop#908): workflows/scripts/install/
+  # legacy-host-preflight.sh's registry-driven HOST-STATE check — asserts the
+  # CONSUMABLE ON THE HOST for a legacy path a release has removed, never the
+  # repo artifact that merely describes it — plus its wiring into doctor.sh's
+  # check_legacy_host_config(). Covers both instances that motivated it
+  # (foundation#1419's stranded funnel-cron.plist, temperloop#165's
+  # unmigrated legacy boards.conf) via RECONSTRUCTED fixtures, the graceful
+  # ABSENT degradation, and a regression case (a header comment naming the
+  # installer script must not false-positive the content match). Same
+  # direct-`bash` form as the sibling doctor gates above (kernel Makefile is
+  # generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_legacy_host_preflight.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"
