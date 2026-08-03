@@ -34,6 +34,22 @@ reads that marker; a stranger greps for it before pulling.
   work. No code/schema changes; both fixes are prose-contract updates to
   `claude/commands/build.md` and `claude/plan-schema.md`.
 
+- **`scripts/quality-gates.sh` gains an opt-in full per-gate wall-clock
+  publication (temperloop#968, first deliverable only — a measurement, not a
+  matrix/branch-protection change): `QUALITY_GATES_STEP_SUMMARY=1` appends
+  every gate's own measured seconds (already tracked internally by the
+  bounded-concurrency pool, temperloop#1025) as a Markdown table to
+  `$GITHUB_STEP_SUMMARY`. Off by default and never set by `ci.yml`'s
+  merge-gating `checks` job, so the leg that gates `main` is byte-identical.
+  `.github/workflows/nightly-macos.yml` sets it on both its existing macOS
+  job and a new, non-gating `ubuntu-timing` job (same script, `ubuntu-latest`
+  — the runner `checks` already uses) so a night's macOS and ubuntu per-gate
+  breakdowns land in the same workflow run's summary page, directly
+  comparable, letting a future slowdown be localised to specific gates
+  instead of attributed to "macOS is slow". `ubuntu-timing` produces no
+  `checks (...)`-shaped status context and is not required by branch
+  protection.
+
 - **`scan_stub.py` emits `stub.model` in the scan report (temperloop#761),**
   satisfying two downstream contracts that already documented it:
   `findings-schema.md`'s `subject_model` ("taken from the stub's `model:`
