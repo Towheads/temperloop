@@ -16,6 +16,33 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`clarification-rework` — a seventh friction-ledger category, so
+  communication quality is visible to the self-learning loop
+  (temperloop#1089).** The friction ledger's six categories were all
+  *mechanical* (re-checked state, acted-before-ground-truth, wrong tool
+  contract); the one failure the operator experiences most directly — having to
+  stop and ask what the assistant's last message *meant* — was captured by
+  `workflows/scripts/drain/lexicon.tsv` (as `trust-rupture`) and then dropped,
+  because no consumer adjudicated that subset. `/tidy` § Tooling friction
+  (fewer-steps) now takes `trust-rupture` **on user turns** as a third lexicon
+  anchor and appends one `clarification-rework` row per genuine re-explanation,
+  each carrying the verbatim operator line; the rows participate in the existing
+  ≥5-in-14d frequent-stumble tally like any other category, so a recurring
+  explanatory habit becomes tracked work. Two discriminations are spec'd
+  explicitly: the **correctness-challenge** and **repeat-offence** subsets of
+  `trust-rupture` stay with § Feedback memories (temperloop#1090's routing,
+  whose "deferred to temperloop#1089 / skip these matches" placeholder is now
+  replaced by a live pointer), and a **false-positive floor** bars ordinary
+  domain questions — a row is logged only when the confusion is about what the
+  assistant itself just said. **Contract-surface note for overlays:** the
+  category set is enumerated in the `friction-slug` block of
+  `workflows/scripts/drain/lexicon.tsv` (now seven rows) and in
+  `claude/measurement-proxies.md` Proxy 2; an overlay carrying its own
+  § Tooling friction capture live rule should add the seventh slug there too so
+  the live rule and the `/tidy` backstop name the same set. The lexicon
+  deliberately does **not** gain a new category — `trust-rupture` stays one
+  category discriminated at consumption time, because the tells overlap and only
+  the surrounding turn separates them.
 - **Machinery-step wall-clock liveness bound — a stalled `/build` machinery
   step is now bounded and disposed, not waited on (temperloop#1071).** A
   `pr-batch` machinery agent was observed running 35,362,333ms — **9h49m** — on

@@ -94,14 +94,17 @@ deferred surfaces) for the async decision-queue instantiation specifically.
 re-verifies a diagnosis it already confirmed, or thrashes searching for context
 it should have had on hand — proxies for "the prior message/summary/artifact
 didn't leave the reader with enough confirmed state," across whichever of the
-six tracked categories applies: `redundant-status-check`,
+seven tracked categories applies: `redundant-status-check`,
 `reverification-backtrack`, `probe-after-not-before`, `stale-context-rework`,
-`tool-misuse`, `search-thrash`.
+`tool-misuse`, `search-thrash`, `clarification-rework`.
 
 **Data source.** `Context/Session friction ledger.md` in the Obsidian vault —
 **explicitly an overlay/personal-vault-backed source, not a kernel-native one.**
-The six category slugs and the append convention are documented in the
-*composed* (kernel + overlay) `CLAUDE.md` § "Tooling friction capture," but the
+The seven category slugs and the append convention are documented in the
+*composed* (kernel + overlay) `CLAUDE.md` § "Tooling friction capture" — whose
+kernel-side, mechanically-checkable enumeration is the `friction-slug` block of
+`workflows/scripts/drain/lexicon.tsv`, the list `/tidy`'s § Tooling friction
+backstop reads — but the
 ledger file itself lives at `Context/Session friction ledger.md`, relative to
 the knowledge store root (`workflows/scripts/lib/knowledge_store.contract.md`;
 Travis's install points that root at his Obsidian vault) — a path a stranger's
@@ -116,14 +119,19 @@ is needed, only a read.
 dated in a fixed pre-template window (suggest: the 30 days before
 `message-schema.md` merges), producing a per-category count. After templates
 ship, count the same categories over an equal-length post-template window and
-compare. `redundant-status-check` and `stale-context-rework` are the categories
-most directly load-bearing for template quality (they fire when a completion
-summary or resume recap didn't leave enough state behind); `search-thrash` and
-`tool-misuse` are more diagnostic of tooling friction than communication
-quality and should be read as weaker signal for this specific question.
+compare. `clarification-rework` is the **strongest** signal for this question —
+it is logged only when the operator had to ask what the assistant's own last
+message meant, which is a communication failure by definition rather than by
+proxy — followed by `redundant-status-check` and `stale-context-rework` (they
+fire when a completion summary or resume recap didn't leave enough state
+behind); `search-thrash` and `tool-misuse` are more diagnostic of tooling
+friction than communication quality and should be read as weaker signal for
+this specific question.
 
-**Modes measured.** Mixed, by category: `stale-context-rework` and
-`redundant-status-check` → Mode 4 (return-cold summaries) and Mode 2 (live
+**Modes measured.** Mixed, by category: `clarification-rework` → Mode 2 (live
+narration) primarily, and Mode 4 / Mode 6 when the text the operator could not
+parse was a return-cold summary or a durable artifact; `stale-context-rework`
+and `redundant-status-check` → Mode 4 (return-cold summaries) and Mode 2 (live
 narration); `probe-after-not-before` → Mode 5 (unattended surfaces not trusted
 before acting) and Mode 6 (durable artifacts not consulted before re-asking);
 `search-thrash` and `tool-misuse` are largely orthogonal to communication style
