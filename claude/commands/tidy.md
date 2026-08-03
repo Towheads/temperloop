@@ -212,7 +212,18 @@ For each such note `D_new` (project `P`):
 
 ### Feedback memories
 User corrections OR user confirmations of non-obvious approaches. (Both directions matter — see auto-memory rules.)
-- Save to the project's auto-memory directory under `feedback_<topic>.md` with `type: feedback`. Body: rule, then `**Why:**` line, then `**How to apply:**` line.
+
+**Adjudicate `report.lexicon_matches[]` for `category: "trust-rupture"` matches** — this step's lexicon anchor, and the named consumer of that category (temperloop#1090), exactly as § Tooling friction anchors on `friction-slug`/`state-collision`, § Unfiled defects on `worked-around-defect`, and § Self-correction moments on `self-correction`. `trust-rupture` is the user-turn pushback category in `workflows/scripts/drain/lexicon.tsv` — explicit doubt, correction, or a re-stated instruction — and it is the operator saying directly that something went wrong, the verbal peer of the `interrupts[]` pass above. Read each match plus its ±1 context, apply the same liberal-but-not-noisy judgment as the `lexicon_matches` adjudication rule, then **route by failure mode** — the three the category spans are not interchangeable:
+
+- **Correctness challenge** (*"are you sure"*, *"I think you're wrong"*, *"solving the wrong problem"*) — the assistant's *conclusion* was doubted → a **feedback memory** below (`feedback_<topic>.md`), stating the rule the pushback implies.
+- **Communication failure** (*"I don't understand"*, *"is jargon"*, *"dense to parse"*) — the assistant's *explanation* failed to land, not its conclusion → **out of scope for this step, deferred to temperloop#1089**, which owns whether this subset splits into its own lexicon category or is discriminated at consumption time. Until that lands, **skip these matches** rather than banking them as a correctness feedback memory — the two issues must not both claim the same tells.
+- **Repeat-offence** (*"again,"*, *"I've told you before"*, *"this shouldn't keep happening"*) — a rule already stated is not being followed → bank the feedback memory **and** treat it as a **rule-promotion candidate**: its `feedback` findings record (§ Findings records) is what § Recurrence → promotion tallies into a "promote to a CLAUDE.md rule" task, and if the rule would belong upstream, apply § Kernel-candidate learnings' stranger test to the note it produces.
+
+**Evidence is a verbatim quote, always.** Every artifact this step produces — memory or promotion candidate — carries the **exact pushback line from the transcript** (the `match.line`, unparaphrased) in its body, so the operator can see what was actually said rather than the drain's reading of it. No quote, no artifact.
+
+**Default to silence.** Most stubs carry no genuine pushback: a stub with no `trust-rupture` match and no correction in `report.user_turns[]` produces **nothing here** — do not manufacture a feedback memory from ordinary clarifying questions or from the assistant's own hedging.
+
+- Save to the project's auto-memory directory under `feedback_<topic>.md` with `type: feedback`. Body: rule, then `**Why:**` line, then `**How to apply:**` line, then the verbatim quote above.
 - Add an index entry in `MEMORY.md`.
 - Skip if a duplicate exists.
 
