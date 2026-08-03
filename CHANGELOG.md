@@ -16,6 +16,24 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`scan_stub.py` gains two soft-error signatures (temperloop#770), promoted
+  from the candidate-tells surface: `Unknown JSON field` (a `gh --json` query
+  naming a field the installed `gh` rejects — the query "succeeds" at the
+  shell level while the wrong branch is silently taken; recurred twice on
+  2026-07-25, temperloop#762) is a straight addition to `_ERROR_SIGNATURES`.
+  `has been denied` (a Bash permission-policy denial of a command a command
+  SPEC requires — two consecutive drains hit this on `/tidy`'s `gh pr list`
+  archive-PR check, temperloop#763) is a new structural detector instead: an
+  isolated denial is noise, so it is gated by a cross-run same-command dedup
+  guard — a small on-disk JSON state file (default under
+  `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/`, overridable via
+  `$SCAN_STUB_DENIED_STATE_PATH` or `--denied-state`) — and only promotes a
+  command to a finding once the same command text has been denied across two
+  or more distinct sessions. The scan report schema gains a new
+  `tool_events.repeated_denials[]` bucket
+  (`workflows/scripts/drain/scan-report-schema.md`) for these findings; both
+  signatures are covered by `workflows/scripts/drain/tests/test_scan_stub.sh`.
+
 - **`make doctor` gains a CROSS-checkout install-source split check
   (temperloop#777), the counterpart to temperloop#774's within-checkout
   plane-A/plane-B knowledge-root comparison.** #774's check is correct and
