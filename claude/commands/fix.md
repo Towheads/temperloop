@@ -225,9 +225,12 @@ For a disposition on **this run's own item** — a `fresh`/`adopt`/`ambiguous` d
    "$(git rev-parse --show-toplevel)/workflows/scripts/emit-command-run.sh" \
      --command fix --board "$BOARD" \
      --items-processed 1 \
-     --merged <1 if merged/resolved-verdict else 0> \
+     --merged <1 if merged else 0> \
+     --resolved <1 if resolved (verdict) else 0> \
      --parked <1 if parked else 0> || true
    ```
+
+   Exactly ONE of the three is `1` — a `/fix` run drives exactly one item to exactly one terminal disposition, so `merged + resolved + parked` always equals `--items-processed` (`1`), which is what the emitter asserts (temperloop#1084; it exits non-zero on a mismatch rather than writing a record whose counts don't reconcile). `--resolved` is the spike arm: a `#<issue>` closed on its verdict is a real terminal success, not a merge, and folding it into `--merged` — the pre-#1084 shape — made the two indistinguishable in the stream. The two **reported-no-op** routes never reach this step at all (4d/4e go straight to the report), so there is no fourth "nothing happened" count to express.
 
 ## Step 7 — Report the terminal disposition
 

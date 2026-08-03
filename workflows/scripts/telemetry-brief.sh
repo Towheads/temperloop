@@ -444,9 +444,15 @@ else
       | {cmd: .[0].command, runs: length,
          items: ([ .[].items_processed ] | add // 0),
          merged: ([ .[].merged ] | add // 0),
+         # `resolved` is ABSENT on pre-temperloop#1084 records and absent means
+         # UNKNOWN, never 0 — so sum only the records that carry it, and say
+         # how many did not rather than implying those runs resolved nothing.
+         resolved: ([ .[] | .resolved // empty ] | add // 0),
+         resolved_unknown: ([ .[] | select(has("resolved") | not) ] | length),
          parked: ([ .[].parked ] | add // 0)}
-      | "- \(.cmd): \(.runs) runs · \(.items) items · \(.merged) merged · \(.parked) parked" +
-        (if .items > 0 then " · merge rate \((.merged * 100 / .items) | floor)%" else "" end)'
+      | "- \(.cmd): \(.runs) runs · \(.items) items · \(.merged) merged · \(.resolved) resolved · \(.parked) parked" +
+        (if .items > 0 then " · merge rate \((.merged * 100 / .items) | floor)%" else "" end) +
+        (if .resolved_unknown > 0 then " (resolved unknown for \(.resolved_unknown) pre-#1084 run(s))" else "" end)'
   fi
 fi
 

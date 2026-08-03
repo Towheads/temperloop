@@ -198,11 +198,14 @@ This assertion is the structural guarantee that makes silent skips impossible: t
 "$(git rev-parse --show-toplevel)/workflows/scripts/emit-command-run.sh" \
   --command sweep --board "$BOARD" \
   --items-processed <Phase-2 checklist size> \
-  --merged <count of "merged" + "resolved (verdict)" terminal dispositions> \
+  --merged <count of "merged" terminal dispositions> \
+  --resolved <count of "resolved (verdict)" terminal dispositions> \
   --parked <count of "parked" terminal dispositions>
 ```
 
-Resolve the script bare repo-relative (same convention as `workflows/scripts/build/build.config.sh` in Step 0.4) — if it is absent from a non-vendoring checkout, the `"$(git rev-parse --show-toplevel)/…"` path simply fails to execute; treat that as a no-op and continue (never let a missing/failing emit block or delay the report). The script itself is `|| true`-safe: a write failure warns to stderr and exits 0, so this call never fails the run either way.
+**The three counts MUST partition `--items-processed`.** Step 3.5 already asserts every Phase-2 entry reached exactly one of `merged` / `resolved (verdict)` / `parked`; this is that assertion carried into the record, and the emitter enforces it (`merged + resolved + parked == items_processed`, else a non-zero exit naming the arithmetic). Before temperloop#1084 there was no `--resolved` at all, so a spike closed on its verdict had to be folded into `--merged` or dropped — the latter is what happened, producing records like `{items_processed:30, merged:27, parked:1}` in which two items were simply unaccounted for. If this doc's terminal set ever gains a fourth disposition, add its field to the emitter in the same change: padding `--items-processed` to make the arithmetic close is exactly the silent under-report the check exists to prevent.
+
+Resolve the script bare repo-relative (same convention as `workflows/scripts/build/build.config.sh` in Step 0.4) — if it is absent from a non-vendoring checkout, the `"$(git rev-parse --show-toplevel)/…"` path simply fails to execute; treat that as a no-op and continue (never let a missing/failing emit block or delay the report). The script stays `|| true`-safe for *infrastructure* failure: a write failure warns to stderr and exits 0. Exit 2 is the one loud case — the accounting mismatch above; recount and re-emit, but never let it block or delay the report.
 
 ## Step 4 — Report
 
