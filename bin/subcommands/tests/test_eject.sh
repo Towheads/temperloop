@@ -41,6 +41,11 @@
 #       eject` restores the original branch, deletes the stray unmerged
 #       local branch, and removes .temperloop/ — byte-identical to before
 #       init ran
+#   - temperloop#967: a REAL init run whose push SUCCEEDS but whose
+#     `gh pr create` fails leaves a genuinely REMOTE stray branch (not just
+#     local) plus the same recovery marker; `temperloop eject` now also
+#     makes a best-effort attempt to delete the branch on the remote, not
+#     only the local copy the pre-#967 recovery restore already handled
 #   - temperloop#794:
 #     - a config carrying `first_epic` / `first_epic_decline_pointer`
 #       install entries (the read-compat case: an older init wrote one of
@@ -208,6 +213,11 @@ case "$1" in
     case "$2" in
       view) printf '%s' "${FAKE_PR_STATE:-MERGED}" ;;
       close) exit "${FAKE_PR_CLOSE_RC:-0}" ;;
+      # Forces `gh pr create` to fail even though the push before it already
+      # succeeded -- test 19's "push landed, PR never opened" repro (a
+      # failed `gh pr create` is one of the two ways proposal-pr.sh's own
+      # header says a run can die "at or after the push").
+      create) [ -n "${FAKE_PR_CREATE_RC:-}" ] && exit "$FAKE_PR_CREATE_RC" ;;
     esac
     exit 0
     ;;
@@ -756,6 +766,68 @@ echo "$out18" | grep -qF "FAILED to fully remove .temperloop/" || fail "18: did 
 echo "$out18" | grep -q "temperloop eject: incomplete" || fail "18: a failing rm -rf did not report incomplete (got: $out18)"
 [ -f "$REPO18/.temperloop/pricing.json" ] || fail "18: pricing.json was not restored despite the reported rm -rf failure -- the restore itself is independent of the removal succeeding"
 echo "PASS: rm -rf's own exit status is checked -- a failed removal is reported as incomplete, never a false 'kept'+'done', even though pricing.json itself is still safely restored"
+
+# =============================================================================
+# 19. temperloop#967 — a REAL 'temperloop init' run whose PUSH SUCCEEDS but
+#     whose `gh pr create` call fails (a transient API error, standing in for
+#     the "dies AT OR AFTER the push" half of proposal-pr.sh's own header
+#     note — distinct from test 11's broken-push repro, which never reaches
+#     the remote at all). The proposal branch is pushed for REAL to the bare
+#     upstream before proposal-pr.sh dies, so this is exactly the scenario
+#     eject's recovery-marker branch restore used to miss: deleting only the
+#     LOCAL stray branch left a genuinely REMOTE branch behind with no PR
+#     ever opened to record it in installs[] and surface it to a later
+#     eject. 'temperloop eject' must now ALSO make a best-effort attempt to
+#     delete the branch on the remote, not just locally.
+# =============================================================================
+BARE19="$WORK/repo19-upstream.git"
+REPO19="$WORK/repo19"
+git init -q --bare --initial-branch=main "$BARE19"
+git clone -q "$BARE19" "$REPO19" 2>/dev/null
+git -C "$REPO19" commit -q --allow-empty -m init
+git -C "$REPO19" push -q origin main 2>/dev/null
+git -C "$REPO19" fetch -q origin
+
+BEFORE_HEAD19="$(git -C "$REPO19" rev-parse HEAD)"
+BEFORE_BRANCH19="$(git -C "$REPO19" branch --show-current)"
+BEFORE_FIND19="$(find "$REPO19" -mindepth 1 -not -path '*/.git*' | sort)"
+
+# Same non-network-flag reasoning as test 11: --no-network would skip Step 3
+# outright, which is the very step this fixture needs init to reach and die
+# inside.
+FAKE_PR_CREATE_RC=1 run_init --dir "$REPO19" --gh-repo acme/widget
+[ "$init_rc" -ne 0 ] || fail "19: test setup: expected the failed-pr-create init run to fail (got rc=0): $init_out"
+echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "19: test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
+[ "$(git -C "$REPO19" branch --show-current)" = "foundation-init/config" ] \
+  || fail "19: test setup: expected the failed init run to leave the checkout on foundation-init/config"
+[ -f "$REPO19/.temperloop/config" ] || fail "19: test setup: expected .temperloop/config committed locally despite the pr-create failure"
+[ -f "$REPO19/.temperloop/.recovery.json" ] || fail "19: test setup: expected the recovery marker to survive the failed run"
+# The load-bearing difference from test 11: the push itself REALLY landed on
+# the bare upstream this time (real git, not the stubbed gh) -- proving the
+# branch this test is about is genuinely remote, not merely local.
+git --git-dir="$BARE19" show-ref --verify --quiet refs/heads/foundation-init/config \
+  || fail "19: test setup: expected the push to have actually landed foundation-init/config on the bare upstream"
+
+run 0 --dir "$REPO19" --yes
+echo "$out" | grep -q "restored 'main'" || fail "19: eject did not report restoring the original branch (got: $out)"
+echo "$out" | grep -q "deleted stray 'foundation-init/config' (local)" || fail "19: eject did not report deleting the stray LOCAL branch (got: $out)"
+echo "$out" | grep -qF "deleted stray 'foundation-init/config' (remote, acme/widget" \
+  || fail "19: eject did not report attempting the stray REMOTE branch cleanup (got: $out)"
+[ "$(call_count 'api --method DELETE repos/acme/widget/git/refs/heads/foundation-init/config')" -ge 1 ] \
+  || fail "19: eject did not call gh to delete the remote branch (log:\n$(cat "$CALL_LOG"))"
+[ "$(git -C "$REPO19" branch --show-current)" = "$BEFORE_BRANCH19" ] \
+  || fail "19: eject did not restore the original branch (on: $(git -C "$REPO19" branch --show-current))"
+git -C "$REPO19" show-ref --verify --quiet refs/heads/foundation-init/config \
+  && fail "19: eject did not delete the stray local branch"
+[ ! -e "$REPO19/.temperloop" ] || fail "19: eject did not remove .temperloop/ residue"
+[ "$(git -C "$REPO19" rev-parse HEAD)" = "$BEFORE_HEAD19" ] \
+  || fail "19: eject left HEAD different from before the failed init run"
+[ -z "$(git -C "$REPO19" status --porcelain)" ] \
+  || fail "19: eject left an uncommitted/dirty tree (status: $(git -C "$REPO19" status --porcelain))"
+AFTER_FIND19="$(find "$REPO19" -mindepth 1 -not -path '*/.git*' | sort)"
+[ "$AFTER_FIND19" = "$BEFORE_FIND19" ] \
+  || fail "19: eject left extra files behind (before:\n$BEFORE_FIND19\nafter:\n$AFTER_FIND19)"
+echo "PASS: a real 'temperloop init' run whose push succeeds but whose 'gh pr create' fails leaves a REAL branch on the remote (not just local) plus a recovery marker; 'temperloop eject' now also makes a best-effort attempt to delete the remote branch, not just the local one"
 
 echo
 echo "ALL PASS: test_eject.sh"

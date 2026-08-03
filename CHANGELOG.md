@@ -484,6 +484,31 @@ reads that marker; a stranger greps for it before pulling.
   zero `pr create` calls) plus two controls: the same skip fires in a repo that
   *does* have a remote, and dropping the flag still opens the PR.
 
+- **`temperloop eject` now also cleans up a stray `foundation-init/*` branch
+  on the REMOTE, not only locally (temperloop#967).** `proposal-pr.sh` commits
+  and pushes the proposal branch *before* it ever opens the PR, so a run that
+  dies at or after the push — a failed `gh pr create`, a killed process —
+  could leave the branch sitting on the remote with no PR ever opened to
+  record it in `.temperloop/config`'s `installs[]` (that entry is only folded
+  in once the PR outcome is known). The `.temperloop/.recovery.json` marker
+  `temperloop#414` added already restored the original branch and deleted the
+  stray *local* copy on `eject`, but never touched the remote — so a run that
+  died after a successful push left a genuinely orphaned branch on the
+  adopter's own GitHub repo that no `eject` run would ever remove.
+  `restore_original_branch()` now also makes a best-effort `gh api --method
+  DELETE .../git/refs/heads/<branch>` attempt against the remote, gated by the
+  same `--no-network`/resolved-`gh_repo`/`gh`-availability checks every other
+  API-state revert in this script already uses, and never treated as fatal on
+  its own (a "nothing there" skip is the common, harmless case — the push
+  itself failing, not landing at all). Both `eject.sh`'s own uninstall bullet
+  (scope (c)) and `bin/README.md`'s Uninstall table now name this branch
+  scope explicitly, local and remote, instead of leaving it implied by "a
+  proposal PR." `test_eject.sh` gains an end-to-end repro: a real `init` run
+  against a real bare-upstream fixture whose push genuinely lands but whose
+  (stubbed) `gh pr create` fails, asserting the branch really is on the
+  upstream beforehand and that `eject` reports and calls the remote deletion,
+  in addition to the existing local-only recovery coverage.
+
 - **A parked item's claim stamp no longer strands on an open issue —
   `release.sh` clears its own, and `reconcile.sh --labels` sweeps the rest
   (temperloop#979).** On the issues-only backend, parking a claimed item back to
