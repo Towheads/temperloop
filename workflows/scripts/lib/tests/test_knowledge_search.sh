@@ -289,6 +289,8 @@ got_kebab="$(jq -r '.kebab_filenames' "$CONFIG")"
 got_sync_changes="$(jq -r '.sync_changes' "$CONFIG")"
 got_auto_update="$(jq -r '.auto_update' "$CONFIG")"
 got_model="$(jq -r '.semantic_embedding_model' "$CONFIG")"
+got_dims="$(jq -r '.semantic_embedding_dimensions' "$CONFIG")"
+got_dims_type="$(jq -r '.semantic_embedding_dimensions | type' "$CONFIG")"
 got_cache_dir="$(jq -r '.semantic_embedding_cache_dir' "$CONFIG")"
 got_projects_key="$(jq -r 'has("projects")' "$CONFIG")"
 [ "$got_disable_permalinks" = "true" ]  || fail "6 point1: disable_permalinks should be true (got $got_disable_permalinks)"
@@ -299,12 +301,45 @@ got_projects_key="$(jq -r 'has("projects")' "$CONFIG")"
 [ "$got_sync_changes" = "false" ]       || fail "6 point3: sync_changes should be false (got $got_sync_changes)"
 [ "$got_auto_update" = "false" ]        || fail "6 point5: auto_update should be false (got $got_auto_update)"
 [ "$got_model" = "bge-small-en-v1.5" ]  || fail "6 point7: semantic_embedding_model wrong (got $got_model)"
+# temperloop#907: the dimensions key must be present, a JSON *number* (not a
+# string — basic-memory reads it as the vector width), and must match the
+# pinned model. A model written without its matching width yields a silent
+# zero-embedding index.
+[ "$got_dims_type" = "number" ] || fail "6 point7: semantic_embedding_dimensions must be a JSON number (got type $got_dims_type, value $got_dims)"
+[ "$got_dims" = "384" ]         || fail "6 point7: semantic_embedding_dimensions should be 384 for bge-small-en-v1.5 (got $got_dims)"
 case "$got_cache_dir" in
   "$BM_HOME"/*) : ;;
   *) fail "6 point6: semantic_embedding_cache_dir should live under the isolated BM home (got $got_cache_dir)" ;;
 esac
 [ "$got_projects_key" = "false" ] || fail "6 point9: config.json must not carry a hand-written 'projects' map (registration is CLI-only)"
 echo "PASS: 6 config.json carries the full no-mutation posture set (points 1,2,3,5,6,7,9), written before the first index"
+
+# --- 6a. point 7 coupling: dimensions are DERIVED from the model pin (temperloop#907) ---
+# The whole guard is that the pair has ONE definition site: the config writer
+# must not spell the model or the width itself, and the width must come from
+# the model name. Assert the derivation directly, plus the loud-failure arm
+# for a model with no known width (the case a future flip would otherwise
+# ship as a zero-embedding index).
+[ "$(_ks_bm_embedding_model)" = "$got_model" ] \
+  || fail "6a: config.json's model must come from _ks_bm_embedding_model (pin=$(_ks_bm_embedding_model), config=$got_model)"
+[ "$(_ks_bm_embedding_dimensions)" = "$got_dims" ] \
+  || fail "6a: config.json's dimensions must come from _ks_bm_embedding_dimensions (derived=$(_ks_bm_embedding_dimensions), config=$got_dims)"
+[ "$(_ks_bm_embedding_dimensions bge-base-en-v1.5)" = "768" ] \
+  || fail "6a: a model flip must re-derive its own width (bge-base-en-v1.5 should be 768)"
+if unknown_dims="$(_ks_bm_embedding_dimensions not-a-real-model 2>/dev/null)"; then
+  fail "6a: an unknown embedding model must fail loudly, not emit a width (got $unknown_dims)"
+fi
+# Static half of the coupling: the config writer itself must spell NEITHER a
+# model name NOR a width — it interpolates the pin and the derived value, so
+# there is no second literal to fall out of sync with the first.
+cfg_writer="$(sed -n '/^_ks_bm_ensure_config()/,/^}/p' "$SEARCH_LIB")"
+printf '%s\n' "$cfg_writer" | grep -qF '"semantic_embedding_model": "$model"' \
+  || fail "6a: the config writer must interpolate the model pin, not restate it"
+printf '%s\n' "$cfg_writer" | grep -qF '"semantic_embedding_dimensions": $dims' \
+  || fail "6a: the config writer must interpolate the derived dimensions, not restate them"
+printf '%s\n' "$cfg_writer" | grep -qE 'bge-|semantic_embedding_dimensions": *[0-9]' \
+  && fail "6a: the config writer must not hardcode a model name or a width (temperloop#907)"
+echo "PASS: 6a model/dimensions are one pin + one derivation; unknown model fails loudly (temperloop#907)"
 
 # --- 6b. .bmignore: upstream base set written, no store-specific extras by default (F#946 seam) ---
 IGN="$BM_HOME/.basic-memory/.bmignore"
