@@ -16,6 +16,35 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **A consumer-parity shellcheck gate for the synced board file set
+  (temperloop#915), closing the SYSTEMIC half of temperloop#905 left open
+  after that fix addressed only one file.** `make shellcheck` (the kernel's
+  own whole-tree lint) excludes `*/tests/*` and passes `-e SC1091`
+  repo-wide — exactly the blind spot stageFind/ssmobile/subsetwiki fall
+  into: they vendor `workflows/scripts/board/` verbatim (`make
+  sync-*-board`) and lint their whole tree at plain shellcheck defaults, no
+  exclusions. On 2026-07-29 the identical SC1091 at
+  `test_board_cache.sh:66` was live simultaneously in all three consumers'
+  required `checks` while the kernel's own gate stayed green throughout —
+  it structurally could not see it. The new gate,
+  `workflows/scripts/board-consumer-shellcheck.sh`, reproduces the
+  consumer's own command (default severity, no `*/tests/*` exclusion, no
+  `-e SC1091`) against the exact synced file set —
+  `workflows/scripts/board/**` (top-level scripts, `lib/`, `tests/`, and
+  `tests/fixtures/`) — so a finding that would red every vendored
+  consumer's `checks` now fails at the source instead. Scoped, not
+  whole-tree, so it stays low-noise and never fights `make shellcheck`'s
+  existing repo-wide posture (unchanged). Registered in
+  `scripts/quality-gates.sh` (`KERNEL_GATES`, sharing `make shellcheck`'s
+  serial lane over the pinned-shellcheck cache) and
+  `workflows/scripts/config/gate-paths.tsv`. Closing the gap required
+  fixing the ~20 files it newly exposed (mostly targeted
+  `# shellcheck disable=SC1091` directives above unresolvable `source`
+  lines, plus a few pre-existing prose comments that happened to start
+  with the literal `# shellcheck ` and were themselves being misparsed as
+  directive attempts) — the tree is clean at consumer parity as of this
+  change.
+
 - **`scripts/quality-gates.sh --scoped` — a changed-file-scoped run for a
   `/build` item worker's iterative mid-work verification (temperloop#957).**
   Verification was measured at **79% of all item-worker shell wall-clock**

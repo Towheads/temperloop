@@ -35,8 +35,9 @@
 # test_reconcile_labels.sh do.
 #
 # FIX / LABELS_APPLY are read by the sourced reconcile.sh, not in this file —
-# shellcheck can't see that cross-file use, so silence SC2034 file-wide (the
-# directive must precede the first command). CI excludes tests/ anyway.
+# ShellCheck can't see that cross-file use, so silence SC2034 file-wide (the
+# directive must precede the first command). (Keep prose off any line starting
+# `# shellcheck ` -- it is parsed as a directive.)
 # shellcheck disable=SC2034
 
 # Pin BOTH boards.conf discovery paths to nonexistent files (same convention as
@@ -64,6 +65,7 @@ cleanup() { rm -rf "${TEST_TMP_DIRS[@]}"; }
 trap cleanup EXIT
 
 # shellcheck source=scripts/reconcile.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/reconcile.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }

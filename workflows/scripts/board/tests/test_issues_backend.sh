@@ -49,9 +49,11 @@ LIB_DIR="$(cd "$HERE/../lib" && pwd)"
 FIX="$HERE/fixtures"
 
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -212,6 +214,7 @@ _board_gh() {
     "api repos/Acme/kernel-test/issues/105")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -220,6 +223,7 @@ _board_gh() {
       shift 2
       local prev="" a
       for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         case "$prev" in
           --remove-label) FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;
@@ -233,6 +237,8 @@ _board_gh() {
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
+# Read by the sourced board.sh accessors below, not in this file.
+# shellcheck disable=SC2034
 BOARD_CURRENT=20
 
 : >"$CALLS"
@@ -323,6 +329,7 @@ _board_gh() {
     "api repos/Acme/kernel-test/issues/106")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":106,"title":"fresh","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -419,6 +426,7 @@ _board_gh() {
     "api repos/Acme/kernel-test/issues/105")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -470,6 +478,7 @@ _board_gh() {
             if [ "$REMOVE_FAILS_LEFT" -gt 0 ]; then
               REMOVE_FAILS_LEFT=$((REMOVE_FAILS_LEFT - 1)); return 1
             fi
+            # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
             FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label) FAKE_LABELS="$FAKE_LABELS $a" ;;
         esac

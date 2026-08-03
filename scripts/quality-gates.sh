@@ -804,6 +804,21 @@ KERNEL_GATES=(
   # let CI-ubuntu's 0.9.0 flag an SC2015 that local/brew 0.11.0 did not (#550).
   "bash scripts/tests/test_ensure_shellcheck.sh"
   "make shellcheck"
+  # Consumer-parity shellcheck (temperloop#915, follow-up to the SYSTEMIC half
+  # of temperloop#905, which fixed one file and left the class open): the
+  # `make shellcheck` gate above EXCLUDES */tests/* and passes -e SC1091
+  # repo-wide, which is exactly the blind spot stageFind/ssmobile/subsetwiki
+  # fall into — they vendor workflows/scripts/board/ verbatim (`make
+  # sync-*-board`) and lint their WHOLE tree at plain shellcheck defaults. On
+  # 2026-07-29 the identical SC1091 at test_board_cache.sh:66 was live
+  # simultaneously in all three consumers' checks while this repo's own gate
+  # stayed green throughout — it structurally could not see it. This gate
+  # reproduces the consumer's command against the exact synced file set (no
+  # tests/ exclusion, no -e SC1091), scoped to workflows/scripts/board/** so
+  # it never fights the kernel's own whole-tree posture above. Same
+  # direct-`bash` form as the sibling gates above (kernel Makefile is
+  # generator-owned; no new target added here).
+  "bash workflows/scripts/board-consumer-shellcheck.sh"
   # Design-brief-conformance lint (temperloop#216, plan item
   # design-brief-lint): a mechanical check that a /design brief carries a
   # valid disposition for every kernel dimension (claude/design-schema.md
@@ -973,9 +988,12 @@ SERIAL_LANE_PINS=(
   # (<repo>/.cache/shellcheck/<version>/shellcheck). On a cold cache — which is
   # every CI run, since nothing restores that cache — two concurrent resolvers
   # would race to `mv` over the same file, and the loser can observe a
-  # half-installed or busy binary. Same lane = never concurrent.
+  # half-installed or busy binary. Same lane = never concurrent. The
+  # consumer-parity shellcheck gate (temperloop#915) resolves the SAME pinned
+  # binary the same way, so it joins this lane too.
   "make shellcheck"
   "bash scripts/tests/test_ensure_shellcheck.sh"
+  "bash workflows/scripts/board-consumer-shellcheck.sh"
   # `make docs` rmtree's and rebuilds workflows/scripts/docs/_site in the live
   # checkout, while the whole-tree shell lint above walks every *.sh under the
   # repo root with find(1). A whole-tree write racing a whole-tree walk is the

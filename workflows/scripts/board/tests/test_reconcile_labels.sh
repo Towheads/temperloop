@@ -14,6 +14,13 @@
 # as test_boards_conf.sh / test_board_name_aliases.sh) so board 7's backend
 # resolves to the built-in default ("issues") regardless of what machine this
 # runs on.
+#
+# PROJECT_NUMBER / LABELS_APPLY / LABELS_UNATTENDED / the API_*_JSON fixtures
+# below are read by the sourced reconcile.sh and by _board_gh, not in this
+# file — ShellCheck can't see that cross-file use, so silence SC2034
+# file-wide (the directive must precede the first command). (Keep prose off
+# any line starting `# shellcheck ` -- it is parsed as a directive.)
+# shellcheck disable=SC2034
 export BOARDS_CONF_MACHINE="/no-such-machine-conf-$$"
 export BOARDS_CONF_REPO_LOCAL="/no-such-repo-local-conf-$$"
 
@@ -31,6 +38,7 @@ cleanup() { rm -rf "${TEST_TMP_DIRS[@]}"; }
 trap cleanup EXIT
 
 # shellcheck source=scripts/reconcile.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/reconcile.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }

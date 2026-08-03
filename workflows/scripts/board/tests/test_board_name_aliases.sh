@@ -43,6 +43,7 @@ export BOARDS_CONF_MACHINE="/no-such-machine-conf-$$"
 export BOARDS_CONF_REPO_LOCAL="/no-such-repo-local-conf-$$"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 # --- 1: numeric-unchanged (backward compatibility) -------------------------
@@ -94,6 +95,11 @@ echo "PASS: with NO boards.conf, the built-in name map answers (the #770 seam co
 
 # --- 5: boards.conf name axis (add + override + known-names list) ----------
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/board-name-test-XXXXXX")"
+# This definition is intentionally superseded by the redefinition below (once
+# $BIN exists) -- it's the safety net that still cleans up $WORK if a `fail`
+# exit happens before that point. ShellCheck can't see the later redefinition
+# is what makes this one "unreachable" by the time EXIT actually fires.
+# shellcheck disable=SC2329
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 cat > "$WORK/boards.conf" <<'EOF'

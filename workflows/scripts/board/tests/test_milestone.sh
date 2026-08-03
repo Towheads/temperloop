@@ -23,6 +23,7 @@ FIX="$HERE/fixtures"
 
 # Source the shared replay component for _fake_gh_log_argv (argv-log-v1).
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 # Isolate + disable the on-disk read cache so every case sees the canned data.
@@ -31,6 +32,7 @@ BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/milestone-cache-XXXXXX")"
 export BOARD_CACHE_DIR
 
 # shellcheck source=scripts/milestone.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/milestone.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }

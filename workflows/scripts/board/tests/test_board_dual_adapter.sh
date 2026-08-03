@@ -53,6 +53,13 @@
 # fixtures/fake_gh.sh helper's PATH form doesn't understand `issue list
 # --search`/`--state` or `issue view --jq`, which this scenario needs) serves
 # canned JSON and appends every invocation's argv to a log this suite greps.
+#
+# The `cond && ok "..." || bad "..." "..."` assertion idiom below is not a
+# real if-then-else -- it is safe here because `ok`/`bad` never fail (they
+# only increment a counter and echo), so C never runs when A is true. Silence
+# SC2015 file-wide (the directive must precede the first command). (Keep
+# prose off any line starting `# shellcheck ` -- it is parsed as a directive.)
+# shellcheck disable=SC2015
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -47,6 +47,7 @@ cleanup() { rm -rf "$BOARD_CACHE_DIR" "$CALLS"; }
 trap cleanup EXIT
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }

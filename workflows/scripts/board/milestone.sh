@@ -48,6 +48,7 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
 # The machine-owned active marker. A milestone is active iff its description
