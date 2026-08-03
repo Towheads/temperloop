@@ -22,6 +22,11 @@
 #   - delete:true removes a tracked file
 #   - mode 755 sets the executable bit
 #   - idempotent NO_CHANGES once the base has absorbed the proposal
+#   - trailing-newline normalization (temperloop#992): every proposed file
+#     lands with EXACTLY ONE final newline (no "\ No newline at end of file"
+#     anywhere in the proposal diff), empty content still lands 0-byte, and a
+#     base already carrying the newline-terminated file re-reads as NO_CHANGES
+#     rather than a spurious one-byte diff
 #   - EXISTS outcome when gh reports a PR already exists (mirrors pr.sh)
 #   - PR body: caller body + generator-owned "## Files changed" + footer
 #   - --repo-dir not a git repo -> ERROR
@@ -275,6 +280,115 @@ out="$(bash "$SCRIPT" open --repo-dir "$REPO" --branch feat/real-open-retry \
 [ "$(jq -r .outcome <<<"$out")" = "NO_CHANGES" ] || fail "idempotent re-run not NO_CHANGES (got: $out)"
 [ "$(jq -r .branch <<<"$out")" = "feat/real-open-retry" ] || fail "NO_CHANGES branch field wrong (got: $out)"
 echo "PASS: re-proposing already-absorbed content -> NO_CHANGES, no commit"
+
+# =============================================================================
+# TRAILING-NEWLINE NORMALIZATION (temperloop#992)
+#
+# Every file the generator proposed used to land with NO final newline: both
+# manifest readers are `$(…)` captures (which strip every trailing newline)
+# and the write was a bare `printf '%s'`. An adopter's FIRST temperloop PR
+# therefore showed "\ No newline at end of file" on every file in the diff —
+# the first impression the install path makes.
+#
+# Its own fixture repo, not $REPO: the blocks above have already fast-forwarded
+# $BARE's main onto a proposal branch, and this block needs a base it seeds
+# itself. Covers the three surfaces #992 names by path — `.temperloop/config`,
+# `boards.conf`, `.temperloop/report.d/tokens` — plus the content_file reader,
+# each fed a DIFFERENT trailing shape so the assertion pins NORMALIZATION
+# ("exactly one"), not merely "at least one".
+# =============================================================================
+git init -q --bare --initial-branch=main "$TMP/upstream-nl.git"
+git clone -q "$TMP/upstream-nl.git" "$TMP/repo-nl" 2>/dev/null
+git -C "$TMP/repo-nl" commit -q --allow-empty -m init
+git -C "$TMP/repo-nl" push -q origin main 2>/dev/null
+git -C "$TMP/repo-nl" fetch -q origin
+NLREPO="$(cd "$TMP/repo-nl" && pwd -P)"
+
+printf 'from a content_file, no final newline' > "$TMP/nl-src.txt"
+jq -n --arg cf "$TMP/nl-src.txt" '[
+  {path:".temperloop/config",          content:"{\"schema\":1}"},
+  {path:"boards.conf",                 content:"3 repo acme/widget\n"},
+  {path:".temperloop/report.d/tokens", content:"#!/bin/sh\necho hi\n\n\n", mode:"755"},
+  {path:".temperloop/from-file",       content_file:$cf},
+  {path:".temperloop/empty",           content:""}
+]' > "$TMP/m-nl.json"
+
+out="$(bash "$SCRIPT" open --repo-dir "$NLREPO" --branch feat/nl --title x --body y \
+  --files-manifest "$TMP/m-nl.json" --base main --dry-run)"
+[ "$(jq -r .outcome <<<"$out")" = "DRY_RUN" ] || fail "newline-fixture proposal outcome (got: $out)"
+
+# (a) The headline symptom, asserted on the proposal diff itself.
+git -C "$NLREPO" show --format= HEAD > "$TMP/nl-diff"
+if grep -qF 'No newline at end of file' "$TMP/nl-diff"; then
+  fail "the proposal diff still carries '\\ No newline at end of file' — every proposed file must be newline-terminated"
+fi
+
+# (b) Per-file: last byte IS a newline, and there is EXACTLY ONE.
+#     Both checks lean on `$(…)` stripping every trailing newline: for a file
+#     ending "x\n", `tail -c 1` captures empty and `tail -c 2` captures "x".
+for p in .temperloop/config boards.conf .temperloop/report.d/tokens .temperloop/from-file; do
+  git -C "$NLREPO" show "HEAD:$p" > "$TMP/nl-landed" 2>/dev/null \
+    || fail "$p was not committed by the proposal"
+  [ -z "$(tail -c 1 "$TMP/nl-landed")" ] \
+    || fail "$p did not land newline-terminated (last byte: $(tail -c 1 "$TMP/nl-landed" | od -An -c))"
+  [ -n "$(tail -c 2 "$TMP/nl-landed")" ] \
+    || fail "$p landed with MORE than one trailing newline — normalization must collapse to exactly one"
+done
+
+# (c) Byte-exact landings: the newline is ADDED, nothing else is altered, and
+#     a manifest value that already ended in one is not doubled.
+printf '{"schema":1}\n'                     > "$TMP/nl-want"
+git -C "$NLREPO" show HEAD:.temperloop/config > "$TMP/nl-got"
+cmp -s "$TMP/nl-want" "$TMP/nl-got" || fail ".temperloop/config bytes wrong: $(od -c < "$TMP/nl-got" | tail -3)"
+printf '3 repo acme/widget\n'               > "$TMP/nl-want"
+git -C "$NLREPO" show HEAD:boards.conf > "$TMP/nl-got"
+cmp -s "$TMP/nl-want" "$TMP/nl-got" || fail "boards.conf bytes wrong: $(od -c < "$TMP/nl-got" | tail -3)"
+printf '#!/bin/sh\necho hi\n'               > "$TMP/nl-want"
+git -C "$NLREPO" show HEAD:.temperloop/report.d/tokens > "$TMP/nl-got"
+cmp -s "$TMP/nl-want" "$TMP/nl-got" || fail ".temperloop/report.d/tokens bytes wrong: $(od -c < "$TMP/nl-got" | tail -3)"
+printf 'from a content_file, no final newline\n' > "$TMP/nl-want"
+git -C "$NLREPO" show HEAD:.temperloop/from-file > "$TMP/nl-got"
+cmp -s "$TMP/nl-want" "$TMP/nl-got" || fail ".temperloop/from-file bytes wrong: $(od -c < "$TMP/nl-got" | tail -3)"
+
+# (d) The carve-out: explicitly-empty content stays a 0-byte file, never a
+#     lone newline (git reports no missing-newline marker for an empty blob).
+git -C "$NLREPO" show HEAD:.temperloop/empty > "$TMP/nl-empty" 2>/dev/null \
+  || fail ".temperloop/empty was not committed by the proposal"
+[ ! -s "$TMP/nl-empty" ] \
+  || fail "empty content did not land as a 0-byte file (got: $(od -c < "$TMP/nl-empty" | head -2))"
+
+# The mode-755 entry still lands executable through the new write path.
+nlmode="$(git -C "$NLREPO" ls-tree HEAD -- .temperloop/report.d/tokens | awk '{print $1}')"
+[ "$nlmode" = "100755" ] || fail "newline-normalized 755 entry lost its exec bit (tree mode: $nlmode)"
+echo "PASS: every proposed file lands with exactly one trailing newline (no '\\ No newline at end of file'); empty content stays 0-byte"
+
+# --- NO_CHANGES against an already-newline-terminated base (temperloop#992) --
+# The other half of #992's acceptance, and the arm that actually regressed
+# BEFORE the fix: a base that already carries the correctly-terminated files
+# must re-read as NO_CHANGES, not as a spurious one-byte-per-file diff. Seeded
+# INDEPENDENTLY of the generator (plain printf + git, on a second clone) so
+# this is a real external-truth comparison, not the generator agreeing with
+# itself.
+git clone -q "$TMP/upstream-nl.git" "$TMP/repo-nl-seed" 2>/dev/null
+git -C "$TMP/repo-nl-seed" checkout -q -b nl-seed
+mkdir -p "$TMP/repo-nl-seed/.temperloop/report.d"
+printf '{"schema":1}\n'                         > "$TMP/repo-nl-seed/.temperloop/config"
+printf '3 repo acme/widget\n'                   > "$TMP/repo-nl-seed/boards.conf"
+printf '#!/bin/sh\necho hi\n'                   > "$TMP/repo-nl-seed/.temperloop/report.d/tokens"
+chmod 755 "$TMP/repo-nl-seed/.temperloop/report.d/tokens"
+printf 'from a content_file, no final newline\n' > "$TMP/repo-nl-seed/.temperloop/from-file"
+: > "$TMP/repo-nl-seed/.temperloop/empty"
+git -C "$TMP/repo-nl-seed" add -A
+git -C "$TMP/repo-nl-seed" -c user.name=test -c user.email=test@test \
+  commit -q -m "seed newline-terminated files"
+git -C "$TMP/repo-nl-seed" push -q origin nl-seed:main
+git -C "$NLREPO" fetch -q origin
+
+out="$(bash "$SCRIPT" open --repo-dir "$NLREPO" --branch feat/nl-retry --title x --body y \
+  --files-manifest "$TMP/m-nl.json" --base main --dry-run)"
+[ "$(jq -r .outcome <<<"$out")" = "NO_CHANGES" ] \
+  || fail "an already-newline-terminated base did not yield NO_CHANGES — the write manufactured a spurious diff (got: $out)"
+echo "PASS: a base already carrying the newline-terminated files re-reads as NO_CHANGES (no spurious trailing-newline diff)"
 
 # --- error: --repo-dir not a git repo ---------------------------------------
 mkdir -p "$TMP/notgit"
