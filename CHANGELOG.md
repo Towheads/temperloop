@@ -585,6 +585,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`build.md`'s five misattributed issue citations now name the right tracker
+  (temperloop#733).** Five incident references in `claude/commands/build.md`
+  carried a `temperloop#` prefix for issues that live on the **foundation**
+  tracker — `#865` (combined-tree pre-check), `#1007` (workflow-reviewer as a
+  required gate for `claude/commands/*.md` diffs), `#1150` (merge-queue silent
+  dequeues / `diagnose-queue`), `#1241` (non-hermetic §3e.5 gate) and `#1055`
+  (machine-local config leak). None of those numbers exist on the kernel
+  tracker, so each pointed either nowhere or — as kernel numbering catches up —
+  at an unrelated issue, which is the worse failure. Each is now `foundation#N`,
+  verified against the live issue's own title rather than assumed; the
+  surrounding citation markers already recorded them as `incident:F#…`, so the
+  prose and the citation registry now agree. Prose only — no behavior change.
+
 - **`build.md` §3e.5/§3e.6's acceptance-gate exit capture is now dialect-safe
   (temperloop#801).** The prior prose named only `${PIPESTATUS[0]}` — a BASH
   array — as the fallback when the gate is piped, but this harness's Bash
