@@ -219,6 +219,17 @@ KERNEL_GATES=(
   # Same direct-`bash` form as the sibling doctor/reviewer gates above
   # (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_doctor_knowledge_root.sh"
+  # Cross-checkout install-source split guard (temperloop#777): doctor.sh's
+  # check_cross_checkout_split() — the CROSS-checkout counterpart to
+  # check_knowledge_root() above. #774's plane-A/plane-B comparison is
+  # scoped to the checkout doctor runs from and cannot see ~/.claude itself
+  # resolving into a DIFFERENT checkout; this resolves the representative
+  # installed surface (~/.claude/hooks/session-start-drain.sh) to its real
+  # path, asks git which checkout owns it, and reports a MISMATCH naming
+  # both real paths and both .kernel-pin tags when it differs from
+  # $FOUNDATION. Same direct-`bash` form as the sibling doctor gates above
+  # (kernel Makefile is generator-owned; no new target added here).
+  "bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
   "make test-prune-branches"

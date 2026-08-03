@@ -186,6 +186,14 @@ install-cli workflows/scripts/install-settings.sh
 install-cli workflows/scripts/install/*
 install-cli workflows/scripts/tests/test_install_*
 install-cli workflows/scripts/tests/test_project_agents_*
+# doctor.sh's own test_doctor_* files don't match test_install_* above, so
+# each gets an exact-path claim — same exact-path style as the knowledge-store
+# / review-agents test_doctor_* carve-outs elsewhere in this file. Unlike
+# those two (a DIFFERENT feature's invariant that happens to live in
+# doctor.sh's file), check_cross_checkout_split() IS install/doctor's own
+# core subject matter (verifying installed state matches the running
+# checkout), so it claims here rather than carving out a new feature.
+install-cli workflows/scripts/tests/test_doctor_cross_checkout_split.sh
 install-cli workflows/scripts/demo/*
 install-cli workflows/scripts/proposal/*
 # `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state

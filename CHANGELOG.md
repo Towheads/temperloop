@@ -16,6 +16,33 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`make doctor` gains a CROSS-checkout install-source split check
+  (temperloop#777), the counterpart to temperloop#774's within-checkout
+  plane-A/plane-B knowledge-root comparison.** #774's check is correct and
+  stays, but it is scoped to the checkout doctor runs from (it sources
+  `build.config.sh` / `knowledge_store.sh` straight out of `$FOUNDATION`) —
+  it cannot see `~/.claude` itself resolving into a *different* checkout
+  entirely. Live evidence (2026-07-26): after vendoring v0.18.0 into
+  `~/dev/foundation`, `readlink -f ~/.claude/hooks/session-start-drain.sh`
+  resolved into an unrelated, clean-on-main checkout still pinned to
+  v0.17.0 — 25 drain skips in one day, with doctor reporting OK from
+  *both* checkouts the entire time (neither was wrong about what it
+  measured). The new `check_cross_checkout_split()` resolves the
+  representative installed surface
+  (`~/.claude/hooks/session-start-drain.sh`) to its real, symlink-resolved
+  path, asks git which checkout owns it (`git -C <dir> rev-parse
+  --show-toplevel`), and compares that against the checkout doctor is
+  running in. A mismatch is reported as `MISMATCH`, naming both real paths
+  and both `.kernel-pin` tags (reusing `env-reconcile.sh`'s
+  `kernel_pin_tag_of()`, sourced in a subshell so its globals/arg-parse
+  never leak into doctor's own). Degrades to `SKIPPED` — never a hard
+  failure — when the installed surface doesn't exist yet (a fresh clone
+  that hasn't run `make install-claude`) or doesn't resolve into any git
+  checkout at all. New regression test
+  `workflows/scripts/tests/test_doctor_cross_checkout_split.sh`, covering
+  the mismatch-detected, no-mismatch, and absent-surface paths; registered
+  in `scripts/quality-gates.sh` and `workflows/scripts/config/gate-paths.tsv`.
+
 - **A consumer-parity shellcheck gate for the synced board file set
   (temperloop#915), closing the SYSTEMIC half of temperloop#905 left open
   after that fix addressed only one file.** `make shellcheck` (the kernel's
