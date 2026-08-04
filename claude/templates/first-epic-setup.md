@@ -38,6 +38,13 @@ agent — can push to directly, and **CI that has to pass** before anything
 merges. With those in place, every change — yours or an agent's — arrives
 as a reviewed, gated pull request you can audit.
 
+One optional extra rides along, kept deliberately separate from the three:
+whether temperloop may **meter your token spend** by reading your own
+machine's Claude Code transcripts (§ A4). It is not a guardrail and nothing
+else here depends on it — it is asked because placing something that reads
+your local conversation logs is a thing to be *asked* about, not disclosed
+afterwards.
+
 How much of that you turn on is your call, one question at a time: nothing
 below is applied without your consent, and anything you decline, or can't
 authorize yourself, is reported back rather than silently skipped.
@@ -98,6 +105,14 @@ record its own progress and its own decline.
   A2 below — a `MANAGED` verdict never offers the native option as if it
   were free, and a probe failure resolves to `MANAGED` (gate.sh's own
   fail-safe direction), never a false `NATIVE`.
+- **Token-producer placement probe** — read the *path*
+  `.temperloop/report.d/tokens` three ways: already on your default branch,
+  present in your working tree only, or absent from both (the same
+  three-rule read `temperloop init` performs). This prices A4 below, so that
+  question is asked as "place it?", "keep the one `init` proposed?", or
+  "leave the one you wrote alone", never as a single question that assumes
+  an empty slot. It reads path metadata only: no producer is run and no
+  transcript file is opened anywhere in Phase A.
 
 ### A1. Principles — merge the kernel set with yours
 
@@ -201,10 +216,70 @@ make, deliberately, not one a command makes for you.
     zero-CI-aware (Phase C) so the CI poll never mistakes "no CI
     configured" for "CI hung."
 
+### A4. Token metering — the `tokens` report producer
+
+*"temperloop can meter your token spend by reading your local Claude Code
+transcript files — the conversation logs Claude Code already writes under
+your own home directory. It makes no network call: nothing is uploaded, and
+the numbers land only in your own `temperloop report` output. Enable it?"*
+
+- **Enable:** the Phase B change-set gains one executable file,
+  `.temperloop/report.d/tokens` — a thin *locator* that hands off to your
+  installed kernel's implementation, not the transcript-reading logic
+  itself. **Consequence:** from then on, `temperloop report` run in this
+  repo grows a `tokens_spent` headline, computed on whichever machine runs
+  it from that machine's own transcripts. **Undo:** unlike
+  everything in A2/A3, this one is a **tracked file** — delete
+  `.temperloop/report.d/tokens`, or revert the PR that placed it, and it is
+  gone; `temperloop eject` removes it too, with the rest of `.temperloop/`.
+  Separately, anyone can switch it off for **themselves on their own
+  machine**, without touching this repo or anyone else's copy, via the
+  per-machine disable marker the producer's own notice prints
+  (`docs/features/telemetry.md` § First-run notice and local disable).
+- **Decline:** nothing is placed — no `.temperloop/report.d/tokens` enters
+  the change-set. **Consequence:** nothing in this repo reads a transcript
+  on anyone's behalf, and `temperloop report` keeps exactly the kernel-tier
+  headline it has today (merged-items/day and time-to-merge, with no
+  `tokens_spent` line). If `temperloop init` already put the shim in front
+  of you — whichever of the A0 probe's two "already there" readings applies,
+  an unmerged proposal PR **or** a copy you have since merged to your
+  default branch — the composed set carries its **removal** instead. Both
+  readings, because a decline that only covered the unmerged one would be
+  silently overridden by a PR you merge afterwards, and one that only
+  covered the merged one would leave the producer to arrive later anyway.
+  (The exception is the next bullet: bytes that are *yours* are never
+  removed either, only left alone.) Nothing else
+  depends on the answer: no other question, no Phase C level, and no
+  `§ Contract` item consumes the producer, so declining leaves no dangling
+  reference. The § Decline floors pointer names it as unconfigured, and you
+  can say yes later.
+- **A producer you already wrote is never touched, on either answer.** If
+  `.temperloop/report.d/tokens` already exists and the bytes are yours (you
+  wrote your own, or edited the one an earlier `init` proposed), this is not
+  asked as a placement question at all: the file is yours, the composed set
+  leaves it byte-for-byte alone, and your answer is recorded as a
+  disposition only. That is the same never-overwrite rule `temperloop init`
+  itself holds, reused rather than re-decided here.
+
+**This is the adopter half of the consent, not the whole of it — do not read <!-- cite: TPL.4 incident:K#1088 -->
+it as replacing the producer's first-run notice.** Answering this question
+consents for **you**, the person running this interview. Exactly like the
+`init`-time prompt that was deliberately ruled out, it can only ever reach
+whoever runs the flow — it structurally **cannot** reach a teammate who
+clones this repo later and inherits the committed producer by a plain
+`git pull`, having never run this epic. That person is reached by the
+producer's own one-time first-run notice, which fires on their own first run
+regardless of what you answer here (`docs/features/telemetry.md` § First-run
+notice and local disable). The two are complementary halves of one answer,
+and neither is conditional on the other: **declining here means no producer
+exists for anyone to inherit; enabling it means the inheritor still gets
+told.** A future edit that deletes the notice, weakens it, or makes it
+conditional on this answer has broken the inheritor half and is wrong.
+
 ## Phase B — Composed change-set (confirm once, as a whole)
 
 Every answer from Phase A composes into **one** change-set, shown back to
-you in full — before anything applies. Two rules make the *composition*
+you in full — before anything applies. These rules make the *composition*
 itself safe, not just each answer in isolation:
 
 - **Structural congruence, not a naming convention.** The required-`checks`
@@ -229,6 +304,15 @@ itself safe, not just each answer in isolation:
   (`claude/CLAUDE.kernel.md` § Branch & PR policy) — never a different
   label that would need its own separate protection-rule edit later. The
   no-Actions path never invents a job name, since none is scaffolded.
+- **Token metering enters the set only on opt-in.** The
+  `.temperloop/report.d/tokens` producer is in the composed change-set
+  **only when** A4 was answered yes. A declined A4 contributes nothing to
+  the set — or, wherever `init` already put a copy of the *kernel's* shim
+  (an unmerged proposal PR, or your default branch), contributes its
+  **removal**, so a decline stays a decline. This is the congruence rule
+  above applied to a tracked file rather than a required status: nothing is
+  placed that your answers did not ask for, and nothing else in the set
+  consumes the producer, so a declined A4 can strand nothing.
 - **Walk-back items ride the same set.** Any write whose later decline
   would strand earlier state carries its own undo item in this same
   change-set — e.g., choosing Actions now means the set also includes
@@ -243,7 +327,7 @@ write-by-write interruptions happen during apply (Phase C).
 
 Once confirmed, the change-set applies through the actual pipeline —
 `/assess --epic <N>` decomposes this epic's `## Contract` into items across
-the two **apply** levels below (L0 carries the first two bullets, which are co-level) — plus
+the two **apply** levels below (L0 carries the first three bullets, which are co-level) — plus
 a third, verification-only level that carries `zero-ci-run-check` (§ Contract) — and `/build` drives every one
 of them exactly like any other work in the pipeline:
 
@@ -251,6 +335,12 @@ of them exactly like any other work in the pipeline:
   `§ Principles` section (`Projects/<project>/Priorities.md`, or the
   legacy `Priorities/<project>.md`). No external write beyond your own
   repo's files; runs regardless of what the GitHub/CI answers were.
+- **L0 — Token-metering disposition.** Your A4 answer settled: the
+  `.temperloop/report.d/tokens` producer placed as part of the composed set,
+  or nothing placed (and an `init`-proposed shim removed) on a decline. Like
+  the principles level, this is your own repo's files only — no admin
+  rights, no GitHub API state, nothing to degrade to an admin packet — so it
+  runs whatever the A2/A3 answers were.
 - **L0 — Consented GitHub writes.** Branch protection and auto-delete per
   the composed rules; the merge queue armed (`NATIVE`) or the managed
   backend recorded (`BUILD_MERGE_BACKEND=managed`) per your A2 answer.
@@ -318,6 +408,24 @@ applies.
   section, populated per your A1 answer (kernel set extended, replaced, or
   with named exclusions per your choice; or the point-of-use kernel default,
   unrecorded, if declined).
+- **`tokens-producer-disposition`** *(Phase C L0 — co-level with
+  `record-principles`; nothing sequences it, and nothing sequences after
+  it)* — the token-metering disposition per your A4 answer: the
+  `.temperloop/report.d/tokens` locator placed on opt-in, nothing placed on
+  a decline (plus the removal of an `init`-placed copy of the kernel's shim,
+  wherever it sits), and an existing producer of your own left byte-for-byte
+  alone on either answer. **This item settles a disposition; it does not
+  commit code, so decompose it as a verdict item** — in plan-schema terms,
+  `kind: spike`, with no `model:` stamp — for the same reason
+  `ci-disposition` below is one: the opt-in branch's file lands as a
+  **consented change-set write** in Phase C, part of the set you confirmed
+  once as a whole, never a separate PR this item opens, and the decline
+  branch places nothing at all. Decomposed as an ordinary code item (the
+  default) it would put a code worker on a seam with nothing to commit, and
+  open an empty PR on the decline branch, so the kind is fixed here rather
+  than left to default. Out of scope for this item, deliberately: the
+  producer's own first-run notice, which is neither placed nor gated by this
+  answer (§ A4).
 - **`github-substrate`** *(Phase C L0 — co-level with `record-principles`; nothing sequences it after the interview)* — the consented GitHub-writes seam.
   One item covering all three writes below: they share a single
   admin-rights probe, a single consent, and one composed change-set, so
@@ -372,6 +480,14 @@ applies.
   for Phase C's zero-CI-aware execution.
 - The adopter git-safety install surface (epic #565) — built on, never
   re-done.
+- The `tokens` `report.d` producer shim `temperloop init` proposes, its
+  three-rule never-overwrite placement, and its own one-time first-run
+  notice plus per-machine disable marker
+  (`docs/features/telemetry.md` § How the producer reaches your repo and
+  § First-run notice and local disable) — **consented** by A4, never
+  reimplemented and never re-decided here. `tokens-producer-disposition`
+  supplies the adopter half of that consent; the notice remains the
+  inheritor half, untouched by any A4 answer.
 - **Sequencing — the edges that fix this epic's level order.** Both slugs on
   each edge are defined in § Produces, so both edges resolve to real items:
   - `ci-disposition` runs **`after: github-substrate`**. The scaffolded job
@@ -443,6 +559,25 @@ applies.
   any write, and the epic still completes its non-admin work
   (`record-principles`, and `ci-disposition`'s local-only posture) through
   the real pipeline — the demo claim is honestly re-scoped, never faked.
+- **Token-metering opt-in.** On a fixture with no `.temperloop/report.d/`
+  at all, the A4 opt-in path composes exactly one new tracked file,
+  `.temperloop/report.d/tokens` (mode 755), into the change-set and nothing
+  else; the A4 decline path composes none, and the epic still completes with
+  no dangling reference to a producer — no other composed entry and no
+  `§ Produces` item fails for its absence. Two re-runs on a fixture that
+  already carries a producer separate the two cases the A0 probe separates:
+  where the bytes are an **`init`-placed copy of the kernel's shim**, the
+  decline path removes it — from the proposal PR or from the default branch,
+  whichever holds it; where the bytes are **adopter-authored**, the file is
+  byte-identical afterwards on **both** answers. This bullet needs no admin
+  rights and no GitHub write:
+  it is a tracked-file claim, verifiable on the same fixtures the bullets
+  above use, and it is falsified by any producer placed on a decline or any
+  adopter-authored producer modified on either answer. *Out of scope,
+  deliberately: the producer's first-run notice. It is the inheritor half
+  (`docs/features/telemetry.md` § First-run notice and local disable),
+  verified where it lives, and this clause is falsified — not satisfied — by
+  any change that gates it on the A4 answer.*
 - **CI-level agreement.** The scaffolded workflow's job is named `checks`
   and matches the composed protection; the no-Actions choice records the
   local-gates/`--non-strict` posture and scaffolds nothing.

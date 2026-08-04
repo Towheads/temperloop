@@ -116,6 +116,7 @@ HK.1	claude/hooks/README.md
 TPL.1	claude/templates/first-epic-setup.md
 TPL.2	claude/templates/first-epic-setup.md
 TPL.3	claude/templates/first-epic-setup.md
+TPL.4	claude/templates/first-epic-setup.md
 B.1	claude/commands/build.md
 B.2	claude/commands/build.md
 B.3	claude/commands/build.md

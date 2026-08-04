@@ -36,6 +36,40 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **First-epic Phase-A opt-in for the `tokens` producer — the adopter half of
+  the consent answer (temperloop#1088).** `temperloop init` proposes the
+  `.temperloop/report.d/tokens` producer in its tree-only proposal PR
+  unconditionally and discloses it only afterwards, via the producer's own
+  first-run notice (temperloop#986). That notice was built where an
+  *interview question* had been asked for: the ratified design brief read the
+  operator's phrase "the first epic" as "this epic", and a notice **discloses**
+  where a question **consents**. `claude/templates/first-epic-setup.md` now
+  carries **§ A4 — Token metering**, authored in the same shape as the existing
+  A1/A2/A3 questions: an A0 read-only placement probe prices it three ways
+  (place it / keep the one `init` proposed / leave one you wrote alone), the
+  question names what is read (your own machine's Claude Code transcript files)
+  and that no network call is made, and the answer composes into the Phase B
+  change-set — so the producer is **placed on opt-in** rather than placed and
+  disclosed. Declining is first-class: nothing is placed, an `init`-placed copy
+  of the kernel's shim is *removed* by the same set wherever it sits (an
+  unmerged proposal PR **or** the default branch — covering only the first
+  would let a PR merged afterwards silently override the decline), an
+  adopter-authored producer is left byte-for-byte alone on either answer, and
+  nothing else in the epic consumes the producer, so no dangling reference
+  survives a decline. Phase C gains a co-level L0 `tokens-producer-disposition` item
+  (`kind: spike`, mirroring `ci-disposition`'s reasoning — the file lands as a
+  consented change-set write, so a code worker would have nothing to commit and
+  would open an empty PR on the decline branch), with its own § Consumes and
+  § Acceptance entries. **Two things deliberately unchanged:** `init` stays
+  non-interactive (no new prompt on any `init` code path — the interview belongs
+  to the first epic and is driven by `/build`), and the producer's first-run
+  notice stays unconditional. An interview question, exactly like a prompt,
+  reaches only whoever runs the flow; the notice is what reaches the teammate
+  who inherits the committed producer by a plain `git pull`. The two are
+  complementary halves of one consent answer — adopter half and inheritor half
+  — and the template, `docs/features/telemetry.md`, and ADR 0010 each now say so
+  explicitly, so a later edit cannot mistake one for a replacement of the other.
+
 - **`scripts/lint-bash32-cmdsubst-comment.sh` — a static lint for the
   hidden-apostrophe class above, plus its regression suite
   (temperloop#1098).** Registered in `scripts/quality-gates.sh` and
@@ -89,6 +123,7 @@ reads that marker; a stranger greps for it before pulling.
   deliberately does **not** gain a new category — `trust-rupture` stays one
   category discriminated at consumption time, because the tells overlap and only
   the surrounding turn separates them.
+
 - **Machinery-step wall-clock liveness bound — a stalled `/build` machinery
   step is now bounded and disposed, not waited on (temperloop#1071).** A
   `pr-batch` machinery agent was observed running 35,362,333ms — **9h49m** — on

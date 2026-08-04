@@ -165,6 +165,20 @@ Two properties worth knowing before you merge it:
   proposed — `init` leaves it byte-for-byte alone, says so, and omits it from
   the PR. It does not ask, and it does not overwrite; that file is yours.
 
+`init` never asks about it, because `init` is non-interactive by standing
+ruling. The **asking** happens one step later, in the first epic
+([ADR 0010](../adr/0010-onboarding-as-first-executed-epic.md),
+`claude/templates/first-epic-setup.md` § A4, temperloop#1088): a Phase A
+interview question offers the producer — naming what it reads (your own
+machine's Claude Code transcript files) and that it makes no network call —
+and the answer composes into the Phase B change-set. Opting in places it;
+declining places nothing and removes the copy `init` put in front of them,
+whether that copy is still in an unmerged proposal PR or already on their
+default branch. That is the **adopter half** of the consent; the first-run
+notice below is the **inheritor half**, and the two are complementary, not
+substitutes — see the next section's "Why this fires producer-side rather
+than at `init`" for why an interview cannot do the notice's job.
+
 ### First-run notice and local disable (temperloop#986)
 
 On its first run per person per machine, the `tokens` producer folds a
@@ -203,7 +217,11 @@ who inherits the `.temperloop/report.d/tokens` shim by a plain `git pull` —
 never having run `init` themselves — has no other way to learn that a
 `temperloop report` run in this repo reads their own Claude Code
 transcripts, so the disclosure has to fire on that teammate's own first
-invocation instead.
+invocation instead. **The first-epic § A4 opt-in above does not change
+this and must never be used to justify removing, weakening, or gating this
+notice** (temperloop#1088): an interview question reaches only whoever runs
+the interview, exactly as a prompt would. It makes the producer's *placement*
+consented; the notice is what reaches everyone who never ran the flow.
 
 **The disable is per-person, per-machine, never a commit — and never a bare
 env var either.** Both the "already shown" and "disabled" states live under
