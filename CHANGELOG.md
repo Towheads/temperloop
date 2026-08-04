@@ -14,7 +14,7 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
-## [0.24.1] - 2026-08-03
+## [0.25.0] - 2026-08-03
 
 ### Fixed
 
@@ -24,8 +24,10 @@ reads that marker; a stranger greps for it before pulling.
   `$( … )` command substitution, so an apostrophe inside such a comment reads as
   an *opening* quote and swallows the closing paren. A comment added in
   `workflows/scripts/install/doctor.sh` tripped exactly that, and the file was
-  **completely unparseable — and therefore `make doctor` completely
-  non-functional — for every macOS user on `main`**:
+  **completely unparseable — and therefore the install-verification step
+  `temperloop install` itself prints on success
+  (`bash <dir>/workflows/scripts/install/doctor.sh`) completely non-functional —
+  for every macOS user on `main`**:
   `line 251: unexpected EOF while looking for matching ')'`, plus a bogus
   `line 611: syntax error` that names nothing useful. Reworded to drop the
   apostrophes. A tree-wide sweep found one sibling with the same break
