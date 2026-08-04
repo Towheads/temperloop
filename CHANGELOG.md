@@ -82,6 +82,33 @@ reads that marker; a stranger greps for it before pulling.
   `workflows/scripts/lib/tests/test_knowledge_search.sh`, led by a positive
   behavioural sentinel that seeds two partitions and asserts the other
   partition's note is **absent** (a no-op filter fails it).
+- **Knowledge-store maintenance scans in the vault-hygiene probe, and a
+  grounding-citation backstop anchor in `/tidy` Step 3 (foundation#1479,
+  foundation#1478).** `vault_hygiene_report.sh` gains two propose-only
+  checks. **`duplicate-overlap`** flags pairs of notes across
+  `Decisions/`/`Patterns/`/`Mistakes/`/`Context/` whose titles share
+  `DUP_OVERLAP_MIN`+ distinct terms — two pages on one concept that should
+  merge or cross-link. It reuses the tokenizer and distinct-token counter
+  `check_repeat_mistake` already ships rather than adding a similarity
+  engine, and builds an inverted token→notes index instead of comparing note
+  pairs, so it does not reintroduce the O(n²) whole-vault cost removed in
+  foundation#1202; non-discriminative terms are skipped and the listed pairs
+  are capped with an explicit "N not shown" line. **`orphan-note`** reports
+  notes with no inbound wikilink anywhere in the store and no `Index.md`
+  entry — **informational, never an alarm**, which is a measured choice: 560
+  of 744 notes (75%) on the reference vault have no inbound link, so a
+  per-note alarm would flag three quarters of the corpus nightly and bury the
+  checks that do alarm, making the rate rather than the list the signal. The
+  whole-vault walk and backlink index are now **memoized** (`_hyg_all_files`
+  / `_hyg_link_index`) and shared by the heat score, orphan scan, and
+  duplicate scan, so the two new checks cost no material runtime (measured
+  119s vs 121s). `/tidy` Step 3 documents both under § Vault hygiene — and
+  records that the third drift class, cross-note contradictions, is
+  deliberately **not** rebuilt because § Contradiction detection already
+  covers it — and gains a § Missing grounding citations section, the backstop
+  anchor an overlay's response-level citation rule registers against. **Not
+  breaking:** both checks are additive and propose-only, no existing finding
+  changes shape, and a checkout with no vault still no-ops.
 
 - **`ks_search_reindex` forwards `--search` / `--embeddings` to the backend,
   and rejects an unrecognised flag instead of swallowing it

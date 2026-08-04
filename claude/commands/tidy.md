@@ -462,6 +462,12 @@ workflows/scripts/drain/vault_hygiene_report.sh --format entry
 
 It checks two families of drift. **Housekeeping**: `Sessions/_inbox` stub count + oldest age (alarm above `INBOX_MAX_STUBS` stubs or `INBOX_MAX_AGE_H` hours); closed plans (`status: done|complete|abandoned`) still resident in `Plans/` (should be archived + removed); named ledgers over their line cap; zero-byte / double-dot / stray-absolute-path garbage files; and a stale-`last_verified` tally (informational). **Structural** (temperloop#230, ADR §2.2): a top-level store folder outside the ADR §2.2 allowlist; a directory holding a single file outside the ADR schema's known nested substructure (one-file-directory); a note filename that doesn't match the `<project> - <title>` convention (naming drift); a `Plans/` note with status `draft`/`approved` untouched for an extended window (stale plan); and a dated or verdict-shaped title sitting in `Patterns/` (kind-misfile heuristic — usually really a Decision/Investigation). `Personal/` is exempt from every check above, structural or housekeeping. With `--format entry` it prints a ready-to-append `### <ts> · vault hygiene · <host>` block carrying **Status: open** **iff** something alarmed, and prints **nothing** when the vault is clean.
 
+**Knowledge-store maintenance scans (foundation#1479).** Two further propose-only checks cover drift classes the "compiled wiki" layer accumulates silently. **`duplicate-overlap`** flags pairs of notes across `Decisions/`, `Patterns/`, `Mistakes/`, `Context/` whose *titles* share `DUP_OVERLAP_MIN` or more distinct terms — two pages on one concept that should merge or cross-link. It reuses the tokenizer and distinct-token counter `check_repeat_mistake` already ships (no new similarity engine), and builds an **inverted token→notes index** rather than comparing note pairs: a pairwise scan would be the same O(n²) whole-vault cost foundation#1202 removed, and worse here. Terms appearing in more than `DUP_TOKEN_MAX_NOTES` notes are skipped as non-discriminative. The listed pairs are capped, with an explicit "N not shown" line so a capped list never reads as the whole list. **`orphan-note`** reports notes with **no inbound wikilink anywhere in the store and no `Index.md` entry** — reachable only by search. It is **informational, never an ALARM** (the same posture as the stale-`last_verified` tally and the heat score), and that is a *measured* choice, not caution: on the vault it was built against, **560 of 744 notes (75%)** have no inbound link, so a per-note alarm would flag three quarters of the corpus nightly and bury the checks that do alarm. The **rate** is the signal — it says the wikilink graph is not this store's retrieval substrate — so the check emits one tally line plus a capped sample. It is distinct from `orphan-pattern` above, and neither subsumes the other: `orphan-pattern` asks whether a `Patterns/` note is reachable from the **composed CLAUDE.md's own T0 rules** (a routing question, answered against the T0 inventory); `orphan-note` asks whether **any** knowledge note is reachable by link-following at all (a graph question, answered against the backlink index).
+
+**Both reuse one memoized backlink index** (`_hyg_all_files` / `_hyg_link_index`) rather than rebuilding per check — so the whole-vault walk and the wikilink tally happen **once** and serve the heat score, the orphan scan, and the duplicate scan together. This is why foundation#1202 (the one-pass index) was a prerequisite for these scans rather than an unrelated performance fix: adding them on the former per-note grep would have multiplied a probe that already blocked the nightly drain. Measured: the two checks added no material runtime (119s with them, 121s without).
+
+**The third drift class — contradictory claims across notes — is already covered** and is deliberately *not* rebuilt here: § Contradiction detection (cross-session supersession proposer) in this same Step 3 is that pass, and it proposes supersessions to its own review surface.
+
 **Read-log telemetry (temperloop#238).** The probe also tallies the knowledge-store read log (`KNOWLEDGE_READ_LOG`) — both the script-plane emitter (`ks__read_log_emit`) and the agent-plane PostToolUse hook (`claude/hooks/ks-agent-read-log.sh`) append the same normalized line, so this tally covers both planes with no special-casing — into four **informational** lines (never an ALARM, same posture as the stale-`last_verified` tally above): `reads/session`, the `most-read` note, `never-read` notes (store notes with no logged `op=read` line, same recursive-walk + `Personal/` exemption as every other check), and `search→read conversion` (the fraction of `op=search` lines followed, later in the same session, by an `op=read`). **Surface choice, documented per temperloop#238's own note:** this checkout carries no `claude/commands/telemetry.md`, and the rollup-backed rich renderer (`workflows/scripts/build_telemetry_brief.py`) is an **overlay**-only script — a kernel-only checkout has neither of those two specifically (a kernel-side brief renderer *does* now exist — `workflows/scripts/telemetry-brief.sh`, temperloop#431, rendered unconditionally by `check-in.md` Part 1 — but it reads the raw-lake streams and the read log's per-line data directly, not this tally; see `check-in.md` Part 1 and `docs/architecture.md`'s telemetry-lake read-side note). So the read-stats lines are wired into *this* report/review surface only — the same `Pipeline/vault hygiene report.md` surface every other finding in this step uses — rather than a kernel-side `/telemetry` file that doesn't exist here. A composed install's `/telemetry` renderer (or the `telemetry` skill) quotes these lines straight from that surface once it reads it; no second write path is needed.
 
 **Heat score + review queue (temperloop#240, ADR §2.6-2.7).** The probe also computes a per-note **heat** score for every note in `Decisions/`, `Patterns/`, `Mistakes/`, `Context/`, and `Plans/` — a simple, documented weighted combination (default weights 3/2/1) of telemetry reads (from the same read log the paragraph above tallies), inbound wikilink count (a grep-based backlink count from every other store note), and a recency-of-verification score (linearly decayed over 180 days from `last_verified` frontmatter, or file mtime when absent). This is **informational only, never an ALARM**, and — like every other finding in this step — **nothing is ever auto-evicted on heat**; it is a discovery aid, not a deletion trigger. It appends a **top-5 review queue**, ranked by heat × staleness (days since `last_verified`/mtime) and capped at 5 by construction, folding in the orphan-pattern, stale-plan, and repeat-mistake flags already raised earlier in the same run as a `[tag]` annotation on any queue entry those checks also flagged. With no read-log data yet, it degrades to a links + recency ranking with no error; with no candidate notes at all (a bare kernel checkout) it reports "0 candidate notes" and emits no queue.
@@ -623,6 +629,46 @@ For each stub in this drain run:
 **Default to silence.** Most stubs show every concept search already ledgered live (the common
 case once the capture rule is in force). Do not manufacture a miss from an ambiguous transcript
 read — skip rather than guess.
+
+### Missing grounding citations
+
+Backstop for the response-level grounding-citation rule (foundation#1478) — the capture half is a
+knowledge-store-backed authoring rule and so registers in the **overlay extension** table
+(`claude/capture-backstop-registry.overlay.md`), not the kernel table above; this heading is the
+backstop anchor that row points at. A standalone kernel checkout ships the heading and no row,
+which is the normal shape for a Step 3 section with no kernel-side capture rule.
+
+**What the rule requires.** When knowledge-store content materially informed an answer, the
+response cites it (`[source: <note path>]`); when a domain query found nothing, the response says
+so explicitly ("no relevant vault content found"). Without response-level citations, **memory
+bypass is undetectable per-response** — a context-dependent answer with no citation is
+indistinguishable from one grounded in retrieved content, which is the "placebo trap": the
+retrieval machinery can silently stop contributing and every answer still *looks* informed.
+
+**The spot check.** For each stub, find responses that are plainly **context-dependent** — they
+assert a project-specific decision, rationale, path, or convention that could only have come from
+the knowledge store (not from the code in front of the session, and not from general knowledge).
+For each, check whether the response carries a citation, or the explicit negative form. Read the
+stub's own evidence of retrieval where present (an `op=search` / `op=read` in the read log, a
+`search_vault_smart` or `vault-search.sh` call in the transcript) — a response that demonstrably
+*followed* a retrieval and cited nothing is the strongest signal.
+
+**Sample, don't sweep.** Cap this at the **5** most clearly context-dependent responses per stub.
+This is a judgment call with no mechanical oracle, and an exhaustive pass over every response
+would cost more than the finding is worth — the point is a periodic read on whether the rule is
+being followed, not a complete audit.
+
+**Record.** If any sampled response lacks both a citation and the negative form, append one line
+per stub to the friction ledger (`Context/Session friction ledger.md`, the same surface
+§ Tooling friction uses) in that note's format, category `stale-context-rework`, evidence naming
+the response and what it asserted uncited. Do **not** file a board defect — this is an authoring
+habit that recurs, tallied like the other ledger classes, not a code bug.
+
+**Default to silence, and never guess.** Most responses are not context-dependent, and a response
+that plainly reasons from the code in front of it needs no citation. Absence of a citation is only
+a finding when the assertion could not have come from anywhere but the store — if the transcript
+is ambiguous about where a claim came from, skip it rather than manufacture a miss. Cite nothing
+against a stub whose session did no knowledge-store work at all.
 
 ### Answered decisions
 
