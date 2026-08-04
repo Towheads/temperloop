@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-08-03
+
 ### Fixed
 
 - **`doctor.sh` parses again on macOS — and the class that broke it is now
