@@ -209,10 +209,17 @@ _ks_search_backend_basic_memory_mcp_available() {
 _ks_search_backend_basic_memory_mcp_search() {
   local query="$1"; shift
   local limit=10
+  # Allowlist, not a silent discard — kept in lockstep with the cold backend's
+  # own loop (temperloop#418). `--partition` is not accepted here either: the
+  # partition scope is enforced once, in ks_search, above both backends, so
+  # neither the warm daemon path nor its cold fail-open fallback can widen it.
   while [ $# -gt 0 ]; do
     case "$1" in
       --limit) limit="${2:?knowledge_search: --limit requires a value}"; shift 2 ;;
-      *) shift ;;
+      *)
+        printf 'knowledge_search: basic-memory-mcp search: unrecognised argument "%s" (accepted: --limit)\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
 

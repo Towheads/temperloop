@@ -16,6 +16,73 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`ks_search` can be scoped to a project partition, and the single-tenancy
+  limitation is now documented for the stranger (temperloop#418).** The
+  knowledge store is one flat corpus per `$HOME`; its only separation between
+  projects is the `<project> - <title>.md` **filename convention**, and search
+  did not respect it. For an operator running one machine account across
+  several engagements that was a structural confidentiality hole: a query
+  typed during client B's session could rank and return client A's
+  confidential notes. Two halves land together.
+  **(1) The capability.** `ks_search <query> [--limit N] [--partition <name>]`,
+  plus a standing `KNOWLEDGE_SEARCH_PARTITION` setting (empty by default) for
+  the route a multi-engagement operator actually uses — export once per
+  engagement and every call in that session is scoped. A result is returned
+  only if its `doc_id` **proves** membership: its basename starts with
+  `<name> - `, or the `doc_id` starts with `<name>/`. Matching is exact and
+  case-sensitive, and a document matching neither form is **excluded** — a
+  confidentiality filter must not return what it cannot attribute.
+  **(2) The documentation.** `docs/features/knowledge-store.md` gains a
+  stranger-facing **§ Limitations — read this if you work across more than one
+  client** naming the exposure in plain terms and both ways to handle it
+  (separate `$HOME`s = the only hard boundary; partition-scoped search = the
+  convenient one), and `docs/who-its-for.md` points the consultant persona it
+  already names at that section.
+  **Fail-closed is the load-bearing property**, and it is why this is not
+  simply a new flag. The pre-existing argument loops ended in `*) shift ;;` —
+  they silently discarded what they did not recognise. Under a *scope* flag
+  that is not a degraded result but the exact bleed this closes, delivered
+  under a flag that looked like it worked: the full unfiltered corpus, at exit
+  0, to a caller that believes it asked for a scoped search. So: `ks_search`
+  now parses its **own** arguments against an allowlist and rejects anything
+  else with **exit 2** before any backend call (the same shape
+  `ks_search_reindex` adopted in temperloop#888); an **empty** `--partition`
+  value is rejected rather than read as "no partition"; the scope is
+  **consumed at the `ks_search` seam and never forwarded**, so enforcement
+  cannot depend on a backend honouring it (both shipped backends now *reject*
+  the flag rather than ignore it); the degraded **ripgrep lexical fallback**
+  runs through the same single filter point; a filter that cannot run returns
+  nothing and **exit 4**, never the unfiltered stream; and
+  `ks_search_partition_supported` exists purely so a caller can
+  `declare -F`-probe a pre-#418 library — the one skew this file cannot close
+  from the inside.
+  **Scope, stated plainly rather than half-built:** this is a **search-layer
+  filter, not a store-layer partition**. `ks_read` / `ks_write` / `ks_list` /
+  `ks_sync` remain unpartitioned — a true multi-tenant store would have to
+  reach the doc-id normalizer, every backend in the matrix, and the sync
+  capability. It reduces *accidental* exposure through search, the dominant
+  and hard-to-avoid failure; it is **not** at-rest isolation, and both the
+  contract and the feature doc say so.
+  **Classified ADDITIVE (minor), not BREAKING — the argument, explicitly.**
+  The documented signature grows an optional flag; every call conforming to
+  the previous documented surface (`ks_search <query> [--limit N]`) is
+  byte-identical, and with no partition configured — the dominant
+  single-tenant case — the whole pipeline including the fallback's trigger
+  condition is unchanged (pinned by a no-regression case in the suite). The
+  new `KNOWLEDGE_SEARCH_PARTITION` row is a **new setting name no reader
+  already depended on**, which `VERSIONING.md` § Setting registry classifies
+  as additive. The one genuine behaviour change is that an argument
+  `ks_search` never documented now errors instead of being silently dropped —
+  the identical judgement temperloop#888 made for `ks_search_reindex` and
+  shipped the same way: no overlay using the documented surface must adapt,
+  and the prior behaviour on that input was not a contract but an unsafe
+  silent discard. No `BREAKING` marker, no migration note owed. Documented in
+  `workflows/scripts/lib/knowledge_store.contract.md` § Project partition —
+  scoped search; covered by ten new cases in
+  `workflows/scripts/lib/tests/test_knowledge_search.sh`, led by a positive
+  behavioural sentinel that seeds two partitions and asserts the other
+  partition's note is **absent** (a no-op filter fails it).
+
 - **`ks_search_reindex` forwards `--search` / `--embeddings` to the backend,
   and rejects an unrecognised flag instead of swallowing it
   (temperloop#888).** The reindex seam parsed only `--full` and *silently
