@@ -113,11 +113,22 @@
 #                                    one {"doc_id","title","score","snippet"}
 #                                    object per line, already ranked by the
 #                                    backend (highest relevance first).
-# ks_search_reindex [--full]      -> rebuilds the search backend's index for
+# ks_search_reindex [--full] [--search] [--embeddings]
+#                                 -> rebuilds the search backend's index for
 #                                    ks_root's corpus. Never runs as a
 #                                    background watcher (point 3) — this is
 #                                    always an explicit, one-shot call (a
 #                                    post-pull hook / cron entry point).
+#                                    Flags are forwarded to the backend CLI by
+#                                    name (temperloop#888): `--full --search`
+#                                    is the full filesystem rescan + FTS
+#                                    rebuild WITHOUT the forced full re-embed
+#                                    (61s vs. 587s for bare `--full` on a
+#                                    977-note store), so a drift-healing
+#                                    caller no longer has to reach into the
+#                                    private `_ks_bm_run`. An UNRECOGNISED
+#                                    argument is rejected with exit 2, never
+#                                    silently discarded.
 # ks_search_available             -> exit 0 if the selected backend's
 #                                    required tooling is present, exit 3
 #                                    otherwise. Lets a caller probe before
@@ -133,7 +144,8 @@
 #       JSONL contract with a score of 0 (marking a lexical, not semantic,
 #       match) and a one-line stderr notice. Still exit 0 when the fallback
 #       also finds nothing (or rg is absent) — a genuine no-match.
-#   2 — invalid usage (empty query, dispatch to an unregistered backend).
+#   2 — invalid usage (empty query, an unrecognised ks_search_reindex flag,
+#       dispatch to an unregistered backend).
 #   3 — backend unavailable ("skipped"): the backend's required subprocess
 #       tooling (uvx) is not on PATH. A message beginning
 #       "skipped — knowledge_search unavailable" is printed to stderr;
@@ -945,16 +957,42 @@ _ks_search_backend_basic_memory_search() {
     || { echo "knowledge_search: could not parse basic-memory search output" >&2; return 4; }
 }
 
-# [--full] -> rebuilds the index for ks_root's project. Always explicit
-# (point 3) — no caller of this file ever starts a watcher. basic-memory's
-# own reindex is resumable on timeout re-invocation (contract-documented
-# CI caching guidance), so this is safe to call repeatedly.
+# [--full] [--search] [--embeddings] -> rebuilds the index for ks_root's
+# project. Always explicit (point 3) — no caller of this file ever starts a
+# watcher. basic-memory's own reindex is resumable on timeout re-invocation
+# (contract-documented CI caching guidance), so this is safe to call repeatedly.
+#
+# Flag passthrough (temperloop#888). Each accepted flag is forwarded to
+# `basic-memory reindex` by NAME, from an explicit allowlist — deliberately
+# not a blanket `"$@"` forward, because the allowlist is exactly what makes
+# the unknown-flag rejection below possible. The shapes that matter, measured
+# on a 977-note live store (foundation#1425, 2026-07-28):
+#
+#   --full --search   full filesystem rescan + FTS rebuild, reconciling the
+#                     entity table (re-paths moves, drops deletions) WITHOUT
+#                     the forced full re-embed — 61s
+#   --full            the above plus the forced full re-embed             — 587s
+#
+# The first shape is what a scheduled drift-healing reindex wants, and before
+# this it was unreachable through the public seam: a caller had to reach into
+# the library-PRIVATE `_ks_bm_run` behind a `declare -F` probe to get it.
+#
+# An UNRECOGNISED argument is now an error (exit 2, the contract's
+# invalid-usage code), not silently shifted away. The old loop discarded
+# every non-`--full` argument, so a mistyped `ks_search_reindex --full
+# --serch` silently degraded to bare `--full` — the 587s forced re-embed
+# instead of the 61s shape the caller asked for — with no warning at all.
 _ks_search_backend_basic_memory_reindex() {
-  local full=0
+  local full=0 rebuild_search=0 rebuild_embeddings=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --full) full=1; shift ;;
-      *) shift ;;
+      --full)       full=1; shift ;;
+      --search)     rebuild_search=1; shift ;;
+      --embeddings) rebuild_embeddings=1; shift ;;
+      *)
+        printf 'knowledge_search: ks_search_reindex: unrecognised argument "%s" (accepted: --full, --search, --embeddings)\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
 
@@ -972,17 +1010,22 @@ _ks_search_backend_basic_memory_reindex() {
     return 4
   }
 
-  if [ "$full" -eq 1 ]; then
-    _ks_bm_run reindex --full --project "$project" || {
-      echo "knowledge_search: basic-memory reindex failed" >&2
-      return 4
-    }
-  else
-    _ks_bm_run reindex --project "$project" || {
-      echo "knowledge_search: basic-memory reindex failed" >&2
-      return 4
-    }
-  fi
+  # Assemble the forwarded flags in a fixed order so the emitted command line
+  # is deterministic regardless of the order the caller passed them. `--project`
+  # is appended last and unconditionally, which also keeps the expansion below
+  # safe under `set -u` on bash 3.2 (macOS), where "${empty_array[@]}" is an
+  # unbound-variable error rather than an empty expansion.
+  local -a bm_args
+  bm_args=()
+  if [ "$full" -eq 1 ]; then               bm_args+=(--full); fi
+  if [ "$rebuild_search" -eq 1 ]; then     bm_args+=(--search); fi
+  if [ "$rebuild_embeddings" -eq 1 ]; then bm_args+=(--embeddings); fi
+  bm_args+=(--project "$project")
+
+  _ks_bm_run reindex "${bm_args[@]}" || {
+    echo "knowledge_search: basic-memory reindex failed" >&2
+    return 4
+  }
 }
 
 # Note: ks_search_available dispatches op "available" straight to

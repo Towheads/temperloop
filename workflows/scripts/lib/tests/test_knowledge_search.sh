@@ -433,6 +433,59 @@ grep -q '^REINDEX args=--full --project test-project$' "$FAKE_UVX_LOG" \
   || fail "12b: --full reindex should pass --full through (log:\n$(cat "$FAKE_UVX_LOG"))"
 echo "PASS: 12 ks_search_reindex drives both incremental (default) and --full rebuilds"
 
+# --- 12c. flag passthrough: --search / --embeddings reach the backend CLI -----
+# temperloop#888: the arg loop used to parse ONLY --full and silently shift
+# every other argument away, so the 61s `reindex --full --search` shape (full
+# rescan + FTS rebuild, no forced full re-embed) was unreachable through the
+# public seam — a caller had to reach into the private _ks_bm_run.
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full --search >/dev/null \
+  || fail "12c: --full --search reindex should succeed"
+grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12c: --full --search should reach the CLI as 'reindex --full --search' (log:\n$(cat "$FAKE_UVX_LOG"))"
+
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full --embeddings >/dev/null \
+  || fail "12d: --full --embeddings reindex should succeed"
+grep -q '^REINDEX args=--full --embeddings --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12d: --full --embeddings should reach the CLI as 'reindex --full --embeddings' (log:\n$(cat "$FAKE_UVX_LOG"))"
+
+# Order is normalized, not caller-dependent: --search alone, and the flags
+# passed in the reverse order, both emit the same canonical command line.
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --search >/dev/null \
+  || fail "12e: --search alone should succeed"
+grep -q '^REINDEX args=--search --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12e: --search alone should reach the CLI without --full (log:\n$(cat "$FAKE_UVX_LOG"))"
+
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --search --full >/dev/null \
+  || fail "12f: reversed flag order should succeed"
+grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12f: flag order should be normalized to --full --search (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 12c ks_search_reindex forwards --search/--embeddings through to the backend CLI"
+
+# --- 12g. an UNRECOGNISED flag is rejected, never silently discarded ----------
+# The pre-#888 loop shifted unknown args away, so a mistyped `--ful` quietly
+# ran a reindex the caller never asked for. Now: exit 2 (the contract's
+# invalid-usage code), nothing on stdout, and NO backend call at all.
+rm -f "$FAKE_UVX_LOG"
+set +e
+out12g="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --ful 2>/tmp/ks-search-test-err12g.$$)"
+rc12g=$?
+set -e
+err12g="$(cat /tmp/ks-search-test-err12g.$$)"
+rm -f /tmp/ks-search-test-err12g.$$
+[ "$rc12g" -eq 2 ] || fail "12g: an unrecognised reindex flag should exit 2 (got $rc12g)"
+[ -z "$out12g" ] || fail "12g: an unrecognised reindex flag must print nothing to stdout (got: $out12g)"
+case "$err12g" in
+  *'unrecognised argument "--ful"'*) : ;;
+  *) fail "12g: stderr must name the offending argument (got: $err12g)" ;;
+esac
+[ ! -s "$FAKE_UVX_LOG" ] \
+  || fail "12g: an unrecognised flag must NOT reach the backend at all (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 12g ks_search_reindex rejects an unrecognised flag (exit 2) instead of silently discarding it"
+
 # --- 13. reindex degrades the same way as search when uvx is missing ----------
 set +e
 out="$(PATH="$EMPTY_BIN" ks_search_reindex 2>/tmp/ks-search-test-err2.$$)"

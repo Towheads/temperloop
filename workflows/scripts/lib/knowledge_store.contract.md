@@ -533,7 +533,8 @@ back that same root from disk.
 
 ```
 ks_search <query> [--limit N]     -> ranked results, JSON Lines on stdout
-ks_search_reindex [--full]        -> rebuild the backend's index for ks_root
+ks_search_reindex [--full] [--search] [--embeddings]
+                                  -> rebuild the backend's index for ks_root
 ks_search_available               -> exit 0/3 probe, no stdout
 ```
 
@@ -552,7 +553,7 @@ Exit codes (both `ks_search` and `ks_search_reindex`):
 | Exit | Meaning |
 |---|---|
 | 0 | Success. For `ks_search`, this includes a legitimate **zero-result** match — an empty JSONL stream with exit 0 is a real "no matches," never confused with "backend unavailable." |
-| 2 | Invalid usage (empty query, or `KNOWLEDGE_SEARCH_BACKEND` names a backend with no matching functions defined). |
+| 2 | Invalid usage (empty query, an **unrecognised `ks_search_reindex` flag**, or `KNOWLEDGE_SEARCH_BACKEND` names a backend with no matching functions defined). |
 | 3 | Backend unavailable ("skipped"). The backend's required subprocess tooling is not on `PATH`. A message beginning `skipped — knowledge_search unavailable` is printed to stderr; **nothing is ever printed to stdout** in this case. This is the legible-degradation contract: a caller must never mistake "backend not installed" for "searched and found nothing." |
 | 4 | Backend error: the subprocess ran but exited non-zero, or its output could not be parsed into the expected shape. |
 
@@ -560,6 +561,37 @@ Exit codes (both `ks_search` and `ks_search_reindex`):
 `ks_search_reindex` use internally, standalone, so a caller can probe
 before calling either (exit 0 = ready, exit 3 = the same "skipped —"
 notice on stderr, no stdout either way).
+
+### `ks_search_reindex` flags
+
+`ks_search_reindex` takes an **allowlist** of flags and forwards each one, by
+name, to the backend's own reindex CLI. It is deliberately not a blanket
+`"$@"` forward: the allowlist is what makes the unknown-flag rejection below
+possible.
+
+| Flag | Meaning |
+|---|---|
+| *(none)* | Incremental reindex — the cheap default. |
+| `--full` | Full filesystem rescan **and** a forced full re-embed. |
+| `--search` | Rebuild the full-text (FTS) index and reconcile the entity table — re-paths moved documents, drops deleted ones. |
+| `--embeddings` | Rebuild the semantic embeddings. |
+
+The flags compose, so the shape a **drift-healing scheduled reindex** wants is
+`ks_search_reindex --full --search`: the full filesystem rescan plus the FTS
+rebuild, **without** the forced full re-embed. Measured on a 977-note live
+store (foundation#1425, 2026-07-28): `--full --search` = **61s**, bare
+`--full` = **587s**. Before temperloop#888 that shape was unreachable through
+this seam — a caller had to reach into the library-private `_ks_bm_run` behind
+a `declare -F` probe — so any consumer that still does so can drop the probe
+and call the public seam.
+
+An **unrecognised** argument is rejected: exit 2 (the invalid-usage code
+above) with a one-line stderr message naming the offending argument and the
+accepted set, and no backend call is made at all. It is never silently
+discarded — the pre-#888 loop shifted every non-`--full` argument away, so a
+mistyped `ks_search_reindex --full --serch` silently degraded to bare `--full`,
+the 587s forced re-embed instead of the 61s shape the caller asked for, with no
+warning.
 
 ### Post-fetch re-rank
 
