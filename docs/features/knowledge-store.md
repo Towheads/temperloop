@@ -174,8 +174,76 @@ sub-millisecond each; the search path additionally spawns one pinned `uvx`
 subprocess per query or reindex — the only process-spawn cost in this seam.
 API/network budget: zero for ordinary read/write/append/list. The search
 subprocess itself runs fully local once its pinned package is cached; the
-only network touch is `uvx`'s one-time fetch of the pinned `basic-memory`
-version.
+only network touch is `uvx`'s fetch of the pinned `basic-memory` version
+for a resolution it has not cached before.
+
+### Configure `uv tool install` — the `uvx` cache grows without bound
+
+`_ks_bm_run` invokes the pinned package as `uvx --from
+basic-memory==<pin> basic-memory …`, which is convenient (nothing to
+install ahead of time) but has a storage consequence worth configuring
+away before it bites.
+
+Under `uvx` there is **no permanent install location**: uv resolves the
+package, unpacks a ready-to-run environment into its own cache
+(`archive-v0`), and executes *out of that cache*. Every distinct
+resolution — a different pin, a different Python, a changed dependency
+set — adds another environment, and nothing expires them. On a host that
+had been running the search path for months this reached **30 GB**, against
+a knowledge store of 273 MB.
+
+Two things make it worse than ordinary cache growth:
+
+- **A pinned `HOME` forks a second cache.** uv locates its cache relative
+  to `HOME`. Any wrapper that runs `basic-memory` under an isolated home
+  (the warm-daemon posture described above does exactly this, to reach an
+  adapter-owned `config.json`) causes uv to build a *separate* cache tree
+  inside that home rather than reusing the user's. The host then carries
+  two independent unbounded caches instead of one.
+- **The cache cannot be pruned while a long-running search process is
+  up.** `uvx` holds the cache lock for the entire lifetime of the process
+  it launched, so `uv cache prune` fails with `Cache is currently in-use`
+  for as long as a warm daemon is running. And because the cache *is* the
+  live environment, clearing it by hand would delete the running
+  interpreter out from under that daemon. A persistent warm daemon means
+  the reclaim window never naturally arrives.
+
+**The configuration that avoids all of this** is to install the pin as a
+uv *tool* and invoke the installed entry point, rather than resolving it
+per-run:
+
+```sh
+# once, using the same HOME the search path runs under
+HOME=<isolated-bm-home> uv tool install "basic-memory==<pin>"
+
+# then invoke the installed entry point instead of `uvx --from …`
+<isolated-bm-home>/.local/bin/basic-memory mcp …
+```
+
+That places a stable virtualenv under
+`$HOME/.local/share/uv/tools/basic-memory/` (~380 MB, with its own
+managed interpreter). The cache then holds no live environment, releases
+its lock, and is safe to prune or delete at any time — including while
+the daemon is serving. Upgrades become explicit (`uv tool install
+basic-memory==<newpin>`), which is arguably more honest for a version
+that is pinned anyway.
+
+**Checking and reclaiming.** `pgrep -fl archive-v0` lists any process
+still executing out of a uv cache — if it names your `basic-memory`, the
+switch above has not taken effect for that process. Once nothing runs
+from it, `uv cache prune` (or removing the cache directory outright)
+reclaims the space; verify the daemon still answers its health check
+afterwards.
+
+Note that `du` will overstate what you get back. uv populates
+environments with APFS copy-on-write clones, which share physical blocks
+that `du` counts in full for every entry — on the host above, a cache
+`du` reported as 30 GB returned roughly 8 GB of actual free space. Read
+`df`, not `du`, when measuring the reclaim.
+
+The kernel's own default remains `uvx` (it needs no install step, which
+matters for a first run); adopting `uv tool install` is an operator
+configuration, and making it the default is tracked separately.
 
 ## Telemetry
 
