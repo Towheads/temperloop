@@ -76,7 +76,8 @@ op routes through the `ks_` dispatch (no caller shells `git -C` at the
 store root directly), it is never wired into a scheduled or background job,
 and the store — including its `.git` and remote config — is user data
 `temperloop uninstall` keeps intact. Experimental scope: single-tenant per
-`$HOME` (per-project partition is deferred — temperloop#418) and
+`$HOME` (see **Limitations** below — sync replicates the whole root, with no
+notion of partitions) and
 single-writer (pull is `--ff-only`; a diverged store is handed back to the
 operator). The thin entry `workflows/scripts/lib/knowledge_sync.sh` is
 deliberately absent from the stranger-facing CLI reference, keeping the
@@ -101,6 +102,54 @@ own `_ks_machine_conf_root || _ks_default_root` fallback. A live agent
 session's Obsidian MCP vault tracks plane A in practice (both derive from
 the same machine-conf-configured root), so a plane A/B mismatch is a real
 signal that the two planes would silently write into different corpora.
+
+## Limitations — read this if you work across more than one client
+
+**One `$HOME` is one store, and the store is single-tenant.** There is
+exactly one `ks_root` per `$HOME`, and everything in it lives in one flat
+corpus. Notes are conventionally named `<project> - <title>.md`, but that
+is **only a filename convention** — nothing enforces it, and the store's
+read/write/list/sync operations do not know it exists.
+
+**What that means concretely for a multi-engagement user.** If you run one
+machine account across several clients, every client's notes sit in the same
+store. `ks_list` enumerates all of them, `ks_sync` replicates all of them to
+one remote, and — the sharpest edge — **a semantic search does not respect
+the filename convention by default**: a query typed while you are working on
+client B can rank and return client A's confidential decision notes. That is
+structural, not a bug you can avoid by being careful with your queries.
+
+**Two ways to handle it — pick deliberately:**
+
+1. **A separate `$HOME` (and therefore a separate store root) per
+   engagement.** This is the only **hard** boundary, and it is the
+   recommendation when the notes are genuinely confidential to a client.
+   Nothing in one engagement's store is reachable from another's: not
+   search, not `ks_list`, not sync. The cost is real — no shared
+   cross-project notes, and per-engagement setup.
+2. **A partition-scoped search**, if one store is worth the convenience.
+   Set `KNOWLEDGE_SEARCH_PARTITION=<client>` (or pass
+   `ks_search … --partition <client>`) and search returns only documents
+   whose `doc_id` proves membership in that partition — either
+   `Decisions/<client> - <title>.md` (the filename convention) or
+   `<client>/…` (a top-level project directory). Anything belonging to
+   another partition, and anything the store cannot attribute at all, is
+   **absent** from the results. The scope fails **closed**: an unrecognised
+   or empty scope argument is an error (exit 2), never a silent widening
+   back to the whole corpus, and the degraded lexical-fallback path is
+   filtered too.
+
+**Know what option 2 does *not* give you.** It scopes **search only**. The
+documents still share one directory: `ks_read` can still read another
+project's note if you know its `doc_id`, `ks_list` still enumerates the
+whole root, and `ks_sync` still pushes every project's notes to one remote.
+It reduces *accidental* exposure through search — the dominant, hard-to-
+avoid failure — but it is **not** at-rest isolation. If you need that,
+option 1 is the answer.
+
+Full contract, including the exact membership rules and the fail-closed
+guarantees: `workflows/scripts/lib/knowledge_store.contract.md` § Project
+partition — scoped search.
 
 ## Integration
 

@@ -118,6 +118,19 @@ case "$sub" in
 JSON
           exit 0
           ;;
+        two_partitions)
+          # temperloop#418 partition fixture: FOUR notes spanning both
+          # membership forms plus the unpartitioned case, so one canned
+          # response drives every scoping assertion.
+          #   Decisions/acme - retainer terms.md   -> partition `acme`   (filename form)
+          #   Decisions/zenith - retainer terms.md -> partition `zenith` (filename form)
+          #   zenith/Decisions/rates.md            -> partition `zenith` (directory form)
+          #   Index.md                             -> UNPARTITIONED
+          cat <<'JSON'
+{"results":[{"title":"acme - retainer terms","type":"entity","score":1.20,"content":"acme confidential","matched_chunk":"acme confidential","file_path":"Decisions/acme - retainer terms.md","metadata":{},"entity_id":1},{"title":"zenith - retainer terms","type":"entity","score":1.10,"content":"zenith confidential","matched_chunk":"zenith confidential","file_path":"Decisions/zenith - retainer terms.md","metadata":{},"entity_id":2},{"title":"rates","type":"entity","score":0.95,"content":"zenith rates","matched_chunk":"zenith rates","file_path":"zenith/Decisions/rates.md","metadata":{},"entity_id":3},{"title":"Index","type":"entity","score":0.90,"content":"index","matched_chunk":"index","file_path":"Index.md","metadata":{},"entity_id":4}],"current_page":1,"page_size":10,"total":4,"has_more":false}
+JSON
+          exit 0
+          ;;
         register_then_ok)
           # Fail until the project has been registered (marker present), then
           # return results — the #996 lazy-on-miss cold/reset path.
@@ -700,5 +713,185 @@ rc16f=$?
 [ "$rc16f" -eq 0 ] || fail "16f: an abstained ks_search call must still exit 0 (got $rc16f)"
 [ -z "$out16f" ] || fail "16f: the sentinel must never reach a real ks_search caller (got: $out16f)"
 echo "PASS: 16f ks_search never leaks the abstention sentinel; exit 0 with empty stdout"
+
+# --- 17. project partition / scoped search (temperloop#418) ------------------
+# The confidentiality seam: ks_search's corpus is the whole resolved ks_root,
+# so an operator running one $HOME across engagements could have a query typed
+# in client B's session rank and return client A's notes. These cases are
+# BEHAVIOURAL — each asserts what came back and, critically, what did NOT.
+
+# 17a. THE POSITIVE BEHAVIOURAL SENTINEL. Two partitions are in the corpus and
+# both are in the backend's candidate set; a search scoped to `acme` returns
+# acme's note and the OTHER partition's notes are ABSENT. A no-op filter, or a
+# scope flag silently discarded somewhere down the stack, fails here — which a
+# flag-parses-only assertion would not catch.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17a="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+  ks_search "retainer terms" --limit 5 --partition acme)" \
+  || fail "17a: a scoped ks_search should succeed"
+docs17a="$(printf '%s\n' "$out17a" | jq -r '.doc_id' | sort | tr '\n' '|')"
+[ "$docs17a" = "Decisions/acme - retainer terms.md|" ] \
+  || fail "17a: scoped search must return ONLY the acme partition (got: $docs17a)"
+printf '%s\n' "$out17a" | grep -q 'zenith' \
+  && fail "17a: CROSS-PARTITION BLEED — a zenith note reached an acme-scoped search:\n$out17a"
+printf '%s\n' "$out17a" | grep -q 'Index.md' \
+  && fail "17a: an UNPARTITIONED note reached a scoped search (must fail closed):\n$out17a"
+echo "PASS: 17a a scoped ks_search returns only its own partition — the other partition's note is ABSENT"
+
+# 17b. NO REGRESSION for the dominant single-tenant user: with no partition
+# configured, the identical query returns the whole unfiltered candidate set,
+# exactly as it did pre-#418.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17b="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --limit 5)" \
+  || fail "17b: an unscoped ks_search should succeed"
+n17b="$(printf '%s\n' "$out17b" | wc -l | tr -d ' ')"
+[ "$n17b" -eq 4 ] \
+  || fail "17b: unpartitioned search must return all 4 candidates untouched (got $n17b): $out17b"
+echo "PASS: 17b default (no partition configured) is unchanged — the whole corpus, no filtering"
+
+# 17c. the DIRECTORY membership form is honoured alongside the filename form:
+# scoping to `zenith` returns both `Decisions/zenith - …md` and `zenith/…`.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+  ks_search "retainer terms" --limit 5 --partition zenith)" \
+  || fail "17c: a zenith-scoped ks_search should succeed"
+docs17c="$(printf '%s\n' "$out17c" | jq -r '.doc_id' | sort | tr '\n' '|')"
+[ "$docs17c" = "Decisions/zenith - retainer terms.md|zenith/Decisions/rates.md|" ] \
+  || fail "17c: both membership forms should match for zenith (got: $docs17c)"
+printf '%s\n' "$out17c" | grep -q 'acme' \
+  && fail "17c: CROSS-PARTITION BLEED — an acme note reached a zenith-scoped search:\n$out17c"
+echo "PASS: 17c partition membership matches both the '<project> - ' filename form and the '<project>/' directory form"
+
+# 17d. the ENV route (KNOWLEDGE_SEARCH_PARTITION) scopes just as hard as the
+# flag — this is the route a consultant actually uses (export once per
+# engagement), so it must not be a second, weaker path.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17d="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions KNOWLEDGE_SEARCH_PARTITION=acme \
+  ks_search "retainer terms" --limit 5)" \
+  || fail "17d: an env-scoped ks_search should succeed"
+[ "$(printf '%s\n' "$out17d" | jq -r '.doc_id' | sort | tr '\n' '|')" = "Decisions/acme - retainer terms.md|" ] \
+  || fail "17d: KNOWLEDGE_SEARCH_PARTITION must scope as hard as --partition (got: $out17d)"
+echo "PASS: 17d KNOWLEDGE_SEARCH_PARTITION scopes every call, identically to the per-call flag"
+
+# --- 17e-17h. FAIL-CLOSED: the load-bearing half ------------------------------
+# An unrecognised or unhonoured scope argument must ERROR, never widen the
+# corpus. The pre-#418 loop ended in `*) shift ;;`, so a scope flag a layer did
+# not understand was DISCARDED and the full corpus came back at exit 0 — a
+# silent confidentiality failure dressed as a successful scoped search. Same
+# rejection shape as ks_search_reindex's (temperloop#888, case 12g).
+
+# 17e. an unrecognised ks_search argument -> exit 2, nothing on stdout, and NO
+# backend call at all.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+set +e
+out17e="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --scope acme 2>/tmp/ks-search-test-err17e.$$)"
+rc17e=$?
+set -e
+err17e="$(cat /tmp/ks-search-test-err17e.$$)"; rm -f /tmp/ks-search-test-err17e.$$
+[ "$rc17e" -eq 2 ] || fail "17e: an unrecognised ks_search argument must exit 2 (got $rc17e)"
+[ -z "$out17e" ] || fail "17e: an unrecognised argument must return NOTHING, never the unfiltered corpus (got: $out17e)"
+case "$err17e" in
+  *'unrecognised argument "--scope"'*) : ;;
+  *) fail "17e: stderr must name the offending argument (got: $err17e)" ;;
+esac
+[ ! -s "$FAKE_UVX_LOG" ] \
+  || fail "17e: an unrecognised argument must not reach the backend (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 17e ks_search rejects an unrecognised argument (exit 2, no results, no backend call)"
+
+# 17f. an EMPTY --partition value is rejected, never read as "no partition" —
+# the `--partition "$CLIENT"` that expanded to nothing must fail loudly rather
+# than silently widen back to the whole corpus.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+set +e
+out17f="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --partition "" 2>/dev/null)"
+rc17f=$?
+out17f2="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --partition 2>/dev/null)"
+rc17f2=$?
+set -e
+[ "$rc17f" -eq 2 ]  || fail "17f: an empty --partition value must exit 2, never widen the corpus (got $rc17f)"
+[ -z "$out17f" ]    || fail "17f: an empty --partition must return nothing (got: $out17f)"
+[ "$rc17f2" -eq 2 ] || fail "17f: a valueless --partition must exit 2 (got $rc17f2)"
+[ -z "$out17f2" ]   || fail "17f: a valueless --partition must return nothing (got: $out17f2)"
+[ ! -s "$FAKE_UVX_LOG" ] \
+  || fail "17f: a malformed --partition must not reach the backend (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 17f an empty or valueless --partition is rejected (exit 2), never silently widened to the whole corpus"
+
+# 17g. the BACKENDS refuse the scope flag rather than swallowing it. Enforcement
+# lives in ks_search, above every backend, precisely so a backend cannot fail
+# open by not implementing the scope — and each backend loop now rejects what it
+# does not recognise, so the old `*) shift ;;` widening cannot come back through
+# a direct backend call either.
+set +e
+PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+  _ks_search_backend_basic_memory_search "retainer terms" --partition acme >/dev/null 2>&1
+rc17g=$?
+set -e
+[ "$rc17g" -eq 2 ] \
+  || fail "17g: the cold backend must REJECT --partition (exit 2), not silently discard it (got $rc17g)"
+echo "PASS: 17g the backend rejects a scope flag it does not implement instead of returning the unfiltered corpus"
+
+# 17h. the capability probe exists, so a caller can tell a library that HONOURS
+# the scope from a pre-#418 one that would silently ignore it (the one skew the
+# adapter cannot close from inside).
+declare -F ks_search_partition_supported >/dev/null \
+  || fail "17h: ks_search_partition_supported must be defined as the version-skew probe"
+ks_search_partition_supported || fail "17h: ks_search_partition_supported should exit 0 on this library"
+echo "PASS: 17h ks_search_partition_supported is the declare -F version-skew probe for scope support"
+
+# --- 17i. the filter itself fails CLOSED --------------------------------------
+# If the filter cannot run at all (no jq), it must yield NOTHING and a non-zero
+# return — never pass the unfiltered stream through. Driven directly, with jq
+# removed from PATH, since that is the only way to force the failure.
+PART_IN="$TMP/part-in.jsonl"
+cat > "$PART_IN" <<'JSONL'
+{"doc_id":"Decisions/acme - retainer terms.md","title":"acme - retainer terms","score":1.2,"snippet":"a"}
+{"doc_id":"Decisions/zenith - retainer terms.md","title":"zenith - retainer terms","score":1.1,"snippet":"z"}
+JSONL
+set +e
+out17i="$(PATH="$EMPTY_BIN" ks_search__partition_filter acme < "$PART_IN" 2>/dev/null)"
+rc17i=$?
+set -e
+[ "$rc17i" -ne 0 ] || fail "17i: a filter that cannot run must return non-zero (got $rc17i)"
+[ -z "$out17i" ] || fail "17i: a failed filter must emit NOTHING, never the unfiltered stream (got: $out17i)"
+# And a record with no usable doc_id is excluded rather than trusted.
+out17i2="$(printf '%s\n' '{"title":"no doc id","score":1.0,"snippet":"x"}' \
+  | ks_search__partition_filter acme)"
+[ -z "$out17i2" ] || fail "17i: a record with no doc_id must be excluded (got: $out17i2)"
+echo "PASS: 17i the partition filter fails closed — a filter it cannot run, or a record it cannot attribute, returns nothing"
+
+# --- 17j. the rg LEXICAL FALLBACK stream is filtered too ----------------------
+# The degraded path is a real leak surface: a backend zero-result falls back to
+# a ripgrep sweep of the corpus, and an unfiltered fallback would hand back the
+# other client's notes precisely when the semantic path found nothing. Driven
+# in a SEPARATE process with the fallback stubbed to a known two-partition
+# stream, so this holds whether or not ripgrep is installed on the host.
+CONSUMER17="$TMP/consumer_17j.sh"
+cat > "$CONSUMER17" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export KNOWLEDGE_STORE_ROOT="$ROOT"
+export KNOWLEDGE_SEARCH_BM_HOME="$BM_HOME"
+export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads-17j.log"
+export FAKE_UVX_LOG="$TMP/uvx-17j.log"
+export FAKE_UVX_MODE=empty_results
+export PATH="$BIN:\$PATH"
+source "$STORE_LIB"
+source "$SEARCH_LIB"
+# Stub the fallback with a canned two-partition lexical hit set (score 0 is the
+# fallback provenance sentinel, exactly as the real one emits).
+ks_search__rg_fallback() {
+  printf '%s\n' \\
+    '{"doc_id":"Decisions/acme - retainer terms.md","title":"acme - retainer terms","score":0,"snippet":"a"}' \\
+    '{"doc_id":"Decisions/zenith - retainer terms.md","title":"zenith - retainer terms","score":0,"snippet":"z"}'
+}
+ks_search "retainer terms" --limit 5 --partition acme
+EOF
+out17j="$(bash "$CONSUMER17" 2>/dev/null)" || fail "17j: the scoped fallback path should exit 0"
+[ "$(printf '%s\n' "$out17j" | jq -r '.doc_id' | sort | tr '\n' '|')" = "Decisions/acme - retainer terms.md|" ] \
+  || fail "17j: the rg lexical fallback must be partition-filtered too (got: $out17j)"
+printf '%s\n' "$out17j" | grep -q 'zenith' \
+  && fail "17j: CROSS-PARTITION BLEED via the rg lexical fallback:\n$out17j"
+echo "PASS: 17j the rg lexical-fallback stream is partition-filtered too — the degraded path cannot leak"
 
 echo "ALL PASS: knowledge_search.sh (interface + basic-memory backend, mocked subprocess)"

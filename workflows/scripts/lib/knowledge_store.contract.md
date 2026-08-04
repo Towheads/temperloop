@@ -300,7 +300,10 @@ git-under-root sync has no meaning there and it degrades legibly rather
 than inheriting an unimplementable obligation.
 
 **Status: EXPERIMENTAL.** Single-tenant per `$HOME` — one flat store root,
-one remote; per-project partition is deferred (temperloop#418).
+one remote. The **search** half of temperloop#418 has landed (§ Project
+partition — `ks_search` can be scoped); the **store** half has not: `ks_sync`
+replicates the whole root and knows nothing about partitions, so a synced
+remote carries every project's notes together.
 Single-writer assumption — there is no conflict story beyond git's own:
 `pull` is fast-forward-only, and a diverged store fails loud for the
 operator to resolve with git directly, never an auto-merge.
@@ -521,7 +524,7 @@ sets no shell options of its own.
 
 ### Corpus binding — no independent path setting
 
-`ks_search`'s corpus is **always** the store's resolved root, `ks_root`
+The **indexed** corpus is **always** the store's resolved root, `ks_root`
 (defined by `knowledge_store.sh`). There is no `KNOWLEDGE_SEARCH_ROOT` or
 equivalent — this is a deliberate split-brain guard: a search index that
 could be pointed somewhere other than the document store would silently
@@ -529,13 +532,26 @@ drift from what `ks_read`/`ks_write`/`ks_list` actually see. Whatever
 backend `KNOWLEDGE_STORE_BACKEND` resolves documents to, `ks_search` reads
 back that same root from disk.
 
+What a **given call returns** is a narrower question, and since
+temperloop#418 it is no longer unconditionally "everything under `ks_root`":
+a call carrying a **partition scope** returns only the subset whose
+documents prove membership in the named partition (§ Project partition
+below). The *index* stays bound to that one root — the split-brain guard is
+unchanged — and the scope is a **result filter over that one index**, never
+a second corpus or a second root setting. Unscoped, which is the default,
+the returned set is the whole root exactly as it was before.
+
 ### Public interface
 
 ```
-ks_search <query> [--limit N]     -> ranked results, JSON Lines on stdout
+ks_search <query> [--limit N] [--partition <name>]
+                                  -> ranked results, JSON Lines on stdout
 ks_search_reindex [--full] [--search] [--embeddings]
                                   -> rebuild the backend's index for ks_root
 ks_search_available               -> exit 0/3 probe, no stdout
+ks_search_partition_supported     -> exit 0 iff THIS library implements the
+                                     --partition scope (a `declare -F`
+                                     version-skew probe — § Project partition)
 ```
 
 `ks_search` prints one JSON object per line (JSON Lines, not a single JSON
@@ -553,14 +569,100 @@ Exit codes (both `ks_search` and `ks_search_reindex`):
 | Exit | Meaning |
 |---|---|
 | 0 | Success. For `ks_search`, this includes a legitimate **zero-result** match — an empty JSONL stream with exit 0 is a real "no matches," never confused with "backend unavailable." |
-| 2 | Invalid usage (empty query, an **unrecognised `ks_search_reindex` flag**, or `KNOWLEDGE_SEARCH_BACKEND` names a backend with no matching functions defined). |
+| 2 | Invalid usage (empty query, an **unrecognised `ks_search` or `ks_search_reindex` flag**, a `--limit`/`--partition` with no value, an **empty `--partition` value**, or `KNOWLEDGE_SEARCH_BACKEND` names a backend with no matching functions defined). |
 | 3 | Backend unavailable ("skipped"). The backend's required subprocess tooling is not on `PATH`. A message beginning `skipped — knowledge_search unavailable` is printed to stderr; **nothing is ever printed to stdout** in this case. This is the legible-degradation contract: a caller must never mistake "backend not installed" for "searched and found nothing." |
-| 4 | Backend error: the subprocess ran but exited non-zero, or its output could not be parsed into the expected shape. |
+| 4 | Backend error: the subprocess ran but exited non-zero, or its output could not be parsed into the expected shape — **including a partition filter that could not run** (see § Project partition: a filter that cannot run returns nothing, never the unscoped set). |
 
 `ks_search_available` runs the same availability check `ks_search` and
 `ks_search_reindex` use internally, standalone, so a caller can probe
 before calling either (exit 0 = ready, exit 3 = the same "skipped —"
 notice on stderr, no stdout either way).
+
+### Project partition — scoped search (temperloop#418)
+
+Without a scope, one `ks_root` is one flat, undivided search corpus. The
+store's only separation between projects is the `<project> - <title>.md`
+**filename convention**, and search did not respect it — so for an operator
+running a single `$HOME` across several engagements, a query typed during
+client B's session could rank and return client A's confidential notes. That
+was structural, not incidental. The partition scope is the seam that closes
+it.
+
+**Setting the scope.** Two routes, same enforcement:
+
+| Route | Shape | Use |
+|---|---|---|
+| `KNOWLEDGE_SEARCH_PARTITION` | env/config setting, **empty by default** | the standing scope — set once per engagement, every `ks_search` in that session is scoped |
+| `ks_search … --partition <name>` | per-call flag | overrides the setting for one call |
+
+**Membership is proven by the `doc_id`, never assumed.** A result belongs to
+partition `<p>` iff its `doc_id` satisfies **either**:
+
+- **filename convention** — its basename starts with `<p> - `, e.g.
+  `Decisions/acme - retainer terms.md` is in partition `acme`. This is the
+  convention the store already uses.
+- **directory convention** — the `doc_id` starts with `<p>/`, e.g.
+  `acme/Decisions/retainer terms.md`, for a store organised by top-level
+  project directory instead.
+
+Matching is **exact and case-sensitive**. There is no fuzzy, normalized, or
+prefix-ish match: a near-miss here is a confidentiality failure, not a
+ranking miss.
+
+**Unpartitioned documents are EXCLUDED from a scoped search**, deliberately.
+A document matching neither form (`Index.md`, `Sessions/2026-08-04.md`) is
+one whose ownership the store cannot prove, and a confidentiality filter must
+not return what it cannot attribute. The cost is real and stated rather than
+hidden: a scoped search also hides your generic, cross-project notes. The
+alternative — an "unpartitioned notes are always visible" opt-out — is
+exactly the fail-open lever this seam exists in order not to have.
+
+**Fail-closed is the load-bearing property.** An unrecognised or unhonoured
+scope argument must **error**, never widen the corpus:
+
+- `ks_search` parses its **own** arguments against an allowlist and rejects
+  anything else with **exit 2** before any backend call — the same shape as
+  `ks_search_reindex`'s rejection above. The pre-#418 loops ended in
+  `*) shift ;;`, so a scope flag a layer did not understand was *discarded*
+  and the full corpus came back at exit 0: a silent confidentiality failure
+  dressed as a successful scoped search.
+- An **empty** `--partition` value is rejected too, never read as "no
+  partition" — a `--partition "$CLIENT"` that expanded to nothing fails
+  loudly instead of silently widening back to the whole corpus.
+- The scope is **consumed at the `ks_search` seam and never forwarded to a
+  backend**. Enforcement therefore cannot depend on a backend choosing to
+  honour it, and both shipped backends (`basic-memory`, `basic-memory-mcp`)
+  *reject* the flag rather than ignore it.
+- Every result stream a caller can receive is filtered at that one point —
+  the backend's own results **and** the degraded **ripgrep lexical fallback**
+  (which would otherwise leak the other client's notes precisely when the
+  semantic path found nothing).
+- A filter that **cannot run** (no `jq`) returns nothing and **exit 4** — it
+  never falls back to the unfiltered stream.
+- A **version-skew** caller probes `declare -F ks_search_partition_supported`
+  first. On a pre-#418 copy of the library that function does not exist, and
+  that is the only reliable way to distinguish a library that *honours* the
+  scope from one that would silently ignore it. No care inside this library
+  can close that gap for a caller running an older one.
+
+**Scope of this seam — a search filter, not a store partition.** This is
+stated plainly rather than half-built. It scopes `ks_search` only.
+`ks_read`, `ks_write`, `ks_append`, `ks_list`, and `ks_sync` are
+**unpartitioned**: a caller that knows a `doc_id` can still read it, and
+`ks_list` still enumerates the whole root. A true multi-tenant *store*
+partition would have to reach the doc-id normalizer, every backend in the
+matrix, and the sync capability — a store-layer redesign, not this change.
+What this closes is the bleed the issue is actually about: **search
+surfacing another project's notes**. What it does **not** provide is
+at-rest isolation; for that, the mitigation remains a **separate `$HOME`
+(and therefore a separate store root) per engagement**.
+
+**No regression when unscoped.** With no partition configured — the dominant
+single-tenant case — behaviour is byte-identical to pre-#418: the whole
+corpus, no filtering, the same fallback trigger conditions. The fallback in
+particular still fires only on a **backend**-empty result, never on a set the
+partition filter emptied (a post-filter empty is not a backend-empty, the
+same distinction the abstention floor already draws).
 
 ### `ks_search_reindex` flags
 
@@ -822,9 +924,14 @@ context, and citation-friendly results.
 
 ### Non-goals of this seam (search)
 
-- **No search over non-store content.** `ks_search`'s corpus is exactly
+- **No search over non-store content.** `ks_search`'s index is exactly
   `ks_root`'s documents — it does not index code, board issues, or
-  anything outside the knowledge store.
+  anything outside the knowledge store. (A **partition scope** narrows what
+  a given call *returns* from that index; it never widens what is indexed.)
+- **No store-layer tenancy.** The partition scope is a search filter only —
+  `ks_read`/`ks_write`/`ks_list`/`ks_sync` remain unpartitioned, and the
+  store offers no at-rest isolation between projects. Separate `$HOME`s (and
+  therefore separate roots) remain the only hard boundary.
 - **No live-watch indexing.** Point 3 above — indexing is always an
   explicit `ks_search_reindex` call.
 - **No caller routing.** Like the document-I/O interface, no existing

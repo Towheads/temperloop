@@ -90,6 +90,17 @@
 #                                Default 0.10. BOTH floors must fail (AND, not
 #                                OR) for the candidate to abstain -- neither
 #                                alone measurably separates.
+#   KNOWLEDGE_SEARCH_PARTITION   project/partition SCOPE for every ks_search
+#                                call (temperloop#418). EMPTY by default =
+#                                unpartitioned: the whole corpus, byte-identical
+#                                to the pre-#418 surface. When non-empty, a
+#                                result is returned ONLY if its doc_id proves
+#                                membership in that partition (see
+#                                "## Project partition" below). Overridable
+#                                per call by `ks_search --partition <name>`.
+#                                FAILS CLOSED by construction: enforced in
+#                                ks_search itself, never delegated to a
+#                                backend that might not honour it.
 #   KNOWLEDGE_SEARCH_BM_PYTHON   pinned CPython version passed to
 #                                `uvx --python <version>` (point 5's
 #                                companion pin). The bm version pin alone
@@ -109,10 +120,27 @@
 # — there is no KNOWLEDGE_SEARCH_ROOT or equivalent.
 
 # ── Public interface ────────────────────────────────────────────────────
-# ks_search <query> [--limit N]   -> ranked results, JSON Lines on stdout:
+# ks_search <query> [--limit N] [--partition <name>]
+#                                 -> ranked results, JSON Lines on stdout:
 #                                    one {"doc_id","title","score","snippet"}
 #                                    object per line, already ranked by the
 #                                    backend (highest relevance first).
+#                                    An UNRECOGNISED argument is rejected with
+#                                    exit 2 before any backend call
+#                                    (temperloop#418) — never silently
+#                                    discarded, because a discarded SCOPE
+#                                    argument would return the full unfiltered
+#                                    corpus to a caller that believes it asked
+#                                    for a scoped search.
+# ks_search_partition_supported   -> exit 0 iff THIS copy of the library
+#                                    implements the --partition scope. A
+#                                    caller that depends on scoping probes
+#                                    `declare -F ks_search_partition_supported`
+#                                    before calling: on a pre-#418 library the
+#                                    function does not exist at all, which is
+#                                    the only reliable way to tell a kernel
+#                                    that HONOURS the scope from one that
+#                                    silently ignores it.
 # ks_search_reindex [--full] [--search] [--embeddings]
 #                                 -> rebuilds the search backend's index for
 #                                    ks_root's corpus. Never runs as a
@@ -144,8 +172,9 @@
 #       JSONL contract with a score of 0 (marking a lexical, not semantic,
 #       match) and a one-line stderr notice. Still exit 0 when the fallback
 #       also finds nothing (or rg is absent) — a genuine no-match.
-#   2 — invalid usage (empty query, an unrecognised ks_search_reindex flag,
-#       dispatch to an unregistered backend).
+#   2 — invalid usage (empty query, an unrecognised ks_search or
+#       ks_search_reindex flag, a --limit/--partition with no value, an EMPTY
+#       --partition value, dispatch to an unregistered backend).
 #   3 — backend unavailable ("skipped"): the backend's required subprocess
 #       tooling (uvx) is not on PATH. A message beginning
 #       "skipped — knowledge_search unavailable" is printed to stderr;
@@ -171,10 +200,46 @@ _ks_now_ms() {
 ks_search() {
   local query="${1:-}"
   if [ -z "$query" ]; then
-    echo "knowledge_search: usage: ks_search <query> [--limit N]" >&2
+    echo "knowledge_search: usage: ks_search <query> [--limit N] [--partition <name>]" >&2
     return 2
   fi
   shift || true
+
+  # ── Argument parsing: an ALLOWLIST that fails closed (temperloop#418) ──
+  # This loop used to live only in the backends, each ending in `*) shift ;;`
+  # — an unknown flag was silently discarded and the call proceeded. That is
+  # tolerable for a typo'd tuning flag; it is NOT tolerable for a SCOPE flag,
+  # because a discarded `--partition` returns the FULL, UNFILTERED corpus to a
+  # caller that believes it asked for a scoped search — the exact confidential
+  # cross-project bleed the partition exists to prevent, delivered silently
+  # under a flag that looked like it worked. So ks_search parses its own
+  # arguments strictly here, at the public seam, and rejects anything it does
+  # not recognise with exit 2 before making any backend call at all. Same
+  # shape as ks_search_reindex's allowlist (temperloop#888).
+  local limit=10 partition="${KNOWLEDGE_SEARCH_PARTITION:-}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)
+        if [ $# -lt 2 ]; then
+          echo "knowledge_search: ks_search: --limit requires a value" >&2
+          return 2
+        fi
+        limit="$2"; shift 2 ;;
+      --partition)
+        # An EMPTY value is rejected rather than read as "no partition": a
+        # caller whose `--partition "$CLIENT"` expanded to nothing must get a
+        # loud error, never a silent widening back to the whole corpus.
+        if [ $# -lt 2 ] || [ -z "$2" ]; then
+          echo "knowledge_search: ks_search: --partition requires a non-empty value" >&2
+          return 2
+        fi
+        partition="$2"; shift 2 ;;
+      *)
+        printf 'knowledge_search: ks_search: unrecognised argument "%s" (accepted: --limit, --partition)\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
 
   # Read-log telemetry (temperloop#229, OUTCOME fields added by
   # foundation#1449 — see knowledge_store.sh's ks__read_log_emit header for
@@ -203,7 +268,11 @@ ks_search() {
   # rg-fallback below), which is the number worth watching for regression.
   local out rc=0 t0 t1 wall_ms
   t0="$(_ks_now_ms)"
-  out="$(ks_search__dispatch search "$query" "$@")" || rc=$?
+  # Arguments are NORMALIZED here — the backend receives exactly the flags it
+  # implements, never the caller's raw argv. `--partition` in particular is
+  # CONSUMED at this seam and never forwarded: enforcement must not depend on a
+  # backend choosing to honour it (a backend that ignored it would fail OPEN).
+  out="$(ks_search__dispatch search "$query" --limit "$limit")" || rc=$?
   t1="$(_ks_now_ms)"
   wall_ms=$(( t1 - t0 ))
   [ "$wall_ms" -ge 0 ] 2>/dev/null || wall_ms=0   # guard against clock skew / fallback rounding
@@ -233,9 +302,37 @@ ks_search() {
   # A floor-triggered abstention (abstained=1) is NOT a backend-empty (the
   # backend returned candidates; the floor discarded them) so it must NOT
   # fall into this branch either — guarded by `abstained` staying 0 here.
+  #
+  # NOTE the ordering below: `backend_empty` is captured from the BACKEND's own
+  # result, BEFORE the partition filter runs, so the fallback's trigger
+  # condition is bit-for-bit what it was pre-#418. A set the partition filter
+  # empties is a POST-filter empty (like an abstention), not a backend-empty,
+  # and must not newly summon a subprocess the pre-#418 surface never ran.
+  local backend_empty=0
+  [ -z "$out" ] && backend_empty=1
+
+  # ── Partition scope enforcement (temperloop#418) ──────────────────────────
+  # Applied HERE, at the public seam, to EVERY result stream a caller can
+  # receive: the backend's own results (below) and the rg lexical fallback's
+  # (further down). One enforcement point, so no backend and no degraded path
+  # can route around it. A filter error is FAIL-CLOSED — exit 4 with nothing on
+  # stdout, never the unfiltered set.
+  if [ -n "$partition" ] && [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    out="$(printf '%s\n' "$out" | ks_search__partition_filter "$partition")" || {
+      echo "knowledge_search: partition filter failed; refusing to return unscoped results" >&2
+      return 4
+    }
+  fi
+
   local rg_fired=0
-  if [ "$abstained" -eq 0 ] && [ "$rc" -eq 0 ] && [ -z "$out" ]; then
-    out="$(ks_search__rg_fallback "$query" "$@")"
+  if [ "$abstained" -eq 0 ] && [ "$rc" -eq 0 ] && [ "$backend_empty" -eq 1 ]; then
+    out="$(ks_search__rg_fallback "$query" --limit "$limit")"
+    if [ -n "$partition" ] && [ -n "$out" ]; then
+      out="$(printf '%s\n' "$out" | ks_search__partition_filter "$partition")" || {
+        echo "knowledge_search: partition filter failed; refusing to return unscoped results" >&2
+        return 4
+      }
+    fi
     [ -n "$out" ] && rg_fired=1
   fi
 
@@ -292,6 +389,76 @@ ks_search() {
   return 0
 }
 
+# ── Project partition (temperloop#418) ────────────────────────────────────
+# THE cross-project confidentiality seam. `ks_search`'s corpus is the whole
+# resolved `ks_root` (see the corpus-binding note at the top of this file), and
+# the store's only isolation between projects is the `<project> - <title>.md`
+# FILENAME CONVENTION — which search, until this, did not respect. For an
+# operator running one `$HOME` across several engagements that is structural,
+# not incidental: a query typed during client B's session could rank and return
+# client A's confidential notes.
+#
+# The scope is a SEARCH-LAYER FILTER, not a store-layer partition. That is a
+# deliberate scope choice, stated plainly rather than half-built: a true
+# multi-tenant store partition would have to reach `ks_read`/`ks_write`/
+# `ks_list`/`ks_sync`, the backend matrix, and the doc-id normalizer — a
+# store-layer redesign. The filter closes the bleed this issue is actually
+# about (search surfacing another project's notes) at one enforcement point,
+# and `knowledge_store.contract.md` § Project partition names exactly what it
+# does and does not cover.
+#
+# ── Membership: proven by the doc_id, never assumed ───────────────────────
+# A result belongs to partition `<p>` iff its `doc_id` satisfies EITHER:
+#   * filename convention — its BASENAME starts with `<p> - `
+#     (`Decisions/acme - retainer terms.md` is in partition `acme`); this is
+#     the convention the store already uses and the one the issue names.
+#   * directory convention — the doc_id starts with `<p>/`
+#     (`acme/Decisions/retainer terms.md`), for a store organised by
+#     top-level project directory instead.
+# Matching is EXACT and case-sensitive; there is no fuzzy or prefix-ish match,
+# because a near-miss here is a confidentiality failure, not a ranking miss.
+#
+# ── Unpartitioned notes are EXCLUDED, on purpose ──────────────────────────
+# A note matching neither form (`Index.md`, `Sessions/2026-08-04.md`) is NOT
+# returned by a scoped search. This is the fail-closed reading: an
+# unconventioned note is one whose ownership the store cannot prove, and a
+# confidentiality filter must not return what it cannot attribute. The cost is
+# real and is documented for the operator (scoped search hides generic notes
+# too) — the alternative, a "shared/unpartitioned notes are always visible"
+# opt-out, is exactly the fail-open lever this seam exists to not have.
+#
+# <partition> ; JSONL on stdin -> the subset on stdout. Returns non-zero
+# (leaving stdout EMPTY) if the filter itself could not run — the caller turns
+# that into exit 4 rather than falling back to the unfiltered stream.
+ks_search__partition_filter() {
+  local partition="$1" filtered rc=0
+  filtered="$(jq -c --arg p "$partition" '
+      select((.doc_id | type) == "string")
+      | select((.doc_id | split("/") | last | startswith($p + " - "))
+               or (.doc_id | startswith($p + "/")))
+    ' 2>/dev/null)" || rc=$?
+  # A legitimately EMPTY result (nothing in this partition matched) is jq exit
+  # 0 with empty stdout — a real "no matches in scope", handled by the caller
+  # exactly like any other zero-result. Only a genuine jq failure (absent
+  # binary, unparseable stream) lands here.
+  if [ "$rc" -ne 0 ]; then
+    return "$rc"
+  fi
+  [ -n "$filtered" ] && printf '%s\n' "$filtered"
+  return 0
+}
+
+# Capability probe for the partition scope (temperloop#418). Exists purely so a
+# caller can tell a library that HONOURS `--partition` from one that does not:
+# on a pre-#418 copy of this file the function is simply not defined, so
+# `declare -F ks_search_partition_supported >/dev/null` is a reliable,
+# zero-subprocess version-skew check. A scope-dependent caller MUST probe —
+# passing `--partition` to a library that predates it is the one remaining way
+# to get unscoped results back while believing you asked for scoped ones, and
+# no amount of care inside THIS file can close that for a caller running an
+# older one.
+ks_search_partition_supported() { return 0; }
+
 # Ripgrep lexical fallback over the knowledge_store corpus (foundation#950).
 # Fires ONLY when the selected backend returns a legitimate zero-result — a
 # fixed-string, case-insensitive rg over the corpus's `*.md` files, reshaped
@@ -307,10 +474,17 @@ ks_search() {
 ks_search__rg_fallback() {
   local query="$1"; shift
   local limit=10
+  # Allowlist, not a silent discard (temperloop#418): every arg loop this file
+  # owns now rejects what it does not recognise, so no path can quietly drop a
+  # flag a caller believed was applied. ks_search normalizes its argv before
+  # calling here, so in production this loop only ever sees `--limit N`.
   while [ $# -gt 0 ]; do
     case "$1" in
       --limit) limit="${2:-10}"; shift 2 ;;
-      *) shift ;;
+      *)
+        printf 'knowledge_search: ks_search__rg_fallback: unrecognised argument "%s" (accepted: --limit)\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
   command -v rg >/dev/null 2>&1 || return 0     # no rg → the empty result stands
@@ -345,6 +519,11 @@ ks_search_available() {
 
 # ── Backend dispatch (mirrors knowledge_store.sh's ks__dispatch shape) ────
 : "${KNOWLEDGE_SEARCH_BACKEND:=basic-memory}"
+# Standing partition scope (temperloop#418). EMPTY = unpartitioned, the
+# pre-#418 whole-corpus behaviour, byte-for-byte. Set it once per engagement
+# (an env export, a per-project config) and every ks_search in that session is
+# scoped; `ks_search --partition <name>` overrides it per call.
+: "${KNOWLEDGE_SEARCH_PARTITION:=}"
 
 ks_search__backend_fn() {
   local op="$1" backend="${KNOWLEDGE_SEARCH_BACKEND//-/_}"
@@ -890,10 +1069,18 @@ _ks_bm_reshape_results() {
 _ks_search_backend_basic_memory_search() {
   local query="$1"; shift
   local limit=10
+  # Allowlist, not a silent discard (temperloop#418) — see ks_search's own
+  # parse loop for why a discarded flag is the dangerous shape here. Note
+  # `--partition` is deliberately NOT accepted at this layer: the scope is
+  # enforced in ks_search, above every backend, so that a backend can never
+  # fail open by simply not implementing it.
   while [ $# -gt 0 ]; do
     case "$1" in
       --limit) limit="${2:?knowledge_search: --limit requires a value}"; shift 2 ;;
-      *) shift ;;
+      *)
+        printf 'knowledge_search: basic-memory search: unrecognised argument "%s" (accepted: --limit)\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
 
