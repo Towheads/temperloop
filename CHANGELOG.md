@@ -14,6 +14,34 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- **`ks_search_reindex` forwards `--search` / `--embeddings` to the backend,
+  and rejects an unrecognised flag instead of swallowing it
+  (temperloop#888).** The reindex seam parsed only `--full` and *silently
+  shifted every other argument away*, so the one shape a drift-healing
+  scheduled reindex actually wants — `basic-memory reindex --full --search`,
+  a full filesystem rescan plus FTS rebuild that reconciles the entity table
+  (re-paths moves, drops deletions) **without** the forced full re-embed —
+  was unreachable through the public seam. Measured on a 977-note live store
+  (foundation#1425, 2026-07-28): `--full --search` = **61s**, bare `--full` =
+  **587s**. A caller needing the cheap shape had to reach into the
+  library-**private** `_ks_bm_run` behind a `declare -F` probe; it can now
+  drop the probe and call `ks_search_reindex --full --search`. Two more
+  consequences: the flags are an explicit **allowlist** forwarded by name (not
+  a blanket `"$@"`), emitted in a normalized order so the command line is the
+  same whichever order the caller passed them; and an **unrecognised**
+  argument is now an error — exit 2, the contract's invalid-usage code, with
+  the offending argument named on stderr and no backend call made at all —
+  where before a mistyped `--full --serch` silently degraded to bare `--full`,
+  the 587s forced re-embed instead of the 61s shape the caller asked for, with
+  no warning. **No behavior change for existing callers:** a bare
+  `ks_search_reindex` and a bare `ks_search_reindex --full` emit exactly the
+  command lines they did before. Documented in
+  `workflows/scripts/lib/knowledge_store.contract.md` § `ks_search_reindex`
+  flags; covered by four new cases in
+  `workflows/scripts/lib/tests/test_knowledge_search.sh`.
+
 ## [0.25.0] - 2026-08-03
 
 ### Fixed
