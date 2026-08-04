@@ -1492,6 +1492,41 @@ _hyg_build_backlink_index() {
       '
 }
 
+# ── Shared whole-vault walk + backlink index (memoized) ──────────────────────
+# THREE checks now need the same two expensive artifacts: the whole-vault file
+# list and the backlink index built from it (check_heat_score's link count,
+# check_orphan_note's zero-inbound test, check_duplicate_overlap's file list).
+# Building them per check would reintroduce the whole-vault re-walk that
+# foundation#1202 removed — just spread across three call sites instead of
+# n^2 within one. So they are built at most ONCE per run and cached here.
+#
+# Cached via a "built" sentinel rather than a non-empty test: a legitimately
+# EMPTY vault (a bare kernel checkout) yields an empty list, and testing
+# emptiness alone would rebuild it on every lookup.
+_HYG_ALL_FILES=""
+_HYG_ALL_FILES_BUILT=0
+_HYG_LINK_INDEX=""
+_HYG_LINK_INDEX_BUILT=0
+
+# -> the whole-vault .md file list (Personal/ and tool dirs pruned), one per
+# line, sorted. Same find expression every other whole-vault check uses.
+_hyg_all_files() {
+  if [ "$_HYG_ALL_FILES_BUILT" -eq 0 ]; then
+    _HYG_ALL_FILES="$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)"
+    _HYG_ALL_FILES_BUILT=1
+  fi
+  printf '%s' "$_HYG_ALL_FILES"
+}
+
+# -> the backlink index for the whole vault, built once from _hyg_all_files.
+_hyg_link_index() {
+  if [ "$_HYG_LINK_INDEX_BUILT" -eq 0 ]; then
+    _HYG_LINK_INDEX="$(_hyg_build_backlink_index "$(_hyg_all_files)")"
+    _HYG_LINK_INDEX_BUILT=1
+  fi
+  printf '%s' "$_HYG_LINK_INDEX"
+}
+
 # base index -> distinct-linking-file count for base (0 when absent from the
 # index, including an empty index — the no-backlinks degrade path). Mirrors
 # _hyg_heat_read_lookup's exact-key awk lookup over an in-memory map: no file
@@ -1526,11 +1561,13 @@ check_heat_score() {
   local rank pri rq_rel rq_heat rq_stale rq_reads rq_tag
   now="$(now_epoch)"
   read_map="$(_hyg_heat_read_counts)"
-  all_files="$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)"
-  # Build the whole-vault backlink index ONCE (foundation #1202), then look
-  # each candidate note up in it — replacing the former per-note grep-over-
-  # every-note scan that made this check O(n^2) in the note count.
-  link_index="$(_hyg_build_backlink_index "$all_files")"
+  all_files="$(_hyg_all_files)"
+  # The whole-vault backlink index is built ONCE per run (foundation#1202),
+  # then each candidate note is looked up in it — replacing the former
+  # per-note grep-over-every-note scan that made this check O(n^2) in the
+  # note count. Now memoized (_hyg_link_index) so check_orphan_note shares
+  # this same single pass rather than walking the vault a second time.
+  link_index="$(_hyg_link_index)"
 
   for d in "${HEAT_SCAN_FOLDERS[@]}"; do
     dir="$ROOT/$d"
@@ -1602,6 +1639,167 @@ EOF
   return 0
 }
 register_check check_heat_score
+
+# ── Check: orphan notes (no inbound wikilink, unreachable from Index) ────────
+# foundation#1479 class 3. A note with ZERO inbound wikilinks anywhere in the
+# store and no mention in Index.md is invisible to link-following navigation:
+# it can only ever be reached by ad-hoc semantic search. Propose-only.
+#
+# DISTINCT from check_orphan_pattern above, which is a narrower, different
+# test and is deliberately kept: that one asks whether a `Patterns/` note is
+# reachable from the COMPOSED CLAUDE.md's own T0 rules (a routing question,
+# answered against T0_INVENTORY_FILE); this one asks whether ANY note in the
+# knowledge folders is reachable by link-following at all (a graph question,
+# answered against the backlink index). A note can pass either and fail the
+# other, so neither subsumes the other.
+#
+# Reuses the memoized whole-vault backlink index (_hyg_link_index) rather than
+# scanning — the same index check_heat_score already builds, which is the
+# whole reason foundation#1202 (one-pass index) was a prerequisite for this
+# check rather than an unrelated performance fix.
+# INFORMATIONAL, never an ALARM — the same posture as the stale-`last_verified`
+# tally and the heat score, and for a MEASURED reason. On the vault this was
+# built against, 560 of 744 notes (75%) have no inbound wikilink: in this store
+# link-following is simply not how notes are reached, so a per-note alarm would
+# flag three quarters of the corpus every night and bury the checks that DO
+# alarm — the same report-drowning failure foundation#1202 was fixed to avoid.
+# The RATE is the signal worth surfacing (it says the wikilink graph is not the
+# retrieval substrate for this store); the 560-line note list is not. So this
+# emits one tally line plus a small capped sample, and never calls `inc`.
+ORPHAN_NOTE_SCAN_FOLDERS=(Decisions Patterns Mistakes Context)
+ORPHAN_NOTE_MAX_SAMPLE=5
+check_orphan_note() {
+  local link_index index_file d dir f rel base links
+  local count=0 total=0 sample="" more=""
+  link_index="$(_hyg_link_index)"
+  index_file="$ROOT/Index.md"
+  for d in "${ORPHAN_NOTE_SCAN_FOLDERS[@]}"; do
+    dir="$ROOT/$d"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      total=$((total + 1))
+      rel="${f#"$ROOT"/}"
+      base="$(basename "$f" .md)"
+      links="$(_hyg_heat_link_lookup "$base" "$link_index")"
+      case "$links" in ''|*[!0-9]*) links=0 ;; esac
+      [ "$links" -gt 0 ] && continue
+      # Index.md reachability is the second half of the test: a note linked
+      # ONLY from the index still has a navigation route. Match the bare
+      # basename or the folder-qualified form, mirroring how the backlink
+      # index tokenizes a `[[Folder/Name]]` target.
+      if [ -f "$index_file" ] && grep -qF -e "[[$base" -e "[[$d/$base" "$index_file" 2>/dev/null; then
+        continue
+      fi
+      count=$((count + 1))
+      [ "$count" -le "$ORPHAN_NOTE_MAX_SAMPLE" ] && sample="${sample}${sample:+, }${rel}"
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  done
+  if [ "$total" -eq 0 ]; then
+    add "- ok orphan-note: 0 (no candidate notes)"
+  elif [ "$count" -eq 0 ]; then
+    add "- ok orphan-note: 0 of ${total} notes lack an inbound wikilink"
+  else
+    # Never truncate silently — the "+N more" is what keeps a capped sample
+    # from reading as the whole list.
+    [ "$count" -gt "$ORPHAN_NOTE_MAX_SAMPLE" ] && more=" (+$(( count - ORPHAN_NOTE_MAX_SAMPLE )) more)"
+    add "- info orphan-note: ${count} of ${total} notes ($(( count * 100 / total ))%) have no inbound wikilink and no Index.md entry — reachable only by search. Sample: ${sample}${more}"
+  fi
+  return 0
+}
+register_check check_orphan_note
+
+# ── Check: duplicate / overlapping concept pages ─────────────────────────────
+# foundation#1479 class 1. Two notes covering ONE concept (classically a
+# Patterns/ and a Context/ note on the same mechanism) that should merge or
+# cross-link. Propose-only — never merges notes.
+#
+# Detection reuses the tokenizer and overlap counter check_repeat_mistake
+# already ships (_hyg_tokenize / the distinct-token semantics), applied to
+# note TITLES, so this adds no similarity engine of its own.
+#
+# NOT pairwise. Comparing every note to every other note is exactly the O(n^2)
+# whole-vault scan foundation#1202 removed from the heat check, and it would
+# be far worse here (~1000 notes = ~500k comparisons in shell). Instead this
+# builds an INVERTED index token -> notes in one pass and emits candidate
+# pairs only from tokens the notes actually share, so cost scales with real
+# token co-occurrence rather than with n^2.
+#
+# Tokens appearing in more than DUP_TOKEN_MAX_NOTES notes are skipped as
+# non-discriminative: a token in 60 notes ("foundation") contributes 1770
+# pairs and zero signal, and it is precisely the common tokens that would
+# reintroduce quadratic blow-up.
+DUP_OVERLAP_MIN=3
+DUP_TOKEN_MAX_NOTES=8
+DUP_MAX_REPORTED=10
+DUP_SCAN_FOLDERS=(Decisions Patterns Mistakes Context)
+check_duplicate_overlap() {
+  local d dir f rel base toks t pairs count=0 line a b n
+  local tokmap=""
+  for d in "${DUP_SCAN_FOLDERS[@]}"; do
+    dir="$ROOT/$d"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      rel="${f#"$ROOT"/}"
+      base="$(basename "$f" .md)"
+      toks="$(_hyg_tokenize "$base")"
+      for t in $toks; do
+        tokmap="${tokmap}${t}	${rel}"$'\n'
+      done
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  done
+  if [ -z "$tokmap" ]; then
+    add "- ok duplicate-overlap: 0 (no candidate notes)"
+    return 0
+  fi
+  # token<TAB>note  ->  "<shared-token-count> <noteA> :: <noteB>" for pairs at
+  # or above the floor. The awk pass groups by token, skips tokens that are
+  # too common to discriminate, emits each within-token note pair once
+  # (ordered, so A::B and B::A collapse), then tallies pairs across tokens.
+  pairs="$(printf '%s' "$tokmap" | sort -u | awk -F'\t' -v maxn="$DUP_TOKEN_MAX_NOTES" '
+      { tok[$1] = ($1 in tok) ? tok[$1] SUBSEP $2 : $2 }
+      END {
+        for (t in tok) {
+          n = split(tok[t], f, SUBSEP)
+          if (n < 2 || n > maxn) continue
+          for (i = 1; i < n; i++)
+            for (j = i + 1; j <= n; j++) {
+              a = f[i]; b = f[j]
+              if (a > b) { tmp = a; a = b; b = tmp }
+              pc[a "\t" b]++
+            }
+        }
+        for (p in pc) printf "%d\t%s\n", pc[p], p
+      }
+    ' | awk -F'\t' -v min="$DUP_OVERLAP_MIN" '$1 >= min' | sort -rn)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n="${line%%	*}"
+    a="$(printf '%s' "$line" | cut -f2)"
+    b="$(printf '%s' "$line" | cut -f3)"
+    count=$((count + 1))
+    if [ "$count" -le "$DUP_MAX_REPORTED" ]; then
+      add "- ⚠️ duplicate-overlap: ${a} ≈ ${b} — ${n} shared title terms (propose-only: merge them, or cross-link if they are genuinely distinct)"
+      inc
+    fi
+  done <<EOF
+$pairs
+EOF
+  if [ "$count" -eq 0 ]; then
+    add "- ok duplicate-overlap: 0"
+  elif [ "$count" -gt "$DUP_MAX_REPORTED" ]; then
+    # Never truncate silently — a capped list that reads as the whole list is
+    # how "we covered everything" becomes false.
+    add "- ⚠️ duplicate-overlap: ${count} candidate pairs total; $(( count - DUP_MAX_REPORTED )) not shown (top ${DUP_MAX_REPORTED} listed above, ranked by shared-term count)"
+  fi
+  return 0
+}
+register_check check_duplicate_overlap
 
 # ── Run every registered check (generic — never changes when adding a check) ──
 for _hyg_fn in "${CHECKS[@]}"; do
