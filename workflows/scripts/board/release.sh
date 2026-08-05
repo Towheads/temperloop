@@ -138,10 +138,8 @@ release_board_half() {
     echo "release.sh: unknown board '$BOARD_ARG' — skipping the board-side claim-stamp clear (the marker release below is unaffected)" >&2
     return 0
   }
-  # Projects-v2 boards keep the owner in a project FIELD, not a repo label, and
-  # their park path is not the drift this fixes — leave them exactly as they
-  # were (silently: this is the un-changed path, not a degradation).
-  _board_is_issues_only "$board" || return 0
+  # Every registered board runs the issues-only backend (temperloop#524's
+  # 2026-08-04 addendum), so the clear below always applies.
 
   if ! board_resolve_item "$board" "$want" >/dev/null 2>&1; then
     echo "release.sh: could not read #$want on board $board — skipping the board-side claim-stamp clear" >&2
