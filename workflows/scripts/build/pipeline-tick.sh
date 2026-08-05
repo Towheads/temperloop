@@ -528,6 +528,18 @@ read_ready_items() {
     if [ -f "$lib" ]; then
       # shellcheck source=/dev/null
       . "$lib"
+      # Issue-plane read cache (F#988). board.sh's cached read arms gate on
+      # `declare -F cache_read` and board.sh never sources cache.sh itself (a
+      # deliberate one-way layering, board.sh:521-526), so this caller must —
+      # otherwise `board.<N>.cache=on` is inert here and board_resolve below
+      # takes the live arm with a per-call stderr notice. Guarded on existence
+      # (a consuming repo may vendor board.sh without cache.sh) and inert with
+      # the axis off: sourcing only sets three `${VAR:-default}`s + functions.
+      local cache_lib="$HERE/../board/lib/cache.sh"
+      if [ -f "$cache_lib" ]; then
+        # shellcheck source=/dev/null
+        . "$cache_lib"
+      fi
       board_resolve "$board" >/dev/null 2>&1 || { echo '[]'; return; }
       ready_items_from_json "${BOARD_ITEMS_JSON:-{\"items\":[]}}"  # setting:exempt — internal already-fetched board cache, not an operator default
     else
