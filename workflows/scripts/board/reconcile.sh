@@ -296,24 +296,23 @@ source "$SCRIPT_DIR/lib/board.sh"
 source "$SCRIPT_DIR/lib/claim_marker.sh"
 
 # reconcile is the board↔marker CONSISTENCY check — its whole job is to surface
-# drift, so it must read the board LIVE. Opt out of the default-ON cross-process
-# read cache (GH #93) here; a ≤90s-stale page would report phantom drift (a claim
-# made seconds ago not yet in the cached page). It does a single resolve per run,
-# so it gains nothing from the cache anyway.
+# drift, so it MUST read the board LIVE. A drift detector fed cached data is
+# self-defeating.
 #
-# THIS LINE IS THE LIVE-READ PIN — the whole contract rests on it. Every board
-# read in this file goes through board.sh's board_resolve/board_item_list, which
-# route through _board_cached_read; BOARD_CACHE_TTL=0 is the one master
-# off-switch that forces those reads live regardless of what's sitting in
-# BOARD_CACHE_DIR (see _board_cached_read's "MASTER off-switch" comment in
-# lib/board.sh). A drift detector fed cached data is self-defeating, so this
-# export must never be removed, conditioned, or shadowed by a later cache layer
-# (e.g. a future local issue-cache store) that doesn't also respect it — if a
-# future cache-dispatch seam is added ahead of _board_cached_read, it MUST be
-# bypassed here too, not just this TTL. tests/test_reconcile.sh's "live-pin"
-# case proves this behaviorally: it seeds a FRESH, wrong on-disk cache file and
-# asserts reconcile still reports the LIVE (_board_gh) truth, not the cache.
-export BOARD_CACHE_TTL=0
+# HOW THE LIVE READ IS GUARANTEED NOW. This used to be an explicit
+# `export BOARD_CACHE_TTL=0` pin against board.sh's default-ON cross-process
+# read cache (GH #93). That cache was removed with the Projects-v2 arm it
+# relieved (ADR 0004, epic temperloop#524), so the pin became a no-op and is
+# gone. The live read is now guaranteed STRUCTURALLY rather than by a setting:
+# board.sh's issues-only whole-board read is a live `gh issue list` unless a
+# caller has BOTH set `board.<N>.cache=on` AND sourced `lib/cache.sh` in the
+# same process — and this script never sources cache.sh, so the
+# `declare -F cache_read` probe in `_board_issues_item_list` always fails here
+# and the read stays live no matter what a shared `boards.conf` says.
+#
+# THAT IS THE CONTRACT, AND IT IS LOAD-BEARING: reconcile.sh must never source
+# lib/cache.sh, and any future cache layer added ahead of the live read must be
+# bypassed here too. tests/test_reconcile.sh's Lens 3 proves it behaviorally.
 
 PROJECT_NUMBER=3
 # --fix: apply the one safe repair of whichever lens is selected — Lens 2's

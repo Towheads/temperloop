@@ -182,30 +182,16 @@ if [ "${DEPLOY_MINI_SKIP_INSTALL:-0}" != 1 ]; then
   fi
 fi
 
-# --- 2.5 bust the board structure cache IF a pulled adapter changed (#341) ----
-# The structure cache (project id + field/option ids) is keyed on the board id
-# number under a 24h TTL, so after a board renumber/migration a freshly-pulled
-# adapter keeps serving the OLD project's ids until the TTL lapses — reads pass
-# (item-list is always live) but WRITES fail with "item does not exist in the
-# project". Busting here, ONLY when a pull actually changed a board.sh, makes a
-# renumber self-heal on the next session without flushing the cache every run.
-# Sourced in a subshell so board.sh's constants/`set` never leak into this script;
-# board_bust_structure honours BOARD_CACHE_DIR, so tests stay hermetic.
-if [ "$adapter_changed" = 1 ]; then
-  if busted="$(
-        # shellcheck source=/dev/null
-        . "$FOUNDATION/workflows/scripts/board/lib/board.sh" || exit 1
-        out=""
-        for b in 3 4 5 6 7 8 9; do
-          board_repo "$b" >/dev/null 2>&1 && { board_bust_structure "$b"; out="$out $b"; }
-        done
-        printf '%s' "$out"
-      )"; then
-    echo "  ✓ structure cache busted (adapter changed) — boards:${busted:- none}"
-  else
-    echo "  ! could not source board.sh to bust structure cache"
-  fi
-fi
+# --- 2.5 (retired) board structure-cache bust ------------------------------
+# This step used to bust board.sh's Projects-v2 STRUCTURE cache (project id +
+# field/option ids, 24h TTL) whenever a pull changed a board.sh, so a board
+# renumber/migration self-healed instead of failing every WRITE with "item does
+# not exist in the project" until the TTL lapsed (#341). Both the cache and
+# `board_bust_structure` were removed with the Projects-v2 arm (ADR 0004, epic
+# temperloop#524): the issues-only path resolves a board's repo from
+# `boards.conf`/the built-in map on every call and holds no cached project
+# identity, so there is nothing left to go stale and nothing to bust. The
+# `adapter_changed` probe above still drives the install/verify steps around it.
 
 # --- 3. verify the guard is present in every board.sh a session could source -
 # Also reports (informationally only — never affects this step's pass/fail
@@ -248,13 +234,13 @@ for co in "${CHECKOUTS[@]}"; do
     cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
     while IFS= read -r cn; do
       [ -n "$cn" ] || continue
-      repo="$(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
+      repo="$(bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
       store_state="absent"
       if [ -n "$repo" ] && [ -f "${cache_store_root}/issues/$(printf '%s' "$repo" | tr '/' '-')/meta.json" ]; then
         store_state="present"
       fi
       printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
-    done < <(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; _board_conf_files 2>/dev/null' |
+    done < <(bash -c '. "'"$bsh"'" 2>/dev/null; _board_conf_files 2>/dev/null' |
                while IFS= read -r _conf; do
                  [ -f "$_conf" ] && grep -oE '^board\.[0-9]+\.cache=on$' "$_conf" 2>/dev/null
                done | cut -d. -f2 | sort -un)

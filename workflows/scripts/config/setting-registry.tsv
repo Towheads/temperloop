@@ -171,7 +171,6 @@ DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/script
 DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
 BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (layer 3). Default is $XDG_CONFIG_HOME/temperloop/boards.conf; the legacy $XDG_CONFIG_HOME/foundation/boards.conf fallback (temperloop#165) was removed in v0.19.0 and such a file is now NAMED on stderr rather than read — see docs/config-precedence.md
 BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (layer 4)
-BOARD_CACHE_DIR	${TMPDIR:-/tmp}	path	kernel	workflows/scripts/board/lib/board.sh	On-disk dir for the board.sh cross-process cache files
 BOARD_ITEM_LIMIT	500	int	kernel	workflows/scripts/board/lib/board.sh	Page-size cap for a whole-board item-list read
 CACHE_STORE_ROOT	${XDG_CACHE_HOME:-$HOME/.cache}/temperloop	path	kernel	workflows/scripts/board/lib/cache.sh	Store root for the durable issue-cache corpus store
 CACHE_STORE_TTL	3600	seconds	kernel	workflows/scripts/board/lib/cache.sh	Max-stale window before a cache_read triggers a refresh
