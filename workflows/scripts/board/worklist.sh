@@ -36,6 +36,22 @@ SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
+# Issue-plane read cache (F#988). board.sh's cached read arms gate on
+# `declare -F cache_read` and board.sh NEVER sources cache.sh itself — a
+# deliberate one-way layering (board.sh:521-526) that keeps reconcile.sh
+# permanently on the live arm. So the CALLER must source it, or the axis
+# `board.<N>.cache=on` is inert here and every read takes the live path with a
+# per-call stderr notice. Guarded on existence: a consuming repo that vendors a
+# subset without cache.sh still runs unchanged. Sourcing is side-effect-free
+# (three `${VAR:-default}` assignments + function defs), so with the axis off
+# this changes nothing. `if` rather than `[ -f … ] && source …` because this
+# script is `set -e`: the && form would abort the run when cache.sh is absent.
+if [ -f "$SCRIPT_DIR/lib/cache.sh" ]; then
+  # shellcheck source=scripts/lib/cache.sh
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/lib/cache.sh"
+fi
+
 PROJECT_NUMBER=3
 show_all=0
 while [ $# -gt 0 ]; do
