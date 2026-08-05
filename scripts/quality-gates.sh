@@ -106,15 +106,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # entries). Each entry is a full command line (a `make` target).
 KERNEL_GATES=(
   "make test-board"
-  # Dual-adapter SAFE-TIER pipeline integration suite (foundation #801, split
-  # 3/3 of the issues-only tracker adapter, Epic B #763): runs pipeline-tick.sh
-  # LIVE against both the Projects-v2 and issues-only backends and proves
-  # parity + zero merge-capable gh calls. A new kernel-side test_*.sh file is
-  # auto-covered by kernel CI's own glob-based `test-board` recipe (F#836);
-  # this line is the explicit registration in FOUNDATION's own gate set (the
-  # one scripts/quality-gates.sh actually runs — see
-  # workflows/scripts/board/ISSUES-ONLY-BACKEND.md § Pipeline integration).
-  "make test-board-dual-adapter"
   # test-ci-poll-retry (temperloop#386): ci-poll.sh's gh_retry() transient-
   # API-hiccup absorption — a bounded, backoff-retried gh api call rather
   # than an immediate false-escalating ERROR on a transient non-JSON/HTTP-5xx
@@ -1071,7 +1062,6 @@ SLOW_DISPATCH_HINTS=(
   "make test-board"
   "bash workflows/scripts/validate-prose-budget.sh"
   "bash workflows/scripts/tests/test_validate_prose_budget.sh"
-  "make test-board-dual-adapter"
   "bash workflows/scripts/tests/test_install_lifecycle.sh"
   "bash workflows/scripts/tests/test_install_cli.sh"
 )
