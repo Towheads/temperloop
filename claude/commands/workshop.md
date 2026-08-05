@@ -86,8 +86,8 @@ the agents that actually run one — `claude/agents/hobbyist-persona.md`,
   dispositions defined in `claude/design-schema.md` § Disposition grammar
   (quoted verbatim in Step 2 below) — never left blank, never inferred.
 - **Kernel-only checkout works end to end.** This checkout (temperloop) has a
-  plain-files knowledge store and an issues-only board backend (board 7, no
-  Projects-v2 `Status` field) — every step below is written to work on that
+  plain-files knowledge store and its own board (board 7, Status carried on
+  `fnd:status:*` labels) — every step below is written to work on that
   substrate with no overlay dependency, per the ratified design brief's
   first-run-experience dimension (§ 12).
 
@@ -878,9 +878,8 @@ design-brief: [[Designs/<note>]]
    create -R "$repo" --title "<title>" --body "<body>"`.
 4. **Board mirroring (best-effort).** If Step 0.4 resolved a registered board
    for `repo`, land the epic on it via the adapter (`board_create_on_board`,
-   or `board_resolve` + a single add for the whole burst) — on this
-   checkout's issues-only backend (board 7), that means no Projects-v2
-   field writes, exactly as `/triage`'s epic creation behaves there. No
+   or `board_resolve` + a single add for the whole burst) — item state rides
+   `fnd:`-namespaced labels, exactly as `/triage`'s epic creation behaves. No
    board registered → the epic still exists as a plain GitHub issue; note
    the skip in the Step 6 summary, don't treat it as a failure.
 

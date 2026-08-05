@@ -19,7 +19,7 @@
 # and, as a side effect, CURES the stale remote-tracking refs the warning is
 # about.
 #
-# WHY ask-not-deny, fail-open: same philosophy as board-adapter-guard.sh — make
+# WHY ask-not-deny, fail-open: same philosophy as subtree-edit-guard.sh — make
 # the risky case a conscious choice, never block legitimate work. ANY internal
 # error (no jq, not a git repo, fetch failure/timeout, unparsed command) exits 0
 # silently and lets the command proceed.
