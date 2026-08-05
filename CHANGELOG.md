@@ -25,7 +25,30 @@ reads that marker; a stranger greps for it before pulling.
   silently accepted and ignored. No replacement flag: an adopter's script
   simply drops `--provision-*`/`--tracker-mode` from its `init` invocation.
 
-## [0.26.0] - 2026-08-05
+## [0.26.0] - 2026-08-05 — BREAKING
+
+### Migration — read this first
+
+This release removes the Projects-v2/GraphQL board-adapter arm (epic #524,
+"Remove the Projects-v2/GraphQL arm (BREAKING) — post-soak follow-on to epic
+#460"; ADR 0004, `docs/adr/0004-issues-only-default-backend.md`). **Migration
+to the issues-only backend must be completed on v0.25.0 or earlier.**
+`migrate-board-to-issues.sh`, the dry-run-first Projects→issues migration
+script, is deleted in this release (see `### Removed — BREAKING` below) —
+past this point there is no script left in the tree to run it with. If you
+have not already migrated a `backend=projects` board, check out v0.25.0 (or
+earlier), run the script from there, then upgrade.
+
+**Who has to act.** Only an adopter still running `backend=projects` on any
+board. Nobody this repo's own maintainers govern is affected: all five
+registered boards have run issues-only since 2026-07-18, the soak window ADR
+0004 required before this removal. For an issues-only adopter this release
+changes nothing observable — `lib/board.sh`, the board adapter interface,
+hook names and signatures, and the `checks` gate contract are all untouched.
+The one other adopter-facing consequence is `### Changed — BREAKING` below:
+every backend-conditional branch in the board/build caller scripts is gone,
+so a `backend=projects` board is no longer served the code path it used to
+take through `claim.sh`, `reconcile.sh`, or `release.sh`.
 
 ### Added
 
@@ -162,6 +185,41 @@ reads that marker; a stranger greps for it before pulling.
   flags; covered by four new cases in
   `workflows/scripts/lib/tests/test_knowledge_search.sh`.
 
+### Changed — BREAKING
+
+<!-- The `BREAKING` token appears on the `## [0.26.0]` heading above AND on
+     this `### Changed` sub-heading, matching the belt-and-suspenders
+     convention every other BREAKING release in this file follows.
+     `changelog_breaking_sections()` (workflows/scripts/lib/changelog.sh)
+     sets its `brk` flag ONLY from a heading line: `$0 ~ /BREAKING/` on the
+     `## [x.y.z]` line, or `/^#+ .*BREAKING/` on a sub-heading. BODY TEXT
+     NEVER SETS IT. Do not strip either marker when editing history. -->
+
+- **BREAKING — every backend-conditional branch in the board/build caller
+  scripts collapses to the issues-only path, and the budget-instrumentation
+  probe retargets from GraphQL to REST (temperloop#1121, temperloop#1122;
+  epic #524, ADR 0004).** `claim.sh`'s field-resolution pre-check,
+  `reconcile.sh`'s conditional field-list widening, closed-issue tail scan,
+  and label-hygiene early return, and `release.sh`'s claim-stamp clear guard
+  no longer branch on the board's configured backend — each now takes the
+  issues-only path unconditionally. The other eight in-scope callers
+  (`capture.sh`, `milestone.sh`, `pr-enqueue.sh`, `worklist.sh`,
+  `board-mirror.sh`, `ci-poll.sh`, `gate.sh`, `unclaim.sh`) already carried no
+  such branch. `gh-bench.sh` and `gh-call-logger.sh`'s header/output framing
+  moves from GraphQL-budget to REST/core-budget (the GraphQL figure is kept,
+  now informational only), and
+  `docs/failure-modes/02-graphql-budget-exhaustion.md` is rewritten and
+  renamed to `02-rest-budget-exhaustion.md`. **No observable change on an
+  issues-only board** — the collapsed branch was reachable only under
+  `backend=projects`, and no registered board runs that: all five have run
+  issues-only since 2026-07-18, the soak window ADR 0004 required before this
+  removal. **BREAKING for a `backend=projects` adopter:** the code path these
+  callers used to take for that backend is gone outright, not merely
+  deprioritized. `lib/board.sh` itself is untouched — its Projects-only
+  functions (`board_field_id`, `board_option_id`, `board_project_number`,
+  `board_add_to_board`) still exist, they are simply no longer reached from
+  any of these callers.
+
 ### Changed
 
 - **Sub-issue reads in `board-mirror.sh` route through the board adapter
@@ -187,6 +245,28 @@ reads that marker; a stranger greps for it before pulling.
   `docs/cost-and-autonomy.md`, `docs/features/install-cli.md`, and
   `docs/features/ci-install-tier2.md` so a stranger meets one on-ramp rather
   than two competing ones. Docs only; no contract surface.
+
+### Removed — BREAKING
+
+<!-- The `BREAKING` token appears on the `## [0.26.0]` heading above AND on
+     this `### Removed` sub-heading — see the comment on `### Changed —
+     BREAKING` above for why both are load-bearing for
+     `changelog_breaking_sections()`. Do not strip either one when editing
+     history. -->
+
+- **BREAKING — `migrate-board-to-issues.sh` and its fixture-replay test are
+  deleted (temperloop#1123; epic #524, ADR 0004).** The dry-run-first
+  Projects→issues migration script introduced in v0.14.0 (see that section's
+  `### Added`) is gone, along with
+  `workflows/scripts/board/tests/test_migrate_board_to_issues.sh`. ADR 0004
+  required at least one release of soak between deprecating the Projects-v2
+  arm and deleting the tooling that migrates off it; that window closed with
+  ten releases behind it and zero live Projects users — every registered
+  board has run issues-only since 2026-07-18. **Migration:** complete any
+  outstanding Projects→issues migration on **v0.25.0 or earlier** — check out
+  that tag (or an earlier one) and run the script from there. Past this
+  release there is no script left in the tree to run it with; see
+  `### Migration — read this first` above.
 
 ### Fixed
 
