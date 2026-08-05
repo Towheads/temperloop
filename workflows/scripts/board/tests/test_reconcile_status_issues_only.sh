@@ -24,10 +24,12 @@
 #   3) issues-only, stamp only — a closed issue wearing ONLY the claim stamp is
 #      still flagged, and BOTH lenses agree on it: --status's new class (l) and
 #      --labels' pre-existing class (j) name the same issue from the same data.
-#   4) Projects-v2 UNREGRESSED — the same closed+labeled issue in the issue-state
-#      read produces NEITHER new section on a `backend=projects` board, the
-#      pre-existing terminal-but-not-Done class still fires, and the issue-state
-#      read's `--json` argv is byte-identical to what it was before this change.
+#   4) backend-branch collapse (temperloop#1121) — the same closed+labeled issue
+#      in the issue-state read now produces BOTH new sections even on a board
+#      whose backend still resolves to lib/board.sh's (not-yet-excised)
+#      Projects-v2 default, because reconcile.sh's own `_board_is_issues_only`
+#      branches are gone; the pre-existing terminal-but-not-Done class still
+#      fires, and the issue-state read's `--json` argv is now unconditional.
 #
 # Zero network: reconcile.sh is SOURCED (its execute-guard suppresses the
 # auto-run) and its `_board_gh` / `_reconcile_session_live` / `_reconcile_now`
@@ -242,10 +244,17 @@ printf '%s' "$OUT" | grep -qF "#902 — $STAMP_LABEL" \
 echo "PASS: case 3 --status and --labels agree on a stranded claim stamp (no silent disagreement)"
 
 # =========================================================================
-# Case 4: Projects-v2 UNREGRESSED. Same closed+labeled issue in the issue-state
-# read, but on a `backend=projects` board: neither new section may print, the
-# pre-existing terminal-but-not-Done class still fires, and the issue-state
-# read's --json argv is byte-identical to what it was before #1410.
+# Case 4: the backend collapse (temperloop#1121 — every registered board runs
+# the issues-only backend per ADR 0004's soak, ten releases in) removed the
+# reconcile.sh-level `_board_is_issues_only` branches, so the closed-issue tail
+# scan and the wider issue-state read now run UNCONDITIONALLY — even for a
+# board whose backend still resolves to the (not-yet-excised) Projects-v2
+# default inside lib/board.sh, which this fixture pins board 3 to via
+# BOARDS_CONF_MACHINE/BOARDS_CONF_REPO_LOCAL above. `board_resolve` itself
+# still exercises the real Projects-v2 GraphQL fixture path below (item-list /
+# field-list) — lib/board.sh is untouched by #1121, only its board.sh-external
+# CALLERS stopped branching on the backend. The board.sh-level backend axis
+# itself is retired by a follow-on item (board-lib-projects-excision).
 # =========================================================================
 PROJECT_NUMBER=3
 ITEM_LIST_JSON='{"items":[
@@ -261,18 +270,20 @@ PR_LIST_JSON='[]'
 run_status
 
 printf '%s' "$OUT" | grep -q "terminal-but-not-Done" \
-  || fail "case4: the pre-existing terminal class must still fire on a Projects-v2 board\n$OUT"
+  || fail "case4: the pre-existing terminal class must still fire on a board 3 fixture\n$OUT"
 printf '%s' "$OUT" | grep -q "#201 — backing CLOSED but board status 'Ready'" \
   || fail "case4: #201 should still be flagged terminal with aligned fields\n$OUT"
 printf '%s' "$OUT" | grep -q "residual status labels on closed issues" \
-  && fail "case4: the closed-issue tail scan must NOT run on a Projects-v2 board\n$OUT"
+  || fail "case4: the closed-issue tail scan must now run regardless of board.sh's configured backend\n$OUT"
+printf '%s' "$OUT" | grep -qF "#900 — CLOSED but still labeled '$STATUS_LABEL'" \
+  || fail "case4: #900's residual status label should be named exactly\n$OUT"
 printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
-  && fail "case4: the closed-issue tail scan must NOT run on a Projects-v2 board\n$OUT"
-printf '%s' "$OUT" | grep -q "#900" \
-  && fail "case4: an off-board closed issue must not be reported on a Projects-v2 board\n$OUT"
-[ "$(cat "$STATE_READ_JSON")" = "number,state,updatedAt" ] \
-  || fail "case4: the Projects-v2 issue-state read's --json argv must be unchanged (got '$(cat "$STATE_READ_JSON")')"
-echo "PASS: case 4 Projects-v2 path unregressed (terminal still fires, no tail scan, identical read argv)"
+  || fail "case4: the closed-issue tail scan's stranded-stamp half must also run unconditionally\n$OUT"
+printf '%s' "$OUT" | grep -qF "#900 — CLOSED but still stamped '$STAMP_LABEL'" \
+  || fail "case4: #900's stranded claim stamp should be named exactly\n$OUT"
+[ "$(cat "$STATE_READ_JSON")" = "number,state,updatedAt,labels,title" ] \
+  || fail "case4: the issue-state read's --json argv is now unconditional, same as the issues-only arm (got '$(cat "$STATE_READ_JSON")')"
+echo "PASS: case 4 the caller-side backend branch is gone — tail scan + wide read run on every board"
 
 # The issues-only arm asks for the two extra fields on the SAME read — proof the
 # tail scan costs zero additional gh calls.

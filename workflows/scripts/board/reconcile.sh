@@ -661,15 +661,12 @@ status_reconcile_main() {
   # updatedAt rides along on the SAME two reads (no extra call) — it ages foreign
   # claims for the GH #152 escalation. Two maps from one reduce: state + updatedAt.
   #
-  # On the issues-only backend this same read ALSO feeds the closed-issue tail
-  # scan below (temperloop#1410), which needs each issue's labels + title — so it
-  # asks for two more fields rather than paying a second list call. The
-  # Projects-v2 argv is left byte-identical (those fields have no meaning there:
-  # the `fnd:` label vocabulary only exists on the issues-only backend).
-  local issue_fields="number,state,updatedAt"
-  if _board_is_issues_only "$PROJECT_NUMBER"; then
-    issue_fields="number,state,updatedAt,labels,title"
-  fi
+  # This same read ALSO feeds the closed-issue tail scan below (temperloop#1410),
+  # which needs each issue's labels + title — so it asks for two more fields
+  # rather than paying a second list call. Every registered board runs the
+  # issues-only backend (temperloop#524's 2026-08-04 addendum), so this is no
+  # longer conditional on backend.
+  local issue_fields="number,state,updatedAt,labels,title"
   issues_json="$(_board_gh issue list -R "$repo" --state all --limit "$STATE_LIMIT" --json "$issue_fields")"
   prs_json="$(_board_gh pr list -R "$repo" --state all --limit "$STATE_LIMIT" --json number,state,updatedAt)"
   state_map="$(jq -n --argjson i "$issues_json" --argjson p "$prs_json" '
@@ -760,37 +757,36 @@ status_reconcile_main() {
   # whole-board read is the OPEN issue set, so a closed issue still wearing a
   # `fnd:status:*` label or a `fnd:host/session:*` claim stamp is invisible to it
   # — the blindness this scan closes. See the "Lens 2, the CLOSED-ISSUE TAIL"
-  # header section for the full rationale and why it is backend-gated rather
-  # than board-gated. Both label prefixes are DERIVED from the same helpers the
-  # write path uses (never hardcoded), so they stay in lockstep with the `fnd:`
-  # vocabulary — exactly as Lens 3's scan 2b does.
+  # header section for the full rationale. Every registered board runs the
+  # issues-only backend (temperloop#524's 2026-08-04 addendum), so this scan is
+  # unconditional now. Both label prefixes are DERIVED from the same helpers
+  # the write path uses (never hardcoded), so they stay in lockstep with the
+  # `fnd:` vocabulary — exactly as Lens 3's scan 2b does.
   local residual_status="" stranded_stamp=""
-  if _board_is_issues_only "$PROJECT_NUMBER"; then
-    local st_prefix hs_prefix closed_rows cls cnum clab ctitle
-    st_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_STATUS")"
-    hs_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_HOSTSESSION")"
-    # Reuses $issues_json — the SAME `--state all` read made above, no extra gh
-    # call. Emits TSV "<class>\t<number>\t<label>\t<title>"; a closed issue
-    # wearing both kinds of label emits one row per label, like Lens 3.
-    closed_rows="$(
-      printf '%s' "$issues_json" | jq -r --arg sp "$st_prefix" --arg hp "$hs_prefix" '
-        .[]
-        | select(((.state // "") | ascii_downcase) == "closed")
-        | .number as $n
-        | (.title // "") as $t
-        | ((.labels // []) | map(.name)) as $ls
-        | ( ($ls[] | select(startswith($sp)) | ["residual", ($n|tostring), ., $t]),
-            ($ls[] | select(startswith($hp)) | ["stranded", ($n|tostring), ., $t]) )
-        | @tsv'
-    )"
-    while IFS=$'\t' read -r cls cnum clab ctitle; do
-      [ -n "$cls" ] || continue
-      case "$cls" in
-        residual) residual_status+="  #$cnum — CLOSED but still labeled '$clab' (Done here is 'closed + no status label') — $ctitle"$'\n' ;;
-        stranded) stranded_stamp+="  #$cnum — CLOSED but still stamped '$clab' (reads as a live, unreleasable claim) — $ctitle"$'\n' ;;
-      esac
-    done < <(printf '%s\n' "$closed_rows")
-  fi
+  local st_prefix hs_prefix closed_rows cls cnum clab ctitle
+  st_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_STATUS")"
+  hs_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_HOSTSESSION")"
+  # Reuses $issues_json — the SAME `--state all` read made above, no extra gh
+  # call. Emits TSV "<class>\t<number>\t<label>\t<title>"; a closed issue
+  # wearing both kinds of label emits one row per label, like Lens 3.
+  closed_rows="$(
+    printf '%s' "$issues_json" | jq -r --arg sp "$st_prefix" --arg hp "$hs_prefix" '
+      .[]
+      | select(((.state // "") | ascii_downcase) == "closed")
+      | .number as $n
+      | (.title // "") as $t
+      | ((.labels // []) | map(.name)) as $ls
+      | ( ($ls[] | select(startswith($sp)) | ["residual", ($n|tostring), ., $t]),
+          ($ls[] | select(startswith($hp)) | ["stranded", ($n|tostring), ., $t]) )
+      | @tsv'
+  )"
+  while IFS=$'\t' read -r cls cnum clab ctitle; do
+    [ -n "$cls" ] || continue
+    case "$cls" in
+      residual) residual_status+="  #$cnum — CLOSED but still labeled '$clab' (Done here is 'closed + no status label') — $ctitle"$'\n' ;;
+      stranded) stranded_stamp+="  #$cnum — CLOSED but still stamped '$clab' (reads as a live, unreleasable claim) — $ctitle"$'\n' ;;
+    esac
+  done < <(printf '%s\n' "$closed_rows")
 
   echo "Status reconcile — board project $PROJECT_NUMBER ($repo)"
   echo
@@ -1033,10 +1029,9 @@ label_reconcile_main() {
   local open_json unstatused_rows backlog_label
   local hs_prefix hs_strip_rows inprogress_label parked_stamp_rows
 
-  if ! _board_is_issues_only "$PROJECT_NUMBER"; then
-    echo "Board label hygiene — board $PROJECT_NUMBER is not the issues-only backend (fnd: labels only exist there) — nothing to sweep"
-    return 0
-  fi
+  # Every registered board runs the issues-only backend (fnd: labels only
+  # exist there; temperloop#524's 2026-08-04 addendum), so this sweep is
+  # unconditional now.
   repo="$(board_repo "$PROJECT_NUMBER")" || {
     echo "reconcile.sh: label hygiene — could not resolve repo for board $PROJECT_NUMBER" >&2
     return 0
