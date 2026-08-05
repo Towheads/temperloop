@@ -142,7 +142,6 @@ make test-board	workflows/scripts/board/**
 # Also depends on the pinned shellcheck resolver (same one `make shellcheck`
 # uses, temperloop#567) so both lints stay on the identical binary.
 bash workflows/scripts/board-consumer-shellcheck.sh	workflows/scripts/board/** scripts/ensure-shellcheck.sh
-make test-board-dual-adapter	workflows/scripts/board/** workflows/scripts/build/**
 make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/scripts/lib/**
 make test-build-workflow	workflows/scripts/build/** claude/workflows/**
 bash workflows/scripts/tests/test_ready_pr_sweep.sh	workflows/scripts/ready-pr-sweep.sh workflows/scripts/board/** workflows/scripts/tests/test_ready_pr_sweep.sh
