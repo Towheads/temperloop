@@ -59,12 +59,11 @@ export TMUX_PANE="%0"
 # Never let a runner that happens to be inside cmux pull the repair down the cmux
 # branch — the marker-repair cases are tmux-shaped and must stay hermetic.
 unset CMUX_WORKSPACE_ID
-# Isolated cache dir (not the real TMPDIR) so the live-pin case below (which
-# plants a fake on-disk cache file) can never collide with another test/run's
-# cache files.
-BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-cache-test-XXXXXX")"
-export BOARD_CACHE_DIR
-trap 'rm -rf "$BOARD_CACHE_DIR"' EXIT
+# Scratch dir for this run's stubs. (Formerly BOARD_CACHE_DIR, isolating the
+# on-disk board cache from other runs — that cache was removed with the
+# Projects-v2 arm, ADR 0004, so this is now just a work dir.)
+TEST_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-test-XXXXXX")"
+trap 'rm -rf "$TEST_WORK_DIR"' EXIT
 
 # shellcheck source=scripts/reconcile.sh
 # shellcheck disable=SC1091
@@ -100,21 +99,54 @@ DEAD_SESSIONS=""
 
 # Override the board seam: replay canned JSON for every read, and RECORD each
 # item-edit's --id (the only write, issued by the --fix path) to $EDITS.
+# ITEM_LIST_JSON stays authored in the readable board-item shape every case
+# below already uses ({id, content:{number,title}, status, "host/Session"}).
+# On the issues-only backend (ADR 0004) the whole-board read is a `gh issue
+# list`, so this converts that fixture into the RAW issues-list payload gh
+# would return — letting board.sh's own issue_item reshape run for real rather
+# than hand-authoring `fnd:` labels in 20 fixtures. Two faithful details:
+#   - a "Done" item is a CLOSED issue, so it is omitted from the `--state open`
+#     read exactly as the former `-status:Done` Projects query omitted it (its
+#     closed-ness still reaches the status lens via ISSUE_LIST_JSON);
+#   - a Host/Session stamp becomes the verbatim fnd:host/session:<stamp> label.
+_reconcile_board_items_as_issues() {
+  printf '%s' "$ITEM_LIST_JSON" | jq -c '
+    def slug: ascii_downcase | gsub(" "; "-");
+    [ .items[]
+      | select((.status // "") != "Done")
+      | { number: .content.number,
+          title: (.content.title // ""),
+          milestone: null,
+          labels: (
+            (if (.status // "") != "" then [{name: ("fnd:status:" + (.status | slug))}] else [] end)
+            + (if (.["host/Session"] // "") != "" then [{name: ("fnd:host/session:" + .["host/Session"])}] else [] end)
+          ) } ]'
+}
+
 _board_gh() {
   case "$1 $2" in
-    "project view")       echo '{"id":"PVT_TESTPROJECT"}' ;;
-    "project field-list") printf '%s' "$FIELD_LIST_JSON" ;;
-    "project item-list")  printf '%s' "$ITEM_LIST_JSON" ;;
-    "issue list")         printf '%s' "$ISSUE_LIST_JSON" ;;
+    "issue list")
+      # Two distinct reads share this verb: board.sh's whole-board read
+      # (--state open, requesting title/labels/milestone) and the status lens's
+      # own state read (--state all). Route by argv so each gets its fixture.
+      case "$*" in
+        *"--state open"*labels*) _reconcile_board_items_as_issues ;;
+        *)                       printf '%s' "$ISSUE_LIST_JSON" ;;
+      esac ;;
     "pr list")            printf '%s' "$PR_LIST_JSON" ;;
     "issue view")         printf '%s' "$ISSUE_VIEW_JSON" ;;
     "pr view")            printf '%s' "$PR_VIEW_JSON" ;;
-    "project item-edit")
-      local a want=0
-      for a in "$@"; do
-        if [ "$want" = 1 ]; then printf '%s\n' "$a" >>"$EDITS"; want=0; continue; fi
-        [ "$a" = "--id" ] && want=1
-      done
+    "api "*)
+      # The single-issue read the issues-only writers do before every write.
+      local n="${2##*/}"
+      printf '{"number":%s,"title":"","state":"open","labels":[]}' "$n" ;;
+    "label create") return 0 ;;
+    "issue edit" | "issue close" | "issue reopen")
+      # Record ONE line per issue touched by a write, so the per-item presence/
+      # absence assertions below keep their shape (a Done move is a label strip
+      # plus a close — one logical edit, one record).
+      local n="$3"
+      grep -qx "ISSUE_$n" "$EDITS" 2>/dev/null || printf 'ISSUE_%s\n' "$n" >>"$EDITS"
       return 0 ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
@@ -137,8 +169,8 @@ run_case() {
 # Board: #500 In Progress on a DIFFERENT host; #501 only Ready. Local marker for
 # #500 → stale (wrong host); local marker for #777 → stale (not on board at all).
 ITEM_LIST_JSON='{"items":[
-  {"id":"i500","content":{"number":500,"title":"Claimed elsewhere"},"status":"In Progress","host/Session":"otherhost:dead1234"},
-  {"id":"i501","content":{"number":501,"title":"Just ready"},"status":"Ready"}
+  {"id":"ISSUE_500","content":{"number":500,"title":"Claimed elsewhere"},"status":"In Progress","host/Session":"otherhost:dead1234"},
+  {"id":"ISSUE_501","content":{"number":501,"title":"Just ready"},"status":"Ready"}
 ]}'
 MARKER_LINES='#500 Claimed elsewhere
 #777 phantom local claim
@@ -160,7 +192,7 @@ echo "PASS: case 1 marker-without-board (wrong host + not-on-board) reported"
 # --- case 2: board-without-marker ---------------------------------------------
 # Board: #600 In Progress stamped to THIS host (testhost), but NO live marker.
 ITEM_LIST_JSON='{"items":[
-  {"id":"i600","content":{"number":600,"title":"Claimed here, parked"},"status":"In Progress","host/Session":"testhost:abcd1234"}
+  {"id":"ISSUE_600","content":{"number":600,"title":"Claimed here, parked"},"status":"In Progress","host/Session":"testhost:abcd1234"}
 ]}'
 MARKER_LINES=''   # no live markers at all (e.g. after release.sh)
 run_case
@@ -179,8 +211,8 @@ echo "PASS: case 2 board-without-marker (claimed here, no live marker) reported"
 # item on another host (#701) with no local marker — correctly NOT flagged since
 # it is not this host's claim. Result: no drift in either direction.
 ITEM_LIST_JSON='{"items":[
-  {"id":"i700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"},
-  {"id":"i701","content":{"number":701,"title":"Someone else"},"status":"In Progress","host/Session":"otherhost:cafe9999"}
+  {"id":"ISSUE_700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"},
+  {"id":"ISSUE_701","content":{"number":701,"title":"Someone else"},"status":"In Progress","host/Session":"otherhost:cafe9999"}
 ]}'
 MARKER_LINES='#700 Working it now
 '
@@ -203,7 +235,7 @@ echo "=== Lens 1 repair: --fix marker repair (temperloop#748) ==="
 # window-option store. File-backed, not a shell variable, because reconcile_main
 # runs inside a command substitution: a variable mutation there would die with the
 # subshell, while a clear recorded to a file is observable from the test.
-MARKER_STUB_DIR="$BOARD_CACHE_DIR/marker-stub"
+MARKER_STUB_DIR="$TEST_WORK_DIR/marker-stub"
 mkdir -p "$MARKER_STUB_DIR"
 WINDOW_MARKER_FILE="$MARKER_STUB_DIR/claimed_issue"
 MARKER_CLEARS_FILE="$MARKER_STUB_DIR/clears"
@@ -237,7 +269,7 @@ cleared_count() { grep -c '^cleared:' "$MARKER_CLEARS_FILE" 2>/dev/null || true;
 # In Progress on the board and is CLOSED on GitHub — the provably-safe class. With
 # FIX=0 it must still only be REPORTED (plus the discoverability hint), never cleared.
 ITEM_LIST_JSON='{"items":[
-  {"id":"i503","content":{"number":503,"title":"Unrelated"},"status":"Ready"}
+  {"id":"ISSUE_503","content":{"number":503,"title":"Unrelated"},"status":"Ready"}
 ]}'
 MARKER_LINES='#502 Claim target
 '
@@ -335,7 +367,7 @@ echo "PASS: marker case 5 unreadable GitHub state fails safe (no clear)"
 # --fix, nothing is cleared and (above all) nothing is re-stamped: with no marker
 # in this window there is nothing for the repair to act on at all.
 ITEM_LIST_JSON='{"items":[
-  {"id":"i600","content":{"number":600,"title":"Claimed here, marker clobbered"},"status":"In Progress","host/Session":"testhost:e4e906b5"}
+  {"id":"ISSUE_600","content":{"number":600,"title":"Claimed here, marker clobbered"},"status":"In Progress","host/Session":"testhost:e4e906b5"}
 ]}'
 MARKER_LINES=''
 ISSUE_VIEW_JSON='{"state":"CLOSED"}'   # even a terminal answer must not license a repair here
@@ -361,7 +393,7 @@ echo "PASS: marker case 6 board-without-marker never repaired (no clear, no re-s
 # live claim (the K#275 claim-until-Done case). Gate 1 must refuse BEFORE the
 # terminality check, so even a CLOSED answer from GitHub cannot license the clear.
 ITEM_LIST_JSON='{"items":[
-  {"id":"i700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"}
+  {"id":"ISSUE_700","content":{"number":700,"title":"Working it now"},"status":"In Progress","host/Session":"testhost:beef5678"}
 ]}'
 MARKER_LINES='#700 Working it now
 '
@@ -419,10 +451,10 @@ _reconcile_now() { echo "$FAKE_NOW"; }
 # #202 merged PR already Done (ok). #203 open issue claimed (ok). --fix moves the
 # two terminal items to Done; the ok items are untouched.
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it200","content":{"number":200,"title":"Merged PR, no status"}},
-  {"id":"PVTI_it201","content":{"number":201,"title":"Closed issue still Ready"},"status":"Ready"},
-  {"id":"PVTI_it202","content":{"number":202,"title":"Merged PR already Done"},"status":"Done"},
-  {"id":"PVTI_it203","content":{"number":203,"title":"Open, claimed"},"status":"In Progress","host/Session":"testhost:abcd1234"}
+  {"id":"ISSUE_200","content":{"number":200,"title":"Merged PR, no status"}},
+  {"id":"ISSUE_201","content":{"number":201,"title":"Closed issue still Ready"},"status":"Ready"},
+  {"id":"ISSUE_202","content":{"number":202,"title":"Merged PR already Done"},"status":"Done"},
+  {"id":"ISSUE_203","content":{"number":203,"title":"Open, claimed"},"status":"In Progress","host/Session":"testhost:abcd1234"}
 ]}'
 ISSUE_LIST_JSON='[{"number":201,"state":"CLOSED"},{"number":203,"state":"OPEN"}]'
 PR_LIST_JSON='[{"number":200,"state":"MERGED"},{"number":202,"state":"MERGED"}]'
@@ -438,8 +470,8 @@ printf '%s' "$OUT" | grep -q "#201 — backing CLOSED but board status 'Ready'" 
   || fail "scase1: #201 (closed Ready) should be flagged with aligned fields\n$OUT"
 printf '%s' "$OUT" | grep -q "✓ #200 → Done" || fail "scase1: --fix should move #200 to Done\n$OUT"
 printf '%s' "$OUT" | grep -q "✓ #201 → Done" || fail "scase1: --fix should move #201 to Done\n$OUT"
-grep -qx "PVTI_it202" "$EDITS" && fail "scase1: #202 already Done must not be edited\n$(cat "$EDITS")"
-grep -qx "PVTI_it203" "$EDITS" && fail "scase1: #203 open/ok must not be edited\n$(cat "$EDITS")"
+grep -qx "ISSUE_202" "$EDITS" && fail "scase1: #202 already Done must not be edited\n$(cat "$EDITS")"
+grep -qx "ISSUE_203" "$EDITS" && fail "scase1: #203 open/ok must not be edited\n$(cat "$EDITS")"
 printf '%s' "$OUT" | grep -q "In sync" && fail "scase1: must not report in-sync with drift\n$OUT"
 FIX=0
 echo "PASS: status case 1 terminal-but-not-Done flagged + --fix moves them to Done"
@@ -449,9 +481,9 @@ echo "PASS: status case 1 terminal-but-not-Done flagged + --fix moves them to Do
 # to this host with a LIVE session (DEAD_SESSIONS empty) → ok, not flagged. #302
 # Ready but in neither list → unresolved.
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it300","content":{"number":300,"title":"Orphaned claim"},"status":"In Progress","host/Session":""},
-  {"id":"PVTI_it301","content":{"number":301,"title":"Properly claimed"},"status":"In Progress","host/Session":"testhost:dead1234"},
-  {"id":"PVTI_it302","content":{"number":302,"title":"Unknown to GH"},"status":"Ready"}
+  {"id":"ISSUE_300","content":{"number":300,"title":"Orphaned claim"},"status":"In Progress","host/Session":""},
+  {"id":"ISSUE_301","content":{"number":301,"title":"Properly claimed"},"status":"In Progress","host/Session":"testhost:dead1234"},
+  {"id":"ISSUE_302","content":{"number":302,"title":"Unknown to GH"},"status":"Ready"}
 ]}'
 ISSUE_LIST_JSON='[{"number":300,"state":"OPEN"},{"number":301,"state":"OPEN"}]'
 PR_LIST_JSON='[]'
@@ -463,7 +495,7 @@ printf '%s' "$OUT" | grep -q "#301" && fail "scase2: #301 (live stamped) must no
 printf '%s' "$OUT" | grep -q "^stale claims" && fail "scase2: a live same-host claim must not be classed stale\n$OUT"
 printf '%s' "$OUT" | grep -q "unresolved" || fail "scase2: expected unresolved section\n$OUT"
 printf '%s' "$OUT" | grep -q "#302" || fail "scase2: #302 unknown should be flagged\n$OUT"
-grep -qx "PVTI_it300" "$EDITS" && fail "scase2: orphan #300 must NEVER be auto-edited\n$(cat "$EDITS")"
+grep -qx "ISSUE_300" "$EDITS" && fail "scase2: orphan #300 must NEVER be auto-edited\n$(cat "$EDITS")"
 [ ! -s "$EDITS" ] || fail "scase2: no item-edit should fire (no terminal items)\n$(cat "$EDITS")"
 FIX=0
 echo "PASS: status case 2 orphan + unresolved reported, never auto-fixed"
@@ -472,9 +504,9 @@ echo "PASS: status case 2 orphan + unresolved reported, never auto-fixed"
 # #400 merged PR already Done; #401 open issue Ready; #402 open issue claimed. No
 # drift in any class.
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it400","content":{"number":400,"title":"Done merged PR"},"status":"Done"},
-  {"id":"PVTI_it401","content":{"number":401,"title":"Open, ready"},"status":"Ready"},
-  {"id":"PVTI_it402","content":{"number":402,"title":"Open, claimed"},"status":"In Progress","host/Session":"testhost:beef5678"}
+  {"id":"ISSUE_400","content":{"number":400,"title":"Done merged PR"},"status":"Done"},
+  {"id":"ISSUE_401","content":{"number":401,"title":"Open, ready"},"status":"Ready"},
+  {"id":"ISSUE_402","content":{"number":402,"title":"Open, claimed"},"status":"In Progress","host/Session":"testhost:beef5678"}
 ]}'
 ISSUE_LIST_JSON='[{"number":401,"state":"OPEN"},{"number":402,"state":"OPEN"}]'
 PR_LIST_JSON='[{"number":400,"state":"MERGED"}]'
@@ -490,8 +522,8 @@ echo "PASS: status case 3 fully in-sync all-clear"
 # #800 In Progress stamped to THIS host but its session is dead → stale claim,
 # report-only (never auto-edited, even with --fix). #801 same host but LIVE → ok.
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it800","content":{"number":800,"title":"Stranded by a dead run"},"status":"In Progress","host/Session":"testhost:dead0001"},
-  {"id":"PVTI_it801","content":{"number":801,"title":"Actively worked"},"status":"In Progress","host/Session":"testhost:live0001"}
+  {"id":"ISSUE_800","content":{"number":800,"title":"Stranded by a dead run"},"status":"In Progress","host/Session":"testhost:dead0001"},
+  {"id":"ISSUE_801","content":{"number":801,"title":"Actively worked"},"status":"In Progress","host/Session":"testhost:live0001"}
 ]}'
 ISSUE_LIST_JSON='[{"number":800,"state":"OPEN"},{"number":801,"state":"OPEN"}]'
 PR_LIST_JSON='[]'
@@ -511,7 +543,7 @@ echo "PASS: status case 4 stale same-host claim flagged (live one not), never au
 # is reported under foreign and NEVER released from this machine — even though the
 # local oracle is told its session id is dead (foreign wins, no liveness call).
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it900","content":{"number":900,"title":"Owned by another host"},"status":"In Progress","host/Session":"otherhost:abcd0001"}
+  {"id":"ISSUE_900","content":{"number":900,"title":"Owned by another host"},"status":"In Progress","host/Session":"otherhost:abcd0001"}
 ]}'
 ISSUE_LIST_JSON='[{"number":900,"state":"OPEN"}]'
 PR_LIST_JSON='[]'
@@ -530,7 +562,7 @@ echo "PASS: status case 5 foreign claim reported (host-aware), never released he
 # #1000 In Progress stamped to a DEAD same-host session, but its backing issue is
 # CLOSED → must classify terminal (work is done), NOT stale.
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it1000","content":{"number":1000,"title":"Closed but still In Progress"},"status":"In Progress","host/Session":"testhost:dead0002"}
+  {"id":"ISSUE_1000","content":{"number":1000,"title":"Closed but still In Progress"},"status":"In Progress","host/Session":"testhost:dead0002"}
 ]}'
 ISSUE_LIST_JSON='[{"number":1000,"state":"CLOSED"}]'
 PR_LIST_JSON='[]'
@@ -548,7 +580,7 @@ echo "PASS: status case 6 terminal-but-not-Done beats stale (priority)"
 # → escalated to the louder "foreign claims (STALE …)" bucket. Report-only: never
 # auto-edited even with --fix (releasing another host's claim is never automated).
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it910","content":{"number":910,"title":"Stranded on a dead host"},"status":"In Progress","host/Session":"deadhost:abcd9100"}
+  {"id":"ISSUE_910","content":{"number":910,"title":"Stranded on a dead host"},"status":"In Progress","host/Session":"deadhost:abcd9100"}
 ]}'
 ISSUE_LIST_JSON='[{"number":910,"state":"OPEN","updatedAt":"2026-05-01T00:00:00Z"}]'
 PR_LIST_JSON='[]'
@@ -570,8 +602,8 @@ echo "PASS: status case 7 stale foreign claim escalated, never auto-released"
 # escalated). #912 foreign with NO updatedAt available → fail safe to plain foreign
 # (never escalate on missing data, never crash).
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it911","content":{"number":911,"title":"Actively worked elsewhere"},"status":"In Progress","host/Session":"otherhost:abcd9110"},
-  {"id":"PVTI_it912","content":{"number":912,"title":"Foreign, no updatedAt"},"status":"In Progress","host/Session":"otherhost:abcd9120"}
+  {"id":"ISSUE_911","content":{"number":911,"title":"Actively worked elsewhere"},"status":"In Progress","host/Session":"otherhost:abcd9110"},
+  {"id":"ISSUE_912","content":{"number":912,"title":"Foreign, no updatedAt"},"status":"In Progress","host/Session":"otherhost:abcd9120"}
 ]}'
 ISSUE_LIST_JSON='[{"number":911,"state":"OPEN","updatedAt":"2026-06-05T00:00:00Z"},{"number":912,"state":"OPEN"}]'
 PR_LIST_JSON='[]'
@@ -587,44 +619,53 @@ FIX=0
 echo "PASS: status case 8 recent + missing-updatedAt foreign stay plain (no escalation), never edited"
 
 echo
-echo "=== Lens 3: the live-read pin (reconcile.sh must never read through the cache) ==="
+echo "=== Lens 3: the live-read guarantee (reconcile.sh must never read a cache) ==="
 
-# --- live-pin case: a FRESH but WRONG on-disk items cache must be ignored -----
-# reconcile.sh's own `export BOARD_CACHE_TTL=0` (see its header comment) is the
-# ONE thing standing between "always live" and "drift detector fed stale data,
-# self-defeating". Prove it behaviorally, not just by grepping the source: seed
-# a cache file that is FRESH (age 0, well within any normal TTL) but WRONG (it
-# does not have #950 In Progress at all) — if BOARD_CACHE_TTL=0 were ever
-# dropped/shadowed, _board_cached_read would see this fresh file and serve it
-# instead of calling _board_gh, and the report below would flip from "in sync"
-# to a false marker-without-board drift.
-[ "$BOARD_CACHE_TTL" = "0" ] \
-  || fail "setup: reconcile.sh must pin BOARD_CACHE_TTL=0 (got '$BOARD_CACHE_TTL') — see reconcile.sh's live-read-pin comment"
+# reconcile is a DRIFT DETECTOR; fed cached data it is self-defeating. That
+# guarantee used to rest on reconcile.sh's own `export BOARD_CACHE_TTL=0`, and
+# this case proved it by planting a FRESH but WRONG on-disk cache file and
+# asserting the live truth still won.
+#
+# ADR 0004 removed board.sh's cross-process cache (and BOARD_CACHE_TTL with it),
+# so there is no longer a TTL to pin — but the GUARANTEE still matters, and it is
+# now STRUCTURAL: the only cache that can sit in front of a board read is the
+# issue-corpus store in lib/cache.sh, and board.sh consults it ONLY when the
+# calling process has itself sourced that file (the `declare -F cache_read`
+# probe in _board_issues_item_list). reconcile.sh never sources it, so the read
+# is live no matter what a shared boards.conf says.
+#
+# That is a stronger property than the old TTL pin — it cannot be defeated by a
+# config value at all — so this case now asserts it directly, in both halves:
+# the structural precondition, and the live-truth behavior under the most
+# hostile config available (cache=on for this very board).
 
-STALE_CACHE_FILE="$BOARD_CACHE_DIR/subset-board-3-items.json"
-printf '%s' '{"items":[]}' >"$STALE_CACHE_FILE"   # wrong: #950 missing entirely
-touch "$STALE_CACHE_FILE"                          # age 0 — "fresh" by any normal TTL
+# (a) STRUCTURAL: cache_read must not be in scope after sourcing reconcile.sh.
+# If a future change makes reconcile.sh source lib/cache.sh, this fails — which
+# is exactly the review moment the guarantee needs.
+if declare -F cache_read >/dev/null 2>&1; then
+  fail "live-read: reconcile.sh must NOT bring cache_read into scope — a drift detector must never read a cache (see reconcile.sh's live-read comment)"
+fi
 
-# The LIVE truth (what _board_gh actually returns for `project item-list`):
-# #950 In Progress on THIS host, matched by a live tmux marker → should be "in
-# sync", not a marker-without-board drift.
+# (b) BEHAVIORAL, under a boards.conf that turns the cache ON for board 3.
+# Even with the enable axis set, the read must stay live (the axis is inert
+# without cache.sh in scope), so the LIVE truth below must win: #950 In Progress
+# on THIS host, matched by a live tmux marker → "in sync", not a false
+# marker-without-board drift.
+CACHEON_CONF="$TEST_WORK_DIR/cache-on-boards.conf"
+cat > "$CACHEON_CONF" <<'CONF'
+board.3.cache=on
+CONF
 ITEM_LIST_JSON='{"items":[
-  {"id":"i950","content":{"number":950,"title":"Live truth item"},"status":"In Progress","host/Session":"testhost:live0001"}
+  {"id":"ISSUE_950","content":{"number":950,"title":"Live truth item"},"status":"In Progress","host/Session":"testhost:live0001"}
 ]}'
 MARKER_LINES='#950 Live truth item
 '
-run_case
+OUT="$(BOARDS_CONF_MACHINE="$CACHEON_CONF" BOARDS_CONF_REPO_LOCAL="$TEST_WORK_DIR/no-such-conf" reconcile_main)"
 printf '%s' "$OUT" | grep -q "In sync" \
-  || fail "live-pin: expected 'in sync' from the LIVE #950 claim — got (possibly cache-served):\n$OUT"
+  || fail "live-read: expected 'in sync' from the LIVE #950 claim even with board.3.cache=on\n$OUT"
 printf '%s' "$OUT" | grep -q "marker-without-board" \
-  && fail "live-pin: #950 flagged marker-without-board — the FRESH stale cache file was served instead of a live read:\n$OUT"
-
-# The cache file must still be untouched (BOARD_CACHE_TTL=0 also means the read
-# path never WRITES the cache — see _board_cached_read's `[ "$ttl" -gt 0 ]` write
-# guard) — confirms this run never went through the cache in either direction.
-[ "$(cat "$STALE_CACHE_FILE")" = '{"items":[]}' ] \
-  || fail "live-pin: the on-disk cache file was rewritten — a live-only read must never touch it\n$(cat "$STALE_CACHE_FILE")"
-echo "PASS: live-pin — a fresh-but-wrong on-disk cache file is ignored; reconcile always reads live"
+  && fail "live-read: #950 flagged marker-without-board — something served a cached read\n$OUT"
+echo "PASS: live-read — reconcile never brings cache_read into scope, and reads live even under board.<N>.cache=on"
 
 echo
 echo "PASS: all reconcile.sh drift-detection assertions passed"

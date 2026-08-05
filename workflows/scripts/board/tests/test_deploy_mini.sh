@@ -57,11 +57,12 @@ advance() {
   GIT -C "$seed" add -A; GIT -C "$seed" commit -qm c2; GIT -C "$seed" push -q origin main
 }
 # run <checkout-paths...> — invoke deploy-mini isolated; prints output, returns its rc.
-# BOARD_CACHE_DIR is pinned into $WORK so the #341 structure-cache bust never touches
-# the real machine's cache (and test 10 can assert against it).
+# No BOARD_CACHE_DIR pin any more: it existed only to keep the #341 structure-cache
+# bust off the real machine's cache, and both were removed with the Projects-v2 arm
+# (ADR 0004).
 run() {
   DEPLOY_MINI_CHECKOUTS="$*" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/run.lock.d" \
-    BOARD_CACHE_DIR="$WORK/cache" bash "$DEPLOY"
+    bash "$DEPLOY"
 }
 behind() { git -C "$1" rev-list --count "HEAD..@{u}" 2>/dev/null || echo "?"; }
 
@@ -148,30 +149,40 @@ out="$(run "$WORK/diverge")" || true
 [ "$(GIT -C "$WORK/diverge" rev-parse HEAD)" = "$before" ] || fail "diverged checkout HEAD must NOT move (no clobber)"
 echo "$out" | grep -q "cannot ff-merge" || fail "diverged should report SKIP (cannot ff-merge) (got: $out)"
 
-# --- 10. #341: an adapter-changed pull busts the structure cache ------------
-# A pull whose diff touches a board.sh must flush the structure cache (stale
-# project/field ids after a renumber break WRITES). The structure cache file is
-# keyed on the RESOLVED owner+project# (#341 option b), so derive the real paths
-# from the same board.sh the bust subshell sources — don't hardcode the migrated
-# number. Pre-seed a stale board-4 structure entry; after a pull that changed
-# board.sh it must be gone + announced.
-mkdir -p "$WORK/cache"
-PROJ_CACHE="$(BOARD_CACHE_DIR="$WORK/cache" bash -c '. "'"$HERE"'/../lib/board.sh"; _board_cache_file 4 project')"
-FIELDS_CACHE="$(BOARD_CACHE_DIR="$WORK/cache" bash -c '. "'"$HERE"'/../lib/board.sh"; _board_cache_file 4 fields')"
-: >"$PROJ_CACHE"
-: >"$FIELDS_CACHE"
+# --- 10/11 (rewritten): an adapter-changed pull is CLEAN — no call into removed
+# board.sh machinery -----------------------------------------------------------
+# These two cases used to assert deploy-mini's step 2.5 structure-cache bust:
+# that a pull touching a board.sh flushed the Projects-v2 project/field-id cache
+# (#341), and that a no-op pull did NOT (preserving the 24h TTL). Both the cache
+# and `board_bust_structure` were removed with the Projects-v2 arm (ADR 0004,
+# epic temperloop#524), so there is no cache to bust and nothing to assert about
+# busting it.
+#
+# What replaces them is the regression those removals actually risk, and which
+# nothing else covers: deploy-mini sources board.sh in a live subshell on every
+# sweep, so a dangling reference to a removed function would surface here as a
+# `command not found` on a real session start — silent-ish, because the step's
+# own `|| true`-ish shape kept the run exiting 0. (That regression was real: the
+# excision initially left the `board_bust_structure` call in place.) So: pull an
+# adapter change and assert the run is not merely successful but CLEAN.
 setup_repo bustpull yes; advance bustpull            # advance() appends to scripts/lib/board.sh
-out="$(run "$WORK/bustpull")" || fail "bust run should exit 0"
-echo "$out" | grep -q "structure cache busted" || fail "an adapter-changed pull should bust the structure cache (got: $out)"
-[ ! -f "$PROJ_CACHE" ] || fail "#341: stale board-4 structure cache must be removed"
-[ ! -f "$FIELDS_CACHE" ]  || fail "#341: stale board-4 fields cache must be removed"
+out="$(run "$WORK/bustpull" 2>&1)" || fail "an adapter-changed pull should exit 0 (got: $out)"
+echo "$out" | grep -q "pulled →" || fail "the adapter-changed checkout should report a pull (got: $out)"
+case "$out" in
+  *"command not found"*)
+    fail "an adapter-changed pull called a function board.sh no longer defines — a removed-symbol regression (got: $out)" ;;
+  *"board_bust_structure"*)
+    fail "deploy-mini still references board_bust_structure, removed with the Projects-v2 arm (ADR 0004) (got: $out)" ;;
+  *"structure cache"*)
+    fail "deploy-mini still reports a structure-cache bust; that cache was removed (ADR 0004) (got: $out)" ;;
+esac
 
-# --- 11. #341: a no-op deploy (nothing pulled) does NOT bust the cache -------
-# Busting every run would defeat the 24h structure TTL — only an adapter change does.
-: >"$PROJ_CACHE"                                       # re-seed; an already-current run must leave it
-out="$(run "$WORK/bustpull")" || fail "no-op bust run should exit 0"
-echo "$out" | grep -q "structure cache busted" && fail "#341: an already-current (no-pull) deploy must NOT bust the cache"
-[ -f "$PROJ_CACHE" ] || fail "#341: a no-op deploy must leave the structure cache intact"
+# ...and a second, already-current run stays clean too (the no-op path).
+out="$(run "$WORK/bustpull" 2>&1)" || fail "a no-op deploy should exit 0 (got: $out)"
+case "$out" in
+  *"command not found"*) fail "a no-op deploy emitted a command-not-found (got: $out)" ;;
+esac
+echo "PASS: an adapter-changed pull and a no-op re-run both source board.sh cleanly (no removed-symbol calls, ADR 0004)"
 
 # --- 12. F#653: a clean-on-main checkout has its merged LOCAL branches pruned ---
 # mergedlocal points at origin/main (the post-merge/ff shape — its work is fully in
@@ -297,4 +308,4 @@ out="$(PATH="$FAKEBIN:$PATH" run "$WORK/wtfail")" && rc=0 || rc=$?
 echo "$out" | grep -q "worktree prune: FAILED (non-fatal)" || fail "should report the swallowed failure (got: $out)"
 echo "PASS: #168 a worktree.sh prune failure is fail-open — logged, deploy-mini still exits 0"
 
-echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
+echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, sources board.sh cleanly on an adapter-changed pull (no removed-symbol calls, ADR 0004), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"

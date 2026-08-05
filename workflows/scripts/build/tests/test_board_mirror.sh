@@ -35,8 +35,6 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 # Keep the board cache off the real dir + force live reads (no stale page).
-export BOARD_CACHE_DIR="$TMP/cache"; mkdir -p "$BOARD_CACHE_DIR"
-export BOARD_CACHE_TTL=0
 # Isolate from any host-level boards.conf (machine, legacy ~/.config/foundation,
 # or repo-local) so board 4 resolves to its built-in default (projects backend,
 # project #3). A real dev-host boards.conf carrying `board.4.backend=issues`
@@ -98,27 +96,12 @@ case "${1:-}" in
     # so synthesize that shape here from the fixture. -F num pins which issue the
     # query is "for" (multi-item fixtures resolve the matching one). This keeps
     # the test fixtures readable while exercising the adapter's real reshape jq.
+    # The Projects-v2 single-item GraphQL resolve is gone (ADR 0004). Any
+    # attempt to build that argv is a regression, so fail loudly rather than
+    # quietly serving a fixture for a call that can no longer happen.
     if printf '%s' "$all" | grep -q 'api graphql' || [ "$path" = "graphql" ]; then
-      qnum=""
-      j=0; qargs=("$@")
-      while [ $j -lt ${#qargs[@]} ]; do
-        case "${qargs[$j]}" in -F) j=$((j+1)); case "${qargs[$j]}" in num=*) qnum="${qargs[$j]#num=}";; esac ;; esac
-        j=$((j+1))
-      done
-      jq -c --argjson n "${qnum:-0}" '
-        (.items[] | select(.content.number==$n)) as $it
-        | { data: { repository: { issue: {
-              title: $it.content.title,
-              projectItems: { nodes: [ {
-                id: $it.id,
-                project: { number: 3 },
-                fieldValues: { nodes: [
-                  { __typename:"ProjectV2ItemFieldSingleSelectValue", name: $it.status, field:{name:"Status"} },
-                  { __typename:"ProjectV2ItemFieldTextValue", text: ($it["host/Session"] // ""), field:{name:"Host/Session"} }
-                ] }
-              } ] }
-        } } } }' "$S/resolve_item.json"
-      exit 0
+      echo "stub: REGRESSION — 'gh api graphql' built, but the Projects-v2 arm was removed (ADR 0004): $all" >&2
+      exit 3
     fi
 
     case "$path" in
@@ -135,9 +118,35 @@ case "${1:-}" in
         fi
         ;;
       repos/*/issues/*)
-        # Single issue object — serve from per-number fixture if present.
+        # Single issue object. board_resolve_item reads THIS on the issues-only
+        # backend (ADR 0004) where it used to fire a Projects-v2 GraphQL query,
+        # so derive it from the same per-case resolve_item.json fixture
+        # write_resolve() already maintains — keeping every case's setup
+        # unchanged while exercising board.sh's real issue_item reshape.
         num="${path##*/}"
-        out="$(cat "$S/issue_$num.json" 2>/dev/null || cat "$S/issue.json")"
+        # Base: the fnd:-label view of this case's resolve_item.json fixture
+        # (status + claim stamp), so board_resolve_item's real issue_item
+        # reshape runs. Overlay: the per-number issue_<n>.json fixture when a
+        # case supplies one (state/id/html_url) — MERGED, not substituted, so
+        # supplying one does not silently erase the item's labels.
+        base="$(cat "$S/issue.json")"
+        if [ -f "$S/resolve_item.json" ] && \
+           jq -e --argjson n "$num" 'any(.items[]?; .content.number==$n)' "$S/resolve_item.json" >/dev/null 2>&1; then
+          base="$(jq -c --argjson n "$num" '
+            def slug: ascii_downcase | gsub(" "; "-");
+            (.items[] | select(.content.number==$n)) as $it
+            | { number: $n, title: ($it.content.title // ""), state: "open", id: 9000,
+                html_url: "https://github.com/Towheads/foundation/issues/\($n)",
+                labels: (
+                  (if ($it.status // "") != "" then [{name: ("fnd:status:" + ($it.status | slug))}] else [] end)
+                  + (if ($it["host/Session"] // "") != "" then [{name: ("fnd:host/session:" + $it["host/Session"])}] else [] end)
+                ) }' "$S/resolve_item.json")"
+        fi
+        if [ -f "$S/issue_$num.json" ]; then
+          out="$(printf '%s\n%s\n' "$base" "$(cat "$S/issue_$num.json")" | jq -sc '.[0] * .[1]')"
+        else
+          out="$base"
+        fi
         ;;
       *)
         out='{}'
@@ -160,6 +169,29 @@ case "${1:-}" in
         ;;
       edit)
         log "issue_edit $*"
+        # Translate the issues-only label write into the SAME `item_edit
+        # field=... opt=... clear=...` record shape the assertions below already
+        # use, so each case keeps its original assertion rather than being
+        # rewritten around a new log vocabulary.
+        for a in "$@"; do
+          case "$a" in
+            fnd:status:*)
+              # opt_<slug> with hyphens dropped, matching the former
+              # Projects-v2 option-id spelling (in-progress -> opt_inprogress).
+              _sl="${a#fnd:status:}"; _sl="${_sl//-/}"
+              log "item_edit field=PVTSSF_status opt=opt_${_sl} text= clear=0" ;;
+            fnd:host/session:*) log "item_edit field=PVTF_hostsession opt= text=${a#fnd:host/session:} clear=0" ;;
+          esac
+        done
+        # A --remove-label of the stamp with no matching --add-label is the
+        # issues-only spelling of the Projects `--clear`.
+        case "$*" in
+          *"--remove-label fnd:host/session:"*)
+            case "$*" in
+              *"--add-label fnd:host/session:"*) : ;;
+              *) log "item_edit field=PVTF_hostsession opt= text= clear=1" ;;
+            esac ;;
+        esac
         ;;
       *) echo "stub: unknown issue subcmd $sub" >&2; exit 3 ;;
     esac
@@ -167,30 +199,13 @@ case "${1:-}" in
     ;;
 
   project)
-    sub="${2:-}"
-    case "$sub" in
-      view)       cat "$S/project_view.json" ;;
-      field-list) cat "$S/field_list.json" ;;
-      item-edit)
-        # record the field-id + option/text the edit set
-        fid=""; opt=""; txt=""; clear=0
-        shift 2
-        while [ $# -gt 0 ]; do
-          case "$1" in
-            --field-id) fid="$2"; shift 2 ;;
-            --single-select-option-id) opt="$2"; shift 2 ;;
-            --text) txt="$2"; shift 2 ;;
-            --clear) clear=1; shift ;;
-            *) shift ;;
-          esac
-        done
-        log "item_edit field=$fid opt=$opt text=$txt clear=$clear"
-        ;;
-      item-add)
-        log "item_add $*"
-        ;;
-      *) echo "stub: unknown project subcmd $sub" >&2; exit 3 ;;
-    esac
+    echo "stub: REGRESSION — 'gh project' built, but the Projects-v2 arm was removed (ADR 0004): $all" >&2
+    exit 3
+    ;;
+
+  label)
+    # `gh label create` — the issues-only writers ensure a label exists first.
+    log "label_$2 $*"
     exit 0
     ;;
 
