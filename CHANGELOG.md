@@ -14,6 +14,17 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Removed
+
+- **`init.sh --provision-*` (the whole board-provisioning flag family) and
+  `--tracker-mode` are gone; both now exit non-zero** (ADR 0004, epic #524
+  "retire the Projects-v2/GraphQL arm"). Every registered board has run
+  issues-only since 2026-07-18, so there is nothing left to select or
+  provision — a caller passing either flag now hits a dedicated case arm
+  that names the removal release and exits 2, rather than the flag being
+  silently accepted and ignored. No replacement flag: an adopter's script
+  simply drops `--provision-*`/`--tracker-mode` from its `init` invocation.
+
 ## [0.26.0] - 2026-08-05
 
 ### Added
