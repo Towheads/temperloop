@@ -170,21 +170,28 @@ later with per-write consent by driving it through the real pipeline
 (`/assess --epic N` → `/build`) — and note that what the epic applies is
 **not** undone by `temperloop eject` (§ Uninstall scope (e), below).
 
-The flags that used to gate `init`'s own applies still parse and still exit
-0; each now prints one line naming where its step went, plus the release it
-is removed in, and is then ignored. Nothing that passes them breaks. Where
-each one went:
+Three flags that used to gate `init`'s own applies still parse and still
+exit 0; each now prints one line naming where its step went, plus the
+release it is removed in, and is then ignored. Nothing that passes them
+breaks. Where each one went:
 
 | Flag | Where its step went | Removed in |
 |---|---|---|
 | `--yes/--no-required-check` | the first epic — which, unlike `init`, refuses to require a `checks` status no workflow will post | v0.20.0 (the pre-scope-down compat window) |
 | `--yes/--no-labels` | nowhere — **retired as redundant**. The `fnd:`/pipeline labels are created lazily at point of use by the issues-only tracker backend, so there was never anything to pre-create | v0.20.0 (same) |
 | `--yes/--no-board` | nowhere — board provisioning was dropped outright | v0.20.0 (same) |
-| `--provision-board` | dropped outright; provision a Projects-v2 board by hand instead | the ADR-0004 Projects-arm removal release |
-| `--tracker-mode projects` | coerced to `issues`, the sole tracker mode `init` writes | the ADR-0004 Projects-arm removal release |
 
-For the by-hand Projects-v2 board, see § "Manual Projects-v2 recipe" in [the
-install-cli feature doc](../docs/features/install-cli.md).
+**Two more are gone outright: `--provision-board` and `--tracker-mode`.**
+Ten releases have passed since issues-only became the default backend
+(ADR 0004), and every registered board has run issues-only since
+2026-07-18 — the removal window both flags were always scoped to has now
+arrived (epic #524). Neither one parses any more; each exits non-zero with
+a message naming the removal, not a bare "unknown flag" error (`init.sh`
+catches `--provision-board` via a `--provision-*` prefix match, so the
+whole retired board-provisioning flag family is refused, not just this one
+historic spelling). Provision a Projects-v2 board by hand instead — see
+§ "Manual Projects-v2 recipe" in
+[the install-cli feature doc](../docs/features/install-cli.md).
 
 `foundation <subcommand>` does **not** run any of this ladder — the compat
 shim was removed in v0.19.0 (see above) and now only refuses, naming

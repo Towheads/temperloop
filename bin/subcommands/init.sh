@@ -55,11 +55,9 @@
 #     § "Manual Projects-v2 recipe").
 #
 # DEPRECATED FLAGS (retained, each with a NAMED removal window).
-# `--yes/--no-required-check`, `--yes/--no-labels`, `--yes/--no-board`,
-# `--provision-board`, and `--tracker-mode projects` all still PARSE and all
-# still exit 0 — they emit a one-line deprecation notice naming where the
-# step went, then are ignored (`--tracker-mode projects` additionally
-# coerces to `issues`).
+# `--yes/--no-required-check`, `--yes/--no-labels`, and `--yes/--no-board`
+# still PARSE and still exit 0 — they emit a one-line deprecation notice
+# naming where the step went, then are ignored.
 #
 # WHY THEY ARE RETAINED. NOT because of the in-repo call sites: those are
 # all greppable, and the very change that deprecated these flags rewrote
@@ -73,26 +71,35 @@
 # this repo. Deprecate-then-remove-on-a-named-release is the contract that
 # row implies.
 #
-# TWO WINDOWS, because these flags do not all belong to one story:
-#   1. THE ADR-0004 PROJECTS-ARM REMOVAL — `--provision-board` and
-#      `--tracker-mode projects`. Both are Projects-v2 tracker-backend
-#      surface, exactly what
-#      docs/adr/0004-issues-only-default-backend.md's removal release is
-#      scoped to. They ride it.
-#   2. THE PRE-SCOPE-DOWN COMPAT WINDOW (v0.20.0) — the three CONSENT
-#      pairs `--yes/--no-required-check`, `--yes/--no-labels`, and
-#      `--yes/--no-board`. These gated a branch-protection PATCH and a
-#      label loop that existed on the ISSUES-ONLY path too, so ADR-0004's
-#      Projects-arm removal would never logically cover them; pinning them
-#      to it would leave them permanent no-ops wearing a deprecation label,
-#      which is a contradiction, not a window. They are removed instead at
-#      **v0.20.0**, together with `eject.sh`'s pre-scope-down
-#      `required_check`/`label`/`board` read-compat handlers — ONE window,
-#      because both halves serve the same cohort: a repo initialised BEFORE
-#      the temperloop#796 scope-down, whose `.temperloop/config` may still
-#      record that API state and whose wrapper scripts may still pass these
-#      flags. Neither half can go while that cohort is still supported, and
-#      neither has a reason to outlive it.
+# ONE WINDOW REMAINS OPEN — THE PRE-SCOPE-DOWN COMPAT WINDOW (v0.20.0) —
+# the three CONSENT pairs `--yes/--no-required-check`, `--yes/--no-labels`,
+# and `--yes/--no-board`. These gated a branch-protection PATCH and a label
+# loop that existed on the ISSUES-ONLY path too, so they were never in
+# scope for the ADR-0004 Projects-arm removal below. They are removed
+# instead at **v0.20.0**, together with `eject.sh`'s pre-scope-down
+# `required_check`/`label`/`board` read-compat handlers — ONE window,
+# because both halves serve the same cohort: a repo initialised BEFORE
+# the temperloop#796 scope-down, whose `.temperloop/config` may still
+# record that API state and whose wrapper scripts may still pass these
+# flags. Neither half can go while that cohort is still supported, and
+# neither has a reason to outlive it.
+#
+# REMOVED FLAGS — the `--provision-*` board-provisioning flag and
+# `--tracker-mode` (temperloop#524, epic "retire the Projects-v2/GraphQL
+# arm"). THE ADR-0004 PROJECTS-ARM REMOVAL these two were always scoped to
+# (docs/adr/0004-issues-only-default-backend.md) has now arrived: ten
+# releases have passed since issues-only became the default, and every
+# registered board has run issues-only since 2026-07-18. Both flags are
+# GONE outright — they no longer parse. Each now hits a dedicated case arm
+# below that exits 2 with a message naming the removal (never the generic
+# "unknown arg" text), so an adopter whose script still passes one learns
+# *why*, not just that it broke. `--tracker-mode` is removed in full, not
+# reduced to a single accepted value: with the Projects-v2 value gone, an
+# `issues`-only accepted value would be dead surface wearing a flag's
+# clothing. (The board-provisioning flag is matched by its `--provision-*`
+# PREFIX rather than a single exact spelling, so the whole retired family
+# — not just its one historic name, still spelled out in bin/README.md's
+# compat table — is caught the same way.)
 #
 # The affirmative forms (`--yes-*`, which REQUEST an action that no longer
 # happens) still warn-and-continue rather than exiting non-zero. That is a
@@ -247,10 +254,12 @@
 #           [--dry-run]
 #
 #   Deprecated, still accepted, ignored (see "DEPRECATED FLAGS" above):
-#           [--tracker-mode issues|projects] [--provision-board]
 #           [--yes-required-check | --no-required-check]
 #           [--yes-labels | --no-labels]
 #           [--yes-board | --no-board]
+#
+#   Removed — no longer parse; each exits 2 naming the removal release
+#   (see "REMOVED FLAGS" above): --tracker-mode, --provision-*
 #
 #   --dir DIR             Git checkout to initialize. Default: current dir.
 #   --gh-repo OWNER/REPO  Forwarded to the probe; also the repo this
@@ -289,18 +298,28 @@
 #                          skips the first-epic offer entirely (zero gh
 #                          mutation calls of any kind).
 #
-#   Deprecated (parsed, reported, then ignored — each with a named removal
-#   window; see "DEPRECATED FLAGS" above for the windows and why removing
-#   one early would break un-greppable adopter callers):
-#   --tracker-mode MODE     "issues" (the only mode) or "projects", which
-#                          now reports its deprecation and coerces to
-#                          "issues". Any other value is still refused with
-#                          exit 2. [removed: ADR-0004 Projects-arm release]
-#   --provision-board       Legible no-op. A Projects-v2 board is never
+#   Removed (no longer parse — each exits 2 naming the removal release,
+#   rather than the generic "unknown arg" error; see "REMOVED FLAGS" above):
+#   --tracker-mode MODE     Used to be "issues" (the only mode this script
+#                          ever wrote) or "projects". With the Projects-v2
+#                          arm gone there is nothing left to select.
+#                          Provision a Projects-v2 board by hand — see
+#                          docs/features/install-cli.md's manual
+#                          Projects-v2 recipe.
+#                          [removed: the Projects-v2 removal release
+#                          (ADR 0004, epic #524)]
+#   --provision-*            Formerly a legible no-op (its one historic
+#                          spelling is still on record in bin/README.md's
+#                          compat table). A Projects-v2 board is never
 #                          provisioned by `init` — see
 #                          docs/features/install-cli.md's manual
 #                          Projects-v2 recipe for the by-hand path.
-#                          [removed: ADR-0004 Projects-arm release]
+#                          [removed: the Projects-v2 removal release
+#                          (ADR 0004, epic #524)]
+#
+#   Deprecated (parsed, reported, then ignored — each with a named removal
+#   window; see "DEPRECATED FLAGS" above for the windows and why removing
+#   one early would break un-greppable adopter callers):
 #   --yes-required-check / --no-required-check
 #   --yes-labels / --no-labels
 #   --yes-board / --no-board
@@ -367,10 +386,12 @@ usage: init.sh [--dir DIR] [--gh-repo OWNER/REPO] [--no-network] [--timeout SECS
                [--dry-run]
 
 deprecated (still accepted, reported, then ignored):
-               [--tracker-mode issues|projects] [--provision-board]
                [--yes-required-check | --no-required-check]
                [--yes-labels | --no-labels]
                [--yes-board | --no-board]
+
+removed (no longer parse; each exits 2 naming the removal release):
+               --tracker-mode, --provision-*
 EOF
 }
 
@@ -384,14 +405,23 @@ init_timeout=10
 branch="foundation-init/config"
 base=""
 remote="origin"
+# Fixed, no longer CLI-settable — issues-only is the sole tracker mode
+# `init` has ever written (temperloop#793), and the Projects-v2 arm that
+# made this a real choice is gone (temperloop#524, ADR 0004). Kept as an
+# internal value because build_config_json()/the Summary still render it.
 tracker_mode="issues"
 board_num=""
-provision_board=0
 consent_required_check=""
 consent_labels=""
 consent_board=""
 consent_first_epic=""
 dry_run=0
+
+# Named removal release for the two flags below — no version number is cut
+# yet (CHANGELOG.md's `## [Unreleased]` section), so this names the epic +
+# ADR per this item's own acceptance criteria, same wording as the
+# "REMOVED FLAGS" header note above and bin/README.md's compat table.
+removed_window_projects="the Projects-v2 removal release (ADR 0004, epic #524)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -402,9 +432,21 @@ while [ $# -gt 0 ]; do
     --branch) branch="${2:?--branch needs a value}"; shift 2 ;;
     --base) base="${2:?--base needs a value}"; shift 2 ;;
     --remote) remote="${2:?--remote needs a value}"; shift 2 ;;
-    --tracker-mode) tracker_mode="${2:?--tracker-mode needs a value}"; shift 2 ;;
+    --tracker-mode)
+      echo "init.sh: --tracker-mode was removed in $removed_window_projects — issues-only is now the only tracker backend \`init\` has ever written, so there is nothing left to select. Provision a Projects-v2 board by hand — see docs/features/install-cli.md's manual Projects-v2 recipe." >&2
+      usage >&2
+      exit 2
+      ;;
     --board) board_num="${2:?--board needs a value}"; shift 2 ;;
-    --provision-board) provision_board=1; shift ;;
+    --provision-*)
+      # Matched by PREFIX, not one exact spelling (its historic name is on
+      # record in bin/README.md's compat table) — the whole retired
+      # board-provisioning flag family hits this arm, and `$1` echoes back
+      # exactly what the caller typed.
+      echo "init.sh: '$1' was removed in $removed_window_projects — a Projects-v2 board is never provisioned by \`init\`; see docs/features/install-cli.md's manual Projects-v2 recipe for the by-hand path." >&2
+      usage >&2
+      exit 2
+      ;;
     --yes-required-check) consent_required_check=yes; shift ;;
     --no-required-check) consent_required_check=no; shift ;;
     --yes-labels) consent_labels=yes; shift ;;
@@ -418,14 +460,6 @@ while [ $# -gt 0 ]; do
     *) echo "init.sh: unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-
-case "$tracker_mode" in
-  issues|projects) ;;
-  *)
-    echo "init.sh: --tracker-mode must be 'issues' or 'projects' (got: $tracker_mode)" >&2
-    exit 2
-    ;;
-esac
 
 # ---------------------------------------------------------------------------
 # VALIDATE BEFORE ACTING — `--remote`, the sibling of the `--base` guard
@@ -481,8 +515,11 @@ _init_deprecated() {
   echo "init.sh: DEPRECATED — $1 is accepted but ignored (removed in $2): $3" >&2
 }
 
-# The two named removal windows — see "DEPRECATED FLAGS" in the header.
-deprecated_window_projects="the ADR-0004 Projects-arm removal release"
+# The one remaining named removal window — see "DEPRECATED FLAGS" in the
+# header. (The ADR-0004 Projects-arm removal window this used to share with
+# the board-provisioning flag family and --tracker-mode is gone: those two
+# no longer parse at all — see "REMOVED FLAGS" — so there is nothing left
+# to defer to it.)
 deprecated_window_consent="v0.20.0, the pre-scope-down compat window"
 
 deprecated_moved_required_check="the required \`checks\` status check is now applied by the first epic (claude/templates/first-epic-setup.md § Contract, item \`github-substrate\`; ADR 0010 § \"Structural congruence\"), which — unlike this step — refuses to arm a required status no producer will ever post. Run it via /assess --epic N -> /build."
@@ -498,14 +535,6 @@ deprecated_moved_board="board provisioning was dropped from \`init\` outright (t
 [ -n "$consent_board" ] \
   && _init_deprecated "--${consent_board}-board" \
        "$deprecated_window_consent" "$deprecated_moved_board"
-[ "$provision_board" -eq 1 ] \
-  && _init_deprecated "--provision-board" \
-       "$deprecated_window_projects" "$deprecated_moved_board"
-if [ "$tracker_mode" = "projects" ]; then
-  _init_deprecated "--tracker-mode projects" "$deprecated_window_projects" \
-    "coerced to 'issues', the sole init-time tracker mode (temperloop#793). $deprecated_moved_board"
-  tracker_mode="issues"
-fi
 
 # --- resolve --dir to a git toplevel (mirrors proposal-pr.sh's own
 # resolve_repo_dir, so both scripts agree on what "the repo" means) -------

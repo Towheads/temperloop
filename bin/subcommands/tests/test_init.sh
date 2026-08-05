@@ -11,14 +11,19 @@
 # job is bootstrap `.temperloop/config` (+ its proposal PR) -> offer/file the
 # first epic -> print the handoff -> stop. The flags that used to gate the
 # retired applies (--yes/--no-required-check, --yes/--no-labels,
-# --yes/--no-board, --provision-board, --tracker-mode projects) are RETAINED
-# as deprecated no-ops, each with a named removal window — an ADOPTER's own
-# wrapper script may pass any of them (VERSIONING.md's CLI-surface contract
-# row covers `bin/subcommands/*`), and init.sh exits 2 on an unknown arg, so
-# removing one early would hard-fail callers that cannot be enumerated from
-# inside this repo. Several cases below therefore assert the INVERSE of what
-# they once did: the flag parses, a deprecation notice fires, and ZERO
-# mutating gh calls result.
+# --yes/--no-board) are RETAINED as deprecated no-ops, each with a named
+# removal window — an ADOPTER's own wrapper script may pass any of them
+# (VERSIONING.md's CLI-surface contract row covers `bin/subcommands/*`), and
+# init.sh exits 2 on an unknown arg, so removing one early would hard-fail
+# callers that cannot be enumerated from inside this repo. Several cases
+# below therefore assert the INVERSE of what they once did: the flag
+# parses, a deprecation notice fires, and ZERO mutating gh calls result.
+#
+# REMOVAL (temperloop#524, epic "retire the Projects-v2/GraphQL arm"):
+# `--provision-board` and `--tracker-mode` — the two flags scoped to the
+# ADR-0004 Projects-arm removal — no longer parse at all. Each now exits
+# non-zero with an error naming the removal release, not the generic
+# "unknown arg" text.
 #
 # Covers:
 #   - --dry-run + --no-network: tree-only preview, zero gh calls of any
@@ -51,10 +56,11 @@
 #     `# board.<N>.project=<FILL IN ...>` placeholder before the apply step
 #     and never reassigned it, so a fully-consented run still shipped a
 #     dangling contract past a green suite.
-#   - --tracker-mode projects --provision-board --yes-board: all three are
-#     deprecated no-ops — ZERO `gh project create` calls, the notices fire,
-#     and tracker.mode is coerced to "issues"
-#   - --provision-board without --tracker-mode projects: same no-op
+#   - --yes-board (still deprecated, still parses): ZERO `gh project
+#     create` calls, the notice fires, tracker.mode stays "issues"
+#   - REMOVED-FLAGS REGRESSION (temperloop#524): --provision-board and
+#     --tracker-mode no longer parse at all — each exits non-zero, the
+#     error names the removal release, and zero gh calls of any kind fire
 #   - the scoped-down contract end to end: --yes-first-epic files the epic,
 #     applies zero API state, and hands off with the `next step:` marker
 #   - the decline floor is the durable re-offer pointer ALONE — no inline
@@ -73,7 +79,9 @@
 #   - PRODUCER NEVER OVERWRITTEN: a pre-existing (adopter-owned) producer at
 #     that path is byte-identical after `init`, and the proposal commit does
 #     not touch it at all
-#   - invalid --tracker-mode -> usage error, exit 2 (still refused)
+#   - --tracker-mode with a bogus value hits the SAME removed-flag error as
+#     a well-formed one, exit 2 — the old "must be issues or projects"
+#     validation is gone with the flag, not just relocated
 #   - --dir not a git repo -> exit 1
 #   - ARGUMENT VALIDATION ORDERING: --base and --remote are BOTH refused
 #     before the first git invocation that consumes them, so an
@@ -431,43 +439,72 @@ settled_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>
 echo "PASS: boards.conf integration proposes a COMPLETE rendered entry, carries it forward verbatim on a re-run (never dropping it), and reports nothing-to-do only once it is on the base tip"
 
 # =============================================================================
-# 6. --tracker-mode projects --provision-board --yes-board: ALL THREE are
-#    deprecated no-ops (temperloop#793 dropped board provisioning from init
-#    outright). The flags still parse — exit 0, never the exit-2 unknown-arg
-#    path — each reports its deprecation, ZERO `gh project create` calls
-#    fire, `projects` is coerced to `issues`, and the rendered entry is
-#    complete. This is the case that used to provision a board AND emit a
-#    `<FILL IN>` placeholder in the same run.
+# 6. --yes-board ALONE: still a deprecated no-op (temperloop#793 dropped
+#    board provisioning from init outright). The flag still parses — exit
+#    0, never the exit-2 unknown-arg path — reports its deprecation, ZERO
+#    `gh project create` calls fire, and the rendered entry stays complete.
+#    (Previously this case also carried --tracker-mode projects and
+#    --provision-board; those two no longer parse at all — see test 7.)
 # =============================================================================
 REPO6="$(new_fixture_repo repo6)"
 FAKE_PR_NUM=23 FAKE_OWNER=acme FAKE_PROJECT_NUM=99 \
-  run 0 --dir "$REPO6" --gh-repo acme/widget --tracker-mode projects --provision-board --yes-board
+  run 0 --dir "$REPO6" --gh-repo acme/widget --yes-board
 [ "$(call_count 'project create')" -eq 0 ] \
   || fail "board provisioning still fired: $(call_count 'project create') 'project create' call(s) (temperloop#793 dropped it)"
-assert_no_mutating_gh "--tracker-mode projects --provision-board --yes-board"
-echo "$out" | grep -q "DEPRECATED — --tracker-mode projects" \
-  || fail "--tracker-mode projects fired no deprecation notice (got: $out)"
-echo "$out" | grep -q "DEPRECATED — --provision-board" \
-  || fail "--provision-board fired no deprecation notice (got: $out)"
+assert_no_mutating_gh "--yes-board"
 echo "$out" | grep -q "DEPRECATED — --yes-board" \
   || fail "--yes-board fired no deprecation notice (got: $out)"
 cfg6="$(cat "$REPO6/.temperloop/config")"
 [ "$(jq -r '.tracker.mode' <<<"$cfg6")" = "issues" ] \
-  || fail "--tracker-mode projects was not coerced to issues (got: $(jq -r '.tracker.mode' <<<"$cfg6"))"
+  || fail "tracker.mode was not issues (got: $(jq -r '.tracker.mode' <<<"$cfg6"))"
 [ "$(jq '[.installs[] | select(.type=="board")] | length' <<<"$cfg6")" -eq 0 ] \
   || fail "a board install entry was recorded (got: $(jq -c '.installs' <<<"$cfg6"))"
-assert_complete_boards_entry "coerced projects run" "$(jq -r '.tracker.boards_conf_entry' <<<"$cfg6")" 1
-echo "PASS: --tracker-mode projects / --provision-board / --yes-board all parse, report their deprecation, provision nothing, and coerce to a complete issues-only entry"
+assert_complete_boards_entry "--yes-board run" "$(jq -r '.tracker.boards_conf_entry' <<<"$cfg6")" 1
+echo "PASS: --yes-board parses standalone, reports its deprecation, provisions nothing, and the rendered entry stays complete"
 
 # =============================================================================
-# 7. --provision-board WITHOUT --tracker-mode projects: same no-op
+# 7. REMOVED-FLAGS REGRESSION (temperloop#524, epic "retire the
+#    Projects-v2/GraphQL arm" — this item, init-cli-retire-projects-flags):
+#    the board-provisioning flag and --tracker-mode no longer parse AT
+#    ALL. Each exits non-zero (2, the CLI-usage-error code) with a message
+#    that NAMES THE REMOVAL — not the generic "unknown arg" text a caller
+#    would get for a flag that was never real — and zero gh calls of any
+#    kind fire, since parsing fails before any gh invocation is reachable.
+#    The board-provisioning flag is caught by a `--provision-*` PREFIX
+#    match (its one historic exact spelling lives on in bin/README.md's
+#    compat table, deliberately not repeated in init.sh's own source — see
+#    that script's "REMOVED FLAGS" header note) rather than one exact
+#    string, so a second case below pins that the whole family is caught,
+#    not just the one name this repo's own history happened to use.
 # =============================================================================
 REPO7="$(new_fixture_repo repo7)"
-FAKE_PR_NUM=24 run 0 --dir "$REPO7" --gh-repo acme/widget --provision-board --yes-board
-[ "$(call_count 'project create')" -eq 0 ] || fail "board provisioning fired on the issues-only path"
-echo "$out" | grep -q "DEPRECATED — --provision-board" \
-  || fail "--provision-board fired no deprecation notice (got: $out)"
-echo "PASS: --provision-board on the issues-only path is the same legible no-op"
+run 2 --dir "$REPO7" --gh-repo acme/widget --provision-board
+[ -s "$CALL_LOG" ] \
+  && fail "--provision-board: a gh call fired before the removed-flag error should have stopped parsing (log: $(cat "$CALL_LOG"))"
+echo "$out" | grep -qF "init.sh: unknown arg: --provision-board" \
+  && fail "--provision-board fell through to the generic unknown-arg error instead of naming its removal (got: $out)"
+echo "$out" | grep -qF "'--provision-board' was removed" \
+  || fail "--provision-board's error does not say it was removed, echoing back what was typed (got: $out)"
+echo "$out" | grep -qF "ADR 0004, epic #524" \
+  || fail "--provision-board's error does not name the removal release (ADR 0004, epic #524) (got: $out)"
+
+# A DIFFERENT member of the same retired flag family — proves the match is
+# a PREFIX, not one hardcoded exact string, and that the error echoes back
+# whatever the caller actually typed.
+run 2 --dir "$REPO7" --gh-repo acme/widget --provision-labels
+echo "$out" | grep -qF "'--provision-labels' was removed" \
+  || fail "a sibling --provision-* flag was not caught by the prefix match and named back correctly (got: $out)"
+
+run 2 --dir "$REPO7" --gh-repo acme/widget --tracker-mode issues
+[ -s "$CALL_LOG" ] \
+  && fail "--tracker-mode: a gh call fired before the removed-flag error should have stopped parsing (log: $(cat "$CALL_LOG"))"
+echo "$out" | grep -qF "init.sh: unknown arg: --tracker-mode" \
+  && fail "--tracker-mode fell through to the generic unknown-arg error instead of naming its removal (got: $out)"
+echo "$out" | grep -qi "tracker-mode.*removed" \
+  || fail "--tracker-mode's error does not say it was removed (got: $out)"
+echo "$out" | grep -qF "ADR 0004, epic #524" \
+  || fail "--tracker-mode's error does not name the removal release (ADR 0004, epic #524) (got: $out)"
+echo "PASS: the board-provisioning flag family (--provision-*) and --tracker-mode no longer parse; both exit 2 naming the removal release (ADR 0004, epic #524), echoing back what was typed, not the generic unknown-arg error"
 
 # =============================================================================
 # 8. THE SCOPED-DOWN CONTRACT END TO END (temperloop#796): --yes-first-epic
@@ -578,12 +615,18 @@ printf '%s\n' "$out" | grep -q '^prerequisite: ' \
 echo "PASS: the handoff names its \`temperloop install\` prerequisite when /assess isn't installed, and the 'next step:' marker itself is byte-identical in both states"
 
 # =============================================================================
-# 11. invalid --tracker-mode -> usage error, exit 2
+# 11. --tracker-mode with a BOGUS value hits the SAME removed-flag error as
+#     a well-formed one, exit 2. The old "must be issues or projects"
+#     validation is GONE along with the flag, not merely relocated behind
+#     it — this pins that a bogus value doesn't resurrect the old message.
 # =============================================================================
 REPO10="$(new_fixture_repo repo10)"
 run 2 --dir "$REPO10" --tracker-mode bogus
-echo "$out" | grep -qi "tracker-mode must be" || fail "invalid --tracker-mode error message unclear (got: $out)"
-echo "PASS: invalid --tracker-mode is refused with exit 2 (validation survives the deprecation)"
+echo "$out" | grep -qi "tracker-mode.*removed" \
+  || fail "bogus --tracker-mode value did not hit the removed-flag error (got: $out)"
+echo "$out" | grep -qi "must be 'issues' or 'projects'" \
+  && fail "the old --tracker-mode value-validation message resurfaced instead of the removed-flag error (got: $out)"
+echo "PASS: --tracker-mode is refused with exit 2 regardless of its value, and names the removal rather than the old value-validation message"
 
 # =============================================================================
 # 12. --dir not a git repo -> exit 1
