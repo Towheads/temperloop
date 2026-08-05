@@ -360,7 +360,7 @@ board_owner() {
 board_backend() {
   local v
   if v="$(_board_conf_get_layered "$1" backend)" && [ "$v" = "projects" ]; then
-    echo "board.sh: board $1 sets backend=projects in boards.conf, but the Projects-v2 arm was REMOVED (ADR 0004; deprecated v0.15.0, removed in the BREAKING release after v0.25.0). Migration path: check out v0.25.0 and run its workflows/scripts/board/migrate-board-to-issues.sh (deleted in this release per ADR 0004 ordering pin), then delete the board.$1.backend=projects line and pull again. There is NO configuration path back to Projects-v2 — an adopter who wants it forks board.sh." >&2
+    echo "board.sh: board $1 sets backend=projects in boards.conf, but the Projects-v2 arm was REMOVED (ADR 0004; deprecated v0.15.0). Migration path: check out v0.25.0 — the last release carrying workflows/scripts/board/migrate-board-to-issues.sh, which was deleted in v0.26.0 per ADR 0004's ordering pin — run that script against this board, then delete the board.$1.backend=projects line and pull again. There is NO configuration path back to Projects-v2 — an adopter who wants it forks board.sh." >&2
     return 1
   fi
   printf '%s\n' "issues"
