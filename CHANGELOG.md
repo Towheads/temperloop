@@ -14,6 +14,8 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-05
+
 ### Added
 
 - **`board_sub_issues` takes an optional state filter (temperloop#1119).**
@@ -166,6 +168,35 @@ reads that marker; a stranger greps for it before pulling.
   `board-mirror.sh` also gains the `lib/cache.sh` source line: temperloop#1118
   excluded it on the reasoning that it called only the always-live
   `board_resolve_item`, which this change invalidates. Not breaking.
+
+- **The README and the remaining docs surfaces carry the sandbox on-ramp
+  (temperloop#1115, temperloop#1133).** `README.md`'s `try` / `--demo` on-ramp
+  is replaced by a sandbox + first-epic walk, and that framing is propagated
+  across `AGENTS.md`, `bin/README.md`, `docs/pitch.md`,
+  `docs/cost-and-autonomy.md`, `docs/features/install-cli.md`, and
+  `docs/features/ci-install-tier2.md` so a stranger meets one on-ramp rather
+  than two competing ones. Docs only; no contract surface.
+
+### Fixed
+
+- **The issue read cache was unreachable from every board command
+  (temperloop#1118).** `board.sh`'s cached read arms gate on
+  `declare -F cache_read`, and `board.sh` never sources `cache.sh` itself — a
+  deliberate one-way layering that is what keeps `reconcile.sh` permanently on
+  the live arm. The consequence went unnoticed for weeks: **no production
+  command sourced it**, so `board.<N>.cache=on` was inert everywhere. The axis
+  could be turned on and every read would still take the live path, emitting
+  one "cache.sh is not sourced" notice per call. `worklist.sh` and
+  `pipeline-tick.sh` — the only two real callers of a cache-aware whole-board
+  read arm — now source it, guarded on file existence so a consuming repo that
+  vendors a subset still runs unchanged. `reconcile.sh` is deliberately still
+  **not** wired (a drift detector fed cached data is self-defeating), asserted
+  by a negative test. No behavior change with the axis off.
+  The accompanying test is the point: the gap survived because the existing
+  suite sourced `cache.sh` in its own process, proving the *mechanism* while
+  structurally unable to observe whether any command was *wired*. The new
+  `test_cache_command_wiring.sh` never sources it, and runs the real command
+  against a booby-trapped `gh` that fails if called.
 
 ## [0.25.0] - 2026-08-03
 
