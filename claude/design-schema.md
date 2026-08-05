@@ -87,7 +87,7 @@ per-brief `--brief` check).
 | 3 | **Alignment (guiding principles / routing)** | How the feature advances a guiding principle, and the kernel-vs-overlay routing decision with its rationale. | Advisory at design time (reviewed by architecture-reviewer); the routing call is checked downstream when code lands — a kernel-routed dimension implemented as overlay code (or vice versa) trips `workflows/scripts/kernel/check-kernel-manifest.sh`'s path classification at merge. |
 | 4 | **Contract seams (Produces / Consumes / Acceptance)** | The epic-shaped contract this design will materialize into (§ Materialization contract) — what the resulting work produces, what it depends on, and how completion is checked. | The brief-conformance lint's `--brief` mode (`workflows/scripts/validate-design-brief.sh`, temperloop#216, shipped 2026-07-11) checks disposition shape/presence only, not content quality; content-level enforcement is `/assess`'s epic-decomposition mode (foundation#526), which asks/fails when Produces/Consumes/Acceptance aren't well-formed enough to decompose without reshaping. |
 | 5 | **Command/mechanism shape** | A steps sketch for the resulting workflow (if the design produces a command or routine) — enough for a reviewer to judge shape, not the final grammar. | If the design produces a prose workflow spec (`claude/commands/*.md`), the `workflow-reviewer` agent covers every edit to it going forward — advisory, standing review, not merge-blocking. |
-| 6 | **Scalability & resource impact** | Token/API cost, and — when the design touches board writes — GraphQL budget impact; the cost tier stated up front. | Advisory — no dedicated gate for the write-up; a design that adds direct Projects-v2 queries is caught at implementation time by `board-adapter-guard.sh`'s prompt-on-raw-query backstop. |
+| 6 | **Scalability & resource impact** | Token/API cost, and — when the design touches board writes — how many extra tracker round-trips it adds; the cost tier stated up front. | Advisory — no dedicated gate for the write-up. |
 | 7 | **Maintainability** | Coupling this design introduces (which gates/contracts must move together), and whether it introduces a new live-capture rule needing a backstop. | `workflows/scripts/validate-capture-backstop.sh` — CI-enforced; fails the build if a new capture/backstop pair is only half-shipped. |
 | 8 | **Testability** | What is mechanically gated vs. honestly advisory-only. | `scripts/quality-gates.sh` / the `KERNEL_GATES` set — the repo-wide static gate list every PR runs. |
 | 9 | **Telemetry & measurement proxies** | Cheapest-first proxies for whether the feature worked, per the existing measurement-proxies convention. | `claude/measurement-proxies.md`'s contract, backed by the emit/validate pairs (`emit-command-run.sh`/`validate-command-run-emit.sh`, `emit-issue-touch.sh`/`validate-issue-touch-emit.sh`) when the design's proxies ride those paths; a genuinely new proxy stream still needs Capture/Backstop pairing (dimension 7). |
@@ -489,7 +489,7 @@ disposition: n/a — this design adds no new command, only a schema change
 
 ## 6. Scalability & resource impact
 disposition: filled
-<cost tier; GraphQL/token impact>
+<cost tier; API/token impact>
 
 ## 7. Maintainability
 disposition: filled

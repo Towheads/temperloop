@@ -54,8 +54,8 @@ mkdir -p "$REPO"
 git init -q --initial-branch=main "$REPO"
 echo "pin" >"$REPO/.kernel-pin"
 mkdir -p "$REPO/kernel/claude/hooks" "$REPO/claude/hooks" "$REPO/overlay-only"
-echo "vendored" >"$REPO/kernel/claude/hooks/board-adapter-guard.sh"
-ln -s ../../kernel/claude/hooks/board-adapter-guard.sh "$REPO/claude/hooks/board-adapter-guard.sh"
+echo "vendored" >"$REPO/kernel/claude/hooks/git-stale-branch-guard.sh"
+ln -s ../../kernel/claude/hooks/git-stale-branch-guard.sh "$REPO/claude/hooks/git-stale-branch-guard.sh"
 # Directory-level compat symlink (mirrors claude/agents -> ../kernel/claude/agents).
 ln -s kernel/claude/hooks "$REPO/hooks-dirlink"
 # The EXACT foundation#1070 / issue #130 shape: a build-scripts dir presented at
@@ -81,9 +81,9 @@ git -C "$PLAIN" commit -q --allow-empty -m init
 REPO_RP="$(cd "$REPO" && pwd -P)"
 
 # --- direct kernel/... path (existing file) -> ask -------------------------
-out="$(run_hook "$REPO" Edit "kernel/claude/hooks/board-adapter-guard.sh")"
+out="$(run_hook "$REPO" Edit "kernel/claude/hooks/git-stale-branch-guard.sh")"
 check "direct kernel/ path (existing file) -> ask" ask "$out"
-grep -q "$REPO_RP/kernel/claude/hooks/board-adapter-guard.sh" <<<"$out" \
+grep -q "$REPO_RP/kernel/claude/hooks/git-stale-branch-guard.sh" <<<"$out" \
   || { fail=$((fail + 1)); printf '  ✗ ask reason does not name the resolved path\n'; }
 
 # --- direct kernel/... path (new file, existing parent dir) -> ask --------
@@ -95,9 +95,9 @@ out="$(run_hook "$REPO" Write "kernel/claude/hooks/nested/new/deep.sh")"
 check "direct kernel/ path (new nested dirs) -> ask" ask "$out"
 
 # --- pre-split compat symlink, FILE-level -> ask ---------------------------
-out="$(run_hook "$REPO" Edit "claude/hooks/board-adapter-guard.sh")"
+out="$(run_hook "$REPO" Edit "claude/hooks/git-stale-branch-guard.sh")"
 check "compat symlink (file-level) resolving into kernel/ -> ask" ask "$out"
-grep -q "$REPO_RP/kernel/claude/hooks/board-adapter-guard.sh" <<<"$out" \
+grep -q "$REPO_RP/kernel/claude/hooks/git-stale-branch-guard.sh" <<<"$out" \
   || { fail=$((fail + 1)); printf '  ✗ ask reason does not name the RESOLVED (not symlink) path\n'; }
 
 # --- pre-split compat symlink, DIRECTORY-level, new file inside -> ask ----
@@ -122,7 +122,7 @@ grep -q "$REPO_RP/kernel/workflows/scripts/build/pipeline-cron.sh" <<<"$out" \
 
 # --- MultiEdit shape (edits[].file_path) -> ask ----------------------------
 json=$(jq -cn --arg cwd "$REPO" \
-  '{tool_name:"MultiEdit", tool_input:{edits:[{file_path:"kernel/claude/hooks/board-adapter-guard.sh"}]}, cwd:$cwd}')
+  '{tool_name:"MultiEdit", tool_input:{edits:[{file_path:"kernel/claude/hooks/git-stale-branch-guard.sh"}]}, cwd:$cwd}')
 out="$(cd "$REPO" && bash "$HOOK" <<<"$json")"
 check "MultiEdit edits[].file_path into kernel/ -> ask" ask "$out"
 
@@ -140,7 +140,7 @@ check "no .kernel-pin at repo root -> inert/silent" silent "$out"
 # --- KERNEL_EDIT_ACK=1 bypass -> silent, but a stderr note is logged -------
 err="$TMP/stderr-ack.txt"
 out="$( ( cd "$REPO" && KERNEL_EDIT_ACK=1 bash "$HOOK" \
-    <<<"$(jq -cn --arg cwd "$REPO" '{tool_name:"Edit", tool_input:{file_path:"kernel/claude/hooks/board-adapter-guard.sh"}, cwd:$cwd}')" \
+    <<<"$(jq -cn --arg cwd "$REPO" '{tool_name:"Edit", tool_input:{file_path:"kernel/claude/hooks/git-stale-branch-guard.sh"}, cwd:$cwd}')" \
     2>"$err" ) )"
 check "KERNEL_EDIT_ACK=1 bypasses the ask -> silent" silent "$out"
 grep -qi "bypass" "$err" || { fail=$((fail + 1)); printf '  ✗ KERNEL_EDIT_ACK bypass produced no stderr note (stderr: %s)\n' "$(cat "$err")"; }
@@ -150,7 +150,7 @@ echo "PASS: KERNEL_EDIT_ACK=1 bypasses silently and logs a stderr note"
 touch "$REPO/.build-guard"
 err2="$TMP/stderr-marker.txt"
 out="$( ( cd "$REPO" && bash "$HOOK" \
-    <<<"$(jq -cn --arg cwd "$REPO" '{tool_name:"Edit", tool_input:{file_path:"kernel/claude/hooks/board-adapter-guard.sh"}, cwd:$cwd}')" \
+    <<<"$(jq -cn --arg cwd "$REPO" '{tool_name:"Edit", tool_input:{file_path:"kernel/claude/hooks/git-stale-branch-guard.sh"}, cwd:$cwd}')" \
     2>"$err2" ) )"
 check ".build-guard marker bypasses the ask -> silent" silent "$out"
 grep -qi "bypass" "$err2" || { fail=$((fail + 1)); printf '  ✗ .build-guard bypass produced no stderr note (stderr: %s)\n' "$(cat "$err2")"; }
@@ -158,11 +158,11 @@ echo "PASS: .build-guard marker bypasses silently and logs a stderr note"
 rm -f "$REPO/.build-guard"
 
 # --- EVAL_RUN suppresses the ask (even with no bypass) ----------------------
-out="$(run_hook "$REPO" Edit "kernel/claude/hooks/board-adapter-guard.sh" EVAL_RUN=1)"
+out="$(run_hook "$REPO" Edit "kernel/claude/hooks/git-stale-branch-guard.sh" EVAL_RUN=1)"
 check "EVAL_RUN=1 suppresses the ask -> silent" silent "$out"
 
 # --- non Edit/Write/MultiEdit tool -> silent --------------------------------
-out="$(run_hook "$REPO" Bash "kernel/claude/hooks/board-adapter-guard.sh")"
+out="$(run_hook "$REPO" Bash "kernel/claude/hooks/git-stale-branch-guard.sh")"
 check "non-Edit/Write/MultiEdit tool_name -> silent" silent "$out"
 
 # --- fail-open: malformed input ---------------------------------------------
@@ -183,7 +183,7 @@ for b in cat git dirname basename readlink mkdir date; do
   bp="$(command -v "$b")"
   [ -n "$bp" ] && ln -sf "$bp" "$NOJQ_BIN/$b"
 done
-json=$(jq -cn --arg cwd "$REPO" '{tool_name:"Edit", tool_input:{file_path:"kernel/claude/hooks/board-adapter-guard.sh"}, cwd:$cwd}')
+json=$(jq -cn --arg cwd "$REPO" '{tool_name:"Edit", tool_input:{file_path:"kernel/claude/hooks/git-stale-branch-guard.sh"}, cwd:$cwd}')
 out="$(cd "$REPO" && printf '%s' "$json" | PATH="$NOJQ_BIN" "$BASH_BIN" "$HOOK")"
 rc=$?
 [ "$rc" -eq 0 ] || { fail=$((fail + 1)); printf '  ✗ jq-missing: exit=%s (want 0)\n' "$rc"; }

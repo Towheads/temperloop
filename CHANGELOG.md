@@ -60,6 +60,43 @@ reads that marker; a stranger greps for it before pulling.
   "board 7 is the sole in-code issues-only exception" language, are retired
   here explicitly. Board 7 is no longer an exception to anything.
 
+- **BREAKING — `claude/hooks/board-adapter-guard.sh` is removed**, together with
+  every kernel-plane rule that taught the two-backend model (epic #524). The
+  hook existed to prompt on a direct `gh project` / Projects GraphQL call and
+  protect the shared 5,000-pt/hr budget; with the Projects arm gone there is no
+  such call to intercept and no such budget to protect. An installed profile
+  that registers this hook by path in its `settings.json` must **delete that
+  registration** — a `PreToolUse` entry pointing at a missing script is a
+  per-command error. `EVAL_DENIAL_LOG` (its eval-mode denial log) leaves the
+  setting registry; `EVAL_RUN` survives, now owned by
+  `claude/hooks/eval-guard.sh`, and still self-suppresses every side-channel
+  hook.
+
+  **The adapter discipline itself is unchanged and still load-bearing.**
+  `claude/CLAUDE.kernel.md` § "GitHub Projects boards — always via the board.sh
+  adapter" is renamed to § "**Board reads and writes — always via the board.sh
+  adapter**" and rewritten for one backend, keeping the rule and restating its
+  rationale: the adapter owns the `fnd:` label encoding (a hand-rolled
+  `gh issue close` leaves a stale `fnd:status:*` label and claim stamp behind)
+  and the cross-process item cache. What went with the arm: the GraphQL-budget
+  clause, the `board_bust_structure`-after-a-structural-edit rule, the
+  structure/state cache-split paragraph, the guard-hook sentence, and the board
+  glossary's org-project-URL column plus its "board ids and URL numbers are
+  swapped for 3 and 4" warning.
+
+  **Two corrected instructions, not just prose tidying.** § "Board hygiene is
+  part of the gate" and `/build` 4d/4e + `/fix` no longer describe a
+  backend-conditional Done write: **nothing moves an item to Done on its own**,
+  so the explicit `board_set_status … Done` is the primary mechanism on every
+  board. `/build`'s epic-close step previously said to *skip* that write and
+  rely on the close→Done cascade — on the surviving backend that left the epic
+  wearing its status label, so it now issues the write. Likewise the
+  `project` gh scope is **never** checked (`/build` Step 0, `/triage` Step 0.2):
+  the default `repo` scope runs everything, and requiring `project` would halt
+  an otherwise-valid run. `Seq` writes are unconditionally skipped rather than
+  guarded on a backend probe that can now only answer one way (ADR 0006).
+  `board_set_status` takes an `ISSUE_*` item id, not `PVTI_*`.
+
 ## [0.27.0] - 2026-08-05 — BREAKING
 
 ### Migration — read this first

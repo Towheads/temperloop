@@ -24,8 +24,8 @@
 # guard leaves silent.
 #
 # VERDICT: ask, never deny — a deliberate cross-repo action is one confirmation
-# away, never hard-blocked (same philosophy as board-adapter-guard.sh /
-# git-stale-branch-guard.sh / subtree-edit-guard.sh).
+# away, never hard-blocked (same philosophy as git-stale-branch-guard.sh /
+# subtree-edit-guard.sh).
 #
 # EVAL_RUN: exits 0 silently — an unanswerable interactive `ask` would hang a
 # headless eval run, and a lane crossing is not a scored finding.

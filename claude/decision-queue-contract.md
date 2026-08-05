@@ -72,8 +72,8 @@ gh label create decision \
 
 ### Saved board view (operator surface)
 
-The operator's queue surface is a GitHub Issues saved search — not a Projects-v2
-field or Status column:
+The operator's queue surface is a GitHub Issues saved search — not a board field
+or Status column:
 
 ```
 is:open assignee:@me label:decision

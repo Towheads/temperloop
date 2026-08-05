@@ -4,8 +4,7 @@
 # PURPOSE: hooks source this file to enforce a uniform early-exit when the
 # EVAL_RUN environment variable is set (truthy, i.e. non-empty).  An eval run
 # must not bleed into production pipelines — no SessionEnd stubs, no vault
-# drain, no AskUserQuestion telemetry, no OTel records.  Board-adapter guard
-# separately downgrades from *ask* to *record-and-deny* (see board-adapter-guard.sh).
+# drain, no AskUserQuestion telemetry, no OTel records.
 #
 # USAGE (in a hook, near the top, BEFORE any side-effectful code):
 #   # shellcheck source=eval-guard.sh

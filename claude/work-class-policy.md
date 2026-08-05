@@ -68,8 +68,8 @@ machine-readable.
 Work-class is carried as a **GitHub repo label** (`Operational` / `Foundational`),
 set at `/triage`. This is consistent with the existing `spike` and
 `needs-clarification` labels, works identically on every registered board (stageFind 3,
-foundation 4, ssmobile 5, subsetwiki 6) with no per-board Projects-v2 field
-provisioning, and requires no extra GraphQL reads beyond what the board adapter
+foundation 4, ssmobile 5, subsetwiki 6, temperloop 7) with no per-board field
+provisioning, and requires no extra reads beyond what the board adapter
 already performs.
 
 Labels are created on each board repo as a one-time setup step (idempotent

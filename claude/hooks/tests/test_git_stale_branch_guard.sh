@@ -151,7 +151,7 @@ mkdir -p "$TMP/work_stale18/.claude/hooks"
 cat >"$TMP/work_stale18/.claude/settings.json" <<'JSON'
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "_comment": "Repo-local hooks ONLY. Global hooks (session drain/log, board-adapter-guard, git-stale-branch-guard) are inherited from ~/.claude/settings.json and must NOT be re-declared here (would double-fire).",
+  "_comment": "Repo-local hooks ONLY. Global hooks (session drain/log, git-stale-branch-guard) are inherited from ~/.claude/settings.json and must NOT be re-declared here (would double-fire).",
   "hooks": {
     "PreToolUse": [
       {
