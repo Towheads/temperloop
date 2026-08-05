@@ -148,9 +148,9 @@ The worked examples all began as repeated frictions and climbed to hooks:
 - [`claude/hooks/write-lane-guard.sh`](../claude/hooks/write-lane-guard.sh) —
   backs "working-tree ownership"; born from a real session stepping on a peer's
   checkout.
-- [`claude/hooks/board-adapter-guard.sh`](../claude/hooks/board-adapter-guard.sh)
-  — backs "adapter-first"; born from a raw GraphQL query draining the shared
-  budget in a real session.
+- [`claude/hooks/subtree-edit-guard.sh`](../claude/hooks/subtree-edit-guard.sh)
+  — backs "edit the kernel upstream, not the vendored copy"; born from a
+  downstream checkout silently forking a vendored kernel file.
 
 Each is a *backstop*, not a replacement for the habit — it fails open and only
 nudges. The top layer of the ladder is a hard invariant (stage 6).

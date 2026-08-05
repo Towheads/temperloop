@@ -112,7 +112,7 @@ time.
 
 - Write-isolation guard: `claude/hooks/write-lane-guard.sh`
 - Stale-branch guard: `claude/hooks/git-stale-branch-guard.sh`
-- Shared-budget guard: `claude/hooks/board-adapter-guard.sh`
+- Subtree-edit guard: `claude/hooks/subtree-edit-guard.sh`
 
 ### 5. Climb the maturity ladder on evidence
 
@@ -123,10 +123,10 @@ invariant. Each step up the ladder is a response to an observed leak, not a
 guess at what might leak.
 
 - `git-stale-branch-guard.sh` backing the "fetch ground truth before
-  building" habit, and `board-adapter-guard.sh` backing the
-  "adapter-first" habit — both described as backstops, not replacements,
-  in `claude/CLAUDE.kernel.md` §§ "Fetch ground truth before building" and
-  "GitHub Projects boards"
+  building" habit, and `write-lane-guard.sh` backing the working-tree
+  ownership habit — both described as backstops, not replacements, in
+  `claude/CLAUDE.kernel.md` §§ "Fetch ground truth before building" and
+  "Working-tree ownership"
 - The hardest layer — a CI-enforced invariant that fails the build outright:
   `workflows/scripts/validate-capture-backstop.sh`
 
@@ -160,23 +160,21 @@ anticipate.
 ### 8. Subtraction over mechanism
 
 The default instinct is to fit the existing mechanism, or remove a
-redundant one, before adding a new one. On a Projects-v2 board a card's
-status is driven by the same GitHub close-cascade that already fires on
-merge, rather than a second write nothing else needs; a merge queue prefers
-GitHub's own native queue and only falls back to hand-rolled mechanics on a
-repo tier where the native feature isn't provisionable at all.
+redundant one, before adding a new one. A merge queue prefers GitHub's own
+native queue and only falls back to hand-rolled mechanics on a repo tier
+where the native feature isn't provisionable at all; the whole Projects-v2
+adapter arm was removed once the issues-only backend covered the same job,
+rather than kept alive as a second path to maintain.
 
 The principle also says when *not* to subtract: where no existing mechanism
 covers the job, the write is not redundant. The issues-only backend has no
-close-cascade and nowhere to hook one, so there the adapter's Done write is
-the primary mechanism rather than a removable second write — and the rule
-below is stated per backend rather than as a blanket "rely on the cascade".
+card-moving automation and nowhere to hook one, so the adapter's Done write
+is the primary mechanism rather than a removable second write.
 
 - The redundant-step rule, in prose: `claude/CLAUDE.kernel.md` §§ "Trust
-  confirmed state" and "Board hygiene is part of the gate" (Projects-v2: "a
-  manual `board_set_status … Done` is a redundant backstop, not the primary
-  mechanism"; issues-only: the inverse — see
-  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade)
+  confirmed state" and "Board hygiene is part of the gate" — where
+  `board_set_status … Done` is the primary mechanism, owed by whoever
+  closes the item (see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`)
 - The fallback-only-when-native-is-absent seam: `docs/managed-merge-queue.md`,
   `workflows/scripts/build/gate.sh`
 
@@ -205,16 +203,23 @@ stopped emitting is caught rather than assumed to still be reporting.
 
 ### 11. Budgets are first-class
 
-API points, tokens, and a 5-hour usage quota are metered resources with
-their own gates, not assumed infinite. A cache TTL protects a shared
-GraphQL budget from a burst of reads; a quota gate reads the live
-rate-limit snapshot and pauses a run rather than exhausting the window.
+API calls, tokens, and a 5-hour usage quota are metered resources with
+their own gates, not assumed infinite. A quota gate reads the live
+rate-limit snapshot and pauses a run rather than exhausting the window; a
+durable issue-corpus store keeps a repeated read off the network entirely.
+
+Budgets also merge, which is its own hazard: removing the Projects-v2 arm
+collapsed two independently-metered API surfaces into one shared REST
+bucket, so a caller that was once moved onto a *different* budget for
+relief is now back on the same one. With no second bucket to route to, a
+drain has to be fixed at its source.
 
 - The quota decision script (fail-open, never sleeps itself):
   `workflows/scripts/build/quota-gate.sh`
-- The board's structure/state cache-TTL split protecting the shared GraphQL
-  budget: `workflows/scripts/board/lib/board.sh` (see its cache-TTL
-  comments), `workflows/scripts/board/lib/cache.sh`
+- The durable issue-corpus store, the one cache in front of a board read:
+  `workflows/scripts/board/lib/cache.sh` (and its `CACHE-STORE.md`)
+- The worked example of a merged budget:
+  `docs/failure-modes/02-rest-budget-exhaustion.md`
 
 ### 12. Capture at source, drain on schedule
 

@@ -60,6 +60,35 @@ reads that marker; a stranger greps for it before pulling.
   "board 7 is the sole in-code issues-only exception" language, are retired
   here explicitly. Board 7 is no longer an exception to anything.
 
+### Changed
+
+- **The stranger-facing docs plane now teaches one backend** (epic #524).
+  `README.md`, `AGENTS.md`, `docs/architecture.md`, and the affected feature
+  docs no longer present Projects-v2 as an available backend or the
+  5,000-pt/hr GraphQL budget as a constraint a reader plans around.
+  `docs/features/board-adapter.md` is rewritten for a single backend — its
+  GraphQL-budget, structure/state cache-split, and dual-arm sections are
+  removed rather than hedged — and now states plainly that board reads are
+  live REST calls sharing one budget with CI polling and issue/PR porcelain.
+  `docs/features/gh-perf.md`, `build-machinery.md`, `merge-gate.md`,
+  `branch-hygiene.md`, `managed-merge-queue.md`, and `docs/principles.md`
+  are retargeted onto that merged-budget framing, whose consequence — no
+  second bucket left to route a noisy caller onto — is the subject of
+  `docs/failure-modes/02-rest-budget-exhaustion.md`.
+
+### Removed
+
+- **`docs/features/install-cli.md` § "Manual Projects-v2 recipe" is deleted.**
+  It walked an adopter through `gh project create` plus a hand-written
+  `boards.conf` entry — a path that now reaches no code, since the adapter has
+  no Projects arm to read it. The surrounding § Tracker mode states plainly
+  that after this release there is **no configuration path back to
+  Projects-v2** and that an adopter who wants it forks `board.sh`, and carries
+  the v0.25.0 migration pointer. `bin/subcommands/init.sh`'s `--tracker-mode`
+  and `--provision-*` rejection messages (and `bin/README.md`'s compat note)
+  are repointed at that statement rather than the deleted recipe, so no
+  user-visible error text names a section that no longer exists.
+
 ## [0.27.0] - 2026-08-05 — BREAKING
 
 ### Migration — read this first

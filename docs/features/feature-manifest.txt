@@ -75,7 +75,7 @@ none docs/features/*
 workshop claude/design-schema.md
 workshop claude/commands/workshop.md
 
-# ── board-adapter — Projects-v2/issues-only board adapter + board commands ──
+# ── board-adapter — issues-only board adapter + board commands ─────────────
 board-adapter workflows/scripts/board/*
 board-adapter workflows/scripts/board-sync-drift-check.sh
 board-adapter workflows/scripts/board-consumer-shellcheck.sh

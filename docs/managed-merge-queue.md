@@ -56,8 +56,9 @@ policy (`claude/commands/build.md`), not gate.sh's concern.
 2. Resolve the **updated** head SHA (never poll a stale one — mirrors
    `ci-poll.sh`'s own guard against exactly that bug).
 3. SHA-pinned CI re-poll (`repos/<nwo>/commits/<sha>/check-runs` — REST,
-   deliberately not `gh pr checks --watch`, which is GraphQL and a shared-
-   budget concern) until every check-run completes or the deadline passes.
+   deliberately not `gh pr checks --watch`, whose cost is flat per query
+   regardless of how little changed) until every check-run completes or the
+   deadline passes.
 4. **Green** → merge (`gh pr merge --merge --delete-branch` — a direct
    merge, not `--auto`; mergeability was already established by the
    re-poll, so there's nothing left to queue). **Red** → the PR is

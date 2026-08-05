@@ -189,8 +189,9 @@ arrived (epic #524). Neither one parses any more; each exits non-zero with
 a message naming the removal, not a bare "unknown flag" error (`init.sh`
 catches `--provision-board` via a `--provision-*` prefix match, so the
 whole retired board-provisioning flag family is refused, not just this one
-historic spelling). Provision a Projects-v2 board by hand instead — see
-§ "Manual Projects-v2 recipe" in
+historic spelling). There is no replacement and no way back: the adapter
+has no Projects code path left to reach, so a Projects-v2 board cannot be
+provisioned by hand either — see § Tracker mode in
 [the install-cli feature doc](../docs/features/install-cli.md).
 
 `foundation <subcommand>` does **not** run any of this ladder — the compat

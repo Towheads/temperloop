@@ -102,41 +102,36 @@ whether anything would ever post it (the self-brick the epic's structural
 congruence rule makes unreachable), and the `fnd:`/pipeline labels are
 already created lazily at point of use by the issues-only tracker backend,
 so pre-creating them bought nothing. The flags that gated those applies
-(`--yes/--no-required-check`, `--yes/--no-labels`, `--yes/--no-board`,
-`--provision-board`, `--tracker-mode projects`) are **retained as deprecated
-no-ops**: each still parses, prints one line naming where its step went, and
-is ignored. Nothing that passes them breaks.
+(`--yes/--no-required-check`, `--yes/--no-labels`, `--yes/--no-board`) are
+**retained as deprecated no-ops**: each still parses, prints one line naming
+where its step went, and is ignored. Nothing that passes them breaks.
+`--tracker-mode` and the `--provision-*` family went further — they no
+longer parse at all, and each exits 2 naming the removal release.
 
-**Tracker mode.** Issues-only (`board.<N>.backend=issues`) is now the sole
-init-time tracker mode (temperloop#793); `init` never provisions a GitHub
-Projects-v2 board.
+**Tracker mode: there is only one, and there is no way back.** Issues-only
+(`board.<N>.backend=issues`) is the sole tracker backend — not merely the
+sole *init-time* default. The Projects-v2 arm was deprecated by ADR 0004
+and **removed outright** in the Projects-v2 removal release (epic
+temperloop#524), so after this release there is **no configuration path
+back to Projects-v2**: no flag, no `boards.conf` axis, and no environment
+variable restores it. `init` cannot provision a Projects board, and neither
+can anything else in this repo.
 
-**Manual Projects-v2 recipe.** The capability is redirected, not removed —
-to run a real Projects board, do it by hand, once:
+Provisioning one by hand no longer helps either, and it is worth being
+precise about why: the adapter has no Projects code path left to reach. A
+stale `board.<N>.backend=projects` line in an operator's `boards.conf` is
+**refused** rather than silently downgraded — `board_backend` exits
+non-zero and names the migration path, so a conf line asking for a backend
+that no longer exists fails loudly instead of quietly doing something else.
+An adopter who genuinely wants Projects-v2 forks `board.sh` and maintains
+that arm themselves.
 
-1. Create the project: `gh project create --owner <owner> --title "<repo>
-   board"`. Note the project number in the URL it prints
-   (`.../projects/<N>`).
-2. Hand-write the board's axes into `workflows/scripts/board/boards.conf`,
-   replacing the `backend=issues` line `init` proposed for that board id:
-
-   ```conf
-   board.1.repo=<owner>/<repo>
-   board.1.owner=<owner>
-   board.1.project=<N>
-   ```
-
-3. Re-run whatever board command you were reaching for; the adapter reads
-   `boards.conf` directly.
-
-Doing it by hand is a deliberate trade. The retired automated arm rendered
-its `boards.conf` entry *before* the apply step that learned the project
-number, and never went back to fill it in — so even a fully consented,
-successful run shipped a commented `board.<N>.project=<FILL IN …>`
-placeholder. Because it was a comment, the adapter's `^board\.N\.axis=`
-lookup did not see it and silently fell through to a built-in default owner
-rather than failing loudly. A three-line hand edit you can read is better
-than an automated one that quietly emits a broken contract.
+If you are crossing over from a Projects board that still holds live state,
+the migration is ordered and time-boxed: check out **v0.25.0** — the last
+release carrying `workflows/scripts/board/migrate-board-to-issues.sh`,
+which was deleted in v0.26.0 per ADR 0004's ordering pin — run that script
+against the board, then delete the `backend=projects` line and pull
+forward.
 
 **The safety contract.** The mutating step in the ladder is exactly one
 (`try --demo`), and it is bounded three separate ways: a spend guard prints
