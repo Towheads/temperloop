@@ -6,12 +6,21 @@
 #   DO NOT hand-edit the installed copy at ~/.local/bin/gh — edit this file and re-install.
 #
 # WHY THIS EXISTS
-#   The shared Projects-v2 GraphQL budget (5,000 pts/hr) has repeatedly drained with
-#   no per-call attribution (foundation #53/#93/#141). An earlier ad-hoc shim was
-#   removed by #62 on the premise usage had flattened; it hadn't, the budget
-#   re-drained the SAME day, and the removal took the only forward log with it.
-#   This is the durable, tracked replacement: a `make` target installs it and a
-#   matching target removes it, so it can never silently vanish again.
+#   Originally: the shared Projects-v2 GraphQL budget (5,000 pts/hr) had
+#   repeatedly drained with no per-call attribution (foundation #53/#93/#141).
+#   An earlier ad-hoc shim was removed by #62 on the premise usage had
+#   flattened; it hadn't, the budget re-drained the SAME day, and the removal
+#   took the only forward log with it. This is the durable, tracked
+#   replacement: a `make` target installs it and a matching target removes
+#   it, so it can never silently vanish again.
+#
+#   Post-removal of the Projects-v2/GraphQL board-adapter arm (temperloop#524),
+#   every registered board is issues-only and the tracker path spends only
+#   REST's own 5,000-pt/hr `core` bucket — THAT is now the budget this shim
+#   exists to keep attributable. A raw `gh api graphql` call from OUTSIDE the
+#   tracker path (an operator running one by hand, or an unmigrated script) is
+#   still worth classifying on its own terms, so the graphql/rest/porcelain
+#   split below is unchanged — only which budget is load-bearing has changed.
 #
 #   v2 (F#988) adds DURATION + ATTRIBUTION so the before/after measurement round
 #   for the git-bug tracker evaluation has a real "before" window. The suspicion
