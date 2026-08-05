@@ -43,6 +43,17 @@ reads that marker; a stranger greps for it before pulling.
   `{"fields":[]}`), so a caller reading them under `set -u` is unaffected.
   Item ids are `ISSUE_<n>`; a `PVTI_*` id is now rejected loud.
 
+  **Soak evidence.** ADR 0004 required "at least one release of soak" between
+  deprecating the Projects-v2 arm and removing it
+  (`docs/adr/0004-issues-only-default-backend.md` § Decision). The arm was
+  deprecated in **v0.15.0** (2026-07-23); all five registered boards — the
+  four fleet repos (ssmobile, stageFind, subsetwiki, foundation) plus the
+  kernel's own tracker (board 7) — have run issues-only since **2026-07-18**.
+  **Ten releases** (v0.16.0 through v0.25.0) shipped between the deprecation
+  and the v0.26.0 removal that actually deleted the Projects-v2 code path —
+  ten times the one-release bar, with zero live Projects users observed
+  during that window.
+
   **Migration — read this before pulling.** There is **no configuration path
   back** to Projects-v2; an adopter who wants it forks `board.sh`. A
   `boards.conf` line reading `board.<N>.backend=projects` **hard-fails** with a
@@ -59,6 +70,7 @@ reads that marker; a stranger greps for it before pulling.
   documented in advance: the built-in map's **additive-only** rule, and the
   "board 7 is the sole in-code issues-only exception" language, are retired
   here explicitly. Board 7 is no longer an exception to anything.
+
 ### Fixed
 
 - **The retro-judge seam refuses legibly instead of exiting success having
