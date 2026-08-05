@@ -47,6 +47,12 @@
 # absent, so checks 2 and 3 report a legible SKIP line for the affected rows
 # instead of failing — mirroring quality-gates.sh's own SKIPPED_KERNEL_GATES
 # convention. In the kernel's own checkout (no `.kernel-pin`) both are hard.
+# Check 4 honors the SAME exemption (temperloop#1144): a row check 3 just
+# reported as `[skip]` is not this tree's row to hold reachable either, and
+# failing it would tell the consumer to edit a gate-paths.tsv that is a symlink
+# to the kernel's own. It is an exemption for ABSENT gates only — a row whose
+# gate IS present in the composed tree keeps full literal-path and reachability
+# checking, so the anti-silent-green property survives everywhere it applies.
 #
 # Usage:
 #   check-gate-paths.sh
@@ -60,6 +66,12 @@
 #   GATE_PATHS_TRACKED_FILE    file of tracked paths (one per line) to use
 #                              instead of `git ls-files`
 #   GATE_PATHS_ASSUME_CONSUMER 1 forces the vendoring-consumer arm (test seam)
+#   GATE_PATHS_KERNEL_PREFIX   in a vendoring consumer, the path prefix the
+#                              kernel subtree is vendored under, WITH its
+#                              trailing slash (default: `kernel/`, the prefix
+#                              `git subtree pull --prefix=kernel` establishes
+#                              and `.kernel-pin` documents). Only consulted in
+#                              consumer mode.
 #
 # Kept bash-3.2-portable (macOS default shell): no associative arrays, no
 # mapfile.
@@ -93,6 +105,11 @@ CONSUMER=0
 if [[ "${GATE_PATHS_ASSUME_CONSUMER:-0}" == "1" ]] || [[ -f "$ROOT/.kernel-pin" ]]; then
   CONSUMER=1
 fi
+# Where a consumer vendors the kernel subtree. The map's rows are authored
+# against the KERNEL's root layout (`scripts/tests/foo.sh`); in a composed tree
+# that same file is tracked as `kernel/scripts/tests/foo.sh`, so check 4 has to
+# try both spellings before calling a path missing.
+KERNEL_PREFIX="${GATE_PATHS_KERNEL_PREFIX:-kernel/}"
 
 # --- inputs ------------------------------------------------------------------
 if [[ ! -f "$MAP_FILE" ]]; then
@@ -213,28 +230,62 @@ while [[ $i -lt ${#KEY_BY_INDEX[@]} ]]; do
   globs="${GLOBS_BY_INDEX[$i]}"
   i=$((i + 1))
   [[ "$globs" == "ALWAYS" ]] && continue
+  # VENDORING CONSUMERS — skip a row whose gate this composed tree does not
+  # carry. quality-gates.sh class-gates those kernel-only gates away
+  # (SELF_DISTRIBUTION_GATES and its peers, keyed on the SAME repo-root
+  # `.kernel-pin` signal this script reads), and check 3 above has already
+  # printed a `[skip]` line for this exact row — so failing it here would
+  # contradict the skip we just reported, and would demand the consumer "fix" a
+  # gate-paths.tsv that is a symlink to the kernel's own. The skip is therefore
+  # already legible; a second line per row would be 100+ lines of noise.
+  #
+  # Deliberately NOT a blanket consumer bypass: a row whose gate IS present in
+  # this tree stays hard, so the anti-silent-green check below still applies
+  # everywhere it can apply.
+  if [[ $CONSUMER -eq 1 ]]; then
+    case "$key" in
+      ALL|none) ;;
+      *) if ! grep -Fxq -- "$key" <<<"$ALL_GATE_LIST"; then continue; fi ;;
+    esac
+  fi
   # `read -r -a`, never a bare `for glob in $globs` — the latter pathname-expands
   # the author's globs against the working directory before they are ever tested.
   read -r -a GLOB_LIST <<<"$globs"
   row_hit=0
   for glob in "${GLOB_LIST[@]}"; do
     hit=0
-    # Fast path: a glob with no wildcard is an exact path — a single grep beats
-    # a bash loop over ~700 tracked paths, and most rows name exact files.
+    # In a composed consumer tree, a row authored against the kernel's root
+    # layout resolves under the vendored subtree — so try `<glob>` first and
+    # `<kernel-prefix><glob>` second. In the kernel's own checkout the second
+    # candidate is never added, so behaviour there is byte-for-byte unchanged.
+    GLOB_CANDIDATES=("$glob")
+    if [[ $CONSUMER -eq 1 ]]; then
+      GLOB_CANDIDATES+=("$KERNEL_PREFIX$glob")
+    fi
+    for cand in "${GLOB_CANDIDATES[@]}"; do
+      # Fast path: a glob with no wildcard is an exact path — a single grep beats
+      # a bash loop over ~700 tracked paths, and most rows name exact files.
+      case "$cand" in
+        *'*'*|*'?'*|*'['*)
+          while IFS= read -r p; do
+            [[ -n "$p" ]] || continue
+            if _gs_path_matches_glob "$p" "$cand"; then hit=1; break; fi
+          done <<<"$TRACKED"
+          ;;
+        *)
+          if grep -Fxq -- "$cand" <<<"$TRACKED"; then hit=1; fi
+          ;;
+      esac
+      if [[ $hit -eq 1 ]]; then break; fi
+    done
+    # A LITERAL path (no wildcard) that matches nothing — under EITHER spelling
+    # — is a typo or a stale reference, always a failure. A WILDCARD may
+    # legitimately point at an optional/absent surface (scripts/quality-gates.d/**
+    # in the kernel's own checkout, an overlay-only tree), so it is judged only
+    # through the row-level check below.
     case "$glob" in
-      *'*'*|*'?'*|*'['*)
-        while IFS= read -r p; do
-          [[ -n "$p" ]] || continue
-          if _gs_path_matches_glob "$p" "$glob"; then hit=1; break; fi
-        done <<<"$TRACKED"
-        ;;
+      *'*'*|*'?'*|*'['*) ;;
       *)
-        if grep -Fxq -- "$glob" <<<"$TRACKED"; then hit=1; fi
-        # A LITERAL path (no wildcard) that matches nothing is a typo or a
-        # stale reference — always a failure. A WILDCARD may legitimately
-        # point at an optional/absent surface (scripts/quality-gates.d/** in
-        # the kernel's own checkout, an overlay-only tree), so it is judged
-        # only through the row-level check below.
         if [[ $hit -eq 0 ]]; then
           _gp_issue "literal path '$glob' does not exist in the tree (typo or stale reference) on row: $key"
         fi
