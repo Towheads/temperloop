@@ -14,6 +14,31 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-05 — BREAKING
+
+### Migration — read this first
+
+One migration, and it is narrow: **`temperloop init` no longer accepts the
+`--provision-*` flag family or `--tracker-mode`** — passing either now exits 2
+instead of being silently ignored. This finishes the epic #524 arc v0.26.0
+opened (ADR 0004, `docs/adr/0004-issues-only-default-backend.md`); the backend
+itself did not move again in this release.
+
+**Who has to act.** Only an adopter whose wrapper script, Makefile, or CI job
+still passes `--provision-board`, `--provision-labels`, any other
+`--provision-*`, or `--tracker-mode` to `temperloop init`. On v0.26.0 those
+flags parsed and were discarded, so such a caller is green today and will exit
+2 after pulling. **The fix is deletion — drop the flag from the invocation.**
+There is no replacement flag and no behavior to preserve: every registered board
+has run issues-only since 2026-07-18, so there has been nothing to select or
+provision for some time. `grep -rn -- '--provision\|--tracker-mode'` over your
+own scripts is the whole audit.
+
+Nothing else in this release moves an adopter-facing contract. The rest is two
+gate fixes that make a **vendoring consumer's** `make quality-gates` pass where
+it previously could not — strictly a loosening, and the kernel's own checkout is
+byte-for-byte unchanged by both.
+
 ### Fixed
 
 - **`check-gate-paths.sh` no longer fails a vendoring consumer for being one**
@@ -41,7 +66,7 @@ reads that marker; a stranger greps for it before pulling.
   in a consumer. Every other check in that section is a shared invariant and
   still runs everywhere.
 
-### Removed
+### Removed — BREAKING
 
 - **`init.sh --provision-*` (the whole board-provisioning flag family) and
   `--tracker-mode` are gone; both now exit non-zero** (ADR 0004, epic #524
