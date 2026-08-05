@@ -108,7 +108,8 @@ silently falling through to the built-in maps. That NAME-on-stderr posture is
 advisory only — it depends on someone watching stderr, and (temperloop#908)
 the same gap let this exact case go unnoticed on a real host once nothing
 was there to read the new location either, silently reverting board.{3,4,5,6}
-to the Projects-v2 backend. `make doctor`'s `check_legacy_host_config()`
+to the built-in map's defaults — at the time, the since-removed Projects-v2
+backend. `make doctor`'s `check_legacy_host_config()`
 (`workflows/scripts/install/legacy-host-preflight.sh`) now additionally
 GATES on it: a legacy `boards.conf` present with no
 `$XDG_CONFIG_HOME/temperloop/boards.conf` successor fails `make doctor`'s

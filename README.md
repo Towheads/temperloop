@@ -52,12 +52,11 @@ or together:
 1. **The board adapter** (`workflows/scripts/board/`) — turns your GitHub
    issue tracker into a cross-session lock and work queue (`claim` /
    `worklist` / `capture` / …), so multiple sessions — or a human and an
-   agent — never silently duplicate the same issue. **Issues-only is the
-   default**: plain GitHub Issues on a free account — a repo and
-   `gh auth login`, no org, no Projects board, no paid plan. A Projects-v2
-   board is fully supported for a repo that already has one; see
+   agent — never silently duplicate the same issue. It runs on **plain
+   GitHub Issues** and nothing else: a repo and `gh auth login`, no org, no
+   Projects board, no paid plan. See
    [`workflows/scripts/board/ISSUES-ONLY-BACKEND.md`](workflows/scripts/board/ISSUES-ONLY-BACKEND.md)
-   for both backends.
+   for the backend contract.
 2. **The build/sweep pipeline** (`claude/commands/`) — Claude Code slash
    commands that carry an issue from backlog to merged PR: `/triage` groups
    the backlog into epics, `/assess` decomposes an epic into a
@@ -240,7 +239,7 @@ docs/           hand-maintained docs (§ 6): architecture, principles, feature d
                 (docs/features/), ADRs (docs/adr/), failure-mode chapters
 workflows/scripts/
   board/        board adapter (worklist/claim/release/capture/reconcile/milestone
-                + lib/board.sh) — issues-only or Projects-v2, see
+                + lib/board.sh) — issues-only, see
                 board/ISSUES-ONLY-BACKEND.md
   build/        build deterministic-machinery toolkit (worktree, ci-poll, pr, gate, …)
   install/      install surface — doctor.sh (machine-link verify),
@@ -304,8 +303,8 @@ Installation.
 
 ### Board adapter (bare commands, source in `workflows/scripts/board/`)
 
-All board reads/writes go through these — never ad-hoc `gh project …` or raw
-Projects GraphQL. Each takes `--board N`.
+All board reads/writes go through these — never a hand-rolled issue read or
+label write. Each takes `--board N`.
 
 | Command | What it does |
 | --- | --- |
@@ -353,7 +352,7 @@ then open (or serve, for root-relative links) `workflows/scripts/docs/_site/`:
   `adr/`.
 - Failure-mode chapters — real engineering failures this project hit, each ending in the mechanical guard it produced:
   [worktree write-isolation leak](workflows/scripts/docs/_site/failure-modes/01-worktree-write-isolation-leak.html),
-  [GraphQL budget exhaustion](workflows/scripts/docs/_site/failure-modes/02-graphql-budget-exhaustion.html),
+  [REST budget exhaustion](workflows/scripts/docs/_site/failure-modes/02-rest-budget-exhaustion.html),
   [premature status-close on async merge](workflows/scripts/docs/_site/failure-modes/03-premature-status-close-on-async-merge.html),
   [patch-API silent corruption](workflows/scripts/docs/_site/failure-modes/04-patch-api-silent-corruption.html)
 

@@ -98,16 +98,16 @@ A few things this diagram compresses that are worth naming explicitly:
   see [`docs/managed-merge-queue.md`](managed-merge-queue.md) (README §9)
   for the full backend-selection algorithm and why "queued" and "merged"
   are deliberately kept distinct.
-- **The close-Done cascade** moves a merged item's board card to Done
-  automatically once its issue closes (via the PR's `Closes #N`); an epic
-  closes itself once its last open sub-issue closes. Neither is a step a
-  command performs by hand — both are consequences of the issue graph
-  reaching a terminal state. The cascade is a **Projects-v2 built-in**,
-  though: on the issues-only backend there is no such automation and nowhere
-  to hook one, so the adapter's own Done write (which strips the residual
-  `fnd:status:*` label and `fnd:host/session:*` claim stamp) is the primary
-  mechanism there, with `reconcile.sh` sweeping the closes that bypassed it —
-  see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade.
+- **Reaching Done** is an explicit write, not an automation. An epic closes
+  itself once its last open sub-issue closes — a consequence of the issue
+  graph reaching a terminal state — but the item's own move to Done is not:
+  on the issues-only backend there is no card-moving automation and nowhere
+  to hook one, because Done is *defined* as the issue being closed with no
+  residual `fnd:status:*` label. So the adapter's own Done write (which
+  strips that label and the `fnd:host/session:*` claim stamp) is the
+  **primary** mechanism, owed by whoever closes the item — including after a
+  merge's own `Closes #N` — with `reconcile.sh` sweeping the closes that
+  bypassed it. See `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`.
 
 ## 2. Actor and guard map
 
@@ -133,7 +133,6 @@ flowchart TB
         WriteLane["write-lane-guard.sh<br/>asks before a mutation targets a<br/>foreign repo's canonical checkout<br/>fails open: home dir, linked worktrees,<br/>non-repo paths, read-only ops"]
         StaleBranch["git-stale-branch-guard.sh<br/>asks before branching off a stale<br/>local default branch<br/>fails open: base already up to date"]
         WorktreeGuard["build-worktree-guard.sh<br/>denies any write (Edit/Write or a<br/>destructive Bash verb) outside the<br/>worker's own worktree root"]
-        BoardGuard["board-adapter-guard.sh<br/>asks before a raw gh project /<br/>Projects GraphQL call<br/>fails open: adapter-mediated calls"]
         SubtreeGuard["subtree-edit-guard.sh<br/>asks before a direct edit under<br/>a vendored kernel/ subtree<br/>fails open: armed .build-guard marker"]
     end
 
@@ -145,7 +144,6 @@ flowchart TB
     Worker -->|writes checked by| WorktreeGuard
     Orchestrator -->|cross-repo writes checked by| WriteLane
     Orchestrator -->|new branches checked by| StaleBranch
-    Orchestrator -->|board reads/writes checked by| BoardGuard
     Orchestrator -->|kernel/ edits checked by| SubtreeGuard
     Orchestrator -->|push by SHA, open PR| CI
     CI -->|green status| Human
@@ -172,17 +170,11 @@ flowchart TB
   `worktree.sh create` drops in each pre-created per-item worktree, then
   structurally **denies** (not asks) any `Edit`/`Write`/`MultiEdit` — or any
   destructive **Bash** verb (`rm`/`rmdir`/`mv`/`shred`/`truncate`/`dd of=`) —
-  that resolves outside that worktree's root. Unlike the other four guards this
+  that resolves outside that worktree's root. Unlike the other three guards this
   one is a hard deny, not a confirmation prompt — a worker has no path to
   leak a write into the parent checkout or a sibling worktree, nor to delete
   outside its jail (the Bash arm closes the gap that let a worker `rm -rf` its
   way to `~/dev`).
-- **`board-adapter-guard.sh`** protects the board's shared GraphQL rate
-  budget: it asks before a raw `gh project` call or hand-rolled Projects
-  GraphQL query that bypasses the board adapter (`board.sh` and its
-  `claim`/`release`/`worklist`/`reconcile`/`capture`/`milestone` commands),
-  which caches across processes and keeps single-item operations off the
-  expensive whole-board page.
 - **`subtree-edit-guard.sh`** protects a downstream checkout that vendors
   this kernel via a `kernel/` git subtree (or a compat symlink to one) from
   drifting silently: it asks before a direct edit lands there instead of

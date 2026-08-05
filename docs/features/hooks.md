@@ -50,13 +50,6 @@ fact and can only observe and record, never block.
   left silent — those bases are already correct. It exists because branching
   from a stale local base and discovering the divergence only at push time
   was the single most common and most expensive friction pattern observed.
-- **board-adapter-guard.sh** — matches `Bash`. Fires an `ask` on a direct
-  `gh project` invocation or a raw `gh api graphql` call touching a
-  Projects-v2 board, prompting the caller to go through the shared board
-  adapter library instead. The adapter caches state across processes and
-  keeps single-item operations off an expensive full-board page load; an
-  ad-hoc raw query bypasses both protections and has drained a shared,
-  metered GraphQL budget in a real incident.
 - **build-worktree-guard.sh** — matches `Bash|Edit|Write|MultiEdit`. Enforces
   that an automated build worker only ever writes inside its own pre-created
   worktree. It is inert by default and arms only when a per-worktree marker
@@ -103,13 +96,9 @@ eval_guard_exit_if_eval   # exits 0 immediately when EVAL_RUN is non-empty
 The check is a single `[ -n "${EVAL_RUN:-}" ]` test. Setting `EVAL_RUN` to
 any non-empty value during a headless evaluation session suppresses every
 side-channel write (vault drain, session-stub logging, telemetry appends)
-and downgrades the interactive guards from `ask` to a silent pass-through —
-except `board-adapter-guard.sh`, which downgrades from `ask` to `deny` under
-`EVAL_RUN` and logs the attempt to a durable eval-denial log, because a board
-bypass by the workflow under evaluation is itself a scored finding rather
-than something to wave through.
+and downgrades the interactive guards from `ask` to a silent pass-through.
 
-**Session lifecycle hooks.** Beyond the five guards, a set of `SessionStart`
+**Session lifecycle hooks.** Beyond the four guards, a set of `SessionStart`
 and `SessionEnd` hooks handle non-blocking bookkeeping: writing a transcript
 stub when a session ends, draining accumulated stubs into durable storage
 when a new session starts, and a health-preflight check that injects a
@@ -145,12 +134,7 @@ file write.
 
 ## Telemetry
 
-`board-adapter-guard.sh` under `EVAL_RUN` appends one line per bypass attempt
-to a durable eval-denial log (default under
-`${XDG_STATE_HOME:-$HOME/.local/state}/foundation/eval-board-adapter-denials.log`,
-overridable), giving an evaluation harness a mechanical, grep-able signal of
-whether the workflow under test bypassed the adapter. Outside of that one
-stream, the guards do not emit their own metrics — a fired `ask` is visible
+The guards do not emit their own metrics — a fired `ask` is visible
 in-session as the prompt itself, and a silent pass-through leaves no trace by
 design (this is the fail-open contract, not a gap). Absence of a fired guard
 is not itself observable; if a guard needs to be proven inert or active in a

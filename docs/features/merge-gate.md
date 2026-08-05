@@ -136,9 +136,9 @@ poll cadence is a single config edit rather than a script change.
 ## Resource impact
 
 Every read, poll, and merge call is a `gh` invocation against GitHub's REST
-API — the same rate-limit bucket `ci-poll.sh` uses, kept deliberately
-separate from the metered GraphQL budget shared with project-board
-operations. A managed-backend merge costs one extra CI run per PR (the
+API — the same rate-limit bucket `ci-poll.sh` and the board adapter both
+use, so poll cadence here competes directly with board traffic for one
+shared budget. A managed-backend merge costs one extra CI run per PR (the
 SHA-pinned re-poll after the branch update) compared to a native-queue
 merge, which is the price of replicating the queue's re-validation without
 platform support for it. Polling wall-clock time is bounded by each

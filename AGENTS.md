@@ -47,32 +47,35 @@ target list with descriptions. The ones an agent needs most:
 
 ### Board-adapter rules
 
-Every GitHub Projects-v2 (or issues-only) board read or write goes through
-the adapter — **never** an ad-hoc `gh project …` call or raw Projects
-GraphQL. Source `workflows/scripts/board/lib/board.sh`, or use the bare
-commands: `worklist` / `claim` / `release` / `reconcile` / `capture` /
-`milestone` (all in `workflows/scripts/board/`), each taking `--board N`.
+Every board read or write goes through the adapter — never a hand-rolled
+issue read or label write at the call site. Source
+`workflows/scripts/board/lib/board.sh`, or use the bare commands:
+`worklist` / `claim` / `release` / `reconcile` / `capture` / `milestone`
+(all in `workflows/scripts/board/`), each taking `--board N`.
 
-This matters mechanically, not just stylistically: every board read against
-GitHub's Projects-v2 API draws on a shared **5,000-points/hr GraphQL
-budget**. The adapter caches board reads across processes and keeps
-single-item operations (`board_resolve_item`) off the expensive whole-board
-page fetch (`board_resolve`) — a raw query bypasses both protections and can
-drain the budget mid-session. Raw `gh project` / `updateProjectV2Field` is
-reserved for structural operations the adapter doesn't cover (creating a
-field, adding/replacing single-select options); after any such structural
-edit, bust the adapter's structure cache before relying on the new schema
-again. See `workflows/scripts/board/lib/board.sh`'s own header and
-`docs/failure-modes/02-graphql-budget-exhaustion.md` for a worked example of
-what happens when a different API's polling loop is mistakenly routed onto
-this same budget.
+There is **one backend: issues-only** — plain GitHub Issues over REST, with
+item state on `fnd:`-namespaced labels and Done meaning the issue is closed
+with no residual `fnd:status:*` label. No Projects board is ever
+provisioned, and none can be: the Projects-v2/GraphQL arm was deprecated by
+ADR 0004 and removed outright in the Projects-v2 removal release (epic
+#524). There is no configuration path back — a stale
+`board.<N>.backend=projects` line in `boards.conf` is refused with a
+non-zero exit naming the migration path, not silently downgraded. See
+`workflows/scripts/board/ISSUES-ONLY-BACKEND.md` for the
+label/status/claim-lock contract, and `board.sh`'s own header for the
+function-level detail.
 
-This repo's own tracker is an **issues-only** backend (no Projects-v2 board
-provisioned) — see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` for the
-label/status/claim-lock/close→Done-cascade contract that backend
-implements. The adapter functions above work the same way against either
-backend; which one a given board uses is a `boards.conf` detail, not
-something calling code branches on.
+This matters mechanically, not just stylistically. Board reads are **live**
+— every one is a real REST call, with no cross-process cache in front of it
+— and they share REST's **5,000 requests/hour** bucket with CI-check
+polling and ordinary issue/PR porcelain. So resolve a board **once** and
+reuse the result rather than re-resolving per item, and prefer
+`board_resolve_item` over the whole-board `board_resolve` for a single-item
+operation. Because the Projects arm's removal collapsed two
+independently-metered surfaces into one, there is no longer a second budget
+to move a noisy caller onto: a drain has to be fixed at its source. See
+`docs/failure-modes/02-rest-budget-exhaustion.md` for the worked example of
+exactly that trap.
 
 ### Quality gates
 
@@ -122,8 +125,8 @@ and quality-gate list) are also browsable as a generated static site at
 ## Safety rails
 
 - **Adapter-only board access.** See § Board-adapter rules above — never a
-  raw `gh project` call or hand-rolled Projects GraphQL query for anything
-  the adapter already covers.
+  hand-rolled issue read or label write for anything the adapter already
+  covers.
 - **`main` is protected.** Never push to it directly. Branch
   `<type>/<slug>` (`type` ∈ `feat|fix|chore|refactor|docs|test`), commit,
   push, open a PR. Wait for the required `checks` status to go green before

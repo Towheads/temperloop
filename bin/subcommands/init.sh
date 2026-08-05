@@ -50,9 +50,11 @@
 #     `# board.<N>.project=<FILL IN ...>` into boards.conf BEFORE the apply
 #     step and never reassigned it, so even a fully-consented, successful
 #     provisioning run emitted a placeholder the adapter cannot read.
-#     Issues-only is now the sole init-time tracker mode; a Projects-v2
-#     board is provisioned by hand (docs/features/install-cli.md
-#     § "Manual Projects-v2 recipe").
+#     Issues-only is now the SOLE tracker backend, not merely the sole
+#     init-time default: the Projects-v2 arm was removed outright (ADR
+#     0004, epic #524). There is NO configuration path back to Projects-v2
+#     — an adopter who wants it forks board.sh (docs/features/
+#     install-cli.md § Tracker mode).
 #
 # DEPRECATED FLAGS (retained, each with a NAMED removal window).
 # `--yes/--no-required-check`, `--yes/--no-labels`, and `--yes/--no-board`
@@ -302,18 +304,18 @@
 #   rather than the generic "unknown arg" error; see "REMOVED FLAGS" above):
 #   --tracker-mode MODE     Used to be "issues" (the only mode this script
 #                          ever wrote) or "projects". With the Projects-v2
-#                          arm gone there is nothing left to select.
-#                          Provision a Projects-v2 board by hand — see
-#                          docs/features/install-cli.md's manual
-#                          Projects-v2 recipe.
+#                          arm gone there is nothing left to select, and no
+#                          configuration path back — see
+#                          docs/features/install-cli.md § Tracker mode.
 #                          [removed: the Projects-v2 removal release
 #                          (ADR 0004, epic #524)]
 #   --provision-*            Formerly a legible no-op (its one historic
 #                          spelling is still on record in bin/README.md's
 #                          compat table). A Projects-v2 board is never
-#                          provisioned by `init` — see
-#                          docs/features/install-cli.md's manual
-#                          Projects-v2 recipe for the by-hand path.
+#                          provisioned by `init`, and cannot be provisioned
+#                          by hand either — the adapter has no Projects
+#                          code path left to reach. See
+#                          docs/features/install-cli.md § Tracker mode.
 #                          [removed: the Projects-v2 removal release
 #                          (ADR 0004, epic #524)]
 #
@@ -433,7 +435,7 @@ while [ $# -gt 0 ]; do
     --base) base="${2:?--base needs a value}"; shift 2 ;;
     --remote) remote="${2:?--remote needs a value}"; shift 2 ;;
     --tracker-mode)
-      echo "init.sh: --tracker-mode was removed in $removed_window_projects — issues-only is now the only tracker backend \`init\` has ever written, so there is nothing left to select. Provision a Projects-v2 board by hand — see docs/features/install-cli.md's manual Projects-v2 recipe." >&2
+      echo "init.sh: --tracker-mode was removed in $removed_window_projects — issues-only is now the only tracker backend \`init\` has ever written, so there is nothing left to select. There is NO configuration path back to Projects-v2; an adopter who wants it forks board.sh. See docs/features/install-cli.md § Tracker mode." >&2
       usage >&2
       exit 2
       ;;
@@ -443,7 +445,7 @@ while [ $# -gt 0 ]; do
       # record in bin/README.md's compat table) — the whole retired
       # board-provisioning flag family hits this arm, and `$1` echoes back
       # exactly what the caller typed.
-      echo "init.sh: '$1' was removed in $removed_window_projects — a Projects-v2 board is never provisioned by \`init\`; see docs/features/install-cli.md's manual Projects-v2 recipe for the by-hand path." >&2
+      echo "init.sh: '$1' was removed in $removed_window_projects — a Projects-v2 board is never provisioned by \`init\`, and cannot be provisioned by hand either: the adapter has no Projects code path left to reach. See docs/features/install-cli.md § Tracker mode." >&2
       usage >&2
       exit 2
       ;;
@@ -524,7 +526,7 @@ deprecated_window_consent="v0.20.0, the pre-scope-down compat window"
 
 deprecated_moved_required_check="the required \`checks\` status check is now applied by the first epic (claude/templates/first-epic-setup.md § Contract, item \`github-substrate\`; ADR 0010 § \"Structural congruence\"), which — unlike this step — refuses to arm a required status no producer will ever post. Run it via /assess --epic N -> /build."
 deprecated_moved_labels="the \`fnd:\`/pipeline label set is created lazily at point of use by the issues-only tracker backend itself (\`_board_issues_ensure_label\`, workflows/scripts/board/lib/board.sh) — there is nothing left to pre-create."
-deprecated_moved_board="board provisioning was dropped from \`init\` outright (temperloop#793); issues-only is the sole init-time tracker mode. Provision a Projects-v2 board by hand — see docs/features/install-cli.md § \"Manual Projects-v2 recipe\"."
+deprecated_moved_board="board provisioning was dropped from \`init\` outright (temperloop#793); issues-only is the sole tracker backend, and the Projects-v2 arm was removed outright (ADR 0004, epic #524). There is no configuration path back — see docs/features/install-cli.md § Tracker mode."
 
 [ -n "$consent_required_check" ] \
   && _init_deprecated "--${consent_required_check}-required-check" \
@@ -1366,8 +1368,9 @@ first epic's work, applied later with per-write consent via
 \`/assess --epic N\` -> \`/build\`.
 
 Tracker mode: **issues-only** (\`board.$board_num.backend=issues\`), the sole
-init-time tracker mode. A Projects-v2 board is provisioned by hand — see
-\`docs/features/install-cli.md\` § \"Manual Projects-v2 recipe\".$producer_body_note"
+tracker backend. The Projects-v2 arm was removed outright (ADR 0004, epic
+#524) and there is no configuration path back — see
+\`docs/features/install-cli.md\` § Tracker mode.$producer_body_note"
 
 if [ "$dry_run" -eq 1 ]; then
   # --dry-run GATE (temperloop#413): genuinely zero-write — compute and

@@ -14,10 +14,11 @@ improvising shell commands turn by turn, four things reliably go wrong:
   contaminating unrelated work with no connection back to the worker that
   caused it.
 - Watching a pull request's checks to completion is one API call away from
-  quietly burning a shared, metered rate-limit budget that other operations
-  (a project board, in this repo's case) also depend on — the convenient
-  "watch until done" helper for CI checks is GraphQL-backed, and several
-  workers polling in parallel for the length of a CI run adds up fast.
+  quietly burning the shared, metered rate-limit budget every other
+  operation (board reads and writes included) also depends on — the
+  convenient "watch until done" helper for CI checks re-queries every few
+  seconds, and several workers polling in parallel for the length of a CI
+  run adds up fast.
 - A long unattended run has no way to know it is about to exceed its own
   usage window until a call fails mid-step, at which point the run stalls
   hard instead of pausing and resuming on its own.
@@ -66,18 +67,20 @@ worktree, one worker, one PR per item — and gates before starting the next
 level, so parallelism is bounded by genuine independence rather than by
 guesswork.
 
-**Why CI polling uses REST, not GraphQL.** `ci-poll.sh` watches a pull
+**Why CI polling is coarse and hand-rolled.** `ci-poll.sh` watches a pull
 request's check-runs to completion by polling `gh api` against the REST
-check-runs endpoint at a coarse interval (30 seconds by default), deliberately
-never using the built-in streaming "watch" helper — that helper is
-GraphQL-backed, and GraphQL's cost accounting is flat per query regardless of
-how much a single query returns. Run several build workers in parallel, each
-watching its own PR every few seconds for the multi-minute length of a CI
-run, and that dwarfs anything else sharing the same GraphQL budget (in this
-repo's case, project-board reads and writes, which have no REST equivalent
-and so cannot be moved off it). Routing the high-frequency polling onto a
-separate, REST-backed budget leaves the GraphQL budget for the calls that
-have nowhere else to go. The poll resolves the PR's head SHA once and
+check-runs endpoint at a coarse interval (30 seconds by default),
+deliberately never using the built-in streaming "watch" helper — that
+helper re-queries every few seconds, and its cost is flat per query
+regardless of how little changed between them. Run several build workers in
+parallel, each watching its own PR for the multi-minute length of a CI run,
+and the call count dwarfs everything else on the budget. What makes this
+sharper than it once was: board traffic used to sit on a *separately*
+metered GraphQL budget, so moving the poller to REST genuinely relieved
+contention. Removing the Projects-v2 arm collapsed both onto the one REST
+bucket, so that relief valve is gone — the only remaining lever is call
+volume itself, which is exactly what the coarse interval buys
+(`docs/failure-modes/02-rest-budget-exhaustion.md`). The poll resolves the PR's head SHA once and
 reports one of `CI_GREEN`, `CI_FAILED` (with the failed run IDs), or
 `TIMEOUT` — never prose, so the orchestrator branches on the outcome
 directly.
@@ -215,10 +218,10 @@ honored everywhere at once.
 Each active plan item's worktree is a full working-tree checkout of the
 repository on disk — the `prune` subcommand reclaims completed or merged
 worktrees so this does not grow unbounded across a long-running project. CI
-polling runs against the REST rate-limit bucket (`gh api`'s core budget)
-rather than the shared GraphQL budget; a poll's cost scales with the
-interval and the CI run's wall-clock length, not with the size of what a
-single call returns. The quota gate itself reads a small local snapshot file
+polling runs against the REST rate-limit bucket (`gh api`'s core budget) —
+the same one board traffic uses — so a poll's cost scales with the interval
+and the CI run's wall-clock length, and competes directly with everything
+else on that budget. The quota gate itself reads a small local snapshot file
 and performs no network calls, so its own overhead is negligible — the
 resource it protects is the run's usage-window budget, which a pause avoids
 exceeding at the cost of wall-clock time spent waiting for the window to
