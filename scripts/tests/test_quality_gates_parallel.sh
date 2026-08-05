@@ -58,6 +58,9 @@ CI="$REPO_ROOT/.github/workflows/ci.yml"
 fail_count=0
 fail() { echo "FAIL: $1" >&2; fail_count=$((fail_count + 1)); }
 pass() { echo "PASS: $1"; }
+# A check that does not apply to THIS tree reports itself rather than vanishing —
+# a silent no-op is the failure mode a skipped check is supposed to avoid.
+skip() { echo "SKIP: $1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/qg-pool-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -360,12 +363,23 @@ if grep -q 'QUALITY_GATES_JOBS' "$REPO_ROOT/workflows/scripts/build/build.config
 else
   fail "QUALITY_GATES_JOBS is not declared in build.config.sh"
 fi
-if [ -f "$CI" ]; then
+# The required-status-context shape is a PER-REPO contract, not a kernel
+# invariant. This assertion encodes the KERNEL's own single-entry matrix, whose
+# job renders as the required context `checks (ubuntu-latest)`. A vendoring
+# consumer (repo-root `.kernel-pin`) names its required context under its own
+# ci.yml contract — foundation's, for instance, is a single NON-matrix job named
+# `checks` — so holding a consumer to the kernel's shape can only ever produce a
+# false failure (temperloop#1144). Scope the assertion to the kernel's own
+# checkout; every other check in this section is a genuinely shared invariant
+# and keeps running in a consumer.
+if [ -f "$CI" ] && [ ! -f "$REPO_ROOT/.kernel-pin" ]; then
   if grep -q 'os: \[ubuntu-latest\]' "$CI" && [ "$(grep -c '^  [a-z-]*:$' "$CI")" -le 2 ]; then
     pass "CI still runs ONE job on a single-entry matrix (required context unchanged)"
   else
     fail "CI's job/matrix shape changed — the required 'checks (ubuntu-latest)' context may have moved"
   fi
+elif [ -f "$CI" ]; then
+  skip "CI job/matrix shape — required-context shape is a per-repo contract (vendoring consumer, .kernel-pin present)"
 fi
 
 # ---------------------------------------------------------------------------

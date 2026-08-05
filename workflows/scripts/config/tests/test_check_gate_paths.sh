@@ -27,7 +27,16 @@
 #  10. GREEN for `ALL` / `none` pseudo-keys, which are never required to name
 #            a gate.
 #  11. Vendoring-consumer arm: a stale row SKIPS instead of failing.
-#  12. GREEN against the REAL tree — the live gate's own invocation.
+#  12. Vendoring-consumer arm reaches CHECK 4 as well — an absent gate's row is
+#            exempt from the literal-path and reachability checks too, not just
+#            from checks 2/3 (temperloop#1144). 12b: the same map stays hard in
+#            the kernel's own checkout, so the exemption is keyed on consumer
+#            mode, never on the map's content.
+#  13. RED   in a consumer for an unreachable row whose gate DOES exist in that
+#            tree — the #1144 exemption is not a blanket bypass.
+#  14. Vendoring-consumer resolution against the vendored subtree prefix (14b:
+#            the prefix is a seam; 14c: the kernel's own checkout never uses it).
+#  15. GREEN against the REAL tree — the live gate's own invocation.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +64,7 @@ docs/adr/0001.md
 src/alpha.sh
 src/beta/thing.sh
 tools/gamma.sh
+kernel/src/alpha-vendored-only.sh
 EOF
 
 run_check() {  # run_check <map-file> [extra env assignments...]
@@ -192,7 +202,95 @@ $out"
 case "$out" in *'[skip]'*) : ;; *) fail "11: expected a legible [skip] line, got: $out" ;; esac
 echo "PASS: 11 a vendoring consumer skips (never fails) a row whose gate its composed tree lacks"
 
-# --- 12. green against the real tree, DETERMINISTICALLY ----------------------
+# --- 12. consumer arm reaches CHECK 4, not just checks 2/3 (temperloop#1144) --
+# The regression: check 3 skipped an absent gate's row while check 4 still
+# hard-failed the SAME row on its kernel-only literal paths. In foundation's
+# composed tree that was 108 failures naming VERSION / VERSIONING.md / AGENTS.md
+# — paths a consumer legitimately does not carry — and the remediation line told
+# the consumer to edit a gate-paths.tsv that is a symlink to the kernel's own.
+# Case 11's stale row has MATCHING globs, so it never exercised check 4; this
+# case gives the absent gate unreachable, kernel-only literals.
+cat >"$TMP/consumer-kernel-only.tsv" <<'EOF'
+ALL	Makefile
+make test-alpha	src/alpha.sh
+make test-beta	src/beta/**
+bash tools/gamma.sh	ALWAYS
+make test-deleted	VERSION VERSIONING.md
+EOF
+if ! out="$(run_check "$TMP/consumer-kernel-only.tsv" GATE_PATHS_ASSUME_CONSUMER=1)"; then
+  fail "12: a consumer must not fail an absent gate's row on its kernel-only literals, got:
+$out"
+fi
+case "$out" in
+  *'literal path'*) fail "12: check 4 still fired on an exempt row, got: $out" ;;
+  *'unreachable row'*) fail "12: check 4 still fired on an exempt row, got: $out" ;;
+esac
+echo "PASS: 12 a vendoring consumer's check-4 exemption covers an absent gate's unreachable literals"
+
+# The SAME map is still hard in the kernel's own checkout — the exemption is
+# keyed on consumer mode, not on the map's content.
+if out="$(run_check "$TMP/consumer-kernel-only.tsv")"; then
+  fail "12b: outside a consumer the same map must FAIL, got:
+$out"
+fi
+echo "PASS: 12b the kernel's own checkout keeps full check-4 coverage on that map"
+
+# --- 13. the exemption is NOT a blanket consumer bypass ----------------------
+# A row whose gate IS present in this composed tree keeps full reachability
+# checking, so the anti-silent-green property survives where it can apply. If
+# this case ever passes, the #1144 fix has been widened into a hole.
+cat >"$TMP/consumer-present-unreachable.tsv" <<'EOF'
+ALL	Makefile
+make test-alpha	src/alpha.sh
+make test-beta	nowhere/at/all/**
+bash tools/gamma.sh	ALWAYS
+EOF
+if out="$(run_check "$TMP/consumer-present-unreachable.tsv" GATE_PATHS_ASSUME_CONSUMER=1)"; then
+  fail "13: a consumer must STILL fail an unreachable row whose gate exists here, got:
+$out"
+fi
+case "$out" in *'unreachable row'*) : ;; *) fail "13: expected an unreachable-row failure, got: $out" ;; esac
+case "$out" in *'make test-beta'*) : ;; *) fail "13: the failure must name the orphaned gate, got: $out" ;; esac
+echo "PASS: 13 a consumer still fails an unreachable row for a gate its own tree carries"
+
+# --- 14. consumer resolves a row against the vendored subtree ----------------
+# The other half of #1144, and the larger half: 87 of the 108 foundation
+# failures were rows whose gate IS registered in the composed tree but whose
+# path the map spells against the KERNEL's root layout. `scripts/tests/foo.sh`
+# is tracked in a consumer as `kernel/scripts/tests/foo.sh`, so a root-only
+# lookup calls a present file missing.
+cat >"$TMP/kernel-prefixed.tsv" <<'EOF'
+ALL	Makefile
+make test-alpha	src/alpha-vendored-only.sh
+make test-beta	src/beta/**
+bash tools/gamma.sh	ALWAYS
+EOF
+if ! out="$(run_check "$TMP/kernel-prefixed.tsv" GATE_PATHS_ASSUME_CONSUMER=1)"; then
+  fail "14: a consumer must resolve a row against the vendored subtree, got:
+$out"
+fi
+echo "PASS: 14 a vendoring consumer resolves a kernel-layout row under the subtree prefix"
+
+# The prefix is a SEAM, not a hardcode — an overlay vendoring elsewhere says so.
+if ! out="$(run_check "$TMP/kernel-prefixed.tsv" GATE_PATHS_ASSUME_CONSUMER=1 GATE_PATHS_KERNEL_PREFIX=kernel/)"; then
+  fail "14b: an explicit GATE_PATHS_KERNEL_PREFIX must work, got:
+$out"
+fi
+if out="$(run_check "$TMP/kernel-prefixed.tsv" GATE_PATHS_ASSUME_CONSUMER=1 GATE_PATHS_KERNEL_PREFIX=elsewhere/)"; then
+  fail "14b: a WRONG prefix must not resolve the row, got:
+$out"
+fi
+echo "PASS: 14b the subtree prefix is an honored seam, and a wrong prefix still fails"
+
+# And the kernel's own checkout never consults the prefix at all.
+if out="$(run_check "$TMP/kernel-prefixed.tsv")"; then
+  fail "14c: outside a consumer a kernel-layout-only path must FAIL, got:
+$out"
+fi
+case "$out" in *'src/alpha-vendored-only.sh'*) : ;; *) fail "14c: the failure must name the path, got: $out" ;; esac
+echo "PASS: 14c the kernel's own checkout does not fall back to a subtree prefix"
+
+# --- 15. green against the real tree, DETERMINISTICALLY ----------------------
 # Repeated deliberately. The first cut of this lint matched a literal path with
 # `printf '%s\n' "$TRACKED" | grep -Fxq …`; under `pipefail`, grep -q's early
 # exit SIGPIPEs the printf and the PIPELINE reports 141 even though the match
@@ -202,10 +300,10 @@ echo "PASS: 11 a vendoring consumer skips (never fails) a row whose gate its com
 REPO_ROOT="$(cd "$CONFIG_DIR/../../.." && pwd)"
 for run in 1 2 3 4 5; do
   if ! out="$(cd "$REPO_ROOT" && bash "$SCRIPT" 2>&1)"; then
-    fail "12: the real gate-paths.tsv must be green (run $run of 5):
+    fail "15: the real gate-paths.tsv must be green (run $run of 5):
 $out"
   fi
 done
-echo "PASS: 12 the real tree's gate-paths.tsv is complete and reachable, deterministically (5 runs)"
+echo "PASS: 15 the real tree's gate-paths.tsv is complete and reachable, deterministically (5 runs)"
 
 echo "OK — check-gate-paths.sh: all cases passed"

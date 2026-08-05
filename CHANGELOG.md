@@ -14,6 +14,33 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check-gate-paths.sh` no longer fails a vendoring consumer for being one**
+  (#1144). The gate already detected a composed tree (repo-root `.kernel-pin`)
+  and its checks 2/3 reported a legible `[skip]` for rows naming gates such a
+  tree legitimately lacks — but **check 4 (reachability) honored neither the
+  exemption nor the vendored layout**, so it hard-failed the very rows check 3
+  had just skipped, and judged every kernel-authored path missing because in a
+  consumer it is tracked under the subtree prefix. In foundation's tree that was
+  **108 failures** (`VERSION`, `VERSIONING.md`, `AGENTS.md`, `make test-try`, …),
+  and the remediation line told the consumer to edit a `gate-paths.tsv` that is a
+  symlink to the kernel's own. Check 4 now (a) skips a row whose gate is absent
+  from the composed tree, using the same predicate check 3 uses, and (b) resolves
+  a row against `<prefix><path>` as well as `<path>`, where the prefix is the new
+  `GATE_PATHS_KERNEL_PREFIX` seam (default `kernel/`). **Not a blanket consumer
+  bypass:** a row whose gate *is* present in the tree keeps full literal-path and
+  reachability checking, and the kernel's own checkout is byte-for-byte
+  unchanged — both pinned by fixture cases.
+
+- **`test_quality_gates_parallel.sh` no longer asserts the kernel's CI shape
+  against a consumer's** (#1144). Its required-status-context check encoded the
+  kernel's own single-entry matrix (`checks (ubuntu-latest)`); a consumer whose
+  contract is a single non-matrix job named `checks` could never satisfy it. The
+  assertion is now scoped to the kernel's own checkout and reports a `SKIP:` line
+  in a consumer. Every other check in that section is a shared invariant and
+  still runs everywhere.
+
 ### Removed
 
 - **`init.sh --provision-*` (the whole board-provisioning flag family) and
