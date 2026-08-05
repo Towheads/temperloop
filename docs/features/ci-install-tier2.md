@@ -8,9 +8,11 @@ slug: ci-install-tier2
 Tier-1 (`docs/features/ci-install-lifecycle.md`) proves the install/uninstall
 machine-surface lifecycle hermetically — a `file://` bare clone, a sandboxed
 `HOME`/XDG tree, zero real network — which is exactly right for a per-PR
-gate (fast, free, deterministic). What it can't prove is that the actual
-newcomer ADOPTION path (`temperloop try` -> `temperloop init` -> `temperloop
-eject`) still works against a REAL target repo: a real `gh` hitting a real
+gate (fast, free, deterministic). What it can't prove is that the CLI's
+REAL-TARGET ROUND TRIP (`temperloop try` -> `temperloop init` -> `temperloop
+eject` — `try` is no longer part of the adoption path per temperloop#1115,
+but remains covered here because it still ships) still works against a real
+target repo: a real `gh` hitting a real
 GitHub API, a real `claude -p` judgment call, real branch-protection/label
 writes, a real proposal PR opened and then reverted. That's a materially
 different failure surface (auth scoping, API shape drift, rate limits, a
