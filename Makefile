@@ -14,7 +14,7 @@ PROPOSAL_SRC := $(FOUNDATION)/workflows/scripts/proposal
 BIN_SRC := $(FOUNDATION)/bin
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
-.PHONY: help shellcheck quality-gates test-board test-board-dual-adapter test-build test-build-workflow \
+.PHONY: help shellcheck quality-gates test-board test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
 	validate-knowledge-search-emit \
@@ -90,10 +90,6 @@ test-board:
 	@for t in $(BOARD_SRC)/tests/test_*.sh; do \
 		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
-
-test-board-dual-adapter:
-	@echo "==> Running dual-adapter SAFE-TIER pipeline integration suite..."
-	@bash $(BOARD_SRC)/tests/test_board_dual_adapter.sh
 
 test-build:
 	@echo "==> Running build toolkit tests..."
