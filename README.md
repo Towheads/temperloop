@@ -67,7 +67,8 @@ or together:
    `/workshop` designs invented work into the same pipeline. Full command
    map in § 5.
 3. **Install and quality-gate tooling** — the `temperloop` CLI (§ 3) for the
-   pre-checkout adoption path (try it, demo it, opt in), plus
+   pre-checkout adoption path (evaluate in a throwaway duplicate, then opt
+   in), plus
    `scripts/quality-gates.sh`, the one static gate set a repo's CI and its
    contributors both run, so "green CI" and "green locally" mean the same
    thing.
@@ -97,12 +98,21 @@ are assumed present.
 
 ---
 
-## 3. Quickstart: try → try --demo → init
+## 3. Quickstart: sandbox → first epic → adopt
 
 The `temperloop` CLI (`bin/`) is the on-ramp — a single POSIX entrypoint for
 someone who has never touched this repo's Makefile, board, or build pipeline.
-Install it, then walk the ladder: taste it read-only, see it mutate something
-disposable, then opt your own repo in.
+
+**Evaluate it on your own code, in a repo you can delete.** Make a detached
+private duplicate of a real repo of yours, run the full pipeline there, and
+throw it away when you're done. Nothing you do in the duplicate can reach the
+original: it is a separate repository with no fork relationship, no shared
+issues, and no upstream to accidentally open a pull request against.
+
+A duplicate is deliberately **not a fork**. A fork of a public repo is
+forcibly public, so evaluating with real issue content would expose it; a
+fork also carries an upstream that PR tooling and the GitHub UI will offer as
+a base. A duplicate has neither problem, and `gh repo delete` ends it.
 
 **Before step 1: what this costs, and what it will do on its own.**
 [`docs/cost-and-autonomy.md`](docs/cost-and-autonomy.md) covers real spend
@@ -122,25 +132,76 @@ sh temperloop-bootstrap.sh
 # silently pulls: it delegates to `temperloop update`, which shows the
 # CHANGELOG delta (including BREAKING sections) and asks before moving.
 
-# 2. Try it — zero-config, zero-write: a read-only repo-conventions probe
-#    plus a real (but structurally zero-write) shadow-triage pass over your
-#    repo's own open issues, with a cost estimate printed before anything
-#    runs.
-cd your-repo
-temperloop try
+# 2. Build the sandbox — a private duplicate of a real repo of yours.
+#    Mirror-push, so you get the full history, not a shallow copy.
+gh repo create my-project-sandbox --private
+git clone --bare git@github.com:me/my-project.git
+git -C my-project.git push --mirror git@github.com:me/my-project-sandbox.git
+git clone git@github.com:me/my-project-sandbox.git && cd my-project-sandbox
 
-# 3. See it work — the ONE mutating exception: ticks a real, disposable
-#    demo repo through one safe-tier issue -> PR pass (never a merge),
-#    behind a spend-guard confirmation.
-temperloop try --demo
+# 3. Give it something real to work on. A duplicate carries your code but
+#    NOT your issues — GitHub never copies issues, to a fork or anywhere
+#    else — so bring a handful across by hand. Ten or twenty open issues is
+#    plenty; every issue is work the pipeline may spend tokens on.
+gh issue list --repo me/my-project --state open --limit 20 \
+    --json title,body \
+  | jq -c '.[]' \
+  | while read -r i; do \
+      gh issue create --repo me/my-project-sandbox \
+        --title "$(jq -r .title <<<"$i")" \
+        --body  "$(jq -r .body  <<<"$i")"; \
+    done
 
-# 4. Opt in — propose adopting the tracker/quality-gate conventions in
-#    YOUR repo via a reviewable, tree-only PR (nothing lands without your
-#    review; --dry-run previews with zero writes at all).
+# 4. Adopt, in the sandbox — bootstraps `.temperloop/config` via a
+#    reviewable, tree-only PR, then offers you the pre-designed FIRST EPIC
+#    ("Set up <project> with temperloop") and prints the handoff. Nothing
+#    lands without your review; --dry-run previews with zero writes at all.
 temperloop init
+
+# 5. Run the first epic through the REAL pipeline — this is the part worth
+#    watching. `/assess` decomposes the epic's Contract into a
+#    dependency-ordered plan; `/build` executes it with worktree-isolated
+#    workers, real PRs, real CI, and a batched merge gate.
+claude
+> /assess --epic <N>
+> /build
 ```
 
-The ladder is the on-ramp; the CLI carries the rest of the adoption
+**Why the first epic is the demo.** Step 5 is not a scripted walkthrough —
+it is the pipeline doing real work on your repo. The first epic
+([ADR 0010](docs/adr/0010-onboarding-as-first-executed-epic.md),
+body in [`claude/templates/first-epic-setup.md`](claude/templates/first-epic-setup.md))
+sets up the three guardrails that make agent work safe to merge: **review
+criteria** that define "good" in this repo, a **protected `main`**, and **CI
+that has to pass**. Setting those up is genuine work with real dependency
+levels, so watching it run shows you the whole machine — claim → worktree →
+PR → CI → merge gate — on a change you actually wanted anyway. It is
+interview-first: every question is asked before any external write, and your
+answers compose into one change-set you confirm once.
+
+Once the epic has merged, the sandbox has a working board and a green
+pipeline. Point `/triage` at the issues you imported in step 3 to watch it
+group a real backlog into epics, and `/build` to drain one.
+
+**When you're done**, delete the whole thing — there is nothing to unwind,
+because nothing outside the sandbox was ever touched:
+
+```sh
+# `gh auth login` does not grant repo deletion by default; grant it once:
+gh auth refresh -s delete_repo
+gh repo delete me/my-project-sandbox --yes
+```
+
+Deleting the sandbox removes the repo only. If you also ran
+`temperloop install` to wire the machine-wide surface, `temperloop uninstall`
+removes that from its own manifest — see the lifecycle note below.
+
+**To adopt for real**, run `temperloop init` in your actual repo. It behaves
+identically, and the same first epic sets up the same guardrails — the only
+difference is that this time the PRs are ones you keep. `temperloop eject`
+undoes `init` in a target repo if you change your mind.
+
+The CLI carries the rest of the adoption
 lifecycle too: `temperloop install` wires the machine-wide surface (and
 prints the `doctor.sh` command that verifies exactly what landed),
 `update` moves an existing install forward with consent, `eject` undoes
@@ -184,7 +245,8 @@ workflows/scripts/
   build/        build deterministic-machinery toolkit (worktree, ci-poll, pr, gate, …)
   install/      install surface — doctor.sh (machine-link verify),
                 project-agents.sh (review-agent deploy), install-claude-md.sh
-  demo/         the disposable demo-repo seeder `temperloop try --demo` ticks
+  demo/         seeder for the legacy disposable demo repo — no longer part
+                of the on-ramp (§ 3 evaluates on a duplicate of your own repo)
   proposal/     the tree-only proposal-PR generator `temperloop init` rides
   probe/        the read-only repo-conventions probe both of the above share
   docs/         the docs-site generator (`make docs`) — renders § 6 below from
