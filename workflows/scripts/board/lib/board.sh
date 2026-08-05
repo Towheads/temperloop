@@ -1856,15 +1856,32 @@ board_parent_issue() {
 # see CACHE-STORE.md) means a closed child is preserved here exactly as the live
 # `/sub_issues` endpoint already includes closed children — no behavior change,
 # just a cheaper read when warm.
-#   board_sub_issues <board> <issue#>  ->  child issue numbers, one per line
+# OPTIONAL STATE FILTER (temperloop#1119). The third arg narrows the result to
+# children in one state; it DEFAULTS to `all`, so every pre-existing two-arg
+# call is byte-identical to before. It exists because the epic-close count
+# ("how many children are still open?") is a relationship read like any other,
+# and without a state filter its only options were the raw REST endpoint —
+# which bypasses this cached arm entirely — or a per-child state lookup, which
+# is N extra calls to answer what one snapshot pass already knows. Both arms
+# filter, so cached and live stay byte-parity under every state value.
+#   board_sub_issues <board> <issue#> [all|open|closed]  ->  numbers, one per line
 board_sub_issues() {
-  local board="$1" issue="$2" repo raw
+  local board="$1" issue="$2" state="${3:-all}" repo raw
+  case "$state" in
+    all | open | closed) ;;
+    *) echo "board_sub_issues: state must be all|open|closed (got '$state')" >&2; return 2 ;;
+  esac
   repo="$(board_repo "$board")" || return 1
   if _board_cache_store_enabled "$board"; then
     if declare -F cache_read >/dev/null 2>&1; then
       raw="$(cache_read "$repo")" || return 1
-      printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" '
-        .[] | select((.parent.number // empty) == $n) | .number
+      # `.state // "open"` mirrors the live arm's own missing-field convention
+      # (issue_item treats an absent .state as open) so a snapshot row written
+      # before the field existed cannot silently drop out of an `open` filter.
+      printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" --arg st "$state" '
+        .[] | select((.parent.number // empty) == $n)
+            | select($st == "all" or (.state // "open") == $st)
+            | .number
       '
       return $?
     fi
@@ -1872,7 +1889,7 @@ board_sub_issues() {
   fi
   _board_gh api "repos/$repo/issues/$issue/sub_issues" 2>/dev/null |
     _board_sanitize_control_chars |
-    jq -r '.[].number'
+    jq -r --arg st "$state" '.[] | select($st == "all" or (.state // "open") == $st) | .number'
   return 0
 }
 

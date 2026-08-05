@@ -83,7 +83,14 @@ BULK_ISSUES='[
 _board_gh() {
   echo "gh $*" >>"$BOARD_CALLS"
   case "$1 $2" in
-    "api repos/$REPO/issues/300/sub_issues") echo '[{"number":301},{"number":302}]' ;;
+    # The real /sub_issues endpoint returns full issue objects and DOES carry
+    # `.state` — verified live 2026-08-04 against a known epic. The stub used to
+    # omit it, which under-specified the response and would have let a broken
+    # live-arm state filter pass (temperloop#1119): with `.state` absent the
+    # filter's `.state // "open"` default matched every row, so `open` returned
+    # closed children too. Keep these rows shaped like the real payload.
+    "api repos/$REPO/issues/300/sub_issues")
+      echo '[{"number":301,"state":"open"},{"number":302,"state":"closed"}]' ;;
     "api repos/$REPO/issues/301")
       echo '{"number":301,"parent_issue_url":"https://api.github.com/repos/'"$REPO"'/issues/300"}' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
@@ -167,6 +174,53 @@ echo "PASS: degradation path (cache.sh not sourced) falls back to live for both 
 # shellcheck source=scripts/lib/cache.sh
 # shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
+
+# --- 4. optional state filter (temperloop#1119) -----------------------------
+# board_sub_issues grew a third arg [all|open|closed], default `all`. It exists
+# so the epic-close "how many children are still open?" count can route through
+# this cached arm instead of the raw REST endpoint. The fixture is exactly the
+# shape that matters: #301 open, #302 CLOSED under epic #300.
+#
+# The load-bearing assertions are (a) the default is byte-identical to the
+# pre-#1119 two-arg call, and (b) cached and live agree under EVERY state value
+# — a filter that only worked warm would silently miscount whenever the store
+# is cold, and an epic-close miscount either strands an epic open forever or
+# closes it while children are still open (the #130 class).
+
+reset_calls
+FILTER_ALL_DEFAULT="$(board_sub_issues 60 300)"
+FILTER_ALL_EXPLICIT="$(board_sub_issues 60 300 all)"
+[ "$FILTER_ALL_DEFAULT" = "$FILTER_ALL_EXPLICIT" ] || \
+  fail "explicit 'all' must equal the default: default=[$FILTER_ALL_DEFAULT] explicit=[$FILTER_ALL_EXPLICIT]"
+[ "$FILTER_ALL_DEFAULT" = "$LIVE_SUB" ] || \
+  fail "default (2-arg) board_sub_issues must be unchanged by #1119: got=[$FILTER_ALL_DEFAULT] live=[$LIVE_SUB]"
+[ "$(board_calls)" -eq 0 ] || fail "filtered warm reads should make zero gh calls, got $(board_calls)"
+
+CACHED_OPEN="$(board_sub_issues 60 300 open)"
+CACHED_CLOSED="$(board_sub_issues 60 300 closed)"
+[ "$CACHED_OPEN" = "301" ] || fail "cached open filter should yield only #301, got [$CACHED_OPEN]"
+[ "$CACHED_CLOSED" = "302" ] || fail "cached closed filter should yield only #302, got [$CACHED_CLOSED]"
+[ "$(board_calls)" -eq 0 ] || fail "filtered warm reads should make zero gh calls, got $(board_calls)"
+echo "PASS: state filter on the CACHED arm — default==all==pre-#1119 output, open/closed partition correctly, zero gh calls"
+
+# Live arm (board 61, axis absent) must partition identically — this is the
+# assertion that stops a warm-only filter from shipping.
+reset_calls
+LIVE_OPEN="$(board_sub_issues 61 300 open)"
+LIVE_CLOSED="$(board_sub_issues 61 300 closed)"
+[ "$LIVE_OPEN" = "$CACHED_OPEN" ] || \
+  fail "live/cached parity broken for state=open: live=[$LIVE_OPEN] cached=[$CACHED_OPEN]"
+[ "$LIVE_CLOSED" = "$CACHED_CLOSED" ] || \
+  fail "live/cached parity broken for state=closed: live=[$LIVE_CLOSED] cached=[$CACHED_CLOSED]"
+echo "PASS: state filter is byte-parity between the cached and live arms (open and closed)"
+
+# A bad state value must be rejected loudly, not silently treated as `all` — a
+# typo'd filter that quietly returned every child would inflate an open-children
+# count and hold an epic open forever.
+rc=0
+board_sub_issues 60 300 bogus >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "invalid state should exit 2 (never silently treated as 'all'), got $rc"
+echo "PASS: invalid state value rejected with exit 2"
 
 echo
 echo "ALL PASS: test_relationship_cache.sh"
