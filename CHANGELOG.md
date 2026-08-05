@@ -16,6 +16,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`board_sub_issues` takes an optional state filter (temperloop#1119).**
+  `board_sub_issues <board> <issue#> [all|open|closed]` — the third arg is new
+  and **defaults to `all`, so every existing two-arg call is byte-identical**.
+  Not breaking; no overlay has to adapt. It exists because the epic-close
+  "how many children are still open?" count is a relationship read like any
+  other, and without a state filter its only options were the raw REST
+  endpoint — which bypasses the cached arm entirely — or one state lookup per
+  child, which is N extra calls to answer what a single snapshot pass already
+  knows. Both the cached and live arms apply the filter, so they stay
+  byte-parity under every state value; a warm-only filter would have
+  miscounted whenever the store was cold, and an epic-close miscount either
+  strands an epic open forever or closes it with children still open.
+
 - **`ks_search` can be scoped to a project partition, and the single-tenancy
   limitation is now documented for the stranger (temperloop#418).** The
   knowledge store is one flat corpus per `$HOME`; its only separation between
@@ -135,6 +148,24 @@ reads that marker; a stranger greps for it before pulling.
   `workflows/scripts/lib/knowledge_store.contract.md` § `ks_search_reindex`
   flags; covered by four new cases in
   `workflows/scripts/lib/tests/test_knowledge_search.sh`.
+
+### Changed
+
+- **Sub-issue reads in `board-mirror.sh` route through the board adapter
+  instead of the raw REST endpoint (temperloop#1119).** temperloop#1030 gave
+  `board_sub_issues` / `board_parent_issue` a cached arm, justified by the
+  F#988 baseline's heaviest measured read class (the per-issue relationship
+  fan-out: 4.1s p50, 12.6s total, against ~500ms for `resolve_item`). Nothing
+  in production called them — `board-mirror.sh` read `repos/…/issues/N/sub_issues`
+  directly, so the cached arm was exercised only by `gh-bench.sh`, the tool that
+  measures it. The epic's largest justified win was unreachable in the running
+  system. `_subissue_children` / `_subissue_open_children` now delegate to
+  `board_sub_issues` and take a board id rather than a repo (both call sites
+  already had one in scope). **The POST link path is deliberately untouched** —
+  it is a mutation, not a read, and the adapter exposes no cached arm for it.
+  `board-mirror.sh` also gains the `lib/cache.sh` source line: temperloop#1118
+  excluded it on the reasoning that it called only the always-live
+  `board_resolve_item`, which this change invalidates. Not breaking.
 
 ## [0.25.0] - 2026-08-03
 
