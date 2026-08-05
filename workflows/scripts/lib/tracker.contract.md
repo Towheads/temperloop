@@ -1,15 +1,22 @@
 # tracker interface contract
 
 `tracker` is the work-tracking seam between a caller (a pipeline script,
-hook, or command) and wherever tracked work items actually live — a GitHub
-Projects-v2 board, or a repo's plain Issues. A caller that wants to resolve
-an item, read its status/fields, set its status, walk its dependency edges,
-or land a new issue on the board does so through this interface — never by
-hardcoding a Projects-v2 GraphQL query or a `gh project` invocation for a
-particular board. That indirection is what lets one install drive a
-Projects-v2 board while another drives an issues-only repo, with **zero
-backend branching in callers** — same function name, same signature, backend
-selected per-board by config.
+hook, or command) and wherever tracked work items actually live — a repo's
+plain Issues. A caller that wants to resolve an item, read its status/fields,
+set its status, walk its dependency edges, or land a new issue on the board
+does so through this interface — never by hardcoding a `gh issue` invocation
+or a REST path for a particular board. That indirection is what keeps
+per-board identity (which repo, which owner) in one registry instead of
+smeared across callers.
+
+**One backend (ADR 0004).** The tracker formerly had two arms — a GitHub
+Projects-v2 board (GraphQL) and issues-only (REST) — selected per board by
+config. The Projects-v2 arm was deprecated in v0.15.0 and **removed** in the
+BREAKING release after v0.25.0 (epic temperloop#524). Issues-only is now the
+only backend: the tracking flow issues no GraphQL call and depends on no paid
+or org-level GitHub feature. The `backend` config axis survives for exactly
+one purpose — refusing a stale `backend=projects` line rather than silently
+reinterpreting it (see Backend selection below).
 
 Implementation: `workflows/scripts/board/lib/board.sh` (bash, 3.2-compatible)
 — there is no separate `tracker.sh`; "tracker" is the seam's conceptual name
@@ -33,11 +40,10 @@ indirection: one place every call pipelines through.
 ## Configuration
 
 The tracker is configured through `boards.conf`, a small key=value file — the
-same seam `board_repo` / `board_owner` / `board_project_number` already read.
+same seam `board_repo` / `board_owner` already read.
 Unlike `knowledge_store` (one process-wide `KNOWLEDGE_STORE_BACKEND` env
-var), the tracker's backend is selected **per board**, because one machine
-routinely drives several boards at once. This is a deliberate asymmetry with
-`knowledge_store`, noted again under Backend selection below.
+var), the tracker's per-board config carries **per-board identity** (repo, owner,
+name), because one machine routinely drives several boards at once.
 
 Discovery order — the first file literally named `boards.conf` found wins
 (see `boards.conf.example`):
@@ -55,10 +61,9 @@ can register data but never execute code (the security posture, mirroring how
 | Axis | Value | Meaning |
 |---|---|---|
 | `repo` | `<owner>/<name>` | repo-owner axis (`gh issue create -R`, REST). The only axis an issues-only board needs. |
-| `owner` | `<login>` | project-owner axis (`gh project … --owner`). Projects-v2 only. |
-| `project` | `<number>` | Projects-v2 project number. Projects-v2 only. |
+| `owner` | `<login>` | board-owner login. Distinct from the repo-owner above (#330); a board with a `repo=` line but no resolvable `owner=` fails LOUD rather than borrowing this checkout's own org (temperloop#798). |
 | `name` | `<slug>` | board NAME alias → number (`board_resolve_name`). Purely additive. |
-| `backend` | `issues` | tracker backend axis (default `projects`; see below). |
+| `backend` | `issues` | vestigial. `issues` is a no-op; `projects` HARD-FAILS (see Backend selection). |
 | `cache` | `on` | issue-plane read-cache enable (default off; see Caching & egress). |
 
 **Rename note (window CLOSED in v0.19.0, temperloop#165).** The per-repo
@@ -72,43 +77,54 @@ surface`.
 
 ## Backend selection
 
-`board_backend <N>` resolves a board number to its backend:
+`board_backend <N>` no longer *selects* anything — there is one backend:
 
 ```
-board_backend <board#>  ->  "issues" | "projects" (default)
+board_backend <board#>  ->  "issues"   (rc 0, unconditionally)
+                        ->  rc 1 + stderr, on an explicit backend=projects
 ```
 
-The default — no conf entry, or any value other than `issues` — is
-`"projects"`, **byte-identical to the pre-issues-only behavior**. Three
-properties are worth stating explicitly, because they are the deliberate
-asymmetries with `knowledge_store`'s backend seam:
+**The one job it has left: refuse a stale `backend=projects` line.** A
+`boards.conf` entry reading `backend=projects` returns **non-zero** with a
+one-line error naming ADR 0004 and the migration path. It is never silently
+resolved to `issues`.
+
+That refusal is load-bearing, not cosmetic. A stale `backend=projects` line
+expresses a real operator intent this build cannot honour, and quietly
+reinterpreting it would move that board's state onto a different substrate
+with no signal at all — which is exactly the failure **temperloop#908**
+recorded, where a silently reverted cutover put four boards on the wrong path
+and was found only by hand. Every public entry point (`board_resolve`,
+`board_resolve_item`, `board_item_list`, `board_create_many`) propagates the
+non-zero rather than proceeding, so the operation stops instead of writing to
+an unintended substrate.
+
+There is **no configuration path back** to Projects-v2. An adopter who wants
+it forks `board.sh`. Migration for anyone still on the old arm: check out
+v0.25.0, run its `migrate-board-to-issues.sh` (deleted in this release, per
+ADR 0004's ordering pin), delete the `backend=projects` line, then pull.
+
+Two properties remain worth stating, as deliberate asymmetries with
+`knowledge_store`'s backend seam:
 
 - **The backend set is closed, not an open registration seam.**
   `knowledge_store` lets anyone register a new backend by defining
   `_ks_backend_<name>_<op>` functions and pointing the env var at it. The
-  tracker has exactly **two** backends — `projects` and `issues` — both
-  implemented inline in `board.sh`; there is no `_tracker_backend_<name>_*`
-  extension point. Adding a third backend is a change to `board.sh` itself,
-  not a caller-side registration.
-- **Selection is per-board config, not a process-wide env var** (see
-  Configuration above).
-- **The `backend` axis resolves per-key across the conf layers**, unlike the
-  whole-file-first-hit-wins `repo`/`owner`/`project` axes: a machine-level
-  conf silent on `backend` for a board falls through to a repo-local
-  `backend=` line rather than jumping straight to the built-in map (a
-  committed repo-local `backend=issues` is what lets a repo declare its own
-  backend without every operator's machine conf having to). See
-  `board_backend`'s header comment and `boards.conf.example` for the exact
-  layering.
+  tracker has exactly **one** backend, implemented inline in `board.sh`;
+  there is no `_tracker_backend_<name>_*` extension point. Adding a backend
+  is a change to `board.sh` itself, not a caller-side registration.
+- **Per-board config, not a process-wide env var** (see Configuration above)
+  — a machine routinely drives several boards at once.
 
-There is deliberately **no built-in case-map entry** defaulting a board to
-`issues` — the seam is additive-only — with exactly one exception: **board 7,
-the kernel's own tracker (the temperloop repo)**, whose issues-only-ness is
-baked into `board_backend`'s built-in map because it is a structural fact of
-what board 7 *is*, not a per-deployment choice. See ISSUES-ONLY-BACKEND.md
-§ The temperloop tracker (board 7). Every other fleet board reaches
-`issues` via a committed `boards.conf` entry (ADR 0004 "issues-only default
-backend" / ADR 0005 "repo-local conf cutover", under `docs/adr/`).
+**Superseded:** this section previously documented the built-in case map as
+*additive-only*, with an unconfigured board resolving `"projects"` and **board
+7 the sole in-code issues-only exception**. ADR 0005 § Decision and
+§ Consequences recorded that this language survives the migration epic and is
+"superseded only by the follow-on removal epic, which retires the Projects
+defaults explicitly". This is that removal. Board 7 is no longer an exception
+to anything — every board is issues-only, and board 7's only special-casing is
+its `board_repo()` built-in-map entry. See ISSUES-ONLY-BACKEND.md § Selecting
+the backend.
 
 ## Public interface
 
@@ -120,9 +136,9 @@ or unknown board, never a silent wrong result.
 
 ```
 board_repo <N>              ->  "owner/repo"
-board_owner <N>             ->  project-owner login          (Projects-v2)
-board_project_number <N>    ->  Projects-v2 project number   (Projects-v2)
-board_backend <N>           ->  "issues" | "projects"
+board_owner <N>             ->  board-owner login (fails loud if repo= is set
+                            #     without a resolvable owner= — temperloop#798)
+board_backend <N>           ->  "issues"; rc 1 on a stale backend=projects
 board_registered_boards     ->  every known board number, ascending
 board_resolve_name <name>   ->  board NAME alias -> number
 ```
@@ -130,31 +146,38 @@ board_resolve_name <name>   ->  board NAME alias -> number
 **Whole-board / item resolution** (read path):
 
 ```
-board_resolve <N>              # sets BOARD_ITEMS_JSON, BOARD_PROJECT_ID,
-                               #   BOARD_FIELDS_JSON. Whole-board scan; the
+board_resolve <N>              # sets BOARD_ITEMS_JSON. Whole-board scan; the
                                #   worklist/reconcile/burst path. Fails LOUD
                                #   (non-zero) on a rate-limited/empty read
                                #   rather than leaving accessors on null.
+                               #   Also sets BOARD_PROJECT_ID="" and
+                               #   BOARD_FIELDS_JSON='{"fields":[]}' — VESTIGIAL
+                               #   (no project node, no field schema), kept at
+                               #   their documented empty values so a caller
+                               #   reading them under `set -u` is unchanged
+                               #   (temperloop#602).
 board_resolve_item <N> <issue#>  # single-item resolve; ALWAYS-LIVE (sees
                                  #   Done), never cached — the claim-lock read
                                  #   path. Prefer for touching exactly one item.
-board_item_list <N>            ->  item-list JSON on stdout (Projects: GraphQL,
-                               #   cached; issues: gh issue list, live)
+board_item_list <N>            ->  item-list JSON on stdout (gh issue list,
+                               #   live; optionally served by the issue-cache
+                               #   store — see Caching & egress)
 board_item_id <n> / board_item_title <n> / board_item_milestone <n>
                                #   jq accessors over BOARD_ITEMS_JSON
-board_field_id / board_option_id   # Projects-v2 field/option id by NAME
 ```
 
 **Write path** (status / component / milestone / claim):
 
 ```
-board_set_status <item-id> <option> [field]   # Projects: item-edit; issues:
-                                              #   fnd:status:* label + open/close.
-                                              #   arg1 MUST be a PVTI_* item-id.
+board_set_status <item-id> <option> [field]   # fnd:status:* label + open/close
+                                              #   (Done = closed, no label).
+                                              #   arg1 MUST be an ISSUE_<n>
+                                              #   item-id; a PVTI_* id is
+                                              #   REJECTED loud (ADR 0004).
 board_set_component <item-id> <name>          # thin wrapper over set_status
-board_stamp <item-id> <text>                  # claim-owner stamp (Projects:
-                                              #   Host/Session field; issues:
-                                              #   fnd:host/session:<verbatim>)
+board_stamp <item-id> <text>                  # claim-owner stamp
+                                              #   (fnd:host/session:<verbatim>;
+                                              #   empty text CLEARS it)
 board_claim_contended <N> <issue#> <stamp>    # cheap pre-write contention check:
                                               #   prints foreign stamp + rc 0 if
                                               #   contended; rc 1 if safe to claim
@@ -179,7 +202,6 @@ board_sub_issues <N> <issue#>                 # parent -> child issue numbers
 **Creation / capture:**
 
 ```
-board_add_to_board <N> <issue-url>            # add an existing issue to the board
 board_create_many <N> <url1> <num1> …         # batch landing; 3-way return
                                               #   (0/1/2) + BOARD_UNLANDED_ISSUES
 board_create_on_board <N> <url> <num>         # single landing
@@ -189,28 +211,26 @@ board_capture_item <N> <url> <num>            # single landing; identical return
                                               #   return-contract parity)
 ```
 
-**Cache control:**
+**Cache control:** none. `board_bust_structure` was removed with the
+Projects-v2 structure cache it invalidated (ADR 0004). There is no adapter-owned
+cache to bust: the whole-board read is live, and the optional issue-corpus store
+is invalidated by `cache.sh`'s own `cache_dirty`/`cache_clear` (write-through
+after every successful mutation — see Caching & egress).
 
-```
-board_bust_structure [N]     # invalidate the structure cache after a manual
-                             #   board edit (field/option create). Structure
-                             #   only — the items page has its own short TTL.
-```
+**Removed with the Projects-v2 arm** (ADR 0004), listed so a caller that still
+references one gets a name to grep rather than a silent `command not found`:
+`board_project_number`, `board_field_id`, `board_option_id`,
+`board_add_to_board`, `board_bust_structure`, and the internals
+`_board_budget_guard`, `_board_cached_read`, `_board_cache_file`,
+`_board_cache_bust`, `_board_cache_patch_*`, `_board_item_list_argv`,
+`_board_item_list_fresh`, `_board_drop_pr_cards`. Settings `BOARD_CACHE_TTL`,
+`BOARD_STRUCTURE_TTL`, `BOARD_CACHE_DIR`, `BOARD_ITEM_QUERY`,
+`BOARD_BUDGET_GUARD*`, and `BOARD_CREATE_INDEX_RETRIES` went with them.
 
 The consuming scripts routed through this seam — `claim.sh`, `capture.sh`,
 `worklist.sh`, `reconcile.sh`, `pipeline-tick.sh`, `pipeline-drive.sh`, and the
-`/build` board-mirror — carry **no backend branching**: the backend is
-chosen entirely inside these functions by `board_backend`.
-
-## The projects-v2 backend
-
-The original arm: a GitHub Projects-v2 board provisioned, items and their
-single-select fields (Status, Component) stamped via `gh project item-edit`,
-resolved-by-**name** (field/option ids are never hardcoded — they're resolved
-from the cached field list). This is the deprecated-not-removed legacy arm
-during the issues-only soak window (ADR 0005; ISSUES-ONLY-BACKEND.md
-§ Issues-only is now the default backend). Its GraphQL calls draw on the
-shared budget documented under Caching & egress.
+`/build` board-mirror — carry **no backend branching**, which is now trivially
+true: there is one backend.
 
 ## The issues-only backend
 
@@ -235,19 +255,23 @@ does not restate it. See in particular:
 
 ## Backend matrix
 
-| Dimension | projects-v2 | issues-only |
+One backend; the former `projects-v2` column is kept only as the historical
+"what this replaced", so a reader migrating an old install can map the concepts.
+
+| Dimension | issues-only (the only backend) | former projects-v2 (REMOVED, ADR 0004) |
 |---|---|---|
-| Item store | Projects-v2 board items | repo Issues |
-| Status | single-select field | `fnd:status:*` label |
-| Done | `Done` option | issue **closed** (no label) |
-| Component | single-select field | `fnd:component:<slug>` label |
-| Claim stamp | Host/Session free-text field | `fnd:host/session:<verbatim>` label |
-| Provisioning | a board must exist | none — any repo works |
-| API surface | GraphQL (project) + REST (issue) | REST only |
-| Rate budget | 5,000-pt/hr GraphQL bucket | 5,000/hr REST bucket (separate) |
-| Read caching | structure(24h)+state(90s) cache | live by default; optional issue-cache |
-| Seq ordering | — | removed, fails loud (ADR 0006) |
-| Selected by | default (or `backend=projects`) | `board.<N>.backend=issues` (board 7 in-code) |
+| Item store | repo Issues | Projects-v2 board items |
+| Item id | `ISSUE_<issue#>` | `PVTI_*` (now rejected loud) |
+| Status | `fnd:status:*` label | single-select field |
+| Done | issue **closed** (no label) | `Done` option |
+| Component | `fnd:component:<slug>` label | single-select field |
+| Claim stamp | `fnd:host/session:<verbatim>` label | Host/Session free-text field |
+| Provisioning | none — any repo works | a board must exist |
+| API surface | REST only | GraphQL (project) + REST (issue) |
+| Rate budget | 5,000/hr REST bucket | 5,000-pt/hr GraphQL bucket |
+| Read caching | live by default; optional issue-corpus store | structure(24h)+state(90s) cache |
+| Seq ordering | removed, fails loud (ADR 0006) | numeric `Seq` field |
+| Selected by | nothing — it is the only backend | `backend=projects` (now HARD-FAILS) |
 
 ## Caching & egress
 
@@ -257,33 +281,22 @@ single `_board_gh` seam; nothing in `board.sh` opens a socket directly (no
 "no egress beyond `gh` itself." The board adapter is **not** among the
 producers scanned by the `test-producer-egress` gate (that gate covers the
 Epic E value-loop producers); the tracker's egress discipline is the
-single-`_board_gh`-seam convention stated here plus the `board-adapter-guard`
-PreToolUse hook that steers raw `gh project` calls back onto the adapter.
+single-`_board_gh`-seam convention stated here.
 
-**Rate budgets differ by backend.** The Projects-v2 arm spends the
-**5,000-points/hour GraphQL** budget (guarded by `_board_budget_guard`); the
-issues-only arm uses REST's **separate 5,000/hour** bucket and never touches
-the GraphQL budget — a distinction that matters when reasoning about which
-runs can starve which.
+**One rate budget.** Every tracker call is REST, on its **5,000/hour** bucket.
+The Projects-v2 **5,000-points/hour GraphQL** budget — and `_board_budget_guard`,
+the pre-flight guard that warned or aborted on a near-empty one — no longer
+apply: nothing in the tracking flow spends GraphQL points (ADR 0004). The
+former structure(24h)/state(90s) cache split existed purely to relieve that
+budget and was removed with it; `board.sh` now owns **no cache of its own**.
 
-**The structure/state cache split** (Projects-v2 arm), deliberately split
-because board *structure* was 56% of board GraphQL:
-
-- **Structure cache** (project id + field/option schema): long TTL
-  `BOARD_STRUCTURE_TTL` (default **86400s / 24h**), invalidated only by
-  `board_bust_structure` (run it after any manual field/option edit — see the
-  board-adapter rule in the process docs).
-- **State/items cache** (the item-list page): short TTL `BOARD_CACHE_TTL`
-  (default **90s**) plus write-invalidation. `BOARD_CACHE_TTL=0` is the
-  master off-switch (fully live, both classes).
-
-**Issues-only read caching** is off by default (every read is live). An
+**Read caching** is off by default (every read is live). An
 optional on-disk issue-cache store (`board/lib/cache.sh`, enabled per-board
 with `board.<N>.cache=on`) can serve the whole-board read with a staleness
 bound `CACHE_STORE_TTL` (default **3600s / 1h**, an env var, not a
-`boards.conf` axis). The read-dispatch short-circuit that consults it fires
-today only for a `backend=issues` board. See ISSUES-ONLY-BACKEND.md § Read
-cache staleness bound and `board/lib/CACHE-STORE.md`.
+`boards.conf` axis). It is now the ONLY cache in front of any board read. See
+ISSUES-ONLY-BACKEND.md § Read cache staleness bound and
+`board/lib/CACHE-STORE.md`.
 
 ## Non-goals of this seam (deliberately out of scope)
 
@@ -291,15 +304,17 @@ cache staleness bound and `board/lib/CACHE-STORE.md`.
   `board_backend`; if a caller finds itself asking "is this issues-only?",
   that logic belongs inside `board.sh`, not in the caller.
 - **No open backend-registration seam.** Unlike `knowledge_store`, the
-  backend set is closed (projects / issues). A new backend is a change to
-  `board.sh`, not an external plug-in point.
+  backend set is closed — one backend, issues-only. A new backend is a change
+  to `board.sh`, not an external plug-in point.
 - **No Seq / positional ordering.** Retired with the Projects-v2 numeric
   ordering field (ADR 0006); `board_set_number` fails loud rather than
   emulating it on issues-only.
-- **No per-item Projects-v2 fields on the issues-only backend** beyond those
-  expressible as `fnd:<field>:<value>` single-select-shaped labels — there is
-  no free-form custom-field API on issues.
-- **No structural board editing.** Creating a field or adding a single-select
-  option is a raw `gh` / `updateProjectV2Field` operation the adapter does
-  not wrap (followed by `board_bust_structure`); this seam resolves and
-  writes *values*, not *schema*.
+- **No per-item custom fields** beyond those expressible as
+  `fnd:<field>:<value>` single-select-shaped labels — there is no free-form
+  custom-field API on issues.
+- **No structural board editing**, and nothing left to edit: with Projects-v2
+  removed there is no field/option schema. This seam writes *values* (labels,
+  milestones, edges), never *schema*.
+- **No path back to Projects-v2.** Removed, not hidden behind a flag — a
+  `backend=projects` conf line fails loud (see Backend selection). An adopter
+  who needs it forks `board.sh`.

@@ -14,6 +14,52 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Removed — BREAKING
+
+- **BREAKING — the Projects-v2/GraphQL arm is removed from the board adapter**
+  (ADR 0004, epic #524). `lib/board.sh` now speaks exactly one tracking
+  backend: issues-only, over REST. The tracking flow issues **no GraphQL call**
+  and depends on no paid or org-level GitHub feature — a free account and a
+  repo are sufficient.
+
+  Gone from the adapter: every `gh project` argv and the single-item
+  `gh api graphql` resolve; the 5,000-pt/hr GraphQL budget guard
+  (`_board_budget_guard`); the whole cross-process structure/state read cache
+  (`_board_cached_read`, `_board_cache_file`, `_board_cache_bust`,
+  `_board_cache_patch_*`, `_board_file_age`, `_board_item_list_argv`,
+  `_board_item_list_fresh`, `_board_drop_pr_cards`); and the public functions
+  `board_project_number`, `board_field_id`, `board_option_id`,
+  `board_add_to_board`, `board_bust_structure`. Settings `BOARD_CACHE_TTL`,
+  `BOARD_STRUCTURE_TTL`, `BOARD_CACHE_DIR`, `BOARD_ITEM_QUERY`,
+  `BOARD_BUDGET_GUARD`, `BOARD_BUDGET_GUARD_THRESHOLD`,
+  `BOARD_CREATE_BUDGET_GUARD`, and `BOARD_CREATE_INDEX_RETRIES` left the
+  setting registry with them.
+
+  **Every surviving public accessor keeps its issues-only behavior
+  byte-identical** — each function's Projects half sat behind an
+  `_board_is_issues_only` early return, so this deletes tails rather than
+  restructuring the live path. `BOARD_PROJECT_ID` and `BOARD_FIELDS_JSON` are
+  now vestigial but are still set to their documented empty values (`""` and
+  `{"fields":[]}`), so a caller reading them under `set -u` is unaffected.
+  Item ids are `ISSUE_<n>`; a `PVTI_*` id is now rejected loud.
+
+  **Migration — read this before pulling.** There is **no configuration path
+  back** to Projects-v2; an adopter who wants it forks `board.sh`. A
+  `boards.conf` line reading `board.<N>.backend=projects` **hard-fails** with a
+  one-line error citing ADR 0004 — deliberately, rather than silently resolving
+  to `issues`: a backend that changes under you with nothing telling you is the
+  exact failure temperloop#908 recorded. If any board is still on the
+  Projects arm, **check out v0.25.0 and run its
+  `workflows/scripts/board/migrate-board-to-issues.sh` first** — v0.25.0 is the
+  last release carrying that script, which was deleted in v0.26.0 per ADR
+  0004's ordering pin — then delete the `backend=projects` line and pull. The `backend` axis otherwise remains
+  accepted and inert; a stale `project=` axis is simply no longer read.
+
+  This also lands the supersession ADR 0005 § Decision and § Consequences
+  documented in advance: the built-in map's **additive-only** rule, and the
+  "board 7 is the sole in-code issues-only exception" language, are retired
+  here explicitly. Board 7 is no longer an exception to anything.
+
 ## [0.27.0] - 2026-08-05 — BREAKING
 
 ### Migration — read this first

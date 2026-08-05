@@ -21,15 +21,25 @@
 #   2) emit canned fixture JSON for the read subcommands, so the scripts run
 #      end-to-end with zero network.
 #
-# It deliberately understands BOTH gh calling styles the scripts use:
-#   - `gh project ... --format json`            (caller pipes to its own jq)
-#   - `gh project ... --format json -q <filter>` (gh applies the jq filter)
-# so it can stand in for the pre-refactor capture.sh (which used -q) and the
-# post-refactor scripts (which jq locally) without either noticing a difference.
+# ISSUES-ONLY (ADR 0004). The PATH-binary form speaks the issues-only REST/CLI
+# verbs the board adapter actually uses — `gh issue create/list/edit/close/reopen`,
+# `gh api repos/<owner>/<repo>/issues/<n>`, `gh label create`. The former
+# Projects-v2 routes (`gh project …`, `gh api graphql`) are now HARD ERRORS
+# rather than canned responses: with that arm removed, any script reaching them
+# is a regression, and failing loudly here is what surfaces it. That makes this
+# fixture a guard as well as a stand-in.
+#
+# It still understands both output styles the scripts use:
+#   - `--format json` / `--json <fields>`  (caller pipes to its own jq)
+#   - `-q <filter>` / `--jq <filter>`      (gh applies the jq filter)
+#
+# NOTE: `test_capture.sh` is the ONLY consumer of this PATH-binary form; every
+# other board test sources this file for `_fake_gh_log_argv` alone
+# (FAKE_GH_SOURCE=1) and is unaffected by the routing below.
 #
 # Env (PATH-binary form only):
 #   GH_LOG        path to append the argv transcript to (required)
-#   GH_FIXTURES   dir holding project_view.json / field_list.json / item_list.json
+#   GH_FIXTURES   dir holding the canned JSON fixtures
 
 # ---------------------------------------------------------------------------
 # Sourceable helper — the ONE owner of the argv-log-v1 quoting logic.
@@ -88,20 +98,19 @@ emit() {
 sub="${1:-}"
 case "$sub" in
   project)
-    pcmd="${2:-}"
-    case "$pcmd" in
-      view)       emit project_view.json "$@" ;;
-      field-list) emit field_list.json "$@" ;;
-      item-list)  emit item_list.json "$@" ;;
-      item-add)   : ;;                       # write: record only (logged above)
-      item-edit)  : ;;                       # write: record only
-      *) echo "fake_gh: unhandled project subcommand: $pcmd" >&2; exit 3 ;;
-    esac
+    # The Projects-v2 arm was REMOVED (ADR 0004). Nothing may build this argv.
+    echo "fake_gh: REGRESSION — a script built a 'gh project' argv, but the Projects-v2 arm was removed (ADR 0004): $*" >&2
+    exit 3
     ;;
   issue)
     icmd="${2:-}"
     case "$icmd" in
       create) printf 'https://github.com/Towheads/stageFind/issues/999\n' ;;
+      list)
+        # Whole-board read on the issues-only path. Serve issue_list.json when
+        # provided; otherwise an empty set, which is a valid board.
+        if [ -f "$FIX/issue_list.json" ]; then emit issue_list.json "$@"; else printf '[]\n'; fi
+        ;;
       view)
         # Serve issue_view.json if present in the fixture dir; fall back to a
         # minimal synthetic issue so `gh issue view <N> --json ...` never hard-
@@ -112,13 +121,29 @@ case "$sub" in
           printf '{"number":0,"title":"(fake issue)","body":"","labels":[],"url":""}\n'
         fi
         ;;
+      edit | close | reopen) : ;;            # write: record only (logged above)
       *) echo "fake_gh: unhandled issue subcommand: $icmd" >&2; exit 3 ;;
     esac
     ;;
   api)
-    # board_resolve_item's single-issue GraphQL lookup (`gh api graphql ...`).
     case "${2:-}" in
-      graphql) emit issue_project_item.json "$@" ;;
+      graphql)
+        echo "fake_gh: REGRESSION — a script built a 'gh api graphql' argv; the tracking flow issues no GraphQL call (ADR 0004): $*" >&2
+        exit 3
+        ;;
+      repos/*/issues/*)
+        # The single-issue read every issues-only resolve/write does first.
+        # Serve issue_api.json when provided; else a synthetic OPEN, unlabeled
+        # issue — the state a freshly-created capture target is actually in.
+        if [ -f "$FIX/issue_api.json" ]; then
+          emit issue_api.json "$@"
+        else
+          printf '{"number":999,"title":"(fake issue)","body":"","state":"open","labels":[]}\n'
+        fi
+        ;;
+      repos/*/milestones*)
+        if [ -f "$FIX/milestones.json" ]; then emit milestones.json "$@"; else printf '[]\n'; fi
+        ;;
       *) echo "fake_gh: unhandled api subcommand: ${2:-}" >&2; exit 3 ;;
     esac
     ;;

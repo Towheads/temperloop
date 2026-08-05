@@ -171,15 +171,7 @@ DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/script
 DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
 BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (layer 3). Default is $XDG_CONFIG_HOME/temperloop/boards.conf; the legacy $XDG_CONFIG_HOME/foundation/boards.conf fallback (temperloop#165) was removed in v0.19.0 and such a file is now NAMED on stderr rather than read — see docs/config-precedence.md
 BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (layer 4)
-BOARD_CACHE_TTL	90	seconds	kernel	workflows/scripts/board/lib/board.sh	Item-state cross-process cache TTL
-BOARD_STRUCTURE_TTL	86400	seconds	kernel	workflows/scripts/board/lib/board.sh	Board structure (project/field schema) cache TTL
-BOARD_CACHE_DIR	${TMPDIR:-/tmp}	path	kernel	workflows/scripts/board/lib/board.sh	On-disk dir for the board.sh cross-process cache files
 BOARD_ITEM_LIMIT	500	int	kernel	workflows/scripts/board/lib/board.sh	Page-size cap for a whole-board item-list read
-BOARD_ITEM_QUERY	-status:Done	string	kernel	workflows/scripts/board/lib/board.sh	Projects `--query` filter for a whole-board read
-BOARD_BUDGET_GUARD_THRESHOLD	200	int	kernel	workflows/scripts/board/lib/board.sh	GraphQL-remaining threshold below which the budget guard warns (0 disables)
-BOARD_BUDGET_GUARD	0	bool	kernel	workflows/scripts/board/lib/board.sh	Hard-abort (vs warn-only) a heavy whole-board read under a near-empty GraphQL budget
-BOARD_CREATE_BUDGET_GUARD	1	bool	kernel	workflows/scripts/board/lib/board.sh	Fallback guard posture for board_create_many's index-wait retry when the caller left BOARD_BUDGET_GUARD unset (defaults the retry loop to abort, not warn-only)
-BOARD_CREATE_INDEX_RETRIES	5	int	kernel	workflows/scripts/board/lib/board.sh	Retry budget for Projects-v2 index lag after board_create_many adds items
 CACHE_STORE_ROOT	${XDG_CACHE_HOME:-$HOME/.cache}/temperloop	path	kernel	workflows/scripts/board/lib/cache.sh	Store root for the durable issue-cache corpus store
 CACHE_STORE_TTL	3600	seconds	kernel	workflows/scripts/board/lib/cache.sh	Max-stale window before a cache_read triggers a refresh
 CMUX_BUNDLED_CLI_PATH	cmux	path	kernel	workflows/scripts/board/lib/claim_marker.sh	cmux CLI binary invoked to set/clear the claim-marker status

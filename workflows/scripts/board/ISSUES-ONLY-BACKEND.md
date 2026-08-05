@@ -79,28 +79,58 @@ below should be read as a removal timeline.
 
 ## Selecting the backend
 
-A new **fourth `boards.conf` axis**, a peer to `repo` / `owner` / `project`
-(same discovery order, same grep/cut-only parsing — see
-`boards.conf.example`):
+**There is nothing to select. Issues-only is the only backend** (ADR 0004).
+A board needs exactly one axis — its repo:
 
 ```
 board.<N>.repo=<owner>/<repo>
-board.<N>.backend=issues
 ```
 
-`board_backend <N>` resolves it; default (no conf entry, or any value other
-than `issues`) is `"projects"` — **byte-identical to the pre-#799 behavior**.
-An issues-only board only needs the `repo` axis; `owner` / `project` are
-Projects-v2-specific and simply never read on this path. There is
-deliberately **no built-in case-map entry** defaulting any board number to
-`issues` — the seam is additive-only, proven in
-`tests/test_issues_backend.sh`'s config-selection case (an unconfigured board
-still emits the exact `gh project …` argv `test_board_replay.sh` pins).
+`board_backend <N>` returns `issues` unconditionally.
 
-Every board this project's own pipeline drives today carries such a
-`boards.conf` entry (or, for board 7, the built-in-map entry described in
-§ The temperloop tracker below) — see § Issues-only is now the default
-backend, above.
+### The `backend` axis is retained solely to REFUSE a stale `projects` line
+
+The `board.<N>.backend=` axis still parses, but it no longer selects
+anything. It has one job left: a conf line reading **`backend=projects`
+hard-fails** with a one-line error naming ADR 0004 and the migration path,
+and `board_backend` returns non-zero. Every public entry point
+(`board_resolve`, `board_resolve_item`, `board_item_list`,
+`board_create_many`) propagates that refusal rather than proceeding.
+
+This deliberately does **not** silently resolve to `issues`. A stale
+`backend=projects` line expresses a real operator intent this build can no
+longer honour, and quietly reinterpreting it would move that board's state
+onto a different substrate with no signal — which is precisely the failure
+**temperloop#908** recorded: a silently reverted cutover put four boards on
+the wrong path and was only found by hand. A backend that changes under you
+with nothing telling you is the thing this refusal exists to prevent. There
+is **no configuration path back** to Projects-v2; an adopter who wants it
+forks `board.sh`.
+
+### Superseded: "the built-in map is additive-only, with board 7 its sole in-code exception"
+
+This section previously stated that the built-in case map was
+**additive-only**, that an unconfigured board resolved `"projects"` and emitted
+byte-identical `gh project …` argv, and that **board 7 was the sole in-code
+issues-only exception**. **All of that is superseded, as of this release, by
+the removal of the Projects-v2 arm.**
+
+The supersession is the documented, deliberate one ADR 0005 anticipated
+rather than an incidental drift. ADR 0005 § Decision records that the
+additive-only rule and its config-selection test pin "survive intact and are
+**superseded only by the follow-on removal epic, which retires the Projects
+defaults explicitly**", and ADR 0005 § Consequences pins the same point: "the
+supersession of the 'board 7 is the sole permanent exception' language is
+deliberate and documented at removal time, not shipped silently mid-migration."
+This is that removal (epic temperloop#524) and this is that documentation.
+
+What replaces it: there is no Projects default left to be additive to, so
+board 7 is no longer an *exception* to anything — it is simply one
+issues-only board among all of them, and its built-in-map `repo` entry is now
+its only special-cased axis (see § The temperloop tracker below).
+
+`owner` remains a live axis (a board's owning login); `project` was retired
+with `board_project_number()`.
 
 ## What `fnd:*` labels mean
 
@@ -596,15 +626,15 @@ across all five of their repos):
 
 ## The temperloop tracker (board 7, foundation #808)
 
-**Status update (temperloop#460):** board 7 was the sole board hard-coded
-to issues-only in the built-in map when this split landed. It no longer is
-unique at the *policy* level — every fleet board (3–6) is now also
-issues-only, via committed `boards.conf` entries rather than a built-in-map
-change (ADR 0004/0005; see § Issues-only is now the default backend,
-above). Board 7 remains the sole board whose issues-only-ness is baked
-directly into `board_backend()`'s built-in map, for the structural reason
-described below (it isn't a per-deployment choice for the kernel's own
-tracker) — the rest of this section is otherwise unchanged.
+**Status update (epic temperloop#524):** board 7 was once the sole board
+hard-coded to issues-only in the built-in map. **It is no longer an exception
+at all** — the Projects-v2 arm was removed (ADR 0004), so every board is
+issues-only and there is no in-code Projects default for board 7 to be
+carved out of. `board_backend()` no longer carries a board-7 case, because it
+no longer carries any backend selection. What survives from this section is
+board 7's `board_repo()` built-in-map entry and the `--repo kernel` routing
+below; the `board_backend()` half of the argument is historical. See
+§ Selecting the backend, above, for the superseded additive-only rule.
 
 The kernel-vs-overlay routing rule (CLAUDE.kernel.md § Kernel vs overlay
 routing rule) needed a concrete board number before it could be *followed*
@@ -616,7 +646,9 @@ this split (F#808, Guard #3 of the routing rule, epic B) gives the adapter a
 real handle: **board 7**, registered directly in `lib/board.sh`'s
 `board_repo()` and `board_backend()` built-in maps (`repo` → the
 temperloop repo; `backend` → `"issues"`), the SAME place boards 3-6
-already carry their real, org-qualified repo values.
+already carry their real, org-qualified repo values. (The `board_backend()`
+half of this is historical — that function no longer selects a backend; see
+§ Selecting the backend.)
 
 Not a committed `boards.conf` entry — deliberately. A real, org-qualified
 `repo` value is exactly the class of literal this checkout's own
@@ -627,12 +659,11 @@ values behind a trailing `# denylist:allow` marker for exactly this reason
 (a `boards.conf`-less consumer must still resolve a real repo — see
 § Selecting the backend, above). Board 7 follows that SAME precedent rather
 than inventing a second one: its case line in `board_repo()` carries the
-same marker, and `board_backend()` gets one narrowly-scoped case (`7 →
-"issues"`) as the sole, deliberate, permanent exception to that function's
-general "no board defaults to issues in-code" rule — board 7's issues-only-
-ness is a structural fact of what board 7 IS, not a per-deployment config
-choice a `boards.conf` should carry. A per-machine/per-repo `boards.conf`
-can still override board 7's `repo`/`backend` (checked FIRST, same
+same marker. (Historically `board_backend()` also carried a narrowly-scoped
+`7 → "issues"` case, as the sole permanent exception to that function's
+general "no board defaults to issues in-code" rule; both the rule and its
+exception are retired — see § Selecting the backend.) A per-machine/per-repo
+`boards.conf` can still override board 7's `repo` (checked FIRST, same
 discovery order as any other board) exactly as it could for boards 3-6 —
 this only hard-codes the DEFAULT a `boards.conf`-less consumer sees.
 `test_boards_conf.sh`'s built-in-fallback assertions cover board 7 the same

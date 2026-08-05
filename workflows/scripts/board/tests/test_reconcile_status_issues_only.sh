@@ -58,11 +58,10 @@ SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 # Deterministic host regardless of the runner's hostname (claim-stamp comparison).
 export SUBSET_HOST_LABEL="testhost"
 
-# Isolated cache dir — never the real TMPDIR/BOARD_CACHE_DIR (mirrors the
+# Isolated scratch dir (mirrors the
 # isolation rationale in test_reconcile.sh).
-BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-status-io-test-XXXXXX")"
-export BOARD_CACHE_DIR
-TEST_TMP_DIRS=("$BOARD_CACHE_DIR")
+TEST_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-status-io-test-XXXXXX")"
+TEST_TMP_DIRS=("$TEST_WORK_DIR")
 cleanup() { rm -rf "${TEST_TMP_DIRS[@]}"; }
 trap cleanup EXIT
 
@@ -96,10 +95,6 @@ _issues_where() { printf '%s' "$ALL_ISSUES_JSON" | jq -c --arg s "$1" '[ .[] | s
 
 _board_gh() {
   case "$1 $2" in
-    "project view")       echo '{"id":"PVT_TESTPROJECT"}' ;;
-    "project field-list") printf '%s' "$FIELD_LIST_JSON" ;;
-    "project item-list")  printf '%s' "$ITEM_LIST_JSON" ;;
-    "project item-edit")  printf 'project item-edit %s\n' "$*" >>"$WRITES"; return 0 ;;
     "pr list")            printf '%s' "$PR_LIST_JSON" ;;
     "label list")         printf '%s' "$LABEL_LIST_JSON" ;;
     "label create")       return 0 ;;
@@ -127,10 +122,27 @@ _board_gh() {
         esac
         return 0
       fi
+      # board.sh's whole-board read (issues-only) is the ONLY caller asking for
+      # title+milestone; serve the board fixture there. Every other --state open
+      # read (Lens 3's open-issue label scan) keeps its previous behavior.
+      if [ "$jsonfields" = "number,title,labels,milestone" ]; then
+        printf '%s' "$ITEM_LIST_JSON" | jq -c '
+          def slug: ascii_downcase | gsub(" "; "-");
+          [ .items[]
+            | select((.status // "") != "Done")
+            | { number: .content.number,
+                title: (.content.title // ""),
+                milestone: null,
+                labels: (
+                  (if (.status // "") != "" then [{name: ("fnd:status:" + (.status | slug))}] else [] end)
+                  + (if (.["host/Session"] // "") != "" then [{name: ("fnd:host/session:" + .["host/Session"])}] else [] end)
+                ) } ]'
+        return 0
+      fi
       case "$state" in
         all)
           # Lens 2's issue-state read. Record its --json argv so case 4 can prove
-          # the Projects-v2 request shape is byte-identical to pre-#1410.
+          # the issue-state request shape stays byte-identical (pre-#1410).
           printf '%s\n' "$jsonfields" >>"$STATE_READ_JSON"
           printf '%s' "$ALL_ISSUES_JSON" ;;
         closed) _issues_where closed ;;
@@ -247,19 +259,22 @@ echo "PASS: case 3 --status and --labels agree on a stranded claim stamp (no sil
 # Case 4: the backend collapse (temperloop#1121 — every registered board runs
 # the issues-only backend per ADR 0004's soak, ten releases in) removed the
 # reconcile.sh-level `_board_is_issues_only` branches, so the closed-issue tail
-# scan and the wider issue-state read now run UNCONDITIONALLY — even for a
-# board whose backend still resolves to the (not-yet-excised) Projects-v2
-# default inside lib/board.sh, which this fixture pins board 3 to via
-# BOARDS_CONF_MACHINE/BOARDS_CONF_REPO_LOCAL above. `board_resolve` itself
-# still exercises the real Projects-v2 GraphQL fixture path below (item-list /
-# field-list) — lib/board.sh is untouched by #1121, only its board.sh-external
-# CALLERS stopped branching on the backend. The board.sh-level backend axis
-# itself is retired by a follow-on item (board-lib-projects-excision).
+# scan and the wider issue-state read run UNCONDITIONALLY, for every board.
+# This case originally proved that held even for a board whose backend still
+# resolved to the Projects-v2 default inside lib/board.sh. That default is gone
+# (ADR 0004 — every board is issues-only), so what it pins now is that the
+# unconditional scans depend on NO per-board backend distinction, because there
+# is none left to depend on.
+#
+# The terminal-but-not-Done fixture below stays meaningful on the one remaining
+# backend: the board read (`issue list --state open`) sees #201 carrying
+# fnd:status:ready, while the wider state read reports it CLOSED — the read-skew
+# / just-closed drift the class exists to catch.
 # =========================================================================
 PROJECT_NUMBER=3
 ITEM_LIST_JSON='{"items":[
-  {"id":"PVTI_it201","content":{"number":201,"title":"Closed issue still Ready"},"status":"Ready"},
-  {"id":"PVTI_it203","content":{"number":203,"title":"Open, claimed"},"status":"In Progress","host/Session":"testhost:abcd1234"}
+  {"id":"ISSUE_201","content":{"number":201,"title":"Closed issue still Ready"},"status":"Ready"},
+  {"id":"ISSUE_203","content":{"number":203,"title":"Open, claimed"},"status":"In Progress","host/Session":"testhost:abcd1234"}
 ]}'
 ALL_ISSUES_JSON='[
   {"number":201,"state":"CLOSED","updatedAt":"2026-06-06T00:00:00Z","title":"Closed issue still Ready","labels":[]},

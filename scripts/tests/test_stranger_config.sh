@@ -21,7 +21,7 @@
 #
 # Sections:
 #   A. sandbox setup — synthetic stranger identity (board 42 -> a fake
-#      owner/repo/project via boards.conf; fake $HOME/XDG; non-default
+#      owner/repo via boards.conf; fake $HOME/XDG; non-default
 #      KNOWLEDGE_STORE_ROOT/PIPELINE_OPERATOR/PIPELINE_REQUIRED_CHECK)
 #   B. regression baseline — the existing board suite (test_boards_conf.sh)
 #      and the existing knowledge_store suite (test_knowledge_store.sh) still
@@ -142,7 +142,7 @@ BOARD_OUT="$(
   source "$BOARD_LIB"
   printf 'repo42=%s\n'  "$(board_repo 42)"
   printf 'owner42=%s\n' "$(board_owner 42)"
-  printf 'proj42=%s\n'  "$(board_project_number 42)"
+  printf 'backend42=%s\n' "$(board_backend 42)"
   printf 'repo3=%s\n'   "$(board_repo 3)"
   printf 'repo4=%s\n'   "$(board_repo 4)"
   printf 'owner3=%s\n'  "$(board_owner 3)"
@@ -154,8 +154,13 @@ get() { printf '%s\n' "$BOARD_OUT" | sed -n "s/^$1=//p"; }
   || bad "C.repo42" "got $(get repo42)"
 [ "$(get owner42)" = "$STRANGER_OWNER" ] && ok "C: board_owner 42 resolves the stranger owner" \
   || bad "C.owner42" "got $(get owner42)"
-[ "$(get proj42)" = "$STRANGER_PROJECT" ] && ok "C: board_project_number 42 resolves the stranger project number" \
-  || bad "C.proj42" "got $(get proj42)"
+# The stranger's conf above still carries a legacy `board.42.project=` line —
+# the Projects-v2 axis retired with that arm (ADR 0004). A stranger who wrote
+# their conf before the removal must not be broken by it: the retired axis is
+# simply not read (never a parse error), the live repo/owner axes beside it
+# resolve normally, and the board comes up on the only backend there is.
+[ "$(get backend42)" = "issues" ] && ok "C: board_backend 42 resolves 'issues' (a legacy project= line in the conf is inert, ADR 0004)" \
+  || bad "C.backend42" "got $(get backend42)"
 [ "$(get repo3)" = "Towheads/stageFind" ] && ok "C: board 3 (built-in, not in conf) still falls back unaffected" \
   || bad "C.repo3" "got $(get repo3)"
 [ "$(get repo4)" = "Towheads/foundation" ] && ok "C: board 4 (built-in, not in conf) still falls back unaffected" \
