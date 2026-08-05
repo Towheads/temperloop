@@ -178,6 +178,21 @@ as such in its bullet below.)
   **never** a silent `executed` over a write-failure the summary does surface.
   Absent such a signal you rely on `/retro`'s own contract to exit non-zero on a
   hard write failure; you do not re-verify the judge's per-tracker writes yourself.
+  **A clean exit that judged NOTHING is `failed`, never `executed` (temperloop#1150).**
+  A nested headless session can end its turn without doing the work and still exit
+  `subtype: success` / `is_error: false` — the observed failure burned 13 minutes and
+  ~$7.60 returning success with zero judgments and zero run-stream rows. The success
+  signal is therefore **judgments, not exit code**: if the output names no per-tracker
+  outcome at all, record `failed` with `note: "judge exited clean with zero judgments
+  — headless --pending produced no work"`. This should now be rare: `pipeline-tick.sh`
+  emits `retro-judge` only when the installed `/retro` **declares** the
+  `headless-unattended` capability (a `capability:` marker line in its own command
+  file — `workflows/scripts/lib/command_declared.sh`), and emits `skip-retro-judge`
+  with `reason: "headless-unsupported"` otherwise. A zero-judgment clean exit means a
+  judge that declared a capability it does not have — report it, never swallow it.
+  **Never assume a failed run left no trace:** the 2026-08-05 run durably minted 4
+  follow-up issues and closed one before dying at its deep-read handoff. Report what
+  the output says happened; do not re-run the action to "clean up".
   This action never opens a PR and never merges anything — that disclaimer is
   scoped to **merge/PR authority**: if the judge's output claims a PR or merge,
   that's the judge's concern, not something you act on. It does **not** license

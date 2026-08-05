@@ -1066,7 +1066,7 @@ FX="$TMP/t23"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":901,"title":"Process retro: epic #800","createdAt":"$ROLD","labels":["retro-pending"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="retro-judge")]|length' <<<"$PLAN")" = "1" ] \
@@ -1083,7 +1083,7 @@ FX="$TMP/t24"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":905,"title":"Process retro: epic #810","createdAt":"$RFRESH","labels":["retro-pending","retro-urgent"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
@@ -1095,7 +1095,7 @@ FX="$TMP/t25"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":906,"title":"Process retro: epic #820","createdAt":"$RFRESH","labels":["retro-pending"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] && ok "no retro-judge — debounce not yet crossed" || bad "t25.nofire" "unexpectedly fired: $PLAN"
@@ -1113,6 +1113,9 @@ PLAN="$(COMMAND_DECLARED_OVERRIDE="" PIPELINE_NOW_EPOCH="$RNOW" \
 [ "$(jq '[.actions[]|select(.action=="skip-retro-judge")]|length' <<<"$PLAN")" = "1" ] \
   && ok "exactly one skip-retro-judge line" || bad "t26.skipcount" "got $(jq -c '[.actions[]|select(.action=="skip-retro-judge")]' <<<"$PLAN")"
 [ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] && ok "no retro-judge action emitted when the judge isn't declared" || bad "t26.noaction" "a retro-judge action leaked through: $PLAN"
+SK="$(action_for <<<"$PLAN" '.action=="skip-retro-judge"')"
+[ "$(jq -r '.reason' <<<"$SK")" = "not-declared" ] \
+  && ok "skip carries a machine-readable reason=not-declared (temperloop#1150)" || bad "t26.reason" "got $(jq -r '.reason' <<<"$SK")"
 
 echo "--- test 27: a tracker pre-set to retro-judged/closed is NEVER re-emitted ---"
 FX="$TMP/t27"; seed_board "$FX" 3
@@ -1120,7 +1123,7 @@ cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":908,"title":"Process retro: epic #840 (already judged)","createdAt":"$ROLD","state":"closed","labels":["retro-judged"]},
  {"number":909,"title":"Process retro: epic #841 (already judged, still open)","createdAt":"$ROLD","labels":["retro-judged"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] \
@@ -1133,13 +1136,69 @@ cat > "$FX/board-3/retro-trackers.json" <<JSON
  {"number":911,"title":"epic #851","createdAt":"$ROLD","labels":["retro-pending"]},
  {"number":912,"title":"epic #852 (already judged)","createdAt":"$ROLD","labels":["retro-judged"]}]
 JSON
-PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" PIPELINE_NOW_EPOCH="$RNOW" \
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended" PIPELINE_NOW_EPOCH="$RNOW" \
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ "$(jq '[.actions[]|select(.action=="retro-judge")]|length' <<<"$PLAN")" = "1" ] \
   && ok "still exactly one retro-judge action for a multi-tracker batch" || bad "t28.count" "got $(jq -c '[.actions[]|select(.action=="retro-judge")]' <<<"$PLAN")"
 RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
 [ "$(jq -r '.count' <<<"$RJ")" = "2" ] && ok "count=2 (the already-judged tracker excluded)" || bad "t28.tcount" "got $(jq -r '.count' <<<"$RJ")"
+
+# ── Phase R headless-capability gate (temperloop#1150) ───────────────────────
+# The failure this closes: `/retro` INSTALLED but with no working headless
+# `--pending` mode. Presence-only gating spawned it anyway, the nested session
+# ended its turn, and the run exited `subtype: success` having judged nothing —
+# a 13-minute, ~$7.60 silence that read as a healthy tick. The tick must now
+# REFUSE, legibly, naming headless-unsupported as the reason.
+echo "--- test 29: /retro declared but NOT headless-capable -> skip-retro-judge reason=headless-unsupported ---"
+FX="$TMP/t29"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":913,"title":"Process retro: epic #860","createdAt":"$ROLD","labels":["retro-pending"]}]
+JSON
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="" PIPELINE_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] \
+  && ok "NO retro-judge action for a judge that never declared headless capability" || bad "t29.noaction" "an unrunnable judge was spawned anyway: $PLAN"
+[ "$(jq '[.actions[]|select(.action=="skip-retro-judge")]|length' <<<"$PLAN")" = "1" ] \
+  && ok "exactly one skip-retro-judge line (never silence)" || bad "t29.skipcount" "got $(jq -c '[.actions[]|select(.action=="skip-retro-judge")]' <<<"$PLAN")"
+SK="$(action_for <<<"$PLAN" '.action=="skip-retro-judge"')"
+[ "$(jq -r '.reason' <<<"$SK")" = "headless-unsupported" ] \
+  && ok "reason=headless-unsupported (distinct from not-declared)" || bad "t29.reason" "got $(jq -r '.reason' <<<"$SK")"
+[ "$(jq -r '.count' <<<"$SK")" = "1" ] && ok "the skip names the parked tracker count" || bad "t29.count" "got $(jq -r '.count' <<<"$SK")"
+jq -e '.detail | test("capability: headless-unattended")' <<<"$SK" >/dev/null \
+  && ok "the skip carries the remedy (the marker line to add) on the live line" || bad "t29.remedy" "$(jq -r '.detail' <<<"$SK")"
+
+echo "--- test 30: an EMPTY tracker set stays silent even when the judge is uncapable (no per-tick spam) ---"
+FX="$TMP/t30"; seed_board "$FX" 3
+echo '[]' > "$FX/board-3/retro-trackers.json"
+PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="" PIPELINE_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq '[.actions[]|select(.action=="skip-retro-judge")]|length' <<<"$PLAN")" = "0" ] \
+  && ok "no skip line when nothing is parked (the #535 action-count contract holds)" || bad "t30.spam" "got $PLAN"
+
+echo "--- test 31: the capability gate is FAIL-CLOSED on a real, marker-less command file ---"
+# No override at all: the probe hits the filesystem. A project-local
+# .claude/commands/retro.md with NO capability marker must read declared=true,
+# capable=false — i.e. the refusal arm, not the spawn arm.
+FX="$TMP/t31"; seed_board "$FX" 3
+cat > "$FX/board-3/retro-trackers.json" <<JSON
+[{"number":914,"title":"Process retro: epic #870","createdAt":"$ROLD","labels":["retro-pending"]}]
+JSON
+T31HOME="$TMP/t31home"; mkdir -p "$T31HOME/.claude/commands" "$TMP/t31cwd/.claude/commands"
+printf 'A /retro judge with no headless declaration.\n' > "$TMP/t31cwd/.claude/commands/retro.md"
+PLAN="$(cd "$TMP/t31cwd" && HOME="$T31HOME" PIPELINE_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ "$(jq -r 'first(.actions[]|select(.action=="skip-retro-judge")).reason' <<<"$PLAN")" = "headless-unsupported" ] \
+  && ok "a real marker-less retro.md refuses (fail-closed, no override involved)" || bad "t31.failclosed" "got $PLAN"
+printf '<!-- capability: headless-unattended -->\n' >> "$TMP/t31cwd/.claude/commands/retro.md"
+PLAN="$(cd "$TMP/t31cwd" && HOME="$T31HOME" PIPELINE_NOW_EPOCH="$RNOW" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  bash "$TICK" --dry-run --fixture "$FX" --board 3)"
+[ -n "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] \
+  && ok "adding the marker line is the whole remedy — the judge is spawned again" || bad "t31.remedy" "still refused after declaring: $PLAN"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo

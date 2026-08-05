@@ -39,10 +39,18 @@
 #                        bypassed unconditionally by a `retro-urgent` tracker
 #                        (urgency was already decided at mint). The judge-side
 #                        session cap (RETRO_BATCH_SESSION_CAP) is `/retro`'s own
-#                        concern, never enforced here. When no `/retro` judge is
-#                        declared (`command_declared retro` false — the overlay
-#                        command isn't installed), EMITs a legible skip instead —
-#                        never a retro-judge action.
+#                        concern, never enforced here. TWO gates precede the
+#                        emit, and either one failing EMITs a legible,
+#                        reason-bearing skip instead — never a retro-judge
+#                        action, and never silence: (1) PRESENCE —
+#                        `command_declared retro` (the overlay command is
+#                        installed at all); (2) HEADLESS CAPABILITY —
+#                        `command_declared_capability retro headless-unattended`
+#                        (the installed judge DECLARES it can complete an
+#                        unattended `--pending` run). Gate 2 exists because
+#                        presence alone spawned an unrunnable judge that exited
+#                        `subtype: success` having judged nothing
+#                        (temperloop#1150).
 #
 # WHY "EMIT", not "do": `/triage`, `/assess`, `/build` are prose specs executed
 # by Claude, not callable binaries. The deterministic half — single-flight,
@@ -119,11 +127,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Shared "is slash command <name> available" probe (ADR 0008), resolve-once —
 # the Phase R retro-judge trigger uses this to decide whether an overlay
-# `/retro` judge is even installed before emitting a retro-judge action. If
+# `/retro` judge is even installed before emitting a retro-judge action, and
+# its companion `command_declared_capability` (temperloop#1150) to decide
+# whether that judge DECLARES it can run unattended. If
 # this checkout has no lib (a stray copy, or a source layout mismatch), the
 # `command_declared` function is simply never defined; every call site below
 # treats "function absent" the same as "declared=false" (fail toward the skip
-# line, never toward assuming an uninstalled judge exists).
+# line, never toward assuming an uninstalled judge exists) — and the same
+# fail-closed treatment applies to `command_declared_capability`.
 # shellcheck source=workflows/scripts/lib/command_declared.sh
 [ -f "$HERE/../lib/command_declared.sh" ] && . "$HERE/../lib/command_declared.sh"
 
@@ -780,14 +791,35 @@ retro_judge_due_reason() {
   return 1
 }
 
+# The capability an overlay `/retro` must DECLARE before this phase will spawn
+# it unattended (temperloop#1150). The declaration grammar is one marker line,
+# alone on its line, in the resolved `retro.md`:
+#     <!-- capability: headless-unattended -->
+# See workflows/scripts/lib/command_declared.sh's header. This is a CONTRACT
+# TOKEN (a name in a grammar shared with the overlay), not a tunable — it is
+# deliberately NOT a build.config.sh setting: making it configurable would only
+# let a host rename the handshake, and a knob to switch the gate OFF is exactly
+# the silence this item exists to remove.
+RETRO_HEADLESS_CAPABILITY='headless-unattended'
+
 # Phase R — EMIT the retro-judge trigger (or a legible skip) for one board.
 # bash 3.2 has no namerefs, so this function returns nothing to the caller
 # directly — its only contract is ACTIONS growth: append exactly one action
 # when it has anything to say (a skip-retro-judge, or a due retro-judge),
 # append nothing when there is genuinely nothing to report (a judge is
-# declared but there are no trackers, or trackers exist but none is due). The
-# caller (tick_board) detects whether it emitted anything by diffing ACTIONS
-# before/after, mirroring how did_op/did_found/did_route are tracked inline.
+# declared+capable but there are no trackers, or trackers exist but none is
+# due). The caller (tick_board) detects whether it emitted anything by diffing
+# ACTIONS before/after, mirroring how did_op/did_found/did_route are tracked
+# inline.
+#
+# EVERY skip carries a machine-readable `reason` (temperloop#1150) so a reader —
+# pipeline-retro-health.sh, /tidy's Retro mint backstop, an operator — can tell
+# the two structurally different skips apart without parsing prose:
+#   not-declared        no `/retro` command file on any surface (a kernel-only
+#                       checkout / CI) — expected, steady state.
+#   headless-unsupported a `/retro` IS installed but does not declare
+#                       `headless-unattended` — a real, actionable gap: the
+#                       judge exists and cannot be driven unattended.
 run_retro_phase() {
   local board="$1" repo="$2"
   # Read the parked retro-pending set FIRST: a skip (or a trigger) is only
@@ -804,8 +836,24 @@ run_retro_phase() {
     # Parked trackers exist but no overlay `/retro` judge is installed — emit
     # exactly one legible skip naming the parked count; no retro-judge action.
     add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" \
-      '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",count:$n,
+      '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",count:$n,reason:"not-declared",
         detail:("\($n) retro-pending tracker(s) parked, but no /retro judge is declared (command_declared retro = false, or the shared lib was unsourceable) — they stay parked; no retro-judge action emitted this tick")}')"
+    return 0
+  fi
+  # GATE 2 — HEADLESS CAPABILITY (temperloop#1150). A judge that is INSTALLED
+  # but cannot complete an unattended `--pending` run is worse than an absent
+  # one: spawning it burns a nested headless session that ends its turn and
+  # exits `subtype: success` having judged nothing, so the tick, the wake
+  # record, and the operator all read "healthy" while the retro loop is dead.
+  # Refuse legibly instead. The capability is DECLARED by the overlay judge
+  # (the marker grammar above), never inferred — an undeclared capability is a
+  # refusal, and the fix is one marker line in the judge, named right here in
+  # the skip so the remedy is on the live line rather than in a doc.
+  if ! { command -v command_declared_capability >/dev/null 2>&1 \
+         && command_declared_capability retro "$RETRO_HEADLESS_CAPABILITY"; }; then
+    add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" --arg cap "$RETRO_HEADLESS_CAPABILITY" \
+      '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",count:$n,reason:"headless-unsupported",
+        detail:("\($n) retro-pending tracker(s) parked and a /retro judge IS installed, but it does not declare the \($cap) capability (command_declared_capability retro \($cap) = false, or the shared lib was unsourceable) — the kernel refuses to spawn a judge that has not asserted it can complete an unattended --pending run, because such a run exits success having judged nothing (temperloop#1150). Trackers stay parked. Remedy: add the marker line <!-- capability: \($cap) --> to the /retro command file once its headless --pending mode genuinely completes unattended")}')"
     return 0
   fi
   local reason
