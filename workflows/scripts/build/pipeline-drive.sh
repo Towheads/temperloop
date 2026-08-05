@@ -43,8 +43,11 @@
 #      already assigned at source in both cases, so there is nothing for the pipeline to
 #      do but drop it. #697 retired the skip-merge-escalation verb: a `funnel-escalated`
 #      item no longer carries `needs-clarification`, so the drain never lists it.
-#      skip-retro-judge — pipeline-tick.sh's own legible record that no overlay
-#      `/retro` judge is declared — there is nothing here to drive either.)
+#      skip-retro-judge — pipeline-tick.sh's own legible, REASON-BEARING record that
+#      it declined to spawn the judge: reason "not-declared" (no overlay `/retro`
+#      installed) or "headless-unsupported" (installed, but it never declared the
+#      headless-unattended capability — temperloop#1150). The refusal IS the record;
+#      there is nothing here to drive either.)
 #
 # 5b safety = STRUCTURALLY incapable of merging: with PIPELINE_DRIVE_MERGE off
 # (default) the merging tier is filtered OUT before the headless Claude sees it,

@@ -73,6 +73,32 @@ outcome is escalated to the operator with a label that removes it from
 future ticks' auto-drive pool, so a stuck item doesn't just keep re-failing
 silently forever.
 
+**Spawning an optional, out-of-tree command is gated twice, and refuses
+legibly.** One tick action — the retrospection judge trigger — hands off to a
+command that lives *outside* this kernel (an overlay `/retro`) by spawning it as
+a nested headless session. Presence alone does not justify that spawn: a nested
+session that cannot do the work can still end its turn and exit *success*, so a
+judge that was installed but had no working unattended mode produced a run that
+spent real time and money, judged nothing, and looked healthy from every
+surface. The tick therefore requires the target command to **declare** the
+capability it is about to be driven under (a marker line in the command's own
+file — see the slash-command availability probe feature), and when that
+declaration is absent it emits a skip action carrying a machine-readable reason
+(`not-declared` — nothing installed; `headless-unsupported` — installed but never
+claimed it can run unattended) instead of spawning. Never silence: either the
+judge runs, or the tick says why it didn't.
+
+**A dead loop is detectable, not a steady state.** `pipeline-retro-health.sh` is
+the read-only companion detector: it reads the tick's own retro decisions out of
+the pipeline stream against the judge's run stream and returns one of five
+verdicts — `healthy`; `no-signal` (nothing was due — the genuine steady state);
+`refused` (the tick declined, and why); `no-lake` (the history is unreadable
+here); or `defect` (a trigger fired and produced nothing, sub-typed
+`never-had-a-row` vs `stalled`). That distinction is the whole point: before it,
+a zero-row run stream meant both "no retros were due" and "the judge has never
+once run," and a dead loop hid inside the healthy reading for months. The nightly
+tidy pass runs it and routes a `defect` verdict to the board as a defect.
+
 ## Integration
 
 Consumes: the existing pipeline commands (triage, assess, build) it invokes
@@ -80,6 +106,10 @@ rather than reimplements; the worklist/board adapter for claim, status, and
 close operations; the decision-queue backend for routing items that need
 operator approval; the unattended build path's own merge gate for every
 actual merge the merging tier performs.
+
+Also consumes, read-only: the pipeline raw-lake stream and the overlay
+retrospection run stream, which the retro-judge health detector compares to tell
+"nothing was due" apart from "the judge never ran."
 
 Produces: worklist mutations (claims, status moves, label changes) audited
 by issue number so a reviewer can cross-check the driver's actual mutations

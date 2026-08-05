@@ -41,6 +41,63 @@
 # surface-2-only TRUE as "declared in source, not necessarily installed" if
 # that distinction matters to it.
 #
+# ── THE SECOND PREDICATE: command_declared_capability ──────────────────────
+# `command_declared` answers PRESENCE. It deliberately says nothing about
+# what the command can DO — and presence is not enough for a kernel surface
+# that SPAWNS a command unattended. temperloop#1150 is the worked failure:
+# the funnel's Phase R retro-judge trigger gated on `command_declared retro`
+# alone, so on a host where `/retro` was installed but implemented no
+# headless `--pending` mode, the tick spawned `claude -p "/retro --pending"`,
+# the nested session ended its turn without judging anything, and the run
+# exited `subtype: success` / `is_error: false` having produced ZERO
+# judgments and zero stream rows — 13m and ~$7.60 of silence, indistinguishable
+# from a healthy tick.
+#
+# `command_declared_capability <name> <capability>` closes that: it answers
+# "does the resolved `<name>.md` DECLARE that it can do <capability>". The
+# declaration grammar is one marker line, ALONE on its line (leading/trailing
+# whitespace allowed), anywhere in the command file:
+#
+#     <!-- capability: headless-unattended -->
+#
+# A marker may carry several tokens, comma- and/or space-separated:
+#
+#     <!-- capability: headless-unattended, no-merge -->
+#
+# The line-alone anchor is load-bearing: it lets prose (this header, a feature
+# doc, a command spec explaining the grammar) mention the marker INLINE inside
+# a sentence or backticks without accidentally declaring the capability.
+#
+# SEMANTICS: FIRST-RESOLVED FILE WINS, and the answer is FAIL-CLOSED.
+# The three surfaces are walked in the SAME order as command_declared, and
+# the FIRST file that exists is authoritative — the same file a runtime
+# resolution would land on. If that file carries no matching marker, the
+# answer is FALSE even if a later surface's copy would declare it; if no
+# surface has the file at all, the answer is FALSE. A caller therefore never
+# spawns on an ASSUMED capability: an undeclared capability is refused, and
+# the refusal is the caller's job to make legible.
+#
+# The declaration is an ASSERTION BY THE COMMAND'S AUTHOR, not a proof. The
+# kernel cannot execute an overlay command to find out whether it completes
+# unattended; what it can do is refuse to spawn one that never claimed it
+# could. That is the whole contract: presence is discovered, capability is
+# declared.
+#
+# ── ENV OVERRIDE (for fixtures) ────────────────────────────────────────────
+# COMMAND_CAPABILITY_OVERRIDE, when SET (including set-but-empty), answers
+# ENTIRELY from this variable — no filesystem probe runs. Its value is a
+# space-separated list of `<name>:<capability>` pairs:
+#
+#   COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended"   # -> true for that pair only
+#   COMMAND_CAPABILITY_OVERRIDE=""                            # -> false for every pair
+#
+# When COMMAND_CAPABILITY_OVERRIDE is UNSET but COMMAND_DECLARED_OVERRIDE is
+# set, the capability probe answers FALSE without touching the filesystem —
+# a fixture that has taken control of the presence answer must not have the
+# capability answer silently decided by whatever real command files happen to
+# exist on the machine running the test. Fail-closed, hermetic, and it keeps
+# the two overrides independent: a fixture opts INTO a capability explicitly.
+#
 # This is a DISTINCT predicate from the subagent capability-probe
 # (`Decisions/foundation - Project capability probes`, the CLAUDE.md-or-
 # .claude/agents/ declaration check a review-gate step runs before trusting
@@ -67,6 +124,7 @@
 # Sourced, not executed:
 #   source ".../workflows/scripts/lib/command_declared.sh"
 #   command_declared retro && ...
+#   command_declared_capability retro headless-unattended && ...
 #
 # This file sets no shell options of its own (the caller owns set -euo).
 # Depends on: git (surface 2 resolution only; degrades gracefully if
@@ -127,5 +185,70 @@ command_declared() {
   # Surface 3: the composed-install deployment target.
   [ -f "$HOME/.claude/commands/$name.md" ] && return 0
 
+  return 1
+}
+
+# <name> -> stdout: the path of the FIRST of the three surfaces (same order as
+# command_declared) that actually carries "<name>.md"; nothing (rc 1) when none
+# does. This is the file a runtime resolution would land on, and the ONLY file
+# command_declared_capability reads — see this file's header, § FIRST-RESOLVED
+# FILE WINS.
+_command_declared_path() {
+  local name="$1" root
+  [ -n "$name" ] || return 1
+  [ -f "$PWD/.claude/commands/$name.md" ] && { printf '%s\n' "$PWD/.claude/commands/$name.md"; return 0; }
+  root="$(_command_declared_checkout_root)"
+  if [ -n "$root" ] && [ -f "$root/claude/commands/$name.md" ]; then
+    printf '%s\n' "$root/claude/commands/$name.md"; return 0
+  fi
+  [ -f "$HOME/.claude/commands/$name.md" ] && { printf '%s\n' "$HOME/.claude/commands/$name.md"; return 0; }
+  return 1
+}
+
+# <file> -> stdout: one capability token per line, parsed from every
+# `<!-- capability: … -->` marker that is ALONE on its line. Tokens may be
+# separated by commas and/or whitespace inside one marker. Emits nothing for a
+# file with no markers (and never fails loudly — an unreadable file is simply
+# a file that declares nothing).
+_command_capability_tokens() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  # BSD/GNU-portable: grep -E for the line-anchored marker, sed -E to strip the
+  # comment wrapper, then split the payload on commas/whitespace.
+  grep -E '^[[:space:]]*<!--[[:space:]]*capability:[^>]*-->[[:space:]]*$' "$file" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*<!--[[:space:]]*capability:[[:space:]]*//; s/[[:space:]]*-->[[:space:]]*$//; s/,/ /g' \
+    | awk '{for (i = 1; i <= NF; i++) print $i}' || true
+}
+
+# <name> <capability> -> rc 0 iff the resolved "<name>.md" DECLARES <capability>
+# via the marker grammar in this file's header; rc 1 otherwise (no marker, no
+# file, or an override that says no). rc 2 on a usage error. Fail-closed by
+# construction: every "I can't tell" answer is rc 1, so a caller never spawns a
+# command on an assumed capability.
+command_declared_capability() {
+  local name="$1" capability="${2:-}" file tok
+  if [ -z "$name" ] || [ -z "$capability" ]; then
+    echo "command_declared_capability: usage: command_declared_capability <name> <capability>" >&2
+    return 2
+  fi
+
+  if [ -n "${COMMAND_CAPABILITY_OVERRIDE+set}" ]; then
+    # shellcheck disable=SC2086  # intentional word-splitting: space-separated list contract
+    for tok in $COMMAND_CAPABILITY_OVERRIDE; do
+      [ "$tok" = "$name:$capability" ] && return 0
+    done
+    return 1
+  fi
+
+  # A fixture that took control of the PRESENCE answer must not have the
+  # CAPABILITY answer decided by whatever real files exist on the test host.
+  [ -n "${COMMAND_DECLARED_OVERRIDE+set}" ] && return 1
+
+  file="$(_command_declared_path "$name")" || return 1
+  while IFS= read -r tok; do
+    [ "$tok" = "$capability" ] && return 0
+  done <<EOF
+$(_command_capability_tokens "$file")
+EOF
   return 1
 }

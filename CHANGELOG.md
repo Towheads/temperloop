@@ -59,6 +59,43 @@ reads that marker; a stranger greps for it before pulling.
   documented in advance: the built-in map's **additive-only** rule, and the
   "board 7 is the sole in-code issues-only exception" language, are retired
   here explicitly. Board 7 is no longer an exception to anything.
+### Fixed
+
+- **The retro-judge seam refuses legibly instead of exiting success having
+  judged nothing** (temperloop#1150). The funnel tick's Phase R gated its nested
+  `claude -p "/retro --pending"` spawn on command *presence* alone, so a host
+  with `/retro` installed but no working headless mode spawned a judge that could
+  not run: the nested session ended its turn and exited `subtype: success` /
+  `is_error: false` having produced zero judgments and zero run-stream rows.
+  Phase R now also requires the judge to **declare** the capability it is being
+  driven under, and emits a reason-bearing `skip-retro-judge`
+  (`reason: "headless-unsupported"`, remedy on the line) instead of spawning when
+  it has not. Never silence: either the judge runs, or the tick says why it
+  didn't. See the amendment in
+  `docs/adr/0007-retrospection-mint-then-judge.md`.
+
+### Added
+
+- `command_declared_capability <name> <capability>` in
+  `workflows/scripts/lib/command_declared.sh` — the capability companion to the
+  ADR 0008 presence probe. Answers from a `capability:` marker line, alone on its
+  line, in the first-resolved command file; fail-closed everywhere (no marker, no
+  file, no answer ⇒ false), with a `COMMAND_CAPABILITY_OVERRIDE` fixture seam.
+  Presence is discovered; capability is declared.
+- `workflows/scripts/build/pipeline-retro-health.sh` — a read-only,
+  always-exit-0 detector that separates the readings a zero-row `retro-runs`
+  stream used to collapse into one: `no-signal` (nothing was due — the genuine
+  steady state), `refused` (the tick declined, and why), `healthy`, and `defect`
+  (a trigger fired and produced nothing, sub-typed `never-had-a-row` vs
+  `stalled`), plus `no-lake` when the trigger history is unreadable. `/tidy`'s
+  Retro mint backstop gains a fourth probe that runs it and files a `defect`
+  verdict as a board defect.
+
+### Changed
+
+- `skip-retro-judge` tick actions now carry a machine-readable `reason` field
+  (`not-declared` | `headless-unsupported`). A reader matching on the action name
+  alone is unaffected.
 
 ## [0.27.0] - 2026-08-05 — BREAKING
 

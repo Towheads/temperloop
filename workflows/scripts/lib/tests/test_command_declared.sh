@@ -129,4 +129,113 @@ set -e
 [ "$rc7" -ne 0 ] || fail "7: a set-but-empty COMMAND_DECLARED_OVERRIDE should force false (got rc $rc7)"
 echo "PASS: 7 a set-but-empty COMMAND_DECLARED_OVERRIDE forces false, overriding a real matching file on disk"
 
+# ── command_declared_capability (temperloop#1150) ────────────────────────────
+# The second predicate: PRESENCE is discovered, CAPABILITY is declared. Every
+# "I can't tell" answer must be false, so a kernel surface never spawns a
+# command on an assumed capability (the retro-judge seam spawned an installed
+# but headless-incapable `/retro` and got a success exit with zero judgments).
+CAP="headless-unattended"
+
+# --- 8. usage: a missing capability argument is rejected ---------------------
+set +e
+out8="$(command_declared_capability "$FIXTURE_NAME" 2>&1)"
+rc8=$?
+set -e
+[ "$rc8" -eq 2 ] || fail "8: a missing capability argument should be rejected with rc 2 (got $rc8)"
+case "$out8" in *"usage"*) : ;; *) fail "8: rejection message should be a usage notice (got: $out8)" ;; esac
+echo "PASS: 8 command_declared_capability rejects a missing capability argument with rc 2"
+
+# --- 9. a present-but-marker-less command file is NOT capable ----------------
+C_CWD="$TMP/cap-cwd"; mkdir -p "$C_CWD/.claude/commands"
+C_HOME="$TMP/cap-home"; mkdir -p "$C_HOME/.claude/commands"
+printf 'A command with no capability marker at all.\n' > "$C_CWD/.claude/commands/$FIXTURE_NAME.md"
+set +e
+( cd "$C_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "$CAP" )
+rc9=$?
+set -e
+[ "$rc9" -ne 0 ] || fail "9: a command file with no marker must NOT be reported capable (got rc $rc9)"
+echo "PASS: 9 a present-but-marker-less command file is not capable (presence != capability)"
+
+# --- 10. the marker line, alone on its line, declares the capability ---------
+printf '<!-- capability: %s -->\n' "$CAP" >> "$C_CWD/.claude/commands/$FIXTURE_NAME.md"
+set +e
+( cd "$C_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "$CAP" )
+rc10=$?
+set -e
+[ "$rc10" -eq 0 ] || fail "10: the marker line should declare the capability (got rc $rc10)"
+echo "PASS: 10 a marker line, alone on its line, declares the capability"
+
+# --- 11. a multi-token marker declares each of its tokens -------------------
+M_CWD="$TMP/cap-multi"; mkdir -p "$M_CWD/.claude/commands"
+printf '   <!-- capability: %s, no-merge  -->\n' "$CAP" > "$M_CWD/.claude/commands/$FIXTURE_NAME.md"
+set +e
+( cd "$M_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "$CAP" ); rc11a=$?
+( cd "$M_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "no-merge" ); rc11b=$?
+( cd "$M_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "merges-everything" ); rc11c=$?
+set -e
+[ "$rc11a" -eq 0 ] && [ "$rc11b" -eq 0 ] || fail "11: a comma/space-separated marker should declare each token (got $rc11a/$rc11b)"
+[ "$rc11c" -ne 0 ] || fail "11: an undeclared token must stay false (got rc $rc11c)"
+echo "PASS: 11 a multi-token marker declares each of its tokens, and only those"
+
+# --- 12. an INLINE mention (not alone on its line) declares nothing ----------
+# The line-alone anchor is what lets prose, feature docs, and command specs
+# explain the grammar without accidentally declaring the capability.
+I_CWD="$TMP/cap-inline"; mkdir -p "$I_CWD/.claude/commands"
+printf 'Add `<!-- capability: %s -->` to your command file to declare it.\n' "$CAP" \
+  > "$I_CWD/.claude/commands/$FIXTURE_NAME.md"
+set +e
+( cd "$I_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "$CAP" )
+rc12=$?
+set -e
+[ "$rc12" -ne 0 ] || fail "12: an inline mention inside a sentence must not declare the capability (got rc $rc12)"
+echo "PASS: 12 an inline/backticked mention of the marker declares nothing (line-alone anchor holds)"
+
+# --- 13. an absent command file is not capable ------------------------------
+A_CWD="$TMP/cap-absent"; mkdir -p "$A_CWD"
+A_HOME="$TMP/cap-absent-home"; mkdir -p "$A_HOME"
+set +e
+( cd "$A_CWD" && HOME="$A_HOME" command_declared_capability "$FIXTURE_NAME" "$CAP" )
+rc13=$?
+set -e
+[ "$rc13" -ne 0 ] || fail "13: an absent command file must not be reported capable (got rc $rc13)"
+echo "PASS: 13 an absent command file is not capable (fail-closed)"
+
+# --- 14. FIRST-RESOLVED FILE WINS -------------------------------------------
+# The surface-1 file is what a runtime resolution lands on, so a capable copy
+# on a LATER surface must not rescue a marker-less earlier one.
+printf '<!-- capability: %s -->\n' "$CAP" > "$C_HOME/.claude/commands/$FIXTURE_NAME.md"
+F_CWD="$TMP/cap-firstwins"; mkdir -p "$F_CWD/.claude/commands"
+printf 'no marker here\n' > "$F_CWD/.claude/commands/$FIXTURE_NAME.md"
+set +e
+( cd "$F_CWD" && HOME="$C_HOME" command_declared_capability "$FIXTURE_NAME" "$CAP" )
+rc14=$?
+set -e
+[ "$rc14" -ne 0 ] || fail "14: the first-resolved (surface 1) file must be authoritative (got rc $rc14)"
+echo "PASS: 14 first-resolved file wins — a capable copy on a later surface does not rescue a marker-less earlier one"
+
+# --- 15. COMMAND_CAPABILITY_OVERRIDE answers entirely from the env -----------
+set +e
+( cd "$F_CWD" && HOME="$C_HOME" COMMAND_CAPABILITY_OVERRIDE="$FIXTURE_NAME:$CAP" \
+    command_declared_capability "$FIXTURE_NAME" "$CAP" ); rc15a=$?
+( cd "$C_CWD" && HOME="$C_HOME" COMMAND_CAPABILITY_OVERRIDE="other:$CAP" \
+    command_declared_capability "$FIXTURE_NAME" "$CAP" ); rc15b=$?
+( cd "$C_CWD" && HOME="$C_HOME" COMMAND_CAPABILITY_OVERRIDE="" \
+    command_declared_capability "$FIXTURE_NAME" "$CAP" ); rc15c=$?
+set -e
+[ "$rc15a" -eq 0 ] || fail "15: a listed <name>:<capability> pair should force true (got rc $rc15a)"
+[ "$rc15b" -ne 0 ] || fail "15: an unlisted pair should force false despite a real marker on disk (got rc $rc15b)"
+[ "$rc15c" -ne 0 ] || fail "15: a set-but-empty override should force false (got rc $rc15c)"
+echo "PASS: 15 COMMAND_CAPABILITY_OVERRIDE answers entirely from the env (true, false, and set-but-empty)"
+
+# --- 16. a presence override alone forces capability FALSE, hermetically -----
+# A fixture that took control of the presence answer must not have the
+# capability answer decided by whatever real files exist on the test host.
+set +e
+( cd "$C_CWD" && HOME="$C_HOME" COMMAND_DECLARED_OVERRIDE="$FIXTURE_NAME" \
+    command_declared_capability "$FIXTURE_NAME" "$CAP" )
+rc16=$?
+set -e
+[ "$rc16" -ne 0 ] || fail "16: COMMAND_DECLARED_OVERRIDE without a capability override should force false (got rc $rc16)"
+echo "PASS: 16 a presence override with no capability override answers false without touching the filesystem"
+
 echo "All command_declared.sh tests passed."
