@@ -69,16 +69,40 @@ ever need `temperloop uninstall` (the machine-surface install) or
 `temperloop eject` (undoing `init` in a target repo); see § Uninstall below
 for the full breakdown and the other two.
 
-## Quickstart: try → try --demo → init
+## Quickstart: sandbox → first epic → adopt
 
-Three steps, each strictly more than the last: taste it read-only, watch it
-mutate something disposable, then opt your own repo in.
+Evaluate temperloop on **your own code, in a repo you can delete**: make a
+private duplicate of a real repo of yours, copy a handful of your open issues
+into it, run `temperloop init` there, and take the first epic it offers you
+through `/assess` → `/build`. The exact commands — duplication, the issue-copy
+loop, and teardown — live in [the README's § 3](../README.md), which is the
+canonical copy; this page is the CLI reference behind it.
 
-**Before step 1: what this costs, and what it will do on its own.**
+A duplicate, not a fork: a fork of a public repo is forcibly public, and it
+carries an upstream that PR tooling will offer as a base. GitHub also never
+copies issues to a fork, so they have to be brought across either way.
+
+**Before you run anything: what this costs, and what it will do on its own.**
 [`../docs/cost-and-autonomy.md`](../docs/cost-and-autonomy.md) covers real
 spend figures per tier (including whether a budget cap is on by default),
 and exactly what an unattended run may do without asking versus what always
-blocks for you — worth two minutes before you run anything below.
+blocks for you — worth two minutes first. Note in particular that the
+evaluation path runs the real pipeline and so carries **no hard dollar cap**
+(temperloop#1130).
+
+## Legacy onboarding commands (`try`, `try --demo`)
+
+`try` and `try --demo` are **no longer part of the on-ramp**. They still work
+and are documented in full below — flags, exit codes, and safety contract —
+but the quickstart above replaced them: `try`'s shadow-triage runs with almost
+no context so its output undersells the pipeline, and `--demo` ticks a canned
+repo of synthetic defects rather than the reader's own code. Their removal or
+replacement is tracked in temperloop#1117, and the resulting surface
+inconsistency (`temperloop help` still lists them) in temperloop#1116.
+
+They remain the only two commands with a **hard, tool-enforced USD cap**,
+which is why they are still worth reaching for if a bounded-spend probe is
+what you want.
 
 ### 1. `temperloop try` — zero-config, zero writes
 
@@ -116,7 +140,7 @@ shell with no `--yes` — a curious stranger cannot silently burn spend. If
 every seeded issue is already claimed or closed, it exits 0 with "no tick
 run" rather than failing.
 
-### 3. `temperloop init` — opt in, on your own repo
+### 3. `temperloop init` — adopt, in the sandbox or for real
 
 ```sh
 temperloop init --dry-run   # preview first: tree-only, zero API writes

@@ -38,8 +38,23 @@ touching `HEAD` at all, then checks out the tag and re-runs `install` +
 the managed clone's own git state plus the machine surface `install.sh`
 already owns, never a repo-tracked path in any other repo.
 
-**The adoption ladder: `try` -> `try --demo` -> `init`.** Each step does
-strictly more than the last:
+**The adoption path: sandbox -> first epic -> adopt.** The reader makes a
+private *duplicate* of a real repo of their own (not a fork — a fork of a
+public repo is forcibly public, and carries an upstream that PR tooling
+offers as a base), copies a handful of their open issues into it since
+GitHub never copies issues to a fork, runs `temperloop init` there, and
+takes the resulting first epic through `/assess` -> `/build`. The evaluation
+is therefore the real pipeline doing real work on the reader's own code, in
+a repo they delete afterwards. `README.md` § 3 is the canonical command
+sequence.
+
+**Legacy rungs: `try` and `try --demo`.** These were the first two steps of
+the former ladder (`try` -> `try --demo` -> `init`) and are **no longer part
+of the adoption path** — `try`'s shadow-triage runs with almost no context
+so its output undersells the pipeline, and `--demo` exercises a canned repo
+of synthetic defects rather than the reader's own code (temperloop#1115;
+disposition tracked in temperloop#1117). Both still work, both still carry
+their hard USD caps, and their contracts are unchanged:
 
 1. `temperloop try` is zero-config and zero-writes. It runs a read-only
    conventions probe, lists the current repo's open issues with a
@@ -57,20 +72,23 @@ strictly more than the last:
    fix, and opens a PR via the tree-only proposal-PR generator — never a
    direct push, never a merge. If every seeded issue is already claimed or
    closed, it exits 0 with "no tick run" instead of failing.
-3. `temperloop init` opts a real repo in, then **hands off**. `init
-   --dry-run` previews the tree-only proposal PR with zero API writes of any
-   kind. `init` for real does exactly four things and stops: bootstraps
-   `.temperloop/config`, proposes any tree changes (e.g. a `boards.conf`
-   entry) via a reviewable PR — nothing ever lands without review — offers
-   the kernel-shipped **first epic** ("Set up `<project>` with temperloop",
-   [ADR 0010](../adr/0010-onboarding-as-first-executed-epic.md)), and prints
-   a `next step:` handoff line. It applies **no API state of its own**.
-   **This step's handoff is the one rung that needs `temperloop install`**:
-   `/assess` and `/build` are Claude Code slash commands, deployed into
-   `~/.claude/` by the install below, so unlike rungs 1 and 2 this one does
-   not end self-contained. `init` probes for the installed command and
-   prints an extra `prerequisite:` line when it is missing, rather than
-   handing the reader a pointer to something that isn't on their machine.
+**`temperloop init` — the adopt step (current, not legacy).** Run it in the
+sandbox to evaluate, and again in the real repo to adopt; it behaves
+identically in both. It opts a repo in, then **hands off**. `init --dry-run`
+previews the tree-only proposal PR with zero API writes of any kind. `init`
+for real does exactly four things and stops: bootstraps `.temperloop/config`,
+proposes any tree changes (e.g. a `boards.conf` entry) via a reviewable PR —
+nothing ever lands without review — offers the kernel-shipped **first epic**
+("Set up `<project>` with temperloop",
+[ADR 0010](../adr/0010-onboarding-as-first-executed-epic.md)), and prints a
+`next step:` handoff line. It applies **no API state of its own**.
+
+**This step's handoff is the one part that needs `temperloop install`**:
+`/assess` and `/build` are Claude Code slash commands, deployed into
+`~/.claude/` by the install below, so unlike the legacy rungs above this one
+does not end self-contained. `init` probes for the installed command and
+prints an extra `prerequisite:` line when it is missing, rather than handing
+the reader a pointer to something that isn't on their machine.
 
 **Where the setup writes went.** Branch protection, head-branch auto-delete,
 the merge-queue disposition, the required `checks` status context, the CI

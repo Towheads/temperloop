@@ -26,9 +26,8 @@ described below).
 ### The CLI vs. `make` — two different surfaces, don't confuse them
 
 `bin/temperloop` (subcommands in `bin/subcommands/`) is the **pre-checkout
-newcomer surface** — `try` (zero-write probe + shadow triage), `try --demo`
-(one real tick against a disposable demo repo), `init` (propose adopting
-this repo's conventions in another repo via a reviewable PR),
+newcomer surface** — `init` (propose adopting this repo's conventions in
+another repo via a reviewable PR, then offer the pre-designed first epic),
 `baseline-snapshot` / `report` (before/after value tracking), `eject`
 (manifest-driven clean removal). It is not a second front door onto *this*
 checkout's day-to-day work — don't add a Makefile-target wrapper here.
@@ -111,8 +110,10 @@ quality-gates` to run them all.
   through.
 - `docs/CONTRIBUTING.md` — how to contribute a failure-mode chapter or a new
   knowledge/tracker adapter.
-- `bin/README.md` — the CLI's own front page: install, prerequisites, the
-  `try` → `try --demo` → `init` quickstart ladder in full.
+- `bin/README.md` — the CLI's own front page: install, prerequisites, and
+  the per-subcommand reference (flags, exit codes, safety contract). The
+  sandbox → first epic → adopt quickstart itself is canonical in
+  `README.md` § 3; `bin/README.md` points at it rather than restating it.
 
 Once `make docs` has been run, all of the above (plus the command reference
 and quality-gate list) are also browsable as a generated static site at

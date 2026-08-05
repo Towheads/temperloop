@@ -10,16 +10,28 @@ money**, and **what will it do without asking me first**
 (temperloop#426 (cost & autonomy expectations doc)). It's linked from the
 very first step of the quickstart ([`README.md` § 3](../README.md),
 [`bin/README.md`](../bin/README.md)) on purpose — read the TL;DR below
-before `temperloop try`, not after; the **Details** section has the full
+before you run anything, not after; the **Details** section has the full
 figures, derivations, and provenance for every claim.
 
 ## TL;DR
 
-- **Onboarding (`try` / `try --demo`) is capped, always.** `try` is capped
-  at **$1.00**/run (directional band **$0.02–$0.08 per issue**, ≈7,000–
-  27,000 tokens); `try --demo` is capped at **$2.00**/tick (directional band
-  **$0.05–$0.40**, ≈9,000–74,000 tokens). Both caps are enforced by the tool
-  itself, not just printed advice.
+- **⚠️ The current on-ramp has no hard dollar cap.** The quickstart
+  (sandbox → first epic → adopt) evaluates temperloop by running the **real**
+  pipeline: `temperloop init`, then `/assess` → `/build` on the first epic.
+  Those are ordinary pipeline commands, and per the next bullet they carry
+  **no fixed cost or USD ceiling** — only the usage-quota gate. The sandbox
+  setup itself (`gh repo create`, `git push --mirror`, the issue-copy loop)
+  spends **no Claude tokens at all**; the cost begins at `temperloop init`.
+  Watch your own Claude Code usage view while evaluating, and see
+  § Cost at a glance for what `/assess` and `/build` scale with. Closing this
+  gap — a published cost band or a cap for the evaluation path — is tracked
+  in temperloop#1130.
+- **The capped commands are the legacy ones.** `try` and `try --demo` (no
+  longer part of the on-ramp — see temperloop#1117) are the only two commands
+  with a hardcoded, tool-enforced USD cap: `try` at **$1.00**/run
+  (directional band **$0.02–$0.08 per issue**, ≈7,000–27,000 tokens);
+  `try --demo` at **$2.00**/tick (directional band **$0.05–$0.40**,
+  ≈9,000–74,000 tokens).
 - **Past onboarding, there is no dollar ceiling by default.** Ordinary
   interactive work (`/triage`, `/assess`, `/build`, `/sweep`) and the
   unattended pipeline driver have no fixed cost or cap — your own Claude Code
@@ -68,8 +80,10 @@ is.**
 
 | What you run | Tokens (directional) | Cost @ Sonnet 5 | Cost @ Opus 4.8 | Hard USD cap |
 |---|---|---|---|---|
-| `try` — per open issue classified | 7K–27K | $0.02–$0.08 | $0.03–$0.13 | **$1.00/run** ✅ |
-| `try --demo` — per issue→PR tick | 9K–74K | $0.05–$0.40 | $0.08–$0.67 | **$2.00/tick** ✅ (flag) |
+| Sandbox setup (duplicate + issue copy) — **on-ramp step 2–3** | 0 Claude | **$0** | **$0** | n/a (no model call) |
+| First epic via `/assess` → `/build` — **on-ramp step 4–5** | scales w/ the work | no fixed figure | no fixed figure | **none by default** ⚠️ |
+| `try` — per open issue classified *(legacy, off the on-ramp)* | 7K–27K | $0.02–$0.08 | $0.03–$0.13 | **$1.00/run** ✅ |
+| `try --demo` — per issue→PR tick *(legacy, off the on-ramp)* | 9K–74K | $0.05–$0.40 | $0.08–$0.67 | **$2.00/tick** ✅ (flag) |
 | `configure` — per config value judged | up to ~83K † | ≤ $0.25 | ≤ $0.25 † | **$0.25/call** ✅ |
 | `/tidy` — nightly drain | 0.3–0.5M | ~$1.48 | ~$2.47 | none |
 | `/check-in` — daily check-in | ~0.1–0.3M ‡ | ~$0.30–$0.90 ‡ | ~$0.50–$1.50 ‡ | none |
@@ -122,10 +136,15 @@ basis costs roughly ~1.67 × $X on Opus 4.8.** The § Cost at a glance table
 carries both columns so you don't have to do that multiplication yourself.
 Treat every token count and every dollar band on this page as directional.
 
-**Tier 1 — the onboarding steps (`try`, `try --demo`).** These are the only
-two commands with a hardcoded, published cost band, because they're the
-commands a total stranger runs before deciding whether to trust anything
-else here:
+**Tier 1 — the capped commands (`try`, `try --demo`).** These are the only
+two commands with a hardcoded, published cost band. They were written as the
+stranger's first steps and were capped precisely because a stranger runs them
+before deciding whether to trust anything here — but they are **no longer the
+on-ramp** (temperloop#1115 replaced it; temperloop#1117 tracks their
+disposition). They still work, and their caps still hold. The current
+evaluation path — sandbox, then the first epic through `/assess` → `/build` —
+is Tier 2 work with no dollar ceiling; see the ⚠️ TL;DR bullet and
+temperloop#1130:
 
 - `temperloop try` — a real `claude -p` shadow-triage classification pass
   over your repo's own open issues, invoked with every tool disabled
