@@ -109,6 +109,24 @@ reads that marker; a stranger greps for it before pulling.
   (`not-declared` | `headless-unsupported`). A reader matching on the action name
   alone is unaffected.
 
+- **The CHANGELOG gate now enforces SECTION SCOPE, not just completeness**
+  (temperloop#1151). `workflows/scripts/check-changelog-entry.sh` fails a change
+  that adds lines to — or removes lines from — a CHANGELOG section that was
+  **already released at its merge base**, in both directions: an unmerged PR's
+  entry drifting *into* a released section when a release is cut underneath it
+  (temperloop#1138), and a released section *losing* an entry that legitimately
+  shipped in it (the temperloop#1125 over-correction, the same class as
+  temperloop#1143's four unrecorded PRs). The discriminator is the **base ref**:
+  a version heading that did not exist at the merge base is one this change is
+  *creating*, so a release cut — which looks identical at head — passes
+  unmodified. The check runs whenever CHANGELOG.md is in the diff, independent
+  of whether contract surface was touched. Deliberate amendment of a shipped
+  release stays possible through a **sibling verb in the existing marker
+  grammar** — `Changelog: amend — <reason>`, honored in the same three channels
+  (the new `changelog-amend` PR label, a PR-body line, or a commit trailer) with
+  the same reason requirement. The `none`/`skip` verb is unchanged and does not
+  waive section scope. New setting: `CHANGELOG_GATE_AMEND_LABEL`.
+
 - **BREAKING — `claude/hooks/board-adapter-guard.sh` is removed**, together with
   every kernel-plane rule that taught the two-backend model (epic #524). The
   hook existed to prompt on a direct `gh project` / Projects GraphQL call and
