@@ -24,6 +24,26 @@
 #  13. RED   — the contract-surface table is unparseable -> loud failure
 #  14. REAL  — the real repo's VERSIONING.md table parses (no loud failure)
 #
+# Section scope (temperloop#1151) — the released-section boundary, both
+# directions, reproducing the REAL observed shapes rather than synthetic ones:
+#  15. RED   — drift-in (temperloop#1138): a concurrent release cut lands a
+#              version section beneath [Unreleased] and the PR's entry resolves
+#              into the TOP of it
+#  16. RED   — history loss (the temperloop#1125 over-correction): moving your
+#              OWN entry back out of a released section also pulls ANOTHER PR's
+#              block out with it
+#  17. GREEN — the release cut itself, unmodified: creating a section and
+#              moving [Unreleased] down into it is never a section-scope
+#              violation (the base-ref discriminator)
+#  18. GREEN — the deliberate amendment (temperloop#1143 shape): marking an
+#              already-shipped release BREAKING + adding its migration note,
+#              via the explicit `Changelog: amend` marker (all three channels)
+#  19. RED   — an amendment marker with NO reason is not an amendment
+#  20. RED   — `Changelog: none` does NOT waive section scope (the two verbs
+#              are siblings, not synonyms)
+#  21. RED   — a CHANGELOG-ONLY PR (no contract surface touched) that steals
+#              from a released section still fails
+#
 # Usage: bash workflows/scripts/tests/test_check_changelog_entry.sh
 
 set -uo pipefail
@@ -334,6 +354,303 @@ if [[ "$RUN_STATUS" == "0" || "$RUN_STATUS" == "1" ]]; then
 else
   bad "real-tree run" "unexpected exit $RUN_STATUS: $RUN_OUT"
 fi
+
+# ═══ Section scope (temperloop#1151) ════════════════════════════════════════
+# These reproduce the three REAL incidents named in the issue. The fixtures
+# below advance the base past `new_repo`'s seed commit so the base ref already
+# carries the released section under test — which is the whole discriminator:
+# a section that exists AT THE BASE has shipped; a section this change creates
+# is a release cut.
+
+# rebase_base <dir> <msg> — commit the current CHANGELOG.md as a new base and
+# echo its sha (the "main advanced under the PR" world).
+rebase_base() {
+  git -C "$1" commit -aqm "$2"
+  git -C "$1" rev-parse HEAD
+}
+
+# ── 15. RED: drift-in — temperloop#1138 ─────────────────────────────────────
+# Main cut v0.26.0 directly beneath [Unreleased]; on rebase the PR's own added
+# lines resolve into the TOP of a release that does not contain its work.
+echo "15. drift-in: an entry lands in an already-released section (#1138)"
+D="$TMP/r15"; new_repo "$D" >/dev/null
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.26.0] - 2026-08-05 — BREAKING
+
+### Removed — BREAKING
+
+- The Projects-v2/GraphQL arm is removed from the board adapter.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+BASE="$(rebase_base "$D" "chore(release): cut v0.26.0")"
+echo "# build v2" > "$D/claude/commands/build.md"
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.26.0] - 2026-08-05 — BREAKING
+
+### Changed
+
+- Tweaked the build command spec.
+
+### Removed — BREAKING
+
+- The Projects-v2/GraphQL arm is removed from the board adapter.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+git -C "$D" commit -aqm "tweak the build command spec"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails — the entry drifted into a released section"
+assert_has "$RUN_OUT" "ALREADY RELEASED" "says the section had already shipped"
+assert_has "$RUN_OUT" "[0.26.0]" "names the section the lines landed in"
+assert_has "$RUN_OUT" "## [Unreleased]" "names the section they belong in"
+assert_has "$RUN_OUT" "Tweaked the build command spec." "quotes the drifted line"
+
+# ── 16. RED: history loss — the temperloop#1125 over-correction ─────────────
+# A worker correctly moves its OWN entry back out of [0.27.0] but also pulls
+# temperloop#1138's `### Removed — BREAKING` block out with it, where that
+# block legitimately belonged. The more damaging direction, and invisible to
+# review because the diff reads as a legitimate move.
+echo "16. history loss: a released section loses an entry that shipped in it (#1125)"
+D="$TMP/r16"; new_repo "$D" >/dev/null
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.27.0] - 2026-08-05 — BREAKING
+
+### Changed
+
+- Tweaked the build command spec.
+
+### Removed — BREAKING
+
+- The board adapter's Projects-v2 arm is gone (temperloop#1138, merged before this cut).
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+BASE="$(rebase_base "$D" "chore(release): cut v0.27.0")"
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Changed
+
+- Tweaked the build command spec.
+
+## [0.27.0] - 2026-08-05 — BREAKING
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+git -C "$D" commit -aqm "move my entry back under Unreleased"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails — a released section lost lines"
+assert_has "$RUN_OUT" "REMOVED from already-released section(s) [0.27.0]" "names the direction and the section"
+assert_has "$RUN_OUT" "temperloop#1138, merged before this cut" "quotes the erased entry"
+assert_has "$RUN_OUT" "changelog-amend" "documents the amendment label"
+
+# ── 17. GREEN: the release cut itself is never a section-scope violation ────
+# A cut creates `## [x.y.z]` directly beneath [Unreleased] and moves the
+# accumulated entries down into it — "lines added inside a version section" and
+# "a version section changed" are both TRUE here. The base-ref discriminator is
+# what separates this from case 15: at the base, [0.2.0] did not exist.
+echo "17. a release cut still passes, unmodified"
+D="$TMP/r17"; new_repo "$D" >/dev/null
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Changed
+
+- Tweaked the build command spec.
+
+### Removed — BREAKING
+
+- The board adapter's Projects-v2 arm is gone.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+BASE="$(rebase_base "$D" "feat: accumulate some unreleased work")"
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.2.0] - 2026-02-02 — BREAKING
+
+### Changed
+
+- Tweaked the build command spec.
+
+### Removed — BREAKING
+
+- The board adapter's Projects-v2 arm is gone.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+echo "0.2.0" > "$D/VERSION"
+git -C "$D" commit -aqm "chore(release): cut v0.2.0"
+run_gate "$D" "$BASE"
+assert_status 0 "$RUN_STATUS" "passes"
+assert_not_has "$RUN_OUT" "ALREADY RELEASED" "the created section is not treated as released"
+assert_has "$RUN_OUT" "release cut" "still recognized as a release cut"
+
+# ── 18. GREEN: the deliberate amendment — temperloop#1143 shape ─────────────
+# Retroactively marking an already-shipped release BREAKING and adding the
+# migration note it should have carried. This MUST still be possible — via the
+# explicit marker, in any of the same three channels.
+echo "18. deliberate amendment of a shipped release (#1143)"
+amend_repo() {
+  local d="$1"
+  new_repo "$d" >/dev/null
+  cat > "$d/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.26.0] - 2026-08-05
+
+### Removed
+
+- The Projects-v2/GraphQL arm is removed from the board adapter.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+  rebase_base "$d" "chore(release): cut v0.26.0"
+}
+amend_head() {
+  cat > "$1/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.26.0] - 2026-08-05 — BREAKING
+
+### Removed — BREAKING
+
+- The Projects-v2/GraphQL arm is removed from the board adapter.
+
+  **Migration.** There is no configuration path back to Projects-v2; an
+  adopter who wants it forks the board adapter.
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+}
+
+D="$TMP/r18"; BASE="$(amend_repo "$D")"
+amend_head "$D"
+git -C "$D" commit -aqm "docs(changelog): mark v0.26.0 BREAKING and add its migration note"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "without the marker it fails (the check really bites)"
+run_gate "$D" "$BASE" CHANGELOG_GATE_PR_LABELS="chore, changelog-amend ,Operational"
+assert_status 0 "$RUN_STATUS" "passes via the amendment LABEL"
+assert_has "$RUN_OUT" "recorded the amendment via the PR label" "records the channel"
+run_gate "$D" "$BASE" CHANGELOG_GATE_PR_BODY="## Summary
+v0.26.0 shipped four PRs with no BREAKING marker.
+
+Changelog: amend - v0.26.0 shipped breaking with no marker; adding it retroactively
+"
+assert_status 0 "$RUN_STATUS" "passes via the amendment marker in the PR BODY"
+assert_has "$RUN_OUT" "recorded the amendment via the PR body" "records the channel"
+assert_has "$RUN_OUT" "adding it retroactively" "echoes the recorded reason"
+
+D="$TMP/r18t"; BASE="$(amend_repo "$D")"
+amend_head "$D"
+git -C "$D" commit -aqm "docs(changelog): mark v0.26.0 BREAKING
+
+Changelog: amend — v0.26.0 shipped breaking with no marker"
+run_gate "$D" "$BASE"
+assert_status 0 "$RUN_STATUS" "passes via the amendment marker in the COMMIT message"
+assert_has "$RUN_OUT" "recorded the amendment via the commit message" "records the channel"
+
+# ── 19. RED: an amendment marker with no reason records nothing ─────────────
+echo "19. amendment marker with no reason"
+D="$TMP/r19"; BASE="$(amend_repo "$D")"
+amend_head "$D"
+git -C "$D" commit -aqm "docs(changelog): mark v0.26.0 BREAKING
+
+Changelog: amend"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "still fails — the reason is required"
+assert_not_has "$RUN_OUT" "recorded the amendment" "does not treat it as an amendment"
+
+# ── 20. RED: `none` and `amend` are siblings, not synonyms ──────────────────
+echo "20. a 'Changelog: none' opt-out does not waive section scope"
+D="$TMP/r20"; BASE="$(amend_repo "$D")"
+amend_head "$D"
+git -C "$D" commit -aqm "docs(changelog): mark v0.26.0 BREAKING
+
+Changelog: none — prose-only changelog touch-up"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails — the skip verb waives the entry requirement only"
+assert_has "$RUN_OUT" "ALREADY RELEASED" "fails for the section-scope reason"
+
+# ── 21. RED: a CHANGELOG-ONLY PR can steal from a released section too ──────
+# No contract surface is touched here, so property (1) would pass this change
+# outright; the section-scope check runs independently of it.
+echo "21. CHANGELOG-only change that erases a released entry"
+D="$TMP/r21"; BASE="$(amend_repo "$D")"
+cat > "$D/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.26.0] - 2026-08-05
+
+## [0.1.0] - 2026-01-01
+
+### Added
+
+- The first release.
+EOF
+git -C "$D" commit -aqm "docs(changelog): tidy up"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails even with no contract-surface path touched"
+assert_not_has "$RUN_OUT" "no contract-surface path changed" "does not short-circuit on the contract-surface test"
+assert_has "$RUN_OUT" "REMOVED from already-released section(s) [0.26.0]" "names the direction and the section"
 
 echo
 echo "test_check_changelog_entry: $pass passed, $fail failed"

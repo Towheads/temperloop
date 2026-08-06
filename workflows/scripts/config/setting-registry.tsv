@@ -325,6 +325,7 @@ CHANGELOG_GATE_BASE		string	kernel	workflows/scripts/check-changelog-entry.sh	Gi
 CHANGELOG_GATE_PR_BODY		string	kernel	workflows/scripts/check-changelog-entry.sh	PR body text the gate scans for a `Changelog: none - <reason>` opt-out marker (CI passes the pull_request payload's body)
 CHANGELOG_GATE_PR_LABELS		string	kernel	workflows/scripts/check-changelog-entry.sh	Comma-separated PR label names the gate scans for the opt-out label (CI passes the pull_request payload's labels)
 CHANGELOG_GATE_SKIP_LABEL	no-changelog	label	kernel	workflows/scripts/check-changelog-entry.sh	PR label that explicitly opts a contract-surface change out of the [Unreleased] entry requirement
+CHANGELOG_GATE_AMEND_LABEL	changelog-amend	label	kernel	workflows/scripts/check-changelog-entry.sh	PR label that explicitly records a DELIBERATE edit to an already-released CHANGELOG section (the sibling of the skip label; waives the section-scope check only)
 CHECK_PRODUCER_EGRESS_KERNEL_ROOT	$(cd "$SCRIPT_DIR/../../.." && pwd)	path	kernel	workflows/scripts/kernel/check-producer-egress.sh	Kernel root the producer-egress checker scans
 CHECK_PRODUCER_EGRESS_OVERLAY_DIR		path	kernel	workflows/scripts/kernel/check-producer-egress.sh	Optional overlay-report dir cross-checked against the kernel root
 GITLEAKS_VERSION	8.30.1	string	kernel	workflows/scripts/kernel/install-gitleaks.sh	Pinned gitleaks release version to install/resolve

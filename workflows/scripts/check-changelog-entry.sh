@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
-# check-changelog-entry.sh — fail a PR that changes CONTRACT SURFACE but adds
-# no `## [Unreleased]` entry to CHANGELOG.md (temperloop#960).
+# check-changelog-entry.sh — the CHANGELOG.md merge gate. Two properties:
+#
+#   (1) COMPLETENESS (temperloop#960) — a PR that changes CONTRACT SURFACE
+#       must add an entry under `## [Unreleased]`.
+#   (2) SECTION SCOPE (temperloop#1151) — a PR must not add lines to, nor take
+#       lines from, a section that was ALREADY RELEASED at its merge base.
 #
 # WHY THIS IS NOT TIDINESS. VERSIONING.md's pre-1.0 scheme carries the breaking
 # signal in the CHANGELOG, not the version number: "a breaking release MUST mark
@@ -47,6 +51,54 @@
 # backticked/inline mention of the marker in prose (as in this header) is never
 # read as an opt-out.
 #
+# ONE grammar, TWO sibling verbs. `none`/`skip` waives property (1); `amend`
+# waives property (2). Same anchored matcher, same three channels, same
+# >= 3-char reason requirement — the amendment escape hatch is a VERB in the
+# existing grammar, deliberately not a second parallel mechanism:
+#
+#   Changelog: none  — <reason>   waives the [Unreleased]-entry requirement
+#   Changelog: amend — <reason>   waives the released-section-scope check
+#
+# (the amendment label is `changelog-amend`, $CHANGELOG_GATE_AMEND_LABEL, the
+# sibling of $CHANGELOG_GATE_SKIP_LABEL). The two are NOT interchangeable: a
+# recorded "this change ships nothing" says nothing about whether editing a
+# shipped release's record was intended, so `none` never waives section scope
+# and `amend` never waives completeness.
+#
+# ── Section scope: the release-cut vs. theft discriminator (#1151) ──────────
+# At HEAD a legitimate release cut and a stolen entry look IDENTICAL: a cut
+# creates `## [x.y.z]` directly beneath `## [Unreleased]` and moves the
+# accumulated entries down into it, so "lines were added inside a released
+# section" and "a released section was modified" are both true of a perfectly
+# correct cut.
+#
+# THE DISCRIMINATOR IS THE BASE REF, NOT THE HEAD. Section membership is
+# resolved against the MERGE BASE's section boundaries:
+#
+#   * the version heading did NOT exist at the merge base  => this PR is
+#     CREATING that section. It is the release cut. Its contents are not
+#     checked — moving the Unreleased body down is the whole point.
+#   * the version heading DID exist at the merge base       => that release
+#     shipped BEFORE this PR. Adding lines to it is drift-in (the PR's work is
+#     not in that release); removing lines from it is history loss (an entry
+#     that legitimately shipped in that release is being erased).
+#
+# Both directions were live incidents. Drift-in (temperloop#1138): a PR adds
+# its entry under Unreleased, main concurrently cuts a release beneath
+# Unreleased, and on rebase the PR's added lines resolve into the TOP of a
+# release that does not contain its work. History loss (the temperloop#1125
+# over-correction): a worker correctly moving its OWN entry back out of a
+# released section also pulled ANOTHER PR's block out with it — the more
+# damaging direction, and invisible to review because the diff reads as a
+# legitimate move. Same class as temperloop#1143, where a release shipped four
+# PRs with no record at all.
+#
+# The check runs whenever CHANGELOG.md itself is in the diff — INDEPENDENT of
+# whether contract surface was touched, since a CHANGELOG-only PR can steal
+# from a released section just as easily. Only NON-BLANK line differences
+# count; a `###` sub-heading DOES count (losing a `### Removed — BREAKING`
+# heading is exactly the temperloop#1125 damage).
+#
 # ── Where it runs ──────────────────────────────────────────────────────────
 # Registered in scripts/quality-gates.sh's KERNEL_GATES, so it rides the
 # already-required `checks` status and needs no second required job and no
@@ -85,6 +137,7 @@ REPO_ROOT_DEFAULT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 : "${CHANGELOG_GATE_ROOT:=$REPO_ROOT_DEFAULT}"
 : "${CHANGELOG_GATE_HEAD:=HEAD}"
 : "${CHANGELOG_GATE_SKIP_LABEL:=no-changelog}"
+: "${CHANGELOG_GATE_AMEND_LABEL:=changelog-amend}"
 
 ROOT="$CHANGELOG_GATE_ROOT"
 HEAD="$CHANGELOG_GATE_HEAD"
@@ -101,6 +154,11 @@ VERSIONING_REL="VERSIONING.md"
 # table parsed" from "the table moved and we now enforce nothing", and no
 # adopter has a reason to tune it.
 min_patterns=8
+
+# How many offending lines the section-scope report quotes per direction, per
+# section. Also a lowercase local, deliberately not an operator setting: it
+# tunes only how much evidence the failure message prints, never the verdict.
+sec_report_max=6
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -174,12 +232,191 @@ fi
 # --- surface-conditional degradation ----------------------------------------
 # A composed consumer tree may carry neither file; enforcing against a CHANGELOG
 # or a contract-surface definition that does not exist is meaningless.
-if ! git -C "$ROOT" show "$HEAD:$VERSIONING_REL" >/dev/null 2>&1; then
-  say "skipped — no $VERSIONING_REL at $HEAD; nothing defines this tree's contract surface"
-  exit 0
-fi
 if ! git -C "$ROOT" show "$HEAD:$CHANGELOG_REL" >/dev/null 2>&1; then
   say "skipped — no $CHANGELOG_REL at $HEAD; this tree keeps no changelog"
+  exit 0
+fi
+
+# --- the marker grammar (shared by both properties) -------------------------
+# ONE anchored grammar, parameterized by VERB: `none`/`skip` waives the
+# [Unreleased]-entry requirement, `amend` waives the released-section-scope
+# check. Reason required (>= 3 chars after the separator); separator may be an
+# em dash, one or two hyphens, or a colon. Anchoring at line start is what
+# keeps a backticked/inline mention in prose (as in this header) from reading
+# as a marker.
+marker_re() {
+  printf '^[[:space:]]*[Cc]hangelog:[[:space:]]*(%s)[[:space:]]*(—|--|-|:)[[:space:]]*[^[:space:]][^[:space:]][^[:space:]]' "$1"
+}
+SKIP_MARKER_RE="$(marker_re '[Nn]one|[Ss]kip|NONE|SKIP')"
+AMEND_MARKER_RE="$(marker_re '[Aa]mend|AMEND')"
+
+marker_line() {
+  # Echo the first line of stdin matching the regex in $1, if any.
+  grep -E -m1 "$1" 2>/dev/null || true
+}
+
+# find_marker <regex> <label> — look for the marker in all three channels, in
+# the order label -> PR body -> commit trailer. Sets MARKER_HIT / MARKER_VIA;
+# returns 0 iff found.
+MARKER_HIT=""
+MARKER_VIA=""
+find_marker() {
+  local re="$1" want_label="$2" hit label old_ifs
+  MARKER_HIT=""
+  MARKER_VIA=""
+
+  # (a) PR label
+  if [[ -n "$want_label" && -n "$PR_LABELS" ]]; then
+    old_ifs="$IFS"
+    IFS=','
+    for label in $PR_LABELS; do
+      # trim surrounding whitespace
+      label="${label#"${label%%[![:space:]]*}"}"
+      label="${label%"${label##*[![:space:]]}"}"
+      if [[ "$label" == "$want_label" ]]; then
+        MARKER_HIT="label '$want_label'"
+        MARKER_VIA="PR label"
+      fi
+    done
+    IFS="$old_ifs"
+  fi
+
+  # (b) PR body marker
+  if [[ -z "$MARKER_HIT" && -n "$PR_BODY" ]]; then
+    hit="$(printf '%s\n' "$PR_BODY" | marker_line "$re")"
+    if [[ -n "$hit" ]]; then
+      MARKER_HIT="$hit"
+      MARKER_VIA="PR body"
+    fi
+  fi
+
+  # (c) commit-message trailer — the pre-PR / merge_group-visible channel
+  if [[ -z "$MARKER_HIT" ]]; then
+    hit="$(git -C "$ROOT" log --format=%B "$MERGE_BASE..$HEAD" 2>/dev/null | marker_line "$re")"
+    if [[ -n "$hit" ]]; then
+      MARKER_HIT="$hit"
+      MARKER_VIA="commit message"
+    fi
+  fi
+
+  [[ -n "$MARKER_HIT" ]]
+}
+
+# --- CHANGELOG snapshots at the merge base and at head ----------------------
+# shellcheck source=lib/changelog.sh
+source "$SCRIPT_DIR/lib/changelog.sh"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+git -C "$ROOT" show "$MERGE_BASE:$CHANGELOG_REL" > "$tmpdir/base.md" 2>/dev/null || : > "$tmpdir/base.md"
+git -C "$ROOT" show "$HEAD:$CHANGELOG_REL"       > "$tmpdir/head.md" 2>/dev/null || : > "$tmpdir/head.md"
+
+# section_text <file> <version-token> — the heading line plus every line after
+# it, up to (not including) the next `## [` heading. The heading is INCLUDED
+# because a released heading's own `— BREAKING` suffix is the downstream
+# acknowledgment signal, so an edit to it is a section edit like any other.
+section_text() {
+  awk -v want="$2" '
+    /^## \[/ {
+      ver = $0; sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+      insec = (ver == want) ? 1 : 0
+      if (insec) print
+      next
+    }
+    insec { print }
+  ' "$1"
+}
+
+# --- property (2): released-section scope (temperloop#1151) -----------------
+# Runs whenever CHANGELOG.md itself is in the diff, independent of contract
+# surface. Only sections that ALREADY EXISTED at the merge base are checked —
+# that is the release-cut discriminator (see the header).
+CHANGELOG_TOUCHED=0
+while IFS= read -r f; do
+  if [[ "$f" == "$CHANGELOG_REL" ]]; then
+    CHANGELOG_TOUCHED=1
+  fi
+done <<EOF
+$CHANGED
+EOF
+
+DRIFT_SECTIONS=""
+DRIFT_REPORT=""
+LOSS_SECTIONS=""
+LOSS_REPORT=""
+
+if [[ "$CHANGELOG_TOUCHED" == "1" ]]; then
+  while IFS= read -r ver; do
+    [[ -n "$ver" ]] || continue
+    section_text "$tmpdir/base.md" "$ver" > "$tmpdir/sec-base.txt"
+    section_text "$tmpdir/head.md" "$ver" > "$tmpdir/sec-head.txt"
+    secdiff="$(diff "$tmpdir/sec-base.txt" "$tmpdir/sec-head.txt" 2>/dev/null || true)"
+    [[ -n "$secdiff" ]] || continue
+
+    # $sec_report_max lines of evidence per direction — enough to show a whole
+    # `### Heading` + bullet block (the temperloop#1125 shape spans four lines),
+    # since the report is what makes a wrong verdict arguable rather than opaque.
+    sec_added="$(printf '%s\n' "$secdiff" | grep -E '^> ' | sed -e 's/^> //' \
+      | grep -Ev '^[[:space:]]*$' | head -"$sec_report_max" || true)"
+    sec_removed="$(printf '%s\n' "$secdiff" | grep -E '^< ' | sed -e 's/^< //' \
+      | grep -Ev '^[[:space:]]*$' | head -"$sec_report_max" || true)"
+
+    if [[ -n "$sec_added" ]]; then
+      DRIFT_SECTIONS="$DRIFT_SECTIONS [$ver]"
+      DRIFT_REPORT="$DRIFT_REPORT$(printf '%s\n' "$sec_added" | sed -e "s|^|    [$ver]  + |")"$'\n'
+    fi
+    if [[ -n "$sec_removed" ]]; then
+      LOSS_SECTIONS="$LOSS_SECTIONS [$ver]"
+      LOSS_REPORT="$LOSS_REPORT$(printf '%s\n' "$sec_removed" | sed -e "s|^|    [$ver]  - |")"$'\n'
+    fi
+  done <<EOF
+$(changelog_version_headings "$tmpdir/base.md")
+EOF
+fi
+
+if [[ -n "$DRIFT_SECTIONS" || -n "$LOSS_SECTIONS" ]]; then
+  if find_marker "$AMEND_MARKER_RE" "$CHANGELOG_GATE_AMEND_LABEL"; then
+    say "OK — already-released section(s)${DRIFT_SECTIONS}${LOSS_SECTIONS} were changed, but the author explicitly recorded the amendment via the $MARKER_VIA: $MARKER_HIT"
+  else
+    warn "FAIL — this change edits CHANGELOG.md section(s) that were ALREADY RELEASED at the merge base ($MERGE_BASE)."
+    warn ""
+    if [[ -n "$DRIFT_SECTIONS" ]]; then
+      warn "  Lines ADDED inside already-released section(s)${DRIFT_SECTIONS}:"
+      printf '%s' "$DRIFT_REPORT" >&2
+      warn "  Those lines belong under '## [Unreleased]', NOT inside${DRIFT_SECTIONS} — that release shipped"
+      warn "  before this change, so its section cannot describe this change's work."
+      warn "  This is the temperloop#1138 shape: a concurrent release cut created a version section"
+      warn "  directly beneath '## [Unreleased]', and on rebase this PR's added lines resolved into the"
+      warn "  TOP of it. Move them back under '## [Unreleased]' and re-push."
+      warn ""
+    fi
+    if [[ -n "$LOSS_SECTIONS" ]]; then
+      warn "  Lines REMOVED from already-released section(s)${LOSS_SECTIONS}:"
+      printf '%s' "$LOSS_REPORT" >&2
+      warn "  A released section is the record of what that release shipped. Removing a line from it"
+      warn "  erases history — most often (the temperloop#1125 shape) by over-correcting a drift-in fix"
+      warn "  and pulling ANOTHER PR's entry out along with your own. Restore${LOSS_SECTIONS} to its"
+      warn "  merge-base content and move only your own lines."
+      warn ""
+    fi
+    warn "  Sections CREATED by this change are never checked — that is how a release cut passes:"
+    warn "  at the merge base its version heading did not exist, so moving the [Unreleased] body down"
+    warn "  into it is the cut, not a theft."
+    warn ""
+    warn "  If the edit IS deliberate (retroactively marking a shipped release BREAKING, adding a"
+    warn "  migration note it should have carried), record the choice — same grammar, sibling verb:"
+    warn "    - add the '$CHANGELOG_GATE_AMEND_LABEL' label to the PR, or"
+    warn "    - put a line 'Changelog: amend - <reason>' in the PR body, or"
+    warn "    - put that same line in a commit message (the channel that works before the PR exists)."
+    warn "  The reason is required — amending a shipped release's record is a RECORDED CHOICE."
+    exit 1
+  fi
+fi
+
+# --- property (1) needs the contract-surface definition ---------------------
+if ! git -C "$ROOT" show "$HEAD:$VERSIONING_REL" >/dev/null 2>&1; then
+  say "skipped — no $VERSIONING_REL at $HEAD; nothing defines this tree's contract surface"
   exit 0
 fi
 
@@ -267,67 +504,16 @@ if [[ -z "$TOUCHED" ]]; then
 fi
 
 # --- explicit, recorded opt-out ---------------------------------------------
-# One grammar: `Changelog: none — <reason>` (or `skip`), anchored at line start,
-# reason required. Separator may be an em dash, one or two hyphens, or a colon.
-MARKER_RE='^[[:space:]]*[Cc]hangelog:[[:space:]]*([Nn]one|[Ss]kip|NONE|SKIP)[[:space:]]*(—|--|-|:)[[:space:]]*[^[:space:]][^[:space:]][^[:space:]]'
-
-marker_line() {
-  # Echo the first matching marker line from stdin, if any.
-  grep -E -m1 "$MARKER_RE" 2>/dev/null || true
-}
-
-OPT_OUT=""
-OPT_OUT_VIA=""
-
-# (a) PR label
-if [[ -n "$PR_LABELS" ]]; then
-  old_ifs="$IFS"
-  IFS=','
-  for label in $PR_LABELS; do
-    # trim surrounding whitespace
-    label="${label#"${label%%[![:space:]]*}"}"
-    label="${label%"${label##*[![:space:]]}"}"
-    if [[ "$label" == "$CHANGELOG_GATE_SKIP_LABEL" ]]; then
-      OPT_OUT="label '$CHANGELOG_GATE_SKIP_LABEL'"
-      OPT_OUT_VIA="PR label"
-    fi
-  done
-  IFS="$old_ifs"
-fi
-
-# (b) PR body marker
-if [[ -z "$OPT_OUT" && -n "$PR_BODY" ]]; then
-  hit="$(printf '%s\n' "$PR_BODY" | marker_line)"
-  if [[ -n "$hit" ]]; then
-    OPT_OUT="$hit"
-    OPT_OUT_VIA="PR body"
-  fi
-fi
-
-# (c) commit-message trailer — the pre-PR / merge_group-visible channel
-if [[ -z "$OPT_OUT" ]]; then
-  hit="$(git -C "$ROOT" log --format=%B "$MERGE_BASE..$HEAD" 2>/dev/null | marker_line)"
-  if [[ -n "$hit" ]]; then
-    OPT_OUT="$hit"
-    OPT_OUT_VIA="commit message"
-  fi
-fi
-
-if [[ -n "$OPT_OUT" ]]; then
-  say "OK — contract surface changed, but the author explicitly opted out via the $OPT_OUT_VIA: $OPT_OUT"
+# The `none`/`skip` verb of the shared marker grammar (see the header): waives
+# property (1) only. It never waives the released-section-scope check above —
+# "this change ships nothing" says nothing about whether editing a shipped
+# release's record was intended.
+if find_marker "$SKIP_MARKER_RE" "$CHANGELOG_GATE_SKIP_LABEL"; then
+  say "OK — contract surface changed, but the author explicitly opted out via the $MARKER_VIA: $MARKER_HIT"
   exit 0
 fi
 
 # --- did this change add an [Unreleased] entry? -----------------------------
-# shellcheck source=lib/changelog.sh
-source "$SCRIPT_DIR/lib/changelog.sh"
-
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
-
-git -C "$ROOT" show "$MERGE_BASE:$CHANGELOG_REL" > "$tmpdir/base.md" 2>/dev/null || : > "$tmpdir/base.md"
-git -C "$ROOT" show "$HEAD:$CHANGELOG_REL"       > "$tmpdir/head.md" 2>/dev/null || : > "$tmpdir/head.md"
-
 changelog_unreleased_body "$tmpdir/base.md"  > "$tmpdir/base-unreleased.txt"
 changelog_unreleased_body "$tmpdir/head.md"  > "$tmpdir/head-unreleased.txt"
 
