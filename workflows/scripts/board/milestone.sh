@@ -26,7 +26,7 @@
 #   milestone list                 [--board N]   # list open milestones, active first
 #
 # Both write verbs are idempotent (re-running is a no-op). --board selects the
-# Projects-v2 board (default 3 = stageFind; 4 = foundation). The milestone must
+# board (default 3 = stageFind; 4 = foundation). The milestone must
 # already exist in the repo (create once with
 # `gh api repos/<owner>/<repo>/milestones -f title=...`).
 #

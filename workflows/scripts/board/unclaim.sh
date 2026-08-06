@@ -42,7 +42,8 @@
 # this adapter-sourcing process) so a headless caller never has to source the
 # board adapter itself to make that decision.
 #
-# Needs the `project` gh scope (gh auth refresh -s project), like claim.sh.
+# Needs only the DEFAULT `repo` gh scope, like claim.sh — the status flip is a
+# plain-REST label write (see ISSUES-ONLY-BACKEND.md), never a `project` scope.
 set -euo pipefail
 
 # Attribution for the gh call-logger shim (F#988): tag every gh call this command

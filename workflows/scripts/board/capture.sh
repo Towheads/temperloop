@@ -25,18 +25,21 @@
 # item defers to a future phase is decided downstream by /triage's active-milestone
 # intake filter, not by this script flipping a Status — no deferral status is set.
 #
-# --board selects which Projects-v2 board + repo:
+# --board selects which board + repo:
 #   3 = "stageFind build"  -> <org>/stageFind   (default)
 #   4 = "foundation build" -> <org>/foundation
 #
 # --repo is a conscious-routing peer to --board (F#808, Guard #3 of the
 # kernel-vs-overlay routing rule — CLAUDE.kernel.md § Kernel vs overlay
 # routing rule). It overrides --board when given:
-#   --repo kernel       route to the temperloop ISSUES-ONLY tracker
-#                        (board id 7 — registered in lib/board.sh's
-#                        board_repo/board_backend built-in maps, see
-#                        ISSUES-ONLY-BACKEND.md) instead of a Projects-v2
-#                        board. Use when the capture IS kernel-domain
+#   --repo kernel       route to the temperloop kernel tracker (board id 7
+#                        — registered in lib/board.sh's board_repo/
+#                        board_backend built-in maps, see
+#                        ISSUES-ONLY-BACKEND.md) instead of the board
+#                        --board would otherwise select. Every board runs
+#                        the issues-only backend, so this is a ROUTING
+#                        choice, not a backend one.
+#                        Use when the capture IS kernel-domain
 #                        machinery (board adapter, build/sweep machinery,
 #                        install/doctor, quality gates — the "stranger test"
 #                        from the routing rule).
