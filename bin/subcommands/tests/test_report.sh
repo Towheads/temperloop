@@ -75,17 +75,17 @@ cat > "$REPO1/.temperloop/baseline.jsonl" <<'JSONL'
 JSONL
 
 out1="$(bash "$REPORT" --dir "$REPO1")"
-echo "$out1" | grep -q "Baseline records: 2" || fail "should report 2 baseline records"
-echo "$out1" | grep -q "Merged items/day:" || fail "should render merged items/day row"
-echo "$out1" | grep -q "0.1000/day -> 0.2000/day" || fail "merged items/day should go 9/90 -> 18/90"
-echo "$out1" | grep -q "Median time-to-merge" || fail "should render time-to-merge row"
-echo "$out1" | grep -q "20.0h -> 10.0h" || fail "time-to-merge should show 20.0h -> 10.0h"
-echo "$out1" | grep -q "delta -10.00h" || fail "time-to-merge delta should be -10.00h"
-echo "$out1" | grep -q "Review latency" || fail "should render review latency row"
-echo "$out1" | grep -q "4.0h -> 2.0h" || fail "review latency should show 4.0h -> 2.0h"
-echo "$out1" | grep -q "Issue backlog age" || fail "should render issue backlog age row"
-echo "$out1" | grep -q "90.0d -> 60.0d" || fail "issue backlog age should show 90.0 -> 60.0"
-echo "$out1" | grep -q "temperloop report: done" || fail "should print the completion line"
+grep -q "Baseline records: 2" <<<"$out1" || fail "should report 2 baseline records"
+grep -q "Merged items/day:" <<<"$out1" || fail "should render merged items/day row"
+grep -q "0.1000/day -> 0.2000/day" <<<"$out1" || fail "merged items/day should go 9/90 -> 18/90"
+grep -q "Median time-to-merge" <<<"$out1" || fail "should render time-to-merge row"
+grep -q "20.0h -> 10.0h" <<<"$out1" || fail "time-to-merge should show 20.0h -> 10.0h"
+grep -q "delta -10.00h" <<<"$out1" || fail "time-to-merge delta should be -10.00h"
+grep -q "Review latency" <<<"$out1" || fail "should render review latency row"
+grep -q "4.0h -> 2.0h" <<<"$out1" || fail "review latency should show 4.0h -> 2.0h"
+grep -q "Issue backlog age" <<<"$out1" || fail "should render issue backlog age row"
+grep -q "90.0d -> 60.0d" <<<"$out1" || fail "issue backlog age should show 90.0 -> 60.0"
+grep -q "temperloop report: done" <<<"$out1" || fail "should print the completion line"
 
 # --- 2: single-record repo --------------------------------------------------
 REPO2="$WORK/repo2"
@@ -95,7 +95,7 @@ cat > "$REPO2/.temperloop/baseline.jsonl" <<'JSONL'
 {"schema":1,"generated_at":"2026-06-01T00:00:00Z","lookback_days":90,"repo":{"gh_repo":"test-owner/test-repo"},"metrics":{"available":true,"reason":null,"pr_throughput":{"merged_count":9},"time_to_merge_hours":{"median":20.0,"sample_size":9},"review_latency_hours":{"median":4.0,"sample_size":8},"issue_backlog":{"open_count":10,"median_age_days":90.0}}}
 JSONL
 out2="$(bash "$REPORT" --dir "$REPO2")"
-echo "$out2" | grep -q "only one snapshot so far" || fail "single-record repo should note first==latest"
+grep -q "only one snapshot so far" <<<"$out2" || fail "single-record repo should note first==latest"
 
 # --- 3: degraded record (metrics.available=false) ---------------------------
 REPO3="$WORK/repo3"
@@ -106,8 +106,8 @@ cat > "$REPO3/.temperloop/baseline.jsonl" <<'JSONL'
 {"schema":1,"generated_at":"2026-06-15T00:00:00Z","lookback_days":90,"repo":{"gh_repo":"test-owner/test-repo"},"metrics":{"available":true,"reason":null,"pr_throughput":{"merged_count":18},"time_to_merge_hours":{"median":10.0,"sample_size":18},"review_latency_hours":{"median":2.0,"sample_size":16},"issue_backlog":{"open_count":5,"median_age_days":60.0}}}
 JSONL
 out3="$(bash "$REPORT" --dir "$REPO3")"
-echo "$out3" | grep -q "unavailable for first record" || fail "degraded first record should render a graceful reason, not crash"
-echo "$out3" | grep -q "gh not authenticated" || fail "degraded first record's reason text should surface"
+grep -q "unavailable for first record" <<<"$out3" || fail "degraded first record should render a graceful reason, not crash"
+grep -q "gh not authenticated" <<<"$out3" || fail "degraded first record's reason text should surface"
 
 # --- 4: missing .temperloop/baseline.jsonl entirely -------------------------
 REPO4="$WORK/repo4"
@@ -126,7 +126,7 @@ cp "$REPO1/.temperloop/baseline.jsonl" "$REPO5/.temperloop/baseline.jsonl"
 
 # 5a: no report.d/ at all
 out5a="$(bash "$REPORT" --dir "$REPO5")"
-echo "$out5a" | grep -q "skipped -- no .temperloop/report.d/ (or legacy .foundation/report.d/) directory" || fail "missing report.d/ should print a skip line"
+grep -q "skipped -- no .temperloop/report.d/ (or legacy .foundation/report.d/) directory" <<<"$out5a" || fail "missing report.d/ should print a skip line"
 
 # 5b-5d: passing / non-executable / failing drop-ins
 mkdir -p "$REPO5/.temperloop/report.d"
@@ -149,10 +149,10 @@ EOF
 chmod +x "$REPO5/.temperloop/report.d/broken"
 
 out5b="$(bash "$REPORT" --dir "$REPO5")"
-echo "$out5b" | grep -q "report.d/hello" || fail "a passing drop-in should render its own heading"
-echo "$out5b" | grep -q "hello from a passing drop-in" || fail "a passing drop-in's stdout should render verbatim"
-echo "$out5b" | grep -q "skipped -- not-exec: producer unavailable (not executable" || fail "a non-executable drop-in should skip legibly"
-echo "$out5b" | grep -q "skipped -- broken: producer unavailable (exit 3)" || fail "a failing drop-in should skip legibly with its exit code"
+grep -q "report.d/hello" <<<"$out5b" || fail "a passing drop-in should render its own heading"
+grep -q "hello from a passing drop-in" <<<"$out5b" || fail "a passing drop-in's stdout should render verbatim"
+grep -q "skipped -- not-exec: producer unavailable (not executable" <<<"$out5b" || fail "a non-executable drop-in should skip legibly"
+grep -q "skipped -- broken: producer unavailable (exit 3)" <<<"$out5b" || fail "a failing drop-in should skip legibly with its exit code"
 
 # 5e: timing out
 cat > "$REPO5/.temperloop/report.d/slow" <<'EOF'
@@ -162,7 +162,7 @@ echo "too slow"
 EOF
 chmod +x "$REPO5/.temperloop/report.d/slow"
 out5c="$(bash "$REPORT" --dir "$REPO5" --timeout 1)"
-echo "$out5c" | grep -q "skipped -- slow: producer unavailable (timed out after 1s)" || fail "a hanging drop-in should time out and skip legibly"
+grep -q "skipped -- slow: producer unavailable (timed out after 1s)" <<<"$out5c" || fail "a hanging drop-in should time out and skip legibly"
 rm -f "$REPO5/.temperloop/report.d/slow"
 
 # --- 6: tokens headline ------------------------------------------------------
@@ -178,9 +178,9 @@ EOF
 chmod +x "$REPO6/.temperloop/report.d/tokens"
 
 out6a="$(bash "$REPORT" --dir "$REPO6")"
-echo "$out6a" | grep -q "Tokens spent vs items merged" || fail "a valid tokens drop-in should drive the tokens headline"
-echo "$out6a" | grep -q "3600 tokens / 18 merged item" || fail "tokens headline should cite the raw tokens_spent and latest merged_count"
-echo "$out6a" | grep -q "200.0 tokens/item" || fail "tokens headline ratio should be 3600/18 = 200.0"
+grep -q "Tokens spent vs items merged" <<<"$out6a" || fail "a valid tokens drop-in should drive the tokens headline"
+grep -q "3600 tokens / 18 merged item" <<<"$out6a" || fail "tokens headline should cite the raw tokens_spent and latest merged_count"
+grep -q "200.0 tokens/item" <<<"$out6a" || fail "tokens headline ratio should be 3600/18 = 200.0"
 
 # 6b: invalid JSON -> falls back to kernel-tier headline
 cat > "$REPO6/.temperloop/report.d/tokens" <<'EOF'
@@ -189,9 +189,9 @@ echo "not json at all"
 EOF
 chmod +x "$REPO6/.temperloop/report.d/tokens"
 out6b="$(bash "$REPORT" --dir "$REPO6")"
-echo "$out6b" | grep -q "Kernel-tier headline" || fail "an invalid-JSON tokens drop-in should fall back to the kernel-tier headline"
-echo "$out6b" | grep -qv "Tokens spent vs items merged" || true  # rendered section still present verbatim, only the HEADLINE falls back
-echo "$out6b" | grep -q "Merged items/day: 0.1000 -> 0.2000/day" || fail "kernel-tier headline fallback should show the items/day figures"
+grep -q "Kernel-tier headline" <<<"$out6b" || fail "an invalid-JSON tokens drop-in should fall back to the kernel-tier headline"
+grep -qv "Tokens spent vs items merged" <<<"$out6b" || true  # rendered section still present verbatim, only the HEADLINE falls back
+grep -q "Merged items/day: 0.1000 -> 0.2000/day" <<<"$out6b" || fail "kernel-tier headline fallback should show the items/day figures"
 
 # --- 6c: dollar framing (foundation#882) -------------------------------------
 # A tokens producer that also emits a by_model breakdown, combined with a
@@ -209,39 +209,39 @@ chmod +x "$REPO_D/.temperloop/report.d/tokens"
 # 6c-i: all models priced -> ~$28.00 = (1M*18 + 2M*5)/1M, all covered.
 echo '{"claude-opus-4-8": 18.00, "claude-sonnet-5": 5.00}' > "$REPO_D/.temperloop/pricing.json"
 outDi="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDi" | grep -q 'Tokens spent vs items merged' || fail "dollar framing must keep the tokens headline"
-echo "$outDi" | grep -q '~[$]28.00 directional' || fail "all-priced dollar total should be 28.00 (1M*18 + 2M*5 per Mtok)"
-echo "$outDi" | grep -q '2 model(s) priced; all attributed tokens covered' || fail "all-priced line should report 2 covered, none excluded"
+grep -q 'Tokens spent vs items merged' <<<"$outDi" || fail "dollar framing must keep the tokens headline"
+grep -q '~[$]28.00 directional' <<<"$outDi" || fail "all-priced dollar total should be 28.00 (1M*18 + 2M*5 per Mtok)"
+grep -q '2 model(s) priced; all attributed tokens covered' <<<"$outDi" || fail "all-priced line should report 2 covered, none excluded"
 
 # 6c-ii: one model unpriced -> ~$18.00, sonnet excluded by name.
 echo '{"claude-opus-4-8": 18.00}' > "$REPO_D/.temperloop/pricing.json"
 outDii="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDii" | grep -q '~[$]18.00 directional' || fail "one-unpriced dollar total should exclude the unpriced model (18.00)"
-echo "$outDii" | grep -q 'unpriced tokens excluded: claude-sonnet-5' || fail "the unpriced model should be named and excluded"
+grep -q '~[$]18.00 directional' <<<"$outDii" || fail "one-unpriced dollar total should exclude the unpriced model (18.00)"
+grep -q 'unpriced tokens excluded: claude-sonnet-5' <<<"$outDii" || fail "the unpriced model should be named and excluded"
 
 # 6c-iii: no pricing.json -> a legible 'add pricing.json' nudge, no dollar figure.
 rm -f "$REPO_D/.temperloop/pricing.json"
 outDiii="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDiii" | grep -q 'add .temperloop/pricing.json' || fail "by_model without a pricing table should nudge to add one"
-if echo "$outDiii" | grep -q 'directional (priced from'; then fail "no dollar figure should render when the pricing table is absent"; fi
+grep -q 'add .temperloop/pricing.json' <<<"$outDiii" || fail "by_model without a pricing table should nudge to add one"
+if grep -q 'directional (priced from' <<<"$outDiii"; then fail "no dollar figure should render when the pricing table is absent"; fi
 
 # 6c-iv: malformed (non-JSON) pricing.json -> a legible 'not a {model: $/Mtok}
 # object' note, no crash, exit 0.
 echo 'not json at all' > "$REPO_D/.temperloop/pricing.json"
 outDiv="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDiv" | grep -qF '{model: $/Mtok} object' || fail "a malformed pricing.json should degrade to the object-shape note"
+grep -qF '{model: $/Mtok} object' <<<"$outDiv" || fail "a malformed pricing.json should degrade to the object-shape note"
 
 # 6c-iv-b: valid JSON but NOT an object (an array) -> same object-shape note,
 # not a misleading 'no model matched' (would otherwise throw on indexing).
 echo '[1, 2, 3]' > "$REPO_D/.temperloop/pricing.json"
 outDivb="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDivb" | grep -qF '{model: $/Mtok} object' || fail "a non-object pricing.json should report the object-shape note, not a name-mismatch"
-if echo "$outDivb" | grep -q 'no model in .temperloop/pricing.json matched'; then fail "a non-object pricing.json must not misreport as a name-mismatch"; fi
+grep -qF '{model: $/Mtok} object' <<<"$outDivb" || fail "a non-object pricing.json should report the object-shape note, not a name-mismatch"
+if grep -q 'no model in .temperloop/pricing.json matched' <<<"$outDivb"; then fail "a non-object pricing.json must not misreport as a name-mismatch"; fi
 
 # 6c-v: a pricing table matching none of the by_model models -> 'no model matched'.
 echo '{"some-other-model": 1.00}' > "$REPO_D/.temperloop/pricing.json"
 outDv="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDv" | grep -q 'no model in .temperloop/pricing.json matched' || fail "a zero-overlap pricing table should report no match"
+grep -q 'no model in .temperloop/pricing.json matched' <<<"$outDv" || fail "a zero-overlap pricing table should report no match"
 
 # 6c-vi: backward-compat -- a tokens producer WITHOUT by_model renders no
 # dollar line at all, even when a pricing.json is present.
@@ -252,8 +252,8 @@ echo '{"tokens_spent": 3000000}'
 EOF
 chmod +x "$REPO_D/.temperloop/report.d/tokens"
 outDvi="$(bash "$REPORT" --dir "$REPO_D")"
-echo "$outDvi" | grep -q 'Tokens spent vs items merged' || fail "a by_model-less tokens producer must still drive the tokens headline"
-if echo "$outDvi" | grep -qE 'directional \(priced from|add .temperloop/pricing.json'; then
+grep -q 'Tokens spent vs items merged' <<<"$outDvi" || fail "a by_model-less tokens producer must still drive the tokens headline"
+if grep -qE 'directional \(priced from|add .temperloop/pricing.json' <<<"$outDvi"; then
   fail "a tokens producer with no by_model must render no dollar line or nudge at all"
 fi
 
@@ -290,8 +290,8 @@ lines_before="$(wc -l < "$REPO7/.temperloop/baseline.jsonl" | tr -d ' ')"
 out7="$(cd "$REPO7" && PATH="$BIN:$PATH" bash "$REPORT" --dir "$REPO7" --refresh)"
 lines_after="$(wc -l < "$REPO7/.temperloop/baseline.jsonl" | tr -d ' ')"
 [ "$lines_after" -eq "$((lines_before + 1))" ] || fail "--refresh should append exactly one new baseline record"
-echo "$out7" | grep -q "Refreshing baseline" || fail "--refresh should announce the refresh step"
-echo "$out7" | grep -q "Baseline records: 2" || fail "--refresh's render step should see the freshly appended record"
+grep -q "Refreshing baseline" <<<"$out7" || fail "--refresh should announce the refresh step"
+grep -q "Baseline records: 2" <<<"$out7" || fail "--refresh's render step should see the freshly appended record"
 
 # a default (no --refresh) run must NOT touch baseline.jsonl, even with no gh at all
 lines_before2="$(wc -l < "$REPO7/.temperloop/baseline.jsonl" | tr -d ' ')"
@@ -322,8 +322,8 @@ echo '{"notice": "first-run disclosure: this producer is new"}'
 EOF
 chmod +x "$REPO9/.temperloop/report.d/hello"
 out9a="$(bash "$REPORT" --dir "$REPO9")"
-echo "$out9a" | grep -q "report.d/hello" || fail "notice-emitting producer should still render its own heading"
-echo "$out9a" | grep -q 'notice: first-run disclosure: this producer is new' || fail "a present notice field should render on its own line"
+grep -q "report.d/hello" <<<"$out9a" || fail "notice-emitting producer should still render its own heading"
+grep -q 'notice: first-run disclosure: this producer is new' <<<"$out9a" || fail "a present notice field should render on its own line"
 
 # 9b: a `tokens` producer whose stdout is leading non-JSON text ahead of the
 # JSON blob must degrade to the kernel-tier headline -- one legible line --
@@ -335,8 +335,8 @@ echo '{"tokens_spent": 4200}'
 EOF
 chmod +x "$REPO9/.temperloop/report.d/tokens"
 out9b="$(bash "$REPORT" --dir "$REPO9")"
-echo "$out9b" | grep -q "Kernel-tier headline" || fail "leading non-JSON tokens stdout should degrade to the kernel-tier headline"
-echo "$out9b" | grep -q "temperloop report: done" || fail "leading non-JSON tokens producer must not crash the report"
+grep -q "Kernel-tier headline" <<<"$out9b" || fail "leading non-JSON tokens stdout should degrade to the kernel-tier headline"
+grep -q "temperloop report: done" <<<"$out9b" || fail "leading non-JSON tokens producer must not crash the report"
 
 # 9c: a clean, single-JSON-object tokens producer -- the designed shape,
 # carrying `notice` alongside `tokens_spent` in the SAME object -- still
@@ -348,9 +348,9 @@ echo '{"tokens_spent": 4200, "notice": "directional spend, see report.contract.m
 EOF
 chmod +x "$REPO9/.temperloop/report.d/tokens"
 out9c="$(bash "$REPORT" --dir "$REPO9")"
-echo "$out9c" | grep -q "Tokens spent vs items merged" || fail "a clean JSON tokens producer (with a notice alongside it) should still drive the tokens headline"
-echo "$out9c" | grep -q "4200 tokens / 18 merged item" || fail "tokens headline should still cite the raw tokens_spent"
-echo "$out9c" | grep -q 'notice: directional spend, see report.contract.md' || fail "the tokens producer's own notice should render alongside its headline-driving JSON"
+grep -q "Tokens spent vs items merged" <<<"$out9c" || fail "a clean JSON tokens producer (with a notice alongside it) should still drive the tokens headline"
+grep -q "4200 tokens / 18 merged item" <<<"$out9c" || fail "tokens headline should still cite the raw tokens_spent"
+grep -q 'notice: directional spend, see report.contract.md' <<<"$out9c" || fail "the tokens producer's own notice should render alongside its headline-driving JSON"
 
 # 9d (bonus regression guard): trailing non-JSON tokens stdout must ALSO
 # degrade now -- before the jq-exit-status check this "accidentally" drove
@@ -363,7 +363,7 @@ echo "trailing non-JSON garbage"
 EOF
 chmod +x "$REPO9/.temperloop/report.d/tokens"
 out9d="$(bash "$REPORT" --dir "$REPO9")"
-echo "$out9d" | grep -q "Kernel-tier headline" || fail "trailing non-JSON tokens stdout must also degrade to the kernel-tier headline (jq exit status now checked)"
+grep -q "Kernel-tier headline" <<<"$out9d" || fail "trailing non-JSON tokens stdout must also degrade to the kernel-tier headline (jq exit status now checked)"
 
 # --- 11: tokens parse-failure notice (temperloop#988) ------------------------
 # The fallback in 9b/9d above used to be entirely MUTE: a `tokens` producer
@@ -386,9 +386,9 @@ echo "...and a trailing human sentence the producer author forgot to drop"
 EOF
 chmod +x "$REPO11/.temperloop/report.d/tokens"
 out11a="$(bash "$REPORT" --dir "$REPO11")"
-echo "$out11a" | grep -q "skipped -- tokens: stdout did not parse as a single JSON object with a numeric tokens_spent field" \
+grep -q "skipped -- tokens: stdout did not parse as a single JSON object with a numeric tokens_spent field" <<<"$out11a" \
   || fail "11a: a JSON-plus-trailing-text tokens producer must render the explicit parse-failure skipped line, not fall back silently"
-echo "$out11a" | grep -q "Kernel-tier headline" \
+grep -q "Kernel-tier headline" <<<"$out11a" \
   || fail "11a: the kernel-tier headline fallback itself must be unchanged"
 bash "$REPORT" --dir "$REPO11" >/dev/null 2>&1 \
   || fail "11a: a non-conforming tokens producer must still exit 0 -- the notice is a degradation, never an error"
@@ -407,7 +407,7 @@ echo '{"tokens_spent": 4200}'
 EOF
 chmod +x "$REPO11/.temperloop/report.d/tokens"
 out11b="$(bash "$REPORT" --dir "$REPO11")"
-echo "$out11b" | grep -q "skipped -- tokens: stdout did not parse" \
+grep -q "skipped -- tokens: stdout did not parse" <<<"$out11b" \
   || fail "11b: leading non-JSON tokens stdout must get the same parse-failure line as the trailing case"
 
 # 11c: valid JSON, but no numeric tokens_spent -- still a headline the
@@ -418,7 +418,7 @@ echo '{"tokens_spent": "lots"}'
 EOF
 chmod +x "$REPO11/.temperloop/report.d/tokens"
 out11c="$(bash "$REPORT" --dir "$REPO11")"
-echo "$out11c" | grep -q "skipped -- tokens: stdout did not parse" \
+grep -q "skipped -- tokens: stdout did not parse" <<<"$out11c" \
   || fail "11c: a non-numeric tokens_spent must also announce the fallback"
 
 # 11d: a producer that ALREADY self-declared via the skip channel (the shape
@@ -433,7 +433,7 @@ out11d="$(bash "$REPORT" --dir "$REPO11")"
 n11d="$(echo "$out11d" | grep -c 'skipped -- tokens' || true)"
 [ "$n11d" -eq 1 ] \
   || fail "11d: a self-declaring 'skipped -- tokens: producer unavailable' producer must render exactly one skip line, got $n11d"
-echo "$out11d" | grep -q "Kernel-tier headline" \
+grep -q "Kernel-tier headline" <<<"$out11d" \
   || fail "11d: a self-declared skip must still fall back to the kernel-tier headline"
 
 # 11e: the happy path stays clean -- a conforming producer renders NO
@@ -444,9 +444,9 @@ echo '{"tokens_spent": 3600}'
 EOF
 chmod +x "$REPO11/.temperloop/report.d/tokens"
 out11e="$(bash "$REPORT" --dir "$REPO11")"
-echo "$out11e" | grep -q "Tokens spent vs items merged" \
+grep -q "Tokens spent vs items merged" <<<"$out11e" \
   || fail "11e: a conforming tokens producer must still drive the tokens headline"
-if echo "$out11e" | grep -q "skipped -- tokens"; then
+if grep -q "skipped -- tokens" <<<"$out11e"; then
   fail "11e: a conforming tokens producer must render no skipped line at all"
 fi
 
@@ -459,7 +459,7 @@ echo "just some prose, not JSON at all"
 EOF
 chmod +x "$REPO11/.temperloop/report.d/plain"
 out11f="$(bash "$REPORT" --dir "$REPO11")"
-if echo "$out11f" | grep -q "skipped -- plain"; then
+if grep -q "skipped -- plain" <<<"$out11f"; then
   fail "11f: a non-tokens producer's plain-text stdout is contractually fine and must never be announced as a parse failure"
 fi
 echo "OK 11: tokens parse failure announces itself through the per-producer skipped-line channel (temperloop#988)"
@@ -491,7 +491,7 @@ THIRD_LOCATION="$WORK/third-location-unrelated"
 mkdir -p "$THIRD_LOCATION"
 REAL_REPO10="$(cd "$REPO10" && pwd -P)"
 out10="$(cd "$THIRD_LOCATION" && bash "$REPORT" --dir "$REPO10")"
-echo "$out10" | grep -qF "notice: cwd=$REAL_REPO10" \
+grep -qF "notice: cwd=$REAL_REPO10" <<<"$out10" \
   || fail "report.sh must cd to the target repo before running a drop-in producer (report.contract.md: cwd = the target repo) -- expected notice: cwd=$REAL_REPO10, got: $(echo "$out10" | grep 'notice: cwd=')"
 echo "OK 10: report.sh cd's to \$repo_root before invoking a drop-in producer, even when --dir differs from this process's own cwd"
 

@@ -35,7 +35,7 @@ done <"$LF"
 for oc in resolve_cold resolve_warm item_list resolve_item worklist reconcile_status pipeline_read_emu rel_loop _run_total; do
   grep -q "\"op_class\":\"$oc\"" "$LF" || fail "missing op_class $oc in lake"
 done
-echo "$out" | grep -q "^op_class" || fail "table header not printed"
+grep -q "^op_class" <<<"$out" || fail "table header not printed"
 echo "  [ok] dry-run: record per section + _run_total, valid schema, table"
 
 # --- 2: --reps reflected in count -------------------------------------------

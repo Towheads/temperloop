@@ -193,9 +193,9 @@ NOCFG_ERR="$(env -u SPEND_WEIGHT_INPUT -u SPEND_WEIGHT_CACHE_READ -u SPEND_WEIGH
                  -u SPEND_TRANSCRIPT_ROOT \
                  bash "$TMP/noconfig/workflows/scripts/pipeline-spend-report.sh" 2>&1; echo "rc=$?")"
 check "WEIGHTS: with no config reachable, an unset weight is a NAMED failure" \
-  bash -c "printf '%s' '$NOCFG_ERR' | grep -q 'SPEND_WEIGHT_INPUT is unset'"
+  bash -c "grep -q 'SPEND_WEIGHT_INPUT is unset' <<<'$NOCFG_ERR'"
 check "WEIGHTS: ...and a non-zero exit, never a silent hidden default" \
-  bash -c "! printf '%s' '$NOCFG_ERR' | grep -q 'rc=0'"
+  bash -c "! grep -q 'rc=0' <<<'$NOCFG_ERR'"
 
 # ===========================================================================
 # 3. Default resolution: with NO env overrides at all, the script must still
@@ -392,9 +392,9 @@ if [ -x "$PRODUCER" ]; then
   chmod +x "$TMP/orphan/tokens"
   OUT9B="$("$TMP/orphan/tokens"; echo "rc=$?")"
   check "PRODUCER: with no profiler reachable, prints the contract's skip line" \
-    bash -c "printf '%s' '$OUT9B' | grep -q 'skipped -- tokens: producer unavailable'"
+    bash -c "grep -q 'skipped -- tokens: producer unavailable' <<<'$OUT9B'"
   check "PRODUCER: ...and still exits 0 (a skip is never an error)" \
-    bash -c "printf '%s' '$OUT9B' | grep -q 'rc=0'"
+    bash -c "grep -q 'rc=0' <<<'$OUT9B'"
 
   # Degradation: an unrecognized record shape from the profiler (units_total
   # present but not a number) -- the producer's own `select((.units_total |
@@ -411,9 +411,9 @@ EOF
   chmod +x "$FAKEROOT/pipeline-spend-report.sh"
   OUT9D="$("$FAKEROOT/report-producers/tokens"; echo "rc=$?")"
   check "PRODUCER: an unrecognized record shape (non-numeric units_total) prints the skip line" \
-    bash -c "printf '%s' '$OUT9D' | grep -q 'skipped -- tokens: producer unavailable'"
+    bash -c "grep -q 'skipped -- tokens: producer unavailable' <<<'$OUT9D'"
   check "PRODUCER: ...and still exits 0" \
-    bash -c "printf '%s' '$OUT9D' | grep -q 'rc=0'"
+    bash -c "grep -q 'rc=0' <<<'$OUT9D'"
 
   # Degradation: no jq on PATH.
   mkdir -p "$TMP/emptybin"
@@ -421,7 +421,7 @@ EOF
   case "$OUT9C" in
     HASJQ) : ;;  # this host has jq in /usr/bin; the branch is covered by the orphan case above
     *) check "PRODUCER: with no jq, prints the skip line" \
-         bash -c "printf '%s' '$OUT9C' | grep -q 'skipped -- tokens: producer unavailable'" ;;
+         bash -c "grep -q 'skipped -- tokens: producer unavailable' <<<'$OUT9C'" ;;
   esac
 
   # Egress: the producer must never open a network connection. This is the

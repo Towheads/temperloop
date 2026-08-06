@@ -286,8 +286,8 @@ check "--print-only writes NOTHING to the lake" bash -c "! ls '$PLAKE'/item-effi
 echo "degradation:"
 NOSLUG="$(emit "$ROOT" "$TMP/lake-noslug" --build-run wf_build-001 2>&1; echo "rc=$?")"
 check "a missing --slug warns and exits 0 (telemetry never blocks its caller)" \
-  bash -c "printf '%s' '$NOSLUG' | grep -q 'rc=0'"
-check "...and emits no record" bash -c "! printf '%s' '$NOSLUG' | grep -q '\"slug\"'"
+  bash -c "grep -q 'rc=0' <<<'$NOSLUG'"
+check "...and emits no record" bash -c "! grep -q '\"slug\"' <<<'$NOSLUG'"
 
 ORPHAN="$TMP/orphan"
 mkdir -p "$ORPHAN"
@@ -296,7 +296,7 @@ ORPHREC="$(env "${PINNED_ENV[@]}" SPEND_TRANSCRIPT_ROOT="$ROOT" ITEM_EFFICIENCY_
             bash "$ORPHAN/emit-item-efficiency.sh" --slug demo --build-run wf_build-001 \
             --end-to-end-ms 5000 2>/dev/null; echo "rc=$?")"
 check "with NO profiler reachable the emit still exits 0" \
-  bash -c "printf '%s' '$ORPHREC' | grep -q 'rc=0'"
+  bash -c "grep -q 'rc=0' <<<'$ORPHREC'"
 ORPHJSON="$(printf '%s' "$ORPHREC" | sed 's/rc=0$//')"
 check_eq "...phases degrade to null rather than a locally recomputed substitute (which would fork the dedupe trap)" \
   "null" "$(printf '%s' "$ORPHJSON" | jq -r '.phases.worker')"
@@ -305,7 +305,7 @@ check_eq "...and the wall-clock the CALLER measured still survives" "5000" \
 
 EMPTYCORPUS="$(emit "$TMP/no-such-corpus" "$TMP/lake-empty" --slug demo --build-run wf_build-001 2>/dev/null; echo "rc=$?")"
 check "an empty transcript corpus is not an error (a genuinely fresh install)" \
-  bash -c "printf '%s' '$EMPTYCORPUS' | grep -q 'rc=0'"
+  bash -c "grep -q 'rc=0' <<<'$EMPTYCORPUS'"
 check_eq "...and the phase reports a real, honest ZERO from the profiler (it ran; there was nothing to attribute) rather than null" \
   "0" "$(printf '%s' "$EMPTYCORPUS" | sed 's/rc=0$//' | jq -r '.phases.worker.units')"
 
@@ -333,7 +333,7 @@ else
   check "build.md still invokes emit-item-efficiency.sh (the 4d merge seam)" \
     grep -Fq 'emit-item-efficiency.sh' "$BUILD_MD"
   block="$(grep -A4 -F 'emit-item-efficiency.sh' "$BUILD_MD" || true)"
-  if printf '%s' "$block" | grep -Fq -- '--build-run'; then
+  if grep -Fq -- '--build-run' <<<"$block"; then
     ok "build.md passes --build-run (without it every token phase is null)"
   else
     bad "build.md passes --build-run" "wiring drifted — the emit would record no tokens"

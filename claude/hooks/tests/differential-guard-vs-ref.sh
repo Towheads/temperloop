@@ -121,7 +121,7 @@ verdict() { # <hook> <cwd> <command> -> deny|allow
   json=$(jq -cn --arg c "$cmd" --arg cwd "$cwd" \
     '{tool_name:"Bash", tool_input:{command:$c}, cwd:$cwd}')
   out=$( cd "$cwd" && bash "$hook" <<<"$json" 2>/dev/null )
-  if printf '%s' "$out" | grep -q '"permissionDecision":"deny"'; then printf 'DENY'; else printf 'allow'; fi
+  if grep -q '"permissionDecision":"deny"' <<<"$out"; then printf 'DENY'; else printf 'allow'; fi
 }
 
 regress=0; tighten=0; same=0; ratified=0

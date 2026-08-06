@@ -346,11 +346,11 @@ fi
 # model name NOR a width — it interpolates the pin and the derived value, so
 # there is no second literal to fall out of sync with the first.
 cfg_writer="$(sed -n '/^_ks_bm_ensure_config()/,/^}/p' "$SEARCH_LIB")"
-printf '%s\n' "$cfg_writer" | grep -qF '"semantic_embedding_model": "$model"' \
+grep -qF '"semantic_embedding_model": "$model"' <<<"$cfg_writer" \
   || fail "6a: the config writer must interpolate the model pin, not restate it"
-printf '%s\n' "$cfg_writer" | grep -qF '"semantic_embedding_dimensions": $dims' \
+grep -qF '"semantic_embedding_dimensions": $dims' <<<"$cfg_writer" \
   || fail "6a: the config writer must interpolate the derived dimensions, not restate them"
-printf '%s\n' "$cfg_writer" | grep -qE 'bge-|semantic_embedding_dimensions": *[0-9]' \
+grep -qE 'bge-|semantic_embedding_dimensions": *[0-9]' <<<"$cfg_writer" \
   && fail "6a: the config writer must not hardcode a model name or a width (temperloop#907)"
 echo "PASS: 6a model/dimensions are one pin + one derivation; unknown model fails loudly (temperloop#907)"
 
@@ -732,9 +732,9 @@ out17a="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
 docs17a="$(printf '%s\n' "$out17a" | jq -r '.doc_id' | sort | tr '\n' '|')"
 [ "$docs17a" = "Decisions/acme - retainer terms.md|" ] \
   || fail "17a: scoped search must return ONLY the acme partition (got: $docs17a)"
-printf '%s\n' "$out17a" | grep -q 'zenith' \
+grep -q 'zenith' <<<"$out17a" \
   && fail "17a: CROSS-PARTITION BLEED — a zenith note reached an acme-scoped search:\n$out17a"
-printf '%s\n' "$out17a" | grep -q 'Index.md' \
+grep -q 'Index.md' <<<"$out17a" \
   && fail "17a: an UNPARTITIONED note reached a scoped search (must fail closed):\n$out17a"
 echo "PASS: 17a a scoped ks_search returns only its own partition — the other partition's note is ABSENT"
 
@@ -758,7 +758,7 @@ out17c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
 docs17c="$(printf '%s\n' "$out17c" | jq -r '.doc_id' | sort | tr '\n' '|')"
 [ "$docs17c" = "Decisions/zenith - retainer terms.md|zenith/Decisions/rates.md|" ] \
   || fail "17c: both membership forms should match for zenith (got: $docs17c)"
-printf '%s\n' "$out17c" | grep -q 'acme' \
+grep -q 'acme' <<<"$out17c" \
   && fail "17c: CROSS-PARTITION BLEED — an acme note reached a zenith-scoped search:\n$out17c"
 echo "PASS: 17c partition membership matches both the '<project> - ' filename form and the '<project>/' directory form"
 
@@ -890,7 +890,7 @@ EOF
 out17j="$(bash "$CONSUMER17" 2>/dev/null)" || fail "17j: the scoped fallback path should exit 0"
 [ "$(printf '%s\n' "$out17j" | jq -r '.doc_id' | sort | tr '\n' '|')" = "Decisions/acme - retainer terms.md|" ] \
   || fail "17j: the rg lexical fallback must be partition-filtered too (got: $out17j)"
-printf '%s\n' "$out17j" | grep -q 'zenith' \
+grep -q 'zenith' <<<"$out17j" \
   && fail "17j: CROSS-PARTITION BLEED via the rg lexical fallback:\n$out17j"
 echo "PASS: 17j the rg lexical-fallback stream is partition-filtered too — the degraded path cannot leak"
 

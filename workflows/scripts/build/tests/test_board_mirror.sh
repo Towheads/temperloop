@@ -99,7 +99,7 @@ case "${1:-}" in
     # The Projects-v2 single-item GraphQL resolve is gone (ADR 0004). Any
     # attempt to build that argv is a regression, so fail loudly rather than
     # quietly serving a fixture for a call that can no longer happen.
-    if printf '%s' "$all" | grep -q 'api graphql' || [ "$path" = "graphql" ]; then
+    if grep -q 'api graphql' <<<"$all" || [ "$path" = "graphql" ]; then
       echo "stub: REGRESSION — 'gh api graphql' built, but the Projects-v2 arm was removed (ADR 0004): $all" >&2
       exit 3
     fi

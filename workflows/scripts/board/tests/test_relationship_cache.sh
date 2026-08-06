@@ -152,7 +152,7 @@ WARM_SUB="$(board_sub_issues 60 300 2>"$STDERR_LOG")"
 A cached arm reading a field the bulk payload does not carry is exactly the defect that armed board-mirror.sh \
 to close epics with open children."
 [ "$WARM_SUB" = "$LIVE_SUB" ] || fail "warm board_sub_issues must equal the live answer: warm=[$WARM_SUB] live=[$LIVE_SUB]"
-echo "$WARM_SUB" | grep -qx 302 || fail "closed child #302 missing"
+grep -qx 302 <<<"$WARM_SUB" || fail "closed child #302 missing"
 echo "PASS: 2 REGRESSION GUARD — warm cache returns the true children, not empty"
 
 reset_calls
@@ -172,15 +172,15 @@ echo "PASS: 3 the epic-close open-child count is correct on a warm cache (1, not
 # --- 4. structural guard — no cached arm may be reintroduced silently -------
 SUB_BODY="$(awk '/^board_sub_issues\(\) \{/,/^\}/' "$LIB_DIR/board.sh")"
 PARENT_BODY="$(awk '/^board_parent_issue\(\) \{/,/^\}/' "$LIB_DIR/board.sh")"
-echo "$SUB_BODY" | grep -q 'cache_read' \
+grep -q 'cache_read' <<<"$SUB_BODY" \
   && fail "board_sub_issues must NOT read the snapshot (temperloop#1163) — the bulk payload has no parent linkage. \
 See temperloop#1165 for the zero-API-cost path to caching this correctly."
-echo "$PARENT_BODY" | grep -q 'cache_read' \
+grep -q 'cache_read' <<<"$PARENT_BODY" \
   && fail "board_parent_issue must NOT read the snapshot (temperloop#1163)"
 echo "PASS: 4 neither relationship read has a snapshot-reading arm (grep-audit)"
 
 BLOCKED_BY_BODY="$(awk '/^board_blocked_by_open\(\) \{/,/^\}/' "$LIB_DIR/board.sh")"
-echo "$BLOCKED_BY_BODY" | grep -q '_board_cache_store_enabled' \
+grep -q '_board_cache_store_enabled' <<<"$BLOCKED_BY_BODY" \
   && fail "board_blocked_by_open must NOT have a cached arm (blocked_by stays live)"
 echo "PASS: 4b board_blocked_by_open still has no cached arm"
 

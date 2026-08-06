@@ -92,9 +92,9 @@ status1="$(git -C "$P1" status --porcelain)"
 $status1"
 pass "1: git status is clean after deploy (no untracked-but-stageable .claude/ state)"
 
-echo "$out1" | grep -q "added '.claude/agents/' to .*\.gitignore" \
+grep -q "added '.claude/agents/' to .*\.gitignore" <<<"$out1" \
   || fail "2: deploy did not print an explicit stdout line naming the .gitignore path it added for .claude/agents/"
-echo "$out1" | grep -q "added '.claude/reviewer-state/' to .*\.gitignore" \
+grep -q "added '.claude/reviewer-state/' to .*\.gitignore" <<<"$out1" \
   || fail "2: deploy did not print an explicit stdout line naming the .gitignore path it added for .claude/reviewer-state/"
 pass "2: deploy prints an explicit stdout line naming the .gitignore path it added, for both entries"
 
@@ -120,7 +120,7 @@ pass "3: no re-implemented .gitignore append loop found in project-agents.sh"
 P4="${TMP}/non-git-adopter"
 mkdir -p "$P4"
 out4="$(bash "$DEPLOY_SH" --project-dir "$P4" 2>&1)" || fail "4: deploy into a non-git target exited non-zero (should proceed anyway)"
-echo "$out4" | grep -qi "not a git repository" || fail "4: deploy into a non-git target did not warn about the missing git repo"
+grep -qi "not a git repository" <<<"$out4" || fail "4: deploy into a non-git target did not warn about the missing git repo"
 [ -d "${P4}/.claude/agents" ] || fail "4: deploy into a non-git target did not deploy agents (should still proceed)"
 [ "$(find "${P4}/.claude/agents" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')" -gt 0 ] \
   || fail "4: deploy into a non-git target deployed zero agent files"

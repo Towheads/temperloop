@@ -49,10 +49,10 @@ run() { env PATH="$TMP/bin:$PATH" WFR_COVERAGE_GH_BIN="$TMP/bin/gh" GH_FIXTURE_D
 
 # --- 1. text summary: 1 of 2 command-doc PRs covered = 50% --------------------
 out="$(run --days 28)"
-echo "$out" | grep -q "command-doc PRs: 2" || bad "denominator: expected 2 command-doc PRs; got: $out"
-echo "$out" | grep -q "workflow-reviewer pass: 1" || bad "numerator: expected 1 covered; got: $out"
-echo "$out" | grep -q "coverage: 50%" || bad "rate: expected 50%; got: $out"
-echo "$out" | grep -q "uncovered PRs: 2" || bad "uncovered list: expected PR 2; got: $out"
+grep -q "command-doc PRs: 2" <<<"$out" || bad "denominator: expected 2 command-doc PRs; got: $out"
+grep -q "workflow-reviewer pass: 1" <<<"$out" || bad "numerator: expected 1 covered; got: $out"
+grep -q "coverage: 50%" <<<"$out" || bad "rate: expected 50%; got: $out"
+grep -q "uncovered PRs: 2" <<<"$out" || bad "uncovered list: expected PR 2; got: $out"
 [ "$fails" -eq 0 ] && ok "text summary: 1/2 command-doc PRs documented -> 50% (PR 3 correctly excluded)"
 
 # --- 2. --json shape ----------------------------------------------------------
@@ -66,8 +66,8 @@ ok "--json emits {command_doc_prs, with_workflow_reviewer, coverage_pct}"
 printf '[]\n' > "$TMP/fix/pr-list.json"
 rc=0; out0="$(run --days 28)" || rc=$?
 [ "$rc" -eq 0 ] || bad "empty set: expected exit 0, got $rc"
-echo "$out0" | grep -q "command-doc PRs: 0" || bad "empty set: expected 0 PRs; got: $out0"
-echo "$out0" | grep -q "coverage: 0%"       || bad "empty set: expected 0% (no divide-by-zero); got: $out0"
+grep -q "command-doc PRs: 0" <<<"$out0" || bad "empty set: expected 0 PRs; got: $out0"
+grep -q "coverage: 0%" <<<"$out0"       || bad "empty set: expected 0% (no divide-by-zero); got: $out0"
 ok "empty PR set -> zero-row report, exit 0, no divide-by-zero"
 
 if [ "$fails" -eq 0 ]; then

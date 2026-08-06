@@ -362,10 +362,10 @@ provision_out="$(
 )"
 
 [[ -d "${FAKE_HOME7}/.cache/temperloop" ]] || fail "7: store root not created"
-echo "$provision_out" | grep -q "cache store root ready" || fail "7: missing store-root-ready line"
-echo "$provision_out" | grep -q "board 1 has no cache axis yet" || fail "7: expected an opt-in hint for board 1 (no cache= line)"
-echo "$provision_out" | grep -q "board.1.cache=on" || fail "7: opt-in hint should name the exact line to add"
-if echo "$provision_out" | grep -q "board 2 has no cache axis"; then
+grep -q "cache store root ready" <<<"$provision_out" || fail "7: missing store-root-ready line"
+grep -q "board 1 has no cache axis yet" <<<"$provision_out" || fail "7: expected an opt-in hint for board 1 (no cache= line)"
+grep -q "board.1.cache=on" <<<"$provision_out" || fail "7: opt-in hint should name the exact line to add"
+if grep -q "board 2 has no cache axis" <<<"$provision_out"; then
   fail "7: board 2 already has a cache= line — must NOT be suggested"
 fi
 
@@ -381,7 +381,7 @@ provision_out2="$(
       links_provision_cache_stores "'"$FAKE_FOUND7"'"
     '
 )"
-echo "$provision_out2" | grep -q "cache store root ready" || fail "7: re-run should still report the store root ready"
+grep -q "cache store root ready" <<<"$provision_out2" || fail "7: re-run should still report the store root ready"
 [[ "$(cat "${FAKE_FOUND7}/workflows/scripts/board/boards.conf")" == "$conf_before" ]] || \
   fail "7: boards.conf must still be untouched after a second (idempotent) run"
 
@@ -428,11 +428,11 @@ doctor8_out="$(
     bash "$DOCTOR_SH" "$FAKE_FOUND8" 2>&1
 )" || true   # other managed links are deliberately left MISSING (non-zero exit expected) — the cache section's own content is what this test checks
 
-echo "$doctor8_out" | grep -qE 'board\.1 +cache=off +store=absent' || \
+grep -qE 'board\.1 +cache=off +store=absent' <<<"$doctor8_out" || \
   fail "8: board 1 (no cache= line, no store) should report cache=off store=absent (got: $doctor8_out)"
-echo "$doctor8_out" | grep -qE 'board\.2 +cache=on +store=present' || \
+grep -qE 'board\.2 +cache=on +store=present' <<<"$doctor8_out" || \
   fail "8: board 2 (cache=on, fresh meta.json) should report cache=on store=present (got: $doctor8_out)"
-echo "$doctor8_out" | grep -qE 'board\.3 +cache=on +store=stale' || \
+grep -qE 'board\.3 +cache=on +store=stale' <<<"$doctor8_out" || \
   fail "8: board 3 (cache=on, old meta.json) should report cache=on store=stale (got: $doctor8_out)"
 
 # SKIPPED path: board.sh/cache.sh absent entirely must not error.
@@ -441,7 +441,7 @@ mkdir -p "${FAKE_FOUND8B}/env" "${FAKE_FOUND8B}/claude" "${FAKE_FOUND8B}/workflo
 doctor8b_out="$(
   FOUNDATION="$FAKE_FOUND8B" HOME="${TMP}/home8b" bash "$DOCTOR_SH" "$FAKE_FOUND8B" 2>&1
 )" || true   # other managed links are absent too (non-zero exit expected)
-echo "$doctor8b_out" | grep -q "SKIPPED (board.sh / cache.sh not found" || \
+grep -q "SKIPPED (board.sh / cache.sh not found" <<<"$doctor8b_out" || \
   fail "8: cache section should SKIP cleanly when board.sh/cache.sh are absent (got: $doctor8b_out)"
 
 pass "8: doctor's check_cache_state reports absent/present/stale per board and skips cleanly when the libs are absent"
@@ -487,7 +487,7 @@ doctor9_out="$(
 
 [[ "$doctor9_exit" -eq 0 ]] || \
   fail "9: an absent cache store must not fail doctor (exit=${doctor9_exit}); output: ${doctor9_out}"
-echo "$doctor9_out" | grep -qE 'board\.1 +cache=on +store=absent' || \
+grep -qE 'board\.1 +cache=on +store=absent' <<<"$doctor9_out" || \
   fail "9: board 1 should report cache=on store=absent (got: $doctor9_out)"
 
 pass "9: an unwarmed (absent) cache store never fails doctor's overall gate"
@@ -523,7 +523,7 @@ output10="$(
 if grep -q '\.\*' <<<"$output10"; then
   fail "10: an absent env/ directory should yield zero env records, not a literal '.*' entry (got: $(grep '\.\*' <<<"$output10"))"
 fi
-echo "$output10" | grep -q "${FAKE_HOME10}/.claude/settings.json" || \
+grep -q "${FAKE_HOME10}/.claude/settings.json" <<<"$output10" || \
   fail "10: non-env categories should still be enumerated when env/ is absent"
 
 pass "10: an absent env/ directory yields zero env records (no bogus literal-glob entry), other categories unaffected"

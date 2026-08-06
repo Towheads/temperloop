@@ -95,9 +95,9 @@ echo "── 3. THE LOUD FAILURE: dispositions that do not partition the total �
 emit l3 --command sweep --board 7 --items-processed 30 --merged 27 --parked 1
 check_eq "exit code is non-zero (2), not a silent 0" "2" "$EMIT_RC"
 check "stderr names the arithmetic that failed" \
-  bash -c "printf '%s' \"\$1\" | grep -Fq 'merged(27) + resolved(0) + parked(1) = 28, but --items-processed is 30'" _ "$EMIT_ERR"
+  bash -c "grep -Fq 'merged(27) + resolved(0) + parked(1) = 28, but --items-processed is 30' <<<\"\$1\"" _ "$EMIT_ERR"
 check "stderr says the record was still appended (never swallowed)" \
-  bash -c "printf '%s' \"\$1\" | grep -Fq 'WAS appended'" _ "$EMIT_ERR"
+  bash -c "grep -Fq 'WAS appended' <<<\"\$1\"" _ "$EMIT_ERR"
 check_eq "the record IS on disk despite the failure — an inconsistent record beats no record" \
   "1" "$(lake_lines l3)"
 check_eq "...and it is the caller's counts verbatim, not silently 'corrected'" \
@@ -110,7 +110,7 @@ echo "── 4. infrastructure-class failure stays warn-and-exit-0 (|| true-safe
 emit l4 --command sweep --items-processed 3 --merged two --parked 1
 check_eq "a malformed count warns and exits 0 — a telemetry emit never blocks its caller" "0" "$EMIT_RC"
 check "...naming the offending flag" \
-  bash -c "printf '%s' \"\$1\" | grep -Fq -- '--merged must be a non-negative integer'" _ "$EMIT_ERR"
+  bash -c "grep -Fq -- '--merged must be a non-negative integer' <<<\"\$1\"" _ "$EMIT_ERR"
 check_eq "...and writes no record rather than a garbage one" "0" "$(lake_lines l4)"
 emit l4b --command ""
 check_eq "a missing --command still warns and exits 0" "0" "$EMIT_RC"

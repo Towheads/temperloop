@@ -62,11 +62,11 @@ done
 echo 'package main' >"${FIXTURE1}/stray.go"
 
 out1="$(bash "$RAC_SH" --list-only --project-dir "$FIXTURE1")"
-printf '%s\n' "$out1" | grep -qx "shell-reviewer" \
+grep -qx "shell-reviewer" <<<"$out1" \
   || fail "1: shell-reviewer not in gap set (got: $out1)"
-printf '%s\n' "$out1" | grep -qx "python-reviewer" \
+grep -qx "python-reviewer" <<<"$out1" \
   || fail "1: python-reviewer not in gap set (got: $out1)"
-if printf '%s\n' "$out1" | grep -qx "go-reviewer"; then
+if grep -qx "go-reviewer" <<<"$out1"; then
   fail "1: go-reviewer unexpectedly in gap set (single stray file, below threshold)"
 fi
 
@@ -109,10 +109,10 @@ done
 echo '# shell-reviewer (already deployed)' >"${FIXTURE2}/.claude/agents/shell-reviewer.md"
 
 out2="$(bash "$RAC_SH" --list-only --project-dir "$FIXTURE2")"
-if printf '%s\n' "$out2" | grep -qx "shell-reviewer"; then
+if grep -qx "shell-reviewer" <<<"$out2"; then
   fail "4: shell-reviewer should be excluded (already covered) — got: $out2"
 fi
-printf '%s\n' "$out2" | grep -qx "python-reviewer" \
+grep -qx "python-reviewer" <<<"$out2" \
   || fail "4: python-reviewer should still be in gap set — got: $out2"
 
 pass "4: an already-covered reviewer (.claude/agents/<name>.md present) is excluded from the gap set"
@@ -124,7 +124,7 @@ mkdir -p "${FIXTURE2}/.claude/reviewer-state/declined"
 touch "${FIXTURE2}/.claude/reviewer-state/declined/python-reviewer"
 
 out3="$(bash "$RAC_SH" --list-only --project-dir "$FIXTURE2")"
-if printf '%s\n' "$out3" | grep -qx "python-reviewer"; then
+if grep -qx "python-reviewer" <<<"$out3"; then
   fail "5: python-reviewer should be excluded (declined) — got: $out3"
 fi
 

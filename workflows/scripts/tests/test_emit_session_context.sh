@@ -120,7 +120,7 @@ OUT5=$(bash "$SCRIPT" --transcript "$T5" --session-id "$CANARY-in-session-id-not
 check "privacy: transcript_tokens_total correct (50) despite recognizable content in the transcript" \
   test "$(printf '%s' "$OUT5" | jq -r '.transcript_tokens_total')" = "50"
 check "privacy: the canary string appears ONLY where the caller explicitly put it (session_id), never elsewhere in the record" \
-  bash -c "printf '%s' '$OUT5' | jq -r 'del(.session_id) | tostring' | grep -qv '$CANARY'"
+  bash -c "jq -r 'del(.session_id) | tostring' <<<'$OUT5' | grep -qv '$CANARY'"
 
 # --- 6. Unknown argument -> warns, ignored, never fails ---------------------
 STDERR6="$TMP/test6.stderr"

@@ -29,12 +29,12 @@ if [ -n "$names" ]; then ok "helper prints setting names"; else bad "helper prin
 
 # 2. Includes representative VALUE settings from each family the pipeline exports.
 for k in BUILD_MERGE_GATE_WINDOW TIDY_SYNC_WAIT ASSESS_POLL_CADENCE PIPELINE_OPERATOR EPIC_MIN_SUBUNITS; do
-  if printf '%s\n' "$names" | grep -qxF "$k"; then ok "includes $k"; else bad "includes $k" "absent from list"; fi
+  if grep -qxF "$k" <<<"$names"; then ok "includes $k"; else bad "includes $k" "absent from list"; fi
 done
 
 # 3. EXCLUDES the two config-file resolvers (structurally distinct; #1055).
 for k in BUILD_CONFIG_MACHINE BUILD_CONFIG_LOCAL; do
-  if printf '%s\n' "$names" | grep -qxF "$k"; then bad "excludes $k" "leaked into scrub list"; else ok "excludes $k"; fi
+  if grep -qxF "$k" <<<"$names"; then bad "excludes $k" "leaked into scrub list"; else ok "excludes $k"; fi
 done
 
 # 4. SSOT coverage: helper list == build.config.sh's `: "${NAME:=...}"` decls

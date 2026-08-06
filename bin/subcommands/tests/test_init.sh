@@ -255,9 +255,9 @@ assert_no_mutating_gh() {
 # exactly the dangling contract that survived a green suite before.
 assert_complete_boards_entry() {
   local label="$1" entry="$2" board="$3"
-  printf '%s\n' "$entry" | grep -q "board\.$board\.backend=issues" \
+  grep -q "board\.$board\.backend=issues" <<<"$entry" \
     || fail "$label: rendered entry missing board.$board.backend=issues (got: $entry)"
-  printf '%s\n' "$entry" | grep -q "FILL IN" \
+  grep -q "FILL IN" <<<"$entry" \
     && fail "$label: rendered entry still carries a 'FILL IN' placeholder (temperloop#793) (got: $entry)"
   return 0
 }
@@ -280,9 +280,9 @@ run 0 --dir "$REPO1" --gh-repo acme/widget --no-network --dry-run \
   --yes-required-check --yes-labels
 
 [ ! -s "$CALL_LOG" ] || fail "dry-run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q 'would create: .temperloop/config' \
+grep -q 'would create: .temperloop/config' <<<"$out" \
   || fail "dry-run did not print a tree-only preview of what it would write (got: $out)"
-echo "$out" | grep -q 'skipped (--dry-run — tree-only preview, no baseline write)' \
+grep -q 'skipped (--dry-run — tree-only preview, no baseline write)' <<<"$out" \
   || fail "dry-run did not report the baseline snapshot as skipped (got: $out)"
 
 AFTER_HEAD="$(git -C "$REPO1" rev-parse HEAD)"
@@ -313,9 +313,9 @@ echo "PASS: --dry-run + --no-network is genuinely zero-write — no baseline.jso
 REPO2="$(new_fixture_repo repo2)"
 FAKE_PR_NUM=20 run 0 --dir "$REPO2" --gh-repo acme/widget
 assert_no_mutating_gh "non-interactive run"
-echo "$out" | grep -q "first-epic: skipped — no interactive operator detected" \
+grep -q "first-epic: skipped — no interactive operator detected" <<<"$out" \
   || fail "first-epic did not report the non-interactive skip (got: $out)"
-echo "$out" | grep -q "^next step: " \
+grep -q "^next step: " <<<"$out" \
   || fail "run printed no handoff line (got: $out)"
 echo "PASS: non-interactive, no --yes-* flags -> the first-epic offer skips, zero mutating gh calls, handoff still printed"
 
@@ -329,13 +329,13 @@ REPO3="$(new_fixture_repo repo3)"
 FAKE_PR_NUM=21 run 0 --dir "$REPO3" --gh-repo acme/widget \
   --yes-required-check --yes-labels
 assert_no_mutating_gh "deprecated --yes-required-check/--yes-labels"
-echo "$out" | grep -q "DEPRECATED — --yes-required-check" \
+grep -q "DEPRECATED — --yes-required-check" <<<"$out" \
   || fail "--yes-required-check fired no deprecation notice (got: $out)"
-echo "$out" | grep -q "DEPRECATED — --yes-labels" \
+grep -q "DEPRECATED — --yes-labels" <<<"$out" \
   || fail "--yes-labels fired no deprecation notice (got: $out)"
-echo "$out" | grep -q "first epic" \
+grep -q "first epic" <<<"$out" \
   || fail "the required-check deprecation notice does not name where the step went (got: $out)"
-echo "$out" | grep -q '"outcome": "PR_OPENED"' || fail "expected PR_OPENED outcome (got: $out)"
+grep -q '"outcome": "PR_OPENED"' <<<"$out" || fail "expected PR_OPENED outcome (got: $out)"
 
 cfg="$(cat "$REPO3/.temperloop/config")"
 [ "$(jq -r '.schema' <<<"$cfg")" = "1" ] || fail "landed config schema is not 1"
@@ -369,7 +369,7 @@ git -C "$REPO3" commit -q -m "seed a pre-scope-down install manifest"
 
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=21 \
   run 0 --dir "$REPO3" --gh-repo acme/widget --yes-required-check --yes-labels
-echo "$out" | grep -q "Found existing .temperloop/config (schema 1)" \
+grep -q "Found existing .temperloop/config (schema 1)" <<<"$out" \
   || fail "round-trip did not detect+re-read the existing config (got: $out)"
 assert_no_mutating_gh "round-trip re-run"
 cfg2="$(cat "$REPO3/.temperloop/config")"
@@ -396,7 +396,7 @@ echo "# marker" > "$REPO5/workflows/scripts/board/marker.txt"
 git -C "$REPO5" add -A && git -C "$REPO5" commit -q -m "seed board toolkit"
 FAKE_PR_NUM=22 run 0 --dir "$REPO5" --gh-repo acme/widget
 proposed_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
-printf '%s\n' "$proposed_conf" | grep -q "board.1.repo=acme/widget" \
+grep -q "board.1.repo=acme/widget" <<<"$proposed_conf" \
   || fail "boards.conf entry was not proposed when the board toolkit is present"
 # REGRESSION PIN (temperloop#793/#796) — the PROPOSED boards.conf half.
 assert_complete_boards_entry "proposed boards.conf" "$proposed_conf" 1
@@ -431,7 +431,7 @@ git -C "$REPO5" push -q origin "HEAD:main" \
 git -C "$REPO5" fetch -q origin
 FAKE_PR_EXISTS=1 FAKE_PR_BRANCH="foundation-init/config" FAKE_PR_NUM=22 \
   run 0 --dir "$REPO5" --gh-repo acme/widget
-echo "$out" | grep -qF "already on main — leaving workflows/scripts/board/boards.conf untouched" \
+grep -qF "already on main — leaving workflows/scripts/board/boards.conf untouched" <<<"$out" \
   || fail "with the entry already on the base branch, init did not report leaving boards.conf untouched (got: $out)"
 settled_conf="$(git -C "$REPO5" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
 [ "$settled_conf" = "$proposed_conf" ] \
@@ -452,7 +452,7 @@ FAKE_PR_NUM=23 FAKE_OWNER=acme FAKE_PROJECT_NUM=99 \
 [ "$(call_count 'project create')" -eq 0 ] \
   || fail "board provisioning still fired: $(call_count 'project create') 'project create' call(s) (temperloop#793 dropped it)"
 assert_no_mutating_gh "--yes-board"
-echo "$out" | grep -q "DEPRECATED — --yes-board" \
+grep -q "DEPRECATED — --yes-board" <<<"$out" \
   || fail "--yes-board fired no deprecation notice (got: $out)"
 cfg6="$(cat "$REPO6/.temperloop/config")"
 [ "$(jq -r '.tracker.mode' <<<"$cfg6")" = "issues" ] \
@@ -481,28 +481,28 @@ REPO7="$(new_fixture_repo repo7)"
 run 2 --dir "$REPO7" --gh-repo acme/widget --provision-board
 [ -s "$CALL_LOG" ] \
   && fail "--provision-board: a gh call fired before the removed-flag error should have stopped parsing (log: $(cat "$CALL_LOG"))"
-echo "$out" | grep -qF "init.sh: unknown arg: --provision-board" \
+grep -qF "init.sh: unknown arg: --provision-board" <<<"$out" \
   && fail "--provision-board fell through to the generic unknown-arg error instead of naming its removal (got: $out)"
-echo "$out" | grep -qF "'--provision-board' was removed" \
+grep -qF "'--provision-board' was removed" <<<"$out" \
   || fail "--provision-board's error does not say it was removed, echoing back what was typed (got: $out)"
-echo "$out" | grep -qF "ADR 0004, epic #524" \
+grep -qF "ADR 0004, epic #524" <<<"$out" \
   || fail "--provision-board's error does not name the removal release (ADR 0004, epic #524) (got: $out)"
 
 # A DIFFERENT member of the same retired flag family — proves the match is
 # a PREFIX, not one hardcoded exact string, and that the error echoes back
 # whatever the caller actually typed.
 run 2 --dir "$REPO7" --gh-repo acme/widget --provision-labels
-echo "$out" | grep -qF "'--provision-labels' was removed" \
+grep -qF "'--provision-labels' was removed" <<<"$out" \
   || fail "a sibling --provision-* flag was not caught by the prefix match and named back correctly (got: $out)"
 
 run 2 --dir "$REPO7" --gh-repo acme/widget --tracker-mode issues
 [ -s "$CALL_LOG" ] \
   && fail "--tracker-mode: a gh call fired before the removed-flag error should have stopped parsing (log: $(cat "$CALL_LOG"))"
-echo "$out" | grep -qF "init.sh: unknown arg: --tracker-mode" \
+grep -qF "init.sh: unknown arg: --tracker-mode" <<<"$out" \
   && fail "--tracker-mode fell through to the generic unknown-arg error instead of naming its removal (got: $out)"
-echo "$out" | grep -qi "tracker-mode.*removed" \
+grep -qi "tracker-mode.*removed" <<<"$out" \
   || fail "--tracker-mode's error does not say it was removed (got: $out)"
-echo "$out" | grep -qF "ADR 0004, epic #524" \
+grep -qF "ADR 0004, epic #524" <<<"$out" \
   || fail "--tracker-mode's error does not name the removal release (ADR 0004, epic #524) (got: $out)"
 echo "PASS: the board-provisioning flag family (--provision-*) and --tracker-mode no longer parse; both exit 2 naming the removal release (ADR 0004, epic #524), echoing back what was typed, not the generic unknown-arg error"
 
@@ -519,11 +519,11 @@ FAKE_PR_NUM=25 FAKE_ISSUE_NUM=77 \
 [ "$(call_count 'issue create')" -eq 1 ] \
   || fail "expected exactly 1 'issue create' (the first epic), got $(call_count 'issue create')"
 assert_no_mutating_gh "--yes-first-epic"
-echo "$out" | grep -q "first-epic: filed .*#77" \
+grep -q "first-epic: filed .*#77" <<<"$out" \
   || fail "first-epic was not reported as filed (got: $out)"
-echo "$out" | grep -q "^next step: /assess --epic 77" \
+grep -q "^next step: /assess --epic 77" <<<"$out" \
   || fail "handoff line missing or does not name the filed epic (got: $out)"
-echo "$out" | grep -q "temperloop init: done" || fail "run did not reach its closing line (got: $out)"
+grep -q "temperloop init: done" <<<"$out" || fail "run did not reach its closing line (got: $out)"
 echo "PASS: --yes-first-epic files the epic, applies zero API state, and hands off with 'next step: /assess --epic <N>'"
 
 # =============================================================================
@@ -540,7 +540,7 @@ echo "PASS: --yes-first-epic files the epic, applies zero API state, and hands o
 last_nonblank="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -1)"
 [ "$last_nonblank" != "temperloop init: done" ] \
   || fail "'temperloop init: done' is the LAST line printed — the handoff box must be last (got tail: $last_nonblank)"
-printf '%s\n' "$last_nonblank" | grep -qF '====' \
+grep -qF '====' <<<"$last_nonblank" \
   || fail "the last non-blank line is not the handoff box's closing border (got: $last_nonblank)"
 done_line="$(printf '%s\n' "$out" | grep -n '^temperloop init: done$' | tail -1 | cut -d: -f1)"
 handoff_hdr_line="$(printf '%s\n' "$out" | grep -n '^-- 5\. Handoff --$' | tail -1 | cut -d: -f1)"
@@ -548,11 +548,11 @@ handoff_hdr_line="$(printf '%s\n' "$out" | grep -n '^-- 5\. Handoff --$' | tail 
   || fail "could not locate both 'temperloop init: done' and the Handoff header in output (got: $out)"
 [ "$done_line" -lt "$handoff_hdr_line" ] \
   || fail "'temperloop init: done' (output line $done_line) does not precede the Handoff block (output line $handoff_hdr_line) — it must print BEFORE, never after"
-echo "$out" | grep -qF "    claude" \
+grep -qF "    claude" <<<"$out" \
   || fail "handoff box missing the exact command to launch Claude Code in this repo (got: $out)"
-echo "$out" | grep -qF "Epic: https://github.com/acme/widget/issues/77" \
+grep -qF "Epic: https://github.com/acme/widget/issues/77" <<<"$out" \
   || fail "handoff box missing the full (never-truncated) epic URL (got: $out)"
-echo "$out" | grep -qi "NOT FINISHED" \
+grep -qi "NOT FINISHED" <<<"$out" \
   || fail "handoff box does not state that configuration is not finished (got: $out)"
 echo "PASS: the handoff box is the LAST thing printed — 'temperloop init: done' now precedes it, and the box carries the not-finished framing, the launch command, the exact /assess invocation, and the full epic URL"
 
@@ -567,14 +567,14 @@ echo "PASS: the handoff box is the LAST thing printed — 'temperloop init: done
 REPO9="$(new_fixture_repo repo9)"
 FAKE_PR_NUM=26 FAKE_ISSUE_NUM=88 \
   run 0 --dir "$REPO9" --gh-repo acme/widget --no-first-epic
-echo "$out" | grep -q "first-epic: declined" || fail "decline was not reported (got: $out)"
-echo "$out" | grep -q "filed durable re-offer pointer .*#88" \
+grep -q "first-epic: declined" <<<"$out" || fail "decline was not reported (got: $out)"
+grep -q "filed durable re-offer pointer .*#88" <<<"$out" \
   || fail "decline did not file the durable re-offer pointer (got: $out)"
-echo "$out" | grep -q "Inline principles interview" \
+grep -q "Inline principles interview" <<<"$out" \
   && fail "decline still ran the retired INLINE principles interview banner (got: $out)"
-echo "$out" | grep -q "Do you have existing engineering conventions" \
+grep -q "Do you have existing engineering conventions" <<<"$out" \
   && fail "decline still asked the retired inline A1 principles question (got: $out)"
-echo "$out" | grep -q "^next step: " || fail "decline printed no handoff line (got: $out)"
+grep -q "^next step: " <<<"$out" || fail "decline printed no handoff line (got: $out)"
 echo "PASS: declining files the durable re-offer pointer as the WHOLE floor — no inline principles interview, handoff still printed"
 
 # =============================================================================
@@ -596,9 +596,9 @@ FAKE_HOME="$WORK/home-no-install" && mkdir -p "$FAKE_HOME"
 FAKE_HOME="$FAKE_HOME" FAKE_PR_NUM=27 FAKE_ISSUE_NUM=91 \
   run 0 --dir "$REPO10A" --gh-repo acme/widget --yes-first-epic
 handoff_uninstalled="$(printf '%s\n' "$out" | grep '^next step: ' || true)"
-printf '%s\n' "$out" | grep -q '^next step: /assess --epic 91' \
+grep -q '^next step: /assess --epic 91' <<<"$out" \
   || fail "uninstalled probe changed the stable handoff marker (got: $out)"
-printf '%s\n' "$out" | grep -q '^prerequisite: .*temperloop install' \
+grep -q '^prerequisite: .*temperloop install' <<<"$out" \
   || fail "no prerequisite line when ~/.claude/commands/assess.md is absent (got: $out)"
 
 REPO10B="$(new_fixture_repo repo10b)"
@@ -608,7 +608,7 @@ echo "# assess" > "$FAKE_HOME_INSTALLED/.claude/commands/assess.md"
 FAKE_HOME="$FAKE_HOME_INSTALLED" FAKE_PR_NUM=28 FAKE_ISSUE_NUM=91 \
   run 0 --dir "$REPO10B" --gh-repo acme/widget --yes-first-epic
 handoff_installed="$(printf '%s\n' "$out" | grep '^next step: ' || true)"
-printf '%s\n' "$out" | grep -q '^prerequisite: ' \
+grep -q '^prerequisite: ' <<<"$out" \
   && fail "prerequisite line printed even though ~/.claude/commands/assess.md exists (got: $out)"
 [ "$handoff_installed" = "$handoff_uninstalled" ] \
   || fail "the 'next step:' marker differs between the installed and uninstalled probe states — install-tier2.yml greps it on a runner with no ~/.claude/:\n  installed:   $handoff_installed\n  uninstalled: $handoff_uninstalled"
@@ -622,9 +622,9 @@ echo "PASS: the handoff names its \`temperloop install\` prerequisite when /asse
 # =============================================================================
 REPO10="$(new_fixture_repo repo10)"
 run 2 --dir "$REPO10" --tracker-mode bogus
-echo "$out" | grep -qi "tracker-mode.*removed" \
+grep -qi "tracker-mode.*removed" <<<"$out" \
   || fail "bogus --tracker-mode value did not hit the removed-flag error (got: $out)"
-echo "$out" | grep -qi "must be 'issues' or 'projects'" \
+grep -qi "must be 'issues' or 'projects'" <<<"$out" \
   && fail "the old --tracker-mode value-validation message resurfaced instead of the removed-flag error (got: $out)"
 echo "PASS: --tracker-mode is refused with exit 2 regardless of its value, and names the removal rather than the old value-validation message"
 
@@ -633,7 +633,7 @@ echo "PASS: --tracker-mode is refused with exit 2 regardless of its value, and n
 # =============================================================================
 mkdir -p "$WORK/not-a-repo"
 run 1 --dir "$WORK/not-a-repo"
-echo "$out" | grep -qi "not a git working tree" || fail "non-repo --dir error message unclear (got: $out)"
+grep -qi "not a git working tree" <<<"$out" || fail "non-repo --dir error message unclear (got: $out)"
 echo "PASS: --dir pointing outside a git working tree is refused with exit 1"
 
 # =============================================================================
@@ -651,18 +651,18 @@ FAKE_EXISTING_EPIC_NUM=77 FAKE_PR_NUM=29 \
   run 0 --dir "$REPO13" --gh-repo acme/widget
 [ "$(call_count 'issue create')" -eq 0 ] \
   || fail "idempotent already-filed path re-filed the epic: $(call_count 'issue create') 'issue create' call(s)"
-echo "$out" | grep -q "first-epic: already filed as #77" \
+grep -q "first-epic: already filed as #77" <<<"$out" \
   || fail "the already-filed idempotency notice did not fire (got: $out)"
-echo "$out" | grep -q "^next step: /assess --epic 77" \
+grep -q "^next step: /assess --epic 77" <<<"$out" \
   || fail "idempotent re-run's handoff marker missing or does not name the existing epic (got: $out)"
-echo "$out" | grep -qF "Epic: https://github.com/acme/widget/issues/77" \
+grep -qF "Epic: https://github.com/acme/widget/issues/77" <<<"$out" \
   || fail "idempotent re-run did not recover the full epic URL for the recovery handoff (got: $out)"
-echo "$out" | grep -qF "    claude" \
+grep -qF "    claude" <<<"$out" \
   || fail "idempotent re-run's handoff box missing the launch-Claude-Code command (got: $out)"
 last_nonblank13="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -1)"
 [ "$last_nonblank13" != "temperloop init: done" ] \
   || fail "idempotent re-run: 'temperloop init: done' is the LAST line printed — the handoff box must be last"
-printf '%s\n' "$last_nonblank13" | grep -qF '====' \
+grep -qF '====' <<<"$last_nonblank13" \
   || fail "idempotent re-run: the last non-blank line is not the handoff box's closing border (got: $last_nonblank13)"
 echo "PASS: the idempotent already-filed path recovers the same actionable handoff (full epic URL + launch command), last, with zero re-filed issues"
 
@@ -693,7 +693,7 @@ echo "PASS: the idempotent already-filed path recovers the same actionable hando
 # =============================================================================
 REPO14="$(new_fixture_repo repo14)"
 FAKE_PR_NUM=30 run 0 --dir "$REPO14" --gh-repo acme/widget
-echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens (mode 755)" \
+grep -qF "report.d producer: proposing .temperloop/report.d/tokens (mode 755)" <<<"$out" \
   || fail "init did not report proposing the tokens producer (got: $out)"
 
 P14="$REPO14/.temperloop/report.d/tokens"
@@ -726,7 +726,7 @@ producer_out="$(cd "$REPO14" && env -u TEMPERLOOP_HOME PATH=/usr/bin:/bin \
   ./.temperloop/report.d/tokens 2>&1)" || prc=$?
 [ "$prc" -eq 0 ] \
   || fail "the placed producer exited $prc in a kernel-less repo (the drop-in contract requires exit 0) — output: $producer_out"
-printf '%s\n' "$producer_out" | grep -qF "skipped -- tokens: producer unavailable" \
+grep -qF "skipped -- tokens: producer unavailable" <<<"$producer_out" \
   || fail "the placed producer did not emit the contract's skip line in a kernel-less repo (got: $producer_out)"
 
 [ "$(jq '[.installs[] | select(.type != "proposal_pr")] | length' "$REPO14/.temperloop/config")" -eq 0 ] \
@@ -767,9 +767,9 @@ git -C "$REPO15" push -q origin main \
 git -C "$REPO15" fetch -q origin
 
 FAKE_PR_NUM=31 run 0 --dir "$REPO15" --gh-repo acme/widget
-echo "$out" | grep -qF "report.d producer: .temperloop/report.d/tokens already on main — leaving it untouched" \
+grep -qF "report.d producer: .temperloop/report.d/tokens already on main — leaving it untouched" <<<"$out" \
   || fail "init did not report skipping the pre-existing producer (got: $out)"
-echo "$out" | grep -qF "report.d producer: proposing" \
+grep -qF "report.d producer: proposing" <<<"$out" \
   && fail "init proposed the producer even though one was already present (got: $out)"
 
 cmp -s "$WORK/producer15.before" "$REPO15/.temperloop/report.d/tokens" \
@@ -809,7 +809,7 @@ git -C "$REPO16" fetch -q origin
 
 # --- run 1: proposes both optional entries -------------------------------
 FAKE_PR_NUM=32 run 0 --dir "$REPO16" --gh-repo acme/widget
-echo "$out" | grep -qF "report.d producer: proposing .temperloop/report.d/tokens" \
+grep -qF "report.d producer: proposing .temperloop/report.d/tokens" <<<"$out" \
   || fail "run 1 did not propose the producer (got: $out)"
 git -C "$REPO16" show "HEAD:.temperloop/report.d/tokens" > "$WORK/run1-producer" 2>/dev/null \
   || fail "run 1 did not commit the producer"
@@ -871,9 +871,9 @@ git -C "$REPO17" fetch -q origin
   || fail "fixture bug: REPO17's working tree already has the producer, so this test proves nothing"
 
 FAKE_PR_NUM=33 run 0 --dir "$REPO17" --gh-repo acme/widget
-echo "$out" | grep -qF "report.d producer: proposing" \
+grep -qF "report.d producer: proposing" <<<"$out" \
   && fail "init proposed its own shim over a producer that exists on the base branch (got: $out)"
-echo "$out" | grep -qF "already on main — leaving it untouched" \
+grep -qF "already on main — leaving it untouched" <<<"$out" \
   || fail "init did not detect the base-branch producer (got: $out)"
 git -C "$REPO17" show --name-only --format= HEAD | grep -qF ".temperloop/report.d/tokens" \
   && fail "the proposal commit touched the adopter's base-branch producer"
@@ -916,11 +916,11 @@ INIT_SAVED="$INIT"
 INIT="$FAKE_KERNEL_MISSING/bin/subcommands/init.sh"
 FAKE_PR_NUM=34 run 0 --dir "$REPO18A" --gh-repo acme/widget
 INIT="$INIT_SAVED"
-echo "$out" | grep -qF "report.d producer: skipped — shim unavailable" \
+grep -qF "report.d producer: skipped — shim unavailable" <<<"$out" \
   || fail "a missing shim did not report the legible soft-seam skip (got: $out)"
 git -C "$REPO18A" show "HEAD:.temperloop/report.d/tokens" >/dev/null 2>&1 \
   && fail "a missing shim still committed a producer into the proposal"
-echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+grep -qF '"outcome": "PR_OPENED"' <<<"$out" \
   || fail "a missing shim blocked the rest of init (the soft seam must never fail the run) (got: $out)"
 
 # 18b — the shim exists but is EMPTY (the zero-byte-executable trap).
@@ -933,7 +933,7 @@ REPO18B="$(new_fixture_repo repo18b)"
 INIT="$FAKE_KERNEL_EMPTY/bin/subcommands/init.sh"
 FAKE_PR_NUM=35 run 0 --dir "$REPO18B" --gh-repo acme/widget
 INIT="$INIT_SAVED"
-echo "$out" | grep -qF "report.d producer: skipped — shim unavailable" \
+grep -qF "report.d producer: skipped — shim unavailable" <<<"$out" \
   || fail "an EMPTY shim did not report the legible soft-seam skip (got: $out)"
 git -C "$REPO18B" show "HEAD:.temperloop/report.d/tokens" >/dev/null 2>&1 \
   && fail "an EMPTY shim committed a ZERO-BYTE mode-755 file into the adopter's proposal"
@@ -958,12 +958,12 @@ run 2 --dir "$REPO19" --gh-repo acme/widget \
   --base "--upload-pack=touch $PWNED_MARKER; git-upload-pack"
 [ ! -e "$PWNED_MARKER" ] \
   || fail "COMMAND INJECTION: --base reached git and executed its --upload-pack payload before anything validated it"
-echo "$out" | grep -qF "is not a valid git branch name" \
+grep -qF "is not a valid git branch name" <<<"$out" \
   || fail "a malformed --base was not refused with a clear message (got: $out)"
 # ...and the guard is not merely "reject everything": an explicit, valid
 # --base must still drive a normal run.
 FAKE_PR_NUM=36 run 0 --dir "$REPO19" --gh-repo acme/widget --base main
-echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+grep -qF '"outcome": "PR_OPENED"' <<<"$out" \
   || fail "an explicit, valid --base was refused by the new guard (got: $out)"
 echo "PASS: a malformed --base is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --base still runs"
 
@@ -1006,14 +1006,14 @@ grep -q "board.2." "$REPO20/workflows/scripts/board/boards.conf" \
 
 FAKE_PR_NUM=37 run 0 --dir "$REPO20" --gh-repo acme/widget --board 3
 union_conf="$(git -C "$REPO20" show HEAD:workflows/scripts/board/boards.conf 2>/dev/null || true)"
-printf '%s\n' "$union_conf" | grep -q "board.2.repo=acme/other" \
+grep -q "board.2.repo=acme/other" <<<"$union_conf" \
   || fail "THE UNION DROPPED board.2 — an entry that exists on the base branch but not in the stale local checkout:\n$union_conf"
-printf '%s\n' "$union_conf" | grep -q "board.1.repo=acme/widget" \
+grep -q "board.1.repo=acme/widget" <<<"$union_conf" \
   || fail "the union dropped board.1 (got:\n$union_conf)"
-printf '%s\n' "$union_conf" | grep -q "board.3.repo=acme/widget" \
+grep -q "board.3.repo=acme/widget" <<<"$union_conf" \
   || fail "the union did not add the newly requested board.3 (got:\n$union_conf)"
 assert_complete_boards_entry "union boards.conf" "$union_conf" 3
-echo "$out" | grep -qF "keeping every board main already defines" \
+grep -qF "keeping every board main already defines" <<<"$out" \
   || fail "the propose branch did not narrate what it was preserving (got: $out)"
 echo "PASS: boards.conf is a real union — every board the base tip defines survives a stale local checkout, and the new entry is added alongside"
 
@@ -1048,9 +1048,9 @@ mode21="$(git -C "$REPO21" ls-tree HEAD .temperloop/report.d/tokens | awk '{prin
 # generator makes impossible.
 [ "$(cat "$WORK/producer21.before")" = "$(cat "$REPO21/.temperloop/report.d/tokens")" ] \
   || fail "rule 2 changed the carried-forward producer's content"
-echo "$out" | grep -qF "mode (644) preserved" \
+grep -qF "mode (644) preserved" <<<"$out" \
   || fail "the carry-forward line did not name the mode it preserved (got: $out)"
-echo "$out" | grep -qF "bytes and mode" \
+grep -qF "bytes and mode" <<<"$out" \
   && fail "the carry-forward line overclaims byte-exactness, which the generator's newline strip makes impossible (got: $out)"
 echo "PASS: rule 2 carries the adopter's own mode (644 stays 644, content unchanged) instead of forcing 755"
 
@@ -1065,11 +1065,11 @@ echo "PASS: rule 2 carries the adopter's own mode (644 stays 644, content unchan
 #     for a path a real run would CREATE.
 # =============================================================================
 run 0 --dir "$REPO16" --gh-repo acme/widget --no-network --dry-run
-printf '%s\n' "$out" | grep -qE '^  would create: \.temperloop/report\.d/tokens$' \
+grep -qE '^  would create: \.temperloop/report\.d/tokens$' <<<"$out" \
   || fail "the dry-run preview did not report the producer as a CREATE against the base tip (got: $out)"
-printf '%s\n' "$out" | grep -qF "unchanged:    .temperloop/report.d/tokens" \
+grep -qF "unchanged:    .temperloop/report.d/tokens" <<<"$out" \
   && fail "the dry-run preview still compares against the working tree — it called a base-tip CREATE 'unchanged' (got: $out)"
-printf '%s\n' "$out" | grep -qF "NOT refreshed (--dry-run performs no fetch" \
+grep -qF "NOT refreshed (--dry-run performs no fetch" <<<"$out" \
   || fail "the dry-run preview did not disclose that its base ref was not refreshed (got: $out)"
 echo "PASS: the --dry-run preview diffs against the base tip a real run would branch from, and discloses that it skipped the fetch"
 
@@ -1092,16 +1092,16 @@ run 2 --dir "$REPO23" --gh-repo acme/widget --base main \
   --remote "--upload-pack=touch $PWNED_REMOTE_MARKER; git-upload-pack"
 [ ! -e "$PWNED_REMOTE_MARKER" ] \
   || fail "COMMAND INJECTION: --remote reached git and executed its --upload-pack payload before anything validated it"
-echo "$out" | grep -qF "must not begin with '-'" \
+grep -qF "must not begin with '-'" <<<"$out" \
   || fail "an option-shaped --remote was not refused with a clear message (got: $out)"
 # A remote name git itself would reject is refused too (same guard, non-'-' arm).
 run 2 --dir "$REPO23" --gh-repo acme/widget --remote "bad remote"
-echo "$out" | grep -qF "is not a valid git remote name" \
+grep -qF "is not a valid git remote name" <<<"$out" \
   || fail "a malformed --remote was not refused with a clear message (got: $out)"
 # ...and the guard is not merely "reject everything": an explicit, valid
 # --remote must still drive a normal run.
 FAKE_PR_NUM=39 run 0 --dir "$REPO23" --gh-repo acme/widget --remote origin
-echo "$out" | grep -qF '"outcome": "PR_OPENED"' \
+grep -qF '"outcome": "PR_OPENED"' <<<"$out" \
   || fail "an explicit, valid --remote was refused by the new guard (got: $out)"
 echo "PASS: a malformed --remote is refused (exit 2) BEFORE any git invocation — no payload executes — while a valid --remote still runs"
 
@@ -1151,21 +1151,21 @@ run 0 --dir "$REPO24" --no-network --base master
 
 # (a) the raw git failure is gone — both halves of the reported string.
 for pusherr in "git push failed" "does not appear to be a git repository"; do
-  if printf '%s\n' "$out" | grep -qF "$pusherr"; then
+  if grep -qF "$pusherr" <<<"$out"; then
     fail "--no-network still reached the push: raw git error '$pusherr' surfaced (got: $out)"
   fi
 done
 
 # (b) the degradation notice names what was skipped and why.
-printf '%s\n' "$out" | grep -qF "skipped — network disabled (--no-network)" \
+grep -qF "skipped — network disabled (--no-network)" <<<"$out" \
   || fail "no degradation notice for the network-gated proposal step (got: $out)"
-printf '%s\n' "$out" | grep -qF "no proposal branch, no commit, no push, no PR" \
+grep -qF "no proposal branch, no commit, no push, no PR" <<<"$out" \
   || fail "the skip notice does not name what did not happen (got: $out)"
 
 # (c) the run CONTINUES — summary and handoff both still print.
-printf '%s\n' "$out" | grep -qF -- "-- 4. Summary --" \
+grep -qF -- "-- 4. Summary --" <<<"$out" \
   || fail "the run aborted before the Step 4 summary (got: $out)"
-printf '%s\n' "$out" | grep -q "^next step: " \
+grep -q "^next step: " <<<"$out" \
   || fail "the run aborted before the Step 5 handoff marker (got: $out)"
 
 # (d) the checkout is where the operator left it — no stray proposal branch.
@@ -1184,7 +1184,7 @@ fi
 REPO24B="$(new_fixture_repo repo24b)"
 R24B_HEAD="$(git -C "$REPO24B" rev-parse HEAD)"
 FAKE_PR_NUM=40 run 0 --dir "$REPO24B" --gh-repo acme/widget --no-network
-printf '%s\n' "$out" | grep -qF "skipped — network disabled (--no-network)" \
+grep -qF "skipped — network disabled (--no-network)" <<<"$out" \
   || fail "--no-network did not skip the proposal in a repo that HAS a remote (got: $out)"
 [ "$(git -C "$REPO24B" rev-parse HEAD)" = "$R24B_HEAD" ] \
   || fail "--no-network committed to a remote-having checkout instead of skipping"
@@ -1194,7 +1194,7 @@ printf '%s\n' "$out" | grep -qF "skipped — network disabled (--no-network)" \
 # CONTROL 2: the gate is not "refuse everything" — the same repo, same
 # invocation minus the flag, still opens the proposal PR.
 FAKE_PR_NUM=40 run 0 --dir "$REPO24B" --gh-repo acme/widget
-printf '%s\n' "$out" | grep -qF '"outcome": "PR_OPENED"' \
+grep -qF '"outcome": "PR_OPENED"' <<<"$out" \
   || fail "dropping --no-network no longer opens the proposal PR (got: $out)"
 echo "PASS: --no-network skips the Step 3 proposal PR with a degradation notice instead of failing on a raw git push — no branch switch, no commit, no PR, and the summary + handoff still print"
 

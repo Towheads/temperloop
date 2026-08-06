@@ -140,7 +140,7 @@ AFTER="$(find "$L" -type f | sort | xargs -I{} shasum {} | shasum | cut -c1-40)"
 
 echo "--- test 11: --format report renders a human verdict line ---"
 OUT="$(PIPELINE_RAW_DIR="$L" RETRO_RUNS_RAW_DIR="$L" bash "$SCRIPT" --days 30 --format report)"
-printf '%s' "$OUT" | grep -q "VERDICT: defect (never-had-a-row)" \
+grep -q "VERDICT: defect (never-had-a-row)" <<<"$OUT" \
   && ok "the report format names the verdict and its kind" || bad "t11.report" "$OUT"
 
 echo "--- test 12: a spawn-site AUTH failure is its own verdict, not 'the judge produces nothing' ---"

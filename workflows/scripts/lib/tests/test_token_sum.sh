@@ -99,7 +99,7 @@ OUT6=$(token_sum_transcript "$T6")
 check "privacy: sum is exactly the usage total (233), unaffected by content size/text" \
   test "$OUT6" = "233"
 check "privacy: the canary string never appears in the function's own output" \
-  bash -c "! printf '%s' '$OUT6' | grep -q '$CANARY'"
+  bash -c "! grep -q '$CANARY' <<<'$OUT6'"
 
 # --- 7. STATIC PROOF: the lib's jq filter has no .message.content selector ---
 # This is the mechanical backstop for the structural guarantee described in

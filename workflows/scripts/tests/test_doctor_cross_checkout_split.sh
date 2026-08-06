@@ -96,15 +96,15 @@ exit1=$?
 set -e
 
 section1="$(_section "$out1")"
-printf '%s\n' "$section1" | grep -q '^  MISMATCH' \
+grep -q '^  MISMATCH' <<<"$section1" \
   || fail "1: expected MISMATCH when ~/.claude/hooks resolves into a different checkout — got: $section1"
-printf '%s\n' "$section1" | grep -qF "${FOUND_A}" \
+grep -qF "${FOUND_A}" <<<"$section1" \
   || fail "1: MISMATCH output should name the doctor checkout ($FOUND_A) — got: $section1"
-printf '%s\n' "$section1" | grep -qF "${FOUND_B}/claude/hooks/session-start-drain.sh" \
+grep -qF "${FOUND_B}/claude/hooks/session-start-drain.sh" <<<"$section1" \
   || fail "1: MISMATCH output should name the installed real path ($FOUND_B/claude/hooks/session-start-drain.sh) — got: $section1"
-printf '%s\n' "$section1" | grep -qF "v0.19.0" \
+grep -qF "v0.19.0" <<<"$section1" \
   || fail "1: MISMATCH output should name the doctor checkout's .kernel-pin tag (v0.19.0) — got: $section1"
-printf '%s\n' "$section1" | grep -qF "v0.17.0" \
+grep -qF "v0.17.0" <<<"$section1" \
   || fail "1: MISMATCH output should name the installed checkout's .kernel-pin tag (v0.17.0) — got: $section1"
 # Coarse-grained regression guard, same posture as test_doctor_knowledge_
 # root.sh's own MISMATCH case: the minimal fixture's overall exit is ALSO
@@ -136,9 +136,9 @@ out2="$(_run_doctor "$HOME2" "$FOUND_A")"
 set -e
 
 section2="$(_section "$out2")"
-printf '%s\n' "$section2" | grep -q '^  OK' \
+grep -q '^  OK' <<<"$section2" \
   || fail "2: expected OK when ~/.claude/hooks resolves into the SAME checkout doctor runs from — got: $section2"
-printf '%s\n' "$section2" | grep -qF "${FOUND_A}" \
+grep -qF "${FOUND_A}" <<<"$section2" \
   || fail "2: OK output should name the checkout ($FOUND_A) — got: $section2"
 pass "2: ~/.claude/hooks resolving into the SAME checkout is OK"
 
@@ -156,7 +156,7 @@ out3="$(_run_doctor "$HOME3" "$FOUND_A")"
 set -e
 
 section3="$(_section "$out3")"
-printf '%s\n' "$section3" | grep -q 'SKIPPED (no installed surface at' \
+grep -q 'SKIPPED (no installed surface at' <<<"$section3" \
   || fail "3: expected SKIPPED when no installed surface exists — got: $section3"
 pass "3: an absent installed surface degrades to SKIPPED, never a hard failure"
 
@@ -179,7 +179,7 @@ out4="$(_run_doctor "$HOME4" "$FOUND_A")"
 set -e
 
 section4="$(_section "$out4")"
-printf '%s\n' "$section4" | grep -q 'SKIPPED (.*does not resolve into any git checkout' \
+grep -q 'SKIPPED (.*does not resolve into any git checkout' <<<"$section4" \
   || fail "4: expected SKIPPED when the installed surface resolves to a real file outside any git checkout — got: $section4"
 pass "4: an installed surface that isn't a symlink into any git checkout degrades to SKIPPED, never a hard failure"
 

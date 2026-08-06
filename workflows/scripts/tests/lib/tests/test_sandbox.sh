@@ -110,8 +110,8 @@ sandbox_bootstrap_checkout "$REPO_ROOT" \
 [ -x "$SANDBOX_TEMPERLOOP" ] || fail "4: SANDBOX_TEMPERLOOP ($SANDBOX_TEMPERLOOP) is not executable"
 
 help_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" help 2>&1)" || fail "4: bootstrapped temperloop help exited non-zero (output: $help_out)"
-echo "$help_out" | grep -q "init " || fail "4: bootstrapped temperloop help did not list the 'init' subcommand (output: $help_out)"
-echo "$help_out" | grep -q "eject " || fail "4: bootstrapped temperloop help did not list the 'eject' subcommand (output: $help_out)"
+grep -q "init " <<<"$help_out" || fail "4: bootstrapped temperloop help did not list the 'init' subcommand (output: $help_out)"
+grep -q "eject " <<<"$help_out" || fail "4: bootstrapped temperloop help did not list the 'eject' subcommand (output: $help_out)"
 
 sandbox_down
 pass "4: sandbox_bootstrap_checkout bare-clones this repo over file:// and produces a working temperloop binary"

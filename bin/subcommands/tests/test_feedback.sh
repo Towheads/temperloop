@@ -95,10 +95,10 @@ run_feedback 1 env TEMPERLOOP_FEEDBACK_DENYLIST_FILE="$FIXTURE_DENYLIST" bash "$
   --message 'Repro: run it from /Users/travis/secret-notes and it fails.' \
   --dry-run < /dev/null
 out="$(cat "$WORK/out.log")"
-echo "$out" | grep -q "BLOCKED" || fail "leak-scan hit should say BLOCKED"
-echo "$out" | grep -q '/Users/travis' || fail "leak-scan output should name the matching pattern"
-echo "$out" | grep -q "personal absolute filesystem path" || fail "leak-scan output should show the pattern's description"
-if echo "$out" | grep -q -- "-- Preview --"; then
+grep -q "BLOCKED" <<<"$out" || fail "leak-scan hit should say BLOCKED"
+grep -q '/Users/travis' <<<"$out" || fail "leak-scan output should name the matching pattern"
+grep -q "personal absolute filesystem path" <<<"$out" || fail "leak-scan output should show the pattern's description"
+if grep -q -- "-- Preview --" <<<"$out"; then
   fail "a leak-scan block must never reach the preview step"
 fi
 [ "$(log_call_count)" = "0" ] || fail "leak-scan block must make ZERO gh calls (log: $(cat "$GH_LOG"))"
@@ -112,11 +112,11 @@ run_feedback 0 bash "$FEEDBACK" --type bug \
   --message "The report command crashes on an empty baseline file." \
   < /dev/null
 out="$(cat "$WORK/out.log")"
-echo "$out" | grep -q "leak-scan OK" || fail "clean message should pass the leak-scan"
-echo "$out" | grep -q -- "-- Preview --" || fail "a non-blocked payload should still preview before refusing"
-echo "$out" | grep -q "refusing to transmit" || fail "no-TTY run should refuse to transmit"
-echo "$out" | grep -q "no interactive operator detected" || fail "refusal message should name the reason"
-echo "$out" | grep -q "Nothing was sent" || fail "refusal message should confirm nothing was sent"
+grep -q "leak-scan OK" <<<"$out" || fail "clean message should pass the leak-scan"
+grep -q -- "-- Preview --" <<<"$out" || fail "a non-blocked payload should still preview before refusing"
+grep -q "refusing to transmit" <<<"$out" || fail "no-TTY run should refuse to transmit"
+grep -q "no interactive operator detected" <<<"$out" || fail "refusal message should name the reason"
+grep -q "Nothing was sent" <<<"$out" || fail "refusal message should confirm nothing was sent"
 [ "$(log_call_count)" = "0" ] || fail "no-TTY refusal must make ZERO gh calls (log: $(cat "$GH_LOG"))"
 echo "PASS: non-interactive run refuses to transmit, zero gh calls"
 
@@ -128,8 +128,8 @@ run_feedback 0 env TEMPERLOOP_FEEDBACK_ASSUME_TTY=1 \
   bash "$FEEDBACK" --type idea --message "A dry-run idea." --dry-run \
   < /dev/null
 out="$(cat "$WORK/out.log")"
-echo "$out" | grep -q "dry run -- nothing transmitted" || fail "--dry-run should announce it sent nothing"
-if echo "$out" | grep -q "Send this feedback to"; then
+grep -q "dry run -- nothing transmitted" <<<"$out" || fail "--dry-run should announce it sent nothing"
+if grep -q "Send this feedback to" <<<"$out"; then
   fail "--dry-run must never reach the consent prompt"
 fi
 [ "$(log_call_count)" = "0" ] || fail "--dry-run must make ZERO gh calls (log: $(cat "$GH_LOG"))"
@@ -143,7 +143,7 @@ run_feedback 0 env TEMPERLOOP_FEEDBACK_ASSUME_TTY=1 CI=true \
   bash "$FEEDBACK" --type bug --message "Clean message under CI=true." \
   < /dev/null
 out="$(cat "$WORK/out.log")"
-echo "$out" | grep -q "refusing to transmit" || fail "CI=true should refuse even with the TTY-assume seam set"
+grep -q "refusing to transmit" <<<"$out" || fail "CI=true should refuse even with the TTY-assume seam set"
 [ "$(log_call_count)" = "0" ] || fail "CI=true run must make ZERO gh calls (log: $(cat "$GH_LOG"))"
 echo "PASS: CI=true refuses to transmit regardless of the TTY-assume test seam"
 
@@ -158,16 +158,16 @@ rc=0
     <<<"y" ) > "$WORK/out.log" 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "consented transmit should exit 0 (rc=$rc)$(printf '\n--- output ---\n%s' "$(cat "$WORK/out.log")")"
 out="$(cat "$WORK/out.log")"
-echo "$out" | grep -q "feedback.sh: sent -- https://github.com/Towheads/temperloop/issues/9999" \
+grep -q "feedback.sh: sent -- https://github.com/Towheads/temperloop/issues/9999" <<<"$out" \
   || fail "consented transmit should echo the fake issue URL"
 grep -q "^auth status" "$GH_LOG" || fail "consented transmit should check gh auth status"
 grep -q "^label create feedback -R Towheads/temperloop" "$GH_LOG" \
   || fail "consented transmit should ensure the feedback label (log: $(cat "$GH_LOG"))"
 issue_line="$(grep "^issue create" "$GH_LOG" || true)"
 [ -n "$issue_line" ] || fail "consented transmit should call gh issue create (log: $(cat "$GH_LOG"))"
-echo "$issue_line" | grep -q -- "-R Towheads/temperloop" || fail "issue create should target Towheads/temperloop"
-echo "$issue_line" | grep -q -- "--label feedback" || fail "issue create should carry the feedback label"
-echo "$issue_line" | grep -q -- "--body-file" || fail "issue create should send the composed payload via --body-file"
+grep -q -- "-R Towheads/temperloop" <<<"$issue_line" || fail "issue create should target Towheads/temperloop"
+grep -q -- "--label feedback" <<<"$issue_line" || fail "issue create should carry the feedback label"
+grep -q -- "--body-file" <<<"$issue_line" || fail "issue create should send the composed payload via --body-file"
 echo "PASS: attended + explicit yes drives label-ensure + issue-create with the composed payload"
 
 # ===========================================================================
@@ -182,7 +182,7 @@ rc=0
     <<<"n" ) > "$WORK/out.log" 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fail "declined consent should exit 0 (rc=$rc)"
 out="$(cat "$WORK/out.log")"
-echo "$out" | grep -q "declined -- nothing sent" || fail "declined run should say so"
+grep -q "declined -- nothing sent" <<<"$out" || fail "declined run should say so"
 grep -q "^label create" "$GH_LOG" && fail "declined consent must never ensure the label (log: $(cat "$GH_LOG"))"
 grep -q "^issue create" "$GH_LOG" && fail "declined consent must never call gh issue create (log: $(cat "$GH_LOG"))"
 echo "PASS: declined consent makes no label/issue-create gh calls"

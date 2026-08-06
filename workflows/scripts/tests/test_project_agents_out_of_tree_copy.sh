@@ -89,7 +89,7 @@ fi
 
 pass "1: no operator absolute path or symlink present anywhere in the out-of-tree deploy"
 
-echo "$out1" | grep -q "mode          : copy" || fail "1: summary header should report mode: copy for out-of-tree default"
+grep -q "mode          : copy" <<<"$out1" || fail "1: summary header should report mode: copy for out-of-tree default"
 
 pass "1: out-of-tree summary header reports the effective copy mode"
 
@@ -145,8 +145,8 @@ P4="${TMP}/proj-dry-run"
 mkdir -p "$P4"
 out4="$(bash "$DEPLOY_SH" --project-dir "$P4" --dry-run 2>&1)" || fail "4: dry-run exited non-zero"
 [ ! -d "${P4}/.claude" ] || fail "4: dry-run created .claude/ (should write nothing)"
-echo "$out4" | grep -q "would copy" || fail "4: dry-run plan should print 'would copy' for out-of-tree default"
-echo "$out4" | grep -q "dry run — nothing written" || fail "4: dry-run should report nothing written"
+grep -q "would copy" <<<"$out4" || fail "4: dry-run plan should print 'would copy' for out-of-tree default"
+grep -q "dry run — nothing written" <<<"$out4" || fail "4: dry-run should report nothing written"
 
 pass "4: --dry-run writes nothing and prints the (copy) plan for the out-of-tree default"
 

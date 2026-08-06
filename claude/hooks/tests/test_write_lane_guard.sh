@@ -35,7 +35,7 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 check() { # <desc> <expected: ask|silent> <actual-stdout>
   local desc="$1" want="$2" out="$3" got
-  if printf '%s' "$out" | grep -q '"permissionDecision":"ask"'; then got=ask; else got=silent; fi
+  if grep -q '"permissionDecision":"ask"' <<<"$out"; then got=ask; else got=silent; fi
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1)); printf '  ✓ %s\n' "$desc"
   else

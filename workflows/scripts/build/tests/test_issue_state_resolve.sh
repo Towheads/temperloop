@@ -184,7 +184,7 @@ else
   bad "help.exit" "resolve --help exited non-zero"
 fi
 HELPOUT="$(bash "$CLI" resolve --help 2>&1 || true)"
-printf '%s' "$HELPOUT" | grep -qi 'resolve' && ok "resolve --help prints resolve usage" || bad "help.text" "no 'resolve' in output"
+grep -qi 'resolve' <<<"$HELPOUT" && ok "resolve --help prints resolve usage" || bad "help.text" "no 'resolve' in output"
 
 # ── top-level --help / -h / no-args ──────────────────────────────────────
 echo "--- top-level dispatch: --help / -h / no-args ---"
@@ -192,7 +192,7 @@ if bash "$CLI" --help >/dev/null 2>&1; then ok "--help exits 0"; else bad "top.h
 if bash "$CLI" -h >/dev/null 2>&1; then ok "-h exits 0"; else bad "top.h" "-h exited non-zero"; fi
 if bash "$CLI" >/dev/null 2>&1; then bad "top.noargs" "no-args exited 0 (expected non-zero usage error)"; else ok "no-args exits non-zero"; fi
 TOPHELP="$(bash "$CLI" --help 2>&1 || true)"
-printf '%s' "$TOPHELP" | grep -qi 'resolve' && printf '%s' "$TOPHELP" | grep -qi 'reattach' \
+grep -qi 'resolve' <<<"$TOPHELP" && grep -qi 'reattach' <<<"$TOPHELP" \
   && ok "top-level usage lists both subcommands" || bad "top.text" "missing resolve/reattach in usage"
 
 # ── reattach activation proof ────────────────────────────────────────────

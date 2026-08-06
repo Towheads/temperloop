@@ -63,7 +63,7 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 check() { # <desc> <expected: ask|silent> <actual-stdout>
   local desc="$1" want="$2" out="$3" got
-  if printf '%s' "$out" | grep -q '"permissionDecision":"ask"'; then got=ask; else got=silent; fi
+  if grep -q '"permissionDecision":"ask"' <<<"$out"; then got=ask; else got=silent; fi
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1)); printf '  ✓ %s\n' "$desc"
   else
@@ -78,7 +78,7 @@ check() { # <desc> <expected: ask|silent> <actual-stdout>
 check_reason() { # <desc> <expected-substring> <actual-stdout>
   local desc="$1" want_substr="$2" out="$3" reason
   reason=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null)
-  if printf '%s' "$out" | grep -q '"permissionDecision":"ask"' && printf '%s' "$reason" | grep -qF "$want_substr"; then
+  if grep -q '"permissionDecision":"ask"' <<<"$out" && grep -qF "$want_substr" <<<"$reason"; then
     pass=$((pass + 1)); printf '  ✓ %s\n' "$desc"
   else
     fail=$((fail + 1)); printf '  ✗ %s (want reason to contain %q)\n     reason=%s\n' "$desc" "$want_substr" "$reason"

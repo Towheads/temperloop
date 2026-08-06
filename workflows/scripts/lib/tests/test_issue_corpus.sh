@@ -196,20 +196,20 @@ esac
 [ -f "$(doc2_path)" ] || fail "3: doc for issue #2 not rendered"
 
 content1="$(cat "$(doc1_path)")"
-echo "$content1" | grep -q '^number: 1$' || fail "3: doc1 missing number field"
-echo "$content1" | grep -q '^title: "Hello World"$' || fail "3: doc1 missing/wrong title field"
-echo "$content1" | grep -q '^state: "open"$' || fail "3: doc1 missing/wrong state field"
-echo "$content1" | grep -q '^labels: \["bug"\]$' || fail "3: doc1 missing/wrong labels field"
-echo "$content1" | grep -q '^updated_at: "2026-07-01T00:00:00Z"$' || fail "3: doc1 missing/wrong updated_at field"
-echo "$content1" | grep -q '^source: "Acme/issue-corpus-test#1"$' || fail "3: doc1 missing/wrong source field"
-echo "$content1" | grep -q '^body one$' || fail "3: doc1 missing rendered body"
-echo "$content1" | grep -q '## Comments' || fail "3: doc1 missing Comments section"
-echo "$content1" | grep -q 'alice' || fail "3: doc1 comments missing commenter"
-echo "$content1" | grep -q 'a comment' || fail "3: doc1 comments missing comment body"
+grep -q '^number: 1$' <<<"$content1" || fail "3: doc1 missing number field"
+grep -q '^title: "Hello World"$' <<<"$content1" || fail "3: doc1 missing/wrong title field"
+grep -q '^state: "open"$' <<<"$content1" || fail "3: doc1 missing/wrong state field"
+grep -q '^labels: \["bug"\]$' <<<"$content1" || fail "3: doc1 missing/wrong labels field"
+grep -q '^updated_at: "2026-07-01T00:00:00Z"$' <<<"$content1" || fail "3: doc1 missing/wrong updated_at field"
+grep -q '^source: "Acme/issue-corpus-test#1"$' <<<"$content1" || fail "3: doc1 missing/wrong source field"
+grep -q '^body one$' <<<"$content1" || fail "3: doc1 missing rendered body"
+grep -q '## Comments' <<<"$content1" || fail "3: doc1 missing Comments section"
+grep -q 'alice' <<<"$content1" || fail "3: doc1 comments missing commenter"
+grep -q 'a comment' <<<"$content1" || fail "3: doc1 comments missing comment body"
 
 content2="$(cat "$(doc2_path)")"
-echo "$content2" | grep -q '^state: "closed"$' || fail "3: doc2 missing/wrong state field (closed issue)"
-echo "$content2" | grep -qF '## Comments' && fail "3: doc2 should carry no Comments section (zero comments)"
+grep -q '^state: "closed"$' <<<"$content2" || fail "3: doc2 missing/wrong state field (closed issue)"
+grep -qF '## Comments' <<<"$content2" && fail "3: doc2 should carry no Comments section (zero comments)"
 echo "PASS: 3 fresh render writes one doc per issue carrying title/labels/state/body/comments"
 
 # --- 4. mtime test: unchanged snapshot -> re-render touches NO files --------
@@ -266,7 +266,7 @@ echo "PASS: 6 an on-disk schema_version mismatch is refused loudly (rc 2), never
 # --- 7. split-brain guard: rendered docs live under ks_root, readable via ks_read
 via_ks_read="$(ks_read "$DOC1")"
 [ -n "$via_ks_read" ] || fail "7: ks_read could not read the rendered doc back"
-echo "$via_ks_read" | grep -q '^number: 1$' || fail "7: ks_read content did not match the rendered doc"
+grep -q '^number: 1$' <<<"$via_ks_read" || fail "7: ks_read content did not match the rendered doc"
 echo "PASS: 7 rendered docs are readable back through ks_read (corpus lives inside ks_root, no side-channel path)"
 
 # --- 8. reindex chain: issue_corpus_sync drives refresh -> render -> reindex -

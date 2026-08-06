@@ -36,7 +36,7 @@ TL_BIN="$REPO_ROOT/bin/temperloop"
 [ -f "$VERSION_FILE" ] || fail "no VERSION file at repo root ($VERSION_FILE)"
 version="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$VERSION_FILE" | head -n1)"
 [ -n "$version" ] || fail "VERSION file is empty"
-printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$' \
+grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$' <<<"$version" \
   || fail "VERSION '$version' is not a bare SemVer X.Y.Z (no 'v' prefix)"
 pass "VERSION file present and well-formed: $version"
 
@@ -74,7 +74,7 @@ pass "TEMPERLOOP_VERSION env override still wins over the VERSION file"
 
 # ── Leg 4: no VERSION↔tag drift when HEAD is exactly a release tag ───────────
 head_tag="$(git -C "$REPO_ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)"
-if printf '%s' "$head_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
+if grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$' <<<"$head_tag"; then
   tag_version="${head_tag#v}"
   [ "$tag_version" = "$version" ] \
     || fail "HEAD is release tag $head_tag but VERSION says '$version' — bump VERSION in the tagged commit (kernel-repo-layout.md § Release-tag convention)"
