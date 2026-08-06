@@ -14,6 +14,39 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-05 — BREAKING
+
+### Migration — read this first
+
+Two migrations, and one of them will break a consuming profile on the next
+command if it is skipped.
+
+**1. Delete any `board-adapter-guard.sh` registration from your
+`settings.json`.** The hook is removed with the Projects-v2 arm it guarded. A
+`PreToolUse` entry pointing at a missing script is a **per-command error**, so
+this is not optional cleanup — grep your installed profile for
+`board-adapter-guard` and remove the block. Nothing replaces it: with no
+Projects arm there is no `gh project` call to intercept and no shared GraphQL
+budget to protect.
+
+**2. Stop calling the removed Projects-v2 adapter functions.** `lib/board.sh`
+now speaks exactly one backend — issues-only, over REST — and
+`board_project_number`, `board_field_id`, `board_option_id`, the
+`_board_cached_read` family and the budget guard are gone. If your overlay
+calls any of them directly, it must adapt. Every registered board has run
+issues-only since 2026-07-18, so no tracking behaviour changes; only the
+adapter's surface shrinks.
+
+**Who does NOT have to act:** a consumer that only ever went through the public
+`board_resolve_item` / `board_item_list` / `board_set_*` / board-command surface
+and does not register the hook. That path is unchanged.
+
+**Also in this release, and worth pulling for on its own:** a correctness fix to
+the cached relationship reads (#1163). If you run with `board.<N>.cache=on`,
+the pre-0.28.0 cached arm returned "no children" for **every** issue, which
+`board-mirror.sh` reads as "epic fully drained" — it was armed to close epics
+that still had open children. See the `### Fixed` entry below.
+
 ### Fixed
 
 - **Relationship reads are live-only again; the cached arm was silently
