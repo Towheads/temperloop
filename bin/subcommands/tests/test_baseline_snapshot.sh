@@ -90,7 +90,7 @@ NOW="2026-07-03T00:00:00Z"
 
 # --- 1: happy path -----------------------------------------------------------
 out="$(cd "$REPO" && PATH="$BIN:$PATH" BASELINE_SNAPSHOT_NOW="$NOW" bash "$SNAP")"
-echo "$out" | grep -q "metrics available: true" || fail "stdout should report metrics available: true"
+grep -q "metrics available: true" <<<"$out" || fail "stdout should report metrics available: true"
 
 record="$(cd "$REPO" && tail -n1 .temperloop/baseline.jsonl)"
 echo "$record" | jq empty || fail "record is not valid JSON"
@@ -111,8 +111,8 @@ echo "$record" | jq empty || fail "record is not valid JSON"
 [ "$(jq -r '.metrics.issue_backlog.median_age_days' <<<"$record")" = "55.5" ] || fail "issue_backlog.median_age_days should be 55.5 ((93+18)/2)"
 
 # --- consent posture: NO identifying field anywhere in the record ----------
-echo "$record" | grep -qi "alice" && fail "reviewer identity must never appear in the record (consent posture)"
-echo "$record" | grep -qi "login" && fail "no 'login'-shaped field should appear anywhere in the record"
+grep -qi "alice" <<<"$record" && fail "reviewer identity must never appear in the record (consent posture)"
+grep -qi "login" <<<"$record" && fail "no 'login'-shaped field should appear anywhere in the record"
 
 # --- 2: re-appendable ---------------------------------------------------------
 lines_before="$(cd "$REPO" && wc -l < .temperloop/baseline.jsonl | tr -d ' ')"

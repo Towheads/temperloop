@@ -271,8 +271,8 @@ run_init() {
 REPO1="$(new_fixture_repo repo1)"
 run 0 --dir "$REPO1" --yes
 [ ! -s "$CALL_LOG" ] || fail "no-config run made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q "nothing to eject" || fail "no-config run did not report nothing-to-eject (got: $out)"
-echo "$out" | grep -q "Five separate removal scopes" || fail "no-config run did not print the uninstall bullet (got: $out)"
+grep -q "nothing to eject" <<<"$out" || fail "no-config run did not report nothing-to-eject (got: $out)"
+grep -q "Five separate removal scopes" <<<"$out" || fail "no-config run did not print the uninstall bullet (got: $out)"
 echo "PASS: no .temperloop/config -> no-op, zero gh calls, uninstall bullet printed"
 
 # =============================================================================
@@ -294,7 +294,7 @@ seed_config "$REPO3" '[{"type":"label","repo":"acme/widget","name":"fnd:status:b
 run 0 --dir "$REPO3"
 [ ! -s "$CALL_LOG" ] || fail "default-deny made gh calls (should be zero):\n$(cat "$CALL_LOG")"
 [ -f "$REPO3/.temperloop/config" ] || fail "default-deny removed .temperloop/config (should be untouched)"
-echo "$out" | grep -q "aborted — nothing reverted" || fail "default-deny did not report the abort (got: $out)"
+grep -q "aborted — nothing reverted" <<<"$out" || fail "default-deny did not report the abort (got: $out)"
 echo "PASS: non-interactive, no --yes -> aborts, zero gh calls, config untouched"
 
 # =============================================================================
@@ -313,11 +313,11 @@ run 0 --dir "$REPO4" --yes
 [ "$(call_count 'required_status_checks')" -ge 1 ] || fail "required-check revert call missing"
 [ "$(call_count 'project delete 42')" -ge 1 ] || fail "board delete call missing"
 [ ! -e "$REPO4/.temperloop" ] || fail "full revert did not remove .temperloop/"
-echo "$out" | grep -q "temperloop eject: done" || fail "full revert did not report done (got: $out)"
+grep -q "temperloop eject: done" <<<"$out" || fail "full revert did not report done (got: $out)"
 
 run 0 --dir "$REPO4" --yes
 [ ! -s "$CALL_LOG" ] || fail "second run made gh calls (should be zero — idempotent):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q "no-op" || fail "second run did not report no-op (got: $out)"
+grep -q "no-op" <<<"$out" || fail "second run did not report no-op (got: $out)"
 echo "PASS: consented full revert fires the exact gh calls per install type, removes .temperloop/; re-run is a zero-call no-op"
 
 # =============================================================================
@@ -329,7 +329,7 @@ seed_config "$REPO5" '[{"type":"proposal_pr","branch":"foundation-init/config","
 FAKE_PR_STATE=MERGED run 0 --dir "$REPO5" --yes
 grep -q "^pr close" "$CALL_LOG" && fail "MERGED proposal_pr should never be closed"
 [ ! -e "$REPO5/.temperloop" ] || fail "MERGED proposal_pr revert did not remove .temperloop/"
-echo "$out" | grep -q "merged — left in tree" || fail "did not report the merged/left-in-tree outcome (got: $out)"
+grep -q "merged — left in tree" <<<"$out" || fail "did not report the merged/left-in-tree outcome (got: $out)"
 echo "PASS: proposal_pr MERGED is left alone (no close call), still counts as reverted"
 
 # =============================================================================
@@ -360,7 +360,7 @@ seed_config "$REPO7" '[
 ]'
 FAKE_LABEL_DELETE_RC=1 FAKE_EXISTING_LABELS="fnd:status:backlog fnd:status:ready" \
   run 1 --dir "$REPO7" --yes
-echo "$out" | grep -q "temperloop eject: incomplete" || fail "partial failure did not report incomplete (got: $out)"
+grep -q "temperloop eject: incomplete" <<<"$out" || fail "partial failure did not report incomplete (got: $out)"
 [ -f "$REPO7/.temperloop/config" ] || fail "partial failure removed .temperloop/config (should be kept for retry)"
 cfg="$(cat "$REPO7/.temperloop/config")"
 [ "$(jq '.installs | length' <<<"$cfg")" -eq 2 ] || fail "partial-failure config should keep both unresolved label entries (got: $(jq -c '.installs' <<<"$cfg"))"
@@ -379,7 +379,7 @@ seed_config "$REPO8" '[{"type":"label","repo":"acme/widget","name":"fnd:status:b
 run 1 --dir "$REPO8" --yes --no-network
 [ ! -s "$CALL_LOG" ] || fail "--no-network made gh calls (should be zero):\n$(cat "$CALL_LOG")"
 [ -f "$REPO8/.temperloop/config" ] || fail "--no-network removed .temperloop/config (should be kept)"
-echo "$out" | grep -q -- "--no-network" || fail "--no-network skip reason not reported (got: $out)"
+grep -q -- "--no-network" <<<"$out" || fail "--no-network skip reason not reported (got: $out)"
 echo "PASS: --no-network skips every install with a reason, zero gh calls, config kept for a later retry"
 
 # =============================================================================
@@ -414,7 +414,7 @@ run 0 --dir "$REPO10" --yes
 [ ! -e "$REPO10/.temperloop" ] || fail "partial-residue cleanup did not remove .temperloop/"
 [ "$(git -C "$REPO10" branch --show-current)" = "$BEFORE_BRANCH10" ] \
   || fail "partial-residue cleanup switched branches unexpectedly"
-echo "$out" | grep -q "Partial-init residue" || fail "did not report the partial-init-residue path (got: $out)"
+grep -q "Partial-init residue" <<<"$out" || fail "did not report the partial-init-residue path (got: $out)"
 echo "PASS: .temperloop/ residue with no config (Step-0 baseline.jsonl only) is recognized and cleaned up, zero gh calls, no branch change"
 
 # --- same residue path honors --dry-run and non-interactive default-deny --
@@ -424,12 +424,12 @@ printf 'baseline.jsonl\n' > "$REPO10B/.temperloop/baseline.jsonl"
 run 0 --dir "$REPO10B" --dry-run
 [ ! -s "$CALL_LOG" ] || fail "dry-run on partial residue made gh calls (should be zero):\n$(cat "$CALL_LOG")"
 [ -e "$REPO10B/.temperloop" ] || fail "dry-run removed partial residue (should be untouched)"
-echo "$out" | grep -q "Dry run: would remove" || fail "dry-run did not report what it would remove (got: $out)"
+grep -q "Dry run: would remove" <<<"$out" || fail "dry-run did not report what it would remove (got: $out)"
 
 run 0 --dir "$REPO10B"
 [ ! -s "$CALL_LOG" ] || fail "non-interactive default-deny on partial residue made gh calls (should be zero):\n$(cat "$CALL_LOG")"
 [ -e "$REPO10B/.temperloop" ] || fail "non-interactive default-deny removed partial residue (should be untouched)"
-echo "$out" | grep -q "aborted — nothing removed" || fail "non-interactive default-deny on partial residue did not report the abort (got: $out)"
+grep -q "aborted — nothing removed" <<<"$out" || fail "non-interactive default-deny on partial residue did not report the abort (got: $out)"
 echo "PASS: partial-init residue honors --dry-run and non-interactive default-deny exactly like the config-manifest path"
 
 # =============================================================================
@@ -468,7 +468,7 @@ rm -rf "$BARE11"
 # quiet anyway because run_init closes stdin — the non-attended skip arm.
 run_init --dir "$REPO11" --gh-repo acme/widget
 [ "$init_rc" -ne 0 ] || fail "test setup: expected the broken-push init run to fail (got rc=0): $init_out"
-echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
+grep -q "proposal-pr.sh failed" <<<"$init_out" || fail "test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
 [ "$(git -C "$REPO11" branch --show-current)" = "foundation-init/config" ] \
   || fail "test setup: expected the failed init run to leave the checkout on foundation-init/config"
 [ -f "$REPO11/.temperloop/config" ] || fail "test setup: expected .temperloop/config committed locally despite the push failure"
@@ -477,8 +477,8 @@ echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "test setup: init did
   || fail "test setup: recovery marker original_branch wrong (got: $(cat "$REPO11/.temperloop/.recovery.json"))"
 
 run 0 --dir "$REPO11" --yes
-echo "$out" | grep -q "restored 'main'" || fail "eject did not report restoring the original branch (got: $out)"
-echo "$out" | grep -q "deleted stray 'foundation-init/config'" || fail "eject did not report deleting the stray branch (got: $out)"
+grep -q "restored 'main'" <<<"$out" || fail "eject did not report restoring the original branch (got: $out)"
+grep -q "deleted stray 'foundation-init/config'" <<<"$out" || fail "eject did not report deleting the stray branch (got: $out)"
 [ "$(git -C "$REPO11" branch --show-current)" = "$BEFORE_BRANCH11" ] \
   || fail "eject did not restore the original branch (on: $(git -C "$REPO11" branch --show-current))"
 git -C "$REPO11" show-ref --verify --quiet refs/heads/foundation-init/config \
@@ -508,9 +508,9 @@ seed_config "$REPO12" '[
 ]'
 run 0 --dir "$REPO12" --yes
 [ ! -s "$CALL_LOG" ] || fail "first_epic/first_epic_decline_pointer entries made gh calls (eject must never touch epic-issue state):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q "informational only — not reverted" || fail "did not report the first_epic informational-only outcome (got: $out)"
+grep -q "informational only — not reverted" <<<"$out" || fail "did not report the first_epic informational-only outcome (got: $out)"
 [ ! -e "$REPO12/.temperloop" ] || fail "eject did not remove .temperloop/ for a config containing only first_epic-type entries"
-echo "$out" | grep -q "temperloop eject: done" || fail "first_epic-only config did not report done (got: $out)"
+grep -q "temperloop eject: done" <<<"$out" || fail "first_epic-only config did not report done (got: $out)"
 echo "PASS: first_epic / first_epic_decline_pointer install entries no longer strand eject — zero gh calls, dropped as informational-only, .temperloop/ removed, exit 0"
 
 # =============================================================================
@@ -526,12 +526,12 @@ REPO13="$(new_fixture_repo repo13)"
 seed_config "$REPO13" '[{"type":"bogus_future_type","repo":"acme/widget","name":"whatever"}]'
 run 1 --dir "$REPO13" --yes
 [ ! -s "$CALL_LOG" ] || fail "unknown install type made gh calls (should be zero):\n$(cat "$CALL_LOG")"
-echo "$out" | grep -q "unknown install type" || fail "did not report the unknown-type path (got: $out)"
+grep -q "unknown install type" <<<"$out" || fail "did not report the unknown-type path (got: $out)"
 [ -f "$REPO13/.temperloop/config" ] || fail "unknown-type failure removed .temperloop/config (should be kept for retry)"
 cfg="$(cat "$REPO13/.temperloop/config")"
 [ "$(jq '.installs | length' <<<"$cfg")" -eq 1 ] || fail "unknown-type config should keep the one unresolved entry (got: $(jq -c '.installs' <<<"$cfg"))"
 [ "$(jq -r '.installs[0].type' <<<"$cfg")" = "bogus_future_type" ] || fail "unresolved entry type mismatch (got: $(jq -c '.installs' <<<"$cfg"))"
-echo "$out" | grep -q "temperloop eject: incomplete" || fail "unknown-type run did not report incomplete (got: $out)"
+grep -q "temperloop eject: incomplete" <<<"$out" || fail "unknown-type run did not report incomplete (got: $out)"
 echo "PASS: a genuinely unknown install type still marks unresolved, rewrites .temperloop/config to keep it, and exits 1"
 
 # =============================================================================
@@ -552,8 +552,8 @@ seed_config "$REPO14" '[
 ]'
 FAKE_LABEL_DELETE_RC=1 FAKE_EXISTING_LABELS="fnd:status:backlog" \
   run 1 --dir "$REPO14" --yes
-echo "$out" | grep -q "informational only — not reverted" || fail "mixed-batch run did not drop the first_epic entry as informational-only (got: $out)"
-echo "$out" | grep -q "temperloop eject: incomplete" || fail "mixed-batch run (genuine label failure) did not report incomplete (got: $out)"
+grep -q "informational only — not reverted" <<<"$out" || fail "mixed-batch run did not drop the first_epic entry as informational-only (got: $out)"
+grep -q "temperloop eject: incomplete" <<<"$out" || fail "mixed-batch run (genuine label failure) did not report incomplete (got: $out)"
 [ -f "$REPO14/.temperloop/config" ] || fail "mixed-batch failure removed .temperloop/config (should be kept for retry)"
 cfg="$(cat "$REPO14/.temperloop/config")"
 [ "$(jq '.installs | length' <<<"$cfg")" -eq 1 ] || fail "mixed-batch config should keep exactly the one unresolved label entry, first_epic dropped (got: $(jq -c '.installs' <<<"$cfg"))"
@@ -585,7 +585,7 @@ run 0 --dir "$REPO15A" --yes
 [ "$(cat "$REPO15A/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
   || fail "15a: pricing.json not byte-identical after partial-init-residue removal (site 1)"
 [ ! -e "$REPO15A/.temperloop/.gitignore" ] || fail "15a: partial-init-residue removal left other .temperloop/ residue behind"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "15a: no kept-pricing.json notice printed (site 1, got: $out)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out" || fail "15a: no kept-pricing.json notice printed (site 1, got: $out)"
 echo "PASS: pricing.json survives the partial-init-residue removal path (site 1), byte-identical, one-line notice"
 
 # --- 15b: empty-install-manifest path (site 2 — n_installs==0) ---------
@@ -598,7 +598,7 @@ run 0 --dir "$REPO15B" --yes
 [ "$(cat "$REPO15B/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
   || fail "15b: pricing.json not byte-identical after empty-manifest removal (site 2)"
 [ ! -e "$REPO15B/.temperloop/config" ] || fail "15b: empty-manifest removal left config behind"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "15b: no kept-pricing.json notice printed (site 2, got: $out)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out" || fail "15b: no kept-pricing.json notice printed (site 2, got: $out)"
 echo "PASS: pricing.json survives the empty-install-manifest removal path (site 2), byte-identical, one-line notice"
 
 # --- 15c: fully-resolved-revert path (site 3 — mirrors test 4) ---------
@@ -610,7 +610,7 @@ run 0 --dir "$REPO15C" --yes
 [ "$(cat "$REPO15C/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
   || fail "15c: pricing.json not byte-identical after full-revert removal (site 3)"
 [ ! -e "$REPO15C/.temperloop/config" ] || fail "15c: full-revert removal left config behind"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "15c: no kept-pricing.json notice printed (site 3, got: $out)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out" || fail "15c: no kept-pricing.json notice printed (site 3, got: $out)"
 echo "PASS: pricing.json survives the fully-resolved-revert removal path (site 3), byte-identical, one-line notice"
 
 # --- 15d: no pricing.json present -> carve-out is invisible, normal ----
@@ -619,7 +619,7 @@ REPO15D="$(new_fixture_repo repo15d)"
 seed_config "$REPO15D" '[]'
 run 0 --dir "$REPO15D" --yes
 [ ! -e "$REPO15D/.temperloop" ] || fail "15d: no-pricing-json removal did not remove .temperloop/"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15d: no-pricing-json removal printed a kept-pricing.json notice when none existed (got: $out)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out" && fail "15d: no-pricing-json removal printed a kept-pricing.json notice when none existed (got: $out)"
 echo "PASS: with no pricing.json present, eject removes .temperloop/ exactly as before and prints no extra line"
 
 # --- 15f: a FAILED stash (mktemp/mv can't write beside .temperloop/, e.g.
@@ -645,9 +645,9 @@ else
   [ -f "$REPO15F/.temperloop/pricing.json" ] || fail "15f: a failed stash lost pricing.json (should be untouched in place)"
   [ "$(cat "$REPO15F/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
     || fail "15f: pricing.json content changed despite the aborted stash"
-  echo "$out" | grep -qF "kept: .temperloop/pricing.json" && fail "15f: a failed stash still printed a false 'kept' line (got: $out)"
-  echo "$out" | grep -qF "FAILED to create a stash location" || fail "15f: did not print the specific stash-creation-failure line (got: $out)"
-  echo "$out" | grep -q "temperloop eject: incomplete" || fail "15f: a failed stash did not report incomplete (got: $out)"
+  grep -qF "kept: .temperloop/pricing.json" <<<"$out" && fail "15f: a failed stash still printed a false 'kept' line (got: $out)"
+  grep -qF "FAILED to create a stash location" <<<"$out" || fail "15f: did not print the specific stash-creation-failure line (got: $out)"
+  grep -q "temperloop eject: incomplete" <<<"$out" || fail "15f: a failed stash did not report incomplete (got: $out)"
   echo "PASS: a failed mktemp/mv stash aborts BEFORE the rm -rf -- .temperloop/ and pricing.json untouched, no false 'kept' claim, exit 1"
 fi
 
@@ -671,8 +671,8 @@ run 0 --dir "$REPO15E" --yes
 [ -f "$REPO15E/.temperloop/pricing.json" ] || fail "15e: second eject run deleted the preserved pricing.json"
 [ "$(cat "$REPO15E/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
   || fail "15e: pricing.json not byte-identical after the idempotent second run"
-echo "$out" | grep -q "no-op" || fail "15e: second run over a preserved-pricing.json repo did not report no-op (got: $out)"
-echo "$out" | grep -q "Already ejected" || fail "15e: second run did not report the already-ejected state (got: $out)"
+grep -q "no-op" <<<"$out" || fail "15e: second run over a preserved-pricing.json repo did not report no-op (got: $out)"
+grep -q "Already ejected" <<<"$out" || fail "15e: second run did not report the already-ejected state (got: $out)"
 echo "PASS: a second 'eject' run over a repo whose only .temperloop/ content is the preserved pricing.json is a true no-op -- matches the documented second-run idempotency contract"
 
 # =============================================================================
@@ -695,7 +695,7 @@ run 0 --dir "$REPO16" --yes
 [ -L "$REPO16/.temperloop/pricing.json" ] || fail "16: a broken pricing.json symlink did not survive eject"
 [ "$(readlink "$REPO16/.temperloop/pricing.json" 2>/dev/null)" = "$LINK_TARGET_BEFORE" ] \
   || fail "16: restored symlink's target string changed (before: $LINK_TARGET_BEFORE, after: $(readlink "$REPO16/.temperloop/pricing.json" 2>/dev/null))"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "16: no kept-pricing.json notice printed for the broken-symlink case (got: $out)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out" || fail "16: no kept-pricing.json notice printed for the broken-symlink case (got: $out)"
 echo "PASS: an intentionally broken pricing.json symlink survives eject on the plain (non-interrupted) removal path, target string intact"
 
 # =============================================================================
@@ -730,7 +730,7 @@ run 0 --dir "$REPO17" --yes
 [ "$(cat "$REPO17/.temperloop/pricing.json")" = "$PRICING_CONTENT" ] \
   || fail "17: pricing.json corrupted in a repo path containing an apostrophe and a space"
 [ ! -e "$REPO17/.temperloop/config" ] || fail "17: full-revert removal left config behind (apostrophe+space path)"
-echo "$out" | grep -qF "kept: .temperloop/pricing.json" || fail "17: no kept-pricing.json notice printed (apostrophe+space path, got: $out)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out" || fail "17: no kept-pricing.json notice printed (apostrophe+space path, got: $out)"
 echo "PASS: a repo path containing both an apostrophe and a space ejects cleanly through the full-revert path"
 
 # =============================================================================
@@ -760,10 +760,10 @@ chmod +x "$FAILRM/rm"
 rc18=0
 out18="$(PATH="$FAILRM:$BIN:$PATH" EJECT_GH_BIN=gh bash "$EJECT" --dir "$REPO18" --yes </dev/null 2>&1)" || rc18=$?
 [ "$rc18" -eq 1 ] || fail "18: a failing rm -rf did not produce exit 1 (got rc=$rc18): $out18"
-echo "$out18" | grep -qF "kept: .temperloop/pricing.json" && fail "18: a failing rm -rf still printed a false 'kept' line (got: $out18)"
-echo "$out18" | grep -q "temperloop eject: done" && fail "18: a failing rm -rf still reported 'done' (got: $out18)"
-echo "$out18" | grep -qF "FAILED to fully remove .temperloop/" || fail "18: did not report the rm -rf failure (got: $out18)"
-echo "$out18" | grep -q "temperloop eject: incomplete" || fail "18: a failing rm -rf did not report incomplete (got: $out18)"
+grep -qF "kept: .temperloop/pricing.json" <<<"$out18" && fail "18: a failing rm -rf still printed a false 'kept' line (got: $out18)"
+grep -q "temperloop eject: done" <<<"$out18" && fail "18: a failing rm -rf still reported 'done' (got: $out18)"
+grep -qF "FAILED to fully remove .temperloop/" <<<"$out18" || fail "18: did not report the rm -rf failure (got: $out18)"
+grep -q "temperloop eject: incomplete" <<<"$out18" || fail "18: a failing rm -rf did not report incomplete (got: $out18)"
 [ -f "$REPO18/.temperloop/pricing.json" ] || fail "18: pricing.json was not restored despite the reported rm -rf failure -- the restore itself is independent of the removal succeeding"
 echo "PASS: rm -rf's own exit status is checked -- a failed removal is reported as incomplete, never a false 'kept'+'done', even though pricing.json itself is still safely restored"
 
@@ -797,7 +797,7 @@ BEFORE_FIND19="$(find "$REPO19" -mindepth 1 -not -path '*/.git*' | sort)"
 # inside.
 FAKE_PR_CREATE_RC=1 run_init --dir "$REPO19" --gh-repo acme/widget
 [ "$init_rc" -ne 0 ] || fail "19: test setup: expected the failed-pr-create init run to fail (got rc=0): $init_out"
-echo "$init_out" | grep -q "proposal-pr.sh failed" || fail "19: test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
+grep -q "proposal-pr.sh failed" <<<"$init_out" || fail "19: test setup: init did not fail at the expected proposal-pr step (got: $init_out)"
 [ "$(git -C "$REPO19" branch --show-current)" = "foundation-init/config" ] \
   || fail "19: test setup: expected the failed init run to leave the checkout on foundation-init/config"
 [ -f "$REPO19/.temperloop/config" ] || fail "19: test setup: expected .temperloop/config committed locally despite the pr-create failure"
@@ -809,9 +809,9 @@ git --git-dir="$BARE19" show-ref --verify --quiet refs/heads/foundation-init/con
   || fail "19: test setup: expected the push to have actually landed foundation-init/config on the bare upstream"
 
 run 0 --dir "$REPO19" --yes
-echo "$out" | grep -q "restored 'main'" || fail "19: eject did not report restoring the original branch (got: $out)"
-echo "$out" | grep -q "deleted stray 'foundation-init/config' (local)" || fail "19: eject did not report deleting the stray LOCAL branch (got: $out)"
-echo "$out" | grep -qF "deleted stray 'foundation-init/config' (remote, acme/widget" \
+grep -q "restored 'main'" <<<"$out" || fail "19: eject did not report restoring the original branch (got: $out)"
+grep -q "deleted stray 'foundation-init/config' (local)" <<<"$out" || fail "19: eject did not report deleting the stray LOCAL branch (got: $out)"
+grep -qF "deleted stray 'foundation-init/config' (remote, acme/widget" <<<"$out" \
   || fail "19: eject did not report attempting the stray REMOTE branch cleanup (got: $out)"
 [ "$(call_count 'api --method DELETE repos/acme/widget/git/refs/heads/foundation-init/config')" -ge 1 ] \
   || fail "19: eject did not call gh to delete the remote branch (log:\n$(cat "$CALL_LOG"))"

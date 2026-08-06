@@ -96,7 +96,7 @@ STATE1="$WORK/state1"
 # --- 1: no baseline.jsonl at all -> no offer --------------------------------
 REPO1="$(new_fixture_repo repo1)"
 out="$(run_temperloop "$REPO1" "$STATE1" 2>&1 1>/dev/null)"
-echo "$out" | grep -q "baseline snapshot is" && fail "no offer expected with no baseline.jsonl yet"
+grep -q "baseline snapshot is" <<<"$out" && fail "no offer expected with no baseline.jsonl yet"
 
 # --- 2: baseline present, first record < 14 days old -> no offer -----------
 mkdir -p "$REPO1/.temperloop"
@@ -104,7 +104,7 @@ fresh_ts="$(_iso_days_ago 3)"
 printf '{"schema":1,"generated_at":"%s","lookback_days":90,"repo":{"gh_repo":"test-owner/repo1"},"metrics":{"available":false,"reason":"x","pr_throughput":null,"time_to_merge_hours":null,"review_latency_hours":null,"issue_backlog":null}}\n' \
   "$fresh_ts" > "$REPO1/.temperloop/baseline.jsonl"
 out="$(run_temperloop "$REPO1" "$STATE1" 2>&1 1>/dev/null)"
-echo "$out" | grep -q "baseline snapshot is" && fail "no offer expected when first record is only 3 days old"
+grep -q "baseline snapshot is" <<<"$out" && fail "no offer expected when first record is only 3 days old"
 
 # --- 3/4: first record >= 14 days old (anchor test: mtime is 'now', a
 # LATER record is fresh, only the FIRST record's generated_at is old) ------
@@ -120,8 +120,8 @@ now_ts="$(_iso_days_ago 0)"
 # file mtime is "now" (just written) -- proves the anchor is NOT mtime.
 
 out="$(run_temperloop "$REPO3" "$STATE3" 2>&1 1>/dev/null)"
-echo "$out" | grep -q "baseline snapshot is" || fail "offer should fire when the FIRST record is >=14 days old"
-echo "$out" | grep -q "temperloop baseline-snapshot && temperloop report" || fail "offer should document the accept-action chain (baseline-snapshot then report)"
+grep -q "baseline snapshot is" <<<"$out" || fail "offer should fire when the FIRST record is >=14 days old"
+grep -q "temperloop baseline-snapshot && temperloop report" <<<"$out" || fail "offer should document the accept-action chain (baseline-snapshot then report)"
 
 # subcommand dispatch must still have run (offer is advisory, never blocking)
 lines_after_first_dispatch="$(wc -l < "$REPO3/.temperloop/baseline.jsonl" | tr -d ' ')"
@@ -133,7 +133,7 @@ find "$STATE3" -type f | grep -q . || fail "dismissal state should be written un
 
 # --- 5: fires once -- a second dispatch does not repeat the offer ----------
 out2="$(run_temperloop "$REPO3" "$STATE3" 2>&1 1>/dev/null)"
-echo "$out2" | grep -q "baseline snapshot is" && fail "the offer must not repeat once already dismissed for this repo"
+grep -q "baseline snapshot is" <<<"$out2" && fail "the offer must not repeat once already dismissed for this repo"
 
 # --- 6: dismissal is keyed by repo -- an independent stale repo still gets
 # its own offer even though repo3's dismissal state already exists in the
@@ -144,6 +144,6 @@ old_ts6="$(_iso_days_ago 30)"
 printf '{"schema":1,"generated_at":"%s","lookback_days":90,"repo":{"gh_repo":"test-owner/repo6"},"metrics":{"available":false,"reason":"x","pr_throughput":null,"time_to_merge_hours":null,"review_latency_hours":null,"issue_backlog":null}}\n' \
   "$old_ts6" > "$REPO6/.temperloop/baseline.jsonl"
 out6="$(run_temperloop "$REPO6" "$STATE3" 2>&1 1>/dev/null)"
-echo "$out6" | grep -q "baseline snapshot is" || fail "a different, independently-stale repo should still get its own offer"
+grep -q "baseline snapshot is" <<<"$out6" || fail "a different, independently-stale repo should still get its own offer"
 
 echo "OK: test_report_offer.sh"

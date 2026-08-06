@@ -107,11 +107,11 @@ out1="$(_run_doctor)"
 set -e
 
 section1="$(printf '%s\n' "$out1" | sed -n '/Knowledge-store root check/,/^$/p')"
-printf '%s\n' "$section1" | grep -qF "OK — script-plane and bare-env knowledge-store root agree." \
+grep -qF "OK — script-plane and bare-env knowledge-store root agree." <<<"$section1" \
   || fail "1: expected OK when plane A and plane B agree — got: $section1"
-printf '%s\n' "$section1" | grep -qF "Plane A (script-plane, via build.config.sh)  = ${VAULT_A}" \
+grep -qF "Plane A (script-plane, via build.config.sh)  = ${VAULT_A}" <<<"$section1" \
   || fail "1: plane A did not resolve to the fixture vault — got: $section1"
-printf '%s\n' "$section1" | grep -qF "Plane B (bare-env, knowledge_store.sh alone) = ${VAULT_A}" \
+grep -qF "Plane B (bare-env, knowledge_store.sh alone) = ${VAULT_A}" <<<"$section1" \
   || fail "1: plane B did not resolve to the fixture vault — got: $section1"
 pass "1: plane A and plane B agree -> OK"
 
@@ -128,11 +128,11 @@ exit2=$?
 set -e
 
 section2="$(printf '%s\n' "$out2" | sed -n '/Knowledge-store root check/,/^$/p')"
-printf '%s\n' "$section2" | grep -q '^  MISMATCH' \
+grep -q '^  MISMATCH' <<<"$section2" \
   || fail "2: expected MISMATCH when the bare-env plane cannot see the rung-3 machine conf — got: $section2"
-printf '%s\n' "$section2" | grep -qF "Plane A (script-plane, via build.config.sh)  = ${VAULT_A}" \
+grep -qF "Plane A (script-plane, via build.config.sh)  = ${VAULT_A}" <<<"$section2" \
   || fail "2: plane A should still resolve to the fixture vault (unaffected by KNOWLEDGE_STORE_MACHINE_CONF) — got: $section2"
-if printf '%s\n' "$section2" | grep -qF "Plane B (bare-env, knowledge_store.sh alone) = ${VAULT_A}"; then
+if grep -qF "Plane B (bare-env, knowledge_store.sh alone) = ${VAULT_A}" <<<"$section2"; then
   fail "2: plane B should NOT resolve to the fixture vault once its machine-conf pointer is broken — got: $section2"
 fi
 [ "$exit2" -ne 0 ] || fail "2: doctor's exit code should be non-zero when the knowledge-root check MISMATCHes"
@@ -148,7 +148,7 @@ set +e
 out3="$(env -i HOME="$HOME_FIX" XDG_CONFIG_HOME="$XDG_CONFIG_FIX" XDG_DATA_HOME="$XDG_DATA_FIX" PATH="$PATH" \
   bash "$DOCTOR_SH" "$FOUND_EMPTY" 2>&1)"
 set -e
-printf '%s\n' "$out3" | grep -q 'SKIPPED (config files not found' \
+grep -q 'SKIPPED (config files not found' <<<"$out3" \
   || fail "3: expected SKIPPED when build.config.sh/knowledge_store.sh are absent — got: $out3"
 pass "3: absent config files degrade to SKIPPED, never a hard failure"
 

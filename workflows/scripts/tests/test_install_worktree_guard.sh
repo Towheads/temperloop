@@ -135,7 +135,7 @@ echo "--- Test 2: guard passes from the canonical checkout"
     fail "expected exit 0 from canonical checkout, got $exit_code; output: $output"
   fi
 
-  if echo "$output" | grep -q "install-env ran"; then
+  if grep -q "install-env ran" <<<"$output"; then
     pass "install-env recipe ran after guard passed"
   else
     fail "install-env recipe did not run; output: $output"
@@ -159,13 +159,13 @@ echo "--- Test 3: FORCE_REHOME=1 bypasses guard from worktree"
     fail "expected exit 0 with FORCE_REHOME=1, got $exit_code; output: $output"
   fi
 
-  if echo "$output" | grep -q "install-env ran"; then
+  if grep -q "install-env ran" <<<"$output"; then
     pass "install-env recipe ran with FORCE_REHOME=1 bypass"
   else
     fail "install-env recipe did not run with FORCE_REHOME=1; output: $output"
   fi
 
-  if echo "$output" | grep -q "refusing to install"; then
+  if grep -q "refusing to install" <<<"$output"; then
     fail "guard still fired despite FORCE_REHOME=1"
   else
     pass "guard did NOT fire with FORCE_REHOME=1"
@@ -182,7 +182,7 @@ echo "--- Test 4: detection uses git rev-parse (not path heuristic)"
 {
   read -r canon wt < <(build_fixture)
   # The worktree path should not contain 'foundation.wt'
-  if echo "$wt" | grep -q "foundation.wt"; then
+  if grep -q "foundation.wt" <<<"$wt"; then
     fail "worktree fixture path contains 'foundation.wt' — test is invalid"
   else
     pass "worktree fixture path does not contain 'foundation.wt' (test is valid)"

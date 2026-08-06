@@ -64,9 +64,9 @@ out1="$(_run_preflight)"
 exit1=$?
 set -e
 
-printf '%s\n' "$out1" | grep -q '^  ABSENT.*funnel-cron-plist' \
+grep -q '^  ABSENT.*funnel-cron-plist' <<<"$out1" \
   || fail "1: expected ABSENT for funnel-cron-plist on a bare host — got: $out1"
-printf '%s\n' "$out1" | grep -q '^  ABSENT.*foundation-boards-conf' \
+grep -q '^  ABSENT.*foundation-boards-conf' <<<"$out1" \
   || fail "1: expected ABSENT for foundation-boards-conf on a bare host — got: $out1"
 [ "$exit1" -eq 0 ] || fail "1: expected exit 0 when every entry is ABSENT — got $exit1"
 pass "1: both registry entries ABSENT on a never-installed host -> exit 0"
@@ -97,9 +97,9 @@ out2a="$(_run_preflight)"
 exit2a=$?
 set -e
 
-printf '%s\n' "$out2a" | grep -q '^  LIVE-UNMIGRATED.*funnel-cron-plist' \
+grep -q '^  LIVE-UNMIGRATED.*funnel-cron-plist' <<<"$out2a" \
   || fail "2a: expected LIVE-UNMIGRATED for funnel-cron-plist — got: $out2a"
-printf '%s\n' "$out2a" | grep -qF 'still references the deleted funnel-cron.sh stub' \
+grep -qF 'still references the deleted funnel-cron.sh stub' <<<"$out2a" \
   || fail "2a: expected the remediation line naming funnel-cron.sh — got: $out2a"
 [ "$exit2a" -ne 0 ] || fail "2a: expected non-zero exit with a LIVE-UNMIGRATED entry — got $exit2a"
 pass "2a: RECONSTRUCTED foundation#1419 (installed plist still runs the deleted stub) -> LIVE-UNMIGRATED, exit 1"
@@ -124,9 +124,9 @@ out2b="$(_run_preflight)"
 exit2b=$?
 set -e
 
-printf '%s\n' "$out2b" | grep -q '^  LIVE-UNMIGRATED.*foundation-boards-conf' \
+grep -q '^  LIVE-UNMIGRATED.*foundation-boards-conf' <<<"$out2b" \
   || fail "2b: expected LIVE-UNMIGRATED for foundation-boards-conf — got: $out2b"
-printf '%s\n' "$out2b" | grep -qF 'silently invisible' \
+grep -qF 'silently invisible' <<<"$out2b" \
   || fail "2b: expected the remediation line naming the silent-invisible risk — got: $out2b"
 [ "$exit2b" -ne 0 ] || fail "2b: expected non-zero exit with a LIVE-UNMIGRATED entry — got $exit2b"
 pass "2b: RECONSTRUCTED temperloop#165 (legacy boards.conf with no successor) -> LIVE-UNMIGRATED, exit 1"
@@ -159,9 +159,9 @@ out3="$(_run_preflight)"
 exit3=$?
 set -e
 
-printf '%s\n' "$out3" | grep -q '^  MIGRATED.*funnel-cron-plist' \
+grep -q '^  MIGRATED.*funnel-cron-plist' <<<"$out3" \
   || fail "3: expected MIGRATED for funnel-cron-plist once the plist references pipeline-cron.sh — got: $out3"
-printf '%s\n' "$out3" | grep -q '^  MIGRATED.*foundation-boards-conf' \
+grep -q '^  MIGRATED.*foundation-boards-conf' <<<"$out3" \
   || fail "3: expected MIGRATED for foundation-boards-conf once the successor file exists — got: $out3"
 [ "$exit3" -eq 0 ] || fail "3: expected exit 0 when every entry is MIGRATED — got $exit3"
 pass "3: both registry entries MIGRATED -> exit 0"
@@ -202,7 +202,7 @@ out3b="$(_run_preflight)"
 exit3b=$?
 set -e
 
-printf '%s\n' "$out3b" | grep -q '^  MIGRATED.*funnel-cron-plist' \
+grep -q '^  MIGRATED.*funnel-cron-plist' <<<"$out3b" \
   || fail "3b: a header comment naming install-funnel-cron.sh must NOT false-positive LIVE-UNMIGRATED when the real ProgramArguments already runs pipeline-cron.sh — got: $out3b"
 [ "$exit3b" -eq 0 ] || fail "3b: expected exit 0 — got $exit3b (regression: comment text leaked into the content match)"
 pass "3b: REGRESSION — a comment mentioning install-funnel-cron.sh does not false-positive a MIGRATED plist"
@@ -234,7 +234,7 @@ exit4=$?
 set -e
 
 section4="$(printf '%s\n' "$out4" | sed -n '/Legacy host-config preflight/,/^$/p')"
-printf '%s\n' "$section4" | grep -q 'LIVE-UNMIGRATED.*funnel-cron-plist' \
+grep -q 'LIVE-UNMIGRATED.*funnel-cron-plist' <<<"$section4" \
   || fail "4: expected doctor.sh to surface the LIVE-UNMIGRATED funnel-cron-plist verdict — got: $section4"
 [ "$exit4" -ne 0 ] || fail "4: expected make-doctor's overall exit to be non-zero on a LIVE-UNMIGRATED legacy-host entry — got $exit4"
 pass "4: doctor.sh's check_legacy_host_config() surfaces LIVE-UNMIGRATED and fails doctor's overall exit code"
@@ -253,7 +253,7 @@ out5="$(env -i HOME="${TMP}/home5" XDG_CONFIG_HOME="${TMP}/xdg5" PATH="$PATH" \
 set -e
 
 section5="$(printf '%s\n' "$out5" | sed -n '/Legacy host-config preflight/,/^$/p')"
-printf '%s\n' "$section5" | grep -q 'SKIPPED (legacy-host-preflight.sh not found' \
+grep -q 'SKIPPED (legacy-host-preflight.sh not found' <<<"$section5" \
   || fail "5: expected SKIPPED when legacy-host-preflight.sh is absent — got: $section5"
 pass "5: absent legacy-host-preflight.sh degrades doctor.sh's own check to SKIPPED"
 

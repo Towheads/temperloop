@@ -176,16 +176,16 @@ MARKER_LINES='#500 Claimed elsewhere
 #777 phantom local claim
 '
 run_case
-printf '%s' "$OUT" | grep -q "marker-without-board" \
+grep -q "marker-without-board" <<<"$OUT" \
   || fail "case1: expected a marker-without-board section\n$OUT"
-printf '%s' "$OUT" | grep -q "#500 — In Progress on the board but stamped to 'otherhost'" \
+grep -q "#500 — In Progress on the board but stamped to 'otherhost'" <<<"$OUT" \
   || fail "case1: expected #500 wrong-host drift line\n$OUT"
-printf '%s' "$OUT" | grep -q "#777 — marker set locally, but #777 is NOT In Progress" \
+grep -q "#777 — marker set locally, but #777 is NOT In Progress" <<<"$OUT" \
   || fail "case1: expected #777 not-on-board drift line\n$OUT"
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   && fail "case1: must NOT report in-sync when drift exists\n$OUT"
 # Nothing on this host claimed → no board-without-marker section.
-printf '%s' "$OUT" | grep -q "board-without-marker" \
+grep -q "board-without-marker" <<<"$OUT" \
   && fail "case1: unexpected board-without-marker section\n$OUT"
 echo "PASS: case 1 marker-without-board (wrong host + not-on-board) reported"
 
@@ -196,13 +196,13 @@ ITEM_LIST_JSON='{"items":[
 ]}'
 MARKER_LINES=''   # no live markers at all (e.g. after release.sh)
 run_case
-printf '%s' "$OUT" | grep -q "board-without-marker" \
+grep -q "board-without-marker" <<<"$OUT" \
   || fail "case2: expected a board-without-marker section\n$OUT"
-printf '%s' "$OUT" | grep -q "#600 — In Progress on the board (this host) but NO live tmux marker — Claimed here, parked" \
+grep -q "#600 — In Progress on the board (this host) but NO live tmux marker — Claimed here, parked" <<<"$OUT" \
   || fail "case2: expected #600 board-without-marker line with title\n$OUT"
-printf '%s' "$OUT" | grep -q "marker-without-board" \
+grep -q "marker-without-board" <<<"$OUT" \
   && fail "case2: unexpected marker-without-board section\n$OUT"
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   && fail "case2: must NOT report in-sync when drift exists\n$OUT"
 echo "PASS: case 2 board-without-marker (claimed here, no live marker) reported"
 
@@ -217,11 +217,11 @@ ITEM_LIST_JSON='{"items":[
 MARKER_LINES='#700 Working it now
 '
 run_case
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   || fail "case3: expected an in-sync all-clear\n$OUT"
-printf '%s' "$OUT" | grep -q "marker-without-board" \
+grep -q "marker-without-board" <<<"$OUT" \
   && fail "case3: unexpected marker-without-board section\n$OUT"
-printf '%s' "$OUT" | grep -q "board-without-marker" \
+grep -q "board-without-marker" <<<"$OUT" \
   && fail "case3: unexpected board-without-marker section\n$OUT"
 echo "PASS: case 3 fully in-sync all-clear (other host's claim not mis-flagged)"
 
@@ -278,11 +278,11 @@ PR_VIEW_JSON=""
 set_window_marker '#502 Claim target'
 FIX=0
 run_case
-printf '%s' "$OUT" | grep -q "#502 — marker set locally, but #502 is NOT In Progress" \
+grep -q "#502 — marker set locally, but #502 is NOT In Progress" <<<"$OUT" \
   || fail "mcase1: expected the #502 stale-marker drift line\n$OUT"
-printf '%s' "$OUT" | grep -q -- "pass --fix to clear THIS window's marker" \
+grep -q -- "pass --fix to clear THIS window's marker" <<<"$OUT" \
   || fail "mcase1: report should point at the repair flag\n$OUT"
-printf '%s' "$OUT" | grep -q -- "--fix (marker lens)" \
+grep -q -- "--fix (marker lens)" <<<"$OUT" \
   && fail "mcase1: repair section must not run without --fix\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase1: dry run must clear nothing (got $(cleared_count))"
 [ "$(cat "$WINDOW_MARKER_FILE")" = '#502 Claim target' ] \
@@ -295,9 +295,9 @@ echo "PASS: marker case 1 report-only without --fix (mutates nothing)"
 set_window_marker '#502 Claim target'
 FIX=1
 run_case
-printf '%s' "$OUT" | grep -q -- "--fix (marker lens)" \
+grep -q -- "--fix (marker lens)" <<<"$OUT" \
   || fail "mcase2: expected the repair section\n$OUT"
-printf '%s' "$OUT" | grep -q "✓ cleared \[#502 Claim target\] — #502 is CLOSED" \
+grep -q "✓ cleared \[#502 Claim target\] — #502 is CLOSED" <<<"$OUT" \
   || fail "mcase2: expected #502 to be cleared as CLOSED\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "mcase2: expected exactly one clear (got $(cleared_count))\n$OUT"
 [ -z "$(cat "$WINDOW_MARKER_FILE")" ] \
@@ -316,7 +316,7 @@ PR_VIEW_JSON='{"state":"MERGED"}'
 set_window_marker '#740 Merged PR'
 FIX=1
 run_case
-printf '%s' "$OUT" | grep -q "✓ cleared \[#740 Merged PR\] — #740 is MERGED" \
+grep -q "✓ cleared \[#740 Merged PR\] — #740 is MERGED" <<<"$OUT" \
   || fail "mcase3: expected the pr-view fallback to prove #740 MERGED\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "mcase3: expected exactly one clear (got $(cleared_count))\n$OUT"
 FIX=0
@@ -333,11 +333,11 @@ PR_VIEW_JSON=""
 set_window_marker '#800 Still open'
 FIX=1
 run_case
-printf '%s' "$OUT" | grep -q "#800 — NOT repaired" \
+grep -q "#800 — NOT repaired" <<<"$OUT" \
   || fail "mcase4: an OPEN issue's marker must be refused\n$OUT"
-printf '%s' "$OUT" | grep -q "not provably terminal (state 'OPEN')" \
+grep -q "not provably terminal (state 'OPEN')" <<<"$OUT" \
   || fail "mcase4: refusal should name the non-terminal state\n$OUT"
-printf '%s' "$OUT" | grep -q "✓ cleared" && fail "mcase4: nothing may be cleared\n$OUT"
+grep -q "✓ cleared" <<<"$OUT" && fail "mcase4: nothing may be cleared\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase4: OPEN issue must not be cleared (got $(cleared_count))"
 [ "$(cat "$WINDOW_MARKER_FILE")" = '#800 Still open' ] \
   || fail "mcase4: the marker must survive untouched"
@@ -355,7 +355,7 @@ PR_VIEW_JSON=""
 set_window_marker '#999 Unknown to GitHub'
 FIX=1
 run_case
-printf '%s' "$OUT" | grep -q "not provably terminal (state 'unknown')" \
+grep -q "not provably terminal (state 'unknown')" <<<"$OUT" \
   || fail "mcase5: an unreadable state must fail safe to no repair\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase5: unreadable state must clear nothing (got $(cleared_count))"
 FIX=0
@@ -375,13 +375,13 @@ PR_VIEW_JSON=""
 set_window_marker ''
 FIX=1
 run_case
-printf '%s' "$OUT" | grep -q "board-without-marker (claimed on board, no local marker — REPORT-ONLY, never repaired)" \
+grep -q "board-without-marker (claimed on board, no local marker — REPORT-ONLY, never repaired)" <<<"$OUT" \
   || fail "mcase6: expected the board-without-marker section, marked report-only\n$OUT"
-printf '%s' "$OUT" | grep -q "#600 — In Progress on the board (this host) but NO live tmux marker" \
+grep -q "#600 — In Progress on the board (this host) but NO live tmux marker" <<<"$OUT" \
   || fail "mcase6: #600 should still be reported\n$OUT"
-printf '%s' "$OUT" | grep -q "nothing to repair: no claim marker is set in this window" \
+grep -q "nothing to repair: no claim marker is set in this window" <<<"$OUT" \
   || fail "mcase6: repair should no-op with no marker in this window\n$OUT"
-printf '%s' "$OUT" | grep -q "✓ cleared" && fail "mcase6: board-without-marker must never be cleared\n$OUT"
+grep -q "✓ cleared" <<<"$OUT" && fail "mcase6: board-without-marker must never be cleared\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase6: board-without-marker must clear nothing (got $(cleared_count))"
 [ -z "$(cat "$WINDOW_MARKER_FILE")" ] \
   || fail "mcase6: board-without-marker must never RE-STAMP a marker (got '$(cat "$WINDOW_MARKER_FILE")')"
@@ -402,7 +402,7 @@ PR_VIEW_JSON=""
 set_window_marker '#700 Working it now'
 FIX=1
 run_case
-printf '%s' "$OUT" | grep -q "#700 — NOT repaired: it is In Progress on the board, stamped to this host" \
+grep -q "#700 — NOT repaired: it is In Progress on the board, stamped to this host" <<<"$OUT" \
   || fail "mcase7: a live same-host claim must be refused by gate 1\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "mcase7: a live claim must not be cleared (got $(cleared_count))"
 [ "$(cat "$WINDOW_MARKER_FILE")" = '#700 Working it now' ] \
@@ -460,19 +460,19 @@ ISSUE_LIST_JSON='[{"number":201,"state":"CLOSED"},{"number":203,"state":"OPEN"}]
 PR_LIST_JSON='[{"number":200,"state":"MERGED"},{"number":202,"state":"MERGED"}]'
 FIX=1
 run_status
-printf '%s' "$OUT" | grep -q "terminal-but-not-Done" || fail "scase1: expected terminal section\n$OUT"
+grep -q "terminal-but-not-Done" <<<"$OUT" || fail "scase1: expected terminal section\n$OUT"
 # Exact field alignment: #200 has NO board status, so its row has an empty middle
 # field — assert the backing state and the '(none)' status land in the right slots
 # (guards the IFS=tab empty-field-collapse bug).
-printf '%s' "$OUT" | grep -q "#200 — backing MERGED but board status '(none)'" \
+grep -q "#200 — backing MERGED but board status '(none)'" <<<"$OUT" \
   || fail "scase1: #200 fields misaligned (empty-status collapse?)\n$OUT"
-printf '%s' "$OUT" | grep -q "#201 — backing CLOSED but board status 'Ready'" \
+grep -q "#201 — backing CLOSED but board status 'Ready'" <<<"$OUT" \
   || fail "scase1: #201 (closed Ready) should be flagged with aligned fields\n$OUT"
-printf '%s' "$OUT" | grep -q "✓ #200 → Done" || fail "scase1: --fix should move #200 to Done\n$OUT"
-printf '%s' "$OUT" | grep -q "✓ #201 → Done" || fail "scase1: --fix should move #201 to Done\n$OUT"
+grep -q "✓ #200 → Done" <<<"$OUT" || fail "scase1: --fix should move #200 to Done\n$OUT"
+grep -q "✓ #201 → Done" <<<"$OUT" || fail "scase1: --fix should move #201 to Done\n$OUT"
 grep -qx "ISSUE_202" "$EDITS" && fail "scase1: #202 already Done must not be edited\n$(cat "$EDITS")"
 grep -qx "ISSUE_203" "$EDITS" && fail "scase1: #203 open/ok must not be edited\n$(cat "$EDITS")"
-printf '%s' "$OUT" | grep -q "In sync" && fail "scase1: must not report in-sync with drift\n$OUT"
+grep -q "In sync" <<<"$OUT" && fail "scase1: must not report in-sync with drift\n$OUT"
 FIX=0
 echo "PASS: status case 1 terminal-but-not-Done flagged + --fix moves them to Done"
 
@@ -489,12 +489,12 @@ ISSUE_LIST_JSON='[{"number":300,"state":"OPEN"},{"number":301,"state":"OPEN"}]'
 PR_LIST_JSON='[]'
 FIX=1   # even with --fix, orphan and unknown are report-only
 run_status
-printf '%s' "$OUT" | grep -q "orphaned In-Progress" || fail "scase2: expected orphan section\n$OUT"
-printf '%s' "$OUT" | grep -q "#300" || fail "scase2: #300 orphan should be flagged\n$OUT"
-printf '%s' "$OUT" | grep -q "#301" && fail "scase2: #301 (live stamped) must not be flagged\n$OUT"
-printf '%s' "$OUT" | grep -q "^stale claims" && fail "scase2: a live same-host claim must not be classed stale\n$OUT"
-printf '%s' "$OUT" | grep -q "unresolved" || fail "scase2: expected unresolved section\n$OUT"
-printf '%s' "$OUT" | grep -q "#302" || fail "scase2: #302 unknown should be flagged\n$OUT"
+grep -q "orphaned In-Progress" <<<"$OUT" || fail "scase2: expected orphan section\n$OUT"
+grep -q "#300" <<<"$OUT" || fail "scase2: #300 orphan should be flagged\n$OUT"
+grep -q "#301" <<<"$OUT" && fail "scase2: #301 (live stamped) must not be flagged\n$OUT"
+grep -q "^stale claims" <<<"$OUT" && fail "scase2: a live same-host claim must not be classed stale\n$OUT"
+grep -q "unresolved" <<<"$OUT" || fail "scase2: expected unresolved section\n$OUT"
+grep -q "#302" <<<"$OUT" || fail "scase2: #302 unknown should be flagged\n$OUT"
 grep -qx "ISSUE_300" "$EDITS" && fail "scase2: orphan #300 must NEVER be auto-edited\n$(cat "$EDITS")"
 [ ! -s "$EDITS" ] || fail "scase2: no item-edit should fire (no terminal items)\n$(cat "$EDITS")"
 FIX=0
@@ -512,10 +512,10 @@ ISSUE_LIST_JSON='[{"number":401,"state":"OPEN"},{"number":402,"state":"OPEN"}]'
 PR_LIST_JSON='[{"number":400,"state":"MERGED"}]'
 FIX=0
 run_status
-printf '%s' "$OUT" | grep -q "In sync" || fail "scase3: expected in-sync all-clear\n$OUT"
-printf '%s' "$OUT" | grep -q "terminal-but-not-Done" && fail "scase3: unexpected terminal section\n$OUT"
-printf '%s' "$OUT" | grep -q "orphaned In-Progress" && fail "scase3: unexpected orphan section\n$OUT"
-printf '%s' "$OUT" | grep -q "^stale claims" && fail "scase3: unexpected stale section\n$OUT"
+grep -q "In sync" <<<"$OUT" || fail "scase3: expected in-sync all-clear\n$OUT"
+grep -q "terminal-but-not-Done" <<<"$OUT" && fail "scase3: unexpected terminal section\n$OUT"
+grep -q "orphaned In-Progress" <<<"$OUT" && fail "scase3: unexpected orphan section\n$OUT"
+grep -q "^stale claims" <<<"$OUT" && fail "scase3: unexpected stale section\n$OUT"
 echo "PASS: status case 3 fully in-sync all-clear"
 
 # --- status case 4: stale claim — same-host stamp, DEAD session (GH #85) -------
@@ -530,10 +530,10 @@ PR_LIST_JSON='[]'
 DEAD_SESSIONS="dead0001"
 FIX=1
 run_status
-printf '%s' "$OUT" | grep -q "^stale claims" || fail "scase4: expected stale section\n$OUT"
-printf '%s' "$OUT" | grep -q "#800 — stamped 'testhost:dead0001'" \
+grep -q "^stale claims" <<<"$OUT" || fail "scase4: expected stale section\n$OUT"
+grep -q "#800 — stamped 'testhost:dead0001'" <<<"$OUT" \
   || fail "scase4: #800 stale should be flagged with its stamp\n$OUT"
-printf '%s' "$OUT" | grep -q "#801" && fail "scase4: #801 (live same-host) must not be flagged\n$OUT"
+grep -q "#801" <<<"$OUT" && fail "scase4: #801 (live same-host) must not be flagged\n$OUT"
 [ ! -s "$EDITS" ] || fail "scase4: stale claim must NEVER be auto-edited\n$(cat "$EDITS")"
 DEAD_SESSIONS=""; FIX=0
 echo "PASS: status case 4 stale same-host claim flagged (live one not), never auto-fixed"
@@ -550,10 +550,10 @@ PR_LIST_JSON='[]'
 DEAD_SESSIONS="abcd0001"
 FIX=1
 run_status
-printf '%s' "$OUT" | grep -q "^foreign claims" || fail "scase5: expected foreign section\n$OUT"
-printf '%s' "$OUT" | grep -q "#900 — stamped 'otherhost:abcd0001' (host 'otherhost'" \
+grep -q "^foreign claims" <<<"$OUT" || fail "scase5: expected foreign section\n$OUT"
+grep -q "#900 — stamped 'otherhost:abcd0001' (host 'otherhost'" <<<"$OUT" \
   || fail "scase5: #900 foreign should name the owning host\n$OUT"
-printf '%s' "$OUT" | grep -q "^stale claims" && fail "scase5: foreign must not be classed stale\n$OUT"
+grep -q "^stale claims" <<<"$OUT" && fail "scase5: foreign must not be classed stale\n$OUT"
 [ ! -s "$EDITS" ] || fail "scase5: foreign claim must NEVER be auto-edited\n$(cat "$EDITS")"
 DEAD_SESSIONS=""; FIX=0
 echo "PASS: status case 5 foreign claim reported (host-aware), never released here"
@@ -569,9 +569,9 @@ PR_LIST_JSON='[]'
 DEAD_SESSIONS="dead0002"
 FIX=0
 run_status
-printf '%s' "$OUT" | grep -q "terminal-but-not-Done" || fail "scase6: closed-backed item should be terminal\n$OUT"
-printf '%s' "$OUT" | grep -q "#1000" || fail "scase6: #1000 should be flagged terminal\n$OUT"
-printf '%s' "$OUT" | grep -q "^stale claims" && fail "scase6: terminal must take priority over stale\n$OUT"
+grep -q "terminal-but-not-Done" <<<"$OUT" || fail "scase6: closed-backed item should be terminal\n$OUT"
+grep -q "#1000" <<<"$OUT" || fail "scase6: #1000 should be flagged terminal\n$OUT"
+grep -q "^stale claims" <<<"$OUT" && fail "scase6: terminal must take priority over stale\n$OUT"
 DEAD_SESSIONS=""
 echo "PASS: status case 6 terminal-but-not-Done beats stale (priority)"
 
@@ -586,12 +586,12 @@ ISSUE_LIST_JSON='[{"number":910,"state":"OPEN","updatedAt":"2026-05-01T00:00:00Z
 PR_LIST_JSON='[]'
 FIX=1
 run_status
-printf '%s' "$OUT" | grep -q "^foreign claims (STALE" || fail "scase7: expected STALE foreign section\n$OUT"
-printf '%s' "$OUT" | grep -q "#910 — stamped 'deadhost:abcd9100' (host 'deadhost')" \
+grep -q "^foreign claims (STALE" <<<"$OUT" || fail "scase7: expected STALE foreign section\n$OUT"
+grep -q "#910 — stamped 'deadhost:abcd9100' (host 'deadhost')" <<<"$OUT" \
   || fail "scase7: #910 should name the owning host\n$OUT"
 # Exact day count (2026-05-01 → pinned 2026-06-07 = 37d). Asserting the EXACT value,
 # not a range, is what catches a parser timezone regression (local-time parse → 36d).
-printf '%s' "$OUT" | grep -q "no activity for 37d" \
+grep -q "no activity for 37d" <<<"$OUT" \
   || fail "scase7: #910 should report exactly 37d stale (timezone skew if off-by-one?)\n$OUT"
 [ ! -s "$EDITS" ] || fail "scase7: a stale foreign claim must NEVER be auto-edited\n$(cat "$EDITS")"
 FIX=0
@@ -609,10 +609,10 @@ ISSUE_LIST_JSON='[{"number":911,"state":"OPEN","updatedAt":"2026-06-05T00:00:00Z
 PR_LIST_JSON='[]'
 FIX=1
 run_status
-printf '%s' "$OUT" | grep -q "^foreign claims (In Progress" || fail "scase8: expected plain foreign section\n$OUT"
-printf '%s' "$OUT" | grep -q "#911" || fail "scase8: #911 recent should be plain foreign\n$OUT"
-printf '%s' "$OUT" | grep -q "#912" || fail "scase8: #912 (no updatedAt) should fail safe to plain foreign\n$OUT"
-printf '%s' "$OUT" | grep -q "^foreign claims (STALE" \
+grep -q "^foreign claims (In Progress" <<<"$OUT" || fail "scase8: expected plain foreign section\n$OUT"
+grep -q "#911" <<<"$OUT" || fail "scase8: #911 recent should be plain foreign\n$OUT"
+grep -q "#912" <<<"$OUT" || fail "scase8: #912 (no updatedAt) should fail safe to plain foreign\n$OUT"
+grep -q "^foreign claims (STALE" <<<"$OUT" \
   && fail "scase8: neither recent nor missing-updatedAt foreign should escalate\n$OUT"
 [ ! -s "$EDITS" ] || fail "scase8: foreign claims must NEVER be auto-edited\n$(cat "$EDITS")"
 FIX=0
@@ -661,9 +661,9 @@ ITEM_LIST_JSON='{"items":[
 MARKER_LINES='#950 Live truth item
 '
 OUT="$(BOARDS_CONF_MACHINE="$CACHEON_CONF" BOARDS_CONF_REPO_LOCAL="$TEST_WORK_DIR/no-such-conf" reconcile_main)"
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   || fail "live-read: expected 'in sync' from the LIVE #950 claim even with board.3.cache=on\n$OUT"
-printf '%s' "$OUT" | grep -q "marker-without-board" \
+grep -q "marker-without-board" <<<"$OUT" \
   && fail "live-read: #950 flagged marker-without-board — something served a cached read\n$OUT"
 echo "PASS: live-read — reconcile never brings cache_read into scope, and reads live even under board.<N>.cache=on"
 

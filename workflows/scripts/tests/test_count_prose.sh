@@ -71,7 +71,7 @@ assert_matches() {
   case "$got" in
     '') fail_test "$name" "value is EMPTY (the line this was extracted from is likely missing from the output entirely — not a format mismatch)" ;;
     *)
-      if printf '%s' "$got" | grep -qE "^${ere}\$"; then
+      if grep -qE "^${ere}\$" <<<"$got"; then
         ok "$name"
       else
         fail_test "$name" "expected to match /$ere/, got '$got'"

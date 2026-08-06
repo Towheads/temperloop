@@ -229,7 +229,7 @@ echo "--- test 8: a credential VALUE never appears in anything the wrapper emits
 # The double deliberately LEAKS the token into its own stdout. The wrapper must
 # redact it on the way out — belt and braces over never printing it itself.
 OUT8="$(MODE=leak run_sut --board 3 2>"$TMP/err8")"
-printf '%s' "$OUT8" | grep -qF "$FAKE_TOKEN" \
+grep -qF "$FAKE_TOKEN" <<<"$OUT8" \
   && bad "t8.leak" "the credential value survived into stdout" \
   || ok "no credential value in stdout (a leaking child is redacted)"
 grep -qF "$FAKE_TOKEN" "$TMP/err8" \

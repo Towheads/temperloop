@@ -175,7 +175,7 @@ ok()  { pass=$((pass + 1)); printf '  ✓ %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf '  ✗ %s\n     %s\n' "$1" "$2"; }
 
 verdict() { # <hook stdout> -> deny|silent
-  if printf '%s' "$1" | grep -q '"permissionDecision":"deny"'; then printf 'deny'; else printf 'silent'; fi
+  if grep -q '"permissionDecision":"deny"' <<<"$1"; then printf 'deny'; else printf 'silent'; fi
 }
 log_reset()     { : >"$LOG"; }
 log_inert()     { grep -h 'INERT:' "$LOG" 2>/dev/null || true; }

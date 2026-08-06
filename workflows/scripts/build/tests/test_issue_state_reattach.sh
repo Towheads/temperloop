@@ -196,7 +196,7 @@ else
   bad "help.exit" "reattach --help exited non-zero"
 fi
 HELPOUT="$(bash "$CLI" reattach --help 2>&1 || true)"
-printf '%s' "$HELPOUT" | grep -qi 'reattach' && ok "reattach --help prints reattach usage" || bad "help.text" "no 'reattach' in output"
+grep -qi 'reattach' <<<"$HELPOUT" && ok "reattach --help prints reattach usage" || bad "help.text" "no 'reattach' in output"
 
 # ── missing args -> usage + non-zero ────────────────────────────────────
 echo "--- reattach missing args -> non-zero usage error ---"

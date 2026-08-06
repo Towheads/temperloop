@@ -78,7 +78,7 @@ field()   { awk -F'\t' -v c="$2" 'END{print $c}' "$1"; }  # last row, column c
 # --- 1 + 2: row shape, fields, duration -------------------------------------
 L="$WORK/log1.tsv"
 out="$(run_shim gh "$L" -- issue list --repo o/r)" || fail "shim exit nonzero on success path"
-echo "$out" | grep -q "real-stdout issue list --repo o/r" || fail "real stdout not passed through"
+grep -q "real-stdout issue list --repo o/r" <<<"$out" || fail "real stdout not passed through"
 [ -f "$L" ] || fail "no log written"
 [ "$(wc -l <"$L")" -eq 1 ] || fail "expected exactly 1 row"
 [ "$(nfields "$L")" -eq 10 ] || fail "expected 10 columns, got $(nfields "$L")"
@@ -109,7 +109,7 @@ echo "  [ok] signal death propagated as 130"
 # --- 4: GH_CALL_LOG=0 passthrough, no row -----------------------------------
 L="$WORK/log4.tsv"
 out="$(GH_CALL_LOG=0 run_shim gh "$L" -- issue list)" || fail "GH_CALL_LOG=0 path exited nonzero"
-echo "$out" | grep -q "real-stdout issue list" || fail "GH_CALL_LOG=0 did not run real tool"
+grep -q "real-stdout issue list" <<<"$out" || fail "GH_CALL_LOG=0 did not run real tool"
 [ ! -f "$L" ] || fail "GH_CALL_LOG=0 must not write a log row"
 echo "  [ok] GH_CALL_LOG=0 zero-overhead passthrough, no row"
 
@@ -124,7 +124,7 @@ echo "  [ok] GH_CALL_CONTEXT + GH_CALL_OP columns"
 # --- 6: basename-generic (git-bug) ------------------------------------------
 L="$WORK/log6.tsv"
 out="$(run_shim git-bug "$L" -- ls)" || fail "git-bug shim exit nonzero"
-echo "$out" | grep -q "real-stdout ls" || fail "git-bug real tool not run"
+grep -q "real-stdout ls" <<<"$out" || fail "git-bug real tool not run"
 [ "$(field "$L" 6)" = "git-bug" ] || fail "tool column should be git-bug, got $(field "$L" 6)"
 echo "  [ok] basename-generic: installed as git-bug logs+dispatches git-bug"
 
@@ -170,7 +170,7 @@ fi
 L="$WORK/log10.tsv"; LAKE10="$WORK/lake10"
 out="$(GH_CALLS_RAW_DIR="$LAKE10" GH_CALL_LOG=0 run_shim gh "$L" -- issue list)" \
   || fail "GH_CALL_LOG=0 path exited nonzero (lake case)"
-echo "$out" | grep -q "real-stdout issue list" || fail "GH_CALL_LOG=0 did not run real tool (lake case)"
+grep -q "real-stdout issue list" <<<"$out" || fail "GH_CALL_LOG=0 did not run real tool (lake case)"
 [ ! -f "$LAKE10/gh-calls-${month_now}.jsonl" ] || fail "GH_CALL_LOG=0 must not write a lake record either"
 echo "  [ok] GH_CALL_LOG=0 skips the lake write too (same zero-overhead passthrough)"
 

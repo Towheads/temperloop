@@ -114,7 +114,7 @@ done
 #      setting is a seat inside build-level.mjs, not build.md-only). ────────
 sweepModelLine="$(grep -n '^\s*model: ' "$SWEEP_MD" | head -1)"
 if [ -z "$sweepModelLine" ]; then bad "sweep.md model: field present" "no 'model:' line found"; else
-  if printf '%s' "$sweepModelLine" | grep -q 'SWEEP_WORKER_MODEL'; then
+  if grep -q 'SWEEP_WORKER_MODEL' <<<"$sweepModelLine"; then
     ok "sweep.md Step 3 item construction references \$SWEEP_WORKER_MODEL"
   else
     bad "sweep.md Step 3 item construction references \$SWEEP_WORKER_MODEL" "line: $sweepModelLine"
@@ -135,7 +135,7 @@ fi
 #      wires the two machinery-executor settings too. ───────────────────────
 fixModelLine="$(grep -n '^\s*model: ' "$FIX_MD" | head -1)"
 if [ -z "$fixModelLine" ]; then bad "fix.md model: field present" "no 'model:' line found"; else
-  if printf '%s' "$fixModelLine" | grep -q 'FIX_WORKER_MODEL'; then
+  if grep -q 'FIX_WORKER_MODEL' <<<"$fixModelLine"; then
     ok "fix.md Step 4 item construction references \$FIX_WORKER_MODEL"
   else
     bad "fix.md Step 4 item construction references \$FIX_WORKER_MODEL" "line: $fixModelLine"

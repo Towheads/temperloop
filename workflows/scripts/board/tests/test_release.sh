@@ -73,7 +73,7 @@ run_release() {
 set_marker '#502 Claim target'
 run_release 27
 [ "$RC" -ne 0 ] || fail "case1: releasing a non-latest claim must exit non-zero (got $RC)\n$OUT"
-printf '%s' "$OUT" | grep -q "this window holds a claim for #502, not #27 — refusing." \
+grep -q "this window holds a claim for #502, not #27 — refusing." <<<"$OUT" \
   || fail "case1: expected the K#275 refusal message\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "case1: a refusal must clear NOTHING (got $(cleared_count))"
 [ "$(cat "$FAKE_MARKER_FILE")" = '#502 Claim target' ] \
@@ -85,7 +85,7 @@ echo "PASS: release case 1 non-latest claim refused, nothing cleared (K#275)"
 set_marker '#502 Claim target'
 run_release 502
 [ "$RC" -eq 0 ] || fail "case2: releasing the held claim should succeed (got $RC)\n$OUT"
-printf '%s' "$OUT" | grep -q "Released \[#502 Claim target\]" \
+grep -q "Released \[#502 Claim target\]" <<<"$OUT" \
   || fail "case2: expected the release confirmation\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "case2: expected exactly one clear (got $(cleared_count))"
 echo "PASS: release case 2 matching issue number releases this window's claim"
@@ -102,7 +102,7 @@ echo "PASS: release case 3 argument-less release clears this window's marker"
 set_marker ''
 run_release 27
 [ "$RC" -eq 0 ] || fail "case4: no marker + an arg should exit 0 (got $RC)\n$OUT"
-printf '%s' "$OUT" | grep -q "no claim marker set in this window" \
+grep -q "no claim marker set in this window" <<<"$OUT" \
   || fail "case4: expected the nothing-to-release notice\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "case4: nothing to clear (got $(cleared_count))"
 echo "PASS: release case 4 no marker set is a benign no-op"
@@ -175,9 +175,9 @@ run_release 1483 --board 7
 [ "$RC" -eq 0 ] || fail "case5: the release should succeed (got $RC)\n$OUT"
 grep -qF "$(printf '1483\t%s' "$OWN_STAMP")" "$FAKE_EDITS_FILE" \
   || fail "case5: expected the parked claim stamp removed from the OPEN issue\n$(cat "$FAKE_EDITS_FILE")\n$OUT"
-printf '%s' "$OUT" | grep -qF "Cleared #1483's claim stamp [mini:9f90bef1]" \
+grep -qF "Cleared #1483's claim stamp [mini:9f90bef1]" <<<"$OUT" \
   || fail "case5: expected the board-side clear confirmation\n$OUT"
-printf '%s' "$OUT" | grep -q "Released \[#1483 parked item\]" \
+grep -q "Released \[#1483 parked item\]" <<<"$OUT" \
   || fail "case5: the local marker half must still run\n$OUT"
 [ "$(cleared_count)" = "1" ] || fail "case5: expected exactly one marker clear (got $(cleared_count))"
 echo "PASS: release case 5 claim -> Ready -> release clears the parked claim stamp (temperloop#979)"
@@ -189,7 +189,7 @@ run_release 1483 --board 7
 [ "$RC" -eq 0 ] || fail "case6: the release should still succeed (got $RC)\n$OUT"
 [ "$(edits_count)" = "0" ] \
   || fail "case6: an In-Progress claim is HELD until Done (K#275) — nothing may be stripped\n$(cat "$FAKE_EDITS_FILE")"
-printf '%s' "$OUT" | grep -q "still In Progress" \
+grep -q "still In Progress" <<<"$OUT" \
   || fail "case6: expected the claim-held-until-Done notice\n$OUT"
 echo "PASS: release case 6 an In-Progress item's live claim stamp is left in place (K#275)"
 
@@ -200,9 +200,9 @@ run_release 1483 --board 7
 [ "$RC" -eq 0 ] || fail "case7: the release should still succeed (got $RC)\n$OUT"
 [ "$(edits_count)" = "0" ] \
   || fail "case7: another session's stamp must never be erased from here\n$(cat "$FAKE_EDITS_FILE")"
-printf '%s' "$OUT" | grep -q "another session's claim stamp" \
+grep -q "another session's claim stamp" <<<"$OUT" \
   || fail "case7: expected the foreign-stamp notice\n$OUT"
-printf '%s' "$OUT" | grep -q "reconcile.sh --board 7 --labels" \
+grep -q "reconcile.sh --board 7 --labels" <<<"$OUT" \
   || fail "case7: expected the pointer at the reconcile sweep that owns this case\n$OUT"
 echo "PASS: release case 7 a foreign claim stamp is reported and routed to reconcile, never erased"
 
@@ -227,7 +227,7 @@ run_release 1483 --board 7
 [ "$RC" -eq 0 ] || fail "case9: an absent marker must stay a benign exit 0 (got $RC)\n$OUT"
 grep -qF "$(printf '1483\t%s' "$OWN_STAMP")" "$FAKE_EDITS_FILE" \
   || fail "case9: the board half must run even with no local marker\n$(cat "$FAKE_EDITS_FILE")\n$OUT"
-printf '%s' "$OUT" | grep -q "no claim marker set in this window" \
+grep -q "no claim marker set in this window" <<<"$OUT" \
   || fail "case9: expected the unchanged no-marker notice\n$OUT"
 echo "PASS: release case 9 the board half runs headless, with no multiplexer marker present"
 
@@ -238,9 +238,9 @@ set_issue open "fnd:status:ready" "$OWN_STAMP"
 run_release 1483 --board no-such-board
 [ "$RC" -eq 0 ] || fail "case10: an unknown board must not fail the release (got $RC)\n$OUT"
 [ "$(edits_count)" = "0" ] || fail "case10: nothing may be written for an unresolvable board\n$(cat "$FAKE_EDITS_FILE")"
-printf '%s' "$OUT" | grep -q "unknown board 'no-such-board'" \
+grep -q "unknown board 'no-such-board'" <<<"$OUT" \
   || fail "case10: expected the legible skip notice\n$OUT"
-printf '%s' "$OUT" | grep -q "Released \[#1483 parked item\]" \
+grep -q "Released \[#1483 parked item\]" <<<"$OUT" \
   || fail "case10: the marker half must still run after a board-half skip\n$OUT"
 echo "PASS: release case 10 a board-half failure degrades to a notice — the release still succeeds"
 
@@ -254,7 +254,7 @@ set_marker '#502 the latest claim'
 set_issue open "fnd:status:ready" "$OWN_STAMP"
 run_release 1483 --board 7
 [ "$RC" -ne 0 ] || fail "case11: the K#275 non-latest marker refusal must still exit non-zero (got $RC)\n$OUT"
-printf '%s' "$OUT" | grep -q "this window holds a claim for #502, not #1483 — refusing." \
+grep -q "this window holds a claim for #502, not #1483 — refusing." <<<"$OUT" \
   || fail "case11: expected the unchanged K#275 refusal message\n$OUT"
 [ "$(cleared_count)" = "0" ] || fail "case11: a refusal must clear NO marker (got $(cleared_count))"
 grep -qF "$(printf '1483\t%s' "$OWN_STAMP")" "$FAKE_EDITS_FILE" \

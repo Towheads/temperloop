@@ -194,19 +194,19 @@ FIX=1   # even with --fix, both new classes are report-only
 run_status
 FIX=0
 
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   && fail "case1: the lens must NOT report 'In sync' with a closed+labeled issue present\n$OUT"
-printf '%s' "$OUT" | grep -q "residual status labels on closed issues" \
+grep -q "residual status labels on closed issues" <<<"$OUT" \
   || fail "case1: expected the residual-status section\n$OUT"
-printf '%s' "$OUT" | grep -qF "#900 — CLOSED but still labeled '$STATUS_LABEL'" \
+grep -qF "#900 — CLOSED but still labeled '$STATUS_LABEL'" <<<"$OUT" \
   || fail "case1: #900's residual status label should be named exactly\n$OUT"
-printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+grep -q "stranded claim stamps on closed issues" <<<"$OUT" \
   || fail "case1: expected the stranded-claim-stamp section\n$OUT"
-printf '%s' "$OUT" | grep -qF "#900 — CLOSED but still stamped '$STAMP_LABEL'" \
+grep -qF "#900 — CLOSED but still stamped '$STAMP_LABEL'" <<<"$OUT" \
   || fail "case1: #900's stranded claim stamp should be named exactly\n$OUT"
-printf '%s' "$OUT" | grep -q "#901" \
+grep -q "#901" <<<"$OUT" \
   && fail "case1: a cleanly-closed issue (no fnd: labels) must not be flagged\n$OUT"
-printf '%s' "$OUT" | grep -q "#10" \
+grep -q "#10" <<<"$OUT" \
   && fail "case1: a live open Ready item must not be flagged\n$OUT"
 [ ! -s "$WRITES" ] \
   || fail "case1: --status --fix must write NOTHING for these classes (repair is --labels --apply)\n$(cat "$WRITES")"
@@ -220,11 +220,11 @@ ALL_ISSUES_JSON='[
   {"number":901,"state":"CLOSED","updatedAt":"2026-06-06T00:00:00Z","title":"Cleanly closed","labels":[{"name":"bug"}]}
 ]'
 run_status
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   || fail "case2: a clean issues-only board must still report In sync\n$OUT"
-printf '%s' "$OUT" | grep -q "residual status labels on closed issues" \
+grep -q "residual status labels on closed issues" <<<"$OUT" \
   && fail "case2: no residual-status section should print on a clean board\n$OUT"
-printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+grep -q "stranded claim stamps on closed issues" <<<"$OUT" \
   && fail "case2: no stranded-stamp section should print on a clean board\n$OUT"
 echo "PASS: case 2 a clean issues-only board still reports In sync (no false positives)"
 
@@ -240,18 +240,18 @@ LABEL_LIST_JSON='[{"name":"'"$STAMP_LABEL"'"},{"name":"bug"}]'
 OPEN_ATTACHED_LABELS=""
 run_status
 STATUS_OUT="$OUT"
-printf '%s' "$STATUS_OUT" | grep -q "stranded claim stamps on closed issues" \
+grep -q "stranded claim stamps on closed issues" <<<"$STATUS_OUT" \
   || fail "case3: --status must flag a stamp-only closed issue\n$STATUS_OUT"
-printf '%s' "$STATUS_OUT" | grep -qF "#902 — CLOSED but still stamped '$STAMP_LABEL'" \
+grep -qF "#902 — CLOSED but still stamped '$STAMP_LABEL'" <<<"$STATUS_OUT" \
   || fail "case3: --status should name #902's stamp\n$STATUS_OUT"
-printf '%s' "$STATUS_OUT" | grep -q "residual status labels on closed issues" \
+grep -q "residual status labels on closed issues" <<<"$STATUS_OUT" \
   && fail "case3: no status label is present, so that section must not print\n$STATUS_OUT"
 
 LABELS_APPLY=0; LABELS_UNATTENDED=0
 run_labels
-printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+grep -q "stranded claim stamps on closed issues" <<<"$OUT" \
   || fail "case3: --labels (class j) must flag the same issue\n$OUT"
-printf '%s' "$OUT" | grep -qF "#902 — $STAMP_LABEL" \
+grep -qF "#902 — $STAMP_LABEL" <<<"$OUT" \
   || fail "case3: --labels should name #902's stamp\n$OUT"
 echo "PASS: case 3 --status and --labels agree on a stranded claim stamp (no silent disagreement)"
 
@@ -284,17 +284,17 @@ ALL_ISSUES_JSON='[
 PR_LIST_JSON='[]'
 run_status
 
-printf '%s' "$OUT" | grep -q "terminal-but-not-Done" \
+grep -q "terminal-but-not-Done" <<<"$OUT" \
   || fail "case4: the pre-existing terminal class must still fire on a board 3 fixture\n$OUT"
-printf '%s' "$OUT" | grep -q "#201 — backing CLOSED but board status 'Ready'" \
+grep -q "#201 — backing CLOSED but board status 'Ready'" <<<"$OUT" \
   || fail "case4: #201 should still be flagged terminal with aligned fields\n$OUT"
-printf '%s' "$OUT" | grep -q "residual status labels on closed issues" \
+grep -q "residual status labels on closed issues" <<<"$OUT" \
   || fail "case4: the closed-issue tail scan must now run regardless of board.sh's configured backend\n$OUT"
-printf '%s' "$OUT" | grep -qF "#900 — CLOSED but still labeled '$STATUS_LABEL'" \
+grep -qF "#900 — CLOSED but still labeled '$STATUS_LABEL'" <<<"$OUT" \
   || fail "case4: #900's residual status label should be named exactly\n$OUT"
-printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+grep -q "stranded claim stamps on closed issues" <<<"$OUT" \
   || fail "case4: the closed-issue tail scan's stranded-stamp half must also run unconditionally\n$OUT"
-printf '%s' "$OUT" | grep -qF "#900 — CLOSED but still stamped '$STAMP_LABEL'" \
+grep -qF "#900 — CLOSED but still stamped '$STAMP_LABEL'" <<<"$OUT" \
   || fail "case4: #900's stranded claim stamp should be named exactly\n$OUT"
 [ "$(cat "$STATE_READ_JSON")" = "number,state,updatedAt,labels,title" ] \
   || fail "case4: the issue-state read's --json argv is now unconditional, same as the issues-only arm (got '$(cat "$STATE_READ_JSON")')"
@@ -347,17 +347,17 @@ FIX=1   # class (k) stays report-only even under --fix (repair lives in --labels
 run_status
 FIX=0
 
-printf '%s' "$OUT" | grep -q "In sync" \
+grep -q "In sync" <<<"$OUT" \
   && fail "case5: a closed issue wearing only a residual status label must NOT report 'In sync'\n$OUT"
-printf '%s' "$OUT" | grep -q "residual status labels on closed issues" \
+grep -q "residual status labels on closed issues" <<<"$OUT" \
   || fail "case5: expected the residual-status section with no claim stamp present\n$OUT"
 for n in 802 809 864 821; do
-  printf '%s' "$OUT" | grep -qF "#$n — CLOSED but still labeled '$BACKLOG_LABEL'" \
+  grep -qF "#$n — CLOSED but still labeled '$BACKLOG_LABEL'" <<<"$OUT" \
     || fail "case5: #$n's residual '$BACKLOG_LABEL' should be named exactly\n$OUT"
 done
-printf '%s' "$OUT" | grep -q "stranded claim stamps on closed issues" \
+grep -q "stranded claim stamps on closed issues" <<<"$OUT" \
   && fail "case5: no fnd:host/session:* stamp exists here — class (k) must fire without class (l)\n$OUT"
-printf '%s' "$OUT" | grep -q "#10" \
+grep -q "#10" <<<"$OUT" \
   && fail "case5: the live open Ready item must not be flagged\n$OUT"
 [ ! -s "$WRITES" ] \
   || fail "case5: --status --fix must write NOTHING for class (k)\n$(cat "$WRITES")"
@@ -365,10 +365,10 @@ printf '%s' "$OUT" | grep -q "#10" \
 # Cross-lens agreement: --labels class (h) must name the same four issues.
 LABELS_APPLY=0; LABELS_UNATTENDED=0
 run_labels
-printf '%s' "$OUT" | grep -q "stale status labels on closed issues" \
+grep -q "stale status labels on closed issues" <<<"$OUT" \
   || fail "case5: --labels (class h) must flag the same residual status labels\n$OUT"
 for n in 802 809 864 821; do
-  printf '%s' "$OUT" | grep -qF "#$n — $BACKLOG_LABEL" \
+  grep -qF "#$n — $BACKLOG_LABEL" <<<"$OUT" \
     || fail "case5: --labels should name #$n's residual '$BACKLOG_LABEL'\n$OUT"
 done
 echo "PASS: case 5 a closed issue wearing ONLY fnd:status:backlog is drift on both lenses (temperloop#902)"

@@ -214,12 +214,12 @@ else
   [ -n "$DRIVE_ACT" ] && [ "$DRIVE_ACT" != "null" ] && ok "D: drive-ready produced for the unlabeled Ready item" \
     || bad "D.drive" "no drive-ready action: $TICK_PLAN"
 
-  if printf '%s' "$TICK_PLAN" | grep -qi "towheads"; then
+  if grep -qi "towheads" <<<"$TICK_PLAN"; then
     bad "D.leak" "plan JSON leaks a Towheads/* literal: $TICK_PLAN"
   else
     ok "D: no residual 'Towheads' literal anywhere in the tick plan"
   fi
-  if printf '%s' "$TICK_PLAN" | grep -q "@towhead"; then
+  if grep -q "@towhead" <<<"$TICK_PLAN"; then
     bad "D.op-leak" "plan JSON leaks the default @towhead operator literal: $TICK_PLAN"
   else
     ok "D: no residual '@towhead' default-operator literal (stranger operator used throughout)"
@@ -244,7 +244,7 @@ else
   [ "$(jq '.safe | length' <<<"$DRIVE_DRY_OUT")" -gt 0 ] && [ "$SAFE_REPOS" = "$STRANGER_REPO" ] \
     && ok "E: safe-tier actions carry the stranger repo through untouched" \
     || bad "E.safe-repo" "got: $SAFE_REPOS (safe count $(jq '.safe | length' <<<"$DRIVE_DRY_OUT"))"
-  if printf '%s' "$DRIVE_DRY_OUT" | grep -qi "towheads"; then
+  if grep -qi "towheads" <<<"$DRIVE_DRY_OUT"; then
     bad "E.leak" "dry-run tiering output leaks a Towheads/* literal: $DRIVE_DRY_OUT"
   else
     ok "E: no residual 'Towheads' literal in the dry-run tiering output"
@@ -326,11 +326,11 @@ KS_OUT="$(
   ks_list "Decisions" 2>&1
 )"
 
-printf '%s\n' "$KS_OUT" | grep -qx "root=$STRANGER_KS_ROOT" && ok "G: ks_root resolves the stranger KNOWLEDGE_STORE_ROOT" \
+grep -qx "root=$STRANGER_KS_ROOT" <<<"$KS_OUT" && ok "G: ks_root resolves the stranger KNOWLEDGE_STORE_ROOT" \
   || bad "G.root" "got: $KS_OUT"
-printf '%s\n' "$KS_OUT" | grep -qx "widget note content" && ok "G: ks_write/ks_read round-trip content under the stranger root" \
+grep -qx "widget note content" <<<"$KS_OUT" && ok "G: ks_write/ks_read round-trip content under the stranger root" \
   || bad "G.roundtrip" "got: $KS_OUT"
-printf '%s\n' "$KS_OUT" | grep -qx "Decisions/widget-choice.md" && ok "G: ks_list finds the written doc-id under the stranger root" \
+grep -qx "Decisions/widget-choice.md" <<<"$KS_OUT" && ok "G: ks_list finds the written doc-id under the stranger root" \
   || bad "G.list" "got: $KS_OUT"
 
 if [ -d "$STRANGER_HOME/dev/mind" ]; then
@@ -363,7 +363,7 @@ KS_SEARCH_OUT="$(
 )"
 
 WANT_BM_HOME="$STRANGER_HOME/.local/state/foundation/basic-memory-home"
-printf '%s\n' "$KS_SEARCH_OUT" | grep -qx "bm_home=$WANT_BM_HOME" && ok "H: KNOWLEDGE_SEARCH_BM_HOME resolves under the stranger XDG_STATE_HOME" \
+grep -qx "bm_home=$WANT_BM_HOME" <<<"$KS_SEARCH_OUT" && ok "H: KNOWLEDGE_SEARCH_BM_HOME resolves under the stranger XDG_STATE_HOME" \
   || bad "H.bmhome" "got: $KS_SEARCH_OUT (want bm_home=$WANT_BM_HOME)"
 AVAIL_RC="$(printf '%s\n' "$KS_SEARCH_OUT" | sed -n 's/^available_rc=//p')"
 case "$AVAIL_RC" in
@@ -381,13 +381,13 @@ BUILD_CFG_OUT="$(
   bash -c '. "$1"; printf "root=%s\nop=%s\ncheck=%s\n" "$KNOWLEDGE_STORE_ROOT" "$PIPELINE_OPERATOR" "$PIPELINE_REQUIRED_CHECK"' _ "$BUILD_CONFIG"
 )"
 
-printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "root=$STRANGER_KS_ROOT" \
+grep -qx "root=$STRANGER_KS_ROOT" <<<"$BUILD_CFG_OUT" \
   && ok "I: KNOWLEDGE_STORE_ROOT override survives build.config.sh (not overwritten to \$HOME/dev/mind)" \
   || bad "I.root" "got: $BUILD_CFG_OUT"
-printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "op=$STRANGER_OPERATOR" \
+grep -qx "op=$STRANGER_OPERATOR" <<<"$BUILD_CFG_OUT" \
   && ok "I: PIPELINE_OPERATOR override survives build.config.sh (not overwritten to @towhead)" \
   || bad "I.op" "got: $BUILD_CFG_OUT"
-printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "check=$STRANGER_CHECK" \
+grep -qx "check=$STRANGER_CHECK" <<<"$BUILD_CFG_OUT" \
   && ok "I: PIPELINE_REQUIRED_CHECK override survives build.config.sh" \
   || bad "I.check" "got: $BUILD_CFG_OUT"
 

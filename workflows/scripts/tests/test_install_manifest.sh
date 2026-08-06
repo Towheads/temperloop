@@ -66,7 +66,7 @@ out1="$(run_in_fixture "$H1" '
   manifest_get_path_entry "'"$target1"'"
 ')"
 
-echo "$out1" | grep -q 'recorded (created)' || fail "1: expected a created-recorded status line (got: $out1)"
+grep -q 'recorded (created)' <<<"$out1" || fail "1: expected a created-recorded status line (got: $out1)"
 entry1_state="$(echo "$out1" | tail -n1 | jq -r '.state')"
 entry1_backup="$(echo "$out1" | tail -n1 | jq -r '.backup_path')"
 [[ "$entry1_state" == "created" ]] || fail "1: expected state=created, got $entry1_state"
@@ -91,7 +91,7 @@ out2="$(run_in_fixture "$H2" '
   manifest_get_path_entry "'"$target2"'"
 ')"
 
-echo "$out2" | grep -q 'backed up to' || fail "2: expected a backed-up status line (got: $out2)"
+grep -q 'backed up to' <<<"$out2" || fail "2: expected a backed-up status line (got: $out2)"
 entry2="$(echo "$out2" | tail -n1)"
 entry2_state="$(echo "$entry2" | jq -r '.state')"
 entry2_backup="$(echo "$entry2" | jq -r '.backup_path')"
@@ -124,9 +124,9 @@ out3="$(run_in_fixture "$H3" '
   manifest_has_path "'"$target3"'" && echo "STILL-RECORDED" || echo "NOT-RECORDED"
 ')"
 
-echo "$out3" | grep -q 'removed (was created by install)' || fail "3: expected a removed status line (got: $out3)"
+grep -q 'removed (was created by install)' <<<"$out3" || fail "3: expected a removed status line (got: $out3)"
 [[ ! -e "$target3" ]] || fail "3: path should be removed after restoring a created entry"
-echo "$out3" | grep -q 'NOT-RECORDED' || fail "3: entry should be removed from the manifest after restore"
+grep -q 'NOT-RECORDED' <<<"$out3" || fail "3: entry should be removed from the manifest after restore"
 
 pass "3: restore_from_record on a created entry removes the path and its manifest entry"
 
@@ -153,10 +153,10 @@ out4="$(run_in_fixture "$H4" '
   manifest_has_path "'"$target4"'" && echo "STILL-RECORDED" || echo "NOT-RECORDED"
 ')"
 
-echo "$out4" | grep -q 'restored from backup' || fail "4: expected a restored status line (got: $out4)"
+grep -q 'restored from backup' <<<"$out4" || fail "4: expected a restored status line (got: $out4)"
 [[ "$(cat "$target4")" == "operator original" ]] || fail "4: original content should be restored"
 [[ ! -e "$backup4" ]] || fail "4: backup file should be removed after a successful restore"
-echo "$out4" | grep -q 'NOT-RECORDED' || fail "4: entry should be removed from the manifest after restore"
+grep -q 'NOT-RECORDED' <<<"$out4" || fail "4: entry should be removed from the manifest after restore"
 
 pass "4: restore_from_record on a preexisting entry restores the original content, removes the backup file, and un-records the entry"
 
@@ -176,7 +176,7 @@ backup5_first="$(run_in_fixture "$H5" 'manifest_get_path_entry "'"$target5"'" | 
 # re-recording the same path (the convergence case).
 printf 'managed content v1\n' >"$target5"
 out5b="$(run_in_fixture "$H5" 'manifest_backup_and_record "'"$target5"'"')"
-echo "$out5b" | grep -q 'already recorded' || fail "5: second record should report already-recorded (got: $out5b)"
+grep -q 'already recorded' <<<"$out5b" || fail "5: second record should report already-recorded (got: $out5b)"
 
 backup5_second="$(run_in_fixture "$H5" 'manifest_get_path_entry "'"$target5"'" | jq -r ".backup_path"')"
 [[ "$backup5_first" == "$backup5_second" ]] || fail "5: backup_path must not change on a re-record"
@@ -205,8 +205,8 @@ echo "$out6a" | jq -e '.schema_version == 1' >/dev/null || fail "6: schema_versi
 printf '{"schema_version":99,"paths":{}}' >"$manifest6"
 out6b="$(run_in_fixture "$H6" 'manifest_load' 2>&1)" && rc6b=0 || rc6b=$?
 [[ "$rc6b" -ne 0 ]] || fail "6: an unknown schema_version (99) must be refused (nonzero rc)"
-echo "$out6b" | grep -q 'schema_version=99' || fail "6: refusal must name the exact version found (got: $out6b)"
-echo "$out6b" | grep -q 'readable' || fail "6: refusal must name what this build CAN read (got: $out6b)"
+grep -q 'schema_version=99' <<<"$out6b" || fail "6: refusal must name the exact version found (got: $out6b)"
+grep -q 'readable' <<<"$out6b" || fail "6: refusal must name what this build CAN read (got: $out6b)"
 
 pass "6: manifest_load reads a known schema_version and refuses an unknown one, naming the version found"
 
@@ -224,9 +224,9 @@ out7="$(run_in_fixture "$H7" '
   manifest_restore_from_record "'"$unknown7"'"
 ')"
 
-echo "$out7" | grep -q '^ABSENT$' || fail "7: manifest_has_path should report ABSENT for an unrecorded path"
-echo "$out7" | grep -q '^ENTRY-NOT-FOUND$' || fail "7: manifest_get_path_entry should find nothing for an unrecorded path"
-echo "$out7" | grep -q 'no manifest record' || fail "7: restore_from_record should report a no-op for an unrecorded path"
+grep -q '^ABSENT$' <<<"$out7" || fail "7: manifest_has_path should report ABSENT for an unrecorded path"
+grep -q '^ENTRY-NOT-FOUND$' <<<"$out7" || fail "7: manifest_get_path_entry should find nothing for an unrecorded path"
+grep -q 'no manifest record' <<<"$out7" || fail "7: restore_from_record should report a no-op for an unrecorded path"
 [[ -f "$unknown7" ]] || fail "7: an unrecorded path must NEVER be touched by restore_from_record"
 [[ "$(cat "$unknown7")" == "operator file, never recorded" ]] || fail "7: an unrecorded path's content must be untouched"
 
@@ -245,7 +245,7 @@ run_in_fixture "$H8" '
   echo "{\"a\":1}" > "'"$unmarked8"'"
 '
 marker_line="$(run_in_fixture "$H8" 'manifest_marker_line')"
-echo "$marker_line" | grep -q 'temperloop-managed' || fail "8: marker_line should contain the marker tag"
+grep -q 'temperloop-managed' <<<"$marker_line" || fail "8: marker_line should contain the marker tag"
 
 out8="$(run_in_fixture "$H8" '
   manifest_has_marker "'"$marked8"'" && echo "MARKED" || echo "NOT-MARKED"
@@ -256,7 +256,7 @@ out8="$(run_in_fixture "$H8" '
 
 # Alternate comment prefix.
 alt_marker="$(run_in_fixture "$H8" 'manifest_marker_line "//"')"
-echo "$alt_marker" | grep -q '^// temperloop-managed' || fail "8: an alternate comment prefix should be honored"
+grep -q '^// temperloop-managed' <<<"$alt_marker" || fail "8: an alternate comment prefix should be honored"
 
 pass "8: manifest_marker_line embeds a detectable tag and manifest_has_marker correctly distinguishes marked/unmarked files"
 
@@ -277,7 +277,7 @@ printf 'still-live-content\n' >"$target9"
 out9="$(run_in_fixture "$H9" 'manifest_restore_from_record "'"$target9"'"' 2>&1)" && rc9=0 || rc9=$?
 
 [[ "$rc9" -ne 0 ]] || fail "9: restore should fail when the recorded backup is missing"
-echo "$out9" | grep -q 'refusing to touch' || fail "9: failure message should explain the refusal (got: $out9)"
+grep -q 'refusing to touch' <<<"$out9" || fail "9: failure message should explain the refusal (got: $out9)"
 [[ -f "$target9" ]] || fail "9: the live path must be left untouched when the backup is missing"
 [[ "$(cat "$target9")" == "still-live-content" ]] || fail "9: the live path's content must be untouched"
 

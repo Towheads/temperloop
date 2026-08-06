@@ -62,7 +62,7 @@ out="$(env -i HOME="$FAKE_HOME" PATH="$PATH" "$OLD_SETTING=7" \
 err="$(cat "$ERRTMP")"
 [ "$out" = "$KERNEL_DEFAULT" ] \
   || fail "pre-rename $OLD_SETTING=7 must NOT drive $NEW_SETTING — expected the kernel default $KERNEL_DEFAULT, got '$out'"
-printf '%s' "$err" | grep -q 'deprecated' \
+grep -q 'deprecated' <<<"$err" \
   && fail "the closed window still emits a deprecation NOTE: $err"
 pass "1 a pre-rename env name is inert and silent (window closed)"
 

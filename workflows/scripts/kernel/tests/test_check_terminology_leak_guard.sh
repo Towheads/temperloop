@@ -36,15 +36,15 @@ git -C "$FIX" add -A && git -C "$FIX" commit -qm seed
 
 # 1 clean
 out="$(run_gate)" || fail "clean fixture went red: $out"
-printf '%s' "$out" | grep -q '^OK' || fail "clean fixture: no OK line: $out"
+grep -q '^OK' <<<"$out" || fail "clean fixture: no OK line: $out"
 pass "1 clean fixture is green"
 
 # 2 new FUNNEL_ identifier
 printf ': "${FUNNEL_NEW_THING:=1}"\n' > "$FIX/bad-env.sh"
 git -C "$FIX" add -A
 out="$(run_gate)" && fail "FUNNEL_NEW_THING not caught"
-printf '%s' "$out" | grep -q 'bad-env.sh' || fail "red output does not name the file: $out"
-printf '%s' "$out" | grep -q 'FUNNEL_NEW_THING' || fail "red output does not show the token: $out"
+grep -q 'bad-env.sh' <<<"$out" || fail "red output does not name the file: $out"
+grep -q 'FUNNEL_NEW_THING' <<<"$out" || fail "red output does not show the token: $out"
 pass "2 a new FUNNEL_* identifier trips the gate, naming file + token"
 rm "$FIX/bad-env.sh"
 
@@ -55,7 +55,7 @@ rm "$FIX/bad-env.sh"
 printf 'see claude/commands/funnel-driver.md\n' > "$FIX/bad-path.md"
 git -C "$FIX" add -A
 out="$(run_gate)" && fail "old renamed-file reference not caught"
-printf '%s' "$out" | grep -q 'bad-path.md' || fail "red output does not name the file: $out"
+grep -q 'bad-path.md' <<<"$out" || fail "red output does not name the file: $out"
 pass "3 an old renamed-file path reference trips the gate"
 rm "$FIX/bad-path.md"
 
@@ -81,7 +81,7 @@ pass "6 an exempt-listed file carrying old identifiers stays green"
 
 # 7b non-repo scan root fails LOUD, never false-greens as 0-scanned
 out="$(TERMINOLOGY_LEAK_SCAN_ROOT="$FIX/does-not-exist" TERMINOLOGY_LEAK_EXEMPT_FILE="$FIX/exempt.txt" bash "$GATE" 2>/dev/null)" && fail "empty scan did not fail loud"
-printf '%s' "$out" | grep -q 'scanned 0 file' || fail "empty-scan failure does not say why: $out"
+grep -q 'scanned 0 file' <<<"$out" || fail "empty-scan failure does not say why: $out"
 pass "7b an empty/failed scan is a loud FAIL, not a false green"
 
 # 7 real tree

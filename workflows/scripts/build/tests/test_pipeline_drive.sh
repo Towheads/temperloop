@@ -527,7 +527,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$CAP_DIR/gh-argv.txt"; done
 # still LOGGED (the attempt was made) but returns non-zero — simulating an auth /
 # rate-limit / repo-mismatch gh side-effect failure so we can assert it is RECORDED,
 # not swallowed.
-if [ -n "${GH_FAIL_MATCH:-}" ] && printf '%s' "$*" | grep -qF -- "$GH_FAIL_MATCH"; then
+if [ -n "${GH_FAIL_MATCH:-}" ] && grep -qF -- "$GH_FAIL_MATCH" <<<"$*"; then
   exit "${GH_FAIL_RC:-1}"
 fi
 exit 0

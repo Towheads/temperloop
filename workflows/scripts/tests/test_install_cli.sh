@@ -92,8 +92,8 @@ BACKUPS_A="$SANDBOX_XDG_STATE_HOME/temperloop/backups"
 dry_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" install --dry-run 2>&1)"
 dry_rc=$?
 [ "$dry_rc" -eq 0 ] || fail "1: install --dry-run exited $dry_rc (output: $dry_out)"
-echo "$dry_out" | grep -q 'would create' || fail "1: dry-run plan should describe at least one 'would create' entry (got: $dry_out)"
-echo "$dry_out" | grep -q 'Dry run: nothing written' || fail "1: dry-run should state nothing was written"
+grep -q 'would create' <<<"$dry_out" || fail "1: dry-run plan should describe at least one 'would create' entry (got: $dry_out)"
+grep -q 'Dry run: nothing written' <<<"$dry_out" || fail "1: dry-run should state nothing was written"
 [ ! -e "$MANIFEST_A" ] || fail "1: --dry-run must not write the install manifest"
 [ ! -L "$SANDBOX_HOME/.claude/commands" ] && [ ! -e "$SANDBOX_HOME/.claude/commands" ] \
   || fail "1: --dry-run must not create any managed path (found $SANDBOX_HOME/.claude/commands)"
@@ -108,8 +108,8 @@ pass "1: 'temperloop install --dry-run' performs zero writes (no manifest file, 
 deny_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" install </dev/null 2>&1)"
 deny_rc=$?
 [ "$deny_rc" -eq 0 ] || fail "2: a declined/skipped install should exit 0 (legible no-op), got $deny_rc (output: $deny_out)"
-echo "$deny_out" | grep -q 'skipped — no explicit consent' || fail "2: expected a no-explicit-consent skip line (got: $deny_out)"
-echo "$deny_out" | grep -q 'aborted — nothing written' || fail "2: expected an aborted/nothing-written summary line (got: $deny_out)"
+grep -q 'skipped — no explicit consent' <<<"$deny_out" || fail "2: expected a no-explicit-consent skip line (got: $deny_out)"
+grep -q 'aborted — nothing written' <<<"$deny_out" || fail "2: expected an aborted/nothing-written summary line (got: $deny_out)"
 [ ! -e "$MANIFEST_A" ] || fail "2: a declined install must not write the install manifest"
 [ ! -e "$SANDBOX_HOME/.local/bin/gh" ] || fail "2: a declined install must not create the gh shim"
 
@@ -164,8 +164,8 @@ n_backups_before="$(find "$BACKUPS_A" -type f 2>/dev/null | wc -l | tr -d ' ')"
 install_out2="$(sandbox_run "$SANDBOX_TEMPERLOOP" install --yes 2>&1)"
 install_rc2=$?
 [ "$install_rc2" -eq 0 ] || fail "4: second install --yes exited $install_rc2 (output: $install_out2)"
-echo "$install_out2" | grep -q 'already linked' || fail "4: second run should report at least one already-linked entry (got: $install_out2)"
-echo "$install_out2" | grep -q 'already installed' || fail "4: second run should report the gh shim as already installed (got: $install_out2)"
+grep -q 'already linked' <<<"$install_out2" || fail "4: second run should report at least one already-linked entry (got: $install_out2)"
+grep -q 'already installed' <<<"$install_out2" || fail "4: second run should report the gh shim as already installed (got: $install_out2)"
 
 n_recorded_after="$(jq '[.paths | keys[]] | length' "$MANIFEST_A")"
 n_backups_after="$(find "$BACKUPS_A" -type f 2>/dev/null | wc -l | tr -d ' ')"
@@ -180,7 +180,7 @@ pass "4: re-running 'temperloop install --yes' converges — no duplicate manife
 doctor_out="$(sandbox_run bash "$CHECKOUT_A/workflows/scripts/install/doctor.sh" "$CHECKOUT_A" 2>&1)"
 doctor_rc=$?
 [ "$doctor_rc" -eq 0 ] || fail "5: doctor.sh exited $doctor_rc after a sandboxed install (output: $doctor_out)"
-echo "$doctor_out" | grep -q 'Non-OK: 0' || fail "5: doctor.sh should report 'Non-OK: 0' after a sandboxed install (got: $doctor_out)"
+grep -q 'Non-OK: 0' <<<"$doctor_out" || fail "5: doctor.sh should report 'Non-OK: 0' after a sandboxed install (got: $doctor_out)"
 
 pass "5: doctor.sh is green (exit 0, Non-OK: 0) after a sandboxed 'temperloop install'"
 

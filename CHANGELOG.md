@@ -16,6 +16,30 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **The `pipefail` + `grep -q` SIGPIPE race is gone from the kernel test
+  suite** (#1173). Under `set -o pipefail`, `echo "$var" | grep -q PATTERN` is
+  a race, not a stable idiom: `grep -q` exits on its **first** match and closes
+  the pipe while the producer may still be writing, the producer takes
+  `SIGPIPE`, and `pipefail` promotes that non-zero status to the whole
+  pipeline — so a **passing** assertion intermittently reports failure. Because
+  it is a race it reproduces only sometimes, which is why a single green run
+  was never evidence a site was safe. The confirmed instance reds CI:
+  `test_issue_corpus.sh` line 211 printed `echo: write error: Broken pipe` and
+  then `FAIL: 3: doc2 missing/wrong state field (closed issue)` in foundation CI
+  run 31101856658. All **618** `<producer> | grep -q` constructs across **59**
+  kernel test scripts — every `tests/` directory under `workflows/scripts/`,
+  `claude/hooks/`, `bin/subcommands/` and `scripts/` — are rewritten to the
+  race-free here-string form `grep -q PATTERN <<<"$var"`, which has no writer
+  process to signal and no pipeline for `pipefail` to judge. Three multi-stage
+  variants (`echo … | awk … | grep -q`, `printf … | jq … | grep -qv`) are
+  de-piped the same way. The rewrite is deliberately a here-string rather than
+  a `case` arm: a here-string preserves each assertion's **exact** semantics —
+  every flag (`-F`, `-E`, `-i`, `-v`, `-x`, `--`), every anchor, and every
+  negated `&& fail` — whereas a `case` glob would silently turn an anchored
+  assertion like `^state: "closed"$` into a permissive substring test, weakening
+  the suite in the name of fixing it. `bin/subcommands/tests/test_tokens_producer.sh`
+  is deliberately untouched: #1168 / PR #1172 own that file.
+
 - **`test_tokens_producer.sh` check 16 no longer fails at random on a
   consumer's Linux CI** (#1168). The check built its haystack twice with
   `grep -vE '^[[:space:]]*#' "$IMPL" | grep -q <pattern>`, under the file's own
@@ -33,9 +57,9 @@ reads that marker; a stranger greps for it before pulling.
   downstream while building foundation#1552, where a worker had fixed it inside
   foundation's *vendored* `kernel/` subtree; that commit was dropped and
   transplanted here, upstream-first. A sibling instance of the same
-  `pipefail` + `grep -q` shape survives in
-  `workflows/scripts/lib/tests/test_issue_corpus.sh` and is tracked separately
-  (#1173) — it, not this one, is what has actually been reddening consumer CI.
+  `pipefail` + `grep -q` shape in `workflows/scripts/lib/tests/test_issue_corpus.sh`
+  — which, not this one, is what had actually been reddening consumer CI — is
+  fixed by #1173 above, in this same release.
 
 - **A token carrying only the default `repo` scope is no longer refused by five
   command specs for a capability none of them uses** (#1159). `/fix`, `/sweep`,
