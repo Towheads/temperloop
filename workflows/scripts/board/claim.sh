@@ -4,14 +4,15 @@
 # In Progress and stamp the Host/Session field so other machines can see which
 # session owns it.
 #
-# Why first: the board (GitHub Projects v2) acts as a distributed
+# Why first: the board (GitHub Issues, issues-only backend) acts as a distributed
 # lock across concurrent Claude Code sessions. A slow claim opens a race window
 # where a second session reads the item as still-Ready and double-pulls it.
 # Claiming as the first action shrinks that window to zero. `worklist.sh` reads
-# the board back for the unified cross-machine view. Needs the `project` gh scope
-# (gh auth refresh -s project).
+# the board back for the unified cross-machine view. Needs only the DEFAULT `repo`
+# gh scope — status and the claim stamp are `fnd:`-namespaced labels written over
+# plain REST (see ISSUES-ONLY-BACKEND.md); no `project` scope is required.
 #
-# --board selects the Projects-v2 board (default 3 = stageFind; 4 = foundation).
+# --board selects the board (default 3 = stageFind; 4 = foundation).
 #
 #   claim.sh 227               # claim issue #227 on the default board (3)
 #   claim.sh '#227'            # leading # is fine

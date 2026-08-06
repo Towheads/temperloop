@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
 # Unified, cross-machine worklist: which board item each Claude Code session is
-# working, on any machine. Reads a GitHub Projects v2 board and
-# prints the In-Progress set with its Host/Session stamp.
+# working, on any machine. Reads the board (GitHub Issues, issues-only backend)
+# and prints the In-Progress set with its Host/Session stamp.
 #
 # The board is the cross-machine source of truth for "what's being worked,
 # where" — it's reachable from every machine, so this command answers the
-# question identically anywhere (no local state, no tmux dependency). Needs the
-# `project` gh scope (gh auth refresh -s project).
+# question identically anywhere (no local state, no tmux dependency). Needs only
+# the DEFAULT `repo` gh scope — the read is a plain-REST issue/label list (see
+# ISSUES-ONLY-BACKEND.md); no `project` scope is required.
 #
-# --board selects the Projects-v2 board (default 3 = stageFind; 4 = foundation).
+# --board selects the board (default 3 = stageFind; 4 = foundation).
 #
 #   worklist.sh                   # In-Progress items + host/session
 #   worklist.sh --all             # every item, grouped by Status

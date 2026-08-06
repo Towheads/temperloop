@@ -14,6 +14,30 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A token carrying only the default `repo` scope is no longer refused by five
+  command specs for a capability none of them uses** (#1159). `/fix`, `/sweep`,
+  `/next`, `/assess` and `/triage` hard-stopped at Step 0 unless `gh auth
+  status` listed the **`project`** scope, and offered `gh auth refresh -s
+  project` as the remedy. That scope authorized the Projects-v2/GraphQL board
+  arm, which ADR 0004 / epic #524 removed outright: every registered board now
+  runs the issues-only backend, where Status, the claim stamp, Done and the
+  epic mirror are plain-REST label writes, issue-closes and sub-issues calls —
+  all covered by `repo`. The `gh auth status` check itself is unchanged in every
+  spec that had one; only the scope *requirement* is gone, replaced by an
+  explicit "never check for or require a `project` scope" statement matching the
+  one `/triage` Step 0.2 and `/build` Step 0.5 already carried. `/build`'s two
+  claim-failure notes drop the `-s project` remedy, and its Step 0.5 bullet is
+  collapsed to state the single remaining backend rather than argue against a
+  branch that no longer exists. The same dead framing is cleared from the
+  `claim.sh`, `worklist.sh` and `unclaim.sh` headers (which all still advertised
+  the `project` scope as a prerequisite) and from the `capture.sh` and
+  `milestone.sh` headers (which described `--board` as selecting a "Projects-v2
+  board"). Third instance of #524's decomposition gap, where a leg's enumerated
+  `files:` list was treated as an inventory: `grep -rn 'auth refresh -s project'
+  claude/ workflows/` now returns nothing.
+
 ## [0.28.0] - 2026-08-05 — BREAKING
 
 ### Migration — read this first
