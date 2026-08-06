@@ -88,12 +88,35 @@ declaration is absent it emits a skip action carrying a machine-readable reason
 claimed it can run unattended) instead of spawning. Never silence: either the
 judge runs, or the tick says why it didn't.
 
+**A nested spawn re-derives its credential; it never inherits one.** That judge
+spawn is *two* levels deep — the cron process starts the safe driver, and the
+driver starts the judge — and a headless agent session does not forward its
+credential environment to a command it launches from its shell tool. So the
+first hop authenticated and did real work while the second hop died before its
+first turn on a host whose interactive login had expired; the only trace was a
+failure counter nobody reads. The driver therefore no longer types that command
+at all. Every judge-trigger action carries an absolute `spawn_cmd` pointing at
+`pipeline-retro-judge-spawn.sh`, the one process that actually launches the
+judge — and that script sources this checkout's own config ladder (including the
+gitignored, mode-restricted local override where a host credential belongs) to
+**re-derive** the credential at the spawn site rather than inherit it across a
+hop that drops it. It classifies an authentication failure there by *shape*
+rather than exit code (a failed nested session can still exit zero), announces it
+on the same operator notification channel a tick uses, returns a distinct exit
+code, and stamps a stable token into its outcome so the health detector below
+reports it as its own verdict long after the notification is gone. The credential
+value itself is never placed on an argv, printed, or logged: only its presence
+and a source label are ever reported, and anything the child emits is passed
+through a redaction step first.
+
 **A dead loop is detectable, not a steady state.** `pipeline-retro-health.sh` is
 the read-only companion detector: it reads the tick's own retro decisions out of
 the pipeline stream against the judge's run stream and returns one of five
 verdicts — `healthy`; `no-signal` (nothing was due — the genuine steady state);
 `refused` (the tick declined, and why); `no-lake` (the history is unreadable
-here); or `defect` (a trigger fired and produced nothing, sub-typed
+here); or `defect` (a trigger fired and produced nothing, sub-typed `auth` — the
+spawn site could not authenticate, a host-credential problem with a one-line
+remedy, named first so it is never re-diagnosed as a broken judge — then
 `never-had-a-row` vs `stalled`). That distinction is the whole point: before it,
 a zero-row run stream meant both "no retros were due" and "the judge has never
 once run," and a dead loop hid inside the healthy reading for months. The nightly

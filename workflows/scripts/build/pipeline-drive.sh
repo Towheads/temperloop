@@ -26,7 +26,13 @@
 #      mint-then-judge design: pipeline-tick.sh emits it when a `retro-pending`
 #      tracker (build.md 4d-retro's mint, #533) is due. It spawns the OVERLAY
 #      `/retro --pending` judge — a nested headless session, no PR/merge of its
-#      own — so it belongs in the safe tier alongside the other no-merge drains.)
+#      own — so it belongs in the safe tier alongside the other no-merge drains.
+#      temperloop#1148: the spawn is NOT typed by the driver as a bare
+#      `claude -p` (that hop inherits no credential and dies on a headless host
+#      with an expired interactive session). Each retro-judge action carries a
+#      `spawn_cmd` naming pipeline-retro-judge-spawn.sh, which re-derives the
+#      credential from the config ladder at the spawn site and reports an auth
+#      failure loudly. See RETRO_JUDGE_SPAWN below.)
 #
 #   MERGING — drive-ready WHERE kind == "code" (→ /build --unattended → PR →
 #     merge). Surfaced-but-not-driven by default; DRIVEN only when
@@ -196,6 +202,23 @@ export GH_CALL_CONTEXT="${GH_CALL_CONTEXT:-pipeline-drive}"
 # --dangerously-skip-permissions). Gate + cap default in build.config.sh.
 : "${PIPELINE_DRIVE_MERGE_MODEL:=claude-opus-4-8}"
 : "${PIPELINE_DRIVE_MERGE_SETTINGS:=$HERE/pipeline-drive-merge.settings.json}"
+
+# ── The retro-judge spawn site (temperloop#1148) ──────────────────────────────
+# A `retro-judge` action is executed by the headless SAFE driver, which used to
+# type a bare `claude -p "/retro --pending …"` into its Bash tool — a SECOND hop
+# that inherits no credential from the driver session, so on a headless host with
+# an expired interactive OAuth session the judge died before turn 1 while the
+# driver itself authenticated fine. Every retro-judge action handed to the driver
+# therefore now carries a `spawn_cmd`: an absolute invocation of the wrapper
+# below, which re-derives the credential from THIS checkout's config ladder
+# (build.config.sh → the gitignored build.config.local.sh) at the spawn site
+# instead of inheriting it, and classifies + announces an auth failure there.
+# Resolved from $HERE — an absolute path, so it survives the driver's `cd` into
+# a board checkout and always sources the CRON checkout's own local config.
+# A plain assignment, not a `:=` seam: this is a structural path, not an
+# operator tunable (the test-double seam for the spawn itself is CLAUDE_BIN,
+# read by the wrapper).
+RETRO_JUDGE_SPAWN="$HERE/pipeline-retro-judge-spawn.sh"
 
 # Operator handle the merge tier routes un-driveable items to (foundation #622).
 # Must match pipeline-tick.sh's PIPELINE_OPERATOR (the assignee baton) — a refused/failed
@@ -1087,13 +1110,18 @@ if [ "${n_safe:-0}" -gt 0 ]; then
       "NEVER open a pull request.",
       "NEVER merge anything.",
       "NEVER drive a kind:code item (only kind:spike drives are permitted here).",
+      "Spawn the retro judge ONLY by running the action'"'"'s spawn_cmd verbatim — NEVER a bare claude -p command, which loses the host credential at that hop (temperloop#1148).",
       "Execute each action independently; on a per-action failure, record it and continue."
     ]'
   safe_combined='{"executed":0,"failed":0,"refused":0,"results":[]}'
   safe_parsed_any=0
   safe_raws=""
   for b in $(jq -r '[.[].board // "?"] | unique[]' <<<"$safe"); do
-    acts_b="$(jq -c --arg b "$b" '[.[] | select((.board // "?") == $b)]' <<<"$safe")"
+    acts_b="$(jq -c --arg b "$b" --arg spawn "$RETRO_JUDGE_SPAWN" '[.[]
+      | select((.board // "?") == $b)
+      | if .action == "retro-judge"
+        then . + {spawn_cmd: ($spawn + " --board " + ((.board // $b) | tostring))}
+        else . end ]' <<<"$safe")"
     co="$(_board_checkout "$b")"; [ -z "$co" ] && co="$PIPELINE_DEFAULT_CHECKOUT"
     pf="$SCRATCH_DIR/safe-$b.json"
     jq -cn --argjson actions "$acts_b" --argjson hr "$safe_hard_rules" \

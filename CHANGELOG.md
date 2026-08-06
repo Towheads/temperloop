@@ -73,6 +73,31 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **The nested retro-judge spawn carries its own credential instead of
+  inheriting one it never gets** (temperloop#1148). Phase R's judge was spawned
+  two levels deep — `pipeline-cron.sh` → the headless 5b driver → `claude -p
+  "/retro --pending"` — and a Claude Code session does not forward credential
+  environment to a child it launches from its Bash tool. On a headless host with
+  an expired interactive OAuth session, hop one authenticated and did real work
+  while hop two died before turn 1, visible only as a `safe_failed` counter.
+  The 5b driver no longer types that command: each `retro-judge` action now
+  carries an absolute `spawn_cmd` naming the new
+  `workflows/scripts/build/pipeline-retro-judge-spawn.sh`, which sources the
+  checkout's own config ladder (`build.config.sh` → the gitignored, mode-600
+  `build.config.local.sh`) to **re-derive** the credential at the process that
+  actually invokes `claude -p` — the same move `tidy-nightly.sh` already makes
+  before its own nested invocation. A `claude -p` typed by hand in that session
+  is now a hard-rule violation in the payload and in `pipeline-drive.md`.
+
+  An auth failure there is **loud**, not a counter: classified by *shape* rather
+  than exit code (a failed nested session can still exit `0`), pushed through the
+  `PIPELINE_NOTIFY_CMD`/`osascript` channel `pipeline-cron.sh` already uses,
+  echoed to stderr for the cron log, and returned as a distinct exit code (`3`
+  auth-failed, `4` spawn-failed). The credential's **value** is never placed on an
+  argv, printed, or logged — only presence and a source label are reported, and
+  the wrapper redacts any credential value out of its child's pass-through
+  output.
+
 - **The retro-judge seam refuses legibly instead of exiting success having
   judged nothing** (temperloop#1150). The funnel tick's Phase R gated its nested
   `claude -p "/retro --pending"` spawn on command *presence* alone, so a host
@@ -104,6 +129,13 @@ reads that marker; a stranger greps for it before pulling.
   verdict as a board defect.
 
 ### Changed
+
+- `pipeline-retro-health.sh` gains an `auth_failures` count and a
+  `defect_kind: "auth"` verdict that outranks `never-had-a-row`/`stalled`
+  (temperloop#1148) — read from the stable `retro-judge-auth-failed` token the
+  spawn wrapper emits into the drive record, so a credential problem is the
+  durable, `/tidy`-visible half of the loud signal and is never re-diagnosed as
+  a broken judge. The detail line names the remedy.
 
 - `skip-retro-judge` tick actions now carry a machine-readable `reason` field
   (`not-declared` | `headless-unsupported`). A reader matching on the action name
