@@ -255,8 +255,8 @@ else `origin/main`, else `main`, else a clean skip with a notice), and both
 ride this same gate set rather than a second CI job, so they gate on the
 already-required status with no branch-protection change.
 
-The changelog gate answers one question: does this change touch **contract
-surface** — the seams a downstream adopter couples to — and if so, does it
+The changelog gate answers two questions. The first: does this change touch
+**contract surface** — the seams a downstream adopter couples to — and if so, does it
 add anything under `## [Unreleased]`? That matters because pre-1.0 the
 breaking signal rides the changelog rather than the version number: the
 kernel updater decides whether a downstream pull needs explicit
@@ -270,6 +270,25 @@ chore, a comment rewording) opts out by *recording* the choice — a label on
 the pull request, a marker line in its body, or the same marker as a commit
 trailer — with a reason required in the marker forms, so a skip is always a
 decision someone made rather than something nobody noticed.
+
+The second question is where the entry landed. An entry written under
+`## [Unreleased]` does not stay there if a release is cut on the default
+branch while the pull request is open: the cut creates the new version
+section directly beneath `[Unreleased]` and moves the accumulated entries
+down, so on rebase the pull request's own added lines resolve into the top of
+a release that does not contain its work. The mirror failure is worse and
+harder to see — correcting that drift by hand, and pulling someone else's
+entry out of the released section along with your own, erasing the record of
+work that genuinely shipped there. So the gate also fails a change that adds
+lines to, or removes lines from, a section that was **already released at its
+merge base**. The base ref is the whole discriminator: at head a release cut
+and a stolen entry look identical, but a version heading that did not exist
+at the merge base is one this change is *creating*, which is precisely what a
+cut does — so a cut passes untouched while an edit to a section that shipped
+earlier does not. Deliberately amending a shipped release — marking it
+breaking after the fact, adding the migration note it should have carried —
+stays possible through the same marker grammar with a different verb,
+recorded in the same three channels and requiring the same reason.
 
 **Diff-scoped gate *selection*.** The gates above describe *what* runs; a
 second layer decides *which of them* runs. Running every suite on every pull
