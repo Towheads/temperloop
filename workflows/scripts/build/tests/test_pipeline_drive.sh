@@ -219,6 +219,39 @@ grep -qxF "$OVERLAY" "$CAP/argv.txt" \
 grep -q "dangerously-skip-permissions" "$CAP/argv.txt" \
   && bad "t4.no-bypass" "--dangerously-skip-permissions was passed" || ok "claude NOT invoked with --dangerously-skip-permissions"
 
+# ── 4b: the retro-judge action carries a credential-bearing spawn_cmd (#1148) ─
+# The 2026-08-05 failure was a SECOND hop: the driver typed a bare `claude -p
+# "/retro --pending"` into its Bash tool, and that child inherited none of the
+# driver's credentials, so on a headless host with an expired interactive OAuth
+# session it died before turn 1. The structural fix asserted here is that the
+# driver is never asked to type that command at all — the payload hands it an
+# absolute `spawn_cmd` pointing at the wrapper that re-derives the credential at
+# the spawn site. This asserts the SEAM, not a real retro run (there is no
+# `/retro` in a kernel checkout, and #1150's capability gate would refuse it).
+echo "--- test 4b: a retro-judge action carries an absolute, credential-bearing spawn_cmd ---"
+CAP4B="$TMP/cap4b"; mkdir -p "$CAP4B"
+RJ_PLANS='[{"tick":"done","actions":[
+  {"phase":"retro","action":"retro-judge","board":"3","repo":"Towheads/stageFind","count":2,"reason":"debounce"}
+]}]'
+OUT4B="$(printf '%s' "$RJ_PLANS" | env CLAUDE_BIN="$CAP_DOUBLE" CAP_DIR="$CAP4B" \
+  PIPELINE_DRIVE_MODEL="claude-test" bash "$DRIVE")"
+[ "$(jq -r '.status' <<<"$OUT4B")" = "ran" ] && ok "retro-judge drives live" || bad "t4b.status" "$OUT4B"
+SPAWN="$(jq -r '.actions[] | select(.action=="retro-judge") | .spawn_cmd // ""' "$CAP4B/payload.json" 2>/dev/null)"
+[ -n "$SPAWN" ] && ok "the retro-judge action carries a spawn_cmd" || bad "t4b.present" "payload: $(cat "$CAP4B/payload.json" 2>/dev/null)"
+case "$SPAWN" in
+  /*pipeline-retro-judge-spawn.sh*) ok "spawn_cmd is an ABSOLUTE path to the credential-bearing wrapper (survives the driver's cd into a board checkout)" ;;
+  *) bad "t4b.abs" "got '$SPAWN'" ;;
+esac
+case "$SPAWN" in
+  *"--board 3"*) ok "spawn_cmd carries the action's own board" ;;
+  *) bad "t4b.board" "got '$SPAWN'" ;;
+esac
+[ -x "${SPAWN%% *}" ] && ok "and that wrapper exists and is executable in this checkout" || bad "t4b.exec" "not executable: ${SPAWN%% *}"
+jq -e '[.hard_rules[]] | any(test("spawn_cmd"))' "$CAP4B/payload.json" >/dev/null \
+  && ok "a HARD RULE forbids the driver typing a bare claude -p for the judge" || bad "t4b.rule" "$(jq -c '.hard_rules' "$CAP4B/payload.json")"
+jq -e '.actions[] | select(.action=="retro-judge") | .spawn_cmd | test("OAUTH|ANTHROPIC_API_KEY|sk-")|not' "$CAP4B/payload.json" >/dev/null \
+  && ok "no credential (or credential-shaped value) is ever written into the payload" || bad "t4b.secret" "$SPAWN"
+
 # ── 5a: a configured-but-missing overlay fails CLOSED (no spawn) ──────────────
 echo "--- test 5a: a missing settings overlay fails closed (no claude spawn) ---"
 MISS_MARK="$TMP/should-not-spawn-missing"

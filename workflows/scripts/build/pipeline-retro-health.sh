@@ -32,8 +32,18 @@
 #               ~$7.60, exited `subtype: success` / `is_error: false`, and
 #               produced zero judgments and zero rows).
 #
-# `defect` carries a `defect_kind` distinguishing the two shapes the issue
-# asked to be told apart:
+# `defect` carries a `defect_kind` distinguishing the shapes that must not be
+# collapsed into one another:
+#   auth            — the judge could not AUTHENTICATE at its spawn site
+#                     (temperloop#1148). Named FIRST and outranking the two
+#                     below, because it is a host-credential problem with a
+#                     one-line remedy, not a broken judge — re-diagnosing it as
+#                     "the judge produces nothing" sends the operator after the
+#                     wrong thing. Counted from the stable `retro-judge-auth-failed`
+#                     token pipeline-retro-judge-spawn.sh emits and the 5b driver
+#                     records into the drive record. This is the DURABLE half of
+#                     that signal (the transient half is the wrapper's own
+#                     operator notification at failure time).
 #   never-had-a-row — the stream is absent, or has never carried a single row
 #                     in its whole recorded history. The loop has NEVER closed.
 #   stalled         — rows exist historically but none landed in the window
@@ -43,7 +53,9 @@
 #   pipeline-<YYYY-MM>.jsonl (+ the permanent legacy funnel-<YYYY-MM>.jsonl
 #     read, see meta/data/raw/README.md § `pipeline`) — the wake records
 #     pipeline-cron.sh emits. `.plans[].actions[]` carries this tick's
-#     retro-judge / skip-retro-judge decisions.
+#     retro-judge / skip-retro-judge decisions, and its `{event:"drive"}`
+#     records carry the 5b driver's per-action outcomes — where a spawn-site
+#     auth failure shows up as the `retro-judge-auth-failed` token.
 #   retro-runs-<YYYY-MM>.jsonl — the OVERLAY judge's own run stream. A bare
 #     kernel checkout has no judge and therefore no such file; that is not a
 #     defect on its own, which is why `defect` requires a FIRED TRIGGER as
@@ -149,6 +161,8 @@ emit() {  # $1 = the finished JSON object
   printf '  triggers emitted (retro-judge):      %s\n' "$(jq -r '.judge_actions' <<<"$1")"
   printf '  refusals (skip-retro-judge):         %s  %s\n' \
     "$(jq -r '[.skips[]] | add // 0' <<<"$1")" "$(jq -rc '.skips' <<<"$1")"
+  printf '  spawn-site auth failures:            %s\n' \
+    "$(jq -r '.auth_failures // 0' <<<"$1")"
   printf '  retro-runs rows in window / ever:    %s / %s (stream present: %s)\n' \
     "$(jq -r '.retro_runs.rows_in_window' <<<"$1")" \
     "$(jq -r '.retro_runs.rows_ever' <<<"$1")" \
@@ -164,7 +178,7 @@ emit() {  # $1 = the finished JSON object
 # say so rather than reporting a clean bill of health off zero evidence.
 if [ -z "$pipeline_files" ]; then
   emit "$(jq -nc --arg d "$pipeline_dir" --argjson w "$days" \
-    '{window_days:$w,judge_actions:0,skips:{},
+    '{window_days:$w,judge_actions:0,skips:{},auth_failures:0,
       retro_runs:{stream_present:false,rows_in_window:0,rows_ever:0},
       status:"no-lake",
       detail:("no pipeline-*.jsonl month-files under \($d) — the trigger history is unreadable here, so retro-judge health is UNKNOWN, not healthy")}')"
@@ -183,6 +197,24 @@ counts="$(printf '%s\n' "$pipeline_files" | cat_stream \
                    | group_by(.) | map({key: .[0], value: length}) | from_entries ) }' 2>/dev/null)"
 [ -n "$counts" ] || counts='{"judge_actions":0,"skips":{}}'
 
+# ── count spawn-site AUTH failures (temperloop#1148) ────────────────────────
+# pipeline-cron.sh emits the 5b/5c DRIVE outcome as its own record in this same
+# stream, and a retro-judge whose credential failed carries the wrapper's stable
+# `retro-judge-auth-failed` token in the per-action note the driver reports. A
+# whole-record substring scan (rather than a path-precise probe into
+# `.result.results[]`) is deliberate: the driver's summary is model-emitted and
+# reaches the record via more than one shape (parsed summary, or raw text under
+# `.raw` when the one-shot session emitted no parseable JSON), so the token —
+# not its position — is the contract. Drive records carry `date`, not `ts`;
+# `.ts // "9999"` therefore counts them IN, matching this script's existing
+# "a missing clock must never hide a signal" rule.
+auth_failures="$(printf '%s\n' "$pipeline_files" | cat_stream \
+  | jq -s --arg c "$cutoff" '
+      [ .[] | select(($c == "") or ((.ts // "9999") >= $c))
+            | select((.event // "") == "drive")
+            | tostring | select(test("retro-judge-auth-failed")) ] | length' 2>/dev/null)"
+case "$auth_failures" in ''|*[!0-9]*) auth_failures=0 ;; esac
+
 # ── count retro-runs rows (in-window AND whole-history) ─────────────────────
 rows_ever=0
 rows_window=0
@@ -199,14 +231,19 @@ case "$rows_window" in ''|*[!0-9]*) rows_window=0 ;; esac
 # ── verdict ─────────────────────────────────────────────────────────────────
 report="$(jq -nc --argjson c "$counts" --argjson w "$days" \
   --argjson present "$stream_present" --argjson ever "$rows_ever" --argjson win "$rows_window" \
+  --argjson auth "$auth_failures" \
   '{window_days:$w, judge_actions:$c.judge_actions, skips:$c.skips,
+    auth_failures:$auth,
     retro_runs:{stream_present:$present, rows_in_window:$win, rows_ever:$ever}}')"
 
 judge_actions="$(jq -r '.judge_actions' <<<"$report")"
 skip_total="$(jq -r '[.skips[]] | add // 0' <<<"$report")"
 headless_skips="$(jq -r '.skips["headless-unsupported"] // 0' <<<"$report")"
 
-if [ "$judge_actions" -gt 0 ] && [ "$rows_window" -gt 0 ]; then
+if [ "$auth_failures" -gt 0 ]; then
+  report="$(jq -c --arg d "DEFECT: the judge's spawn site reported an AUTH FAILURE on $auth_failures drive(s) in the window — the nested /retro session could not authenticate, so nothing was judged. This is a HOST CREDENTIAL problem, not a broken judge: the driver session authenticates and the second hop does not. Remedy: set CLAUDE_CODE_OAUTH_TOKEN in the gitignored, mode-600 workflows/scripts/build/build.config.local.sh on the cron host (never in a tracked file), then re-run pipeline-retro-judge-spawn.sh --dry-run to confirm credential_present" \
+    '. + {status:"defect", defect_kind:"auth", detail:$d}' <<<"$report")"
+elif [ "$judge_actions" -gt 0 ] && [ "$rows_window" -gt 0 ]; then
   report="$(jq -c --arg d "the trigger fired $judge_actions time(s) and the retro-runs stream grew by $rows_window row(s) in the window — the mint→trigger→judge loop is closed" \
     '. + {status:"healthy", detail:$d}' <<<"$report")"
 elif [ "$judge_actions" -gt 0 ] && [ "$rows_ever" -eq 0 ]; then

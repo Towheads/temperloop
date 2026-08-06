@@ -161,11 +161,29 @@ as such in its bullet below.)
   the `RETRO_MIN_INTERVAL` debounce. `/retro` is an **OVERLAY** command (not part
   of this kernel checkout), so this is a **direct nested spawn**, not a
   followed-in-session pipeline call like `/assess`/`/build` above: run, via Bash,
-  synchronously (never backgrounded) —
+  synchronously (never backgrounded), **the action's own `spawn_cmd` field,
+  verbatim** —
   ```bash
-  claude -p "/retro --pending --board <board>" --model "$RETRO_JUDGE_MODEL" --output-format json
+  <the action's .spawn_cmd, exactly as given>
   ```
-  using the action's own `.board` (HARD RULE 5). The judge owns everything
+  **Never type a bare `claude -p "/retro …"` yourself (temperloop#1148).** Your
+  own session authenticates; a `claude` you launch from the Bash tool is a
+  *second* hop that inherits none of your credentials, so on a headless host
+  whose interactive OAuth session has expired it dies before turn 1 — the exact
+  failure this field exists to remove. `spawn_cmd` points at
+  `pipeline-retro-judge-spawn.sh`, which re-derives the credential from the
+  cron checkout's config ladder at the spawn site, already carries the action's
+  `.board` (HARD RULE 5) and the configured model, and **prints one JSON object**:
+  `{status, credential_source, exit, judge, stderr_head, note}`. Read `.status` first:
+  - `auth-failed` (exit 3) → record this action **`failed`**, with the wrapper's
+    own `.note` as your `note` — it carries the stable token
+    `retro-judge-auth-failed` that `pipeline-retro-health.sh` reads back out of
+    the lake. Do not retry, and do not re-run the spawn by hand.
+  - `spawn-failed` (exit 4) → record **`failed`**, `note` naming the exit code.
+  - `ok` → the judge ran; judge its `.judge` payload by the rules below.
+  Never print, echo, or copy a credential value anywhere — the wrapper reports
+  presence and a source label only, and redacts its child's output.
+  The judge owns everything
   downstream from there — relabeling each processed tracker, closing it, and its
   own per-session batch cap — you only trigger it and report the outcome. A
   non-zero exit, or output carrying no parseable summary, is `failed` (with a

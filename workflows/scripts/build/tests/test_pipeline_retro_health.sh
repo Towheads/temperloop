@@ -143,6 +143,49 @@ OUT="$(PIPELINE_RAW_DIR="$L" RETRO_RUNS_RAW_DIR="$L" bash "$SCRIPT" --days 30 --
 printf '%s' "$OUT" | grep -q "VERDICT: defect (never-had-a-row)" \
   && ok "the report format names the verdict and its kind" || bad "t11.report" "$OUT"
 
+echo "--- test 12: a spawn-site AUTH failure is its own verdict, not 'the judge produces nothing' ---"
+# temperloop#1148. The credential dies at the second hop, so the judge never
+# authenticates — a HOST problem with a one-line remedy. Collapsing it into
+# never-had-a-row would send the operator after the judge instead of the token.
+# The signal is the stable `retro-judge-auth-failed` token the spawn wrapper
+# emits and the 5b driver records into the {event:"drive"} record.
+L="$TMP/l12"; new_lake "$L"
+wake "$L" retro-judge
+jq -nc --arg ts "$NOW_TS" \
+  '{event:"drive",ts:$ts,status:"ran",driven:1,safe_executed:0,safe_failed:1,
+    result:{executed:0,failed:1,refused:0,results:[
+      {action:"retro-judge",board:"3",status:"failed",
+       note:"retro-judge-auth-failed: the nested judge could not authenticate (credential_source=oauth-token, present=true) — no judgment ran"}]}}' \
+  >> "$L/pipeline-$NOW_MONTH.jsonl"
+OUT="$(run "$L")"
+[ "$(jq -r '.status' <<<"$OUT")" = "defect" ] \
+  && ok "status=defect" || bad "t12.status" "$OUT"
+[ "$(jq -r '.defect_kind' <<<"$OUT")" = "auth" ] \
+  && ok "defect_kind=auth outranks never-had-a-row (a credential problem, not a broken judge)" \
+  || bad "t12.kind" "$OUT"
+[ "$(jq -r '.auth_failures' <<<"$OUT")" = "1" ] \
+  && ok "auth_failures counts the drive records carrying the token" || bad "t12.count" "$OUT"
+jq -e '.detail | test("build.config.local.sh")' <<<"$OUT" >/dev/null \
+  && ok "the detail names the remedy (the gitignored mode-600 local config)" || bad "t12.remedy" "$OUT"
+jq -e '.detail | test("never in a tracked file")' <<<"$OUT" >/dev/null \
+  && ok "…and restates that the token must never land in a tracked file" || bad "t12.security" "$OUT"
+
+echo "--- test 13: a drive record WITHOUT the token leaves the verdict untouched ---"
+# The disconfirming control for test 12: the auth verdict must key on the token,
+# not merely on the presence of a drive record carrying a failure.
+L="$TMP/l13"; new_lake "$L"
+wake "$L" retro-judge
+jq -nc --arg ts "$NOW_TS" \
+  '{event:"drive",ts:$ts,status:"ran",driven:1,safe_failed:1,
+    result:{executed:0,failed:1,refused:0,results:[
+      {action:"retro-judge",board:"3",status:"failed",note:"judge exited clean with zero judgments"}]}}' \
+  >> "$L/pipeline-$NOW_MONTH.jsonl"
+OUT="$(run "$L")"
+[ "$(jq -r '.auth_failures' <<<"$OUT")" = "0" ] \
+  && ok "auth_failures=0 for a non-auth failure" || bad "t13.count" "$OUT"
+[ "$(jq -r '.defect_kind' <<<"$OUT")" = "never-had-a-row" ] \
+  && ok "the pre-existing #1150 verdict is unchanged" || bad "t13.kind" "$OUT"
+
 echo
 echo "pipeline-retro-health tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
