@@ -374,12 +374,28 @@ echo "PASS: 15 both markers live only under the isolated \$XDG_STATE_HOME, never
 # makes this an actual check on the disclosure CODE, covering what test 12's
 # dynamic check does not: that the wording lives in the shipped source, not
 # just in whatever this one test run happened to produce.
-if ! grep -vE '^[[:space:]]*#' "$IMPL" | grep -q 'no network call\|NO network call'; then
-  fail "16: the kernel-side implementation's non-comment source has no 'no network call' disclosure text"
-fi
-if ! grep -vE '^[[:space:]]*#' "$IMPL" | grep -q 'SPEND_TRANSCRIPT_ROOT'; then
-  fail "16: the kernel-side implementation's non-comment source does not reference \$SPEND_TRANSCRIPT_ROOT in its disclosure text"
-fi
+#
+# The comment-filtered source is captured ONCE into a variable and matched
+# with `case`, NOT re-derived per check as `grep -vE ... | grep -q ...`
+# (temperloop#1168). Under this file's `set -uo pipefail`, that pipeline is a
+# SIGPIPE race: `grep -q` exits the instant it matches -- for the
+# SPEND_TRANSCRIPT_ROOT pattern that is within the first few hundred bytes of
+# a ~37KB producer -- which closes the pipe while the upstream `grep -vE` is
+# still writing. GNU grep (every Linux CI runner) then reports `grep: write
+# error: Broken pipe` and exits 2; `pipefail` promotes that to the pipeline's
+# status, `!` inverts it, and the check fails a green tree. BSD grep on macOS
+# usually wins the race, which is why this reproduced only in consumer CI.
+# `case` on a captured string has no pipe and no race, and matches the
+# in-file convention test 12 already uses.
+impl_noncomment="$(grep -vE '^[[:space:]]*#' "$IMPL")"
+case "$impl_noncomment" in
+  *'no network call'*|*'NO network call'*) : ;;
+  *) fail "16: the kernel-side implementation's non-comment source has no 'no network call' disclosure text" ;;
+esac
+case "$impl_noncomment" in
+  *SPEND_TRANSCRIPT_ROOT*) : ;;
+  *) fail "16: the kernel-side implementation's non-comment source does not reference \$SPEND_TRANSCRIPT_ROOT in its disclosure text" ;;
+esac
 echo "PASS: 16 kernel-side implementation's non-comment source carries the disclosure wording"
 
 # --- 17: BLOCKING 1 REGRESSION — a RELATIVE $XDG_STATE_HOME must not write
