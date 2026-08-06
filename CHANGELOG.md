@@ -14,6 +14,47 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Relationship reads are live-only again; the cached arm was silently
+  returning "no children" for every issue** (#1163). `board_sub_issues` /
+  `board_parent_issue` gained a cached arm in #1030 on the premise — asserted in
+  board.sh's own comment and in #1023's acceptance as "verified live" — that the
+  bulk issues-list payload carries the parent link as a nested `.parent.number`.
+  **It does not.** The bulk list carries `sub_issues_summary` (counts only);
+  `parent_issue_url` comes from the *single-issue* endpoint. Measured against
+  real stores: **0 of 911** rows in one repo's snapshot and **0 of 611** in
+  another's carry any `parent` key. The arm read a field that was never there
+  and returned empty, silently.
+
+  **Why this mattered:** `build/board-mirror.sh` counts
+  `board_sub_issues <b> <epic> open | wc -l` and treats **0 as "epic fully
+  drained"**, closing the epic. Once board-mirror.sh began sourcing `cache.sh`
+  (#1118) and the enable axis was switched on, that path was armed to close
+  epics with open children — verified on a real open epic (live = 1 open child,
+  cached = 0). Both accessors now always take the live path, like
+  `board_blocked_by_open`.
+
+  Its suite is why this survived: the fixture hand-wrote `"parent":{"number":300}`
+  into snapshot rows, so it was strictly more capable than reality and green-lit
+  a path production could never take. `test_relationship_cache.sh` is rebuilt
+  around the **real** payload shape and carries a regression guard that fails
+  against the old arm and passes against the fix.
+
+  This is recoverable at zero API cost — `cache_refresh_details` already fetches
+  the payload carrying `parent_issue_url` and discards it (#1165).
+
+### Changed
+
+- **A cached read no longer parses the whole snapshot just to validate it**
+  (#1163). `cache_read`'s freshness guard ran `jq . "$snapshot"` — a full parse
+  of a 3.7–5.1MB file whose result was **discarded** — on every read, before
+  `cat` read the file again and the caller parsed it a third time. It now checks
+  only the last line, which is the guard that matches the real failure mode
+  (`_cache_persist_snapshot` writes to a temp file and `mv`s it into place, so
+  partial content can only appear at the end). Measured on `board_item_list`
+  p50: **452ms → 313ms** and **336ms → 214ms** on two real boards, ~1.5x.
+
 ### Removed — BREAKING
 
 - **BREAKING — the Projects-v2/GraphQL arm is removed from the board adapter**
