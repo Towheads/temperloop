@@ -328,7 +328,21 @@ cache_read() {
   repo="$(_cache_resolve_repo "$arg")" || return 1
   snap="$(cache_snapshot_file "$arg")" || return 1
 
-  if [ -f "$snap" ] && ! cache_stale "$arg" && jq . "$snap" >/dev/null 2>&1; then
+  # The validity guard is deliberately O(1), not O(corpus) (temperloop#1163).
+  # This was `jq . "$snap"` — a full parse of a multi-MB file whose result was
+  # DISCARDED, on every read, before `cat` read the file a second time and the
+  # caller parsed it a third. Measured: snapshots are 3.7–5.1MB, and that single
+  # thrown-away parse was the largest component of a cached read.
+  #
+  # Checking the LAST line instead is the guard that matches the actual failure
+  # mode. _cache_persist_snapshot writes a temp file and `mv`s it into place, so
+  # a snapshot is either wholly absent or wholly written; partial content can
+  # only come from a truncated or interrupted write, which manifests at the END
+  # of the file. A mid-file corruption a full parse would have caught is not
+  # reachable through this store's own write path, and if one ever arises the
+  # consumer's own jq fails loudly rather than silently serving wrong data.
+  if [ -f "$snap" ] && [ -s "$snap" ] && ! cache_stale "$arg" &&
+    tail -n 1 "$snap" | jq -e . >/dev/null 2>&1; then
     cat "$snap"
     return 0
   fi

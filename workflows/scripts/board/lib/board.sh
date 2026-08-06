@@ -1219,40 +1219,27 @@ board_blocked_by_remove() {
 # Empty output = no parent (a directly-workable singleton). Pipes to an external
 # `jq` (like its siblings) so the `_board_gh` seam stays replay-testable.
 #
-# --- cache-relationships item (F#988 Contract) -------------------------------
-# When `board.<N>.cache=on` AND the caller has separately sourced lib/cache.sh
-# (same enable axis + `declare -F cache_read` probe as _board_issues_item_list's
-# dispatch — see that function's PLANE MAP comment), this answers by INVERTING
-# cache.sh's snapshot instead of paying a live per-issue REST call: the bulk
-# snapshot row (`gh api repos/<r>/issues?state=all` shape, cache.sh's own
-# storage format) carries the parent link as a nested `.parent.number` object —
-# NOT the string `.parent_issue_url` the single-issue endpoint uses; these are
-# two different GitHub REST shapes for the same relationship, so the cached arm
-# reads `.parent.number` directly (no basename parsing needed) while the live
-# arm below is unchanged. `cache_read` itself is the staleness-aware entrypoint
-# (CACHE-STORE.md's degradation contract): warm-and-fresh serves straight off
-# disk with ZERO gh calls; miss/stale pays exactly the ONE live refresh
-# `cache_read` already does internally (this function does not layer a second
-# live fallback on top of that — same convention as _board_issues_item_list).
-# If the axis is on but cache.sh isn't in scope, one stderr notice and fall
-# through to the always-live per-issue call, unchanged. board_blocked_by_open
-# (above) deliberately has NO cached arm — native issue *dependencies* are a
-# different relationship this item's scope excludes.
+# --- relationship reads are LIVE-ONLY (temperloop#1163) ----------------------
+# The cache-relationships arm temperloop#1030 added here was REMOVED. It rested
+# on a premise this comment previously asserted as fact — that the bulk
+# issues-list row "carries the parent link as a nested `.parent.number`" — which
+# is false, and was false when it was written. The bulk list carries
+# `sub_issues_summary` (counts only); `parent_issue_url` comes from the
+# single-issue endpoint. So the cached arm read a key that was never present and
+# returned empty for every issue, silently. See the block comment above
+# board_sub_issues for the measurement, the blast radius (board-mirror.sh's
+# epic-close cascade reading a 0 open-child count as "fully drained"), and the
+# zero-API-cost path back to caching these reads (temperloop#1165).
+#
+# board_blocked_by_open (above) is likewise live-only — native issue
+# *dependencies* are a different relationship, deliberately never cached.
 #   board_parent_issue <board> <issue#>  ->  parent epic number, or empty
 board_parent_issue() {
-  local board="$1" issue="$2" repo url raw parent
+  local board="$1" issue="$2" repo url
   repo="$(board_repo "$board")" || return 1
-  if _board_cache_store_enabled "$board"; then
-    if declare -F cache_read >/dev/null 2>&1; then
-      raw="$(cache_read "$repo")" || return 1
-      parent="$(printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" '
-        .[] | select(.number == $n) | (.parent.number // empty)
-      ')"
-      [ -n "$parent" ] && printf '%s\n' "$parent"
-      return 0
-    fi
-    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
-  fi
+  # NO CACHED ARM — removed in temperloop#1163. See the block comment above
+  # board_sub_issues for the full finding; in short, the snapshot has no
+  # `.parent` field to read, so the cached arm returned empty for every issue.
   url="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null |
     _board_sanitize_control_chars |
     jq -r '.parent_issue_url // empty')"
@@ -1295,21 +1282,39 @@ board_sub_issues() {
     *) echo "board_sub_issues: state must be all|open|closed (got '$state')" >&2; return 2 ;;
   esac
   repo="$(board_repo "$board")" || return 1
-  if _board_cache_store_enabled "$board"; then
-    if declare -F cache_read >/dev/null 2>&1; then
-      raw="$(cache_read "$repo")" || return 1
-      # `.state // "open"` mirrors the live arm's own missing-field convention
-      # (issue_item treats an absent .state as open) so a snapshot row written
-      # before the field existed cannot silently drop out of an `open` filter.
-      printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" --arg st "$state" '
-        .[] | select((.parent.number // empty) == $n)
-            | select($st == "all" or (.state // "open") == $st)
-            | .number
-      '
-      return $?
-    fi
-    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
-  fi
+  # NO CACHED ARM — removed in temperloop#1163, because it was answering from a
+  # field the store does not contain and so returned EMPTY for every issue.
+  #
+  # THE DEFECT. temperloop#1030 added a cached arm here on the premise (stated
+  # in this file's own prior comment, and in temperloop#1023's acceptance as
+  # "verified live 2026-07-05") that the bulk issues-list payload carries the
+  # parent link as a nested `.parent.number`. It does not, and measurement says
+  # it did not: 0 of 911 rows in foundation's snapshot and 0 of 611 in
+  # temperloop's carry any `.parent` key. The bulk list carries
+  # `sub_issues_summary` (counts) — the *single-issue* endpoint is what carries
+  # the linkage, as `parent_issue_url`.
+  #
+  # WHY IT MATTERED. The failure was silent and directional: `board_sub_issues
+  # <b> <epic> open | wc -l` returned 0 for every epic, and
+  # build/board-mirror.sh treats a 0 open-child count as "epic fully drained"
+  # and CLOSES the epic. Verified on a real open epic: temperloop#524 live=1
+  # open child, cached=0. Once board-mirror.sh began sourcing cache.sh
+  # (temperloop#1118) and the enable axis was switched on, that path was armed
+  # to close epics with open children.
+  #
+  # WHY LIVE-ONLY RATHER THAN A FIXED CACHED ARM. The linkage is genuinely
+  # absent from the snapshot, so there is nothing here to read correctly — and a
+  # relationship read backs an irreversible action (closing an epic), which is
+  # the wrong place to trade correctness for latency. `board_blocked_by_open`
+  # is already live-only for the same reason.
+  #
+  # THIS IS RECOVERABLE, AND CHEAPLY (temperloop#1165). cache_refresh_details
+  # ALREADY issues one single-issue API call per issue — the exact call whose
+  # response carries `parent_issue_url` — and discards the field when it
+  # projects to {body, comments, number, schema_version, updatedAt}. Persisting
+  # it there costs ZERO additional API calls and makes the parent graph fully
+  # derivable on disk, at which point these reads can be served locally and
+  # indexed. Until that lands, live is the only correct answer.
   _board_gh api "repos/$repo/issues/$issue/sub_issues" 2>/dev/null |
     _board_sanitize_control_chars |
     jq -r --arg st "$state" '.[] | select($st == "all" or (.state // "open") == $st) | .number'
