@@ -16,6 +16,27 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`test_tokens_producer.sh` check 16 no longer fails at random on a
+  consumer's Linux CI** (#1168). The check built its haystack twice with
+  `grep -vE '^[[:space:]]*#' "$IMPL" | grep -q <pattern>`, under the file's own
+  `set -uo pipefail`. `grep -q` exits on first match — for the
+  `SPEND_TRANSCRIPT_ROOT` pattern that lands within the first few hundred bytes
+  of a ~37KB producer — closing the pipe while the upstream `grep -vE` is still
+  writing. GNU grep (every Linux CI runner) then reports `write error: Broken
+  pipe` and exits 2, `pipefail` promotes that to the pipeline's status, `!`
+  inverts it, and the check fails **a green tree**. BSD grep on macOS usually
+  wins the race, which is why it reproduced only downstream and read as a flake
+  locally. The comment-filtered source is now captured once into a variable and
+  matched with `case` — no pipe, no race — matching the convention check 12
+  already used. The assertions are otherwise untouched (same two patterns, same
+  two failure messages), so this cannot mask a real disclosure regression. Found
+  downstream while building foundation#1552, where a worker had fixed it inside
+  foundation's *vendored* `kernel/` subtree; that commit was dropped and
+  transplanted here, upstream-first. A sibling instance of the same
+  `pipefail` + `grep -q` shape survives in
+  `workflows/scripts/lib/tests/test_issue_corpus.sh` and is tracked separately
+  (#1173) — it, not this one, is what has actually been reddening consumer CI.
+
 - **A token carrying only the default `repo` scope is no longer refused by five
   command specs for a capability none of them uses** (#1159). `/fix`, `/sweep`,
   `/next`, `/assess` and `/triage` hard-stopped at Step 0 unless `gh auth
