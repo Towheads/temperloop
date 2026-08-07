@@ -20,13 +20,13 @@
 #     touch any local marker).
 # Together they invert claim.sh. A human parking work interactively usually wants
 # release.sh (+ deliberately parking the card); an AUTONOMOUS/headless context
-# (cron, the funnel driver) that must un-strand a board card wants unclaim.sh.
+# (cron, the pipeline driver) that must un-strand a board card wants unclaim.sh.
 #
 # ── Releases regardless of owner — deliberate (#1157) ─────────────────────────
 # UNLIKE claim.sh, unclaim.sh does NOT consult the Host/Session owner stamp and
 # does NOT refuse a foreign-owned claim. Its guard is "is the card In Progress?",
 # NOT "is this MY claim?". This is the whole point: the motivating caller is the
-# funnel's #1157 abandonment reclaim, where the stranded claim was stamped by a
+# pipeline's #1157 abandonment reclaim, where the stranded claim was stamped by a
 # now-dead one-shot session — an owner-stamp refusal would refuse the exact case
 # this exists for. So unclaim.sh is a more powerful primitive than the local-only
 # release.sh: run bare (`unclaim.sh 42 --board 4`) it can Ready-ify ANY In-Progress
@@ -42,7 +42,8 @@
 # this adapter-sourcing process) so a headless caller never has to source the
 # board adapter itself to make that decision.
 #
-# Needs the `project` gh scope (gh auth refresh -s project), like claim.sh.
+# Needs only the DEFAULT `repo` gh scope, like claim.sh — the status flip is a
+# plain-REST label write (see ISSUES-ONLY-BACKEND.md), never a `project` scope.
 set -euo pipefail
 
 # Attribution for the gh call-logger shim (F#988): tag every gh call this command
@@ -60,6 +61,7 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
 # Module-level state, set by the execute-guard (direct run) or by a sourcing test

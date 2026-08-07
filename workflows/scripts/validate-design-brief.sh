@@ -7,11 +7,11 @@
 # change to the grammar or the kernel dimension count belongs in
 # claude/design-schema.md first, with this script updated to match.
 #
-# Two independent checks, run together (or selectably via flags):
+# Three independent checks, run together (or selectably via flags):
 #
 #   (A) SCHEMA CITATION CHECK — claude/design-schema.md's own "Enforcing gate"
 #       table column cites gates/scripts/docs by backtick-quoted path (e.g.
-#       `workflows/scripts/validate-live-drain.sh`). design-schema.md § Kernel
+#       `workflows/scripts/validate-capture-backstop.sh`). design-schema.md § Kernel
 #       dimension list says explicitly: "The 'Enforcing gate' column's own
 #       citations are not themselves lint-checked today ... the forthcoming
 #       brief-conformance lint (temperloop#216) is chartered to also resolve
@@ -23,14 +23,30 @@
 #       a bare filename with no `/` resolves by basename search). Non-path
 #       backtick tokens (agent names, constants, error codes, command names
 #       like `/design`) are not citations and are skipped — the extension
-#       suffix is what marks a token as a path reference.
+#       suffix is what marks a token as a path reference. The SAME resolution
+#       also covers design-schema.md's § Challenge record "Enforcing gate"
+#       table (a second, separate citation zone, not dimension-numbered) —
+#       so that section's own gate citation (check (C) itself) is checked by
+#       check (A) too, the same closed loop the dimension table already gets.
 #
 #   (B) BRIEF CONFORMANCE CHECK — a design brief (`Designs/<name>.md`, lives
 #       in the knowledge store, NOT this repo — see design-schema.md
 #       § File location) must carry a disposition line for every kernel
 #       dimension (1..16, plus any letter-suffixed overlay addition, e.g.
 #       `16a`), matching the grammar exactly (design-schema.md
-#       § Disposition grammar):
+#       § Disposition grammar). Dimension 0 (Premise & null hypothesis,
+#       temperloop#508) is required CONDITIONALLY (temperloop#512): a
+#       `ratified` brief is IMMUTABLE (design-schema.md § Frontmatter: "a
+#       later change is a **new** brief that supersedes it ... never an
+#       edit-in-place of a ratified brief") and its six pre-`## 0.`-era
+#       instances must NOT be retrofitted — so a ratified brief missing a
+#       `## 0.` heading is EXEMPT, not flagged MISSING-DIMENSION. An
+#       in-flight / newly-authored brief (any NON-ratified status — draft,
+#       dropped, or absent) IS in scope and must carry `## 0.`. The switch
+#       reads a PER-BRIEF signal (the frontmatter `status:` field), never a
+#       global flip, exactly as the ratified-immutability rule demands.
+#       design-schema.md itself remains the source of truth for dimension
+#       0's filled-only requirement:
 #         disposition: filled
 #         disposition: n/a — <reason>
 #         disposition: deferred → <tracking ref>
@@ -43,6 +59,34 @@
 #       as UNKNOWN-DIMENSION — design-schema.md § Overlay extensibility
 #       reserves bare integers for future kernel dimensions; overlay
 #       additions are letter-suffixed (`16a`).
+#
+#   (C) CHALLENGE-RECORD COMPLETENESS CHECK — a brief's `## Working notes` §
+#       `### Challenge record` (design-schema.md § Challenge record) is
+#       checked in two independent ways: every stop line present must match
+#       the § Challenge record grammar exactly (dim-list, `[walk|walkthrough]`,
+#       source, verdict, optional verbatim `response:`), and an
+#       `operator-edited` stop line without a `response:` field is flagged
+#       (design-schema.md § Record completeness — "the record is incomplete
+#       without capturing what that hand actually wrote"). SOURCE OF TRUTH,
+#       same rule as (A)/(B): the completeness bar itself — every kernel
+#       dimension 0..16 needs a `walk` stop line before a brief may ratify —
+#       is READ FROM design-schema.md § Record completeness, never re-encoded
+#       here independently; this script only enforces what that section
+#       states, and `/workshop` Step 4.1c (the in-session ratify gate) reuses
+#       the identical rule so the two can never drift apart. Two carve-outs,
+#       both keyed on the frontmatter `status:` field exactly as (B)'s
+#       dimension-0 exemption already is (never a global flip):
+#         - NO `### Challenge record` subheading at all → exempt, for ANY
+#           status — design-schema.md § Record-start marker and its absence:
+#           a valid, non-defective "zero stops this pass" state, and (for a
+#           `ratified` brief specifically) the MIGRATION carve-out — a brief
+#           ratified before this record existed.
+#         - Subheading present but `status` is NOT `ratified` (draft/dropped,
+#           still in-flight) → grammar/response checks still run, but the
+#           per-dimension `walk`-coverage completeness bar does NOT — the
+#           record is still being built.
+#       Only a `ratified` brief whose `### Challenge record` subheading IS
+#       present is held to full per-dimension completeness.
 #
 # ANTI-DRIFT GUARDS (both live in check (A)):
 #   - NO-DIMENSION-ROWS: zero parsed table rows always fails — a renamed or
@@ -59,13 +103,13 @@
 #     only, against the real claude/design-schema.md. This is the only
 #     in-repo "brief-shaped" artifact this repo tracks today (there is no
 #     committed Designs/ brief in this repo to run check (B) against for
-#     real) — check (B)'s failure/pass paths are proven by the dedicated
-#     fixture test suite, workflows/scripts/tests/test_validate_design_brief.sh,
-#     against the in-repo fixtures under
-#     workflows/scripts/tests/fixtures/design-briefs/.
-#   - `--brief FILE` — on-demand mode: lint an arbitrary brief file (check
-#     (B) only). This is how a LIVE vault brief gets checked: read it out to
-#     a file (or point at its exported path) and pass it here. Read-only —
+#     real) — check (B)'s and check (C)'s failure/pass paths are proven by
+#     the dedicated fixture test suite,
+#     workflows/scripts/tests/test_validate_design_brief.sh, against the
+#     in-repo fixtures under workflows/scripts/tests/fixtures/design-briefs/.
+#   - `--brief FILE` — on-demand mode: lint an arbitrary brief file (checks
+#     (B) and (C)). This is how a LIVE vault brief gets checked: read it out
+#     to a file (or point at its exported path) and pass it here. Read-only —
 #     this script never writes to FILE.
 #   - `--schema FILE` — lint an arbitrary schema-shaped file (check (A) only)
 #     instead of the real claude/design-schema.md. Used by the fixture test
@@ -90,7 +134,23 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 : "${DESIGN_SCHEMA_ROOT:=$REPO_ROOT}"
 
-KERNEL_DIM_COUNT=16
+# claude/design-schema.md § Kernel dimension list numbers dimension 0
+# (Premise & null hypothesis, temperloop#508) as a PREPEND — the kernel set
+# is 0..KERNEL_DIM_MAX, not a contiguous 1..N — so "how many kernel
+# dimensions total" and "highest bare-integer dimension number" are two
+# different numbers now:
+KERNEL_DIM_MAX=16      # highest bare-integer kernel dimension (1..16); the
+                        # UNKNOWN-DIMENSION guard and check (B)'s required-
+                        # heading loop (dimensions 1..KERNEL_DIM_MAX) both key
+                        # on this. Dimension 0 is checked SEPARATELY and
+                        # CONDITIONALLY (temperloop#512) — see
+                        # check_brief_conformance below: required for every
+                        # NON-ratified (in-flight) brief, exempt for a ratified
+                        # (immutable) one, keyed on the brief's frontmatter
+                        # `status:` field.
+KERNEL_DIM_COUNT=17    # total kernel dimension count, 0..KERNEL_DIM_MAX
+                        # inclusive — used only by check (A)'s DIM-COUNT-
+                        # DRIFT guard against the real schema table below.
 # Extension suffixes that mark a backtick token as a path citation (see (A)
 # above) rather than an agent name, constant, error code, or command.
 CITATION_EXT_RE='\.(sh|md|py|txt|mjs|json|yml|yaml)$'
@@ -185,6 +245,44 @@ EOF
 $rows
 EOF
 
+  # Second citation zone: design-schema.md § Challenge record's own
+  # "Enforcing gate" table (not dimension-numbered, so it never touches
+  # nrows/nint_rows/DIM-COUNT-DRIFT above — this zone is purely a citation
+  # check). Every table row's last-but-one cell is scanned the same way the
+  # dimension table's cell is, so the § Challenge record section's own gate
+  # citation (check (C) itself) is resolved by check (A) too.
+  local crows nccites=0
+  crows="$(awk '
+    /^## Challenge record/ { insec = 1; next }
+    insec && /^## / { insec = 0 }
+    insec && /^\|/ { print }
+  ' "$file")"
+
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    case "$row" in
+      *---*) continue ;;  # markdown header-separator row, no citations possible
+    esac
+    local ccell ctok
+    ccell="$(printf '%s' "$row" | awk -F'|' '{print $(NF-1)}')"
+    # shellcheck disable=SC2016  # backticks in the heredoc body below are literal (match `...` spans), not command substitution
+    while IFS= read -r ctok; do
+      [[ -n "$ctok" ]] || continue
+      if ! printf '%s' "$ctok" | grep -Eq "$CITATION_EXT_RE"; then
+        continue
+      fi
+      ncites=$((ncites + 1))
+      nccites=$((nccites + 1))
+      if ! resolve_citation "$ctok" "$root"; then
+        failures+=("DANGLING-CITATION  § Challenge record Enforcing gate — '$ctok' does not resolve to a tracked path under $root")
+      fi
+    done <<EOF
+$(printf '%s' "$ccell" | grep -oE '`[^`]+`' | tr -d '`')
+EOF
+  done <<EOF
+$crows
+EOF
+
   # Vacuous-pass guard: a renamed/restructured "## Kernel dimension list"
   # section yields zero parsed rows — that must never print OK.
   if (( nrows == 0 )); then
@@ -195,7 +293,7 @@ EOF
     failures+=("DIM-COUNT-DRIFT  $file — schema table has $nint_rows bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=$KERNEL_DIM_COUNT (update both together; design-schema.md is the source of truth)")
   fi
 
-  echo "schema citation check: $file — $nrows dimension row(s), $ncites citation(s) checked"
+  echo "schema citation check: $file — $nrows dimension row(s), $ncites citation(s) checked ($nccites from § Challenge record's own Enforcing-gate table)"
 }
 
 # resolve_citation <token> <root> -> rc 0 if it resolves to a tracked path.
@@ -230,6 +328,26 @@ resolve_citation() {
   esac
 }
 
+# brief_status <file> -> prints the frontmatter `status:` value, lowercased
+# with any trailing comment/whitespace stripped, or empty if absent. Reads
+# ONLY the leading YAML frontmatter block (the first `---` up to the next
+# `---`); a `status:` in body prose is deliberately ignored.
+brief_status() {
+  awk '
+    NR == 1 && $0 == "---" { infm = 1; next }
+    NR == 1 { exit }                       # no leading frontmatter block
+    infm && $0 == "---" { exit }           # end of frontmatter
+    infm && /^status:[[:space:]]*/ {
+      v = $0
+      sub(/^status:[[:space:]]*/, "", v)
+      sub(/[[:space:]]*#.*$/, "", v)       # strip a trailing YAML comment
+      sub(/[[:space:]]+$/, "", v)
+      print tolower(v)
+      exit
+    }
+  ' "$1"
+}
+
 # ---------------------------------------------------------------------------
 # (B) Brief conformance check.
 # ---------------------------------------------------------------------------
@@ -243,8 +361,23 @@ check_brief_conformance() {
   local headings
   headings="$(grep -nE '^## [0-9]+[a-z]?\. ' "$file" || true)"
 
+  # Dimension 0 (Premise & null hypothesis, temperloop#508) — CONDITIONAL
+  # requirement (temperloop#512). A `ratified` brief is immutable
+  # (design-schema.md § Frontmatter) and its pre-`## 0.`-era instances must
+  # never be retrofitted, so it is EXEMPT. Every other status — an in-flight
+  # draft, a dropped brief, or a brief with no status frontmatter at all — is
+  # in scope and must carry a `## 0.` heading. Keyed on the per-brief
+  # `status:` signal, never a global flip.
+  local status
+  status="$(brief_status "$file")"
+  if [[ "$status" != "ratified" ]]; then
+    if ! printf '%s\n' "$headings" | grep -qE "^[0-9]+:## 0\. "; then
+      failures+=("MISSING-DIMENSION  $label — kernel dimension 0 (Premise & null hypothesis) has no '## 0. <title>' heading; required for in-flight briefs (status='${status:-<none>}', not ratified) per design-schema.md § Kernel dimension list (dimension 0 is filled-only)")
+    fi
+  fi
+
   local n
-  for (( n = 1; n <= KERNEL_DIM_COUNT; n++ )); do
+  for (( n = 1; n <= KERNEL_DIM_MAX; n++ )); do
     if ! printf '%s\n' "$headings" | grep -qE "^[0-9]+:## ${n}\. "; then
       failures+=("MISSING-DIMENSION  $label — kernel dimension $n has no '## $n. <title>' heading")
     fi
@@ -264,8 +397,8 @@ check_brief_conformance() {
     case "$dimnum" in
       *[!0-9]*) : ;;  # letter-suffixed (e.g. 16a) — sanctioned overlay form
       *)
-        if (( dimnum > KERNEL_DIM_COUNT )); then
-          failures+=("UNKNOWN-DIMENSION  $label — '## $dimnum.' is a bare integer beyond the kernel count ($KERNEL_DIM_COUNT); overlay additions are letter-suffixed, e.g. 16a (design-schema.md § Overlay extensibility)")
+        if (( dimnum > KERNEL_DIM_MAX )); then
+          failures+=("UNKNOWN-DIMENSION  $label — '## $dimnum.' is a bare integer beyond the kernel count ($KERNEL_DIM_MAX); overlay additions are letter-suffixed, e.g. 16a (design-schema.md § Overlay extensibility)")
           continue
         fi
         ;;
@@ -305,6 +438,112 @@ EOF
   echo "brief conformance check: $label — $(printf '%s\n' "$headings" | grep -c . || true) dimension heading(s) found"
 }
 
+# Stop-line grammar (design-schema.md § Challenge record "Per-stop line
+# shape"): <dim-list> [<kind>] <source>: <verdict>[ — response: "<text>"]
+CHALLENGE_STOP_RE='^([0-9]+[a-z]?(,[0-9]+[a-z]?)*) \[(walk|walkthrough)\] ([^:]+): (accepted|challenged → revised ×[0-9]+|operator-edited)( — response: "(.*)")?$'
+CHALLENGE_MARKER_RE='^challenge-record-start: [0-9]{4}-[0-9]{2}-[0-9]{2}$'
+
+# ---------------------------------------------------------------------------
+# (C) Challenge-record completeness check. SOURCE OF TRUTH:
+#     design-schema.md § Challenge record (grammar) and § Record completeness
+#     (the completeness bar + migration carve-out) — this function encodes
+#     neither independently; see this script's own header block (C).
+# ---------------------------------------------------------------------------
+check_challenge_record() {
+  local file="$1" label="$2"
+  [[ -f "$file" ]] || return   # BRIEF-NOT-FOUND already reported by check (B)
+
+  local status
+  status="$(brief_status "$file")"
+
+  local working_notes record_section
+  working_notes="$(awk '
+    /^## Working notes/ { insec = 1; next }
+    insec && /^## / { insec = 0 }
+    insec { print }
+  ' "$file")"
+  record_section="$(printf '%s\n' "$working_notes" | awk '
+    /^### Challenge record/ { insec = 1; next }
+    insec && /^### / { insec = 0 }
+    insec { print }
+  ')"
+
+  # No '### Challenge record' subheading at all: zero stops recorded this
+  # pass — a valid, non-defective state for ANY brief status
+  # (design-schema.md § Record-start marker and its absence), and — for a
+  # `ratified` brief specifically — the MIGRATION carve-out (§ Record
+  # completeness): a brief ratified before this record existed. Nothing to
+  # check; the completeness bar below never applies with no record present.
+  if [[ -z "$(printf '%s' "$record_section" | tr -d '[:space:]')" ]]; then
+    echo "challenge record check: $label — no '### Challenge record' section (exempt; status=${status:-<none>})"
+    return
+  fi
+
+  # NOTE (bash 3.2 / macOS /bin/bash): every array below is initialised to ()
+  # and every expansion uses the `${arr[@]+"${arr[@]}"}` guard. Under `set -u`,
+  # bash 3.2 treats "${arr[@]}" on an EMPTY array as an unbound-variable error
+  # (fixed upstream in 4.4) — and the empty case is REACHABLE here: a record
+  # carrying only its start marker leaves stop_lines empty, which is exactly
+  # the EMPTY-CHALLENGE-RECORD state below. Dropping the guard passes on
+  # Homebrew bash 5 and fails only on macOS CI.
+  local -a lines=()
+  while IFS= read -r ln; do
+    [[ -n "$(printf '%s' "$ln" | tr -d '[:space:]')" ]] && lines+=("$ln")
+  done <<EOF
+$record_section
+EOF
+
+  local -a stop_lines=()
+  if (( ${#lines[@]} == 0 )) || [[ ! "${lines[0]}" =~ $CHALLENGE_MARKER_RE ]]; then
+    failures+=("MALFORMED-RECORD-MARKER  $label — '### Challenge record' subheading found but its first non-blank line is not 'challenge-record-start: <YYYY-MM-DD>' (design-schema.md § Record-start marker and its absence)")
+    stop_lines=(${lines[@]+"${lines[@]}"})
+  elif (( ${#lines[@]} > 1 )); then
+    stop_lines=("${lines[@]:1}")
+  fi
+
+  if (( ${#stop_lines[@]} == 0 )); then
+    failures+=("EMPTY-CHALLENGE-RECORD  $label — 'challenge-record-start:' marker present but no stop lines follow before the next heading (design-schema.md § Record-start marker and its absence: a record announced but never populated)")
+  fi
+
+  local walk_dims=" " sl
+  for sl in ${stop_lines[@]+"${stop_lines[@]}"}; do
+    if [[ ! "$sl" =~ $CHALLENGE_STOP_RE ]]; then
+      failures+=("BAD-CHALLENGE-LINE  $label — '$sl' matches none of the § Challenge record grammar's stop-line forms")
+      continue
+    fi
+    local dimlist="${BASH_REMATCH[1]}" kind="${BASH_REMATCH[3]}" source="${BASH_REMATCH[4]}" verdict="${BASH_REMATCH[5]}" response="${BASH_REMATCH[7]}"
+
+    if [[ "$verdict" == "operator-edited" && -z "$response" ]]; then
+      failures+=("MISSING-RESPONSE  $label dimension(s) $dimlist — 'operator-edited' stop line ($source) carries no verbatim 'response:' field (design-schema.md § Record completeness)")
+    fi
+
+    if [[ "$kind" == "walk" ]]; then
+      local -a dparts
+      IFS=',' read -ra dparts <<< "$dimlist"
+      local d
+      for d in "${dparts[@]}"; do
+        walk_dims="$walk_dims$d "
+      done
+    fi
+  done
+
+  # Completeness bar (design-schema.md § Record completeness, rule 1) —
+  # ratified brief WITH a present record only; the migration carve-out
+  # (no record at all) already returned above, and a non-ratified brief is
+  # never held to this bar (its record is still being built).
+  if [[ "$status" == "ratified" ]]; then
+    local n
+    for (( n = 0; n <= KERNEL_DIM_MAX; n++ )); do
+      case "$walk_dims" in
+        *" $n "*) : ;;
+        *) failures+=("MISSING-WALK-VERDICT  $label — kernel dimension $n has no 'walk' stop line in its challenge record; required before a brief may ratify (design-schema.md § Record completeness)") ;;
+      esac
+    done
+  fi
+
+  echo "challenge record check: $label — ${#stop_lines[@]} stop line(s) parsed, status=${status:-<none>}"
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch.
 # ---------------------------------------------------------------------------
@@ -316,6 +555,7 @@ case "$mode" in
     ;;
   brief)
     check_brief_conformance "$target_file" "$(basename "$target_file")"
+    check_challenge_record "$target_file" "$(basename "$target_file")"
     ;;
   schema)
     # enforce_count=0: fixture schemas legitimately carry fewer rows; only

@@ -36,7 +36,7 @@ def _make_fixture_repo(tmp: Path) -> Path:
     )
     _write(
         repo / "claude" / "commands" / "overlay-cmd.md",
-        "---\ndescription: a private ritual\n---\n\n# overlay-cmd\n\nBody text.\n",
+        "---\ndescription: a private routine\n---\n\n# overlay-cmd\n\nBody text.\n",
     )
     _write(
         repo / "claude" / "plan-schema.md",

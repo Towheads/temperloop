@@ -8,7 +8,7 @@
 # telemetry seam landed by temperloop#229 (ks__read_log_emit,
 # workflows/scripts/lib/knowledge_store.sh). This hook does NOT re-implement
 # that log's path/format contract — it sources knowledge_store.sh and calls
-# its _ks_read_log_path() knob resolver, so KNOWLEDGE_READ_LOG (or its
+# its _ks_read_log_path() setting resolver, so KNOWLEDGE_READ_LOG (or its
 # XDG_STATE_HOME-based default) is resolved in exactly one place in the repo.
 #
 # Reads JSON on stdin: {session_id, ...} (the Claude Code hooks contract).
@@ -47,7 +47,7 @@ INPUT="$(cat)"
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -n "$SESSION_ID" ] || exit 0
 
-# --- Locate + source knowledge_store.sh (reuse its _ks_read_log_path knob) --
+# --- Locate + source knowledge_store.sh (reuse its _ks_read_log_path setting) --
 # Resolution order:
 #   1. KS_LIB_DIR env override — same convention already used by
 #      session-start-drain.sh / mcp-health-preflight.sh in this directory

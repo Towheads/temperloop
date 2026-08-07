@@ -4,7 +4,7 @@
 #
 # Every entry here is a fixture-replay TEST that exercises the boards.conf
 # built-in fallback map (workflows/scripts/board/lib/board.sh,
-# workflows/scripts/build/funnel-tick.sh, workflows/scripts/build/funnel-drive.sh
+# workflows/scripts/build/pipeline-tick.sh, workflows/scripts/build/pipeline-drive.sh
 # — see those files' own `# denylist:allow` markers) with literal mock `gh`
 # JSON/CLI-call data matching that map's real values. Scrubbing the literal
 # strings in these tests would not remove anything the already-exempted
@@ -22,8 +22,8 @@ workflows/scripts/board/tests/test_milestone.sh
 workflows/scripts/board/tests/test_parent_issue.sh
 workflows/scripts/board/tests/fixtures/fake_gh.sh
 workflows/scripts/board/tests/fixtures/project_view.json
-workflows/scripts/build/tests/test_funnel_drive.sh
-workflows/scripts/build/tests/test_funnel_tick.sh
+workflows/scripts/build/tests/test_pipeline_drive.sh
+workflows/scripts/build/tests/test_pipeline_tick.sh
 workflows/scripts/build/tests/test_gate.sh
 workflows/scripts/build/tests/test_pr.sh
 workflows/scripts/build/tests/test_ci_poll.sh
@@ -79,6 +79,17 @@ workflows/scripts/kernel/tests/test_check_pr_leak_guard.sh
 # session.
 workflows/scripts/drain/tests/fixtures/sample_stub.md
 workflows/scripts/drain/tests/fixtures/command_expansion_stub.md
+
+# test_feedback.sh (temperloop#428, feedback-submit-mechanism) — the
+# feedback subcommand's own leak-scan test. To prove the leak-scan blocks a
+# real-pattern hit it must MENTION the very tokens it detects
+# (/Users/travis) in its seeded fixture message and assertions, and it also
+# asserts against the kernel repo's own real target-repo identity
+# (Towheads/temperloop, feedback.sh's own `denylist:allow`-marked constant)
+# in its stubbed-gh-call assertions. Same rationale as
+# test_check_pr_leak_guard.sh above: those literals are the test subject
+# (or the fixed transmit target under test), not a leak.
+bin/subcommands/tests/test_feedback.sh
 
 # The denylist tooling's OWN data files. personal-token-denylist.tsv's job is
 # to CONTAIN the pattern strings (that's the data, not a leak), the burn-down

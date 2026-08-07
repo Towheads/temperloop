@@ -12,7 +12,14 @@
 #   - --exit-nonzero-on-failure: CI_FAILED exits 2 instead of 0, JSON unchanged
 #   - --exit-nonzero-on-failure: CI_GREEN's exit 0 is unaffected
 #   - pending-then-complete across two polls (tiny --interval) → CI_GREEN
-#   - zero check-runs → TIMEOUT outcome + non-zero exit (never spins forever)
+#   - zero check-runs past the grace window → NO_CI outcome + exit 0
+#     (temperloop#605 — never spins to the full --timeout for a no-CI repo)
+#   - zero check-runs, grace window LONGER than --timeout → NO_CI still fires
+#     no later than --timeout itself (grace is capped, never extends the wait)
+#   - zero check-runs THEN a check-run appears within the grace window →
+#     CI_GREEN, never misclassified as NO_CI (the slow-starting-CI case)
+#   - check-runs present but never finish (pending forever) → TIMEOUT outcome
+#     + non-zero exit (the genuine "CI hung" case, distinct from NO_CI)
 #   - --sha pins the head: the pulls endpoint is never queried
 #   - head SHA is resolved exactly ONCE; only REST endpoints are ever called
 #     (no `gh pr checks` — the GH #53 GraphQL-budget rule, enforced by stub)
@@ -174,14 +181,53 @@ out="$(bash "$SCRIPT" Towheads/foundation 42 --interval 0.1)"
   || fail "expected exactly 2 check-runs polls (got: $(cat "$TMP/state/checkruns.count"))"
 echo "PASS: pending run keeps polling; completes green on poll 2 (--interval honored)"
 
-# --- zero check-runs → TIMEOUT + non-zero exit --------------------------------
+# --- zero check-runs past the grace window → NO_CI (temperloop#605) ----------
+# Grace=0 makes the very first poll already past the grace deadline, so NO_CI
+# fires immediately instead of spinning to the full --timeout.
 reset_state
 echo '{"check_runs":[]}' > "$TMP/state/checkruns.json"
+rc=0; out="$(CI_POLL_NOCI_GRACE_SECS=0 bash "$SCRIPT" Towheads/foundation 42 --timeout 5)" || rc=$?
+[ "$rc" -eq 0 ] || fail "NO_CI must exit 0 like CI_GREEN/CI_FAILED (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "NO_CI" ] || fail "zero check-runs past grace not NO_CI (got: $out)"
+[ "$(jq -r .sha <<<"$out")" = "$HEAD_SHA" ] || fail "NO_CI sha (got: $out)"
+[ "$(jq -r .waited <<<"$out")" != "null" ] || fail "NO_CI missing waited field (got: $out)"
+echo "PASS: zero check-runs past the grace window → NO_CI, exit 0 (no CI configured, not TIMEOUT)"
+
+# --- grace window LONGER than --timeout → NO_CI still bounded by --timeout ---
+# The grace deadline must never extend the wait past --timeout itself.
+reset_state
+echo '{"check_runs":[]}' > "$TMP/state/checkruns.json"
+rc=0; out="$(CI_POLL_NOCI_GRACE_SECS=9999 bash "$SCRIPT" Towheads/foundation 42 --timeout 0)" || rc=$?
+[ "$rc" -eq 0 ] || fail "NO_CI (grace-capped) must exit 0 (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "NO_CI" ] || fail "grace-capped zero check-runs not NO_CI (got: $out)"
+echo "PASS: an oversized grace window is capped at --timeout — NO_CI fires promptly, never TIMEOUT-then-NO_CI"
+
+# --- slow-starting CI (check-run appears within the grace window) → CI_GREEN -
+# Poll 1 sees zero check-runs (well inside the default 120s grace); poll 2
+# sees a completed green run. Must resolve CI_GREEN, never NO_CI.
+reset_state
+echo '{"check_runs":[]}' > "$TMP/state/checkruns.1.json"
+cat > "$TMP/state/checkruns.json" <<'EOF'
+{"check_runs":[{"status":"completed","conclusion":"success"}]}
+EOF
+out="$(bash "$SCRIPT" Towheads/foundation 42 --interval 0.1)"
+[ "$(jq -r .outcome <<<"$out")" = "CI_GREEN" ] || fail "slow-starting CI misclassified (got: $out)"
+[ "$(cat "$TMP/state/checkruns.count")" -eq 2 ] \
+  || fail "expected exactly 2 check-runs polls (got: $(cat "$TMP/state/checkruns.count"))"
+echo "PASS: zero check-runs on poll 1 then a green run on poll 2 (still inside grace) → CI_GREEN, not NO_CI"
+
+# --- check-runs present but never finish → TIMEOUT + non-zero exit -----------
+# Distinct from NO_CI: at least one check-run exists (n>0), it just never
+# completes — the genuine "CI hung" case must still time out as before.
+reset_state
+cat > "$TMP/state/checkruns.json" <<'EOF'
+{"check_runs":[{"status":"in_progress","conclusion":null}]}
+EOF
 rc=0; out="$(bash "$SCRIPT" Towheads/foundation 42 --timeout 0)" || rc=$?
-[ "$rc" -ne 0 ] || fail "zero check-runs did not exit non-zero"
-[ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "zero check-runs not TIMEOUT (got: $out)"
+[ "$rc" -ne 0 ] || fail "pending-forever check-runs did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "pending-forever check-runs not TIMEOUT (got: $out)"
 [ "$(jq -r .sha <<<"$out")" = "$HEAD_SHA" ] || fail "timeout sha (got: $out)"
-echo "PASS: zero check-runs (unpushed/no-CI SHA) → TIMEOUT + non-zero exit, no infinite spin"
+echo "PASS: check-runs present but never finish → TIMEOUT + non-zero exit, no infinite spin"
 
 # --- --sha pins the head: pulls endpoint never queried -------------------------
 reset_state

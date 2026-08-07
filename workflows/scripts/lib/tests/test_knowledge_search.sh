@@ -11,7 +11,7 @@
 # error (exit 2), posture assembly (config.json carries every no-mutation
 # key from the spike verdict, BEFORE the first index; the belt-and-suspenders
 # env var reaches the subprocess), corpus-root binding (project registration
-# always uses ks_root, no independent path knob), a successful hybrid-search
+# always uses ks_root, no independent path setting), a successful hybrid-search
 # round-trip reshaped into JSONL, the backend-error path (subprocess exits
 # non-zero / emits unparseable output -> exit 4), the reindex entry point,
 # and the legible-degradation path (no `uvx` on PATH -> exit 3, "skipped —"
@@ -74,6 +74,10 @@ case "$sub" in
         echo "Error adding project: simulated registration failure detail" >&2
         exit 1
       fi
+      # register_then_ok (#996 lazy-on-miss cold path): registration drops a
+      # marker so a subsequent search-notes succeeds where the pre-register one
+      # failed (project-not-found → register → retry).
+      [ "${FAKE_UVX_MODE:-ok}" = "register_then_ok" ] && : > "${FAKE_UVX_LOG}.registered"
       echo "Project '$name' added successfully"
       exit 0
     fi
@@ -88,12 +92,55 @@ case "$sub" in
       shift
       printf 'SEARCH args=%s\n' "$*" >> "$FAKE_UVX_LOG"
       case "${FAKE_UVX_MODE:-ok}" in
-        search_fail)
-          echo "fake-uvx: simulated backend crash" >&2
+        search_fail|project_add_fail)
+          # project_add_fail must also MISS the search: under #996's lazy-on-miss
+          # flow, `project add` is only attempted after a search miss, so a
+          # registration-failure test needs the search to fail first.
+          echo "fake-uvx: simulated backend crash / miss" >&2
           exit 1
           ;;
         bad_json)
           echo "this is not json"
+          exit 0
+          ;;
+        empty_results)
+          # A zero-match query: basic-memory returns a non-empty {"results":[]}
+          # ENVELOPE (exit 0), NOT empty stdout — the load-bearing #996 contract.
+          echo '{"results":[],"current_page":1,"page_size":10,"total":0,"has_more":false}'
+          exit 0
+          ;;
+        low_conf)
+          # Both candidates fail the abstention floor's DEFAULT thresholds
+          # (score < 0.72, and titles share no query terms so L == 0 < 0.10)
+          # — used to exercise KNOWLEDGE_SEARCH_ABSTAIN (foundation#1450).
+          cat <<'JSON'
+{"results":[{"title":"unrelated thing","type":"entity","score":0.65,"content":"c1","matched_chunk":"c1","file_path":"Decisions/unrelated-thing.md","metadata":{},"entity_id":1},{"title":"another unrelated","type":"entity","score":0.60,"content":"c2","matched_chunk":"c2","file_path":"Decisions/another-unrelated.md","metadata":{},"entity_id":2}],"current_page":1,"page_size":10,"total":0,"has_more":false}
+JSON
+          exit 0
+          ;;
+        two_partitions)
+          # temperloop#418 partition fixture: FOUR notes spanning both
+          # membership forms plus the unpartitioned case, so one canned
+          # response drives every scoping assertion.
+          #   Decisions/acme - retainer terms.md   -> partition `acme`   (filename form)
+          #   Decisions/zenith - retainer terms.md -> partition `zenith` (filename form)
+          #   zenith/Decisions/rates.md            -> partition `zenith` (directory form)
+          #   Index.md                             -> UNPARTITIONED
+          cat <<'JSON'
+{"results":[{"title":"acme - retainer terms","type":"entity","score":1.20,"content":"acme confidential","matched_chunk":"acme confidential","file_path":"Decisions/acme - retainer terms.md","metadata":{},"entity_id":1},{"title":"zenith - retainer terms","type":"entity","score":1.10,"content":"zenith confidential","matched_chunk":"zenith confidential","file_path":"Decisions/zenith - retainer terms.md","metadata":{},"entity_id":2},{"title":"rates","type":"entity","score":0.95,"content":"zenith rates","matched_chunk":"zenith rates","file_path":"zenith/Decisions/rates.md","metadata":{},"entity_id":3},{"title":"Index","type":"entity","score":0.90,"content":"index","matched_chunk":"index","file_path":"Index.md","metadata":{},"entity_id":4}],"current_page":1,"page_size":10,"total":4,"has_more":false}
+JSON
+          exit 0
+          ;;
+        register_then_ok)
+          # Fail until the project has been registered (marker present), then
+          # return results — the #996 lazy-on-miss cold/reset path.
+          if [ ! -f "${FAKE_UVX_LOG}.registered" ]; then
+            echo "fake-uvx: project not registered (register_then_ok, pre-registration)" >&2
+            exit 1
+          fi
+          cat <<'JSON'
+{"results":[{"title":"Foo","type":"entity","score":1.23,"content":"c1 full text","matched_chunk":"c1 snippet","file_path":"Decisions/foo.md","metadata":{},"entity_id":1},{"title":"Bar","type":"entity","score":0.9,"content":"c2 full text","matched_chunk":"c2 snippet","file_path":"Decisions/bar.md","metadata":{},"entity_id":2}],"current_page":1,"page_size":10,"total":0,"has_more":false}
+JSON
           exit 0
           ;;
         *)
@@ -178,7 +225,7 @@ echo "PASS: 3b ks_search_available exit-code probe matches ks_search's own gate 
 
 # --- 4. successful hybrid search -> JSONL reshape, ranked order preserved ----
 rm -rf "$BM_HOME"
-rm -f "$FAKE_UVX_LOG"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
 out="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search "orchard" --limit 5)" || fail "4: ks_search should succeed"
 lines="$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
 [ "$lines" -eq 2 ] || fail "4: expected 2 JSONL result lines (got $lines): $out"
@@ -194,10 +241,55 @@ doc2="$(printf '%s' "$line2" | jq -r '.doc_id')"
 [ "$doc2" = "Decisions/bar.md" ] || fail "4: second result doc_id wrong (got $doc2) -- ranked order not preserved"
 echo "PASS: 4 ks_search reshapes basic-memory's hybrid-search JSON into ranked JSONL"
 
-# --- 5. corpus-root binding: project registration always uses ks_root --------
+# --- 4b. warm path issues ONE subprocess: no per-query project add (#996) -----
+# The warm/ok path (project already registered) must NOT call `project add` —
+# the ~1.9s re-register #996 drops — and must issue exactly one search-notes.
+if grep -q '^PROJECT_ADD ' "$FAKE_UVX_LOG"; then
+  fail "4b: warm path must NOT call project add (#996); log:\n$(cat "$FAKE_UVX_LOG")"
+fi
+warm_search_calls="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+[ "$warm_search_calls" -eq 1 ] \
+  || fail "4b: warm path should issue exactly ONE search-notes (got $warm_search_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+echo "PASS: 4b warm path issues one subprocess — no per-query project add (#996)"
+
+# --- 4c. warm no-match: exit 0 + empty stdout, still NO re-register (#996) -----
+# The load-bearing #996 correctness contract: bm returns a non-empty
+# {"results":[]} envelope for a zero-match query, so `[ -z "$raw" ]` is false →
+# NOT a miss → no re-register, and the empty envelope reshapes to zero output
+# lines + exit 0 (NOT a backend error). If this ever broke, a no-match would
+# both slow to a needless register+retry AND wrongly report exit 4.
+rm -rf "$BM_HOME"; rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out4c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "no-such-term" --limit 5)" \
+  || fail "4c: a warm no-match must exit 0 (empty {\"results\":[]} envelope is not a failure)"
+[ -z "$out4c" ] || fail "4c: a warm no-match must print nothing to stdout (got: $out4c)"
+if grep -q '^PROJECT_ADD ' "$FAKE_UVX_LOG"; then
+  fail "4c: a warm no-match must NOT re-register (#996); log:\n$(cat "$FAKE_UVX_LOG")"
+fi
+nomatch_search="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+[ "$nomatch_search" -eq 1 ] \
+  || fail "4c: warm no-match should issue exactly ONE search (got $nomatch_search); log:\n$(cat "$FAKE_UVX_LOG")"
+echo "PASS: 4c warm no-match → exit 0, empty stdout, no re-register (#996 empty-envelope contract)"
+
+# --- 5. cold/reset path: lazy register-on-miss, bound to ks_root, then retry --
+# When the first search misses (project not registered on first use, or a
+# `basic-memory reset` dropped the DB while config still lists it), ks_search
+# registers (bound to ks_root — the corpus-root binding still holds, now on the
+# cold path) and retries the search ONCE.
+rm -rf "$BM_HOME"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out5="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=register_then_ok ks_search "orchard" --limit 5)" \
+  || fail "5: cold-path ks_search should recover via register+retry"
+[ "$(printf '%s\n' "$out5" | wc -l | tr -d ' ')" -eq 2 ] \
+  || fail "5: cold-path search should return 2 results after register+retry; got: $out5"
 grep -q "PROJECT_ADD name=test-project path=$ROOT\$" "$FAKE_UVX_LOG" \
-  || fail "5: fake-uvx log missing a project-add call bound to ROOT ($ROOT); log:\n$(cat "$FAKE_UVX_LOG")"
-echo "PASS: 5 ks_search binds the backend's project registration to ks_root (no independent path knob)"
+  || fail "5: cold-path register must bind project to ROOT ($ROOT); log:\n$(cat "$FAKE_UVX_LOG")"
+cold_add_calls="$(grep -c '^PROJECT_ADD ' "$FAKE_UVX_LOG" || true)"
+cold_search_calls="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+[ "$cold_add_calls" -eq 1 ] \
+  || fail "5: cold path should register exactly once (got $cold_add_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+[ "$cold_search_calls" -eq 2 ] \
+  || fail "5: cold path should search twice — miss then retry (got $cold_search_calls); log:\n$(cat "$FAKE_UVX_LOG")"
+echo "PASS: 5 cold/reset path lazily registers (bound to ks_root) and retries the search once (#996)"
 
 # --- 6. posture assembly: config.json carries every no-mutation key ----------
 CONFIG="$BM_HOME/.basic-memory/config.json"
@@ -210,6 +302,8 @@ got_kebab="$(jq -r '.kebab_filenames' "$CONFIG")"
 got_sync_changes="$(jq -r '.sync_changes' "$CONFIG")"
 got_auto_update="$(jq -r '.auto_update' "$CONFIG")"
 got_model="$(jq -r '.semantic_embedding_model' "$CONFIG")"
+got_dims="$(jq -r '.semantic_embedding_dimensions' "$CONFIG")"
+got_dims_type="$(jq -r '.semantic_embedding_dimensions | type' "$CONFIG")"
 got_cache_dir="$(jq -r '.semantic_embedding_cache_dir' "$CONFIG")"
 got_projects_key="$(jq -r 'has("projects")' "$CONFIG")"
 [ "$got_disable_permalinks" = "true" ]  || fail "6 point1: disable_permalinks should be true (got $got_disable_permalinks)"
@@ -220,12 +314,45 @@ got_projects_key="$(jq -r 'has("projects")' "$CONFIG")"
 [ "$got_sync_changes" = "false" ]       || fail "6 point3: sync_changes should be false (got $got_sync_changes)"
 [ "$got_auto_update" = "false" ]        || fail "6 point5: auto_update should be false (got $got_auto_update)"
 [ "$got_model" = "bge-small-en-v1.5" ]  || fail "6 point7: semantic_embedding_model wrong (got $got_model)"
+# temperloop#907: the dimensions key must be present, a JSON *number* (not a
+# string — basic-memory reads it as the vector width), and must match the
+# pinned model. A model written without its matching width yields a silent
+# zero-embedding index.
+[ "$got_dims_type" = "number" ] || fail "6 point7: semantic_embedding_dimensions must be a JSON number (got type $got_dims_type, value $got_dims)"
+[ "$got_dims" = "384" ]         || fail "6 point7: semantic_embedding_dimensions should be 384 for bge-small-en-v1.5 (got $got_dims)"
 case "$got_cache_dir" in
   "$BM_HOME"/*) : ;;
   *) fail "6 point6: semantic_embedding_cache_dir should live under the isolated BM home (got $got_cache_dir)" ;;
 esac
 [ "$got_projects_key" = "false" ] || fail "6 point9: config.json must not carry a hand-written 'projects' map (registration is CLI-only)"
 echo "PASS: 6 config.json carries the full no-mutation posture set (points 1,2,3,5,6,7,9), written before the first index"
+
+# --- 6a. point 7 coupling: dimensions are DERIVED from the model pin (temperloop#907) ---
+# The whole guard is that the pair has ONE definition site: the config writer
+# must not spell the model or the width itself, and the width must come from
+# the model name. Assert the derivation directly, plus the loud-failure arm
+# for a model with no known width (the case a future flip would otherwise
+# ship as a zero-embedding index).
+[ "$(_ks_bm_embedding_model)" = "$got_model" ] \
+  || fail "6a: config.json's model must come from _ks_bm_embedding_model (pin=$(_ks_bm_embedding_model), config=$got_model)"
+[ "$(_ks_bm_embedding_dimensions)" = "$got_dims" ] \
+  || fail "6a: config.json's dimensions must come from _ks_bm_embedding_dimensions (derived=$(_ks_bm_embedding_dimensions), config=$got_dims)"
+[ "$(_ks_bm_embedding_dimensions bge-base-en-v1.5)" = "768" ] \
+  || fail "6a: a model flip must re-derive its own width (bge-base-en-v1.5 should be 768)"
+if unknown_dims="$(_ks_bm_embedding_dimensions not-a-real-model 2>/dev/null)"; then
+  fail "6a: an unknown embedding model must fail loudly, not emit a width (got $unknown_dims)"
+fi
+# Static half of the coupling: the config writer itself must spell NEITHER a
+# model name NOR a width — it interpolates the pin and the derived value, so
+# there is no second literal to fall out of sync with the first.
+cfg_writer="$(sed -n '/^_ks_bm_ensure_config()/,/^}/p' "$SEARCH_LIB")"
+grep -qF '"semantic_embedding_model": "$model"' <<<"$cfg_writer" \
+  || fail "6a: the config writer must interpolate the model pin, not restate it"
+grep -qF '"semantic_embedding_dimensions": $dims' <<<"$cfg_writer" \
+  || fail "6a: the config writer must interpolate the derived dimensions, not restate them"
+grep -qE 'bge-|semantic_embedding_dimensions": *[0-9]' <<<"$cfg_writer" \
+  && fail "6a: the config writer must not hardcode a model name or a width (temperloop#907)"
+echo "PASS: 6a model/dimensions are one pin + one derivation; unknown model fails loudly (temperloop#907)"
 
 # --- 6b. .bmignore: upstream base set written, no store-specific extras by default (F#946 seam) ---
 IGN="$BM_HOME/.basic-memory/.bmignore"
@@ -319,6 +446,59 @@ grep -q '^REINDEX args=--full --project test-project$' "$FAKE_UVX_LOG" \
   || fail "12b: --full reindex should pass --full through (log:\n$(cat "$FAKE_UVX_LOG"))"
 echo "PASS: 12 ks_search_reindex drives both incremental (default) and --full rebuilds"
 
+# --- 12c. flag passthrough: --search / --embeddings reach the backend CLI -----
+# temperloop#888: the arg loop used to parse ONLY --full and silently shift
+# every other argument away, so the 61s `reindex --full --search` shape (full
+# rescan + FTS rebuild, no forced full re-embed) was unreachable through the
+# public seam — a caller had to reach into the private _ks_bm_run.
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full --search >/dev/null \
+  || fail "12c: --full --search reindex should succeed"
+grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12c: --full --search should reach the CLI as 'reindex --full --search' (log:\n$(cat "$FAKE_UVX_LOG"))"
+
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --full --embeddings >/dev/null \
+  || fail "12d: --full --embeddings reindex should succeed"
+grep -q '^REINDEX args=--full --embeddings --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12d: --full --embeddings should reach the CLI as 'reindex --full --embeddings' (log:\n$(cat "$FAKE_UVX_LOG"))"
+
+# Order is normalized, not caller-dependent: --search alone, and the flags
+# passed in the reverse order, both emit the same canonical command line.
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --search >/dev/null \
+  || fail "12e: --search alone should succeed"
+grep -q '^REINDEX args=--search --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12e: --search alone should reach the CLI without --full (log:\n$(cat "$FAKE_UVX_LOG"))"
+
+rm -f "$FAKE_UVX_LOG"
+PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --search --full >/dev/null \
+  || fail "12f: reversed flag order should succeed"
+grep -q '^REINDEX args=--full --search --project test-project$' "$FAKE_UVX_LOG" \
+  || fail "12f: flag order should be normalized to --full --search (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 12c ks_search_reindex forwards --search/--embeddings through to the backend CLI"
+
+# --- 12g. an UNRECOGNISED flag is rejected, never silently discarded ----------
+# The pre-#888 loop shifted unknown args away, so a mistyped `--ful` quietly
+# ran a reindex the caller never asked for. Now: exit 2 (the contract's
+# invalid-usage code), nothing on stdout, and NO backend call at all.
+rm -f "$FAKE_UVX_LOG"
+set +e
+out12g="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=ok ks_search_reindex --ful 2>/tmp/ks-search-test-err12g.$$)"
+rc12g=$?
+set -e
+err12g="$(cat /tmp/ks-search-test-err12g.$$)"
+rm -f /tmp/ks-search-test-err12g.$$
+[ "$rc12g" -eq 2 ] || fail "12g: an unrecognised reindex flag should exit 2 (got $rc12g)"
+[ -z "$out12g" ] || fail "12g: an unrecognised reindex flag must print nothing to stdout (got: $out12g)"
+case "$err12g" in
+  *'unrecognised argument "--ful"'*) : ;;
+  *) fail "12g: stderr must name the offending argument (got: $err12g)" ;;
+esac
+[ ! -s "$FAKE_UVX_LOG" ] \
+  || fail "12g: an unrecognised flag must NOT reach the backend at all (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 12g ks_search_reindex rejects an unrecognised flag (exit 2) instead of silently discarding it"
+
 # --- 13. reindex degrades the same way as search when uvx is missing ----------
 set +e
 out="$(PATH="$EMPTY_BIN" ks_search_reindex 2>/tmp/ks-search-test-err2.$$)"
@@ -333,5 +513,385 @@ case "$err" in
   *) fail "13: reindex stderr must begin with the 'skipped —' notice (got: $err)" ;;
 esac
 echo "PASS: 13 ks_search_reindex degrades legibly the same way ks_search does (exit 3, skipped notice)"
+
+# --- 14. rg fallback surfaces a literal corpus match on a backend zero-result -
+# foundation#950: when the backend returns a legitimate zero-result (exit 0,
+# empty), ks_search falls back to ripgrep over the corpus and reshapes hits into
+# the SAME JSONL contract, with score=0 marking a lexical fallback. Guarded on
+# rg being installed (the feature is a no-op without it — fail-open).
+if command -v rg >/dev/null 2>&1; then
+  mkdir -p "$ROOT/Decisions"
+  printf '# Widget cache decision\n\nThe frobnicator uses a widget cache.\n' > "$ROOT/Decisions/widget-cache.md"
+  rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+  out14="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "frobnicator" --limit 5 2>/dev/null)" \
+    || fail "14: rg fallback path should exit 0"
+  [ -n "$out14" ] || fail "14: rg fallback should surface the literal match (got empty)"
+  fdoc="$(printf '%s\n' "$out14" | sed -n '1p' | jq -r '.doc_id')"
+  fscore="$(printf '%s\n' "$out14" | sed -n '1p' | jq -r '.score')"
+  [ "$fdoc" = "Decisions/widget-cache.md" ] \
+    || fail "14: fallback doc_id should be the corpus-relative path (got: $fdoc)"
+  [ "$fscore" = "0" ] || fail "14: fallback score should be the 0 sentinel (got: $fscore)"
+  fb_search="$(grep -c '^SEARCH ' "$FAKE_UVX_LOG" || true)"
+  [ "$fb_search" -eq 1 ] \
+    || fail "14: fallback must not issue extra backend subprocesses (got $fb_search); log:\n$(cat "$FAKE_UVX_LOG")"
+  echo "PASS: 14 rg fallback surfaces a literal corpus match on a backend zero-result (foundation#950)"
+else
+  echo "SKIP: 14 rg fallback assertion (ripgrep not installed)"
+fi
+
+# --- 14b. rg fallback is fail-open: zero-result with no corpus match -> empty --
+rm -rf "${ROOT:?}/Decisions"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out14b="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=empty_results ks_search "no-such-literal-xyzzy" --limit 5 2>/dev/null)" \
+  || fail "14b: a zero-result with no fallback match must still exit 0"
+[ -z "$out14b" ] || fail "14b: no backend match and no rg match must print nothing (got: $out14b)"
+echo "PASS: 14b rg fallback is fail-open — no backend match and no corpus match yields empty, exit 0"
+
+# --- 14c. fallback must not trip a caller's set -e on the no-match path --------
+# The lib is SOURCED into scripts owning `set -euo pipefail`. On a no-match rg
+# exits 1, so the fallback's `hits=$(… rg … | jq | head)` pipeline exits non-zero
+# under pipefail — unguarded, it would abort the caller (foundation#950 shell-
+# review; the `|| true` is the guard). This runs in a SEPARATE process where
+# set -e is genuinely active (an inline `$(…) || fail` would put the subshell in
+# a set-e-IGNORED context — bash: an explicit `set -e` there has no effect — and
+# could never catch the regression), and calls the fallback DIRECTLY (the via-
+# ks_search command-substitution layer masks the abort; the direct call is the
+# proven-teeth form). Pointed at a guaranteed-EMPTY store so rg deterministically
+# misses. Verified: with the `|| true` guard this exits 0 + SURVIVED; without it,
+# the consumer aborts (exit 1, no SURVIVED).
+if command -v rg >/dev/null 2>&1; then
+  mkdir -p "$TMP/empty-store-14c"
+  CONSUMER="$TMP/consumer_14c.sh"
+  cat > "$CONSUMER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export KNOWLEDGE_STORE_ROOT="$TMP/empty-store-14c"
+source "$STORE_LIB"
+source "$SEARCH_LIB"
+ks_search__rg_fallback "no-such-literal-xyzzy" --limit 5
+printf 'SURVIVED:[]\n'
+EOF
+  set +e
+  cons_out="$(bash "$CONSUMER" 2>/dev/null)"
+  cons_rc=$?
+  set -e
+  [ "$cons_rc" -eq 0 ] \
+    || fail "14c: the rg-fallback no-match path aborted a set -e caller (exit $cons_rc) — missing '|| true' guard?"
+  [ "$cons_out" = "SURVIVED:[]" ] \
+    || fail "14c: caller should survive to the marker with an empty result (got: $cons_out)"
+  echo "PASS: 14c rg-fallback no-match does not trip a sourced caller's set -e (caller survives)"
+else
+  echo "SKIP: 14c set -e no-match survival (ripgrep not installed)"
+fi
+
+# --- 15. post-fetch re-rank (temperloop#1446) ---------------------------------
+# The re-rank is the ranking lever from the #1445 mode-sweep verdict: fetch
+# deeper than the caller asked for, reorder, return exactly --limit. These cases
+# pin the three properties the frozen contract depends on — record shape is
+# passed through untouched, the score-0 rg sentinel is NEVER reordered, and the
+# off-switch restores byte-identical pre-#1446 behavior — plus the fetch-depth
+# wiring on the cold CLI path.
+rr_in() {
+  printf '%s\n' \
+    '{"doc_id":"Decisions/unrelated thing.md","title":"unrelated thing","score":1.28,"snippet":"a"}' \
+    '{"doc_id":"Decisions/board adapter cache split.md","title":"board adapter cache split","score":0.61,"snippet":"b"}'
+}
+
+# 15a. a title-agreeing candidate is promoted over a higher-SCORING one. This is
+# the whole point of the lever, and it also proves the re-ranker never reads
+# .score (trap 1: hybrid scores are query-relative, so 1.28 > 0.61 must not be
+# treated as evidence across candidates).
+out15a="$(rr_in | _ks_bm_rerank "board adapter cache split" 5)"
+[ "$(printf '%s' "$out15a" | head -1 | jq -r '.doc_id')" = "Decisions/board adapter cache split.md" ] \
+  || fail "15a: the title-agreeing candidate should re-rank to the top (got: $out15a)"
+echo "PASS: 15a re-rank promotes a title-agreeing candidate over a higher-scoring one"
+
+# 15b. RECORD SHAPE IS FROZEN — each surviving record must come out byte-for-byte
+# as it went in (only the ORDER and which k survive may change). A re-ranker that
+# rebuilt records instead of passing them through would silently break the
+# published {doc_id,title,score,snippet} JSONL contract.
+in15b="$(rr_in)"
+out15b="$(rr_in | _ks_bm_rerank "board adapter cache split" 5 | sort)"
+[ "$out15b" = "$(printf '%s' "$in15b" | sort)" ] \
+  || fail "15b: re-rank altered record bytes; the JSONL contract is frozen (got: $out15b)"
+echo "PASS: 15b re-rank preserves every record byte-for-byte (order-only change)"
+
+# 15c. TRAP 2 — the score-0 rg-fallback sentinel is a PROVENANCE marker, not a
+# relevance value. A set carrying one is passed through in backend order, so a
+# fallback hit can never be reordered against (or above) backend results.
+out15c="$(printf '%s\n' \
+  '{"doc_id":"z.md","title":"zzz nothing","score":0,"snippet":"a"}' \
+  '{"doc_id":"board adapter.md","title":"board adapter","score":0,"snippet":"b"}' \
+  | _ks_bm_rerank "board adapter" 5)"
+[ "$(printf '%s' "$out15c" | head -1 | jq -r '.doc_id')" = "z.md" ] \
+  || fail "15c: a score-0 sentinel set must NOT be reordered (got: $out15c)"
+echo "PASS: 15c the score-0 rg-fallback sentinel is never reordered"
+
+# 15d. the off-switch is a true no-op, and k truncation still applies.
+out15d="$(rr_in | KNOWLEDGE_SEARCH_RERANK=0 _ks_bm_rerank "board adapter cache split" 5)"
+[ "$out15d" = "$in15b" ] \
+  || fail "15d: KNOWLEDGE_SEARCH_RERANK=0 must return the backend order untouched (got: $out15d)"
+n15d="$(rr_in | _ks_bm_rerank "board adapter cache split" 1 | wc -l | tr -d ' ')"
+[ "$n15d" = "1" ] || fail "15d: re-rank must return exactly k records (got $n15d)"
+echo "PASS: 15d re-rank off-switch is a no-op; on, it returns exactly k records"
+
+# 15e. FETCH DEPTH reaches the subprocess: the caller asks for 5, the backend is
+# asked for KNOWLEDGE_SEARCH_RERANK_DEPTH. Asserted against the fake uvx's own
+# argv log, so this pins the wiring rather than the intent.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=1 KNOWLEDGE_SEARCH_RERANK_DEPTH=20 \
+  ks_search "hybrid probe" --limit 5 >/dev/null 2>&1 || true
+grep -q -- "--page-size 20" "$FAKE_UVX_LOG" \
+  || fail "15e: cold path must fetch RERANK_DEPTH (20), not the caller's --limit (log: $(cat "$FAKE_UVX_LOG"))"
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+PATH="$BIN:$PATH" KNOWLEDGE_SEARCH_RERANK=0 \
+  ks_search "hybrid probe" --limit 5 >/dev/null 2>&1 || true
+grep -q -- "--page-size 5" "$FAKE_UVX_LOG" \
+  || fail "15e: with the re-rank off, fetch depth must collapse back to --limit (log: $(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 15e fetch depth is RERANK_DEPTH when on and the caller's --limit when off"
+
+# --- 16. abstention floor (foundation#1450, epic foundation#1443) ------------
+# Below the measured floor (both the top-ranked candidate's score AND its
+# lexical-coverage feature L must fail — see knowledge_search.sh's
+# "## Abstention floor" comment for the measured rationale), _ks_bm_rerank
+# emits the {"__ks_abstain":true} sentinel instead of the normal stream.
+
+abstain_low_in() {
+  printf '%s\n' \
+    '{"doc_id":"Decisions/unrelated thing.md","title":"unrelated thing","score":0.65,"snippet":"a"}' \
+    '{"doc_id":"Decisions/another unrelated.md","title":"another unrelated","score":0.60,"snippet":"b"}'
+}
+
+# 16a. default (KNOWLEDGE_SEARCH_ABSTAIN unset) is a true no-op — byte-identical
+# to pre-#1450 behavior even when every candidate is low-confidence.
+out16a="$(abstain_low_in | _ks_bm_rerank "widget install guide" 5)"
+[ "$out16a" = "$(abstain_low_in)" ] \
+  || fail "16a: KNOWLEDGE_SEARCH_ABSTAIN unset must be a true no-op (got: $out16a)"
+echo "PASS: 16a abstention floor is a true no-op when KNOWLEDGE_SEARCH_ABSTAIN is unset (default)"
+
+# 16b. enabled + both floors fail -> the sentinel, and ONLY the sentinel.
+out16b="$(abstain_low_in | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$out16b" = '{"__ks_abstain":true}' ] \
+  || fail "16b: both floors failing should abstain (got: $out16b)"
+echo "PASS: 16b enabled + both floors fail -> the {__ks_abstain:true} sentinel"
+
+# 16c. enabled but the SCORE floor clears -> no abstain (score alone is enough
+# to save a candidate; the gate is a conjunction, not a single surface).
+out16c="$(printf '%s\n' \
+    '{"doc_id":"Decisions/unrelated thing.md","title":"unrelated thing","score":0.90,"snippet":"a"}' \
+    '{"doc_id":"Decisions/another unrelated.md","title":"another unrelated","score":0.60,"snippet":"b"}' \
+  | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$(printf '%s' "$out16c" | head -1 | jq -r '.doc_id')" = "Decisions/unrelated thing.md" ] \
+  || fail "16c: a cleared score floor must not abstain (got: $out16c)"
+echo "PASS: 16c enabled + score floor clears -> no abstain"
+
+# 16d. enabled but the LEX floor clears (title agrees with the query) -> no
+# abstain, even though the score is low.
+out16d="$(printf '%s\n' \
+    '{"doc_id":"Decisions/widget install guide.md","title":"widget install guide","score":0.65,"snippet":"a"}' \
+    '{"doc_id":"Decisions/another unrelated.md","title":"another unrelated","score":0.60,"snippet":"b"}' \
+  | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$(printf '%s' "$out16d" | head -1 | jq -r '.doc_id')" = "Decisions/widget install guide.md" ] \
+  || fail "16d: a cleared lexical floor must not abstain (got: $out16d)"
+echo "PASS: 16d enabled + lexical floor clears -> no abstain"
+
+# 16e. TRAP 2 still holds with the gate enabled: a score-0 rg-sentinel set is
+# the bypass branch, never reaches the abstention gate at all.
+out16e="$(printf '%s\n' '{"doc_id":"z.md","title":"zzz nothing","score":0,"snippet":"a"}' \
+  | KNOWLEDGE_SEARCH_ABSTAIN=1 _ks_bm_rerank "widget install guide" 5)"
+[ "$(printf '%s' "$out16e" | jq -r '.doc_id')" = "z.md" ] \
+  || fail "16e: the score-0 sentinel bypass must never reach the abstention gate (got: $out16e)"
+echo "PASS: 16e the abstention gate never touches the score-0 rg-fallback bypass"
+
+# 16f. FULL ks_search integration: the sentinel never leaks to a real caller —
+# enabled + failing floors returns genuine empty stdout, exit 0, via the
+# fake uvx's low_conf canned response.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out16f="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=low_conf KNOWLEDGE_SEARCH_ABSTAIN=1 \
+  ks_search "widget install guide" --limit 5)"
+rc16f=$?
+[ "$rc16f" -eq 0 ] || fail "16f: an abstained ks_search call must still exit 0 (got $rc16f)"
+[ -z "$out16f" ] || fail "16f: the sentinel must never reach a real ks_search caller (got: $out16f)"
+echo "PASS: 16f ks_search never leaks the abstention sentinel; exit 0 with empty stdout"
+
+# --- 17. project partition / scoped search (temperloop#418) ------------------
+# The confidentiality seam: ks_search's corpus is the whole resolved ks_root,
+# so an operator running one $HOME across engagements could have a query typed
+# in client B's session rank and return client A's notes. These cases are
+# BEHAVIOURAL — each asserts what came back and, critically, what did NOT.
+
+# 17a. THE POSITIVE BEHAVIOURAL SENTINEL. Two partitions are in the corpus and
+# both are in the backend's candidate set; a search scoped to `acme` returns
+# acme's note and the OTHER partition's notes are ABSENT. A no-op filter, or a
+# scope flag silently discarded somewhere down the stack, fails here — which a
+# flag-parses-only assertion would not catch.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17a="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+  ks_search "retainer terms" --limit 5 --partition acme)" \
+  || fail "17a: a scoped ks_search should succeed"
+docs17a="$(printf '%s\n' "$out17a" | jq -r '.doc_id' | sort | tr '\n' '|')"
+[ "$docs17a" = "Decisions/acme - retainer terms.md|" ] \
+  || fail "17a: scoped search must return ONLY the acme partition (got: $docs17a)"
+grep -q 'zenith' <<<"$out17a" \
+  && fail "17a: CROSS-PARTITION BLEED — a zenith note reached an acme-scoped search:\n$out17a"
+grep -q 'Index.md' <<<"$out17a" \
+  && fail "17a: an UNPARTITIONED note reached a scoped search (must fail closed):\n$out17a"
+echo "PASS: 17a a scoped ks_search returns only its own partition — the other partition's note is ABSENT"
+
+# 17b. NO REGRESSION for the dominant single-tenant user: with no partition
+# configured, the identical query returns the whole unfiltered candidate set,
+# exactly as it did pre-#418.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17b="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --limit 5)" \
+  || fail "17b: an unscoped ks_search should succeed"
+n17b="$(printf '%s\n' "$out17b" | wc -l | tr -d ' ')"
+[ "$n17b" -eq 4 ] \
+  || fail "17b: unpartitioned search must return all 4 candidates untouched (got $n17b): $out17b"
+echo "PASS: 17b default (no partition configured) is unchanged — the whole corpus, no filtering"
+
+# 17c. the DIRECTORY membership form is honoured alongside the filename form:
+# scoping to `zenith` returns both `Decisions/zenith - …md` and `zenith/…`.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17c="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+  ks_search "retainer terms" --limit 5 --partition zenith)" \
+  || fail "17c: a zenith-scoped ks_search should succeed"
+docs17c="$(printf '%s\n' "$out17c" | jq -r '.doc_id' | sort | tr '\n' '|')"
+[ "$docs17c" = "Decisions/zenith - retainer terms.md|zenith/Decisions/rates.md|" ] \
+  || fail "17c: both membership forms should match for zenith (got: $docs17c)"
+grep -q 'acme' <<<"$out17c" \
+  && fail "17c: CROSS-PARTITION BLEED — an acme note reached a zenith-scoped search:\n$out17c"
+echo "PASS: 17c partition membership matches both the '<project> - ' filename form and the '<project>/' directory form"
+
+# 17d. the ENV route (KNOWLEDGE_SEARCH_PARTITION) scopes just as hard as the
+# flag — this is the route a consultant actually uses (export once per
+# engagement), so it must not be a second, weaker path.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+out17d="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions KNOWLEDGE_SEARCH_PARTITION=acme \
+  ks_search "retainer terms" --limit 5)" \
+  || fail "17d: an env-scoped ks_search should succeed"
+[ "$(printf '%s\n' "$out17d" | jq -r '.doc_id' | sort | tr '\n' '|')" = "Decisions/acme - retainer terms.md|" ] \
+  || fail "17d: KNOWLEDGE_SEARCH_PARTITION must scope as hard as --partition (got: $out17d)"
+echo "PASS: 17d KNOWLEDGE_SEARCH_PARTITION scopes every call, identically to the per-call flag"
+
+# --- 17e-17h. FAIL-CLOSED: the load-bearing half ------------------------------
+# An unrecognised or unhonoured scope argument must ERROR, never widen the
+# corpus. The pre-#418 loop ended in `*) shift ;;`, so a scope flag a layer did
+# not understand was DISCARDED and the full corpus came back at exit 0 — a
+# silent confidentiality failure dressed as a successful scoped search. Same
+# rejection shape as ks_search_reindex's (temperloop#888, case 12g).
+
+# 17e. an unrecognised ks_search argument -> exit 2, nothing on stdout, and NO
+# backend call at all.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+set +e
+out17e="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --scope acme 2>/tmp/ks-search-test-err17e.$$)"
+rc17e=$?
+set -e
+err17e="$(cat /tmp/ks-search-test-err17e.$$)"; rm -f /tmp/ks-search-test-err17e.$$
+[ "$rc17e" -eq 2 ] || fail "17e: an unrecognised ks_search argument must exit 2 (got $rc17e)"
+[ -z "$out17e" ] || fail "17e: an unrecognised argument must return NOTHING, never the unfiltered corpus (got: $out17e)"
+case "$err17e" in
+  *'unrecognised argument "--scope"'*) : ;;
+  *) fail "17e: stderr must name the offending argument (got: $err17e)" ;;
+esac
+[ ! -s "$FAKE_UVX_LOG" ] \
+  || fail "17e: an unrecognised argument must not reach the backend (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 17e ks_search rejects an unrecognised argument (exit 2, no results, no backend call)"
+
+# 17f. an EMPTY --partition value is rejected, never read as "no partition" —
+# the `--partition "$CLIENT"` that expanded to nothing must fail loudly rather
+# than silently widen back to the whole corpus.
+rm -f "$FAKE_UVX_LOG" "$FAKE_UVX_LOG.registered"
+set +e
+out17f="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --partition "" 2>/dev/null)"
+rc17f=$?
+out17f2="$(PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions ks_search "retainer terms" --partition 2>/dev/null)"
+rc17f2=$?
+set -e
+[ "$rc17f" -eq 2 ]  || fail "17f: an empty --partition value must exit 2, never widen the corpus (got $rc17f)"
+[ -z "$out17f" ]    || fail "17f: an empty --partition must return nothing (got: $out17f)"
+[ "$rc17f2" -eq 2 ] || fail "17f: a valueless --partition must exit 2 (got $rc17f2)"
+[ -z "$out17f2" ]   || fail "17f: a valueless --partition must return nothing (got: $out17f2)"
+[ ! -s "$FAKE_UVX_LOG" ] \
+  || fail "17f: a malformed --partition must not reach the backend (log:\n$(cat "$FAKE_UVX_LOG"))"
+echo "PASS: 17f an empty or valueless --partition is rejected (exit 2), never silently widened to the whole corpus"
+
+# 17g. the BACKENDS refuse the scope flag rather than swallowing it. Enforcement
+# lives in ks_search, above every backend, precisely so a backend cannot fail
+# open by not implementing the scope — and each backend loop now rejects what it
+# does not recognise, so the old `*) shift ;;` widening cannot come back through
+# a direct backend call either.
+set +e
+PATH="$BIN:$PATH" FAKE_UVX_MODE=two_partitions \
+  _ks_search_backend_basic_memory_search "retainer terms" --partition acme >/dev/null 2>&1
+rc17g=$?
+set -e
+[ "$rc17g" -eq 2 ] \
+  || fail "17g: the cold backend must REJECT --partition (exit 2), not silently discard it (got $rc17g)"
+echo "PASS: 17g the backend rejects a scope flag it does not implement instead of returning the unfiltered corpus"
+
+# 17h. the capability probe exists, so a caller can tell a library that HONOURS
+# the scope from a pre-#418 one that would silently ignore it (the one skew the
+# adapter cannot close from inside).
+declare -F ks_search_partition_supported >/dev/null \
+  || fail "17h: ks_search_partition_supported must be defined as the version-skew probe"
+ks_search_partition_supported || fail "17h: ks_search_partition_supported should exit 0 on this library"
+echo "PASS: 17h ks_search_partition_supported is the declare -F version-skew probe for scope support"
+
+# --- 17i. the filter itself fails CLOSED --------------------------------------
+# If the filter cannot run at all (no jq), it must yield NOTHING and a non-zero
+# return — never pass the unfiltered stream through. Driven directly, with jq
+# removed from PATH, since that is the only way to force the failure.
+PART_IN="$TMP/part-in.jsonl"
+cat > "$PART_IN" <<'JSONL'
+{"doc_id":"Decisions/acme - retainer terms.md","title":"acme - retainer terms","score":1.2,"snippet":"a"}
+{"doc_id":"Decisions/zenith - retainer terms.md","title":"zenith - retainer terms","score":1.1,"snippet":"z"}
+JSONL
+set +e
+out17i="$(PATH="$EMPTY_BIN" ks_search__partition_filter acme < "$PART_IN" 2>/dev/null)"
+rc17i=$?
+set -e
+[ "$rc17i" -ne 0 ] || fail "17i: a filter that cannot run must return non-zero (got $rc17i)"
+[ -z "$out17i" ] || fail "17i: a failed filter must emit NOTHING, never the unfiltered stream (got: $out17i)"
+# And a record with no usable doc_id is excluded rather than trusted.
+out17i2="$(printf '%s\n' '{"title":"no doc id","score":1.0,"snippet":"x"}' \
+  | ks_search__partition_filter acme)"
+[ -z "$out17i2" ] || fail "17i: a record with no doc_id must be excluded (got: $out17i2)"
+echo "PASS: 17i the partition filter fails closed — a filter it cannot run, or a record it cannot attribute, returns nothing"
+
+# --- 17j. the rg LEXICAL FALLBACK stream is filtered too ----------------------
+# The degraded path is a real leak surface: a backend zero-result falls back to
+# a ripgrep sweep of the corpus, and an unfiltered fallback would hand back the
+# other client's notes precisely when the semantic path found nothing. Driven
+# in a SEPARATE process with the fallback stubbed to a known two-partition
+# stream, so this holds whether or not ripgrep is installed on the host.
+CONSUMER17="$TMP/consumer_17j.sh"
+cat > "$CONSUMER17" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export KNOWLEDGE_STORE_ROOT="$ROOT"
+export KNOWLEDGE_SEARCH_BM_HOME="$BM_HOME"
+export KNOWLEDGE_SEARCH_BM_PROJECT="test-project"
+export KNOWLEDGE_READ_LOG="$TMP/knowledge-reads-17j.log"
+export FAKE_UVX_LOG="$TMP/uvx-17j.log"
+export FAKE_UVX_MODE=empty_results
+export PATH="$BIN:\$PATH"
+source "$STORE_LIB"
+source "$SEARCH_LIB"
+# Stub the fallback with a canned two-partition lexical hit set (score 0 is the
+# fallback provenance sentinel, exactly as the real one emits).
+ks_search__rg_fallback() {
+  printf '%s\n' \\
+    '{"doc_id":"Decisions/acme - retainer terms.md","title":"acme - retainer terms","score":0,"snippet":"a"}' \\
+    '{"doc_id":"Decisions/zenith - retainer terms.md","title":"zenith - retainer terms","score":0,"snippet":"z"}'
+}
+ks_search "retainer terms" --limit 5 --partition acme
+EOF
+out17j="$(bash "$CONSUMER17" 2>/dev/null)" || fail "17j: the scoped fallback path should exit 0"
+[ "$(printf '%s\n' "$out17j" | jq -r '.doc_id' | sort | tr '\n' '|')" = "Decisions/acme - retainer terms.md|" ] \
+  || fail "17j: the rg lexical fallback must be partition-filtered too (got: $out17j)"
+grep -q 'zenith' <<<"$out17j" \
+  && fail "17j: CROSS-PARTITION BLEED via the rg lexical fallback:\n$out17j"
+echo "PASS: 17j the rg lexical-fallback stream is partition-filtered too — the degraded path cannot leak"
 
 echo "ALL PASS: knowledge_search.sh (interface + basic-memory backend, mocked subprocess)"

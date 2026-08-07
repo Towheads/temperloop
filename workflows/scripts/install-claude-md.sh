@@ -18,8 +18,8 @@
 # Composition, in order:
 #   1. a generated-file banner (naming both sources — never hand-edit the
 #      target; edit the sources and re-run `make install-claude`)
-#   2. the kernel doc, with any `{{KNOB_NAME}}` placeholder tokens it contains
-#      substituted for a value resolved from config (see "Prose-resident knob
+#   2. the kernel doc, with any `{{SETTING_NAME}}` placeholder tokens it contains
+#      substituted for a value resolved from config (see "Named-setting convention
 #      rendering" below) — otherwise verbatim
 #   3. a rendered "## Knowledge store routing" section (see below)
 #   4. the overlay doc, verbatim
@@ -64,8 +64,8 @@
 # *source* prose so a new reference appears here on the next compose.
 #
 # Written to `<dirname target>/t0-inventory.txt` — a plain lowercase-derived
-# path (no new operator knob: it is wholly a function of the existing
-# `target` argument, so it needs no knob-registry.tsv row), sibling to the
+# path (no new operator setting: it is wholly a function of the existing
+# `target` argument, so it needs no setting-registry.tsv row), sibling to the
 # composed CLAUDE.md the same way plan-schema.md / message-schema.md /
 # decision-queue-contract.md already sit alongside it under `~/.claude/`.
 #
@@ -95,8 +95,27 @@ kernel="${1:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}
 overlay="${2:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}"
 target="${3:?usage: install-claude-md.sh <kernel.md> <overlay.md> <target-path>}"
 
+# ── Render-only kernel-only seam (temperloop#722, item
+#    prose-baseline-measurement) ────────────────────────────────────────────
+# INSTALL_CLAUDE_MD_KERNEL_ONLY=1 emits ONLY render_kernel_doc's own
+# setting-substituted output — no generated-file banner, no rendered
+# "## Knowledge store routing" section (host-rendered, never kernel-authored
+# prose), no overlay content appended, and (see below) NO T0-inventory write
+# either. This is the ONE compose seam workflows/scripts/count-prose.sh calls
+# for its tier-1 count: the composed kernel-authored surface alone, through
+# this existing implementation — never a second, duplicated render inside
+# the counting script (ADR 0015 / docs/adr/0015-prose-plane-budget-gate.md).
+# Default behavior (the var unset or "0") is completely unchanged — neither
+# `temperloop install` (this repo's own CLI) nor a downstream fleet's
+# `make install-claude` wrapper ever sets it, so the normal three-piece
+# compose (banner + kernel + knowledge-routing + overlay) is untouched by
+# this addition.
+: "${INSTALL_CLAUDE_MD_KERNEL_ONLY:=0}"  # setting:exempt — internal render-mode toggle for count-prose.sh's own kernel-only caller, not an operator-facing config-precedence default
+
 [ -f "$kernel" ]  || { echo "install-claude-md: kernel doc not found: $kernel" >&2; exit 1; }
-[ -f "$overlay" ] || { echo "install-claude-md: overlay doc not found: $overlay" >&2; exit 1; }
+if [ "$INSTALL_CLAUDE_MD_KERNEL_ONLY" != "1" ]; then
+  [ -f "$overlay" ] || { echo "install-claude-md: overlay doc not found: $overlay" >&2; exit 1; }
+fi
 
 # FOUNDATION root, derived from the kernel doc's path (claude/CLAUDE.kernel.md
 # -> repo root), so this script works regardless of caller CWD.
@@ -105,26 +124,27 @@ build_config="${foundation}/workflows/scripts/build/build.config.sh"
 ks_lib="${foundation}/workflows/scripts/lib/knowledge_store.sh"
 
 # ---------------------------------------------------------------------------
-# ── Prose-resident knob rendering (temperloop#183, D3's "CLAUDE.md-resident
-#    knob" seam — claude/CLAUDE.kernel.md § Prose-resident knob convention) ──
-# A knob embedded in this file's own standing-rules prose (e.g. the epic-
+# ── Named-setting rendering (temperloop#183, D3's "CLAUDE.md-resident
+#    setting" seam — claude/CLAUDE.kernel.md § Named-setting convention) ──
+# A setting embedded in this file's own standing-rules prose (e.g. the epic-
 # decomposition sub-unit threshold)
 # has no Step-0 to source a config file from — the doc is read passively by
 # the agent, never executed — so it is rendered here instead, at compose
-# time, into a `{{KNOB_NAME}}` placeholder token the kernel doc's own text
+# time, into a `{{SETTING_NAME}}` placeholder token the kernel doc's own text
 # carries. SAME mechanism as § Knowledge store routing below (resolve a
 # value from build.config.sh in an isolated subshell, then substitute it into
 # the composed output) — this is one more resolved value fed through that
 # existing render pass, not a second templating engine.
 #
 # render_kernel_doc <kernel-file> — prints the kernel doc's content with every
-# known `{{KNOB_NAME}}` token substituted; unmatched tokens are left as-is
-# (surfacing a missing wiring loudly rather than silently blanking the knob).
+# known `{{SETTING_NAME}}` token substituted; unmatched tokens are left as-is
+# (surfacing a missing wiring loudly rather than silently blanking the setting).
 # ---------------------------------------------------------------------------
 render_kernel_doc() {
-  local kernel_file="$1" content epic_subunit_floor
+  local kernel_file="$1" content epic_subunit_floor display_tz
 
   epic_subunit_floor=""
+  display_tz=""
   if [ -f "$build_config" ]; then
     epic_subunit_floor="$(
       set -e
@@ -132,11 +152,20 @@ render_kernel_doc() {
       source "$build_config"
       printf '%s\n' "$EPIC_MIN_SUBUNITS"
     )" || epic_subunit_floor=""
+    display_tz="$(
+      set -e
+      # shellcheck source=/dev/null
+      source "$build_config"
+      # shellcheck disable=SC2153  # DISPLAY_TZ is defined by the sourced build.config.sh, not a misspelling of the local display_tz
+      printf '%s\n' "$DISPLAY_TZ"
+    )" || display_tz=""
   fi
-  [ -n "$epic_subunit_floor" ] || epic_subunit_floor=3   # build.config.sh's own default, if unresolved
+  [ -n "$epic_subunit_floor" ] || epic_subunit_floor=3               # build.config.sh's own default, if unresolved
+  [ -n "$display_tz" ] || display_tz="America/Los_Angeles"           # build.config.sh's own default, if unresolved
 
   content="$(cat "$kernel_file")"
   content="${content//\{\{EPIC_MIN_SUBUNITS\}\}/$epic_subunit_floor}"
+  content="${content//\{\{DISPLAY_TZ\}\}/$display_tz}"
   printf '%s' "$content"
 }
 
@@ -221,33 +250,56 @@ tmp="$(mktemp "${TMPDIR:-/tmp}/install-claude-md.XXXXXX")"
 t0_tmp="$(mktemp "${TMPDIR:-/tmp}/install-claude-md-t0.XXXXXX")"
 trap 'rm -f "$tmp" "$t0_tmp"' EXIT
 
-{
-  printf '<!-- GENERATED by foundation '"'"'make install-claude'"'"' — DO NOT EDIT HERE.\n'
-  printf '     Sources: claude/CLAUDE.kernel.md + claude/CLAUDE.overlay.md\n'
-  printf '     (the "## Knowledge store routing" section below is rendered, not\n'
-  printf '     tracked in either source). Edit the sources, then re-run\n'
-  # shellcheck disable=SC2016  # literal markdown backticks, not expansion
-  printf '     `make install-claude`. See workflows/scripts/install-claude-md.sh. -->\n'
-  printf '\n'
-  render_kernel_doc "$kernel"
-  printf '\n'
-  render_knowledge_routing
-  printf '\n'
-  cat "$overlay"
-} >"$tmp"
+if [ "$INSTALL_CLAUDE_MD_KERNEL_ONLY" = "1" ]; then
+  # Kernel-only render: the rendered kernel doc alone, nothing else appended.
+  render_kernel_doc "$kernel" >"$tmp"
+else
+  {
+    printf '<!-- GENERATED by foundation '"'"'make install-claude'"'"' — DO NOT EDIT HERE.\n'
+    printf '     Sources: claude/CLAUDE.kernel.md + claude/CLAUDE.overlay.md\n'
+    printf '     (the "## Knowledge store routing" section below is rendered, not\n'
+    printf '     tracked in either source). Edit the sources, then re-run\n'
+    # shellcheck disable=SC2016  # literal markdown backticks, not expansion
+    printf '     `make install-claude`. See workflows/scripts/install-claude-md.sh. -->\n'
+    printf '\n'
+    render_kernel_doc "$kernel"
+    printf '\n'
+    render_knowledge_routing
+    printf '\n'
+    cat "$overlay"
+  } >"$tmp"
+fi
 
-# T0 inventory: derived from the fully composed doc just assembled in $tmp —
-# regenerated every run, written next to $target (see the "Compose-plane T0
-# inventory" header comment). extract_t0_inventory never fails on zero
-# matches (an empty/absent overlay yields a zero-byte file, not an error).
-extract_t0_inventory "$tmp" >"$t0_tmp"
-t0_target="$(dirname "$target")/t0-inventory.txt"
+if [ "$INSTALL_CLAUDE_MD_KERNEL_ONLY" = "1" ]; then
+  # Kernel-only render: $target alone. Deliberately NO T0-inventory write —
+  # T0 is defined over the fully composed doc (kernel + knowledge-routing +
+  # overlay); a kernel-only render's T0 would be a truncated, misleading
+  # subset, and writing it next to $target risks CLOBBERING A REAL
+  # ~/.claude/t0-inventory.txt if this mode were ever pointed at a live
+  # install target. Skipping it here means the ONLY t0-inventory.txt any
+  # caller ever sees is the one the full (default) compose below writes.
+  rm -f "$target"
+  mv -f "$tmp" "$target"
+  # $t0_tmp above is never consumed on this arm (no T0 write, per the
+  # comment above) — the `trap - EXIT` below clears the cleanup trap before
+  # exit, so an un-rm'd $t0_tmp here leaks one empty
+  # install-claude-md-t0.XXXXXX into TMPDIR per kernel-only render. Remove
+  # it explicitly rather than relying on the (cleared) trap.
+  rm -f "$t0_tmp"
+else
+  # T0 inventory: derived from the fully composed doc just assembled in $tmp —
+  # regenerated every run, written next to $target (see the "Compose-plane T0
+  # inventory" header comment). extract_t0_inventory never fails on zero
+  # matches (an empty/absent overlay yields a zero-byte file, not an error).
+  extract_t0_inventory "$tmp" >"$t0_tmp"
+  t0_target="$(dirname "$target")/t0-inventory.txt"
 
-# Replace as a REAL file — drop any prior symlink first so the move can't
-# write through it back into a tracked source (same discipline as
-# install-settings.sh's #292 reconcile).
-rm -f "$target"
-mv -f "$tmp" "$target"
-rm -f "$t0_target"
-mv -f "$t0_tmp" "$t0_target"
+  # Replace as a REAL file — drop any prior symlink first so the move can't
+  # write through it back into a tracked source (same discipline as
+  # install-settings.sh's #292 reconcile).
+  rm -f "$target"
+  mv -f "$tmp" "$target"
+  rm -f "$t0_target"
+  mv -f "$t0_tmp" "$t0_target"
+fi
 trap - EXIT

@@ -60,11 +60,18 @@
 #      covers both known transports and stays quiet; a non-Obsidian-backed
 #      root is a quiet no-op regardless of the matcher list.
 #  14. Controls lint (temperloop#239, ADR §2.3a/§2.4/§2.8) → against a
-#      fixture knob-registry.tsv (KNOB_REGISTRY_FILE override): a dead dial
+#      fixture setting-registry.tsv (SETTING_REGISTRY_FILE override): a dead dial
 #      (matched row's owning-script missing), an orphaned control (no row
 #      names the file), and a machine-read file living outside Controls/ all
 #      fire; a healthy registry-matched control never fires; no Controls/
 #      folder is a quiet no-op.
+#  check_folder_allowlist / check_naming_drift (temperloop#420) → the 6 in-use
+#      folders (Designs/, Issues/, Plans-archive/, Sequencing/, Spikes/,
+#      StageFind/) reconciled into the ADR §2.2 allowlist report zero
+#      folder-allowlist violations; and the explicit `cross_project: true`
+#      frontmatter marker exempts a deliberately cross-cutting note from the
+#      `<project>`-prefix naming rule while an unmarked (or non-truthy-marked)
+#      drifting note still flags.
 #  15. Heat score + review queue (temperloop#240, ADR §2.6-2.7) → a fixture
 #      with distinct reads/links/last_verified combos computes the
 #      documented weighted heat score and ranks the top-5 review queue by
@@ -395,6 +402,7 @@ rmreport="$(bash "$SCRIPT" --root "$RM")"
 assert_has "$rmreport" "repeat-mistake:"                                                  "seeded recurrence fires the flag"
 assert_has "$rmreport" "retrieval failure"                                                "flag names it a retrieval failure"
 assert_has "$rmreport" "Mistakes/temperloop - BSD stat flags break Linux CI.md"           "flag names the matching Mistakes/ note"
+assert_missing "$rmreport" "Mistakes/Mistakes/"                                           "no doubled Mistakes/ path prefix in the emitted repeat-mistake line (foundation#1307)"
 assert_has "$rmreport" "ALARM:"                                                           "seeded recurrence trips an alarm"
 rm -rf "$RM"
 
@@ -426,6 +434,59 @@ strangerreport="$(bash "$SCRIPT" --root "$RM4")"
 assert_has     "$strangerreport" "ok repeat-mistake:"    "no ledger / no Mistakes/ -> quiet no-op"
 assert_missing "$strangerreport" "repeat-mistake: 20"    "no ledger / no Mistakes/ -> never flags"
 rm -rf "$RM4"
+
+# 10e-10g: the three named false pairings from foundation#1307 — real
+# friction-ledger rows paired against real Mistakes/ note titles that share
+# only the project-name token (every row carries its own project; every
+# Mistakes/ note is filed "<project> - <title>.md") plus one incidental
+# generic word. That is 2 distinct shared tokens, which used to clear the
+# old >=2 floor; now that the floor is FRICTION_OVERLAP_MIN (3), none of the
+# three pairings fire, and they're pinned here as regressions.
+
+# 10e: 'plan.sh writeback failed (foundation-specific REST config path...)'
+# vs. 'foundation - A foundation path can be a symlink into the kernel
+# subtree' — shared tokens are only "foundation" (project name) + "path"
+# (generic); no third point of overlap.
+RM5="$(mktemp -d)"; mkdir -p "$RM5/Context" "$RM5/Mistakes"
+printf -- '---\ntags: [mistake, project/foundation]\n---\n# A foundation path can be a symlink into the kernel subtree\nbody\n' \
+  > "$RM5/Mistakes/foundation - A foundation path can be a symlink into the kernel subtree.md"
+today5="$(date +%Y-%m-%d)"
+echo "- ${today5} · temperloop · tool-misuse · plan.sh writeback failed (foundation-specific REST config path + repo-relative plan path) -> fell back to full-file vault_write for every /build sentinel flip (filed temperloop#342)" \
+  > "$RM5/Context/Session friction ledger.md"
+r5="$(bash "$SCRIPT" --root "$RM5")"
+assert_missing "$r5" "repeat-mistake: ${today5}" "foundation#1307 false pairing 1 (plan.sh writeback vs symlink-subtree note) no longer fires"
+assert_has     "$r5" "ok repeat-mistake:"        "foundation#1307 false pairing 1 leaves the check quiet"
+rm -rf "$RM5"
+
+# 10f: 'archive-session.sh got 29 stub paths as ONE arg (zsh word-splitting)'
+# vs. 'foundation - Bash cat does not satisfy Read-before-Write' — shared
+# tokens are only "foundation" (project name) + "bash" (generic).
+RM6="$(mktemp -d)"; mkdir -p "$RM6/Context" "$RM6/Mistakes"
+printf -- '---\ntags: [mistake, project/foundation, kernel-candidate]\n---\n# Bash cat does not satisfy the harness Read-before-Write requirement\nbody\n' \
+  > "$RM6/Mistakes/foundation - Bash cat does not satisfy Read-before-Write.md"
+today6="$(date +%Y-%m-%d)"
+echo "- ${today6} · foundation · tool-misuse · archive-session.sh got 29 stub paths as ONE arg — unquoted \`\$args\` doesn't word-split in zsh (Bash tool's shell); fixed with an array. [drain 1ad12257]" \
+  > "$RM6/Context/Session friction ledger.md"
+r6="$(bash "$SCRIPT" --root "$RM6")"
+assert_missing "$r6" "repeat-mistake: ${today6}" "foundation#1307 false pairing 2 (archive-session.sh vs Read-before-Write note) no longer fires"
+assert_has     "$r6" "ok repeat-mistake:"        "foundation#1307 false pairing 2 leaves the check quiet"
+rm -rf "$RM6"
+
+# 10g: 'ci-poll.sh dies on GitHub 503 (HTML body)' vs. 'foundation - Host
+# misidentification - read tailscale self from json' — this pairing was
+# driven by the OTHER defect (occurrence- not distinct-token counting: the
+# row says "json" twice, inflating one real overlap into two); fixed by
+# _hyg_token_overlap's dedup alone, independent of the threshold bump.
+RM7="$(mktemp -d)"; mkdir -p "$RM7/Context" "$RM7/Mistakes"
+printf -- '---\ntags: [mistake, project/foundation]\n---\n# Host misidentification: read tailscale self from --json, not the status table\nbody\n' \
+  > "$RM7/Mistakes/foundation - Host misidentification - read tailscale self from json.md"
+today7="$(date +%Y-%m-%d)"
+echo "- ${today7} · ssmobile · tool-misuse · ci-poll.sh check-runs query dies on GitHub 503 (HTML body -> \"invalid character '<'\"); gh statusCheckRollup/run-view --json survived — poller should retry non-JSON, not exit 1" \
+  > "$RM7/Context/Session friction ledger.md"
+r7="$(bash "$SCRIPT" --root "$RM7")"
+assert_missing "$r7" "repeat-mistake: ${today7}" "foundation#1307 false pairing 3 (ci-poll.sh 503 vs tailscale-host note) no longer fires"
+assert_has     "$r7" "ok repeat-mistake:"        "foundation#1307 false pairing 3 leaves the check quiet"
+rm -rf "$RM7"
 
 # ── Test 11: read-log telemetry surfacing (temperloop#238) ─────────────────
 echo "--- test 11: read-log telemetry surfacing ---"
@@ -574,17 +635,17 @@ echo "orphan" > "$CV/Controls/temperloop - orphan dial.md"
 # literal resolves to a file that physically exists there).
 echo "outside" > "$CV/Context/temperloop - outside dial.md"
 
-fixture_registry="$CV/knob-registry.tsv"
+fixture_registry="$CV/setting-registry.tsv"
 cat > "$fixture_registry" <<EOF
 CTRL_GOOD	Controls/temperloop - good dial.md	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Points at \`Controls/temperloop - good dial.md\` — a healthy, reachable control (fixture).
 CTRL_DEAD	Controls/temperloop - dead dial.md	path	kernel	workflows/scripts/does/not/exist.sh	Points at \`Controls/temperloop - dead dial.md\` but its consumer script is missing (fixture dead-dial case).
 CTRL_OUTSIDE	Context/temperloop - outside dial.md	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Legacy path: defaults to \`Controls/temperloop - outside dial.md\`, falling back to \`Context/temperloop - outside dial.md\` during the overlay move window (fixture).
 EOF
 
-cvreport="$(KNOB_REGISTRY_FILE="$fixture_registry" bash "$SCRIPT" --root "$CV")"
+cvreport="$(SETTING_REGISTRY_FILE="$fixture_registry" bash "$SCRIPT" --root "$CV")"
 assert_missing "$cvreport" "controls: Controls/temperloop - good dial.md" "healthy, registry-matched control with a real consumer script is never flagged"
 assert_has     "$cvreport" "controls: Controls/temperloop - dead dial.md — named consumer script missing" "dead dial (missing consumer script) fires"
-assert_has     "$cvreport" "controls: Controls/temperloop - orphan dial.md — no knob-registry.tsv path row points at it" "orphaned control (no row names it) fires"
+assert_has     "$cvreport" "controls: Controls/temperloop - orphan dial.md — no setting-registry.tsv path row points at it" "orphaned control (no row names it) fires"
 assert_has     "$cvreport" "controls: Context/temperloop - outside dial.md — machine-read store file outside Controls/" "machine-read file outside Controls/ fires"
 assert_has     "$cvreport" "ALARM:" "controls fixture trips an alarm"
 rm -rf "$CV"
@@ -714,6 +775,44 @@ assert_has     "$emptyReport" "info heat-score: 0 candidate note(s) scored"   "e
 assert_has     "$emptyReport" "info review-queue: empty (0 candidate notes)" "empty store -> empty queue, not an alarm"
 assert_missing "$emptyReport" "ALARM:"                                       "empty store trips no alarm from heat-score"
 rm -rf "$HS5"
+
+# ── test check_folder_allowlist: in-use folders allowlisted (temperloop#420) ──
+echo "--- test check_folder_allowlist: in-use folders (temperloop#420) ---"
+# The 6 in-use top-level folders reconciled against the live vault must all be
+# in the ADR §2.2 allowlist now, so a vault holding each of them reports zero
+# folder-allowlist violations (previously every one re-flagged as unlisted).
+AL="$(mktemp -d)"
+for _d in Designs Issues Plans-archive Sequencing Spikes StageFind; do
+  mkdir -p "$AL/$_d"
+  echo "x" > "$AL/$_d/note.md"
+done
+alreport="$(bash "$SCRIPT" --root "$AL")"
+assert_has "$alreport" "ok folder allowlist: 0 violations" "the 6 in-use folders are all allowlisted (no unlisted-folder flag)"
+for _d in Designs Issues Plans-archive Sequencing Spikes StageFind; do
+  assert_missing "$alreport" "allowlist: $_d/ — not in the ADR" "$_d/ is no longer flagged as unlisted"
+done
+rm -rf "$AL"
+
+# ── test check_naming_drift: cross-project marker (temperloop#420) ─────────────
+echo "--- test check_naming_drift: cross-project marker (temperloop#420) ---"
+# A deliberately cross-cutting note carrying `cross_project: true` frontmatter
+# is exempt from the `<project>`-prefix rule even though its filename has no
+# ` - ` separator; an unmarked note of the same non-convention shape still
+# flags — proving the marker is a precise per-note opt-in, not a blanket pass.
+XP="$(mktemp -d)"; mkdir -p "$XP/Decisions"
+printf -- '---\ncross_project: true\n---\ncross-cutting content\n' > "$XP/Decisions/BoardNumberingGlossary.md"
+echo "content" > "$XP/Decisions/UnmarkedDrift.md"
+xpreport="$(bash "$SCRIPT" --root "$XP")"
+assert_missing "$xpreport" "naming: Decisions/BoardNumberingGlossary.md" "cross_project-marked note is exempt from the <project>-prefix rule"
+assert_has     "$xpreport" "naming: Decisions/UnmarkedDrift.md"          "unmarked drifting note still flags"
+rm -rf "$XP"
+
+# A non-truthy cross_project value is NOT a marker — the note is still linted.
+XP2="$(mktemp -d)"; mkdir -p "$XP2/Decisions"
+printf -- '---\ncross_project: false\n---\ncontent\n' > "$XP2/Decisions/NotReallyCrossProject.md"
+xp2report="$(bash "$SCRIPT" --root "$XP2")"
+assert_has "$xp2report" "naming: Decisions/NotReallyCrossProject.md" "cross_project: false is not a marker — note still flags"
+rm -rf "$XP2"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"

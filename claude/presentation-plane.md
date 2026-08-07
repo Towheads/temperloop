@@ -14,7 +14,7 @@ the kernel's output surfaces are not prose at all: they are grammars a parser
 failure shape (looks like it worked; nothing downstream notices until the
 mechanism that depended on the exact bytes fails).
 
-This file is the **index of which surfaces are which**. It is deliberately
+This file is the **index of which surfaces are which**. It is deliberately <!-- cite: PP.1 incident:F#164 -->
 **not** a second copy of any contract: each row below names a surface,
 classifies it, and points at the ONE place that surface's real shape is owned
 (spec-centralization — the same discipline foundation's F#741 telemetry-sink
@@ -40,14 +40,14 @@ For any concrete output you're about to restyle:
    descriptions, plan-item titles and notes prose, commit-message bodies
    minus any closing-keyword line, decision-issue question prose, session
    summaries) that a style template may restyle freely.
-4. Found a machine-parsed surface that isn't listed? That's a gap in this
+4. Found a machine-parsed surface that isn't listed? That's a gap in this <!-- cite: PP.3 class:stale-index-licensed-breakage -->
    index, not license to guess — file it (kernel: an issue against this repo;
    overlay: per that project's capture-at-source rule) and add a row once the
    real owner is confirmed.
 
 ### Mixed surfaces (the common trap)
 
-Most frozen surfaces are not whole documents — they are **exact lines or
+Most frozen surfaces are not whole documents — they are **exact lines or <!-- cite: PP.2 incident:F#265 -->
 fields embedded inside an otherwise free-form document**. A PR body is mostly
 style-free prose, EXCEPT a bare `Closes #N` line and the `## Verification`
 section's resolved content. A plan-note item is mostly free-form prose,
@@ -67,20 +67,21 @@ no board, no vault) needs them frozen too.
 | Surface | Class | Owning contract / parser | Why |
 |---|---|---|---|
 | Bare `Closes #N` / `Fixes #N` issue-closing line in a PR body or commit message | **Frozen** | `claude/CLAUDE.kernel.md` § Issue linkage (grammar) + `workflows/scripts/build/pr.sh` `open` (mechanical emitter) | GitHub's own closing-keyword scanner reads this exact bare-line, non-backticked form; a reformatted or combined (`Closes #1 and #2`) line silently fails to close. |
-| Plan-note status sentinels `[ ]`/`[~]`/`[m]`/`[x]`/`[v]`/`[-]` | **Frozen** | `claude/plan-schema.md` § Status sentinels (meaning) + `workflows/scripts/build/plan.sh` `writeback`/`toposort` (mechanical parser/writer) | `/build`'s crash-resume, dependency-level toposort, and merge-gate logic branch on these exact tokens — see `plan.sh`'s closed `{"outcome":…}` contract. |
+| Plan-note status sentinels `[ ]`/`[~]`/`[m]`/`[>]`/`[x]`/`[v]`/`[-]` | **Frozen** | `claude/plan-schema.md` § Status sentinels (meaning) + `workflows/scripts/build/plan.sh` `writeback`/`toposort` (mechanical parser/writer) | `/build`'s crash-resume, dependency-level toposort, and merge-gate logic branch on these exact tokens — see `plan.sh`'s closed `{"outcome":…}` contract. |
 | Orchestrator/author sub-line fields on a plan item: `pr:`, `pushed_sha:`, `gh_issue:`, `also_closes:`, `epic:`, `split_from:`, `gate_check:`, `slug:`, `branch:`, `depends-on:`, `after:` | **Frozen** | `claude/plan-schema.md` (field definitions) + `workflows/scripts/build/plan.sh` `validate`/`writeback` | `/build` resume, `worktree.sh`'s deterministic `<slug>` path, `pr.sh`'s `Closes` emission, and `gate.sh`'s risk read all key off these exact field names. |
 | `speculative: true` / `escalated: true` sentinel sub-lines | **Frozen** | `claude/commands/build.md` §§ "Crash-safe sentinel" / "Stamp `escalated: true`" (not in `plan-schema.md`) | Step 0.5 reconcile and Step 1.4 resume use presence/absence of these exact tokens to discriminate a held speculative worker / an escalated-awaiting-continuation item from a plain stuck worker — a renamed or reworded sentinel collapses the discrimination. |
 | Decision-issue reply grammar: fenced ` ```decision ` block, `chosen:` key, `/choose <label>`, `/approve` shorthand, the `decision` label | **Frozen** | `claude/decision-queue-contract.md` §§ 2–3 | The driver's typed-reply parser and closed-enum-or-escalate rule read this exact grammar; the `decision` label is also the queue's drain filter (`--label decision --assignee ""`). |
 | `plan-approval-poll: [[Plans/<vault-path>]]` marker line | **Frozen** | `claude/commands/assess.md` Step 6 (minted; "load-bearing... must not change") / `claude/commands/build.md` Step 0a (consumed as filter) | Literal-string filter `/build` Step 0a uses to distinguish a plan-approval decision issue from any other decision issue in the same queue. |
 | `gate.sh` structured `.outcome` JSON (`READ`/`STRICT`/`NON_STRICT`/`RISKY`/`CLEAN_DISJOINT_INDEPENDENT`/`QUEUED`/`NUDGED`/`NUDGE_NOOP`/`MERGED`/`CONFLICTING`/`TIMEOUT`/`NATIVE`/`MANAGED`/`EJECTED`/`MERGE_REJECTED`/`ERROR`) | **Frozen** | `workflows/scripts/build/gate.sh` header (closed outcome-set contract) | The orchestrator branches on `.outcome` and associated keys only — never parses prose; a reworded outcome value is a silent no-match. |
 | `pr.sh` structured outcomes (`SCAN_CLEAN`/`SCAN_BLOCKED`/`BASE_CURRENT`/`BASE_STALE`/`REBASED`/`REBASE_CONFLICT`/`PUSHED`/`PUSH_REJECTED`/`PR_OPENED`/`EXISTS`/`ERROR`) | **Frozen** | `workflows/scripts/build/pr.sh` header | Same closed-outcome-set contract as `gate.sh`; `open --body-only` is the one exception (prints raw prose body, not JSON — see that surface separately, style-free). |
-| `worktree.sh` structured outcomes (`CREATED`/`REMOVED`/`NOT_FOUND`/`PRUNED`/`SKIPPED_DIRTY`/`SKIPPED_UNMERGED`/`ERROR`) | **Frozen** | `workflows/scripts/build/worktree.sh` header | Same closed-outcome-set contract; the deterministic `<repo-root>.wt/<slug>` path it derives is also frozen (a pure function of `slug:`, never restated by a worker). |
+| `worktree.sh` structured outcomes (`CREATED`/`REMOVED`/`NOT_FOUND`/`PRUNED`/`SKIPPED_FRESH`/`SKIPPED_DIRTY`/`SKIPPED_UNMERGED`/`ERROR`) | **Frozen** | `workflows/scripts/build/worktree.sh` header | Same closed-outcome-set contract; the deterministic `<repo-root>.wt/<slug>` path it derives is also frozen (a pure function of `slug:`, never restated by a worker). |
 | `ci-poll.sh` structured outcomes (`CI_GREEN`/`CI_FAILED`/`TIMEOUT`/`ERROR`) | **Frozen** | `workflows/scripts/build/ci-poll.sh` header | Same closed-outcome-set contract; `failed_run_ids` shape is part of it. |
 | `.build-guard` worktree marker file (JSON: `slug`/`branch`/`created`) | **Frozen** | `workflows/scripts/build/worktree.sh` (`create`, writer) + `claude/hooks/build-worktree-guard.sh` (reader) | The PreToolUse write-jail hook arms itself by checking for this exact filename's presence — a renamed marker file silently disarms the guard. |
-| Telemetry / raw-lake record shapes (`command-run`, `issue-touches`, `claims`, `funnel`, `knowledge-search-fallback` streams; the `schema_version` convention) | **Frozen** | `meta/data/raw/README.md` (canonical sink spec) | Every emit site (`emit-command-run.sh`, `emit-issue-touch.sh`, `emit-gh-perf.sh`, …) and every reader points here rather than restating the shape; a stream's readers key off exact field names, and a breaking change requires the documented `schema_version` bump. |
+| Telemetry / raw-lake record shapes (`command-run`, `issue-touches`, `claims`, `pipeline`, `knowledge-search-fallback`, `item-efficiency` streams; the `schema_version` convention) | **Frozen** | `meta/data/raw/README.md` (canonical sink spec) | Every emit site (`emit-command-run.sh`, `emit-issue-touch.sh`, `emit-gh-perf.sh`, `emit-item-efficiency.sh`, …) and every reader points here rather than restating the shape; a stream's readers key off exact field names, and a breaking change requires the documented `schema_version` bump. |
 | Board adapter field names/values: `Status` single-select option strings, the `Host/Session` claim-stamp format, `Seq`, `Component` | **Frozen** | `workflows/scripts/board/lib/board.sh` (field-name constants) + `claim.sh`/`worklist.sh`/`reconcile.sh` (consumers) | The distributed-lock read (claim/release/reconcile) and the board's Ready/In-Progress/Done routing key off these exact option strings and the stamp format; a restyled option string desyncs the board from every reader. |
-| Work-class labels `Operational` / `Foundational` | **Frozen** | `claude/work-class-policy.md` | The autonomous funnel driver's autonomy-policy branch (fully-autonomous vs prep-then-gate) matches on these exact label strings. |
-| Live/Drain pairing registry table (`claude/commands/tidy.md` § "Live/Drain pairings" table) | **Frozen** | `workflows/scripts/validate-live-drain.sh` (mechanical table parser) | The validator parses this table's literal row/column structure to assert every live rule has a paired drain backstop; reflowing the table (not just its prose) breaks the CI gate silently. |
+| Work-class labels `Operational` / `Foundational` | **Frozen** | `claude/work-class-policy.md` | The autonomous pipeline driver's autonomy-policy branch (fully-autonomous vs prep-then-gate) matches on these exact label strings. |
+| Capture/Backstop pairing registry table (`claude/commands/tidy.md` § "Capture/Backstop pairings" table) | **Frozen** | `workflows/scripts/validate-capture-backstop.sh` (mechanical table parser) | The validator parses this table's literal row/column structure to assert every capture rule has a paired backstop; reflowing the table (not just its prose) breaks the CI gate silently. |
+| Citation markers (`<!-- cite: <row-id> <class>:<ref> -->`) + `workflows/scripts/config/citation-registry.tsv` rows | **Frozen** | `claude/citation-schema.md` (grammar/placement) + `workflows/scripts/validate-prose-budget.sh` (mechanical 1:1 reconciler) | The budget gate greps the exact marker token grammar across `claude/**/*.md` and reconciles it against the registry's `row-id<TAB>file` rows; a restyled marker, a reflowed registry row, or a marker moved into code font goes red (or silently unscanned). |
 
 ## Overlay-extension table
 
@@ -95,7 +96,7 @@ not an exhaustive or verified enumeration.
 | Surface | Class | Owning contract / parser | Why |
 |---|---|---|---|
 | *(example, foundation)* Overlay-only telemetry streams layered onto `meta/data/raw/` (rework-tracking, richer issue-metadata snapshots, retrospective-verdict snapshots) | **Frozen** | *(overlay's own `meta/data/raw/README.md` extension — not this kernel's)* | Same reasoning as the kernel `command-run`/`issue-touches` row, scoped to overlay-only emit sites; the overlay's README extends this kernel's stub additively rather than replacing it (per `meta/data/raw/README.md` § Scope). |
-| *(example, foundation)* `claude/live-drain-registry.overlay.md` § "Live/Drain pairings — overlay extension" table | **Frozen** | `workflows/scripts/validate-live-drain.sh` (unions this table in when present) | Same mechanical-parse reasoning as the kernel Live/Drain row, for pairs whose live half is a personal/vault-backed rule with no meaning in a standalone kernel checkout. |
+| *(example, foundation)* `claude/capture-backstop-registry.overlay.md` § "Capture/Backstop pairings — overlay extension" table | **Frozen** | `workflows/scripts/validate-capture-backstop.sh` (unions this table in when present) | Same mechanical-parse reasoning as the kernel Capture/Backstop row, for pairs whose capture half is a personal/vault-backed rule with no meaning in a standalone kernel checkout. |
 | *(placeholder — add real overlay-specific frozen surfaces here as they're identified)* | — | — | — |
 
 ---

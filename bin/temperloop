@@ -3,9 +3,10 @@
 # temperloop — the kernel's newcomer/adoption-surface CLI entrypoint
 # (foundation #765 Epic D "newcomer experience", item cli-entrypoint-
 # bootstrap / #849). Public name TemperLoop; this binary was renamed from
-# `foundation` (foundation #893) — `kernel/bin/foundation` remains a thin
-# compat shim that execs this file so an existing `foundation <sub>` caller
-# keeps working. See Decisions/foundation - Kernel public name TemperLoop.
+# `foundation` (foundation #893). `kernel/bin/foundation` was a thin compat
+# shim that execed this file through the temperloop#165 rename window; that
+# window closed in v0.19.0 and the shim now only refuses, naming this
+# binary. See Decisions/foundation - Kernel public name TemperLoop.
 #
 # SCOPE (read before adding a subcommand): this CLI is the surface a
 # STRANGER meets before they have a working checkout — install, look around
@@ -40,10 +41,27 @@
 #   mechanism. A new FEATURE belongs in subcommands/, never as a new verb
 #   handled here.
 #
-# Every subcommand dispatch (anything past help/version) runs a prereq
-# check first — Claude Code CLI on PATH + gh authenticated — with an honest,
-# specific failure message per missing piece (see lib/common.sh). This is
-# centralized here so no individual subcommand item has to reimplement it.
+# Every subcommand dispatch (anything past help/version) runs a PER-
+# SUBCOMMAND prereq check first (temperloop#412, "subcommand-prereq-
+# scoping") — never a blanket claude+gh gate applied uniformly to every
+# subcommand regardless of whether it touches either tool. A subcommand
+# file declares what it needs via a `# prereqs: ...` header line (a subset
+# of `claude`, `gh`, space-separated — see _foundation_subcommand_prereqs
+# below); the dispatcher checks only that declared set before dispatch,
+# with an honest, specific failure message per missing piece (see
+# lib/common.sh's foundation_check_prereqs). A subcommand with NO
+# `# prereqs:` header declares nothing and is dispatched with zero
+# dispatcher-level checks — this is the common case: every subcommand
+# shipped today (try, install, uninstall, init, eject, configure,
+# baseline-snapshot, report, config) already has its OWN internal,
+# honest degrade-with-reason path for a missing/unauthenticated gh or an
+# absent claude (try's documented zero-auth contract chief among them), so
+# a blanket dispatcher-level gate was redundant at best and, for
+# install/uninstall (which call neither tool at all) and try (whose whole
+# point is to work with zero auth), an outright bug — see the issue for
+# the fuller history. A future subcommand that genuinely has no internal
+# degrade path for a hard dependency opts in with a `# prereqs: gh` (or
+# `claude`, or both) header instead of reimplementing the check itself.
 #
 # Alongside that prereq check sits a second, PASSIVE pre-dispatch check: the
 # 14-day report auto-offer (foundation #766 Epic E, item report-auto-offer /
@@ -53,25 +71,33 @@ set -uo pipefail
 # --- resolve this script's real location, following symlinks. Portable
 # (no GNU readlink -f) — the exact idiom already used by
 # workflows/scripts/board/claim.sh et al., so a `temperloop` invoked through
-# the curl-bootstrap's ~/.local/bin/temperloop symlink (or a `foundation`
-# compat-shim symlink) still finds its real sibling subcommands/ and lib/
-# directories. ---
+# the curl-bootstrap's ~/.local/bin/temperloop symlink still finds its real
+# sibling subcommands/ and lib/ directories. ---
 _src="${BASH_SOURCE[0]}"
 while [ -L "$_src" ]; do
   _dir="$(cd -P "$(dirname "$_src")" && pwd)"
   _src="$(readlink "$_src")"
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
-FOUNDATION_BIN_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+_tl_self_bin_dir="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 
-SUBCOMMANDS_DIR="$FOUNDATION_BIN_DIR/subcommands"
-LIB_DIR="$FOUNDATION_BIN_DIR/lib"
+SUBCOMMANDS_DIR="$_tl_self_bin_dir/subcommands"
+LIB_DIR="$_tl_self_bin_dir/lib"
 
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
 
-FOUNDATION_VERSION="${FOUNDATION_VERSION:-dev}"
+# Legacy FOUNDATION_* env vars are NO LONGER READ (the temperloop#165 window
+# closed in v0.19.0): a set legacy name refuses legibly here rather than
+# being silently ignored. See temperloop_env_compat in lib/common.sh.
+temperloop_env_compat || exit 1
+
+# Resolve the version via the shared helper (bin/lib/common.sh): env override
+# > shipped repo-root VERSION file > "dev". Exported so subcommand child
+# processes (feedback.sh's telemetry) inherit the embedded value. temperloop#677.
+TEMPERLOOP_VERSION="$(temperloop_resolve_version)"
+export TEMPERLOOP_VERSION
 
 # _foundation_subcommand_description <file>
 #   Prints the file's `# description: ...` header line — a documented,
@@ -89,9 +115,29 @@ _foundation_subcommand_description() {
   fi
 }
 
+# _foundation_subcommand_prereqs <file>
+#   Prints the file's `# prereqs: ...` header line — the per-subcommand
+#   prereq-scoping declaration (temperloop#412) — or an EMPTY string if the
+#   file has no such header. Same lightweight convention as
+#   _foundation_subcommand_description above (a documented `#
+#   <keyword>: ...` first-lines comment, also rendered into the docs
+#   site's subcommand-reference table by
+#   kernel/workflows/scripts/docs/sources/cli.py). Unlike the description
+#   convention, an ABSENT header here is meaningful, not a placeholder: it
+#   means the subcommand declares NO dispatch-level prereqs at all (see
+#   this file's header comment above for why that's the common case).
+#   Valid tokens: `claude`, `gh` (space-separated, either or both).
+_foundation_subcommand_prereqs() {
+  local file="$1" line
+  line="$(grep -m1 '^# prereqs: ' "$file" 2>/dev/null || true)"
+  printf '%s\n' "${line#\# prereqs: }"
+}
+
 _foundation_print_help() {
   cat <<EOF
 temperloop — kernel newcomer/adoption-surface CLI
+
+Start here: temperloop try
 
 Usage:
   temperloop <subcommand> [args...]
@@ -115,9 +161,9 @@ EOF
 In-checkout operations (board, build, quality gates) stay on 'make' — this
 CLI is the pre-checkout newcomer surface only.
 
-Running from: ${FOUNDATION_BIN_DIR%/bin}
-Default install location: $FOUNDATION_CLI_HOME_DEFAULT
-  (symlinked onto PATH at $FOUNDATION_CLI_BIN_DEFAULT by bin/bootstrap.sh)
+Running from: ${_tl_self_bin_dir%/bin}
+Default install location: $TEMPERLOOP_CLI_HOME_DEFAULT
+  (symlinked onto PATH at $TEMPERLOOP_CLI_BIN_DEFAULT by bin/bootstrap.sh)
 EOF
 }
 
@@ -125,8 +171,10 @@ EOF
 #   The 14-day report auto-offer (foundation #766 Epic E "cost/benefit value
 #   loop", item report-auto-offer / #880): a PASSIVE, pre-dispatch nudge —
 #   no cron, no daemon, no new verb — that prints a one-line offer to run
-#   `foundation report` once the target repo's baseline snapshot
-#   (.foundation/baseline.jsonl, written by `foundation baseline-snapshot` —
+#   `temperloop report` once the target repo's baseline snapshot
+#   (.temperloop/baseline.jsonl — a pre-rename repo's legacy .foundation/
+#   file is still read HERE, read-only, so an un-migrated checkout still
+#   gets its offer, temperloop#165 — written by `temperloop baseline-snapshot`;
 #   see kernel/workflows/scripts/lib/baseline_snapshot.contract.md) is at
 #   least 14 days old and the offer hasn't already fired for this repo.
 #
@@ -145,7 +193,7 @@ EOF
 #   dismiss verb or flag to maintain.
 #
 #   LATE-FIRE CAVEAT (accepted, not worked around): this only runs when the
-#   user happens to invoke `foundation <subcommand>` again after the
+#   user happens to invoke `temperloop <subcommand>` again after the
 #   14-day mark. Day-to-day work in an adopted checkout mostly stays on
 #   `make` (see this dispatcher's own scope note above), so post-init
 #   invocations of this CLI may be rare — a checkout that goes quiet after
@@ -162,11 +210,23 @@ _foundation_check_report_offer() {
   local cmd="$1"
   local repo_root baseline_file first_record generated_at
   local now_epoch gen_epoch age_days dismiss_key dismiss_dir dismiss_file
+  local baseline_is_legacy=0 migrate_hint=""
 
   command -v jq >/dev/null 2>&1 || return 0
 
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root="$(pwd)"
-  baseline_file="$repo_root/.foundation/baseline.jsonl"
+  # .temperloop/ is the canonical per-repo dir (renamed from .foundation/ in
+  # v0.15.0, temperloop#165). This READ-ONLY age probe deliberately still
+  # falls back to a legacy .foundation/baseline.jsonl after the v0.19.0
+  # window close — same rationale as `eject`'s legacy-residue cleanup: the
+  # window governed which dir the CLI RESOLVES CONFIG FROM and WRITES (those
+  # paths now refuse legibly, see init.sh / baseline-snapshot.sh), never
+  # whether an un-migrated repo's existing history can still be looked at.
+  baseline_file="$repo_root/.temperloop/baseline.jsonl"
+  if [ ! -f "$baseline_file" ]; then
+    baseline_file="$repo_root/.foundation/baseline.jsonl"
+    baseline_is_legacy=1
+  fi
   [ -f "$baseline_file" ] || return 0
 
   first_record="$(head -n1 "$baseline_file" 2>/dev/null)"
@@ -183,11 +243,23 @@ _foundation_check_report_offer() {
   [ "$age_days" -ge 14 ] || return 0
 
   dismiss_key="${repo_root//\//_}"
+  # The state/ subdir deliberately stays `foundation` — allowlisted legacy
+  # machine-state path (temperloop#165 verdict: cross-host writers/readers
+  # migrate together in the gate-sweep item, not per-call-site).
   dismiss_dir="${XDG_STATE_HOME:-$HOME/.local/state}/foundation/report-offer-dismissed"
   dismiss_file="$dismiss_dir/$dismiss_key"
   [ -f "$dismiss_file" ] && return 0
 
-  echo "temperloop: your baseline snapshot is ${age_days} days old — run 'foundation baseline-snapshot && foundation report' to see your before/after value (won't ask again for this repo)." >&2
+  # This offer is ONE-SHOT (the dismiss marker below fires in the same call),
+  # so the action it names has to work the FIRST time. When the age probe read
+  # a legacy .foundation/baseline.jsonl, `baseline-snapshot` REFUSES on that
+  # exact file (bin/subcommands/baseline-snapshot.sh) — so naming the bare
+  # command would spend the single offer on a step that cannot succeed. Carry
+  # the migration inline instead, matching that refusal's own wording.
+  if [ "$baseline_is_legacy" -eq 1 ]; then
+    migrate_hint="first migrate the legacy dir (mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/), then "
+  fi
+  echo "temperloop: your baseline snapshot is ${age_days} days old — ${migrate_hint}run 'temperloop baseline-snapshot && temperloop report' to see your before/after value (won't ask again for this repo)." >&2
 
   mkdir -p "$dismiss_dir" 2>/dev/null && : > "$dismiss_file" 2>/dev/null
   return 0
@@ -201,7 +273,7 @@ if [[ "$cmd" == "help" || "$cmd" == "-h" || "$cmd" == "--help" ]]; then
 fi
 
 if [[ "$cmd" == "--version" || "$cmd" == "-v" || "$cmd" == "version" ]]; then
-  echo "temperloop $FOUNDATION_VERSION"
+  echo "temperloop $TEMPERLOOP_VERSION"
   exit 0
 fi
 
@@ -212,7 +284,8 @@ if [[ ! -f "$subcommand_file" ]]; then
   exit 1
 fi
 
-if ! foundation_check_prereqs; then
+subcommand_prereqs="$(_foundation_subcommand_prereqs "$subcommand_file")"
+if [[ -n "$subcommand_prereqs" ]] && ! foundation_check_prereqs "$subcommand_prereqs"; then
   echo "" >&2
   echo "temperloop: fix the above, then re-run: temperloop $cmd" >&2
   exit 1

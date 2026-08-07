@@ -2,11 +2,14 @@
 #
 # Only a file literally named `boards.conf` (no `.example`) is consulted, at
 # one of two locations, in this order (first hit wins):
-#   1. machine-level: $XDG_CONFIG_HOME/foundation/boards.conf
-#      (default ~/.config/foundation/boards.conf)
+#   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
+#      (default ~/.config/temperloop/boards.conf). Renamed from the legacy
+#      foundation/ subdir in v0.15.0 (temperloop#165); the fallback to an
+#      existing ~/.config/foundation/boards.conf was removed in v0.19.0 —
+#      such a file is now NAMED on stderr, never read. Move it.
 #   2. repo-local override: workflows/scripts/board/boards.conf (next to this
 #      file)
-# If NEITHER exists, board.sh / funnel-tick.sh / funnel-drive.sh fall back to
+# If NEITHER exists, board.sh / pipeline-tick.sh / pipeline-drive.sh fall back to
 # their own built-in case maps (this repo's own real values — see those
 # files' own comments) — so a consuming repo (e.g. one that gets a synced
 # copy of board.sh but never a conf file) behaves identically to today.
@@ -17,7 +20,7 @@
 #   project  "<number>"        — project-number axis (gh project <number> ...)
 #   name     "<slug>"          — board NAME alias axis (temperloop #95). Lets
 #                                 every --board switch accept this NAME as well
-#                                 as the logical number, so a human never has to
+#                                 as the board id, so a human never has to
 #                                 touch the private number space: `--board
 #                                 widget-app` resolves identically to `--board
 #                                 1`. Matching is case-insensitive; the number
@@ -44,6 +47,16 @@
 #                                 issues-only board only needs the `repo` axis
 #                                 — `owner`/`project` are meaningless without a
 #                                 Projects board and are simply never read.
+#                                 UNLIKE every other axis on this page, this
+#                                 one resolves PER-KEY across both conf files:
+#                                 a machine-level conf that exists but has no
+#                                 `backend=` line for this board falls through
+#                                 to a repo-local `backend=` line instead of
+#                                 shadowing it (an explicit machine-level
+#                                 `backend=` line still wins outright). This
+#                                 is what lets a committed repo-local backend
+#                                 flip survive an unrelated machine-level conf
+#                                 on the same host.
 #   cache    "on"               — issue-plane read-cache enable axis
 #                                 (F#988/#1026, cache-read-dispatch item's
 #                                 Contract; workflows/scripts/board/lib/cache.sh
@@ -77,13 +90,13 @@
 #                                 window) is deliberately ENV VARS, NOT a
 #                                 boards.conf axis — see `CACHE_STORE_ROOT` /
 #                                 `CACHE_STORE_TTL` in cache.sh's own header
-#                                 for the knobs and their defaults.
+#                                 for the settings and their defaults.
 # These are deliberately SEPARATE axes (#330) — do not collapse them.
 # Blank lines and lines starting with # are ignored. This file is parsed with
 # grep/cut only — never sourced or eval'd — so it cannot execute code.
 #
 # The values below are a PLACEHOLDER example — replace with your own org/repo
-# registry. Board numbers are logical (arbitrary, chosen by you); onboard a
+# registry. Board ids are arbitrary (chosen by you); onboard a
 # new board by adding its 2-3 lines here (or by extending the built-in case
 # maps directly if you're maintaining a fork rather than overriding).
 

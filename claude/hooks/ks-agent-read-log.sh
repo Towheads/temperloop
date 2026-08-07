@@ -24,7 +24,7 @@
 # KNOWLEDGE_STORE_BACKEND in knowledge_store.sh (today:
 # `mcp__obsidian* mcp__obsidian-builtin*`). Enabling a future
 # `mcp__basic-memory__*` transport at the mcp_obsidian EOL cutover
-# (F#946/#947) is a one-line edit to that knob — no edit to this file. The
+# (F#946/#947) is a one-line edit to that setting — no edit to this file. The
 # PostToolUse `matcher` this hook is registered under (in the consuming
 # repo's settings.json — see claude/hooks/README.md) may be broader than
 # this list (e.g. `mcp__.*`) since this in-hook check is authoritative and
@@ -70,7 +70,7 @@
 # is INERT (no knowledge_store.sh to source) rather than reimplementing the
 # line format from a hardcoded guess. Never hardcodes a personal path: the
 # knowledge_store.sh location is resolved relative to this file's own
-# (symlink-resolved) directory, never a literal like $HOME/dev/foundation.
+# (symlink-resolved) directory, never a hardcoded personal checkout literal.
 set -uo pipefail
 
 # shellcheck source=eval-guard.sh
@@ -93,9 +93,9 @@ tool=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 [ -n "$tool" ] || exit 0
 
 # ── Resolve knowledge_store.sh relative to THIS file's real directory ─────
-# Never a hardcoded personal path (e.g. $HOME/dev/foundation) — that would
-# fail the stranger test for any checkout whose owner isn't the machine the
-# literal was authored on. `cd ... && pwd -P` follows a symlinked hooks/
+# Never a hardcoded personal checkout path — that would fail the stranger
+# test for any checkout whose owner isn't the machine the literal was
+# authored on. `cd ... && pwd -P` follows a symlinked hooks/
 # directory (this hook is typically reached via a `~/.claude/hooks ->
 # <repo>/claude/hooks` directory symlink, per this repo's install
 # convention) back to the real repo tree, so `../..` correctly climbs to
@@ -116,7 +116,7 @@ declare -F ks__read_log_emit >/dev/null 2>&1 || exit 0
 matched=0
 # Intentional word-splitting: KNOWLEDGE_READ_LOG_AGENT_MATCHERS is a
 # space-separated list of case-glob patterns by design (see this file's own
-# header and the knob's definition in knowledge_store.sh).
+# header and the setting's definition in knowledge_store.sh).
 # shellcheck disable=SC2086
 for pat in ${KNOWLEDGE_READ_LOG_AGENT_MATCHERS:-}; do
   # shellcheck disable=SC2254  # $pat is deliberately unquoted: it's a glob

@@ -28,6 +28,17 @@
 #   checkout                  PARKED_ON_MERGED  on a branch whose PR merged
 #                              STALE_UNTRACKED   an untracked file older than
 #                                                the staleness horizon
+#                              STALE_VENDORED_HOOK:<hook>
+#                                                the checkout's VENDORED copy of
+#                                                a guard hook
+#                                                (.claude/hooks/<hook>) differs
+#                                                from this kernel's canonical
+#                                                claude/hooks/<hook> — i.e. the
+#                                                consumer is running an
+#                                                out-of-date guard. See the
+#                                                "Vendored-hook drift" block
+#                                                below for the comparison
+#                                                contract and the remedy.
 #                            Default checkouts: foundation, stageFind,
 #                            ssmobile, subsetwiki, temperloop (the interactive
 #                            operator checkout of the kernel repo — a DIFFERENT
@@ -47,11 +58,18 @@
 #
 #   launchd agent            each infra/launchd/*.plist declared beside a
 #                            checkout above. Drift:
-#                              AGENT_UNLOADED  declared but not in
-#                                              `launchctl list`
+#                              AGENT_UNLOADED  declared AND installed on THIS
+#                                              host, but not in `launchctl list`
 #                              AGENT_STALE     loaded, but its heartbeat marker
 #                                              is older than its cadence (no
 #                                              successful run within cadence)
+#                            Non-drift (informational):
+#                              EXPECTED_ELSEWHERE  declared, but this host does
+#                                              not own the agent (not installed
+#                                              here / not in ENV_RECONCILE_AGENT_HOSTS)
+#                                              — the agent host owns it, so its
+#                                              not-loaded state is NOT this
+#                                              host's drift (#531).
 #                            Override: ENV_RECONCILE_LAUNCHD_DIRS
 #                            (space-separated dirs to glob *.plist in).
 #                            Heartbeat convention (#1173): freshness is judged
@@ -105,6 +123,82 @@
 #                                            markers the jobs write on success)
 #   ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S   (default 86400 — used when a
 #                                            plist declares no StartInterval)
+#   ENV_RECONCILE_AGENT_HOSTS               (host-role override, #531 — space-
+#                                            separated host labels that OWN the
+#                                            launchd/cron role; compared against
+#                                            ${SUBSET_HOST_LABEL:-hostname -s}.
+#                                            When set, a host NOT in the list
+#                                            reports its agents/cron checkouts as
+#                                            EXPECTED_ELSEWHERE. When UNSET, the
+#                                            install-marker auto-detect below is
+#                                            used instead — no config needed.)
+#   ENV_RECONCILE_AGENT_INSTALL_DIR         (default ~/Library/LaunchAgents — the
+#                                            launchd user-agent install dir whose
+#                                            plists mark which agents THIS host
+#                                            actually runs, #531)
+#   ENV_RECONCILE_CANONICAL_HOOK_DIR        (default <this repo>/claude/hooks —
+#                                            the canonical hook source the
+#                                            vendored copies are compared against)
+#   ENV_RECONCILE_VENDORED_HOOKS            (default build-worktree-guard.sh —
+#                                            space-separated hook basenames to
+#                                            compare)
+#
+# ── Vendored-hook drift (STALE_VENDORED_HOOK, foundation#1353 / F#932) ────────
+# A guard hook is the source of truth HERE (claude/hooks/) and is push-synced
+# into each consumer repo at .claude/hooks/<hook>, where it is registered in
+# that repo's project-level .claude/settings.json. Nothing reported when a
+# consumer's copy fell behind — so a consumer could keep running a guard whose
+# protections the kernel has since widened, silently. That is exactly the F#932
+# shape: the write-jail's matcher was `Edit|Write|MultiEdit` only, worker Bash
+# was un-jailed, and a worker's `rm -rf "$(dirname "$(pwd)")"` deleted every
+# checkout and the local knowledge store. The kernel grew a Bash arm; the
+# consumers kept the pre-Bash-arm copy and nothing said so.
+#
+# Comparison contract:
+#   - CONTENT comparison, never a version stamp. A stamp needs kernel-side
+#     coordination to bump and can itself go stale (it says what the syncer
+#     BELIEVED, not what the file IS); the bytes cannot lie. This is
+#     deliberately a different mechanism from board-sync-drift-check.sh's
+#     single-manifest SHA — that check runs inside a consumer's own CI against
+#     an explicit expected SHA; this one runs on the operator's host with no
+#     agreed reference but the canonical file itself.
+#   - The sync stamps a provenance PREAMBLE onto its output: after the shebang
+#     it injects THREE lines — the "# GENERATED by foundation '<cmd>' …" banner,
+#     the "# Source of truth: …" note, and a bare "#" separator. All three are
+#     EXCLUDED from the comparison (_hook_body is the injector's exact inverse)
+#     — they are present by construction in every synced copy and absent from
+#     the canonical file, so counting even ONE of them would make every
+#     correctly-synced consumer permanently and unclearably "drifted".
+#     ⚠️ The injector lives in the consumer-side fleet Makefile (foundation
+#     Makefile:458) and this strip lives here in the kernel, with NOTHING
+#     mechanically linking them — see _hook_body's own note; the in-sync test
+#     fixture is deliberately built with the real injector so a shape change
+#     fails the suite rather than silently false-alarming production.
+#   - The remedy is read from the copy's OWN banner (which names the exact sync
+#     command that produced it), VALIDATED to a bare `make <target>` shape, and
+#     falls back to the generic engine invocation otherwise. No mapping table to
+#     keep in sync with the fleet Makefile's wrappers. The named target lives in
+#     that fleet repo, NOT in this kernel repo, so the remedy is rendered with
+#     its run location.
+#   - Which hooks are compared is ENV_RECONCILE_VENDORED_HOOKS. Renaming the
+#     canonical hook without updating that list turns this check into a silent
+#     no-op. That is the fail-open invariant working as specified (an
+#     unresolvable reference must never manufacture drift), noted here so the
+#     trade-off is visible rather than surprising.
+#
+# DETECTION ONLY. This class makes the staleness visible; auto-syncing a
+# consumer on kernel merge (foundation#694) is the durable fix and is NOT
+# duplicated here. Reporting — never healing — is also what the "aggressive
+# in-lane, report cross-lane" environment-hygiene policy requires: a consumer
+# checkout is a foreign lane, so its drift is surfaced for /check-in to dispose,
+# never silently rewritten from under whichever session owns it.
+#
+# Deliberately NOT a `make doctor` check: doctor runs at every session start and
+# its pinned contract is "doctor non-zero → run `make install` to heal". A stale
+# hook in a FOREIGN checkout is not healable by `make install` (that would be a
+# foreign-tree write), so a doctor class here would pin doctor non-zero forever,
+# fire a futile `make install` every session, and bury doctor's real
+# MISSING/DANGLING signal.
 #
 # READ-ONLY / FAIL-OPEN contract: this script never runs `git fetch`, never
 # writes a file, never calls `launchctl load/unload`, never invokes `gh` in
@@ -159,6 +253,41 @@ AGENT_DEFAULT_CADENCE_S="${ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S:-86400}"
 # $AGENT_HEARTBEAT_DIR/<label>.ran on SUCCESSFUL completion; env-reconcile reads
 # the marker's mtime, never StandardOutPath (which launchd touches on every wake).
 AGENT_HEARTBEAT_DIR="${ENV_RECONCILE_AGENT_HEARTBEAT_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/agent-heartbeat}"
+
+# Vendored-hook drift (STALE_VENDORED_HOOK). The canonical source is THIS repo's
+# own claude/hooks/ — resolved from SCRIPT_DIR (workflows/scripts/build) up three
+# levels. That holds both in a bare kernel checkout and inside a consumer's
+# vendored `kernel/` subtree, since either way the canonical hook sits beside the
+# reconciler running the comparison. Empty (unresolvable) = the comparison is
+# skipped entirely: fail-open, never a false alarm from a missing reference.
+_REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd -P)" || _REPO_ROOT=""
+DEFAULT_CANONICAL_HOOK_DIR=""
+[ -n "$_REPO_ROOT" ] && DEFAULT_CANONICAL_HOOK_DIR="$_REPO_ROOT/claude/hooks"
+CANONICAL_HOOK_DIR="${ENV_RECONCILE_CANONICAL_HOOK_DIR:-$DEFAULT_CANONICAL_HOOK_DIR}"
+read -r -a VENDORED_HOOKS <<<"${ENV_RECONCILE_VENDORED_HOOKS:-build-worktree-guard.sh}"
+
+# ── Host-role ownership (#531) ────────────────────────────────────────────────
+# The launchd-agent and cron-checkout roles are owned by ONE host (the agent host),
+# not every machine that carries this checkout. A laptop that never installed
+# the plists and never held the cron checkouts must NOT report the agent host's agents
+# as AGENT_UNLOADED nor the agent host's cron checkouts as ABSENT — that drift belongs
+# to the owning host, and flagging it everywhere is the #531 false-positive.
+#
+# Ownership resolves through two seams, cheapest-first, both READ-ONLY:
+#   1. Explicit host list — ENV_RECONCILE_AGENT_HOSTS (space-separated host
+#      labels, matched against this host's ${SUBSET_HOST_LABEL:-hostname -s}).
+#      When set, THIS host owns the role iff it is in the list; every other host
+#      classifies the agents/cron checkouts as EXPECTED_ELSEWHERE (not drift).
+#   2. Install-marker auto-detect (default, zero-config) — a launchd USER agent
+#      is "installed" on a host only when its plist lives in the launchd agents
+#      directory ($AGENT_INSTALL_DIR, default ~/Library/LaunchAgents). If a
+#      declared plist is NOT installed here, this host does not run that agent →
+#      EXPECTED_ELSEWHERE; if it IS installed but not loaded → genuine
+#      AGENT_UNLOADED. The install directory being empty of the declared agents
+#      is exactly the laptop's self-describing "not my role" signal.
+RECONCILE_HOST="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)}"
+AGENT_INSTALL_DIR="${ENV_RECONCILE_AGENT_INSTALL_DIR:-$HOME/Library/LaunchAgents}"
+read -r -a AGENT_HOSTS <<<"${ENV_RECONCILE_AGENT_HOSTS:-}"
 
 DEFAULT_CRON_CHECKOUTS="$HOME/dev/foundation.cron $HOME/dev/batch/temperloop $HOME/dev/foundation-kernel"
 # Note: $HOME/dev/batch/temperloop (cron, above) and $HOME/dev/temperloop
@@ -329,6 +458,115 @@ classify_cron_checkout() {
   printf '%s' "$classes"
 }
 
+# ── Vendored-hook drift helpers (STALE_VENDORED_HOOK) ─────────────────────────
+# _hook_body <file> — the file's content with the sync's provenance BANNER
+# removed, so a synced copy and its canonical source compare equal when only the
+# banner differs.
+#
+# EXACT INVERSE OF THE INJECTOR. The hook-sync's recipe is
+#   awk 'NR==1{print; print b; print s; print "#"; next} {print}'
+# i.e. after the shebang it inserts exactly THREE lines: the "GENERATED by …
+# DO NOT EDIT HERE" banner, the "Source of truth: …" note, and a bare `#`
+# separator. So this strips exactly lines 2-4, and ONLY when line 2 is the
+# banner — which makes it a no-op on the canonical file (no banner at line 2),
+# keeping the two streams symmetric.
+#
+# The bare `#` is the load-bearing third line: dropping only the two commented
+# lines leaves it behind in every synced copy and absent from canonical, so the
+# streams could never compare equal and EVERY correctly-synced consumer would
+# report permanent, unclearable drift (following the remedy re-runs the injector
+# and reproduces the identical file). That self-perpetuating alarm is exactly the
+# fatigue shape that buries the real signal this class exists to raise.
+#
+# ⚠️ CROSS-REPO COUPLING, NOT MECHANICALLY LINKED: this strip lives in the kernel
+# while the injector lives in the CONSUMER-side fleet Makefile's `sync-hooks`
+# recipe (foundation Makefile:458, the `inject()` awk one-liner above). Nothing
+# checks the two stay inverses — if the injected preamble's shape ever changes,
+# this function must change with it, and the in-sync fixture in
+# tests/test_env_reconcile.sh (built with the REAL injector, deliberately) is
+# what catches the mismatch.
+#
+# Positional, not pattern-global: a body line deeper in the file that happens to
+# read "Source of truth:" is content, not banner, and is never silently dropped.
+# Nothing else is normalised — any other byte difference IS drift.
+_hook_body() {
+  awk '
+    NR==1 { print; next }
+    NR==2 && /^# *GENERATED by / { stripped=1; next }
+    stripped && (NR==3 || NR==4) { next }
+    { print }
+  ' "$1" 2>/dev/null
+}
+
+# _vendored_hook_sync_cmd <repo> <hook> — the exact command that re-syncs <hook>
+# into <repo>. Read from the vendored copy's OWN banner, which names the make
+# target that produced it (`# GENERATED by foundation 'make sync-<x>-hooks' …`);
+# falls back to the generic sync engine with an explicit TARGET_REPO when the
+# copy carries no banner. Self-describing — no repo→target mapping table here
+# that could itself drift from the fleet Makefile's wrappers.
+#
+# THE CAPTURE IS UNTRUSTED INPUT AND IS VALIDATED BEFORE USE. Its source is the
+# very file this check exists because it cannot be assumed to match canonical —
+# a garbled, truncated, or hand-edited banner is the realistic case. This script
+# never executes the string, but `--format entry` is appended to the hygiene
+# report that /check-in READS AND DISPOSES, so an unvalidated capture hands an
+# agent an authoritative-looking command line sourced from a suspect file (a
+# planted banner reading `make sync-x-hooks; curl … | sh; rm -rf …` otherwise
+# renders verbatim). So the capture is accepted ONLY in the narrow shape a
+# legitimate SYNC_LABEL produces — `make <target>`, a single bare target of
+# word/dot/dash characters — and anything else falls back to the generic engine
+# invocation. That keeps the self-describing property for real banners while
+# making the surface un-injectable.
+#
+# The emitted command is a FLEET-Makefile target (`sync-<x>-hooks` lives in the
+# consumer-side fleet repo, not in this kernel repo, which has no such target),
+# so callers render it with its run location — see the emit site.
+_vendored_hook_sync_cmd() {
+  local repo="$1" hook="$2" cmd
+  cmd="$(sed -n "s/^#[[:space:]]*GENERATED by [A-Za-z0-9_-]* '\([^']*\)'.*/\1/p" \
+    "$repo/.claude/hooks/$hook" 2>/dev/null | head -1)"
+  case "$cmd" in
+    "make "[A-Za-z0-9_]*)
+      # Re-check the tail against the allowed charset: no whitespace, no shell
+      # metacharacters, no second word — a bare `make <target>` and nothing else.
+      case "${cmd#make }" in
+        *[!A-Za-z0-9_.-]*) cmd="" ;;
+      esac
+      ;;
+    *) cmd="" ;;
+  esac
+  if [ -n "$cmd" ]; then
+    printf '%s\n' "$cmd"
+  else
+    printf 'make sync-hooks TARGET_REPO=%s\n' "$repo"
+  fi
+}
+
+# _stale_vendored_hooks <repo> — prints a space-terminated
+# `STALE_VENDORED_HOOK:<hook>` token per vendored hook whose banner-stripped body
+# differs from canonical. FAIL-OPEN and SILENT on every uncertain case: no
+# resolvable canonical dir, no `cmp`, a canonical file that is missing/unreadable,
+# or a consumer that simply vendors no copy of the hook — each is skipped without
+# a token and without a message. Only a readable-copy-vs-readable-canonical
+# mismatch raises the class.
+_stale_vendored_hooks() {
+  local repo="$1" out="" h canon vend _i=0
+  [ -n "$CANONICAL_HOOK_DIR" ] || { printf ''; return 0; }
+  command -v cmp >/dev/null 2>&1 || { printf ''; return 0; }
+  while [ "$_i" -lt "${#VENDORED_HOOKS[@]}" ]; do
+    h="${VENDORED_HOOKS[$_i]}"; _i=$((_i + 1))
+    [ -n "$h" ] || continue
+    canon="$CANONICAL_HOOK_DIR/$h"
+    vend="$repo/.claude/hooks/$h"
+    [ -r "$canon" ] || continue   # no reference to compare against — skip
+    [ -r "$vend" ] || continue    # consumer vendors no copy — not this class
+    if ! cmp -s <(_hook_body "$canon") <(_hook_body "$vend"); then
+      out="${out}STALE_VENDORED_HOOK:${h} "
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # ── classify_operator_checkout <repo> ─────────────────────────────────────────
 classify_operator_checkout() {
   local repo="$1" classes="" branch default merged now f m age_days
@@ -352,6 +590,10 @@ classify_operator_checkout() {
       classes="${classes}STALE_UNTRACKED:${f} "
     fi
   done < <(git -C "$repo" status --porcelain 2>/dev/null | awk '/^\?\?/{ sub(/^\?\? /,""); print }')
+
+  # An out-of-date VENDORED guard hook — the consumer is running protections the
+  # kernel has since widened (see the "Vendored-hook drift" block in the header).
+  classes="${classes}$(_stale_vendored_hooks "$repo")"
 
   printf '%s' "$classes"
 }
@@ -411,6 +653,72 @@ _plist_extract_key() {
   ' "$plist" 2>/dev/null || true
 }
 
+# ── Host-role ownership helpers (#531) ────────────────────────────────────────
+# _host_in_agent_hosts — true iff this host is in the explicit AGENT_HOSTS list.
+_host_in_agent_hosts() {
+  local h _i=0
+  while [ "$_i" -lt "${#AGENT_HOSTS[@]}" ]; do
+    h="${AGENT_HOSTS[$_i]}"; _i=$((_i + 1))
+    [ "$h" = "$RECONCILE_HOST" ] && return 0
+  done
+  return 1
+}
+
+# _agent_installed_here <plist> — is the agent declared by <plist> installed on
+# THIS host? An installed launchd user agent lives in $AGENT_INSTALL_DIR (default
+# ~/Library/LaunchAgents), matched by plist basename first (the shape
+# `make install-launchd-all` produces) then, as a fallback, by declared Label.
+# READ-ONLY — a stat/glob only, never a launchctl call.
+_agent_installed_here() {
+  local plist="$1" base label f flabel
+  [ -d "$AGENT_INSTALL_DIR" ] || return 1
+  base="$(basename "$plist")"
+  [ -e "$AGENT_INSTALL_DIR/$base" ] && return 0
+  label="$(_plist_extract_key "$plist" Label)"
+  [ -n "$label" ] || return 1
+  for f in "$AGENT_INSTALL_DIR"/*.plist; do
+    [ -e "$f" ] || continue
+    flabel="$(_plist_extract_key "$f" Label)"
+    [ "$flabel" = "$label" ] && return 0
+  done
+  return 1
+}
+
+# _agent_owned_here <plist> — does THIS host own (and therefore run) the agent
+# declared by <plist>? Explicit AGENT_HOSTS list wins when set; otherwise the
+# install-marker auto-detect above. When false, the agent is another host's
+# responsibility and classify_agent reports EXPECTED_ELSEWHERE, not drift.
+_agent_owned_here() {
+  local plist="$1"
+  if [ "${#AGENT_HOSTS[@]}" -gt 0 ]; then
+    _host_in_agent_hosts
+    return $?
+  fi
+  _agent_installed_here "$plist"
+}
+
+# _this_host_owns_cron — does THIS host own the cron-checkout role? Explicit
+# AGENT_HOSTS list wins when set; otherwise auto-detect: a host owns the cron
+# role iff it has at least one of the declared launchd agents installed (the same
+# automation-host signal). A host with none installed (a laptop) does not own the
+# cron checkouts, so their absence is EXPECTED_ELSEWHERE rather than ABSENT.
+_this_host_owns_cron() {
+  if [ "${#AGENT_HOSTS[@]}" -gt 0 ]; then
+    _host_in_agent_hosts
+    return $?
+  fi
+  local d p _i=0
+  while [ "$_i" -lt "${#LAUNCHD_DIRS[@]}" ]; do
+    d="${LAUNCHD_DIRS[$_i]}"; _i=$((_i + 1))
+    [ -d "$d" ] || continue
+    for p in "$d"/*.plist; do
+      [ -e "$p" ] || continue
+      _agent_installed_here "$p" && return 0
+    done
+  done
+  return 1
+}
+
 # ── classify_agent <plist> ────────────────────────────────────────────────────
 classify_agent() {
   local plist="$1" label interval last_run age_s marker
@@ -418,6 +726,14 @@ classify_agent() {
   label="$(_plist_extract_key "$plist" Label)"
   if [ -z "$label" ]; then
     printf 'MALFORMED_PLIST:%s' "$(basename "$plist")"
+    return 0
+  fi
+
+  # Host-role gate (#531): an agent this host does not own belongs to the agent host,
+  # not here — report EXPECTED_ELSEWHERE (a non-drift class) rather than probing
+  # launchctl and false-flagging it AGENT_UNLOADED on a non-owning laptop.
+  if ! _agent_owned_here "$plist"; then
+    printf 'EXPECTED_ELSEWHERE:%s' "$label"
     return 0
   fi
 
@@ -525,16 +841,31 @@ while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
   [ -d "${_c}.wt" ] && WT_ROOTS+=("$_c")
 done
 
+# Resolve once (#531): does THIS host own the cron-checkout role? On a
+# non-owning host a cron checkout that is simply not present here is
+# EXPECTED_ELSEWHERE, not ABSENT — the absence is the owning host's concern.
+if _this_host_owns_cron; then HOST_OWNS_CRON=1; else HOST_OWNS_CRON=0; fi
+
 CRON_LINES=""
 _i=0
 while [ "$_i" -lt "${#CRON_CHECKOUTS[@]}" ]; do
   c="${CRON_CHECKOUTS[$_i]}"; _i=$((_i + 1))
   [ -n "$c" ] || continue
   cls="$(classify_cron_checkout "$c")"
+  # A missing cron checkout on a host that does not own the cron role isn't
+  # drift — reclassify ABSENT → EXPECTED_ELSEWHERE so a laptop stops reporting
+  # the agent host's cron checkouts as ABSENT (#531).
+  if [ "$cls" = "ABSENT" ] && [ "$HOST_OWNS_CRON" -eq 0 ]; then
+    cls="EXPECTED_ELSEWHERE"
+  fi
   if [ -z "$cls" ]; then
     CRON_LINES="${CRON_LINES}  OK           $c"$'\n'
   else
     case "$cls" in
+      EXPECTED_ELSEWHERE)
+        # Not this host's role (#531) — informational, never drift.
+        CRON_LINES="${CRON_LINES}  EXPECTED     $c  [${cls}]"$'\n'
+        ;;
       ABSENT | NOT_A_REPO)
         CRON_LINES="${CRON_LINES}  ${cls}$(printf '%*s' $((13 - ${#cls})) '')$c"$'\n'
         ;;
@@ -562,6 +893,30 @@ while [ "$_i" -lt "${#OPERATOR_CHECKOUTS[@]}" ]; do
       *)
         OPERATOR_LINES="${OPERATOR_LINES}  DRIFT        $c  [${cls% }]"$'\n'
         add "- ⚠️ operator checkout drift: $c — ${cls% }" drift
+        # A stale vendored hook is only actionable with the command that re-syncs
+        # it, so emit the remedy alongside the class in BOTH formats (the report
+        # table below, and the FINDINGS block --format entry renders). Appended
+        # via `add` WITHOUT the drift flag: it annotates the alarm already
+        # counted above rather than counting as a second one.
+        _j=0
+        while [ "$_j" -lt "${#VENDORED_HOOKS[@]}" ]; do
+          h="${VENDORED_HOOKS[$_j]}"; _j=$((_j + 1))
+          # Match the token's TRAILING SPACE (_stale_vendored_hooks emits
+          # `STALE_VENDORED_HOOK:<hook> `). Without it a hook basename that is a
+          # prefix of another cross-matches, emitting a spurious re-sync line for
+          # an in-sync hook the moment ENV_RECONCILE_VENDORED_HOOKS lists two
+          # with a shared prefix.
+          case "$cls" in
+            *"STALE_VENDORED_HOOK:$h "*)
+              remedy="$(_vendored_hook_sync_cmd "$c" "$h")"
+              # The target lives in the consumer-side FLEET Makefile, not in this
+              # kernel repo — so name the run location, or an operator acting on
+              # this line from a kernel checkout just gets "No rule to make target".
+              OPERATOR_LINES="${OPERATOR_LINES}               ↳ re-sync $h: $remedy  (run from the foundation checkout)"$'\n'
+              add "  - remedy — re-sync $h into $c: \`$remedy\` (run from the foundation checkout)"
+              ;;
+          esac
+        done
         ;;
     esac
   fi
@@ -598,8 +953,16 @@ while [ "$_i" -lt "${#LAUNCHD_DIRS[@]}" ]; do
     if [ -z "$cls" ]; then
       AGENT_LINES="${AGENT_LINES}  OK           $p"$'\n'
     else
-      AGENT_LINES="${AGENT_LINES}  DRIFT        $p  [${cls}]"$'\n'
-      add "- ⚠️ launchd agent drift: $p — ${cls}" drift
+      case "$cls" in
+        EXPECTED_ELSEWHERE:*)
+          # Not this host's role (#531) — informational, never drift.
+          AGENT_LINES="${AGENT_LINES}  EXPECTED     $p  [${cls}]"$'\n'
+          ;;
+        *)
+          AGENT_LINES="${AGENT_LINES}  DRIFT        $p  [${cls}]"$'\n'
+          add "- ⚠️ launchd agent drift: $p — ${cls}" drift
+          ;;
+      esac
     fi
   done < <(find "$d" -mindepth 1 -maxdepth 1 -type f -name '*.plist' 2>/dev/null)
 done

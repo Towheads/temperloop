@@ -23,6 +23,7 @@ FIX="$HERE/fixtures"
 
 # Source the shared replay component for _fake_gh_log_argv (argv-log-v1).
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 # Isolate + disable the on-disk read cache so every case sees the canned data.
@@ -31,6 +32,7 @@ BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/milestone-cache-XXXXXX")"
 export BOARD_CACHE_DIR
 
 # shellcheck source=scripts/milestone.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/milestone.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
@@ -90,7 +92,7 @@ case "$DESC" in
   *"Ship to prod."*) ;;
   *) fail "activate: must PRESERVE the existing description, got: '$DESC'" ;;
 esac
-printf '%s' "$OUT" | grep -q "Activated milestone 'Production Live'" || fail "activate: expected a confirmation\n$OUT"
+grep -q "Activated milestone 'Production Live'" <<<"$OUT" || fail "activate: expected a confirmation\n$OUT"
 echo "PASS: milestone_activate adds the triage:active marker, preserving existing text"
 
 # Empty existing description -> description becomes just the marker.
@@ -125,7 +127,7 @@ case "$DESC" in
   *"Ship to prod."*) ;;
   *) fail "deactivate: must preserve the rest of the description, got: '$DESC'" ;;
 esac
-printf '%s' "$OUT" | grep -q "Deactivated milestone 'Production Live'" || fail "deactivate: expected a confirmation\n$OUT"
+grep -q "Deactivated milestone 'Production Live'" <<<"$OUT" || fail "deactivate: expected a confirmation\n$OUT"
 echo "PASS: milestone_deactivate removes the marker, preserving the rest"
 
 # --- milestone_deactivate is idempotent: no marker -> no PATCH ------------------
@@ -145,11 +147,11 @@ MILESTONES_JSON='[
 ]'
 : >"$CALLS"
 OUT="$(milestone_list 3)"
-printf '%s' "$OUT" | grep -q "Production Live.*active" || fail "list: Production Live should be flagged active\n$OUT"
-printf '%s' "$OUT" | grep -q "hardening.*active"       || fail "list: hardening should be flagged active\n$OUT"
-printf '%s' "$OUT" | grep -Eq '○ v2' || fail "list: v2 should be shown as inactive\n$OUT"
+grep -q "Production Live.*active" <<<"$OUT" || fail "list: Production Live should be flagged active\n$OUT"
+grep -q "hardening.*active" <<<"$OUT"       || fail "list: hardening should be flagged active\n$OUT"
+grep -Eq '○ v2' <<<"$OUT" || fail "list: v2 should be shown as inactive\n$OUT"
 # v2 must not be in the active group.
-printf '%s' "$OUT" | grep -q "v2.*active" && fail "list: v2 (no marker) must NOT be flagged active\n$OUT"
+grep -q "v2.*active" <<<"$OUT" && fail "list: v2 (no marker) must NOT be flagged active\n$OUT"
 echo "PASS: milestone_list flags active milestones and shows inactive ones plainly"
 
 # --- park is gone: the subcommand no longer dispatches --------------------------

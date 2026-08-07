@@ -1,0 +1,76 @@
+# prerename-leak-verdicts.tsv — single source of truth for the per-path
+# migrate-vs-allowlist VERDICT TABLE the temperloop#165 foundation->temperloop
+# rename recorded (PR #487 body Sec. (a); CHANGELOG.md "[Unreleased] —
+# BREAKING" section), consumed by check-prerename-leak-guard.sh (temperloop
+# #433, gate-sweep item) so a pre-rename identifier can migrate/allowlist
+# ONLY per an explicit, reviewed row here — never by a silent new occurrence.
+#
+# Format: <kind> TAB <token> TAB <verdict> TAB <rationale>
+#   kind     — "env" (a FOUNDATION_<NAME> environment-variable identifier,
+#              matched by check-prerename-leak-guard.sh's
+#              `FOUNDATION_[A-Z][A-Z0-9_]*` scan) or "path-leaf" (the final
+#              path segment of a `foundation/<leaf>` XDG-rooted machine-state
+#              subdir, matched by the guard's `foundation/<leaf>` scan).
+#   token    — exact identifier (env) or exact leaf segment (path-leaf).
+#              Case-sensitive, matched verbatim.
+#   verdict  — "refusal" (the read is GONE, but the literal survives inside
+#              the post-window legible refusal or stale-artifact diagnostic
+#              that replaced it — the identifier has to be named for the
+#              failure to tell the operator WHAT to migrate; permanent, and
+#              the only place a pre-rename identifier may still appear in
+#              live code), "allowlist" (a grandfathered path the rename item
+#              deliberately did NOT migrate — no removal date, stays until a
+#              later coordinated-move item revisits it), or "no-action"
+#              (matches the FOUNDATION_ shape but is not a stranger-facing
+#              config surface at all — an internal script/test-local variable
+#              name; nothing to migrate or allowlist, listed defensively so
+#              it doesn't read as an unreviewed gap).
+#
+#              The former "windowed" verdict (a migrate-with-read-old compat
+#              literal, legitimate only through the v0.19.0 removal window)
+#              is RETIRED: that window closed in v0.19.0, every read it
+#              covered is deleted, and its 8 rows were removed with it. A
+#              literal that legitimately outlived the window because a
+#              refusal or diagnostic names it carries "refusal" instead. Do
+#              not reintroduce "windowed" without a new, dated window.
+#   rationale — why, citing the verdict-table row it encodes (PR #487 Sec.
+#              (a)) or the CHANGELOG "Grandfathered machine-state paths"
+#              paragraph, so a fix is obvious without re-deriving it here.
+#
+# NOT covered here (verdict "no-action", no row needed — no FOUNDATION_-shaped
+# or foundation/-shaped literal exists for either): KS_LIB_DIR (name-neutral;
+# claude/hooks/*'s BASH_SOURCE-relative climb has no foundation-named default
+# at all, temperloop#406).
+#
+# The compat shim's OWN two remaining intentional legacy literal FORMS —
+# the committed per-repo dir (any `.foundation/<leaf>`, e.g. .foundation/config,
+# .foundation/baseline.jsonl, .foundation/report.d, .foundation/.gitignore,
+# .foundation/.recovery.json — verdict-table row "Committed .foundation/
+# per-repo dir") and the CLI compat shim's own binary path
+# (`bin/foundation`) — are NOT enumerated here as rows: they are always
+# sanctioned by check-prerename-leak-guard.sh's own pattern logic (matched
+# unconditionally, no per-leaf lookup) — see that script's header for the two
+# unconditional-pass rules. Both forms OUTLIVE the v0.19.0 window close by
+# design: `temperloop eject`/`uninstall` still clean legacy residue (that is
+# their job), the report-offer age probe still READS an un-migrated repo's
+# legacy baseline read-only, and `bin/foundation` stays as a legible
+# tombstone so a pre-v0.19.0 install's leftover PATH symlink refuses with a
+# message instead of dangling. What the window governed — which dir the CLI
+# RESOLVES CONFIG FROM and WRITES — now refuses legibly instead.
+
+env	FOUNDATION_HOME	refusal	Pre-rename env name, renamed TEMPERLOOP_HOME in v0.15.0; the read was REMOVED in v0.19.0. The literal survives only where a refusal names it: bin/bootstrap.sh's and bin/lib/common.sh's detect-and-refuse arms (a set legacy var must be named, not silently ignored, or the caller installs to a path they did not ask for) and workflows/scripts/tests/test_rename_compat.sh, which asserts that refusal.
+env	FOUNDATION_BIN_DIR	refusal	Pre-rename env name, renamed TEMPERLOOP_BIN_DIR in v0.15.0; read removed in v0.19.0. Same detect-and-refuse sites as FOUNDATION_HOME above.
+env	FOUNDATION_KERNEL_REPO	refusal	Pre-rename env name, renamed TEMPERLOOP_KERNEL_REPO in v0.15.0; read removed in v0.19.0. Same detect-and-refuse sites as FOUNDATION_HOME above.
+env	FOUNDATION_VERSION	refusal	Pre-rename env name, renamed TEMPERLOOP_VERSION in v0.15.0; read removed in v0.19.0 (bin/subcommands/feedback.sh and bin/lib/common.sh's temperloop_resolve_version no longer consult it). The literal survives only in temperloop_env_compat's detect-and-refuse pair list and the test asserting it.
+env	FOUNDATION_ROOT	no-action	workflows/scripts/kernel/tests/test_check_producer_egress.sh's own test-local shell variable naming a directory one level up in that test's scratch layout; not a stranger-facing config setting.
+env	FOUNDATION_LINKS_SH_LOADED	no-action	workflows/scripts/install/links.sh's own private include-guard variable (`_FOUNDATION_LINKS_SH_LOADED`, matched without its leading underscore) preventing double-sourcing; never read or set by anything outside this one file, not a stranger-facing config setting.
+
+path-leaf	boards.conf	refusal	BOARDS_CONF_MACHINE: the legacy $XDG_CONFIG_HOME/foundation/boards.conf read was REMOVED in v0.19.0. The literal survives only in the two DIAGNOSTICS that replaced it — board.sh's _board_machine_conf_default and doctor.sh's check_cache_state both name a stranded legacy file on stderr rather than falling through to the built-in maps with no explanation — plus the tests asserting them.
+path-leaf	knowledge	refusal	KNOWLEDGE_STORE_ROOT: the legacy .../foundation/knowledge default-root fallback was REMOVED in v0.19.0. The literal survives only in knowledge_store.sh's _ks_default_root stranded-store NOTE (without it a pre-rename install silently resolves an EMPTY new root and reports 'no notes found') plus the test asserting it.
+path-leaf	agent-heartbeat	allowlist	ENV_RECONCILE_AGENT_HEARTBEAT_DIR (PR #487 verdict table): allowlist, no migration this PR — launchd heartbeat writers and env-reconcile.sh's freshness-oracle reader update on different cadences; a reader-only migration would silently blind the oracle. No removal date; revisit only via a coordinated writer+reader move.
+path-leaf	knowledge-reads.log	allowlist	KNOWLEDGE_READ_LOG: part of the ${XDG_STATE_HOME}/foundation/ machine-state family (CHANGELOG "Grandfathered machine-state paths" paragraph) — installed hook copies (~/.claude/hooks) write on make-install cadence, not repo cadence; a per-site move would split read-log tallies across two dirs.
+path-leaf	basic-memory-home	allowlist	KNOWLEDGE_SEARCH_BM_HOME: same machine-state family as knowledge-reads.log above; same split-state hazard.
+path-leaf	eval-board-adapter-denials.log	allowlist	EVAL_DENIAL_LOG: same machine-state family; same split-state hazard.
+path-leaf	session-start-drain.log	allowlist	session-start-drain.sh's own failure log: same machine-state family; same split-state hazard.
+path-leaf	report-offer-dismissed	allowlist	bin/temperloop's report-offer dismissal marker dir: same machine-state family; same split-state hazard.
+path-leaf	gitleaks	allowlist	install-gitleaks.sh's local tool-cache dir (${XDG_CACHE_HOME}/foundation/gitleaks/$GITLEAKS_VERSION) — not enumerated in the original PR #487 verdict table (a disposable re-downloadable cache, not a persisted contract surface); allowlisted here defensively under the same "no coordinated-move benefit yet" rationale as the machine-state family, pending a future explicit no-action confirmation.

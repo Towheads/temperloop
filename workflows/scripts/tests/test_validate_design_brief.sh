@@ -80,11 +80,17 @@ assert_has "$out" "DANGLING-CITATION  dimension 2 — 'workflows/scripts/validat
 assert_lacks "$out" "dimension 1 —" "the real citation in row 1 is NOT flagged"
 
 # ── 4. brief conformance: minimal conformant fixture passes ─────────────────
-echo "--- 4. --brief on the minimal-conformant fixture ---"
+# minimal-conformant.md is `status: ratified` (temperloop#512): immutable, so
+# EXEMPT from the conditional dimension-0 requirement — it legitimately starts
+# at `## 1.` (no `## 0.`) and must still pass. Also serves as the exempt-arm
+# regression: a ratified brief missing `## 0.` is NOT flagged MISSING-DIMENSION.
+echo "--- 4. --brief on the minimal-conformant fixture (ratified/exempt) ---"
 run --brief "$BRIEF_FIXTURES/minimal-conformant.md"
 assert_rc "$rc" 0 "conformant fixture exits 0"
 assert_has "$out" "validate-design-brief: OK" "conformant fixture says OK"
 assert_has "$out" "16 dimension heading(s) found" "all 16 dimensions counted"
+assert_lacks "$out" "MISSING-DIMENSION" "ratified brief w/o '## 0.' is NOT flagged missing a dimension"
+assert_lacks "$out" "kernel dimension 0" "no dim-0 failure line for a ratified (exempt) brief"
 
 # ── 5. brief conformance: dropped disposition line ───────────────────────────
 echo "--- 5. --brief on missing-dimension (dropped disposition, dim 9) ---"
@@ -118,6 +124,39 @@ assert_rc "$rc" 0 "overlay-added fixture exits 0"
 assert_has "$out" "validate-design-brief: OK" "overlay-added fixture says OK"
 assert_has "$out" "17 dimension heading(s) found" "16 kernel + 1 overlay heading counted"
 
+# ── 7c-0. brief conformance: dimension 0 (## 0.) is an accepted bare integer ─
+# temperloop#508: dimension 0 was prepended to the kernel set (0..16). A brief
+# carrying `## 0.` must be ACCEPTED — not flagged UNKNOWN-DIMENSION / bare-
+# integer-overflow (that boundary keys on KERNEL_DIM_MAX=16, so 0..16 are valid
+# bare integers, >=17 is overflow). Guards the semantic goal of #508's validator
+# coupling: `## 0.` is a valid kernel dimension, not an unknown one.
+echo "--- 7c-0. --brief on dimension-0-accepted ('## 0.' present) ---"
+run --brief "$BRIEF_FIXTURES/dimension-0-accepted.md"
+assert_rc "$rc" 0 "dimension-0-accepted fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "dimension-0-accepted fixture says OK"
+assert_lacks "$out" "UNKNOWN-DIMENSION" "'## 0.' is NOT flagged as an unknown/overflow dimension"
+assert_lacks "$out" "'## 0.'" "no failure line names '## 0.'"
+# temperloop#512 positive in-scope arm: dimension-0-accepted.md is `status:
+# draft` (in-flight) AND carries `## 0.`, so the conditional dim-0 requirement
+# is satisfied — proving the requirement is met by supplying the heading, not
+# merely bypassed. (The exempt arm is test 4; the failing arm is 7c-1.)
+assert_lacks "$out" "kernel dimension 0" "in-scope draft WITH '## 0.' is not flagged missing dim-0"
+
+# ── 7c-1. conditional dim-0: in-flight brief MISSING '## 0.' fails ───────────
+# temperloop#512 enforcing arm. dim0-required-missing.md is `status: draft`
+# (in-flight / non-ratified) and otherwise fully conformant across dimensions
+# 1..16, but OMITS the '## 0.' heading — so it is IN SCOPE for the conditional
+# dimension-0 requirement and MUST fail with MISSING-DIMENSION for dim 0. This
+# proves the enforcement actually bites (it is not simply disabled), the
+# counterpart to test 4's exempt-ratified arm. It differs from
+# minimal-conformant.md only in `status:` — the single per-brief signal the
+# switch keys on.
+echo "--- 7c-1. --brief on dim0-required-missing (draft, no '## 0.') ---"
+run --brief "$BRIEF_FIXTURES/dim0-required-missing.md"
+assert_rc "$rc" 1 "in-flight brief missing '## 0.' exits 1"
+assert_has "$out" "MISSING-DIMENSION  dim0-required-missing.md — kernel dimension 0" "dim-0 flagged missing for an in-flight brief"
+assert_has "$out" "not ratified" "failure names the ratified-exemption rationale"
+
 # ── 7d. anti-drift: renamed schema section must not pass vacuously ───────────
 echo "--- 7d. --schema on a renamed-section schema (zero parsed rows) ---"
 SCRATCH="$(mktemp -d)"
@@ -131,14 +170,15 @@ assert_has "$out" "NO-DIMENSION-ROWS" "zero-row parse named"
 # ── 7e. anti-drift: kernel dimension count drift fails ci mode ────────────────
 echo "--- 7e. ci mode against a schema copy with a kernel row removed ---"
 mkdir -p "$SCRATCH/driftroot/claude"
-# Drop dimension 16's table row (bare-integer rows go 16 -> 15).
+# Drop dimension 16's table row (bare-integer rows go 17 -> 16; the real
+# schema now carries dimensions 0..16 inclusive per temperloop#508).
 grep -v '^| 16 |' "$REPO/claude/design-schema.md" \
   > "$SCRATCH/driftroot/claude/design-schema.md"
 rc=0
 out="$(DESIGN_SCHEMA_ROOT="$SCRATCH/driftroot" bash "$SCRIPT" 2>&1)" || rc=$?
 assert_rc "$rc" 1 "row-removed schema fails ci mode"
 assert_has "$out" "DIM-COUNT-DRIFT" "count drift named"
-assert_has "$out" "15 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=16" "drift counts named"
+assert_has "$out" "16 bare-integer kernel row(s), script encodes KERNEL_DIM_COUNT=17" "drift counts named"
 
 # ── 7f. anti-drift: --schema fixture mode does NOT enforce the count ─────────
 echo "--- 7f. --schema fixture mode exempt from the count check ---"
@@ -230,6 +270,53 @@ rc=0
 out="$(DESIGN_SCHEMA_ROOT="$BIG" bash "$SCRIPT" --schema "$SCRATCH/schema-bare-citation.md" 2>&1)" || rc=$?
 assert_rc "$rc" 0 "10b: bare-filename citation resolves in a >64KiB tree"
 assert_lacks "$out" "DANGLING-CITATION" "10c: no false DANGLING-CITATION from a SIGPIPE'd producer"
+
+# ── 11. check (C) — challenge-record completeness (temperloop item
+#        brief-record-completeness-lint) ────────────────────────────────────
+# design-schema.md § Challenge record / § Record completeness is the source
+# of truth check (C) reads; these fixtures exercise its grammar check, its
+# two completeness rules, and the migration carve-out — the SAME carve-out
+# semantics `/workshop` Step 4.1c's in-session ratify gate reuses verbatim
+# (the two migration fixtures below are the ones it consumes).
+
+echo "--- 11a. --brief on challenge-record-migration-exempt (ratified, no record at all) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-migration-exempt.md"
+assert_rc "$rc" 0 "migration-exempt fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "migration-exempt fixture says OK"
+assert_has "$out" "no '### Challenge record' section (exempt; status=ratified)" "exempt path named"
+assert_lacks "$out" "MISSING-WALK-VERDICT" "no completeness failure for a pre-epic ratified brief"
+
+echo "--- 11b. --brief on challenge-record-walk-missing (ratified, marker present, dim 6 missing walk) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-walk-missing.md"
+assert_rc "$rc" 1 "walk-missing fixture exits 1"
+assert_has "$out" "MISSING-WALK-VERDICT  challenge-record-walk-missing.md — kernel dimension 6" "dimension 6 named missing a walk verdict"
+
+echo "--- 11c. --brief on challenge-record-complete (ratified, full walk+walkthrough coverage) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-complete.md"
+assert_rc "$rc" 0 "complete fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "complete fixture says OK"
+assert_has "$out" "7 stop line(s) parsed, status=ratified" "all 7 stop lines parsed"
+
+echo "--- 11d. --brief on challenge-record-empty (marker present, zero stop lines) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-empty.md"
+assert_rc "$rc" 1 "empty-record fixture exits 1"
+assert_has "$out" "EMPTY-CHALLENGE-RECORD  challenge-record-empty.md" "empty-record defect named"
+
+echo "--- 11e. --brief on challenge-record-bad-grammar (verdict 'skipped' not in the grammar) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-bad-grammar.md"
+assert_rc "$rc" 1 "bad-grammar-record fixture exits 1"
+assert_has "$out" "BAD-CHALLENGE-LINE  challenge-record-bad-grammar.md — '6 [walk] step-1-seed: skipped'" "malformed stop line named"
+
+echo "--- 11f. --brief on challenge-record-missing-response (operator-edited, no response:) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-missing-response.md"
+assert_rc "$rc" 1 "missing-response fixture exits 1"
+assert_has "$out" "MISSING-RESPONSE  challenge-record-missing-response.md dimension(s) 5" "dimension 5 named missing a response field"
+
+echo "--- 11g. --brief on challenge-record-draft-partial (draft, partial coverage, not held to completeness) ---"
+run --brief "$BRIEF_FIXTURES/challenge-record-draft-partial.md"
+assert_rc "$rc" 0 "draft-partial fixture exits 0"
+assert_has "$out" "validate-design-brief: OK" "draft-partial fixture says OK"
+assert_lacks "$out" "MISSING-WALK-VERDICT" "in-flight draft not held to the ratify-time completeness bar"
 
 # ── Tally ─────────────────────────────────────────────────────────────────────
 echo "---"

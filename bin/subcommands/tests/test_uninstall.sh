@@ -114,7 +114,7 @@ printf 'user-edited machine conf, never in the manifest\n' > "$conf1"
 
 out1="$(run_uninstall --yes 2>&1)" && rc1=0 || rc1=$?
 [ "$rc1" -eq 0 ] || fail "1: uninstall --yes should exit 0 (got rc=$rc1, out: $out1)"
-echo "$out1" | grep -q "temperloop uninstall: done" || fail "1: expected a done status line (got: $out1)"
+grep -q "temperloop uninstall: done" <<<"$out1" || fail "1: expected a done status line (got: $out1)"
 
 [ ! -e "$created1" ] || fail "1: a 'created' entry's path must be removed after uninstall"
 [ -f "$preexisting1" ] || fail "1: a 'preexisting' entry's path must still exist after uninstall (restored, not removed)"
@@ -128,7 +128,9 @@ echo "$out1" | grep -q "temperloop uninstall: done" || fail "1: expected a done 
 
 [ "$(manifest_path_count)" = "0" ] || fail "1: manifest should have 0 entries after a fully successful uninstall"
 
-echo "$out1" | grep -q "Bootstrap footprint" || fail "1: expected the bootstrap-footprint guidance bullet (got: $out1)"
+grep -q "Bootstrap footprint" <<<"$out1" || fail "1: expected the bootstrap-footprint guidance bullet (got: $out1)"
+grep -q "Issue-cache store root" <<<"$out1" || fail "1: expected the cache-store-root guidance bullet (got: $out1)"
+grep -q "temperloop init" <<<"$out1" || fail "1: expected the eject reminder (got: $out1)"
 
 sandbox_down
 echo "PASS: 1 (created removed, preexisting restored from backup, decoy + XDG_CONFIG_HOME conf survive)"
@@ -147,7 +149,7 @@ before_manifest2="$(sandbox_bash 'source "'"$MANIFEST_SH"'"; manifest_load')"
 
 out2="$(run_uninstall --dry-run 2>&1)" && rc2=0 || rc2=$?
 [ "$rc2" -eq 0 ] || fail "2: --dry-run should exit 0 (got rc=$rc2, out: $out2)"
-echo "$out2" | grep -q "dry run" || fail "2: expected dry-run to be reported (got: $out2)"
+grep -q "dry run" <<<"$out2" || fail "2: expected dry-run to be reported (got: $out2)"
 
 [ -f "$created2" ] || fail "2: --dry-run must not remove a 'created' path"
 [ "$(cat "$created2")" = "installed content" ] || fail "2: --dry-run must not alter a 'created' path's content"
@@ -170,7 +172,7 @@ seed_created "$created3" "installed content"
 
 out3="$(run_uninstall 2>&1)" && rc3=0 || rc3=$?
 [ "$rc3" -eq 0 ] || fail "3: a declined/non-interactive run should exit 0 (legible no-op, got rc=$rc3)"
-echo "$out3" | grep -q "aborted — nothing touched" || fail "3: expected the abort message (got: $out3)"
+grep -q "aborted — nothing touched" <<<"$out3" || fail "3: expected the abort message (got: $out3)"
 [ -f "$created3" ] || fail "3: a declined uninstall must not remove any path"
 [ "$(manifest_path_count)" = "1" ] || fail "3: a declined uninstall must leave the manifest untouched"
 
@@ -192,8 +194,8 @@ printf 'must survive — the manifest that would have named this is unreadable\n
 
 out4="$(run_uninstall --yes 2>&1)" && rc4=0 || rc4=$?
 [ "$rc4" -ne 0 ] || fail "4: an unknown schema_version must be refused (nonzero exit)"
-echo "$out4" | grep -q "schema_version=99" || fail "4: refusal must name the exact version found (got: $out4)"
-echo "$out4" | grep -q "refusing to proceed" || fail "4: expected uninstall.sh's own refusal framing (got: $out4)"
+grep -q "schema_version=99" <<<"$out4" || fail "4: refusal must name the exact version found (got: $out4)"
+grep -q "refusing to proceed" <<<"$out4" || fail "4: expected uninstall.sh's own refusal framing (got: $out4)"
 [ -f "$decoy4" ] || fail "4: a refused manifest load must leave every path untouched (no partial deletion)"
 [ "$(cat "$decoy4")" = "must survive — the manifest that would have named this is unreadable" ] || fail "4: the path's content must be untouched"
 
@@ -220,7 +222,7 @@ rm -f "$backup5"   # simulate a corrupted/lost backup
 
 out5="$(run_uninstall --yes 2>&1)" && rc5=0 || rc5=$?
 [ "$rc5" -eq 1 ] || fail "5: a partial failure should exit 1 (got rc=$rc5, out: $out5)"
-echo "$out5" | grep -q "temperloop uninstall: incomplete" || fail "5: expected the incomplete summary (got: $out5)"
+grep -q "temperloop uninstall: incomplete" <<<"$out5" || fail "5: expected the incomplete summary (got: $out5)"
 
 [ ! -e "$ok5" ] || fail "5: the OTHER (resolvable) entry should still be uninstalled despite the broken one"
 [ -f "$broken5" ] || fail "5: the path whose backup is missing must be left untouched (refused, not deleted)"
@@ -229,6 +231,58 @@ echo "$out5" | grep -q "temperloop uninstall: incomplete" || fail "5: expected t
 
 sandbox_down
 echo "PASS: 5 (partial failure: unresolved entry stays recorded for a retry, every other entry still resolves, exit 1)"
+
+# =============================================================================
+# Test 6: an emptied ~/.claude is rmdir'd; a ~/.claude left non-empty by an
+#         unrecorded file survives (rmdir only, never rm -rf).
+# =============================================================================
+sandbox_up uninstall-test6
+
+created6="$SANDBOX_HOME/.claude/settings.json"
+seed_created "$created6" "installed content"
+[ -d "$SANDBOX_HOME/.claude" ] || fail "6: setup — \$HOME/.claude should exist before uninstall"
+
+out6="$(run_uninstall --yes 2>&1)" && rc6=0 || rc6=$?
+[ "$rc6" -eq 0 ] || fail "6: uninstall --yes should exit 0 (got rc=$rc6, out: $out6)"
+[ ! -e "$SANDBOX_HOME/.claude" ] || fail "6: an emptied \$HOME/.claude must be rmdir'd after uninstall"
+grep -q '\.claude removed (was left empty)' <<<"$out6" || fail "6: expected the empty-dir removal line (got: $out6)"
+
+sandbox_down
+echo "PASS: 6a (an emptied \$HOME/.claude is rmdir'd)"
+
+sandbox_up uninstall-test6b
+
+created6b="$SANDBOX_HOME/.claude/settings.json"
+seed_created "$created6b" "installed content"
+unrecorded6b="$SANDBOX_HOME/.claude/hand-edited-notes.md"
+printf 'never in the manifest\n' > "$unrecorded6b"
+
+out6b="$(run_uninstall --yes 2>&1)" && rc6b=0 || rc6b=$?
+[ "$rc6b" -eq 0 ] || fail "6b: uninstall --yes should exit 0 (got rc=$rc6b, out: $out6b)"
+[ -d "$SANDBOX_HOME/.claude" ] || fail "6b: \$HOME/.claude must survive when a non-recorded file still lives in it"
+[ -f "$unrecorded6b" ] || fail "6b: the unrecorded file itself must survive untouched"
+
+sandbox_down
+echo "PASS: 6b (a \$HOME/.claude left non-empty by an unrecorded path survives — rmdir only, never rm -rf)"
+
+# =============================================================================
+# Test 7: the printed cache-store-root guidance honors an explicit
+#         CACHE_STORE_ROOT override — the same precedence links.sh
+#         (links_provision_cache_stores) and board/lib/cache.sh resolve the
+#         real store root with. A guidance line built from the
+#         XDG_CACHE_HOME/$HOME/.cache fallback alone, ignoring an operator's
+#         CACHE_STORE_ROOT, would print the wrong rm -rf path.
+# =============================================================================
+sandbox_up uninstall-test7
+
+override_root7="$SANDBOX_ROOT/custom-cache-root"
+out7="$(CACHE_STORE_ROOT="$override_root7" run_uninstall --yes 2>&1)" && rc7=0 || rc7=$?
+[ "$rc7" -eq 0 ] || fail "7: uninstall --yes should exit 0 (got rc=$rc7, out: $out7)"
+grep -qF "$override_root7" <<<"$out7" || fail "7: expected the guidance to print the CACHE_STORE_ROOT override path (got: $out7)"
+grep -qF "${SANDBOX_XDG_CACHE_HOME}/temperloop" <<<"$out7" && fail "7: guidance must NOT print the XDG_CACHE_HOME fallback when CACHE_STORE_ROOT is set (got: $out7)"
+
+sandbox_down
+echo "PASS: 7 (cache-store-root guidance honors an explicit CACHE_STORE_ROOT override)"
 
 echo
 echo "ALL PASS: test_uninstall.sh"

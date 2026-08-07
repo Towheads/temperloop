@@ -10,7 +10,13 @@
 #   friction-slug       friction-ledger slug; near-zero false-positives.
 #   filed-at-source     defect/capture-at-source acknowledgement.
 #   self-critique       lesson/mistake language; insight about what went wrong.
-#   trust-rupture       user pushback or expressed doubt.
+#   trust-rupture       user pushback or expressed doubt. Deliberately ONE category
+#                       spanning three failure modes — correctness challenge,
+#                       communication failure, repeat-offence — discriminated at
+#                       CONSUMPTION time, never split here: the tells overlap and
+#                       only the surrounding turn tells them apart (temperloop#1089;
+#                       claude/commands/tidy.md § Feedback memories routes the first
+#                       and third, § Tooling friction the second).
 #   failure-report      "didn't fire / hasn't moved / never registered" tense family.
 #   flagging            "worth flagging/knowing/naming/noting" family.
 #   state-collision     stale context, dirty state, conflicting data.
@@ -37,6 +43,7 @@ redundant-status-check	friction-slug	literal
 reverification-backtrack	friction-slug	literal
 tool-misuse	friction-slug	literal
 search-thrash	friction-slug	literal
+clarification-rework	friction-slug	literal
 
 # --- filed-at-source ---
 Captured as #	filed-at-source	literal

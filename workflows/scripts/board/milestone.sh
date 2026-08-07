@@ -26,7 +26,7 @@
 #   milestone list                 [--board N]   # list open milestones, active first
 #
 # Both write verbs are idempotent (re-running is a no-op). --board selects the
-# Projects-v2 board (default 3 = stageFind; 4 = foundation). The milestone must
+# board (default 3 = stageFind; 4 = foundation). The milestone must
 # already exist in the repo (create once with
 # `gh api repos/<owner>/<repo>/milestones -f title=...`).
 #
@@ -48,6 +48,7 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
 # The machine-owned active marker. A milestone is active iff its description

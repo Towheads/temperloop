@@ -1,0 +1,194 @@
+name: Nightly macOS gates
+
+# nightly-macos.yml — the macOS half of temperloop's gate coverage, moved
+# OFF the pre-merge path (temperloop#963). It runs the SAME single command
+# the merge gate runs — `bash scripts/quality-gates.sh` — on macos-latest,
+# once a night against `main`.
+#
+# WHY THIS EXISTS: macOS was the slow leg of ci.yml's matrix (~6m46s–9m37s
+# vs ubuntu's ~4m50s) and it ran twice per PR (`pull_request` +
+# `merge_group`), so it set both PR-ready latency and merge latency.
+# Dropping it from the merge gate is a deliberate speed-for-coverage trade;
+# this workflow is the mitigation half of that trade. It does NOT restore
+# gate-time safety — a BSD-dialect regression (BSD awk has no `asort`, GNU
+# `sed` `:label`/`t` loops are rejected, `date -d` is unsupported) can now
+# land on `main` and be caught here up to ~24h later, instead of being
+# blocked at the gate.
+#
+# NEVER add `pull_request`, `push`, or `merge_group` here, and never name
+# ANY job in this file `checks` or give one a matrix that would produce a
+# `checks (...)` status context: branch protection matches required checks
+# BY CONTEXT NAME, and a colliding name would let protection latch onto a
+# workflow that is not part of the merge gate (the exact ordering hazard
+# temperloop#963 called out). The contexts this file produces are
+# `nightly-macos` and `ubuntu-timing`, neither required by protection, and
+# must stay that way.
+#
+# FAILURE VISIBILITY — read this before assuming someone gets paged.
+# There is NO paging, no Slack, no webhook. A failing nightly surfaces in
+# exactly two places:
+#   1. The run goes RED in the repo's Actions tab (filter: this workflow).
+#   2. GitHub's built-in scheduled-workflow-failure email fires to the
+#      repo's default recipients (the workflow file's last committer / the
+#      repo owner, per each account's Settings > Notifications > Actions).
+#      That is a GitHub default, not something configured here, and it
+#      applies to `schedule` runs — a `workflow_dispatch` run notifies the
+#      person who triggered it under the same settings.
+# On top of those, the job writes a pass/fail line to $GITHUB_STEP_SUMMARY
+# and emits an `::error::` annotation naming the failure, so the red run is
+# self-describing without opening the raw log. If someone wants a louder
+# channel than "red tab + default email", that is a separate change — do
+# not read this comment as implying one already exists.
+#
+# CADENCE: GitHub Actions cron is ALWAYS UTC — it has no timezone field,
+# and it ignores this repo's human-facing America/Los_Angeles display
+# convention. The schedule below is written in UTC: 09:17 UTC daily, which
+# is 02:17 America/Los_Angeles during PDT and 01:17 during PST (the local
+# time shifts with DST because the cron does not). Off-peak by design, and
+# deliberately not on the hour — GitHub's shared cron queue is most
+# congested at :00, and a scheduled run can be delayed or dropped under
+# that load.
+#
+# NOTE: `schedule` only ever runs from the DEFAULT branch (`main`), so
+# editing the cron on a feature branch has no effect until it merges.
+#
+# PER-GATE WALL-CLOCK, BOTH RUNNERS (temperloop#968, first deliverable only —
+# a MEASUREMENT, not a matrix/branch-protection change; see that issue for
+# the remaining legs, deliberately NOT done here). scripts/quality-gates.sh
+# already measures each gate's own wall-clock seconds internally (the
+# bounded-concurrency pool, temperloop#1025); `QUALITY_GATES_STEP_SUMMARY=1`
+# (set on BOTH jobs below) makes it also publish the full per-gate table to
+# $GITHUB_STEP_SUMMARY, off by default everywhere else and never set on
+# ci.yml's merge-gating leg. The `ubuntu-timing` job exists ONLY to gather
+# that same breakdown on ubuntu-latest — the runner ci.yml's `checks` job
+# already uses — in the SAME workflow run as the macOS leg, so the two
+# tables sit side by side on one summary page instead of needing to be
+# diffed across separate runs. It is deliberately non-gating: it does not
+# run `pull_request`/`push`/`merge_group`, its job id is not `checks`, and it
+# carries no matrix — see the collision warning below, which applies to it
+# exactly as it does to `nightly-macos`.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"   # 09:17 UTC daily (cron is UTC — see CADENCE above)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# One nightly at a time — a manual `workflow_dispatch` fired while the
+# scheduled run is in flight should queue behind it, not race it. Let the
+# in-flight run finish; it is the one already producing a verdict.
+concurrency:
+  group: nightly-macos
+  cancel-in-progress: false
+
+jobs:
+  # Job id (and therefore status context) is `nightly-macos`, NOT `checks`
+  # and NOT a matrix — see the collision warning in the header.
+  nightly-macos:
+    name: nightly-macos
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      # fetch-depth: 0 for the same reason ci.yml uses it: several gates
+      # (the differential hook guard, the checkout-freshness check) diff
+      # against `origin/main`, which a shallow depth-1 checkout lacks.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # LEAK_GUARD_BASE is deliberately UNSET here. The diff-scoped PR leak
+      # guard needs a PR/merge-queue base SHA to diff added lines against;
+      # a scheduled run on `main` has no such base, so the guard skips its
+      # live scan exactly as it already does on ci.yml's push:main leg.
+      # The gate that matters on this leg is the macOS/BSD dialect
+      # behaviour of the whole suite, not the leak diff — that one is
+      # already enforced pre-merge on ubuntu.
+      #
+      # No shellcheck install step, same as ci.yml: quality-gates.sh ->
+      # `make shellcheck` provisions the PINNED shellcheck
+      # (scripts/ensure-shellcheck.sh, temperloop#567), bypassing brew, so
+      # this leg checks the identical version the merge gate does.
+      #
+      # QUALITY_GATES_STEP_SUMMARY=1 (temperloop#968): publish the full
+      # per-gate wall-clock table to $GITHUB_STEP_SUMMARY, in addition to the
+      # pass/fail verdict below — see scripts/quality-gates.sh's own ENV VAR
+      # interface note. Off everywhere else, including ci.yml.
+      - name: Run the full quality-gate suite on macOS
+        id: gates
+        env:
+          QUALITY_GATES_STEP_SUMMARY: "1"
+        run: bash scripts/quality-gates.sh
+
+      - name: Verdict
+        if: always()
+        env:
+          GATES_OUTCOME: ${{ steps.gates.outcome }}
+        run: |
+          if [ "$GATES_OUTCOME" = "success" ]; then
+            echo "## nightly macOS gates: PASS" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`bash scripts/quality-gates.sh\` is green on macos-latest for \`main\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error::nightly-macos: scripts/quality-gates.sh FAILED on macos-latest against main — a macOS/BSD-dialect regression has already landed on the default branch (ubuntu-only pre-merge CI cannot catch these, temperloop#963). Open the 'Run the full quality-gate suite on macOS' step log; quality-gates.sh names every failing gate in its own FAILED N/M summary."
+          {
+            echo "## nightly macOS gates: FAIL"
+            echo
+            echo "\`bash scripts/quality-gates.sh\` is RED on macos-latest for \`main\`."
+            echo "This regression is **already on the default branch** — pre-merge CI runs ubuntu only (temperloop#963)."
+            echo "See the step log above: quality-gates.sh prints a \`FAILED N/M quality gate(s)\` summary naming every gate that failed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+  # ubuntu-timing — NOT a gate, NOT required by branch protection, NOT part
+  # of the merge path. Its only purpose is temperloop#968's per-gate
+  # wall-clock comparison: run the identical script on ubuntu-latest (the
+  # same runner ci.yml's `checks` job already uses) in this SAME workflow
+  # run, so its $GITHUB_STEP_SUMMARY table sits next to the macOS job's on
+  # one summary page rather than requiring a diff across two separate runs.
+  # Job id (and status context) is `ubuntu-timing` — NOT `checks`, NOT a
+  # matrix — see the collision warning in the header.
+  ubuntu-timing:
+    name: ubuntu-timing
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # fetch-depth: 0 — same reason as the macOS job above.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # LEAK_GUARD_BASE deliberately unset — same reasoning as the macOS
+      # job's checkout step above: no PR/merge-queue base exists on a
+      # scheduled run against `main`.
+      #
+      # No shellcheck install step: quality-gates.sh -> `make shellcheck`
+      # provisions the pinned shellcheck (temperloop#567) exactly as ci.yml
+      # does, so this leg's gate times are not skewed by a different
+      # shellcheck provisioning path than the merge gate pays.
+      - name: Run the full quality-gate suite on ubuntu (timing comparison only)
+        id: gates
+        env:
+          QUALITY_GATES_STEP_SUMMARY: "1"
+        run: bash scripts/quality-gates.sh
+
+      - name: Verdict
+        if: always()
+        env:
+          GATES_OUTCOME: ${{ steps.gates.outcome }}
+        run: |
+          if [ "$GATES_OUTCOME" = "success" ]; then
+            echo "## ubuntu-timing gates: PASS" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`bash scripts/quality-gates.sh\` is green on ubuntu-latest for \`main\` — the per-gate table above is the comparison baseline for the nightly-macos job's own table (temperloop#968)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::warning::ubuntu-timing: scripts/quality-gates.sh FAILED on ubuntu-latest against main. This job is NOT the merge gate (ci.yml's pull_request/merge_group/push runs already cover this leg pre-merge) — it exists only to gather comparison timing (temperloop#968). A genuine ubuntu-side regression on main would already have been caught pre-merge; treat a failure here as a signal to check whether it also reproduces under ci.yml's own gate."
+          {
+            echo "## ubuntu-timing gates: FAIL"
+            echo
+            echo "\`bash scripts/quality-gates.sh\` is RED on ubuntu-latest for \`main\`."
+            echo "This job is informational (per-gate timing comparison, temperloop#968), not the merge gate — ci.yml already covers ubuntu pre-merge."
+            echo "See the step log above: quality-gates.sh prints a \`FAILED N/M quality gate(s)\` summary naming every gate that failed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

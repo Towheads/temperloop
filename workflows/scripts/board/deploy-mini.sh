@@ -22,7 +22,7 @@
 #   - refreshes the PATH board symlinks (make install-board);
 #   - busts the board STRUCTURE cache when a pulled adapter actually changed, so a
 #     board renumber/migration can't leave stale project/field ids that break WRITES
-#     (the cache is logical-board-keyed with a 24h TTL — reads stay live, but a
+#     (the cache is board-id-keyed with a 24h TTL — reads stay live, but a
 #     post-renumber write hits "item does not exist in the project"; foundation #341);
 #   - VERIFIES the #128 guard is present in every board.sh a session could source,
 #     exiting non-zero if any is missing (e.g. a sync PR that was never merged).
@@ -82,7 +82,6 @@ board_sh_of() {
 
 # --- 1. fast-forward each clean-on-main checkout -----------------------------
 echo "==> deploy-mini"
-adapter_changed=0   # set when a pull's diff touches a board.sh (gates the #341 bust)
 for co in "${CHECKOUTS[@]}"; do
   label="$(tilde "$co")"
   if ! git -C "$co" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -91,8 +90,8 @@ for co in "${CHECKOUTS[@]}"; do
   branch="$(git -C "$co" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   if [ "$branch" != "main" ]; then
     # F#1098: a checkout stranded on an ALREADY-MERGED feature branch (its PR merged,
-    # nothing unmerged) used to be SKIPPED here forever — silently blocking the funnel's
-    # clean-on-main merge tier for days (funnel-drive.sh refuses to merge from a non-main
+    # nothing unmerged) used to be SKIPPED here forever — silently blocking the pipeline's
+    # clean-on-main merge tier for days (pipeline-drive.sh refuses to merge from a non-main
     # tree, and nothing ever reset the checkout — F#687). Auto-recover ONLY the provably
     # safe case: a clean tree whose HEAD is fully contained in origin/main
     # (`--is-ancestor` = every commit already merged) → switch to main and fall through to
@@ -122,12 +121,6 @@ for co in "${CHECKOUTS[@]}"; do
     if [ "$before" = "$after" ]; then printf '  %-26s already current (%s)\n' "$label" "$after"
     else
       printf '  %-26s pulled → %s\n' "$label" "$after"
-      # Did the pulled range touch the board adapter (either layout)? Only then is
-      # a structure-cache bust warranted (#341) — keeps the 24h cache otherwise warm.
-      if git -C "$co" diff --name-only "$before" "$after" 2>/dev/null \
-           | grep -qE '(^|/)(workflows/scripts/board/lib|scripts/lib)/board\.sh$'; then
-        adapter_changed=1
-      fi
     fi
   else
     printf '  %-26s SKIP (cannot ff-merge — diverged)\n' "$label"
@@ -182,30 +175,20 @@ if [ "${DEPLOY_MINI_SKIP_INSTALL:-0}" != 1 ]; then
   fi
 fi
 
-# --- 2.5 bust the board structure cache IF a pulled adapter changed (#341) ----
-# The structure cache (project id + field/option ids) is keyed on the LOGICAL board
-# number under a 24h TTL, so after a board renumber/migration a freshly-pulled
-# adapter keeps serving the OLD project's ids until the TTL lapses — reads pass
-# (item-list is always live) but WRITES fail with "item does not exist in the
-# project". Busting here, ONLY when a pull actually changed a board.sh, makes a
-# renumber self-heal on the next session without flushing the cache every run.
-# Sourced in a subshell so board.sh's constants/`set` never leak into this script;
-# board_bust_structure honours BOARD_CACHE_DIR, so tests stay hermetic.
-if [ "$adapter_changed" = 1 ]; then
-  if busted="$(
-        # shellcheck source=/dev/null
-        . "$FOUNDATION/workflows/scripts/board/lib/board.sh" || exit 1
-        out=""
-        for b in 3 4 5 6 7 8 9; do
-          board_repo "$b" >/dev/null 2>&1 && { board_bust_structure "$b"; out="$out $b"; }
-        done
-        printf '%s' "$out"
-      )"; then
-    echo "  ✓ structure cache busted (adapter changed) — boards:${busted:- none}"
-  else
-    echo "  ! could not source board.sh to bust structure cache"
-  fi
-fi
+# --- 2.5 (retired) board structure-cache bust ------------------------------
+# This step used to bust board.sh's Projects-v2 STRUCTURE cache (project id +
+# field/option ids, 24h TTL) whenever a pull changed a board.sh, so a board
+# renumber/migration self-healed instead of failing every WRITE with "item does
+# not exist in the project" until the TTL lapsed (#341). Both the cache and
+# `board_bust_structure` were removed with the Projects-v2 arm (ADR 0004, epic
+# temperloop#524): the issues-only path resolves a board's repo from
+# `boards.conf`/the built-in map on every call and holds no cached project
+# identity, so there is nothing left to go stale and nothing to bust.
+#
+# The `adapter_changed` probe that gated this step went with it — it had no
+# other consumer, so keeping it would have left a dead diff-scan on every pull.
+# Step 3 below still verifies the guard in every pulled board.sh unconditionally,
+# which is the check that actually matters after an adapter change.
 
 # --- 3. verify the guard is present in every board.sh a session could source -
 # Also reports (informationally only — never affects this step's pass/fail
@@ -226,24 +209,38 @@ for co in "${CHECKOUTS[@]}"; do
 
   cache_lib="$(dirname "$bsh")/cache.sh"
   if [ -f "$cache_lib" ]; then
-    machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
-    repo_conf="$(dirname "$bsh")/../boards.conf"
-    conf=""
-    if [ -f "$machine_conf" ]; then conf="$machine_conf"
-    elif [ -f "$repo_conf" ]; then conf="$repo_conf"
-    fi
-    if [ -n "$conf" ]; then
-      cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
-      while IFS= read -r cn; do
-        [ -n "$cn" ] || continue
-        repo="$(BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-}" bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
-        store_state="absent"
-        if [ -n "$repo" ] && [ -f "${cache_store_root}/issues/$(printf '%s' "$repo" | tr '/' '-')/meta.json" ]; then
-          store_state="present"
-        fi
-        printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
-      done < <(grep -oE '^board\.[0-9]+\.cache=on$' "$conf" 2>/dev/null | cut -d. -f2 | sort -un)
-    fi
+    # temperloop#616: enumerate this checkout's boards.conf layers through the
+    # checkout's OWN board.sh resolver (_board_conf_files) rather than
+    # reimplementing machine/repo-local discovery inline. _board_conf_files is
+    # the single BOARDS_CONF_*-honoring discovery seam every other consumer
+    # already routes through — it applies BOARDS_CONF_MACHINE + the temperloop#165
+    # XDG rename (temperloop/ only; the legacy foundation/ fallback was
+    # removed in v0.19.0) to the MACHINE layer, adds the #494 composed-tree
+    # consumer-root conf, and honors BOARDS_CONF_REPO_LOCAL (else the
+    # $bsh-relative repo-local) — so a single BOARDS_CONF_* override now
+    # hermeticizes deploy-mini exactly as it does board.sh / board-mirror /
+    # pipeline-tick, closing the per-consumer divergence that made the #592/#614
+    # test-hermeticity leaks possible (temperloop#591 fixed only deploy-mini's
+    # BOARDS_CONF_MACHINE handling — this routes the whole discovery through the
+    # shared seam so nothing is reimplemented here at all). Sourced from the
+    # PER-CHECKOUT $bsh so the consumer-root + repo-local layers resolve relative
+    # to THIS checkout (each checkout carries its own conf; the machine layer is
+    # machine-wide). Union of `cache=on` across all layers is the right set
+    # semantic: a board is cache-enabled if ANY layer says so (informational
+    # only — this block never affects the step's pass/fail).
+    cache_store_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
+    while IFS= read -r cn; do
+      [ -n "$cn" ] || continue
+      repo="$(bash -c '. "'"$bsh"'" 2>/dev/null; board_repo "'"$cn"'" 2>/dev/null')"
+      store_state="absent"
+      if [ -n "$repo" ] && [ -f "${cache_store_root}/issues/$(printf '%s' "$repo" | tr '/' '-')/meta.json" ]; then
+        store_state="present"
+      fi
+      printf '  %-26s cache enabled: board %s (store %s)\n' "$(tilde "$co")" "$cn" "$store_state"
+    done < <(bash -c '. "'"$bsh"'" 2>/dev/null; _board_conf_files 2>/dev/null' |
+               while IFS= read -r _conf; do
+                 [ -f "$_conf" ] && grep -oE '^board\.[0-9]+\.cache=on$' "$_conf" 2>/dev/null
+               done | cut -d. -f2 | sort -un)
   fi
 done
 if [ "$n" -eq 0 ]; then

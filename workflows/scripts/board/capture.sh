@@ -5,7 +5,7 @@
 #
 # This is the source-side half of the dropped-bug capture net (GH #245): the
 # live "Capture at source" rule in CLAUDE.md says capture-don't-ask, and this
-# script is what makes that cheap. The drain backstop
+# script is what makes that cheap. The backstop
 # (~/.claude/commands/tidy.md § Unfiled defects) is the other half.
 #
 # Routing (per CLAUDE.md § Task workflow "Defect vs enhancement routing"):
@@ -25,19 +25,22 @@
 # item defers to a future phase is decided downstream by /triage's active-milestone
 # intake filter, not by this script flipping a Status — no deferral status is set.
 #
-# --board selects which Projects-v2 board + repo:
+# --board selects which board + repo:
 #   3 = "stageFind build"  -> <org>/stageFind   (default)
 #   4 = "foundation build" -> <org>/foundation
 #
 # --repo is a conscious-routing peer to --board (F#808, Guard #3 of the
 # kernel-vs-overlay routing rule — CLAUDE.kernel.md § Kernel vs overlay
 # routing rule). It overrides --board when given:
-#   --repo kernel       route to the temperloop ISSUES-ONLY tracker
-#                        (logical board 7 — registered in lib/board.sh's
-#                        board_repo/board_backend built-in maps, see
-#                        ISSUES-ONLY-BACKEND.md) instead of a Projects-v2
-#                        board. Use when the capture IS kernel-domain
-#                        machinery (board adapter, build/sweep spine,
+#   --repo kernel       route to the temperloop kernel tracker (board id 7
+#                        — registered in lib/board.sh's board_repo/
+#                        board_backend built-in maps, see
+#                        ISSUES-ONLY-BACKEND.md) instead of the board
+#                        --board would otherwise select. Every board runs
+#                        the issues-only backend, so this is a ROUTING
+#                        choice, not a backend one.
+#                        Use when the capture IS kernel-domain
+#                        machinery (board adapter, build/sweep machinery,
 #                        install/doctor, quality gates — the "stranger test"
 #                        from the routing rule).
 #   --repo ambiguous     the capture is foundation-domain (foundation's own
@@ -77,6 +80,7 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
 # Canonical default sink for the append-only issue-touches log (F#916/#919,
@@ -126,8 +130,11 @@ usage() {
   cat <<'EOF'
 usage: capture.sh "<title>" [--body "..."] [--label <l>] [--board 3|4] [--milestone "<m>"]
                   [--rework <regression|spec-miss|flake>] [--repo kernel|ambiguous]
+   or: capture.sh --title "<title>" [ ...same flags... ]
 
 Capture a noticed-but-not-now item as a tracked board item in one call.
+  --title      the issue title, as a flag alias for the positional first arg
+               (pass EITHER positionally OR via --title, not both)
   --body       longer description (defaults to a provenance line)
   --label      add an extra GitHub label (e.g. bug); Operational is always added
                by default — pass --label Foundational to override the work class
@@ -149,14 +156,18 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
 
-title="${1:-}"
-[ -n "$title" ] || { usage >&2; exit 2; }
-# A title starting with `--` is almost certainly a misplaced flag (a typo or a
-# forgotten title), not an intended issue title — refuse rather than file junk.
-case "$title" in
-  --*) { echo "capture.sh: refusing a title that starts with '--' (looks like a misplaced flag): $title"; usage; } >&2; exit 2 ;;
+# Title source: the positional first arg OR `--title <value>` (foundation#1227).
+# Every sibling field is a flag, so the odd-one-out positional kept getting
+# mis-passed as `--title` (misuse recurred 2026-07-07 / 2026-07-17 with the
+# lesson already banked) — so accept both, but require EXACTLY ONE source. A
+# leading `--` arg is NOT taken as the positional title (it's a flag, including
+# `--title` itself, parsed in the loop below); a bare leading arg is.
+title=""
+positional_title=0
+case "${1:-}" in
+  '' | --*) : ;;                    # no positional title (flags-only, or empty)
+  *) title="$1"; positional_title=1; shift ;;
 esac
-shift
 
 body=""
 label=""
@@ -166,6 +177,9 @@ rework=""
 repo_route=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --title)
+      [ "$positional_title" -eq 0 ] || { echo "capture.sh: pass the title EITHER positionally OR via --title, not both" >&2; exit 2; }
+      title="${2:?--title needs a value}"; shift 2 ;;
     --body)  body="${2:?--body needs a value}"; shift 2 ;;
     --label) label="${2:?--label needs a value}"; shift 2 ;;
     --board) board="$(board_resolve_name "${2:?--board needs a value}")" || exit 2; shift 2 ;;
@@ -175,6 +189,13 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+[ -n "$title" ] || { echo "capture.sh: a title is required (positional or --title)" >&2; usage >&2; exit 2; }
+# A title starting with `--` is almost certainly a misplaced flag (a typo or a
+# forgotten value), not an intended issue title — refuse rather than file junk.
+case "$title" in
+  --*) { echo "capture.sh: refusing a title that starts with '--' (looks like a misplaced flag): $title"; usage; } >&2; exit 2 ;;
+esac
 
 # --repo kernel/ambiguous routing (F#808, Guard #3 of the kernel-vs-overlay
 # routing rule) — overrides --board. `ambiguous` routes to the SAME board as
@@ -299,7 +320,41 @@ issue_touch_log_emit "$repo" "$num" "capture" || true
 # in Backlog, and only falls back to an explicit item-add + whole-board resolve if
 # auto-add never fires — so the GraphQL-heavy add (GH #53) is the rare fallback,
 # not every capture. Correct whether or not auto-add is configured.
-board_capture_item "$board" "$url" "$num"
+#
+# That fallback (board_create_on_board -> board_create_many, in lib/board.sh) is
+# exactly the path a BURST of serial capture.sh invocations hits when auto-add
+# is off/slow, and it used to be O(N) in the burst size (foundation #1225): every
+# invocation's board_add_to_board unconditionally busted the cross-process items
+# cache the NEXT invocation would have reused, so N serial captures inside one
+# BOARD_CACHE_TTL window paid N live whole-board resolves instead of sharing ~1.
+# Two fixes now live in lib/board.sh, not here (no capture.sh code needed):
+# board_add_to_board splices the newly-added item's stub into the warm cache
+# instead of busting it (_board_cache_patch_add), and board_create_many's
+# index-wait retry loop is now pre-flight budget-guarded — DEFAULTING TO ABORT
+# (not the general guard's warn-only default) on a near-empty GraphQL budget, so
+# a burst that would have silently drained the budget instead fails loud through
+# the SAME truthful-failure contract the `board_capture_item` check below already
+# handles (non-zero + BOARD_UNLANDED_ISSUES) rather than stranding issues off-board.
+#
+# board_capture_item now returns non-zero when the item never actually lands
+# (foundation #1226 — the Projects-v2 index race board_create_many's header
+# comment documents). Called EXPLICITLY under `set -euo pipefail`, not bare: a
+# bare call would abort the script mid-flight on that failure with no message
+# of its own (a silent, unexplained abort instead of the old false "Captured
+# -> Backlog" success line — an improvement over the bug, but still not the
+# actionable report a caller needs, and it would skip the milestone step
+# below with no explanation). Handle it explicitly instead: report the
+# created-but-not-landed issue loudly with a concrete next step, and exit
+# non-zero — NEVER fall through to the "Captured -> Backlog" line for an item
+# that didn't land.
+if ! board_capture_item "$board" "$url" "$num"; then
+  echo "capture.sh: created $url (#$num) but it did NOT land on board $board" \
+       "— the board card is missing or unstatused (a Projects-v2 index race);" \
+       "next step: re-run \`board_capture_item $board '$url' $num\` (after" \
+       "sourcing lib/board.sh) once indexing catches up, or add/status it on" \
+       "the board by hand" >&2
+  exit 1
+fi
 
 # 4) Optional: tag a release phase. Assign the native GitHub milestone as a free,
 # concurrent grouping label and LEAVE the item in Backlog — the milestone no longer

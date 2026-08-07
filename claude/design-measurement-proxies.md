@@ -1,11 +1,11 @@
-# Measurement proxies for /design effectiveness
+# Measurement proxies for /workshop effectiveness
 
-Falsifiability contract for `/design` (temperloop#148, epic
+Falsifiability contract for `/workshop` (temperloop#148, epic
 [[Plans/2026-07-08 temperloop - design command front door]]; this file is
 plan item `design-telemetry-proxies`, temperloop#220). Sibling of
 `claude/measurement-proxies.md` (the K94/K102 precedent for the
 communication-style model) — same shape, different subject: before/after
-`/design` ships value, this file pins **what "did /design improve outcomes?"
+`/workshop` ships value, this file pins **what "did /workshop improve outcomes?"
 cashes out to** — four named, checkable proxies, each tied to an existing
 data source, an explicit designed-vs-hand-authored (or, for Proxy 4,
 across-briefs) comparison, and a computation cadence. The four proxies below
@@ -13,16 +13,16 @@ are carried forward verbatim from the ratified brief's own dimension 9
 (`Designs/temperloop - design command design brief.md` § 9) — this file is
 where that brief's promise is discharged in full.
 
-## Independence from /design's own merge acceptance
+## Independence from /workshop's own merge acceptance
 
-**These proxies measure the system `/design` feeds. They do not gate any
+**These proxies measure the system `/workshop` feeds. They do not gate any <!-- cite: DMP.1 incident:K#220 -->
 sibling plan item's merge.** Nothing in `Plans/2026-07-08 temperloop -
 design command front door.md` takes a `depends-on:`/`after:` edge on this
 file, and no other `design-telemetry-proxies` sibling (`design-command-core`,
 `design-review-machinery`, `design-adoption-pack`, `design-adr-emission`,
 `design-persona-agents`) is blocked on a proxy reaching a target value here.
 The relationship runs the other way: once epics start flowing through
-`/design` in volume, these are the numbers a retro pass or `/check-in` pulls
+`/workshop` in volume, these are the numbers a retro pass or `/check-in` pulls
 to ask "did the coverage walk help, hurt, or do nothing" — after the fact,
 never as a merge gate.
 
@@ -40,37 +40,37 @@ epistemic stance.
 
 ## No new telemetry stream
 
-All four proxies below derive from artifacts `/design`, `/assess`, or
+All four proxies below derive from artifacts `/workshop`, `/assess`, or <!-- cite: DMP.2 guard:meta/data/raw/README.md -->
 `/build` **already produce** — satisfying this item's acceptance criterion
 2 without inventing instrumentation:
 
-- the epic body's `design-brief:` provenance marker line (`claude/commands/design.md`
+- the epic body's `design-brief:` provenance marker line (`claude/commands/workshop.md`
   Step 5a) — the designed/hand-authored classifier;
 - each PR's existing CI check-run history (`ci-poll.sh`'s `CI_FAILED`
   outcome, `gate.sh managed-merge`'s `EJECTED` disposition — `claude/commands/build.md`
   3g/4b);
-- the epic-close retro issue's `## Merge friction` section (`claude/commands/build.md`
-  4d-epic, Step 3) and the `rework`/`rework-cause:<cause>` labels
+- the epic-close retro tracker's `## Merge friction` section (`claude/commands/build.md`
+  4d-retro, the mint) and the `rework`/`rework-cause:<cause>` labels
   (`workflows/scripts/board/capture.sh --rework`, F#730);
 - the plan note's Contract-derived acceptance-placeholder bullets and the
   `needs-clarification` label / `## Re-triage signals` section
   (`claude/commands/assess.md` Steps 1, 2, 4);
 - the `Designs/*.md` ratified brief notes' per-dimension disposition lines
-  (`claude/design-schema.md` § Disposition grammar).
+  (`claude/workshop-schema.md` § Disposition grammar).
 
 If a future proxy genuinely needs a new stream, its schema must be
 documented in `meta/data/raw/README.md`'s shape **and** the extraction rule
-Live/Drain paired in the same change (`claude/commands/tidy.md`'s registry +
-`workflows/scripts/validate-live-drain.sh` green) — this file names no such
+Capture/Backstop paired in the same change (`claude/commands/tidy.md`'s registry +
+`workflows/scripts/validate-capture-backstop.sh` green) — this file names no such
 stream today because none of the four proxies requires one.
 
 ## Proxy 1 — Merge-gate failures on designed vs. hand-authored epics
 
-**What it measures.** Whether a `/design`-materialized epic's PRs clear the
+**What it measures.** Whether a `/workshop`-materialized epic's PRs clear the
 merge gate clean, versus needing a CI-failure-triggered worker re-spawn or
 an `EJECTED` disposition at the batched merge gate — a proxy for whether the
 coverage walk's design-time promises (each brief dimension pre-writing what
-its enforcing merge-time gate will demand — `claude/design-schema.md`'s
+its enforcing merge-time gate will demand — `claude/workshop-schema.md`'s
 "design-time promise ↔ merge-time enforcement is one loop" framing) actually
 reduced surprises at merge time, versus a hand-authored epic whose `##
 Contract` had no such walk behind it.
@@ -92,11 +92,11 @@ points, keyed by PR:
   the orchestrator-witnessed event set, applied identically to both sides
   of the comparison.
 - Epic classification rides the `design-brief: [[Designs/<note>]]` marker
-  line `claude/commands/design.md` Step 5a writes into a materialized epic's
+  line `claude/commands/workshop.md` Step 5a writes into a materialized epic's
   body — its presence/absence is exactly what already distinguishes a
-  `/design`-born epic from a hand-authored one. Confirmed directly: neither
+  `/workshop`-born epic from a hand-authored one. Confirmed directly: neither
   temperloop#94 nor temperloop#131's issue body contains a `design-brief:`
-  line (both pre-date `/design`), which is precisely why the epic's own
+  line (both pre-date `/workshop`), which is precisely why the epic's own
   acceptance criterion names them as the hand-authored baseline.
 
 **Designed-vs-baseline comparison.** For a closed epic, compute
@@ -112,8 +112,8 @@ timeline) → each PR's SHA/check-run history. Not continuously emitted; cheap
 enough to compute retrospectively from existing `gh` data with no dedicated
 stream.
 
-**Named gap, stated honestly.** This repo has zero fully `/design`-materialized-**and**-built
-epics to sample yet — K148 (the `/design` epic itself) is mid-build, and its
+**Named gap, stated honestly.** This repo has zero fully `/workshop`-materialized-**and**-built
+epics to sample yet — K148 (the `/workshop` epic itself) is mid-build, and its
 own children (including this one) are the first designed-epic sample once
 K148 closes. The hand-authored baseline (K94, K131) is available now; the
 designed side fills in as K148 and its successors complete.
@@ -125,16 +125,19 @@ redone, or a contract/edge actually changed, after building started — the
 sign that dimension 4 (Contract seams)'s design-time promise didn't hold,
 forcing mid-build replanning the coverage walk should have caught.
 
-**Data source.** No new stream — two existing artifacts:
+**Data source.** No new stream — two existing artifacts, with a relocation
+this proxy must account for (the mint-then-judge redesign, temperloop#533):
 
-- **Primary:** the epic-close retro issue's `## Merge friction` section
-  (`claude/commands/build.md` 4d-epic, Step 3) already buckets every PR
-  conflict encountered as `trivial-inline` (resolved in place) /
-  `rebase-respawn` (needed an update-branch/rebase round-trip) /
-  `real-rework` (a contract or edge actually had to change) — `real-rework`
-  is defined, verbatim, as mid-build rework. This section already
-  explicitly feeds the existing "plan-defects-per-epic KPI" trend
-  `build.md` names.
+- **Primary:** the epic-close retro tracker's `## Merge friction` section
+  (`claude/commands/build.md` 4d-retro — the mint, filed at epic close; not
+  4d-epic, which only closes the epic issue) buckets every PR conflict
+  encountered as `trivial-inline` (resolved in place) / `rebase-respawn`
+  (needed an update-branch/rebase round-trip) / `real-rework` (a contract or
+  edge actually had to change) — `real-rework` is defined, verbatim, as
+  mid-build rework. This bucket data is a **"what happened" signal only**:
+  as of #533 the mint deliberately carries no judgment (`build.md` 4d-retro's
+  own framing — "the tracker is a mint, not a questionnaire"), so it no
+  longer feeds any named KPI trend inside the kernel itself.
 - **Secondary, corroborating:** the `rework` / `rework-cause:<regression|spec-miss|flake>`
   GitHub labels (`workflows/scripts/board/capture.sh --rework`, F#730)
   applied when a mid-build-discovered defect is re-filed. This is broader
@@ -142,14 +145,32 @@ forcing mid-build replanning the coverage walk should have caught.
   rework surfacing while a specific epic is being built), so it corroborates
   rather than substitutes for the retro issue's own count.
 
+**Handoff-defect KPI — relocated out of the kernel mint (#533).** Before
+#533, the mint template itself asked four decomposition-retro questions and
+tallied a handoff-defect taxonomy, and this doc used to cite that data as
+feeding a "plan-defects-per-epic KPI" trend `build.md` named. #533 removed
+both the four questions and the handoff-defect taxonomy from the kernel mint
+template outright and relocated them to the overlay `/retro` judge's sixth
+axis (`build.md` 4d-retro, verbatim: "The four decomposition-retro questions
+and the handoff-defect taxonomy that used to live here have moved out of the
+kernel into that judge's sixth axis"). The handoff-defect KPI therefore now
+sources from **the judge's verdict**, not the kernel mint — and `build.md`
+(and `tidy.md`) no longer name a `plan-defects-per-epic` KPI trend at all
+(confirmed: the string is absent from both files at HEAD). **Named gap,
+stated honestly:** on a bare kernel-only checkout with no overlay `/retro`
+judge installed, this KPI has **no kernel-side source at all** — the mint's
+`retro-info` state label (as opposed to `retro-pending`) is exactly the
+marker for this case: nothing measures the handoff-defect count for that
+tracker, by design, until a judge is installed and runs against it.
+
 **Designed-vs-baseline comparison.** Rework rate = `real-rework`-bucketed
 conflict count / total conflicts (or / total PRs) logged in the epic's own
 retro issue. Compare designed epics against K94/K131.
 
-**How/when computed.** Read at epic-close time, when the retro issue already
-exists (`claude/commands/build.md` 4d-epic auto-files it on the epic's
-open→closed transition) — no separate pull needed beyond reading that
-issue's `## Merge friction` section.
+**How/when computed.** Read at epic-close time, when the retro tracker
+already exists (`claude/commands/build.md` 4d-retro — the mint — auto-files
+it on the epic's open→closed transition) — no separate pull needed beyond
+reading that tracker's `## Merge friction` section.
 
 **Named gap, stated honestly.** Neither K94 nor K131 has a filed retro issue
 today — confirmed via `gh issue list --search "Retro-for-epic: #94 in:body"`
@@ -173,8 +194,8 @@ already carry, before its items could be built — a well-formed Contract
 framing (§ 9: "a well-formed Contract should approach zero").
 
 **Data source — with a structural nuance the naive read misses.** A
-`/design`-materialized epic carries a `## Contract` with **zero sub-issues**
-(`claude/commands/design.md` Step 5b), so `/assess` against it runs in
+`/workshop`-materialized epic carries a `## Contract` with **zero sub-issues**
+(`claude/commands/workshop.md` Step 5b), so `/assess` against it runs in
 **epic-decomposition mode** (`claude/commands/assess.md` Step 1's "No
 sub-issues found" branch, foundation #526) — every item is Contract-derived,
 never sub-issue-derived. The ordinary clarification signal, the
@@ -192,7 +213,7 @@ operator to fill in before `/build` proceeds (`assess.md` Step 2's
 plan note, and filled by hand before `status: draft → approved`, **is** the
 round-trip for a designed epic.
 
-(Should a `/design`-born epic ever also carry independently-`/triage`d
+(Should a `/workshop`-born epic ever also carry independently-`/triage`d
 sub-issues in a mixed epic, the ordinary `needs-clarification` label /
 `## Re-triage signals` mechanism still applies to those items unchanged —
 this nuance only concerns the epic-decomposition-mode path.)
@@ -227,12 +248,12 @@ pull, since it needs no history walk.
 
 ## Proxy 4 — Dimension-disposition distribution
 
-**What it measures.** Across every ratified `/design` brief, the per-dimension
+**What it measures.** Across every ratified `/workshop` brief, the per-dimension
 distribution of dispositions — the `disposition: filled` /
 `disposition: n/a — <reason>` / `disposition: deferred → <ref>` line each
 dimension carries, in the prefixed shape the brief-conformance lint
 (`workflows/scripts/validate-design-brief.sh`) checks and the schema's
-worked example uses — among `claude/design-schema.md`'s 16 kernel dimensions
+worked example uses — among `claude/workshop-schema.md`'s 16 kernel dimensions
 (plus any overlay-added ones). A dimension disposed `n/a` on (nearly) every brief is
 dead weight in the schema — a removal candidate, per the ratified brief's
 own framing (§ 9: "the template earns its slots empirically").
@@ -240,7 +261,7 @@ own framing (§ 9: "the template earns its slots empirically").
 **Data source.** No new stream — the `Designs/*.md` ratified brief notes
 themselves. Each carries one disposition line as the **first non-blank
 line** under each numbered dimension heading
-(`claude/design-schema.md` § Disposition grammar's positional contract,
+(`claude/workshop-schema.md` § Disposition grammar's positional contract,
 going forward mechanically enforced by the brief-conformance lint,
 temperloop#216 / `workflows/scripts/validate-design-brief.sh`). Compute by
 walking every `status: ratified` note in `Designs/` and tallying, per
@@ -254,7 +275,7 @@ designed-epic briefs over time, not a designed-vs-baseline delta like
 Proxies 1–3.
 
 **How/when computed.** Cheapest to read at a retro pass, or whenever
-`/design` materializes a new epic (read every prior `Designs/*.md` note's
+`/workshop` materializes a new epic (read every prior `Designs/*.md` note's
 disposition lines then). **Named gap, stated honestly:** exactly one
 ratified brief exists today, `Designs/temperloop - design command design
 brief.md` (the bootstrap brief) — and per the `design-brief-lint` plan
@@ -269,7 +290,7 @@ pass lands.
 
 ## Cross-references
 
-- Epic: temperloop#148 ("/design: front door for invented work"); this
+- Epic: temperloop#148 ("/workshop: front door for invented work"); this
   file's own plan item: `design-telemetry-proxies`, temperloop#220.
 - Sibling contract this file mirrors: `claude/measurement-proxies.md`
   (temperloop#94/#102 precedent — the communication-style model's
@@ -277,15 +298,18 @@ pass lands.
 - Source of the four proxies (carried forward verbatim, then expanded with
   data-source mechanics): `Designs/temperloop - design command design
   brief.md` § 9 ("Telemetry & measurement proxies (K102 precedent)").
-- Disposition grammar + kernel dimension list (Proxy 4): `claude/design-schema.md`.
+- Disposition grammar + kernel dimension list (Proxy 4): `claude/workshop-schema.md`.
 - Materialization mechanics (the `design-brief:` marker, Proxy 1's
-  classifier): `claude/commands/design.md` Step 5a/5b.
+  classifier): `claude/commands/workshop.md` Step 5a/5b.
 - CI-poll / managed-merge-gate outcomes (Proxy 1): `claude/commands/build.md`
   3g, 4b.
-- Epic-retro `## Merge friction` section + the plan-defects-per-epic KPI,
-  and the `rework`/`rework-cause:*` label convention (Proxy 2):
-  `claude/commands/build.md` 4d-epic Step 3; `workflows/scripts/board/capture.sh`
-  (F#730).
+- Epic-retro `## Merge friction` section, and the `rework`/`rework-cause:*`
+  label convention (Proxy 2): `claude/commands/build.md` 4d-retro;
+  `workflows/scripts/board/capture.sh` (F#730).
+- The handoff-defect KPI's relocation out of the kernel mint into the
+  judge's sixth axis (temperloop#533, Proxy 2): the mint,
+  `claude/commands/build.md` 4d-retro; the judge, the overlay `/retro`
+  command (not present in a kernel-only checkout — see Proxy 2's named gap).
 - Epic-decomposition mode, the acceptance-placeholder rule, and the
   `needs-clarification` label / `## Re-triage signals` mechanism (Proxy 3):
   `claude/commands/assess.md` Steps 1, 2, 4 (foundation #526).

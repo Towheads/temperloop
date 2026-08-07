@@ -6,12 +6,21 @@
 #   DO NOT hand-edit the installed copy at ~/.local/bin/gh — edit this file and re-install.
 #
 # WHY THIS EXISTS
-#   The shared Projects-v2 GraphQL budget (5,000 pts/hr) has repeatedly drained with
-#   no per-call attribution (foundation #53/#93/#141). An earlier ad-hoc shim was
-#   removed by #62 on the premise usage had flattened; it hadn't, the budget
-#   re-drained the SAME day, and the removal took the only forward log with it.
-#   This is the durable, tracked replacement: a `make` target installs it and a
-#   matching target removes it, so it can never silently vanish again.
+#   Originally: the shared Projects-v2 GraphQL budget (5,000 pts/hr) had
+#   repeatedly drained with no per-call attribution (foundation #53/#93/#141).
+#   An earlier ad-hoc shim was removed by #62 on the premise usage had
+#   flattened; it hadn't, the budget re-drained the SAME day, and the removal
+#   took the only forward log with it. This is the durable, tracked
+#   replacement: a `make` target installs it and a matching target removes
+#   it, so it can never silently vanish again.
+#
+#   Post-removal of the Projects-v2/GraphQL board-adapter arm (temperloop#524),
+#   every registered board is issues-only and the tracker path spends only
+#   REST's own 5,000-pt/hr `core` bucket — THAT is now the budget this shim
+#   exists to keep attributable. A raw `gh api graphql` call from OUTSIDE the
+#   tracker path (an operator running one by hand, or an unmigrated script) is
+#   still worth classifying on its own terms, so the graphql/rest/porcelain
+#   split below is unchanged — only which budget is load-bearing has changed.
 #
 #   v2 (F#988) adds DURATION + ATTRIBUTION so the before/after measurement round
 #   for the git-bug tracker evaluation has a real "before" window. The suspicion
@@ -34,7 +43,7 @@
 #   code — the after-side instrument for the tracker migration for free.
 #
 #   Attribution comes from two optional env vars set by callers:
-#     GH_CALL_CONTEXT  outermost command (worklist / reconcile / funnel-tick / ...)
+#     GH_CALL_CONTEXT  outermost command (worklist / reconcile / pipeline-tick / ...)
 #     GH_CALL_OP       fine-grained op — the board adapter auto-tags its calling
 #                      function at the _board_gh seam.
 #   GraphQL/REST/porcelain CLASSIFICATION is derived at REPORT time from `args`;
@@ -58,12 +67,21 @@
 #   (canonical sink spec: meta/data/raw/README.md), using the SAME
 #   override-then-fallback resolution seam emit-command-run.sh /
 #   emit-issue-touch.sh / emit-gh-perf.sh use for their own <STREAM>_RAW_DIR:
-#   an explicit override (GH_CALLS_RAW_DIR) first, else a fixed default
-#   ($HOME/dev/foundation/meta/data/raw). This shim can't use those scripts'
-#   BASH_SOURCE-relative trick (`cd "$here/../.."`) because, unlike them, it
-#   is INSTALLED — copied to ~/.local/bin/gh (make install-gh-logger) and run
-#   from there, decoupled from any repo checkout on disk; the fixed fallback
-#   is therefore the primary path in practice, not a rare degrade case.
+#   an explicit override (GH_CALLS_RAW_DIR) first, else an XDG-scoped default
+#   (${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls, temperloop
+#   #415). This shim can't use those scripts' BASH_SOURCE-relative trick
+#   (`cd "$here/../.."`) because, unlike them, it is INSTALLED — copied to
+#   ~/.local/bin/gh (`temperloop install`, bin/subcommands/install.sh) and
+#   run from there, decoupled from any repo checkout on disk; the XDG
+#   fallback is therefore the primary path in practice, not a rare degrade
+#   case. A real downstream build-repo checkout that wants the lake to land
+#   in its own meta/data/raw/ (unioned with the other in-repo emit sites)
+#   sets GH_CALLS_RAW_DIR explicitly — the override always wins. The default
+#   was previously a hardcoded path under one operator's personal projects
+#   directory: a fresh machine's first few `gh` calls silently pre-populated
+#   the exact directory this project documents as the canonical `git clone`
+#   target for that downstream repo, breaking that clone on a non-empty
+#   destination (temperloop#415).
 #
 #   CUTOVER NOTE: the TSV (`$LOG`, below) stays live because
 #   workflows/scripts/probe/gh-perf-report.sh reads it directly (percentile/
@@ -88,7 +106,11 @@ LOG="${GH_CALL_LOG_FILE:-$HOME/.cache/gh-calls-v2.tsv}"
 MAX_BYTES="${GH_CALL_LOG_MAX_BYTES:-16777216}"   # 16 MiB
 
 # Lake stream (dual-write sibling of $LOG — see header LAKE STREAM note).
-LAKE_DIR="${GH_CALLS_RAW_DIR:-$HOME/dev/foundation/meta/data/raw}"
+# Default is XDG-scoped (never a hardcoded personal checkout path —
+# temperloop#415); GH_CALLS_RAW_DIR overrides for a real downstream
+# build-repo checkout that wants the lake unioned into its own
+# meta/data/raw/.
+LAKE_DIR="${GH_CALLS_RAW_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls}"
 
 # Resolve THIS shim's own absolute path so we never exec ourselves (infinite loop).
 # When invoked as `gh` via PATH, $0 may be bare "gh"; command -v then yields this
@@ -180,15 +202,15 @@ dur_ms=$(( end_ms - start_ms ))
   # args is the LAST column and is sanitized (tabs/newlines -> space) so a
   # GraphQL query arg can never split or corrupt the row (a latent v1 bug).
   args_clean="$(printf '%s' "$*" | tr '\t\n' '  ')"
-  # Read the two attribution env vars ONCE into plain (lowercase, non-knob-
+  # Read the two attribution env vars ONCE into plain (lowercase, non-setting-
   # shaped) locals and reuse them for both sinks below — GH_CALL_OP has no
   # registry row (a per-call attribution tag, not a static operator default;
-  # knob:exempt), so a single read here keeps check-knob-registry.sh's
+  # setting:exempt), so a single read here keeps check-setting-registry.sh's
   # unregistered-seam sweep to exactly one exempted occurrence instead of one
   # per sink. GH_CALL_CONTEXT is registered (owning script capture.sh; this
   # is a byte-identical duplicate seam elsewhere, allowed name-only).
   call_context="${GH_CALL_CONTEXT:-}"
-  call_op="${GH_CALL_OP:-}"  # knob:exempt — per-call attribution tag, not a static operator default
+  call_op="${GH_CALL_OP:-}"  # setting:exempt — per-call attribution tag, not a static operator default
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$start_ms" "$dur_ms" "$code" "$$" "$PPID" \
     "$tool" "$call_context" "$call_op" "$PWD" "$args_clean" >>"$LOG"
@@ -200,8 +222,8 @@ dur_ms=$(( end_ms - start_ms ))
     lake_host="${SUBSET_HOST_LABEL:-}"
     if [ -z "$lake_host" ]; then
       # $HOSTNAME is bash's own automatic variable (generic OS/harness-
-      # injected runtime value, KNOB_REGISTRY_GENERIC_ALLOWLIST category —
-      # same class as HOME/PATH/SHELL, not an operator-tunable knob).
+      # injected runtime value, SETTING_REGISTRY_GENERIC_ALLOWLIST category —
+      # same class as HOME/PATH/SHELL, not an operator-tunable setting).
       if [ -n "${HOSTNAME:-}" ]; then
         lake_host="${HOSTNAME%%.*}"
       else

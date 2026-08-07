@@ -9,7 +9,7 @@
 # another repo's canonical checkout in place — `git checkout -b`, commits, a
 # merge, `make install` — moves that peer's HEAD/branch pointer underneath it,
 # leaving the peer's on-disk state inconsistent with its in-memory view. That is
-# exactly how epic #86 stepped on a concurrent session working in dev/foundation.
+# exactly how epic #86 stepped on a concurrent session working in a peer checkout.
 #
 # WHAT: the session's LANE = its home dir (`$CLAUDE_PROJECT_DIR`, the launch dir)
 # PLUS any linked git worktree (a linked worktree is ephemeral task scratch with
@@ -24,8 +24,8 @@
 # guard leaves silent.
 #
 # VERDICT: ask, never deny — a deliberate cross-repo action is one confirmation
-# away, never hard-blocked (same philosophy as board-adapter-guard.sh /
-# git-stale-branch-guard.sh / subtree-edit-guard.sh).
+# away, never hard-blocked (same philosophy as git-stale-branch-guard.sh /
+# subtree-edit-guard.sh).
 #
 # EVAL_RUN: exits 0 silently — an unanswerable interactive `ask` would hang a
 # headless eval run, and a lane crossing is not a scored finding.
@@ -42,6 +42,7 @@
 #     — but file mutations through the Edit/Write/MultiEdit/NotebookEdit tools ARE
 #     covered, which is the dominant vector. A command chaining several `cd`s is
 #     checked against the FIRST mutation's context only.
+#     DIVERGENT since foundation#1355: build-worktree-guard.sh now DOES contain redirect targets; this guard deliberately still does not — a write jail proves containment, whereas this one only `ask`s on peer-HEAD moves.
 #   - `git worktree add` is intentionally NOT a gated verb: creating a worktree
 #     off a foreign repo is the sanctioned isolation escape hatch and only writes
 #     that repo's worktree-admin dir — it never moves the peer's HEAD or working
@@ -208,7 +209,7 @@ fi
 
 [ -n "$hit" ] || exit 0                     # in-lane -> silent, proceed
 
-reason="This ${tool} targets '${hit_target}', inside the canonical checkout of a DIFFERENT repo ('${hit}') than this session's home ('${home_real}'). Under the one-session-per-repo-directory invariant that other checkout is very likely a concurrent Claude session's live working tree — mutating it in place (moving its HEAD/branch, committing, merging, make install) leaves that peer's on-disk state inconsistent with what it thinks it has (exactly the epic #86 dev/foundation incident). If you need to change that repo, do it in an ISOLATED worktree instead: 'git -C ${hit} worktree add <path> -b <branch>' and work under <path> (worktrees are in-lane, never prompt). Approve only if you are certain no other session holds '${hit}'."
+reason="This ${tool} targets '${hit_target}', inside the canonical checkout of a DIFFERENT repo ('${hit}') than this session's home ('${home_real}'). Under the one-session-per-repo-directory invariant that other checkout is very likely a concurrent Claude session's live working tree — mutating it in place (moving its HEAD/branch, committing, merging, make install) leaves that peer's on-disk state inconsistent with what it thinks it has (exactly the epic #86 peer-checkout incident). If you need to change that repo, do it in an ISOLATED worktree instead: 'git -C ${hit} worktree add <path> -b <branch>' and work under <path> (worktrees are in-lane, never prompt). Approve only if you are certain no other session holds '${hit}'."
 log "ASK :: tool=${tool} target=${hit_target} foreign_root=${hit} home=${home_real}"
 jq -cn --arg r "$reason" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$r}}' \

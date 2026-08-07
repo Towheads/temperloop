@@ -78,9 +78,9 @@ links_enumerate() {
   # ---- 1. env/ dotfiles -> ~ -------------------------------------------------
   # Mirrors install-env: loops env/.* (excluding . .. .gitkeep). Guarded on
   # the directory actually existing: a kernel-only checkout (this repo,
-  # temperloop) has NO env/ at all — env/* is overlay-only, per
-  # workflows/scripts/kernel/kernel-repo-layout.md's own "what got seeded"
-  # note. Without this guard, an absent env/ leaves the glob unexpanded
+  # temperloop) has NO env/ at all — env/* is overlay-only, composed in only
+  # by a downstream overlay checkout. Without this guard, an absent env/
+  # leaves the glob unexpanded
   # (bash's default non-nullglob behavior), so `for f in .../env/.*` iterates
   # ONCE with the literal pattern string itself — basename of that is ".*",
   # which is neither "." nor ".." nor ".gitkeep", so it fell through and
@@ -155,10 +155,24 @@ links_enumerate() {
 # links_apply_symlink <target> <expected_source>
 #
 # Idempotent symlink creation with the canonical install-* semantics:
-#   - already correctly linked  -> print "✓ <name> already linked"
-#   - exists but not our symlink -> print "! <name> exists and is not a
-#     symlink — skipping (backup manually)"
+#   - already correctly linked   -> print "✓ <name> already linked"
+#   - a symlink pointing anywhere else (including a DANGLING one into a
+#     deleted worktree) -> atomically re-point it, print "→ relinked <name>".
+#     This is what makes a re-run self-healing: a farm of stale/dangling links
+#     is repaired in place rather than failing with "ln: <target>: File exists".
+#   - a real (non-symlink) file/dir at the target -> print "! <name> exists
+#     and is not a symlink — skipping (backup manually)". A user's real file is
+#     never clobbered.
 #   - absent -> create symlink, print "→ linked <name>"
+#
+# The heal path uses `ln -sfn` (force + no-dereference): `-f` removes the
+# existing symlink before creating the new one, and `-n` ensures an old symlink
+# that resolves to a directory is replaced itself rather than the new link
+# landing *inside* it. This satisfies the acceptance's "ln -sfn or rm-then-ln"
+# atomic-replace requirement. Critically, `[ -L ]` is tested BEFORE `[ -e ]`
+# because a dangling symlink is `-L`-true but `-e`-false, so the old `-e`-first
+# check silently missed it and fell through to a bare `ln -s` (the "File
+# exists" failure this fixes).
 #
 # Used by install-env, install-claude, and install-board recipes that have been
 # refactored to source this helper.
@@ -172,8 +186,15 @@ links_apply_symlink() {
   local name
   name="$(basename "$target")"
 
-  if [ -L "$target" ] && [ "$(readlink "$target")" = "$src" ]; then
-    echo "  ✓ ${name} already linked"
+  if [ -L "$target" ]; then
+    # It IS a symlink (possibly dangling — `-L` is true even when the link is
+    # broken). Either it already points where we want, or it's stale/dangling
+    # and we heal it in place.
+    if [ "$(readlink "$target")" = "$src" ]; then
+      echo "  ✓ ${name} already linked"
+    else
+      ln -sfn "$src" "$target" && echo "  → relinked ${name}"
+    fi
   elif [ -e "$target" ]; then
     echo "  ! ${name} exists and is not a symlink — skipping (backup manually)"
   else
@@ -201,11 +222,22 @@ links_apply_symlink() {
 #      axis already established (boards.conf.example's own header: "This
 #      file is parsed with grep/cut only — never sourced or eval'd").
 #
-# Discovery mirrors board.sh's own `_board_conf_file()` order exactly
-# (machine-level $XDG_CONFIG_HOME/foundation/boards.conf, then repo-local
-# workflows/scripts/board/boards.conf next to board.sh) via grep/cut only —
-# no sourcing of board.sh needed, keeping links.sh's install-time posture
-# dependency-free. If neither conf exists, this only creates the store root
+# Discovery is a deliberately REDUCED, two-rung subset of board.sh's
+# `_board_conf_file()` order — the two default paths only, as literals, via
+# grep/cut, so links.sh sources nothing at install time and stays
+# dependency-free. In order: machine-level
+# $XDG_CONFIG_HOME/temperloop/boards.conf, then the repo-local
+# workflows/scripts/board/boards.conf next to board.sh.
+#
+# What it does NOT mirror (this function is hint-only, so a conf it misses
+# costs a suggestion, never a wrong action):
+#   * the $BOARDS_CONF_MACHINE / $BOARDS_CONF_REPO_LOCAL env overrides — an
+#     operator who redirects either one gets no hint from here, though
+#     board.sh itself still honors them at runtime;
+#   * the #494 composed-tree consumer-root rung `_board_consumer_root_conf()`
+#     probes between the two rungs above.
+# Keep this list current if `_board_conf_file()` grows a rung.
+# If neither conf exists, this only creates the store root
 # and prints one informational line — never fails (a bare `mkdir -p` on a
 # writable path does not fail; a caller on a read-only HOME sees one stderr
 # notice and a non-zero return, same idiom as links_apply_symlink's siblings).
@@ -224,8 +256,23 @@ links_provision_cache_stores() {
   fi
   echo "  ✓ cache store root ready: ${store_root}"
 
-  local machine_conf conf=""
-  machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  # The temperloop#165 legacy $XDG_CONFIG_HOME/foundation/ fallback was
+  # removed in v0.19.0 — that path is no longer read. A stale file still
+  # sitting there is REPORTED by name rather than passed over in silence,
+  # matching board.sh's own promoted NOTE and doctor.sh's check_cache_state.
+  # Silence is not safe here: this function's no-conf arm prints "(no
+  # boards.conf found — nothing to suggest)", which is FALSE for an operator
+  # whose only conf is at the legacy path, and points them nowhere. The
+  # installer is a distinct surface from doctor — `temperloop install`
+  # (bin/subcommands/install.sh) calls this function and never invokes
+  # doctor.sh, it only SUGGESTS running it — so naming the file here cannot
+  # double-print with doctor's diagnostic in one run.
+  local machine_conf machine_conf_legacy conf=""
+  machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+  machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  if [ ! -f "$machine_conf" ] && [ -f "$machine_conf_legacy" ]; then
+    echo "  NOTE: a machine boards.conf exists only at the legacy path ${machine_conf_legacy} — the default moved to ${machine_conf} in v0.15.0 and the legacy read was removed in v0.19.0, so that file is IGNORED; move it."
+  fi
   if [ -f "$machine_conf" ]; then
     conf="$machine_conf"
   elif [ -n "$foundation" ] && [ -f "${foundation}/workflows/scripts/board/boards.conf" ]; then

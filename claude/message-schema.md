@@ -29,7 +29,7 @@ decision needs; see that note for the full verdict table.
 
 ## Scope — artifact-shaped templates only
 
-This file authors **artifact-shaped** templates: message shapes that are
+This file authors **artifact-shaped** templates: message shapes that are <!-- cite: MS.1 class:driftable-second-copy -->
 written *into* a standalone artifact (a PR body, a board comment, a digest
 record) and can be named, checked, and overridden as a unit. It deliberately
 does **not** author **every-turn conversational shapes** — the completion
@@ -42,8 +42,11 @@ a second, driftable copy of a rule the kernel file already owns (the
 contract-by-pointer risk `claude/presentation-plane.md` warns against for
 parsed surfaces applies just as much to prose rules split across two files).
 
-The five templates authored here: **PR-body skeleton**, **parking note**,
-**digest entry**, **question block**, **degradation notice**. Rewriting
+The six templates authored here: **PR-body skeleton**, **parking note**,
+**digest entry**, **question block**, **decision presentation**,
+**degradation notice**. Five of the six are the sanctioned overlay-override
+surface; **decision presentation** is explicitly excluded from it and may not
+be redeclared by an overlay at all (§ Overrides). Rewriting
 `CLAUDE.kernel.md`'s existing communication rules to be *instances of* this
 model is a separate, later plan item (`kernel-guides-unify`) — not performed
 by this file. The overlay override mechanism itself was a separate, later
@@ -52,14 +55,14 @@ plan item (`override-seam`) at authoring time; it has since landed as
 
 ## The seven interaction modes (recap)
 
-Canonical in temperloop#94; restated here (as `measurement-proxies.md` also
+Canonical in temperloop#94; restated here (as `measurement-proxies.md` also <!-- cite: MS.2 incident:K#94 -->
 does) only so each template's mode-mapping below is self-contained:
 
 1. **CLI terminal output** — `try`/`init`, board commands, `gate.sh`
 2. **Live conversational narration** — slash commands mid-session
 3. **Blocking questions** — `AskUserQuestion` / `decision_sink_ask(...)`
 4. **Return-cold summaries** — completion summary, resume recap, parking notes
-5. **Unattended/deferred surfaces** — pending-decisions, digests, funnel-tick reports
+5. **Unattended/deferred surfaces** — pending-decisions, digests, pipeline-tick reports
 6. **Durable review artifacts** — PR bodies, issue/epic contracts, plan notes, decision notes
 7. **Newcomer/docs surface** — README, `bin/README`, generated docs site
 
@@ -83,10 +86,10 @@ axes is what "as much as this exchange requires" cashes out to.
 |---|---|---|---|---|---|
 | 1 | CLI terminal output | present | operator, stranger | *(none — style-free CLI text is unauthored; structured `.outcome` JSON is frozen, see `presentation-plane.md`)* | — |
 | 2 | Live conversational narration | present | operator | Degradation notice (minimal form) | Mode-2 conciseness must be *structurally* enforced (locked) |
-| 3 | Blocking questions | present | operator | Question block (blocking variant) | Amershi G3/G10 (locked) |
+| 3 | Blocking questions | present | operator | Question block (blocking variant); decision presentation (which fills that block's Context slot) | Amershi G3/G10 (locked) |
 | 4 | Return-cold summaries | cold | operator | Parking note | Endsley skeleton (locked-structural; effectiveness provisional) |
 | 5 | Unattended/deferred surfaces | absent | operator | Digest entry; question block (deferred variant) | Endsley skeleton + Lee & See calibrated trust (locked); Iqbal & Bailey ~90s anchor (locked) |
-| 6 | Durable review artifacts | cold, absent | operator, stranger, parser | PR-body skeleton; degradation notice (recorded form) | ETRA-2025 title/desc/labels + mandatory Purpose + commit What+Why (all locked) |
+| 6 | Durable review artifacts | cold, absent | operator, stranger, parser | PR-body skeleton; degradation notice (recorded form); decision presentation (recorded form — its challenge-record line) | ETRA-2025 title/desc/labels + mandatory Purpose + commit What+Why (all locked) |
 | 7 | Newcomer/docs surface | absent | stranger | *(none — the docs-generator surface, out of scope for this file)* | Expertise reversal (locked): the same text cannot optimally serve mode 1 and mode 7 |
 
 Mode 6 spans two presence states and all three reader types deliberately — a
@@ -98,7 +101,7 @@ line) byte-for-byte alone.
 
 ## The reference-token rule
 
-A template class, not a single template: **any token whose meaning lives in
+A template class, not a single template: **any token whose meaning lives in <!-- cite: MS.3 incident:K#94 -->
 an external system — an issue/PR/epic id, a board id, a plan-note slug, a
 session id, a milestone/phase name — must be self-sufficient at its point of
 use.** Concretely:
@@ -138,7 +141,7 @@ restated.
 
 ### PR-body skeleton
 
-**Mode(s):** 6 (durable review artifact) — read cold by the reviewer,
+**Mode(s):** 6 (durable review artifact) — read cold by the reviewer, <!-- cite: MS.4 guard:workflows/scripts/build/pr.sh -->
 absently by a later auditor, mechanically by GitHub's closing-keyword
 scanner.
 
@@ -204,7 +207,11 @@ operator later reviews it.
   Quantity — don't manufacture urgency to fill the slot).
 - **Calibrated-trust statement**, where the entry reports on autonomous or
   unattended action — state confidence and limits honestly (locked, Lee &
-  See 2004) rather than defaulting to a uniformly confident tone.
+  See 2004) rather than defaulting to a uniformly confident tone. The
+  concrete failure mode this guards against is citable: explanations can be
+  **persuasive but not informative**, raising reader acceptance of *wrong*
+  outputs (arXiv 2605.10930) — a confident-sounding rationale is itself a
+  trust-miscalibration risk, not automatically a transparency win.
 - **Deferred-question backlog pointer** (optional) — a link to any question
   block entries (deferred variant, below) this digest is surfacing.
 
@@ -230,13 +237,22 @@ Shared required slots:
   `## Questions` entry, a decision-queue issue, the pending-decisions note) —
   a pointer to that surface, never a restatement of its grammar.
 
+**When the block is the right vehicle.** This structured block (and <!-- cite: MS.5 guard:claude/plan-schema.md -->
+`AskUserQuestion`) fits a **bounded** decision — approve/reject, or pick from
+a small closed set of named options. For an **open-ended** question — an
+exploratory design fork, a "what should this even look like" — prefer plain
+prose: forcing open-ended judgment into fixed options usually means the option
+set omitted the real answer, and an operator who rejects every option is
+exactly that signal. Reserve the block for the bounded case; ask the open-ended
+one in prose.
+
 Variant-specific:
 
 - **Blocking variant** (mode 3): no default is required — the reader is
   present to decide directly.
 - **Deferred variant** (mode 5): a **default is required** — this is the
   existing convention in `claude/plan-schema.md` § Orchestrator-written
-  `## Questions` section ("every `batch-at-gate` entry MUST state its
+  `## Questions` section ("every `ask-at-gate` entry MUST state its
   default") and in the pending-decisions surface; this template names both
   as the canonical deferred-variant instances rather than re-specifying
   their frozen grammar.
@@ -245,6 +261,52 @@ Variant-specific:
 Orchestrator-written `## Questions` section (checkbox/step/default/
 auto-proceed grammar); `claude/decision-queue-contract.md` § 3 (typed reply
 grammar, ` ```decision ` block, `/choose`/`/approve`).
+
+### Decision presentation
+
+**Mode(s):** 3 (blocking, present-reader) — a `/workshop` coverage-walk stop, <!-- cite: MS.10 incident:K#923 -->
+a pre-ratify walkthrough step, or the premise-gate ask; the same content
+recorded into the brief's challenge record is that instance read cold and
+absently later, i.e. mode 6.
+
+**Composes with § Question block — it does not replace it.** A walk stop *is*
+a Question block whose **Context** slot is a decision presentation (and whose
+**Options** slot carries the stop's named choices, where the stop offers a
+closed set). Stating the composition here is what keeps neither template's
+slots dangling: § Question block still owns Context/Options/Routing and the
+blocking-vs-deferred variant split; this template owns what a *decision*
+specifically must contain before an operator can fairly contest it.
+
+Five required parts, in order:
+
+1. **The decision, in plain terms** — what is actually being decided, stated
+   so a reader carrying none of the surrounding spec in their head can
+   evaluate it.
+2. **The proposed answer** — the facilitator's recommendation, offered as a
+   proposal to be contested, never as an accomplished fact.
+3. **The reasoning** — why this answer rather than another.
+4. **Alternatives considered, and why they lost** — each named with the
+   reason it was set aside. "None considered" is a legitimate value and must
+   be said outright; an empty slot is not the same statement.
+5. **What accepting constrains downstream** — what the decision forecloses,
+   commits, or makes expensive to reverse later.
+
+**Plain-language rule (required, and it governs all five parts).** A
+spec-internal reference or piece of jargon — a step number, a slug, an issue
+ref, a schema section name, an internal coinage — must be explained inline at
+its point of use, never assumed. The counterexample is citable rather than
+hypothetical: the premise gate of the very design brief that produced this
+template first fired as a context-free, jargon-dense question the operator
+could not evaluate ("I don't have context on this question so I have to
+challenge you to understand what's hidden from me") — the failure
+demonstrated inside its own intake (temperloop#923). The rule does **not**
+lapse once the challenge phase ends: it governs the walkthrough steps' gists
+and delta summaries too, which is precisely where compression makes jargon
+cheapest to reach for.
+
+**Not overridable by an overlay.** Alone among the templates in this file,
+this one is excluded from the sanctioned overlay-override surface — see
+§ Overrides for the exclusion and the lint that enforces it.
 
 ### Degradation notice
 
@@ -260,20 +322,34 @@ same notice lands in a durable artifact).
   in the surrounding result (locked, Lee & See); never silently imply full
   confidence when a gate didn't run (Amershi G10, locked).
 - **Remedy pointer** (optional) — what would restore the capability, if
-  known.
+  known. In mode 6 this is unconditional; in mode 2 it is permitted **only**
+  for the shipped-but-not-installed subagent case defined below.
 
-The mode-2 minimal form matches the existing one-line `skipped —
-<agent> unavailable` convention verbatim — that exact wording is owned by
-`CLAUDE.kernel.md` itself and is not restated here. The fuller mode-6 form
-adds the calibrated-trust and remedy slots because a cold or stranger reader
-of a durable artifact lacks the live session's surrounding context; this
-live-vs-recorded distinction is an authoring judgment call, not itself a
-research-grounded finding — flag it as such rather than dressing it up as
-locked.
+The mode-2 minimal form has **two shapes, and only two.** Its **default** is <!-- cite: MS.6 incident:F#164 -->
+the bare one-line `skipped — <agent> unavailable` convention verbatim — that
+exact wording is owned by `CLAUDE.kernel.md` itself and is not restated here.
+Its **one sanctioned exception** is the *shipped-but-not-installed* case: when
+the skipped capability is a subagent that **ships as source under
+`claude/agents/<agent>.md`** but is not resolvable as a live agent (no
+`.claude/agents/<agent>.md` and no `CLAUDE.md § Subagents` declaration), the
+mode-2 line MAY carry a **single short remedy clause** naming the one-command
+fix — `skipped — <agent> available as source; run
+workflows/scripts/install/project-agents.sh to enable`. This is the **only**
+remedy pointer permitted on a live mode-2 line; it exists because this
+specific degradation has a known, in-the-moment fix the operator needs
+*while the panel is running*, not merely in a later durable record.
+Conciseness stays structurally enforced — one clause, this case only; every
+other mode-2 skip (a genuinely not-shipped agent, or a non-agent capability
+like `/verify` that has no `project-agents.sh` install path) stays bare. The
+fuller mode-6 form still adds the calibrated-trust and (unconditional) remedy
+slots because a cold or stranger reader of a durable artifact lacks the live
+session's surrounding context; this live-vs-recorded distinction is an
+authoring judgment call, not itself a research-grounded finding — flag it as
+such rather than dressing it up as locked.
 
 ## Provisional slots — do not lock
 
-Per the L0 verification verdict, the following remain explicitly
+Per the L0 verification verdict, the following remain explicitly <!-- cite: MS.7 incident:K#100 -->
 provisional. A template above rests its *structure* on these where noted,
 but none of the following may be authored as a firm, load-bearing rule:
 
@@ -286,23 +362,50 @@ but none of the following may be authored as a firm, load-bearing rule:
   device) actually enforces it is not — this file names the templates as the
   enforcement surface without claiming that surface is proven sufficient.
 - **Mode-2/6 error-message readability tuned to expertise level** (Cluster
-  5) — **unresolved**, zero evidence found either way; templates here must
-  not assume the CHI-2021 vocabulary/jargon/sentence-structure/length
-  findings (novice populations) generalize to an operator or expert reader
-  of CLI/PR content. Routed to temperloop#100.
-- **"Over-explanation harms comprehension/trust"** as a causal claim — the
-  parking-note and digest-entry "don't restate what's already visible"
-  guidance above rests only on the locked CLT redundancy-effect finding
-  (self-sufficient artifacts, Tier-1 finding 3), not on a proven link to
-  reader trust or comprehension outcomes. Routed to temperloop#100.
+  5) — direction **theoretically supported but empirically unconfirmed**:
+  expertise-reversal predicts expert readers may tolerate or even prefer
+  terser, denser output (2025 meta-analysis, 176 effect sizes), but this is
+  unconfirmed for professional developers, untested in the error-message
+  domain, and the reversal effect itself is unestablished at professional
+  expertise levels. Templates here must still not assume the CHI-2021
+  vocabulary/jargon/sentence-structure/length findings (novice populations)
+  generalize to an operator or expert reader of CLI/PR content. **Stays
+  provisional** — accepted standing gap per the temperloop#718 verdict
+  record (`Context/temperloop - CHI-2021 readability + over-explanation
+  harm research verdicts (#100)`, from the temperloop#100 spike).
+- **"Over-explanation harms comprehension"** as a causal claim — the former
+  combined "harms comprehension/trust" slot is **split in two** per the
+  temperloop#100 verdicts. The *trust-miscalibration / over-reliance* half
+  is now **citable and no longer provisional**: explanations can be
+  persuasive but not informative, raising reader acceptance of wrong
+  outputs (arXiv 2605.10930; supporting: doi 10.1080/0144929X.2025.2568928,
+  S0747563224002206, doi 10.1145/3686164) — see the strengthened Mode-5
+  calibrated-trust rule (§ Digest entry) and § Citation hygiene. The
+  *comprehension-degradation* half **stays provisional**: no study isolates
+  over-explanation → worse understanding, so the parking-note and
+  digest-entry "don't restate what's already visible" guidance above still
+  rests only on the locked CLT redundancy-effect finding (self-sufficient
+  artifacts, Tier-1 finding 3). Verdicts recorded in the temperloop#718
+  verdict record (`Context/temperloop - CHI-2021 readability +
+  over-explanation harm research verdicts (#100)`).
 
 ## Citation hygiene
 
-- Cite **Iqbal & Bailey** (CHI 2008 / TOCHI 2010) for the ~90s (88.6s mean)
+- Cite **Iqbal & Bailey** (CHI 2008 / TOCHI 2010) for the ~90s (88.6s mean) <!-- cite: MS.8 incident:K#94 -->
   breakpoint-deferral-cost anchor — **not** Iqbal & Horvitz.
 - Scope the LLM-verbosity figure (≈50.4% compressible without information
   loss) to **short-QA tasks with an explicit brevity instruction** — do not
   generalize it to "about half of all responses."
+- Cite **arXiv 2605.10930** for the trust-harm link: explanations
+  "persuasive but not informative" raise reader acceptance of wrong outputs
+  (supporting: doi 10.1080/0144929X.2025.2568928, S0747563224002206, doi
+  10.1145/3686164). The measured harm is a function of **explanation
+  type/presence, not narration length per se** — do not cite it as evidence
+  that longer narration harms trust.
+- Keep **arXiv 2411.07858** scoped to **verbosity-compensation frequency
+  and compressibility only**. The trust/reliance sources above measure a
+  different construct (reader trust and over-reliance) and **complement,
+  not replace**, it — do not merge the two into one "verbosity harms" claim.
 - Do **not** cite arXiv 2507.10906 for the commit "What + Why" definition —
   refuted 0-3 on primary-source verification. Cite ICSE 2023 (doi
   10.1109/ICSE48619.2023.00076) and the stairs.ics.uci.edu commit-messages
@@ -315,20 +418,39 @@ but none of the following may be authored as a firm, load-bearing rule:
 ## Overlay override status
 
 The named templates in this file are the sanctioned surface an overlay may
-override — see the carve-out added to `claude/CLAUDE.kernel.md` § Kernel vs
-overlay routing rule in this same change. § Overrides below specifies the
-mechanism (redeclaration precedence, dangling-override detection): "sanctioned
-surface" means a future override of one of these five templates by name is
-not, by itself, a violation of "overlay may extend, never contradict",
-resolved per that mechanism.
+override — see the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs overlay
+routing rule — **with one exclusion**: of the six templates authored here,
+**five are overridable and § Decision presentation is not**. § Overrides below
+specifies the mechanism (redeclaration precedence, dangling-override
+detection, and the non-overridable set): "sanctioned surface" means an
+override of one of those five templates by name is not, by itself, a
+violation of "overlay may extend, never contradict", resolved per that
+mechanism. It has never meant *every* template here, and the exclusion is
+enforced by a lint rather than left to prose.
 
 ## Overrides
 
-This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs
-overlay routing rule points at. It governs only the five named templates
-this file authors (§ Templates) — no other kernel contract is overridable by
-this or any other route.
+This is the mechanism the carve-out in `claude/CLAUDE.kernel.md` § Kernel vs <!-- cite: MS.9 class:drifting-delta-divergence -->
+overlay routing rule points at. It governs only the **five overridable** of
+the six named templates this file authors (§ Templates) — no other kernel
+contract is overridable by this or any other route.
 
+- **Non-overridable set — an enforced exclusion, not a convention.** <!-- cite: MS.11 guard:workflows/scripts/validate-template-refs.sh -->
+  § **Decision presentation** may not be redeclared by an overlay **at all**.
+  It is a challenge-gate contract: a sanctioned redeclaration would let an
+  overlay quietly shrink its five parts or drop its plain-language rule, and
+  a walk stop that no longer has to be intelligible is exactly the
+  overlay-weakens-kernel back-channel `CLAUDE.kernel.md` § Kernel vs overlay
+  routing rule forbids. This is enforced, not asserted:
+  `workflows/scripts/validate-template-refs.sh` carries the exclusion set and
+  **fails** an overlay that redeclares a listed name — without that check the
+  exclusion would be inert, since a redeclaration of a template this file
+  defines otherwise passes the dangling-override rule below cleanly (the name
+  *is* canonical). Maintaining the set is a two-site change made in one PR —
+  this bullet and that script's `NON_OVERRIDABLE_TEMPLATES` — and the script
+  self-checks that every name it excludes is still a template § Templates
+  defines, so renaming or retiring one here reds CI instead of silently
+  disarming the exclusion.
 - **Whole-template redeclaration by name, not a delta.** An overlay overrides
   a template by writing out the **entire template again under the same
   name** — not a structured patch/delta against the kernel's version (no
@@ -364,10 +486,13 @@ this or any other route.
   has no such residue when absent.)
 - **Dangling-override rule.** Every overlay-defined override name MUST match
   the name of a template this file defines (§ Templates) — an overlay may
-  not "override" a template that doesn't exist here. Checking this
-  mechanically is the job of the `template-lints` plan item (L4); this file
-  states the rule, `template-lints` implements the check. Do not re-implement
-  or duplicate that check here or elsewhere.
+  not "override" a template that doesn't exist here. This is checked
+  mechanically by `workflows/scripts/validate-template-refs.sh` (shipped by
+  the `template-lints` plan item); this file states the rule, that script
+  implements the check. Do not re-implement or duplicate it here or
+  elsewhere. Note the two checks are complements, not duplicates: this one
+  rejects a name § Templates does **not** define, the non-overridable-set
+  check above rejects one specific name it **does**.
 - **Per-template staleness detection is out of scope.** Whole-template
   redeclaration means a kernel update to a template's *content* (wording,
   slots, grounding) is silently shadowed wherever an overlay has redeclared
@@ -403,10 +528,16 @@ this or any other route.
   reference tokens are a first-class artifact class")
 - L0 verification verdicts: `Context/temperloop - communication-style
   Tier-2 verification verdicts` (vault note)
-- Deferred research debt (Cluster 5, over-explanation→harm link): temperloop#100
+- Research debt (Cluster 5, over-explanation→harm link): adjudicated by the
+  temperloop#100 spike, applied here via temperloop#718; verdict record:
+  `Context/temperloop - CHI-2021 readability + over-explanation harm
+  research verdicts (#100)` (vault note)
 - Later plan items that build on this file: `kernel-guides-unify` (rewrites
   `CLAUDE.kernel.md`'s prose against this schema, retires the refs legend),
-  `overlay-adoption` (foundation's adoption), `template-lints` (CI
-  conformance checks, including the § Overrides dangling-override rule).
-  `override-seam` (specified the override mechanism, § Overrides above) has
-  landed.
+  `overlay-adoption` (foundation's adoption). `template-lints` (CI
+  conformance checks, including the § Overrides dangling-override rule),
+  `override-seam` (specified the override mechanism, § Overrides above), and
+  `decision-presentation-template` (§ Decision presentation plus the enforced
+  non-overridable set, temperloop#928) have landed.
+- Design brief this template answers to: `Designs/temperloop - workshop
+  collaborative decision walk` (ratified 2026-08-01), epic temperloop#923

@@ -38,6 +38,23 @@ LEAK_PATH="/Users/tra""vis/app/config.txt"      # matches /Users/travis\b
 LEAK_EMAIL="trav""new@yahoo.com"                 # matches travnew@yahoo\.com
 LEAK_ORG="Tow""heads"                            # matches Towheads
 
+# --- self-contained fixture denylist (temperloop#438) -----------------------
+# The tracked personal-token-denylist.tsv no longer ships operator-personal
+# rows — they moved to a gitignored .local.tsv overlay that is ABSENT on a
+# stranger's kernel-only clone. So this test must NOT depend on the tracked
+# TSV's contents (nor on any overlay being present): it supplies its OWN
+# denylist fixture with the exact patterns it seeds, via KERNEL_DENYLIST_FILE.
+# The patterns are split (Tow""heads) so this file's own SOURCE carries no
+# contiguous scannable token, same discipline as the seeded leak literals
+# above. No sibling <fixture>.local.tsv is created, so every run exercises the
+# guard's "overlay absent — degrade legibly" path deterministically.
+FIXTURE_DENY="$WORK/fixture-denylist.tsv"
+{
+  printf '%s\t%s\n' "/Users/tra""vis\\b"    "personal absolute filesystem path (fixture)"
+  printf '%s\t%s\n' "trav""new@yahoo\\.com" "personal email address (fixture)"
+  printf '%s\t%s\n' "Tow""heads"            "personal GitHub org name (fixture)"
+} > "$FIXTURE_DENY"
+
 # --- empty exempt file (default; overridden per-case) -----------------------
 EMPTY_EXEMPT="$WORK/empty-exempt.txt"
 : > "$EMPTY_EXEMPT"
@@ -72,6 +89,7 @@ BASE_SHA="$(git -C "$REPO" rev-parse HEAD)"
 # via an explicit `env ...` instead.
 run_guard() {
   env KERNEL_MANIFEST_ROOT="$REPO" \
+      KERNEL_DENYLIST_FILE="$FIXTURE_DENY" \
       KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
       LEAK_GUARD_BASE="$BASE_SHA" \
       LEAK_GUARD_SKIP_SECRETS=1 \
@@ -126,7 +144,7 @@ commit "base carries a token (pre-existing)"
 SCOPE_BASE="$(git -C "$REPO" rev-parse HEAD)"
 git -C "$REPO" -c core.hooksPath=/dev/null rm -q "$REPO/src/legacy.env"
 commit "remove the pre-existing token"
-if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
         LEAK_GUARD_BASE="$SCOPE_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
         bash "$GUARD" >/dev/null 2>&1; then
   fail "3: a token present only on REMOVED lines must NOT fail the guard (added-only scope)"
@@ -152,7 +170,7 @@ if run_guard >/dev/null 2>&1; then
 fi
 POP_EXEMPT="$WORK/populated-exempt.txt"
 echo "src/exempt_me.env" > "$POP_EXEMPT"
-if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$POP_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$POP_EXEMPT" \
         LEAK_GUARD_BASE="$BASE_SHA" LEAK_GUARD_SKIP_SECRETS=1 \
         bash "$GUARD" >/dev/null 2>&1; then
   fail "5: a file in the exempt list should be suppressed wholesale"
@@ -164,19 +182,19 @@ git -C "$REPO" -c core.hooksPath=/dev/null reset -q --hard "$BASE_SHA"
 echo "just some new code, no personal token" > "$REPO/src/secretish.sh"
 commit "add a plain file for the secrets scan"
 # 6a: a gitleaks that reports a finding fails the guard.
-if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
        LEAK_GUARD_BASE="$BASE_SHA" GITLEAKS_BIN="$GL_FOUND" \
        bash "$GUARD" >/dev/null 2>&1; then
   fail "6a: a gitleaks finding in added lines should FAIL the guard"
 fi
 # 6b: LEAK_GUARD_SKIP_SECRETS=1 bypasses the secrets half (personal-clean -> pass).
-if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
         LEAK_GUARD_BASE="$BASE_SHA" LEAK_GUARD_SKIP_SECRETS=1 GITLEAKS_BIN="$GL_FOUND" \
         bash "$GUARD" >/dev/null 2>&1; then
   fail "6b: LEAK_GUARD_SKIP_SECRETS=1 should bypass the secrets half"
 fi
 # 6c: a clean gitleaks passes.
-if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
         LEAK_GUARD_BASE="$BASE_SHA" GITLEAKS_BIN="$GL_CLEAN" \
         bash "$GUARD" >/dev/null 2>&1; then
   fail "6c: a clean gitleaks should pass"
@@ -195,7 +213,7 @@ git -C "$NOBASE" -c core.hooksPath=/dev/null add -A
 git -C "$NOBASE" -c core.hooksPath=/dev/null commit -q -m init
 # rename away from any main/master default so no base ref resolves
 git -C "$NOBASE" branch -m no-default-branch-xyz
-if ! env KERNEL_MANIFEST_ROOT="$NOBASE" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$NOBASE" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
         LEAK_GUARD_BASE="" LEAK_GUARD_SKIP_SECRETS=1 \
         bash "$GUARD" >/dev/null 2>&1; then
   fail "7: an unresolvable base should skip the live scan and exit 0"
@@ -215,13 +233,13 @@ SCOPE_PATH_BASE="$(git -C "$REPO" rev-parse HEAD)"
 # token only in an OUT-OF-SCOPE overlay file
 echo "org = $LEAK_ORG" > "$REPO/overlay/private.env"
 commit "token in out-of-scope overlay file"
-if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
         LEAK_GUARD_BASE="$SCOPE_PATH_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
         bash "$GUARD" --path kernel/ >/dev/null 2>&1; then
   fail "8a: a token in an OUT-OF-SCOPE file must be ignored under --path kernel/"
 fi
 # sanity: the SAME diff, unscoped, MUST fail (proves the token really is a leak)
-if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
        LEAK_GUARD_BASE="$SCOPE_PATH_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
        bash "$GUARD" >/dev/null 2>&1; then
   fail "8b: sanity — the out-of-scope token IS a leak and must fail an unscoped scan"
@@ -229,7 +247,7 @@ fi
 # token in an IN-SCOPE kernel/ file -> scoped scan still catches it (also via env)
 echo "org = $LEAK_ORG" > "$REPO/kernel/sub/leak.env"
 commit "token in in-scope kernel file"
-if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$EMPTY_EXEMPT" \
        LEAK_GUARD_BASE="$SCOPE_PATH_BASE" LEAK_GUARD_SKIP_SECRETS=1 LEAK_GUARD_PATHS="kernel/" \
        bash "$GUARD" >/dev/null 2>&1; then
   fail "8c: a token in an IN-SCOPE kernel/ file must still be caught when scoped"
@@ -254,14 +272,14 @@ commit "tokens inside and outside sub/"
 REL_EXEMPT="$WORK/rel-exempt.txt"; echo "leak.env" > "$REL_EXEMPT"   # subtree-relative
 # 9a: --relative, ROOT=sub/ -> scoped to sub/ (outside excluded), path 'leak.env'
 #     matches the subtree-relative exempt -> PASS (no violations).
-if ! env KERNEL_MANIFEST_ROOT="$REPO/sub" KERNEL_DENYLIST_EXEMPT_FILE="$REL_EXEMPT" \
+if ! env KERNEL_MANIFEST_ROOT="$REPO/sub" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$REL_EXEMPT" \
         LEAK_GUARD_BASE="$REL_BASE" LEAK_GUARD_SKIP_SECRETS=1 LEAK_GUARD_RELATIVE=1 \
         bash "$GUARD" >/dev/null 2>&1; then
   fail "9a: --relative must scope to sub/ AND exempt the subtree-relative 'leak.env'"
 fi
 # 9b: WITHOUT --relative (ROOT=repo, whole tree), the path is 'sub/leak.env', which
 #     the subtree-relative exempt 'leak.env' does NOT match -> the token is caught.
-if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_EXEMPT_FILE="$REL_EXEMPT" \
+if env KERNEL_MANIFEST_ROOT="$REPO" KERNEL_DENYLIST_FILE="$FIXTURE_DENY" KERNEL_DENYLIST_EXEMPT_FILE="$REL_EXEMPT" \
        LEAK_GUARD_BASE="$REL_BASE" LEAK_GUARD_SKIP_SECRETS=1 \
        bash "$GUARD" >/dev/null 2>&1; then
   fail "9b: without --relative, a subtree-relative exempt entry must NOT match the prefixed path"

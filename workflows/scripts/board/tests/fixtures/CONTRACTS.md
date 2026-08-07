@@ -68,8 +68,9 @@ execute the scenario without network access or human input.
     project_view.json
     field_list.json
     item_list.json
-    issue_project_item.json   # optional; needed for board_resolve_item tests
-    item_list_with_pr.json    # optional; for PR-card-drop tests
+    issue_project_item.json   # optional; needed for the api-graphql replay path
+                               #   (e.g. test_capture.sh's --rework flow via
+                               #   fake_gh.sh's PATH-binary form)
     <other>.json              # any additional fixtures declared in scenario.yaml
   goldens/               # (required) expected output files for diff-based assertions
     stdout.txt            # expected stdout of the command under test

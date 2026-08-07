@@ -1,0 +1,619 @@
+#!/usr/bin/env bash
+#
+# workflows/scripts/report-producers/tokens — kernel-side implementation of
+# the `tokens` `.temperloop/report.d/` drop-in producer (originally
+# temperloop#958; relocated here by temperloop#980
+# "producer-kernel-side-relocation").
+#
+# WHY THIS LIVES HERE, NOT UNDER .temperloop/report.d/: a producer placed
+# directly in an adopter repo's `.temperloop/report.d/` is a byte-for-byte
+# COPY that `temperloop update` never touches (frozen at whatever version
+# `init` placed) and sits outside `check-producer-egress.sh`'s per-repo scan.
+# Living here instead means this file updates with the kernel checkout, and
+# the file actually committed to an adopter's `.temperloop/report.d/tokens`
+# (see that path in THIS repo for the kernel's own copy) is a thin locator +
+# `exec` shim with no transcript parsing and no jq shaping of its own — see
+# that file's header for the resolution order it uses to find this one.
+#
+# CONTRACT (workflows/scripts/lib/report.contract.md § Overlay drop-in
+# contract): invoked with no arguments. Must exit 0 and print a
+# self-contained block of stdout that ALSO parses as a single JSON object
+# carrying a numeric `tokens_spent` field for report.sh to render the
+# "tokens spent vs items merged" headline; an optional `by_model` object
+# feeds the directional dollar line when the repo also carries a
+# hand-written `.temperloop/pricing.json`.
+#
+# DEGRADATION: every failure path prints the contract's own one-line
+# `skipped -- tokens: producer unavailable` and exits 0 — never a non-zero
+# exit, never a stack trace, never a partially-written JSON object. report.sh
+# then renders that line verbatim and falls back to the kernel-tier headline,
+# exactly as it would for an absent producer.
+#
+# EGRESS: none. Everything below is a local file read (the sibling profiler
+# walks $SPEND_TRANSCRIPT_ROOT) plus `jq`. No curl, no gh, no API — this file
+# is scanned by `make test-producer-egress`
+# (workflows/scripts/kernel/check-producer-egress.sh, whose header documents
+# this loop's egress surface as EMPTY, and whose named-file list covers this
+# exact path since temperloop#980).
+#
+# SETTINGS RESOLUTION BOUNDARY (temperloop#980): this file execs the sibling
+# ../pipeline-spend-report.sh, which resolves build.config.sh from its OWN
+# `$SCRIPT_DIR/../..` — always the KERNEL checkout now, never the invoking
+# repo's own copy (pre-#980, when this logic lived at
+# .temperloop/report.d/tokens inside the invoking repo, that same climb
+# landed on the invoking repo's build.config.sh instead). So
+# SPEND_TRANSCRIPT_ROOT, the SPEND_WEIGHT_* cost weights, and
+# BASELINE_SNAPSHOT_LOOKBACK_DAYS (read a few lines below) now come
+# unconditionally from the kernel's own layer-5 tracked-repo config; an
+# adopter repo can still override any of them, but only at layer 2 (an
+# exported env var) per docs/config-precedence.md's ladder — layer 5 no
+# longer reads the adopter's own file.
+#
+# WHAT tokens_spent MEANS: DIRECTIONAL cost-weighted units, not dollars and
+# not raw tokens — see ../pipeline-spend-report.sh's header for the
+# weighting and the four correctness traps it encodes, and
+# ../lib/report.contract.md § Non-goals for why this loop never claims
+# precision. `by_model` is reported in the SAME cost-weighted units as
+# `tokens_spent`, so the two are internally consistent (the parts sum to the
+# whole).
+#
+# CORPUS SCOPE (temperloop#983): the profiler's --root defaults to
+# $SPEND_TRANSCRIPT_ROOT, i.e. the WHOLE of $HOME/.claude/projects — every
+# repo this operator has ever run Claude Code against on this machine, not
+# just the one that is invoking `temperloop report`. Left unset, that made
+# `tokens_spent / merged_count` divide EVERY project's spend on this
+# machine by only THIS repo's merged-item count — invisible in the kernel's
+# own dogfooding (one repo dominates the corpus here) but wrong for any
+# other adopter.
+#
+# THE FIX: scope --root to THIS checkout's own Claude Code project
+# directory, computed FORWARD from a known real path — never decoded
+# backward. Claude Code names a project's transcript directory by taking the
+# checkout's absolute path and replacing every non-alphanumeric character
+# ('/' and '.' alike) with '-' (verified against this machine's real
+# ~/.claude/projects/ listing during #983's investigation: e.g.
+# /Users/x/dev/batch/foundation.wt/some-slug encodes to
+# -Users-x-dev-batch-foundation-wt-some-slug). That transform is lossy in
+# the REVERSE direction — "...repo.wt.slug..." and "...repo--claude-
+# worktrees.slug..." are indistinguishable once collapsed to dashes — so
+# this script never tries to pattern-match or enumerate existing
+# ~/.claude/projects/ entries. It only ever encodes ONE path it already
+# knows for certain: `git rev-parse --show-toplevel` of its own cwd, which
+# report.contract.md's Overlay drop-in contract fixes as "the target repo".
+#
+# WHY THIS IS ENOUGH, NOT JUST "CLOSE ENOUGH": Claude Code writes a
+# subagent's transcript under the ORCHESTRATING session's own project
+# directory (keyed by that session's cwd at spawn time) — never under
+# whatever directory the subagent itself later `cd`s into. A `/build` item
+# worker launched from this checkout, that does its actual work inside an
+# isolated LINKED worktree elsewhere on disk, still leaves its transcript
+# under this checkout's own project directory. #983 confirmed this
+# empirically on this machine: the checkout's own project dir carried
+# hundreds of workflow agent transcripts while six sibling per-worktree
+# project dirs for the same repo carried zero. A genuinely DIFFERENT
+# checkout or clone of the same repo (a separate `git clone`, not a linked
+# worktree of this one) gets its own, unrelated project directory and is
+# correctly EXCLUDED — that is a different corpus, not this checkout's
+# spend, and this machine carries three such independent temperloop clones
+# with wildly different transcript counts (evidence a single "repo" is not
+# a single directory).
+#
+# DEGRADE, NOT GUESS: if this cwd is not inside a git working tree (`git
+# rev-parse` fails), or the derived path does not exist, or the CALLER
+# already overrode $SPEND_TRANSCRIPT_ROOT to something OTHER than its own
+# default — this script does not pass --root at all and lets the profiler
+# fall back to its default, machine-wide by construction. Whichever corpus
+# is actually walked, the `notice` field below (workflows/scripts/lib/
+# report.contract.md's notice channel, temperloop#981) states that TRUE
+# scope, never a hardcoded claim — see the scope_notice assignment below,
+# which is set from the SAME branch that decides whether --root is passed.
+# FIVE distinct notices, not two (temperloop#983 review round 2; a fifth
+# added by temperloop#995): repo-scoped success; repo-scoped success
+# reached via the over-cap PREFIX MATCH (see the 200-CAP paragraph below),
+# which says so, because that route resolves the directory by its first 200
+# encoded characters rather than by its full name; repo-scoping unavailable
+# (not a git tree, or an explicit non-default override) → generic
+# machine-wide; repo-scoping SUCCEEDED at deriving a path but that path
+# doesn't exist yet (a genuinely fresh or empty checkout) → a notice naming
+# the exact path, because silently falling back to machine-wide there would
+# look identical to a real, populated repo-scoped zero — an undetectable
+# wrong number is worse than the bug this item exists to fix (see the
+# `scoped_root_missing` branch below); and the encoded name exceeds Claude
+# Code's 200-character cap AND the prefix match did not resolve to exactly
+# one directory — zero matches, or an ambiguous several — → a notice naming
+# the PREFIX GLOB that was searched and which of those two it was (see
+# `scoped_root_capped` below).
+#
+# "OVERRIDE" DETECTION (temperloop#983 review, finding 3): naively treating
+# any non-empty $SPEND_TRANSCRIPT_ROOT as an explicit override defeats this
+# whole fix in the most common real invocation path — every command spec
+# that follows the kernel's § Named-setting convention sources
+# build.config.sh at its own Step 0, which does `:
+# "${SPEND_TRANSCRIPT_ROOT:=$HOME/.claude/projects}"` and EXPORTS it (see
+# that file's own `export SPEND_TRANSCRIPT_ROOT ...` line), so by the time
+# this producer runs as a child of such a session, $SPEND_TRANSCRIPT_ROOT is
+# ALREADY non-empty with the machine-wide DEFAULT, not a caller's deliberate
+# choice. So: only a value that DIFFERS from that documented default counts
+# as an override (test fixtures naturally clear this bar — they point at a
+# throwaway tmpdir). This is a heuristic, not a perfect signal — an operator
+# who explicitly re-asserts the literal default value is indistinguishable
+# from one who never touched it, and this script does not try to
+# distinguish them; there is no separate opt-out flag today.
+#
+# CWD-KEYING CAVEAT (temperloop#983 review, finding 6): Claude Code keys a
+# project's transcript directory on the SESSION'S OWN LAUNCH cwd, which this
+# script approximates with `git rev-parse --show-toplevel` (the git
+# TOPLEVEL of our cwd), not the literal cwd itself. Those two can diverge —
+# a session launched from a SUBDIRECTORY of a checkout gets its own,
+# different project directory that this encoding will never find (this
+# machine carries a real example: `foundation-cron/workflows`, 34
+# transcripts, invisible to a toplevel-keyed encode of `foundation-cron`).
+# This is a known, accepted UNDER-count, not a bug to chase: pattern-
+# matching or globbing for such subdirectory variants would reintroduce the
+# exact reverse-decode ambiguity this script deliberately refuses (see
+# "THE FIX" above) — it is latent today only because no such divergent
+# directory happens to carry workflow transcripts, not because the risk
+# doesn't exist structurally.
+#
+# LOCALE (temperloop#983 review round 2, finding 1 — MEASURED, not assumed):
+# a first cut of this script pinned `LC_ALL=C` on the encode `sed` call,
+# reasoning that byte-wise matching was the "safe" choice independent of the
+# ambient locale. That reasoning was WRONG, and measured wrong on this
+# machine against the real extracted encoder (Claude Code's own JS,
+# `e.replace(/[^a-zA-Z0-9]/g,"-")` — no `/u` flag, so it walks per UTF-16
+# CODE UNIT, not per Unicode codepoint):
+#
+#   char          Claude Code (UTF-16 code units)   sed, UTF-8 locale   sed, LC_ALL=C
+#   é (BMP)       1 dash                            1 dash  (MATCH)     2 dashes (byte-split, WRONG)
+#   🚀 (astral)   2 dashes (a surrogate PAIR)        1 dash  (WRONG)     4 dashes (UTF-8 is 4 bytes, WRONG)
+#
+# `LC_ALL=C` matches Claude Code in NEITHER case, and — the part that
+# mattered most — it took the one case that WAS working (every BMP
+# non-ASCII character: accented Latin, CJK, Cyrillic, Greek — under the
+# ambient UTF-8 locale nearly every interactive macOS/Linux shell already
+# runs, which is exactly where a non-ASCII checkout path would live) and
+# broke it. So: NO locale pin. Plain `sed` under the ambient locale is the
+# better default — it matches Claude Code exactly for the entire BMP, and
+# only diverges on an astral-plane character (rare: emoji, historic/rare CJK
+# extension blocks), which the existence check above (finding 1, BLOCKING)
+# already degrades legibly rather than silently miscounting. A `LC_ALL=C`
+# environment (cron/launchd/CI commonly set one) still degrades safely under
+# the SAME existence check — it just means those environments see the
+# honestly-labeled machine-wide notice for a non-ASCII checkout instead of a
+# correctly repo-scoped one, never a wrong number. This is a narrower,
+# already-covered gap, not a new one: a purely-ASCII checkout path (the
+# overwhelming majority) is unaffected by locale either way.
+#
+# THE 200-CAP (temperloop#983 review round 2, finding 2; RESOLVED by
+# temperloop#995): Claude Code's real encoder additionally caps the encoded
+# name at 200 characters (`iRt = 200` in the shipped bundle) — a name that
+# would encode LONGER than that is instead truncated to its first 200
+# characters plus a `-<hash>` suffix the hash algorithm of which is not
+# reproducible in shell. #983 closed the HONESTY half only: past 200 encoded
+# characters it degraded to a distinct, honestly-named reason rather than
+# claiming a path that structurally cannot exist under that name. #995
+# closes the RESOLUTION half, by the route #983's own header recorded so it
+# wouldn't be rediscovered from scratch — Claude Code's OWN reverse lookup
+# for an over-cap name uses a PREFIX match (`<first-200-chars>-*`) rather
+# than the unreproducible hash itself, and this script now globs
+# `$HOME/.claude/projects/<first-200-chars-of-encoded>-*` the same way (see
+# the length check below).
+#
+# WHY THIS IS NOT THE REVERSE-DECODE THIS FILE REFUSES (see "THE FIX"
+# above): the prefix is FORWARD-encoded from a path this script already
+# knows for certain (git's own toplevel), exactly like the un-capped case —
+# nothing is decoded backward, and no ~/.claude/projects/ entry is
+# interpreted as anything but an opaque name to compare a known prefix
+# against. Only the hash TAIL is unknown, and the tail is never guessed.
+#
+# EXACTLY ONE MATCH, OR DEGRADE (the precision question #983 deferred on):
+# a prefix glob can in principle match more than one directory — it takes
+# two checkouts identical across their first 200 encoded characters, rare
+# but not impossible (two long sibling worktree paths differing only in a
+# trailing slug). "Rare" is not "safe to guess between", and the hash that
+# WOULD disambiguate them is precisely what this script cannot compute — so
+# ZERO matches and MORE THAN ONE match both degrade to the machine-wide
+# corpus under a notice that names the glob it searched and says which of
+# the two happened. Only a single, unambiguous match is scoped, and even
+# then the notice says the directory was resolved by prefix rather than by
+# full name (see the `scoped_via_prefix` notice below) — a caller who sees
+# a surprising number can tell at a glance which route produced it.
+#
+# Reachability today: the longest encoded project name on this machine is
+# 106 characters (well under the cap), but a real one already reads 87
+# characters (`-Users-travis-dev-batch-temperloop--claude-worktrees-feat-
+# activation-class-a-build-gate`), and a deeper org path plus a long branch
+# slug reaches 200 — latent, not exotic.
+#
+# --- first-run disclosure notice + per-person local disable (temperloop#986)
+# -----------------------------------------------------------------------------
+# WHY: this producer is a COMMITTED, shared-repo artifact (the shim at
+# .temperloop/report.d/tokens is tracked) — a teammate who inherits it by a
+# plain `git pull` has never seen an `init` prompt and has no other way to
+# learn that a report run silently reads their own Claude Code transcripts.
+# The `init` prompt only ever reaches whoever ran `init`; it can't reach
+# someone who just pulled the file, so the disclosure has to live
+# producer-side, firing on that teammate's own first invocation instead.
+#
+# STATE, NEVER REPO-TRACKED: both the "already shown" and "disabled" states
+# ride a marker file under
+# `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/` —
+# the same XDG-state convention (and the same non-repo rationale) as
+# bin/temperloop's own `_foundation_check_report_offer` dismiss marker (see
+# that function's header). A COMMITTED dismissal/disable file would silently
+# disable the producer for every collaborator who clones the repo, which is
+# the exact opposite of "per-person" — so this never writes inside the git
+# tree, and a disable is a plain `mkdir -p ... && touch ...` a person runs
+# for themselves, never a flag threaded through config.
+#
+# TWO MARKERS, TWO PURPOSES (checked in this order, at two different points
+# below): `disabled` short-circuits the ENTIRE producer (checked first, right
+# after the cheap prerequisite checks, before any transcript scoping or
+# reading happens — "suppresses the producer entirely" per the item's own
+# acceptance criteria) via the ordinary `skip()` path, so a disabled producer
+# renders identically to an absent/unavailable one and `report.sh` falls back
+# to the kernel-tier headline with no special-casing on its end.
+# `first-run-notice-shown` gates the ONE-TIME disclosure text folded into the
+# `notice` field below — it does not suppress output, it only stops the
+# disclosure prefix from repeating on every subsequent run.
+#
+# THE NOTICE CHANNEL, NOT A SECOND STDOUT LINE: this producer's stdout is
+# contractually constrained to exactly one JSON object (report.contract.md §
+# Overlay drop-in contract) — printing the disclosure as a second line of
+# plain text would break `report.sh`'s `tokens_spent` parse and silently
+# fall the whole headline back to the kernel tier, which is worse than the
+# problem this item exists to fix. So the one-time disclosure text is folded
+# into the SAME `notice` string this file already emits every run for repo-
+# scoping (report.contract.md § `notice` field, temperloop#981) — prefixed
+# on a first run, otherwise absent — never a second top-level key, never
+# extra stdout.
+#
+# WHAT THE NOTICE NAMES (three things, per the item's acceptance criteria):
+# what this producer reads (transcripts under $SPEND_TRANSCRIPT_ROOT, at
+# whichever TRUE scope this same run resolved — the disclosure prefix is
+# glued onto the SAME $scope_notice string computed below, so it never
+# states a scope other than the one this run actually used), that it makes
+# no network call (true by construction — see the file-level EGRESS
+# comment above), and the literal `mkdir -p ... && touch ...` command that
+# disables it locally.
+#
+# BEST-EFFORT MARKER WRITE (defect class 1 — checked exit status, not
+# assumed): the mkdir+touch below is chained with `&&`, so a failure to
+# create the state dir or the marker file is never silently treated as
+# success — worst case on a failed write, the disclosure simply repeats on
+# the NEXT run too (a harmless, self-correcting degrade), never a false
+# claim in the notice text that it "won't show again".
+
+set -uo pipefail
+
+skip() { echo "skipped -- tokens: producer unavailable"; exit 0; }
+
+# Sibling-relative resolution: this file lives at
+# workflows/scripts/report-producers/tokens, one level below
+# workflows/scripts/pipeline-spend-report.sh — a fixed, kernel-internal
+# relationship (unlike the pre-#980 shape, this no longer depends on where
+# the INVOKING repo happens to keep its own checkout).
+self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || skip
+profiler="$self_dir/../pipeline-spend-report.sh"
+
+[ -f "$profiler" ] || skip
+command -v jq >/dev/null 2>&1 || skip
+
+# --- per-person disable + first-run notice state (temperloop#986) ----------
+# See the header comment above for the full rationale. Mirrors bin/
+# temperloop's own `_foundation_check_report_offer` expression
+# (`${XDG_STATE_HOME:-$HOME/.local/state}`), with two corrections review
+# caught that the bare mirror gets wrong:
+#
+# 1. UNSET-$HOME SAFETY: bin/temperloop runs with no `set -u`, so its bare
+#    `$HOME` reference is safe even when $HOME is unset. THIS file runs
+#    under `set -uo pipefail` (defect class 4 -- a derived path used without
+#    an existence/definedness check), so the same bare reference would abort
+#    with "unbound variable" the moment $XDG_STATE_HOME is unset and bash
+#    has to evaluate the $HOME fallback -- exactly what
+#    test_pipeline_spend_report.sh's "SCOPE 9h: an unset $HOME" fixture
+#    caught. `${HOME:-}` keeps that fallback safe under -u.
+#
+# 2. RELATIVE $XDG_STATE_HOME REJECTED (BLOCKING 1, review round 2): the XDG
+#    Base Directory spec requires a RELATIVE $XDG_STATE_HOME be treated as
+#    invalid and ignored -- `${VAR:-default}` alone only guards unset/empty,
+#    not relative. report.sh runs every producer with cwd = the TARGET
+#    repo's own root, so an operator with a relative $XDG_STATE_HOME set
+#    (however that happened -- their own shell rc, a stale export) would
+#    otherwise make this producer write producer state INSIDE that repo's
+#    working tree the moment it runs there -- exactly the repo-tracked-path
+#    outcome the whole XDG-marker design exists to rule out (AC#2/AC#4). A
+#    leading `/` is the one portable, dependency-free relative-vs-absolute
+#    test in POSIX shell. See test 17 in the test suite for the regression
+#    coverage (a relative $XDG_STATE_HOME run from inside this very repo
+#    must not create anything in the working tree).
+case "${XDG_STATE_HOME:-}" in
+  /*) state_home="$XDG_STATE_HOME" ;;
+  *) state_home="${HOME:-}/.local/state" ;;
+esac
+producer_state_dir="$state_home/temperloop/tokens-producer"
+disable_marker="$producer_state_dir/disabled"
+notice_marker="$producer_state_dir/first-run-notice-shown"
+
+# Disabled short-circuits the ENTIRE producer -- checked before any
+# transcript scoping or reading happens, via the ordinary skip() path, so a
+# disabled producer degrades identically to an absent/unavailable one.
+[ -f "$disable_marker" ] && skip
+
+# Match the baseline's own lookback window, so "tokens spent vs items merged"
+# divides two numbers drawn from the SAME period. BASELINE_SNAPSHOT_LOOKBACK_DAYS
+# is bin/subcommands/baseline-snapshot.sh's registered setting; the literal
+# here is its documented byte-identical non-vendoring fallback, the same
+# convention PIPELINE_OPERATOR's duplicate seams use.
+lookback="${BASELINE_SNAPSHOT_LOOKBACK_DAYS:-90}"
+case "$lookback" in ''|*[!0-9]*) lookback=90 ;; esac
+
+# Portable "N days before today" — GNU coreutils on Linux CI, BSD date on
+# macOS. Same two-branch shape as baseline-snapshot.sh's own
+# _baseline_date_sub_days; never a bare `date -d`, which is GNU-only and
+# silently fails on macOS.
+today="$(date -u +%Y-%m-%d 2>/dev/null)" || today=""
+since=""
+if [ -n "$today" ]; then
+  if date --version >/dev/null 2>&1; then
+    since="$(date -u -d "$today -${lookback} days" +%Y-%m-%d 2>/dev/null || true)"
+  else
+    since="$(date -u -j -v-"${lookback}"d -f "%Y-%m-%d" "$today" +%Y-%m-%d 2>/dev/null || true)"
+  fi
+fi
+
+# --- repo scoping (temperloop#983) -----------------------------------------
+# See the header comment above for the full rationale, including the three-
+# notice shape and the override-detection heuristic. Compute this repo's own
+# Claude Code project directory by FORWARD-encoding a path we already know
+# for certain (git's own toplevel of our cwd) — never by pattern-matching or
+# decoding existing ~/.claude/projects/ entries, which is lossy.
+#
+# override detection: only a $SPEND_TRANSCRIPT_ROOT that DIFFERS from its
+# own documented default counts as a caller override (see header finding 3)
+# — the mere presence of the var, exported at its default by any session
+# that sourced build.config.sh, must not defeat repo-scoping.
+transcript_root_overridden=0
+default_transcript_root="${HOME:-}/.claude/projects"
+if [ -n "${SPEND_TRANSCRIPT_ROOT:-}" ] && [ "$SPEND_TRANSCRIPT_ROOT" != "$default_transcript_root" ]; then
+  transcript_root_overridden=1
+fi
+
+scoped_root=""
+scoped_root_missing=""
+scoped_root_capped=0
+scoped_via_prefix=0
+capped_glob=""
+capped_matches=0
+capped_match=""
+# Claude Code's own cap (temperloop#983 review round 2, finding 2): an
+# encoded name longer than this is truncated-plus-hashed upstream, a suffix
+# this script cannot reproduce (see the header's 200-CAP paragraph). Named
+# once so the literal appears exactly here, not scattered.
+encoded_name_cap=200
+if [ "$transcript_root_overridden" -eq 0 ]; then
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root=""
+  if [ -n "$repo_root" ] && [ -n "${HOME:-}" ]; then
+    # Ambient locale, deliberately NOT pinned (header finding 1, round 2):
+    # measured to match Claude Code's own JS encoder for the entire BMP
+    # under a UTF-8 locale; only an astral-plane character diverges, and
+    # that degrades legibly via the checks below, never silently.
+    encoded="$(printf '%s' "$repo_root" | sed 's/[^A-Za-z0-9]/-/g')"
+    # Guard `encoded` non-empty (header finding 5): an empty encode would
+    # make the candidate literally "$HOME/.claude/projects/" -- which
+    # EXISTS, so the missing-dir check below would never catch it, and this
+    # script would silently walk the whole machine while claiming
+    # repo-scoping. Not reachable today (sed on a non-empty input always
+    # emits SOME output), but the failure mode of a silent gap here is
+    # exactly the lying notice this whole review round exists to kill.
+    if [ -n "$encoded" ]; then
+      if [ "${#encoded}" -gt "$encoded_name_cap" ]; then
+        # 200-CAP RESOLUTION (temperloop#995; see the header's 200-CAP
+        # paragraph): Claude Code truncated this name to its first
+        # $encoded_name_cap characters and appended a `-<hash>` suffix this
+        # script cannot reproduce -- so rather than claim the untruncated
+        # path (which structurally cannot exist under this name), look for
+        # the directory whose name begins with that same forward-encoded
+        # prefix plus the separating dash, exactly as Claude Code's own
+        # reverse lookup does.
+        capped_prefix="${encoded:0:$encoded_name_cap}"
+        capped_glob="$HOME/.claude/projects/$capped_prefix-*"
+        # Counted with a loop, not an array: bash 3.2 (the macOS default,
+        # and this repo's floor) errors on `${arr[@]}` of an EMPTY array
+        # under `set -u`, and zero matches is the common case here. A
+        # non-matching glob leaves the literal pattern in the loop var,
+        # which the -d test rejects -- so no `nullglob` dependency either.
+        # $encoded is [A-Za-z0-9-] only by construction (the sed above), so
+        # the prefix can carry no glob metacharacter of its own.
+        for capped_candidate in "$HOME/.claude/projects/$capped_prefix"-*; do
+          [ -d "$capped_candidate" ] || continue
+          capped_matches=$((capped_matches + 1))
+          capped_match="$capped_candidate"
+        done
+        if [ "$capped_matches" -eq 1 ]; then
+          # Exactly one match: unambiguous, and it exists by construction
+          # (the -d test above), so no second existence check is needed.
+          scoped_root="$capped_match"
+          scoped_via_prefix=1
+        else
+          # ZERO or MORE THAN ONE -- degrade, never guess. The hash suffix
+          # that would disambiguate two same-prefix checkouts is exactly
+          # what this script cannot compute (header, "EXACTLY ONE MATCH, OR
+          # DEGRADE"). $capped_matches is carried into the notice below so
+          # the two cases read differently to the operator.
+          scoped_root_capped=1
+        fi
+      else
+        candidate_root="$HOME/.claude/projects/$encoded"
+        # Existence check (header finding 1, BLOCKING): a derived root that
+        # does not exist must NOT be passed to --root silently. The profiler
+        # (pipeline-spend-report.sh) treats a nonexistent --root as a
+        # legitimate empty corpus -- valid JSON, units_total: 0, exit 0 -- so
+        # without this check a fresh clone, a linked worktree, a CI runner, or
+        # any $HOME that differs from the session that recorded the
+        # transcripts would silently render "0 tokens" under a "THIS git
+        # checkout" notice: a wrong number that asserts its own correctness,
+        # strictly worse than the machine-wide number it replaced.
+        if [ -d "$candidate_root" ]; then
+          scoped_root="$candidate_root"
+        else
+          scoped_root_missing="$candidate_root"
+        fi
+      fi
+    fi
+  fi
+fi
+
+if [ -n "$scoped_root" ]; then
+  if [ "$scoped_via_prefix" -eq 1 ]; then
+    # Prefix-resolved success (temperloop#995): scoped, but by the first
+    # $encoded_name_cap encoded characters rather than the full name, since
+    # Claude Code truncated-and-hashed this one. Say so -- the number is
+    # repo-scoped either way, but a reader who sees a surprising total can
+    # tell which of the two routes produced it without reading this file.
+    scope_notice="directional cost-weighted token spend, scoped to THIS git checkout on this machine only -- its path exceeds Claude Code's ${encoded_name_cap}-character project-name cap, so its project directory was resolved by the single unambiguous match for $capped_glob -- not comparable across teammates, machines, or other clones/checkouts of this repo."
+  else
+    scope_notice="directional cost-weighted token spend, scoped to THIS git checkout on this machine only -- not comparable across teammates, machines, or other clones/checkouts of this repo."
+  fi
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" --root "$scoped_root" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json --root "$scoped_root" 2>/dev/null)" || skip
+  fi
+elif [ "$scoped_root_capped" -eq 1 ]; then
+  # 200-CAP unresolved notice (temperloop#995): the prefix match ran and did
+  # NOT land on exactly one directory. It names the GLOB it searched, never
+  # the untruncated path -- that path cannot exist under Claude Code's own
+  # naming rule, so naming it would send the operator hunting for something
+  # that was never going to be there, whereas the glob is a real, pasteable
+  # search they can run themselves against their own ~/.claude/projects.
+  if [ "$capped_matches" -eq 0 ]; then
+    scope_notice="this checkout's path exceeds Claude Code's ${encoded_name_cap}-character project-name cap and no project directory matches its truncated prefix ($capped_glob); reporting machine-wide instead -- not comparable across teammates or machines."
+  else
+    scope_notice="this checkout's path exceeds Claude Code's ${encoded_name_cap}-character project-name cap and its truncated prefix is ambiguous -- $capped_matches project directories match $capped_glob and the hash suffix that would tell them apart is not reproducible here, so repo-scoping is declined rather than guessed; reporting machine-wide instead -- not comparable across teammates or machines."
+  fi
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+  fi
+elif [ -n "$scoped_root_missing" ]; then
+  # The path-naming notice (header finding 1): repo-scoping succeeded at
+  # deriving a path, but nothing has ever been recorded there -- a genuinely
+  # empty or fresh checkout is real, so this is not an error, but it must be
+  # named explicitly rather than silently substituting the machine-wide
+  # corpus under a claim of repo-scoping. The exact path is included so the
+  # operator can diff it against their own `ls ~/.claude/projects`.
+  scope_notice="no Claude Code transcripts recorded for this checkout ($scoped_root_missing); reporting machine-wide instead -- not comparable across teammates or machines."
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+  fi
+else
+  # Machine-wide fallback -- repo-scoping was never attempted at all (not a
+  # git working tree, or the caller genuinely overrode
+  # $SPEND_TRANSCRIPT_ROOT to something other than its own default; either
+  # way we don't second-guess an explicit override, but we also can't claim
+  # it's scoped to this repo).
+  scope_notice="directional cost-weighted token spend across every Claude Code project on this machine -- not comparable across teammates or machines."
+  # An unresolvable window is not a failure — report the whole corpus rather
+  # than nothing, and let the report's own DIRECTIONAL label carry the caveat.
+  if [ -n "$since" ]; then
+    raw="$(bash "$profiler" --format json --since "$since" 2>/dev/null)" || skip
+  else
+    raw="$(bash "$profiler" --format json 2>/dev/null)" || skip
+  fi
+fi
+[ -n "$raw" ] || skip
+
+# --- first-run disclosure, folded into $scope_notice (temperloop#986) ------
+# One-time only: gated on the SAME notice_marker computed above, near the
+# disable check. Names the three required things -- what is read (the same
+# $scope_notice text this run already resolved, whichever of the four
+# branches above it came from, so the scope claim is always the TRUE one for
+# THIS run), that there is no network call, and the exact command to disable
+# locally. Glued onto the front of $scope_notice with a single space (the
+# contract requires notice stay a single-line string -- no embedded
+# newline), never a second stdout line, so it can never defeat the
+# tokens_spent JSON parse.
+#
+# UNEXPANDED COMMAND, NOT AN INTERPOLATED PATH (BLOCKING 2, review round 2):
+# the disable command below is printed for a HUMAN TO PASTE INTO THEIR OWN
+# SHELL -- a second, distinct quoting boundary from anything checked
+# elsewhere in this file. An earlier cut interpolated the RESOLVED
+# $producer_state_dir/$disable_marker paths into single quotes; any
+# apostrophe anywhere in $HOME or $XDG_STATE_HOME (a real, observed path
+# shape -- e.g. .../o'brien dev/...) closes that quote early. The pasted
+# command then still exits 0, but does something other than what it claims:
+# creates the wrong directories, never writes the real marker, and the
+# operator walks away believing they opted out while the producer stays
+# fully enabled -- the worst failure shape available for a privacy control.
+# Printing the LITERAL, UNEXPANDED `${XDG_STATE_HOME:-$HOME/.local/state}`
+# form instead (identical to what docs/features/telemetry.md already shows,
+# closing that code/doc divergence too) has no shell metacharacters of
+# $HOME's or $XDG_STATE_HOME's own to break out of -- the operator's shell
+# resolves it safely in their own environment, whatever that path contains.
+# See test 18 for the regression coverage: it extracts this exact command
+# from a first-run notice, evaluates it under a synthetic $HOME containing
+# an apostrophe AND a space, and confirms the disable round-trips end to
+# end (the marker lands, and the NEXT run is actually suppressed).
+first_run=0
+if [ ! -f "$notice_marker" ]; then
+  first_run=1
+  first_run_notice='first run of the temperloop tokens producer: it reads Claude Code transcript files under $SPEND_TRANSCRIPT_ROOT (see scope below) and makes NO network call; to disable it on this machine, run: mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer" && touch "${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/tokens-producer/disabled" (a per-machine marker file, never committed to this repo).'
+  scope_notice="$first_run_notice $scope_notice"
+fi
+
+# Zero-unit models are dropped from by_model: they add nothing to a priced
+# total and would only surface in report.sh's "excluded, no matching price"
+# list as noise (Claude Code records a `<synthetic>` pseudo-model for
+# locally-generated messages that cost nothing).
+#
+# `notice` (workflows/scripts/lib/report.contract.md's notice channel,
+# temperloop#981) always carries the comparability caveat, and its wording
+# is set from the SAME branch above that decided whether --root was passed
+# -- so the text always describes the corpus this run actually walked, not
+# a hardcoded claim.
+out="$(printf '%s' "$raw" | jq -c --arg notice "$scope_notice" '
+  select((.units_total | type) == "number")
+  | (if (.by_model | type) == "object"
+     then (.by_model | with_entries(select((.value | type) == "number" and .value > 0)))
+     else {} end) as $bm
+  | {tokens_spent: .units_total, notice: $notice}
+    + (if ($bm | length) > 0 then {by_model: $bm} else {} end)
+' 2>/dev/null)" || skip
+
+[ -n "$out" ] || skip
+printf '%s\n' "$out"
+
+# Record "shown" only AFTER the disclosure has actually reached stdout
+# (SHOULD FIX 5, review round 2): two more `|| skip` exits remain between
+# the merge above and here (the jq-shaping call, and the empty-$out guard).
+# Writing the marker at merge time meant a run that hit either of those
+# later skips would still mark itself "shown" while never having printed
+# the disclosure -- a permanently unreachable one-time notice for that
+# person. skip() calls `exit 0` immediately, so if this line is reached the
+# disclosure text above was genuinely the stdout this run produced.
+#
+# Best-effort marker write (defect class 1: checked, not assumed -- chained
+# with && so a mkdir failure never lets the touch run and get mis-credited
+# as success). A failed write just means the disclosure repeats on the next
+# run too -- harmless, self-correcting, never a false "won't show again"
+# claim in the notice text above.
+#
+# `if ... fi`, NOT a bare `[ cond ] && { ... }` (a real bug caught while
+# verifying this exact fix): this block is the LAST thing in the script, and
+# under no `-e`, a script's own exit status is whatever its last command
+# returned. A bare `[ "$first_run" -eq 1 ] && { ... }` returns the TEST's
+# own exit status (1) on every run where $first_run is 0 -- i.e. EVERY run
+# after the first -- which would have silently broken this producer's
+# "always exit 0" contract (report.contract.md's Overlay drop-in contract)
+# on the normal, common case. `if` returns 0 when its condition is false and
+# the body never runs; the explicit `exit 0` below is the second,
+# belt-and-suspenders guarantee that this file's own contractual exit code
+# never depends on this best-effort write's outcome either way.
+if [ "$first_run" -eq 1 ]; then
+  mkdir -p "$producer_state_dir" 2>/dev/null && : > "$notice_marker" 2>/dev/null
+fi
+exit 0

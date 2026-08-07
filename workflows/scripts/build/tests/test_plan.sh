@@ -17,6 +17,9 @@
 #     kind: spike or docs-only item with no block → VALID (exempt); a
 #     product-source item WITH a block → VALID; a pre-RULE_14_CUTOVER_DATE
 #     plan's product-source item with no block → VALID (grandfathered)
+#   - validate rule 15 (temperloop#526): keystone: true on a kind: spike → VALID;
+#     keystone: on a kind: code item → INVALID; keystone: <non-true> → INVALID;
+#     a routine spike with no keystone: → VALID (absent field is the common case)
 #   - toposort: a 2-level DAG over the union of depends-on + after → the right
 #     level partition; a cycle → CYCLE outcome + non-zero exit
 #   - writeback routes EVERY vault write through _plan_vault_write (grep: no
@@ -392,6 +395,34 @@ out="$(bash "$SCRIPT" validate "$TMP/r14-product-withact.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "product-source item WITH activation: block should be VALID (got: $out)"
 echo "PASS: validate → VALID on a product-source item (kind: code, files: under workflows/) carrying an activation: block (rule 14)"
 
+# product-source WITH activation: placed AFTER acceptance: (the canonical field
+# order) → VALID. Regression guard for the parser bug where the in_acc branch
+# tested the deeper-bullet acceptance-entry regex before the same-level field-key
+# regex, so a `- activation:` bullet following acceptance: was miscounted as an
+# acceptance entry and never opened the activation block — rule 14 then wrongly
+# reported 'carries no activation: block' for a well-formed item.
+cat > "$TMP/r14-act-after-acc.md" <<'EOF'
+---
+status: approved
+date: 2026-07-20
+---
+## Items
+
+- [ ] **Activation after acceptance** `slug: r14-act-after-acc` — canonical field order, activation: after acceptance:
+  - branch: `feat/r14-act-after-acc`
+  - kind: code
+  - files: `workflows/scripts/build/plan.sh`
+  - acceptance:
+    - runner registered and dispatched
+    - tests pass
+  - activation:
+    - class: A
+    - proof: "true"
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r14-act-after-acc.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "product-source item with activation: placed AFTER acceptance: should be VALID — rule 14 false positive on canonical field order (got: $out)"
+echo "PASS: validate → VALID on a product-source item whose activation: block follows acceptance: (rule 14 field-order regression)"
+
 # grandfathered: pre-cutover date: + product-source + no activation: → VALID
 cat > "$TMP/r14-grandfathered.md" <<'EOF'
 ---
@@ -410,6 +441,148 @@ EOF
 out="$(bash "$SCRIPT" validate "$TMP/r14-grandfathered.md")"
 [ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "grandfathered (pre-cutover date:) product-source item with no activation: should be VALID (got: $out)"
 echo "PASS: validate → VALID on a product-source item with no activation: block when the plan's date: predates RULE_14_CUTOVER_DATE (rule 14 grandfather clause)"
+
+# --- validate: rule 15 — keystone: spike-only, value 'true' (temperloop#526) --
+# A keystone: true spike halts /build for operator verdict-review before
+# dependents build. It is spike-only and its only meaningful value is 'true'.
+
+# keystone: true on a kind: spike → VALID
+cat > "$TMP/r15-keystone-spike.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Reshaping spike** `slug: r15-ks-spike` — verdict reshapes downstream contracts
+  - branch: `chore/r15-ks-spike`
+  - kind: spike
+  - keystone: true
+  - acceptance:
+    - verdict note written
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r15-keystone-spike.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "keystone: true on a kind: spike item should be VALID (rule 15) (got: $out)"
+echo "PASS: validate → VALID on a keystone: true marker on a kind: spike item (rule 15)"
+
+# keystone: true on a kind: code item → INVALID (rule 15)
+cat > "$TMP/r15-keystone-code.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Not a spike** `slug: r15-ks-code` — keystone marker on a code item is a defect
+  - branch: `feat/r15-ks-code`
+  - kind: code
+  - keystone: true
+  - files: `docs/x.md`
+  - acceptance:
+    - x
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r15-keystone-code.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 15")) | any' <<<"$out" >/dev/null \
+  || fail "keystone: true on a kind: code item not flagged (rule 15) (got: $out)"
+echo "PASS: validate → INVALID on a keystone: true marker on a non-spike (kind: code) item (rule 15)"
+
+# keystone: <not true> on a spike → INVALID (rule 15)
+cat > "$TMP/r15-keystone-badval.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Bad keystone value** `slug: r15-ks-badval` — only 'true' is meaningful
+  - branch: `chore/r15-ks-badval`
+  - kind: spike
+  - keystone: yes
+  - acceptance:
+    - verdict note written
+EOF
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r15-keystone-badval.md")" || rc=$?
+[ "$rc" -ne 0 ] && jq -e '.errors | map(test("rule 15")) | any' <<<"$out" >/dev/null \
+  || fail "keystone: <non-true> value not flagged (rule 15) (got: $out)"
+echo "PASS: validate → INVALID on a keystone: value other than 'true' (rule 15)"
+
+# a routine spike (no keystone:) → VALID (unchanged autonomous path)
+cat > "$TMP/r15-routine-spike.md" <<'EOF'
+---
+status: approved
+date: 2026-07-23
+---
+## Items
+
+- [ ] **Routine spike** `slug: r15-routine-spike` — no keystone marker, autonomous
+  - branch: `chore/r15-routine-spike`
+  - kind: spike
+  - acceptance:
+    - verdict note written
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r15-routine-spike.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "routine spike (no keystone:) should be VALID (rule 15) (got: $out)"
+echo "PASS: validate → VALID on a routine spike with no keystone: marker (rule 15 — absent field is the common case)"
+
+# --- validate rule 16 (foundation#1059): cost: block requires because: --------
+# A cost: block WITH because: (and optional budget:) → VALID.
+cat > "$TMP/r16-ok.md" <<'EOF'
+---
+tags: [plan]
+date: 2026-07-24
+status: approved
+---
+## Items
+
+- [ ] **Deep research run** `slug: r16-deep` — run the research harness
+  - branch: `feat/r16-deep`
+  - size: M
+  - cost:
+      - because: deep-research
+      - budget: 500000
+  - acceptance:
+    - it runs
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r16-ok.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "cost: block with because: should be VALID (rule 16) (got: $out)"
+grep -q "rule 16" <<<"$out" && fail "rule 16 should NOT fire on a valid cost: block (got: $out)"
+echo "PASS: validate → VALID on a cost: block carrying because: (+optional budget:) (rule 16)"
+
+# A cost: block with NO because: → INVALID (rule 16).
+sed '/because: deep-research/d' "$TMP/r16-ok.md" > "$TMP/r16-nobecause.md"
+rc=0; out="$(bash "$SCRIPT" validate "$TMP/r16-nobecause.md")" || rc=$?
+[ "$rc" -ne 0 ] || fail "cost: with no because: should exit non-zero (rule 16) (got rc=$rc)"
+[ "$(jq -r .outcome <<<"$out")" = "INVALID" ] || fail "cost: with no because: should be INVALID (rule 16) (got: $out)"
+jq -e '.errors[] | select(test("rule 16"))' <<<"$out" >/dev/null \
+  || fail "cost: with no because: INVALID but rule 16 not in errors (got: $out)"
+echo "PASS: validate → INVALID + rule 16 on a cost: block missing because:"
+
+# An item with NO cost: block → VALID, rule 16 never fires (the common case).
+grep -q "rule 16" <<<"$(bash "$SCRIPT" validate "$TMP/valid.md")" \
+  && fail "rule 16 must not fire on a plan with no cost: blocks"
+echo "PASS: validate → rule 16 dormant on plans with no cost: block (absent = standard cost)"
+
+# Inline shorthand `- cost: <driver>` (a hand-authored one-liner) is FLAGGED, not
+# silently dropped: the inline value is captured as because: → VALID, no rule 16.
+cat > "$TMP/r16-inline.md" <<'EOF'
+---
+tags: [plan]
+date: 2026-07-24
+status: approved
+---
+## Items
+
+- [ ] **Inline cost flag** `slug: r16-inline` — one-liner cost, cost BEFORE acceptance
+  - branch: `feat/r16-inline`
+  - size: M
+  - cost: agent-fanout
+  - acceptance:
+    - it runs
+EOF
+out="$(bash "$SCRIPT" validate "$TMP/r16-inline.md")"
+[ "$(jq -r .outcome <<<"$out")" = "VALID" ] || fail "inline '- cost: <driver>' should be VALID (because captured inline) (got: $out)"
+grep -q "rule 16" <<<"$out" && fail "inline cost value must count as because: (rule 16 must NOT fire) (got: $out)"
+echo "PASS: validate → inline '- cost: <driver>' captures the driver as because: (not silently dropped) + a cost block before acceptance still parses"
 
 # --- toposort: 2-level DAG over depends-on ∪ after ----------------------------
 out="$(bash "$SCRIPT" toposort "$TMP/valid.md")"
@@ -503,6 +676,25 @@ grep -q '^  - Run-status: worker active' "$TMP/put-body" || fail "PUT body missi
 grep -q '^- \[ \] \*\*Base change\*\* `slug: base`' "$TMP/put-body" \
   || fail "writeback disturbed an unrelated item's sentinel"
 echo "PASS: writeback flips the target sentinel, stamps pr/pushed_sha/Run-status, leaves others untouched (→ WRITTEN)"
+
+# --- writeback: the as-you-go merging sentinel [>] (temperloop#1026) -----------
+# `[>]` is a DISTINCT state from `[m]` — consent recorded and the merge issued at
+# Step 3h.5, awaiting confirmed MERGED — so writeback must accept it in BOTH the
+# bracketed and the bare-char form and land it on the item header line. A silent
+# rejection here would force /build to repurpose `[m]` for merge-in-flight, the
+# exact conflation this sentinel exists to prevent.
+cp "$TMP/valid.md" "$TMP/wb-ayg.md"
+out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+  bash "$SCRIPT" writeback "$TMP/wb-ayg.md" --slug builds-on --sentinel '[>]' --pr 1026)"
+[ "$(jq -r .outcome <<<"$out")" = "WRITTEN" ] || fail "writeback [>] not WRITTEN (got: $out)"
+[ "$(jq -r .sentinel <<<"$out")" = "[>]" ] || fail "writeback [>] sentinel not echoed (got: $out)"
+grep -q '^- \[>\] \*\*Builds on base\*\* `slug: builds-on`' "$TMP/put-body" \
+  || fail "PUT body did not flip the builds-on sentinel to [>]"
+cp "$TMP/valid.md" "$TMP/wb-ayg2.md"
+out="$(PATH="$TMP/bin:$PATH" PLAN_API_KEY_FILE="$TMP/keydir/data.json" \
+  bash "$SCRIPT" writeback "$TMP/wb-ayg2.md" --slug base --sentinel '>')"
+[ "$(jq -r .sentinel <<<"$out")" = "[>]" ] || fail "bare-char '>' not normalized to [>] (got: $out)"
+echo "PASS: writeback accepts the as-you-go merging sentinel [>], bracketed and bare (#1026)"
 
 # --- writeback: plan filename with spaces → URL-encoded PUT path (#364) --------
 # Every real plan filename has spaces ('Plans/<date> <project> - <title>.md'), so

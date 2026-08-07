@@ -22,12 +22,12 @@
 # NAMESPACING is a CALL-SITE responsibility, not a generator mechanic: post
 # design-review, the "generic policy enforced by the generator" framing was
 # retired — the caller who builds the files manifest owns what paths/content
-# it contains (e.g. everything under `.foundation/`, or an `fnd:`-prefixed
+# it contains (e.g. everything under `.temperloop/`, or an `fnd:`-prefixed
 # file). This script does not inspect or gate manifest paths against a
 # namespace convention; it only guards against path TRAVERSAL (an entry
 # that would write outside the target repo — see validate_manifest_path).
 # Every fixture in this script's own test suite happens to write under
-# `.foundation/` to demonstrate the intended calling convention, but that is
+# `.temperloop/` to demonstrate the intended calling convention, but that is
 # a test-authoring choice, not an enforced contract.
 #
 # Usage:
@@ -58,6 +58,17 @@
 #                        MUST NOT escape the repo (no leading "/", no ".."
 #                        segment, not under ".git/") — validated before any
 #                        write.
+#                        TRAILING-NEWLINE NORMALIZATION (temperloop#992):
+#                        whatever trailing newlines a `content`/
+#                        `content_file` value carries — none, one, or
+#                        several — the file that LANDS ends in EXACTLY ONE
+#                        "\n". Callers therefore need not (and must not)
+#                        hand-append one; an adopter's first proposal diff
+#                        never shows "\ No newline at end of file". The one
+#                        carve-out is EMPTY content, which lands as a
+#                        0-byte file rather than a lone newline (git
+#                        reports no missing-newline marker for an empty
+#                        blob, so there is nothing to normalize).
 #   --base BRANCH        Base branch to propose against. Default: the
 #                        target repo's own default branch (origin/HEAD,
 #                        falling back to main/master).
@@ -143,6 +154,24 @@ validate_branch() {
     || die "$label '$branch' is not a valid git branch name"
 }
 
+# Remote names are the FIRST POSITIONAL of `git fetch`/`git push` — the
+# position git parses as an OPTION whenever the word begins with `-`. A value
+# like `--upload-pack=touch /tmp/PWNED; git-upload-pack` therefore EXECUTES at
+# the fetch. `--remote` is documented CLI surface that adopter wrappers and
+# init.sh pass through, so it is not always a human's own keystroke. Same
+# validate-before-act ordering as validate_branch above: refuse at parse time,
+# before the first git invocation that consumes it — which here is
+# default_branch()'s own symbolic-ref/show-ref probes, not just the fetch.
+validate_remote() {
+  local remote="$1" label="$2"
+  [ -n "$remote" ] || die "$label is empty"
+  case "$remote" in
+    -*) die "$label '$remote' must not begin with '-' (git would read it as an option, not a remote)" ;;
+  esac
+  git check-ref-format "refs/remotes/$remote/HEAD" >/dev/null 2>&1 \
+    || die "$label '$remote' is not a valid git remote name"
+}
+
 # validate_manifest_path <path> — refuse anything that could write outside
 # the target repo: empty, absolute (leading "/"), a ".." path segment, or
 # under ".git/". This is a safety guard, NOT a namespace-convention check
@@ -197,6 +226,12 @@ cmd_open() {
     die "--body and --body-file are mutually exclusive"
   fi
   [ -n "$body" ] || [ -n "$body_file" ] || die "open requires --body or --body-file"
+
+  # Parse-time, before ANY git subprocess in this run — see validate_remote's
+  # own comment. `--remote` always holds its final value here (it defaults to
+  # "origin"), unlike `--base`, which may still need default_branch() to
+  # resolve it and so is validated a few lines further down.
+  validate_remote "$remote" "--remote"
 
   if [ -n "$body_file" ]; then
     if [ "$body_file" = "-" ]; then
@@ -278,7 +313,32 @@ cmd_open() {
         die "manifest entry '$path' has neither content, content_file, nor delete=true"
       fi
       mkdir -p "$(dirname "$abs")" || die "cannot create directory for '$path'"
-      printf '%s' "$content" > "$abs" || die "cannot write '$path'"
+      # NEWLINE-TERMINATE (temperloop#992). Both readers above are `$(…)`
+      # captures, and command substitution strips EVERY trailing newline —
+      # so `$content` is already normalized to "no trailing newline at all",
+      # whether the manifest said "a", "a\n", or "a\n\n\n". A bare
+      # `printf '%s'` therefore wrote a file with NO final newline, every
+      # time, for every entry: an adopter's very first temperloop PR showed
+      # "\ No newline at end of file" on every file in the diff. Adding the
+      # "\n" here — at the single write site, not at each call site — is
+      # what makes "exactly one trailing newline" a property of the
+      # generator rather than something every caller must remember.
+      #
+      # EMPTY CONTENT is the deliberate carve-out: `printf '%s\n' ""` would
+      # turn a requested zero-byte file into a 1-byte one, and git reports
+      # no missing-newline marker for an empty blob — there is nothing to
+      # fix, so leave it 0 bytes.
+      #
+      # NO_CHANGES is unaffected in mechanism and strictly better in
+      # outcome: the idempotence check below is `git diff --cached --quiet`
+      # against the base tree, so a base already carrying the
+      # newline-terminated file now compares EQUAL (before this fix the
+      # stripped write manufactured a one-byte diff on every re-run).
+      if [ -n "$content" ]; then
+        printf '%s\n' "$content" > "$abs" || die "cannot write '$path'"
+      else
+        : > "$abs" || die "cannot write '$path'"
+      fi
       if [ "$mode" = "755" ]; then chmod 755 "$abs"; else chmod 644 "$abs"; fi
     fi
     touched+=("$path")

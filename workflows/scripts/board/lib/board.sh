@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 #
-# Board adapter — the ONE sourced library that owns every GitHub Projects-v2
-# board interaction for the dev-process scripts (claim.sh / capture.sh /
-# worklist.sh, and eventually /build board-mirroring).
+# Board adapter — the ONE sourced library that owns every tracker interaction
+# for the dev-process scripts (claim.sh / capture.sh / worklist.sh, and /build
+# board-mirroring).
 #
-# Why this exists: four call sites used to re-implement the same board
-# resolution dance (project view -> field-list -> item-list active-set page ->
-# item-edit), copy-pasting the field-name strings ("Status", "Host/Session"),
-# the option names ("In Progress", "Backlog"), the owner, and the item-list page
-# footgun. A board rename broke all four, some silently. This library makes
-# those a single edit point and — crucially — adds a test seam (`_board_gh`)
-# so the claim/capture logic can finally be covered by fixture-replay tests.
-# See dev-process-refactor-board-adapter.md for the full design.
+# SINGLE BACKEND (ADR 0004, epic temperloop#524). This adapter speaks exactly
+# one tracking backend: ISSUES-ONLY — plain GitHub Issues, `fnd:`-namespaced
+# labels for state, native milestones, sub-issues, and issue dependencies, over
+# REST alone. The former Projects-v2/GraphQL arm — its `gh project` argv, the
+# 5,000-pt/hr GraphQL budget guard, and the structure/state cross-process cache
+# split — was deprecated in v0.15.0 and REMOVED here. The tracking flow now
+# issues no GraphQL call and depends on no paid or org-level GitHub feature: a
+# free account and a repo are sufficient. See ADR 0004 for the decision and
+# ISSUES-ONLY-BACKEND.md for the label/status contract this file implements.
+#
+# Why this exists: four call sites used to re-implement the same item
+# resolution dance, copy-pasting the field-name strings ("Status",
+# "Host/Session"), the option names ("In Progress", "Backlog"), and the owner.
+# A board rename broke all four, some silently. This library makes those a
+# single edit point and — crucially — adds a test seam (`_board_gh`) so the
+# claim/capture logic can finally be covered by fixture-replay tests.
 #
 # Two design rules carried over from lib/claim_marker.sh:
 #   - resolve-by-NAME (robust to a board field being deleted + re-created with a
@@ -52,14 +60,33 @@ BOARD_OPT_DONE="Done"
 BOARD_FIELD_COMPONENT="Component"
 
 # --- boards.conf registry seam (foundation #770) --------------------------
-# The three registries below (board_repo/board_owner/board_project_number) are
-# deliberately SEPARATE axes (repo-owner vs project-owner vs project-number —
-# #330 paid for this distinction; never collapse them back to one). Each
-# resolves its value through an optional external `boards.conf` FIRST, falling
+# The two registries below (board_repo/board_owner) are deliberately SEPARATE
+# axes (repo-owner vs board-owner — #330 paid for this distinction; never
+# collapse them back to one). The third, board_project_number, was retired with
+# the Projects-v2 arm (ADR 0004) — a project number has no meaning on the
+# issues-only backend. Each resolves its value through an optional external
+# `boards.conf` FIRST, falling
 # back to the built-in case map below when no conf entry exists. Discovery
 # order (first hit wins):
-#   1. machine-level: $XDG_CONFIG_HOME/foundation/boards.conf
-#      (default ~/.config/foundation/boards.conf) — override BOARDS_CONF_MACHINE
+#   1. machine-level: $XDG_CONFIG_HOME/temperloop/boards.conf
+#      (default ~/.config/temperloop/boards.conf) — override BOARDS_CONF_MACHINE.
+#      The subdir renamed foundation/ -> temperloop/ in v0.15.0
+#      (temperloop#165). The legacy ~/.config/foundation/boards.conf
+#      fallback was removed in v0.19.0 and is NO LONGER READ — an existing
+#      legacy file is named once on stderr instead of being used silently
+#      (see _board_machine_conf_default). Move it (mkdir -p
+#      ~/.config/temperloop && mv ~/.config/foundation/boards.conf
+#      ~/.config/temperloop/) or set BOARDS_CONF_MACHINE.
+#   1b. composed-tree consumer-root conf (temperloop#494): in a self-hosting
+#      checkout that vendors this kernel as a `kernel/` subtree and symlinks
+#      workflows/scripts/board into it (foundation), the layer-2 repo-local path
+#      below physically lands inside kernel/. This layer — between machine-level
+#      and repo-local — probes the CONSUMER ROOT (the directory containing
+#      kernel/, located from board.sh's own physical path) for a real
+#      workflows/scripts/board/boards.conf OUTSIDE kernel/, giving that tree a
+#      committable driver-side seam. Inert for synced-directory consumers and
+#      the kernel repo itself (not inside a kernel/ subtree). See
+#      _board_consumer_root_conf below.
 #   2. repo-local override: workflows/scripts/board/boards.conf, next to this
 #      lib — override BOARDS_CONF_REPO_LOCAL
 #   3. the built-in case map (below) — the fallback every caller sees when
@@ -69,31 +96,164 @@ BOARD_FIELD_COMPONENT="Component"
 #      the sync never carries a conf file: a consuming repo with no conf must
 #      behave EXACTLY as it did pre-#770.
 #
-# Conf format: `board.<N>.<axis>=<value>` lines, axis in {repo,owner,project}.
+# The repo/owner axes above resolve "whole-file first-hit-wins": once
+# a conf file exists at a higher-precedence location, THAT file alone is
+# consulted for the axis (a miss there falls straight to the built-in map,
+# never checking a lower-precedence file — see _board_conf_get's comment and
+# test_boards_conf.sh section 3, which pins this). The `backend` axis
+# (board_backend below) is the one exception: it resolves per-key across
+# BOTH files via _board_conf_get_layered, so a machine-level conf that is
+# merely silent on a board's backend key falls through to a repo-local entry
+# instead of shadowing it outright — see board_backend's own comment for why.
+#
+# Conf format: `board.<N>.<axis>=<value>` lines, axis in {repo,owner,backend,
+# name,cache}.
 # Blank lines and `#`-prefixed lines are ignored. Parsed with grep/cut only —
 # NEVER sourced or eval'd, so a conf file cannot execute code. See
 # workflows/scripts/board/boards.conf.example for the documented format.
 _BOARD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Echo the first EXISTING conf file in discovery order; rc 1 if neither exists
+# Default machine-level conf path (layer 3): $XDG_CONFIG_HOME/temperloop/
+# boards.conf. The temperloop#165 read-old fallback to a legacy
+# $XDG_CONFIG_HOME/foundation/boards.conf was removed in v0.19.0 — the
+# legacy file is no longer used, but its mere PRESENCE is still reported
+# once on stderr rather than ignored silently: a stranger whose only conf
+# sits at the legacy path would otherwise see every board op fall through to
+# the built-in maps with no explanation at all. This NOTE is the whole
+# diagnostic (docs/config-precedence.md and the CHANGELOG carry the
+# migration instruction).
+_board_machine_conf_default() {
+  local new_f old_f
+  new_f="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
+  old_f="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
+  if [ ! -f "$new_f" ] && [ -f "$old_f" ]; then
+    echo "board.sh: NOTE — legacy machine conf $old_f is no longer read (legacy fallback removed in v0.19.0); move it to $new_f or set BOARDS_CONF_MACHINE." >&2
+  fi
+  printf '%s' "$new_f"
+}
+
+# Composed-tree consumer-root conf (temperloop#494). A self-hosting composed
+# checkout (foundation, the pipeline driver) vendors this kernel as a `kernel/`
+# subtree and exposes `workflows/scripts/board` as a DIRECTORY SYMLINK into it —
+# so the symlink-resolved repo-local location ($_BOARD_LIB_DIR/../boards.conf,
+# the layer-2 path in _board_conf_file/_board_conf_files below) physically lands
+# INSIDE kernel/, where a committed consumer-owned conf trips kernel-drift-check
+# and conflicts with every subtree pull. That is exactly why foundation — alone
+# among the consumers — could not commit its driver-side backend-flip entries
+# (temperloop#460 L3 canary, temperloop#470) and fell back to a machine-level
+# ~/.config conf.
+#
+# This probe gives such a tree a committable, reviewable seam OUTSIDE kernel/:
+# board.sh's OWN physical path (symlinks resolved, `pwd -P`) is inspected for a
+# `/kernel/` component; if present, the consumer root is the directory that
+# CONTAINS kernel/, and its `workflows/scripts/board/boards.conf` is used —
+# but ONLY when it is a real file whose directory does NOT itself resolve back
+# inside kernel/ (i.e. the consumer really does own a physical board dir there,
+# not merely a whole-directory symlink into the subtree). That guard is what
+# keeps the current whole-`board`-symlink layout falling straight through to
+# layer 2 unchanged, and lights up only once the consumer materialises a real
+# consumer-owned boards.conf at that path.
+#
+# ADR 0005's "boards.conf is never vendored" rule is preserved: this file lives
+# at the CONSUMER root, above kernel/ — it is consumer-owned, never carried into
+# the vendored subtree. A synced-directory consumer (stageFind/ssmobile/
+# subsetwiki, whose `workflows/scripts/board` is a real banner-stamped copy, not
+# a subtree symlink) and the kernel repo itself are NOT inside a `/kernel/`
+# subtree, so this returns rc 1 and their existing layer-2 path is used verbatim.
+# rc 0 + the path on a hit; rc 1 on any miss (not a composed tree, no file, or
+# a file that resolves back inside kernel/).
+_board_consumer_root_conf() {
+  local phys root cand cand_dir
+  # board.sh's own PHYSICAL directory (pwd -P resolves the board symlink into
+  # kernel/ for a composed tree; leaves a real synced/kernel checkout as-is).
+  phys="$(cd "$_BOARD_LIB_DIR" 2>/dev/null && pwd -P)" || return 1
+  case "$phys" in
+    */kernel/*) root="${phys%%/kernel/*}" ;;   # dir that contains kernel/
+    *) return 1 ;;                              # not a vendored composed tree
+  esac
+  cand="$root/workflows/scripts/board/boards.conf"
+  [ -f "$cand" ] || return 1
+  # Reject a candidate whose directory resolves back INSIDE kernel/ — that is
+  # the whole-`board`-symlink case, which is NOT a committable seam. Only a real
+  # consumer-owned board dir at the root passes.
+  cand_dir="$(cd "$(dirname "$cand")" 2>/dev/null && pwd -P)" || return 1
+  case "$cand_dir/" in
+    "$root/kernel/"*) return 1 ;;
+  esac
+  printf '%s' "$cand"
+  return 0
+}
+
+# Echo the first EXISTING conf file in discovery order; rc 1 if none exists
 # (callers then fall through to their built-in case map).
 _board_conf_file() {
   local f
-  f="${BOARDS_CONF_MACHINE:-${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf}"
+  f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
   [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+  # composed-tree consumer-root conf — BEFORE the symlink-resolved repo-local
+  # one, so a self-hosting tree's committed driver-side conf wins over the
+  # kernel-internal path its board symlink would otherwise resolve to (#494).
+  f="$(_board_consumer_root_conf)" && { printf '%s' "$f"; return 0; }
   f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
   [ -f "$f" ] && { printf '%s' "$f"; return 0; }
   return 1
 }
 
+# Echo EVERY existing conf file, one per line, in discovery order (machine
+# then repo-local). Unlike _board_conf_file() (which stops at the first
+# existing file, for the "one file wins" axes), this is the enumeration seam
+# _board_conf_get_layered() below walks for a per-key fallthrough. Emits
+# nothing (rc 0, empty output) when neither file exists.
+_board_conf_files() {
+  local f
+  f="${BOARDS_CONF_MACHINE:-$(_board_machine_conf_default)}"
+  [ -f "$f" ] && printf '%s\n' "$f"
+  # composed-tree consumer-root conf, same layer/precedence as in
+  # _board_conf_file (between machine-level and symlink-resolved repo-local) so
+  # the per-key backend fallthrough walked by _board_conf_get_layered() sees it
+  # too (#494).
+  f="$(_board_consumer_root_conf)" && printf '%s\n' "$f"
+  f="${BOARDS_CONF_REPO_LOCAL:-$_BOARD_LIB_DIR/../boards.conf}"
+  [ -f "$f" ] && printf '%s\n' "$f"
+  return 0
+}
+
 # _board_conf_get <board> <axis> — echo the conf value + rc 0 on a hit; rc 1 on
 # any miss (no conf file, or no matching key) so the caller falls back cleanly.
+# Whole-file "one file wins" discovery: only the FIRST existing conf file is
+# ever consulted for this axis, even if a lower-precedence file would have
+# matched — see test_boards_conf.sh section 3, which pins this contract
+# deliberately (no cross-file per-key merge) for the repo/owner axes.
 _board_conf_get() {
   local board="$1" axis="$2" file val
   file="$(_board_conf_file)" || return 1
   val="$(grep -m1 "^board\.${board}\.${axis}=" "$file" 2>/dev/null | cut -d= -f2-)"
   [ -n "$val" ] || return 1
   printf '%s' "$val"
+}
+
+# _board_conf_get_layered <board> <axis> — like _board_conf_get, but walks
+# EVERY existing conf file in discovery order (machine, then repo-local) and
+# returns the first line match ACROSS files, instead of stopping at the first
+# existing file. This is per-key fallthrough: a machine-level conf that omits
+# this axis for this board no longer shadows a repo-local entry that sets it —
+# an explicit machine-level value for the axis still wins outright, since it's
+# found first. Used ONLY by board_backend() below (which since ADR 0004 reads
+# the axis solely to REJECT a stale `backend=projects` line, not to select an
+# arm); every other axis keeps _board_conf_get's whole-file "one file wins"
+# contract (see its comment).
+# rc 1 if no existing conf file carries the key.
+_board_conf_get_layered() {
+  local board="$1" axis="$2" file val
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    val="$(grep -m1 "^board\.${board}\.${axis}=" "$file" 2>/dev/null | cut -d= -f2-)"
+    if [ -n "$val" ]; then
+      printf '%s' "$val"
+      return 0
+    fi
+  done < <(_board_conf_files)
+  return 1
 }
 
 # board number -> "owner/repo" for `gh issue create -R`. This is the ONE
@@ -118,7 +278,7 @@ board_repo() {
   esac
 }
 
-# The registered logical board numbers — the SINGLE SOURCE OF TRUTH every
+# The registered board ids — the SINGLE SOURCE OF TRUTH every
 # caller's repo->board reverse-lookup probe iterates, instead of a hardcoded
 # `3 4 5 6` literal duplicated across command specs that silently drifts each
 # time a board is onboarded. That drift was temperloop#352: board 7 was added to
@@ -138,94 +298,90 @@ board_registered_boards() {
   } | sort -nu
 }
 
-# board number -> the GitHub login that owns the board's Projects-v2 PROJECT (for
-# `gh project … --owner`). This is the seam where a board migrated to a different
-# owner expresses it: boards 3/4/5 were all migrated into this repo's own org (#330)
-# and carry it here. $BOARD_OWNER remains only the `*)` fallback for an unknown
-# board. Kept SEPARATE from board_repo()'s repo-owner: for a co-located board they're
-# equal (all three are now), but the project-owner drives `gh project` while the
-# repo-owner drives `repos/<owner>/<repo>` REST.
+# board number -> the GitHub login that owns the board. This is the seam where a
+# board migrated to a different owner expresses it: boards 3/4/5 were all
+# migrated into this repo's own org (#330) and carry it here. $BOARD_OWNER
+# remains only the `*)` fallback for an unknown board. Kept SEPARATE from
+# board_repo()'s repo-owner: for a co-located board they're equal (all are now),
+# but the two are distinct axes and #330 paid for the distinction.
 board_owner() {
   local v
   v="$(_board_conf_get "$1" owner)" && { printf '%s\n' "$v"; return 0; }
   case "$1" in
     3 | 4 | 5 | 6) echo "Towheads" ;; # all boards live in the org (#330; 6 onboarded)  # denylist:allow — this repo's own real value, see board_repo() comment above
-    *) echo "$BOARD_OWNER" ;;     # fallback for an unknown board
+    *)
+      # No owner= for this board, and it isn't one of the built-in boards
+      # above. If boards.conf declares repo= for this board (an ADOPTER's own
+      # custom board id, not one of this repo's own 3-6), silently returning
+      # $BOARD_OWNER here would be a CROSS-TENANT MISDIRECTION
+      # (temperloop#798): $BOARD_OWNER is THIS kernel checkout's own org
+      # ("Towheads"), so a read against an adopter's board would silently
+      # resolve to a FOREIGN org instead of erroring. Fail loudly instead — the
+      # adopter is missing a `board.<N>.owner=` line and needs to add one, not
+      # have the request silently misrouted to this repo's own org.
+      if _board_conf_get "$1" repo >/dev/null 2>&1; then
+        echo "board.sh: board $1 sets repo= in boards.conf but no resolvable owner= — add 'board.$1.owner=<login-or-org>' to boards.conf (refusing to silently fall back to this kernel checkout's own org)" >&2
+        return 1
+      fi
+      # No boards.conf entry AT ALL for this board (repo AND owner both
+      # absent) — e.g. board 7, the temperloop tracker itself, whose repo
+      # resolves from board_repo()'s own built-in map rather than boards.conf
+      # (#808). The pre-#798 fallback stays unchanged for this
+      # genuinely-unconfigured case.
+      echo "$BOARD_OWNER" ;;
   esac
 }
 
-# logical board number -> the gh project NUMBER under board_owner(). Migrating a
-# board into an org restarts project numbering, so the migrated board carries its
-# real org project number here (or in boards.conf) while every caller keeps
-# using the stable logical `--board N`. Boards 3/4 were copied into the org
-# (#330) where they landed as org projects #4 and #3 respectively (the order is
-# incidental — the seam absorbs it). Twin of board_repo() — the per-board
-# "which project" registry to board_repo()'s "which repo". Contains all
-# renumbering churn inside this one function (the cross-process cache stays
-# keyed on the LOGICAL number, so renumbering causes zero cache churn).
-board_project_number() {
-  local v
-  v="$(_board_conf_get "$1" project)" && { printf '%s\n' "$v"; return 0; }
-  case "$1" in
-    3) echo 4 ;;   # logical stageFind  -> org project #4
-    4) echo 3 ;;   # logical foundation -> org project #3
-    *) echo "$1" ;; # boards 5 (ssmobile) / 6 (subsetwiki) -> org project #5 / #6 (identity, incidental)
-  esac
-}
-
-# --- tracker backend selector (foundation #799, "tracker seam") -----------
-# A board is Projects-v2-backed (default) or ISSUES-ONLY: no Projects board is
-# ever provisioned/queried and item CRUD + Status ride plain `fnd:`-namespaced
-# GitHub labels on the repo's Issues instead. This is a FOURTH boards.conf
-# axis, a peer to repo/owner/project (same discovery order, same grep/cut-only
-# parsing — see boards.conf.example): `board.<N>.backend=issues`. There is
-# deliberately NO GENERAL-PURPOSE built-in case-map entry defaulting an
-# arbitrary board to "issues" — every board with no explicit `backend=issues`
-# line resolves "projects" and takes the EXACT SAME Projects-v2 code path as
-# before this seam existed (see test_issues_backend.sh's config-selection
-# proof: unmentioned/absent-conf boards emit byte-identical `gh project …`
-# argv). This is what makes the seam additive-only rather than a fork of the
-# toolkit — see workflows/scripts/board/ISSUES-ONLY-BACKEND.md for the full
-# label vocabulary + status-mapping contract the issues-only path implements.
+# --- tracker backend selector (ADR 0004) ----------------------------------
+# There is exactly ONE tracking backend: ISSUES-ONLY. No Projects board is ever
+# provisioned or queried; item CRUD + Status ride plain `fnd:`-namespaced
+# GitHub labels on the repo's Issues. This function is retained (rather than
+# deleted outright) for two reasons: callers and the boards.conf `backend` axis
+# both predate the removal, and — the load-bearing one — a stale
+# `board.<N>.backend=projects` line left in an operator's conf MUST NOT be
+# silently ignored.
 #
-# ONE deliberate, permanent, singular exception (F#808, Guard #3 of the
-# kernel-vs-overlay routing rule): board 7 IS the temperloop tracker
-# itself — its issues-only-ness is a structural fact of what board 7 means,
-# not a per-deployment configuration choice a boards.conf should carry (and a
-# real boards.conf committed inside kernel/ would embed this org's name in a
-# file this checkout's own personal-token-denylist forbids it in — see
-# board_repo()'s own board.7 case + its trailing `denylist:allow` marker,
-# the one place a real org literal is sanctioned). A per-machine/per-repo
-# boards.conf can still override board 7's `repo`/`backend` (checked FIRST,
-# same discovery order as any other board) — this hard-codes only the
-# DEFAULT any boards.conf-less consumer sees, exactly like board_repo()'s
-# boards 3-6 already do for the `repo` axis.
-#   board_backend <board#>  ->  "issues" | "projects" (default)
+# WHY THE HARD FAIL. temperloop#908 recorded the failure this guards: a backend
+# that changes under you with nothing telling you. A conf line reading
+# `backend=projects` expresses a real operator intent that this build can no
+# longer honour; quietly resolving it to "issues" would move that board's state
+# onto a different substrate with no signal at all — exactly the silently
+# reverted cutover that put four boards on the wrong path and was found by
+# hand. So an explicit `backend=projects` is a LOUD, non-zero refusal naming
+# ADR 0004 and the migration path, and every other input (absent axis,
+# `backend=issues`, or any conf file at all) resolves "issues".
+#
+# The axis still resolves through _board_conf_get_layered (per-key fallthrough
+# across BOTH conf files) so a stale line is caught wherever it sits — a
+# machine-level conf and a committed repo-local one are equally able to strand
+# an operator on a dead arm.
+#   board_backend <board#>  ->  "issues"  (rc 0)
+#                            ->  rc 1 + stderr on an explicit backend=projects
 board_backend() {
   local v
-  v="$(_board_conf_get "$1" backend)" && { printf '%s\n' "$v"; return 0; }
-  case "$1" in
-    7) printf '%s\n' "issues"; return 0 ;;   # the kernel tracker (F#808) — see comment above
-  esac
-  printf '%s\n' "projects"
+  if v="$(_board_conf_get_layered "$1" backend)" && [ "$v" = "projects" ]; then
+    echo "board.sh: board $1 sets backend=projects in boards.conf, but the Projects-v2 arm was REMOVED (ADR 0004; deprecated v0.15.0). Migration path: check out v0.25.0 — the last release carrying workflows/scripts/board/migrate-board-to-issues.sh, which was deleted in v0.26.0 per ADR 0004's ordering pin — run that script against this board, then delete the board.$1.backend=projects line and pull again. There is NO configuration path back to Projects-v2 — an adopter who wants it forks board.sh." >&2
+    return 1
+  fi
+  printf '%s\n' "issues"
 }
 
-# True iff <board#> is configured for the issues-only backend. The single
-# predicate every branch point below (board_resolve / board_resolve_item /
-# board_item_list / board_set_status / board_create_many / board_capture_item)
-# guards on, so onboarding a fifth branch point later is a one-line addition.
+# True iff <board#> is configured for the issues-only backend — which, since
+# ADR 0004, is every board. Retained as the single predicate the public
+# functions read so a stale `backend=projects` conf line propagates its
+# non-zero refusal (see board_backend above) instead of being ignored.
 _board_is_issues_only() {
   [ "$(board_backend "$1")" = "issues" ]
 }
 
 # --- board NAME aliases for --board (temperloop #95) ----------------------
-# Every --board switch accepts a board NAME as well as its logical number, so a
+# Every --board switch accepts a board NAME as well as its board id, so a
 # human never has to touch the private number space (the number stays the SOLE
 # internal key; names resolve to a number at the CLI/entrypoint boundary and
 # nothing downstream is name-aware). Two name sources, checked in this order —
 # same first-hit-wins discovery as every other axis:
-#   1. a `board.<N>.name=<slug>` line in boards.conf (a SEVENTH axis, peer to
-#      repo/owner/project/backend/cache — same grep-only, never-sourced parsing;
+#   1. a `board.<N>.name=<slug>` line in boards.conf (an axis peer to
+#      repo/owner/backend/cache — same grep-only, never-sourced parsing;
 #      see boards.conf.example). This is how a stranger's fork names its own
 #      boards without editing this lib.
 #   2. the built-in name map below — this repo's OWN board names, kept here for
@@ -237,7 +393,7 @@ _board_is_issues_only() {
 # passes straight through untouched (the cheap, dominant internal path — no conf
 # read). An unknown name errors to stderr WITH the known-names list, rc 2.
 
-# Built-in name -> logical number. Lowercased input; rc 1 on miss.
+# Built-in name -> board id. Lowercased input; rc 1 on miss.
 # A stranger's fork edits this map (or ships boards.conf board.<N>.name= lines).
 _board_builtin_name_to_number() {
   case "$1" in
@@ -287,7 +443,7 @@ _board_known_names() {
   printf '%s' "$names"
 }
 
-# board_resolve_name <name-or-number> -> canonical logical NUMBER on stdout.
+# board_resolve_name <name-or-number> -> canonical board id on stdout.
 # The ONE shared resolver every --board switch and every lib entrypoint routes a
 # board argument through. A bare integer passes through unchanged (backward
 # compatible — the sole internal key is still the number). A name resolves via
@@ -310,22 +466,21 @@ board_resolve_name() {
 
 # --- issue-plane read-cache enable axis (F#988 Contract, cache-read-dispatch
 # item) ----------------------------------------------------------------------
-# A SIXTH boards.conf axis, a peer to repo/owner/project/backend/(milestone is
+# A boards.conf axis, a peer to repo/owner/backend (milestone is
 # read-side, not conf): `board.<N>.cache=on`. Default (omitted, or any value
 # other than "on") is OFF — the whole-board issues-only read stays exactly the
 # live `gh issue list` call it always was (see _board_issues_item_list below).
-# This is deliberately an ENABLE/DISABLE switch only — every TUNING knob for
+# This is deliberately an ENABLE/DISABLE switch only — every TUNING setting for
 # the store itself (root dir, TTL) stays an env var on lib/cache.sh
 # (CACHE_STORE_ROOT / CACHE_STORE_TTL), never a second boards.conf axis (see
-# cache.sh's own "Tuning knobs" comment). Turning this on has NO effect unless
+# cache.sh's own "Tuning settings" comment). Turning this on has NO effect unless
 # the caller has ALSO sourced lib/cache.sh in the same process — board.sh
 # itself never sources cache.sh (kept a one-way, additive-only layering; see
 # cache.sh's own header) — _board_issues_item_list checks `declare -F
 # cache_read` and falls back to the live read (with one stderr notice) when
 # the axis is on but cache.sh isn't in scope. This is what keeps reconcile.sh
 # (which never sources cache.sh) permanently on the live-read arm regardless
-# of what a boards.conf sets this axis to — see reconcile.sh's own
-# BOARD_CACHE_TTL=0 live-read-pin comment and test_reconcile.sh's Lens 3.
+# of what a boards.conf sets this axis to — see test_reconcile.sh's Lens 3.
 _board_cache_store_enabled() {
   [ "$(_board_conf_get "$1" cache 2>/dev/null)" = "on" ]
 }
@@ -334,224 +489,33 @@ _board_cache_store_enabled() {
 # Every board `gh` call goes through here. Production runs real gh; tests
 # override this after sourcing (e.g. `_board_gh() { fake_gh "$@"; }`) to replay
 # fixtures. Mirrors lib/claim_marker.sh's `_claim_marker_tmux`.
-_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }  # knob:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default
+_board_gh() { GH_CALL_OP="${GH_CALL_OP:-board:${FUNCNAME[1]:-unknown}}" gh "$@"; }  # setting:exempt — call-attribution tag, computed per-call via FUNCNAME, not a static operator default
 
-# --- cross-process read cache (Projects-v2 GraphQL relief) ----------------
-# Every board read is a Projects-v2 GraphQL call against a 5,000-points/hr budget
-# (GH #396). The `item-list` active-set page is the heavy one — its cost scales
-# with the returned (non-Done) items. board_resolve's "one fetch per process" memoization lives
-# in shell globals, which is useless to the dominant caller today: an ORCHESTRATED
-# command (/triage, /build) runs each step in a SEPARATE bash process, so
-# every step re-sources this lib and re-pays project-view + field-list +
-# item-list. ~6-10 resolves across one command's bash blocks is what re-drained
-# the budget (GH #93) even after the per-process work of GH #53/#396.
-#
-# So the cache is keyed by board number (structure also by resolved owner+project#;
-# see _board_cache_file / #341) and lives ON DISK, surviving across those
-# processes: within the TTL window a read-burst costs ONE fetch, not N.
-#
-# TWO CACHE CLASSES, split by how fast the data actually changes — caching them
-# under ONE short TTL was the root drain (structure was 56% of board GraphQL: a
-# long-lived session re-paid project-view + field-list EVERY step because the 90s
-# window expired between steps, even though that data never changed):
-#   - STRUCTURE (`project` view + `fields` list — the project node-id and the
-#     field/option SCHEMA) is config-like: invariant under item edits and NEVER
-#     mutated by this adapter (structural edits are rare, manual `gh project
-#     field-create` / updateProjectV2Field ops). It gets a LONG ttl
-#     (BOARD_STRUCTURE_TTL, 24h) and is invalidated only by board_bust_structure
-#     after such an edit — not by the per-step clock.
-#   - ITEM STATE (`items` — status/stamp/seq values) is volatile: it keeps the
-#     SHORT ttl (BOARD_CACHE_TTL, 90s) AND write-invalidation. Correctness is held
-#     by WRITE-INVALIDATION, not by reading live: every mutator busts the board's
-#     items cache (see _board_cache_bust), so a read-after-write sees the new value
-#     even across processes. The cross-session claim lock stays correct because its
-#     readers use board_resolve_item, whose one-issue query is ALWAYS LIVE.
-# BOARD_CACHE_TTL=0 is the master off-switch (fully live, both classes);
-# BOARD_STRUCTURE_TTL=0 (with the cache on) forces just structure live.
-#
-# ACCEPTED residual gap (foundation #589): the close→Done cascade (GH #340) fires
-# GitHub-side on issue-close, so NO adapter mutator runs to bust the items cache —
-# a warm page can show a just-merged item as still non-Done until the 90s TTL
-# elapses. This is deliberately left to self-heal on the TTL: it is rare (~1-2/mo),
-# bounded (≤90s), and has no clean adapter hook (merges go through `gh pr merge`,
-# not the adapter). Do NOT shorten the global TTL to chase it — that would worsen
-# the far more common friction of whole-board re-resolves draining the shared
-# 5,000-pt/hr GraphQL budget. board_create_many's staleness, by contrast, is
-# handled: its board_set_status calls patch-or-bust the page for indexed items.
-BOARD_CACHE_TTL="${BOARD_CACHE_TTL:-90}"
-# Structure changes only on a manual board edit; board_bust_structure invalidates it.
-BOARD_STRUCTURE_TTL="${BOARD_STRUCTURE_TTL:-86400}"
-BOARD_CACHE_DIR="${BOARD_CACHE_DIR:-${TMPDIR:-/tmp}}"
-
-# One file per (board, kind). kind defaults to `items` so the historical
-# `subset-board-<n>-items.json` name is unchanged; board_resolve also caches
-# `project` and `fields` (board structure, invariant under item edits).
-#
-# STRUCTURE kinds (project/fields) fold the RESOLVED owner + project-number into
-# the name; items keeps the bare logical key. This is the #341 durable fix: a
-# renumber/migration (board_project_number / board_owner change) shifts the
-# structure key, so the next resolve naturally MISSES the old cache and re-fetches
-# live — instead of serving a stale project id for up to BOARD_STRUCTURE_TTL (24h)
-# and failing every WRITE with "item does not exist in the project". It self-heals
-# on ANY pull or in-place adapter edit, no board_bust_structure needed (deploy-mini
-# still busts as belt-and-suspenders). The old resolved-key files (e.g.
-# `<cachekey>-board-4-<oldowner>-4-project.json`) are simply never read again post-rename;
-# they age out of TMPDIR. items/* stay logical-keyed: their short TTL +
-# write-invalidation already cover the renumber window, and the historical
-# `subset-board-<n>-items.json` name (and its tests) stay stable.
-_board_cache_file() {
-  local board="$1" kind="${2:-items}"
-  case "$kind" in
-    project | fields)
-      printf '%s/subset-board-%s-%s-%s-%s.json' "${BOARD_CACHE_DIR%/}" \
-        "$board" "$(board_owner "$board")" "$(board_project_number "$board")" "$kind" ;;
-    *)
-      printf '%s/subset-board-%s-%s.json' "${BOARD_CACHE_DIR%/}" "$board" "${kind}" ;;
-  esac
-}
+# In-memory resolve results, populated by board_resolve / board_resolve_item. Default
+# them to empty AT LOAD so a read-position accessor (board_item_id,
+# board_item_title, board_item_milestone, …) invoked BEFORE any resolve
+# returns its documented empty-string "not on the board" result instead of aborting with
+# an 'unbound variable' error under set -u — the capture.sh --repo kernel path runs set -u
+# and was stranding freshly-captured issues off-board (temperloop#602). The `+x` guard
+# assigns only when unset, so a resolve already run in this process is never clobbered by a
+# defensive re-source; the plain-assignment form (not the ${VAR:-} setting idiom) keeps these
+# internal cache globals out of the setting-registry ${VAR:-} seam sweep.
+[ -n "${BOARD_ITEMS_JSON+x}" ]  || BOARD_ITEMS_JSON=""
+[ -n "${BOARD_FIELDS_JSON+x}" ] || BOARD_FIELDS_JSON=""
 
 # The board whose state the in-shell globals currently describe — set by
 # board_resolve / board_resolve_item so the item-id-only mutators (board_set_*,
 # board_stamp) know which board's on-disk cache to invalidate after a write.
 BOARD_CURRENT=""
 
-# Drop a board's cached item-list so the next read re-fetches live. A write makes
-# the cached page stale; busting here is what lets the cache default ON without
-# breaking read-after-write across processes. Item edits never change board
-# structure, so the project/fields caches are left intact — to invalidate STRUCTURE
-# after a manual board edit, use board_bust_structure (below), not this. No-op when
-# the board is unknown — a mutator with no prior resolve in this process couldn't
-# have resolved the field ids it needs anyway.
-_board_cache_bust() {
-  local board="${1:-$BOARD_CURRENT}"
-  [ -n "$board" ] || return 0
-  rm -f "$(_board_cache_file "$board" items)" 2>/dev/null || true
-}
-
-# Splice ONE mutated field's new value into the cached items page IN PLACE, so a
-# read-after-write stays correct WITHOUT busting the whole page (which would force
-# the next read to re-paginate the heavy item-list — GH #157: 9 of 46 item-list
-# calls fired within 30s of a write, re-fetching the whole board for a one-field
-# change). The single-item mutators (board_set_status / board_set_component /
-# board_stamp / board_set_number) call this on a SUCCESSFUL edit instead of
-# _board_cache_bust, keeping the items page warm for the rest of the session.
-#
-#   _board_cache_patch_field <board#> <item-id> <field-name> <json-value>
-#
-# <json-value> is a JSON-ENCODED literal (a quoted string for single-select/text,
-# a bare number for number fields) so jq writes the correct type. The flattened
-# key MUST mirror board_resolve_item's reshape EXACTLY: the field name with its
-# first letter lowercased (Status->status, Host/Session->host/Session, Seq->seq,
-# Component->component), value = the option NAME / text / number just written.
-#
-# Falls back to the whole-page bust whenever an in-place splice can't be trusted:
-# no board known, the cache file absent or STALE (past its ttl — patching a stale
-# page would leave other items wrong), or the item not present in the cached page.
-# In every fallback the next read simply re-fetches live — correct, just not warm.
-# This is the targeted-patch counterpart to _board_cache_bust; multi-field /
-# structural writes (board_set_milestone) keep busting the whole page.
-_board_cache_patch_field() {
-  local board="${1:-$BOARD_CURRENT}" item_id="$2" field_name="$3" json_value="$4"
-  local cache key ttl patched
-  [ -n "$board" ] || return 0
-  cache="$(_board_cache_file "$board" items)"
-  ttl="${BOARD_CACHE_TTL:-90}"
-  # No fresh cached page to patch -> nothing warm to keep; bust (next read = live).
-  if [ "$ttl" -le 0 ] || [ ! -f "$cache" ] || [ "$(_board_file_age "$cache")" -ge "$ttl" ]; then
-    _board_cache_bust "$board"
-    return 0
-  fi
-  # Flatten the field name the SAME way board_resolve_item / gh item-list do:
-  # first letter lowercased, rest verbatim (Status->status, Host/Session->host/Session).
-  key="$(printf '%s' "$field_name" | jq -Rr '(.[0:1] | ascii_downcase) + .[1:]')"
-  # Set the key on the matching item only. If the cache holds no entry for this
-  # item id (a stale page that predates the item), `changed` is false -> bust so
-  # the next read picks it up live rather than serving a page missing the value.
-  patched="$(
-    jq --arg id "$item_id" --arg k "$key" --argjson v "$json_value" '
-      if any(.items[]?; .id == $id)
-      then { json: ( .items |= map(if .id == $id then .[$k] = $v else . end) ), changed: true }
-      else { changed: false }
-      end' "$cache" 2>/dev/null
-  )" || { _board_cache_bust "$board"; return 0; }
-  if [ "$(printf '%s' "$patched" | jq -r '.changed')" != "true" ]; then
-    _board_cache_bust "$board"
-    return 0
-  fi
-  printf '%s' "$patched" | jq '.json' >"$cache" 2>/dev/null || _board_cache_bust "$board"
-}
-
-# Public: invalidate a board's STRUCTURE cache (project view + field-list) so the
-# next resolve re-reads the schema live. The adapter never mutates structure, so
-# nothing auto-busts it; run this after a MANUAL structural edit (gh project
-# field-create / updateProjectV2Field — e.g. adding a Status/Component option) so
-# the long-lived BOARD_STRUCTURE_TTL cache doesn't keep serving the pre-edit
-# schema. Drops ONLY structure (not the items page — that has its own short ttl +
-# write-invalidation). Default board = BOARD_CURRENT; no-op when unknown.
-board_bust_structure() {
-  local board="${1:-$BOARD_CURRENT}"
-  [ -n "$board" ] || return 0
-  rm -f "$(_board_cache_file "$board" fields)" "$(_board_cache_file "$board" project)" \
-    2>/dev/null || true
-}
-
-# Age of a file in whole seconds, or a large sentinel if absent/unstatable.
-# stat(1) differs by platform — GNU `stat -c %Y` (Linux CI/hosts) vs BSD
-# `stat -f %m` (macOS dev). Try GNU FIRST: BSD's `-f` is a different flag
-# (--file-system) on GNU and exits 0 printing non-numeric text, so a BSD-first
-# probe would short-circuit the fallback and yield garbage. Validate the result
-# is all-digits before doing arithmetic on it; anything else → treat as stale.
-_board_file_age() {
-  local f="$1" mtime now
-  [ -f "$f" ] || { echo 999999; return; }
-  mtime="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || true)"
-  case "$mtime" in
-    '' | *[!0-9]*) echo 999999; return ;;
-  esac
-  now="$(date +%s)"
-  echo "$(( now - mtime ))"
-}
-
-# Build the `gh project item-list` argv for a WHOLE-BOARD read into the global
-# array _BOARD_IL_ARGV (bash can't return arrays; both whole-board sites share this
-# one builder so the knobs/order never drift). It filters to the ACTIVE (non-Done)
-# slice server-side via the Projects `--query` syntax: board 3 crossed 200 TOTAL
-# items (GH #168), and `gh project item-list --limit N` only ever returns the first
-# page, so an unfiltered read silently truncated the active slice. Every whole-board
-# consumer (board_resolve / worklist / reconcile / milestone / board_create_many)
-# operates ONLY on non-Done items, so the Done tail is pure payload — dropping it
-# keeps the active set well inside one page. Two knobs (matching the ${VAR:-default}
-# idiom used for BOARD_CACHE_TTL):
-#   BOARD_ITEM_LIMIT  (default 500) — page cap; gh paginates internally to reach it,
-#                       so GraphQL cost scales with RETURNED items, not the ceiling.
-#   BOARD_ITEM_QUERY  (default -status:Done) — Projects filter. `-status:Done` is
-#                       STATUS-based (not `is:open` issue-state), so it still surfaces
-#                       no-status items and closed-but-not-yet-Done DRIFT that
-#                       reconcile must catch. Set it EMPTY to fetch ALL items incl.
-#                       Done (escape hatch for a future reverse-drift audit).
-# Sets _BOARD_IL_ARGV (the argv) and _BOARD_IL_QUERY (the effective query) so the
-# cache layer can key its slot on the query (board_item_list).
-_board_item_list_argv() {
-  local lim="${BOARD_ITEM_LIMIT:-500}"
-  _BOARD_IL_QUERY="${BOARD_ITEM_QUERY-"-status:Done"}"
-  _BOARD_IL_ARGV=(project item-list "$(board_project_number "$1")" --owner "$(board_owner "$1")" --limit "$lim")
-  [ -n "$_BOARD_IL_QUERY" ] && _BOARD_IL_ARGV+=(--query "$_BOARD_IL_QUERY")
-  _BOARD_IL_ARGV+=(--format json)
-}
-
-# Drop PR-type cards from a whole-board read (foundation #223). The board's
-# work-unit is the ISSUE; GitHub's "Auto-add to project" workflow also lands PRs,
-# whose cards orphan at Status (none) forever — the close→Done cascade (GH #340)
-# fires on issue-close, not PR-merge, so nothing ever moves a merged PR's card.
-# Drops EXACTLY content.type "PullRequest"; Issue, DraftIssue, and absent/unknown
-# types pass (the latter carry a null content.number, so they are inert in the
-# number-keyed accessors). This is the read-side backstop to the source fix
-# (the board's auto-add filter set to is:issue). Applied at BOTH raw whole-board
-# exits — _board_item_list_fresh and board_item_list — so BOARD_ITEMS_JSON is
-# issues-only no matter which path populated it.
-_board_drop_pr_cards() {
-  jq -c 'if has("items") then .items |= map(select((.content.type // "") != "PullRequest")) else . end'
-}
+# Machine-readable un-landed-issue list, set by board_create_many /
+# _board_issues_create_many / board_capture_item on every return: a
+# space-separated list of the issue numbers that did NOT resolve/status in the
+# call that just returned (empty string on a fully-successful call). A caller
+# that wants the specifics — not just the pass/fail return code — reads this
+# global immediately after the call. See board_create_many's own header
+# comment for the full return-code contract (foundation #1226).
+BOARD_UNLANDED_ISSUES=""
 
 # Strip ASCII control characters 0x00–0x1f from a whole-board read's raw TEXT
 # (foundation #224). A raw control char inside an item title/body is invalid in a
@@ -559,10 +523,11 @@ _board_drop_pr_cards() {
 # whole-board read is bulk, ONE poisoned item takes down the entire list. This has
 # RECURRED because earlier fixes patched it per-call-site (ccbc6868 added an inline
 # `tr -d '\000-\037'` at ONE site; 92feec12 hit it again). The durable fix mirrors
-# _board_drop_pr_cards (#223): ONE shared pipe-stage helper applied at the raw
-# whole-board exits — _board_item_list_fresh (live) and board_item_list (cached) —
-# AND at every per-issue / per-milestone REST→jq seam that reads a user-controlled
-# body/description: board_blocked_by_open, board_parent_issue, board_active_milestones,
+# the #223 fix: ONE shared pipe-stage helper applied at the raw whole-board exit
+# (_board_issues_item_list) AND at every per-issue / per-milestone REST→jq seam
+# that reads a user-controlled
+# body/description: board_blocked_by_open, board_parent_issue, _board_issue_db_id,
+# board_active_milestones,
 # board_set_milestone_description, and milestone.sh's _milestone_description /
 # milestone_list (#614). Those single-item REST reads were the uncovered class: a
 # gh-leaked literal control byte made their `… 2>/dev/null | jq` fail, the 2>/dev/null
@@ -576,145 +541,6 @@ _board_sanitize_control_chars() {
   LC_ALL=C tr -d '\000-\037'
 }
 
-# Always-live item-list fetch (the SINGLE active-set page; see _board_item_list_argv).
-# The internal that never touches the cache — used by board_create_many's index-wait
-# retry, which must read fresh to observe just-added items the cached page can't yet
-# contain. Just-added items land in Backlog, so the non-Done filter never hides them.
-# Captures the raw read first so _board_gh's fail-loud exit propagates (the jq
-# PR-card filter would otherwise mask it); see _board_drop_pr_cards (#223).
-_board_item_list_fresh() {
-  _board_item_list_argv "$1"
-  local raw
-  raw="$(_board_gh "${_BOARD_IL_ARGV[@]}")" || return 1
-  printf '%s' "$raw" | _board_sanitize_control_chars | _board_drop_pr_cards
-}
-
-# Cache-aware GraphQL read with fail-loud, don't-poison semantics.
-#   _board_cached_read <board#> <kind> <gh-args...>
-# Fresh-enough cache file → returns it with ZERO gh calls. Miss → reads live, and
-# crucially NEVER caches an empty or failed result and returns NON-ZERO so the
-# caller fails loudly instead of proceeding on empty JSON. That last part closes
-# the silent-null corruption a drained budget used to cause (GH #93): board_resolve
-# would capture empty stdout from a rate-limited gh and the accessors would then
-# read null. gh's own rate-limit message still reaches stderr via the _board_gh
-# seam; here we add a one-line hint and refuse to cache the garbage.
-_board_cached_read() {
-  local board="$1" kind="$2"; shift 2
-  local cache out ttl
-  # TTL by class: STRUCTURE (project/fields schema, invariant + never mutator-busted)
-  # gets the long ttl; ITEM STATE (items) keeps the short ttl + write-invalidation.
-  # BOARD_CACHE_TTL=0 stays the MASTER off-switch ("0 = fully live") — it disables
-  # structure caching too, so a caller forcing live reads still gets them; only with
-  # the cache on does structure take its own long BOARD_STRUCTURE_TTL.
-  case "$kind" in
-    project | fields)
-      if [ "${BOARD_CACHE_TTL:-90}" -gt 0 ]; then ttl="${BOARD_STRUCTURE_TTL:-86400}"; else ttl=0; fi
-      ;;
-    *) ttl="${BOARD_CACHE_TTL:-90}" ;;
-  esac
-  cache="$(_board_cache_file "$board" "$kind")"
-  if [ "$ttl" -gt 0 ] && [ "$(_board_file_age "$cache")" -lt "$ttl" ]; then
-    # Sanitize on READ too (#443). The write path below strips control chars
-    # BEFORE caching, but that doesn't cover a file dirtied by a pre-fix write,
-    # an external/partial write, or an older adapter version — and the HIT path
-    # used to `cat` it raw, serving control chars to every direct consumer
-    # (board_resolve's BOARD_ITEMS_JSON, _board_cache_patch_field's jq). Strip on
-    # read so the served value is canonical-clean regardless of how the file got
-    # written (the #443 recurrence of #354). tr never fails on this class.
-    _board_sanitize_control_chars < "$cache"
-    return 0
-  fi
-  out="$(_board_gh "$@")" || {
-    echo "board.sh: live read failed ($kind, board $board) — rate limit or auth?" >&2
-    return 1
-  }
-  [ -n "$out" ] || {
-    echo "board.sh: live read returned empty ($kind, board $board) — not caching" >&2
-    return 1
-  }
-  # Strip unescaped control chars (U+0000–U+001F) from the raw gh response BEFORE
-  # it is cached. gh can emit a literal control byte inside an issue body, which
-  # makes the response invalid JSON (jq: "control characters … must be escaped").
-  # board_item_list strips these on its read-OUTPUT, but the cache FILE kept the
-  # raw bytes — so _board_cache_patch_field's jq runs DIRECTLY on an invalid file,
-  # fails, and busts the page: the silent-empty board_item_id of #354. Sanitizing
-  # at write makes the cache file canonical-clean for every direct consumer. (tr
-  # also drops \t/\n, but those are insignificant JSON whitespace; the body text
-  # that carried them is non-load-bearing and board_item_list already dropped it.)
-  out="$(printf '%s' "$out" | _board_sanitize_control_chars)"
-  if [ "$ttl" -gt 0 ]; then
-    printf '%s' "$out" >"$cache" 2>/dev/null || true
-  fi
-  printf '%s' "$out"
-}
-
-# --- pre-flight GraphQL budget guard (GH #156) ----------------------------
-# The heavy whole-board `item-list` active-set page is the dominant Projects-v2
-# GraphQL cost; on a near-empty 5,000-pt/hr budget it fails with an opaque empty
-# read (caught by _board_cached_read's fail-loud, but only AFTER the attempt).
-# This pre-checks the budget BEFORE that heavy read, turning a silent drain into
-# an early, legible stderr signal naming the remaining budget + reset time.
-#
-# It is a REST call (`gh api rate_limit`) — free, on REST's SEPARATE 5,000/hr
-# bucket — so the check itself never spends GraphQL points. Routed through the
-# `_board_gh` seam so tests stub it with zero network.
-#
-# Threshold: BOARD_BUDGET_GUARD_THRESHOLD (default 200). Set it to 0 to DISABLE
-# the guard entirely (the opt-out). Behaviour:
-#   - graphql.remaining >= threshold  -> silent, proceed (the common case);
-#   - remaining < threshold           -> one-line stderr WARNING, proceed;
-#   - remaining < threshold AND BOARD_BUDGET_GUARD=1 -> warn + return non-zero
-#     (HARD-ABORT before the heavy read).
-# Conservative by construction: any failure to read/parse the rate_limit (network
-# hiccup, unexpected JSON) is swallowed and the guard PROCEEDS — it can never make
-# board_resolve worse than today. Lives ONLY on the heavy whole-board path
-# (board_resolve, and only when the items cache misses); board_resolve_item never
-# calls it, so a claim never pays the latency.
-#   _board_budget_guard <board#>  ->  0 = proceed, non-zero = hard-abort
-_board_budget_guard() {
-  local board="$1" threshold remaining reset now mins out
-  threshold="${BOARD_BUDGET_GUARD_THRESHOLD:-200}"
-  # Opt-out: threshold 0 (or non-numeric) disables the guard entirely.
-  case "$threshold" in
-    '' | *[!0-9]*) return 0 ;;
-  esac
-  [ "$threshold" -gt 0 ] || return 0
-  # REST rate_limit read (free, separate bucket). Degrade gracefully on any error:
-  # a failed/empty/garbled read must NOT block the resolve.
-  out="$(_board_gh api rate_limit --jq '.resources.graphql.remaining, .resources.graphql.reset' 2>/dev/null)" || return 0
-  remaining="$(printf '%s\n' "$out" | sed -n '1p')"
-  reset="$(printf '%s\n' "$out" | sed -n '2p')"
-  case "$remaining" in
-    '' | *[!0-9]*) return 0 ;;
-  esac
-  # Healthy budget -> silent, proceed.
-  [ "$remaining" -lt "$threshold" ] || return 0
-  # Compute a human "resets in Nm" hint when the reset epoch is sane; omit it
-  # otherwise (still warn) — never let a bad reset value break the guard.
-  now="$(date +%s 2>/dev/null)"
-  case "$reset" in
-    '' | *[!0-9]*) mins="" ;;
-    *)
-      if [ -n "$now" ] && [ "$reset" -gt "$now" ]; then
-        mins="$(( (reset - now + 59) / 60 ))"
-      else
-        mins=""
-      fi
-      ;;
-  esac
-  if [ -n "$mins" ]; then
-    echo "board: graphql $remaining/5000, resets in ${mins}m — heavy whole-board read (board $board) may fail" >&2
-  else
-    echo "board: graphql $remaining/5000 — heavy whole-board read (board $board) may fail" >&2
-  fi
-  # Opt-in hard-abort; default is warn-only.
-  if [ "${BOARD_BUDGET_GUARD:-0}" = "1" ]; then
-    echo "board: BOARD_BUDGET_GUARD=1 — refusing the whole-board read on a near-empty budget" >&2
-    return 1
-  fi
-  return 0
-}
-
 # --- issues-only backend: fnd: label vocabulary + item CRUD/status --------
 # See ISSUES-ONLY-BACKEND.md (sibling file) for the full contract. Summary:
 # item state rides `fnd:<field-slug>:<value-slug>` labels on the plain GitHub
@@ -722,8 +548,8 @@ _board_budget_guard() {
 # …); "Done" is the ONE exception — it carries NO label, it is simply the
 # issue being CLOSED (closing strips any residual fnd:status:* label; a
 # read of a closed issue always reports status "Done" regardless of labels).
-# No Projects-v2 call is ever made on this path — board_backend gates every
-# branch point below before any `gh project …` argv is built.
+# No Projects-v2 call is ever made on this path — the arm that made them was
+# removed (ADR 0004); this is the only path there is.
 
 # "In Progress" -> "in-progress" (lowercase, spaces collapsed to hyphens).
 _board_issues_slug() {
@@ -754,30 +580,27 @@ _board_issues_label_prefix() {
 #     unslugging (which lowercases) would corrupt a mixed-case hostname and
 #     silently break the foreign-host comparison board_claim_contended /
 #     reconcile.sh rely on. The stamp is stored and read back VERBATIM.
-#   labels: the RAW label-name array (foundation #801, split 3/3 — the funnel-
-#     integration "D3 seam" fix). A caller like funnel-tick.sh reads a Ready
+#   labels: the RAW label-name array (foundation #801, split 3/3 — the pipeline-
+#     integration "D3 seam" fix). A caller like pipeline-tick.sh reads a Ready
 #     item's ordinary GitHub labels directly (`spike`, `Foundational`,
 #     `needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — none
 #     of them `fnd:`-namespaced) to classify/gate it; the Projects-v2 path
-#     already exposes this for free, because board_item_list/_board_item_list_fresh
-#     pass `gh project item-list`'s own raw JSON straight through (gh's default
-#     item-list output carries a top-level `labels` array for Issue content —
-#     see board_item_list's header comment), and board.sh reshapes NONE of it.
+#     exposed this for free (its raw item-list JSON carried a top-level `labels`
+#     array for Issue content, which board.sh reshaped none of).
 #     Before this fix the issues-only reshape below extracted only the
 #     `fnd:`-prefixed labels into status/component/host-session and DROPPED
-#     every other label — so a live funnel-tick against an issues-only board
+#     every other label — so a live pipeline-tick against an issues-only board
 #     could never see `spike`/`Foundational`/etc. and every Ready item
 #     silently misclassified as a fresh Operational kind:code drive. Emitting
 #     the full, unfiltered label-name list here (fnd: ones included — harmless,
 #     since a `. == "spike"` equality check never matches `"fnd:status:ready"`)
 #     makes the issues-only item shape a byte-for-byte structural match for the
-#     Projects-v2 one on this key too. See ISSUES-ONLY-BACKEND.md § Funnel
+#     Projects-v2 one on this key too. See ISSUES-ONLY-BACKEND.md § Pipeline
 #     integration and tests/test_board_dual_adapter.sh (the parity proof).
 #   milestone: the item's release-phase milestone as { title } (temperloop#154 —
 #     the same class of dropped-field bug the #801 labels passthrough fixed).
-#     board_item_milestone reads `.milestone.title`; the Projects-v2 path gets it
-#     for free (gh project item-list emits `.milestone = {title, description,
-#     dueOn}`), but the issues-only reshape used to drop it entirely, so
+#     board_item_milestone reads `.milestone.title`; the Projects-v2 path got it
+#     for free, but the issues-only reshape used to drop it entirely, so
 #     board_item_milestone always returned empty on this backend — which silently
 #     defeated /triage's active-milestone intake filter (every item read as
 #     unmilestoned, so a Backlog item on an INACTIVE milestone was wrongly intook
@@ -821,17 +644,12 @@ JQ_DEFS
 # LIVE (a `gh issue list` REST call, always was) or, when `board.<N>.cache=on`
 # AND lib/cache.sh has been sourced by the caller, from cache.sh's on-disk
 # issue-cache STORE (see cache.sh's header + CACHE-STORE.md). Either way this
-# draws on REST's separate 5,000/hr bucket, never the Projects-v2 GraphQL
-# budget board.sh's OWN item-plane cache above (_board_cached_read /
-# BOARD_CACHE_TTL) exists to protect — that cache is the unrelated ITEM PLANE:
-# Projects-v2 board-item field values (Status/Component/etc as GraphQL sees
-# them), unchanged by this item and still the only cache a Projects-v2-backed
-# board ever reads through. The two planes never overlap: a Projects-v2 board
-# has no issue-plane store to read (this function is never called for one —
-# board_item_list only reaches here via _board_is_issues_only), and an
-# issues-only board has no item-plane cache to read (there is no Projects
-# board to page). See cache.sh's own header for the store-side half of this
-# map.
+# draws on REST's own 5,000/hr bucket. Since ADR 0004 removed the Projects-v2
+# arm, cache.sh's store is the ONLY cache in front of any board read —
+# board.sh's former item-plane cache (`_board_cached_read` / BOARD_CACHE_TTL,
+# GraphQL-budget relief for Projects-v2 board-item field values) went with the
+# arm it existed to protect. See cache.sh's own header for the store-side half
+# of this map.
 #   _board_issues_item_list <board#>  ->  {"items":[...]} JSON on stdout
 _board_issues_item_list() {
   local board="$1" repo lim raw
@@ -846,7 +664,7 @@ _board_issues_item_list() {
       # degradation contract — one stderr notice, never fabricated data) and
       # this function does not layer a second live fallback on top of that.
       # Snapshot rows are ALL states; filter to open here (mirrors the live
-      # arm's `--state open`) — note BOARD_ITEM_LIMIT is a live-arm-only knob:
+      # arm's `--state open`) — note BOARD_ITEM_LIMIT is a live-arm-only setting:
       # the store is not paginated/truncated (a later perf pass can add a cap
       # if an issues-only repo's corpus ever makes this the bottleneck).
       raw="$(cache_read "$repo")" || return 1
@@ -923,6 +741,22 @@ _board_issues_ensure_label() {
 # ensure the label + REOPEN if the issue was closed. Both the close/reopen and
 # the label add/remove are read-before-write (one `gh api issues/<n>` fetch)
 # so an already-correct state is a no-op, not a redundant/erroring gh call.
+#
+# Done ALSO clears the claim stamp (temperloop#744). The `fnd:host/session:*`
+# label is the cross-session claim LOCK (see _board_issues_stamp_field below and
+# ISSUES-ONLY-BACKEND.md § Claim lock) — reaching Done is the end of the claim
+# by construction, so leaving the stamp on a closed issue publishes a lock that
+# can never be released, and a reader (issue-state.sh's `claimed-elsewhere`
+# derivation, reconcile.sh's foreign-claim bucket, board_claim_contended) cannot
+# tell it apart from a live claim. So the Done arm strips every
+# `fnd:host/session:*` label alongside the status label, under the same
+# retry-once/never-swallow contract as the status strip. Non-Done targets do NOT
+# touch the stamp — a Ready/Backlog park is exactly the case where the claim may
+# legitimately still be held (kernel doc § Claim held until Done), and claim.sh
+# re-stamps on its own. This closes only the ADAPTER-driven close path; a close
+# that bypasses the adapter entirely (a merged PR's native `Closes #N`, a hand
+# `gh issue close`, the web UI) never runs this code and is swept by
+# reconcile.sh's Lens 3 --labels backstop instead — see that file's class (j).
 # Best-effort write-through invalidation (F#988 Contract, cache-read-dispatch
 # item): dirty the canonical issue-cache store's entry for <repo> after a
 # SUCCESSFUL issues-only mutation, so a following whole-board read (when
@@ -940,10 +774,11 @@ _board_cache_dirty_after_write() {
 #   _board_issues_set_field <ISSUE_n> <field-name> <option-name>
 _board_issues_set_field() {
   local item_id="$1" field_name="$2" opt_name="$3"
-  local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0
+  local issue repo prefix target_label issue_json state cur l is_done=0 already_present=0 removal_failed=0
+  local hs_prefix hs_cur
 
   issue="${item_id#ISSUE_}"
-  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # setting:exempt — internal already-resolved board state, not an operator default
     echo "board: _board_issues_set_field — no current board (call board_resolve_item first)" >&2
     return 1
   }
@@ -967,7 +802,18 @@ _board_issues_set_field() {
       already_present=1
       continue
     fi
-    _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 || true
+    # Retry once, then surface the failure — do NOT swallow it. A silently
+    # dropped removal leaves DUAL fnd:<field>:* labels (e.g. status:backlog +
+    # status:ready) on the issue while the write still reports success, so the
+    # caller cannot tell the flip half-failed (temperloop#601). The removal is
+    # not inherently broken (running it by hand succeeds); the hazard is a
+    # transient/throttled failure being hidden, so a single retry absorbs the
+    # transient case and a persistent failure is reported via a non-zero return.
+    if ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 \
+       && ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+      echo "board: _board_issues_set_field — failed to remove stale '$prefix' label '$l' on $repo#$issue" >&2
+      removal_failed=1
+    fi
   done <<<"$cur"
 
   # Skip a redundant add when the target label is already the issue's only
@@ -975,6 +821,22 @@ _board_issues_set_field() {
   # no-op at the gh-call level, not just idempotent at the label-set level).
   if [ "$is_done" -eq 0 ] && [ "$already_present" -eq 0 ]; then
     _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
+  fi
+
+  # Done clears the claim stamp too (temperloop#744) — see this function's
+  # header. Reads the ALREADY-FETCHED issue_json (no extra gh call) and reuses
+  # the same retry-once/never-swallow removal contract as the status strip.
+  if [ "$is_done" -eq 1 ]; then
+    hs_prefix="$(_board_issues_label_prefix "$BOARD_FIELD_HOSTSESSION")"
+    hs_cur="$(printf '%s' "$issue_json" | jq -r --arg p "$hs_prefix" '.labels[]?.name | select(startswith($p))')"
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      if ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 \
+         && ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+        echo "board: _board_issues_set_field — failed to clear claim stamp '$l' on $repo#$issue" >&2
+        removal_failed=1
+      fi
+    done <<<"$hs_cur"
   fi
 
   if [ "$field_name" = "$BOARD_FIELD_STATUS" ]; then
@@ -985,6 +847,10 @@ _board_issues_set_field() {
     fi
   fi
   _board_cache_dirty_after_write "$repo"
+  # A stale-label removal that persistently failed above means the issue may
+  # still carry a second fnd:<field>:* label — report that to the caller rather
+  # than claiming a clean single-label flip (temperloop#601).
+  [ "$removal_failed" -eq 0 ] || return 1
   return 0
 }
 
@@ -1016,10 +882,10 @@ _board_issues_set_field() {
 #   _board_issues_stamp_field <ISSUE_n> <field-name> <text>
 _board_issues_stamp_field() {
   local item_id="$1" field_name="$2" text="$3"
-  local issue repo prefix target_label issue_json cur l already_present=0
+  local issue repo prefix target_label issue_json cur l already_present=0 removal_failed=0
 
   issue="${item_id#ISSUE_}"
-  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # knob:exempt — internal already-resolved board state, not an operator default
+  repo="$(board_repo "${BOARD_CURRENT:-}")" || {  # setting:exempt — internal already-resolved board state, not an operator default
     echo "board: _board_issues_stamp_field — no current board (call board_resolve_item first)" >&2
     return 1
   }
@@ -1040,13 +906,22 @@ _board_issues_stamp_field() {
       already_present=1
       continue
     fi
-    _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 || true
+    # Same non-swallowing contract as _board_issues_set_field: retry once, then
+    # surface a persistent removal failure via a non-zero return rather than
+    # leaving a stale second fnd:<field>:* stamp label behind silently
+    # (temperloop#601).
+    if ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1 \
+       && ! _board_gh issue edit "$issue" -R "$repo" --remove-label "$l" >/dev/null 2>&1; then
+      echo "board: _board_issues_stamp_field — failed to remove stale '$prefix' label '$l' on $repo#$issue" >&2
+      removal_failed=1
+    fi
   done <<<"$cur"
 
   if [ -n "$text" ] && [ "$already_present" -eq 0 ]; then
     _board_gh issue edit "$issue" -R "$repo" --add-label "$target_label" >/dev/null || return 1
   fi
   _board_cache_dirty_after_write "$repo"
+  [ "$removal_failed" -eq 0 ] || return 1
   return 0
 }
 
@@ -1092,80 +967,78 @@ board_claim_contended() {
 # synchronous REST, not an async Projects-v2 mutation), so "landing an item"
 # collapses to just labeling it Backlog. The issues already exist repo-side
 # (gh issue create is the caller's job, same as the Projects path).
+#
+# RETURN CONTRACT: identical to board_create_many (foundation #1226) so the
+# contract does not diverge by backend (see ISSUES-ONLY-BACKEND.md's
+# function-level interface parity table) — 0/full, 1/partial, 2/total, with
+# BOARD_UNLANDED_ISSUES carrying the space-separated failures on any non-zero.
 #   _board_issues_create_many <board#> <url1> <num1> [<url2> <num2> ...]
 _board_issues_create_many() {
   local board="$1"; shift
   local url num item_id
+  local nums=() failed=()
   BOARD_CURRENT="$board"
   while [ "$#" -ge 2 ]; do
     url="$1"; num="$2"; shift 2
+    nums+=("$num")
     item_id="ISSUE_$num"
-    board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || \
-      echo "warning: #$num (issues-only board $board) could not be labeled Backlog" >&2
+    if board_set_status "$item_id" "$BOARD_OPT_BACKLOG"; then
+      continue
+    fi
+    failed+=("$num")
+    echo "warning: #$num (issues-only board $board) could not be labeled Backlog" >&2
   done
-  return 0
+  if [ "${#failed[@]}" -eq 0 ]; then
+    BOARD_UNLANDED_ISSUES=""
+    return 0
+  fi
+  BOARD_UNLANDED_ISSUES="${failed[*]}"
+  if [ "${#failed[@]}" -eq "${#nums[@]}" ]; then
+    return 2
+  fi
+  return 1
 }
 
-# --- resolve once, cache across processes ---------------------------------
-# A `project view`, a `field-list`, and an `item-list` active-set page, EACH served
-# from the on-disk cache when warm (GH #93) so a /triage|/build step that
-# re-resolves in a fresh process within the TTL pays zero GraphQL. Populates
-# module globals reused by every accessor below.
+# --- resolve a whole board ------------------------------------------------
+# ONE live `gh issue list` read of the board's active (open) set, reshaped into
+# the shared item form. Populates module globals reused by every accessor below.
 #
 #   board_resolve <board#>
 #
 # Sets: BOARD_PROJECT_ID, BOARD_FIELDS_JSON, BOARD_ITEMS_JSON, BOARD_CURRENT.
-# Returns non-zero (without completing) if any read fails or comes back empty —
-# so a rate-limited run fails loudly instead of leaving the accessors on null
-# (the old silent-corruption mode). For a caller that touches exactly ONE issue,
-# prefer board_resolve_item (below): it skips the expensive whole-board item-list
-# AND stays always-live for the claim lock (GH #53).
+# BOARD_PROJECT_ID and BOARD_FIELDS_JSON are VESTIGIAL on the issues-only
+# backend — there is no project node and no field schema — and are set to their
+# documented empty values ("" and `{"fields":[]}`) so a caller reading them
+# under `set -u` behaves exactly as it did before the Projects arm was removed.
+# Returns non-zero (without completing) if the read fails, so a rate-limited run
+# fails loudly instead of leaving the accessors on null. For a caller that
+# touches exactly ONE issue, prefer board_resolve_item (below): it reads that one
+# issue rather than the whole board.
 board_resolve() {
-  local board pv cache ttl
+  local board
   board="$(board_resolve_name "$1")" || return 1
-  if _board_is_issues_only "$board"; then
-    BOARD_PROJECT_ID=""
-    BOARD_FIELDS_JSON='{"fields":[]}'
-    BOARD_ITEMS_JSON="$(board_item_list "$board")" || return 1
-    BOARD_CURRENT="$board"
-    return 0
-  fi
-  pv="$(_board_cached_read "$board" project \
-        project view "$(board_project_number "$board")" --owner "$(board_owner "$board")" --format json)" || return 1
-  BOARD_PROJECT_ID="$(printf '%s' "$pv" | jq -r '.id')"
-  BOARD_FIELDS_JSON="$(_board_cached_read "$board" fields \
-        project field-list "$(board_project_number "$board")" --owner "$(board_owner "$board")" --format json)" || return 1
-  # Pre-flight budget guard ONLY when the heavy item-list is about to read LIVE
-  # (cache miss / off / expired) — never on a warm-cache hit (no GraphQL spent)
-  # and never in board_resolve_item (so a claim never pays the latency). Mirror
-  # _board_cached_read's hit predicate so the guard fires exactly when the read will.
-  cache="$(_board_cache_file "$board" items)"
-  ttl="${BOARD_CACHE_TTL:-90}"
-  if [ "$ttl" -le 0 ] || [ "$(_board_file_age "$cache")" -ge "$ttl" ]; then
-    _board_budget_guard "$board" || return 1
-  fi
+  # Propagates board_backend's non-zero refusal for a stale `backend=projects`
+  # conf line (ADR 0004) rather than resolving it silently.
+  _board_is_issues_only "$board" || return 1
+  BOARD_PROJECT_ID=""
+  BOARD_FIELDS_JSON='{"fields":[]}'
   BOARD_ITEMS_JSON="$(board_item_list "$board")" || return 1
   BOARD_CURRENT="$board"
+  return 0
 }
 
-# --- resolve ONE item, without the full-board page ------------------------
-# board_resolve pulls the `item-list` active-set page — the Projects-v2 GraphQL call whose
-# point cost scales with the non-Done items and drained the 5,000-pt/hr
-# budget when a session fired it once per process across a claim/set-status burst
-# (GH #53). Single-item callers don't need the whole board: this serves the project
-# id + field-list from the shared cross-process cache (board structure, invariant
-# under item edits — GH #141), and looks up the ONE issue's project item LIVE via a
-# targeted GraphQL query instead of paginating every item.
+# --- resolve ONE item -----------------------------------------------------
+# Single-item callers don't need the whole board: this reads the ONE issue live
+# (`gh api repos/<r>/issues/<n>`) instead of listing every item.
 #
 # It sets the SAME globals as board_resolve (BOARD_PROJECT_ID, BOARD_FIELDS_JSON,
-# BOARD_ITEMS_JSON), and reshapes the item into the identical `gh project
-# item-list` form — `{id, content:{number,title,type}, <flattened single-select /
-# text / number fields like status, host/Session, seq>}` — so EVERY accessor
-# (board_item_id / board_item_title / board_field_id / board_option_id) and every
+# BOARD_ITEMS_JSON) in the identical item form — `{id, content:{number,title,
+# type}, status, component, "host/Session", labels, milestone}` — so every
+# accessor (board_item_id / board_item_title / board_item_milestone) and every
 # mutator works against it unchanged; BOARD_ITEMS_JSON simply carries the one
-# resolved item. The ITEM read is always live (no cache): the single-item callers
-# are the mutating ones (the cross-session claim lock, a Done/In-Progress move) and
-# must see fresh status — only the structure reads (project/fields) are cached.
+# resolved item. The read is ALWAYS LIVE and never cached: the single-item
+# callers are the mutating ones (the cross-session claim lock, a Done /
+# In-Progress move) and must see fresh status.
 #
 # Drop-in for board_resolve at any caller that touches exactly ONE issue
 # (claim.sh; a single Done / In-Progress move; a one-item contention read). The
@@ -1174,125 +1047,31 @@ board_resolve() {
 #   board_resolve_item <board#> <issue#>
 # Returns non-zero (without setting state) if <board#> is not a known board.
 board_resolve_item() {
-  local board issue="$2" repo owner name pv
+  local board issue="$2"
   board="$(board_resolve_name "$1")" || return 1
-  if _board_is_issues_only "$board"; then
-    _board_issues_resolve_item "$board" "$issue"
-    return $?
-  fi
-  repo="$(board_repo "$board")" || return 1
-  owner="${repo%/*}"; name="${repo#*/}"
-  # project-view + field-list are board STRUCTURE (project id, field/option schema) —
-  # invariant under item edits, and never busted by the single-item mutators (see
-  # _board_cache_bust). So serve them from the SAME cross-process cache board_resolve
-  # uses (GH #141): a long-lived session firing many single-item ops (claim / status
-  # move) re-paid these two GraphQL calls EVERY time before this — the dominant drain
-  # in the #141 attribution log. Only the one-issue query below stays always-live.
-  pv="$(_board_cached_read "$board" project \
-        project view "$(board_project_number "$board")" --owner "$(board_owner "$board")" --format json)" || return 1
-  BOARD_PROJECT_ID="$(printf '%s' "$pv" | jq -r '.id')"
-  BOARD_FIELDS_JSON="$(_board_cached_read "$board" fields \
-        project field-list "$(board_project_number "$board")" --owner "$(board_owner "$board")" --format json)" || return 1
-  # ONE issue's project item + its field values, reshaped to the item-list form.
-  # The `(field name with first letter lowercased)` keying mirrors how `gh project
-  # item-list --format json` flattens single-selects/text/number (Status->status,
-  # Host/Session->host/Session, Seq->seq), so the accessors see an identical item.
-  # SC2016: the `$owner`/`$name`/`$num` in the query are GraphQL variables (bound
-  # via -f/-F below), NOT shell expansions — the single quotes are intentional.
-  # shellcheck disable=SC2016
-  BOARD_ITEMS_JSON="$(
-    _board_gh api graphql \
-      -f owner="$owner" -f name="$name" -F num="$issue" \
-      -f query='
-        query($owner:String!,$name:String!,$num:Int!){
-          repository(owner:$owner,name:$name){
-            issue(number:$num){
-              title
-              projectItems(first:20){
-                nodes{
-                  id
-                  project{ number }
-                  fieldValues(first:50){
-                    nodes{
-                      __typename
-                      ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ name } } }
-                      ... on ProjectV2ItemFieldTextValue{ text field{ ... on ProjectV2FieldCommon{ name } } }
-                      ... on ProjectV2ItemFieldNumberValue{ number field{ ... on ProjectV2FieldCommon{ name } } }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }' |
-      _board_sanitize_control_chars |
-      jq --argjson b "$(board_project_number "$board")" --argjson n "$issue" '
-        (.data.repository.issue // {}) as $i
-        | { items: [
-              ($i.projectItems.nodes // [])[]
-              | select(.project.number == $b)
-              | { id, content: { number: $n, title: ($i.title // ""), type: "Issue" } }
-                + ( [ (.fieldValues.nodes // [])[]
-                      | select((.field.name? // null) != null and (.name // .text // .number) != null)
-                      | { ( (.field.name[0:1] | ascii_downcase) + .field.name[1:] ): (.name // .text // .number) } ]
-                    | add // {} ) ] }'
-  )"
-  # Single-item resolve reads LIVE and never writes the full-list cache, but it
-  # still records the board so a following mutator busts the right cache file.
-  BOARD_CURRENT="$board"
+  # Propagates board_backend's non-zero refusal for a stale `backend=projects`
+  # conf line (ADR 0004) rather than resolving it silently.
+  _board_is_issues_only "$board" || return 1
+  _board_issues_resolve_item "$board" "$issue"
+  return $?
 }
-
-# Fetch just the item-list for a board (the SINGLE active-set page; see
-# _board_item_list_argv) without the field-list/project-view that board_resolve
-# also does. For read-only callers like worklist.sh that only need the items and
-# never resolve ids. The cached page now holds the ACTIVE (non-Done) slice — which
-# is exactly what every whole-board consumer wants — under the unchanged cache
-# filename.
+# Fetch just the item-list for a board — the board's ACTIVE (open) slice, which
+# is exactly what every whole-board consumer wants. For read-only callers like
+# worklist.sh that only need the items.
 #
-# Cache-aware via _board_cached_read: a fresh-enough on-disk copy is returned with
-# no GraphQL hit; a miss fetches live, caches a non-empty result, and fails loud
-# (non-zero, no poisoned cache) on an empty/errored read. Caching is ON by default
-# (BOARD_CACHE_TTL=90); export BOARD_CACHE_TTL=0 to force live reads.
+# ALWAYS LIVE: one `gh issue list` REST call per invocation, on REST's own
+# 5,000/hr bucket. The optional per-board issue-corpus store
+# (`board.<N>.cache=on` + a caller that sourced lib/cache.sh) is the ONE cache in
+# front of this read — see _board_issues_item_list's PLANE MAP comment.
 #   board_item_list <board#>  ->  item-list JSON on stdout
 board_item_list() {
   local _b; _b="$(board_resolve_name "$1")" || return 1; set -- "$_b" "${@:2}"
-  if _board_is_issues_only "$1"; then
-    _board_issues_item_list "$1"
-    return $?
-  fi
-  _board_item_list_argv "$1"
-  # Key the cache slot on the effective query: a non-default query reads a DIFFERENT
-  # dataset, so it must NOT share the default slot (else the escape hatch would serve
-  # the active-set page to a full-board reader, or vice versa, within the TTL). The
-  # default query keeps the unchanged `items` slot; anything else gets its own.
-  local kind=items
-  [ "$_BOARD_IL_QUERY" = "-status:Done" ] || \
-    kind="items-$(printf '%s' "$_BOARD_IL_QUERY" | tr -cs 'a-zA-Z0-9' '-')"
-  # Capture first so _board_cached_read's fail-loud non-zero (GH #93: empty /
-  # rate-limited read) propagates, THEN drop PR cards (#223). The on-disk cache
-  # holds the RAW gh response (may include PR cards); every reader filters here,
-  # so the cache stays generic — the asymmetry is inert (a valid {"items":[]}
-  # still passes the jq filter unchanged, exit 0, same as before).
-  local raw
-  raw="$(_board_cached_read "$1" "$kind" "${_BOARD_IL_ARGV[@]}")" || return 1
-  printf '%s' "$raw" | _board_sanitize_control_chars | _board_drop_pr_cards
+  # Propagates board_backend's non-zero refusal for a stale `backend=projects`
+  # conf line (ADR 0004) rather than resolving it silently.
+  _board_is_issues_only "$1" || return 1
+  _board_issues_item_list "$1"
+  return $?
 }
-
-# Resolve a single-select field's id by NAME from the cached field-list.
-#   board_field_id <field-name>  ->  field id (empty if absent)
-board_field_id() {
-  printf '%s' "$BOARD_FIELDS_JSON" |
-    jq -r --arg n "$1" '.fields[] | select(.name==$n) | .id'
-}
-
-# Resolve a single-select OPTION id by (field-name, option-name) from cache.
-#   board_option_id <field-name> <option-name>  ->  option id (empty if absent)
-board_option_id() {
-  printf '%s' "$BOARD_FIELDS_JSON" |
-    jq -r --arg f "$1" --arg o "$2" \
-      '.fields[] | select(.name==$f) | .options[] | select(.name==$o) | .id'
-}
-
 # Resolve the board item id for an issue number from the cached item-list.
 #   board_item_id <issue#>  ->  item id (empty if the issue is not on the board)
 board_item_id() {
@@ -1307,17 +1086,34 @@ board_item_title() {
     jq -r --argjson n "$1" '.items[] | select(.content.number == $n) | .content.title // ""'
 }
 
-# Resolve an item's release-phase milestone TITLE from the cached item-list.
+# Resolve an item's release-phase milestone TITLE from the resolved item-list.
 # The release-phase axis rides GitHub's built-in, read-only `Milestone` field
-# (foundation #97): a system field that can't be renamed/deleted, surfaced by
-# `gh project item-list` as `.milestone = {title, description, dueOn}` on the
-# Projects-v2 path, and — since temperloop#154 — carried as `.milestone = {title}`
-# by the issues-only reshape (issue_item) too. Backend-agnostic on the read side:
-# this bare `.milestone.title // ""` works on both. WRITES go through
+# (foundation #97): a system field that can't be renamed/deleted, carried as
+# `.milestone = {title}` by the issues-only reshape (issue_item) since
+# temperloop#154. WRITES go through
 # board_set_milestone (repo-level `gh issue edit`, since the board mirror is
 # read-only).
 #   board_item_milestone <issue#>  ->  milestone title (empty if none)
+#
+# Arg guard (temperloop#594): this accessor takes a SINGLE issue-number arg — no
+# leading board arg, unlike the accessor-family siblings board_blocked_by_open /
+# board_set_status that take/guard one. Called with the guessable leading-board-arg
+# shape `board_item_milestone 7 592`, jq would select issue #7 (the board number)
+# and silently return empty — reading as "unmilestoned" and masking real milestones
+# (in a live /triage run this hid 8 milestoned Backlog items). So reject any call
+# that isn't exactly one all-digits issue number, LOUD on stderr + non-zero, like
+# board_set_status's item-id guard — the misuse surfaces even when a caller swallows
+# the exit code.
 board_item_milestone() {
+  if [ "$#" -ne 1 ]; then
+    echo "board: board_item_milestone takes exactly ONE issue# arg — no leading board arg (got $# arg(s): '$*'); it reads .milestone.title for a single issue" >&2
+    return 1
+  fi
+  case "$1" in
+    '' | *[!0-9]*)
+      echo "board: board_item_milestone needs a numeric issue# (got '$1')" >&2
+      return 1 ;;
+  esac
   printf '%s' "$BOARD_ITEMS_JSON" |
     jq -r --argjson n "$1" '.items[] | select(.content.number == $n) | .milestone.title // ""'
 }
@@ -1341,6 +1137,75 @@ board_blocked_by_open() {
     jq -r '.[] | select(.state=="open") | .number'
 }
 
+# Resolve an issue NUMBER to its REST **database id** (`.id`) — the integer the
+# dependencies WRITE API keys blockers by (distinct from `.number` and the
+# GraphQL `.node_id`). Internal helper for the blocked_by writers below; goes
+# through the `_board_gh` seam so those writers stay replay-testable. Empty
+# output + non-zero when the issue can't be resolved.
+#   _board_issue_db_id <repo> <issue#>  ->  numeric database id, or empty
+_board_issue_db_id() {
+  local repo="${1:-}" issue="${2:-}" id
+  id="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null |
+    _board_sanitize_control_chars |
+    jq -r '.id // empty')"
+  [ -n "$id" ] || return 1
+  printf '%s' "$id"
+}
+
+# Add a native GitHub `blocked_by` dependency edge — make <issue#> blocked by
+# <blocker#>. The WRITE counterpart to board_blocked_by_open (foundation#1221):
+# the adapter had the reader but no writer, so a dependency-edge write had to
+# bypass the adapter via raw REST, against the "all board reads/writes go through
+# the adapter" rule. Like the reader this is per-issue REST, ALWAYS LIVE (REST's
+# 5,000/hr bucket, not the GraphQL board budget) — and there is NO board cache to
+# bust, since board_blocked_by_open reads the same live endpoint, so a written
+# edge is visible on the very next read. The dependencies WRITE API keys the
+# blocker by its **database id**, not its number (foundation#1221 verified: the
+# issue object exposes `.id` ≠ `.number`), so we resolve <blocker#> → its id
+# first, then POST. Both calls go through `_board_gh` so the writer is
+# replay-testable like its reader sibling. Adding an edge that ALREADY exists is
+# the API's 422 (surfaced as a non-zero return), NOT a silent success — a caller
+# wanting idempotency gates on board_blocked_by_open first.
+#   board_blocked_by_add <board> <issue#> <blocker#>  ->  exit 0 on success
+board_blocked_by_add() {
+  local board="${1:-}" issue="${2:-}" blocker="${3:-}" repo blocker_id
+  if [ "$#" -ne 3 ]; then
+    echo "board: board_blocked_by_add takes <board> <issue#> <blocker#> (got $#: '$*')" >&2
+    return 1
+  fi
+  case "$issue" in '' | *[!0-9]*) echo "board: board_blocked_by_add needs a numeric <issue#> (got '$issue')" >&2; return 1 ;; esac
+  case "$blocker" in '' | *[!0-9]*) echo "board: board_blocked_by_add needs a numeric <blocker#> (got '$blocker')" >&2; return 1 ;; esac
+  repo="$(board_repo "$board")" || return 1
+  if ! blocker_id="$(_board_issue_db_id "$repo" "$blocker")"; then
+    echo "board: board_blocked_by_add could not resolve the database id of blocker #$blocker in $repo" >&2
+    return 1
+  fi
+  _board_gh api --method POST "repos/$repo/issues/$issue/dependencies/blocked_by" \
+    -F "issue_id=$blocker_id" >/dev/null
+}
+
+# Remove a native `blocked_by` dependency edge — the DELETE counterpart to
+# board_blocked_by_add (foundation#1221), so the writer contract is whole. Same
+# database-id keying (the DELETE path ends in the blocker's `.id`, not its
+# number). Removing an edge that ISN'T present is the API's 404 (non-zero), not a
+# silent success. Same always-live REST / no-cache posture as _add.
+#   board_blocked_by_remove <board> <issue#> <blocker#>  ->  exit 0 on success
+board_blocked_by_remove() {
+  local board="${1:-}" issue="${2:-}" blocker="${3:-}" repo blocker_id
+  if [ "$#" -ne 3 ]; then
+    echo "board: board_blocked_by_remove takes <board> <issue#> <blocker#> (got $#: '$*')" >&2
+    return 1
+  fi
+  case "$issue" in '' | *[!0-9]*) echo "board: board_blocked_by_remove needs a numeric <issue#> (got '$issue')" >&2; return 1 ;; esac
+  case "$blocker" in '' | *[!0-9]*) echo "board: board_blocked_by_remove needs a numeric <blocker#> (got '$blocker')" >&2; return 1 ;; esac
+  repo="$(board_repo "$board")" || return 1
+  if ! blocker_id="$(_board_issue_db_id "$repo" "$blocker")"; then
+    echo "board: board_blocked_by_remove could not resolve the database id of blocker #$blocker in $repo" >&2
+    return 1
+  fi
+  _board_gh api --method DELETE "repos/$repo/issues/$issue/dependencies/blocked_by/$blocker_id" >/dev/null
+}
+
 # Print the parent EPIC's issue number for a sub-issue, or empty for a singleton
 # (foundation #159). The REST issue object has NO `.parent` key — the parent link
 # is `.parent_issue_url` (e.g. ".../issues/145") and `.sub_issues_summary` is the
@@ -1354,40 +1219,27 @@ board_blocked_by_open() {
 # Empty output = no parent (a directly-workable singleton). Pipes to an external
 # `jq` (like its siblings) so the `_board_gh` seam stays replay-testable.
 #
-# --- cache-relationships item (F#988 Contract) -------------------------------
-# When `board.<N>.cache=on` AND the caller has separately sourced lib/cache.sh
-# (same enable axis + `declare -F cache_read` probe as _board_issues_item_list's
-# dispatch — see that function's PLANE MAP comment), this answers by INVERTING
-# cache.sh's snapshot instead of paying a live per-issue REST call: the bulk
-# snapshot row (`gh api repos/<r>/issues?state=all` shape, cache.sh's own
-# storage format) carries the parent link as a nested `.parent.number` object —
-# NOT the string `.parent_issue_url` the single-issue endpoint uses; these are
-# two different GitHub REST shapes for the same relationship, so the cached arm
-# reads `.parent.number` directly (no basename parsing needed) while the live
-# arm below is unchanged. `cache_read` itself is the staleness-aware entrypoint
-# (CACHE-STORE.md's degradation contract): warm-and-fresh serves straight off
-# disk with ZERO gh calls; miss/stale pays exactly the ONE live refresh
-# `cache_read` already does internally (this function does not layer a second
-# live fallback on top of that — same convention as _board_issues_item_list).
-# If the axis is on but cache.sh isn't in scope, one stderr notice and fall
-# through to the always-live per-issue call, unchanged. board_blocked_by_open
-# (above) deliberately has NO cached arm — native issue *dependencies* are a
-# different relationship this item's scope excludes.
+# --- relationship reads are LIVE-ONLY (temperloop#1163) ----------------------
+# The cache-relationships arm temperloop#1030 added here was REMOVED. It rested
+# on a premise this comment previously asserted as fact — that the bulk
+# issues-list row "carries the parent link as a nested `.parent.number`" — which
+# is false, and was false when it was written. The bulk list carries
+# `sub_issues_summary` (counts only); `parent_issue_url` comes from the
+# single-issue endpoint. So the cached arm read a key that was never present and
+# returned empty for every issue, silently. See the block comment above
+# board_sub_issues for the measurement, the blast radius (board-mirror.sh's
+# epic-close cascade reading a 0 open-child count as "fully drained"), and the
+# zero-API-cost path back to caching these reads (temperloop#1165).
+#
+# board_blocked_by_open (above) is likewise live-only — native issue
+# *dependencies* are a different relationship, deliberately never cached.
 #   board_parent_issue <board> <issue#>  ->  parent epic number, or empty
 board_parent_issue() {
-  local board="$1" issue="$2" repo url raw parent
+  local board="$1" issue="$2" repo url
   repo="$(board_repo "$board")" || return 1
-  if _board_cache_store_enabled "$board"; then
-    if declare -F cache_read >/dev/null 2>&1; then
-      raw="$(cache_read "$repo")" || return 1
-      parent="$(printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" '
-        .[] | select(.number == $n) | (.parent.number // empty)
-      ')"
-      [ -n "$parent" ] && printf '%s\n' "$parent"
-      return 0
-    fi
-    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
-  fi
+  # NO CACHED ARM — removed in temperloop#1163. See the block comment above
+  # board_sub_issues for the full finding; in short, the snapshot has no
+  # `.parent` field to read, so the cached arm returned empty for every issue.
   url="$(_board_gh api "repos/$repo/issues/$issue" 2>/dev/null |
     _board_sanitize_control_chars |
     jq -r '.parent_issue_url // empty')"
@@ -1401,9 +1253,7 @@ board_parent_issue() {
 # endpoint (foundation #800, claim/edges split). Works on a PLAIN issue with
 # no Projects board provisioned — same per-issue REST shape as
 # board_parent_issue / board_blocked_by_open (ALWAYS LIVE, REST's own
-# 5,000/hr bucket, never the Projects-v2 GraphQL budget), so this is
-# backend-agnostic for free: identical behavior whether <board> is
-# Projects-v2-backed or issues-only. Callers MUST gate on candidate items
+# 5,000/hr bucket). Callers MUST gate on candidate items
 # only, never the whole board (same caveat as its siblings). Pipes to an
 # external `jq` so the `_board_gh` seam stays replay-testable.
 #
@@ -1416,23 +1266,58 @@ board_parent_issue() {
 # see CACHE-STORE.md) means a closed child is preserved here exactly as the live
 # `/sub_issues` endpoint already includes closed children — no behavior change,
 # just a cheaper read when warm.
-#   board_sub_issues <board> <issue#>  ->  child issue numbers, one per line
+# OPTIONAL STATE FILTER (temperloop#1119). The third arg narrows the result to
+# children in one state; it DEFAULTS to `all`, so every pre-existing two-arg
+# call is byte-identical to before. It exists because the epic-close count
+# ("how many children are still open?") is a relationship read like any other,
+# and without a state filter its only options were the raw REST endpoint —
+# which bypasses this cached arm entirely — or a per-child state lookup, which
+# is N extra calls to answer what one snapshot pass already knows. Both arms
+# filter, so cached and live stay byte-parity under every state value.
+#   board_sub_issues <board> <issue#> [all|open|closed]  ->  numbers, one per line
 board_sub_issues() {
-  local board="$1" issue="$2" repo raw
+  local board="$1" issue="$2" state="${3:-all}" repo raw
+  case "$state" in
+    all | open | closed) ;;
+    *) echo "board_sub_issues: state must be all|open|closed (got '$state')" >&2; return 2 ;;
+  esac
   repo="$(board_repo "$board")" || return 1
-  if _board_cache_store_enabled "$board"; then
-    if declare -F cache_read >/dev/null 2>&1; then
-      raw="$(cache_read "$repo")" || return 1
-      printf '%s' "$raw" | _board_sanitize_control_chars | jq -s -r --argjson n "$issue" '
-        .[] | select((.parent.number // empty) == $n) | .number
-      '
-      return $?
-    fi
-    echo "board: cache enabled for board $board (board.$board.cache=on) but lib/cache.sh is not sourced in this process — falling back to a live (uncached) read" >&2
-  fi
+  # NO CACHED ARM — removed in temperloop#1163, because it was answering from a
+  # field the store does not contain and so returned EMPTY for every issue.
+  #
+  # THE DEFECT. temperloop#1030 added a cached arm here on the premise (stated
+  # in this file's own prior comment, and in temperloop#1023's acceptance as
+  # "verified live 2026-07-05") that the bulk issues-list payload carries the
+  # parent link as a nested `.parent.number`. It does not, and measurement says
+  # it did not: 0 of 911 rows in foundation's snapshot and 0 of 611 in
+  # temperloop's carry any `.parent` key. The bulk list carries
+  # `sub_issues_summary` (counts) — the *single-issue* endpoint is what carries
+  # the linkage, as `parent_issue_url`.
+  #
+  # WHY IT MATTERED. The failure was silent and directional: `board_sub_issues
+  # <b> <epic> open | wc -l` returned 0 for every epic, and
+  # build/board-mirror.sh treats a 0 open-child count as "epic fully drained"
+  # and CLOSES the epic. Verified on a real open epic: temperloop#524 live=1
+  # open child, cached=0. Once board-mirror.sh began sourcing cache.sh
+  # (temperloop#1118) and the enable axis was switched on, that path was armed
+  # to close epics with open children.
+  #
+  # WHY LIVE-ONLY RATHER THAN A FIXED CACHED ARM. The linkage is genuinely
+  # absent from the snapshot, so there is nothing here to read correctly — and a
+  # relationship read backs an irreversible action (closing an epic), which is
+  # the wrong place to trade correctness for latency. `board_blocked_by_open`
+  # is already live-only for the same reason.
+  #
+  # THIS IS RECOVERABLE, AND CHEAPLY (temperloop#1165). cache_refresh_details
+  # ALREADY issues one single-issue API call per issue — the exact call whose
+  # response carries `parent_issue_url` — and discards the field when it
+  # projects to {body, comments, number, schema_version, updatedAt}. Persisting
+  # it there costs ZERO additional API calls and makes the parent graph fully
+  # derivable on disk, at which point these reads can be served locally and
+  # indexed. Until that lands, live is the only correct answer.
   _board_gh api "repos/$repo/issues/$issue/sub_issues" 2>/dev/null |
     _board_sanitize_control_chars |
-    jq -r '.[].number'
+    jq -r --arg st "$state" '.[] | select($st == "all" or (.state // "open") == $st) | .number'
   return 0
 }
 
@@ -1446,41 +1331,31 @@ board_sub_issues() {
 # swallowed. Resolve an item-id first with board_resolve_item / board_item_id.
 _board_assert_item_id() {
   case "$1" in
-    PVTI_* | ISSUE_*) return 0 ;;
+    ISSUE_*) return 0 ;;
+    PVTI_*)
+      echo "board: ${2:-this op} was given a PVTI_* Projects-v2 item-id ('$1'), but the Projects-v2 arm was REMOVED (ADR 0004) — item ids are ISSUE_<issue#> now; re-resolve with board_resolve_item/board_item_id" >&2
+      return 1 ;;
     *)
-      echo "board: ${2:-this op} needs a PVTI_* (Projects-v2) or ISSUE_* (issues-only) item-id as arg1 (got '$1') — resolve it first with board_resolve_item/board_item_id; a board number or issue# silently no-ops" >&2
+      echo "board: ${2:-this op} needs an ISSUE_* item-id as arg1 (got '$1') — resolve it first with board_resolve_item/board_item_id; a board number or issue# silently no-ops" >&2
       return 1 ;;
   esac
 }
 
 # Set the worklist single-select on an item to a named option.
 #   board_set_status <item-id> <option-name> [field-name]
-#     e.g. board_set_status PVTI_x "In Progress"            # default Status field
-#          board_set_status PVTI_x "Backlog" "Some Field"   # explicit field override
+#     e.g. board_set_status ISSUE_42 "In Progress"            # default Status field
+#          board_set_status ISSUE_42 "Backlog" "Some Field"   # explicit field override
 # field-name defaults to BOARD_FIELD_STATUS (the built-in Status field every board
 # governs on). The override arg remains for callers that target another
-# single-select. Resolves the field id and the option id by name from cache, then
-# issues the item-edit. Returns non-zero without editing if arg1 is not a PVTI_*
-# item-id (foundation #128) or if either the field or option is missing.
+# single-select-shaped field (Component). Delegates to the `fnd:` label writer,
+# which emulates a single-select: at most one `fnd:<field>:*` label at a time.
+# Returns non-zero without editing if arg1 is not an ISSUE_* item-id
+# (foundation #128).
 board_set_status() {
-  local item_id="$1" opt_name="$2" field_name="${3:-$BOARD_FIELD_STATUS}" status_field opt_id
+  local item_id="$1" opt_name="$2" field_name="${3:-$BOARD_FIELD_STATUS}"
   _board_assert_item_id "$item_id" board_set_status || return 1
-  case "$item_id" in
-    ISSUE_*)
-      _board_issues_set_field "$item_id" "$field_name" "$opt_name"
-      return $? ;;
-  esac
-  status_field="$(board_field_id "$field_name")"
-  opt_id="$(board_option_id "$field_name" "$opt_name")"
-  if [ -z "$status_field" ] || [ -z "$opt_id" ]; then
-    return 1
-  fi
-  _board_gh project item-edit --id "$item_id" --project-id "$BOARD_PROJECT_ID" \
-    --field-id "$status_field" --single-select-option-id "$opt_id" >/dev/null || return 1
-  # Patch the one mutated field into the warm items page instead of busting it: a
-  # single-select stores the option NAME under the flattened field key (GH #157).
-  _board_cache_patch_field "$BOARD_CURRENT" "$item_id" "$field_name" \
-    "$(printf '%s' "$opt_name" | jq -Rs .)"
+  _board_issues_set_field "$item_id" "$field_name" "$opt_name"
+  return $?
 }
 
 # Set the board-native Component single-select on an item to a named option.
@@ -1495,52 +1370,25 @@ board_set_component() {
 
 # Stamp a free-text field on an item.
 #   board_stamp <item-id> <field-name> <text>   (e.g. "Host/Session" "host:abc")
-# Returns non-zero without editing if the field name does not resolve.
-# An EMPTY <text> CLEARS the field: `gh project item-edit --text ''` errors with
-# "no changes to make" (so a bare empty stamp was a silent no-op — foundation
-# #259), so route the clear through `--clear` and null the cached key instead.
-# This is what makes the build Step 5 epic park-back stamp-clear actually clear.
-#
-# ISSUE_* items (issues-only backend, foundation #800) route to
-# _board_issues_stamp_field instead — a `fnd:<field-slug>:<verbatim-text>`
-# label, single-value-per-prefix, empty text clears (same shape as the
-# Projects-v2 --clear semantics above, no ISSUES-ONLY-BACKEND.md vocabulary
-# change needed). This was the ONE function split #799 deliberately left
-# failing loud ("out of scope for this split"); it is now implemented.
+# Delegates to _board_issues_stamp_field — a `fnd:<field-slug>:<verbatim-text>`
+# label, single-value-per-prefix. UNLIKE status/component the value is stored
+# VERBATIM (no slugging), because slugging lowercases and would corrupt a
+# mixed-case hostname. An EMPTY <text> CLEARS the field (strips the label, adds
+# nothing) — this is what makes build Step 5's epic park-back stamp-clear
+# actually clear. Returns non-zero without editing if arg1 is not an ISSUE_*
+# item-id.
 board_stamp() {
-  local item_id="$1" field_name="$2" text="$3" field_id
+  local item_id="$1" field_name="$2" text="$3"
   _board_assert_item_id "$item_id" board_stamp || return 1
-  case "$item_id" in
-    ISSUE_*)
-      _board_issues_stamp_field "$item_id" "$field_name" "$text"
-      return $? ;;
-  esac
-  field_id="$(board_field_id "$field_name")"
-  if [ -z "$field_id" ]; then
-    return 1
-  fi
-  if [ -z "$text" ]; then
-    _board_gh project item-edit --id "$item_id" --project-id "$BOARD_PROJECT_ID" \
-      --field-id "$field_id" --clear >/dev/null || return 1
-    # Null the flattened field key in the warm page (matches a cleared field's
-    # absence on the next live read), rather than busting the items cache.
-    _board_cache_patch_field "$BOARD_CURRENT" "$item_id" "$field_name" "null"
-    return 0
-  fi
-  _board_gh project item-edit --id "$item_id" --project-id "$BOARD_PROJECT_ID" \
-    --field-id "$field_id" --text "$text" >/dev/null || return 1
-  # Patch the new text under the flattened field key (Host/Session->host/Session)
-  # rather than busting the warm items page (GH #157).
-  _board_cache_patch_field "$BOARD_CURRENT" "$item_id" "$field_name" \
-    "$(printf '%s' "$text" | jq -Rs .)"
+  _board_issues_stamp_field "$item_id" "$field_name" "$text"
+  return $?
 }
 
 # Assign an issue's release-phase milestone (foundation #97). The board's
 # `Milestone` column is GitHub's read-only mirror of the issue's native milestone,
 # so this writes at the REPO level (`gh issue edit … --milestone`) rather than via
 # a board item-edit — keyed by issue NUMBER, not item id. Routes through the
-# `_board_gh` seam (testable) and busts the board's item cache so the mirrored
-# value re-reads fresh. The milestone must already exist in the repo (create it
+# `_board_gh` seam (testable). The milestone must already exist in the repo (create it
 # once with `gh api repos/<owner>/<repo>/milestones`). Returns non-zero (no edit)
 # if the board number is unknown.
 #   board_set_milestone <board#> <issue#> <milestone-title>
@@ -1548,7 +1396,6 @@ board_set_milestone() {
   local board="$1" issue="$2" title="$3" repo
   repo="$(board_repo "$board")" || return 1
   _board_gh issue edit "$issue" -R "$repo" --milestone "$title" >/dev/null || return 1
-  _board_cache_bust "$board"
 }
 
 # Print the titles of the OPEN milestones marked "triage:active", one per line
@@ -1557,8 +1404,7 @@ board_set_milestone() {
 # inactive (no marker). The marker is MACHINE-OWNED — never hand-edited; written
 # only via board_set_milestone_description (which the milestone.sh CLI verbs call
 # in a later item). Milestones are read over REST (repos/<owner>/<repo>/milestones)
-# NOT Projects-v2 GraphQL, keeping this off the scarce 5,000-pt/hr GraphQL budget
-# (REST has its own separate 5,000/hr bucket). Routed through the `_board_gh` seam
+# over REST (REST's own 5,000/hr bucket). Routed through the `_board_gh` seam
 # so the fixture-replay harness can stub it; pipes to an external `jq` like
 # board_blocked_by_open / board_parent_issue so the seam stays replay-testable.
 # Returns non-zero (no output) on an unknown board OR on an actual milestone-fetch
@@ -1585,8 +1431,8 @@ board_active_milestones() {
 # pair (board_active_milestones reads it): the milestone.sh CLI verbs call this to
 # stamp/clear the machine-owned `<!-- triage:active -->` marker. Like its read
 # sibling it goes over REST — a GET to resolve the title->number (and read the
-# current description), then a PATCH of repos/<owner>/<repo>/milestones/<number> —
-# NOT Projects-v2 GraphQL, so it never touches the GraphQL budget. Both calls route
+# current description), then a PATCH of repos/<owner>/<repo>/milestones/<number>.
+# Both calls route
 # through the `_board_gh` seam (stubbable). IDEMPOTENT: if the milestone's current
 # description already equals the target, it skips the PATCH (no-op, returns 0 — do
 # not double-write). Fails loudly (non-zero, clear stderr) on an unknown board or
@@ -1624,133 +1470,78 @@ board_set_milestone_description() {
 #   board_set_number <item-id> <field-name> <value>   (e.g. "Seq" 3)
 # Resolves the field id by name from cache, then issues the --number item-edit.
 # Returns non-zero without editing if the field name does not resolve.
+#
+# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0006), not emulated —
+# an ISSUE_* item-id has no Projects-v2 field schema to resolve a number field
+# against, and no `fnd:seq:<n>` label encoding was introduced to fake one (that
+# would mint an unbounded numeric label namespace, recreating the label sprawl
+# the issues-only migration removes). Work ordering on this backend lives where
+# it already effectively lived: epic dependency levels (computed from plan
+# notes) and milestones. So an ISSUE_* item-id fails LOUD here with a message
+# naming the retirement and its replacement signal, instead of falling through
+# to the generic "field id doesn't resolve" silent return 1 below.
 board_set_number() {
-  local item_id="$1" field_name="$2" value="$3" field_id
+  local item_id="$1"
   _board_assert_item_id "$item_id" board_set_number || return 1
-  field_id="$(board_field_id "$field_name")"
-  if [ -z "$field_id" ]; then
-    return 1
-  fi
-  _board_gh project item-edit --id "$item_id" --project-id "$BOARD_PROJECT_ID" \
-    --field-id "$field_id" --number "$value" >/dev/null || return 1
-  # Patch the new number under the flattened field key (Seq->seq) rather than
-  # busting the warm items page (GH #157). Normalize via jq so the cache stores a
-  # JSON number (matching gh item-list's shape); a non-numeric value can't reach
-  # here (the item-edit --number above would have failed first), but if jq still
-  # rejects it, _board_cache_patch_field falls back to the safe whole-page bust.
-  local json_value
-  json_value="$(jq -n --arg v "$value" '$v | tonumber' 2>/dev/null)" || json_value=""
-  if [ -n "$json_value" ]; then
-    _board_cache_patch_field "$BOARD_CURRENT" "$item_id" "$field_name" "$json_value"
-  else
-    _board_cache_bust
-  fi
+  echo "board: board_set_number — Seq is retired by design on the issues-only backend — ordering lives in epic dependency levels and milestones (ADR 0006)" >&2
+  return 1
 }
-
-# Add an existing issue URL to a board (does NOT set Status; caller follows
-# with board_resolve + board_set_status to land it in Backlog).
-#   board_add_to_board <board#> <issue-url>
-board_add_to_board() {
-  _board_gh project item-add "$(board_project_number "$1")" --owner "$(board_owner "$1")" --url "$2" >/dev/null || return 1
-  _board_cache_bust "$1"
-}
-
-# Add many already-created issues to a board and land each in Backlog, paying a
-# SINGLE board_resolve for the WHOLE batch instead of one resolve per item.
+# Land many already-created issues in Backlog.
 #
-# This is the BURST path for /triage and /build, which create N issues/epics
-# at once. Calling board_create_on_board in a loop re-resolved the whole board
-# (project view + field-list + the item-list active-set page, plus up to 3 more
-# item-list fetches in the index-retry) on EVERY item — O(N) full re-lists of an
-# expensive paginated Projects-v2 GraphQL query, which drained the 5,000-pt/hr
-# budget mid-run (GH #40). Here the whole batch costs ONE board_resolve plus a
-# bounded index-retry whose re-list is SHARED across all still-missing items, so
-# the GraphQL cost is independent of N.
+# This is the BURST path for /triage and /build, which create N issues/epics at
+# once. On the issues-only backend "landing an item" is just labeling it Backlog
+# — a synchronous REST write per issue, with no board to item-add to and so no
+# index-lag retry to absorb (the Projects-v2 async-indexing retry loop, and its
+# GraphQL budget guard, died with that arm — ADR 0004). The issues themselves
+# already exist (`gh issue create` is the caller's job, repo-level, not board
+# state).
 #
-# The issues already exist (gh issue create is repo-level, not board state, so it
-# stays in the caller). Projects-v2 indexes a newly-added item asynchronously:
-# the item-list inside the first board_resolve often does NOT yet contain a
-# just-added item (GH #386), so after adding all URLs we resolve once and then,
-# while ANY item is still missing, re-fetch the item-list (a single shared
-# active-set page per attempt, never per item) a few times. The client-side
-# Backlog set is the load-bearing no-untracked-item guarantee (GH #387) — board 3
-# has a server-side 'Item added -> Backlog' workflow, but not every board does.
-# An item that never indexes WARNs on stderr (no silent unstatused add); the
-# batch still returns 0 so a caller's success line still prints.
+# RETURN CONTRACT (foundation #1226 — supersedes the old "always returns 0"
+# behavior, which let a genuinely-dropped item print as a success one line
+# later in every caller). An item that fails to label WARNs on stderr AND is
+# counted as a failure — a single exit code can't distinguish "everything
+# failed" from "one straggler in a big batch failed", so:
+#   - every item landed  -> return 0, BOARD_UNLANDED_ISSUES=""
+#   - SOME items failed  -> return 1 (partial), BOARD_UNLANDED_ISSUES=
+#                           "<space-separated un-landed issue numbers>"
+#   - ALL items failed   -> return 2 (total),   BOARD_UNLANDED_ISSUES=
+#                           "<space-separated un-landed issue numbers>"
+# A caller that only checks `|| die`/`|| true` still gets truthful pass/fail;
+# a caller that wants the specifics reads BOARD_UNLANDED_ISSUES right after
+# the call (before any other board.sh call touches it).
 #   board_create_many <board#> <url1> <num1> [<url2> <num2> ...]
 board_create_many() {
   local board="$1"; shift
-  if _board_is_issues_only "$board"; then
-    _board_issues_create_many "$board" "$@"
-    return $?
-  fi
-  local url num attempt item_id missing max_attempts
-  local nums=()
-  # Index-lag retry budget. Projects-v2 can take longer than a few seconds to
-  # index a just-added item; too small a budget leaves laggards unstatused (the
-  # observed 2026-06-21 friction: 3 of 8 new items unstatused because the old
-  # 3-attempt / ~6s window elapsed before GitHub indexed them). Default 5 with a
-  # graduated backoff (~2+3+4+5 = 14s worst case). Overridable for tuning/tests.
-  max_attempts="${BOARD_CREATE_INDEX_RETRIES:-5}"
-  # 1) item-add every URL (each a cheap single-node mutation).
-  while [ "$#" -ge 2 ]; do
-    url="$1"; num="$2"; shift 2
-    board_add_to_board "$board" "$url"
-    nums+=("$num")
-  done
-  [ "${#nums[@]}" -gt 0 ] || return 0
-  # 2) ONE resolve, then a bounded retry that re-lists ONCE per attempt for the
-  #    whole batch (not per item) until every added item indexes.
-  board_resolve "$board"
-  for attempt in $(seq 1 "$max_attempts"); do
-    missing=0
-    for num in "${nums[@]}"; do
-      if [ -z "$(board_item_id "$num")" ]; then missing=1; fi
-    done
-    if [ "$missing" -eq 0 ]; then break; fi
-    # Graduated backoff: give GitHub progressively more time to index laggards.
-    sleep "$((attempt + 1))"
-    # Read FRESH: a cached page would hide the just-added items we're waiting on.
-    BOARD_ITEMS_JSON="$(_board_item_list_fresh "$board")"
-  done
-  # 3) set Backlog on each item that resolved; warn (don't fail) on the rest.
-  for num in "${nums[@]}"; do
-    item_id="$(board_item_id "$num")"
-    if [ -n "$item_id" ]; then
-      # Every board governs on the built-in Status field (board_set_status default).
-      board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || true
-    else
-      echo "warning: #$num added to board $board but its item id did not resolve" \
-           "in time to set Backlog; it may be unstatused on the board" >&2
-    fi
-  done
+  # Propagates board_backend's non-zero refusal for a stale `backend=projects`
+  # conf line (ADR 0004) rather than resolving it silently.
+  _board_is_issues_only "$board" || return 2
+  _board_issues_create_many "$board" "$@"
+  return $?
 }
 
 # Single-item convenience wrapper over board_create_many (the capture.sh flow:
-# one issue already created repo-side; item-add it and land it in Backlog). For a
-# burst of items prefer board_create_many directly — it resolves the board once
-# for the whole batch instead of once per item (GH #40).
+# one issue already created repo-side; label it Backlog). Return code and
+# BOARD_UNLANDED_ISSUES pass straight through from board_create_many — with a
+# single item, "partial" (1) never happens, only 0 (landed) or 2 (didn't).
 #   board_create_on_board <board#> <issue-url> <issue#>
 board_create_on_board() {
   board_create_many "$1" "$2" "$3"
 }
 
-# --- auto-add-aware single-item placement (GH #53) ------------------------
-# When the board's built-in "Auto-add to project" workflow is ON, a freshly
-# created issue lands on the board on its own — so the explicit item-add +
-# whole-board resolve board_create_on_board does is redundant, and that resolve
-# is exactly the Projects-v2 GraphQL cost GH #53 is about.
+# --- single-item placement -------------------------------------------------
+# Place a just-created issue: resolve the ONE issue, then ensure it is in Backlog
+# if it isn't already statused. On the issues-only backend the issue always
+# resolves on the first attempt (there is no asynchronous board indexing to wait
+# on), so the retry loop below is vestigial belt-and-braces rather than the
+# Projects-v2 auto-add poll it originally was; it is kept because its fallback to
+# board_create_on_board is what guarantees a Backlog label even if the resolve
+# itself transiently fails.
 #
-# This places a just-created issue the CHEAP way: poll the single-item resolve
-# (board_resolve_item — no whole-board item-list) a few times for auto-add to
-# index it; once it appears, ensure it's in Backlog (covers a board whose
-# auto-add adds membership but does NOT set Status); and only if it NEVER appears
-# fall back to the explicit board_create_on_board. So the expensive add becomes
-# the rare fallback, not the default — and the result is correct whether or not
-# auto-add (and an "Item added -> Backlog" workflow) is configured.
-#
-# NOTE: only a net win once auto-add is enabled on the board; with it OFF every
-# call burns the poll attempts before falling back. Enable auto-add first.
+# RETURN CONTRACT (foundation #1226): same shape as board_create_many, since
+# this is itself single-item — return 0 on a landed item, non-zero (2, by
+# board_create_many's total-failure convention — see its header comment) on
+# one that never landed, and BOARD_UNLANDED_ISSUES carries "<num>" on failure.
+# A caller MUST check this return, not assume the old always-0 behavior.
 #   board_capture_item <board#> <issue-url> <issue#>
 board_capture_item() {
   # NB: 'item_status', not 'status' — 'status' is zsh's read-only alias for $?,
@@ -1766,8 +1557,13 @@ board_capture_item() {
           jq -r --argjson n "$num" '.items[] | select(.content.number==$n) | .status // ""'
       )"
       # Auto-add placed it; land it in Backlog only if it isn't already statused.
-      [ -n "$item_status" ] || board_set_status "$item_id" "$BOARD_OPT_BACKLOG" || true
-      return 0
+      if [ -n "$item_status" ] || board_set_status "$item_id" "$BOARD_OPT_BACKLOG"; then
+        BOARD_UNLANDED_ISSUES=""
+        return 0
+      fi
+      BOARD_UNLANDED_ISSUES="$num"
+      echo "warning: #$num found on board $board but setting Backlog failed" >&2
+      return 2
     fi
     sleep 2
   done

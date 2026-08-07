@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# description: append one aggregate-only 90-day gh-history snapshot record to .foundation/baseline.jsonl
+# description: append one aggregate-only 90-day gh-history snapshot record to .temperloop/baseline.jsonl
 #
-# baseline-snapshot.sh — `foundation baseline-snapshot`: the 'BEFORE'
+# baseline-snapshot.sh — `temperloop baseline-snapshot`: the 'BEFORE'
 # picture for Epic E's value loop (foundation #766, epic #765-adjacent
 # "Epic E" value-proof work, item baseline-snapshot / #766). A later item's
 # "report" reads this file and never calls `gh` itself — this script is the
@@ -10,8 +10,8 @@
 #
 # DISPATCH MODEL: this file is a DISCOVERED subcommand — its mere presence
 # at kernel/bin/subcommands/baseline-snapshot.sh next to the dispatcher's
-# other subcommand files IS `foundation baseline-snapshot`, executed in its
-# own process (see kernel/bin/foundation's header comment). This script
+# other subcommand files IS `temperloop baseline-snapshot`, executed in its
+# own process (see kernel/bin/temperloop's header comment). This script
 # also has a SECOND call site: kernel/bin/subcommands/init.sh Step 0 shells
 # out to it directly (`bash "$BASELINE_SNAPSHOT"`, cwd already set to the
 # target repo) as a soft seam — init.sh's own file-existence check on this
@@ -19,7 +19,7 @@
 # and adds no code for it. Both call sites use the SAME one-line contract:
 #
 #     invoked with NO ARGS, cwd = the target repo. Exit 0 = a record was
-#     appended to .foundation/baseline.jsonl. This is a SOFT SEAM: it is
+#     appended to .temperloop/baseline.jsonl. This is a SOFT SEAM: it is
 #     designed to never need a non-zero exit to signal "nothing to report"
 #     — an unresolvable repo, missing/unauthenticated gh, or a network
 #     failure all still produce a legible `metrics.available: false`
@@ -49,21 +49,21 @@
 # definition (see the contract doc's "Population definition" section) —
 # merged PRs / open issues as of THIS run's `gh` read, over a rolling
 # 90-day window ending "now". A later report reads every line in
-# .foundation/baseline.jsonl and never calls `gh` itself.
+# .temperloop/baseline.jsonl and never calls `gh` itself.
 #
-# GITIGNORE SELF-MANAGEMENT: `.foundation/baseline.jsonl` is generated,
+# GITIGNORE SELF-MANAGEMENT: `.temperloop/baseline.jsonl` is generated,
 # per-checkout runtime data — never meant to be committed. init.sh proposes
-# `.foundation/config` via a reviewable PR (proposal-pr.sh); this script has
+# `.temperloop/config` via a reviewable PR (proposal-pr.sh); this script has
 # no such PR machinery available to it (it must also work standalone, e.g.
 # invoked directly with no init.sh in the loop at all) and so is not
-# proposing anything — it just writes `.foundation/.gitignore` straight to
+# proposing anything — it just writes `.temperloop/.gitignore` straight to
 # disk, idempotently (never clobbers an existing entry, never duplicates
 # the line on a repeat run).
 #
 # Usage:
 #   baseline-snapshot.sh
 #
-#   No flags are read. Every knob below is an ENV VAR test seam only (never
+#   No flags are read. Every setting below is an ENV VAR test seam only (never
 #   set in production use, mirroring the INIT_GH_BIN / TRY_GH_BIN /
 #   REWORK_SNAPSHOT_NOW conventions already in this codebase):
 #     BASELINE_SNAPSHOT_GH_BIN      override the `gh` binary. Default: gh.
@@ -100,7 +100,7 @@ case "${1:-}" in
     cat <<'EOF'
 usage: baseline-snapshot.sh
 Appends one aggregate-only 90-day gh-history snapshot record to
-.foundation/baseline.jsonl in the current working directory's repo root.
+.temperloop/baseline.jsonl in the current working directory's repo root.
 Takes no arguments; see this file's header comment for env-var test seams.
 EOF
     exit 0
@@ -116,7 +116,7 @@ command -v git >/dev/null 2>&1 || { echo "baseline-snapshot.sh: git not found on
 command -v jq >/dev/null 2>&1 || { echo "baseline-snapshot.sh: jq not found on PATH" >&2; exit 1; }
 
 # Test-double seam (mirrors init.sh's INIT_GH_BIN / try.sh's TRY_GH_BIN /
-# funnel-drive.sh's FUNNEL_GH_BIN convention) — never overridden in
+# pipeline-drive.sh's PIPELINE_GH_BIN convention) — never overridden in
 # production use.
 : "${BASELINE_SNAPSHOT_GH_BIN:=gh}"
 GH_BIN="$BASELINE_SNAPSHOT_GH_BIN"
@@ -293,16 +293,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Write: .foundation/baseline.jsonl (append) + .foundation/.gitignore
+# Write: .temperloop/baseline.jsonl (append) + .temperloop/.gitignore
 # (self-managed, idempotent — never committed).
+#
+# temperloop#165: through the v0.15.0 -> v0.19.0 window an EXISTING legacy
+# .foundation/baseline.jsonl kept accreting IN PLACE, because the baseline is
+# one append-only before/after history and splitting it across two dirs
+# silently truncates every later report's "before" anchor (report.sh reads
+# exactly one file). That continue-in-place arm is GONE — but the legacy file
+# is still DETECTED and refused, for the same reason: writing a second
+# history to .temperloop/ while one already sits in .foundation/ is exactly
+# the silent split the arm existed to avoid. The operator moves the file (git
+# has never tracked it — plain mkdir -p .temperloop && mv
+# .foundation/baseline.jsonl .temperloop/).
 # ---------------------------------------------------------------------------
-foundation_dir="$repo_root/.foundation"
-if ! mkdir -p "$foundation_dir" 2>/dev/null; then
-  echo "baseline-snapshot.sh: could not create $foundation_dir" >&2
+tl_dir="$repo_root/.temperloop"
+if [ ! -f "$tl_dir/baseline.jsonl" ] && [ -f "$repo_root/.foundation/baseline.jsonl" ]; then
+  echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.19.0 (renamed .temperloop/ in v0.15.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
+  exit 1
+fi
+if ! mkdir -p "$tl_dir" 2>/dev/null; then
+  echo "baseline-snapshot.sh: could not create $tl_dir" >&2
   exit 1
 fi
 
-gitignore_path="$foundation_dir/.gitignore"
+gitignore_path="$tl_dir/.gitignore"
 if [ -f "$gitignore_path" ]; then
   if ! grep -Fxq "baseline.jsonl" "$gitignore_path" 2>/dev/null; then
     if ! printf '%s\n' "baseline.jsonl" >> "$gitignore_path"; then
@@ -317,7 +332,7 @@ else
   fi
 fi
 
-baseline_file="$foundation_dir/baseline.jsonl"
+baseline_file="$tl_dir/baseline.jsonl"
 if ! printf '%s\n' "$(jq -c '.' <<<"$record")" >> "$baseline_file"; then
   echo "baseline-snapshot.sh: could not append to $baseline_file" >&2
   exit 1

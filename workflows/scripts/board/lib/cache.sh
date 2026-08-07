@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 #
-# cache.sh — canonical-layer issue-cache store: a backend-agnostic read cache
-# hoisted ABOVE board.sh's Projects-v2/issues-only backend dispatch (F#988
-# Contract). One cache mechanism, keyed per-repo, serving either backend
-# alike, backed by the REST issues-list bucket (never GraphQL) — so it never
-# touches the Projects-v2 5,000-pt/hr budget board.sh's own cross-process
-# cache (BOARD_CACHE_TTL / _board_cached_read) protects. That existing cache
-# is a SEPARATE, narrower mechanism (in-memory item-state relief for a single
-# board resolve); this one is a durable, cross-session, two-layer on-disk
-# store of the full issue corpus (title/body/state/labels/parent linkage +
-# comments) a later corpus renderer or funnel driver can read without ever
-# hitting GitHub. See CACHE-STORE.md (sibling file) for the full on-disk
-# layout, schema, and design rationale.
+# cache.sh — canonical-layer issue-cache store: a read cache hoisted ABOVE
+# board.sh's backend dispatch (F#988 Contract). One cache mechanism, keyed
+# per-repo, backed by the REST issues-list bucket. It is a durable,
+# cross-session, two-layer on-disk store of the full issue corpus
+# (title/body/state/labels/parent linkage + comments) a later corpus renderer
+# or pipeline driver can read without ever hitting GitHub. See CACHE-STORE.md
+# (sibling file) for the full on-disk layout, schema, and design rationale.
+#
+# THE ONLY CACHE IN FRONT OF A BOARD READ. This file's header used to frame
+# itself against board.sh's OWN cross-process cache (BOARD_CACHE_TTL /
+# _board_cached_read) — a separate, narrower mechanism that existed to relieve
+# the Projects-v2 5,000-pt/hr GraphQL budget. That cache was REMOVED together
+# with the Projects-v2 arm it protected (ADR 0004, epic temperloop#524), so
+# there is no longer another board cache to contrast with: this store is it.
+# Nothing about THIS file's behavior changed with that removal — it never rode
+# GraphQL and never consulted board.sh's cache; only the framing above did.
 #
 # PLANE MAP (cache-read-dispatch item): this store serves the ISSUE PLANE —
-# the whole GitHub-Issues corpus for a repo. board.sh's OWN cache
-# (BOARD_CACHE_TTL / _board_cached_read, mentioned above) serves the separate
-# ITEM PLANE — Projects-v2 board-item field values — and is KEPT unchanged for
-# every Projects-v2-backed board; the two never overlap (see board.sh's
-# _board_issues_item_list header comment for the read-side half of this map).
+# the whole GitHub-Issues corpus for a repo — which, now that the Projects-v2
+# ITEM PLANE (board-item field values as GraphQL saw them) is gone, is the only
+# plane there is (see board.sh's _board_issues_item_list header comment for the
+# read-side half of this map).
 # board.sh dispatches into THIS store from its issues-only whole-board read
 # (_board_issues_item_list) when the caller has sourced cache.sh AND the
 # board's boards.conf sets the enable axis `board.<N>.cache=on` — that axis
@@ -50,7 +53,7 @@
 # (no directories created, no network) — every write happens lazily inside a
 # cache_refresh*/cache_read call.
 
-# --- tuning knobs: ENV VARS only (no boards.conf axis here — the per-board
+# --- tuning settings: ENV VARS only (no boards.conf axis here — the per-board
 # `board.<N>.cache` enable/disable axis lives in board.sh, which is the sole
 # reader of boards.conf; cache.sh stays boards.conf-agnostic, only ever
 # governed by env vars and by whichever caller decides to source+call it)
@@ -58,10 +61,10 @@
 # Store root. Defaults to the XDG cache dir; override wholesale for tests or
 # a non-standard layout.
 CACHE_STORE_ROOT="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
-# Max-stale window in seconds before a read triggers a refresh. Mirrors the
-# BOARD_CACHE_TTL "${VAR:-default}" idiom; deliberately its OWN var — this is
-# a different cache class (durable corpus store, not the GraphQL relief
-# cache) with a different, typically much longer, staleness budget.
+# Max-stale window in seconds before a read triggers a refresh. Deliberately
+# its OWN var — this is a durable corpus store, with a typically much longer
+# staleness budget than the short-TTL GraphQL-relief cache the Projects-v2 arm
+# used to carry (removed with that arm — ADR 0004).
 CACHE_STORE_TTL="${CACHE_STORE_TTL:-3600}"
 # On-disk schema version stamped into every meta.json / details/<n>.json this
 # lib writes (CACHE-STORE.md documents the shape each version implies). Bump
@@ -325,7 +328,21 @@ cache_read() {
   repo="$(_cache_resolve_repo "$arg")" || return 1
   snap="$(cache_snapshot_file "$arg")" || return 1
 
-  if [ -f "$snap" ] && ! cache_stale "$arg" && jq . "$snap" >/dev/null 2>&1; then
+  # The validity guard is deliberately O(1), not O(corpus) (temperloop#1163).
+  # This was `jq . "$snap"` — a full parse of a multi-MB file whose result was
+  # DISCARDED, on every read, before `cat` read the file a second time and the
+  # caller parsed it a third. Measured: snapshots are 3.7–5.1MB, and that single
+  # thrown-away parse was the largest component of a cached read.
+  #
+  # Checking the LAST line instead is the guard that matches the actual failure
+  # mode. _cache_persist_snapshot writes a temp file and `mv`s it into place, so
+  # a snapshot is either wholly absent or wholly written; partial content can
+  # only come from a truncated or interrupted write, which manifests at the END
+  # of the file. A mid-file corruption a full parse would have caught is not
+  # reachable through this store's own write path, and if one ever arises the
+  # consumer's own jq fails loudly rather than silently serving wrong data.
+  if [ -f "$snap" ] && [ -s "$snap" ] && ! cache_stale "$arg" &&
+    tail -n 1 "$snap" | jq -e . >/dev/null 2>&1; then
     cat "$snap"
     return 0
   fi

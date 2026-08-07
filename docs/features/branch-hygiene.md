@@ -86,21 +86,22 @@ human remembers to run it by hand.
 detection helper, so the squash/rebase-safe check used here is the same
 one the build worktree-cleanup path uses when deciding whether a
 work-item worktree is safe to remove — one detection implementation, two
-callers. `make prune-branches` at the repo root is the on-demand entry
-point for a human running the sweep manually; the session-start hook is
-the equivalent automatic trigger on a machine configured to run it, so
-`make prune-branches` is the off-machine or on-demand lever, not the only
-way the sweep runs.
+callers. `bash scripts/prune-merged-branches.sh` at the repo root is the
+on-demand entry point for a human running the sweep manually (dry-run by
+default; `--apply` to delete); the session-start hook is the equivalent
+automatic trigger on a machine configured to run it, so
+`scripts/prune-merged-branches.sh` run by hand is the off-machine or
+on-demand lever, not the only way the sweep runs.
 
 ## Resource impact
 
 Purely local Git housekeeping: `git branch -d`/`-D` on branches already
 merged, and a `git fetch origin --prune` at the start of each invocation.
-No GraphQL or REST budget is spent by the local-branch path; the
-merge-queue-safe detection helper's PR-state check does call `gh pr view`,
-which draws on GitHub's REST rate limit (a separate, much larger bucket
-than the Projects-v2 GraphQL budget the board adapter shares), and only for
-branches the plain-ancestor check didn't already resolve for free.
+No API budget is spent by the local-branch path; the merge-queue-safe
+detection helper's PR-state check does call `gh pr view`, which draws on
+GitHub's REST rate limit — the same bucket the board adapter and CI polling
+share — and only for branches the plain-ancestor check didn't already
+resolve for free.
 
 ## Telemetry
 

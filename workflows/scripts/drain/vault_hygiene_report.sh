@@ -42,7 +42,12 @@
 #                             (NAMING_LINT_FOLDERS below) that doesn't match
 #                             the `<project> - <title>` convention. Propose-
 #                             only — the correct project/title split is a
-#                             judgment call.
+#                             judgment call. A deliberately cross-cutting note
+#                             opts OUT via the explicit `cross_project: true`
+#                             frontmatter marker (a precise, per-note opt-in,
+#                             NOT a maintained blanket exemption list — see the
+#                             NAMING_LINT_FOLDERS tunable block below,
+#                             temperloop#420).
 #   9. stale plan           — a Plans/ note with frontmatter `status:`
 #                             draft|approved whose mtime is older than
 #                             STALE_PLAN_DAYS. Propose-only.
@@ -97,13 +102,13 @@
 #                             (knowledge_store.sh) — the mcp_obsidian EOL
 #                             cutover gate. ALARM if any.
 #  16. controls              — cross-references $ROOT/Controls/ against
-#                             knob-registry.tsv's `path`-typed rows (the
+#                             setting-registry.tsv's `path`-typed rows (the
 #                             registry-reachability rule,
 #                             docs/config-precedence.md § The
 #                             registry-reachability rule): a Controls/ file
 #                             named by no row is orphaned; a file whose
 #                             matching row's owning-script doesn't exist on
-#                             disk is a dead dial; a knob-registry path row
+#                             disk is a dead dial; a setting-registry path row
 #                             whose referenced file physically lives outside
 #                             Controls/ (e.g. a legacy fallback path that
 #                             still holds the real file) is flagged too.
@@ -249,7 +254,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/../lib/knowledge_store.sh"
 
 # ── Tunable caps (no machine cap existed before this script — foundation #959) ──
-# INBOX_MAX_STUBS / INBOX_MAX_AGE_H are registered knobs (knob-registry.tsv) —
+# INBOX_MAX_STUBS / INBOX_MAX_AGE_H are registered settings (setting-registry.tsv) —
 # tidy.md's own prose names them symbolically rather than restating the
 # values (prose-tunables-migration, temperloop#164/#169 D3 follow-up).
 : "${INBOX_MAX_STUBS:=20}"    # alarm above this many Sessions/_inbox stubs
@@ -275,6 +280,10 @@ LEDGER_CAPS=(250 120 400)
 ALLOWED_TOP_FOLDERS=(
   Plans Decisions Patterns Mistakes Context Sessions Priorities Controls
   Pipeline Investigations Projects Personal
+  # In-use top-level folders reconciled against the live vault (temperloop#420):
+  # the ruleset shipped from epic temperloop#226 never listed these, so every
+  # nightly run re-flagged them as unlisted even though they are known-good.
+  Designs Issues Plans-archive Sequencing Spikes StageFind
 )
 # Folders the one-file-directory lint (check 7) must NOT flag even though
 # they nest below a top-level folder and may legitimately hold exactly one
@@ -288,21 +297,31 @@ SCHEMA_NESTED_DIRS=(
 # <project>-<id8>.md` prefix convention) and Personal/ are deliberately
 # excluded.
 NAMING_LINT_FOLDERS=(Decisions Patterns Mistakes Plans)
+# THE CROSS-PROJECT MARKER (temperloop#420). A note that is deliberately
+# cross-cutting — one that legitimately has no single `<project>` owner (a
+# glossary, a shared-tooling decision, a convention that spans every project)
+# — opts OUT of the `<project>`-prefix rule above by carrying the explicit
+# `cross_project: true` frontmatter marker. This is a PRECISE, per-note
+# opt-in: each cross-cutting note declares itself, rather than the lint
+# carrying a maintained blanket exemption list that silently drifts out of
+# date. Any other value, or an absent key, is NOT a marker and the note is
+# still linted. Parsed by _hyg_has_cross_project_marker() below; accepts the
+# truthy scalar spellings true|yes|1 (case-insensitive).
 STALE_PLAN_DAYS=30   # Plans/ note with status draft|approved untouched this long -> alarm
 
 # ── Read-path-lint tunables (temperloop#239) ─────────────────────────────────
 # "New" window for the missing-trigger lint (check 14) — same recency-window
 # shape as STALE_PLAN_DAYS/FRICTION_RECENT_DAYS above/below; not an
-# operator-overridable knob (a plain assignment, not a `:=` seam), mirroring
+# operator-overridable setting (a plain assignment, not a `:=` seam), mirroring
 # those two siblings.
 PATTERN_TRIGGER_RECENT_DAYS=30
 # Compose-plane T0 inventory artifact (temperloop#235, ADR §2.5 capture point
 # 3) the orphan-pattern lint (check 13) reads — see install-claude-md.sh's
 # own header for the format/generation contract. This IS a registered,
-# operator-overridable knob (knob-registry.tsv) since the real path is a
+# operator-overridable setting (setting-registry.tsv) since the real path is a
 # function of wherever `make install-claude`'s <target> argument lands on a
 # given machine; the default mirrors the same `$HOME/.claude/...` convention
-# already used by CLAUDE_PROJECTS_DIR/BUILD_QUOTA_CACHE/FUNNEL_LOG_DIR in the
+# already used by CLAUDE_PROJECTS_DIR/BUILD_QUOTA_CACHE/PIPELINE_LOG_DIR in the
 # registry. Read-only: this script never regenerates or writes this file.
 : "${T0_INVENTORY_FILE:=$HOME/.claude/t0-inventory.txt}"
 
@@ -356,7 +375,7 @@ file_mtime() {
   printf '%s\n' "$m"
 }
 # Current epoch without Date.now()-style pitfalls — plain `date` is fine here.
-# HYG_NOW_EPOCH is the test seam (mirrors FUNNEL_NOW_EPOCH / _reconcile_now
+# HYG_NOW_EPOCH is the test seam (mirrors PIPELINE_NOW_EPOCH / _reconcile_now
 # elsewhere in this repo): a test that asserts an exact day-count staleness must
 # pin `now` against a fixed anchor, otherwise a real-wall-clock `now` read a
 # beat after the fixture dates were written can cross a midnight boundary and
@@ -650,6 +669,25 @@ EOF
 }
 register_check check_one_file_dir
 
+# note file -> 0 iff it carries the explicit cross-project marker
+# (`cross_project: true` in its YAML frontmatter), which opts the note OUT of
+# the naming-drift `<project>`-prefix rule (check 8). This is a PRECISE,
+# per-note opt-in — a deliberately cross-cutting note declares itself
+# cross-project rather than being blanket-exempted by a maintained list
+# (temperloop#420). The frontmatter is extracted with the same awk idiom every
+# other frontmatter-reading check here uses (check 11/13/14). Truthy scalar
+# spellings true|yes|1 (case-insensitive) count as the marker; any other value
+# or an absent key does NOT.
+_hyg_has_cross_project_marker() {
+  local f="$1" fm val
+  fm="$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$f" 2>/dev/null)"
+  val="$(printf '%s\n' "$fm" | grep -im1 '^cross_project:' | sed -e 's/^[Cc]ross_project:[[:space:]]*//' -e 's/["'\'']//g' | tr -d '\r' | tr '[:upper:]' '[:lower:]' | awk '{print $1}' || true)"
+  case "$val" in
+    true|yes|1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── Check 8: naming drift ─────────────────────────────────────────────────────
 check_naming_drift() {
   local count=0 d dir f base rel
@@ -662,6 +700,10 @@ check_naming_drift() {
       case "$base" in
         *" - "*) continue ;;   # matches the `<project> - <title>` convention
       esac
+      # A deliberately cross-cutting note opts out of the `<project>`-prefix
+      # rule via the explicit `cross_project: true` frontmatter marker — a
+      # precise, per-note opt-in, not a blanket exemption list (temperloop#420).
+      _hyg_has_cross_project_marker "$f" && continue
       count=$((count + 1))
       rel="${f#"$ROOT"/}"
       add "- ⚠️ naming: ${rel} — filename doesn't match the \`<project> - <title>\` convention (propose-only: confirm the right project/title split before renaming)"
@@ -747,14 +789,25 @@ register_check check_kind_misfile
 # at least one prior check-in/tidy cycle — not this check's concern).
 # Matching is deliberately simple and mechanical: lowercase + split on
 # non-alnum, drop tokens shorter than 4 chars and a small stopword list, then
-# count tokens shared between the row's text and a Mistakes/ note's title +
-# `trigger:` frontmatter (scalar `trigger: a, b` or YAML-list form); >=2
-# shared tokens is a match (1 alone is too weak — every row and every note
-# share the project name, e.g. "temperloop", so a 1-token floor would flag on
-# that alone). Propose-only: never edits the ledger or Mistakes/. Graceful
-# no-op when the ledger or Mistakes/ is absent (a bare kernel checkout has
+# count DISTINCT tokens shared between the row's text and a Mistakes/ note's
+# title + `trigger:` frontmatter (scalar `trigger: a, b` or YAML-list form);
+# >=FRICTION_OVERLAP_MIN (3) shared tokens is a match. A 2-token floor is
+# ALSO too weak, not just 1: every row's text carries its own project name
+# (e.g. "temperloop"), and every Mistakes/ note is filed as "<project> -
+# <title>.md", so a row and a same-project note collide on that one token for
+# free — pair it with a single incidental generic word (e.g. both mention
+# "path", or both happen to say "bash") and a 2-token floor fires on two
+# semantically unrelated incidents (temperloop#234's regression fixtures:
+# foundation#1307). 3 requires a genuine third point of overlap beyond that
+# free collision. Overlap counting is per-DISTINCT-token (`_hyg_token_overlap`)
+# — a token repeated within one row or note counts once, not once per
+# occurrence, so a duplicated word can no longer inflate two rows past the
+# floor on a single real point of overlap (foundation#1307's second,
+# independent defect). Propose-only: never edits the ledger or Mistakes/.
+# Graceful no-op when the ledger or Mistakes/ is absent (a bare kernel checkout has
 # neither).
 FRICTION_RECENT_DAYS=14
+FRICTION_OVERLAP_MIN=3
 _HYG_STOPWORDS=" this that with from have were what when where which should using used just been also into over than then still very more your "
 
 # YYYY-MM-DD -> epoch (GNU `date -d` vs BSD `date -j -f`); empty on failure.
@@ -774,10 +827,16 @@ _hyg_tokenize() {
   done
   printf '%s' "$out"
 }
-# set_a set_b (space-separated token lists) -> count of $1's tokens also in $2
+# set_a set_b (space-separated token lists) -> count of $1's DISTINCT tokens
+# also present in $2. Dedupes $1 first (via $seen) so a token repeated
+# within one ledger row or one note's title+trigger is counted once, not
+# once per occurrence — an occurrence-counting iteration would inflate a
+# single real point of overlap into a false multi-token match (foundation#1307).
 _hyg_token_overlap() {
-  local a match=0
+  local a match=0 seen=""
   for a in $1; do
+    case " $seen " in *" $a "*) continue ;; esac
+    seen="$seen $a"
     case " $2 " in *" $a "*) match=$((match + 1)) ;; esac
   done
   printf '%s' "$match"
@@ -821,8 +880,14 @@ check_repeat_mistake() {
       mtoks="$(_hyg_mistake_tokens "$mf")"
       [ -n "$mtoks" ] || continue
       overlap="$(_hyg_token_overlap "$rtoks" "$mtoks")"
-      if [ "$overlap" -ge 2 ]; then
-        add "- ⚠️ repeat-mistake: ${rdate} — ${rrest} — matches Mistakes/${mf#"$ROOT"/} (retrieval failure: recurrence despite an existing note)"
+      if [ "$overlap" -ge "$FRICTION_OVERLAP_MIN" ]; then
+        # $mf is already "$ROOT/Mistakes/<file>.md" — stripping $ROOT/ alone
+        # yields "Mistakes/<file>.md"; do NOT re-prepend a literal "Mistakes/"
+        # or the line reads "Mistakes/Mistakes/<file>.md" (foundation#1307).
+        # The heat-queue cross-reference (~check_heat_score's `[repeat-mistake]`
+        # tag) matches this exact "matches <rel-path> (" shape — keep both in
+        # sync if this line's wording ever changes.
+        add "- ⚠️ repeat-mistake: ${rdate} — ${rrest} — matches ${mf#"$ROOT"/} (retrieval failure: recurrence despite an existing note)"
         inc
         count=$((count + 1))
         break
@@ -840,7 +905,7 @@ register_check check_repeat_mistake
 
 # ── Check 12: read-log telemetry surfacing (temperloop#238) ─────────────────
 # Tallies the knowledge-store read log (KNOWLEDGE_READ_LOG, resolved via
-# knowledge_store.sh's `_ks_read_log_path` — the ONE knob for this path; see
+# knowledge_store.sh's `_ks_read_log_path` — the ONE setting for this path; see
 # that file) into the metrics /tidy's Vault hygiene step records, and that
 # the (overlay) `/telemetry` brief renderer can quote when present. Both the
 # script-plane emitter (`ks__read_log_emit`, PR #249) and the agent-plane
@@ -1163,7 +1228,7 @@ check_telemetry_coverage() {
 register_check check_telemetry_coverage
 
 # ── Check 16: controls (temperloop#239 — ADR §2.3a/§2.4/§2.8) ────────────────
-# Cross-references $ROOT/Controls/ against knob-registry.tsv's `path`-typed
+# Cross-references $ROOT/Controls/ against setting-registry.tsv's `path`-typed
 # rows — the mechanical enforcement of docs/config-precedence.md's
 # "registry-reachability rule" ("every file under Controls/ ... MUST be
 # pointed at by a path-typed row ... a file dropped into Controls/ with no
@@ -1180,9 +1245,9 @@ register_check check_telemetry_coverage
 #                        moved).
 #
 # Matching a Controls/ file to "the row that names it" is NECESSARILY a
-# heuristic: knob-registry.tsv's `default` column is frequently a dynamic
-# `$(...)` call (e.g. FUNNEL_SCHEDULE_FILE's own row) rather than a static
-# literal, and knob-registry-lib.sh deliberately never sources or evals a
+# heuristic: setting-registry.tsv's `default` column is frequently a dynamic
+# `$(...)` call (e.g. PIPELINE_SCHEDULE_FILE's own row) rather than a static
+# literal, and setting-registry-lib.sh deliberately never sources or evals a
 # registry row (parsed with grep/cut only — see that file's own header) —
 # resolving a dynamic default would mean executing arbitrary registry-named
 # shell, which this lint will not do. So the mechanical, documented
@@ -1216,20 +1281,20 @@ check_controls() {
     add "- ok controls: 0 (no Controls/ folder)"
     return 0
   fi
-  local kr_lib="$HERE/../config/knob-registry-lib.sh"
+  local kr_lib="$HERE/../config/setting-registry-lib.sh"
   if [ ! -f "$kr_lib" ]; then
-    add "- ok controls: 0 (knob-registry-lib.sh not found in this checkout — skipped)"
+    add "- ok controls: 0 (setting-registry-lib.sh not found in this checkout — skipped)"
     return 0
   fi
-  # shellcheck source=workflows/scripts/config/knob-registry-lib.sh
+  # shellcheck source=workflows/scripts/config/setting-registry-lib.sh
   . "$kr_lib"
   local kernel_repo_root
   kernel_repo_root="$(cd "$HERE/../../.." 2>/dev/null && pwd)" || kernel_repo_root=""
 
   local rows row rtype kname owning ref
   local controls_names=() controls_scripts=()
-  local outside_refs=() outside_knobs=() outside_owners=()
-  rows="$(knob_registry_rows 2>/dev/null || true)"
+  local outside_refs=() outside_settings=() outside_owners=()
+  rows="$(setting_registry_rows 2>/dev/null || true)"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     rtype="$(cut -f3 <<<"$row")"
@@ -1245,7 +1310,7 @@ check_controls() {
           ;;
         */*)
           outside_refs+=("$ref")
-          outside_knobs+=("$kname")
+          outside_settings+=("$kname")
           outside_owners+=("$owning")
           ;;
       esac
@@ -1280,7 +1345,7 @@ EOF
     done
     if [ "$found" -eq 0 ]; then
       count=$((count + 1))
-      add "- ⚠️ controls: Controls/${base} — no knob-registry.tsv path row points at it (orphaned control — docs/config-precedence.md § The registry-reachability rule)"
+      add "- ⚠️ controls: Controls/${base} — no setting-registry.tsv path row points at it (orphaned control — docs/config-precedence.md § The registry-reachability rule)"
       inc
     fi
   done <<EOF
@@ -1293,7 +1358,7 @@ EOF
     ref="${outside_refs[$i]}"
     if [ -f "$ROOT/$ref" ]; then
       count=$((count + 1))
-      add "- ⚠️ controls: ${ref} — machine-read store file outside Controls/ (registered by ${outside_knobs[$i]} in ${outside_owners[$i]})"
+      add "- ⚠️ controls: ${ref} — machine-read store file outside Controls/ (registered by ${outside_settings[$i]} in ${outside_owners[$i]})"
       inc
     fi
     i=$((i + 1))
@@ -1369,23 +1434,106 @@ _hyg_heat_read_lookup() {
   printf '%s\n' "$map" | awk -F'\t' -v d="$rel" '$1==d{print $2; found=1} END{if(!found) print 0}'
 }
 
-# base self all_files -> count of DISTINCT other store notes (from
-# all_files, the same Personal/-pruned whole-vault list every other check
-# here uses) containing a literal `[[<base>` wikilink reference — a simple,
-# documented, grep-based inbound-link count (per temperloop#240's own
-# acceptance note: "a simple grep-based count is fine"). Counts one per
-# LINKING FILE, not per occurrence, so a note that links twice from the same
-# file isn't double-weighted.
-_hyg_inbound_link_count() {
-  local base="$1" self="$2" all_files="$3" count=0 f
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    [ "$f" = "$self" ] && continue
-    grep -qF -- "[[${base}" "$f" 2>/dev/null && count=$((count + 1))
-  done <<EOF
-$all_files
-EOF
-  printf '%s' "$count"
+# all_files -> a backlink INDEX: one "<target>\t<distinct-linking-file-count>"
+# line per wikilink target, built in a SINGLE pass over the whole vault
+# (foundation #1202). The former implementation grep'd every note against every
+# other note — an O(n^2) file-read scan that took >12min on
+# an 872-note vault and either blocked or got skipped on the nightly /tidy run.
+# This does it once: extract every `[[<target>` wikilink token from every file
+# (all_files is the same Personal/-pruned whole-vault list every other check
+# here uses), then tally the number of DISTINCT linking files per target.
+#
+# Semantics preserved from the old per-note count, still "a simple grep-based
+# count is fine" per temperloop#240:
+#   - Counts one per LINKING FILE, not per occurrence (the `seen[file,tok]`
+#     guard), so a note that links twice from one file isn't double-weighted.
+#   - A file's link to its OWN basename is skipped (the self-exclusion the old
+#     `[ "$f" = "$self" ]` guard implemented).
+#   - The token is the text immediately after `[[`, up to the first `]`, `|`,
+#     or `#` — so `[[Name]]`, `[[Name|alias]]`, and `[[Name#heading]]` all tally
+#     under `Name`, while a folder-qualified `[[Folder/Name]]` tallies under
+#     `Folder/Name` (never `Name`), exactly as the old `[[<base>` prefix grep
+#     did (it never matched a base sitting after a `Folder/`).
+# The one deliberate difference: the old substring grep also matched a base that
+# was a strict PREFIX of a longer target (`base` counted a `[[baseball]]` link);
+# this exact-target index does not — a fix to that accidental over-count,
+# immaterial here since heat is informational and never alarms.
+#
+# `set -euo pipefail` note: grep exits 1 when a batch has no wikilink match, so
+# the xargs|grep stage is wrapped in `|| true` to keep the empty/no-link case
+# (small fixtures, a linkless vault) from aborting the whole check.
+_hyg_build_backlink_index() {
+  local all_files="$1"
+  [ -n "$all_files" ] || return 0
+  printf '%s\n' "$all_files" \
+    | tr '\n' '\0' \
+    | { xargs -0 grep -oHE '\[\[[^]|#]+' 2>/dev/null || true; } \
+    | awk '
+        {
+          # grep -oH emits "<file>:<match>"; split on the first colon only
+          # (vault paths carry no colon), the match is the rest of the line.
+          ci = index($0, ":")
+          if (ci == 0) next
+          file = substr($0, 1, ci - 1)
+          tok  = substr($0, ci + 1)     # "[[<target>"
+          sub(/^\[\[/, "", tok)         # -> "<target>"
+          if (tok == "") next
+          # skip a self-link: a file linking to its own basename
+          nf = split(file, parts, "/")
+          fbase = parts[nf]
+          sub(/\.md$/, "", fbase)
+          if (fbase == tok) next
+          if (!((file SUBSEP tok) in seen)) {
+            seen[file SUBSEP tok] = 1
+            count[tok]++
+          }
+        }
+        END { for (t in count) printf "%s\t%d\n", t, count[t] }
+      '
+}
+
+# ── Shared whole-vault walk + backlink index (memoized) ──────────────────────
+# THREE checks now need the same two expensive artifacts: the whole-vault file
+# list and the backlink index built from it (check_heat_score's link count,
+# check_orphan_note's zero-inbound test, check_duplicate_overlap's file list).
+# Building them per check would reintroduce the whole-vault re-walk that
+# foundation#1202 removed — just spread across three call sites instead of
+# n^2 within one. So they are built at most ONCE per run and cached here.
+#
+# Cached via a "built" sentinel rather than a non-empty test: a legitimately
+# EMPTY vault (a bare kernel checkout) yields an empty list, and testing
+# emptiness alone would rebuild it on every lookup.
+_HYG_ALL_FILES=""
+_HYG_ALL_FILES_BUILT=0
+_HYG_LINK_INDEX=""
+_HYG_LINK_INDEX_BUILT=0
+
+# -> the whole-vault .md file list (Personal/ and tool dirs pruned), one per
+# line, sorted. Same find expression every other whole-vault check uses.
+_hyg_all_files() {
+  if [ "$_HYG_ALL_FILES_BUILT" -eq 0 ]; then
+    _HYG_ALL_FILES="$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)"
+    _HYG_ALL_FILES_BUILT=1
+  fi
+  printf '%s' "$_HYG_ALL_FILES"
+}
+
+# -> the backlink index for the whole vault, built once from _hyg_all_files.
+_hyg_link_index() {
+  if [ "$_HYG_LINK_INDEX_BUILT" -eq 0 ]; then
+    _HYG_LINK_INDEX="$(_hyg_build_backlink_index "$(_hyg_all_files)")"
+    _HYG_LINK_INDEX_BUILT=1
+  fi
+  printf '%s' "$_HYG_LINK_INDEX"
+}
+
+# base index -> distinct-linking-file count for base (0 when absent from the
+# index, including an empty index — the no-backlinks degrade path). Mirrors
+# _hyg_heat_read_lookup's exact-key awk lookup over an in-memory map: no file
+# I/O per candidate — that per-note whole-vault re-read was the O(n^2) cost.
+_hyg_heat_link_lookup() {
+  local base="$1" idx="$2"
+  printf '%s\n' "$idx" | awk -F'\t' -v d="$base" '$1==d{print $2; found=1} END{if(!found) print 0}'
 }
 
 # note file -> its last_verified frontmatter parsed to epoch, or (when
@@ -1407,13 +1555,19 @@ _hyg_heat_epoch() {
 
 # ── Check 17: heat score + top-5 review queue (temperloop#240 — ADR §2.6-2.7) ──
 check_heat_score() {
-  local now read_map all_files d dir f rel base
+  local now read_map all_files link_index d dir f rel base
   local reads links epoch stale_days stale_capped recency heat tag priority
   local n=0 lines=""
   local rank pri rq_rel rq_heat rq_stale rq_reads rq_tag
   now="$(now_epoch)"
   read_map="$(_hyg_heat_read_counts)"
-  all_files="$(find "$ROOT" \( -iname .obsidian -o -iname .smart-env -o -iname .git -o -iname Personal \) -prune -o -type f -name '*.md' -print 2>/dev/null | sort)"
+  all_files="$(_hyg_all_files)"
+  # The whole-vault backlink index is built ONCE per run (foundation#1202),
+  # then each candidate note is looked up in it — replacing the former
+  # per-note grep-over-every-note scan that made this check O(n^2) in the
+  # note count. Now memoized (_hyg_link_index) so check_orphan_note shares
+  # this same single pass rather than walking the vault a second time.
+  link_index="$(_hyg_link_index)"
 
   for d in "${HEAT_SCAN_FOLDERS[@]}"; do
     dir="$ROOT/$d"
@@ -1427,7 +1581,7 @@ check_heat_score() {
       reads="$(_hyg_heat_read_lookup "$rel" "$read_map")"
       case "$reads" in ''|*[!0-9]*) reads=0 ;; esac
 
-      links="$(_hyg_inbound_link_count "$base" "$f" "$all_files")"
+      links="$(_hyg_heat_link_lookup "$base" "$link_index")"
       case "$links" in ''|*[!0-9]*) links=0 ;; esac
 
       epoch="$(_hyg_heat_epoch "$f")"
@@ -1453,7 +1607,12 @@ check_heat_score() {
       tag=""
       case "$FINDINGS" in *"orphan-pattern: ${rel} "*) tag="${tag}[orphan-pattern]" ;; esac
       case "$FINDINGS" in *"stale plan: $(basename "$rel") ("*) tag="${tag}[stale-plan]" ;; esac
-      case "$FINDINGS" in *"matches Mistakes/${rel} ("*) tag="${tag}[repeat-mistake]" ;; esac
+      # $rel is already "Mistakes/<file>.md" for a candidate under Mistakes/
+      # (per HEAT_SCAN_FOLDERS) — check_repeat_mistake's line now emits a
+      # SINGLE "matches Mistakes/<file>.md (" (foundation#1307 fixed the
+      # doubled "Mistakes/Mistakes/" prefix), so this match string is
+      # "matches ${rel} (" with no extra literal "Mistakes/" prepended.
+      case "$FINDINGS" in *"matches ${rel} ("*) tag="${tag}[repeat-mistake]" ;; esac
 
       lines="${lines}$(printf '%d\t%s\t%d\t%d\t%d\t%s' "$priority" "$rel" "$heat" "$stale_days" "$reads" "$tag")"$'\n'
     done <<EOF
@@ -1480,6 +1639,167 @@ EOF
   return 0
 }
 register_check check_heat_score
+
+# ── Check: orphan notes (no inbound wikilink, unreachable from Index) ────────
+# foundation#1479 class 3. A note with ZERO inbound wikilinks anywhere in the
+# store and no mention in Index.md is invisible to link-following navigation:
+# it can only ever be reached by ad-hoc semantic search. Propose-only.
+#
+# DISTINCT from check_orphan_pattern above, which is a narrower, different
+# test and is deliberately kept: that one asks whether a `Patterns/` note is
+# reachable from the COMPOSED CLAUDE.md's own T0 rules (a routing question,
+# answered against T0_INVENTORY_FILE); this one asks whether ANY note in the
+# knowledge folders is reachable by link-following at all (a graph question,
+# answered against the backlink index). A note can pass either and fail the
+# other, so neither subsumes the other.
+#
+# Reuses the memoized whole-vault backlink index (_hyg_link_index) rather than
+# scanning — the same index check_heat_score already builds, which is the
+# whole reason foundation#1202 (one-pass index) was a prerequisite for this
+# check rather than an unrelated performance fix.
+# INFORMATIONAL, never an ALARM — the same posture as the stale-`last_verified`
+# tally and the heat score, and for a MEASURED reason. On the vault this was
+# built against, 560 of 744 notes (75%) have no inbound wikilink: in this store
+# link-following is simply not how notes are reached, so a per-note alarm would
+# flag three quarters of the corpus every night and bury the checks that DO
+# alarm — the same report-drowning failure foundation#1202 was fixed to avoid.
+# The RATE is the signal worth surfacing (it says the wikilink graph is not the
+# retrieval substrate for this store); the 560-line note list is not. So this
+# emits one tally line plus a small capped sample, and never calls `inc`.
+ORPHAN_NOTE_SCAN_FOLDERS=(Decisions Patterns Mistakes Context)
+ORPHAN_NOTE_MAX_SAMPLE=5
+check_orphan_note() {
+  local link_index index_file d dir f rel base links
+  local count=0 total=0 sample="" more=""
+  link_index="$(_hyg_link_index)"
+  index_file="$ROOT/Index.md"
+  for d in "${ORPHAN_NOTE_SCAN_FOLDERS[@]}"; do
+    dir="$ROOT/$d"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      total=$((total + 1))
+      rel="${f#"$ROOT"/}"
+      base="$(basename "$f" .md)"
+      links="$(_hyg_heat_link_lookup "$base" "$link_index")"
+      case "$links" in ''|*[!0-9]*) links=0 ;; esac
+      [ "$links" -gt 0 ] && continue
+      # Index.md reachability is the second half of the test: a note linked
+      # ONLY from the index still has a navigation route. Match the bare
+      # basename or the folder-qualified form, mirroring how the backlink
+      # index tokenizes a `[[Folder/Name]]` target.
+      if [ -f "$index_file" ] && grep -qF -e "[[$base" -e "[[$d/$base" "$index_file" 2>/dev/null; then
+        continue
+      fi
+      count=$((count + 1))
+      [ "$count" -le "$ORPHAN_NOTE_MAX_SAMPLE" ] && sample="${sample}${sample:+, }${rel}"
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  done
+  if [ "$total" -eq 0 ]; then
+    add "- ok orphan-note: 0 (no candidate notes)"
+  elif [ "$count" -eq 0 ]; then
+    add "- ok orphan-note: 0 of ${total} notes lack an inbound wikilink"
+  else
+    # Never truncate silently — the "+N more" is what keeps a capped sample
+    # from reading as the whole list.
+    [ "$count" -gt "$ORPHAN_NOTE_MAX_SAMPLE" ] && more=" (+$(( count - ORPHAN_NOTE_MAX_SAMPLE )) more)"
+    add "- info orphan-note: ${count} of ${total} notes ($(( count * 100 / total ))%) have no inbound wikilink and no Index.md entry — reachable only by search. Sample: ${sample}${more}"
+  fi
+  return 0
+}
+register_check check_orphan_note
+
+# ── Check: duplicate / overlapping concept pages ─────────────────────────────
+# foundation#1479 class 1. Two notes covering ONE concept (classically a
+# Patterns/ and a Context/ note on the same mechanism) that should merge or
+# cross-link. Propose-only — never merges notes.
+#
+# Detection reuses the tokenizer and overlap counter check_repeat_mistake
+# already ships (_hyg_tokenize / the distinct-token semantics), applied to
+# note TITLES, so this adds no similarity engine of its own.
+#
+# NOT pairwise. Comparing every note to every other note is exactly the O(n^2)
+# whole-vault scan foundation#1202 removed from the heat check, and it would
+# be far worse here (~1000 notes = ~500k comparisons in shell). Instead this
+# builds an INVERTED index token -> notes in one pass and emits candidate
+# pairs only from tokens the notes actually share, so cost scales with real
+# token co-occurrence rather than with n^2.
+#
+# Tokens appearing in more than DUP_TOKEN_MAX_NOTES notes are skipped as
+# non-discriminative: a token in 60 notes ("foundation") contributes 1770
+# pairs and zero signal, and it is precisely the common tokens that would
+# reintroduce quadratic blow-up.
+DUP_OVERLAP_MIN=3
+DUP_TOKEN_MAX_NOTES=8
+DUP_MAX_REPORTED=10
+DUP_SCAN_FOLDERS=(Decisions Patterns Mistakes Context)
+check_duplicate_overlap() {
+  local d dir f rel base toks t pairs count=0 line a b n
+  local tokmap=""
+  for d in "${DUP_SCAN_FOLDERS[@]}"; do
+    dir="$ROOT/$d"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      rel="${f#"$ROOT"/}"
+      base="$(basename "$f" .md)"
+      toks="$(_hyg_tokenize "$base")"
+      for t in $toks; do
+        tokmap="${tokmap}${t}	${rel}"$'\n'
+      done
+    done <<EOF
+$(find "$dir" -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort)
+EOF
+  done
+  if [ -z "$tokmap" ]; then
+    add "- ok duplicate-overlap: 0 (no candidate notes)"
+    return 0
+  fi
+  # token<TAB>note  ->  "<shared-token-count> <noteA> :: <noteB>" for pairs at
+  # or above the floor. The awk pass groups by token, skips tokens that are
+  # too common to discriminate, emits each within-token note pair once
+  # (ordered, so A::B and B::A collapse), then tallies pairs across tokens.
+  pairs="$(printf '%s' "$tokmap" | sort -u | awk -F'\t' -v maxn="$DUP_TOKEN_MAX_NOTES" '
+      { tok[$1] = ($1 in tok) ? tok[$1] SUBSEP $2 : $2 }
+      END {
+        for (t in tok) {
+          n = split(tok[t], f, SUBSEP)
+          if (n < 2 || n > maxn) continue
+          for (i = 1; i < n; i++)
+            for (j = i + 1; j <= n; j++) {
+              a = f[i]; b = f[j]
+              if (a > b) { tmp = a; a = b; b = tmp }
+              pc[a "\t" b]++
+            }
+        }
+        for (p in pc) printf "%d\t%s\n", pc[p], p
+      }
+    ' | awk -F'\t' -v min="$DUP_OVERLAP_MIN" '$1 >= min' | sort -rn)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n="${line%%	*}"
+    a="$(printf '%s' "$line" | cut -f2)"
+    b="$(printf '%s' "$line" | cut -f3)"
+    count=$((count + 1))
+    if [ "$count" -le "$DUP_MAX_REPORTED" ]; then
+      add "- ⚠️ duplicate-overlap: ${a} ≈ ${b} — ${n} shared title terms (propose-only: merge them, or cross-link if they are genuinely distinct)"
+      inc
+    fi
+  done <<EOF
+$pairs
+EOF
+  if [ "$count" -eq 0 ]; then
+    add "- ok duplicate-overlap: 0"
+  elif [ "$count" -gt "$DUP_MAX_REPORTED" ]; then
+    # Never truncate silently — a capped list that reads as the whole list is
+    # how "we covered everything" becomes false.
+    add "- ⚠️ duplicate-overlap: ${count} candidate pairs total; $(( count - DUP_MAX_REPORTED )) not shown (top ${DUP_MAX_REPORTED} listed above, ranked by shared-term count)"
+  fi
+  return 0
+}
+register_check check_duplicate_overlap
 
 # ── Run every registered check (generic — never changes when adding a check) ──
 for _hyg_fn in "${CHECKS[@]}"; do

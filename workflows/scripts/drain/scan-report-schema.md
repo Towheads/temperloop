@@ -27,6 +27,7 @@ every field marked **required**; optional fields may be absent.
 | `project`    | string | required | Project name (from frontmatter `project:`). |
 | `date`       | string | optional | Session date `YYYY-MM-DD`. |
 | `time`       | string | optional | Session time `HHMM`. |
+| `model`      | string \| null | required | The model(s) that ran the session, read from frontmatter `model:` (the session-end hook's comma-joined model set — see `~/.claude/hooks/session-end-log.sh`). `null` when the stub's frontmatter carries no `model:` line. This key is **always present** in the object — `scan_stub.py` populates it on every scan, so `null` unambiguously means "the frontmatter genuinely has no model:", never "the scanner never emitted this field" (the distinction temperloop#761 exists to preserve). Consumed by `findings-schema.md`'s `subject_model` (`report.stub.model`) and `tidy.md`'s vault-provenance `source_model` stamp. |
 
 ---
 
@@ -109,6 +110,92 @@ downstream tool's error to stdout yet exits 0, so the harness never flags it.
 |------------|--------|----------|-------------|
 | `command`  | string | required | The `capture.sh` Bash invocation text (truncated at 400 chars). |
 | `location` | string | required | `"jsonl line N"`. |
+
+### `tool_events.auq_answer_flags[]`
+
+Structural detector (temperloop #421-1). Flags `AskUserQuestion` **answers**
+(which live in the tool_result, unreachable by the turn-scanning lexicon) that
+signal a bad question, one entry per flagged (answer, signal):
+
+- `signal: "confusion"` — the answer expresses confusion (e.g. *"I do not
+  understand this. I need more context."*) rather than a choice: a top-signal
+  feedback moment.
+- `signal: "omitted-option"` — the answer is itself a question (ends in `?`) or
+  opens with a counter-proposal stem (`Why` / `What about` / `Couldn't` /
+  `Can't` / `How about`), meaning the presented option set omitted the right
+  answer.
+
+| Field      | Type   | R/O      | Description |
+|------------|--------|----------|-------------|
+| `signal`   | string | required | `"confusion"` or `"omitted-option"`. |
+| `question` | string | required | The question that was posed (first of the block). |
+| `answer`   | string | required | The answer text (truncated at 500 chars). |
+| `location` | string | required | `"jsonl line N"` of the `AskUserQuestion` tool_use. |
+
+### `tool_events.repeated_env_prefixes[]`
+
+Structural detector (temperloop #421-2). A leading `export VAR=value` re-typed
+**verbatim** ahead of **3+ separate Bash calls** in one session — config patched
+at the call site instead of fixing the default (F#1141). One entry per prefix
+that crossed the 3-call threshold.
+
+| Field       | Type     | R/O      | Description |
+|-------------|----------|----------|-------------|
+| `prefix`    | string   | required | The leading `export VAR=value` string, verbatim. |
+| `count`     | int      | required | Number of separate Bash calls carrying it (≥ 3). |
+| `locations` | string[] | required | `"jsonl line N"` for each carrying call, in file order. |
+
+### `tool_events.mcp_invalid_args[]`
+
+Structural detector (temperloop #421-3). MCP JSON-RPC `-32602 … Invalid
+arguments` results — always the caller's bug, and invisible when folded into the
+generic `errors[]` list. Counted as its own top-level bucket. (Such a result is
+typically also `is_error: true`, so it may additionally appear in `errors[]`;
+this bucket exists to make the class independently visible and countable.)
+
+| Field       | Type   | R/O      | Description |
+|-------------|--------|----------|-------------|
+| `tool_name` | string | required | The MCP tool whose result carried the error. |
+| `content`   | string | required | Error content (truncated at 300 chars). |
+| `location`  | string | required | `"jsonl line N"`. |
+
+### `tool_events.mutating_mcp_timeouts[]`
+
+Structural detector (temperloop #421-4). A `vault_write` / `vault_move` /
+`vault_delete` result matching `/timed out/i` — the store is left in **UNKNOWN**
+state (applied? partial? not at all?), materially unlike a read timeout. Its own
+bucket. Keyed on the mutating tool's identity plus the timeout signature; a read
+tool's timeout does **not** appear here.
+
+| Field       | Type   | R/O      | Description |
+|-------------|--------|----------|-------------|
+| `tool_name` | string | required | The mutating vault MCP tool that timed out. |
+| `content`   | string | required | Error content (truncated at 300 chars). |
+| `location`  | string | required | `"jsonl line N"`. |
+
+### `tool_events.repeated_denials[]`
+
+Structural detector (temperloop #770-5). A Bash tool_result matching `/has
+been denied/i` — a permission-policy denial of a command a command SPEC
+requires. Distinguishes a **designed guard that structurally cannot run on
+this host** from a transient, one-off failure. An **isolated** denial is
+noise, so this is deliberately gated by cross-run state rather than folded
+into the unconditional `_ERROR_SIGNATURES` list: an entry appears here **only**
+once the same command text has been denied across **two or more distinct
+sessions** (`_DENIED_MIN_SESSIONS`). Cross-run state is a small on-disk JSON
+map of `{command: [session_id, ...]}`, default path
+`${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/scan-stub-denied-commands.json`
+— overridable via `$SCAN_STUB_DENIED_STATE_PATH` or `scan_stub.py`'s
+`--denied-state` flag (tests point this at a tmpdir so scans stay hermetic).
+Scanning the same stub/session twice is idempotent (an already-recorded
+session_id is a no-op), preserving the determinism guarantee below.
+
+| Field           | Type   | R/O      | Description |
+|-----------------|--------|----------|-------------|
+| `command`       | string | required | The exact Bash command text that was denied. |
+| `content`       | string | required | Error content of the first hit this session (truncated at 300 chars). |
+| `location`      | string | required | `"jsonl line N"` of the first hit this session. |
+| `session_count` | int    | required | Distinct sessions (this one included) this command has been denied in (≥ 2). |
 
 ---
 

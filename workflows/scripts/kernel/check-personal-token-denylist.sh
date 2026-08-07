@@ -11,8 +11,8 @@
 # comment is skipped. Used today for two documented, load-bearing cases where
 # the personal-looking literal is an intentional runtime default, not an
 # oversight:
-#   1. workflows/scripts/board/lib/board.sh's (and funnel-tick.sh's /
-#      funnel-drive.sh's) `boards.conf`-fallback case maps — kernel-manifest
+#   1. workflows/scripts/board/lib/board.sh's (and pipeline-tick.sh's /
+#      pipeline-drive.sh's) `boards.conf`-fallback case maps — kernel-manifest
 #      #770 already documents these built-in values as required
 #      byte-for-byte so a `boards.conf`-less CONSUMING checkout (board.sh is
 #      synced, as real files, into other repos) keeps behaving exactly as it
@@ -88,7 +88,7 @@ _kernel_denylist_is_exempt() {
 # ---------------------------------------------------------------------------
 # Load the burn-down baseline (file, pattern, line) triples. Bash-3.2-
 # compatible plain indexed arrays (no `declare -A` — kernel scripts must run
-# unmodified on macOS's system bash, see kernel-repo-layout.md), same linear-
+# unmodified on macOS's system bash 3.2), same linear-
 # scan idiom as _kernel_denylist_is_exempt above. Blank lines and
 # #-prefixed comment lines are skipped, same convention as the other two
 # data files. A parallel `baseline_used` flag array tracks per-row
@@ -139,6 +139,32 @@ while IFS=$'\t' read -r pat desc; do
   patterns+=("$pat")
   descriptions+=("$desc")
 done < "$KERNEL_DENYLIST_FILE"
+
+# ---------------------------------------------------------------------------
+# Overlay: the operator-personal rows (name, personal emails, machine names,
+# Sentry slug, vault path, private org/handle) do NOT ship in the tracked,
+# public denylist (temperloop#438) — they live in a sibling, gitignored
+# personal-token-denylist.local.tsv. UNION it in when present; DEGRADE LEGIBLY
+# (a one-line NOTE, never a silent skip) when absent, so a stranger's
+# kernel-only clone still runs — enforcing the tracked structural/example rows
+# only — and the coverage gap is visible rather than silent. Path defaults to
+# the sibling of KERNEL_DENYLIST_FILE (overridable via KERNEL_DENYLIST_LOCAL_FILE,
+# a test seam).
+# ---------------------------------------------------------------------------
+: "${KERNEL_DENYLIST_LOCAL_FILE:=${KERNEL_DENYLIST_FILE%.tsv}.local.tsv}"
+if [[ -f "$KERNEL_DENYLIST_LOCAL_FILE" ]]; then
+  _local_rows=0
+  while IFS=$'\t' read -r pat desc; do
+    [[ -z "${pat:-}" ]] && continue
+    case "$pat" in \#*) continue ;; esac
+    patterns+=("$pat")
+    descriptions+=("$desc")
+    _local_rows=$((_local_rows + 1))
+  done < "$KERNEL_DENYLIST_LOCAL_FILE"
+  echo "check-personal-token-denylist: loaded $_local_rows operator-personal overlay row(s) from ${KERNEL_DENYLIST_LOCAL_FILE##*/}" >&2
+else
+  echo "check-personal-token-denylist: NOTE — no personal-token-denylist.local.tsv overlay present; enforcing the tracked structural/example rows only (operator-personal tokens are enforced only where the gitignored overlay exists)." >&2
+fi
 
 if [[ ${#patterns[@]} -eq 0 ]]; then
   echo "check-personal-token-denylist: denylist has zero entries — nothing to check" >&2

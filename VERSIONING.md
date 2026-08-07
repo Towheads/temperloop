@@ -27,12 +27,26 @@ contract-surface change (minor-or-breaking, never a patch):
 | **Board adapter interface** | overlay scripts calling `board_resolve_item` / `board_resolve` / `board_item_list` / `board_set_*`, the `--board N` axis, board commands (`claim`/`release`/`worklist`/`reconcile`/`capture`/`milestone`) | `workflows/scripts/board/lib/board.sh`, `boards.conf` |
 | **Pipeline command contracts** | operators running the slash commands; their documented steps + `plan-schema.md` shape | `claude/commands/*.md`, `claude/plan-schema.md` |
 | **Hook names + signatures** | a machine's installed hooks; anything keying off their I/O contract | `claude/hooks/*.sh` |
-| **Quality-gate contract** | CI + local gate parity: the required job name `checks`, the `KERNEL_GATES` set, the Live/Drain + PR-body-lint registry formats | `scripts/quality-gates.sh`, `.github/workflows/ci.yml` |
-| **CLI surface** | callers of `bin/foundation` and its subcommands (`init`, `eject`, `try`, `report`, `baseline-snapshot`, `configure`, `config`, `install`, `uninstall`) | `bin/foundation`, `bin/subcommands/*` |
+| **Quality-gate contract** | CI + local gate parity: the required job name `checks`, the `KERNEL_GATES` set, the Capture/Backstop + PR-body-lint registry formats | `scripts/quality-gates.sh`, `.github/workflows/ci.yml` |
+| **CLI surface** | callers of `bin/temperloop` and its subcommands (`init`, `eject`, `try`, `report`, `feedback`, `baseline-snapshot`, `configure`, `config`, `install`, `uninstall`, `update`) (the `bin/foundation` compat shim rode this row through the temperloop#165 rename window; at v0.19.0 its **forwarding removed; file retained as a refusing tombstone** — never say "removed": a pre-v0.19.0 install left a `~/.local/bin/foundation` symlink pointing at that file, and `temperloop update` moves the checkout underneath the symlink, so deleting the file would yield a dangling ENOENT exactly where the operator needs to be told the name changed. Retiring the stale symlink is MANUAL — `temperloop uninstall` *prints* the `rm -f` but cannot remove it, since the symlink is bootstrap footprint predating the install manifest) | `bin/temperloop`, `bin/foundation` (the refusing tombstone — retained, not deleted), `bin/subcommands/*` |
+| **Shipped version stamp** | the release artifact's own version — the repo-root `VERSION` file (bare `x.y.z`) that `temperloop version` reports. **Bumped in the tagged commit** as part of the cut (kernel-repo-layout.md § Release-tag convention); `test_version_embedding.sh` fails the build if it drifts from the tag | `VERSION`, `bin/lib/common.sh` (`temperloop_resolve_version`) |
 | **Compose / pin seam** | the overlay's `install-claude` compose (`CLAUDE.kernel.md` + overlay), `.kernel-pin` format, the kernel-manifest classification | `workflows/scripts/install-claude-md.sh`, `.kernel-pin`, `kernel-manifest.txt` |
-| **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
-| **Knob registry** | callers reading `workflows/scripts/config/knob-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/knob-registry.tsv`, `workflows/scripts/config/knob-registry-lib.sh` |
+| **Published schemas/contracts** | anything a stranger reads to conform: `plan-schema.md`, `report.contract.md`, `knowledge_store.contract.md`, `tracker.contract.md`, `lexicon.tsv` columns | various `*.contract.md`, `*-schema.md` |
+| **Setting registry** | callers reading `workflows/scripts/config/setting-registry.tsv`'s row shape (`name\|default\|type\|layer\|owning-script\|doc`) or the union-aware parse helper's function signatures/output shape — `temperloop config list`, the registry↔shell equality lint, and any overlay extension TSV | `workflows/scripts/config/setting-registry.tsv`, `workflows/scripts/config/setting-registry-lib.sh` |
 | **Machine-surface install manifest** | callers reading/writing `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/install-manifest.json`'s `schema_version` / `paths[path].{state,backup_path}` shape, or the lib helper function signatures/output shapes — the not-yet-built `temperloop install`/`uninstall` subcommands, and any future doctor-style reader | `workflows/scripts/install/manifest.sh` |
+| **Kernel engineering-principles criteria** | review agents and `/build` workers judging a diff against the declared cross-language criteria; a project's `§ Principles` section merging with (extending, replacing, or excluding from) the kernel set per the merge semantics stated in the file's own header | `claude/engineering-principles.md` |
+
+**This table is machine-read.** `workflows/scripts/check-changelog-entry.sh`
+(the `## [Unreleased]` completeness gate in `scripts/quality-gates.sh`'s
+`KERNEL_GATES`, temperloop#960) parses the backticked paths out of the **"Where
+it lives"** column at run time and uses exactly that set to decide whether a
+change touches contract surface and therefore owes a CHANGELOG entry. It reads
+this table rather than keeping a second copy of the definition, so **adding a
+row here extends the gate for free** — and restructuring the table, renaming the
+`### The contract surface` heading, or moving the paths out of the last column
+will make the gate fail loudly (it refuses to run against a table it cannot
+parse rather than silently enforce nothing). Keep the shape: one row per
+surface, path patterns backticked in the final column.
 
 ### "Vendored" vs. "installed" — two different senses (ADR K164 D7)
 
@@ -63,8 +77,10 @@ this run did. Two axes, never conflated:
 So "the kernel is vendored, not installed" continues to describe the
 repo-integration axis exactly as it always has; it says nothing about, and
 is not contradicted by, the machine-surface axis `temperloop install` now
-covers. `docs/kernel-repo-layout.md`'s own "what got seeded" note (its
-Makefile-exclusion paragraph) points back here for the disambiguation.
+covers. The Makefile ships no `install`/`install-env`/`install-claude`
+target for the same reason — those depend on `env/*` dotfiles absent from a
+kernel-only checkout — so the vendored-vs-installed table above is the
+authoritative disambiguation.
 
 Renaming/removing a board function, changing a hook's I/O, renaming the
 `checks` job, changing `.kernel-pin`'s format, or dropping a documented
@@ -73,19 +89,30 @@ optional `plan-schema` field, or a new gate that no existing overlay is
 required to satisfy is **additive**. Fixing a bug with none of the above is a
 **patch**.
 
-**Knob registry, specifically** (finer-grained than the generic rule above,
-since a TSV row is itself structured data a caller can depend on at three
+**Setting registry, specifically** (finer-grained than the generic rule above,
+since a TSV row is itself structured data a caller can depend on at four
 different granularities): a **column change** (renaming/removing/reordering
 one of the six `name|default|type|layer|owning-script|doc` fields, or a
 parse-helper function signature/output-shape change) is **breaking** — every
-reader of the row shape must adapt. A **new knob row** (a name no reader
+reader of the row shape must adapt. A **new setting row** (a name no reader
 already depended on) is **additive**. A **default-value change on an
 existing row** is **minor** — a stranger who dot-sources the previous
 default should re-check it, so it is never a bare **patch**, but it doesn't
-change the row shape so it isn't breaking either.
+change the row shape so it isn't breaking either. **Removing an existing
+row** — retiring a setting *name* — is **breaking**, and is the case the
+other three do not cover: unlike a column change it leaves the row *shape*
+completely intact, so nothing a shape-reader parses fails, yet every caller
+that sets or reads that name silently gets nothing back. It therefore must
+mark its CHANGELOG section `BREAKING` and carry a migration line naming the
+replacement name (or stating plainly that there is none). v0.19.0 is the
+worked example: closing the two compatibility windows removed **four** rows
+— the four DEPRECATED legacy-prefixed env rows superseded by their
+`TEMPERLOOP_*` twins in v0.15.0 — with no column change at all.
+(`setting-registry.tsv`'s own header already classified its removal this
+way, deferring to "the rule above"; this is that rule, now stated.)
 
 **Machine-surface install manifest, specifically** (same three-way split as
-the knob registry, applied to the manifest's own JSON shape): a **field/
+the setting registry, applied to the manifest's own JSON shape): a **field/
 column change** (renaming, removing, or reshaping `schema_version`,
 `state`, or `backup_path` on a path entry, or a `manifest.sh` helper
 function's signature/output-shape change) is **breaking** — every reader
@@ -158,6 +185,101 @@ surface is still moving (v0.4→v0.6 in days). The trigger to cut `1.0.0`:
 Until then, a stranger reads `0.x` as "stable semantics, surface still
 settling — read the CHANGELOG `BREAKING` markers before you pull," which is a
 real, usable signal rather than SemVer's blanket pre-1.0 disclaimer.
+
+## Cutting a release
+
+The ordered procedure. The *conventions* it applies — annotated tag, `VERSION`
+bumped in the tagged commit, Keep-a-Changelog section shape — belong to
+`workflows/scripts/kernel/kernel-repo-layout.md` § Release-tag convention and
+are referenced here, not restated. This section owns the **steps and their
+order**, so a cut is followed rather than reconstructed from memory.
+
+**The cut is ONE pull request.** Not one per concern. `main` is protected, so
+every cut costs a merge-queue round-trip (~11 min: the `checks` run, then the
+queue's second run); splitting the cut across two PRs doubles that for no
+structural reason. The v0.23.0 cut split a CHANGELOG backfill from the version
+bump and spent an extra cycle on it.
+
+### 1. Verify the CHANGELOG is complete
+
+Every merged PR since the last tag should already have its `## [Unreleased]`
+entry. Check before you cut, because a gap found here is the whole reason a cut
+turns into two PRs:
+
+```sh
+git log v<last>..HEAD --merges --format='%H %s' | while read -r sha subj; do
+  pr=$(echo "$subj" | sed -nE 's/.*Merge pull request #([0-9]+).*/\1/p')
+  [ -z "$pr" ] && continue
+  git diff --name-only "$sha^1" "$sha^2" | grep -q '^CHANGELOG.md$' || echo "unlogged #$pr"
+done
+```
+
+Backfill anything it names **into the same cut PR** — never a separate one.
+(temperloop#960 tracks the gate that makes this step vacuous by requiring the
+entry at PR time; until it lands, this check is the backstop.)
+
+### 2. Rewrite the heading and bump `VERSION` — in one commit
+
+Turn `## [Unreleased]` into `## [x.y.z] - YYYY-MM-DD`, open a fresh empty
+`## [Unreleased]` above it, and set `VERSION` to bare `x.y.z`. The
+`test_version_embedding.sh` gate fails the build if `VERSION` disagrees with
+the tag, so these must move together.
+
+> **⚠ Carry the `BREAKING` marker across the rewrite.**
+> `changelog_breaking_sections()` (`workflows/scripts/lib/changelog.sh`) sets
+> its breaking flag **only from a heading line** — `BREAKING` on the
+> `## [x.y.z]` line, or `/^#+ .*BREAKING/` on a sub-heading. **Body prose never
+> sets it.** So rewriting `## [Unreleased] — BREAKING` into a bare
+> `## [0.23.0] - 2026-08-02` silently drops the release's breaking signal, and
+> both `update-kernel`'s acknowledgment gate and `temperloop update`'s BREAKING
+> warning no-op without telling anyone. Keep the suffix on the version heading,
+> and keep the ` — BREAKING` sub-heading (e.g. `### Changed — BREAKING`) as the
+> belt-and-suspenders half that survives a botched rewrite.
+
+> **⚠ `## [Unreleased] — BREAKING` occurs more than once in the file.** The live
+> heading is near the top; historical entries quote the same string in their
+> body prose. A `replace_all` edit rewrites history. Anchor on a unique
+> neighbouring line instead.
+
+Verify before pushing — a non-empty result means the gate will fire rather than
+silently pass:
+
+```sh
+source workflows/scripts/lib/changelog.sh
+changelog_breaking_sections v<last> v<new> CHANGELOG.md | wc -c   # args: cur, tgt, FILE
+```
+
+### 3. Merge, then tag the merge commit
+
+Enqueue via `pr-enqueue` (or a bare `gh pr merge` — the queue owns the
+strategy; passing `--merge` is rejected). Wait for confirmed `MERGED`, pull, and
+tag **that** commit — not the branch tip:
+
+```sh
+git checkout main && git pull --ff-only
+git tag -a v<new> -m "<subject>"   # subject: 'v<new>' or 'v<new> — BREAKING'
+git push origin v<new>
+```
+
+The tag body follows the shape of the previous tags: subject line, one line on
+how many PRs/commits it covers, the BREAKING pointer if applicable, then a short
+`Highlights:` list drawn from the CHANGELOG section. `git tag -l --format=
+'%(contents)' v<last>` shows the house style.
+
+### 4. Propagate to consuming repos
+
+A tag alone changes nothing downstream — each overlay vendors on its own:
+
+```sh
+cd <consuming-repo> && make update-kernel KERNEL_TAG=v<new>
+```
+
+This is worktree-isolated: it pushes a `chore/kernel-v<new>` branch and opens a
+PR, leaving the caller clean-on-main. **Read its output** — it runs the gate
+wiring check and will name any gate the new kernel adds that the overlay does
+not satisfy yet, then open the PR anyway. Wire those before merging or CI blocks
+(foundation#1508 tracks automating this). Merge the vendor PR, then
+`git pull && make install` in that repo to make the release live.
 
 ## Summary for a stranger
 

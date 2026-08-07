@@ -21,7 +21,7 @@
 # Both call sites live in the SAME file (build.md), unlike
 # validate-command-run-emit.sh's two-file (sweep.md/triage.md) case — so this
 # checks for the presence of BOTH --kind values within the file rather than
-# one value per file. This mirrors the validate-live-drain.sh /
+# one value per file. This mirrors the validate-capture-backstop.sh /
 # validate-command-run-emit.sh shape (same script style, same
 # hard-fail-on-half-present contract, wired into scripts/quality-gates.sh the
 # same way).

@@ -20,12 +20,14 @@ name: Install Tier-2 (real round-trip)
 #     $1.00 via TRY_CLAUDE_MAX_BUDGET_USD, bin/lib/cost-estimates.conf) —
 #     harmless once, but every PR push/re-push on this repo would multiply
 #     that spend for zero marginal coverage over tier-1's hermetic suite.
-#   - SHARED REMOTE STATE: `temperloop init`'s consented-apply step writes
-#     REAL API state (a branch-protection required-check, a label set, a
-#     proposal PR) onto the shared demo repo. Two PRs' tier-2 runs racing
-#     the same remote repo concurrently would collide; this workflow's own
-#     `concurrency` group below serializes runs for exactly that reason,
-#     which is fine for a weekly/manual cadence and wrong for a per-PR one.
+#   - SHARED REMOTE STATE: `temperloop init` writes real remote objects onto
+#     the shared demo repo — a proposal branch + PR, and the first-epic
+#     issue it offers to file. (Since the init scope-down, temperloop#796,
+#     it writes no API STATE: no branch protection, no label set, no
+#     board.) Two PRs' tier-2 runs racing the same remote repo concurrently
+#     would still collide; this workflow's own `concurrency` group below
+#     serializes runs for exactly that reason, which is fine for a
+#     weekly/manual cadence and wrong for a per-PR one.
 #   - FLAKINESS SURFACE: real network + a live model call + GitHub API
 #     rate limits are exactly the nondeterminism per-PR CI must not carry
 #     (a stranger's PR should never go red because the demo repo's API
@@ -106,13 +108,42 @@ jobs:
 
       - name: Bootstrap the temperloop CLI from this checkout
         run: |
-          FOUNDATION_HOME="$RUNNER_TEMP/temperloop-home"
-          FOUNDATION_BIN_DIR="$RUNNER_TEMP/temperloop-bin"
-          FOUNDATION_KERNEL_REPO="file://$GITHUB_WORKSPACE" \
-            FOUNDATION_HOME="$FOUNDATION_HOME" \
-            FOUNDATION_BIN_DIR="$FOUNDATION_BIN_DIR" \
+          TEMPERLOOP_HOME="$RUNNER_TEMP/temperloop-home"
+          TEMPERLOOP_BIN_DIR="$RUNNER_TEMP/temperloop-bin"
+          TEMPERLOOP_KERNEL_REPO="file://$GITHUB_WORKSPACE" \
+            TEMPERLOOP_HOME="$TEMPERLOOP_HOME" \
+            TEMPERLOOP_BIN_DIR="$TEMPERLOOP_BIN_DIR" \
             sh bin/bootstrap.sh
-          echo "$FOUNDATION_BIN_DIR" >> "$GITHUB_PATH"
+          echo "$TEMPERLOOP_BIN_DIR" >> "$GITHUB_PATH"
+          echo "TEMPERLOOP_HOME=$TEMPERLOOP_HOME" >> "$GITHUB_ENV"
+
+      # The release must be VERSIONED: the just-installed CLI has to report the
+      # version embedded in its shipped files (temperloop#677), not "dev". This
+      # is the one leg that proves the install carries its own version number —
+      # a hermetic unit gate (test_version_embedding.sh) can't, because it only
+      # sees the in-tree checkout, not what bootstrap actually landed on PATH.
+      # Fail-closed: unlike try/init there is no degraded-network excuse for a
+      # wrong version string. continue-on-error so the round trip below still
+      # runs and the verdict reports every leg at once.
+      - name: "Version embedded in the install"
+        id: version
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          shipped="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$TEMPERLOOP_HOME/VERSION" | head -n1)"
+          [ -n "$shipped" ] || { echo "::error::install-tier2: pinned checkout $TEMPERLOOP_HOME has no readable VERSION file"; exit 1; }
+          reported="$(temperloop version)"
+          echo "shipped VERSION file: $shipped"
+          echo "temperloop version : $reported"
+          if [ "$reported" = "temperloop dev" ]; then
+            echo "::error::install-tier2: 'temperloop version' reports 'dev' — the release version is not embedded in the shipped files (temperloop#677)"
+            exit 1
+          fi
+          if [ "$reported" != "temperloop $shipped" ]; then
+            echo "::error::install-tier2: 'temperloop version' ('$reported') does not match the shipped VERSION file ('$shipped')"
+            exit 1
+          fi
+          echo "OK: the installed CLI reports its embedded version ($shipped)."
 
       - name: Reset the demo repo to a known baseline
         env:
@@ -159,7 +190,29 @@ jobs:
           fi
           echo "try: OK — probe + open-issue list + live claude shadow-triage all ran live, zero skips"
 
-      - name: "Round trip 2/3 — init (proposal PR + consented API-state apply)"
+      # RE-SCOPED for the init scope-down (temperloop#796). `init`'s contract
+      # is now: bootstrap .temperloop/config (+ its proposal PR) -> offer/file
+      # the first epic -> print the handoff -> stop. It applies NO API state,
+      # so the old `--yes-required-check --yes-labels --no-board` invocation
+      # no longer asserts anything real. Those flags still PARSE (they are
+      # retained deprecated no-ops, which is exactly why this leg would not
+      # have gone red on its own — it would have kept passing while silently
+      # asserting an obsolete contract), so they are dropped here in favour
+      # of the flag that drives the live path that still exists.
+      #
+      # `--yes-first-epic` is what makes this a real assertion: without a
+      # preset, an unattended run correctly SKIPS the offer (GITHUB_ACTIONS
+      # is an ambient no-live-operator signal), and the skip notice itself
+      # matches the "skipped —" scan below — i.e. the leg could not pass at
+      # all without deciding the offer explicitly.
+      #
+      # The `next step:` grep is the handoff marker: it proves the run
+      # reached its final step rather than degrading somewhere earlier, and
+      # it holds on BOTH a first run (epic filed) and every later one (the
+      # idempotency probe finds the existing epic and hands off identically),
+      # which matters because the epic issue is not `demo-seed` labelled and
+      # so survives seed-demo-repo.sh --reset.
+      - name: "Round trip 2/3 — init (bootstrap + proposal PR + first-epic offer + handoff)"
         id: init
         if: always()
         continue-on-error: true
@@ -167,7 +220,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
         run: |
           temperloop init --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --timeout 30 \
-            --yes-required-check --yes-labels --no-board \
+            --yes-first-epic \
             2>&1 | tee "$RUNNER_TEMP/init.log"
           if grep -q "skipped —" "$RUNNER_TEMP/init.log"; then
             echo "::error::install-tier2: 'temperloop init' degraded instead of completing the live round trip — see the init.log artifact for the skip reason(s):"
@@ -175,12 +228,25 @@ jobs:
             exit 1
           fi
           if grep -q "FAILED" "$RUNNER_TEMP/init.log"; then
-            echo "::error::install-tier2: 'temperloop init' reported a FAILED apply action — see the init.log artifact:"
+            echo "::error::install-tier2: 'temperloop init' reported a FAILED action — see the init.log artifact:"
             grep "FAILED" "$RUNNER_TEMP/init.log" || true
             exit 1
           fi
-          echo "init: OK — proposal PR opened + required-check/labels applied live, zero skips/failures"
+          if ! grep -q '^next step: /assess --epic ' "$RUNNER_TEMP/init.log"; then
+            echo "::error::install-tier2: 'temperloop init' never printed its first-epic handoff ('next step: /assess --epic <N>') — the run did not reach the end of its contract. See the init.log artifact."
+            exit 1
+          fi
+          echo "init: OK — config bootstrapped, proposal PR opened, first epic filed, handoff printed:"
+          grep '^next step: ' "$RUNNER_TEMP/init.log"
 
+      # The manifest `eject` reverts is now SHRUNKEN: since init applies no
+      # API state, a fresh demo-repo round trip records only the proposal_pr
+      # entry (a pre-scope-down repo's label/required_check/board entries are
+      # still carried forward and still reverted — eject keeps all four
+      # handlers — but this fixture is reset each run, so it has none). eject
+      # is fail-open at the exit-code layer exactly like try/init, so a bare
+      # exit code proves nothing: content-scan for its own `FAILED` markers,
+      # same shape as the two legs above.
       - name: "Round trip 3/3 — eject (manifest-driven revert)"
         id: eject
         if: always()
@@ -190,6 +256,12 @@ jobs:
         run: |
           temperloop eject --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --yes \
             2>&1 | tee "$RUNNER_TEMP/eject.log"
+          if grep -q "FAILED" "$RUNNER_TEMP/eject.log"; then
+            echo "::error::install-tier2: 'temperloop eject' reported a FAILED revert under the shrunken install manifest — see the eject.log artifact:"
+            grep "FAILED" "$RUNNER_TEMP/eject.log" || true
+            exit 1
+          fi
+          echo "eject: OK — clean revert, no FAILED markers"
 
       - name: Upload round-trip logs
         if: always()
@@ -206,6 +278,7 @@ jobs:
       - name: Round-trip verdict
         if: always()
         env:
+          VERSION_OUTCOME: ${{ steps.version.outcome }}
           TRY_OUTCOME: ${{ steps.try.outcome }}
           INIT_OUTCOME: ${{ steps.init.outcome }}
           EJECT_OUTCOME: ${{ steps.eject.outcome }}
@@ -215,12 +288,14 @@ jobs:
             echo
             echo "| leg | outcome |"
             echo "|---|---|"
+            echo "| version | $VERSION_OUTCOME |"
             echo "| try | $TRY_OUTCOME |"
             echo "| init | $INIT_OUTCOME |"
             echo "| eject | $EJECT_OUTCOME |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           failed_legs=""
+          [ "$VERSION_OUTCOME" = "success" ] || failed_legs="$failed_legs version"
           [ "$TRY_OUTCOME" = "success" ] || failed_legs="$failed_legs try"
           [ "$INIT_OUTCOME" = "success" ] || failed_legs="$failed_legs init"
           [ "$EJECT_OUTCOME" = "success" ] || failed_legs="$failed_legs eject"

@@ -2,10 +2,20 @@
 title: Guiding principles
 ---
 
-temperloop#135. This page states the thesis TemperLoop is built on and the
-twelve principles that follow from it — each one pinned to the in-repo
-mechanism that embodies it, so the claim is falsifiable, not aspirational.
-Every path below exists in this repo today; open it and check.
+# Guiding principles
+
+This page states the thesis TemperLoop is built on and the fifteen principles
+that follow from it — each one pinned to the in-repo mechanism that embodies
+it, so the claim is falsifiable, not aspirational. Every path below exists in
+this repo today; open it and check (temperloop#135).
+
+This page is **dual-use**, the same way `docs/who-its-for.md` is for the
+persona agents: it is the stranger-facing thesis README and ADR-0001 point
+to, and it is also the **charter-derivation source** a principle-referencing
+lens — `/workshop`'s premise gate and its red-team lens — cites back to by
+name, so a design ratified against "principle 13" or "principle 14" resolves
+to an actual, checkable section here rather than a lens inventing its own
+parallel list.
 
 ## The thesis
 
@@ -41,7 +51,7 @@ contributor being infallible.
   merge) is contained to the smallest scope that could have caused it, not
   free to spread across a shared checkout or an unreviewed `main`.
 
-## The twelve principles
+## The fifteen principles
 
 ### 1. Manage agents like an org, not like a chat
 
@@ -50,8 +60,8 @@ Projects provisioning) is a **cross-session lock**, not a status display.
 Claiming an item — marking it In Progress and stamping the owning
 session — is the first action before investigation even starts, because
 investigation itself is duplicate-able work the lock is meant to prevent.
-On the autonomous lane, the funnel's drive-concurrency governor
-(`FUNNEL_DRIVE_CONCURRENCY`) bounds how many drives a tick launches; the
+On the autonomous lane, the pipeline's drive-concurrency governor
+(`PIPELINE_DRIVE_CONCURRENCY`) bounds how many drives a tick launches; the
 human WIP-cap governance rule was retired (temperloop#162) once it proved to
 double a mechanical governor as a cross-session bound the claim-first lock
 already provides per item.
@@ -102,7 +112,7 @@ time.
 
 - Write-isolation guard: `claude/hooks/write-lane-guard.sh`
 - Stale-branch guard: `claude/hooks/git-stale-branch-guard.sh`
-- Shared-budget guard: `claude/hooks/board-adapter-guard.sh`
+- Subtree-edit guard: `claude/hooks/subtree-edit-guard.sh`
 
 ### 5. Climb the maturity ladder on evidence
 
@@ -113,12 +123,12 @@ invariant. Each step up the ladder is a response to an observed leak, not a
 guess at what might leak.
 
 - `git-stale-branch-guard.sh` backing the "fetch ground truth before
-  building" habit, and `board-adapter-guard.sh` backing the
-  "adapter-first" habit — both described as backstops, not replacements,
-  in `claude/CLAUDE.kernel.md` §§ "Fetch ground truth before building" and
-  "GitHub Projects boards"
-- The hardest rung — a CI-enforced invariant that fails the build outright:
-  `workflows/scripts/validate-live-drain.sh`
+  building" habit, and `write-lane-guard.sh` backing the working-tree
+  ownership habit — both described as backstops, not replacements, in
+  `claude/CLAUDE.kernel.md` §§ "Fetch ground truth before building" and
+  "Working-tree ownership"
+- The hardest layer — a CI-enforced invariant that fails the build outright:
+  `workflows/scripts/validate-capture-backstop.sh`
 
 ### 6. Automate the reversible; human-gate the irreversible
 
@@ -150,16 +160,21 @@ anticipate.
 ### 8. Subtraction over mechanism
 
 The default instinct is to fit the existing mechanism, or remove a
-redundant one, before adding a new one. A card's board status is driven by
-the same GitHub close-cascade that already fires on merge, rather than a
-second write nothing else needs; a merge queue prefers GitHub's own native
-queue and only falls back to hand-rolled mechanics on a repo tier where the
-native feature isn't provisionable at all.
+redundant one, before adding a new one. A merge queue prefers GitHub's own
+native queue and only falls back to hand-rolled mechanics on a repo tier
+where the native feature isn't provisionable at all; the whole Projects-v2
+adapter arm was removed once the issues-only backend covered the same job,
+rather than kept alive as a second path to maintain.
+
+The principle also says when *not* to subtract: where no existing mechanism
+covers the job, the write is not redundant. The issues-only backend has no
+card-moving automation and nowhere to hook one, so the adapter's Done write
+is the primary mechanism rather than a removable second write.
 
 - The redundant-step rule, in prose: `claude/CLAUDE.kernel.md` §§ "Trust
-  confirmed state" and "Board hygiene is part of the gate" ("a manual
-  `board_set_status … Done` is a redundant backstop, not the primary
-  mechanism")
+  confirmed state" and "Board hygiene is part of the gate" — where
+  `board_set_status … Done` is the primary mechanism, owed by whoever
+  closes the item (see `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`)
 - The fallback-only-when-native-is-absent seam: `docs/managed-merge-queue.md`,
   `workflows/scripts/build/gate.sh`
 
@@ -188,16 +203,23 @@ stopped emitting is caught rather than assumed to still be reporting.
 
 ### 11. Budgets are first-class
 
-API points, tokens, and a 5-hour usage quota are metered resources with
-their own gates, not assumed infinite. A cache TTL protects a shared
-GraphQL budget from a burst of reads; a quota gate reads the live
-rate-limit snapshot and pauses a run rather than exhausting the window.
+API calls, tokens, and a 5-hour usage quota are metered resources with
+their own gates, not assumed infinite. A quota gate reads the live
+rate-limit snapshot and pauses a run rather than exhausting the window; a
+durable issue-corpus store keeps a repeated read off the network entirely.
+
+Budgets also merge, which is its own hazard: removing the Projects-v2 arm
+collapsed two independently-metered API surfaces into one shared REST
+bucket, so a caller that was once moved onto a *different* budget for
+relief is now back on the same one. With no second bucket to route to, a
+drain has to be fixed at its source.
 
 - The quota decision script (fail-open, never sleeps itself):
   `workflows/scripts/build/quota-gate.sh`
-- The board's structure/state cache-TTL split protecting the shared GraphQL
-  budget: `workflows/scripts/board/lib/board.sh` (see its cache-TTL
-  comments), `workflows/scripts/board/lib/cache.sh`
+- The durable issue-corpus store, the one cache in front of a board read:
+  `workflows/scripts/board/lib/cache.sh` (and its `CACHE-STORE.md`)
+- The worked example of a merged budget:
+  `docs/failure-modes/02-rest-budget-exhaustion.md`
 
 ### 12. Capture at source, drain on schedule
 
@@ -207,7 +229,45 @@ summary that might never happen. Every such live capture rule ships with a
 paired backstop in the nightly drain, and a registry check fails the build
 if either half of a pair ships without the other.
 
-- The live/drain pairing rule and its registry table:
-  `claude/commands/tidy.md` (the "Live/Drain pairings" table)
+- The capture/backstop pairing rule and its registry table:
+  `claude/commands/tidy.md` (the "Capture/Backstop pairings" table)
 - The CI check that fails on a half-shipped pair:
-  `workflows/scripts/validate-live-drain.sh`
+  `workflows/scripts/validate-capture-backstop.sh`
+
+### 13. The stranger test
+
+A kernel rule or mechanism earns its place only if a stranger's fresh
+install — someone who cloned only the kernel repo, with no org history, no
+personal vault, no personal board tied to it — would actually need it for
+the kernel machinery (board adapter, build/sweep pipeline, install/doctor,
+branch/PR policy) to work. A concern that's personal, org-specific, or tied
+to one machine's paths or credentials routes downstream to the overlay
+instead, never patched silently into the kernel.
+
+- The rule verbatim, by this name: `claude/CLAUDE.kernel.md` § "Kernel vs
+  overlay routing rule" ("The stranger test")
+
+### 14. Minimum-viable-output
+
+Whatever else is unavailable to a workflow — no `gh` auth, no repo, no
+registered board, no reviewer agents declared — the run still produces the
+one artifact that is its floor, and every dependency below that floor
+degrades legibly rather than blocking the floor itself.
+
+- The rule verbatim, by this name: `claude/commands/workshop.md` § "Minimum-
+  viable-output rule" (the coverage walk's guaranteed floor: a ratified
+  brief note in the knowledge store, even when every downstream integration
+  is unavailable)
+
+### 15. Legible degradation
+
+When an agent-gated step's dependency — a reviewer agent, a capability probe
+target — is unavailable, the step emits a one-line `skipped — <x>
+unavailable` notice rather than silently no-opping. A silent skip is
+indistinguishable from a pass that never ran, which is worse than a loud
+failure because it hides the missing check instead of surfacing it.
+
+- The rule verbatim, by this name: `claude/CLAUDE.kernel.md` § "Subagent
+  usage" ("Legible agent-gate degradation")
+- The presentation-plane instance of the same rule: `claude/message-schema.md`
+  § "Degradation notice"

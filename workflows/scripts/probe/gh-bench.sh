@@ -2,20 +2,27 @@
 #
 # gh-bench.sh — the SYNTHETIC anchor for the F#988 gh-performance measurement
 # (the git-bug tracker evaluation). Times the board adapter's read-heavy paths
-# over a fixed set of sections, snapshots the GraphQL/REST rate-limit budget
-# around the run, and freezes per-op-class summary records to the gh-perf lake
-# (via emit-gh-perf.sh) so `gh-perf-report.sh --compare before after` has an
-# apples-to-apples anchor alongside the passive gh-call-logger v2 live window.
+# over a fixed set of sections, snapshots the REST `core` rate-limit budget
+# around the run — the budget the tracker path actually spends — and freezes
+# per-op-class summary records to the gh-perf lake (via emit-gh-perf.sh) so
+# `gh-perf-report.sh --compare before after` has an apples-to-apples anchor
+# alongside the passive gh-call-logger v2 live window.
 #
 # WHY a synthetic anchor AND a live window: the live window (the v2 TSV) is
 # zero-effort but its op mix drifts with whatever the operator did that week.
 # This bench runs the SAME sections every time, so a before/after delta is
 # attributable to the tracker change, not to a change in what was measured.
 #
-# The board-7 (issues-only / REST) baseline is SAFE to run repeatedly: it spends
-# only the REST budget, never the shared 5,000-pt/hr GraphQL budget (F#983) —
-# board 7 has no Projects-v2 page. On a Projects board (3-6) the resolve_cold
-# section DOES spend GraphQL points; the run-total record captures how many.
+# Every registered board (issues-only backend, temperloop#524 — the
+# Projects-v2/GraphQL arm's removal) is SAFE to run repeatedly: it spends only
+# REST's separate 5,000-pt/hr `core` bucket, never the shared Projects-v2
+# GraphQL budget the arm used to draw on — no board has a Projects-v2 page
+# left to spend GraphQL points against. The `graphql_remaining` figure is
+# still snapshotted and reported alongside `core_remaining` (a stray `gh api
+# graphql` call from outside the tracker path still draws on that separate
+# budget and is worth being able to see) — but core(REST) is the load-bearing,
+# reported figure this bench exists to catch drain on; the run-total record
+# captures both.
 #
 # Usage:
 #   gh-bench.sh --board N --phase before|after --label <str>
@@ -131,11 +138,11 @@ _run_section() {
     resolve_item) for i in $ISSUES; do board_resolve_item "$board" "$i" >/dev/null 2>&1 || true; done ;;
     worklist)     "$HERE/../board/worklist.sh" --board "$board" --all >/dev/null 2>&1 || true ;;
     reconcile_status) "$HERE/../board/reconcile.sh" --board "$board" --status >/dev/null 2>&1 || true ;;
-    funnel_read_emu)
-      # emulate funnel-tick's read fan-out: two label searches + a per-issue view
-      GH_CALL_OP="bench:funnel_emu" gh issue list --repo "$REPO" --search "label:fnd:status:in-progress" --limit 20 >/dev/null 2>&1 || true
-      GH_CALL_OP="bench:funnel_emu" gh issue list --repo "$REPO" --search "is:open" --limit 20 >/dev/null 2>&1 || true
-      for i in $ISSUES; do GH_CALL_OP="bench:funnel_emu" gh issue view "$i" --repo "$REPO" --json number,labels,state >/dev/null 2>&1 || true; done
+    pipeline_read_emu)
+      # emulate pipeline-tick's read fan-out: two label searches + a per-issue view
+      GH_CALL_OP="bench:pipeline_emu" gh issue list --repo "$REPO" --search "label:fnd:status:in-progress" --limit 20 >/dev/null 2>&1 || true
+      GH_CALL_OP="bench:pipeline_emu" gh issue list --repo "$REPO" --search "is:open" --limit 20 >/dev/null 2>&1 || true
+      for i in $ISSUES; do GH_CALL_OP="bench:pipeline_emu" gh issue view "$i" --repo "$REPO" --json number,labels,state >/dev/null 2>&1 || true; done
       ;;
     rel_loop)     for i in $ISSUES; do board_blocked_by_open "$board" "$i" >/dev/null 2>&1 || true; board_sub_issues "$board" "$i" >/dev/null 2>&1 || true; done ;;
     mutation_noop)
@@ -154,7 +161,7 @@ case "$mode" in
   warm) SECTIONS="resolve_warm" ;;
   both) SECTIONS="resolve_cold resolve_warm" ;;
 esac
-SECTIONS="$SECTIONS item_list resolve_item worklist reconcile_status funnel_read_emu rel_loop"
+SECTIONS="$SECTIONS item_list resolve_item worklist reconcile_status pipeline_read_emu rel_loop"
 [ "$with_mutations" -eq 1 ] && SECTIONS="$SECTIONS mutation_noop"
 
 # --- run --------------------------------------------------------------------
@@ -193,7 +200,7 @@ $(_ratelimit)
 EOF
 gql_spent=$(( gql0 - gql1 )); [ "$gql_spent" -ge 0 ] || gql_spent=0
 core_spent=$(( core0 - core1 )); [ "$core_spent" -ge 0 ] || core_spent=0
-echo "gh-bench: budget spent this run — graphql=${gql_spent} pts, core(REST)=${core_spent} calls"
+echo "gh-bench: budget spent this run — core(REST)=${core_spent} calls [the tracker's own 5,000/hr bucket], graphql=${gql_spent} pts (informational — no board draws on this budget anymore)"
 
 "$EMIT" --phase "$phase" --label "$label" --source bench --backend "$backend" \
   --board "$board" --op-class "_run_total" --count "$reps" \

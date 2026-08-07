@@ -26,7 +26,7 @@
 #     error.
 #
 # What fails CI (collect-all-failures, one run surfaces everything —
-# message/summary style modeled on workflows/scripts/validate-live-drain.sh):
+# message/summary style modeled on workflows/scripts/validate-capture-backstop.sh):
 #   UNCLAIMED              tracked path no manifest glob claims
 #   MISSING-DOC            non-exempt slug with no docs/features/<slug>.md
 #   MISSING-SECTION        required section heading absent from a doc

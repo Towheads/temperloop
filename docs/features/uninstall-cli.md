@@ -13,9 +13,10 @@ recorded, reversible undo, "uninstall" degrades into either a manual
 a namespace grep (risking an unrelated file that merely looks like it
 belongs to temperloop). Two other undo surfaces already exist and are
 deliberately **not** this one: `bin/bootstrap.sh`'s own footprint
-(`~/.local/bin/temperloop`, the `foundation` compat shim,
-`~/.local/share/temperloop`) predates any manifest — nothing recorded it —
-and `temperloop eject` undoes a *target repo's* `.foundation/config` side
+(`~/.local/bin/temperloop`, `~/.local/share/temperloop`, plus a
+`foundation` compat symlink if the install predates v0.19.0) predates any
+manifest — nothing recorded it —
+and `temperloop eject` undoes a *target repo's* `.temperloop/config` side
 effects (labels, required checks, boards), a wholly different manifest for
 a wholly different class of side effect. This item is the third, missing
 piece: reversing the *machine-surface* manifest a `temperloop install`
@@ -49,8 +50,9 @@ unresolved subset; `uninstall.sh` needs no extra bookkeeping of its own for
 that convergence, and exits 1 to signal the incomplete run.
 
 `temperloop uninstall` explicitly does **not** remove the bootstrap
-footprint (`~/.local/bin/temperloop`, the `foundation` compat shim,
-`~/.local/share/temperloop`) — that footprint predates any manifest, so
+footprint (`~/.local/bin/temperloop`, `~/.local/share/temperloop`, plus a
+pre-v0.19.0 install's `foundation` compat symlink) — that footprint predates
+any manifest, so
 this manifest has no record of it and cannot know it's safe to remove.
 This is a deliberate stance, not a gap: inferring "this looks like a
 temperloop path, remove it too" would be exactly the namespace-grep
@@ -70,7 +72,7 @@ conflates them — `bin/README.md`'s Uninstall section and `eject.sh`'s own
 - **(b) This subcommand** — the machine-surface install manifest a
   `temperloop install` (a sibling item in this epic, not yet landed as of
   this item) records.
-- **(c) `temperloop eject`** — a target repo's `.foundation/config`
+- **(c) `temperloop eject`** — a target repo's `.temperloop/config`
   side effects. A wholly separate manifest (repo-tree-scoped, sole-writer
   `init.sh`/reader `eject.sh`) from the machine-scoped manifest this item
   reverses — see `manifest.sh`'s own header for why the two are never
@@ -78,12 +80,12 @@ conflates them — `bin/README.md`'s Uninstall section and `eject.sh`'s own
 
 `temperloop uninstall` is dispatched exactly like every other subcommand —
 a discovered file at `bin/subcommands/uninstall.sh`, no dispatcher edit
-required (`bin/temperloop`'s DISPATCH MODEL). Like every subcommand, it
-still passes through the dispatcher's unconditional prereq gate
-(`claude` + authenticated `gh` on `PATH`) before it runs, even though this
-subcommand itself never calls either tool — that gate is dispatcher-level,
-not opt-outable per subcommand (see `bin/lib/common.sh`:
-`foundation_check_prereqs`).
+required (`bin/temperloop`'s DISPATCH MODEL). Per-subcommand prereq scoping
+(temperloop#412) means the dispatcher checks a subcommand only against what
+its own `# prereqs: ...` header declares (see `bin/lib/common.sh`:
+`foundation_check_prereqs`); this subcommand declares none, matching that it
+never calls `claude` or `gh` itself, so `temperloop uninstall` runs with
+zero dispatcher-level claude/gh checks in front of it.
 
 ## Resource impact
 

@@ -2,7 +2,8 @@
 # kernel/bin/lib/common.sh — shared helpers + constants for the `temperloop`
 # CLI and its subcommands (foundation #765 Epic D, item
 # cli-entrypoint-bootstrap / #849). Renamed from `foundation` to `temperloop`
-# in foundation #893 — kernel/bin/foundation remains a compat shim.
+# in foundation #893; kernel/bin/foundation's compat shim was removed in
+# v0.19.0 and now only refuses.
 #
 # This is the PINNED location for shared CLI lib/constants (see the epic's
 # plan note, "## Repo targeting"): a future item (e.g. foundation-try) drops
@@ -19,7 +20,7 @@
 
 # Machine-level install locations the curl bootstrap (bin/bootstrap.sh) uses.
 # Echoed back here (rather than re-typed) so the dispatcher's help text and
-# any future `foundation eject` uninstall doc all state the SAME path.
+# any future `temperloop eject` uninstall doc all state the SAME path.
 # bootstrap.sh runs BEFORE any of this repo exists on disk, so it cannot
 # source this file — its own copy of these two defaults must be kept
 # byte-identical by hand; see bootstrap.sh's header note.
@@ -28,25 +29,107 @@
 # linting this file in isolation, hence the disable, mirroring the
 # workflows/scripts/board/lib/board.sh BOARD_OWNER precedent.
 # shellcheck disable=SC2034
-FOUNDATION_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
+TEMPERLOOP_CLI_HOME_DEFAULT="$HOME/.local/share/temperloop"
 # shellcheck disable=SC2034
-FOUNDATION_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
+TEMPERLOOP_CLI_BIN_DEFAULT="$HOME/.local/bin/temperloop"
 
-# foundation_check_prereqs
-#   Verifies the two external tools every live subcommand needs:
-#     - the Claude Code CLI (`claude`) — drives the actual work
-#     - an authenticated `gh` — talks to GitHub
-#   Prints one specific, actionable line per missing/failing prerequisite to
-#   stderr (never a bare failure or a downstream stack trace) and returns
-#   non-zero if anything is missing. Read-only: zero side effects.
-foundation_check_prereqs() {
-  local problems=0
+# ── Legacy FOUNDATION_* env names: no longer read (temperloop#165) ──────────
+# TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR / TEMPERLOOP_KERNEL_REPO /
+# TEMPERLOOP_VERSION are the env settings. The pre-rename FOUNDATION_* names
+# were read as fallbacks through the v0.15.0 -> v0.19.0 migration window;
+# that window is CLOSED (VERSIONING.md pre-1.0 bump rules; the v0.15.0
+# CHANGELOG BREAKING entry carries the migration note).
+#
+# temperloop_env_compat
+#   Called once by the dispatcher (kernel/bin/temperloop) before any
+#   subcommand dispatch. A legacy FOUNDATION_* var is no longer ADOPTED —
+#   but it is still DETECTED, and refusing on it is the whole point: an
+#   operator who set $FOUNDATION_HOME asked for a specific install root, and
+#   silently resolving a different one is precisely the silent miss this
+#   detection exists to prevent. Returns 1 after a specific message naming
+#   the replacement. A set TEMPERLOOP_* primary wins silently, exactly as
+#   before.
+temperloop_env_compat() {
+  local pair legacy new legacy_set new_set legacy_val
+  for pair in \
+    "FOUNDATION_HOME TEMPERLOOP_HOME" \
+    "FOUNDATION_BIN_DIR TEMPERLOOP_BIN_DIR" \
+    "FOUNDATION_KERNEL_REPO TEMPERLOOP_KERNEL_REPO" \
+    "FOUNDATION_VERSION TEMPERLOOP_VERSION"; do
+    legacy="${pair%% *}"
+    new="${pair##* }"
+    eval "legacy_set=\${${legacy}+x}"
+    eval "new_set=\${${new}+x}"
+    eval "legacy_val=\${${legacy}:-}"
+    if [ -n "$legacy_set" ] && [ -z "$new_set" ] && [ -n "$legacy_val" ]; then
+      echo "temperloop: ERROR — \$$legacy is no longer read: it was renamed \$$new in v0.15.0 and the legacy name was removed in v0.19.0. Set \$$new and re-run." >&2
+      return 1
+    fi
+  done
+  return 0
+}
 
+# ── Release version embedding (temperloop#677) ──────────────────────────────
+# temperloop_resolve_version
+#   Single source of truth for what `temperloop version` (and feedback.sh's
+#   telemetry) reports. Precedence:
+#     TEMPERLOOP_VERSION env  >  the shipped repo-root VERSION file  >  "dev".
+#   (The pre-rename FOUNDATION_VERSION fallback was removed in v0.19.0 with
+#   the rest of the temperloop#165 window; temperloop_env_compat above now
+#   refuses on a set legacy name rather than resolving it here.)
+#
+#   The VERSION file is the COMMITTED, shipped source of truth: a release cut
+#   bumps it in the tagged commit (kernel-repo-layout.md § Release-tag
+#   convention), so a fresh tag-pinned install CONTAINS its own version rather
+#   than deriving it from git at runtime. A dev checkout with no readable
+#   VERSION file degrades to "dev".
+#
+#   The file is read relative to THIS library's real location — inside the
+#   function, BASH_SOURCE[0] is common.sh (bin/lib/common.sh), so the repo
+#   root is two levels up regardless of whether the dispatcher or a
+#   subcommand-in-its-own-process sourced us, and through the bootstrap
+#   symlink (only bin/temperloop is symlinked; this file is sourced by its
+#   real path). An explicit env override still wins unchanged — the seam CI
+#   and test fixtures already rely on.
+temperloop_resolve_version() {
+  if [ -n "${TEMPERLOOP_VERSION:-}" ]; then
+    printf '%s\n' "$TEMPERLOOP_VERSION"
+    return 0
+  fi
+  local _common_dir _version_file _v
+  _common_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _version_file="$_common_dir/../../VERSION"
+  if [ -f "$_version_file" ]; then
+    # First non-empty line, all whitespace stripped (BSD/macOS-safe sed).
+    _v="$(sed -e 's/[[:space:]]//g' -e '/^$/d' "$_version_file" | head -n1)"
+    if [ -n "$_v" ]; then
+      printf '%s\n' "$_v"
+      return 0
+    fi
+  fi
+  printf '%s\n' "dev"
+  return 0
+}
+
+# foundation_check_prereq_claude
+#   Verifies the Claude Code CLI (`claude`) is on PATH. Prints one specific,
+#   actionable line to stderr and returns non-zero if it is missing.
+#   Read-only: zero side effects.
+foundation_check_prereq_claude() {
   if ! command -v claude >/dev/null 2>&1; then
     echo "temperloop: 'claude' (Claude Code CLI) not found on PATH." >&2
     echo "  Install: https://docs.claude.com/en/docs/claude-code/quickstart" >&2
-    problems=$((problems + 1))
+    return 1
   fi
+  return 0
+}
+
+# foundation_check_prereq_gh
+#   Verifies `gh` is on PATH AND authenticated. Prints one specific,
+#   actionable line per missing/failing piece to stderr and returns
+#   non-zero if either is missing. Read-only: zero side effects.
+foundation_check_prereq_gh() {
+  local problems=0
 
   if ! command -v gh >/dev/null 2>&1; then
     echo "temperloop: 'gh' (GitHub CLI) not found on PATH." >&2
@@ -57,6 +140,42 @@ foundation_check_prereqs() {
     echo "  Run: gh auth login" >&2
     problems=$((problems + 1))
   fi
+
+  if [[ "$problems" -gt 0 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# foundation_check_prereqs <prereq-list>
+#   Per-subcommand prereq scoping (temperloop#412): checks ONLY the
+#   space-separated prereq names actually passed (a subset of `claude`,
+#   `gh`) — never a blanket "check everything" default. This is what lets
+#   the `bin/temperloop` dispatcher gate a subcommand on exactly what its
+#   own `# prereqs: ...` header declares (see that script's
+#   _foundation_subcommand_prereqs) instead of a one-size-fits-all check
+#   applied to every subcommand regardless of whether it touches claude or
+#   gh at all. Called with an empty/absent list, this is a pure no-op that
+#   returns 0 immediately — a subcommand with no declared prereqs gets zero
+#   dispatcher-level checks, on the premise that its own internal
+#   degrade-with-reason logic (see bin/temperloop's header comment) is the
+#   real, already-correct contract. Prints one specific, actionable line
+#   per missing/failing prerequisite to stderr (never a bare failure or a
+#   downstream stack trace) and returns non-zero if anything named is
+#   missing. Read-only: zero side effects.
+foundation_check_prereqs() {
+  local prereqs="${1:-}" name problems=0
+
+  for name in $prereqs; do
+    case "$name" in
+      claude) foundation_check_prereq_claude || problems=$((problems + 1)) ;;
+      gh) foundation_check_prereq_gh || problems=$((problems + 1)) ;;
+      *)
+        echo "temperloop: internal error: unknown prereq '$name' declared by this subcommand." >&2
+        problems=$((problems + 1))
+        ;;
+    esac
+  done
 
   if [[ "$problems" -gt 0 ]]; then
     return 1

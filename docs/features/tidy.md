@@ -51,29 +51,29 @@ artifact) so the whole extraction history — lexicon hits and model-skim
 misses alike — is queryable rather than only visible inside the note it
 produced.
 
-### The Live/Drain pairing contract
+### The Capture/Backstop pairing contract
 
 Every extraction rule that *does* have a live counterpart is registered as a
-**pair**: a live rule (a real-time instruction, e.g. "capture a defect at the
-moment it's noticed") and its drain backstop (the `tidy` step that re-derives
+**pair**: a capture rule (a real-time instruction, e.g. "capture a defect at the
+moment it's noticed") and its backstop (the `tidy` step that re-derives
 the same class of finding from a transcript after the fact). The pairing
 registry lives in a table at the top of the `tidy` command spec itself — the
 single source of truth for pairs generic enough that any checkout of this
 repo needs them backstopped. A composed/overlay checkout may carry a second,
 separate extension table for pairs that reference personal or
-organization-specific live rules with no meaning in a standalone checkout.
+organization-specific capture rules with no meaning in a standalone checkout.
 
 This is a **contract, not a convention**: a CI validator script parses both
 tables — the base table always, and the extension table when present — and
-checks that every live anchor named in a row actually exists at the location
-the row claims, and that every drain anchor named in a row exists as a
+checks that every capture anchor named in a row actually exists at the location
+the row claims, and that every backstop anchor named in a row exists as a
 `###`-level backstop step inside the drain command spec. It **fails the
-build** if any pair is half-present in either direction: a live rule added
-with no drain backstop, or a drain step that references a live rule no
-longer in the source file it names. This is what makes "add a live rule and
-its drain backstop in the same change" mechanically enforced rather than a
-review-time reminder that can silently lapse — a live rule shipped without
-its drain half is caught by CI the same run it lands, not discovered months
+build** if any pair is half-present in either direction: a capture rule added
+with no backstop, or a drain step that references a capture rule no
+longer in the source file it names. This is what makes "add a capture rule and
+its backstop in the same change" mechanically enforced rather than a
+review-time reminder that can silently lapse — a capture rule shipped without
+its backstop half is caught by CI the same run it lands, not discovered months
 later when the gap has already cost real signal.
 
 ## Integration
@@ -94,7 +94,7 @@ one findings record per accepted extraction.
 The **check-in** feature is the read side of every surface this command
 writes: it is the sole reader-and-disposer of the review surfaces above, and
 it renders a status brief that summarizes what this command found overnight.
-The **CI validator** for the Live/Drain pairing contract is a repo-level
+The **CI validator** for the Capture/Backstop pairing contract is a repo-level
 quality gate, run alongside every other structural check.
 
 ## Resource impact

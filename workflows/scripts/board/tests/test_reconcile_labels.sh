@@ -1,0 +1,669 @@
+#!/usr/bin/env bash
+#
+# Fixture-replay tests for reconcile.sh's Lens 3 (label hygiene, --labels):
+# board_label_hygiene-sweep — orphaned `fnd:host/session:*` repo labels and
+# stale `fnd:status:*` labels left on closed issues, both artifacts of the
+# issues-only backend (board 7, the kernel tracker itself). Zero network: we
+# SOURCE reconcile.sh (its execute-guard suppresses the auto-run when sourced)
+# and override its `_board_gh` seam, exactly like test_reconcile.sh does for
+# Lens 1/2. `label_reconcile_main` is driven directly (not through the CLI
+# parser) so each case sets $PROJECT_NUMBER / $LABELS_APPLY / $LABELS_UNATTENDED
+# itself.
+#
+# Pin BOTH boards.conf discovery paths to nonexistent files (same convention
+# as test_boards_conf.sh / test_board_name_aliases.sh) so board 7's backend
+# resolves to the built-in default ("issues") regardless of what machine this
+# runs on.
+#
+# PROJECT_NUMBER / LABELS_APPLY / LABELS_UNATTENDED / the API_*_JSON fixtures
+# below are read by the sourced reconcile.sh and by _board_gh, not in this
+# file — ShellCheck can't see that cross-file use, so silence SC2034
+# file-wide (the directive must precede the first command). (Keep prose off
+# any line starting `# shellcheck ` -- it is parsed as a directive.)
+# shellcheck disable=SC2034
+export BOARDS_CONF_MACHINE="/no-such-machine-conf-$$"
+export BOARDS_CONF_REPO_LOCAL="/no-such-repo-local-conf-$$"
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
+
+# Isolated cache dir — never the real TMPDIR/BOARD_CACHE_DIR (mirrors
+# test_reconcile.sh's isolation rationale).
+BOARD_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-labels-cache-test-XXXXXX")"
+export BOARD_CACHE_DIR
+TEST_TMP_DIRS=("$BOARD_CACHE_DIR")
+cleanup() { rm -rf "${TEST_TMP_DIRS[@]}"; }
+trap cleanup EXIT
+
+# shellcheck source=scripts/reconcile.sh
+# shellcheck disable=SC1091
+source "$SCRIPTS_DIR/reconcile.sh"
+
+fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
+
+# Always the issues-only kernel tracker board for this lens.
+PROJECT_NUMBER=7
+
+# --- mock _board_gh state -----------------------------------------------
+# LABEL_LIST_JSON        -> `gh label list` response (every repo label, fnd:
+#                            and non-fnd: mixed, exactly as a real repo would
+#                            return).
+# OPEN_ATTACHED_LABELS    -> space-separated set of labels currently attached
+#                            to >=1 OPEN issue (drives the per-label
+#                            `issue list --label X --state open` query for
+#                            every label EXCEPT $RACE_LABEL, which gets its
+#                            own call-counted behavior below).
+# CLOSED_ISSUES_JSON      -> `gh issue list --state closed --json
+#                            number,labels` bulk-read response.
+# RACE_LABEL / RACE_CALLS_FILE -> simulates a claim landing in the scan->apply
+#                            gap: the FIRST `issue list --label $RACE_LABEL`
+#                            query (scan) returns empty (orphan); the SECOND
+#                            (apply's own re-check) returns a live open issue.
+#                            Proves the re-check is a FRESH read, not the
+#                            scan's own snapshot. Empty ("") disables it. The
+#                            call count is tracked in a FILE, not a shell
+#                            variable — `_board_gh` runs inside a command-
+#                            substitution subshell here (its stdout is
+#                            captured), so a plain variable increment would be
+#                            lost when that subshell exits; a file write is
+#                            real I/O and survives the subshell boundary
+#                            (same reason $DELETES/$STRIPS below are files,
+#                            not variables).
+# API_<n>_JSON            -> `gh api repos/<repo>/issues/<n>` response for the
+#                            per-issue re-check the strip path does
+#                            immediately before removing a status label.
+LABEL_LIST_JSON=""
+OPEN_ATTACHED_LABELS=""
+CLOSED_ISSUES_JSON="[]"
+# OPEN_ISSUES_JSON -> `gh issue list --state open --json number,labels` bulk-read
+# response (scan 3, temperloop#376 — unstatused open issues). Distinct from the
+# per-label open-count queries above (those carry --label); this is the
+# label-less --state open bulk read. Defaults to empty so pre-existing cases
+# (which never set it) surface zero unstatused-open candidates.
+OPEN_ISSUES_JSON="[]"
+RACE_LABEL=""
+RACE_CALLS_FILE="/dev/null"
+DELETES="/dev/null"
+STRIPS="/dev/null"
+BACKFILLS="/dev/null"
+
+_board_gh() {
+  case "$1 $2" in
+    "label list")
+      printf '%s' "$LABEL_LIST_JSON" ;;
+    "issue list")
+      local has_label=0 lbl="" a want=0 state=""
+      for a in "$@"; do
+        if [ "$want" = 1 ]; then lbl="$a"; want=0; continue; fi
+        case "$a" in
+          --label) has_label=1; want=1 ;;
+          open|closed|all) state="$a" ;;
+        esac
+      done
+      if [ "$has_label" = 1 ]; then
+        if [ -n "$RACE_LABEL" ] && [ "$lbl" = "$RACE_LABEL" ]; then
+          local n_calls
+          printf 'x\n' >>"$RACE_CALLS_FILE"
+          n_calls="$(wc -l <"$RACE_CALLS_FILE" | tr -d ' ')"
+          if [ "$n_calls" -eq 1 ]; then echo '[]'; else echo '[{"number":999}]'; fi
+        else
+          case " $OPEN_ATTACHED_LABELS " in
+            *" $lbl "*) echo '[{"number":100}]' ;;
+            *)          echo '[]' ;;
+          esac
+        fi
+      elif [ "$state" = open ]; then
+        printf '%s' "$OPEN_ISSUES_JSON"
+      else
+        printf '%s' "$CLOSED_ISSUES_JSON"
+      fi
+      ;;
+    "label create")
+      # _board_issues_ensure_label (backfill path) creates the label object
+      # idempotently — a no-op here, same as the real gh's "already exists" swallow.
+      return 0 ;;
+    "label delete")
+      printf '%s\n' "$3" >>"$DELETES"
+      return 0 ;;
+    "issue edit")
+      # Distinguish a strip (--remove-label, scan 2) from a backfill
+      # (--add-label, scan 3): record each to its own log so a case can assert
+      # exactly which write fired.
+      local n="$3" a want_rm=0 want_add=0 rm_lbl="" add_lbl=""
+      for a in "$@"; do
+        if [ "$want_rm" = 1 ]; then rm_lbl="$a"; want_rm=0; continue; fi
+        if [ "$want_add" = 1 ]; then add_lbl="$a"; want_add=0; continue; fi
+        [ "$a" = "--remove-label" ] && want_rm=1
+        [ "$a" = "--add-label" ] && want_add=1
+      done
+      [ -n "$rm_lbl" ] && printf '%s\t%s\n' "$n" "$rm_lbl" >>"$STRIPS"
+      [ -n "$add_lbl" ] && printf '%s\t%s\n' "$n" "$add_lbl" >>"$BACKFILLS"
+      return 0 ;;
+    *)
+      case "$1" in
+        api)
+          local n="${2##*/}" var json
+          var="API_${n}_JSON"
+          json="${!var:-}"
+          [ -n "$json" ] || json='{"state":"open","labels":[]}'
+          printf '%s' "$json"
+          ;;
+        *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+      esac
+      ;;
+  esac
+}
+
+run_labels() {
+  DELETES="$(mktemp)"; STRIPS="$(mktemp)"; BACKFILLS="$(mktemp)"; RACE_CALLS_FILE="$(mktemp)"
+  TEST_TMP_DIRS+=("$DELETES" "$STRIPS" "$BACKFILLS" "$RACE_CALLS_FILE")
+  : >"$RACE_CALLS_FILE"
+  OUT="$(label_reconcile_main)"
+}
+
+LIVE_LABEL="fnd:host/session:hostA:sess0001"
+ORPHAN_LABEL="fnd:host/session:hostB:sess0002"
+
+# =========================================================================
+# Case 1: dry-run is the interactive default — report only, ZERO writes.
+# =========================================================================
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"'"$ORPHAN_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[{"number":200,"labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}]'
+API_200_JSON='{"state":"closed","labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}'
+RACE_LABEL=""
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "orphaned host/session labels" <<<"$OUT" \
+  || fail "case1: expected the orphaned-labels section\n$OUT"
+grep -qF "$ORPHAN_LABEL" <<<"$OUT" \
+  || fail "case1: expected the orphan label listed\n$OUT"
+grep -qF "$LIVE_LABEL" <<<"$OUT" \
+  && fail "case1: a label backing a live open-issue claim must NEVER be listed as a candidate\n$OUT"
+grep -q "stale status labels on closed issues" <<<"$OUT" \
+  || fail "case1: expected the stale-status section\n$OUT"
+grep -q "#200 — fnd:status:in-progress" <<<"$OUT" \
+  || fail "case1: expected #200's stale status label reported\n$OUT"
+grep -q "(dry-run" <<<"$OUT" \
+  || fail "case1: expected the dry-run notice\n$OUT"
+grep -q "^applied:" <<<"$OUT" \
+  && fail "case1: dry-run must never print an 'applied:' summary\n$OUT"
+grep -qw "bug" <<<"$OUT" \
+  && fail "case1: a non-fnd: label must NEVER be listed\n$OUT"
+[ ! -s "$DELETES" ] || fail "case1: dry-run must issue ZERO label deletes\n$(cat "$DELETES")"
+[ ! -s "$STRIPS" ] || fail "case1: dry-run must issue ZERO label strips\n$(cat "$STRIPS")"
+echo "PASS: case 1 dry-run (interactive default) reports candidates with zero writes"
+
+# =========================================================================
+# Case 2: --apply — real deletes/strips, PLUS the immediate re-check skips a
+# label/issue whose state changed in the scan->apply gap. A live-claimed
+# label and a non-fnd: label are never touched.
+# =========================================================================
+RACE_LABEL="fnd:host/session:hostC:sess0003"
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"'"$ORPHAN_LABEL"'"},{"name":"'"$RACE_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[{"number":200,"labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]},{"number":201,"labels":[{"name":"fnd:status:ready"}]}]'
+API_200_JSON='{"state":"closed","labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}'
+API_201_JSON='{"state":"open","labels":[{"name":"fnd:status:ready"}]}'   # reopened between scan and apply
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "deleted: $ORPHAN_LABEL" <<<"$OUT" \
+  || fail "case2: expected #ORPHAN_LABEL to be deleted\n$OUT"
+grep -qxF "$ORPHAN_LABEL" "$DELETES" \
+  || fail "case2: expected $ORPHAN_LABEL recorded in the delete log\n$(cat "$DELETES")"
+grep -qxF "$LIVE_LABEL" "$DELETES" \
+  && fail "case2: a label backing a live open-issue claim must NEVER be deleted\n$(cat "$DELETES")"
+grep -qxF "$RACE_LABEL" "$DELETES" \
+  && fail "case2: the re-check must skip a label that became attached between scan and apply\n$(cat "$DELETES")"
+grep -q "skip (now attached to an open issue): $RACE_LABEL" <<<"$OUT" \
+  || fail "case2: expected the race-skip notice for $RACE_LABEL\n$OUT"
+RACE_CALLS_SEEN="$(wc -l <"$RACE_CALLS_FILE" | tr -d ' ')"
+[ "$RACE_CALLS_SEEN" -eq 2 ] \
+  || fail "case2: expected exactly 2 open-count queries for the race label (scan + apply re-check), got $RACE_CALLS_SEEN"
+
+grep -q "stripped: #200 fnd:status:in-progress" <<<"$OUT" \
+  || fail "case2: expected #200's stale status label stripped\n$OUT"
+grep -qF "$(printf '200\tfnd:status:in-progress')" "$STRIPS" \
+  || fail "case2: expected #200 recorded in the strip log\n$(cat "$STRIPS")"
+grep -q "skip (no longer closed+labeled): #201" <<<"$OUT" \
+  || fail "case2: expected #201 (reopened) to be skipped by the re-check\n$OUT"
+grep -qF "$(printf '201\t')" "$STRIPS" \
+  && fail "case2: the re-check must skip an issue that was reopened between scan and apply\n$(cat "$STRIPS")"
+
+grep -qw "bug" <<<"$OUT" \
+  && fail "case2: a non-fnd: label must NEVER be listed, touched, or modified\n$OUT"
+grep -qxF "bug" "$DELETES" && fail "case2: 'bug' must never be deleted\n$(cat "$DELETES")"
+grep -q "bug\$" "$STRIPS" && fail "case2: 'bug' must never be stripped\n$(cat "$STRIPS")"
+
+grep -q "applied: deleted 1 label(s), stripped 1 status label(s)\." <<<"$OUT" \
+  || fail "case2: expected the exact applied-counts summary\n$OUT"
+echo "PASS: case 2 --apply deletes/strips candidates; the immediate re-check protects a label/issue whose state changed"
+
+# =========================================================================
+# Case 3: fully in sync — no orphaned labels, no stale status labels. Even
+# with --apply requested, there is nothing to do and zero writes fire.
+# =========================================================================
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[]'
+RACE_LABEL=""
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "In sync" <<<"$OUT" \
+  || fail "case3: expected the in-sync all-clear\n$OUT"
+grep -q "^orphaned host/session labels" <<<"$OUT" \
+  && fail "case3: unexpected orphaned-labels section header\n$OUT"
+grep -q "^stale status labels" <<<"$OUT" \
+  && fail "case3: unexpected stale-status section header\n$OUT"
+[ ! -s "$DELETES" ] || fail "case3: in-sync must issue ZERO deletes\n$(cat "$DELETES")"
+[ ! -s "$STRIPS" ] || fail "case3: in-sync must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 3 fully in-sync — no candidates, zero writes even with --apply"
+
+# =========================================================================
+# Case 4: --apply is idempotent — a second run against the POST-apply state
+# (as gh would actually report it) reports zero changes.
+# =========================================================================
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"'"$ORPHAN_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[{"number":200,"labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}]'
+API_200_JSON='{"state":"closed","labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}'
+RACE_LABEL=""
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+grep -q "applied: deleted 1 label(s), stripped 1 status label(s)\." <<<"$OUT" \
+  || fail "case4 (first run): expected 1 deleted + 1 stripped\n$OUT"
+
+# Second run: gh would now report the label gone and the status label removed.
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"bug"}]'
+CLOSED_ISSUES_JSON='[{"number":200,"labels":[{"name":"bug"}]}]'
+run_labels
+grep -q "In sync" <<<"$OUT" \
+  || fail "case4 (second run): expected in-sync (zero changes) on the idempotent re-run\n$OUT"
+[ ! -s "$DELETES" ] || fail "case4 (second run): must issue ZERO deletes\n$(cat "$DELETES")"
+[ ! -s "$STRIPS" ] || fail "case4 (second run): must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 4 --apply is idempotent — a second run against post-apply state reports zero changes"
+
+echo
+echo "=== Unattended apply: pending-decisions surface append ==="
+
+# Fresh, isolated knowledge-store root per sub-case (never the real vault).
+new_ks_root() {
+  local d
+  d="$(mktemp -d "${TMPDIR:-/tmp}/reconcile-labels-ks-test-XXXXXX")"
+  TEST_TMP_DIRS+=("$d")
+  printf '%s' "$d"
+}
+
+# =========================================================================
+# Case 5: unattended apply appends a `### open` entry recording the counts;
+# --unattended alone (no explicit --apply) is enough to trigger a real apply.
+# Neither pending-decisions path exists yet -> creates at the LEGACY path
+# (the append-target resolution rule: create at legacy until the Pipeline/
+# parent folder already exists).
+# =========================================================================
+KS_ROOT_5="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_5"
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"'"$ORPHAN_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[{"number":200,"labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}]'
+API_200_JSON='{"state":"closed","labels":[{"name":"fnd:status:in-progress"},{"name":"bug"}]}'
+RACE_LABEL=""
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+grep -q "applied: deleted 1 label(s), stripped 1 status label(s)\." <<<"$OUT" \
+  || fail "case5: --unattended alone must apply (LABELS_APPLY forced to 1)\n$OUT"
+LEGACY_DOC="$KS_ROOT_5/Context/pipeline - pending decisions.md"
+NEW_DOC="$KS_ROOT_5/Pipeline/pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case5: expected the pending-decisions entry created at the legacy path (neither existed)\n$(find "$KS_ROOT_5" -type f)"
+[ ! -f "$NEW_DOC" ] \
+  || fail "case5: must NOT create the new-path file when neither pre-existed (legacy is the creation target)\n$(cat "$NEW_DOC")"
+grep -q "label hygiene sweep" "$LEGACY_DOC" || fail "case5: entry missing the sweep name\n$(cat "$LEGACY_DOC")"
+grep -q "board7" "$LEGACY_DOC" || fail "case5: entry missing the board tag\n$(cat "$LEGACY_DOC")"
+grep -q "Default taken:\*\* applied — deleted 1 label(s), stripped 1 status label(s)" "$LEGACY_DOC" \
+  || fail "case5: entry missing the exact default-taken counts line\n$(cat "$LEGACY_DOC")"
+grep -q "Disposition:\*\* auto-taken" "$LEGACY_DOC" || fail "case5: entry missing the disposition line\n$(cat "$LEGACY_DOC")"
+grep -q "Status:\*\* open" "$LEGACY_DOC" || fail "case5: entry missing Status: open\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 5 unattended apply appends a pending-decision entry (created at the legacy path)"
+unset KNOWLEDGE_STORE_ROOT
+
+# =========================================================================
+# Case 6: when the NEW-path surface already exists, the append targets it —
+# never forks a second legacy-path entry stream.
+# =========================================================================
+KS_ROOT_6="$(new_ks_root)"
+mkdir -p "$KS_ROOT_6/Pipeline"
+printf '# pending decisions\n\n' >"$KS_ROOT_6/Pipeline/pending decisions.md"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_6"
+run_labels
+
+NEW_DOC="$KS_ROOT_6/Pipeline/pending decisions.md"
+LEGACY_DOC="$KS_ROOT_6/Context/pipeline - pending decisions.md"
+grep -q "label hygiene sweep" "$NEW_DOC" \
+  || fail "case6: expected the entry appended to the EXISTING new-path file\n$(cat "$NEW_DOC")"
+[ ! -f "$LEGACY_DOC" ] \
+  || fail "case6: must never fork a second legacy-path entry stream when the new path already exists\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 6 unattended apply appends to an already-existing Pipeline/ surface, never forks the legacy path"
+unset KNOWLEDGE_STORE_ROOT
+
+# =========================================================================
+# Case 7: an unavailable knowledge store degrades to best-effort — the sweep
+# itself still completes (never fails) even though the append can't land.
+# ENOTDIR forces mkdir -p to fail deterministically regardless of who runs
+# this test / what $HOME or root perms look like.
+# =========================================================================
+BLOCKER_FILE="$(mktemp)"
+TEST_TMP_DIRS+=("$BLOCKER_FILE")
+export KNOWLEDGE_STORE_ROOT="$BLOCKER_FILE/store"
+run_labels
+grep -q "applied: deleted 1 label(s), stripped 1 status label(s)\." <<<"$OUT" \
+  || fail "case7: the sweep itself must still complete when the knowledge store is unavailable\n$OUT"
+echo "PASS: case 7 unattended apply degrades best-effort when the knowledge store is unavailable — the sweep still completes"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
+echo "=== Scan 3: unstatused open issues — the /triage-invisibility backstop (temperloop#376) ==="
+
+# From here on isolate scan 3: no orphaned host/session labels, no stale
+# closed-issue status labels — only OPEN_ISSUES_JSON drives drift.
+LABEL_LIST_JSON='[{"name":"'"$LIVE_LABEL"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$LIVE_LABEL"
+CLOSED_ISSUES_JSON='[]'
+RACE_LABEL=""
+
+# =========================================================================
+# Case 8: dry-run reports an OPEN issue carrying NO fnd:status:* label as an
+# invisible-to-/triage candidate, with ZERO writes. An open issue that DOES
+# carry a status label is never a candidate.
+# =========================================================================
+OPEN_ISSUES_JSON='[{"number":300,"labels":[{"name":"Operational"}]},{"number":301,"labels":[{"name":"Operational"},{"name":"fnd:status:ready"}]}]'
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "unstatused open issues" <<<"$OUT" \
+  || fail "case8: expected the unstatused-open-issues section\n$OUT"
+grep -q "#300 — no fnd:status:\* label; backfill target: fnd:status:backlog" <<<"$OUT" \
+  || fail "case8: expected #300 reported as unstatused with the fnd:status:backlog backfill target\n$OUT"
+grep -q "#301" <<<"$OUT" \
+  && fail "case8: an open issue that already carries a fnd:status:* label must NEVER be a candidate\n$OUT"
+grep -q "(dry-run" <<<"$OUT" \
+  || fail "case8: expected the dry-run notice\n$OUT"
+[ ! -s "$BACKFILLS" ] || fail "case8: dry-run must issue ZERO backfills\n$(cat "$BACKFILLS")"
+echo "PASS: case 8 dry-run reports an unstatused open issue as invisible-to-/triage, zero writes (temperloop#376)"
+
+# =========================================================================
+# Case 9: --apply backfills fnd:status:backlog on the unstatused open issue,
+# and the immediate re-check skips an issue that gained a status label OR was
+# closed in the scan->apply gap. #300 backfilled; #301 (gained status) and
+# #302 (closed) skipped.
+# =========================================================================
+OPEN_ISSUES_JSON='[{"number":300,"labels":[{"name":"Operational"}]},{"number":301,"labels":[{"name":"Operational"}]},{"number":302,"labels":[{"name":"Operational"}]}]'
+API_300_JSON='{"state":"open","labels":[{"name":"Operational"}]}'
+API_301_JSON='{"state":"open","labels":[{"name":"Operational"},{"name":"fnd:status:ready"}]}'  # gained a status in the gap
+API_302_JSON='{"state":"closed","labels":[{"name":"Operational"}]}'                            # closed in the gap
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "backfilled: #300 fnd:status:backlog" <<<"$OUT" \
+  || fail "case9: expected #300 backfilled with fnd:status:backlog\n$OUT"
+grep -qF "$(printf '300\tfnd:status:backlog')" "$BACKFILLS" \
+  || fail "case9: expected #300 recorded in the backfill log\n$(cat "$BACKFILLS")"
+grep -q "skip (no longer open+unstatused): #301" <<<"$OUT" \
+  || fail "case9: expected #301 (gained a status in the gap) skipped by the re-check\n$OUT"
+grep -q "skip (no longer open+unstatused): #302" <<<"$OUT" \
+  || fail "case9: expected #302 (closed in the gap) skipped by the re-check\n$OUT"
+grep -q "^301	" "$BACKFILLS" && fail "case9: #301 must NOT be backfilled (it gained a status)\n$(cat "$BACKFILLS")"
+grep -q "^302	" "$BACKFILLS" && fail "case9: #302 must NOT be backfilled (it was closed)\n$(cat "$BACKFILLS")"
+grep -q "applied: deleted 0 label(s), stripped 0 status label(s), backfilled 1 status label(s)\." <<<"$OUT" \
+  || fail "case9: expected the summary to name the backfilled count\n$OUT"
+echo "PASS: case 9 --apply backfills fnd:status:backlog; the immediate re-check protects an issue re-statused or closed in the gap (temperloop#376)"
+
+# =========================================================================
+# Case 10: unattended apply records the backfill in the pending-decisions
+# entry — the Default-taken line names the backfilled count and the Decision
+# line mentions the backfill.
+# =========================================================================
+KS_ROOT_10="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_10"
+OPEN_ISSUES_JSON='[{"number":300,"labels":[{"name":"Operational"}]}]'
+API_300_JSON='{"state":"open","labels":[{"name":"Operational"}]}'
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+LEGACY_DOC="$KS_ROOT_10/Context/pipeline - pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case10: expected the pending-decisions entry created at the legacy path\n$(find "$KS_ROOT_10" -type f)"
+grep -q "Default taken:\*\* applied — deleted 0 label(s), stripped 0 status label(s), backfilled 1 status label(s)" "$LEGACY_DOC" \
+  || fail "case10: entry missing the backfilled count on the default-taken line\n$(cat "$LEGACY_DOC")"
+grep -q "backfill .fnd:status:backlog. on unstatused open issues" "$LEGACY_DOC" \
+  || fail "case10: entry missing the backfill mention on the decision line\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 10 unattended apply records the backfill in the pending-decisions entry (temperloop#376)"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
+echo "=== Scan 2b: stranded fnd:host/session:* claim stamps on CLOSED issues (temperloop#744) ==="
+
+# Reset the scan-3 fixture so these cases surface no unstatused-open noise.
+OPEN_ISSUES_JSON="[]"
+
+# The motivating REAL shape (temperloop#744): one host/session stamp worn by BOTH
+# a live OPEN issue and a stale CLOSED one. Scan 1 must (correctly) refuse to
+# delete the label OBJECT — it is still backing a live claim — which is exactly
+# why the closed issue's copy needs its own per-issue strip.
+SHARED_STAMP="fnd:host/session:mini:322ce445"
+
+# =========================================================================
+# Case 11: dry-run reports a stranded claim stamp on a closed issue, and does
+# NOT list the (still-live) label object as an orphan-delete candidate.
+# =========================================================================
+LABEL_LIST_JSON='[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$SHARED_STAMP"
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]}'
+RACE_LABEL=""
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "stranded claim stamps on closed issues" <<<"$OUT" \
+  || fail "case11: expected the stranded-claim-stamp section\n$OUT"
+grep -qF "#27 — $SHARED_STAMP" <<<"$OUT" \
+  || fail "case11: expected #27's stranded stamp reported\n$OUT"
+grep -q "^orphaned host/session labels" <<<"$OUT" \
+  && fail "case11: a stamp still worn by a LIVE open claim must never be an orphan-delete candidate\n$OUT"
+[ ! -s "$DELETES" ] || fail "case11: dry-run must issue ZERO label deletes\n$(cat "$DELETES")"
+[ ! -s "$STRIPS" ] || fail "case11: dry-run must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 11 dry-run reports a stranded claim stamp scan 1 structurally cannot reach (temperloop#744)"
+
+# =========================================================================
+# Case 12: --apply strips the stamp from the CLOSED issue only — the label
+# OBJECT is never deleted (it still backs a live open claim), the issue's
+# non-fnd: labels are untouched, and the re-check skips an issue REOPENED in
+# the scan->apply gap.
+# =========================================================================
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]},{"number":28,"labels":[{"name":"'"$SHARED_STAMP"'"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"'"$SHARED_STAMP"'"},{"name":"bug"}]}'
+API_28_JSON='{"state":"open","labels":[{"name":"'"$SHARED_STAMP"'"}]}'   # reopened in the gap
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+grep -qF "stripped: #27 $SHARED_STAMP" <<<"$OUT" \
+  || fail "case12: expected #27's stranded stamp stripped\n$OUT"
+grep -qF "$(printf '27\t%s' "$SHARED_STAMP")" "$STRIPS" \
+  || fail "case12: expected #27 recorded in the strip log\n$(cat "$STRIPS")"
+grep -qF "skip (no longer closed+labeled): #28 $SHARED_STAMP" <<<"$OUT" \
+  || fail "case12: expected #28 (reopened in the gap) skipped by the re-check\n$OUT"
+grep -q "^28	" "$STRIPS" && fail "case12: a REOPENED issue's live claim must never be stripped\n$(cat "$STRIPS")"
+[ ! -s "$DELETES" ] || fail "case12: the label OBJECT must never be deleted by this class\n$(cat "$DELETES")"
+grep -q "bug" "$STRIPS" && fail "case12: a non-fnd: label must never be stripped\n$(cat "$STRIPS")"
+grep -q "applied: deleted 0 label(s), stripped 0 status label(s), cleared 1 claim stamp(s)\." <<<"$OUT" \
+  || fail "case12: expected the summary to name the cleared count\n$OUT"
+echo "PASS: case 12 --apply strips the stranded stamp from the closed issue only; the label object and a reopened claim survive"
+
+# =========================================================================
+# Case 13: idempotent — a second run against the POST-apply state reports the
+# in-sync all-clear and issues zero writes.
+# =========================================================================
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"bug"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"bug"}]}'
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+grep -q "In sync" <<<"$OUT" \
+  || fail "case13: expected in-sync on the idempotent re-run\n$OUT"
+[ ! -s "$STRIPS" ] || fail "case13: must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 13 the claim-stamp strip is idempotent — a second run reports in-sync, zero writes"
+
+# =========================================================================
+# Case 14: unattended apply records the cleared count + the claim-stamp
+# dimension in the pending-decisions entry.
+# =========================================================================
+KS_ROOT_14="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_14"
+CLOSED_ISSUES_JSON='[{"number":27,"labels":[{"name":"'"$SHARED_STAMP"'"}]}]'
+API_27_JSON='{"state":"closed","labels":[{"name":"'"$SHARED_STAMP"'"}]}'
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+LEGACY_DOC="$KS_ROOT_14/Context/pipeline - pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case14: expected the pending-decisions entry created at the legacy path\n$(find "$KS_ROOT_14" -type f)"
+grep -q "Default taken:\*\* applied — deleted 0 label(s), stripped 0 status label(s), cleared 1 claim stamp(s)" "$LEGACY_DOC" \
+  || fail "case14: entry missing the cleared count on the default-taken line\n$(cat "$LEGACY_DOC")"
+grep -q "clear stranded .fnd:host/session:\*. claim stamps from closed issues" "$LEGACY_DOC" \
+  || fail "case14: entry missing the claim-stamp mention on the decision line\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 14 unattended apply records the cleared claim stamps in the pending-decisions entry (temperloop#744)"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
+echo "=== Scan 3b: PARKED fnd:host/session:* claim stamps on OPEN issues (temperloop#979) ==="
+
+# The motivating REAL shape (temperloop#979, reproduced on foundation#1483):
+# claim.sh stamps the owner + flips In Progress; the item is parked back to
+# Ready; release.sh (pre-#979) cleared only the local marker. The stamp then
+# sits on an OPEN, Ready issue reading as a live claim by a dead session, and
+# NOTHING swept it: (h)/(j) are scoped to CLOSED issues, and (g) correctly
+# refuses to delete a label object still attached to an open issue — this one.
+PARKED_STAMP="fnd:host/session:mini:9f90bef1"
+CLOSED_ISSUES_JSON='[]'
+LABEL_LIST_JSON='[{"name":"'"$PARKED_STAMP"'"},{"name":"bug"}]'
+OPEN_ATTACHED_LABELS="$PARKED_STAMP"
+RACE_LABEL=""
+
+# =========================================================================
+# Case 15: dry-run reports the parked stamp on the READY issue, and NEVER
+# reports the one on an In-Progress issue — that stamp is a live claim held
+# until Done (K#275), the sanctioned flow, not drift. Zero writes.
+# =========================================================================
+OPEN_ISSUES_JSON='[
+  {"number":40,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"},{"name":"bug"}]},
+  {"number":41,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:in-progress"}]}
+]'
+LABELS_APPLY=0
+LABELS_UNATTENDED=0
+run_labels
+
+grep -q "parked claim stamps on open issues" <<<"$OUT" \
+  || fail "case15: expected the parked-claim-stamp section\n$OUT"
+grep -qF "#40 — $PARKED_STAMP" <<<"$OUT" \
+  || fail "case15: expected #40's parked stamp reported\n$OUT"
+grep -qF "#41 — $PARKED_STAMP" <<<"$OUT" \
+  && fail "case15: an In-Progress issue's stamp is a LIVE claim held until Done — never a candidate\n$OUT"
+grep -q "^orphaned host/session labels" <<<"$OUT" \
+  && fail "case15: a stamp still attached to an open issue must never be an orphan-delete candidate\n$OUT"
+grep -q "(dry-run" <<<"$OUT" \
+  || fail "case15: expected the dry-run notice\n$OUT"
+[ ! -s "$STRIPS" ] || fail "case15: dry-run must issue ZERO strips\n$(cat "$STRIPS")"
+[ ! -s "$DELETES" ] || fail "case15: dry-run must issue ZERO deletes\n$(cat "$DELETES")"
+echo "PASS: case 15 dry-run reports a parked claim stamp on an open, not-In-Progress issue (temperloop#979)"
+
+# =========================================================================
+# Case 16: --apply strips the parked stamp from the OPEN issue only. The
+# label OBJECT is never deleted, an In-Progress issue is never touched, and
+# the immediate re-check skips an issue that was RE-CLAIMED (gained
+# fnd:status:in-progress) or CLOSED in the scan->apply gap.
+# =========================================================================
+OPEN_ISSUES_JSON='[
+  {"number":40,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"},{"name":"bug"}]},
+  {"number":41,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:in-progress"}]},
+  {"number":42,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]},
+  {"number":43,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]}
+]'
+API_40_JSON='{"state":"open","labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"},{"name":"bug"}]}'
+API_42_JSON='{"state":"open","labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:in-progress"}]}'  # re-claimed in the gap
+API_43_JSON='{"state":"closed","labels":[{"name":"'"$PARKED_STAMP"'"}]}'                                   # closed in the gap
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+
+grep -qF "stripped: #40 $PARKED_STAMP" <<<"$OUT" \
+  || fail "case16: expected #40's parked stamp stripped\n$OUT"
+grep -qF "$(printf '40\t%s' "$PARKED_STAMP")" "$STRIPS" \
+  || fail "case16: expected #40 recorded in the strip log\n$(cat "$STRIPS")"
+grep -q "^41	" "$STRIPS" \
+  && fail "case16: an In-Progress issue's live claim must NEVER be stripped\n$(cat "$STRIPS")"
+grep -qF "skip (no longer open+parked+labeled): #42 $PARKED_STAMP" <<<"$OUT" \
+  || fail "case16: expected #42 (re-claimed in the gap) skipped by the re-check\n$OUT"
+grep -qF "skip (no longer open+parked+labeled): #43 $PARKED_STAMP" <<<"$OUT" \
+  || fail "case16: expected #43 (closed in the gap) skipped by the re-check\n$OUT"
+grep -q "^42	" "$STRIPS" && fail "case16: a re-claimed issue must never be stripped\n$(cat "$STRIPS")"
+grep -q "^43	" "$STRIPS" && fail "case16: an issue closed in the gap must never be stripped here\n$(cat "$STRIPS")"
+[ ! -s "$DELETES" ] || fail "case16: the label OBJECT must never be deleted by this class\n$(cat "$DELETES")"
+grep -q "bug" "$STRIPS" && fail "case16: a non-fnd: label must never be stripped\n$(cat "$STRIPS")"
+grep -q "applied: deleted 0 label(s), stripped 0 status label(s), cleared 1 parked claim stamp(s)\." <<<"$OUT" \
+  || fail "case16: expected the summary to name the parked-cleared count\n$OUT"
+echo "PASS: case 16 --apply strips the parked stamp only; a live In-Progress claim, a re-claim, and a close in the gap all survive"
+
+# =========================================================================
+# Case 17: idempotent — a second run against the POST-apply state reports the
+# in-sync all-clear and issues zero writes.
+# =========================================================================
+OPEN_ISSUES_JSON='[{"number":40,"labels":[{"name":"fnd:status:ready"},{"name":"bug"}]}]'
+LABELS_APPLY=1
+LABELS_UNATTENDED=0
+run_labels
+grep -q "In sync" <<<"$OUT" \
+  || fail "case17: expected in-sync on the idempotent re-run\n$OUT"
+[ ! -s "$STRIPS" ] || fail "case17: must issue ZERO strips\n$(cat "$STRIPS")"
+echo "PASS: case 17 the parked-stamp strip is idempotent — a second run reports in-sync, zero writes"
+
+# =========================================================================
+# Case 18: unattended apply records the parked-cleared count + its own
+# dimension in the pending-decisions entry.
+# =========================================================================
+KS_ROOT_18="$(new_ks_root)"
+export KNOWLEDGE_STORE_ROOT="$KS_ROOT_18"
+OPEN_ISSUES_JSON='[{"number":40,"labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]}]'
+API_40_JSON='{"state":"open","labels":[{"name":"'"$PARKED_STAMP"'"},{"name":"fnd:status:ready"}]}'
+LABELS_APPLY=0
+LABELS_UNATTENDED=1
+run_labels
+
+LEGACY_DOC="$KS_ROOT_18/Context/pipeline - pending decisions.md"
+[ -f "$LEGACY_DOC" ] \
+  || fail "case18: expected the pending-decisions entry created at the legacy path\n$(find "$KS_ROOT_18" -type f)"
+grep -q "Default taken:\*\* applied — deleted 0 label(s), stripped 0 status label(s), cleared 1 parked claim stamp(s)" "$LEGACY_DOC" \
+  || fail "case18: entry missing the parked-cleared count on the default-taken line\n$(cat "$LEGACY_DOC")"
+grep -q "clear parked .fnd:host/session:\*. claim stamps from open issues that are not In Progress" "$LEGACY_DOC" \
+  || fail "case18: entry missing the parked-claim-stamp mention on the decision line\n$(cat "$LEGACY_DOC")"
+echo "PASS: case 18 unattended apply records the parked claim stamps in the pending-decisions entry (temperloop#979)"
+unset KNOWLEDGE_STORE_ROOT
+
+echo
+echo "PASS: all reconcile.sh --labels (label hygiene) assertions passed"

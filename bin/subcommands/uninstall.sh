@@ -16,9 +16,9 @@
 # $XDG_CONFIG_HOME/temperloop/ a human hand-edited after install — see
 # bin/README.md's Uninstall section for the worked example).
 #
-# THREE SEPARATE REMOVAL SCOPES (bin/README.md § Uninstall has the full
+# FOUR SEPARATE REMOVAL SCOPES (bin/README.md § Uninstall has the full
 # table; eject.sh's print_uninstall_bullet prints the same delineation) —
-# this subcommand is exactly the MIDDLE one:
+# this subcommand is exactly the SECOND one:
 #   (a) the bootstrap footprint (~/.local/bin/temperloop + the `foundation`
 #       compat shim + ~/.local/share/temperloop) — written by
 #       bin/bootstrap.sh BEFORE any manifest existed, so this manifest
@@ -31,10 +31,19 @@
 #       reader").
 #   (b) THIS SCRIPT — the machine-surface manifest a `temperloop install`
 #       records (settings/config/symlinks under $HOME the CLI itself wrote).
-#   (c) `temperloop eject` — a target REPO's `.foundation/config` side
-#       effects (labels, required checks, boards, proposal PRs). A wholly
+#   (c) `temperloop eject` — a target REPO's `.temperloop/config` side
+#       effects (labels, required checks, boards, proposal PRs; a
+#       pre-v0.15.0 init recorded them in `.foundation/config`). A wholly
 #       separate manifest, a wholly separate script — see eject.sh's own
-#       header for why the two are never merged.
+#       header for why the two are never merged. This script prints a
+#       reminder to run it (print_eject_reminder below) since a machine-
+#       scoped manifest has no way to know which repos `init` ever touched.
+#   (d) the issue-cache store root
+#       (${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop},
+#       links.sh's links_provision_cache_stores) — created by `temperloop
+#       install` but DELIBERATELY left out of this manifest (see
+#       print_cache_store_bullet below for why) rather than folded into
+#       scope (b).
 #
 # Usage:
 #   uninstall.sh [--yes] [--dry-run]
@@ -59,14 +68,15 @@
 # CLI usage.
 #
 # Dependencies: bash (3.2+), jq. No network — this subcommand never calls
-# `gh` or `claude` itself. The `temperloop` dispatcher's prereq gate
-# (bin/lib/common.sh: foundation_check_prereqs) still runs before ANY
-# subcommand dispatch, including this one — that gate is unconditional at
-# the dispatcher level, not something an individual subcommand opts out of.
-# A test that wants to exercise only this script's own logic invokes it
-# directly (bash bin/subcommands/uninstall.sh ...), bypassing the
-# dispatcher entirely — the same idiom bin/subcommands/tests/test_eject.sh
-# already uses.
+# `gh` or `claude` itself, and (temperloop#412, per-subcommand prereq
+# scoping) declares no `# prereqs: ...` header, so `bin/temperloop`'s
+# dispatcher gate (bin/lib/common.sh: foundation_check_prereqs) runs zero
+# claude/gh checks before dispatching it — `temperloop uninstall` works
+# with neither tool on PATH, matching what this script actually needs
+# (nothing). A test that wants to exercise only this script's own logic
+# still invokes it directly (bash bin/subcommands/uninstall.sh ...),
+# bypassing the dispatcher entirely — the same idiom
+# bin/subcommands/tests/test_eject.sh already uses.
 #
 # shellcheck shell=bash
 
@@ -100,8 +110,64 @@ print_bootstrap_footprint_bullet() {
 Bootstrap footprint (predates this manifest — 'temperloop uninstall' has no
   record of it and cannot remove it; scope (a) of bin/README.md's Uninstall
   section — manual removal):
-  rm -f "$FOUNDATION_CLI_BIN_DEFAULT" "${FOUNDATION_CLI_BIN_DEFAULT%/*}/foundation"
-  rm -rf "$FOUNDATION_CLI_HOME_DEFAULT"
+  rm -f "$TEMPERLOOP_CLI_BIN_DEFAULT" "${TEMPERLOOP_CLI_BIN_DEFAULT%/*}/foundation"
+  rm -rf "$TEMPERLOOP_CLI_HOME_DEFAULT"
+EOF
+}
+
+# print_cache_store_bullet — scope (d): the issue-cache store root
+# (links.sh's links_provision_cache_stores, run by `temperloop install`).
+# Deliberately NOT folded into this manifest: unlike every other managed
+# path (a single file/symlink install writes once and this script restores/
+# removes verbatim), the store root is a directory that keeps growing after
+# install — every board cache read/refresh across every repo this checkout
+# has touched writes into it — so "remove it" and "restore its original
+# content" are the wrong verbs for it. It is content-addressed regenerable
+# cache, not install state; documented here as a deliberately-unmanaged
+# scope rather than silently left unexplained.
+print_cache_store_bullet() {
+  # Same precedence links.sh (links_provision_cache_stores) and
+  # board/lib/cache.sh resolve the store root with: an explicit
+  # CACHE_STORE_ROOT override wins outright, THEN the XDG_CACHE_HOME/
+  # $HOME/.cache fallback. Printing anything else here would hand an
+  # operator who has CACHE_STORE_ROOT set a wrong rm -rf path.
+  local cache_root="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
+  cat <<EOF
+Issue-cache store root (deliberately unmanaged — not tracked by this
+  manifest, never touched by 'temperloop uninstall'; scope (d) of
+  bin/README.md's Uninstall section):
+  $cache_root
+  Created by 'temperloop install' and grown by ongoing board cache reads —
+  everything in it is regenerable, so removing it is safe but optional:
+  rm -rf "$cache_root"
+EOF
+}
+
+# print_eject_reminder — scope (c): `temperloop init` side effects live in
+# a target REPO's .temperloop/config (pre-v0.15.0: .foundation/config), a
+# wholly separate manifest this machine-scoped script never reads (see
+# header). There is no machine-level
+# record of which repos init ever touched, so — mirroring the bootstrap-
+# footprint bullet's own always-print posture — this is a fixed reminder,
+# not a personalized one. Names the `report.d/tokens` producer shim
+# explicitly (temperloop#985) alongside the manifest-recorded install
+# types, since removing IT is also `eject`'s job (deleting
+# .temperloop/report.d/ along with the rest of .temperloop/) even though
+# this machine-scoped uninstall has no manifest entry for it either — a
+# reader following this reminder should land on the one verb that actually
+# removes it, not conclude there's nothing left to do once labels/checks/
+# boards/PRs are handled.
+print_eject_reminder() {
+  cat <<EOF
+Ran 'temperloop init' in one or more target repos? Their side effects
+  (labels, required checks, boards, proposal PRs, recorded in that repo's
+  .temperloop/config — or .foundation/config from a pre-v0.15.0 init; PLUS
+  the .temperloop/report.d/tokens producer shim, which carries no manifest
+  entry of its own but is removed the same way) are scope (c) — a separate
+  manifest this script never touches. Run 'temperloop eject' inside each
+  such repo if you want those reverted too. (A hand-authored
+  .temperloop/pricing.json in that repo is NOT among them — 'temperloop
+  eject' preserves it.)
 EOF
 }
 
@@ -161,6 +227,10 @@ if [ "$n_paths" -eq 0 ]; then
   echo
   print_bootstrap_footprint_bullet
   echo
+  print_cache_store_bullet
+  echo
+  print_eject_reminder
+  echo
   echo "temperloop uninstall: done (no-op)"
   exit 0
 fi
@@ -218,11 +288,31 @@ for p in "${recorded_paths[@]:-}"; do
 done
 echo
 
+# ---------------------------------------------------------------------------
+# Post-removal tidy: rmdir ~/.claude iff it's now EMPTY. Every path installed
+# under it is a SEPARATE manifest entry (one per file/symlink — links.sh's
+# links_enumerate never records the directory itself), so a fully successful
+# uninstall can leave a now-empty ~/.claude behind with nothing to clean it
+# up. `rmdir` (never `rm -rf`): if anything install didn't touch still lives
+# there, rmdir fails harmlessly on a non-empty directory and it is left
+# alone — exactly like every other unrecorded path this script leaves
+# untouched.
+# ---------------------------------------------------------------------------
+claude_dir="${HOME:-$(eval echo ~)}/.claude"
+if [ -d "$claude_dir" ] && rmdir "$claude_dir" 2>/dev/null; then
+  echo "  → ${claude_dir} removed (was left empty)"
+  echo
+fi
+
 echo "-- Summary --"
 if [ "$n_failed" -eq 0 ]; then
   echo "all $n_paths recorded path(s) uninstalled"
   echo
   print_bootstrap_footprint_bullet
+  echo
+  print_cache_store_bullet
+  echo
+  print_eject_reminder
   echo
   echo "temperloop uninstall: done"
   exit 0

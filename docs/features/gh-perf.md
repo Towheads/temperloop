@@ -5,11 +5,14 @@ slug: gh-perf
 
 ## Problem
 
-A GitHub Projects-v2 board is read and written over GraphQL, which shares one
-rate-limited budget (points per hour) across every caller on the host — a
-board adapter's own calls, an ad-hoc script, and any convenience CLI helper
-that happens to be GraphQL-backed under the hood, all draining the same
-pool. That budget has been fully drained more than once in production, each
+Every call this pipeline makes to GitHub — board reads and writes, CI-check
+polling, ordinary issue/PR porcelain — now shares **one** rate-limited REST
+budget (requests per hour) across every caller on the host. That was not
+always true: the board integration used to run on a separately-metered
+GraphQL budget, and removing the Projects-v2 arm collapsed the two surfaces
+into one, so there is no longer a second bucket to move a noisy caller onto
+for relief (`docs/failure-modes/02-rest-budget-exhaustion.md`). A shared
+budget has been fully drained more than once in production, each
 time with no per-call record of what actually spent the points — only the
 symptom (calls starting to fail) and a guess at the cause. A first
 investigation blamed the obvious suspect (the board operations being
@@ -23,8 +26,9 @@ failure alone.
 ## How it works
 
 **The `gh` shim.** `workflows/scripts/gh-call-logger.sh` is installed in
-place of the real `gh` binary on `PATH` (`make install-gh-logger`, symmetric
-with `make uninstall-gh-logger`), so every invocation of `gh` anywhere on the
+place of the real `gh` binary on `PATH` as part of `temperloop install`'s
+managed-path set (`gh-shim` kind; reversed by `temperloop uninstall`), so
+every invocation of `gh` anywhere on the
 host — the board adapter, an ad-hoc script, an interactive shell — passes
 through it transparently. The shim times the real call (millisecond
 resolution where a system `perl` with `Time::HiRes` is available, falling
@@ -67,9 +71,10 @@ Two companion scripts turn the raw log into a decision surface:
   `--compare before after` view that joins two frozen lake summaries and
   shows the delta.
 
-**What budget drain looks like.** Point cost on the GraphQL side is flat per
-query, not proportional to how much a query fetches — so the number of calls
-is what matters, not their individual size. A drain typically shows up first
+**What budget drain looks like.** What drains a call-count budget is the
+number of calls, not their individual weight — and on the GraphQL side cost
+is flat per query regardless of how much it fetches, so the lesson is the
+same on both. A drain typically shows up first
 as failures on whichever calls happen to run *last* in the budget window,
 which is not necessarily the caller actually spending the points. With this
 instrumentation, the honest signal is the per-op-class table from

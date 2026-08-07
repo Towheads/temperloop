@@ -12,6 +12,16 @@
 # title that starts with `--` must exit 2 — all WITHOUT touching gh.
 set -euo pipefail
 
+# Hermetic conf env (temperloop#501): fixture tests must never resolve boards
+# through the repo's or host's real boards.conf — a consumer's committed
+# cutover flip (e.g. stageFind's board.3.backend=issues) or a driver host's
+# machine-level conf would silently change canned-fixture resolution.
+# (The --repo kernel section below re-exports its own fixture conf, then
+# cleanup restores these hermetic defaults.)
+export BOARDS_CONF_REPO_LOCAL=/dev/null
+export BOARDS_CONF_MACHINE=/dev/null
+
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 CAPTURE="$SCRIPTS_DIR/capture.sh"
@@ -65,17 +75,41 @@ run 2
 grep -q 'usage: capture.sh' <<<"$out" || fail "no-arg run did not print usage (got: $out)"
 echo "PASS: capture.sh with no title exits 2 with usage (no issue filed)"
 
-# 4) a title that starts with `--` (misplaced flag) → refused, exit 2, no gh
+# 4) a leading flag with no title → "title required", exit 2, no gh.
+# (Post-#1227 a leading `--` arg is a flag, not the title, so `--board 4` with no
+# title is a missing-title error rather than the "--"-prefixed-title refusal.)
 run 2 --board 4
-grep -q "refusing a title that starts with '--'" <<<"$out" \
-  || fail "flag-as-title not refused (got: $out)"
-echo "PASS: capture.sh refuses a '--'-prefixed title instead of filing it (#366)"
+grep -q "a title is required" <<<"$out" \
+  || fail "flags-only-no-title not rejected with the title-required error (got: $out)"
+echo "PASS: capture.sh with flags but no title exits 2 (no junk issue) (#366/#1227)"
 
 # 5) invalid --rework cause → refused, exit 2, no gh (F#730)
 run 2 "Some title" --rework bogus
 grep -q -- "--rework must be one of regression, spec-miss, flake" <<<"$out" \
   || fail "invalid --rework cause not rejected (got: $out)"
 echo "PASS: capture.sh rejects an invalid --rework cause without filing an issue (F#730)"
+
+# 6) --title alias is ACCEPTED as the title and proceeds past arg-parsing to the
+# filing path (foundation#1227). The fail-on-call fake gh makes "reached gh" the
+# proof that arg-parsing accepted the title rather than rejecting it in the
+# preamble. (This is the one case that intentionally reaches gh.)
+rm -f "$SENTINEL"
+PATH="$BIN:$PATH" bash "$CAPTURE" --title "Alias title" --board 4 >/dev/null 2>&1 || true
+[ -e "$SENTINEL" ] \
+  || fail "6: --title should be accepted and proceed to the filing path (not rejected in arg-parsing)"
+echo "PASS: capture.sh --title <t> is accepted as a positional-title alias (#1227)"
+
+# 7) BOTH a positional title AND --title → exit 2, no gh (exactly one source).
+run 2 "Positional" --title "Flag"
+grep -q "EITHER positionally OR via --title, not both" <<<"$out" \
+  || fail "7: passing both a positional title and --title should be rejected (got: $out)"
+echo "PASS: capture.sh rejects both a positional title and --title (#1227)"
+
+# 8) --title whose value starts with `--` (a misplaced flag) → refused, exit 2.
+run 2 --title --board
+grep -q "refusing a title that starts with '--'" <<<"$out" \
+  || fail "8: a '--'-prefixed --title value should be refused (got: $out)"
+echo "PASS: capture.sh refuses a '--'-prefixed --title value (#1227 keeps the junk-flag guard)"
 
 # 6) invalid --repo value → refused, exit 2, no gh (F#808)
 run 2 "Some title" --repo overlay
@@ -195,6 +229,15 @@ grep -q -- "--label bug" <<<"$line" \
   || fail "#49: a non-work-class --label must still append (line: $line)"
 echo "PASS: capture.sh --label bug still appends on top of the default Operational (#49)"
 
+# 4) --title alias: the flag VALUE flows through to `gh issue create` as the
+# title (foundation#1227 — the whole point of the alias). Full-flow harness, so
+# this proves value-passthrough, not merely that arg-parsing accepted the flag.
+line="$(wc_issue_create_line --title "AliasTitle" --label bug)"
+[ -n "$line" ] || fail "#1227: --title never reached gh issue create"
+grep -q -- "--title AliasTitle" <<<"$line" \
+  || fail "#1227: --title value did not flow to gh issue create as the title (line: $line)"
+echo "PASS: capture.sh --title <t> flows the flag value through as the issue title (#1227)"
+
 cleanup_wc
 trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
 
@@ -242,7 +285,7 @@ KBIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-kernel-bin-XXXXXX")"
 KLOG="$(mktemp "${TMPDIR:-/tmp}/capture-kernel-log-XXXXXX")"
 KBODY="$(mktemp "${TMPDIR:-/tmp}/capture-kernel-body-XXXXXX")"
 export KLOG KBODY KERNEL_TEST_REPO
-cleanup_kernel() { rm -rf "$KBIN" "$KLOG" "$KBODY" "$KCONF_DIR"; unset BOARDS_CONF_REPO_LOCAL BOARDS_CONF_MACHINE; }
+cleanup_kernel() { rm -rf "$KBIN" "$KLOG" "$KBODY" "$KCONF_DIR"; export BOARDS_CONF_REPO_LOCAL=/dev/null BOARDS_CONF_MACHINE=/dev/null; }
 trap 'cleanup_kernel; rm -rf "$BIN"' EXIT
 
 # NB: a QUOTED heredoc delimiter ('FAKEGH') — this script's own comments
@@ -330,3 +373,197 @@ cleanup_kernel
 trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
 
 echo "ALL capture.sh --repo kernel/ambiguous tests passed"
+
+# ---------------------------------------------------------------------------
+# board_capture_item / board_create_many landing contract (foundation #1226).
+# The original bug: `board_create_many` always returned 0 even when an item
+# never landed, so capture.sh's "Captured -> Backlog" success line printed on
+# the very next line after a loud warning — a created-but-not-landed issue read
+# as success in the run summary. That contract (0 landed / 1 partial / 2 total,
+# with no false success line) is BACKEND-AGNOSTIC and is preserved in full here.
+#
+# What changed with ADR 0004 is only HOW an item fails to land. There is no
+# Projects-v2 async indexing any more — `_board_issues_create_many` labels the
+# issue Backlog with a synchronous REST write — so the failure mode these cases
+# drive is now a failing/transient LABEL WRITE rather than an index-lag timeout.
+# Both cases below drive capture.sh as a real subprocess against a bespoke fake
+# `gh`; a fake `sleep` on PATH keeps board_capture_item's 3x2s poll fast.
+# ---------------------------------------------------------------------------
+
+# --- never lands: total failure -> non-zero exit, no false success line -----
+RACE_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-race-log-XXXXXX")"
+RACE_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-race-bin-XXXXXX")"
+export RACE_LOG
+cat > "$RACE_BIN/gh" <<'RACEGH'
+#!/usr/bin/env bash
+# Minimal fake gh: the Backlog label write ALWAYS fails, so the issue is
+# created repo-side but never lands on the board.
+set -euo pipefail
+: "${RACE_LOG:?fake gh needs RACE_LOG}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$RACE_LOG"
+case "$1 $2" in
+  "issue create") printf 'https://github.com/ExampleOrg/example-repo/issues/902\n' ;;
+  "label create") : ;;
+  "api repos/ExampleOrg/example-repo/issues/902"|"api repos/Towheads/stageFind/issues/902")
+    printf '{"number":902,"title":"Never lands","state":"open","labels":[]}\n' ;;
+  "issue edit")   echo "fake gh: label write refused" >&2; exit 1 ;;
+  "issue close"|"issue reopen") : ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+RACEGH
+chmod +x "$RACE_BIN/gh"
+cat > "$RACE_BIN/sleep" <<'RACESLEEP'
+#!/usr/bin/env bash
+exit 0
+RACESLEEP
+chmod +x "$RACE_BIN/sleep"
+cleanup_race() { rm -rf "$RACE_LOG" "$RACE_BIN"; unset RACE_LOG; }
+trap 'cleanup_race; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+rc=0
+out="$(
+  PATH="$RACE_BIN:$PATH" RACE_LOG="$RACE_LOG" \
+  bash "$CAPTURE" "Item that never lands" 2>&1
+)" || rc=$?
+[ "$rc" -ne 0 ] || fail "capture.sh must exit non-zero when the item never lands on the board (out: $out)"
+if grep -Eq 'Captured .* -> board .* Backlog' <<<"$out"; then
+  fail "capture.sh must NEVER print the Backlog success line for an item that never landed (out: $out)"
+fi
+grep -qi 'NOT land' <<<"$out" \
+  || fail "capture.sh must print a distinct loud line naming the created-but-not-landed issue (out: $out)"
+grep -q '#902' <<<"$out" \
+  || fail "capture.sh's not-landed message must name the issue number (out: $out)"
+# ...and no Projects argv was built on the way to that failure (ADR 0004).
+grep -q '^gh project' "$RACE_LOG" \
+  && fail "capture.sh must never build a 'gh project' argv (ADR 0004): $(cat "$RACE_LOG")"
+echo "PASS: capture.sh exits non-zero and never prints a false Backlog success line when the item never lands (F#1226)"
+
+cleanup_race
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+# --- resolves late -> still a truthful success ------------------------------
+# The regression guard against over-tightening the contract above into treating
+# a slow-but-eventual landing as a failure. Its pre-ADR-0004 form drove a
+# Projects-v2 item-list that was empty on the first call and populated on the
+# second (index lag). board_capture_item's 3-attempt resolve poll SURVIVED the
+# excision, so the same shape still applies: the single-issue read reports a
+# non-matching issue on the first attempt and the real one from the second on,
+# so the item resolves on a LATER attempt and must still land + report success.
+LATE_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-late-log-XXXXXX")"
+LATE_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-late-bin-XXXXXX")"
+LATE_COUNT="$(mktemp "${TMPDIR:-/tmp}/capture-late-count-XXXXXX")"
+echo 0 > "$LATE_COUNT"
+export LATE_LOG LATE_COUNT
+cat > "$LATE_BIN/gh" <<'LATEGH'
+#!/usr/bin/env bash
+# The single-issue read reports a DIFFERENT issue number on the first call, so
+# board_item_id finds nothing and board_capture_item polls again; from the
+# second call on it reports the real issue, which then lands in Backlog.
+set -euo pipefail
+: "${LATE_LOG:?fake gh needs LATE_LOG}" "${LATE_COUNT:?fake gh needs LATE_COUNT}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$LATE_LOG"
+case "$1 $2" in
+  "issue create") printf 'https://github.com/ExampleOrg/example-repo/issues/903\n' ;;
+  "label create") : ;;
+  "api repos/ExampleOrg/example-repo/issues/903"|"api repos/Towheads/stageFind/issues/903")
+    c=$(($(cat "$LATE_COUNT") + 1)); echo "$c" > "$LATE_COUNT"
+    if [ "$c" -lt 2 ]; then
+      # not indexed yet: a non-matching number, so board_item_id resolves empty
+      printf '{"number":1,"title":"(not yet)","state":"open","labels":[]}\n'
+    else
+      printf '{"number":903,"title":"Resolves late","state":"open","labels":[]}\n'
+    fi ;;
+  "issue edit"|"issue close"|"issue reopen") : ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+LATEGH
+chmod +x "$LATE_BIN/gh"
+cat > "$LATE_BIN/sleep" <<'LATESLEEP'
+#!/usr/bin/env bash
+exit 0
+LATESLEEP
+chmod +x "$LATE_BIN/sleep"
+cleanup_late() { rm -rf "$LATE_LOG" "$LATE_BIN" "$LATE_COUNT"; unset LATE_LOG LATE_COUNT; }
+trap 'cleanup_late; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+rc=0
+out="$(
+  PATH="$LATE_BIN:$PATH" LATE_LOG="$LATE_LOG" LATE_COUNT="$LATE_COUNT" \
+  bash "$CAPTURE" "Item that resolves late" 2>&1
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "capture.sh must still exit 0 when the write lands after a transient failure (out: $out)"
+grep -Eq 'Captured .* -> board 3 Backlog \(#903\)' <<<"$out" \
+  || fail "capture.sh must print the truthful Backlog success line once the item lands (out: $out)"
+[ "$(cat "$LATE_COUNT")" -ge 2 ] \
+  || fail "expected the single-issue read to have been re-polled at least once (log: $(cat "$LATE_LOG"))"
+grep -q -- '--add-label fnd:status:backlog' "$LATE_LOG" \
+  || fail "the late-resolving item must still be labeled Backlog (log: $(cat "$LATE_LOG"))"
+echo "PASS: capture.sh still reports truthful success when the item resolves on a later poll attempt (F#1226)"
+
+cleanup_late
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+echo "ALL capture.sh board-landing tests passed (F#1226)"
+
+# ---------------------------------------------------------------------------
+# Capture cost shape (successor to the foundation #1225 batch-budget tests).
+#
+# #1225 reported an O(N) drain: N serial capture.sh invocations each paid a
+# LIVE whole-board Projects-v2 `item-list` fetch, because board_add_to_board
+# busted the very cross-process cache the next invocation would have reused.
+# The fix was a cache SPLICE, and the two tests here counted item-list calls
+# and exercised the retry loop's budget-guard abort.
+#
+# All of that machinery — the whole-board item-list, the cross-process cache,
+# board_add_to_board, and _board_budget_guard — was removed with the
+# Projects-v2 arm (ADR 0004). The budget-guard-abort case has no successor:
+# there is no GraphQL budget left to guard. The call-counting case DOES, and
+# in a stronger form: the drain is now structurally impossible rather than
+# merely mitigated, because capture reads ONE issue (board_resolve_item) and
+# never pages the board at all. That is what this asserts — for N serial
+# captures, ZERO whole-board reads, which no cache warmth is required to hold.
+# ---------------------------------------------------------------------------
+BURST_LOG="$(mktemp "${TMPDIR:-/tmp}/capture-burst-log-XXXXXX")"
+BURST_BIN="$(mktemp -d "${TMPDIR:-/tmp}/capture-burst-bin-XXXXXX")"
+export BURST_LOG
+cat > "$BURST_BIN/gh" <<'BURSTGH'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${BURST_LOG:?}"
+{ printf 'gh'; for a in "$@"; do printf ' %q' "$a"; done; printf '\n'; } >> "$BURST_LOG"
+case "$1 $2" in
+  "issue create") printf 'https://github.com/ExampleOrg/example-repo/issues/%s\n' "$((900 + RANDOM % 90))" ;;
+  "label create") : ;;
+  "issue list")   printf '[]\n' ;;
+  "issue edit"|"issue close"|"issue reopen") : ;;
+  "api "*) printf '{"number":901,"title":"burst","state":"open","labels":[]}\n' ;;
+  *) echo "fake gh: unhandled '$1 $2' (argv: $*)" >&2; exit 3 ;;
+esac
+BURSTGH
+chmod +x "$BURST_BIN/gh"
+cat > "$BURST_BIN/sleep" <<'BURSTSLEEP'
+#!/usr/bin/env bash
+exit 0
+BURSTSLEEP
+chmod +x "$BURST_BIN/sleep"
+cleanup_burst() { rm -rf "$BURST_LOG" "$BURST_BIN"; unset BURST_LOG; }
+trap 'cleanup_burst; rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+for _i in 1 2 3; do
+  PATH="$BURST_BIN:$PATH" BURST_LOG="$BURST_LOG" \
+    bash "$CAPTURE" "Burst capture $_i" >/dev/null 2>&1 || true
+done
+# ZERO whole-board reads across all three invocations — the #1225 drain class
+# is structurally impossible now, not merely cache-mitigated.
+[ "$(grep -c '^gh issue list' "$BURST_LOG" || true)" -eq 0 ] \
+  || fail "3 serial captures must make ZERO whole-board reads (capture resolves ONE issue), got $(grep -c '^gh issue list' "$BURST_LOG") (log: $(cat "$BURST_LOG"))"
+grep -q '^gh project' "$BURST_LOG" \
+  && fail "capture must never build a 'gh project' argv (ADR 0004): $(cat "$BURST_LOG")"
+[ "$(grep -c '^gh issue create' "$BURST_LOG" || true)" -eq 3 ] \
+  || fail "expected 3 issue creates across the burst (log: $(cat "$BURST_LOG"))"
+echo "PASS: 3 serial capture.sh invocations make ZERO whole-board reads and no Projects argv — the #1225 O(N) drain class is structurally impossible post-ADR-0004"
+
+cleanup_burst
+trap 'rm -rf "$BIN" "$ISSUE_TOUCHES_LOG_DIR"' EXIT
+
+echo "ALL capture.sh cost-shape tests passed"

@@ -15,8 +15,8 @@ foundation-init, foundation-eject, ...) drops its own <name>.sh file there
 glob-and-render pattern (see generate.py's module docstring).
 
 The `# description: ` header convention parsed here is the SAME one
-kernel/bin/foundation's own `_foundation_subcommand_description()` reads for
-`foundation help` — one convention, two independent readers (a shell one at
+kernel/bin/temperloop's own `_foundation_subcommand_description()` reads for
+`temperloop help` — one convention, two independent readers (a shell one at
 runtime, this Python one at docs-build time), so a subcommand author writes
 it once and both surfaces pick it up.
 """

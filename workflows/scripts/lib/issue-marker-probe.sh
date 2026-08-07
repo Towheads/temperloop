@@ -40,7 +40,7 @@
 # is a pure render of the cache-store snapshot (issue-corpus.sh), so its
 # staleness bound is deliberately the SAME one cache.sh already owns
 # (`cache_stale`, governed by `CACHE_STORE_TTL`) rather than a second,
-# competing TTL knob (subtraction over mechanism — see foundation
+# competing TTL setting (subtraction over mechanism — see foundation
 # CLAUDE.md's "Design discipline"). The corpus is treated as usable for a
 # probe iff ALL of:
 #   1. a cache-store meta.json exists for the repo (cache_meta_file),

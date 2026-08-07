@@ -56,51 +56,20 @@ KERNEL_TAG="${KERNEL_TAG:?set KERNEL_TAG=vX.Y.Z (make update-kernel KERNEL_TAG=.
 cd "$KERNEL_UPDATE_ROOT"
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — semver_major()/breaking_sections() lifted into the shared lib
+# workflows/scripts/lib/changelog.sh (temperloop#429, ADR 0002 follow-on) so
+# bin/subcommands/update.sh (the managed-clone updater) can reuse the exact
+# same CHANGELOG-range parsing without back-channeling into scripts/. Sourced
+# SCRIPT-RELATIVE (never repo-root- or cwd-relative, and independent of
+# KERNEL_UPDATE_ROOT below, which may point at a wholly different repo under
+# test) so this keeps resolving correctly no matter where this script's
+# caller cd'd from. changelog_semver_major()/changelog_breaking_sections()
+# are the renamed (changelog_-prefixed) equivalents of this script's former
+# private semver_major()/breaking_sections() — same behavior, same argument
+# order, name only.
 # ---------------------------------------------------------------------------
-
-# semver_major <vX.Y.Z> — echo the numeric major field (leading v stripped),
-# 0 when absent/non-numeric so a malformed tag never trips the arithmetic.
-semver_major() {
-  local v="${1#v}"
-  v="${v%%.*}"
-  [[ "$v" =~ ^[0-9]+$ ]] && printf '%s\n' "$v" || printf '0\n'
-}
-
-# breaking_sections <current-tag> <target-tag> <changelog>
-# Prints the full text of every CHANGELOG section whose version is in the range
-# (current, target] AND whose heading carries a `BREAKING` marker — the pre-1.0
-# migration notes. Empty output ⇒ no breaking-marked section in range.
-breaking_sections() {
-  local cur="$1" tgt="$2" changelog="$3"
-  [[ -f "$changelog" ]] || return 0
-  awk -v cur="$cur" -v tgt="$tgt" '
-    function semver_num(v,   a, n) {
-      sub(/^v/, "", v)
-      n = split(v, a, ".")
-      return (a[1] + 0) * 1000000 + (a[2] + 0) * 1000 + (a[3] + 0)
-    }
-    function flush() {
-      if (in_range && brk) printf "%s", buf
-      buf = ""; in_range = 0; brk = 0
-    }
-    BEGIN { cur_n = semver_num(cur); tgt_n = semver_num(tgt) }
-    /^## \[/ {
-      flush()
-      ver = $0; sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
-      if (ver ~ /^v?[0-9]/) {
-        sn = semver_num(ver)
-        if (sn > cur_n && sn <= tgt_n) in_range = 1
-      }
-      buf = $0 "\n"
-      if ($0 ~ /BREAKING/) brk = 1
-      next
-    }
-    { buf = buf $0 "\n" }
-    /^#+ .*BREAKING/ { brk = 1 }
-    END { flush() }
-  ' "$changelog"
-}
+# shellcheck source=../workflows/scripts/lib/changelog.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../workflows/scripts/lib/changelog.sh"
 
 # ---------------------------------------------------------------------------
 # 1. Resolve the current pin tag (the "before" surface). A first-time vendor
@@ -121,12 +90,12 @@ is_breaking=0
 migration=""
 
 if [[ -n "$cur_tag" ]]; then
-  cur_major="$(semver_major "$cur_tag")"
-  tgt_major="$(semver_major "$KERNEL_TAG")"
+  cur_major="$(changelog_semver_major "$cur_tag")"
+  tgt_major="$(changelog_semver_major "$KERNEL_TAG")"
   if (( tgt_major > cur_major )); then
     is_breaking=1
   fi
-  migration="$(breaking_sections "$cur_tag" "$KERNEL_TAG" "$KERNEL_UPDATE_CHANGELOG")"
+  migration="$(changelog_breaking_sections "$cur_tag" "$KERNEL_TAG" "$KERNEL_UPDATE_CHANGELOG")"
   if [[ -n "$migration" ]]; then
     is_breaking=1
   fi

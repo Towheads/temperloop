@@ -13,16 +13,13 @@ read this page for the shape of the system, and the linked command/contract
 files for the mechanics of one piece.
 
 All three diagrams below are [Mermaid](https://mermaid.js.org) fenced code
-blocks. GitHub renders Mermaid natively in any Markdown file it displays —
-that rendering is this page's canonical view; no build step or script this
-repo ships is required to see them. `make docs` (§6 of the
-README) does not process this file at all: like
+blocks, rendered natively by GitHub in any Markdown file it displays — that
+rendering is this page's canonical view, with no build step required to see
+them. `make docs` (§6 of the README) does not process this file: like
 [`docs/managed-merge-queue.md`](managed-merge-queue.md) and
-[`docs/config-precedence.md`](config-precedence.md), this is a hand-maintained
+[`docs/config-precedence.md`](config-precedence.md), it's a hand-maintained
 standalone doc, not one of the three generated sources the docs-site
-generator (`workflows/scripts/docs/generate.py`) renders — so the generator
-stays zero-network and zero-install (stdlib-only Markdown, no Mermaid
-runtime) with nothing extra to wire up here.
+generator (`workflows/scripts/docs/generate.py`) renders.
 
 ## 1. Pipeline flow
 
@@ -64,10 +61,10 @@ A few things this diagram compresses that are worth naming explicitly:
 - **`/triage`** runs the logical decision tree — cull, root-cause collapse,
   group-by-meaning, value/priority — over a board's Backlog, then
   materialises survivors as board-native epics (parent issue + sub-issues)
-  or leaves an ungrouped survivor as a Ready singleton. This is the funnel's
+  or leaves an ungrouped survivor as a Ready singleton. This is the pipeline's
   front door for **discovered** work; nothing downstream re-decides what
   survives.
-- **`/workshop`** is the funnel's second front door, for **invented** work —
+- **`/workshop`** is the pipeline's second front door, for **invented** work —
   an idea that starts as "we should build X" with no Backlog item behind
   it. It walks a fixed coverage template (`claude/design-schema.md`)
   instead of triage's decision tree, then materializes a ratified brief
@@ -81,8 +78,13 @@ A few things this diagram compresses that are worth naming explicitly:
   acceptance check) rather than an implementation.
 - **`/build`** executes an approved plan note one dependency level at a
   time: every item in a level is isolated into its own worktree and worker,
-  runs concurrently within the level, and parks at CI-green for a single
-  **batched merge gate** at the end of the level — not a gate per item.
+  runs concurrently within the level, and reaches CI-green. An item the
+  merge gate's own risk partition already classes **clean and disjoint** may
+  then take its consent and land immediately; anything else parks for a
+  single **batched merge gate** at the end of the level. Either way the
+  level boundary stays a dependency barrier for *starting* the next level,
+  and a risky or structurally-overlapping set is always decided at that one
+  batched gate — never per item.
 - **`/sweep`** is the singleton-path peer to `/build`: it drains Ready
   issues that are *not* a sub-issue of any epic, one at a time, reusing the
   same per-item worktree/worker/PR/CI mechanics but with no dependency
@@ -96,11 +98,16 @@ A few things this diagram compresses that are worth naming explicitly:
   see [`docs/managed-merge-queue.md`](managed-merge-queue.md) (README §9)
   for the full backend-selection algorithm and why "queued" and "merged"
   are deliberately kept distinct.
-- **The close-Done cascade** moves a merged item's board card to Done
-  automatically once its issue closes (via the PR's `Closes #N`); an epic
-  closes itself once its last open sub-issue closes. Neither is a step a
-  command performs by hand — both are consequences of the issue graph
-  reaching a terminal state.
+- **Reaching Done** is an explicit write, not an automation. An epic closes
+  itself once its last open sub-issue closes — a consequence of the issue
+  graph reaching a terminal state — but the item's own move to Done is not:
+  on the issues-only backend there is no card-moving automation and nowhere
+  to hook one, because Done is *defined* as the issue being closed with no
+  residual `fnd:status:*` label. So the adapter's own Done write (which
+  strips that label and the `fnd:host/session:*` claim stamp) is the
+  **primary** mechanism, owed by whoever closes the item — including after a
+  merge's own `Closes #N` — with `reconcile.sh` sweeping the closes that
+  bypassed it. See `workflows/scripts/board/ISSUES-ONLY-BACKEND.md`.
 
 ## 2. Actor and guard map
 
@@ -125,8 +132,7 @@ flowchart TB
     subgraph Hooks["Guard hooks (PreToolUse)"]
         WriteLane["write-lane-guard.sh<br/>asks before a mutation targets a<br/>foreign repo's canonical checkout<br/>fails open: home dir, linked worktrees,<br/>non-repo paths, read-only ops"]
         StaleBranch["git-stale-branch-guard.sh<br/>asks before branching off a stale<br/>local default branch<br/>fails open: base already up to date"]
-        WorktreeGuard["build-worktree-guard.sh<br/>denies any write outside the<br/>worker's own worktree root"]
-        BoardGuard["board-adapter-guard.sh<br/>asks before a raw gh project /<br/>Projects GraphQL call<br/>fails open: adapter-mediated calls"]
+        WorktreeGuard["build-worktree-guard.sh<br/>denies any write (Edit/Write or a<br/>destructive Bash verb) outside the<br/>worker's own worktree root"]
         SubtreeGuard["subtree-edit-guard.sh<br/>asks before a direct edit under<br/>a vendored kernel/ subtree<br/>fails open: armed .build-guard marker"]
     end
 
@@ -138,7 +144,6 @@ flowchart TB
     Worker -->|writes checked by| WorktreeGuard
     Orchestrator -->|cross-repo writes checked by| WriteLane
     Orchestrator -->|new branches checked by| StaleBranch
-    Orchestrator -->|board reads/writes checked by| BoardGuard
     Orchestrator -->|kernel/ edits checked by| SubtreeGuard
     Orchestrator -->|push by SHA, open PR| CI
     CI -->|green status| Human
@@ -163,16 +168,13 @@ flowchart TB
 - **`build-worktree-guard.sh`** is the mechanical write-isolation jail for
   build/sweep workers: it self-arms via a `.build-guard` marker that
   `worktree.sh create` drops in each pre-created per-item worktree, then
-  structurally **denies** (not asks) any `Edit`/`Write`/`MultiEdit` that
-  resolves outside that worktree's root. Unlike the other four guards this
+  structurally **denies** (not asks) any `Edit`/`Write`/`MultiEdit` — or any
+  destructive **Bash** verb (`rm`/`rmdir`/`mv`/`shred`/`truncate`/`dd of=`) —
+  that resolves outside that worktree's root. Unlike the other three guards this
   one is a hard deny, not a confirmation prompt — a worker has no path to
-  leak a write into the parent checkout or a sibling worktree.
-- **`board-adapter-guard.sh`** protects the board's shared GraphQL rate
-  budget: it asks before a raw `gh project` call or hand-rolled Projects
-  GraphQL query that bypasses the board adapter (`board.sh` and its
-  `claim`/`release`/`worklist`/`reconcile`/`capture`/`milestone` commands),
-  which caches across processes and keeps single-item operations off the
-  expensive whole-board page.
+  leak a write into the parent checkout or a sibling worktree, nor to delete
+  outside its jail (the Bash arm closes the gap that let a worker `rm -rf` its
+  way to `~/dev`).
 - **`subtree-edit-guard.sh`** protects a downstream checkout that vendors
   this kernel via a `kernel/` git subtree (or a compat symlink to one) from
   drifting silently: it asks before a direct edit lands there instead of
@@ -205,7 +207,7 @@ flowchart LR
         IssueTouch["emit-issue-touch.sh<br/>pr-open, merge"]
         Capture["capture.sh<br/>issue_touch_log_emit<br/>capture"]
         Claim["claim.sh<br/>claim_log_emit"]
-        FunnelCron["funnel-cron.sh<br/>each cron wake"]
+        PipelineCron["pipeline-cron.sh<br/>each cron wake"]
         Findings["tidy Step 3<br/>findings.py"]
         GhPerf["gh-bench.sh /<br/>gh-perf-report.sh"]
         KsFallback["knowledge_search_mcp.sh<br/>warm-to-cold fallback"]
@@ -215,7 +217,7 @@ flowchart LR
         CmdStream["command-runs-YYYY-MM.jsonl"]
         TouchStream["issue-touches-YYYY-MM.jsonl"]
         ClaimStream["claims-YYYY-MM.jsonl"]
-        FunnelStream["funnel-YYYY-MM.jsonl"]
+        PipelineStream["pipeline-YYYY-MM.jsonl"]
         FindingsStream["findings-YYYY-MM.jsonl"]
         GhPerfStream["gh-perf-YYYY-MM.jsonl"]
         KsStream["knowledge-search-fallback-YYYY-MM.jsonl"]
@@ -225,7 +227,7 @@ flowchart LR
     IssueTouch --> TouchStream
     Capture --> TouchStream
     Claim --> ClaimStream
-    FunnelCron --> FunnelStream
+    PipelineCron --> PipelineStream
     Findings --> FindingsStream
     GhPerf --> GhPerfStream
     KsFallback --> KsStream
@@ -233,7 +235,7 @@ flowchart LR
     CmdStream --> Telemetry["telemetry brief<br/>(five-question read side)"]
     TouchStream --> Telemetry
     ClaimStream --> Telemetry
-    FunnelStream --> Telemetry
+    PipelineStream --> Telemetry
     FindingsStream --> Telemetry
     GhPerfStream --> Telemetry
     KsStream --> Telemetry
@@ -246,7 +248,7 @@ flowchart LR
 - **`issue-touches`**, with its **`claims`** sibling stream (unioned at read
   time) — every `pr-open` / `merge` / `capture` touch on an issue, plus
   every board claim, giving a full touch history per issue.
-- **`funnel`** — one record per autonomous funnel cron wake, heterogeneous
+- **`pipeline`** — one record per autonomous pipeline cron wake, heterogeneous
   by `event` (`skipped`, `ran`, `drive`).
 - **`findings`** — one record per extraction `/tidy` Step 3 makes from a
   session stub, whether found via a lexicon tell or a model skim, with
@@ -259,9 +261,13 @@ flowchart LR
   signal rather than a swallowed per-query stderr line.
 
 The read side is `/check-in`'s daily status readout, which leads with a
-telemetry brief rendered from these streams (an overlay-provided renderer in
-a composed install; a kernel-only checkout skips that one section with a
-one-line note and reviews the rest of `/check-in` as normal) — and, on
-demand, the same brief as a `telemetry` skill invocation mid-session. Both
-are pure readers: nothing in this pipeline mutates a raw-lake file once
-written.
+telemetry brief rendered from these streams. The kernel renders it
+**unconditionally** on every checkout: `workflows/scripts/telemetry-brief.sh`
+reads only the kernel raw streams (plus the knowledge-store read log), names
+each source stream in its output, and degrades any absent or empty stream to
+an honest "no data yet" line. A composed install then **enriches** it: the
+overlay's rollup-backed renderer (token-cost spend, rework/retro yield)
+renders after the kernel brief, behind an existence guard — the kernel brief
+stands alone without it. On demand, the same brief is a `telemetry` skill
+invocation mid-session. All of these are pure readers: nothing in this
+pipeline mutates a raw-lake file once written.

@@ -5,10 +5,10 @@ slug: check-in
 
 ## Problem
 
-Unattended machinery (the nightly drain pass, the autonomous funnel driver,
+Unattended machinery (the nightly drain pass, the autonomous pipeline driver,
 an unattended build run) is deliberately designed to never block waiting for
 an absent operator — it takes a safe default and keeps moving, or it parks
-something it can't safely decide on its own. Without a review ritual, every
+something it can't safely decide on its own. Without a review step, every
 one of those defaulted decisions, parked findings, and flagged surfaces just
 sits there permanently: a pending decision nobody confirmed, a proposed
 supersession nobody linked, a possible-secret flag nobody redacted, a
@@ -42,6 +42,16 @@ discard it, redact a flagged secret, and so on. This command is the **sole
 mutator** of every entry's status — every surface above is written
 append-only by the unattended side and disposed only here.
 
+The retro findings surface specifically is **capability-gated**: `/retro` is
+an overlay-only command, absent on a bare kernel checkout (temperloop#521,
+"the layering leak"). Part 2 opens with one `command_declared retro` check
+(the shared `command_declared` helper — see its own feature doc); when true,
+the retro findings subsection runs exactly as described above, and when
+false the whole subsection is skipped in favor of a single consolidated
+`retro review skipped — /retro not installed (command_declared retro = false)`
+line for the run, rather than a dangling reference to a command that isn't
+there.
+
 **Part 3 — priorities review.** A durable per-project priorities note (the
 weighted themes, the definition of "impactful"/"done", the avoid-now list)
 drives what an advisory "what should I work on next" recommendation
@@ -53,10 +63,13 @@ actually shifted.
 ## Integration
 
 Consumes: every review surface the drain pass (`tidy`) and the autonomous
-funnel driver write — pending decisions, proposed supersessions, retro
-findings, candidate tells, vault hygiene, sensitivity flags — plus a
-telemetry-brief renderer for Part 1's status readout, when one is present
-in the checkout.
+pipeline driver write — pending decisions, proposed supersessions, retro
+findings (when `/retro` is installed — gated via `command_declared`, see
+above), candidate tells, vault hygiene, sensitivity flags — plus the
+telemetry-brief renderers for Part 1's status readout: the kernel renderer
+(`workflows/scripts/telemetry-brief.sh`) unconditionally — it ships in every
+checkout and degrades honestly on empty streams — and the overlay's
+rollup-backed renderer as an enrichment when present.
 
 Produces: resolved/dismissed status on every surface entry it disposes;
 worklist issues for accepted retro findings; lexicon updates for promoted
@@ -64,7 +77,7 @@ candidate tells; edits to the standing per-project priorities notes that a
 downstream advisory recommender reads.
 
 This command is the **read side** of the drain-proposes / operator-disposes
-split: `tidy` and the funnel driver **propose** by appending; `check-in`
+split: `tidy` and the pipeline driver **propose** by appending; `check-in`
 **disposes** by mutating status. Nothing else in the pipeline reads or
 writes the `Status` field on these surfaces.
 
@@ -74,18 +87,23 @@ Cost is proportional to the number of open entries across the six review
 surfaces, not to overall pipeline volume — a quiet night costs a handful of
 reads that each report "no open entries." Each disposition is a small,
 targeted edit (a status-line patch or a short append), not a full-file
-rewrite. The priorities review is bounded by the number of active projects,
-each a small note read-and-confirm.
+rewrite — followed by a cheap trailing-newline check (temperloop#853) so a
+status-line patch landing on the file's last line can never leave it
+unterminated for the next appender. The priorities review is bounded by the
+number of active projects, each a small note read-and-confirm.
 
 ## Telemetry
 
 None as a direct raw-lake emitter — this command is the human-facing
 consumer of telemetry rather than a producer of it. Its Part 1 status
-readout surfaces whatever the checkout's telemetry-brief renderer already
-computed from the raw-lake streams (command runs, issue touches, funnel
-ticks, findings, and the rest); if that renderer reports stale or missing
+readout surfaces whatever the checkout's telemetry-brief renderers already
+computed from the raw-lake streams (command runs, issue touches, pipeline
+ticks, findings, and the rest); if a renderer reports stale or missing
 data, that staleness is itself the observable signal that something in the
-telemetry pipeline needs attention. Absent any renderer, the way to notice
-this command isn't doing its job is indirect: review surfaces (pending
-decisions, sensitivity flags, and the rest) accumulating unresolved entries
-across multiple days is the tell that check-ins have lapsed.
+telemetry pipeline needs attention. The kernel renderer is now
+**unconditional** — every checkout renders Part 1's brief, so "no renderer
+in this checkout" is no longer a state this command can be in; a fresh
+install simply renders honest "no data yet" lines until the streams warm
+up. The remaining indirect tell that check-ins themselves have lapsed:
+review surfaces (pending decisions, sensitivity flags, and the rest)
+accumulating unresolved entries across multiple days.

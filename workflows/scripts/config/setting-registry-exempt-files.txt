@@ -1,0 +1,18 @@
+# setting-registry-exempt-files.txt — files WHOLESALE exempted from
+# check-setting-registry.sh's unregistered-setting sweep (temperloop#164/#169,
+# item registry-config-lints), one git-relative path per line. `#` starts a
+# comment; blank lines ignored. Mirrors
+# workflows/scripts/kernel/personal-token-denylist-exempt-files.txt's own
+# file-level exemption mechanism and its own stated rationale: a same-line
+# `# setting:exempt` marker (check-setting-registry.sh's per-line mechanism,
+# mirroring `# denylist:allow`) can't always be used safely — e.g. when the
+# seam-shaped text lives inside a heredoc payload a script emits for ANOTHER
+# file (a trailing marker comment would land inside the generated file's own
+# text and corrupt it), not because the checker's own file needs to quote
+# itself (contrast the denylist checker's OWN self-referential exemption;
+# this file has no such case today).
+#
+# This list is currently EMPTY: the sole historical entry
+# (seed-kernel-repo.sh) was removed when that seeder was retired
+# (Decisions/temperloop - Retire seed-kernel-repo.sh). The mechanism stays
+# for the next file that legitimately needs a wholesale exemption.

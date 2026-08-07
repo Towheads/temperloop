@@ -18,60 +18,74 @@
 #   5) issue not on the board → NO edit (idempotent no-op).
 #
 # The board_resolve_item override sets BOARD_* globals that unclaim.sh / board.sh
-# accessors read in OTHER functions — shellcheck can't see that cross-function use,
-# so silence SC2034 file-wide (mirrors test_claim.sh). CI excludes tests/ from
-# shellcheck anyway; this keeps a whole-tree local run clean.
+# accessors read in OTHER functions — ShellCheck can't see that cross-function use,
+# so silence SC2034 file-wide (mirrors test_claim.sh). (Keep prose off any line
+# starting `# shellcheck ` -- it is parsed as a directive.)
 # shellcheck disable=SC2034
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 export SUBSET_HOST_LABEL="testhost"
-# Keep cache busts off the real cache dir.
-BOARD_CACHE_DIR="$(mktemp -d)"; export BOARD_CACHE_DIR
-
 # shellcheck source=scripts/unclaim.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/unclaim.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
-# Canned board state — board_option_id/board_item_id read these. Field NAMES must
-# match board.sh's BOARD_FIELD_* / BOARD_OPT_* constants.
-FIELDS_JSON='{"fields":[
-  {"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"opt_inprogress","name":"In Progress"},{"id":"opt_ready","name":"Ready"},{"id":"opt_done","name":"Done"}]},
-  {"id":"PVTF_hostsession","name":"Host/Session","type":"ProjectV2Field"}
-]}'
+# Canned board state. The fixture is ISSUES-ONLY (ADR 0004 removed the
+# Projects-v2 arm): item ids are ISSUE_<n>, and a status write is an `fnd:status:*`
+# label edit rather than `gh project item-edit --single-select-option-id`. All
+# five cases below assert unclaim.sh's own behavior — release, idempotent no-ops,
+# and the deliberate release-regardless-of-owner divergence from claim.sh — none
+# of which was ever backend-specific.
 ITEM_STATUS="In Progress"   # per-case: starting Status of the item
 ITEM_HOSTSESSION=""         # per-case: starting Host/Session stamp
 ITEM_ON_BOARD=1             # per-case: 0 → resolve returns no matching item (off-board)
-EDITS=""                    # per-case: temp file recording "<field-id> <option-id>" per edit
+EDITS=""                    # per-case: temp file recording "status <target>" per write
 
-# Inject a canned single-item board without any GraphQL — unclaim_main calls this
-# instead of the real one. Sets the SAME globals the real board_resolve_item does.
+# Inject a canned single-item board — unclaim_main calls this instead of the real
+# one. Sets the SAME globals the real board_resolve_item does, including the
+# vestigial-but-still-set BOARD_PROJECT_ID / BOARD_FIELDS_JSON (temperloop#602).
 board_resolve_item() {
-  BOARD_PROJECT_ID="PVT_TEST"
-  BOARD_FIELDS_JSON="$FIELDS_JSON"
+  BOARD_PROJECT_ID=""
+  BOARD_FIELDS_JSON='{"fields":[]}'
   if [ "$ITEM_ON_BOARD" = 1 ]; then
-    BOARD_ITEMS_JSON="{\"items\":[{\"id\":\"PVTI_item\",\"content\":{\"number\":${issue},\"title\":\"Test item\"},\"status\":\"${ITEM_STATUS}\",\"host/Session\":\"${ITEM_HOSTSESSION}\"}]}"
+    BOARD_ITEMS_JSON="{\"items\":[{\"id\":\"ISSUE_${issue}\",\"content\":{\"number\":${issue},\"title\":\"Test item\"},\"status\":\"${ITEM_STATUS}\",\"host/Session\":\"${ITEM_HOSTSESSION}\"}]}"
   else
     BOARD_ITEMS_JSON='{"items":[]}'
   fi
   BOARD_CURRENT="$1"
 }
 
-# Override the board write seam: record the --field-id AND --single-select-option-id
-# of every item-edit to $EDITS (one "<fid> <oid>" line per call, in order).
-# board_set_status is the only caller here, via `project item-edit`.
+# Override the board write seam. board_set_status routes through the issues-only
+# label writer, so record one "status <slug>" line per fnd:status:* label ADD —
+# the same one-line-per-status-write shape the old "<field-id> <option-id>"
+# records had, so every assertion below keeps its form.
 _board_gh() {
-  if [ "$1 $2" = "project item-edit" ]; then
-    local fid="" oid="" want="" a
-    for a in "$@"; do
-      case "$want" in fid) fid="$a"; want="" ;; oid) oid="$a"; want="" ;; esac
-      case "$a" in --field-id) want=fid ;; --single-select-option-id) want=oid ;; esac
-    done
-    printf '%s %s\n' "$fid" "$oid" >>"$EDITS"
-    return 0
-  fi
+  case "$1 $2" in
+    "api repos/Towheads/foundation/issues/${issue}")
+      local labels="" state="open"
+      [ "$ITEM_STATUS" = "Done" ] && state="closed"
+      case "$ITEM_STATUS" in
+        "In Progress") labels='{"name":"fnd:status:in-progress"}' ;;
+        "Ready")       labels='{"name":"fnd:status:ready"}' ;;
+      esac
+      printf '{"state":"%s","title":"Test item","labels":[%s]}' "$state" "$labels"
+      return 0 ;;
+    "label create") return 0 ;;
+    "issue edit")
+      local a want=0
+      for a in "$@"; do
+        if [ "$want" = 1 ]; then
+          case "$a" in fnd:status:*) printf 'status %s\n' "${a#fnd:status:}" >>"$EDITS" ;; esac
+          want=0; continue
+        fi
+        [ "$a" = "--add-label" ] && want=1
+      done
+      return 0 ;;
+    "issue reopen" | "issue close") return 0 ;;
+  esac
   echo "test _board_gh: unexpected call '$*'" >&2
   return 3
 }
@@ -93,9 +107,9 @@ ITEM_STATUS="In Progress"; ITEM_HOSTSESSION=""; ITEM_ON_BOARD=1
 run_unclaim
 [ "$RC" -eq 0 ] || fail "case1: unclaim_main should have succeeded (RC=$RC)\n$(cat "$EDITS")"
 [ "$(wc -l <"$EDITS" | tr -d ' ')" = "1" ] \
-  || fail "case1: expected exactly one item-edit\n$(cat "$EDITS")"
-grep -qx "PVTSSF_status opt_ready" "$EDITS" \
-  || fail "case1: expected a Status→Ready edit (PVTSSF_status opt_ready)\n$(cat "$EDITS")"
+  || fail "case1: expected exactly one status write\n$(cat "$EDITS")"
+grep -qx "status ready" "$EDITS" \
+  || fail "case1: expected a Status→Ready edit (fnd:status:ready)\n$(cat "$EDITS")"
 echo "PASS: case 1 In Progress → Ready issues one Status→Ready edit"
 
 # --- case 2: already Ready → no-op --------------------------------------------
@@ -121,7 +135,7 @@ issue=204; PROJECT_NUMBER=4
 ITEM_STATUS="In Progress"; ITEM_HOSTSESSION="otherhost:aaaaaaaa"; ITEM_ON_BOARD=1
 run_unclaim
 [ "$RC" -eq 0 ] || fail "case4: a foreign-stamped release must succeed (RC=$RC)\n$(cat "$EDITS")"
-grep -qx "PVTSSF_status opt_ready" "$EDITS" \
+grep -qx "status ready" "$EDITS" \
   || fail "case4: a foreign-stamped In-Progress item must STILL be released to Ready\n$(cat "$EDITS")"
 echo "PASS: case 4 foreign-stamped In-Progress item is released regardless of owner"
 

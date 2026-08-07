@@ -313,6 +313,14 @@ _ERROR_SIGNATURES = [
     # the very next line, so it is invisible to both the is_error pass and a
     # human skimming — the item silently drops from Backlog-only intake (K#422).
     re.compile(r"did not resolve in time|may be unstatused", re.IGNORECASE),
+    # `gh --json` query naming a field the installed gh CLI rejects — the
+    # query "succeeds" at the shell level (gh still exits) and the wrong
+    # branch is silently taken. Near-zero-FP and recurring: two firings on
+    # 2026-07-25 surfaced temperloop#762 (kernel prose still teaching the
+    # `isInMergeQueue` field #357's fix removed). Verbatim gh CLI string → no
+    # IGNORECASE, same precedent as InputValidationError / `Key "..." does not
+    # exist` above (promoted from candidate-tells, temperloop#770).
+    re.compile(r"Unknown JSON field"),
 ]
 
 
@@ -327,10 +335,287 @@ def _matches_error_signature(text):
 
 
 # ---------------------------------------------------------------------------
+# Structural detectors (temperloop #421, #770)
+# ---------------------------------------------------------------------------
+#
+# Detectors that are structurally unreachable by the turn-scanning /
+# error-signature passes above — each keys off a shape in the raw tool stream
+# (an AskUserQuestion answer, a repeated Bash export prefix, a JSON-RPC error
+# code, a mutating-MCP tool identity, cross-run denial state) rather than a
+# line of prose. Four from #421 below; a fifth — repeated Bash-command denial
+# with cross-run dedup — is defined near _is_mutating_mcp_tool (#770-5).
+
+# (1a) AUQ answer expressing confusion — a top-signal feedback moment: the
+# operator did not answer the question, they signalled they couldn't. Narrow,
+# high-precision phrases (not a bare "confused" that benign prose carries).
+_AUQ_CONFUSION_RE = re.compile(
+    r"\b("
+    r"i (?:do not|don't) understand"
+    r"|i(?:'m| am) (?:confused|lost)"
+    r"|(?:need|want) more context"
+    r"|not sure what you(?:'re| are) asking"
+    r"|(?:this )?makes no sense"
+    r"|no idea what"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# (1b) AUQ answer that is itself a question, or opens with a counter-proposal
+# stem — the tell that the presented option set omitted the right answer, so the
+# operator had to type past it. Applied to the *selected answer value*, not the
+# wrapper string (see _scan_auq_answer).
+_AUQ_OMITTED_START_RE = re.compile(
+    r"^\s*(?:why\b|what about\b|couldn['’]?t\b|can['’]?t\b|how about\b)",
+    re.IGNORECASE,
+)
+
+# The AskUserQuestion tool_result wraps the selection as
+#   Your questions have been answered: "<question>"="<answer>"
+# so the *answer value* the operator actually gave is the RHS of each `="..."`.
+# Extract those so (1b)'s prefix/suffix tests see the answer, not the wrapper.
+_AUQ_ANSWER_VALUE_RE = re.compile(r'="((?:[^"\\]|\\.)*)"')
+
+
+def _auq_answer_values(answer):
+    """Return the selected answer value(s) from an AUQ result string.
+
+    Falls back to the whole (stripped) string when the `="..."` wrapper is
+    absent — a free-text / non-standard answer shape.
+    """
+    if not answer:
+        return []
+    vals = _AUQ_ANSWER_VALUE_RE.findall(answer)
+    if vals:
+        return [v.strip() for v in vals if v.strip()]
+    stripped = answer.strip()
+    return [stripped] if stripped else []
+
+
+def _scan_auq_answer(answer):
+    """Scan an AUQ answer string; return a sorted list of signal strings.
+
+    Signals: "confusion" (1a) and/or "omitted-option" (1b).
+    """
+    signals = set()
+    values = _auq_answer_values(answer)
+    for val in values:
+        if _AUQ_CONFUSION_RE.search(val):
+            signals.add("confusion")
+        if val.endswith("?") or _AUQ_OMITTED_START_RE.search(val):
+            signals.add("omitted-option")
+    # Confusion phrasing can also appear when the wrapper wasn't parseable into
+    # values but the whole answer still carries it — belt-and-suspenders for 1a
+    # (1b's positional tests deliberately stay on the extracted value only).
+    if answer and _AUQ_CONFUSION_RE.search(answer):
+        signals.add("confusion")
+    return sorted(signals)
+
+
+# (2) Repeated inline env-var workaround — a leading `export VAR=value` that the
+# session re-types verbatim ahead of many separate Bash calls, instead of
+# fixing the default (F#1141). Capture the *leading* export assignment only;
+# quoted values (spaces) and bare values both supported.
+_EXPORT_PREFIX_RE = re.compile(
+    r'^\s*(export\s+[A-Za-z_][A-Za-z0-9_]*='
+    r'''(?:"[^"]*"|'[^']*'|\S*))'''
+)
+
+# Minimum distinct Bash calls carrying the same verbatim export prefix before it
+# is flagged as a workaround (the "3+ separate Bash calls" acceptance bar).
+_ENV_PREFIX_MIN_CALLS = 3
+
+
+def _extract_export_prefix(command):
+    """Return the leading `export VAR=value` prefix of a Bash command, or None."""
+    if not command:
+        return None
+    m = _EXPORT_PREFIX_RE.match(command)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+# (3) MCP JSON-RPC -32602 "Invalid arguments" — always the caller's bug, and
+# invisible when folded into the generic errors[] list. Counted as its own
+# bucket. DOTALL so the `.*` between the code and "Invalid arguments" spans
+# newlines in a multi-line error body.
+_MCP_INVALID_ARGS_RE = re.compile(
+    r"MCP error -32602.*Invalid arguments", re.IGNORECASE | re.DOTALL
+)
+
+# (4) Mutating-MCP timeout — a vault_write / vault_move / vault_delete result
+# that timed out leaves the store in UNKNOWN state (applied? partial? not at
+# all?), materially unlike a read timeout. Distinct bucket. Matched by the
+# mutating tool's identity (substring of the fully-qualified MCP tool name) plus
+# a /timed out/i result body.
+_MUTATING_MCP_TOOL_SUBSTRINGS = ("vault_write", "vault_move", "vault_delete")
+_TIMED_OUT_RE = re.compile(r"timed out", re.IGNORECASE)
+
+
+def _is_mutating_mcp_tool(tool_name):
+    """Return True if `tool_name` is a mutating vault MCP op."""
+    if not tool_name:
+        return False
+    return any(sub in tool_name for sub in _MUTATING_MCP_TOOL_SUBSTRINGS)
+
+
+# (5) Bash permission-policy denial with cross-run dedup (temperloop#770). A
+# "has been denied" tool_result on a Bash command distinguishes a designed
+# guard that structurally cannot run on this host (a command a command SPEC
+# requires, but this host's permission policy blocks) from a transient,
+# one-off failure. An ISOLATED denial is noise — a fat-fingered command, a
+# deliberate one-time block — so this is deliberately NOT folded into the
+# unconditional _ERROR_SIGNATURES list above: it only becomes a finding when
+# the SAME command text has been denied across TWO OR MORE DISTINCT SESSIONS.
+# That requires cross-run state — a small on-disk JSON map of
+# {command: [session_id, ...]} — never a bare substring match. Two consecutive
+# drains hit this on /tidy Step 0's `gh pr list` archive-PR check, surfacing
+# temperloop#763.
+_DENIED_RE = re.compile(r"has been denied", re.IGNORECASE)
+_DENIED_MIN_SESSIONS = 2
+
+
+def _default_denied_state_path():
+    """Default path for the cross-run denied-command dedup state.
+
+    Follows the `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/...`
+    convention already used elsewhere in this repo (gh-call-logger.sh,
+    telemetry-brief.sh). Overridable via the SCAN_STUB_DENIED_STATE_PATH env
+    var (tests point this at a tmpdir so scans stay hermetic and never touch
+    real cross-session state) or the --denied-state CLI flag.
+    """
+    override = os.environ.get("SCAN_STUB_DENIED_STATE_PATH")
+    if override:
+        return override
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "temperloop", "scan-stub-denied-commands.json")
+
+
+def _load_denied_state(path):
+    """Load the {command: [session_id, ...]} cross-run denial state.
+
+    Missing/unreadable/malformed state is treated as empty — the dedup guard
+    degrades to "nothing seen before", never a crash.
+    """
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_denied_state(path, state):
+    """Persist the cross-run denial state.
+
+    Best-effort and silent on failure (read-only fs, missing HOME, etc.) — a
+    state-write failure must never break the scan itself; it only means the
+    next run starts from stale state.
+    """
+    if not path:
+        return
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except OSError:
+        pass
+
+
+def _scan_repeated_denials(denied_hits, session_id, denied_state_path):
+    """Correlate Bash-command denial hits against cross-run state.
+
+    `denied_hits` is a list of {command, content, location} dicts collected
+    in file order from the current stub's own transcript (may contain the
+    same command more than once — deduped here, one entry per command).
+
+    Returns a list of finding dicts for commands whose distinct-session count
+    (this session included) has reached _DENIED_MIN_SESSIONS, and persists
+    the updated state. A single stub scanned twice (same session_id) is
+    idempotent — re-adding an already-recorded session_id is a no-op — which
+    keeps the determinism guarantee (same stub + jsonl -> identical output).
+    """
+    if not denied_hits:
+        return []
+
+    by_command = {}
+    for hit in denied_hits:
+        by_command.setdefault(hit["command"], []).append(hit)
+
+    state_path = denied_state_path or _default_denied_state_path()
+    state = _load_denied_state(state_path)
+    changed = False
+    findings = []
+
+    for cmd, hits in by_command.items():
+        sessions = list(state.get(cmd, []))
+        if session_id and session_id not in sessions:
+            sessions.append(session_id)
+            state[cmd] = sessions
+            changed = True
+        session_count = len(sessions)
+        if session_count >= _DENIED_MIN_SESSIONS:
+            first_hit = hits[0]
+            findings.append({
+                "command": cmd,
+                "content": first_hit["content"],
+                "location": first_hit["location"],
+                "session_count": session_count,
+            })
+
+    if changed:
+        _save_denied_state(state_path, state)
+
+    return findings
+
+
+# Tool names whose edits can carry tell-phrase prose into a file.
+_SPEC_AUTHORING_EDIT_TOOLS = ("Edit", "Write", "MultiEdit")
+
+
+def _is_spec_authoring_path(file_path):
+    """True if `file_path` is one of the drain's own tell-DEFINING surfaces
+    (foundation#1137).
+
+    Editing these files makes a session quote lexicon tells verbatim — a command
+    spec / CLAUDE.md carries friction-slug prose (the self-match trap the
+    lexicon-assistant split, #444, already guards for *assistant turns*), and the
+    lexicon TSVs literally are the tell list. A session that edits them produces a
+    false-positive lexicon storm, so scan_stub damps the lexicon when this fires.
+
+    Matches (on an absolute OR repo-relative path) — anchored tightly so a
+    NEAR-MISS name doesn't silently damp a whole legitimate session:
+      - `…/claude/commands/*.md`  — the command specs (separator-anchored, so
+        `myclaude/commands/x.md` does NOT match)
+      - `…/CLAUDE.*.md` / `CLAUDE.md`  — the CLAUDE.md family; the required dot
+        rejects `CLAUDE-notes.md` / `CLAUDEFILE.md`
+      - `…/drain/lexicon*.tsv`    — the drain's own tell lists specifically; the
+        `drain/lexicon` anchor rejects an unrelated `data/lexicon_helper.tsv`
+    """
+    if not file_path:
+        return False
+    p = str(file_path).replace(os.sep, "/")
+    base = p.rsplit("/", 1)[-1]
+    if ("/claude/commands/" in p or p.startswith("claude/commands/")) and base.endswith(".md"):
+        return True
+    if base.startswith("CLAUDE.") and base.endswith(".md"):
+        return True
+    if "drain/lexicon" in p and base.endswith(".tsv"):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Tool-event parsing from raw .jsonl
 # ---------------------------------------------------------------------------
 
-def parse_tool_events(jsonl_path):
+def parse_tool_events(jsonl_path, session_id=None, denied_state_path=None):
     """
     Parse the raw Claude Code .jsonl transcript for high-signal tool events:
 
@@ -341,21 +626,49 @@ def parse_tool_events(jsonl_path):
     - [Request interrupted by user for tool use] text events
     - capture.sh Bash invocations: the command body (defect-at-source signals)
 
+    `session_id` and `denied_state_path` feed the cross-run denial dedup guard
+    (#770-5 below) — session_id identifies THIS run for the cross-run
+    distinct-session count; denied_state_path overrides where that state is
+    persisted (default: _default_denied_state_path()).
+
     Returns a dict with keys:
-        ask_user_questions: list of {id, question, answer, location}
-        errors:             list of {tool_name, content, kind, location}
-        interrupts:         list of {location}
-        capture_calls:      list of {command, location}
+        ask_user_questions:    list of {id, question, answer, location}
+        errors:                list of {tool_name, content, kind, location}
+        interrupts:            list of {location}
+        capture_calls:         list of {command, location}
+        auq_answer_flags:      list of {signal, question, answer, location} (#421-1)
+        repeated_env_prefixes: list of {prefix, count, locations} (#421-2)
+        mcp_invalid_args:      list of {tool_name, content, location} (#421-3)
+        mutating_mcp_timeouts: list of {tool_name, content, location} (#421-4)
+        repeated_denials:      list of {command, content, location, session_count} (#770-5)
     """
     result = {
         "ask_user_questions": [],
         "errors": [],
         "interrupts": [],
         "capture_calls": [],
+        "auq_answer_flags": [],
+        "repeated_env_prefixes": [],
+        "mcp_invalid_args": [],
+        "mutating_mcp_timeouts": [],
+        "repeated_denials": [],
+        # foundation#1137: set True when this session edited a tell-defining file
+        # (command spec / CLAUDE.md / lexicon TSV), so scan_stub damps the lexicon.
+        "spec_authoring_context": False,
+        "spec_authoring_files": [],
     }
 
     if not jsonl_path or not os.path.isfile(jsonl_path):
         return result
+
+    # (#421-2) Collect every Bash export-prefix as (prefix, location) so a
+    # post-pass can flag any prefix repeated verbatim across 3+ separate calls.
+    export_prefix_hits = []  # list of (prefix, location) in file order
+
+    # (#770-5) Collect every Bash-command "has been denied" hit as
+    # {command, content, location} so a post-pass can cross-run-correlate it
+    # against denied_state_path (see _scan_repeated_denials).
+    denied_hits = []  # list of {command, content, location} in file order
 
     # First pass: collect tool_use events so we can match them to tool_results.
     tool_use_by_id = {}  # id → {name, input, event_index}
@@ -397,6 +710,17 @@ def parse_tool_events(jsonl_path):
                 tid = item.get("id", "")
                 tname = item.get("name", "")
                 tinput = item.get("input", {})
+
+                # Spec-authoring detection (#1137): an Edit/Write/MultiEdit to a
+                # tell-defining file means this session quotes tell phrases
+                # verbatim → its lexicon signal is unreliable. Flag it so
+                # scan_stub can damp the lexicon.
+                if tname in _SPEC_AUTHORING_EDIT_TOOLS and isinstance(tinput, dict):
+                    fp = tinput.get("file_path", "")
+                    if _is_spec_authoring_path(fp):
+                        result["spec_authoring_context"] = True
+                        if fp not in result["spec_authoring_files"]:
+                            result["spec_authoring_files"].append(fp)
                 tool_use_by_id[tid] = {
                     "name": tname,
                     "input": tinput,
@@ -425,6 +749,11 @@ def parse_tool_events(jsonl_path):
                             "command": cmd[:400],
                             "location": f"jsonl line {lineno}",
                         })
+                    # (#421-2) Record any leading `export VAR=value` prefix for
+                    # the repeated-workaround post-pass below.
+                    prefix = _extract_export_prefix(cmd)
+                    if prefix:
+                        export_prefix_hits.append((prefix, f"jsonl line {lineno}"))
 
             # ── tool_result ───────────────────────────────────────────────
             elif itype == "tool_result":
@@ -457,6 +786,39 @@ def parse_tool_events(jsonl_path):
                         "location": f"jsonl line {lineno}",
                     })
 
+                # (#421-3) MCP -32602 "Invalid arguments" — its own counted
+                # bucket (always the caller's bug; invisible among errors[]).
+                if _MCP_INVALID_ARGS_RE.search(result_text):
+                    result["mcp_invalid_args"].append({
+                        "tool_name": tname,
+                        "content": result_text[:300],
+                        "location": f"jsonl line {lineno}",
+                    })
+
+                # (#421-4) Mutating-MCP timeout — vault_write/move/delete that
+                # timed out leaves the store in UNKNOWN state; its own bucket.
+                if _is_mutating_mcp_tool(tname) and _TIMED_OUT_RE.search(result_text):
+                    result["mutating_mcp_timeouts"].append({
+                        "tool_name": tname,
+                        "content": result_text[:300],
+                        "location": f"jsonl line {lineno}",
+                    })
+
+                # (#770-5) Bash permission-policy denial — record the hit for
+                # the cross-run dedup post-pass below (_scan_repeated_denials).
+                # Command-keyed, so only a Bash tool_use with a `command` input
+                # is eligible; other tools are out of scope (see the module
+                # docstring on this detector above _DENIED_RE).
+                if tname == "Bash" and _DENIED_RE.search(result_text):
+                    tinput = tu.get("input", {})
+                    cmd = tinput.get("command", "") if isinstance(tinput, dict) else ""
+                    if cmd:
+                        denied_hits.append({
+                            "command": cmd,
+                            "content": result_text[:300],
+                            "location": f"jsonl line {lineno}",
+                        })
+
                 # AskUserQuestion answer: match by tool_use_id.
                 if tname == "AskUserQuestion":
                     # Find the corresponding question record and fill in answer.
@@ -471,6 +833,41 @@ def parse_tool_events(jsonl_path):
                 if "[Request interrupted by user for tool use]" in text_val:
                     result["interrupts"].append({"location": f"jsonl line {lineno}"})
 
+    # (#421-1) AUQ answer-field scan: flag confusion answers (1a) and
+    # answers that are themselves questions / counter-proposals (1b — the
+    # option set omitted the right answer). Runs after answers are populated.
+    for aq in result["ask_user_questions"]:
+        answer = aq.get("answer")
+        if not answer:
+            continue
+        questions = aq.get("questions", [])
+        question = questions[0] if questions else ""
+        for signal in _scan_auq_answer(answer):
+            result["auq_answer_flags"].append({
+                "signal": signal,
+                "question": question,
+                "answer": answer[:500],
+                "location": aq.get("location", ""),
+            })
+
+    # (#421-2) Repeated inline env-var workaround: flag any export prefix that
+    # appeared verbatim ahead of _ENV_PREFIX_MIN_CALLS (3+) separate Bash calls.
+    prefix_locations = {}  # prefix → [locations] in file order
+    for prefix, loc in export_prefix_hits:
+        prefix_locations.setdefault(prefix, []).append(loc)
+    for prefix, locs in prefix_locations.items():
+        if len(locs) >= _ENV_PREFIX_MIN_CALLS:
+            result["repeated_env_prefixes"].append({
+                "prefix": prefix,
+                "count": len(locs),
+                "locations": locs,
+            })
+
+    # (#770-5) Cross-run denial dedup: only commands whose distinct-session
+    # count (this session included) has reached _DENIED_MIN_SESSIONS become a
+    # finding. Persists the updated cross-run state as a side effect.
+    result["repeated_denials"] = _scan_repeated_denials(denied_hits, session_id, denied_state_path)
+
     # Clean up: remove internal 'id' from AskUserQuestion records (not part of public schema).
     for aq in result["ask_user_questions"]:
         aq.pop("id", None)
@@ -482,7 +879,8 @@ def parse_tool_events(jsonl_path):
 # Top-level scan
 # ---------------------------------------------------------------------------
 
-def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexicon_path=None):
+def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexicon_path=None,
+              denied_state_path=None):
     """
     Scan a session stub and return the scan report as a dict.
 
@@ -490,6 +888,8 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
     lexicon_path            — override path for lexicon.tsv (default: sibling file)
     jsonl_override          — override path for the raw .jsonl (default: from stub frontmatter)
     assistant_lexicon_path  — override path for lexicon-assistant.tsv (default: sibling file)
+    denied_state_path       — override path for the cross-run denied-command dedup state
+                               (default: _default_denied_state_path(), temperloop#770)
     """
     with open(stub_path, encoding="utf-8") as fh:
         stub_text = fh.read()
@@ -519,7 +919,21 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
     state_collision = [row for row in lexicon if row[1] == "state-collision"]
     matches += apply_lexicon(turns, state_collision, roles=("assistant",))
     digest = user_turn_digest(turns)
-    tool_events = parse_tool_events(jsonl_path)
+    tool_events = parse_tool_events(jsonl_path, session_id=session_id, denied_state_path=denied_state_path)
+
+    # Damp the lexicon for a spec-authoring session (foundation#1137). A session
+    # that edited the drain's own tell-defining files (command spec / CLAUDE.md /
+    # lexicon TSV) quotes tell phrases verbatim, so its lexicon_matches are a
+    # false-positive storm that swamps the drain. Suppress them — but record the
+    # count and set the flag so nothing is silently lost: the STRUCTURAL
+    # tool_events passes (errors, capture_calls, interrupts, AUQ answers) are
+    # phrase-independent and stay fully in force, so a genuine defect/decision
+    # from such a session is still caught.
+    spec_authoring = bool(tool_events.get("spec_authoring_context"))
+    lexicon_matches_suppressed = 0
+    if spec_authoring:
+        lexicon_matches_suppressed = len(matches)
+        matches = []
 
     report = {
         "schema_version": "1",
@@ -529,8 +943,17 @@ def scan_stub(stub_path, lexicon_path=None, jsonl_override=None, assistant_lexic
             "project": project,
             "date": meta.get("date", ""),
             "time": meta.get("time", ""),
+            # Explicit `None` (never "") when the frontmatter carries no
+            # `model:` line — this scanner ALWAYS populates this key going
+            # forward, so `null` here unambiguously means "the stub's
+            # frontmatter genuinely has no model:", never "the scanner didn't
+            # emit this field" (findings-schema.md `subject_model`,
+            # temperloop#761).
+            "model": meta.get("model") or None,
         },
         "lexicon_matches": matches,
+        "spec_authoring_context": spec_authoring,
+        "lexicon_matches_suppressed": lexicon_matches_suppressed,
         "user_turns": digest,
         "tool_events": tool_events,
     }
@@ -566,13 +989,28 @@ def main():
         action="store_true",
         help="Emit compact JSON (no indentation)",
     )
+    parser.add_argument(
+        "--denied-state",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Override the cross-run denied-command dedup state path "
+            "(default: ${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/"
+            "scan-stub-denied-commands.json, or $SCAN_STUB_DENIED_STATE_PATH)"
+        ),
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.stub):
         print(f"ERROR: stub not found: {args.stub}", file=sys.stderr)
         sys.exit(1)
 
-    report = scan_stub(args.stub, lexicon_path=args.lexicon, jsonl_override=args.jsonl)
+    report = scan_stub(
+        args.stub,
+        lexicon_path=args.lexicon,
+        jsonl_override=args.jsonl,
+        denied_state_path=args.denied_state,
+    )
     indent = None if args.compact else 2
     print(json.dumps(report, indent=indent, ensure_ascii=False))
 
