@@ -78,6 +78,21 @@ default:
    re-poll entirely and merges directly, trading the extra CI run for a
    cheaper, less-revalidated merge.
 
+**A draft PR is a named state, not a raw platform error.** GitHub refuses
+`enablePullRequestAutoMerge` on a draft, so an enqueue against one failed with
+the raw string `GraphQL: Pull request is a draft (enablePullRequestAutoMerge)` —
+true, but naming neither the state nor the fix, and leaving behind a PR no
+re-run could ever land. `gate.sh queue` now reads `isDraft` **before** the
+enqueue and returns a distinct `DRAFT` outcome (exit code 9) whose message names
+the draft state and the remedy (`gh pr ready <n> -R <owner>/<repo>`). It
+deliberately does **not** flip the PR ready itself: nothing in this repo opens a
+draft (`pr.sh open` passes no `--draft` on any path, and no script runs `gh pr
+ready`), so a draft reaching the merge gate is always a human decision, and
+silently un-drafting it would override the one party who made it. The pre-flight
+probe fails open — an unreadable `isDraft` proceeds to the enqueue — and a second
+classifier names the same `DRAFT` outcome if `gh` itself rejects the draft, so
+neither path can surface the raw GraphQL text.
+
 **Landed-merge confirmation.** Both the native path (`gate.sh queue`, which
 enqueues via the platform's own `--auto` merge, followed by `gate.sh poll`)
 and the managed path's post-merge step confirm a merge the same way: poll

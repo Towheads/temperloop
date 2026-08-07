@@ -80,8 +80,16 @@ mkdir -p "$GH_FIXTURE_DIR"
 : > "$GH_CALL_LOG"
 
 # ── Fixtures (fictional org — kernel test, no real repo names) ──────────────
+# Draft rows carry a WALL-CLOCK-RELATIVE updatedAt, because the stale-draft
+# class (temperloop#1180) is a function of "now": a hardcoded date would silently
+# flip every draft fixture to stale-draft as the calendar advanced. RECENT_ISO
+# is now (always fresh -> `skip`); the stale side uses a fixed far-past literal,
+# which needs no arithmetic and can never stop being stale.
+RECENT_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+STALE_ISO="2020-01-01T00:00:00Z"
+
 # exampleorg/alpha: one of every class.
-cat > "$GH_FIXTURE_DIR/exampleorg_alpha.json" <<'JSON'
+cat > "$GH_FIXTURE_DIR/exampleorg_alpha.json" <<JSON
 [
   {"number": 1, "title": "feat: ready one", "isDraft": false, "mergeStateStatus": "CLEAN", "updatedAt": "2026-07-01T00:00:00Z",
    "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
@@ -95,16 +103,29 @@ cat > "$GH_FIXTURE_DIR/exampleorg_alpha.json" <<'JSON'
    "statusCheckRollup": [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null}]},
   {"number": 6, "title": "feat: green but blocked", "isDraft": false, "mergeStateStatus": "BLOCKED", "updatedAt": "2026-07-01T00:00:00Z",
    "statusCheckRollup": [{"__typename": "StatusContext", "state": "SUCCESS"}]},
-  {"number": 7, "title": "wip thing", "isDraft": true, "mergeStateStatus": "CLEAN", "updatedAt": "2026-07-01T00:00:00Z",
+  {"number": 7, "title": "wip thing", "isDraft": true, "mergeStateStatus": "CLEAN", "updatedAt": "$RECENT_ISO",
    "statusCheckRollup": []},
   {"number": 8, "title": "DO NOT MERGE: spike", "isDraft": false, "mergeStateStatus": "CLEAN", "updatedAt": "2026-07-01T00:00:00Z",
    "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
 ]
 JSON
-# exampleorg/quiet: skip-only (a draft) — the clean case for --format entry.
-cat > "$GH_FIXTURE_DIR/exampleorg_quiet.json" <<'JSON'
+# exampleorg/quiet: skip-only (a RECENT draft) — the clean case for --format
+# entry. Recent on purpose: an in-flight draft is a deliberate state, so it must
+# stay skip-class and keep the nothing-when-clean contract intact.
+cat > "$GH_FIXTURE_DIR/exampleorg_quiet.json" <<JSON
 [
-  {"number": 9, "title": "draft only", "isDraft": true, "mergeStateStatus": "UNKNOWN", "updatedAt": "2026-07-01T00:00:00Z",
+  {"number": 9, "title": "draft only", "isDraft": true, "mergeStateStatus": "UNKNOWN", "updatedAt": "$RECENT_ISO",
+   "statusCheckRollup": []}
+]
+JSON
+# exampleorg/drafty: the stale-draft class (temperloop#1180) — #10 is a long-idle
+# draft (a real fix nobody ever flipped ready, which can never enqueue), #11 is a
+# fresh draft that must stay skip.
+cat > "$GH_FIXTURE_DIR/exampleorg_drafty.json" <<JSON
+[
+  {"number": 10, "title": "fix: real fix, never flipped ready", "isDraft": true, "mergeStateStatus": "CLEAN", "updatedAt": "$STALE_ISO",
+   "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 11, "title": "wip: opened moments ago", "isDraft": true, "mergeStateStatus": "CLEAN", "updatedAt": "$RECENT_ISO",
    "statusCheckRollup": []}
 ]
 JSON
@@ -139,7 +160,7 @@ assert_has "$out" "needs-attention  exampleorg/alpha#6" "green-but-BLOCKED → n
 assert_has "$out" "mergeStateStatus BLOCKED" "blocked reason names the state"
 assert_has "$out" "skip             exampleorg/alpha#7" "draft → skip"
 assert_has "$out" "skip             exampleorg/alpha#8" "DO-NOT-MERGE title → skip"
-assert_has "$out" "summary: ready=1 needs-rebase=2 needs-attention=3 skip=2 errors=0" "summary counts"
+assert_has "$out" "summary: ready=1 needs-rebase=2 needs-attention=3 stale-draft=0 skip=2 errors=0" "summary counts"
 
 echo "2. --format entry with candidates"
 out="$(bash "$SCRIPT" --repos "exampleorg/alpha" --format entry)"
@@ -188,6 +209,34 @@ rc=$?
 [ "$rc" -eq 0 ] && ok "missing board lib + no --repos fails open (exit 0)" \
   || fail_test "missing board lib + no --repos fails open (exit 0)" "got $rc"
 assert_has "$out" "skipping (fail-open)" "missing-lib notice printed"
+
+echo "8. stale-draft — its own NAMED drift class, not folded into skip (#1180)"
+out="$(bash "$SCRIPT" --repos "exampleorg/drafty" --format report)"
+rc=$?
+[ "$rc" -eq 0 ] && ok "exit 0" || fail_test "exit 0" "got $rc"
+assert_has "$out" "stale-draft      exampleorg/drafty#10" "idle draft → stale-draft"
+assert_has "$out" "a draft can never enqueue" "stale-draft reason names why it can't land"
+assert_has "$out" "skip             exampleorg/drafty#11" "fresh draft stays skip (in-flight is legitimate)"
+assert_has "$out" "stale-draft=1 skip=1" "summary counts the stale-draft class separately"
+
+# The point of the class: a stale draft is a CANDIDATE, so it reaches the
+# operator through --format entry. Under the old skip-only classification this
+# repo emitted nothing at all — which is exactly how three real drafts sat 1-3
+# weeks unseen.
+out="$(bash "$SCRIPT" --repos "exampleorg/drafty" --format entry)"
+[ -n "$out" ] && ok "stale-draft breaks nothing-when-clean (an entry is emitted)" \
+  || fail_test "stale-draft breaks nothing-when-clean" "no entry emitted"
+assert_has "$out" "stale-draft: exampleorg/drafty#10" "entry lists the stale-draft ref"
+assert_not_has "$out" "#11" "fresh draft not surfaced in entry"
+
+# The threshold is a registered setting, not a hardcoded literal: raising it far
+# past the fixture's age must reclassify #10 back to skip.
+out="$(READY_PR_SWEEP_STALE_DRAFT_DAYS=100000 bash "$SCRIPT" --repos "exampleorg/drafty" --format report)"
+assert_has "$out" "skip             exampleorg/drafty#10" "raising the threshold reclassifies the draft to skip"
+assert_has "$out" "stale-draft=0 skip=2" "threshold setting is honored in the summary"
+out="$(READY_PR_SWEEP_STALE_DRAFT_DAYS=bogus bash "$SCRIPT" --repos "exampleorg/drafty" --format report 2>&1)"
+rc=$?
+[ "$rc" -eq 2 ] && ok "non-integer threshold exits 2" || fail_test "non-integer threshold exits 2" "got $rc"
 
 echo
 echo "test_ready_pr_sweep: $pass passed, $fail failed"
