@@ -23,7 +23,7 @@ REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # defect tells, foundation #444).
 LEXICON_FILES="$REPO/workflows/scripts/drain/lexicon.tsv $REPO/workflows/scripts/drain/lexicon-assistant.tsv"
 
-VALID_CATEGORIES="friction-slug filed-at-source self-critique trust-rupture failure-report flagging state-collision filing-decision deferral worked-around-defect self-correction"
+VALID_CATEGORIES="friction-slug filed-at-source self-critique trust-rupture failure-report flagging state-collision filing-decision deferral worked-around-defect capture-miss self-correction"
 VALID_MATCH_TYPES="literal regex"
 
 fail=0
