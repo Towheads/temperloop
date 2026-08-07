@@ -14,6 +14,26 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Added
+
+- **`/check-in` now reads and disposes the environment-hygiene surface**
+  (#596). `/tidy`'s § Environment hygiene step already ran `env-reconcile.sh`
+  and appended each drift finding to the environment hygiene report, and
+  `CLAUDE.kernel.md` § Environment hygiene already promised that drift was
+  appended "for `/check-in` to review and dispose" — but `check-in.md` carried
+  no section that read the surface, so the propose half of the loop had no
+  disposer and every finding sat unread. The motivating incident: a
+  telemetry-regeneration LaunchAgent sat **unloaded for four days**;
+  `env-reconcile.sh` detected it correctly and `/tidy` recorded it, and it
+  still never reached the operator. Part 2 gains an
+  `### Environment hygiene review` section, mirroring the existing
+  `### Vault hygiene review`: for each `open` entry it presents the
+  launchd/checkout/worktree drift, lets the operator act or dismiss, and
+  patches the entry's `Status`. It **never** mechanically reloads an agent or
+  resets a foreign checkout — per § Environment hygiene's aggressive-in-lane /
+  report-cross-lane split, disposition of a foreign checkout stays the
+  operator's call.
+
 ### Fixed
 
 - **The `pipefail` + `grep -q` SIGPIPE race is gone from the kernel test
