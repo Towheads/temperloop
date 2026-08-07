@@ -122,7 +122,7 @@ find again.
 | File | Failure |
 |---|---|
 | `01-worktree-write-isolation-leak.md` | An isolated build worker's absolute-path write lands in the shared parent checkout instead of its own worktree |
-| `02-graphql-budget-exhaustion.md` | A polling loop backed by the wrong API silently drains a shared, points-based rate-limit budget |
+| `02-rest-budget-exhaustion.md` | Consolidating onto one API surface removes the relief valve an earlier fix depended on, merging two metered budgets into one |
 | `03-premature-status-close-on-async-merge.md` | An orchestrator marks work "done" at queue time instead of at confirmed completion, closing tracking state against code that isn't actually merged yet |
 | `04-patch-api-silent-corruption.md` | A "success" response from a partial-update API hides a structural corruption of the target document |
 
@@ -146,16 +146,18 @@ The two seams:
   [`workflows/scripts/lib/knowledge_store.contract.md`](../workflows/scripts/lib/knowledge_store.contract.md).
   Read that file rather than this one for the actual contract; it is the
   source of truth and this guide does not restate it.
-- **Tracker adapter** — the issue/board backend seam (label vocabulary,
-  claim lock, parent/child and dependency edges, close→Done cascade) that
-  the board toolkit talks to instead of assuming a specific tracker. The
-  current interface is documented alongside the reference `issues-only`
-  backend in
+- **Tracker adapter** — the issue/board backend seam a caller uses to
+  resolve items, read and set status/fields, walk parent/child and
+  dependency edges, and land new issues without hardcoding a tracker-specific
+  query or assuming a specific tracker. The full interface — configuration
+  (`boards.conf`), the public `board_*` functions, and the `issues-only`
+  backend as the worked example — is specified in
+  [`workflows/scripts/lib/tracker.contract.md`](../workflows/scripts/lib/tracker.contract.md).
+  Read that file rather than this one for the actual contract; it is the
+  source of truth and this guide does not restate it. The issues-only
+  backend's operational deep-dive (label vocabulary, claim lock, edges,
+  close→Done cascade) is its companion,
   [`workflows/scripts/board/ISSUES-ONLY-BACKEND.md`](../workflows/scripts/board/ISSUES-ONLY-BACKEND.md).
-  There is no standalone `tracker.contract.md` yet separating the general
-  interface from that one backend's specifics — that split is tracked as a
-  follow-up, foundation#891 — so until it lands, ISSUES-ONLY-BACKEND.md is
-  the source of truth for the tracker seam's shape.
 
 Before opening an adapter PR:
 

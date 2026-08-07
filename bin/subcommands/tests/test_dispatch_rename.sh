@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 #
-# test_dispatch_rename.sh — proves the foundation -> temperloop rename
-# (foundation #893, "chore(kernel): rename to TemperLoop everywhere the
-# name lives") didn't break dispatch: kernel/bin/temperloop is the primary
-# entrypoint, and kernel/bin/foundation is a thin compat shim that execs it
-# — so BOTH paths dispatch identically for every existing `foundation <sub>`
-# caller. Zero network: help/version/unknown-subcommand all short-circuit
-# before the claude/gh prereq check, so no fake binaries are needed for
-# those; the final case drives a real installed subcommand (eject, which is
-# a zero-write, zero-network dry-run) through both entrypoints with a fake
-# claude + gh on PATH (mirrors test_report_offer.sh's convention) to prove
-# parity all the way through a live subcommand dispatch too.
+# test_dispatch_rename.sh — pins the POST-WINDOW state of the foundation ->
+# temperloop rename (foundation #893; windowed by temperloop#165, window
+# closed in v0.19.0).
+#
+# Through the window this file asserted DISPATCH PARITY: kernel/bin/foundation
+# was a thin shim that execed kernel/bin/temperloop, so both entrypoints
+# behaved identically for every existing `foundation <sub>` caller. That
+# parity is deliberately GONE. What is asserted now is the removal itself:
+#
+#   - `temperloop` is the sole working entrypoint and still dispatches.
+#   - `foundation` is a tombstone: it refuses, legibly, on EVERY invocation
+#     — non-zero exit, a message naming `temperloop` and the removal version
+#     — and it NEVER forwards to a subcommand.
+#
+# The env seam that used to simulate the post-window state is gone with the
+# window itself: the refusal below is the real, shipped behavior, exercised
+# directly rather than staged.
+#
+# Zero network: help/version/unknown-subcommand all short-circuit before the
+# claude/gh prereq check, so no fake binaries are needed for those; the final
+# case drives a real installed subcommand (eject, a zero-write, zero-network
+# dry-run) with a fake claude + gh on PATH (mirrors test_report_offer.sh's
+# convention) to prove the shim refuses even a live subcommand dispatch.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,61 +32,51 @@ FOUNDATION="$BIN_DIR/foundation"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
-[ -x "$TEMPERLOOP" ] || fail "kernel/bin/temperloop must exist and be executable (primary entrypoint)"
-[ -x "$FOUNDATION" ] || fail "kernel/bin/foundation must exist and be executable (compat shim)"
+[ -x "$TEMPERLOOP" ] || fail "kernel/bin/temperloop must exist and be executable (the sole entrypoint)"
 
-# The shim must be short (a thin exec, not a re-implementation) and must
-# actually exec temperloop rather than duplicate its logic. Since
-# temperloop#165 it also carries the rename-window plumbing (a one-line
-# deprecation notice + the TEMPERLOOP_LEGACY_WINDOW_CLOSED simulation arm),
-# so "thin" is a slightly larger bound than the pre-window shim's 25.
-grep -q 'exec .*temperloop' "$FOUNDATION" || fail "kernel/bin/foundation must exec temperloop"
+# --- T0: the tombstone is still SHIPPED ----------------------------------
+# Deliberately not deleted: a pre-v0.19.0 install left a
+# ~/.local/bin/foundation symlink pointing here, and `temperloop update`
+# moves the checkout underneath it. Deleting the file would turn that symlink
+# into a dangling "no such file or directory" — an opaque failure exactly
+# where the operator needs to be told the name changed.
+[ -x "$FOUNDATION" ] || fail "kernel/bin/foundation must still exist and be executable (legible tombstone for an already-installed symlink)"
+
+# It must NOT forward any more, and must stay small (a refusal, not a
+# re-implementation and not a resurrected shim).
+! grep -q 'exec .*temperloop' "$FOUNDATION" \
+  || fail "kernel/bin/foundation must NOT exec temperloop any more (the compat window closed in v0.19.0)"
 lines="$(wc -l < "$FOUNDATION" | tr -d ' ')"
-[ "$lines" -le 45 ] || fail "kernel/bin/foundation should stay a thin shim (got $lines lines)"
+[ "$lines" -le 30 ] || fail "kernel/bin/foundation should stay a bare refusal (got $lines lines)"
+echo "PASS: kernel/bin/foundation ships as a non-forwarding tombstone ($lines lines)"
 
-# Rename window (temperloop#165): every shim invocation prints EXACTLY ONE
-# deprecation-notice line on stderr, naming the new binary and the removal
-# version; dispatch parity below is asserted modulo that one line.
-strip_shim_notice() { grep -v '^foundation: NOTE' || true; }
-notice="$("$FOUNDATION" --version 2>&1 >/dev/null | grep '^foundation: NOTE' || true)"
-[ -n "$notice" ] || fail "shim must print a deprecation NOTE on stderr"
-[ "$(printf '%s\n' "$notice" | wc -l | tr -d ' ')" = "1" ] || fail "shim must print exactly one NOTE line (got: $notice)"
-case "$notice" in *temperloop*) ;; *) fail "shim NOTE must name 'temperloop' (got: $notice)" ;; esac
-case "$notice" in *v0.17.0*) ;; *) fail "shim NOTE must state the removal version v0.17.0 (got: $notice)" ;; esac
-echo "PASS: shim prints one deprecation NOTE naming temperloop + removal version v0.17.0"
+# --- T1: the tombstone refuses legibly, on every invocation shape ---------
+# No env seam sets this up — this IS the shipped behavior now.
+for args in "--version" "help" "eject" "not-a-real-subcommand"; do
+  rc=0; out="$("$FOUNDATION" "$args" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "'foundation $args' must exit non-zero (got 0, output: $out)"
+  case "$out" in *temperloop*) ;; *) fail "'foundation $args' refusal must name 'temperloop' (got: $out)" ;; esac
+  case "$out" in *v0.19.0*) ;; *) fail "'foundation $args' refusal must name the removal version v0.19.0 (got: $out)" ;; esac
+  # The through-the-window deprecation NOTE is gone: a refusal, not a warning.
+  case "$out" in *NOTE*) fail "'foundation $args' must not print a deprecation NOTE any more (got: $out)" ;; *) ;; esac
+done
+echo "PASS: 'foundation <anything>' refuses legibly (non-zero, names temperloop + v0.19.0, no NOTE)"
 
-# Window-closed simulation (the post-v0.17.0 behavior, testable now): the
-# shim refuses legibly — non-zero exit, a message naming 'temperloop' —
-# never a silent success or an opaque failure.
-rc_c=0; out_c="$(TEMPERLOOP_LEGACY_WINDOW_CLOSED=1 "$FOUNDATION" --version 2>&1)" || rc_c=$?
-[ "$rc_c" -ne 0 ] || fail "window-closed shim must exit non-zero"
-case "$out_c" in *temperloop*) ;; *) fail "window-closed shim failure must name 'temperloop' (got: $out_c)" ;; esac
-case "$out_c" in *v0.17.0*) ;; *) fail "window-closed shim failure must name v0.17.0 (got: $out_c)" ;; esac
-echo "PASS: window-closed shim degrades legibly (exit $rc_c, names temperloop + v0.17.0)"
-
-# --- T1: --version identical --------------------------------------------
+# --- T2: the primary entrypoint is unaffected ----------------------------
 out_t="$("$TEMPERLOOP" --version 2>&1)"
-out_f="$("$FOUNDATION" --version 2>&1 | strip_shim_notice)"
-[ "$out_t" = "$out_f" ] || fail "--version diverged: temperloop='$out_t' foundation='$out_f'"
 case "$out_t" in temperloop*) ;; *) fail "--version should self-identify as temperloop (got: $out_t)" ;; esac
-echo "PASS: --version identical via both entrypoints ($out_t)"
+echo "PASS: temperloop --version works ($out_t)"
 
-# --- T2: help identical ---------------------------------------------------
 out_t="$("$TEMPERLOOP" help 2>&1)"
-out_f="$("$FOUNDATION" help 2>&1 | strip_shim_notice)"
-[ "$out_t" = "$out_f" ] || fail "help output diverged between temperloop and foundation"
 case "$out_t" in *"temperloop —"*) ;; *) fail "help banner should self-identify as temperloop (got: $out_t)" ;; esac
-echo "PASS: help identical via both entrypoints"
+echo "PASS: temperloop help works"
 
-# --- T3: unknown subcommand identical (dispatch error path) ---------------
 rc_t=0; out_t="$("$TEMPERLOOP" not-a-real-subcommand 2>&1)" || rc_t=$?
-rc_f=0; out_f="$("$FOUNDATION" not-a-real-subcommand 2>&1 | strip_shim_notice)" || rc_f=$?
-[ "$out_t" = "$out_f" ] || fail "unknown-subcommand output diverged"
-[ "$rc_t" = "$rc_f" ] || fail "unknown-subcommand exit code diverged ($rc_t vs $rc_f)"
-echo "PASS: unknown-subcommand error identical via both entrypoints (exit $rc_t)"
+[ "$rc_t" -ne 0 ] || fail "temperloop must reject an unknown subcommand with a non-zero exit"
+echo "PASS: temperloop rejects an unknown subcommand (exit $rc_t)"
 
-# --- T4: a real installed subcommand dispatches identically end-to-end ----
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH — T4 (live subcommand dispatch) skipped"; exit 0; }
+# --- T3: the shim never reaches a real subcommand -------------------------
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH — T3 (live subcommand dispatch) skipped"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-rename-test-XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
@@ -99,8 +101,13 @@ git -C "$FIXTURE" init -q
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test \
        GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test
 
+# temperloop still dispatches 'eject' end-to-end...
 rc_t=0; out_t="$(cd "$FIXTURE" && PATH="$FAKE_BIN:$PATH" "$TEMPERLOOP" eject 2>&1)" || rc_t=$?
-rc_f=0; out_f="$(cd "$FIXTURE" && PATH="$FAKE_BIN:$PATH" "$FOUNDATION" eject 2>&1 | strip_shim_notice)" || rc_f=$?
-[ "$out_t" = "$out_f" ] || fail "'eject' dispatch diverged between temperloop and foundation (t='$out_t' f='$out_f')"
-[ "$rc_t" = "$rc_f" ] || fail "'eject' exit code diverged ($rc_t vs $rc_f)"
-echo "PASS: live subcommand ('eject') dispatches identically via both entrypoints (exit $rc_t)"
+case "$out_t" in *"temperloop eject"*) ;; *) fail "'temperloop eject' should reach the eject subcommand (got: $out_t)" ;; esac
+
+# ...and the shim does not: it refuses BEFORE any subcommand runs, so none of
+# eject's own output can appear.
+rc_f=0; out_f="$(cd "$FIXTURE" && PATH="$FAKE_BIN:$PATH" "$FOUNDATION" eject 2>&1)" || rc_f=$?
+[ "$rc_f" -ne 0 ] || fail "'foundation eject' must exit non-zero"
+case "$out_f" in *"== temperloop eject =="*) fail "'foundation eject' must NOT reach the eject subcommand (got: $out_f)" ;; *) ;; esac
+echo "PASS: 'temperloop eject' dispatches (exit $rc_t); 'foundation eject' refuses without dispatching (exit $rc_f)"

@@ -8,42 +8,42 @@
 # adopter's kernel-only install can run this repo's pipeline with none of
 # Travis's org/repo/operator/vault literals baked in. This is the first test
 # that builds a FULL synthetic non-Towheads identity — fake owner/repo/project
-# number, non-default KNOWLEDGE_STORE_ROOT, non-default FUNNEL_OPERATOR /
-# FUNNEL_REQUIRED_CHECK — and drives every seam through it AT ONCE, proving the
+# number, non-default KNOWLEDGE_STORE_ROOT, non-default PIPELINE_OPERATOR /
+# PIPELINE_REQUIRED_CHECK — and drives every seam through it AT ONCE, proving the
 # seams compose rather than just each surviving its own single-axis unit test.
 #
-# Zero network, zero live `gh`/`claude` — every board/funnel-tick/funnel-drive
-# path below is either --dry-run or driven against a mocked FUNNEL_GH_BIN
-# double (the same test-injection idiom test_funnel_drive.sh already uses for
+# Zero network, zero live `gh`/`claude` — every board/pipeline-tick/pipeline-drive
+# path below is either --dry-run or driven against a mocked PIPELINE_GH_BIN
+# double (the same test-injection idiom test_pipeline_drive.sh already uses for
 # its #718 reconciliation-probe tests). Real $HOME, real ~/dev/mind, and real
 # ~/.claude are never read or written — every path below resolves under a
 # throwaway tmpdir standing in for a stranger's fresh $HOME/XDG layout.
 #
 # Sections:
 #   A. sandbox setup — synthetic stranger identity (board 42 -> a fake
-#      owner/repo/project via boards.conf; fake $HOME/XDG; non-default
-#      KNOWLEDGE_STORE_ROOT/FUNNEL_OPERATOR/FUNNEL_REQUIRED_CHECK)
+#      owner/repo via boards.conf; fake $HOME/XDG; non-default
+#      KNOWLEDGE_STORE_ROOT/PIPELINE_OPERATOR/PIPELINE_REQUIRED_CHECK)
 #   B. regression baseline — the existing board suite (test_boards_conf.sh)
 #      and the existing knowledge_store suite (test_knowledge_store.sh) still
 #      pass, unmodified, run in a clean subshell with none of this file's
 #      stranger env leaked in (partial-conf coexistence, #770's guarantee)
 #   C. board.sh: board_repo/board_owner/board_project_number resolve the
 #      stranger identity for board 42, and built-in boards 3-6 are unaffected
-#   D. funnel-tick.sh --dry-run under the stranger config: every emitted
+#   D. pipeline-tick.sh --dry-run under the stranger config: every emitted
 #      action's repo is the stranger repo, drain-parse-miss reassigns the
 #      stranger operator, and the raw plan JSON carries no "Towheads" or
 #      "@towhead" literal
-#   E. funnel-drive.sh --dry-run tiering: the stranger repo passes through the
+#   E. pipeline-drive.sh --dry-run tiering: the stranger repo passes through the
 #      safe/merge tiering untouched, no Towheads substituted
-#   F. funnel-drive.sh's _board_repo mirror (the #718 reconciliation probe,
-#      exercised via a mocked FUNNEL_GH_BIN double — never live gh) resolves
+#   F. pipeline-drive.sh's _board_repo mirror (the #718 reconciliation probe,
+#      exercised via a mocked PIPELINE_GH_BIN double — never live gh) resolves
 #      board 42 to the stranger repo, not the built-in Towheads/stageFind
 #   G. knowledge_store.sh: ks_root/ks_write/ks_read/ks_list round-trip under
 #      a non-default KNOWLEDGE_STORE_ROOT, never touching the real vault
 #   H. knowledge_search.sh binds to the same ks_root (no independent corpus
 #      path) and its BM_HOME resolves under the stranger XDG_STATE_HOME
 #   I. build.config.sh: an exported stranger KNOWLEDGE_STORE_ROOT /
-#      FUNNEL_OPERATOR / FUNNEL_REQUIRED_CHECK survive sourcing (the `:=`
+#      PIPELINE_OPERATOR / PIPELINE_REQUIRED_CHECK survive sourcing (the `:=`
 #      idiom means the file's own foundation-specific defaults never win)
 
 set -uo pipefail
@@ -52,8 +52,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 BOARD_LIB="$REPO_ROOT/workflows/scripts/board/lib/board.sh"
-TICK="$REPO_ROOT/workflows/scripts/build/funnel-tick.sh"
-DRIVE="$REPO_ROOT/workflows/scripts/build/funnel-drive.sh"
+TICK="$REPO_ROOT/workflows/scripts/build/pipeline-tick.sh"
+DRIVE="$REPO_ROOT/workflows/scripts/build/pipeline-drive.sh"
 BUILD_CONFIG="$REPO_ROOT/workflows/scripts/build/build.config.sh"
 KS_LIB="$REPO_ROOT/workflows/scripts/lib/knowledge_store.sh"
 KS_SEARCH_LIB="$REPO_ROOT/workflows/scripts/lib/knowledge_search.sh"
@@ -71,6 +71,27 @@ bad() { echo "  FAIL  $1: $2"; fail=$((fail + 1)); }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/stranger-config-test-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+
+# ── Hermeticity: neutralize any host-local build.config.local.sh (#1055) ─────
+# build.config.sh (sourced by pipeline-tick.sh/pipeline-drive.sh, and directly in
+# Section I) sources $BUILD_CONFIG_LOCAL when it exists — its documented test
+# seam. On a developer's PRIMARY checkout that sibling file is present and
+# hard-`export`s a real PIPELINE_OPERATOR (@towhead), which leaks past the injected
+# STRANGER_OPERATOR and fails Section D's reassign assertion (`got towhead`). A
+# fresh checkout / CI has no such file and passes, so the break only surfaces
+# on a real dev machine. Point the seam at a guaranteed-absent path so no
+# host-local config is ever sourced, keeping the test hermetic regardless of the
+# running checkout. Exported so every subshell (the pipeline-tick / build.config
+# invocations below) inherits it.
+#
+# The same neutralization is applied to BUILD_CONFIG_MACHINE (build.config.sh
+# precedence layer 3, `$XDG_CONFIG_HOME/temperloop/build.config.sh`): a host that
+# carries a machine-level build config would leak it identically, and a fresh
+# worktree / CI masks that just the same. One nonexistent-path sentinel per
+# seam; an absent file is a silent no-op (build.config.sh guards both with
+# `[ -f ]`).
+export BUILD_CONFIG_LOCAL="$WORK/no-such-local-config.sh"
+export BUILD_CONFIG_MACHINE="$WORK/no-such-machine-config.sh"
 
 # ── A: synthetic stranger identity ──────────────────────────────────────────
 # Board 42 is NOT one of the built-in boards (3/4/5/6) — a genuinely new board
@@ -121,7 +142,7 @@ BOARD_OUT="$(
   source "$BOARD_LIB"
   printf 'repo42=%s\n'  "$(board_repo 42)"
   printf 'owner42=%s\n' "$(board_owner 42)"
-  printf 'proj42=%s\n'  "$(board_project_number 42)"
+  printf 'backend42=%s\n' "$(board_backend 42)"
   printf 'repo3=%s\n'   "$(board_repo 3)"
   printf 'repo4=%s\n'   "$(board_repo 4)"
   printf 'owner3=%s\n'  "$(board_owner 3)"
@@ -133,8 +154,13 @@ get() { printf '%s\n' "$BOARD_OUT" | sed -n "s/^$1=//p"; }
   || bad "C.repo42" "got $(get repo42)"
 [ "$(get owner42)" = "$STRANGER_OWNER" ] && ok "C: board_owner 42 resolves the stranger owner" \
   || bad "C.owner42" "got $(get owner42)"
-[ "$(get proj42)" = "$STRANGER_PROJECT" ] && ok "C: board_project_number 42 resolves the stranger project number" \
-  || bad "C.proj42" "got $(get proj42)"
+# The stranger's conf above still carries a legacy `board.42.project=` line —
+# the Projects-v2 axis retired with that arm (ADR 0004). A stranger who wrote
+# their conf before the removal must not be broken by it: the retired axis is
+# simply not read (never a parse error), the live repo/owner axes beside it
+# resolve normally, and the board comes up on the only backend there is.
+[ "$(get backend42)" = "issues" ] && ok "C: board_backend 42 resolves 'issues' (a legacy project= line in the conf is inert, ADR 0004)" \
+  || bad "C.backend42" "got $(get backend42)"
 [ "$(get repo3)" = "Towheads/stageFind" ] && ok "C: board 3 (built-in, not in conf) still falls back unaffected" \
   || bad "C.repo3" "got $(get repo3)"
 [ "$(get repo4)" = "Towheads/foundation" ] && ok "C: board 4 (built-in, not in conf) still falls back unaffected" \
@@ -142,7 +168,7 @@ get() { printf '%s\n' "$BOARD_OUT" | sed -n "s/^$1=//p"; }
 [ "$(get owner3)" = "Towheads" ] && ok "C: board_owner 3 still falls back unaffected" \
   || bad "C.owner3" "got $(get owner3)"
 
-echo "=== Section D: funnel-tick.sh --dry-run under the stranger config ==="
+echo "=== Section D: pipeline-tick.sh --dry-run under the stranger config ==="
 
 FX="$WORK/fixture"
 mkdir -p "$FX/board-42"
@@ -158,13 +184,13 @@ echo 0 > "$FX/board-42/assignees-9002.txt"
 TICK_PLAN="$(
   BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf" \
   BOARDS_CONF_MACHINE="$NO_MACHINE_CONF" \
-  FUNNEL_ENABLED_BOARDS=42 \
-  FUNNEL_OPERATOR="$STRANGER_OPERATOR" \
+  PIPELINE_ENABLED_BOARDS=42 \
+  PIPELINE_OPERATOR="$STRANGER_OPERATOR" \
   bash "$TICK" --dry-run --fixture "$FX" --board 42
 )"
 
 if [ -z "$TICK_PLAN" ] || ! jq -e . >/dev/null 2>&1 <<<"$TICK_PLAN"; then
-  bad "D.parse" "funnel-tick.sh did not emit valid JSON: $TICK_PLAN"
+  bad "D.parse" "pipeline-tick.sh did not emit valid JSON: $TICK_PLAN"
 else
   [ "$(jq -r '.dry_run' <<<"$TICK_PLAN")" = "true" ] && ok "D: dry_run flag set" \
     || bad "D.dry_run" "got $(jq -r '.dry_run' <<<"$TICK_PLAN")"
@@ -178,39 +204,39 @@ else
 
   MISS="$(jq -c 'first(.actions[] | select(.action=="drain-parse-miss"))' <<<"$TICK_PLAN")"
   [ -n "$MISS" ] && [ "$MISS" != "null" ] && ok "D: drain-parse-miss produced" || bad "D.miss" "no drain-parse-miss action: $TICK_PLAN"
-  # reassign_to is the BARE login — the leading `@` of FUNNEL_OPERATOR is stripped
+  # reassign_to is the BARE login — the leading `@` of PIPELINE_OPERATOR is stripped
   # for the `--add-assignee` target (foundation #977); the `@` is kept only for
   # mention/config-resolution (asserted separately below on the build.config.sh output).
-  [ "$(jq -r '.reassign_to' <<<"$MISS")" = "${STRANGER_OPERATOR#@}" ] && ok "D: parse-miss reassigns the stranger FUNNEL_OPERATOR (bared, #977)" \
+  [ "$(jq -r '.reassign_to' <<<"$MISS")" = "${STRANGER_OPERATOR#@}" ] && ok "D: parse-miss reassigns the stranger PIPELINE_OPERATOR (bared, #977)" \
     || bad "D.reassign" "got $(jq -r '.reassign_to // "MISSING"' <<<"$MISS")"
 
   DRIVE_ACT="$(jq -c 'first(.actions[] | select(.action=="drive-ready"))' <<<"$TICK_PLAN")"
   [ -n "$DRIVE_ACT" ] && [ "$DRIVE_ACT" != "null" ] && ok "D: drive-ready produced for the unlabeled Ready item" \
     || bad "D.drive" "no drive-ready action: $TICK_PLAN"
 
-  if printf '%s' "$TICK_PLAN" | grep -qi "towheads"; then
+  if grep -qi "towheads" <<<"$TICK_PLAN"; then
     bad "D.leak" "plan JSON leaks a Towheads/* literal: $TICK_PLAN"
   else
     ok "D: no residual 'Towheads' literal anywhere in the tick plan"
   fi
-  if printf '%s' "$TICK_PLAN" | grep -q "@towhead"; then
+  if grep -q "@towhead" <<<"$TICK_PLAN"; then
     bad "D.op-leak" "plan JSON leaks the default @towhead operator literal: $TICK_PLAN"
   else
     ok "D: no residual '@towhead' default-operator literal (stranger operator used throughout)"
   fi
 fi
 
-echo "=== Section E: funnel-drive.sh --dry-run tiering carries the stranger repo through ==="
+echo "=== Section E: pipeline-drive.sh --dry-run tiering carries the stranger repo through ==="
 
 STRANGER_TIER_PLAN="$(jq -cn --arg r "$STRANGER_REPO" '[{"tick":"done","actions":[
   {"phase":"drain","action":"drain-answer","board":"42","repo":$r,"issue":9002,"chosen":"chosen-x"},
   {"phase":"drive","action":"drive-ready","board":"42","repo":$r,"issue":9003,"kind":"spike","emit":"/assess"}
 ]}]')"
 
-DRIVE_DRY_OUT="$(printf '%s' "$STRANGER_TIER_PLAN" | env FUNNEL_GH_BIN="/usr/bin/false" bash "$DRIVE" --dry-run)"
+DRIVE_DRY_OUT="$(printf '%s' "$STRANGER_TIER_PLAN" | env PIPELINE_GH_BIN="/usr/bin/false" bash "$DRIVE" --dry-run)"
 
 if [ -z "$DRIVE_DRY_OUT" ] || ! jq -e . >/dev/null 2>&1 <<<"$DRIVE_DRY_OUT"; then
-  bad "E.parse" "funnel-drive.sh --dry-run did not emit valid JSON: $DRIVE_DRY_OUT"
+  bad "E.parse" "pipeline-drive.sh --dry-run did not emit valid JSON: $DRIVE_DRY_OUT"
 else
   [ "$(jq -r '.status' <<<"$DRIVE_DRY_OUT")" = "dry-run" ] && ok "E: status=dry-run (no claude spawn)" \
     || bad "E.status" "got $(jq -r '.status' <<<"$DRIVE_DRY_OUT")"
@@ -218,21 +244,21 @@ else
   [ "$(jq '.safe | length' <<<"$DRIVE_DRY_OUT")" -gt 0 ] && [ "$SAFE_REPOS" = "$STRANGER_REPO" ] \
     && ok "E: safe-tier actions carry the stranger repo through untouched" \
     || bad "E.safe-repo" "got: $SAFE_REPOS (safe count $(jq '.safe | length' <<<"$DRIVE_DRY_OUT"))"
-  if printf '%s' "$DRIVE_DRY_OUT" | grep -qi "towheads"; then
+  if grep -qi "towheads" <<<"$DRIVE_DRY_OUT"; then
     bad "E.leak" "dry-run tiering output leaks a Towheads/* literal: $DRIVE_DRY_OUT"
   else
     ok "E: no residual 'Towheads' literal in the dry-run tiering output"
   fi
 fi
 
-echo "=== Section F: funnel-drive.sh's _board_repo mirror (mocked gh, #718 reconcile probe) ==="
+echo "=== Section F: pipeline-drive.sh's _board_repo mirror (mocked gh, #718 reconcile probe) ==="
 
 # A single kind:code drive so n_safe=0 (code never lands in the safe tier) and,
-# with FUNNEL_DRIVE_MERGE left at its default-off, do_merge=0 too -> the
+# with PIPELINE_DRIVE_MERGE left at its default-off, do_merge=0 too -> the
 # "empty" fast path runs _reconcile_pending, which is the ONE place
-# funnel-drive.sh's own _board_repo mirror actually resolves a repo (dry-run
+# pipeline-drive.sh's own _board_repo mirror actually resolves a repo (dry-run
 # skips reconciliation entirely, so this mocked-gh live-but-offline path is
-# how the mirror itself gets exercised, per test_funnel_drive.sh's existing
+# how the mirror itself gets exercised, per test_pipeline_drive.sh's existing
 # #718 test idiom — never real gh, never network).
 CODE_PLAN='[{"tick":"done","actions":[
   {"phase":"drive","action":"drive-ready","board":"42","repo":"whatever/ignored","issue":9010,"kind":"code","emit":"/build"}]}]'
@@ -253,7 +279,7 @@ chmod +x "$GH_DOUBLE"
 
 RECONCILE_OUT="$(
   printf '%s' "$CODE_PLAN" | env \
-    FUNNEL_GH_BIN="$GH_DOUBLE" CAP_DIR="$CAP" \
+    PIPELINE_GH_BIN="$GH_DOUBLE" CAP_DIR="$CAP" \
     BOARDS_CONF_REPO_LOCAL="$WORK/boards.conf" BOARDS_CONF_MACHINE="$NO_MACHINE_CONF" \
     GH_PENDING_JSON='[{"number":9010,"state":"CLOSED"}]' \
     bash "$DRIVE"
@@ -277,9 +303,18 @@ KS_OUT="$(
   export HOME="$STRANGER_HOME"
   # Pin the read-log (temperloop#229) into the stranger sandbox: HOME is
   # overridden above, but an inherited XDG_STATE_HOME from the outer
-  # environment would otherwise win the log path's default and leak test
-  # entries into the real machine's state dir.
+  # environment would otherwise win the default log path and leak test
+  # entries into the real machine state dir.
   export XDG_STATE_HOME="$STRANGER_HOME/.local/state"
+  # Pin XDG_CONFIG_HOME too (temperloop#1328): KNOWLEDGE_STORE_ROOT is
+  # exported above so ks_root rung-2 env win makes this a no-op for the
+  # assertions below, but without pinning it the sandbox isolation from a
+  # real machine conf at $XDG_CONFIG_HOME/temperloop/build.config.sh would be
+  # ACCIDENTAL (only holding because rung 2 short-circuits first) rather than
+  # structural. No apostrophes in this comment on purpose (bash 3.2
+  # mis-parses one inside a $(...) command substitution) -- now the sandbox
+  # is airtight regardless of rung order.
+  export XDG_CONFIG_HOME="$STRANGER_HOME/.config"
   # shellcheck source=/dev/null
   source "$KS_LIB"
   root="$(ks_root)"
@@ -291,11 +326,11 @@ KS_OUT="$(
   ks_list "Decisions" 2>&1
 )"
 
-printf '%s\n' "$KS_OUT" | grep -qx "root=$STRANGER_KS_ROOT" && ok "G: ks_root resolves the stranger KNOWLEDGE_STORE_ROOT" \
+grep -qx "root=$STRANGER_KS_ROOT" <<<"$KS_OUT" && ok "G: ks_root resolves the stranger KNOWLEDGE_STORE_ROOT" \
   || bad "G.root" "got: $KS_OUT"
-printf '%s\n' "$KS_OUT" | grep -qx "widget note content" && ok "G: ks_write/ks_read round-trip content under the stranger root" \
+grep -qx "widget note content" <<<"$KS_OUT" && ok "G: ks_write/ks_read round-trip content under the stranger root" \
   || bad "G.roundtrip" "got: $KS_OUT"
-printf '%s\n' "$KS_OUT" | grep -qx "Decisions/widget-choice.md" && ok "G: ks_list finds the written doc-id under the stranger root" \
+grep -qx "Decisions/widget-choice.md" <<<"$KS_OUT" && ok "G: ks_list finds the written doc-id under the stranger root" \
   || bad "G.list" "got: $KS_OUT"
 
 if [ -d "$STRANGER_HOME/dev/mind" ]; then
@@ -310,6 +345,11 @@ KS_SEARCH_OUT="$(
   export KNOWLEDGE_STORE_ROOT="$STRANGER_KS_ROOT"
   export XDG_STATE_HOME="$STRANGER_HOME/.local/state"
   export HOME="$STRANGER_HOME"
+  # Pin XDG_CONFIG_HOME too (temperloop#1328) -- same rationale as the
+  # identical pin in Section G just above: structural isolation from a real
+  # machine conf, not merely accidental via rung-2 KNOWLEDGE_STORE_ROOT
+  # already winning.
+  export XDG_CONFIG_HOME="$STRANGER_HOME/.config"
   # shellcheck source=/dev/null
   source "$KS_LIB"
   # shellcheck source=/dev/null
@@ -323,7 +363,7 @@ KS_SEARCH_OUT="$(
 )"
 
 WANT_BM_HOME="$STRANGER_HOME/.local/state/foundation/basic-memory-home"
-printf '%s\n' "$KS_SEARCH_OUT" | grep -qx "bm_home=$WANT_BM_HOME" && ok "H: KNOWLEDGE_SEARCH_BM_HOME resolves under the stranger XDG_STATE_HOME" \
+grep -qx "bm_home=$WANT_BM_HOME" <<<"$KS_SEARCH_OUT" && ok "H: KNOWLEDGE_SEARCH_BM_HOME resolves under the stranger XDG_STATE_HOME" \
   || bad "H.bmhome" "got: $KS_SEARCH_OUT (want bm_home=$WANT_BM_HOME)"
 AVAIL_RC="$(printf '%s\n' "$KS_SEARCH_OUT" | sed -n 's/^available_rc=//p')"
 case "$AVAIL_RC" in
@@ -336,19 +376,19 @@ echo "=== Section I: build.config.sh — stranger overrides win over its own fou
 BUILD_CFG_OUT="$(
   BUILD_CONFIG_LOCAL="$WORK/no-such-local.sh" \
   KNOWLEDGE_STORE_ROOT="$STRANGER_KS_ROOT" \
-  FUNNEL_OPERATOR="$STRANGER_OPERATOR" \
-  FUNNEL_REQUIRED_CHECK="$STRANGER_CHECK" \
-  bash -c '. "$1"; printf "root=%s\nop=%s\ncheck=%s\n" "$KNOWLEDGE_STORE_ROOT" "$FUNNEL_OPERATOR" "$FUNNEL_REQUIRED_CHECK"' _ "$BUILD_CONFIG"
+  PIPELINE_OPERATOR="$STRANGER_OPERATOR" \
+  PIPELINE_REQUIRED_CHECK="$STRANGER_CHECK" \
+  bash -c '. "$1"; printf "root=%s\nop=%s\ncheck=%s\n" "$KNOWLEDGE_STORE_ROOT" "$PIPELINE_OPERATOR" "$PIPELINE_REQUIRED_CHECK"' _ "$BUILD_CONFIG"
 )"
 
-printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "root=$STRANGER_KS_ROOT" \
+grep -qx "root=$STRANGER_KS_ROOT" <<<"$BUILD_CFG_OUT" \
   && ok "I: KNOWLEDGE_STORE_ROOT override survives build.config.sh (not overwritten to \$HOME/dev/mind)" \
   || bad "I.root" "got: $BUILD_CFG_OUT"
-printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "op=$STRANGER_OPERATOR" \
-  && ok "I: FUNNEL_OPERATOR override survives build.config.sh (not overwritten to @towhead)" \
+grep -qx "op=$STRANGER_OPERATOR" <<<"$BUILD_CFG_OUT" \
+  && ok "I: PIPELINE_OPERATOR override survives build.config.sh (not overwritten to @towhead)" \
   || bad "I.op" "got: $BUILD_CFG_OUT"
-printf '%s\n' "$BUILD_CFG_OUT" | grep -qx "check=$STRANGER_CHECK" \
-  && ok "I: FUNNEL_REQUIRED_CHECK override survives build.config.sh" \
+grep -qx "check=$STRANGER_CHECK" <<<"$BUILD_CFG_OUT" \
+  && ok "I: PIPELINE_REQUIRED_CHECK override survives build.config.sh" \
   || bad "I.check" "got: $BUILD_CFG_OUT"
 
 echo

@@ -31,7 +31,7 @@ fields (`pr:`, `pushed_sha:`, `gh_issue:`, ...), the `speculative:`/
 marker line, the closed `.outcome` enums of `gate.sh`/`pr.sh`/`worktree.sh`/
 `ci-poll.sh`, the `.build-guard` marker file, telemetry/raw-lake record
 shapes, board-adapter field names/values, the `Operational`/`Foundational`
-work-class labels, and the Live/Drain pairing registry table itself. Most
+work-class labels, and the Capture/Backstop pairing registry table itself. Most
 frozen surfaces are not whole documents but exact lines or fields embedded
 inside an otherwise free-form one — a PR body is mostly style-free prose
 *except* its bare `Closes #N` line and its Verification section's resolved

@@ -51,7 +51,7 @@
 # This file is SOURCED — it sets no shell options (the caller owns set -euo).
 # Depends on: knowledge_search.sh (source FIRST), curl, jq.
 
-# ── Config knobs ──────────────────────────────────────────────────────────
+# ── Config settings ──────────────────────────────────────────────────────────
 #   KNOWLEDGE_SEARCH_BM_MCP_URL    daemon endpoint. Default is a loopback-only
 #                                  streamable-http address; override to match
 #                                  the supervised daemon's host/port/path.
@@ -71,7 +71,7 @@
 # when it ISN'T swallowed. This section adds a durable, de-duped signal that
 # survives a swallowed stderr, without changing the fail-open contract.
 #
-# Config knobs (tests only):
+# Config settings (tests only):
 #   KS_SEARCH_FALLBACK_RAW_DIR    override the raw-lake dir (default: the
 #                                 <repo>/meta/data/raw resolved from this file).
 #   KS_SEARCH_FALLBACK_STATE_DIR  override the de-dup marker dir (default:
@@ -209,12 +209,31 @@ _ks_search_backend_basic_memory_mcp_available() {
 _ks_search_backend_basic_memory_mcp_search() {
   local query="$1"; shift
   local limit=10
+  # Allowlist, not a silent discard — kept in lockstep with the cold backend's
+  # own loop (temperloop#418). `--partition` is not accepted here either: the
+  # partition scope is enforced once, in ks_search, above both backends, so
+  # neither the warm daemon path nor its cold fail-open fallback can widen it.
   while [ $# -gt 0 ]; do
     case "$1" in
       --limit) limit="${2:?knowledge_search: --limit requires a value}"; shift 2 ;;
-      *) shift ;;
+      *)
+        printf 'knowledge_search: basic-memory-mcp search: unrecognised argument "%s" (accepted: --limit)\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
+
+  # Post-fetch re-rank (#1446): fetch a DEEPER candidate set than the caller
+  # asked for, then re-rank down to --limit. Kept in lockstep with the cold
+  # path's identical depth computation — the two surfaces must fetch the same
+  # depth and apply the same re-rank, or warm and cold silently diverge in
+  # RANKING the way they were already prevented from diverging in search MODE
+  # (see the search_type:"hybrid" note below).
+  local depth="$limit"
+  if [ "${KNOWLEDGE_SEARCH_RERANK:-1}" = "1" ] \
+     && [ "${KNOWLEDGE_SEARCH_RERANK_DEPTH:-20}" -gt "$limit" ]; then
+    depth="${KNOWLEDGE_SEARCH_RERANK_DEPTH:-20}"
+  fi
 
   local sid call raw results
   if sid="$(_ks_bm_mcp_open_session)" && [ -n "$sid" ]; then
@@ -224,7 +243,7 @@ _ks_search_backend_basic_memory_mcp_search() {
     # warm and cold from silently diverging to text-only on a differently-
     # configured daemon — the fail-open safety argument is latency-only, not a
     # change in search mode.
-    call="$(jq -cn --arg q "$query" --argjson lim "$limit" --arg proj "$KNOWLEDGE_SEARCH_BM_PROJECT" \
+    call="$(jq -cn --arg q "$query" --argjson lim "$depth" --arg proj "$KNOWLEDGE_SEARCH_BM_PROJECT" \
       '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"search_notes",arguments:{query:$q,output_format:"json",search_type:"hybrid",page_size:$lim,project:$proj}}}')"
     raw="$(curl -s \
         --connect-timeout "$KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT" \
@@ -240,7 +259,9 @@ _ks_search_backend_basic_memory_mcp_search() {
       | jq -e 'if (.result.isError == true) then error("tool error")
                else (.result.content[0].text | fromjson) end' 2>/dev/null)"
     if [ -n "$results" ]; then
-      printf '%s' "$results" | _ks_bm_reshape_results
+      # Same reshape AND same re-rank as the cold path — both stages have ONE
+      # owner in knowledge_search.sh so a change can't land on one surface only.
+      printf '%s' "$results" | _ks_bm_reshape_results | _ks_bm_rerank "$query" "$limit"
       return 0
     fi
     # Reachable but the tool returned an error / empty / unparseable body. The

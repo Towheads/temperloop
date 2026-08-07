@@ -2,23 +2,34 @@
 
 Sibling doc to `cache.sh` (F#988 Contract, epic "canonical-item cache layer").
 This is the schema/contract note a later consumer (a corpus renderer, a
-funnel driver, anything that wants to read "every issue in this repo" without
+pipeline driver, anything that wants to read "every issue in this repo" without
 re-paying GitHub every time) reads to know what's on disk and what it means.
 
-## Why this exists, and how it differs from board.sh's own cache
+## Why this exists — and why there is no longer another cache to differ from
 
-`board.sh` already has a read cache (`BOARD_CACHE_TTL` / `_board_cached_read`
-— see its header comment), but that one is narrow: in-memory-per-process-class
-relief for the Projects-v2 GraphQL budget, keyed on a single board's active
-(non-Done) item-list page, living in `$TMPDIR` with a short TTL.
+`cache.sh` is a **durable, cross-session store of the full issue corpus** for
+a repo — every issue, open and closed, with its body, parent linkage, and
+comments — hoisted above board.sh's read path. It rides the REST issues-list
+bucket exclusively, **never** GraphQL.
 
-`cache.sh` is a different, broader thing: a **backend-agnostic, durable,
-cross-session store of the full issue corpus** for a repo — every issue,
-open and closed, with its body, parent linkage, and comments — hoisted above
-board.sh's backend dispatch so it serves a Projects-v2 board and an
-issues-only board identically (both are just "issues in repo X" underneath).
-It rides the REST issues-list bucket exclusively, **never** GraphQL, so it
-never competes with the Projects-v2 budget board.sh's own cache protects.
+**This section used to contrast the store against a second cache; that second
+cache no longer exists.** `board.sh` formerly carried its own read cache
+(`BOARD_CACHE_TTL` / `_board_cached_read`): a narrow, `$TMPDIR`-resident,
+short-TTL page of a single board's active (non-Done) Projects-v2 item-list,
+whose entire purpose was relief for the Projects-v2 5,000-pt/hr **GraphQL**
+budget. That cache — along with the structure/state TTL split
+(`BOARD_STRUCTURE_TTL`, `board_bust_structure`) and the budget guard — was
+removed together with the Projects-v2 arm it protected (ADR 0004, epic
+temperloop#524). With one backend and no GraphQL, there is nothing left for it
+to cache.
+
+So `cache.sh` is now simply **the** cache in front of a board read: the
+optional, per-board issue-corpus store described below. Its own behavior did
+not change at that removal — it never rode GraphQL, never sourced `board.sh`,
+and never consulted board.sh's cache — only this framing did. Its
+**non-board consumers** (`workflows/scripts/lib/issue-corpus.sh`,
+`workflows/scripts/lib/issue-marker-probe.sh`, `install/doctor.sh`) predate
+the removal and are unaffected by it.
 
 ## Design seam: board number OR explicit repo
 
@@ -112,7 +123,7 @@ Read (consumer-facing):
   whatever `details/<n>.json` currently holds; not staleness-aware itself
   (call `cache_refresh_details` first for a guaranteed-fresh read).
 
-## Tuning knobs (ENV VARS only — no boards.conf axis in cache.sh itself)
+## Tuning settings (ENV VARS only — no boards.conf axis in cache.sh itself)
 
 - `CACHE_STORE_ROOT` — store root (default `${XDG_CACHE_HOME:-$HOME/.cache}/temperloop`)
 - `CACHE_STORE_TTL` — max-stale window in seconds (default `3600`)
@@ -120,7 +131,7 @@ Read (consumer-facing):
 Deliberately environment-only in `cache.sh` itself: the per-board
 `board.<N>.cache` *enable/disable* axis lives in `board.sh` (a different
 concern — whether a board's whole-board issues-only read uses this store at
-all — from these tuning knobs, which govern the store's own behavior once in
+all — from these tuning settings, which govern the store's own behavior once in
 use). See § Read dispatch (board.sh integration) below.
 
 ## Read dispatch (board.sh integration, cache-read-dispatch item)
@@ -144,12 +155,12 @@ successful issues-only mutation (`board_set_status` / `board_stamp`, and
 anything that routes through them) calls `cache_dirty` on that same repo —
 see `_board_cache_dirty_after_write` in `board.sh`. `board_resolve_item` (the
 claim lock) and `reconcile.sh` are structurally unaffected: the former never
-reads through any cache regardless of backend, and the latter never sources
-this file, so its live-read pin (`BOARD_CACHE_TTL=0`) holds even if a
-`boards.conf` it shares sets `board.<N>.cache=on`.
+reads through any cache, and the latter never sources this file, so it stays on
+the live-read arm even if a `boards.conf` it shares sets `board.<N>.cache=on`.
 
-**Staleness bound** (supersedes the Projects-v2 90s items-cache figure,
-foundation #589, for this read path): a mutation made THROUGH `board.sh`
+**Staleness bound** (this read path's own figure; it superseded the
+Projects-v2 90s items-cache figure of foundation #589, which is now moot —
+that cache was removed with the arm, ADR 0004): a mutation made THROUGH `board.sh`
 (`board_set_status`/`board_stamp`/claim/release) is reflected on the very
 next `cache_read` in any process — no fixed wait, via the write-through
 `cache_dirty` call above. A mutation made OUTSIDE this adapter (a PR-merge
@@ -157,9 +168,9 @@ auto-close, a manual `gh issue close`, a web-UI edit) is bounded only by the
 refresh cadence `CACHE_STORE_TTL` names — **default 3600s / 1 hour** — since
 nothing calls `cache_dirty` for a write this adapter never saw. See
 `ISSUES-ONLY-BACKEND.md`'s § Read cache staleness bound for the full
-rationale (this bound is deliberately looser than #589's 90s figure — a
-durable corpus cache trades staleness budget for a fundamentally cheaper,
-zero-GraphQL read).
+rationale (this bound is deliberately looser than #589's retired 90s figure —
+a durable corpus cache trades staleness budget for a fundamentally cheaper
+read).
 
 ## Degradation contract
 
@@ -191,6 +202,8 @@ source `cache.sh` at all; nothing else in the toolkit depends on it existing.
 ## Invariants carried over from the epic contract
 
 - `board_resolve_item` (board.sh) stays always-live — this store never
-  substitutes for it and is never consulted by the claim-lock path.
+  substitutes for it and is never consulted by the claim-lock path. This
+  survives the Projects-v2 removal unchanged (ADR 0004): the claim lock was
+  always-live on both arms and remains so on the one that is left.
 - Writes are write-through GitHub; this store is read-side only. A mutator
   calls `cache_dirty` after writing, it never writes issue state itself.

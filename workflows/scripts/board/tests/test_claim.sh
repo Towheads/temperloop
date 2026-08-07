@@ -59,46 +59,77 @@ BOARD_CACHE_DIR="$(mktemp -d)"; export BOARD_CACHE_DIR
 CLAIMS_LOG_DIR="$(mktemp -d)"; export CLAIMS_RAW_DIR="$CLAIMS_LOG_DIR"
 
 # shellcheck source=scripts/claim.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/claim.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
 
-# Canned board state — board_field_id/board_option_id/board_item_id read these.
-# Field NAMES must match board.sh's BOARD_FIELD_* / BOARD_OPT_* constants.
-FIELDS_JSON='{"fields":[
-  {"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField","options":[{"id":"opt_inprogress","name":"In Progress"},{"id":"opt_ready","name":"Ready"},{"id":"opt_done","name":"Done"}]},
-  {"id":"PVTF_hostsession","name":"Host/Session","type":"ProjectV2Field"}
-]}'
+# Canned board state. The fixture is ISSUES-ONLY (ADR 0004 removed the
+# Projects-v2 arm): item ids are ISSUE_<n>, and writes are `fnd:` label edits
+# rather than `gh project item-edit --field-id`. Everything this suite actually
+# asserts — claim.sh's stamp-before-status ordering, its fail-safe on a failed
+# stamp, half-claim adoption, contention refusal, and the claims-log record —
+# is backend-agnostic claim.sh logic and is preserved case-for-case.
 ITEM_STATUS="Ready"        # per-case: starting Status of the item
 ITEM_HOSTSESSION=""        # per-case: starting Host/Session stamp
-FAIL_STAMP=0               # per-case: when 1, the Host/Session item-edit returns non-zero
-EDITS=""                   # per-case: temp file recording each edit's --field-id
+FAIL_STAMP=0               # per-case: when 1, the Host/Session label edit returns non-zero
+EDITS=""                   # per-case: temp file recording each write, in call order
 
-# Inject a canned single-item board without any GraphQL — claim_main calls this
-# instead of the real one. Sets the SAME globals the real board_resolve_item does.
+# Inject a canned single-item board — claim_main calls this instead of the real
+# one. Sets the SAME globals the real board_resolve_item does, including the
+# vestigial-but-still-set BOARD_PROJECT_ID / BOARD_FIELDS_JSON (temperloop#602).
 board_resolve_item() {
-  BOARD_PROJECT_ID="PVT_TEST"
-  BOARD_FIELDS_JSON="$FIELDS_JSON"
-  BOARD_ITEMS_JSON="{\"items\":[{\"id\":\"PVTI_item\",\"content\":{\"number\":${issue},\"title\":\"Test item\"},\"status\":\"${ITEM_STATUS}\",\"host/Session\":\"${ITEM_HOSTSESSION}\"}]}"
+  BOARD_PROJECT_ID=""
+  BOARD_FIELDS_JSON='{"fields":[]}'
+  BOARD_ITEMS_JSON="{\"items\":[{\"id\":\"ISSUE_${issue}\",\"content\":{\"number\":${issue},\"title\":\"Test item\"},\"status\":\"${ITEM_STATUS}\",\"host/Session\":\"${ITEM_HOSTSESSION}\"}]}"
   BOARD_CURRENT="$1"
 }
 
-# Override the board write seam: record the --field-id of every item-edit to
-# $EDITS (one per line, in call order), and fail the Host/Session edit when armed.
-# board_set_status / board_stamp are the only callers, each via `project item-edit`.
+# Override the board write seam. board_set_status / board_stamp both route
+# through the issues-only label writers, so we record ONE normalized marker per
+# write — "status" for an fnd:status:* add, "hostsession" for an
+# fnd:host/session:* add — which keeps the ordering/absence assertions below
+# identical in shape to the pre-ADR-0004 --field-id records they replace.
 _board_gh() {
-  if [ "$1 $2" = "project item-edit" ]; then
-    local fid="" want_fid=0 a
-    for a in "$@"; do
-      if [ "$want_fid" = 1 ]; then fid="$a"; want_fid=0; continue; fi
-      [ "$a" = "--field-id" ] && want_fid=1
-    done
-    printf '%s\n' "$fid" >>"$EDITS"
-    if [ "$FAIL_STAMP" = 1 ] && [ "$fid" = "PVTF_hostsession" ]; then
-      return 1
-    fi
-    return 0
-  fi
+  case "$1 $2" in
+    "api repos/Towheads/foundation/issues/${issue}")
+      # The read-before-write both label writers do. Report the case's starting
+      # state so an already-correct label is a no-op, exactly as in production.
+      local labels=""
+      [ -n "$ITEM_HOSTSESSION" ] && labels="{\"name\":\"fnd:host/session:$ITEM_HOSTSESSION\"}"
+      if [ "$ITEM_STATUS" = "In Progress" ]; then
+        [ -n "$labels" ] && labels="$labels,"
+        labels="${labels}{\"name\":\"fnd:status:in-progress\"}"
+      elif [ "$ITEM_STATUS" = "Ready" ]; then
+        [ -n "$labels" ] && labels="$labels,"
+        labels="${labels}{\"name\":\"fnd:status:ready\"}"
+      fi
+      printf '{"state":"open","title":"Test item","labels":[%s]}' "$labels"
+      return 0 ;;
+    "label create") return 0 ;;
+    "issue edit")
+      local a mark="" want=0
+      for a in "$@"; do
+        if [ "$want" = 1 ]; then
+          case "$a" in
+            fnd:host/session:*) mark="hostsession" ;;
+            fnd:status:*)       mark="status" ;;
+          esac
+          want=0; continue
+        fi
+        [ "$a" = "--add-label" ] && want=1
+      done
+      # Only ADDs are recorded; a stale-label --remove-label is bookkeeping, not
+      # a claim write, and recording it would break the ordering assertions.
+      if [ -n "$mark" ]; then
+        printf '%s\n' "$mark" >>"$EDITS"
+        if [ "$FAIL_STAMP" = 1 ] && [ "$mark" = "hostsession" ]; then
+          return 1
+        fi
+      fi
+      return 0 ;;
+    "issue reopen" | "issue close") return 0 ;;
+  esac
   echo "test _board_gh: unexpected call '$*'" >&2
   return 3
 }
@@ -123,9 +154,9 @@ issue=123; PROJECT_NUMBER=4
 ITEM_STATUS="Ready"; ITEM_HOSTSESSION=""; FAIL_STAMP=1
 run_claim
 [ "$RC" -ne 0 ] || fail "case1: claim_main should have failed on the stamp error (RC=$RC)\n$(cat "$EDITS")"
-grep -qx "PVTF_hostsession" "$EDITS" \
+grep -qx "hostsession" "$EDITS" \
   || fail "case1: expected a Host/Session stamp attempt\n$(cat "$EDITS")"
-grep -qx "PVTSSF_status" "$EDITS" \
+grep -qx "status" "$EDITS" \
   && fail "case1: Status/In-Progress edit was issued — lock flipped despite stamp failure\n$(cat "$EDITS")"
 echo "PASS: case 1 stamp failure leaves the item Ready (Status edit never issued)"
 
@@ -135,9 +166,9 @@ issue=124; PROJECT_NUMBER=4
 ITEM_STATUS="Ready"; ITEM_HOSTSESSION=""; FAIL_STAMP=0
 run_claim
 [ "$RC" -eq 0 ] || fail "case2: claim_main should have succeeded (RC=$RC)\n$(cat "$EDITS")"
-[ "$(sed -n '1p' "$EDITS")" = "PVTF_hostsession" ] \
+[ "$(sed -n '1p' "$EDITS")" = "hostsession" ] \
   || fail "case2: first edit must be the Host/Session stamp\n$(cat "$EDITS")"
-[ "$(sed -n '2p' "$EDITS")" = "PVTSSF_status" ] \
+[ "$(sed -n '2p' "$EDITS")" = "status" ] \
   || fail "case2: second edit must be the Status flip\n$(cat "$EDITS")"
 echo "PASS: case 2 happy path stamps before it flips status"
 
@@ -148,21 +179,21 @@ issue=103; PROJECT_NUMBER=4
 ITEM_STATUS="In Progress"; ITEM_HOSTSESSION=""; FAIL_STAMP=0
 run_claim
 [ "$RC" -eq 0 ] || fail "case3: re-claim should succeed (RC=$RC)\n$(cat "$EDITS")"
-grep -qx "PVTF_hostsession" "$EDITS" \
+grep -qx "hostsession" "$EDITS" \
   || fail "case3: adoption must issue the Host/Session stamp\n$(cat "$EDITS")"
 echo "PASS: case 3 adoption stamps an unstamped In-Progress item"
 
-# --- case 4: contended claim refused on a Projects-v2 board -------------------
+# --- case 4: contended claim refused ------------------------------------------
 # The item is In Progress and stamped to a DIFFERENT host:session. claim_main
-# must refuse (non-zero) BEFORE issuing any item-edit — this is the
-# board_claim_contended pre-check (originally issues-only-only, foundation
-# #800) now also firing on the Projects-v2 path it used to silently skip.
+# must refuse (non-zero) BEFORE issuing any write — the board_claim_contended
+# pre-check (foundation #800). It reads the already-resolved BOARD_ITEMS_JSON,
+# so it never depended on which backend produced that JSON.
 issue=127; PROJECT_NUMBER=4
 ITEM_STATUS="In Progress"; ITEM_HOSTSESSION="otherhost:aaaaaaaa"; FAIL_STAMP=0
 run_claim
-[ "$RC" -ne 0 ] || fail "case4: a contended claim on a Projects-v2 board must be refused (RC=$RC)"
+[ "$RC" -ne 0 ] || fail "case4: a contended claim must be refused (RC=$RC)"
 [ ! -s "$EDITS" ] || fail "case4: a contended claim must issue ZERO writes\n$(cat "$EDITS")"
-echo "PASS: case 4 contended claim refused on a Projects-v2 board, zero writes issued"
+echo "PASS: case 4 contended claim refused, zero writes issued"
 
 # --- case 5: claims log emit (F#728) ------------------------------------------
 # A successful claim appends one JSONL record to CLAIMS_RAW_DIR/claims-YYYY-MM.jsonl
@@ -192,7 +223,7 @@ case "$rec_session" in
 esac
 [ "$(printf '%s' "$rec" | jq -r '.board')" = "4" ] \
   || fail "case5: board must be the numeric PROJECT_NUMBER (4)\n$rec"
-[ "$(printf '%s' "$rec" | jq -r '.item_id')" = "PVTI_item" ] \
+[ "$(printf '%s' "$rec" | jq -r '.item_id')" = "ISSUE_126" ] \
   || fail "case5: item_id must be the resolved board item id\n$rec"
 echo "PASS: case 5 claims log emits the raw session UUID (not the host:sess8 stamp)"
 

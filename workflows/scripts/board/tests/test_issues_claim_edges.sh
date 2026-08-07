@@ -26,8 +26,9 @@
 #
 # The `_board_gh` overrides are invoked indirectly (the library/claim.sh call
 # `_board_gh`, which this test redefines) and are redefined mid-file per case —
-# shellcheck's "never invoked"/"unreachable" checks are false positives here,
-# as in the sibling replay suites.
+# ShellCheck's "never invoked"/"unreachable" checks are false positives here,
+# as in the sibling replay suites. (Keep prose off any line starting
+# `# shellcheck ` -- it is parsed as a directive.)
 # shellcheck disable=SC2317,SC2329,SC2034
 set -euo pipefail
 
@@ -37,9 +38,11 @@ SCRIPTS_DIR="$(cd "$HERE/.." && pwd)"
 FIX="$HERE/fixtures"
 
 # shellcheck source=scripts/tests/fixtures/fake_gh.sh
+# shellcheck disable=SC1091
 FAKE_GH_SOURCE=1 source "$FIX/fake_gh.sh"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
@@ -76,6 +79,7 @@ _board_gh() {
     "api repos/$REPO/issues/200")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":200,"title":"claim target","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -84,6 +88,7 @@ _board_gh() {
       shift 2
       local prev="" a
       for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         case "$prev" in
           --remove-label) FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;
@@ -237,6 +242,7 @@ CLAIMS_LOG_DIR="$(mktemp -d)"; export CLAIMS_RAW_DIR="$CLAIMS_LOG_DIR"
 export CLAUDE_CODE_SESSION_ID="bbbbbbbb-1111-2222-3333-444444444444"   # -> myhost:bbbbbbbb
 
 # shellcheck source=scripts/claim.sh
+# shellcheck disable=SC1091
 source "$SCRIPTS_DIR/claim.sh"
 
 # Stateful fake modeling ONE fake repo's issue state across a claim_main call:
@@ -261,6 +267,7 @@ _board_gh() {
       shift 2
       local prev="" a
       for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         case "$prev" in
           --remove-label) FAKE_LABELS="$(printf '%s\n' $FAKE_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
           --add-label)    FAKE_LABELS="$FAKE_LABELS $a" ;;

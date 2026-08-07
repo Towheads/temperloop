@@ -44,6 +44,27 @@
 #     pre-1.0 migration-note subset (VERSIONING.md's bump-rules table).
 #     Empty output means no BREAKING-marked section in range.
 #
+#   changelog_unreleased_body <changelog-file>
+#     Prints the BODY of the `## [Unreleased]` section — every line AFTER the
+#     heading, up to (not including) the next `## [` heading. The heading line
+#     itself is never printed, so a heading suffix (`## [Unreleased] —
+#     BREAKING`) can't register as body content. Empty output means the
+#     section is absent or carries nothing.
+#
+#   changelog_version_headings <changelog-file>
+#     Prints one bare version token per line for every version-shaped
+#     `## [x.y.z]` heading, in file order. `[Unreleased]` is not version-
+#     shaped, so it is never printed.
+#
+# The last two were added for the CHANGELOG-entry merge gate
+# (workflows/scripts/check-changelog-entry.sh, temperloop#960). That gate asks
+# the COMPLETENESS question about the same file the range helpers above read
+# for the BREAKING acknowledgment question: it diffs the Unreleased body
+# across a PR's merge-base and head to answer "did this PR add an entry?",
+# and compares the version-heading sets to recognize a RELEASE CUT (a PR that
+# moves the Unreleased body down into a brand-new version section, leaving
+# Unreleased legitimately empty) rather than mistake it for an omission.
+#
 # Dependencies: bash (3.2+), awk, POSIX-portable (no GNU-only awk/sed
 # extensions — runs identically on macOS/BSD and Linux CI, per AGENTS.md §
 # Safety rails "Portable shell only").
@@ -139,5 +160,45 @@ changelog_breaking_sections() {
     { buf = buf $0 "\n" }
     /^#+ .*BREAKING/ { brk = 1 }
     END { flush() }
+  ' "$changelog"
+}
+
+# ---------------------------------------------------------------------------
+# changelog_unreleased_body <changelog>
+#
+# Prints the body of the `## [Unreleased]` section — every line after the
+# heading up to (not including) the next `## [` heading. The heading itself is
+# excluded on purpose: a release marks breakingness by SUFFIXING that heading
+# (`## [Unreleased] — BREAKING`), and a suffix edit is not an entry.
+# ---------------------------------------------------------------------------
+changelog_unreleased_body() {
+  local changelog="$1"
+  [[ -f "$changelog" ]] || return 0
+  awk '
+    /^## \[/ {
+      # Any `## [` heading ends the Unreleased body; the Unreleased heading
+      # itself starts it (and is not part of the body).
+      in_unrel = ($0 ~ /^## \[Unreleased\]/) ? 1 : 0
+      next
+    }
+    in_unrel { print }
+  ' "$changelog"
+}
+
+# ---------------------------------------------------------------------------
+# changelog_version_headings <changelog>
+#
+# Prints the bare version token of every version-shaped `## [x.y.z]` heading,
+# one per line, in file order. `## [Unreleased]` is not version-shaped and is
+# never printed.
+# ---------------------------------------------------------------------------
+changelog_version_headings() {
+  local changelog="$1"
+  [[ -f "$changelog" ]] || return 0
+  awk '
+    /^## \[/ {
+      ver = $0; sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+      if (ver ~ /^v?[0-9]/) print ver
+    }
   ' "$changelog"
 }

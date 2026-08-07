@@ -16,6 +16,12 @@
 #     never combined, never backticked); acceptance recap; ## Verification;
 #     backlinks + footer; fallback-to-recap when verification_surface absent
 #   - open (stubbed gh): PR_OPENED with parsed pr_number; body/head passed to gh
+#   - recover-probe (temperloop#939): the staged lost-return ladder — RECOVER_NONE
+#     / _COMMITTED / _PUSHED / _PR_OPEN across the four real fixture states, plus
+#     the fail-soft degradation when `gh` errors
+#   - recover-probe (temperloop#993): the RECOVER_DIRTY rung — a dirty worktree
+#     with ZERO commits (the backgrounded-gate stall) is distinguished from a
+#     clean RECOVER_NONE, and dirty/dirty_files ride every outcome
 #   - error: structured ERROR + non-zero exit on bad inputs
 set -euo pipefail
 
@@ -219,7 +225,7 @@ cat > "$TMP/verdict.json" <<'EOF'
 EOF
 body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" \
   --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" \
   --source "epic #253, spike #245 verdict" --body-only)"
 # Per-entry bare emission: exactly the two lines, each on its own line.
 [ "$(grep -c '^Closes #' <<<"$body")" -eq 2 ] || fail "expected exactly 2 Closes lines (body: $body)"
@@ -237,7 +243,7 @@ grep -qF -- '- [ ] legacy path unchanged — one diff remains' <<<"$body" \
 grep -qF '## Verification' <<<"$body" || fail "missing ## Verification"
 grep -qF 'After: 3 widgets rendered.' <<<"$body" || fail "verification_surface not in body"
 # Backlinks + footer.
-grep -qxF 'Tracked in: [[Plans/2026-06-09 foundation - spine#spine-pr-open]]' <<<"$body" \
+grep -qxF 'Tracked in: [[Plans/2026-06-09 foundation - machinery#machinery-pr-open]]' <<<"$body" \
   || fail "missing Tracked in backlink"
 grep -qxF 'Derived from: epic #253, spike #245 verdict' <<<"$body" \
   || fail "missing Derived from source ref"
@@ -288,16 +294,16 @@ echo "PASS: open falls back to the acceptance recap only when verification_surfa
 # the explicit --verification-surface-file flag are exercised.
 printf '%s\n' "Before: 0 widgets rendered." "After: 3 widgets rendered." > "$TMP/surface.md"
 inline_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict.json" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" --source "epic #253" --body-only)"
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" --body-only)"
 # (a) verdict carries .verification_surface_path instead of the inline field
 jq --arg p "$TMP/surface.md" 'del(.verification_surface) | .verification_surface_path=$p' \
   "$TMP/verdict.json" > "$TMP/verdict-pathref.json"
 pathref_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-pathref.json" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" --source "epic #253" --body-only)"
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" --body-only)"
 [ "$pathref_body" = "$inline_body" ] || fail "path-key body not byte-identical to inline body"
 # (b) --verification-surface-file flag, verdict has neither surface field
 flag_body="$(bash "$SCRIPT" open --verdict "$TMP/verdict-nosurface.json" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" --source "epic #253" \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" --source "epic #253" \
   --verification-surface-file "$TMP/surface.md" --body-only)"
 [ "$flag_body" = "$inline_body" ] || fail "--verification-surface-file body not byte-identical to inline body"
 echo "PASS: verification surface by file-ref (path key + flag) == inline body, byte-identical"
@@ -333,7 +339,7 @@ chmod +x "$TMP/bin/gh"
 out="$(GH_STUB_ARGS="$TMP/gh-args" PATH="$TMP/bin:$PATH" bash "$SCRIPT" open \
   --verdict "$TMP/verdict.json" --repo "$REPO" --branch feat/widget \
   --title "feat: widget renderer" --gh-issue 278 --also-closes 171 \
-  --plan-link "Plans/2026-06-09 foundation - spine#spine-pr-open" \
+  --plan-link "Plans/2026-06-09 foundation - machinery#machinery-pr-open" \
   --source "epic #253")"
 [ "$(jq -r .outcome <<<"$out")" = "PR_OPENED" ] || fail "open outcome (got: $out)"
 [ "$(jq -r .pr_number <<<"$out")" = "342" ] || fail "pr_number not parsed (got: $out)"
@@ -370,7 +376,110 @@ out="$(PATH="$TMP/bin-exists:$PATH" bash "$SCRIPT" open \
   || fail "url not parsed from already-exists message (got: $out)"
 echo "PASS: open returns EXISTS{pr_number,url} when gh reports a PR already exists (#544)"
 
+# --- recover-probe: the staged lost-return side-effect ladder (temperloop#939) ----
+# Drives all four stages against the real fixture, bottom to top, on a branch of
+# its own so the earlier push tests' remote state cannot mask a stage transition.
+git -C "$REPO" fetch -q origin
+git -C "$REPO" checkout -q -b build/recov origin/main
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_NONE" ] \
+  || fail "no commits + no PR must be RECOVER_NONE (got: $out)"
+[ "$(jq -r .commits_ahead <<<"$out")" = "0" ] || fail "commits_ahead should be 0 (got: $out)"
+[ "$(jq -r .pushed <<<"$out")" = "false" ] || fail "pushed should be false (got: $out)"
+jq -e 'has("pr_number") | not' <<<"$out" >/dev/null || fail "pr_number must be absent with no PR (got: $out)"
+[ "$(jq -r .dirty <<<"$out")" = "false" ] || fail "a clean worktree must report dirty:false (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "0" ] || fail "a clean worktree must report dirty_files:0 (got: $out)"
+echo "PASS: recover-probe → RECOVER_NONE when nothing observable landed (the genuine-failure case)"
+
+# --- recover-probe: the DIRTY rung (temperloop#993) -------------------------------
+# Same zero-commit, no-PR state as RECOVER_NONE above — but with real work left on
+# disk. That is the backgrounded-gate stall (#982: 8 modified files / 0 commits;
+# #983: 3 / 0), and it must NOT read as "nothing happened": the caller resumes the
+# worker on THIS worktree instead of escalating. Both index-staged and untracked
+# paths count toward the porcelain tally.
+printf 'staged work\n' > "$REPO/staged-work.txt"
+git -C "$REPO" add staged-work.txt
+printf 'untracked work\n' > "$REPO/untracked-work.txt"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_DIRTY" ] \
+  || fail "a dirty worktree with 0 commits must be RECOVER_DIRTY, not RECOVER_NONE (got: $out)"
+[ "$(jq -r .commits_ahead <<<"$out")" = "0" ] \
+  || fail "RECOVER_DIRTY must still report commits_ahead 0 (got: $out)"
+[ "$(jq -r .pushed <<<"$out")" = "false" ] || fail "RECOVER_DIRTY must report pushed:false (got: $out)"
+[ "$(jq -r .dirty <<<"$out")" = "true" ] || fail "dirty must be true on a dirty worktree (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "2" ] \
+  || fail "dirty_files must count BOTH the staged and the untracked path (got: $out)"
+echo "PASS: recover-probe → RECOVER_DIRTY on uncommitted work with zero commits (the #993 stall shape)"
+git -C "$REPO" rm -q --cached staged-work.txt >/dev/null
+rm -f "$REPO/staged-work.txt" "$REPO/untracked-work.txt"
+
+# `.build-guard` is worktree.sh's OWN marker, not worker work: it must not count
+# toward the dirty tally, or every freshly-created worktree would read
+# RECOVER_DIRTY in a consuming repo that has not gitignored it.
+printf '{"slug":"x"}\n' > "$REPO/.build-guard"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_NONE" ] \
+  || fail "the .build-guard marker alone must not make a worktree read dirty (got: $out)"
+[ "$(jq -r .dirty_files <<<"$out")" = "0" ] \
+  || fail ".build-guard must be excluded from the dirty tally (got: $out)"
+echo "PASS: recover-probe excludes worktree.sh's own .build-guard marker from the dirty tally (#993)"
+rm -f "$REPO/.build-guard"
+
+git -C "$REPO" commit -q --allow-empty -m "worker work that never returned a verdict"
+recov_sha="$(git -C "$REPO" rev-parse HEAD)"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_COMMITTED" ] \
+  || fail "a commit ahead of base with no push must be RECOVER_COMMITTED (got: $out)"
+[ "$(jq -r .sha <<<"$out")" = "$recov_sha" ] || fail "probe sha mismatch (got: $out)"
+[ "$(jq -r .commits_ahead <<<"$out")" = "1" ] || fail "commits_ahead should be 1 (got: $out)"
+[ "$(jq -r .verification_surface_present <<<"$out")" = "false" ] \
+  || fail "verification_surface_present should be false (got: $out)"
+echo "PASS: recover-probe → RECOVER_COMMITTED on an unpushed worktree commit (the #939 L1 shape)"
+
+bash "$SCRIPT" push "$REPO" feat/recov >/dev/null
+: > "$REPO/.build-verification.md"
+out="$(bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_PUSHED" ] \
+  || fail "a pushed branch with no PR must be RECOVER_PUSHED (got: $out)"
+[ "$(jq -r .pushed <<<"$out")" = "true" ] || fail "pushed should be true (got: $out)"
+[ "$(jq -r .remote_sha <<<"$out")" = "$recov_sha" ] || fail "remote_sha mismatch (got: $out)"
+[ "$(jq -r .verification_surface_present <<<"$out")" = "true" ] \
+  || fail "verification_surface_present must report the worker's .build-verification.md (got: $out)"
+echo "PASS: recover-probe → RECOVER_PUSHED once the branch is on origin (+ surface-file presence)"
+
+mkdir -p "$TMP/bin-prlist"
+cat > "$TMP/bin-prlist/gh" <<'EOF'
+#!/usr/bin/env bash
+echo '[{"number":936,"url":"https://github.com/Towheads/temperloop/pull/936"}]'
+EOF
+chmod +x "$TMP/bin-prlist/gh"
+out="$(PATH="$TMP/bin-prlist:$PATH" bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_PR_OPEN" ] \
+  || fail "an open PR for the branch must be RECOVER_PR_OPEN (got: $out)"
+[ "$(jq -r .pr_number <<<"$out")" = "936" ] || fail "pr_number not adopted from gh (got: $out)"
+[ "$(jq -r .url <<<"$out")" = "https://github.com/Towheads/temperloop/pull/936" ] \
+  || fail "url not adopted from gh (got: $out)"
+echo "PASS: recover-probe → RECOVER_PR_OPEN{pr_number,url} when an open PR exists (the #939 L0 shape)"
+
+# Fail-soft: a broken/erroring gh degrades to "no PR observed" rather than
+# failing the whole recovery (the caller's `open` then returns EXISTS and adopts).
+mkdir -p "$TMP/bin-ghfail"
+cat > "$TMP/bin-ghfail/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh: could not determine repository" >&2
+exit 1
+EOF
+chmod +x "$TMP/bin-ghfail/gh"
+out="$(PATH="$TMP/bin-ghfail:$PATH" bash "$SCRIPT" recover-probe "$REPO" feat/recov)"
+[ "$(jq -r .outcome <<<"$out")" = "RECOVER_PUSHED" ] \
+  || fail "an erroring gh must degrade to the push-stage answer, not fail (got: $out)"
+echo "PASS: recover-probe degrades fail-soft when gh errors (no PR observed, push stage still reported)"
+rm -f "$REPO/.build-verification.md"
+
 # --- error: closed ERROR outcome + non-zero exit ----------------------------------
+rc=0; out="$(bash "$SCRIPT" recover-probe "$TMP/nonexistent" feat/recov 2>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
+  || fail "recover-probe on missing path not structured ERROR (got: $out)"
 rc=0; out="$(bash "$SCRIPT" scan "$TMP/nonexistent" 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] && [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] \
   || fail "scan on missing path not structured ERROR (got: $out)"

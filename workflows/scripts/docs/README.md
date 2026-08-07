@@ -45,7 +45,7 @@ the next `make docs` run with zero code change here.
 ## Telemetry metrics (overlay drop-in, not a kernel `sources/*.py` module)
 
 Telemetry metric-definition rendering — the four rollup producers'
-per-metric docstrings (`workflows/scripts/build_funnel_rollup.py`,
+per-metric docstrings (`workflows/scripts/build_pipeline_rollup.py`,
 `build_rollups.py`, `build_eval_rollup.py`, `build_findings_rollup.py`) —
 is deliberately **not** a `sources/*.py` module in this kernel directory:
 those producers are themselves `overlay`-classified in
@@ -80,9 +80,9 @@ pipeline the generator has never otherwise needed — add a new entry to
 `lib.kernel_manifest.is_kernel()` per candidate file — only paths the
 manifest classifies `kernel` render. This is why the command reference shows
 `assess` / `build` / `tidy` / `check-in` / `init` / `next` / `sweep` / `triage` /
-`funnel-drive` / `funnel-drive-merge` but never `standup` /
+`pipeline-drive` / `pipeline-drive-merge` but never `standup` /
 `telemetry` / `signal-intake` (all `overlay` in the
-manifest, Travis's personal rituals). The filter is the manifest itself, not
+manifest, Travis's personal routines). The filter is the manifest itself, not
 a hardcoded list in this generator — reclassify a command in
 `kernel-manifest.txt` and the site follows on the next `make docs`, no code
 change required.

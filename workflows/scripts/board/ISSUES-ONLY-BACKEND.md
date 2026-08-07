@@ -8,8 +8,8 @@ extraction). This is the contract the other two splits build on:
   dependency edges, and the close→Done cascade, for a board that has no
   Projects-v2 fields to stamp. See § Claim lock, § Parent/child and
   dependency edges, and § Close→Done cascade below.
-- **split 3/3 (funnel integration)** — wiring `funnel-tick.sh` /
-  `funnel-drive.sh` to drive an issues-only repo.
+- **split 3/3 (pipeline integration)** — wiring `pipeline-tick.sh` /
+  `pipeline-drive.sh` to drive an issues-only repo.
 
 Both consume the vocabulary and function-level interface below. **Do not
 invent a second label scheme or a second set of adapter functions** — extend
@@ -79,28 +79,58 @@ below should be read as a removal timeline.
 
 ## Selecting the backend
 
-A new **fourth `boards.conf` axis**, a peer to `repo` / `owner` / `project`
-(same discovery order, same grep/cut-only parsing — see
-`boards.conf.example`):
+**There is nothing to select. Issues-only is the only backend** (ADR 0004).
+A board needs exactly one axis — its repo:
 
 ```
 board.<N>.repo=<owner>/<repo>
-board.<N>.backend=issues
 ```
 
-`board_backend <N>` resolves it; default (no conf entry, or any value other
-than `issues`) is `"projects"` — **byte-identical to the pre-#799 behavior**.
-An issues-only board only needs the `repo` axis; `owner` / `project` are
-Projects-v2-specific and simply never read on this path. There is
-deliberately **no built-in case-map entry** defaulting any board number to
-`issues` — the seam is additive-only, proven in
-`tests/test_issues_backend.sh`'s config-selection case (an unconfigured board
-still emits the exact `gh project …` argv `test_board_replay.sh` pins).
+`board_backend <N>` returns `issues` unconditionally.
 
-Every board this project's own pipeline drives today carries such a
-`boards.conf` entry (or, for board 7, the built-in-map entry described in
-§ The temperloop tracker below) — see § Issues-only is now the default
-backend, above.
+### The `backend` axis is retained solely to REFUSE a stale `projects` line
+
+The `board.<N>.backend=` axis still parses, but it no longer selects
+anything. It has one job left: a conf line reading **`backend=projects`
+hard-fails** with a one-line error naming ADR 0004 and the migration path,
+and `board_backend` returns non-zero. Every public entry point
+(`board_resolve`, `board_resolve_item`, `board_item_list`,
+`board_create_many`) propagates that refusal rather than proceeding.
+
+This deliberately does **not** silently resolve to `issues`. A stale
+`backend=projects` line expresses a real operator intent this build can no
+longer honour, and quietly reinterpreting it would move that board's state
+onto a different substrate with no signal — which is precisely the failure
+**temperloop#908** recorded: a silently reverted cutover put four boards on
+the wrong path and was only found by hand. A backend that changes under you
+with nothing telling you is the thing this refusal exists to prevent. There
+is **no configuration path back** to Projects-v2; an adopter who wants it
+forks `board.sh`.
+
+### Superseded: "the built-in map is additive-only, with board 7 its sole in-code exception"
+
+This section previously stated that the built-in case map was
+**additive-only**, that an unconfigured board resolved `"projects"` and emitted
+byte-identical `gh project …` argv, and that **board 7 was the sole in-code
+issues-only exception**. **All of that is superseded, as of this release, by
+the removal of the Projects-v2 arm.**
+
+The supersession is the documented, deliberate one ADR 0005 anticipated
+rather than an incidental drift. ADR 0005 § Decision records that the
+additive-only rule and its config-selection test pin "survive intact and are
+**superseded only by the follow-on removal epic, which retires the Projects
+defaults explicitly**", and ADR 0005 § Consequences pins the same point: "the
+supersession of the 'board 7 is the sole permanent exception' language is
+deliberate and documented at removal time, not shipped silently mid-migration."
+This is that removal (epic temperloop#524) and this is that documentation.
+
+What replaces it: there is no Projects default left to be additive to, so
+board 7 is no longer an *exception* to anything — it is simply one
+issues-only board among all of them, and its built-in-map `repo` entry is now
+its only special-cased axis (see § The temperloop tracker below).
+
+`owner` remains a live axis (a board's owning login); `project` was retired
+with `board_project_number()`.
 
 ## What `fnd:*` labels mean
 
@@ -158,7 +188,7 @@ close). An **open** issue with no `fnd:status:*` label reads as unstatused
 
 Because an unstatused open issue reads as `.status = ""`, **`/triage`'s Backlog
 intake silently skips it** (Adapter A keeps only `.status == Backlog`), so a
-genuine defect can fall out of the funnel with no error (temperloop#376). The
+genuine defect can fall out of the pipeline with no error (temperloop#376). The
 capture path (`capture.sh` → `board_capture_item`) already stamps
 `fnd:status:backlog` on every issue it files — so the normal front door never
 produces one — but an issue reaching the tracker by any *other* route (a hand
@@ -189,7 +219,7 @@ convention, not a bug).
 Every adapter function a caller already uses works **unchanged** — same
 name, same signature, same return semantics — selected purely by
 `board_backend`. A consuming script (claim.sh, capture.sh, worklist.sh,
-board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
+board-mirror.sh, pipeline-tick.sh, …) needs **zero branching** on backend.
 
 | Function | Issues-only behavior |
 |---|---|
@@ -202,6 +232,7 @@ board-mirror.sh, funnel-tick.sh, …) needs **zero branching** on backend.
 | `board_create_many` / `board_create_on_board` / `board_capture_item` | No `gh project item-add`, no index-lag retry (a label write is synchronous REST). Landing a fresh issue collapses to labeling it Backlog. **Return contract is identical across backends** (foundation #1226): 0 on full success, 1 on partial failure, 2 on total failure, with `BOARD_UNLANDED_ISSUES` carrying the space-separated un-landed issue numbers on any non-zero return — `_board_issues_create_many` (the issues-only twin of `board_create_many`) implements the same three-way return, it just never has an index-lag failure mode to hit (a label write is synchronous REST, so the only failure is the `gh` call itself erroring). |
 | `board_active_milestones` / `board_set_milestone` / `board_set_milestone_description` | **Unchanged, no new code** — these were already REST-only (`repos/<repo>/milestones…`) and backend-agnostic before this split. Milestone intake (the `<!-- triage:active -->` marker convention) works identically on an issues-only board. |
 | `board_blocked_by_open` / `board_parent_issue` | **Unchanged, no new code** — same reason (per-issue REST, never Projects). Backend-agnostic for free: works identically on a Projects-v2 or issues-only board. |
+| `board_blocked_by_add` / `board_blocked_by_remove` (NEW, #1221) | Write-side counterpart to `board_blocked_by_open` — add/remove a native `blocked_by` dependency edge (resolve the blocker's REST db id → POST/DELETE the dependencies endpoint). Same shape as its reader sibling: per-issue REST, always live, backend-agnostic, no Projects call. Closes the reader-without-writer gap that forced dependency-edge writes through raw REST. |
 | `board_sub_issues` (NEW, #800) | Read-side counterpart to `board_parent_issue` — child issue numbers via GitHub's native sub-issues REST endpoint. Same shape as its siblings: per-issue REST, always live, backend-agnostic. See § Parent/child and dependency edges. |
 | `board_stamp` (#800 — now IMPLEMENTED) | `ISSUE_n` routes to a free-text `fnd:host/session:<verbatim-text>` label (single label of that prefix kept at a time; empty text clears). See § Claim lock. |
 | `board_claim_contended` (NEW, #800; extended to Projects-v2) | Backend-agnostic pre-check: is `<issue#>` already In Progress under a DIFFERENT Host/Session stamp? See § Claim lock. Reads the already-resolved `BOARD_ITEMS_JSON` on either backend — no extra `gh`/GraphQL call. |
@@ -214,7 +245,7 @@ The item shape produced by the issues-only reshape:
 ```
 
 — identical keys to the Projects-v2 shape (`id`, `content.number/title/type`,
-flattened field values, **`labels`** — see § Funnel integration below — **and
+flattened field values, **`labels`** — see § Pipeline integration below — **and
 `milestone`** — see § Milestone read passthrough below),
 so every existing jq-based reader of `BOARD_ITEMS_JSON` works without
 modification. The `milestone` key is present only when the issue carries one
@@ -252,7 +283,7 @@ an unmilestoned one reads empty and carries no `.milestone` key).
   free — see § Parent/child and dependency edges) — see that section.
 - **No Seq ordering.** Retired by design, not deferred (ADR 0006) — see
   `board_set_number` above.
-- **No funnel wiring.** That's the funnel-integration split (3/3).
+- **No pipeline wiring.** That's the pipeline-integration split (3/3).
 
 ## Claim lock (Host/Session-equivalent, foundation #800)
 
@@ -303,9 +334,27 @@ writes anything — no extra `gh` call):
   claim and refuses (non-zero, no writes) rather than silently overwriting.
   On a Projects-v2 board this always reports "not contended" — the
   historical silent-overwrite behavior is completely unchanged there.
-- **Release stays local-only, unchanged.** `release.sh` never touched the
-  board on either backend — it only clears the terminal marker — so it needed
-  no changes here.
+- **Release is local-only PLUS one narrow board-side clear (temperloop#979).**
+  `release.sh` originally never touched the board on either backend — it only
+  cleared the terminal marker. That left a hole on exactly this backend's
+  **park** path: the claim owner lives in a `fnd:host/session:*` LABEL, an item
+  parked back to Ready never reaches Done (whose write is what strips the
+  stamp), and `reconcile.sh --labels` swept only CLOSED issues — so the stamp
+  sat on an open, Ready issue reading as a live claim by a session that is
+  gone. `release.sh` now also clears that stamp, but only when **all** of:
+  an `<issue#>` **and** `--board <N>` were passed, the board is issues-only,
+  the item is **not In Progress** (an In-Progress stamp is a live claim HELD
+  until Done — K#275 — and is left in place with a notice), and the stamp is
+  **this session's own** (a foreign stamp is reported and routed to
+  `reconcile.sh --labels`, never erased from here, so a peer's in-flight claim
+  — `claim.sh` stamps the owner *before* it flips the status — can never be
+  lost). It clears through `board_stamp <item> Host/Session ""`, the adapter's
+  one existing clearing implementation, and it never changes `release.sh`'s
+  exit status: every board-side failure degrades to a stderr notice, because a
+  park must never fail on a release. It still never moves the board STATUS —
+  that stays `unclaim.sh` or a deliberate park. The backstop for every park
+  that did NOT run it (or ran it from a later session, whose foreign stamp it
+  refuses to touch) is `reconcile.sh --labels`' class (m).
 
 ## Parent/child and dependency edges (foundation #800)
 
@@ -329,7 +378,12 @@ everything here was already backend-agnostic before this split touched it:
   with zero adapter code needed for this split**. No body-marker or
   label-based dependency scheme was invented (there was nothing to invent) —
   this is the "simplest faithful mechanism" the item description anticipated
-  might be needed; it turned out to already exist.
+  might be needed; it turned out to already exist. The **write** counterpart —
+  `board_blocked_by_add` / `board_blocked_by_remove` (NEW, foundation#1221) —
+  closes the reader-without-writer gap that had forced every dependency-edge
+  write through raw REST: they resolve the blocker's REST db id (the id the
+  dependencies WRITE API keys by, not its number) and POST/DELETE the same
+  endpoint, backend-agnostic per-issue REST like the reader.
 
 All three functions gate on candidate items only (never the whole board) —
 same caveat as every per-issue REST accessor in this file.
@@ -342,12 +396,42 @@ automation to move the linked project *item*'s Status to Done, which
 `_board_cache_bust`/the 90s items-cache TTL eventually observes (foundation
 #589's accepted residual staleness gap).
 
-On an issues-only board there is no such automation, and **none is needed**:
-"Done" is not a separate field that has to be kept in sync with "closed" — it
-IS closed, by construction (`issue_item`'s jq reshape reports
-`status: "Done"` for any closed issue regardless of labels; `board_set_status
-… Done` closes the issue directly, no automation round-trip). Concretely,
-what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
+On an issues-only board there is **no such automation, and nowhere to hook
+one**. There is no project *item* for a board automation to move, and GitHub
+exposes no native "on issue close, strip a label" rule for a plain Issues repo
+— the GH #340 cascade has exactly one implementation, the Projects-v2 built-in,
+and [ADR 0004](../../../docs/adr/0004-issues-only-default-backend.md) retires
+the arm it lives on. **On this backend the cascade is not a mechanism that can
+be relied on, because it does not exist** (temperloop#902: 9 of 9 closures
+across two runs left `fnd:status:backlog` standing on the closed issue — which
+is precisely what "no cascade" looks like from the outside).
+
+What stands in for it is the adapter's own Done write, and the substitution is
+only partial, because the two halves of "Done" come apart here:
+
+- **The READ half needs no cascade.** "Done" is not a separate field that has
+  to be kept in sync with "closed" — it IS closed, by construction
+  (`issue_item`'s jq reshape reports `status: "Done"` for any closed issue
+  regardless of labels). *Any* close, by *any* route, makes the item read Done
+  immediately, with no automation round-trip.
+- **The LABEL half has no automation at all.** Done on this backend is defined
+  as *closed with **no** `fnd:status:*` label* (§ Status vocabulary above).
+  Only `board_set_status <item> Done` strips that label — and the
+  `fnd:host/session:*` claim stamp with it (`_board_issues_set_field`'s Done
+  arm). A close that **bypasses the adapter** — a merged PR's native
+  `Closes #N`, a hand `gh issue close`, a web-UI close — closes the issue and
+  leaves both labels standing.
+
+**So on this backend `board_set_status … Done` is the PRIMARY mechanism, not a
+redundant backstop** — the exact inverse of the Projects-v2 posture, and
+`claude/CLAUDE.kernel.md` § Board hygiene is part of the gate now states that
+split rather than the Projects-v2 case alone. A caller that closes an item by
+any other route owes it the adapter Done write; `reconcile.sh` is the sweep for
+the closes that skip it (classes **(h)**/**(k)** for the status label,
+**(j)**/**(l)** for the claim stamp — below).
+
+Concretely, what the GH #340 cascade does on Projects-v2 that this backend does
+not need **for the read**:
 
 - **No async lag for a WRITE made through this adapter.** A Projects-v2
   close→Done is eventually-consistent (the automation fires, then the cache
@@ -359,11 +443,61 @@ what the GH #340 cascade does on Projects-v2 that this backend does NOT need:
 - **No separate "board card" to move.** There is no project item distinct
   from the issue to keep in sync — reading `.state` (open/closed) on the
   issue itself IS reading its board Status.
-- **No stale-Done detection needed** the way `reconcile.sh`'s Projects-v2
-  logic needs it (a card that says Ready/In-Progress but is actually
-  closed) — a closed issue on this backend can never report anything but
-  Done, by the jq reshape's own precedence (`if $state == "closed" then
-  {status:"Done"}` is checked FIRST, before any label).
+- **No stale-Done *read* is possible** the way it is on Projects-v2 (a card
+  that says Ready/In-Progress but is actually closed) — a closed issue on this
+  backend can never *report* anything but Done, by the jq reshape's own
+  precedence (`if $state == "closed" then {status:"Done"}` is checked FIRST,
+  before any label).
+
+  ⚠️ That is a statement about the READ, and it was once written here as "no
+  stale-Done *detection* needed" — which is false, and made
+  `reconcile.sh --status` structurally blind for a while (temperloop#1410). The
+  residual `fnd:status:*` label is still THERE on the closed issue; the reshape
+  only shadows it. And because the whole-board read is the OPEN issue set, such
+  an issue is *absent* from `board_item_list` entirely rather than misreported —
+  so a lens that classifies board items saw nothing at all and printed
+  "In sync" over real drift. Detection IS needed here; only its *shape* differs
+  from the Projects-v2 one, because the candidate population is the closed-issue
+  tail rather than a stale board card. `reconcile.sh --status` now scans that
+  tail as classes **(k)** residual status label and **(l)** stranded claim stamp
+  — see that file's "Lens 2, the CLOSED-ISSUE TAIL" header section.
+
+### What close DOES have to clear: the claim stamp (temperloop#744)
+
+The read-half argument above ("any close makes the item read Done") holds for
+**Status** — but not for the **claim lock**. `fnd:host/session:<host>:<sess8>` is a real piece of state that
+outlives the close: unlike `fnd:status:*`, no reader shadows it with a
+closed-state precedence rule, so a stamp left on a closed issue is a
+cross-session lock that can never be released. `issue-state.sh resolve` derives
+`claimed-elsewhere` from exactly that label; `reconcile.sh --status`'s
+foreign-claim bucket and `board_claim_contended` read it the same way. A closed
+issue wearing one is indistinguishable from a live claim.
+
+Two halves, both shipped:
+
+- **Root cause — the adapter's own Done write clears it.**
+  `_board_issues_set_field`'s Done arm strips every `fnd:host/session:*` label
+  alongside the `fnd:status:*` label before closing, under the same
+  retry-once/never-swallow contract. Reaching Done ends the claim by
+  construction. A NON-Done target deliberately leaves the stamp alone — a park
+  back to Ready/Backlog is exactly the case where the claim may legitimately
+  still be held (kernel doc § Claim held until Done).
+- **Backstop — the sweep, for every close that bypasses the adapter.** The
+  dominant close path in this pipeline is a merged PR's native `Closes #N`,
+  which runs no adapter code at all (same adapter-bypass leak that strands
+  `fnd:status:*`), and there is no server-side automation on this backend to
+  hook. So `reconcile.sh --labels` owns the residue as class **(j)**: a
+  `fnd:host/session:*` label ON a closed issue, stripped per-issue by
+  `--apply`. This is NOT covered by class (g) (orphaned repo *label objects*):
+  (g) deletes a label object only when it is attached to zero OPEN issues, so
+  while any open issue still wears the same stamp the object is correctly kept
+  — and every closed issue wearing it stays stranded forever. One documented
+  command sweeps the accumulated backlog:
+
+  ```sh
+  workflows/scripts/board/reconcile.sh --board 7 --labels          # report
+  workflows/scripts/board/reconcile.sh --board 7 --labels --apply  # + strip
+  ```
 
 ## Read cache staleness bound (cache-read-dispatch item)
 
@@ -396,7 +530,7 @@ read path specifically:
   LOOSER bound than the Projects-v2 90s figure it supersedes for this path,
   by deliberate design: the store trades a longer worst-case staleness
   window for a durable, cross-session, zero-GraphQL corpus cache serving a
-  fundamentally different consumer (a corpus renderer / funnel driver reading
+  fundamentally different consumer (a corpus renderer / pipeline driver reading
   "every issue", not a single board's live Status page).
 - **The always-live paths are unaffected regardless of this axis**:
   `board_resolve_item` (the claim lock) never reads through any cache on
@@ -408,20 +542,20 @@ read path specifically:
 
 Operationally: a consumer that wants a tighter bound than the 3600s default
 overrides `CACHE_STORE_TTL` (an env var, never a `boards.conf` key — see
-`CACHE-STORE.md`'s "Tuning knobs"), or simply doesn't source `lib/cache.sh`
+`CACHE-STORE.md`'s "Tuning settings"), or simply doesn't source `lib/cache.sh`
 and stays on the always-synchronous live-read arm.
 
-## Funnel integration (foundation #801, split 3/3)
+## Pipeline integration (foundation #801, split 3/3)
 
-The final split: wiring `funnel-tick.sh` to drive an issues-only repo, and
-proving it via a dual-adapter test suite. `funnel-tick.sh` itself needed
+The final split: wiring `pipeline-tick.sh` to drive an issues-only repo, and
+proving it via a dual-adapter test suite. `pipeline-tick.sh` itself needed
 **zero backend branching** — it already only ever touches `BOARD_ITEMS_JSON`
 through `board.sh`'s public accessors — but its Ready-item classification
-(`classify_item`, `needs_clarification`, `funnel_escalated`, `pending_merge`)
+(`classify_item`, `needs_clarification`, `pipeline_escalated`, `pending_merge`)
 reads a Ready item's **raw GitHub labels** directly (`spike`, `Foundational`,
 `needs-clarification`, `funnel-escalated`, `funnel-merge-pending` — every one
 of them a PLAIN label, never `fnd:`-namespaced). That is the "D3 seam": the
-funnel's Ready-item read depends on `BOARD_ITEMS_JSON` carrying a `labels`
+pipeline's Ready-item read depends on `BOARD_ITEMS_JSON` carrying a `labels`
 key, not just `status`/`component`.
 
 **The gap split 1/3 left (now fixed).** The Projects-v2 path always had this
@@ -431,7 +565,7 @@ carries a top-level `labels` array for Issue content, and `board_item_list` /
 strip PR cards and control characters). The issues-only `issue_item()` jq
 def, by contrast, extracted ONLY the `fnd:`-prefixed labels into
 `status`/`component`/`host/Session` and silently dropped every other label —
-so a live funnel-tick against an issues-only board could never see `spike` /
+so a live pipeline-tick against an issues-only board could never see `spike` /
 `Foundational` / `needs-clarification`, and every Ready item would
 misclassify as a fresh Operational `kind:code` drive (worse: probing for an
 open PR via `gh pr list`, a step that must never fire in a SAFE-tier-only
@@ -442,12 +576,12 @@ too; harmless, since an equality check like `. == "spike"` never matches
 match for the Projects-v2 one on this key, the same way it already was for
 `status`/`component`/`host/Session`.
 
-**What "SAFE-TIER" means here.** funnel-drive.sh's rung-5b executor
+**What "SAFE-TIER" means here.** pipeline-drive.sh's level-5b executor
 auto-runs only route-*/drain-*/a `kind:spike` drive — never a merge
 (foundation #604's SAFE/MERGING tier split). A full safe-tier tick therefore
 never needs to open a PR, so proving it against an issues-only repo needs no
 merge-capable adapter surface at all — only the read path (`board_resolve` /
-`board_item_list`) plus the plain-REST reads `funnel-tick.sh` already made
+`board_item_list`) plus the plain-REST reads `pipeline-tick.sh` already made
 directly (`gh issue list --search …`, `gh issue view --json assignees`),
 which were already backend-agnostic (per-issue/per-search REST, no Projects
 call either way).
@@ -492,15 +626,15 @@ across all five of their repos):
 
 ## The temperloop tracker (board 7, foundation #808)
 
-**Status update (temperloop#460):** board 7 was the sole board hard-coded
-to issues-only in the built-in map when this split landed. It no longer is
-unique at the *policy* level — every fleet board (3–6) is now also
-issues-only, via committed `boards.conf` entries rather than a built-in-map
-change (ADR 0004/0005; see § Issues-only is now the default backend,
-above). Board 7 remains the sole board whose issues-only-ness is baked
-directly into `board_backend()`'s built-in map, for the structural reason
-described below (it isn't a per-deployment choice for the kernel's own
-tracker) — the rest of this section is otherwise unchanged.
+**Status update (epic temperloop#524):** board 7 was once the sole board
+hard-coded to issues-only in the built-in map. **It is no longer an exception
+at all** — the Projects-v2 arm was removed (ADR 0004), so every board is
+issues-only and there is no in-code Projects default for board 7 to be
+carved out of. `board_backend()` no longer carries a board-7 case, because it
+no longer carries any backend selection. What survives from this section is
+board 7's `board_repo()` built-in-map entry and the `--repo kernel` routing
+below; the `board_backend()` half of the argument is historical. See
+§ Selecting the backend, above, for the superseded additive-only rule.
 
 The kernel-vs-overlay routing rule (CLAUDE.kernel.md § Kernel vs overlay
 routing rule) needed a concrete board number before it could be *followed*
@@ -512,7 +646,9 @@ this split (F#808, Guard #3 of the routing rule, epic B) gives the adapter a
 real handle: **board 7**, registered directly in `lib/board.sh`'s
 `board_repo()` and `board_backend()` built-in maps (`repo` → the
 temperloop repo; `backend` → `"issues"`), the SAME place boards 3-6
-already carry their real, org-qualified repo values.
+already carry their real, org-qualified repo values. (The `board_backend()`
+half of this is historical — that function no longer selects a backend; see
+§ Selecting the backend.)
 
 Not a committed `boards.conf` entry — deliberately. A real, org-qualified
 `repo` value is exactly the class of literal this checkout's own
@@ -523,12 +659,11 @@ values behind a trailing `# denylist:allow` marker for exactly this reason
 (a `boards.conf`-less consumer must still resolve a real repo — see
 § Selecting the backend, above). Board 7 follows that SAME precedent rather
 than inventing a second one: its case line in `board_repo()` carries the
-same marker, and `board_backend()` gets one narrowly-scoped case (`7 →
-"issues"`) as the sole, deliberate, permanent exception to that function's
-general "no board defaults to issues in-code" rule — board 7's issues-only-
-ness is a structural fact of what board 7 IS, not a per-deployment config
-choice a `boards.conf` should carry. A per-machine/per-repo `boards.conf`
-can still override board 7's `repo`/`backend` (checked FIRST, same
+same marker. (Historically `board_backend()` also carried a narrowly-scoped
+`7 → "issues"` case, as the sole permanent exception to that function's
+general "no board defaults to issues in-code" rule; both the rule and its
+exception are retired — see § Selecting the backend.) A per-machine/per-repo
+`boards.conf` can still override board 7's `repo` (checked FIRST, same
 discovery order as any other board) exactly as it could for boards 3-6 —
 this only hard-codes the DEFAULT a `boards.conf`-less consumer sees.
 `test_boards_conf.sh`'s built-in-fallback assertions cover board 7 the same
@@ -542,7 +677,7 @@ to memorize board 7:
 
 - `--repo kernel` — routes to board 7 outright (overrides `--board`). Use
   when the capture IS kernel-domain machinery (board adapter, build/sweep
-  spine, install/doctor, quality gates — the "stranger test" the routing
+  machinery, install/doctor, quality gates — the "stranger test" the routing
   rule names).
 - `--repo ambiguous` — routes to the SAME board 7, for the routing rule's
   **ambiguity clause**: "Ambiguous foundation-domain captures default to
@@ -587,7 +722,7 @@ Projects-v2 board to pin the cross-backend parity), `board_sub_issues`, and
 
 `workflows/scripts/board/tests/test_board_dual_adapter.sh` (registered as its
 own `make test-board-dual-adapter` gate — see `scripts/quality-gates.sh`) is
-the split-3/3 (#801) suite: it runs `funnel-tick.sh` LIVE (not
+the split-3/3 (#801) suite: it runs `pipeline-tick.sh` LIVE (not
 `--dry-run --fixture`, which bypasses `board.sh` entirely and so can never
 catch a reshape gap like the one above) against the SAME scenario twice — once
 with the board configured `backend=projects`, once `backend=issues` — and

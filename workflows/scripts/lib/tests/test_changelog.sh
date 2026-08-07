@@ -161,6 +161,64 @@ out="$(changelog_breaking_sections v0.1.0 v0.3.0 "$TMP_ROOT/does-not-exist.md")"
 assert_empty "changelog_breaking_sections on a missing file" "$out"
 assert_eq "changelog_breaking_sections rc 0 on a missing file" "0" "$rc"
 
+# ---------------------------------------------------------------------------
+# T8 — changelog_unreleased_body (temperloop#960, the CHANGELOG-entry gate)
+# ---------------------------------------------------------------------------
+echo "T8: changelog_unreleased_body"
+assert_empty "an empty [Unreleased] section yields nothing" \
+  "$(changelog_unreleased_body "$CHANGELOG" | grep -Ev '^[[:space:]]*$')"
+
+POPULATED="$TMP_ROOT/populated.md"
+cat > "$POPULATED" <<'EOF'
+# Changelog
+
+## [Unreleased] — BREAKING
+
+### Changed — BREAKING
+
+- Renamed a board helper. MIGRATION: update your overlay.
+
+## [0.1.0] - 2026-07-01
+
+### Added
+
+- Initial release.
+EOF
+out="$(changelog_unreleased_body "$POPULATED")"
+assert_contains "includes the section's own body" "Renamed a board helper" "$out"
+if grep -qF "## [Unreleased]" <<<"$out"; then
+  echo "  NOT OK - T8 must exclude the [Unreleased] heading itself (a BREAKING suffix is not an entry)"
+  fail_count=$((fail_count + 1))
+else
+  echo "  ok - T8 excludes the [Unreleased] heading line itself"
+  pass_count=$((pass_count + 1))
+fi
+if grep -qF "Initial release" <<<"$out"; then
+  echo "  NOT OK - T8 must stop at the next '## [' heading"
+  fail_count=$((fail_count + 1))
+else
+  echo "  ok - T8 stops at the next version heading"
+  pass_count=$((pass_count + 1))
+fi
+assert_empty "missing file -> empty, no error" "$(changelog_unreleased_body "$TMP_ROOT/does-not-exist.md")"
+
+# ---------------------------------------------------------------------------
+# T9 — changelog_version_headings
+# ---------------------------------------------------------------------------
+echo "T9: changelog_version_headings"
+out="$(changelog_version_headings "$CHANGELOG")"
+assert_eq "lists every version heading in file order" "0.3.0
+0.2.0
+0.1.0" "$out"
+if grep -qF "Unreleased" <<<"$out"; then
+  echo "  NOT OK - T9 must not list the non-version [Unreleased] heading"
+  fail_count=$((fail_count + 1))
+else
+  echo "  ok - T9 omits [Unreleased] (not version-shaped)"
+  pass_count=$((pass_count + 1))
+fi
+assert_empty "missing file -> empty, no error" "$(changelog_version_headings "$TMP_ROOT/does-not-exist.md")"
+
 echo
 echo "test_changelog.sh: $pass_count passed, $fail_count failed"
 if (( fail_count > 0 )); then

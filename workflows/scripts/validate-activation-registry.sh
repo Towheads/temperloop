@@ -13,7 +13,7 @@
 #     - class: A
 #     - proof: "grep -q GeminiRunner evals/runners/__init__.py"
 #
-# This script is the validate-live-drain.sh MOLD applied to that registry:
+# This script is the validate-capture-backstop.sh MOLD applied to that registry:
 # same skeleton, same banner style, same "collect every failure, then report
 # once" shape, same exit-code contract (0 = pass, non-zero = at least one
 # anchor missing).
@@ -83,7 +83,7 @@ skip=0
 nchecked=0
 
 # tokens <string> -> backticked tokens, one per line, backticks stripped.
-# (Same helper as validate-live-drain.sh's tokens() — files: entries are
+# (Same helper as validate-capture-backstop.sh's tokens() — files: entries are
 # backtick-quoted paths, exactly like that script's anchor tokens.)
 tokens() {
   # shellcheck disable=SC2016

@@ -56,13 +56,13 @@ echo "$out" | jq empty || fail "output is not valid JSON"
 #    `foundation init` embeds verbatim into the committed .foundation/config)
 #    must not contain the fixture's own absolute path, a literal /Users/
 #    prefix, or the real $HOME value, under any key.
-if printf '%s' "$out" | grep -qF "$REPO"; then
+if grep -qF "$REPO" <<<"$out"; then
   fail "emitted config contains the fixture's absolute local path: $REPO"
 fi
-if printf '%s' "$out" | grep -q '/Users/'; then
+if grep -q '/Users/' <<<"$out"; then
   fail "emitted config contains a /Users/-prefixed absolute path"
 fi
-if [ -n "${HOME:-}" ] && printf '%s' "$out" | grep -qF "$HOME"; then
+if [ -n "${HOME:-}" ] && grep -qF "$HOME" <<<"$out"; then
   fail "emitted config contains the literal \$HOME value"
 fi
 

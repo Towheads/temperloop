@@ -23,10 +23,22 @@
 #      checkout (this repo) ships no overlay, so this check is parameterized
 #      over an overlay path (MESSAGE_SCHEMA_OVERLAY, default
 #      claude/message-schema.overlay.md — the natural sibling of the
-#      existing claude/live-drain-registry.overlay.md pattern) that is
+#      existing claude/capture-backstop-registry.overlay.md pattern) that is
 #      typically ABSENT here: absent -> zero overrides to check -> trivial
 #      pass, not an error. When a downstream composed checkout ships that
 #      file, this check activates automatically.
+#
+#      2b. NON-OVERRIDABLE SET (temperloop#928). The dangling-override check
+#      alone cannot enforce message-schema.md § Overrides' exclusion, because
+#      an excluded template's name IS canonical — an overlay redeclaring it
+#      would sail through check 2 exactly like a sanctioned override. So the
+#      exclusion is a SEPARATE check with its own list, NON_OVERRIDABLE_
+#      TEMPLATES below: an overlay redeclaring a listed name FAILS. Without
+#      this, the kernel's overlay carve-out (claude/CLAUDE.kernel.md § Kernel
+#      vs overlay routing rule) would be unenforceable prose. The list is
+#      maintained in the same PR as the § Overrides bullet that states it,
+#      and is self-checked against the canonical set below so a rename or
+#      retirement in the doc reds CI rather than silently disarming it.
 #
 #   3. Registry-completeness: every contract-frozen row in
 #      claude/presentation-plane.md's "## Kernel table" must name a
@@ -36,12 +48,12 @@
 #      numeric range like "2-3", both of which name non-heading targets this
 #      script does not attempt to resolve) must resolve to a heading or
 #      bold-label anchor in the file it follows — the same anchor_present
-#      contract validate-live-drain.sh already uses for the Live/Drain
+#      contract validate-capture-backstop.sh already uses for the Capture/Backstop
 #      registry, applied here to presentation-plane.md's registry instead.
-#      This is the "live-drain-validator mold" the acceptance criteria name.
+#      This is the "capture-backstop-validator mold" the acceptance criteria name.
 #
 # Kept POSIX-bash-3.2 friendly (no mapfile/associative arrays) so it runs on
-# the macOS dev shell as well as Linux CI, matching validate-live-drain.sh's
+# the macOS dev shell as well as Linux CI, matching validate-capture-backstop.sh's
 # own portability contract.
 #
 # Usage: workflows/scripts/validate-template-refs.sh   (resolves the repo itself)
@@ -70,7 +82,7 @@ done
 
 # anchor_present <file> <anchor> -> 0 if the anchor appears in the file as a
 # markdown heading ("## Anchor...") or a bold label ("**Anchor"). Identical
-# contract to validate-live-drain.sh's own anchor_present, reused here so the
+# contract to validate-capture-backstop.sh's own anchor_present, reused here so the
 # two registry validators agree on what "resolvable" means.
 anchor_present() {
   local file="$1" anchor="$2"
@@ -123,6 +135,51 @@ EOF
 }
 
 # ==========================================================================
+# 1b. The non-overridable set — claude/message-schema.md § Overrides'
+#     "Non-overridable set" bullet, mirrored mechanically.
+#
+# EDIT CONTRACT: this list and that bullet are ONE change, made in ONE PR.
+# One name per line, matched case-insensitively and trimmed, exactly like the
+# canonical set above. Every entry MUST also be a canonical template name —
+# enforced immediately below, so a template renamed or retired in the doc
+# fails here loudly instead of leaving a dead exclusion that silently
+# re-opens the surface.
+# ==========================================================================
+
+NON_OVERRIDABLE_TEMPLATES='Decision presentation'
+
+# name_is_non_overridable <name> -> 0 if <name> is in the exclusion set
+# (case-insensitive, trimmed).
+name_is_non_overridable() {
+  local want lc_want lc_have
+  want="$(trim "$1")"
+  lc_want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
+  while IFS= read -r have; do
+    [ -n "$have" ] || continue
+    lc_have="$(printf '%s' "$(trim "$have")" | tr '[:upper:]' '[:lower:]')"
+    [ "$lc_want" = "$lc_have" ] && return 0
+  done <<EOF
+$NON_OVERRIDABLE_TEMPLATES
+EOF
+  return 1
+}
+
+echo
+echo "non-overridable templates (an overlay may NOT redeclare these):"
+while IFS= read -r nname; do
+  [ -n "$nname" ] || continue
+  if name_is_canonical "$nname"; then
+    echo "  - $nname"
+  else
+    echo "  FAIL  non-overridable entry \"$nname\" is not a template defined in $MSG_SCHEMA § Templates"
+    echo "        (renamed or retired there? update NON_OVERRIDABLE_TEMPLATES and the § Overrides bullet together)"
+    fail=$((fail + 1))
+  fi
+done <<EOF
+$NON_OVERRIDABLE_TEMPLATES
+EOF
+
+# ==========================================================================
 # 2. Reference-integrity: by-name template refs in CLAUDE.kernel.md +
 #    claude/commands/*.md must resolve to a canonical template.
 # ==========================================================================
@@ -169,7 +226,10 @@ echo "checked $nrefs by-name reference(s)"
 
 # ==========================================================================
 # 3. Dangling-override check: an overlay's redeclared template names (if the
-#    overlay file is present at all) must match a canonical template name.
+#    overlay file is present at all) must match a canonical template name —
+#    AND must not be in the non-overridable set (1b). The exclusion is
+#    checked FIRST, because a non-overridable name is by construction also a
+#    canonical one: checked in the other order it would report "ok".
 # ==========================================================================
 
 echo
@@ -182,7 +242,10 @@ if [ -f "$OVERLAY_MSG_SCHEMA" ]; then
   else
     while IFS= read -r oname; do
       [ -n "$oname" ] || continue
-      if name_is_canonical "$oname"; then
+      if name_is_non_overridable "$oname"; then
+        echo "FAIL  overlay override \"$oname\" ($OVERLAY_MSG_SCHEMA) redeclares a NON-OVERRIDABLE template — $MSG_SCHEMA § Overrides excludes it from the sanctioned overlay-override surface"
+        fail=$((fail + 1))
+      elif name_is_canonical "$oname"; then
         echo "ok    overlay override \"$oname\" matches a kernel template"
       else
         echo "FAIL  overlay override \"$oname\" ($OVERLAY_MSG_SCHEMA) does not match any kernel-defined template in $MSG_SCHEMA § Templates"
@@ -242,7 +305,7 @@ while IFS= read -r row; do
     # skipped, per this script's header.
     # SC2016: the backticks in the regex are literal (match `...` spans), not
     # a command substitution — single quotes are intentional (same rationale
-    # as validate-live-drain.sh's tokens() helper).
+    # as validate-capture-backstop.sh's tokens() helper).
     # shellcheck disable=SC2016
     seg_files="$(printf '%s' "$seg" | grep -oE '`[^`]*/[^`]*`' | tr -d '`' || true)"
     last_file=""

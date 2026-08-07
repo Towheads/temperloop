@@ -2,7 +2,7 @@
 #
 # Tests for board.sh's board NAME alias resolver (temperloop #95). Every --board
 # switch (and every lib resolve entrypoint) now accepts a board NAME as well as
-# its logical number, so a human never has to touch the private number space.
+# its board id, so a human never has to touch the private number space.
 # board_resolve_name is the ONE shared resolver: it maps a name -> number at the
 # boundary and passes a bare integer straight through unchanged (the number stays
 # the sole internal key — nothing downstream is name-aware).
@@ -26,7 +26,7 @@
 #
 # NOTE ON FIXTURES: this file is NOT on the personal-token-denylist exempt list,
 # so it must contain NO real org/identity tokens. Board APP names
-# (stagefind/foundation/…) and logical numbers are explicitly NOT denylisted
+# (stagefind/foundation/…) and board ids are explicitly NOT denylisted
 # (they are illustrative pipeline examples — see personal-token-denylist.tsv's
 # header); the boards.conf fixture uses the generic placeholder org `acme/widget`.
 set -euo pipefail
@@ -43,6 +43,7 @@ export BOARDS_CONF_MACHINE="/no-such-machine-conf-$$"
 export BOARDS_CONF_REPO_LOCAL="/no-such-repo-local-conf-$$"
 
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/board.sh"
 
 # --- 1: numeric-unchanged (backward compatibility) -------------------------
@@ -94,6 +95,11 @@ echo "PASS: with NO boards.conf, the built-in name map answers (the #770 seam co
 
 # --- 5: boards.conf name axis (add + override + known-names list) ----------
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/board-name-test-XXXXXX")"
+# This definition is intentionally superseded by the redefinition below (once
+# $BIN exists) -- it's the safety net that still cleans up $WORK if a `fail`
+# exit happens before that point. ShellCheck can't see the later redefinition
+# is what makes this one "unreachable" by the time EXIT actually fires.
+# shellcheck disable=SC2329
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 cat > "$WORK/boards.conf" <<'EOF'

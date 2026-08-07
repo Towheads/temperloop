@@ -49,6 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 # shellcheck source=scripts/lib/cache.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/cache.sh"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -197,7 +198,7 @@ chmod -w "$repo_dir"
 out="$(cache_read "$REPO" 2>"$STDERR_LOG")"
 chmod u+w "$repo_dir"
 [ -n "$out" ] || fail "persist-failure fallback must still return the live-fetched data"
-echo "$out" | grep -q '"number":1' || fail "persist-failure fallback data missing expected issue"
+grep -q '"number":1' <<<"$out" || fail "persist-failure fallback data missing expected issue"
 [ "$(stderr_lines)" -eq 1 ] || fail "expected exactly 1 stderr notice on persist failure, got $(stderr_lines)"
 grep -q "falling through to a live" "$STDERR_LOG" || fail "persist-failure notice text missing"
 after_hash="$(shasum "$(cache_snapshot_file "$REPO")" | awk '{print $1}')"

@@ -50,7 +50,7 @@ expect_msg() {
 	shift 3
 	local out got
 	out="$(printf '%b' "$body" | bash "$LINT" "$@" 2>&1)" && got=0 || got=$?
-	if [ "$got" != 0 ] && printf '%s' "$out" | grep -qF -- "$needle"; then
+	if [ "$got" != 0 ] && grep -qF -- "$needle" <<<"$out"; then
 		printf '  ok   %s (msg matched)\n' "$name"
 		pass=$((pass + 1))
 	else

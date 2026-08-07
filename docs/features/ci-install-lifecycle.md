@@ -60,7 +60,7 @@ inside the sandbox harness (`workflows/scripts/tests/lib/sandbox.sh`):
 
 The suite **self-scopes to a kernel-only checkout**: on a composed overlay
 tree — detected by `claude/CLAUDE.overlay.md` beside
-`claude/CLAUDE.kernel.md` (the `validate-live-drain.sh` idiom), a
+`claude/CLAUDE.kernel.md` (the `validate-capture-backstop.sh` idiom), a
 recognizable `kernel/` subtree at the repo root, or the suite's own tree
 being a vendored subtree inside a larger repo (its `$REPO_ROOT` is not its
 own git toplevel, which is also a hard bootstrap precondition) — it prints

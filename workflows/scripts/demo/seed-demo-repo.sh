@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # seed-demo-repo.sh — idempotent, script-generated seeder for the PRIVATE
-# scratch demo repo (default: Towheads/temperloop-demo) that  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
-# `foundation try --demo` runs one real safe-tier funnel tick against
+# scratch demo repo (default: `<your-gh-login>/temperloop-demo`, derived from
+# your authenticated gh identity — foundation#871) that
+# `foundation try --demo` runs one real safe-tier pipeline tick against
 # (foundation #765 Epic D, item `demo-repo-seed` / foundation #851).
 #
 # WHAT IT DOES
@@ -44,7 +45,8 @@
 # Usage:
 #   seed-demo-repo.sh [--repo OWNER/NAME] [--reset] [--dry-run]
 #
-# --repo OWNER/NAME   target repo (default: Towheads/temperloop-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+# --repo OWNER/NAME   target repo. Default: SEED_DEMO_REPO env, else
+#                      <your-gh-login>/temperloop-demo (owner from `gh api user`).
 # --reset             close stale demo-seed issues + recreate the fixed set;
 #                      also overwrites starter files back to baseline
 # --dry-run           print every `gh` call this run would make without
@@ -55,7 +57,13 @@
 
 set -euo pipefail
 
-REPO="Towheads/temperloop-demo"  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+# Target repo resolution (foundation#871): --repo flag > SEED_DEMO_REPO env
+# (the host-local config seam — an operator points the seeder at an org-owned
+# companion repo here, never hardcoded in the kernel) > a default derived from
+# the authenticated gh login after arg parsing. No org-specific slug ships in
+# the kernel, so a stranger's checkout seeds a repo THEY own.
+REPO="${SEED_DEMO_REPO:-}"
+repo_flag_given=0
 RESET=0
 DRY_RUN=0
 SEED_LABEL="demo-seed"
@@ -64,7 +72,9 @@ usage() {
   cat <<'EOF'
 usage: seed-demo-repo.sh [--repo OWNER/NAME] [--reset] [--dry-run]
 
-  --repo OWNER/NAME   target repo (default: Towheads/temperloop-demo)  # denylist:allow — the demo repo's own default slug (its identity, same category-1 rationale as bootstrap.sh's kernel-repo URL)
+  --repo OWNER/NAME   target repo. Default: SEED_DEMO_REPO env if set, else
+                      <your-gh-login>/temperloop-demo (owner derived from
+                      `gh api user`). Requires --repo or gh auth if unset.
   --reset             close stale demo-seed issues + recreate the fixed set;
                        also overwrites starter files back to baseline
   --dry-run           print gh calls without executing them
@@ -74,8 +84,14 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
+      repo_flag_given=1
       REPO="${2:-}"
-      shift 2
+      shift
+      # Consume the value only if one followed; a bare `--repo` (flag as the
+      # last arg) leaves REPO empty and falls to the empty-value guard below,
+      # rather than aborting on `shift 2` under set -e (which would exit 1, not
+      # the guard's 2).
+      if [[ $# -gt 0 ]]; then shift; fi
       ;;
     --reset)
       RESET=1
@@ -97,17 +113,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$REPO" ]]; then
+# An explicit `--repo` given with an empty or absent value (`--repo ""` or a
+# bare trailing `--repo`) is a usage error — preserve the prior guard.
+if [[ "$repo_flag_given" -eq 1 && -z "$REPO" ]]; then
   echo "seed-demo-repo: --repo OWNER/NAME must not be empty" >&2
   exit 2
 fi
 
+# Verify required tools BEFORE the gh-login derivation below invokes `gh`, so a
+# missing gh reports "required tool 'gh' not found" rather than the derivation's
+# auth-flavored error.
 for bin in gh base64; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "seed-demo-repo: required tool '$bin' not found on PATH" >&2
     exit 1
   fi
 done
+
+# Default resolution (foundation#871): neither --repo nor SEED_DEMO_REPO given →
+# derive the OWNER from the authenticated gh login so a stranger seeds a repo
+# THEY own. If gh isn't authenticated, require an explicit target rather than
+# guessing an org the caller can't push to.
+if [[ -z "$REPO" ]]; then
+  login="$(gh api user -q .login 2>/dev/null || true)"
+  if [[ -n "$login" ]]; then
+    REPO="$login/temperloop-demo"
+  else
+    echo "seed-demo-repo: no target repo — pass --repo OWNER/NAME, set SEED_DEMO_REPO=OWNER/NAME, or run 'gh auth login' so the owner can be read from your gh identity" >&2
+    exit 2
+  fi
+fi
 
 # run_gh CMD... — execute a gh invocation, or print it under --dry-run. The
 # dry-run trace goes to stderr (not stdout) so it survives call sites that

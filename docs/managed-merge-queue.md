@@ -5,7 +5,7 @@ temperloop#13. GitHub's **native merge queue** (the platform feature
 **organization-owned repo on a paid plan** — a personal account, or a free
 org, can enable branch protection and required checks, but cannot arm a
 merge queue. Until this contract existed, that was a hard wall: the
-merge-gated build/sweep ladder (`/build`, `/sweep`, the funnel merge tier)
+merge-gated build/sweep ladder (`/build`, `/sweep`, the pipeline merge tier)
 assumed a native queue was always available, so the whole pipeline simply
 didn't work on a free personal repo.
 
@@ -56,8 +56,9 @@ policy (`claude/commands/build.md`), not gate.sh's concern.
 2. Resolve the **updated** head SHA (never poll a stale one — mirrors
    `ci-poll.sh`'s own guard against exactly that bug).
 3. SHA-pinned CI re-poll (`repos/<nwo>/commits/<sha>/check-runs` — REST,
-   deliberately not `gh pr checks --watch`, which is GraphQL and a shared-
-   budget concern) until every check-run completes or the deadline passes.
+   deliberately not `gh pr checks --watch`, whose cost is flat per query
+   regardless of how little changed) until every check-run completes or the
+   deadline passes.
 4. **Green** → merge (`gh pr merge --merge --delete-branch` — a direct
    merge, not `--auto`; mergeability was already established by the
    re-poll, so there's nothing left to queue). **Red** → the PR is

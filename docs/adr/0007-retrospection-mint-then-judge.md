@@ -48,6 +48,50 @@ passes no merge-capable action across the seam. `/retro`'s own contract
 must therefore carry a one-line no-merge assertion covering this
 delegation — an overlay-side companion change (foundation#1247).
 
+## Amendment — the trigger's probe is CAPABILITY, not presence (temperloop#1150)
+
+The decision above specified the trigger as "one label query, one
+age-or-urgent comparison, and a **command-availability** probe." That third
+probe was too weak for what the seam actually does: it *spawns* the judge as
+a nested `claude -p "/retro --pending"`. `/retro` did not implement that
+headless mode, so a probe answering only "is a `retro.md` file present"
+returned true and the tick spawned a judge that could not run. The nested
+session ended its turn without judging anything and exited `subtype:
+success` / `is_error: false` — 13 minutes and ~$7.60 for zero judgments and
+zero run-stream rows, indistinguishable from a healthy tick. The loop's
+other two halves (the mint, and `/tidy`'s backstop sweep) worked from day
+one; only the judge never ran, for months, invisibly.
+
+Amended: the trigger's third probe is a **capability** probe, and the
+capability is **declared by the judge, never inferred by the kernel**. The
+overlay `/retro` asserts it can complete an unattended `--pending` run with
+a marker line in its own command file (`<!-- capability: headless-unattended
+-->`, the grammar in ADR 0008's helper); absent that declaration the tick
+emits a `skip-retro-judge` action carrying `reason: "headless-unsupported"`
+and spawns nothing. This keeps the kernel's side of the seam exactly as thin
+as the decision intended — it adds no judgment, only a handshake — while
+making the refusal legible instead of silent. **Never silence: either the
+judge runs, or the tick records why it did not.** The kernel cannot execute
+an overlay command to verify the capability, and does not try; what it can
+do is refuse to spawn one that never claimed it.
+
+Amended consequence for observability: the seam is now **detectable**. A
+zero-row `retro-runs` stream previously meant both "no retros were due" (the
+steady state) and "the judge has never once run" (the dead loop), which is
+how the failure hid. `workflows/scripts/build/pipeline-retro-health.sh`
+reads the tick's own retro actions against the judge's run stream and
+returns a verdict that separates them — `no-signal`, `refused`, `healthy`,
+`no-lake`, or `defect` (sub-typed `never-had-a-row` vs `stalled`) — and
+`/tidy`'s Retro mint backstop gains a fourth probe that files a `defect`
+verdict as a board defect rather than letting it read as steady state.
+
+Deliberately **not** taken here: giving `/retro` a real synchronous headless
+mode. That is the judge's own control flow, and `/retro` is overlay content
+— out of the kernel's lane per the kernel/overlay routing rule. The kernel's
+job at this seam is to not spawn an unrunnable judge, which is what this
+amendment does; the overlay half (implement the mode, then declare it) stays
+an overlay change.
+
 ## Consequences
 
 Benefits: one retrospection brain instead of two overlapping specs;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build plan-note mechanics — the deterministic-spine script that owns the
+# build plan-note mechanics — the deterministic-machinery script that owns the
 # Step-1 plan parse/validate + dependency-level toposort and the in-band
 # sentinel writeback of /build (epic #253, spike #245). These are pure
 # functions of the plan note's text with closed outcome sets, so they move from
@@ -12,19 +12,22 @@
 #   plan.sh writeback <planFile> --slug <slug> --sentinel <state> \
 #         [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]
 #
-# `validate` enforces the 14 plan-schema rules (status==approved, slug+acceptance
+# `validate` enforces the 15 plan-schema rules (status==approved, slug+acceptance
 # present, unique kebab slugs ≤40, branch <type>/<slug>, depends-on/after refs
 # exist, the depends-on∪after union acyclic, no leftover acceptance placeholder,
 # gh_issue a positive int, gh_issue/split_from mutual exclusion, the rule-11
 # external-gate gate_check requirement, rule-12 repo owner/repo shape, the
 # rule-13 activation-block class∈{A,B,C} + class-A proof: requirement, the
 # rule-14 product-source activation-required requirement — see
-# RULE_14_CUTOVER_DATE below for the grandfather gate).
+# RULE_14_CUTOVER_DATE below for the grandfather gate — and the rule-15
+# keystone-spike marker being value 'true' on a kind: spike item only,
+# temperloop#526).
 # `toposort` partitions items into
 # dependency levels — level 0 = items with neither depends-on nor after — over
 # the UNION of both edge sets, and emits `{"levels":[["a","b"],["c"]]}` on stdout.
 #
-# `writeback` flips an item's checkbox sentinel ([ ]→[~]→[m]→[x], plus [v]/[-])
+# `writeback` flips an item's checkbox sentinel ([ ]→[~]→[m]→[x], the as-you-go
+# variant [ ]→[~]→[>]→[x] (temperloop#1026), plus [v]/[-])
 # and stamps sub-lines (pr:, pushed_sha:, speculative:, Run-status:) on the plan
 # note. It is the SOLE sentinel-writeback path: ALL vault writes route through a
 # single `_plan_vault_write` indirection (mirrors board.sh's `_board_gh`),
@@ -81,7 +84,7 @@ die() {
 }
 
 usage() {
-  die "usage: plan.sh validate <planFile> | toposort <planFile> | writeback <planFile> --slug <slug> --sentinel <[ ]|[~]|[m]|[x]|[v]|[-]> [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]"
+  die "usage: plan.sh validate <planFile> | toposort <planFile> | writeback <planFile> --slug <slug> --sentinel <[ ]|[~]|[m]|[>]|[x]|[v]|[-]> [--pr N] [--pushed-sha SHA] [--speculative] [--run-status <text>]"
 }
 
 # --- the ONE test-injection seam ---------------------------------------------
@@ -105,7 +108,7 @@ usage() {
 # vault path/URL in that ONE file (knowledge_store_obsidian.sh), so plan.sh no
 # longer repeats the literal here. PLAN_API_BASE / PLAN_API_KEY_FILE remain the
 # names tests/callers override (unchanged surface) — they now fall back to the
-# seam's own knobs instead of a hardcoded default.
+# seam's own settings instead of a hardcoded default.
 PLAN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 if [ -f "$PLAN_LIB_DIR/knowledge_store.sh" ]; then
   # shellcheck source=workflows/scripts/lib/knowledge_store.sh
@@ -123,7 +126,7 @@ PLAN_API_KEY_FILE="${PLAN_API_KEY_FILE:-${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:
 # no REST config, the caller falls soft to a filesystem write). Resolution
 # order, most-specific first (#342):
 #   1. PLAN_API_KEY_FILE — the caller/test override, itself defaulted from the
-#      knowledge_store seam's KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE knob (which
+#      knowledge_store seam's KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE setting (which
 #      derives from KNOWLEDGE_STORE_ROOT — the "actual knowledge-store root").
 #   2. The vault root RESOLVED from the plan note's own absolute on-disk path:
 #      the parent of its `/Plans/` segment. This is what makes writeback work in
@@ -233,7 +236,9 @@ fm_date() {
 # gate_check, acceptance (=1 if a non-empty acceptance block exists),
 # acceptance_placeholder (=1 if the placeholder line is present), notes,
 # sentinel (the current checkbox char), title, kind (code|spike, default code),
-# files (raw comma-separated files: value, backtick-quoted per entry).
+# keystone (the raw keystone: value — a keystone spike halts /build for verdict
+# review before dependents build, temperloop#526), files (raw comma-separated
+# files: value, backtick-quoted per entry).
 # This is the single parse used by validate/toposort/writeback.
 parse_items() {
   awk '
@@ -255,14 +260,18 @@ parse_items() {
         rec = rec SEP "act_class=" act_class
         rec = rec SEP "act_proof=" act_proof
         rec = rec SEP "kind=" (kind=="" ? "code" : kind)
+        rec = rec SEP "keystone=" keystone
         rec = rec SEP "files=" files
+        rec = rec SEP "cost=" (cost ? "1" : "0")
+        rec = rec SEP "cost_because=" cost_because
         print rec
       }
       have_item=0; slug=""; sentinel=""; title=""; branch=""; dependson="";
       after=""; gh_issue=""; split_from=""; gate_check=""; notes="";
       acc_count=0; acc_placeholder=0; in_acc=0
       activation=0; act_class=""; act_proof=""; in_activation=0
-      kind=""; files=""
+      kind=""; keystone=""; files=""
+      cost=0; cost_because=""; in_cost=0
     }
     BEGIN { SEP=sprintf("%c",31); in_items=0 }
     /^##[[:space:]]+Items[[:space:]]*$/ { in_items=1; next }
@@ -295,7 +304,7 @@ parse_items() {
     have_item {
       l=$0
       # acceptance block: `- acceptance:` opens it; subsequent deeper bullets are entries.
-      if (l ~ /^[[:space:]]*-[[:space:]]*acceptance:[[:space:]]*$/) { in_acc=1; in_activation=0; next }
+      if (l ~ /^[[:space:]]*-[[:space:]]*acceptance:[[:space:]]*$/) { in_acc=1; in_activation=0; in_cost=0; next }
       if (in_acc) {
         # placeholder line is fatal at execution
         if (l ~ /no acceptance criteria derivable from source/) { acc_placeholder=1 }
@@ -313,7 +322,7 @@ parse_items() {
       }
       # activation block: `- activation:` opens it; `- class:` / `- proof:` are its
       # keyed entries (the inward twin of gate_check — plan-schema.md § activation).
-      if (l ~ /^[[:space:]]*-[[:space:]]*activation:[[:space:]]*$/) { in_activation=1; activation=1; in_acc=0; next }
+      if (l ~ /^[[:space:]]*-[[:space:]]*activation:[[:space:]]*$/) { in_activation=1; activation=1; in_acc=0; in_cost=0; next }
       if (in_activation) {
         if (match(l, /^[[:space:]]*-[[:space:]]*class:[[:space:]]*/)) {
           v=l; sub(/^[[:space:]]*-[[:space:]]*class:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]/,"",v); act_class=v; next
@@ -323,6 +332,29 @@ parse_items() {
         }
         # any other same-level field key ends the activation block (fall through to field parse)
         if (l ~ /^[[:space:]]*-[[:space:]]*[a-zA-Z_-]+:/) { in_activation=0 }
+        else { next }
+      }
+      # cost block (foundation#1059): `- cost:` marks an item with outsized
+      # EXECUTION spend (presence = expensive, the binary flag); `- because:`
+      # (required, rule 16) and `- budget:` (optional token ceiling) are its
+      # keyed entries. Same block shape as activation above — EXCEPT the open is
+      # forgiving of an inline value: `- cost: deep-research` (a hand-authored
+      # one-liner) opens the block AND takes the inline value as the `because:`
+      # shorthand, so it is FLAGGED, never silently dropped. A nested
+      # `- because:` still overrides an inline value.
+      if (match(l, /^[[:space:]]*-[[:space:]]*cost:([[:space:]]|$)/)) {
+        in_cost=1; cost=1; in_activation=0; in_acc=0
+        v=l; sub(/^[[:space:]]*-[[:space:]]*cost:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v)
+        if (v != "") cost_because=v
+        next
+      }
+      if (in_cost) {
+        if (match(l, /^[[:space:]]*-[[:space:]]*because:[[:space:]]*/)) {
+          v=l; sub(/^[[:space:]]*-[[:space:]]*because:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); cost_because=v; next
+        }
+        if (l ~ /^[[:space:]]*-[[:space:]]*budget:[[:space:]]*/) { next }
+        # any other same-level field key ends the cost block
+        if (l ~ /^[[:space:]]*-[[:space:]]*[a-zA-Z_-]+:/) { in_cost=0 }
         else { next }
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*branch:[[:space:]]*/)) {
@@ -348,6 +380,9 @@ parse_items() {
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*kind:[[:space:]]*/)) {
         v=l; sub(/^[[:space:]]*-[[:space:]]*kind:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); kind=v; next
+      }
+      if (match(l, /^[[:space:]]*-[[:space:]]*keystone:[[:space:]]*/)) {
+        v=l; sub(/^[[:space:]]*-[[:space:]]*keystone:[[:space:]]*/,"",v); gsub(/`/,"",v); gsub(/[[:space:]]*#.*/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); keystone=v; next
       }
       if (match(l, /^[[:space:]]*-[[:space:]]*files:[[:space:]]*/)) {
         v=l; sub(/^[[:space:]]*-[[:space:]]*files:[[:space:]]*/,"",v); gsub(/[[:space:]]*#.*/,"",v); files=v; next
@@ -447,7 +482,7 @@ cmd_validate() {
     slug="$(rec_slug "$rec")"
     [ -n "$slug" ] || continue
     local branch acc acc_ph gh_issue split_from gate_check notes dep aft tok
-    local activation act_class act_proof kind files
+    local activation act_class act_proof kind keystone files cost cost_because
     branch="$(rec_field "$rec" branch)"
     acc="$(rec_field "$rec" acceptance)"
     acc_ph="$(rec_field "$rec" acc_placeholder)"
@@ -461,7 +496,10 @@ cmd_validate() {
     act_class="$(rec_field "$rec" act_class)"
     act_proof="$(rec_field "$rec" act_proof)"
     kind="$(rec_field "$rec" kind)"
+    keystone="$(rec_field "$rec" keystone)"
     files="$(rec_field "$rec" files)"
+    cost="$(rec_field "$rec" cost)"
+    cost_because="$(rec_field "$rec" cost_because)"
 
     # Rule 2: acceptance block present.
     [ "$acc" = "1" ] || errors+=("rule 2: item '$slug' has no acceptance: block")
@@ -511,6 +549,28 @@ cmd_validate() {
     if [ "$rule14_grandfathered" -ne 1 ] && [ "$kind" = "code" ] \
        && _files_touch_shipped "$files" && [ "$activation" != "1" ]; then
       errors+=("rule 14: item '$slug' is product-source (kind: code, files: touches scripts/|workflows/|claude/) but carries no activation: block")
+    fi
+    # Rule 15: keystone: (when present) is a spike-only marker whose only
+    # meaningful value is `true` — a keystone spike halts /build for operator
+    # verdict-review before dependents build (temperloop#526). It is meaningless
+    # on a code item (which merges through the normal gate) so a keystone: on a
+    # non-spike item is a plan defect. An empty value = field absent = no gate.
+    if [ -n "$keystone" ]; then
+      if [ "$keystone" != "true" ]; then
+        errors+=("rule 15: item '$slug' keystone '$keystone' must be 'true' (the only meaningful value) or absent")
+      fi
+      # kind defaults to code when unset; a keystone marker requires kind: spike.
+      if [ "${kind:-code}" != "spike" ]; then
+        errors+=("rule 15: item '$slug' carries keystone: but is not kind: spike (keystone is a spike-only review-gate marker)")
+      fi
+    fi
+    # Rule 16: a cost: block (present = the item has outsized execution spend,
+    # foundation#1059) MUST carry a because: entry naming the cost driver — a
+    # bare "expensive" with no reason is uninformative at the approval surface.
+    # budget: stays optional. (Display-only field; /build surfaces it at the
+    # per-item approval preview so a large spend isn't buried in a plain item.)
+    if [ "$cost" = "1" ] && [ -z "$cost_because" ]; then
+      errors+=("rule 16: item '$slug' has a cost: block but no because: (name the driver — deep-research | agent-fanout | large-eval | <freeform>)")
     fi
     # Rule 5/8: depends-on + after refs must exist in this plan.
     for tok in $(split_list "$dep"); do
@@ -657,9 +717,9 @@ cmd_writeback() {
   [ -n "$sentinel" ] || die "writeback requires --sentinel"
   [ -f "$file" ]     || die "plan file '$file' does not exist"
   case "$sentinel" in
-    ' '|~|m|x|v|-) sentinel="[$sentinel]" ;;        # bare char form
-    '[ ]'|'[~]'|'[m]'|'[x]'|'[v]'|'[-]') : ;;       # bracketed form
-    *) die "invalid sentinel '$sentinel' (one of: [ ] [~] [m] [x] [v] [-])" ;;
+    ' '|~|m|'>'|x|v|-) sentinel="[$sentinel]" ;;         # bare char form
+    '[ ]'|'[~]'|'[m]'|'[>]'|'[x]'|'[v]'|'[-]') : ;;      # bracketed form
+    *) die "invalid sentinel '$sentinel' (one of: [ ] [~] [m] [>] [x] [v] [-])" ;;
   esac
 
   # Confirm the slug exists.

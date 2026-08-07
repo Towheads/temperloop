@@ -8,9 +8,11 @@ slug: ci-install-tier2
 Tier-1 (`docs/features/ci-install-lifecycle.md`) proves the install/uninstall
 machine-surface lifecycle hermetically — a `file://` bare clone, a sandboxed
 `HOME`/XDG tree, zero real network — which is exactly right for a per-PR
-gate (fast, free, deterministic). What it can't prove is that the actual
-newcomer ADOPTION path (`temperloop try` -> `temperloop init` -> `temperloop
-eject`) still works against a REAL target repo: a real `gh` hitting a real
+gate (fast, free, deterministic). What it can't prove is that the CLI's
+REAL-TARGET ROUND TRIP (`temperloop try` -> `temperloop init` -> `temperloop
+eject` — `try` is no longer part of the adoption path per temperloop#1115,
+but remains covered here because it still ships) still works against a real
+target repo: a real `gh` hitting a real
 GitHub API, a real `claude -p` judgment call, real branch-protection/label
 writes, a real proposal PR opened and then reverted. That's a materially
 different failure surface (auth scoping, API shape drift, rate limits, a
@@ -41,20 +43,27 @@ release-gate role). Never `pull_request`/`push`/`merge_group`.
    seed-demo-repo.sh --reset`) to a known baseline, then clone it locally —
    the newcomer's own first `git clone`.
 4. **The round trip** — `temperloop try`, `temperloop init
-   --yes-required-check --yes-labels --no-board`, `temperloop eject --yes`,
-   each run as its own step with output captured to a log. `try`/`init` are
-   BOTH deliberately fail-open at the shell-exit-code layer in their own
-   design (a real `gh`/`claude` failure prints `skipped — <reason>` or
-   `FAILED — <reason>` and still exits 0 — see those scripts' own headers,
-   this is the right default for an interactive stranger on a flaky
-   connection). This workflow can't rely on exit codes alone, so each step
-   greps its own captured log for those two markers and turns a soft
-   degrade into a hard step failure — the whole point of tier-2 is proving
-   the LIVE path ran to completion, not that it degraded gracefully.
-   `continue-on-error: true` on the `try`/`init` steps means `eject` always
-   runs afterward and attempts to revert whatever `init` did manage to
-   apply, even if an earlier leg failed partway (never leaving orphaned
-   labels/required-checks/proposal-PR branches on the shared demo repo).
+   --yes-first-epic`, `temperloop eject --yes`, each run as its own step
+   with output captured to a log. All three are deliberately fail-open at
+   the shell-exit-code layer in their own design (a real `gh`/`claude`
+   failure prints `skipped — <reason>` or `FAILED — <reason>` and still
+   exits 0 — see those scripts' own headers, this is the right default for
+   an interactive stranger on a flaky connection). This workflow can't rely
+   on exit codes alone, so each step greps its own captured log for those
+   two markers and turns a soft degrade into a hard step failure — the whole
+   point of tier-2 is proving the LIVE path ran to completion, not that it
+   degraded gracefully. The `init` step additionally asserts its **handoff
+   marker** (`next step: /assess --epic <N>`): since the `init` scope-down
+   (temperloop#796) that line is the end of `init`'s contract, so asserting
+   it is what proves the run reached the end rather than stopping short.
+   `--yes-first-epic` is load-bearing there — without a preset, an
+   unattended run correctly *skips* the first-epic offer, and that skip
+   notice matches the `skipped —` scan, so the leg cannot pass without
+   deciding the offer explicitly. `continue-on-error: true` on the
+   `try`/`init` steps means `eject` always runs afterward and attempts to
+   revert whatever `init` did manage to record, even if an earlier leg
+   failed partway (never leaving an orphaned proposal-PR branch on the
+   shared demo repo).
 5. **Verdict** — a final always-run step writes a leg-by-leg outcome table
    to the job summary and fails the job with an explicit `::error::` line
    naming exactly which leg(s) (`try`/`init`/`eject`) failed. `on: schedule`

@@ -5,7 +5,7 @@
 # storage under a throwaway tmpdir; never touches a real vault or the
 # machine's real XDG data dir.
 #
-# Covers: root resolution (default + override, ONE knob), doc-id
+# Covers: root resolution (default + override, ONE setting), doc-id
 # normalization (.md append, absolute/".." rejection, empty rejection),
 # write/read round-trip, write's default-overwrite vs --no-clobber
 # semantics, atomic write (no stray temp file survives), append
@@ -20,6 +20,18 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/ks-test-XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+
+# ── Hermeticity: neutralize any host-local machine conf (temperloop#1328) ────
+# ks_root() now consults KNOWLEDGE_STORE_MACHINE_CONF's rung-3 machine conf
+# (default $XDG_CONFIG_HOME/temperloop/build.config.sh) before falling back to
+# the kernel default this file's tests below exercise. On a developer's real
+# machine that path commonly exists and sets a real KNOWLEDGE_STORE_ROOT —
+# exactly the fix this item ships — which would leak into every default-root
+# test below that doesn't itself override KNOWLEDGE_STORE_ROOT or HOME.
+# Neutralize the seam at a guaranteed-absent path here so this whole file
+# stays hermetic on any machine; the machine-conf-specific tests (3b-3f)
+# further below explicitly re-point this per-test to exercise the seam.
+export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/no-such-machine-conf-neutralized/build.config.sh"
 
 # --- 1. default root resolution (XDG_DATA_HOME override, no explicit ROOT) ---
 (
@@ -46,9 +58,12 @@ trap 'rm -rf "$TMP"' EXIT
   echo "PASS: 2 default root falls back to \$HOME/.local/share/temperloop/knowledge"
 )
 
-# --- 2b. rename window (temperloop#165): an EXISTING store at the legacy
-# foundation/ default is still found when nothing exists at the new default —
-# with a NOTE on stderr — and a fresh install (neither dir) resolves new. ----
+# --- 2b. legacy default-root fallback REMOVED (temperloop#165 window closed
+# in v0.19.0): an EXISTING store at the legacy foundation/ default is NOT
+# used when nothing exists at the new default — resolution goes to the NEW
+# default, and the stranded legacy store is named legibly on stderr rather
+# than silently ignored. This is the real shipped behavior; there is no
+# window-open arm and no simulation env seam left to set. ------------------
 (
   unset KNOWLEDGE_STORE_ROOT
   export XDG_DATA_HOME="$TMP/xdg-legacy"
@@ -56,14 +71,18 @@ trap 'rm -rf "$TMP"' EXIT
   # shellcheck source=/dev/null
   source "$LIB"
   got="$(ks_root 2>"$TMP/2b-note.txt")"
-  want="$TMP/xdg-legacy/foundation/knowledge"
-  [ "$got" = "$want" ] || fail "2b: legacy store should be found through the window (got $got want $want)"
-  grep -q 'legacy store root' "$TMP/2b-note.txt" || fail "2b: legacy fallback must print a NOTE naming the legacy root"
-  grep -q 'v0.17.0' "$TMP/2b-note.txt" || fail "2b: the NOTE must state the removal version (v0.17.0)"
-  echo "PASS: 2b legacy foundation/knowledge store found through the rename window, with removal-version NOTE"
+  want="$TMP/xdg-legacy/temperloop/knowledge"
+  legacy="$TMP/xdg-legacy/foundation/knowledge"
+  [ "$got" = "$want" ] || fail "2b: a legacy store must NOT be resolved any more (got $got want $want)"
+  [ "$got" != "$legacy" ] || fail "2b: the legacy fallback is removed — it must never be returned"
+  grep -q 'removed in v0.19.0' "$TMP/2b-note.txt" || fail "2b: the stranded legacy store must be named with the removal version"
+  grep -q "$legacy" "$TMP/2b-note.txt" || fail "2b: the NOTE must name the legacy store path so it can be migrated"
+  grep -q 'KNOWLEDGE_STORE_ROOT' "$TMP/2b-note.txt" || fail "2b: the NOTE must name the migration/override setting"
+  echo "PASS: 2b legacy foundation/knowledge store is no longer resolved; new default + legible NOTE naming the stranded store"
 )
 
-# --- 2c. rename window: when BOTH defaults exist, the NEW one wins ----------
+# --- 2c. when BOTH defaults exist, the NEW one wins (silently — nothing is
+# stranded, so there is nothing to report). --------------------------------
 (
   unset KNOWLEDGE_STORE_ROOT
   export XDG_DATA_HOME="$TMP/xdg-both"
@@ -76,22 +95,20 @@ trap 'rm -rf "$TMP"' EXIT
   echo "PASS: 2c new temperloop/knowledge default wins when both exist"
 )
 
-# --- 2d. window closed (TEMPERLOOP_LEGACY_WINDOW_CLOSED=1 simulation): the
-# legacy store is NOT silently used — resolution goes to the new default and
-# a legible NOTE names the stranded legacy store + the migration. -----------
+# --- 2d. a fresh install (NEITHER dir exists) resolves the new default and
+# says nothing — the NOTE fires only when there is a real stranded store, so
+# it can never become per-process noise on a clean machine. ----------------
 (
   unset KNOWLEDGE_STORE_ROOT
-  export XDG_DATA_HOME="$TMP/xdg-closed"
-  export TEMPERLOOP_LEGACY_WINDOW_CLOSED=1
-  mkdir -p "$TMP/xdg-closed/foundation/knowledge"
+  export XDG_DATA_HOME="$TMP/xdg-fresh"
+  mkdir -p "$TMP/xdg-fresh"
   # shellcheck source=/dev/null
   source "$LIB"
   got="$(ks_root 2>"$TMP/2d-note.txt")"
-  want="$TMP/xdg-closed/temperloop/knowledge"
-  [ "$got" = "$want" ] || fail "2d: closed window must resolve to the new default (got $got want $want)"
-  grep -q 'removed in v0.17.0' "$TMP/2d-note.txt" || fail "2d: closed-window resolution must name the removal legibly"
-  grep -q 'KNOWLEDGE_STORE_ROOT' "$TMP/2d-note.txt" || fail "2d: closed-window NOTE must name the migration/override knob"
-  echo "PASS: 2d closed window degrades legibly (new default + NOTE naming the stranded legacy store)"
+  want="$TMP/xdg-fresh/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "2d: a fresh install must resolve the new default (got $got want $want)"
+  [ ! -s "$TMP/2d-note.txt" ] || fail "2d: a fresh install must print nothing on stderr (got: $(cat "$TMP/2d-note.txt"))"
+  echo "PASS: 2d fresh install resolves the new default silently (no stranded-store NOTE)"
 )
 
 # --- 3. KNOWLEDGE_STORE_ROOT is the ONE override; XDG_DATA_HOME is ignored when set --
@@ -102,7 +119,100 @@ trap 'rm -rf "$TMP"' EXIT
   source "$LIB"
   got="$(ks_root)"
   [ "$got" = "$TMP/explicit-root" ] || fail "3: explicit KNOWLEDGE_STORE_ROOT must win (got $got)"
-  echo "PASS: 3 KNOWLEDGE_STORE_ROOT overrides the default (single config knob)"
+  echo "PASS: 3 KNOWLEDGE_STORE_ROOT overrides the default (single config setting)"
+)
+
+# --- 3b. rung-2 env (KNOWLEDGE_STORE_ROOT already set) beats the rung-3
+# machine conf even when the machine conf ALSO sets KNOWLEDGE_STORE_ROOT
+# (temperloop#1328) — env always wins, the machine conf is never consulted
+# once KNOWLEDGE_STORE_ROOT is already bound. ---------------------------------
+(
+  mkdir -p "$TMP/machine-conf-3b"
+  cat > "$TMP/machine-conf-3b/build.config.sh" <<'EOF'
+: "${KNOWLEDGE_STORE_ROOT:=/machine-conf-should-not-win}"
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3b/build.config.sh"
+  export KNOWLEDGE_STORE_ROOT="$TMP/env-root"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  [ "$got" = "$TMP/env-root" ] || fail "3b: rung-2 env KNOWLEDGE_STORE_ROOT must beat the rung-3 machine conf (got $got)"
+  echo "PASS: 3b rung-2 env KNOWLEDGE_STORE_ROOT wins over a machine conf that also sets it"
+)
+
+# --- 3c. rung-3 machine conf beats the rung-6 XDG default when
+# KNOWLEDGE_STORE_ROOT is otherwise unset — the load-bearing bare-env-plane
+# fix (temperloop#1328): a process sourcing ONLY this file, never
+# build.config.sh, still resolves the operator's machine-conf-configured
+# root. -----------------------------------------------------------------------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  unset XDG_DATA_HOME
+  HOME="$TMP/home-3c"
+  mkdir -p "$TMP/machine-conf-3c" "$TMP/machine-conf-root-3c"
+  cat > "$TMP/machine-conf-3c/build.config.sh" <<EOF
+: "\${KNOWLEDGE_STORE_ROOT:=$TMP/machine-conf-root-3c}"
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3c/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  want="$TMP/machine-conf-root-3c"
+  [ "$got" = "$want" ] || fail "3c: rung-3 machine conf should win over the rung-6 XDG default (got $got want $want)"
+  echo "PASS: 3c rung-3 machine conf resolves the root for a bare-env process (no build.config.sh sourced)"
+)
+
+# --- 3d. a MISSING machine conf falls through cleanly to the XDG default -----
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-3d"
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/no-such-machine-conf-3d/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  want="$TMP/xdg-3d/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "3d: a missing machine conf should fall through to the XDG default (got $got want $want)"
+  echo "PASS: 3d missing machine conf falls through cleanly to the XDG default"
+)
+
+# --- 3e. a machine conf present but setting NOTHING (or a relative path)
+# also falls through cleanly, rather than binding a bad/empty root. ----------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-3e"
+  mkdir -p "$TMP/machine-conf-3e"
+  cat > "$TMP/machine-conf-3e/build.config.sh" <<'EOF'
+: "${KNOWLEDGE_STORE_ROOT:=relative/not-absolute}"
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3e/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  want="$TMP/xdg-3e/temperloop/knowledge"
+  [ "$got" = "$want" ] || fail "3e: a non-absolute machine-conf value should be rejected, falling through to the XDG default (got $got want $want)"
+  echo "PASS: 3e malformed (non-absolute) machine-conf value falls through cleanly to the XDG default"
+)
+
+# --- 3f. a machine conf that errors/exits mid-source does not abort the
+# caller — the isolation subshell absorbs it and resolution still falls
+# through to the XDG default. -------------------------------------------------
+(
+  unset KNOWLEDGE_STORE_ROOT
+  export XDG_DATA_HOME="$TMP/xdg-3f"
+  mkdir -p "$TMP/machine-conf-3f"
+  cat > "$TMP/machine-conf-3f/build.config.sh" <<'EOF'
+echo "reference to an unset var: $SOME_UNSET_VAR_3F"
+exit 1
+EOF
+  export KNOWLEDGE_STORE_MACHINE_CONF="$TMP/machine-conf-3f/build.config.sh"
+  # shellcheck source=/dev/null
+  source "$LIB"
+  got="$(ks_root)"
+  rc=$?
+  want="$TMP/xdg-3f/temperloop/knowledge"
+  [ "$rc" -eq 0 ] || fail "3f: ks_root should not itself fail when the machine conf errors (rc=$rc)"
+  [ "$got" = "$want" ] || fail "3f: an erroring machine conf should fall through to the XDG default (got $got want $want)"
+  echo "PASS: 3f an erroring/exiting machine conf is isolated and falls through cleanly"
 )
 
 # From here on, all cases share one isolated store root.
@@ -160,6 +270,42 @@ got="$(ks_read "Scratch/log")" || fail "8: read appended doc should succeed"
 want="$(printf 'line1\nline2')"
 [ "$got" = "$want" ] || fail "8: append semantics wrong (got: [$got] want: [$want])"
 echo "PASS: 8 append creates on first call, appends on subsequent calls"
+
+# --- 8c/8d. append trailing newline guarantee (temperloop#1308) — run
+# against a DEDICATED, isolated store root (not $ROOT) so the extra
+# documents these cases create never leak into test 12's exact whole-root
+# listing assertion below. Byte-exact comparison (via cmp), not a
+# $(...)-stripped string compare, because a stripped compare would hide the
+# very trailing-newline distinction these cases exist to prove.
+NL_ROOT="$TMP/nl-store"
+mkdir -p "$NL_ROOT/Scratch"
+
+# --- 8c. an UNTERMINATED target (last byte is not a newline) gets a
+# separating newline inserted before the appended content lands, so the
+# appended content always begins on a fresh line. The observed corruptor
+# (foundation#1308) was a `### heading` append concatenating mid-line onto
+# an unterminated last line — invisible to any `^### `-anchored consumer
+# (e.g. /check-in's pending-decisions scan). ---------------------------
+UNTERM_DOC="$NL_ROOT/Scratch/unterminated.md"
+printf 'no trailing newline' > "$UNTERM_DOC"
+printf '### new entry\n' | KNOWLEDGE_STORE_ROOT="$NL_ROOT" ks_append "Scratch/unterminated" \
+  || fail "8c: append to an unterminated target should succeed"
+printf 'no trailing newline\n### new entry\n' > "$TMP/8c-want"
+cmp -s "$UNTERM_DOC" "$TMP/8c-want" \
+  || fail "8c: trailing newline guarantee should insert a separator before appended content (got: $(od -c < "$UNTERM_DOC" | head -5))"
+echo "PASS: 8c append trailing newline guarantee inserts a separator when the target's last byte isn't already a newline"
+
+# --- 8d. a WELL-TERMINATED target (last byte already a newline) is a
+# byte-identical no-op for the guarantee itself — no stray blank line is
+# ever introduced on top of an already-terminated document. -------------
+TERM_DOC="$NL_ROOT/Scratch/terminated.md"
+printf 'already ends in newline\n' > "$TERM_DOC"
+printf 'appended cleanly\n' | KNOWLEDGE_STORE_ROOT="$NL_ROOT" ks_append "Scratch/terminated" \
+  || fail "8d: append to a well-terminated target should succeed"
+printf 'already ends in newline\nappended cleanly\n' > "$TMP/8d-want"
+cmp -s "$TERM_DOC" "$TMP/8d-want" \
+  || fail "8d: trailing newline guarantee must be a no-op on an already-terminated target, got: $(od -c < "$TERM_DOC" | head -5)"
+echo "PASS: 8d append trailing newline guarantee is a no-op on an already-terminated target (no stray blank line)"
 
 # --- 9. read a missing document -> exit 1, nothing on stdout -----------------
 set +e

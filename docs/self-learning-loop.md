@@ -41,11 +41,23 @@ drain on schedule").
   ending a turn with "want me to file this?", because that offer dies with the
   session ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Task
   workflow). Filing is reversible; a dropped bug is not.
-- **The other live rules are overlay/vault** — decision capture (→ `Decisions/`
+- **Epic completion files its own retrospective.** When `/build` drives an epic
+  to completion, its `4d-retro` step *synchronously* files a "Process retro:
+  epic #N" issue — the four standing decomposition-retro questions (was the
+  sub-unit threshold right, did the contract seam hold, was spike routing
+  right, where did the triage→assess→build cadence add friction) plus a
+  handoff-defect taxonomy — so the lessons of *how the work was structured* get
+  a durable tracker instead of depending on someone remembering to open one
+  ([`claude/commands/build.md`](../claude/commands/build.md) § 4d-retro). It's
+  filed at the instant the epic closes, not deferred to the drain, so the
+  learning can't be lost if the session ends first. This closes the
+  contract-decomposition loop: every completed epic teaches the next
+  decomposition.
+- **The other capture rules are overlay/vault** — decision capture (→ `Decisions/`
   notes), feedback memory, config-drift sync, session-optimization tracking (→
   `Patterns/`), and tooling-friction capture (→ the friction ledger,
   `Context/Session friction ledger.md`). The kernel doesn't ship the capture
-  *rules*, but it ships their nightly **drain backstops** (stage 3) and the CI
+  *rules*, but it ships their nightly **backstops** (stage 3) and the CI
   check that keeps the two halves paired (stage 6). One in-repo trace: a
   reviewer agent enforces config-drift sync — "a `claude/` change with no paired
   note update is config drift" ([`claude/agents/workflow-reviewer.md`](../claude/agents/workflow-reviewer.md)).
@@ -87,6 +99,20 @@ Every adjudication — accepted or rejected — is written as a **findings recor
 ([`workflows/scripts/drain/findings-schema.md`](../workflows/scripts/drain/findings-schema.md)),
 which is what makes the next stage possible.
 
+**A full install adds a second reader of those sessions: `/retro`, the judge.**
+Where `/tidy` reads a session forward and pulls content *out* of it, the overlay
+`/retro` command reads archived sessions and asks a different question — *did
+the system itself perform well?* — grading across five axes (extraction recall,
+rule efficacy, efficiency, outcome quality, judgment quality), each checked
+against a named source. A finding that names a measurable effect is filed
+straight to the board with a `## Measurement` contract; one that can't is routed
+to the retro-review surface `/check-in` disposes (stage 7). `/retro` is the
+**judge** counterpart to `/tidy`'s **extractor** — it grades system performance
+rather than extracting session content — and it is an **overlay** command, not
+present in a bare kernel checkout. (The epic-close `4d-retro` above, by
+contrast, ships in the kernel: it files the per-epic *process* retro, a narrower
+thing than `/retro`'s cross-session performance judgment.)
+
 ### 4. Detect recurrence → promote — one-off vs. pattern
 
 A single stumble is just a note; a *repeated* one is tracked work. The drain
@@ -111,7 +137,7 @@ The escalation has a fixed shape ([`principles.md`](principles.md) #5, "Climb
 the maturity ladder on evidence"): **a rule starts as prose** (a habit stated in
 `CLAUDE.md`); **if it keeps leaking, it earns a mechanical backstop** (a
 PreToolUse hook that warns or asks); **only a backstop that keeps firing earns a
-hard, CI-enforced invariant.** Each rung is a response to an observed leak, not a
+hard, CI-enforced invariant.** Each layer is a response to an observed leak, not a
 guess at what might leak.
 
 The worked examples all began as repeated frictions and climbed to hooks:
@@ -122,23 +148,23 @@ The worked examples all began as repeated frictions and climbed to hooks:
 - [`claude/hooks/write-lane-guard.sh`](../claude/hooks/write-lane-guard.sh) —
   backs "working-tree ownership"; born from a real session stepping on a peer's
   checkout.
-- [`claude/hooks/board-adapter-guard.sh`](../claude/hooks/board-adapter-guard.sh)
-  — backs "adapter-first"; born from a raw GraphQL query draining the shared
-  budget in a real session.
+- [`claude/hooks/subtree-edit-guard.sh`](../claude/hooks/subtree-edit-guard.sh)
+  — backs "edit the kernel upstream, not the vendored copy"; born from a
+  downstream checkout silently forking a vendored kernel file.
 
 Each is a *backstop*, not a replacement for the habit — it fails open and only
-nudges. The top rung of the ladder is a hard invariant (stage 6).
+nudges. The top layer of the ladder is a hard invariant (stage 6).
 
-### 6. Enforce that the loop stays whole — live/drain pairing
+### 6. Enforce that the loop stays whole — capture/backstop pairing
 
 The loop only works if a capture rule can't silently lose its backstop. So
 every live-capture rule must ship **paired** with a nightly drain rule,
-registered in a table, and [`workflows/scripts/validate-live-drain.sh`](../workflows/scripts/validate-live-drain.sh)
+registered in a table, and [`workflows/scripts/validate-capture-backstop.sh`](../workflows/scripts/validate-capture-backstop.sh)
 **fails the build** (it's part of the required `checks` gate) if any pair is
-half-present — a live anchor with no drain, or a drain with no live. That is the
+half-present — a capture anchor with no backstop, or a backstop with no capture anchor. That is the
 CI-enforced invariant at the top of the maturity ladder, guarding the loop
 against its own silent-loss failure mode ([`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md)
-§ Live/Drain pairing).
+§ Capture/Backstop pairing).
 
 ### 7. Operator disposes, and the loop is measured — `/check-in`
 
@@ -165,14 +191,15 @@ not proofs**. Same honesty as the cost and token-spend pages.
 
 | Half of the loop | Where it lives | Examples |
 |---|---|---|
-| Drain, enforcement, plumbing | **kernel (this repo)** | `/tidy`, `/check-in`, the session hooks, the drain scripts, the maturity-ladder guard hooks, `validate-live-drain.sh`, the findings schema |
+| Drain, enforcement, plumbing | **kernel (this repo)** | `/tidy`, `/check-in`, the session hooks, the drain scripts, the maturity-ladder guard hooks, `validate-capture-backstop.sh`, the findings schema |
 | Live-capture rules | **private overlay** | decision capture, feedback memory, config-drift sync, session-optimization tracking, tooling-friction capture (composed into `~/.claude/CLAUDE.md` at install) |
+| The retrospective *judge* | **private overlay** | `/retro` (the epic #916 retro-judge layer) — grades system performance across five axes and feeds `/check-in`'s retro-review surface; the judge counterpart to the kernel's `/tidy` extractor |
 | The knowledge store the loop reads and writes | **Obsidian vault** | the friction ledger, curated `Decisions/`/`Patterns/`/`Mistakes/`/`Context/`, the `Sessions/_inbox/` stubs, the pipeline disposition surfaces |
 
 So a bare kernel checkout has the machine that *processes and hardens*
 learnings; a full install adds the rules that *capture* them and the store that
 *holds* them. The pairing check (stage 6) is what keeps a downstream install
-from shipping a capture rule whose drain backstop went missing.
+from shipping a capture rule whose backstop went missing.
 
 ## Related
 

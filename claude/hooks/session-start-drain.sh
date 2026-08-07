@@ -20,15 +20,29 @@ set -uo pipefail
 # Vault-root / config resolution routes through the knowledge_store seam
 # (foundation #777, Epic A #762 "kernel split") rather than a hardcoded vault
 # path. This hook is permanently Obsidian-specific (it drains straight into
-# Sessions/_inbox via the vault's REST API — the interface's `ks_root` is
-# documented as MEANINGLESS for the obsidian backend, see
-# knowledge_store_obsidian.sh, so it is deliberately NOT used here), so the
-# config it borrows is the obsidian backend's own knobs
-# (KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE) — their defaults already
-# resolve to today's vault path/URL in that ONE file, not duplicated here. The
-# transport itself (raw curl PUT, not ks_write) is unchanged — see the header
-# comment below on why a whole-file PUT stays outside the interface's own
-# write op for this hook.
+# Sessions/_inbox via the vault's REST API, never through ks_read/ks_write),
+# so the config it borrows DIRECTLY is the obsidian backend's own settings
+# (KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE / _API_BASE below) rather than a
+# call to ks_root() in this file's own code.
+#
+# That does NOT make this hook independent of ks_root(), though: read
+# knowledge_store_obsidian.sh's own header before assuming so.
+# KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE's own default (that file, currently
+# line 55) is `$(ks_root)/.obsidian/plugins/obsidian-local-rest-api/data.json`
+# — and this hook's own VAULT (below, currently line 85) is derived by
+# stripping that exact suffix back off API_KEY_FILE. So every time this
+# hook's operator leaves that default unoverridden, the whole vault path
+# this hook drains into is derived from ks_root() TRANSITIVELY, through two
+# hops. A ks_root() resolution bug in the bare-env plane (temperloop#1328 —
+# a process that never sources build.config.sh, exactly this hook's own
+# shape, falling through to the wrong default root) therefore breaks this
+# hook's drain just as surely as if it called ks_root() itself — measured
+# cost before the fix: 218 skipped drains across 16 consecutive days on the
+# operator's host. "Deliberately not used here" was true only of a direct
+# call in this file; read as "independent of ks_root" it overstates the
+# case. The transport itself (raw curl PUT, not ks_write) is unchanged — see
+# the header comment below on why a whole-file PUT stays outside the
+# interface's own write op for this hook.
 #
 # Resolution order (temperloop#406 — no shipped hook may default to a
 # hardcoded personal checkout path):

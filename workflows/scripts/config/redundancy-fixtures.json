@@ -1,0 +1,90 @@
+{
+  "_comment": [
+    "redundancy-fixtures.json — labelled fixture corpus for the P9 semantic-",
+    "redundancy probe (temperloop#854, half (a); consumed by #855, half (b)).",
+    "",
+    "Each entry is a HAND-AUTHORED pair of chunk-shaped text (not extracted",
+    "from a real tracked file — these are synthetic illustrations, so they",
+    "carry no path/start_line/section provenance), labelled positive or",
+    "negative, with a one-line rationale explaining WHY — so half (b)'s",
+    "precision measurement is auditable rather than resting on a bare label.",
+    "",
+    "label=positive: chunk_a and chunk_b state the SAME rule in different",
+    "words — a genuine paraphrase a verbatim/shingle-overlap detector would",
+    "miss. Every positive pair is mechanically checked (check-redundancy-",
+    "fixtures.sh) to share NO common run of 10 consecutive (lowercased,",
+    "punctuation-stripped) words between chunk_a and chunk_b — that absence",
+    "is the whole point of a positive fixture: a verbatim-only detector must",
+    "fail to find anything here, while a paraphrase-aware one should not.",
+    "",
+    "label=negative: chunk_a and chunk_b are NOT redundant, despite looking",
+    "topically related on the surface — flagging this pair would be a false",
+    "positive. Two sub-kinds appear below (see each entry's rationale):",
+    "  - deliberate-pointer: chunk_b explicitly defers to chunk_a's rule by",
+    "    name and states only what is specific to its own context (modelled",
+    "    on the project CLAUDE.md's own '## CI & branch policy' shape, which",
+    "    names the canonical kernel rule and then states only what differs).",
+    "  - hard-topical-near-miss: both chunks concern the same SUBJECT but",
+    "    state two genuinely DIFFERENT rules about it — a topic-similarity-",
+    "    only detector risks conflating them; a redundancy detector must not.",
+    "",
+    "Schema (see check-redundancy-fixtures.sh for the enforced structure):",
+    "  id          unique string, kebab-case",
+    "  label       'positive' | 'negative'",
+    "  kind        free text, for grouping (e.g. 'paraphrase',",
+    "              'deliberate-pointer', 'hard-topical-near-miss')",
+    "  rationale   one-line string: why this pair is (or is not) redundant",
+    "  chunk_a     { text: string }",
+    "  chunk_b     { text: string }"
+  ],
+  "fixtures": [
+    {
+      "id": "positive-branch-naming-paraphrase",
+      "label": "positive",
+      "kind": "paraphrase",
+      "rationale": "Both chunks state the identical branch-naming rule (type-prefixed, kebab-case, 40-char cap) in fully reworded language — a verbatim/10-word-shingle detector finds nothing shared here, but a human reviewer (and a paraphrase-aware detector) recognizes the same rule stated twice.",
+      "chunk_a": {
+        "text": "Branch names follow the pattern `<type>/<slug>` — type is one of feat, fix, chore, refactor, docs, or test, and slug is a short kebab-case description capped at 40 characters."
+      },
+      "chunk_b": {
+        "text": "When starting new work, pick a branch label combining a category word — feature, bugfix, maintenance, restructuring, documentation, or testing — with a brief hyphenated summary no longer than forty characters."
+      }
+    },
+    {
+      "id": "positive-board-adapter-budget-paraphrase",
+      "label": "positive",
+      "kind": "paraphrase",
+      "rationale": "Both chunks state the same board-adapter-over-raw-API rule and the same GraphQL-budget motivation, in unrelated wording — this is the shape the epic's own motivating measurement found between the kernel doc and a downstream project CLAUDE.md (real restatement with zero verbatim overlap).",
+      "chunk_a": {
+        "text": "All reads and writes to the GitHub Projects board must go through the board.sh adapter, never raw `gh project` calls — the adapter caches results, protecting the shared 5,000-point-per-hour GraphQL budget that a direct query would drain."
+      },
+      "chunk_b": {
+        "text": "Never call the Projects API directly for board data; funnel every interaction through the shared wrapper script instead, since it keeps a cache in front of the org's rate-limited five-thousand-points-per-hour allowance that an ad-hoc lookup could otherwise exhaust."
+      }
+    },
+    {
+      "id": "negative-ci-branch-policy-pointer",
+      "label": "negative",
+      "kind": "deliberate-pointer",
+      "rationale": "chunk_b explicitly names and defers to chunk_a's canonical rule ('the shared kernel doc') and states ONLY what is specific to its own repo (a pinned shellcheck version) — modelled directly on the project CLAUDE.md's own '## CI & branch policy' section, which names the canonical branch/PR/merge-queue flow and then states only the repo-specific gate detail. Flagging this pair as redundant would be a false positive: nothing is actually restated.",
+      "chunk_a": {
+        "text": "The branch to push to PR to checks-green to merge-queue flow is canonical: create a branch named `<type>/<slug>`, push it, open a PR, wait for the required `checks` status to go green, then run `gh pr merge --merge` to enqueue it — never push directly to a protected default branch."
+      },
+      "chunk_b": {
+        "text": "CI matches the canonical branch/PR/merge-queue flow described in the shared kernel doc — that part is not repeated here. What is specific to this repository: `checks` runs a single job that provisions a pinned shellcheck version (`scripts/.shellcheck-version`) plus the whole-tree static gate suite; nothing about the branch or merge mechanics differs from the shared flow."
+      }
+    },
+    {
+      "id": "negative-token-rules-near-miss",
+      "label": "negative",
+      "kind": "hard-topical-near-miss",
+      "rationale": "Both chunks concern API tokens, so a bag-of-words or plain topic-similarity detector may conflate them, but they govern two different actions — never committing a secret, versus periodically rotating one regardless of exposure — and are not redundant. Included as a hard negative specifically to stress-test over-eager topical matching.",
+      "chunk_a": {
+        "text": "Never commit a file containing a real API token or credential — the personal-token denylist scan blocks any line matching a known secret-shape pattern from being merged."
+      },
+      "chunk_b": {
+        "text": "Rotate every personal API token at least once per quarter, even if it was never exposed, as a defense-in-depth measure against an undetected leak."
+      }
+    }
+  ]
+}

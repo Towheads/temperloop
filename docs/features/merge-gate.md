@@ -26,8 +26,9 @@ queue can simply take a while.
 
 ## How it works
 
-`workflows/scripts/build/gate.sh` is the deterministic-spine script that
-owns the level-boundary merge-gate steps of `/build`: reading a PR's live
+`workflows/scripts/build/gate.sh` is the deterministic-machinery script that
+owns the merge-gate steps of `/build` — at the level boundary, and per item
+as each PR goes green: reading a PR's live
 mergeability, detecting whether the repo's default branch is under a
 *strict* status-check requirement, computing a mechanical risk verdict over
 a batch of PRs, queuing a merge, nudging a stale branch, and polling until a
@@ -90,6 +91,23 @@ be mistaken for landed work — closing a tracking issue or moving a board
 card only happens after this confirmation, never on the strength of the
 merge call alone.
 
+**Classify before retrying.** The CI poll (`ci-poll.sh`) absorbs a transient
+`gh`/API hiccup — an HTML error page, a 5xx — by re-issuing the same call up to
+`CI_POLL_API_MAX_ATTEMPTS` times with a graduated `CI_POLL_API_RETRY_BACKOFF`
+between attempts, instead of surfacing a blip as an immediate `ERROR` the
+orchestrator would escalate like a genuine CI failure. But it inspects the
+failure *first*: one matching `CI_POLL_API_DETERMINISTIC_PATTERN` — a permanent
+HTTP 4xx, an auth failure, a bad argument — cannot change on a re-issue, so it
+dies at once carrying `deterministic_failure: true` and spends neither attempts
+nor backoff seconds. The default pattern deliberately excludes HTTP 429, which
+*is* transient and keeps its retries. The three `ERROR` shapes are therefore
+distinguishable by field: a hard argument error (neither flag), a permanent
+remote error refused a retry (`deterministic_failure`), and an outage that
+outlasted every attempt (`transient_retries_exhausted`). The mergeability read's
+single re-poll needs no such classifier — the only states it re-polls
+(`UNKNOWN`, a lone `BEHIND`) are by definition not-yet-computed server-side
+values, and every deterministic answer is returned on the first read.
+
 ## Integration
 
 `/build`'s batch merge gate (`claude/commands/build.md`, the level-boundary
@@ -97,19 +115,30 @@ steps) is the sole caller: it reads each candidate PR's state with `gate.sh
 read`, checks strictness with `gate.sh strict`, computes the batch's risk
 verdict with `gate.sh risk` before asking for consent, and — once consent is
 given — either queues a native merge (`gate.sh queue` + `gate.sh poll`) or
-walks the batch through `gate.sh managed-merge` on the managed backend. The
-sweep pipeline reuses the same script for its own per-fix merges. Poll
+walks the batch through `gate.sh managed-merge` on the managed backend.
+
+It also calls that identical sequence **per item, as each PR goes green**
+(build.md Step 3h.5), over a *one-PR* set — but only for an item the same
+`gate.sh risk` predicate already classes clean and disjoint, so a level's
+merges spread over its duration instead of arriving as one burst. A risky
+verdict is never landed this way; it waits for the batched gate. Because
+each such merge is its own invocation of the per-PR mechanics, the
+re-validate-against-the-current-tip step runs once per merge rather than
+once per level — which matters precisely because an early merge moves the
+base out from under its still-open siblings.
+
+The sweep pipeline reuses the same script for its own per-fix merges. Poll
 tunables (`GATE_CI_POLL_INTERVAL` / `GATE_CI_POLL_TIMEOUT`,
 `GATE_MERGE_POLL_INTERVAL` / `GATE_MERGE_POLL_TIMEOUT`) live in
-`build.config.sh` alongside every other build knob, so a slower or faster
+`build.config.sh` alongside every other build setting, so a slower or faster
 poll cadence is a single config edit rather than a script change.
 
 ## Resource impact
 
 Every read, poll, and merge call is a `gh` invocation against GitHub's REST
-API — the same rate-limit bucket `ci-poll.sh` uses, kept deliberately
-separate from the metered GraphQL budget shared with project-board
-operations. A managed-backend merge costs one extra CI run per PR (the
+API — the same rate-limit bucket `ci-poll.sh` and the board adapter both
+use, so poll cadence here competes directly with board traffic for one
+shared budget. A managed-backend merge costs one extra CI run per PR (the
 SHA-pinned re-poll after the branch update) compared to a native-queue
 merge, which is the price of replicating the queue's re-validation without
 platform support for it. Polling wall-clock time is bounded by each

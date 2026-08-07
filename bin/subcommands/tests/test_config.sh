@@ -2,23 +2,23 @@
 #
 # Tests for config.sh — `temperloop config list` (temperloop#262, item
 # configure-config-cli — ADR K164 D7). Exercises the PINNED clean-subshell
-# rung-probe mechanism (config.sh's own header comment) against the REAL
-# kernel registry (workflows/scripts/config/knob-registry.tsv) and the
+# layer-probe mechanism (config.sh's own header comment) against the REAL
+# kernel registry (workflows/scripts/config/setting-registry.tsv) and the
 # REAL build.config.sh — deliberately, not a synthetic fixture registry:
 # the point of `config list` is to reflect THIS repo's actual precedence
 # resolution, so testing against real rows also catches real drift.
 #
 # Covers:
-#   - an exported env var wins (rung "env"), value reflects the export
+#   - an exported env var wins (layer "env"), value reflects the export
 #   - a machine-conf file (XDG_CONFIG_HOME fixture) setting a var wins
-#     over its tracked-repo default (rung "machine-conf")
+#     over its tracked-repo default (layer "machine-conf")
 #   - a repo-local file (BUILD_CONFIG_LOCAL fixture) setting a var wins
-#     over its tracked-repo default (rung "repo-local")
-#   - an untouched tracked-repo-layer knob resolves to build.config.sh's
-#     own default, rung "tracked-repo"
-#   - an untouched kernel-layer knob (owned by a script OTHER than
-#     build.config.sh) resolves to the registry default, rung "kernel"
-#   - --format text prints the rung-1 "n/a at list-time" note once
+#     over its tracked-repo default (layer "repo-local")
+#   - an untouched tracked-repo-layer setting resolves to build.config.sh's
+#     own default, layer "tracked-repo"
+#   - an untouched kernel-layer setting (owned by a script OTHER than
+#     build.config.sh) resolves to the registry default, layer "kernel"
+#   - --format text prints the layer-1 "n/a at list-time" note once
 #   - --format tsv header row is exact
 #   - unknown subcommand / no args -> exit 2; -h/--help -> exit 0
 set -euo pipefail
@@ -32,7 +32,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/config-test-XXXXXX")"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
-# tsv_field <tsv-output> <name> <field#> (1=name 2=rung 3=value 4=owning 5=doc)
+# tsv_field <tsv-output> <name> <field#> (1=name 2=layer 3=value 4=owning 5=doc)
 #
 # Herestring input, NOT `printf | awk`: awk's early `exit` closes the pipe
 # while the writer may still be flushing, so under this suite's
@@ -45,18 +45,18 @@ tsv_field() {
 }
 
 # =============================================================================
-# 1. env rung: an exported var wins, value reflects the export.
+# 1. env layer: an exported var wins, value reflects the export.
 # =============================================================================
 out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL \
   BUILD_QUOTA_PAUSE_PCT=77 bash "$CONFIG" list --format tsv)"
 [ "$(tsv_field "$out" BUILD_QUOTA_PAUSE_PCT 2)" = "env" ] \
-  || fail "env-set BUILD_QUOTA_PAUSE_PCT did not report rung=env (got: $(tsv_field "$out" BUILD_QUOTA_PAUSE_PCT 2))"
+  || fail "env-set BUILD_QUOTA_PAUSE_PCT did not report layer=env (got: $(tsv_field "$out" BUILD_QUOTA_PAUSE_PCT 2))"
 [ "$(tsv_field "$out" BUILD_QUOTA_PAUSE_PCT 3)" = "77" ] \
   || fail "env-set BUILD_QUOTA_PAUSE_PCT did not report the exported value (got: $(tsv_field "$out" BUILD_QUOTA_PAUSE_PCT 3))"
-echo "PASS: an exported env var wins (rung=env, correct value)"
+echo "PASS: an exported env var wins (layer=env, correct value)"
 
 # =============================================================================
-# 2. machine-conf rung: a machine-conf file setting a var wins over its
+# 2. machine-conf layer: a machine-conf file setting a var wins over its
 #    tracked-repo default.
 # =============================================================================
 XDG="$WORK/xdg"
@@ -67,15 +67,15 @@ export BUILD_MERGE_GATE_WINDOW
 EOF
 out="$(env -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL XDG_CONFIG_HOME="$XDG" bash "$CONFIG" list --format tsv)"
 [ "$(tsv_field "$out" BUILD_MERGE_GATE_WINDOW 2)" = "machine-conf" ] \
-  || fail "machine-conf-set BUILD_MERGE_GATE_WINDOW did not report rung=machine-conf (got: $(tsv_field "$out" BUILD_MERGE_GATE_WINDOW 2))"
+  || fail "machine-conf-set BUILD_MERGE_GATE_WINDOW did not report layer=machine-conf (got: $(tsv_field "$out" BUILD_MERGE_GATE_WINDOW 2))"
 [ "$(tsv_field "$out" BUILD_MERGE_GATE_WINDOW 3)" = "999" ] \
   || fail "machine-conf-set BUILD_MERGE_GATE_WINDOW did not report the machine-conf value (got: $(tsv_field "$out" BUILD_MERGE_GATE_WINDOW 3))"
-echo "PASS: a machine-conf file setting a var wins over its tracked-repo default (rung=machine-conf)"
+echo "PASS: a machine-conf file setting a var wins over its tracked-repo default (layer=machine-conf)"
 
 # =============================================================================
-# 3. repo-local rung: a BUILD_CONFIG_LOCAL fixture setting a var wins over
+# 3. repo-local layer: a BUILD_CONFIG_LOCAL fixture setting a var wins over
 #    its tracked-repo default (and is itself outranked by machine-conf,
-#    tested implicitly by using a DIFFERENT knob than test 2 above).
+#    tested implicitly by using a DIFFERENT setting than test 2 above).
 # =============================================================================
 LOCAL_CONF="$WORK/build.config.local.sh"
 cat > "$LOCAL_CONF" <<'EOF'
@@ -84,34 +84,34 @@ export TIDY_SYNC_WAIT
 EOF
 out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE BUILD_CONFIG_LOCAL="$LOCAL_CONF" bash "$CONFIG" list --format tsv)"
 [ "$(tsv_field "$out" TIDY_SYNC_WAIT 2)" = "repo-local" ] \
-  || fail "repo-local-set TIDY_SYNC_WAIT did not report rung=repo-local (got: $(tsv_field "$out" TIDY_SYNC_WAIT 2))"
+  || fail "repo-local-set TIDY_SYNC_WAIT did not report layer=repo-local (got: $(tsv_field "$out" TIDY_SYNC_WAIT 2))"
 [ "$(tsv_field "$out" TIDY_SYNC_WAIT 3)" = "555" ] \
   || fail "repo-local-set TIDY_SYNC_WAIT did not report the repo-local value (got: $(tsv_field "$out" TIDY_SYNC_WAIT 3))"
-echo "PASS: a repo-local (BUILD_CONFIG_LOCAL) file setting a var wins over its tracked-repo default (rung=repo-local)"
+echo "PASS: a repo-local (BUILD_CONFIG_LOCAL) file setting a var wins over its tracked-repo default (layer=repo-local)"
 
 # =============================================================================
-# 4. untouched tracked-repo-layer knob -> build.config.sh's own default,
-#    rung=tracked-repo.
+# 4. untouched tracked-repo-layer setting -> build.config.sh's own default,
+#    layer=tracked-repo.
 # =============================================================================
 out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL bash "$CONFIG" list --format tsv)"
-[ "$(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 2)" = "tracked-repo" ] \
-  || fail "untouched FUNNEL_DRIVE_CONCURRENCY did not report rung=tracked-repo (got: $(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 2))"
-[ "$(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 3)" = "3" ] \
-  || fail "untouched FUNNEL_DRIVE_CONCURRENCY did not report build.config.sh's default of 3 (got: $(tsv_field "$out" FUNNEL_DRIVE_CONCURRENCY 3))"
-echo "PASS: an untouched tracked-repo-layer knob resolves to build.config.sh's own default (rung=tracked-repo)"
+[ "$(tsv_field "$out" PIPELINE_DRIVE_CONCURRENCY 2)" = "tracked-repo" ] \
+  || fail "untouched PIPELINE_DRIVE_CONCURRENCY did not report layer=tracked-repo (got: $(tsv_field "$out" PIPELINE_DRIVE_CONCURRENCY 2))"
+[ "$(tsv_field "$out" PIPELINE_DRIVE_CONCURRENCY 3)" = "3" ] \
+  || fail "untouched PIPELINE_DRIVE_CONCURRENCY did not report build.config.sh's default of 3 (got: $(tsv_field "$out" PIPELINE_DRIVE_CONCURRENCY 3))"
+echo "PASS: an untouched tracked-repo-layer setting resolves to build.config.sh's own default (layer=tracked-repo)"
 
 # =============================================================================
-# 5. untouched kernel-layer knob (owned by a script other than
-#    build.config.sh) -> registry default, rung=kernel.
+# 5. untouched kernel-layer setting (owned by a script other than
+#    build.config.sh) -> registry default, layer=kernel.
 # =============================================================================
 [ "$(tsv_field "$out" BASELINE_SNAPSHOT_TIMEOUT 2)" = "kernel" ] \
-  || fail "untouched BASELINE_SNAPSHOT_TIMEOUT did not report rung=kernel (got: $(tsv_field "$out" BASELINE_SNAPSHOT_TIMEOUT 2))"
+  || fail "untouched BASELINE_SNAPSHOT_TIMEOUT did not report layer=kernel (got: $(tsv_field "$out" BASELINE_SNAPSHOT_TIMEOUT 2))"
 [ "$(tsv_field "$out" BASELINE_SNAPSHOT_TIMEOUT 3)" = "20" ] \
   || fail "untouched BASELINE_SNAPSHOT_TIMEOUT did not report its registry default of 20 (got: $(tsv_field "$out" BASELINE_SNAPSHOT_TIMEOUT 3))"
-echo "PASS: an untouched kernel-layer knob resolves to the registry default (rung=kernel)"
+echo "PASS: an untouched kernel-layer setting resolves to the registry default (layer=kernel)"
 
 # =============================================================================
-# 6. --format text prints the rung-1 n/a note + header once; --format tsv
+# 6. --format text prints the layer-1 n/a note + header once; --format tsv
 #    header row is exact.
 # =============================================================================
 text_out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL bash "$CONFIG" list)"
@@ -122,14 +122,14 @@ text_out="$(env -u XDG_CONFIG_HOME -u BUILD_CONFIG_MACHINE -u BUILD_CONFIG_LOCAL
 # output was CORRECT. This is the Linux-CI-only failure this suite shipped
 # with (temperloop#262): the race all but never fires on macOS, so it looked
 # platform-dependent. See tsv_field's comment above.
-grep -q 'rung 1 .cli. is never resolved at list-time' <<<"$text_out" \
-  || fail "text format did not print the rung-1 n/a note"
+grep -q 'layer 1 .cli. is never resolved at list-time' <<<"$text_out" \
+  || fail "text format did not print the layer-1 n/a note"
 grep -q '^NAME' <<<"$text_out" || fail "text format did not print a NAME header"
 
 tsv_header="$(head -1 <<<"$out")"
-[ "$tsv_header" = "$(printf 'name\trung\tvalue\towning-script\tdoc')" ] \
+[ "$tsv_header" = "$(printf 'name\tlayer\tvalue\towning-script\tdoc')" ] \
   || fail "tsv header row is not exact (got: $tsv_header)"
-echo "PASS: --format text prints the rung-1 n/a note; --format tsv header row is exact"
+echo "PASS: --format text prints the layer-1 n/a note; --format tsv header row is exact"
 
 # =============================================================================
 # 7. CLI usage errors.

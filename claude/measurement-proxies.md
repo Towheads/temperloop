@@ -1,6 +1,6 @@
 # Measurement proxies for communication quality
 
-Falsifiability contract for the communication-style model (temperloop#94, epic
+Falsifiability contract for the communication-style model (temperloop#94, epic <!-- cite: MP.2 class:vibes-based-improvement-claims -->
 [[Plans/2026-07-06 temperloop - communication style model]]). Before any
 `claude/message-schema.md` template lands, this file pins **what "highly readable"
 cashes out to** — named, checkable proxies, each tied to a data source (or an
@@ -9,7 +9,7 @@ comparable against a pre-template number instead of against vibes.
 
 ## Independence from the template layer
 
-**These proxies measure the system. They do not gate template authoring.** This
+**These proxies measure the system. They do not gate template authoring.** This <!-- cite: MP.1 incident:K#94 -->
 file has no dependency edge on `claude/message-schema.md` (no `depends-on:` /
 `after:` in the epic's plan) and `message-schema.md`'s authors are not blocked on
 any proxy reaching a target value here — a proxy with no baseline yet, or a proxy
@@ -40,7 +40,7 @@ self-contained:
 2. **Live conversational narration** — slash commands mid-session
 3. **Blocking questions** — `AskUserQuestion` / `decision_sink_ask(...)`
 4. **Return-cold summaries** — completion summary, resume recap, parking notes
-5. **Unattended/deferred surfaces** — pending-decisions, digests, funnel-tick reports
+5. **Unattended/deferred surfaces** — pending-decisions, digests, pipeline-tick reports
 6. **Durable review artifacts** — PR bodies, issue/epic contracts, plan notes, decision notes
 7. **Newcomer/docs surface** — README, `bin/README`, generated docs site
 
@@ -78,7 +78,7 @@ this rides:
 **Baseline capture method.** Before `message-schema.md` lands: pull the last
 N (suggest N≥20) `decision`-labeled issues closed in the async backend, compute
 the assign→unassign count per originating plan item (a `[ ]`-parked-then-answered
-`## Questions` entry, or a `blocking-now` gate) and the parse-miss rate as a
+`## Questions` entry, or an `ask-now` gate) and the parse-miss rate as a
 fraction of total round-trips. Record median round-trips/item and parse-miss %
 as the pre-template baseline. For the modal path, manually sample N recent
 `/build`/`/assess` sessions (via the overlay session archive, where available)
@@ -94,14 +94,17 @@ deferred surfaces) for the async decision-queue instantiation specifically.
 re-verifies a diagnosis it already confirmed, or thrashes searching for context
 it should have had on hand — proxies for "the prior message/summary/artifact
 didn't leave the reader with enough confirmed state," across whichever of the
-six tracked categories applies: `redundant-status-check`,
+seven tracked categories applies: `redundant-status-check`,
 `reverification-backtrack`, `probe-after-not-before`, `stale-context-rework`,
-`tool-misuse`, `search-thrash`.
+`tool-misuse`, `search-thrash`, `clarification-rework`.
 
 **Data source.** `Context/Session friction ledger.md` in the Obsidian vault —
 **explicitly an overlay/personal-vault-backed source, not a kernel-native one.**
-The six category slugs and the append convention are documented in the
-*composed* (kernel + overlay) `CLAUDE.md` § "Tooling friction capture," but the
+The seven category slugs and the append convention are documented in the
+*composed* (kernel + overlay) `CLAUDE.md` § "Tooling friction capture" — whose
+kernel-side, mechanically-checkable enumeration is the `friction-slug` block of
+`workflows/scripts/drain/lexicon.tsv`, the list `/tidy`'s § Tooling friction
+backstop reads — but the
 ledger file itself lives at `Context/Session friction ledger.md`, relative to
 the knowledge store root (`workflows/scripts/lib/knowledge_store.contract.md`;
 Travis's install points that root at his Obsidian vault) — a path a stranger's
@@ -116,14 +119,19 @@ is needed, only a read.
 dated in a fixed pre-template window (suggest: the 30 days before
 `message-schema.md` merges), producing a per-category count. After templates
 ship, count the same categories over an equal-length post-template window and
-compare. `redundant-status-check` and `stale-context-rework` are the categories
-most directly load-bearing for template quality (they fire when a completion
-summary or resume recap didn't leave enough state behind); `search-thrash` and
-`tool-misuse` are more diagnostic of tooling friction than communication
-quality and should be read as weaker signal for this specific question.
+compare. `clarification-rework` is the **strongest** signal for this question —
+it is logged only when the operator had to ask what the assistant's own last
+message meant, which is a communication failure by definition rather than by
+proxy — followed by `redundant-status-check` and `stale-context-rework` (they
+fire when a completion summary or resume recap didn't leave enough state
+behind); `search-thrash` and `tool-misuse` are more diagnostic of tooling
+friction than communication quality and should be read as weaker signal for
+this specific question.
 
-**Modes measured.** Mixed, by category: `stale-context-rework` and
-`redundant-status-check` → Mode 4 (return-cold summaries) and Mode 2 (live
+**Modes measured.** Mixed, by category: `clarification-rework` → Mode 2 (live
+narration) primarily, and Mode 4 / Mode 6 when the text the operator could not
+parse was a return-cold summary or a durable artifact; `stale-context-rework`
+and `redundant-status-check` → Mode 4 (return-cold summaries) and Mode 2 (live
 narration); `probe-after-not-before` → Mode 5 (unattended surfaces not trusted
 before acting) and Mode 6 (durable artifacts not consulted before re-asking);
 `search-thrash` and `tool-misuse` are largely orthogonal to communication style
@@ -171,7 +179,7 @@ the closest kernel-native analog available to check that design decision
 against reality once it ships.*
 
 **What it measures.** How long a park-to-operator decision (Mode 5: pending
-decision, digest entry, funnel-tick report) sits before the operator disposes
+decision, digest entry, pipeline-tick report) sits before the operator disposes
 of it — a proxy for whether the digest/summary cadence is landing at a natural
 breakpoint (fast, low-friction resolution) versus interrupting badly (slow,
 or requiring the parse-miss retry loop in Proxy 1).

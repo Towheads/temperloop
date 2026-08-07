@@ -28,26 +28,52 @@
 #   by accident. This check enforces the CURRENT (empty) surface; it is not
 #   a general allowlist mechanism for future exceptions.
 #
-# WHAT THIS SCANS (the exact producers, named — not a whole-tree lint):
+# WHAT THIS SCANS (a fixed scan set — four named files plus two directory
+# globs, not a whole-tree lint. The globs are why the file COUNT this check
+# reports varies by checkout and by caller; see each bullet):
 #   - $KERNEL_ROOT/bin/subcommands/baseline-snapshot.sh
 #   - $KERNEL_ROOT/bin/subcommands/report.sh
 #   - $KERNEL_ROOT/bin/temperloop   (the dispatcher's 14-day report
 #     auto-offer check, _foundation_check_report_offer — see that
 #     function's own header comment in bin/temperloop) — renamed from
 #     bin/foundation in foundation #893; bin/foundation is scanned too
-#     (it's now just a thin exec shim, but scanning it is free and keeps
-#     this list honest if that ever changes)
+#     (since v0.19.0 it is only a refusal tombstone, but scanning it is free
+#     and keeps this list honest if that ever changes)
 #   - every regular file directly inside $OVERLAY_REPORT_D, if that
-#     directory is given and exists — the report.d/ drop-in seam's actual
-#     overlay producers (foundation's own `tokens` / `interventions` /
-#     `improvement` today). A glob, not a hardcoded name list, so a future
-#     drop-in is covered automatically with zero maintenance here.
+#     directory is given and exists — the report.d/ drop-in seam. A GLOB,
+#     never a hardcoded name list, so a future drop-in is covered
+#     automatically with zero maintenance here, and an absent directory is
+#     a legible skip rather than a failure.
 #
-#   A missing file or absent overlay dir is a silent, legible skip — this
-#   is a lint over whatever producers actually exist in the checkout it's
-#   run from (a standalone kernel-only checkout has no
-#   `.temperloop/report.d/` of its own — see the OVERLAY_REPORT_D default
-#   below), not a presence/coverage check (that is kernel-manifest's job).
+#     This deliberately does NOT name which drop-ins live there, because
+#     there is no single answer: the directory is whatever the CALLER
+#     points the flag at, and both its path and its contents differ per
+#     checkout. Illustratively — as examples to recognize the shape, NOT
+#     as an inventory to rely on — a drop-in is a small locator/exec shim
+#     such as a `tokens` spend producer, and a composed adopter tree may
+#     carry several (`tokens` / `interventions` / `improvement` is the
+#     shape one such tree has had) at an overlay path of its own choosing
+#     that is NOT necessarily `.temperloop/report.d/`. Do not infer a
+#     producer's existence, name, or path from this comment: run the check
+#     and read the trailing "across N named producer(s)" count, or just
+#     `ls` the directory the caller actually passes.
+#   - every regular file directly inside $KERNEL_ROOT/workflows/scripts/
+#     report-producers/ — the kernel-side IMPLEMENTATIONS a report.d/ shim
+#     execs into (temperloop#980 "producer-kernel-side-relocation": the
+#     `tokens` drop-in's real transcript-parsing logic moved here so it
+#     updates with the kernel and stays inside this lint's reach; whatever
+#     `tokens` file an adopter actually commits into its own report.d/ is
+#     now just a locator + exec shim, covered by the $OVERLAY_REPORT_D glob
+#     above). Unconditional (kernel-root-relative, no flag needed) and, like
+#     the overlay glob, a directory scan rather than a name list.
+#
+#   A missing file or absent dir (overlay OR report-producers) is a silent,
+#   legible skip — this is a lint over whatever producers actually exist in
+#   the checkout it's run from, not a presence/coverage check (that is
+#   kernel-manifest's job). A checkout may or may not carry a report.d/ of
+#   its own, and a caller may omit --overlay-report-d entirely (the
+#   OVERLAY_REPORT_D default below is unset); both cases scan the named
+#   producers and skip the overlay without failing.
 #
 # PATTERNS FLAGGED — network-call IDIOMS, deliberately not the bare word
 # "http" or "network" (these files' own header comments discuss networking
@@ -61,11 +87,13 @@
 #
 # Usage:
 #   check-producer-egress.sh [--kernel-root DIR] [--overlay-report-d DIR]
-#   (called by `make test-producer-egress` — see kernel/Makefile for the
-#   standalone-kernel-checkout invocation with no overlay dir, and
-#   foundation's own root Makefile for the composed-tree invocation that
-#   also passes --overlay-report-d so .temperloop/report.d/'s real
-#   drop-ins are covered there.)
+#   (called by `make test-producer-egress`. Read the invoking Makefile
+#   rather than assuming a shape: this repo's own `test-producer-egress`
+#   target passes BOTH --kernel-root and --overlay-report-d, and a
+#   composed tree that vendors this file passes its own kernel root and
+#   its own overlay path — which need not match this repo's. --overlay-
+#   report-d is optional in every shape; omitting it, or pointing it at a
+#   directory that does not exist, simply skips the overlay glob.)
 #
 # Env overrides (same effect as the matching flag above; flags win if both
 # are given — a test seam, mirrors check-personal-token-denylist.sh's
@@ -113,7 +141,7 @@ done
 # Pattern set — parallel arrays (pattern, description), same shape as
 # check-personal-token-denylist.sh's denylist loop. Small and fixed enough
 # that an inline array is the right call (subtraction over mechanism) — no
-# external pattern file needed for six named producers.
+# external pattern file needed for a producer list this small.
 # ---------------------------------------------------------------------------
 # Command-invocation patterns require a WHITESPACE (or end-of-line) right
 # boundary, not just any non-word char — this is what a real shell
@@ -157,6 +185,17 @@ done
 
 if [ -n "$overlay_dir" ] && [ -d "$overlay_dir" ]; then
   for f in "$overlay_dir"/*; do
+    [ -e "$f" ] || continue
+    [ -f "$f" ] || continue
+    files+=("$f")
+  done
+fi
+
+# Kernel-side report-producers/ — unconditional (kernel-root-relative), a
+# missing dir is a silent skip same as the overlay glob above.
+report_producers_dir="$kernel_root/workflows/scripts/report-producers"
+if [ -d "$report_producers_dir" ]; then
+  for f in "$report_producers_dir"/*; do
     [ -e "$f" ] || continue
     [ -f "$f" ] || continue
     files+=("$f")

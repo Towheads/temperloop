@@ -18,6 +18,7 @@ fi
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 # shellcheck source=scripts/lib/claim_marker.sh
+# shellcheck disable=SC1091
 source "$LIB_DIR/claim_marker.sh"
 
 SOCK="$(mktemp -u "${TMPDIR:-/tmp}/test-claim-marker-XXXXXX.sock")"

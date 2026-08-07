@@ -27,6 +27,7 @@ every field marked **required**; optional fields may be absent.
 | `project`    | string | required | Project name (from frontmatter `project:`). |
 | `date`       | string | optional | Session date `YYYY-MM-DD`. |
 | `time`       | string | optional | Session time `HHMM`. |
+| `model`      | string \| null | required | The model(s) that ran the session, read from frontmatter `model:` (the session-end hook's comma-joined model set — see `~/.claude/hooks/session-end-log.sh`). `null` when the stub's frontmatter carries no `model:` line. This key is **always present** in the object — `scan_stub.py` populates it on every scan, so `null` unambiguously means "the frontmatter genuinely has no model:", never "the scanner never emitted this field" (the distinction temperloop#761 exists to preserve). Consumed by `findings-schema.md`'s `subject_model` (`report.stub.model`) and `tidy.md`'s vault-provenance `source_model` stamp. |
 
 ---
 
@@ -171,6 +172,30 @@ tool's timeout does **not** appear here.
 | `tool_name` | string | required | The mutating vault MCP tool that timed out. |
 | `content`   | string | required | Error content (truncated at 300 chars). |
 | `location`  | string | required | `"jsonl line N"`. |
+
+### `tool_events.repeated_denials[]`
+
+Structural detector (temperloop #770-5). A Bash tool_result matching `/has
+been denied/i` — a permission-policy denial of a command a command SPEC
+requires. Distinguishes a **designed guard that structurally cannot run on
+this host** from a transient, one-off failure. An **isolated** denial is
+noise, so this is deliberately gated by cross-run state rather than folded
+into the unconditional `_ERROR_SIGNATURES` list: an entry appears here **only**
+once the same command text has been denied across **two or more distinct
+sessions** (`_DENIED_MIN_SESSIONS`). Cross-run state is a small on-disk JSON
+map of `{command: [session_id, ...]}`, default path
+`${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/scan-stub-denied-commands.json`
+— overridable via `$SCAN_STUB_DENIED_STATE_PATH` or `scan_stub.py`'s
+`--denied-state` flag (tests point this at a tmpdir so scans stay hermetic).
+Scanning the same stub/session twice is idempotent (an already-recorded
+session_id is a no-op), preserving the determinism guarantee below.
+
+| Field           | Type   | R/O      | Description |
+|-----------------|--------|----------|-------------|
+| `command`       | string | required | The exact Bash command text that was denied. |
+| `content`       | string | required | Error content of the first hit this session (truncated at 300 chars). |
+| `location`      | string | required | `"jsonl line N"` of the first hit this session. |
+| `session_count` | int    | required | Distinct sessions (this one included) this command has been denied in (≥ 2). |
 
 ---
 

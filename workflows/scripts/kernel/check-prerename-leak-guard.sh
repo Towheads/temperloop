@@ -4,9 +4,12 @@
 # (temperloop#433, gate-sweep item; depends on the foundation->temperloop
 # rename, temperloop#165 / PR #487).
 #
-# The rename left every stranger-facing `foundation` name working through a
-# documented v0.17.0 read-old window, plus a small number of paths the
-# rename item deliberately did NOT migrate at all (allowlisted as legacy).
+# The rename kept every stranger-facing `foundation` name working through a
+# documented read-old window that CLOSED in v0.19.0 — those reads are gone,
+# and what remains of the legacy identifiers lives inside the legible
+# refusals and stale-artifact diagnostics that replaced them (verdict
+# "refusal") — plus a small number of paths the rename item deliberately did
+# NOT migrate at all (allowlisted as legacy).
 # THIS gate is what keeps that a closed, reviewed set: it scans the same
 # stranger-surface file set the sibling scrubs already cover
 # (list-kernel-set.sh's `kernel` class — see check-personal-token-denylist.sh)
@@ -21,16 +24,18 @@
 # WHAT IS SCANNED (four identifier shapes):
 #   1. `FOUNDATION_<NAME>` env-var identifiers — looked up by EXACT token
 #      against prerename-leak-verdicts.tsv's `env` rows. An unknown token
-#      is a violation (a new, unreviewed FOUNDATION_-prefixed knob).
+#      is a violation (a new, unreviewed FOUNDATION_-prefixed setting).
 #   2. `.foundation/<leaf>` (any leaf) — the committed per-repo compat dir
-#      (verdict-table row "Committed .foundation/ per-repo dir": migrate,
-#      read-old). This is the compat shim's OWN intentional legacy literal
-#      in totality (the rename's whole point was read-old across every leaf
-#      under this dir, not an enumerable closed set) — matched but ALWAYS
-#      allowed, never looked up.
-#   3. `bin/foundation` — the CLI compat shim's own binary path. Same
-#      "compat shim's own intentional legacy literal" carve-out as #2:
-#      always allowed, never looked up.
+#      (verdict-table row "Committed .foundation/ per-repo dir"). This is the
+#      compat shim's OWN intentional legacy literal in totality (not an
+#      enumerable closed set) — matched but ALWAYS allowed, never looked up.
+#      Still needed past the v0.19.0 window close: `eject`/`uninstall` clean
+#      this dir, `init`/`baseline-snapshot` name it in their refusals, and the
+#      report auto-offer still reads it — see the verdict table's own header.
+#   3. `bin/foundation` — the CLI compat shim's own binary path (since
+#      v0.19.0 a refusal tombstone rather than a forwarding shim, but the
+#      same path). Same "compat shim's own intentional legacy literal"
+#      carve-out as #2: always allowed, never looked up.
 #   4. `foundation/<leaf>` (NOT dot-prefixed — see #2), on a line that ALSO
 #      carries an XDG-home-shaped anchor (`XDG_*_HOME`, `~/.config`,
 #      `~/.cache`, `~/.local/share`, `~/.local/state`, `~/.local/bin`, or the
@@ -45,7 +50,7 @@
 #      separate, still-real, personal overlay/build repo that is itself
 #      named `foundation` (e.g. `foundation/workflows/...`,
 #      `~/dev/foundation/meta/sessions/archive/`, `Projects/foundation/...`
-#      vault paths, knob-registry.tsv's own `FOUNDATION` checkout-root knob)
+#      vault paths, setting-registry.tsv's own `FOUNDATION` checkout-root setting)
 #      — a completely different, currently-valid identifier that happens to
 #      share the old kernel name, not a pre-rename identifier of THIS
 #      kernel at all. Requiring an XDG-home anchor on the same line is what
@@ -203,7 +208,8 @@ while IFS= read -r f; do
     covered=$((covered + 1))
   done < <(grep -noE '\.foundation/[A-Za-z0-9._-]*' "$path" 2>/dev/null || true)
 
-  # --- shape 3: bin/foundation (CLI compat shim path) — always allowed ------
+  # --- shape 3: bin/foundation (CLI compat shim path — a refusal tombstone
+  # since v0.19.0) — always allowed ------------------------------------------
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
     covered=$((covered + 1))

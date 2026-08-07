@@ -21,6 +21,10 @@
 # ── none — repo meta, claimed by no single feature ──────────────────────────
 none .gitignore
 none .gitattributes
+# The per-repo value-loop dir's own ignore file — repo meta, not a feature
+# surface (its one feature-bearing member, report.d/tokens, is claimed by
+# `telemetry` below and wins on longest-pattern).
+none .temperloop/.gitignore
 none CHANGELOG.md
 none LICENSE
 none NOTICE
@@ -44,6 +48,7 @@ none docs/who-its-for.md
 none docs/cost-and-autonomy.md
 none docs/self-learning-loop.md
 none docs/token-spend.md
+none docs/model-fanout-inventory.md
 none docs/cognitive-load.md
 # The ≤1-page postable pitch (temperloop#432): a stranger-shareable summary
 # derived from docs/who-its-for.md + README.md § 1, same "none" treatment as
@@ -70,16 +75,18 @@ none docs/features/*
 workshop claude/design-schema.md
 workshop claude/commands/workshop.md
 
-# ── board-adapter — Projects-v2/issues-only board adapter + board commands ──
+# ── board-adapter — issues-only board adapter + board commands ─────────────
 board-adapter workflows/scripts/board/*
 board-adapter workflows/scripts/board-sync-drift-check.sh
+board-adapter workflows/scripts/board-consumer-shellcheck.sh
+board-adapter workflows/scripts/lib/tracker.contract.md
 
-# ── build-spine — /build pipeline: plan, worktree, workers, board mirror ────
-build-spine claude/commands/build.md
-build-spine claude/plan-schema.md
-build-spine claude/workflows/build-level.mjs
-build-spine workflows/scripts/build/*
-build-spine workflows/scripts/validate-activation-registry.sh
+# ── build-machinery — /build pipeline: plan, worktree, workers, board mirror ────
+build-machinery claude/commands/build.md
+build-machinery claude/plan-schema.md
+build-machinery claude/workflows/build-level.mjs
+build-machinery workflows/scripts/build/*
+build-machinery workflows/scripts/validate-activation-registry.sh
 
 # ── merge-gate — PR enqueue, CI poll, batched merge gate, protected main ────
 merge-gate docs/managed-merge-queue.md
@@ -91,20 +98,24 @@ merge-gate workflows/scripts/board/pr-enqueue.sh
 merge-gate workflows/scripts/board/tests/test_pr_enqueue.sh
 merge-gate workflows/scripts/lib/land-on-protected-main.sh
 
-# ── triage / assess / sweep / next / check-in — pipeline command specs ──────
+# ── triage / assess / sweep / fix / next / check-in — pipeline command specs ─
 triage claude/commands/triage.md
 assess claude/commands/assess.md
 sweep claude/commands/sweep.md
+fix claude/commands/fix.md
 next claude/commands/next.md
 check-in claude/commands/check-in.md
 check-in claude/decision-queue-contract.md
+check-in workflows/scripts/tests/test_checkin_status_trailing_newline.sh
 
-# ── tidy — nightly drain: stub scan, findings, hygiene probes, live/drain ───
+# ── tidy — nightly drain: stub scan, findings, hygiene probes, capture/backstop ───
 tidy claude/commands/tidy.md
 tidy workflows/scripts/drain/*
-tidy workflows/scripts/validate-live-drain.sh
+tidy workflows/scripts/validate-capture-backstop.sh
 tidy workflows/scripts/env-hygiene-report.sh
 tidy workflows/scripts/tests/test_env_hygiene_report.sh
+tidy workflows/scripts/ready-pr-sweep.sh
+tidy workflows/scripts/tests/test_ready_pr_sweep.sh
 tidy workflows/scripts/build/env-reconcile.sh
 tidy workflows/scripts/build/tests/test_env_reconcile.sh
 tidy workflows/scripts/test_findings.py
@@ -117,15 +128,49 @@ telemetry workflows/scripts/emit-command-run.sh
 telemetry workflows/scripts/emit-issue-touch.sh
 telemetry workflows/scripts/validate-command-run-emit.sh
 telemetry workflows/scripts/validate-issue-touch-emit.sh
+telemetry workflows/scripts/validate-knowledge-search-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh
+telemetry workflows/scripts/tests/test_command_run_emit.sh
 telemetry workflows/scripts/tests/test_telemetry_brief.sh
+# session-context — the realized-session-context probe (temperloop#828,
+# epic #810): the SessionEnd-seam raw-lake emit, its shared token-sum
+# helper (also called by claude/status-line.sh's display), and their tests
+# — including the suite covering how status-line.sh RESOLVES that helper
+# from its installed per-file-symlink location.
+telemetry workflows/scripts/emit-session-context.sh
+telemetry workflows/scripts/lib/token_sum.sh
+telemetry workflows/scripts/lib/tests/test_token_sum.sh
+telemetry workflows/scripts/tests/test_emit_session_context.sh
+telemetry workflows/scripts/tests/test_status_line_token_resolution.sh
+# pipeline spend profiler (temperloop#958): the retroactive, cost-weighted
+# token-spend reader over Claude Code's own workflow agent transcripts, plus
+# the `.temperloop/report.d/tokens` drop-in producer that feeds `temperloop
+# report`'s tokens headline. Claimed by `telemetry` rather than a slug of its
+# own — it answers the same "what does this cost / where do the tokens go"
+# question the rest of this feature does, read from a different source.
+telemetry workflows/scripts/pipeline-spend-report.sh
+telemetry workflows/scripts/tests/test_pipeline_spend_report.sh
+# per-merged-item efficiency (temperloop#943): the overhead-per-shipped-change
+# emit at build.md's 4d merge seam. It COMPOSES the spend profiler above rather
+# than re-deriving any token number, so it is the same feature read at a
+# different grain — per merged item and per epic, instead of per corpus.
+telemetry workflows/scripts/emit-item-efficiency.sh
+telemetry workflows/scripts/tests/test_item_efficiency.sh
+# `.temperloop/report.d/tokens` is now a thin locator + exec SHIM
+# (temperloop#980 "producer-kernel-side-relocation"); the real
+# transcript-parsing implementation lives at
+# workflows/scripts/report-producers/tokens, and the shim's own reachability
+# is asserted by bin/subcommands/tests/test_tokens_producer.sh.
+telemetry .temperloop/report.d/tokens
+telemetry workflows/scripts/report-producers/tokens
+telemetry bin/subcommands/tests/test_tokens_producer.sh
 
-# ── funnel-driver — autonomous funnel tick/drive/cron + work-class policy ───
-funnel-driver claude/commands/funnel-drive.md
-funnel-driver claude/commands/funnel-drive-merge.md
-funnel-driver claude/work-class-policy.md
-funnel-driver workflows/scripts/build/funnel-*
-funnel-driver workflows/scripts/build/tests/test_funnel_*
+# ── pipeline-driver — autonomous pipeline tick/drive/cron + work-class policy ───
+pipeline-driver claude/commands/pipeline-drive.md
+pipeline-driver claude/commands/pipeline-drive-merge.md
+pipeline-driver claude/work-class-policy.md
+pipeline-driver workflows/scripts/build/pipeline-*
+pipeline-driver workflows/scripts/build/tests/test_pipeline_*
 
 # ── hooks — PreToolUse/SessionStart/SessionEnd guard + logging hooks ────────
 hooks claude/hooks/*
@@ -142,6 +187,18 @@ install-cli workflows/scripts/install-settings.sh
 install-cli workflows/scripts/install/*
 install-cli workflows/scripts/tests/test_install_*
 install-cli workflows/scripts/tests/test_project_agents_*
+# The legacy-host preflight lives under workflows/scripts/install/ (claimed by
+# the glob above), but its test doesn't match test_install_*, so it needs the
+# same exact-path claim the test_doctor_* files below get (temperloop#908).
+install-cli workflows/scripts/tests/test_legacy_host_preflight.sh
+# doctor.sh's own test_doctor_* files don't match test_install_* above, so
+# each gets an exact-path claim — same exact-path style as the knowledge-store
+# / review-agents test_doctor_* carve-outs elsewhere in this file. Unlike
+# those two (a DIFFERENT feature's invariant that happens to live in
+# doctor.sh's file), check_cross_checkout_split() IS install/doctor's own
+# core subject matter (verifying installed state matches the running
+# checkout), so it claims here rather than carving out a new feature.
+install-cli workflows/scripts/tests/test_doctor_cross_checkout_split.sh
 install-cli workflows/scripts/demo/*
 install-cli workflows/scripts/proposal/*
 # `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
@@ -153,6 +210,11 @@ install-cli workflows/scripts/lib/changelog.sh
 install-cli workflows/scripts/lib/tests/test_changelog.sh
 install-cli workflows/scripts/tests/test_update_subcommand.sh
 install-cli workflows/scripts/tests/test_rename_compat.sh
+# v0.17.0 terminology-consolidation window-CLOSED regression test
+# (temperloop#767): the env shim, the forwarding stubs, and the stub's own
+# manifest claim went away with the window in v0.19.0; this test is what
+# remains, asserting the window stays shut.
+install-cli workflows/scripts/tests/test_terminology_rename_compat.sh
 # bin/bootstrap.sh tag-pinning + delegate-to-update (temperloop#434, ADR
 # 0002): the fixture suite doesn't match any existing install-cli glob
 # either (same reasoning as the three lines above it).
@@ -175,6 +237,13 @@ install-cli workflows/scripts/lib/tests/test_portable_timeout.sh
 # above for these two specific paths (longer patterns win) ─────────────────
 install-manifest-lib workflows/scripts/install/manifest.sh
 install-manifest-lib workflows/scripts/tests/test_install_manifest.sh
+# ── version-embedding — the release version stamped into the shipped files
+# (temperloop#677): the committed VERSION file and its drift-guard gate. The
+# resolver helper lives in bin/lib/common.sh (claimed by install-cli's bin
+# globs) and the dispatcher/feedback call sites stay install-cli's; only the
+# two paths that are wholly this feature's are carved out here ──────────────
+version-embedding VERSION
+version-embedding workflows/scripts/tests/test_version_embedding.sh
 # ── uninstall-cli — `temperloop uninstall`: manifest-scoped, reversible
 # removal (temperloop#265, ADR K164 D7): overrides the broader install-cli
 # `bin/*` claim above for these two specific paths (longer patterns win) —
@@ -200,6 +269,13 @@ knowledge-store workflows/scripts/lib/issue-corpus.sh
 knowledge-store workflows/scripts/lib/issue-marker-probe.sh
 knowledge-store workflows/scripts/lib/tests/test_issue_corpus.sh
 knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
+# doctor.sh's check_knowledge_root lives in install-cli's own file
+# (workflows/scripts/install/doctor.sh, already covered by that feature's
+# `workflows/scripts/install/*` glob above), but its subject matter is this
+# feature's plane-A/plane-B root-resolution invariant, not install/doctor
+# machinery generally — same exact-path carve-out style as
+# review-agents' test_doctor_reviewer_coverage.sh claim below.
+knowledge-store workflows/scripts/tests/test_doctor_knowledge_root.sh
 
 # ── command-declared — slash-command availability probe (ADR 0008) ──────────
 # The command-side peer of the subagent capability-probe: `command_declared
@@ -209,18 +285,50 @@ knowledge-store workflows/scripts/lib/tests/test_issue_marker_probe.sh
 command-declared workflows/scripts/lib/command_declared.sh
 command-declared workflows/scripts/lib/tests/test_command_declared.sh
 
-# ── quality-gates — the static gate set, lints, kernel scrubs, knob registry ─
+# ── quality-gates — the static gate set, lints, kernel scrubs, setting registry ─
 quality-gates .github/workflows/ci.yml
+# The nightly macOS leg of the SAME gate script (temperloop#963): ci.yml
+# gates merges on ubuntu, nightly-macos.yml re-runs scripts/quality-gates.sh
+# on macos-latest against main. Same feature, second cadence — not its own
+# slug.
+quality-gates .github/workflows/nightly-macos.yml
 quality-gates scripts/quality-gates.sh
 quality-gates workflows/scripts/lib/checkout-freshness.sh
 quality-gates scripts/tests/test_quality_gates_freshness.sh
+quality-gates workflows/scripts/lib/gate-retry.sh
+quality-gates scripts/tests/test_quality_gates_retry.sh
+quality-gates scripts/tests/test_quality_gates_slice.sh
+# Diff-scoped gate SELECTION (temperloop#1024) — the selector that narrows a
+# `pull_request` run to the suites its diff can affect. Its map
+# (workflows/scripts/config/gate-paths.tsv) and the map's completeness/
+# reachability lint (check-gate-paths.sh) ride the `workflows/scripts/config/*`
+# claim below; the selector lib and its suite are claimed here.
+quality-gates workflows/scripts/lib/gate-selection.sh
+quality-gates workflows/scripts/lib/tests/test_gate_selection.sh
+quality-gates workflows/scripts/lib/gate-pool.sh
+quality-gates scripts/tests/test_quality_gates_parallel.sh
+# Changed-file-scoped LOCAL runs (temperloop#957) — the `--scoped` flag a
+# /build item worker's mid-work verification uses. The flag itself and the
+# local changed-set resolver live in two files already claimed above
+# (scripts/quality-gates.sh, workflows/scripts/lib/gate-selection.sh); this
+# claims its own suite.
+quality-gates scripts/tests/test_quality_gates_scoped.sh
 quality-gates scripts/lint-zsh-param-tie.sh
+# bash-3.2 hidden-apostrophe lint (temperloop#1098) — the static guard for a
+# defect class that is invisible to shellcheck AND to `bash -n` on the ubuntu-only
+# pre-merge leg, so it has to be a textual lint rather than a parser invocation.
+quality-gates scripts/lint-bash32-cmdsubst-comment.sh
+quality-gates scripts/tests/test_lint_bash32_cmdsubst_comment.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh
 quality-gates workflows/scripts/config/*
 quality-gates workflows/scripts/kernel/*
 quality-gates workflows/scripts/lint-pr-body.sh
 quality-gates workflows/scripts/tests/test_lint_pr_body.sh
+# CHANGELOG [Unreleased] completeness gate (temperloop#960) — the PR-hygiene
+# sibling of the lint above, and the second diff-scoped gate in KERNEL_GATES.
+quality-gates workflows/scripts/check-changelog-entry.sh
+quality-gates workflows/scripts/tests/test_check_changelog_entry.sh
 quality-gates workflows/scripts/validate-feature-docs.sh
 quality-gates workflows/scripts/tests/test_validate_feature_docs.sh
 quality-gates workflows/scripts/validate-design-brief.sh
@@ -229,6 +337,67 @@ quality-gates workflows/scripts/tests/fixtures/design-briefs/*
 quality-gates workflows/scripts/tests/fixtures/design-schema/*
 quality-gates docs/features/feature-manifest.txt
 quality-gates docs/features/backfill-exempt.txt
+# Prose-plane baseline counter (temperloop#719/#722): the mechanical
+# tier-1/tier-2 line counter that seeds the forthcoming two-tier prose
+# budget gate's caps (docs/adr/0015-prose-plane-budget-gate.md) — a
+# quality-gates-family tool even though the gate itself lands in a later
+# item, same slug as the other size/coverage validators above.
+quality-gates workflows/scripts/count-prose.sh
+quality-gates workflows/scripts/tests/test_count_prose.sh
+# Contributor-manifest tsv + its structural lint (temperloop#827, epic #810
+# P1): the tracked registry count-prose.sh's SESSION-START CONTRIBUTORS
+# section reads, and the lint that reconciles it against the tree. Already
+# covered by the `quality-gates workflows/scripts/config/*` glob above,
+# listed explicitly for discoverability alongside count-prose.sh.
+quality-gates workflows/scripts/config/contributor-manifest.tsv
+quality-gates workflows/scripts/config/check-contributor-manifest.sh
+quality-gates workflows/scripts/config/tests/test_check_contributor_manifest.sh
+# Two-tier prose-budget gate (temperloop#719/#725, item prose-budget-gate;
+# ADR 0015): validate-prose-budget.sh joins the checks gate set above,
+# consuming count-prose.sh's report rather than re-counting anything itself.
+quality-gates workflows/scripts/validate-prose-budget.sh
+quality-gates workflows/scripts/tests/test_validate_prose_budget.sh
+# Citation-marker convention (temperloop#719/#724, item citation-markers):
+# the marker grammar/placement doc whose registry
+# (workflows/scripts/config/citation-registry.tsv, claimed by the config/*
+# glob above) validate-prose-budget.sh reconciles 1:1 against the tree.
+quality-gates claude/citation-schema.md
+# Semantic-redundancy chunker + labelled fixture corpus (temperloop#854,
+# half (a) of the P9 semantic-redundancy probe split from #830; epic #810
+# contract amendment P9): rule-sized chunker over the always-loaded surface
+# (contributor-manifest.tsv-driven, same manifest count-prose.sh reads) plus
+# the format contract doc that is the seam #855 (scoring half) consumes.
+# Ships no cap/gate — same measurement-tooling family as count-prose.sh
+# above, hence the same slug. The fixture corpus + its structural/shingle
+# lint are under workflows/scripts/config/ and already covered by the
+# `quality-gates workflows/scripts/config/*` glob above — listed explicitly
+# for discoverability alongside the chunker.
+quality-gates workflows/scripts/chunk-redundancy-surface.sh
+quality-gates workflows/scripts/chunk-redundancy-surface.md
+quality-gates workflows/scripts/tests/test_chunk_redundancy_surface.sh
+quality-gates workflows/scripts/config/redundancy-fixtures.json
+quality-gates workflows/scripts/config/check-redundancy-fixtures.sh
+quality-gates workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
+# Semantic-redundancy SCORER (temperloop#855, half (b) of the same P9 probe):
+# scores the chunk pairs half (a) emits, ranks them by duplicated-byte weight,
+# and records the pre-registered precision go/no-go. Report-only, same
+# measurement-tooling family (and so the same slug) as count-prose.sh and the
+# chunker above — it is deliberately NOT wired into scripts/quality-gates.sh:
+# this item ships no CI gate, so nothing here can turn a contributor's PR red.
+quality-gates workflows/scripts/score-redundancy.sh
+quality-gates workflows/scripts/score-redundancy.py
+quality-gates workflows/scripts/score-redundancy.md
+quality-gates workflows/scripts/tests/test_score_redundancy.sh
+quality-gates workflows/scripts/config/redundancy-precision-labels.tsv
+# Declared-expiry check (temperloop#831, epic #810 P10): resolves whether a
+# standing rule's own declared expiry (the citation-marker `expires:`
+# extension above) has passed, over citation-registry.tsv intersected with
+# contributor-manifest.tsv (both already claimed by the config/* glob
+# above). Report-only, same quality-gates-family slug as the other
+# size/coverage validators — Phase A ships no cap and nothing here fails a
+# contributor's build.
+quality-gates workflows/scripts/declared-expiry-check.sh
+quality-gates workflows/scripts/tests/test_declared_expiry_check.sh
 
 # ── docs-generator — docs-site generator + published doc sources ────────────
 docs-generator .github/workflows/docs-pages.yml
@@ -251,10 +420,12 @@ branch-hygiene workflows/scripts/build/tests/test_merged_detect.sh
 presentation-plane claude/message-schema.md
 presentation-plane claude/presentation-plane.md
 presentation-plane workflows/scripts/validate-template-refs.sh
+presentation-plane workflows/scripts/tests/test_validate_template_refs.sh
 
 # ── review-agents — advisory review subagent definitions ────────────────────
 review-agents claude/agents/*
 review-agents workflows/scripts/tests/fixtures/docs-reviewer/*
+review-agents workflows/scripts/tests/fixtures/congruence-lens/*
 review-agents workflows/scripts/workflow-reviewer-coverage.sh
 review-agents workflows/scripts/tests/test_workflow_reviewer_coverage.sh
 review-agents workflows/scripts/install/reviewer-activation-coverage.sh
@@ -262,6 +433,19 @@ review-agents workflows/scripts/tests/test_reviewer_activation_coverage.sh
 review-agents workflows/scripts/install/reviewer-activate.sh
 review-agents workflows/scripts/tests/test_reviewer_activate.sh
 review-agents workflows/scripts/tests/test_doctor_reviewer_coverage.sh
+
+# ── engineering-principles — kernel cross-language review/authoring
+#    criteria (temperloop#599/#419): the seven flaggable principles, their
+#    both-active merge-with-project-principles rule, and advisory posture.
+#    docs/features/engineering-principles.md, docs/adr/000{9,10}-*.md, and
+#    VERSIONING.md's row are already covered by the broader
+#    `none docs/features/*` / `none docs/adr/*` / `none VERSIONING.md`
+#    claims above (most-specific-wins; no override needed). The first-epic
+#    template (temperloop#609, ADR 0010) is the onboarding delivery vehicle
+#    for these same principles plus the GitHub/CI substrate, so it rides
+#    the same slug rather than a new one ─────────────────────────────────
+engineering-principles claude/engineering-principles.md
+engineering-principles claude/templates/first-epic-setup.md
 
 # ── sandbox-core — hermetic env-sandbox test harness (temperloop#263) ───────
 sandbox-core workflows/scripts/tests/lib/sandbox.sh

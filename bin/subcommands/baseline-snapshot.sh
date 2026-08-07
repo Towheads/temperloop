@@ -11,7 +11,7 @@
 # DISPATCH MODEL: this file is a DISCOVERED subcommand — its mere presence
 # at kernel/bin/subcommands/baseline-snapshot.sh next to the dispatcher's
 # other subcommand files IS `temperloop baseline-snapshot`, executed in its
-# own process (see kernel/bin/foundation's header comment). This script
+# own process (see kernel/bin/temperloop's header comment). This script
 # also has a SECOND call site: kernel/bin/subcommands/init.sh Step 0 shells
 # out to it directly (`bash "$BASELINE_SNAPSHOT"`, cwd already set to the
 # target repo) as a soft seam — init.sh's own file-existence check on this
@@ -63,7 +63,7 @@
 # Usage:
 #   baseline-snapshot.sh
 #
-#   No flags are read. Every knob below is an ENV VAR test seam only (never
+#   No flags are read. Every setting below is an ENV VAR test seam only (never
 #   set in production use, mirroring the INIT_GH_BIN / TRY_GH_BIN /
 #   REWORK_SNAPSHOT_NOW conventions already in this codebase):
 #     BASELINE_SNAPSHOT_GH_BIN      override the `gh` binary. Default: gh.
@@ -116,7 +116,7 @@ command -v git >/dev/null 2>&1 || { echo "baseline-snapshot.sh: git not found on
 command -v jq >/dev/null 2>&1 || { echo "baseline-snapshot.sh: jq not found on PATH" >&2; exit 1; }
 
 # Test-double seam (mirrors init.sh's INIT_GH_BIN / try.sh's TRY_GH_BIN /
-# funnel-drive.sh's FUNNEL_GH_BIN convention) — never overridden in
+# pipeline-drive.sh's PIPELINE_GH_BIN convention) — never overridden in
 # production use.
 : "${BASELINE_SNAPSHOT_GH_BIN:=gh}"
 GH_BIN="$BASELINE_SNAPSHOT_GH_BIN"
@@ -296,30 +296,28 @@ fi
 # Write: .temperloop/baseline.jsonl (append) + .temperloop/.gitignore
 # (self-managed, idempotent — never committed).
 #
-# temperloop#165 rename window: an EXISTING legacy .foundation/baseline.jsonl
-# keeps accreting IN PLACE through the window — the baseline is one
-# append-only before/after history, and splitting it across two dirs
-# mid-window would silently truncate every later report's "before" anchor
-# (report.sh reads exactly one file). A repo with no legacy baseline writes
-# to .temperloop/ from the start. The legacy continue-in-place arm is
-# removed in v0.17.0 (move the file: git has never tracked it — plain
-# mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/).
+# temperloop#165: through the v0.15.0 -> v0.19.0 window an EXISTING legacy
+# .foundation/baseline.jsonl kept accreting IN PLACE, because the baseline is
+# one append-only before/after history and splitting it across two dirs
+# silently truncates every later report's "before" anchor (report.sh reads
+# exactly one file). That continue-in-place arm is GONE — but the legacy file
+# is still DETECTED and refused, for the same reason: writing a second
+# history to .temperloop/ while one already sits in .foundation/ is exactly
+# the silent split the arm existed to avoid. The operator moves the file (git
+# has never tracked it — plain mkdir -p .temperloop && mv
+# .foundation/baseline.jsonl .temperloop/).
 # ---------------------------------------------------------------------------
-foundation_dir="$repo_root/.temperloop"
-if [ ! -f "$foundation_dir/baseline.jsonl" ] && [ -f "$repo_root/.foundation/baseline.jsonl" ]; then
-  if [ "${TEMPERLOOP_LEGACY_WINDOW_CLOSED:-0}" = "1" ]; then # knob:exempt — test/simulation-only seam
-    echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.17.0 (renamed .temperloop/ in v0.15.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
-    exit 1
-  fi
-  foundation_dir="$repo_root/.foundation"
-  echo "baseline-snapshot: NOTE — appending to legacy ${foundation_dir#"$repo_root"/}/baseline.jsonl (dir renamed .temperloop/ in v0.15.0; legacy append removed in v0.17.0 — move the file)." >&2
+tl_dir="$repo_root/.temperloop"
+if [ ! -f "$tl_dir/baseline.jsonl" ] && [ -f "$repo_root/.foundation/baseline.jsonl" ]; then
+  echo "baseline-snapshot.sh: ERROR — a legacy .foundation/baseline.jsonl exists, but appending to the legacy dir was removed in v0.19.0 (renamed .temperloop/ in v0.15.0). Move it: mkdir -p .temperloop && mv .foundation/baseline.jsonl .temperloop/ — then re-run." >&2
+  exit 1
 fi
-if ! mkdir -p "$foundation_dir" 2>/dev/null; then
-  echo "baseline-snapshot.sh: could not create $foundation_dir" >&2
+if ! mkdir -p "$tl_dir" 2>/dev/null; then
+  echo "baseline-snapshot.sh: could not create $tl_dir" >&2
   exit 1
 fi
 
-gitignore_path="$foundation_dir/.gitignore"
+gitignore_path="$tl_dir/.gitignore"
 if [ -f "$gitignore_path" ]; then
   if ! grep -Fxq "baseline.jsonl" "$gitignore_path" 2>/dev/null; then
     if ! printf '%s\n' "baseline.jsonl" >> "$gitignore_path"; then
@@ -334,7 +332,7 @@ else
   fi
 fi
 
-baseline_file="$foundation_dir/baseline.jsonl"
+baseline_file="$tl_dir/baseline.jsonl"
 if ! printf '%s\n' "$(jq -c '.' <<<"$record")" >> "$baseline_file"; then
   echo "baseline-snapshot.sh: could not append to $baseline_file" >&2
   exit 1

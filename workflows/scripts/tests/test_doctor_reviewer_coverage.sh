@@ -96,12 +96,12 @@ out_before="$(bash "$DOCTOR_SH" "$FOUND1" 2>&1)"
 exit_before=$?
 set -e
 
-printf '%s\n' "$out_before" | grep -qi 'reviewer cover' \
+grep -qi 'reviewer cover' <<<"$out_before" \
   || fail "5: doctor output missing a 'reviewer cover' section (activation-proof shape) — got: $out_before"
 
-printf '%s\n' "$out_before" | grep -q 'no resolvable reviewer-activation gaps' \
+grep -q 'no resolvable reviewer-activation gaps' <<<"$out_before" \
   || fail "1a: below-threshold fixture should report no gaps yet — got: $out_before"
-if printf '%s\n' "$out_before" | grep -q 'WARN.*python-reviewer'; then
+if grep -q 'WARN.*python-reviewer' <<<"$out_before"; then
   fail "1a: python-reviewer should not warn below threshold — got: $out_before"
 fi
 
@@ -128,9 +128,9 @@ out_after="$(bash "$DOCTOR_SH" "$FOUND1" 2>&1)"
 exit_after=$?
 set -e
 
-printf '%s\n' "$out_after" | grep -q 'WARN.*python-reviewer' \
+grep -q 'WARN.*python-reviewer' <<<"$out_after" \
   || fail "1b: python-reviewer should warn at/above threshold — got: $out_after"
-printf '%s\n' "$out_after" | grep -q 'WARN.*shell-reviewer' \
+grep -q 'WARN.*shell-reviewer' <<<"$out_after" \
   || fail "1b: shell-reviewer should warn at/above threshold — got: $out_after"
 
 pass "1b: at/above REVIEWER_SCAN_MIN_FILES, catalogued unactivated reviewers WARN"
@@ -153,10 +153,10 @@ touch "${FOUND1}/.claude/reviewer-state/declined/python-reviewer"
 set +e
 out_declined="$(bash "$DOCTOR_SH" "$FOUND1" 2>&1)"
 set -e
-if printf '%s\n' "$out_declined" | grep -q 'python-reviewer'; then
+if grep -q 'python-reviewer' <<<"$out_declined"; then
   fail "3: a durably-declined python-reviewer should not appear at all (WARN or INFO) — got: $out_declined"
 fi
-printf '%s\n' "$out_declined" | grep -q 'WARN.*shell-reviewer' \
+grep -q 'WARN.*shell-reviewer' <<<"$out_declined" \
   || fail "3: shell-reviewer (still an open, non-declined gap) should still WARN — got: $out_declined"
 
 pass "3: a durably-declined language yields neither WARN nor INFO; an unrelated open gap still warns"
@@ -175,9 +175,9 @@ out_info1="$(bash "$DOCTOR_SH" "$FOUND2" 2>&1)"
 exit_info1=$?
 set -e
 
-printf '%s\n' "$out_info1" | grep -qi 'INFO.*uncatalogued' \
+grep -qi 'INFO.*uncatalogued' <<<"$out_info1" \
   || fail "4a: first run should show a one-time INFO for the uncatalogued (dangling) language — got: $out_info1"
-printf '%s\n' "$out_info1" | grep -q 'does-not-exist-zz.md' \
+grep -q 'does-not-exist-zz.md' <<<"$out_info1" \
   || fail "4a: the INFO should name the dangling catalog-agent-path — got: $out_info1"
 
 [ -e "${FOUND2}/.claude/reviewer-state/doctor-uncatalogued-notified" ] \
@@ -192,7 +192,7 @@ out_info2="$(bash "$DOCTOR_SH" "$FOUND2" 2>&1)"
 exit_info2=$?
 set -e
 
-if printf '%s\n' "$out_info2" | grep -qi 'INFO.*uncatalogued'; then
+if grep -qi 'INFO.*uncatalogued' <<<"$out_info2"; then
   fail "4b: second run should be silent (one-time INFO already shown) — got: $out_info2"
 fi
 
@@ -224,7 +224,7 @@ set +e
 out_regress="$(bash "$DOCTOR_SH" "$FOUND3" 2>&1)"
 set -e
 
-printf '%s\n' "$out_regress" | grep -q "added '.claude/reviewer-state/'" \
+grep -q "added '.claude/reviewer-state/'" <<<"$out_regress" \
   || fail "5: expected a console notice naming the .gitignore write — got: $out_regress"
 
 git -C "$FOUND3" check-ignore -q -- stray.pyc \

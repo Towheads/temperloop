@@ -110,8 +110,8 @@ sandbox_bootstrap_checkout "$REPO_ROOT" \
 [ -x "$SANDBOX_TEMPERLOOP" ] || fail "4: SANDBOX_TEMPERLOOP ($SANDBOX_TEMPERLOOP) is not executable"
 
 help_out="$(sandbox_run "$SANDBOX_TEMPERLOOP" help 2>&1)" || fail "4: bootstrapped temperloop help exited non-zero (output: $help_out)"
-echo "$help_out" | grep -q "init " || fail "4: bootstrapped temperloop help did not list the 'init' subcommand (output: $help_out)"
-echo "$help_out" | grep -q "eject " || fail "4: bootstrapped temperloop help did not list the 'eject' subcommand (output: $help_out)"
+grep -q "init " <<<"$help_out" || fail "4: bootstrapped temperloop help did not list the 'init' subcommand (output: $help_out)"
+grep -q "eject " <<<"$help_out" || fail "4: bootstrapped temperloop help did not list the 'eject' subcommand (output: $help_out)"
 
 sandbox_down
 pass "4: sandbox_bootstrap_checkout bare-clones this repo over file:// and produces a working temperloop binary"
@@ -148,8 +148,11 @@ snapshot_path() {
 
 # The exact real-HOME paths bin/bootstrap.sh / init.sh / eject.sh would
 # write to if HOME/XDG_* were NOT re-pointed (bin/bootstrap.sh's own
-# FOUNDATION_HOME/FOUNDATION_BIN_DIR defaults + the CLI's own
-# XDG_CONFIG_HOME/XDG_STATE_HOME dismiss-state paths).
+# TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR defaults + the CLI's own
+# XDG_CONFIG_HOME/XDG_STATE_HOME dismiss-state paths). The two legacy
+# `foundation`-named entries below stay in the tripwire deliberately: the
+# temperloop#165 window closed in v0.19.0, so NOTHING should write them any
+# more, and that is precisely what makes them worth asserting.
 REAL_CANDIDATES=(
   "$REAL_HOME_BEFORE/.local/share/temperloop"
   "$REAL_HOME_BEFORE/.local/bin/temperloop"

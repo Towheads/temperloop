@@ -23,6 +23,19 @@ DEPLOY="$HERE/../deploy-mini.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/deploy-mini-test-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+# Hermetic conf env, part 2 (temperloop#616): as of temperloop#616 deploy-mini.sh's
+# own §3 cache-report discovery no longer reimplements conf lookup — it routes
+# through the checkout's board.sh resolver (_board_conf_files), so the
+# BOARDS_CONF_MACHINE=/dev/null guard above ALREADY hermeticizes its machine
+# layer (a real host ~/.config/{temperloop,foundation}/boards.conf can no longer
+# shadow the fixture's repo-local conf). Pointing XDG_CONFIG_HOME at an empty
+# fixture dir is now belt-and-suspenders (BOARDS_CONF_MACHINE=/dev/null already
+# defeats the XDG machine default), kept so the machine layer stays inert on any
+# host regardless of how the seam resolves its default. (Before temperloop#616 §3
+# read $XDG_CONFIG_HOME/{temperloop,foundation}/boards.conf directly and this
+# export was load-bearing.)
+export XDG_CONFIG_HOME="$WORK/xdg"
+
 fail() { echo "FAIL: $1" >&2; exit 1; }
 GIT() { git -c user.email=t@t -c user.name=t -c init.defaultBranch=main "$@"; }
 
@@ -44,11 +57,12 @@ advance() {
   GIT -C "$seed" add -A; GIT -C "$seed" commit -qm c2; GIT -C "$seed" push -q origin main
 }
 # run <checkout-paths...> — invoke deploy-mini isolated; prints output, returns its rc.
-# BOARD_CACHE_DIR is pinned into $WORK so the #341 structure-cache bust never touches
-# the real machine's cache (and test 10 can assert against it).
+# No BOARD_CACHE_DIR pin any more: it existed only to keep the #341 structure-cache
+# bust off the real machine's cache, and both were removed with the Projects-v2 arm
+# (ADR 0004).
 run() {
   DEPLOY_MINI_CHECKOUTS="$*" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/run.lock.d" \
-    BOARD_CACHE_DIR="$WORK/cache" bash "$DEPLOY"
+    bash "$DEPLOY"
 }
 behind() { git -C "$1" rev-list --count "HEAD..@{u}" 2>/dev/null || echo "?"; }
 
@@ -59,7 +73,7 @@ before="$(GIT -C "$WORK/cleanpull" rev-parse HEAD)"
 out="$(run "$WORK/cleanpull")" || fail "clean-main run should exit 0"
 [ "$(GIT -C "$WORK/cleanpull" rev-parse HEAD)" != "$before" ] || fail "clean-main behind must be ff-pulled"
 [ "$(behind "$WORK/cleanpull")" -eq 0 ] || fail "checkout must be current after pull"
-echo "$out" | grep -q "pulled →" || fail "should report 'pulled →' (got: $out)"
+grep -q "pulled →" <<<"$out" || fail "should report 'pulled →' (got: $out)"
 
 # --- 2. dirty checkout → SKIP, working tree untouched ------------------------
 setup_repo dirtyskip yes; advance dirtyskip
@@ -68,7 +82,7 @@ before="$(GIT -C "$WORK/dirtyskip" rev-parse HEAD)"
 out="$(run "$WORK/dirtyskip")" || true
 [ "$(GIT -C "$WORK/dirtyskip" rev-parse HEAD)" = "$before" ] || fail "dirty checkout must NOT be pulled"
 grep -q UNCOMMITTED "$WORK/dirtyskip/scripts/lib/board.sh" || fail "dirty working tree was clobbered"
-echo "$out" | grep -q "SKIP (dirty" || fail "dirty should report SKIP (dirty)"
+grep -q "SKIP (dirty" <<<"$out" || fail "dirty should report SKIP (dirty)"
 
 # --- 3. UNMERGED feature branch (real in-flight work) → SKIP, untouched ------
 # F#1098: the recovery below auto-resets ONLY a merged/contained branch. A branch
@@ -81,22 +95,22 @@ before="$(GIT -C "$WORK/featskip" rev-parse HEAD)"
 out="$(run "$WORK/featskip")" || true
 [ "$(GIT -C "$WORK/featskip" rev-parse HEAD)" = "$before" ] || fail "unmerged feature-branch checkout must NOT be touched"
 [ "$(GIT -C "$WORK/featskip" branch --show-current)" = "feature/x" ] || fail "unmerged feature branch must stay checked out (not reset to main)"
-echo "$out" | grep -q "not main" || fail "unmerged feature branch should report SKIP (not main)"
+grep -q "not main" <<<"$out" || fail "unmerged feature branch should report SKIP (not main)"
 
 # --- 3b. MERGED/contained feature branch → RECOVERED to main + ff (F#1098) ----
 # The failure this fixes: a checkout stranded on an already-merged branch (its tip
 # fully contained in origin/main) used to be skipped forever, silently blocking the
-# funnel's clean-on-main merge tier. It must now be switched back to main and pulled.
+# pipeline's clean-on-main merge tier. It must now be switched back to main and pulled.
 setup_repo featrecover yes; advance featrecover
 GIT -C "$WORK/featrecover" checkout -q -b feature/merged   # at c1, an ancestor of origin/main (c2)
 out="$(run "$WORK/featrecover")" || fail "merged-branch recovery run should exit 0"
 [ "$(GIT -C "$WORK/featrecover" branch --show-current)" = "main" ] || fail "merged feature branch must be recovered to main"
 [ "$(behind "$WORK/featrecover")" -eq 0 ] || fail "recovered checkout must be ff-pulled to current"
-echo "$out" | grep -q "RECOVERED" || fail "merged feature branch should report RECOVERED (got: $out)"
+grep -q "RECOVERED" <<<"$out" || fail "merged feature branch should report RECOVERED (got: $out)"
 
 # --- 4. absent path → SKIP, no error ----------------------------------------
 out="$(run "$WORK/does-not-exist")" || true
-echo "$out" | grep -q "SKIP (absent" || fail "absent path should report SKIP (absent)"
+grep -q "SKIP (absent" <<<"$out" || fail "absent path should report SKIP (absent)"
 
 # --- 5. verify gate: guard present → exit 0; missing → exit non-zero ---------
 setup_repo guarded yes
@@ -104,26 +118,26 @@ run "$WORK/guarded" >/dev/null || fail "guard present must exit 0"
 setup_repo noguard no
 out="$(run "$WORK/noguard")" && rc=0 || rc=$?
 [ "$rc" -ne 0 ] || fail "a board.sh missing the guard must exit non-zero"
-echo "$out" | grep -q "guard MISSING" || fail "should report guard MISSING (got: $out)"
+grep -q "guard MISSING" <<<"$out" || fail "should report guard MISSING (got: $out)"
 
 # --- 6. idempotent: a current checkout re-runs as 'already current' ----------
 setup_repo idem yes
 run "$WORK/idem" >/dev/null || fail "idem first run should exit 0"
 out="$(run "$WORK/idem")" || fail "idem second run should exit 0"
-echo "$out" | grep -q "already current" || fail "idempotent re-run should be 'already current' (got: $out)"
+grep -q "already current" <<<"$out" || fail "idempotent re-run should be 'already current' (got: $out)"
 
 # --- 7. lock: a lock held by a LIVE owner makes a concurrent invocation no-op -
 mkdir "$WORK/held.lock.d"; echo "$$" >"$WORK/held.lock.d/pid"   # $$ = this test, alive
 out="$(DEPLOY_MINI_CHECKOUTS="$WORK/idem" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/held.lock.d" bash "$DEPLOY")" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || fail "a live-held lock must exit 0 (skip)"
-echo "$out" | grep -q "holds the lock" || fail "a live-held lock should report skipping (got: $out)"
+grep -q "holds the lock" <<<"$out" || fail "a live-held lock should report skipping (got: $out)"
 
 # --- 8. lock: a lock owned by a DEAD PID is stolen and the deploy runs -------
 mkdir "$WORK/dead.lock.d"; echo 999999 >"$WORK/dead.lock.d/pid"   # 999999 > PID_MAX → never alive
 out="$(DEPLOY_MINI_CHECKOUTS="$WORK/idem" DEPLOY_MINI_SKIP_INSTALL=1 DEPLOY_MINI_LOCK="$WORK/dead.lock.d" bash "$DEPLOY")" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || fail "a dead-owner lock should be stolen and run (exit 0)"
-echo "$out" | grep -q "holds the lock" && fail "a dead-owner lock must NOT be treated as held"
-echo "$out" | grep -q "already current" || fail "after stealing a dead lock, deploy should run (got: $out)"
+grep -q "holds the lock" <<<"$out" && fail "a dead-owner lock must NOT be treated as held"
+grep -q "already current" <<<"$out" || fail "after stealing a dead lock, deploy should run (got: $out)"
 
 # --- 9. diverged: a checkout with a local commit can't ff-merge → SKIP, no clobber -
 setup_repo diverge yes
@@ -133,32 +147,42 @@ advance diverge                                    # origin advances on a differ
 before="$(GIT -C "$WORK/diverge" rev-parse HEAD)"
 out="$(run "$WORK/diverge")" || true
 [ "$(GIT -C "$WORK/diverge" rev-parse HEAD)" = "$before" ] || fail "diverged checkout HEAD must NOT move (no clobber)"
-echo "$out" | grep -q "cannot ff-merge" || fail "diverged should report SKIP (cannot ff-merge) (got: $out)"
+grep -q "cannot ff-merge" <<<"$out" || fail "diverged should report SKIP (cannot ff-merge) (got: $out)"
 
-# --- 10. #341: an adapter-changed pull busts the structure cache ------------
-# A pull whose diff touches a board.sh must flush the structure cache (stale
-# project/field ids after a renumber break WRITES). The structure cache file is
-# keyed on the RESOLVED owner+project# (#341 option b), so derive the real paths
-# from the same board.sh the bust subshell sources — don't hardcode the migrated
-# number. Pre-seed a stale board-4 structure entry; after a pull that changed
-# board.sh it must be gone + announced.
-mkdir -p "$WORK/cache"
-PROJ_CACHE="$(BOARD_CACHE_DIR="$WORK/cache" bash -c '. "'"$HERE"'/../lib/board.sh"; _board_cache_file 4 project')"
-FIELDS_CACHE="$(BOARD_CACHE_DIR="$WORK/cache" bash -c '. "'"$HERE"'/../lib/board.sh"; _board_cache_file 4 fields')"
-: >"$PROJ_CACHE"
-: >"$FIELDS_CACHE"
+# --- 10/11 (rewritten): an adapter-changed pull is CLEAN — no call into removed
+# board.sh machinery -----------------------------------------------------------
+# These two cases used to assert deploy-mini's step 2.5 structure-cache bust:
+# that a pull touching a board.sh flushed the Projects-v2 project/field-id cache
+# (#341), and that a no-op pull did NOT (preserving the 24h TTL). Both the cache
+# and `board_bust_structure` were removed with the Projects-v2 arm (ADR 0004,
+# epic temperloop#524), so there is no cache to bust and nothing to assert about
+# busting it.
+#
+# What replaces them is the regression those removals actually risk, and which
+# nothing else covers: deploy-mini sources board.sh in a live subshell on every
+# sweep, so a dangling reference to a removed function would surface here as a
+# `command not found` on a real session start — silent-ish, because the step's
+# own `|| true`-ish shape kept the run exiting 0. (That regression was real: the
+# excision initially left the `board_bust_structure` call in place.) So: pull an
+# adapter change and assert the run is not merely successful but CLEAN.
 setup_repo bustpull yes; advance bustpull            # advance() appends to scripts/lib/board.sh
-out="$(run "$WORK/bustpull")" || fail "bust run should exit 0"
-echo "$out" | grep -q "structure cache busted" || fail "an adapter-changed pull should bust the structure cache (got: $out)"
-[ ! -f "$PROJ_CACHE" ] || fail "#341: stale board-4 structure cache must be removed"
-[ ! -f "$FIELDS_CACHE" ]  || fail "#341: stale board-4 fields cache must be removed"
+out="$(run "$WORK/bustpull" 2>&1)" || fail "an adapter-changed pull should exit 0 (got: $out)"
+grep -q "pulled →" <<<"$out" || fail "the adapter-changed checkout should report a pull (got: $out)"
+case "$out" in
+  *"command not found"*)
+    fail "an adapter-changed pull called a function board.sh no longer defines — a removed-symbol regression (got: $out)" ;;
+  *"board_bust_structure"*)
+    fail "deploy-mini still references board_bust_structure, removed with the Projects-v2 arm (ADR 0004) (got: $out)" ;;
+  *"structure cache"*)
+    fail "deploy-mini still reports a structure-cache bust; that cache was removed (ADR 0004) (got: $out)" ;;
+esac
 
-# --- 11. #341: a no-op deploy (nothing pulled) does NOT bust the cache -------
-# Busting every run would defeat the 24h structure TTL — only an adapter change does.
-: >"$PROJ_CACHE"                                       # re-seed; an already-current run must leave it
-out="$(run "$WORK/bustpull")" || fail "no-op bust run should exit 0"
-echo "$out" | grep -q "structure cache busted" && fail "#341: an already-current (no-pull) deploy must NOT bust the cache"
-[ -f "$PROJ_CACHE" ] || fail "#341: a no-op deploy must leave the structure cache intact"
+# ...and a second, already-current run stays clean too (the no-op path).
+out="$(run "$WORK/bustpull" 2>&1)" || fail "a no-op deploy should exit 0 (got: $out)"
+case "$out" in
+  *"command not found"*) fail "a no-op deploy emitted a command-not-found (got: $out)" ;;
+esac
+echo "PASS: an adapter-changed pull and a no-op re-run both source board.sh cleanly (no removed-symbol calls, ADR 0004)"
 
 # --- 12. F#653: a clean-on-main checkout has its merged LOCAL branches pruned ---
 # mergedlocal points at origin/main (the post-merge/ff shape — its work is fully in
@@ -174,22 +198,22 @@ GIT -C "$WORK/prunelocal" rev-parse --verify -q mergedlocal >/dev/null \
   && fail "merged local branch must be pruned"
 GIT -C "$WORK/prunelocal" rev-parse --verify -q unmergedlocal >/dev/null \
   || fail "unmerged local branch must be kept"
-echo "$out" | grep -q "prune: deleted 1 local" || fail "should report 'prune: deleted 1 local' (got: $out)"
+grep -q "prune: deleted 1 local" <<<"$out" || fail "should report 'prune: deleted 1 local' (got: $out)"
 
 # --- 13. F#988/#1026: cache-enabled boards are reported (store present vs absent) ---
-# A dedicated minimal board.sh (guard string + a board_repo() stub) rather than the
-# real one — this test targets deploy-mini's OWN reporting logic, not board.sh's conf
-# discovery (that's covered by test_boards_conf.sh / test_cache_store.sh).
+# temperloop#616: §3 now enumerates conf layers through the checkout's OWN
+# board.sh resolver (_board_conf_files), so the fixture board.sh is the REAL
+# adapter (copied in) rather than a minimal stub — the report is now an
+# integration of deploy-mini's reporting logic WITH board.sh's conf discovery.
+# board_repo() for boards 9/10 resolves via the fixture repo-local boards.conf
+# (board.9.repo / board.10.repo), no stub needed. BOARDS_CONF_REPO_LOCAL is
+# overridden to empty for these runs so _board_conf_files' `:-` default resolves
+# the repo-local layer to the fixture's own $bsh-relative boards.conf (the global
+# /dev/null export would otherwise miss it); BOARDS_CONF_MACHINE=/dev/null keeps
+# the machine layer inert, exercising the single-override hermeticity this item
+# establishes.
 setup_repo cacherep yes
-cat >"$WORK/cacherep/scripts/lib/board.sh" <<'BOARDEOF'
-_board_assert_item_id() { :; }
-board_repo() {
-  case "$1" in
-    9) echo "acme/cached-thing" ;;
-    10) echo "acme/uncached-thing" ;;
-  esac
-}
-BOARDEOF
+cp "$HERE/../lib/board.sh" "$WORK/cacherep/scripts/lib/board.sh"
 cp "$HERE/../lib/cache.sh" "$WORK/cacherep/scripts/lib/cache.sh"
 cat >"$WORK/cacherep/scripts/boards.conf" <<'EOF'
 board.9.repo=acme/cached-thing
@@ -200,36 +224,48 @@ CACHE_ROOT="$WORK/cache-store-root"
 mkdir -p "$CACHE_ROOT/issues/acme-cached-thing"
 echo '{"schema_version":1,"repo":"acme/cached-thing","last_refresh":1}' \
   >"$CACHE_ROOT/issues/acme-cached-thing/meta.json"
-out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report run should exit 0"
-echo "$out" | grep -q "board 9 (store present)" || \
+out="$(BOARDS_CONF_REPO_LOCAL='' CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report run should exit 0"
+grep -q "board 9 (store present)" <<<"$out" || \
   fail "board 9 (cache=on, store on disk) should report store present (got: $out)"
-echo "$out" | grep -q "board 10" && \
+grep -q "board 10" <<<"$out" && \
   fail "board 10 (no cache=on line) must not be reported (got: $out)"
 
 # Same checkout, no store on disk yet for board 9 → reports "store absent".
 rm -rf "$CACHE_ROOT"
-out="$(CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report (absent) run should exit 0"
-echo "$out" | grep -q "board 9 (store absent)" || \
+out="$(BOARDS_CONF_REPO_LOCAL='' CACHE_STORE_ROOT="$CACHE_ROOT" run "$WORK/cacherep")" || fail "cache-report (absent) run should exit 0"
+grep -q "board 9 (store absent)" <<<"$out" || \
   fail "board 9 with no store on disk should report store absent (got: $out)"
 
 # --- 14. #168: a merged/orphaned <checkout>.wt/* worktree is swept -----------
 # per clean-on-main checkout, deploy-mini also runs worktree.sh prune. A
-# worktree whose branch is a plain ancestor of origin/main (trivially "merged" —
-# zero commits ahead) and clean must be removed; the dir + branch both go away
-# and deploy-mini reports it.
+# worktree whose branch is GENUINELY merged — it has commits of its own that ARE
+# ancestors of origin/main, so its tip is NOT origin/main — and clean must be
+# removed; the dir + branch both go away and deploy-mini reports it.
+# (#891: this fixture used to be a ZERO-COMMIT worktree, which the old
+# ancestor-only gate read as "trivially merged" — the very shape a LIVE build
+# worktree has before its worker's first commit. That shape is now SKIPPED_FRESH
+# and is asserted intact in case 15 below.)
 WTSH="$HERE/../../build/worktree.sh"
 setup_repo wtsweep yes
 bash "$WTSH" create "$WORK/wtsweep" mergedwt >/dev/null \
   || fail "test setup: worktree.sh create failed"
 [ -d "$WORK/wtsweep.wt/mergedwt" ] || fail "test setup: worktree not created"
+advance wtsweep
+landedwt="$(GIT -C "$WORK/wtsweep.seed" rev-parse HEAD)"
+advance wtsweep
+GIT -C "$WORK/wtsweep" fetch -q origin main
+GIT -C "$WORK/wtsweep.wt/mergedwt" reset -q --hard "$landedwt"
 out="$(run "$WORK/wtsweep")" || fail "wtsweep run should exit 0"
 [ ! -e "$WORK/wtsweep.wt/mergedwt" ] || fail "merged worktree must be pruned by deploy-mini"
 GIT -C "$WORK/wtsweep" show-ref --verify --quiet refs/heads/build/mergedwt \
   && fail "branch build/mergedwt must be removed with the pruned worktree"
-echo "$out" | grep -q "worktree prune: 1 pruned" || fail "should report 'worktree prune: 1 pruned' (got: $out)"
+grep -q "worktree prune: 1 pruned" <<<"$out" || fail "should report 'worktree prune: 1 pruned' (got: $out)"
 echo "PASS: #168 a merged/orphaned <checkout>.wt/* worktree is swept by deploy-mini's per-checkout worktree.sh prune"
 
-# --- 15. #168: a dirty or genuinely-unmerged worktree is left intact ---------
+# --- 15. #168: a dirty, genuinely-unmerged, or FRESH worktree is left intact --
+# The `freshwt` case is #891 (downstream: Towheads/foundation#1430): deploy-mini's session-start sweep is
+# host-wide, so a build worktree another session created seconds ago — zero
+# commits ahead, tip == origin/main — must survive it.
 setup_repo wtkeep yes
 bash "$WTSH" create "$WORK/wtkeep" unmergedwt >/dev/null \
   || fail "test setup: worktree.sh create (unmerged) failed"
@@ -237,11 +273,17 @@ GIT -C "$WORK/wtkeep.wt/unmergedwt" commit -q --allow-empty -m "unlanded work"
 bash "$WTSH" create "$WORK/wtkeep" dirtywt >/dev/null \
   || fail "test setup: worktree.sh create (dirty) failed"
 echo scratch >"$WORK/wtkeep.wt/dirtywt/junk.txt"
+bash "$WTSH" create "$WORK/wtkeep" freshwt >/dev/null \
+  || fail "test setup: worktree.sh create (fresh) failed"
 out="$(run "$WORK/wtkeep")" || fail "wtkeep run should exit 0"
 [ -e "$WORK/wtkeep.wt/unmergedwt" ] || fail "genuinely-unmerged worktree must NOT be pruned"
 [ -e "$WORK/wtkeep.wt/dirtywt" ] || fail "dirty worktree must NOT be pruned (no --force)"
-echo "$out" | grep -q "worktree prune: 1 pruned" && fail "no worktree here should have been pruned (got: $out)"
-echo "PASS: #168 a dirty or genuinely-unmerged worktree is left intact by deploy-mini's worktree sweep"
+[ -e "$WORK/wtkeep.wt/freshwt" ] \
+  || fail "#891: a fresh zero-commit worktree must NOT be reaped by deploy-mini's sweep"
+GIT -C "$WORK/wtkeep" show-ref --verify --quiet refs/heads/build/freshwt \
+  || fail "#891: branch build/freshwt must survive deploy-mini's sweep"
+grep -q "worktree prune: 1 pruned" <<<"$out" && fail "no worktree here should have been pruned (got: $out)"
+echo "PASS: #168/#891 a dirty, genuinely-unmerged, or fresh worktree is left intact by deploy-mini's worktree sweep"
 
 # --- 16. #168: fail-open — a worktree.sh prune failure never aborts deploy-mini
 # Point $FOUNDATION's worktree.sh lookup at a stub that always fails; deploy-mini
@@ -263,7 +305,7 @@ EOF
 chmod +x "$FAKEBIN/jq"
 out="$(PATH="$FAKEBIN:$PATH" run "$WORK/wtfail")" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] || fail "a worktree-prune failure must not abort deploy-mini (rc=$rc, got: $out)"
-echo "$out" | grep -q "worktree prune: FAILED (non-fatal)" || fail "should report the swallowed failure (got: $out)"
+grep -q "worktree prune: FAILED (non-fatal)" <<<"$out" || fail "should report the swallowed failure (got: $out)"
 echo "PASS: #168 a worktree.sh prune failure is fail-open — logged, deploy-mini still exits 0"
 
-echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, busts the structure cache only on an adapter-changed pull (#341), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"
+echo "PASS: deploy-mini ff-pulls clean-on-main checkouts, recovers a checkout stranded on a merged/contained branch back to main (F#1098), skips dirty/UNMERGED-feature/absent/diverged, prunes merged local branches (F#653, keeps unmerged), sweeps merged/orphaned <checkout>.wt/* worktrees fail-open while leaving dirty/unmerged ones intact (#168), verifies the guard (exit non-zero on miss), is idempotent, sources board.sh cleanly on an adapter-changed pull (no removed-symbol calls, ADR 0004), single-instances via a PID-owned lock (live held, dead stolen), and reports cache-enabled boards + store presence (F#988/#1026)"

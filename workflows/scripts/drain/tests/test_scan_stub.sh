@@ -318,7 +318,12 @@ if [ -n "${report_nojsonl:-}" ]; then
   empty_te=$(printf '%s' "$report_nojsonl" | python3 -c "
 import json, sys
 te = json.load(sys.stdin).get('tool_events', {})
-all_empty = all(len(v) == 0 for v in te.values())
+# list/dict sub-arrays must be empty; scalar flags (spec_authoring_context, a
+# bool — foundation#1137) must be falsy. Skipping the len() check for scalars.
+all_empty = all(
+    (len(v) == 0) if isinstance(v, (list, dict)) else (not v)
+    for v in te.values()
+)
 print('yes' if all_empty else 'no')
 " 2>/dev/null)
   if [ "${empty_te:-no}" = "yes" ]; then
@@ -929,6 +934,336 @@ else
 fi
 
 rm -rf "$TMPDIR14"
+
+# ── Test 15: spec-authoring lexicon damping (foundation#1137) ────────────────
+#
+# A session that edits the drain's own tell-defining files (command spec /
+# CLAUDE.md / lexicon TSV) quotes tell phrases verbatim, so its lexicon_matches
+# are a false-positive storm. scan_stub must detect the context and damp: empty
+# lexicon_matches, set spec_authoring_context, and record the suppressed count —
+# while a session editing a NORMAL file is untouched. The SAMPLE_STUB carries 11
+# real tell matches, so the suppression is genuinely demonstrated (not a 0→0).
+echo "--- test 15: spec-authoring lexicon damping (#1137) ---"
+
+TMPDIR15=$(mktemp -d)
+
+# Baseline / control: an Edit to a NON-spec file → no damping, matches intact.
+TMP_JSONL15N="$TMPDIR15/normal_edit.jsonl"
+cat > "$TMP_JSONL15N" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_e1","name":"Edit","input":{"file_path":"/Users/x/dev/proj/src/foo.py","old_string":"a","new_string":"b"}}]}}
+JSONLEOF
+report15n=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL15N") || true
+base_count=$(printf '%s' "$report15n" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('%d %s %d' % (len(d['lexicon_matches']), d.get('spec_authoring_context'), d.get('lexicon_matches_suppressed', -1)))
+" 2>/dev/null)
+if [ "$base_count" = "11 False 0" ]; then
+  ok "normal-file edit → not spec-authoring, 11 matches intact, 0 suppressed"
+else
+  fail_test "normal-file edit" "expected '11 False 0', got '${base_count:-}'"
+fi
+
+# Spec-authoring: an Edit to claude/commands/tidy.md → damp to zero.
+TMP_JSONL15S="$TMPDIR15/spec_edit.jsonl"
+cat > "$TMP_JSONL15S" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_e2","name":"Edit","input":{"file_path":"/Users/x/dev/proj/claude/commands/tidy.md","old_string":"a","new_string":"b"}}]}}
+JSONLEOF
+report15s=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL15S") || true
+spec_state=$(printf '%s' "$report15s" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('%d %s %d' % (len(d['lexicon_matches']), d.get('spec_authoring_context'), d.get('lexicon_matches_suppressed', -1)))
+" 2>/dev/null)
+if [ "$spec_state" = "0 True 11" ]; then
+  ok "command-spec edit → spec-authoring, 0 matches, 11 suppressed (count preserved)"
+else
+  fail_test "command-spec edit" "expected '0 True 11', got '${spec_state:-}'"
+fi
+
+# Positive precision: the CLAUDE.md family (Write), the drain lexicon TSV
+# (MultiEdit), and a plain claude/commands spec all trigger.
+i=0
+for spec in \
+  "Write|/r/claude/CLAUDE.kernel.md" \
+  "MultiEdit|/r/workflows/scripts/drain/lexicon-assistant.tsv" \
+  "Edit|/r/claude/commands/build.md"; do
+  tool="${spec%%|*}"; fp="${spec#*|}"; i=$((i + 1))
+  TMP_J="$TMPDIR15/pos_$i.jsonl"
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_p%d","name":"%s","input":{"file_path":"%s","content":"x","old_string":"a","new_string":"b"}}]}}\n' "$i" "$tool" "$fp" > "$TMP_J"
+  ctx=$(scan "$SAMPLE_STUB" --jsonl "$TMP_J" | python3 -c "import json,sys; print(json.load(sys.stdin).get('spec_authoring_context'))" 2>/dev/null)
+  if [ "$ctx" = "True" ]; then
+    ok "spec-authoring detected for $(basename "$fp") ($tool)"
+  else
+    fail_test "spec-authoring surface" "expected True for $fp ($tool), got ${ctx:-}"
+  fi
+done
+
+# NEGATIVE precision (pins the tightened predicate, #1137 review): a near-miss
+# basename must NOT damp the session — matches stay intact. A whole-session
+# false positive would silently suppress every real tell.
+i=0
+for fp in \
+  "/r/docs/CLAUDE-notes.md" \
+  "/r/data/lexicon_helper.tsv" \
+  "/r/nlp/lexicon-english.tsv" \
+  "/r/home/myclaude/commands/thing.md"; do
+  i=$((i + 1))
+  TMP_J="$TMPDIR15/neg_$i.jsonl"
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_n%d","name":"Edit","input":{"file_path":"%s","old_string":"a","new_string":"b"}}]}}\n' "$i" "$fp" > "$TMP_J"
+  state=$(scan "$SAMPLE_STUB" --jsonl "$TMP_J" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('%s %d' % (d.get('spec_authoring_context'), len(d['lexicon_matches'])))
+" 2>/dev/null)
+  if [ "$state" = "False 11" ]; then
+    ok "near-miss $(basename "$fp") → NOT spec-authoring, 11 matches intact"
+  else
+    fail_test "near-miss precision" "expected 'False 11' for $fp, got '${state:-}'"
+  fi
+done
+
+rm -rf "$TMPDIR15"
+
+# ── Test 16: `Unknown JSON field` promoted soft-error signature (temperloop#770) ──
+#
+# A `gh --json` query naming a field the installed gh CLI rejects — the query
+# "succeeds" at the shell level and the wrong branch is silently taken (the
+# soft-error class F#444 built this detector for). Verbatim gh CLI string →
+# case-sensitive (no IGNORECASE), same precedent as InputValidationError /
+# `Key "..." does not exist` above.
+
+echo "--- test 16: 'Unknown JSON field' promoted soft-error signature (#770) ---"
+
+TMPDIR16=$(mktemp -d)
+TMP_JSONL16="$TMPDIR16/unknown_field.jsonl"
+cat > "$TMP_JSONL16" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_gh1","name":"Bash","input":{"command":"gh pr view 357 --json isInMergeQueue"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_gh1","content":[{"type":"text","text":"gh: Unknown JSON field: \"isInMergeQueue\""}]}]}}
+JSONLEOF
+
+report16=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL16") || true
+uf_count=$(printf '%s' "$report16" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len([e for e in te.get('errors', []) if e.get('kind') == 'soft']))
+" 2>/dev/null)
+if [ "${uf_count:-0}" -eq 1 ]; then
+  ok "'Unknown JSON field': gh --json rejection → 1 soft error captured"
+else
+  fail_test "'Unknown JSON field'" "expected 1 soft error, got ${uf_count:-0}"
+fi
+
+# Precision: lower-cased prose must NOT match (verbatim gh CLI string, no IGNORECASE).
+TMP_JSONL16B="$TMPDIR16/lowercase.jsonl"
+cat > "$TMP_JSONL16B" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_gh2","name":"Bash","input":{"command":"echo note"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_gh2","content":[{"type":"text","text":"there was an unknown json field somewhere in that blob, unrelated to gh"}]}]}}
+JSONLEOF
+
+report16b=$(scan "$SAMPLE_STUB" --jsonl "$TMP_JSONL16B") || true
+uf_benign=$(printf '%s' "$report16b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('errors', [])))
+" 2>/dev/null)
+if [ "${uf_benign:-1}" -eq 0 ]; then
+  ok "'Unknown JSON field' precision: lower-cased prose → 0 errors (case-sensitive)"
+else
+  fail_test "'Unknown JSON field' precision" "expected 0 errors on lower-cased prose, got $uf_benign"
+fi
+
+rm -rf "$TMPDIR16"
+
+# ── Test 17: `has been denied` cross-run same-command dedup (temperloop#770) ─────
+#
+# A Bash permission-policy denial of a command a command SPEC requires. A
+# single ISOLATED denial (one session) must produce NO finding — only the
+# SAME command denied across TWO OR MORE DISTINCT SESSIONS promotes to a
+# finding (cross-run state on disk, never a bare substring match). Uses a
+# dedicated --denied-state tmp path so this stays hermetic and never touches
+# real cross-session state.
+
+echo "--- test 17: 'has been denied' cross-run same-command dedup (#770) ---"
+
+TMPDIR17=$(mktemp -d)
+DENIED_STATE="$TMPDIR17/denied-state.json"
+
+TMP_JSONL17="$TMPDIR17/denied.jsonl"
+cat > "$TMP_JSONL17" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_deny1","name":"Bash","input":{"command":"gh pr list --repo org/repo --search 'archived:true'"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_deny1","is_error":true,"content":[{"type":"text","text":"Bash command \"gh pr list --repo org/repo --search 'archived:true'\" has been denied by the user's permission policy."}]}]}}
+JSONLEOF
+
+mk_stub_with_session() {
+  # $1 = target path, $2 = session_id
+  cat > "$1" << STUBEOF
+---
+date: 2026-07-25
+time: "0900"
+project: testproject
+cwd: /tmp
+session_id: $2
+transcript: /nonexistent
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+run the tidy sweep
+
+STUBEOF
+}
+
+TMP_STUB17A="$TMPDIR17/session_a.md"
+TMP_STUB17B="$TMPDIR17/session_b.md"
+mk_stub_with_session "$TMP_STUB17A" "aabbccdd-denytest-000000a1"
+mk_stub_with_session "$TMP_STUB17B" "aabbccdd-denytest-000000b2"
+
+# Run 1 (session A): first sighting of this denied command → 0 findings.
+report17a=$(scan "$TMP_STUB17A" --jsonl "$TMP_JSONL17" --denied-state "$DENIED_STATE") || true
+deny_count_a=$(printf '%s' "$report17a" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_a:-1}" -eq 0 ]; then
+  ok "denial dedup: single isolated denial (session A) → 0 findings"
+else
+  fail_test "denial dedup isolated" "expected 0 findings on first sighting, got $deny_count_a"
+fi
+
+# Re-running the SAME session (idempotency / determinism) must still be 0 —
+# re-adding an already-recorded session_id is a no-op.
+report17a_again=$(scan "$TMP_STUB17A" --jsonl "$TMP_JSONL17" --denied-state "$DENIED_STATE") || true
+deny_count_a_again=$(printf '%s' "$report17a_again" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_a_again:-1}" -eq 0 ]; then
+  ok "denial dedup: re-scanning the SAME session → still 0 findings (idempotent)"
+else
+  fail_test "denial dedup idempotency" "expected 0 findings re-scanning the same session, got $deny_count_a_again"
+fi
+
+# Run 2 (session B, a DIFFERENT session, same command, same state path): the
+# same command denied on a second distinct run → 1 finding, session_count 2.
+report17b=$(scan "$TMP_STUB17B" --jsonl "$TMP_JSONL17" --denied-state "$DENIED_STATE") || true
+deny_count_b=$(printf '%s' "$report17b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_b:-0}" -eq 1 ]; then
+  ok "denial dedup: same command denied on a SECOND distinct session → 1 finding"
+else
+  fail_test "denial dedup cross-run" "expected 1 finding on the second distinct session, got ${deny_count_b:-0}"
+fi
+
+deny_session_count=$(printf '%s' "$report17b" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+d = te.get('repeated_denials', [])
+print(d[0].get('session_count', 0) if d else 0)
+" 2>/dev/null)
+if [ "${deny_session_count:-0}" -eq 2 ]; then
+  ok "denial dedup: finding carries session_count == 2"
+else
+  fail_test "denial dedup session_count" "expected session_count 2, got ${deny_session_count:-0}"
+fi
+
+# Precision: a DIFFERENT command, never denied before, against the SAME
+# populated state path → 0 findings (dedup is per-command, not a global flag).
+TMP_JSONL17C="$TMPDIR17/other_command.jsonl"
+cat > "$TMP_JSONL17C" << 'JSONLEOF'
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_deny2","name":"Bash","input":{"command":"gh issue list --repo org/repo"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_deny2","is_error":true,"content":[{"type":"text","text":"Bash command \"gh issue list --repo org/repo\" has been denied by the user's permission policy."}]}]}}
+JSONLEOF
+TMP_STUB17C="$TMPDIR17/session_c.md"
+mk_stub_with_session "$TMP_STUB17C" "aabbccdd-denytest-000000c3"
+report17c=$(scan "$TMP_STUB17C" --jsonl "$TMP_JSONL17C" --denied-state "$DENIED_STATE") || true
+deny_count_c=$(printf '%s' "$report17c" | python3 -c "
+import json, sys
+te = json.load(sys.stdin).get('tool_events', {})
+print(len(te.get('repeated_denials', [])))
+" 2>/dev/null)
+if [ "${deny_count_c:-1}" -eq 0 ]; then
+  ok "denial dedup precision: a different, never-before-denied command → 0 findings"
+else
+  fail_test "denial dedup precision" "expected 0 findings for a distinct first-sighting command, got $deny_count_c"
+fi
+
+rm -rf "$TMPDIR17"
+
+# ── Test 18: stub.model field (temperloop#761) ────────────────────────────────
+#
+# scan-report-schema.md / findings-schema.md require `report.stub.model`,
+# read from the stub frontmatter's `model:` line (session-end-log.sh). A stub
+# WITH a model: line must produce that value; a stub WITHOUT one must degrade
+# to an explicit `null` (never an omitted key, never "") — the distinction
+# that keeps "genuinely no model" from reading as "the scanner never emitted
+# this field".
+
+echo "--- test 18: stub.model field (present + absent, temperloop#761) ---"
+
+TMPDIR18=$(mktemp -d)
+
+# Present case: frontmatter carries model: claude-opus-4-8.
+TMP_STUB18A="$TMPDIR18/with_model.md"
+cat > "$TMP_STUB18A" << 'STUBEOF'
+---
+date: 2026-06-01
+time: "1600"
+project: testproject
+cwd: /tmp
+session_id: aabbccdd-test-model-00000001
+transcript: /nonexistent
+model: claude-opus-4-8
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+hello
+
+STUBEOF
+
+report18a=$(scan "$TMP_STUB18A") || true
+model_present=$(printf '%s' "$report18a" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('stub', {}).get('model'))
+" 2>/dev/null)
+if [ "${model_present:-}" = "claude-opus-4-8" ]; then
+  ok "stub.model: frontmatter model: line → 'claude-opus-4-8' in report"
+else
+  fail_test "stub.model present" "expected 'claude-opus-4-8', got '${model_present:-}'"
+fi
+
+# Absent case: SAMPLE_STUB carries no model: line → key present, value null
+# (not omitted, not empty string).
+report18b=$(scan "$SAMPLE_STUB" --jsonl "$SAMPLE_JSONL") || true
+model_absent=$(printf '%s' "$report18b" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+stub = d.get('stub', {})
+present = 'model' in stub
+print('%s %s' % (present, stub.get('model') is None))
+" 2>/dev/null)
+if [ "$model_absent" = "True True" ]; then
+  ok "stub.model: no model: line → key present, value explicit null"
+else
+  fail_test "stub.model absent" "expected 'True True' (key present, value None), got '${model_absent:-}'"
+fi
+
+rm -rf "$TMPDIR18"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

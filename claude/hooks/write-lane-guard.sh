@@ -24,8 +24,8 @@
 # guard leaves silent.
 #
 # VERDICT: ask, never deny — a deliberate cross-repo action is one confirmation
-# away, never hard-blocked (same philosophy as board-adapter-guard.sh /
-# git-stale-branch-guard.sh / subtree-edit-guard.sh).
+# away, never hard-blocked (same philosophy as git-stale-branch-guard.sh /
+# subtree-edit-guard.sh).
 #
 # EVAL_RUN: exits 0 silently — an unanswerable interactive `ask` would hang a
 # headless eval run, and a lane crossing is not a scored finding.
@@ -42,6 +42,7 @@
 #     — but file mutations through the Edit/Write/MultiEdit/NotebookEdit tools ARE
 #     covered, which is the dominant vector. A command chaining several `cd`s is
 #     checked against the FIRST mutation's context only.
+#     DIVERGENT since foundation#1355: build-worktree-guard.sh now DOES contain redirect targets; this guard deliberately still does not — a write jail proves containment, whereas this one only `ask`s on peer-HEAD moves.
 #   - `git worktree add` is intentionally NOT a gated verb: creating a worktree
 #     off a foreign repo is the sanctioned isolation escape hatch and only writes
 #     that repo's worktree-admin dir — it never moves the peer's HEAD or working

@@ -35,8 +35,15 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 # Keep the board cache off the real dir + force live reads (no stale page).
-export BOARD_CACHE_DIR="$TMP/cache"; mkdir -p "$BOARD_CACHE_DIR"
-export BOARD_CACHE_TTL=0
+# Isolate from any host-level boards.conf (machine, legacy ~/.config/foundation,
+# or repo-local) so board 4 resolves to its built-in default (projects backend,
+# project #3). A real dev-host boards.conf carrying `board.4.backend=issues`
+# (the temperloop#460 fleet-cutover soak) would otherwise flip board 4 onto the
+# issues-only resolve path this projects-fixtured suite does not stub, so the
+# 3a contention pre-check reads an unstamped default issue and never HALTS —
+# green in CI (clean host, no conf), red on a dev host. temperloop#592.
+export BOARDS_CONF_MACHINE="$TMP/no-machine.conf"     # nonexistent -> no machine/legacy conf
+export BOARDS_CONF_REPO_LOCAL="$TMP/no-repo.conf"     # nonexistent -> no repo-local conf
 # Deterministic claim stamp; never inside tmux (skip claim.sh's marker block).
 export SUBSET_HOST_LABEL="testhost"
 export CLAUDE_CODE_SESSION_ID="sess1234deadbeef"   # -> stamp "testhost:sess1234"
@@ -89,27 +96,12 @@ case "${1:-}" in
     # so synthesize that shape here from the fixture. -F num pins which issue the
     # query is "for" (multi-item fixtures resolve the matching one). This keeps
     # the test fixtures readable while exercising the adapter's real reshape jq.
-    if printf '%s' "$all" | grep -q 'api graphql' || [ "$path" = "graphql" ]; then
-      qnum=""
-      j=0; qargs=("$@")
-      while [ $j -lt ${#qargs[@]} ]; do
-        case "${qargs[$j]}" in -F) j=$((j+1)); case "${qargs[$j]}" in num=*) qnum="${qargs[$j]#num=}";; esac ;; esac
-        j=$((j+1))
-      done
-      jq -c --argjson n "${qnum:-0}" '
-        (.items[] | select(.content.number==$n)) as $it
-        | { data: { repository: { issue: {
-              title: $it.content.title,
-              projectItems: { nodes: [ {
-                id: $it.id,
-                project: { number: 3 },
-                fieldValues: { nodes: [
-                  { __typename:"ProjectV2ItemFieldSingleSelectValue", name: $it.status, field:{name:"Status"} },
-                  { __typename:"ProjectV2ItemFieldTextValue", text: ($it["host/Session"] // ""), field:{name:"Host/Session"} }
-                ] }
-              } ] }
-        } } } }' "$S/resolve_item.json"
-      exit 0
+    # The Projects-v2 single-item GraphQL resolve is gone (ADR 0004). Any
+    # attempt to build that argv is a regression, so fail loudly rather than
+    # quietly serving a fixture for a call that can no longer happen.
+    if grep -q 'api graphql' <<<"$all" || [ "$path" = "graphql" ]; then
+      echo "stub: REGRESSION — 'gh api graphql' built, but the Projects-v2 arm was removed (ADR 0004): $all" >&2
+      exit 3
     fi
 
     case "$path" in
@@ -126,9 +118,35 @@ case "${1:-}" in
         fi
         ;;
       repos/*/issues/*)
-        # Single issue object — serve from per-number fixture if present.
+        # Single issue object. board_resolve_item reads THIS on the issues-only
+        # backend (ADR 0004) where it used to fire a Projects-v2 GraphQL query,
+        # so derive it from the same per-case resolve_item.json fixture
+        # write_resolve() already maintains — keeping every case's setup
+        # unchanged while exercising board.sh's real issue_item reshape.
         num="${path##*/}"
-        out="$(cat "$S/issue_$num.json" 2>/dev/null || cat "$S/issue.json")"
+        # Base: the fnd:-label view of this case's resolve_item.json fixture
+        # (status + claim stamp), so board_resolve_item's real issue_item
+        # reshape runs. Overlay: the per-number issue_<n>.json fixture when a
+        # case supplies one (state/id/html_url) — MERGED, not substituted, so
+        # supplying one does not silently erase the item's labels.
+        base="$(cat "$S/issue.json")"
+        if [ -f "$S/resolve_item.json" ] && \
+           jq -e --argjson n "$num" 'any(.items[]?; .content.number==$n)' "$S/resolve_item.json" >/dev/null 2>&1; then
+          base="$(jq -c --argjson n "$num" '
+            def slug: ascii_downcase | gsub(" "; "-");
+            (.items[] | select(.content.number==$n)) as $it
+            | { number: $n, title: ($it.content.title // ""), state: "open", id: 9000,
+                html_url: "https://github.com/Towheads/foundation/issues/\($n)",
+                labels: (
+                  (if ($it.status // "") != "" then [{name: ("fnd:status:" + ($it.status | slug))}] else [] end)
+                  + (if ($it["host/Session"] // "") != "" then [{name: ("fnd:host/session:" + $it["host/Session"])}] else [] end)
+                ) }' "$S/resolve_item.json")"
+        fi
+        if [ -f "$S/issue_$num.json" ]; then
+          out="$(printf '%s\n%s\n' "$base" "$(cat "$S/issue_$num.json")" | jq -sc '.[0] * .[1]')"
+        else
+          out="$base"
+        fi
         ;;
       *)
         out='{}'
@@ -151,6 +169,29 @@ case "${1:-}" in
         ;;
       edit)
         log "issue_edit $*"
+        # Translate the issues-only label write into the SAME `item_edit
+        # field=... opt=... clear=...` record shape the assertions below already
+        # use, so each case keeps its original assertion rather than being
+        # rewritten around a new log vocabulary.
+        for a in "$@"; do
+          case "$a" in
+            fnd:status:*)
+              # opt_<slug> with hyphens dropped, matching the former
+              # Projects-v2 option-id spelling (in-progress -> opt_inprogress).
+              _sl="${a#fnd:status:}"; _sl="${_sl//-/}"
+              log "item_edit field=PVTSSF_status opt=opt_${_sl} text= clear=0" ;;
+            fnd:host/session:*) log "item_edit field=PVTF_hostsession opt= text=${a#fnd:host/session:} clear=0" ;;
+          esac
+        done
+        # A --remove-label of the stamp with no matching --add-label is the
+        # issues-only spelling of the Projects `--clear`.
+        case "$*" in
+          *"--remove-label fnd:host/session:"*)
+            case "$*" in
+              *"--add-label fnd:host/session:"*) : ;;
+              *) log "item_edit field=PVTF_hostsession opt= text= clear=1" ;;
+            esac ;;
+        esac
         ;;
       *) echo "stub: unknown issue subcmd $sub" >&2; exit 3 ;;
     esac
@@ -158,30 +199,13 @@ case "${1:-}" in
     ;;
 
   project)
-    sub="${2:-}"
-    case "$sub" in
-      view)       cat "$S/project_view.json" ;;
-      field-list) cat "$S/field_list.json" ;;
-      item-edit)
-        # record the field-id + option/text the edit set
-        fid=""; opt=""; txt=""; clear=0
-        shift 2
-        while [ $# -gt 0 ]; do
-          case "$1" in
-            --field-id) fid="$2"; shift 2 ;;
-            --single-select-option-id) opt="$2"; shift 2 ;;
-            --text) txt="$2"; shift 2 ;;
-            --clear) clear=1; shift ;;
-            *) shift ;;
-          esac
-        done
-        log "item_edit field=$fid opt=$opt text=$txt clear=$clear"
-        ;;
-      item-add)
-        log "item_add $*"
-        ;;
-      *) echo "stub: unknown project subcmd $sub" >&2; exit 3 ;;
-    esac
+    echo "stub: REGRESSION — 'gh project' built, but the Projects-v2 arm was removed (ADR 0004): $all" >&2
+    exit 3
+    ;;
+
+  label)
+    # `gh label create` — the issues-only writers ensure a label exists first.
+    log "label_$2 $*"
     exit 0
     ;;
 
@@ -287,6 +311,31 @@ rc=0; out="$(bash "$SCRIPT" claim-item --board 4 --issue 200)" || rc=$?
 [ "$(jq -r .owner   <<<"$out")" = "otherhost:beef0000" ] || fail "3a wrong owner (got $out)"
 echo "PASS: 3a claim-item HALTS (CONTENDED) when a different live session owns it"
 
+# (a-issues) contention on the ISSUES-ONLY backend — now the live path for boards
+# 3/4/5/6 mid-cutover (#470). Board 4 is flipped backend=issues via a machine-level
+# boards.conf; board_resolve_item then takes its ISSUES path (a `gh api
+# repos/.../issues/<n>` REST read reshaped from `fnd:` labels), NOT the Projects-v2
+# projectItems GraphQL stub. The 3a pre-check must read cur_status from the
+# `fnd:status:in-progress` label and cur_stamp from the `fnd:host/session:` label and
+# HALT (CONTENDED) under a foreign stamp. To PROVE the labels path is the one
+# exercised (and the projectItems stub is NOT), point the Projects-v2 resolve fixture
+# at #205 as an UNCLAIMED Ready item with no stamp: were the projects path wrongly
+# taken here, cur_status would read "Ready" and the pre-check would proceed to claim
+# rather than HALT — so a CONTENDED outcome can ONLY come from the issues reshape.
+cat > "$STATE/issues_backend.conf" <<'EOF'
+board.4.backend=issues
+EOF
+write_resolve 205 "Ready" ""     # projectItems stub: would NOT contend if wrongly taken
+cat > "$STATE/issue_205.json" <<'EOF'
+{"number":205,"state":"open","id":205205,"labels":[{"name":"fnd:status:in-progress"},{"name":"fnd:host/session:otherhost:beef0000"}]}
+EOF
+rc=0
+out="$(BOARDS_CONF_MACHINE="$STATE/issues_backend.conf" bash "$SCRIPT" claim-item --board 4 --issue 205)" || rc=$?
+[ "$rc" -ne 0 ] || fail "3a issues-backend contention did not exit non-zero"
+[ "$(jq -r .outcome <<<"$out")" = "CONTENDED" ] || fail "3a issues-backend expected CONTENDED (got $out)"
+[ "$(jq -r .owner   <<<"$out")" = "otherhost:beef0000" ] || fail "3a issues-backend wrong owner (got $out)"
+echo "PASS: 3a claim-item HALTS (CONTENDED) on the ISSUES-ONLY backend (fnd:status + fnd:host/session labels, not the projectItems stub)"
+
 # (b) claim a Ready item + move the epic In Progress on first claim.
 #     claim.sh resolves the ISSUE; then we resolve the EPIC. Both share the one
 #     resolve_item.json, so point it at whichever is being resolved by sequencing:
@@ -354,6 +403,58 @@ out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
 [ "$(jq -r .open <<<"$out")" = "1" ] || fail "4d-epic wrong open count (got $out)"
 grep -q 'issue_close' "$LOG" && fail "4d-epic closed despite open children"
 echo "PASS: 4d-epic does NOT close while a child is still open"
+
+# temperloop#458 — body-acceptance guard (children drained; epic body still carries
+# unchecked acceptance/verification prose that was never split into a sub-issue).
+echo '[{"number":41,"state":"closed"},{"number":42,"state":"closed"}]' > "$STATE/sub_issues.json"
+
+# (d) zero open children BUT an unchecked acceptance box in the body -> refuse close.
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400,"body":"## Acceptance\n\n- [ ] induced crash converges to a board item\n- [x] handled error converges\n"}
+EOF
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_ACCEPTANCE_OPEN" ] || fail "4d-epic expected EPIC_ACCEPTANCE_OPEN (got $out)"
+[ "$(jq -r .acceptance_open <<<"$out")" = "1" ] || fail "4d-epic wrong acceptance_open count (got $out)"
+grep -q 'issue_close' "$LOG" && fail "4d-epic closed despite an open body-acceptance box"
+echo "PASS: 4d-epic REFUSES to close while an unchecked body acceptance box remains"
+
+# (e) same body, but the explicit override closes anyway (acceptance_override flagged).
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400 --allow-open-acceptance)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_CLOSED" ] || fail "4d-epic override expected EPIC_CLOSED (got $out)"
+[ "$(jq -r '.acceptance_override' <<<"$out")" = "true" ] || fail "4d-epic override did not flag acceptance_override (got $out)"
+grep -q 'issue_close 400' "$LOG" || fail "4d-epic override did not close #400"
+echo "PASS: 4d-epic --allow-open-acceptance overrides the guard and closes (flagged)"
+
+# (f) no-regression: heading-scoped + checked boxes -> close normally.
+#   Only sections whose heading matches /accept|verif/i are scanned; an unchecked
+#   box under a non-acceptance heading, and a CHECKED acceptance box, are ignored.
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400,"body":"## Tasks\n\n- [ ] some non-acceptance note\n\n## Acceptance\n\n- [x] all e2e legs green\n"}
+EOF
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_CLOSED" ] || fail "4d-epic no-regression expected EPIC_CLOSED (got $out)"
+grep -q 'issue_close 400' "$LOG" || fail "4d-epic no-regression did not close #400"
+echo "PASS: 4d-epic closes normally when acceptance boxes are checked (heading-scoped, no false positive)"
+
+# (g) child-reference checkboxes under Acceptance are NOT body acceptance -> close.
+#   `- [ ] #N` / `- [ ] owner/repo#N` are tracked by the sub-issue state count, so
+#   they must not block the close as if they were freestanding acceptance prose.
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400,"body":"## Acceptance\n\n- [ ] #358\n- [ ] Towheads/foundation#709\n"}
+EOF
+: >"$LOG"
+out="$(bash "$SCRIPT" close-epic --board 4 --epic 400)"
+[ "$(jq -r .outcome <<<"$out")" = "EPIC_CLOSED" ] || fail "4d-epic child-ref case expected EPIC_CLOSED (got $out)"
+grep -q 'issue_close 400' "$LOG" || fail "4d-epic child-ref case did not close #400"
+echo "PASS: 4d-epic ignores bare #N / owner/repo#N child-ref checkboxes under Acceptance"
+
+# restore the all-closed children fixture for downstream tests (retro/park reuse it)
+cat > "$STATE/issue_400.json" <<'EOF'
+{"number":400,"state":"open","id":400400}
+EOF
 
 # =============================================================================
 # 4d-retro file-retro

@@ -5,7 +5,7 @@
 #
 # Definitions (from the epic contract):
 #   kernel  — anything a stranger needs for the process layer to work against
-#             their own org/values: board toolkit, build spine, funnel,
+#             their own org/values: board toolkit, build machinery, pipeline,
 #             quality gates, commands/skills, generic hooks, plan schema.
 #   overlay — anything personal or machine-specific: vault-specific content,
 #             mini/launchd deploy bits, personal dotfiles, telemetry data,
@@ -47,7 +47,7 @@
 # install-settings.sh). Same split-pending treatment extended here to
 # `claude/settings.json` (mixes kernel hook-wiring with Travis's personal
 # permission allowlist/model choice in one committed file) and `Makefile`
-# (kernel build-spine/board/install targets interleaved with overlay
+# (kernel build-machinery/board/install targets interleaved with overlay
 # telemetry/sessions/crash-convergence targets in one file, mirroring the
 # quality-gates.sh KERNEL_GATES/OVERLAY_GATES split but not yet itself split
 # the same way) — both need a real file-level split before physical
@@ -64,9 +64,22 @@ kernel .gitattributes
 kernel .github/*
 overlay .claude/*
 
+# .temperloop/ — this repo's OWN per-repo value-loop dir (the same dir
+# `temperloop init` creates in an adopter's repo). Only TRACKED members are
+# classified here; `.temperloop/baseline.jsonl` and `.recovery.json` are
+# gitignored runtime data (see .temperloop/.gitignore) and never reach this
+# walk. `report.d/tokens` is the kernel's own `tokens` drop-in producer's
+# LOCATOR SHIM (temperloop#958; temperloop#980 "producer-kernel-side-relocation"
+# moved the real transcript-derived spend reader kernel-side to
+# workflows/scripts/report-producers/tokens, see that entry below) — a
+# generic locate-and-exec with nothing personal in it, which is exactly the
+# stranger test.
+kernel .temperloop/*
+
 kernel scripts/quality-gates.sh
 kernel scripts/prune-merged-branches.sh
 kernel scripts/lint-zsh-param-tie.sh
+kernel scripts/lint-bash32-cmdsubst-comment.sh
 kernel scripts/update-kernel.sh
 kernel scripts/ensure-shellcheck.sh
 kernel scripts/tests/*
@@ -79,7 +92,7 @@ overlay iterm/*
 overlay meta/*
 # Single-file override (longest-pattern-wins, per the MATCH RULE above): the
 # raw-lake sink-spec stub (kernel #29) is the doc a bare kernel checkout's own
-# emit sites (emit-command-run.sh, emit-issue-touch.sh, funnel-cron.sh,
+# emit sites (emit-command-run.sh, emit-issue-touch.sh, pipeline-cron.sh,
 # board/capture.sh, board/claim.sh) point their "canonical sink spec:" header
 # comment at — it must ship with the kernel even though the actual runtime
 # data under meta/data/raw/ (gitignored JSONL) stays overlay-owned, matching
@@ -109,15 +122,16 @@ kernel bin/lib/*
 kernel claude/.gitkeep
 kernel claude/CLAUDE.kernel.md
 overlay claude/CLAUDE.overlay.md
-# Overlay extension of tidy.md's kernel Live/Drain pairing table
+# Overlay extension of tidy.md's kernel Capture/Backstop pairing table
 # (foundation F#809): personal/vault-backed pairs only, unioned in by
-# workflows/scripts/validate-live-drain.sh when this file is present. Deliberately
+# workflows/scripts/validate-capture-backstop.sh when this file is present. Deliberately
 # NOT under claude/commands/ (a bare .md there is discovered as a slash
 # command; this is a data/registry file, not a command).
-overlay claude/live-drain-registry.overlay.md
+overlay claude/capture-backstop-registry.overlay.md
 split claude/settings.json
 kernel claude/status-line.sh
 kernel claude/plan-schema.md
+kernel claude/citation-schema.md
 kernel claude/design-schema.md
 kernel claude/message-schema.md
 kernel claude/presentation-plane.md
@@ -125,16 +139,24 @@ kernel claude/decision-queue-contract.md
 kernel claude/work-class-policy.md
 kernel claude/measurement-proxies.md
 kernel claude/design-measurement-proxies.md
+kernel claude/engineering-principles.md
+# The first-epic template (temperloop#609): the static, pre-designed body
+# of the adopter's first epic ("Set up <project> with temperloop",
+# ADR 0010). Deliberately NOT under claude/commands/ (a bare .md there is
+# discovered as a slash command; this is template data, not a command),
+# same reasoning as claude/capture-backstop-registry.overlay.md above.
+kernel claude/templates/first-epic-setup.md
 kernel claude/agents/*
 kernel claude/workflows/*
 
-# claude/commands/ — pipeline skills. Generic bug->PR pipeline + funnel
-# driver are kernel; Travis's personal daily-planning rituals, his telemetry
+# claude/commands/ — pipeline skills. Generic bug->PR pipeline + pipeline
+# driver are kernel; Travis's personal daily-planning routines, his telemetry
 # brief, and the Sentry-backed crash-convergence intake are overlay (they
 # name overlay-only subject matter even though the *shape* is a slash
 # command like any other).
 kernel claude/commands/assess.md
 kernel claude/commands/build.md
+kernel claude/commands/fix.md
 kernel claude/commands/tidy.md
 kernel claude/commands/check-in.md
 kernel claude/commands/init.md
@@ -142,8 +164,8 @@ kernel claude/commands/next.md
 kernel claude/commands/sweep.md
 kernel claude/commands/triage.md
 kernel claude/commands/workshop.md
-kernel claude/commands/funnel-drive.md
-kernel claude/commands/funnel-drive-merge.md
+kernel claude/commands/pipeline-drive.md
+kernel claude/commands/pipeline-drive-merge.md
 overlay claude/commands/standup.md
 overlay claude/commands/telemetry.md
 overlay claude/commands/signal-intake.md
@@ -177,6 +199,13 @@ kernel workflows/scripts/board/*
 # narrows the board/* catch-all above (longest-pattern-wins). foundation #798.
 overlay workflows/scripts/board/migrate-to-org.sh
 kernel workflows/scripts/build/*
+# issue-state.sh + lib/pr-linkage.sh (temperloop #635) are already covered by
+# the build/* catch-all above; these two explicit lines are the requested
+# by-name registration for the new `resolve` single-issue state probe and
+# its shared open-PR-linkage lib (both kernel: generic build-machinery tooling,
+# no org/personal content).
+kernel workflows/scripts/build/issue-state.sh
+kernel workflows/scripts/build/lib/pr-linkage.sh
 # test_rework_snapshot.sh tests workflows/scripts/rework-snapshot.sh, which is
 # overlay (personal telemetry pipeline, see the flat-files block below) — a
 # kernel-only checkout has nothing for this test to exercise. Single-file
@@ -188,8 +217,8 @@ overlay workflows/scripts/build/tests/test_rework_snapshot.sh
 kernel workflows/scripts/lib/*
 kernel workflows/scripts/drain/*
 kernel workflows/scripts/install/*
-# Knob registry (temperloop#164/#169 D2): the kernel TSV of every tunable
-# knob + the union-aware parse helper. A stranger's kernel-only checkout
+# Setting registry (temperloop#164/#169 D2): the kernel TSV of every tunable
+# setting + the union-aware parse helper. A stranger's kernel-only checkout
 # needs both the registry and the parser (a future `temperloop config list`
 # and CI equality lint both read it) — kernel content, no org/vault subject
 # matter.
@@ -253,6 +282,7 @@ kernel docs/who-its-for.md
 kernel docs/cost-and-autonomy.md
 kernel docs/self-learning-loop.md
 kernel docs/token-spend.md
+kernel docs/model-fanout-inventory.md
 kernel docs/cognitive-load.md
 kernel docs/pitch.md
 kernel AGENTS.md
@@ -286,21 +316,91 @@ kernel workflows/scripts/tests/fixtures/design-schema/*
 # validate-issue-meta-snapshot, telemetry-test, sessions-test) in
 # scripts/quality-gates.d/foundation-overlay.sh.
 kernel workflows/scripts/board-sync-drift-check.sh
+kernel workflows/scripts/board-consumer-shellcheck.sh
+kernel workflows/scripts/count-prose.sh
+# Contributor-manifest tsv + its structural lint (temperloop#827, epic #810
+# P1) — already covered by the `kernel workflows/scripts/config/*` glob
+# above (line ~212), listed explicitly here for discoverability alongside
+# the count-prose.sh flat-file entries this manifest feeds.
+kernel workflows/scripts/config/contributor-manifest.tsv
+kernel workflows/scripts/config/check-contributor-manifest.sh
+kernel workflows/scripts/config/tests/test_check_contributor_manifest.sh
+kernel workflows/scripts/validate-prose-budget.sh
+kernel workflows/scripts/tests/test_validate_prose_budget.sh
+# Semantic-redundancy chunker + labelled fixture corpus (temperloop#854,
+# half (a) of the P9 semantic-redundancy probe split from #830; epic #810
+# contract amendment P9). The chunker script/doc live at the top level
+# (like count-prose.sh) so need their own explicit rows; the fixture
+# corpus + its lint are under workflows/scripts/config/ and are already
+# covered by the `kernel workflows/scripts/config/*` glob above — listed
+# explicitly here for discoverability alongside the chunker.
+kernel workflows/scripts/chunk-redundancy-surface.sh
+kernel workflows/scripts/chunk-redundancy-surface.md
+kernel workflows/scripts/tests/test_chunk_redundancy_surface.sh
+kernel workflows/scripts/config/redundancy-fixtures.json
+kernel workflows/scripts/config/check-redundancy-fixtures.sh
+kernel workflows/scripts/config/tests/test_check_redundancy_fixtures.sh
+# Semantic-redundancy SCORER (temperloop#855, half (b) of the same P9 probe):
+# consumes half (a)'s chunk stream through its documented interface, scores
+# pairs, and records the pre-registered precision go/no-go. Same top-level
+# placement as the chunker, hence the same explicit rows; the hand-labelled
+# precision sample under workflows/scripts/config/ is already covered by the
+# `kernel workflows/scripts/config/*` glob above — listed explicitly here for
+# discoverability alongside the scorer.
+kernel workflows/scripts/score-redundancy.sh
+kernel workflows/scripts/score-redundancy.py
+kernel workflows/scripts/score-redundancy.md
+kernel workflows/scripts/tests/test_score_redundancy.sh
+kernel workflows/scripts/config/redundancy-precision-labels.tsv
+# Declared-expiry check (temperloop#831, epic #810 P10): resolves whether a
+# standing rule's own declared expiry (claude/citation-schema.md's marker
+# extension) has passed, over the surface citation-registry.tsv (already
+# covered by the `kernel workflows/scripts/config/*` glob above) intersected
+# with contributor-manifest.tsv. Report-only — Phase A ships no gate.
+kernel workflows/scripts/declared-expiry-check.sh
+kernel workflows/scripts/tests/test_declared_expiry_check.sh
 kernel workflows/scripts/emit-command-run.sh
+kernel workflows/scripts/emit-session-context.sh
 kernel workflows/scripts/env-hygiene-report.sh
+kernel workflows/scripts/ready-pr-sweep.sh
 kernel workflows/scripts/emit-gh-perf.sh
 kernel workflows/scripts/emit-issue-touch.sh
+# Per-merged-item efficiency emit (temperloop#943) — kernel for the same
+# reason pipeline-spend-report.sh below is: it derives from harness-owned
+# workflow agent transcripts every Claude Code user has (via that profiler,
+# which it composes rather than reimplements), names no personal path, and
+# hangs off build.md's own 4d merge seam.
+kernel workflows/scripts/emit-item-efficiency.sh
 kernel workflows/scripts/gh-call-logger.sh
 kernel workflows/scripts/install-settings.sh
 kernel workflows/scripts/install-claude-md.sh
 kernel workflows/scripts/lint-pr-body.sh
+# CHANGELOG [Unreleased] completeness gate (temperloop#960) — the PR-hygiene
+# sibling of lint-pr-body.sh above. Kernel: it derives "contract surface" from
+# VERSIONING.md's own table and names no personal path or org-specific value.
+kernel workflows/scripts/check-changelog-entry.sh
 kernel workflows/scripts/telemetry-brief.sh
+# Pipeline spend profiler (temperloop#958) — reads Claude Code's own workflow
+# agent transcripts and reports cost-weighted spend. Kernel: it derives from a
+# harness-owned data source every Claude Code user has, names no personal
+# path, and is what feeds the kernel's own `.temperloop/report.d/tokens`
+# drop-in above.
+kernel workflows/scripts/pipeline-spend-report.sh
+# report-producers/ — kernel-side IMPLEMENTATIONS a .temperloop/report.d/
+# locator shim execs into (temperloop#980 "producer-kernel-side-relocation").
+# `tokens` moved here from `.temperloop/report.d/tokens` (now just a thin
+# locator + exec shim, still claimed by the `.temperloop/*` entry above) so
+# the real transcript-parsing logic updates with the kernel checkout and
+# stays inside check-producer-egress.sh's reach (see that script's own
+# report-producers/ scan, added in the same change).
+kernel workflows/scripts/report-producers/*
 kernel workflows/scripts/validate-activation-registry.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
+kernel workflows/scripts/validate-knowledge-search-emit.sh
 kernel workflows/scripts/workflow-reviewer-coverage.sh
-kernel workflows/scripts/validate-live-drain.sh
+kernel workflows/scripts/validate-capture-backstop.sh
 kernel workflows/scripts/validate-template-refs.sh
 kernel workflows/scripts/validate-design-brief.sh
 
@@ -316,8 +416,8 @@ overlay workflows/scripts/build_eval_rollup.py
 overlay workflows/scripts/build_findings_rollup.py
 overlay workflows/scripts/test_docs_metrics.py
 overlay workflows/scripts/test_build_findings_rollup.py
-overlay workflows/scripts/build_funnel_rollup.py
-overlay workflows/scripts/test_build_funnel_rollup.py
+overlay workflows/scripts/build_pipeline_rollup.py
+overlay workflows/scripts/test_build_pipeline_rollup.py
 overlay workflows/scripts/build_rework_rollup.py
 overlay workflows/scripts/test_build_rework_rollup.py
 overlay workflows/scripts/build_rollups.py
@@ -351,11 +451,13 @@ overlay workflows/scripts/test_findings.py
 overlay workflows/scripts/validator-ci.sh
 overlay workflows/scripts/test_validators.py
 
-# --- appended by seed-kernel-repo.sh (F#803): these paths are generated by
-# the seeder directly into the kernel repo and never exist in the foundation
-# source tree, so they have no entry in the manifest copied from there. ---
+# --- kernel-repo identity + release files (F#803): these paths live directly
+# in the kernel repo and have no counterpart in foundation's source tree, so
+# they carry their own explicit classification here (the 100%-coverage gate
+# requires every tracked path be classified). ---
 kernel LICENSE
 kernel NOTICE
 kernel SECURITY.md
 kernel CHANGELOG.md
 kernel VERSIONING.md
+kernel VERSION

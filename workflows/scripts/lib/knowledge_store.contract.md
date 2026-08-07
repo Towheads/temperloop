@@ -16,7 +16,7 @@ interface into scope. It sets no shell options; the sourcing script owns
 ## Configuration
 
 Exactly one environment variable selects the store root, and one selects the
-backend. There is no second path knob — every operation resolves its target
+backend. There is no second path setting — every operation resolves its target
 location through `ks_root` (directly or via a backend's own call to it).
 
 | Variable | Default | Meaning |
@@ -29,20 +29,19 @@ per-user data directory, not tied to any particular git checkout, so a
 plain-files store survives independent of which repo clone is active and
 does not risk being accidentally committed inside a project tree.
 
-**Legacy default-root window (v0.15.0 → removed in v0.17.0).** The default
-namespace renamed from `.../foundation/knowledge` to
-`.../temperloop/knowledge` in v0.15.0 (temperloop#165, read-old-write-new).
-When `KNOWLEDGE_STORE_ROOT` is unset, resolution probes the **new** default
-first; if nothing exists there but a store directory **exists at the legacy
-default**, the legacy store is used (with a one-line `NOTE` on stderr, at
-most once per process) so a pre-rename install keeps finding its notes. A
-fresh install — neither directory present — always resolves to the new
-default, so every new store is created under `temperloop/`. The legacy
-fallback is **removed in v0.17.0**: migrate with
+**Legacy default root (window CLOSED in v0.19.0).** The default namespace
+renamed from `.../foundation/knowledge` to `.../temperloop/knowledge` in
+v0.15.0 (temperloop#165). Through the v0.15.0 → v0.19.0 window, a store
+existing at the legacy default was resolved as a fallback; **that fallback is
+removed**. When `KNOWLEDGE_STORE_ROOT` is unset, resolution now always yields
+the **new** default. What survives is the *diagnostic*: if nothing exists at
+the new default but a store directory **exists at the legacy default**, one
+`NOTE` per process names the stranded store on stderr — without it a
+pre-rename install would silently resolve an empty new root and report "no
+notes found" while the real store sits one directory over. Migrate with
 `mv "${XDG_DATA_HOME:-$HOME/.local/share}/foundation/knowledge" "${XDG_DATA_HOME:-$HOME/.local/share}/temperloop/knowledge"`
 (or pin `KNOWLEDGE_STORE_ROOT`). An explicitly set `KNOWLEDGE_STORE_ROOT`
-is always honored verbatim — the window logic applies to the *default*
-only.
+is always honored verbatim — this logic applies to the *default* only.
 
 ### `ks_root`
 
@@ -128,6 +127,22 @@ because append's use case is incremental logs where "atomic whole-file
 replace" is the wrong cost/semantic for a call that may run many times
 against the same document.
 
+**Trailing-newline guarantee (temperloop#1308).** Appended content always
+begins on a fresh line — `ks_append` never lands a mid-line concatenation
+onto an unterminated last line. This matters concretely for a caller that
+appends a `### heading` block to a log-like document: a consumer that
+enumerates entries by matching `^### ` at line-start (e.g. a pending-
+decisions review scan) silently skips an entry whose heading got fused onto
+the previous line, because it is then no longer a real line-leading
+heading. The guarantee is **conditional, not unconditional**: a separating
+newline is inserted only when the target already exists, is non-empty, and
+its last byte is not itself a newline. Appending to an already
+well-terminated document is therefore byte-identical to appending without
+this guarantee — no stray blank line is ever introduced, and a caller that
+already emits its own leading `\n` (as most existing callers do) sees no
+behavior change. See the Backend matrix below for how each backend
+satisfies this.
+
 - **Exit 0** — appended (document created if it did not exist).
 - **Exit 2** — invalid `doc-id`.
 - **Exit 1** — other I/O failure.
@@ -167,12 +182,16 @@ Stores each document as a markdown file — optionally carrying a YAML
 frontmatter block at its top — under `ks_root`. The relative filesystem
 path of a document IS its `doc-id` (after normalization).
 
-The backend treats document content as **opaque bytes**: it moves content
-in and out via `read`/`write`/`append`, and does not parse, validate, or
-otherwise interpret any YAML frontmatter a caller chooses to put at the top
-of a document's content. Frontmatter-aware operations (e.g. "read just the
-`status:` field") are out of this seam's scope — a caller that needs that
-composes it on top of `ks_read`.
+The backend treats document content as **opaque bytes**: it does not parse,
+validate, or otherwise interpret any YAML frontmatter a caller chooses to
+put at the top of a document's content. Frontmatter-aware operations (e.g.
+"read just the `status:` field") are out of this seam's scope — a caller
+that needs that composes it on top of `ks_read`. This "opaque bytes" claim
+is about content *interpretation*, not about `ks_append` touching nothing
+but stdin: `ks_append`'s trailing-newline guarantee (above) does read the
+existing document's last byte before writing, purely to decide whether to
+insert a separating newline — it never inspects, parses, or reacts to
+anything else about the content (frontmatter, headings, structure).
 
 No locking is implemented — the atomic-rename write and O_APPEND append
 are each individually safe against a torn write, but there is no
@@ -202,9 +221,9 @@ for the established base-URL/auth/TLS conventions this backend reuses
 verbatim, rather than inventing new plumbing).
 
 **Root mapping: the vault itself is the root, not `KNOWLEDGE_STORE_ROOT`.**
-This is the one deliberate deviation from the "ONE knob for the root"
+This is the one deliberate deviation from the "ONE setting for the root"
 framing at the top of this file — `KNOWLEDGE_STORE_ROOT` is a *filesystem*
-path knob and is simply not consulted by this backend. A normalized
+path setting and is simply not consulted by this backend. A normalized
 `doc-id` (e.g. `Decisions/foo.md`) is used directly as the REST API's
 vault-relative path (`/vault/Decisions/foo.md`); `ks_root` still resolves
 to its filesystem default/override but that value is meaningless for this
@@ -213,7 +232,7 @@ sub-vault "store root" concept — every doc-id addresses a path relative to
 the vault's own root.
 
 Additional config, specific to this backend (beyond the two universal
-knobs):
+settings):
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -227,7 +246,7 @@ Op-to-REST mapping:
 | `ks_read` | `GET /vault/<path>` | Body is the document content verbatim. |
 | `ks_write` | `PUT /vault/<path>` | Whole-file replace; Obsidian creates missing parent folders. |
 | `ks_write --no-clobber` | `GET` then `PUT` | The REST API has no native create-only verb, so `--no-clobber` is **emulated** with a pre-flight `GET`: exit 3 (untouched) if it returns 200, otherwise proceed to `PUT`. This is a check-then-act race under concurrent writers — no worse than this seam's documented "no locking" guarantee, but worth naming explicitly: two concurrent `--no-clobber` writers to the same `doc-id` can both pass the pre-flight check and both `PUT`. |
-| `ks_append` | `POST /vault/<path>` | Local REST API POST semantics are already create-or-append, matching this op exactly. |
+| `ks_append` | `POST /vault/<path>` | Local REST API POST semantics are already create-or-append, matching this op exactly. **Trailing-newline guarantee: inherited, not enforced by this adapter.** Whether an append lands on a fresh line is a property of the Local REST API server's own POST separator semantics — this backend does not pre-flight a `GET` to inspect the target's last byte and decide whether to inject a separator itself (unlike the deliberate `--no-clobber` pre-flight above, adding a network round trip and a check-then-act race here would only re-achieve a property the upstream POST already delivers for free). If a future Local REST API release changed its POST-append separator behavior, this adapter's conformance to the guarantee would change with it — that is an explicit, accepted upstream dependency, not a gap this seam silently papers over. |
 | `ks_list [prefix]` | `GET /vault/<dir>/` (recursive) | The REST API has no recursive-listing endpoint, only a per-directory `GET` returning `{"files":[...]}` (subfolder entries end in `/`); this backend walks the tree breadth-first, one request per directory, filtering to `*.md` entries. |
 
 Error-mode deviations from the plain-files table above (both driven by the
@@ -265,6 +284,7 @@ race noted in the table.
 | `ks_read` exit 1 | not found only | not found, OR any other read failure (incl. unreachable) |
 | `ks_write --no-clobber` | atomic filesystem check (`[ -e "$path" ]`) | emulated via pre-flight `GET` (TOCTOU race under concurrent writers) |
 | `ks_list` exit code | always 0 | 0 when the target dir 404s; **1** on any other failure mid-walk |
+| `ks_append` trailing-newline guarantee | enforced directly (conditional last-byte check + separator insert, see § `ks_append`) | **inherited** from the Local REST API's own POST-append semantics — not independently checked/enforced by this adapter (no pre-flight `GET`, no TOCTOU race added) |
 | Locking | none | none (plus the `--no-clobber` pre-flight race) |
 | Sync (optional capability, see § Sync) | implemented (git-backed, manual) | not implemented — `ks_sync` exits 3, `skipped — sync unavailable for backend obsidian` |
 
@@ -280,7 +300,10 @@ git-under-root sync has no meaning there and it degrades legibly rather
 than inheriting an unimplementable obligation.
 
 **Status: EXPERIMENTAL.** Single-tenant per `$HOME` — one flat store root,
-one remote; per-project partition is deferred (temperloop#418).
+one remote. The **search** half of temperloop#418 has landed (§ Project
+partition — `ks_search` can be scoped); the **store** half has not: `ks_sync`
+replicates the whole root and knows nothing about partitions, so a synced
+remote carries every project's notes together.
 Single-writer assumption — there is no conflict story beyond git's own:
 `pull` is fast-forward-only, and a diverged store fails loud for the
 operator to resolve with git directly, never an auto-merge.
@@ -390,7 +413,7 @@ shape, fields joined by `" · "`:
   `knowledge_search.sh`. The agent-plane read-telemetry hook
   (`claude/hooks/ks-agent-read-log.sh`, temperloop#236) calls the SAME
   `ks__read_log_emit` function with `plane=agent` rather than getting a new
-  knob.
+  setting.
 - `op` — `read` | `write` | `append` | `list` | `search` | `sync` (the
   optional sync capability's dispatches, temperloop#430 — its
   `doc-path-or-query` field carries the sub-op, e.g. `push`), plus `other` from
@@ -412,13 +435,64 @@ This line format is a stable contract — later telemetry items (a SessionEnd
 one-liner, a `/tidy` tally) are documented to consume it as-is; changing the
 field order/count/separator means updating every consumer.
 
+### Additive outcome fields (search only)
+
+`ks_search` (`knowledge_search.sh` — the ONE entrypoint shared by both the
+cold `basic-memory` backend and the warm `basic-memory-mcp` daemon backend in
+`knowledge_search_mcp.sh`, selected via `KNOWLEDGE_SEARCH_BACKEND`) appends
+SIX further fields after the 5-field prefix above (foundation#1449, epic
+foundation#1443 "obs-outcome-emit"), same `" · "` separator:
+
+```
+<timestamp> · <session-id> · <plane> · search · <query> · <result_count> · <top_score> · <abstained> · <rg_fallback> · <mode> · <wall_ms>
+```
+
+- `result_count` — number of results the caller actually received (post
+  re-rank, post rg-fallback). An integer, `0` on a genuine no-match, or `-`
+  when the dispatch itself errored (no result set to describe).
+- `top_score` — the first result's `.score` field verbatim (query-relative —
+  never compared across queries, per `_ks_bm_rerank`'s trap 1), or `-` when
+  `result_count` is `0` or `-`.
+- `abstained` — `1` when the `KNOWLEDGE_SEARCH_ABSTAIN` floor
+  (foundation#1450, off by default) dropped every candidate below the
+  measured floor and `ks_search` returned the genuine empty-result shape
+  instead of a low-confidence hit; `0` otherwise. See "### Abstention floor"
+  below.
+- `rg_fallback` — `1` when the score:0 ripgrep lexical fallback
+  (`ks_search__rg_fallback`, foundation#950) fired and surfaced a hit; `0`
+  otherwise.
+- `mode` — the retrieval path actually taken: `hybrid` (the only mode this
+  adapter implements) or `hybrid+rerank` when `KNOWLEDGE_SEARCH_RERANK=1`
+  actually ran (outcome fields record the POST-re-rank result); `rg-fallback`
+  when the lexical fallback is what answered the query instead (overrides the
+  hybrid/rerank label); or `error:<rc>` when the backend dispatch itself
+  errored (`rc` 3 = unavailable mid-flight, 4 = backend error).
+- `wall_ms` — wall-clock milliseconds the backend dispatch call took (perl
+  `Time::HiRes` when available, whole-second×1000 fallback).
+
+Only `ks_search`'s call passes these — every `ks__dispatch` call
+(`ks_read`/`ks_write`/`ks_append`/`ks_list`, every backend) and the
+agent-plane hook still call `ks__read_log_emit` with exactly the 3-field
+prefix, so their lines are byte-identical to the pre-#1449 5-field shape.
+This is additive by construction: a consumer keyed on field position (e.g.
+`telemetry-brief.sh`'s `$4`/`NF>=4`, or `vault_hygiene_report.sh`'s
+`NF<5{next}` reassembly of the doc field from `$5..NF`, which only runs on
+`op=="read"` lines and so never sees a search line's extra fields) is
+unaffected either way.
+
+`ks_search` logs exactly once per call it dispatches (gated on the same
+backend-availability probe the pre-#1449 code used) — including a call whose
+dispatch errors, so the pre-#1449 count semantics (one line per
+available-gated call) are unchanged; a dispatch error is itself a countable
+outcome (`mode=error:<rc>`), not one dropped from the tally.
+
 **Agent plane.** `claude/hooks/ks-agent-read-log.sh` is a PostToolUse hook
 that appends the same-format line for a knowledge-store MCP tool call. Which
 `tool_name` values count is read from `KNOWLEDGE_READ_LOG_AGENT_MATCHERS`
 (space-separated `case`-glob patterns, defined right next to
 `KNOWLEDGE_STORE_BACKEND` in this file) — today `mcp__obsidian*
 mcp__obsidian-builtin*`; enabling a future `mcp__basic-memory__*` transport
-at the `mcp__obsidian__*` EOL cutover is a one-line edit to that knob, no
+at the `mcp__obsidian__*` EOL cutover is a one-line edit to that setting, no
 hook change. The hook sources this file (`knowledge_store.sh`) to resolve
 both that matcher list and `ks__read_log_emit` itself; on a checkout where
 this file isn't reachable (no knowledge-store config at all) the hook is
@@ -448,9 +522,9 @@ shell library — `source knowledge_search.sh` after `source knowledge_store.sh`
 (it calls `ks_root`, so `knowledge_store.sh` must already be sourced). It
 sets no shell options of its own.
 
-### Corpus binding — no independent path knob
+### Corpus binding — no independent path setting
 
-`ks_search`'s corpus is **always** the store's resolved root, `ks_root`
+The **indexed** corpus is **always** the store's resolved root, `ks_root`
 (defined by `knowledge_store.sh`). There is no `KNOWLEDGE_SEARCH_ROOT` or
 equivalent — this is a deliberate split-brain guard: a search index that
 could be pointed somewhere other than the document store would silently
@@ -458,12 +532,26 @@ drift from what `ks_read`/`ks_write`/`ks_list` actually see. Whatever
 backend `KNOWLEDGE_STORE_BACKEND` resolves documents to, `ks_search` reads
 back that same root from disk.
 
+What a **given call returns** is a narrower question, and since
+temperloop#418 it is no longer unconditionally "everything under `ks_root`":
+a call carrying a **partition scope** returns only the subset whose
+documents prove membership in the named partition (§ Project partition
+below). The *index* stays bound to that one root — the split-brain guard is
+unchanged — and the scope is a **result filter over that one index**, never
+a second corpus or a second root setting. Unscoped, which is the default,
+the returned set is the whole root exactly as it was before.
+
 ### Public interface
 
 ```
-ks_search <query> [--limit N]     -> ranked results, JSON Lines on stdout
-ks_search_reindex [--full]        -> rebuild the backend's index for ks_root
+ks_search <query> [--limit N] [--partition <name>]
+                                  -> ranked results, JSON Lines on stdout
+ks_search_reindex [--full] [--search] [--embeddings]
+                                  -> rebuild the backend's index for ks_root
 ks_search_available               -> exit 0/3 probe, no stdout
+ks_search_partition_supported     -> exit 0 iff THIS library implements the
+                                     --partition scope (a `declare -F`
+                                     version-skew probe — § Project partition)
 ```
 
 `ks_search` prints one JSON object per line (JSON Lines, not a single JSON
@@ -481,14 +569,228 @@ Exit codes (both `ks_search` and `ks_search_reindex`):
 | Exit | Meaning |
 |---|---|
 | 0 | Success. For `ks_search`, this includes a legitimate **zero-result** match — an empty JSONL stream with exit 0 is a real "no matches," never confused with "backend unavailable." |
-| 2 | Invalid usage (empty query, or `KNOWLEDGE_SEARCH_BACKEND` names a backend with no matching functions defined). |
+| 2 | Invalid usage (empty query, an **unrecognised `ks_search` or `ks_search_reindex` flag**, a `--limit`/`--partition` with no value, an **empty `--partition` value**, or `KNOWLEDGE_SEARCH_BACKEND` names a backend with no matching functions defined). |
 | 3 | Backend unavailable ("skipped"). The backend's required subprocess tooling is not on `PATH`. A message beginning `skipped — knowledge_search unavailable` is printed to stderr; **nothing is ever printed to stdout** in this case. This is the legible-degradation contract: a caller must never mistake "backend not installed" for "searched and found nothing." |
-| 4 | Backend error: the subprocess ran but exited non-zero, or its output could not be parsed into the expected shape. |
+| 4 | Backend error: the subprocess ran but exited non-zero, or its output could not be parsed into the expected shape — **including a partition filter that could not run** (see § Project partition: a filter that cannot run returns nothing, never the unscoped set). |
 
 `ks_search_available` runs the same availability check `ks_search` and
 `ks_search_reindex` use internally, standalone, so a caller can probe
 before calling either (exit 0 = ready, exit 3 = the same "skipped —"
 notice on stderr, no stdout either way).
+
+### Project partition — scoped search (temperloop#418)
+
+Without a scope, one `ks_root` is one flat, undivided search corpus. The
+store's only separation between projects is the `<project> - <title>.md`
+**filename convention**, and search did not respect it — so for an operator
+running a single `$HOME` across several engagements, a query typed during
+client B's session could rank and return client A's confidential notes. That
+was structural, not incidental. The partition scope is the seam that closes
+it.
+
+**Setting the scope.** Two routes, same enforcement:
+
+| Route | Shape | Use |
+|---|---|---|
+| `KNOWLEDGE_SEARCH_PARTITION` | env/config setting, **empty by default** | the standing scope — set once per engagement, every `ks_search` in that session is scoped |
+| `ks_search … --partition <name>` | per-call flag | overrides the setting for one call |
+
+**Membership is proven by the `doc_id`, never assumed.** A result belongs to
+partition `<p>` iff its `doc_id` satisfies **either**:
+
+- **filename convention** — its basename starts with `<p> - `, e.g.
+  `Decisions/acme - retainer terms.md` is in partition `acme`. This is the
+  convention the store already uses.
+- **directory convention** — the `doc_id` starts with `<p>/`, e.g.
+  `acme/Decisions/retainer terms.md`, for a store organised by top-level
+  project directory instead.
+
+Matching is **exact and case-sensitive**. There is no fuzzy, normalized, or
+prefix-ish match: a near-miss here is a confidentiality failure, not a
+ranking miss.
+
+**Unpartitioned documents are EXCLUDED from a scoped search**, deliberately.
+A document matching neither form (`Index.md`, `Sessions/2026-08-04.md`) is
+one whose ownership the store cannot prove, and a confidentiality filter must
+not return what it cannot attribute. The cost is real and stated rather than
+hidden: a scoped search also hides your generic, cross-project notes. The
+alternative — an "unpartitioned notes are always visible" opt-out — is
+exactly the fail-open lever this seam exists in order not to have.
+
+**Fail-closed is the load-bearing property.** An unrecognised or unhonoured
+scope argument must **error**, never widen the corpus:
+
+- `ks_search` parses its **own** arguments against an allowlist and rejects
+  anything else with **exit 2** before any backend call — the same shape as
+  `ks_search_reindex`'s rejection above. The pre-#418 loops ended in
+  `*) shift ;;`, so a scope flag a layer did not understand was *discarded*
+  and the full corpus came back at exit 0: a silent confidentiality failure
+  dressed as a successful scoped search.
+- An **empty** `--partition` value is rejected too, never read as "no
+  partition" — a `--partition "$CLIENT"` that expanded to nothing fails
+  loudly instead of silently widening back to the whole corpus.
+- The scope is **consumed at the `ks_search` seam and never forwarded to a
+  backend**. Enforcement therefore cannot depend on a backend choosing to
+  honour it, and both shipped backends (`basic-memory`, `basic-memory-mcp`)
+  *reject* the flag rather than ignore it.
+- Every result stream a caller can receive is filtered at that one point —
+  the backend's own results **and** the degraded **ripgrep lexical fallback**
+  (which would otherwise leak the other client's notes precisely when the
+  semantic path found nothing).
+- A filter that **cannot run** (no `jq`) returns nothing and **exit 4** — it
+  never falls back to the unfiltered stream.
+- A **version-skew** caller probes `declare -F ks_search_partition_supported`
+  first. On a pre-#418 copy of the library that function does not exist, and
+  that is the only reliable way to distinguish a library that *honours* the
+  scope from one that would silently ignore it. No care inside this library
+  can close that gap for a caller running an older one.
+
+**Scope of this seam — a search filter, not a store partition.** This is
+stated plainly rather than half-built. It scopes `ks_search` only.
+`ks_read`, `ks_write`, `ks_append`, `ks_list`, and `ks_sync` are
+**unpartitioned**: a caller that knows a `doc_id` can still read it, and
+`ks_list` still enumerates the whole root. A true multi-tenant *store*
+partition would have to reach the doc-id normalizer, every backend in the
+matrix, and the sync capability — a store-layer redesign, not this change.
+What this closes is the bleed the issue is actually about: **search
+surfacing another project's notes**. What it does **not** provide is
+at-rest isolation; for that, the mitigation remains a **separate `$HOME`
+(and therefore a separate store root) per engagement**.
+
+**No regression when unscoped.** With no partition configured — the dominant
+single-tenant case — behaviour is byte-identical to pre-#418: the whole
+corpus, no filtering, the same fallback trigger conditions. The fallback in
+particular still fires only on a **backend**-empty result, never on a set the
+partition filter emptied (a post-filter empty is not a backend-empty, the
+same distinction the abstention floor already draws).
+
+### `ks_search_reindex` flags
+
+`ks_search_reindex` takes an **allowlist** of flags and forwards each one, by
+name, to the backend's own reindex CLI. It is deliberately not a blanket
+`"$@"` forward: the allowlist is what makes the unknown-flag rejection below
+possible.
+
+| Flag | Meaning |
+|---|---|
+| *(none)* | Incremental reindex — the cheap default. |
+| `--full` | Full filesystem rescan **and** a forced full re-embed. |
+| `--search` | Rebuild the full-text (FTS) index and reconcile the entity table — re-paths moved documents, drops deleted ones. |
+| `--embeddings` | Rebuild the semantic embeddings. |
+
+The flags compose, so the shape a **drift-healing scheduled reindex** wants is
+`ks_search_reindex --full --search`: the full filesystem rescan plus the FTS
+rebuild, **without** the forced full re-embed. Measured on a 977-note live
+store (foundation#1425, 2026-07-28): `--full --search` = **61s**, bare
+`--full` = **587s**. Before temperloop#888 that shape was unreachable through
+this seam — a caller had to reach into the library-private `_ks_bm_run` behind
+a `declare -F` probe — so any consumer that still does so can drop the probe
+and call the public seam.
+
+An **unrecognised** argument is rejected: exit 2 (the invalid-usage code
+above) with a one-line stderr message naming the offending argument and the
+accepted set, and no backend call is made at all. It is never silently
+discarded — the pre-#888 loop shifted every non-`--full` argument away, so a
+mistyped `ks_search_reindex --full --serch` silently degraded to bare `--full`,
+the 587s forced re-embed instead of the 61s shape the caller asked for, with no
+warning.
+
+### Post-fetch re-rank
+
+`ks_search` does not return the backend's own ordering unchanged. It asks the
+backend for a **deeper** candidate set than the caller requested
+(`KNOWLEDGE_SEARCH_RERANK_DEPTH`, default 20), re-orders those candidates, and
+returns exactly `--limit` of them. The extra depth is **internal**: a caller
+that asks for 5 still receives 5.
+
+This is the ranking lever chosen by the mode-sweep verdict (foundation#1445):
+on that corpus the right document was inside the backend's top-20 for 94.6% of
+queries but inside its top-5 for only 86.8%, while MRR stayed flat across the
+same depth increase — so depth was buying coverage the returned window threw
+away.
+
+What the re-rank is allowed to change, and what it is not:
+
+| | |
+|---|---|
+| **May change** | the ORDER of results, and therefore WHICH `--limit` candidates survive |
+| **Never changes** | the record shape, the field set, the `score` values, or any exit code — each surviving record is passed through byte-for-byte as the backend's reshape emitted it |
+
+Three invariants the implementation is built around, each pinned by a test in
+`tests/test_knowledge_search.sh` (case 15) and
+`tests/test_knowledge_search_mcp.sh` (case 4):
+
+1. **It never reads `score` as evidence.** basic-memory's hybrid scores are
+   normalised **within each query's own result set**, so they are query-relative
+   and not comparable across queries or against any fixed threshold. The
+   re-ranker therefore fuses **rank lists** (reciprocal-rank fusion), which is
+   scale-free.
+2. **The `score: 0` rg-fallback sentinel is never reordered.** A `0` there is a
+   *provenance marker* (a ripgrep lexical hit surfaced when the backend found
+   nothing), not a relevance value. A candidate set containing one is passed
+   through in backend order.
+3. **Both backends apply the same re-rank.** The cold `basic-memory` CLI path
+   and the warm `basic-memory-mcp` daemon path share one implementation, so
+   they cannot drift apart in ranking.
+
+Set `KNOWLEDGE_SEARCH_RERANK=0` to restore the backend's own ordering; the fetch
+depth then collapses back to `--limit`, making the off-switch a true no-op.
+
+### Abstention floor
+
+`ks_search` can decline to answer a query at all: below a **measured** floor on
+the shipped hybrid+rerank surface, it returns the same genuine
+**zero-result** shape a backend-empty query gets, instead of confident-looking
+low-relevance hits (foundation#1450, epic foundation#1443). **Off by default**
+— set `KNOWLEDGE_SEARCH_ABSTAIN=1` to enable it.
+
+The gate looks only at the **top-ranked, post-re-rank candidate** (if the best
+one fails, none of the rest can pass either) and requires **both** of the
+following to fail — a conjunction, not either surface alone:
+
+| Setting | Default | What it gates |
+|---|---|---|
+| `KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR` | `0.72` | the candidate's own backend `.score` |
+| `KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR` | `0.10` | the candidate's lexical-coverage feature `L` (the re-rank's own title/path term-agreement score) |
+
+**Why a conjunction, and why these two surfaces.** Two single-surface floors
+were measured and rejected on the 213-query engine-neutral golden-query bench
+(foundation's `workflows/scripts/evals/golden-queries/`, 204 labeled + 9
+correct-abstention queries): raw `.score` alone is query-relative (the
+re-rank's own trap 1) and the 9 correct-abstention queries' top score
+(0.65–0.76) sits inside genuine hits' own range (0.58–1.28); the re-rank's RRF
+fusion score `.f` is rank-dominated and near-constant for every query's
+top-ranked candidate regardless of relevance, so it carries almost no
+separating signal either. The conjunction of raw score AND lexical coverage
+does separate, because a genuine hit in this corpus is almost always a strong
+semantic match, a strong lexical match, or both.
+
+**Measured result** (two independent runs, byte-identical — the fused
+candidate order is deterministic here; only *tie-breaking* among near-equal
+ranks jitters, per trap 3): at the shipped defaults, **4 of the 9
+correct-abstention queries newly abstain, and 0 of the 186 labeled top-5 hits
+are lost.** See the CHANGELOG `[Unreleased]` entry for the full numbers and
+the small-*n* caveat (only 9 correct-abstention examples exist at all, so the
+floors are calibrated to, not validated against a held-out set of, them — the
+zero-measured-cost property is the load-bearing safety claim; the 4/9 recall
+figure is directional).
+
+**The rg-fallback interaction (ratified L1 mode-sweep semantics).** An
+abstention here is a **post-re-rank empty**, never a **backend-empty** — the
+backend returned real candidates; the floor discarded them. The score-0
+ripgrep lexical fallback (`ks_search__rg_fallback`, foundation#950) fires
+*only* on a genuine backend-empty, so it stays **suppressed** on a
+floor-triggered abstention even when a literal corpus match exists
+(`abstained=1`, `rg_fallback=0`) — returning nothing is the intended,
+scored-correct outcome, not a fallback opportunity.
+
+Internally, `_ks_bm_rerank` signals an abstention with one sentinel line,
+`{"__ks_abstain":true}`, in place of its normal JSONL stream; `ks_search` is
+the one place that consumes it, converts it to the real empty-result shape,
+sets the `abstained` outcome field, and suppresses the rg fallback. The
+sentinel never reaches a caller. Both backends share this — one
+implementation (`_ks_bm_rerank`), reused by the warm `basic-memory-mcp` path
+exactly as the re-rank itself is.
 
 ### Backend registration seam
 
@@ -542,7 +844,19 @@ The adapter's required posture, every point implemented in
    the fastembed model download lands under the pinned cache dir, not the
    machine's shared HF cache).
 7. **`semantic_embedding_model: bge-small-en-v1.5`** kept as the default
-   explicitly (avoids upstream #1023's non-bge normalization bug).
+   explicitly (avoids upstream #1023's non-bge normalization bug) — written
+   together with the **`semantic_embedding_dimensions`** that model requires
+   (`384`). The two are a **single setting with two config keys**, not two
+   independent literals: the model is authored once
+   (`_ks_bm_embedding_model`) and the width is *derived* from it through a
+   model→width table (`_ks_bm_embedding_dimensions`), which fails loudly on
+   a model it has no width for. A config that names a model but carries a
+   mismatched (or absent, hence defaulted) width silently produces a
+   **zero-embedding index** — it builds without error and every semantic
+   search then returns nothing — so a model flip that could set one without
+   the other is structurally prevented rather than caught by review
+   (temperloop#907). Flipping the model means editing one literal and adding
+   its width to that table in the same edit.
 8. **CI caching guidance**: cache `memory.db` and the fastembed model cache
    (`semantic_embedding_cache_dir`) as build artifacts across CI runs.
    Approximate cost, from basic-memory's own documentation: a cold rebuild
@@ -610,9 +924,14 @@ context, and citation-friendly results.
 
 ### Non-goals of this seam (search)
 
-- **No search over non-store content.** `ks_search`'s corpus is exactly
+- **No search over non-store content.** `ks_search`'s index is exactly
   `ks_root`'s documents — it does not index code, board issues, or
-  anything outside the knowledge store.
+  anything outside the knowledge store. (A **partition scope** narrows what
+  a given call *returns* from that index; it never widens what is indexed.)
+- **No store-layer tenancy.** The partition scope is a search filter only —
+  `ks_read`/`ks_write`/`ks_list`/`ks_sync` remain unpartitioned, and the
+  store offers no at-rest isolation between projects. Separate `$HOME`s (and
+  therefore separate roots) remain the only hard boundary.
 - **No live-watch indexing.** Point 3 above — indexing is always an
   explicit `ks_search_reindex` call.
 - **No caller routing.** Like the document-I/O interface, no existing

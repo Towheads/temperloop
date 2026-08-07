@@ -15,7 +15,7 @@
 #      (the tsv's own internal duplicate-claim invariant).
 #   2. Citation: build.md's 3e section names reviewer-routing.tsv by path,
 #      so a reader lands on the real source of truth.
-#   3. Set-membership (the ADR 0008 D3-shaped check, `check-knob-prose.sh`
+#   3. Set-membership (the ADR 0008 D3-shaped check, `check-setting-prose.sh`
 #      shape): for EVERY extension/glob key the tsv defines, that key's
 #      literal backtick-quoted form (e.g. `` `.py` ``) must NOT reappear
 #      anywhere in build.md's 3e section. The tsv is the only place a
@@ -39,8 +39,8 @@
 #
 # Kept bash-3.2-portable (no associative arrays, no mapfile) so it runs on
 # the macOS dev shell as well as Linux CI, matching every other
-# workflows/scripts/config/*.sh checker (check-knob-prose.sh,
-# check-knob-registry.sh).
+# workflows/scripts/config/*.sh checker (check-setting-prose.sh,
+# check-setting-registry.sh).
 
 set -uo pipefail
 export LC_ALL=C
@@ -61,7 +61,7 @@ if [ ! -f "$REVIEWER_ROUTING_BUILD_MD" ]; then
 fi
 
 _rr_ere_escape() {
-  # Same bracket-expression ordering discipline as check-knob-prose.sh's
+  # Same bracket-expression ordering discipline as check-setting-prose.sh's
   # _kp_ere_escape (`]` first, `[` last-before-close) so BSD/macOS sed
   # doesn't misread a following `.`/`:`/`=` as a collating-symbol token.
   printf '%s' "$1" | sed -E 's/[]\.^$*+?(){}|[]/\\&/g'

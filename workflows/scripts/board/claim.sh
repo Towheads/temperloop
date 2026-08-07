@@ -4,14 +4,15 @@
 # In Progress and stamp the Host/Session field so other machines can see which
 # session owns it.
 #
-# Why first: the board (GitHub Projects v2) acts as a distributed
+# Why first: the board (GitHub Issues, issues-only backend) acts as a distributed
 # lock across concurrent Claude Code sessions. A slow claim opens a race window
 # where a second session reads the item as still-Ready and double-pulls it.
 # Claiming as the first action shrinks that window to zero. `worklist.sh` reads
-# the board back for the unified cross-machine view. Needs the `project` gh scope
-# (gh auth refresh -s project).
+# the board back for the unified cross-machine view. Needs only the DEFAULT `repo`
+# gh scope — status and the claim stamp are `fnd:`-namespaced labels written over
+# plain REST (see ISSUES-ONLY-BACKEND.md); no `project` scope is required.
 #
-# --board selects the Projects-v2 board (default 3 = stageFind; 4 = foundation).
+# --board selects the board (default 3 = stageFind; 4 = foundation).
 #
 #   claim.sh 227               # claim issue #227 on the default board (3)
 #   claim.sh '#227'            # leading # is fine
@@ -35,8 +36,10 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/claim_marker.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/claim_marker.sh"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
 
 # Module-level state, set by the execute-guard (direct run) or by a sourcing test
@@ -105,24 +108,14 @@ claim_main() {
   # when claim ran in a burst (GH #53). Same globals/accessors as board_resolve.
   board_resolve_item "$PROJECT_NUMBER" "$issue"
 
-  local status_field_id inprogress_opt hostsession_field_id item_id issue_title host sess stamp
-  # On an issues-only board (foundation #800) there is no Projects-v2 field/
-  # option schema to resolve — BOARD_FIELDS_JSON is always {"fields":[]} there
-  # (see ISSUES-ONLY-BACKEND.md) — so board_field_id/board_option_id would
-  # always resolve empty and this pre-check would refuse EVERY claim. The
-  # issues-only backend drives status/stamp writes entirely through fnd:
-  # labels inside board_set_status/board_stamp themselves; skip the
-  # Projects-v2-only field-resolution gate for that backend.
-  if ! _board_is_issues_only "$PROJECT_NUMBER"; then
-    status_field_id=$(board_field_id "$BOARD_FIELD_STATUS")
-    inprogress_opt=$(board_option_id "$BOARD_FIELD_STATUS" "$BOARD_OPT_INPROGRESS")
-    hostsession_field_id=$(board_field_id "$BOARD_FIELD_HOSTSESSION")
-
-    if [ -z "$status_field_id" ] || [ -z "$inprogress_opt" ] || [ -z "$hostsession_field_id" ]; then
-      echo "could not resolve board fields (Status / Host/Session) on project $PROJECT_NUMBER" >&2
-      return 1
-    fi
-  fi
+  local item_id issue_title host sess stamp
+  # Every registered board runs the issues-only backend (temperloop#524's
+  # 2026-08-04 addendum — 10 releases of soak past ADR 0004): status/stamp
+  # writes drive entirely through fnd: labels inside board_set_status/
+  # board_stamp themselves, so there is no Projects-v2 field/option schema to
+  # pre-resolve or gate on here (a caller-side removal — lib/board.sh's
+  # board_field_id/board_option_id accessors are untouched, just unused by
+  # this script now).
 
   # Resolve the project item id (and title, for the tmux window name) for this issue.
   item_id=$(board_item_id "$issue")

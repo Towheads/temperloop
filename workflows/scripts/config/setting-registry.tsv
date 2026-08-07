@@ -1,0 +1,426 @@
+# setting-registry.tsv — the kernel's tunable-setting registry (temperloop#164/#169,
+# design decision D2: "keep the shell literals, lint them for equality" — a
+# TSV of every existing setting, populated with defaults matching the shell
+# literals EXACTLY, so a future equality lint (a LATER item,
+# registry-config-lints) starts green with no baseline needed. This file is
+# read by workflows/scripts/config/setting-registry-lib.sh; see that file's
+# header for the parse/union contract and the overlay extension format.
+#
+# ── Row shape ────────────────────────────────────────────────────────────
+#   name<TAB>default<TAB>type<TAB>layer<TAB>owning-script<TAB>doc
+#
+# name           the shell variable name (exact, case-sensitive).
+# default        the CURRENT shell literal, copied verbatim from the
+#                `: "${VAR:=default}"` / `${VAR:-default}` seam in
+#                owning-script — including any nested `$VAR`/`$(...)`
+#                interpolation written as-is (never pre-resolved). A blank
+#                field means the literal default IS the empty string.
+# type           closed set (see below) — the KIND of value, not its
+#                current default.
+# layer          closed set (see below) — which layer of the six-layer config
+#                precedence ladder (docs/config-precedence.md) this row's
+#                DEFAULT lives at. Almost every row is `kernel` (an
+#                individual script's own hardcoded layer-6 fallback) or
+#                `tracked-repo` (build.config.sh's own layer-5 `:=` default —
+#                that file IS the committed config a consuming repo vendors
+#                and edits, per its own header). A var whose default
+#                genuinely DIFFERS between two owning scripts (a real layer-5
+#                vs layer-6 divergence, not just a byte-identical duplicate
+#                fallback — see below) gets TWO rows, one per layer.
+# owning-script  repo-relative path to the script whose `:=`/`:-` line this
+#                row transcribes. Several settings have a BYTE-IDENTICAL `:=`
+#                fallback duplicated in more than one consuming script
+#                (documented in each duplicate site's own comment as
+#                "non-vendoring-checkout fallback" — e.g. PIPELINE_OPERATOR
+#                also has a matching literal in pipeline-drive.sh and
+#                pipeline-tick.sh); this registry records ONE row citing the
+#                script documented as the SOURCE OF TRUTH (build.config.sh
+#                where one exists) rather than one row per duplicate site,
+#                since the literals are identical and a future equality
+#                lint gains nothing from redundant rows.
+# doc            one-line description of what the setting controls.
+#
+# ── type (closed set) ───────────────────────────────────────────────────
+#   int      a plain integer count/limit/retry-budget
+#   seconds  a duration, in seconds
+#   pct      a percentage (0-100)
+#   bool     a 0/1 (or unset/1) boolean flag
+#   string   free-form text with no narrower type below
+#   enum     a closed set of string values (see the doc column for the set)
+#   path     a filesystem path, or a bare binary name resolved via PATH
+#   url      an http(s) URL
+#   label    a GitHub label / branch / literal identifier string
+#   marker   an HTML-comment idempotency marker embedded in issue/PR bodies
+#
+# ── layer (closed set) ──────────────────────────────────────────────────
+# The six-layer ladder's own tokens (docs/config-precedence.md). Layers 1-2
+# (cli, env) never appear here — a registry row records a DEFAULT, and layers
+# 1-2 are call-site/environment inputs, never a hardcoded default:
+#   cli            layer 1 — CLI flag (never a registry row; listed for
+#                  vocabulary completeness)
+#   env            layer 2 — env var (never a registry row; ditto)
+#   machine-conf   layer 3 — a machine-wide conf file
+#   repo-local     layer 4 — an untracked, gitignored repo-local conf file
+#   tracked-repo   layer 5 — a COMMITTED config file's own `:=` default
+#                  (build.config.sh today — the file IS the tracked conf)
+#   kernel         layer 6 — a hardcoded `:=`/`:-` fallback in an individual
+#                  script, for a non-vendoring caller that never sources a
+#                  tracked-repo conf file at all
+#
+# ── Inclusion rule ──────────────────────────────────────────────────────
+# A row exists for every `${VAR:-default}` / `: "${VAR:=default}"` shell
+# seam an OPERATOR could meaningfully override via the config precedence
+# ladder to change behavior. Excluded: internal/derived/computed values
+# (timestamps, loop counters, computed paths built from other already-
+# decided vars), dynamic call-site defaults (`${FUNCNAME[1]:-unknown}`),
+# environment-detection predicates (`${TMUX:-}` — "am I inside tmux?", not a
+# setting), private (`_`-prefixed) implementation state, harness-injected
+# runtime values (`CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_SESSION_ID`), generic
+# OS/XDG passthrough vars with no project-specific override point of their
+# own (`TMPDIR`, bare `XDG_*_HOME`), and test/reproducibility-only seams
+# explicitly documented as such in their own script (`BUILD_QUOTA_NOW`,
+# `PIPELINE_NOW_*`). A "test-double seam for the <X> binary" row (e.g.
+# `*_GH_BIN`) IS included — swapping the resolved binary is a real,
+# meaningful override, not merely a test's implementation detail.
+#
+# ── Renamed env-var rows (temperloop#165, the foundation→temperloop rename) ──
+# TEMPERLOOP_KERNEL_REPO / TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR /
+# TEMPERLOOP_VERSION were renamed from FOUNDATION_* in v0.15.0. Through the
+# read-old window each new row's default transcribed a nested
+# `${FOUNDATION_*:-...}` fallback and a DEPRECATED legacy row sat beside it.
+# Both are GONE as of v0.19.0: the four legacy rows were REMOVED (a removed
+# row-name, i.e. BREAKING per the rule above, carried by the v0.15.0
+# CHANGELOG BREAKING entry's stated window) and each surviving row's default
+# is now the bare built-in value its owning script actually reads. The legacy
+# NAMES still appear in those scripts — but only inside a detect-and-refuse
+# arm, which is not a read and so is not a registry setting; see
+# workflows/scripts/kernel/prerename-leak-verdicts.tsv's "refusal" rows.
+#
+# ── Personal-path-verbatim rows (superseded, kernel-literal-scrub, temperloop#189) ──
+# Two rows below (TEMPERLOOP_KERNEL_REPO and KERNEL_REMOTE) record a CURRENT
+# default that is this org's real repo clone URL — permanent, load-bearing,
+# out of scrub scope (this repo's own public identity, not a personal-token
+# leak; see check-personal-token-denylist.sh's category-1 rationale). They
+# carry an explicit `denylist:allow` marker substring in their doc column
+# (mirroring the `# denylist:allow — <reason>` convention
+# check-personal-token-denylist.sh's marker-skip already uses in shell
+# files, adapted to TSV's data-not-code rows, since the checker's marker
+# test is a bare substring match, not shell-comment syntax) — those rows
+# would otherwise register as NEW denylist hits, and the burn-down baseline
+# mechanism explicitly does not accept new rows for an already-tracked
+# family (see personal-token-denylist-baseline.tsv's own header). These are
+# permanent, documented, load-bearing defaults, not scrub debt — exactly the
+# marker's intended use.
+#
+# A THIRD row used to live here — KNOWLEDGE_STORE_ROOT's build.config.sh
+# reseed to the operator's personal vault directory. kernel-literal-scrub
+# removed that reseed (build.config.sh no longer sets a layer-5 default for
+# this setting at all) rather than allow-marking it, so the row was deleted
+# rather than converted — see the kernel-layer KNOWLEDGE_STORE_ROOT row
+# (owning-script knowledge_store.sh) below for the setting's one remaining
+# registry entry.
+#
+# ── Reserved ─────────────────────────────────────────────────────────────
+# TEMPERLOOP_PROFILE (below) is a RESERVED row, not a live seam today: no
+# script reads it yet. The profile mechanism itself (named config profiles
+# an operator switches between) is deferred (Bucket C of the D2 design); this
+# row only reserves the name + default so a future implementation has an
+# uncontested slot and the registry's shape doesn't change out from under
+# an equality lint when that lands.
+#
+# See row count at end of file (grep -c for a live count; comment count
+# drifts if this header grows).
+TEMPERLOOP_KERNEL_REPO	https://github.com/Towheads/temperloop.git	url	kernel	bin/bootstrap.sh	Clone URL bootstrap.sh pulls the kernel repo from (denylist:allow — the kernel repo's own public clone URL, its identity, not a personal-token leak); renamed from FOUNDATION_KERNEL_REPO in v0.15.0, whose read was removed in v0.19.0
+TEMPERLOOP_HOME	$HOME/.local/share/temperloop	path	kernel	bin/bootstrap.sh	Local install dir for the bootstrapped kernel checkout; renamed from FOUNDATION_HOME in v0.15.0, whose read was removed in v0.19.0
+TEMPERLOOP_BIN_DIR	$HOME/.local/bin	path	kernel	bin/bootstrap.sh	Where bootstrap.sh symlinks the temperloop CLI onto PATH; renamed from FOUNDATION_BIN_DIR in v0.15.0, whose read was removed in v0.19.0
+BASELINE_SNAPSHOT_GH_BIN	gh	path	kernel	bin/subcommands/baseline-snapshot.sh	Test-double seam for the gh binary
+BASELINE_SNAPSHOT_TIMEOUT	20	seconds	kernel	bin/subcommands/baseline-snapshot.sh	Per-gh-call watchdog timeout
+BASELINE_SNAPSHOT_LOOKBACK_DAYS	90	int	kernel	bin/subcommands/baseline-snapshot.sh	How many days back the baseline snapshot scans
+BASELINE_SNAPSHOT_PR_LIMIT	500	int	kernel	bin/subcommands/baseline-snapshot.sh	Max PRs fetched per snapshot
+BASELINE_SNAPSHOT_ISSUE_LIMIT	500	int	kernel	bin/subcommands/baseline-snapshot.sh	Max issues fetched per snapshot
+EJECT_GH_BIN	gh	path	kernel	bin/subcommands/eject.sh	Test-double seam for the gh binary
+INIT_GH_BIN	gh	path	kernel	bin/subcommands/init.sh	Test-double seam for the gh binary
+CLAUDE_BIN	claude	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the claude CLI binary
+TRY_GH_BIN	gh	path	kernel	bin/subcommands/try.sh	Test-double seam for the gh binary
+WFR_COVERAGE_GH_BIN	gh	path	kernel	workflows/scripts/workflow-reviewer-coverage.sh	Test-double seam for the gh binary
+TRY_DEMO_CLONE_URL	https://github.com/$demo_repo.git	url	kernel	bin/subcommands/try.sh	Scratch-clone source URL for `try --demo`
+TRY_DEMO_BOARD_NUM	900	int	kernel	bin/subcommands/try.sh	Throwaway internal board number for the demo run's scratch boards.conf
+EVAL_RUN		bool	kernel	claude/hooks/eval-guard.sh	Enables eval-mode hook self-suppression (unset = normal interactive behavior)
+KS_LIB_DIR		path	kernel	claude/hooks/mcp-health-preflight.sh	Where the hook looks for knowledge_store.sh; empty default falls through to a BASH_SOURCE-relative resolution against the installed checkout (temperloop#406)
+KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE		path	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API key-file path
+MCP_HEALTH_API_BASE	${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}	url	kernel	claude/hooks/mcp-health-preflight.sh	Obsidian Local REST API base URL override for the health preflight hook (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
+KNOWLEDGE_STORE_OBSIDIAN_API_BASE	https://127.0.0.1:27124	url	kernel	claude/hooks/session-start-drain.sh	Obsidian Local REST API base URL
+KERNEL_EDIT_ACK		bool	kernel	claude/hooks/subtree-edit-guard.sh	Build-worker bypass ack for editing vendored kernel/ paths directly
+SESSION_CONTEXT_RAW_ENABLED	0	bool	kernel	claude/hooks/session-end-log.sh	Opt-in gate (default off) for the realized-session-context probe's per-SessionEnd raw-lake emit (temperloop#828); an on-demand --print-only reading via emit-session-context.sh bypasses this gate entirely
+TOKEN_SUM_LIB_DIR		path	kernel	claude/status-line.sh	Where the status line looks for the shared token_sum.sh helper; empty default falls through to a symlink-resolved BASH_SOURCE-relative climb (temperloop#828 — this file installs as a PER-FILE symlink into the real ~/.claude, so an unresolved climb would silently pin the Tokens figure at 0)
+KERNEL_UPDATE_ROOT	$REPO_ROOT	path	kernel	scripts/update-kernel.sh	Root of the consuming repo update-kernel.sh operates on
+KERNEL_UPDATE_PIN_FILE	$KERNEL_UPDATE_ROOT/.kernel-pin	path	kernel	scripts/update-kernel.sh	Path to the kernel subtree pin file
+KERNEL_UPDATE_CHANGELOG	$KERNEL_UPDATE_ROOT/CHANGELOG.md	path	kernel	scripts/update-kernel.sh	Path to the CHANGELOG scanned for BREAKING markers
+KERNEL_REMOTE	https://github.com/Towheads/temperloop	url	kernel	scripts/update-kernel.sh	Git remote update-kernel.sh subtree-pulls from (denylist:allow — the kernel repo's own public remote URL, its identity, not a personal-token leak)
+KERNEL_ALLOW_BREAKING	0	bool	kernel	scripts/update-kernel.sh	Acknowledge and proceed through a BREAKING kernel delta unattended
+KERNEL_UPDATE_ASSUME_TTY	auto	enum	kernel	scripts/update-kernel.sh	Force interactive(1)/unattended(0) confirmation instead of auto-detecting a TTY (auto|1|0)
+KERNEL_UPDATE_DRY_RUN	0	bool	kernel	scripts/update-kernel.sh	Run the breaking-delta gate but skip the actual subtree pull
+UPDATE_ASSUME_TTY	auto	enum	kernel	bin/subcommands/update.sh	Force interactive(1)/unattended(0) confirmation instead of auto-detecting a TTY (auto|1|0) — temperloop update's own consent gate, mirrors KERNEL_UPDATE_ASSUME_TTY's convention above
+GH_CALL_CONTEXT	capture	label	kernel	workflows/scripts/board/capture.sh	Attribution tag for the gh call-logger shim
+ISSUE_TOUCHES_RAW_DIR	$ISSUE_TOUCHES_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/capture.sh	Sink dir for the issue-touches raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+SUBSET_HOST_LABEL	$(hostname -s)	string	kernel	workflows/scripts/board/capture.sh	Host label recorded in issue-touch/telemetry records
+CLAIMS_RAW_DIR	$CLAIMS_RAW_DIR_DEFAULT	path	kernel	workflows/scripts/board/claim.sh	Sink dir for the claims raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+DEPLOY_MINI_CHECKOUTS	$DEFAULT_CHECKOUTS	string	kernel	workflows/scripts/board/deploy-mini.sh	Space-separated checkouts deploy-mini.sh keeps current (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+DEPLOY_MINI_LOCK	${TMPDIR:-/tmp}/deploy-mini.lock.d	path	kernel	workflows/scripts/board/deploy-mini.sh	Single-instance lock dir for deploy-mini.sh
+DEPLOY_MINI_SKIP_INSTALL	0	bool	kernel	workflows/scripts/board/deploy-mini.sh	Skip the `make install-board` PATH-symlink refresh step
+BOARDS_CONF_MACHINE	$(_board_machine_conf_default)	path	kernel	workflows/scripts/board/lib/board.sh	Machine-level boards.conf path (layer 3). Default is $XDG_CONFIG_HOME/temperloop/boards.conf; the legacy $XDG_CONFIG_HOME/foundation/boards.conf fallback (temperloop#165) was removed in v0.19.0 and such a file is now NAMED on stderr rather than read — see docs/config-precedence.md
+BOARDS_CONF_REPO_LOCAL	$_BOARD_LIB_DIR/../boards.conf	path	kernel	workflows/scripts/board/lib/board.sh	Repo-local boards.conf path (layer 4)
+BOARD_ITEM_LIMIT	500	int	kernel	workflows/scripts/board/lib/board.sh	Page-size cap for a whole-board item-list read
+CACHE_STORE_ROOT	${XDG_CACHE_HOME:-$HOME/.cache}/temperloop	path	kernel	workflows/scripts/board/lib/cache.sh	Store root for the durable issue-cache corpus store
+CACHE_STORE_TTL	3600	seconds	kernel	workflows/scripts/board/lib/cache.sh	Max-stale window before a cache_read triggers a refresh
+CMUX_BUNDLED_CLI_PATH	cmux	path	kernel	workflows/scripts/board/lib/claim_marker.sh	cmux CLI binary invoked to set/clear the claim-marker status
+PR_ENQUEUE_GH	gh	path	kernel	workflows/scripts/board/pr-enqueue.sh	Test-double seam for the gh binary
+PR_ENQUEUE_GIT	git	path	kernel	workflows/scripts/board/pr-enqueue.sh	Test-double seam for the git binary
+PR_ENQUEUE_CONFIRM_RETRIES	5	int	kernel	workflows/scripts/board/pr-enqueue.sh	Retries confirming a PR reached queued/merged state
+PR_ENQUEUE_CONFIRM_INTERVAL	2	seconds	kernel	workflows/scripts/board/pr-enqueue.sh	Sleep interval between enqueue-confirmation polls
+RECONCILE_STALE_AFTER_SECS	86400	seconds	kernel	workflows/scripts/board/reconcile.sh	Same-host claim staleness cutoff (session idle beyond this = stale)
+RECONCILE_FOREIGN_STALE_AFTER_SECS	1209600	seconds	kernel	workflows/scripts/board/reconcile.sh	Foreign-host claim escalation cutoff (issue/PR inactivity beyond this)
+CLAUDE_PROJECTS_DIR	$HOME/.claude/projects	path	kernel	workflows/scripts/board/reconcile.sh	Where Claude Code session transcripts are read from for liveness checks
+PLAN_ARCHIVE_BRANCH	chore/plan-archive	label	kernel	workflows/scripts/build/archive-plan.sh	Stable branch name reused for every plan-archive PR
+PLAN_ARCHIVE_GH	gh	path	kernel	workflows/scripts/build/archive-plan.sh	gh binary override fed into the shared land-on-protected-main kernel
+PLAN_ARCHIVE_REQUIRES_PR		bool	kernel	workflows/scripts/build/archive-plan.sh	Test seam forcing the protected-branch (PR) landing path
+STAGEFIND_HOST_LABEL	$(hostname -s)	string	kernel	workflows/scripts/build/board-mirror.sh	Legacy/back-compat host-label override, nested inside SUBSET_HOST_LABEL's own fallback (registry-maintenance fix, registry-config-lints — row was missing)
+BUILD_CONFIG_MACHINE	${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh	path	kernel	workflows/scripts/build/build.config.sh	Machine-conf path (layer 3 discovery path; its own default is the layer-6 literal)
+BUILD_CONFIG_LOCAL	$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.config.local.sh	path	kernel	workflows/scripts/build/build.config.sh	Untracked repo-local conf path (layer 4 discovery path; its own default is the layer-6 literal; registry-maintenance fix, registry-config-lints — command substitution recorded verbatim, was placeholder-ized)
+BUILD_QUOTA_PAUSE_PCT	10	pct	tracked-repo	workflows/scripts/build/build.config.sh	Pause build/sweep when remaining 5h quota drops below this percent
+BUILD_QUOTA_CACHE	$HOME/.claude/rate-limits.json	path	tracked-repo	workflows/scripts/build/build.config.sh	Where status-line.sh persists the live rate-limit snapshot
+BUILD_QUOTA_WAIT_BUFFER	60	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Seconds waited past a quota window's reset before resuming
+BUILD_QUOTA_MAX_AGE	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Ignore a quota cache snapshot older than this (fail open)
+BUILD_MERGE_GATE_WINDOW	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Timed merge-gate window (0 = always modal)
+BUILD_QUEUE_TIMEOUT	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-PR native-merge-queue timeout
+PIPELINE_DRIVE_CONCURRENCY	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Autonomous pipeline lane's concurrent-drive bound per tick (mechanical governor; formerly PIPELINE_WIP_CAP, split from the retired human WIP-cap rule)
+EPIC_MIN_SUBUNITS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Epic-decomposition sub-unit threshold (rendered into CLAUDE.kernel.md prose)
+DISPLAY_TZ	America/Los_Angeles	string	tracked-repo	workflows/scripts/build/build.config.sh	Human-facing display timezone (IANA name so DST is automatic); rendered into CLAUDE.kernel.md prose as {{DISPLAY_TZ}}, with belt-and-suspenders defaults in telemetry-brief.sh/reconcile.sh. Stored/parsed timestamps stay UTC.
+BUILD_MERGE_BACKEND	auto	enum	tracked-repo	workflows/scripts/build/build.config.sh	Merge-backend selection: auto probes for a merge_queue rule; native/managed override (auto|native|managed)
+BUILD_COMBINED_TREE_PRECHECK	on	enum	tracked-repo	workflows/scripts/build/build.config.sh	Combined-tree union pre-check at the level merge gate before enqueue (on|off); build.md Step 4a.5
+BUILD_MERGE_AS_YOU_GO	1	bool	tracked-repo	workflows/scripts/build/build.config.sh	Merge each clean-disjoint-tier PR as it goes green (build.md Step 3h.5) instead of parking every item until the level-boundary batch gate; 0 restores pure level batching
+BUILD_DECISION_NOTIFY_CMD		string	tracked-repo	workflows/scripts/build/build.config.sh	Optional scriptable operator-notify channel for an ask-now /build halt (foundation#863); receives the one-line summary as a single arg; empty = rely on the harness PushNotification relay alone; also decision-notify.sh's test-injection seam
+COMBINED_TREE_SUITE_CMD	bash scripts/quality-gates.sh	string	kernel	workflows/scripts/build/combined-tree-precheck.sh	Gate-suite command the combined-tree pre-check runs against the merged worktree (test-injection seam)
+BUILD_HEADLESS_POLL_TIMEOUT	540	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Foreground CI/MERGED poll bound on the headless (pipeline merge-driver) path
+ASSESS_POLL_FIRST_WAKE	270	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll first wake after arming
+ASSESS_POLL_CADENCE	1200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll wake cadence after the first wake
+ASSESS_POLL_BUDGET	7200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	assess.md Step 6 approval-poll give-up budget after arming
+NEXT_SEQ_STALE_AFTER	64800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	next.md Step 0.5 orphan Sequencing/*.md record staleness prune
+TIDY_SYNC_WAIT	90	seconds	tracked-repo	workflows/scripts/build/build.config.sh	tidy.md Step 0 wait for Obsidian Sync to propagate cross-host drain locks
+TIDY_LOCK_STALE_AFTER	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	tidy.md Step 0 cutoff to discard a crashed prior run's drain lock
+CHECKIN_PRUNE_DAYS	30	int	tracked-repo	workflows/scripts/build/build.config.sh	check-in.md resolved-entry prune window across its review sections
+SWEEP_FANOUT_WIDTH	3	int	tracked-repo	workflows/scripts/build/build.config.sh	sweep.md Phase 2 clarification-free-issue fanout width per batch chunk (1 = full legacy sequential)
+SWEEP_DETECT_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for sweep.md Phase 1 underspecification-detection subagent fanout; empty = inherit-session sentinel — Contract-pinned default (NOT a cheap tier): detection is judgment work and a missed ambiguity silently reaching Phase 2 is the costly failure
+SEED_DEMO_REPO		string	tracked-repo	workflows/scripts/demo/seed-demo-repo.sh	Host-local override for the demo seeder's target repo (foundation#871), OWNER/NAME. Empty (default) = derive the owner from the authenticated gh login (<login>/temperloop-demo), or require --repo / gh auth. Keeps the org-specific companion-repo value out of the kernel.
+SWEEP_BG_POLL_ATTEMPTS	6	int	tracked-repo	workflows/scripts/build/build.config.sh	sweep.md Step 3 tier-2 bounded-wait poll count on background chunk 1's completion notification before declaring the chunk a dropped-background escalation
+SWEEP_BG_POLL_INTERVAL	120	seconds	tracked-repo	workflows/scripts/build/build.config.sh	sweep.md Step 3 tier-2 bounded-wait seconds between background-chunk task-state polls
+PIPELINE_OPERATOR	@REPLACE_WITH_YOUR_GH_LOGIN	label	tracked-repo	workflows/scripts/build/build.config.sh	Operator's GitHub login the async decision/merge-escalation baton targets
+PIPELINE_REQUIRED_CHECK	checks	label	tracked-repo	workflows/scripts/build/build.config.sh	Required CI job name a PR must clear to merge
+PIPELINE_DRIVEN_PATHS	kernel/ workflows/scripts/ claude/commands/ claude/workflows/ claude/hooks/ scripts/quality-gates Makefile	string	tracked-repo	workflows/scripts/build/build.config.sh	Path prefixes = the pipeline's operational surface for the overlap predicate
+PIPELINE_DRIVE	0	bool	tracked-repo	workflows/scripts/build/build.config.sh	Auto-execute the safe (no-merge) tier of each pipeline tick (level-5b)
+PIPELINE_DRIVE_CAP	1	int	tracked-repo	workflows/scripts/build/build.config.sh	Max Operational drive-ready items emitted per tick
+PIPELINE_DRIVE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model for the headless level-5b safe-tier driver
+PIPELINE_DRIVE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.config.sh	Layer-5 placeholder for the safe-tier --settings overlay; empty passes through to pipeline-drive.sh's own layer-6 default
+PIPELINE_DRIVE_MERGE	0	bool	tracked-repo	workflows/scripts/build/build.config.sh	Auto-execute the kind:code merge tier (level-5c)
+PIPELINE_DRIVE_MERGE_CAP	1	int	tracked-repo	workflows/scripts/build/build.config.sh	Max kind:code items driven to merge per tick
+PIPELINE_DRIVE_MERGE_MODEL	claude-opus-4-8	string	tracked-repo	workflows/scripts/build/build.config.sh	Model for the headless level-5c merge-tier driver
+PIPELINE_DRIVE_MERGE_SETTINGS		path	tracked-repo	workflows/scripts/build/build.config.sh	Layer-5 placeholder for the merge-tier --settings overlay; empty passes through to pipeline-drive.sh's own layer-6 default
+PIPELINE_MERGE_PENDING_LABEL	funnel-merge-pending	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a cross-tick merge hand-off (open unmerged PR at session end)
+PIPELINE_CLARIFIED_MARKER	<!-- funnel:clarification-drained -->	marker	tracked-repo	workflows/scripts/build/build.config.sh	Idempotency marker posted when a needs-clarification item is drained
+PIPELINE_ESCALATED_LABEL	funnel-escalated	label	tracked-repo	workflows/scripts/build/build.config.sh	Label applied to a level-5c CODE escalation (route-refused / terminally-red CI)
+RETRO_MINT_ENABLED	1	bool	tracked-repo	workflows/scripts/build/build.config.sh	Master on/off for the /build 4d-retro MINT (files a per-epic retro tracker at epic close)
+RETRO_MIN_INTERVAL	259200	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Debounce: minimum age of the oldest retro-pending tracker before the pipeline tick emits a retro-judge action
+RETRO_URGENT_CI_RETRIES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	CI-retry count at/above which a retro tracker is stamped retro-urgent at mint time (bypasses the debounce)
+RETRO_BATCH_SESSION_CAP	5	int	tracked-repo	workflows/scripts/build/build.config.sh	Max number of retro trackers a single /retro --pending judge session processes (enforced judge-side)
+RETRO_JUDGE_MODEL	claude-sonnet-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model the pipeline runs claude -p "/retro --pending" under (distinct from PIPELINE_DRIVE_MODEL)
+REVIEWER_SCAN_MIN_FILES	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Language-reviewer catalog install-time coverage scan / doctor check: minimum file count before a language is offered its reviewer (temperloop#538, ADR 0007/0008) — install/doctor-time, not the batch build pipeline
+PROSE_BUDGET_TIER1_CAP	347	int	tracked-repo	workflows/scripts/build/build.config.sh	Two-tier prose-budget gate (temperloop#719/#725, ADR 0015): cap on the composed kernel-authored render (count-prose.sh tier-1, INSTALL_CLAUDE_MD_KERNEL_ONLY seam) — never the kernel+overlay total. Ratchet: raised only by a config PR after a subtraction pass (2026-08-01, temperloop#925: raised 335→347 to fund epic #923's decision-presentation-template kernel.md qualifier)
+PROSE_BUDGET_TIER2_FILE_CAP	1100	int	tracked-repo	workflows/scripts/build/build.config.sh	Two-tier prose-budget gate (temperloop#719/#725, ADR 0015): ONE uniform per-file line cap over every tracked claude/**/*.md file (count-prose.sh tier-2) — a single setting, not a per-file table. Ratchet: raised only by a config PR after a subtraction pass (2026-08-01, temperloop#925: raised 1057→1128 to fund epic #923's four workshop.md-growing items — a uniform-cap raise that relaxes the budget for every tracked kernel doc, not workshop.md alone) Raised again 1128→1154 (2026-08-01, temperloop#947) after the epic's first workshop.md item (#946) came in +60 vs a drafted +50, leaving the three remaining items projecting to exactly 1128 — zero slack; 130 re-projected + 20% contingency = 1154. Raised a THIRD time 1154→1186 (2026-08-01, temperloop#954) after the whole L3 level landed and measured: the 1154 raise had sized off a one-item sample (1.20), but the blended observed overrun across all four measured items is 1.53 (135 drafted → 206 actual), driven by workshop-congruence-walkthrough at 1.76 (+137 vs a drafted +78 that only priced the new Step 3.5, not its two other regions or the docs update). Post-L3 merged main measures 1144 — 10 lines of headroom, and the last item (workshop-ratify-gate #934) projects +35; 1144 + 35 + 20% contingency = 1186. Alternatives declined by the operator: a subtraction pass first (unplanned item on the critical path, same file #934 rewrites) and a per-file cap (a contract change — this gate's header pins "never a per-file table"). workshop.md at 1144 was the largest tracked kernel doc; the subtraction pass was filed as its own follow-up (temperloop#956). LOWERED 1186→1100 (2026-08-02, temperloop#956): the deferred subtraction pass ran against workshop.md itself (removals/consolidations only, no behavior deletion — apply-by-reference instead of restating design-schema.md/message-schema.md content), taking it from 1181 to 1041 lines. `claude/commands/build.md` is now the largest tracked file at 1100 lines, unchanged by this item; the cap is reseeded to it with the same zero-headroom convention as the original seeding. The ratchet moves both ways.
+DECLARED_EXPIRY_ADOPTION_THRESHOLD_PCT	50	pct	kernel	workflows/scripts/declared-expiry-check.sh	Declared-expiry check (temperloop#831, epic #810 P10): adoption share (declared expiries / (declared + reads-as-temporary-but-undeclared)) at which a future Phase-B expiry gate is judged warranted. Pre-registered before any real-tree measurement ran, per this item's own acceptance ordering. Never a cap itself — Phase A ships no gate
+PIPELINE_DRIVE_SETTINGS	$HERE/pipeline-drive.settings.json	path	kernel	workflows/scripts/build/pipeline-drive.sh	Layer-6 real default used when build.config.sh's layer-5 placeholder is left empty
+PIPELINE_DRIVE_MERGE_SETTINGS	$HERE/pipeline-drive-merge.settings.json	path	kernel	workflows/scripts/build/pipeline-drive.sh	Layer-6 real default used when build.config.sh's layer-5 placeholder is left empty
+ENV_RECONCILE_STALE_UNTRACKED_DAYS	7	int	kernel	workflows/scripts/build/env-reconcile.sh	Days before an untracked checkout is flagged stale
+ENV_RECONCILE_AGENT_HEARTBEAT_DIR	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/agent-heartbeat	path	kernel	workflows/scripts/build/env-reconcile.sh	Dir of <label>.ran heartbeat markers a launchd job writes on success (freshness oracle)
+ENV_RECONCILE_AGENT_DEFAULT_CADENCE_S	86400	seconds	kernel	workflows/scripts/build/env-reconcile.sh	Default expected cadence for a launchd agent with no explicit interval
+ENV_RECONCILE_CRON_CHECKOUTS	$DEFAULT_CRON_CHECKOUTS	string	kernel	workflows/scripts/build/env-reconcile.sh	Cron-role checkouts env-reconcile scans (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+ENV_RECONCILE_OPERATOR_CHECKOUTS	$DEFAULT_OPERATOR_CHECKOUTS	string	kernel	workflows/scripts/build/env-reconcile.sh	Operator-role checkouts env-reconcile scans (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule; that indirected var's own literal is personal-path-verbatim)
+ENV_RECONCILE_LAUNCHD_DIRS		string	kernel	workflows/scripts/build/env-reconcile.sh	Explicit launchd-agent dirs override (else derived from the checkout lists)
+PIPELINE_GATE_BIN	$HERE/pipeline-schedule-gate.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the schedule-gate sub-script
+PIPELINE_TICK_BIN	$HERE/pipeline-tick.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the tick sub-script
+PIPELINE_DRIVE_BIN	$HERE/pipeline-drive.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the drive sub-script
+PIPELINE_ISSUE_META_BIN	$HERE/../issue-meta-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the issue-meta-snapshot sub-script
+REWORK_SNAPSHOT_BIN	$HERE/../rework-snapshot.sh	path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for the rework-snapshot sub-script
+PIPELINE_ENABLED_BOARDS	3	string	kernel	workflows/scripts/build/pipeline-cron.sh	Space-separated board ids the pipeline ticks
+PIPELINE_LOG_DIR	$HOME/.claude/funnel/log	path	kernel	workflows/scripts/build/pipeline-cron.sh	Local (non-git-archived) pipeline wake-record log dir
+PIPELINE_CRON_SELF_UPDATE	0	bool	kernel	workflows/scripts/build/pipeline-cron.sh	Opt-in: fetch+hard-reset the checkout to origin/main and re-exec before ticking
+FOUNDATION	$(cd "$HERE/../../.." && pwd)	path	kernel	workflows/scripts/build/pipeline-cron.sh	Root of the foundation/kernel checkout the pipeline operates in
+PIPELINE_RAW_DIR	$HOME/dev/foundation/meta/data/raw	path	kernel	workflows/scripts/build/pipeline-cron.sh	Canonical raw-lake sink dir for pipeline telemetry (personal-path-verbatim)
+PIPELINE_OPERATOR_RESOLVE_BIN		path	kernel	workflows/scripts/build/pipeline-cron.sh	Test-double seam for resolving the operator's gh login (else `gh api user`)
+PIPELINE_NOTIFY_CMD		path	kernel	workflows/scripts/build/pipeline-cron.sh	Custom notify command for a non-no-op tick (else osascript, else stderr)
+PIPELINE_GH_BIN	gh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the gh binary used by pipeline-drive's routing calls
+PIPELINE_UNCLAIM_BIN	$HERE/../board/unclaim.sh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the unclaim.sh board CLI the #1157 abandonment reclaim shells out to
+PIPELINE_BOARD_LIB	$HERE/../board/lib/board.sh	path	kernel	workflows/scripts/build/pipeline-drive.sh	Test-double seam for the board adapter path sourced for the #795 label self-provisioning (a missing/redirected file degrades per #801, never a 127)
+PIPELINE_CHECKOUT_3	$HOME/dev/stageFind	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 3 items in (personal-path-verbatim)
+PIPELINE_CHECKOUT_4	$HOME/dev/foundation	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 4 items in (personal-path-verbatim)
+PIPELINE_CHECKOUT_5	$HOME/dev/ssmobile	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 5 items in (personal-path-verbatim)
+PIPELINE_CHECKOUT_6	$HOME/dev/subsetwiki	path	kernel	workflows/scripts/build/pipeline-drive.sh	Local checkout the headless driver runs board 6 items in (personal-path-verbatim)
+PIPELINE_DEFAULT_CHECKOUT	${FOUNDATION:-$(cd "$HERE/../../.." && pwd)}	path	kernel	workflows/scripts/build/pipeline-drive.sh	Default checkout for cwd-agnostic safe actions with no board-specific checkout
+PIPELINE_SCHEDULE_FILE	$(_pipeline_schedule_file_default)	path	kernel	workflows/scripts/build/pipeline-overlap.sh	Operator-controls schedule note (ADR §2.3a kind-3, docs/config-precedence.md § operator controls) pipeline-schedule-gate/tick read — defaults to Controls/, falling back to legacy Context/ through the overlay move window (temperloop#226/#232; personal-path-verbatim — vault content path)
+PIPELINE_TICK_CADENCE	daily	enum	kernel	workflows/scripts/build/pipeline-tick.sh	Documented cron cadence (surfaced only; cadence is enforced by the installed cron entry)
+PIPELINE_LOCK_DIR	/tmp/funnel-tick	path	kernel	workflows/scripts/build/pipeline-tick.sh	Single-flight lockfile dir (one tick per host at a time)
+PIPELINE_LOCK_FILE	$PIPELINE_LOCK_DIR/tick.lock	path	kernel	workflows/scripts/build/pipeline-tick.sh	Single-flight lockfile path
+PIPELINE_INTAKE_WARN_DIR	$PIPELINE_LOCK_DIR	path	kernel	workflows/scripts/build/pipeline-tick.sh	Per-board dedup-marker dir for the signal-intake config-absent WARN (once per condition, not per poll)
+PIPELINE_DELIVERED_MARKER	<!-- funnel:decision-applied -->	marker	kernel	workflows/scripts/build/pipeline-tick.sh	Idempotency marker for an already-applied answered decision
+PIPELINE_INTAKE_CMD	$HERE/../crash-convergence/signal-intake.sh	path	kernel	workflows/scripts/build/pipeline-tick.sh	Crash-signal intake orchestrator invoked/injected by the tick
+GATE_REPOLL_DELAY	3	seconds	kernel	workflows/scripts/build/gate.sh	Sleep before one re-poll of an UNKNOWN/BEHIND mergeable state
+GATE_CI_POLL_INTERVAL	30	seconds	kernel	workflows/scripts/build/gate.sh	Interval between CI-status polls
+GATE_CI_POLL_TIMEOUT	3600	seconds	kernel	workflows/scripts/build/gate.sh	Max time to wait for CI to go green
+GATE_MERGE_POLL_INTERVAL	15	seconds	kernel	workflows/scripts/build/gate.sh	Interval between post-merge confirmation polls
+GATE_MERGE_POLL_TIMEOUT	600	seconds	kernel	workflows/scripts/build/gate.sh	Max time to wait for a merge to confirm
+PLAN_API_BASE	${KNOWLEDGE_STORE_OBSIDIAN_API_BASE:-https://127.0.0.1:27124}	url	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API base URL for plan-note vault writes (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
+PLAN_API_KEY_FILE	${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:-}	path	kernel	workflows/scripts/build/plan.sh	Obsidian Local REST API key-file path for plan-note vault writes (registry-maintenance fix, registry-config-lints — nested fallback recorded verbatim, was pre-resolved)
+SETTING_REGISTRY_FILE	$_SETTING_REGISTRY_LIB_DIR/setting-registry.tsv	path	kernel	workflows/scripts/config/setting-registry-lib.sh	Override path to the kernel setting-registry TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
+SETTING_REGISTRY_OVERLAY_FILE	$_SETTING_REGISTRY_LIB_DIR/setting-registry.overlay.tsv	path	kernel	workflows/scripts/config/setting-registry-lib.sh	Override path to the overlay extension TSV (test seam / explicit path override; registry-maintenance fix, registry-config-lints — row was missing)
+SETTING_REGISTRY_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-setting-registry.sh	Root the equality lint resolves owning-script paths / the kernel file set against (fixture-test seam)
+SETTING_REGISTRY_OVERLAY_SCAN_ROOT	$SETTING_REGISTRY_SCAN_ROOT	path	kernel	workflows/scripts/config/check-setting-registry.sh	Root the equality lint resolves OVERLAY-table (add/redefault) owning-script paths against; defaults to SETTING_REGISTRY_SCAN_ROOT so a standalone checkout is unaffected (temperloop#243 composed-tree seam)
+SETTING_REGISTRY_MANIFEST_FILE		path	kernel	workflows/scripts/config/check-setting-registry.sh	Manifest passed to list-kernel-set.sh for the unregistered-setting sweep (empty = that script's own default; fixture-test seam)
+SETTING_REGISTRY_EXEMPT_FILE	$SCRIPT_DIR/setting-registry-exempt-files.txt	path	kernel	workflows/scripts/config/check-setting-registry.sh	Path to the sweep's wholesale file-exemption list (fixture-test seam)
+SETTING_PROSE_SCAN_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/config/check-setting-prose.sh	Root the prose lint resolves claude/commands/*.md + claude/CLAUDE.kernel.md against (fixture-test seam)
+SETTING_PROSE_BASELINE_FILE	$SCRIPT_DIR/setting-prose-baseline.tsv	path	kernel	workflows/scripts/config/check-setting-prose.sh	Path to the prose lint's burn-down baseline TSV (fixture-test seam)
+SETTING_PROSE_EMIT_BASELINE	0	bool	kernel	workflows/scripts/config/check-setting-prose.sh	Maintenance mode: print ready-to-append baseline TSV rows instead of violation text
+REVIEWER_ROUTING_TSV	$SCRIPT_DIR/reviewer-routing.tsv	path	kernel	workflows/scripts/config/check-reviewer-routing.sh	Path to the reviewer-routing tsv the drift lint compares against build.md's 3e prose (fixture-test seam)
+REVIEWER_ROUTING_BUILD_MD	$REPO_ROOT/claude/commands/build.md	path	kernel	workflows/scripts/config/check-reviewer-routing.sh	Path to build.md whose 3e section the drift lint scans (fixture-test seam)
+CMD_RUN_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-command-run.sh	Sink dir for the /sweep and /triage per-run telemetry stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
+SESSION_CONTEXT_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-session-context.sh	Sink dir for the realized-session-context-probe raw-lake stream (temperloop#828) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/GH_PERF_RAW_DIR above, recorded verbatim
+ITEM_EFFICIENCY_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-item-efficiency.sh	Sink dir for the per-merged-item efficiency raw-lake stream (temperloop#943) — same same-file $VAR-indirection convention as CMD_RUN_RAW_DIR/SESSION_CONTEXT_RAW_DIR above, recorded verbatim
+GH_PERF_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/emit-gh-perf.sh	Sink dir for the gh-performance raw-lake stream (registry-maintenance fix, registry-config-lints — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
+TELEMETRY_RAW_DIR	$raw_root/meta/data/raw	path	kernel	workflows/scripts/telemetry-brief.sh	Raw-lake dir the kernel telemetry-brief reader falls back to for any stream whose own emitter *_RAW_DIR override is unset (temperloop#431 — the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule)
+TELEMETRY_LOOKBACK_DAYS	7	int	kernel	workflows/scripts/telemetry-brief.sh	Lookback window (days) for every windowed number in the kernel telemetry brief; the --lookback-days flag wins over the env var (temperloop#431)
+RETRO_RUNS_RAW_DIR	$TELEMETRY_RAW_DIR	path	kernel	workflows/scripts/build/pipeline-retro-health.sh	Dir the retro-judge health detector reads the OVERLAY retro-runs stream from (temperloop#1150) — the kernel emits no such stream, so this reader-side seam is its only kernel mention; default is a same-file $VAR indirection, recorded verbatim per this file's own "never pre-resolved" rule
+GH_CALL_LOG_FILE	$HOME/.cache/gh-calls-v2.tsv	path	kernel	workflows/scripts/gh-call-logger.sh	Where the gh-call-logger shim appends its per-call TSV rows
+GH_CALL_LOG_MAX_BYTES	16777216	int	kernel	workflows/scripts/gh-call-logger.sh	Rotation threshold for the gh-call-logger TSV
+GH_CALL_LOG	1	bool	kernel	workflows/scripts/gh-call-logger.sh	Opt-out (0) for zero-overhead passthrough with no timing/logging
+GH_CALLS_RAW_DIR	${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/gh-calls	path	kernel	workflows/scripts/gh-call-logger.sh	Sink dir for the gh-calls raw-lake stream (XDG-scoped default, temperloop#415 — never a hardcoded personal checkout path; the shim is INSTALLED to ~/.local/bin/gh, decoupled from any repo checkout, so it can't use the BASH_SOURCE-relative trick the other emit sites use — see the script's own LAKE STREAM header note)
+FEATURE_DOCS_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/validate-feature-docs.sh	Repo root the feature-docs coverage walk scans (fixture-test seam, same shape as KERNEL_MANIFEST_ROOT)
+FEATURE_MANIFEST_FILE	$FEATURE_DOCS_ROOT/docs/features/feature-manifest.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the full-coverage feature path-claims registry
+FEATURE_EXEMPT_FILE	$FEATURE_DOCS_ROOT/docs/features/backfill-exempt.txt	path	kernel	workflows/scripts/validate-feature-docs.sh	Path to the shrink-only feature-doc backfill ratchet
+FEATURE_DOCS_DIR	$FEATURE_DOCS_ROOT/docs/features	path	kernel	workflows/scripts/validate-feature-docs.sh	Directory holding the docs/features/<slug>.md feature docs
+KERNEL_MANIFEST_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/kernel/check-kernel-manifest.sh	Repo root the kernel-manifest checker scans (also used by check-gitleaks-kernel.sh, check-personal-token-denylist.sh, check-pr-leak-guard.sh)
+DESIGN_SCHEMA_ROOT	$REPO_ROOT	path	kernel	workflows/scripts/validate-design-brief.sh	Repo root the design-brief lint resolves schema gate citations against (fixture-test seam, same shape as FEATURE_DOCS_ROOT)
+KERNEL_MANIFEST_FILE	$SCRIPT_DIR/kernel-manifest.txt	path	kernel	workflows/scripts/kernel/check-kernel-manifest.sh	Path to the kernel/overlay classification manifest
+KERNEL_DENYLIST_FILE	$SCRIPT_DIR/personal-token-denylist.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the personal-token denylist TSV
+KERNEL_DENYLIST_EXEMPT_FILE	$SCRIPT_DIR/personal-token-denylist-exempt-files.txt	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the denylist's exempt-files list
+KERNEL_DENYLIST_BASELINE_FILE	$SCRIPT_DIR/personal-token-denylist-baseline.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Path to the denylist burn-down baseline TSV
+PRERENAME_VERDICTS_FILE	$SCRIPT_DIR/prerename-leak-verdicts.tsv	path	kernel	workflows/scripts/kernel/check-prerename-leak-guard.sh	Path to the pre-rename identifier migrate-vs-allowlist verdict table
+PRERENAME_EXEMPT_FILE	$SCRIPT_DIR/prerename-leak-exempt-files.txt	path	kernel	workflows/scripts/kernel/check-prerename-leak-guard.sh	Path to the prerename gate's own exempt-files list
+LEAK_GUARD_HEAD	HEAD	string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as HEAD for the added-lines diff
+LEAK_GUARD_BASE		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Git ref treated as the diff base
+LEAK_GUARD_PATHS		string	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Space-separated pathspec scope (empty = whole tree)
+LEAK_GUARD_RELATIVE		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Root dir for --relative path reporting (empty = repo toplevel; overlay vendoring sets it to the kernel/ subtree)
+LEAK_GUARD_SKIP_SECRETS	0	bool	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Skip the gitleaks secrets-scan half of the guard
+GITLEAKS_BIN		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Use this gitleaks binary verbatim instead of resolving one
+CHANGELOG_GATE_ROOT	$REPO_ROOT_DEFAULT	path	kernel	workflows/scripts/check-changelog-entry.sh	Repo root the CHANGELOG [Unreleased] gate scans (fixture-test seam, same shape as KERNEL_MANIFEST_ROOT)
+CHANGELOG_GATE_HEAD	HEAD	string	kernel	workflows/scripts/check-changelog-entry.sh	Git ref treated as HEAD for the contract-surface diff
+CHANGELOG_GATE_BASE		string	kernel	workflows/scripts/check-changelog-entry.sh	Git ref treated as the diff base (CI passes the PR's base SHA; empty falls back to origin/main then main)
+CHANGELOG_GATE_PR_BODY		string	kernel	workflows/scripts/check-changelog-entry.sh	PR body text the gate scans for a `Changelog: none - <reason>` opt-out marker (CI passes the pull_request payload's body)
+CHANGELOG_GATE_PR_LABELS		string	kernel	workflows/scripts/check-changelog-entry.sh	Comma-separated PR label names the gate scans for the opt-out label (CI passes the pull_request payload's labels)
+CHANGELOG_GATE_SKIP_LABEL	no-changelog	label	kernel	workflows/scripts/check-changelog-entry.sh	PR label that explicitly opts a contract-surface change out of the [Unreleased] entry requirement
+CHANGELOG_GATE_AMEND_LABEL	changelog-amend	label	kernel	workflows/scripts/check-changelog-entry.sh	PR label that explicitly records a DELIBERATE edit to an already-released CHANGELOG section (the sibling of the skip label; waives the section-scope check only)
+CHECK_PRODUCER_EGRESS_KERNEL_ROOT	$(cd "$SCRIPT_DIR/../../.." && pwd)	path	kernel	workflows/scripts/kernel/check-producer-egress.sh	Kernel root the producer-egress checker scans
+CHECK_PRODUCER_EGRESS_OVERLAY_DIR		path	kernel	workflows/scripts/kernel/check-producer-egress.sh	Optional overlay-report dir cross-checked against the kernel root
+GITLEAKS_VERSION	8.30.1	string	kernel	workflows/scripts/kernel/install-gitleaks.sh	Pinned gitleaks release version to install/resolve
+SHELLCHECK_VERSION	0.11.0	string	kernel	scripts/ensure-shellcheck.sh	Pinned shellcheck release version make shellcheck resolves/downloads; keeps local == CI (temperloop#567)
+KNOWLEDGE_SEARCH_BM_MCP_URL	http://127.0.0.1:8766/mcp	url	kernel	workflows/scripts/lib/knowledge_search_mcp.sh	basic-memory MCP daemon endpoint
+KNOWLEDGE_SEARCH_BM_MCP_PROTO	2025-03-26	string	kernel	workflows/scripts/lib/knowledge_search_mcp.sh	MCP protocol version sent in the handshake
+KNOWLEDGE_SEARCH_BM_MCP_CONNECT_TIMEOUT	2	seconds	kernel	workflows/scripts/lib/knowledge_search_mcp.sh	curl connect timeout to the MCP daemon
+KNOWLEDGE_SEARCH_BM_MCP_MAX_TIME	30	seconds	kernel	workflows/scripts/lib/knowledge_search_mcp.sh	curl total-time timeout to the MCP daemon
+KS_SEARCH_FALLBACK_RAW_DIR		path	kernel	workflows/scripts/lib/knowledge_search_mcp.sh	Override for the cold-fallback telemetry raw-lake dir
+KS_SEARCH_FALLBACK_STATE_DIR	${TMPDIR:-/tmp}	path	kernel	workflows/scripts/lib/knowledge_search_mcp.sh	Dir for the cold-fallback de-dup marker file
+KNOWLEDGE_SEARCH_BACKEND	basic-memory	enum	kernel	workflows/scripts/lib/knowledge_search.sh	Search backend name (dispatches to `_ks_search_backend_<name>_<op>`)
+KNOWLEDGE_SEARCH_BM_PROJECT	foundation-knowledge	label	kernel	workflows/scripts/lib/knowledge_search.sh	basic-memory project name
+KNOWLEDGE_SEARCH_BM_VERSION	0.22.1	string	kernel	workflows/scripts/lib/knowledge_search.sh	Pinned basic-memory CLI version invoked via uvx
+KNOWLEDGE_SEARCH_BM_PYTHON	3.13	string	kernel	workflows/scripts/lib/knowledge_search.sh	Pinned CPython version for the uvx basic-memory env (wheel-availability guard, K#368)
+KNOWLEDGE_SEARCH_BM_EXTRA_IGNORES		string	kernel	workflows/scripts/lib/knowledge_search.sh	Overlay seam: extra .bmignore segments appended to the generic base set
+KNOWLEDGE_SEARCH_BM_HOME	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/basic-memory-home	path	kernel	workflows/scripts/lib/knowledge_search.sh	Dedicated HOME dir for the basic-memory subprocess
+KNOWLEDGE_SEARCH_RERANK	1	bool	kernel	workflows/scripts/lib/knowledge_search.sh	Post-fetch re-rank of the backend's candidate set (0 = backend order untouched)
+KNOWLEDGE_SEARCH_RERANK_DEPTH	20	int	kernel	workflows/scripts/lib/knowledge_search.sh	Candidates fetched per query before re-ranking down to the caller's --limit
+KNOWLEDGE_SEARCH_RERANK_LEX_WEIGHT	1.0	string	kernel	workflows/scripts/lib/knowledge_search.sh	Weight of the lexical rank list against the backend's own rank list in the fusion
+KNOWLEDGE_SEARCH_ABSTAIN	0	bool	kernel	workflows/scripts/lib/knowledge_search.sh	Abstain (genuine zero-result shape) when the top-ranked post-rerank candidate fails both measured floors below (foundation#1450, opt-in)
+KNOWLEDGE_SEARCH_ABSTAIN_SCORE_FLOOR	0.72	string	kernel	workflows/scripts/lib/knowledge_search.sh	Floor on the top-ranked candidate's own backend .score, measured on the 213-query engine-neutral bench (foundation#1450)
+KNOWLEDGE_SEARCH_ABSTAIN_LEX_FLOOR	0.10	string	kernel	workflows/scripts/lib/knowledge_search.sh	Floor on the top-ranked candidate's lexical-coverage feature L; both floors must fail (AND) to abstain (foundation#1450)
+KNOWLEDGE_SEARCH_PARTITION		label	kernel	workflows/scripts/lib/knowledge_search.sh	Standing project/partition scope for every ks_search call; empty = unpartitioned (whole corpus, the pre-#418 behaviour). Overridden per call by `ks_search --partition <name>`; enforced in ks_search itself and fails closed (temperloop#418)
+KNOWLEDGE_STORE_ROOT	$(_ks_machine_conf_root || _ks_default_root)	path	kernel	workflows/scripts/lib/knowledge_store.sh	Knowledge-store root dir (the kernel's generic "stranger with no vault" default; build.config.sh no longer re-seeds a personal-path default here — kernel-literal-scrub, temperloop#189). Checks the rung-3 machine conf first (KNOWLEDGE_STORE_MACHINE_CONF row below, temperloop#1328), then uses $XDG_DATA_HOME/temperloop/knowledge; the legacy $XDG_DATA_HOME/foundation/knowledge fallback (temperloop#165) was removed in v0.19.0 and such a store is now NAMED on stderr rather than resolved
+KNOWLEDGE_STORE_MACHINE_CONF	${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/build.config.sh	path	kernel	workflows/scripts/lib/knowledge_store.sh	Rung-3 machine-conf path ks_root() consults (in an isolated subshell, via _ks_machine_conf_root) when KNOWLEDGE_STORE_ROOT is unset, so a bare-env process that never sources build.config.sh (a hook, a launchd agent) still resolves the operator's rung-3-configured store root (temperloop#1328/foundation#1328). Shares build.config.sh's own layer-3 discovery-path literal by convention; never sources the tracked build.config.sh itself
+KNOWLEDGE_STORE_BACKEND	plain-files	enum	kernel	workflows/scripts/lib/knowledge_store.sh	Document-I/O backend name (dispatches to `_ks_backend_<name>_<op>`)
+KNOWLEDGE_READ_LOG_AGENT_MATCHERS	mcp__obsidian* mcp__obsidian-builtin*	string	kernel	workflows/scripts/lib/knowledge_store.sh	Agent-plane read-telemetry hook's PostToolUse tool_name matcher list (space-separated case-glob patterns; temperloop#236) — the one-line seam to add mcp__basic-memory__* at the mcp_obsidian EOL cutover
+KNOWLEDGE_READ_LOG	${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log	path	kernel	workflows/scripts/lib/knowledge_store.sh	Script-plane read-log path — one normalized line per ks__dispatch/ks_search call (temperloop#229)
+LAND_GH	gh	path	kernel	workflows/scripts/lib/land-on-protected-main.sh	gh binary used by the shared protected-main landing kernel
+LAND_DEFAULT_BRANCH	main	label	kernel	workflows/scripts/lib/land-on-protected-main.sh	Default branch name the landing kernel treats as protected
+LAND_REQUIRES_PR		bool	kernel	workflows/scripts/lib/land-on-protected-main.sh	Test seam forcing the protected-branch (PR) landing path
+GH_BENCH_EMIT_BIN	$HERE/../emit-gh-perf.sh	path	kernel	workflows/scripts/probe/gh-bench.sh	Test-double seam for the gh-perf emit sub-script
+GH_PERF_REPORT_EMIT_BIN	$HERE/../emit-gh-perf.sh	path	kernel	workflows/scripts/probe/gh-perf-report.sh	Test-double seam for the gh-perf emit sub-script
+STAGEFIND_DIR	$REPO/../stageFind	path	kernel	workflows/scripts/validate-capture-backstop.sh	stageFind checkout path checked for the cross-repo capture-backstop pairing (soft-skipped if absent)
+MESSAGE_SCHEMA_OVERLAY	$REPO/claude/message-schema.overlay.md	path	kernel	workflows/scripts/validate-template-refs.sh	Overlay message-schema file unioned when present (same union pattern this item's parser follows)
+INBOX_MAX_STUBS	20	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm above this many Sessions/_inbox stubs (tidy.md § Vault hygiene names this setting)
+INBOX_MAX_AGE_H	48	int	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Alarm if the oldest _inbox stub is older than this many hours (tidy.md § Vault hygiene names this setting)
+T0_INVENTORY_FILE	$HOME/.claude/t0-inventory.txt	path	kernel	workflows/scripts/drain/vault_hygiene_report.sh	Compose-plane T0 inventory artifact (temperloop#235) the orphan-pattern lint (temperloop#239) reads to determine Patterns/ inbound-link reachability; absent = the lint degrades gracefully (skipped, never guesses)
+GATE_MAX_ATTEMPTS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Bounded per-gate retry CAP in quality-gates.sh absorbing transient CI-runner flakiness (temperloop#403); set 1 to disable retries. quality-gates.sh keeps a byte-identical layer-6 fallback for a non-vendoring checkout
+GATE_RETRY_BACKOFF	5	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Graduated per-attempt sleep multiplier (backoff*attempt) between quality-gates.sh retry attempts (Towheads/foundation#1297 — the pre-fix loop fired its whole budget back-to-back, defeating a slow-clearing transient); 0 = retry immediately
+GATE_DETERMINISTIC_PATTERN	SC[0-9][0-9][0-9][0-9]	string	tracked-repo	workflows/scripts/build/build.config.sh	ERE matched against a FAILED gate attempt's output; a match classifies the failure DETERMINISTIC and skips every retry (temperloop#976). Default matches a shellcheck finding code; empty disables signature classification (the byte-identical-output short-circuit still applies)
+QUALITY_GATES_JOBS	auto	string	tracked-repo	workflows/scripts/build/build.config.sh	How many quality gates scripts/quality-gates.sh runs CONCURRENTLY (temperloop#1025); `auto` = detected cores clamped to the scheduler's own ceiling, an integer overrides, 1 restores the exact pre-parallel serial loop. quality-gates.sh keeps a byte-identical layer-6 fallback for a non-vendoring checkout
+QUALITY_GATES_SKIP_FRESHNESS	0	bool	kernel	workflows/scripts/lib/checkout-freshness.sh	Disable the checkout-staleness guard (temperloop#591) that warns when quality-gates.sh runs against a checkout behind origin/<default> — a smaller gate set + stale leak-guard diff than CI; set 1 to silence
+QUALITY_GATES_SCOPE	auto	enum	kernel	workflows/scripts/lib/gate-selection.sh	Diff-scoped gate selection mode for scripts/quality-gates.sh (temperloop#1024): auto scopes on a GitHub pull_request event only (merge_group/push/local stay full), full disables scoping outright, diff forces an attempt regardless of event
+GATE_PATHS_FILE	$SCRIPT_DIR/gate-paths.tsv	path	kernel	workflows/scripts/config/check-gate-paths.sh	Path to the path->gate map the completeness/reachability lint validates (fixture-test seam)
+GATE_PATHS_ROOT	$REPO_ROOT_DEFAULT	path	kernel	workflows/scripts/config/check-gate-paths.sh	Repo root the gate-paths lint resolves the gate list and tracked-file set against (fixture-test seam)
+GATE_PATHS_GATE_LIST_FILE		path	kernel	workflows/scripts/config/check-gate-paths.sh	File of `[layer]  <gate>` lines to use instead of invoking scripts/quality-gates.sh --list (empty = invoke it; fixture-test seam)
+GATE_PATHS_TRACKED_FILE		path	kernel	workflows/scripts/config/check-gate-paths.sh	File of tracked paths, one per line, to use instead of `git ls-files` (empty = run git; fixture-test seam)
+GATE_PATHS_ASSUME_CONSUMER	0	bool	kernel	workflows/scripts/config/check-gate-paths.sh	Force the vendoring-consumer arm (a row naming an absent gate SKIPs instead of failing) without a repo-root .kernel-pin; fixture-test seam
+GATE_PATHS_KERNEL_PREFIX	kernel/	string	kernel	workflows/scripts/config/check-gate-paths.sh	Path prefix (with trailing slash) a vendoring consumer vendors the kernel subtree under; check 4 resolves a kernel-layout row against it as well as the bare path. Only consulted in consumer mode
+CI_POLL_API_MAX_ATTEMPTS	5	int	tracked-repo	workflows/scripts/build/build.config.sh	Bounded retry CAP for a single gh api call (head-SHA resolve or check-runs query) absorbing a transient non-JSON/HTTP-5xx gh hiccup (temperloop#386); set 1 to disable retries. ci-poll.sh keeps a byte-identical layer-6 fallback for a non-vendoring checkout
+CI_POLL_API_RETRY_BACKOFF	2	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Graduated per-attempt sleep multiplier (backoff*attempt) between gh_retry attempts in ci-poll.sh (temperloop#386)
+CI_POLL_API_DETERMINISTIC_PATTERN	HTTP 40[0-9]|HTTP 41[0-9]|Not Found|Could not resolve to a|Bad credentials|Resource not accessible|unknown flag	string	tracked-repo	workflows/scripts/build/build.config.sh	ERE matched against a failed gh invocation's combined output in ci-poll.sh; a match classifies the failure DETERMINISTIC (permanent HTTP 4xx/auth/argument error) and dies immediately with deterministic_failure:true instead of retrying (temperloop#976). Deliberately EXCLUDES HTTP 429, which is transient; empty restores retry-everything
+CI_POLL_NOCI_GRACE_SECS	120	seconds	kernel	workflows/scripts/build/ci-poll.sh	Bounded grace window before zero-ever-seen check-runs on the head SHA resolves to the NO_CI verdict instead of TIMEOUT (temperloop#605); capped at --timeout when the timeout is shorter
+TEMPERLOOP_PROFILE	default	enum	kernel	workflows/scripts/config/setting-registry.tsv	RESERVED — named config profile switch; no reader exists yet (deferred, D2 Bucket C)
+TEMPERLOOP_FEEDBACK_DENYLIST_FILE	$REPO_ROOT/workflows/scripts/kernel/personal-token-denylist.tsv	path	kernel	bin/subcommands/feedback.sh	Path to the personal-token denylist TSV the composed feedback payload is leak-scanned against (temperloop#428)
+TEMPERLOOP_FEEDBACK_REPO	Towheads/temperloop	label	kernel	bin/subcommands/feedback.sh	Target repo `temperloop feedback` opens its GitHub issue on (temperloop#428) — the kernel's own upstream tracker, its identity (denylist:allow — same category-1 rationale as feedback.sh's own marked constant)
+TEMPERLOOP_FEEDBACK_ASSUME_TTY	0	bool	kernel	bin/subcommands/feedback.sh	Test seam: treat stdin as attended even when it isn't a real TTY (temperloop#428) — never bypasses the CI/GITHUB_ACTIONS unattended signal, and never substitutes for the actual interactive "y" consent read
+TEMPERLOOP_VERSION	dev	string	kernel	bin/subcommands/feedback.sh	CLI version string stamped into the composed feedback payload (mirrors bin/temperloop's own identical default, which isn't a `.sh` file so isn't swept by this registry's unregistered-setting check); renamed from FOUNDATION_VERSION in v0.15.0, whose read was removed in v0.19.0
+PIPELINE_FLOCK_CMD	flock	path	kernel	workflows/scripts/build/pipeline-tick.sh	Test-double seam for the flock binary — lets a host with a differently-named or absent flock point at a real one (once-per-run degradation notice, temperloop#492)
+PIPELINE_RUN_ID	$log_date-$$	string	kernel	workflows/scripts/build/pipeline-cron.sh	Per-run identity for once-per-run dedup markers (flock-degradation warn); wake-unique = cron wake-date + PID so a later wake re-warns once (temperloop#492)
+PIPELINE_RUN_ID	$$	string	kernel	workflows/scripts/build/pipeline-tick.sh	Per-run identity fallback when pipeline-tick runs standalone with no cron-exported PIPELINE_RUN_ID; PID-scoped (temperloop#492)
+ENV_RECONCILE_AGENT_INSTALL_DIR	$HOME/Library/LaunchAgents	path	kernel	workflows/scripts/build/env-reconcile.sh	Directory whose presence of a declared launchd plist marks this host as owning that agent role; empty of the declared agents = the "not my role" signal (temperloop#531)
+ENV_RECONCILE_AGENT_HOSTS		string	kernel	workflows/scripts/build/env-reconcile.sh	Explicit space-separated host-label allowlist that owns the launchd/cron roles; wins over install-marker auto-detect when set (temperloop#531)
+KERNEL_DENYLIST_LOCAL_FILE	${KERNEL_DENYLIST_FILE%.tsv}.local.tsv	path	kernel	workflows/scripts/kernel/check-personal-token-denylist.sh	Test seam / override for the gitignored operator-personal denylist overlay path; defaults to the sibling .local.tsv of the tracked denylist (temperloop#438)
+KERNEL_DENYLIST_LOCAL_FILE	${KERNEL_DENYLIST_FILE%.tsv}.local.tsv	path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Test seam / override for the gitignored operator-personal denylist overlay path; defaults to the sibling .local.tsv of the tracked denylist (temperloop#438)
+RIGHTS_PROBE_OVERRIDE		enum	kernel	workflows/scripts/build/fixtures/verify-first-epic-consent.sh	Test/injection seam for Contract (f3): overrides rights_probe()'s admin-rights read (values: true, false; unset = real gh api probe), temperloop#611
+READY_PR_SWEEP_BOARD_LIB	$SCRIPT_DIR/board/lib/board.sh	path	kernel	workflows/scripts/ready-pr-sweep.sh	Path to board.sh (the board registry seam for repo enumeration)
+READY_PR_SWEEP_LIMIT	100	int	kernel	workflows/scripts/ready-pr-sweep.sh	Per-repo open-PR page size passed to gh pr list
+READY_PR_SWEEP_REPOS		string	kernel	workflows/scripts/ready-pr-sweep.sh	Space-separated owner/repo override (bypasses board registry)
+ENV_RECONCILE_CANONICAL_HOOK_DIR	$DEFAULT_CANONICAL_HOOK_DIR	path	kernel	workflows/scripts/build/env-reconcile.sh	Canonical guard-hook dir the consumers' vendored .claude/hooks copies are compared against for STALE_VENDORED_HOOK; the seam's own default is a same-file $VAR indirection, recorded verbatim per this file's "never pre-resolved" rule (empty = comparison skipped, fail-open) (foundation#1353)
+ENV_RECONCILE_VENDORED_HOOKS	build-worktree-guard.sh	string	kernel	workflows/scripts/build/env-reconcile.sh	Space-separated hook basenames whose vendored consumer copies are compared against canonical for STALE_VENDORED_HOOK drift (foundation#1353)
+SPEND_WEIGHT_INPUT	1	string	tracked-repo	workflows/scripts/build/build.config.sh	Cost weight for ordinary input tokens in workflows/scripts/pipeline-spend-report.sh's cost-weighted unit (temperloop#958). The four SPEND_WEIGHT_* settings are RELATIVE multipliers normalized on input=1, never prices — no dollar constant exists in this loop (report.contract.md § Non-goals). Typed `string` because the registry's closed type set has no float; the value is a non-negative decimal.
+SPEND_WEIGHT_CACHE_READ	0.1	string	tracked-repo	workflows/scripts/build/build.config.sh	Cost weight for cache_read_input_tokens (temperloop#958). Its ratio to SPEND_WEIGHT_CACHE_CREATE (~1:12.5) is the load-bearing one: ranking by RAW cache-read said /build machinery agents were ~10% of spend; cost-weighted they are 31.8%. Non-negative decimal, typed `string` (no float type in the closed set).
+SPEND_WEIGHT_CACHE_CREATE	1.25	string	tracked-repo	workflows/scripts/build/build.config.sh	Cost weight for cache_creation_input_tokens (temperloop#958) — ~12.5x SPEND_WEIGHT_CACHE_READ, the ratio that makes cost-weighted ranking differ from raw-token ranking. Non-negative decimal, typed `string` (no float type in the closed set).
+SPEND_WEIGHT_OUTPUT	5	string	tracked-repo	workflows/scripts/build/build.config.sh	Cost weight for output_tokens (temperloop#958). Non-negative decimal, typed `string` (no float type in the closed set).
+SPEND_MACHINERY_MAX_CALLS	6	int	tracked-repo	workflows/scripts/build/build.config.sh	Spend-ATTRIBUTION split in pipeline-spend-report.sh (temperloop#958): an agent with at most this many DEDUPED API calls is /build machinery (a prelude/pr-batch/ci-batch executor), above it an item worker. Seeded at the value reproducing the temperloop#953 baseline (machinery 31.8% / item workers 68.2% of cost-weighted units).
+SPEND_WORKER_PROFILE_MIN_CALLS	40	int	tracked-repo	workflows/scripts/build/build.config.sh	Floor (deduped API calls) for the 'typical item worker' PROFILE in pipeline-spend-report.sh (temperloop#958) — deliberately a SECOND, higher threshold than SPEND_MACHINERY_MAX_CALLS so the long tail of short-lived helper agents on the item-worker side of the attribution split doesn't drag the median. Seeded at the value reproducing the #953 baseline (median 61 calls, ~161K peak context).
+SPEND_TRANSCRIPT_ROOT	$HOME/.claude/projects	path	tracked-repo	workflows/scripts/build/build.config.sh	Root that pipeline-spend-report.sh walks for */wf_*/agent-*.jsonl workflow agent transcripts (temperloop#958). Local files only, no network; --root overrides it per call.
+SWEEP_WORKER_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for sweep.md Step 3's Phase-2 fix-issue WORKER agent (the item.model field on its build-level.mjs items[] entry) — distinct from SWEEP_DETECT_MODEL's Phase-1 detection fanout; empty = inherit-session sentinel, unchanged default (temperloop#982; the epic's default-flip is the separate temperloop#971)
+FIX_WORKER_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for fix.md Step 4's single-issue WORKER agent spawn (the item.model field on its one-item build-level.mjs items[] entry); empty = inherit-session sentinel, unchanged default (temperloop#982)
+BUILD_MACHINERY_SOLO_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for claude/workflows/build-level.mjs's runMachinery SOLO machinery-executor spawn (paired with BUILD_MACHINERY_BATCH_MODEL — each covers half of the file's four machinery call sites, neither is a general-case default for the other); resolved at build.md/sweep.md/fix.md Step 0 and passed as the orchestrator-supplied workflow input input.machinerySoloModel (the Workflow runtime has no shell to source build.config.sh itself — DESIGN NOTE 1) — empty = the .mjs's own 'haiku' literal wins via `|| 'haiku'` (empty-string-safe, not just absent-key-safe), unchanged (temperloop#982)
+BUILD_MACHINERY_BATCH_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for claude/workflows/build-level.mjs's runMachineryBatch (prelude/pr-batch/ci-batch) machinery-executor spawn; paired with BUILD_MACHINERY_SOLO_MODEL above; resolved at build.md/sweep.md/fix.md Step 0 and passed as the orchestrator-supplied workflow input input.machineryBatchModel — empty = the .mjs's own 'haiku' literal wins via `|| 'haiku'` (empty-string-safe, not just absent-key-safe), unchanged (temperloop#982)
+BUILD_GATE_SLICE_SECS	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-SLICE wall-clock budget for claude/workflows/build-level.mjs's 3e.5 parent-side acceptance gate: quality-gates.sh (via QUALITY_GATES_BUDGET_SECS) runs gates until this budget is spent, stops cleanly BETWEEN gates and reports a resume index, and the .mjs loops slices — so total suite runtime is not bounded by the executor agent's ~10-min Bash cap and gate-list growth cannot manufacture a false GATE_FAIL (the flat-timeout design decayed twice: temperloop#115 raised it 2min->8min, temperloop#1021 hit the same wall again). Resolved at build.md/sweep.md/fix.md Step 0 and passed as the orchestrator-supplied workflow input input.gateSliceSecs (the Workflow runtime has no shell to source build.config.sh itself — DESIGN NOTE 1); the .mjs keeps its own in-file default for an un-updated caller and CLAMPS the value so the derived Bash-tool timeout can never exceed the agent cap (temperloop#1021)
+BUILD_MACHINERY_STEP_CEILING_SECS	900	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-STEP wall-clock liveness bound, in seconds, on a claude/workflows/build-level.mjs machinery-executor step (prelude/pr-batch/ci-batch batches and the solo gate/recover-probe/push-retry calls). Enforced INSIDE the emitted shell (a bash+sleep+kill watchdog modelled on workflows/scripts/lib/portable-timeout.sh's dependency-free fallback tier), independently of and in addition to the Bash tool's own `timeout` parameter — because temperloop#1071 observed a pr-batch step run 9h49m with the tool timeout never firing and nothing else bounding the call. A step that outlives the ceiling is killed, reports {"outcome":"STEP_TIMEOUT"}, and is treated as LOST: the driver runs the existing pr.sh recover-probe side-effect ladder (temperloop#939) and ADOPTS an already-opened PR rather than re-issuing anything, so a bounded step can never double-push or double-open. Resolved at build.md/sweep.md/fix.md Step 0 and passed as the orchestrator-supplied workflow input input.machineryStepCeilingSecs (the Workflow runtime has no shell to source build.config.sh itself, and no Date.now() to measure with — DESIGN NOTE 1); the .mjs keeps its own in-file default and enforces a floor so no value can bound a step below one CI poll slice
+BUILD_MACHINERY_STEP_SLOW_SECS	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Observability half of BUILD_MACHINERY_STEP_CEILING_SECS: a BATCHED build-level.mjs machinery step that takes at least this many seconds emits an extra {"outcome":"STEP_SLOW"} notice line alongside its real result, which the driver partitions out of the results array and turns into a log() line — so a long stall is visible long before it reaches the ceiling, instead of being the silent 9h49m of temperloop#1071. A slow step is NOT lost and is NOT disposed. 0 disables the notice. Deliberately NOT applied to the SOLO executor calls, whose schema admits exactly one JSON object. Resolved at build.md/sweep.md/fix.md Step 0 and passed as input.machineryStepSlowSecs
+BUILD_WORKER_SUMMARY_MAX_WORDS	60	int	tracked-repo	workflows/scripts/build/build.config.sh	Word bound on the `summary` slot of a /build worker's structured verdict (claude/workflows/build-level.mjs workerPrompt()'s Output shape section, §3c return contract). The verdict's SHAPE is schema-enforced but a JSON schema cannot bound a string's LENGTH: measured across 83 real worker verdicts, summary ran to a median 119 words / max 557 against a spec asking for 1-3 sentences, and every one is an output token (weight 5) the orchestrator then ingests. Not information loss — the detail belongs in the worker's .build-verification.md file, which pr.sh splices into the PR body's ## Verification section without it ever entering orchestrator context (temperloop#1080). Resolved at build.md Step 0 and passed as the orchestrator-supplied workflow input input.workerSummaryMaxWords (the Workflow runtime has no shell to source build.config.sh itself — DESIGN NOTE 1); the .mjs keeps its own in-file default, so sweep.md/fix.md inherit a bounded prompt without resolving the setting
+BUILD_WORKER_EVIDENCE_MAX_WORDS	30	int	tracked-repo	workflows/scripts/build/build.config.sh	Word bound on EACH acceptance_results[].evidence entry of a /build worker's structured verdict (claude/workflows/build-level.mjs workerPrompt()'s Output shape section, §3c return contract). Same rationale and same measured gap as BUILD_WORKER_SUMMARY_MAX_WORDS above: per-criterion evidence ran to a median 33 words / max 244 against a spec asking for '<file:line or test name>'. Evidence is a POINTER (file:line, test name, command + verdict), not the argument — the argument lives in .build-verification.md, which reaches the PR body without entering orchestrator context (temperloop#1080). Resolved at build.md Step 0 and passed as input.workerEvidenceMaxWords, with the same .mjs in-file default for a caller that omits it
+QUALITY_GATES_START_AT	0	int	kernel	scripts/quality-gates.sh	Sliced-run resume index (0-based) into scripts/quality-gates.sh's unioned gate list — begin at this gate, skipping the prefix an earlier slice already ran. 0 (the default) runs the whole list, byte-identically to a bare invocation. ENV VAR rather than a flag deliberately: a consuming repo vendoring an older quality-gates.sh IGNORES an unknown env var and runs the whole suite (still correct), whereas an unknown flag would exit 2 'usage' and read back to /build's 3e.5 gate as a gate failure (temperloop#1021)
+QUALITY_GATES_STEP_SUMMARY	0	bool	kernel	scripts/quality-gates.sh	Opt-in per-gate wall-clock breakdown written to $GITHUB_STEP_SUMMARY, labelled by runner OS (temperloop#968). 0 (the default) emits nothing, so a local run and the merge-path `checks` job are byte-identical to before; the nightly per-OS workflows set 1 to publish the timing table that localises the macOS-vs-ubuntu delta to named gates instead of attributing it to "macOS is slow". Reporting only — it never changes which gates run or their verdicts
+QUALITY_GATES_BUDGET_SECS	0	seconds	kernel	scripts/quality-gates.sh	Soft per-invocation wall-clock budget for scripts/quality-gates.sh; checked only BETWEEN gates (so no gate is ever killed mid-run) and, when spent with gates remaining, the script prints QUALITY_GATES_RESUME_AT=/QUALITY_GATES_FAILED= and exits 75 (EX_TEMPFAIL, distinct from 0 pass and 1 fail). 0 (the default) disables slicing entirely. /build's 3e.5 gate sets it from BUILD_GATE_SLICE_SECS and loops slices, which is what removes the executor agent's ~10-min Bash cap as a ceiling on total suite runtime (temperloop#1021)
+REDUNDANCY_PRECISION_THRESHOLD_PCT	80	pct	kernel	workflows/scripts/score-redundancy.sh	Semantic-redundancy probe (temperloop#855, epic #810 P9 half (b)): the PRE-REGISTERED precision bar at which a Phase-B redundancy gate is judged warranted, measured over a hand-labelled sample of the detector's own top-ranked output. Fixed in the commit that landed score-redundancy.md § Pre-registration, BEFORE the detector existed — changing it after a precision figure is known is a NEW pre-registration for a NEW measurement, never an edit. Never a cap itself: Phase A ships no gate
+REDUNDANCY_PRECISION_MIN_SAMPLE	10	int	kernel	workflows/scripts/score-redundancy.sh	Semantic-redundancy probe (temperloop#855): minimum hand-labelled sample the precision figure needs to count. Below it the recorded verdict is NO-GO by insufficient evidence whatever the ratio reads — a precision figure without its sample size beside it is the failure this item's acceptance names. Pre-registered alongside the threshold above
+REDUNDANCY_LABEL_SAMPLE_N	12	int	kernel	workflows/scripts/score-redundancy.sh	Semantic-redundancy probe (temperloop#855): how many top-ranked candidates (by duplicated-byte weight) are drawn into the hand-labelled sample in workflows/scripts/config/redundancy-precision-labels.tsv. Set above REDUNDANCY_PRECISION_MIN_SAMPLE so the sample clears the minimum with margin for a pair going stale as the surface changes
+REDUNDANCY_SCORE_FLOOR_PCT	16	pct	kernel	workflows/scripts/score-redundancy.sh	Semantic-redundancy probe (temperloop#855): the score at or above which a chunk pair is reported as a redundancy candidate. Calibrated on temperloop#854's labelled fixture corpus ALONE (the midpoint between the highest-scoring unsuppressed negative and the lowest-scoring positive), never on the surface being measured — see score-redundancy.md PR-4, which forbids moving it after seeing the real ranking or its labels
+TRY_TRIAGE_MODEL	claude-haiku-4-5	string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for bin/subcommands/try.sh Step 3's SHADOW/DRY-RUN triage classification claude -p seat; the one seat temperloop#978 re-tiered off inherit — its output is free-form text printed verbatim with no parse contract to fail, it is a zero-write dry run, and it lands on a stranger's first-run bill (measured: valid report 2/2, ~5.5x cheaper per call in dollars, within noise on cost-weighted units). Empty restores inherit-session
+TRY_DEMO_FIX_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for bin/subcommands/try.sh --demo's LIVE judgment call producing a fixed file's full corrected content, which the script applies, commits and pushes to a real PR; empty = inherit-session sentinel, deliberately NOT re-tiered (committed code no mechanical gate checks — the tier-by-verification case for the strong tier; temperloop#978)
+CONFIGURE_AI_MODEL		string	tracked-repo	workflows/scripts/build/build.config.sh	Model tier for bin/subcommands/configure.sh's AI-guided starting-value suggestion claude -p seat; empty = inherit-session sentinel, deliberately NOT re-tiered on MEASURED evidence — at the cheap tier the model fenced its JSON on 4 of 4 runs, jq exits 5, and every setting falls through to the plain-prompt fallback: ~2.4x cheaper per seat, 0% of the job (temperloop#978)

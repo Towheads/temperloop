@@ -5,10 +5,10 @@ slug: check-in
 
 ## Problem
 
-Unattended machinery (the nightly drain pass, the autonomous funnel driver,
+Unattended machinery (the nightly drain pass, the autonomous pipeline driver,
 an unattended build run) is deliberately designed to never block waiting for
 an absent operator — it takes a safe default and keeps moving, or it parks
-something it can't safely decide on its own. Without a review ritual, every
+something it can't safely decide on its own. Without a review step, every
 one of those defaulted decisions, parked findings, and flagged surfaces just
 sits there permanently: a pending decision nobody confirmed, a proposed
 supersession nobody linked, a possible-secret flag nobody redacted, a
@@ -63,7 +63,7 @@ actually shifted.
 ## Integration
 
 Consumes: every review surface the drain pass (`tidy`) and the autonomous
-funnel driver write — pending decisions, proposed supersessions, retro
+pipeline driver write — pending decisions, proposed supersessions, retro
 findings (when `/retro` is installed — gated via `command_declared`, see
 above), candidate tells, vault hygiene, sensitivity flags — plus the
 telemetry-brief renderers for Part 1's status readout: the kernel renderer
@@ -77,7 +77,7 @@ candidate tells; edits to the standing per-project priorities notes that a
 downstream advisory recommender reads.
 
 This command is the **read side** of the drain-proposes / operator-disposes
-split: `tidy` and the funnel driver **propose** by appending; `check-in`
+split: `tidy` and the pipeline driver **propose** by appending; `check-in`
 **disposes** by mutating status. Nothing else in the pipeline reads or
 writes the `Status` field on these surfaces.
 
@@ -87,15 +87,17 @@ Cost is proportional to the number of open entries across the six review
 surfaces, not to overall pipeline volume — a quiet night costs a handful of
 reads that each report "no open entries." Each disposition is a small,
 targeted edit (a status-line patch or a short append), not a full-file
-rewrite. The priorities review is bounded by the number of active projects,
-each a small note read-and-confirm.
+rewrite — followed by a cheap trailing-newline check (temperloop#853) so a
+status-line patch landing on the file's last line can never leave it
+unterminated for the next appender. The priorities review is bounded by the
+number of active projects, each a small note read-and-confirm.
 
 ## Telemetry
 
 None as a direct raw-lake emitter — this command is the human-facing
 consumer of telemetry rather than a producer of it. Its Part 1 status
 readout surfaces whatever the checkout's telemetry-brief renderers already
-computed from the raw-lake streams (command runs, issue touches, funnel
+computed from the raw-lake streams (command runs, issue touches, pipeline
 ticks, findings, and the rest); if a renderer reports stale or missing
 data, that staleness is itself the observable signal that something in the
 telemetry pipeline needs attention. The kernel renderer is now

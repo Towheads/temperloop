@@ -40,6 +40,13 @@ org-grade process without an org:
    whether you're one consultant spinning this up per client repo, one
    hobbyist with no budget line at all, or one of a handful of teammates
    who don't want to ask anyone to provision anything on their behalf.
+   **If you are that consultant, read one caveat before you start:** the
+   knowledge store is single-tenant per `$HOME` — one flat corpus shared by
+   every engagement on that account, with only a filename convention
+   separating them — so a search run during one client's session can
+   surface another client's notes unless you scope it or split the account.
+   `docs/features/knowledge-store.md` § Limitations states the exposure and
+   the two ways to handle it.
 
 ## Explicitly not a fit
 

@@ -11,8 +11,8 @@
 # comment is skipped. Used today for two documented, load-bearing cases where
 # the personal-looking literal is an intentional runtime default, not an
 # oversight:
-#   1. workflows/scripts/board/lib/board.sh's (and funnel-tick.sh's /
-#      funnel-drive.sh's) `boards.conf`-fallback case maps — kernel-manifest
+#   1. workflows/scripts/board/lib/board.sh's (and pipeline-tick.sh's /
+#      pipeline-drive.sh's) `boards.conf`-fallback case maps — kernel-manifest
 #      #770 already documents these built-in values as required
 #      byte-for-byte so a `boards.conf`-less CONSUMING checkout (board.sh is
 #      synced, as real files, into other repos) keeps behaving exactly as it
@@ -88,7 +88,7 @@ _kernel_denylist_is_exempt() {
 # ---------------------------------------------------------------------------
 # Load the burn-down baseline (file, pattern, line) triples. Bash-3.2-
 # compatible plain indexed arrays (no `declare -A` — kernel scripts must run
-# unmodified on macOS's system bash, see kernel-repo-layout.md), same linear-
+# unmodified on macOS's system bash 3.2), same linear-
 # scan idiom as _kernel_denylist_is_exempt above. Blank lines and
 # #-prefixed comment lines are skipped, same convention as the other two
 # data files. A parallel `baseline_used` flag array tracks per-row

@@ -16,7 +16,7 @@ Two framing facts carry over from the cost page:
   same token count on either model; dollars scale ~1.67× from Sonnet 5 to
   Opus 4.8. So "efficient" almost always means *do the same work with fewer
   tokens*, or *route those tokens to a cheaper model* — the levers below.
-- **Every knob named here has its value in
+- **Every setting named here has its value in
   [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh),
   not in this prose.** Defaults are quoted as a directional aid; the config
   file is the source of truth.
@@ -83,25 +83,44 @@ genuinely hard decisions (a merge, a design fork) get the strong one. The
 failure this prevents is a fan-out that silently launches every agent on the
 top tier for work that never needed it.
 
-- **The funnel splits its driver model by judgment level:**
-  `FUNNEL_DRIVE_MODEL` (default `claude-sonnet-5`) drives mechanical actions;
-  `FUNNEL_DRIVE_MERGE_MODEL` (default `claude-opus-4-8`) is reserved for the
+- **The pipeline splits its driver model by judgment level:**
+  `PIPELINE_DRIVE_MODEL` (default `claude-sonnet-5`) drives mechanical actions;
+  `PIPELINE_DRIVE_MERGE_MODEL` (default `claude-opus-4-8`) is reserved for the
   high-judgment code/merge tier.
   ([`build.config.sh`](../workflows/scripts/build/build.config.sh)).
-- **`/build`'s one-shot executors are pinned to Haiku** — the agents that just
-  run a spine command or a read-only merge-state query do no reasoning, so
-  they're the cheapest tier; the worker that *does* the build inherits the
-  session model (`model: item.model`).
+- **`/build`'s machinery executors are pinned to Haiku, and batched** — the
+  agents that just run machinery commands do no reasoning, so they're the
+  cheapest tier; the worker that *does* the build inherits the session model
+  (`model: item.model`). Mechanically-adjacent steps also share **one** executor
+  spawn instead of one per shell command (`prelude` / `pr-batch` / `ci-batch`),
+  which cut an L0-shaped 3-item level from 40 agent spawns to 15 — each spawn
+  had been paying ~160K cache-read tokens to run a single one-liner
+  (temperloop#942).
   ([`claude/workflows/build-level.mjs`](../claude/workflows/build-level.mjs)).
+- **…and they carry a lean context, because context size is what a cache miss
+  costs.** Two of those executors exceed the ~300s prompt-cache TTL *by
+  construction* — the CI poll (waiting is its whole job) and the minutes-scale
+  3e.5 acceptance gate — so their post-wait call re-*writes* the whole context at
+  weight 1.25 instead of re-*reading* it at 0.1. The excess is therefore
+  proportional to the agent's **context size**, not to the length of the wait, so
+  machinery executors run as the Bash-only
+  [`machinery-executor`](../claude/agents/machinery-executor.md) agent rather than
+  a `general-purpose` one, and that definition carries the standing "run it
+  verbatim, return each step's JSON line" contract the per-call prompt used to
+  restate. Measured first-call `cache_creation`, same prompts and machine:
+  37,428 → 30,856 tokens for a CI-poll batch and 37,201 → 30,734 for the gate
+  (−17.5%; −56% of the context that is not the installed CLAUDE.md, which the
+  harness injects into every non-built-in agent and no agent definition can
+  decline) (temperloop#1014).
 - **The standing rule** that each fan-out set its worker's tier *explicitly*
   to the cheapest that fits — rather than defaulting all agents to the
   driver's tier — is [`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md)
-  § Subagent usage ("Cost-tier routing"). The two funnel knobs are its worked
+  § Subagent usage ("Cost-tier routing"). The two pipeline settings are its worked
   example; review seats are routed the same way (advisory reviewers →
   `sonnet`, locate-and-report fan-outs → `haiku`).
 
 > temperloop routes by **model tier**, not by a separate effort setting —
-> there is no effort-tier (`low`/`high`/`xhigh`) knob in the pipeline config
+> there is no effort-tier (`low`/`high`/`xhigh`) setting in the pipeline config
 > today. Model-tier selection is how the cost/quality tradeoff is expressed
 > here.
 
@@ -233,18 +252,24 @@ efficiency rule, says "don't spend tokens you don't have to":
 
 ## How temperloop tracks spend — and where the gaps are
 
-The honest headline, confirmed by reading the telemetry directly: **this repo
-does not log dollar spend, and does not log token counts, per command.** What
-it captures is *work events* — counts, timestamps, and wall-time — not cost.
-Knowing that is the point: it tells you what you can and can't answer from the
-built-in data.
+The honest headline, confirmed by reading the telemetry directly: **this repo's
+own telemetry does not log dollar spend, and does not log token counts, per
+command.** What it captures is *work events* — counts, timestamps, and
+wall-time — not cost. Knowing that is the point: it tells you what you can and
+can't answer from the built-in data.
+
+But temperloop is not the only thing keeping records. **Claude Code itself
+already persists per-agent token `usage`**, and reading *that* retroactively
+answers the token question without temperloop emitting anything — see
+[§ Reading token spend out of the harness's own transcripts](#reading-token-spend-out-of-the-harnesss-own-transcripts)
+below.
 
 ### What's captured natively (kernel)
 
 - **Raw-lake event streams** under [`meta/data/raw/`](../meta/data/raw/README.md)
   (field reference in [`docs/features/telemetry.md`](features/telemetry.md)):
   `command-run` (items processed/merged/parked), `issue-touches`, `claims`,
-  `funnel` (each wake's event type + `duration_ms` + action counts), `gh-calls`
+  `pipeline` (each wake's event type + `duration_ms` + action counts), `gh-calls`
   (per-call wall-time `dur_ms` + exit code), `findings` (records the model's
   *identity*, useful for attribution, not its token count), and `gh-perf`
   (per-op latency percentiles). Every one records events, time, or counts —
@@ -264,41 +289,107 @@ built-in data.
   rate-limit state to `~/.claude/rate-limits.json` at zero token cost, feeding
   the 5-hour quota gate — rolling-window *headroom*, again not dollars.
 
-### The honest gap — and the two empty slots left for it
+### The remaining gap — one empty slot left, one now filled
 
-Per-command **token counts** and **dollar spend**, and **cost-per-epic**, are
-not captured kernel-side. They exist only as (a) the hardcoded directional
-constants above and (b) an **overlay** rollup pipeline
-(`meta/data/rollups/*` + `workflows/scripts/build_telemetry_brief.py`) that is
-*not present in a bare kernel checkout* — `/check-in` guards it with an
-`if [ -f … ]` and notes it's unavailable when absent
+Per-command **dollar spend** and **cost-per-epic** are still not captured
+kernel-side. They exist only as (a) the hardcoded directional constants above
+and (b) an **overlay** rollup pipeline (`meta/data/rollups/*` +
+`workflows/scripts/build_telemetry_brief.py`) that is *not present in a bare
+kernel checkout* — `/check-in` guards it with an `if [ -f … ]` and notes it's
+unavailable when absent
 ([`claude/commands/check-in.md`](../claude/commands/check-in.md)).
 
-The kernel deliberately ships **two empty slots** where real spend data would
-plug in, rather than pretending to have it:
+The kernel shipped **two empty slots** where real spend data would plug in,
+rather than pretending to have it. **One of them is now filled:**
 
-- A `tokens` drop-in producer for `temperloop report` at
-  `.temperloop/report.d/tokens` — if it emits `{"tokens_spent": <n>}`, the
-  report headline becomes `tokens_spent / merged_count`. No such producer
-  ships; the design non-goal is stated as "no precise cost accounting."
+- ✅ **`tokens` drop-in producer** for `temperloop report`, reached at
+  [`.temperloop/report.d/tokens`](../.temperloop/report.d/tokens) — **shipped**
+  (temperloop#958). That path is a thin locator + `exec` shim (temperloop#980
+  "producer-kernel-side-relocation": moving the real logic kernel-side is
+  what lets a producer *committed into an adopter's own repo* update when the
+  kernel updates); the shim resolves and execs into the implementation at
+  [`workflows/scripts/report-producers/tokens`](../workflows/scripts/report-producers/tokens),
+  which emits `{"tokens_spent": <n>, "by_model": {…}}` derived from the
+  harness's own transcripts (next section), so the report headline is now
+  `tokens_spent / merged_count`, and — given a hand-written
+  `.temperloop/pricing.json` — a directional `~$<total>` line beside it. The
+  "no precise cost accounting" non-goal is unchanged: the number is
+  **directional cost-weighted units**, never a billed amount
   ([`workflows/scripts/lib/report.contract.md`](../workflows/scripts/lib/report.contract.md)).
-- The overlay `build_telemetry_brief.py` guard in `/check-in`, which would add
-  the cost-per-epic / token-cost digest the kernel streams can't derive.
+- ⬜ **The overlay `build_telemetry_brief.py` guard** in `/check-in`, which
+  would add the cost-per-epic / token-cost digest the kernel streams can't
+  derive. Still empty.
 
-**What would close the gap:** a per-run token/dollar emitter (the `claude -p`
-calls could write their `usage` totals to a new raw-lake stream), which both
-empty slots are already shaped to consume. Until then, your own Claude Code
-usage view remains the source of truth for actual spend — the same conclusion
-the cost page reaches.
+**What would close the rest of the gap — and what turned out *not* to be
+needed.** This page used to say the fix was *"a per-run token/dollar emitter
+(the `claude -p` calls could write their `usage` totals to a new raw-lake
+stream)"*. **That was wrong, and building it would have been wasted work:**
+Claude Code **already** persists a per-agent `usage` block for every workflow
+subagent, in transcripts on disk. An emitter would have duplicated data the
+harness writes anyway — and, being an emitter, would only ever have covered
+runs made *after* it shipped. Reading the existing transcripts instead works
+**retroactively, over all of history**, which is the property that actually
+answers "did that change save anything?". So the remaining empty slot needs
+the *cost-per-epic attribution* layer, not a new emitter.
+
+### Reading token spend out of the harness's own transcripts
+
+[`workflows/scripts/pipeline-spend-report.sh`](../workflows/scripts/pipeline-spend-report.sh)
+walks `~/.claude/projects/**/subagents/workflows/wf_*/agent-*.jsonl` and
+reports cost-weighted spend. Local files only — no network, no API, no `gh`.
+
+```sh
+workflows/scripts/pipeline-spend-report.sh                       # whole corpus
+workflows/scripts/pipeline-spend-report.sh --since 2026-07-20    # a date window
+workflows/scripts/pipeline-spend-report.sh --run wf_423b8a39-a02 # one workflow run
+workflows/scripts/pipeline-spend-report.sh --format json         # machine-readable
+```
+
+It reports the corpus (runs, agents, deduped API calls), raw tokens per class,
+total cost-weighted units, the **machinery vs item worker** split, a typical
+item worker's profile, and per-model attribution. The machinery/worker split
+is what makes lever 2's claims checkable: `--since` before and after a
+machinery-batching change is a two-command before/after, rather than a
+projection nobody measured.
+
+Two things worth knowing before you trust a number from it:
+
+- **Units are cost-weighted, not raw tokens.** The four class weights
+  (`SPEND_WEIGHT_INPUT`, `SPEND_WEIGHT_CACHE_READ`, `SPEND_WEIGHT_CACHE_CREATE`,
+  `SPEND_WEIGHT_OUTPUT`) live in
+  [`build.config.sh`](../workflows/scripts/build/build.config.sh), never in
+  the script. This matters more than it sounds: `cache_creation` bills ~12.5×
+  `cache_read`, so ranking by *raw* cache-read put the machinery agents at
+  ~10% of spend when cost-weighted they are ~32%.
+- **One API response spans several transcript lines**, each repeating the same
+  `usage` block, so the tool dedupes by `requestId`. Summing per line inflated
+  the measured corpus **2.16×**. The report prints the undeduped figure beside
+  the real one so the correction is visible rather than assumed, and the
+  property is pinned by a fixture test
+  ([`workflows/scripts/tests/test_pipeline_spend_report.sh`](../workflows/scripts/tests/test_pipeline_spend_report.sh)).
+
+The script's own header documents these plus two further traps it deliberately
+encodes — why it derives **no** tool-call-parallelism metric (the transcript
+format structurally cannot express it), and the BSD/macOS dialect constraints.
+
+Your Claude Code usage view remains the source of truth for actual **dollars**;
+this tool answers *where the tokens went*, which is the question the levers on
+this page are trying to move.
 
 ## Related
 
 - [`cost-and-autonomy.md`](cost-and-autonomy.md) — what a run costs and what it
   does unattended, plus the spend *ceilings* (caps, quota gate) this page
   deliberately leaves out.
-- [`docs/features/funnel-driver.md`](features/funnel-driver.md) — the autonomy
+- [`docs/features/pipeline-driver.md`](features/pipeline-driver.md) — the autonomy
   tiers whose model split this page describes.
 - [`docs/features/telemetry.md`](features/telemetry.md) — the raw-lake stream
-  reference behind the tracking section.
+  reference behind the tracking section, and the feature page the spend
+  profiler is documented under.
+- [`workflows/scripts/pipeline-spend-report.sh`](../workflows/scripts/pipeline-spend-report.sh)
+  — the profiler itself; its header carries the four correctness traps and the
+  `--format json` schema.
+- [`workflows/scripts/lib/report.contract.md`](../workflows/scripts/lib/report.contract.md)
+  — the `report.d/` drop-in contract the `tokens` producer satisfies.
 - [`workflows/scripts/build/build.config.sh`](../workflows/scripts/build/build.config.sh)
-  — the single source of truth for every knob value named above.
+  — the single source of truth for every setting value named above.

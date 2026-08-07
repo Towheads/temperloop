@@ -41,8 +41,8 @@ pass() { echo "PASS: $1"; }
 [ -x "$RAC_SH" ] || fail "0: script not found or not executable at $RAC_SH"
 
 # Resolve the REAL REVIEWER_SCAN_MIN_FILES default from build.config.sh
-# (the knob's single source of truth) rather than hardcoding a literal here,
-# so this test tracks the knob if it's ever retuned.
+# (the setting's single source of truth) rather than hardcoding a literal here,
+# so this test tracks the setting if it's ever retuned.
 min_files="$(bash -c "source '$CONFIG_SH' >/dev/null 2>&1; echo \"\${REVIEWER_SCAN_MIN_FILES:-3}\"")"
 case "$min_files" in
   ''|*[!0-9]*) fail "0: could not resolve a numeric REVIEWER_SCAN_MIN_FILES (got '$min_files')" ;;
@@ -62,11 +62,11 @@ done
 echo 'package main' >"${FIXTURE1}/stray.go"
 
 out1="$(bash "$RAC_SH" --list-only --project-dir "$FIXTURE1")"
-printf '%s\n' "$out1" | grep -qx "shell-reviewer" \
+grep -qx "shell-reviewer" <<<"$out1" \
   || fail "1: shell-reviewer not in gap set (got: $out1)"
-printf '%s\n' "$out1" | grep -qx "python-reviewer" \
+grep -qx "python-reviewer" <<<"$out1" \
   || fail "1: python-reviewer not in gap set (got: $out1)"
-if printf '%s\n' "$out1" | grep -qx "go-reviewer"; then
+if grep -qx "go-reviewer" <<<"$out1"; then
   fail "1: go-reviewer unexpectedly in gap set (single stray file, below threshold)"
 fi
 
@@ -109,10 +109,10 @@ done
 echo '# shell-reviewer (already deployed)' >"${FIXTURE2}/.claude/agents/shell-reviewer.md"
 
 out2="$(bash "$RAC_SH" --list-only --project-dir "$FIXTURE2")"
-if printf '%s\n' "$out2" | grep -qx "shell-reviewer"; then
+if grep -qx "shell-reviewer" <<<"$out2"; then
   fail "4: shell-reviewer should be excluded (already covered) — got: $out2"
 fi
-printf '%s\n' "$out2" | grep -qx "python-reviewer" \
+grep -qx "python-reviewer" <<<"$out2" \
   || fail "4: python-reviewer should still be in gap set — got: $out2"
 
 pass "4: an already-covered reviewer (.claude/agents/<name>.md present) is excluded from the gap set"
@@ -124,7 +124,7 @@ mkdir -p "${FIXTURE2}/.claude/reviewer-state/declined"
 touch "${FIXTURE2}/.claude/reviewer-state/declined/python-reviewer"
 
 out3="$(bash "$RAC_SH" --list-only --project-dir "$FIXTURE2")"
-if printf '%s\n' "$out3" | grep -qx "python-reviewer"; then
+if grep -qx "python-reviewer" <<<"$out3"; then
   fail "5: python-reviewer should be excluded (declined) — got: $out3"
 fi
 

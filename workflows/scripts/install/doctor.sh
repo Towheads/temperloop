@@ -106,77 +106,223 @@ classify_entry() {
 
 # ---------------------------------------------------------------------------
 # check_knowledge_root — foundation Epic B "layered CLAUDE.md" / the Epic A
-# (#762) knowledge_store split-brain guard: the agent-plane Obsidian MCP
-# vault (what a live Claude session actually reads/writes via mcp__obsidian*)
-# must be the SAME directory as KNOWLEDGE_STORE_ROOT (the script-plane
-# document-I/O seam, workflows/scripts/build/build.config.sh). A mismatch
-# means the two planes silently split the corpus: the agent writes decisions
-# into one vault while hooks/scripts read/write knowledge_store documents in
-# another.
+# (#762) knowledge_store split-brain guard: EVERY consumer of ks_root() must
+# resolve the SAME KNOWLEDGE_STORE_ROOT regardless of which files it happens
+# to source first. A mismatch means the two planes silently split the
+# corpus: e.g. a script-plane consumer that sources build.config.sh writes
+# into one directory while a bare-env consumer (a hook, a launchd agent —
+# session-start-drain.sh is the motivating case) that sources only
+# knowledge_store.sh reads/writes another.
 #
-# The Obsidian MCP vault root is not itself exposed as a config value — it is
-# derived MECHANICALLY from KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE
-# (workflows/scripts/lib/knowledge_store_obsidian.sh), whose default is
-# always "<vault>/.obsidian/plugins/obsidian-local-rest-api/data.json" (the
-# Local REST API plugin's fixed on-disk layout) — stripping that fixed
-# suffix recovers <vault> with no hardcoded path literal in this script.
+# REWRITTEN (foundation#1332): the prior version of this check compared
+# ks_root() against a root derived from KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE
+# (workflows/scripts/lib/knowledge_store_obsidian.sh) — but that setting's
+# ONLY default is itself "$(ks_root)/.obsidian/plugins/.../data.json", and
+# nothing in this tree ever sets it independently. So the old check compared
+# a value to itself: its MISMATCH branch was dead code that could never
+# fire. Worse, its resolution subshell sourced build.config.sh FIRST, which
+# directly sources the operator's rung-3 machine conf (BUILD_CONFIG_MACHINE)
+# into scope before ks_root() ever ran its own `:=` — so the old check could
+# only ever observe the ALREADY-correct plane, never the bare-env plane it
+# was nominally guarding. This is exactly how a 218-drain, 16-consecutive-day
+# split-brain outage (temperloop#1328/foundation#1328, fixed for real
+# consumers by temperloop#771's _ks_machine_conf_root()) ran with this check
+# reporting green the whole time.
 #
-# Runs fully offline: sourcing build.config.sh / knowledge_store_obsidian.sh
-# does no network I/O (only their functions, never called here, would).
+# The rewrite compares TWO independently-resolved planes instead:
+#
+#   Plane A (script-plane) — sources build.config.sh, then knowledge_store.sh,
+#     then calls ks_root(). build.config.sh directly sources the rung-3
+#     machine conf into this subshell's scope, so this is the root any
+#     consumer that goes through the full build/sweep stack sees — the same
+#     value install-claude-md.sh renders as the vault "Store root:" line.
+#
+#   Plane B (bare-env) — sources ONLY knowledge_store.sh, then calls
+#     ks_root(). This is exactly what a bare hook or launchd agent sees: no
+#     build.config.sh in the chain, so ks_root()'s own `_ks_machine_conf_root
+#     || _ks_default_root` fallback (temperloop#771) is what resolves it.
+#
+# A mismatch here is real and actionable: it means the rung-3 machine conf
+# (or its KNOWLEDGE_STORE_MACHINE_CONF pointer) is broken or inconsistent
+# with whatever build.config.sh itself sees, so the bare-env plane silently
+# resolves a different root than the script-plane one.
+#
+# Runs fully offline: sourcing build.config.sh / knowledge_store.sh does no
+# network I/O (only functions never called here would).
 # ---------------------------------------------------------------------------
 check_knowledge_root() {
   local build_config="${FOUNDATION}/workflows/scripts/build/build.config.sh"
   local ks_lib="${FOUNDATION}/workflows/scripts/lib/knowledge_store.sh"
-  local ks_obsidian="${FOUNDATION}/workflows/scripts/lib/knowledge_store_obsidian.sh"
-  local suffix="/.obsidian/plugins/obsidian-local-rest-api/data.json"
 
   printf '\nKnowledge-store root check:\n'
 
-  if [[ ! -f "$build_config" || ! -f "$ks_lib" || ! -f "$ks_obsidian" ]]; then
+  if [[ ! -f "$build_config" || ! -f "$ks_lib" ]]; then
     printf '  SKIPPED (config files not found under %s)\n' "$FOUNDATION"
     return 0
   fi
 
-  local resolved store_root api_key_file obsidian_root
-  resolved="$(
+  local plane_a plane_b
+  plane_a="$(
     set -e
     # shellcheck source=/dev/null
     source "$build_config"
-    # knowledge_store_obsidian.sh's own API-key-file default is DERIVED from
-    # ks_root (knowledge_store.sh) — source it first, per that file's own
-    # documented "source AFTER knowledge_store.sh" requirement.
     # shellcheck source=/dev/null
     source "$ks_lib"
+    ks_root
+  )" || { printf '  FAIL — could not resolve build.config.sh / knowledge_store.sh (plane A, script-plane)\n'; return 1; }
+
+  plane_b="$(
+    set -e
     # shellcheck source=/dev/null
-    source "$ks_obsidian"
-    printf '%s\n%s\n' "$(ks_root)" "$KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE"
-  )" || { printf '  FAIL — could not resolve build.config.sh / knowledge_store.sh / knowledge_store_obsidian.sh\n'; return 1; }
-  store_root="$(sed -n '1p' <<<"$resolved")"
-  api_key_file="$(sed -n '2p' <<<"$resolved")"
+    source "$ks_lib"
+    ks_root
+  )" || { printf '  FAIL — could not resolve knowledge_store.sh (plane B, bare-env)\n'; return 1; }
 
-  case "$api_key_file" in
-    *"$suffix")
-      obsidian_root="${api_key_file%"$suffix"}"
-      ;;
-    *)
-      printf '  FAIL — could not derive the Obsidian vault root from KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE=%s\n' "$api_key_file"
-      printf '        (expected it to end in %s)\n' "$suffix"
-      return 1
-      ;;
-  esac
+  printf '  Plane A (script-plane, via build.config.sh)  = %s\n' "$plane_a"
+  printf '  Plane B (bare-env, knowledge_store.sh alone) = %s\n' "$plane_b"
 
-  printf '  KNOWLEDGE_STORE_ROOT              = %s\n' "$store_root"
-  printf '  Obsidian MCP vault root (derived) = %s\n' "$obsidian_root"
-
-  if [[ "$store_root" == "$obsidian_root" ]]; then
-    printf '  OK — knowledge store and Obsidian MCP vault agree.\n'
+  if [[ "$plane_a" == "$plane_b" ]]; then
+    printf '  OK — script-plane and bare-env knowledge-store root agree.\n'
     return 0
   fi
 
-  printf '  MISMATCH — the agent-plane Obsidian MCP vault and the script-plane\n'
-  printf '  KNOWLEDGE_STORE_ROOT point at DIFFERENT directories. Fix by setting\n'
-  printf '  KNOWLEDGE_STORE_ROOT (env, or workflows/scripts/build/build.config.local.sh)\n'
-  printf '  to match the vault root, or vice versa.\n'
+  printf '  MISMATCH — a consumer that sources build.config.sh (plane A) resolves\n'
+  printf '  KNOWLEDGE_STORE_ROOT to a DIFFERENT directory than a bare consumer that\n'
+  printf '  sources only knowledge_store.sh (plane B, e.g. a hook or launchd agent).\n'
+  printf '  Fix the rung-3 machine conf (see docs/config-precedence.md, default path\n'
+  printf '  under XDG_CONFIG_HOME or HOME/.config, temperloop/build.config.sh) or\n'
+  printf '  repoint KNOWLEDGE_STORE_MACHINE_CONF at it so both planes agree.\n'
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# check_cross_checkout_split — temperloop#777: the CROSS-checkout counterpart
+# to check_knowledge_root() above. #774's plane-A/plane-B comparison STAYS —
+# it is correct — but it is scoped to THIS checkout ($FOUNDATION): it sources
+# build.config.sh / knowledge_store.sh straight from $FOUNDATION, so it can
+# never observe a split where ~/.claude itself is bound to a DIFFERENT
+# checkout entirely. Live evidence 2026-07-26: after vendoring v0.18.0 into
+# ~/dev/foundation, `readlink -f ~/.claude/hooks/session-start-drain.sh`
+# resolved into an unrelated checkout — clean-on-main, but still pinned to
+# v0.17.0 — whose ks_root() returned the WRONG root, causing 25 drain skips
+# in one day. #774's check reported OK in BOTH checkouts the entire time; it
+# was never wrong about what it measured, it just wasn't measuring this.
+#
+# Resolves a REPRESENTATIVE installed surface —
+# ~/.claude/hooks/session-start-drain.sh, the exact file the incident above
+# traced through (links.sh's own "claude/* -> ~/.claude/*" enumeration
+# symlinks the whole claude/hooks/ DIRECTORY, so resolving this one file's
+# physical parent dir is enough to reveal which checkout ~/.claude/hooks is
+# actually bound to) — to its real (symlink-resolved) physical path, then
+# asks git which checkout OWNS that path (`git -C <dir> rev-parse
+# --show-toplevel`) and compares it against the checkout doctor itself is
+# running in ($FOUNDATION). A mismatch names BOTH paths and BOTH .kernel-pin
+# tags, reusing kernel_pin_tag_of() from env-reconcile.sh rather than
+# reimplementing the same 8-line file read — sourced in a SUBSHELL only
+# (never doctor.sh's own top level), so its globals / arg-parse loop can
+# never leak into or fight with doctor.sh's own (mirrors check_knowledge_
+# root's own build.config.sh/knowledge_store.sh subshell-sourcing above).
+# env-reconcile.sh's own header documents this as safe: its main-enumeration
+# body is guarded behind a direct-invocation check (`BASH_SOURCE[0] == $0`)
+# that is never true under `source`, so sourcing it only ever defines
+# functions and returns — never runs the reconciler or trips one of its
+# `exit`s.
+#
+# Degrades to SKIPPED (never a hard failure) when:
+#   - the installed surface doesn't exist yet (a fresh install / stranger's
+#     clone that hasn't run `make install-claude` at all);
+#   - it exists on disk but doesn't resolve into ANY git checkout (a real,
+#     unmanaged/SHADOWED copy rather than a symlink into a checkout —
+#     classify_entry's own SHADOWED case already flags that separately, so
+#     this check staying silent here does not lose the signal).
+#
+# Runs fully offline: readlink/pwd -P/git rev-parse do no network I/O.
+# ---------------------------------------------------------------------------
+_cross_checkout_kernel_pin_tag() {
+  local checkout="$1"
+  local env_reconcile="${SCRIPT_DIR}/../build/env-reconcile.sh"
+  local tag
+
+  if [[ ! -f "$env_reconcile" ]]; then
+    printf '(unknown — env-reconcile.sh not found)\n'
+    return 0
+  fi
+
+  tag="$(
+    # NOTE — no apostrophes in these comments: they sit inside a $( ... ) and
+    # bash 3.2 (macOS /bin/bash) would read one as an opening quote and swallow
+    # the closing paren. Guarded by scripts/lint-bash32-cmdsubst-comment.sh
+    # (temperloop#1098).
+    #
+    # The env-reconcile.sh arg-parse loop reads "$@" — and since this
+    # function was itself CALLED with an argument (checkout), that argument
+    # is still $1 here, not empty. Left un-cleared, `source` inherits it as
+    # the env-reconcile.sh positional params, its arg-parse loop treats
+    # the checkout path as an unrecognized flag, and it `exit 2`s before
+    # kernel_pin_tag_of is ever defined (silently — the caller only sees an
+    # empty, rc!=0 command substitution). Scoped to THIS subshell only, so
+    # the enclosing function keeps its own "$@"/"$1" untouched.
+    set --
+    # shellcheck source=/dev/null
+    source "$env_reconcile" 2>/dev/null
+    kernel_pin_tag_of "$checkout" 2>/dev/null
+  )" || tag=""
+
+  if [[ -n "$tag" ]]; then
+    printf '%s\n' "$tag"
+  else
+    printf '(no .kernel-pin)\n'
+  fi
+}
+
+check_cross_checkout_split() {
+  local home claude_dir surface base
+  home="${HOME:-$(eval echo ~)}"
+  claude_dir="${home}/.claude"
+  surface="${claude_dir}/hooks/session-start-drain.sh"
+  base="$(basename "$surface")"
+
+  printf '\nCross-checkout install-source check (temperloop#777):\n'
+
+  if [[ ! -e "$surface" && ! -L "$surface" ]]; then
+    printf '  SKIPPED (no installed surface at %s — fresh install, or make install-claude not yet run)\n' "$surface"
+    return 0
+  fi
+
+  local real_dir real_path
+  real_dir="$(cd "$(dirname "$surface")" 2>/dev/null && pwd -P)" || real_dir=""
+  if [[ -z "$real_dir" || ! -f "${real_dir}/${base}" ]]; then
+    printf '  SKIPPED (%s does not resolve to a real file on disk — broken/dangling install)\n' "$surface"
+    return 0
+  fi
+  real_path="${real_dir}/${base}"
+
+  local installed_root this_root
+  installed_root="$(git -C "$real_dir" rev-parse --show-toplevel 2>/dev/null)" || {
+    printf '  SKIPPED (%s does not resolve into any git checkout — not a symlink into a kernel repo)\n' "$real_path"
+    return 0
+  }
+  installed_root="$(cd "$installed_root" 2>/dev/null && pwd -P)" || return 0
+  this_root="$(cd "$FOUNDATION" 2>/dev/null && pwd -P)" || return 0
+
+  if [[ "$installed_root" == "$this_root" ]]; then
+    printf '  OK — installed surface (%s) resolves into THIS checkout (%s).\n' "$real_path" "$this_root"
+    return 0
+  fi
+
+  local this_tag installed_tag
+  this_tag="$(_cross_checkout_kernel_pin_tag "$this_root")"
+  installed_tag="$(_cross_checkout_kernel_pin_tag "$installed_root")"
+
+  printf '  MISMATCH — %s\n' "$surface"
+  printf '  resolves (real path) to %s\n' "$real_path"
+  printf '  which is owned by a DIFFERENT checkout than the one doctor is running from:\n'
+  printf '    doctor checkout : %s  [.kernel-pin tag: %s]\n' "$this_root" "$this_tag"
+  printf '    installed from  : %s  [.kernel-pin tag: %s]\n' "$installed_root" "$installed_tag"
+  printf '  ~/.claude is bound to a DIFFERENT checkout than this one — edits here under\n'
+  printf '  claude/hooks/... are NOT what the installed hooks actually run. Re-run\n'
+  printf '  "make install-claude" from %s to repoint ~/.claude at THIS checkout,\n' "$this_root"
+  printf '  or confirm %s is the intended install source.\n' "$installed_root"
   return 1
 }
 
@@ -208,17 +354,23 @@ check_cache_state() {
     return 0
   fi
 
-  # temperloop#165 rename window: temperloop/ machine conf preferred, an
-  # existing legacy foundation/ one read as fallback (removed in v0.17.0).
+  # temperloop#165: the machine conf's subdir renamed foundation/ ->
+  # temperloop/ in v0.15.0, and the legacy read was removed in v0.19.0 — the
+  # legacy path is no longer a fallback. But this is `doctor`, whose whole
+  # job is to explain why a tree isn't wired up the way its operator thinks,
+  # so a legacy file that still exists is REPORTED rather than passed over in
+  # silence (same disposition as board.sh's own promoted NOTE — and note this
+  # fires whether or not a repo-local conf then supplies the boards, since
+  # the operator's question is "why is my machine conf being ignored").
   local machine_conf="${XDG_CONFIG_HOME:-$HOME/.config}/temperloop/boards.conf"
   local machine_conf_legacy="${XDG_CONFIG_HOME:-$HOME/.config}/foundation/boards.conf"
   local repo_conf="${FOUNDATION}/workflows/scripts/board/boards.conf"
   local conf=""
+  if [[ ! -f "$machine_conf" && -f "$machine_conf_legacy" ]]; then
+    printf '  NOTE: a machine boards.conf exists only at the legacy path %s — the default moved to %s in v0.15.0 and the legacy read was removed in v0.19.0, so that file is IGNORED; move it.\n' "$machine_conf_legacy" "$machine_conf"
+  fi
   if [[ -f "$machine_conf" ]]; then
     conf="$machine_conf"
-  elif [[ -f "$machine_conf_legacy" ]]; then
-    conf="$machine_conf_legacy"
-    printf '  NOTE: machine boards.conf found at the legacy path %s — the default moved to %s in v0.15.0 (legacy read removed in v0.17.0); move the file.\n' "$machine_conf_legacy" "$machine_conf"
   elif [[ -f "$repo_conf" ]]; then
     conf="$repo_conf"
   fi
@@ -366,6 +518,52 @@ check_reviewer_coverage() {
 }
 
 # ---------------------------------------------------------------------------
+# check_legacy_host_config — HOST-STATE preflight for legacy host-config
+# paths a release has REMOVED (temperloop#908). Delegates entirely to the
+# registry-driven workflows/scripts/install/legacy-host-preflight.sh (see
+# that file's own header for the full rationale and the two instances that
+# motivated it — foundation#1419's stranded funnel-cron.plist and
+# temperloop#165's unmigrated legacy boards.conf).
+#
+# Unlike check_cache_state's advisory NOTE (which never affects doctor's
+# exit code — a legacy machine conf that's merely unread might still be
+# harmless if a repo-local conf covers the same boards), this check is a
+# GATE: a registry entry that comes back LIVE-UNMIGRATED means a host
+# consumable a release removed is both still present AND has no successor
+# in place, which is never a benign state — it is the exact silent-and-
+# wrong failure both motivating instances produced. Non-zero here fails
+# `make doctor`, and therefore fails the `temperloop update` post-checkout
+# doctor run (bin/subcommands/update.sh run_post_checkout()) — the point a
+# release actually lands on an operator's host.
+#
+# Degrades to SKIPPED (never a hard failure) when legacy-host-preflight.sh
+# itself is absent — a stranger's fresh clone at a kernel version that
+# predates this check, or a vendored tree that hasn't pulled this far yet.
+# ---------------------------------------------------------------------------
+check_legacy_host_config() {
+  local preflight_sh="${FOUNDATION}/workflows/scripts/install/legacy-host-preflight.sh"
+
+  printf '\nLegacy host-config preflight (temperloop#908):\n'
+
+  if [[ ! -f "$preflight_sh" ]]; then
+    printf '  SKIPPED (legacy-host-preflight.sh not found under %s)\n' "$FOUNDATION"
+    return 0
+  fi
+
+  # shellcheck source=legacy-host-preflight.sh
+  if ! source "$preflight_sh" 2>/dev/null; then
+    printf '  SKIPPED (could not source legacy-host-preflight.sh)\n'
+    return 0
+  fi
+
+  if ! legacy_host_preflight_run; then
+    printf '  one or more legacy host-config paths are LIVE and UNMIGRATED — see above.\n'
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Main — enumerate and classify every managed entry.
 # ---------------------------------------------------------------------------
 ok=0
@@ -393,9 +591,15 @@ printf 'OK: %d   Non-OK: %d\n' "$ok" "$non_ok"
 knowledge_root_status=0
 check_knowledge_root || knowledge_root_status=$?
 
+cross_checkout_status=0
+check_cross_checkout_split || cross_checkout_status=$?
+
 check_cache_state || true
 
 check_reviewer_coverage || true
+
+legacy_host_status=0
+check_legacy_host_config || legacy_host_status=$?
 
 if (( non_ok > 0 )); then
   echo
@@ -403,7 +607,7 @@ if (( non_ok > 0 )); then
   printf '  %s\n' "${non_ok_entries[@]}"
 fi
 
-if (( non_ok > 0 || knowledge_root_status != 0 )); then
+if (( non_ok > 0 || knowledge_root_status != 0 || cross_checkout_status != 0 || legacy_host_status != 0 )); then
   echo
   exit 1
 fi

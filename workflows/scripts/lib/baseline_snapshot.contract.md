@@ -30,10 +30,10 @@ and continues either way; present, a non-zero exit from this script is
 still non-fatal to init.sh (it only prints a continuation notice) — this
 script is a **soft seam that never blocks a caller**.
 
-This script is *also* independently reachable as `foundation
+This script is *also* independently reachable as `temperloop
 baseline-snapshot` (any `kernel/bin/subcommands/<name>.sh` file is
-automatically `foundation <name>`, per the dispatcher's discovery model —
-see `kernel/bin/foundation`'s header comment). Both call sites use the
+automatically `temperloop <name>`, per the dispatcher's discovery model —
+see `kernel/bin/temperloop`'s header comment). Both call sites use the
 identical contract below.
 
 **Exit codes**: `0` — a record was appended (even one with
@@ -53,7 +53,7 @@ failure — the one case where "a record was appended" is actually false).
    that file **directly to disk**, not via a reviewable proposal PR: unlike
    `init.sh` (which has `proposal-pr.sh` available for every tree change it
    makes), this script must also work when invoked completely standalone
-   (`foundation baseline-snapshot`, no `init.sh` in the loop at all), so it
+   (`temperloop baseline-snapshot`, no `init.sh` in the loop at all), so it
    owns its own idempotent gitignore-management step rather than leaning on
    a PR-generation seam it can't assume is being driven.
 3. Both are runtime, per-checkout, generated data — never meant to be
@@ -61,17 +61,20 @@ failure — the one case where "a record was appended" is actually false).
    ensures on a cold repo with no prior `.temperloop/` directory at all
    (the first run creates both the directory and the ignore entry).
 
-**Legacy-dir window (v0.15.0 → removed in v0.17.0).** The per-repo dir
-renamed `.foundation/` → `.temperloop/` in v0.15.0 (temperloop#165). An
-**existing** legacy `.foundation/baseline.jsonl` keeps accreting **in
-place** through the window (the baseline is one append-only before/after
-history; splitting it across two dirs would truncate every later report's
-"before" anchor), with a one-line `NOTE` per run; a repo with no legacy
-baseline writes under `.temperloop/` from the first run. `report` reads
-whichever single file exists (new preferred). The legacy arm is removed in
-v0.17.0 — migrate with `mkdir -p .temperloop && mv
-.foundation/baseline.jsonl .temperloop/` (the file is gitignored, never
-tracked).
+**Legacy dir (window CLOSED in v0.19.0).** The per-repo dir renamed
+`.foundation/` → `.temperloop/` in v0.15.0 (temperloop#165). Through the
+window an **existing** legacy `.foundation/baseline.jsonl` kept accreting in
+place, because the baseline is one append-only before/after history and
+splitting it across two dirs truncates every later report's "before" anchor.
+That continue-in-place arm is **removed**: `baseline-snapshot` now **refuses**
+(exit 1, naming the migration) when a legacy baseline exists and no
+`.temperloop/baseline.jsonl` does — same reasoning, opposite mechanism,
+because starting a second history at the new path would be exactly the silent
+split the old arm avoided. A repo with no legacy baseline writes under
+`.temperloop/` from the first run, unaffected. Migrate with `mkdir -p
+.temperloop && mv .foundation/baseline.jsonl .temperloop/` (the file is
+gitignored, never tracked). `report`'s own read is deliberately unchanged —
+see `report.contract.md`.
 
 ## Re-appendable by design
 

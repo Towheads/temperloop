@@ -41,7 +41,7 @@ something durable gets committed. Each one:
   workflow (and ultimately a human) to act on; it never mutates state
   itself, and authority runs one direction only.
 
-Three agents currently make up the family:
+Five agents currently make up the family:
 
 - **architecture-reviewer** — an independent check on boundary, layering,
   and contract decisions before they are locked in: a new component, a
@@ -59,6 +59,25 @@ Three agents currently make up the family:
   automated tests and fail silently when an invariant is violated, so this
   agent's job is to catch an invariant violation the author, mid-edit,
   would not see.
+- **docs-reviewer** — an independent review for stranger-facing documentation
+  prose (`docs/**`, READMEs, and other prose `*.md` content), scored against
+  named communication rules (BLUF, the reference-token rule, unproxied
+  efficacy claims, audience fit) rather than taste. Used in `/build`'s 3e
+  pre-push review for a PR touching documentation.
+- **congruence-lens** (`claude/agents/congruence-lens.md`) — a cold-read
+  textual-consistency check for a single `/workshop` design brief: it reads
+  exactly one target brief document and reports contradictions between its
+  own dimensions (a claim in one dimension the brief's own text disagrees
+  with elsewhere), quoting both passages and naming the seam. It differs
+  from the other four in shape as well as target: the other four review
+  code, prose, or decomposition output already in this repo; congruence-lens
+  reviews a single knowledge-store design-brief document, and its charter is
+  explicit that it is **not** an independent-priors reviewer — a same-model
+  fresh-context re-read catches self-contradiction in the *text*, not a
+  flawed premise the whole document agrees with. The operator remains the
+  only independent reviewer in the flow. It runs in `/workshop`'s congruence
+  pass (Step 3.5); the agent is also usable standalone against any design
+  brief.
 
 Each agent's own spec states which model tier it should run on and why: an
 agent whose findings gate something downstream (nothing else double-checks
@@ -127,7 +146,7 @@ Everything the tsv does not model — a change *kind* with no extension
 (`architectural` → architecture-reviewer), the broader stranger-facing-prose
 `*.md` fallback, the `claude/commands/*.md` → workflow-reviewer exception, a
 per-item `review:` override, and the run-both multi-match rule — stays
-prose-resident in `build.md` by design; the tsv's scope is deliberately
+resident in `build.md`'s prose by design; the tsv's scope is deliberately
 narrower than "all routing."
 
 **The coverage scan.** `workflows/scripts/install/reviewer-activation-coverage.sh`
@@ -216,7 +235,7 @@ The language-reviewer catalog integrates through the same capability-probe
 seam plus one more resolution step: `/build`'s 3e pre-push review
 (`claude/commands/build.md`) resolves a changed file's reviewer from
 `reviewer-routing.tsv`'s extension/glob axis (falling back to the
-prose-resident non-extension routing described above), then runs the same
+in-prose non-extension routing described above), then runs the same
 capability probe and `skipped — <agent> unavailable` degradation as
 `architecture-reviewer`/`workflow-reviewer`/`docs-reviewer`. Getting a
 catalog reviewer into that resolvable state runs through the opt-in
@@ -253,6 +272,44 @@ reported and skipped, never clobbered). Deploy the agents into a *different*
 working repo (adopting the kernel's review lenses there) with
 `--project-dir DIR`; preview with `--dry-run`. Once it has run, the capability
 probe resolves and the review lenses execute instead of skipping.
+
+**Build worktrees resolve the lenses automatically.** `.claude/agents/` is
+gitignored by design (ADR 0007 — one teammate's opt-in is never imposed on the
+rest of the repo by a stray `git add -A`), and the direct consequence is that it
+is *absent from every fresh git worktree*: tracked content rides into a
+worktree, gitignored content does not. So every `/build` worker — which runs in
+an isolated `<repo>.wt/<slug>` worktree — used to see the probe evaluate FALSE
+for every lens and degrade its whole review step to `skipped — <agent>
+unavailable`, including the `workflow-reviewer` pass `/build` 3e marks
+*mandatory* for a `claude/commands/*.md` diff (temperloop#1005, worker-worktree
+review gap).
+
+`workflows/scripts/build/worktree.sh create` therefore materializes the flat
+`claude/agents/*.md` catalog into the new worktree's own `.claude/agents/` as
+**relative** symlinks (`../../claude/agents/<name>.md`) — the same link shape
+`project-agents.sh` deploys in-tree, resolving against the worktree's *own*
+tracked source, so a worker reads the charter at the commit its branch is based
+on rather than whatever the parent checkout happens to have. Nothing has to be
+run inside the worktree. Four properties keep it safe:
+
+- **Flat catalog only.** `claude/agents/reviewers/` stays inert (ADR 0007) — a
+  per-language reviewer is still opt-in through `reviewer-activate.sh`.
+- **Never clobbers.** Anything already at a target is left alone, so a repo that
+  tracks its own `.claude/agents/<name>.md` override always wins.
+- **Writes no `.gitignore`.** The exclusion rides the shared `info/exclude`
+  instead, so the step can never leak an unrelated hunk into the worker's PR.
+  That exclusion is load-bearing rather than cosmetic: an un-ignored `.claude/`
+  reads as untracked, which would make every live worktree `SKIPPED_DIRTY` at
+  prune time.
+- **Fail-open.** Any failure degrades to a stderr note and `create` still emits
+  its `CREATED` line — review coverage is advisory and must never block a build.
+
+Declaring the roster in the tracked `CLAUDE.md § Subagents` instead was the
+rejected alternative: a declaration is a *claim* about availability, a symlink
+*is* availability. Declaring would flip the probe TRUE even in a fresh clone
+where nothing has ever deployed `.claude/agents/`, so the review call would fail
+hard instead of taking the legible `skipped — … available as source; run
+workflows/scripts/install/project-agents.sh to enable` path above.
 
 ## Resource impact
 

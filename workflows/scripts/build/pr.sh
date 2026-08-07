@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build push + PR-open mechanics — the deterministic-spine script that owns
+# build push + PR-open mechanics — the deterministic-machinery script that owns
 # the 3f steps of /build (epic #253, spike #245): the closing-keyword
 # pre-push scan, the speculative base-currency check, push-by-SHA, and PR-body
 # assembly from the worker verdict JSON + plan fields. A step moved here iff
@@ -13,6 +13,7 @@
 #   pr.sh base-check <worktreePath>            # speculative base-currency check
 #   pr.sh rebase <worktreePath>                # rebase onto fresh origin/<default>
 #   pr.sh push <worktreePath> <branch> [--force]   # push HEAD by SHA
+#   pr.sh recover-probe <worktreePath> <branch>    # 3c lost-return side-effect probe
 #   pr.sh open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...]
 #         [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] \
 #         ( --body-only | --repo <repo-root> --branch <b> --title <t> )
@@ -49,6 +50,11 @@
 #   open       → {"outcome":"PR_OPENED","pr_number":…,"url":…} |
 #                {"outcome":"EXISTS","pr_number":…,"url":…}
 #                (EXISTS when gh reports a PR for that branch already exists — adopt it)
+#   recover-probe → {"outcome":"RECOVER_NONE"|"RECOVER_DIRTY"|"RECOVER_COMMITTED"
+#                    |"RECOVER_PUSHED"|"RECOVER_PR_OPEN","sha":…,"branch":…,
+#                    "commits_ahead":N,"pushed":bool,"remote_sha":…,
+#                    "dirty":bool,"dirty_files":N,
+#                    "verification_surface_present":bool[,"pr_number":N,"url":…]}
 #   error      → {"outcome":"ERROR","error":…} + non-zero exit
 set -euo pipefail
 
@@ -69,7 +75,7 @@ die() {
 }
 
 usage() {
-  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --repo <repo-root> --branch <branch> --title <title>)"
+  die "usage: pr.sh scan <worktreePath> | base-check <worktreePath> | rebase <worktreePath> | push <worktreePath> <branch> [--force] | recover-probe <worktreePath> <branch> | open --verdict <file|-> [--gh-issue N] [--also-closes N,N,...] [--plan-link <target>] [--source <ref>] [--verification-surface-file <path>] (--body-only | --repo <repo-root> --branch <branch> --title <title>)"
 }
 
 # Physical-path resolve for an EXISTING dir (portable — no GNU readlink -f).
@@ -228,7 +234,7 @@ cmd_rebase() {
 # the requesting caller always passes --force. An unconditional --force on a
 # feature branch trips the git-destructive safety classifier in auto mode
 # non-deterministically, which silently parks/dead-ends an autonomous /sweep,
-# /build --unattended, or funnel-drive-merge run. So when --force is requested
+# /build --unattended, or pipeline-drive-merge run. So when --force is requested
 # we DOWNGRADE to a plain push whenever we can positively prove the local head
 # descends from the current remote tip (a pure fast-forward), and reserve the
 # real --force for a genuine rewrite (local head does NOT descend the tip) or an
@@ -259,6 +265,119 @@ cmd_push() {
       '{outcome:"PUSH_REJECTED", sha:$sha, branch:$branch, error:$error}'
     exit 1
   fi
+}
+
+# --- recover-probe: 3c lost-return side-effect probe (temperloop#939) ----------
+# When the 3c worker completes WITHOUT returning a verdict (the subagent never
+# called StructuredOutput, or blew the StructuredOutput retry cap), the return
+# CHANNEL failed — which says nothing about whether the WORK failed. In the #939
+# incident the worker had committed, pushed, opened PR #936 and gone green, yet
+# the level reported `worker-error`; a second worker in the same run had
+# committed but not pushed. So the side-effect state at death is NOT uniform and
+# a single boolean ("did it get far enough?") mis-handles one of the two shapes.
+#
+# This is the STAGED probe build-level.mjs runs before it classifies that death.
+# It reads only observable ground truth — never the worker's word — and reports
+# the furthest stage the work actually reached:
+#   1. commits ahead of origin/<default> in the worktree? → work exists at all
+#   2. the branch present on origin (`git ls-remote`)?    → it was pushed
+#   3. an OPEN PR for that branch (`gh pr list`)?         → the PR exists
+# RECOVER_NONE (stage 0, and no open PR) is the genuine-failure case the caller
+# still escalates unchanged. Anything else is recoverable: the caller
+# reconstructs the parked record from these fields instead of escalating, and
+# resumes the machinery at the right stage rather than re-spawning the worker.
+#
+# RECOVER_DIRTY (temperloop#993) splits stage 0 in two. A worker that backgrounds
+# the quality gate and yields is reaped mid-flight: it has REAL WORK ON DISK and
+# ZERO commits (observed twice in one run — #982 with 8 modified files, #983 with
+# 3), which is a materially different state from a worker that died having touched
+# nothing. Both were RECOVER_NONE before, so the caller could not tell "resume the
+# same worktree, the work is still there" from "nothing happened". `dirty` /
+# `dirty_files` (a `git status --porcelain` line count, tracked edits AND untracked
+# files) are reported on EVERY outcome; the RECOVER_DIRTY outcome fires only where
+# it changes the answer — nothing committed, no PR, but the tree is dirty. It is
+# NOT a "landed" stage: nothing is committed, so there is nothing to push or open a
+# PR from — the caller's recovery ladder must keep treating it as not-landed and
+# resume the WORKER (build-level.mjs's foreground-cure re-spawn), never
+# reconstruct a parked record from it.
+#
+# `verification_surface_present` reports whether the worker got as far as writing
+# `.build-verification.md`, so the caller knows whether it may pass
+# --verification-surface-file to `open` (a given-but-missing surface file is a
+# hard ERROR by contract) or must fall back to a synthesized surface.
+#
+# Read-only and FAIL-SOFT by construction: it fetches nothing and writes nothing,
+# and a missing/erroring `gh` degrades to "no PR observed" (a caller that then
+# re-runs `open` gets EXISTS and adopts the PR anyway) rather than failing the
+# whole recovery. Only an unusable worktree/branch argument is a structured ERROR.
+cmd_recover_probe() {
+  local wt branch default ahead sha remote_sha pr_number url outcome surface out
+  local dirty_files dirty
+  wt="$(resolve_worktree "$1")"
+  branch="$2"
+  validate_branch "$branch"
+  default="$(default_branch "$wt")" || die "cannot resolve origin's default branch in '$wt'"
+  sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || die "cannot resolve HEAD in '$wt'"
+  # No fetch: the worktree was created from the local origin/<default> ref, and a
+  # probe must never mutate refs or depend on the network to answer.
+  ahead="$(git -C "$wt" rev-list --count "origin/$default..HEAD" 2>/dev/null || echo 0)"
+  case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
+
+  remote_sha=""
+  out="$(git -C "$wt" ls-remote --heads origin "$branch" 2>/dev/null || true)"
+  if [ -n "$out" ]; then
+    remote_sha="$(printf '%s\n' "$out" | head -1 | awk '{print $1}')"
+  fi
+
+  pr_number=""; url=""
+  if command -v gh >/dev/null 2>&1; then
+    out="$(cd "$wt" && gh pr list --head "$branch" --state open --json number,url --limit 1 2>/dev/null || true)"
+    if [ -n "$out" ] && jq -e . >/dev/null 2>&1 <<<"$out"; then
+      pr_number="$(jq -r '(.[0].number // "") | tostring | select(. != "null")' <<<"$out" 2>/dev/null || true)"
+      url="$(jq -r '.[0].url // ""' <<<"$out" 2>/dev/null || true)"
+    fi
+  fi
+  case "$pr_number" in ''|*[!0-9]*) pr_number="" ;; esac
+
+  surface=false
+  if [ -f "$wt/.build-verification.md" ]; then surface=true; fi
+
+  # Uncommitted work on disk (tracked edits + untracked files). Reported on every
+  # outcome; only stage 0 branches on it (temperloop#993). `.build-guard` is
+  # EXCLUDED by pathspec: worktree.sh's `create` drops that marker itself, so it
+  # is orchestrator machinery, never worker work — counting it would make every
+  # freshly-created worktree read dirty and collapse RECOVER_NONE into
+  # RECOVER_DIRTY wherever a consuming repo has not gitignored it (this repo has;
+  # the exclusion is what makes the rung correct where it hasn't).
+  dirty_files="$(git -C "$wt" status --porcelain -- ':(exclude).build-guard' 2>/dev/null | wc -l | tr -d ' ')"
+  case "$dirty_files" in ''|*[!0-9]*) dirty_files=0 ;; esac
+  dirty=false
+  if [ "$dirty_files" -gt 0 ]; then dirty=true; fi
+
+  if [ -n "$pr_number" ]; then
+    outcome="RECOVER_PR_OPEN"
+  elif [ "$ahead" -eq 0 ] && [ "$dirty_files" -gt 0 ]; then
+    # Nothing committed, no PR — but the worker left real work on disk. The
+    # #993 backgrounded-gate stall: resume the worker on THIS worktree.
+    outcome="RECOVER_DIRTY"
+  elif [ "$ahead" -eq 0 ]; then
+    # Nothing committed and no PR — the worker died with no observable trace.
+    outcome="RECOVER_NONE"
+  elif [ -n "$remote_sha" ]; then
+    outcome="RECOVER_PUSHED"
+  else
+    outcome="RECOVER_COMMITTED"
+  fi
+
+  jq -cn --arg outcome "$outcome" --arg sha "$sha" --arg branch "$branch" \
+     --argjson ahead "$ahead" --arg remote_sha "$remote_sha" \
+     --arg pr "$pr_number" --arg url "$url" --argjson surface "$surface" \
+     --argjson dirty "$dirty" --argjson dirty_files "$dirty_files" \
+     '{outcome:$outcome, sha:$sha, branch:$branch, commits_ahead:$ahead,
+       pushed:($remote_sha != ""), remote_sha:$remote_sha,
+       dirty:$dirty, dirty_files:$dirty_files,
+       verification_surface_present:$surface}
+      + (if $pr == "" then {} else {pr_number:($pr|tonumber), url:$url} end)'
 }
 
 # --- open: 3f step 2 — PR-body assembly + gh pr create -------------------------
@@ -443,6 +562,10 @@ case "$cmd" in
       shift
     done
     cmd_push "$force" "$wt_arg" "$branch_arg"
+    ;;
+  recover-probe)
+    [ $# -eq 2 ] || usage
+    cmd_recover_probe "$1" "$2"
     ;;
   open)
     cmd_open "$@"

@@ -32,7 +32,7 @@
 # backend. The vault IS the root — a normalized doc-id (e.g.
 # "Decisions/foo.md") is used directly as the REST API's vault-relative path
 # ("/vault/Decisions/foo.md"). `ks_root` still exists and still resolves the
-# filesystem knob, but that value is meaningless for this backend; do not
+# filesystem setting, but that value is meaningless for this backend; do not
 # call it to build obsidian paths.
 #
 # Test seam: every HTTP call routes through `_ks_backend_obsidian_curl` — a
@@ -49,9 +49,12 @@
 # before this file per this header's own requirement above) — the plugin's
 # fixed on-disk layout under whatever directory KNOWLEDGE_STORE_ROOT already
 # names, rather than a second, independently-hardcoded vault-path literal
-# that could silently drift from it (temperloop#189 kernel-literal-scrub; this
-# is also what doctor.sh's check_knowledge_root split-brain guard now derives
-# the "expected" side from, see that script).
+# that could silently drift from it (temperloop#189 kernel-literal-scrub).
+# NOTE: because this default is itself derived from ks_root(), it can never
+# disagree with it — workflows/scripts/install/doctor.sh's check_knowledge_root
+# split-brain guard does NOT compare against this value (foundation#1332
+# found that comparison tautological and unreachable); it instead compares
+# two independently-resolved ks_root() planes directly, see that script.
 : "${KNOWLEDGE_STORE_OBSIDIAN_API_KEY_FILE:=$(ks_root)/.obsidian/plugins/obsidian-local-rest-api/data.json}"
 
 # --- HTTP seam ---------------------------------------------------------------

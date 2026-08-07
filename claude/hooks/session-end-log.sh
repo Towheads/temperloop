@@ -103,7 +103,7 @@ USER_TURNS=$(jq -r '
   | select(length > 0)
 ' "$TRANSCRIPT" 2>/dev/null | grep -c . || true)
 
-if [ "${USER_TURNS:-0}" -lt 1 ]; then  # knob:exempt — USER_TURNS is a computed jq-derived count, not an operator default
+if [ "${USER_TURNS:-0}" -lt 1 ]; then  # setting:exempt — USER_TURNS is a computed jq-derived count, not an operator default
   exit 0
 fi
 
@@ -134,5 +134,30 @@ fi
     | "### " + ($role[0:1] | ascii_upcase) + ($role[1:]) + "\n\n" + $text + "\n"
   ' "$TRANSCRIPT"
 } > "$OUTFILE"
+
+# --- Realized-session-context probe emit (temperloop#828, epic #810) --------
+# Opt-in, default OFF (setting-registry.tsv row SESSION_CONTEXT_RAW_ENABLED)
+# — an explicit switch, never sink-presence used as an implicit one. This is
+# the ONLY call site that checks the gate; emit-session-context.sh itself
+# has no opinion on it (its own header explains why).
+#
+# Deliberately sits at THIS seam: $TRANSCRIPT above is already the
+# rollover-resolved LIVE END of the conversation (see the rollover-chain
+# following at the top of this hook), and $INPUT already carries
+# `.context_window.*` from the harness. The emit script must not re-derive
+# either — re-deriving the transcript path here would reproduce the exact
+# undercount-on-compaction bug this hook's own rollover-following already
+# fixed once.
+if [ "${SESSION_CONTEXT_RAW_ENABLED:-0}" = "1" ]; then
+  CW_SIZE=$(printf '%s' "$INPUT" | jq -r '.context_window.context_window_size // empty' 2>/dev/null)
+  CW_REMAINING=$(printf '%s' "$INPUT" | jq -r '.context_window.remaining_percentage // empty' 2>/dev/null)
+  EMIT_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/../../workflows/scripts/emit-session-context.sh"
+  if [ -f "$EMIT_SCRIPT" ]; then
+    SC_ARGS=(--transcript "$TRANSCRIPT" --session-id "$SESSION_ID" --project "$PROJECT" --cwd "$CWD")
+    [ -n "$CW_SIZE" ] && SC_ARGS+=(--context-window-size "$CW_SIZE")
+    [ -n "$CW_REMAINING" ] && SC_ARGS+=(--context-window-remaining-pct "$CW_REMAINING")
+    bash "$EMIT_SCRIPT" "${SC_ARGS[@]}" >/dev/null 2>&1 || true
+  fi
+fi
 
 exit 0

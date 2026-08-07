@@ -1,13 +1,64 @@
 name: CI
 
 # temperloop's CI: a single job named `checks` (the required status
-# check for branch protection), run on ubuntu-latest AND macos-latest so
-# "protected + green" holds on both OSes a stranger's clone might run on.
+# check for branch protection), run on ubuntu-latest ONLY. macOS coverage
+# has MOVED OFF the merge gate to a nightly run —
+# .github/workflows/nightly-macos.yml — so this workflow gates merges and
+# that one catches BSD-dialect regressions within a day.
 # The job runs ONE command, scripts/quality-gates.sh — the single source of
 # truth for the whole static gate set (board/build/install/hooks suites,
-# Live/Drain + PR-body-lint registries, the kernel manifest/denylist/gitleaks
+# Capture/Backstop + PR-body-lint registries, the kernel manifest/denylist/gitleaks
 # scrub checks, and a whole-tree shellcheck). Add or change a gate THERE, not
 # here.
+#
+# WHY UBUNTU-ONLY PRE-MERGE (temperloop#963) — a deliberate speed-for-
+# coverage trade, not a claim that macOS was redundant. The macOS leg was
+# the slow one (~6m46s–9m37s vs ubuntu's ~4m50s) and it ran TWICE per PR,
+# once on `pull_request` and once on `merge_group`, so it set both
+# PR-ready latency and merge latency.
+#
+# WHAT THIS COSTS, stated honestly: this repo has REAL BSD/macOS dialect
+# hazards (no `asort` in BSD awk, GNU `sed` `:label`/`t` loops rejected,
+# no `date -d`), and the pinned-shellcheck provisioning below was added
+# (temperloop#567) precisely so a local green implies a CI green. With
+# macOS off the gate, a BSD-dialect regression CAN now reach `main`. The
+# nightly macOS run is the mitigation: it converts "never caught" into
+# "caught within a day", not into "caught at the gate".
+#
+# KEEP THE MATRIX. `os: [ubuntu-latest]` is a SINGLE-ENTRY matrix on
+# purpose: a matrix job's status context is `checks (ubuntu-latest)`,
+# which is the exact context name branch protection requires; deleting
+# the matrix would rename the context to plain `checks` and the required
+# check would then never report. Do not "simplify" it away.
+#
+# WHICH GATES RUN, BY EVENT (temperloop#1024) — the workflow itself is
+# unchanged here; the split lives inside scripts/quality-gates.sh, so the
+# job name, the matrix, the required context `checks (ubuntu-latest)`, and
+# the single `run:` step below are all exactly as they were:
+#
+#   pull_request  DIFF-SCOPED. Only the gates the PR's changed paths can
+#                 affect, per workflows/scripts/config/gate-paths.tsv. This
+#                 is where the ~5.5 min flat cost was being paid on every
+#                 PR (measured 2026-08-02 across the last 20 runs) for a
+#                 diff that usually touches one directory.
+#   merge_group   FULL SET. This is the run that actually gates `main` —
+#                 nothing merges without it — so it is deliberately NOT
+#                 scoped. Whole-set coverage of the default branch is
+#                 therefore identical to before diff-scoping existed.
+#   push: main    FULL SET (belt and braces on the merged result).
+#   nightly       FULL SET on macos-latest (nightly-macos.yml).
+#
+# So a narrowing bug can, at worst, let a PR go green early — it can never
+# let an unproven commit reach `main`, because the merge queue re-runs
+# everything. The selector additionally defaults to the FULL set on any
+# unrecognised changed path, unresolvable base, or unusable map; see
+# workflows/scripts/lib/gate-selection.sh's header for the four defenses,
+# and workflows/scripts/config/check-gate-paths.sh (itself a gate) for the
+# map's completeness + reachability validation.
+#
+# Nothing new is passed in for this: GitHub Actions already exports
+# GITHUB_EVENT_NAME, and the base SHA is REUSED from the LEAK_GUARD_BASE
+# export below rather than derived a second way.
 
 on:
   pull_request:
@@ -21,14 +72,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Single-entry matrix, retained deliberately — see "KEEP THE
+        # MATRIX" in the header comment above.
+        os: [ubuntu-latest]
     # The diff-scoped PR leak guard (make test-pr-leak-guard, run inside
     # quality-gates.sh) needs the PR's base commit to diff the added lines
     # against. Hand it the base SHA from the event payload — pull_request and
     # merge_group both carry one, so the guard's live scan runs in BOTH gating
     # events; on push:main it stays empty and the guard skips the live scan.
+    #
+    # The CHANGELOG [Unreleased] gate (workflows/scripts/check-changelog-entry.sh,
+    # also run inside quality-gates.sh — temperloop#960) needs three things from
+    # the event payload: the same base SHA, plus the two channels an author can
+    # record an EXPLICIT opt-out on — the PR's labels and its body. Both exist
+    # only on the `pull_request` event, which is exactly why that gate enforces
+    # on `pull_request` only and prints a legible skip on merge_group/push (an
+    # author's recorded opt-out would otherwise be invisible in the merge queue
+    # and a legitimately-exempt PR would fail there after passing on the PR).
+    # Passing the body through `env:` rather than interpolating it into a `run:`
+    # block is deliberate — it is untrusted user input and must never reach a
+    # shell as script text.
     env:
       LEAK_GUARD_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+      CHANGELOG_GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+      CHANGELOG_GATE_PR_BODY: ${{ github.event.pull_request.body }}
+      CHANGELOG_GATE_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
     steps:
       # fetch-depth: 0 so the base commit above is present in the local history
       # for `git diff <base>...HEAD` (a shallow depth-1 checkout has no base).
@@ -37,8 +105,9 @@ jobs:
           fetch-depth: 0
 
       # No shellcheck install step: scripts/quality-gates.sh -> `make shellcheck`
-      # provisions a PINNED shellcheck (scripts/ensure-shellcheck.sh) on BOTH OS
-      # legs, so the version is identical to what runs locally (temperloop#567 —
-      # a local green must guarantee a CI green on this gate). This bypasses the
-      # ubuntu runner's pre-installed apt shellcheck and macOS brew entirely.
+      # provisions a PINNED shellcheck (scripts/ensure-shellcheck.sh), so the
+      # version is identical to what runs locally (temperloop#567 — a local
+      # green must guarantee a CI green on this gate). This bypasses the ubuntu
+      # runner's pre-installed apt shellcheck entirely, and the nightly macOS
+      # workflow provisions the same pin so both legs stay version-identical.
       - run: bash scripts/quality-gates.sh

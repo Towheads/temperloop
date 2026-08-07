@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
 # Unified, cross-machine worklist: which board item each Claude Code session is
-# working, on any machine. Reads a GitHub Projects v2 board and
-# prints the In-Progress set with its Host/Session stamp.
+# working, on any machine. Reads the board (GitHub Issues, issues-only backend)
+# and prints the In-Progress set with its Host/Session stamp.
 #
 # The board is the cross-machine source of truth for "what's being worked,
 # where" — it's reachable from every machine, so this command answers the
-# question identically anywhere (no local state, no tmux dependency). Needs the
-# `project` gh scope (gh auth refresh -s project).
+# question identically anywhere (no local state, no tmux dependency). Needs only
+# the DEFAULT `repo` gh scope — the read is a plain-REST issue/label list (see
+# ISSUES-ONLY-BACKEND.md); no `project` scope is required.
 #
-# --board selects the Projects-v2 board (default 3 = stageFind; 4 = foundation).
+# --board selects the board (default 3 = stageFind; 4 = foundation).
 #
 #   worklist.sh                   # In-Progress items + host/session
 #   worklist.sh --all             # every item, grouped by Status
@@ -33,7 +34,24 @@ while [ -L "$src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=scripts/lib/board.sh
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/board.sh"
+
+# Issue-plane read cache (F#988). board.sh's cached read arms gate on
+# `declare -F cache_read` and board.sh NEVER sources cache.sh itself — a
+# deliberate one-way layering (board.sh:521-526) that keeps reconcile.sh
+# permanently on the live arm. So the CALLER must source it, or the axis
+# `board.<N>.cache=on` is inert here and every read takes the live path with a
+# per-call stderr notice. Guarded on existence: a consuming repo that vendors a
+# subset without cache.sh still runs unchanged. Sourcing is side-effect-free
+# (three `${VAR:-default}` assignments + function defs), so with the axis off
+# this changes nothing. `if` rather than `[ -f … ] && source …` because this
+# script is `set -e`: the && form would abort the run when cache.sh is absent.
+if [ -f "$SCRIPT_DIR/lib/cache.sh" ]; then
+  # shellcheck source=scripts/lib/cache.sh
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/lib/cache.sh"
+fi
 
 PROJECT_NUMBER=3
 show_all=0

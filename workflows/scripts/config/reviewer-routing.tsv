@@ -7,7 +7,7 @@
 # per-checkout activation state — activation lives solely as
 # symlink/copy presence in the gitignored .claude/agents/ (ADR 0007).
 #
-# The non-extension routing logic stays prose-resident in
+# The non-extension routing logic stays in-prose in
 # claude/commands/build.md 3e: the claude/commands/*.md -> workflow-reviewer
 # override (temperloop#1007, which wins over any tsv row for that path),
 # the `architectural` change-kind route (no file extension to key on), the

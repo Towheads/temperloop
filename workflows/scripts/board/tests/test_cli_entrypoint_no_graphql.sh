@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 #
 # test_cli_entrypoint_no_graphql.sh — Zero-GraphQL CLI-entrypoint test
-# (temperloop plan item `no-graphql-cli-test`).
+# (temperloop plan item `no-graphql-cli-test`; widened by the
+# `retire-projects-arm-tests` item, temperloop#524 epic, to cover the WHOLE
+# board CLI surface — see "widened coverage" below).
 #
 # SCOPE (deliberately narrow — see "what this does NOT cover" below): this
 # suite owns the CLI ENTRYPOINT surface — worklist.sh, claim.sh, capture.sh,
-# reconcile.sh invoked AS COMMANDS (real subprocesses, `bash <script>.sh …`,
-# not sourced) against a `backend=issues` board — and asserts, at the PROCESS
-# level, that the cumulative `gh` invocation log carries ZERO `gh project …`
-# and ZERO `gh api graphql …` calls across the whole run.
+# reconcile.sh, milestone.sh, unclaim.sh invoked AS COMMANDS (real
+# subprocesses, `bash <script>.sh …`, not sourced) against a `backend=issues`
+# board — and asserts, at the PROCESS level, that the cumulative `gh`
+# invocation log carries ZERO `gh project …` and ZERO `gh api graphql …`
+# calls across the whole run.
 #
 # THE GAP THIS CLOSES: board.sh's own issues-only branch points
 # (board_resolve / board_resolve_item / board_item_list / board_set_status /
@@ -20,7 +23,7 @@
 #   - test_capture.sh             line  ~303
 # Those suites source board.sh and override its `_board_gh` seam directly —
 # they prove the LIBRARY never calls Projects-v2/GraphQL. They do NOT prove
-# the four CLI SCRIPTS (as invoked by a human or an orchestrator: `bash
+# the CLI SCRIPTS (as invoked by a human or an orchestrator: `bash
 # worklist.sh …`) stay on that path end-to-end as real subprocesses — a CLI
 # script could, in principle, bypass the board.sh adapter entirely and shell
 # out to `gh project` or `gh api graphql` directly, and none of the
@@ -29,7 +32,31 @@
 # SOURCES reconcile.sh and drives reconcile_main/status_reconcile_main
 # in-process — it carries ZERO assertions about which backend/call-shape a
 # real `bash reconcile.sh …` invocation makes. This suite is that missing
-# process-level proof, for reconcile.sh and its three siblings.
+# process-level proof, for reconcile.sh and every sibling CLI script listed
+# above.
+#
+# WIDENED COVERAGE (temperloop#524 `retire-projects-arm-tests`): this suite is
+# the coverage that REPLACES the Projects-v2-arm test files retired in the
+# same change (test_board_cache.sh, test_board_dual_adapter.sh) — so its job
+# is now to cover as much of the CLI surface as it reasonably can, not just
+# the original four scripts. milestone.sh (`list` / `activate`) and
+# unclaim.sh joined this run for that reason: both are ordinary board CLI
+# entrypoints in the same family as worklist/claim/capture/reconcile, backed
+# entirely by REST once board.sh's issues-only branch is selected. Three
+# board/*.sh scripts are DELIBERATELY still excluded, each for a reason tied
+# to what the script does rather than an oversight:
+#   - release.sh: its primary job is clearing a LOCAL tmux/cmux claim marker;
+#     its board-side half is optional and conditional, and it already has its
+#     own dedicated test seam (see release.sh's own header + test_release.sh)
+#     built around lib/claim_marker.sh, not this suite's PATH-shim shape.
+#   - migrate-board-to-issues.sh: exists SPECIFICALLY to read a Projects-v2
+#     board and migrate it to issues-only — asserting "never calls gh project"
+#     against the tool whose whole job is reading gh project data would be
+#     asserting away its own purpose, not proving anything about the
+#     issues-only steady state this suite otherwise covers.
+#   - deploy-mini.sh / pr-enqueue.sh: not board-item CRUD (session hygiene
+#     sweep and PR-merge-queue enqueue, respectively) — out of this suite's
+#     "board CLI surface" frame.
 #
 # What this does NOT cover (by design, not oversight — see the plan item's
 # acceptance criteria): function-level behavior (label round-tripping, status
@@ -38,7 +65,7 @@
 # correctness of what the library does with that data.
 #
 # HARNESS: the PATH-shadowing "logging shim" pattern already established by
-# test_board_dual_adapter.sh (the dual-adapter SAFE-TIER funnel-tick suite)
+# test_board_dual_adapter.sh (the dual-adapter SAFE-TIER pipeline-tick suite)
 # and test_capture.sh's `--repo kernel` section — a fake `gh` binary placed
 # first on PATH that appends every invocation's shell-quoted argv to a log
 # file and serves canned JSON for the small, closed set of REST calls the
@@ -119,6 +146,13 @@ ISSUE_LIST_JSON='[
   {"number":502,"title":"Claim target","labels":[{"name":"fnd:status:ready"}],"milestone":null,"state":"OPEN","updatedAt":"2026-07-01T00:00:00Z"}
 ]'
 
+# One open milestone, no triage:active marker on it — backs milestone.sh's
+# `list` and `activate` verbs (both REST-only: board_active_milestones /
+# board_set_milestone_description, never gh project or gh api graphql).
+MILESTONES_JSON='[
+  { "number": 10, "title": "Phase 2", "description": "work items" }
+]'
+
 case "$sub" in
   issue)
     icmd="${2:-}"
@@ -143,6 +177,9 @@ case "$sub" in
     case "$rest" in
       repos/*/issues/502) printf '{"number":502,"title":"Claim target","state":"open","labels":[{"name":"fnd:status:ready"}]}' ;;
       repos/*/issues/503) printf '{"number":503,"title":"fresh","state":"open","labels":[]}' ;;
+      repos/*/milestones\?state=open) printf '%s' "$MILESTONES_JSON" ;;
+      repos/*/milestones\?state=all)  printf '%s' "$MILESTONES_JSON" ;;
+      --method) : ;;   # milestone.sh's PATCH repos/<repo>/milestones/<n> — write no-op
       *) echo "fake gh: unhandled 'api $rest' (argv: $*)" >&2; exit 3 ;;
     esac
     ;;
@@ -200,6 +237,13 @@ run_cli "claim.sh 502 --board $BOARD"          -- claim.sh 502 --board "$BOARD"
 run_cli "capture.sh --board $BOARD"            -- capture.sh "A captured item" --board "$BOARD"
 run_cli "reconcile.sh --board $BOARD"          -- reconcile.sh --board "$BOARD"
 run_cli "reconcile.sh --board $BOARD --status" -- reconcile.sh --board "$BOARD" --status
+# Widened coverage (temperloop#524 retire-projects-arm-tests) — the two
+# remaining ordinary board CLI entrypoints, see the header's "widened
+# coverage" note for why release.sh / migrate-board-to-issues.sh /
+# deploy-mini.sh / pr-enqueue.sh stay out.
+run_cli "milestone.sh list --board $BOARD"            -- milestone.sh list --board "$BOARD"
+run_cli "milestone.sh activate --board $BOARD"        -- milestone.sh activate "Phase 2" --board "$BOARD"
+run_cli "unclaim.sh 502 --board $BOARD"                -- unclaim.sh 502 --board "$BOARD"
 
 echo
 echo "--- assert: cumulative gh-invocation log carries zero forbidden calls ---"

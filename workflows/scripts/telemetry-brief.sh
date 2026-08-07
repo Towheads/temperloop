@@ -10,7 +10,7 @@
 #
 # The five questions (order and names shared with the overlay renderer):
 #   1. Attention              — what needs you now
-#   2. Funnel health & trust  — is the autonomous machinery alive and honest
+#   2. Pipeline health & trust  — is the autonomous machinery alive and honest
 #   3. Spend                  — what the pipeline is costing (kernel-observable
 #                               spend: gh wall-time + knowledge-store op volume;
 #                               token-cost spend is an overlay enrichment)
@@ -24,8 +24,11 @@
 #   command-runs-<YYYY-MM>.jsonl               (emit-command-run.sh)
 #   issue-touches-<YYYY-MM>.jsonl              (emit-issue-touch.sh, capture.sh)
 #   claims-<YYYY-MM>.jsonl                     (board/claim.sh claim_log_emit)
-#   funnel-<YYYY-MM>.jsonl                     (build/funnel-cron.sh)
+#   pipeline-<YYYY-MM>.jsonl                     (build/pipeline-cron.sh)
 #   gh-calls-<YYYY-MM>.jsonl                   (gh-call-logger.sh lake stream)
+#   item-efficiency-<YYYY-MM>.jsonl            (emit-item-efficiency.sh — the
+#                                               per-merged-item overhead record,
+#                                               temperloop#943)
 #   knowledge-search-fallback-<YYYY-MM>.jsonl  (lib/knowledge_search_mcp.sh)
 #   knowledge-reads.log                        (lib/knowledge_store.sh
 #                                               ks__read_log_emit — the ks
@@ -38,22 +41,23 @@
 # inside the lookback window says so and names the freshest record it DID
 # find. jq missing degrades the whole brief to an honest one-liner, exit 0.
 # This script never mutates anything and always exits 0 (a status readout
-# must never block the ritual that reads it).
+# must never block the check-in that reads it).
 #
 # Usage:
 #   telemetry-brief.sh [--lookback-days N]
 #
-# Knobs (registered in workflows/scripts/config/knob-registry.tsv):
+# Settings (registered in workflows/scripts/config/setting-registry.tsv):
 #   TELEMETRY_LOOKBACK_DAYS  window for every windowed number (default 7;
 #                            the --lookback-days flag wins over the env var,
-#                            per docs/config-precedence.md rung 1 > rung 2)
+#                            per docs/config-precedence.md layer 1 > layer 2)
 #   TELEMETRY_RAW_DIR        the raw lake dir every stream falls back to when
 #                            its own emitter's *_RAW_DIR override is unset
 #                            (default: this checkout's meta/data/raw, resolved
 #                            BASH_SOURCE-relative like emit-command-run.sh)
 #   Per-stream overrides honored first, so the reader follows the emitters
 #   wherever they were pointed: CMD_RUN_RAW_DIR, ISSUE_TOUCHES_RAW_DIR,
-#   CLAIMS_RAW_DIR, FUNNEL_RAW_DIR, GH_CALLS_RAW_DIR,
+#   CLAIMS_RAW_DIR, PIPELINE_RAW_DIR, GH_CALLS_RAW_DIR,
+#   ITEM_EFFICIENCY_RAW_DIR,
 #   KS_SEARCH_FALLBACK_RAW_DIR (registered by their owning emit scripts), and
 #   KNOWLEDGE_READ_LOG (owning: lib/knowledge_store.sh — the fallback literal
 #   below is a byte-identical duplicate of that owning seam, per the registry
@@ -85,15 +89,30 @@ esac
 cmd_run_dir="${CMD_RUN_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 issue_touch_dir="${ISSUE_TOUCHES_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 claims_dir="${CLAIMS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
-funnel_dir="${FUNNEL_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+# PERMANENT legacy-prefix read (temperloop#767 confirmed this survives the
+# v0.19.0 window close, unlike the env shim and the forwarding stubs): the
+# raw lake is append-only immutable history, so a pre-rename install's
+# funnel-<YYYY-MM>.jsonl month-files can never be rewritten into the renamed
+# prefix — stream_files unions them in READ-ONLY and forever (writers emit
+# only pipeline-*.jsonl). NOTE once per run when any are present. See
+# meta/data/raw/README.md § `pipeline`.
+for _lf in "$pipeline_dir"/funnel-*.jsonl; do
+  if [ -e "$_lf" ]; then
+    echo "NOTE: reading legacy funnel-*.jsonl telemetry (the pipeline stream was renamed pipeline-*.jsonl in v0.17.0, temperloop#729; this read is permanent — the lake is append-only)" >&2
+    break
+  fi
+done
+unset _lf
 gh_calls_dir="${GH_CALLS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+item_eff_dir="${ITEM_EFFICIENCY_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 ks_fallback_dir="${KS_SEARCH_FALLBACK_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 read_log="${KNOWLEDGE_READ_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/foundation/knowledge-reads.log}"
 
 # Human-facing "today" bucket renders in the operator's display timezone, not
 # UTC, so a late-evening run isn't filed under tomorrow's date (kernel doc §
-# Communication conventions). Belt-and-suspenders default per § Prose-resident
-# knob convention — respects an exported DISPLAY_TZ, else the build.config.sh
+# Communication conventions). Belt-and-suspenders default per § Named-setting convention
+# setting convention — respects an exported DISPLAY_TZ, else the build.config.sh
 # default. The interval math below (cutoff_iso / iso_to_epoch, epoch diffs) stays
 # UTC by design: absolute instants, unaffected by display zone.
 today="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date +%Y-%m-%d)"
@@ -116,6 +135,18 @@ cutoff="$(cutoff_iso "$lookback")"
 stream_files() {  # $1=dir $2=stream-prefix -> matching month-files, one per line
   [ -d "$1" ] || return 0
   local f
+  # PERMANENT legacy-prefix read (temperloop#729 renamed the stream;
+  # temperloop#767 kept THIS read when the rest of the window closed): the
+  # pipeline stream was named funnel-<YYYY-MM>.jsonl before the terminology
+  # consolidation, and the lake is append-only immutable history — those
+  # month-files can never be renamed, so union them in read-only, forever, or
+  # an existing install's accumulated history goes dark. Writers emit only
+  # the new name. Self-limiting: no new legacy file is ever created.
+  if [ "$2" = "pipeline" ]; then
+    for f in "$1/funnel"-*.jsonl; do
+      [ -e "$f" ] && printf '%s\n' "$f"
+    done
+  fi
   for f in "$1/$2"-*.jsonl; do
     [ -e "$f" ] && printf '%s\n' "$f"
   done
@@ -164,7 +195,8 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "jq not found — the kernel raw streams cannot be parsed, so no numbers are rendered."
   echo "Install jq, then re-run. Streams this brief would read:"
   echo "  $cmd_run_dir/command-runs-*.jsonl · $issue_touch_dir/issue-touches-*.jsonl · $claims_dir/claims-*.jsonl"
-  echo "  $funnel_dir/funnel-*.jsonl · $gh_calls_dir/gh-calls-*.jsonl · $ks_fallback_dir/knowledge-search-fallback-*.jsonl"
+  echo "  $pipeline_dir/pipeline-*.jsonl · $gh_calls_dir/gh-calls-*.jsonl · $ks_fallback_dir/knowledge-search-fallback-*.jsonl"
+  echo "  $item_eff_dir/item-efficiency-*.jsonl"
   echo "  $read_log"
   exit 0
 fi
@@ -181,8 +213,9 @@ for pair in \
   "command-runs=$cmd_run_dir" \
   "issue-touches=$issue_touch_dir" \
   "claims=$claims_dir" \
-  "funnel=$funnel_dir" \
+  "pipeline=$pipeline_dir" \
   "gh-calls=$gh_calls_dir" \
+  "item-efficiency=$item_eff_dir" \
   "knowledge-search-fallback=$ks_fallback_dir"; do
   s="${pair%%=*}"; d="${pair#*=}"
   ts="$(stream_max_ts "$d" "$s")"
@@ -218,13 +251,13 @@ echo "Window: last $lookback days (records with ts >= $cutoff) · kernel raw str
 
 cmd_runs="$(window_records "$cmd_run_dir" "command-runs")"
 cmd_files="$(stream_files "$cmd_run_dir" "command-runs")"
-funnel_recs="$(window_records "$funnel_dir" "funnel")"
-funnel_files="$(stream_files "$funnel_dir" "funnel")"
+pipeline_recs="$(window_records "$pipeline_dir" "pipeline")"
+pipeline_files="$(stream_files "$pipeline_dir" "pipeline")"
 
 # ── 1. Attention ─────────────────────────────────────────────────────────────
 echo
 echo "## 1. Attention — what needs you now"
-echo "source: command-runs-*.jsonl @ $cmd_run_dir · funnel-*.jsonl @ $funnel_dir"
+echo "source: command-runs-*.jsonl @ $cmd_run_dir · pipeline-*.jsonl @ $pipeline_dir"
 attention_any=0
 if [ -n "$cmd_files" ]; then
   n="$(printf '%s' "$cmd_runs" | jq 'length')"
@@ -235,39 +268,39 @@ if [ -n "$cmd_files" ]; then
     attention_any=1
   fi
 fi
-if [ -n "$funnel_files" ]; then
-  n="$(printf '%s' "$funnel_recs" | jq 'length')"
+if [ -n "$pipeline_files" ]; then
+  n="$(printf '%s' "$pipeline_recs" | jq 'length')"
   if [ "$n" -gt 0 ]; then
-    drive_errs="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
-    echo "- funnel drive errors (${lookback}d): $drive_errs (drive records carrying an error reason)"
+    drive_errs="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
+    echo "- pipeline drive errors (${lookback}d): $drive_errs (drive records carrying an error reason)"
     attention_any=1
   fi
 fi
 if [ "$attention_any" -eq 0 ]; then
   if [ -z "$cmd_files" ]; then stream_empty_line "command-runs" "$cmd_run_dir"; fi
-  if [ -z "$funnel_files" ]; then stream_empty_line "funnel" "$funnel_dir"; fi
-  if [ -n "$cmd_files" ] || [ -n "$funnel_files" ]; then
+  if [ -z "$pipeline_files" ]; then stream_empty_line "pipeline" "$pipeline_dir"; fi
+  if [ -n "$cmd_files" ] || [ -n "$pipeline_files" ]; then
     echo "- no in-window attention signals (streams present, no records in the last $lookback days)"
   fi
 fi
-echo "note: parked \`/build\` items live in the active plan note's own item statuses, not a raw stream — check the plan note directly; the overlay brief adds funnel escalation/hand-off detail."
+echo "note: parked \`/build\` items live in the active plan note's own item statuses, not a raw stream — check the plan note directly; the overlay brief adds pipeline escalation/hand-off detail."
 
-# ── 2. Funnel health & trust ────────────────────────────────────────────────
+# ── 2. Pipeline health & trust ────────────────────────────────────────────────
 echo
-echo "## 2. Funnel health & trust"
-echo "source: funnel-*.jsonl @ $funnel_dir · knowledge-search-fallback-*.jsonl @ $ks_fallback_dir"
-if [ -z "$funnel_files" ]; then
-  stream_empty_line "funnel" "$funnel_dir"
+echo "## 2. Pipeline health & trust"
+echo "source: pipeline-*.jsonl @ $pipeline_dir · knowledge-search-fallback-*.jsonl @ $ks_fallback_dir"
+if [ -z "$pipeline_files" ]; then
+  stream_empty_line "pipeline" "$pipeline_dir"
 else
-  n="$(printf '%s' "$funnel_recs" | jq 'length')"
+  n="$(printf '%s' "$pipeline_recs" | jq 'length')"
   if [ "$n" -eq 0 ]; then
-    stale_note "funnel" "$funnel_dir" "$(stream_max_ts "$funnel_dir" "funnel")"
+    stale_note "pipeline" "$pipeline_dir" "$(stream_max_ts "$pipeline_dir" "pipeline")"
   else
-    ran="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "ran") ] | length')"
-    skipped="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "skipped") ] | length')"
-    drives="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "drive") ] | length')"
-    drive_errs="$(printf '%s' "$funnel_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
-    last_wake="$(printf '%s' "$funnel_recs" | jq -r '[ .[].ts ] | max // "unknown"')"
+    ran="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "ran") ] | length')"
+    skipped="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "skipped") ] | length')"
+    drives="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "drive") ] | length')"
+    drive_errs="$(printf '%s' "$pipeline_recs" | jq '[ .[] | select(.event == "drive" and (has("reason"))) ] | length')"
+    last_wake="$(printf '%s' "$pipeline_recs" | jq -r '[ .[].ts ] | max // "unknown"')"
     echo "- wakes (${lookback}d): $n (ran $ran · skipped $skipped · drive $drives, of which $drive_errs errored) · last wake: $last_wake"
   fi
 fi
@@ -283,7 +316,7 @@ fi
 # ── 3. Spend ─────────────────────────────────────────────────────────────────
 echo
 echo "## 3. Spend — kernel-observable cost"
-echo "source: gh-calls-*.jsonl @ $gh_calls_dir · ks read-log (knowledge_store.sh ks__read_log_emit) @ $read_log"
+echo "source: gh-calls-*.jsonl @ $gh_calls_dir · ks read-log (knowledge_store.sh ks__read_log_emit) @ $read_log · item-efficiency-*.jsonl @ $item_eff_dir (emit-item-efficiency.sh, token figures composed from pipeline-spend-report.sh)"
 gh_files="$(stream_files "$gh_calls_dir" "gh-calls")"
 if [ -z "$gh_files" ]; then
   stream_empty_line "gh-calls" "$gh_calls_dir"
@@ -321,7 +354,52 @@ else
     echo "- knowledge-store ops (${lookback}d): $ks_total ($ks_by_op)"
   fi
 fi
-echo "note: token-cost spend (cost-per-epic) requires the overlay rollup pipeline — not available kernel-side."
+
+# ── 3b. Overhead per merged item (temperloop#943) ────────────────────────────
+# The ceremony-cost number: what one SHIPPED change cost in tokens, wall-clock
+# and agent count, split by phase, rolled up per epic. Every figure below is a
+# field of the item-efficiency record — this section never re-derives a token
+# number, so it cannot disagree with pipeline-spend-report.sh.
+ie_files="$(stream_files "$item_eff_dir" "item-efficiency")"
+if [ -z "$ie_files" ]; then
+  stream_empty_line "item-efficiency" "$item_eff_dir"
+else
+  ie_recs="$(window_records "$item_eff_dir" "item-efficiency")"
+  n="$(printf '%s' "$ie_recs" | jq 'length')"
+  if [ "$n" -eq 0 ]; then
+    stale_note "item-efficiency" "$item_eff_dir" "$(stream_max_ts "$item_eff_dir" "item-efficiency")"
+  else
+    printf '%s' "$ie_recs" | jq -r --argjson lb "$lookback" '
+      # An un-measured leg is null and STAYS null through every aggregate: a
+      # median over [] renders "—", never 0. A 0 would read as "this cost
+      # nothing", which is the opposite of "nobody measured it".
+      def med: map(select(. != null)) | sort
+        | if length == 0 then null
+          elif (length % 2) == 1 then .[((length - 1) / 2)]
+          else ((.[(length / 2) - 1] + .[length / 2]) / 2) end;
+      def mins: if . == null then "—" else "\(((. / 60000) | floor))m" end;
+      def share($p; $t): if ($t | not) or $t == 0 then 0 else (($p * 100 / $t) | floor) end;
+      def units($k): map(.phases[$k].units // 0) | add // 0;
+      def toks($k): map(.phases | to_entries | map(.value.tokens[$k] // 0) | add // 0) | add // 0;
+
+      length as $n
+      | units("design") as $d | units("driver_prep") as $p
+      | units("worker") as $w | units("mechanical") as $m
+      | ($d + $p + $w + $m) as $tot
+      | ([ "- overhead per merged item (\($lb)d): \($n) merged item(s) · \((($tot / $n) | floor)) cost-weighted units/item · phase split design \(share($d; $tot))% · driver-prep \(share($p; $tot))% · worker \(share($w; $tot))% · mechanical \(share($m; $tot))% → ceremony (everything but the worker) \(share($d + $p + $m; $tot))%",
+           "- raw tokens per merged item (\($lb)d): \(((toks("output") / $n) | floor)) output · \(((toks("cache_create") / $n) | floor)) cache-create · \(((toks("cache_read") / $n) | floor)) cache-read (shown unweighted so the cheap-cache-read distortion stays visible next to the cost-weighted units above)",
+           "- wall-clock per merged item (\($lb)d, median): worker \(map(.wall_ms.worker) | med | mins) · CI \(map(.wall_ms.ci) | med | mins) · merge-group \(map(.wall_ms.merge_group) | med | mins) · gate-wait \(map(.wall_ms.gate_wait) | med | mins) · end-to-end \(map(.wall_ms.end_to_end) | med | mins)   (\"—\" = not measured, never 0)",
+           "- agents per merged item (\($lb)d, median): \(map(.agent_counts.worker) | med // "—") worker · \(map(.agent_counts.mechanical) | med // "—") mechanical"
+         ]
+         + (group_by(.epic)
+            | map(. as $g
+                  | ($g | units("design") + units("driver_prep") + units("worker") + units("mechanical")) as $gt
+                  | "- per epic \(if $g[0].epic == null then "(unattributed)" else "#\($g[0].epic)" end): \($g | length) item(s) · \((($gt / ($g | length)) | floor)) units/item · end-to-end \($g | map(.wall_ms.end_to_end) | med | mins)/item · levels \($g | map(.level) | map(select(. != null) | tostring) | unique | if length == 0 then "unrecorded" else join(",") end)"))
+        )[]' 2>/dev/null \
+      || echo "- item-efficiency records present but unreadable (malformed JSON in $item_eff_dir/item-efficiency-*.jsonl) — no numbers rendered"
+  fi
+fi
+echo "note: token-cost spend (cost-per-epic) beyond the per-item records above requires the overlay rollup pipeline — not available kernel-side."
 
 # ── 4. Improvement ───────────────────────────────────────────────────────────
 echo
@@ -366,9 +444,15 @@ else
       | {cmd: .[0].command, runs: length,
          items: ([ .[].items_processed ] | add // 0),
          merged: ([ .[].merged ] | add // 0),
+         # `resolved` is ABSENT on pre-temperloop#1084 records and absent means
+         # UNKNOWN, never 0 — so sum only the records that carry it, and say
+         # how many did not rather than implying those runs resolved nothing.
+         resolved: ([ .[] | .resolved // empty ] | add // 0),
+         resolved_unknown: ([ .[] | select(has("resolved") | not) ] | length),
          parked: ([ .[].parked ] | add // 0)}
-      | "- \(.cmd): \(.runs) runs · \(.items) items · \(.merged) merged · \(.parked) parked" +
-        (if .items > 0 then " · merge rate \((.merged * 100 / .items) | floor)%" else "" end)'
+      | "- \(.cmd): \(.runs) runs · \(.items) items · \(.merged) merged · \(.resolved) resolved · \(.parked) parked" +
+        (if .items > 0 then " · merge rate \((.merged * 100 / .items) | floor)%" else "" end) +
+        (if .resolved_unknown > 0 then " (resolved unknown for \(.resolved_unknown) pre-#1084 run(s))" else "" end)'
   fi
 fi
 

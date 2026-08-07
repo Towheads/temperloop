@@ -8,8 +8,9 @@
 # and command definitions as SOURCE under claude/agents/ and claude/commands/
 # — but Claude Code discovers project agents/commands from a project-scoped
 # .claude/agents/ and .claude/commands/, NOT from claude/*. The kernel Makefile
-# ships no install-prefixed target (install targets are overlay-only, per
-# seed-kernel-repo.sh), and `temperloop install` deploys the MACHINE surface
+# ships no install-prefixed target (install targets are overlay-only — they
+# depend on env/* dotfiles absent from a kernel-only checkout), and
+# `temperloop install` deploys the MACHINE surface
 # (~/.claude, via links.sh) — neither wires the agents into a live in-repo
 # .claude/. So on a fresh clone the capability-probe predicate (an agent is
 # available iff declared in `CLAUDE.md § Subagents` or present under

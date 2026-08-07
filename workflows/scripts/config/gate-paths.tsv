@@ -1,0 +1,285 @@
+# gate-paths.tsv — the path->gate map that lets a `pull_request` run of
+# scripts/quality-gates.sh execute only the suites its diff can affect
+# (temperloop#1024). Consumed by workflows/scripts/lib/gate-selection.sh;
+# validated by workflows/scripts/config/check-gate-paths.sh (itself a gate).
+#
+# WHY: the `checks` job ran the whole ~110-suite set on every pull_request and
+# again on merge_group — ~5.5 min flat, so every merged PR paid >=11 min of CI
+# even for a one-file docs change. Scoping applies to the pull_request event
+# ONLY; merge_group (the run that actually gates `main`) stays unscoped, so
+# full-set coverage of the default branch is unchanged.
+#
+# SECOND CONSUMER (temperloop#957): `scripts/quality-gates.sh --scoped` applies
+# this same map to the LOCAL working tree, so a /build item worker's iterative
+# MID-WORK verification runs only the gates its own changes reach instead of
+# the minutes-scale full suite. That path's pre-push/final invocation — /build
+# §3e.5's parent-side acceptance gate — stays BARE and repo-wide, exactly like
+# merge_group. Both consumers share every safety property below; neither can
+# narrow the run that gates `main`.
+#
+# FORMAT — TAB-separated, exactly two columns:
+#   1. KEY    a gate command EXACTLY as it appears in scripts/quality-gates.sh's
+#             GATES array, or one of two reserved pseudo-keys:
+#               ALL   the listed globs escalate the run to the FULL set
+#               none  the listed globs are RECOGNISED but affect no gate
+#   2. GLOBS  a space-separated glob list, or the single token ALWAYS.
+#
+#   `**` and `*` both match any characters INCLUDING `/` (bash `[[ ]]` pattern
+#   matching is not path-component aware); `**` is accepted so a glob reads the
+#   way an author expects. `#` comments and blank lines are ignored.
+#
+#   ALWAYS marks a gate that runs on EVERY scoped run — either a whole-tree
+#   scanner (it reads the entire tree, so every path is in scope for it) or a
+#   GLOBAL-BY-NATURE verdict (a completeness / cross-file / total claim that no
+#   glob can scope honestly — see that section below, temperloop#957). An
+#   ALWAYS row is deliberately NOT a path recogniser — if it were, its implicit
+#   `**` would match every path and the default-to-full-on-unmapped-path safety
+#   below could never fire.
+#
+# THE SAFETY CONTRACT (the silent-green failure class this must not reopen):
+#   * A changed path matching NO glob in ANY row escalates to the full set.
+#     Narrowing is opt-in per path; the fallback is always MORE coverage.
+#   * A gate with no row here runs unconditionally (over-run, never under-run).
+#     check-gate-paths.sh turns that soft fallback into a hard build failure in
+#     the kernel's own checkout: every kernel gate must have exactly one row.
+#   * Every row's globs must match at least one git-tracked path. A gate
+#     orphaned behind a glob that can never match fails the build rather than
+#     being silently skipped forever. (Same check, same script.)
+#
+# MAINTENANCE: adding a gate to quality-gates.sh without adding a row here
+# fails check-gate-paths.sh. When in doubt about a gate's blast radius, be
+# GENEROUS — an over-broad glob costs seconds of CI; a missing dependency costs
+# a silent green.
+
+# ── ALL — paths whose blast radius is the gate machinery itself ─────────────
+# A change to any of these can alter which gates exist, what they run, or how
+# the tree is classified, so no narrower selection can be trusted.
+ALL	scripts/quality-gates.sh scripts/quality-gates.d/** workflows/scripts/lib/gate-selection.sh workflows/scripts/lib/gate-retry.sh workflows/scripts/lib/gate-pool.sh workflows/scripts/lib/checkout-freshness.sh workflows/scripts/config/gate-paths.tsv workflows/scripts/config/check-gate-paths.sh Makefile .github/workflows/** workflows/scripts/kernel/kernel-manifest.txt workflows/scripts/kernel/list-kernel-set.sh .gitignore .gitattributes
+
+# ── none — recognised paths that no gate reads ──────────────────────────────
+# `Plans-archive/**` is recognised here rather than by a gate row: its only
+# reader, validate-activation-registry.sh, moved to the always-run floor below
+# (temperloop#957), and without a recogniser every plan-archive edit would
+# escalate the whole run to the full set for a gate that was already running.
+none	LICENSE NOTICE SECURITY.md .github/ISSUE_TEMPLATE/** meta/** .temperloop/.gitignore Plans-archive/**
+
+# ── Whole-tree scanners — ALWAYS, on every scoped run ───────────────────────
+# Each of these walks the entire tracked tree (or the entire PR diff), so any
+# change at all is in scope for them. They are the floor of every scoped run.
+make test-kernel-manifest	ALWAYS
+make test-kernel-denylist	ALWAYS
+make test-kernel-gitleaks	ALWAYS
+make test-kernel-prerename	ALWAYS
+make test-kernel-terminology	ALWAYS
+make test-pr-leak-guard	ALWAYS
+bash workflows/scripts/validate-feature-docs.sh	ALWAYS
+bash workflows/scripts/check-changelog-entry.sh	ALWAYS
+bash workflows/scripts/tests/test_terminology_rename_compat.sh	ALWAYS
+make test-stranger-config	ALWAYS
+
+# ── GLOBAL BY NATURE — the enumerated always-run floor (temperloop#957) ─────
+# The scanners above are ALWAYS because of HOW they read the tree. The seven
+# below are ALWAYS because of WHAT THEIR VERDICT IS ABOUT: each one answers a
+# whole-surface question — "is this registry complete?", "do these two files
+# still agree?", "is the total under the cap?" — rather than "is this file
+# correct?". A path glob can enumerate a gate's INPUTS; it cannot keep a
+# completeness claim true when the thing that breaks it lands somewhere the map
+# did not think to look. Since temperloop#957 made scoping reachable from a
+# /build item worker's MID-WORK verification (scripts/quality-gates.sh
+# --scoped), that difference stopped being theoretical: the four classes that
+# issue names as global by nature are ENUMERATED here rather than inferred from
+# a glob, and each is justified below.
+#
+#   * capture/backstop PAIRING — validate-capture-backstop.sh's verdict is
+#     "no registered pair is half-present", over the kernel table unioned with
+#     any overlay extension table. Half a pair can be created by touching
+#     EITHER half anywhere in the authored surface, so the claim is about the
+#     pairing, never about one file.
+#   * CROSS-FILE consistency — validate-template-refs.sh reconciles by-name
+#     template references across the kernel doc, every command spec, the
+#     message schema and the presentation-plane registry. A reference and its
+#     definition live in different files by construction, so "the reference
+#     still resolves" is not a single file's property.
+#   * PROSE-BUDGET totals — validate-prose-budget.sh's tier-1 cap is a count
+#     over the whole COMPOSED render (plus the citation-marker reconciliation
+#     it owns). A total is the canonical global verdict: it can be breached by
+#     a file the diff never mentions.
+#   * MANIFEST / REGISTRY completeness — check-contributor-manifest.sh (every
+#     tracked command/agent file has a row), check-setting-registry.sh
+#     (registry <-> shell equality plus an unregistered-setting sweep over
+#     every *.sh), validate-activation-registry.sh (every declared `files:`
+#     surface still EXISTS in the tree — a deletion anywhere can red it, which
+#     its former Plans-archive/** row could not see), and check-gate-paths.sh
+#     (every gate has exactly one row in THIS file — the lint the whole
+#     scoping scheme's honesty rests on, so it may never be scoped out).
+#
+# THE COST OF THE FLOOR IS THE POINT, NOT AN OVERSIGHT: these now run on every
+# scoped run, PR-scoped (temperloop#1024) and worker-scoped (temperloop#957)
+# alike. They are seconds each; the alternative is a completeness gate that
+# quietly stops being enforced precisely on the narrow diffs that are easiest
+# to get wrong.
+#
+# NOT in this floor, deliberately: count-prose.sh, declared-expiry-check.sh and
+# chunk-redundancy-surface.sh are REPORTS that never fail on their own findings
+# (see their own headers), so scoping them out can produce a missing report but
+# never a false green. Keeping the floor to gates that can actually FAIL is
+# what stops it becoming a dumping ground that erases the wall-clock win.
+make validate-capture-backstop	ALWAYS
+make validate-template-refs	ALWAYS
+make validate-activation-registry	ALWAYS
+bash workflows/scripts/validate-prose-budget.sh	ALWAYS
+bash workflows/scripts/config/check-contributor-manifest.sh	ALWAYS
+bash workflows/scripts/config/check-setting-registry.sh	ALWAYS
+bash workflows/scripts/config/check-gate-paths.sh	ALWAYS
+
+# ── Board / build toolkits ──────────────────────────────────────────────────
+make test-board	workflows/scripts/board/**
+# Consumer-parity shellcheck (temperloop#915, follow-up to #905): lints the
+# SYNCED board file set (workflows/scripts/board/**) at the same defaults
+# stageFind/ssmobile/subsetwiki actually lint their vendored copy with — no
+# */tests/* exclusion, no -e SC1091 — so a finding invisible to `make
+# shellcheck`'s repo-wide `*.sh -e SC1091` posture still fails at source.
+# Also depends on the pinned shellcheck resolver (same one `make shellcheck`
+# uses, temperloop#567) so both lints stay on the identical binary.
+bash workflows/scripts/board-consumer-shellcheck.sh	workflows/scripts/board/** scripts/ensure-shellcheck.sh
+make test-build	workflows/scripts/build/** workflows/scripts/board/** workflows/scripts/lib/**
+make test-build-workflow	workflows/scripts/build/** claude/workflows/**
+bash workflows/scripts/tests/test_ready_pr_sweep.sh	workflows/scripts/ready-pr-sweep.sh workflows/scripts/board/** workflows/scripts/tests/test_ready_pr_sweep.sh
+make test-env-hygiene-report	workflows/scripts/env-hygiene-report.sh workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_env_hygiene_report.sh
+make lint-pr-body-test	workflows/scripts/lint-pr-body.sh workflows/scripts/tests/test_lint_pr_body.sh
+
+# ── Hooks ───────────────────────────────────────────────────────────────────
+make test-hooks	claude/hooks/**
+bash claude/hooks/tests/differential-guard-vs-ref.sh	claude/hooks/**
+
+# ── Install / machine surface ───────────────────────────────────────────────
+make test-install	workflows/scripts/install-settings.sh workflows/scripts/tests/test_install_settings.sh
+bash workflows/scripts/tests/test_install_claude_md_t0_inventory.sh	workflows/scripts/install-claude-md.sh workflows/scripts/tests/test_install_claude_md_t0_inventory.sh claude/CLAUDE.kernel.md
+bash workflows/scripts/tests/test_install_manifest.sh	workflows/scripts/install/manifest.sh workflows/scripts/tests/test_install_manifest.sh
+bash workflows/scripts/tests/test_install_project_agents.sh	workflows/scripts/install/** workflows/scripts/tests/test_install_project_agents.sh claude/agents/** claude/commands/**
+bash workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh	workflows/scripts/install/** workflows/scripts/tests/test_project_agents_out_of_tree_copy.sh
+bash workflows/scripts/tests/test_project_agents_gitignore_propagation.sh	workflows/scripts/install/** workflows/scripts/tests/test_project_agents_gitignore_propagation.sh
+bash workflows/scripts/tests/test_reviewer_activation_coverage.sh	workflows/scripts/install/** workflows/scripts/config/reviewer-routing.tsv claude/agents/** workflows/scripts/tests/test_reviewer_activation_coverage.sh
+bash workflows/scripts/tests/test_reviewer_activate.sh	workflows/scripts/install/** workflows/scripts/config/reviewer-routing.tsv claude/agents/** workflows/scripts/tests/test_reviewer_activate.sh
+bash workflows/scripts/tests/test_doctor_reviewer_coverage.sh	workflows/scripts/install/** workflows/scripts/tests/test_doctor_reviewer_coverage.sh
+bash workflows/scripts/tests/test_doctor_knowledge_root.sh	workflows/scripts/install/** workflows/scripts/lib/knowledge_store*.sh workflows/scripts/build/build.config.sh workflows/scripts/tests/test_doctor_knowledge_root.sh
+bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh	workflows/scripts/install/** workflows/scripts/build/env-reconcile.sh workflows/scripts/tests/test_doctor_cross_checkout_split.sh
+bash workflows/scripts/tests/test_legacy_host_preflight.sh	workflows/scripts/install/** workflows/scripts/tests/test_legacy_host_preflight.sh
+make test-install-links	workflows/scripts/install/** claude/** bin/** workflows/scripts/tests/test_install_links.sh
+make test-install-worktree-guard	workflows/scripts/install/** claude/hooks/** workflows/scripts/tests/test_install_worktree_guard.sh
+bash workflows/scripts/tests/test_install_cli.sh	bin/** workflows/scripts/install/** workflows/scripts/tests/** VERSION
+bash workflows/scripts/tests/test_install_lifecycle.sh	bin/** workflows/scripts/install/** workflows/scripts/tests/** claude/** VERSION
+bash workflows/scripts/tests/lib/tests/test_sandbox.sh	workflows/scripts/tests/lib/** bin/**
+bash workflows/scripts/tests/test_sandbox_dry_run_legs.sh	workflows/scripts/tests/lib/** workflows/scripts/tests/test_sandbox_dry_run_legs.sh bin/** workflows/scripts/install/**
+bash workflows/scripts/tests/lib/tests/test_sandbox_integrity.sh	workflows/scripts/tests/lib/**
+make test-prune-branches	scripts/prune-merged-branches.sh scripts/tests/test_prune_merged_branches.sh
+
+# ── Registry / prose / presentation-plane lints ─────────────────────────────
+make validate-command-run-emit	workflows/scripts/validate-command-run-emit.sh workflows/scripts/emit-command-run.sh claude/commands/**
+bash workflows/scripts/tests/test_command_run_emit.sh	workflows/scripts/emit-command-run.sh workflows/scripts/validate-command-run-emit.sh workflows/scripts/tests/test_command_run_emit.sh claude/commands/sweep.md claude/commands/triage.md claude/commands/fix.md meta/data/raw/README.md
+make validate-issue-touch-emit	workflows/scripts/validate-issue-touch-emit.sh workflows/scripts/emit-issue-touch.sh workflows/scripts/board/** claude/commands/**
+make validate-lexicon	workflows/scripts/drain/**
+bash workflows/scripts/tests/test_validate_template_refs.sh	workflows/scripts/validate-template-refs.sh workflows/scripts/tests/test_validate_template_refs.sh claude/message-schema.md
+bash workflows/scripts/config/tests/test_setting_registry.sh	workflows/scripts/config/**
+bash workflows/scripts/config/tests/test_check_setting_registry.sh	workflows/scripts/config/**
+bash workflows/scripts/config/check-setting-prose.sh	claude/** workflows/scripts/config/**
+bash workflows/scripts/config/tests/test_check_setting_prose.sh	workflows/scripts/config/**
+bash workflows/scripts/config/check-reviewer-routing.sh	workflows/scripts/config/reviewer-routing.tsv claude/commands/build.md claude/agents/** workflows/scripts/config/check-reviewer-routing.sh
+bash workflows/scripts/config/tests/test_check_reviewer_routing.sh	workflows/scripts/config/**
+bash workflows/scripts/count-prose.sh	claude/** CLAUDE.md README.md workflows/scripts/count-prose.sh workflows/scripts/install-claude-md.sh workflows/scripts/config/** workflows/scripts/build/build.config.sh
+bash workflows/scripts/tests/test_count_prose.sh	workflows/scripts/count-prose.sh workflows/scripts/install-claude-md.sh workflows/scripts/tests/test_count_prose.sh
+bash workflows/scripts/config/tests/test_check_contributor_manifest.sh	workflows/scripts/config/**
+bash workflows/scripts/tests/test_validate_prose_budget.sh	workflows/scripts/validate-prose-budget.sh workflows/scripts/count-prose.sh workflows/scripts/tests/test_validate_prose_budget.sh
+bash workflows/scripts/chunk-redundancy-surface.sh	claude/** workflows/scripts/chunk-redundancy-surface.* workflows/scripts/config/**
+bash workflows/scripts/tests/test_chunk_redundancy_surface.sh	workflows/scripts/chunk-redundancy-surface.* workflows/scripts/tests/test_chunk_redundancy_surface.sh
+bash workflows/scripts/config/check-redundancy-fixtures.sh	workflows/scripts/config/**
+bash workflows/scripts/config/tests/test_check_redundancy_fixtures.sh	workflows/scripts/config/**
+bash workflows/scripts/declared-expiry-check.sh	claude/** workflows/scripts/declared-expiry-check.sh workflows/scripts/config/**
+bash workflows/scripts/tests/test_declared_expiry_check.sh	workflows/scripts/declared-expiry-check.sh workflows/scripts/tests/test_declared_expiry_check.sh
+bash workflows/scripts/validate-design-brief.sh	claude/design-schema.md claude/** workflows/scripts/validate-design-brief.sh
+bash workflows/scripts/tests/test_validate_design_brief.sh	workflows/scripts/validate-design-brief.sh workflows/scripts/tests/test_validate_design_brief.sh
+bash workflows/scripts/config/tests/test_check_gate_paths.sh	workflows/scripts/config/**
+
+# ── Knowledge store / search ────────────────────────────────────────────────
+bash workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_search_zsh_path_tie.sh
+bash workflows/scripts/lib/tests/test_knowledge_store.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_store.sh
+bash workflows/scripts/lib/tests/test_knowledge_store_obsidian.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_store_obsidian.sh
+bash workflows/scripts/lib/tests/test_knowledge_search.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_search.sh
+bash workflows/scripts/lib/tests/test_knowledge_store_sync.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_store_sync.sh
+bash workflows/scripts/lib/tests/test_knowledge_read_log.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_read_log.sh
+bash workflows/scripts/lib/tests/test_knowledge_search_mcp.sh	workflows/scripts/lib/knowledge_* workflows/scripts/lib/tests/test_knowledge_search_mcp.sh
+make validate-knowledge-search-emit	workflows/scripts/validate-knowledge-search-emit.sh workflows/scripts/lib/knowledge_*
+bash workflows/scripts/lib/tests/test_issue_corpus.sh	workflows/scripts/lib/** claude/commands/**
+bash workflows/scripts/lib/tests/test_issue_marker_probe.sh	workflows/scripts/lib/issue-marker-probe.sh workflows/scripts/lib/tests/test_issue_marker_probe.sh claude/commands/**
+bash workflows/scripts/lib/tests/test_command_declared.sh	workflows/scripts/lib/command_declared.sh workflows/scripts/lib/tests/test_command_declared.sh claude/commands/**
+
+# ── Telemetry / spend / session context ─────────────────────────────────────
+bash workflows/scripts/tests/test_telemetry_brief.sh	workflows/scripts/telemetry-brief.sh workflows/scripts/tests/test_telemetry_brief.sh claude/commands/check-in.md
+bash workflows/scripts/tests/test_checkin_status_trailing_newline.sh	claude/commands/check-in.md workflows/scripts/tests/test_checkin_status_trailing_newline.sh
+bash workflows/scripts/lib/tests/test_token_sum.sh	workflows/scripts/lib/token_sum.sh workflows/scripts/lib/tests/test_token_sum.sh claude/status-line.sh
+bash workflows/scripts/tests/test_emit_session_context.sh	workflows/scripts/emit-session-context.sh workflows/scripts/lib/token_sum.sh workflows/scripts/tests/test_emit_session_context.sh
+bash workflows/scripts/tests/test_status_line_token_resolution.sh	claude/status-line.sh workflows/scripts/lib/token_sum.sh workflows/scripts/install/links.sh workflows/scripts/tests/test_status_line_token_resolution.sh
+bash workflows/scripts/tests/test_pipeline_spend_report.sh	workflows/scripts/pipeline-spend-report.sh workflows/scripts/report-producers/** .temperloop/report.d/** workflows/scripts/tests/test_pipeline_spend_report.sh
+bash workflows/scripts/tests/test_item_efficiency.sh	workflows/scripts/emit-item-efficiency.sh workflows/scripts/pipeline-spend-report.sh workflows/scripts/tests/test_item_efficiency.sh claude/commands/build.md
+bash workflows/scripts/tests/test_workflow_reviewer_coverage.sh	workflows/scripts/workflow-reviewer-coverage.sh workflows/scripts/tests/test_workflow_reviewer_coverage.sh
+
+# ── Shared libs ─────────────────────────────────────────────────────────────
+bash workflows/scripts/lib/tests/test_portable_timeout.sh	workflows/scripts/lib/portable-timeout.sh workflows/scripts/lib/tests/test_portable_timeout.sh
+bash workflows/scripts/lib/tests/test_changelog.sh	workflows/scripts/lib/changelog.sh workflows/scripts/lib/tests/test_changelog.sh
+bash workflows/scripts/lib/tests/test_gate_selection.sh	workflows/scripts/lib/gate-selection.sh workflows/scripts/lib/tests/test_gate_selection.sh
+bash scripts/tests/test_quality_gates_freshness.sh	workflows/scripts/lib/checkout-freshness.sh scripts/tests/test_quality_gates_freshness.sh
+bash scripts/tests/test_quality_gates_retry.sh	workflows/scripts/lib/gate-retry.sh scripts/tests/test_quality_gates_retry.sh
+# The sliced-execution seam (temperloop#1021) lives INSIDE scripts/quality-gates.sh,
+# which is already an ALL-escalation row above — so a change to the seam itself
+# escalates to the full set regardless. The only OTHER path that can affect this
+# gate is its own fixture, which is what this row names.
+bash scripts/tests/test_quality_gates_slice.sh	scripts/tests/test_quality_gates_slice.sh
+# The bounded-concurrency scheduler (temperloop#1025) lives in
+# workflows/scripts/lib/gate-pool.sh, which is an ALL-escalation path above —
+# a change to the scheduler itself affects every gate, so it widens to the full
+# set rather than narrowing to this suite. This row names the only OTHER path
+# that can affect this gate: its own fixture.
+bash scripts/tests/test_quality_gates_parallel.sh	scripts/tests/test_quality_gates_parallel.sh
+# The `--scoped` seam (temperloop#957) lives INSIDE scripts/quality-gates.sh and
+# workflows/scripts/lib/gate-selection.sh, both ALL-escalation paths above — a
+# change to the seam itself widens to the full set rather than narrowing to this
+# suite. Same shape as the two rows above; this row names its own fixture.
+bash scripts/tests/test_quality_gates_scoped.sh	scripts/tests/test_quality_gates_scoped.sh
+
+# ── Drain / vault-side maintenance ──────────────────────────────────────────
+make test-scan-stub	workflows/scripts/drain/**
+make test-vault-hygiene	workflows/scripts/drain/**
+bash workflows/scripts/drain/tests/test_generate_moc.sh	workflows/scripts/drain/**
+make test-tally-findings	workflows/scripts/drain/**
+
+# ── Kernel classification / distribution / CLI ──────────────────────────────
+bash workflows/scripts/kernel/tests/test_check_kernel_manifest.sh	workflows/scripts/kernel/**
+bash workflows/scripts/kernel/tests/test_kernel_lib_resolve.sh	workflows/scripts/kernel/**
+make test-producer-egress	workflows/scripts/kernel/** workflows/scripts/report-producers/** .temperloop/report.d/** bin/**
+make test-conventions-probe	workflows/scripts/probe/** bin/**
+make test-try	bin/** workflows/scripts/probe/**
+make test-demo	workflows/scripts/demo/**
+make test-proposal-pr	workflows/scripts/proposal/**
+bash workflows/scripts/tests/test_rename_compat.sh	bin/** workflows/scripts/tests/test_rename_compat.sh
+bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh	bin/** workflows/scripts/tests/test_bootstrap_tag_pinning.sh
+bash workflows/scripts/tests/test_version_embedding.sh	bin/** VERSION VERSIONING.md workflows/scripts/tests/test_version_embedding.sh
+bash workflows/scripts/tests/test_update_subcommand.sh	bin/** workflows/scripts/lib/changelog.sh CHANGELOG.md workflows/scripts/tests/test_update_subcommand.sh
+bash scripts/tests/test_update_kernel.sh	scripts/update-kernel.sh workflows/scripts/lib/changelog.sh CHANGELOG.md scripts/tests/test_update_kernel.sh
+
+# ── Docs site ───────────────────────────────────────────────────────────────
+make docs	docs/** workflows/scripts/docs/** README.md AGENTS.md CLAUDE.md llms.txt
+bash workflows/scripts/tests/test_validate_feature_docs.sh	workflows/scripts/validate-feature-docs.sh workflows/scripts/tests/test_validate_feature_docs.sh docs/features/**
+bash workflows/scripts/tests/test_check_changelog_entry.sh	workflows/scripts/check-changelog-entry.sh workflows/scripts/tests/test_check_changelog_entry.sh CHANGELOG.md VERSIONING.md
+
+# ── Whole-tree shell lints ──────────────────────────────────────────────────
+bash scripts/lint-zsh-param-tie.sh	*.sh
+# The bash-3.2 hidden-apostrophe lint (temperloop#1098) covers the WHOLE tracked
+# shell set, which is wider than `*.sh`: it also reads extensionless tracked files
+# carrying an sh/bash shebang (bin/temperloop, bin/foundation, the report
+# producers), plus the `*/tests/*` files `make shellcheck` excludes — the #1098
+# sweep found workflows/scripts/board/tests/test_boards_conf.sh broken too, so a
+# tests-excluding scope would have left half the known breakage ungated.
+bash scripts/lint-bash32-cmdsubst-comment.sh	*.sh bin/** .temperloop/** workflows/scripts/report-producers/**
+bash scripts/tests/test_lint_bash32_cmdsubst_comment.sh	scripts/lint-bash32-cmdsubst-comment.sh scripts/tests/test_lint_bash32_cmdsubst_comment.sh
+make shellcheck	*.sh
+bash scripts/tests/test_ensure_shellcheck.sh	scripts/ensure-shellcheck.sh scripts/tests/test_ensure_shellcheck.sh

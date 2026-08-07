@@ -41,7 +41,7 @@
 # SEPARATE mode: the "aha moment" tick. It scratch-clones a disposable,
 # already-seeded demo repo (kernel/workflows/scripts/demo/seed-demo-repo.sh
 # maintains it; falsifiable one-file defects, `demo-seed`-labeled issues)
-# and drives ONE real safe-tier funnel tick — issue -> PR — against it:
+# and drives ONE real safe-tier pipeline tick — issue -> PR — against it:
 #   1. claims one open demo-seed issue via the issues-only tracker adapter
 #      (kernel/workflows/scripts/board/lib/board.sh, board_backend=issues;
 #      NO Projects-v2 board is ever provisioned — a throwaway scratch
@@ -53,7 +53,7 @@
 #   3. opens the PR via kernel/workflows/scripts/proposal/proposal-pr.sh
 #      (never a direct push — branch==base is structurally refused there).
 # It stops at an OPENED pull request — never a merge (the safe/merging
-# tier split, foundation #604's SAFE rung never merges).
+# tier split, foundation #604's SAFE layer never merges).
 # SPEND GUARD: prints a DIRECTIONAL cost estimate, requires an explicit y/N
 # confirmation (or --yes — refused outright on a non-tty stdin with no
 # --yes, so a curious stranger cannot silently burn spend), and enforces a
@@ -169,7 +169,32 @@ TRY_CLAUDE_TIMEOUT_SECS=180
 # call above. Non-flag-configurable, same rationale as TRY_CLAUDE_TIMEOUT_SECS.
 TRY_DEMO_CLAUDE_TIMEOUT_SECS=300
 
-# Test-double seams (mirror funnel-drive.sh's CLAUDE_BIN / FUNNEL_GH_BIN
+# Model-tier settings for this script's two `claude -p` seats (temperloop#978).
+# Sourced best-effort from the kernel's single settings home — build.config.sh
+# is where BOTH defaults live, and this file only NAMES them (§ Named-setting
+# convention). A checkout missing the config file still runs: each seat's
+# `${VAR:-}` expansion below then yields empty, which is the same
+# inherit-the-session-model behavior this script had before the settings existed.
+#   TRY_TRIAGE_MODEL    — Step 3's SHADOW/DRY-RUN triage classification pass
+#   TRY_DEMO_FIX_MODEL  — --demo's live judgment call (empty by default: it
+#                         produces committed code, so it keeps the strong tier)
+# Both are passed through `_try_model_args` below, which emits NO --model flag
+# at all when the setting is empty — never a literal empty model argument.
+TRY_BUILD_CONFIG="$KERNEL_ROOT/workflows/scripts/build/build.config.sh"
+if [ -f "$TRY_BUILD_CONFIG" ]; then
+  # shellcheck source=../../workflows/scripts/build/build.config.sh
+  . "$TRY_BUILD_CONFIG" >/dev/null 2>&1 || true
+fi
+
+# Emit `--model <tier>` iff $1 is non-empty; emit nothing otherwise. Callers
+# expand it unquoted-with-array semantics: `"${model_args[@]}"`.
+_try_model_args() {
+  if [ -n "${1:-}" ]; then
+    printf '%s\n%s\n' '--model' "$1"
+  fi
+}
+
+# Test-double seams (mirror pipeline-drive.sh's CLAUDE_BIN / PIPELINE_GH_BIN
 # convention) — never overridden in production use.
 : "${CLAUDE_BIN:=claude}"
 : "${TRY_GH_BIN:=gh}"
@@ -250,7 +275,7 @@ run_demo() {
   high="$TRY_DEMO_TICK_HIGH_USD"
   echo "Cost estimate (DIRECTIONAL — hardcoded constants, not a live pricing lookup;"
   echo "  see kernel/bin/lib/cost-estimates.conf): \$$low - \$$high for ONE real"
-  echo "  safe-tier funnel tick (issue -> PR) against $demo_repo."
+  echo "  safe-tier pipeline tick (issue -> PR) against $demo_repo."
   echo "Hard spend cap for this run: \$$demo_cap_usd (--demo-cap-usd; enforced on the"
   echo "  live judgment call via --max-budget-usd — DIRECTIONAL, an approval-time"
   echo "  decision; tighten when real calibration exists)."
@@ -392,8 +417,18 @@ PROMPT_EOF
   # later command substitution (e.g. `jq` on a malformed judgment-call
   # response) returns non-zero — exactly the case the explicit `fix_rc` /
   # `fix_path` checks below exist to handle gracefully.
+  # Tier for this seat: $TRY_DEMO_FIX_MODEL (empty by default = inherit the
+  # session model, unchanged — this seat's output is committed code, so it keeps
+  # the strong tier; see build.config.sh's own header). The `${a[@]+...}` guard
+  # is required, not decorative: macOS ships bash 3.2, where expanding an EMPTY
+  # array as "${a[@]}" under `set -u` is an unbound-variable error.
+  demo_model_args=()
+  while IFS= read -r _a; do demo_model_args+=("$_a"); done \
+    < <(_try_model_args "${TRY_DEMO_FIX_MODEL:-}")
+
   fix_json="$(run_with_timeout "$TRY_DEMO_CLAUDE_TIMEOUT_SECS" \
     "$CLAUDE_BIN" -p "$prompt" \
+    ${demo_model_args[@]+"${demo_model_args[@]}"} \
     --tools "" \
     --output-format text \
     --no-session-persistence \
@@ -654,9 +689,19 @@ noting this is a SHADOW/DRY-RUN result with zero writes performed.
 PROMPT_EOF
 )"
 
+# Tier for this seat: $TRY_TRIAGE_MODEL. This is the ONE seat temperloop#978
+# re-tiered off inherit — the report below is printed VERBATIM with no parse
+# contract a weaker model can break, the pass is a labelled zero-write dry run,
+# and the call lands on a stranger's own first-run bill. Same bash-3.2
+# empty-array guard as the --demo seat above.
+triage_model_args=()
+while IFS= read -r _a; do triage_model_args+=("$_a"); done \
+  < <(_try_model_args "${TRY_TRIAGE_MODEL:-}")
+
 set +e
 triage_out="$(run_with_timeout "$TRY_CLAUDE_TIMEOUT_SECS" \
   "$CLAUDE_BIN" -p "$prompt" \
+  ${triage_model_args[@]+"${triage_model_args[@]}"} \
   --tools "" \
   --output-format text \
   --no-session-persistence \

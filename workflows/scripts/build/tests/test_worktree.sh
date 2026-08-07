@@ -76,12 +76,31 @@ out="$(bash "$SCRIPT" remove "$REPO" alpha)"
 [ "$(jq -r .outcome <<<"$out")" = "NOT_FOUND" ] || fail "second remove not NOT_FOUND (got: $out)"
 echo "PASS: remove cleans worktree+branch+marker (REMOVED), repeat is NOT_FOUND"
 
-# --- prune: merged+clean PRUNED; unmerged skipped; dirty skipped sans --force -
+# --- prune: merged+clean PRUNED; unmerged/dirty/fresh skipped sans --force ----
+# A GENUINELY merged branch has commits of its OWN that are ancestors of
+# origin/main — so its tip is NOT equal to origin/main. Build that shape for
+# `merged-clean` and `dirty`: land a commit on upstream main, advance main once
+# more, then point the build branch at the landed commit. (Before #891 these
+# fixtures were zero-commit worktrees, which the ancestor-only gate 1 read as
+# merged — exactly the live-worktree-reaping bug; that shape is now
+# SKIPPED_FRESH and is asserted separately below.)
 bash "$SCRIPT" create "$REPO" merged-clean >/dev/null
-bash "$SCRIPT" create "$REPO" unmerged >/dev/null
 bash "$SCRIPT" create "$REPO" dirty >/dev/null
+landedsha="$(git -C "$TMP/upstream" commit -q --allow-empty -m 'merged-clean work lands on main' && git -C "$TMP/upstream" rev-parse HEAD)"
+git -C "$TMP/upstream" commit -q --allow-empty -m 'main advances after that merge'
+git -C "$REPO" fetch -q origin main
+git -C "$REPO.wt/merged-clean" reset -q --hard "$landedsha"
+git -C "$REPO.wt/dirty" reset -q --hard "$landedsha"
+
+bash "$SCRIPT" create "$REPO" unmerged >/dev/null
 git -C "$REPO.wt/unmerged" commit -q --allow-empty -m "unlanded work"
 echo scratch > "$REPO.wt/dirty/junk.txt"
+# The #891 case: a worktree exactly as `create` leaves it — zero commits ahead,
+# tip == origin/main. This is a LIVE build worktree in the window between
+# `create` and its worker's first commit.
+bash "$SCRIPT" create "$REPO" fresh >/dev/null
+[ "$(git -C "$REPO.wt/fresh" rev-parse HEAD)" = "$(git -C "$REPO" rev-parse origin/main)" ] \
+  || fail "#891 test setup bug: fresh worktree tip must equal origin/main"
 
 out="$(bash "$SCRIPT" prune "$REPO")"
 oc() { jq -r --arg p "$REPO.wt/$1" 'select(.path==$p).outcome' <<<"$out"; }
@@ -95,11 +114,30 @@ git -C "$REPO" show-ref --verify --quiet refs/heads/build/merged-clean \
   && fail "branch build/merged-clean survived prune"
 echo "PASS: prune removes merged+clean only (PRUNED / SKIPPED_UNMERGED / SKIPPED_DIRTY)"
 
+# --- #891: a fresh, ZERO-COMMIT worktree survives a non-forced prune ---------
+# Zero commits ahead is evidence of NO WORK YET, not of a merge. Gate 1's
+# ancestor test alone cannot tell a live, just-created build worktree from a
+# finished merged one — `head != origin/<default>` can, and does.
+[ "$(oc fresh)" = "SKIPPED_FRESH" ] || fail "#891: zero-commit worktree not SKIPPED_FRESH (got: $out)"
+[ -e "$REPO.wt/fresh" ] || fail "#891: live zero-commit worktree dir was reaped by prune"
+[ -f "$REPO.wt/fresh/.build-guard" ] || fail "#891: fresh worktree's .build-guard marker was removed"
+git -C "$REPO" show-ref --verify --quiet refs/heads/build/fresh \
+  || fail "#891: branch build/fresh was deleted out from under a live worker"
+echo "PASS: prune spares a fresh, zero-commit worktree (SKIPPED_FRESH — #891)"
+
 out="$(bash "$SCRIPT" prune "$REPO" --force)"
 [ "$(oc dirty)" = "PRUNED" ] || fail "dirty not PRUNED under --force (got: $out)"
 [ ! -e "$REPO.wt/dirty" ] || fail "dirty dir survived prune --force"
 [ "$(oc unmerged)" = "SKIPPED_UNMERGED" ] || fail "--force pruned an UNMERGED worktree (got: $out)"
-echo "PASS: prune --force overrides dirty-skip but never removes unmerged work"
+# --force bypasses the #891 fresh guard exactly as it bypasses the dirty gate:
+# an aborted `create` leaves a legitimate zero-commit worktree that must stay
+# reapable, so the guard protects the default path without making stale fresh
+# worktrees immortal.
+[ "$(oc fresh)" = "PRUNED" ] || fail "#891: --force did not reap a fresh worktree (got: $out)"
+[ ! -e "$REPO.wt/fresh" ] || fail "#891: fresh dir survived prune --force"
+git -C "$REPO" show-ref --verify --quiet refs/heads/build/fresh \
+  && fail "#891: branch build/fresh survived prune --force"
+echo "PASS: prune --force overrides the dirty- and fresh-skips but never removes unmerged work"
 
 # --- prune: squash/rebase-merged branch (tip NOT an ancestor of origin/main) --
 # is still detected MERGED via the merge-queue-safe helper (#171/#173) and
@@ -221,3 +259,89 @@ rc=0; out="$(bash "$SCRIPT" deps-merged "$REPO" "" 2>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "#108: deps-merged with an empty sha list did not exit non-zero"
 [ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "#108: empty sha list not ERROR (got: $out)"
 echo "PASS: deps-merged with an empty sha list emits structured ERROR + non-zero exit"
+
+# --- review-agent propagation into the worktree (#1005) -----------------------
+# `.claude/agents/` is gitignored (ADR 0007) so it never rides into a fresh
+# worktree, and the capability probe resolves an agent iff a file sits at
+# `.claude/agents/<name>.md` — so before #1005 every worker-side review pass
+# read as `skipped — <agent> unavailable`, including build.md 3e's MANDATORY
+# workflow-reviewer pass for a `claude/commands/*.md` diff (#1007). `create`
+# must now materialize the FLAT catalog itself.
+git init -q --initial-branch=main "$TMP/up1005"
+mkdir -p "$TMP/up1005/claude/agents/reviewers"
+printf -- '---\nname: workflow-reviewer\n---\nspec review lens\n' \
+  > "$TMP/up1005/claude/agents/workflow-reviewer.md"
+printf -- '---\nname: docs-reviewer\n---\nprose review lens\n' \
+  > "$TMP/up1005/claude/agents/docs-reviewer.md"
+# The opt-in per-language catalog lives one dir DOWN and stays inert (ADR 0007).
+printf -- '---\nname: python-reviewer\n---\nopt-in only\n' \
+  > "$TMP/up1005/claude/agents/reviewers/python-reviewer.md"
+git -C "$TMP/up1005" add -A
+git -C "$TMP/up1005" commit -q -m "kernel-shaped agent catalog"
+git clone -q "$TMP/up1005" "$TMP/repo1005"
+REPO1005="$(cd "$TMP/repo1005" && pwd -P)"
+
+bash "$SCRIPT" create "$REPO1005" lenses >/dev/null
+WT1005="$REPO1005.wt/lenses"
+for a in workflow-reviewer docs-reviewer; do
+  [ -L "$WT1005/.claude/agents/$a.md" ] \
+    || fail "#1005: .claude/agents/$a.md not materialized as a symlink in a fresh worktree"
+  [ "$(readlink "$WT1005/.claude/agents/$a.md")" = "../../claude/agents/$a.md" ] \
+    || fail "#1005: $a.md link is not the relative in-worktree target (got: $(readlink "$WT1005/.claude/agents/$a.md"))"
+  # The link must RESOLVE — a dangling link fails the probe just as an absent
+  # file does, and an ABSOLUTE link back into the parent checkout would serve
+  # the worker a charter from the wrong commit.
+  [ -f "$WT1005/.claude/agents/$a.md" ] \
+    || fail "#1005: $a.md link does not resolve inside the worktree"
+  grep -q "review lens" "$WT1005/.claude/agents/$a.md" \
+    || fail "#1005: $a.md link does not resolve to the tracked claude/agents/ source"
+done
+echo "PASS: create materializes the flat claude/agents/ catalog into the worktree's .claude/agents/ (#1005)"
+
+# ADR 0007: the per-language catalog under claude/agents/reviewers/ is opt-in
+# via reviewer-activate.sh and must NEVER be bulk-deployed by this step.
+[ ! -e "$WT1005/.claude/agents/python-reviewer.md" ] \
+  || fail "#1005/ADR 0007: an opt-in catalog reviewer was flat-deployed into the worktree"
+[ ! -e "$WT1005/.claude/agents/reviewers" ] \
+  || fail "#1005/ADR 0007: claude/agents/reviewers/ was propagated into the worktree"
+echo "PASS: create leaves the opt-in reviewers/ catalog inert (ADR 0007)"
+
+# The materialized tree must stay git-status-invisible even in a repo whose own
+# .gitignore says nothing about .claude/ (this fixture has no .gitignore at
+# all): an untracked .claude/ would both leak into a worker's `git add -A` and
+# make every LIVE worktree read SKIPPED_DIRTY at prune time.
+[ -z "$(git -C "$WT1005" status --porcelain)" ] \
+  || fail "#1005: materialized .claude/agents/ leaked into git status (got: $(git -C "$WT1005" status --porcelain))"
+[ -z "$(git -C "$REPO1005" status --porcelain)" ] \
+  || fail "#1005: materialization dirtied the parent checkout (.gitignore must not be written)"
+echo "PASS: materialized .claude/agents/ is git-status-invisible and writes no .gitignore (#1005)"
+
+# Never clobber: a repo that TRACKS its own .claude/agents/<name>.md wins.
+git init -q --initial-branch=main "$TMP/up1005own"
+mkdir -p "$TMP/up1005own/claude/agents" "$TMP/up1005own/.claude/agents"
+printf 'kernel source\n' > "$TMP/up1005own/claude/agents/docs-reviewer.md"
+printf 'kernel source\n' > "$TMP/up1005own/claude/agents/workflow-reviewer.md"
+printf 'PROJECT OVERRIDE\n' > "$TMP/up1005own/.claude/agents/docs-reviewer.md"
+git -C "$TMP/up1005own" add -A
+git -C "$TMP/up1005own" commit -q -m "repo tracks its own docs-reviewer override"
+git clone -q "$TMP/up1005own" "$TMP/repo1005own"
+REPO1005OWN="$(cd "$TMP/repo1005own" && pwd -P)"
+bash "$SCRIPT" create "$REPO1005OWN" own >/dev/null
+WT1005OWN="$REPO1005OWN.wt/own"
+[ ! -L "$WT1005OWN/.claude/agents/docs-reviewer.md" ] \
+  || fail "#1005: a repo's own tracked .claude/agents/ entry was clobbered by a link"
+grep -q 'PROJECT OVERRIDE' "$WT1005OWN/.claude/agents/docs-reviewer.md" \
+  || fail "#1005: the repo's own tracked agent content did not survive create"
+[ -L "$WT1005OWN/.claude/agents/workflow-reviewer.md" ] \
+  || fail "#1005: the un-conflicting agent was not materialized alongside the tracked one"
+[ -z "$(git -C "$WT1005OWN" status --porcelain)" ] \
+  || fail "#1005: materializing alongside a tracked .claude/agents/ dirtied the worktree"
+echo "PASS: create never clobbers a repo's own tracked .claude/agents/ entry (#1005)"
+
+# A repo with no claude/agents/ source at all is a clean no-op — no .claude/ is
+# invented, and create still emits CREATED.
+out="$(bash "$SCRIPT" create "$REPO" nosrc)"
+[ "$(jq -r .outcome <<<"$out")" = "CREATED" ] || fail "#1005: no-source create not CREATED (got: $out)"
+[ ! -e "$REPO.wt/nosrc/.claude" ] \
+  || fail "#1005: a repo with no claude/agents/ source got a spurious .claude/ directory"
+echo "PASS: create is a clean no-op in a repo with no claude/agents/ source (#1005)"

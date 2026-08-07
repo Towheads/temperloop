@@ -108,4 +108,27 @@ out="$(_ks_search_backend_basic_memory_mcp_reindex --full)"
 case "$out" in *"COLD_REINDEX_MARKER args=--full"*) : ;; *) fail "reindex did not delegate with args, got: [$out]" ;; esac
 echo "PASS: 3c reindex delegates to cold reindex (args passed through)"
 
+# ── 4. BOTH SURFACES CARRY THE RE-RANK (temperloop#1446) ──────────────────
+# The warm happy path needs a live daemon, so it is out of this hermetic
+# suite's reach (see the header). But the failure this guards against is not a
+# runtime bug — it is a MAINTENANCE drift: someone changes the ranking on the
+# cold path and forgets the warm one, and the two backends silently disagree
+# about ordering the way they were already prevented from disagreeing about
+# search MODE. That is a STRUCTURAL property of the source, so assert it
+# structurally (same idiom as test_knowledge_search_agpl_boundary.sh).
+MCP_LIB="$LIB_DIR/knowledge_search_mcp.sh"
+
+grep -q '_ks_bm_reshape_results | _ks_bm_rerank "\$query" "\$limit"' "$MCP_LIB" \
+  || fail "4: the warm MCP search path must pipe results through _ks_bm_rerank, exactly as the cold path does"
+echo "PASS: 4a warm MCP search path applies the shared post-fetch re-rank"
+
+# The warm path must request the SAME fetch depth as the cold path, or the
+# re-rank operates on a shallower candidate set over there and the whole
+# fetch-deeper premise silently degrades on production's fastest surface.
+grep -q 'KNOWLEDGE_SEARCH_RERANK_DEPTH' "$MCP_LIB" \
+  || fail "4: the warm MCP search path must compute fetch depth from KNOWLEDGE_SEARCH_RERANK_DEPTH"
+grep -q -- '--argjson lim "\$depth"' "$MCP_LIB" \
+  || fail "4: the warm MCP search path must send the computed depth as page_size, not the caller's limit"
+echo "PASS: 4b warm MCP search path fetches the same re-rank depth as the cold path"
+
 echo "ALL PASS: knowledge_search_mcp.sh (registration + selection + fail-open, hermetic)"

@@ -7,13 +7,13 @@ slug: workshop
 
 ## Problem
 
-`/triage` is the funnel's front door for **discovered** work — a Backlog
+`/triage` is the pipeline's front door for **discovered** work — a Backlog
 item, a sweep finding, something already sitting there waiting for logical
 judgment. It has no path for work that is *invented* mid-conversation: an
 idea that starts as "we should build X," with no Backlog item behind it. Two
 epics (K94, K131) were hand-authored this way before `/workshop` existed — a
 rich `## Contract` body typed straight into a GitHub issue, with no coverage
-checklist run against it and no ritual forcing the hard questions (does this
+checklist run against it and no routine forcing the hard questions (does this
 change a contract surface? what's the uninstall story? what's the telemetry
 proxy?) to get asked before the epic exists. `/workshop` closes that gap: it
 gives invented work the same kind of structured, checklist-driven front door
@@ -24,9 +24,10 @@ would otherwise have to catch late, or never.
 ## How it works
 
 `/workshop` walks a fixed sequence — intake, coverage walk, review pass,
-ratify, materialize — against the coverage template in
+congruence pass and walkthrough, ratify, materialize — against the
+coverage template in
 `claude/design-schema.md`. It is modal by construction: there is no
-unattended arm, because a design ritual has no meaning without a live
+unattended arm, because a design routine has no meaning without a live
 operator to make the calls.
 
 1. **Intake.** Establish the problem statement, the customer-visible
@@ -53,12 +54,36 @@ operator to make the calls.
    <agent> unavailable` line rather than a silent no-op. Every finding is
    then folded into the brief, converted to a `deferred` disposition, or
    explicitly declined — nothing is left dangling.
-4. **Ratify.** Confirm every dimension carries a disposition, confirm
+4. **Congruence pass and walkthrough** (Step 3.5). Every dimension carrying
+   a disposition does not mean the dimensions *agree* with each other — a
+   brief can promise an acceptance check in dimension 4 that dimension 8
+   says is manual-only, and pass every completeness check anyway. So before
+   ratify is offered, three things happen. The facilitator works the
+   **congruence seam checklist** (`claude/design-schema.md` § Congruence
+   seams — five named seams, a floor rather than a ceiling), recording each
+   as held or flagged; this needs no agent and runs in every checkout. A
+   **cold-read congruence lens** (`claude/agents/congruence-lens.md`) then
+   reads the brief with no memory of it having been written and reports
+   contradictions between its dimensions, quoting both passages. The lens
+   is capability-probed like any other, and because it ships as source
+   under `claude/agents/`, an uninstalled checkout gets the remedy-bearing
+   skip line naming the one-command fix — stamped into the brief's coverage
+   record, so a brief the lens never read is distinguishable from one it
+   cleared. Finally the operator gets a **walkthrough**: every dimension is
+   listed with its final disposition, a plain-language gist, the delta since
+   they last saw it, and any congruence flags — and every dimension gets its
+   own verdict. Steps mirror the walk's own tier split, so load-bearing
+   dimensions get individual steps and mechanical ones step through in their
+   clusters, but a cluster never collapses several dimensions into one
+   verdict. A dimension that cannot be resolved in the session can take a
+   `deferred → <tracking ref>` here — the sanctioned way to time-box —
+   except dimension 0, whose premise can only be `filled`.
+5. **Ratify.** Confirm every dimension carries a disposition, confirm
    dimension 4 reads as a real contract rather than a summary, then ask the
    operator directly: ratify this brief? On approval, the brief's frontmatter
    flips `status: draft → ratified` and becomes immutable — a later change is
    a new, superseding brief, never an edit in place.
-5. **Materialize.** A ratified brief turns into four distinct artifacts, no
+6. **Materialize.** A ratified brief turns into four distinct artifacts, no
    content duplicated across them:
    - **The epic** — a board issue carrying the `## Contract` copied forward
      from dimension 4, plus a `design-brief: [[Designs/<note>]]` provenance
@@ -86,7 +111,7 @@ other dependency degrades legibly instead of blocking the walk.
 
 ## Integration
 
-`/workshop` is the funnel's **second front door**, a peer to `/triage` rather
+`/workshop` is the pipeline's **second front door**, a peer to `/triage` rather
 than a patch on top of it:
 
 ```
@@ -94,7 +119,7 @@ capture.sh (bugs) ┐
 sweeps / audits   ┼─► /triage      cull → collapse → group → epic + sub-issues
 loose Backlog     ┘
                                                                     │
-a design conversation ──► /workshop   intake → coverage walk → review pass → ratify → materialize
+a design conversation ──► /workshop   intake → coverage walk → review pass → congruence pass + walkthrough → ratify → materialize
                                                                     │
                                                                     ▼
                                               board epic (## Contract, design-brief: marker)
@@ -123,7 +148,7 @@ lose its provenance or slip through the wrong door:
   proceed with the hand-authored Contract as-is, or park and run `/workshop`
   first. Unattended runs take the safe default (proceed) and log it to the
   pending-decisions surface rather than blocking.
-- **`/tidy`'s drain backstop.** A provenance-less epic that the live
+- **`/tidy`'s backstop.** A provenance-less epic that the live
   `/assess` check never caught (or whose ask went unanswered) is swept up by
   `/tidy`'s own provenance sweep, so the gap doesn't depend on a single
   live session catching it.
@@ -132,11 +157,12 @@ lose its provenance or slip through the wrong door:
 
 `/workshop` is **operator-present only** — there is no unattended arm, no
 `ScheduleWakeup` poll, and no async decision-issue backend, because a design
-ritual has no meaning without a live operator making the calls. Cost is
+routine has no meaning without a live operator making the calls. Cost is
 therefore conversational: the coverage-walk conversation itself, plus
 whichever review-agent passes the operator picks (a brief pass spawns two
 standing lenses; a full pass adds a red-team lens, a persona pass, and — when
-the install surface is touched — an executed first-run/uninstall run). At
+the install surface is touched — an executed first-run/uninstall run), plus
+one congruence-lens spawn at Step 3.5 on every brief regardless of tier. At
 materialize time there are a handful of one-shot board/API writes (the epic,
 its board mirroring if a board is registered) and knowledge-store writes (the
 brief, the Decisions note, any draft ADRs) — none of it recurring or
@@ -151,7 +177,7 @@ rather than a dedicated stream:
 
 - **Merge-gate failure rate, designed vs. hand-authored epics.** Whether an
   epic that went through the coverage walk trips fewer merge-time gates
-  (leak guard, live/drain pairing, feature-docs coverage, and so on) than a
+  (leak guard, capture/backstop pairing, feature-docs coverage, and so on) than a
   hand-authored one — the loop the design-schema dimensions are built
   around (each dimension names the merge-time gate it pre-answers).
 - **Mid-build rework rate.** Whether a designed epic's plan items need fewer

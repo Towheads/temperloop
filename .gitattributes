@@ -23,4 +23,4 @@
 docs/features/feature-manifest.txt                                merge=union
 workflows/scripts/kernel/kernel-manifest.txt                      merge=union
 workflows/scripts/kernel/personal-token-denylist-exempt-files.txt merge=union
-workflows/scripts/config/knob-registry-exempt-files.txt           merge=union
+workflows/scripts/config/setting-registry-exempt-files.txt           merge=union

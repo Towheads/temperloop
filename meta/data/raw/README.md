@@ -11,7 +11,9 @@ this kernel checkout emits.
 
 **Scope.** This stub documents only the streams a bare kernel checkout
 actually emits: `command-run`, `issue-touches` (plus its `claims` sibling,
-unioned at read time), `funnel`, `knowledge-search-fallback`, and `gh-calls`.
+unioned at read time), `pipeline` (plus its pre-rename `funnel-*` month-files,
+also unioned at read time — see that stream below), `knowledge-search-fallback`,
+`gh-calls`, `session-context`, and `item-efficiency`.
 A downstream overlay checkout (e.g. the
 composed foundation repo) layers additional, overlay-only telemetry streams
 on top — with their own record shapes, for capabilities this bare kernel
@@ -23,7 +25,7 @@ rather than replacing it.
 ## Lake path convention
 
 Every stream lands in this directory (or wherever `<STREAM>_RAW_DIR` /
-`FUNNEL_RAW_DIR` overrides point, tests only) as one file per calendar month:
+`PIPELINE_RAW_DIR` overrides point, tests only) as one file per calendar month:
 
 ```
 meta/data/raw/<stream>-<YYYY-MM>.jsonl
@@ -32,8 +34,12 @@ meta/data/raw/<stream>-<YYYY-MM>.jsonl
 - `command-runs-<YYYY-MM>.jsonl`
 - `issue-touches-<YYYY-MM>.jsonl`
 - `claims-<YYYY-MM>.jsonl`
-- `funnel-<YYYY-MM>.jsonl`
+- `pipeline-<YYYY-MM>.jsonl` (plus, on a lake that predates the v0.17.0
+  rename, `funnel-<YYYY-MM>.jsonl` — a **permanent legacy-prefix read**, see
+  below)
 - `gh-calls-<YYYY-MM>.jsonl`
+- `session-context-<YYYY-MM>.jsonl`
+- `item-efficiency-<YYYY-MM>.jsonl`
 
 Each file is newline-delimited JSON (JSONL), one record per line, strictly
 append-only — a reader unions across month-files as needed and never expects
@@ -48,7 +54,7 @@ optional field is not a breaking change and does not require a bump).
 
 Not every stream carries the field explicitly yet. `issue-touches` is the
 precedent: every record explicitly carries `schema_version: "1"`. Streams
-that don't yet emit the field (`command-run`, `claims`, `funnel`) are
+that don't yet emit the field (`command-run`, `claims`, `pipeline`) are
 implicitly at their initial, unversioned shape — the convention going forward
 is that the *first* breaking change to any of those streams is also the
 change that introduces its `schema_version` field (starting at `"1"`), rather
@@ -76,29 +82,73 @@ run did not do. A `/triage --feedback` run (sweep **plus** queue walk) still
 emits one `"triage"` record for its sweep; giving its queue walk counters of
 its own is a follow-on, not covered here.
 
-Record shape: `{ts, session_id, command, board, items_processed, merged, parked, epic?}`
+Record shape: `{ts, session_id, command, board, items_processed, merged, resolved, parked, epic?}`
 
 | field | type | notes |
 |---|---|---|
 | `ts` | string | ISO-8601 UTC, `Z` suffix |
 | `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — the join key other raw/ streams key on; `null` for a non-Claude-Code/manual run |
-| `command` | string | `"sweep"` \| `"triage"` \| `"triage-feedback"`, verbatim from `--command`. `"triage-feedback"` is a `/triage --feedback-only` run (queue walk, no sweep — see above); purely additive, no `schema_version` bump, but note a reader filtering on `command == "triage"` will **not** see these runs, which is intended |
+| `command` | string | `"sweep"` \| `"triage"` \| `"triage-feedback"` \| `"fix"`, verbatim from `--command`. `"triage-feedback"` is a `/triage --feedback-only` run (queue walk, no sweep — see above); purely additive, no `schema_version` bump, but note a reader filtering on `command == "triage"` will **not** see these runs, which is intended |
 | `board` | number \| string \| null | the logical board number (`--board`), or `null` if omitted |
 | `items_processed` | integer | how many items the run drove/considered |
-| `merged` | integer | how many reached a successful terminal outcome |
+| `merged` | integer | how many landed a merged PR |
+| `resolved` | integer, **absent on pre-#1084 records** | how many reached a terminal outcome that is **not** a merge — a `kind: spike` closed on its verdict (`/sweep`, `/fix`), a culled or decision-routed candidate (`/triage`). See the absent-means-unknown caveat below |
 | `parked` | integer | how many were parked/deferred/escalated |
 | `epic` | number \| string, OPTIONAL | the epic issue number the run drove against (e.g. `/assess --epic N`, or `/build` on a plan note with an `epic:` frontmatter field), from `--epic`. ABSENT from the record entirely (not `null`) when the caller doesn't pass `--epic` — purely additive, no `schema_version` bump |
+
+**Invariant: `merged + resolved + parked == items_processed`.** Every item a
+run drives reaches exactly one terminal disposition, so the three counts
+partition the total. `emit-command-run.sh` asserts this and **exits 2** on a
+mismatch (after appending the record anyway, so the inconsistency is preserved
+in the stream rather than swallowed). The invariant is what makes a *missing*
+disposition loud: if a command grows a fourth terminal outcome and nobody adds
+a field for it, the arithmetic breaks on the very next run instead of silently
+under-reporting. That silent under-report is what temperloop#1084 was filed
+for — a 30-item `/sweep` emitting `{items_processed:30, merged:27, parked:1}`,
+with the two verdict-resolved spikes expressible nowhere.
+
+⚠ **`resolved` is absent on records written before temperloop#1084, and absent
+means UNKNOWN — never `0`.** This stream is strictly append-only and is
+**never backfilled**, so historical records keep their original shape. A
+consumer MUST distinguish:
+
+- **no `resolved` key** — a pre-#1084 record. Its `merged` count may silently
+  include verdict-resolved items (`/sweep` folded them in), or the record may
+  simply not add up at all; the invariant above does **not** hold for it, and
+  neither does `resolved == 0`.
+- **`"resolved": 0`** — a post-#1084 run that genuinely resolved nothing.
+
+Every record written from #1084 on carries the field explicitly, so its
+absence is a reliable pre-#1084 marker. Read it defensively — e.g. in jq,
+`(.resolved // 0)` is fine for a *sum*, but `has("resolved")` is what you need
+before asserting the invariant or reporting a rate.
+
+This is a **purely additive** change (a new optional field, no field removed,
+no type or meaning changed), so per the schema-version convention above it does
+**not** bump `schema_version`, and this stream stays implicitly at its initial
+unversioned shape. `merged`'s *documented* meaning did narrow from "reached a
+successful terminal outcome" to "landed a merged PR" — but that is a
+clarification of what the callers already emitted in the merge-carrying case,
+not a re-typing of the field, and the absence marker above is what lets a
+reader tell the two eras apart without a version bump.
 
 Example record:
 
 ```json
-{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1}
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1}
 ```
 
 Example record, run against an epic (`--epic` passed):
 
 ```json
-{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"parked":1,"epic":42}
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1,"epic":42}
+```
+
+Example pre-#1084 record (no `resolved` key — the counts do **not** reconcile,
+and that is the defect, preserved as written):
+
+```json
+{"ts":"2026-08-03T02:14:55Z","session_id":"e9d363cd-0000-0000-0000-000000000000","command":"sweep","board":7,"items_processed":30,"merged":27,"parked":1}
 ```
 
 ### `issue-touches` — `issue-touches-<YYYY-MM>.jsonl`
@@ -138,13 +188,38 @@ full at `claim_log_emit`'s own header comment):
 `{ts, host, session_id, board, issue, item_id}` — no `schema_version` field
 yet (see the schema-version convention above for what that implies).
 
-### `funnel` — `funnel-<YYYY-MM>.jsonl`
+**Pinned sink — `claims` does not honor cwd.** Unlike every other stream here
+(which lands in the invoking checkout's own `meta/data/raw/`), `claim.sh` pins
+its claims sink to `$HOME/dev/foundation/meta/data/raw` **regardless of the cwd
+it runs in** (`CLAIMS_RAW_DIR_DEFAULT` in `claim.sh`; `CLAIMS_RAW_DIR` overrides
+it, tests only) — deliberate, so every host's claims aggregate in one place
+rather than scattering across per-checkout lakes. **Consequence for a reader:** a
+touch-stream consumer running from a **non-foundation checkout** (a kernel or
+consumer checkout) has **no** `claims-*.jsonl` in its own local `meta/data/raw/`,
+so to see the claims half of an issue's touch history it must read the pinned
+sink — `$HOME/dev/foundation/meta/data/raw/claims-*.jsonl` — directly, unioned
+with its own local lake. (In a composed/foundation checkout, the overlay
+`/retro` command's Step 1 performs exactly this union — foundation#1216.)
 
-Emitted by `workflows/scripts/build/funnel-cron.sh` (foundation #596), one
+### `pipeline` — `pipeline-<YYYY-MM>.jsonl` (+ the permanent legacy prefix)
+
+Emitted by `workflows/scripts/build/pipeline-cron.sh` (foundation #596), one
 record per cron wake — every wake writes exactly one record via the script's
 `emit_record` chokepoint, which stamps a shared `ts` onto whatever event
 record Steps 1–4 built. Records are heterogeneous by `event`; the fields
 below `event`/`ts` vary by event type.
+
+**Permanent legacy-prefix read.** Before the v0.17.0 terminology
+consolidation (temperloop#729) this stream was named `funnel-<YYYY-MM>.jsonl`.
+The lake is **append-only immutable history**, so those month-files are never
+rewritten under the new prefix — readers union both prefixes, read-only,
+**permanently**. This deliberately survived the v0.19.0 close of the rest of
+that rename's compat window (temperloop#767): the window's env shim and
+forwarding stubs are gone, but this read is not part of the window. It is
+self-limiting — writers emit only `pipeline-*`, so no new legacy month-file is
+ever created — and it is exercised by `workflows/scripts/telemetry-brief.sh`
+(`stream_files`) and preserved across lake moves by `pipeline-cron.sh
+--backfill`.
 
 Base shape: `{event, ts, ...event-specific fields}`
 
@@ -152,7 +227,7 @@ Base shape: `{event, ts, ...event-specific fields}`
 |---|---|---|
 | `skipped` | the schedule gate declined this wake | `date`, `reason`, optional `context` (gate error) |
 | `ran` | the gate allowed the wake and a tick ran | `date`, `boards` (array), `nonop_actions` (integer), `duration_ms`, `plans` (array of per-board tick plans) |
-| `drive` | rung 5b/5c auto-drive executed (only when `FUNNEL_DRIVE=1` and the tick found non-no-op work) | `status`, `date`, `duration_ms`, and on error: `reason`, `context` (captured driver stderr) |
+| `drive` | rung 5b/5c auto-drive executed (only when `PIPELINE_DRIVE=1` and the tick found non-no-op work) | `status`, `date`, `duration_ms`, and on error: `reason`, `context` (captured driver stderr) |
 
 Any record may also carry a `self_update` object (foundation #598's
 self-update sandbox outcome) when a self-update was attempted that wake.
@@ -247,7 +322,7 @@ Record shape: `{schema_version, ts, host, start_ms, dur_ms, exit_code, pid, ppid
 | `exit_code` | integer | the wrapped call's verbatim exit code, including 128+N signal deaths (e.g. Ctrl-C → 130) |
 | `pid` / `ppid` | integer | the shim process's own pid / parent pid |
 | `tool` | string | `"gh"` or `"git-bug"` — this shim's own install basename (basename-generic: the same script installed as either name logs+dispatches that same name) |
-| `context` | string \| null | `$GH_CALL_CONTEXT` — the outermost command (`worklist` / `reconcile` / `funnel-tick` / …), `null` when unset |
+| `context` | string \| null | `$GH_CALL_CONTEXT` — the outermost command (`worklist` / `reconcile` / `pipeline-tick` / …), `null` when unset |
 | `op` | string \| null | `$GH_CALL_OP` — fine-grained per-call attribution tag (e.g. the board adapter's calling function), `null` when unset |
 | `cwd` | string | `$PWD` at call time |
 | `args` | string | the wrapped call's arguments, space-joined, with embedded tabs/newlines flattened to spaces (same sanitization as the TSV's `args` column, so a GraphQL query arg can never split or corrupt the record) |
@@ -257,4 +332,111 @@ Example record:
 
 ```json
 {"schema_version":"1","ts":"2026-07-10T18:22:47Z","host":"mini","start_ms":1783455767210,"dur_ms":143,"exit_code":0,"pid":41213,"ppid":41190,"tool":"gh","context":"worklist","op":"board:_board_item_list_fresh","cwd":"/home/dev/checkout","args":"issue list --repo o/r","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+```
+
+### `session-context` — `session-context-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/emit-session-context.sh` (temperloop#828, epic
+#810 "session-start context growth") — **one record appended per session at
+the SessionEnd hook seam** (`claude/hooks/session-end-log.sh`), recording
+the whole session's realized token usage. This is the **realized-session-
+context probe**: its job is measuring the WHOLE session's realized context,
+not only the session-start prefix a prior scope measured — relocating
+content out of an always-loaded document improves a t0
+(before-the-agent-reads-anything) metric *by construction*, whether or not
+the agent reads the relocated content two turns later. This stream is what
+makes a relocation's *real* value measurable instead of assumed.
+
+The SessionEnd hook calls the emit script with the transcript path ALREADY
+resolved through the compaction-rollover chain (a compaction rolls the
+conversation into a new `.jsonl`; re-deriving the path here would silently
+undercount exactly the long sessions this probe exists to measure) and the
+harness's `.context_window.*` fields already in hand — the emit script
+never resolves either itself.
+
+**Opt-in, default OFF** (setting-registry.tsv row `SESSION_CONTEXT_RAW_ENABLED`)
+— an explicit switch, never sink-presence used as an implicit one. The
+SessionEnd hook checks this gate before invoking the emit script at all; a
+stranger's fresh kernel install therefore writes nothing to this stream
+until they opt in.
+
+**One-off reading.** `emit-session-context.sh --transcript <path> --print-only`
+computes and prints the record to stdout without appending to the lake and
+without checking the opt-in gate above — a direct, explicit invocation is
+the consent for that one call. This is what lets another command (e.g. a
+design that wants to measure realized context around a specific
+intervention) take a single on-demand reading rather than only ever seeing
+this stream fire passively at SessionEnd.
+
+**Structural privacy.** Token counting is delegated entirely to
+`workflows/scripts/lib/token_sum.sh`'s `token_sum_transcript()`, whose only
+jq selector is `.message.usage.*` — never `.message.content` or any other
+transcript field. This is the SAME expression `claude/status-line.sh`'s
+"Tokens: NNk" display calls, so the displayed and recorded figures cannot
+drift apart.
+
+Record shape: `{schema_version, ts, session_id, host, project, cwd, transcript_tokens_total, context_window_size, context_window_remaining_pct}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams; `null` when the caller omitted it |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `hostname -s` |
+| `project` | string \| null | the caller's `--project` value (e.g. the session's `cwd` basename), or `null` |
+| `cwd` | string \| null | the caller's `--cwd` value, or `null` |
+| `transcript_tokens_total` | integer \| null | cumulative token sum (input + cache-creation + cache-read + output) across EVERY message in the whole (rollover-resolved) transcript — the realized-context figure this stream exists to record; `null` if no `--transcript` was passed |
+| `context_window_size` | integer \| null | the harness's `.context_window.context_window_size` at SessionEnd, passed through verbatim; `null` if absent |
+| `context_window_remaining_pct` | number \| null | the harness's `.context_window.remaining_percentage` at SessionEnd, passed through verbatim; `null` if absent |
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-07-27T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini","project":"temperloop","cwd":"/home/dev/temperloop","transcript_tokens_total":83659,"context_window_size":200000,"context_window_remaining_pct":58.2}
+```
+
+### `item-efficiency` — `item-efficiency-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/emit-item-efficiency.sh` (temperloop#943), **one
+record per plan item confirmed MERGED** — written from `claude/commands/build.md`
+Step 4d, the same seam that emits the `merge` issue-touch. This is the
+**overhead-per-shipped-change** stream: what one merged item actually cost in
+tokens, wall-clock, and agent count, split by pipeline *phase*, so ceremony
+growth is a number rather than a hunch (epic #923 spent ~55M tokens on
+`/workshop`+`/assess` prep before a single worker ran, and nothing surfaced it).
+
+**Composed, never re-derived.** Every token figure is selected out of
+`workflows/scripts/pipeline-spend-report.sh --format json`, which owns the
+cost-weighted per-agent transcript analysis *and* its four documented
+correctness traps (dedupe-by-requestId above all). The emit script opens no
+transcript and computes no token total of its own; when the profiler is
+unreachable the phases are `null`, never a locally recomputed substitute.
+
+Record shape: `{schema_version, ts, host, session_id, repo, slug, epic, issue, pr, level, phases, agent_counts, wall_ms, runs, spend_source}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `hostname -s` |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams |
+| `repo` | string \| null | `"owner/repo"` the item merged in |
+| `slug` | string | the plan item's `slug:` — the per-item identity |
+| `epic` | number \| string \| null | the epic issue number, the per-EPIC rollup key |
+| `issue` / `pr` | number \| null | the item's `gh_issue:` and its merged PR |
+| `level` | number \| null | the plan's dependency level, the per-LEVEL rollup key |
+| `phases` | object | `{design, driver_prep, worker, mechanical}`; each is `null` (un-attributed) or `{agents, api_calls, units, wall_ms, tokens:{output, cache_create, cache_read, input}}`. `units` is cost-weighted; `tokens` is raw, so the cheap-cache-read distortion stays visible. `worker`/`mechanical` are the profiler's OWN `SPEND_MACHINERY_MAX_CALLS` class split, reused verbatim |
+| `agent_counts` | object | `{worker, mechanical}` — agent counts by role, taken from the same class split, so counts and tokens can never disagree |
+| `wall_ms` | object | `{worker, ci, merge_group, gate_wait, end_to_end}`, each an integer or `null`. **`null` means UNMEASURED, never zero** — the two mean opposite things to a reader deciding whether ceremony grew |
+| `runs` | object | `{design, driver_prep, build}` — the workflow run ids each phase was attributed from, so any figure here is reproducible with `pipeline-spend-report.sh --run <id>` |
+| `spend_source` | string | `"pipeline-spend-report.sh"` — the provenance marker |
+
+Reader: `workflows/scripts/telemetry-brief.sh` § 3 Spend renders overhead per
+merged item, the phase split, wall-clock medians, agent counts by role, and a
+per-epic rollup — the surface `/telemetry` and `/check-in` Part 1 both show.
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-08-02T19:51:53Z","host":"mini","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","repo":"acme/widgets","slug":"telemetry-efficiency-metric","epic":923,"issue":943,"pr":1500,"level":1,"phases":{"design":{"agents":1,"api_calls":20,"units":6170,"wall_ms":1140000,"tokens":{"output":600,"cache_create":1000,"cache_read":18000,"input":120}},"driver_prep":null,"worker":{"agents":1,"api_calls":8,"units":2232,"wall_ms":420000,"tokens":{"output":160,"cache_create":800,"cache_read":4000,"input":32}},"mechanical":{"agents":3,"api_calls":9,"units":186,"wall_ms":120000,"tokens":{"output":30,"cache_create":0,"cache_read":300,"input":6}}},"agent_counts":{"worker":1,"mechanical":3},"wall_ms":{"worker":420000,"ci":300000,"merge_group":180000,"gate_wait":60000,"end_to_end":1800000},"runs":{"design":["wf_d-001"],"driver_prep":[],"build":["wf_b-001"]},"spend_source":"pipeline-spend-report.sh"}
 ```
