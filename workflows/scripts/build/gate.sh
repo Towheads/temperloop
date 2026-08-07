@@ -23,7 +23,8 @@
 #   gate.sh risk <owner>/<repo> <pr> [<pr> ...]
 #       → mechanical risk predicate over the selected PR set
 #   gate.sh queue <owner>/<repo> <pr> [--strict|--non-strict]
-#       → queue the canonical --auto merge incantation
+#       → queue the canonical --auto merge incantation; a DRAFT PR is named as
+#         its own outcome BEFORE the enqueue is attempted (temperloop#1180)
 #   gate.sh nudge <owner>/<repo> <pr>
 #       → gh pr update-branch for a still-BEHIND PR (the #83 nudge)
 #   gate.sh poll <owner>/<repo> <pr> [--interval <secs>] [--timeout <secs>]
@@ -58,6 +59,7 @@
 #   risk   → {"outcome":"RISKY","reasons":[…]} |
 #            {"outcome":"CLEAN_DISJOINT_INDEPENDENT"}                 exit 0
 #   queue  → {"outcome":"QUEUED","pr":…,"strict":…}                   exit 0
+#            {"outcome":"DRAFT","pr":…,"error":…}                     exit 9
 #   nudge  → {"outcome":"NUDGED","pr":…} |
 #            {"outcome":"NUDGE_NOOP","pr":…,"mergeStateStatus":…}     exit 0
 #   poll   → {"outcome":"MERGED","pr":…,"mergedAt":…}                 exit 0
@@ -83,7 +85,9 @@
 # rejecting a direct merge); 7 MERGE_GROUP_FAILED (diagnose-queue: the queue's
 # merge_group CI concluded failure — a real group conflict); 8 DEQUEUED
 # (diagnose-queue: the PR left the queue with no failing group run — an entry
-# dropped during churn). MERGED is the SOLE success check for poll and for
+# dropped during churn); 9 DRAFT (queue: the PR is a draft, which GitHub refuses
+# to auto-merge — a NAMED state with a named remedy, never a raw
+# enablePullRequestAutoMerge string). MERGED is the SOLE success check for poll and for
 # managed-merge's confirm step — never "closed", never "checks green" — so a
 # PR closed-without-merge can never read as merged (the #130 premature-close
 # class).
@@ -349,6 +353,35 @@ cmd_risk() {
 # branch protection or a missing check. No --delete-branch flag: the merge
 # queue rejects it and owns head-branch deletion itself (via the repo's
 # delete_branch_on_merge setting), per the Branch & PR policy.
+#
+# DRAFT is a NAMED outcome, checked BEFORE the enqueue (temperloop#1180).
+# GitHub refuses `enablePullRequestAutoMerge` on a draft PR, so an enqueue
+# against one fails with the raw GraphQL string
+# `GraphQL: Pull request is a draft (enablePullRequestAutoMerge)` — a true but
+# unactionable message that named neither the state nor the fix, and left a
+# parked run's PR behind that no re-run could ever land (three such PRs sat
+# 1-3 weeks in temperloop#1179's stale-PR triage).
+#
+# The disposition is FAIL LOUDLY, never an auto `gh pr ready` flip, because
+# draft-open is NOT a pipeline flow: `pr.sh open` calls bare
+# `gh pr create --head --title --body` with no `--draft` on any path,
+# build-level.mjs adds none, `pr-enqueue.sh` only drafts on an explicit opt-in
+# (and already refuses to enqueue one), and no script in this repo runs
+# `gh pr ready` at all — so a draft PR reaching the merge gate is ALWAYS a
+# human decision, and silently un-drafting it would override the one party who
+# chose it. gate.sh reports; consent stays orchestrator/operator-side, exactly
+# as this file's header contract requires.
+#
+# TWO detection sites, because either alone leaves a hole: the pre-flight probe
+# is FAIL-OPEN (an unreadable `isDraft` proceeds to the enqueue rather than
+# blocking it — never worse than today's behavior), and the post-hoc classifier
+# catches the draft whose probe failed, or that was flipped to draft between
+# the probe and the enqueue.
+_gate_draft_msg() {  # $1=owner/repo $2=pr — the operator-facing named message
+  printf 'PR #%s is a DRAFT — GitHub refuses to auto-merge a draft, so it can never be enqueued. /build never opens draft PRs, so this one was marked draft by hand: mark it ready with "gh pr ready %s -R %s" (or close it), then re-run the merge gate.' \
+    "$2" "$2" "$1"
+}
+
 cmd_queue() {
   local owner_repo="$1" pr="$2" strict="" out
   validate_owner_repo "$owner_repo"
@@ -362,11 +395,33 @@ cmd_queue() {
     esac
     shift
   done
+  # Pre-flight draft probe (fail-open: only a literal `true` blocks — an empty
+  # or errored read falls through to the enqueue, where the post-hoc classifier
+  # below still names a draft rejection).
+  local isdraft=""
+  isdraft="$(_gate_gh pr view "$pr" -R "$owner_repo" --json isDraft --jq '.isDraft' 2>/dev/null)" || isdraft=""
+  if [ "$isdraft" = "true" ]; then
+    jq -cn --argjson pr "$pr" --arg error "$(_gate_draft_msg "$owner_repo" "$pr")" \
+      '{outcome:"DRAFT", pr:$pr, error:$error}'
+    return 9
+  fi
+
   # Both strict and non-strict use --auto (queue, not merge-now). The strict
   # flag is recorded in the outcome for the orchestrator's audit trail; the
   # incantation is the same canonical `--auto --merge` (no --delete-branch —
   # the merge queue rejects it and deletes the head branch itself).
   if ! out="$(_gate_gh pr merge "$pr" -R "$owner_repo" --auto --merge 2>&1)"; then
+    # Post-hoc classifier — the probe was unreadable, or the PR became a draft
+    # between probe and enqueue. Same NAMED outcome, never the raw GraphQL text.
+    # Anchored on the draft phrase ALONE, deliberately not on the mutation name:
+    # `enablePullRequestAutoMerge` also tails unrelated rejections (auto-merge
+    # disabled repo-wide), and mis-naming one of those "DRAFT" would trade one
+    # wrong message for another.
+    if grep -qi 'is a draft' <<<"$out"; then
+      jq -cn --argjson pr "$pr" --arg error "$(_gate_draft_msg "$owner_repo" "$pr")" \
+        '{outcome:"DRAFT", pr:$pr, error:$error}'
+      return 9
+    fi
     die "gh pr merge --auto failed for #$pr: $out"
   fi
   jq -cn --argjson pr "$pr" --argjson strict "$([ -n "$strict" ] && echo true || echo false)" \

@@ -36,6 +36,37 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **A draft PR is now a named state in the merge path, not GitHub's raw
+  enqueue error** (#1180). `gate.sh queue` enqueued blind, so a draft PR — which
+  GitHub refuses to auto-merge — failed with the raw string
+  `GraphQL: Pull request is a draft (enablePullRequestAutoMerge)`: true, but
+  naming neither the state nor the fix, and leaving behind a PR no re-run could
+  ever land. The investigation this fix turned on: **draft-open is not a
+  pipeline flow.** `pr.sh open` calls bare `gh pr create --head --title --body`
+  with no `--draft` on any path, `build-level.mjs` adds none, `pr-enqueue.sh`
+  drafts only on an explicit `--draft` opt-in (and already refused to enqueue
+  one), and **no script in this repo runs `gh pr ready`** — so a draft reaching
+  the merge gate is always a human decision. The disposition is therefore to
+  **fail loudly, never to auto-flip**: `queue` reads `isDraft` before the
+  enqueue and returns a distinct `DRAFT` outcome (exit code 9) whose message
+  names the draft state and the remedy (`gh pr ready <n> -R <owner>/<repo>`);
+  silently un-drafting would override the one party who chose it. The pre-flight
+  probe **fails open** — an unreadable `isDraft` proceeds to the enqueue, never
+  worse than before — and a second classifier, anchored on the draft phrase
+  alone so an unrelated auto-merge rejection is not mis-named, returns the same
+  `DRAFT` outcome when `gh` itself rejects the PR. Neither path can surface the
+  raw GraphQL text.
+- **`ready-pr-sweep.sh` gained a `stale-draft` drift class** (#1180). The sweep
+  classified every draft as `skip`, and `--format entry`'s nothing-when-clean
+  contract suppresses a skip-only repo entirely — so a draft nobody ever flipped
+  ready was structurally invisible to the one surface that reports stuck work.
+  That is how three drafts sat 1-3 weeks with real fixes in them, one a live
+  correctness bug. A draft idle for `READY_PR_SWEEP_STALE_DRAFT_DAYS` or more is
+  now its own named class and a genuine candidate, so it reaches `/check-in`
+  through the pending-decisions entry; a *recent* draft stays `skip`, since an
+  in-flight draft is a deliberate state and not drift. The sweep remains
+  read-only and fail-open — it names the stale draft, it never flips or closes
+  one.
 - **The `pipefail` + `grep -q` SIGPIPE race is gone from the kernel test
   suite** (#1173). Under `set -o pipefail`, `echo "$var" | grep -q PATTERN` is
   a race, not a stable idiom: `grep -q` exits on its **first** match and closes

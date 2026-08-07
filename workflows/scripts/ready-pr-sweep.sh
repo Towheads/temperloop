@@ -23,7 +23,18 @@
 # open PR below; no special casing).
 #
 # CLASSES (one per open PR, first match wins):
-#   skip             draft, or a DO-NOT-MERGE marker in the title
+#   stale-draft      draft AND untouched for $READY_PR_SWEEP_STALE_DRAFT_DAYS
+#                    or more (temperloop#1180) — a NAMED drift class, not a
+#                    skip. A draft can never enqueue (GitHub refuses
+#                    enablePullRequestAutoMerge on one, and gate.sh queue now
+#                    names that state), so a draft nobody flips ready is work
+#                    that is structurally unable to land. Folding it into
+#                    `skip` is what hid three such PRs for 1-3 weeks —
+#                    including a live correctness fix — because skip-class PRs
+#                    are invisible to --format entry's nothing-when-clean
+#                    contract. A RECENT draft stays `skip`: an in-flight draft
+#                    is a legitimate, deliberate state.
+#   skip             draft (recent), or a DO-NOT-MERGE marker in the title
 #   needs-rebase     mergeStateStatus BEHIND or DIRTY
 #   needs-attention  failing checks; also the inclusion-biased catch-all for
 #                    checks-pending / UNKNOWN / BLOCKED / any other not-ready,
@@ -44,10 +55,10 @@
 #   --format report   (default) human-readable per-PR classification + summary
 #   --format entry    a ready-to-append pending-decisions `### … Status: open`
 #                     block (the ask-at-checkin entry tidy appends verbatim)
-#                     IFF at least one ready/needs-rebase/needs-attention
-#                     candidate surfaced; NOTHING when clean (skip-only or
-#                     zero open PRs) — same nothing-when-clean contract as
-#                     env-hygiene-report.sh --format entry
+#                     IFF at least one ready/needs-rebase/needs-attention/
+#                     stale-draft candidate surfaced; NOTHING when clean
+#                     (skip-only or zero open PRs) — same nothing-when-clean
+#                     contract as env-hygiene-report.sh --format entry
 #   --limit N         per-repo open-PR page size passed to gh pr list
 #   --repos "…"       space-separated owner/repo override — bypasses the board
 #                     registry (test seam + boardless-consumer escape hatch)
@@ -56,6 +67,9 @@
 #   READY_PR_SWEEP_BOARD_LIB   path to board.sh (default: <this dir>/board/lib/board.sh)
 #   READY_PR_SWEEP_REPOS       same as --repos
 #   READY_PR_SWEEP_LIMIT       same as --limit
+#   READY_PR_SWEEP_STALE_DRAFT_DAYS
+#                              idle-days threshold above which an open DRAFT PR
+#                              is classified stale-draft rather than skip
 #
 # Kept POSIX-bash-3.2 compatible, mirroring its sibling probe scripts.
 
@@ -68,6 +82,7 @@ BOARD_LIB="${READY_PR_SWEEP_BOARD_LIB:-$SCRIPT_DIR/board/lib/board.sh}"
 FORMAT="report"
 LIMIT="${READY_PR_SWEEP_LIMIT:-100}"
 REPOS="${READY_PR_SWEEP_REPOS:-}"
+STALE_DRAFT_DAYS="${READY_PR_SWEEP_STALE_DRAFT_DAYS:-7}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --format) FORMAT="${2:-}"; shift 2 ;;
@@ -82,6 +97,11 @@ while [ $# -gt 0 ]; do
 done
 case "$FORMAT" in report | entry) ;; *) echo "unknown --format: $FORMAT (report|entry)" >&2; exit 2 ;; esac
 case "$LIMIT" in '' | *[!0-9]*) echo "bad --limit: '$LIMIT' (positive integer)" >&2; exit 2 ;; esac
+case "$STALE_DRAFT_DAYS" in '' | *[!0-9]*) echo "bad READY_PR_SWEEP_STALE_DRAFT_DAYS: '$STALE_DRAFT_DAYS' (non-negative integer)" >&2; exit 2 ;; esac
+# Cutoff resolved ONCE, in shell, and handed to jq as data: `date +%s` is the
+# one portable epoch primitive across BSD/GNU (no `-d`/`-v` dialect split), and
+# a single cutoff keeps every repo in a sweep judged against the same instant.
+STALE_DRAFT_CUTOFF=$(( $(date +%s) - STALE_DRAFT_DAYS * 86400 ))
 
 # ── Preflight (fail-open: a missing tool/registry is "nothing to report") ────
 notice() { [ "$FORMAT" = "report" ] && echo "ready-pr sweep: $1"; }
@@ -132,8 +152,9 @@ for repo in $REPOS; do
     notice "ERROR listing PRs for $repo — continuing (fail-open)"
     continue
   fi
-  rows="$(printf '%s' "$raw" | jq -r --arg repo "$repo" '
-    def rank: {"ready": 0, "needs-rebase": 1, "needs-attention": 2, "skip": 3};
+  rows="$(printf '%s' "$raw" | jq -r --arg repo "$repo" \
+    --argjson cutoff "$STALE_DRAFT_CUTOFF" --argjson staledays "$STALE_DRAFT_DAYS" '
+    def rank: {"ready": 0, "needs-rebase": 1, "needs-attention": 2, "stale-draft": 3, "skip": 4};
     [ .[]
       | ( [ .statusCheckRollup[]?
             | select(
@@ -145,7 +166,11 @@ for repo in $REPOS; do
                 (((.status // "") != "") and ((.status // "") != "COMPLETED"))
                 or ((.state // "") | IN("PENDING","EXPECTED")) ) ]
           | length ) as $pending
-      | ( if .isDraft then ["skip", "draft"]
+      | ( ((.updatedAt // "") | (fromdateiso8601? // 9999999999)) ) as $upd
+      | ( if (.isDraft and ($upd < $cutoff))
+            then ["stale-draft",
+                  "draft, idle \($staledays)+ days — a draft can never enqueue; flip it ready or close it"]
+          elif .isDraft then ["skip", "draft"]
           elif (.title | test("do[ _-]?not[ _-]?merge"; "i")) then ["skip", "DO-NOT-MERGE marker in title"]
           elif .mergeStateStatus == "BEHIND" then ["needs-rebase", "BEHIND the base branch"]
           elif .mergeStateStatus == "DIRTY" then ["needs-rebase", "DIRTY (merge conflicts)"]
@@ -176,8 +201,9 @@ refs_class() { [ -n "$ROWS" ] || return 0; printf '%s\n' "$ROWS" | awk -F '\t' -
 N_READY="$(count_class ready)"
 N_REBASE="$(count_class needs-rebase)"
 N_ATTN="$(count_class needs-attention)"
+N_STALE_DRAFT="$(count_class stale-draft)"
 N_SKIP="$(count_class skip)"
-N_CANDIDATES=$((N_READY + N_REBASE + N_ATTN))
+N_CANDIDATES=$((N_READY + N_REBASE + N_ATTN + N_STALE_DRAFT))
 
 # ── Output ────────────────────────────────────────────────────────────────────
 if [ "$FORMAT" = "entry" ]; then
@@ -196,6 +222,10 @@ if [ "$FORMAT" = "entry" ]; then
     [ -n "$refs" ] && refs="$refs; "
     refs="${refs}needs-attention: $(refs_class needs-attention)"
   fi
+  if [ "$N_STALE_DRAFT" -gt 0 ]; then
+    [ -n "$refs" ] && refs="$refs; "
+    refs="${refs}stale-draft: $(refs_class stale-draft)"
+  fi
   printf '### %s · tidy ready-PR sweep · %s\n' "$ts" "$host"
   printf -- '- **Decision:** review complete-but-unmerged open PR(s) — %s\n' "$refs"
   printf -- '- **Default taken:** leave all (report-only; no PR merged, enqueued, rebased, closed, or commented)\n'
@@ -210,5 +240,5 @@ if [ -n "$ROWS" ]; then
 else
   echo "  (no open PRs)"
 fi
-echo "summary: ready=$N_READY needs-rebase=$N_REBASE needs-attention=$N_ATTN skip=$N_SKIP errors=$ERRORS${ERR_REPOS:+ (errored:$ERR_REPOS)}"
+echo "summary: ready=$N_READY needs-rebase=$N_REBASE needs-attention=$N_ATTN stale-draft=$N_STALE_DRAFT skip=$N_SKIP errors=$ERRORS${ERR_REPOS:+ (errored:$ERR_REPOS)}"
 exit 0

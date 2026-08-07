@@ -240,6 +240,67 @@ grep -q -- '--merge' <<<"$argv" || fail "queue did not use --merge (argv: $argv)
 grep -q -- '--delete-branch' <<<"$argv" && fail "queue must NOT pass --delete-branch (the merge queue rejects it; argv: $argv)"
 echo "PASS: queue → QUEUED via the canonical --auto --merge (no --delete-branch, no bare merge)"
 
+# --- queue: a DRAFT PR is NAMED before the enqueue (temperloop#1180) ---------
+# Disposition is FAIL LOUDLY, not an auto `gh pr ready` flip: nothing in this
+# repo opens a draft (pr.sh open passes no --draft on any path) and nothing runs
+# `gh pr ready`, so a draft at the merge gate is always a human decision. Assert
+# the named DRAFT outcome + exit 9, the actionable remedy in the message, and —
+# the load-bearing half — that `gh pr merge` is NEVER reached, so GitHub's raw
+# `Pull request is a draft (enablePullRequestAutoMerge)` string can't be the
+# operator-facing signal.
+rm -f "$TMP/queue_merge_called"
+_gate_gh() {
+  local -a a=("$@")
+  if [ "${a[0]}" = "pr" ] && [ "${a[1]}" = "merge" ]; then
+    touch "$TMP/queue_merge_called"; return 0
+  fi
+  echo "true"   # gh pr view --json isDraft --jq .isDraft
+}
+rc=0; out="$(cmd_queue Towheads/foundation 440 --strict)" || rc=$?
+[ "$rc" -eq 9 ] || fail "draft PR did not exit 9 (rc=$rc, out: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "DRAFT" ] || fail "queue draft outcome (got: $out)"
+[ "$(jq -r .pr <<<"$out")" = "440" ] || fail "queue draft pr number (got: $out)"
+[ -f "$TMP/queue_merge_called" ] && fail "gh pr merge was attempted on a draft PR (detection must precede the enqueue)"
+err="$(jq -r .error <<<"$out")"
+grep -q 'DRAFT' <<<"$err" || fail "draft message does not name the draft state (got: $err)"
+grep -q 'gh pr ready 440 -R Towheads/foundation' <<<"$err" || fail "draft message lacks the actionable remedy (got: $err)"
+grep -qi 'GraphQL' <<<"$err" && fail "draft message leaks GitHub's raw GraphQL error text (got: $err)"
+echo "PASS: queue → DRAFT (exit 9) detected BEFORE the enqueue, with a named state + a gh pr ready remedy"
+
+# --- queue: a draft that slips past the fail-open probe is still NAMED -------
+# The pre-flight probe is fail-open (an unreadable isDraft proceeds rather than
+# blocking), so the post-hoc classifier is what closes the hole: `gh pr merge`
+# rejecting with GitHub's raw draft string must still surface as DRAFT, never as
+# a raw-text ERROR.
+_gate_gh() {
+  local -a a=("$@")
+  if [ "${a[0]}" = "pr" ] && [ "${a[1]}" = "merge" ]; then
+    echo "GraphQL: Pull request is a draft (enablePullRequestAutoMerge)"; return 1
+  fi
+  return 1   # the isDraft probe itself fails — the fail-open path
+}
+rc=0; out="$(cmd_queue Towheads/foundation 440)" || rc=$?
+[ "$rc" -eq 9 ] || fail "post-hoc draft rejection did not exit 9 (rc=$rc, out: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "DRAFT" ] || fail "post-hoc draft outcome (got: $out)"
+grep -qi 'GraphQL' <<<"$(jq -r .error <<<"$out")" && fail "post-hoc DRAFT still echoes the raw GraphQL string"
+echo "PASS: queue → DRAFT (exit 9) also when the probe fails open and gh itself rejects the draft"
+
+# --- queue: a NON-draft enqueue failure stays a plain ERROR ------------------
+# The post-hoc classifier is anchored on the draft phrase alone; an unrelated
+# rejection that merely mentions enablePullRequestAutoMerge must NOT be
+# mis-named DRAFT (one wrong message traded for another).
+_gate_gh() {
+  local -a a=("$@")
+  if [ "${a[0]}" = "pr" ] && [ "${a[1]}" = "merge" ]; then
+    echo "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)"; return 1
+  fi
+  echo "false"
+}
+rc=0; out="$( (cmd_queue Towheads/foundation 42) 3>&1 2>/dev/null)" || rc=$?
+[ "$rc" -eq 1 ] || fail "non-draft enqueue failure did not exit 1 (rc=$rc, out: $out)"
+[ "$(jq -r .outcome <<<"$out")" = "ERROR" ] || fail "non-draft enqueue failure not ERROR (got: $out)"
+echo "PASS: queue → a non-draft enqueue rejection stays a plain ERROR (no DRAFT false positive)"
+
 # --- nudge: BEHIND → NUDGED (update-branch invoked) -------------------------
 rm -f "$TMP/nudge_called"
 _gate_gh() {
