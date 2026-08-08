@@ -79,6 +79,20 @@ reads that marker; a stranger greps for it before pulling.
   step because an LLM-executed prose lookup gets paraphrased away, and the
   failure mode of a paraphrased lookup is a silently absent or silently
   wrong record, not a caught error.
+- **`/promote`'s API-state story is now diff, record, and handoff — never
+  apply** (#1236). Branch protection, required checks, labels, and board
+  configuration are GitHub API state, not tree state, so they cannot ride a
+  pull request; `workflows/scripts/promote/api-state-diff.sh` shows a
+  read-only current-versus-proposed settings diff before the operator is
+  asked to run the adopt path (`temperloop init`) themselves, then — once
+  that separately-consented step has run — leaves a durable, team-visible
+  record as a comment or issue in the real repository, naming the source
+  testbed as a temperloop evaluation. Its report is structurally three parts
+  (migrated / re-applied / left-to-you), each required, with a uniform
+  "migration complete"-shaped claim refused in any of the three rather than
+  left to prose discipline — re-applying the state itself stays the adopt
+  path's job, never this script's, so ADR 0023's biconditional (docs/adr/0023)
+  holds.
 - **`/promote` carries work back out of a testbed and into your real
   repository, as your pipeline's actual commits** (#1233). Building the
   evaluation in a disposable duplicate is only half the story; the other half
