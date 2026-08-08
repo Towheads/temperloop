@@ -191,7 +191,12 @@
 // the same bytes on every run. So it is written for the operator as a plain
 // statement of what the run DOES; the run-IDENTIFYING half (repo, items, issues)
 // rides the one dynamic surface there is, the phase() title — see
-// levelPhaseTitle() near the entry point. Return shape, the never-merges rule and
+// levelPhaseTitle() near the entry point. That title is now emitted ONCE PER
+// STAGE (temperloop#1294), and the optional `phases` key is deliberately ABSENT
+// from this literal: meta.phases entries are matched against phase() titles
+// EXACTLY, and every title this workflow emits is dynamic, so a static entry
+// could only ever render an empty duplicate group. See the levelPhaseTitle block
+// for the full reasoning. Return shape, the never-merges rule and
 // the never-writes-the-plan-note rule are contract detail and live in the I/O
 // CONTRACT block above; do not re-state them here.
 export const meta = {
@@ -901,7 +906,12 @@ async function machineryAgent(promptFor, opts) {
 // and returns its single closed-outcome JSON line, schema-validated. No model
 // override beyond haiku (cheapest tier — the executor does no reasoning); NO
 // isolation:'worktree' (the machinery scripts manage their own worktrees, §5).
-async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } = {}) {
+// `phase` (temperloop#1294) is the caller's STAGE group name — the string
+// enterStage()/stagePhase() returned. It is passed EXPLICITLY rather than read
+// off the global phase() cursor, which races under parallel(). The `?? 'machinery'`
+// fallback keeps a caller that omits it on the pre-#1294 flat group rather than
+// on whatever stage happens to be current.
+async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome, phase: phaseName } = {}) {
   // temperloop#1071: the command runs under the workflow's own wall-clock
   // ceiling. `slowSecs` is 0 on this path — a solo executor returns exactly ONE
   // object by schema, so an advisory second line has nowhere to go. The step
@@ -968,7 +978,7 @@ async function runMachinery(cmd, { label, slug, bashTimeoutMs, timeoutOutcome } 
     promptFor,
     {
       label: label ?? `machinery:${cmd.split(' ').slice(0, 2).join(' ')}`,
-      phase: 'machinery',
+      phase: phaseName ?? 'machinery',
       // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
       // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` —
       // `??` only falls through on null/undefined, and a caller (or an
@@ -1066,7 +1076,8 @@ function batchCommand(steps) {
 // short-circuited (expected). `denied:true` is the batched twin of
 // machineryDenied() — agent() returned null (auto-mode classifier DENIED the
 // command / user skip / terminal API error) or gave back no usable array.
-async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
+// `phase` (temperloop#1294): the caller's STAGE group name — see runMachinery().
+async function runMachineryBatch(steps, { label, slug, bashTimeoutMs, phase: phaseName } = {}) {
   if (!steps || steps.length === 0) {
     return { denied: false, results: [], steps: [] };
   }
@@ -1103,7 +1114,7 @@ async function runMachineryBatch(steps, { label, slug, bashTimeoutMs } = {}) {
     promptFor,
     {
       label: label ?? `machinery-batch:${kinds.join('+')}`,
-      phase: 'machinery',
+      phase: phaseName ?? 'machinery',
       // temperloop#982: orchestrator-supplied workflow input, NOT a config-file
       // read (this runtime has no shell — DESIGN NOTE 1). `||`, NOT `??` — see
       // the twin runMachinery() comment above for why: `??` lets an
@@ -1409,11 +1420,13 @@ const RECOVER_STAGES = ['RECOVER_COMMITTED', 'RECOVER_PUSHED', 'RECOVER_PR_OPEN'
 // both are the same thing to the caller ("no verdict"), and neither is evidence
 // about the work. Normalize both into { verdict, error } so driveItem decides
 // what they MEAN only after the side-effect probe has run.
-async function callWorker(item, wt, extraSection, label) {
+// `phaseName` (temperloop#1294) — the STAGE group this worker belongs to,
+// passed explicitly (the global phase() cursor races under parallel()).
+async function callWorker(item, wt, extraSection, label, phaseName) {
   try {
     const v = await agent(workerPrompt(item, wt, extraSection), {
       label,
-      phase: 'worker',
+      phase: phaseName ?? 'worker',
       // temperloop#982: item.model || undefined, NOT bare item.model — an
       // empty-string item.model (e.g. an orchestrator that resolved
       // SWEEP_WORKER_MODEL/FIX_WORKER_MODEL to "" and passed it through
@@ -1442,7 +1455,9 @@ async function probeSideEffects(item, wt) {
   const prBin = machineryBin(input.repoRoot, 'pr.sh');
   const out = await runMachinery(
     `${prBin} recover-probe ${sq(wt)} ${sq(item.branch)}`,
-    { label: `recover-probe:${item.slug}`, slug: item.slug },
+    // STAGE_RECOVER (temperloop#1294): an off-path diagnostic that can fire from
+    // any stage, so it gets its own group and never moves the global cursor.
+    { label: `recover-probe:${item.slug}`, slug: item.slug, phase: stagePhase(STAGE_RECOVER) },
   );
   if (machineryDenied(out) || !RECOVER_STAGES.includes(out.outcome)) {
     // Not landed — but temperloop#993 splits this bucket. RECOVER_DIRTY means the
@@ -1615,6 +1630,7 @@ async function recoverLostReturn(item, wt, openCmd) {
       label: `pr-batch-resume:${item.slug}`,
       slug: item.slug,
       bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+      phase: stagePhase(STAGE_RECOVER), // off-path recovery — own group, cursor untouched
     });
     if (rb.denied) {
       return {
@@ -1860,6 +1876,7 @@ async function driveItem(item) {
     label: `prelude:${item.slug}`,
     slug: item.slug,
     bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+    phase: enterStage(STAGE_CLAIM), // 3a claim + 3b-0 deps-merged + 3b worktree
   });
   if (prelude.denied) {
     return escalate(item.slug, 'machinery-denied', {
@@ -1902,7 +1919,7 @@ async function driveItem(item) {
       ),
       {
         label: `worker:${item.slug}`,
-        phase: 'worker',
+        phase: enterStage(STAGE_BUILD),
         // temperloop#982: item.model || undefined — see callWorker()'s
         // identical comment above; an empty-string item.model must collapse
         // to the inherit-session sentinel, not ride through as a literal "".
@@ -1956,7 +1973,7 @@ async function driveItem(item) {
   // instead of re-forking forever (MAJOR fix). On a fresh drive verdictSection
   // is undefined → workerPrompt emits no extra section, unchanged behavior.
   let recovery = null; // temperloop#939 — set only on a lost-return recovery
-  let w = await callWorker(item, wt, verdictSection, `worker:${item.slug}`);
+  let w = await callWorker(item, wt, verdictSection, `worker:${item.slug}`, enterStage(STAGE_BUILD));
   let verdict = w.verdict;
   if (verdict == null) {
     // No verdict — either agent() returned null (user skip, transient 5xx, or the
@@ -1988,7 +2005,7 @@ async function driveItem(item) {
       } else {
         log(`[${item.slug}] worker returned no verdict, no side-effects — retrying once (foreground cure #1219)`);
       }
-      w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles), `worker:${item.slug}#retry`);
+      w = await callWorker(item, wt, withCure(verdictSection, probe.dirtyFiles), `worker:${item.slug}#retry`, enterStage(STAGE_BUILD));
       verdict = w.verdict;
       if (verdict == null) {
         // The retry may itself have built and lost its return — probe again.
@@ -2116,6 +2133,7 @@ async function driveItem(item) {
     gateOut = await runMachinery(gateCmd(gateStartAt), {
       label: `gate:${item.slug}`,
       slug: item.slug,
+      phase: enterStage(STAGE_GATE),
       // temperloop#115/#1021: without an explicit timeout the executor's Bash
       // tool kills the suite at its 120s default. GATE_BASH_TIMEOUT_MS is now
       // DERIVED from the slice budget (see the tunables block) and is an outer
@@ -2282,6 +2300,7 @@ async function driveItem(item) {
     label: `pr-batch:${item.slug}`,
     slug: item.slug,
     bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+    phase: enterStage(STAGE_PR), // 3f rebase + scan + push + pr-open
   });
   if (prb.denied) {
     return escalate(item.slug, 'machinery-denied', {
@@ -2495,6 +2514,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         label: `ci-batch:${item.slug}#${batchIdx++}`,
         slug: item.slug,
         bashTimeoutMs: CI_BATCH_BASH_TIMEOUT_MS,
+        phase: enterStage(STAGE_CI), // 3g merge-state probe + CI poll slices
       });
       if (batch.denied) {
         return {
@@ -2598,7 +2618,10 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
         ),
         {
           label: `worker-cifix:${item.slug}`,
-          phase: 'worker',
+          // A WORKER agent, but it belongs to the CI stage (temperloop#1294) —
+          // grouping it there is what makes the CI box read as "CI is being fixed"
+          // rather than dropping it back into a build box the level already left.
+          phase: enterStage(STAGE_CI),
           // Escalate-on-retry: a CI-failure re-spawn runs top tier (omit model).
           schema: WORKER_VERDICT_SCHEMA,
         },
@@ -2627,7 +2650,7 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
       const prBin = machineryBin(input.repoRoot, 'pr.sh');
       const fpush = await runMachinery(
         `${prBin} push ${sq(wt)} ${sq(item.branch)}`,
-        { label: `push-retry:${item.slug}`, slug: item.slug },
+        { label: `push-retry:${item.slug}`, slug: item.slug, phase: enterStage(STAGE_CI) },
       );
       if (machineryDenied(fpush)) {
         return { escalation: 'machinery-denied', payload: { step: 'push-retry', out: fpush, sha } };
@@ -2667,7 +2690,8 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 }
 
 // =============================================================================
-// levelPhaseTitle — the run-identifying progress-row heading (temperloop#903).
+// levelPhaseTitle — the run-identifying progress-row heading (temperloop#903),
+// now emitted ONCE PER STAGE rather than once per level (temperloop#1294).
 // =============================================================================
 // The Workflow progress UI renders one row per workflow (labelled from the PURE
 // LITERAL `meta.description`, which by runtime constraint is byte-identical on
@@ -2677,9 +2701,41 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 // issues. Two concurrent spine runs (routine: one /fix session drives several
 // back to back) rendered indistinguishable rows.
 //
-// The heading now names, from context already in scope at the call site:
-//   <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
-// e.g.  build level — Towheads/foundation · 1 item · spine-progress-row-903 (#903)
+// The heading names, from context already in scope at the call site:
+//   build level · <stage> — <ownerRepo> · <N> item(s) · <slug> (#<ghIssue>), …
+// e.g.  build level · gate — Towheads/foundation · 1 item · row-per-stage (#1294)
+//
+// temperloop#1294 added the `· <stage>` segment and made the level emit ONE
+// phase() PER STAGE (claim → build → gate → PR → CI) instead of a single static
+// heading for the whole level. Two independent effects, both wanted:
+//   • the ACTIVE phase now ADVANCES as the level progresses, so a collapsed view
+//     that renders it moves instead of sitting on one heading all run;
+//   • the expanded progress tree groups agents by stage instead of dumping every
+//     executor into one 'machinery' box.
+// The #903 run context rides EVERY stage heading — dropping it from the later
+// stages would re-open exactly the complaint #903 closed.
+//
+// TWO SURFACES, ONE STRING. `phase(t)` moves the GLOBAL cursor (what a collapsed
+// view shows); `agent(…, {phase: t})` assigns one agent to the group named `t`.
+// The Workflow docs are explicit that the global cursor RACES inside
+// parallel()/pipeline() stages — this level fans its items out with parallel(),
+// so item A can be at CI while item B is still at build. Every agent spawn below
+// therefore passes opts.phase EXPLICITLY (same string → same group box) and never
+// relies on whatever the global cursor happens to be. enterStage() returns that
+// string and, as a side effect, advances the global cursor MONOTONICALLY (a stage
+// already passed never re-fires), so the collapsed row tracks the level's
+// furthest-reached stage and can never appear to run backwards when a straggler
+// item is still on an earlier one.
+//
+// meta.phases: DELIBERATELY ABSENT. `meta` is a pure literal by runtime
+// constraint, and meta.phases entries are matched against phase() titles
+// EXACTLY. Every title here is dynamic by construction (#903 requires the repo,
+// the item count and the item/issue list in it), so no static entry could ever
+// match one — declaring the five stages statically would render five permanently
+// EMPTY groups alongside the five real ones. Per the runtime's own contract a
+// phase() call with no matching meta entry simply gets its own progress group,
+// which is the correct outcome here; this is a noted, accepted consequence of
+// #903's dynamic-title requirement, not an oversight to work around.
 //
 // BOUNDED BY CONSTRUCTION: a level can hold many items, so at most
 // PHASE_TITLE_MAX_ITEMS slugs are named and the rest collapse to `+K more` — a
@@ -2689,6 +2745,27 @@ async function ciPollLoop(item, ownerRepo, pr, initialSha, wt) {
 // that throws and takes a level down.
 const PHASE_TITLE_MAX_ITEMS = 3;
 
+// The level's stages, in the order an item passes through them. STAGE_RECOVER is
+// deliberately NOT in STAGE_ORDER: the recovery probes (pr.sh recover-probe, the
+// lost-return resume batch) are off-path diagnostics that can fire from any
+// stage, so they get their own progress group but must never move the global
+// cursor — otherwise a single item's recovery would drag the whole level's
+// collapsed row backwards.
+const STAGE_CLAIM = 'claim';
+const STAGE_BUILD = 'build';
+const STAGE_GATE = 'gate';
+const STAGE_PR = 'PR';
+const STAGE_CI = 'CI';
+const STAGE_RECOVER = 'recover';
+const STAGE_ORDER = [STAGE_CLAIM, STAGE_BUILD, STAGE_GATE, STAGE_PR, STAGE_CI];
+
+// The items whose slugs/issues every stage heading names — the ACTIVE subset
+// (post-onlySlugs filter), assigned by buildLevel() before any fan-out. Empty
+// until then, which is safe: nothing spawns an agent before it is set.
+let phaseItems = [];
+// Index into STAGE_ORDER of the furthest stage any item has reached this run.
+let stageReached = -1;
+
 // itemTag — `<slug> (#<issue>)`, or the bare slug when the item has no issue
 // (kind:spike items and board-OFF runs legitimately carry no ghIssue).
 function itemTag(item) {
@@ -2697,7 +2774,9 @@ function itemTag(item) {
   return issue ? `${slug} (#${issue})` : slug;
 }
 
-function levelPhaseTitle(list) {
+// levelPhaseTitle(list, stage) — the heading itself. `stage` is optional; absent
+// it reproduces the pre-#1294 level-wide form byte-for-byte.
+function levelPhaseTitle(list, stage) {
   const items = Array.isArray(list) ? list : [];
   const parts = [];
   if (typeof input.ownerRepo === 'string' && input.ownerRepo.length > 0) {
@@ -2709,7 +2788,29 @@ function levelPhaseTitle(list) {
     const rest = items.length - named.length;
     parts.push(named.join(', ') + (rest > 0 ? ` +${rest} more` : ''));
   }
-  return `build level — ${parts.join(' · ')}`;
+  const head = stage ? `build level · ${stage}` : 'build level';
+  return `${head} — ${parts.join(' · ')}`;
+}
+
+// stagePhase(stage) — the group name for `stage`, WITHOUT touching the global
+// cursor. Used by the off-path recovery spawns.
+function stagePhase(stage) {
+  return levelPhaseTitle(phaseItems, stage);
+}
+
+// enterStage(stage) — returns the group name for `stage` (hand it straight to
+// opts.phase) and advances the global phase cursor to it the first time the
+// level reaches that stage. Monotonic: a later item re-entering an earlier stage
+// is a no-op on the cursor, and STAGE_RECOVER (not in STAGE_ORDER) never moves
+// it at all. Cosmetic by construction — it must never throw.
+function enterStage(stage) {
+  const title = stagePhase(stage);
+  const i = STAGE_ORDER.indexOf(stage);
+  if (i > stageReached) {
+    stageReached = i;
+    phase(title);
+  }
+  return title;
 }
 
 // =============================================================================
@@ -2740,7 +2841,14 @@ async function buildLevel() {
   // being re-driven, not the level's full membership (whose siblings are already
   // parked and untouched). Nothing above this point awaits, so the row is never
   // observed unlabelled.
-  phase(levelPhaseTitle(activeItems));
+  //
+  // temperloop#1294: `phaseItems` is the ONE assignment that binds every later
+  // stage heading to this run's active items — it must land before any agent
+  // spawns. enterStage() then opens the first stage (claim) and each later stage
+  // advances the cursor from its own spawn site inside driveItem().
+  phaseItems = activeItems;
+  stageReached = -1;
+  enterStage(STAGE_CLAIM);
 
   // Drive every active item through 3a–3h. The items in one level are
   // independent by construction (no merge edge between them), so we fan them

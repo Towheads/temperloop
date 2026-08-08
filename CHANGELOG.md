@@ -16,6 +16,27 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`build-level.mjs` now emits a `phase()` per STAGE of a level instead of one
+  static heading for the whole run** (#1294). The level's progress heading
+  advances `claim → build → gate → PR → CI` as items move, so a collapsed
+  `/workflows` view that renders the ACTIVE phase tracks the run rather than
+  freezing on one line, and the expanded tree groups agents by stage instead of
+  dumping every executor into one `machinery` box. Every stage title still
+  carries temperloop#903's run context — `build level · gate — owner/repo · 3
+  items · slug (#N), … +K more` — bounded by the existing
+  `PHASE_TITLE_MAX_ITEMS`; `levelPhaseTitle()` was extended with an optional
+  `stage` argument rather than forked into a second title format. Each agent is
+  assigned to its stage's group through the documented `opts.phase` argument
+  (the global `phase()` cursor races inside `parallel()`), and the cursor itself
+  advances monotonically, so an off-path recovery probe gets its own group
+  without dragging the collapsed row backwards. `meta` stays a pure literal and
+  deliberately declares no `phases:` key — entries there are matched against
+  phase titles exactly, and every title here is dynamic by #903's requirement.
+  No change to claim/worktree/gate/PR/CI mechanics; this is a progress-surface
+  change only. This is the kernel-side half of #1294 — the collapsed row still
+  renders from `meta.description` until the Claude Code Workflow progress UI
+  draws from the active phase, which this repo does not control.
+
 - **The generated `/build` worker prompt now carries a structural
   no-context-inheriting-research-fork guardrail** (#1072). Both execution
   paths — `workerPrompt()` in `claude/workflows/build-level.mjs` (a new

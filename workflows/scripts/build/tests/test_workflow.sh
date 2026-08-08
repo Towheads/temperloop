@@ -143,6 +143,21 @@ globalThis.AGENT_DEF = AGENT_DEF;
 
 const callLog = [];
 
+// --- temperloop#1294: agent-KIND classifiers --------------------------------
+// opts.phase is no longer the flat 'machinery'/'worker' constant — it is the
+// per-STAGE progress heading (`build level · <stage> — <repo> · N items · …`),
+// dynamic by construction because it carries #903's run context. So the mock can
+// no longer route (and cases can no longer assert) on the phase STRING.
+//
+// Route on the LABEL instead: every spawn site already encodes the agent kind
+// there — `worker:` / `worker-cifix:` is the implementation worker, everything
+// else is a machinery executor. Deliberately NOT derived from the phase string:
+// a label-based classifier keeps working if the heading format is retuned again,
+// and an agent spawned with NO label matches neither, which is exactly what the
+// "no third agent kind" assertion wants to catch.
+globalThis.isWorkerCall = (o) => /^(worker|worker-cifix):/.test(String((o && o.label) || ''));
+globalThis.isMachineryCall = (o) => !!(o && o.label) && !globalThis.isWorkerCall(o);
+
 // machineryMap: slug → [outcome, ...] — consumed in order per slug
 const machineryMap = new Map();
 // workerMap: slug → [verdict, ...] — consumed in order per slug
@@ -215,7 +230,7 @@ globalThis.mergeCheckMap = mergeCheckMap;
 globalThis.agent = async function agent(prompt, opts = {}) {
   callLog.push({ prompt: String(prompt).slice(0, 120), promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, model: opts.model, agentType: opts.agentType } });
   const slug = slugFromLabel(opts.label);
-  if (opts.phase === 'machinery') {
+  if (isMachineryCall(opts)) {
     const kinds = batchStepKinds(prompt);
     if (!kinds) {
       // Solo executor (gate / recover-probe / push-retry) — routed by slug.
@@ -255,7 +270,7 @@ globalThis.agent = async function agent(prompt, opts = {}) {
     }
     return { results };
   }
-  if (opts.phase === 'worker') {
+  if (isWorkerCall(opts)) {
     // Worker call — implementation agent, routed by slug.
     // temperloop#939: a queued { __throw: '<msg>' } entry makes agent() THROW
     // instead of returning — faithfully simulating the real runtime when a
@@ -383,7 +398,7 @@ if (!p103 || p103.pr !== 103 || p103.pushed_sha !== 'sha3')
 
 // No plan-note write from inside the workflow (workflow only RETURNS; orchestrator writes)
 const planWrites = callLog.filter(c =>
-  c.opts.phase !== 'machinery' && c.opts.phase !== 'worker' &&
+  !isMachineryCall(c.opts) && !isWorkerCall(c.opts) &&
   (String(c.prompt).toLowerCase().includes('write the plan') || String(c.prompt).toLowerCase().includes('update the plan note'))
 );
 if (planWrites.length > 0)
@@ -493,7 +508,7 @@ let ciFixWorkerModel = undefined;
 const origAgent = globalThis.agent;
 globalThis.agent = async function(prompt, opts={}) {
   // Track model on the CI-fix worker call
-  if (opts.phase === 'worker' && String(prompt).includes('CI failed')) {
+  if (isWorkerCall(opts) && String(prompt).includes('CI failed')) {
     ciFixWorkerModel = opts.model;
   }
   return origAgent(prompt, opts);
@@ -1460,7 +1475,7 @@ let sawCreateOrClaim = false;
 const origAgent = globalThis.agent;
 globalThis.agent = async function(prompt, opts={}) {
   const label = opts.label || '';
-  if (opts.phase === 'worker' && label.startsWith('worker:item-cont')) {
+  if (isWorkerCall(opts) && label.startsWith('worker:item-cont')) {
     workerPromptSeen = String(prompt);
   }
   // temperloop#942: claim + worktree create ride the batched prelude executor.
@@ -1967,7 +1982,7 @@ happyWorker('deobf');
 let machineryPrompts = [];
 const origAgent = globalThis.agent;
 globalThis.agent = async function(prompt, opts={}) {
-  if (opts.phase === 'machinery') machineryPrompts.push(String(prompt));
+  if (isMachineryCall(opts)) machineryPrompts.push(String(prompt));
   return origAgent(prompt, opts);
 };
 globalThis.args = { ...baseArgs, machineryBinDir: '/resolved/machinery/bin', items: [
@@ -2434,7 +2449,7 @@ else if (parked[0].recovered_from !== 'RECOVER_PR_OPEN') reason = 'recovered_fro
 else if ((parked[0].acceptance_results || []).some(r => r.passed === true)) reason = 'recovered acceptance results must NEVER read as passing';
 else if (!(parked[0].acceptance_results || []).every(r => String(r.evidence||'').includes('UNVERIFIED'))) reason = 'every recovered acceptance result must be marked UNVERIFIED';
 // No re-spawn: exactly ONE worker call, and no #retry label.
-else if (callLog.filter(c => c.opts.phase === 'worker').length !== 1) reason = 'worker was re-spawned after a recovered return (must not be)';
+else if (callLog.filter(c => isWorkerCall(c.opts)).length !== 1) reason = 'worker was re-spawned after a recovered return (must not be)';
 else if (callLog.some(c => String(c.opts.label||'').includes('#retry'))) reason = 'retry worker spawned despite observable side-effects';
 // No second PR: the open call went out and pr.sh answered EXISTS (adopted).
 // No second PR: the pr-open step ran exactly once and pr.sh answered EXISTS.
@@ -2618,8 +2633,8 @@ let reason = null;
 if ((result.parked ?? []).length !== 3) reason = 'expected 3 parked, got ' + JSON.stringify(result);
 else if ((result.escalations ?? []).length !== 0) reason = 'expected 0 escalations, got ' + JSON.stringify(result.escalations);
 
-const machineryCalls = callLog.filter(c => c.opts.phase === 'machinery');
-const workerCalls = callLog.filter(c => c.opts.phase === 'worker');
+const machineryCalls = callLog.filter(c => isMachineryCall(c.opts));
+const workerCalls = callLog.filter(c => isWorkerCall(c.opts));
 
 // The number of agent spawns the OLD one-agent-per-command bridge would have
 // paid for exactly this run: one per batched step actually executed, plus one
@@ -2911,7 +2926,7 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
 const gateCall = callLog.find(c => c.opts.label === 'gate:mtier');
 const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtier');
-const workerCall = callLog.find(c => c.opts.phase === 'worker' && c.opts.label === 'worker:mtier');
+const workerCall = callLog.find(c => isWorkerCall(c.opts) && c.opts.label === 'worker:mtier');
 if (!gateCall) { console.log(JSON.stringify({ ok: false, reason: 'no gate:mtier call recorded' })); process.exit(0); }
 if (!preludeCall) { console.log(JSON.stringify({ ok: false, reason: 'no prelude:mtier call recorded' })); process.exit(0); }
 if (!workerCall) { console.log(JSON.stringify({ ok: false, reason: 'no worker:mtier call recorded' })); process.exit(0); }
@@ -2937,7 +2952,7 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
 const gateCall = callLog.find(c => c.opts.label === 'gate:mtierdef');
 const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtierdef');
-const workerCall = callLog.find(c => c.opts.phase === 'worker' && c.opts.label === 'worker:mtierdef');
+const workerCall = callLog.find(c => isWorkerCall(c.opts) && c.opts.label === 'worker:mtierdef');
 if (!gateCall || gateCall.opts.model !== 'haiku')
   { console.log(JSON.stringify({ ok: false, reason: 'gate: opts.model=' + (gateCall && gateCall.opts.model) + ', expected unchanged haiku default' })); process.exit(0); }
 if (!preludeCall || preludeCall.opts.model !== 'haiku')
@@ -2960,7 +2975,7 @@ if ((result.parked ?? []).length !== 1)
   { console.log(JSON.stringify({ ok: false, reason: 'expected 1 parked, got ' + JSON.stringify(result) })); process.exit(0); }
 const gateCall = callLog.find(c => c.opts.label === 'gate:mtierempty');
 const preludeCall = callLog.find(c => c.opts.label === 'prelude:mtierempty');
-const workerCall = callLog.find(c => c.opts.phase === 'worker' && c.opts.label === 'worker:mtierempty');
+const workerCall = callLog.find(c => isWorkerCall(c.opts) && c.opts.label === 'worker:mtierempty');
 console.log('EMPTY-STRING PROBE  gate.model=' + JSON.stringify(gateCall && gateCall.opts.model) + '  prelude.model=' + JSON.stringify(preludeCall && preludeCall.opts.model) + '  worker.model=' + JSON.stringify(workerCall && workerCall.opts.model));
 if (!gateCall || gateCall.opts.model !== 'haiku')
   { console.log(JSON.stringify({ ok: false, reason: 'gate: opts.model=' + JSON.stringify(gateCall && gateCall.opts.model) + ', expected haiku (empty string must collapse to the default, not ride through as \"\")' })); process.exit(0); }
@@ -2998,7 +3013,7 @@ globalThis.args = { ...baseArgs, items: [
 ]};
 const mod = await loadLevel();
 const result = await mod.default();
-const mach = callLog.filter(c => c.opts.phase === 'machinery');
+const mach = callLog.filter(c => isMachineryCall(c.opts));
 const gate = mach.find(c => c.opts.label === 'gate:lean1');
 const ci = mach.find(c => (c.opts.label||'').startsWith('ci-batch:lean1'));
 let reason = null;
@@ -3042,7 +3057,7 @@ globalThis.args = { ...baseArgs, items: [
 ]};
 const mod = await loadLevel();
 const result = await mod.default();
-const served = callLog.filter(c => c.opts.phase === 'machinery' && !c.opts.rejected);
+const served = callLog.filter(c => isMachineryCall(c.opts) && !c.opts.rejected);
 const gate = served.find(c => c.opts.label === 'gate:fb1');
 const ci = served.find(c => (c.opts.label||'').startsWith('ci-batch:fb1'));
 let reason = null;
@@ -3067,7 +3082,7 @@ happyWorker('nar1');
 const origAgent = globalThis.agent;
 let attempts = 0;
 globalThis.agent = async function(prompt, opts = {}) {
-  if (opts.phase === 'machinery') {
+  if (isMachineryCall(opts)) {
     attempts++;
     callLog.push({ prompt: '', promptFull: String(prompt), opts: { label: opts.label, phase: opts.phase, agentType: opts.agentType } });
     throw new Error('agent({schema}): StructuredOutput retry cap (3) exceeded');
@@ -3094,7 +3109,7 @@ globalThis.args = { ...baseArgs, machineryAgentType: 'general-purpose', items: [
 ]};
 const mod = await loadLevel();
 const result = await mod.default();
-const mach = callLog.filter(c => c.opts.phase === 'machinery');
+const mach = callLog.filter(c => isMachineryCall(c.opts));
 const gate = mach.find(c => c.opts.label === 'gate:pin1');
 let reason = null;
 if ((result.parked ?? []).length !== 1) reason = 'expected 1 parked, got ' + JSON.stringify(result);
@@ -3268,7 +3283,7 @@ const logged = [];
 globalThis.log = (m) => logged.push(String(m));
 globalThis.agent = async (prompt, opts = {}) => {
   const label = opts.label || '';
-  if (opts.phase === 'worker') return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
+  if (isWorkerCall(opts)) return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
   if (label.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/sl' }] };
   if (label.startsWith('gate:')) return { outcome: 'GATE_PASS' };
   if (label.startsWith('pr-batch:')) return { results: [
@@ -3301,7 +3316,7 @@ $PREAMBLE
 const seen = [];
 globalThis.agent = async (prompt, opts = {}) => {
   seen.push({ label: opts.label, prompt: String(prompt) });
-  if (opts.phase === 'worker') return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
+  if (isWorkerCall(opts)) return { status: 'done', summary: 's', acceptance_results: [], commits: [] };
   const l = opts.label || '';
   if (l.startsWith('prelude:')) return { results: [{ outcome: 'CREATED', path: '/tmp/repo.wt/c' }] };
   if (l.startsWith('gate:')) return { outcome: 'GATE_PASS' };
@@ -3649,6 +3664,152 @@ grep -q 'function isLostReturn(' "$MJS" \
 [ "$(grep -c 'await probeSideEffects(item, wt)' "$MJS")" -ge 3 ] \
   || fail "#1067: recoverLostReturn must reuse the EXISTING probeSideEffects, not invent a second probe"
 echo "PASS: #1067 lost-return guard — recoverLostReturn/isLostReturn present, reusing the existing probe, greppable by name"
+
+# ===========================================================================
+# temperloop#1294 — one phase() PER STAGE, each still carrying #903's context
+# ===========================================================================
+# The /workflows collapsed row identified nothing about a running level: it sat
+# on one static heading for the whole run. The kernel-side mitigation is a
+# phase() per stage (claim → build → gate → PR → CI) whose title still names the
+# repo, the item count and each item's <slug> (#<issue>) — #903's contract — so a
+# collapsed view that renders the ACTIVE phase advances instead of freezing, and
+# the expanded tree groups agents by stage instead of by 'machinery'/'worker'.
+
+run_node_case "K1294 stages: a level emits one phase() per stage, in order, and EVERY stage title still carries #903's repo/count/item context" "
+$PREAMBLE
+const phases = [];
+globalThis.phase = (t) => phases.push(String(t));
+happyMachinery('alpha', 201, 'sha-a');
+happyMachinery('beta', 202, 'sha-b');
+happyMachinery('gamma', 203, 'sha-c');
+happyWorker('alpha'); happyWorker('beta'); happyWorker('gamma');
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'alpha', branch: 'b/alpha', title: 'A', kind: 'impl', ghIssue: 11, acceptance: ['c'] },
+  { slug: 'beta',  branch: 'b/beta',  title: 'B', kind: 'impl', ghIssue: 12, acceptance: ['c'] },
+  { slug: 'gamma', branch: 'b/gamma', title: 'C', kind: 'impl', ghIssue: 13, acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const CTX = 'owner/repo · 3 items · alpha (#11), beta (#12), gamma (#13)';
+const EXPECTED = ['claim','build','gate','PR','CI'].map(s => 'build level · ' + s + ' — ' + CTX);
+let reason = null;
+if ((result.parked ?? []).length !== 3) reason = 'expected 3 parked, got ' + JSON.stringify(result);
+// One phase() per stage, in pipeline order, no repeats and no regressions.
+else if (JSON.stringify(phases) !== JSON.stringify(EXPECTED))
+  reason = 'phase() sequence must be exactly the five stages in order, each carrying the #903 context.\n  got:      ' + JSON.stringify(phases) + '\n  expected: ' + JSON.stringify(EXPECTED);
+// #903 non-regression, restated positively: EVERY stage title names repo, count and items.
+else if (!phases.every(p => p.includes('owner/repo') && p.includes('3 items') && p.includes('alpha (#11)')))
+  reason = 'a stage phase dropped the #903 run context: ' + JSON.stringify(phases);
+// Every agent is assigned to its OWN stage's group via opts.phase — never left
+// on the global cursor (which races under parallel()) and never on the old flat
+// 'machinery'/'worker' constant.
+else {
+  const STAGE_OF_LABEL = [
+    [/^prelude:/,      'claim'],
+    [/^worker:/,       'build'],
+    [/^gate:/,         'gate'],
+    [/^pr-batch:/,     'PR'],
+    [/^ci-batch:/,     'CI'],
+    [/^worker-cifix:/, 'CI'],
+  ];
+  for (const c of callLog) {
+    const label = String(c.opts.label || '');
+    const hit = STAGE_OF_LABEL.find(([re]) => re.test(label));
+    if (!hit) { reason = 'unclassified agent label (a new spawn site needs a stage): ' + label; break; }
+    const want = 'build level · ' + hit[1] + ' — ' + CTX;
+    if (c.opts.phase !== want) { reason = label + ' assigned to the wrong progress group: ' + JSON.stringify(c.opts.phase) + ', expected ' + JSON.stringify(want); break; }
+  }
+}
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1294 bounding: a level wider than PHASE_TITLE_MAX_ITEMS collapses the tail to '+K more' on EVERY stage title, not just the first" "
+$PREAMBLE
+const phases = [];
+globalThis.phase = (t) => phases.push(String(t));
+const slugs = ['i1','i2','i3','i4','i5'];
+slugs.forEach((s, n) => { happyMachinery(s, 300 + n, 'sha-' + s); happyWorker(s); });
+globalThis.args = { ...baseArgs, items: slugs.map((s, n) => (
+  { slug: s, branch: 'b/' + s, title: s, kind: 'impl', ghIssue: 400 + n, acceptance: ['c'] }
+))};
+const mod = await loadLevel();
+const result = await mod.default();
+let reason = null;
+if ((result.parked ?? []).length !== 5) reason = 'expected 5 parked, got ' + JSON.stringify(result);
+else if (phases.length !== 5) reason = 'expected 5 stage phases, got ' + JSON.stringify(phases);
+else if (!phases.every(p => p.includes('5 items') && p.includes('i1 (#400), i2 (#401), i3 (#402) +2 more')))
+  reason = 'every stage title must name at most PHASE_TITLE_MAX_ITEMS items and collapse the rest: ' + JSON.stringify(phases);
+else if (phases.some(p => p.includes('i4') || p.includes('i5')))
+  reason = 'the bound leaked — a 20-item level would swamp the progress row: ' + JSON.stringify(phases);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1294 monotonic: an off-path recovery probe gets its OWN group and never drags the collapsed row backwards" "
+$PREAMBLE
+const phases = [];
+globalThis.phase = (t) => phases.push(String(t));
+// A worker whose return channel is lost at the build stage: the recover-probe
+// fires while the level is mid-flight. It must NOT re-fire phase().
+setMachinery('rec1',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/rec1' },
+  { outcome: 'RECOVER_PR_OPEN', sha: 'sha-r', commits_ahead: 1, pushed: true, remote_sha: 'sha-r', pr_number: 4242, verification_surface_present: true },
+  { outcome: 'GATE_PASS' },
+  // No REBASED entry — an already-pushed recovery skips 3f-0a.
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-r', branch: 'b/rec1' },
+  { outcome: 'EXISTS', pr_number: 4242 },
+  { outcome: 'CI_GREEN' },
+);
+setWorker('rec1', throwingWorker());
+globalThis.args = { ...baseArgs, items: [
+  { slug: 'rec1', branch: 'b/rec1', title: 'R', kind: 'impl', ghIssue: 77, acceptance: ['c'] },
+]};
+const mod = await loadLevel();
+const result = await mod.default();
+const probe = callLog.find(c => c.opts.label === 'recover-probe:rec1');
+let reason = null;
+if ((result.parked ?? []).length !== 1) reason = 'expected the recovered item to park: ' + JSON.stringify(result);
+else if (!probe) reason = 'expected a recover-probe spawn';
+else if (probe.opts.phase !== 'build level · recover — owner/repo · 1 item · rec1 (#77)')
+  reason = 'the recovery probe must get its own named group: ' + JSON.stringify(probe.opts.phase);
+else if (phases.some(p => p.includes('· recover —')))
+  reason = 'an off-path recovery must NEVER move the global phase cursor: ' + JSON.stringify(phases);
+// Cursor advanced monotonically over the stages it did reach.
+else if (JSON.stringify(phases) !== JSON.stringify(['claim','build','gate','PR','CI'].map(s => 'build level · ' + s + ' — owner/repo · 1 item · rec1 (#77)')))
+  reason = 'stage cursor must advance monotonically over the stages actually reached: ' + JSON.stringify(phases);
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1294 static lockstep guards ------------------------------------------
+# meta stays a PURE LITERAL and deliberately declares NO phases: meta.phases
+# entries are matched against phase() titles EXACTLY, and every title this
+# workflow emits is dynamic (#903 requires the repo/count/items in it), so a
+# static entry could only ever render an empty duplicate group.
+node -e "
+  const fs = require('fs');
+  const src = fs.readFileSync(process.env.MJS_PATH, 'utf8');
+  const m = src.match(/export const meta = \{[\s\S]*?\n\};/);
+  if (!m) { console.error('meta literal not found'); process.exit(1); }
+  if (/phases\s*:/.test(m[0])) { console.error('meta declares phases: — every phase() title here is dynamic, so a static entry can only render an empty duplicate group'); process.exit(1); }
+  if (/\\\$\{|\.\.\.|\(\)/.test(m[0])) { console.error('meta is no longer a pure literal'); process.exit(1); }
+" || fail "#1294: meta must stay a pure literal with no phases: key"
+grep -q 'function levelPhaseTitle(list, stage)' "$MJS" \
+  || fail "#1294: levelPhaseTitle() must take the stage — a second title-formatting path would re-fork #903"
+grep -q 'function enterStage(stage)' "$MJS" \
+  || fail "#1294: enterStage() missing — the stage cursor must be one named, monotonic helper"
+[ "$(grep -c '^[^/]*`build level' "$MJS")" -eq 1 ] \
+  || fail "#1294: exactly one non-comment 'build level' title literal expected — a second one means the heading was hand-rolled somewhere instead of going through levelPhaseTitle()"
+# Every agent spawn names its stage explicitly; the two flat constants survive
+# ONLY as the `??` fallbacks inside the transport helpers.
+[ "$(grep -c "phase: phaseName ?? 'machinery'" "$MJS")" -eq 2 ] \
+  || fail "#1294: runMachinery/runMachineryBatch must take an explicit phase with a flat fallback"
+grep -q "phase: phaseName ?? 'worker'" "$MJS" \
+  || fail "#1294: callWorker must take an explicit phase with a flat fallback"
+[ "$(grep -c "phase: enterStage(STAGE_" "$MJS")" -ge 7 ] \
+  || fail "#1294: every stage-owning spawn site must pass opts.phase via enterStage() (global phase() state races inside parallel())"
+[ "$(grep -c "phase: stagePhase(STAGE_RECOVER)" "$MJS")" -eq 2 ] \
+  || fail "#1294: the off-path recovery spawns must use stagePhase(), which never moves the cursor"
+echo "PASS: #1294 stage-phase guard — one monotonic enterStage() cursor, explicit opts.phase at every spawn, meta.phases deliberately absent"
 
 echo ""
 echo "All test_workflow.sh cases passed."
