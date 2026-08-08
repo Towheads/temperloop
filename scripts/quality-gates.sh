@@ -514,12 +514,17 @@ KERNEL_GATES=(
   # called. Same direct-`bash` form as the sibling gates above.
   "bash workflows/scripts/tests/test_item_efficiency.sh"
   # Comparison-statistics library (temperloop#1249, epic #1225 "model
-  # comparison harness"): bootstrap CI known-answer fixture, minimum-
-  # detectable-effect at two N, the inconclusive floor asserted at the
-  # threshold boundary in BOTH directions, and coverage % against the
-  # emit-feasible seat denominator (temperloop#1246). Zero network, zero
-  # model calls — deterministic fixtures via a seeded RNG whose sequence is
-  # stable across CPython versions for a fixed seed.
+  # comparison harness"): bootstrap CI known-answer fixture, the minimum
+  # detectable effect at two N (kept distinct from the CI margin of error),
+  # the inconclusive floor asserted at the threshold boundary in BOTH
+  # directions and on BOTH subcommands, non-finite input rejection, and
+  # coverage % against the emit-feasible seat denominator (temperloop#1246).
+  # Zero network, zero model calls. The fixtures are cross-version
+  # reproducible because stats.py draws from Random.random() (the only
+  # CPython method documented as sequence-stable) and accumulates with
+  # math.fsum — NOT merely because the RNG is seeded: builtin sum() switched
+  # to compensated summation in CPython 3.12 (gh-100425), which moved the
+  # reported bound and failed this suite on 3.9 until fsum replaced it.
   "make test-model-comparison-stats"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe

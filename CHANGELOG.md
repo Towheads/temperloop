@@ -187,6 +187,54 @@ reads that marker; a stranger greps for it before pulling.
   send-vs-log coverage cross-check (proving every actual send produced an
   entry) is owned by a later item in the same epic.
 
+- **A comparison-statistics library, so a model comparison reports what the
+  numbers can actually support** (#1249, epic #1225 "model comparison
+  harness"). `workflows/scripts/model-comparison/stats.sh` (a thin CLI over
+  the `stats.py` numeric core, python3 stdlib only — no network call, no model
+  call, every subcommand a pure function of the numbers it is given) answers
+  the four questions a cost comparison has to answer honestly. `bootstrap-ci`
+  puts a percentile bootstrap confidence interval around a cost-per-merged-
+  outcome delta array. `verdict` adds the winner call and, above all, the
+  **inconclusive floor**: below `MODEL_COMPARISON_MIN_SAMPLE_N` outcomes the
+  answer is always `inconclusive` with no winner-shaped field populated, so a
+  CI that happens to exclude zero on four data points can never be read as a
+  result — and `bootstrap-ci` enforces the same floor, because the guarantee
+  has to be a property of the module rather than of the one subcommand that
+  spells the word "verdict". `mde` reports two deliberately distinct effect
+  sizes, since conflating them is how a comparison gets under-powered: the CI
+  half-width as `margin_of_error`, and the genuine minimum detectable effect
+  as `mde` — `(z + z_power) · σ/√n` at a `--power` that defaults to the
+  conventional 0.80, roughly 43% larger than the half-width. Sizing N against
+  the half-width instead is how a team spends the whole budget and lands on
+  `inconclusive`. `coverage` reports emit-coverage against the structural
+  denominator the L0 usage-capture spike (#1246) defined — the emit-FEASIBLE
+  seat subset, never the full seat inventory — and refuses an observed count
+  above that denominator, because passing the inventory as the numerator is
+  the most likely form of exactly the confusion the subcommand exists to
+  prevent.
+
+  Five operator tunables are registered in `setting-registry.tsv` with their
+  defaults in `build.config.sh`, which `stats.sh` sources rather than
+  duplicating: `MODEL_COMPARISON_MIN_SAMPLE_N`,
+  `MODEL_COMPARISON_BOOTSTRAP_ITERATIONS`, `MODEL_COMPARISON_BOOTSTRAP_SEED`,
+  `MODEL_COMPARISON_CI_WIDTH_PCT` and `MODEL_COMPARISON_EMIT_FEASIBLE_SEATS`.
+
+  Two properties are load-bearing enough to name. **Input is finite or it is
+  rejected**: `json.loads` accepts bare `NaN`/`Infinity` and overflows `1e400`
+  to infinity, and `json.dumps` re-emits those as tokens RFC 8259 does not
+  permit — which `jq` silently coerces to `null`, where `null < 0` makes a
+  corrupted record read to a downstream `select(.upper < 0)` as "the candidate
+  is significantly cheaper". Non-finite input therefore exits 2 with empty
+  stdout. **Results reproduce across CPython versions**: resampling draws
+  indices from `Random.random()` (the only method CPython documents as
+  sequence-stable) and accumulates with `math.fsum` (builtin `sum()` changed
+  strategy in 3.12, gh-100425, and does not agree across versions), and
+  `stats.sh` enforces a python3 >= 3.8 floor rather than assuming it. The
+  fixture suite (`make test-model-comparison-stats`, wired into the kernel
+  gate set) was run green on CPython 3.9.6 and 3.14.6 with byte-identical
+  output, and its five settings assertions were verified by mutation —
+  deleting each setting's forwarding in turn fails the suite.
+
 - **`/promote` carries work back out of a testbed and into your real
   repository, as your pipeline's actual commits** (#1233). Building the
   evaluation in a disposable duplicate is only half the story; the other half
