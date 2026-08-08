@@ -134,6 +134,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`board`: `board_close_done <board#> <issue#>` — a Done write that
+  survives an already-closed issue** (temperloop#1217). One call lands a
+  board item Done from ANY state — open, already closed (the case a
+  whole-board `board_item_id`/`board_set_status` composition silently
+  no-ops on, since that list is `--state open` only), or already Done
+  (no-op, exit 0) — and needs no prior `board_resolve_item`/`BOARD_ITEMS_JSON`
+  carried over from an earlier call, since shell state does not persist
+  between separate Bash tool calls. It saves and restores `BOARD_CURRENT`,
+  leaving no adapter global modified. A thin, guarded composition over the
+  existing `board_set_status … Done` write path (`ISSUES-ONLY-BACKEND.md`
+  § Close→Done cascade already documents that path as the primary
+  mechanism on this backend) — no new write logic.
+
 - **`/promote`'s issue correspondence is now resolved by a real script,
   never a prose lookup** (#1235). `workflows/scripts/promote/resolve-correspondence.sh`
   resolves a copied testbed issue back to its original by **exact lookup**

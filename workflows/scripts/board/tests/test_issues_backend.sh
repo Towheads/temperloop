@@ -161,6 +161,7 @@ EOF
   grep -q 'ADR 0004' "$WORK/stale-err.txt" || { echo "FAIL: refusal should cite ADR 0004" >&2; exit 1; }
   board_resolve 21 >/dev/null 2>&1 && { echo "FAIL: board_resolve 21 must propagate the refusal" >&2; exit 1; }
   board_item_list 21 >/dev/null 2>&1 && { echo "FAIL: board_item_list 21 must propagate the refusal" >&2; exit 1; }
+  board_close_done 21 107 >/dev/null 2>&1 && { echo "FAIL: board_close_done 21 must propagate the refusal" >&2; exit 1; }
   exit 0
 ) || fail "stale backend=projects refusal did not behave as contracted"
 
@@ -530,6 +531,7 @@ _board_gh() {
     "api repos/Acme/kernel-test/issues/105")
       local ljson='[]'
       if [ -n "$FAKE_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
         ljson="$(printf '%s\n' $FAKE_LABELS | jq -R . | jq -s 'map({name:.})')"
       fi
       printf '{"number":105,"title":"t","state":"%s","labels":%s}' "$FAKE_STATE" "$ljson"
@@ -558,6 +560,144 @@ _board_gh() {
 board_set_status "ISSUE_105" "Ready" || fail "a single transient --remove-label failure should be absorbed by the retry and still succeed"
 [ "$FAKE_LABELS" = " fnd:status:ready" ] || fail "after a retry-absorbed removal the item must carry exactly one fnd:status:* label, got: '$FAKE_LABELS'"
 echo "PASS: board_set_status retries a transient --remove-label failure and yields a single fnd:status:* label"
+
+# --- 12: board_close_done — a Done write that survives an ALREADY-CLOSED
+# issue and depends on NO cross-Bash-call shell state (temperloop#1217) ------
+# A single stateful fake tracks issue #107's open/closed state + fnd: labels
+# across the four sub-cases below, the same shape as section 6/6b.
+FAKE107_STATE="open"
+FAKE107_LABELS=""
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Acme/kernel-test/issues/107")
+      local ljson='[]'
+      if [ -n "$FAKE107_LABELS" ]; then
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
+        ljson="$(printf '%s\n' $FAKE107_LABELS | jq -R . | jq -s 'map({name:.})')"
+      fi
+      printf '{"number":107,"title":"t","state":"%s","labels":%s}' "$FAKE107_STATE" "$ljson"
+      ;;
+    "issue edit")
+      shift 2
+      local prev="" a
+      for a in "$@"; do
+        # shellcheck disable=SC2086  # intentional word-split: iterate the space-separated label list
+        # (SC1124: a directive must precede the whole `case`, never an individual branch)
+        case "$prev" in
+          --remove-label) FAKE107_LABELS="$(printf '%s\n' $FAKE107_LABELS | grep -vx "$a" | tr '\n' ' ')" ;;
+          --add-label)    FAKE107_LABELS="$FAKE107_LABELS $a" ;;
+        esac
+        prev="$a"
+      done
+      ;;
+    "issue close")  FAKE107_STATE="closed" ;;
+    "issue reopen") FAKE107_STATE="open" ;;
+    "label create") : ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+
+# 12a — an issue that is ALREADY CLOSED (the #1217 case: a merged PR's own
+# `Closes #N` beat the adapter's Done write to the punch) still has its
+# fnd:status:*/fnd:host/session:* labels stripped, with NO `gh issue close`
+# call needed (already closed) — this is exactly the case a whole-board
+# `board_item_id`/`board_set_status ""` composition would silently no-op on.
+FAKE107_STATE="closed"
+FAKE107_LABELS="fnd:status:in-progress fnd:host/session:mini:abcd1234"
+: >"$CALLS"
+BOARD_CURRENT=999
+board_close_done 20 107 || fail "board_close_done must succeed on an already-closed issue (#1217)"
+grep -q -- '--remove-label fnd:status:in-progress' "$CALLS" \
+  || fail "board_close_done (already-closed) should strip the residual status label: $(cat "$CALLS")"
+grep -q -- '--remove-label fnd:host/session:mini:abcd1234' "$CALLS" \
+  || fail "board_close_done (already-closed) should clear the claim stamp: $(cat "$CALLS")"
+grep -q '^gh issue close' "$CALLS" \
+  && fail "board_close_done must not re-close an already-closed issue: $(cat "$CALLS")"
+[ "$FAKE107_STATE" = "closed" ] || fail "issue should stay closed"
+[ "$(printf '%s' "$FAKE107_LABELS" | tr -d ' ')" = "" ] \
+  || fail "no fnd: label should remain after board_close_done on an already-closed issue, got: '$FAKE107_LABELS'"
+[ "$BOARD_CURRENT" = "999" ] \
+  || fail "board_close_done must restore the caller's prior BOARD_CURRENT, got: '$BOARD_CURRENT'"
+echo "PASS: board_close_done lands Done on an already-closed issue (#1217) and restores BOARD_CURRENT"
+
+# 12b — a STILL-OPEN issue: strips the status label + claim stamp AND closes it.
+FAKE107_STATE="open"
+FAKE107_LABELS="fnd:status:in-progress fnd:host/session:mini:abcd1234"
+: >"$CALLS"
+BOARD_CURRENT=""
+board_close_done 20 107 || fail "board_close_done must succeed on a still-open issue"
+grep -q -- '--remove-label fnd:status:in-progress' "$CALLS" \
+  || fail "board_close_done (open) should strip the status label: $(cat "$CALLS")"
+grep -q -- '--remove-label fnd:host/session:mini:abcd1234' "$CALLS" \
+  || fail "board_close_done (open) should clear the claim stamp: $(cat "$CALLS")"
+grep -q '^gh issue close 107' "$CALLS" \
+  || fail "board_close_done (open) should close the issue: $(cat "$CALLS")"
+[ "$FAKE107_STATE" = "closed" ] || fail "issue should be closed"
+[ "$(printf '%s' "$FAKE107_LABELS" | tr -d ' ')" = "" ] \
+  || fail "no fnd: label should remain, got: '$FAKE107_LABELS'"
+[ "${BOARD_CURRENT+set}" = "set" ] && [ "$BOARD_CURRENT" = "" ] \
+  || fail "board_close_done must restore the caller's prior BOARD_CURRENT (an empty string), got: '${BOARD_CURRENT:-<unset>}'"
+echo "PASS: board_close_done lands Done on a still-open issue and closes it, and restores an empty-string BOARD_CURRENT"
+
+# 12c — a RE-RUN on an issue that is already fully Done (closed, no fnd:
+# labels): a pure no-op, exit 0, no add/remove/close calls at all. Sets
+# BOARD_CURRENT explicitly (rather than inheriting whatever 12b left behind)
+# so this case's meaning doesn't depend on 12b's ordering or on the
+# save/restore implementation detail under test elsewhere.
+FAKE107_STATE="closed"
+FAKE107_LABELS=""
+: >"$CALLS"
+BOARD_CURRENT=999
+board_close_done 20 107 || fail "board_close_done re-run on an already-Done issue must exit 0"
+grep -q -- '--remove-label\|--add-label' "$CALLS" \
+  && fail "board_close_done re-run on an already-Done issue must touch no labels: $(cat "$CALLS")"
+grep -q '^gh issue close\|^gh issue reopen' "$CALLS" \
+  && fail "board_close_done re-run on an already-Done issue must not close/reopen: $(cat "$CALLS")"
+echo "PASS: board_close_done re-run on an already-Done issue is a true no-op (exit 0)"
+
+# 12d — arg guards: wrong arg count and a non-numeric issue# both fail loud,
+# WITHOUT mutating anything — no gh call at all, and the stderr message
+# actually names the problem (a refactor that silently dropped the `echo …
+# >&2` would otherwise keep this case green with only a bare non-zero check).
+: >"$CALLS"
+if board_close_done 20 2>"$WORK/12d-err.txt"; then fail "board_close_done must reject a missing issue# arg"; fi
+grep -q 'board_close_done takes' "$WORK/12d-err.txt" \
+  || fail "board_close_done (missing arg) should print a clear stderr message, got: '$(cat "$WORK/12d-err.txt")'"
+[ ! -s "$CALLS" ] || fail "board_close_done (missing arg) must not call gh: $(cat "$CALLS")"
+
+: >"$CALLS"
+if board_close_done 20 abc 2>"$WORK/12d-err.txt"; then fail "board_close_done must reject a non-numeric issue#"; fi
+grep -q 'needs a numeric' "$WORK/12d-err.txt" \
+  || fail "board_close_done (non-numeric issue#) should print a clear stderr message, got: '$(cat "$WORK/12d-err.txt")'"
+[ ! -s "$CALLS" ] || fail "board_close_done (non-numeric issue#) must not call gh: $(cat "$CALLS")"
+echo "PASS: board_close_done rejects a missing arg / a non-numeric issue# (loud, non-zero, no gh call)"
+
+# 12e — a board_set_status FAILURE: the case save/restore actually earns its
+# keep. Override _board_gh so the `issue edit` label-removal arm fails
+# persistently (already-closed issue with a residual status label, so the
+# only gh call the write needs is the removal — no close call to also mock),
+# and assert BOTH that board_close_done propagates the failure AND that
+# BOARD_CURRENT is still restored — a refactor moving the restore below an
+# early `return` would pass all of 12a-12d but fail this one.
+_board_gh() {
+  _fake_gh_log_argv "$@" >>"$CALLS"
+  case "$1 $2" in
+    "api repos/Acme/kernel-test/issues/107")
+      printf '{"number":107,"title":"t","state":"closed","labels":[{"name":"fnd:status:in-progress"}]}'
+      ;;
+    "issue edit") return 7 ;;
+    *) echo "test _board_gh: unhandled '$1 $2'" >&2; return 3 ;;
+  esac
+}
+: >"$CALLS"
+BOARD_CURRENT="PRIOR"
+if board_close_done 20 107 2>/dev/null; then
+  fail "board_close_done must propagate a board_set_status failure"
+fi
+[ "$BOARD_CURRENT" = "PRIOR" ] \
+  || fail "board_close_done must restore BOARD_CURRENT even when board_set_status fails, got: '$BOARD_CURRENT'"
+echo "PASS: board_close_done propagates a board_set_status failure and still restores BOARD_CURRENT"
 
 echo
 echo "ALL PASS: test_issues_backend.sh"
