@@ -15,22 +15,18 @@ ejection. The `/build` pipeline runs a whole dependency level at once and
 `/sweep` drives chunks of concurrent singletons, so "two concurrent PRs" is the
 normal case, not an edge one.
 
-Two remedies were evaluated and rejected before this one (recorded in
-`Decisions/temperloop - changelog fragment direction (keystone spike verdict)`):
+Two other remedies were evaluated and rejected first:
 
-- **A `merge=union` driver on `CHANGELOG.md`.** It resolves the everyday case,
-  but on the release-cut race — a cut PR moving the `[Unreleased]` body into a
-  new `## [x.y.z]` while a sibling inserts at the same anchor — the default
-  driver conflicts loudly and union auto-merges *clean*, landing the sibling's
-  entry inside the shipped release section. Nothing catches it: `git
-  merge-tree` honours the attribute, so the merge-gate's hunk-overlap probe
-  reclassifies the pair as disjoint. `.gitattributes`' own header already
-  excludes this class — union is scoped to files whose only mutation is an
-  append, and a release cut is a *move*.
-- **Relaxing the gate to release time.** Self-refuting from the gate's own
-  header: an absent entry cannot carry a `BREAKING` marker, which is the state
-  that motivated the gate (at the v0.22.0 cut, 1 of 14 merged PRs had touched
-  `CHANGELOG.md`).
+- **Auto-merging the file instead of splitting it.** Git can be told to combine
+  both sides of a `CHANGELOG.md` conflict automatically. That fixes the
+  everyday case but silently mis-files entries during a release cut, and it
+  does so *quietly* — the merge looks clean.
+- **Only requiring an entry at release time.** This removes the conflict by
+  removing the gate, and with it the `BREAKING` warning the gate exists to
+  collect. At the v0.22.0 cut, 1 of 14 merged PRs had touched `CHANGELOG.md`.
+
+The mechanism-level reasoning for both is recorded in
+`Decisions/temperloop - changelog fragment direction (keystone spike verdict)`.
 
 ## How it works
 
@@ -72,21 +68,31 @@ everything accumulated since the last tag. It also makes an in-flight PR
 written against the old flow (a direct `[Unreleased]` line, no fragment)
 harmless rather than lost.
 
-**It fails loudly rather than dropping an entry.** An unrecognised filename, an
-empty fragment, a body carrying its own `#`/`##`/`###` heading (which could
-forge a `BREAKING` signal, since `changelog_breaking_sections()` reads headings
-only), or a missing `## [Unreleased]` heading each abort the run with a named
-cause and **write nothing**.
+**It fails loudly rather than dropping an entry.** Each of these aborts the run
+with a named cause and **writes nothing**: an unrecognised filename; an empty
+fragment; a body carrying its own `#`/`##`/`###` heading (which could forge a
+`BREAKING` signal, since `changelog_breaking_sections()` reads headings only);
+an entry the assembler cannot read as a fragment file, such as a subdirectory
+or a dangling symlink; or a missing `## [Unreleased]` heading.
+
+**Nothing is deleted until the rewrite has actually landed.** The new
+`CHANGELOG.md` is staged beside the old one and renamed over it, so the file is
+either wholly old or wholly new, and the fragments are removed only after that
+rename succeeds. Every failure path leaves them on disk — the entries always
+survive in at least one place, which matters because a consumed fragment is
+otherwise the only other copy.
 
 Parsing lives in `workflows/scripts/lib/changelog.sh`, beside the range helpers
-it must stay consistent with. That placement is forced by ADR-0002's layering
-rule, stated in that file's own header: `check-changelog-entry.sh` lives under
-`workflows/scripts/` and already sources the lib, and a parser under `scripts/`
-sourced from `workflows/scripts/` is the forbidden direction. The executable
-assembler sits in `scripts/` and sources the lib in the sanctioned direction,
-beside `update-kernel.sh` — a release cut runs inside an established checkout
-by a maintainer, so per ADR-0023 it is not `bin/temperloop` surface, and it is
-mechanical rather than judgment-bearing, so it is not a slash command either.
+it must stay consistent with. That placement is forced by the layering rule in
+ADR 0002 "Managed-clone state ownership", stated in that file's own header:
+`check-changelog-entry.sh` lives under `workflows/scripts/` and already sources
+the lib, and a parser under `scripts/` sourced from `workflows/scripts/` is the
+forbidden direction. The executable assembler sits in `scripts/` and sources
+the lib in the sanctioned direction, beside `update-kernel.sh` — a release cut
+runs inside an established checkout by a maintainer, so per ADR 0023 "the CLI
+owns pre-checkout state changes; slash commands own in-checkout judgment" it is
+not `bin/temperloop` surface, and it is mechanical rather than
+judgment-bearing, so it is not a slash command either.
 
 ```sh
 scripts/assemble-changelog.sh --check     # validate every fragment, write nothing
@@ -131,10 +137,10 @@ once per release cut by a human. No network, no GitHub API, no git operations.
 The new gate is a fast fixture suite (sub-second) in the already-required
 `checks` job.
 
-CI wall-clock moves the *right* way on balance: the `gate-paths.tsv` recogniser
-keeps fragment-only diffs scoped instead of escalating them to the full
-~110-gate set, which is what an unmapped new top-level directory would have
-done to nearly every PR.
+The `gate-paths.tsv` recogniser keeps a fragment-only diff on its scoped gate
+set. Without that row an unmapped new top-level directory would escalate
+nearly every PR to the full ~110-gate set, since `gate-selection.sh` defaults
+to *full* on a path it does not recognise.
 
 ## Telemetry
 

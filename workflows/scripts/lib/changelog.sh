@@ -338,18 +338,59 @@ changelog_fragment_is_breaking() {
 }
 
 # ---------------------------------------------------------------------------
-# _changelog_fragment_ls <dir> — basenames of every regular file directly in
-# <dir>, LC_ALL=C sorted. Dotfiles are excluded by the glob (a `.gitkeep`
-# placeholder is never a fragment and is never reported as one).
+# _changelog_fragment_ls_all <dir> — basenames of EVERY entry directly in
+# <dir>, regular or not, LC_ALL=C sorted. Dotfiles are excluded by the glob (a
+# `.gitkeep` placeholder is never a fragment and is never reported as one).
+#
+# A dangling symlink fails `-e` but passes `-L`, so both tests are needed: the
+# unmatched-glob literal (`<dir>/*` when the directory is empty) must be
+# dropped, but a broken symlink must NOT be — silently dropping it is exactly
+# the invisibility `changelog_fragment_nonregular` exists to end.
 # ---------------------------------------------------------------------------
-_changelog_fragment_ls() {
+_changelog_fragment_ls_all() {
   local dir="$1" f
   [[ -d "$dir" ]] || return 0
   for f in "$dir"/*; do
-    if [[ -f "$f" ]]; then
+    if [[ -e "$f" || -L "$f" ]]; then
       printf '%s\n' "${f##*/}"
     fi
   done | LC_ALL=C sort
+}
+
+# ---------------------------------------------------------------------------
+# _changelog_fragment_ls <dir> — basenames of every regular file directly in
+# <dir>, LC_ALL=C sorted. This is the ASSEMBLY-side listing: only a regular
+# file can be read as a fragment body. Everything it drops is reported by
+# `changelog_fragment_nonregular` below, so nothing filtered here is invisible.
+# ---------------------------------------------------------------------------
+_changelog_fragment_ls() {
+  local dir="$1" name
+  _changelog_fragment_ls_all "$dir" | while IFS= read -r name; do
+    if [[ -f "$dir/$name" ]]; then
+      printf '%s\n' "$name"
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------------
+# changelog_fragment_nonregular <dir> — basenames of entries directly in <dir>
+# that are NOT regular files: a subdirectory, a dangling symlink, a fifo.
+#
+# WHY THIS IS REPORTED RATHER THAN FILTERED. `_changelog_fragment_ls` keeps
+# only regular files, so without this listing a fragment placed one level down
+# (`changelog.d/subdir/1-nested.added.md`) is INVISIBLE end to end: `--check`
+# reports "all well-formed", the fragment never assembles, and it survives the
+# deletion loop — sitting on disk looking pending while the release ships
+# without it. A dangling symlink whose NAME conforms is the same failure with
+# no filename tell at all. Kernel principle 5: a lost entry must fail loudly.
+# ---------------------------------------------------------------------------
+changelog_fragment_nonregular() {
+  local dir="$1" name
+  _changelog_fragment_ls_all "$dir" | while IFS= read -r name; do
+    if [[ ! -f "$dir/$name" ]]; then
+      printf '%s\n' "$name"
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -385,10 +426,21 @@ changelog_fragment_names() {
 # conforming fragments and are not the sanctioned placeholders (`README.md`,
 # dotfiles). A release cut must fail loudly on these rather than silently
 # drop somebody's entry, so this is a listing, not a filter.
+#
+# NON-REGULAR ENTRIES COUNT AS INVALID, whatever their name. A subdirectory or
+# a dangling symlink cannot be read as a fragment body, so leaving it out of
+# this listing would make it invisible to `--check` (see
+# `changelog_fragment_nonregular` above). The name test is only reached for
+# entries that are actually readable files — a broken symlink NAMED
+# `1-nested.added.md` parses fine and would otherwise pass.
 # ---------------------------------------------------------------------------
 changelog_fragment_invalid() {
   local dir="$1" name
-  _changelog_fragment_ls "$dir" | while IFS= read -r name; do
+  _changelog_fragment_ls_all "$dir" | while IFS= read -r name; do
+    if [[ ! -f "$dir/$name" ]]; then
+      printf '%s\n' "$name"
+      continue
+    fi
     case "$name" in
       README.md) continue ;;
     esac
@@ -435,16 +487,35 @@ changelog_fragment_empty() {
 
 # ---------------------------------------------------------------------------
 # changelog_fragment_body_offenders <dir> — `<name>:<line>: <text>` for every
-# fragment body line that is an h1/h2/h3 heading. The assembler OWNS the
-# `### <Category>` heading; a heading inside a body would silently restructure
-# the assembled section (and, with `BREAKING` in it, could forge a breaking
-# signal `changelog_breaking_sections()` reads). h4+ inside an entry is fine.
+# fragment body line that is an h1/h2/h3 heading, or that impersonates one of
+# the assembler's own control tokens. The assembler OWNS the `### <Category>`
+# heading; a heading inside a body would silently restructure the assembled
+# section (and, with `BREAKING` in it, could forge a breaking signal
+# `changelog_breaking_sections()` reads). h4+ inside an entry is fine.
+#
+# THE CONTROL-TOKEN ARM IS DEFENCE IN DEPTH, not the primary guard. The
+# assembler's metadata now travels OUT OF BAND (see
+# `_changelog_fragment_additions`: a control-only manifest, one body file per
+# category), so a body line can no longer be parsed as control however it is
+# spelled — that is the structural fix. This arm additionally rejects the two
+# tokens LOUDLY so (a) a future refactor back toward an in-band stream cannot
+# silently reopen the forgery path, and (b) a line like `##CATEGORY## security
+# 1` — which is not a valid ATX heading, so `/^## /` never matched it — does
+# not land in a shipped changelog as confusing literal text.
+#
+# Deliberately NOT fence-aware: a fenced ``` ### Foo — BREAKING ``` inside a
+# fragment body would still be copied verbatim into `## [Unreleased]`, and
+# `changelog_breaking_sections()` reads `/^#+ .*BREAKING/` with no fence
+# tracking of its own. Flagging it is the safe direction.
 # ---------------------------------------------------------------------------
 changelog_fragment_body_offenders() {
   local dir="$1" name
   changelog_fragment_names "$dir" | while IFS= read -r name; do
     awk -v f="$name" '
-      /^# / || /^## / || /^### / { printf "%s:%d: %s\n", f, FNR, $0 }
+      /^# / || /^## / || /^### / ||
+      /^##BEGIN##$/ || /^##CATEGORY##([ \t]|$)/ {
+        printf "%s:%d: %s\n", f, FNR, $0
+      }
     ' "$dir/$name"
   done
 }
@@ -464,18 +535,38 @@ changelog_fragment_has_breaking() {
 }
 
 # ---------------------------------------------------------------------------
-# _changelog_fragment_additions <dir> — the assembler's intermediate stream:
+# _changelog_fragment_additions <dir> <workdir> — the assembler's intermediate
+# form. Writes ONE BODY FILE PER CATEGORY into <workdir> and prints a
+# control-only MANIFEST on stdout:
 #
 #   ##BEGIN##
-#   ##CATEGORY## <category> <breaking:0|1>
-#   <concatenated bodies of that category's fragments, blank-line separated>
-#   ##CATEGORY## ...
+#   <category> <breaking:0|1> <path to that category's body file>
 #
-# The `##BEGIN##` sentinel guarantees the stream is never empty, so the
-# assembler's two-file awk pass can rely on NR==FNR to separate its inputs.
+# METADATA TRAVELS OUT OF BAND — this is a correctness property, not a
+# refactor. The former shape multiplexed control lines and fragment bodies
+# onto ONE stream using in-band `##CATEGORY## <cat> <brk>` sentinels, which
+# made a body line indistinguishable from a control line: a fragment whose
+# body contained `##CATEGORY## security 1` passed validation and assembled to
+# `### Security — BREAKING`, forging the exact heading
+# `changelog_breaking_sections()` keys on — the signal `scripts/update-kernel.sh`
+# and `bin/subcommands/update.sh` read to gate a downstream pull for EVERY
+# vendoring overlay. A `##BEGIN##` body line was silently deleted outright.
+#
+# With bodies in their own files, no fragment content is ever parsed as
+# control, whatever it says. Kernel principle 5 — counter the failure mode
+# STRUCTURALLY rather than with a matching rule someone must keep in sync.
+# (`changelog_fragment_body_offenders` still rejects the tokens as defence in
+# depth; that arm is now a second line, not the only one.)
+#
+# The manifest's every field is generated here — a fixed category token, a
+# 0|1, and an mktemp'd path — so its leading `##BEGIN##` sentinel is
+# unforgeable. It exists only to guarantee the first file of the assembler's
+# two-file awk pass is never empty, which is what makes `NR==FNR` a sound
+# input separator (an empty first file makes NR==FNR true for the SECOND
+# file's lines too).
 # ---------------------------------------------------------------------------
 _changelog_fragment_additions() {
-  local dir="$1" c name brk count first
+  local dir="$1" workdir="$2" c name brk count first bodyfile
   printf '##BEGIN##\n'
   while IFS= read -r c; do
     brk=0
@@ -489,7 +580,7 @@ _changelog_fragment_additions() {
     if [[ "$count" -eq 0 ]]; then
       continue
     fi
-    printf '##CATEGORY## %s %s\n' "$c" "$brk"
+    bodyfile="$workdir/body.$c"
     first=1
     while IFS= read -r name; do
       if [[ "$first" -eq 0 ]]; then
@@ -497,12 +588,21 @@ _changelog_fragment_additions() {
       fi
       first=0
       changelog_fragment_body "$dir/$name"
-    done < <(_changelog_fragment_names_in "$dir" "$c")
+    done < <(_changelog_fragment_names_in "$dir" "$c") >"$bodyfile" || return 1
+    printf '%s %s %s\n' "$c" "$brk" "$bodyfile"
   done < <(changelog_fragment_category_order)
 }
 
 # ---------------------------------------------------------------------------
-# changelog_assemble_unreleased_body <fragment-dir> <changelog-file>
+# changelog_assemble_unreleased_body <fragment-dir> <changelog-file> [workdir]
+#
+# <workdir> is optional scratch space the CALLER owns and cleans up — pass it
+# when the caller already has an EXIT trap, so a signal during the awk pass
+# cannot leak temps. Omitted, this function makes and removes its own.
+#
+# RETURNS NON-ZERO on any failure, and callers MUST check it: a silent empty
+# body here is what let `scripts/assemble-changelog.sh` print "assembled N
+# fragment(s)" while deleting the entire pre-existing `[Unreleased]` section.
 #
 # Print the `## [Unreleased]` BODY that results from folding <fragment-dir>'s
 # fragments into the changelog's CURRENT Unreleased body. The output has the
@@ -530,12 +630,51 @@ _changelog_fragment_additions() {
 # lost — its line is existing body content and is simply kept.
 # ---------------------------------------------------------------------------
 changelog_assemble_unreleased_body() {
-  local dir="$1" changelog="$2"
-  local add_tmp body_tmp
-  add_tmp="$(mktemp)" || return 1
-  body_tmp="$(mktemp)" || return 1
-  _changelog_fragment_additions "$dir" >"$add_tmp"
-  changelog_unreleased_body "$changelog" >"$body_tmp"
+  local dir="$1" changelog="$2" workdir="${3:-}"
+  local owned=0 rc=0 manifest body
+
+  # TEMP OWNERSHIP. The caller MAY pass its own <workdir>, in which case the
+  # caller's own EXIT trap owns cleanup — that is the signal-safe path, and
+  # `scripts/assemble-changelog.sh` uses it. When no workdir is passed this
+  # function makes one and removes it on EVERY return path below, including
+  # the early failures (the previous shape's bare `rm -f` at the end was
+  # skipped by an early `return 1`, leaking two temps per failure).
+  if [[ -z "$workdir" ]]; then
+    workdir="$(mktemp -d)" || return 1
+    owned=1
+  fi
+  [[ -d "$workdir" ]] || { [[ "$owned" -eq 1 ]] && rm -rf "$workdir"; return 1; }
+
+  manifest="$workdir/manifest"
+  body="$workdir/unreleased-body"
+
+  if ! _changelog_fragment_additions "$dir" "$workdir" >"$manifest"; then
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! changelog_unreleased_body "$changelog" >"$body"; then
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    _changelog_assemble_awk "$manifest" "$body" || rc=1
+  fi
+
+  if [[ "$owned" -eq 1 ]]; then
+    rm -rf "$workdir"
+  fi
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# _changelog_assemble_awk <manifest> <body> — the two-file awk pass behind
+# `changelog_assemble_unreleased_body`. Split out so that function stays
+# readable as the temp-ownership + error-propagation wrapper it now is.
+#
+# <manifest> is the control-only stream `_changelog_fragment_additions`
+# printed; <body> is the changelog's current Unreleased body. Each manifest
+# line names a category, its breakingness, and a FILE holding that category's
+# concatenated fragment bodies, which this pass slurps with `getline`.
+# ---------------------------------------------------------------------------
+_changelog_assemble_awk() {
   awk '
     BEGIN {
       ncat = split("added changed deprecated removed fixed security", CATS, " ")
@@ -581,17 +720,43 @@ changelog_assemble_unreleased_body() {
         }
       }
     }
+    # FILE 1 — the control-only manifest. Every field here was generated by
+    # `_changelog_fragment_additions`, never by a fragment body, so no
+    # fragment text can reach this branch however it is spelled. The body
+    # itself is slurped from the named FILE, out of band.
     NR == FNR {
       if ($0 == "##BEGIN##") next
-      if ($0 ~ /^##CATEGORY## /) { cur = $2; BR[cur] = $3; HAVE[cur] = 1; next }
-      ADD[cur] = ADD[cur] $0 "\n"
+      if (NF < 3) next
+      c = $1
+      BR[c] = $2
+      HAVE[c] = 1
+      # The path is everything after the second field — a workdir under
+      # $TMPDIR may legitimately contain spaces, so $3 alone is not enough.
+      p = $0
+      sub(/^[^ ]+ [^ ]+ /, "", p)
+      r = (getline line < p)
+      while (r > 0) { ADD[c] = ADD[c] line "\n"; r = (getline line < p) }
+      close(p)
+      if (r < 0) {
+        printf "changelog_assemble_unreleased_body: cannot read body stream for category %s (%s)\n", c, p > "/dev/stderr"
+        exit 1
+      }
       next
     }
     { L[++n] = $0 }
     END {
+      # FENCE-AWARE heading scan. An UNINDENTED ``` fence in the Unreleased
+      # body may legitimately contain a line like `### Added` as sample text;
+      # treating that as a real sub-heading would split the section at it,
+      # inject a blank line INSIDE the fence (mutating existing content), and
+      # append fragments into a pseudo-section. Toggling on a line-initial
+      # fence keeps fenced content opaque to the scan. (An INDENTED fence
+      # never matched /^### / in the first place, so it needs no handling.)
       nh = 0
+      infence = 0
       for (i = 1; i <= n; i++) {
-        if (L[i] ~ /^### /) { nh++; H[nh] = i; HC[nh] = catof(L[i]) }
+        if (L[i] ~ /^```/) { infence = !infence; continue }
+        if (!infence && L[i] ~ /^### /) { nh++; H[nh] = i; HC[nh] = catof(L[i]) }
       }
       for (j = 1; j <= ncat; j++) RANK[CATS[j]] = j
       for (k = 1; k <= nh; k++) if (HC[k] != "" && !EXISTS[HC[k]]) EXISTS[HC[k]] = k
@@ -631,6 +796,5 @@ changelog_assemble_unreleased_body() {
       emit("")
       for (i = 1; i <= on; i++) print OUT[i]
     }
-  ' "$add_tmp" "$body_tmp"
-  rm -f "$add_tmp" "$body_tmp"
+  ' "$1" "$2"
 }

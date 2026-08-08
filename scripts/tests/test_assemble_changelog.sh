@@ -52,7 +52,10 @@ assert_eq() {
 
 assert_contains() {
   local desc="$1" needle="$2" haystack="$3"
-  if grep -F "$needle" <<<"$haystack" >/dev/null; then
+  # `-e` is required, not stylistic: a changelog needle routinely STARTS WITH
+  # a dash (`- some entry`), which grep would otherwise read as a flag bundle
+  # and fail on with a usage error rather than a verdict.
+  if grep -F -e "$needle" <<<"$haystack" >/dev/null; then
     pass "$desc"
   else
     fail "$desc (expected output to contain: $needle)"
@@ -61,7 +64,7 @@ assert_contains() {
 
 assert_not_contains() {
   local desc="$1" needle="$2" haystack="$3"
-  if grep -F "$needle" <<<"$haystack" >/dev/null; then
+  if grep -F -e "$needle" <<<"$haystack" >/dev/null; then
     fail "$desc (output should NOT contain: $needle)"
   else
     pass "$desc"
@@ -378,6 +381,247 @@ while IFS= read -r line; do
   fi
 done <<<"$before_unreleased"
 assert_eq "every pre-existing [Unreleased] line survived" "0" "$missing"
+
+# ===========================================================================
+# T9 — a FAILING assembly must refuse to write (the destroy-everything bug)
+#
+# THE DEFECT. The script ran `changelog_assemble_unreleased_body ... >"$body"`
+# under `set -uo pipefail` — no `-e`, and the status discarded. On any failure
+# (the lib's own `mktemp` returning non-zero, a crashed awk) `$body` came back
+# EMPTY, the rewrite printed the `## [Unreleased]` heading with nothing under
+# it and swallowed the entire pre-existing section, and the old guard — which
+# checked the REWRITTEN CHANGELOG, still non-empty because the rest of the
+# file was intact — passed. Exit 0, "assembled N fragment(s)", every
+# accumulated entry gone, and the fragments deleted immediately after.
+#
+# Both failure shapes are forced here via a SHIM TREE rather than asserted on
+# the happy path: the assembler resolves its lib relative to its own path, so
+# a copy of the lib with `changelog_assemble_unreleased_body` overridden
+# reproduces the exact conditions without touching the real one.
+# ===========================================================================
+echo "T9: a failing assembly refuses to write and keeps the fragments"
+
+make_shim() {
+  # make_shim <dir> <override-body> — a REPO_ROOT-shaped tree whose lib has
+  # changelog_assemble_unreleased_body replaced.
+  local shim="$1" override="$2"
+  mkdir -p "$shim/scripts" "$shim/workflows/scripts/lib"
+  ln -sf "$ASSEMBLER" "$shim/scripts/assemble-changelog.sh"
+  cp "$REPO_ROOT/workflows/scripts/lib/changelog.sh" "$shim/workflows/scripts/lib/changelog.sh"
+  printf 'changelog_assemble_unreleased_body() { %s }\n' "$override" \
+    >> "$shim/workflows/scripts/lib/changelog.sh"
+}
+
+# T9a — the assembly returns NON-ZERO.
+new_case
+write_nonempty_changelog
+cp "$CHANGELOG" "$CASE_DIR/before.md"
+frag '30-a.added.md' '- **entry that must not vanish** (#30).'
+make_shim "$CASE_DIR/shim" 'return 1;'
+out="$(bash "$CASE_DIR/shim/scripts/assemble-changelog.sh" \
+  --changelog "$CHANGELOG" --fragment-dir "$FRAGS" 2>&1)"
+rc=$?
+assert_eq "T9a exits non-zero" "1" "$rc"
+assert_contains "T9a names the cause" "assembly failed" "$out"
+assert_not_contains "T9a never claims success" "assembled 1 fragment(s)" "$out"
+assert_files_equal "T9a CHANGELOG.md byte-identical" "$CASE_DIR/before.md" "$CHANGELOG"
+assert_eq "T9a fragment kept" "30-a.added.md" "$(changelog_fragment_names "$FRAGS")"
+
+# T9b — the assembly exits 0 but emits an EMPTY body. This is the silent arm
+# `|| die` alone cannot catch, and the one the old out_tmp guard passed.
+new_case
+write_nonempty_changelog
+cp "$CHANGELOG" "$CASE_DIR/before.md"
+frag '31-a.added.md' '- **entry that must not vanish** (#31).'
+make_shim "$CASE_DIR/shim" 'return 0;'
+out="$(bash "$CASE_DIR/shim/scripts/assemble-changelog.sh" \
+  --changelog "$CHANGELOG" --fragment-dir "$FRAGS" 2>&1)"
+rc=$?
+assert_eq "T9b exits non-zero" "1" "$rc"
+assert_contains "T9b names the shrunken body" "refusing to write" "$out"
+assert_not_contains "T9b never claims success" "assembled 1 fragment(s)" "$out"
+assert_files_equal "T9b CHANGELOG.md byte-identical" "$CASE_DIR/before.md" "$CHANGELOG"
+assert_eq "T9b fragment kept" "31-a.added.md" "$(changelog_fragment_names "$FRAGS")"
+assert_contains "T9b [Unreleased] body still intact" "**existing changed entry** (#1)." "$(cat "$CHANGELOG")"
+
+# ===========================================================================
+# T10 — a fragment body cannot forge the BREAKING marker
+#
+# THE DEFECT. The assembler multiplexed metadata and bodies onto ONE stream
+# with in-band `##CATEGORY## <cat> <brk>` / `##BEGIN##` sentinels, so a body
+# line was indistinguishable from a control line — and the body-heading check
+# missed them, because `/^## /` requires a SPACE after the hashes that
+# `##CATEGORY##` does not have. A fragment whose body said
+# `##CATEGORY## security 1` passed `--check` as "all well-formed" and
+# assembled to `### Security — BREAKING`: a forgery of the exact heading
+# changelog_breaking_sections() keys on, which gates the downstream pull for
+# every vendoring overlay. A `##BEGIN##` body line was silently DELETED.
+#
+# Metadata now travels out of band (one body file per category), so this is
+# structurally impossible; the loud rejection below is the second line.
+# ===========================================================================
+echo "T10: a fragment body cannot forge the BREAKING marker"
+new_case
+write_nonempty_changelog
+cp "$CHANGELOG" "$CASE_DIR/before.md"
+frag '40-forge.added.md' '- looks innocuous' '##CATEGORY## security 1' '- more text'
+frag '41-begin.added.md' '- second entry' '##BEGIN##' '- after the sentinel'
+out="$(run_assembler --check)"
+rc=$?
+assert_eq "T10 --check exits non-zero" "1" "$rc"
+assert_not_contains "T10 --check never says all well-formed" "all well-formed" "$out"
+assert_contains "T10 names the ##CATEGORY## line" "40-forge.added.md:2" "$out"
+assert_contains "T10 names the ##BEGIN## line" "41-begin.added.md:2" "$out"
+
+out="$(run_assembler)"
+rc=$?
+assert_eq "T10 apply exits non-zero" "1" "$rc"
+assert_files_equal "T10 CHANGELOG.md untouched" "$CASE_DIR/before.md" "$CHANGELOG"
+assert_not_contains "T10 no forged Security section" "### Security" "$(cat "$CHANGELOG")"
+assert_not_contains "T10 no forged BREAKING heading" "BREAKING" \
+  "$(changelog_unreleased_body "$CHANGELOG")"
+
+# The STRUCTURAL half: even with the validation arm bypassed, sentinel text in
+# a body is inert literal content — it cannot set a category or a flag, and it
+# is no longer silently deleted.
+new_case
+write_nonempty_changelog
+frag '42-forge.added.md' '- entry one' '##CATEGORY## security 1' '##BEGIN##'
+assembled="$(changelog_assemble_unreleased_body "$FRAGS" "$CHANGELOG")"
+assert_not_contains "T10 out-of-band: no Security section from a body line" "### Security" "$assembled"
+assert_not_contains "T10 out-of-band: no BREAKING heading from a body line" "BREAKING" "$assembled"
+assert_contains "T10 out-of-band: ##BEGIN## survives as literal text" "##BEGIN##" "$assembled"
+
+# ===========================================================================
+# T11 — a failed WRITE leaves the fragments undeleted
+#
+# THE DEFECT. `cat "$out_tmp" >"$CHANGELOG"` truncated the real file in place,
+# its status unchecked, and the `rm -f` loop ran after an unconditional
+# success message. Against a read-only CHANGELOG.md the old code printed
+# "assembled 1 fragment(s)" and "removed 1 consumed fragment(s)" and exited 0
+# with the entry present in NEITHER place — the only two copies destroyed in
+# one run. The write is now staged beside the target and renamed, and the
+# fragments are deleted only after a replace that actually succeeded.
+# ===========================================================================
+echo "T11: a failed write leaves the fragments undeleted"
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "  skipped — running as root, filesystem permissions are not enforced"
+else
+  # T11a — read-only CHANGELOG.md.
+  new_case
+  write_nonempty_changelog
+  cp "$CHANGELOG" "$CASE_DIR/before.md"
+  frag '50-a.added.md' '- **entry that must not vanish** (#50).'
+  chmod a-w "$CHANGELOG"
+  out="$(run_assembler)"
+  rc=$?
+  chmod u+w "$CHANGELOG"
+  assert_eq "T11a exits non-zero" "1" "$rc"
+  assert_not_contains "T11a never claims success" "assembled 1 fragment(s)" "$out"
+  assert_not_contains "T11a never claims deletion" "removed 1 consumed" "$out"
+  assert_files_equal "T11a CHANGELOG.md byte-identical" "$CASE_DIR/before.md" "$CHANGELOG"
+  assert_eq "T11a fragment kept — the entry still exists somewhere" \
+    "50-a.added.md" "$(changelog_fragment_names "$FRAGS")"
+
+  # T11b — an unwritable directory, so even STAGING the replacement fails.
+  new_case
+  write_nonempty_changelog
+  cp "$CHANGELOG" "$CASE_DIR/before.md"
+  frag '51-a.added.md' '- **entry that must not vanish** (#51).'
+  chmod a-w "$CASE_DIR"
+  out="$(run_assembler)"
+  rc=$?
+  chmod u+w "$CASE_DIR"
+  assert_eq "T11b exits non-zero" "1" "$rc"
+  assert_contains "T11b names the staging failure" "cannot stage a replacement" "$out"
+  assert_files_equal "T11b CHANGELOG.md byte-identical" "$CASE_DIR/before.md" "$CHANGELOG"
+  assert_eq "T11b fragment kept" "51-a.added.md" "$(changelog_fragment_names "$FRAGS")"
+  assert_eq "T11b no staging temp left behind" "0" \
+    "$(find "$CASE_DIR" -maxdepth 1 -name '.assemble-changelog.*' | wc -l | tr -d ' ')"
+fi
+
+# ===========================================================================
+# T12 — a fragment the lister cannot read is reported, never skipped
+#
+# THE DEFECT. The listing filtered to regular files with no diagnostic, so a
+# fragment one level down (`changelog.d/subdir/1-nested.added.md`) was
+# invisible end to end: `--check` reported "all well-formed", the fragment
+# never assembled, and it survived the deletion loop — sitting on disk looking
+# pending while the release shipped without it. A dangling symlink whose NAME
+# conforms is the same failure with no filename tell at all.
+# ===========================================================================
+echo "T12: a subdirectory or dangling symlink fails --check"
+new_case
+write_nonempty_changelog
+mkdir -p "$FRAGS/subdir"
+printf -- '- nested and invisible\n' > "$FRAGS/subdir/1-nested.added.md"
+out="$(run_assembler --check)"
+rc=$?
+assert_eq "T12 subdirectory exits non-zero" "1" "$rc"
+assert_not_contains "T12 never says all well-formed" "all well-formed" "$out"
+assert_contains "T12 names the subdirectory" "subdir" "$out"
+
+new_case
+write_nonempty_changelog
+ln -s "$CASE_DIR/does-not-exist.md" "$FRAGS/1-dangling.added.md"
+out="$(run_assembler --check)"
+rc=$?
+assert_eq "T12 dangling symlink exits non-zero" "1" "$rc"
+assert_contains "T12 names the dangling symlink" "1-dangling.added.md" "$out"
+
+# ===========================================================================
+# T13 — an unindented code fence in [Unreleased] is not a sub-heading
+#
+# THE DEFECT. The heading scan was fence-unaware, so a fenced sample line like
+# `### Added` inside the Unreleased body registered as a real sub-heading:
+# the section was split at it, a blank line was injected INSIDE the fence
+# (mutating existing content), and fragments were appended into the resulting
+# pseudo-section instead of the real one.
+# ===========================================================================
+echo "T13: an unindented code fence is not treated as a sub-heading"
+new_case
+cat > "$CHANGELOG" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- an entry documenting the fragment format:
+
+```
+### Added
+
+- sample bullet inside a fence
+```
+
+- a real trailing entry
+
+## [0.1.0] - 2026-01-01
+
+- the beginning.
+EOF
+cp "$CHANGELOG" "$CASE_DIR/before.md"
+frag '60-a.added.md' '- **appended below the fence** (#60).'
+run_assembler >/dev/null
+removed="$(diff "$CASE_DIR/before.md" "$CHANGELOG" | grep -c '^<')"
+assert_eq "T13 not one line removed" "0" "$removed"
+assert_contains "T13 the new entry landed" "**appended below the fence** (#60)." "$(cat "$CHANGELOG")"
+# The fenced block's own content must come through byte-identical: the defect
+# injected a blank line and the fragment INSIDE the fence.
+fence_block() { awk '/^```$/ { n++; next } n == 1 { print }' "$1"; }
+assert_eq "T13 the fenced block is byte-identical" \
+  "$(fence_block "$CASE_DIR/before.md")" "$(fence_block "$CHANGELOG")"
+
+# And the entry must land AFTER the closing fence — in the real sub-section,
+# not the pseudo-section the fenced `### Added` used to create.
+entry_line="$(grep -n 'appended below the fence' "$CHANGELOG" | cut -d: -f1)"
+close_line="$(grep -n '^```$' "$CHANGELOG" | sed -n '2p' | cut -d: -f1)"
+if [[ -n "$entry_line" && -n "$close_line" && "$entry_line" -gt "$close_line" ]]; then
+  pass "T13 the entry landed after the closing fence, not inside it"
+else
+  fail "T13 the entry landed inside the fence (entry line $entry_line, closing fence $close_line)"
+fi
 
 echo
 echo "test_assemble_changelog.sh: $pass_count passed, $fail_count failed"

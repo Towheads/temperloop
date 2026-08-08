@@ -36,7 +36,10 @@ assert_eq() {
 
 assert_contains() {
   local desc="$1" needle="$2" haystack="$3"
-  if grep -qF "$needle" <<<"$haystack"; then
+  # `-e` is required, not stylistic: a changelog needle routinely STARTS WITH
+  # a dash (`- some entry`), which grep would otherwise read as a flag bundle
+  # and fail on with a usage error rather than a verdict.
+  if grep -qF -e "$needle" <<<"$haystack"; then
     echo "  ok - $desc"
     pass_count=$((pass_count + 1))
   else
@@ -519,6 +522,114 @@ assert_eq "the fragment appears exactly once" "1" \
   "$(printf '%s\n' "$out" | grep -c 'once only')"
 assert_eq "both existing blocks survive" "2" \
   "$(printf '%s\n' "$out" | grep -c 'changed block')"
+
+# ---------------------------------------------------------------------------
+# T20 — a non-regular entry is REPORTED, never silently filtered
+#
+# The listing keeps only regular files, because only a regular file can be
+# read as a fragment body. Without a matching report, a fragment placed one
+# level down (`changelog.d/subdir/1-nested.added.md`) is invisible end to end:
+# validation calls the directory well-formed, the fragment never assembles,
+# and it survives the post-cut deletion loop — on disk looking pending while
+# the release ships without it. A DANGLING SYMLINK is the nastier half: its
+# name parses fine, so nothing about the filename gives it away.
+# ---------------------------------------------------------------------------
+echo "T20: non-regular entries are reported as invalid"
+reset_fragments
+frag 'ok.changed.md' '- fine'
+mkdir -p "$FRAG_DIR/subdir"
+printf -- '- nested\n' > "$FRAG_DIR/subdir/1-nested.added.md"
+ln -s "$TMP_ROOT/does-not-exist.md" "$FRAG_DIR/1-dangling.added.md"
+assert_eq "both non-regular entries are listed" "1-dangling.added.md
+subdir" "$(changelog_fragment_nonregular "$FRAG_DIR")"
+assert_eq "a dangling symlink with a CONFORMING name is still invalid" "1-dangling.added.md
+subdir" "$(changelog_fragment_invalid "$FRAG_DIR")"
+assert_eq "only the real file is treated as a fragment" "ok.changed.md" \
+  "$(changelog_fragment_names "$FRAG_DIR")"
+rm -f "$FRAG_DIR/1-dangling.added.md"
+rm -rf "$FRAG_DIR/subdir"
+
+# ---------------------------------------------------------------------------
+# T21 — a body cannot forge assembler control data
+#
+# The assembler's metadata travels OUT OF BAND (a control-only manifest plus
+# one body file per category), so fragment text is never parsed as control.
+# Before that, both were multiplexed onto one stream with in-band
+# `##CATEGORY## <cat> <brk>` / `##BEGIN##` sentinels and a body line was
+# indistinguishable from a control line — `##CATEGORY## security 1` in a body
+# assembled to `### Security — BREAKING`, forging the heading
+# changelog_breaking_sections() keys on (the downstream acknowledgment gate
+# for every vendoring overlay), and `##BEGIN##` was silently deleted.
+#
+# Two properties, and BOTH matter: the tokens are rejected loudly by the
+# offender check, AND — with that check bypassed — they are inert text.
+# ---------------------------------------------------------------------------
+echo "T21: fragment bodies cannot forge assembler control data"
+reset_fragments
+frag 'forge.added.md' '- looks innocuous' '##CATEGORY## security 1' '- more'
+frag 'begin.added.md' '- second' '##BEGIN##'
+offenders="$(changelog_fragment_body_offenders "$FRAG_DIR")"
+assert_contains "the ##CATEGORY## line is an offender" "forge.added.md:2" "$offenders"
+assert_contains "the ##BEGIN## line is an offender" "begin.added.md:2" "$offenders"
+
+out="$(changelog_assemble_unreleased_body "$FRAG_DIR" "$CHANGELOG")"
+assert_eq "no category is set by a body line" "0" \
+  "$(printf '%s\n' "$out" | grep -c '^### Security')"
+assert_eq "no BREAKING marker is forged by a body line" "0" \
+  "$(printf '%s\n' "$out" | grep -c 'BREAKING')"
+assert_eq "##BEGIN## is preserved as literal text, not swallowed" "1" \
+  "$(printf '%s\n' "$out" | grep -c '^##BEGIN##$')"
+assert_contains "the surrounding entry text survives intact" "- more" "$out"
+
+# ---------------------------------------------------------------------------
+# T22 — the heading scan is fence-aware
+#
+# An UNINDENTED ``` fence in the Unreleased body may legitimately contain a
+# line like `### Added` as sample text. Treating it as a real sub-heading
+# split the section at it, injected a blank line INSIDE the fence (mutating
+# existing content), and appended fragments into the resulting pseudo-section.
+# ---------------------------------------------------------------------------
+echo "T22: an unindented code fence is not a sub-heading"
+FENCED="$TMP_ROOT/fenced.md"
+cat > "$FENCED" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- documents the format:
+
+```
+### Added
+
+- sample inside a fence
+```
+
+- a real trailing entry
+
+## [0.1.0] - 2026-01-01
+
+- old.
+EOF
+reset_fragments
+frag '9-z.added.md' '- **below the fence** (#9).'
+out="$(changelog_assemble_unreleased_body "$FRAG_DIR" "$FENCED")"
+assert_eq "the fenced block comes through unchanged" \
+  "$(awk '/^```$/ { n++; next } n == 1 { print }' "$FENCED")" \
+  "$(printf '%s\n' "$out" | awk '/^```$/ { n++; next } n == 1 { print }')"
+assert_eq "the fragment is merged exactly once" "1" \
+  "$(printf '%s\n' "$out" | grep -c 'below the fence')"
+# The entry must sit AFTER the closing fence — inside it is the defect.
+entry_at="$(printf '%s\n' "$out" | grep -n 'below the fence' | cut -d: -f1)"
+close_at="$(printf '%s\n' "$out" | grep -n '^```$' | sed -n '2p' | cut -d: -f1)"
+if [[ -n "$entry_at" && -n "$close_at" && "$entry_at" -gt "$close_at" ]]; then
+  echo "  ok - the entry landed after the closing fence"
+  pass_count=$((pass_count + 1))
+else
+  echo "  NOT OK - the entry landed inside the fence (entry $entry_at, fence close $close_at)"
+  fail_count=$((fail_count + 1))
+fi
 
 echo
 echo "test_changelog.sh: $pass_count passed, $fail_count failed"

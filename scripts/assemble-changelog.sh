@@ -69,7 +69,16 @@
 # Portable shell only — bash 3.2 + POSIX awk, identical on macOS and Linux CI
 # (AGENTS.md § Safety rails).
 
-set -uo pipefail
+# `-e` IS LOAD-BEARING, not boilerplate. This script REWRITES CHANGELOG.md and
+# then DELETES the fragments — the only other copy of those entries — so an
+# unchecked failure mid-run destroys data. Without `-e`, a failing
+# `changelog_assemble_unreleased_body` left an empty body file, the rewrite
+# swallowed the whole pre-existing `## [Unreleased]` section, and the script
+# still exited 0 announcing success. It matches the sibling MUTATING scripts
+# beside it (`update-kernel.sh`, `prune-merged-branches.sh`); the `set -uo`
+# form used by `scripts/lint-*.sh` is for violation COUNTERS that must survive
+# a failing check, which this is not.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -118,10 +127,11 @@ problems=0
 
 invalid="$(changelog_fragment_invalid "$FRAGMENT_DIR")"
 if [[ -n "$invalid" ]]; then
-  printf 'assemble-changelog: UNRECOGNISED fragment filename(s) in %s:\n' "$FRAGMENT_DIR" >&2
+  printf 'assemble-changelog: UNRECOGNISED or unreadable entr(ies) in %s:\n' "$FRAGMENT_DIR" >&2
   printf '%s\n' "$invalid" | sed 's/^/  - /' >&2
   printf '  expected <slug>.<category>[.breaking].md with category in: %s\n' \
     "$(changelog_fragment_category_order | tr '\n' ' ')" >&2
+  printf '  a subdirectory or dangling symlink is never assembled — flatten or remove it\n' >&2
   problems=1
 fi
 
@@ -134,7 +144,7 @@ fi
 
 offenders="$(changelog_fragment_body_offenders "$FRAGMENT_DIR")"
 if [[ -n "$offenders" ]]; then
-  printf 'assemble-changelog: fragment body carries its own h1/h2/h3 heading (the assembler owns the category sub-heading):\n' >&2
+  printf 'assemble-changelog: fragment body carries its own h1/h2/h3 heading or an assembler control token (the assembler owns the category sub-heading):\n' >&2
   printf '%s\n' "$offenders" | sed 's/^/  - /' >&2
   problems=1
 fi
@@ -168,7 +178,7 @@ if [[ ! -f "$CHANGELOG" ]]; then
   die "no changelog at $CHANGELOG"
 fi
 
-# `grep -c` over a fixed anchor; a changelog with no Unreleased section is an
+# `grep -q` over a fixed anchor; a changelog with no Unreleased section is an
 # operator error, not something to paper over by inventing one.
 if ! grep -q '^## \[Unreleased\]' "$CHANGELOG"; then
   die "no '## [Unreleased]' heading in $CHANGELOG — add one before assembling"
@@ -188,11 +198,56 @@ if changelog_fragment_has_breaking "$FRAGMENT_DIR"; then
   mark_breaking=1
 fi
 
+# TRAP FIRST, mktemp second. Installed after the temps were made, a failure of
+# the SECOND mktemp leaks the first. The cleanup reads its targets at trap
+# time, so an unset-or-empty variable is simply skipped, and it always returns
+# 0 so it can never itself trip `set -e` on the way out.
+work_dir=""
+body_tmp=""
+out_tmp=""
+new_tmp=""
+# shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
+cleanup() {
+  # `if` rather than `[[ ]] && rm`: under `set -e` an AND-list whose left side
+  # is false fails as a whole, which would abort the trap part-way and skip
+  # the remaining removals.
+  if [[ -n "$body_tmp" ]]; then rm -f "$body_tmp"; fi
+  if [[ -n "$out_tmp" ]]; then rm -f "$out_tmp"; fi
+  if [[ -n "$new_tmp" ]]; then rm -f "$new_tmp"; fi
+  if [[ -n "$work_dir" ]]; then rm -rf "$work_dir"; fi
+  return 0
+}
+trap cleanup EXIT
+
+work_dir="$(mktemp -d)" || die "mktemp -d failed"
 body_tmp="$(mktemp)" || die "mktemp failed"
 out_tmp="$(mktemp)" || die "mktemp failed"
-trap 'rm -f "$body_tmp" "$out_tmp"' EXIT
 
-changelog_assemble_unreleased_body "$FRAGMENT_DIR" "$CHANGELOG" >"$body_tmp"
+# HOW MUCH BODY EXISTED BEFORE we touch anything. This is the reference for
+# the additive-over-non-empty guarantee: every non-blank line of the current
+# Unreleased body is re-emitted by the assembly (headings are rewritten in
+# place, never dropped; unrecognised sub-sections are kept), and each fragment
+# adds at least one more. So the assembled body can never hold FEWER non-blank
+# lines than the body it merged into — and if it does, something failed and we
+# must not write.
+prior_nonblank="$(changelog_unreleased_body "$CHANGELOG" | awk 'NF { c++ } END { print c + 0 }')"
+
+# The `|| die` is the first of two guards, and the one that catches a hard
+# failure (`mktemp` failure inside the lib, a crashed awk). `set -e` does NOT
+# cover this on its own: the exit status of a command whose stdout is
+# redirected is still checked, but the previous shape discarded it entirely.
+changelog_assemble_unreleased_body "$FRAGMENT_DIR" "$CHANGELOG" "$work_dir" >"$body_tmp" \
+  || die "assembly failed — nothing written to $CHANGELOG, fragments kept"
+
+# The second guard catches a SILENT failure — an assembly that exits 0 but
+# returns an empty (or shrunken) body. Checking the rewritten changelog
+# instead, as this once did, cannot see it: the rest of the file is still
+# there, so the output is non-empty and the guard passes while the entire
+# `## [Unreleased]` section has just been swallowed.
+assembled_nonblank="$(awk 'NF { c++ } END { print c + 0 }' "$body_tmp")"
+if [[ "$assembled_nonblank" -eq 0 || "$assembled_nonblank" -lt "$prior_nonblank" ]]; then
+  die "assembly returned $assembled_nonblank non-blank line(s) where [Unreleased] already had $prior_nonblank — refusing to write (nothing changed, fragments kept)"
+fi
 
 # Replace ONLY the first `## [Unreleased]` section's body. The `done` flag
 # matters: `## [Unreleased] — BREAKING` also occurs inside historical release
@@ -224,7 +279,29 @@ if [[ "$MODE" == "dry-run" ]]; then
   exit 0
 fi
 
-cat "$out_tmp" >"$CHANGELOG"
+# ATOMIC REPLACE, then delete. `cat "$out_tmp" >"$CHANGELOG"` truncated the
+# real file in place and left its status unchecked, so a write that failed
+# part-way (ENOSPC, a read-only mount, an interrupt) corrupted CHANGELOG.md
+# AND the deletion loop below then removed the fragments — the only other copy
+# of those entries. Staging beside the target and renaming means the file is
+# either wholly old or wholly new, and the fragments are only ever deleted
+# after a replace that actually succeeded.
+#
+# The temp is created in the SAME DIRECTORY as the changelog on purpose:
+# `mv` is only atomic within one filesystem, and $TMPDIR is routinely a
+# different one. `cp -p` first so the rename preserves the changelog's
+# existing mode rather than stamping mktemp's 0600 onto it.
+changelog_dir="$(dirname "$CHANGELOG")"
+new_tmp="$(mktemp "$changelog_dir/.assemble-changelog.XXXXXX")" \
+  || die "cannot stage a replacement in $changelog_dir — $CHANGELOG untouched, fragments kept"
+cp -p "$CHANGELOG" "$new_tmp" \
+  || die "cannot copy $CHANGELOG's mode onto the staged replacement — $CHANGELOG untouched, fragments kept"
+cat "$out_tmp" >"$new_tmp" \
+  || die "write to the staged replacement failed — $CHANGELOG untouched, fragments kept"
+mv -f "$new_tmp" "$CHANGELOG" \
+  || die "atomic replace of $CHANGELOG failed — fragments kept"
+new_tmp=""   # ownership handed to $CHANGELOG; the trap must not remove it
+
 say "assembled $count fragment(s) into $CHANGELOG"
 if [[ "$mark_breaking" -eq 1 ]]; then
   say "at least one fragment is BREAKING — the Unreleased heading and its sub-heading(s) carry the marker"
@@ -235,6 +312,8 @@ if [[ "$KEEP_FRAGMENTS" -eq 1 ]]; then
   exit 0
 fi
 
+# Reached ONLY after the atomic replace above succeeded — every `die` on that
+# path leaves the fragments on disk, so the entries always survive somewhere.
 printf '%s\n' "$names" | while IFS= read -r name; do
   if [[ -n "$name" ]]; then
     rm -f "$FRAGMENT_DIR/$name"

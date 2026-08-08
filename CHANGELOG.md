@@ -82,8 +82,14 @@ reads that marker; a stranger greps for it before pulling.
   — it merges into a non-empty `[Unreleased]` rather than replacing it, so
   nothing accumulated since the last tag is dropped and an in-flight PR still
   writing a direct entry stays harmless. It refuses to write at all on an
-  unrecognised filename, an empty fragment, or a body carrying its own
-  heading. **Additive and non-breaking on its own:**
+  unrecognised filename, an empty fragment, a body carrying its own heading,
+  or an entry it cannot read as a fragment (a subdirectory, a dangling
+  symlink). The rewrite is staged beside `CHANGELOG.md` and renamed into
+  place, and fragments are deleted only after that succeeds, so a failed run
+  never loses an entry from both places at once. Fragment metadata travels
+  out of band, so body text is never parsed as assembler control data — a
+  fragment cannot forge the `BREAKING` marker the downstream update gate
+  reads. **Additive and non-breaking on its own:**
   `workflows/scripts/check-changelog-entry.sh` is unchanged and a direct
   `## [Unreleased]` entry still satisfies it — nothing yet *requires* a
   fragment. Cutting the gate over to fragments (a BREAKING change for

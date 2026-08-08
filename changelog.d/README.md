@@ -7,15 +7,12 @@ written by the PR that makes the change and folded into `CHANGELOG.md`'s
 
 ## Why
 
-`VERSIONING.md` requires a `## [Unreleased]` entry for every contract-surface
-change, and `workflows/scripts/check-changelog-entry.sh` enforces it — so
-**25 of the last 25** commits touched `CHANGELOG.md`. Two concurrent PRs both
-inserting a line at the same anchor in the same file collide *structurally*,
-every time, and each collision costs a rebase or a merge-queue ejection.
-
-Two PRs writing two **distinct new files** share no line and cannot conflict.
-That is the whole idea. Direction ratified by the keystone spike
-(temperloop#1311, epic #1299).
+Every PR needs a changelog entry, so every PR edited the same file at the same
+anchor — and two concurrent ones collided every time. Two PRs writing two
+**distinct new files** share no line and cannot conflict. That is the whole
+idea. Direction ratified by the keystone spike (temperloop#1311, epic #1299);
+the measured motivation is in
+[`docs/features/changelog-fragments.md`](../docs/features/changelog-fragments.md).
 
 ## Filename format
 
@@ -62,17 +59,30 @@ Rules the assembler enforces (it fails the cut rather than dropping an entry):
 - **Not empty.** An empty fragment is a lost entry.
 - **A recognised filename.** An unparseable name fails loudly; it is never
   skipped silently.
+- **A plain file, directly in this directory.** A fragment in a subdirectory,
+  or a symlink pointing at nothing, cannot be read and is reported rather than
+  skipped — otherwise it would sit here looking pending while the release
+  shipped without it.
 
 Leading and trailing blank lines are trimmed; interior blank lines are kept.
 
 ## `BREAKING`
 
-`changelog_breaking_sections()` — the detector `update-kernel` and
-`temperloop update` read to gate a downstream pull — sets its flag from
-**heading lines only**; body prose never sets it. So breakingness is declared
-by the `.breaking` marker in the filename, and the assembler turns that into
-`### Changed — BREAKING` plus the `## [Unreleased] — BREAKING` suffix. Writing
-the word "breaking" in your prose does *not* mark the release.
+Breakingness is declared by the `.breaking` marker in the filename, and the
+assembler turns that into `### Changed — BREAKING` plus the
+`## [Unreleased] — BREAKING` suffix. The detector reads **heading lines only**,
+so writing the word "breaking" in your prose does *not* mark the release — and
+neither does omitting it un-mark one.
+
+**What the marker actually does to a downstream repo.** `update-kernel` and
+`temperloop update` scan the CHANGELOG range they are about to pull for a
+`BREAKING` heading. If they find one they **refuse to pull unattended**: the
+person updating has to acknowledge it explicitly — `KERNEL_ALLOW_BREAKING=1`,
+or confirming at an interactive prompt — and the marked sections are printed to
+them as migration notes first. An unmarked delta pulls without stopping. So
+adding `.breaking` deliberately interrupts every overlay that vendors this
+kernel; leaving it off when the change *is* breaking lets them pull it
+silently. See `VERSIONING.md` § Signal to the machinery.
 
 ## Assembly
 
@@ -94,6 +104,10 @@ order and their content, fragments append to the end of their category's
 section, and a category with no section yet gets a new one. A PR that still
 writes a direct `## [Unreleased]` line instead of a fragment is therefore
 harmless rather than lost.
+
+Fragments are deleted only after the rewrite has actually landed. If anything
+goes wrong the files stay here, so an entry is never lost from both places at
+once.
 
 ## Status
 
