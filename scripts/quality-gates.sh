@@ -334,6 +334,21 @@ KERNEL_GATES=(
   # very failure #1098 is about.
   "bash scripts/lint-bash32-cmdsubst-comment.sh"
   "bash scripts/tests/test_lint_bash32_cmdsubst_comment.sh"
+  # Piped `grep -q` guard + its regression (temperloop#1050). Same direct-`bash`
+  # form and same reason as the two pairs above. `grep -q` exits at its FIRST
+  # match without draining the pipe, so the writer upstream takes SIGPIPE and,
+  # under `set -o pipefail`, the pipeline reports 141 even though grep matched —
+  # a RACE, so such a line passes for months and then fails once under a longer
+  # input. Nothing already in this list covers it: shellcheck has no check for
+  # the shape (SC2143 is the adjacent `$(... | grep -c)` smell) and no runtime
+  # test can reliably observe a race. Hence a STATIC lint, over the WHOLE tracked
+  # shell set with NO pipefail predicate — a sourced lib sets no `set` line and
+  # inherits pipefail from its caller, which is precisely how
+  # workflows/scripts/lib/issue-marker-probe.sh hid a live site. Its test asserts
+  # the lint rejects the actual pre-sweep bin/subcommands/init.sh line, and that
+  # it stays silent on a comment that merely names the shape.
+  "bash scripts/lint-pipe-grep-q.sh"
+  "bash scripts/tests/test_lint_pipe_grep_q.sh"
   # Main knowledge_store interface + plain-files backend suite (foundation
   # #771) — root resolution, doc-id normalization, write/read round-trip,
   # --no-clobber, atomic write, list, and (temperloop#1308) the ks_append

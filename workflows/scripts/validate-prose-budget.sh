@@ -270,7 +270,7 @@ while IFS= read -r rline || [ -n "$rline" ]; do
   case "$rline" in ''|\#*) continue ;; esac
   rid="${rline%%	*}"
   rfile="${rline#*	}"
-  if [ "$rid" = "$rline" ] || [ -z "$rfile" ] || ! printf '%s' "$rid" | grep -qE '^[A-Z]+\.[0-9]+$'; then
+  if [ "$rid" = "$rline" ] || [ -z "$rfile" ] || ! printf '%s' "$rid" | grep -E '^[A-Z]+\.[0-9]+$' >/dev/null; then
     fail=1
     violations=$((violations + 1))
     reg_malformed=$((reg_malformed + 1))
@@ -306,7 +306,7 @@ REG_DUP_EOF
 tier2_list="$(printf '%s\n' "${tier2_files[@]}")"
 while IFS= read -r rfile; do
   [ -z "$rfile" ] && continue
-  if ! printf '%s\n' "$tier2_list" | grep -qxF "$rfile"; then
+  if ! printf '%s\n' "$tier2_list" | grep -xF "$rfile" >/dev/null; then
     fail=1
     violations=$((violations + 1))
     echo "CITATION-MARKERS: registry names a file not in the tracked claude/**/*.md set: $rfile"

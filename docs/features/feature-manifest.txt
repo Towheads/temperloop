@@ -320,6 +320,12 @@ quality-gates scripts/lint-zsh-param-tie.sh
 # pre-merge leg, so it has to be a textual lint rather than a parser invocation.
 quality-gates scripts/lint-bash32-cmdsubst-comment.sh
 quality-gates scripts/tests/test_lint_bash32_cmdsubst_comment.sh
+# Piped-`grep -q` lint (temperloop#1050) — same shape and same reason as the
+# bash-3.2 lint above: shellcheck has no check for `<writer> | grep -q`, and the
+# SIGPIPE/pipefail failure it causes is a race no runtime test can observe
+# reliably, so the guard has to be textual.
+quality-gates scripts/lint-pipe-grep-q.sh
+quality-gates scripts/tests/test_lint_pipe_grep_q.sh
 quality-gates scripts/ensure-shellcheck.sh
 quality-gates scripts/tests/test_ensure_shellcheck.sh
 quality-gates workflows/scripts/config/*

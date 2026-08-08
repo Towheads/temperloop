@@ -53,10 +53,10 @@ while IFS= read -r n; do
   [ -n "$n" ] || continue
   # Did this PR touch a workflow spec? (per-PR files — not available on `pr list`.)
   files="$("$GH" pr view "$n" "${repo_args[@]+"${repo_args[@]}"}" --json files --jq '.files[].path' 2>/dev/null || true)"
-  printf '%s\n' "$files" | grep -qE '^claude/commands/.*\.md$' || continue
+  printf '%s\n' "$files" | grep -E '^claude/commands/.*\.md$' >/dev/null || continue
   total=$((total + 1))
   body="$(printf '%s' "$prs_json" | jq -r --argjson n "$n" '.[] | select(.number==$n) | .body // ""')"
-  if printf '%s' "$body" | grep -qiE 'workflow-reviewer|BLOCKING|MAJOR'; then
+  if printf '%s' "$body" | grep -iE 'workflow-reviewer|BLOCKING|MAJOR' >/dev/null; then
     covered=$((covered + 1))
   else
     uncovered_list="$uncovered_list $n"

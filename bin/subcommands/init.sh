@@ -1144,7 +1144,7 @@ if [ -d "$board_toolkit_dir" ] || base_has "workflows/scripts/board"; then
     printf '%s\n' "$1" | awk -v p="board.$2." 'index($0, p) == 1'
   }
   boards_conf_has_id() {
-    printf '%s\n' "$1" | grep -Fxq "$2"
+    printf '%s\n' "$1" | grep -Fx "$2" >/dev/null
   }
 
   boards_conf_unsafe=0

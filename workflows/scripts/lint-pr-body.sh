@@ -128,7 +128,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-if [ -n "$expect" ] && ! printf '%s' "$expect" | grep -qE '^[0-9]+$'; then
+if [ -n "$expect" ] && ! printf '%s' "$expect" | grep -E '^[0-9]+$' >/dev/null; then
 	echo "lint-pr-body: --expect must be a number, got: $expect" >&2
 	exit 2
 fi
@@ -290,7 +290,7 @@ done
 # only, per this script's header. A missing heading here means the PR-body
 # skeleton template's required Verification-surface slot was dropped.
 if [ "$require_verification" = "1" ]; then
-	if ! printf '%s\n' "$body" | grep -Eqi '^#{1,6}[[:space:]]+verification'; then
+	if ! printf '%s\n' "$body" | grep -Ei '^#{1,6}[[:space:]]+verification' >/dev/null; then
 		echo "lint-pr-body: FAIL — no '## Verification' section found. The PR-body skeleton template (claude/message-schema.md) requires a Verification-surface slot; see claude/CLAUDE.kernel.md § PR verification surface for the by-change-type breakdown to fill it with." >&2
 		violations=$((violations + 1))
 	fi

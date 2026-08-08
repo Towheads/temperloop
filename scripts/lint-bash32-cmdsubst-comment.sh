@@ -90,7 +90,7 @@ else
       *)
         # Extensionless tracked script: keep it only if it declares a sh/bash
         # interpreter. `head -1` on a binary is harmless (grep just won't match).
-        if head -n 1 "$REPO_ROOT/$f" 2>/dev/null | grep -qE '^#!.*[ /](ba)?sh( |$)'; then
+        if head -n 1 "$REPO_ROOT/$f" 2>/dev/null | grep -E '^#!.*[ /](ba)?sh( |$)' >/dev/null; then
           files+=("$REPO_ROOT/$f")
         fi
         ;;

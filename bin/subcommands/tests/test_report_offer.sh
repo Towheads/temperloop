@@ -128,8 +128,8 @@ lines_after_first_dispatch="$(wc -l < "$REPO3/.temperloop/baseline.jsonl" | tr -
 [ "$lines_after_first_dispatch" -eq 3 ] || fail "the dispatched subcommand (baseline-snapshot) should still have appended its own record"
 
 # --- 7: dismissal state lands only under XDG_STATE_HOME, never in the repo -
-find "$REPO3" -name '*dismiss*' | grep -q . && fail "dismissal state must never be written inside the repo tree"
-find "$STATE3" -type f | grep -q . || fail "dismissal state should be written under XDG_STATE_HOME"
+find "$REPO3" -name '*dismiss*' | grep . >/dev/null && fail "dismissal state must never be written inside the repo tree"
+find "$STATE3" -type f | grep . >/dev/null || fail "dismissal state should be written under XDG_STATE_HOME"
 
 # --- 5: fires once -- a second dispatch does not repeat the offer ----------
 out2="$(run_temperloop "$REPO3" "$STATE3" 2>&1 1>/dev/null)"

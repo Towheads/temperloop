@@ -832,7 +832,7 @@ revert_label() {
   fi
   if "$EJECT_GH_BIN" label delete "$name" -R "$repo" --yes >/dev/null 2>&1; then
     echo "label '$name' ($repo): deleted"
-  elif ! "$EJECT_GH_BIN" label list -R "$repo" --json name -q '.[].name' 2>/dev/null | grep -Fxq "$name"; then
+  elif ! "$EJECT_GH_BIN" label list -R "$repo" --json name -q '.[].name' 2>/dev/null | grep -Fx "$name" >/dev/null; then
     echo "label '$name' ($repo): already absent — skipped"
   else
     echo "label '$name' ($repo): FAILED to delete"

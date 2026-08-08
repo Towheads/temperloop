@@ -131,7 +131,7 @@ case "${2:-}" in
   list)
     # FIXTURE_ASSIGNED=1 models an issue still assigned to the operator, i.e.
     # UNANSWERED: the `--assignee ""` filter excludes it server-side.
-    if [ "${FIXTURE_ASSIGNED:-0}" = "1" ] && printf '%s' "$*" | grep -q -- '--assignee'; then
+    if [ "${FIXTURE_ASSIGNED:-0}" = "1" ] && printf '%s' "$*" | grep -- '--assignee' >/dev/null; then
       echo '[]'
     else
       cat "$FIXTURE_ISSUE_JSON"

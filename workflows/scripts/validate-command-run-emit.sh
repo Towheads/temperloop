@@ -87,7 +87,7 @@ check_wiring() {  # $1=label $2=path $3=expected --command value
   # The invocation spans a few lines (a `\`-continued bash block), so scan a
   # window of lines AFTER the emit-command-run.sh match for the --command
   # flag rather than requiring it on the same line.
-  if ! grep -A4 -F 'emit-command-run.sh' "$file" | grep -Eq -- "--command[[:space:]]+${cmdval}\b"; then
+  if ! grep -A4 -F 'emit-command-run.sh' "$file" | grep -E -- "--command[[:space:]]+${cmdval}\b" >/dev/null; then
     echo "FAIL  $label ($file) invokes emit-command-run.sh but not with --command ${cmdval} — wiring drifted"
     fail=1
     return
@@ -106,7 +106,7 @@ check_resolved() {  # $1=label $2=path
     return
   fi
   # The invocation is a `\`-continued block; scan a window after the match.
-  if ! grep -A8 -F 'emit-command-run.sh' "$file" | grep -Eq -- '--resolved[[:space:]]'; then
+  if ! grep -A8 -F 'emit-command-run.sh' "$file" | grep -E -- '--resolved[[:space:]]' >/dev/null; then
     echo "FAIL  $label ($file) declares a 'resolved (verdict)' terminal disposition but its emit-command-run.sh call omits --resolved — verdict-resolved items would be invisible and the counts would not reconcile against items_processed (temperloop#1084)"
     fail=1
     return

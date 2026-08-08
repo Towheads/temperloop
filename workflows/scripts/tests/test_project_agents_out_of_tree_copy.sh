@@ -83,7 +83,7 @@ if grep -rlF "$REPO_ROOT" "${P1}/.claude" >/dev/null 2>&1; then
 fi
 # Belt-and-suspenders: no plain, non-recursive symlink anywhere under the
 # deployed tree either (grep above only checks file CONTENT).
-if find "${P1}/.claude" -type l | grep -q .; then
+if find "${P1}/.claude" -type l | grep . >/dev/null; then
   fail "1: a symlink was found under the deployed out-of-tree .claude/ tree"
 fi
 

@@ -233,7 +233,7 @@ case "$out" in
 esac
 git -C "$BARE" show-ref --verify --quiet refs/heads/demo/issue-5 \
   || fail "proposal branch was not pushed to the bare upstream"
-git -C "$BARE" show refs/heads/demo/issue-5:greet.sh 2>/dev/null | grep -q 'Hello,' \
+git -C "$BARE" show refs/heads/demo/issue-5:greet.sh 2>/dev/null | grep 'Hello,' >/dev/null \
   || fail "pushed greet.sh does not carry the fix"
 echo "PASS: happy path -- claims #5, drives a real (fake) claude judgment call, opens PR_OPENED"
 

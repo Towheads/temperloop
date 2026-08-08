@@ -278,7 +278,7 @@ check "the record was appended to the monthly lake file" test -s "$LAKE/item-eff
 check_eq "one invocation appends exactly one line" "1" "$(wc -l < "$LAKE/item-efficiency-${MONTH}.jsonl" | tr -d ' ')"
 PLAKE="$TMP/lake-print"
 emit "$ROOT" "$PLAKE" --slug demo --build-run wf_build-001 --print-only >/dev/null
-check "--print-only writes NOTHING to the lake" bash -c "! ls '$PLAKE'/item-efficiency-*.jsonl 2>/dev/null | grep -q ."
+check "--print-only writes NOTHING to the lake" bash -c "! ls '$PLAKE'/item-efficiency-*.jsonl 2>/dev/null | grep . >/dev/null"
 
 # ===========================================================================
 # 6. Degradation — warn + null + exit 0, never a crash or a fabricated number.

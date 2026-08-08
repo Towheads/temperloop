@@ -282,5 +282,14 @@ bash scripts/lint-zsh-param-tie.sh	*.sh
 # tests-excluding scope would have left half the known breakage ungated.
 bash scripts/lint-bash32-cmdsubst-comment.sh	*.sh bin/** .temperloop/** workflows/scripts/report-producers/**
 bash scripts/tests/test_lint_bash32_cmdsubst_comment.sh	scripts/lint-bash32-cmdsubst-comment.sh scripts/tests/test_lint_bash32_cmdsubst_comment.sh
+# The piped-`grep -q` lint (temperloop#1050) reads the same WHOLE tracked shell
+# set as the bash-3.2 lint above, and for the same reason: the shape occurs in
+# `*/tests/*` and in extensionless entry points (bin/temperloop, bin/foundation,
+# the report producers) as well as in `*.sh`. Deliberately no pipefail scoping —
+# a sourced lib inherits pipefail from its caller, so a pipefail-file predicate
+# is structurally blind to exactly the live site the sweep found in
+# workflows/scripts/lib/issue-marker-probe.sh.
+bash scripts/lint-pipe-grep-q.sh	*.sh bin/** .temperloop/** workflows/scripts/report-producers/**
+bash scripts/tests/test_lint_pipe_grep_q.sh	scripts/lint-pipe-grep-q.sh scripts/tests/test_lint_pipe_grep_q.sh
 make shellcheck	*.sh
 bash scripts/tests/test_ensure_shellcheck.sh	scripts/ensure-shellcheck.sh scripts/tests/test_ensure_shellcheck.sh

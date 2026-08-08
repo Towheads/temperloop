@@ -200,7 +200,7 @@ auth_re='invalid[ _-]?api[ _-]?key|authentication[ _]error|authentication failed
 
 status="ok"
 note="judge spawned at one level of nesting with the ${credential_source} credential in scope"
-if printf '%s' "$combined" | grep -Eiq "$auth_re"; then
+if printf '%s' "$combined" | grep -Ei "$auth_re" >/dev/null; then
   status="auth-failed"
   note="retro-judge-auth-failed: the nested judge could not authenticate (credential_source=${credential_source}, present=${credential_present}) — no judgment ran"
 elif [ "$rc" -ne 0 ]; then

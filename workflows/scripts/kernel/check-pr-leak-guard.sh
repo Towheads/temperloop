@@ -273,7 +273,7 @@ if [[ $added_count -gt 0 ]]; then
       path="${rec%%$'\t'*}"
       text="${rec#*$'\t'}"
       case "$text" in *denylist:allow*) continue ;; esac
-      if printf '%s' "$text" | grep -Eq -- "$pat"; then
+      if printf '%s' "$text" | grep -E -- "$pat" >/dev/null; then
         printf 'LEAK  %s: [%s] %s\n    + %s\n' \
           "$path" "$pat" "${descriptions[$i]}" "$text"
         violations=$((violations + 1))

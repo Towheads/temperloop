@@ -376,7 +376,7 @@ EOF
 }
 
 ensure_seed_label() {
-  if gh label list --repo "$REPO" --json name -q '.[].name' 2>/dev/null | grep -Fxq "$SEED_LABEL"; then
+  if gh label list --repo "$REPO" --json name -q '.[].name' 2>/dev/null | grep -Fx "$SEED_LABEL" >/dev/null; then
     return 0
   fi
   echo "==> Creating '$SEED_LABEL' label on $REPO"
@@ -433,7 +433,7 @@ seed_issues() {
   have="$(existing_seed_titles)"
   printf '%s\n' "$ISSUE_TITLES" | while IFS= read -r title; do
     [[ -z "$title" ]] && continue
-    if printf '%s\n' "$have" | grep -Fxq "$title"; then
+    if printf '%s\n' "$have" | grep -Fx "$title" >/dev/null; then
       echo "  -> issue already exists: $title"
       continue
     fi

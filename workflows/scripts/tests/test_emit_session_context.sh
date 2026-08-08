@@ -83,9 +83,9 @@ check "normal mode: exits 0" test "$RC2" -eq 0
 check "normal mode: raw file created" test -f "$RAWFILE2"
 check "normal mode: exactly one line appended" test "$(wc -l < "$RAWFILE2" | tr -d ' ')" = "1"
 check "normal mode: transcript_tokens_total correct (6750)" \
-  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE2' | grep -qx 6750"
+  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE2' | grep -x 6750 >/dev/null"
 check "normal mode: session_id correct" \
-  bash -c "jq -r '.session_id' '$RAWFILE2' | grep -qx sess-write"
+  bash -c "jq -r '.session_id' '$RAWFILE2' | grep -x sess-write >/dev/null"
 
 # Run it again -> a SECOND line is appended (append-only, never overwritten).
 SESSION_CONTEXT_RAW_DIR="$RAWDIR2" bash "$SCRIPT" \
@@ -120,7 +120,7 @@ OUT5=$(bash "$SCRIPT" --transcript "$T5" --session-id "$CANARY-in-session-id-not
 check "privacy: transcript_tokens_total correct (50) despite recognizable content in the transcript" \
   test "$(printf '%s' "$OUT5" | jq -r '.transcript_tokens_total')" = "50"
 check "privacy: the canary string appears ONLY where the caller explicitly put it (session_id), never elsewhere in the record" \
-  bash -c "jq -r 'del(.session_id) | tostring' <<<'$OUT5' | grep -qv '$CANARY'"
+  bash -c "jq -r 'del(.session_id) | tostring' <<<'$OUT5' | grep -v '$CANARY' >/dev/null"
 
 # --- 6. Unknown argument -> warns, ignored, never fails ---------------------
 STDERR6="$TMP/test6.stderr"

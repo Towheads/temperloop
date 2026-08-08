@@ -166,7 +166,7 @@ _issue_marker_probe_corpus() {
     [ -n "$doc_id" ] || continue
     content="$(ks_read "$doc_id" 2>/dev/null)" || continue
     body="$(printf '%s\n' "$content" | _issue_marker_probe_extract_body)"
-    if printf '%s' "$body" | grep -qF -- "$marker"; then
+    if printf '%s' "$body" | grep -F -- "$marker" >/dev/null; then
       n="$(printf '%s\n' "$content" | sed -n 's/^number: *//p' | head -n1)"
       [ -n "$n" ] && numbers+=("$n")
     fi

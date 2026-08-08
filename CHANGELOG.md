@@ -54,7 +54,34 @@ reads that marker; a stranger greps for it before pulling.
   list` read plus the `status:` flip the operator already asked for.
   `/check-in` Part 1 gains a read-only § Stranded plan approvals probe as the
   backstop for a repo neither arm ticks.
-
+- **Every piped `grep -q` is gone from the tracked shell set, and a new lint
+  keeps the shape out** (#1050). `grep -q` exits zero at its *first* match
+  without draining the pipe, so the writer upstream takes SIGPIPE (141) and,
+  under `set -o pipefail`, the pipeline reports **141 — a failure — even though
+  grep matched**. It is a race on whether the writer had already finished, which
+  is why such a line passes for months and then fails once under a longer input.
+  Every site is converted to the one sanctioned form — drop `q` from the flag
+  cluster however it is clustered (`-Fxq`→`-Fx`, `-qF`→`-F`, `-Eiq`→`-Ei`, bare
+  `-q`→ no flag) and append `>/dev/null`, which drains to EOF with bit-for-bit
+  identical exit status. A `<<<` herestring and an intermediate variable were
+  both rejected: each changes trailing-newline or word-splitting behaviour per
+  site. **Contract surface:** `scripts/quality-gates.sh` gains a `KERNEL_GATES`
+  pair, `bin/subcommands/{init,eject}.sh` change behaviourally under pipefail,
+  and an overlay carrying its own shell scripts will see the new lint run
+  against them. Not breaking — the new gate rejects a shape that was already
+  wrong, and the fix is mechanical.
+- **New `scripts/lint-pipe-grep-q.sh` gate** (#1050). Anchored, quote-aware, and
+  self-exempt: it fires on `<writer> | grep -<cluster containing q>` (including
+  `egrep`/`fgrep`/`zgrep` and `command grep`), and stays silent on an *unpiped*
+  `grep -q file` — correct, and a pure win — and on a comment that merely names
+  the shape. It reads every tracked `*.sh` **plus every tracked file with a
+  sh/bash shebang**, with **no pipefail predicate**: a sourced lib sets no `set`
+  line and inherits pipefail from its caller, which is exactly how
+  `workflows/scripts/lib/issue-marker-probe.sh` hid a live site. Paired
+  `scripts/tests/test_lint_pipe_grep_q.sh` demonstrates the lint firing on the
+  real pre-sweep `bin/subcommands/init.sh` line and staying silent on prose.
+  The sweep's completeness criterion is that lint exiting 0 over the tree — a
+  predicate, deliberately not a site count.
 - **`/sweep` now treats an issue with a later `Clarified (…)` answer comment
   as answered, not underspecified** (#1193). Phase 1's per-item fetch pulled
   only `title,body,labels`, so an issue whose question had already been

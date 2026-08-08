@@ -347,7 +347,7 @@ _de_resolve_default_repo() {
 # heuristic "reads as temporary in prose" keyword set — a deliberately small,
 # fixed, documented list (never a semantic reader; see header § STATED LIMIT).
 _de_reads_temporary() {
-  printf '%s' "$1" | grep -qiE 'temporary|deprecated|sunset|removed at|to be removed|timeboxed|phase [0-9]|for now|until [a-z0-9#]'
+  printf '%s' "$1" | grep -iE 'temporary|deprecated|sunset|removed at|to be removed|timeboxed|phase [0-9]|for now|until [a-z0-9#]' >/dev/null
 }
 
 # ── Walk the in-scope set, classify each row ────────────────────────────────
