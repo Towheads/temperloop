@@ -21,7 +21,13 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 # shellcheck disable=SC1091
 source "$LIB_DIR/claim_marker.sh"
 
-SOCK="$(mktemp -u "${TMPDIR:-/tmp}/test-claim-marker-XXXXXX.sock")"
+# A per-run scratch dir (mktemp -d, real allocation — no global-namespace
+# race) holds the socket at a FIXED name inside it; uniqueness comes from the
+# enclosing directory, not from an unallocated advisory name. A socket path
+# still can't be pre-created (tmux must bind it itself), which the fixed name
+# inside an as-yet-empty scratch dir satisfies.
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/test-claim-marker-XXXXXX")"
+SOCK="$SCRATCH/test-claim-marker.sock"
 
 # Pin every lib tmux call to the isolated server — no chance of hitting the
 # user's default server.
@@ -29,7 +35,7 @@ _claim_marker_tmux() { command tmux -S "$SOCK" "$@"; }
 
 T() { command tmux -S "$SOCK" "$@"; }   # the test's own assertions
 
-cleanup() { T kill-server 2>/dev/null || true; rm -f "$SOCK"; }
+cleanup() { T kill-server 2>/dev/null || true; rm -rf "$SCRATCH"; }
 trap cleanup EXIT
 
 fail() { echo "FAIL: $1" >&2; exit 1; }

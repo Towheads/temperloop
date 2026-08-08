@@ -113,8 +113,17 @@ export KNOWLEDGE_READ_LOG="$_TEST_ISOLATION_DIR/no-such-read-log.log"
 # would make every fixture below spuriously subject to orphan-pattern
 # findings against ITS real T0 inventory instead of this suite's fixtures).
 # Tests that specifically exercise T0 coverage override this per-invocation.
+# Allocated as a per-run scratch dir (mktemp -d, real allocation — no
+# global-namespace race) holding a FIXED, never-created name; uniqueness
+# comes from the enclosing directory. The scratch dir itself must survive to
+# script end (T0_INVENTORY_FILE is referenced by many later tests, all
+# relying on its PARENT existing while the file itself stays absent), so it
+# is trap-cleaned at EXIT rather than removed inline like _TEST_ISOLATION_DIR
+# above.
+_T0_SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vault-hygiene-test-t0-XXXXXX")"
+trap 'rm -rf "$_T0_SCRATCH_DIR"' EXIT
 export T0_INVENTORY_FILE
-T0_INVENTORY_FILE="$(mktemp -u "${TMPDIR:-/tmp}/vault-hygiene-test-no-t0-XXXXXX")"
+T0_INVENTORY_FILE="$_T0_SCRATCH_DIR/no-t0-inventory.txt"
 
 pass=0
 fail=0
