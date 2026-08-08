@@ -92,6 +92,30 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **A transient GitHub Actions infra outage no longer permanently ejects a
+  healthy PR onto the do-not-retry path** (#1175). `gate.sh diagnose-queue`
+  splits its `MERGE_GROUP_FAILED` verdict on **per-job step data**
+  (`repos/<owner>/<repo>/actions/runs/<run_id>/jobs`, never log text): a
+  workflow-defined step — any step after the runner-provided "Set up job"
+  step — itself concluding `failure` stays `MERGE_GROUP_FAILED` (exit 7, a
+  real gate failure); the run concluding `failure` before ever reaching a
+  workflow-defined step now reads a new `MERGE_GROUP_INFRA` verdict (exit 11,
+  payload `{"pr":N,"run_id":N}`) instead. The motivating incident: foundation
+  PR #1563's `merge_group` run logged `Set up job -> Failed to resolve action
+  download info -> Service Unavailable` and was reported as a gate failure,
+  routing a healthy PR to conflict-resolution with no conflict to resolve.
+  Classification is purely structural — the step's position, never its name
+  or any log string — so a CI step rename can never silently reclassify a
+  result, and anything unclassifiable (the jobs lookup erroring, an
+  empty/missing jobs array, missing step data) stays the conservative
+  `MERGE_GROUP_FAILED` default: this split never widens what gets retried.
+  `build.md` Step 4b routes `MERGE_GROUP_INFRA` to a **re-enqueue** (the same
+  re-arm-once pattern `DEQUEUED` uses) rather than ejecting to 4c, and names
+  it alongside `MERGE_GROUP_FAILED` in the unattended pending-decisions
+  record. Contract surface via `claude/commands/build.md`; **not** breaking —
+  `MERGE_GROUP_FAILED`'s existing exit code, payload shape, and 4c routing
+  are unchanged for a real gate failure.
+
 - **A stalled merge queue is now distinguishable from a merely slow one**
   (#1178). `gate.sh diagnose-queue` gains a `QUEUE_STALLED` verdict (exit 10,
   payload `{"pr":N,"enqueued_secs":S,"merge_group_runs":0}`): a PR that is
