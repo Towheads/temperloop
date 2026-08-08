@@ -513,6 +513,14 @@ KERNEL_GATES=(
   # never reads the operator's real ~/.claude corpus; `gh` is stubbed, never
   # called. Same direct-`bash` form as the sibling gates above.
   "bash workflows/scripts/tests/test_item_efficiency.sh"
+  # Comparison-statistics library (temperloop#1249, epic #1225 "model
+  # comparison harness"): bootstrap CI known-answer fixture, minimum-
+  # detectable-effect at two N, the inconclusive floor asserted at the
+  # threshold boundary in BOTH directions, and coverage % against the
+  # emit-feasible seat denominator (temperloop#1246). Zero network, zero
+  # model calls — deterministic fixtures via a seeded RNG whose sequence is
+  # stable across CPython versions for a fixed seed.
+  "make test-model-comparison-stats"
   # Portable-timeout shared shim (temperloop#256): run_with_timeout's
   # backend selection (native `timeout` -> `gtimeout` -> the bash-3.2-safe
   # background+kill fallback), the 124->137 exit-code normalization across

@@ -906,6 +906,34 @@ fi
 # the same idiom capture.sh's self-healing `fnd:` labels use, so no third repo needs a
 # manual onboarding step here at all.
 
+# ── Comparison-statistics library (temperloop#1249, epic #1225 "model
+#    comparison harness") ───────────────────────────────────────────────────
+# workflows/scripts/model-comparison/stats.sh: bootstrap confidence intervals,
+# the minimum-detectable-effect disclosure, the inconclusive floor, and
+# emit-coverage %. Every one of these five is a real operator-facing tunable
+# (named symbolically in stats.sh's own header, never re-valued in prose —
+# see § Named-setting convention).
+#
+# Sample-size floor: below this many outcomes, `verdict` is ALWAYS
+# "inconclusive" and never returns a winner, whatever the bootstrap CI shows.
+: "${MODEL_COMPARISON_MIN_SAMPLE_N:=20}"
+# Percentile-bootstrap resample count.
+: "${MODEL_COMPARISON_BOOTSTRAP_ITERATIONS:=2000}"
+# Resampling RNG seed — fixed (not time-varying) so the SAME deltas always
+# reproduce the SAME confidence interval; a real report needs a reproducible
+# number, and the library's own known-answer fixture test depends on this.
+: "${MODEL_COMPARISON_BOOTSTRAP_SEED:=1729}"
+# Confidence-interval width (pct), e.g. 95 = a 95% CI. Also the width the
+# minimum-detectable-effect figure is computed at, so the MDE and the CI it
+# bounds are always stated at the same confidence.
+: "${MODEL_COMPARISON_CI_WIDTH_PCT:=95}"
+# `coverage`'s denominator: the emit-FEASIBLE seat subset the L0
+# usage-capture-feasibility spike (temperloop#1246) measured — "only 3 of the
+# pipeline's 12 spawn seats can emit a token-bearing attribution record
+# today" — deliberately NOT the full 12-seat inventory. A coverage figure
+# below 100% is expected and structural, not a defect to chase to zero.
+: "${MODEL_COMPARISON_EMIT_FEASIBLE_SEATS:=3}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -927,4 +955,6 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        PROSE_BUDGET_TIER1_CAP PROSE_BUDGET_TIER2_FILE_CAP \
        SPEND_WEIGHT_INPUT SPEND_WEIGHT_CACHE_READ SPEND_WEIGHT_CACHE_CREATE SPEND_WEIGHT_OUTPUT \
        SPEND_MACHINERY_MAX_CALLS SPEND_WORKER_PROFILE_MIN_CALLS SPEND_TRANSCRIPT_ROOT \
-       KNOWLEDGE_STORE_ROOT
+       KNOWLEDGE_STORE_ROOT \
+       MODEL_COMPARISON_MIN_SAMPLE_N MODEL_COMPARISON_BOOTSTRAP_ITERATIONS MODEL_COMPARISON_BOOTSTRAP_SEED \
+       MODEL_COMPARISON_CI_WIDTH_PCT MODEL_COMPARISON_EMIT_FEASIBLE_SEATS
