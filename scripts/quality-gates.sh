@@ -775,6 +775,24 @@ KERNEL_GATES=(
   # Fake `gh` on PATH, zero network — mirrors test-board's glob-based kernel
   # coverage (F#836).
   "make test-promote-push"
+  # Provider-equivalence guard (temperloop#1232, epic #1117 Produces 2/3):
+  # the epic's central structural claim made mechanical — both source
+  # providers, driven THROUGH bin/subcommands/testbed.sh's own driver via two
+  # test doubles (never the two real providers; their content differences
+  # are test-testbed-source's job), must produce ONE identical seam-call
+  # sequence and ONE identical driver step/pre-flight/flush/handoff trace,
+  # modulo the source-identity fields that legitimately differ (kind,
+  # provenance_capable, promotable) — asserted excluded BY NAME, with a
+  # sanity check proving the exclusion is real, not vacuous. This is the
+  # guard that stops `materialize-from-seed` from drifting into a second
+  # orchestration path, and it deliberately proves identical MECHANISM only,
+  # never identical evaluation value (the two sources differ in content,
+  # promotability, and privacy exposure by design — see the test's own
+  # header and docs/features/testbed.md § Provider equivalence). Zero
+  # network. Same rationale as test-testbed-command for a named target
+  # (scoped to both the driver AND the seam) rather than riding
+  # test-testbed-source's glob alone.
+  "make test-testbed-equivalence"
   "make test-kernel-manifest"
   # Subtree-root support for check-kernel-manifest.sh (temperloop#680,
   # derived from foundation#870): synthetic-fixture suite proving the guard

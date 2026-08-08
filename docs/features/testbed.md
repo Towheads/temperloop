@@ -245,6 +245,34 @@ teardown — a repo-tree-scoped record would be destroyed by eject before
 teardown ever read it. Machine-scoped XDG state is the only location
 eject's blast radius does not reach.
 
+## Provider equivalence
+
+The driver being provider-agnostic (no `case` on kind, above) is a static
+claim about the source code. `workflows/scripts/testbed/tests/
+test_provider_equivalence.sh` (temperloop#1232) is what makes it mechanical:
+it drives the driver with two **test doubles** — never the two real
+providers, whose content differences are `test-testbed-source`'s job — and
+asserts an identical seam-call sequence, plus an identical driver
+step/pre-flight/flush/handoff trace, between the two runs. Asserting over the
+driver's own sequence, rather than either provider's internals, is what
+makes a provider-agnostic-orchestration bug fail here instead of surfacing
+downstream as a seed-provider failure — precisely the guard that stops the
+prepared-source option from drifting into a second path, the way `try
+--demo` became a dead end.
+
+**What this proves, and what it does not.** The test proves identical
+**mechanism**: the same seam calls, in the same order, wrapped in the same
+driver-owned steps. It does **not** prove identical **evaluation value** —
+`mirror-from-repo` and `materialize-from-seed` differ in content,
+promotability, and privacy exposure by design (ADR 0025; see "The record —
+`workflows/scripts/testbed/record.sh`" above for `promotable`'s role), and
+nothing in this test speaks to whether the two sources make an equally good
+testbed to evaluate against. A few fields
+legitimately carry that source identity (the provider's `describe()`
+payload, and the `provenance_capable`/`promotable` flags it reports) and are
+excluded from the comparison by name, with a sanity assertion confirming the
+exclusion is actually exercised rather than accidentally vacuous.
+
 ## Resource impact
 
 The **record library** is pure local filesystem I/O (`jq`, `mktemp`, `mv`,
@@ -262,13 +290,14 @@ testbed repository itself is private and disposable; `--teardown` reclaims
 it with one read (`gh auth status`, the delete_repo scope check) plus, when
 that scope is present, one `gh repo delete`.
 
-CI growth is two test suites in `scripts/quality-gates.sh`'s `KERNEL_GATES`
-(`make test-testbed-record`, `make test-testbed-command`), both hermetic and
-zero-network, each with its own `gate-paths.tsv` row so a scoped run selects
-only what a diff can actually affect. `workflows/scripts/testbed/scope.sh`'s
-own tests ship alongside it under `workflows/scripts/testbed/tests/` and are
-picked up automatically by `make test-testbed-source`'s glob — no new gate
-or `gate-paths.tsv` row needed for it.
+CI growth is three test suites in `scripts/quality-gates.sh`'s `KERNEL_GATES`
+(`make test-testbed-record`, `make test-testbed-command`,
+`make test-testbed-equivalence`), all hermetic and zero-network, each with
+its own `gate-paths.tsv` row so a scoped run selects only what a diff can
+actually affect. `workflows/scripts/testbed/scope.sh`'s own tests ship
+alongside it under `workflows/scripts/testbed/tests/` and are picked up
+automatically by `make test-testbed-source`'s glob — no new gate or
+`gate-paths.tsv` row needed for it.
 
 ## Telemetry
 

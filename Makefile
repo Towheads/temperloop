@@ -23,7 +23,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source \
-	test-testbed-command test-promote-push
+	test-testbed-command test-promote-push test-testbed-equivalence
 
 help:
 	@echo "Targets:"
@@ -64,6 +64,7 @@ help:
 	@echo "  test-testbed-source     Testbed source-provider seam + mirror-from-repo tests"
 	@echo "  test-testbed-command    'temperloop testbed' one-command evaluation-build tests"
 	@echo "  test-promote-push       /promote's commit-carrying branch-push tests"
+	@echo "  test-testbed-equivalence  Provider-equivalence guard: identical driver call sequence, both providers"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -310,6 +311,18 @@ test-testbed-record:
 test-testbed-command:
 	@echo "==> Running temperloop testbed subcommand tests..."
 	@bash bin/subcommands/tests/test_testbed.sh
+
+# Provider-equivalence guard (temperloop#1232, epic #1117): both source
+# providers, driven through bin/subcommands/testbed.sh's own driver via test
+# doubles, must produce ONE identical seam-call and driver-step sequence,
+# modulo source identity. Named target (not riding test-testbed-source's
+# glob, even though the test file lives under workflows/scripts/testbed/
+# tests/ and IS also picked up there) because, like test-testbed-command, it
+# is a consumer of BOTH the seam AND the driver script — its own
+# gate-paths.tsv row is scoped to both, so a change to either re-runs it.
+test-testbed-equivalence:
+	@echo "==> Running testbed provider-equivalence tests..."
+	@bash workflows/scripts/testbed/tests/test_provider_equivalence.sh
 
 test-prune-branches:
 	@echo "==> Running prune-merged-branches tests..."
