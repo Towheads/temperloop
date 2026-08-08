@@ -415,6 +415,15 @@ kernel workflows/scripts/validate-diagnose-queue-emit.sh
 kernel workflows/scripts/validate-feature-docs.sh
 kernel workflows/scripts/validate-issue-touch-emit.sh
 kernel workflows/scripts/validate-knowledge-search-emit.sh
+# model-comparison — attribution telemetry + inert opt-in replay/judge
+# module (epic temperloop#1225, ADR 0026/0027/0028): a stranger's kernel
+# checkout needs the provider allowlist/disclosure-log pairing (and the
+# sibling replay/judge machinery landing under the same subtree later in
+# the epic) to work against their own repo, exactly like the board/build
+# machinery above — nothing here is Travis-personal. Directory-level glob,
+# same shape as `kernel workflows/scripts/board/*` above.
+kernel workflows/scripts/model-comparison/*
+kernel workflows/scripts/validate-provider-disclosure.sh
 kernel workflows/scripts/workflow-reviewer-coverage.sh
 kernel workflows/scripts/validate-capture-backstop.sh
 kernel workflows/scripts/validate-template-refs.sh

@@ -588,6 +588,16 @@ KERNEL_GATES=(
   # setting-registry gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/validate-feature-docs.sh"
   "bash workflows/scripts/tests/test_validate_feature_docs.sh"
+  # Provider allowlist / disclosure-log pairing gate (temperloop#1250, epic
+  # #1225, ADR 0028): validate-provider-disclosure.sh owns log-format
+  # validity and allowlist-membership checking — the committed ceiling is
+  # git-tracked and repo-scoped, a personal override may only narrow it
+  # (never widen), and the append-only disclosure log's hash chain must be
+  # intact. The send-vs-log coverage cross-check is deliberately NOT here
+  # (owned by the later replay-execute-and-score item — see that script's
+  # own header). Direct `bash` form, no Makefile target, matching the
+  # validate-feature-docs.sh gate immediately above.
+  "bash workflows/scripts/validate-provider-disclosure.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through

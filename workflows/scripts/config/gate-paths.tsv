@@ -181,6 +181,7 @@ bash workflows/scripts/tests/test_command_run_emit.sh	workflows/scripts/emit-com
 make validate-issue-touch-emit	workflows/scripts/validate-issue-touch-emit.sh workflows/scripts/emit-issue-touch.sh workflows/scripts/board/** claude/commands/**
 make validate-diagnose-queue-emit	workflows/scripts/validate-diagnose-queue-emit.sh workflows/scripts/emit-diagnose-queue.sh workflows/scripts/build/gate.sh
 bash workflows/scripts/tests/test_diagnose_queue_emit.sh	workflows/scripts/emit-diagnose-queue.sh workflows/scripts/validate-diagnose-queue-emit.sh workflows/scripts/build/gate.sh workflows/scripts/tests/test_diagnose_queue_emit.sh meta/data/raw/README.md
+bash workflows/scripts/validate-provider-disclosure.sh	workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**
 make validate-lexicon	workflows/scripts/drain/**
 bash workflows/scripts/tests/test_validate_template_refs.sh	workflows/scripts/validate-template-refs.sh workflows/scripts/tests/test_validate_template_refs.sh claude/message-schema.md
 bash workflows/scripts/config/tests/test_setting_registry.sh	workflows/scripts/config/**

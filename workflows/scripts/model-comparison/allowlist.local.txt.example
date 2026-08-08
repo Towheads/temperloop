@@ -1,0 +1,27 @@
+# allowlist.local.txt.example — template for the OPTIONAL personal provider
+# narrowing override (temperloop#1250, ADR 0028 decision 1). This is a
+# TRACKED template only; the real file it documents is untracked and lives
+# outside this committed subtree, at:
+#
+#   .temperloop/model-comparison/allowlist.local.txt
+#
+# (repo-local, gitignored via .temperloop/.gitignore — never a `$HOME`
+# config, never an env var: the same repo-scoping ADR 0028 requires for the
+# committed ceiling applies to a personal narrowing of it, so a narrowing
+# set for one client's checkout can never bleed into another repo's).
+#
+# Copy this file to that path to use it. Same format as
+# provider-allowlist.txt: one lowercase provider name per line, `#` comments
+# and blank lines ignored.
+#
+# RULE: this file may only be a SUBSET of
+# workflows/scripts/model-comparison/provider-allowlist.txt's committed
+# list. Naming a provider here that the committed file doesn't list is a
+# WIDEN attempt — allowlist.sh's pa_effective_list refuses to resolve an
+# effective allowlist at all when that happens (fail closed), rather than
+# silently granting the extra provider or silently ignoring the bad line.
+#
+# Example: an operator who never wants ANY non-Anthropic send from this
+# checkout, even if the committed file is later widened by a reviewed
+# commit, narrows to just:
+anthropic
