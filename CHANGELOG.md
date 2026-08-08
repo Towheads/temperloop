@@ -605,6 +605,26 @@ reads that marker; a stranger greps for it before pulling.
   doesn't source board.sh today; env-reconcile.sh's host check answers a
   different question, launchd/cron role ownership, not claim stamps) — and
   is a follow-up, not part of this fix.
+- **`ready-pr-sweep.sh` no longer misclassifies a PR whose `mergeStateStatus`
+  simply hasn't been computed yet as `needs-attention`** (foundation#1504).
+  GitHub computes `mergeStateStatus` asynchronously — right after a push, an
+  enqueue, or any base-branch movement it reads `UNKNOWN`, meaning "not
+  computed yet", not "computed, and problematic". Reading it exactly once
+  meant the SAME PR could read `UNKNOWN` (→ `needs-attention`) on one sweep
+  and `CLEAN` (→ `ready`) moments later on the next — the remedy flipped
+  between back-to-back runs. The sweep now re-fetches ONLY a PR that reads
+  `UNKNOWN` on the initial `gh pr list`, with a bounded retry
+  (`READY_PR_SWEEP_UNKNOWN_RETRY_MAX`, default 3) and a short delay between
+  attempts (`READY_PR_SWEEP_UNKNOWN_RETRY_DELAY`, default 2s) — a PR that
+  reads a resolved status on the first fetch costs zero extra `gh` calls. A
+  PR resolved on retry (e.g. UNKNOWN → CLEAN) now classifies normally; a PR
+  still `UNKNOWN` after the bound gets its own `not-yet-computed` bucket,
+  distinct from `needs-attention`, whose reason names the real cause and
+  prescribes no operator action — it is deliberately excluded from
+  `--format entry` since there is nothing to decide (it resolves on its own
+  on a later sweep). Fail-open throughout: an errored or exhausted retry
+  never aborts the run or drops the other PRs from the report.
+
 - **The kernel/overlay classifier is shell-portable and fails closed — it no
   longer answers "not kernel" when it cannot evaluate at all** (#1177).
   `workflows/scripts/kernel/lib.sh` is *sourced*, so its `#!/usr/bin/env bash`
