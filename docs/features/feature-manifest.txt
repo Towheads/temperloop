@@ -505,3 +505,22 @@ ci-install-tier2 .github/workflows/install-tier2.yml
 #    that route straight into the fnd:status:backlog intake /triage sweeps
 #    (temperloop#427) ───────────────────────────────────────────────────
 feedback-issue-templates .github/ISSUE_TEMPLATE/*
+
+# ── model-comparison — attribution telemetry + inert opt-in replay/judge
+#    module (epic temperloop#1225, ADR 0026/0027/0028): pre-claims the
+#    module's subtree ahead of its sibling build items (temperloop#1249-1262)
+#    so none of their new files need a manifest edit of their own. The first
+#    line is a DIRECTORY-LEVEL glob over the module's own subtree — new
+#    files landing under it (stats.sh, allowlist.sh, candidate-session.sh,
+#    replay.sh, score.sh, judge.sh, tagging.sh, rubric.md, tests/, …) are
+#    claimed automatically, never itemized one line per file. The remaining
+#    lines are standalone files that live OUTSIDE that subtree (each is a
+#    single file, not a directory with siblings to generalize over), so each
+#    gets its own exact-path claim, same convention the `telemetry` section
+#    above uses for its own scattered emit-/validate- scripts ─────────────
+model-comparison workflows/scripts/model-comparison/**
+model-comparison workflows/scripts/validate-provider-disclosure.sh
+model-comparison workflows/scripts/validate-model-usage-emit.sh
+model-comparison workflows/scripts/emit-model-usage.sh
+model-comparison workflows/scripts/config/default-pricing.json
+model-comparison workflows/scripts/report-producers/model-comparison
