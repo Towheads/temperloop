@@ -18,9 +18,19 @@
 #      inside the sandbox that lists its real subcommands.
 #   5. No-residue: a full bootstrap+dispatch cycle never touches the paths
 #      a REAL (unsandboxed) run would have written to under the real HOME,
-#      and sandbox_down removes the throwaway root entirely.
+#      and sandbox_down removes the throwaway root entirely — asserted with
+#      a CONTINUOUS third-party writer active against the real cache store
+#      root, so the leg cannot pass merely because nothing was writing.
+#   6. Public-knob pins: inside the sandbox, CACHE_STORE_ROOT /
+#      TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR each resolve under $SANDBOX_ROOT
+#      even when the caller exports a real-machine value for them — plus the
+#      guard-not-weakened counter-check, that a deliberate leak to a
+#      still-sampled candidate is still caught with the same message.
 #
-# No network. No real HOME/XDG mutations at any point.
+# No network. The ONLY real-machine writes are test 5's interferer markers
+# under the real cache store root — pid-namespaced, and removed (along with
+# the root itself if this run created it) by sandbox_cache_interferer_stop,
+# which is wired onto an EXIT trap. No real HOME/XDG mutations otherwise.
 #
 set -uo pipefail
 
@@ -121,50 +131,22 @@ pass "4: sandbox_bootstrap_checkout bare-clones this repo over file:// and produ
 #    paths an unsandboxed run would have written to; sandbox_down removes
 #    the throwaway root entirely.
 # =============================================================================
-snapshot_path() {
-  # snapshot_path PATH — "absent" if it doesn't exist, else "present:<n>"
-  # where <n> is a portable file-count fingerprint (no stat flags, works on
-  # both BSD/macOS and GNU find).
-  #
-  # The basic-memory knowledge store (F#946) lives under
-  # ~/.local/state/foundation/{basic-memory-home,bm-*} and is LIVE, concurrently
-  # written runtime state — churned on-demand by ks_search / the
-  # CLAUDE.kernel.md § Phase-1 parity `bm` leg from any other session or hook,
-  # with hundreds of files created inside a single test window. It is NOT the
-  # bootstrap residue this guard looks for, so counting it makes test 5 flake on
-  # unrelated concurrent bm activity (temperloop#377). Prune the bm subtrees:
-  #   - by directory NAME — the bm dirs only ever appear under
-  #     .local/state/foundation, so a global name-prune cannot hide bootstrap
-  #     residue leaked into any other REAL_CANDIDATE path;
-  #   - via -prune, so the 400k+-file store is never descended (fast, and the
-  #     count stays a leak-detector, not a store-size measurement).
-  local p="$1"
-  if [ -e "$p" ]; then
-    printf 'present:%s' "$(find "$p" \( -name basic-memory-home -o -name 'bm-*' \) -prune -o -print 2>/dev/null | wc -l | tr -d ' ')"
-  else
-    printf 'absent'
-  fi
-}
+# snapshot_path and the candidate list now live in sandbox.sh
+# (sandbox_snapshot_path / sandbox_real_candidates, temperloop#1154) —
+# they were duplicated here and in the sibling
+# workflows/scripts/tests/test_sandbox_dry_run_legs.sh, which is how #377's
+# bm-prune fix had to be re-made as #382. One definition, sourced by both.
+sandbox_real_candidates "$REAL_HOME_BEFORE"
 
-# The exact real-HOME paths bin/bootstrap.sh / init.sh / eject.sh would
-# write to if HOME/XDG_* were NOT re-pointed (bin/bootstrap.sh's own
-# TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR defaults + the CLI's own
-# XDG_CONFIG_HOME/XDG_STATE_HOME dismiss-state paths). The two legacy
-# `foundation`-named entries below stay in the tripwire deliberately: the
-# temperloop#165 window closed in v0.19.0, so NOTHING should write them any
-# more, and that is precisely what makes them worth asserting.
-REAL_CANDIDATES=(
-  "$REAL_HOME_BEFORE/.local/share/temperloop"
-  "$REAL_HOME_BEFORE/.local/bin/temperloop"
-  "$REAL_HOME_BEFORE/.local/bin/foundation"
-  "$REAL_HOME_BEFORE/.config/foundation"
-  "$REAL_HOME_BEFORE/.cache/temperloop"
-  "$REAL_HOME_BEFORE/.local/state/foundation"
-)
-snaps_before=()
-for p in "${REAL_CANDIDATES[@]}"; do
-  snaps_before+=("$(snapshot_path "$p")")
-done
+# A CONTINUOUS third-party writer against the REAL cache store root, live for
+# the whole of assertion 5. Without it this leg passes vacuously: the real
+# cache root was dropped from the sampled candidate set precisely because a
+# concurrent board-adapter process writes it, and only an actual concurrent
+# writer can demonstrate that the assertion now survives one.
+trap 'sandbox_cache_interferer_stop' EXIT
+sandbox_cache_interferer_start || fail "5: could not start the cache-root interferer"
+
+sandbox_snapshot_real_candidates
 
 sandbox_up test-sandbox-5
 sandbox_stub_gh
@@ -176,17 +158,104 @@ sandbox_down
 
 [ ! -e "$sandbox_root_snapshot" ] || fail "5: sandbox_down did not remove the throwaway root ($sandbox_root_snapshot still exists)"
 
-i=0
-for p in "${REAL_CANDIDATES[@]}"; do
-  after="$(snapshot_path "$p")"
-  [ "$after" = "${snaps_before[$i]}" ] \
-    || fail "5: real-HOME path changed during a sandboxed run: $p (before: ${snaps_before[$i]}, after: $after)"
-  i=$((i + 1))
-done
+drift="$(sandbox_diff_real_candidates)" || fail "5: $drift"
+
+# Non-vacuity: prove the interferer really was writing the real cache store
+# root, concurrently, for the duration of the assertion above. Asserted
+# BEFORE stopping it — the stop removes its markers.
+interferer_writes="$(sandbox_cache_interferer_count)"
+[ "$interferer_writes" -ge 2 ] \
+  || fail "5: the third-party cache-root interferer laid down only $interferer_writes marker(s) — assertion 5 did not actually run against a concurrent writer"
+sandbox_cache_interferer_stop
+trap - EXIT
 
 [ "$HOME" = "$REAL_HOME_BEFORE" ] || fail "5: caller's own \$HOME changed after the sandboxed cycle (got: $HOME)"
 
-pass "5: a full bootstrap+dispatch cycle leaves every real-HOME candidate path unchanged, and sandbox_down removes the throwaway root entirely"
+pass "5: a full bootstrap+dispatch cycle leaves every real-HOME candidate path unchanged — even with a concurrent third-party writer ($interferer_writes writes) active against the real cache store root — and sandbox_down removes the throwaway root entirely"
+
+# =============================================================================
+# 6. Public-knob pins (temperloop#1154), two halves:
+#    (a) POSITIVE — inside the sandbox, CACHE_STORE_ROOT / TEMPERLOOP_HOME /
+#        TEMPERLOOP_BIN_DIR each resolve under $SANDBOX_ROOT even when the
+#        caller exports a real-machine value for them. This is a test of the
+#        redirect MECHANISM, not absence-sampling: it is what licenses test 5
+#        to stop counting the real cache root.
+#    (b) NEGATIVE — the guard is NOT weakened: a deliberate leak from a
+#        sandboxed run into a still-sampled candidate is still caught, by the
+#        same code path and with the same failure message. Run against a
+#        SYNTHETIC candidate root (sandbox_real_candidates takes the home
+#        root as an argument) so proving the guard fires costs no write to
+#        the operator's actual HOME.
+# =============================================================================
+sandbox_up test-sandbox-6
+
+# The leak vectors, each pointed at a real-machine path a leaked value would
+# steer a sandboxed write to. Exported deliberately — this is exactly the
+# shape links_provision_cache_stores' `mkdir -p "$store_root"` and
+# bin/bootstrap.sh's install step would act on.
+export CACHE_STORE_ROOT="$REAL_HOME_BEFORE/.cache/temperloop"
+export TEMPERLOOP_HOME="$REAL_HOME_BEFORE/.local/share/temperloop"
+export TEMPERLOOP_BIN_DIR="$REAL_HOME_BEFORE/.local/bin"
+
+# shellcheck disable=SC2016  # deliberately single-quoted (see test 1's note)
+pinned="$(sandbox_run bash -c 'printf "%s\n%s\n%s\n" "$CACHE_STORE_ROOT" "$TEMPERLOOP_HOME" "$TEMPERLOOP_BIN_DIR"')"
+knob_i=0
+while IFS= read -r seen; do
+  knob_i=$((knob_i + 1))
+  case "$seen" in
+    "$SANDBOX_ROOT"/*) : ;;
+    *) fail "6a: knob #$knob_i resolved OUTSIDE the sandbox root inside a sandboxed run (got: $seen, want a path under $SANDBOX_ROOT)" ;;
+  esac
+done <<<"$pinned"
+[ "$knob_i" -eq 3 ] || fail "6a: expected 3 pinned knob values, got $knob_i"
+
+# The pins are values, not just prefixes — each must be the sandbox's own
+# derivation of that knob, so a sandboxed consumer lands where the sandbox
+# expects rather than at some other in-sandbox path.
+[ "$(sed -n 1p <<<"$pinned")" = "$SANDBOX_CACHE_STORE_ROOT" ] \
+  || fail "6a: CACHE_STORE_ROOT pinned to the wrong in-sandbox path (got: $(sed -n 1p <<<"$pinned"), want: $SANDBOX_CACHE_STORE_ROOT)"
+[ "$(sed -n 2p <<<"$pinned")" = "$SANDBOX_TEMPERLOOP_HOME" ] \
+  || fail "6a: TEMPERLOOP_HOME pinned to the wrong in-sandbox path (got: $(sed -n 2p <<<"$pinned"), want: $SANDBOX_TEMPERLOOP_HOME)"
+[ "$(sed -n 3p <<<"$pinned")" = "$SANDBOX_TEMPERLOOP_BIN_DIR" ] \
+  || fail "6a: TEMPERLOOP_BIN_DIR pinned to the wrong in-sandbox path (got: $(sed -n 3p <<<"$pinned"), want: $SANDBOX_TEMPERLOOP_BIN_DIR)"
+
+# An IN-sandbox steer must still win — the documented temporary-assignment
+# seam bin/subcommands/tests/test_uninstall.sh test 7 uses. A pin that
+# clobbered this would be an over-correction, not a fix.
+in_sandbox_steer="$SANDBOX_ROOT/custom-cache-root"
+# shellcheck disable=SC2016  # deliberately single-quoted (see test 1's note)
+steered="$(CACHE_STORE_ROOT="$in_sandbox_steer" sandbox_run bash -c 'printf "%s" "$CACHE_STORE_ROOT"')"
+[ "$steered" = "$in_sandbox_steer" ] \
+  || fail "6a: an in-sandbox CACHE_STORE_ROOT steer was clobbered by the pin (got: $steered, want: $in_sandbox_steer)"
+
+unset CACHE_STORE_ROOT TEMPERLOOP_HOME TEMPERLOOP_BIN_DIR
+pass "6a: CACHE_STORE_ROOT / TEMPERLOOP_HOME / TEMPERLOOP_BIN_DIR are pinned inside \$SANDBOX_ROOT even when the caller exports real-machine values, while an in-sandbox steer still wins"
+
+# --- 6b: guard-not-weakened counter-check ----------------------------------
+FAKE_REAL_HOME="$SANDBOX_ROOT/fake-real-home"
+mkdir -p "$FAKE_REAL_HOME"
+sandbox_real_candidates "$FAKE_REAL_HOME"
+sandbox_snapshot_real_candidates
+
+# A deliberate leak: a sandboxed run writing an ABSOLUTE path that lands in a
+# still-sampled candidate (.config/foundation). Nothing in the isolation
+# model prevents an absolute-path write — detecting it is the guard's whole
+# job, and this is the assertion that the removal of the cache-root entry
+# did not quietly disarm it.
+sandbox_run bash -c 'mkdir -p "$1" && : > "$1/leaked"' sandbox-leak "$FAKE_REAL_HOME/.config/foundation" \
+  || fail "6b: setup — the deliberate leak write itself failed"
+
+leak_msg="$(sandbox_diff_real_candidates)" && fail "6b: the guard did NOT catch a deliberate leak into a still-sampled candidate"
+grep -F "real-HOME path changed during a sandboxed run: $FAKE_REAL_HOME/.config/foundation" <<<"$leak_msg" >/dev/null \
+  || fail "6b: the guard fired but not with the expected failure message (got: $leak_msg)"
+grep -E 'before: absent, after: present:[0-9]+' <<<"$leak_msg" >/dev/null \
+  || fail "6b: the failure message lost its before/after fingerprint detail (got: $leak_msg)"
+
+sandbox_down
+# Restore the real candidate set — nothing runs after this today, but leaving
+# a synthetic set installed would silently defang any later leg.
+sandbox_real_candidates "$REAL_HOME_BEFORE"
+pass "6b: a deliberate leak from a sandboxed run into a still-sampled real-HOME candidate is still caught, with the same failure message"
 
 echo
 echo "ALL PASS: test_sandbox.sh"
