@@ -528,6 +528,60 @@ reads that marker; a stranger greps for it before pulling.
   round-trip's own use of the generator are retired with `try` itself
   (#1237/#1234).
 
+- **`temperloop try` and `temperloop try --demo` are removed, and the CLI's
+  front door is now `temperloop testbed`** (#1117). The old two-rung on-ramp
+  (`try` -> `try --demo` -> `init`) was retired in favour of the sandbox walk
+  (#1115): `try`'s shadow-triage ran with almost no context, so its output
+  undersold the pipeline, and `--demo` ticked a canned repo of synthetic
+  defects rather than the reader's own code. Deleted outright:
+  `bin/subcommands/try.sh`, its two suites (`test_try.sh`,
+  `test_try_demo.sh`), and `bin/lib/cost-estimates.conf` (every constant in
+  it was a `TRY_*` band). `bin/temperloop`'s `Start here:` line and
+  `temperloop help` now name `temperloop testbed`. `try`'s documentation goes
+  with it, in the same change rather than a follow-up — `bin/README.md`'s
+  legacy-commands section and `docs/features/install-cli.md`'s legacy rungs.
+
+  **Migration — CLI surface.** `temperloop try` and `temperloop try --demo`
+  no longer exist and exit as unknown subcommands; there is no compat shim
+  and no drop-in replacement with the same shape. Evaluate on your own code
+  with **`temperloop testbed`** instead (`docs/features/testbed.md`), which
+  builds a private, disposable duplicate of a real repository of yours and
+  hands off to `init` -> `/assess` -> `/build`. Note the deliberate trade:
+  `try`/`try --demo` carried hard, tool-enforced USD caps ($1.00/run and
+  $2.00/tick) and the testbed path does **not** — it runs the real pipeline
+  and carries no dollar ceiling (temperloop#1130 tracks closing that gap).
+  `VERSIONING.md`'s CLI-surface row no longer enumerates `try`.
+
+  **Migration — setting registry.** Five `TRY_*` rows are gone from
+  `workflows/scripts/config/setting-registry.tsv`, and they are **not** the
+  same kind of removal — read which class yours is before pulling. Three are
+  `kernel`-scoped test seams that only ever existed to let `try.sh`'s own
+  suites inject doubles — `TRY_GH_BIN`, `TRY_DEMO_CLONE_URL`,
+  `TRY_DEMO_BOARD_NUM`; a consumer setting them is a no-op today and their
+  removal is harmless. The other two are `tracked-repo`-scoped model
+  settings — `TRY_TRIAGE_MODEL` (defaulted `claude-haiku-4-5`) and
+  `TRY_DEMO_FIX_MODEL` (inherit sentinel) — and this is the materially
+  different case: a downstream overlay may carry a **live override** for
+  either in its own `build.config.sh`, and that override now names a setting
+  nothing reads. It will not error; it will silently do nothing. **Delete
+  those two overrides from your overlay** rather than leave them as dead
+  config. Their definitions and their entry in the export list are removed
+  from `workflows/scripts/build/build.config.sh` in the same change, so the
+  registry-to-source correspondence stays clean.
+
+- **The `make test-try` gate is renamed `make test-cli-subcommands`, not
+  deleted** (#1117). The target only ever carried `try`'s name incidentally:
+  it globs the whole `bin/subcommands/tests/` directory and is the sole
+  runner for 13 suites that have nothing to do with `try` (init, eject,
+  config, configure, report, feedback, uninstall, update, baseline-snapshot,
+  dispatch-rename, prereq-scoping, report-offer, tokens-producer). Deleting
+  it would have silently dropped all of their coverage. The glob, and
+  therefore the covered set, is unchanged; only the name moved, along with
+  its `.PHONY` entry, its help line, its `gate-paths.tsv` row and its
+  `scripts/quality-gates.sh` registration. A downstream repo invoking
+  `make test-try` directly must call `make test-cli-subcommands` instead.
+
+
 ### Fixed
 
 - **Board claim-stamp host labels no longer diverge by call site** (#1455).

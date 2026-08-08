@@ -6,10 +6,11 @@
 # v0.19.0 and now only refuses.
 #
 # This is the PINNED location for shared CLI lib/constants (see the epic's
-# plan note, "## Repo targeting"): a future item (e.g. foundation-try) drops
-# its own file here (kernel/bin/lib/cost-estimates.conf) with zero collision
-# risk against this one. This item ships only the prereq-check helper; it
-# does not speak for what a later item adds alongside it.
+# plan note, "## Repo targeting"): a later item drops its own file here with
+# zero collision risk against this one. This item ships only the prereq-check
+# helper; it does not speak for what a later item adds alongside it. (The
+# original example was cost-estimates.conf, added by the `try` item and
+# removed with `try` in temperloop#1117.)
 #
 # Sourced, not executed — by the dispatcher (kernel/bin/temperloop) directly,
 # or by an individual subcommand script IN ITS OWN PROCESS if it wants these

@@ -59,7 +59,7 @@
 # gate selection" block below and workflows/scripts/lib/gate-selection.sh.
 # PARALLELISM (temperloop#1025): the gate set is ~109 INDEPENDENT suites, and
 # the `checks` job's ~5.5 min wall time was almost entirely the cost of running
-# them one after another (measured 2026-08-02: test-try 56s, test-build 55s,
+# them one after another (measured 2026-08-02: test-cli-subcommands 56s, test-build 55s,
 # the whole-tree shell lint 29s, test-board 21s, prose-budget ~20s, then a long
 # tail of 1–5s suites — no dominant gate, only concurrency recovers it). They run
 # through a bounded worker pool (workflows/scripts/lib/gate-pool.sh) instead of
@@ -496,7 +496,7 @@ KERNEL_GATES=(
   # temperloop#980 "producer-kernel-side-relocation" moved the implementation
   # here from .temperloop/report.d/tokens, which is now a locator + exec shim
   # tested separately by bin/subcommands/tests/test_tokens_producer.sh, part
-  # of the make test-try gate below). The load-bearing check is the requestId
+  # of the make test-cli-subcommands gate below). The load-bearing check is the requestId
   # DEDUPE fixture: one API response split across three transcript lines that
   # each repeat the same `usage` block must yield ONE call and the undoubled
   # total — summing per line inflated the temperloop#953 corpus 2.16x, and a
@@ -818,7 +818,7 @@ KERNEL_GATES=(
   # zero-write proof, and record-file snapshots taken AT the push and AT the
   # issue copy for the per-step-flush proof. Zero network. It carries its own
   # gate-paths.tsv row (scoped to bin/subcommands/testbed*.sh AND
-  # workflows/scripts/testbed/**) rather than riding test-try's glob, so a
+  # workflows/scripts/testbed/**) rather than riding test-cli-subcommands' glob, so a
   # change to either consumed seam re-runs its only call site's suite.
   "make test-testbed-command"
   # /promote's commit-carrying branch push (temperloop#1233, epic #1117
@@ -936,12 +936,13 @@ KERNEL_GATES=(
   # coverage can never trail whichever tests/test_*.sh files are actually
   # vendored), not a second gate registration.
   "make test-conventions-probe"
-  # `foundation try` — zero-config, zero-write taste (foundation #765 Epic D,
-  # item foundation-try / #852): fake `gh`/`claude` on PATH (the
-  # write-intercepting-wrapper proof), zero network, plus PATH-trimmed
-  # gh-absent/claude-absent degrade-path cases (see
-  # bin/subcommands/tests/test_try.sh).
-  "make test-try"
+  # The bin/subcommands/ CLI suites — init, eject, config, configure, report,
+  # feedback, uninstall, update, baseline-snapshot, dispatch-rename,
+  # prereq-scoping, report-offer, tokens-producer — run as one globbed gate
+  # (F#836: kernel coverage can never trail whichever tests/test_*.sh files are
+  # actually vendored). Renamed from `make test-try` when `try` was retired
+  # (temperloop#1117); the glob and therefore the covered set are unchanged.
+  "make test-cli-subcommands"
   # Docs-build gate (F#764, Epic A): runs the docs-site generator
   # (workflows/scripts/docs/generate.py) BUILD ONLY, no publish step — a
   # doc-source break (e.g. a malformed workflows/scripts/kernel/kernel-
@@ -1215,7 +1216,7 @@ SERIAL_LANE_PINS=(
 # the pool dispatches them first. A stale entry here costs nothing but a little
 # scheduling efficiency — it can never change a verdict.
 SLOW_DISPATCH_HINTS=(
-  "make test-try"
+  "make test-cli-subcommands"
   "make test-build"
   "make test-board"
   "bash workflows/scripts/validate-prose-budget.sh"

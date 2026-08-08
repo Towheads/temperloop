@@ -58,8 +58,8 @@ exactly what a run will execute before it executes it.
 
 The gate set is ~109 *independent* suites, and the `checks` job's wall time
 was almost entirely the cost of running them one after another. The measured
-baseline (2026-08-02, from run-log timestamps) has no dominant gate — `test-try`
-56s, `test-build` 55s, the whole-tree shell lint 29s, `test-board` 21s, the
+baseline (2026-08-02, from run-log timestamps) has no dominant gate —
+`test-cli-subcommands` (then named `test-try`) 56s, `test-build` 55s, the whole-tree shell lint 29s, `test-board` 21s, the
 prose budget ~20s, then a long tail of 1–5s suites — so no single-gate
 optimization could recover it. Only concurrency could.
 
@@ -220,7 +220,8 @@ it is invisible on an idle machine and increasingly likely under load. Measured
 on a 10-core machine with a synthetic probe: **0 failures in 800 tries
 unloaded, ~0.25% at 4 concurrent, ~5% at 8 concurrent.** In the real suite at
 width 8 it produced three first-attempt gate failures — `make test-build`,
-`make test-try`, and the design-brief lint — each of which then passed on
+`make test-cli-subcommands` (then named `make test-try`), and the design-brief
+lint — each of which then passed on
 retry, and two of which were the slowest gates in that run *because* of the
 retry.
 

@@ -2,16 +2,16 @@
 #
 # test_prereq_scoping.sh — per-subcommand prereq scoping (temperloop#412,
 # "subcommand-prereq-scoping"). Proves the actual regression the issue
-# described: unlike bin/subcommands/tests/test_try.sh (which invokes
-# try.sh DIRECTLY and therefore never exercised the dispatcher's own
-# gate), every test here dispatches through the REAL `bin/temperloop`
-# entrypoint — the exact path a stranger's first `temperloop try` /
-# `temperloop install` takes.
+# described: every test here dispatches through the REAL `bin/temperloop`
+# entrypoint — the exact path a stranger's first `temperloop install` takes
+# — rather than invoking a subcommand file directly, which would never
+# exercise the dispatcher's own gate.
 #
 # Covers:
-#   T1  `temperloop try` (through the dispatcher) runs to completion with
-#       gh entirely absent from PATH and no claude either — zero-auth,
-#       per try.sh's own documented contract, reachable end to end.
+#   (A `temperloop try` case, T1, sat here until temperloop#1117 retired the
+#   subcommand. It proved the dispatcher never gates a real shipped
+#   subcommand; T2 below proves the same invariant on subcommands that still
+#   exist, so retiring T1 cost no coverage.)
 #   T2  `temperloop install --dry-run` and `temperloop uninstall --dry-run`
 #       (through the dispatcher) reach their own subcommand logic with
 #       neither gh nor claude on PATH — the dispatcher never gates them.
@@ -49,41 +49,8 @@ for tool in git jq awk sed grep sort mktemp date find cut printf cat sleep \
   [ -n "$b" ] && ln -sf "$b" "$NOGH_NOCLAUDE/$tool"
 done
 
-# =============================================================================
-# T1 -- `temperloop try` through the real dispatcher, gh+claude both absent:
-# must run to completion (exit 0) per try.sh's own zero-auth contract,
-# never hitting the old blanket dispatcher-level gate.
-# =============================================================================
-REPO="$WORK/fixture-repo"
-mkdir -p "$REPO"
-git -C "$REPO" init -q -b main
-git -C "$REPO" config user.email "test@example.com"
-git -C "$REPO" config user.name "Test"
-echo one > "$REPO/a.txt"
-git -C "$REPO" add -A
-git -C "$REPO" commit -q -m "chore: seed fixture"
-
-rc=0
-out="$(PATH="$NOGH_NOCLAUDE" "$BASH_BIN" "$TEMPERLOOP" try \
-  --dir "$REPO" --gh-repo test-owner/test-demo --timeout 5 2>&1)" || rc=$?
-[ "$rc" -eq 0 ] || fail "T1: 'temperloop try' with gh+claude absent should exit 0 (got $rc, output: $out)"
-case "$out" in
-  *"temperloop: fix the above, then re-run"*)
-    fail "T1: 'temperloop try' hit the old blanket dispatcher-level prereq gate (output: $out)" ;;
-esac
-case "$out" in
-  *"== temperloop try =="*) ;;
-  *) fail "T1: expected the try banner (output: $out)" ;;
-esac
-case "$out" in
-  *"gh CLI not found on PATH"*) ;;
-  *) fail "T1: expected try.sh's OWN gh-absent skip reason (output: $out)" ;;
-esac
-case "$out" in
-  *"temperloop try: done (zero writes)"*) ;;
-  *) fail "T1: expected try.sh's own completion line (output: $out)" ;;
-esac
-pass "T1: 'temperloop try' (dispatcher-invoked, gh+claude both absent from PATH) runs to completion with zero auth, per try.sh's own contract"
+# (T1 -- `temperloop try` through the real dispatcher -- was removed with the
+# subcommand itself in temperloop#1117. T2 below carries the same invariant.)
 
 # =============================================================================
 # T2 -- `temperloop install --dry-run` / `temperloop uninstall --dry-run`

@@ -22,7 +22,7 @@ Two framing facts carry over from the cost page:
   file is the source of truth.
 
 > **Efficiency vs. spend ceilings — a deliberate distinction.** Bounding
-> *exposure* — the onboarding USD caps (`try`/`try --demo`/`configure`), the
+> *exposure* — the onboarding USD cap (`configure`), the
 > per-tick item caps, the 5-hour usage-quota gate — is a different thing from
 > being *efficient*. A cap stops runaway spend; it doesn't make the work
 > cheaper. Those ceilings are documented on the cost page
@@ -281,10 +281,6 @@ below.
   *"token-cost spend (cost-per-epic) requires the overlay rollup pipeline —
   not available kernel-side."* So the kernel's "spend" is wall-time and op
   volume, a proxy, not model cost.
-- **Directional cost estimates.**
-  [`bin/lib/cost-estimates.conf`](../bin/lib/cost-estimates.conf) holds
-  hand-derived USD bands that drive the `try` pre-spend estimate and the
-  onboarding hard caps — *inputs to a spend guard*, not a *log of actual spend*.
 - **Usage-quota headroom.** `claude/status-line.sh` persists Claude Code's live
   rate-limit state to `~/.claude/rate-limits.json` at zero token cost, feeding
   the 5-hour quota gate — rolling-window *headroom*, again not dollars.

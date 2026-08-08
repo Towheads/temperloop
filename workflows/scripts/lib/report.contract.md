@@ -214,8 +214,7 @@ first):
    `{as_of: "YYYY-MM-DD", prices: {model: $/Mtok}}` object, hand-
    transcribed from public list prices and refreshed only by hand-editing
    the file in an upstream PR (no regeneration script), same discipline as
-   the sibling `kernel/bin/lib/cost-estimates.conf` and the user-supplied
-   table above. Every dollar line this tier drives carries **both** the
+   the user-supplied table above. Every dollar line this tier drives carries **both** the
    table's own `as_of` date and an explicit staleness label (`DEFAULT PRICE
    TABLE dated <as_of>` plus a `STALENESS:` line naming it as a committed
    snapshot, not the adopter's own prices) — a stranger reading the output
@@ -295,8 +294,7 @@ empty) opt-in egress surface for this whole value loop.
   `report.sh` has no opinion on how a `tokens` producer derives its own
   numbers, only that `tokens_spent` be a number and (optionally) `by_model`
   an object; the pricing table is a hand-edited, user-supplied,
-  never-runtime-recalculated list-price map, exactly the directional posture
-  of `kernel/bin/lib/cost-estimates.conf`. This is a real-dollar *framing*,
+  never-runtime-recalculated list-price map — a directional posture. This is a real-dollar *framing*,
   not an accounting ledger.
 - **No new baseline data.** `report.sh` computes nothing that isn't already
   in `.temperloop/baseline.jsonl` or a drop-in's own stdout -- it is a pure

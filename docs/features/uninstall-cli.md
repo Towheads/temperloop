@@ -93,7 +93,8 @@ None. Pure local filesystem I/O (`jq`, `cp`/`rm` via `manifest.sh`) against
 a per-machine XDG state directory — no network calls, no GitHub API usage,
 no CI resource growth beyond the one new test suite
 (`bin/subcommands/tests/test_uninstall.sh`), auto-discovered by the
-existing `make test-try` glob loop (`bin/subcommands/tests/test_*.sh`) with
+existing `make test-cli-subcommands` glob loop
+(`bin/subcommands/tests/test_*.sh`) with
 no Makefile edit needed.
 
 ## Telemetry

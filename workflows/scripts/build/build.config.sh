@@ -631,41 +631,25 @@ fi
 # safe/standard drive, not a merge-tier high-judgment one).
 : "${RETRO_JUDGE_MODEL:=claude-sonnet-5}"
 
-# ── `temperloop try` / `temperloop configure` headless seats (temperloop#978) ──
-# Three `claude -p` seats live OUTSIDE the batch pipeline, under bin/subcommands/.
-# The model-fan-out inventory (docs/model-fanout-inventory.md) found them as
-# SILENT INHERITS: each spawned a headless session with no --model flag at all,
-# so each ran on whatever tier the invoking operator's CLI defaults to — the top
-# tier, on a stranger's very first command. These three settings are their levers.
+# ── `temperloop configure` headless seat (temperloop#978) ─────────────────────
+# A `claude -p` seat lives OUTSIDE the batch pipeline, under bin/subcommands/.
+# The model-fan-out inventory (docs/model-fanout-inventory.md) found it as a
+# SILENT INHERIT: it spawned a headless session with no --model flag at all,
+# so it ran on whatever tier the invoking operator's CLI defaults to — the top
+# tier, on a stranger's very first command. This setting is its lever.
 #
-# All three seats run `--tools ""` (structurally zero tool access), so none can
-# write, and all three are already dollar-capped. They are ALSO invisible to the
-# `.temperloop/report.d/tokens` producer: every one passes
-# --no-session-persistence, so no transcript is written and no spend from these
-# seats appears in the corpus that backs the pre-registered token-spend baseline
-# note. See the inventory doc's § Measurement for why that gap forced a direct
-# per-call measurement rather than a producer read.
-
-# try.sh Step 3 — the SHADOW/DRY-RUN triage classification pass. The ONE seat
-# this item re-tiers, and the only one whose default is not the inherit sentinel.
-# Justification (measured, not assumed — inventory doc § Measurement): its output
-# is free-form text the script prints VERBATIM, with no JSON contract to violate
-# and no downstream parse that a weaker model can fail; it is explicitly labelled
-# a dry run with zero writes; and it is a stranger's FIRST-run demo, billed to the
-# stranger's own account, where the per-call dollar cost is the axis that bites.
-# Measured whole-job-including-repairs: valid, correctly-prefixed report 2/2 at
-# the cheap tier, ~5.5x cheaper per call in dollars, and within noise on
-# cost-weighted units. Set to empty to restore the inherit behavior.
-: "${TRY_TRIAGE_MODEL:=claude-haiku-4-5}"
-
-# try.sh --demo — the LIVE judgment call that produces a fixed file's full
-# corrected content, which this script then applies, commits, and pushes to a
-# real PR. Deliberately NOT re-tiered: its output is committed code that no
-# mechanical gate checks before it reaches a human's repo, which is exactly the
-# tier-by-verification case for keeping the strong tier (§ Cost-tier routing,
-# claude/CLAUDE.kernel.md). Sentinel: empty = INHERIT THE SESSION'S OWN model,
-# the unchanged default.
-: "${TRY_DEMO_FIX_MODEL:=}"
+# The inventory's other two seats were `try.sh`'s shadow-triage pass and
+# `try.sh --demo`'s fix call, levered by TRY_TRIAGE_MODEL / TRY_DEMO_FIX_MODEL.
+# Both settings were removed when `try` was retired — see the CHANGELOG's
+# BREAKING entry for the migration.
+#
+# The seat runs `--tools ""` (structurally zero tool access), so it cannot
+# write, and it is already dollar-capped. It is ALSO invisible to the
+# `.temperloop/report.d/tokens` producer: it passes --no-session-persistence,
+# so no transcript is written and no spend from this seat appears in the
+# corpus that backs the pre-registered token-spend baseline note. See the
+# inventory doc's § Measurement for why that gap forced a direct per-call
+# measurement rather than a producer read.
 
 # configure.sh — the AI-guided starting-value suggestion pass. Deliberately NOT
 # re-tiered, and this one is a MEASURED refusal rather than a cautious one: the
@@ -950,7 +934,7 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        PIPELINE_MERGE_PENDING_LABEL PIPELINE_CLARIFIED_MARKER PIPELINE_ESCALATED_LABEL \
        RETRO_MINT_ENABLED RETRO_MIN_INTERVAL RETRO_URGENT_CI_RETRIES \
        RETRO_BATCH_SESSION_CAP RETRO_JUDGE_MODEL \
-       TRY_TRIAGE_MODEL TRY_DEMO_FIX_MODEL CONFIGURE_AI_MODEL \
+       CONFIGURE_AI_MODEL \
        REVIEWER_SCAN_MIN_FILES \
        PROSE_BUDGET_TIER1_CAP PROSE_BUDGET_TIER2_FILE_CAP \
        SPEND_WEIGHT_INPUT SPEND_WEIGHT_CACHE_READ SPEND_WEIGHT_CACHE_CREATE SPEND_WEIGHT_OUTPUT \

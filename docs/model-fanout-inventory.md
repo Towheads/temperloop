@@ -149,9 +149,17 @@ graceful degradation path.
 
 | # | seat | setting | disposition |
 |---|---|---|---|
-| C1 | `try.sh` Step 3 — SHADOW/DRY-RUN triage classification | `$TRY_TRIAGE_MODEL` | **re-tiered** (measured) |
-| C2 | `try.sh --demo` — live judgment call producing a fixed file | `$TRY_DEMO_FIX_MODEL` | justified inherit |
+| C1 | `try.sh` Step 3 — SHADOW/DRY-RUN triage classification | `$TRY_TRIAGE_MODEL` | **re-tiered** (measured) — **seat RETIRED** (#1237) |
+| C2 | `try.sh --demo` — live judgment call producing a fixed file | `$TRY_DEMO_FIX_MODEL` | justified inherit — **seat RETIRED** (#1237) |
 | C3 | `configure.sh` — AI-guided starting-value suggestion | `$CONFIGURE_AI_MODEL` | justified inherit (measured refusal) |
+
+> **Retirement note (temperloop#1237).** C1 and C2 lived in
+> `bin/subcommands/try.sh`, which was deleted when `try` / `try --demo` were
+> retired in favour of `temperloop testbed`; their `$TRY_TRIAGE_MODEL` and
+> `$TRY_DEMO_FIX_MODEL` settings went with them. **C3 (`configure.sh`) is the
+> only seat in this table that still exists.** The measurements below are kept
+> as the record of how the tiering call was made — they are history, not a
+> description of current behaviour.
 
 **C1 — re-tiered.** Its output is free-form text the script prints *verbatim*:
 no JSON contract to violate, no downstream parse a weaker model can fail, so it
@@ -249,7 +257,7 @@ same quantity the producer would, at the one place the producer cannot see.
 Every figure below is an observed measurement. Sample sizes are small and are
 stated inline; none is extrapolated.
 
-### C1 — `try.sh` shadow triage: the re-tier
+### C1 — `try.sh` shadow triage: the re-tier (seat since retired)
 
 Prompt: the script's real Step-3 shadow-triage prompt over a 5-issue sample.
 
