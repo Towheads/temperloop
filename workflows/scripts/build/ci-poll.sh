@@ -169,7 +169,7 @@ gh_retry() {
       return 0
     fi
     if [ -n "$CI_POLL_API_DETERMINISTIC_PATTERN" ] \
-      && printf '%s\n' "$out" | grep -Eq -- "$CI_POLL_API_DETERMINISTIC_PATTERN"; then
+      && printf '%s\n' "$out" | grep -E -- "$CI_POLL_API_DETERMINISTIC_PATTERN" >/dev/null; then
       die_deterministic "$desc failed DETERMINISTICALLY on attempt $attempt — not retried (temperloop#976): $out"
     fi
     if [ "$attempt" -ge "$CI_POLL_API_MAX_ATTEMPTS" ]; then

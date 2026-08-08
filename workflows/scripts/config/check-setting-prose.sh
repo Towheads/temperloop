@@ -280,7 +280,7 @@ for path in "${targets[@]}"; do
       # program, not a missed expansion.
       # shellcheck disable=SC2016
       prose="$(printf '%s' "$line" | sed -E 's/`[^`]*`//g; s/<!--([^-]|-[^-]|--[^>])*-->//g')"
-      if printf '%s' "$prose" | grep -qE -- "$pat"; then
+      if printf '%s' "$prose" | grep -E -- "$pat" >/dev/null; then
         if _kp_take_baseline "$rel" "$name" "$default" "$line"; then
           baselined=$((baselined + 1))
           continue

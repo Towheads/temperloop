@@ -39,7 +39,7 @@ checked=0
 while IFS= read -r rel; do
   case "$rel" in */tests/*) continue ;; esac
   # only build-machinery scripts with a shebang carry executable intent
-  head -1 "$REPO_ROOT/$rel" | grep -q '^#!' || continue
+  head -1 "$REPO_ROOT/$rel" | grep '^#!' >/dev/null || continue
   base="$(basename "$rel")"
   is_sourced_only "$base" && continue
   checked=$((checked + 1))

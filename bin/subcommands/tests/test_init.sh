@@ -774,7 +774,7 @@ grep -qF "report.d producer: proposing" <<<"$out" \
 
 cmp -s "$WORK/producer15.before" "$REPO15/.temperloop/report.d/tokens" \
   || fail "init OVERWROTE a pre-existing tokens producer — it must be byte-identical after the run"
-git -C "$REPO15" show --name-only --format= HEAD | grep -qF ".temperloop/report.d/tokens" \
+git -C "$REPO15" show --name-only --format= HEAD | grep -F ".temperloop/report.d/tokens" >/dev/null \
   && fail "the proposal commit touched the pre-existing tokens producer (it must not appear in the diff at all)"
 mode15="$(git -C "$REPO15" ls-tree HEAD .temperloop/report.d/tokens | awk '{print $1}')"
 [ "$mode15" = "100755" ] || fail "the pre-existing producer's mode changed (git mode $mode15, want 100755)"
@@ -875,7 +875,7 @@ grep -qF "report.d producer: proposing" <<<"$out" \
   && fail "init proposed its own shim over a producer that exists on the base branch (got: $out)"
 grep -qF "already on main — leaving it untouched" <<<"$out" \
   || fail "init did not detect the base-branch producer (got: $out)"
-git -C "$REPO17" show --name-only --format= HEAD | grep -qF ".temperloop/report.d/tokens" \
+git -C "$REPO17" show --name-only --format= HEAD | grep -F ".temperloop/report.d/tokens" >/dev/null \
   && fail "the proposal commit touched the adopter's base-branch producer"
 git -C "$REPO17" show "HEAD:.temperloop/report.d/tokens" > "$WORK/producer17.after" 2>/dev/null \
   || fail "the adopter's producer vanished from the proposal branch"

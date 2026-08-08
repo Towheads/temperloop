@@ -30,7 +30,7 @@ BIN="${CACHE_DIR}/shellcheck"
 
 # Fast path: a cached binary of the pinned version that reports that version.
 # No network. `--version` prints a `version: <v>` line we match exactly.
-if [ -x "$BIN" ] && "$BIN" --version 2>/dev/null | grep -qxF "version: ${SHELLCHECK_VERSION}"; then
+if [ -x "$BIN" ] && "$BIN" --version 2>/dev/null | grep -xF "version: ${SHELLCHECK_VERSION}" >/dev/null; then
   printf '%s\n' "$BIN"
   exit 0
 fi

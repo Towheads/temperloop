@@ -426,7 +426,7 @@ marker_issue_number() {
 
 # Set membership helper: is issue $1 present in the newline list $2?
 in_list() {
-  printf '%s\n' "$2" | grep -qx "$1"
+  printf '%s\n' "$2" | grep -x "$1" >/dev/null
 }
 
 # --- Lens 1 repair: terminality oracle (temperloop#748) ----------------------

@@ -231,7 +231,7 @@ check_schema_citations() {
       # Only extension-terminated tokens are treated as path citations —
       # this excludes agent names, constants (KERNEL_GATES), error codes
       # (STALE-EXEMPT), and command names (/design, /tidy).
-      if ! printf '%s' "$tok" | grep -Eq "$CITATION_EXT_RE"; then
+      if ! printf '%s' "$tok" | grep -E "$CITATION_EXT_RE" >/dev/null; then
         continue
       fi
       ncites=$((ncites + 1))
@@ -268,7 +268,7 @@ EOF
     # shellcheck disable=SC2016  # backticks in the heredoc body below are literal (match `...` spans), not command substitution
     while IFS= read -r ctok; do
       [[ -n "$ctok" ]] || continue
-      if ! printf '%s' "$ctok" | grep -Eq "$CITATION_EXT_RE"; then
+      if ! printf '%s' "$ctok" | grep -E "$CITATION_EXT_RE" >/dev/null; then
         continue
       fi
       ncites=$((ncites + 1))
@@ -371,14 +371,14 @@ check_brief_conformance() {
   local status
   status="$(brief_status "$file")"
   if [[ "$status" != "ratified" ]]; then
-    if ! printf '%s\n' "$headings" | grep -qE "^[0-9]+:## 0\. "; then
+    if ! printf '%s\n' "$headings" | grep -E "^[0-9]+:## 0\. " >/dev/null; then
       failures+=("MISSING-DIMENSION  $label — kernel dimension 0 (Premise & null hypothesis) has no '## 0. <title>' heading; required for in-flight briefs (status='${status:-<none>}', not ratified) per design-schema.md § Kernel dimension list (dimension 0 is filled-only)")
     fi
   fi
 
   local n
   for (( n = 1; n <= KERNEL_DIM_MAX; n++ )); do
-    if ! printf '%s\n' "$headings" | grep -qE "^[0-9]+:## ${n}\. "; then
+    if ! printf '%s\n' "$headings" | grep -E "^[0-9]+:## ${n}\. " >/dev/null; then
       failures+=("MISSING-DIMENSION  $label — kernel dimension $n has no '## $n. <title>' heading")
     fi
   done

@@ -60,7 +60,7 @@ if [ ! -f "$STORE_LIB" ]; then
 elif ! grep -Fq 'ks__read_log_emit()' "$STORE_LIB"; then
   echo "FAIL  knowledge_store.sh ($STORE_LIB) no longer defines ks__read_log_emit — the read-log seam was removed"
   fail=1
-elif ! grep -A30 -F 'ks__read_log_emit()' "$STORE_LIB" | grep -Eq 'for[[:space:]]+outcome_field[[:space:]]+in[[:space:]]+"\$@"'; then
+elif ! grep -A30 -F 'ks__read_log_emit()' "$STORE_LIB" | grep -E 'for[[:space:]]+outcome_field[[:space:]]+in[[:space:]]+"\$@"' >/dev/null; then
   echo "FAIL  knowledge_store.sh's ks__read_log_emit no longer appends additive outcome fields (the 'for outcome_field in \"\$@\"' loop is missing) — wiring drifted"
   fail=1
 else

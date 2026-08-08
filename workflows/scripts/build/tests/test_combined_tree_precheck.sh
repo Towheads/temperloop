@@ -188,7 +188,7 @@ esac
 grep -q "beta chatter line 199" "$LOG" || fail "suite_log must hold the FULL log (got: $LOG)"
 # ... and the reason genuinely was out of a blind tail's reach: this is the
 # regression this whole item exists for.
-if tail -40 "$LOG" | grep -q "FAIL: alpha exploded"; then
+if tail -40 "$LOG" | grep "FAIL: alpha exploded" >/dev/null; then
   fail "fixture is not exercising the defect — the FAIL: line is within tail -40 of the log"
 fi
 echo "PASS: the full suite log is retained outside the worktree and survives teardown (the FAIL: line is >40 lines from the stream's end)"

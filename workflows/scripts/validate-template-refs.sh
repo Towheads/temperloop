@@ -326,10 +326,10 @@ EOF
     # quoted or numeric target this script doesn't attempt to resolve) —
     # extract the section name up to the first "(" or end of segment, and
     # check it resolves in the last path-shaped file seen in this segment.
-    if printf '%s' "$seg" | grep -qE '(^|[^§])§([^§]|$)'; then
+    if printf '%s' "$seg" | grep -E '(^|[^§])§([^§]|$)' >/dev/null; then
       secname="$(printf '%s' "$seg" | sed -E 's/^.*[^§]§[[:space:]]*//; s/\(.*$//' | sed 's/[[:space:]]*$//')"
       # Skip bare numeric/range targets (e.g. "2-3", "0a") — not headings.
-      if printf '%s' "$secname" | grep -qE '^[0-9]'; then
+      if printf '%s' "$secname" | grep -E '^[0-9]' >/dev/null; then
         : # not a headed section; nothing to resolve
       elif [ -n "$secname" ] && [ -n "$last_file" ]; then
         if [ -f "$REPO/$last_file" ] && anchor_present "$REPO/$last_file" "$secname"; then

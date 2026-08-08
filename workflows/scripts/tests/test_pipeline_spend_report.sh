@@ -323,7 +323,7 @@ check_eq "BY_MODEL: the parts sum to units_total (internally consistent)" \
 # 7. Degradation and hygiene.
 # ===========================================================================
 check "EMPTY: a nonexistent root exits 0 with a legible text report" \
-  bash -c "bash '$BIN' --root '$TMP/does-not-exist' | grep -q 'no transcripts matched'"
+  bash -c "bash '$BIN' --root '$TMP/does-not-exist' | grep 'no transcripts matched' >/dev/null"
 check "EMPTY: a nonexistent root still emits VALID JSON" \
   bash -c "bash '$BIN' --root '$TMP/does-not-exist' --format json | jq -e . >/dev/null"
 check_eq "EMPTY: units_total is 0, never null" \
@@ -339,17 +339,17 @@ check_eq "TORN: an unparseable line is skipped, the surrounding data survives" \
   "10" "$(run "$R7" | jq -r '.units_total')"
 
 check "USAGE: --help exits 0 and prints a usage block" \
-  bash -c "bash '$BIN' --help | grep -q 'usage: pipeline-spend-report.sh'"
+  bash -c "bash '$BIN' --help | grep 'usage: pipeline-spend-report.sh' >/dev/null"
 check "USAGE: an unknown flag exits 2" \
   bash -c "bash '$BIN' --bogus; test \$? -eq 2"
 check "USAGE: --format xml exits 2" \
   bash -c "bash '$BIN' --format xml; test \$? -eq 2"
 check "USAGE: a malformed --since exits non-zero with a named error" \
-  bash -c "bash '$BIN' --since 7/1/2026 2>&1 | grep -q 'must be YYYY-MM-DD'"
+  bash -c "bash '$BIN' --since 7/1/2026 2>&1 | grep 'must be YYYY-MM-DD' >/dev/null"
 check "TEXT: the default format is human-readable, not JSON" \
-  bash -c "bash '$BIN' --root '$R1' | grep -q 'cost-weighted spend'"
+  bash -c "bash '$BIN' --root '$R1' | grep 'cost-weighted spend' >/dev/null"
 check "TEXT: the report names the settings its weights came from" \
-  bash -c "bash '$BIN' --root '$R1' | grep -q 'SPEND_WEIGHT_'"
+  bash -c "bash '$BIN' --root '$R1' | grep 'SPEND_WEIGHT_' >/dev/null"
 
 # ===========================================================================
 # 8. STATIC PROOFS of the two "never do this" traps.

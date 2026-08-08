@@ -1080,7 +1080,7 @@ EOF
     [ -n "$f" ] || continue
     note_total=$((note_total + 1))
     rel="${f#"$ROOT"/}"
-    if ! printf '%s' "$read_docs" | grep -qxF -- "$rel"; then
+    if ! printf '%s' "$read_docs" | grep -xF -- "$rel" >/dev/null; then
       never_read=$((never_read + 1))
     fi
   done <<EOF

@@ -85,17 +85,17 @@ RAWFILE2="$RAW2/session-context-${MONTH}.jsonl"
 check "opt-in: session-context file created" test -f "$RAWFILE2"
 check "opt-in: exactly one record" test "$(wc -l < "$RAWFILE2" | tr -d ' ')" = "1"
 check "opt-in: transcript_tokens_total correct (1175)" \
-  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE2' | grep -qx 1175"
+  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE2' | grep -x 1175 >/dev/null"
 check "opt-in: context_window_size passed through verbatim" \
-  bash -c "jq -r '.context_window_size' '$RAWFILE2' | grep -qx 200000"
+  bash -c "jq -r '.context_window_size' '$RAWFILE2' | grep -x 200000 >/dev/null"
 check "opt-in: context_window_remaining_pct passed through verbatim" \
-  bash -c "jq -r '.context_window_remaining_pct' '$RAWFILE2' | grep -qx 42.5"
+  bash -c "jq -r '.context_window_remaining_pct' '$RAWFILE2' | grep -x 42.5 >/dev/null"
 check "opt-in: session_id correct" \
-  bash -c "jq -r '.session_id' '$RAWFILE2' | grep -qx bbbb2222-0000-0000-0000-000000000000"
+  bash -c "jq -r '.session_id' '$RAWFILE2' | grep -x bbbb2222-0000-0000-0000-000000000000 >/dev/null"
 check "opt-in: cwd correct" \
-  bash -c "jq -r '.cwd' '$RAWFILE2' | grep -qF '$CWD2'"
+  bash -c "jq -r '.cwd' '$RAWFILE2' | grep -F '$CWD2' >/dev/null"
 check "opt-in: project (cwd basename) correct" \
-  bash -c "jq -r '.project' '$RAWFILE2' | grep -qx proj2"
+  bash -c "jq -r '.project' '$RAWFILE2' | grep -x proj2 >/dev/null"
 
 # --- 3. SEAM CONTRACT: rollover — the emitted sum reflects the CONTINUATION -
 CWD3="$TMP/proj3"; TD3="$TMP/t3"; RAW3="$TMP/raw3"; mkdir -p "$CWD3" "$TD3"
@@ -119,7 +119,7 @@ run_hook "cccc3333-0000-0000-0000-000000000000" "$ORIG" "$CWD3" "$RAW3" "1"
 RAWFILE3="$RAW3/session-context-${MONTH}.jsonl"
 check "rollover: record created" test -f "$RAWFILE3"
 check "rollover: sum reflects the CONTINUATION (110+9990=10100), not just the stale original (110)" \
-  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE3' | grep -qx 10100"
+  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE3' | grep -x 10100 >/dev/null"
 
 # --- 4. EVAL_RUN suppression: no record even with the gate on --------------
 CWD4="$TMP/proj4"; TD4="$TMP/t4"; RAW4="$TMP/raw4"; mkdir -p "$CWD4" "$TD4"
@@ -143,7 +143,7 @@ run_hook "ffff6666-0000-0000-0000-000000000000" "$TR5" "$CWD5" "$RAW5" "1" "1500
 RAWFILE5="$RAW5/session-context-${MONTH}.jsonl"
 check "privacy: record created" test -f "$RAWFILE5"
 check "privacy: transcript_tokens_total correct (360) despite recognizable prose in the transcript" \
-  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE5' | grep -qx 360"
+  bash -c "jq -r '.transcript_tokens_total' '$RAWFILE5' | grep -x 360 >/dev/null"
 check "privacy: the canary string never appears anywhere in the emitted record" \
   bash -c "! grep -q '$CANARY' '$RAWFILE5'"
 

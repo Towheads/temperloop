@@ -108,11 +108,11 @@ check "privacy: the canary string never appears in the function's own output" \
 # `.message.usage`. A future edit that adds a `.message.content` (or any
 # other field) read into this filter fails this check immediately.
 check "static: token_sum.sh's jq filter never selects .message.content" \
-  bash -c "! grep -A12 'jq -s' '$LIB' | grep -q 'message\\.content'"
+  bash -c "! grep -A12 'jq -s' '$LIB' | grep 'message\\.content' >/dev/null"
 check "static: token_sum.sh's jq filter never selects .message.role" \
-  bash -c "! grep -A12 'jq -s' '$LIB' | grep -q 'message\\.role'"
+  bash -c "! grep -A12 'jq -s' '$LIB' | grep 'message\\.role' >/dev/null"
 check "static: token_sum.sh's jq filter DOES select .message.usage (sanity — proves the grep window is right)" \
-  bash -c "grep -A12 'jq -s' '$LIB' | grep -q 'message\\.usage'"
+  bash -c "grep -A12 'jq -s' '$LIB' | grep 'message\\.usage' >/dev/null"
 
 echo
 if [ "$fail" -gt 0 ]; then

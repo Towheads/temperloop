@@ -515,7 +515,7 @@ cmd_open() {
     # create actually succeeded). Adopt the existing PR — parse its number and URL
     # from the error message and return a structured EXISTS outcome (success) so
     # the caller routes it to the normal CI-poll/park-with-pr path.
-    if printf '%s\n' "$out" | grep -qiE 'a pull request for branch .* already exists'; then
+    if printf '%s\n' "$out" | grep -iE 'a pull request for branch .* already exists' >/dev/null; then
       url="$(grep -oE 'https?://[^[:space:]]+/pull/[0-9]+' <<<"$out" | tail -1 || true)"
       raw="$(grep -oE '/pull/[0-9]+' <<<"$out" | tail -1 || true)"
       pr_number="${raw#/pull/}"

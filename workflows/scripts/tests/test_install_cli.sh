@@ -139,7 +139,7 @@ grep -q 'call-logger' "$SANDBOX_HOME/.local/bin/gh" \
   || fail "3: gh shim should carry doctor.sh's own 'call-logger' identity marker"
 grep -q 'temperloop-managed' "$SANDBOX_HOME/.local/bin/gh" \
   || fail "3: gh shim should carry the manifest_marker_line() 'temperloop-managed' marker-stamp"
-head -n1 "$SANDBOX_HOME/.local/bin/gh" | grep -q '^#!' \
+head -n1 "$SANDBOX_HOME/.local/bin/gh" | grep '^#!' >/dev/null \
   || fail "3: gh shim's first line should still be the shebang (marker line must not precede it)"
 
 [ -f "$MANIFEST_A" ] || fail "3: install manifest should exist after a real install run"

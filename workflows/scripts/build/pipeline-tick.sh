@@ -432,7 +432,7 @@ decision_already_applied() {
   case "$body" in
     *"$PIPELINE_DELIVERED_MARKER"*) return 0 ;;
   esac
-  printf '%s\n' "$body" | grep -qiE '^[[:space:]]*Decision applied:'
+  printf '%s\n' "$body" | grep -iE '^[[:space:]]*Decision applied:' >/dev/null
 }
 
 # Phase-A2 reader (foundation #657): the ANSWERED `needs-clarification` items —
@@ -568,7 +568,7 @@ read_ready_items() {
 parse_reply() {
   local body="$1" chosen=""
   # /approve shorthand (start of a line)
-  if printf '%s\n' "$body" | grep -qiE '^/approve([[:space:]]|$)'; then
+  if printf '%s\n' "$body" | grep -iE '^/approve([[:space:]]|$)' >/dev/null; then
     echo "approve"; return 0
   fi
   # /choose <label> shorthand (start of a line) — take the rest of the line
@@ -719,7 +719,7 @@ bare_ready_singleton() {  # $1=board  $2=repo  $3=issue
   [ "$total" -eq 0 ] || return 1
   # A `## Contract` body → a pre-designed undecomposed epic /assess decomposes → epic route.
   body="$(jq -r '.body // ""' <<<"$json" 2>/dev/null)" || return 1
-  printf '%s\n' "$body" | grep -qiE '^[[:space:]]*##[[:space:]]+Contract\b' && return 1
+  printf '%s\n' "$body" | grep -iE '^[[:space:]]*##[[:space:]]+Contract\b' >/dev/null && return 1
   return 0
 }
 

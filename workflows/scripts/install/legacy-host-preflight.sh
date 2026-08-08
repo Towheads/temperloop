@@ -111,7 +111,7 @@ legacy_check_funnel_cron_plist() {
     return 0
   fi
 
-  if sed '/<!--/,/-->/d' "$plist" 2>/dev/null | grep -q '<string>[^<]*funnel-cron\.sh</string>'; then
+  if sed '/<!--/,/-->/d' "$plist" 2>/dev/null | grep '<string>[^<]*funnel-cron\.sh</string>' >/dev/null; then
     printf 'LIVE-UNMIGRATED|%s still references the deleted funnel-cron.sh stub — re-run the launchd install (infra/launchd, or launchctl bootout + bootstrap the current com.foundation.funnel-cron.plist) so it invokes pipeline-cron.sh instead\n' "$plist"
     return 1
   fi

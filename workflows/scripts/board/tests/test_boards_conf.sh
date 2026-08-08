@@ -180,7 +180,7 @@ export BOARDS_CONF_MACHINE="$WORK/no-such-machine-conf-8"
 export BOARDS_CONF_REPO_LOCAL="$WORK/no-such-repo-local-conf-8"
 [ "$(board_registered_boards | tr '\n' ' ')" = "3 4 5 6 7 " ] \
   || fail "board_registered_boards (conf-absent) should be the built-in set '3 4 5 6 7', got: $(board_registered_boards | tr '\n' ' ')"
-board_registered_boards | grep -qx 7 \
+board_registered_boards | grep -x 7 >/dev/null \
   || fail "board_registered_boards must include board 7 (temperloop#352: probes dropped it)"
 
 cat > "$WORK/board8.conf" <<'EOF'

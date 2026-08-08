@@ -170,7 +170,7 @@ echo "PASS: 1 SELF-CHECKOUT — shim in place resolves with no \$TEMPERLOOP_HOME
 out2="$(env -i HOME="$HOME" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" XDG_STATE_HOME="$XDG_STATE_HOME" PATH="$FAKEBIN2:/usr/bin:/bin" "$SHIM")" \
   || fail "2: shim invocation failed"
 [ "$out2" = "$control_out" ] || fail "2: self-checkout should win over a different PATH-found kernel, but output was: $out2"
-echo "$out2" | grep -q 424242 && fail "2: self-checkout should have won over the PATH-found fake-kernel-2, but fake-kernel-2's output leaked through"
+echo "$out2" | grep 424242 >/dev/null && fail "2: self-checkout should have won over the PATH-found fake-kernel-2, but fake-kernel-2's output leaked through"
 echo "PASS: 2 resolution order 2>3 — self-checkout wins over a different PATH-found kernel"
 
 # --- fixture: an orphan repo (NO workflows/ dir) so self-checkout fails
@@ -206,7 +206,7 @@ echo "PASS: 4 shim with no \$TEMPERLOOP_HOME resolves via 'command -v temperloop
 out5="$(cd "$ORPHAN" && env -i HOME="$HOME" TEMPERLOOP_HOME="$REPO_ROOT" SPEND_TRANSCRIPT_ROOT="$SPEND_TRANSCRIPT_ROOT" XDG_STATE_HOME="$XDG_STATE_HOME" PATH="$FAKEBIN2:/usr/bin:/bin" "$ORPHAN/.temperloop/report.d/tokens")" \
   || fail "5: shim invocation failed"
 [ "$out5" = "$control_out" ] || fail "5: with BOTH \$TEMPERLOOP_HOME (real) and a different PATH-found kernel set, \$TEMPERLOOP_HOME should win, but output was: $out5"
-echo "$out5" | grep -q 424242 && fail "5: \$TEMPERLOOP_HOME should have won over the PATH-found fake-kernel-2, but fake-kernel-2's output leaked through"
+echo "$out5" | grep 424242 >/dev/null && fail "5: \$TEMPERLOOP_HOME should have won over the PATH-found fake-kernel-2, but fake-kernel-2's output leaked through"
 echo "PASS: 5 resolution order 1>3 — \$TEMPERLOOP_HOME wins over a different PATH-found kernel"
 
 # --- 6: resolution ORDER 1>2 — $TEMPERLOOP_HOME (a DIFFERENT fake kernel)
@@ -240,12 +240,12 @@ echo "PASS: 8 no kernel resolvable -> exactly the contract's skip line, exit 0"
 # (comments mentioning "jq" or "tokens_spent" are fine and expected — this
 # checks CODE lines only, same convention as
 # workflows/scripts/tests/test_pipeline_spend_report.sh's egress checks.)
-if grep -nE '\bjq\b' "$SHIM" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+if grep -nE '\bjq\b' "$SHIM" | grep -vE '^[0-9]+:[[:space:]]*#' | grep . >/dev/null; then
   fail "9: the shim contains a non-comment 'jq' reference -- transcript/JSON shaping belongs kernel-side only"
 fi
 echo "PASS: 9a shim has no non-comment jq reference"
 
-if grep -nE 'select\(|with_entries|by_model' "$SHIM" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+if grep -nE 'select\(|with_entries|by_model' "$SHIM" | grep -vE '^[0-9]+:[[:space:]]*#' | grep . >/dev/null; then
   fail "9: the shim contains jq-shaping-looking code (select/with_entries/by_model) outside comments"
 fi
 echo "PASS: 9b shim has no jq-shaping code outside comments"
@@ -258,7 +258,7 @@ echo "PASS: 10 shim does not hardcode a fourth copy of the install-path literal"
 
 # --- 11: ARGS PASSTHROUGH ----------------------------------------------------
 # Static: the exec line forwards "$@" (a non-comment occurrence).
-if ! grep -nE '^[^#]*exec .*"\$@"' "$SHIM" | grep -q .; then
+if ! grep -nE '^[^#]*exec .*"\$@"' "$SHIM" | grep . >/dev/null; then
   fail "11: the shim's exec line does not forward \"\$@\" -- args passthrough regressed"
 fi
 echo "PASS: 11a shim's exec line forwards \"\$@\""

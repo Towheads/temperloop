@@ -382,7 +382,7 @@ cmd_open() {
   local gh_args=(pr create --base "$base" --head "$branch" --title "$title" --body "$full_body")
   [ -n "$draft" ] && gh_args+=(--draft)
   if ! out="$(cd "$repo" && gh "${gh_args[@]}" 2>&1)"; then
-    if printf '%s\n' "$out" | grep -qiE 'a pull request for branch .* already exists'; then
+    if printf '%s\n' "$out" | grep -iE 'a pull request for branch .* already exists' >/dev/null; then
       local url raw pr_number
       url="$(grep -oE 'https?://[^[:space:]]+/pull/[0-9]+' <<<"$out" | tail -1 || true)"
       raw="$(grep -oE '/pull/[0-9]+' <<<"$out" | tail -1 || true)"

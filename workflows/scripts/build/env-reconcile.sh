@@ -608,7 +608,7 @@ classify_worktree() {
 
   wt_abs="$(cd "$wt" 2>/dev/null && pwd -P)" || wt_abs="$wt"
 
-  if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $wt_abs"; then
+  if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -xF "worktree $wt_abs" >/dev/null; then
     printf 'LEAKED_WORKTREE:ORPHANED:%s' "$slug"
     return 0
   fi
@@ -742,7 +742,7 @@ classify_agent() {
     return 0
   fi
 
-  if ! _env_reconcile_launchctl list 2>/dev/null | awk '{print $3}' | grep -qxF "$label"; then
+  if ! _env_reconcile_launchctl list 2>/dev/null | awk '{print $3}' | grep -xF "$label" >/dev/null; then
     printf 'AGENT_UNLOADED:%s' "$label"
     return 0
   fi
