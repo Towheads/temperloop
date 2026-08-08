@@ -121,13 +121,27 @@ scripts/assemble-changelog.sh             # rewrite CHANGELOG.md, delete the fra
   **`docs/features/feature-manifest.txt`** each claim the directory with one
   glob; **`workflows/scripts/kernel/terminology-leak-exempt-files.txt`**
   exempts it as `record`, the twin of `CHANGELOG.md`'s own entry.
-- **`workflows/scripts/check-changelog-entry.sh` is deliberately UNCHANGED.**
-  This change is additive: nothing yet *requires* a fragment, and a direct
-  `## [Unreleased]` entry still satisfies the gate. temperloop#1322 cuts the
-  gate over to fragments, rewrites `VERSIONING.md` § Cutting a release, and
-  ships the legible-degradation arm for a consumer tree that has no
-  `changelog.d/` yet — a **BREAKING** release, because a vendoring overlay must
-  create the directory to keep the completeness property it has today.
+- **`workflows/scripts/check-changelog-entry.sh` requires a fragment**
+  (temperloop#1322, the cutover — **BREAKING**). Its completeness property asks
+  for a conforming `changelog.d/` file present at HEAD; a direct
+  `## [Unreleased]` line no longer satisfies it. The escape-hatch grammar is
+  untouched (`Changelog: none|amend — <reason>`, all three channels, the
+  ≥ 3-char reason floor), and so is the section-scope property's merge-base
+  discriminator — though its reason to exist narrows to the release-cut PR,
+  now the only PR that edits `CHANGELOG.md` at all.
+  - A tree carrying **`.kernel-pin`** (a vendoring consumer) with no
+    `changelog.d/` gets an actionable skip of completeness naming its pinned
+    kernel tag and the one command that enables it; property (2) still runs.
+  - A tree with **neither** `changelog.d/` nor `.kernel-pin` is not a consumer
+    — it is a kernel checkout that lost the directory — and **fails loudly**.
+    Without that arm the skip would let the kernel silently disable its own
+    gate.
+- **`scripts/assemble-changelog.sh --assert-empty <rev>`** is the cut-time
+  assertion (temperloop#1322) that replaced `VERSIONING.md` § Cutting a
+  release's merge-walking `^CHANGELOG.md$` backfill loop. It closes the
+  cut-vs-sibling **omission** race: a cut PR deleting fragments and a sibling
+  PR adding one touch disjoint files, so git merges them clean and the
+  sibling's entry is missing — not wrong — from the shipped section.
 
 ## Resource impact
 
