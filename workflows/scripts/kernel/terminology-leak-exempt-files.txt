@@ -29,6 +29,11 @@
 
 # record
 CHANGELOG.md
+# changelog.d/ fragments are CHANGELOG.md content that has not been
+# assembled yet (temperloop#1321) — same `record` rationale as the line
+# above: an entry describing a rename must be able to quote the
+# pre-rename identifier verbatim, exactly as the assembled history does.
+changelog.d/
 docs/adr/
 Plans-archive/
 meta/

@@ -66,6 +66,28 @@ reads that marker; a stranger greps for it before pulling.
   first-run failure no longer prints `session_id` / `uuid` / cost internals.
 
   Not breaking: no overlay, config, or caller has to adapt.
+- **Changelog entries can now be written as per-entry files under
+  `changelog.d/` instead of edits to `CHANGELOG.md`** (#1321). `VERSIONING.md`
+  requires an `## [Unreleased]` entry for every contract-surface change, so 25
+  of the last 25 commits touched `CHANGELOG.md` and any two concurrent PRs
+  collided structurally on it. A fragment is one file — `<slug>.<category>
+  [.breaking].md`, e.g. `1321-changelog-fragment-format.changed.md` — so two
+  concurrent PRs write disjoint files, share no line, and cannot conflict. The
+  format is **index-free**: category, breakingness and sort key all derive from
+  the filename, because a shared ordering file would recreate the identical
+  hotspot one directory over. `scripts/assemble-changelog.sh` folds the
+  accumulated fragments into `## [Unreleased]` at the release cut and deletes
+  them; parsing lives in `workflows/scripts/lib/changelog.sh` beside the range
+  helpers, as ADR-0002's layering rule requires. The assembler is **additive**
+  — it merges into a non-empty `[Unreleased]` rather than replacing it, so
+  nothing accumulated since the last tag is dropped and an in-flight PR still
+  writing a direct entry stays harmless. It refuses to write at all on an
+  unrecognised filename, an empty fragment, or a body carrying its own
+  heading. **Additive and non-breaking on its own:**
+  `workflows/scripts/check-changelog-entry.sh` is unchanged and a direct
+  `## [Unreleased]` entry still satisfies it — nothing yet *requires* a
+  fragment. Cutting the gate over to fragments (a BREAKING change for
+  vendoring overlays, which must create their own `changelog.d/`) is #1322.
 
 - **`pipeline-retro-health.sh` resolves its lake roots logically and pins the
   PIPELINE stream to the writer's own default** (#1185). Two independent
