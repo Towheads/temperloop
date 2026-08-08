@@ -67,7 +67,15 @@ echo "$i" > "$CLAUDE_ARGS_DIR/argc"
 if [ "${FAKE_CLAUDE_RC:-0}" -ne 0 ]; then
   exit "${FAKE_CLAUDE_RC:-0}"
 fi
-printf '%s' "${FAKE_CLAUDE_JSON:-{\}}"
+if [ "${FAKE_CLAUDE_BAD_ENVELOPE:-0}" = "1" ]; then
+  printf 'not-json-at-all {{{'
+  exit 0
+fi
+# --output-format json ENVELOPE whose .result is the suggestions object,
+# serialized as a JSON STRING (mirrors the real CLI's envelope shape,
+# where .result is always a string, never an object).
+jq -cn --arg result "${FAKE_CLAUDE_JSON:-{\}}" \
+  '{result: $result, usage: {input_tokens: 10, output_tokens: 5}, total_cost_usd: 0.001, duration_ms: 100, num_turns: 1}'
 FAKE_CLAUDE_EOF
 chmod +x "$BIN/claude"
 export CLAUDE_ARGS_DIR CLAUDE_CALL_COUNT_FILE
@@ -169,6 +177,24 @@ grep -q "falling back to plain prompts" <<<"$out" || fail "AI-call-failure did n
 mc4="$(machine_conf_path "$XDG4")"
 [ -f "$mc4" ] || fail "AI-call-failure run did not still write the machine-conf file"
 echo "PASS: an AI call failure degrades gracefully to plain prompts (still writes, never hard-fails)"
+
+# =============================================================================
+# 4b. Unparseable envelope: claude exits 0 but its stdout is not valid JSON
+#    at all (a corrupted/truncated envelope) -- degrades to plain prompts
+#    exactly like an AI call failure above, never a hard failure.
+# =============================================================================
+: > "$CLAUDE_CALL_COUNT_FILE"
+XDG4B="$(fresh_xdg)"
+out="$(FAKE_CLAUDE_BAD_ENVELOPE=1 PATH="$BIN:/usr/bin:/bin" XDG_CONFIG_HOME="$XDG4B" bash "$CONFIGURE" \
+  --set PIPELINE_OPERATOR=octocat --yes </dev/null 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] || fail "unparseable-envelope run did not still exit 0 (got: $rc) -- output:\n$out"
+[ "$(claude_call_count)" -eq 1 ] || fail "unparseable-envelope run did not invoke claude exactly once (got: $(claude_call_count))"
+grep -q "unparseable envelope" <<<"$out" || fail "unparseable-envelope run did not report the envelope-parse failure (got: $out)"
+grep -q "falling back to plain prompts" <<<"$out" || fail "unparseable-envelope run did not report a plain-prompt fallback (got: $out)"
+mc4b="$(machine_conf_path "$XDG4B")"
+[ -f "$mc4b" ] || fail "unparseable-envelope run did not still write the machine-conf file"
+echo "PASS: an unparseable envelope degrades gracefully to plain prompts (still writes, never hard-fails)"
 
 # =============================================================================
 # 5. Writes ONLY the machine-conf file: --dry-run touches nothing.

@@ -82,8 +82,9 @@ exit 0
 FAKE_GH_EOF
 chmod +x "$BIN/gh"
 
-# --- fake claude: logs every argv element (one file per index), echoes a
-# canned marker report ---------------------------------------------------
+# --- fake claude: logs every argv element (one file per index), emits an
+# --output-format json ENVELOPE whose .result carries the canned marker
+# report (mirrors the real CLI's envelope shape) --------------------------
 CLAUDE_ARGS_DIR="$WORK/claude-args"
 cat > "$BIN/claude" <<'FAKE_CLAUDE_EOF'
 #!/usr/bin/env bash
@@ -95,7 +96,13 @@ for a in "$@"; do
   i=$((i + 1))
 done
 echo "$i" > "$CLAUDE_ARGS_DIR/argc"
-echo "FAKE-TRIAGE-REPORT-MARKER: ${FAKE_TRIAGE_OUTPUT:-shadow triage report}"
+if [ "${FAKE_CLAUDE_BAD_ENVELOPE:-0}" = "1" ]; then
+  printf 'not-json-at-all {{{'
+  exit "${FAKE_CLAUDE_RC:-0}"
+fi
+report="FAKE-TRIAGE-REPORT-MARKER: ${FAKE_TRIAGE_OUTPUT:-shadow triage report}"
+jq -cn --arg result "$report" \
+  '{result: $result, usage: {input_tokens: 100, output_tokens: 50}, total_cost_usd: 0.01, duration_ms: 500, num_turns: 1}'
 exit "${FAKE_CLAUDE_RC:-0}"
 FAKE_CLAUDE_EOF
 chmod +x "$BIN/claude"
@@ -136,6 +143,7 @@ run() {
     FAKE_OPEN_ISSUES_JSON="${FAKE_OPEN_ISSUES_JSON:-[]}" \
     FAKE_TRIAGE_OUTPUT="${FAKE_TRIAGE_OUTPUT:-}" \
     FAKE_CLAUDE_RC="${FAKE_CLAUDE_RC:-0}" \
+    FAKE_CLAUDE_BAD_ENVELOPE="${FAKE_CLAUDE_BAD_ENVELOPE:-0}" \
     CALL_LOG="$CALL_LOG" \
     CLAUDE_ARGS_DIR="$CLAUDE_ARGS_DIR" \
     bash "$TRY" "$@" 2>&1)" || rc=$?
@@ -241,7 +249,21 @@ done
 [ "$found_no_persist" -eq 1 ] || fail "claude must be invoked with --no-session-persistence"
 [ "$(claude_flag_value -p)" != "" ] || fail "claude must be invoked with a non-empty -p prompt"
 [ "$(claude_flag_value --max-budget-usd)" = "1.00" ] || fail "expected --max-budget-usd 1.00 (cost-estimates.conf), got: $(claude_flag_value --max-budget-usd)"
+[ "$(claude_flag_value --output-format)" = "json" ] || fail "expected --output-format json (envelope capture), got: $(claude_flag_value --output-format)"
 echo "PASS: happy path — probe + estimate-before-triage + zero-tool claude call, zero writes to target tree"
+
+# =============================================================================
+# T4b -- unparseable envelope: claude exits 0 but its stdout is not valid
+# JSON at all (a corrupted/truncated envelope) -- the shadow-triage report
+# degrades to a legible skip line, same as a timeout or non-zero exit.
+# =============================================================================
+FAKE_OPEN_ISSUES_JSON='[{"number":1,"title":"bug one","url":"https://x/1","labels":[],"body":"body one"}]'
+FAKE_CLAUDE_BAD_ENVELOPE=1
+run 0 --dir "$REPO" --gh-repo "$TEST_REPO" --timeout 5
+assert_contains "skipped — claude shadow-triage call returned an unparseable envelope"
+assert_not_contains "not-json-at-all"
+FAKE_CLAUDE_BAD_ENVELOPE=0
+echo "PASS: unparseable envelope — degrades to a legible skip line, exit 0"
 
 # =============================================================================
 # T5 -- gh absent entirely: issues + triage both gracefully skip; exit 0.

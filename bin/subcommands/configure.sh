@@ -373,11 +373,11 @@ PROMPT_EOF
     ai_model_args=(--model "$CONFIGURE_AI_MODEL")
   fi
 
-  ai_out="$(run_with_timeout "$CONFIGURE_CLAUDE_TIMEOUT_SECS" \
+  ai_envelope="$(run_with_timeout "$CONFIGURE_CLAUDE_TIMEOUT_SECS" \
     "$CLAUDE_BIN" -p "$prompt" \
     ${ai_model_args[@]+"${ai_model_args[@]}"} \
     --tools "" \
-    --output-format text \
+    --output-format json \
     --no-session-persistence \
     --max-budget-usd "$CONFIGURE_CLAUDE_MAX_BUDGET_USD" \
     2>/dev/null)"
@@ -390,6 +390,25 @@ PROMPT_EOF
       echo "  skipped — claude call failed (exit $ai_rc); falling back to plain prompts"
     fi
     ai_out=""
+  else
+    # $ai_envelope carries the FULL --output-format json envelope
+    # (usage / modelUsage / total_cost_usd / duration_ms / num_turns), kept
+    # in scope for a future attribution emit. .result is a JSON STRING (the
+    # model's own {"SETTING":{"value","why"}} object) — unwrapped with
+    # `fromjson` HERE, in the SAME jq call, and re-serialized COMPACT
+    # (`-c`, never `-r`): `-r` would flatten .result's own escapes into
+    # literal control characters, and round-tripping that through a
+    # SECOND `jq`/`fromjson` call re-parses it as an object first (jq's
+    # stdin is auto-parsed as JSON), so `fromjson` then errors "only
+    # strings can be parsed" — silently swallowed by `?` into an empty
+    # result. Never `.result.<key>` directly either, which silently
+    # yields empty the same way. $ai_out below is therefore already a
+    # plain (once-encoded) JSON object — the per-setting reads further
+    # down need no second unwrap.
+    ai_out="$(printf '%s' "$ai_envelope" | jq -c '.result | fromjson? // empty' 2>/dev/null)" || ai_out=""
+    if [ -z "$ai_out" ]; then
+      echo "  skipped — claude call returned an unparseable envelope; falling back to plain prompts"
+    fi
   fi
 
   still_unresolved=""
@@ -401,6 +420,8 @@ PROMPT_EOF
     v=""
     why=""
     if command -v jq >/dev/null 2>&1 && [ -n "$ai_out" ]; then
+      # $ai_out is already the once-decoded settings object (see the
+      # fromjson unwrap above) — a plain field read, no second fromjson.
       v="$(printf '%s' "$ai_out" | jq -r --arg k "$name" '.[$k].value // empty' 2>/dev/null)"
       why="$(printf '%s' "$ai_out" | jq -r --arg k "$name" '.[$k].why // empty' 2>/dev/null)"
     fi

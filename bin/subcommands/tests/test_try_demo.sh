@@ -90,8 +90,10 @@ esac
 GHEOF
 chmod +x "$BIN/gh"
 
-# --- fake claude: logs every argv element (mirrors test_try.sh), emits a
-# canned {"path","content"} fix on stdout. --------------------------------
+# --- fake claude: logs every argv element (mirrors test_try.sh), emits an
+# --output-format json ENVELOPE whose .result is the canned {"path",
+# "content"} fix, serialized as a JSON STRING (mirrors the real CLI's
+# envelope shape, where .result is always a string, never an object). ----
 CLAUDE_ARGS_DIR="$WORK/claude-args"
 cat > "$BIN/claude" <<'CLAUDEEOF'
 #!/usr/bin/env bash
@@ -103,7 +105,12 @@ for a in "$@"; do
   i=$((i + 1))
 done
 echo "$i" > "$CLAUDE_ARGS_DIR/argc"
-printf '%s' "${FAKE_FIX_JSON:-{\"path\":\"greet.sh\",\"content\":\"fixed\"}}"
+if [ "${FAKE_CLAUDE_BAD_ENVELOPE:-0}" = "1" ]; then
+  printf 'not-json-at-all {{{'
+  exit "${FAKE_CLAUDE_RC:-0}"
+fi
+jq -cn --arg result "${FAKE_FIX_JSON:-{\"path\":\"greet.sh\",\"content\":\"fixed\"\}}" \
+  '{result: $result, usage: {input_tokens: 100, output_tokens: 50}, total_cost_usd: 0.01, duration_ms: 500, num_turns: 1}'
 exit "${FAKE_CLAUDE_RC:-0}"
 CLAUDEEOF
 chmod +x "$BIN/claude"
@@ -242,6 +249,8 @@ echo "PASS: happy path -- claims #5, drives a real (fake) claude judgment call, 
   || fail "claude must be invoked with --tools \"\" (zero tool access), got: $(claude_flag_value --tools)"
 [ "$(claude_flag_value --max-budget-usd)" = "2.00" ] \
   || fail "expected --max-budget-usd 2.00 (the --demo-cap-usd default), got: $(claude_flag_value --max-budget-usd)"
+[ "$(claude_flag_value --output-format)" = "json" ] \
+  || fail "expected --output-format json (envelope capture), got: $(claude_flag_value --output-format)"
 n="$(claude_argc)"
 i=0
 found_no_persist=0
@@ -282,5 +291,42 @@ out="$(PATH="$BIN:$PATH" \
 [ "$(claude_flag_value --max-budget-usd)" = "0.50" ] \
   || fail "expected --max-budget-usd 0.50 to thread through, got: $(claude_flag_value --max-budget-usd)"
 echo "PASS: --demo-cap-usd threads through to the live call's --max-budget-usd"
+
+# =============================================================================
+# T6 -- unparseable envelope: claude exits 0 but its stdout is not valid
+# JSON at all (a corrupted/truncated envelope) -- the fix call fails the
+# same "could not parse a fix" way it would for a malformed {"path",
+# "content"} body, never a PR, never a merge. A DIFFERENT issue number
+# than T4/T5 (a fresh branch name) for the same fast-forward-safe reason.
+# =============================================================================
+: > "$GH_LOG"
+rm -rf "$CLAUDE_ARGS_DIR"
+FAKE_ISSUES_JSON_T6='[{"number":7,"title":"greet.sh misspells its own greeting","labels":[{"name":"demo-seed"}]}]'
+rc=0
+out="$(PATH="$BIN:$PATH" \
+  FAKE_AUTH_RC=0 \
+  FAKE_ISSUES_JSON="$FAKE_ISSUES_JSON_T6" \
+  FAKE_ISSUE_BODY="$FAKE_ISSUE_BODY" \
+  FAKE_ISSUE_API_JSON="$FAKE_ISSUE_API_JSON" \
+  FAKE_CLAUDE_BAD_ENVELOPE=1 \
+  DEMO_REPO_ENV="$DEMO_REPO" \
+  GH_LOG="$GH_LOG" \
+  CLAUDE_ARGS_DIR="$CLAUDE_ARGS_DIR" \
+  TRY_DEMO_CLONE_URL="$BARE" \
+  TRY_DEMO_BOARD_NUM=903 \
+  bash "$TRY" --demo --demo-repo "$DEMO_REPO" --yes 2>&1)" || rc=$?
+[ "$rc" -eq 1 ] || fail "unparseable-envelope run should exit 1 (got $rc: $out)"
+case "$out" in
+  *"could not parse a fix from the judgment call's output"*) ;;
+  *) fail "expected the parse-failure message (got: $out)" ;;
+esac
+case "$out" in
+  *"not-json-at-all"*) ;;
+  *) fail "expected the raw (unparseable) envelope echoed for debugging (got: $out)" ;;
+esac
+if grep -Eq '^gh pr (create|merge)' "$GH_LOG" 2>/dev/null; then
+  fail "unparseable-envelope run must never open or merge a PR: $(cat "$GH_LOG")"
+fi
+echo "PASS: unparseable envelope — fix call fails gracefully (exit 1, no PR), same as a malformed fix body"
 
 echo "OK: test_try_demo.sh"
