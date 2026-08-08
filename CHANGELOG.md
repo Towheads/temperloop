@@ -60,6 +60,36 @@ reads that marker; a stranger greps for it before pulling.
   report-cross-lane split, disposition of a foreign checkout stays the
   operator's call.
 
+### Changed
+
+- **A queue-time `CONFLICTING` now takes a shared `rebase-and-retry`
+  disposition instead of an unconditional park** (#1093). GitHub reports
+  `CONFLICTING`/`DIRTY` both for a branch whose base merely *moved* while the
+  PR sat in the merge gate and for a branch with a genuine content conflict —
+  and `/build` Step 4c and `/fix` Step 5 parked on the label either way,
+  spending an operator's merge approval on a base that had simply advanced.
+  `/build` § 4c gains **`4c-retry`**, one implementation composed entirely from
+  existing machinery (`pr.sh rebase` → `pr.sh push --force` → a `--sha`-pinned
+  `ci-poll.sh` → the caller's already-probed `gate.sh queue` /
+  `gate.sh managed-merge`), and `/fix` Step 5 references that section by name
+  rather than carrying a second copy. A cleanly-rebasable PR is re-pushed,
+  re-verified on the new head, and re-enqueued **within the same run with no
+  second merge approval** — sound because the merge decision is unchanged (a
+  clean rebase replays the approved commits without touching a hunk) and the
+  one thing that moved, the base, is re-verified mechanically by the
+  SHA-pinned poll before anything is enqueued. A **genuine content conflict
+  still parks**, now naming the conflicting files, and is never auto-resolved;
+  a `CI_FAILED` on the new base takes the existing `EJECTED` disposition set;
+  a second `CONFLICTING` stops the retry rather than looping. `pr.sh rebase`'s
+  own `REBASED`/`REBASE_CONFLICT` outcomes are the branch point, and its
+  abort-and-restore on conflict is relied on, not reimplemented. Contract
+  surface via `claude/commands/*.md`; **not** breaking — the park path and the
+  `#130` confirmed-`MERGED` guard are unchanged, the retry only runs ahead of
+  them. `/sweep` is deliberately **not** wired in: it fires
+  `gh pr merge --auto` and immediately records the item fixed, with no
+  merge-confirmation call site to hang a disposition on — that plumbing is
+  tracked separately (#1268).
+
 ### Fixed
 
 - **`/build` Step 0a drains an answered plan-approval on attended ticks too, so
