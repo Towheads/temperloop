@@ -117,10 +117,55 @@ echo "PASS: control (axis absent) takes the live arm and trips the gh trap — t
 # === 3. reconcile.sh stays OFF the cached arm (#1024 acceptance) =============
 # A drift detector fed cached data is self-defeating. Static assertion: the
 # regression to catch is someone "helpfully" adding the source line here too.
-if grep -q "lib/cache\.sh" "$BOARD_DIR/reconcile.sh"; then
+#
+# temperloop#1152: the match is anchored to a real sourcing line, not any
+# occurrence of the path — a bare `grep -q "lib/cache\.sh"` also matched
+# reconcile.sh's OWN governing comment (which names lib/cache.sh plainly to
+# document this very contract), so merely documenting the contract tripped
+# the gate that enforces it. The regex below requires a `source` or `.`
+# keyword at the start of the (whitespace-trimmed) line, so a comment
+# mentioning the path no longer counts.
+CACHE_SOURCE_RE='^[[:space:]]*(source|\.)[[:space:]]+.*lib/cache\.sh'
+
+if grep -Eq "$CACHE_SOURCE_RE" "$BOARD_DIR/reconcile.sh"; then
   fail "reconcile.sh sources lib/cache.sh — it MUST stay on the live arm (temperloop#1024: a drift detector must not read cached data)"
 fi
 
 echo "PASS: reconcile.sh does not source lib/cache.sh (stays on the live read arm)"
+
+# --- 3a. anchoring cases (temperloop#1152) -----------------------------------
+# Pin both directions of the anchored match with synthetic fixtures, so the
+# loosened match cannot silently stop detecting the real thing:
+#   - a COMMENT naming lib/cache.sh must PASS (no false positive)
+#   - a genuine SOURCE of it must still FAIL, in all four forms it can take
+FIXTURE="$WORK/reconcile-fixture.sh"
+
+cat > "$FIXTURE" <<'EOF'
+#!/usr/bin/env bash
+# This script deliberately does not source lib/cache.sh — see the contract
+# above naming lib/cache.sh plainly.
+EOF
+if grep -Eq "$CACHE_SOURCE_RE" "$FIXTURE"; then
+  fail "the anchored check flagged a COMMENT naming lib/cache.sh as if it were a sourcing line — the match is not anchored to a real sourcing line"
+fi
+echo "PASS: a comment naming lib/cache.sh does not trip the anchored check"
+
+# Single-quoted on purpose: DIR_FORM is literal fixture TEXT written to a
+# file, not a shell expansion in this script.
+# shellcheck disable=SC2016
+DIR_FORM='source "$SCRIPT_DIR/lib/cache.sh"'   # $DIR-prefixed
+declare -a SOURCING_FORMS=(
+  'source lib/cache.sh'                        # bare: source X
+  '. lib/cache.sh'                              # bare: . X
+  'source "lib/cache.sh"'                       # quoted
+  "$DIR_FORM"
+)
+for line in "${SOURCING_FORMS[@]}"; do
+  printf '#!/usr/bin/env bash\n%s\n' "$line" > "$FIXTURE"
+  if ! grep -Eq "$CACHE_SOURCE_RE" "$FIXTURE"; then
+    fail "reconcile.sh sources lib/cache.sh — it MUST stay on the live arm (temperloop#1024: a drift detector must not read cached data) [form: $line]"
+  fi
+done
+echo "PASS: the anchored check still catches a real sourcing line in all four forms (source X, . X, quoted, \$DIR-prefixed)"
 
 echo "ALL PASS: test_cache_command_wiring.sh"
