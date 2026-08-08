@@ -16,6 +16,48 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`/sweep`'s spike-close arm now lands a real board Done write via
+  `board_close_done`, and both arms' false close→Done "cascade" claim is
+  purged** (#1280). The spike arm (`pr` is `null`) previously ran a bare
+  `gh issue close` that bypassed the adapter entirely, stranding a
+  `fnd:status:*` label and a `fnd:host/session:*` claim stamp on every spike
+  close — it now posts its verdict comment, then calls
+  `board_close_done "$BOARD" <N>` (behind a `declare -F` fallback guard for a
+  vendored `board.sh` predating the helper), which strips both and fires the
+  adapter's own write-through cache invalidation, so the hand-rolled
+  guarded-source `lib/cache.sh` / `cache_dirty` call is removed. The merge arm
+  (`pr` set) deliberately gains **no** Done write — `gh pr merge --auto` only
+  enqueues, so a Done write there would close the issue before the merge
+  lands, breaking the `Closes #N` linkage; its Done write is deferred to a
+  confirmed-`MERGED` point owned by temperloop#1268, mirroring the existing
+  cache-bust deferral on that same arm. Both arms' prior "the close→Done
+  cascade moves the card" claim — inaccurate on this issues-only backend,
+  which has no such automation — is deleted throughout `claude/commands/sweep.md`
+  and replaced with what actually happens: the close makes the item read Done
+  immediately (checked before any label), but the status label and claim
+  stamp stay standing unless the adapter's Done write runs.
+- **`install-tier2.yml` is re-scoped off the retired `try` path onto the
+  `init` -> `eject` adopt-path round trip against the persistent
+  `Towheads/temperloop-demo` repo** (#1234). Drops the `temperloop try` step
+  and `ANTHROPIC_API_KEY` entirely (no leg makes a model call), and no longer
+  invokes the deleted `seed-demo-repo.sh`. The workflow never creates or
+  deletes a repository — `DEMO_REPO_TOKEN` is a fine-grained PAT scoped to
+  that one repo — and `eject`'s manifest-driven revert is what returns the
+  repo to a reusable baseline each run. ADR 0025's "CI inherits the rule"
+  consequence is amended to record the resulting accepted gap: no weekly
+  automated coverage of `temperloop testbed` or its teardown.
+- **The three `claude -p` seats in `bin/` now capture the `--output-format
+  json` envelope instead of raw text** (#1264). `try.sh`'s shadow-triage call
+  (C1) and `--demo` fix call (C2), and `configure.sh`'s AI-suggestions call
+  (C3), all switch `--output-format text` → `json` and unwrap `.result` at the
+  call site, so each call's own `usage` / `modelUsage` / `total_cost_usd` /
+  `duration_ms` block is captured in a named variable for a future attribution
+  emit. These seats pass `--no-session-persistence` and so write no transcript,
+  which made them invisible to the tokens producer; the envelope is what makes
+  them measurable without a one-off replay. `--tools ""`,
+  `--no-session-persistence` and `--max-budget-usd` are unchanged at all three
+  seats, and the model's own output is still printed/applied verbatim.
+
 - **`/triage`'s cull, decision-route, and funnel-escalation close arms now
   route their Done writes through `board_close_done`** (#1217), guarded
   `if declare -F board_close_done` with a resolve-based fallback for a
