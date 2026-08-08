@@ -267,6 +267,17 @@ KERNEL_GATES=(
   # `^### `-anchored scan). Same direct-`bash` form as the sibling test gates
   # above (kernel Makefile is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_checkin_status_trailing_newline.sh"
+  # /build Step 0a's two-arm plan-approval drain + /check-in's strand probe
+  # (foundation#1496). Pins the narrowed hybrid over the full 2x2 of
+  # {attended, operator-absent} x {answered, unanswered}: both arms apply an
+  # answered `approve` and set the plan's `status: approved`, but ONLY the
+  # operator-absent arm may invoke `/build --unattended` — an attended tick
+  # reports and stops (docs/principles.md § 7 Bound the blast radius). A
+  # replay under the PRE-FIX absent-only gate reproduces the reported strand,
+  # so the suite fails if the gate is ever narrowed back. Same direct-`bash`
+  # form as the sibling test gates above (kernel Makefile is generator-owned;
+  # no new target added here).
+  "bash workflows/scripts/tests/test_plan_approval_drain.sh"
   "make validate-lexicon"
   # Message-template reference-integrity + registry-completeness lint
   # (temperloop#94, plan item `template-lints`): every by-name template

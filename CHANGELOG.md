@@ -36,6 +36,25 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`/build` Step 0a drains an answered plan-approval on attended ticks too, so
+  an operator's `approve` no longer strands** (Towheads/foundation#1496). The
+  step was gated on the operator-absent flag, so on a board no funnel ticks the
+  answer was read by nobody: the decision issue went unassigned (= answered),
+  the plan note stayed `status: draft`, and `/build` refused to pick it up —
+  observed inert for six days with no surface anywhere showing it was stuck.
+  Step 0a now runs on every work-selecting tick, in two arms. The
+  operator-absent arm is unchanged (set `status: approved`, then invoke
+  `/build --unattended`). The new **attended-tick drain** applies the same
+  answer, stops at `status: approved`, reports the plan in one line, and is
+  explicitly forbidden from invoking `/build` — widening *when* the step fires
+  is already a fleet-wide change, and letting an attended tick auto-start a
+  build would widen what that firing can *do* (`docs/principles.md` § 7 Bound
+  the blast radius). Not breaking: no overlay must adapt, and the only
+  behavioral delta for an attended argless `/build` is one extra `gh issue
+  list` read plus the `status:` flip the operator already asked for.
+  `/check-in` Part 1 gains a read-only § Stranded plan approvals probe as the
+  backstop for a repo neither arm ticks.
+
 - **`/sweep` now treats an issue with a later `Clarified (…)` answer comment
   as answered, not underspecified** (#1193). Phase 1's per-item fetch pulled
   only `title,body,labels`, so an issue whose question had already been
