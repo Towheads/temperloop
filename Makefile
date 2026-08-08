@@ -280,6 +280,10 @@ test-tally-findings:
 	@echo "==> Running recent-findings tally tests..."
 	@bash $(FOUNDATION)/workflows/scripts/drain/tests/test_tally_recent_findings.sh
 
+test-model-comparison-stats:
+	@echo "==> Running comparison-statistics library tests..."
+	@bash $(FOUNDATION)/workflows/scripts/model-comparison/tests/test_stats.sh
+
 test-env-hygiene-report:
 	@echo "==> Running env-hygiene-report wrapper tests..."
 	@bash $(FOUNDATION)/workflows/scripts/tests/test_env_hygiene_report.sh

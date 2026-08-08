@@ -227,6 +227,7 @@ bash workflows/scripts/tests/test_emit_session_context.sh	workflows/scripts/emit
 bash workflows/scripts/tests/test_status_line_token_resolution.sh	claude/status-line.sh workflows/scripts/lib/token_sum.sh workflows/scripts/install/links.sh workflows/scripts/tests/test_status_line_token_resolution.sh
 bash workflows/scripts/tests/test_pipeline_spend_report.sh	workflows/scripts/pipeline-spend-report.sh workflows/scripts/report-producers/** .temperloop/report.d/** workflows/scripts/tests/test_pipeline_spend_report.sh
 bash workflows/scripts/tests/test_item_efficiency.sh	workflows/scripts/emit-item-efficiency.sh workflows/scripts/pipeline-spend-report.sh workflows/scripts/tests/test_item_efficiency.sh claude/commands/build.md
+make test-model-comparison-stats	workflows/scripts/model-comparison/** Makefile workflows/scripts/config/setting-registry.tsv workflows/scripts/build/build.config.sh
 bash workflows/scripts/tests/test_workflow_reviewer_coverage.sh	workflows/scripts/workflow-reviewer-coverage.sh workflows/scripts/tests/test_workflow_reviewer_coverage.sh
 
 # ── Shared libs ─────────────────────────────────────────────────────────────
