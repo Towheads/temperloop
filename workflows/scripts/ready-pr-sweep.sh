@@ -37,8 +37,20 @@
 #   skip             draft (recent), or a DO-NOT-MERGE marker in the title
 #   needs-rebase     mergeStateStatus BEHIND or DIRTY
 #   needs-attention  failing checks; also the inclusion-biased catch-all for
-#                    checks-pending / UNKNOWN / BLOCKED / any other not-ready,
-#                    not-rebase state (reason string names the actual state)
+#                    checks-pending / BLOCKED / any other not-ready, not-rebase
+#                    state (reason string names the actual state)
+#   not-yet-computed mergeStateStatus read UNKNOWN and STAYED UNKNOWN through a
+#                    bounded retry (temperloop#1504) — GitHub computes
+#                    mergeStateStatus asynchronously, so UNKNOWN means "not
+#                    computed yet", not "computed, and problematic". A single
+#                    read that lands mid-computation used to fall into
+#                    needs-attention, and the SAME PR would read CLEAN (→
+#                    ready) moments later — the remedy flipped between
+#                    back-to-back sweeps. Distinct bucket, deliberately no
+#                    prescribed action: it resolves on its own on a later
+#                    sweep, so it is NOT a --format entry candidate (nothing to
+#                    decide). See $READY_PR_SWEEP_UNKNOWN_RETRY_MAX /
+#                    $READY_PR_SWEEP_UNKNOWN_RETRY_DELAY below.
 #   ready            required checks green + mergeStateStatus CLEAN — an
 #                    enqueue candidate (auto-enqueue is deliberately OUT of
 #                    scope — a later autonomy layer; this script only reports)
@@ -70,6 +82,15 @@
 #   READY_PR_SWEEP_STALE_DRAFT_DAYS
 #                              idle-days threshold above which an open DRAFT PR
 #                              is classified stale-draft rather than skip
+#   READY_PR_SWEEP_UNKNOWN_RETRY_MAX
+#                              max re-fetch attempts for a PR whose
+#                              mergeStateStatus reads UNKNOWN, before it is
+#                              classified not-yet-computed (default 3)
+#   READY_PR_SWEEP_UNKNOWN_RETRY_DELAY
+#                              seconds to wait before each UNKNOWN re-fetch
+#                              attempt (default 2). Only PRs reading UNKNOWN
+#                              pay this cost — a PR that resolves on the first
+#                              fetch triggers zero extra `gh` calls.
 #
 # Kept POSIX-bash-3.2 compatible, mirroring its sibling probe scripts.
 
@@ -83,6 +104,8 @@ FORMAT="report"
 LIMIT="${READY_PR_SWEEP_LIMIT:-100}"
 REPOS="${READY_PR_SWEEP_REPOS:-}"
 STALE_DRAFT_DAYS="${READY_PR_SWEEP_STALE_DRAFT_DAYS:-7}"
+UNKNOWN_RETRY_MAX="${READY_PR_SWEEP_UNKNOWN_RETRY_MAX:-3}"
+UNKNOWN_RETRY_DELAY="${READY_PR_SWEEP_UNKNOWN_RETRY_DELAY:-2}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --format) FORMAT="${2:-}"; shift 2 ;;
@@ -98,6 +121,8 @@ done
 case "$FORMAT" in report | entry) ;; *) echo "unknown --format: $FORMAT (report|entry)" >&2; exit 2 ;; esac
 case "$LIMIT" in '' | *[!0-9]*) echo "bad --limit: '$LIMIT' (positive integer)" >&2; exit 2 ;; esac
 case "$STALE_DRAFT_DAYS" in '' | *[!0-9]*) echo "bad READY_PR_SWEEP_STALE_DRAFT_DAYS: '$STALE_DRAFT_DAYS' (non-negative integer)" >&2; exit 2 ;; esac
+case "$UNKNOWN_RETRY_MAX" in '' | *[!0-9]*) echo "bad READY_PR_SWEEP_UNKNOWN_RETRY_MAX: '$UNKNOWN_RETRY_MAX' (non-negative integer)" >&2; exit 2 ;; esac
+case "$UNKNOWN_RETRY_DELAY" in '' | *[!0-9]*) echo "bad READY_PR_SWEEP_UNKNOWN_RETRY_DELAY: '$UNKNOWN_RETRY_DELAY' (non-negative integer seconds)" >&2; exit 2 ;; esac
 # Cutoff resolved ONCE, in shell, and handed to jq as data: `date +%s` is the
 # one portable epoch primitive across BSD/GNU (no `-d`/`-v` dialect split), and
 # a single cutoff keeps every repo in a sweep judged against the same instant.
@@ -152,9 +177,49 @@ for repo in $REPOS; do
     notice "ERROR listing PRs for $repo — continuing (fail-open)"
     continue
   fi
+
+  # ── UNKNOWN mergeStateStatus resolution (temperloop#1504) ──────────────────
+  # mergeStateStatus is computed asynchronously by GitHub; UNKNOWN means "not
+  # computed yet", not "computed, and problematic". Re-fetch ONLY the PRs that
+  # actually read UNKNOWN on the list call above — a PR that already reads a
+  # resolved status costs zero extra `gh` calls. Bounded retry, short delay
+  # between attempts; a PR still UNKNOWN after the bound is left as-is and
+  # picked up by the not-yet-computed branch below (fail-open: a `gh pr view`
+  # error during retry is treated as "still unresolved this attempt" and never
+  # aborts the repo).
+  unknown_nums="$(printf '%s' "$raw" | jq -r '.[] | select((.mergeStateStatus // "") == "UNKNOWN") | .number' 2>/dev/null)"
+  if [ -n "$unknown_nums" ]; then
+    overrides="{}"
+    for num in $unknown_nums; do
+      resolved=""
+      attempt=1
+      while [ "$attempt" -le "$UNKNOWN_RETRY_MAX" ]; do
+        sleep "$UNKNOWN_RETRY_DELAY"
+        view_json="$(gh pr view "$num" -R "$repo" --json mergeStateStatus 2>/dev/null)"
+        status="$(printf '%s' "$view_json" | jq -r '.mergeStateStatus // empty' 2>/dev/null)"
+        if [ -n "$status" ] && [ "$status" != "UNKNOWN" ]; then
+          resolved="$status"
+          break
+        fi
+        attempt=$((attempt + 1))
+      done
+      if [ -n "$resolved" ]; then
+        overrides="$(printf '%s' "$overrides" | jq --arg n "$num" --arg s "$resolved" '. + {($n): $s}' 2>/dev/null)"
+        [ -n "$overrides" ] || overrides="{}"
+      fi
+    done
+    if [ "$overrides" != "{}" ]; then
+      patched="$(printf '%s' "$raw" | jq --argjson ov "$overrides" '
+        [ .[] | . as $pr | (($ov[($pr.number | tostring)]) // $pr.mergeStateStatus) as $ms
+          | $pr | .mergeStateStatus = $ms ]
+      ' 2>/dev/null)"
+      [ -n "$patched" ] && raw="$patched"
+    fi
+  fi
+
   rows="$(printf '%s' "$raw" | jq -r --arg repo "$repo" \
     --argjson cutoff "$STALE_DRAFT_CUTOFF" --argjson staledays "$STALE_DRAFT_DAYS" '
-    def rank: {"ready": 0, "needs-rebase": 1, "needs-attention": 2, "stale-draft": 3, "skip": 4};
+    def rank: {"ready": 0, "needs-rebase": 1, "needs-attention": 2, "not-yet-computed": 3, "stale-draft": 4, "skip": 5};
     [ .[]
       | ( [ .statusCheckRollup[]?
             | select(
@@ -177,6 +242,7 @@ for repo in $REPOS; do
           elif $failing > 0 then ["needs-attention", "failing checks (\($failing))"]
           elif $pending > 0 then ["needs-attention", "checks still pending (\($pending))"]
           elif .mergeStateStatus == "CLEAN" then ["ready", "checks green + mergeStateStatus CLEAN — enqueue candidate"]
+          elif .mergeStateStatus == "UNKNOWN" then ["not-yet-computed", "mergeStateStatus still UNKNOWN after retry — not yet computed by GitHub, resolves on a later sweep (no action needed)"]
           else ["needs-attention", "checks green but mergeStateStatus \(.mergeStateStatus)"]
           end ) as $cls
       | { cls: $cls[0], reason: $cls[1], n: .number, title: .title } ]
@@ -201,8 +267,13 @@ refs_class() { [ -n "$ROWS" ] || return 0; printf '%s\n' "$ROWS" | awk -F '\t' -
 N_READY="$(count_class ready)"
 N_REBASE="$(count_class needs-rebase)"
 N_ATTN="$(count_class needs-attention)"
+N_UNKNOWN="$(count_class not-yet-computed)"
 N_STALE_DRAFT="$(count_class stale-draft)"
 N_SKIP="$(count_class skip)"
+# not-yet-computed is deliberately EXCLUDED from N_CANDIDATES: it resolves on
+# its own on a later sweep and carries no prescribed operator action, so it is
+# never a --format entry candidate (nothing to decide) — see the class doc
+# comment above.
 N_CANDIDATES=$((N_READY + N_REBASE + N_ATTN + N_STALE_DRAFT))
 
 # ── Output ────────────────────────────────────────────────────────────────────
@@ -240,5 +311,5 @@ if [ -n "$ROWS" ]; then
 else
   echo "  (no open PRs)"
 fi
-echo "summary: ready=$N_READY needs-rebase=$N_REBASE needs-attention=$N_ATTN stale-draft=$N_STALE_DRAFT skip=$N_SKIP errors=$ERRORS${ERR_REPOS:+ (errored:$ERR_REPOS)}"
+echo "summary: ready=$N_READY needs-rebase=$N_REBASE needs-attention=$N_ATTN not-yet-computed=$N_UNKNOWN stale-draft=$N_STALE_DRAFT skip=$N_SKIP errors=$ERRORS${ERR_REPOS:+ (errored:$ERR_REPOS)}"
 exit 0

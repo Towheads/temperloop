@@ -17,8 +17,18 @@
 #   3. fail-open — an erroring repo is reported and the sweep continues (exit 0)
 #   4. board-lib enumeration + dedup (two boards, one repo → swept once)
 #   5. read-only guarantee — the stub gh records every invocation; nothing but
-#      `pr list` is ever called (no merge/close/comment/edit subcommand)
+#      `pr list`/`pr view` is ever called (no merge/close/comment/edit subcommand)
 #   6. usage errors exit 2; missing board lib + no --repos fails open (exit 0)
+#   9-12. UNKNOWN mergeStateStatus retry (temperloop#1504) — resolves-on-retry
+#      classifies ready, still-UNKNOWN gets its own not-yet-computed bucket
+#      (never needs-attention) excluded from --format entry, and a PR that
+#      reads a resolved status on the FIRST fetch triggers zero `pr view` calls
+#
+# The stub `gh` additionally replays `pr view <n> -R <repo> --json
+# mergeStateStatus` from $GH_FIXTURE_DIR/view_<owner>_<repo>_<n>.seq — one
+# mergeStateStatus value per line, consumed in order per call (repeating the
+# last line once exhausted), so a fixture can script "UNKNOWN then CLEAN" or
+# "UNKNOWN forever".
 #
 # Usage: bash workflows/scripts/tests/test_ready_pr_sweep.sh
 
@@ -70,13 +80,37 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
   cat "$f"
   exit 0
 fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  num="$3"
+  repo=""
+  prev=""
+  for a in "$@"; do
+    [ "$prev" = "-R" ] && repo="$a"
+    prev="$a"
+  done
+  key="$(printf '%s' "$repo" | tr '/' '_')_${num}"
+  seqfile="$GH_FIXTURE_DIR/view_${key}.seq"
+  [ -f "$seqfile" ] || exit 1
+  countfile="$GH_STATE_DIR/view_${key}.count"
+  n=0
+  [ -f "$countfile" ] && n="$(cat "$countfile")"
+  n=$((n + 1))
+  echo "$n" > "$countfile"
+  total="$(wc -l < "$seqfile" | tr -d ' ')"
+  idx="$n"
+  [ "$idx" -gt "$total" ] && idx="$total"
+  status="$(sed -n "${idx}p" "$seqfile")"
+  printf '{"mergeStateStatus": "%s"}\n' "$status"
+  exit 0
+fi
 exit 1
 FAKE_GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
 export GH_CALL_LOG="$TMP/gh-calls.log"
 export GH_FIXTURE_DIR="$TMP/fixtures"
-mkdir -p "$GH_FIXTURE_DIR"
+export GH_STATE_DIR="$TMP/view-state"
+mkdir -p "$GH_FIXTURE_DIR" "$GH_STATE_DIR"
 : > "$GH_CALL_LOG"
 
 # ── Fixtures (fictional org — kernel test, no real repo names) ──────────────
@@ -132,6 +166,20 @@ JSON
 # exampleorg/empty: no open PRs at all.
 echo "[]" > "$GH_FIXTURE_DIR/exampleorg_empty.json"
 
+# exampleorg/pending: mergeStateStatus UNKNOWN on the initial `pr list` fetch
+# (temperloop#1504) — #20 resolves to CLEAN on its first retry, #21 stays
+# UNKNOWN through every retry attempt.
+cat > "$GH_FIXTURE_DIR/exampleorg_pending.json" <<JSON
+[
+  {"number": 20, "title": "feat: resolves on retry", "isDraft": false, "mergeStateStatus": "UNKNOWN", "updatedAt": "2026-07-01T00:00:00Z",
+   "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 21, "title": "feat: never resolves", "isDraft": false, "mergeStateStatus": "UNKNOWN", "updatedAt": "2026-07-01T00:00:00Z",
+   "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+]
+JSON
+echo "CLEAN" > "$GH_FIXTURE_DIR/view_exampleorg_pending_20.seq"
+printf 'UNKNOWN\nUNKNOWN\nUNKNOWN\n' > "$GH_FIXTURE_DIR/view_exampleorg_pending_21.seq"
+
 # ── Stub board lib: two boards mapping onto ONE repo (dedup) + a second ─────
 cat > "$TMP/board-stub.sh" <<'STUB'
 board_registered_boards() { printf '%s\n' 3 4 5; }
@@ -160,7 +208,7 @@ assert_has "$out" "needs-attention  exampleorg/alpha#6" "green-but-BLOCKED → n
 assert_has "$out" "mergeStateStatus BLOCKED" "blocked reason names the state"
 assert_has "$out" "skip             exampleorg/alpha#7" "draft → skip"
 assert_has "$out" "skip             exampleorg/alpha#8" "DO-NOT-MERGE title → skip"
-assert_has "$out" "summary: ready=1 needs-rebase=2 needs-attention=3 stale-draft=0 skip=2 errors=0" "summary counts"
+assert_has "$out" "summary: ready=1 needs-rebase=2 needs-attention=3 not-yet-computed=0 stale-draft=0 skip=2 errors=0" "summary counts"
 
 echo "2. --format entry with candidates"
 out="$(bash "$SCRIPT" --repos "exampleorg/alpha" --format entry)"
@@ -194,8 +242,8 @@ n_alpha="$(grep -c -- "-R exampleorg/alpha" "$GH_CALL_LOG" || true)"
 [ "$n_alpha" -eq 1 ] && ok "alpha swept once despite two boards (dedup)" \
   || fail_test "alpha swept once despite two boards (dedup)" "swept $n_alpha times"
 
-echo "6. read-only — stub gh saw only 'pr list' calls"
-bad="$(grep -v '^pr list ' "$GH_CALL_LOG" || true)"
+echo "6. read-only — stub gh saw only 'pr list'/'pr view' calls"
+bad="$(grep -vE '^pr (list|view) ' "$GH_CALL_LOG" || true)"
 [ -z "$bad" ] && ok "no mutating gh subcommand invoked" \
   || fail_test "no mutating gh subcommand invoked" "saw: $bad"
 
@@ -237,6 +285,41 @@ assert_has "$out" "stale-draft=0 skip=2" "threshold setting is honored in the su
 out="$(READY_PR_SWEEP_STALE_DRAFT_DAYS=bogus bash "$SCRIPT" --repos "exampleorg/drafty" --format report 2>&1)"
 rc=$?
 [ "$rc" -eq 2 ] && ok "non-integer threshold exits 2" || fail_test "non-integer threshold exits 2" "got $rc"
+
+echo "9. UNKNOWN mergeStateStatus — bounded retry (temperloop#1504)"
+: > "$GH_CALL_LOG"
+out="$(READY_PR_SWEEP_UNKNOWN_RETRY_DELAY=0 bash "$SCRIPT" --repos "exampleorg/pending" --format report)"
+rc=$?
+[ "$rc" -eq 0 ] && ok "exit 0" || fail_test "exit 0" "got $rc"
+assert_has "$out" "ready            exampleorg/pending#20" "(a) UNKNOWN-then-CLEAN classifies ready, not needs-attention"
+assert_has "$out" "not-yet-computed exampleorg/pending#21" "(b) still-UNKNOWN after retry gets its own bucket"
+assert_not_has "$out" "needs-attention  exampleorg/pending#21" "(b) still-UNKNOWN PR is explicitly NOT needs-attention"
+assert_has "$out" "not yet computed by GitHub" "not-yet-computed reason names the real cause"
+n_view_20="$(grep -c -- "pr view 20 -R exampleorg/pending" "$GH_CALL_LOG" || true)"
+[ "$n_view_20" -eq 1 ] && ok "PR 20 retried exactly once (resolved on first retry attempt)" \
+  || fail_test "PR 20 retried exactly once" "saw $n_view_20 view calls"
+n_view_21="$(grep -c -- "pr view 21 -R exampleorg/pending" "$GH_CALL_LOG" || true)"
+[ "$n_view_21" -eq 3 ] && ok "PR 21 retried up to the default bound (3) then gave up" \
+  || fail_test "PR 21 retried up to the default bound (3)" "saw $n_view_21 view calls"
+
+echo "10. (c) resolved-on-first-fetch PRs cost zero extra gh calls"
+: > "$GH_CALL_LOG"
+out="$(bash "$SCRIPT" --repos "exampleorg/alpha" --format report)"
+assert_has "$out" "ready            exampleorg/alpha#1" "first-read CLEAN still classifies ready"
+assert_has "$out" "needs-rebase     exampleorg/alpha#2" "first-read BEHIND still classifies needs-rebase"
+assert_has "$out" "needs-rebase     exampleorg/alpha#3" "first-read DIRTY still classifies needs-rebase"
+n_view="$(grep -c '^pr view ' "$GH_CALL_LOG" || true)"
+[ "$n_view" -eq 0 ] && ok "no pr view calls when nothing reads UNKNOWN on the first fetch" \
+  || fail_test "no pr view calls when nothing reads UNKNOWN on the first fetch" "saw $n_view"
+
+echo "11. not-yet-computed is excluded from --format entry (nothing to decide)"
+out="$(READY_PR_SWEEP_UNKNOWN_RETRY_DELAY=0 bash "$SCRIPT" --repos "exampleorg/pending" --format entry)"
+assert_has "$out" "ready: exampleorg/pending#20" "resolved-on-retry PR still surfaces as a ready candidate"
+assert_not_has "$out" "#21" "still-UNKNOWN PR not surfaced in --format entry"
+
+echo "12. summary line names the new bucket"
+out="$(READY_PR_SWEEP_UNKNOWN_RETRY_DELAY=0 bash "$SCRIPT" --repos "exampleorg/pending" --format report)"
+assert_has "$out" "not-yet-computed=1" "summary counts not-yet-computed separately from needs-attention"
 
 echo
 echo "test_ready_pr_sweep: $pass passed, $fail failed"
