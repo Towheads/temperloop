@@ -31,16 +31,36 @@
 #
 #   --reps N           invocations per section (default 3); p50/p95/max over them
 #   --cold|--warm|--both  board_resolve cache state to exercise (default both).
-#                      On board 7 (always-live issues backend) cold==warm — the
-#                      cache is a Projects-only relief, so this is a no-op there
-#                      and the near-equal numbers are the honest result.
+#                      `resolve_cold` FORCES a live read every rep (cache_dirty
+#                      before each board_resolve, when lib/cache.sh is sourced —
+#                      see below); `resolve_warm` reads whatever is currently
+#                      cached. Whenever the board's issue-plane cache isn't in
+#                      effect for the board under test (lib/cache.sh not
+#                      sourced, or that board's `board.<N>.cache` conf axis is
+#                      off), cold and warm both fall through to the same live
+#                      path and report near-identical numbers — an honest
+#                      result, not a bug.
 #   --with-mutations   also time a WRITE (board_set_status set to the CURRENT
 #                      value — idempotent, no net state change). Off by default.
 #   --dry-run          offline self-test: no network, no rate_limit, fake timings
 #                      exercising the stats+emit+table pipeline (used by the test).
 #
+# Sources lib/cache.sh (guarded, optional — same convention as worklist.sh) so
+# the board adapter's cached read arm is actually reachable here; without it
+# `resolve_cold`/`resolve_warm` would be measuring the same live path under two
+# different names (the bug this bench used to have — foundation#1029's
+# `BASH_ENV=…/cache.sh gh-bench.sh …` workaround).
+#
 # Records land (one per op_class, plus a `_run_total`) in:
 #   ${GH_PERF_RAW_DIR:-<repo>/meta/data/raw}/gh-perf-YYYY-MM.jsonl
+# Per-op-class records for `resolve_cold`/`resolve_warm` fold the arm they
+# measured into `--label` (`<label>-live` / `<label>-cached`) since the lake
+# is append-only, never backfilled, and emit-gh-perf.sh's record shape carries
+# no arm field — an unlabelled row would be permanently ambiguous. The
+# `_run_total` record instead folds in whether lib/cache.sh was sourced at all
+# this run (`<label>-cache-available` / `<label>-cache-unavailable`): a single
+# `--both` run's `_run_total` spans BOTH arms, so attributing it to one would
+# be a lie — these are two different true facts about the run.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,7 +83,7 @@ while [ $# -gt 0 ]; do
     --with-mutations) with_mutations=1; shift ;;
     --backend)        backend="${2:-}"; shift 2 ;;
     --dry-run)        dry_run=1; shift ;;
-    -h|--help)        sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,63p' "$0"; exit 0 ;;
     *)                die "unknown argument: $1" ;;
   esac
 done
@@ -110,6 +130,19 @@ _ratelimit() {
 if [ "$dry_run" -eq 0 ]; then
   # shellcheck source=workflows/scripts/board/lib/board.sh
   . "$HERE/../board/lib/board.sh"
+  # Issue-plane read cache (F#988 Contract). board.sh's cached read arm gates
+  # on `declare -F cache_read` and board.sh NEVER sources cache.sh itself
+  # (board.sh:479-483) — a deliberate one-way layering that keeps reconcile.sh
+  # permanently on the live arm. So the CALLER must source it, exactly like
+  # worklist.sh:50-53, or `resolve_cold`/`resolve_warm` below silently measure
+  # the identical live path. Guarded on existence: a consuming repo that
+  # vendors a subset without cache.sh still runs unchanged. `if` rather than
+  # `[ -f … ] && source …` because this script is `set -euo pipefail`: the &&
+  # form would abort the run when cache.sh is absent.
+  if [ -f "$HERE/../board/lib/cache.sh" ]; then
+    # shellcheck source=workflows/scripts/board/lib/cache.sh
+    . "$HERE/../board/lib/cache.sh"
+  fi
   REPO="$(board_repo "$board")" || die "cannot resolve repo for board $board"
 fi
 
@@ -132,7 +165,19 @@ _run_section() {
   local sec="$1" i
   if [ "$dry_run" -eq 1 ]; then return 0; fi
   case "$sec" in
-    resolve_cold) BOARD_CACHE_TTL=0 board_resolve "$board" >/dev/null 2>&1 || true ;;
+    resolve_cold)
+      # Force a genuinely live read: dirty the on-disk store's entry for this
+      # repo (a pure no-op when lib/cache.sh isn't sourced or no store exists
+      # yet — cache_dirty's own contract) BEFORE EVERY rep, not just once —
+      # the store persists across reps (it's an on-disk, cross-process cache,
+      # unlike the removed in-memory board.sh cache), so dirtying only once
+      # would leave reps 2..N silently served warm. `BOARD_CACHE_TTL=0` used
+      # to sit here; that variable is dead (its only remaining mention in
+      # board.sh is a comment describing the removed Projects-v2 cache), so it
+      # forced nothing — resolve_cold and resolve_warm were byte-identical.
+      declare -F cache_dirty >/dev/null 2>&1 && cache_dirty "$REPO" >/dev/null 2>&1
+      board_resolve "$board" >/dev/null 2>&1 || true
+      ;;
     resolve_warm) board_resolve "$board" >/dev/null 2>&1 || true ;;
     item_list)    board_item_list "$board" >/dev/null 2>&1 || true ;;
     resolve_item) for i in $ISSUES; do board_resolve_item "$board" "$i" >/dev/null 2>&1 || true; done ;;
@@ -151,6 +196,21 @@ _run_section() {
         if [ -n "$cur" ]; then board_set_status "$board" "$i" "$cur" >/dev/null 2>&1 || true; fi
         break   # a single write is enough to time the write path
       done ;;
+  esac
+}
+
+# --- per-section arm label suffix -------------------------------------------
+# Only resolve_cold/resolve_warm have a CODE-ENFORCED arm (cold: cache_dirty
+# forced every rep above; warm: served whatever's currently cached) — every
+# other section (item_list, resolve_item, worklist, reconcile_status,
+# pipeline_read_emu, rel_loop, mutation_noop) runs once per invocation
+# regardless of --cold/--warm/--both and has no such guarantee, so it keeps
+# the plain label rather than a guessed/unverified arm suffix.
+_section_label() {
+  case "$1" in
+    resolve_cold) printf '%s-live' "$label" ;;
+    resolve_warm) printf '%s-cached' "$label" ;;
+    *)            printf '%s' "$label" ;;
   esac
 }
 
@@ -190,7 +250,7 @@ for sec in $SECTIONS; do
 $(_stats "$@")
 EOF
   printf '%-18s %5s %8s %8s %8s %9s\n' "$sec" "$cnt" "$p50" "$p95" "$mx" "$tot"
-  "$EMIT" --phase "$phase" --label "$label" --source bench --backend "$backend" \
+  "$EMIT" --phase "$phase" --label "$(_section_label "$sec")" --source bench --backend "$backend" \
     --board "$board" --op-class "$sec" --count "$cnt" \
     --p50 "$p50" --p95 "$p95" --max "$mx" --total "$tot" >/dev/null 2>&1 || true
 done
@@ -202,7 +262,17 @@ gql_spent=$(( gql0 - gql1 )); [ "$gql_spent" -ge 0 ] || gql_spent=0
 core_spent=$(( core0 - core1 )); [ "$core_spent" -ge 0 ] || core_spent=0
 echo "gh-bench: budget spent this run — core(REST)=${core_spent} calls [the tracker's own 5,000/hr bucket], graphql=${gql_spent} pts (informational — no board draws on this budget anymore)"
 
-"$EMIT" --phase "$phase" --label "$label" --source bench --backend "$backend" \
+# _run_total spans EVERY section run this invocation — in --both mode that's
+# both the cold and the warm arm under ONE record, so attributing it to
+# either arm would be a lie. What IS true of the whole process is whether
+# lib/cache.sh got sourced at all (the precondition for either arm to mean
+# anything) — report that fact instead, folded into --label the same way.
+if declare -F cache_read >/dev/null 2>&1; then
+  total_label="${label}-cache-available"
+else
+  total_label="${label}-cache-unavailable"
+fi
+"$EMIT" --phase "$phase" --label "$total_label" --source bench --backend "$backend" \
   --board "$board" --op-class "_run_total" --count "$reps" \
   --gql-pts "$gql_spent" --rest-calls "$core_spent" >/dev/null 2>&1 || true
 

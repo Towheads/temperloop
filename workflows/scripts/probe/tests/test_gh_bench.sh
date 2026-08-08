@@ -27,9 +27,12 @@ D="$WORK/d1"; mkdir -p "$D"
 out="$(GH_PERF_RAW_DIR="$D" bash "$BENCH" --board 7 --phase before --label t1 --both --reps 3 --dry-run)" \
   || fail "dry-run exited nonzero"
 LF="$(lakefile "$D")"; [ -n "$LF" ] || fail "no lake file written"
-# every line valid JSON, schema_version 1, phase=before, label=t1, source=bench
+# every line valid JSON, schema_version 1, phase=before, source=bench, and
+# label prefixed with the base "t1" (resolve_cold/resolve_warm/_run_total
+# fold their arm/sourcing-state into the label — see test 6 below for the
+# exact per-op_class suffix assertions).
 while IFS= read -r line; do
-  echo "$line" | jq -e '.schema_version=="1" and .phase=="before" and .label=="t1" and .source=="bench"' >/dev/null \
+  echo "$line" | jq -e '.schema_version=="1" and .phase=="before" and (.label|startswith("t1")) and .source=="bench"' >/dev/null \
     || fail "bad record: $line"
 done <"$LF"
 for oc in resolve_cold resolve_warm item_list resolve_item worklist reconcile_status pipeline_read_emu rel_loop _run_total; do
@@ -71,5 +74,47 @@ rec="$(GH_PERF_RAW_DIR="$D" bash "$EMIT" --phase after --label ok --board 4 --op
 echo "$rec" | jq -e '.board==4 and .op_class=="z" and .p50_ms==9 and .total_ms==18' >/dev/null \
   || fail "valid emit record wrong: $rec"
 echo "  [ok] emitter reject paths (exit 0, no write) + valid record shape"
+
+# label_for <lakefile> <op_class>  ->  the .label of that op_class's record
+# (empty if absent). Field-order-agnostic (reads via jq, not positional grep).
+label_for() { jq -r --arg oc "$2" 'select(.op_class==$oc) | .label' "$1" 2>/dev/null; }
+
+# --- 6: per-section arm label suffix (temperloop cache-arm fix) -------------
+# resolve_cold/resolve_warm fold the arm they measured into --label
+# (<label>-live / <label>-cached); every other section keeps the plain label;
+# _run_total folds in whether lib/cache.sh was sourced this run instead
+# (always "unavailable" in --dry-run, since board.sh/cache.sh sourcing is
+# itself gated on dry_run==0 — deterministic, no live network needed).
+D="$WORK/d6"; mkdir -p "$D"
+GH_PERF_RAW_DIR="$D" bash "$BENCH" --board 7 --phase before --label armtest --both --reps 2 --dry-run >/dev/null \
+  || fail "arm-label (--both) run failed"
+LF="$(lakefile "$D")"
+[ "$(label_for "$LF" resolve_cold)" = "armtest-live" ] \
+  || fail "resolve_cold record missing label armtest-live"
+[ "$(label_for "$LF" resolve_warm)" = "armtest-cached" ] \
+  || fail "resolve_warm record missing label armtest-cached"
+[ "$(label_for "$LF" item_list)" = "armtest" ] \
+  || fail "item_list record should carry the plain (unsuffixed) label"
+[ "$(label_for "$LF" _run_total)" = "armtest-cache-unavailable" ] \
+  || fail "_run_total record missing label armtest-cache-unavailable (dry-run never sources cache.sh)"
+echo "  [ok] --both: resolve_cold/-live, resolve_warm/-cached, other sections plain, _run_total/-cache-unavailable"
+
+# --cold: only the live arm's record appears, still suffixed
+D="$WORK/d7"; mkdir -p "$D"
+GH_PERF_RAW_DIR="$D" bash "$BENCH" --board 7 --phase before --label c7 --cold --reps 2 --dry-run >/dev/null \
+  || fail "arm-label (--cold) run failed"
+LF="$(lakefile "$D")"
+[ "$(label_for "$LF" resolve_cold)" = "c7-live" ] || fail "--cold resolve_cold missing label c7-live"
+[ -z "$(label_for "$LF" resolve_warm)" ] || fail "--cold should not emit a resolve_warm record"
+echo "  [ok] --cold: resolve_cold labeled c7-live, no resolve_warm"
+
+# --warm: only the cached arm's record appears, still suffixed
+D="$WORK/d8"; mkdir -p "$D"
+GH_PERF_RAW_DIR="$D" bash "$BENCH" --board 7 --phase after --label w8 --warm --reps 2 --dry-run >/dev/null \
+  || fail "arm-label (--warm) run failed"
+LF="$(lakefile "$D")"
+[ "$(label_for "$LF" resolve_warm)" = "w8-cached" ] || fail "--warm resolve_warm missing label w8-cached"
+[ -z "$(label_for "$LF" resolve_cold)" ] || fail "--warm should not emit a resolve_cold record"
+echo "  [ok] --warm: resolve_warm labeled w8-cached, no resolve_cold"
 
 echo "PASS: gh-bench + emit-gh-perf"
