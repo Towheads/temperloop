@@ -12,7 +12,8 @@
 #
 # Scope: the LOCAL marker, plus ONE narrow board-side clear (below). It never
 # moves the board item out of In Progress. Park/close the board item
-# deliberately (board UI, `unclaim.sh`, or `gh project item-edit`), per the
+# deliberately (`unclaim.sh`, `board_set_status` via lib/board.sh, or editing
+# the issue's `fnd:status:*` label by hand on GitHub), per the
 # "Park, don't abandon" rule in CLAUDE.md.
 #
 # ── The board-side half: a PARKED claim stamp (temperloop#979) ────────────────
