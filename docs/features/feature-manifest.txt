@@ -26,6 +26,13 @@ none .gitattributes
 # `telemetry` below and wins on longest-pattern).
 none .temperloop/.gitignore
 none CHANGELOG.md
+# Per-entry changelog fragments (temperloop#1321) — the same repo-meta status
+# as CHANGELOG.md above, since a fragment IS a changelog entry. A DIRECTORY
+# GLOB, never a per-fragment line: fragments are deleted at each release cut,
+# so per-file claims would make this file a shrink-only ratchet (the class
+# .gitattributes' header excludes from merge=union). The tooling that reads
+# them is claimed by the `changelog-fragments` slug below.
+none changelog.d/*
 none LICENSE
 none NOTICE
 none README.md
@@ -214,6 +221,15 @@ install-cli workflows/scripts/proposal/*
 install-cli workflows/scripts/lib/changelog.sh
 install-cli workflows/scripts/lib/tests/test_changelog.sh
 install-cli workflows/scripts/tests/test_update_subcommand.sh
+# ── changelog-fragments — `changelog.d/` per-entry fragments + the release-
+# time assembler (temperloop#1321, epic #1299). The fragment FILES are repo
+# meta (`none changelog.d/*` near the top of this file, beside CHANGELOG.md);
+# these two paths are the tooling that reads them. The shared parser itself
+# extends workflows/scripts/lib/changelog.sh, which stays claimed by
+# `install-cli` above — it is the same lib `temperloop update` already reads,
+# and a second claim on one path would just fight the longest-pattern rule.
+changelog-fragments scripts/assemble-changelog.sh
+changelog-fragments scripts/tests/test_assemble_changelog.sh
 install-cli workflows/scripts/tests/test_rename_compat.sh
 # v0.17.0 terminology-consolidation window-CLOSED regression test
 # (temperloop#767): the env shim, the forwarding stubs, and the stub's own

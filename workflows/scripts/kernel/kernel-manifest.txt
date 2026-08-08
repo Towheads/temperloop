@@ -82,6 +82,7 @@ kernel scripts/lint-zsh-param-tie.sh
 kernel scripts/lint-bash32-cmdsubst-comment.sh
 kernel scripts/lint-pipe-grep-q.sh
 kernel scripts/update-kernel.sh
+kernel scripts/assemble-changelog.sh
 kernel scripts/ensure-shellcheck.sh
 kernel scripts/tests/*
 overlay scripts/quality-gates.d/*
@@ -499,5 +500,14 @@ kernel LICENSE
 kernel NOTICE
 kernel SECURITY.md
 kernel CHANGELOG.md
+# Per-entry changelog fragments (temperloop#1321, epic #1299): one file per
+# changelog entry, folded into CHANGELOG.md's `## [Unreleased]` at the release
+# cut by scripts/assemble-changelog.sh. A DIRECTORY GLOB, never a per-fragment
+# line — per-file entries would be DELETED at each cut, making this registry a
+# shrink-only ratchet, which is precisely the class .gitattributes' own header
+# excludes from `merge=union` (union's keep-both semantics would resurrect a
+# deleted line). This file carries merge=union, so one directory glob appended
+# once is safe; only the per-file variant breaks.
+kernel changelog.d/*
 kernel VERSIONING.md
 kernel VERSION

@@ -61,7 +61,24 @@ ALL	scripts/quality-gates.sh scripts/quality-gates.d/** workflows/scripts/lib/ga
 # reader, validate-activation-registry.sh, moved to the always-run floor below
 # (temperloop#957), and without a recogniser every plan-archive edit would
 # escalate the whole run to the full set for a gate that was already running.
-none	LICENSE NOTICE SECURITY.md .github/ISSUE_TEMPLATE/** meta/** .temperloop/.gitignore Plans-archive/**
+#
+# `changelog.d/**` (temperloop#1321) is here for the IDENTICAL reason, and the
+# reason is worth stating precisely because the obvious one is wrong. An
+# unmapped path does NOT silently skip its gates: gate-selection.sh
+# DEFAULTS TO FULL on an unrecognised path, so a fragment-only diff would run
+# every gate. The failure is COST, not correctness — under fragments nearly
+# every PR carries one, so an unmapped changelog.d/ would escalate every PR
+# and every /build worker's --scoped run to the full ~110-gate set, erasing
+# the diff-scoping win outright, with CI green throughout and wall-clock the
+# only symptom. The gate that actually reads a fragment
+# (check-changelog-entry.sh) is an ALWAYS row below and runs regardless.
+#
+# It must be a GLOB-BEARING row, and this is counter-intuitive: an ALWAYS row
+# CANNOT serve as the recogniser. ALWAYS rows are deliberately non-recognising
+# (gate-selection.sh skips them when matching paths) so their implicit `**`
+# cannot defeat the default-to-full safety above. `Plans-archive/**` on this
+# very row is the precedent.
+none	LICENSE NOTICE SECURITY.md .github/ISSUE_TEMPLATE/** meta/** .temperloop/.gitignore Plans-archive/** changelog.d/**
 
 # ── Whole-tree scanners — ALWAYS, on every scoped run ───────────────────────
 # Each of these walks the entire tracked tree (or the entire PR diff), so any
@@ -235,6 +252,7 @@ bash workflows/scripts/tests/test_workflow_reviewer_coverage.sh	workflows/script
 # ── Shared libs ─────────────────────────────────────────────────────────────
 bash workflows/scripts/lib/tests/test_portable_timeout.sh	workflows/scripts/lib/portable-timeout.sh workflows/scripts/lib/tests/test_portable_timeout.sh
 bash workflows/scripts/lib/tests/test_changelog.sh	workflows/scripts/lib/changelog.sh workflows/scripts/lib/tests/test_changelog.sh
+bash scripts/tests/test_assemble_changelog.sh	scripts/assemble-changelog.sh scripts/tests/test_assemble_changelog.sh workflows/scripts/lib/changelog.sh CHANGELOG.md
 bash workflows/scripts/lib/tests/test_gate_selection.sh	workflows/scripts/lib/gate-selection.sh workflows/scripts/lib/tests/test_gate_selection.sh
 bash scripts/tests/test_quality_gates_freshness.sh	workflows/scripts/lib/checkout-freshness.sh scripts/tests/test_quality_gates_freshness.sh
 bash scripts/tests/test_quality_gates_retry.sh	workflows/scripts/lib/gate-retry.sh scripts/tests/test_quality_gates_retry.sh

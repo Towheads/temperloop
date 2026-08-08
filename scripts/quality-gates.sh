@@ -576,6 +576,18 @@ KERNEL_GATES=(
   # below. Same direct-`bash` form as the knowledge_search/portable-timeout
   # gates above (kernel Makefile is generator-owned).
   "bash workflows/scripts/lib/tests/test_changelog.sh"
+  # `changelog.d/` per-entry fragments + the release-time assembler
+  # (temperloop#1321, epic #1299): scripts/assemble-changelog.sh folds one
+  # file per changelog entry into CHANGELOG.md's `## [Unreleased]` at the cut,
+  # so two concurrent PRs write DISJOINT files and can no longer collide on
+  # the single hotspot file 25 of the last 25 commits touched. The suite's
+  # load-bearing legs run against the REPO'S OWN CHANGELOG.md: no fragments
+  # leaves it byte-identical, and a merge over the real (non-empty)
+  # `[Unreleased]` body removes not one line and leaves
+  # changelog_breaking_sections()/_sections_in_range()/_version_headings()
+  # byte-stable — the downstream BREAKING acknowledgment contract. Same
+  # direct-`bash` form as the changelog-lib gate above.
+  "bash scripts/tests/test_assemble_changelog.sh"
   # Setting registry (temperloop#164/#169 D2): parse/union tests for
   # workflows/scripts/config/setting-registry-lib.sh — parses the real kernel
   # TSV clean, unions a synthetic overlay fixture (add + redefault rows),

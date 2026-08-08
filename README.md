@@ -308,6 +308,8 @@ scripts/quality-gates.sh   the ONE static gate set — CI and local dev both run
 Makefile        the in-checkout command surface (test/gate/docs targets)
 AGENTS.md       cross-agent operating instructions for any coding agent in this repo
 CHANGELOG.md    Keep-a-Changelog history — BREAKING entries drive `temperloop update`
+changelog.d/    one changelog entry per file; assembled into CHANGELOG.md at the
+                release cut by scripts/assemble-changelog.sh (see its README)
 VERSIONING.md   version-bump policy: version by contract surface, not by code
 llms.txt        machine-readable project index (llmstxt.org convention)
 ```
