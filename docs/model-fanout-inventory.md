@@ -224,6 +224,21 @@ producer reads transcripts. Therefore:
   Doing so would have reported "no change" for the trivial reason that it
   reports nothing at all for these seats.
 
+**Update (temperloop#1264 — envelope capture):** all three seats now run
+with `--output-format json` instead of `text`, so the transcript-corpus
+absence above still holds unchanged — `--no-session-persistence` is
+untouched, no transcript is written, and the tokens producer's contribution
+for these three seats stays **zero, structurally**. What changes is that
+each live call's own `usage` / `modelUsage` / `total_cost_usd` /
+`duration_ms` block is now captured into a named shell variable at the call
+site (`triage_envelope` in `try.sh`'s C1, `fix_envelope` in its C2,
+`ai_envelope` in `configure.sh`'s C3), in scope for a future attribution
+emit. These seats are therefore no longer invisible to **both** measurement
+paths at once — they remain invisible to the transcript/tokens-producer
+path, but are now **envelope-capable**: the direct per-call measurement
+the "Method actually used" below already relies on is no longer a one-off
+replay technique, it is what every real call already returns.
+
 **Method actually used** — a direct per-call measurement, at the same weight
 vector so the numbers are comparable to the baseline even though they are not
 *in* it: each seat's real production prompt was replayed through
@@ -310,4 +325,14 @@ weighted-units saving available at this seat at any tier that completes the job.
    and measure both axes, because dollars and weighted units can disagree by
    5x (§ Measurement).
 4. If the seat passes `--no-session-persistence`, note that it is invisible to
-   the tokens producer, so a direct measurement is the only option.
+   the tokens producer — but run it with `--output-format json` and unwrap
+   `.result` (never `.result.<field>` directly; `.result` is a JSON
+   **string**, so a parsed field needs `.result | fromjson | .field`, done
+   in the SAME `jq` call — round-tripping an already-`-r`-decoded value
+   through a second `jq`/`fromjson` call re-parses it as an object first
+   and silently yields empty) so the call's own `usage` / `modelUsage` /
+   `total_cost_usd` / `duration_ms` block is captured for free. That is now
+   the standard remedy (see C1/C2/C3 in `try.sh`/`configure.sh`,
+   temperloop#1264), not a one-off direct measurement — reach for a
+   one-off replay only if the seat cannot be moved to `--output-format
+   json` at all.

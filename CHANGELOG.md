@@ -26,6 +26,34 @@ reads that marker; a stranger greps for it before pulling.
   repo to a reusable baseline each run. ADR 0025's "CI inherits the rule"
   consequence is amended to record the resulting accepted gap: no weekly
   automated coverage of `temperloop testbed` or its teardown.
+- **The three `claude -p` seats in `bin/` now capture the `--output-format
+  json` envelope instead of raw text** (#1264). `try.sh`'s shadow-triage call
+  (C1) and `--demo` fix call (C2), and `configure.sh`'s AI-suggestions call
+  (C3), all switch `--output-format text` → `json` and unwrap `.result` at the
+  call site, so each call's own `usage` / `modelUsage` / `total_cost_usd` /
+  `duration_ms` block is captured in a named variable for a future attribution
+  emit. These seats pass `--no-session-persistence` and so write no transcript,
+  which made them invisible to the tokens producer; the envelope is what makes
+  them measurable without a one-off replay. `--tools ""`,
+  `--no-session-persistence` and `--max-budget-usd` are unchanged at all three
+  seats, and the model's own output is still printed/applied verbatim.
+
+  **User-visible degradation lines** are the behavior change: a response the
+  wrapper cannot read now says so specifically rather than failing opaquely,
+  and each distinct cause gets its own message so a format change costs a
+  *missing* number, never a wrong one — `returned an unparseable envelope`
+  (the envelope itself did not parse), `returned an empty report` (C1: the
+  envelope parsed and the model simply reported nothing), and `jq not on PATH`
+  (C3: jq is an optional dependency of the wizard, and its absence is no
+  longer misreported as a bad envelope). On every one of these the command
+  degrades exactly as it did before — `try` skips the triage section and exits
+  0, `configure` falls back to plain prompts and still writes. C2's
+  parse-failure debug line now echoes the model's own `.result` when it is
+  readable, falling back to the whole envelope only when it is not, so a
+  first-run failure no longer prints `session_id` / `uuid` / cost internals.
+
+  Not breaking: no overlay, config, or caller has to adapt.
+
 - **`build-level.mjs` now emits a `phase()` per STAGE of a level instead of one
   static heading for the whole run** (#1294). The level's progress heading
   advances `claim → build → gate → PR → CI` as items move, so a collapsed
