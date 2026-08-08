@@ -284,7 +284,11 @@ _kernel_row() {
     printf '  %-22s first: %s%s -> latest: %s%s (no sample in one or both windows)\n' "$label:" "$fv" "$unit" "$lv" "$unit"
     return
   fi
-  delta="$(awk -v a="$fv" -v b="$lv" 'BEGIN{printf "%+.2f", b-a}')"
+  # LC_ALL=C: fv/lv are jq-emitted period-decimal numbers; keep the delta's
+  # own decimal point locale-independent so it never mismatches the
+  # period-formatted fv/lv it sits beside (see the dollar-total LC_ALL=C
+  # comments below for the same class of locale bug).
+  delta="$(LC_ALL=C awk -v a="$fv" -v b="$lv" 'BEGIN{printf "%+.2f", b-a}')"
   printf '  %-22s %s%s -> %s%s  (delta %s%s)\n' "$label:" "$fv" "$unit" "$lv" "$unit" "$delta" "$unit"
 }
 
@@ -499,21 +503,26 @@ if [ "$tokens_ok" -eq 1 ] && [ "$latest_mc_usable" -eq 1 ]; then
           | reduce ($bm | to_entries[]) as $e
               ({priced: 0, total: 0, unpriced: []};
                if ($e.value | type) == "number" then
-                 (if ($prices[$e.key] | type) == "number"
+                 (if (($prices[$e.key] | type) == "number" and $prices[$e.key] > 0)
                   then .priced += 1 | .total += ($e.value * $prices[$e.key] / 1000000)
                   else .unpriced += [$e.key] end)
                else . end)' 2>/dev/null || true)"
         d_priced="$(jq -r '.priced // 0' <<<"$dollar_json" 2>/dev/null || echo 0)"
         if [ -n "$d_priced" ] && [ "$d_priced" -gt 0 ] 2>/dev/null; then
-          d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | awk '{printf "%.2f", $1}')"
+          # LC_ALL=C: jq always emits a period-decimal number; awk's field
+          # split parses it via the ambient locale's strtod, which silently
+          # truncates at the decimal point in a comma-decimal locale (e.g.
+          # de_DE) instead of reformatting -- $20.75 becomes 20, not 20,75.
+          # Force the C locale for this parse only.
+          d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | LC_ALL=C awk '{printf "%.2f", $1}')"
           d_unpriced="$(jq -r 'if (.unpriced | length) > 0 then (.unpriced | join(", ")) else "" end' <<<"$dollar_json")"
           echo "  ~\$$d_total_fmt directional -- DEFAULT PRICE TABLE dated $default_as_of,"
           echo "    STALENESS: a committed snapshot, not your own prices -- add"
           echo "    .temperloop/pricing.json to override with current numbers;"
           if [ -n "$d_unpriced" ]; then
-            echo "    $d_priced model(s) priced; unpriced tokens excluded: $d_unpriced)."
+            echo "    $d_priced model(s) priced; unpriced tokens excluded: $d_unpriced."
           else
-            echo "    $d_priced model(s) priced; all attributed tokens covered)."
+            echo "    $d_priced model(s) priced; all attributed tokens covered."
           fi
         else
           echo "  (no dollar estimate: no model in the default price table (dated"
@@ -540,13 +549,14 @@ if [ "$tokens_ok" -eq 1 ] && [ "$latest_mc_usable" -eq 1 ]; then
         | reduce ($bm | to_entries[]) as $e
             ({priced: 0, total: 0, unpriced: []};
              if ($e.value | type) == "number" then
-               (if ($prices[$e.key] | type) == "number"
+               (if (($prices[$e.key] | type) == "number" and $prices[$e.key] > 0)
                 then .priced += 1 | .total += ($e.value * $prices[$e.key] / 1000000)
                 else .unpriced += [$e.key] end)
              else . end)' 2>/dev/null || true)"
       d_priced="$(jq -r '.priced // 0' <<<"$dollar_json" 2>/dev/null || echo 0)"
       if [ -n "$d_priced" ] && [ "$d_priced" -gt 0 ] 2>/dev/null; then
-        d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | awk '{printf "%.2f", $1}')"
+        # LC_ALL=C -- see the matching comment in the default-table arm above.
+        d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | LC_ALL=C awk '{printf "%.2f", $1}')"
         d_unpriced="$(jq -r 'if (.unpriced | length) > 0 then (.unpriced | join(", ")) else "" end' <<<"$dollar_json")"
         echo "  ~\$$d_total_fmt directional (priced from .temperloop/pricing.json;"
         if [ -n "$d_unpriced" ]; then

@@ -21,7 +21,13 @@
 #      kernel-tier headline. (6c, foundation#882) a by_model breakdown +
 #      .temperloop/pricing.json renders a directional dollar line; each
 #      missing/malformed/zero-overlap piece degrades to one legible line; a
-#      by_model-less producer renders no dollar line (backward compat).
+#      by_model-less producer renders no dollar line (backward compat). A
+#      default price table (temperloop#1251) renders the same dollar line
+#      when no user pricing.json exists; a user pricing.json that names only
+#      SOME of the by_model models overrides the default table PER-KEY, not
+#      as a whole file -- the omitted model is named/excluded, never
+#      back-filled from the default table (6c-iii-b2, temperloop#1251
+#      review ADVISORY finding 5).
 #   7. --refresh appends a real baseline record via a fake gh, then renders.
 #   8. CLI hygiene: unknown arg is exit 2; -h is exit 0; a nonexistent --dir
 #      is exit 1.
@@ -42,6 +48,10 @@
 #      with its own `skipped -- ` line gets exactly one line, not two; a
 #      conforming producer and a non-`tokens` producer get none; the
 #      kernel-tier fallback and exit 0 are unchanged.
+#  12. default price table shape (temperloop#1251 review, BLOCKING finding
+#      3b): the REAL shipped workflows/scripts/config/default-pricing.json
+#      has a well-formed `as_of` (YYYY-MM-DD) and every `prices` value is a
+#      positive number -- guards the hand-edited file itself, not a fixture.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -251,6 +261,24 @@ outDiiib="$(TEMPERLOOP_DEFAULT_PRICING_FILE="$DEFAULT_FIXTURE" bash "$REPORT" --
 grep -q '~[$]28.00 directional (priced from .temperloop/pricing.json' <<<"$outDiiib" \
   || fail "a present pricing.json must override the default table outright, not blend with it"
 if grep -q 'DEFAULT PRICE TABLE' <<<"$outDiiib"; then fail "the default-table label must not render once a user pricing.json exists"; fi
+rm -f "$REPO_D/.temperloop/pricing.json"
+
+# 6c-iii-b2 (temperloop#1251 review, ADVISORY finding 5): 6c-iii-b above is
+# blind to a PER-KEY blend bug, because its user file prices BOTH models --
+# a per-key fallback to the default table would fill nothing and produce the
+# identical $28.00. Pin the partial-override case instead: same fixture
+# default table in scope, but the user file prices ONLY claude-opus-4-8.
+# The correct behavior is $18.00 (1M*18/1M, opus only) with sonnet named and
+# excluded -- exactly as if no default table existed at all. A blend bug
+# would instead back-fill sonnet from the default table's 6.00 and render
+# ~$30.00 (1M*18 + 2M*6) with sonnet NOT excluded.
+echo '{"claude-opus-4-8": 18.00}' > "$REPO_D/.temperloop/pricing.json"
+outDiiib2="$(TEMPERLOOP_DEFAULT_PRICING_FILE="$DEFAULT_FIXTURE" bash "$REPORT" --dir "$REPO_D")"
+grep -q '~[$]18.00 directional (priced from .temperloop/pricing.json' <<<"$outDiiib2" \
+  || fail "a partial user pricing.json must price only its own named model (18.00), never blend in the default table's price for an omitted key"
+grep -q 'unpriced tokens excluded: claude-sonnet-5' <<<"$outDiiib2" \
+  || fail "a model omitted from a partial user pricing.json must be named/excluded, not silently back-filled from the default table"
+if grep -q 'DEFAULT PRICE TABLE' <<<"$outDiiib2"; then fail "the default-table label must not render once a user pricing.json exists, even a partial one"; fi
 rm -f "$REPO_D/.temperloop/pricing.json"
 
 # 6c-iii-c: default table missing entirely (a broken/incomplete kernel
@@ -546,5 +574,33 @@ out10="$(cd "$THIRD_LOCATION" && bash "$REPORT" --dir "$REPO10")"
 grep -qF "notice: cwd=$REAL_REPO10" <<<"$out10" \
   || fail "report.sh must cd to the target repo before running a drop-in producer (report.contract.md: cwd = the target repo) -- expected notice: cwd=$REAL_REPO10, got: $(echo "$out10" | grep 'notice: cwd=')"
 echo "OK 10: report.sh cd's to \$repo_root before invoking a drop-in producer, even when --dir differs from this process's own cwd"
+
+# --- 12: default price table shape (temperloop#1251 review, BLOCKING finding
+# 3b) --------------------------------------------------------------------
+# Nothing validates the REAL kernel-shipped default-pricing.json itself --
+# every other 6c-iii-* test above runs against a FIXTURE table via
+# $TEMPERLOOP_DEFAULT_PRICING_FILE. Guard the shape report.sh assumes of the
+# actual shipped file: every `prices` value is a POSITIVE number (a
+# zero/negative price would otherwise silently count as "priced" -- see the
+# report.sh `> 0` guard fixed for BLOCKING finding 3a), and `as_of` is a
+# real YYYY-MM-DD date (`as_of: ""` renders "dated ," and `as_of: "whenever"`
+# renders "dated whenever" with no complaint from report.sh itself). The
+# table is refreshed only by hand-editing with no regeneration script, so a
+# hand-edit typo is the expected failure mode this test exists to catch.
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+DEFAULT_PRICING_REAL="$REPO_ROOT/workflows/scripts/config/default-pricing.json"
+[ -f "$DEFAULT_PRICING_REAL" ] || fail "12: the shipped default-pricing.json is missing at $DEFAULT_PRICING_REAL"
+
+jq -e '(.as_of | type) == "string"' >/dev/null <"$DEFAULT_PRICING_REAL" \
+  || fail "12: default-pricing.json's as_of must be a string"
+as_of_val="$(jq -r '.as_of' <"$DEFAULT_PRICING_REAL")"
+[[ "$as_of_val" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+  || fail "12: default-pricing.json's as_of '$as_of_val' does not match YYYY-MM-DD"
+
+jq -e '(.prices | type) == "object" and (.prices | length) > 0' >/dev/null <"$DEFAULT_PRICING_REAL" \
+  || fail "12: default-pricing.json's prices must be a non-empty object"
+jq -e '[.prices[] | (type == "number" and . > 0)] | all' >/dev/null <"$DEFAULT_PRICING_REAL" \
+  || fail "12: every default-pricing.json price must be a positive number"
+echo "OK 12: the shipped default-pricing.json has a well-formed as_of date and all-positive prices"
 
 echo "OK: test_report.sh"

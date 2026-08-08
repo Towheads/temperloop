@@ -75,17 +75,24 @@ reads that marker; a stranger greps for it before pulling.
   as before; the malformed-pricing-file and no-model-matched degradation
   paths are unchanged. A missing/malformed default table (a broken kernel
   checkout) degrades to the old nudge line rather than crashing.
-  **Classified ADDITIVE (minor), not BREAKING — the argument, explicitly.**
-  Nothing an existing adopter depends on stops working: the dollar line has
-  always been advisory, human-readable CLI output, never a machine-parsed
-  contract with a fixed string a script could depend on; the exit code,
-  section headings, and every other rendered line are unchanged; and a
-  `.temperloop/pricing.json` an adopter already wrote keeps overriding the
-  output exactly as before (pinned by `bin/subcommands/tests/
-  test_report.sh`'s 6c-iii-b fixture). An adopter who never wrote a pricing
-  table merely starts seeing a new, clearly-labeled directional dollar
-  estimate where a nudge used to render — an addition, not a removal or an
-  incompatible reshaping of anything documented. No `BREAKING` marker, no
+  **Classified ADDITIVE (minor), not BREAKING — grounded in VERSIONING.md's
+  contract-surface table, not merely asserted.** Two of that table's rows
+  are in play. **CLI surface** (`bin/subcommands/*`) is what an adopter
+  actually calls, and none of it moves: exit code 0, every flag, every
+  section heading, and the user-`.temperloop/pricing.json` override path
+  (including its **per-key**, never-blended override behavior) are all
+  unchanged — pinned by `bin/subcommands/tests/test_report.sh`'s
+  6c-iii-b/6c-iii-b2 fixtures. An adopter who already wrote a pricing table
+  sees byte-identical behavior; one who never wrote one merely starts
+  seeing a new, clearly-labeled directional dollar line where a nudge used
+  to render — an addition, not a removal or a reshaping of anything a
+  caller depends on. **Published schemas/contracts** (`*.contract.md`) is
+  the row that *does* move: `workflows/scripts/lib/report.contract.md`'s
+  "Pricing table & dollar framing" section is updated in this same change
+  to document the new default-table tier, its override order, and its
+  degradation paths — a documentation update describing new capability, not
+  a behavior change a caller must adapt to, so it stays additive rather
+  than tipping this release into BREAKING. No `BREAKING` marker, no
   migration note owed.
 
 - **The generated `/build` worker prompt now carries a structural

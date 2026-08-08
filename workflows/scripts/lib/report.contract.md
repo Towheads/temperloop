@@ -188,44 +188,78 @@ value that differs textually from the default but resolves to the same
 directory (a trailing slash, a symlink), or by editing
 `workflows/scripts/report-producers/tokens` directly.
 
-## Pricing table & dollar framing (foundation#882)
+## Pricing table & dollar framing (foundation#882, temperloop#1251)
 
-The tokens headline can render a **directional dollar estimate** when two
-user-supplied pieces are both present:
+The tokens headline can render a **directional dollar estimate** whenever
+the `tokens` producer emits a `by_model` breakdown (above). Pricing itself
+no longer requires anything user-supplied — as of temperloop#1251 the kernel
+ships its own dated default price table, so the dollar figure is never
+gated behind hand-authored config.
 
-1. the `tokens` producer emits a `by_model` breakdown (above), and
-2. the target repo carries a **pricing table** at `.temperloop/pricing.json`
-   — a single JSON object mapping each model id to its **USD-per-million-tokens
-   list price**, e.g. `{"claude-opus-4-8": 18.00, "claude-sonnet-5": 5.40}`.
+Two tiers feed the figure, in **override order** (highest precedence
+first):
+
+1. a user-supplied pricing table at `.temperloop/pricing.json` — a single
+   JSON object mapping each model id to its **USD-per-million-tokens list
+   price**, e.g. `{"claude-opus-4-8": 18.00, "claude-sonnet-5": 5.40}`. When
+   this file is present it **overrides the default table outright, never
+   merges with it per-key**: even if the user's table names only one of two
+   `by_model` models, the other is **not** back-filled from the default
+   table — it is named and excluded exactly as it would be with no default
+   table in play at all (see "Every degradation" below). A partial user
+   file that silently blended in kernel defaults for the keys it omitted
+   would defeat the point of writing an override.
+2. absent that, the kernel-shipped **default price table** at
+   `workflows/scripts/config/default-pricing.json` — a
+   `{as_of: "YYYY-MM-DD", prices: {model: $/Mtok}}` object, hand-
+   transcribed from public list prices and refreshed only by hand-editing
+   the file in an upstream PR (no regeneration script), same discipline as
+   the sibling `kernel/bin/lib/cost-estimates.conf` and the user-supplied
+   table above. Every dollar line this tier drives carries **both** the
+   table's own `as_of` date and an explicit staleness label (`DEFAULT PRICE
+   TABLE dated <as_of>` plus a `STALENESS:` line naming it as a committed
+   snapshot, not the adopter's own prices) — a stranger reading the output
+   is never left thinking the figure is their own configured number.
 
 `report.sh` then multiplies each attributed model's tokens by its list price
 (`tokens × price ÷ 1,000,000`), sums the priced models, and prints a
 `~$<total> directional` line under the same **DIRECTIONAL** label as the
 tokens headline, naming the count of priced models and **excluding** (by
-name) any `by_model` model with no matching price. This is a **user-supplied,
-hand-edited, directional** table, exactly like the sibling
-`kernel/bin/lib/cost-estimates.conf`: it is never a live pricing-API read,
-never recalculated at runtime, and refreshed only by hand-editing the file
-(no regeneration script) — the producer-egress lint covers this seam and the
-table read is a **local file read only, no network**. The pricing table is
-**absent by default**: the kernel ships no prices, so a stranger opts in by
-writing their own table. (This used to add "just as it ships no `tokens`
-producer" — no longer true as of temperloop#958: the kernel repo now carries
-its own `tokens` producer, `workflows/scripts/report-producers/tokens`, a
+name) any `by_model` model with no matching price in whichever table is in
+effect. Both tables are **directional, hand-edited** tables: neither is ever
+a live pricing-API read, neither is recalculated at runtime — the
+producer-egress lint covers this seam and both table reads are **local file
+reads only, no network**. The pricing table used to be **absent by
+default** (the kernel shipped no prices, so a stranger opted in by writing
+their own table); that is no longer true — the kernel now ships a default
+table out of the box, and a stranger instead opts *out* of it by never
+writing `.temperloop/pricing.json`, or opts into their *own* current
+numbers by writing one, which always wins per the override order above.
+(This section used to add "just as it ships no `tokens` producer" — no
+longer true as of temperloop#958: the kernel repo now carries its own
+`tokens` producer, `workflows/scripts/report-producers/tokens`, a
 transcript-derived spend reader wrapping
 `workflows/scripts/pipeline-spend-report.sh`; `.temperloop/report.d/tokens`
 is the locator shim that finds the installed kernel and `exec`s that
 producer. That changes nothing here — the producer emits `by_model` in
-DIRECTIONAL cost-weighted units, and the pricing table remains the separate,
-hand-written, opt-in half.)
+DIRECTIONAL cost-weighted units, and pricing remains the separate,
+hand-written half, now two-tiered.)
 
 Every degradation is one legible line, never an error: **no** `by_model` →
-no dollar line; `by_model` present but **no** `pricing.json` → a one-line
-"add `.temperloop/pricing.json`" nudge; a `pricing.json` that is **not a JSON
-object** (malformed, or a valid array/number/string/`null`) → a "not a
-`{model: $/Mtok}` object" note; a `pricing.json` object that matches **none**
-of the `by_model` models → a "no model matched" note. The kernel-tier
-headline and the tokens/item line are unchanged in every case.
+no dollar line; `by_model` present, **no** `.temperloop/pricing.json`, and
+the default table itself missing or malformed (a broken/incomplete kernel
+checkout — no `prices` object, no `as_of` string) → the pre-#1251 one-line
+"add `.temperloop/pricing.json`" nudge, now naming the default table as
+unavailable too; `by_model` present, **no** `.temperloop/pricing.json`, a
+well-formed default table but **zero** matching models → a "no model in the
+default price table (dated `<as_of>`) matched" note; a `.temperloop/
+pricing.json` that is **not a JSON object** (malformed, or a valid
+array/number/string/`null`) → a "not a `{model: $/Mtok}` object" note; a
+`.temperloop/pricing.json` object that matches **none** of the `by_model`
+models → a "no model matched" note (the user-table wording, distinct from
+the default-table one above — the two never conflate which table was in
+effect). The kernel-tier headline and the tokens/item line are unchanged in
+every case.
 
 **Egress:** this seam and its own drop-ins are covered by the mechanical
 network-call lint at `kernel/workflows/scripts/kernel/check-producer-egress.sh`
@@ -240,9 +274,10 @@ empty) opt-in egress surface for this whole value loop.
   parses as `{"tokens_spent": <number>, ...}`: the headline is `tokens_spent`
   divided by the **latest** record's `merged_count`, labeled directional
   (never a precise unit cost -- see "Non-goals" below). When that producer
-  **also** emits `by_model` and the repo carries `.temperloop/pricing.json`,
-  the headline additionally renders a directional `~$<total>` dollar line
-  (see "Pricing table & dollar framing" above).
+  **also** emits `by_model`, the headline additionally renders a directional
+  `~$<total>` dollar line, priced from a user `.temperloop/pricing.json`
+  override when present, else the kernel-shipped default price table (see
+  "Pricing table & dollar framing" above).
 - **Else**: the headline is the kernel-tier numbers alone -- the
   merged-items/day delta plus the median-time-to-merge delta. When the
   `tokens` producer *ran* (exit 0) but its stdout failed that parse, the
