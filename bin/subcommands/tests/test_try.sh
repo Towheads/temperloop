@@ -100,6 +100,14 @@ if [ "${FAKE_CLAUDE_BAD_ENVELOPE:-0}" = "1" ]; then
   printf 'not-json-at-all {{{'
   exit "${FAKE_CLAUDE_RC:-0}"
 fi
+if [ "${FAKE_CLAUDE_EMPTY_RESULT:-0}" = "1" ]; then
+  # A structurally VALID envelope carrying an EMPTY .result -- the model
+  # legitimately reported nothing. jq exits 0 here, so this is a DIFFERENT
+  # state from the unparseable envelope above (jq exits 5), and the two must
+  # not collapse into one message.
+  printf '{"result":"","usage":{"input_tokens":100,"output_tokens":0},"total_cost_usd":0.01,"duration_ms":500,"num_turns":1}'
+  exit "${FAKE_CLAUDE_RC:-0}"
+fi
 report="FAKE-TRIAGE-REPORT-MARKER: ${FAKE_TRIAGE_OUTPUT:-shadow triage report}"
 jq -cn --arg result "$report" \
   '{result: $result, usage: {input_tokens: 100, output_tokens: 50}, total_cost_usd: 0.01, duration_ms: 500, num_turns: 1}'
@@ -144,6 +152,7 @@ run() {
     FAKE_TRIAGE_OUTPUT="${FAKE_TRIAGE_OUTPUT:-}" \
     FAKE_CLAUDE_RC="${FAKE_CLAUDE_RC:-0}" \
     FAKE_CLAUDE_BAD_ENVELOPE="${FAKE_CLAUDE_BAD_ENVELOPE:-0}" \
+    FAKE_CLAUDE_EMPTY_RESULT="${FAKE_CLAUDE_EMPTY_RESULT:-0}" \
     CALL_LOG="$CALL_LOG" \
     CLAUDE_ARGS_DIR="$CLAUDE_ARGS_DIR" \
     bash "$TRY" "$@" 2>&1)" || rc=$?
@@ -264,6 +273,21 @@ assert_contains "skipped — claude shadow-triage call returned an unparseable e
 assert_not_contains "not-json-at-all"
 FAKE_CLAUDE_BAD_ENVELOPE=0
 echo "PASS: unparseable envelope — degrades to a legible skip line, exit 0"
+
+# =============================================================================
+# T4c -- EMPTY report: claude exits 0 and its envelope is perfectly valid,
+# but .result is empty (the model legitimately reported nothing). jq exits 0
+# here where T4b's unparseable envelope makes it exit 5, so the two are
+# genuinely different states and must NOT share one message -- reporting a
+# format failure for an empty report is exactly the "wrong number" this
+# item's own acceptance bar forbids.
+# =============================================================================
+FAKE_CLAUDE_EMPTY_RESULT=1
+run 0 --dir "$REPO" --gh-repo "$TEST_REPO" --timeout 5
+assert_contains "skipped — claude shadow-triage call returned an empty report"
+assert_not_contains "unparseable envelope"
+FAKE_CLAUDE_EMPTY_RESULT=0
+echo "PASS: empty report — reported as empty, never mislabelled as an unparseable envelope"
 
 # =============================================================================
 # T5 -- gh absent entirely: issues + triage both gracefully skip; exit 0.

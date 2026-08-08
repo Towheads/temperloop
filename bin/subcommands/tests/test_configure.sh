@@ -74,8 +74,22 @@ fi
 # --output-format json ENVELOPE whose .result is the suggestions object,
 # serialized as a JSON STRING (mirrors the real CLI's envelope shape,
 # where .result is always a string, never an object).
-jq -cn --arg result "${FAKE_CLAUDE_JSON:-{\}}" \
-  '{result: $result, usage: {input_tokens: 10, output_tokens: 5}, total_cost_usd: 0.001, duration_ms: 100, num_turns: 1}'
+#
+# Built with `printf` and bash parameter expansion, deliberately NOT with
+# `jq -cn --arg`: every call site below pins PATH="$BIN:/usr/bin:/bin", so an
+# external tool in this fixture resolves only if it happens to live in
+# /usr/bin or /bin. That holds on Linux CI and macOS 15+, but NOT on macOS
+# <15 or where jq is only in /opt/homebrew/bin -- there the fixture would
+# silently emit nothing and test 3 would fail for a reason unrelated to the
+# code under test. The fixture must depend on nothing but the shell.
+fake_result="${FAKE_CLAUDE_JSON:-{\}}"
+# JSON-string-escape for embedding in .result: backslashes FIRST, then
+# double quotes (reversing the order would double-escape the backslashes
+# that the quote pass introduces).
+fake_result="${fake_result//\\/\\\\}"
+fake_result="${fake_result//\"/\\\"}"
+printf '{"result":"%s","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.001,"duration_ms":100,"num_turns":1}' \
+  "$fake_result"
 FAKE_CLAUDE_EOF
 chmod +x "$BIN/claude"
 export CLAUDE_ARGS_DIR CLAUDE_CALL_COUNT_FILE
@@ -195,6 +209,31 @@ grep -q "falling back to plain prompts" <<<"$out" || fail "unparseable-envelope 
 mc4b="$(machine_conf_path "$XDG4B")"
 [ -f "$mc4b" ] || fail "unparseable-envelope run did not still write the machine-conf file"
 echo "PASS: an unparseable envelope degrades gracefully to plain prompts (still writes, never hard-fails)"
+
+# =============================================================================
+# 4c. The INNER unwrap arm: the envelope itself is structurally VALID, but
+#    .result is not itself valid JSON (the model answered in prose instead
+#    of the {"SETTING":{"value","why"}} object it was asked for). 4b above
+#    only reaches the OUTER parse; this is the `fromjson?` arm, and it must
+#    degrade the same graceful way rather than write garbage.
+# =============================================================================
+: > "$CLAUDE_CALL_COUNT_FILE"
+XDG4C="$(fresh_xdg)"
+out="$(FAKE_CLAUDE_JSON='I am not JSON, I am prose.' PATH="$BIN:/usr/bin:/bin" \
+  XDG_CONFIG_HOME="$XDG4C" bash "$CONFIGURE" \
+  --set PIPELINE_OPERATOR=octocat --yes </dev/null 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] || fail "non-JSON-.result run did not still exit 0 (got: $rc) -- output:\n$out"
+[ "$(claude_call_count)" -eq 1 ] || fail "non-JSON-.result run did not invoke claude exactly once (got: $(claude_call_count))"
+grep -q "falling back to plain prompts" <<<"$out" || fail "non-JSON-.result run did not report a plain-prompt fallback (got: $out)"
+mc4c="$(machine_conf_path "$XDG4C")"
+[ -f "$mc4c" ] || fail "non-JSON-.result run did not still write the machine-conf file"
+# `if ... then fail; fi`, not `grep -q ... && fail`: under `set -e` a failing
+# `&&` list exits the script silently, which is the PASSING case here.
+if grep -q 'I am not JSON' "$mc4c"; then
+  fail "the model's un-parsed prose leaked into the written machine-conf file"
+fi
+echo "PASS: a .result that is not valid JSON degrades to plain prompts (never writes the un-parsed body)"
 
 # =============================================================================
 # 5. Writes ONLY the machine-conf file: --dry-run touches nothing.

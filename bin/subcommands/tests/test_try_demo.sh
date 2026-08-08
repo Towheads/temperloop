@@ -109,7 +109,45 @@ if [ "${FAKE_CLAUDE_BAD_ENVELOPE:-0}" = "1" ]; then
   printf 'not-json-at-all {{{'
   exit "${FAKE_CLAUDE_RC:-0}"
 fi
-jq -cn --arg result "${FAKE_FIX_JSON:-{\"path\":\"greet.sh\",\"content\":\"fixed\"\}}" \
+if [ "${FAKE_CLAUDE_NO_RESULT:-0}" = "1" ]; then
+  # A structurally VALID envelope that simply carries NO .result key --
+  # exercises the INNER unwrap arm (jq exits 0, output empty), which the
+  # outer FAKE_CLAUDE_BAD_ENVELOPE mode above cannot reach.
+  printf '{"usage":{"input_tokens":100,"output_tokens":50},"total_cost_usd":0.01,"duration_ms":500,"num_turns":1}'
+  exit "${FAKE_CLAUDE_RC:-0}"
+fi
+# FAKE_FIX_RESULT_RAW, when set, is placed in .result VERBATIM (still a JSON
+# string, so the envelope itself stays valid) -- lets a test drive .result to
+# a non-JSON blob or to a JSON SCALAR, both of which reach `fromjson?`'s own
+# failure arms rather than the outer envelope parse.
+#
+# The default fix body is assigned on its OWN line, deliberately NOT inside a
+# `${FAKE_FIX_JSON:-...}` default-word. A JSON object embedded in a `:-` word
+# has no spelling that is correct in both cases and on both shells:
+#
+#   `...\"fixed\"}}`   set:   value + a SPURIOUS trailing `}` (expansion ends
+#                             at the first unescaped brace) -- both shells
+#                      unset: correct -- both shells
+#   `...\"fixed\"\}}`  set:   correct -- both shells
+#                      unset: a trailing literal BACKSLASH under bash 3.2
+#                             (stock macOS): `..."fixed"\}` -- invalid JSON
+#
+# Both spellings are therefore latent bugs, in DIFFERENT cells, and neither
+# is safe to prefer: every call site below sets FAKE_FIX_JSON, so the SET row
+# is the one under test today (the unescaped spelling breaks the happy path
+# outright, on both shells) while the UNSET row is a trap armed for whoever
+# next adds a case that omits FAKE_FIX_JSON -- and since
+# `.github/workflows/ci.yml` pins ubuntu-latest, that trap could only ever be
+# sprung on a contributor's own stock-macOS box, never in CI. Keeping the
+# brace out of the expansion entirely is correct in all four cells, so
+# neither row can regress.
+if [ -n "${FAKE_FIX_JSON:-}" ]; then
+  fake_result="$FAKE_FIX_JSON"
+else
+  fake_result='{"path":"greet.sh","content":"fixed"}'
+fi
+fake_result="${FAKE_FIX_RESULT_RAW:-$fake_result}"
+jq -cn --arg result "$fake_result" \
   '{result: $result, usage: {input_tokens: 100, output_tokens: 50}, total_cost_usd: 0.01, duration_ms: 500, num_turns: 1}'
 exit "${FAKE_CLAUDE_RC:-0}"
 CLAUDEEOF
@@ -328,5 +366,83 @@ if grep -Eq '^gh pr (create|merge)' "$GH_LOG" 2>/dev/null; then
   fail "unparseable-envelope run must never open or merge a PR: $(cat "$GH_LOG")"
 fi
 echo "PASS: unparseable envelope — fix call fails gracefully (exit 1, no PR), same as a malformed fix body"
+
+# =============================================================================
+# T7 -- the INNER unwrap arms. T6 above only covers "stdout is not JSON at
+# all", which fails on the OUTER envelope parse. These three cases keep the
+# envelope structurally VALID and break `.result` itself, which is where
+# `fromjson?` and the `|| fix_path=""` guard actually earn their keep:
+#
+#   a. no .result key      -> jq rc 0, empty  (`// empty` arm)
+#   b. .result not JSON    -> jq rc 0, empty  (`fromjson?` arm)
+#   c. .result a SCALAR    -> jq rc 5         (`.path` on a string ERRORS;
+#                                              `?` does NOT cover this, only
+#                                              the `|| fix_path=""` does)
+#
+# Every case must land on the same graceful "could not parse a fix" exit-1
+# with no PR. Each also asserts the debug line's disclosure contract: the
+# model's own .result is echoed when it exists, and the full envelope (with
+# its total_cost_usd / usage internals) ONLY when there is no readable
+# .result to show instead. Each gets a DISTINCT issue + board number for the
+# same fresh-branch-name reason as T6.
+# =============================================================================
+demo_parse_failure_case() {
+  # $1 label · $2 issue# · $3 board# · $4 NAME=VALUE env · $5 must-appear
+  # substring · $6 must-NOT-appear substring ("" to skip)
+  local label="$1" issue="$2" board="$3" envkv="$4" must="$5" mustnot="$6"
+  local out rc=0
+  : > "$GH_LOG"
+  rm -rf "$CLAUDE_ARGS_DIR"
+  out="$(PATH="$BIN:$PATH" \
+    env "$envkv" \
+    FAKE_AUTH_RC=0 \
+    FAKE_ISSUES_JSON="[{\"number\":$issue,\"title\":\"greet.sh misspells its own greeting\",\"labels\":[{\"name\":\"demo-seed\"}]}]" \
+    FAKE_ISSUE_BODY="$FAKE_ISSUE_BODY" \
+    FAKE_ISSUE_API_JSON="$FAKE_ISSUE_API_JSON" \
+    DEMO_REPO_ENV="$DEMO_REPO" \
+    GH_LOG="$GH_LOG" \
+    CLAUDE_ARGS_DIR="$CLAUDE_ARGS_DIR" \
+    TRY_DEMO_CLONE_URL="$BARE" \
+    TRY_DEMO_BOARD_NUM="$board" \
+    bash "$TRY" --demo --demo-repo "$DEMO_REPO" --yes 2>&1)" || rc=$?
+  [ "$rc" -eq 1 ] || fail "$label: should exit 1 (got $rc: $out)"
+  case "$out" in
+    *"could not parse a fix from the judgment call's output"*) ;;
+    *) fail "$label: expected the parse-failure message (got: $out)" ;;
+  esac
+  case "$out" in
+    *"$must"*) ;;
+    *) fail "$label: expected [$must] in the debug output (got: $out)" ;;
+  esac
+  if [ -n "$mustnot" ]; then
+    case "$out" in
+      *"$mustnot"*) fail "$label: [$mustnot] must NOT be disclosed (got: $out)" ;;
+      *) ;;
+    esac
+  fi
+  if grep -Eq '^gh pr (create|merge)' "$GH_LOG" 2>/dev/null; then
+    fail "$label: must never open or merge a PR: $(cat "$GH_LOG")"
+  fi
+}
+
+# a. Envelope is valid but carries NO .result at all -> nothing of the
+#    model's to echo, so the FULL envelope is the debug surface.
+demo_parse_failure_case "missing .result" 11 904 "FAKE_CLAUDE_NO_RESULT=1" \
+  '"total_cost_usd"' ""
+echo "PASS: a valid envelope with no .result fails gracefully (exit 1, no PR), echoing the envelope"
+
+# b. .result present but not itself valid JSON -> the model's own output is
+#    echoed and the envelope's cost/usage internals stay UNdisclosed.
+demo_parse_failure_case ".result not JSON" 12 905 \
+  "FAKE_FIX_RESULT_RAW=I could not find the bug, sorry." \
+  'I could not find the bug, sorry.' '"total_cost_usd"'
+echo "PASS: a .result that is not valid JSON fails gracefully, echoing .result and NOT the envelope internals"
+
+# c. .result is a valid JSON SCALAR (a bare string), so `fromjson` succeeds
+#    and `.path` then ERRORS on a non-object -- the arm `?` does not cover.
+demo_parse_failure_case ".result a JSON scalar" 13 906 \
+  'FAKE_FIX_RESULT_RAW="just-a-string"' \
+  'just-a-string' '"total_cost_usd"'
+echo "PASS: a .result that is a JSON scalar fails gracefully (the || guard, not ?), echoing .result only"
 
 echo "OK: test_try_demo.sh"

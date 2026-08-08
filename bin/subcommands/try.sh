@@ -226,7 +226,7 @@ _try_model_args() {
 # RETURN` scratch-dir cleanup below fire on every path, success or failure).
 run_demo() {
   local demo_repo board_lib proposal_pr scratch clone_dir conf issue_num item_id \
-        title body host sess stamp foreign fix_envelope fix_path fix_content \
+        title body host sess stamp foreign fix_envelope fix_result fix_path fix_content \
         manifest_file body_file branch pr_out outcome low high demo_reply \
         clone_out files_json prompt fix_rc BOARDS_CONF_REPO_LOCAL BOARDS_CONF_MACHINE
 
@@ -454,7 +454,18 @@ PROMPT_EOF
   fix_content="$(printf '%s' "$fix_envelope" | jq -r '.result | fromjson? | if has("content") then .content else empty end' 2>/dev/null)" || fix_content=""
   if [ -z "$fix_path" ]; then
     echo "try --demo: could not parse a fix from the judgment call's output — #$issue_num left claimed" >&2
-    echo "  raw output: $fix_envelope" >&2
+    # Echo the MODEL's own .result when the envelope itself parsed, and the
+    # whole envelope ONLY when it did not. The real envelope carries
+    # session_id / uuid / total_cost_usd / modelUsage; dumping it wholesale
+    # would print session identifiers and cost internals to a stranger on
+    # their very first `--demo` failure, when the thing they actually need to
+    # see is the model's own unparseable output.
+    fix_result="$(printf '%s' "$fix_envelope" | jq -r '.result // empty' 2>/dev/null)" || fix_result=""
+    if [ -n "$fix_result" ]; then
+      echo "  raw model output (.result): $fix_result" >&2
+    else
+      echo "  raw output (envelope carried no readable .result): $fix_envelope" >&2
+    fi
     return 1
   fi
   echo "Fix: $fix_path"
@@ -731,9 +742,25 @@ else
   # in scope in case a future attribution emit needs it — no token number
   # is re-derived here. .result is the model's own report TEXT, printed
   # verbatim (never the whole envelope).
-  triage_out="$(printf '%s' "$triage_envelope" | jq -r '.result // empty' 2>/dev/null)" || triage_out=""
-  if [ -z "$triage_out" ]; then
+  #
+  # jq's EXIT CODE, not the emptiness of its output, is what separates an
+  # unparseable envelope from a legitimately-empty report — measured:
+  #   {"result":""}  -> rc 0, empty output   (model reported nothing)
+  #   {"usage":{}}   -> rc 0, empty output   (no .result key at all)
+  #   not-json       -> rc 5, empty output   (envelope genuinely unparseable)
+  # Only the third is an envelope problem; collapsing all three into one
+  # message mislabels an empty model report as a format failure. Captured on
+  # its own line via `&& rc=0 || rc=$?` because `set -e` is in force from the
+  # `set -e` above, so a bare `var="$(...)"; rc=$?` would abort the script
+  # before the branch is ever reached. jq itself is guaranteed present here —
+  # this script hard-exits on a missing jq during the probe, well upstream —
+  # so rc 127 cannot reach this branch.
+  triage_out="$(printf '%s' "$triage_envelope" | jq -r '.result // empty' 2>/dev/null)" \
+    && triage_jq_rc=0 || triage_jq_rc=$?
+  if [ "$triage_jq_rc" -ne 0 ]; then
     echo "skipped — claude shadow-triage call returned an unparseable envelope"
+  elif [ -z "$triage_out" ]; then
+    echo "skipped — claude shadow-triage call returned an empty report"
   else
     echo "$triage_out"
   fi

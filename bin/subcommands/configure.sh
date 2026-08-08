@@ -405,9 +405,23 @@ PROMPT_EOF
     # yields empty the same way. $ai_out below is therefore already a
     # plain (once-encoded) JSON object — the per-setting reads further
     # down need no second unwrap.
-    ai_out="$(printf '%s' "$ai_envelope" | jq -c '.result | fromjson? // empty' 2>/dev/null)" || ai_out=""
-    if [ -z "$ai_out" ]; then
-      echo "  skipped — claude call returned an unparseable envelope; falling back to plain prompts"
+    #
+    # The `command -v jq` guard is load-bearing, NOT decorative, and mirrors
+    # the identical guard on the per-setting reads below. jq is an OPTIONAL
+    # dependency of this wizard (unlike try.sh, which hard-exits without it),
+    # so unguarded, a MISSING jq lands as "command not found" in the
+    # suppressed stderr — rc 127, empty output — and gets reported as an
+    # unparseable ENVELOPE when the envelope was fine and jq was simply
+    # absent. A format change must cost a MISSING number, never a WRONG one,
+    # so the two causes get two distinct messages.
+    ai_out=""
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "  skipped — jq not on PATH (needed to read the claude response); falling back to plain prompts"
+    else
+      ai_out="$(printf '%s' "$ai_envelope" | jq -c '.result | fromjson? // empty' 2>/dev/null)" || ai_out=""
+      if [ -z "$ai_out" ]; then
+        echo "  skipped — claude call returned an unparseable envelope; falling back to plain prompts"
+      fi
     fi
   fi
 
