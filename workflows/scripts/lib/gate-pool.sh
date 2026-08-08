@@ -14,7 +14,7 @@
 # ── The problem ──────────────────────────────────────────────────────────
 # The gate set is ~109 INDEPENDENT suites run strictly one after another, and
 # the `checks` job's ~5.5 min wall time is almost entirely that serialization:
-# the measured 2026-08-02 baseline has no dominant gate (test-try 56s,
+# the measured 2026-08-02 baseline has no dominant gate (test-cli-subcommands 56s,
 # test-build 55s, shellcheck 29s, test-board 21s, prose-budget ~20s, then a long
 # tail of 1–5s suites), so no single-gate optimization can recover it. Only
 # running them concurrently can.

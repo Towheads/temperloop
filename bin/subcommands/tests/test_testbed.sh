@@ -221,8 +221,18 @@ tree_of() { (cd "$1" 2>/dev/null && find . -type f -exec shasum {} \; | sort) ||
 grep -q '^# description: ' "$TESTBED" \
   || fail "testbed.sh must carry a '# description: ' header line (the dispatcher's discovery convention)"
 
-if grep -q 'testbed' "$DISPATCHER"; then
-  fail "bin/temperloop must contain NO reference to 'testbed' — registration is file discovery, never a dispatch-table edit"
+# The invariant is that `testbed` is registered by FILE DISCOVERY — never by
+# a hand-edited dispatch branch in bin/temperloop. Exactly ONE mention is
+# sanctioned: the help banner's `Start here:` pointer, which temperloop#1117
+# flipped from `try` to `testbed` when `try` was retired. That line is prose
+# inside a heredoc, not a dispatch branch, so it cannot register anything.
+# Every OTHER occurrence still fails, which is what keeps a real dispatch-table
+# edit (a `testbed)` case arm, a `_foundation_dispatch_testbed` helper, an
+# `if [ "$cmd" = testbed ]`) caught here.
+stray_testbed="$(grep -n 'testbed' "$DISPATCHER" \
+  | grep -v '^[0-9]*:Start here: temperloop testbed$' || true)"
+if [ -n "$stray_testbed" ]; then
+  fail "bin/temperloop must contain NO reference to 'testbed' beyond the help banner's 'Start here:' line — registration is file discovery, never a dispatch-table edit (found: $stray_testbed)"
 fi
 
 help_out="$(bash "$DISPATCHER" help 2>&1)"

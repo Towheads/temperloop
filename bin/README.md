@@ -90,57 +90,7 @@ blocks for you — worth two minutes first. Note in particular that the
 evaluation path runs the real pipeline and so carries **no hard dollar cap**
 (temperloop#1130).
 
-## Legacy onboarding commands (`try`, `try --demo`)
-
-`try` and `try --demo` are **no longer part of the on-ramp**. They still work
-and are documented in full below — flags, exit codes, and safety contract —
-but the quickstart above replaced them: `try`'s shadow-triage runs with almost
-no context so its output undersells the pipeline, and `--demo` ticks a canned
-repo of synthetic defects rather than the reader's own code. Their removal or
-replacement is tracked in temperloop#1117, and the resulting surface
-inconsistency (`temperloop help` still lists them) in temperloop#1116.
-
-They remain the only two commands with a **hard, tool-enforced USD cap**,
-which is why they are still worth reaching for if a bounded-spend probe is
-what you want.
-
-### 1. `temperloop try` — zero-config, zero writes
-
-```sh
-cd your-repo
-temperloop try
-```
-
-Runs the read-only conventions probe, lists your repo's own open issues with
-a directional cost estimate printed *before* anything else happens, then
-drives a real `claude -p` shadow-triage classification pass over those
-issues — invoked with `--tools ""` (every built-in tool disabled), a
-structural guarantee of zero writes independent of the prompt or the model's
-behavior. No `gh` mutation is ever issued. Missing `gh`/network/auth degrades
-to a legible `skipped — <reason>` line per step, never a hard failure. Exit
-0 either way — a graceful skip is not an error.
-
-### 2. `temperloop try --demo` — the one mutating exception
-
-```sh
-temperloop try --demo
-```
-
-Everything above is read-only; `--demo` is the deliberate, isolated
-exception — the "aha moment" tick. It clones a disposable, already-seeded
-demo repo and drives ONE real safe-tier pipeline tick (issue → PR) against it:
-claims one open demo-seed issue, gets a real (but still `--tools ""`,
-zero-tool-access) `claude -p` judgment call for the fix, and opens a PR via
-the tree-only proposal-PR generator — **never a direct push, never a
-merge**. A spend guard prints a directional cost estimate and a hard
-mechanical cap (`--demo-cap-usd`, default \$2.00, ≈370,000 tokens at Claude
-Sonnet 5 list price — see `docs/cost-and-autonomy.md` for the conversion
-basis) before anything runs, and refuses outright on a non-interactive
-shell with no `--yes` — a curious stranger cannot silently burn spend. If
-every seeded issue is already claimed or closed, it exits 0 with "no tick
-run" rather than failing.
-
-### 3. `temperloop init` — adopt, in the sandbox or for real
+### `temperloop init` — adopt, in the sandbox or for real
 
 ```sh
 temperloop init --dry-run   # preview first: tree-only, zero API writes
@@ -154,10 +104,10 @@ up `<project>` with temperloop"), prints a `next step:` handoff line, and
 stops. `--dry-run` previews the tree-only PR with zero API calls of any
 kind.
 
-**The handoff needs step 4 below.** `/assess` and `/build` are Claude Code
-slash commands, and they reach your machine only through `temperloop
-install`, which symlinks them into `~/.claude/`. Steps 1 and 2 genuinely
-need no machine-wide setup; **step 3's handoff does** — so if you have not
+**The handoff needs `temperloop install`.** `/assess` and `/build` are
+Claude Code slash commands, and they reach your machine only through
+`temperloop install`, which symlinks them into `~/.claude/`. `init` itself
+needs no machine-wide setup; **its handoff does** — so if you have not
 run `temperloop install` yet, run it before acting on the `next step:` line.
 `init` itself detects this and prints a `prerequisite:` line when the
 command isn't installed, so you won't be left pointing at something that
@@ -200,9 +150,9 @@ shim was removed in v0.19.0 (see above) and now only refuses, naming
 
 ### Verify: `temperloop install` + `doctor.sh`
 
-Steps 1 and 2 above work against a target repo and need no machine-wide
-setup. Step 3 is the exception worth calling out: `init` itself needs none
-either, but the `/assess --epic N` → `/build` handoff it ends on is Claude
+`init` above works against a target repo and needs no machine-wide setup
+of its own. Its **handoff** is the exception worth calling out: `init`
+itself needs none, but the `/assess --epic N` → `/build` handoff it ends on is Claude
 Code slash commands that only exist once you have run the install below —
 so treat this step as part of the adoption path, not an optional extra.
 `temperloop install` wires up the **machine surface** —

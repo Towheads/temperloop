@@ -48,31 +48,7 @@ is therefore the real pipeline doing real work on the reader's own code, in
 a repo they delete afterwards. `README.md` § 3 is the canonical command
 sequence.
 
-**Legacy rungs: `try` and `try --demo`.** These were the first two steps of
-the former ladder (`try` -> `try --demo` -> `init`) and are **no longer part
-of the adoption path** — `try`'s shadow-triage runs with almost no context
-so its output undersells the pipeline, and `--demo` exercises a canned repo
-of synthetic defects rather than the reader's own code (temperloop#1115;
-disposition tracked in temperloop#1117). Both still work, both still carry
-their hard USD caps, and their contracts are unchanged:
-
-1. `temperloop try` is zero-config and zero-writes. It runs a read-only
-   conventions probe, lists the current repo's open issues with a
-   directional cost estimate printed before anything else happens, then
-   drives a real `claude -p` shadow-triage classification pass over those
-   issues — invoked with `--tools ""` (every built-in tool disabled), a
-   *structural* zero-write guarantee independent of the model's own
-   behavior. No `gh` mutation is ever issued. A missing `gh`/network/auth
-   degrades to a legible `skipped — <reason>` line per step rather than a
-   hard failure, and the command exits 0 either way.
-2. `temperloop try --demo` is the one deliberate, isolated mutating
-   exception. It clones a disposable, already-seeded demo repo and drives
-   one real safe-tier pipeline tick (issue -> PR) against it: claims one open
-   demo-seed issue, gets a real (still `--tools ""`) judgment call for the
-   fix, and opens a PR via the tree-only proposal-PR generator — never a
-   direct push, never a merge. If every seeded issue is already claimed or
-   closed, it exits 0 with "no tick run" instead of failing.
-**`temperloop init` — the adopt step (current, not legacy).** Run it in the
+**`temperloop init` — the adopt step.** Run it in the
 sandbox to evaluate, and again in the real repo to adopt; it behaves
 identically in both. It opts a repo in, then **hands off**. `init --dry-run`
 previews the tree-only proposal PR with zero API writes of any kind. `init`
@@ -150,14 +126,7 @@ line, or run `init` again inside a repo that already has a
 `.temperloop/config` — its prior `tracker.board` is carried forward
 unless overridden.
 
-**The safety contract.** The mutating step in the ladder is exactly one
-(`try --demo`), and it is bounded three separate ways: a spend guard prints
-a directional cost estimate and a hard mechanical cap (`--demo-cap-usd`,
-default `$2.00` — ≈370,000 tokens at Claude Sonnet 5 list price, see
-`docs/cost-and-autonomy.md` for the conversion basis) before anything runs; a non-interactive shell with no
-`--yes` is refused outright, so a curious stranger cannot silently burn API
-spend; and the tick itself touches only the disposable demo repo, never the
-caller's own. `init` writes no API state at all, so its only mutating calls
+**The safety contract.** `init` writes no API state at all, so its only mutating calls
 are the tree-only proposal PR and the first-epic issue it offers to file
 (plus, if you decline, the one Backlog pointer that keeps the gap tracked);
 `--dry-run` skips even those.
@@ -213,8 +182,7 @@ what's missing and how to fix it rather than a stack trace. `doctor.sh`
 consumes `workflows/scripts/install/links.sh`'s managed-path enumeration and
 `workflows/scripts/build/build.config.sh` / `workflows/scripts/lib/
 knowledge_store.sh` / `knowledge_store_obsidian.sh` for the vault-agreement
-check. `try --demo` consumes the tree-only proposal-PR generator under
-`workflows/scripts/proposal/`. `install-claude-md.sh` is invoked by
+check. `install-claude-md.sh` is invoked by
 `temperloop install` (its `claude-md`-kind managed path) and is itself
 verified by `doctor.sh`'s `claude-md` classification.
 
@@ -222,17 +190,15 @@ verified by `doctor.sh`'s `claude-md` classification.
 
 Storage: a shallow clone into `~/.local/share/temperloop` (typically tens of
 MB) plus a handful of negligible symlinks in `~/.local/bin`. API budget:
-`try` issues zero `gh` mutations and one bounded `claude -p` call with tools
-disabled; `try --demo` is hard-capped at `--demo-cap-usd` (default `$2.00`,
-≈370,000 tokens at Claude Sonnet 5 list price), enforced before any spend,
-and mechanically bounded to a single pipeline tick.
-Runtime: `doctor.sh` is pure shell and sub-second; `try` and `try --demo`
-each drive one `claude -p` invocation, so their wall time tracks that call.
+`doctor.sh` and `install`/`uninstall` issue no `gh` mutations and make no
+model calls at all; `init`'s only mutating calls are the tree-only proposal
+PR and the first-epic issue it offers to file.
+Runtime: `doctor.sh` is pure shell and sub-second.
 
 ## Telemetry
 
 None dedicated. Each subcommand's own printed output is the observable
-surface: `try`'s classification summary, `doctor`'s per-entry
+surface: `doctor`'s per-entry
 `OK`/`MISSING`/`DRIFT`/`SHADOWED`/`DANGLING` table and its exit code,
 `init --dry-run`'s preview diff, and `init`'s closing `next step:` handoff
 line (the marker the tier-2 round-trip workflow greps to prove the live path

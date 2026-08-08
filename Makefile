@@ -22,7 +22,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	validate-knowledge-search-emit validate-diagnose-queue-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
-	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source \
+	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-cli-subcommands test-testbed-source \
 	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session
 
 help:
@@ -60,7 +60,7 @@ help:
 	@echo "  test-conventions-probe  Conventions-probe (read-only repo-convention detector) tests"
 	@echo "  test-demo               Demo-repo seed script tests"
 	@echo "  test-proposal-pr        Proposal-PR generator (tree-diff -> reviewable PR) tests"
-	@echo "  test-try                foundation try (zero-config, zero-write taste) tests"
+	@echo "  test-cli-subcommands    bin/subcommands/ CLI subcommand tests"
 	@echo "  test-testbed-source     Testbed source-provider seam + mirror-from-repo tests"
 	@echo "  test-testbed-command    'temperloop testbed' one-command evaluation-build tests"
 	@echo "  test-promote-push       /promote's commit-carrying branch-push tests"
@@ -136,8 +136,16 @@ test-proposal-pr:
 # Glob-based, same rationale as test-board/test-conventions-probe above
 # (F#836): kernel coverage can never trail whichever tests/test_*.sh files
 # are actually vendored.
-test-try:
-	@echo "==> Running foundation try tests..."
+#
+# NAMED `test-cli-subcommands`, not `test-try` (temperloop#1117): this target
+# has always globbed the WHOLE bin/subcommands/tests/ directory — init, eject,
+# config, configure, report, feedback, uninstall, update, baseline-snapshot,
+# dispatch-rename, prereq-scoping, report-offer, tokens-producer — and only
+# incidentally carried try's name. Retiring `try` therefore RENAMES this gate
+# rather than deleting it; deleting it would have silently dropped the sole
+# runner for 13 unrelated suites.
+test-cli-subcommands:
+	@echo "==> Running CLI subcommand tests..."
 	@for t in $(BIN_SRC)/subcommands/tests/test_*.sh; do \
 		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
@@ -309,10 +317,11 @@ test-testbed-record:
 	@bash workflows/scripts/testbed/tests/test_testbed_record.sh
 
 # `temperloop testbed` — the one-command evaluation build (temperloop#1229).
-# Named explicitly rather than left to test-try's bin/subcommands/tests/*.sh
-# glob: this suite is the FIRST consumer of BOTH Level 0 testbed seams, so it
-# must also be selected when workflows/scripts/testbed/** changes — which
-# test-try's `bin/**`-scoped gate-paths row cannot express. Same
+# Named explicitly rather than left to test-cli-subcommands'
+# bin/subcommands/tests/*.sh glob: this suite is the FIRST consumer of BOTH
+# Level 0 testbed seams, so it must also be selected when
+# workflows/scripts/testbed/** changes — which test-cli-subcommands'
+# `bin/**`-scoped gate-paths row cannot express. Same
 # named-target/globbed-target overlap test-testbed-record already carries with
 # test-testbed-source, and for the same reason.
 test-testbed-command:

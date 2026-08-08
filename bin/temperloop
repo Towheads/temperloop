@@ -52,14 +52,18 @@
 # lib/common.sh's foundation_check_prereqs). A subcommand with NO
 # `# prereqs:` header declares nothing and is dispatched with zero
 # dispatcher-level checks — this is the common case: every subcommand
-# shipped today (try, install, uninstall, init, eject, configure,
-# baseline-snapshot, report, config) already has its OWN internal,
-# honest degrade-with-reason path for a missing/unauthenticated gh or an
-# absent claude (try's documented zero-auth contract chief among them), so
-# a blanket dispatcher-level gate was redundant at best and, for
-# install/uninstall (which call neither tool at all) and try (whose whole
-# point is to work with zero auth), an outright bug — see the issue for
-# the fuller history. A future subcommand that genuinely has no internal
+# shipped today already has its OWN internal, honest degrade-with-reason
+# path for a missing/unauthenticated gh or an absent claude, so a blanket
+# dispatcher-level gate was redundant at best and, for install/uninstall
+# (which call neither tool at all), an outright bug — see the issue for the
+# fuller history. (The original motivating case was `try`, whose whole point
+# was to work with zero auth; it was retired in temperloop#1117, but the
+# scoping contract it forced is unchanged. This paragraph deliberately does
+# not enumerate the shipped subcommands: they are DISCOVERED FILES, so a
+# hand-maintained list here would go stale by construction — and a subcommand
+# suite asserts this dispatcher never names it, which is exactly what proves
+# discovery, not a dispatch table, does the registering.)
+# A future subcommand that genuinely has no internal
 # degrade path for a hard dependency opts in with a `# prereqs: gh` (or
 # `claude`, or both) header instead of reimplementing the check itself.
 #
@@ -137,7 +141,7 @@ _foundation_print_help() {
   cat <<EOF
 temperloop — kernel newcomer/adoption-surface CLI
 
-Start here: temperloop try
+Start here: temperloop testbed
 
 Usage:
   temperloop <subcommand> [args...]

@@ -265,7 +265,7 @@ bash workflows/scripts/kernel/tests/test_kernel_lib_resolve.sh	workflows/scripts
 bash workflows/scripts/kernel/tests/test_kernel_lib_portability.sh	workflows/scripts/kernel/**
 make test-producer-egress	workflows/scripts/kernel/** workflows/scripts/report-producers/** .temperloop/report.d/** bin/**
 make test-conventions-probe	workflows/scripts/probe/** bin/**
-make test-try	bin/** workflows/scripts/probe/**
+make test-cli-subcommands	bin/** workflows/scripts/probe/**
 make test-demo	workflows/scripts/demo/**
 make test-proposal-pr	workflows/scripts/proposal/**
 make test-testbed-source	workflows/scripts/testbed/**

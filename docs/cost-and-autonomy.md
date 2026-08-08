@@ -26,12 +26,10 @@ figures, derivations, and provenance for every claim.
   § Cost at a glance for what `/assess` and `/build` scale with. Closing this
   gap — a published cost band or a cap for the evaluation path — is tracked
   in temperloop#1130.
-- **The capped commands are the legacy ones.** `try` and `try --demo` (no
-  longer part of the on-ramp — see temperloop#1117) are the only two commands
-  with a hardcoded, tool-enforced USD cap: `try` at **$1.00**/run
-  (directional band **$0.02–$0.08 per issue**, ≈7,000–27,000 tokens);
-  `try --demo` at **$2.00**/tick (directional band **$0.05–$0.40**,
-  ≈9,000–74,000 tokens).
+- **One command still carries a hardcoded USD cap.** `temperloop configure`
+  is capped at **$0.25**/call. It is the only remaining tool-enforced dollar
+  ceiling; `try` and `try --demo`, which carried the other two, were retired
+  in temperloop#1117.
 - **Past onboarding, there is no dollar ceiling by default.** Ordinary
   interactive work (`/triage`, `/assess`, `/build`, `/sweep`) and the
   unattended pipeline driver have no fixed cost or cap — your own Claude Code
@@ -82,8 +80,6 @@ is.**
 |---|---|---|---|---|
 | Sandbox setup (duplicate + issue copy) — **on-ramp step 2–3** | 0 Claude | **$0** | **$0** | n/a (no model call) |
 | First epic via `/assess` → `/build` — **on-ramp step 4–5** | scales w/ the work | no fixed figure | no fixed figure | **none by default** ⚠️ |
-| `try` — per open issue classified *(legacy, off the on-ramp)* | 7K–27K | $0.02–$0.08 | $0.03–$0.13 | **$1.00/run** ✅ |
-| `try --demo` — per issue→PR tick *(legacy, off the on-ramp)* | 9K–74K | $0.05–$0.40 | $0.08–$0.67 | **$2.00/tick** ✅ (flag) |
 | `configure` — per config value judged | up to ~83K † | ≤ $0.25 | ≤ $0.25 † | **$0.25/call** ✅ |
 | `/tidy` — nightly drain | 0.3–0.5M | ~$1.48 | ~$2.47 | none |
 | `/check-in` — daily check-in | ~0.1–0.3M ‡ | ~$0.30–$0.90 ‡ | ~$0.50–$1.50 ‡ | none |
@@ -115,9 +111,9 @@ everything else), against your own API/subscription usage.
 
 **Why the dollar figures are stated at both Sonnet 5 and Opus 4.8.** The
 source figures are directional **USD** bands, hand-derived once from real
-operator usage ([`bin/lib/cost-estimates.conf`](../bin/lib/cost-estimates.conf)),
+operator usage,
 derived at list price without pinning a particular model — this repo does
-not pin the `try`/`try --demo`/`configure`/`tidy` calls to one named model.
+not pin the `configure`/`tidy` calls to one named model.
 To turn a dollar band into a token band you have to divide by *some* model's
 price, and the natural mid-tier reference is **Claude Sonnet 5**
 (`claude-sonnet-5`) list price — $3.00 per million input tokens, $15.00 per
@@ -136,38 +132,22 @@ basis costs roughly ~1.67 × $X on Opus 4.8.** The § Cost at a glance table
 carries both columns so you don't have to do that multiplication yourself.
 Treat every token count and every dollar band on this page as directional.
 
-**Tier 1 — the capped commands (`try`, `try --demo`).** These are the only
-two commands with a hardcoded, published cost band. They were written as the
-stranger's first steps and were capped precisely because a stranger runs them
-before deciding whether to trust anything here — but they are **no longer the
-on-ramp** (temperloop#1115 replaced it; temperloop#1117 tracks their
-disposition). They still work, and their caps still hold. The current
-evaluation path — sandbox, then the first epic through `/assess` → `/build` —
-is Tier 2 work with no dollar ceiling; see the ⚠️ TL;DR bullet and
-temperloop#1130:
+**Tier 1 — the capped command (`temperloop configure`).** One command still
+carries a hardcoded, tool-enforced cost ceiling: the AI-guided `configure`
+wizard, capped at **$0.25** per call. It is capped precisely because a
+stranger may run it before deciding whether to trust anything here.
 
-- `temperloop try` — a real `claude -p` shadow-triage classification pass
-  over your repo's own open issues, invoked with every tool disabled
-  (`--tools ""`) so it cannot write anything. Directional band: **$0.02–
-  $0.08 per open issue classified** (≈**7,000–27,000 tokens**, mostly
-  input, at the Sonnet-5 basis above), hand-derived once from real operator
-  usage ([`bin/lib/cost-estimates.conf`](../bin/lib/cost-estimates.conf)),
-  hard-capped at **$1.00** for the whole run (≈**330,000 tokens** if the
-  whole cap were spent) regardless of issue count or how wrong the estimate
-  turns out to be.
-- `temperloop try --demo` — the one mutating exception: one real issue → PR
-  tick against a disposable, throwaway demo repo. Directional band:
-  **$0.05–$0.40 per tick** (≈**9,000–74,000 tokens**, assuming roughly an
-  80/20 input/output token split — this tick reads the whole demo repo but
-  also emits a full corrected file, so output is a larger share than the
-  classification tier above), same provenance, hard-capped at **$2.00**
-  (`--demo-cap-usd`, adjustable via flag; ≈**370,000 tokens** if the whole
-  cap were spent).
+Two more commands used to sit in this tier — `try` at $1.00/run and
+`try --demo` at $2.00/tick — and they were, for a long time, the only
+published cost bands on this page. Both were retired in temperloop#1117
+once the sandbox on-ramp (temperloop#1115) replaced them; their bands and
+their caps went with them.
 
-Both bands are *directional* — hand-derived once from real usage, not a
-live pricing-API read, not recalculated at runtime — but they are real
-observed figures, not guesses, and the hard USD cap on each is enforced by
-the tool itself, not just printed as advice.
+That leaves a gap worth stating plainly rather than papering over: the
+current evaluation path — sandbox, then the first epic through `/assess` →
+`/build` — is **Tier 2 work with no dollar ceiling**. See the ⚠️ TL;DR
+bullet above and temperloop#1130, which tracks publishing a cost band or a
+cap for it.
 
 **Tier 2 — ordinary interactive use (`/triage`, `/assess`, `/build`,
 `/sweep`, run with you at the keyboard).** There is no fixed number here,
@@ -216,10 +196,10 @@ dollars from it.
 
 Two things carry over unchanged for a plan user:
 
-- **The same directional bands apply.** A `try` run still costs roughly
-  7,000–27,000 tokens' worth of usage whether that usage is billed per-token
-  or drawn from a plan allowance — the workload doesn't change, only how
-  it's paid for.
+- **The same directional bands apply.** A given command costs the same
+  tokens' worth of usage whether that usage is billed per-token or drawn
+  from a plan allowance — the workload doesn't change, only how it's paid
+  for.
 - **The 5-hour usage-quota gate (§ below) is the plan-side backstop.**
   `BUILD_QUOTA_PAUSE_PCT` already exists specifically to pause a run before
   it exhausts your plan's rolling 5-hour window and auto-resume after it
@@ -321,8 +301,8 @@ grounded per-run figures that do exist, not a measured ratio:
   day on an idle backlog costs approximately nothing** — the model isn't
   invoked on a wake that drives nothing. (One caveat: a crash-signal intake
   phase runs on every tick, but it is config-gated — with no Sentry
-  credential wired up, as on a fresh checkout, it no-ops.) The onboarding
-  `try` per-issue band is **not** a valid stand-in for a tick that *does*
+  credential wired up, as on a fresh checkout, it no-ops.) A per-issue
+  *classification* band is **not** a valid stand-in for a tick that *does*
   drive: driving an item (judging and applying a change) is a heavier task
   than classifying one.
 
@@ -343,12 +323,13 @@ week's Claude spend, simply because there's nothing else to spend on.
 
 Split answer, and this is the fact to know before you run anything:
 
-- **Yes, always, for the onboarding tier.** `try`'s $1.00 classification
-  cap and `try --demo`'s $2.00 tick cap are baked into the tool itself — not
-  a flag you have to discover, not something you can silently exceed. This
-  is deliberate: a curious stranger's very first command should not require
-  reading a budget flag to be protected.
-- **No, not for anything past that, by default.** Once you're doing
+- **Yes, for `temperloop configure`.** Its $0.25 per-call cap is baked into
+  the tool itself — not a flag you have to discover, not something you can
+  silently exceed. This is deliberate: a curious stranger's first commands
+  should not require reading a budget flag to be protected. (`try` and
+  `try --demo` carried the other two such caps until temperloop#1117 retired
+  them.)
+- **No, not for anything else, by default.** Once you're doing
   ordinary interactive pipeline work, or you opt into the unattended pipeline
   driver, there is **no dollar ceiling shipped by default**. The only
   built-in throttle at that point is the **5-hour usage-quota gate**
@@ -441,6 +422,3 @@ own account's usage view.
   CI-cost profile, native vs. managed.
 - [`claude/CLAUDE.kernel.md`](../claude/CLAUDE.kernel.md) § Merge autonomy &
   consent — the full consent contract behind the autonomy section above.
-- [`bin/lib/cost-estimates.conf`](../bin/lib/cost-estimates.conf) — the
-  source of the `try` / `try --demo` cost bands, including their own
-  provenance note.
