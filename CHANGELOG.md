@@ -812,17 +812,40 @@ reads that marker; a stranger greps for it before pulling.
   preflight/resolve/spawn CLI: `preflight` fails loudly at pre-flight
   (never a silent no-op) when a non-default provider's API key is unset,
   naming the exact env var and the concrete host-supply file
-  (`build.config.local.sh`); `spawn` scopes the resolved key to the one
-  spawned `claude` child via `env VAR=value`, never exporting it into this
-  script's own shell beyond that line. `candidate.settings.json` is a
+  (`build.config.local.sh`); `spawn` hands the child an EXPLICITLY
+  CONSTRUCTED environment — `env -i` plus a named allowlist plus exactly one
+  provider key, the selected provider's — so no other provider key and no
+  other host secret the config ladder exports reaches a candidate session.
+  (`env VAR=value cmd` ADDS to the inherited environment rather than
+  replacing it, so an allowlist is what actually isolates; the forwarded key
+  is chosen from the one provider table, so registering a provider later
+  cannot silently start leaking.) `candidate.settings.json` is a
   deny-over-allow containment overlay removing every knowledge-store/vault
-  MCP tool and every path/command reaching `build.config.local.sh`, while
-  keeping the ordinary replay/worker surface reachable. Registers the
-  `make test-candidate-session` gate (`scripts/quality-gates.sh`, `Makefile`,
-  `workflows/scripts/config/gate-paths.tsv`) and the `CANDIDATE_SETTINGS`
-  setting-registry row, and adds the missing kernel classification for
-  `workflows/scripts/model-comparison/*` in `kernel-manifest.txt`. Not
-  breaking — a new opt-in module with no default-path behavior change.
+  MCP tool and every path/command reaching `build.config.local.sh`, its
+  `build.config.machine.sh` sibling and its `.env`-shaped siblings, while
+  keeping the ordinary replay/worker surface reachable. Its deny patterns are
+  plain `*<needle>*` substring globs, never `**/`-anchored: the matcher is a
+  shell `case`, which has no globstar, so a `**/` pattern requires a literal
+  `/` in the subject and silently fails to deny a bare filename.
+
+  `spawn` also REFUSES a permission-overriding passthrough argument (a second
+  `--settings`, an allow/deny-tools override, a permission-mode or
+  skip-permissions switch, an extra `--add-dir`, an alternate MCP/setting-source
+  config) rather than forwarding it into the child, where it would override
+  the very overlay being installed.
+
+  Both `resolve` and `spawn` fail CLOSED on an overlay they cannot read:
+  distinct exits `3` (absent), `4` (unreadable) and `5` (malformed), never
+  `unspecified` at exit `0` — "I could not determine the restriction" is never
+  reported as "no restriction applies". A flag given with no value (a trailing
+  `--provider`) is exit `2`, not a silent fallback to the default provider.
+  Registers the `make test-candidate-session` gate
+  (`scripts/quality-gates.sh`, `Makefile`,
+  `workflows/scripts/config/gate-paths.tsv`) and the `CANDIDATE_SETTINGS` and
+  `CANDIDATE_ENV_PASSTHROUGH_EXTRA` setting-registry rows, and adds the
+  missing kernel classification for `workflows/scripts/model-comparison/*` in
+  `kernel-manifest.txt`. Not breaking — a new opt-in module with no
+  default-path behavior change (the module has no caller yet).
 
 ## [0.28.0] - 2026-08-05 — BREAKING
 
