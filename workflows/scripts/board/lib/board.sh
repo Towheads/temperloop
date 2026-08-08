@@ -1443,6 +1443,70 @@ board_set_component() {
   board_set_status "$1" "$2" "$BOARD_FIELD_COMPONENT"
 }
 
+# Resolve THIS machine's claim-stamp host label — the value written into every
+# `Host/Session` board stamp (`<host>:<sess8>`) and read back by every script
+# that needs to know whether a claim is "ours" (claim.sh / release.sh /
+# capture.sh / reconcile.sh / board-mirror.sh). ONE helper, ONE resolution
+# order, so a single machine can never resolve to two different labels
+# depending on which script asked (temperloop#1455 — session 15297bb9 stamped
+# some issues `mini` and others `Mac-mini` on the SAME machine because five
+# call sites each inlined their own copy of this fallback — three different
+# variants — and a sixth site, this repo's own prose spec for the value
+# (`claude/commands/build.md`), documented a variant none of the shell code
+# actually implemented).
+#
+# Resolution order, highest wins:
+#   1. $SUBSET_HOST_LABEL    — the current override name. An operator sets
+#      this once per machine (durable per-machine config: a shell-profile
+#      export, or a launchd agent's own `EnvironmentVariables` dict — whichever
+#      contexts that machine actually runs this tooling from) to a SHORT,
+#      STABLE label that won't drift if the box is renamed. This is
+#      deliberately NOT `hostname -s`: macOS's Bonjour/System-Settings hostname
+#      can differ from a human's preferred short label (observed on the
+#      machine that motivated this fix: `hostname -s` = "Mac-mini", the
+#      desired/established label = "mini") and can itself change on a rename,
+#      whereas an operator-set override stays put until they change it again.
+#      THIS is why the override wins over `hostname -s` rather than the other
+#      way around — the override is the more durable, more intentional value.
+#   2. $STAGEFIND_HOST_LABEL — legacy/back-compat name for the same override
+#      (predates the `SUBSET_` rename), kept as a nested fallback so a machine
+#      that only ever set the old name still resolves consistently instead of
+#      silently falling through past it to `hostname -s`.
+#   3. `hostname -s`          — the built-in, zero-config fallback every
+#      machine has even with no override set anywhere.
+#   4. A literal "unknown"    — only if even `hostname -s` (and the bare
+#      `hostname` retry below it) comes back empty, e.g. a broken/missing
+#      `hostname` binary in a stripped-down launchd environment. This function
+#      MUST NEVER return an empty string: an empty host half would corrupt the
+#      `<host>:<sess8>` claim-stamp format downstream.
+#
+# WHY THE OVERRIDE ALONE ISN'T ENOUGH, AND WHAT THIS FUNCTION DOES AND DOES NOT
+# FIX: an exported env var is only visible to a process that had it exported
+# INTO its environment — an interactive shell with a profile loaded sees it,
+# but a bare launchd/cron invocation (no profile sourced) does NOT unless the
+# operator ALSO exported it into that context (e.g. a launchd plist's own
+# `EnvironmentVariables`). Populating the override consistently across every
+# context on a given machine is per-machine operator data — out of scope for
+# this function (and for kernel code generally; see the issue's own scope
+# note). What this function guarantees is narrower but was the actual bug:
+# EVERY call site in this tree resolves the override (when present) and the
+# built-in fallback (when it isn't) through the exact same ordered chain, so
+# two scripts invoked in the SAME environment can never disagree — the
+# session-15297bb9 regression was two call sites disagreeing given identical
+# inputs, not the override being unset somewhere.
+#
+#   board_host_label   ->  a non-empty host label, always
+board_host_label() {
+  local label
+  label="${SUBSET_HOST_LABEL:-${STAGEFIND_HOST_LABEL:-$(hostname -s)}}"
+  if [ -z "$label" ]; then
+    label="$(hostname -s 2>/dev/null)"
+    [ -n "$label" ] || label="$(hostname 2>/dev/null)"
+    [ -n "$label" ] || label="unknown"
+  fi
+  printf '%s' "$label"
+}
+
 # Stamp a free-text field on an item.
 #   board_stamp <item-id> <field-name> <text>   (e.g. "Host/Session" "host:abc")
 # Delegates to _board_issues_stamp_field — a `fnd:<field-slug>:<verbatim-text>`

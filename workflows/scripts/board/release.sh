@@ -118,12 +118,12 @@ want=""
 BOARD_ARG=""
 
 # THIS session's own claim stamp, derived EXACTLY as claim.sh derives the value
-# it writes (`${SUBSET_HOST_LABEL:-$(hostname -s)}` + the first 8 chars of
+# it writes (board_host_label's resolved host + the first 8 chars of
 # $CLAUDE_CODE_SESSION_ID, or `<host>:manual` when there is no session id) —
 # the two must agree or guard 2 above would never match its own stamp.
 release_own_stamp() {
   local host sess
-  host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+  host="$(board_host_label)"
   sess="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$sess" ]; then printf '%s:%s' "$host" "${sess:0:8}"; else printf '%s:manual' "$host"; fi
 }
