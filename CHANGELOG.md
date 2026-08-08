@@ -16,6 +16,20 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **A machine-scoped testbed artifact record tracks every artifact a
+  `temperloop testbed` run creates** (#1227). The record is an append-only
+  list resident in XDG state
+  (`${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/...`, not `.temperloop/`,
+  so it survives `eject`), keyed by `owner/name` so a consumer resolves its
+  own entry from `git remote get-url origin` with no filesystem scan. It owns
+  the full schema up front — the artifact list (repo created, mirror pushed,
+  issues copied) plus the source-provenance fields `source_kind`,
+  `source_repo`, and `promotable` that promote-spec-and-tree-push reads two
+  levels later — and carries a `schema_version`, refusing on an unknown
+  version, following `workflows/scripts/install/manifest.sh`. Ships
+  library-only with its own tests and no CLI caller yet, exactly as
+  `manifest.sh` did when it landed.
+
 - **`/check-in` now reads and disposes the environment-hygiene surface**
   (#596). `/tidy`'s § Environment hygiene step already ran `env-reconcile.sh`
   and appended each drift finding to the environment hygiene report, and
