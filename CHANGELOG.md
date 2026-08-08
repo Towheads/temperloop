@@ -171,6 +171,20 @@ reads that marker; a stranger greps for it before pulling.
   board"). Third instance of #524's decomposition gap, where a leg's enumerated
   `files:` list was treated as an inventory: `grep -rn 'auth refresh -s project'
   claude/ workflows/` now returns nothing.
+- **`/sweep`'s Step 1 singleton fix pool no longer admits decomposed epic
+  parents** (#1038). The pool was defined as Ready items with `board_parent_issue`
+  empty, which correctly excludes epic *children* but not epic *parents* — a
+  Ready item that is itself an epic head with native sub-issues passed the
+  filter untouched and would be driven through a single fix worker instead of
+  the `/assess` + `/build` path its decomposition calls for. Measured impact:
+  11 of 46 pooled items were epic parents on board 7 and 13 of 31 on board 4
+  (2026-08-02). The pool now also excludes any Ready item for which
+  `board_sub_issues <board> <issue#>` returns non-empty, gated on the same
+  Ready-slice-only scope the existing `board_parent_issue` check already used
+  (no whole-board REST fan-out added), and the seam prose at every site that
+  described the filter — the frontmatter `description:`, the header
+  paragraph, and Step 1 itself — now reads "neither a sub-issue of an epic nor
+  an epic parent" instead of "not a sub-issue of an epic".
 
 ## [0.28.0] - 2026-08-05 — BREAKING
 
