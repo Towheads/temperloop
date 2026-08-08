@@ -127,7 +127,25 @@
 #   weighted_units    cost-weighted total per the inherited SPEND_WEIGHT_*
 #                      values (see divergence note above), present iff
 #                      tokens is present AND the weight settings resolved
-#                      cleanly; null otherwise
+#                      cleanly; null otherwise. CAVEAT (advisory 9a/A7): this
+#                      record does NOT also carry the weight vector it was
+#                      computed with, so weighted_units is comparable only
+#                      WITHIN a single SPEND_WEIGHT_* "retune epoch" — after a
+#                      weight retune in build.config.sh, an old record's
+#                      weighted_units and a new record's are not
+#                      apples-to-apples, and there is no way to recompute the
+#                      old figure under the new weights from the record alone.
+#                      `tokens` is the durable, retune-independent figure;
+#                      treat weighted_units as a today's-weights convenience
+#                      view, not the figure to trend across a retune. (A
+#                      carried `weights_version` field would let a reader
+#                      detect/re-derive across a retune — a real improvement,
+#                      but out of scope here; this is the documented
+#                      cheaper-but-honest alternative.) The validator
+#                      deliberately does NOT re-verify weighted_units against
+#                      tokens for the same reason: a retuned weight would make
+#                      an old, correctly-recorded value look "wrong" against
+#                      today's formula.
 #   duration_ms       non-negative integer (--duration-ms) or null —
 #                      independent of usage_source (wall-clock timing needs
 #                      no envelope)
@@ -158,6 +176,18 @@
 # calling spawn site — see the `|| true`-safe contract in the epic #724
 # Contract (the same contract every sibling emit script here follows).
 #
+# ARG-ARITY GUARD: every value-taking flag below is arity-checked before the
+# arg-loop shifts — a value-taking flag with NO following argument (e.g. this
+# script invoked with a trailing `--seat`) is dropped with a warning rather
+# than shifting past the end of `$#`, which — since this script deliberately
+# does not run under `set -e` (a telemetry emit warns, never aborts a caller)
+# — would otherwise spin `$1` forever at 100% CPU instead of returning. A
+# value that itself looks like another flag (starts with `--`, e.g.
+# `--seat --model foo`) is rejected the same way rather than silently
+# consumed as the flag's value. Dropping the flag reliably surfaces as the
+# pre-existing "required flag missing" warn-and-drop path below, so this is
+# no new failure shape, only a hang closed off.
+#
 # Kept POSIX-bash-3.2-friendly (no mapfile/associative arrays) to match the
 # rest of workflows/scripts/ (macOS dev shell + Linux CI).
 
@@ -181,21 +211,50 @@ duration_ms=""
 repo=""
 print_only=0
 
+# arg_ok <flagname> <remaining-argc> <next-arg-or-empty>
+# Returns 0 iff <flagname> has a real value to take, having already warned
+# and returned 1 otherwise (no value at all, or a value that looks like
+# another flag) — see the header's ARG-ARITY GUARD note. Never shifts;
+# the call site decides how many positions to consume.
+arg_ok() {
+  local flag="$1" remaining="$2" next="$3"
+  if [ "$remaining" -lt 2 ]; then
+    warn "$flag requires a value but none was given (ignored)"
+    return 1
+  fi
+  case "$next" in
+    --*)
+      warn "$flag requires a value, got flag-like '$next' (ignored, not consumed as the value)"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --seat)                  seat="${2:-}"; shift 2 ;;
-    --model)                 model="${2:-}"; shift 2 ;;
-    --usage-source)          usage_source="${2:-}"; shift 2 ;;
-    --outcome-ref)           outcome_ref="${2:-}"; shift 2 ;;
-    --provider)               provider="${2:-}"; shift 2 ;;
-    --input-tokens)          input_tokens="${2:-}"; shift 2 ;;
-    --output-tokens)         output_tokens="${2:-}"; shift 2 ;;
-    --cache-read-tokens)     cache_read_tokens="${2:-}"; shift 2 ;;
-    --cache-creation-tokens) cache_creation_tokens="${2:-}"; shift 2 ;;
-    --duration-ms)           duration_ms="${2:-}"; shift 2 ;;
-    --repo)                  repo="${2:-}"; shift 2 ;;
+    --seat)                  if arg_ok --seat $# "${2:-}"; then seat="$2"; shift 2; else shift; fi ;;
+    --model)                 if arg_ok --model $# "${2:-}"; then model="$2"; shift 2; else shift; fi ;;
+    --usage-source)          if arg_ok --usage-source $# "${2:-}"; then usage_source="$2"; shift 2; else shift; fi ;;
+    --outcome-ref)           if arg_ok --outcome-ref $# "${2:-}"; then outcome_ref="$2"; shift 2; else shift; fi ;;
+    --provider)               if arg_ok --provider $# "${2:-}"; then provider="$2"; shift 2; else shift; fi ;;
+    --input-tokens)          if arg_ok --input-tokens $# "${2:-}"; then input_tokens="$2"; shift 2; else shift; fi ;;
+    --output-tokens)         if arg_ok --output-tokens $# "${2:-}"; then output_tokens="$2"; shift 2; else shift; fi ;;
+    --cache-read-tokens)     if arg_ok --cache-read-tokens $# "${2:-}"; then cache_read_tokens="$2"; shift 2; else shift; fi ;;
+    --cache-creation-tokens) if arg_ok --cache-creation-tokens $# "${2:-}"; then cache_creation_tokens="$2"; shift 2; else shift; fi ;;
+    --duration-ms)           if arg_ok --duration-ms $# "${2:-}"; then duration_ms="$2"; shift 2; else shift; fi ;;
+    --repo)                  if arg_ok --repo $# "${2:-}"; then repo="$2"; shift 2; else shift; fi ;;
     --print-only)             print_only=1; shift ;;
-    -h|--help)                sed -n '2,150p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)
+      # Print the WHOLE header comment block (line 1 is the shebang, skipped;
+      # the header ends at the first non-'#' line, i.e. the blank line right
+      # before `set -uo pipefail`) rather than a hardcoded line range — a
+      # hardcoded range silently truncates mid-sentence (and cuts off the
+      # WARN-DON'T-DROP contract, the single most important thing a spawn-site
+      # author needs) the next time the header grows or shrinks (advisory 9b).
+      awk 'NR==1{next} /^#/{print; next} {exit}' "${BASH_SOURCE[0]}"
+      exit 0
+      ;;
     *)
       warn "unknown argument $1 (ignored)"
       shift
@@ -371,8 +430,26 @@ fi
 # Resolve the raw sink dir the same way every sibling emit script does: an
 # explicit override env var first, else the repo this script lives in
 # (workflows/scripts/../.. == repo root), so it works from any checkout that
-# vendors this file, not just a hardcoded $HOME/dev/foundation path.
-raw_root="$(cd -P "$here/../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
+# vendors this file. NO foreign-path guess (advisory 9a): a prior version of
+# this line fell back to a hardcoded $HOME/dev/foundation when the repo-root
+# resolution failed, but this is temperloop (a different repo), and a
+# stranger's checkout has no such directory at all — silently writing there
+# (or into whatever unrelated tree happens to exist at that path) is worse
+# than not writing. If MODEL_USAGE_RAW_DIR is unset AND the repo root can't
+# be resolved, warn and drop the record (WARN, DON'T DROP still holds — this
+# just never guesses a path).
+raw_root="$(cd -P "$here/../.." 2>/dev/null && pwd)"
+# `${MODEL_USAGE_RAW_DIR:+x}` (not `${MODEL_USAGE_RAW_DIR:-}`) deliberately —
+# the setting-registry lint (workflows/scripts/config/check-setting-registry.sh)
+# scans for every `${MODEL_USAGE_RAW_DIR:-...}`-shaped seam in this file and
+# requires each one's default literal to match the registry row for this
+# name; a second `:-` seam here (even one only used for an emptiness test)
+# would need its own registry row. `:+` sidesteps that — it's a plain
+# "is this set and non-empty" test, not a defaulting seam.
+if [ -z "${MODEL_USAGE_RAW_DIR:+x}" ] && [ -z "$raw_root" ]; then
+  warn "cannot resolve the repo root above $here, and MODEL_USAGE_RAW_DIR is unset — no fallback path guessed, no record emitted (seat=$seat)"
+  exit 0
+fi
 raw_dir="${MODEL_USAGE_RAW_DIR:-$raw_root/meta/data/raw}"
 raw_file="$raw_dir/model-usage-${month}.jsonl"
 

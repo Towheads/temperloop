@@ -38,6 +38,10 @@ PROVIDER_TXT="$REPO/workflows/scripts/model-comparison/provider-allowlist.txt"
 BUILD_CONFIG="$REPO/workflows/scripts/build/build.config.sh"
 TELEMETRY_MD="$REPO/docs/features/telemetry.md"
 MODELCMP_MD="$REPO/docs/features/model-comparison.md"
+PORTABLE_TIMEOUT="$REPO/workflows/scripts/lib/portable-timeout.sh"
+[ -f "$PORTABLE_TIMEOUT" ] || { echo "FATAL: portable-timeout.sh not found at $PORTABLE_TIMEOUT" >&2; exit 1; }
+# shellcheck source=workflows/scripts/lib/portable-timeout.sh
+source "$PORTABLE_TIMEOUT"
 
 [ -f "$EMIT" ] || { echo "FATAL: emit-model-usage.sh not found at $EMIT" >&2; exit 1; }
 [ -f "$LINT" ] || { echo "FATAL: validate-model-usage-emit.sh not found at $LINT" >&2; exit 1; }
@@ -46,6 +50,22 @@ command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 required for this t
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/model-usage-emit-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+
+# Layer an ADDITIONAL EXIT cleanup action on top of whatever EXIT trap is
+# currently registered, rather than replacing it outright — a bare
+# `trap ... EXIT` REPLACES any prior EXIT trap, and this suite's outer
+# `rm -rf "$TMP"` trap above must never be silently dropped by a later
+# fixture-permission-restore trap (BLOCKING 3 fixtures below chmod a dir
+# unreadable and must restore it even on a mid-fixture failure).
+add_exit_cleanup() {
+  local existing
+  existing="$(trap -p EXIT | sed -e "s/^trap -- '//" -e "s/' EXIT\$//")"
+  # Intentional: $1 and $existing must expand NOW (capturing the caller's
+  # exact cleanup command and the trap text as it stands at this call), not
+  # be deferred to signal time — this isn't the usual SC2064 footgun.
+  # shellcheck disable=SC2064
+  trap "$1; $existing" EXIT
+}
 
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); printf '  ok    %s\n' "$1"; }
@@ -104,19 +124,38 @@ check_eq "tokens is null" "null" "$(printf '%s' "$EMIT_OUT" | jq -c '.tokens')"
 check_eq "weighted_units is null" "null" "$(printf '%s' "$EMIT_OUT" | jq -c '.weighted_units')"
 
 echo "── 3. cache-class weighting is genuinely INHERITED from SPEND_WEIGHT_* (build.config.sh) ──"
-# Default weights (build.config.sh): input=1, cache_read=0.1, cache_create=1.25, output=5.
-# 100*1 + 200*0.1 + 10*1.25 + 50*5 = 100 + 20 + 12.5 + 250 = 382.5 -> floor 382.
-check_eq "weighted_units matches the default SPEND_WEIGHT_* formula (floor(382.5)=382)" \
-  "382" "$(printf '%s' "$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens 100 --output-tokens 50 --cache-read-tokens 200 --cache-creation-tokens 10 --outcome-ref issue:1 --print-only)" | jq -r '.weighted_units')"
+# advisory A8: derive the expected figure LIVE from build.config.sh's own
+# SPEND_WEIGHT_* values rather than hardcoding today's numbers (the suite
+# used to assert literal 382/5132) — this assertion is about INHERITANCE (a
+# future weight retune in build.config.sh must move both emit's output and
+# this test's expectation together), not about today's specific weights, so
+# it must not silently start failing (or worse, silently keep "passing" for
+# the wrong reason) the day someone retunes SPEND_WEIGHT_*.
+weights_from_config() { # prints "IN CACHE_READ CACHE_CREATE OUTPUT"
+  bash -c "source '$BUILD_CONFIG' >/dev/null 2>&1; printf '%s %s %s %s' \"\${SPEND_WEIGHT_INPUT:?}\" \"\${SPEND_WEIGHT_CACHE_READ:?}\" \"\${SPEND_WEIGHT_CACHE_CREATE:?}\" \"\${SPEND_WEIGHT_OUTPUT:?}\""
+}
+read -r W_IN W_CR W_CC W_OUT <<<"$(weights_from_config)"
+if [ -z "$W_IN" ] || [ -z "$W_CR" ] || [ -z "$W_CC" ] || [ -z "$W_OUT" ]; then
+  echo "FATAL: could not resolve SPEND_WEIGHT_* from $BUILD_CONFIG" >&2
+  exit 1
+fi
+# Fixed token mix used throughout this suite: input=100 cache_read=200 cache_creation=10 output=50.
+wu() { python3 -c "import math; print(math.floor(100*$1 + 200*$2 + 10*$3 + 50*$4))"; }
+expected_default="$(wu "$W_IN" "$W_CR" "$W_CC" "$W_OUT")"
+check_eq "weighted_units matches the formula computed LIVE from build.config.sh's own default SPEND_WEIGHT_* values (not a hardcoded literal)" \
+  "$expected_default" "$(printf '%s' "$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens 100 --output-tokens 50 --cache-read-tokens 200 --cache-creation-tokens 10 --outcome-ref issue:1 --print-only)" | jq -r '.weighted_units')"
 # Override ONE weight via env and confirm the computed figure actually moves —
 # proof this is real sourcing from build.config.sh's `:=` seam, not a copied
-# literal. SPEND_WEIGHT_OUTPUT overridden from 5 -> 100: 100 + 20 + 12.5 + 50*100=5000 -> 5132.5 -> floor 5132.
-OVERRIDE_OUT="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT=100 \
+# literal — and that it moves to the value computed WITH the override, not
+# some other hardcoded number.
+OVERRIDE_W_OUT=100
+expected_override="$(wu "$W_IN" "$W_CR" "$W_CC" "$OVERRIDE_W_OUT")"
+OVERRIDE_OUT="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT="$OVERRIDE_W_OUT" \
   bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic \
   --input-tokens 100 --output-tokens 50 --cache-read-tokens 200 --cache-creation-tokens 10 \
   --outcome-ref issue:1 --print-only)"
-check_eq "an env override of SPEND_WEIGHT_OUTPUT changes weighted_units (genuine inheritance, not a hardcoded copy)" \
-  "5132" "$(printf '%s' "$OVERRIDE_OUT" | jq -r '.weighted_units')"
+check_eq "an env override of SPEND_WEIGHT_OUTPUT changes weighted_units to the value computed WITH the override (genuine inheritance, not a hardcoded copy)" \
+  "$expected_override" "$(printf '%s' "$OVERRIDE_OUT" | jq -r '.weighted_units')"
 
 echo "── 4. malformed / contradictory input warns and exits 0, writes NO record (WARN, DON'T DROP) ──"
 emit l4a sess-4 --model claude-sonnet-5 --usage-source unavailable --outcome-ref pr:1
@@ -155,6 +194,17 @@ printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"rep
 check_not "a record carrying host FAILS" bash "$LINT" --file "$TMP/host.jsonl"
 check "...and names it NO-HOST" bash -c "bash '$LINT' --file '$TMP/host.jsonl' 2>&1 | grep -F 'NO-HOST' >/dev/null"
 
+echo "── 7b. BLOCKING 2: CLOSED SCHEMA — unknown top-level fields BEYOND 'host' (hostname/operator/machine_id) FAIL too ──"
+# The old check was a one-key denylist (only the literal name 'host'). A
+# record carrying THREE OTHER cross-repo operator identifiers, none of them
+# spelled 'host', used to pass at exit 0 — this is the acceptance-mandated
+# demonstration that the fix is a real closed schema, not a bigger denylist.
+printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1","hostname":"travis-mbp.local","operator":"travnew@yahoo.com","machine_id":"AABBCC"}\n' > "$TMP/cross-repo-ids.jsonl"
+check_not "a record carrying hostname/operator/machine_id (none named 'host') FAILS" \
+  bash "$LINT" --file "$TMP/cross-repo-ids.jsonl"
+check "...names it SCHEMA-CLOSED and lists all three unexpected fields" bash -c \
+  "out=\$(bash '$LINT' --file '$TMP/cross-repo-ids.jsonl' 2>&1); grep -Fq 'SCHEMA-CLOSED' <<<\"\$out\" && grep -Fq 'hostname' <<<\"\$out\" && grep -Fq 'operator' <<<\"\$out\" && grep -Fq 'machine_id' <<<\"\$out\""
+
 echo "── 8. usage_source / tokens / provider pairing is enforced as a SHAPE violation ──"
 printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":"anthropic","usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1"}\n' > "$TMP/pairing.jsonl"
 check_not "unavailable + non-null provider FAILS" bash "$LINT" --file "$TMP/pairing.jsonl"
@@ -191,19 +241,47 @@ check_not "lint FAILS when emit-model-usage.sh loses its exec bit" bash "$FIXR/w
 chmod +x "$FIXR/workflows/scripts/emit-model-usage.sh"
 check "restored: fixture copy passes again" bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 
+echo "── 11b. MUTATION: the closed-schema (SCHEMA-CLOSED) check is independently load-bearing for a NON-host field ──"
+# Neuter ONLY the generic extra-field check, leaving the named 'if host in
+# rec' branch ACTIVE — proves SCHEMA-CLOSED is doing real, independent work
+# for identifiers the named branch never looks at (hostname/operator/
+# machine_id), not that the named branch alone was already sufficient.
+check_not "BEFORE tamper: fixture validator rejects hostname/operator/machine_id" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/cross-repo-ids.jsonl"
+sed -e 's/extra = sorted(k for k in rec if k not in required)/extra = []/' \
+  "$LINT" > "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "AFTER tamper (closed-schema check neutered, no-host branch left ACTIVE): hostname/operator/machine_id WRONGLY passes" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/cross-repo-ids.jsonl"
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check_not "RESTORED: hostname/operator/machine_id rejected again" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/cross-repo-ids.jsonl"
+
 echo "── 12. MUTATION: the strict-parse NaN rejection is load-bearing ──"
-# This fixture is otherwise a FULLY VALID, fully-compliant record (usage_source
-# unavailable, tokens/provider/weighted_units all correctly null) plus one
+# This fixture is otherwise a FULLY VALID, fully-compliant record plus one
 # EXTRA field the schema-shape checks never look at, carrying NaN. No
-# downstream type check (tokens.*, duration_ms, ...) touches this field, so
-# this isolates the STRICT-PARSE step's own load-bearing-ness: if parse_constant
-# is removed, NOTHING else in the validator can catch the corruption, and the
-# record wrongly passes end to end. (The tokens.input placement used in
-# section 9 above is a fine demonstration of the jq-vs-python TRAP, but is a
-# poor mutation-test fixture: tokens.input also fails the separate
-# isinstance(v, int) check, so removing parse_constant there does not, by
-# itself, prove strict-parse was the thing catching it.)
-printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1","junk_unvalidated_field":NaN}\n' > "$TMP/nan-isolated.jsonl"
+# downstream type check touches this field, so this isolates the
+# STRICT-PARSE step's own load-bearing-ness: if parse_constant is removed,
+# NOTHING else in the validator can catch the corruption, and the record
+# wrongly passes end to end. (The tokens.input placement used in section 9
+# above is a fine demonstration of the jq-vs-python TRAP, but is a poor
+# mutation-test fixture: tokens.input also fails the separate isinstance(v,
+# int) check, so removing parse_constant there does not, by itself, prove
+# strict-parse was the thing catching it.)
+#
+# BLOCKING 2 knock-on: this fixture used to put the extra field at the TOP
+# LEVEL of the record — but BLOCKING 2 closed the top-level schema, so a
+# top-level extra field is now caught by the generic SCHEMA-CLOSED check
+# too, which would no longer isolate strict-parse's OWN load-bearing-ness
+# (removing parse_constant would still correctly fail the record, just for a
+# different reason). Retargeted: the extra field now lives INSIDE the
+# `tokens` object instead — usage_source=cli-envelope so tokens is a real
+# object, and the tokens-shape check only enumerates its four named keys
+# (input/output/cache_read/cache_creation), never checking for extras within
+# it — so this nested placement is genuinely untouched by every OTHER check
+# in the validator, top-level closed-schema included.
+printf '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":"anthropic","usage_source":"cli-envelope","tokens":{"input":1,"output":1,"cache_read":0,"cache_creation":0,"junk_unvalidated_field":NaN},"weighted_units":6,"duration_ms":null,"outcome_ref":"issue:1"}\n' > "$TMP/nan-isolated.jsonl"
 check_not "BEFORE tamper: the fixture validator still rejects the isolated-NaN fixture" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/nan-isolated.jsonl"
 cp "$FIXR/workflows/scripts/validate-model-usage-emit.sh" "$TMP/lint-orig-for-nan.sh"
@@ -244,12 +322,43 @@ chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 check_not "RESTORED: provider=openai is rejected again" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/bad-provider.jsonl"
 
-echo "── 15. MUTATION: the no-host check is load-bearing (ADR 0028) ──"
+echo "── 15. MUTATION: the no-host guarantee — defense-in-depth after BLOCKING 2 ──"
+# BLOCKING 2's closed-schema check made the named 'if host in rec' branch
+# REDUNDANT for catching a host-carrying record (not for its MESSAGE — that
+# stays specific and ADR-0028-quoting). So removing ONLY the named branch no
+# longer lets the record wrongly pass: the generic SCHEMA-CLOSED catch-all
+# backstops it. This is deliberately a CHANGED assertion from before BLOCKING
+# 2 (it used to assert "wrongly passes"; now it asserts "still rejected, via
+# a different message") — see section 15b below for the mutation that
+# isolates the TRUE combined load-bearing-ness the old version of this
+# section used to test alone.
 check_not "BEFORE tamper: fixture validator rejects a record carrying host" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/host.jsonl"
 sed -e 's/if "host" in rec:/if False:/' "$LINT" > "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
-check "AFTER tamper (no-host check neutered): a record carrying host WRONGLY passes" \
+check_not "AFTER tamper (named no-host branch removed): STILL correctly REJECTED — the generic SCHEMA-CLOSED catch-all backstops it" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/host.jsonl"
+check "...now via the generic SCHEMA-CLOSED message, not the specific NO-HOST one" bash -c \
+  "bash '$FIXR/workflows/scripts/validate-model-usage-emit.sh' --file '$TMP/host.jsonl' 2>&1 | grep -F 'SCHEMA-CLOSED' >/dev/null"
+cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check_not "RESTORED: a record carrying host is rejected again" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/host.jsonl"
+check "...restored message is the specific NO-HOST one again" bash -c \
+  "bash '$FIXR/workflows/scripts/validate-model-usage-emit.sh' --file '$TMP/host.jsonl' 2>&1 | grep -F 'NO-HOST' >/dev/null"
+
+echo "── 15b. MUTATION: with BOTH the no-host branch AND the closed-schema check neutered together, a host record WRONGLY passes ──"
+# This isolates the combined load-bearing-ness section 15 used to test via a
+# single check alone, pre-BLOCKING-2: proves there is still SOME real
+# mechanism enforcing the ADR 0028 no-cross-repo-identifier guarantee, even
+# though the two checks are now individually redundant with each other for
+# this specific 'host' field.
+check_not "BEFORE tamper: fixture validator rejects a record carrying host" \
+  bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/host.jsonl"
+sed -e 's/if "host" in rec:/if False:/' -e 's/extra = sorted(k for k in rec if k not in required)/extra = []/' \
+  "$LINT" > "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
+check "AFTER tamper (BOTH the no-host branch AND closed-schema neutered): a record carrying host WRONGLY passes" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/host.jsonl"
 cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 chmod +x "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
@@ -257,30 +366,36 @@ check_not "RESTORED: a record carrying host is rejected again" \
   bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh" --file "$TMP/host.jsonl"
 
 echo "── 16. MUTATION: cache-class weighting is sourced from build.config.sh, not hardcoded ──"
-BEFORE="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT=100 \
+# advisory A8: derive both expected figures from the SAME live-sourced
+# weights ($W_IN/$W_CR/$W_CC/$W_OUT, $expected_default, $expected_override)
+# computed in section 3 above, instead of the hardcoded 382/5132 this test
+# used to assert — so this test, too, distinguishes "someone retuned the
+# weights" from "the inheritance regressed" rather than conflating them.
+BEFORE="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT="$OVERRIDE_W_OUT" \
   bash "$FIXR/workflows/scripts/emit-model-usage.sh" --seat x --model claude-sonnet-5 --usage-source cli-envelope \
   --provider anthropic --input-tokens 100 --output-tokens 50 --cache-read-tokens 200 --cache-creation-tokens 10 \
   --outcome-ref issue:1 --print-only | jq -r '.weighted_units')"
-check_eq "BEFORE tamper: SPEND_WEIGHT_OUTPUT=100 override moves weighted_units to 5132" "5132" "$BEFORE"
-# Tamper: hardcode the output weight literal instead of sourcing it, breaking
-# genuine inheritance from build.config.sh.
+check_eq "BEFORE tamper: SPEND_WEIGHT_OUTPUT override moves weighted_units to the value computed WITH the override" "$expected_override" "$BEFORE"
+# Tamper: hardcode the output weight literal (to today's UN-overridden
+# default, $W_OUT) instead of sourcing it, breaking genuine inheritance from
+# build.config.sh — the env override should then have no effect at all.
 # Intentional: matching a literal '${SPEND_WEIGHT_OUTPUT:-0}' in the source text, never expanding it here.
 # shellcheck disable=SC2016
-sed -e 's/--argjson w_out "\${SPEND_WEIGHT_OUTPUT:-0}"/--argjson w_out 5/' \
+sed -e 's/--argjson w_out "\${SPEND_WEIGHT_OUTPUT:-0}"/--argjson w_out '"$W_OUT"'/' \
   "$EMIT" > "$FIXR/workflows/scripts/emit-model-usage.sh"
 chmod +x "$FIXR/workflows/scripts/emit-model-usage.sh"
-AFTER="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT=100 \
+AFTER="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT="$OVERRIDE_W_OUT" \
   bash "$FIXR/workflows/scripts/emit-model-usage.sh" --seat x --model claude-sonnet-5 --usage-source cli-envelope \
   --provider anthropic --input-tokens 100 --output-tokens 50 --cache-read-tokens 200 --cache-creation-tokens 10 \
   --outcome-ref issue:1 --print-only | jq -r '.weighted_units')"
-check_eq "AFTER tamper (weight hardcoded to 5): the env override no longer has any effect (382, not 5132) — proves inheritance was real" "382" "$AFTER"
+check_eq "AFTER tamper (weight hardcoded to today's default): the env override no longer has any effect — proves inheritance was real" "$expected_default" "$AFTER"
 cp "$EMIT" "$FIXR/workflows/scripts/emit-model-usage.sh"
 chmod +x "$FIXR/workflows/scripts/emit-model-usage.sh"
-RESTORED="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT=100 \
+RESTORED="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID=s SPEND_WEIGHT_OUTPUT="$OVERRIDE_W_OUT" \
   bash "$FIXR/workflows/scripts/emit-model-usage.sh" --seat x --model claude-sonnet-5 --usage-source cli-envelope \
   --provider anthropic --input-tokens 100 --output-tokens 50 --cache-read-tokens 200 --cache-creation-tokens 10 \
   --outcome-ref issue:1 --print-only | jq -r '.weighted_units')"
-check_eq "RESTORED: the override is honored again (5132)" "5132" "$RESTORED"
+check_eq "RESTORED: the override is honored again" "$expected_override" "$RESTORED"
 
 echo "── 17. MUTATION: session_id is the RAW, untruncated join key, not a truncated stamp ──"
 BEFORE_SESS="$(MODEL_USAGE_RAW_DIR="$TMP/l1" CLAUDE_CODE_SESSION_ID="$LONGSESS" \
@@ -345,6 +460,127 @@ check "kernel-manifest.txt classifies emit-model-usage.sh" \
   grep -Fq 'kernel workflows/scripts/emit-model-usage.sh' "$KM"
 check "kernel-manifest.txt classifies validate-model-usage-emit.sh" \
   grep -Fq 'kernel workflows/scripts/validate-model-usage-emit.sh' "$KM"
+
+echo "── 22. BLOCKING 1: a trailing value-taking flag does NOT hang (bounded-timeout proof) ──"
+HANG_TMP="$TMP/hangtest"
+mkdir -p "$HANG_TMP"
+hang_check() { # <desc> <secs> <want_rc> <cmd...>
+  local d="$1" secs="$2" want_rc="$3"; shift 3
+  local rc
+  run_with_timeout "$secs" "$@" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 137 ]; then
+    bad "$d" "TIMED OUT (hung) after ${secs}s — rc=137"
+  elif [ "$rc" -eq "$want_rc" ]; then
+    ok "$d (bounded, rc=$rc as expected)"
+  else
+    bad "$d" "did not hang, but rc=$rc (wanted $want_rc)"
+  fi
+}
+# emit-model-usage.sh: WARN-DON'T-DROP contract -> always exits 0.
+hang_check "emit: trailing --seat does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat
+hang_check "emit: trailing --model does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --model
+hang_check "emit: trailing --usage-source does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source
+hang_check "emit: trailing --outcome-ref does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source unavailable --outcome-ref
+hang_check "emit: trailing --provider does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider
+hang_check "emit: trailing --input-tokens does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens
+hang_check "emit: trailing --output-tokens does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens 1 --output-tokens
+hang_check "emit: trailing --cache-read-tokens does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens 1 --output-tokens 1 --cache-read-tokens
+hang_check "emit: trailing --cache-creation-tokens does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens 1 --output-tokens 1 --cache-read-tokens 0 --cache-creation-tokens
+hang_check "emit: trailing --duration-ms does not hang (the acceptance-named case)" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source unavailable --outcome-ref issue:1 --duration-ms
+hang_check "emit: trailing --repo does not hang" 8 0 env MODEL_USAGE_RAW_DIR="$HANG_TMP" bash "$EMIT" --seat x --model claude-sonnet-5 --usage-source unavailable --outcome-ref issue:1 --repo
+# validate-model-usage-emit.sh: FAIL-CLOSED discipline -> CANNOT EVALUATE, exit 1.
+hang_check "validator: trailing --file does not hang (the acceptance-named case)" 8 1 bash "$LINT" --file
+
+echo "── 22b. advisory 9c: a value that looks like another flag is rejected, not silently consumed ──"
+mkdir -p "$TMP/flaglike"
+FLAGLIKE_ERR="$(MODEL_USAGE_RAW_DIR="$TMP/flaglike" CLAUDE_CODE_SESSION_ID=s bash "$EMIT" --seat --model foo --usage-source unavailable --outcome-ref issue:1 2>&1 >/dev/null)"
+check "names the flag-like-value rejection, not consuming --model as the seat" bash -c \
+  "grep -F -- \"requires a value, got flag-like '--model'\" <<<\"\$1\" >/dev/null" _ "$FLAGLIKE_ERR"
+FLAGLIKE_OUT="$(MODEL_USAGE_RAW_DIR="$TMP/flaglike" CLAUDE_CODE_SESSION_ID=s bash "$EMIT" --seat x --model foo --usage-source unavailable --outcome-ref issue:1 --print-only)"
+check_eq "sanity: a normal (non-flag-like) value is still consumed as intended" "foo" "$(printf '%s' "$FLAGLIKE_OUT" | jq -r '.model')"
+
+echo "── 23. BLOCKING 3: an unreadable raw-lake directory CANNOT EVALUATE, never silently OK ──"
+UNREADABLE_DIR="$TMP/unreadable-lake"
+mkdir -p "$UNREADABLE_DIR"
+add_exit_cleanup "chmod 700 '$UNREADABLE_DIR' 2>/dev/null || true"
+chmod 000 "$UNREADABLE_DIR"
+UNREADABLE_ERR="$(MODEL_USAGE_RAW_DIR="$UNREADABLE_DIR" bash "$LINT" 2>&1)"
+UNREADABLE_RC=$?
+chmod 700 "$UNREADABLE_DIR"   # inline restore — the EXIT trap above is the belt-and-suspenders backstop
+check_eq "an unreadable raw dir: exit 1 (CANNOT EVALUATE), not 0" "1" "$UNREADABLE_RC"
+check "...says CANNOT EVALUATE, never OK" bash -c \
+  "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\" && ! grep -Fq 'validate-model-usage-emit: OK' <<<\"\$1\"" _ "$UNREADABLE_ERR"
+
+echo "── 24. BLOCKING 3 / A6: a CLOSED stdin ('--file -') CANNOT EVALUATE, never silently OK ──"
+# This is precisely the case that survived the prior mutation pass (A6): the
+# '--file -' stdin seam had zero fixture coverage, so a validator that read
+# "line 291: 0: Bad file descriptor" then printed OK on a closed stdin went
+# undetected.
+CLOSED_ERR="$(bash "$LINT" --file - <&- 2>&1)"
+CLOSED_RC=$?
+check_eq "closed stdin: exit 1 (CANNOT EVALUATE), not 0" "1" "$CLOSED_RC"
+check "...says CANNOT EVALUATE, never OK" bash -c \
+  "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\" && ! grep -Fq 'validate-model-usage-emit: OK' <<<\"\$1\"" _ "$CLOSED_ERR"
+
+echo "── 25. advisory A6: the documented '--file -' stdin seam has real fixture coverage (good/bad) ──"
+check "a good record piped on stdin: OK" bash -c \
+  "MODEL_USAGE_RAW_DIR='$TMP/l1' bash '$EMIT' --seat x --model claude-sonnet-5 --usage-source cli-envelope --provider anthropic --input-tokens 1 --output-tokens 1 --cache-read-tokens 0 --cache-creation-tokens 0 --outcome-ref issue:1 --print-only | bash '$LINT' --file -"
+check_not "garbage piped on stdin: FAILS" bash -c "printf 'not json\n' | bash '$LINT' --file -"
+
+echo "── 26. advisory A4: a DIRECTORY matching the glob is skipped cleanly (no set -u crash) ──"
+A4_DIR="$TMP/a4-lake"
+mkdir -p "$A4_DIR/model-usage-2099-01.jsonl"   # a directory, not a file, matching the glob pattern
+A4_OUT="$(MODEL_USAGE_RAW_DIR="$A4_DIR" bash "$LINT" 2>&1)"
+A4_RC=$?
+check_eq "a directory matching the glob: exits 0 cleanly (nothing real to scan)" "0" "$A4_RC"
+check "...no bash 'unbound variable' trace leaked" bash -c "! grep -Fiq 'unbound variable' <<<\"\$1\"" _ "$A4_OUT"
+
+echo "── 27. advisory A5: FAIL line numbers are per-FILE (reset), not a running total across files ──"
+A5_DIR="$TMP/a5-lake"
+mkdir -p "$A5_DIR"
+printf '%s\n%s\n%s\n' \
+  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:1"}' \
+  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-sonnet-5","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:2"}' \
+  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-turbo-1","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:3"}' \
+  > "$A5_DIR/model-usage-2026-06.jsonl"
+printf '%s\n' \
+  '{"schema_version":"1","ts":"2026-08-08T12:00:00Z","session_id":null,"repo":null,"seat":"x","model":"claude-turbo-2","provider":null,"usage_source":"unavailable","tokens":null,"weighted_units":null,"duration_ms":null,"outcome_ref":"issue:4"}' \
+  > "$A5_DIR/model-usage-2026-07.jsonl"
+A5_OUT="$(MODEL_USAGE_RAW_DIR="$A5_DIR" bash "$LINT" 2>&1)"
+check "file 1's bad record is cited at ITS OWN line 3" bash -c \
+  "grep -F 'model-usage-2026-06.jsonl:3' <<<\"\$1\" >/dev/null" _ "$A5_OUT"
+check "file 2's bad record is cited at ITS OWN line 1 (reset per file)" bash -c \
+  "grep -F 'model-usage-2026-07.jsonl:1' <<<\"\$1\" >/dev/null" _ "$A5_OUT"
+check "...and NOT at a running-total line 4 across files (the bug this advisory fixes)" bash -c \
+  "! grep -F 'model-usage-2026-07.jsonl:4' <<<\"\$1\" >/dev/null" _ "$A5_OUT"
+
+echo "── 28. advisory A9a: no hardcoded \$HOME/dev/foundation fallback path remains in either script ──"
+check "emit-model-usage.sh: the old foreign-path-guessing fallback code is gone" \
+  bash -c "! grep -Fq 'echo \"\$HOME/dev/foundation\"' '$EMIT'"
+check "validate-model-usage-emit.sh: the old foreign-path-guessing fallback code is gone" \
+  bash -c "! grep -Fq 'echo \"\$HOME/dev/foundation\"' '$LINT'"
+check "emit-model-usage.sh instead warns-and-drops when the repo root can't be resolved" \
+  grep -Fq 'no fallback path guessed' "$EMIT"
+check "validate-model-usage-emit.sh instead CANNOT EVALUATEs when the repo root can't be resolved" \
+  grep -Fq 'no fallback path guessed' "$LINT"
+
+echo "── 29. advisory A9b: --help prints the FULL header, not truncated mid-sentence ──"
+HELP_OUT="$(bash "$EMIT" --help)"
+check "help output names the WARN-DON'T-DROP contract (the single most important thing a spawn-site author needs)" \
+  bash -c "grep -Fq \"WARN, DON'T DROP\" <<<\"\$1\"" _ "$HELP_OUT"
+check "help output reaches the FINAL header line" \
+  bash -c "grep -Fq 'macOS dev shell + Linux CI' <<<\"\$1\"" _ "$HELP_OUT"
+check "help output excludes the shebang line" \
+  bash -c "! grep -Fq '#!/usr/bin/env bash' <<<\"\$1\"" _ "$HELP_OUT"
+check "help output does not run past the header into executable code" \
+  bash -c "! grep -Fq 'set -uo pipefail' <<<\"\$1\"" _ "$HELP_OUT"
+
+echo "── 30. advisory A7: weighted_units' retune-epoch caveat is documented ──"
+check "emit-model-usage.sh documents weighted_units as comparable only within a SPEND_WEIGHT_* retune epoch" \
+  grep -Fq 'retune epoch' "$EMIT"
+check "...and names tokens as the durable, retune-independent figure" \
+  grep -Fq 'is the durable' "$EMIT"
 
 echo
 if [ "$fail" -gt 0 ]; then

@@ -15,11 +15,19 @@
 #      coerces bare NaN/Infinity to `null`, so a `jq`-based validity check
 #      cannot catch a non-finite-corrupted record (a real trap hit and named
 #      by this item's own testing bar).
-#   3. SHAPE — every record has exactly the required field set, correctly
-#      typed, with the usage_source/tokens/provider pairing enforced (tokens
-#      and provider are BOTH present iff usage_source is "cli-envelope", BOTH
-#      null iff "unavailable" — a mismatch is a shape violation, not merely a
-#      missing field).
+#   3. SHAPE — every record has EXACTLY the required field set (a CLOSED
+#      schema / allowlist, not merely a missing-field check — an unknown key
+#      not in the required set is itself a FAIL, SCHEMA-CLOSED, whatever it's
+#      named), correctly typed, with the usage_source/tokens/provider pairing
+#      enforced (tokens and provider are BOTH present iff usage_source is
+#      "cli-envelope", BOTH null iff "unavailable" — a mismatch is a shape
+#      violation, not merely a missing field). This closed-schema check is
+#      what makes check 5 below (no cross-repo identifier) a real guarantee
+#      rather than a one-name denylist: `host` gets its own named message
+#      (checked first, so that specific case keeps a specific, ADR-0028-
+#      quoting reason), but ANY other unexpected field — `hostname`,
+#      `operator`, `machine_id`, or a future copy-paste's own invented name —
+#      is caught by the same generic check, not enumerated one at a time.
 #   4. CONTENT-LEVEL ENUMS — not merely presence-checked:
 #        * `model` must name a known Claude model FAMILY (opus/sonnet/haiku)
 #          — the family token is the stable, enumerable part of a model id;
@@ -73,7 +81,26 @@ ALLOWLIST_LIB="$SCRIPT_DIR/model-comparison/allowlist.sh"
 single_file=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --file) single_file="${2:-}"; shift 2 ;;
+    --file)
+      # ARG-ARITY GUARD (BLOCKING 1): a trailing `--file` with no following
+      # argument used to fall through to `shift 2` with only 1 positional
+      # param left — `shift 2` then fails and shifts NOTHING, and since this
+      # script deliberately does not run under `set -e`, `$#` never
+      # decreases and the loop spins at 100% CPU forever instead of
+      # returning. Guard the arity before shifting, and reject a value that
+      # itself looks like another flag (e.g. `--file --other`) rather than
+      # silently consuming it as the path.
+      if [ $# -lt 2 ]; then
+        echo "validate-model-usage-emit: CANNOT EVALUATE — --file requires a value" >&2
+        exit 1
+      fi
+      case "$2" in
+        --*)
+          echo "validate-model-usage-emit: CANNOT EVALUATE — --file requires a value, got flag-like '$2'" >&2
+          exit 1
+          ;;
+      esac
+      single_file="$2"; shift 2 ;;
     *) echo "validate-model-usage-emit: CANNOT EVALUATE — unknown argument $1" >&2; exit 1 ;;
   esac
 done
@@ -118,11 +145,37 @@ if [ -n "$single_file" ]; then
   fi
   files=("$single_file")
 else
-  raw_root="$(cd -P "$SCRIPT_DIR/../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
+  # NO foreign-path guess (advisory 9a): a prior version of this line fell
+  # back to a hardcoded $HOME/dev/foundation when the repo-root resolution
+  # failed. In temperloop that is a different repo entirely, and a
+  # stranger's checkout has no such directory — scanning (or silently
+  # skipping) a foreign, unrelated tree is worse than a hard abort.
+  raw_root="$(cd -P "$SCRIPT_DIR/../.." 2>/dev/null && pwd)"
+  # `${MODEL_USAGE_RAW_DIR:+x}` (not `${MODEL_USAGE_RAW_DIR:-}`) — see the
+  # matching comment in emit-model-usage.sh: a second `:-`-shaped seam here
+  # would trip the setting-registry lint's per-seam equality check.
+  if [ -z "${MODEL_USAGE_RAW_DIR:+x}" ] && [ -z "$raw_root" ]; then
+    echo "validate-model-usage-emit: CANNOT EVALUATE — cannot resolve the repo root above $SCRIPT_DIR, and MODEL_USAGE_RAW_DIR is unset — no fallback path guessed" >&2
+    exit 1
+  fi
   raw_dir="${MODEL_USAGE_RAW_DIR:-$raw_root/meta/data/raw}"
   if [ -d "$raw_dir" ]; then
+    # BLOCKING 3: distinguish "glob found nothing" (legal, see below) from
+    # "the dir exists but this process can't read it" (e.g. a
+    # container-mounted raw lake owned by a different uid) — the latter must
+    # CANNOT EVALUATE, never silently read as an empty, legal lake.
+    if [ ! -r "$raw_dir" ]; then
+      echo "validate-model-usage-emit: CANNOT EVALUATE — $raw_dir exists but is not readable" >&2
+      exit 1
+    fi
     for f in "$raw_dir"/model-usage-*.jsonl; do
       [ -e "$f" ] || continue
+      # advisory A4: skip a DIRECTORY that happens to match the glob (`-e`
+      # alone is true for a directory too) — treat only regular files as
+      # scannable lines to read, or the per-line read loop below reads a
+      # directory as its input source and, under `set -u`, can dereference
+      # an unset `line` before the read loop's first successful assignment.
+      [ -f "$f" ] || continue
       files+=("$f")
     done
   fi
@@ -189,6 +242,19 @@ if missing:
 if "host" in rec:
     print("FAIL NO-HOST: record carries a 'host' field — ADR 0028 forbids a "
           "cross-repo operator/machine identifier on this stream")
+    sys.exit(0)
+
+# BLOCKING 2: CLOSED schema, not a one-key denylist. The `host` check above
+# has its own specific, ADR-0028-quoting message and stays first so that
+# named case keeps its named reason — but `host` is not the only possible
+# cross-repo identifier a future copy-paste could introduce (`hostname`,
+# `operator`, `machine_id`, ...). Reject ANY field outside the required set,
+# by name, generically, rather than enumerating denylist entries one at a
+# time forever.
+extra = sorted(k for k in rec if k not in required)
+if extra:
+    print("FAIL SCHEMA-CLOSED: unexpected field(s) not in the required schema: "
+          + ", ".join(extra))
     sys.exit(0)
 
 if rec["schema_version"] != "1":
@@ -288,18 +354,53 @@ PYEOF
 
 n_records=0
 n_files=0
-for f in "${files[@]}"; do
+# advisory A4 (bash-3.2 empty-array trap): "${files[@]}" on a genuinely empty
+# array can itself trip `set -u` on old bash. Unreachable today because the
+# empty-files case above already exits before this loop — but this stays
+# correct even if that guard is ever refactored out from under it.
+for f in ${files[@]+"${files[@]}"}; do
   n_files=$((n_files + 1))
   if [ "$f" = "-" ]; then
     src="/dev/stdin"
+    # BLOCKING 3 (the stdin half): `-r` on a CLOSED stdin correctly reads
+    # false (its backing /dev/fd/0 entry is gone), so this catches the
+    # closed-stdin case the old code missed entirely (it only ever checked
+    # readability for the != "-" branch).
+    if [ ! -r "$src" ]; then
+      echo "validate-model-usage-emit: CANNOT EVALUATE — stdin (--file -) is not readable (closed?)" >&2
+      exit 1
+    fi
   else
     src="$f"
+    if [ ! -r "$f" ]; then
+      echo "validate-model-usage-emit: CANNOT EVALUATE — $f exists but is not readable" >&2
+      exit 1
+    fi
   fi
-  if [ "$f" != "-" ] && [ ! -r "$f" ]; then
-    echo "validate-model-usage-emit: CANNOT EVALUATE — $f exists but is not readable" >&2
+  # BLOCKING 3 (the redirect half): the `-r` test above is a point-in-time
+  # check, not proof the redirect itself will succeed (a container-mounted
+  # dir can pass `-r` on the dir yet still fail to open a specific entry, and
+  # `-r` on a symlink doesn't guarantee its target opens). Actually open the
+  # fd and check ITS exit status — `done < "$src"` alone never surfaced this:
+  # a failed redirect on a `while` loop still enters the loop with `read`
+  # immediately returning EOF, so it silently "succeeds" at 0 records read.
+  if ! exec 3< "$src" 2>/dev/null; then
+    if [ "$f" = "-" ]; then
+      echo "validate-model-usage-emit: CANNOT EVALUATE — could not open stdin for reading" >&2
+    else
+      echo "validate-model-usage-emit: CANNOT EVALUATE — could not open $f for reading" >&2
+    fi
     exit 1
   fi
+  lineno=0
+  # advisory A4 (set -u crash): initialise `line` before the loop so a `read`
+  # that fails before its first successful assignment (e.g. an immediately
+  # empty/EOF fd) doesn't dereference an unset variable in the `|| [ -n
+  # "$line" ]` arm under `set -u` — that used to dump a raw bash "unbound
+  # variable" trace instead of the promised CANNOT EVALUATE / clean handling.
+  line=""
   while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
     [ -z "$line" ] && continue
     n_records=$((n_records + 1))
     verdict="$(validate_record_py "$line")"
@@ -309,20 +410,21 @@ for f in "${files[@]}"; do
       OK-PROVIDER\ *)
         prov="${verdict#OK-PROVIDER }"
         if ! pa_is_allowed "$prov" 2>/dev/null; then
-          echo "FAIL  $f:$n_records — PROVIDER-ENUM: provider '$prov' is not in the ADR 0028 committed allowlist (${committed_providers:-<none>})"
+          echo "FAIL  $f:$lineno — PROVIDER-ENUM: provider '$prov' is not in the ADR 0028 committed allowlist (${committed_providers:-<none>})"
           fail=1
         fi
         ;;
       FAIL*)
-        echo "FAIL  $f:$n_records — ${verdict#FAIL }"
+        echo "FAIL  $f:$lineno — ${verdict#FAIL }"
         fail=1
         ;;
       *)
-        echo "FAIL  $f:$n_records — validator produced no verdict (got: $verdict)"
+        echo "FAIL  $f:$lineno — validator produced no verdict (got: $verdict)"
         fail=1
         ;;
     esac
-  done < "$src"
+  done <&3
+  exec 3<&-
 done
 
 echo "Checked $n_files file(s), $n_records record(s)."
