@@ -615,6 +615,27 @@ reads that marker; a stranger greps for it before pulling.
   privacy exposure by design, and no test speaks to that. Zero network, its
   own `make test-testbed-equivalence` gate.
 
+- **A positive on-ramp anchor-registry gate replaces the tree-wide-sweep
+  instinct for cross-surface on-ramp coherence** (#1239, ADR 0024). The
+  command a newcomer should run first is named in four unrelated places —
+  `bin/temperloop`'s first-run banner, `README.md`'s quickstart,
+  `bin/README.md`, `docs/features/install-cli.md` — that drifted silently
+  once already (temperloop#1116). Rather than grep the tree for a retired
+  name (a gate that ships with an exemption list on day one, since
+  `CHANGELOG.md`/`docs/adr/**`/`Plans-archive/**` name the retired command
+  legitimately, as history),
+  `workflows/scripts/config/onramp-anchors.tsv` registers the four anchors
+  and `workflows/scripts/validate-onramp-anchors.sh` asserts what each one
+  MUST say against a small canonical-value table — installer command, first
+  subcommand, and the `testbed` onramp noun itself — normalizing the
+  Unicode/ASCII arrow-glyph difference between anchors rather than papering
+  over it with a loose substring, and scoping its "no anchor names a
+  retired value" check to the registered anchors only, never the tree. A
+  new `checks` gate (`make validate-onramp-anchors`, its own
+  `gate-paths.tsv` row) plus a fixture suite proving both the real tree's
+  current agreement and the gate's red on a deliberately disagreeing
+  anchor.
+
 ### Changed
 
 - **`write-lane-guard.sh` no longer prompts on the one cross-repo direction

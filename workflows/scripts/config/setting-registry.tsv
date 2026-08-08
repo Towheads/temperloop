@@ -327,6 +327,7 @@ GITLEAKS_BIN		path	kernel	workflows/scripts/kernel/check-pr-leak-guard.sh	Use th
 CHANGELOG_GATE_ROOT	$REPO_ROOT_DEFAULT	path	kernel	workflows/scripts/check-changelog-entry.sh	Repo root the CHANGELOG [Unreleased] gate scans (fixture-test seam, same shape as KERNEL_MANIFEST_ROOT)
 CHANGELOG_GATE_HEAD	HEAD	string	kernel	workflows/scripts/check-changelog-entry.sh	Git ref treated as HEAD for the contract-surface diff
 CHANGELOG_GATE_BASE		string	kernel	workflows/scripts/check-changelog-entry.sh	Git ref treated as the diff base (CI passes the PR's base SHA; empty falls back to origin/main then main)
+ONRAMP_GATE_ROOT	$REPO_ROOT_DEFAULT	path	kernel	workflows/scripts/validate-onramp-anchors.sh	Repo root the on-ramp anchor-registry gate scans (fixture-test seam, same shape as CHANGELOG_GATE_ROOT)
 CHANGELOG_GATE_PR_BODY		string	kernel	workflows/scripts/check-changelog-entry.sh	PR body text the gate scans for a `Changelog: none - <reason>` opt-out marker (CI passes the pull_request payload's body)
 CHANGELOG_GATE_PR_LABELS		string	kernel	workflows/scripts/check-changelog-entry.sh	Comma-separated PR label names the gate scans for the opt-out label (CI passes the pull_request payload's labels)
 CHANGELOG_GATE_SKIP_LABEL	no-changelog	label	kernel	workflows/scripts/check-changelog-entry.sh	PR label that explicitly opts a contract-surface change out of the [Unreleased] entry requirement

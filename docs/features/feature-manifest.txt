@@ -252,6 +252,13 @@ install-cli workflows/scripts/lib/report.contract.md
 # operator-facing feature.
 install-cli workflows/scripts/lib/portable-timeout.sh
 install-cli workflows/scripts/lib/tests/test_portable_timeout.sh
+# Positive on-ramp anchor-registry gate (ADR 0024, temperloop#1117): claims
+# the validator + its fixture test. The registry itself
+# (workflows/scripts/config/onramp-anchors.tsv) is already claimed by the
+# broader `quality-gates workflows/scripts/config/*` glob below — no
+# duplicate row needed for it.
+install-cli workflows/scripts/validate-onramp-anchors.sh
+install-cli workflows/scripts/tests/test_validate_onramp_anchors.sh
 
 # ── install-manifest-lib — machine-surface install manifest library
 # (temperloop#261, ADR K164 D7): overrides the broader install-cli globs

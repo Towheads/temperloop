@@ -1,0 +1,86 @@
+# onramp-anchors.tsv — the registered on-ramp anchor set (ADR 0024
+# "cross-surface coherence is asserted positively", temperloop#1117).
+#
+# The command a newcomer should run first is named in four places that have
+# no structural relationship to each other: `bin/temperloop`'s first-run
+# banner, `README.md`'s quickstart, `bin/README.md`, and
+# `docs/features/install-cli.md`. Nothing ties those four together, so they
+# drift silently — they did (temperloop#1116). Per ADR 0024, the fix is NOT a
+# tree-wide grep for the retired name (`try`, `try --demo`, adoption-sense
+# `sandbox`): that gate ships with an exemption list on day one, because
+# CHANGELOG.md, docs/adr/**, and Plans-archive/** name the retired command
+# legitimately, as history. Instead this registry names the specific PLACES
+# that must agree, and the validator (workflows/scripts/validate-onramp-
+# anchors.sh) asserts what each one MUST say — never what the rest of the
+# tree must not.
+#
+# ── Row format ───────────────────────────────────────────────────────────
+# TAB-separated, exactly three columns:
+#   1. anchor-path   repo-relative path to the file carrying the anchor
+#   2. locator       the 1-based line number the anchor sits on (as of this
+#                     registry's last edit — see § Locator drift below)
+#   3. value-key     a key into the small canonical-value table the
+#                     validator owns (see its own header) — NOT a literal
+#                     value here, so the same canonical string is never
+#                     duplicated across rows that must agree
+#
+# ── Why per-anchor rows, never one global string ───────────────────────────
+# The four anchors legitimately say DIFFERENT things: README.md's quickstart
+# opens with the installer curl line; bin/temperloop's banner names the first
+# SUBCOMMAND to run after install; bin/README.md and install-cli.md describe
+# the adoption path in prose. A single "same first command" string would be
+# false against its own anchors on day one. So each anchor gets exactly the
+# value-key(s) that describe what IT must say, resolved from the table.
+#
+# ── The arrow-glyph decision ────────────────────────────────────────────
+# README.md and bin/README.md write the adoption-path phrase with the Unicode
+# arrow (`→`); docs/features/install-cli.md writes it with the ASCII arrow
+# (`->`) — both legitimate prose, same meaning. Rather than register two
+# near-duplicate canonical values (or degrade to a substring so loose it
+# asserts nothing), the validator NORMALIZES `→` to `->` in the anchor's own
+# text before comparing against the single ASCII canonical value. The
+# canonical value itself is therefore always ASCII — see the validator's
+# `canonical_value()`.
+#
+# ── Locator drift is expected maintenance, not gate fragility ─────────────
+# The validator does not require the exact line; it searches a small window
+# of lines around the locator (see its own WINDOW constant) so an unrelated
+# edit elsewhere in the same file does not red the gate. A locator that has
+# drifted OUT of that window is a real registry-maintenance signal — update
+# the row — not a false positive to route around.
+#
+# ── The negative assertion is scoped to THESE rows only ────────────────────
+# For every row below, the validator also asserts the SAME window contains no
+# retired value (`try`, `sandbox`, whole-word matched). That check reads only
+# the windows these rows name — never the rest of the file, never the rest of
+# the tree. CHANGELOG.md, docs/adr/**, and Plans-archive/** are not read by
+# this gate at all and may name `try`/`sandbox` freely, as history.
+#
+# ── Known, accepted weakness (ADR 0024 § Consequences) ─────────────────────
+# A surface that SHOULD be an anchor but was never registered here is not
+# checked, and nothing announces that. This is deliberate: the alternative
+# (a tree-wide sweep) fails worse, by shipping an exemption list that becomes
+# the thing people edit to make the build green. Adding a surface to the
+# invariant is an explicit registry edit — there is nothing to exempt.
+#
+# Enforced by workflows/scripts/validate-onramp-anchors.sh (a KERNEL_GATES
+# entry in scripts/quality-gates.sh), with its own gate-paths.tsv row.
+
+# ── bin/temperloop — the CLI's own first-run banner ─────────────────────────
+bin/temperloop	144	first-subcommand
+bin/temperloop	144	onramp-noun
+
+# ── README.md — § 3 Quickstart ──────────────────────────────────────────────
+README.md	100	adoption-path
+README.md	100	onramp-noun
+README.md	127	installer-command
+
+# ── bin/README.md — § Quickstart ────────────────────────────────────────────
+bin/README.md	72	adoption-path
+bin/README.md	72	onramp-noun
+bin/README.md	32	installer-command
+bin/README.md	40	installer-command
+
+# ── docs/features/install-cli.md — the adoption-path paragraph ─────────────
+docs/features/install-cli.md	41	adoption-path
+docs/features/install-cli.md	41	onramp-noun

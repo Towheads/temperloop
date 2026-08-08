@@ -444,6 +444,11 @@ kernel workflows/scripts/workflow-reviewer-coverage.sh
 kernel workflows/scripts/validate-capture-backstop.sh
 kernel workflows/scripts/validate-template-refs.sh
 kernel workflows/scripts/validate-design-brief.sh
+# Positive on-ramp anchor-registry gate (ADR 0024, temperloop#1117): a
+# stranger's kernel checkout has its own on-ramp surfaces to keep coherent
+# (bin/temperloop, README.md, bin/README.md, docs/features/install-cli.md),
+# same reasoning as every sibling validate-*.sh above.
+kernel workflows/scripts/validate-onramp-anchors.sh
 
 overlay workflows/scripts/aggregate_sessions.py
 overlay workflows/scripts/test_aggregate_sessions.py
