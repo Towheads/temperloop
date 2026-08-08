@@ -87,6 +87,7 @@ build-machinery claude/plan-schema.md
 build-machinery claude/workflows/build-level.mjs
 build-machinery workflows/scripts/build/*
 build-machinery workflows/scripts/validate-activation-registry.sh
+build-machinery workflows/scripts/tests/test_plan_approval_drain.sh
 
 # ── merge-gate — PR enqueue, CI poll, batched merge gate, protected main ────
 merge-gate docs/managed-merge-queue.md
