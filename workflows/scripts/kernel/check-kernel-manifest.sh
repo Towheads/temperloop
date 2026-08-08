@@ -79,7 +79,18 @@ total=0
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   total=$((total + 1))
-  best_class="$(kernel_lib_classify "$f")" || best_class=""
+  # FAIL CLOSED (temperloop#1177): rc 1 is the legitimate "no pattern matched"
+  # answer (→ UNCLASSIFIED, reported below); rc >= KERNEL_LIB_RC_CANNOT_EVALUATE
+  # means the classifier could not evaluate AT ALL, which is a different fact.
+  # Swallowing it into an empty class would report every tracked path as
+  # unclassified — a guard that cannot evaluate must never answer.
+  classify_rc=0
+  best_class="$(kernel_lib_classify "$f")" || classify_rc=$?
+  if (( classify_rc >= KERNEL_LIB_RC_CANNOT_EVALUATE )); then
+    echo "check-kernel-manifest: CANNOT EVALUATE the class of '$f' (kernel_lib_classify rc $classify_rc) — aborting rather than treating an un-evaluable classifier as 'unclassified'" >&2
+    exit 1
+  fi
+  (( classify_rc == 0 )) || best_class=""
   case "$best_class" in
     kernel) kernel_n=$((kernel_n + 1)) ;;
     overlay) overlay_n=$((overlay_n + 1)) ;;

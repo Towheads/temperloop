@@ -114,11 +114,27 @@ if [[ ${#FD_SLUGS[@]} -eq 0 ]]; then
   echo "validate-feature-docs: manifest has zero entries — nothing to check" >&2
   exit 1
 fi
+if [[ ${#FD_SLUGS[@]} -ne ${#FD_PATTERNS[@]} ]]; then
+  echo "validate-feature-docs: CANNOT EVALUATE — parsed ${#FD_SLUGS[@]} slug(s) but ${#FD_PATTERNS[@]} pattern(s); the parallel arrays did not populate (fail closed, temperloop#1177)" >&2
+  exit 1
+fi
+
+# rc contract, mirroring workflows/scripts/kernel/lib.sh (temperloop#1177):
+#   0                        matched; slug on stdout
+#   FD_RC_NOMATCH        (1) evaluated fine, no glob claims this path
+#   FD_RC_CANNOT_EVALUATE(2) could NOT evaluate — a hard error, never "unclaimed"
+FD_RC_NOMATCH=1
+FD_RC_CANNOT_EVALUATE=2
 
 # fd_classify <path> — echo the slug of the longest matching pattern, rc 1 if
-# no pattern matches ("longest pattern wins", kernel_lib_classify's rule).
+# no pattern matches ("longest pattern wins", kernel_lib_classify's rule),
+# rc 2 if the matcher has nothing loaded to match against.
 fd_classify() {
   local f="$1" i pat plen best_len=-1 best_slug=""
+  if (( ${#FD_PATTERNS[@]} == 0 )); then
+    echo "validate-feature-docs: CANNOT EVALUATE '$f' — no manifest patterns loaded" >&2
+    return "$FD_RC_CANNOT_EVALUATE"
+  fi
   for i in "${!FD_PATTERNS[@]}"; do
     pat="${FD_PATTERNS[$i]}"
     # shellcheck disable=SC2053  # intentional unquoted glob match
@@ -130,9 +146,30 @@ fd_classify() {
       fi
     fi
   done
-  [[ -n "$best_slug" ]] || return 1
+  [[ -n "$best_slug" ]] || return "$FD_RC_NOMATCH"
   printf '%s' "$best_slug"
 }
+
+# Known-answer probe of the match PRIMITIVE itself. `[[ "$f" == $pat ]]` with an
+# expanded pattern is a bash-ism: zsh evaluates it to NO MATCH, silently, unless
+# GLOB_SUBST is set (temperloop#1177 — the same divergence that made
+# kernel_lib_classify answer "not kernel" for every path under the agent shell).
+# This script carries a real bash shebang, but it is also `bash …`-invoked from
+# a gate list, so prove the primitive works HERE rather than assume it: a broken
+# matcher would mark every tracked path UNCLAIMED, or (worse) claim nothing and
+# look green. Fail loudly instead of answering.
+fd_selftest() {
+  local probe='a/b/*'
+  # shellcheck disable=SC2053  # intentional unquoted glob match
+  [[ "a/b/c.md" == $probe ]] || return 1
+  # shellcheck disable=SC2053  # intentional unquoted glob match
+  [[ "z/z.md" == $probe ]] && return 1
+  return 0
+}
+if ! fd_selftest; then
+  echo "validate-feature-docs: CANNOT EVALUATE — glob matching against an expanded pattern does not work in this shell (${ZSH_VERSION:+zsh $ZSH_VERSION}${BASH_VERSION:+bash $BASH_VERSION}); refusing to run so no path is falsely reported (temperloop#1177)" >&2
+  exit 1
+fi
 
 # fd_in_list <needle> <newline-list> — rc 0 if <needle> is a line of the list.
 fd_in_list() {
@@ -157,7 +194,15 @@ claimed=0
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   total=$((total + 1))
-  if fd_classify "$f" >/dev/null; then
+  # FAIL CLOSED (temperloop#1177): only rc 1 ("no glob claims it") is UNCLAIMED.
+  # rc >= FD_RC_CANNOT_EVALUATE means the classifier had no answer to give —
+  # abort rather than convert an un-evaluable classifier into a coverage verdict.
+  fd_rc=0
+  fd_classify "$f" >/dev/null || fd_rc=$?
+  if (( fd_rc >= FD_RC_CANNOT_EVALUATE )); then
+    echo "validate-feature-docs: CANNOT EVALUATE the feature claim on '$f' (fd_classify rc $fd_rc) — aborting rather than reporting it UNCLAIMED" >&2
+    exit 1
+  elif (( fd_rc == 0 )); then
     claimed=$((claimed + 1))
   else
     failures+=("UNCLAIMED  $f — no feature-manifest glob claims this tracked path (add a '<slug> <glob>' line, or 'none <glob>' for repo meta)")

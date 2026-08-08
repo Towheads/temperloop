@@ -766,6 +766,18 @@ KERNEL_GATES=(
   # direct-`bash` form (kernel Makefile is generator-owned; a new tests/ file
   # needs no new Makefile target).
   "bash workflows/scripts/kernel/tests/test_kernel_lib_resolve.sh"
+  # DUAL-SHELL portability + fail-closed suite for kernel_lib_classify
+  # (temperloop#1177). lib.sh is SOURCED, so its shebang is inert and it runs
+  # under whatever shell the caller is — on macOS the agent's Bash tool is zsh,
+  # where the pre-#1177 implementation returned EMPTY + rc 1 (bit-identical to
+  # "no pattern matched") for EVERY path, silently passing /assess's
+  # seam-straddling check and /build 3b's kernel backstop. This suite runs
+  # byte-identical asserts under bash, zsh, and macOS bash 3.2 against a
+  # KNOWN-KERNEL CONTROL (claude/commands/build.md), and pins the three-way rc
+  # contract: 0 classified / 1 no-match / 2 CANNOT EVALUATE. Same direct-`bash`
+  # form (kernel Makefile is generator-owned; a new tests/ file needs no new
+  # Makefile target).
+  "bash workflows/scripts/kernel/tests/test_kernel_lib_portability.sh"
   "make test-kernel-denylist"
   "make test-kernel-gitleaks"
   # Pre-rename identifier leak-gate sweep (temperloop#433, gate-sweep item;

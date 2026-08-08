@@ -72,6 +72,18 @@ cd "$KERNEL_MANIFEST_ROOT" || exit 1
 
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  best_class="$(kernel_lib_classify "$f")" || continue
+  # FAIL CLOSED (temperloop#1177): the old `|| continue` swallowed BOTH the
+  # legitimate "no pattern matched" (rc 1) and "could not evaluate at all"
+  # (rc >= KERNEL_LIB_RC_CANNOT_EVALUATE) into the same silent skip — and this
+  # script's output IS the kernel set consumed by the scrub gates, so an
+  # un-evaluable classifier would hand them an EMPTY set that passes every
+  # check. Only rc 1 may skip; anything worse aborts loudly.
+  classify_rc=0
+  best_class="$(kernel_lib_classify "$f")" || classify_rc=$?
+  if (( classify_rc >= KERNEL_LIB_RC_CANNOT_EVALUATE )); then
+    echo "list-kernel-set: CANNOT EVALUATE the class of '$f' (kernel_lib_classify rc $classify_rc) — aborting rather than emitting a silently-truncated $class set" >&2
+    exit 1
+  fi
+  (( classify_rc == 0 )) || continue
   [[ "$best_class" == "$class" ]] && printf '%s\n' "$f"
 done < <(git ls-files)
