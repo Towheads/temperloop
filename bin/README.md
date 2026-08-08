@@ -89,8 +89,10 @@ copies issues to a fork, which is why `testbed` copies them for you.
 spend figures per tier (including whether a budget cap is on by default),
 and exactly what an unattended run may do without asking versus what always
 blocks for you — worth two minutes first. Note in particular that the
-evaluation path runs the real pipeline and so carries **no hard dollar cap**
-(temperloop#1130).
+evaluation path runs the real pipeline in an **interactive** `claude`
+session, not a capped headless call, and so carries **no tool-enforced
+dollar ceiling**; `temperloop testbed` and `temperloop init` themselves
+spend $0 (see `docs/cost-and-autonomy.md` § Cost at a glance).
 
 ### `temperloop init` — adopt, in the testbed or for real
 

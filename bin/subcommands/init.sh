@@ -1578,6 +1578,22 @@ echo "  CONFIGURATION IS NOT FINISHED — one step remains"
 echo "================================================================"
 echo
 echo "\`temperloop init\` created the plan of work; it did not apply it."
+echo
+# Cost disclosure, named BEFORE the /assess handoff below (temperloop#1130,
+# spike temperloop#1348) — a separate line, never folded into `next step:`,
+# which .github/workflows/install-tier2.yml greps verbatim and which this
+# script's own tests pin the exact prefix of (see the comment above this
+# block). `temperloop testbed`/`temperloop init` are verified $0 (no
+# `claude` invocation in either path); `/assess`/`/build` run in your own
+# interactive `claude` session, not a capped headless call, so
+# `--max-budget-usd` has nothing to attach to and there is no tool-enforced
+# dollar ceiling from here on.
+echo "cost: \`temperloop testbed\` and \`temperloop init\` spent \$0 (no"
+echo "  Claude invocation runs in either path). From here on — \`/assess\`,"
+echo "  \`/build\` — there is no tool-enforced dollar ceiling: those run in"
+echo "  your own interactive Claude Code session, not a capped headless"
+echo "  call. See docs/cost-and-autonomy.md for the full breakdown before"
+echo "  you proceed."
 if [ -n "$handoff_epic_num" ]; then
   echo
   echo "Launch Claude Code in this repo:"

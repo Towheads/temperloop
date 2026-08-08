@@ -15,18 +15,23 @@ figures, derivations, and provenance for every claim.
 
 ## TL;DR
 
-- **⚠️ The current on-ramp has no hard dollar cap.** The quickstart
-  (testbed → first epic → promote → adopt) evaluates temperloop by running the
-  **real** pipeline: `temperloop init`, then `/assess` → `/build` on the first
-  epic. Those are ordinary pipeline commands, and per the next bullet they
-  carry **no fixed cost or USD ceiling** — only the usage-quota gate. The
-  testbed setup itself (`temperloop testbed`: repo creation, mirror push,
-  issue copy) is pure `gh` and `git` and spends **no Claude tokens at all**;
-  the cost begins at `temperloop init`.
-  Watch your own Claude Code usage view while evaluating, and see
-  § Cost at a glance for what `/assess` and `/build` scale with. Closing this
-  gap — a published cost band or a cap for the evaluation path — is tracked
-  in temperloop#1130.
+- **⚠️ The current on-ramp has no tool-enforced dollar ceiling.** The
+  quickstart (testbed → first epic → promote → adopt) evaluates temperloop
+  by running the **real** pipeline: `temperloop testbed`, `temperloop init`,
+  then `/assess` → `/build` on the first epic. `temperloop testbed` and
+  `temperloop init` both spend **$0** — verified: no `claude` invocation
+  anywhere in either path — so the billable surface begins at `/assess`.
+  There's no ceiling there because there's nothing to attach one to:
+  `--max-budget-usd` only caps a **headless** `claude -p` call (the
+  mechanism behind the capped `configure` tier below), and `/assess`/`/build`
+  instead run inside your own **interactive** `claude` session, which gives
+  the CLI nothing to wrap a budget flag around. The first epic itself is a
+  fixed, kernel-shipped 5-item/3-level epic — not open-ended work — but no
+  source in this repo's own telemetry yet measures what it costs a stranger
+  on a fresh sandbox (the temperloop#1348 spike checked every candidate
+  source and found none fit); a real measured run is tracked in
+  temperloop#1352. Watch your own Claude Code usage view while evaluating,
+  and see § Cost at a glance for the full breakdown.
 - **One command still carries a hardcoded USD cap.** `temperloop configure`
   is capped at **$0.25**/call. It is the only remaining tool-enforced dollar
   ceiling; `try` and `try --demo`, which carried the other two, were retired
@@ -79,8 +84,8 @@ is.**
 
 | What you run | Tokens (directional) | Cost @ Sonnet 5 | Cost @ Opus 4.8 | Hard USD cap |
 |---|---|---|---|---|
-| Sandbox setup (duplicate + issue copy) — **on-ramp step 2–3** | 0 Claude | **$0** | **$0** | n/a (no model call) |
-| First epic via `/assess` → `/build` — **on-ramp step 4–5** | scales w/ the work | no fixed figure | no fixed figure | **none by default** ⚠️ |
+| Sandbox setup + `init` (duplicate, issue copy, config bootstrap, proposal PR) — **on-ramp step 2–3** | 0 Claude | **$0** | **$0** | n/a (no model call) |
+| First epic via `/assess` → `/build` — **on-ramp step 4–5** (fixed 5-item/3-level epic ¶) | not yet measured ¶ | not yet measured ¶ | not yet measured ¶ | **none — no headless call to cap** ⚠️ |
 | `configure` — per config value judged | up to ~83K † | ≤ $0.25 | ≤ $0.25 † | **$0.25/call** ✅ |
 | `/tidy` — nightly drain | 0.3–0.5M | ~$1.48 | ~$2.47 | none |
 | `/check-in` — daily check-in | ~0.1–0.3M ‡ | ~$0.30–$0.90 ‡ | ~$0.50–$1.50 ‡ | none |
@@ -101,6 +106,25 @@ same $0.25 cap is ≈50K tokens.
 (a Tier-2 interactive session that reads and reviews the vault/rollup
 surfaces, lighter than a full `/tidy` drain, heavier than a single
 classification). Treat it as an order of magnitude, not an observation.
+
+¶ The first epic is **not** open-ended work — it's a fixed, kernel-shipped
+5-item / 3-level epic (`claude/templates/first-epic-setup.md`, ADR 0010),
+four of whose five items are verdict-only spikes with no code worker and no
+PR. Despite that fixed shape, no source in this repo's own telemetry yet
+measures what running it costs a stranger on a fresh sandbox — the
+temperloop#1348 spike checked every candidate source (`item-efficiency`
+records, `pipeline-spend-report.sh` output, the Layer-1 turn streams,
+`command-runs`, and the rest) and found each one either too thin (as low as
+N=1) or measuring the wrong population — an operator's own established
+checkout, never a fresh testbed run. Rather than publish a hand-derived or
+extrapolated number that would read as a measurement, this page states that
+finding: **there is currently no data to support a band**, and a real
+measured run is tracked in temperloop#1352. There is also no
+*tool-enforced* dollar ceiling on this step, and structurally can't be yet:
+`--max-budget-usd` only caps a **headless** `claude -p` call (the same
+mechanism behind the capped `configure` row above) — `/assess` and `/build`
+instead run inside your own **interactive** `claude` session, which gives
+the CLI nothing to attach a budget flag to.
 
 ### What running temperloop costs
 
@@ -146,9 +170,13 @@ their caps went with them.
 
 That leaves a gap worth stating plainly rather than papering over: the
 current evaluation path — the testbed, then the first epic through `/assess`
-→ `/build` — is **Tier 2 work with no dollar ceiling**. See the ⚠️ TL;DR
-bullet above and temperloop#1130, which tracks publishing a cost band or a
-cap for it.
+→ `/build` — is **Tier 2 work with no tool-enforced dollar ceiling**, and
+structurally can't have one yet, because it's interactive rather than a
+capped headless call (see the ⚠️ TL;DR bullet above and § Cost at a glance
+footnote ¶). temperloop#1130 tracked closing this gap; the temperloop#1348
+spike found no source in this repo's telemetry supports a published spend
+band for it, so this page states that finding rather than a fabricated
+number — a real measured run is tracked in temperloop#1352.
 
 **Tier 2 — ordinary interactive use (`/triage`, `/assess`, `/build`,
 `/sweep`, run with you at the keyboard).** There is no fixed number here,
