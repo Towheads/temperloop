@@ -89,6 +89,24 @@ The streams a bare checkout of this repo emits:
   a reader asking whether ceremony is growing. This is the stream that turns
   "the pipeline feels like it spends more on preamble than on the change"
   into a number that can be watched and ratcheted.
+- **`model-usage`** (`model-usage-<YYYY-MM>.jsonl`) — one record per
+  spawned pipeline seat that the model-comparison module's always-on
+  attribution stream can reach: seat role name, model, provider, input /
+  output / cache-read / cache-creation token counts, a cost-weighted total,
+  duration, and an outcome reference (the issue or PR the spawn was working
+  on). A `usage_source` field (`cli-envelope` vs `unavailable`) discriminates
+  a token-bearing record from an attribution-only one, since not every
+  emit-feasible seat can see both a seat identity and a token count at spawn
+  time. Unlike every sibling stream above, this one deliberately carries no
+  `host` field — ADR 0028 requires attribution records to carry a seat role
+  name rather than any cross-repo operator identifier, so two repos'
+  streams can never be correlated. See
+  [`docs/features/model-comparison.md`](model-comparison.md) for the full
+  picture (why the stream exists, what it collects in plain terms, and its
+  content-level schema validation), and
+  [`workflows/scripts/emit-model-usage.sh`](../../workflows/scripts/emit-model-usage.sh)
+  for the record shape and its documented divergences from ADR 0020's
+  counting rules.
 
 A downstream, composed checkout of this repo may layer additional
 overlay-only streams on top (e.g. richer issue-metadata snapshots,

@@ -536,5 +536,11 @@ model-comparison workflows/scripts/model-comparison/**
 model-comparison workflows/scripts/validate-provider-disclosure.sh
 model-comparison workflows/scripts/validate-model-usage-emit.sh
 model-comparison workflows/scripts/emit-model-usage.sh
+# test_model_usage_emit.sh lives at workflows/scripts/tests/ (matching the
+# telemetry section's sibling test-file convention, e.g.
+# workflows/scripts/tests/test_command_run_emit.sh above) rather than under
+# workflows/scripts/model-comparison/, so it needs its own exact-path claim —
+# the directory-level glob two lines up does not reach it.
+model-comparison workflows/scripts/tests/test_model_usage_emit.sh
 model-comparison workflows/scripts/config/default-pricing.json
 model-comparison workflows/scripts/report-producers/model-comparison
