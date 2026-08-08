@@ -92,6 +92,26 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **The board issue cache no longer serves a merged item as still open/In
+  Progress until its TTL expires** (#1164). The write-through invalidation
+  hook `_board_cache_dirty_after_write` (`board.sh`, called from every
+  `board_set_status`/`board_stamp` write) already existed and was already
+  tested — it was a *designed* no-op whenever the calling bash block hadn't
+  sourced `lib/cache.sh`, which none of the merge-confirmed Done-write sites
+  did. `claude/commands/build.md` (4d's per-item Done write and 4d-epic's
+  epic-close Done write), `claude/commands/fix.md` (Step 6's Board
+  close→Done), and `claude/commands/sweep.md` (Phase 2's merge and spike-close
+  arms, which bypass the adapter entirely and so take an explicit
+  `cache_dirty` call) now guarded-source `lib/cache.sh` alongside
+  `lib/board.sh` — the same `if [ -f … ]; then . …; fi` form
+  `worklist.sh:50-53` already used, never `[ -f … ] && .` under `set -e`
+  (temperloop#1118) — activating cache invalidation on the merge-confirmed
+  Done write. `test_cache_command_wiring.sh`'s warm-cache/zero-`gh`-call
+  assertion for `worklist.sh` is unchanged: this only makes the *next* read
+  after a merge legitimately stale, so it refetches once, not on every warm
+  no-change read. Contract surface via `claude/commands/*.md`; **not**
+  breaking.
+
 - **A transient GitHub Actions infra outage no longer permanently ejects a
   healthy PR onto the do-not-retry path** (#1175). `gate.sh diagnose-queue`
   splits its `MERGE_GROUP_FAILED` verdict on **per-job step data**
