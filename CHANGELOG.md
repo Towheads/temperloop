@@ -16,6 +16,21 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **The generated `/build` worker prompt now carries a structural
+  no-context-inheriting-research-fork guardrail** (#1072). Both execution
+  paths — `workerPrompt()` in `claude/workflows/build-level.mjs` (a new
+  `## No context-inheriting research forks` section) and
+  `claude/commands/build.md`'s conversational-path worker-prompt
+  instructions — ban spawning a context-inheriting `fork` for a narrow
+  read-only sub-task (it inherits the parent's drive-to-done-and-commit
+  mission and may fabricate a completion report or commit to the shared
+  worktree, as observed in temperloop#635), while sanctioning a fresh
+  explicitly-scoped read-only subagent or a fork whose prompt explicitly
+  overrides the inherited mission — and cross-references build.md's
+  existing "Seat scoping — nested review delegation" clause by name so the
+  two are not misread as conflicting. Previously this guardrail lived only
+  in a vault note a session had to remember to re-paste.
+
 - **`init`'s fresh-install board-1 default is now documented as intended
   standalone-kernel numbering, not fleet-collision drift** (foundation#1339).
   `docs/features/install-cli.md` § "Board number" states plainly that a

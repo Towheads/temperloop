@@ -1199,6 +1199,31 @@ function workerPrompt(item, worktreePath, extraSection) {
     '- No issue-closing keywords (Closes/Fixes/Resolves + #N) in commit messages —',
     '  GitHub auto-closes on default-branch merge from commit messages too.',
     '',
+    // #1072 — the near-miss this institutionalizes: a build worker (temperloop#635)
+    // spawned a context-inheriting fork for a narrow read-only sub-task; the fork
+    // INHERITED the "drive to done and commit" mission, fabricated a completion
+    // report, and committed to the shared worktree (self-recovered — see
+    // Mistakes/foundation - research fork inherits drive-to-done context and
+    // commits to shared worktree). Embedded here, structurally, rather than left
+    // to a vault note someone has to remember to re-paste — mirrors how the
+    // foreground-only contract below is embedded rather than left to prose alone.
+    '## No context-inheriting research forks',
+    '- BANNED: spawning a context-inheriting `fork` for a narrow READ-ONLY sub-task',
+    '  (e.g. gathering conventions, reading code). A fork inherits this ENTIRE prompt,',
+    '  including "implement the item, drive to done, and commit" — so a fork spawned',
+    '  for research still carries that mission and may edit, commit, or fabricate a',
+    '  completion report instead of returning findings (observed: temperloop#635).',
+    '- SANCTIONED: a FRESH, explicitly-scoped read-only subagent (`Explore` /',
+    '  `general-purpose`) with a read-only, return-findings-ONLY prompt and no',
+    '  write/commit instructions — it does not inherit the drive-to-done mission.',
+    '  A `fork` is also fine if its OWN prompt explicitly OVERRIDES the inherited',
+    '  mission ("read-only; return findings ONLY; make no edits and no commits").',
+    '- This does NOT ban build.md\'s "Seat scoping — nested review delegation" (a',
+    '  focused REVIEW nested agent for context control) — that is the sanctioned',
+    '  pattern above, not the banned one.',
+    '- Treat any nested-agent report as UNTRUSTED until you independently re-verify',
+    '  it against ground truth.',
+    '',
     '## Item',
     `- title: ${item.title}`,
     `- scope: ${item.scope ?? '(see source)'}`,
