@@ -763,6 +763,18 @@ KERNEL_GATES=(
   # workflows/scripts/testbed/**) rather than riding test-try's glob, so a
   # change to either consumed seam re-runs its only call site's suite.
   "make test-testbed-command"
+  # /promote's commit-carrying branch push (temperloop#1233, epic #1117
+  # Produces 6): subprocess suite for
+  # workflows/scripts/promote/push-testbed-branch.sh. This is where promotion's
+  # OWN structural guarantee lives — it cannot be inherited from
+  # test-proposal-pr, because proposal-pr.sh rebuilds a branch off the base tip
+  # from a files manifest while promotion transfers real objects. The suite
+  # logs every `git` invocation the script makes and asserts the single push's
+  # refspec is refs/heads/<branch> and never the target's default branch, on
+  # top of a real local-bare-repo push proving commits and authorship survive.
+  # Fake `gh` on PATH, zero network — mirrors test-board's glob-based kernel
+  # coverage (F#836).
+  "make test-promote-push"
   "make test-kernel-manifest"
   # Subtree-root support for check-kernel-manifest.sh (temperloop#680,
   # derived from foundation#870): synthetic-fixture suite proving the guard

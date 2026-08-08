@@ -277,6 +277,7 @@ llms.txt        machine-readable project index (llmstxt.org convention)
 | `/tidy` | Nightly unattended: processes the session-stub backlog (extracts learnings, archives transcripts, snapshots the vault) and parks anything needing human judgment on durable review surfaces. |
 | `/check-in` | Daily human review: renders the telemetry brief, disposes the surfaces `/tidy` parked overnight, and sets the `/next` priorities per project. |
 | `/pipeline-drive`, `/pipeline-drive-merge` | Headless (`claude -p`) executors of the autonomous pipeline driver — the unattended scheduler that runs the triage→build pipeline on a timer ([`docs/features/pipeline-driver.md`](docs/features/pipeline-driver.md)). The first runs the safe, structurally no-merge tier of a tick; the second (a separate opt-in) drives code items through `/build --unattended`, merging only via build's own gated path. |
+| `/promote` | Carries work out of a `temperloop testbed` and into the real repository it was built from — the testbed's OWN commits pushed as a branch plus a pull request, with issue correspondence and API state reported as separate operations rather than as one "migrated" claim ([`docs/features/promote.md`](docs/features/promote.md)). Runs inside the testbed checkout; the target repository is always named, never inferred. |
 | `/init` | Bootstraps a new project's `CLAUDE.md` + context. |
 
 ### Review agents (definitions in `claude/agents/`)

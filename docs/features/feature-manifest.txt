@@ -259,6 +259,17 @@ testbed bin/subcommands/tests/test_testbed.sh
 # `**`, NOT `*`: a single star does not cross a directory separator, so a `*`
 # claim would leave everything under seed/ and tests/ UNCLAIMED.
 testbed workflows/scripts/demo/**
+# ── promote — `/promote`, the promotion path out of a testbed and back into
+# the reader's real repository (temperloop#1117 Produces 6, temperloop#1233).
+# ADR 0023 splits it: the judgment half is the slash-command spec, the
+# mechanical half is the commit-carrying push script + its own suite. This
+# file carries NO blanket `claude/commands/*` glob — every command spec is
+# claimed individually above — so the spec needs its own row here.
+promote claude/commands/promote.md
+# `**`, NOT `*`: a single star does not cross a directory separator, so a `*`
+# claim would leave everything under tests/ UNCLAIMED (same reasoning as the
+# testbed seed-content row above).
+promote workflows/scripts/promote/**
 # ── version-embedding — the release version stamped into the shipped files
 # (temperloop#677): the committed VERSION file and its drift-guard gate. The
 # resolver helper lives in bin/lib/common.sh (claimed by install-cli's bin
