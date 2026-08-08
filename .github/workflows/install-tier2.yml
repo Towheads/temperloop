@@ -1,4 +1,4 @@
-name: Install Tier-2 (real round-trip)
+name: Install Tier-2 (install + adopt-path round trip)
 
 # install-tier2.yml — the tier-2 leg of ADR K164 D6's install-lifecycle
 # validation strategy (temperloop#268). Tier-1
@@ -7,39 +7,90 @@ name: Install Tier-2 (real round-trip)
 # ci-install-lifecycle.md) proves the install/uninstall MACHINE-SURFACE
 # lifecycle hermetically, entirely inside a sandboxed HOME/XDG tree with a
 # `file://` bare clone as its only "network" call — fast and free enough to
-# run on every PR. This workflow proves the OTHER half: the REAL newcomer
-# adoption path (`temperloop try` -> `temperloop init` -> `temperloop
-# eject`) against a REAL target repo, over REAL network, with a REAL `gh`
-# and a REAL `claude -p` judgment call — see docs/features/
-# ci-install-tier2.md for the full "how it works".
+# run on every PR. This workflow proves the OTHER half this tier-1 gate
+# cannot: that a real newcomer's INSTALL (`bin/bootstrap.sh`, exercising the
+# just-checked-out ref) and ADOPT PATH (`temperloop init` -> `temperloop
+# eject`) still work against a REAL target repo over REAL network with a
+# REAL `gh` — see docs/features/ci-install-tier2.md for the full "how it
+# works".
+#
+# RE-SCOPED off the retired `try` path (temperloop#1234, epic #1117). This
+# workflow used to also drive `temperloop try` (a live `claude -p`
+# shadow-triage call) and `temperloop testbed` (create/destroy a disposable
+# evaluation repo). Neither runs here any more:
+#   - `try` is no longer part of the adoption path (temperloop#1115) — the
+#     step, its ANTHROPIC_API_KEY secret, and the Claude Code CLI install it
+#     needed are all removed outright, not merely skipped.
+#   - `testbed` is NOT run here (deliberately — see "SCOPE GAP" below). This
+#     workflow's round trip is `init` -> `eject` only, against the ONE
+#     persistent, this-project-scoped repo named below — never a
+#     just-created disposable one.
+#
+# THE CREDENTIAL: `DEMO_REPO_TOKEN` is a fine-grained PAT scoped to exactly
+# one repository — resource owner `Towheads`, repository access limited to
+# `temperloop-demo`, permissions Contents + Issues + Administration. It
+# cannot reach `Towheads/temperloop` or any other repository, and — because
+# repository CREATION needs an org-wide grant no single-repo-scoped token
+# can carry — it cannot create a repository either. This workflow therefore
+# never creates or deletes a repository at any point; both are structurally
+# unreachable from this credential, not merely avoided by convention. This
+# is also why the target is a PERSISTENT, pre-existing repo
+# (`Towheads/temperloop-demo`) rather than a fresh one per run: a fixed,
+# known repo name is what lets the token be scoped this narrowly in the
+# first place — see `Decisions/temperloop - CI round trip keeps a
+# persistent demo repo, not per-run create-delete` and ADR 0025's amended
+# "CI inherits the rule" consequence.
+#
+# REUSABLE BASELINE, EACH RUN. `temperloop eject` is the primary reversal
+# leg: it reverts exactly the install-manifest-tracked API state `init`
+# applied (a proposal branch + PR onto a single, reused branch name) and
+# leaves nothing else behind — see eject.sh's own header for the manifest
+# model. The one other thing `init` COULD create is the first-epic issue its
+# Step 2 offers to file (`--yes-first-epic`) or, on an explicit decline, a
+# durable re-offer-pointer issue (`--no-first-epic`) — either would need its
+# own explicit close/clean step to keep the repo baseline-stable. This
+# workflow instead chooses the OTHER option point (d) of temperloop#1234
+# names: it passes NEITHER `--yes-first-epic` NOR `--no-first-epic`, so
+# `init`'s own ambient-CI detection (`GITHUB_ACTIONS` is set) makes it
+# legibly SKIP the offer ("first-epic: skipped — no interactive operator
+# detected …") rather than deciding it. Nothing is ever filed, so there is
+# nothing here to clean up — simpler and more robust than a create-then-
+# close mechanism, at the cost of never exercising the first-epic offer
+# itself (that offer already has its own coverage: init.sh's unit suite,
+# test_init.sh, drives both the accept and decline paths hermetically).
+#
+# SCOPE GAP (accepted, see ADR 0025 "CI inherits the rule" as amended by
+# this same change): because this workflow never creates or tears down a
+# repository, `temperloop testbed` and its teardown leg have NO weekly
+# automated coverage here. They are exercised only by their own unit tests
+# (a faked `gh`) and by temperloop#1240's one-time executed run. This is a
+# deliberate, named trade-off, not an oversight — see the ADR for the full
+# reasoning.
 #
 # WHY NEVER PER-PR (the reason this is a SEPARATE workflow, not a job added
 # to ci.yml's `checks`):
-#   - COST: a real live `claude -p` shadow-triage call against the demo
-#     repo's open issues is a billed LLM turn (`temperloop try` caps it at
-#     $1.00 via TRY_CLAUDE_MAX_BUDGET_USD, bin/lib/cost-estimates.conf) —
-#     harmless once, but every PR push/re-push on this repo would multiply
-#     that spend for zero marginal coverage over tier-1's hermetic suite.
-#   - SHARED REMOTE STATE: `temperloop init` writes real remote objects onto
-#     the shared demo repo — a proposal branch + PR, and the first-epic
-#     issue it offers to file. (Since the init scope-down, temperloop#796,
-#     it writes no API STATE: no branch protection, no label set, no
-#     board.) Two PRs' tier-2 runs racing the same remote repo concurrently
-#     would still collide; this workflow's own `concurrency` group below
-#     serializes runs for exactly that reason, which is fine for a
-#     weekly/manual cadence and wrong for a per-PR one.
-#   - FLAKINESS SURFACE: real network + a live model call + GitHub API
-#     rate limits are exactly the nondeterminism per-PR CI must not carry
-#     (a stranger's PR should never go red because the demo repo's API
-#     round-trip hiccuped) — that's what tier-1's hermetic suite is FOR.
+#   - SHARED REMOTE STATE: `temperloop init` writes a real remote proposal
+#     branch + PR onto the shared demo repo. Two PRs' tier-2 runs racing the
+#     same remote repo concurrently would collide; this workflow's own
+#     `concurrency` group below serializes runs for exactly that reason,
+#     which is fine for a weekly/manual cadence and wrong for a per-PR one.
+#   - FLAKINESS SURFACE: real network + GitHub API rate limits are exactly
+#     the nondeterminism per-PR CI must not carry (a stranger's PR should
+#     never go red because the demo repo's API round-trip hiccuped) —
+#     that's what tier-1's hermetic suite is FOR.
 #
 # CADENCE: weekly (Monday 05:00 UTC) is right for a release-gate leg — it
 # only needs to prove the live path still works before a release ships, not
 # on every commit. Also `workflow_dispatch` for an on-demand run — in
 # particular, run this BY HAND once before cutting a kernel release tag
 # (its "release-gate role": a green run here is the real-world proof tier-1
-# can't give, that a stranger's actual `try`/`init`/`eject` still works
-# against a live target repo, not just a hermetic sandbox).
+# can't give, that a stranger's actual `init`/`eject` still works against a
+# live target repo, not just a hermetic sandbox).
+#
+# VERIFICATION NOTE: this item's own PR cannot demonstrate a green run of
+# this workflow — it never triggers on `pull_request` by design (see below),
+# so a run only happens on the next Monday schedule or an operator's manual
+# `workflow_dispatch` after merge, with `DEMO_REPO_TOKEN` in place.
 #
 # FAILURE VISIBILITY: `on: schedule` failures already trigger GitHub's
 # built-in scheduled-workflow-failure notification (repo Watch settings ->
@@ -47,10 +98,10 @@ name: Install Tier-2 (real round-trip)
 # plumbing needed here. On top of that, the final "Round-trip verdict" job
 # step below writes a leg-by-leg outcome table to $GITHUB_STEP_SUMMARY and
 # fails the job with an explicit `::error::` line NAMING which leg
-# (try/init/eject) failed — see that step for why a bare exit-code check on
-# `try`/`init` isn't enough (both scripts are deliberately fail-open at the
-# shell-exit-code layer; degrade-to-skip is caught by content-scanning
-# their captured logs instead).
+# (init/eject) failed — see that step for why a bare exit-code check on
+# `init` isn't enough (it is deliberately fail-open at the shell-exit-code
+# layer; a real failure is caught by content-scanning its captured log for
+# a `FAILED` marker instead).
 #
 # NEVER pull_request / push / merge_group — this workflow must never gate
 # or run on a PR. If you're tempted to add one of those triggers here,
@@ -74,7 +125,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DEMO_REPO: Towheads/temperloop-demo  # denylist:allow — this repo's own scratch demo-repo default (mirrors seed-demo-repo.sh / try.sh's identical default), its identity, not a personal-token leak
+  DEMO_REPO: Towheads/temperloop-demo  # denylist:allow — this repo's own persistent demo-repo identity (temperloop#1234), not a personal-token leak
 
 jobs:
   round-trip:
@@ -85,26 +136,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify required secrets are present
+      - name: Verify DEMO_REPO_TOKEN is present and functional
         env:
-          HAVE_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
-          HAVE_DEMO_TOKEN: ${{ secrets.DEMO_REPO_TOKEN != '' }}
+          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
         run: |
-          missing=""
-          [ "$HAVE_ANTHROPIC" = "true" ] || missing="$missing ANTHROPIC_API_KEY"
-          [ "$HAVE_DEMO_TOKEN" = "true" ] || missing="$missing DEMO_REPO_TOKEN"
-          if [ -n "$missing" ]; then
-            echo "::error::install-tier2: missing required repo secret(s):$missing — set them under Settings > Secrets and variables > Actions, then re-run. See docs/features/ci-install-tier2.md for what each one is for."
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::install-tier2: missing required repo secret DEMO_REPO_TOKEN — set it under Settings > Secrets and variables > Actions (a fine-grained PAT scoped to $DEMO_REPO only: Contents + Issues + Administration), then re-run. See docs/features/ci-install-tier2.md."
             exit 1
           fi
-          echo "install-tier2: required secrets present (ANTHROPIC_API_KEY, DEMO_REPO_TOKEN)"
+          if ! gh api "repos/$DEMO_REPO" --jq .full_name >/dev/null 2>&1; then
+            echo "::error::install-tier2: DEMO_REPO_TOKEN is set but cannot read $DEMO_REPO — check the token is unexpired, unrevoked, and still scoped to this repo. See docs/features/ci-install-tier2.md."
+            exit 1
+          fi
+          echo "install-tier2: DEMO_REPO_TOKEN present and functional against $DEMO_REPO"
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
 
       - name: Bootstrap the temperloop CLI from this checkout
         run: |
@@ -122,7 +170,7 @@ jobs:
       # is the one leg that proves the install carries its own version number —
       # a hermetic unit gate (test_version_embedding.sh) can't, because it only
       # sees the in-tree checkout, not what bootstrap actually landed on PATH.
-      # Fail-closed: unlike try/init there is no degraded-network excuse for a
+      # Fail-closed: unlike init there is no degraded-network excuse for a
       # wrong version string. continue-on-error so the round trip below still
       # runs and the verdict reports every leg at once.
       - name: "Version embedded in the install"
@@ -145,11 +193,6 @@ jobs:
           fi
           echo "OK: the installed CLI reports its embedded version ($shipped)."
 
-      - name: Reset the demo repo to a known baseline
-        env:
-          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
-        run: bash workflows/scripts/demo/seed-demo-repo.sh --repo "$DEMO_REPO" --reset
-
       - name: Clone the demo repo (the newcomer's local checkout)
         env:
           GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
@@ -158,96 +201,57 @@ jobs:
           git clone "https://github.com/$DEMO_REPO.git" "$RUNNER_TEMP/demo-repo"
           echo "DEMO_DIR=$RUNNER_TEMP/demo-repo" >> "$GITHUB_ENV"
 
-      # --- The real round trip -------------------------------------------
+      # --- The real round trip: init -> eject -------------------------------
       #
-      # `temperloop try`/`init` are BOTH deliberately fail-open at the
-      # shell-exit-code layer for their interactive/degraded-network use
-      # case (a real `gh`/`claude` failure prints "skipped — <reason>" or
-      # "FAILED — <reason>" and still exits 0 — see bin/subcommands/try.sh
-      # and init.sh's own headers). That's the right default for a curious
-      # stranger on a flaky connection, and the wrong one for a gate whose
-      # whole point is proving the LIVE path actually ran. So each leg
-      # below captures its own log, then greps it for those two markers and
-      # turns a soft degrade into a hard step failure. `continue-on-error:
-      # true` on try/init so the eject leg still runs and attempts a clean
-      # revert of whatever init did manage to apply, even if a step above
-      # it failed partway — see the "Round-trip verdict" step for how the
-      # job's real pass/fail is decided from these three outcomes.
-
-      - name: "Round trip 1/3 — try (probe + live claude shadow-triage)"
-        id: try
-        continue-on-error: true
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
-        run: |
-          temperloop try --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --timeout 30 \
-            2>&1 | tee "$RUNNER_TEMP/try.log"
-          if grep -q "skipped —" "$RUNNER_TEMP/try.log"; then
-            echo "::error::install-tier2: 'temperloop try' degraded instead of completing the live round trip — see the try.log artifact for the skip reason(s):"
-            grep "skipped —" "$RUNNER_TEMP/try.log" || true
-            exit 1
-          fi
-          echo "try: OK — probe + open-issue list + live claude shadow-triage all ran live, zero skips"
-
-      # RE-SCOPED for the init scope-down (temperloop#796). `init`'s contract
-      # is now: bootstrap .temperloop/config (+ its proposal PR) -> offer/file
-      # the first epic -> print the handoff -> stop. It applies NO API state,
-      # so the old `--yes-required-check --yes-labels --no-board` invocation
-      # no longer asserts anything real. Those flags still PARSE (they are
-      # retained deprecated no-ops, which is exactly why this leg would not
-      # have gone red on its own — it would have kept passing while silently
-      # asserting an obsolete contract), so they are dropped here in favour
-      # of the flag that drives the live path that still exists.
+      # `temperloop init` is deliberately fail-open at the shell-exit-code
+      # layer for its interactive/degraded-network use case (a real `gh`
+      # failure prints "skipped — <reason>" or "FAILED — <reason>" and still
+      # exits 0 — see init.sh's own header). That's the right default for a
+      # curious stranger on a flaky connection, and a bare exit code proves
+      # nothing for a gate whose whole point is proving the live path ran —
+      # so this leg captures its own log and content-scans it instead.
       #
-      # `--yes-first-epic` is what makes this a real assertion: without a
-      # preset, an unattended run correctly SKIPS the offer (GITHUB_ACTIONS
-      # is an ambient no-live-operator signal), and the skip notice itself
-      # matches the "skipped —" scan below — i.e. the leg could not pass at
-      # all without deciding the offer explicitly.
-      #
-      # The `next step:` grep is the handoff marker: it proves the run
-      # reached its final step rather than degrading somewhere earlier, and
-      # it holds on BOTH a first run (epic filed) and every later one (the
-      # idempotency probe finds the existing epic and hands off identically),
-      # which matters because the epic issue is not `demo-seed` labelled and
-      # so survives seed-demo-repo.sh --reset.
-      - name: "Round trip 2/3 — init (bootstrap + proposal PR + first-epic offer + handoff)"
+      # Unlike the workflow's own prior revision, this leg does NOT treat
+      # every "skipped —" line as fatal: this workflow intentionally never
+      # passes --yes-first-epic/--no-first-epic (see the file header's
+      # "REUSABLE BASELINE" note), so `init`'s first-epic offer legibly
+      # skips on EVERY run by design (the ambient GITHUB_ACTIONS signal) —
+      # that is the expected, successful outcome here, not a degrade. A
+      # genuine failure is instead caught by a `FAILED` marker, and full
+      # completion is proven by the stable `next step:` handoff line
+      # (init.sh's own header: "the stable marker
+      # .github/workflows/install-tier2.yml greps to prove the live round
+      # trip actually reached the handoff" — true regardless of whether the
+      # first-epic offer ran).
+      - name: "Round trip 1/2 — init (bootstrap + proposal PR + handoff)"
         id: init
-        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.DEMO_REPO_TOKEN }}
         run: |
           temperloop init --dir "$DEMO_DIR" --gh-repo "$DEMO_REPO" --timeout 30 \
-            --yes-first-epic \
             2>&1 | tee "$RUNNER_TEMP/init.log"
-          if grep -q "skipped —" "$RUNNER_TEMP/init.log"; then
-            echo "::error::install-tier2: 'temperloop init' degraded instead of completing the live round trip — see the init.log artifact for the skip reason(s):"
-            grep "skipped —" "$RUNNER_TEMP/init.log" || true
-            exit 1
-          fi
           if grep -q "FAILED" "$RUNNER_TEMP/init.log"; then
             echo "::error::install-tier2: 'temperloop init' reported a FAILED action — see the init.log artifact:"
             grep "FAILED" "$RUNNER_TEMP/init.log" || true
             exit 1
           fi
-          if ! grep -q '^next step: /assess --epic ' "$RUNNER_TEMP/init.log"; then
-            echo "::error::install-tier2: 'temperloop init' never printed its first-epic handoff ('next step: /assess --epic <N>') — the run did not reach the end of its contract. See the init.log artifact."
+          if ! grep -q '^next step: ' "$RUNNER_TEMP/init.log"; then
+            echo "::error::install-tier2: 'temperloop init' never printed its handoff ('next step: …') — the run did not reach the end of its contract. See the init.log artifact."
             exit 1
           fi
-          echo "init: OK — config bootstrapped, proposal PR opened, first epic filed, handoff printed:"
+          echo "init: OK — config bootstrapped, proposal PR opened, handoff printed (first-epic offer deliberately un-requested, see file header):"
           grep '^next step: ' "$RUNNER_TEMP/init.log"
 
-      # The manifest `eject` reverts is now SHRUNKEN: since init applies no
-      # API state, a fresh demo-repo round trip records only the proposal_pr
-      # entry (a pre-scope-down repo's label/required_check/board entries are
-      # still carried forward and still reverted — eject keeps all four
-      # handlers — but this fixture is reset each run, so it has none). eject
-      # is fail-open at the exit-code layer exactly like try/init, so a bare
-      # exit code proves nothing: content-scan for its own `FAILED` markers,
-      # same shape as the two legs above.
-      - name: "Round trip 3/3 — eject (manifest-driven revert)"
+      # The manifest `eject` reverts holds exactly one entry on a healthy run:
+      # the `proposal_pr` init.sh just opened (init applies no other API
+      # state — see init.sh's own "SCOPE" header note). eject is fail-open at
+      # the exit-code layer exactly like init, so a bare exit code proves
+      # nothing: content-scan for its own `FAILED` markers, same shape as the
+      # leg above. This is the primary mechanism that returns the demo repo
+      # to a reusable baseline every run (see the file header's "REUSABLE
+      # BASELINE" note) — no repository is ever created or deleted here.
+      - name: "Round trip 2/2 — eject (manifest-driven revert)"
         id: eject
         if: always()
         continue-on-error: true
@@ -269,7 +273,6 @@ jobs:
         with:
           name: install-tier2-logs
           path: |
-            ${{ runner.temp }}/try.log
             ${{ runner.temp }}/init.log
             ${{ runner.temp }}/eject.log
           if-no-files-found: ignore
@@ -279,7 +282,6 @@ jobs:
         if: always()
         env:
           VERSION_OUTCOME: ${{ steps.version.outcome }}
-          TRY_OUTCOME: ${{ steps.try.outcome }}
           INIT_OUTCOME: ${{ steps.init.outcome }}
           EJECT_OUTCOME: ${{ steps.eject.outcome }}
         run: |
@@ -289,14 +291,12 @@ jobs:
             echo "| leg | outcome |"
             echo "|---|---|"
             echo "| version | $VERSION_OUTCOME |"
-            echo "| try | $TRY_OUTCOME |"
             echo "| init | $INIT_OUTCOME |"
             echo "| eject | $EJECT_OUTCOME |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           failed_legs=""
           [ "$VERSION_OUTCOME" = "success" ] || failed_legs="$failed_legs version"
-          [ "$TRY_OUTCOME" = "success" ] || failed_legs="$failed_legs try"
           [ "$INIT_OUTCOME" = "success" ] || failed_legs="$failed_legs init"
           [ "$EJECT_OUTCOME" = "success" ] || failed_legs="$failed_legs eject"
 
@@ -309,4 +309,4 @@ jobs:
             exit 1
           fi
 
-          echo "All three legs (try/init/eject) completed the live round trip successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "Both legs (init/eject) completed the live round trip successfully." >> "$GITHUB_STEP_SUMMARY"
