@@ -1068,6 +1068,22 @@ KERNEL_GATES=(
   # generator-owned).
   "bash workflows/scripts/validate-design-brief.sh"
   "bash workflows/scripts/tests/test_validate_design_brief.sh"
+  # Positive on-ramp anchor-registry gate (ADR 0024, temperloop#1117): the
+  # validate-capture-backstop.sh / validate-activation-registry.sh mold
+  # applied to the four cross-surface on-ramp anchors (bin/temperloop's
+  # first-run banner, README.md's quickstart, bin/README.md,
+  # docs/features/install-cli.md) that drifted silently once already
+  # (temperloop#1116) — asserts what each registered anchor MUST say
+  # (workflows/scripts/config/onramp-anchors.tsv), never a tree-wide sweep
+  # for a retired name. See the registry's own header for why: a sweep
+  # ships with an exemption list on day one (CHANGELOG.md/docs/adr/**/
+  # Plans-archive/** name the retired command legitimately, as history),
+  # and the exemption list becomes the thing people edit to make the build
+  # green. Same direct-`bash` form as the sibling validator gates above
+  # (kernel Makefile is generator-owned; a `make` target exists too —
+  # `make validate-onramp-anchors` — for a human running it locally).
+  "bash workflows/scripts/validate-onramp-anchors.sh"
+  "bash workflows/scripts/tests/test_validate_onramp_anchors.sh"
 )
 
 # Surface-conditional kernel gates (temperloop#488, class-gated per temperloop#691).

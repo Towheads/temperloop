@@ -222,6 +222,12 @@ bash workflows/scripts/declared-expiry-check.sh	claude/** workflows/scripts/decl
 bash workflows/scripts/tests/test_declared_expiry_check.sh	workflows/scripts/declared-expiry-check.sh workflows/scripts/tests/test_declared_expiry_check.sh
 bash workflows/scripts/validate-design-brief.sh	claude/design-schema.md claude/** workflows/scripts/validate-design-brief.sh
 bash workflows/scripts/tests/test_validate_design_brief.sh	workflows/scripts/validate-design-brief.sh workflows/scripts/tests/test_validate_design_brief.sh
+# Positive on-ramp anchor-registry gate (ADR 0024, temperloop#1117): scoped to
+# the registry itself, the validator, its fixture test, and the four
+# registered anchor files it reads — never ALWAYS, since the registered
+# anchor set is small and enumerable (the opposite of a whole-tree scanner).
+bash workflows/scripts/validate-onramp-anchors.sh	workflows/scripts/config/onramp-anchors.tsv workflows/scripts/validate-onramp-anchors.sh bin/temperloop README.md bin/README.md docs/features/install-cli.md
+bash workflows/scripts/tests/test_validate_onramp_anchors.sh	workflows/scripts/validate-onramp-anchors.sh workflows/scripts/tests/test_validate_onramp_anchors.sh workflows/scripts/config/onramp-anchors.tsv
 bash workflows/scripts/config/tests/test_check_gate_paths.sh	workflows/scripts/config/**
 
 # ── Knowledge store / search ────────────────────────────────────────────────

@@ -18,7 +18,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 
 .PHONY: help shellcheck quality-gates test-board test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard test-testbed-record \
-	test-prune-branches validate-capture-backstop validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
+	test-prune-branches validate-capture-backstop validate-activation-registry validate-onramp-anchors validate-command-run-emit validate-issue-touch-emit \
 	validate-knowledge-search-emit validate-diagnose-queue-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
@@ -40,6 +40,7 @@ help:
 	@echo "  test-prune-branches     prune-merged-branches.sh tests"
 	@echo "  validate-capture-backstop     Capture/Backstop pairing registry lint"
 	@echo "  validate-activation-registry  Class-A static-second-surface activation registry lint"
+	@echo "  validate-onramp-anchors  On-ramp anchor-registry lint (ADR 0024)"
 	@echo "  validate-command-run-emit  emit-command-run.sh presence/wiring lint"
 	@echo "  validate-issue-touch-emit  emit-issue-touch.sh presence/wiring lint"
 	@echo "  validate-knowledge-search-emit  ks_search read-log outcome-field presence/wiring lint"
@@ -186,6 +187,9 @@ validate-capture-backstop:
 
 validate-activation-registry:
 	@bash $(FOUNDATION)/workflows/scripts/validate-activation-registry.sh
+
+validate-onramp-anchors:
+	@bash $(FOUNDATION)/workflows/scripts/validate-onramp-anchors.sh
 
 validate-command-run-emit:
 	@bash $(FOUNDATION)/workflows/scripts/validate-command-run-emit.sh
