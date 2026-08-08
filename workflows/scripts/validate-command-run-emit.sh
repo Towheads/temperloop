@@ -28,7 +28,19 @@
 #      later is caught without editing this script. A doc with no such
 #      disposition may legitimately omit the flag (it defaults to 0) — but it
 #      still has to satisfy the emitter's own
-#      `merged + resolved + parked == items_processed` assertion at run time.
+#      `merged + resolved + parked + reported_no_op == items_processed`
+#      assertion at run time.
+#   4. (temperloop#1103) the same content-derived check, for the
+#      **`reported-no-op`** terminal disposition: a command doc whose prose
+#      declares it invokes the emit WITHOUT `--reported-no-op`. This is the
+#      sibling gap #1103 was filed for: `/fix` can terminate a target on
+#      `already-done` / `claimed-elsewhere` with nothing merged, resolved, or
+#      parked, but before #1103 the schema had no fourth field to say so —
+#      fix.md instead just skipped the emit on those two routes, so a no-op
+#      /fix run left NO telemetry record at all. Content-derived the same way
+#      as `resolved`: any doc that declares `reported-no-op` must pass
+#      `--reported-no-op`, so a future doc that grows this disposition is
+#      caught without editing this script.
 #
 # This mirrors the validate-capture-backstop.sh shape (same script style, same
 # hard-fail-on-half-present contract, wired into scripts/quality-gates.sh
@@ -57,17 +69,21 @@ elif [ ! -x "$EMIT_SCRIPT" ]; then
   fail=1
 else
   echo "ok    emit-command-run.sh present and executable"
-  # 1b. and it must still accept --resolved + still assert the sum (#1084).
-  #     Without these the wiring below is cosmetic: the callers would pass a
-  #     flag the script silently drops (the `WARN unknown argument` arm).
+  # 1b. and it must still accept --resolved / --reported-no-op + still assert
+  #     the sum (#1084, extended #1103). Without these the wiring below is
+  #     cosmetic: the callers would pass a flag the script silently drops (the
+  #     `WARN unknown argument` arm).
   if ! grep -Eq -- '--resolved\)' "$EMIT_SCRIPT"; then
     echo "FAIL  emit-command-run.sh no longer parses --resolved — the verdict-resolved disposition (temperloop#1084) lost its telemetry field"
     fail=1
+  elif ! grep -Eq -- '--reported-no-op\)' "$EMIT_SCRIPT"; then
+    echo "FAIL  emit-command-run.sh no longer parses --reported-no-op — the reported-no-op disposition (temperloop#1103) lost its telemetry field"
+    fail=1
   elif ! grep -Fq 'disposition_total' "$EMIT_SCRIPT"; then
-    echo "FAIL  emit-command-run.sh parses --resolved but no longer asserts merged + resolved + parked == items_processed — a disposition added without a field would under-report silently again (temperloop#1084)"
+    echo "FAIL  emit-command-run.sh parses --resolved/--reported-no-op but no longer asserts merged + resolved + parked + reported_no_op == items_processed — a disposition added without a field would under-report silently again (temperloop#1084/#1103)"
     fail=1
   else
-    echo "ok    emit-command-run.sh parses --resolved and asserts the disposition sum"
+    echo "ok    emit-command-run.sh parses --resolved / --reported-no-op and asserts the disposition sum"
   fi
 fi
 
@@ -114,6 +130,26 @@ check_resolved() {  # $1=label $2=path
   echo "ok    $label declares 'resolved (verdict)' and passes --resolved"
 }
 
+# --- 4. a doc that can terminate an item on a REPORTED-NO-OP must pass it ----
+# Content-derived (see the header), the same shape as check_resolved above:
+# the trigger is the doc declaring the `reported-no-op` disposition, not this
+# script knowing which docs do (temperloop#1103).
+check_reported_no_op() {  # $1=label $2=path
+  local label="$1" file="$2"
+  [ -f "$file" ] || return 0   # missing-doc case already reported by check_wiring
+  if ! grep -Fqi 'reported-no-op' "$file"; then
+    echo "ok    $label declares no 'reported-no-op' disposition — --reported-no-op not required"
+    return
+  fi
+  # The invocation is a `\`-continued block; scan a window after the match.
+  if ! grep -A8 -F 'emit-command-run.sh' "$file" | grep -E -- '--reported-no-op[[:space:]]' >/dev/null; then
+    echo "FAIL  $label ($file) declares a 'reported-no-op' terminal disposition but its emit-command-run.sh call omits --reported-no-op — reported-no-op runs would be invisible and the counts would not reconcile against items_processed (temperloop#1103)"
+    fail=1
+    return
+  fi
+  echo "ok    $label declares 'reported-no-op' and passes --reported-no-op"
+}
+
 check_wiring "sweep.md"  "$SWEEP_MD"  "sweep"
 check_wiring "triage.md" "$TRIAGE_MD" "triage"
 check_wiring "fix.md"    "$FIX_MD"    "fix"
@@ -121,6 +157,10 @@ check_wiring "fix.md"    "$FIX_MD"    "fix"
 check_resolved "sweep.md"  "$SWEEP_MD"
 check_resolved "triage.md" "$TRIAGE_MD"
 check_resolved "fix.md"    "$FIX_MD"
+
+check_reported_no_op "sweep.md"  "$SWEEP_MD"
+check_reported_no_op "triage.md" "$TRIAGE_MD"
+check_reported_no_op "fix.md"    "$FIX_MD"
 
 echo "---"
 if [ "$fail" -ne 0 ]; then
