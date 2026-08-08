@@ -200,15 +200,60 @@ and what is **left to you** — three lists, never one claim.
      Edit only between these two markers; the issue-correspondence section
      above belongs to a sibling item and the two must stay disjoint. -->
 
-Placeholder. Branch protection, required checks, labels, and board
-configuration are GitHub API **state**, not tree state: they cannot ride a
-pull request, so they are never "migrated". They are re-applied by running the
-adopt path (`temperloop init`) in the real repository as its **own separately
-consented step** — owning that apply here would bend ADR 0023's biconditional.
-Diffing current-versus-proposed settings before anything acts, and leaving a
-durable team-visible record in the repository afterwards, land with their own
-script and tests in a later item. Until then, state plainly that API state was
-**not** promoted and name the adopt path.
+Branch protection, required checks, labels, and board configuration are
+GitHub API **state**, not tree state: they cannot ride a pull request, so
+they are never "migrated" the way Step 3's commits are. This section covers
+what `/promote` DOES do about that state — show it, and leave a trail — and
+is explicit about the one thing it never does: apply it. Re-applying is the
+**adopt path**'s job (`temperloop init`, run in the real repository as its
+**own separately consented step**) — owning that apply here would bend ADR
+0023's biconditional (docs/adr/0023) the first time it happened. Drive every
+step below through `workflows/scripts/promote/api-state-diff.sh`; never
+re-implement its `gh` calls by hand, for the same reason Step 3 drives
+`push-testbed-branch.sh` rather than re-implementing its git.
+
+**Before suggesting the adopt path, show the diff.** Run:
+
+```sh
+workflows/scripts/promote/api-state-diff.sh diff --to <owner>/<repo> --from <testbed-owner>/<repo>
+```
+
+This is all reads — it never writes anything. Surface its output to the
+operator verbatim, before you say anything about running `temperloop init`.
+The point is informed consent: the target repository may already carry a
+deliberate branch-protection or label setup, and the diff is what turns
+"the adopt path silently overwrote my settings" into a decision the operator
+actually made. If the operator decides to proceed, they run `temperloop
+init` themselves in the real repository — `/promote` never runs it for them.
+
+**After the adopt path runs, leave a durable trail in the repository.** A
+terminal report only the promotion operator saw is not a trail anyone else
+can find later — the record has to live **in** the target repository. Once
+the operator confirms the adopt path has run (or that they are deliberately
+skipping it), run:
+
+```sh
+workflows/scripts/promote/api-state-diff.sh record --to <owner>/<repo> \
+  --testbed-repo <testbed-owner>/<repo> \
+  --migrated "<what rode the pull request as real commits>" \
+  --reapplied "<what running the adopt path actually re-applied, or 'not run'>" \
+  --left "<what still needs a human decision>" \
+  (--issue <N> | --pr <N> | --create-issue --title "<title>")
+```
+
+Post it as a comment on the pull request Step 3 opened when one exists;
+otherwise comment on the corresponding issue, or create a new issue. Every
+record it leaves states plainly that it came from a temperloop evaluation
+testbed and names which one — a reviewer with no context on this process
+can tell where it came from without asking anyone.
+
+**The three-part report is mandatory and structural, not a style choice.**
+`--migrated`, `--reapplied`, and `--left` are each **required** — there is no
+way to call `record` (or the standalone `report` subcommand it shares its
+rendering with) with one omitted, and each of the three is independently
+refused if it reads as a uniform "migration complete"-shaped claim. State
+what is actually true in each of the three, even when one of them is
+"(none)" — never collapse them into one blanket line.
 
 <!-- END: api-state -->
 
