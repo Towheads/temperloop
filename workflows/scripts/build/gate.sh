@@ -607,6 +607,55 @@ cmd_poll() {
 # run) for ours rather than MERGE_GROUP_FAILED. Recovery still fires (DEQUEUED
 # re-arms), just without the failed-run id — strictly better than today's opaque
 # timeout, never worse.
+# --- diagnose-queue lake-stream emit (temperloop#1192) -----------------------
+# cmd_diagnose_queue computes a merge-queue verdict that /build and /fix
+# branch merge decisions on — until now that verdict was computed and then
+# discarded, with no durable record of which verdicts actually fire in
+# practice. The three helpers below route EVERY exit from cmd_diagnose_queue
+# (including its own internal die() paths) through the SIBLING emit script
+# (workflows/scripts/emit-diagnose-queue.sh) as a subprocess call. WARN-
+# DON'T-DROP by construction (see that script's own header); the emit is
+# NEVER inlined into cmd_diagnose_queue itself — gate.sh's whole design is a
+# closed outcome set that FAILS LOUD via die(), while telemetry must never
+# fail or block its caller, so mixing the two would risk a telemetry hiccup
+# silently changing this function's exit code (the blast-radius risk kernel
+# principle 6 warns against). Because cmd_diagnose_queue is a plain function
+# call (not a separate process) from BOTH the standalone `diagnose-queue` CLI
+# dispatch and cmd_poll's internal TIMEOUT-path probe, wiring the emit HERE
+# — rather than at the CLI dispatch site — fires it on both call paths.
+_DQ_EMIT_SCRIPT="$_GATE_HERE/../emit-diagnose-queue.sh"
+
+_dq_emit() {  # $1=owner/repo $2=pr $3=outcome $4=detail-json
+  "$_DQ_EMIT_SCRIPT" --repo "$1" --pr "$2" --outcome "$3" --detail-json "$4" \
+      >/dev/null 2>&1 || true
+}
+
+# $1=owner/repo $2=pr $3=verdict-json — the full {"outcome":...,"pr":...,...}
+# object cmd_diagnose_queue is about to print/return. `detail` is everything
+# BUT outcome/pr (those are already their own top-level record fields), so a
+# future field added to a verdict's own jq literal is captured automatically
+# with no second edit here. Emits, then prints the verdict UNCHANGED — every
+# non-error return path funnels through this.
+_dq_finish() {
+  local owner_repo="$1" pr="$2" v="$3" ocm detail
+  ocm="$(jq -r '.outcome // "ERROR"' <<<"$v" 2>/dev/null || echo "ERROR")"
+  detail="$(jq -c 'del(.outcome,.pr)' <<<"$v" 2>/dev/null || echo "{}")"
+  _dq_emit "$owner_repo" "$pr" "$ocm" "$detail"
+  printf '%s\n' "$v"
+}
+
+# $1=owner/repo $2=pr $3=die-message. Emits an ERROR verdict record (carrying
+# the same message die() itself is about to report) THEN calls the real,
+# UNMODIFIED die() — so the CLI-facing {"outcome":"ERROR","error":…} shape
+# and exit-1 contract stay byte-identical to before; only an ADDITIONAL lake
+# record is now written on the way out.
+_dq_die() {
+  local owner_repo="$1" pr="$2" msg="$3"
+  _dq_emit "$owner_repo" "$pr" "ERROR" \
+      "$(jq -cn --arg error "$msg" '{error:$error}' 2>/dev/null || echo "{}")"
+  die "$msg"
+}
+
 cmd_diagnose_queue() {
   local owner_repo="$1" pr="$2" owner name
   validate_owner_repo "$owner_repo"
@@ -628,9 +677,10 @@ cmd_diagnose_queue() {
        }
      }'
   cj="$(_gate_gh api graphql -f query="$q" -f owner="$owner" -f name="$name" \
-        -F number="$pr" 2>&1)" || die "merge-queue membership query failed for #$pr: $cj"
+        -F number="$pr" 2>&1)" \
+    || _dq_die "$owner_repo" "$pr" "merge-queue membership query failed for #$pr: $cj"
   merged="$(jq -r '.data.repository.pullRequest.merged // false' <<<"$cj" 2>/dev/null)" \
-    || die "unparseable merge-queue membership response for #$pr"
+    || _dq_die "$owner_repo" "$pr" "unparseable merge-queue membership response for #$pr"
   mergedat="$(jq -r '.data.repository.pullRequest.mergedAt // ""' <<<"$cj" 2>/dev/null || echo "")"
   qstate="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.state // ""' <<<"$cj" 2>/dev/null || echo "")"
   enqueued_at="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.enqueuedAt // ""' <<<"$cj" 2>/dev/null || echo "")"
@@ -638,7 +688,8 @@ cmd_diagnose_queue() {
   # Already landed (a race — cmd_poll's own MERGED check normally wins first;
   # diagnose is defensive) → report MERGED so the caller goes to 4d, not recovery.
   if [ "$merged" = "true" ]; then
-    jq -cn --argjson pr "$pr" --arg at "$mergedat" '{outcome:"MERGED", pr:$pr, mergedAt:$at}'
+    _dq_finish "$owner_repo" "$pr" \
+      "$(jq -cn --argjson pr "$pr" --arg at "$mergedat" '{outcome:"MERGED", pr:$pr, mergedAt:$at}')"
     return 0
   fi
   # Still enqueued → normally keep waiting; a slow queue is not a dequeue. But
@@ -663,19 +714,21 @@ cmd_diagnose_queue() {
       if [ "$enqueued_secs" -lt 0 ]; then enqueued_secs=0; fi
       if [ "$enqueued_secs" -ge "${BUILD_QUEUE_STALL_AFTER:-600}" ]; then
         mg_raw="$(_gate_gh api "repos/$owner_repo/actions/runs?event=merge_group&per_page=100" 2>&1)" \
-          || die "merge_group run query failed for #$pr: $mg_raw"
+          || _dq_die "$owner_repo" "$pr" "merge_group run query failed for #$pr: $mg_raw"
         mg_count="$(jq --arg n "$pr" \
               '[.workflow_runs[]? | select((.head_branch // "") | test("/pr-" + $n + "-"))] | length' \
               <<<"$mg_raw" 2>/dev/null)" \
-          || die "unparseable merge_group run response for #$pr"
+          || _dq_die "$owner_repo" "$pr" "unparseable merge_group run response for #$pr"
         if [ "${mg_count:-0}" -eq 0 ]; then
-          jq -cn --argjson pr "$pr" --argjson secs "$enqueued_secs" \
-            '{outcome:"QUEUE_STALLED", pr:$pr, enqueued_secs:$secs, merge_group_runs:0}'
+          _dq_finish "$owner_repo" "$pr" \
+            "$(jq -cn --argjson pr "$pr" --argjson secs "$enqueued_secs" \
+              '{outcome:"QUEUE_STALLED", pr:$pr, enqueued_secs:$secs, merge_group_runs:0}')"
           return 10
         fi
       fi
     fi
-    jq -cn --argjson pr "$pr" --arg s "$qstate" '{outcome:"QUEUED", pr:$pr, queueState:$s}'
+    _dq_finish "$owner_repo" "$pr" \
+      "$(jq -cn --argjson pr "$pr" --arg s "$qstate" '{outcome:"QUEUED", pr:$pr, queueState:$s}')"
     return 0
   fi
 
@@ -684,15 +737,15 @@ cmd_diagnose_queue() {
   # created_at.
   local raw run conclusion status run_id
   raw="$(_gate_gh api "repos/$owner_repo/actions/runs?event=merge_group&per_page=100" 2>&1)" \
-    || die "merge_group run query failed for #$pr: $raw"
+    || _dq_die "$owner_repo" "$pr" "merge_group run query failed for #$pr: $raw"
   run="$(jq -c --arg n "$pr" \
         '[.workflow_runs[]? | select((.head_branch // "") | test("/pr-" + $n + "-"))]
          | sort_by(.created_at) | last' <<<"$raw" 2>/dev/null)" \
-    || die "unparseable merge_group run response for #$pr"
+    || _dq_die "$owner_repo" "$pr" "unparseable merge_group run response for #$pr"
 
   # No merge_group run references this PR → entry dropped during queue churn.
   if [ "$run" = "null" ] || [ -z "$run" ]; then
-    jq -cn --argjson pr "$pr" '{outcome:"DEQUEUED", pr:$pr}'
+    _dq_finish "$owner_repo" "$pr" "$(jq -cn --argjson pr "$pr" '{outcome:"DEQUEUED", pr:$pr}')"
     return 8
   fi
   conclusion="$(jq -r '.conclusion // ""' <<<"$run" 2>/dev/null || echo "")"
@@ -736,23 +789,26 @@ cmd_diagnose_queue() {
       fi
     fi
     if [ "$classification" = "infra_only" ]; then
-      jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
-        '{outcome:"MERGE_GROUP_INFRA", pr:$pr, run_id:$rid}'
+      _dq_finish "$owner_repo" "$pr" \
+        "$(jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
+          '{outcome:"MERGE_GROUP_INFRA", pr:$pr, run_id:$rid}')"
       return 11
     fi
-    jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
-      '{outcome:"MERGE_GROUP_FAILED", pr:$pr, run_id:$rid}'
+    _dq_finish "$owner_repo" "$pr" \
+      "$(jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
+        '{outcome:"MERGE_GROUP_FAILED", pr:$pr, run_id:$rid}')"
     return 7
   fi
   # A referencing run still building (not yet concluded) → not a dequeue; wait.
   if [ -n "$status" ] && [ "$status" != "completed" ]; then
-    jq -cn --argjson pr "$pr" --arg s "merge_group:$status" \
-      '{outcome:"QUEUED", pr:$pr, queueState:$s}'
+    _dq_finish "$owner_repo" "$pr" \
+      "$(jq -cn --argjson pr "$pr" --arg s "merge_group:$status" \
+        '{outcome:"QUEUED", pr:$pr, queueState:$s}')"
     return 0
   fi
   # A completed non-failure run but the PR is neither queued nor merged → the
   # entry was dropped; re-arm.
-  jq -cn --argjson pr "$pr" '{outcome:"DEQUEUED", pr:$pr}'
+  _dq_finish "$owner_repo" "$pr" "$(jq -cn --argjson pr "$pr" '{outcome:"DEQUEUED", pr:$pr}')"
   return 8
 }
 

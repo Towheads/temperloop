@@ -471,3 +471,42 @@ Example record:
 ```json
 {"schema_version":"1","ts":"2026-08-02T19:51:53Z","host":"mini","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","repo":"acme/widgets","slug":"telemetry-efficiency-metric","epic":923,"issue":943,"pr":1500,"level":1,"phases":{"design":{"agents":1,"api_calls":20,"units":6170,"wall_ms":1140000,"tokens":{"output":600,"cache_create":1000,"cache_read":18000,"input":120}},"driver_prep":null,"worker":{"agents":1,"api_calls":8,"units":2232,"wall_ms":420000,"tokens":{"output":160,"cache_create":800,"cache_read":4000,"input":32}},"mechanical":{"agents":3,"api_calls":9,"units":186,"wall_ms":120000,"tokens":{"output":30,"cache_create":0,"cache_read":300,"input":6}}},"agent_counts":{"worker":1,"mechanical":3},"wall_ms":{"worker":420000,"ci":300000,"merge_group":180000,"gate_wait":60000,"end_to_end":1800000},"runs":{"design":["wf_d-001"],"driver_prep":[],"build":["wf_b-001"]},"spend_source":"pipeline-spend-report.sh"}
 ```
+
+### `diagnose-queue` — `diagnose-queue-<YYYY-MM>.jsonl`
+
+Emitted by `workflows/scripts/emit-diagnose-queue.sh` (temperloop#1192), **one
+record per `gate.sh diagnose-queue` verdict** — called from
+`workflows/scripts/build/gate.sh`'s `cmd_diagnose_queue`, on every exit path
+including its own internal error (`die()`) paths, so it fires whether
+`diagnose-queue` runs as a standalone CLI invocation or as the internal probe
+`cmd_poll`'s TIMEOUT path runs to classify a stalled native merge-queue poll.
+This is the **decided-then-discarded** fix: `cmd_diagnose_queue` classifies a
+stall into a structured verdict that `/build` and `/fix` branch their merge
+decisions on, but until this stream existed nothing durable recorded which
+verdicts actually fire, at what rate, or how often the queue stalls vs
+genuinely fails.
+
+**Emit is telemetry, never part of gate.sh's own contract.** The emit call is
+a WARN-DON'T-DROP subprocess (see `emit-diagnose-queue.sh`'s own header) and
+is deliberately never inlined into `gate.sh` itself: `gate.sh`'s whole design
+is a closed outcome set that fails loud via `die()`, so a telemetry hiccup
+must never be able to change `cmd_diagnose_queue`'s own exit code.
+
+Record shape: `{schema_version, ts, repo, pr, outcome, detail, session_id, host}`
+
+| field | type | notes |
+|---|---|---|
+| `schema_version` | string | `"1"` — bump on a breaking shape change |
+| `ts` | string | ISO-8601 UTC, `Z` suffix |
+| `repo` | string | `"owner/repo"` the PR lives in |
+| `pr` | integer | PR number |
+| `outcome` | string | one of `QUEUED` \| `MERGED` \| `MERGE_GROUP_FAILED` \| `MERGE_GROUP_INFRA` \| `DEQUEUED` \| `QUEUE_STALLED` \| `ERROR` — the full current `cmd_diagnose_queue` verdict set (`gate.sh`'s own header "diagnose-queue" section is the source of truth for this list) |
+| `detail` | object | the verdict's own outcome-specific fields verbatim (e.g. `{"run_id":123}`, `{"enqueued_secs":900,"merge_group_runs":0}`, `{"error":"..."}`), or `{}` when the verdict carries none |
+| `session_id` | string \| null | raw, untruncated `$CLAUDE_CODE_SESSION_ID` — same join-key convention as the other streams |
+| `host` | string | `$SUBSET_HOST_LABEL` if set, else `hostname -s` |
+
+Example record:
+
+```json
+{"schema_version":"1","ts":"2026-08-08T14:54:19Z","repo":"acme/widgets","pr":42,"outcome":"QUEUE_STALLED","detail":{"enqueued_secs":900,"merge_group_runs":0},"session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","host":"mini"}
+```
