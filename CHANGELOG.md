@@ -54,6 +54,41 @@ reads that marker; a stranger greps for it before pulling.
 
   Not breaking: no overlay, config, or caller has to adapt.
 
+- **`pipeline-retro-health.sh` resolves its lake roots logically and pins the
+  PIPELINE stream to the writer's own default** (#1185). Two independent
+  defects made the probe report `no-lake` from the checkout the pipeline
+  actually runs in. First, `$here`/`raw_root` were resolved with `cd -P`
+  (physical), which walks THROUGH a vendored checkout's `workflows/scripts/
+  build -> kernel/workflows/scripts/build` directory symlink and lands three
+  levels up inside `kernel/` — verified live:
+  `cd -P .../foundation.cron/workflows/scripts/build && cd -P ../../..`
+  yields `.../foundation.cron/kernel`, whose `meta/data/raw` holds only a
+  stub README — instead of the checkout that owns the real lake. Both roots
+  now resolve with a logical `cd`/`pwd` (no `-P`), which collapses `..`
+  textually against `$PWD` rather than following symlinks. Second, the
+  PIPELINE stream's default stopped being re-derived from that
+  checkout-relative root at all: `pipeline-cron.sh:299` pins its own
+  `PIPELINE_RAW_DIR` default to the intentionally **absolute**,
+  checkout-independent `$HOME/dev/foundation/meta/data/raw` (foundation#725's
+  "canonical absolute sink" — the cron sandbox checkout must still write into
+  the main checkout's lake), so a script-relative guess here would read a
+  *different* lake than the one the writer filled whenever the probe runs
+  from that sandbox. `pipeline-retro-health.sh` now duplicates that literal
+  verbatim (setting-registry.tsv's existing `PIPELINE_RAW_DIR` row already
+  covers it — a byte-identical, non-vendoring-checkout-fallback duplicate,
+  same convention as `PIPELINE_OPERATOR`'s duplicate in `pipeline-drive.sh`),
+  falling through to it only when neither `PIPELINE_RAW_DIR` nor an
+  operator-set `TELEMETRY_RAW_DIR` override is present — both overrides still
+  win exactly as before. The RETRO-RUNS stream deliberately stays
+  checkout-relative (unpinned from the writer's absolute root): its writer,
+  the overlay `/retro` judge, sets no override and inherits whichever
+  checkout invoked it, so converging the two streams onto one root would make
+  the probe miss rows the judge wrote under a different checkout.
+  `workflows/scripts/config/setting-registry.tsv` needed no new row — the
+  duplicate literal is already registered under `pipeline-cron.sh` and the
+  registry's name-only unregistered-setting sweep passes unchanged. Not
+  breaking — read-only, still fails open (`no-lake`/`unknown`, exit 0) when
+  the resolved lake genuinely holds no month-files.
 - **`build-level.mjs` now emits a `phase()` per STAGE of a level instead of one
   static heading for the whole run** (#1294). The level's progress heading
   advances `claim → build → gate → PR → CI` as items move, so a collapsed

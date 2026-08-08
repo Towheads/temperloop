@@ -186,6 +186,89 @@ OUT="$(run "$L")"
 [ "$(jq -r '.defect_kind' <<<"$OUT")" = "never-had-a-row" ] \
   && ok "the pre-existing #1150 verdict is unchanged" || bad "t13.kind" "$OUT"
 
+echo "--- test 14: SYMLINK CLIMB — a checkout whose workflows/scripts/build is a symlink into kernel/ resolves the RETRO-RUNS default to the CHECKOUT ROOT, not <checkout>/kernel (temperloop#1185) ---"
+# Fabricates the vendored layout the live bug report named: workflows ->
+# kernel/workflows (a directory symlink), so the script's own dir climbs
+# THROUGH the symlink under the old `cd -P` resolution and lands 3 levels up
+# inside kernel/ instead of the checkout root. Only the RETRO-RUNS default is
+# exercised here (PIPELINE_RAW_DIR is pinned explicitly, isolating this case
+# to the symlink-climb defect alone) — the checkout-root lake carries the
+# in-window row; the kernel stub carries none. Fails against pre-fix code,
+# which reads the kernel stub (empty) and reports never-had-a-row instead.
+FAKE="$TMP/symlink-checkout"
+mkdir -p "$FAKE/kernel/workflows/scripts/build" "$FAKE/kernel/meta/data/raw"
+mkdir -p "$FAKE/meta/data/raw"
+ln -s kernel/workflows "$FAKE/workflows"
+cp "$SCRIPT" "$FAKE/kernel/workflows/scripts/build/pipeline-retro-health.sh"
+new_lake "$TMP/l14-pipeline"
+wake "$TMP/l14-pipeline" retro-judge
+jq -nc --arg ts "$NOW_TS" '{ts:$ts,event:"retro-run",judged:1}' > "$FAKE/meta/data/raw/retro-runs-$NOW_MONTH.jsonl"
+OUT="$(PIPELINE_RAW_DIR="$TMP/l14-pipeline" bash "$FAKE/workflows/scripts/build/pipeline-retro-health.sh" --days 30)"
+[ "$(jq -r '.status' <<<"$OUT")" = "healthy" ] \
+  && ok "resolved the CHECKOUT ROOT's retro-runs stream, not the kernel/ stub — status=healthy" \
+  || bad "t14.status" "$OUT"
+[ "$(jq -r '.retro_runs.rows_in_window' <<<"$OUT")" = "1" ] \
+  && ok "read the checkout-root row, proving the symlinked build/ dir did not divert resolution into kernel/" \
+  || bad "t14.rows" "$OUT"
+
+echo "--- test 15: PIPELINE default equals the WRITER's own absolute pin (\$HOME/dev/foundation/meta/data/raw), not a checkout-relative guess (temperloop#1185) ---"
+# HOME is faked and the real pipeline_dir default is exercised (PIPELINE_RAW_DIR
+# and TELEMETRY_RAW_DIR both left unset) — proving the default follows $HOME,
+# which only happens if it's the literal pipeline-cron.sh pins, not $raw_root
+# (this checkout's own real root, which holds no pipeline-*.jsonl and would
+# report no-lake). RETRO_RUNS_RAW_DIR is pinned to an empty dir so only the
+# PIPELINE-stream default is under test.
+FAKE_HOME="$TMP/fakehome15"
+mkdir -p "$FAKE_HOME/dev/foundation/meta/data/raw" "$TMP/l15-retro"
+new_lake "$FAKE_HOME/dev/foundation/meta/data/raw"
+wake "$FAKE_HOME/dev/foundation/meta/data/raw" retro-judge
+OUT="$(HOME="$FAKE_HOME" RETRO_RUNS_RAW_DIR="$TMP/l15-retro" bash "$SCRIPT" --days 30)"
+[ "$(jq -r '.judge_actions' <<<"$OUT")" = "1" ] \
+  && ok "read the trigger from \$HOME/dev/foundation/meta/data/raw with no PIPELINE_RAW_DIR/TELEMETRY_RAW_DIR override" \
+  || bad "t15.judge_actions" "$OUT"
+[ "$(jq -r '.status' <<<"$OUT")" != "no-lake" ] \
+  && ok "did not fall back to this checkout's own (real, empty) lake" || bad "t15.status" "$OUT"
+
+echo "--- test 16: the PIPELINE default literal is provably equal to pipeline-cron.sh's own RAW_DIR literal ---"
+CRON_SCRIPT="$HERE/../pipeline-cron.sh"
+cron_literal="$(grep -oE 'RAW_DIR="\$\{PIPELINE_RAW_DIR:-[^}]*\}"' "$CRON_SCRIPT" \
+  | sed -E 's/^RAW_DIR="\$\{PIPELINE_RAW_DIR:-(.*)\}"$/\1/')"
+health_literal="$(grep -oE 'pipeline_dir="\$HOME/dev/foundation/meta/data/raw"' "$SCRIPT" \
+  | sed -E 's/^pipeline_dir="(.*)"$/\1/')"
+[ -n "$cron_literal" ] && [ -n "$health_literal" ] && [ "$cron_literal" = "$health_literal" ] \
+  && ok "pipeline-cron.sh's writer default ($cron_literal) matches pipeline-retro-health.sh's reader default verbatim" \
+  || bad "t16.equal" "cron=$cron_literal health=$health_literal"
+
+echo "--- test 17: TELEMETRY_RAW_DIR still wins for BOTH streams when explicitly set (override precedence unchanged) ---"
+L="$TMP/l17"; new_lake "$L"
+wake "$L" retro-judge
+jq -nc --arg ts "$NOW_TS" '{ts:$ts,event:"retro-run",judged:1}' > "$L/retro-runs-$NOW_MONTH.jsonl"
+OUT="$(TELEMETRY_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
+[ "$(jq -r '.status' <<<"$OUT")" = "healthy" ] \
+  && ok "a bare TELEMETRY_RAW_DIR override still supplies BOTH the pipeline and retro-runs dirs" \
+  || bad "t17.status" "$OUT"
+
+echo "--- test 18: RETRO-RUNS stream is NOT pinned to the pipeline writer's absolute root — it stays checkout-relative ---"
+# The critical non-convergence guard from the item's own notes: retro-runs
+# rows exist in BOTH lakes, and pinning this stream to the writer's absolute
+# root would make the probe MISS rows the judge wrote under a different
+# checkout. FAKE_HOME2's meta/data/raw carries a HEALTHY-looking retro-runs
+# row that only a WRONGLY-converged retro_dir would ever see; this checkout's
+# own (real) root carries none. Only PIPELINE_RAW_DIR is pinned, so a
+# defect(never-had-a-row) verdict here proves retro_dir stayed
+# checkout-relative rather than following pipeline_dir's $HOME-anchored
+# default — a healthy verdict would mean the two streams wrongly converged.
+FAKE_HOME2="$TMP/fakehome18"
+mkdir -p "$FAKE_HOME2/dev/foundation/meta/data/raw"
+jq -nc --arg ts "$NOW_TS" '{ts:$ts,event:"retro-run",judged:1}' \
+  > "$FAKE_HOME2/dev/foundation/meta/data/raw/retro-runs-$NOW_MONTH.jsonl"
+L="$TMP/l18"; new_lake "$L"
+wake "$L" retro-judge
+OUT="$(HOME="$FAKE_HOME2" PIPELINE_RAW_DIR="$L" bash "$SCRIPT" --days 30)"
+[ "$(jq -r '.status' <<<"$OUT")" = "defect" ] && [ "$(jq -r '.defect_kind' <<<"$OUT")" = "never-had-a-row" ] \
+  && ok "retro-runs resolved against the CHECKOUT root, independent of the pipeline stream's absolute default" \
+  || bad "t18.status" "$OUT"
+
 echo
 echo "pipeline-retro-health tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
