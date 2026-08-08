@@ -84,6 +84,37 @@
 #   PIPELINE_RAW_DIR      the pipeline stream's own dir (pipeline-cron.sh owns it)
 #   RETRO_RUNS_RAW_DIR    the overlay retro-runs stream's dir
 #
+# ── ROOT RESOLUTION (temperloop#1185) ───────────────────────────────────────
+# TWO independent defects lived here, and both had to move together:
+#
+#  1. SYMLINK CLIMB. `$here` used to be resolved with `cd -P` (physical), which
+#     walks THROUGH a vendored checkout's `workflows/scripts/build ->
+#     kernel/workflows/scripts/build` directory symlink — landing 3 levels up
+#     inside `kernel/` (whose meta/data/raw/ is a stub — see that dir's own
+#     README) instead of the checkout that actually owns the lake. Verified
+#     live: `cd -P .../foundation.cron/workflows/scripts/build && cd -P
+#     ../../..` yields `.../foundation.cron/kernel`. `cd` (no `-P`) below stays
+#     on the LOGICAL invoked path — bash's non-physical `cd`/`pwd` collapse
+#     `..` textually against $PWD rather than resolving symlinks along the
+#     way — so the checkout root three levels up resolves correctly whether or
+#     not any path component is itself a symlink.
+#  2. PIPELINE STREAM must NOT use the (now-fixed) checkout-relative root at
+#     all. pipeline-cron.sh pins its own RAW_DIR default to an intentionally
+#     ABSOLUTE, checkout-INDEPENDENT sink — "the CANONICAL ABSOLUTE SINK...
+#     deliberately NOT derived from $FOUNDATION" (that script's own comment,
+#     foundation#725) — because the cron sandbox checkout (foundation.cron)
+#     must still write into the MAIN checkout's lake. This prober commonly
+#     RUNS from that same cron sandbox, so a checkout-relative default here
+#     would read a DIFFERENT lake than the one the writer filled. The
+#     PIPELINE stream's default below is therefore the writer's own literal,
+#     duplicated verbatim (setting-registry.tsv's PIPELINE_RAW_DIR row,
+#     owning-script pipeline-cron.sh — a "non-vendoring-checkout fallback"
+#     duplicate, same convention as PIPELINE_OPERATOR's duplicate in
+#     pipeline-drive.sh/pipeline-tick.sh), never re-derived.
+#
+# The RETRO-RUNS stream stays checkout-relative on purpose (see its own
+# comment below) — do not converge the two streams onto one root.
+#
 # Kept bash-3.2 / BSD-date portable, matching the rest of workflows/scripts/.
 
 set -uo pipefail
@@ -95,11 +126,39 @@ command -v jq >/dev/null 2>&1 || {
   exit 0
 }
 
-here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-raw_root="$(cd -P "$here/../../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+raw_root="$(cd "$here/../../.." 2>/dev/null && pwd || echo "$HOME/dev/foundation")"
+
+# Captured BEFORE the `:=` below applies this script's own checkout-relative
+# fallback, so the PIPELINE-stream default further down can tell "the
+# operator explicitly pointed the shared TELEMETRY_RAW_DIR fallback
+# somewhere" (which must still win, unchanged) from "nothing was set" (which
+# must fall through to the writer's own absolute pin, not a checkout-relative
+# guess). `+1` tests SET-ness, not emptiness, and — unlike `:-`/`:=`/`-`/`=` —
+# is not a seam operator the setting-registry lint scans for, so this probe
+# doesn't create a second, divergent-literal TELEMETRY_RAW_DIR seam.
+telemetry_raw_dir_set="${TELEMETRY_RAW_DIR+1}"
+
 : "${TELEMETRY_RAW_DIR:=$raw_root/meta/data/raw}"
 
-pipeline_dir="${PIPELINE_RAW_DIR:-$TELEMETRY_RAW_DIR}"
+pipeline_dir="${PIPELINE_RAW_DIR:-}"
+if [ -z "$pipeline_dir" ]; then
+  if [ -n "$telemetry_raw_dir_set" ]; then
+    pipeline_dir="$TELEMETRY_RAW_DIR"
+  else
+    # Mirrors pipeline-cron.sh:299's own PIPELINE_RAW_DIR default literal,
+    # byte-for-byte — see the header note above. Do NOT derive this from
+    # $raw_root.
+    pipeline_dir="$HOME/dev/foundation/meta/data/raw"
+  fi
+fi
+
+# RETRO-RUNS stream: stays CHECKOUT-RELATIVE (raw_root, the now-symlink-fixed
+# checkout root) — the overlay judge (pipeline-retro-judge-spawn.sh) sets NO
+# raw-dir override and inherits whatever checkout invoked it, so pinning this
+# stream to the pipeline writer's absolute root above would make the probe
+# MISS rows the judge wrote under a DIFFERENT (e.g. cron-sandbox) checkout.
+# Do NOT converge with pipeline_dir above.
 retro_dir="${RETRO_RUNS_RAW_DIR:-$TELEMETRY_RAW_DIR}"
 
 days=30
