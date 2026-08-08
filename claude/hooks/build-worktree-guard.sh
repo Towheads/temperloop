@@ -183,6 +183,16 @@
 # A marker found OUTSIDE the `.wt` convention (condition 1 without 2 — a stale
 # or hand-copied marker) makes the hook WARN on stderr and fail OPEN.
 #
+# WRITER IDENTITY (temperloop#1187). Arming answers "is this worktree
+# guarded?"; it does not answer "is THIS agent the one supposed to be writing
+# here?" — a sibling worker that `cd`s into a peer's worktree passes every
+# containment check. So a third arm binds the worktree to the `agent_id` of its
+# FIRST qualifying in-tree write and refuses a write from an agent that already
+# owns a different armed worktree. An ABSENT `agent_id` (the main thread — the
+# orchestrator's own push/rebase/prune) is a separate, always-allowed state.
+# Full contract, including the one deliberate relaxation, at § WRITER-IDENTITY
+# BINDING below.
+#
 # Why a marker, not an env var (#171/#212): the prior arming required
 # BUILD_WORKTREE_GUARD in the tool-invoking process env, but the Agent tool
 # has no per-spawn env parameter — so the guard was never actually armable for
@@ -288,6 +298,185 @@ case "$(dirname "$wt")" in
     inert "marker '$wt/.build-guard' present but '$wt' is not under a '<repo>.wt/' dir — stale or hand-copied marker, guard NOT armed"
     ;;
 esac
+
+# --- WRITER-IDENTITY BINDING (temperloop#1187) --------------------------------
+#
+# The arming gate above answers "is this worktree guarded?". It does NOT answer
+# "is THIS agent the one that is supposed to be writing here?" — so two agents
+# running concurrently under one session could both write into the same armed
+# worktree and clobber each other. The containment arms above cannot see that:
+# a sibling worker that `cd`s INTO another worker's worktree first satisfies
+# every containment check, because the cwd's toplevel is then that worktree.
+#
+# THE DISCRIMINATOR — `agent_id` on the PreToolUse payload. Per the installed
+# CLI's own embedded hook-input schema: "Subagent identifier. Present only when
+# the hook fires from within a subagent (e.g., a tool called by an AgentTool
+# worker). Absent for the main thread, even in --agent sessions. Use this field
+# (not agent_type) to distinguish subagent calls from main-thread calls." Every
+# spawn gets a fresh, distinct id. That schema is UNDOCUMENTED AND UNVERSIONED
+# (read out of a closed binary), so it was CONFIRMED LIVE against real payloads
+# on CLI 2.1.226 before anything was built on it — main thread: no `agent_id`;
+# two sibling subagents: two distinct ids; a subagent nested inside one of them:
+# a third, distinct id. See the item's verification surface for the capture.
+#
+# THREE STATES, NOT TWO. `agent_id` ABSENT is its own always-allowed state and
+# is NEVER folded into "not the owner":
+#   - ABSENT      -> the main thread. The /build ORCHESTRATOR's own post-spawn
+#                    operations against a worker's worktree (the 3f push-by-SHA,
+#                    the 4c-retry rebase in pr.sh, worktree.sh remove/prune) all
+#                    run main-thread and carry no `agent_id` — the same signature
+#                    an ordinary unspawned interactive session has. Rejecting
+#                    them would deadlock every level's merge path, which is the
+#                    difference between a guard and an outage. Always allowed,
+#                    and it neither binds nor disturbs ownership.
+#   - THE OWNER   -> allowed, unchanged.
+#   - A DIFFERENT
+#     AGENT       -> judged by the rule below.
+#
+# OWNERSHIP BINDS AT FIRST WRITE, NOT AT WORKTREE CREATION. `worktree.sh create`
+# writes the `.build-guard` marker at build.md step 3b, BEFORE the worker is
+# spawned at 3c — no worker identity exists yet, and the orchestrator's own
+# write carries no `agent_id`, so the marker cannot carry the binding and
+# deliberately stays `{slug, branch, created}`. The binding therefore lives
+# HERE: the first QUALIFYING WRITE records its `agent_id` as the worktree's
+# owner (first-writer-wins, established atomically via O_EXCL).
+#
+# WHAT COUNTS AS A QUALIFYING WRITE — deliberately narrow, because the
+# load-bearing NEGATIVE case is a nested READ-ONLY review subagent (the
+# sanctioned claude/commands/build.md § "Seat scoping — nested review
+# delegation" pattern), which necessarily has a DIFFERENT `agent_id` from the
+# owner and MUST keep running. So a naive owner-equality rule over every tool
+# call would break exactly the pattern the pipeline sanctions. Only a write
+# that lands INSIDE the worktree binds or is judged: an Edit/Write/MultiEdit
+# target under `$wt`, or a Bash record (a destructive verb's operand, or an
+# output-redirect target) that resolves under `$wt`. A reviewer's `git diff`,
+# `rg`, and `> /tmp/notes` touch nothing here.
+#
+# THE REJECTION RULE — a different agent is refused when it ALREADY OWNS
+# ANOTHER ARMED WORKTREE. That is the uncoordinated second writer this closes:
+# a sibling /build worker (a level runs N of them at once under one session)
+# that `cd`s into a peer's worktree and writes. It is bound to its own worktree
+# by its own first write, so the collision is decided on recorded fact, with no
+# timing window and no liveness guess.
+#
+# THE ONE DELIBERATE RELAXATION, stated rather than discovered later. A
+# different agent that owns NO other armed worktree TAKES OVER (rebinds, and
+# says so in the log) instead of being denied. This is not a softening for its
+# own sake — a literal "reject every later differing agent_id" rule is a
+# DEADLOCK, because /build legitimately re-spawns a FRESH agent against the
+# SAME, still-armed worktree on the `blocked`, `design-fork`, `failed`,
+# RECOVER_DIRTY-resume and commit-scan paths (claude/commands/build.md: "Each
+# re-spawn is a fresh `Agent`, re-run against the same pre-created
+# `worktreePath` … its `.build-guard` marker persists with the worktree, so the
+# guard stays armed — no re-arming step"). Such a successor is unbound by
+# construction, so it takes over; a live sibling worker is not. The residual
+# gap this leaves is disclosed, not hidden: a genuinely uncoordinated agent
+# that has never written anywhere else — including the conversational-path
+# hazard where an orchestrator re-spawns a second worker while the first is
+# still alive — is allowed to take over. Closing THAT needs a liveness signal
+# the payload does not carry (build.md's own cure is `TaskStop` the first
+# worker before re-spawning), and the alternative — denying it — would refuse
+# every legitimate re-spawn, i.e. break the pipeline to catch an orchestrator
+# bug. A false deny is what gets a guard disarmed, after which coverage is zero.
+#
+# FAIL-OPEN, like every other arm: an unreadable or unwritable state dir, a
+# missing `cksum`, an unparseable marker — none of them ever block a write.
+agent_id=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)
+
+# Ownership records live beside the log in the XDG state dir — NOT in the
+# worktree. An extra file in the worktree would show up as untracked in
+# `git status --porcelain`, and build.md's RECOVER_DIRTY probe reads exactly
+# that signal (with only `.build-guard` itself excluded by pathspec), so a
+# second in-tree marker would make every fresh worktree read "dirty".
+OWNER_DIR="$XDG_STATE_DIR/build-worktree-guard.owners"
+
+# A stable per-worktree key that CHANGES when the worktree is recreated. The
+# path alone is not enough: `worktree.sh create` force-removes and re-adds the
+# same deterministic path on a re-run, and a key that ignored that would hand
+# the fresh worktree a stale owner from the previous run. The marker's own
+# `created` stamp is regenerated on every create, so it is the generation
+# counter; its mtime is the fallback for a marker that is not parseable JSON.
+owner_key() {
+  local stamp="" sum base
+  stamp=$(jq -r 'if type == "object" then (.created // empty) else empty end' \
+    < "$wt/.build-guard" 2>/dev/null)
+  if [ -z "$stamp" ]; then
+    # mtime fallback — GNU probe FIRST, then validate numeric. `stat -f` means
+    # `--file-system` on GNU coreutils, where `%m` is not a valid specifier, so
+    # `stat -f %m` there does NOT fail: it succeeds with junk, and a BSD-first
+    # `||` chain never reaches the GNU form. That made this stamp constant on
+    # Linux, collapsing the generation key (ubuntu CI caught it; macOS passed).
+    # `-c` is invalid on BSD and genuinely fails, so GNU-first is safe both
+    # ways; the digit check then rejects a success-with-junk from either.
+    stamp=$(stat -c %Y "$wt/.build-guard" 2>/dev/null \
+      || stat -f %m "$wt/.build-guard" 2>/dev/null || printf 'nostamp')
+    case "$stamp" in
+      '' | *[!0-9]*) stamp='nostamp' ;;
+    esac
+  fi
+  # cksum, not a hash tool: POSIX, always present, and this is a collision-
+  # tolerant cache key, never a security boundary.
+  sum=$(printf '%s|%s' "$wt" "$stamp" | cksum 2>/dev/null | awk '{print $1 "-" $2}')
+  [ -n "$sum" ] || return 1
+  base=$(basename "$wt" | tr -c 'A-Za-z0-9._-' '_')
+  printf 'wt-%s-%s' "$base" "$sum"
+}
+
+# Judge ONE qualifying in-worktree write against the writer-identity rule.
+# Called only for a target already proven to land inside `$wt`. Either returns
+# 0 (allowed — and binds/renews ownership as a side effect) or denies and exits.
+writer_bind_check() { # <what — human phrasing of the write being judged>
+  local what="$1" okey owner_file self_file owner mine
+
+  # STATE 1 — no agent_id: the main thread. Always allowed; binds nothing.
+  if [ -z "$agent_id" ]; then
+    if [ -z "${writer_absent_logged:-}" ]; then
+      writer_absent_logged=1
+      log "WRITER: payload carries no agent_id (main thread — the orchestrator's own push/rebase/prune, or an unspawned session). Always allowed; ownership neither bound nor consulted."
+    fi
+    return 0
+  fi
+
+  mkdir -p "$OWNER_DIR" 2>/dev/null || return 0
+  okey=$(owner_key) || return 0
+  [ -n "$okey" ] || return 0
+  owner_file="$OWNER_DIR/$okey"
+  self_file="$OWNER_DIR/ag-$(printf '%s' "$agent_id" | tr -c 'A-Za-z0-9._-' '_')"
+
+  # FIRST-WRITER-WINS, atomically. `set -C` (noclobber) makes the redirect an
+  # O_EXCL create, so two concurrent agents racing their first write cannot both
+  # believe they won.
+  if ( set -C; printf '%s\n' "$agent_id" > "$owner_file" ) 2>/dev/null; then
+    printf '%s\n' "$wt" > "$self_file" 2>/dev/null || true
+    log "WRITER: bound $okey -> agent $agent_id (first qualifying write: $what)"
+    # Opportunistic prune, only on the rare bind path so the common path forks
+    # nothing. Records are keyed per worktree-generation and per agent, so old
+    # ones are inert clutter rather than a correctness problem.
+    find "$OWNER_DIR" -type f -mtime +14 -delete 2>/dev/null || true
+    return 0
+  fi
+
+  owner=$(head -1 "$owner_file" 2>/dev/null)
+
+  # STATE 2 — we are the owner (or a truncated record left nobody as owner).
+  if [ -z "$owner" ] || [ "$owner" = "$agent_id" ]; then
+    [ -n "$owner" ] || printf '%s\n' "$agent_id" > "$owner_file" 2>/dev/null || true
+    printf '%s\n' "$wt" > "$self_file" 2>/dev/null || true
+    return 0
+  fi
+
+  # STATE 3 — a DIFFERENT agent. Denied iff it already owns another armed
+  # worktree (a concurrent sibling worker); otherwise it is an unbound
+  # successor and takes over. See the header for why this is the split.
+  mine=$(head -1 "$self_file" 2>/dev/null)
+  if [ -n "$mine" ] && [ "$mine" != "$wt" ]; then
+    deny "build worktree guard (writer identity): $what is refused — this worktree ('$wt') is owned by agent '$owner', which bound it on its first write, and YOU (agent '$agent_id') already own a DIFFERENT armed worktree: '$mine'. Two agents writing into one worktree clobber each other, so the second one is refused rather than allowed to interleave. Do your work in your OWN worktree ('$mine'); if you need a change made here, hand it to the agent that owns this worktree instead of writing it yourself. Reading this worktree is always permitted — only writes bind. (temperloop#1187.)"
+  fi
+  printf '%s\n' "$agent_id" > "$owner_file" 2>/dev/null || true
+  printf '%s\n' "$wt" > "$self_file" 2>/dev/null || true
+  log "WRITER: takeover of $okey by agent $agent_id (previous owner $owner; challenger owns no other armed worktree — the /build same-worktree re-spawn path). Write: $what"
+  return 0
+}
 
 # --- shared helpers (used by both the Edit/Write and Bash arms) ---------------
 
@@ -503,7 +692,10 @@ if [ "$tool" = "Bash" ]; then
     ap=$(abspath "$tgt" "$basedir")
 
     # Inside the worktree, or allow-listed, or a gitignored in-tree copy → OK.
-    case "$ap" in "$wt"/*|"$wt") continue ;; esac
+    # An in-worktree target is also the QUALIFYING WRITE the writer-identity
+    # binding keys off (temperloop#1187) — containment says the write stays in
+    # this worktree, ownership says whether THIS agent is the one writing here.
+    case "$ap" in "$wt"/*|"$wt") writer_bind_check "$what targeting '$ap'"; continue ;; esac
     is_allowlisted "$ap" && continue
     is_gitignored "$ap" && continue
     # Redirect-only: a character-device sink writes no tree (see is_device_sink).
@@ -874,9 +1066,10 @@ done < <(printf '%s' "$INPUT" | jq -r '
 for t in "${targets[@]}"; do
   ap=$(abspath "$t")
 
-  # Inside the active worktree root → allowed.
+  # Inside the active worktree root → allowed, and it is the QUALIFYING WRITE
+  # the writer-identity binding keys off (temperloop#1187).
   case "$ap" in
-    "$wt"/*|"$wt") continue ;;
+    "$wt"/*|"$wt") writer_bind_check "a $tool of '$ap'"; continue ;;
   esac
 
   # Outside the worktree, but on an allow-list → permitted.
