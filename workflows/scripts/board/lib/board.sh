@@ -1358,6 +1358,81 @@ board_set_status() {
   return $?
 }
 
+# One-call Done write that survives an issue already being CLOSED
+# (temperloop#1217) and needs NO prior cross-Bash-call shell state — a caller
+# in a fresh Bash tool invocation can call this directly with nothing
+# resolved first.
+#
+# DELIBERATE DEPARTURE from the usual "resolve first with board_item_id /
+# board_resolve_item, then act" model this kernel doc's own board-adapter
+# rule documents: that model is actively WRONG for a Done write specifically,
+# for two reasons. (1) `board_item_id` reads the whole-board `BOARD_ITEMS_JSON`
+# (board_resolve/board_item_list), and that list is `--state open` only (mirrors
+# the Projects-v2 active-set convention) — so on an issue that is ALREADY
+# closed (the #1217 case: a merged PR's own `Closes #N` beat the adapter's Done
+# write to the punch), `board_item_id` returns EMPTY and a caller's
+# `board_set_status "" Done` silently no-ops, leaving the stale
+# `fnd:status:*`/`fnd:host/session:*` labels standing on a closed issue. (2)
+# even `board_resolve_item` (which DOES read live and sees a closed issue) sets
+# `BOARD_ITEMS_JSON`/`BOARD_CURRENT` as process globals — no help across a
+# resolve-then-act split, since shell state does not persist between separate
+# Bash tool calls in an agent session. So this helper skips resolution
+# entirely: the `ISSUE_<n>` item id is fully deterministic (see `issue_item`'s
+# `id: "ISSUE_" + ($n|tostring)` def above — it needs no lookup, just the
+# issue number), and `_board_issues_set_field`'s Done arm already does its own
+# live single-issue `gh api issues/<n>` read to decide what to strip/close —
+# so one call is correct whether the issue starts open, already closed, or
+# already fully Done (re-run is a no-op, exit 0).
+#
+# Saves and restores BOARD_CURRENT, so a caller mid-way through its own
+# multi-op board sequence is not left with this helper's board silently
+# substituted for whatever it had resolved before — the adapter is left with
+# no global modified, which is the property this helper exists to guarantee
+# alongside the state-independence above.
+#
+# Takes NO --comment param by design: a reason comment is repo-level content,
+# not board state, and bundling a non-idempotent `gh issue comment` into this
+# otherwise read-before-write-idempotent mutator would repost it on retry.
+# Callers post their own comment (`gh issue comment`) immediately BEFORE
+# calling this.
+#
+# MISUSE WARNING: never call this for an issue whose close is properly owed to
+# a merged PR's own `Closes #N` (kernel doc § Issue linkage) — that PR's merge
+# is what should close it. Calling this first closes the issue EARLY, which
+# breaks both the auto-close linkage (GitHub's closing-keyword match no longer
+# has an open issue to act on) and the merge-queue accounting that a
+# still-open issue number represents. This helper is for a Done write the
+# adapter itself owns outright: closing with no linked PR, or repairing a Done
+# write a #1217-style race already lost.
+#   board_close_done <board#> <issue#>  -> exit 0 on success (idempotent)
+board_close_done() {
+  if [ "$#" -ne 2 ]; then
+    echo "board: board_close_done takes <board#> <issue#> (got $#: '$*')" >&2
+    return 1
+  fi
+  local board="$1" issue="$2" rc saved_board
+  case "$issue" in '' | *[!0-9]*) echo "board: board_close_done needs a numeric <issue#> (got '$issue')" >&2; return 1 ;; esac
+  board="$(board_resolve_name "$board")" || return 1
+  # Propagates board_backend's non-zero refusal for a stale `backend=projects`
+  # conf line (ADR 0004) rather than resolving it silently.
+  _board_is_issues_only "$board" || return 1
+  # Save/restore BOARD_CURRENT around the write below. `${BOARD_CURRENT:-}` is
+  # `set -u`-safe whether or not the caller had it set, and always restores it
+  # to a defined (possibly empty) string — this function is defined IN
+  # board.sh, so no caller can reach it without having sourced the file, and
+  # every neighboring script-level BOARD_CURRENT init in this file already
+  # runs unconditionally too. There is no unset-vs-empty case to preserve.
+  saved_board="${BOARD_CURRENT:-}"  # setting:exempt — internal already-resolved board state, not an operator default
+  BOARD_CURRENT="$board"
+  # `|| rc=$?` (not a bare trailing status check) so the restore below still
+  # runs under a caller's `set -e` even when this call's exit status goes
+  # untested.
+  rc=0
+  board_set_status "ISSUE_$issue" "$BOARD_OPT_DONE" || rc=$?
+  BOARD_CURRENT="$saved_board"
+  return $rc
+}
+
 # Set the board-native Component single-select on an item to a named option.
 # Thin, intention-revealing wrapper over board_set_status's field-override arm
 # (the Component axis is just another single-select). Returns non-zero without

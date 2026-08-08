@@ -174,6 +174,9 @@ board_set_status <item-id> <option> [field]   # fnd:status:* label + open/close
                                               #   arg1 MUST be an ISSUE_<n>
                                               #   item-id; a PVTI_* id is
                                               #   REJECTED loud (ADR 0004).
+board_close_done <N> <issue#>                 # Done from ANY state (open/closed/
+                                              #   already-Done); no prior resolve
+                                              #   needed; idempotent
 board_set_component <item-id> <name>          # thin wrapper over set_status
 board_stamp <item-id> <text>                  # claim-owner stamp
                                               #   (fnd:host/session:<verbatim>;
