@@ -130,6 +130,35 @@ def _is_command_expansion_turn(turn_text):
     return False
 
 
+# Claude Code writes a slash-command invocation as TWO consecutive user turns
+# (temperloop #1199):
+#
+#   turn N   — the tag block:  <command-message>tidy</command-message>
+#                              <command-name>/tidy</command-name> …   (~115 chars)
+#   turn N+1 — the EXPANDED command spec prose, e.g.
+#              "You are running the **tidy** command. Goal: …"        (~133k chars)
+#
+# Only turn N carries a `<command-*>` tag, so the purely tag-based match above
+# misses turn N+1 entirely and the whole spec body gets lexicon-grepped as
+# operator signal. Every `claude -p "/<cmd>"` cron run (tidy, build, sweep,
+# triage, check-in) hits this on every run — the highest-volume false-positive
+# source in the drain.
+#
+# The fix is positional and deliberately narrow: the SINGLE user turn
+# immediately adjacent to a `<command-name>` invocation turn is the expansion,
+# so it is excluded too. The adjacency is one turn only — a genuine operator
+# turn that merely happens to come later in the same session is untouched, and
+# an adjacent ASSISTANT turn (the command produced no expansion turn) is left
+# alone as well. No size threshold: a bare length cutoff would silently drop
+# long genuine user turns.
+_CMD_INVOCATION_PATTERN = re.compile(r'<command-name>', re.IGNORECASE)
+
+
+def _is_command_invocation_turn(turn_text):
+    """Return True if this turn is the `<command-name>` slash-command tag block."""
+    return bool(_CMD_INVOCATION_PATTERN.search(turn_text))
+
+
 # ---------------------------------------------------------------------------
 # Stub body → user turns extraction
 # ---------------------------------------------------------------------------
@@ -139,7 +168,10 @@ def extract_user_turns(body):
     Parse the '## Transcript' section and return a list of dicts:
         { 'role': 'user'|'assistant', 'text': str, 'excluded': bool }
 
-    'excluded' is True for command-expansion turns that must not be grepped.
+    'excluded' is True for command-expansion turns that must not be grepped —
+    both the tag-bearing turns matched by _CMD_EXPANSION_PATTERNS and the
+    single untagged user turn immediately following a `<command-name>`
+    invocation (the expanded command spec, temperloop #1199).
     """
     # Find the ## Transcript section.
     transcript_match = re.search(r'^## Transcript\s*\n', body, re.MULTILINE)
@@ -154,12 +186,19 @@ def extract_user_turns(body):
     splits = list(turn_pattern.finditer(transcript_text))
 
     turns = []
+    # True only for the turn immediately after a `<command-name>` tag block —
+    # reset every iteration, so the exclusion never reaches past one turn.
+    prev_was_invocation = False
     for i, m in enumerate(splits):
         role = m.group(1).lower()
         start = m.end()
         end = splits[i + 1].start() if i + 1 < len(splits) else len(transcript_text)
         text = transcript_text[start:end].strip()
         excluded = _is_command_expansion_turn(text)
+        if not excluded and prev_was_invocation and role == "user":
+            # The untagged expanded command spec (temperloop #1199).
+            excluded = True
+        prev_was_invocation = _is_command_invocation_turn(text)
         turns.append({"role": role, "text": text, "excluded": excluded})
 
     return turns

@@ -216,6 +216,94 @@ fi
 
 rm -rf "$TMPDIR_TEST"
 
+# ── Test 3c: two-turn command-expansion shape (temperloop #1199) ─────────────
+#
+# Claude Code writes a slash-command invocation as TWO user turns: the
+# `<command-name>` tag block, then the EXPANDED command spec prose, which
+# carries no tag at all. The untagged expansion turn must be excluded; a
+# genuine operator turn later in the same session must NOT be.
+
+echo "--- test 3c: two-turn command-expansion shape (#1199) ---"
+
+TMPDIR_1199=$(mktemp -d)
+LEX_1199="$TMPDIR_1199/lexicon.tsv"
+STUB_1199="$TMPDIR_1199/cmd_expansion_two_turn.md"
+
+printf 'Lesson:\tself-critique\tliteral\n' > "$LEX_1199"
+
+cat > "$STUB_1199" << 'STUBEOF'
+---
+date: 2026-07-29
+time: "0254"
+project: testproject
+cwd: /tmp
+session_id: aabbccdd-test-1199-00000001
+transcript: /nonexistent
+tags:
+  - session
+---
+
+## Transcript
+
+### User
+
+<command-message>tidy</command-message>
+<command-name>/tidy</command-name>
+<command-args></command-args>
+
+### User
+
+You are running the **tidy** command. Goal: turn raw session transcripts into
+vault notes. Lesson: this sentence is command-spec prose, not operator signal,
+and must not be lexicon-grepped.
+
+### Assistant
+
+Starting the drain.
+
+### User
+
+Lesson: this is a genuine operator turn later in the session and MUST match.
+
+STUBEOF
+
+report_1199=$(scan "$STUB_1199" --lexicon "$LEX_1199") || true
+
+# (a) The untagged expansion turn (turn_index 1) is excluded.
+read -r n_1199 idx_1199 <<< "$(printf '%s' "$report_1199" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+m = d.get('lexicon_matches', [])
+print(len(m), ','.join(str(x['turn_index']) for x in m) or '-')
+" 2>/dev/null)"
+
+if [ "${n_1199:-0}" -eq 1 ] && [ "${idx_1199:-}" = "3" ]; then
+  ok "#1199: untagged command-spec turn excluded; only the genuine turn (index 3) matches"
+else
+  fail_test "#1199 expansion exclusion" \
+    "expected exactly 1 match at turn_index 3, got ${n_1199:-0} at [${idx_1199:-none}]"
+fi
+
+# (b) extract_user_turns marks the expansion turn excluded and the later
+#     genuine turn NOT excluded — the over-exclusion guard.
+flags_1199=$(python3 -c "
+import sys
+sys.path.insert(0, '$REPO/workflows/scripts/drain')
+import scan_stub as s
+meta, body = s.parse_frontmatter(open('$STUB_1199', encoding='utf-8').read())
+turns = s.extract_user_turns(body)
+print(' '.join('%s:%s' % (t['role'], t['excluded']) for t in turns))
+" 2>/dev/null)
+
+if [ "$flags_1199" = "user:True user:True assistant:False user:False" ]; then
+  ok "#1199: exclusion stops at the single adjacent turn (${flags_1199})"
+else
+  fail_test "#1199 adjacency guard" \
+    "expected 'user:True user:True assistant:False user:False', got '${flags_1199:-<empty>}'"
+fi
+
+rm -rf "$TMPDIR_1199"
+
 # ── Test 4: tool events from .jsonl ────────────────────────────────────────
 
 echo "--- test 4: tool events from .jsonl ---"
