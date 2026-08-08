@@ -1090,7 +1090,7 @@ RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
 [ -n "$RJ" ] && ok "retro-urgent tracker still fires despite being fresh" || bad "t24.fire" "no retro-judge action; PLAN=$PLAN"
 [ "$(jq -r '.reason' <<<"$RJ")" = "urgent" ] && ok "reason=urgent (bypasses the age gate)" || bad "t24.reason" "got $(jq -r '.reason' <<<"$RJ")"
 
-echo "--- test 25: a fresh, non-urgent tracker does NOT fire (debounce not yet met) ---"
+echo "--- test 25: a fresh, non-urgent tracker does NOT fire (debounce not yet met), and emits a legible not-due skip (temperloop#1184) ---"
 FX="$TMP/t25"; seed_board "$FX" 3
 cat > "$FX/board-3/retro-trackers.json" <<JSON
 [{"number":906,"title":"Process retro: epic #820","createdAt":"$RFRESH","labels":["retro-pending"]}]
@@ -1099,8 +1099,24 @@ PLAN="$(COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:hea
   BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -z "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] && ok "no retro-judge — debounce not yet crossed" || bad "t25.nofire" "unexpectedly fired: $PLAN"
-[ "$(jq -r 'first(.actions[]|select(.action=="no-op"))' <<<"$PLAN")" != "null" ] \
-  && ok "tick still reports no-op (nothing else drivable this tick)" || bad "t25.noop" "got $PLAN"
+# Before temperloop#1184 this parked-but-not-due set was silent — no distinct
+# signal separated "waiting on schedule" from "the phase went quiet". Phase R
+# must now say so explicitly (never silence, same rule as the not-declared /
+# headless-unsupported skips), and — since it spoke — the tick's separate
+# no-op guard must NOT also fire (a retro-judge/skip-retro-judge-only tick
+# never ALSO claims no-op, per the guard above tick_board's no-op check).
+[ "$(jq '[.actions[]|select(.action=="skip-retro-judge")]|length' <<<"$PLAN")" = "1" ] \
+  && ok "exactly one skip-retro-judge line — a parked-but-not-due set is no longer silent" \
+  || bad "t25.skipcount" "got $(jq -c '[.actions[]|select(.action=="skip-retro-judge")]' <<<"$PLAN")"
+SK="$(action_for <<<"$PLAN" '.action=="skip-retro-judge"')"
+[ "$(jq -r '.reason' <<<"$SK")" = "not-due" ] \
+  && ok "reason=not-due (distinct from not-declared/headless-unsupported)" || bad "t25.reason" "got $(jq -r '.reason' <<<"$SK")"
+[ "$(jq -r '.count' <<<"$SK")" = "1" ] && ok "the skip names the parked tracker count" || bad "t25.count" "got $(jq -r '.count' <<<"$SK")"
+DUE_EXPECT="$(_t_epoch_to_iso $((RNOW - 10 + 259200)))"
+[ "$(jq -r '.due_at' <<<"$SK")" = "$DUE_EXPECT" ] \
+  && ok "due_at names WHEN the debounce clears (oldest createdAt + RETRO_MIN_INTERVAL)" || bad "t25.dueat" "expected $DUE_EXPECT, got $(jq -r '.due_at' <<<"$SK")"
+[ -z "$(jq -r 'first(.actions[]|select(.action=="no-op"))' <<<"$PLAN")" ] \
+  && ok "the not-due skip speaks for the tick — no contradicting ALSO-emitted no-op" || bad "t25.noop" "got $PLAN"
 
 echo "--- test 26: /retro NOT declared -> exactly ONE legible skip-retro-judge; NO retro-judge action ---"
 FX="$TMP/t26"; seed_board "$FX" 3
@@ -1199,6 +1215,52 @@ PLAN="$(cd "$TMP/t31cwd" && HOME="$T31HOME" PIPELINE_NOW_EPOCH="$RNOW" \
   bash "$TICK" --dry-run --fixture "$FX" --board 3)"
 [ -n "$(action_for <<<"$PLAN" '.action=="retro-judge"')" ] \
   && ok "adding the marker line is the whole remedy — the judge is spawned again" || bad "t31.remedy" "still refused after declaring: $PLAN"
+
+# ── LIVE-arm label-shape normalization (temperloop#1184) ─────────────────────
+# `gh issue list --json …labels` hands back `labels` as OBJECTS
+# ({id,name,description,color}), never bare strings, so
+# `retro_judge_due_reason`'s `index("retro-urgent")` was always null against
+# the raw LIVE shape — the urgency bypass never fired in production even
+# though the fixture arm (test 24, string-shaped labels) always passed. This
+# exercises the REAL non-fixture code path (no --dry-run/--fixture) with a
+# PATH-shim `gh` stub answering only the retro-pending search — every other gh
+# call this live tick makes falls back through the script's OWN existing
+# `2>/dev/null || echo '[]'` / `board_resolve … || { echo '[]'; return; }`
+# degradation paths (Phase A/A2's decision+clarification search, Phase B/C's
+# board-adapter read), exactly as they do in production when a call errors.
+echo "--- test 32: LIVE arm normalizes gh's object-shaped labels — the urgency bypass fires for real ---"
+GHBIN="$TMP/t32bin"; mkdir -p "$GHBIN"
+RLIVE="$(_t_epoch_to_iso $((RNOW - 10)))"   # fresh — only urgency, never the debounce, can fire this
+TRACKER_JSON="$(jq -cn --arg t "$RLIVE" \
+  '[{number:950,title:"Process retro: epic #900",createdAt:$t,
+     labels:[{id:"LA_1",name:"retro-pending",description:"",color:"ededed"},
+             {id:"LA_2",name:"retro-urgent",description:"",color:"b60205"}]}]')"
+cat > "$GHBIN/gh" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *"retro-pending state:open"*) printf '%s\n' '$TRACKER_JSON' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$GHBIN/gh"
+INTAKE_STUB="$TMP/t32-intake.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$INTAKE_STUB"; chmod +x "$INTAKE_STUB"
+PLAN="$(PATH="$GHBIN:$PATH" \
+  COMMAND_DECLARED_OVERRIDE="retro" COMMAND_CAPABILITY_OVERRIDE="retro:headless-unattended" \
+  PIPELINE_NOW_EPOCH="$RNOW" PIPELINE_INTAKE_CMD="$INTAKE_STUB" PIPELINE_LOCK_DIR="$TMP/t32-lock" \
+  BUILD_CONFIG_LOCAL="$NOLOCAL" BUILD_CONFIG_MACHINE="$NOMACHINE" \
+  CACHE_STORE_ROOT="$TMP/t32-cache" \
+  bash "$TICK" --board 3)"
+RJ="$(action_for <<<"$PLAN" '.action=="retro-judge"')"
+[ -n "$RJ" ] \
+  && ok "the LIVE object-labelled shape still fires the urgency bypass (fails against pre-#1184 code: index() on objects is always null)" \
+  || bad "t32.fire" "no retro-judge action against the live gh shape; PLAN=$PLAN"
+[ "$(jq -r '.reason' <<<"$RJ")" = "urgent" ] \
+  && ok "reason=urgent — the LIVE arm now agrees with the DRY_RUN fixture arm (test 24)" || bad "t32.reason" "got $(jq -r '.reason' <<<"$RJ")"
+[ "$(jq -r '.count' <<<"$RJ")" = "1" ] && ok "count=1 tracker" || bad "t32.count" "got $(jq -r '.count' <<<"$RJ")"
+[ "$(jq '.actions|length' <<<"$PLAN")" = "1" ] \
+  && ok "hermetic: the tick emits ONLY the retro-judge action (CACHE_STORE_ROOT forces a cache-miss, so every other gh call hits the stub's fallback path, not this host's real board)" \
+  || bad "t32.hermetic" "unexpected extra actions leaked in: $PLAN"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 echo
