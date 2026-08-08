@@ -69,18 +69,20 @@ ever need `temperloop uninstall` (the machine-surface install) or
 `temperloop eject` (undoing `init` in a target repo); see § Uninstall below
 for the full breakdown and the other two.
 
-## Quickstart: sandbox → first epic → adopt
+## Quickstart: testbed → first epic → promote → adopt
 
-Evaluate temperloop on **your own code, in a repo you can delete**: make a
-private duplicate of a real repo of yours, copy a handful of your open issues
-into it, run `temperloop init` there, and take the first epic it offers you
-through `/assess` → `/build`. The exact commands — duplication, the issue-copy
-loop, and teardown — live in [the README's § 3](../README.md), which is the
-canonical copy; this page is the CLI reference behind it.
+Evaluate temperloop on **your own code, in a repo you can throw away — then
+keep what it built**: `temperloop testbed` makes a private duplicate of a real
+repo of yours and carries its open issues across, you run `temperloop init`
+there and take the first epic it offers you through `/assess` → `/build`, then
+`/promote` lands the work worth keeping back in the real repo before
+`temperloop testbed --teardown` reclaims the duplicate. The exact commands live
+in [the README's § 3](../README.md), which is the canonical copy; this page is
+the CLI reference behind it.
 
 A duplicate, not a fork: a fork of a public repo is forcibly public, and it
 carries an upstream that PR tooling will offer as a base. GitHub also never
-copies issues to a fork, so they have to be brought across either way.
+copies issues to a fork, which is why `testbed` copies them for you.
 
 **Before you run anything: what this costs, and what it will do on its own.**
 [`../docs/cost-and-autonomy.md`](../docs/cost-and-autonomy.md) covers real
@@ -90,7 +92,7 @@ blocks for you — worth two minutes first. Note in particular that the
 evaluation path runs the real pipeline and so carries **no hard dollar cap**
 (temperloop#1130).
 
-### `temperloop init` — adopt, in the sandbox or for real
+### `temperloop init` — adopt, in the testbed or for real
 
 ```sh
 temperloop init --dry-run   # preview first: tree-only, zero API writes

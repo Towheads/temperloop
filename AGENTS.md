@@ -115,7 +115,7 @@ quality-gates` to run them all.
   knowledge/tracker adapter.
 - `bin/README.md` — the CLI's own front page: install, prerequisites, and
   the per-subcommand reference (flags, exit codes, safety contract). The
-  sandbox → first epic → adopt quickstart itself is canonical in
+  testbed → first epic → promote → adopt quickstart itself is canonical in
   `README.md` § 3; `bin/README.md` points at it rather than restating it.
 
 Once `make docs` has been run, all of the above (plus the command reference

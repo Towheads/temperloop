@@ -97,21 +97,24 @@ are assumed present.
 
 ---
 
-## 3. Quickstart: sandbox → first epic → adopt
+## 3. Quickstart: testbed → first epic → promote → adopt
 
 The `temperloop` CLI (`bin/`) is the on-ramp — a single POSIX entrypoint for
 someone who has never touched this repo's Makefile, board, or build pipeline.
 
-**Evaluate it on your own code, in a repo you can delete.** Make a detached
-private duplicate of a real repo of yours, run the full pipeline there, and
-throw it away when you're done. Nothing you do in the duplicate can reach the
-original: it is a separate repository with no fork relationship, no shared
-issues, and no upstream to accidentally open a pull request against.
+**Evaluate it on your own code, in a repo you can throw away — then keep what
+it built.** `temperloop testbed` makes a detached private duplicate of a real
+repo of yours; you run the full pipeline in there, promote the work worth
+keeping back into the original, and reclaim the duplicate afterwards. Nothing
+you do in the duplicate can reach the original by accident: it is a separate
+repository with no fork relationship, no shared issues, and no upstream to
+open a pull request against. The only way back out is the deliberate one —
+`/promote`, which names the destination explicitly.
 
 A duplicate is deliberately **not a fork**. A fork of a public repo is
 forcibly public, so evaluating with real issue content would expose it; a
 fork also carries an upstream that PR tooling and the GitHub UI will offer as
-a base. A duplicate has neither problem, and `gh repo delete` ends it.
+a base. A duplicate has neither problem.
 
 **Before step 1: what this costs, and what it will do on its own.**
 [`docs/cost-and-autonomy.md`](docs/cost-and-autonomy.md) covers real spend
@@ -131,33 +134,56 @@ sh temperloop-bootstrap.sh
 # silently pulls: it delegates to `temperloop update`, which shows the
 # CHANGELOG delta (including BREAKING sections) and asks before moving.
 
-# 2. Build the sandbox — a private duplicate of a real repo of yours.
-#    Mirror-push, so you get the full history, not a shallow copy.
-gh repo create my-project-sandbox --private
-git clone --bare git@github.com:me/my-project.git
-git -C my-project.git push --mirror git@github.com:me/my-project-sandbox.git
-git clone git@github.com:me/my-project-sandbox.git && cd my-project-sandbox
+# 2. Build the testbed — run this from a checkout of the repo you want to
+#    evaluate on. One command does all three mutating steps: creates the
+#    private duplicate, mirror-pushes the full git history into it (not a
+#    shallow copy), and carries the open issues across — GitHub itself never
+#    copies issues, to a fork or anywhere else, so this is what gives the
+#    pipeline something real to work on.
+temperloop testbed --dry-run   # preview: zero writes of any kind
+temperloop testbed             # for real, once you like the preview
+```
 
-# 3. Give it something real to work on. A duplicate carries your code but
-#    NOT your issues — GitHub never copies issues, to a fork or anywhere
-#    else — so bring a handful across by hand. Ten or twenty open issues is
-#    plenty; every issue is work the pipeline may spend tokens on.
-gh issue list --repo me/my-project --state open --limit 20 \
-    --json title,body \
-  | jq -c '.[]' \
-  | while read -r i; do \
-      gh issue create --repo me/my-project-sandbox \
-        --title "$(jq -r .title <<<"$i")" \
-        --body  "$(jq -r .body  <<<"$i")"; \
-    done
+The run ends on a handoff block — the same one `--dry-run` previews, under a
+`DRY RUN — NOTHING WAS CREATED` banner:
 
-# 4. Adopt, in the sandbox — bootstraps `.temperloop/config` via a
+```text
+temperloop testbed: done
+
+-- Handoff --
+================================================================
+  YOUR EVALUATION TESTBED IS READY
+================================================================
+
+Testbed: https://github.com/me/my-project-testbed
+
+Clone it, cd into it, and run temperloop init THERE (not here):
+
+    git clone https://github.com/me/my-project-testbed.git
+    cd my-project-testbed
+    temperloop init
+
+next step: temperloop init — run it inside the clone above. The testbed is a
+  throwaway: everything init proposes lands there, and your real repo
+  (me/my-project) is never touched.
+================================================================
+```
+
+Nothing is created before you consent: every pre-flight check is a read, and
+the run names the exact repository it is about to create before asking. The
+name is derived for you (`<repo>-testbed`, uniquified if taken) unless you
+pass `--name`. Then follow the handoff:
+
+```sh
+# 3. Adopt, in the testbed — bootstraps `.temperloop/config` via a
 #    reviewable, tree-only PR, then offers you the pre-designed FIRST EPIC
 #    ("Set up <project> with temperloop") and prints the handoff. Nothing
 #    lands without your review; --dry-run previews with zero writes at all.
+git clone https://github.com/me/my-project-testbed.git
+cd my-project-testbed
 temperloop init
 
-# 5. Run the first epic through the REAL pipeline — this is the part worth
+# 4. Run the first epic through the REAL pipeline — this is the part worth
 #    watching. `/assess` decomposes the epic's Contract into a
 #    dependency-ordered plan; `/build` executes it with worktree-isolated
 #    workers, real PRs, real CI, and a batched merge gate.
@@ -166,7 +192,7 @@ claude
 > /build
 ```
 
-**Why the first epic is the demo.** Step 5 is not a scripted walkthrough —
+**Why the first epic is the demo.** Step 4 is not a scripted walkthrough —
 it is the pipeline doing real work on your repo. The first epic
 ([ADR 0010](docs/adr/0010-onboarding-as-first-executed-epic.md),
 body in [`claude/templates/first-epic-setup.md`](claude/templates/first-epic-setup.md))
@@ -178,22 +204,49 @@ PR → CI → merge gate — on a change you actually wanted anyway. It is
 interview-first: every question is asked before any external write, and your
 answers compose into one change-set you confirm once.
 
-Once the epic has merged, the sandbox has a working board and a green
-pipeline. Point `/triage` at the issues you imported in step 3 to watch it
-group a real backlog into epics, and `/build` to drain one.
+Once the epic has merged, the testbed has a working board and a green
+pipeline. Point `/triage` at the issues `testbed` carried across in step 2 to
+watch it group a real backlog into epics, and `/build` to drain one.
 
-**When you're done**, delete the whole thing — there is nothing to unwind,
-because nothing outside the sandbox was ever touched:
+**When you're done, bring the work home first.** The pipeline did real work on
+your real code, and the point of the testbed is that you don't have to throw
+that away to have evaluated safely. `/promote` runs **inside the testbed
+checkout** and lands the testbed's own commits in your real repository as a
+branch plus a reviewable pull request — never a push to `main`, and the
+destination is always named explicitly rather than inferred from the testbed's
+name or your working directory:
+
+```sh
+# In the testbed clone. --dry-run runs every read and prints the plan,
+# with zero writes.
+claude
+> /promote --to me/my-project --dry-run
+> /promote --to me/my-project
+```
+
+Review and merge that pull request in your real repo like any other change.
+
+**Then reclaim the testbed** — after promoting, not instead of it:
 
 ```sh
 # `gh auth login` does not grant repo deletion by default; grant it once:
 gh auth refresh -s delete_repo
-gh repo delete me/my-project-sandbox --yes
+temperloop testbed --teardown   # from inside the testbed clone
 ```
 
-Deleting the sandbox removes the repo only. If you also ran
-`temperloop install` to wire the machine-wide surface, `temperloop uninstall`
-removes that from its own manifest — see the lifecycle note below.
+`--teardown` resolves its target from the testbed clone's own `origin` remote
+(or from an explicit `--repo me/my-project-testbed`, so it also works from the
+checkout that created it), deletes the repository, and removes its entry from
+the machine-scoped artifact record — so an interrupted run can't leave a
+private repo orphaned with nobody able to find it. Without the `delete_repo`
+scope it stops and prints the `gh auth refresh` remedy above rather than
+failing.
+
+There is still nothing to unwind afterwards: nothing outside the testbed was
+ever touched except the pull request `/promote` opened, which you reviewed.
+Teardown removes the testbed repository only — if you also ran `temperloop
+install` to wire the machine-wide surface, `temperloop uninstall` removes that
+from its own manifest, see the lifecycle note below.
 
 **To adopt for real**, run `temperloop init` in your actual repo. It behaves
 identically, and the same first epic sets up the same guardrails — the only
