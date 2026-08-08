@@ -37,7 +37,12 @@
 #     JSON is asserted BYTE-IDENTICAL (no-behavior-change-on-native guarantee)
 #   - diagnose-queue (temperloop#1150): a live mergeQueueEntry → QUEUED (exit 0,
 #     the merge_group probe is NOT even queried); a failed merge_group run for
-#     the PR → MERGE_GROUP_FAILED (exit 7) + the run id; not-in-queue with no
+#     the PR → split by per-job step data (temperloop#1175): a workflow-defined
+#     step (any step after "Set up job") itself failing → MERGE_GROUP_FAILED
+#     (exit 7) + the run id; the run failing before any workflow-defined step
+#     ran → MERGE_GROUP_INFRA (exit 11) + the run id; the jobs lookup itself
+#     erroring → the conservative MERGE_GROUP_FAILED fallback (never widens
+#     what gets retried); not-in-queue with no
 #     referencing run → DEQUEUED (exit 8); the `/pr-<N>-` branch anchor does not
 #     let #4 match a #42 run; an in-progress referencing run → QUEUED (not a
 #     dequeue); an already-merged PR → MERGED (exit 0), short-circuiting the probe
@@ -395,6 +400,65 @@ rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
 [ "$(jq -r .outcome <<<"$out")" = "MERGE_GROUP_FAILED" ] || fail "diagnose MERGE_GROUP_FAILED outcome (got: $out)"
 [ "$(jq -r .run_id <<<"$out")" = "9001" ] || fail "diagnose failed run_id (got: $out)"
 echo "PASS: diagnose-queue → MERGE_GROUP_FAILED (exit 7) + failed run id when the group CI failed"
+
+# --- diagnose-queue: MERGE_GROUP_FAILED split via per-job step data (temperloop#1175) ---
+# A workflow-defined step (any step AFTER the runner-provided "Set up job"
+# step, keyed on the step's `number`, never its name) itself concluded
+# "failure" → still MERGE_GROUP_FAILED (exit 7), the real-gate-failure case.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs/9001/jobs*) echo '{"jobs":[{"id":1,"steps":[
+        {"number":1,"name":"Set up job","conclusion":"success"},
+        {"number":2,"name":"Run bash scripts/quality-gates.sh","conclusion":"failure"},
+        {"number":3,"name":"Complete job","conclusion":"skipped"}]}]}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-abc123","conclusion":"failure","status":"completed","id":9001,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 7 ] || fail "real gate failure did not exit 7 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGE_GROUP_FAILED" ] || fail "real gate failure outcome (got: $out)"
+[ "$(jq -r .run_id <<<"$out")" = "9001" ] || fail "real gate failure run_id (got: $out)"
+echo "PASS: diagnose-queue → MERGE_GROUP_FAILED (exit 7) when a workflow-defined step itself concluded failure"
+
+# --- diagnose-queue: MERGE_GROUP_INFRA when the run never reached a workflow-
+# defined step (temperloop#1175, foundation PR #1563) — a GitHub Actions infra
+# hiccup during runner setup (e.g. "Set up job -> Failed to resolve action
+# download info -> Service Unavailable"), never a log-text match: only the
+# STRUCTURE (the sole recorded step is the runner-provided "Set up job" step,
+# number 1) drives this.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs/9002/jobs*) echo '{"jobs":[{"id":1,"steps":[
+        {"number":1,"name":"Set up job","conclusion":"failure"}]}]}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-def456","conclusion":"failure","status":"completed","id":9002,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 11 ] || fail "MERGE_GROUP_INFRA did not exit 11 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGE_GROUP_INFRA" ] || fail "diagnose MERGE_GROUP_INFRA outcome (got: $out)"
+[ "$(jq -r .run_id <<<"$out")" = "9002" ] || fail "diagnose MERGE_GROUP_INFRA run_id (got: $out)"
+echo "PASS: diagnose-queue → MERGE_GROUP_INFRA (exit 11) when the failing run never reached a workflow-defined step"
+
+# --- diagnose-queue: unclassifiable per-job data stays the conservative
+# MERGE_GROUP_FAILED default (never widens what gets retried) — the jobs
+# lookup itself erroring is the representative unclassifiable case.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":null}}}}' ;;
+    *actions/runs/9003/jobs*) return 1 ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-ghi789","conclusion":"failure","status":"completed","id":9003,"created_at":"2026-07-01T10:00:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 7 ] || fail "unclassifiable jobs lookup did not fall back to exit 7 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "MERGE_GROUP_FAILED" ] || fail "unclassifiable jobs lookup fallback outcome (got: $out)"
+[ "$(jq -r .run_id <<<"$out")" = "9003" ] || fail "unclassifiable jobs lookup fallback run_id (got: $out)"
+echo "PASS: diagnose-queue → an erroring jobs lookup stays the conservative MERGE_GROUP_FAILED default"
 
 # --- diagnose-queue: not in queue + no referencing run → DEQUEUED ------------
 _gate_gh() {

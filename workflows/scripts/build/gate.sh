@@ -49,10 +49,17 @@
 #         observability channels the bare `gh pr view` poll cannot — the GraphQL
 #         `mergeQueueEntry` membership signal and the `merge_group` run history —
 #         so a silent dequeue resolves to a structured QUEUED / MERGE_GROUP_FAILED
-#         / DEQUEUED / MERGED verdict instead of an opaque BUILD_QUEUE_TIMEOUT.
+#         / MERGE_GROUP_INFRA / DEQUEUED / MERGED verdict instead of an opaque
+#         BUILD_QUEUE_TIMEOUT.
 #         A STILL-ENQUEUED entry older than BUILD_QUEUE_STALL_AFTER with zero
 #         merge_group runs dispatched resolves to QUEUE_STALLED (temperloop#1178)
 #         — a stalled queue, distinguishable from a merely slow one.
+#         A FAILED merge_group run is further split by per-job step data
+#         (temperloop#1175): MERGE_GROUP_FAILED only when a workflow-defined
+#         step itself concluded failure; MERGE_GROUP_INFRA when the run never
+#         reached one (a GitHub Actions infra hiccup during runner setup) — so
+#         a transient outage no longer permanently ejects a healthy PR onto
+#         the do-not-retry path.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per command
 # (the orchestrator branches on `.outcome`, never parses prose):
@@ -82,6 +89,7 @@
 #                    {"outcome":"DEQUEUED","pr":…}                     exit 8
 #                    {"outcome":"QUEUE_STALLED","pr":…,
 #                     "enqueued_secs":…,"merge_group_runs":0}         exit 10
+#                    {"outcome":"MERGE_GROUP_INFRA","pr":…,"run_id":…} exit 11
 #   error  → {"outcome":"ERROR","error":…}                           exit 1
 # Exit codes: 0 success; 1 ERROR (bad input / failed call); 3 CONFLICTING/DIRTY
 # terminal-bad (poll, and managed-merge's post-merge confirm poll); 4 TIMEOUT/
@@ -89,14 +97,23 @@
 # no merge attempted); 6 MERGE_REJECTED (managed-merge: the platform itself
 # refused the `gh pr merge` call, e.g. branch protection or a queue-armed repo
 # rejecting a direct merge); 7 MERGE_GROUP_FAILED (diagnose-queue: the queue's
-# merge_group CI concluded failure — a real group conflict); 8 DEQUEUED
+# merge_group run concluded failure AND a workflow-defined step — any step
+# after the runner-provided "Set up job" step — itself concluded failure: a
+# real group conflict); 8 DEQUEUED
 # (diagnose-queue: the PR left the queue with no failing group run — an entry
 # dropped during churn); 9 DRAFT (queue: the PR is a draft, which GitHub refuses
 # to auto-merge — a NAMED state with a named remedy, never a raw
 # enablePullRequestAutoMerge string); 10 QUEUE_STALLED (diagnose-queue: the PR
 # is STILL enqueued but has been for longer than BUILD_QUEUE_STALL_AFTER with
 # ZERO merge_group runs ever dispatched for it — a stalled queue, not a slow
-# one, so the caller stops waiting instead of re-polling forever). MERGED is the SOLE success check for poll and for
+# one, so the caller stops waiting instead of re-polling forever); 11
+# MERGE_GROUP_INFRA (diagnose-queue: the queue's merge_group run concluded
+# failure but NEVER REACHED a workflow-defined step — a GitHub Actions infra
+# hiccup during runner setup, e.g. "Service Unavailable" resolving action
+# download info (temperloop#1175, foundation PR #1563) — so the caller
+# re-enqueues instead of ejecting a healthy PR onto the do-not-retry path;
+# anything unclassifiable from the per-job step data stays MERGE_GROUP_FAILED,
+# the conservative default). MERGED is the SOLE success check for poll and for
 # managed-merge's confirm step — never "closed", never "checks green" — so a
 # PR closed-without-merge can never read as merged (the #130 premature-close
 # class).
@@ -567,11 +584,22 @@ cmd_poll() {
 #   (2) merge_group workflow runs via REST — repos/<r>/actions/runs?event=
 #       merge_group. When not in the queue, the LATEST run whose trial branch
 #       references this PR (gh-readonly-queue/<base>/pr-<N>-<sha>) says WHY it
-#       left: conclusion==failure ⇒ MERGE_GROUP_FAILED (a real group CI failure —
-#       a semantic conflict or transiently-broken main; the caller routes
-#       straight to 4c rather than burning a managed-merge retry that re-fails);
-#       no referencing run ⇒ DEQUEUED (entry dropped during churn — re-arm --auto
-#       once). An in-progress referencing run ⇒ still QUEUED.
+#       left: conclusion==failure ⇒ split further by a THIRD channel — per-job
+#       step data (repos/<r>/actions/runs/<run_id>/jobs, temperloop#1175) —
+#       into MERGE_GROUP_FAILED (a workflow-defined step, i.e. any step after
+#       the runner-provided "Set up job" step, itself concluded failure: a
+#       real group conflict or transiently-broken main; the caller routes
+#       straight to 4c rather than burning a managed-merge retry that
+#       re-fails) vs MERGE_GROUP_INFRA (the run never reached a
+#       workflow-defined step at all — a GitHub Actions infra hiccup during
+#       runner setup, e.g. "Service Unavailable" resolving action download
+#       info; the caller re-enqueues instead of ejecting a healthy PR).
+#       Unclassifiable per-job data (the jobs call errors, an empty/missing
+#       jobs array, missing/null step data) stays MERGE_GROUP_FAILED — the
+#       conservative default, load-bearing: this split must never widen what
+#       gets retried by accident. No referencing run ⇒ DEQUEUED (entry
+#       dropped during churn — re-arm --auto once). An in-progress
+#       referencing run ⇒ still QUEUED.
 #
 # LIMITATION (documented — a bounded improvement, never a regression): when the
 # queue BATCHES several PRs into one group, the trial-branch ref names one PR, so
@@ -672,6 +700,46 @@ cmd_diagnose_queue() {
   run_id="$(jq -r '.id // empty' <<<"$run" 2>/dev/null || echo "")"
 
   if [ "$conclusion" = "failure" ]; then
+    # A run-level "failure" alone cannot tell a REAL gate failure (a
+    # workflow-defined step itself failed) from a GitHub Actions INFRA failure
+    # that never reached one (temperloop#1175) — e.g. a run logging "Set up
+    # job -> Failed to resolve action download info -> Service Unavailable"
+    # (the motivating foundation PR #1563 incident) concludes the whole RUN as
+    # "failure" despite no workflow-defined step ever having run, which
+    # today's classifier cannot distinguish from a real gate failure and
+    # ejects a healthy PR onto the do-not-retry path for it. Classify
+    # STRUCTURALLY from per-job step data — repos/<owner>/<repo>/actions/runs/
+    # <run_id>/jobs — NEVER on log text (untestable offline, and brittle to
+    # message wording). Every job's first step is the runner-provided
+    # "Set up job" step (step `number` 1); any step after it is
+    # workflow-defined — key on that STRUCTURE (position), never on our own
+    # CI's step NAMES (a rename would silently reclassify everything).
+    # Conservative default, load-bearing: anything unclassifiable — the jobs
+    # call erroring, an empty/missing jobs array, missing/null step data —
+    # stays MERGE_GROUP_FAILED. A new verdict must never widen what gets
+    # retried by accident.
+    local jobs_raw jobs_rc=0 classification="no_data"
+    if [ -n "$run_id" ]; then
+      jobs_raw="$(_gate_gh api "repos/$owner_repo/actions/runs/$run_id/jobs" 2>&1)" \
+        || jobs_rc=$?
+      if [ "$jobs_rc" -eq 0 ]; then
+        classification="$(jq -r '
+              if ((.jobs? // null) | type) != "array" or ((.jobs // []) | length) == 0
+                then "no_data"
+              elif ([.jobs[] | (.steps? // null) | type] | any(. != "array"))
+                then "no_data"
+              elif ([.jobs[].steps[]? |
+                     select((.number? // 0) > 1 and .conclusion == "failure")] | length) > 0
+                then "workflow_failed"
+              else "infra_only"
+              end' <<<"$jobs_raw" 2>/dev/null)" || classification="no_data"
+      fi
+    fi
+    if [ "$classification" = "infra_only" ]; then
+      jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
+        '{outcome:"MERGE_GROUP_INFRA", pr:$pr, run_id:$rid}'
+      return 11
+    fi
     jq -cn --argjson pr "$pr" --argjson rid "${run_id:-null}" \
       '{outcome:"MERGE_GROUP_FAILED", pr:$pr, run_id:$rid}'
     return 7
