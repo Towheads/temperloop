@@ -257,6 +257,7 @@ make test-tally-findings	workflows/scripts/drain/**
 # ── Kernel classification / distribution / CLI ──────────────────────────────
 bash workflows/scripts/kernel/tests/test_check_kernel_manifest.sh	workflows/scripts/kernel/**
 bash workflows/scripts/kernel/tests/test_kernel_lib_resolve.sh	workflows/scripts/kernel/**
+bash workflows/scripts/kernel/tests/test_kernel_lib_portability.sh	workflows/scripts/kernel/**
 make test-producer-egress	workflows/scripts/kernel/** workflows/scripts/report-producers/** .temperloop/report.d/** bin/**
 make test-conventions-probe	workflows/scripts/probe/** bin/**
 make test-try	bin/** workflows/scripts/probe/**

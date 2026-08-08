@@ -109,6 +109,41 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **The kernel/overlay classifier is shell-portable and fails closed — it no
+  longer answers "not kernel" when it cannot evaluate at all** (#1177).
+  `workflows/scripts/kernel/lib.sh` is *sourced*, so its `#!/usr/bin/env bash`
+  shebang is inert and it runs under whatever shell the caller is. On macOS
+  that is routinely zsh, and two bash-isms broke there **silently**:
+  `${!ARRAY[@]}` (rejected with `bad substitution`) and — the nastier half —
+  zsh's refusal to glob-match a pattern arriving via parameter expansion
+  without `GLOB_SUBST`, which makes `case "$f" in $pat)` and
+  `[[ "$f" == $pat ]]` evaluate to *no match* with no error whatsoever. The
+  result was `kernel_lib_classify claude/commands/build.md` returning empty +
+  rc 1 under zsh (`kernel` under bash) — bit-identical to the legitimate
+  "no pattern matched" answer, so **every agent invocation** of `/assess`'s
+  seam-straddling check and `/build` Step 3b's kernel backstop (the #1050
+  guard) took the failing branch and passed everything it exists to stop. The
+  lib now holds the manifest in one newline-delimited scalar instead of
+  parallel arrays, sets `localoptions globsubst` under zsh, and keeps every
+  construct POSIX-shaped (bash 3.2 / bash 5 / zsh). Fail-closed is now a
+  *signal*, not better error handling: `kernel_lib_load_manifest` runs a
+  known-answer `kernel_lib_selftest` before parsing and verifies its entry
+  store populated, and `kernel_lib_classify` distinguishes **rc 1** ("no
+  pattern matched") from **rc 2** (`CANNOT EVALUATE`). Every consumer treats
+  rc 2 as a hard error rather than swallowing it: `check-kernel-manifest.sh`
+  and `list-kernel-set.sh` abort instead of reporting a path unclassified or
+  emitting a silently-truncated kernel set, `validate-feature-docs.sh` gains
+  the same rc contract plus its own matcher selftest, and the two **prose**
+  consumers (`claude/commands/assess.md`, `claude/commands/build.md`) carry
+  identical fail-loud wording so the agent-executed surface behaves the same
+  way. A new dual-shell regression gate,
+  `workflows/scripts/kernel/tests/test_kernel_lib_portability.sh`, runs
+  byte-identical asserts under bash, zsh, and macOS bash 3.2 against a
+  **known-kernel control** (`claude/commands/build.md`) — the control being
+  the point, since a run that checks only the files it just touched is exactly
+  how this stayed invisible. Contract surface via `claude/commands/*.md`; not
+  breaking.
+
 - **The board issue cache no longer serves a merged item as still open/In
   Progress until its TTL expires** (#1164). The write-through invalidation
   hook `_board_cache_dirty_after_write` (`board.sh`, called from every
