@@ -382,6 +382,48 @@ while IFS= read -r line; do
 done <<<"$before_unreleased"
 assert_eq "every pre-existing [Unreleased] line survived" "0" "$missing"
 
+# ---------------------------------------------------------------------------
+# T8b — the SAME real changelog, with stray whitespace INJECTED.
+#
+# T8 above is content-dependent by construction: it can only catch a
+# whitespace-normalising rewrite when the repo's own `[Unreleased]` happens to
+# contain the stray whitespace at the moment the suite runs. It did not — and
+# a `main` that HAD picked up a double blank line ejected an already-green PR
+# from the merge queue, because the merge_group trial branch assembled that
+# `main` and lost the line (temperloop#1321).
+#
+# So: inject the whitespace rather than wait for it. This leg asserts the
+# additive property against a deliberately-imperfect copy of the real file, so
+# the guarantee holds for ANY `main`, not just a tidy one.
+# ---------------------------------------------------------------------------
+new_case
+awk '
+  /^## \[Unreleased\]/ { unrel = 1; print; next }
+  # An extra blank immediately before the next version heading — a doubled
+  # TRAILING run at the end of the Unreleased body.
+  unrel && /^## \[/ { print ""; unrel = 0; print; next }
+  # An extra blank before the first sub-heading — a doubled run mid-section.
+  unrel && /^### / && !injected { injected = 1; print "" }
+  { print }
+' "$REPO_ROOT/CHANGELOG.md" > "$CHANGELOG"
+cp "$CHANGELOG" "$CASE_DIR/before.md"
+
+# The injection must actually have produced a double blank, or this leg is
+# silently vacuous — the exact failure mode that let the original defect reach
+# the merge queue.
+assert_eq "T8b the fixture really does carry a double blank line" "1" \
+  "$(awk 'prev == "" && $0 == "" && !seen { seen = 1; print 1 } { prev = $0 }' "$CHANGELOG")"
+
+frag '1321-injected-demo.changed.md' '- **injected-whitespace smoke entry** (#1321).'
+run_assembler >/dev/null
+
+removed="$(diff "$CASE_DIR/before.md" "$CHANGELOG" | grep -c '^<')"
+assert_eq "T8b not one line removed from the whitespace-injected changelog" "0" "$removed"
+assert_contains "T8b the new entry is present" \
+  "**injected-whitespace smoke entry** (#1321)." "$(cat "$CHANGELOG")"
+assert_eq "T8b changelog_version_headings unchanged" "$before_headings" \
+  "$(changelog_version_headings "$CHANGELOG")"
+
 # ===========================================================================
 # T9 — a FAILING assembly must refuse to write (the destroy-everything bug)
 #
@@ -622,6 +664,98 @@ if [[ -n "$entry_line" && -n "$close_line" && "$entry_line" -gt "$close_line" ]]
 else
   fail "T13 the entry landed inside the fence (entry line $entry_line, closing fence $close_line)"
 fi
+
+# ===========================================================================
+# T14 — the rewrite is INSERT-ONLY: existing blank lines are byte-preserved.
+#
+# THE DEFECT. The emitter RECONSTRUCTED the Unreleased body rather than
+# splicing into it — it stripped each sub-section's leading/trailing blank run
+# and re-emitted one canonical blank line around every heading. So the output
+# depended on incidental whitespace in the INPUT: a `[Unreleased]` carrying a
+# stray DOUBLE blank line assembled to one line FEWER than it started with,
+# while the same body without one assembled purely additively. Same code, two
+# answers. That is how a green PR was ejected from the merge queue — the
+# merge_group trial branch merged a `main` that had picked up a double blank,
+# and T8's "not one line removed" assertion flipped to 1 (temperloop#1321).
+#
+# T8 only catches this when the REAL changelog happens to contain the stray
+# whitespace, which is exactly the content-dependence at issue. This case
+# fixes the input so the property is asserted unconditionally.
+# ===========================================================================
+echo "T14: existing blank lines are byte-preserved (insert-only rewrite)"
+new_case
+cat > "$CHANGELOG" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- normal single-blank layout, which must ALSO come through unchanged
+
+
+### Changed
+
+- reached across a stray DOUBLE blank line
+
+### Fixed
+
+- last entry before a trailing blank run
+
+
+## [0.1.0] - 2026-01-01
+
+- the beginning.
+EOF
+cp "$CHANGELOG" "$CASE_DIR/before.md"
+
+# Three fragments, so all three splice paths run over this body at once: a
+# merge into the section immediately AFTER the double blank, a merge into the
+# section that ends in the trailing blank run, and a BRAND-NEW section flushed
+# at end-of-body (`security` sorts last), which is the path that would trample
+# that trailing run if it normalised.
+frag '14-a.changed.md'  '- **merged into an existing section** (#14a).'
+frag '14-b.fixed.md'    '- **merged into the section before the trailing run** (#14b).'
+frag '14-c.security.md' '- **brand-new section at end of body** (#14c).'
+run_assembler >/dev/null
+
+# BYTE-IDENTITY, not merely "no content lost". `diff` reporting zero `<` lines
+# AND zero change/delete hunks proves the before-file is an exact, in-order,
+# byte-for-byte subsequence of the after-file: every pre-existing line is still
+# there, unedited and unreordered, and the whole diff is pure insertion.
+d="$(diff "$CASE_DIR/before.md" "$CHANGELOG")"
+assert_eq "T14 not one line removed or changed" "0" "$(grep -c '^<' <<<"$d")"
+assert_eq "T14 every diff hunk is a pure append" "0" \
+  "$(grep -c '^[0-9,]*[cd]' <<<"$d")"
+
+# The two specific runs the old emitter collapsed, named individually so a
+# future regression reports WHICH one it broke rather than a bare line count.
+# `blanks_before <file> <regex>` — the length of the blank run immediately
+# preceding the first line matching <regex>.
+blanks_before() {
+  awk -v pat="$2" '$0 ~ pat { print b + 0; exit } /^[ \t]*$/ { b++; next } { b = 0 }' "$1"
+}
+assert_eq "T14 the double blank before ### Changed survived" "2" \
+  "$(blanks_before "$CHANGELOG" '^### Changed$')"
+# The pre-existing trailing run now sits before the brand-new section that was
+# flushed at end-of-body — still two lines, neither of them consumed.
+assert_eq "T14 the trailing blank run survived the end-of-body flush" "2" \
+  "$(blanks_before "$CHANGELOG" '^### Security$')"
+# Guard against over-correction: the normal single-blank layout must not grow.
+assert_eq "T14 the normal single-blank layout is untouched" "1" \
+  "$(blanks_before "$CHANGELOG" '^### Added$')"
+
+assert_contains "T14 the existing-section merge landed" \
+  "**merged into an existing section** (#14a)." "$(cat "$CHANGELOG")"
+assert_contains "T14 the pre-trailing-run merge landed" \
+  "**merged into the section before the trailing run** (#14b)." "$(cat "$CHANGELOG")"
+assert_contains "T14 the brand-new section was created" "### Security" "$(cat "$CHANGELOG")"
+assert_contains "T14 the brand-new section entry landed" \
+  "**brand-new section at end of body** (#14c)." "$(cat "$CHANGELOG")"
+
+# The downstream readers must still parse the result.
+assert_eq "T14 version headings unchanged" "0.1.0" \
+  "$(changelog_version_headings "$CHANGELOG")"
 
 echo
 echo "test_assemble_changelog.sh: $pass_count passed, $fail_count failed"

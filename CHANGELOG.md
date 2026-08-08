@@ -81,7 +81,16 @@ reads that marker; a stranger greps for it before pulling.
   helpers, as ADR-0002's layering rule requires. The assembler is **additive**
   — it merges into a non-empty `[Unreleased]` rather than replacing it, so
   nothing accumulated since the last tag is dropped and an in-flight PR still
-  writing a direct entry stays harmless. It refuses to write at all on an
+  writing a direct entry stays harmless. The merge is also **insert-only**:
+  every pre-existing line of `[Unreleased]` is re-emitted byte-for-byte, blank
+  lines and consecutive blank runs included, and the only lines that differ
+  from the input are the ones being added. That is a correctness property
+  rather than tidiness — an emitter that RECONSTRUCTED the section instead
+  made its output depend on incidental whitespace in the input, so the same
+  code assembled purely additively against one `main` and silently dropped a
+  line against another that happened to carry a stray double blank. Since
+  `CHANGELOG.md` is a file every PR touches, that is a standing source of
+  surprise diffs and merge-queue ejections. It refuses to write at all on an
   unrecognised filename, an empty fragment, a body carrying its own heading,
   or an entry it cannot read as a fragment (a subdirectory, a dangling
   symlink). The rewrite is staged beside `CHANGELOG.md` and renamed into
