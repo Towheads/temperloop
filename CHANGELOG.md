@@ -64,6 +64,32 @@ reads that marker; a stranger greps for it before pulling.
   original to promote to. Every pull request it opens carries a one-line
   provenance note so a reviewer with no context can tell where the change came
   from.
+- **`reported_no_op` — a fourth disposition count on the `command-run`
+  telemetry stream, closing a `/fix` no-op run's guaranteed reconcile failure
+  (#1103).** `workflows/scripts/emit-command-run.sh` could express `merged`,
+  `resolved (verdict)`, and `parked`, but `/fix`'s two reported-no-op routes —
+  `already-done` (4e) and `claimed-elsewhere` (4d) — had no disposition to
+  claim: emitting `items_processed:1` with all three at `0` would trip the
+  emitter's own accounting assertion (temperloop#1084), so `claude/commands/fix.md`
+  Step 6 instead skipped the emit entirely on both routes, leaving a real
+  `/fix 1100` `already-done` run with **no telemetry record at all** — the
+  exact absent-signal failure this stream exists to prevent. New
+  `--reported-no-op <N>` → a `reported_no_op` field, and the emitter now
+  asserts **`merged + resolved + parked + reported_no_op == items_processed`**
+  (still exiting **2** with the arithmetic named on a mismatch, after
+  appending the record — never a dropped record). A caller that omits the
+  flag (sweep/triage, and any pre-#1103 `/fix` call site) still gets an
+  explicit `0` and still reconciles. `fix.md` 4d/4e now call the emit
+  directly — the two routes that previously "went straight to the report" —
+  and Step 6 §4's prose no longer denies a fourth field is needed.
+  `workflows/scripts/validate-command-run-emit.sh` gains the analogous
+  content-derived check for the `reported-no-op` disposition (mirroring its
+  existing `resolved (verdict)` check), so a future doc that grows this
+  disposition without wiring the flag is caught without editing the linter.
+  Purely additive (no `schema_version` bump); ⚠ absent on a pre-#1103 record
+  means UNKNOWN, never `0`, same convention as `resolved`. New tests in
+  `workflows/scripts/tests/test_command_run_emit.sh`.
+
 - **`temperloop testbed` builds a private, disposable evaluation copy of a
   repo in one command, then hands off to `temperloop init` inside it**
   (#1229). The repo worth evaluating temperloop on is the one you care about

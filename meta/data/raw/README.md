@@ -82,7 +82,7 @@ run did not do. A `/triage --feedback` run (sweep **plus** queue walk) still
 emits one `"triage"` record for its sweep; giving its queue walk counters of
 its own is a follow-on, not covered here.
 
-Record shape: `{ts, session_id, command, board, items_processed, merged, resolved, parked, epic?}`
+Record shape: `{ts, session_id, command, board, items_processed, merged, resolved, parked, reported_no_op, epic?}`
 
 | field | type | notes |
 |---|---|---|
@@ -94,18 +94,25 @@ Record shape: `{ts, session_id, command, board, items_processed, merged, resolve
 | `merged` | integer | how many landed a merged PR |
 | `resolved` | integer, **absent on pre-#1084 records** | how many reached a terminal outcome that is **not** a merge — a `kind: spike` closed on its verdict (`/sweep`, `/fix`), a culled or decision-routed candidate (`/triage`). See the absent-means-unknown caveat below |
 | `parked` | integer | how many were parked/deferred/escalated |
+| `reported_no_op` | integer, **absent on pre-#1103 records** | how many were a terminal "nothing to do" outcome that is **not** a merge, a verdict-resolve, or a park — `/fix` only, today: an `already-done` target, or an `claimed-elsewhere` target owned by another session. See the absent-means-unknown caveat below |
 | `epic` | number \| string, OPTIONAL | the epic issue number the run drove against (e.g. `/assess --epic N`, or `/build` on a plan note with an `epic:` frontmatter field), from `--epic`. ABSENT from the record entirely (not `null`) when the caller doesn't pass `--epic` — purely additive, no `schema_version` bump |
 
-**Invariant: `merged + resolved + parked == items_processed`.** Every item a
-run drives reaches exactly one terminal disposition, so the three counts
-partition the total. `emit-command-run.sh` asserts this and **exits 2** on a
-mismatch (after appending the record anyway, so the inconsistency is preserved
-in the stream rather than swallowed). The invariant is what makes a *missing*
-disposition loud: if a command grows a fourth terminal outcome and nobody adds
-a field for it, the arithmetic breaks on the very next run instead of silently
-under-reporting. That silent under-report is what temperloop#1084 was filed
-for — a 30-item `/sweep` emitting `{items_processed:30, merged:27, parked:1}`,
-with the two verdict-resolved spikes expressible nowhere.
+**Invariant: `merged + resolved + parked + reported_no_op == items_processed`.**
+Every item a run drives reaches exactly one terminal disposition, so the four
+counts partition the total. `emit-command-run.sh` asserts this and **exits 2**
+on a mismatch (after appending the record anyway, so the inconsistency is
+preserved in the stream rather than swallowed). The invariant is what makes a
+*missing* disposition loud: if a command grows a further terminal outcome and
+nobody adds a field for it, the arithmetic breaks on the very next run instead
+of silently under-reporting. That silent under-report is what temperloop#1084
+was filed for — a 30-item `/sweep` emitting
+`{items_processed:30, merged:27, parked:1}`, with the two verdict-resolved
+spikes expressible nowhere. temperloop#1103 was the same class one field
+short: a `/fix` run resolving `already-done` had no fourth field to say
+"nothing happened, on purpose," so it could not call the emitter at all
+without tripping this very invariant — the fix.md spec instead just skipped
+the call on that route, leaving the run with **no telemetry record whatsoever**
+rather than a merely-inconsistent one.
 
 ⚠ **`resolved` is absent on records written before temperloop#1084, and absent
 means UNKNOWN — never `0`.** This stream is strictly append-only and is
@@ -123,6 +130,23 @@ absence is a reliable pre-#1084 marker. Read it defensively — e.g. in jq,
 `(.resolved // 0)` is fine for a *sum*, but `has("resolved")` is what you need
 before asserting the invariant or reporting a rate.
 
+⚠ **`reported_no_op` is absent on records written before temperloop#1103, and
+absent means UNKNOWN — never `0`, same convention as `resolved` above.** A
+pre-#1103 record from `/fix` may not reconcile against the invariant at all
+(a run that resolved `already-done` may show
+`items_processed:1, merged:0, resolved:0, parked:0` with no fourth field to
+account for the missing `1` — or, if `/fix`'s already-done/claimed-elsewhere
+routes skipped the emit call entirely that run, there may be **no record for
+that run at all**, not merely an inconsistent one). **Disposition of
+pre-existing non-reconciling rows:** this stream is strictly per-host and
+gitignored (nothing here is committed — see the lake path convention above),
+so there is no committed history to migrate or backfill; any such rows live
+only in an individual host's own local lake and are accepted **as legacy,
+read defensively** exactly like the pre-#1084 `resolved`-absent rows above —
+never backfilled, never treated as `reported_no_op: 0`. Every record written
+from #1103 on carries the field explicitly, so its absence is a reliable
+pre-#1103 marker.
+
 This is a **purely additive** change (a new optional field, no field removed,
 no type or meaning changed), so per the schema-version convention above it does
 **not** bump `schema_version`, and this stream stays implicitly at its initial
@@ -135,13 +159,20 @@ reader tell the two eras apart without a version bump.
 Example record:
 
 ```json
-{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1}
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1,"reported_no_op":0}
 ```
 
 Example record, run against an epic (`--epic` passed):
 
 ```json
-{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1,"epic":42}
+{"ts":"2026-07-05T14:03:11Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"sweep","board":3,"items_processed":4,"merged":3,"resolved":0,"parked":1,"reported_no_op":0,"epic":42}
+```
+
+Example record, a `/fix` run that resolved `already-done` (the temperloop#1103
+case — `reported_no_op` is the only non-zero disposition count):
+
+```json
+{"ts":"2026-08-08T14:51:26Z","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","command":"fix","board":7,"items_processed":1,"merged":0,"resolved":0,"parked":0,"reported_no_op":1}
 ```
 
 Example pre-#1084 record (no `resolved` key — the counts do **not** reconcile,

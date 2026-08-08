@@ -14,8 +14,9 @@
 # call is removed from claude/commands/sweep.md / claude/commands/triage.md.
 #
 # Usage:
-#   emit-command-run.sh --command sweep|triage --board <N> \
-#     --items-processed <N> --merged <N> --resolved <N> --parked <N> [--epic <N>]
+#   emit-command-run.sh --command sweep|triage|fix --board <N> \
+#     --items-processed <N> --merged <N> --resolved <N> --parked <N> \
+#     --reported-no-op <N> [--epic <N>]
 #
 # Appends ONE JSONL line to:
 #   ${CMD_RUN_RAW_DIR:-<repo>/meta/data/raw}/command-runs-YYYY-MM.jsonl
@@ -25,7 +26,7 @@
 # canonical sink spec: meta/data/raw/README.md (lake path + schema-version
 # convention; this stream's own record shape is documented below).
 #
-# Record shape: {ts, session_id, command, board, items_processed, merged, resolved, parked, epic?}
+# Record shape: {ts, session_id, command, board, items_processed, merged, resolved, parked, reported_no_op, epic?}
 #   ts               ISO-8601 UTC, `Z` suffix (matches the raw/ stream convention)
 #   session_id       the RAW $CLAUDE_CODE_SESSION_ID (full value, UNTRUNCATED) —
 #                     the join key every other raw/ stream keys on
@@ -36,7 +37,8 @@
 #                     truncating here would break the join to Layer-2 session
 #                     telemetry this record exists to support. null when the
 #                     env var is unset (e.g. a manual/non-Claude-Code run).
-#   command          "sweep" | "triage" (whatever --command was passed, verbatim)
+#   command          "sweep" | "triage" | "fix" (whatever --command was passed,
+#                     verbatim)
 #   board            the board id (--board), or null
 #   items_processed  integer — how many items the run drove/considered
 #   merged           integer — how many landed a merged PR
@@ -57,6 +59,29 @@
 #                     reliable pre-#1084 marker. Purely additive, so no
 #                     schema_version bump (meta/data/raw/README.md convention).
 #   parked           integer — how many were parked/deferred/escalated
+#   reported_no_op   integer — how many were a terminal "nothing to do" outcome
+#                     that is not a merge, a verdict-resolve, or a park: an
+#                     already-done target, a claim already held by another
+#                     session, or an epic-refused redirect (`/fix` 4d/4e/Step
+#                     3). Added by temperloop#1103 — before it, `/fix`'s two
+#                     reported-no-op routes (4d/4e) never called this emitter
+#                     at all, so a no-op /fix run had no way to reconcile:
+#                     items_processed=1 with merged=resolved=parked=0 would
+#                     have tripped the loud failure below on every single
+#                     no-op run, so fix.md instead skipped the emit entirely —
+#                     which meant a no-op /fix run left NO telemetry record,
+#                     the exact absent-signal failure this whole script exists
+#                     to close.
+#                     ⚠ ABSENT on a record written before #1103 — and absent
+#                     means UNKNOWN, never 0, same convention as `resolved`
+#                     above: this stream is append-only and is NEVER
+#                     backfilled, so a pre-#1103 record's true disposition
+#                     mix (e.g. a /fix no-op that got folded into no count at
+#                     all, or simply never emitted) cannot be recovered.
+#                     Every record this script writes from #1103 on carries
+#                     the field explicitly, so its absence is a reliable
+#                     pre-#1103 marker. Purely additive, so no schema_version
+#                     bump (meta/data/raw/README.md convention).
 #   epic             OPTIONAL — the epic issue number the run drove against
 #                     (e.g. `/assess --epic N`, or `/build` on a plan note with
 #                     an `epic:` frontmatter field). ABSENT (not null/empty)
@@ -72,15 +97,18 @@
 # telemetry emit must never fail or block the calling command — see the
 # `|| true`-safe contract in the epic #724 Contract.
 #
-# THE ONE LOUD FAILURE — a disposition-accounting mismatch (temperloop#1084).
-# `merged + resolved + parked` MUST equal `items_processed`: every item a run
-# drove reaches exactly one terminal disposition, so the three counts partition
-# the total. If they don't, the run produced an outcome this schema cannot
-# express — precisely the silent under-report #1084 was filed for (a 30-item
-# sweep emitting merged=27, parked=1 and no way to say the other 2 were
-# resolved by verdict). That is an ACCOUNTING bug in the caller or a MISSING
-# FIELD in this schema, not an infrastructure hiccup, so it must not be
-# swallowed:
+# THE ONE LOUD FAILURE — a disposition-accounting mismatch (temperloop#1084,
+# extended to a four-way partition by temperloop#1103).
+# `merged + resolved + parked + reported_no_op` MUST equal `items_processed`:
+# every item a run drove reaches exactly one terminal disposition, so the four
+# counts partition the total. If they don't, the run produced an outcome this
+# schema cannot express — precisely the silent under-report #1084 was filed
+# for (a 30-item sweep emitting merged=27, parked=1 and no way to say the
+# other 2 were resolved by verdict), and the same class of bug #1103 was filed
+# for (a /fix no-op run emitting items_processed=1 with nothing else set,
+# because the schema had no fourth field to say "nothing happened, on
+# purpose"). That is an ACCOUNTING bug in the caller or a MISSING FIELD in
+# this schema, not an infrastructure hiccup, so it must not be swallowed:
 #
 #   * the record IS still appended, with the caller's counts verbatim — the
 #     mismatch is preserved in the stream rather than dropped, because an
@@ -106,6 +134,7 @@ items_processed=""
 merged=""
 resolved=""
 parked=""
+reported_no_op=""
 epic=""
 
 while [ $# -gt 0 ]; do
@@ -116,6 +145,7 @@ while [ $# -gt 0 ]; do
     --merged) merged="${2:-}"; shift 2 ;;
     --resolved) resolved="${2:-}"; shift 2 ;;
     --parked) parked="${2:-}"; shift 2 ;;
+    --reported-no-op) reported_no_op="${2:-}"; shift 2 ;;
     --epic) epic="${2:-}"; shift 2 ;;
     *)
       printf '%s: WARN unknown argument %s (ignored)\n' "$self" "$1" >&2
@@ -142,6 +172,7 @@ items_processed="${items_processed:-0}"
 merged="${merged:-0}"
 resolved="${resolved:-0}"
 parked="${parked:-0}"
+reported_no_op="${reported_no_op:-0}"
 
 # A count that isn't a non-negative integer is an infrastructure-class caller
 # error, not an accounting one: warn and emit nothing (exit 0). Previously jq
@@ -161,6 +192,7 @@ check_count --items-processed "$items_processed" || exit 0
 check_count --merged          "$merged"          || exit 0
 check_count --resolved        "$resolved"        || exit 0
 check_count --parked          "$parked"          || exit 0
+check_count --reported-no-op  "$reported_no_op"  || exit 0
 
 # Normalise to base-10 so a zero-padded count ("08") is neither read as octal
 # by $(( )) nor emitted as invalid JSON by jq --argjson.
@@ -168,11 +200,12 @@ items_processed=$((10#$items_processed))
 merged=$((10#$merged))
 resolved=$((10#$resolved))
 parked=$((10#$parked))
+reported_no_op=$((10#$reported_no_op))
 
-# THE ACCOUNTING CHECK (temperloop#1084) — see the header. Computed BEFORE the
-# emit so the failure message is ready, but acted on AFTER it so the record is
-# never dropped over it.
-disposition_total=$((merged + resolved + parked))
+# THE ACCOUNTING CHECK (temperloop#1084, extended #1103) — see the header.
+# Computed BEFORE the emit so the failure message is ready, but acted on
+# AFTER it so the record is never dropped over it.
+disposition_total=$((merged + resolved + parked + reported_no_op))
 reconciles=1
 [ "$disposition_total" -eq "$items_processed" ] || reconciles=0
 
@@ -200,6 +233,7 @@ record="$(jq -nc \
   --argjson merged "$merged" \
   --argjson resolved "$resolved" \
   --argjson parked "$parked" \
+  --argjson reported_no_op "$reported_no_op" \
   --arg epic "$epic" \
   '{
     ts: $ts,
@@ -209,7 +243,8 @@ record="$(jq -nc \
     items_processed: $items_processed,
     merged: $merged,
     resolved: $resolved,
-    parked: $parked
+    parked: $parked,
+    reported_no_op: $reported_no_op
   }
   + (if $epic == "" then {} else {epic: ($epic | tonumber? // $epic)} end)' 2>/dev/null)"
 
@@ -227,9 +262,9 @@ printf '%s\n' "$record"
 
 # The record is safely on disk; NOW fail loudly if the dispositions don't add up.
 if [ "$reconciles" -ne 1 ]; then
-  printf '%s: FAIL disposition counts do not reconcile (command=%s): merged(%s) + resolved(%s) + parked(%s) = %s, but --items-processed is %s.\n' \
-    "$self" "$command" "$merged" "$resolved" "$parked" "$disposition_total" "$items_processed" >&2
-  printf '%s: every item a run drives must reach exactly one terminal disposition, so the three counts must partition the total. Either the caller miscounted, or the run produced an outcome this schema cannot express — in which case the fix is a new disposition field here, NOT a fudged total. Canonical shape: meta/data/raw/README.md (command-run stream).\n' \
+  printf '%s: FAIL disposition counts do not reconcile (command=%s): merged(%s) + resolved(%s) + parked(%s) + reported_no_op(%s) = %s, but --items-processed is %s.\n' \
+    "$self" "$command" "$merged" "$resolved" "$parked" "$reported_no_op" "$disposition_total" "$items_processed" >&2
+  printf '%s: every item a run drives must reach exactly one terminal disposition, so the four counts must partition the total. Either the caller miscounted, or the run produced an outcome this schema cannot express — in which case the fix is a new disposition field here, NOT a fudged total. Canonical shape: meta/data/raw/README.md (command-run stream).\n' \
     "$self" >&2
   printf '%s: the record above WAS appended to %s (the mismatch is preserved in the stream, not swallowed).\n' \
     "$self" "$raw_file" >&2
