@@ -1,0 +1,53 @@
+# write-lane-guard.sh declared-allies registry (temperloop#1028) — EXAMPLE,
+# not read.
+#
+# Only a file literally named `write-lane-allies.conf` (no `.example`),
+# located next to this example at claude/hooks/write-lane-allies.conf INSIDE
+# THIS SESSION'S HOME CHECKOUT (resolved from CLAUDE_PROJECT_DIR at hook run
+# time — never the hook's own installed location, which is a single
+# machine-wide copy under ~/.claude/hooks/ shared by every checkout), is
+# consulted. Absent -> no allies -> write-lane-guard.sh behaves exactly as it
+# does with this file deleted: every foreign canonical checkout still `ask`s.
+#
+# WHY a config file and not an env var: KERNEL_EDIT_ACK (a per-invocation
+# acknowledgement) and EVAL_RUN (a run-mode marker) are session-scoped — the
+# wrong shape for a durable, repo-level fact ("this kernel checkout's allied
+# overlay lives at path X"). This file is that fact, owned by the checkout it
+# describes.
+#
+# WHY declared, not automatic: the guard's whole job is to `ask` before a
+# session mutates a checkout that might be a PEER SESSION'S live working tree
+# (epic #86). An automatic exemption for "any repo whose remote looks like
+# mine" or "any directory named `foundation`" would silently reopen that hole
+# for a stranger's fork or a differently-named overlay. A declared pair is an
+# explicit, reviewable, per-machine opt-in — never a hardcoded org/repo name,
+# because this kernel ships to strangers whose overlay checkout is not
+# necessarily named `foundation` (this operator's own overlay name, not a
+# universal one).
+#
+# Format: one `ally=<absolute-path>` per line — the path to a checkout this
+# session's home is allowed to mutate directly (git commit/checkout/switch/
+# merge/reset/push, or `make install`) without an `ask`. The path is resolved
+# to its real (symlink-followed) form at hook run time, so a relative or
+# symlinked path in this file still matches correctly. Multiple `ally=` lines
+# are allowed (this checkout may trust more than one downstream overlay).
+# Blank lines and lines starting with # are ignored. Parsed with a plain
+# shell read loop only — never sourced or eval'd, so this file cannot execute
+# code.
+#
+# The pairing is ONE-DIRECTIONAL per file: this file, sitting in the KERNEL
+# checkout, declares which OVERLAY checkout(s) the kernel trusts. It does not
+# automatically grant the reverse (the overlay checkout trusting the kernel
+# checkout) — if a session launched FROM the overlay checkout should also be
+# exempt when it reaches back into the kernel checkout, the overlay checkout
+# needs its own claude/hooks/write-lane-allies.conf declaring the kernel path
+# as ITS ally. This mirrors the boards.conf precedent
+# (workflows/scripts/board/boards.conf.example): each checkout declares its
+# own registry, no cross-checkout implication.
+#
+# This does NOT change write-lane-guard.sh's verdict anywhere else — every
+# foreign checkout NOT listed here still `ask`s exactly as before (including
+# the load-bearing negative case: an unpaired foreign repo, e.g. a peer
+# session's checkout of a THIRD, unrelated repo, is untouched by this file).
+
+# ally=/Users/you/dev/your-overlay-repo
