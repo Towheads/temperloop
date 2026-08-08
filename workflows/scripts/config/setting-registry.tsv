@@ -193,6 +193,7 @@ BUILD_QUOTA_WAIT_BUFFER	60	seconds	tracked-repo	workflows/scripts/build/build.co
 BUILD_QUOTA_MAX_AGE	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Ignore a quota cache snapshot older than this (fail open)
 BUILD_MERGE_GATE_WINDOW	300	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Timed merge-gate window (0 = always modal)
 BUILD_QUEUE_TIMEOUT	1800	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Per-PR native-merge-queue timeout
+BUILD_QUEUE_STALL_AFTER	600	seconds	tracked-repo	workflows/scripts/build/build.config.sh	Seconds a PR may sit IN the native merge queue with ZERO merge_group runs dispatched before gate.sh diagnose-queue returns QUEUE_STALLED (exit 10) instead of QUEUED (temperloop#1178); gate.sh keeps a byte-identical layer-6 fallback
 PIPELINE_DRIVE_CONCURRENCY	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Autonomous pipeline lane's concurrent-drive bound per tick (mechanical governor; formerly PIPELINE_WIP_CAP, split from the retired human WIP-cap rule)
 EPIC_MIN_SUBUNITS	3	int	tracked-repo	workflows/scripts/build/build.config.sh	Epic-decomposition sub-unit threshold (rendered into CLAUDE.kernel.md prose)
 DISPLAY_TZ	America/Los_Angeles	string	tracked-repo	workflows/scripts/build/build.config.sh	Human-facing display timezone (IANA name so DST is automatic); rendered into CLAUDE.kernel.md prose as {{DISPLAY_TZ}}, with belt-and-suspenders defaults in telemetry-brief.sh/reconcile.sh. Stored/parsed timestamps stay UTC.
