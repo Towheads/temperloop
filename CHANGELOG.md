@@ -36,6 +36,27 @@ reads that marker; a stranger greps for it before pulling.
   change only. This is the kernel-side half of #1294 — the collapsed row still
   renders from `meta.description` until the Claude Code Workflow progress UI
   draws from the active phase, which this repo does not control.
+- **`gate.sh diagnose-queue` now persists every verdict to its own telemetry
+  stream** (#1192). The subcommand decides whether a merge queue is stalled,
+  dequeued, or hit a GitHub Actions infra failure — and until now wrote that
+  verdict **nowhere a consumer could read**, so the per-run stall tally the
+  overlay wants could not be built at all. Verdicts are emitted by a new
+  `workflows/scripts/emit-diagnose-queue.sh`, a **sibling** of the existing
+  `emit-*.sh` scripts rather than code inlined into `gate.sh`: telemetry is
+  contractually *warn, don't drop*, while `gate.sh` is a closed outcome set
+  that fails loud via `die()` and whose exit codes `/build` and `/fix` branch
+  merge decisions on — so an emit bug must never be able to reach that
+  contract. The emit fires from inside `cmd_diagnose_queue`, so it covers the
+  internal call on `cmd_poll`'s TIMEOUT path as well as a direct invocation,
+  and it records on **both** attended and unattended runs (the two rejected
+  alternatives each covered only one arm). Coverage is the full current
+  verdict set, including `QUEUE_STALLED` and `MERGE_GROUP_INFRA`, which landed
+  earlier in this same release. A dedicated `validate-diagnose-queue-emit.sh`
+  joins the three existing per-stream validators, since these verdicts feed
+  merge decisions. **Contract surface:** `scripts/quality-gates.sh` gains the
+  validator gate. Not breaking — the emit is purely additive and cannot alter
+  `diagnose-queue`'s exit-code contract. The consumer half (the tally itself)
+  is overlay-owned and stays open at foundation#1281.
 
 - **The generated `/build` worker prompt now carries a structural
   no-context-inheriting-research-fork guardrail** (#1072). Both execution
