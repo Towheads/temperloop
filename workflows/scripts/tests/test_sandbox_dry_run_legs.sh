@@ -22,9 +22,17 @@
 #   4. `temperloop eject --dir TARGET --dry-run` — mirrors test_eject.sh's
 #      own test 2 (zero gh calls, .foundation/config left untouched).
 #   5. No-residue: the same real-HOME candidate-path check
-#      workflows/scripts/tests/lib/tests/test_sandbox.sh's own test 5 uses.
+#      workflows/scripts/tests/lib/tests/test_sandbox.sh's own test 5 uses —
+#      now LITERALLY the same code, sandbox.sh's sandbox_real_candidates /
+#      sandbox_snapshot_path / sandbox_diff_real_candidates
+#      (temperloop#1154), rather than a second verbatim copy of it. It runs
+#      with a CONTINUOUS third-party writer active against the real cache
+#      store root, so the leg cannot pass merely because nothing was writing.
 #
-# No network. No real HOME/XDG mutations at any point.
+# No network. The ONLY real-machine writes are test 5's interferer markers
+# under the real cache store root — pid-namespaced, and removed (along with
+# the root itself if this run created it) by sandbox_cache_interferer_stop,
+# which is wired onto an EXIT trap. No real HOME/XDG mutations otherwise.
 #
 set -uo pipefail
 
@@ -71,44 +79,21 @@ REAL_HOME_BEFORE="$HOME"
 # report-auto-offer dismiss state under .local/state/foundation), so the
 # assertion is "unchanged", never "absent" — same before/after form as
 # workflows/scripts/tests/lib/tests/test_sandbox.sh's own test 5.
-snapshot_path() {
-  # snapshot_path PATH — "absent" if it doesn't exist, else "present:<n>"
-  # where <n> is a portable file-count fingerprint (no stat flags, works on
-  # both BSD/macOS and GNU find).
-  #
-  # The basic-memory knowledge store (F#946) lives under
-  # ~/.local/state/foundation/{basic-memory-home,bm-*} and is LIVE, concurrently
-  # written runtime state — churned on-demand by ks_search / the
-  # CLAUDE.kernel.md § Phase-1 parity `bm` leg from any other session or hook,
-  # with hundreds of files created inside a single test window. It is NOT the
-  # bootstrap residue this guard looks for, so counting it makes test 5 flake on
-  # unrelated concurrent bm activity (temperloop#382, completing #377's fix in
-  # the sibling test_sandbox.sh — this file's snapshot_path was missed there).
-  # Prune the bm subtrees:
-  #   - by directory NAME — the bm dirs only ever appear under
-  #     .local/state/foundation, so a global name-prune cannot hide bootstrap
-  #     residue leaked into any other REAL_CANDIDATE path;
-  #   - via -prune, so the 400k+-file store is never descended (fast, and the
-  #     count stays a leak-detector, not a store-size measurement).
-  local p="$1"
-  if [ -e "$p" ]; then
-    printf 'present:%s' "$(find "$p" \( -name basic-memory-home -o -name 'bm-*' \) -prune -o -print 2>/dev/null | wc -l | tr -d ' ')"
-  else
-    printf 'absent'
-  fi
-}
-REAL_CANDIDATES=(
-  "$REAL_HOME_BEFORE/.local/share/temperloop"
-  "$REAL_HOME_BEFORE/.local/bin/temperloop"
-  "$REAL_HOME_BEFORE/.local/bin/foundation"
-  "$REAL_HOME_BEFORE/.config/foundation"
-  "$REAL_HOME_BEFORE/.cache/temperloop"
-  "$REAL_HOME_BEFORE/.local/state/foundation"
-)
-snaps_before=()
-for p in "${REAL_CANDIDATES[@]}"; do
-  snaps_before+=("$(snapshot_path "$p")")
-done
+# snapshot_path and the candidate list are sandbox.sh's
+# (sandbox_snapshot_path / sandbox_real_candidates, temperloop#1154). They
+# used to be a verbatim second copy of test_sandbox.sh's, which is why #377's
+# bm-prune fix had to be re-made here as #382 — the comments had already
+# drifted apart by then. Hoisted, so the next contract change is made once.
+sandbox_real_candidates "$REAL_HOME_BEFORE"
+
+# A CONTINUOUS third-party writer against the REAL cache store root, live for
+# the whole of assertion 5 — the concurrent board-adapter traffic that made
+# count-sampling that root un-attributable in the first place. Without it
+# this leg passes vacuously.
+trap 'sandbox_cache_interferer_stop' EXIT
+sandbox_cache_interferer_start || fail "5: could not start the cache-root interferer"
+
+sandbox_snapshot_real_candidates
 
 sandbox_up test-dry-run-legs
 sandbox_stub_gh
@@ -203,20 +188,23 @@ pass "2: 'temperloop eject --dry-run' (through the bootstrapped CLI) exits 0, ma
 #    cycle — must be byte-for-byte unchanged (same existence + same
 #    portable file-count fingerprint).
 # ---------------------------------------------------------------------------
-i=0
-for p in "${REAL_CANDIDATES[@]}"; do
-  after="$(snapshot_path "$p")"
-  [ "$after" = "${snaps_before[$i]}" ] \
-    || fail "5: real-HOME path changed during the sandboxed run: $p (before: ${snaps_before[$i]}, after: $after)"
-  i=$((i + 1))
-done
+drift="$(sandbox_diff_real_candidates)" || fail "5: $drift"
+
+# Non-vacuity: prove the interferer really was writing the real cache store
+# root, concurrently, for the duration of the assertion above. Asserted
+# BEFORE stopping it — the stop removes its markers.
+interferer_writes="$(sandbox_cache_interferer_count)"
+[ "$interferer_writes" -ge 2 ] \
+  || fail "5: the third-party cache-root interferer laid down only $interferer_writes marker(s) — assertion 5 did not actually run against a concurrent writer"
+sandbox_cache_interferer_stop
+trap - EXIT
 
 sandbox_root_snapshot="$SANDBOX_ROOT"
 sandbox_down
 [ ! -e "$sandbox_root_snapshot" ] || fail "5: sandbox_down did not remove the throwaway root ($sandbox_root_snapshot still exists)"
 [ "$HOME" = "$REAL_HOME_BEFORE" ] || fail "5: caller's own \$HOME changed after the sandboxed cycle (got: $HOME)"
 
-pass "3: no residue outside the throwaway root — none of the real-HOME install targets exist, sandbox_down removes the root entirely"
+pass "3: no residue outside the throwaway root — every real-HOME install target is unchanged even with a concurrent third-party writer ($interferer_writes writes) active against the real cache store root, and sandbox_down removes the root entirely"
 
 echo
 echo "ALL PASS: test_sandbox_dry_run_legs.sh"

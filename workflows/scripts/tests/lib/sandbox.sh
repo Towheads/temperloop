@@ -11,6 +11,17 @@
 # `claude`) sits on a sandbox-private PATH prefix so no real network call or
 # credential is ever reachable from inside the sandbox.
 #
+# The re-pointed env is ADDITIVE (`env NAME=VAL... cmd`, never `env -i`, and
+# nothing here `unset`s), so re-pointing HOME/XDG_* does NOT by itself
+# neutralise a PUBLIC env knob a caller exported: every consumer reads such a
+# knob as `${KNOB:-<HOME/XDG-derived default>}`, and the override arm
+# short-circuits the sandboxed default. The three knobs that would otherwise
+# steer a sandboxed run at a REAL machine path — CACHE_STORE_ROOT,
+# TEMPERLOOP_HOME, TEMPERLOOP_BIN_DIR — are therefore PINNED inside
+# $SANDBOX_ROOT by sandbox_env (temperloop#1154; see _sandbox_pin, and
+# test_sandbox.sh test 6 for the positive assertion). An in-sandbox steer
+# still works; an inherited real-machine value never reaches the sandbox.
+#
 # This is the SAME fake-gh + throwaway-tree idiom
 # bin/subcommands/tests/test_init.sh and test_eject.sh already use for their
 # own fixtures — EXTRACTED here verbatim (subtraction over mechanism, see
@@ -131,6 +142,11 @@
 #   SANDBOX_XDG_CACHE_HOME      $SANDBOX_ROOT/xdg/cache
 #   SANDBOX_BIN                 $SANDBOX_ROOT/bin (prepended onto PATH by
 #                               sandbox_run/sandbox_bash)
+#   SANDBOX_CACHE_STORE_ROOT    $SANDBOX_XDG_CACHE_HOME/temperloop
+#   SANDBOX_TEMPERLOOP_HOME     $SANDBOX_HOME/.local/share/temperloop
+#   SANDBOX_TEMPERLOOP_BIN_DIR  $SANDBOX_HOME/.local/bin
+#                               (the last three are the public-knob pins
+#                               sandbox_env emits — see _sandbox_pin)
 #
 # Additional globals set by other functions:
 #   SANDBOX_GH_CALL_LOG         set by sandbox_stub_gh
@@ -213,6 +229,24 @@ sandbox_up() {
   SANDBOX_XDG_DATA_HOME="$SANDBOX_ROOT/xdg/data"
   SANDBOX_XDG_CACHE_HOME="$SANDBOX_ROOT/xdg/cache"
   SANDBOX_BIN="$SANDBOX_ROOT/bin"
+  # Sandbox-interior values for the three PUBLIC env knobs that would
+  # otherwise let a caller's exported value steer a sandboxed run at a REAL
+  # machine path (temperloop#1154). Each is pinned to exactly the path its
+  # own default derivation ALREADY produces inside the sandbox — so nothing
+  # about a clean run changes; the pin only removes the inherit-from-caller
+  # arm:
+  #   CACHE_STORE_ROOT   <- $XDG_CACHE_HOME/temperloop  (the expression
+  #                         workflows/scripts/install/links.sh's
+  #                         links_provision_cache_stores derives, and that
+  #                         uninstall.sh / eject.sh / deploy-mini.sh
+  #                         re-derive identically)
+  #   TEMPERLOOP_HOME    <- $HOME/.local/share/temperloop  (bin/bootstrap.sh)
+  #   TEMPERLOOP_BIN_DIR <- $HOME/.local/bin               (bin/bootstrap.sh)
+  # See sandbox_env for why an UNpinned knob is a live leak vector, not a
+  # theoretical one.
+  SANDBOX_CACHE_STORE_ROOT="$SANDBOX_XDG_CACHE_HOME/temperloop"
+  SANDBOX_TEMPERLOOP_HOME="$SANDBOX_HOME/.local/share/temperloop"
+  SANDBOX_TEMPERLOOP_BIN_DIR="$SANDBOX_HOME/.local/bin"
   mkdir -p \
     "$SANDBOX_HOME" \
     "$SANDBOX_XDG_CONFIG_HOME" \
@@ -229,8 +263,37 @@ sandbox_down() {
 }
 
 # ---------------------------------------------------------------------------
+# _sandbox_pin <VAR_NAME> <sandbox_default>  (internal, temperloop#1154)
+#
+# Prints the value sandbox_env should assign to <VAR_NAME>. The rule is
+# "always inside $SANDBOX_ROOT", implemented as:
+#   - the caller's current value, IFF it already resolves under $SANDBOX_ROOT
+#     — this preserves the documented temporary-assignment-prefix steering
+#     seam (`CACHE_STORE_ROOT="$SANDBOX_ROOT/custom" sandbox_run ...`, which
+#     bin/subcommands/tests/test_uninstall.sh test 7 relies on);
+#   - the sandbox default otherwise — which is the leak-closing arm: a value
+#     inherited from the real environment (an operator's or CI runner's
+#     exported knob) can never reach a sandboxed process.
+# Deliberately NOT an unconditional override: that would break in-sandbox
+# steering, and deliberately NOT a `:-` default: that would leave the leak
+# open. Both properties are asserted by test_sandbox.sh test 6.
+# ---------------------------------------------------------------------------
+_sandbox_pin() {
+  local name="$1" fallback="$2" cur
+  cur="${!name:-}"
+  case "$cur" in
+    "$SANDBOX_ROOT" | "$SANDBOX_ROOT"/*) printf '%s' "$cur" ;;
+    *) printf '%s' "$fallback" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 sandbox_env() {
   : "${SANDBOX_ROOT:?sandbox_env: call sandbox_up first}"
+  local _sb_cache_store_root _sb_temperloop_home _sb_temperloop_bin_dir
+  _sb_cache_store_root="$(_sandbox_pin CACHE_STORE_ROOT "$SANDBOX_CACHE_STORE_ROOT")"
+  _sb_temperloop_home="$(_sandbox_pin TEMPERLOOP_HOME "$SANDBOX_TEMPERLOOP_HOME")"
+  _sb_temperloop_bin_dir="$(_sandbox_pin TEMPERLOOP_BIN_DIR "$SANDBOX_TEMPERLOOP_BIN_DIR")"
   SANDBOX_ENV_ARGS=(
     "HOME=$SANDBOX_HOME"
     "XDG_CONFIG_HOME=$SANDBOX_XDG_CONFIG_HOME"
@@ -238,6 +301,27 @@ sandbox_env() {
     "XDG_DATA_HOME=$SANDBOX_XDG_DATA_HOME"
     "XDG_CACHE_HOME=$SANDBOX_XDG_CACHE_HOME"
     "PATH=$SANDBOX_BIN:$PATH"
+    # --- explicit public-knob pins (temperloop#1154) ---------------------
+    # This env is ADDITIVE: sandbox_run/sandbox_bash invoke `env NAME=VAL...
+    # cmd`, never `env -i`, and nothing in this file `unset`s anything. So a
+    # knob that is merely ABSENT from this array is NOT neutralised by
+    # re-pointing HOME/XDG_* — a caller that exported it wins outright,
+    # because every consumer reads it as `${KNOB:-<HOME/XDG-derived
+    # default>}` and the override arm short-circuits the default. All three
+    # below are documented public knobs (bin/README.md,
+    # workflows/scripts/board/lib/CACHE-STORE.md, boards.conf.example), so
+    # an operator or a CI runner exporting one is expected, not exotic.
+    #
+    # That today's suites happen to survive without these pins is a
+    # TEST-COVERAGE ACCIDENT, not a guarantee: they exercise only `help`,
+    # `init --dry-run` and `eject --dry-run`, none of which reach the cache
+    # root — while links_provision_cache_stores (reached from the shipped
+    # `temperloop install`) does an unconditional `mkdir -p` on it. The pins
+    # close the hole ahead of the first suite that walks a writing path.
+    # Asserted positively by test_sandbox.sh test 6.
+    "CACHE_STORE_ROOT=$_sb_cache_store_root"
+    "TEMPERLOOP_HOME=$_sb_temperloop_home"
+    "TEMPERLOOP_BIN_DIR=$_sb_temperloop_bin_dir"
   )
   if [[ -n "${SANDBOX_GH_CALL_LOG:-}" ]]; then
     SANDBOX_ENV_ARGS+=("CALL_LOG=$SANDBOX_GH_CALL_LOG")
@@ -245,6 +329,42 @@ sandbox_env() {
   if [[ -n "${SANDBOX_CLAUDE_CALL_LOG:-}" ]]; then
     SANDBOX_ENV_ARGS+=("CLAUDE_CALL_LOG=$SANDBOX_CLAUDE_CALL_LOG")
   fi
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_env_omit <VAR>... (temperloop#1154)
+#
+# Rebuilds SANDBOX_ENV_ARGS (via sandbox_env) with the named assignments
+# REMOVED, so the invoked process sees those variables genuinely UNSET rather
+# than pinned. `env` cannot express this after the fact — its options must
+# precede its assignments, so an `-u NAME` cannot cancel a `NAME=VAL` already
+# in the array.
+#
+# This is a narrow, named opt-out for a suite whose SUBJECT is a variable's
+# unset-ness, not a general escape hatch: bin/bootstrap.sh's legacy-env
+# refusal fires only when the TEMPERLOOP_* name is unset-or-empty, so
+# workflows/scripts/tests/test_rename_compat.sh's leg 1 cannot assert it
+# while sandbox_env pins TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR. Any caller
+# reaching for this is deliberately re-opening a leak vector for the
+# duration of one assertion — call sandbox_env again straight after to
+# restore the pins, and keep the un-pinned window to legs that write nothing
+# outside the sandbox.
+# ---------------------------------------------------------------------------
+sandbox_env_omit() {
+  sandbox_env
+  local keep=() a name want drop
+  for a in "${SANDBOX_ENV_ARGS[@]}"; do
+    name="${a%%=*}"
+    drop=0
+    for want in "$@"; do
+      if [ "$name" = "$want" ]; then
+        drop=1
+        break
+      fi
+    done
+    [ "$drop" = "1" ] || keep+=("$a")
+  done
+  SANDBOX_ENV_ARGS=("${keep[@]}")
 }
 
 # ---------------------------------------------------------------------------
@@ -670,4 +790,204 @@ sandbox_tripwire_check() {
   done < "$dir/paths.list"
 
   return "$bad"
+}
+
+# =============================================================================
+# RESIDUE GUARD (temperloop#1154) — the real-HOME no-residue tripwire that
+# workflows/scripts/tests/lib/tests/test_sandbox.sh (test 5) and
+# workflows/scripts/tests/test_sandbox_dry_run_legs.sh (test 5) both assert
+# with. HOISTED here from those two files, where it existed as two verbatim
+# copies whose COMMENTS had already drifted apart — #377 fixed the bm-prune
+# flake in one and #382 had to chase the identical bug in the other. One
+# definition, so the next contract change is made once.
+#
+#   sandbox_real_candidates [real_home]
+#     Populates SANDBOX_REAL_CANDIDATES[] with the real-HOME paths a REAL
+#     (unsandboxed) bin/bootstrap.sh + init.sh + eject.sh run would write to
+#     if HOME/XDG_* were not re-pointed. Defaults real_home to $HOME — pass
+#     an explicit root to build a SYNTHETIC candidate set (what
+#     test_sandbox.sh test 6 does, so a deliberate-leak meta-test can prove
+#     the guard still fires without writing to the operator's actual HOME).
+#
+#   sandbox_snapshot_path <path>
+#     "absent", or "present:<n>" where <n> is a portable file-count
+#     fingerprint (no stat flags; works on both BSD/macOS and GNU find).
+#
+#   sandbox_snapshot_real_candidates
+#     Fills SANDBOX_REAL_SNAPS[] with sandbox_snapshot_path of every entry in
+#     SANDBOX_REAL_CANDIDATES[]. Call BEFORE the sandboxed run.
+#
+#   sandbox_diff_real_candidates
+#     Re-snapshots the same entries and compares against SANDBOX_REAL_SNAPS[].
+#     Returns 0 iff every one is unchanged; otherwise prints the single
+#     canonical drift message to STDOUT (so a caller can splice it into its
+#     own `fail`) and returns 1. Call AFTER the sandboxed run.
+#
+#   sandbox_cache_interferer_start / _count / _stop
+#     A CONTINUOUS third-party writer against the resolved REAL cache store
+#     root — the concurrency this guard must be immune to, made active
+#     rather than assumed. See those functions' own comments.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+sandbox_real_candidates() {
+  local real_home="${1:-$HOME}"
+  # The two legacy `foundation`-named entries stay in the tripwire
+  # deliberately: the temperloop#165 window closed in v0.19.0, so NOTHING
+  # should write them any more, and that is precisely what makes them worth
+  # asserting.
+  #
+  # $real_home/.cache/temperloop is DELIBERATELY ABSENT (temperloop#1154).
+  # Two independent reasons, and the first is what makes the second safe:
+  #   (a) its leak vector is CLOSED at the source — CACHE_STORE_ROOT is now
+  #       pinned inside $SANDBOX_ROOT by sandbox_env (see _sandbox_pin), and
+  #       that redirect is asserted positively by test_sandbox.sh test 6.
+  #       Sampling the real root is no longer the thing standing between a
+  #       sandboxed run and the operator's cache;
+  #   (b) it is SHARED MUTABLE STATE. Any concurrent board-adapter process
+  #       (board.sh's cross-process cache, cache-store reads/writes) writes
+  #       that root at will, from outside this test's process tree. A
+  #       count-sampled shared path cannot attribute a delta to the
+  #       sandboxed run, so keeping it could only ever add third-party
+  #       noise — the same flake class #377/#382 removed for the
+  #       basic-memory store, arriving here by a different door.
+  # The removal is safe BECAUSE OF (a); (b) alone would not justify
+  # deleting a working leak detector.
+  SANDBOX_REAL_CANDIDATES=(
+    "$real_home/.local/share/temperloop"
+    "$real_home/.local/bin/temperloop"
+    "$real_home/.local/bin/foundation"
+    "$real_home/.config/foundation"
+    "$real_home/.local/state/foundation"
+  )
+}
+
+# ---------------------------------------------------------------------------
+sandbox_snapshot_path() {
+  # The basic-memory knowledge store (F#946) lives under
+  # ~/.local/state/foundation/{basic-memory-home,bm-*} and is LIVE,
+  # concurrently written runtime state — churned on-demand by ks_search /
+  # the CLAUDE.kernel.md § Phase-1 parity `bm` leg from any other session or
+  # hook, with hundreds of files created inside a single test window. It is
+  # NOT the bootstrap residue this guard looks for, so counting it makes the
+  # no-residue assertion flake on unrelated concurrent bm activity
+  # (temperloop#377, and #382 for the second copy this hoist retires).
+  # Prune the bm subtrees:
+  #   - by directory NAME — the bm dirs only ever appear under
+  #     .local/state/foundation, so a global name-prune cannot hide
+  #     bootstrap residue leaked into any other candidate path;
+  #   - via -prune, so the 400k+-file store is never descended (fast, and
+  #     the count stays a leak-detector, not a store-size measurement).
+  local p="$1"
+  if [ -e "$p" ]; then
+    printf 'present:%s' "$(find "$p" \( -name basic-memory-home -o -name 'bm-*' \) -prune -o -print 2>/dev/null | wc -l | tr -d ' ')"
+  else
+    printf 'absent'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+sandbox_snapshot_real_candidates() {
+  : "${SANDBOX_REAL_CANDIDATES:?sandbox_snapshot_real_candidates: call sandbox_real_candidates first}"
+  local p
+  SANDBOX_REAL_SNAPS=()
+  for p in "${SANDBOX_REAL_CANDIDATES[@]}"; do
+    SANDBOX_REAL_SNAPS+=("$(sandbox_snapshot_path "$p")")
+  done
+}
+
+# ---------------------------------------------------------------------------
+sandbox_diff_real_candidates() {
+  : "${SANDBOX_REAL_CANDIDATES:?sandbox_diff_real_candidates: call sandbox_real_candidates first}"
+  local i=0 p after bad=0
+  for p in "${SANDBOX_REAL_CANDIDATES[@]}"; do
+    after="$(sandbox_snapshot_path "$p")"
+    if [ "$after" != "${SANDBOX_REAL_SNAPS[$i]}" ]; then
+      printf 'real-HOME path changed during a sandboxed run: %s (before: %s, after: %s)\n' \
+        "$p" "${SANDBOX_REAL_SNAPS[$i]}" "$after"
+      bad=1
+    fi
+    i=$((i + 1))
+  done
+  return "$bad"
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_cache_interferer_start (temperloop#1154)
+#
+# Backgrounds a CONTINUOUS writer against the resolved REAL cache store root
+# — `${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}`
+# evaluated in the CALLER's (unsandboxed) environment, i.e. the exact
+# expression links.sh / uninstall.sh / eject.sh / deploy-mini.sh resolve.
+#
+# WHY a live writer rather than a comment: dropping the real cache root from
+# SANDBOX_REAL_CANDIDATES makes the no-residue assertion immune to concurrent
+# third-party cache writes — but a leg that merely ASSERTS the paths are
+# unchanged, with nothing writing, passes VACUOUSLY and would keep passing if
+# the path were silently re-added. An active interferer is what makes the
+# assertion capable of observing an interferer.
+#
+# Each iteration creates a NEW uniquely-named marker file, because the
+# fingerprint sandbox_snapshot_path takes is a file COUNT — re-touching one
+# file would not move it. Markers are namespaced by pid so a concurrent run
+# of the sibling suite cleans up only its own.
+#
+# The 0.1s pause is a CPU courtesy only: this loop stays alive across a
+# whole bootstrap+dispatch cycle, and a bare spin would peg a core for the
+# duration without making the leg any stronger.
+# ---------------------------------------------------------------------------
+sandbox_cache_interferer_start() {
+  SANDBOX_CACHE_INTERFERER_ROOT="${CACHE_STORE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/temperloop}"
+  SANDBOX_CACHE_INTERFERER_TAG="$$"
+  SANDBOX_CACHE_INTERFERER_CREATED_ROOT=0
+  SANDBOX_CACHE_INTERFERER_PID=""
+
+  if [ ! -d "$SANDBOX_CACHE_INTERFERER_ROOT" ]; then
+    mkdir -p "$SANDBOX_CACHE_INTERFERER_ROOT" 2>/dev/null || {
+      echo "sandbox_cache_interferer_start: could not create $SANDBOX_CACHE_INTERFERER_ROOT" >&2
+      return 1
+    }
+    SANDBOX_CACHE_INTERFERER_CREATED_ROOT=1
+  fi
+
+  (
+    n=0
+    while :; do
+      : > "$SANDBOX_CACHE_INTERFERER_ROOT/.sandbox-interferer-$SANDBOX_CACHE_INTERFERER_TAG-$n" 2>/dev/null || true
+      n=$((n + 1))
+      sleep 0.1
+    done
+  ) &
+  SANDBOX_CACHE_INTERFERER_PID=$!
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_cache_interferer_count — how many marker files this run's
+# interferer has laid down so far. A caller asserts this is non-trivial
+# BEFORE stopping (stop deletes them), which is what proves the leg is not
+# vacuous: the interferer really did write the real cache root, concurrently,
+# during the assertion window.
+# ---------------------------------------------------------------------------
+sandbox_cache_interferer_count() {
+  [ -n "${SANDBOX_CACHE_INTERFERER_ROOT:-}" ] || { printf '0'; return 0; }
+  find "$SANDBOX_CACHE_INTERFERER_ROOT" -maxdepth 1 \
+    -name ".sandbox-interferer-$SANDBOX_CACHE_INTERFERER_TAG-*" 2>/dev/null | wc -l | tr -d ' '
+}
+
+# ---------------------------------------------------------------------------
+# sandbox_cache_interferer_stop — kill the writer and remove exactly what it
+# created (its own pid-namespaced markers, plus the root itself only if this
+# run created it). Idempotent, and safe to wire onto an EXIT trap so an
+# aborting suite never leaves a spinner or a marker behind.
+# ---------------------------------------------------------------------------
+sandbox_cache_interferer_stop() {
+  [ -n "${SANDBOX_CACHE_INTERFERER_PID:-}" ] || return 0
+  kill "$SANDBOX_CACHE_INTERFERER_PID" 2>/dev/null || true
+  wait "$SANDBOX_CACHE_INTERFERER_PID" 2>/dev/null || true
+  SANDBOX_CACHE_INTERFERER_PID=""
+  rm -f "$SANDBOX_CACHE_INTERFERER_ROOT"/.sandbox-interferer-"$SANDBOX_CACHE_INTERFERER_TAG"-* 2>/dev/null || true
+  if [ "${SANDBOX_CACHE_INTERFERER_CREATED_ROOT:-0}" = "1" ]; then
+    rmdir "$SANDBOX_CACHE_INTERFERER_ROOT" 2>/dev/null || true
+    SANDBOX_CACHE_INTERFERER_CREATED_ROOT=0
+  fi
 }

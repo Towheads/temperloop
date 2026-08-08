@@ -88,7 +88,16 @@ git -C "$FIXTURE_UPSTREAM" tag -a v9.1.0 -m v9.1.0
 # ===========================================================================
 # 1. Legacy-env install REFUSES — legibly, and writes nothing.
 # ===========================================================================
-sandbox_env
+# sandbox_env normally PINS TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR inside the
+# sandbox (temperloop#1154, closing the additive-env leak vector). This leg's
+# whole subject is bootstrap.sh's refusal arm, which fires only when the
+# TEMPERLOOP_* name is unset-or-empty — so it must run with those two pins
+# OMITTED, or every iteration below would see a legitimate new-name value and
+# correctly decline to refuse. Safe here specifically because a refused
+# bootstrap exits before resolving any default, cloning, or writing anything
+# (the two assertions after the loop pin exactly that). The pins are restored
+# immediately after the loop.
+sandbox_env_omit TEMPERLOOP_HOME TEMPERLOOP_BIN_DIR
 LEGACY_HOME="$SANDBOX_HOME/legacy-install/share"
 LEGACY_BIN="$SANDBOX_HOME/legacy-install/bin"
 
@@ -115,6 +124,11 @@ done
 [ ! -d "$LEGACY_HOME" ] || fail "1: a refused bootstrap must install nothing"
 [ ! -d "$LEGACY_BIN" ] || fail "1: a refused bootstrap must put nothing on PATH"
 pass "1: each legacy FOUNDATION_* env var refuses legibly at bootstrap (names replacement + v0.19.0, installs nothing)"
+
+# Restore the TEMPERLOOP_HOME/TEMPERLOOP_BIN_DIR pins for every leg below —
+# the un-pinned window is leg 1's alone. Each later leg sets both explicitly
+# anyway, so this only matters as a floor, which is the point of a floor.
+sandbox_env
 
 # ===========================================================================
 # 1b. SET-BUT-EMPTY boundary — the guards test NON-EMPTINESS, not set-ness,
