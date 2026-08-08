@@ -59,6 +59,23 @@ Dispose by the verdict it prints (`classify_agent`'s grammar):
 - **one open PR** → surface it: `⚠️ archive PR #<n> open since <date> — draining is PAUSED until it merges; merge it (gh pr merge <n>) or investigate why the queue hasn't.` Merging it unblocks the next `/tidy`.
 - **`gh` absent, `~/dev/foundation` not present, or the command errors** → **skip silently** (this checkout doesn't own the nightly archive).
 
+### Stranded plan approvals (answered but never drained)
+
+`/assess`'s operator-absent approval poll parks its offer as a `decision` issue carrying the marker line `plan-approval-poll: [[Plans/<path>]]`, and `/build` Step 0a drains it — setting that plan's `status: approved` — on the next tick of *that repo's* pipeline. On a board no funnel ticks, no such tick ever comes: the operator's `approve` reaches the issue and the plan sits `draft` indefinitely, with nothing anywhere showing it is stuck (foundation#1496 — six days). This probe is that missing surface. It is strictly **read-only** — it reports the strand and never applies the answer, which is Step 0a's job in either of its arms.
+
+For each repo whose board you drive, list the **answered** (i.e. unassigned — the same signal Step 0a keys on) plan-approval decision issues and pair each with its plan path:
+
+```sh
+gh issue list -R "<owner>/<repo>" --label decision --state open --assignee "" \
+  --json number,body --jq '.[] | select(.body | test("plan-approval-poll: \\[\\[Plans/")) | "\(.number)\t\(.body | capture("plan-approval-poll: \\[\\[(?<p>Plans/[^\\]]+)\\]\\]").p)"'
+```
+
+For each `<issue>` / `<plan-path>` pair, read that plan note's frontmatter `status:` via `mcp__obsidian-builtin__vault_read`, then dispose by what it says:
+- **`approved`, `executing`, or `done`** → already drained. **Surface nothing** (default to silence, as elsewhere in this readout).
+- **`draft`** → **stranded.** Surface: `⚠️ plan approval stranded — issue #<n> is answered but Plans/<path> is still status: draft; run /build in that repo (its Step 0a attended-tick drain applies the answer) or flip the field by hand.`
+- **plan note missing / unreadable** → surface it as a broken marker rather than a strand: `⚠️ plan-approval issue #<n> points at Plans/<path>, which does not resolve.`
+- **`gh` absent, the command errors, or no marked issues come back** → **skip silently** (nothing is stranded, or this checkout doesn't drive that board).
+
 ## Part 2 — Dispose the overnight queues
 
 **Source the batch-pipeline config (best-effort), once, before this part.** `source workflows/scripts/build/build.config.sh` (bare repo-relative, the kernel's Step-0 config-sourcing convention — `~/.claude/CLAUDE.md` § Named-setting convention). This pulls the prune-window setting (`CHECKIN_PRUNE_DAYS`, referenced below) into scope, with any pre-set env value still overriding. If the file isn't found, the sections below fall back to the `${CHECKIN_PRUNE_DAYS:-30}` inline default.
