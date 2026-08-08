@@ -14,6 +14,20 @@ reads that marker; a stranger greps for it before pulling.
 
 ## [Unreleased]
 
+### Changed
+
+- **`init`'s fresh-install board-1 default is now documented as intended
+  standalone-kernel numbering, not fleet-collision drift** (foundation#1339).
+  `docs/features/install-cli.md` § "Board number" states plainly that a
+  repo with no prior `.temperloop/config` and no `--board` flag mints board
+  1, names the two existing escapes (`--board <n>`, or a carried-forward
+  `tracker.board` from a prior config), and records why detecting a fleet
+  operator's own numbering was rejected — that convention is overlay
+  knowledge about one operator's repos, and baking it into the kernel
+  installer would violate the stranger test. `bin/subcommands/init.sh`'s
+  `board_num=1` fallback now carries a one-line pointer to that section.
+  Documentation only; no behavior change.
+
 ### Added
 
 - **`temperloop testbed` builds a private, disposable evaluation copy of a

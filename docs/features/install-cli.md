@@ -133,6 +133,23 @@ which was deleted in v0.26.0 per ADR 0004's ordering pin — run that script
 against the board, then delete the `backend=projects` line and pull
 forward.
 
+**Board number: a fresh install mints board 1, on purpose.** A repo with no
+prior `.temperloop/config` and no `--board` flag gets `board.1.*` in the
+proposed `boards.conf` entry. That default is deliberately standalone-kernel
+numbering — a stranger cloning this kernel has no other boards to collide
+with, so `1` is simply the first free id. It is **not** a recommendation for
+every adopter: a fleet operator who already runs several repos under their
+own board-numbering convention (their own boards 3/4/5/6/7, say) is expected
+to override it, not collide with it. Teaching `init` to detect and match an
+operator's fleet-specific numbering was considered and rejected — that
+convention names one operator's own repos, which is overlay knowledge, and
+baking it into the kernel installer would put overlay-specific state inside
+code a stranger with no fleet is expected to run. Two escapes already cover
+the fleet case instead: pass `--board <n>` explicitly on the `init` command
+line, or run `init` again inside a repo that already has a
+`.temperloop/config` — its prior `tracker.board` is carried forward
+unless overridden.
+
 **The safety contract.** The mutating step in the ladder is exactly one
 (`try --demo`), and it is bounded three separate ways: a spend guard prints
 a directional cost estimate and a hard mechanical cap (`--demo-cap-usd`,

@@ -654,6 +654,10 @@ if [ -z "$board_num" ] && [ -n "$existing_config" ]; then
   [ -n "$prior_board" ] && board_num="$prior_board"
 fi
 [ -n "$board_num" ] || board_num=1
+# Board 1 above is intended standalone-kernel numbering, not a fleet-collision
+# bug — see docs/features/install-cli.md § "Board number: a fresh install
+# mints board 1, on purpose" for why detection of a fleet's own numbering is
+# deliberately not done here.
 
 # render_boards_conf_entry <board-id> [owner/repo]
 #
