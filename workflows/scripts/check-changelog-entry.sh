@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# check-changelog-entry.sh — the CHANGELOG.md merge gate. Two properties:
+# check-changelog-entry.sh — the changelog merge gate. Two properties:
 #
-#   (1) COMPLETENESS (temperloop#960) — a PR that changes CONTRACT SURFACE
-#       must add an entry under `## [Unreleased]`.
+#   (1) COMPLETENESS (temperloop#960; cut over to FRAGMENTS in temperloop#1322)
+#       — a PR that changes CONTRACT SURFACE must add a `changelog.d/`
+#       fragment. A direct line under `## [Unreleased]` no longer satisfies it.
 #   (2) SECTION SCOPE (temperloop#1151) — a PR must not add lines to, nor take
 #       lines from, a section that was ALREADY RELEASED at its merge base.
 #
@@ -19,8 +20,43 @@
 # enforced completeness (at the v0.22.0 cut, 1 of 14 merged PRs had touched
 # CHANGELOG.md).
 #
-# THE PROPERTY IT HOLDS: at any commit on main, `## [Unreleased]` describes
-# everything on main that is not yet released.
+# THE PROPERTY IT HOLDS: at any commit on main, `## [Unreleased]` TOGETHER WITH
+# the pending `changelog.d/` fragments describes everything on main that is not
+# yet released.
+#
+# ── Why property (1) asks for a FRAGMENT (temperloop#1322) ─────────────────
+# Requiring an `## [Unreleased]` line made every contract-surface PR edit the
+# SAME file at the SAME anchor: 25 of the last 25 commits touching CHANGELOG.md,
+# so any two concurrent PRs collided by construction. Under fragments each PR
+# writes its own new file under `changelog.d/`, two concurrent PRs share no
+# line, and the collision is structurally impossible rather than merely
+# unlikely. `scripts/assemble-changelog.sh` folds the accumulated fragments
+# into `## [Unreleased]` at the release cut. Direction ratified by the keystone
+# spike (temperloop#1311); the filename grammar
+# (`<slug>.<category>[.breaking].md`) and its parser live in lib/changelog.sh.
+#
+# THIS IS A BREAKING CHANGE FOR A VENDORING OVERLAY, and it degrades in two
+# deliberately different directions (see the `changelog.d/` probe below):
+#
+#   * a tree carrying `.kernel-pin` (a VENDORING CONSUMER) with no
+#     `changelog.d/` gets a legible, ACTIONABLE skip of property (1) — it keeps
+#     building green and is told, on every run, exactly what to create;
+#   * a tree with NEITHER `changelog.d/` NOR `.kernel-pin` is not a vendoring
+#     consumer — it is a kernel checkout that LOST its fragment directory, and
+#     it FAILS LOUDLY. A bare "no directory -> skip" would let the kernel's own
+#     tree silently disable this gate, which is the very "quietly narrows to
+#     zero" failure the contract-surface parse below refuses to commit.
+#
+# The `.kernel-pin` probe goes through `git show "$HEAD:.kernel-pin"` and never
+# a filesystem `[[ -f "$ROOT/.kernel-pin" ]]`: a `<rev>:<path>` not starting
+# with `./` resolves against the TOP LEVEL of the tree, so if $ROOT lands on
+# the kernel subtree root inside an overlay a filesystem test would look in
+# `kernel/` and miss the overlay-root pin.
+#
+# Property (2) is UNCHANGED and its merge-base discriminator is untouched — but
+# its reason to exist now narrows to the RELEASE-CUT PR, since that is the only
+# PR that still edits CHANGELOG.md at all. It stays because the cut is exactly
+# where a released section can be stolen from.
 #
 # ── What counts as "contract surface" ──────────────────────────────────────
 # NOT a second definition. The pattern set is PARSED, at run time, out of
@@ -148,6 +184,8 @@ PR_LABELS="${CHANGELOG_GATE_PR_LABELS:-}"
 # Repo-relative paths (used both on disk and as `git show <ref>:<path>`).
 CHANGELOG_REL="CHANGELOG.md"
 VERSIONING_REL="VERSIONING.md"
+FRAGMENT_DIR_REL="changelog.d"
+KERNEL_PIN_REL=".kernel-pin"
 
 # Sanity floor on the parsed contract-surface pattern count. A lowercase local,
 # deliberately not an operator setting: it exists only to distinguish "the
@@ -235,6 +273,37 @@ fi
 if ! git -C "$ROOT" show "$HEAD:$CHANGELOG_REL" >/dev/null 2>&1; then
   say "skipped — no $CHANGELOG_REL at $HEAD; this tree keeps no changelog"
   exit 0
+fi
+
+# --- the changelog.d/ probe: legible skip, or a LOUD failure ----------------
+# `git show <rev>:<dir>` exits 0 for a present tree and non-zero for an absent
+# one, so the same probe shape as the CHANGELOG check above generalizes to a
+# directory unchanged.
+#
+# This runs HERE — before property (2), not inside property (1) — on purpose.
+# The fail-loud arm is a statement about the TREE, not about one PR's diff, so
+# a kernel checkout that lost `changelog.d/` must fail on EVERY PR, including
+# one that touches no contract surface at all. The skip arm sets a flag instead
+# of exiting, so an un-migrated overlay still gets property (2) enforced: the
+# released-section-scope check is about CHANGELOG.md and stays valid whether or
+# not the tree has migrated.
+FRAGMENTS_ENFORCEABLE=1
+if ! git -C "$ROOT" show "$HEAD:$FRAGMENT_DIR_REL" >/dev/null 2>&1; then
+  if ! git -C "$ROOT" show "$HEAD:$KERNEL_PIN_REL" >/dev/null 2>&1; then
+    warn "FAIL — no $FRAGMENT_DIR_REL/ at $HEAD, and no $KERNEL_PIN_REL either."
+    warn ""
+    warn "  $KERNEL_PIN_REL is what marks a tree as a VENDORING CONSUMER of this kernel. Without it,"
+    warn "  this is the kernel's own checkout — and a kernel checkout that has lost its fragment"
+    warn "  directory has silently disabled this gate's completeness property. A gate that quietly"
+    warn "  narrows to zero is worse than no gate, so this fails rather than skipping."
+    warn ""
+    warn "  If this IS the kernel (or a fork of it): restore the directory —"
+    warn "    mkdir -p $FRAGMENT_DIR_REL && touch $FRAGMENT_DIR_REL/.gitkeep && git add $FRAGMENT_DIR_REL/.gitkeep"
+    warn "  If this is a vendoring overlay: its repo root is missing $KERNEL_PIN_REL. Restore the pin"
+    warn "  (it is written by 'make update-kernel'), or create $FRAGMENT_DIR_REL/ and adopt fragments."
+    exit 1
+  fi
+  FRAGMENTS_ENFORCEABLE=0
 fi
 
 # --- the marker grammar (shared by both properties) -------------------------
@@ -499,7 +568,22 @@ $CHANGED
 EOF
 
 if [[ -z "$TOUCHED" ]]; then
-  say "OK — no contract-surface path changed against $BASE (per $VERSIONING_REL § The contract surface); no [Unreleased] entry required"
+  say "OK — no contract-surface path changed against $BASE (per $VERSIONING_REL § The contract surface); no $FRAGMENT_DIR_REL/ fragment required"
+  exit 0
+fi
+
+# --- legible degradation for an un-migrated vendoring consumer --------------
+# Reached only when the tree carries `.kernel-pin` (the fail-loud arm above
+# already handled the other case) AND contract surface actually changed — i.e.
+# exactly where this gate would otherwise have enforced. The notice is
+# ACTIONABLE rather than bare: it names the kernel release whose gate is
+# running, the BREAKING classification, and the one command that enables it.
+if [[ "$FRAGMENTS_ENFORCEABLE" == "0" ]]; then
+  pinned_tag="$(git -C "$ROOT" show "$HEAD:$KERNEL_PIN_REL" 2>/dev/null \
+    | awk '$1 == "tag" { print $2; exit }')"
+  [[ -n "$pinned_tag" ]] || pinned_tag="unknown (unparseable $KERNEL_PIN_REL)"
+  say "skipped — $CHANGELOG_REL exists but there is no $FRAGMENT_DIR_REL/ at $HEAD; this tree has not migrated to changelog fragments (vendored kernel $pinned_tag; the fragment requirement shipped as a BREAKING change, temperloop#1322). Completeness is NOT enforced here until it does."
+  say "  To enable: mkdir -p $FRAGMENT_DIR_REL && touch $FRAGMENT_DIR_REL/.gitkeep && git add $FRAGMENT_DIR_REL/.gitkeep — then author one fragment per contract-surface PR, named <slug>.<category>[.breaking].md."
   exit 0
 fi
 
@@ -513,29 +597,47 @@ if find_marker "$SKIP_MARKER_RE" "$CHANGELOG_GATE_SKIP_LABEL"; then
   exit 0
 fi
 
-# --- did this change add an [Unreleased] entry? -----------------------------
-changelog_unreleased_body "$tmpdir/base.md"  > "$tmpdir/base-unreleased.txt"
-changelog_unreleased_body "$tmpdir/head.md"  > "$tmpdir/head-unreleased.txt"
+# --- did this change add a changelog.d/ fragment? ---------------------------
+# An "entry" is now a CONFORMING FRAGMENT PRESENT AT HEAD. Three filters, each
+# closing a way an apparent entry could still be a lost one:
+#
+#   * the basename must parse under the lib's filename grammar — an
+#     unrecognised name is never assembled, so it is not an entry;
+#   * a path one level down (`changelog.d/sub/x.added.md`) is rejected — the
+#     assembler only reads regular files DIRECTLY in the directory, so a
+#     nested file would sit there looking pending while the release shipped
+#     without it;
+#   * the file must EXIST at HEAD with at least one non-blank line. Existence
+#     at HEAD is what stops a release cut's fragment DELETIONS from reading as
+#     entries; the non-blank test is the fragment-era analogue of the old
+#     "a bare `###` sub-heading is not an entry" rule (an empty fragment is a
+#     lost entry, and the assembler refuses to cut on one).
+ADDED_FRAGMENTS=""
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  case "$f" in
+    "$FRAGMENT_DIR_REL"/*) frag_name="${f#"$FRAGMENT_DIR_REL"/}" ;;
+    *) continue ;;
+  esac
+  case "$frag_name" in */*) continue ;; esac
+  changelog_fragment_parse "$frag_name" >/dev/null 2>&1 || continue
+  git -C "$ROOT" show "$HEAD:$f" 2>/dev/null | grep -E '[^[:space:]]' >/dev/null || continue
+  ADDED_FRAGMENTS="$ADDED_FRAGMENTS$f"$'\n'
+done <<EOF
+$CHANGED
+EOF
 
-# An "entry" = at least one added, non-blank line under [Unreleased] that is
-# more than a bare `###` sub-heading. `diff`'s `>` side is used (rather than a
-# set-membership test) so re-adding a line that also exists elsewhere in the
-# section still counts.
-ADDED_ENTRY="$(diff "$tmpdir/base-unreleased.txt" "$tmpdir/head-unreleased.txt" 2>/dev/null \
-  | grep -E '^> ' \
-  | sed -e 's/^> //' \
-  | grep -Ev '^[[:space:]]*$' \
-  | grep -Ev '^[[:space:]]*#+[[:space:]]' \
-  | head -3 || true)"
-
-if [[ -n "$ADDED_ENTRY" ]]; then
-  say "OK — contract surface changed and CHANGELOG.md's [Unreleased] section gained an entry:"
-  printf '%s\n' "$ADDED_ENTRY" | sed -e 's/^/  + /'
+if [[ -n "$ADDED_FRAGMENTS" ]]; then
+  say "OK — contract surface changed and this change carries a $FRAGMENT_DIR_REL/ fragment:"
+  printf '%s' "$ADDED_FRAGMENTS" | sed -e 's/^/  + /'
   exit 0
 fi
 
-# A RELEASE CUT legitimately empties [Unreleased] by moving its body into a new
-# version section. Recognize that by the version-heading set growing.
+# A RELEASE CUT legitimately carries no NEW fragment: it runs the assembler,
+# which folds the pending fragments into [Unreleased] and DELETES them, then
+# moves that body into a new version section. Recognize it the same way as
+# before — by the version-heading set growing — which is unaffected by the
+# fragment cutover.
 BASE_VERSIONS="$(changelog_version_headings "$tmpdir/base.md" | sort)"
 HEAD_VERSIONS="$(changelog_version_headings "$tmpdir/head.md" | sort)"
 NEW_VERSIONS="$(comm -13 <(printf '%s\n' "$BASE_VERSIONS") <(printf '%s\n' "$HEAD_VERSIONS") 2>/dev/null | grep -Ev '^[[:space:]]*$' || true)"
@@ -545,7 +647,7 @@ if [[ -n "$NEW_VERSIONS" ]]; then
 fi
 
 # --- violation --------------------------------------------------------------
-warn "FAIL — this change touches contract surface but adds nothing to CHANGELOG.md's '## [Unreleased]' section."
+warn "FAIL — this change touches contract surface but adds no $FRAGMENT_DIR_REL/ fragment."
 warn ""
 warn "  Contract-surface paths changed (per $VERSIONING_REL § The contract surface):"
 printf '%s' "$TOUCHED" | sed -e 's/^/    - /' >&2
@@ -554,9 +656,20 @@ warn "  Why this is enforced: pre-1.0, the breaking signal rides the CHANGELOG, 
 warn "  update-kernel's downstream acknowledgment gate reads BREAKING markers out of the CHANGELOG range,"
 warn "  so an absent entry cannot carry one — a breaking change with no entry ships with that gate silently passing."
 warn ""
-warn "  To fix: add a bullet under '## [Unreleased]' in $CHANGELOG_REL, classified per $VERSIONING_REL's"
-warn "  bump-rules table (### Added / ### Changed / ### Fixed / ### Removed), and mark the section BREAKING"
-warn "  with a migration note if an overlay must adapt."
+warn "  To fix: add ONE new file under $FRAGMENT_DIR_REL/ — not a line in $CHANGELOG_REL. Editing"
+warn "  $CHANGELOG_REL directly is what made every concurrent PR collide on one anchor; a fragment is a"
+warn "  new path nobody else writes, so two PRs cannot conflict. The release cut assembles them"
+warn "  (scripts/assemble-changelog.sh) into '## [Unreleased]' and deletes them."
+warn ""
+warn "    $FRAGMENT_DIR_REL/<slug>.<category>[.breaking].md"
+warn ""
+warn "      <slug>      [A-Za-z0-9][A-Za-z0-9_-]* — no dots. Convention: <issue#>-<branch-slug>."
+warn "      <category>  added | changed | deprecated | removed | fixed | security"
+warn "      .breaking   add it when an overlay must change to keep working; it becomes the"
+warn "                  '— BREAKING' heading suffix update-kernel's acknowledgment gate reads."
+warn ""
+warn "  The body is the markdown bullet that would have gone under '### <Category>' — no h1/h2/h3"
+warn "  heading of its own (the assembler owns those), and never empty. See $FRAGMENT_DIR_REL/README.md."
 warn ""
 warn "  To opt out (a genuinely non-shipping change — a prose chore, a comment rewording, a test-only edit):"
 warn "    - add the '$CHANGELOG_GATE_SKIP_LABEL' label to the PR, or"

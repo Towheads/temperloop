@@ -109,12 +109,31 @@ Fragments are deleted only after the rewrite has actually landed. If anything
 goes wrong the files stay here, so an entry is never lost from both places at
 once.
 
+Then, on the commit about to be tagged:
+
+```sh
+scripts/assemble-changelog.sh --assert-empty HEAD
+```
+
+That is the cut-time assertion. A sibling PR can add a fragment *after* the cut
+PR assembled; the two touch disjoint files so git merges them clean, and the
+sibling's entry goes missing from the shipped section with nothing anywhere to
+flag it. The leftover file at the tagged commit is the only evidence, so the
+cut checks for it. See `VERSIONING.md` § Cutting a release.
+
 ## Status
 
-Fragments are **available, not yet required**.
-`workflows/scripts/check-changelog-entry.sh` is unchanged, and a direct
-`## [Unreleased]` entry still satisfies it. temperloop#1322 cuts the gate over
-to fragments; until then both paths work.
+Fragments are **required** (temperloop#1322).
+`workflows/scripts/check-changelog-entry.sh` fails a PR that changes contract
+surface without adding one, and a direct `## [Unreleased]` line no longer
+satisfies it. The escape hatch is unchanged — `Changelog: none — <reason>` as a
+PR label, a PR-body line, or a commit trailer.
+
+A tree that has not migrated degrades in one of two directions: a vendoring
+consumer (one carrying `.kernel-pin`) with no `changelog.d/` gets an actionable
+skip and keeps building green; a checkout with neither the directory nor a pin
+is the kernel itself having lost the directory, and the gate fails loudly
+rather than silently enforcing nothing.
 
 `README.md` (this file) and dotfiles such as `.gitkeep` are placeholders, never
 fragments, and are ignored by every reader here.

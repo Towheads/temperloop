@@ -33,12 +33,27 @@
 # against the old flow (a direct Unreleased line, no fragment) harmless
 # rather than lost.
 #
-# SCOPE OF THIS CHANGE (temperloop#1321). Additive and non-breaking on its
-# own: nothing yet REQUIRES a fragment. `check-changelog-entry.sh` is
-# unchanged and the existing `## [Unreleased]` flow keeps working. The gate
-# cutover, the `VERSIONING.md` § Cutting a release rewrite, and the
-# legible-degradation arm for a `changelog.d/`-less consumer tree are
-# temperloop#1322.
+# --assert-empty: THE CUT-VS-SIBLING OMISSION RACE (temperloop#1322).
+# `--assert-empty <rev>` reads <rev>'s GIT TREE (never the working directory)
+# and exits 1 if any conforming fragment is still there. It replaces
+# `VERSIONING.md` § Cutting a release step 1's old merge-walking backfill loop
+# (a `^CHANGELOG.md$` grep over every merge commit since the last tag), and it
+# catches a failure that loop never could.
+#
+# The race is the MIRROR IMAGE of a merge conflict, which is why nothing else
+# sees it. A cut PR rewrites CHANGELOG.md and deletes fragments A and B while a
+# sibling PR adds fragment C. Those touch DISJOINT files, so git merges them
+# CLEAN — no conflict, no queue ejection, no gate failure — and C lands on main
+# before the tag with its entry absent from the assembled release section. The
+# entry is not wrong, it is simply MISSING, and the only durable evidence is
+# that C's file is still sitting in `changelog.d/` at the tagged commit. So
+# that is exactly what this asserts. It is strictly cheaper and strictly more
+# reliable than the loop it replaces: one `git ls-tree` against one commit,
+# with no dependence on merge-commit shape, PR-number parsing, or whether a
+# merge happened to touch CHANGELOG.md at all.
+#
+# The remedy when it fires is to assemble again on the commit you are about to
+# tag (never to delete the leftover fragment — that IS the entry).
 #
 # Usage:
 #   scripts/assemble-changelog.sh                 assemble in place, then
@@ -53,6 +68,11 @@
 #                                                 the fragment files on disk
 #   scripts/assemble-changelog.sh --list          print fragments in assembly
 #                                                 order and exit
+#   scripts/assemble-changelog.sh --assert-empty <rev>
+#                                                 the CUT-TIME assertion: exit 1
+#                                                 if any conforming fragment
+#                                                 still exists in <rev>'s git
+#                                                 tree (see below)
 #
 #   --changelog <path>      changelog to rewrite   (default: <repo>/CHANGELOG.md)
 #   --fragment-dir <path>   fragment directory     (default: <repo>/changelog.d)
@@ -90,6 +110,7 @@ CHANGELOG="$REPO_ROOT/CHANGELOG.md"
 FRAGMENT_DIR="$REPO_ROOT/changelog.d"
 MODE="apply"
 KEEP_FRAGMENTS=0
+ASSERT_REV=""
 
 usage() {
   sed -n '2,/^# Portable shell only/p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//'
@@ -107,6 +128,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run)        MODE="dry-run" ;;
     --check)          MODE="check" ;;
     --list)           MODE="list" ;;
+    --assert-empty)   shift; [[ $# -gt 0 ]] || die "--assert-empty needs a git rev" 2
+                      MODE="assert-empty"; ASSERT_REV="$1" ;;
     --keep-fragments) KEEP_FRAGMENTS=1 ;;
     --changelog)      shift; [[ $# -gt 0 ]] || die "--changelog needs a path" 2; CHANGELOG="$1" ;;
     --fragment-dir)   shift; [[ $# -gt 0 ]] || die "--fragment-dir needs a path" 2; FRAGMENT_DIR="$1" ;;
@@ -115,6 +138,49 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# --- the cut-time assertion (rev-scoped, working tree never read) -----------
+# Dispatched BEFORE the working-directory validation below on purpose: this
+# mode is a question about a COMMIT, and it must answer identically whatever
+# the working tree happens to hold (mid-cut, dirty, or on another branch).
+if [[ "$MODE" == "assert-empty" ]]; then
+  frag_parent="$(dirname "$FRAGMENT_DIR")"
+  frag_rel="$(basename "$FRAGMENT_DIR")"
+  repo_dir="$(cd "$frag_parent" 2>/dev/null && pwd)" \
+    || die "cannot resolve $frag_parent (the directory holding $frag_rel/)"
+  git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "$repo_dir is not a git checkout — --assert-empty reads a git tree"
+  git -C "$repo_dir" rev-parse --verify -q "$ASSERT_REV^{commit}" >/dev/null 2>&1 \
+    || die "rev '$ASSERT_REV' does not resolve in $repo_dir"
+
+  # `-r` recurses, so a fragment hidden one level down is reported too — it is
+  # every bit as unassembled as one sitting at the top of the directory.
+  leftover=""
+  while IFS= read -r tracked; do
+    [[ -n "$tracked" ]] || continue
+    if changelog_fragment_parse "${tracked##*/}" >/dev/null 2>&1; then
+      leftover="$leftover$tracked"$'\n'
+    fi
+  done <<EOF
+$(git -C "$repo_dir" ls-tree -r --name-only "$ASSERT_REV" -- "$frag_rel" 2>/dev/null || true)
+EOF
+
+  if [[ -n "$leftover" ]]; then
+    printf 'assemble-changelog: FAIL — unassembled fragment(s) still present at %s:\n' "$ASSERT_REV" >&2
+    printf '%s' "$leftover" | sed 's/^/  - /' >&2
+    printf '\n' >&2
+    printf '  Their entries are NOT in the section this commit is about to ship. This is the\n' >&2
+    printf '  cut-vs-sibling omission race: a sibling PR added a fragment after the cut PR\n' >&2
+    printf '  assembled, the two touched disjoint files so git merged them clean, and the\n' >&2
+    printf '  entry is missing rather than wrong — no conflict anywhere told you.\n' >&2
+    printf '\n' >&2
+    printf '  Fix: re-run scripts/assemble-changelog.sh on THIS commit and fold the leftovers\n' >&2
+    printf '  into the release section, then tag. Do NOT delete them — the file IS the entry.\n' >&2
+    exit 1
+  fi
+  say "ok — no unassembled fragments in $frag_rel/ at $ASSERT_REV"
+  exit 0
+fi
 
 # --- fragment validation ----------------------------------------------------
 # Fail loudly on anything that would otherwise SILENTLY drop somebody's entry:

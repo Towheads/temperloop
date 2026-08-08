@@ -200,23 +200,35 @@ queue's second run); splitting the cut across two PRs doubles that for no
 structural reason. The v0.23.0 cut split a CHANGELOG backfill from the version
 bump and spent an extra cycle on it.
 
-### 1. Verify the CHANGELOG is complete
+### 1. Assemble the `changelog.d/` fragments into `[Unreleased]`
 
-Every merged PR since the last tag should already have its `## [Unreleased]`
-entry. Check before you cut, because a gap found here is the whole reason a cut
-turns into two PRs:
+Every contract-surface PR since the last tag wrote its entry as a
+**`changelog.d/` fragment** rather than a line under `## [Unreleased]` — that
+is what stops two concurrent PRs colliding on one anchor, and
+`workflows/scripts/check-changelog-entry.sh` enforces it at PR time. The cut is
+where they are folded back into the one section every downstream reader still
+expects:
 
 ```sh
-git log v<last>..HEAD --merges --format='%H %s' | while read -r sha subj; do
-  pr=$(echo "$subj" | sed -nE 's/.*Merge pull request #([0-9]+).*/\1/p')
-  [ -z "$pr" ] && continue
-  git diff --name-only "$sha^1" "$sha^2" | grep -q '^CHANGELOG.md$' || echo "unlogged #$pr"
-done
+scripts/assemble-changelog.sh --check     # validate every fragment; writes nothing
+scripts/assemble-changelog.sh --dry-run   # print the resulting CHANGELOG.md
+scripts/assemble-changelog.sh             # rewrite [Unreleased], delete the consumed fragments
 ```
 
-Backfill anything it names **into the same cut PR** — never a separate one.
-(temperloop#960 tracks the gate that makes this step vacuous by requiring the
-entry at PR time; until it lands, this check is the backstop.)
+The assembler is **additive, never replacing**: it merges into whatever
+`## [Unreleased]` already holds, so an in-flight PR that still wrote a direct
+line is folded in beside the fragments rather than dropped. When any fragment
+carries `.breaking` it adds the ` — BREAKING` suffix to the `## [Unreleased]`
+heading *and* to that category's sub-heading. Fragments are deleted only after
+the rewrite has actually landed, so an entry is never lost from both places at
+once. Format and rules: [`changelog.d/README.md`](changelog.d/README.md).
+
+**What replaced the old completeness walk.** This step used to grep every merge
+commit since the last tag for `^CHANGELOG.md$` and backfill whatever it named.
+That loop is gone. Completeness is enforced at PR time by the gate, and the
+cut-time backstop is now the deterministic `--assert-empty` assertion in step 3
+— one `git ls-tree` against the commit being tagged, which is both cheaper than
+the loop and catches a failure the loop never could.
 
 ### 2. Rewrite the heading and bump `VERSION` — in one commit
 
@@ -235,6 +247,11 @@ the tag, so these must move together.
 > warning no-op without telling anyone. Keep the suffix on the version heading,
 > and keep the ` — BREAKING` sub-heading (e.g. `### Changed — BREAKING`) as the
 > belt-and-suspenders half that survives a botched rewrite.
+>
+> Step 1's assembler applies both markers for you when a `.breaking` fragment
+> was pending — which makes this rewrite the **only** place they can now be
+> lost. A `.breaking` fragment reaches `changelog_breaking_sections()` solely
+> through the heading it produces here.
 
 > **⚠ `## [Unreleased] — BREAKING` occurs more than once in the file.** The live
 > heading is near the top; historical entries quote the same string in their
@@ -257,9 +274,29 @@ tag **that** commit — not the branch tip:
 
 ```sh
 git checkout main && git pull --ff-only
+
+# The cut-time assertion. Run it on the commit you are about to tag, BEFORE
+# tagging — a tag is local until pushed, but re-tagging is still churn.
+scripts/assemble-changelog.sh --assert-empty HEAD
+
 git tag -a v<new> -m "<subject>"   # subject: 'v<new>' or 'v<new> — BREAKING'
 git push origin v<new>
 ```
+
+> **⚠ Why the assertion is not optional: the cut-vs-sibling omission race.**
+> Your cut PR rewrote `CHANGELOG.md` and deleted fragments A and B. While it
+> sat in the queue, a sibling PR added fragment C. Those touch **disjoint
+> files**, so git merged them **clean** — no conflict, no queue ejection, no
+> gate failure — and C is now on `main` with its entry **absent** from the
+> section you are about to ship. Nothing else in the pipeline sees this: it is
+> a missing entry, not a wrong one, and the mirror image of the merge conflict
+> fragments were adopted to eliminate. The only durable evidence is C's file
+> still sitting in `changelog.d/` at the commit being tagged, which is exactly
+> what `--assert-empty` checks.
+>
+> If it fires, **re-run step 1 on this commit** and fold the leftovers into the
+> release section. Never delete a leftover fragment to silence it — the file
+> *is* somebody's entry.
 
 The tag body follows the shape of the previous tags: subject line, one line on
 how many PRs/commits it covers, the BREAKING pointer if applicable, then a short

@@ -21,8 +21,12 @@
 #      acknowledgment contract that scripts/update-kernel.sh and
 #      bin/subcommands/update.sh read.
 #
-# Fast, no network, no git operations: every write lands in a mktemp dir and
-# the repo's own CHANGELOG.md is only ever COPIED, never modified.
+# T15 additionally covers `--assert-empty <rev>`, the CUT-TIME assertion added
+# by temperloop#1322 that closes the cut-vs-sibling OMISSION race.
+#
+# Fast and no network. Every write lands in a mktemp dir and the repo's own
+# CHANGELOG.md is only ever COPIED, never modified; the only git operations are
+# T15's throwaway `git init` fixtures, which never touch this repo.
 #
 # Usage: bash scripts/tests/test_assemble_changelog.sh
 
@@ -756,6 +760,108 @@ assert_contains "T14 the brand-new section entry landed" \
 # The downstream readers must still parse the result.
 assert_eq "T14 version headings unchanged" "0.1.0" \
   "$(changelog_version_headings "$CHANGELOG")"
+
+# ===========================================================================
+# T15 — `--assert-empty <rev>`: the CUT-TIME assertion (temperloop#1322).
+#
+# It closes the cut-vs-sibling OMISSION race, which nothing else in the
+# pipeline can see: a cut PR deletes fragments A and B while a sibling PR adds
+# fragment C, the two touch DISJOINT files so git merges them clean, and C
+# lands before the tag with its entry MISSING — not wrong — from the assembled
+# release section. The leftover file at the tagged commit is the only
+# evidence, so that is what this asserts. It replaced VERSIONING.md § Cutting
+# a release step 1's merge-walking `^CHANGELOG.md$` backfill loop.
+#
+# These are the suite's only git-touching cases; every repo is a throwaway
+# under mktemp and the repo's own tree is never read or written.
+# ===========================================================================
+echo "T15: --assert-empty (the cut-time assertion)"
+
+git_case() {
+  new_case
+  git -C "$CASE_DIR" init -q >/dev/null 2>&1
+  git -C "$CASE_DIR" config user.email t@example.com
+  git -C "$CASE_DIR" config user.name Tester
+  git -C "$CASE_DIR" config commit.gpgsign false
+  write_nonempty_changelog
+}
+
+git_commit() {
+  git -C "$CASE_DIR" add -A >/dev/null 2>&1
+  git -C "$CASE_DIR" commit -qm "$1" >/dev/null 2>&1
+}
+
+# T15a — a clean tag. The sanctioned placeholders must not trip it.
+git_case
+printf '# placeholder\n' > "$FRAGS/README.md"
+: > "$FRAGS/.gitkeep"
+git_commit "cut"
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15a a clean commit exits 0" "0" "$rc"
+assert_contains "T15a says so" "no unassembled fragments" "$out"
+
+# T15b — the race itself: a sibling's fragment survived to the tagged commit.
+git_case
+frag '90-sibling.added.md' '- **the sibling entry that would have gone missing** (#90).'
+git_commit "cut with a sibling fragment merged in behind it"
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15b exits 1" "1" "$rc"
+assert_contains "T15b names the leftover file" "90-sibling.added.md" "$out"
+assert_contains "T15b names the failure class" "omission race" "$out"
+assert_contains "T15b names the remedy" "re-run scripts/assemble-changelog.sh" "$out"
+assert_contains "T15b forbids the destructive shortcut" "Do NOT delete them" "$out"
+
+# T15c — a fragment hidden one level down is reported too: it is every bit as
+# unassembled as one at the top of the directory (T12's shape, at a rev).
+git_case
+mkdir -p "$FRAGS/sub"
+printf -- '- **nested** (#91).\n' > "$FRAGS/sub/91-nested.added.md"
+git_commit "cut with a nested fragment"
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15c a nested fragment exits 1" "1" "$rc"
+assert_contains "T15c names the nested path" "sub/91-nested.added.md" "$out"
+
+# T15d — REV-SCOPED, never working-tree scoped. This is what makes the
+# assertion usable mid-cut: the answer is about the commit being tagged,
+# whatever the working tree happens to hold at the time.
+git_case
+frag '92-committed.added.md' '- **committed** (#92).'
+git_commit "a commit that carries a fragment"
+rm -f "$FRAGS/92-committed.added.md"          # gone from the working tree only
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15d still fails: the fragment is in the COMMIT" "1" "$rc"
+assert_contains "T15d names it" "92-committed.added.md" "$out"
+
+git_case
+: > "$FRAGS/.gitkeep"
+git_commit "a clean commit"
+frag '93-uncommitted.added.md' '- **uncommitted** (#93).'   # working tree only
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15d2 passes: an UNCOMMITTED fragment is not at the rev" "0" "$rc"
+
+# T15e — an unresolvable rev is a loud error, never a silent pass. A cut-time
+# assertion that exits 0 because it could not resolve what it was asked about
+# is the same "quietly narrows to zero" failure the gate refuses to commit.
+git_case
+: > "$FRAGS/.gitkeep"
+git_commit "a clean commit"
+out="$(run_assembler --assert-empty v9.9.9-does-not-exist)"
+rc=$?
+assert_eq "T15e an unresolvable rev exits non-zero" "1" "$rc"
+assert_contains "T15e names the rev" "v9.9.9-does-not-exist" "$out"
+
+# T15f — a non-git tree is an error too, not an accidental pass.
+new_case
+write_nonempty_changelog
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15f a non-git tree exits non-zero" "1" "$rc"
+assert_contains "T15f says why" "not a git checkout" "$out"
 
 echo
 echo "test_assemble_changelog.sh: $pass_count passed, $fail_count failed"
