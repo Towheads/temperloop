@@ -918,6 +918,41 @@ fi
 # below 100% is expected and structural, not a defect to chase to zero.
 : "${MODEL_COMPARISON_EMIT_FEASIBLE_SEATS:=3}"
 
+# ── Replay corpus selection + isolation (temperloop#1254, epic #1225 "model
+#    comparison harness") ───────────────────────────────────────────────────
+# workflows/scripts/model-comparison/replay.sh: `corpus` (real `gh` reads,
+# selects eligible closed-issue + merged-PR pairs from this repo's own
+# history) and `worktree-prepare`/`worktree-teardown` (the isolated replay
+# worktree, built on workflows/scripts/build/worktree.sh's existing lifecycle
+# — see that file's header and Context/temperloop - replay ground-truth seam.md
+# for why replay.sh adds no flag there and instead rewinds an unmodified
+# `create`). Four operator-facing tunables, named symbolically in replay.sh's
+# own header, never re-valued in prose (§ Named-setting convention).
+#
+# Default number of merged PRs `corpus` asks `gh pr list` for when no
+# explicit `--limit`/`--target` is given. The ground-truth spike measured a
+# ~52% survival rate applying the scope-closure rule to 46 single-issue
+# merged PRs (temperloop#1247) — this default is sized to that same
+# ballpark scan.
+: "${REPLAY_CORPUS_LIMIT:=60}"
+# Multiplier `corpus --target N` applies to compute its default `--limit`
+# (limit = target * multiplier) when `--limit` is not given explicitly. 2x
+# is the spike's own measured corpus-yield guidance: "budget ~2x its target
+# size" (24/46 = 52% usable survival after scope closure).
+: "${REPLAY_CORPUS_SAMPLE_MULTIPLIER:=2}"
+# Space-separated file-extension list `diff-scope`'s N-bucket (solution-
+# surface) path extraction matches against the pre-cut issue text — mirrors
+# the spike's own demonstrated named-path regex
+# (`[A-Za-z0-9_./-]+\.(py|sh|mjs|md|tsv|json)`).
+: "${REPLAY_NAMED_PATH_EXTENSIONS:=py sh mjs md tsv json}"
+# The sentinel `remote.origin.pushurl` value `worktree-prepare` writes,
+# scoped ONLY to the replay worktree via git's per-worktree config extension
+# (`extensions.worktreeConfig`), so a `git push` issued from inside an
+# isolated replay worktree cannot resolve a real transport — structural,
+# not a post-hoc probe. Deliberately not a real-looking URL, so a stray push
+# attempt fails fast on an unresolvable scheme rather than hanging on DNS.
+: "${REPLAY_PUSH_DISABLE_SENTINEL:=replay-worktree-push-disabled://no-remote}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -941,4 +976,6 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        SPEND_MACHINERY_MAX_CALLS SPEND_WORKER_PROFILE_MIN_CALLS SPEND_TRANSCRIPT_ROOT \
        KNOWLEDGE_STORE_ROOT \
        MODEL_COMPARISON_MIN_SAMPLE_N MODEL_COMPARISON_BOOTSTRAP_ITERATIONS MODEL_COMPARISON_BOOTSTRAP_SEED \
-       MODEL_COMPARISON_CI_WIDTH_PCT MODEL_COMPARISON_EMIT_FEASIBLE_SEATS
+       MODEL_COMPARISON_CI_WIDTH_PCT MODEL_COMPARISON_EMIT_FEASIBLE_SEATS \
+       REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \
+       REPLAY_PUSH_DISABLE_SENTINEL
