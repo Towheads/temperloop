@@ -654,4 +654,135 @@ done
   || fail "vendored-hook comparison removed a consumer's hook (must be READ-ONLY)"
 echo "PASS: STALE_VENDORED_HOOK detection stays read-only"
 
+# --- is_kernel_checkout / kernel_pin_tag_of (temperloop#1333) ----------------
+# The kernel repo has no `.kernel-pin` BY CONSTRUCTION (that file is the
+# vendored-subtree identity carrier a CONSUMER writes) — so a checkout that IS
+# the kernel repo must resolve its "reached" tag from its own HEAD instead of
+# demanding a pin file it can never have. Sourced as a library (the same
+# `source env-reconcile.sh` with no args /check-in's class-B discharge uses),
+# never run directly, so none of this exercises the direct-invocation guard.
+
+# Fixture: a standalone real git repo shaped like the kernel repo — carries
+# claude/CLAUDE.kernel.md, NOT claude/CLAUDE.overlay.md (the same detection
+# convention validate-capture-backstop.sh already uses), with two ancestor
+# release tags on its HEAD.
+git init -q --initial-branch=main "$TMP/kernel-checkout"
+KCHECKOUT="$(cd "$TMP/kernel-checkout" && pwd -P)"
+mkdir -p "$KCHECKOUT/claude"
+printf '# kernel contracts\n' > "$KCHECKOUT/claude/CLAUDE.kernel.md"
+git -C "$KCHECKOUT" add claude/CLAUDE.kernel.md
+git -C "$KCHECKOUT" commit -q -m "v0.1.0"
+git -C "$KCHECKOUT" tag v0.1.0
+git -C "$KCHECKOUT" commit -q --allow-empty -m "v0.2.0"
+git -C "$KCHECKOUT" tag v0.2.0
+
+# A composed/overlay checkout — carries BOTH files, so it is NOT the kernel
+# repo itself (a consumer's composed CLAUDE.md source pair) — must fall back
+# to the ordinary `.kernel-pin` path, never the HEAD-tag resolution.
+git init -q --initial-branch=main "$TMP/overlay-checkout"
+OCHECKOUT="$(cd "$TMP/overlay-checkout" && pwd -P)"
+mkdir -p "$OCHECKOUT/claude"
+printf '# kernel contracts\n' > "$OCHECKOUT/claude/CLAUDE.kernel.md"
+printf '# overlay\n' > "$OCHECKOUT/claude/CLAUDE.overlay.md"
+git -C "$OCHECKOUT" add claude
+git -C "$OCHECKOUT" commit -q -m init
+printf 'tag v0.5.0\n' > "$OCHECKOUT/.kernel-pin"
+
+# A plain consumer checkout with a valid .kernel-pin (the pre-existing path,
+# must be completely unaffected by this change).
+git init -q --initial-branch=main "$TMP/consumer-pinned"
+CPINNED="$(cd "$TMP/consumer-pinned" && pwd -P)"
+git -C "$CPINNED" commit -q --allow-empty -m init
+printf 'tag v0.7.2\n' > "$CPINNED/.kernel-pin"
+
+# A plain consumer checkout with NO .kernel-pin at all — "not yet reached".
+git init -q --initial-branch=main "$TMP/consumer-unpinned"
+CUNPINNED="$(cd "$TMP/consumer-unpinned" && pwd -P)"
+git -C "$CUNPINNED" commit -q --allow-empty -m init
+
+# Source the script as a library (no args) — never runs the reconciler.
+set --
+# shellcheck source=/dev/null
+source "$SCRIPT"
+
+kt="$(kernel_pin_tag_of "$KCHECKOUT")" || fail "kernel_pin_tag_of on the kernel checkout itself returned non-zero"
+[ "$kt" = "v0.2.0" ] \
+  || fail "kernel checkout should resolve to its nearest ancestor release tag v0.2.0, got: '$kt'"
+echo "PASS: kernel_pin_tag_of resolves the kernel repo's own checkout from its HEAD's nearest release tag (v0.2.0), not .kernel-pin"
+
+is_kernel_checkout "$KCHECKOUT" \
+  || fail "is_kernel_checkout did not detect the kernel checkout fixture"
+echo "PASS: is_kernel_checkout true for claude/CLAUDE.kernel.md present + claude/CLAUDE.overlay.md absent"
+
+if is_kernel_checkout "$OCHECKOUT"; then
+  fail "is_kernel_checkout wrongly flagged a composed overlay checkout (both files present) as the kernel repo"
+fi
+ot="$(kernel_pin_tag_of "$OCHECKOUT")" || fail "kernel_pin_tag_of on the overlay checkout returned non-zero (should read its .kernel-pin)"
+[ "$ot" = "v0.5.0" ] \
+  || fail "overlay checkout (both CLAUDE.kernel.md and CLAUDE.overlay.md present) must still read its own .kernel-pin, got: '$ot'"
+echo "PASS: is_kernel_checkout false when claude/CLAUDE.overlay.md is also present -> falls back to .kernel-pin (v0.5.0)"
+
+pt="$(kernel_pin_tag_of "$CPINNED")" || fail "kernel_pin_tag_of on a plain pinned consumer returned non-zero"
+[ "$pt" = "v0.7.2" ] \
+  || fail "plain consumer checkout's own .kernel-pin path must be byte-identical to before this change, got: '$pt'"
+echo "PASS: an ordinary consumer checkout's .kernel-pin read is unchanged (v0.7.2)"
+
+if kernel_pin_tag_of "$CUNPINNED" >/dev/null 2>&1; then
+  fail "kernel_pin_tag_of on a consumer with no .kernel-pin should exit 1 (not yet reached), not succeed"
+fi
+echo "PASS: a plain consumer with no .kernel-pin still resolves 'not yet reached' (exit 1), unchanged"
+
+# semver_ge integration: the kernel checkout's resolved tag (v0.2.0) meets an
+# earlier watermark and falls short of a later one, exactly like a normal
+# consumer tag would under the class-B discharge gate in check-in.md.
+[ "$(semver_ge "$kt" v0.1.5)" = "true" ] \
+  || fail "kernel checkout's resolved tag v0.2.0 should meet watermark v0.1.5"
+[ "$(semver_ge "$kt" v0.3.0)" = "false" ] \
+  || fail "kernel checkout's resolved tag v0.2.0 should NOT meet a later watermark v0.3.0"
+echo "PASS: kernel checkout's resolved tag composes with semver_ge exactly like a consumer's .kernel-pin tag"
+
+# --- non-kernel report/entry output must be byte-identical (contract #3) -----
+# classify_operator_checkout never calls kernel_pin_tag_of, so including a
+# kernel-shaped checkout in OPERATOR_CHECKOUTS must not change the per-row
+# report shape for ANY checkout, kernel or not: run the SAME operator set
+# once with the kernel checkout appended and once without, and diff every
+# line that isn't the kernel checkout's own row.
+rc=0
+before="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$OP1 $CPINNED" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "byte-identical check (before): expected exit 0 (got $rc)"
+
+rc=0
+after="$(
+  PATH="$TMP/bin:$PATH" \
+  ENV_RECONCILE_CRON_CHECKOUTS="$TMP/no-such-cron-checkout" \
+  ENV_RECONCILE_OPERATOR_CHECKOUTS="$OP1 $CPINNED $KCHECKOUT" \
+  ENV_RECONCILE_LAUNCHD_DIRS="$TMP/no-such-launchd-dir" \
+  bash "$SCRIPT" --format report
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "byte-identical check (after): expected exit 0 (got $rc)"
+
+# Every line from the "before" run (OP1's and CPINNED's rows, the whole cron/
+# worktree/agent sections, DRIFT summary) must appear verbatim in "after" —
+# the kernel checkout being present only ADDS its own OK row, changing
+# nothing else.
+while IFS= read -r line; do
+  case "$line" in *"$KCHECKOUT"*) continue ;; esac   # not expected to repeat verbatim (own row differs by path)
+  grep -qF -- "$line" <<<"$after" \
+    || fail "non-kernel row/line changed when a kernel checkout was added to OPERATOR_CHECKOUTS: '$line'
+before:
+$before
+after:
+$after"
+done <<<"$before"
+grep -qE "OK +$KCHECKOUT\$" <<<"$after" \
+  || fail "kernel checkout itself should classify OK (clean, on its default branch, no drift); output:
+$after"
+echo "PASS: adding a kernel-shaped checkout to OPERATOR_CHECKOUTS leaves every other checkout's report row byte-identical (contract #3)"
+
 echo "ALL PASS: test_env_reconcile.sh"
