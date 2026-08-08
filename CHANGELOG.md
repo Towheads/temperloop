@@ -16,6 +16,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`/triage`'s cull, decision-route, and funnel-escalation close arms now
+  route their Done writes through `board_close_done`** (#1217), guarded
+  `if declare -F board_close_done` with a resolve-based fallback for a
+  vendored `board.sh` that predates the helper. Each arm posts its reason
+  comment first, then lands Done unconditionally — no more an `or`-branch a
+  reader could take as optional, and no more a bare `gh issue close` in the
+  funnel-escalation arm that left the board unstamped. Also deletes the
+  false claim that a built-in close→Done automation reflects a close on the
+  board (no such mechanism exists on this issues-only backend — see
+  `workflows/scripts/board/ISSUES-ONLY-BACKEND.md` § Close→Done cascade) and
+  corrects the Step 4.6 cache-bust note: the real hazard is that shell state
+  does not persist between separate Bash tool calls, not a
+  `board_set_milestone` cache-bust (it never dirties the cache).
 - **`install-tier2.yml` is re-scoped off the retired `try` path onto the
   `init` -> `eject` adopt-path round trip against the persistent
   `Towheads/temperloop-demo` repo** (#1234). Drops the `temperloop try` step

@@ -172,7 +172,7 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
 7. **Flip Backlog → Ready *for active-phase survivors only*; leave inactive-phase survivors in Backlog** (foundation #208 routing).
 
    **Two ordering hazards this step must avoid — read first:** <!-- cite: TR.8 class:silent-backlog-strand -->
-   - **Cache-bust hazard (BLOCKER).** Step 4.6's `board_set_milestone` busts the on-disk items cache. So after 4.6, do **NOT** call `board_resolve_item`/`board_resolve` to look up an item id — they would read the busted cache and `board_item_id` would return **empty**, making `board_set_status "" …` a silent no-op (the survivor stays Backlog and re-enters next sweep with no error). Instead, for every `board_item_id <n>` lookup in this step use the **in-shell `BOARD_ITEMS_JSON` captured at Step 4.5** (it is fresh as of 4.5 and still in-shell — `board_set_milestone` busts the *on-disk* cache, not the shell variable). Do not re-resolve between 4.6 and 4.7.
+   - **Stale-lookup hazard (BLOCKER).** `board_item_id` reads only the in-shell `BOARD_ITEMS_JSON` — and shell state does not persist between separate Bash tool calls in an agent session, so a `BOARD_ITEMS_JSON` captured at Step 4.5 is gone the moment this step runs in a new call (it is *not* a `board_set_milestone` cache-bust issue: `board_set_milestone` never calls `_board_cache_dirty_after_write`, and `_board_issues_resolve_item`'s single-issue read is always-live REST consulting no cache at all — `board.sh` :698/:1470/:849/:923). Re-resolving between 4.6 and 4.7 in the **same** Bash call is therefore safe; what is unsafe is *assuming* an earlier call's `BOARD_ITEMS_JSON` still exists. Every `board_item_id <n>` lookup in this step must run in the same Bash block as the resolve that populated it — `board_resolve_item "$BOARD" <n>` (or the whole-board `board_resolve`) immediately before the lookup, not carried forward from a prior call.
    - **Active-set TOCTOU hazard.** Do **NOT** re-call `board_active_milestones` here. Branch on each survivor's carried-forward **`phase_active`** flag (derived at Step 2 from the Step-1 `$active` snapshot), so what executes matches the Step-3.5 preview the user gated.
 
    For every grouped survivor, surviving singleton, **and** each epic, branch on its carried `phase_active`:
@@ -180,7 +180,16 @@ All board bash blocks below `source "$BOARD_LIB"` first (Step 0.3); let `repo="$
    - **inactive phase (`phase_active` false)** → **leave it in `Backlog`** (no status write). It defers, and re-enters the next sweep automatically once the phase is activated (`milestone activate "<phase>"` stamps the `<!-- triage:active -->` marker). There is no `Parked` move.
 
    An **epic's** Ready flip follows its members: if **any** member's `phase_active` is true the epic flips Ready; if the whole group is on inactive phases the epic stays Backlog with them. The epic's Ready flip signals only that the *group is scoped* — member readiness follows each member's **own** `phase_active`: an **inactive-phase member of an active-phase epic is NOT dragged to Ready** — it stays in `Backlog` individually (per the rule above) and is counted in the Step-5 "Left in Backlog (inactive phase)" line.
-8. **Apply culls and decision-routes** — close culled board issues with their reason comment (`gh issue close <n> -R "$repo" --comment "…"` — the built-in close→Done automation reflects it on the board; or set it explicitly with `board_set_status "$(board_item_id <n>)" "$BOARD_OPT_DONE"`). Write the decision-route vault stubs and close/move their issues off Backlog the same way.
+8. **Apply culls and decision-routes.** **Comment-first, then land Done** — same ordering discipline as Step 4.4's flagging direction: a failed comment write leaves the issue open and untouched so it re-enters the next sweep, where a markers-first order could Done an issue with no durable reason recorded.
+   ```bash
+   gh issue comment <n> -R "$repo" --body "<reason>"
+   if declare -F board_close_done >/dev/null 2>&1; then
+     board_close_done "$BOARD" <n>
+   else
+     board_resolve_item "$BOARD" <n> >/dev/null && board_set_status "$(board_item_id <n>)" "$BOARD_OPT_DONE"
+   fi
+   ```
+   `board_close_done "$BOARD" <n>` (`workflows/scripts/board/lib/board.sh`, temperloop#1217/#1337) is the primary path — it closes the issue unconditionally (from open, already-closed, or already-Done state), strips the `fnd:status:*` label, and clears the claim stamp in one guaranteed call; there is no separate `gh issue close` to make and no `or`-branch here that a reader could skip. The `else` arm is a graceful degrade for a consuming checkout whose vendored `board.sh` predates the helper (command specs install as one machine-global symlink while `BOARD_LIB` resolves per-repo — see Step 0.3), not an equally-valid alternative — and it is reached ONLY when the helper is absent, never when it is present and fails (which is why this is an `if`/`else`, not a one-line `A && B || C` chain: the chain's fallback would also fire on a *failed* call, silently re-closing through a path that strips neither label). A **non-zero return from `board_close_done` is warn-and-continue, naming the issue** — the same contract `/fix` Step 6.3 and `/build` 4d already state for their own Done writes — with `reconcile.sh --status` / `--labels --apply` as the backstop; never retry it through a bare `gh issue close`. Write the decision-route vault stubs the same way: post the note link as the reason comment, then run the same guarded Done write.
 
 ## Step 4.9 — Emit the run telemetry record
 
@@ -327,7 +336,16 @@ gh pr list -R "$repo" --search "Closes #<n>" --state all \
 
 Offer, per item:
 - **Merge it** → a **bare** `gh pr merge <pr> -R "$repo"` (enqueues; the merge queue owns the strategy — never guess a method flag, per `claude/CLAUDE.kernel.md` § Branch & PR policy's enqueue-method caveat). The PR's `Closes #N` then closes the issue; move its board item to Done via the adapter, as `/build` 4d does. This is the one **outward** action in this step, and it fires only on an explicit per-item choice.
-- **Close it** → the escalation is obsolete/abandoned. **Close the PR too, not just the issue:** `gh pr close <pr> -R "$repo" --comment "<reason>"` *then* `gh issue close <n> -R "$repo" --comment "<reason>"`. A `funnel-escalated` item has an open or failed PR **by definition** (that is what the 5c tier escalated), so closing the issue alone strands a live PR with no owner, no tracking issue, and no path back to attention — an artifact whose failure mode is to sit open forever. If the PR is already merged or closed, skip that call and close the issue alone.
+- **Close it** → the escalation is obsolete/abandoned. **Close the PR too, not just the issue:** `gh pr close <pr> -R "$repo" --comment "<reason>"` *then*, comment-first, land the issue Done:
+  ```bash
+  gh issue comment <n> -R "$repo" --body "<reason>"
+  if declare -F board_close_done >/dev/null 2>&1; then
+    board_close_done "$BOARD" <n>
+  else
+    board_resolve_item "$BOARD" <n> >/dev/null && board_set_status "$(board_item_id <n>)" "$BOARD_OPT_DONE"
+  fi
+  ```
+  `board_close_done` needs no prior resolve — the reason this call site can use it directly even though Step 6 never runs Step 0.4/4.5's board resolve (6.1 is deliberately repo-level, not board-level). The `else` degrade resolves the single item itself since, unlike Step 4.8, this step has no earlier resolve to fall back on. Its failure contract is Step 4.8's verbatim: the `else` arm is reached only when the helper is **absent**, never when it is present and fails (hence `if`/`else`, never a one-line `A && B || C` chain), and a non-zero `board_close_done` return is **warn-and-continue naming the issue**, backstopped by `reconcile.sh --status` / `--labels --apply` — never retried through a bare `gh issue close`. A `funnel-escalated` item has an open or failed PR **by definition** (that is what the 5c tier escalated), so closing the issue alone strands a live PR with no owner, no tracking issue, and no path back to attention — an artifact whose failure mode is to sit open forever. If the PR is already merged or closed, skip that call and Done the issue alone.
 - **Re-drive it** → `gh issue edit <n> -R "$repo" --remove-label funnel-escalated --remove-assignee <operator>`, returning it to the pipeline's drive pool. ⚠ **Guard: offer this only once the stale PR is merged or closed.** Re-driving with a PR still open makes the next drive open a **duplicate PR** — precisely the hazard `/sweep` Step 1 drops these items to avoid. If the PR is open, say so and offer merge/close instead.
 - **Leave it** → no writes; it stays in the queue for next time.
 
