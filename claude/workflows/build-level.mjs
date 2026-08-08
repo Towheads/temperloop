@@ -1530,6 +1530,110 @@ async function disposeStepTimeout(item, wt, to, where, { adoptable = true } = {}
   };
 }
 
+// -----------------------------------------------------------------------------
+// pr-batch lost-return recovery (temperloop#1067).
+// -----------------------------------------------------------------------------
+// isLostReturn — true iff a batch step's outcome is the SYNTHESIZED sentinel
+// batchStep() (line ~1158) mints for a missing `batch.results[i]` entry, never a
+// genuine failure the machinery script itself reported. This is the fidelity
+// signal that distinguishes "the step failed" from "the step's return value was
+// lost pr-batch return" — a real `pr.sh` failure calls its own `die()` and
+// carries a DIFFERENT `error` string, so this check can never mistake a genuine
+// non-zero exit for a lost line. That distinction is what keeps the negative
+// case (a real failure) escalating immediately, unprobed, exactly as before.
+function isLostReturn(stepOut) {
+  return Boolean(
+    stepOut &&
+      stepOut.outcome === 'ERROR' &&
+      typeof stepOut.error === 'string' &&
+      stepOut.error.includes('produced no result'),
+  );
+}
+
+// recoverLostReturn — the 3f push/pr-open twin of disposeStepTimeout's probe,
+// for the NON-timeout case: a pr-batch step's own JSON line was dropped (lost
+// pr-batch return) with every step before it in the SAME batch already
+// confirmed successful (the caller only reaches this after its own
+// rebase/scan/push branches above already passed) — temperloop#1067, distinct
+// from #1071's liveness-kill. Reuses the EXISTING probeSideEffects/RECOVER_*
+// ladder — no second probe, no new machinery. Returns one of:
+//   { kind: 'adopted', pr, pushedSha }   — landed; caller skips re-push/re-open
+//   { kind: 'escalate', escKind, payload } — a resume attempt itself failed
+//   { kind: 'none' }                      — RECOVER_NONE/RECOVER_DIRTY/unusable
+//                                            probe; caller does its UNCHANGED
+//                                            escalation exactly as before this
+//                                            wiring existed.
+async function recoverLostReturn(item, wt, openCmd) {
+  const probe = await probeSideEffects(item, wt);
+  if (probe.landed && probe.stage === 'RECOVER_PR_OPEN' && probe.pr && probe.sha) {
+    log(
+      `[${item.slug}] lost pr-batch return (temperloop#1067) — recover-probe found PR #${probe.pr} ` +
+      'already open; ADOPTING it (no re-push, no re-open).',
+    );
+    return { kind: 'adopted', pr: probe.pr, pushedSha: probe.sha };
+  }
+  if (probe.landed && (probe.stage === 'RECOVER_PUSHED' || probe.stage === 'RECOVER_COMMITTED')) {
+    const resumeFromPush = probe.stage === 'RECOVER_COMMITTED';
+    log(
+      `[${item.slug}] lost pr-batch return (temperloop#1067) — recover-probe reports ${probe.stage}; ` +
+      `resuming at ${resumeFromPush ? 'push' : 'pr-open'} (no re-run of already-confirmed steps).`,
+    );
+    const resumeSteps = [];
+    if (resumeFromPush) {
+      const prBin = machineryBin(input.repoRoot, 'pr.sh');
+      resumeSteps.push({ kind: 'push', cmd: `${prBin} push ${sq(wt)} ${sq(item.branch)}`, continueOutcomes: ['PUSHED'] });
+    }
+    resumeSteps.push({ kind: 'pr-open', cmd: openCmd });
+    const resumeAt = {};
+    resumeSteps.forEach((s, i) => { resumeAt[s.kind] = i; });
+    const rb = await runMachineryBatch(resumeSteps, {
+      label: `pr-batch-resume:${item.slug}`,
+      slug: item.slug,
+      bashTimeoutMs: BATCH_BASH_TIMEOUT_MS,
+    });
+    if (rb.denied) {
+      return {
+        kind: 'escalate',
+        escKind: 'machinery-denied',
+        payload: { step: batchDeniedStep(rb, 'pr-batch-resume'), steps: rb.steps, out: rb.out },
+      };
+    }
+    const resumeTimeout = timedOutStep(rb.results);
+    if (resumeTimeout) {
+      const disp = await disposeStepTimeout(item, wt, resumeTimeout, 'pr-batch-resume');
+      if (disp.escalation) {
+        return { kind: 'escalate', escKind: disp.escalation.escalation.kind, payload: disp.escalation.escalation.payload };
+      }
+      return { kind: 'adopted', pr: disp.adopt.pr, pushedSha: disp.adopt.sha };
+    }
+    // `resumedSha` starts at the probe's own reading (correct for the
+    // RECOVER_PUSHED case, which resumes at pr-open only — nothing pushes
+    // again) and is overwritten by the RESUMED push's own sha when
+    // RECOVER_COMMITTED actually re-runs push — the freshest ground truth, not
+    // the pre-resume probe reading.
+    let resumedSha = probe.sha ?? null;
+    if (resumeAt.push !== undefined) {
+      const pushOut = batchStep(rb, resumeAt.push);
+      if (pushOut.outcome === 'PUSH_REJECTED') {
+        return { kind: 'escalate', escKind: 'push-rejected', payload: { pushOut } };
+      }
+      if (pushOut.outcome !== 'PUSHED') {
+        return { kind: 'escalate', escKind: 'push-error', payload: { pushOut } };
+      }
+      resumedSha = pushOut.sha ?? resumedSha;
+    }
+    const openOut = batchStep(rb, resumeAt['pr-open']);
+    if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
+      return { kind: 'escalate', escKind: 'pr-open-failed', payload: { openOut } };
+    }
+    return { kind: 'adopted', pr: openOut.pr_number, pushedSha: resumedSha };
+  }
+  // RECOVER_NONE / RECOVER_DIRTY / denied / unusable probe — genuinely nothing
+  // landed (or the probe itself gave no usable answer); the caller falls
+  // through to its own UNCHANGED escalation, exactly as before this wiring.
+  return { kind: 'none' };
+}
+
 // recoveredVerdict — reconstruct the verdict object the worker never returned,
 // from ground truth plus an explicit UNVERIFIED marker on every acceptance
 // criterion. Deliberately carries NO `passed` key: pr.sh renders each result as
@@ -2206,27 +2310,58 @@ async function driveItem(item) {
       return escalate(item.slug, 'scan-error', { scanOut });
     }
 
-    // 3f-1 branch — the push decision, unchanged.
+    // 3f-1 branch — the push decision. Before escalating a non-PUSHED,
+    // non-PUSH_REJECTED outcome, probe for a LOST pr-batch return
+    // (temperloop#1067): batchStep synthesizes the same 'ERROR'/'produced no
+    // result' sentinel for both a genuine short-circuit and a dropped last JSON
+    // line, and by this point rebase+scan are ALREADY confirmed successful (the
+    // branches above), so a sentinel here specifically means push's own result
+    // line was lost, not that push never ran. A genuine PUSH_REJECTED (or any
+    // other real failure) is unaffected — it never reaches isLostReturn().
     const pushOut = batchStep(prb, prAt.push);
     if (pushOut.outcome === 'PUSH_REJECTED') {
       // Remote-branch collision / non-ff — orchestrator triages (force vs rename).
       return escalate(item.slug, 'push-rejected', { pushOut });
     }
     if (pushOut.outcome !== 'PUSHED') {
-      return escalate(item.slug, 'push-error', { pushOut });
+      const rec = isLostReturn(pushOut) ? await recoverLostReturn(item, wt, openCmd) : { kind: 'none' };
+      if (rec.kind === 'adopted') {
+        pr = rec.pr;
+        pushedSha = rec.pushedSha;
+      } else if (rec.kind === 'escalate') {
+        return escalate(item.slug, rec.escKind, rec.payload);
+      } else {
+        return escalate(item.slug, 'push-error', { pushOut });
+      }
+    } else {
+      pushedSha = pushOut.sha;
     }
-    pushedSha = pushOut.sha;
 
-    // 3f-2 branch — the PR-open decision, unchanged.
+    // 3f-2 branch — the PR-open decision. Skipped entirely when the push-branch
+    // recovery above already adopted or opened a PR (`pr` is already set) —
+    // re-running open against a branch that already has one is exactly the
+    // duplicate-PR hazard this wiring must never cause.
     // EXISTS means the branch already had an open PR (a create-retry after a
     // succeeded first attempt). Treat it as PR_OPENED — adopt the existing PR and
-    // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is a
-    // genuine failure and escalates as pr-open-failed.
-    const openOut = batchStep(prb, prAt['pr-open']);
-    if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
-      return escalate(item.slug, 'pr-open-failed', { openOut });
+    // continue to CI-poll/park-with-pr. Any other non-PR_OPENED outcome is
+    // probed for the same lost-return sentinel (temperloop#1067) before it
+    // escalates as a genuine pr-open-failed.
+    if (pr == null) {
+      const openOut = batchStep(prb, prAt['pr-open']);
+      if (openOut.outcome !== 'PR_OPENED' && openOut.outcome !== 'EXISTS') {
+        const rec = isLostReturn(openOut) ? await recoverLostReturn(item, wt, openCmd) : { kind: 'none' };
+        if (rec.kind === 'adopted') {
+          pr = rec.pr;
+          pushedSha = rec.pushedSha ?? pushedSha;
+        } else if (rec.kind === 'escalate') {
+          return escalate(item.slug, rec.escKind, rec.payload);
+        } else {
+          return escalate(item.slug, 'pr-open-failed', { openOut });
+        }
+      } else {
+        pr = openOut.pr_number;
+      }
     }
-    pr = openOut.pr_number;
   }
 
   // --- 3g. CI poll (the bounded short-slice loop — DESIGN NOTE 2) ----------
