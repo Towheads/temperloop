@@ -409,6 +409,14 @@ kernel workflows/scripts/pipeline-spend-report.sh
 # stays inside check-producer-egress.sh's reach (see that script's own
 # report-producers/ scan, added in the same change).
 kernel workflows/scripts/report-producers/*
+# model-comparison/ — the inert, opt-in model-comparison harness (epic
+# #1225, ADR 0027): attribution telemetry, replay runner, judge pass, and
+# comparison report. Ships as source in every kernel install, present but
+# doing nothing until an operator deliberately invokes it — kernel content,
+# no org/vault subject matter, same "always present, opt-in" shape as the
+# language-reviewer catalog. Directory-level glob so a later item's new file
+# under this module needs no manifest edit of its own.
+kernel workflows/scripts/model-comparison/*
 kernel workflows/scripts/validate-activation-registry.sh
 kernel workflows/scripts/validate-command-run-emit.sh
 kernel workflows/scripts/validate-diagnose-queue-emit.sh

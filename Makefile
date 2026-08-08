@@ -23,7 +23,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source \
-	test-testbed-command test-promote-push test-testbed-equivalence
+	test-testbed-command test-promote-push test-testbed-equivalence test-candidate-session
 
 help:
 	@echo "Targets:"
@@ -334,6 +334,10 @@ test-testbed-equivalence:
 test-prune-branches:
 	@echo "==> Running prune-merged-branches tests..."
 	@bash scripts/tests/test_prune_merged_branches.sh
+
+test-candidate-session:
+	@echo "==> Running candidate-session (restricted candidate-model overlay + provider-key health check) tests..."
+	@bash workflows/scripts/model-comparison/tests/test_candidate_session.sh
 
 test-stranger-config:
 	@echo "==> Running stranger-config test..."
