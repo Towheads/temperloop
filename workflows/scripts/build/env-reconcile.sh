@@ -98,9 +98,17 @@
 #                            kernel consumers", reused (not re-listed) by
 #                            /check-in's class-B cross-repo-propagation
 #                            discharge (claude/commands/check-in.md).
+#   is_kernel_checkout <c>   true iff <c> IS the kernel repo itself (ships
+#                            claude/CLAUDE.kernel.md, not claude/CLAUDE.overlay.md
+#                            — see the function's own header for the matched site).
 #   kernel_pin_tag_of <c>    prints checkout <c>'s installed kernel tag, read
 #                            from its own `.kernel-pin` `tag` line; exits 1
 #                            (prints nothing) if absent — "not yet reached".
+#                            EXCEPTION: when <c> is the kernel repo itself
+#                            (is_kernel_checkout), which has no `.kernel-pin`
+#                            by construction, the tag is instead the nearest
+#                            release tag reachable from <c>'s own HEAD (see
+#                            the function's own header, #1333).
 #   semver_ge <a> <b>        prints `true`/`false` for a numeric (not
 #                            lexical) `vMAJOR.MINOR.PATCH` compare.
 #   agent_status_by_label <l> looks up the launchd agent declaring Label <l>
@@ -334,6 +342,21 @@ file_mtime() {
 }
 now_epoch() { date +%s; }
 
+# ── is_kernel_checkout <checkout> ─────────────────────────────────────────────
+# True iff <checkout> IS the kernel repo itself, rather than a checkout that
+# merely vendors the kernel in as a consumer. Same detection convention
+# validate-capture-backstop.sh already uses for its own KERNEL_ONLY_MD case
+# (workflows/scripts/validate-capture-backstop.sh:68-70): a bare kernel
+# checkout ships `claude/CLAUDE.kernel.md` but never `claude/CLAUDE.overlay.md`
+# (a composed/overlay consumer checkout carries both — the overlay half is
+# personal/org content the kernel repo itself never ships). Matched here
+# rather than reinvented so the two checks agree on what "is the kernel repo"
+# means.
+is_kernel_checkout() {
+  local checkout="$1"
+  [ -f "$checkout/claude/CLAUDE.kernel.md" ] && [ ! -f "$checkout/claude/CLAUDE.overlay.md" ]
+}
+
 # ── kernel_pin_tag_of <checkout> ──────────────────────────────────────────────
 # Reads the installed kernel tag straight from a consumer checkout's own
 # `.kernel-pin` file (atomically written by `scripts/update-kernel.sh`; NOT a
@@ -343,8 +366,29 @@ now_epoch() { date +%s; }
 # checkout or its `.kernel-pin` is absent or has no `tag` line — the caller
 # treats that as "not yet reached", never a crash (a straggler/never-updated
 # consumer keeps a class-B record open, it doesn't abort the discharge pass).
+#
+# EXCEPTION — the checkout IS the kernel repo (is_kernel_checkout above).
+# `.kernel-pin` is the vendored-subtree identity carrier a CONSUMER writes;
+# the kernel repo is never its own consumer, so it can never have one BY
+# CONSTRUCTION — treating that absence as "not yet reached" would make any
+# `all-consumers` class-B record permanently undischargeable the moment the
+# kernel checkout is in scope (temperloop#1333: exactly the failure
+# `719-pointer-collapse` / `719-apply-approved-deletions` /
+# `719-terminology-consolidation` hit). Instead resolve "reached" from the
+# checkout's OWN history: the nearest release tag that is an ancestor of its
+# HEAD is the version this checkout has itself reached — the same tag a
+# consumer would record in `.kernel-pin` if it updated right now. A checkout
+# that hasn't fetched/merged far enough correctly resolves to an OLDER tag (or
+# none), so a stale kernel checkout still reads "not yet reached" — this stays
+# fail-open, never a blanket "always discharged".
 kernel_pin_tag_of() {
   local checkout="$1" pin tag
+  if is_kernel_checkout "$checkout"; then
+    tag="$(git -C "$checkout" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)" || return 1
+    [ -n "$tag" ] || return 1
+    printf '%s\n' "$tag"
+    return 0
+  fi
   pin="$checkout/.kernel-pin"
   [ -f "$pin" ] || return 1
   tag="$(awk '$1=="tag"{print $2; exit}' "$pin" 2>/dev/null)"
