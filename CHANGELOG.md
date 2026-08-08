@@ -854,6 +854,22 @@ reads that marker; a stranger greps for it before pulling.
   described the filter — the frontmatter `description:`, the header
   paragraph, and Step 1 itself — now reads "neither a sub-issue of an epic nor
   an epic parent" instead of "not a sub-issue of an epic".
+- **`pipeline-tick.sh`'s Phase R retro-judge urgency bypass now fires against
+  the real `gh` label shape, and a parked-but-not-due tracker set is no
+  longer silent** (#1184). `read_retro_trackers`'s LIVE arm (`gh issue list
+  --json …labels`) hands back `labels` as OBJECTS
+  (`{id,name,description,color}`), never bare strings, while
+  `retro_judge_due_reason`'s urgency check was `(.labels // []) |
+  index("retro-urgent")` — always `null` against an object array, so the
+  urgency bypass decided at mint (#533) never fired live even though the
+  DRY_RUN fixture arm (already string-shaped) always passed. The LIVE arm now
+  normalizes `labels` to a bare name array so both arms agree. Separately,
+  Phase R's "not due yet" case (trackers parked, none urgent, the oldest
+  hasn't crossed `RETRO_MIN_INTERVAL`) used to return silently — indistinguishable
+  from a healthy no-op tick — and now emits a `skip-retro-judge` action with
+  `reason: "not-due"` carrying the tracker count and the computed `due_at`, so
+  a steady-state debounce wait reads distinctly from the two broken-judge
+  skips (`not-declared`, `headless-unsupported`) instead of going quiet.
 
 ### Added
 

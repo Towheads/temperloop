@@ -748,8 +748,20 @@ read_retro_trackers() {
     jq -c '[.[] | select(((.state // "open") | ascii_downcase) == "open")
                  | select((.labels // []) | index("retro-pending"))]' "$f" 2>/dev/null || echo '[]'
   else
-    gh issue list -R "$repo" --search 'label:retro-pending state:open' \
-      --json number,title,createdAt,labels 2>/dev/null || echo '[]'
+    local raw
+    raw="$(gh issue list -R "$repo" --search 'label:retro-pending state:open' \
+      --json number,title,createdAt,labels 2>/dev/null)"
+    [ -n "$raw" ] || { echo '[]'; return; }
+    # `gh issue list --json …labels` hands back `labels` as OBJECTS
+    # ({id,name,description,color}), never bare strings — normalize to a bare
+    # name array here so this LIVE arm agrees with the shape the DRY_RUN
+    # fixture arm already speaks (an array of strings). Without this,
+    # retro_judge_due_reason's `index("retro-urgent")` is always false against
+    # the raw object shape, so the urgency bypass never fires live
+    # (temperloop#1184). Do NOT normalize the fixture arm instead — its
+    # fixtures already use the string shape gh's search-index encodes on disk.
+    jq -c '[.[] | .labels = ((.labels // []) | map(.name // empty) | map(select(. != "")))]' \
+      <<<"$raw" 2>/dev/null || echo '[]'
   fi
 }
 
@@ -766,6 +778,32 @@ _retro_iso_to_epoch() {
   return 1
 }
 
+# Epoch seconds -> ISO8601 UTC. Platform-dialect twin of _retro_iso_to_epoch
+# above (same GNU-then-BSD fallback) — used to render the not-due skip's
+# due-at in the same createdAt shape gh already speaks. Echoes nothing + rc 1
+# on a conversion failure (neither date dialect available).
+_retro_epoch_to_iso() {
+  local epoch="$1"
+  date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null && return 0
+  date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null && return 0
+  return 1
+}
+
+# Oldest createdAt (epoch seconds) across $1 (a retro-trackers JSON array), or
+# nothing (rc 1) when none parse. Shared by retro_judge_due_reason's debounce
+# check and the not-due skip's due-at computation below, so both read the same
+# "oldest" fact off one loop.
+_retro_oldest_epoch() {
+  local trackers="$1" ts epoch oldest=""
+  while IFS= read -r ts; do
+    [ -z "$ts" ] && continue
+    epoch="$(_retro_iso_to_epoch "$ts")" || continue
+    if [ -z "$oldest" ] || [ "$epoch" -lt "$oldest" ]; then oldest="$epoch"; fi
+  done < <(jq -r '.[].createdAt // empty' <<<"$trackers" 2>/dev/null)
+  [ -n "$oldest" ] || return 1
+  printf '%s\n' "$oldest"
+}
+
 # Is $1 (a retro-trackers JSON array, already filtered to open+retro-pending)
 # DUE for the judge? Echoes the reason ("urgent" or "debounce") + rc 0 when
 # due; rc 1 (nothing echoed) when not due (empty set, or the oldest tracker
@@ -777,16 +815,11 @@ _retro_iso_to_epoch() {
 # This is the ONLY threshold Phase R applies — the tick holds no policy beyond
 # it (RETRO_BATCH_SESSION_CAP is the judge's own concern downstream).
 retro_judge_due_reason() {
-  local trackers="$1" now oldest="" epoch ts
+  local trackers="$1" now oldest
   jq -e 'any(.[]; (.labels // []) | index("retro-urgent"))' <<<"$trackers" >/dev/null 2>&1 \
     && { echo "urgent"; return 0; }
   now="${PIPELINE_NOW_EPOCH:-$(date -u +%s)}"
-  while IFS= read -r ts; do
-    [ -z "$ts" ] && continue
-    epoch="$(_retro_iso_to_epoch "$ts")" || continue
-    if [ -z "$oldest" ] || [ "$epoch" -lt "$oldest" ]; then oldest="$epoch"; fi
-  done < <(jq -r '.[].createdAt // empty' <<<"$trackers" 2>/dev/null)
-  [ -n "$oldest" ] || return 1
+  oldest="$(_retro_oldest_epoch "$trackers")" || return 1
   [ $(( now - oldest )) -ge "${RETRO_MIN_INTERVAL:-259200}" ] && { echo "debounce"; return 0; }
   return 1
 }
@@ -857,14 +890,32 @@ run_retro_phase() {
     return 0
   fi
   local reason
-  reason="$(retro_judge_due_reason "$trackers")" || return 0
-  add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" --arg reason "$reason" \
-    --arg model "$RETRO_JUDGE_MODEL" \
-    '{phase:"retro",board:$b,repo:$r,action:"retro-judge",count:$n,reason:$reason,
-      emit:("claude -p \"/retro --pending --board "+$b+"\" --model "+$model+" — hand "+($n|tostring)+" due retro-pending tracker(s) to the overlay judge ("+
-            (if $reason=="urgent" then "urgency bypass: at least one tracker carries retro-urgent, decided at mint (#533)"
-             else "oldest tracker'"'"'s age has crossed RETRO_MIN_INTERVAL" end)+")"),
-      detail:"THIN trigger only: urgency was decided at mint, not here; the only threshold this phase applies is the RETRO_MIN_INTERVAL debounce (bypassed by urgency); RETRO_BATCH_SESSION_CAP is the judge'"'"'s own concern, never enforced here (epic #528, temperloop#535)"}')"
+  if reason="$(retro_judge_due_reason "$trackers")"; then
+    add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" --arg reason "$reason" \
+      --arg model "$RETRO_JUDGE_MODEL" \
+      '{phase:"retro",board:$b,repo:$r,action:"retro-judge",count:$n,reason:$reason,
+        emit:("claude -p \"/retro --pending --board "+$b+"\" --model "+$model+" — hand "+($n|tostring)+" due retro-pending tracker(s) to the overlay judge ("+
+              (if $reason=="urgent" then "urgency bypass: at least one tracker carries retro-urgent, decided at mint (#533)"
+               else "oldest tracker'"'"'s age has crossed RETRO_MIN_INTERVAL" end)+")"),
+        detail:"THIN trigger only: urgency was decided at mint, not here; the only threshold this phase applies is the RETRO_MIN_INTERVAL debounce (bypassed by urgency); RETRO_BATCH_SESSION_CAP is the judge'"'"'s own concern, never enforced here (epic #528, temperloop#535)"}')"
+    return 0
+  fi
+  # Not due (temperloop#1184): trackers ARE parked, none is urgent, and the
+  # oldest hasn't crossed RETRO_MIN_INTERVAL yet — the STEADY-STATE debounce
+  # wait, distinct from the two broken-judge skips above. Emit it too (never
+  # silence — temperloop#1150's "every skip is legible" rule applies here as
+  # much as to not-declared/headless-unsupported) so a parked-but-not-due set
+  # reads as "waiting on schedule" rather than "the phase went quiet".
+  local oldest due_at due_at_iso
+  if oldest="$(_retro_oldest_epoch "$trackers")"; then
+    due_at=$(( oldest + ${RETRO_MIN_INTERVAL:-259200} ))
+    due_at_iso="$(_retro_epoch_to_iso "$due_at")" || due_at_iso="$due_at"
+  else
+    due_at_iso="unknown"
+  fi
+  add_action "$(jq -cn --arg b "$board" --arg r "$repo" --argjson n "$n" --arg due "$due_at_iso" \
+    '{phase:"retro",board:$b,repo:$r,action:"skip-retro-judge",count:$n,reason:"not-due",due_at:$due,
+      detail:("\($n) retro-pending tracker(s) parked, none urgent, oldest has not yet crossed RETRO_MIN_INTERVAL — due at \($due) UTC (steady-state debounce wait, not a broken judge)")}')"
 }
 
 # ── Phase 0 — crash-signal intake (foundation #671, epic #637) ───────────────
