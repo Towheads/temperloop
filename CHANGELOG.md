@@ -36,6 +36,26 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **`/sweep` now treats an issue with a later `Clarified (…)` answer comment
+  as answered, not underspecified** (#1193). Phase 1's per-item fetch pulled
+  only `title,body,labels`, so an issue whose question had already been
+  answered in a comment — by triage, by a prior `/sweep` answer, or by the
+  Phase-2 escalation-park path — carried no signal the detection fanout could
+  see; a stale surviving `needs-clarification` label, or the self-judged-
+  underspecified arm re-reading the same ambiguous body, could re-raise a
+  question the operator already answered. The fetch now also pulls
+  `comments`, and Step 2 states the exclusion explicitly: an issue carrying a
+  `Clarified (…)` comment (`Clarified (sweep): …`, `Clarified (triage): …`,
+  etc.) newer than its most recent flagging-type comment — either
+  `needs-clarification: <question>` or the escalation-park path's
+  `Parked by sweep — <question>` — is **answered, not underspecified**, and is
+  excluded from the question batch. The rule applies to both detection arms
+  (self-judged and already-labelled), so a stale label alone cannot re-raise
+  an answered question. The comment-timestamp comparison itself is mechanical,
+  not judgment, so it also ships as a standalone, independently testable
+  script (`workflows/scripts/build/sweep-answered-exclusion.sh`, covered by
+  `workflows/scripts/build/tests/test_sweep_answered_exclusion.sh`) rather
+  than living only as prose.
 - **The drain no longer lexicon-greps the expanded command spec as operator
   signal** (#1199). Claude Code writes a slash-command invocation as TWO user
   turns: the `<command-name>` tag block (~115 chars), then the **expanded

@@ -186,6 +186,14 @@ check "sweep.md Step 1 gates the pool on board_sub_issues (epic-parent exclusion
 check "sweep.md's seam prose names epic parents, not just sub-issues" \
   grep -Fq 'neither a sub-issue of an epic nor an epic parent' "$SWEEP_MD"
 
+echo "── 9. an answered issue is excluded, not re-flagged underspecified (temperloop#1193) ──"
+check "sweep.md states the answered-exclusion rule verbatim" \
+  grep -Fq 'answered, not underspecified' "$SWEEP_MD"
+check "sweep.md's Step 1 fetch now pulls comments" \
+  grep -Fq -- '--json title,body,labels,comments,url' "$SWEEP_MD"
+check "sweep.md's detection-fanout input is stated as title/body/labels and comments" \
+  grep -Fq 'title/body/labels **and comments**' "$SWEEP_MD"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'test_command_run_emit: FAILED %d of %d\n' "$fail" "$((pass + fail))"
