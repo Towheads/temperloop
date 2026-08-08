@@ -63,3 +63,10 @@ __pycache__/
 # caches the pinned shellcheck static binary here. Host-local, regenerated on
 # demand — never committed.
 .cache/
+# write-lane-guard.sh declared-allies registry (temperloop#1028): the real,
+# per-checkout pairing a stranger sets for their own overlay. Tracked example
+# at claude/hooks/write-lane-allies.conf.example; absent by default so a
+# fresh clone's write-lane behavior is unchanged until the operator declares
+# a pair. Same tracked-.example/gitignored-real-file shape as
+# workflows/scripts/board/boards.conf.example.
+claude/hooks/write-lane-allies.conf

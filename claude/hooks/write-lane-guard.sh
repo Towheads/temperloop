@@ -34,6 +34,20 @@
 # unresolvable path) exits 0 immediately — a guard bug must never block a
 # legitimate write.
 #
+# ALLIED-PAIR EXEMPTION (temperloop#1028): the architecture PRESCRIBES one
+# cross-repo direction — a kernel checkout mutating its own declared allied
+# overlay checkout (e.g. syncing/committing into the downstream repo that
+# vendors this kernel as a subtree) — and that direction should never prompt.
+# This does NOT change the verdict (still ask-never-deny for every OTHER
+# foreign checkout) or widen scope; it only exempts a specific, explicitly
+# DECLARED pair from firing at all. The pairing is read from an optional,
+# gitignored, repo-local config file — never an env var (KERNEL_EDIT_ACK/
+# EVAL_RUN are session-scoped acknowledgements; "this checkout's allied
+# overlay lives at path X" is a durable repo-level fact) and never a
+# hardcoded org/repo name (this kernel ships to strangers whose overlay is
+# not named `foundation`). See claude/hooks/write-lane-allies.conf.example
+# for the format; absent by default -> today's behavior, byte-for-byte.
+#
 # KNOWN LIMITATIONS (fail-open by design, documented like the sibling guards):
 #   - Bash detection is scoped to `git <mutating-subcommand>` and `make install`,
 #     with the target dir resolved from `git -C <dir>` / `make -C <dir>` / a
@@ -208,6 +222,29 @@ else
 fi
 
 [ -n "$hit" ] || exit 0                     # in-lane -> silent, proceed
+
+# --- declared allied-pair exemption ------------------------------------------
+# Optional, gitignored, repo-local config: one or more `ally=<path>` lines
+# declaring foreign checkouts THIS home trusts enough to mutate directly (the
+# kernel-to-overlay direction the architecture prescribes). Parsed with a
+# plain read loop only — never sourced/eval'd, so a conf file cannot execute
+# code. Missing file -> no allies -> unchanged behavior.
+ALLIES_CONF="$home_real/claude/hooks/write-lane-allies.conf"
+is_declared_ally() {
+  local foreign="$1" line val val_real
+  [ -f "$ALLIES_CONF" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in ally=*) val="${line#ally=}" ;; *) continue ;; esac
+    val_real=$(cd "$val" 2>/dev/null && pwd -P) || continue
+    [ "${val_real%/}" = "$foreign" ] && return 0
+  done <"$ALLIES_CONF"
+  return 1
+}
+if is_declared_ally "$hit"; then
+  log "ALLY :: tool=${tool} target=${hit_target} foreign_root=${hit} home=${home_real} (declared ally — exempt)"
+  exit 0
+fi
 
 reason="This ${tool} targets '${hit_target}', inside the canonical checkout of a DIFFERENT repo ('${hit}') than this session's home ('${home_real}'). Under the one-session-per-repo-directory invariant that other checkout is very likely a concurrent Claude session's live working tree — mutating it in place (moving its HEAD/branch, committing, merging, make install) leaves that peer's on-disk state inconsistent with what it thinks it has (exactly the epic #86 peer-checkout incident). If you need to change that repo, do it in an ISOLATED worktree instead: 'git -C ${hit} worktree add <path> -b <branch>' and work under <path> (worktrees are in-lane, never prompt). Approve only if you are certain no other session holds '${hit}'."
 log "ASK :: tool=${tool} target=${hit_target} foreign_root=${hit} home=${home_real}"

@@ -62,6 +62,23 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`write-lane-guard.sh` no longer prompts on the one cross-repo direction
+  the architecture prescribes: a kernel checkout mutating its own declared
+  allied overlay checkout** (#1028). The guard's verdict is unchanged
+  everywhere else (still `ask`, never deny, on every other foreign canonical
+  checkout — the epic #86 peer-session protection) — this only exempts an
+  explicitly DECLARED pair from firing at all. The pairing is read from an
+  optional, gitignored, repo-local config file,
+  `claude/hooks/write-lane-allies.conf` (tracked `.example` at
+  `claude/hooks/write-lane-allies.conf.example`, same
+  tracked-example/gitignored-real-file shape as
+  `workflows/scripts/board/boards.conf.example`) — a config file rather than
+  an env var, since `KERNEL_EDIT_ACK`/`EVAL_RUN` are session-scoped
+  acknowledgements and this is a durable, repo-level fact. Never a hardcoded
+  org/repo string: this kernel ships to strangers whose overlay checkout is
+  not necessarily named `foundation`. **Not breaking** — absent config is
+  today's behavior exactly, byte-for-byte.
+
 - **A queue-time `CONFLICTING` now takes a shared `rebase-and-retry`
   disposition instead of an unconditional park** (#1093). GitHub reports
   `CONFLICTING`/`DIRTY` both for a branch whose base merely *moved* while the

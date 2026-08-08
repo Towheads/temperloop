@@ -128,6 +128,42 @@ out="$(cd "$HOME_REPO" && printf '%s' "$mej" | CLAUDE_PROJECT_DIR="$HOME_REPO" P
 [ -z "$out" ]   || { fail=$((fail+1)); printf '  ✗ jq-missing produced output: %s\n' "$out"; }
 echo "  ✓ jq missing fails open (exit 0, no output)"
 
+echo "== declared allied-pair exemption (temperloop#1028) =="
+# A THIRD checkout, distinct from FOREIGN, so the "unpaired foreign repo
+# still prompts" case (the load-bearing negative — the epic #86 protection
+# must survive this feature) is tested against a repo the ally file never
+# mentions, not accidentally against FOREIGN itself.
+ALLY="$TMP/ally";        git init -q --initial-branch=main "$ALLY"
+git -C "$ALLY" commit -q --allow-empty -m init
+echo x >"$ALLY/f.txt"
+ALLY_RP="$(cd "$ALLY" && pwd -P)"
+
+mkdir -p "$HOME_REPO/claude/hooks"
+{
+  echo "# test fixture"
+  echo "ally=$ALLY"
+} >"$HOME_REPO/claude/hooks/write-lane-allies.conf"
+
+check "git -C declared-ALLY commit -> silent (exempt)" silent \
+  "$(run_bash "$HOME_REPO" "git -C $ALLY commit -m x")"
+check "Write into declared-ALLY -> silent (exempt)" silent \
+  "$(run_file "$HOME_REPO" Write "$ALLY/new.txt")"
+check "make install -C declared-ALLY -> silent (exempt)" silent \
+  "$(run_bash "$HOME_REPO" "cd $ALLY && make install")"
+# LOAD-BEARING NEGATIVE: an UNPAIRED foreign repo (FOREIGN, never listed in
+# the ally file) still prompts — the exemption is scoped to the declared
+# pair only, never a blanket disarm. Re-asserted here (not just above) so a
+# regression that widened the exemption too far is caught in the same
+# section as the feature it would widen.
+check "git -C UNPAIRED FOREIGN commit still -> ask (epic #86 protection intact)" ask \
+  "$(run_bash "$HOME_REPO" "git -C $FOREIGN commit -m x")"
+check "Write into UNPAIRED FOREIGN still -> ask" ask \
+  "$(run_file "$HOME_REPO" Write "$FOREIGN/new.txt")"
+
+rm -f "$HOME_REPO/claude/hooks/write-lane-allies.conf"
+check "ally file removed -> ALLY reverts to -> ask (absent-by-default)" ask \
+  "$(run_bash "$HOME_REPO" "git -C $ALLY commit -m x")"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1
