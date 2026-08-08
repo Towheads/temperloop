@@ -55,6 +55,15 @@
 # The remedy when it fires is to assemble again on the commit you are about to
 # tag (never to delete the leftover fragment — that IS the entry).
 #
+# IT NEVER REPORTS "ok" FOR A QUESTION IT COULD NOT ASK. Every way the read
+# could come back empty for a reason OTHER than "there are no fragments" is a
+# hard error, because on the last gate before a tag those two are the same line
+# of output and opposite facts: the rev must resolve, the fragment directory
+# must EXIST at that rev, and the tree read must SUCCEED (its status is checked
+# and git's own stderr surfaces). `--assert-empty` also refuses a second
+# mode flag rather than letting the last one win — `--assert-empty <rev>
+# --check` silently cancelled the assertion.
+#
 # Usage:
 #   scripts/assemble-changelog.sh                 assemble in place, then
 #                                                 delete the consumed fragments
@@ -123,13 +132,25 @@ die() {
 
 say() { printf 'assemble-changelog: %s\n' "$1"; }
 
+# set_mode <mode> <the flag that asked for it> — REJECT a second mode-setting
+# flag rather than letting the last one win. `--assert-empty HEAD --check` used
+# to set the rev and then silently overwrite the mode, so the assertion never
+# ran and a release script composing `--check` for "extra validation" got a
+# green that asserted nothing. Each mode's name matches its own flag, so
+# `--$MODE` names the flag already in force.
+set_mode() {
+  [[ "$MODE" == "apply" ]] || die "conflicting mode flags: --$MODE and $2 — pass exactly one mode" 2
+  MODE="$1"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run)        MODE="dry-run" ;;
-    --check)          MODE="check" ;;
-    --list)           MODE="list" ;;
-    --assert-empty)   shift; [[ $# -gt 0 ]] || die "--assert-empty needs a git rev" 2
-                      MODE="assert-empty"; ASSERT_REV="$1" ;;
+    --dry-run)        set_mode "dry-run" "$1" ;;
+    --check)          set_mode "check" "$1" ;;
+    --list)           set_mode "list" "$1" ;;
+    --assert-empty)   set_mode "assert-empty" "$1"
+                      shift; [[ $# -gt 0 ]] || die "--assert-empty needs a git rev" 2
+                      ASSERT_REV="$1" ;;
     --keep-fragments) KEEP_FRAGMENTS=1 ;;
     --changelog)      shift; [[ $# -gt 0 ]] || die "--changelog needs a path" 2; CHANGELOG="$1" ;;
     --fragment-dir)   shift; [[ $# -gt 0 ]] || die "--fragment-dir needs a path" 2; FRAGMENT_DIR="$1" ;;
@@ -153,8 +174,39 @@ if [[ "$MODE" == "assert-empty" ]]; then
   git -C "$repo_dir" rev-parse --verify -q "$ASSERT_REV^{commit}" >/dev/null 2>&1 \
     || die "rev '$ASSERT_REV' does not resolve in $repo_dir"
 
+  # THE DIRECTORY MUST BE THERE AT THE REV. Only $FRAGMENT_DIR's PARENT was
+  # validated above, so a misspelled --fragment-dir matched nothing and reported
+  # "ok" — a line that read identically for "the cut is clean" and "I looked in
+  # a directory that has never existed", on the last gate before a tag. An
+  # assertion cannot prove an absence it never looked for.
+  #
+  # `|| frag_type=""` rather than a bare assignment: under `set -e` a failing
+  # command substitution aborts the script with no message at all, and a
+  # successful `cat-file -t` always prints a type, so empty means failure.
+  frag_type="$(git -C "$repo_dir" cat-file -t "$ASSERT_REV:$frag_rel" 2>/dev/null)" || frag_type=""
+  if [[ "$frag_type" != "tree" ]]; then
+    die "cannot read $frag_rel/ as a directory at $ASSERT_REV${frag_type:+ (found a $frag_type there)} — refusing to report 'ok' for a directory this rev does not carry. Check --fragment-dir for a typo, and that $ASSERT_REV is a commit from after the fragment cutover."
+  fi
+
   # `-r` recurses, so a fragment hidden one level down is reported too — it is
   # every bit as unassembled as one sitting at the top of the directory.
+  #
+  # THE STATUS IS CHECKED, and git's own stderr is left to surface. The previous
+  # `2>/dev/null || true` inside a command substitution swallowed both, so ANY
+  # failure of the tree read — a corrupt or absent tree object, a treeless
+  # partial clone whose promisor remote is unreachable (where `rev-parse
+  # --verify` passes and `ls-tree` does not) — produced empty output, an empty
+  # leftover set, and a clean verdict. That is the omission race reopening
+  # silently, right before a tag.
+  #
+  # `:(literal)` stops a pathspec-magic character in the directory name (`*`,
+  # `?`, `[`, a leading `:`) from being interpreted as a glob or as magic;
+  # `core.quotePath=false` stops a non-ASCII path from coming back C-quoted and
+  # being mis-split by the basename strip below.
+  tree_out="$(git -C "$repo_dir" -c core.quotePath=false \
+    ls-tree -r --name-only "$ASSERT_REV" -- ":(literal)$frag_rel")" \
+    || die "cannot read $frag_rel/ at $ASSERT_REV — the tree read failed (see git's message above); refusing to report 'ok' on a tree this assertion could not read"
+
   leftover=""
   while IFS= read -r tracked; do
     [[ -n "$tracked" ]] || continue
@@ -162,7 +214,7 @@ if [[ "$MODE" == "assert-empty" ]]; then
       leftover="$leftover$tracked"$'\n'
     fi
   done <<EOF
-$(git -C "$repo_dir" ls-tree -r --name-only "$ASSERT_REV" -- "$frag_rel" 2>/dev/null || true)
+$tree_out
 EOF
 
   if [[ -n "$leftover" ]]; then

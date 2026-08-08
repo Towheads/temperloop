@@ -35,3 +35,12 @@
   consumer but a kernel checkout that lost the directory, and there the gate
   fails loudly: a bare skip would let the kernel silently disable its own gate,
   which is worse than having no gate.
+
+  The **same `.kernel-pin` discriminator now governs the `CHANGELOG.md` probe**,
+  which runs first. A tree with no `CHANGELOG.md` and no `.kernel-pin` fails
+  loudly instead of skipping; one carrying the pin still gets the legible skip.
+  Previously that probe exited 0 unconditionally, which made the fail-loud arm
+  above unreachable whenever a checkout had lost `CHANGELOG.md` as well —
+  probe order was the only thing holding the invariant up. An overlay that
+  genuinely keeps no changelog needs `.kernel-pin` present at its own repo
+  root, exactly as the `changelog.d/` degradation already required.

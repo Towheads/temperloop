@@ -863,6 +863,54 @@ rc=$?
 assert_eq "T15f a non-git tree exits non-zero" "1" "$rc"
 assert_contains "T15f says why" "not a git checkout" "$out"
 
+# T15g — a --fragment-dir that does not EXIST at the rev is an error, never an
+# "ok". This is the finding's sharp edge: the ok line read identically for
+# "the cut is clean" and "I looked in a directory that has never existed", and
+# it is the last gate before a tag. Only the PARENT of --fragment-dir was ever
+# validated, so a misspelled directory matched nothing and passed.
+git_case
+: > "$FRAGS/.gitkeep"
+git_commit "a clean commit"
+out="$(bash "$ASSEMBLER" --changelog "$CHANGELOG" \
+  --fragment-dir "$CASE_DIR/changelogd-typo" --assert-empty HEAD 2>&1)"
+rc=$?
+assert_eq "T15g a fragment dir absent at the rev exits non-zero" "1" "$rc"
+assert_not_contains "T15g never reports ok" "no unassembled fragments" "$out"
+assert_contains "T15g names the directory it could not read" "changelogd-typo" "$out"
+
+# T15h — an UNREADABLE tree is an error too. The `ls-tree` call used to swallow
+# both stderr and its exit status (`2>/dev/null || true`), so ANY failure of
+# the tree read produced empty output, an empty leftover set, and a clean
+# verdict. Forced here by deleting the fragment directory's own tree object:
+# the COMMIT still resolves (so the rev guard passes) while the tree read
+# cannot succeed — the treeless-partial-clone shape, reproduced locally.
+git_case
+frag '94-unreadable.added.md' '- **an entry that must not vanish** (#94).'
+git_commit "a commit carrying a fragment"
+frag_tree="$(git -C "$CASE_DIR" rev-parse "HEAD:changelog.d")"
+rm -f "$CASE_DIR/.git/objects/${frag_tree:0:2}/${frag_tree:2}"
+out="$(run_assembler --assert-empty HEAD)"
+rc=$?
+assert_eq "T15h an unreadable tree exits non-zero" "1" "$rc"
+assert_not_contains "T15h never reports ok" "no unassembled fragments" "$out"
+
+# T15i — a trailing mode flag must not silently CANCEL the assertion. MODE was
+# last-assignment-wins, so `--assert-empty HEAD --check` set the rev and then
+# overwrote the mode: a release script composing --check for "extra validation"
+# got a green that asserted nothing at all.
+new_case
+out="$(run_assembler --assert-empty HEAD --check)"
+rc=$?
+assert_eq "T15i a trailing mode flag is a usage error" "2" "$rc"
+assert_contains "T15i names the conflict" "conflicting mode flags" "$out"
+assert_not_contains "T15i does not silently run the other mode" "all well-formed" "$out"
+
+new_case
+out="$(run_assembler --check --assert-empty HEAD)"
+rc=$?
+assert_eq "T15i2 rejected in the other order too" "2" "$rc"
+assert_contains "T15i2 names the conflict" "conflicting mode flags" "$out"
+
 echo
 echo "test_assemble_changelog.sh: $pass_count passed, $fail_count failed"
 if (( fail_count > 0 )); then

@@ -47,6 +47,13 @@
 #     tree silently disable this gate, which is the very "quietly narrows to
 #     zero" failure the contract-surface parse below refuses to commit.
 #
+# THE SAME DISCRIMINATOR GOVERNS THE `CHANGELOG.md` PROBE, which runs first. It
+# once exited 0 unconditionally, which made the fail-loud arm above UNREACHABLE
+# for a tree that had lost CHANGELOG.md too — probe ORDER was the only thing
+# standing between this gate and the invariant stated right here. So: no
+# `CHANGELOG.md` and no `.kernel-pin` FAILS LOUDLY; no `CHANGELOG.md` WITH a pin
+# is the consumer that genuinely keeps no changelog, and gets the legible skip.
+#
 # The `.kernel-pin` probe goes through `git show "$HEAD:.kernel-pin"` and never
 # a filesystem `[[ -f "$ROOT/.kernel-pin" ]]`: a `<rev>:<path>` not starting
 # with `./` resolves against the TOP LEVEL of the tree, so if $ROOT lands on
@@ -198,17 +205,45 @@ min_patterns=8
 # tunes only how much evidence the failure message prints, never the verdict.
 sec_report_max=6
 
+# ANCHORED range, never a fixed line count. A fixed `2,20p` printed whatever
+# happened to sit in the first 20 lines, so the header growing pushed `Usage:`
+# and the exit-code table out of `--help` entirely — 19 lines of rationale and
+# no usage, while the kernel's own § Tool invocation discipline tells a caller
+# to read exactly that block before invoking. The fallback matters for the same
+# reason the anchors do: if the start anchor is ever renamed, print the whole
+# header rather than an empty --help.
+usage() {
+  local text
+  text="$(sed -n '/^# Usage:/,/^[[:space:]]*$/p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//')"
+  if [[ -z "${text//[[:space:]]/}" ]]; then
+    text="$(sed -n '2,/^set -uo pipefail/p' "${BASH_SOURCE[0]}" | sed 's/^#\{0,1\} \{0,1\}//')"
+  fi
+  printf '%s\n' "$text"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base) BASE="${2:-}"; shift 2 ;;
     --head) HEAD="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "check-changelog-entry: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
 
 say()  { printf 'check-changelog-entry: %s\n' "$1"; }
 warn() { printf 'check-changelog-entry: %s\n' "$1" >&2; }
+
+# The pinned kernel release named by `.kernel-pin`, or a legible placeholder.
+# Read through `git show` for the same top-level-resolution reason the probes
+# are (see the header): a filesystem test would look in `kernel/` when $ROOT
+# lands on the kernel subtree root inside an overlay.
+pinned_kernel_tag() {
+  local t
+  t="$(git -C "$ROOT" show "$HEAD:$KERNEL_PIN_REL" 2>/dev/null \
+    | awk '$1 == "tag" { print $2; exit }')"
+  [[ -n "$t" ]] || t="unknown (unparseable $KERNEL_PIN_REL)"
+  printf '%s' "$t"
+}
 
 if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   warn "$ROOT is not a git checkout"
@@ -270,8 +305,31 @@ fi
 # --- surface-conditional degradation ----------------------------------------
 # A composed consumer tree may carry neither file; enforcing against a CHANGELOG
 # or a contract-surface definition that does not exist is meaningless.
+#
+# SAME `.kernel-pin` DISCRIMINATOR AS THE changelog.d/ PROBE BELOW, for the same
+# reason. This probe runs FIRST, and when it exited 0 unconditionally the
+# fail-loud arm below was UNREACHABLE for a tree that had also lost
+# CHANGELOG.md: probe ORDER was the only thing standing between this gate and
+# the invariant its own header states. A kernel checkout that lost CHANGELOG.md
+# is at least as broken as one that lost changelog.d/, and a gate that quietly
+# narrows to zero is worse than no gate.
 if ! git -C "$ROOT" show "$HEAD:$CHANGELOG_REL" >/dev/null 2>&1; then
-  say "skipped — no $CHANGELOG_REL at $HEAD; this tree keeps no changelog"
+  if ! git -C "$ROOT" show "$HEAD:$KERNEL_PIN_REL" >/dev/null 2>&1; then
+    warn "FAIL — no $CHANGELOG_REL at $HEAD, and no $KERNEL_PIN_REL either."
+    warn ""
+    warn "  $KERNEL_PIN_REL is what marks a tree as a VENDORING CONSUMER of this kernel. Without it,"
+    warn "  this is the kernel's own checkout — and a kernel checkout with no $CHANGELOG_REL has"
+    warn "  silently disabled BOTH of this gate's properties: completeness has nothing to be complete"
+    warn "  about, and the released-section-scope check has no sections to scope. A gate that quietly"
+    warn "  narrows to zero is worse than no gate, so this fails rather than skipping."
+    warn ""
+    warn "  If this IS the kernel (or a fork of it): restore $CHANGELOG_REL — it is the record"
+    warn "  update-kernel's downstream acknowledgment gate reads BREAKING markers out of."
+    warn "  If this is a vendoring overlay that genuinely keeps no changelog: its repo root is missing"
+    warn "  $KERNEL_PIN_REL. Restore the pin (it is written by 'make update-kernel')."
+    exit 1
+  fi
+  say "skipped — no $CHANGELOG_REL at $HEAD; this tree keeps no changelog (vendored kernel $(pinned_kernel_tag)). Neither property is enforced here."
   exit 0
 fi
 
@@ -579,9 +637,7 @@ fi
 # ACTIONABLE rather than bare: it names the kernel release whose gate is
 # running, the BREAKING classification, and the one command that enables it.
 if [[ "$FRAGMENTS_ENFORCEABLE" == "0" ]]; then
-  pinned_tag="$(git -C "$ROOT" show "$HEAD:$KERNEL_PIN_REL" 2>/dev/null \
-    | awk '$1 == "tag" { print $2; exit }')"
-  [[ -n "$pinned_tag" ]] || pinned_tag="unknown (unparseable $KERNEL_PIN_REL)"
+  pinned_tag="$(pinned_kernel_tag)"
   say "skipped — $CHANGELOG_REL exists but there is no $FRAGMENT_DIR_REL/ at $HEAD; this tree has not migrated to changelog fragments (vendored kernel $pinned_tag; the fragment requirement shipped as a BREAKING change, temperloop#1322). Completeness is NOT enforced here until it does."
   say "  To enable: mkdir -p $FRAGMENT_DIR_REL && touch $FRAGMENT_DIR_REL/.gitkeep && git add $FRAGMENT_DIR_REL/.gitkeep — then author one fragment per contract-surface PR, named <slug>.<category>[.breaking].md."
   exit 0

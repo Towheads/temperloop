@@ -72,6 +72,16 @@
 #              skip never disables the released-section-scope check
 #  30. PROP  — the property the cutover buys: two concurrent fragment PRs merge
 #              CLEAN where the same two [Unreleased] edits CONFLICT
+#  31. RED   — no CHANGELOG.md AND no .kernel-pin => FAIL LOUDLY. The SAME
+#              discriminator as case 26, on the probe that runs first: without
+#              it the fail-loud arm was unreachable for a tree that had lost
+#              CHANGELOG.md, and probe ORDER was the only thing standing
+#              between this gate and its own stated invariant
+#  32. SKIP  — no CHANGELOG.md but .kernel-pin present => the actionable skip
+#  33. RED   — a tree that lost BOTH CHANGELOG.md and changelog.d/, with no
+#              pin, fails rather than skipping on the first probe
+#  34. HELP  — `--help` reaches the usage block and the exit-code table (the
+#              header grew past the old fixed line range)
 #
 # Usage: bash workflows/scripts/tests/test_check_changelog_entry.sh
 
@@ -164,6 +174,9 @@ CHANGELOG_SEED='# Changelog
 #                lost the directory (the fail-loud arm)
 #   nofrag-pin   no changelog.d/ but .kernel-pin present — an un-migrated
 #                vendoring consumer (the legible-skip arm)
+#   frag-pin     changelog.d/ AND .kernel-pin — a MIGRATED vendoring consumer.
+#                Used to isolate the CHANGELOG.md probe from the changelog.d/
+#                one: only the file under test is ever the missing thing.
 new_repo() {
   local d="$1" shape="${2:-fragments}"
   mkdir -p "$d/claude/commands" "$d/docs" "$d/bin"
@@ -183,6 +196,11 @@ new_repo() {
       ;;
     nofrag) : ;;
     nofrag-pin)
+      printf '# .kernel-pin\ntag v0.42.0\nsha deadbeef\n' > "$d/.kernel-pin"
+      ;;
+    frag-pin)
+      mkdir -p "$d/changelog.d"
+      : > "$d/changelog.d/.gitkeep"
       printf '# .kernel-pin\ntag v0.42.0\nsha deadbeef\n' > "$d/.kernel-pin"
       ;;
     *) echo "new_repo: unknown tree-shape '$shape'" >&2; exit 2 ;;
@@ -965,6 +983,64 @@ if [[ -f "$D/changelog.d/1322-pr-A.changed.md" && -f "$D/changelog.d/1322-pr-B.c
 else
   bad "fragment merge" "expected both fragments present after the merge"
 fi
+
+# ── 31. RED: no CHANGELOG.md AND no .kernel-pin => FAIL LOUDLY ──────────────
+# The SAME discriminator as case 26, applied to the probe that runs FIRST.
+# Before this, the CHANGELOG.md probe exited 0 unconditionally, so a kernel
+# checkout that had lost CHANGELOG.md never reached the fail-loud arm below it
+# — probe ORDER was the only thing standing between this gate and the
+# invariant its own header states. A tree that lost CHANGELOG.md is at least as
+# broken as one that lost changelog.d/.
+echo "31. no CHANGELOG.md and no .kernel-pin fails loudly"
+D="$TMP/r31"; BASE="$(new_repo "$D")"
+git -C "$D" rm -q CHANGELOG.md >/dev/null
+echo "# build v2" > "$D/claude/commands/build.md"
+git -C "$D" commit -aqm "lose CHANGELOG.md"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails loudly rather than skipping"
+assert_has "$RUN_OUT" "no CHANGELOG.md at" "names the missing file"
+assert_has "$RUN_OUT" ".kernel-pin" "names the discriminator"
+assert_not_has "$RUN_OUT" "this tree keeps no changelog" "never reports the unconditional skip"
+
+# ── 32. SKIP: no CHANGELOG.md but .kernel-pin present => actionable skip ────
+# A tree that genuinely keeps no changelog is a VENDORING CONSUMER, and the pin
+# is what says so. It keeps building green and is told which kernel's gate is
+# running. `frag-pin` keeps changelog.d/ present so ONLY CHANGELOG.md is
+# missing — the probe under test in isolation.
+echo "32. a pinned consumer with no CHANGELOG.md gets an actionable skip"
+D="$TMP/r32"; BASE="$(new_repo "$D" frag-pin)"
+git -C "$D" rm -q CHANGELOG.md >/dev/null
+echo "# build v2" > "$D/claude/commands/build.md"
+git -C "$D" commit -aqm "a consumer that keeps no changelog"
+run_gate "$D" "$BASE"
+assert_status 0 "$RUN_STATUS" "skips instead of failing"
+assert_has "$RUN_OUT" "skipped —" "the skip is legible, never silent"
+assert_has "$RUN_OUT" "keeps no changelog" "says what is missing"
+assert_has "$RUN_OUT" "v0.42.0" "names the pinned kernel release from .kernel-pin"
+
+# ── 33. RED: a tree that lost BOTH files still fails on the first probe ─────
+# The shape the review reproduced: no CHANGELOG.md, no changelog.d/, no pin.
+# Both fail-loud arms apply; the first one reached must fire.
+echo "33. a tree that lost both CHANGELOG.md and changelog.d/ fails"
+D="$TMP/r33"; BASE="$(new_repo "$D" nofrag)"
+git -C "$D" rm -q CHANGELOG.md >/dev/null
+echo "# build v2" > "$D/claude/commands/build.md"
+git -C "$D" commit -aqm "lose both"
+run_gate "$D" "$BASE"
+assert_status 1 "$RUN_STATUS" "fails rather than skipping"
+assert_has "$RUN_OUT" "FAIL —" "the failure is loud"
+
+# ── 34. HELP: --help reaches the usage block ───────────────────────────────
+# The header grew past the old fixed `2,20p` range, so --help printed 19 lines
+# of rationale and NO usage and NO exit codes — while the kernel's own
+# § Tool invocation discipline tells a caller to read exactly that block first.
+# Anchored range, so the header can grow again without silently truncating it.
+echo "34. --help prints the usage block and the exit codes"
+HELP_OUT="$(bash "$SCRIPT" --help 2>&1)"; HELP_RC=$?
+assert_status 0 "$HELP_RC" "exits 0"
+assert_has "$HELP_OUT" "Usage:" "prints the usage line"
+assert_has "$HELP_OUT" "check-changelog-entry.sh [--base REF] [--head REF]" "prints the invocation"
+assert_has "$HELP_OUT" "Exit codes:" "prints the exit-code table"
 
 echo
 echo "test_check_changelog_entry: $pass passed, $fail failed"
