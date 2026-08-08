@@ -150,6 +150,7 @@ claude/commands/init.md	frontmatter:description	command-listing	harness-auto
 claude/commands/next.md	frontmatter:description	command-listing	harness-auto
 claude/commands/pipeline-drive-merge.md	frontmatter:description	command-listing	harness-auto
 claude/commands/pipeline-drive.md	frontmatter:description	command-listing	harness-auto
+claude/commands/promote.md	frontmatter:description	command-listing	harness-auto
 claude/commands/sweep.md	frontmatter:description	command-listing	harness-auto
 claude/commands/tidy.md	frontmatter:description	command-listing	harness-auto
 claude/commands/triage.md	frontmatter:description	command-listing	harness-auto

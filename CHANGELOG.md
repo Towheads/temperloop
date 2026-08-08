@@ -45,6 +45,25 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`/promote` carries work back out of a testbed and into your real
+  repository, as your pipeline's actual commits** (#1233). Building the
+  evaluation in a disposable duplicate is only half the story; the other half
+  is getting the good parts out without hand-copying files. `/promote` is the
+  judgment half (which work is worth promoting, and the honest three-way
+  report — commits carried, issue correspondence resolved by lookup, API state
+  explicitly not migrated), and `workflows/scripts/promote/push-testbed-branch.sh`
+  is the mechanical half: it adds the testbed as a remote in a throwaway
+  workspace, fetches, and pushes a branch carrying the testbed's real commits
+  and authorship — deliberately not the proposal-PR generator, which rebuilds a
+  branch off the base tip and would squash that away. Its own suite asserts the
+  guarantee that matters: exactly one push, always to `refs/heads/<branch>`,
+  never the target's default branch. Pre-flight checks the branch-create
+  precondition (with the fork fallback named in the refusal) instead of
+  discovering it at failure time, and refuses a `materialize-from-seed` testbed
+  by reading `source_kind` from the artifact record — a seed testbed has no
+  original to promote to. Every pull request it opens carries a one-line
+  provenance note so a reviewer with no context can tell where the change came
+  from.
 - **`temperloop testbed` builds a private, disposable evaluation copy of a
   repo in one command, then hands off to `temperloop init` inside it**
   (#1229). The repo worth evaluating temperloop on is the one you care about

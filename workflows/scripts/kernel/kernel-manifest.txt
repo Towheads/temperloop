@@ -167,6 +167,7 @@ kernel claude/commands/triage.md
 kernel claude/commands/workshop.md
 kernel claude/commands/pipeline-drive.md
 kernel claude/commands/pipeline-drive-merge.md
+kernel claude/commands/promote.md
 overlay claude/commands/standup.md
 overlay claude/commands/telemetry.md
 overlay claude/commands/signal-intake.md
@@ -251,6 +252,12 @@ kernel workflows/scripts/proposal/*
 kernel workflows/scripts/proposal/tests/*
 kernel workflows/scripts/testbed/*
 kernel workflows/scripts/testbed/tests/*
+# /promote's mechanical half (temperloop#1233): carries a testbed's real
+# commits into the reader's own repository. Generic evaluation-workflow
+# machinery, same reasoning as the testbed rows above — a stranger evaluating
+# temperloop on a duplicate of their own repo needs the way back out.
+kernel workflows/scripts/promote/*
+kernel workflows/scripts/promote/tests/*
 # Overlay renderer drop-in convention (analogous to scripts/quality-gates.d/,
 # a sibling `.d` dir next to the script it extends): a private overlay repo
 # drops extra page-producing modules here. Prospective — this directory

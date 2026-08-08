@@ -11,6 +11,7 @@ BUILD_SRC := $(FOUNDATION)/workflows/scripts/build
 PROBE_SRC := $(FOUNDATION)/workflows/scripts/probe
 DEMO_SRC := $(FOUNDATION)/workflows/scripts/demo
 PROPOSAL_SRC := $(FOUNDATION)/workflows/scripts/proposal
+PROMOTE_SRC := $(FOUNDATION)/workflows/scripts/promote
 BIN_SRC := $(FOUNDATION)/bin
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
 TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
@@ -22,7 +23,7 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
 	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source \
-	test-testbed-command
+	test-testbed-command test-promote-push
 
 help:
 	@echo "Targets:"
@@ -62,6 +63,7 @@ help:
 	@echo "  test-try                foundation try (zero-config, zero-write taste) tests"
 	@echo "  test-testbed-source     Testbed source-provider seam + mirror-from-repo tests"
 	@echo "  test-testbed-command    'temperloop testbed' one-command evaluation-build tests"
+	@echo "  test-promote-push       /promote's commit-carrying branch-push tests"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -144,6 +146,14 @@ test-try:
 test-testbed-source:
 	@echo "==> Running testbed source-provider tests..."
 	@for t in $(TESTBED_SRC)/tests/test_*.sh; do \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
+	done
+
+# Glob-based, mirroring test-board/test-testbed-source (F#836): kernel
+# coverage tracks whatever /promote tests are actually vendored.
+test-promote-push:
+	@echo "==> Running /promote branch-push tests..."
+	@for t in $(PROMOTE_SRC)/tests/test_*.sh; do \
 		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 
