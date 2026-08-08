@@ -115,9 +115,9 @@ test-conventions-probe:
 	done
 
 # Glob-based, mirroring test-board (F#836) — kernel coverage tracks
-# whatever demo tests are actually vendored.
+# whatever seed-content tests are actually vendored.
 test-demo:
-	@echo "==> Running demo-repo seed script tests..."
+	@echo "==> Running testbed seed-content tests..."
 	@for t in $(DEMO_SRC)/tests/test_*.sh; do \
 		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done

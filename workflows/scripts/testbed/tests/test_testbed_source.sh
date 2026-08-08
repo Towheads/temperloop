@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # Tests for workflows/scripts/testbed/source.sh — the testbed source-provider
-# seam (temperloop#1228, epic #1117 Produces 2). Zero network throughout: git
-# fixtures are real local repos (including a real bare repo as a produce_git
-# destination — a genuine mirror-push proof with no network at all), and
-# every `gh` touch point is either a would-explode trap (proving describe()
-# never calls it) or a fake `gh` on PATH answering from fixture JSON.
+# seam (temperloop#1228/#1230, epic #1117 Produces 2). Zero network
+# throughout: git fixtures are real local repos (including a real bare repo as
+# a produce_git destination — a genuine mirror-push proof with no network at
+# all), and every `gh` touch point is either a would-explode trap (proving
+# describe() never calls it) or a fake `gh` on PATH answering from fixture
+# JSON.
 #
 # Part A drives the SEAM itself with a double (a fake provider), asserting
 # the four-function contract independently of any real provider or command.
@@ -14,6 +15,16 @@
 # paths), produce_git(dest) (real local mirror push), and produce_issues(dest)
 # (fake gh — provenance-line stamping, and that it happens inside
 # produce_issues itself, not shared code).
+# Part F drives materialize-from-seed the same way, against the REAL in-tree
+# seed: describe()'s provenance_capable/promotable both false, the seed-
+# content preflight check, a real local materialize-and-push, and that
+# produce_issues stamps NO provenance line.
+# Part G is the structural half of ADR 0025's "everything downstream of source
+# selection is shared and proven shared": the seam carries no provider-kind
+# knowledge, both providers resolve through one dispatch, and both describe()
+# through one identical shape — which is why a seed testbed has no teardown
+# path of its own. (The full downstream call-sequence equivalence test is its
+# own item, temperloop#1232.)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -352,6 +363,214 @@ FAKE_GH_EOF
     *) fail "E3: expected the failure message to name the source issue number (got: $out)" ;;
   esac
   echo "PASS: E3 produce_issues fails legibly and names the source issue when gh issue create fails"
+)
+
+# =============================================================================
+# Part F -- materialize-from-seed (temperloop#1230): the SECOND provider,
+# implementing the SAME four functions with the SAME arity. Zero network: the
+# seed is tracked in this repository, produce_git pushes to a real local bare
+# repo, and produce_issues runs against a fake gh.
+# =============================================================================
+(
+  # shellcheck source=/dev/null
+  source "$LIB"
+
+  SEED_REAL="$(cd "$(dirname "$LIB")/../demo/seed" && pwd)"
+
+  # F1: describe() -- kind, base_name from the seed's own metadata, and the
+  # two capability flags ADR 0025 pins to false (no upstream issue to cite,
+  # no original to promote back to).
+  got="$(_testbed_provider_materialize_from_seed_describe)"
+  [ "$(printf '%s' "$got" | jq -r .kind)" = "materialize-from-seed" ] || fail "F1: kind mismatch (got: $got)"
+  [ -n "$(printf '%s' "$got" | jq -r .base_name)" ] || fail "F1: base_name must be non-empty (got: $got)"
+  [ "$(printf '%s' "$got" | jq -r .base_name)" = "$(jq -r .name "$SEED_REAL/seed.json")" ] \
+    || fail "F1: base_name should come from the seed's own seed.json .name (got: $got)"
+  [ "$(printf '%s' "$got" | jq -r .provenance_capable)" = "false" ] || fail "F1: provenance_capable MUST be false"
+  [ "$(printf '%s' "$got" | jq -r .promotable)" = "false" ] || fail "F1: promotable MUST be false"
+  echo "PASS: F1 describe() reports the seed's base_name with provenance_capable:false and promotable:false"
+
+  # F2: describe() resolves the in-tree seed with ZERO gh (network) calls,
+  # and from ANY cwd -- the default is anchored to source.sh's own location,
+  # not the caller's.
+  NOGHBIN2="$TMP/no-gh-seed"
+  mkdir -p "$NOGHBIN2"
+  cat > "$NOGHBIN2/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "UNEXPECTED gh CALL: $*" >&2
+exit 99
+EOF
+  chmod +x "$NOGHBIN2/gh"
+  out="$(cd / && PATH="$NOGHBIN2:$PATH" _testbed_provider_materialize_from_seed_describe 2>&1)" \
+    || fail "F2: describe() must resolve the in-tree seed from any cwd (out: $out)"
+  case "$out" in
+    *"UNEXPECTED gh CALL"*) fail "F2: describe() must make ZERO gh (network) calls (out: $out)" ;;
+  esac
+  [ "$(printf '%s' "$out" | jq -r .kind)" = "materialize-from-seed" ] || fail "F2: describe() from / did not resolve the seed (out: $out)"
+  echo "PASS: F2 describe() resolves the in-tree seed from any cwd with zero gh (network) calls"
+
+  # F3: preflight_checks() -- yields callable, all-reads check names that all
+  # pass against the real in-tree seed.
+  checks="$(_testbed_provider_materialize_from_seed_preflight_checks)"
+  [ -n "$checks" ] || fail "F3: preflight_checks should yield at least one check function name"
+  FAKEBIN_OK2="$TMP/fake-gh-ok-seed"
+  mkdir -p "$FAKEBIN_OK2"
+  cat > "$FAKEBIN_OK2/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "auth status") exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$FAKEBIN_OK2/gh"
+  rc=0
+  for c in $checks; do
+    PATH="$FAKEBIN_OK2:$PATH" "$c" || rc=1
+  done
+  [ "$rc" -eq 0 ] || fail "F3: every yielded check should pass against the real in-tree seed + authenticated gh"
+  echo "PASS: F3 preflight_checks yields checks that all pass against the in-tree seed"
+
+  # F4: an incomplete seed degrades legibly (skipped —), naming what is
+  # missing -- same wording convention as mirror-from-repo's checks.
+  EMPTY_SEED="$TMP/seed-empty"
+  mkdir -p "$EMPTY_SEED"
+  _testbed_provider_materialize_from_seed_preflight_checks "$EMPTY_SEED" >/dev/null
+  rc=0
+  out="$(_testbed_provider_materialize_from_seed_check_seed_content 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "F4: check_seed_content should fail on a seed with no project/ tree"
+  case "$out" in
+    "skipped — "*) ;;
+    *) fail "F4: expected a 'skipped — ...' degradation message (got: $out)" ;;
+  esac
+  echo "PASS: F4 check_seed_content degrades legibly (skipped —) on an incomplete seed"
+
+  # F5: produce_git(dest) -- builds the seed project into a fresh repo and
+  # mirror-pushes it to a real local bare repo. SAME final mechanism as
+  # mirror-from-repo, so downstream sees one shape.
+  SEED_DEST="$TMP/seed-dest.git"
+  git init -q --bare "$SEED_DEST"
+  _testbed_provider_materialize_from_seed_produce_git "$SEED_DEST"
+  seed_branch="$(jq -r '.default_branch' "$SEED_REAL/seed.json")"
+  git -C "$SEED_DEST" rev-parse "refs/heads/$seed_branch" >/dev/null 2>&1 \
+    || fail "F5: dest bare repo should carry refs/heads/$seed_branch after produce_git"
+  tree="$(git -C "$SEED_DEST" ls-tree -r --name-only "$seed_branch")"
+  printf '%s\n' "$tree" | grep '^README.md$' >/dev/null || fail "F5: the materialized tree should carry the seed project's README.md (got: $tree)"
+  printf '%s\n' "$tree" | grep 'linkrot.py' >/dev/null || fail "F5: the materialized tree should carry the seed project's module (got: $tree)"
+  if printf '%s\n' "$tree" | grep '__pycache__' >/dev/null; then
+    fail "F5: the materialized tree must not carry build junk the seed's .gitignore excludes (got: $tree)"
+  fi
+  echo "PASS: F5 produce_git materializes the in-tree seed and mirror-pushes it (real local repos, zero network)"
+
+  # F6: produce_git failure path -> non-zero, legible message naming the dest.
+  rc=0
+  out="$(_testbed_provider_materialize_from_seed_produce_git "$TMP/does-not-exist/seed-dest.git" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "F6: produce_git should fail for an unreachable destination"
+  case "$out" in
+    *"does-not-exist"*) ;;
+    *) fail "F6: expected a message naming the failed destination (got: $out)" ;;
+  esac
+  echo "PASS: F6 produce_git fails legibly when the destination is unreachable"
+
+  # F7: produce_issues(dest) -- one issue per seed definition, in filename
+  # order, and NO provenance line (there is no upstream issue to cite, which
+  # is exactly what describe()'s provenance_capable:false promises).
+  BIN2="$TMP/fake-gh-seed-issues"
+  mkdir -p "$BIN2"
+  export CALL_LOG="$TMP/seed-issues-call.log"
+  : > "$CALL_LOG"
+  cat > "$BIN2/gh" <<'FAKE_GH_EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue create")
+    {
+      echo "--CALL--"
+      printf '%s\n' "$@"
+    } >> "$CALL_LOG"
+    exit "${FAKE_SEED_CREATE_RC:-0}"
+    ;;
+esac
+exit 0
+FAKE_GH_EOF
+  chmod +x "$BIN2/gh"
+
+  n_defs="$(find "$SEED_REAL/issues" -name '*.md' -type f | wc -l | tr -d ' ')"
+  out="$(PATH="$BIN2:$PATH" _testbed_provider_materialize_from_seed_produce_issues someone/linkrot-testbed 2>&1)" \
+    || fail "F7: produce_issues should succeed with a well-formed fake gh (out: $out)"
+  case "$out" in
+    *"created $n_defs issue(s)"*) ;;
+    *) fail "F7: expected a summary naming $n_defs created issues (got: $out)" ;;
+  esac
+  [ "$(grep -c -- '--CALL--' "$CALL_LOG")" -eq "$n_defs" ] || fail "F7: expected exactly $n_defs gh issue create calls"
+  grep -q "someone/linkrot-testbed" "$CALL_LOG" || fail "F7: gh issue create should target the destination repo"
+  if grep -q "copied from" "$CALL_LOG"; then
+    fail "F7: materialize-from-seed must NOT stamp a provenance line (it reports provenance_capable:false)"
+  fi
+  echo "PASS: F7 produce_issues files one issue per seed definition and stamps NO provenance line"
+
+  # F8: produce_issues failure path -> non-zero, names the failing definition.
+  : > "$CALL_LOG"
+  export FAKE_SEED_CREATE_RC=1
+  rc=0
+  out="$(PATH="$BIN2:$PATH" _testbed_provider_materialize_from_seed_produce_issues someone/linkrot-testbed 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "F8: produce_issues should fail when gh issue create fails"
+  case "$out" in
+    *".md"*) ;;
+    *) fail "F8: expected the failure message to name the seed issue definition (got: $out)" ;;
+  esac
+  unset FAKE_SEED_CREATE_RC
+  echo "PASS: F8 produce_issues fails legibly and names the seed definition when gh issue create fails"
+)
+
+# =============================================================================
+# Part G -- ONE code path, structurally. ADR 0025's first obligation is that
+# "everything downstream of source selection is shared and proven shared", so
+# this part proves the seam itself carries no provider-kind knowledge and that
+# both providers are reachable through the identical dispatch. (The full
+# downstream call-sequence equivalence test is its own item, temperloop#1232;
+# this is the seam-local half of the same guarantee.)
+# =============================================================================
+(
+  # shellcheck source=/dev/null
+  source "$LIB"
+
+  # G1: no public seam member -- nor the dispatcher beneath it -- mentions any
+  # provider kind. A `case` on kind reappearing here is exactly the second
+  # code path this interface exists to prevent, and is what would give a seed
+  # testbed a teardown path of its own.
+  seam_src="$(declare -f \
+    testbed_source_describe \
+    testbed_source_preflight_checks \
+    testbed_source_produce_git \
+    testbed_source_produce_issues \
+    testbed_source__fn \
+    testbed_source__require)"
+  if printf '%s' "$seam_src" | grep -E 'mirror[-_]from[-_]repo|materialize[-_]from[-_]seed' >/dev/null; then
+    fail "G1: a public seam member names a provider kind — the seam must dispatch, never branch"
+  fi
+  echo "PASS: G1 no seam member or dispatcher names a provider kind"
+
+  # G2: both providers implement all four ops, reachable through the public
+  # seam by kind alone -- same call, same arity, nothing kind-specific.
+  for kind in mirror-from-repo materialize-from-seed; do
+    for op in describe preflight_checks produce_git produce_issues; do
+      fn="$(testbed_source__fn "$kind" "$op")"
+      declare -F "$fn" >/dev/null 2>&1 || fail "G2: provider $kind does not implement $op (no $fn)"
+    done
+  done
+  echo "PASS: G2 both providers implement all four seam ops and resolve through the same dispatch"
+
+  # G3: describe() is the ONLY place capability differs -- the seam reports
+  # both providers through one shape, so a caller (teardown included) reads
+  # capability from the record rather than from the kind.
+  SRCG="$TMP/src-g"
+  make_source_repo "$SRCG" "git@github.com:acme/widgets.git"
+  a="$(testbed_source_describe mirror-from-repo "$SRCG")"
+  b="$(testbed_source_describe materialize-from-seed)"
+  keys_a="$(printf '%s' "$a" | jq -Sr 'keys | join(",")')"
+  keys_b="$(printf '%s' "$b" | jq -Sr 'keys | join(",")')"
+  [ "$keys_a" = "$keys_b" ] || fail "G3: the two providers' describe() shapes differ ($keys_a vs $keys_b)"
+  [ "$(printf '%s' "$a" | jq -r .promotable)" = "true" ] || fail "G3: mirror-from-repo should be promotable"
+  [ "$(printf '%s' "$b" | jq -r .promotable)" = "false" ] || fail "G3: materialize-from-seed must not be promotable"
+  echo "PASS: G3 both providers describe() through one identical shape; only the values differ"
 )
 
 echo "All testbed source-provider tests passed."

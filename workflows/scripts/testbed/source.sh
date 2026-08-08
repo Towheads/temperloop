@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# source.sh — the testbed SOURCE-PROVIDER seam (temperloop#1228, epic #1117
-# Produces 2): the interface `temperloop testbed` resolves a source through,
-# plus its first implementation, `mirror-from-repo`.
+# source.sh — the testbed SOURCE-PROVIDER seam (temperloop#1228/#1230, epic
+# #1117 Produces 2): the interface `temperloop testbed` resolves a source
+# through, plus its two implementations — `mirror-from-repo` (the reader's
+# own repository) and `materialize-from-seed` (a prepared project tracked in
+# this repository, materialized into the reader's own account).
 #
 # WHY FOUR FUNCTIONS, NOT ONE TUPLE (temperloop#1228 notes): the epic's
 # Contract described this seam as a single five-member tuple (`{git content,
@@ -44,18 +46,21 @@
 # issue IT creates — inside its own `produce_issues`, not in shared
 # downstream code. Promotion (a later item) resolves correspondence by exact
 # lookup on that line; a provider that has no upstream issue to cite
-# (`materialize-from-seed`, a later item) simply never stamps one, and
-# reports `provenance_capable: false` from `describe()` so callers never
-# expect it to.
+# (`materialize-from-seed`) simply never stamps one, and reports
+# `provenance_capable: false` from `describe()` so callers never expect it
+# to.
 #
 # ── Provider dispatch (mirrors workflows/scripts/lib/knowledge_store.sh's
 # backend-dispatch shape: `ks__dispatch` / `_ks_backend_<name>_<op>`) ───────
 # A provider is a set of four `_testbed_provider_<name>_<op>` functions,
 # where <name> is the provider's kebab-case `kind` with '-' -> '_'
 # (`mirror-from-repo` -> `mirror_from_repo`). Registering a new provider
-# (e.g. the later `materialize-from-seed`) means defining its four
-# functions and sourcing that file before use — no change to the dispatcher
-# below, and no `case` on kind anywhere in this file either.
+# means defining its four functions and sourcing that file before use — no
+# change to the dispatcher below, and no `case` on kind anywhere in this
+# file either. `materialize-from-seed` (temperloop#1230) is the worked
+# proof of that: it was added by defining four more functions and nothing
+# else — the dispatcher, the public seam members, and every downstream
+# caller are byte-for-byte unchanged by its arrival.
 #
 # This file is SOURCED — it sets no shell options (the caller owns
 # `set -euo pipefail`; see knowledge_store.sh's own header for the same
@@ -117,8 +122,27 @@ testbed_source_produce_issues() {
   "$fn" "$@"
 }
 
-# ── shared helper (used by mirror-from-repo; kept file-private with a
-# leading underscore since it is not part of the seam) ─────────────────────
+# ── shared helpers (kept file-private with a leading underscore since they
+# are not part of the seam) ────────────────────────────────────────────────
+# All-reads check: gh is present and authenticated. BOTH providers' own
+# `check_gh_auth` delegate here rather than each carrying its own copy —
+# every provider that files issues needs exactly this check with exactly
+# this wording, and two copies is how the two wordings drift apart. The
+# per-provider wrapper names stay distinct because `preflight_checks()`
+# yields function NAMES and the driver runs whatever it is handed; the
+# shared body is an implementation detail beneath that seam, not a change
+# to it.
+_testbed_check_gh_auth() {
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "skipped — gh CLI not found on PATH" >&2
+    return 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "skipped — gh is not authenticated (run: gh auth login)" >&2
+    return 1
+  fi
+}
+
 # <remote-url> -> best-effort github.com "owner/repo" extraction. Same shape
 # as conventions-probe.sh's slug_from_remote / baseline-snapshot.sh's
 # sibling — deliberately re-derived here rather than sourced from either
@@ -191,14 +215,7 @@ _testbed_provider_mirror_from_repo_check_git_repo() {
 # All-reads check: gh is present and authenticated (produce_issues needs it
 # to read the source's issues and create them on the destination).
 _testbed_provider_mirror_from_repo_check_gh_auth() {
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "skipped — gh CLI not found on PATH" >&2
-    return 1
-  fi
-  if ! gh auth status >/dev/null 2>&1; then
-    echo "skipped — gh is not authenticated (run: gh auth login)" >&2
-    return 1
-  fi
+  _testbed_check_gh_auth
 }
 
 # <dest> [source-dir] -> mirror-pushes every ref (branches + tags) from
@@ -265,4 +282,205 @@ _testbed_provider_mirror_from_repo_produce_issues() {
     i=$((i + 1))
   done
   printf 'testbed-source(mirror-from-repo): copied %s issue(s) from %s to %s\n' "$count" "$source_slug" "$dest"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Provider: materialize-from-seed — a prepared project whose content is
+# TRACKED IN THIS REPOSITORY, materialized into a private repo in the
+# OPERATOR'S OWN account (ADR 0025: "any artifact this toolkit creates for
+# evaluation purposes is materialized into the operator's own account, from
+# content tracked in this repository"). NOT provenance-capable (there is no
+# upstream issue to cite) and NOT promotable (there is no original to
+# promote back to) — `describe()` reports both as false so no caller ever
+# expects otherwise.
+#
+# NO PROJECT-OWNED REPOSITORY EXISTS AT ANY POINT. Nothing below names,
+# reads, clones, or forks a remote this project controls: the git content is
+# built locally from tracked files and pushed to the caller-supplied `dest`,
+# and the issues are created on that same `dest`. The only remote touched is
+# the one the driving command just created in the operator's account.
+#
+# The source is a SEED DIRECTORY (default: `workflows/scripts/demo/seed`,
+# resolved relative to this file so it works from any cwd) laid out as:
+#
+#   seed.json     {name, description, default_branch} — describe() reads it
+#   project/      copied verbatim into a fresh git repo and pushed
+#   issues/*.md   one issue each, `# <title>` on line 1, body after it
+#
+# Every function below takes that seed directory as an optional
+# trailing/second argument, exactly mirroring how mirror-from-repo takes its
+# source checkout — same arity, same position, so the driver calls both
+# identically and TEARDOWN (which only ever reads the artifact record the
+# driver writes) sees no difference between a seed testbed and any other.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Resolved once at source time from this file's own location, so a caller in
+# any cwd gets the in-tree seed by default. Empty when the seed directory is
+# absent (a consumer that vendored source.sh without the seed) — the
+# preflight check below is what reports that legibly.
+_TESTBED_SEED_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../demo/seed" 2>/dev/null && pwd || printf '%s' '')"
+
+# [seed-dir] -> the seed directory to use (the argument, else the in-tree
+# default). File-private, not a seam member.
+_testbed_seed_dir() {
+  local given="${1:-}"
+  if [ -n "$given" ]; then printf '%s' "$given"; else printf '%s' "$_TESTBED_SEED_DIR_DEFAULT"; fi
+}
+
+# [seed-dir] -> JSON {kind, base_name, provenance_capable, promotable} on
+# stdout. ZERO network calls and zero content fetching: `seed.json` is a
+# tracked local file, so this is safe to call before pre-flight has run or
+# anything has been created. base_name comes from the seed's own `name`,
+# falling back to the seed directory's basename so a malformed or absent
+# seed.json still yields a usable name rather than failing describe() (the
+# preflight check is where a broken seed is reported, not here).
+_testbed_provider_materialize_from_seed_describe() {
+  local seed_dir base_name=""
+  seed_dir="$(_testbed_seed_dir "${1:-}")"
+  if [ -f "$seed_dir/seed.json" ]; then
+    base_name="$(jq -r '.name // empty' "$seed_dir/seed.json" 2>/dev/null || true)"
+  fi
+  if [ -z "$base_name" ]; then
+    base_name="$(basename "${seed_dir:-seed}")"
+  fi
+  jq -cn --arg kind "materialize-from-seed" --arg base_name "$base_name" \
+    '{kind: $kind, base_name: $base_name, provenance_capable: false, promotable: false}'
+}
+
+# [seed-dir] -> newline-separated preflight check function NAMES (zero args
+# each) on stdout. Same shape as mirror-from-repo's: the seed dir is stashed
+# in a provider-scoped global so the printed check functions stay
+# parameterless, per the seam contract.
+_TESTBED_SEED_SOURCE_DIR=""
+_testbed_provider_materialize_from_seed_preflight_checks() {
+  _TESTBED_SEED_SOURCE_DIR="$(_testbed_seed_dir "${1:-}")"
+  printf '%s\n' \
+    _testbed_provider_materialize_from_seed_check_seed_content \
+    _testbed_provider_materialize_from_seed_check_gh_auth
+}
+
+# All-reads check: the seed directory is present and complete — a project
+# tree with at least one file to push, and at least one issue definition to
+# file. `skipped —` on failure naming the fix, consistent with
+# mirror-from-repo's checks and this repo's established degradation wording.
+_testbed_provider_materialize_from_seed_check_seed_content() {
+  # Falls back to the in-tree default (exactly as mirror-from-repo's checks
+  # fall back to `.`) so the check is still meaningful when the caller
+  # captured `preflight_checks` in a command substitution — a subshell, whose
+  # assignment to the provider-scoped global never reaches the parent.
+  local dir="${_TESTBED_SEED_SOURCE_DIR:-$_TESTBED_SEED_DIR_DEFAULT}"
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+    echo "skipped — seed directory not found at '${dir:-<unset>}' (materialize-from-seed needs the in-tree seed content)" >&2
+    return 1
+  fi
+  if [ ! -d "$dir/project" ] || [ -z "$(find "$dir/project" -type f -print -quit 2>/dev/null)" ]; then
+    echo "skipped — $dir/project is missing or empty (nothing to materialize)" >&2
+    return 1
+  fi
+  if [ ! -d "$dir/issues" ] || [ -z "$(find "$dir/issues" -name '*.md' -type f -print -quit 2>/dev/null)" ]; then
+    echo "skipped — $dir/issues holds no *.md issue definitions (nothing to file)" >&2
+    return 1
+  fi
+}
+
+# All-reads check: gh is present and authenticated (produce_issues needs it
+# to create the seed's issues on the destination). Delegates to the shared
+# helper — one wording for both providers.
+_testbed_provider_materialize_from_seed_check_gh_auth() {
+  _testbed_check_gh_auth
+}
+
+# <dest> [seed-dir] -> builds a fresh single-commit git repository from the
+# seed's `project/` tree in a temp dir and mirror-pushes it to <dest>, a git
+# push target (URL or local path). Deliberately the SAME final mechanism as
+# mirror-from-repo — `git push --mirror <dest>` — so everything downstream of
+# this seam (the artifact record, teardown, the driver) sees one shape, and
+# so this is testable against a plain local bare repo with zero network.
+#
+# The commit identity is pinned with `-c` overrides rather than read from the
+# operator's git config: the seed is fixture content, not their authorship,
+# and a host with no user.email configured must not fail here. Signing is
+# forced off for the same reason.
+_testbed_provider_materialize_from_seed_produce_git() {
+  local dest="${1:?testbed-source(materialize-from-seed): produce_git requires a destination git push target}"
+  local seed_dir work branch out rc=0
+  seed_dir="$(_testbed_seed_dir "${2:-}")"
+
+  if [ ! -d "$seed_dir/project" ]; then
+    printf 'testbed-source(materialize-from-seed): seed project tree not found at %s/project\n' "$seed_dir" >&2
+    return 1
+  fi
+
+  branch="$(jq -r '.default_branch // "main"' "$seed_dir/seed.json" 2>/dev/null || true)"
+  [ -n "$branch" ] || branch="main"
+
+  work="$(mktemp -d "${TMPDIR:-/tmp}/testbed-seed-XXXXXX")" || {
+    echo "testbed-source(materialize-from-seed): could not create a temp working directory" >&2
+    return 1
+  }
+
+  # tar-pipe rather than `cp -R`: it carries dotfiles and is identical on
+  # BSD and GNU userlands (`cp -R src/. dst` differs subtly between them).
+  if ! out="$( { (cd "$seed_dir/project" && tar cf - .) | (cd "$work" && tar xf -); } 2>&1 )"; then
+    printf 'testbed-source(materialize-from-seed): copying the seed project tree failed: %s\n' "$out" >&2
+    rm -rf "$work"
+    return 1
+  fi
+
+  if ! out="$( {
+    git -C "$work" init -q \
+      && git -C "$work" symbolic-ref HEAD "refs/heads/$branch" \
+      && git -C "$work" add -A \
+      && git -C "$work" \
+        -c user.name="temperloop testbed" \
+        -c user.email="testbed@localhost" \
+        -c commit.gpgsign=false \
+        commit -q -m "Initial commit — temperloop testbed seed project" \
+      && git -C "$work" push --mirror "$dest"
+  } 2>&1 )"; then
+    rc=1
+    printf 'testbed-source(materialize-from-seed): building and pushing the seed tree to %s failed: %s\n' "$dest" "$out" >&2
+  fi
+
+  rm -rf "$work"
+  return "$rc"
+}
+
+# <dest> [seed-dir] -> creates one issue on <dest> (an OWNER/NAME repo slug)
+# per `issues/*.md` in the seed, in filename order. NO provenance line is
+# stamped: there is no upstream issue to cite, which is exactly what
+# `describe()`'s `provenance_capable: false` tells callers. Prints the count
+# created on success.
+_testbed_provider_materialize_from_seed_produce_issues() {
+  local dest="${1:?testbed-source(materialize-from-seed): produce_issues requires a destination owner/repo}"
+  local seed_dir f title body create_out count=0
+  seed_dir="$(_testbed_seed_dir "${2:-}")"
+
+  command -v gh >/dev/null 2>&1 \
+    || { echo "testbed-source(materialize-from-seed): gh CLI not found on PATH" >&2; return 1; }
+
+  if [ ! -d "$seed_dir/issues" ]; then
+    printf 'testbed-source(materialize-from-seed): seed issue definitions not found at %s/issues\n' "$seed_dir" >&2
+    return 1
+  fi
+
+  for f in "$seed_dir"/issues/*.md; do
+    [ -f "$f" ] || continue
+    title="$(head -n 1 "$f" | sed -E 's/^#[[:space:]]*//')"
+    if [ -z "$title" ]; then
+      printf 'testbed-source(materialize-from-seed): %s has no "# <title>" first line\n' "$f" >&2
+      return 1
+    fi
+    # Body = everything after the title line, with the blank separator line
+    # trimmed so the issue does not open on an empty line.
+    body="$(tail -n +2 "$f" | sed -E '1{/^[[:space:]]*$/d;}')"
+    if ! create_out="$(gh issue create --repo "$dest" --title "$title" --body "$body" 2>&1)"; then
+      printf 'testbed-source(materialize-from-seed): gh issue create on %s failed for %s: %s\n' \
+        "$dest" "$(basename "$f")" "$create_out" >&2
+      return 1
+    fi
+    count=$((count + 1))
+  done
+
+  printf 'testbed-source(materialize-from-seed): created %s issue(s) on %s from the in-tree seed\n' "$count" "$dest"
 }

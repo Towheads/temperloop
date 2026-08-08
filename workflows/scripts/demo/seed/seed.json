@@ -1,0 +1,5 @@
+{
+  "name": "linkrot",
+  "description": "linkrot - a tiny Markdown link checker. A prepared project for evaluating the temperloop pipeline end to end.",
+  "default_branch": "main"
+}

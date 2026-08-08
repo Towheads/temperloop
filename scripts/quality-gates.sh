@@ -731,9 +731,13 @@ KERNEL_GATES=(
   "bash workflows/scripts/check-changelog-entry.sh"
   "bash workflows/scripts/tests/test_check_changelog_entry.sh"
   "make test-stranger-config"
-  # Demo-repo seed script tests (foundation #851, Epic D): subprocess suite
-  # for kernel/workflows/scripts/demo/seed-demo-repo.sh, fake `gh` on PATH,
-  # zero network — mirrors test-board's glob-based kernel coverage (F#836).
+  # Testbed seed-content tests (temperloop#1230, epic #1117): coherence gate
+  # for kernel/workflows/scripts/demo/seed/ — the in-tree fixture project +
+  # issue definitions `materialize-from-seed` materializes into the operator's
+  # own account (ADR 0025). Zero network; asserts the layout, the issue-file
+  # grammar, that every defect the seed's issues claim is still present, and
+  # that the seed's own suite ships green. Glob-based, mirroring test-board's
+  # kernel coverage (F#836) — it tracks whatever demo tests are vendored.
   "make test-demo"
   # Proposal-PR generator tests (foundation #853, Epic D): subprocess suite
   # for kernel/workflows/scripts/proposal/proposal-pr.sh, fake `gh` on PATH,
