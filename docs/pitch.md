@@ -44,34 +44,36 @@ per tier and exactly what an unattended run may do without asking — worth
 two minutes first, especially before turning on anything that runs without
 you watching.
 
-**Evaluate it on your own code, in a repo you can delete.** Install the CLI
-— see `bin/README.md`'s Install section for the exact command (an
-inspect-first form and a one-line form, your choice) — then make a *private
-duplicate* of a real repo of yours, copy a handful of your open issues into
-it, and run the whole pipeline there:
+**Evaluate it on your own code, in a repo you can throw away — then keep what
+it built.** Install the CLI — see `bin/README.md`'s Install section for the
+exact command (an inspect-first form and a one-line form, your choice) — then
+run one command from a checkout of the repo you want to evaluate on:
 
 ```sh
-gh repo create my-project-sandbox --private
-git clone --bare git@github.com:me/my-project.git
-git -C my-project.git push --mirror git@github.com:me/my-project-sandbox.git
+temperloop testbed --dry-run   # preview: zero writes of any kind
+temperloop testbed             # creates the duplicate, mirrors the history,
+                               # carries the open issues across
 ```
 
 A duplicate, not a fork: a fork of a public repo is forcibly public, and it
 carries an upstream that PR tooling will offer as a base. A duplicate has
-neither problem, and one `gh repo delete` ends it. Note that GitHub never
-copies issues — to a fork or anywhere else — so bring yours across
-explicitly.
+neither problem. Note that GitHub never copies issues — to a fork or anywhere
+else — which is why `testbed` copies them for you.
 
-Then `temperloop init` inside the sandbox, and run the **first epic** it
+Then `temperloop init` inside the testbed, and run the **first epic** it
 offers you through `/assess` → `/build`. That epic sets up review criteria,
 a protected `main`, and required CI — genuine work with real dependency
 levels, so watching it run shows you the whole machine (claim → worktree →
-PR → CI → merge gate) on your own code rather than a canned example. When
-you're convinced, run `temperloop init` in the real repo; when you're not,
-delete the sandbox and nothing of yours was ever touched.
+PR → CI → merge gate) on your own code rather than a canned example.
 
-Full walkthrough with the exact commands, including the issue-copy loop and
-teardown: the README's Quickstart, mirrored in `bin/README.md`.
+You don't have to throw the result away to have evaluated safely: `/promote`
+lands the work worth keeping in your real repo as a branch plus a reviewable
+pull request, and `temperloop testbed --teardown` reclaims the duplicate
+afterwards. When you're convinced, run `temperloop init` in the real repo;
+when you're not, tear the testbed down and nothing of yours was ever touched.
+
+Full walkthrough with the exact commands, including the promote-then-teardown
+exit: the README's Quickstart, mirrored in `bin/README.md`.
 
 ## One more thing before you turn on anything unattended
 

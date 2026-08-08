@@ -37,7 +37,7 @@ licensed; see [`LICENSE`](LICENSE).
 ## Optional
 
 - [CLI reference](bin/README.md): install, prerequisites, and the
-  `try` → `try --demo` → `init` quickstart in full.
+  `testbed` → first epic → `/promote` → adopt quickstart in full.
 - [Plan-note schema](claude/plan-schema.md): the plan-note contract
   `/assess` writes and `/build` consumes.
 - [Kernel process contract](claude/CLAUDE.kernel.md): the full branch/PR,

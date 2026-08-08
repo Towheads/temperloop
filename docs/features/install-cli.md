@@ -38,18 +38,20 @@ touching `HEAD` at all, then checks out the tag and re-runs `install` +
 the managed clone's own git state plus the machine surface `install.sh`
 already owns, never a repo-tracked path in any other repo.
 
-**The adoption path: sandbox -> first epic -> adopt.** The reader makes a
-private *duplicate* of a real repo of their own (not a fork — a fork of a
-public repo is forcibly public, and carries an upstream that PR tooling
-offers as a base), copies a handful of their open issues into it since
-GitHub never copies issues to a fork, runs `temperloop init` there, and
-takes the resulting first epic through `/assess` -> `/build`. The evaluation
-is therefore the real pipeline doing real work on the reader's own code, in
-a repo they delete afterwards. `README.md` § 3 is the canonical command
+**The adoption path: testbed -> first epic -> promote -> adopt.** The reader
+runs `temperloop testbed`, which builds a private *duplicate* of a real repo
+of their own (not a fork — a fork of a public repo is forcibly public, and
+carries an upstream that PR tooling offers as a base) and carries their open
+issues across, since GitHub never copies issues to a fork; they run
+`temperloop init` there and take the resulting first epic through `/assess`
+-> `/build`. The evaluation is therefore the real pipeline doing real work on
+the reader's own code, in a repo that is disposable — and `/promote` carries
+the work worth keeping back into the original before `temperloop testbed
+--teardown` reclaims the duplicate. `README.md` § 3 is the canonical command
 sequence.
 
 **`temperloop init` — the adopt step.** Run it in the
-sandbox to evaluate, and again in the real repo to adopt; it behaves
+testbed to evaluate, and again in the real repo to adopt; it behaves
 identically in both. It opts a repo in, then **hands off**. `init --dry-run`
 previews the tree-only proposal PR with zero API writes of any kind. `init`
 for real does exactly four things and stops: bootstraps `.temperloop/config`,

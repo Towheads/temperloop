@@ -208,6 +208,27 @@ reads that marker; a stranger greps for it before pulling.
   `board_num=1` fallback now carries a one-line pointer to that section.
   Documentation only; no behavior change.
 
+- **The on-ramp surfaces now run on `temperloop testbed`, and § 3 ends on
+  `/promote` rather than on deleting the evaluation repo** (#1238).
+  `README.md` § 3's hand-run block — `gh repo create`, a bare clone, `git
+  push --mirror`, and a `gh issue list | jq | gh issue create` loop — is
+  replaced by the single `temperloop testbed` command (#1117) plus the real
+  handoff block it prints, and the section's exit changes from `gh repo
+  delete` to **`/promote` first, `temperloop testbed --teardown` second**:
+  the work a reader's evaluation produced comes home as a reviewable pull
+  request in their real repo before the duplicate is reclaimed, closing the
+  "a convinced reader had to throw everything away" gap this epic exists to
+  fix. The **adoption-sense** noun is renamed throughout — `sandbox` ->
+  `testbed`, including the § 3 heading and the `my-project-sandbox` repo
+  name — across `README.md`, `bin/README.md`, `AGENTS.md`, `docs/pitch.md`,
+  `docs/features/install-cli.md` and `docs/cost-and-autonomy.md`; every
+  **harness-sense** use (the hermetic HOME/XDG test tree in
+  `workflows/scripts/tests/**`, the `sandbox-core`/`sandbox-integrity`
+  feature slugs and their docs) is deliberately untouched, since that word
+  legitimately names a different thing there. `llms.txt`'s stale `try` ->
+  `try --demo` -> `init` quickstart line is corrected to the real path.
+  Documentation only; no behavior change.
+
 ### Added
 
 - **`board`: `board_close_done <board#> <issue#>` — a Done write that

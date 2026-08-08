@@ -16,12 +16,13 @@ figures, derivations, and provenance for every claim.
 ## TL;DR
 
 - **⚠️ The current on-ramp has no hard dollar cap.** The quickstart
-  (sandbox → first epic → adopt) evaluates temperloop by running the **real**
-  pipeline: `temperloop init`, then `/assess` → `/build` on the first epic.
-  Those are ordinary pipeline commands, and per the next bullet they carry
-  **no fixed cost or USD ceiling** — only the usage-quota gate. The sandbox
-  setup itself (`gh repo create`, `git push --mirror`, the issue-copy loop)
-  spends **no Claude tokens at all**; the cost begins at `temperloop init`.
+  (testbed → first epic → promote → adopt) evaluates temperloop by running the
+  **real** pipeline: `temperloop init`, then `/assess` → `/build` on the first
+  epic. Those are ordinary pipeline commands, and per the next bullet they
+  carry **no fixed cost or USD ceiling** — only the usage-quota gate. The
+  testbed setup itself (`temperloop testbed`: repo creation, mirror push,
+  issue copy) is pure `gh` and `git` and spends **no Claude tokens at all**;
+  the cost begins at `temperloop init`.
   Watch your own Claude Code usage view while evaluating, and see
   § Cost at a glance for what `/assess` and `/build` scale with. Closing this
   gap — a published cost band or a cap for the evaluation path — is tracked
@@ -140,12 +141,12 @@ stranger may run it before deciding whether to trust anything here.
 Two more commands used to sit in this tier — `try` at $1.00/run and
 `try --demo` at $2.00/tick — and they were, for a long time, the only
 published cost bands on this page. Both were retired in temperloop#1117
-once the sandbox on-ramp (temperloop#1115) replaced them; their bands and
+once the testbed on-ramp (temperloop#1115) replaced them; their bands and
 their caps went with them.
 
 That leaves a gap worth stating plainly rather than papering over: the
-current evaluation path — sandbox, then the first epic through `/assess` →
-`/build` — is **Tier 2 work with no dollar ceiling**. See the ⚠️ TL;DR
+current evaluation path — the testbed, then the first epic through `/assess`
+→ `/build` — is **Tier 2 work with no dollar ceiling**. See the ⚠️ TL;DR
 bullet above and temperloop#1130, which tracks publishing a cost band or a
 cap for it.
 
