@@ -195,13 +195,13 @@ RC=0
 OUT="$(PATH="$BIN:$PATH" FAKE_ISSUE_LIST_JSON="$list_json" \
   bash "$SCRIPT" report --testbed-repo acme/proj-testbed --state all 2>&1)" || RC=$?
 [ "$RC" -eq 1 ] || fail "D1: report with 3 unresolved of 4 should exit 1 (got rc=$RC)"
-echo "$OUT" | grep -Fxq $'RESOLVED\tacme/proj-testbed#101\tacme/proj#1' \
+echo "$OUT" | grep -Fx $'RESOLVED\tacme/proj-testbed#101\tacme/proj#1' >/dev/null \
   || fail "D1: expected a RESOLVED row for #101 (out: $OUT)"
-echo "$OUT" | grep -q $'^ABSENT\tacme/proj-testbed#102\t' \
+echo "$OUT" | grep $'^ABSENT\tacme/proj-testbed#102\t' >/dev/null \
   || fail "D1: expected an ABSENT row for #102 (out: $OUT)"
-echo "$OUT" | grep -q $'^MALFORMED\tacme/proj-testbed#103\t' \
+echo "$OUT" | grep $'^MALFORMED\tacme/proj-testbed#103\t' >/dev/null \
   || fail "D1: expected a MALFORMED row for #103 (out: $OUT)"
-echo "$OUT" | grep -q $'^EDITED\tacme/proj-testbed#104\t' \
+echo "$OUT" | grep $'^EDITED\tacme/proj-testbed#104\t' >/dev/null \
   || fail "D1: expected an EDITED row for #104 (out: $OUT)"
 echo "PASS: D1 report emits one distinct row per issue, mixing all four outcomes, and exits 1 when any is unresolved"
 
