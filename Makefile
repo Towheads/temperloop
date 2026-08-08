@@ -15,7 +15,7 @@ BIN_SRC := $(FOUNDATION)/bin
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
 
 .PHONY: help shellcheck quality-gates test-board test-build test-build-workflow \
-	test-hooks test-install test-install-links test-install-worktree-guard \
+	test-hooks test-install test-install-links test-install-worktree-guard test-testbed-record \
 	test-prune-branches validate-capture-backstop validate-activation-registry validate-command-run-emit validate-issue-touch-emit \
 	validate-knowledge-search-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
@@ -33,6 +33,7 @@ help:
 	@echo "  test-install            install-settings reconcile test"
 	@echo "  test-install-links      install-links helper tests"
 	@echo "  test-install-worktree-guard  Canonical-checkout guard tests"
+	@echo "  test-testbed-record     Machine-scoped testbed artifact record tests"
 	@echo "  test-prune-branches     prune-merged-branches.sh tests"
 	@echo "  validate-capture-backstop     Capture/Backstop pairing registry lint"
 	@echo "  validate-activation-registry  Class-A static-second-surface activation registry lint"
@@ -272,6 +273,10 @@ test-install-links:
 test-install-worktree-guard:
 	@echo "==> Running install-worktree-guard tests..."
 	@bash workflows/scripts/tests/test_install_worktree_guard.sh
+
+test-testbed-record:
+	@echo "==> Running testbed-record tests..."
+	@bash workflows/scripts/testbed/tests/test_testbed_record.sh
 
 test-prune-branches:
 	@echo "==> Running prune-merged-branches tests..."

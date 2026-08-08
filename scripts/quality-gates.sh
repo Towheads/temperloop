@@ -235,6 +235,14 @@ KERNEL_GATES=(
   "bash workflows/scripts/tests/test_legacy_host_preflight.sh"
   "make test-install-links"
   "make test-install-worktree-guard"
+  # Machine-scoped testbed artifact record (temperloop#1117 Produces 4,
+  # temperloop#1227): workflows/scripts/testbed/record.sh's append-only,
+  # per-step-atomic-flush record of everything a `temperloop testbed` run
+  # creates, including the source_kind/source_repo/promotable provenance
+  # fields promotion reads two levels later. Library-only, no CLI caller yet
+  # — same shape as install-manifest-lib above, but a real `make` target
+  # rather than the sibling gates' direct-`bash` form.
+  "make test-testbed-record"
   "make test-prune-branches"
   "make validate-capture-backstop"
   "make validate-command-run-emit"

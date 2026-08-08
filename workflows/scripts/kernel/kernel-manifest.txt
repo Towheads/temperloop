@@ -218,6 +218,10 @@ overlay workflows/scripts/build/tests/test_rework_snapshot.sh
 kernel workflows/scripts/lib/*
 kernel workflows/scripts/drain/*
 kernel workflows/scripts/install/*
+# `temperloop testbed`'s machine-scoped artifact record (temperloop#1117,
+# temperloop#1227) — generic evaluation-workflow machinery, needed for a
+# stranger's own kernel-only checkout exactly like install-manifest.sh above.
+kernel workflows/scripts/testbed/*
 # Setting registry (temperloop#164/#169 D2): the kernel TSV of every tunable
 # setting + the union-aware parse helper. A stranger's kernel-only checkout
 # needs both the registry and the parser (a future `temperloop config list`

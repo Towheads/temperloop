@@ -167,6 +167,7 @@ bash workflows/scripts/tests/test_doctor_cross_checkout_split.sh	workflows/scrip
 bash workflows/scripts/tests/test_legacy_host_preflight.sh	workflows/scripts/install/** workflows/scripts/tests/test_legacy_host_preflight.sh
 make test-install-links	workflows/scripts/install/** claude/** bin/** workflows/scripts/tests/test_install_links.sh
 make test-install-worktree-guard	workflows/scripts/install/** claude/hooks/** workflows/scripts/tests/test_install_worktree_guard.sh
+make test-testbed-record	workflows/scripts/testbed/**
 bash workflows/scripts/tests/test_install_cli.sh	bin/** workflows/scripts/install/** workflows/scripts/tests/** VERSION
 bash workflows/scripts/tests/test_install_lifecycle.sh	bin/** workflows/scripts/install/** workflows/scripts/tests/** claude/** VERSION
 bash workflows/scripts/tests/lib/tests/test_sandbox.sh	workflows/scripts/tests/lib/** bin/**
