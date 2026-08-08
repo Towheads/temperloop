@@ -180,6 +180,12 @@ check "triage.md passes --resolved (its culled + decision-routed bucket)" \
 check "sweep.md no longer folds verdict-resolved items into --merged" \
   bash -c "! grep -Fq -- '--merged <count of \"merged\" + \"resolved (verdict)\" terminal dispositions>' '$SWEEP_MD'"
 
+echo "── 8. Step 1's pool excludes epic parents, not just epic legs (temperloop#1038) ──"
+check "sweep.md Step 1 gates the pool on board_sub_issues (epic-parent exclusion)" \
+  grep -Fq 'board_sub_issues' "$SWEEP_MD"
+check "sweep.md's seam prose names epic parents, not just sub-issues" \
+  grep -Fq 'neither a sub-issue of an epic nor an epic parent' "$SWEEP_MD"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'test_command_run_emit: FAILED %d of %d\n' "$fail" "$((pass + fail))"
