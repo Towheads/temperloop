@@ -266,6 +266,7 @@ make test-proposal-pr	workflows/scripts/proposal/**
 make test-testbed-source	workflows/scripts/testbed/**
 make test-testbed-command	bin/subcommands/testbed.sh bin/subcommands/tests/test_testbed.sh workflows/scripts/testbed/**
 make test-promote-push	workflows/scripts/promote/** claude/commands/promote.md
+make test-testbed-equivalence	bin/subcommands/testbed.sh workflows/scripts/testbed/**
 bash workflows/scripts/tests/test_rename_compat.sh	bin/** workflows/scripts/tests/test_rename_compat.sh
 bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh	bin/** workflows/scripts/tests/test_bootstrap_tag_pinning.sh
 bash workflows/scripts/tests/test_version_embedding.sh	bin/** VERSION VERSIONING.md workflows/scripts/tests/test_version_embedding.sh

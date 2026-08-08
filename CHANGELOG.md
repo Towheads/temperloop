@@ -179,6 +179,26 @@ reads that marker; a stranger greps for it before pulling.
   (`workflows/scripts/testbed/scope.sh`) and, when absent, degrades legibly —
   prints the one-line `gh auth refresh -s delete_repo` remedy and exits 0 —
   rather than failing on a `gh repo delete` call it can never make.
+- **A provider-equivalence guard makes the epic's central structural claim
+  mechanical: both testbed source providers drive one identical call
+  sequence downstream of the seam** (#1232). Two test doubles — never the
+  real `mirror-from-repo`/`materialize-from-seed` (their content differences
+  are `test-testbed-source`'s job) — are driven through
+  `bin/subcommands/testbed.sh`'s own driver, and the test asserts an
+  identical seam-call sequence plus an identical driver
+  step/pre-flight/flush/handoff trace between them, modulo the
+  source-identity fields (kind, `provenance_capable`, `promotable`) that
+  legitimately differ — excluded from the comparison by name, with a sanity
+  check proving the exclusion is real rather than accidental. Asserting over
+  the driver's own sequence, not either provider's internals, is what makes
+  a provider-agnostic-orchestration bug fail here instead of surfacing as a
+  seed-provider failure; this is the guard that stops the prepared-source
+  option from drifting into a second path — precisely how `try --demo`
+  became a dead end. States plainly, in its own header and in
+  `docs/features/testbed.md`, what it does **not** prove: identical
+  evaluation value — the two sources differ in content, promotability, and
+  privacy exposure by design, and no test speaks to that. Zero network, its
+  own `make test-testbed-equivalence` gate.
 
 ### Changed
 
