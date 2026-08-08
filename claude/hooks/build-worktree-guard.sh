@@ -401,8 +401,18 @@ owner_key() {
   stamp=$(jq -r 'if type == "object" then (.created // empty) else empty end' \
     < "$wt/.build-guard" 2>/dev/null)
   if [ -z "$stamp" ]; then
-    stamp=$(stat -f %m "$wt/.build-guard" 2>/dev/null \
-      || stat -c %Y "$wt/.build-guard" 2>/dev/null || printf 'nostamp')
+    # mtime fallback — GNU probe FIRST, then validate numeric. `stat -f` means
+    # `--file-system` on GNU coreutils, where `%m` is not a valid specifier, so
+    # `stat -f %m` there does NOT fail: it succeeds with junk, and a BSD-first
+    # `||` chain never reaches the GNU form. That made this stamp constant on
+    # Linux, collapsing the generation key (ubuntu CI caught it; macOS passed).
+    # `-c` is invalid on BSD and genuinely fails, so GNU-first is safe both
+    # ways; the digit check then rejects a success-with-junk from either.
+    stamp=$(stat -c %Y "$wt/.build-guard" 2>/dev/null \
+      || stat -f %m "$wt/.build-guard" 2>/dev/null || printf 'nostamp')
+    case "$stamp" in
+      '' | *[!0-9]*) stamp='nostamp' ;;
+    esac
   fi
   # cksum, not a hash tool: POSIX, always present, and this is a collision-
   # tolerant cache key, never a security boundary.
