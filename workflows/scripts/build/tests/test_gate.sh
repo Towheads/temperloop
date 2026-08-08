@@ -41,6 +41,14 @@
 #     referencing run → DEQUEUED (exit 8); the `/pr-<N>-` branch anchor does not
 #     let #4 match a #42 run; an in-progress referencing run → QUEUED (not a
 #     dequeue); an already-merged PR → MERGED (exit 0), short-circuiting the probe
+#   - QUEUE_STALLED (temperloop#1178): a live entry older than
+#     BUILD_QUEUE_STALL_AFTER with ZERO dispatched merge_group runs →
+#     QUEUE_STALLED (exit 10) + enqueued_secs/merge_group_runs; a HEALTHY entry is
+#     unaffected (under the threshold, or with ≥1 referencing run, stays QUEUED);
+#     raising the setting turns the same stalled fixture back into QUEUED; poll's
+#     TIMEOUT carries the probe's verdict as `reason`/`diagnosis`, and falls back
+#     to the bare TIMEOUT shape when the probe itself errors. The clock is pinned
+#     through the `_gate_now` seam, so these are deterministic and network-free.
 #
 # The seams are redefined mid-file per case (the library calls them
 # indirectly), so shellcheck's "never invoked"/"unreachable" checks are false
@@ -443,6 +451,108 @@ rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
 [ "$(jq -r .outcome <<<"$out")" = "MERGED" ] || fail "diagnose MERGED-race outcome (got: $out)"
 [ "$(jq -r .mergedAt <<<"$out")" = "2026-07-02T08:00:00Z" ] || fail "diagnose MERGED-race mergedAt (got: $out)"
 echo "PASS: diagnose-queue → MERGED (exit 0) short-circuits the merge_group probe when the PR already landed"
+
+# --- QUEUE_STALLED (temperloop#1178) ----------------------------------------
+# The stall verdict ages the live queue entry against BUILD_QUEUE_STALL_AFTER and
+# counts merge_group runs dispatched for it. Both inputs are pinned here — the
+# clock via the `_gate_now` seam (expressed through `_gate_epoch_of` so the test
+# never hardcodes an epoch integer), the run history via the `_gate_gh` fixture —
+# so every case below is deterministic with ZERO network.
+_gate_now() { _gate_epoch_of "2026-01-01T00:00:00Z"; }
+
+# STALLED: enqueued an hour ago (past the threshold) and NO merge_group run has
+# ever been dispatched for it — the exact shape the incident hand-probed.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":{"state":"QUEUED","position":1,"enqueuedAt":"2025-12-31T23:00:00Z"}}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 10 ] || fail "QUEUE_STALLED did not exit 10 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUE_STALLED" ] || fail "diagnose QUEUE_STALLED outcome (got: $out)"
+[ "$(jq -r .enqueued_secs <<<"$out")" = "3600" ] || fail "QUEUE_STALLED enqueued_secs (got: $out)"
+[ "$(jq -r .merge_group_runs <<<"$out")" = "0" ] || fail "QUEUE_STALLED merge_group_runs (got: $out)"
+echo "PASS: diagnose-queue → QUEUE_STALLED (exit 10) + enqueued_secs/merge_group_runs when a long-enqueued PR has no merge_group run"
+
+# HEALTHY (a): enqueued 2 minutes ago — inside the ~2.5 min a queue's own checks
+# legitimately take. The runs fixture is EMPTY, i.e. the very state that reads
+# STALLED once aged: only the threshold keeps this QUEUED, which is the point.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":{"state":"QUEUED","position":1,"enqueuedAt":"2025-12-31T23:58:00Z"}}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 0 ] || fail "under-threshold entry did not exit 0 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "under-threshold outcome (got: $out)"
+echo "PASS: diagnose-queue → QUEUED under BUILD_QUEUE_STALL_AFTER (the legitimate ~2.5 min check window never trips the stall verdict)"
+
+# HEALTHY (b): long-enqueued but the queue HAS dispatched a merge_group run for
+# it (still building) — a slow queue, not a stalled one.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":{"state":"QUEUED","position":1,"enqueuedAt":"2025-12-31T23:00:00Z"}}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[{"head_branch":"gh-readonly-queue/main/pr-42-abc","conclusion":null,"status":"in_progress","id":9100,"created_at":"2025-12-31T23:01:00Z"}]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 0 ] || fail "long-enqueued PR with a merge_group run did not exit 0 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "run-present outcome (got: $out)"
+echo "PASS: diagnose-queue → QUEUED when a long-enqueued PR HAS a dispatched merge_group run (slow, not stalled)"
+
+# The threshold is the NAMED SETTING, not a literal: the SAME stalled fixture
+# reads QUEUED when BUILD_QUEUE_STALL_AFTER is raised past the entry's age.
+_gate_gh() {
+  case "$*" in
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":{"state":"QUEUED","position":1,"enqueuedAt":"2025-12-31T23:00:00Z"}}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(BUILD_QUEUE_STALL_AFTER=7200 cmd_diagnose_queue Towheads/foundation 42)" || rc=$?
+[ "$rc" -eq 0 ] || fail "raised BUILD_QUEUE_STALL_AFTER did not suppress the stall (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "QUEUED" ] || fail "raised-threshold outcome (got: $out)"
+echo "PASS: diagnose-queue → the stall threshold is read from BUILD_QUEUE_STALL_AFTER (raising it turns the same fixture back into QUEUED)"
+
+# --- poll: a TIMEOUT carries its REASON, not a bare `waited` count -----------
+# Same never-terminal PR as the TIMEOUT case above, but the queue channels now
+# describe a stalled entry: the deadline runs the same probe and the TIMEOUT
+# payload names QUEUE_STALLED — "stop waiting" rather than "try again later".
+_gate_gh() {
+  case "$*" in
+    *"pr view"*) echo '{"state":"OPEN","mergedAt":null,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}' ;;
+    *graphql*) echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","merged":false,"mergedAt":null,"mergeQueueEntry":{"state":"QUEUED","position":1,"enqueuedAt":"2025-12-31T23:00:00Z"}}}}}' ;;
+    *actions/runs*) echo '{"workflow_runs":[]}' ;;
+    *) echo '{}' ;;
+  esac
+}
+rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 0)" || rc=$?
+[ "$rc" -eq 4 ] || fail "diagnosed TIMEOUT did not exit 4 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "poll TIMEOUT outcome (got: $out)"
+[ "$(jq -r .reason <<<"$out")" = "QUEUE_STALLED" ] || fail "poll TIMEOUT reason (got: $out)"
+[ "$(jq -r .diagnosis.enqueued_secs <<<"$out")" = "3600" ] || fail "poll TIMEOUT diagnosis payload (got: $out)"
+echo "PASS: poll → TIMEOUT carries the diagnose-queue reason (QUEUE_STALLED) instead of a bare waited count"
+
+# Fail-open: when the diagnose probe itself errors, the TIMEOUT keeps its
+# pre-existing bare shape (outcome + waited, exit 4) and never leaks an ERROR.
+_gate_gh() {
+  case "$*" in
+    *"pr view"*) echo '{"state":"OPEN","mergedAt":null,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}' ;;
+    *) return 1 ;;
+  esac
+}
+rc=0; out="$(cmd_poll Towheads/foundation 42 --interval 0.1 --timeout 0)" || rc=$?
+[ "$rc" -eq 4 ] || fail "fail-open TIMEOUT did not exit 4 (rc=$rc, out=$out)"
+[ "$(jq -r .outcome <<<"$out")" = "TIMEOUT" ] || fail "fail-open TIMEOUT outcome (got: $out)"
+[ "$(jq -r '.reason // "none"' <<<"$out")" = "none" ] || fail "fail-open TIMEOUT should carry no reason (got: $out)"
+echo "PASS: poll → a failing diagnose probe leaves the bare TIMEOUT shape untouched (fail-open, still exit 4)"
+
+_gate_now() { date +%s; }
 
 # --- error: bad inputs → structured ERROR + non-zero exit -------------------
 # die() emits on fd 3 (the script's real-stdout seam); when sourced, fd 3 is the

@@ -130,6 +130,16 @@ fi
 : "${BUILD_MERGE_GATE_WINDOW:=300}"   # timed merge-gate window (s); 0 = always modal
 : "${BUILD_QUEUE_TIMEOUT:=1800}"      # per-PR native-merge-queue timeout (s)
 
+# Queue-stall threshold (temperloop#1178): how long a PR may sit IN the native
+# merge queue with ZERO merge_group runs ever dispatched for it before
+# `gate.sh diagnose-queue` calls it QUEUE_STALLED rather than merely slow. A
+# healthy entry gets its gh-readonly-queue/<base>/pr-<N>-<sha> run within about
+# a minute, so this sits far above the ~2.5 min a queue's own checks
+# legitimately take — and far below BUILD_QUEUE_TIMEOUT, so a genuine stall is
+# NAMED well before the ceiling instead of guessed at after it. gate.sh keeps a
+# byte-identical layer-6 fallback for a caller that did not source this file.
+: "${BUILD_QUEUE_STALL_AFTER:=600}"   # queue-stall threshold (s), zero merge_group runs
+
 # Step-4a.5 combined-tree pre-check (temperloop#865): before enqueuing a level
 # that parked >1 PR, build the UNION of the parked branches in a throwaway
 # worktree and run the full gate suite against it — catching a SEMANTIC
@@ -897,7 +907,8 @@ fi
 # manual onboarding step here at all.
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
-       BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_HEADLESS_POLL_TIMEOUT \
+       BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
+       BUILD_HEADLESS_POLL_TIMEOUT \
        BUILD_MERGE_BACKEND BUILD_COMBINED_TREE_PRECHECK BUILD_MERGE_AS_YOU_GO \
        PIPELINE_DRIVE_CONCURRENCY EPIC_MIN_SUBUNITS DISPLAY_TZ \
        ASSESS_POLL_FIRST_WAKE ASSESS_POLL_CADENCE ASSESS_POLL_BUDGET \

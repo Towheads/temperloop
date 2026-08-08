@@ -92,6 +92,24 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **A stalled merge queue is now distinguishable from a merely slow one**
+  (#1178). `gate.sh diagnose-queue` gains a `QUEUE_STALLED` verdict (exit 10,
+  payload `{"pr":N,"enqueued_secs":S,"merge_group_runs":0}`): a PR that is
+  *still* enqueued past the new `BUILD_QUEUE_STALL_AFTER` setting with **zero**
+  `merge_group` runs ever dispatched for it is stuck, not slow — so a caller
+  stops waiting instead of re-polling to the `BUILD_QUEUE_TIMEOUT` ceiling and
+  then guessing. This is the probe that was hand-run during the incident
+  (`gh run list --event merge_group` against the entry's `enqueuedAt`), now in
+  the machinery. A healthy entry is untouched: under the threshold, or with any
+  referencing run, it still reads `QUEUED`, so the ~2.5 min a queue's own
+  checks legitimately take can never trip it. `gate.sh poll`'s `TIMEOUT` now
+  runs the same probe and carries its verdict as `reason`/`diagnosis` rather
+  than a bare `waited` count — the difference between "try again later" and
+  "stop waiting, this needs a human" — falling back to the previous bare shape
+  when the probe itself errors. `build.md` Step 4b routes the new verdict
+  (dequeue + `managed-merge --strict` fallback) and names it in the unattended
+  pending-decisions record.
+
 - **`/build` Step 0a drains an answered plan-approval on attended ticks too, so
   an operator's `approve` no longer strands** (Towheads/foundation#1496). The
   step was gated on the operator-absent flag, so on a board no funnel ticks the

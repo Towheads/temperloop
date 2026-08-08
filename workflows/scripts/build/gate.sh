@@ -50,6 +50,9 @@
 #         `mergeQueueEntry` membership signal and the `merge_group` run history —
 #         so a silent dequeue resolves to a structured QUEUED / MERGE_GROUP_FAILED
 #         / DEQUEUED / MERGED verdict instead of an opaque BUILD_QUEUE_TIMEOUT.
+#         A STILL-ENQUEUED entry older than BUILD_QUEUE_STALL_AFTER with zero
+#         merge_group runs dispatched resolves to QUEUE_STALLED (temperloop#1178)
+#         — a stalled queue, distinguishable from a merely slow one.
 #
 # Output contract — CLOSED outcome set, one structured JSON line per command
 # (the orchestrator branches on `.outcome`, never parses prose):
@@ -64,7 +67,8 @@
 #            {"outcome":"NUDGE_NOOP","pr":…,"mergeStateStatus":…}     exit 0
 #   poll   → {"outcome":"MERGED","pr":…,"mergedAt":…}                 exit 0
 #            {"outcome":"CONFLICTING","pr":…,"mergeStateStatus":…}    exit 3
-#            {"outcome":"TIMEOUT","pr":…,"waited":…}                  exit 4
+#            {"outcome":"TIMEOUT","pr":…,"waited":…,
+#             "reason":…,"diagnosis":{…}}                            exit 4
 #   backend → {"outcome":"NATIVE"} | {"outcome":"MANAGED"} |
 #              {"outcome":"MANAGED","probe_failed":true}              exit 0
 #   managed-merge → {"outcome":"MERGED","pr":…,"mergedAt":…}                exit 0
@@ -76,6 +80,8 @@
 #                    {"outcome":"MERGED","pr":…,"mergedAt":…}          exit 0
 #                    {"outcome":"MERGE_GROUP_FAILED","pr":…,"run_id":…} exit 7
 #                    {"outcome":"DEQUEUED","pr":…}                     exit 8
+#                    {"outcome":"QUEUE_STALLED","pr":…,
+#                     "enqueued_secs":…,"merge_group_runs":0}         exit 10
 #   error  → {"outcome":"ERROR","error":…}                           exit 1
 # Exit codes: 0 success; 1 ERROR (bad input / failed call); 3 CONFLICTING/DIRTY
 # terminal-bad (poll, and managed-merge's post-merge confirm poll); 4 TIMEOUT/
@@ -87,7 +93,10 @@
 # (diagnose-queue: the PR left the queue with no failing group run — an entry
 # dropped during churn); 9 DRAFT (queue: the PR is a draft, which GitHub refuses
 # to auto-merge — a NAMED state with a named remedy, never a raw
-# enablePullRequestAutoMerge string). MERGED is the SOLE success check for poll and for
+# enablePullRequestAutoMerge string); 10 QUEUE_STALLED (diagnose-queue: the PR
+# is STILL enqueued but has been for longer than BUILD_QUEUE_STALL_AFTER with
+# ZERO merge_group runs ever dispatched for it — a stalled queue, not a slow
+# one, so the caller stops waiting instead of re-polling forever). MERGED is the SOLE success check for poll and for
 # managed-merge's confirm step — never "closed", never "checks green" — so a
 # PR closed-without-merge can never read as merged (the #130 premature-close
 # class).
@@ -108,6 +117,28 @@ _GATE_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$_GATE_HERE/../board/lib/board.sh" ] && source "$_GATE_HERE/../board/lib/board.sh"
 
 _gate_gh() { gh "$@"; }
+
+# Second injection seam: wall-clock. Only the queue-stall age computation reads
+# it, and a test that could not pin "now" would have to embed a moving
+# timestamp — so the clock gets the same override treatment as `gh` (mirrors
+# reconcile.sh's `_reconcile_now`). Production is plain epoch seconds.
+_gate_now() { date +%s; }
+
+# Parse an ISO-8601 UTC timestamp ("2026-06-07T12:00:00Z", as the GitHub API
+# emits enqueuedAt) to epoch seconds, portably: GNU `date -d` first, then BSD
+# `date -j -f` (macOS ships no GNU date). Prints NOTHING on a missing or
+# unparseable value so the caller fails safe — an unreadable timestamp must
+# never manufacture a stall verdict. TZ=UTC is FORCED on both branches: BSD's
+# `date -j -f` treats the trailing 'Z' as a literal rather than a zone, so
+# without it the stamp parses in the host's local time and the resulting epoch
+# is skewed by the UTC offset while `_gate_now` is true UTC.
+_gate_epoch_of() {
+  local iso="$1"
+  [ -n "$iso" ] || return 0
+  TZ=UTC date -d "$iso" +%s 2>/dev/null && return 0
+  TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null && return 0
+  return 0
+}
 
 command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not found"}'; exit 1; }
 
@@ -453,7 +484,9 @@ cmd_nudge() {
 # Poll state until terminal. MERGED is the SOLE success check (state=="MERGED"
 # AND a non-null mergedAt) → exit 0. A CONFLICTING mergeable or a DIRTY
 # mergeStateStatus is a terminal-bad outcome → exit 3 (the merge cannot land
-# without intervention). Running out the deadline → TIMEOUT exit 4. A PR that
+# without intervention). Running out the deadline → TIMEOUT exit 4, carrying the
+# `diagnose-queue` verdict as `reason`/`diagnosis` (temperloop#1178) so a caller
+# can tell a slow queue from a stalled one. A PR that
 # goes CLOSED without merging never reads as MERGED — this is the #130
 # premature-close guard.
 cmd_poll() {
@@ -494,7 +527,22 @@ cmd_poll() {
       exit 3
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
-      jq -cn --argjson pr "$pr" --argjson waited "$SECONDS" '{outcome:"TIMEOUT", pr:$pr, waited:$waited}'
+      # A bare `waited` count cannot tell "try again later" from "stop waiting,
+      # this needs a human" — so the deadline runs the SAME diagnose-queue probe
+      # and the TIMEOUT carries its reason (temperloop#1178). Fail-open by
+      # construction: diagnose's own die() writes to fd 3, which is redirected
+      # away here, so an unreachable/erroring probe leaves the pre-existing bare
+      # TIMEOUT shape (and exit 4) exactly as before.
+      local dq dq_outcome
+      dq="$( (cmd_diagnose_queue "$owner_repo" "$pr") 3>/dev/null 2>/dev/null )" || true
+      dq_outcome="$(jq -r '.outcome // empty' <<<"$dq" 2>/dev/null || echo "")"
+      if [ -n "$dq_outcome" ]; then
+        jq -cn --argjson pr "$pr" --argjson waited "$SECONDS" \
+               --arg reason "$dq_outcome" --argjson diag "$dq" \
+          '{outcome:"TIMEOUT", pr:$pr, waited:$waited, reason:$reason, diagnosis:$diag}'
+      else
+        jq -cn --argjson pr "$pr" --argjson waited "$SECONDS" '{outcome:"TIMEOUT", pr:$pr, waited:$waited}'
+      fi
       exit 4
     fi
     sleep "$interval"
@@ -514,7 +562,8 @@ cmd_poll() {
 #       "still in the queue". The gh `--json mergeQueueEntry` CLI field is absent
 #       (build.md's NATIVE poll predicate), but the GraphQL field works —
 #       pr-enqueue.sh already relies on it. Non-empty state ⇒ QUEUED (keep
-#       waiting; NOT a dequeue).
+#       waiting; NOT a dequeue) — UNLESS the entry is also stale with no
+#       merge_group run ever dispatched, which is QUEUE_STALLED (see below).
 #   (2) merge_group workflow runs via REST — repos/<r>/actions/runs?event=
 #       merge_group. When not in the queue, the LATEST run whose trial branch
 #       references this PR (gh-readonly-queue/<base>/pr-<N>-<sha>) says WHY it
@@ -540,13 +589,13 @@ cmd_diagnose_queue() {
   # scalar with its OWN jq (never a tab-joined `read` — tab is IFS-whitespace, so
   # `read` would silently trim an empty leading field, exactly the not-in-queue
   # case). Mirrors pr-enqueue.sh's per-field jq -r style.
-  local q cj merged mergedat qstate
+  local q cj merged mergedat qstate enqueued_at
   # shellcheck disable=SC2016  # $owner/$name/$number are GraphQL vars, not shell
   q='query($owner:String!,$name:String!,$number:Int!){
        repository(owner:$owner,name:$name){
          pullRequest(number:$number){
            merged mergedAt
-           mergeQueueEntry{ state position }
+           mergeQueueEntry{ state position enqueuedAt }
          }
        }
      }'
@@ -556,6 +605,7 @@ cmd_diagnose_queue() {
     || die "unparseable merge-queue membership response for #$pr"
   mergedat="$(jq -r '.data.repository.pullRequest.mergedAt // ""' <<<"$cj" 2>/dev/null || echo "")"
   qstate="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.state // ""' <<<"$cj" 2>/dev/null || echo "")"
+  enqueued_at="$(jq -r '.data.repository.pullRequest.mergeQueueEntry.enqueuedAt // ""' <<<"$cj" 2>/dev/null || echo "")"
 
   # Already landed (a race — cmd_poll's own MERGED check normally wins first;
   # diagnose is defensive) → report MERGED so the caller goes to 4d, not recovery.
@@ -563,8 +613,40 @@ cmd_diagnose_queue() {
     jq -cn --argjson pr "$pr" --arg at "$mergedat" '{outcome:"MERGED", pr:$pr, mergedAt:$at}'
     return 0
   fi
-  # Still enqueued → keep waiting; a slow queue is not a dequeue.
+  # Still enqueued → normally keep waiting; a slow queue is not a dequeue. But
+  # "enqueued" alone cannot tell a SLOW queue from a STALLED one (temperloop#1178):
+  # the incident's hand-run probe was exactly this — a healthy entry gets a
+  # merge_group run on gh-readonly-queue/<base>/pr-<N>-<sha> within about a
+  # minute of enqueue, while a stalled entry gets NONE however long it sits.
+  # So: age the entry from mergeQueueEntry.enqueuedAt, and only once it is past
+  # BUILD_QUEUE_STALL_AFTER spend the second request to count referencing
+  # merge_group runs. Zero runs at that age ⇒ QUEUE_STALLED (stop waiting; this
+  # needs a human). Under the threshold — or ANY referencing run, however old —
+  # stays QUEUED, so the ~2.5 min a queue's own checks legitimately take can
+  # never trip this (that window is the whole reason "is it enqueued?" alone is
+  # useless). An unparseable/absent enqueuedAt also stays QUEUED: fail safe,
+  # never manufacture a stall from a timestamp we could not read.
   if [ -n "$qstate" ]; then
+    local enq_epoch enqueued_secs mg_raw mg_count
+    enq_epoch="$(_gate_epoch_of "$enqueued_at")"
+    if [ -n "$enq_epoch" ]; then
+      enqueued_secs=$(( $(_gate_now) - enq_epoch ))
+      # Clock skew between the API stamp and this host must never read negative.
+      if [ "$enqueued_secs" -lt 0 ]; then enqueued_secs=0; fi
+      if [ "$enqueued_secs" -ge "${BUILD_QUEUE_STALL_AFTER:-600}" ]; then
+        mg_raw="$(_gate_gh api "repos/$owner_repo/actions/runs?event=merge_group&per_page=100" 2>&1)" \
+          || die "merge_group run query failed for #$pr: $mg_raw"
+        mg_count="$(jq --arg n "$pr" \
+              '[.workflow_runs[]? | select((.head_branch // "") | test("/pr-" + $n + "-"))] | length' \
+              <<<"$mg_raw" 2>/dev/null)" \
+          || die "unparseable merge_group run response for #$pr"
+        if [ "${mg_count:-0}" -eq 0 ]; then
+          jq -cn --argjson pr "$pr" --argjson secs "$enqueued_secs" \
+            '{outcome:"QUEUE_STALLED", pr:$pr, enqueued_secs:$secs, merge_group_runs:0}'
+          return 10
+        fi
+      fi
+    fi
     jq -cn --argjson pr "$pr" --arg s "$qstate" '{outcome:"QUEUED", pr:$pr, queueState:$s}'
     return 0
   fi
