@@ -243,6 +243,14 @@ install-manifest-lib workflows/scripts/tests/test_install_manifest.sh
 # lands first (library-only); the subcommand, provider seam, teardown, and
 # /promote land in later same-epic items under this same slug ──────────────
 testbed workflows/scripts/testbed/**
+# The subcommand itself (temperloop#1229). These two rows OVERRIDE the
+# broader `install-cli bin/*` claim above by LONGEST MATCH — `temperloop
+# testbed` is its own operator-facing feature (it creates real remote
+# repositories and hands off to `init`), not part of install/doctor's
+# newcomer-CLI surface, exactly as uninstall-cli and configure-config-cli
+# carve their own subcommand files out of the same glob.
+testbed bin/subcommands/testbed.sh
+testbed bin/subcommands/tests/test_testbed.sh
 # ── version-embedding — the release version stamped into the shipped files
 # (temperloop#677): the committed VERSION file and its drift-guard gate. The
 # resolver helper lives in bin/lib/common.sh (claimed by install-cli's bin

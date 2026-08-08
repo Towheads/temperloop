@@ -21,7 +21,8 @@ TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 	validate-knowledge-search-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
-	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source
+	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source \
+	test-testbed-command
 
 help:
 	@echo "Targets:"
@@ -60,6 +61,7 @@ help:
 	@echo "  test-proposal-pr        Proposal-PR generator (tree-diff -> reviewable PR) tests"
 	@echo "  test-try                foundation try (zero-config, zero-write taste) tests"
 	@echo "  test-testbed-source     Testbed source-provider seam + mirror-from-repo tests"
+	@echo "  test-testbed-command    'temperloop testbed' one-command evaluation-build tests"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -287,6 +289,17 @@ test-install-worktree-guard:
 test-testbed-record:
 	@echo "==> Running testbed-record tests..."
 	@bash workflows/scripts/testbed/tests/test_testbed_record.sh
+
+# `temperloop testbed` — the one-command evaluation build (temperloop#1229).
+# Named explicitly rather than left to test-try's bin/subcommands/tests/*.sh
+# glob: this suite is the FIRST consumer of BOTH Level 0 testbed seams, so it
+# must also be selected when workflows/scripts/testbed/** changes — which
+# test-try's `bin/**`-scoped gate-paths row cannot express. Same
+# named-target/globbed-target overlap test-testbed-record already carries with
+# test-testbed-source, and for the same reason.
+test-testbed-command:
+	@echo "==> Running temperloop testbed subcommand tests..."
+	@bash bin/subcommands/tests/test_testbed.sh
 
 test-prune-branches:
 	@echo "==> Running prune-merged-branches tests..."

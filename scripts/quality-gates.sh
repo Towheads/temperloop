@@ -746,6 +746,19 @@ KERNEL_GATES=(
   # repos (produce_git) and a fake `gh` on PATH (produce_issues), zero
   # network — mirrors test-board's glob-based kernel coverage (F#836).
   "make test-testbed-source"
+  # `temperloop testbed` subcommand tests (temperloop#1229, epic #1117
+  # Produces 1/3): subprocess suite for bin/subcommands/testbed.sh — the
+  # FIRST consumer of both Level 0 testbed seams, so it is where a seam
+  # mismatch surfaces. Fake `gh` AND fake `git` on PATH log every call
+  # (test_try.sh's wrapper pattern, extended to git because this command's
+  # mutating step is a `git push --mirror`), plus a before/after file-tree
+  # diff of the source checkout and the XDG state dir for the --dry-run
+  # zero-write proof, and record-file snapshots taken AT the push and AT the
+  # issue copy for the per-step-flush proof. Zero network. It carries its own
+  # gate-paths.tsv row (scoped to bin/subcommands/testbed*.sh AND
+  # workflows/scripts/testbed/**) rather than riding test-try's glob, so a
+  # change to either consumed seam re-runs its only call site's suite.
+  "make test-testbed-command"
   "make test-kernel-manifest"
   # Subtree-root support for check-kernel-manifest.sh (temperloop#680,
   # derived from foundation#870): synthetic-fixture suite proving the guard

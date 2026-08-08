@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+#
+# Tests for testbed.sh — `temperloop testbed` (epic temperloop#1117, item
+# testbed-command / #1229).
+#
+# Zero network. A fake `gh` AND a fake `git` sit on PATH ahead of the real
+# ones, following bin/subcommands/tests/test_try.sh's wrapper pattern — this
+# is the WRITE-INTERCEPTING WRAPPER the item's `--dry-run` acceptance
+# criterion asks for, extended to `git` because this command's mutating step
+# is a `git push --mirror`, not only a `gh` call:
+#   - the fake `gh` logs every call it sees; a dry run's log is asserted to
+#     contain ONLY read-shaped calls (`auth status`, `api user`,
+#     `repo view`) and never `repo create` / `issue create` / `-X POST`.
+#   - the fake `git` logs every call it sees and DELEGATES read-shaped calls
+#     to the real binary, but never delegates a mutating verb (`push`,
+#     `clone`, `commit`, ...) — so a dry-run leg cannot mutate the fixture
+#     even by accident, and the log proves no such call was attempted.
+#   - the fixture repo's file tree AND the XDG state dir that holds the
+#     testbed record are diffed byte-for-byte before/after every zero-write
+#     leg (proves testbed.sh itself writes nothing, anywhere).
+#
+# PER-STEP FLUSH IS PROVEN STRUCTURALLY, NOT BY READING THE FINAL FILE. The
+# fakes SNAPSHOT the record file at the exact moment the mirror push and the
+# issue copy are invoked, so T6 can assert the record already carried
+# `repo_created` (and only that) when the push ran, and `mirror_pushed` (and
+# not yet `issues_copied`) when the issue copy ran. A record written once at
+# the end would pass a final-state assertion and fail these.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTBED="$HERE/../testbed.sh"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+DISPATCHER="$REPO_ROOT/bin/temperloop"
+
+fail() { printf 'FAIL: %b\n' "$1" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
+command -v git >/dev/null 2>&1 || { echo "SKIP: git not on PATH"; exit 0; }
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/testbed-test-XXXXXX")"
+cleanup() { rm -rf "$WORK"; }
+trap cleanup EXIT
+
+REAL_GIT="$(command -v git)"
+export REAL_GIT
+
+# --- fixture git repo (built with the REAL git, before PATH is shadowed) ---
+REPO="$WORK/test-repo"
+mkdir -p "$REPO"
+git -C "$REPO" init -q -b main
+git -C "$REPO" config user.email "test@example.com"
+git -C "$REPO" config user.name "Test"
+git -C "$REPO" remote add origin "https://github.com/test-owner/test-repo.git"
+echo one > "$REPO/a.txt"
+git -C "$REPO" add -A
+git -C "$REPO" commit -q -m "chore: seed fixture"
+
+# A plain, non-git directory — used to drive the PROVIDER's own pre-flight
+# check to failure (its `skipped —` wording, distinct from the driver's
+# `cannot proceed —`).
+NOTREPO="$WORK/not-a-repo"
+mkdir -p "$NOTREPO"
+
+# --- machine-scoped state root the record library writes under ------------
+STATE="$WORK/state"
+mkdir -p "$STATE"
+export XDG_STATE_HOME="$STATE"
+RECORD_FILE="$STATE/temperloop/testbed-record.json"
+export RECORD_FILE
+
+SNAP_AT_PUSH="$WORK/record-at-push.json"
+SNAP_AT_ISSUES="$WORK/record-at-issues.json"
+export SNAP_AT_PUSH SNAP_AT_ISSUES
+
+# --- fakes ----------------------------------------------------------------
+BIN="$WORK/bin"
+mkdir -p "$BIN"
+GH_CALL_LOG="$WORK/gh-calls.log"
+GIT_CALL_LOG="$WORK/git-calls.log"
+export GH_CALL_LOG GIT_CALL_LOG
+
+cat > "$BIN/gh" <<'FAKE_GH_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "${1:-}" in
+  auth) exit "${FAKE_GH_AUTH_RC:-0}" ;;
+  api)
+    case "${2:-}" in
+      user) printf '%s\n' "${FAKE_GH_LOGIN:-test-owner}"; exit 0 ;;
+    esac
+    exit 0
+    ;;
+  repo)
+    case "${2:-}" in
+      # rc 1 == "no such repo" == the candidate name is FREE. This is the
+      # read the driver's collision-safe uniquification is built on.
+      view) exit "${FAKE_GH_REPO_VIEW_RC:-1}" ;;
+      create)
+        printf 'https://github.com/%s\n' "${3:-}"
+        exit "${FAKE_GH_REPO_CREATE_RC:-0}"
+        ;;
+    esac
+    exit 0
+    ;;
+  issue)
+    case "${2:-}" in
+      list)
+        # produce_issues' first call — snapshot the record AS IT STANDS at
+        # the instant the issue-copy step begins.
+        [ -f "$RECORD_FILE" ] && cp "$RECORD_FILE" "$SNAP_AT_ISSUES"
+        printf '%s' "${FAKE_GH_ISSUES_JSON:-[]}"
+        exit 0
+        ;;
+      create) printf 'https://github.com/test-owner/test-repo-testbed/issues/1\n'; exit 0 ;;
+    esac
+    exit 0
+    ;;
+esac
+exit 0
+FAKE_GH_EOF
+chmod +x "$BIN/gh"
+
+cat > "$BIN/git" <<'FAKE_GIT_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GIT_CALL_LOG"
+for a in "$@"; do
+  case "$a" in
+    push|clone|commit|fetch|remote-add)
+      # Mutating-shaped: NEVER delegated to the real binary, so no leg of
+      # this suite can mutate anything through it.
+      if [ "$a" = push ]; then
+        # produce_git — snapshot the record AS IT STANDS at the instant the
+        # mirror push begins.
+        [ -f "$RECORD_FILE" ] && cp "$RECORD_FILE" "$SNAP_AT_PUSH"
+      fi
+      exit "${FAKE_GIT_MUTATE_RC:-0}"
+      ;;
+  esac
+done
+exec "$REAL_GIT" "$@"
+FAKE_GIT_EOF
+chmod +x "$BIN/git"
+
+export PATH="$BIN:$PATH"
+
+# --- helpers --------------------------------------------------------------
+out=""
+rc=0
+run() {
+  local expected="$1"; shift
+  : > "$GH_CALL_LOG"
+  : > "$GIT_CALL_LOG"
+  set +e
+  out="$(bash "$TESTBED" "$@" 2>&1 < /dev/null)"
+  rc=$?
+  set -e
+  if [ "$expected" != "any" ] && [ "$rc" -ne "$expected" ]; then
+    fail "expected exit $expected, got $rc\n--- output ---\n$out"
+  fi
+}
+
+assert_contains() {
+  case "$out" in
+    *"$1"*) ;;
+    *) fail "expected output to contain '$1'\n--- output ---\n$out" ;;
+  esac
+}
+
+assert_not_contains() {
+  case "$out" in
+    *"$1"*) fail "expected output NOT to contain '$1'\n--- output ---\n$out" ;;
+  esac
+}
+
+# The zero-write proof, applied to both logs at once.
+assert_no_mutating_calls() {
+  local label="$1" line
+  while IFS= read -r line; do
+    case "$line" in
+      *"repo create"*|*"issue create"*|*"repo delete"*|*"-X POST"*|*"-X PATCH"*|*"-X DELETE"*|*"label create"*)
+        fail "$label must issue no mutating gh call, got: $line"
+        ;;
+    esac
+  done < "$GH_CALL_LOG"
+  while IFS= read -r line; do
+    case "$line" in
+      *push*|*clone*|*commit*|*" init"*)
+        fail "$label must issue no mutating git call, got: $line"
+        ;;
+    esac
+  done < "$GIT_CALL_LOG"
+}
+
+tree_of() { (cd "$1" 2>/dev/null && find . -type f -exec shasum {} \; | sort) || true; }
+
+# =============================================================================
+# T1 -- REGISTRATION is the file's presence plus its `# description:` line
+# under the dispatcher's existing discovery convention. No dispatch-table
+# edit exists, and none is needed.
+# =============================================================================
+grep -q '^# description: ' "$TESTBED" \
+  || fail "testbed.sh must carry a '# description: ' header line (the dispatcher's discovery convention)"
+
+if grep -q 'testbed' "$DISPATCHER"; then
+  fail "bin/temperloop must contain NO reference to 'testbed' — registration is file discovery, never a dispatch-table edit"
+fi
+
+help_out="$(bash "$DISPATCHER" help 2>&1)"
+case "$help_out" in
+  *"testbed"*) ;;
+  *) fail "temperloop help must list the discovered 'testbed' subcommand, got:\n$help_out" ;;
+esac
+case "$help_out" in
+  *"evaluation testbed"*) ;;
+  *) fail "temperloop help must render testbed.sh's own '# description:' text, got:\n$help_out" ;;
+esac
+echo "PASS: registration — file presence + '# description:' line, zero dispatcher edits"
+
+# =============================================================================
+# T2 -- the driver is PROVIDER-AGNOSTIC: no `case` on provider kind anywhere.
+# That per-provider branch is exactly what source.sh's four-function seam
+# exists to eliminate downstream, so its absence is asserted structurally
+# rather than left to review.
+# =============================================================================
+# Comments are stripped first: this file's own header DESCRIBES the branch it
+# refuses to contain, and prose that names a construct is not that construct
+# (the same comment-stripping convention check-setting-registry.sh applies to
+# its own seam sweep).
+if sed 's/[[:space:]]*#.*$//' "$TESTBED" \
+    | grep -nE 'case[[:space:]]+"?\$\{?(source_kind|resolved_kind|kind)'; then
+  fail "testbed.sh must contain no 'case' on the provider kind — the seam exists to eliminate it"
+fi
+for fn in testbed_source_describe testbed_source_preflight_checks \
+          testbed_source_produce_git testbed_source_produce_issues \
+          testbed_record_add testbed_record_mark_step; do
+  grep -q "$fn" "$TESTBED" || fail "testbed.sh must call the landed seam function $fn, not reimplement it"
+done
+if grep -q '_testbed_provider_' "$TESTBED"; then
+  fail "testbed.sh must never name a provider's own functions directly — it dispatches through the seam"
+fi
+echo "PASS: provider-agnostic driver — no kind branch, both seams consumed by their public API"
+
+# =============================================================================
+# T3 -- --dry-run performs ZERO WRITES: proven by the fake gh/git call logs
+# plus a before/after file-tree diff of BOTH the source checkout and the XDG
+# state dir. Runs with a non-tty stdin and NO --yes, which a real run would
+# refuse — a preview must stay runnable unattended.
+# =============================================================================
+repo_before="$(tree_of "$REPO")"
+state_before="$(tree_of "$STATE")"
+
+run 0 --dir "$REPO" --dry-run
+
+repo_after="$(tree_of "$REPO")"
+state_after="$(tree_of "$STATE")"
+[ "$repo_before" = "$repo_after" ] || fail "--dry-run must never write to the source checkout"
+[ "$state_before" = "$state_after" ] || fail "--dry-run must never write the testbed record (XDG state dir changed)"
+[ ! -f "$RECORD_FILE" ] || fail "--dry-run must not create $RECORD_FILE"
+assert_no_mutating_calls "--dry-run"
+assert_contains "[dry-run] would run: gh repo create test-owner/test-repo-testbed --private"
+assert_contains "[dry-run] would run: produce_git"
+assert_contains "[dry-run] would run: produce_issues"
+assert_contains "nothing is created, so there is nothing to consent to"
+# The read-shaped calls it DID make are the pre-flight reads, and they ran.
+grep -q "auth status" "$GH_CALL_LOG" || fail "--dry-run should still run the all-reads pre-flight (gh auth status)"
+grep -q "repo view" "$GH_CALL_LOG" || fail "--dry-run should still resolve a collision-free name (gh repo view)"
+echo "PASS: --dry-run — zero writes (fake gh/git logs + before/after tree diff), pre-flight still ran"
+
+# =============================================================================
+# T4 -- the CONSENT GATE refuses on a non-tty stdin with no --yes. The guard
+# `try --demo` established, carried to a command that now creates REAL remote
+# repositories — so the refusal must also leave nothing behind.
+# =============================================================================
+run 1 --dir "$REPO"
+assert_contains "refusing to run non-interactively without --yes"
+assert_contains "Nothing was created."
+assert_no_mutating_calls "a refused consent gate"
+[ ! -f "$RECORD_FILE" ] || fail "a refused consent gate must not create $RECORD_FILE"
+echo "PASS: consent gate — refuses a non-tty stdin with no --yes, zero writes"
+
+# =============================================================================
+# T5 -- PRE-FLIGHT IS ALL READS, and either half of the union refuses
+# legibly and writes nothing:
+#   (a) a DRIVER check fails with `cannot proceed — <fix>`
+#   (b) a PROVIDER check fails with `skipped — <fix>`
+# =============================================================================
+FAKE_GH_AUTH_RC=1 run 1 --dir "$REPO" --yes
+assert_contains "cannot proceed — gh is not authenticated (run: gh auth login)"
+assert_contains "pre-flight failed; nothing was created"
+assert_no_mutating_calls "a failed driver pre-flight check"
+[ ! -f "$RECORD_FILE" ] || fail "a failed pre-flight must not create $RECORD_FILE"
+echo "PASS: pre-flight (driver half) — 'cannot proceed —' names the fix, zero writes"
+
+run 1 --dir "$NOTREPO" --yes
+assert_contains "skipped —"
+assert_contains "is not a git working tree"
+assert_contains "pre-flight failed; nothing was created"
+assert_no_mutating_calls "a failed provider pre-flight check"
+[ ! -f "$RECORD_FILE" ] || fail "a failed pre-flight must not create $RECORD_FILE"
+echo "PASS: pre-flight (provider half) — 'skipped —' names the fix, zero writes"
+
+# =============================================================================
+# T6 -- the FIXED DRIVER, end to end: create repo -> flush -> produce_git ->
+# flush -> produce_issues -> flush -> handoff. Asserted by the record's state
+# AT each step (snapshotted by the fakes), not just its final state.
+# =============================================================================
+export FAKE_GH_ISSUES_JSON='[{"number":7,"title":"seed bug","body":"the body"}]'
+rm -f "$SNAP_AT_PUSH" "$SNAP_AT_ISSUES"
+
+run 0 --dir "$REPO" --yes
+
+[ -f "$RECORD_FILE" ] || fail "a completed run must write $RECORD_FILE"
+key="test-owner/test-repo-testbed"
+
+entry="$(jq -c --arg k "$key" '.testbeds[$k][0]' "$RECORD_FILE")"
+[ "$entry" != "null" ] || fail "record must carry an entry keyed by the CREATED testbed's own owner/name ($key), got: $(cat "$RECORD_FILE")"
+[ "$(jq -r '.source_kind' <<<"$entry")" = "mirror-from-repo" ] || fail "source_kind must come from describe(), got: $entry"
+[ "$(jq -r '.source_repo' <<<"$entry")" = "test-owner/test-repo" ] || fail "source_repo must be the source's own slug, got: $entry"
+[ "$(jq -r '.promotable' <<<"$entry")" = "true" ] || fail "promotable must come from describe(), got: $entry"
+[ "$(jq -r '.artifacts | .repo_created and .mirror_pushed and .issues_copied' <<<"$entry")" = "true" ] \
+  || fail "every artifact must be flushed true by the end, got: $entry"
+
+# --- the per-step flush proof ---------------------------------------------
+[ -f "$SNAP_AT_PUSH" ] || fail "the mirror push must run AFTER the record exists (no snapshot was taken)"
+at_push="$(jq -c --arg k "$key" '.testbeds[$k][0].artifacts' "$SNAP_AT_PUSH")"
+[ "$(jq -r '.repo_created' <<<"$at_push")" = "true" ] || fail "repo_created must already be flushed when produce_git runs, got: $at_push"
+[ "$(jq -r '.mirror_pushed' <<<"$at_push")" = "false" ] || fail "mirror_pushed must NOT be flushed before produce_git runs, got: $at_push"
+[ "$(jq -r '.issues_copied' <<<"$at_push")" = "false" ] || fail "issues_copied must NOT be flushed before produce_git runs, got: $at_push"
+
+[ -f "$SNAP_AT_ISSUES" ] || fail "the issue copy must run AFTER the record exists (no snapshot was taken)"
+at_issues="$(jq -c --arg k "$key" '.testbeds[$k][0].artifacts' "$SNAP_AT_ISSUES")"
+[ "$(jq -r '.mirror_pushed' <<<"$at_issues")" = "true" ] || fail "mirror_pushed must be flushed BEFORE produce_issues runs, got: $at_issues"
+[ "$(jq -r '.issues_copied' <<<"$at_issues")" = "false" ] || fail "issues_copied must NOT be flushed before produce_issues runs, got: $at_issues"
+
+# --- the provider, not the driver, stamps provenance ----------------------
+grep -q "copied from test-owner/test-repo#7" "$GH_CALL_LOG" \
+  || fail "produce_issues must stamp its own 'copied from <owner>/<repo>#<N>' provenance line; log: $(cat "$GH_CALL_LOG")"
+
+# --- the handoff block ----------------------------------------------------
+assert_contains "https://github.com/test-owner/test-repo-testbed"
+assert_contains "    cd test-repo-testbed"
+assert_contains "    temperloop init"
+assert_contains "next step: temperloop init"
+assert_contains "YOUR EVALUATION TESTBED IS READY"
+# Nothing is printed after the handoff (temperloop#781): its closing rule is
+# the very last non-empty line of the run.
+last_line="$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -n1)"
+case "$last_line" in
+  ================================================================) ;;
+  *) fail "the handoff must be the LAST thing printed, got last line: $last_line" ;;
+esac
+echo "PASS: fixed driver end to end — per-step flush proven at each step, handoff prints URL + cd + next command"
+
+echo "OK: test_testbed.sh"
