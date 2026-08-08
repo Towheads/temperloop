@@ -36,6 +36,26 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **The drain no longer lexicon-greps the expanded command spec as operator
+  signal** (#1199). Claude Code writes a slash-command invocation as TWO user
+  turns: the `<command-name>` tag block (~115 chars), then the **expanded
+  command spec prose** (~133k chars in the cited stub) — which carries no
+  `<command-*>` tag at all. `scan_stub.py`'s purely tag-based
+  `_CMD_EXPANSION_PATTERNS` matched only the first, so the entire spec body was
+  scanned as though the operator had typed it: the stub
+  `2026-07-29-0254-foundation.cron-e5e70c47.md` yielded 38 lexicon matches, all
+  from turn 1, all the tidy spec quoting its own tells. Every
+  `claude -p "/<cmd>"` cron run (tidy, build, sweep, triage, check-in) hit this
+  on every run, making it the drain's highest-volume false-positive source.
+  `extract_user_turns` now also excludes the **single** user turn immediately
+  adjacent to a `<command-name>` invocation. The rule is deliberately narrow:
+  one turn of adjacency (a genuine operator turn later in the session is
+  untouched), user-role only (an adjacent assistant turn means the command
+  produced no expansion turn), and **no size threshold** — a bare length cutoff
+  would silently drop long genuine operator turns. F#1137's
+  `spec_authoring_context` damping does not cover this case: it keys on an
+  Edit/Write to a tell-defining file, and here the session never *edited* a
+  spec, it merely *received* one as its prompt.
 - **A draft PR is now a named state in the merge path, not GitHub's raw
   enqueue error** (#1180). `gate.sh queue` enqueued blind, so a draft PR — which
   GitHub refuses to auto-merge — failed with the raw string
