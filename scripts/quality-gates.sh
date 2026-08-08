@@ -739,6 +739,13 @@ KERNEL_GATES=(
   # for kernel/workflows/scripts/proposal/proposal-pr.sh, fake `gh` on PATH,
   # zero network — mirrors test-board's glob-based kernel coverage (F#836).
   "make test-proposal-pr"
+  # Testbed source-provider seam tests (temperloop#1228, epic #1117 Produces
+  # 2): sourced-library suite for
+  # kernel/workflows/scripts/testbed/source.sh — the four-function seam
+  # driven with a double, plus mirror-from-repo against real local git
+  # repos (produce_git) and a fake `gh` on PATH (produce_issues), zero
+  # network — mirrors test-board's glob-based kernel coverage (F#836).
+  "make test-testbed-source"
   "make test-kernel-manifest"
   # Subtree-root support for check-kernel-manifest.sh (temperloop#680,
   # derived from foundation#870): synthetic-fixture suite proving the guard

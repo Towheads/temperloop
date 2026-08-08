@@ -249,6 +249,8 @@ kernel workflows/scripts/demo/*
 kernel workflows/scripts/demo/tests/*
 kernel workflows/scripts/proposal/*
 kernel workflows/scripts/proposal/tests/*
+kernel workflows/scripts/testbed/*
+kernel workflows/scripts/testbed/tests/*
 # Overlay renderer drop-in convention (analogous to scripts/quality-gates.d/,
 # a sibling `.d` dir next to the script it extends): a private overlay repo
 # drops extra page-producing modules here. Prospective — this directory

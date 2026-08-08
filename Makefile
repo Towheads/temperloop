@@ -13,6 +13,7 @@ DEMO_SRC := $(FOUNDATION)/workflows/scripts/demo
 PROPOSAL_SRC := $(FOUNDATION)/workflows/scripts/proposal
 BIN_SRC := $(FOUNDATION)/bin
 HOOKS_SRC := $(FOUNDATION)/claude/hooks
+TESTBED_SRC := $(FOUNDATION)/workflows/scripts/testbed
 
 .PHONY: help shellcheck quality-gates test-board test-build test-build-workflow \
 	test-hooks test-install test-install-links test-install-worktree-guard test-testbed-record \
@@ -20,7 +21,7 @@ HOOKS_SRC := $(FOUNDATION)/claude/hooks
 	validate-knowledge-search-emit \
 	validate-lexicon validate-template-refs test-scan-stub test-vault-hygiene test-tally-findings test-env-hygiene-report lint-pr-body-test test-stranger-config \
 	test-kernel-manifest test-kernel-denylist test-kernel-gitleaks test-kernel-prerename test-kernel-terminology test-pr-leak-guard test-producer-egress docs \
-	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try
+	test-docs-generator test-conventions-probe test-demo test-proposal-pr guard-install-worktree test-try test-testbed-source
 
 help:
 	@echo "Targets:"
@@ -58,6 +59,7 @@ help:
 	@echo "  test-demo               Demo-repo seed script tests"
 	@echo "  test-proposal-pr        Proposal-PR generator (tree-diff -> reviewable PR) tests"
 	@echo "  test-try                foundation try (zero-config, zero-write taste) tests"
+	@echo "  test-testbed-source     Testbed source-provider seam + mirror-from-repo tests"
 
 # Canonical-checkout guard (foundation #509): refuses to run from a linked git
 # worktree unless FORCE_REHOME=1. Not wired into any target below today (no
@@ -132,6 +134,14 @@ test-proposal-pr:
 test-try:
 	@echo "==> Running foundation try tests..."
 	@for t in $(BIN_SRC)/subcommands/tests/test_*.sh; do \
+		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
+	done
+
+# Glob-based, mirroring test-board/test-demo (F#836): kernel coverage tracks
+# whatever testbed tests are actually vendored.
+test-testbed-source:
+	@echo "==> Running testbed source-provider tests..."
+	@for t in $(TESTBED_SRC)/tests/test_*.sh; do \
 		if out="$$(bash "$$t" 2>&1)"; then echo "  [ok] $$(basename $$t)"; else echo "  [FAIL] $$(basename $$t)"; printf '%s\n' "$$out" | sed 's/^/      /'; exit 1; fi; \
 	done
 

@@ -262,6 +262,7 @@ make test-conventions-probe	workflows/scripts/probe/** bin/**
 make test-try	bin/** workflows/scripts/probe/**
 make test-demo	workflows/scripts/demo/**
 make test-proposal-pr	workflows/scripts/proposal/**
+make test-testbed-source	workflows/scripts/testbed/**
 bash workflows/scripts/tests/test_rename_compat.sh	bin/** workflows/scripts/tests/test_rename_compat.sh
 bash workflows/scripts/tests/test_bootstrap_tag_pinning.sh	bin/** workflows/scripts/tests/test_bootstrap_tag_pinning.sh
 bash workflows/scripts/tests/test_version_embedding.sh	bin/** VERSION VERSIONING.md workflows/scripts/tests/test_version_embedding.sh
