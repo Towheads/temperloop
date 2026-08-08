@@ -83,7 +83,23 @@ cat > "$BIN/gh" <<'FAKE_GH_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_CALL_LOG"
 case "${1:-}" in
-  auth) exit "${FAKE_GH_AUTH_RC:-0}" ;;
+  auth)
+    case "${2:-}" in
+      status)
+        # scope.sh's primary path: `gh auth status --json hosts`. The
+        # scopes string is configurable per-test via FAKE_GH_SCOPES so a
+        # test can assert both "has delete_repo" and "does not" without two
+        # fakes — default has NO delete_repo (the common/unprivileged case).
+        if printf '%s\n' "$*" | grep -- '--json' >/dev/null; then
+          printf '{"hosts":{"github.com":[{"active":true,"scopes":"%s"}]}}\n' \
+            "${FAKE_GH_SCOPES:-gist, repo, workflow}"
+          exit 0
+        fi
+        exit "${FAKE_GH_AUTH_RC:-0}"
+        ;;
+    esac
+    exit "${FAKE_GH_AUTH_RC:-0}"
+    ;;
   api)
     case "${2:-}" in
       user) printf '%s\n' "${FAKE_GH_LOGIN:-test-owner}"; exit 0 ;;
@@ -98,6 +114,10 @@ case "${1:-}" in
       create)
         printf 'https://github.com/%s\n' "${3:-}"
         exit "${FAKE_GH_REPO_CREATE_RC:-0}"
+        ;;
+      delete)
+        printf 'deleted %s\n' "${3:-}"
+        exit "${FAKE_GH_REPO_DELETE_RC:-0}"
         ;;
     esac
     exit 0
@@ -350,5 +370,89 @@ case "$last_line" in
   *) fail "the handoff must be the LAST thing printed, got last line: $last_line" ;;
 esac
 echo "PASS: fixed driver end to end — per-step flush proven at each step, handoff prints URL + cd + next command"
+
+# =============================================================================
+# T7 -- --teardown WITHOUT the delete_repo scope degrades LEGIBLY (epic
+# #1117 Produces 7, temperloop#1231): exits 0, prints the one-line
+# `gh auth refresh -s delete_repo` remedy, issues NO mutating gh call, and
+# leaves the T6 record entry untouched. `gh auth login`'s default scope set
+# does not include delete_repo, so this is the common case, not an edge one.
+# =============================================================================
+key="test-owner/test-repo-testbed"
+[ -f "$RECORD_FILE" ] || fail "T7 setup: expected the T6 record entry to still exist at $key"
+record_before="$(cat "$RECORD_FILE")"
+
+export FAKE_GH_SCOPES="gist, repo, workflow"   # no delete_repo
+run 0 --teardown --repo "$key" --yes
+assert_contains "gh auth refresh -s delete_repo"
+assert_no_mutating_calls "--teardown without the delete_repo scope"
+[ "$(cat "$RECORD_FILE")" = "$record_before" ] || fail "T7: teardown without delete_repo scope must not modify the record, got: $(cat "$RECORD_FILE")"
+echo "PASS: --teardown without delete_repo scope — exits 0, prints the 'gh auth refresh -s delete_repo' remedy, zero mutating calls, record untouched"
+
+# =============================================================================
+# T8 -- --teardown WITH the delete_repo scope. --dry-run first (same
+# zero-write proof style as T3), then a real run that resolves the target
+# from a cwd with NO relation to the checkout that created the testbed — a
+# bare directory whose only connection is its 'origin' remote — proving
+# resolution is via the MACHINE-scoped record (record.sh), never a
+# tree-relative path.
+# =============================================================================
+TBCLONE="$WORK/tb-checkout"
+mkdir -p "$TBCLONE"
+git -C "$TBCLONE" init -q -b main
+git -C "$TBCLONE" remote add origin "https://github.com/test-owner/test-repo-testbed.git"
+
+export FAKE_GH_SCOPES="gist, delete_repo, repo"
+
+record_before="$(cat "$RECORD_FILE")"
+run 0 --teardown --dir "$TBCLONE" --dry-run
+assert_contains "[dry-run] would run: gh repo delete test-owner/test-repo-testbed --yes"
+assert_no_mutating_calls "--teardown --dry-run (delete_repo scope present)"
+[ "$(cat "$RECORD_FILE")" = "$record_before" ] || fail "T8: --teardown --dry-run must not modify the record, got: $(cat "$RECORD_FILE")"
+echo "PASS: --teardown --dry-run — zero writes even with the scope present"
+
+run 0 --teardown --dir "$TBCLONE" --yes
+assert_contains "Deleted test-owner/test-repo-testbed"
+grep -q "^repo delete test-owner/test-repo-testbed --yes" "$GH_CALL_LOG" \
+  || fail "T8: expected a 'gh repo delete test-owner/test-repo-testbed --yes' call, log: $(cat "$GH_CALL_LOG")"
+[ "$(jq -c --arg k "$key" '.testbeds[$k] // []' "$RECORD_FILE")" = "[]" ] \
+  || fail "T8: record entry for $key must be removed after teardown, got: $(cat "$RECORD_FILE")"
+echo "PASS: --teardown with delete_repo scope — resolved from a DIFFERENT cwd than the source checkout (via --dir's origin remote, never a tree-relative path), repo deleted, record entry removed"
+
+# =============================================================================
+# T9 -- --teardown removes a PARTIAL-FAILURE entry too: artifacts.
+# repo_created=true is the only artifact ever guaranteed by
+# testbed_record_add ("creation IS the repo-created mutating step"), and
+# that alone is enough — teardown never requires a complete artifacts map,
+# since the record's own repo_created=true already means a real repo exists
+# to delete.
+# =============================================================================
+# shellcheck source=../../../workflows/scripts/testbed/record.sh
+. "$REPO_ROOT/workflows/scripts/testbed/record.sh"
+partial_key="test-owner/partial-testbed"
+partial_id="$(testbed_record_add "$partial_key" "mirror-from-repo" "test-owner/test-repo" "true")"
+[ -n "$partial_id" ] || fail "T9 setup: testbed_record_add failed"
+entry_before="$(jq -c --arg k "$partial_key" --arg i "$partial_id" '.testbeds[$k][] | select(.id==$i)' "$RECORD_FILE")"
+[ "$(jq -r '.artifacts.mirror_pushed' <<<"$entry_before")" = "false" ] || fail "T9 setup: expected mirror_pushed=false, got: $entry_before"
+[ "$(jq -r '.artifacts.issues_copied' <<<"$entry_before")" = "false" ] || fail "T9 setup: expected issues_copied=false, got: $entry_before"
+
+run 0 --teardown --repo "$partial_key" --id "$partial_id" --yes
+assert_contains "Deleted $partial_key"
+[ "$(jq -c --arg k "$partial_key" '.testbeds[$k] // []' "$RECORD_FILE")" = "[]" ] \
+  || fail "T9: a partial-failure record entry must still be removed by teardown, got: $(cat "$RECORD_FILE")"
+echo "PASS: --teardown removes a partial-failure record entry (repo_created only) without requiring a complete artifacts map"
+
+# =============================================================================
+# T10 -- teardown is a MODE on `temperloop testbed`, never a second
+# subcommand: no separate bin/subcommands/teardown.sh (or similar) exists,
+# and the dispatcher — file-discovery only, per T1 — has nothing new to
+# discover, so `temperloop help`'s output is byte-for-byte unchanged.
+# =============================================================================
+[ ! -f "$REPO_ROOT/bin/subcommands/teardown.sh" ] \
+  || fail "T10: teardown must be a --teardown MODE on testbed.sh, not its own bin/subcommands/teardown.sh"
+help_out2="$(bash "$DISPATCHER" help 2>&1)"
+[ "$help_out2" = "$help_out" ] \
+  || fail "T10: --teardown must add NO new dispatcher-discovered subcommand; \`temperloop help\` changed:\n$help_out2"
+echo "PASS: --teardown is a mode on testbed.sh, not a second subcommand — no new subcommand file, 'temperloop help' unchanged"
 
 echo "OK: test_testbed.sh"

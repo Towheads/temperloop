@@ -107,6 +107,39 @@ full, the literal `git clone` / `cd` / `temperloop init` commands to
 copy-paste, and a stable `next step:` marker line. Nothing is printed after
 it.
 
+### Teardown — `temperloop testbed --teardown`
+
+```sh
+temperloop testbed --teardown --dry-run   # preview: zero writes
+temperloop testbed --teardown             # for real
+```
+
+Teardown is a **mode on the same command**, not a second subcommand — it
+branches early, before any of the create-path driver's toplevel resolution,
+describe, pre-flight union, consent, or four seam calls, so it can never
+perturb that fixed sequence. The target resolves from `--repo OWNER/NAME`
+if given, else from `--dir`'s (default: cwd) `origin` remote — read with
+`git -C`, never a `cd` — so it works from **any cwd**, including inside the
+testbed's own clone, by keying straight into the machine-scoped artifact
+record rather than any tree-relative path.
+
+Every recorded entry has `artifacts.repo_created=true` by construction
+(`testbed_record_add`'s own contract), so a single `gh repo delete` removes
+whatever the record enumerates for that entry — the mirrored history and
+any copied issues both live inside the repository being deleted — whether
+or not `mirror_pushed`/`issues_copied` ever flushed true. A partial-failure
+run tears down exactly like a complete one.
+
+`gh auth login`'s default scope set does not include `delete_repo`, so
+teardown checks for it first (`workflows/scripts/testbed/scope.sh`'s
+`testbed_teardown_has_delete_repo_scope`, a reusable helper rather than a
+check re-typed at each call site) and, when it is absent, degrades
+**legibly**: prints the one-line `gh auth refresh -s delete_repo` remedy
+and exits 0, leaving the record entry untouched for a re-run — never a
+failed `gh repo delete` call it could never have made. When the scope is
+present, teardown carries the same consent gate as creation (refuses a
+non-tty stdin with no `--yes`) and the same `--dry-run` zero-write proof.
+
 ### The record — `workflows/scripts/testbed/record.sh`
 
 `workflows/scripts/testbed/record.sh` is a sourceable bash library that
@@ -189,8 +222,9 @@ never re-derives the provenance line — `produce_issues` stamps
 `copied from <owner>/<repo>#<N>` itself, inside the provider, so a provider
 with no upstream issue to cite simply never emits one.
 
-Downstream, the teardown leg reads the record to find what to delete and
-calls `testbed_record_remove` once deletion succeeds. `/promote`'s
+Downstream, `temperloop testbed --teardown` reads the record to find what to
+delete and calls `testbed_record_remove` once `gh repo delete` succeeds.
+`/promote`'s
 `promote-spec-and-tree-push` step (a later,
 separate item) reads `source_kind` / `source_repo` / `promotable` off the
 matching entry to resolve where a promoted branch pushes to and to refuse
@@ -224,13 +258,17 @@ repository creation, one `git push --mirror` carrying the source repo's full
 history, and one issue creation per open issue carried across. `--dry-run`
 costs the pre-flight reads and nothing else. No LLM call is made at any point
 — unlike `try` and `try --demo`, this command spends no model budget. The
-testbed repository itself is private and disposable; teardown (a later item)
-is what reclaims it.
+testbed repository itself is private and disposable; `--teardown` reclaims
+it with one read (`gh auth status`, the delete_repo scope check) plus, when
+that scope is present, one `gh repo delete`.
 
 CI growth is two test suites in `scripts/quality-gates.sh`'s `KERNEL_GATES`
 (`make test-testbed-record`, `make test-testbed-command`), both hermetic and
 zero-network, each with its own `gate-paths.tsv` row so a scoped run selects
-only what a diff can actually affect.
+only what a diff can actually affect. `workflows/scripts/testbed/scope.sh`'s
+own tests ship alongside it under `workflows/scripts/testbed/tests/` and are
+picked up automatically by `make test-testbed-source`'s glob — no new gate
+or `gate-paths.tsv` row needed for it.
 
 ## Telemetry
 
