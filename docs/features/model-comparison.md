@@ -49,11 +49,11 @@ act on. Each is described below, in the order a comparison actually flows.
 
 ### Per-seat attribution telemetry
 
-Every kernel-spawned seat (a `/sweep` fix worker, a `/build` item worker, a
-`/fix` worker, a drive-tier machinery call, and so on) writes one record per
-spawn to a dedicated attribution stream: seat name, model, provider, input
-and output token counts, duration, and an outcome reference (the issue or PR
-the spawn was working on). This is a **second, narrower producer alongside**
+Every kernel-spawned seat (a drive-tier machinery call, the retro judge, and
+so on) writes one record per spawn to a dedicated attribution stream: seat
+name, model, provider, input and output token counts, duration, and an
+outcome reference (the issue or PR the spawn was working on). This is a
+**second, narrower producer alongside**
 the existing transcript-based cost measurement documented in
 [`telemetry.md`](telemetry.md) — that producer keeps sole ownership of the
 report's headline dollar/spend figure; the attribution stream exists only to
@@ -98,9 +98,25 @@ operator sees the tradeoff before spending anything, not after.
 (temperloop#1247) measured this end to end against real history rather than
 assuming it: of the closed issues sampled, only **about 52%** yielded a
 usable replay (a reconstructable prompt, a resolvable pre-merge base, and a
-scoped diff) — the rest were excluded for reasons the spike catalogs, such
-as squash merges bundling unrelated refactors or formatting-only churn that
-would contaminate a diff-based score. Base resolution itself has more than
+scoped diff) — the rest were excluded for reasons the spike catalogs. The
+dominant cause is the diff-scope rule's Tier C: **22 of 46 PRs (48%)** were
+rejected for diff residue touching code the issue never named, concentrated
+in broad refactor/propagation epics. Other exclusion paths include PRs
+closing more than one issue (filtered out before sampling) and
+base-resolution ambiguity (below). Two further traps the spike checked for —
+squash merges bundling unrelated refactors, and formatting-only churn from
+an autoformatter — were guarded against but measured **absent** in this
+repo's own corpus (all 60 sampled merged PRs have two parents, so zero
+squash merges; the gate suite runs shellcheck only, so there is no
+autoformatter to produce such churn) — they did not contribute to the 48%.
+Two traps the spike found genuinely real here: gate-version drift (the
+gate-paths map moved 136 → 139 entries across the corpus window, "the one
+that bites" per the spike) and post-hoc issue mutation, where the original
+run writes back to its own issue after the fact (sweep `Clarified` answers,
+triage cull notes, a PR cross-reference) — the runner cuts at `T_cut =
+min(first branch commit author date, PR createdAt)`, drops every comment at
+or after it, and rejects a candidate whose body was edited post-cut and is
+unretrievable. Base resolution itself has more than
 one defensible answer: the runner uses `git merge-base $MC^1 $MC^2` (the
 fork point) as its rule, but of three plausible base-resolution strategies
 the spike compared, they disagreed on **21 of 60** real merged PRs — meaning
@@ -277,7 +293,8 @@ report's emit-coverage percentage is therefore expected to read below
 denominator this module states outright rather than silently rounding up.
 The full seat-by-seat inventory and mechanism is recorded in the operator's
 knowledge store as `Context/temperloop - per-seat usage capture
-feasibility.md` (not part of this repo's tracked tree).
+feasibility.md` (not part of this repo's tracked tree); a stranger without
+access to that store can instead read the spike itself, temperloop#1246.
 
 **What the attribution telemetry collects, in plain terms.** This is
 written to be readable by a teammate or a client's reviewer opening this
