@@ -97,6 +97,23 @@ reads that marker; a stranger greps for it before pulling.
   report-cross-lane split, disposition of a foreign checkout stays the
   operator's call.
 
+- **A second testbed source provider, `materialize-from-seed`, plus the in-tree
+  seed it materializes** (#1230). It implements the same four seam functions as
+  `mirror-from-repo` — no new dispatch, no `case` on provider kind, no second
+  path downstream, so teardown reclaims a seed testbed by exactly the route it
+  reclaims any other. `describe()` reports `provenance_capable: false` and
+  `promotable: false`: there is no upstream issue to cite and no original to
+  promote back to, and `produce_issues` correspondingly stamps no provenance
+  line. Per ADR 0025 the seed is content **tracked in this repository** —
+  `workflows/scripts/demo/seed/`, a fixture project plus one Markdown file per
+  issue — built into a fresh repository locally and pushed into the operator's
+  **own** account; no repository owned by this project exists at any point. The
+  fixture replaces the retired `demo-seed` one-file synthetic defects with a
+  small, coherent Markdown link checker: six issues that group into a real
+  first epic for `/triage` and `/build`, a suite that ships green, and its own
+  gate (`make test-demo`) asserting every defect the issues claim is still
+  present and the seed still passes.
+
 ### Changed
 
 - **`write-lane-guard.sh` no longer prompts on the one cross-repo direction
@@ -143,6 +160,20 @@ reads that marker; a stranger greps for it before pulling.
   `gh pr merge --auto` and immediately records the item fixed, with no
   merge-confirmation call site to hang a disposition on — that plumbing is
   tracked separately (#1268).
+
+### Removed — BREAKING
+
+- **The try-era demo-repo generator `workflows/scripts/demo/seed-demo-repo.sh`
+  and its `SEED_DEMO_REPO` setting** (#1230). The generator seeded a scratch
+  repository **this project owned**, which ADR 0025 retires: evaluation
+  artifacts are now materialized into the operator's own account from the
+  in-tree seed above. `workflows/scripts/demo/` is retained as the seed-content
+  home. **Migration:** if you set `SEED_DEMO_REPO` in a host-local config or
+  CI secret, drop it — it is no longer read by anything, and the testbed's
+  target repository is resolved from the source provider's `base_name` in the
+  operator's own account instead. The `try`-side settings and the CI
+  round-trip's own use of the generator are retired with `try` itself
+  (#1237/#1234).
 
 ### Fixed
 

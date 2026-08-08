@@ -200,7 +200,8 @@ install-cli workflows/scripts/tests/test_legacy_host_preflight.sh
 # core subject matter (verifying installed state matches the running
 # checkout), so it claims here rather than carving out a new feature.
 install-cli workflows/scripts/tests/test_doctor_cross_checkout_split.sh
-install-cli workflows/scripts/demo/*
+# (workflows/scripts/demo/ is claimed by the `testbed` slug below — it is the
+# testbed seed-content home now, not the try-era demo-repo generator.)
 install-cli workflows/scripts/proposal/*
 # `temperloop update` (temperloop#429, ADR 0002 "Managed-clone state
 # ownership") + the shared CHANGELOG-range parsing lib it and
@@ -251,6 +252,13 @@ testbed workflows/scripts/testbed/**
 # carve their own subcommand files out of the same glob.
 testbed bin/subcommands/testbed.sh
 testbed bin/subcommands/tests/test_testbed.sh
+# workflows/scripts/demo/ is the testbed SEED-CONTENT home (temperloop#1230):
+# the fixture project + issue definitions `materialize-from-seed` materializes
+# into the operator's own account (ADR 0025). It moved here from install-cli's
+# claim above when the try-era generator was replaced by tracked seed content.
+# `**`, NOT `*`: a single star does not cross a directory separator, so a `*`
+# claim would leave everything under seed/ and tests/ UNCLAIMED.
+testbed workflows/scripts/demo/**
 # ── version-embedding — the release version stamped into the shipped files
 # (temperloop#677): the committed VERSION file and its drift-guard gate. The
 # resolver helper lives in bin/lib/common.sh (claimed by install-cli's bin
