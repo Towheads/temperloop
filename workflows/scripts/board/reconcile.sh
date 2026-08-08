@@ -304,18 +304,18 @@ source "$SCRIPT_DIR/lib/claim_marker.sh"
 # read cache (GH #93). That cache was removed with the Projects-v2 arm it
 # relieved (ADR 0004, epic temperloop#524), so the pin became a no-op and is
 # gone. The live read is now guaranteed STRUCTURALLY rather than by a setting:
-# board.sh's issues-only whole-board read is a live `gh issue list` unless the
-# calling process has BOTH set `board.<N>.cache=on` AND sourced the issue-corpus
-# cache library — and this script sources no such library, so the
+# board.sh's issues-only whole-board read is a live `gh issue list` unless a
+# caller has BOTH set `board.<N>.cache=on` AND sourced `lib/cache.sh` in the
+# same process — and this script never sources cache.sh, so the
 # `declare -F cache_read` probe in `_board_issues_item_list` always fails here
 # and the read stays live no matter what a shared `boards.conf` says.
 #
-# THAT IS THE CONTRACT, AND IT IS LOAD-BEARING: this script must never pull that
-# library into scope, and any future cache layer added ahead of the live read
-# must be bypassed here too. Two tests pin it — tests/test_reconcile.sh's Lens 3
-# behaviorally, and tests/test_cache_command_wiring.sh section 3 by inspection.
-# (That second one greps this file for the library's PATH, which is why the
-# contract above is stated without naming it literally.)
+# THAT IS THE CONTRACT, AND IT IS LOAD-BEARING: reconcile.sh must never source
+# lib/cache.sh, and any future cache layer added ahead of the live read must be
+# bypassed here too. Two tests pin it — tests/test_reconcile.sh's Lens 3
+# behaviorally, and tests/test_cache_command_wiring.sh section 3 by static
+# inspection, anchored to a real sourcing line so this comment naming the path
+# plainly does not itself trip it (temperloop#1152).
 
 PROJECT_NUMBER=3
 # --fix: apply the one safe repair of whichever lens is selected — Lens 2's
