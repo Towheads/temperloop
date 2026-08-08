@@ -661,6 +661,19 @@ KERNEL_GATES=(
   # at all, and let eight mutations of the very guarantees it claimed to
   # cover survive untouched.
   "bash workflows/scripts/model-comparison/tests/test_allowlist.sh"
+  # Replay corpus selection + isolated replay worktree (temperloop#1254,
+  # epic #1225 "model comparison harness"): replay.sh selects eligible
+  # closed-issue + merged-PR pairs from this repo's own history (real `gh`
+  # reads at run time; the fixture suite stubs `gh` and builds its own
+  # throwaway git fixture repo — zero network, per kernel principle 3) and
+  # prepares/tears down the isolated replay worktree on top of
+  # workflows/scripts/build/worktree.sh's UNMODIFIED lifecycle (create, then
+  # rewind — see Context/temperloop - replay ground-truth seam.md). This
+  # item ships corpus selection + isolation + the scored-record schema only;
+  # replay EXECUTION and scoring are the later replay-execute-and-score item
+  # (#1258). Same direct-`bash` form, no Makefile target, as the
+  # test_allowlist.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through
