@@ -164,6 +164,22 @@ reads that marker; a stranger greps for it before pulling.
   gate (`make test-demo`) asserting every defect the issues claim is still
   present and the seed still passes.
 
+- **`temperloop testbed --teardown` deletes a testbed created by a prior run**
+  (#1231). Teardown is a MODE on the existing command, not a second
+  subcommand — it branches early and never touches the create-path driver's
+  fixed step order or its four seam calls. The target resolves from
+  `--repo OWNER/NAME`, or from `--dir`'s (default: cwd) `origin` remote read
+  with `git -C` (never a `cd`), so it works from any cwd — inside the
+  testbed's own clone, not only the checkout that created it — by keying
+  straight into the machine-scoped artifact record (`record.sh`) rather than
+  any tree-relative path. Every recorded entry has `repo_created=true` by
+  construction, so a single `gh repo delete` removes whatever the record
+  enumerates, complete or partial. `gh auth login`'s default scope set omits
+  `delete_repo`; teardown checks for it first via a new reusable helper
+  (`workflows/scripts/testbed/scope.sh`) and, when absent, degrades legibly —
+  prints the one-line `gh auth refresh -s delete_repo` remedy and exits 0 —
+  rather than failing on a `gh repo delete` call it can never make.
+
 ### Changed
 
 - **`write-lane-guard.sh` no longer prompts on the one cross-repo direction

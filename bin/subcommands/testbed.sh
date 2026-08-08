@@ -134,6 +134,38 @@
 # create a repository, mirror history into it, and copy issues, so a missing
 # one is a pre-flight refusal that names the fix rather than a partial run.
 #
+# --teardown MODE (temperloop#1231, epic #1117 Produces 7) — the reader of
+# the artifact record this driver writes. Usage:
+#
+#   testbed.sh --teardown [--repo OWNER/NAME] [--dir DIR] [--id ID]
+#              [--yes] [--dry-run]
+#
+#   --repo OWNER/NAME  The testbed to tear down, explicitly. Default: the
+#                      'origin' remote of --dir (default: cwd), read with
+#                      `git -C` (never a `cd`) — so this works from ANY
+#                      cwd, including inside the testbed's own clone.
+#   --id ID            Which recorded entry to remove, when more than one
+#                      is recorded at that owner/name. Default: the most
+#                      recently created entry.
+#
+# ONE `gh repo delete` REMOVES EVERY ARTIFACT THE RECORD ENUMERATES,
+# ALWAYS, EVEN AFTER A PARTIAL-FAILURE RUN: record.sh's own contract makes
+# artifacts.repo_created=true true the instant an entry is born ("creation
+# IS the repo-created mutating step"), and the mirrored history and any
+# copied issues both live INSIDE that same repository — so deleting it
+# removes whatever the record enumerates, whether or not mirror_pushed /
+# issues_copied ever flushed true. No branching on which steps finished.
+#
+# THE delete_repo SCOPE GATE IS LEGIBLE DEGRADATION, NOT A FAILURE.
+# `gh auth login`'s default scope set does not include `delete_repo` — so a
+# testbed created under an ordinary login has no way to be deleted until
+# the operator explicitly grants it. Rather than let `gh repo delete` fail
+# opaquely, teardown checks first (workflows/scripts/testbed/scope.sh's
+# `testbed_teardown_has_delete_repo_scope`, reused so this isn't
+# reimplemented inline anywhere else that needs it, e.g. a CI round-trip
+# step): absent, it prints the one-line `gh auth refresh -s delete_repo`
+# remedy and exits 0, leaving the record entry untouched for a re-run.
+#
 # shellcheck shell=bash
 
 set -uo pipefail
@@ -147,6 +179,7 @@ BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
 KERNEL_ROOT="$(cd "$BIN_DIR/.." && pwd)"
 RECORD_LIB="$KERNEL_ROOT/workflows/scripts/testbed/record.sh"
 SOURCE_LIB="$KERNEL_ROOT/workflows/scripts/testbed/source.sh"
+SCOPE_LIB="$KERNEL_ROOT/workflows/scripts/testbed/scope.sh"
 
 if [ ! -f "$RECORD_LIB" ]; then
   echo "testbed.sh: record.sh not found at $RECORD_LIB (broken kernel checkout)" >&2
@@ -156,22 +189,39 @@ if [ ! -f "$SOURCE_LIB" ]; then
   echo "testbed.sh: source.sh not found at $SOURCE_LIB (broken kernel checkout)" >&2
   exit 1
 fi
+if [ ! -f "$SCOPE_LIB" ]; then
+  echo "testbed.sh: scope.sh not found at $SCOPE_LIB (broken kernel checkout)" >&2
+  exit 1
+fi
 
-# Both libraries are SOURCED, never re-implemented. Neither sets shell
+# All three libraries are SOURCED, never re-implemented. None sets shell
 # options at file scope, so this script's own `set -uo pipefail` survives.
 # shellcheck source=../../workflows/scripts/testbed/record.sh
 . "$RECORD_LIB"
 # shellcheck source=../../workflows/scripts/testbed/source.sh
 . "$SOURCE_LIB"
+# shellcheck source=../../workflows/scripts/testbed/scope.sh
+. "$SCOPE_LIB"
 
 usage() {
   cat <<'EOF'
 usage: testbed.sh [--dir DIR] [--source-kind KIND] [--owner OWNER] [--name NAME]
                   [--yes] [--dry-run]
+       testbed.sh --teardown [--repo OWNER/NAME] [--dir DIR] [--id ID]
+                  [--yes] [--dry-run]
 
 Builds a private, disposable evaluation copy of a repo — create it,
 mirror-push its history, carry its open issues across — then hands off to
 `temperloop init` inside the copy.
+
+--teardown deletes a testbed created by a prior run and removes its entry
+from the machine-scoped artifact record (workflows/scripts/testbed/
+record.sh). The target is resolved from --repo OWNER/NAME if given,
+otherwise from --dir's (default: cwd) 'origin' remote — so it works from
+inside the testbed's own clone, not only from the checkout that created it.
+Requires the gh account's delete_repo OAuth scope; without it, teardown
+exits 0 and prints the `gh auth refresh -s delete_repo` remedy rather than
+failing.
 EOF
 }
 
@@ -184,6 +234,9 @@ owner_flag=""
 name_flag=""
 assume_yes=0
 dry_run=0
+teardown_mode=0
+repo_flag=""
+id_flag=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -193,6 +246,9 @@ while [ $# -gt 0 ]; do
     --name) name_flag="${2:?--name needs a value}"; shift 2 ;;
     --yes) assume_yes=1; shift ;;
     --dry-run) dry_run=1; shift ;;
+    --teardown) teardown_mode=1; shift ;;
+    --repo) repo_flag="${2:?--repo needs a value}"; shift 2 ;;
+    --id) id_flag="${2:?--id needs a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "testbed.sh: unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -212,6 +268,126 @@ fi
 if ! command -v git >/dev/null 2>&1; then
   echo "cannot proceed — git not found on PATH (install git). Nothing was created." >&2
   exit 1
+fi
+
+# =============================================================================
+# TEARDOWN MODE — a separate leg of this same command (temperloop#1231),
+# branching EARLY (before any of the --dir toplevel-resolution/cd, describe,
+# pre-flight-union, consent, or four seam calls below) so it can never
+# perturb the create-path driver's fixed step order. It shares only the two
+# libraries already sourced above (record.sh, scope.sh) and the CLI-level
+# --dir/--yes/--dry-run flags; nothing past this block runs on this leg.
+#
+# Target resolution is via the MACHINE-scoped record, never a tree-relative
+# path: --repo OWNER/NAME if given, else --dir's (default: cwd) 'origin'
+# remote read with `git -C` (no cd, so this works from ANY cwd — inside the
+# testbed's own clone, inside the original source checkout, or a bare
+# directory with --repo). record.sh's own key convention (its header,
+# "testbeds ... keyed by the CREATED TESTBED's own owner/name") is exactly
+# what makes this a zero-filesystem-scan lookup.
+#
+# Every recorded entry has artifacts.repo_created=true by construction
+# (testbed_record_add's own contract: "creation IS the repo-created
+# mutating step") — so a SINGLE `gh repo delete` always removes every
+# artifact the record enumerates for that entry (the mirrored history and
+# any copied issues live inside the repo being deleted), even when
+# mirror_pushed/issues_copied never flushed true — a partial-failure run's
+# entry tears down exactly like a complete one, no branching on which steps
+# finished.
+# =============================================================================
+if [ "$teardown_mode" -eq 1 ]; then
+  echo "== temperloop testbed --teardown =="
+  echo
+
+  if [ -n "$repo_flag" ]; then
+    case "$repo_flag" in
+      */*) teardown_key="$repo_flag" ;;
+      *) echo "cannot proceed — --repo must be exactly \"<owner>/<name>\": $repo_flag" >&2; exit 1 ;;
+    esac
+  else
+    _td_origin="$(git -C "$source_dir" remote get-url origin 2>/dev/null || true)"
+    teardown_key="$(_testbed_slug_from_remote "$_td_origin")"
+    if [ -z "$teardown_key" ]; then
+      echo "cannot proceed — could not resolve a testbed owner/name from --dir's ('$source_dir') 'origin' remote. Pass --repo OWNER/NAME, or run this from inside the testbed's own clone." >&2
+      exit 1
+    fi
+  fi
+
+  echo "-- Resolve the target (machine-scoped record: $(testbed_record_file)) --"
+  if ! entries_json="$(testbed_record_list "$teardown_key")"; then
+    echo "cannot proceed — could not read the testbed record." >&2
+    exit 1
+  fi
+  entry_count="$(jq 'length' <<<"$entries_json")"
+  if [ "$entry_count" -eq 0 ]; then
+    echo "temperloop testbed --teardown: nothing recorded for $teardown_key — nothing to tear down."
+    exit 0
+  fi
+
+  if [ -n "$id_flag" ]; then
+    entry="$(jq -c --arg i "$id_flag" '[.[] | select(.id == $i)][0] // empty' <<<"$entries_json")"
+    if [ -z "$entry" ]; then
+      echo "cannot proceed — no entry $id_flag recorded for $teardown_key." >&2
+      exit 1
+    fi
+  else
+    # No --id: the most recently created entry. record.sh's list is
+    # append-only, so the last element is the newest run.
+    entry="$(jq -c '.[-1]' <<<"$entries_json")"
+  fi
+  entry_id="$(jq -r '.id' <<<"$entry")"
+  printf '%s\n' "$entry" | jq -c '.'
+  echo
+
+  # -- the delete_repo scope gate: LEGIBLE DEGRADATION, not a failure. -------
+  echo "-- delete_repo scope check (scope.sh) --"
+  if ! testbed_teardown_has_delete_repo_scope; then
+    echo "skipped — gh account lacks the delete_repo scope; run: gh auth refresh -s delete_repo"
+    echo "  $teardown_key ($entry_id) was NOT deleted; its record entry was left in place — re-run --teardown after the scope is granted."
+    exit 0
+  fi
+  echo "  [ok]   delete_repo scope present"
+  echo
+
+  if [ "$dry_run" -eq 1 ]; then
+    echo "[dry-run] would run: gh repo delete $teardown_key --yes"
+    echo "[dry-run] would record: testbed_record_remove $teardown_key $entry_id"
+    exit 0
+  fi
+
+  if [ "$assume_yes" -ne 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "cannot proceed — refusing to run non-interactively without --yes. \`temperloop testbed --teardown\` deletes a REAL private GitHub repository ($teardown_key) — that must never happen on an unattended stdin with nobody answering. Re-run with --yes to confirm, or --dry-run to preview." >&2
+      exit 1
+    fi
+    printf 'Delete %s and its recorded artifacts? [y/N] ' "$teardown_key"
+    consent_reply=""
+    read -r consent_reply || consent_reply=""
+    case "$consent_reply" in
+      y|Y|yes|YES) ;;
+      *)
+        echo "temperloop testbed --teardown: aborted (no confirmation given) — nothing was deleted."
+        exit 0
+        ;;
+    esac
+  fi
+  echo
+
+  if ! delete_out="$(gh repo delete "$teardown_key" --yes 2>&1)"; then
+    echo "testbed.sh: could not delete $teardown_key: $delete_out" >&2
+    echo "The record entry ($entry_id) was left in place so a re-run can retry." >&2
+    exit 1
+  fi
+  echo "Deleted $teardown_key"
+
+  if ! testbed_record_remove "$teardown_key" "$entry_id"; then
+    echo "testbed.sh: $teardown_key was deleted but its record entry ($entry_id) could NOT be removed — remove it by hand from $(testbed_record_file)." >&2
+    exit 1
+  fi
+  echo "  → $teardown_key ($entry_id) removed from the record"
+  echo
+  echo "temperloop testbed --teardown: done"
+  exit 0
 fi
 
 # --- resolve --dir, then cd there (see "WHY THIS cd's" in the header) ------
