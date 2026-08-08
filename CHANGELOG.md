@@ -30,6 +30,18 @@ reads that marker; a stranger greps for it before pulling.
   library-only with its own tests and no CLI caller yet, exactly as
   `manifest.sh` did when it landed.
 
+- **A source-provider seam sits upstream of `temperloop testbed` pre-flight,
+  plus its first implementation `mirror-from-repo`** (#1228). The seam is
+  four functions, not one tuple — `describe()` (kind, base name, provenance
+  capability, promotability), `preflight_checks()` (the provider's own
+  all-reads checks), `produce_git(dest)`, and `produce_issues(dest)` — so the
+  command never branches on provider kind to decide which checks to run, and
+  `describe()` resolves with zero network writes so pre-flight still runs
+  before anything is produced. `mirror-from-repo` stamps a machine-readable
+  `copied from <owner>/<repo>#<N>` line into every issue it creates, inside
+  its own `produce_issues` rather than in shared downstream code. Ships
+  library-only with its own tests.
+
 - **`/check-in` now reads and disposes the environment-hygiene surface**
   (#596). `/tidy`'s § Environment hygiene step already ran `env-reconcile.sh`
   and appended each drift finding to the environment hygiene report, and
