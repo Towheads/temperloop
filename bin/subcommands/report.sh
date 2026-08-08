@@ -70,6 +70,17 @@
 #   price, unpriced models named and excluded). Absent/malformed pricing or
 #   an absent by_model degrades to one legible line, never an error -- no
 #   precise cost accounting, no network (a local jq file read).
+#   DEFAULT PRICE TABLE (temperloop#1251): when `by_model` is present but the
+#   repo carries NO .temperloop/pricing.json, report.sh now falls back to a
+#   kernel-shipped, dated snapshot at workflows/scripts/config/
+#   default-pricing.json instead of only nudging the adopter to write one --
+#   the dollar figure is never gated behind hand-authored config. A dollar
+#   line rendered from that table is unmissably labeled with its `as_of` date
+#   and a staleness/DEFAULT-TABLE marker, alongside the existing DIRECTIONAL
+#   label. A user-supplied pricing.json, when present, OVERRIDES the default
+#   table outright -- it is never merged with it. Every other degradation
+#   (malformed pricing.json, zero name overlap, an absent/malformed default
+#   table) is still one legible line, never an error.
 #
 # Usage:
 #   report.sh [--dir DIR] [--refresh] [--timeout SECS]
@@ -139,7 +150,16 @@ command -v jq >/dev/null 2>&1 || { echo "report.sh: jq not found on PATH" >&2; e
 # baseline-snapshot.sh / try.sh / eject.sh's own header comments.
 # ---------------------------------------------------------------------------
 SUBCOMMAND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$(cd "$SUBCOMMAND_DIR/.." && pwd)"
+KERNEL_ROOT="$(cd "$BIN_DIR/.." && pwd)"
 BASELINE_SNAPSHOT="$SUBCOMMAND_DIR/baseline-snapshot.sh"
+# Kernel-shipped default price table (temperloop#1251) -- see "Default price
+# table fallback" below, near the dollar-framing block. Overridable via
+# $TEMPERLOOP_DEFAULT_PRICING_FILE (an ordinary layer-2 env override, same
+# idiom as SPEND_TRANSCRIPT_ROOT) purely so test_report.sh can point at a
+# fixture with fixed prices/as_of instead of coupling assertions to
+# whatever the real, hand-edited table currently contains.
+DEFAULT_PRICING_FILE="${TEMPERLOOP_DEFAULT_PRICING_FILE:-$KERNEL_ROOT/workflows/scripts/config/default-pricing.json}"  # setting:exempt — test/fixture root override, mirrors COUNT_PROSE_ROOT/REDUNDANCY_CHUNK_ROOT
 
 abs_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 target_dir="$(abs_dir "$report_dir")" || { echo "report.sh: --dir '$report_dir' does not exist" >&2; exit 1; }
@@ -264,7 +284,11 @@ _kernel_row() {
     printf '  %-22s first: %s%s -> latest: %s%s (no sample in one or both windows)\n' "$label:" "$fv" "$unit" "$lv" "$unit"
     return
   fi
-  delta="$(awk -v a="$fv" -v b="$lv" 'BEGIN{printf "%+.2f", b-a}')"
+  # LC_ALL=C: fv/lv are jq-emitted period-decimal numbers; keep the delta's
+  # own decimal point locale-independent so it never mismatches the
+  # period-formatted fv/lv it sits beside (see the dollar-total LC_ALL=C
+  # comments below for the same class of locale bug).
+  delta="$(LC_ALL=C awk -v a="$fv" -v b="$lv" 'BEGIN{printf "%+.2f", b-a}')"
   printf '  %-22s %s%s -> %s%s  (delta %s%s)\n' "$label:" "$fv" "$unit" "$lv" "$unit" "$delta" "$unit"
 }
 
@@ -464,8 +488,54 @@ if [ "$tokens_ok" -eq 1 ] && [ "$latest_mc_usable" -eq 1 ]; then
   if [ "$tokens_by_model" != "{}" ]; then
     pricing_file="$repo_root/.temperloop/pricing.json"
     if [ ! -f "$pricing_file" ]; then
-      echo "  (add .temperloop/pricing.json -- a {model: \$/Mtok} map -- for a"
-      echo "    directional dollar estimate; see report.contract.md.)"
+      # -- Default price table fallback (temperloop#1251) --------------------
+      # No user-supplied override: rather than only nudge the adopter to
+      # write one, fall back to the kernel-shipped, dated snapshot at
+      # $DEFAULT_PRICING_FILE ({as_of: "YYYY-MM-DD", prices: {model: $/Mtok}})
+      # so the dollar figure is never gated behind hand-authored config. A
+      # LATER user pricing.json still overrides this outright (see the `elif`/
+      # `else` arms below) -- this arm only fires when no override exists.
+      if [ -f "$DEFAULT_PRICING_FILE" ] \
+         && jq -e '(.prices | type) == "object" and (.as_of | type) == "string"' >/dev/null 2>&1 <"$DEFAULT_PRICING_FILE"; then
+        default_as_of="$(jq -r '.as_of' <"$DEFAULT_PRICING_FILE")"
+        dollar_json="$(jq -n --argjson bm "$tokens_by_model" --slurpfile pr "$DEFAULT_PRICING_FILE" '
+          ($pr[0].prices // {}) as $prices
+          | reduce ($bm | to_entries[]) as $e
+              ({priced: 0, total: 0, unpriced: []};
+               if ($e.value | type) == "number" then
+                 (if (($prices[$e.key] | type) == "number" and $prices[$e.key] > 0)
+                  then .priced += 1 | .total += ($e.value * $prices[$e.key] / 1000000)
+                  else .unpriced += [$e.key] end)
+               else . end)' 2>/dev/null || true)"
+        d_priced="$(jq -r '.priced // 0' <<<"$dollar_json" 2>/dev/null || echo 0)"
+        if [ -n "$d_priced" ] && [ "$d_priced" -gt 0 ] 2>/dev/null; then
+          # LC_ALL=C: jq always emits a period-decimal number; awk's field
+          # split parses it via the ambient locale's strtod, which silently
+          # truncates at the decimal point in a comma-decimal locale (e.g.
+          # de_DE) instead of reformatting -- $20.75 becomes 20, not 20,75.
+          # Force the C locale for this parse only.
+          d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | LC_ALL=C awk '{printf "%.2f", $1}')"
+          d_unpriced="$(jq -r 'if (.unpriced | length) > 0 then (.unpriced | join(", ")) else "" end' <<<"$dollar_json")"
+          echo "  ~\$$d_total_fmt directional -- DEFAULT PRICE TABLE dated $default_as_of,"
+          echo "    STALENESS: a committed snapshot, not your own prices -- add"
+          echo "    .temperloop/pricing.json to override with current numbers;"
+          if [ -n "$d_unpriced" ]; then
+            echo "    $d_priced model(s) priced; unpriced tokens excluded: $d_unpriced."
+          else
+            echo "    $d_priced model(s) priced; all attributed tokens covered."
+          fi
+        else
+          echo "  (no dollar estimate: no model in the default price table (dated"
+          echo "    $default_as_of) matched the tokens producer's by_model"
+          echo "    breakdown; add .temperloop/pricing.json to supply your own.)"
+        fi
+      else
+        # Broken/missing kernel checkout -- degrade to the pre-#1251 nudge
+        # rather than crash or silently drop the whole dollar section.
+        echo "  (add .temperloop/pricing.json -- a {model: \$/Mtok} map -- for a"
+        echo "    directional dollar estimate; default price table unavailable;"
+        echo "    see report.contract.md.)"
+      fi
     elif ! jq -e 'type == "object"' >/dev/null 2>&1 <"$pricing_file"; then
       # Require an OBJECT, not merely valid JSON: an array/number/string/null
       # parses but would throw on `$prices[$e.key]` below, and misreports as a
@@ -479,13 +549,14 @@ if [ "$tokens_ok" -eq 1 ] && [ "$latest_mc_usable" -eq 1 ]; then
         | reduce ($bm | to_entries[]) as $e
             ({priced: 0, total: 0, unpriced: []};
              if ($e.value | type) == "number" then
-               (if ($prices[$e.key] | type) == "number"
+               (if (($prices[$e.key] | type) == "number" and $prices[$e.key] > 0)
                 then .priced += 1 | .total += ($e.value * $prices[$e.key] / 1000000)
                 else .unpriced += [$e.key] end)
              else . end)' 2>/dev/null || true)"
       d_priced="$(jq -r '.priced // 0' <<<"$dollar_json" 2>/dev/null || echo 0)"
       if [ -n "$d_priced" ] && [ "$d_priced" -gt 0 ] 2>/dev/null; then
-        d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | awk '{printf "%.2f", $1}')"
+        # LC_ALL=C -- see the matching comment in the default-table arm above.
+        d_total_fmt="$(jq -r '.total' <<<"$dollar_json" | LC_ALL=C awk '{printf "%.2f", $1}')"
         d_unpriced="$(jq -r 'if (.unpriced | length) > 0 then (.unpriced | join(", ")) else "" end' <<<"$dollar_json")"
         echo "  ~\$$d_total_fmt directional (priced from .temperloop/pricing.json;"
         if [ -n "$d_unpriced" ]; then

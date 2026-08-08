@@ -1,0 +1,10 @@
+{
+  "as_of": "2026-08-08",
+  "unit": "USD per million tokens, same shape/units as a hand-written .temperloop/pricing.json",
+  "note": "DIRECTIONAL kernel-shipped default price table (temperloop#1251) -- consumed by bin/subcommands/report.sh's dollar-framing fallback ONLY when the target repo carries no .temperloop/pricing.json (a user-supplied table always overrides this outright, never merged with it -- see workflows/scripts/lib/report.contract.md 'Pricing table & dollar framing'). Hand-transcribed from public Claude API list prices as of `as_of` above, at the INPUT-token rate: report.sh's `by_model` figures are already cost-weighted units (SPEND_WEIGHT_INPUT=1, SPEND_WEIGHT_OUTPUT=5, workflows/scripts/build/build.config.sh) calibrated so 1 weighted unit approximates 1 input-token-equivalent -- an input-token list price is therefore the correct per-unit multiplier, not a separate blended figure. Never a live pricing-API read, never recalculated at runtime; STALE BY CONSTRUCTION -- refresh only by hand-editing this file in an upstream PR (no regeneration script), same discipline as bin/lib/cost-estimates.conf. report.sh renders this table's `as_of` date and an explicit staleness label on every dollar line it drives, so nobody mistakes the figure for a real invoice or their own configured prices.",
+  "prices": {
+    "claude-opus-4-8": 5.00,
+    "claude-sonnet-5": 3.00,
+    "claude-haiku-4-5": 1.00
+  }
+}

@@ -58,6 +58,43 @@ reads that marker; a stranger greps for it before pulling.
   `diagnose-queue`'s exit-code contract. The consumer half (the tally itself)
   is overlay-owned and stays open at foundation#1281.
 
+- **`report` now renders a directional dollar line from a kernel-shipped,
+  dated default price table when the target repo carries no
+  `.temperloop/pricing.json`, replacing the previous "add
+  `.temperloop/pricing.json`" nudge for that case (#1251).** The new table
+  lives at `workflows/scripts/config/default-pricing.json` — a tracked,
+  hand-dated `{as_of, prices}` snapshot, never a live pricing-API read and
+  never recalculated at runtime, refreshed only by hand-editing the file in
+  an upstream PR (same discipline as the existing user-supplied table and as
+  `bin/lib/cost-estimates.conf`). Every dollar line the default table drives
+  carries its own `as_of` date and an explicit, unmissable staleness label
+  alongside the existing DIRECTIONAL marker, so nobody mistakes the figure
+  for a real invoice or for their own configured prices. A user-supplied
+  `.temperloop/pricing.json`, when present, is used **exclusively** — it
+  overrides the default table outright rather than supplementing it, exactly
+  as before; the malformed-pricing-file and no-model-matched degradation
+  paths are unchanged. A missing/malformed default table (a broken kernel
+  checkout) degrades to the old nudge line rather than crashing.
+  **Classified ADDITIVE (minor), not BREAKING — grounded in VERSIONING.md's
+  contract-surface table, not merely asserted.** Two of that table's rows
+  are in play. **CLI surface** (`bin/subcommands/*`) is what an adopter
+  actually calls, and none of it moves: exit code 0, every flag, every
+  section heading, and the user-`.temperloop/pricing.json` override path
+  (including its **per-key**, never-blended override behavior) are all
+  unchanged — pinned by `bin/subcommands/tests/test_report.sh`'s
+  6c-iii-b/6c-iii-b2 fixtures. An adopter who already wrote a pricing table
+  sees byte-identical behavior; one who never wrote one merely starts
+  seeing a new, clearly-labeled directional dollar line where a nudge used
+  to render — an addition, not a removal or a reshaping of anything a
+  caller depends on. **Published schemas/contracts** (`*.contract.md`) is
+  the row that *does* move: `workflows/scripts/lib/report.contract.md`'s
+  "Pricing table & dollar framing" section is updated in this same change
+  to document the new default-table tier, its override order, and its
+  degradation paths — a documentation update describing new capability, not
+  a behavior change a caller must adapt to, so it stays additive rather
+  than tipping this release into BREAKING. No `BREAKING` marker, no
+  migration note owed.
+
 - **The generated `/build` worker prompt now carries a structural
   no-context-inheriting-research-fork guardrail** (#1072). Both execution
   paths — `workerPrompt()` in `claude/workflows/build-level.mjs` (a new
