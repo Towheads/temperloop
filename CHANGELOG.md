@@ -1077,6 +1077,46 @@ reads that marker; a stranger greps for it before pulling.
   missing kernel classification for `workflows/scripts/model-comparison/*` in
   `kernel-manifest.txt`. Not breaking — a new opt-in module with no
   default-path behavior change (the module has no caller yet).
+- **The model-comparison harness's per-seat attribution stream: record
+  schema, emit script, and its content-level validator** (#1253, epic
+  #1225, ADR 0026/0028). New `workflows/scripts/emit-model-usage.sh` appends
+  one JSONL record per spawned pipeline seat — seat role name, model,
+  provider, input/output/cache-read/cache-creation token counts, a
+  cost-weighted total, duration, and an outcome ref — to
+  `meta/data/raw/model-usage-<YYYY-MM>.jsonl` (monthly rotation,
+  `schema_version` from day one, the raw untruncated session id as the join
+  key), following the L0 usage-capture-feasibility spike's verdict
+  (temperloop#1246): a `usage_source` discriminator (`cli-envelope` vs
+  `unavailable`) is required because only 3 of 12 pipeline seats can see
+  both a seat identity and a token count at spawn time today. ADR 0020's
+  requestId dedup is documented N/A (the CLI envelope is already a
+  per-run aggregate with no `requestId` field — the declared owner of that
+  divergence); cache-class weighting IS genuinely inherited, sourced from
+  the existing `SPEND_WEIGHT_*` settings in `build.config.sh` rather than a
+  second hardcoded copy. Per ADR 0028, the record carries no `host` field
+  and no other cross-repo operator identifier, unlike every sibling
+  raw-lake stream. New `workflows/scripts/validate-model-usage-emit.sh`
+  schema-validates records at CONTENT level, not merely presence: a
+  fixture record with valid shape but an out-of-enum `provider` (checked
+  against the ADR 0028 committed allowlist via `allowlist.sh`'s
+  `pa_is_allowed`, composed rather than re-parsed) or an unrecognized
+  `model` family FAILS. JSON is parsed with a STRICT python3 parser (a
+  `parse_constant` hook that rejects `NaN`/`Infinity`) rather than `jq -e .`,
+  which silently coerces non-finite constants to `null` — demonstrated
+  directly in the new test suite,
+  `workflows/scripts/tests/test_model_usage_emit.sh`, which also includes a
+  tamper-and-restore mutation test for every enforcement mechanism (the
+  presence-lint, the strict-parse rejection, the model/provider enums, the
+  no-host check, and the SPEND_WEIGHT_* inheritance). GATE SCOPE: this item
+  ships the emit/validate pair and schema only — wiring the three
+  emit-feasible seats (the pipeline-drive safe/merge drivers and the retro
+  judge) is the later attribution-spawn-site-wiring item (temperloop#1255),
+  so an absent/empty stream is legal here. Registers the
+  `MODEL_USAGE_RAW_DIR` setting-registry row, two `scripts/quality-gates.sh`
+  KERNEL_GATES entries, their `workflows/scripts/config/gate-paths.tsv`
+  rows, two `workflows/scripts/kernel/kernel-manifest.txt` kernel rows, and
+  documents the new stream in `docs/features/telemetry.md`. Not breaking —
+  a new stream with no existing reader and no spawn site calling it yet.
 
 ## [0.28.0] - 2026-08-05 — BREAKING
 

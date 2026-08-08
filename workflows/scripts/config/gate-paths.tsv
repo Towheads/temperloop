@@ -183,6 +183,8 @@ make validate-diagnose-queue-emit	workflows/scripts/validate-diagnose-queue-emit
 bash workflows/scripts/tests/test_diagnose_queue_emit.sh	workflows/scripts/emit-diagnose-queue.sh workflows/scripts/validate-diagnose-queue-emit.sh workflows/scripts/build/gate.sh workflows/scripts/tests/test_diagnose_queue_emit.sh meta/data/raw/README.md
 bash workflows/scripts/validate-provider-disclosure.sh	workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**
 bash workflows/scripts/model-comparison/tests/test_allowlist.sh	workflows/scripts/model-comparison/tests/test_allowlist.sh workflows/scripts/validate-provider-disclosure.sh workflows/scripts/model-comparison/**
+bash workflows/scripts/validate-model-usage-emit.sh	workflows/scripts/validate-model-usage-emit.sh workflows/scripts/emit-model-usage.sh workflows/scripts/model-comparison/**
+bash workflows/scripts/tests/test_model_usage_emit.sh	workflows/scripts/emit-model-usage.sh workflows/scripts/validate-model-usage-emit.sh workflows/scripts/tests/test_model_usage_emit.sh workflows/scripts/model-comparison/** workflows/scripts/build/build.config.sh workflows/scripts/config/setting-registry.tsv docs/features/telemetry.md docs/features/model-comparison.md scripts/quality-gates.sh workflows/scripts/kernel/kernel-manifest.txt
 make validate-lexicon	workflows/scripts/drain/**
 bash workflows/scripts/tests/test_validate_template_refs.sh	workflows/scripts/validate-template-refs.sh workflows/scripts/tests/test_validate_template_refs.sh claude/message-schema.md
 bash workflows/scripts/config/tests/test_setting_registry.sh	workflows/scripts/config/**

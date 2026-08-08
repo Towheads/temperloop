@@ -432,6 +432,13 @@ kernel workflows/scripts/validate-knowledge-search-emit.sh
 # same shape as `kernel workflows/scripts/board/*` above.
 kernel workflows/scripts/model-comparison/*
 kernel workflows/scripts/validate-provider-disclosure.sh
+# model-usage attribution-stream emit + its content-level validator
+# (temperloop#1253, epic #1225, ADR 0026/0028) — a stranger's kernel checkout
+# needs both to work against its own repo, exactly like the sibling
+# validate-provider-disclosure.sh line above; not covered by the directory
+# glob since they live one level up from workflows/scripts/model-comparison/.
+kernel workflows/scripts/emit-model-usage.sh
+kernel workflows/scripts/validate-model-usage-emit.sh
 kernel workflows/scripts/workflow-reviewer-coverage.sh
 kernel workflows/scripts/validate-capture-backstop.sh
 kernel workflows/scripts/validate-template-refs.sh

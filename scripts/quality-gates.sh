@@ -256,6 +256,22 @@ KERNEL_GATES=(
   # is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_command_run_emit.sh"
   "make validate-issue-touch-emit"
+  # model-usage attribution-stream emit + its CONTENT-LEVEL validator
+  # (temperloop#1253, epic #1225, ADR 0026/0028): emit-model-usage.sh is the
+  # per-spawned-seat record (seat/model/provider/token counts/duration/
+  # outcome ref); validate-model-usage-emit.sh schema-validates records at
+  # CONTENT level — model-family and ADR-0028-provider-allowlist ENUMS, not
+  # merely presence — via a STRICT (NaN/Infinity-rejecting) python3 parse,
+  # never jq (which silently coerces non-finite constants). GATE SCOPE: this
+  # item ships the emit/validate pair and its schema ONLY — spawn-site
+  # coverage (wiring the three emit-feasible seats) is the LATER
+  # attribution-spawn-site-wiring item (temperloop#1255); an absent/empty
+  # stream is legal here, exactly like validate-provider-disclosure.sh's
+  # own "absent disclosure log is legal" precedent. Direct `bash` form, no
+  # Makefile target, matching the validate-provider-disclosure.sh gate
+  # below (kernel Makefile is generator-owned).
+  "bash workflows/scripts/validate-model-usage-emit.sh"
+  "bash workflows/scripts/tests/test_model_usage_emit.sh"
   "make validate-diagnose-queue-emit"
   # diagnose-queue lake-stream emit (temperloop#1192) — gate.sh's
   # cmd_diagnose_queue computes a merge-queue verdict /build and /fix branch
