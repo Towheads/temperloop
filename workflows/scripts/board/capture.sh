@@ -349,10 +349,11 @@ issue_touch_log_emit "$repo" "$num" "capture" || true
 # that didn't land.
 if ! board_capture_item "$board" "$url" "$num"; then
   echo "capture.sh: created $url (#$num) but it did NOT land on board $board" \
-       "— the board card is missing or unstatused (a Projects-v2 index race);" \
-       "next step: re-run \`board_capture_item $board '$url' $num\` (after" \
-       "sourcing lib/board.sh) once indexing catches up, or add/status it on" \
-       "the board by hand" >&2
+       "— the board card is missing or unstatused (a failing or transient" \
+       "\`fnd:status:*\` label write, not an index race — the issues-only" \
+       "backend writes status synchronously, ADR 0004); next step: re-run" \
+       "\`board_capture_item $board '$url' $num\` (after sourcing" \
+       "lib/board.sh), or add \`fnd:status:backlog\` to the issue by hand" >&2
   exit 1
 fi
 

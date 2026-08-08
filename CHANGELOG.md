@@ -274,6 +274,18 @@ reads that marker; a stranger greps for it before pulling.
   (dequeue + `managed-merge --strict` fallback) and names it in the unattended
   pending-decisions record.
 
+- **The board scripts' remaining live Projects-v2 framing is corrected to the
+  issues-only backend ADR 0004 shipped** (Towheads/foundation#1339). Two
+  runtime-facing sites still described the removed backend: `capture.sh`'s
+  not-landed error told the operator to wait out "a Projects-v2 index race"
+  when the issues-only backend writes status synchronously — the real failure
+  mode is a failing/transient `fnd:status:*` label write, which the message
+  now names, along with a working remedy; and `release.sh`'s parking guidance
+  named `gh project item-edit`, a Projects-v2-only command that cannot work on
+  any registered board, replaced with the currently-valid options
+  (`unclaim.sh`, `board_set_status`, or hand-editing the `fnd:status:*`
+  label). Not breaking: comment/message wording only, no behavior or contract
+  change.
 - **`/build` Step 0a drains an answered plan-approval on attended ticks too, so
   an operator's `approve` no longer strands** (Towheads/foundation#1496). The
   step was gated on the operator-absent flag, so on a board no funnel ticks the
