@@ -56,6 +56,24 @@ reads that marker; a stranger greps for it before pulling.
   `spec_authoring_context` damping does not cover this case: it keys on an
   Edit/Write to a tell-defining file, and here the session never *edited* a
   spec, it merely *received* one as its prompt.
+- **The merge gate's hunk-overlap probe now trial-merges the pushed PR heads,
+  not stale local refs** (#1198). `/build` Step 4a's condition-(a) probe decides
+  whether a selected set is `risky` (modal hard-block) or
+  `clean-disjoint-independent` (timed auto-merge), and it did so by running
+  `git merge-tree --write-tree <branchA> <branchB>` on **bare** branch names.
+  Git resolves a bare name against whatever the local clone last saw — a
+  leftover from a removed worktree, or a ref diverged from what was actually
+  force-pushed — so the probe could trial-merge the wrong trees and report a
+  **spurious** conflict, converting an unattended timed merge into an operator
+  interrupt. Both documented forms (the primary and the older-git
+  `merge-base` fallback) are now `origin/`-qualified and preceded by an
+  explicit `git fetch origin <branchA> <branchB>`, so the probe tests the
+  pushed head the queue would actually integrate — the same reasoning § 4a.5
+  already states for `combined-tree-precheck.sh`. Prose-only; the two-tier
+  probe structure (cheap file-overlap advisory, then hunk-overlap on same-file
+  pairs) is unchanged. Not a duplicate of #998, which concerns `--write-tree`
+  *output* reuse rather than *input* ref resolution.
+
 - **A draft PR is now a named state in the merge path, not GitHub's raw
   enqueue error** (#1180). `gate.sh queue` enqueued blind, so a draft PR — which
   GitHub refuses to auto-merge — failed with the raw string
