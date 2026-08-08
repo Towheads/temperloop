@@ -16,6 +16,16 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Changed
 
+- **`install-tier2.yml` is re-scoped off the retired `try` path onto the
+  `init` -> `eject` adopt-path round trip against the persistent
+  `Towheads/temperloop-demo` repo** (#1234). Drops the `temperloop try` step
+  and `ANTHROPIC_API_KEY` entirely (no leg makes a model call), and no longer
+  invokes the deleted `seed-demo-repo.sh`. The workflow never creates or
+  deletes a repository — `DEMO_REPO_TOKEN` is a fine-grained PAT scoped to
+  that one repo — and `eject`'s manifest-driven revert is what returns the
+  repo to a reusable baseline each run. ADR 0025's "CI inherits the rule"
+  consequence is amended to record the resulting accepted gap: no weekly
+  automated coverage of `temperloop testbed` or its teardown.
 - **`build-level.mjs` now emits a `phase()` per STAGE of a level instead of one
   static heading for the whole run** (#1294). The level's progress heading
   advances `claim → build → gate → PR → CI` as items move, so a collapsed

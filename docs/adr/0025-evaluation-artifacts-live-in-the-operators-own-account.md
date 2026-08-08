@@ -73,14 +73,31 @@ that. This is not solved — it is *relocated* from an unreclaimable external
 liability to an in-tree one that is at least reviewable in a diff and deletable
 in a commit.
 
-**CI inherits the rule, and did not automatically obey it.** The live round-trip
-workflow that exercises the newcomer path against a project-owned repository is
-now the remaining place where this project owns external state — each run must
-create and delete a real repository in an account this project controls. The rule
-applies there too: that workflow needs the deletion scope and an explicit
-teardown leg, backed by the same created-artifact record, or the leak simply
-moved from the design into CI. Naming this is the point — the rule is only worth
-having if it is enforced where it is inconvenient.
+**CI inherits the rule — amended (temperloop#1234): a persistent, narrowly-scoped
+repo, not per-run create/delete, and an accepted coverage gap.** This
+consequence originally read that the live round-trip workflow must create and
+delete a real repository each run, backed by the deletion scope and an explicit
+teardown leg. That requirement is **superseded**. GitHub has no "delete only the
+repos I created" permission — deletion (`delete_repo`, or fine-grained
+Administration) is owner-wide, and a token cannot be pre-scoped to a repository
+that does not exist yet, so per-run creation is exactly what forces an owner-wide
+credential. The workflow instead targets one **persistent**, pre-existing repo
+(`Towheads/temperloop-demo`) with a token scoped to that repository alone
+(Contents + Issues + Administration) — a credential that structurally cannot
+create or delete a repository at all. `temperloop eject`, the manifest-driven
+revert `init` already ships, is what returns the repo to a reusable baseline
+each run; see `.github/workflows/install-tier2.yml`'s own header for the full
+mechanism and `Decisions/temperloop - CI round trip keeps a persistent demo
+repo, not per-run create-delete` for the rationale.
+
+This is an **explicit accepted gap, not a silent one**: because CI never
+creates or deletes a repository, it has nothing of that kind to strand — but it
+also means `temperloop testbed` (this ADR's own create-a-disposable-testbed
+path) and its teardown leg have **no weekly automated coverage**. They are
+exercised only by their own unit tests (a faked `gh`) and by temperloop#1240's
+one-time executed run. The rule ("this project owns no external artifact its
+own teardown cannot reclaim") still holds for what CI actually does — it simply
+does less than the original consequence assumed CI would need to do.
 
 **It constrains future capabilities.** Any later feature wanting a shared,
 project-hosted resource for demonstration purposes is refused by this ADR unless
