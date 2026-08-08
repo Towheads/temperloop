@@ -530,6 +530,27 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Fixed
 
+- **Board claim-stamp host labels no longer diverge by call site** (#1455).
+  `claim.sh`, `release.sh`, `capture.sh`, and reconcile.sh's three read sites
+  each inlined their own `${SUBSET_HOST_LABEL:-$(hostname -s)}` fallback,
+  `board-mirror.sh` independently inlined a three-way variant that also
+  nested the legacy `STAGEFIND_HOST_LABEL` override, and one reconcile.sh
+  site added a fourth `|| echo unknown` variant on top — five inlined copies,
+  three different shapes. `build.md`'s prose spec documented the three-way
+  chain as canonical, but no script actually matched it. One real machine hit
+  the resulting divergence live: some issues got claim-stamped `mini`, others
+  `Mac-mini`, and `reconcile --status` then misclassified a same-host claim
+  as foreign. Added `board_host_label()` to
+  `workflows/scripts/board/lib/board.sh` as the one resolution chain every
+  site now calls (`$SUBSET_HOST_LABEL` → legacy `$STAGEFIND_HOST_LABEL` →
+  `hostname -s` → a literal `unknown`, never empty); the `build.md` and
+  `decision-queue-contract.md` prose specs now name the helper instead of
+  restating a chain, so they can't drift from the scripts again.
+  `workflows/scripts/build/issue-state.sh` and `env-reconcile.sh` still
+  inline a variant of this chain — left alone deliberately (issue-state.sh
+  doesn't source board.sh today; env-reconcile.sh's host check answers a
+  different question, launchd/cron role ownership, not claim stamps) — and
+  is a follow-up, not part of this fix.
 - **The kernel/overlay classifier is shell-portable and fails closed — it no
   longer answers "not kernel" when it cannot evaluate at all** (#1177).
   `workflows/scripts/kernel/lib.sh` is *sourced*, so its `#!/usr/bin/env bash`
