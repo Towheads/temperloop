@@ -8,7 +8,7 @@
 | `mcp-health-preflight.sh` | SessionStart | — | Injects banner into model context | Yes (no banner injected under eval) |
 | `session-start-deploy-mini.sh` | SessionStart | — | Board toolkit deploy (mini-only) | No (mini-gate handles it; eval runs are not mini) |
 | `git-stale-branch-guard.sh` | PreToolUse | Bash | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
-| `build-worktree-guard.sh` | PreToolUse | Bash\|Edit\|Write\|MultiEdit | None (deny decision) | No (write jail is always active) |
+| `build-worktree-guard.sh` | PreToolUse | Bash\|Edit\|Write\|MultiEdit | Worktree-ownership records under `<XDG state>/build-worktree-guard.owners/` (deny decision) | No (write jail is always active) |
 | `subtree-edit-guard.sh` | PreToolUse | Edit\|Write\|MultiEdit | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
 | `write-lane-guard.sh` | PreToolUse | Bash\|Edit\|Write\|MultiEdit\|NotebookEdit | None (prod: *ask* decision) | Yes (exits 0 silently under EVAL_RUN) |
 | `mcp-failure-tripwire.sh` | PostToolUse | mcp__obsidian.* | None (block decision) | No (eval sessions don't use vault; hook is a no-op if MCP not called) |
@@ -73,7 +73,7 @@ done
 | Sequencing record cleanup | Runs | **Suppressed** |
 | Git stale-branch guard on `checkout -b`/`switch -c` off stale main | `ask` decision | **Suppressed** (exit 0) |
 | Session-id `additionalContext` | Emitted | **Emitted** (eval traceability) |
-| Write-jail guard (build-worktree-guard) | Active when armed | Active when armed |
+| Write-jail guard (build-worktree-guard), incl. its writer-identity arm | Active when armed | Active when armed |
 | Subtree-edit guard on Edit/Write/MultiEdit into `kernel/` (direct or via a compat symlink) | `ask` decision (or silent bypass under `.build-guard`/`KERNEL_EDIT_ACK=1`) | **Suppressed** (exit 0) |
 | Write-lane guard on a mutation targeting a foreign repo's canonical checkout | `ask` decision | **Suppressed** (exit 0) |
 

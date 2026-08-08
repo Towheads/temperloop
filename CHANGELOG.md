@@ -52,6 +52,22 @@ reads that marker; a stranger greps for it before pulling.
   artifact is flushed to the record the instant its step completes, so a run
   killed partway stays enumerable by teardown instead of becoming an orphaned
   private repository.
+- **The build write-jail guard now binds a worktree to the AGENT writing in
+  it, and refuses an uncoordinated second writer** (#1187). Containment
+  answered "does this write stay inside the worktree?" but never "is THIS
+  agent the one supposed to be writing here?" — a sibling `/build` worker that
+  `cd`s into a peer's worktree passed every existing check. The guard now
+  records the `agent_id` of the FIRST qualifying in-tree write as that
+  worktree's owner (binding at first write, not at worktree creation — the
+  `.build-guard` marker is dropped at build step 3b, before any worker exists,
+  and deliberately stays `{slug, branch, created}`) and denies a write from an
+  agent that already owns a *different* armed worktree. An **absent**
+  `agent_id` is a third, always-allowed state, never folded into "non-owning":
+  the orchestrator's own post-spawn push/rebase/prune run main-thread and
+  carry none, and rejecting them would deadlock every level's merge path. A
+  nested read-only review subagent (the sanctioned nested-delegation pattern)
+  is untouched, because only writes bind. The `agent_id` discriminator was
+  confirmed live against real PreToolUse payloads before being built on.
 
 - **A machine-scoped testbed artifact record tracks every artifact a
   `temperloop testbed` run creates** (#1227). The record is an append-only

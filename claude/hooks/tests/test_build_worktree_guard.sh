@@ -699,6 +699,184 @@ fi
 
 # =============================================================================
 echo
+echo "== WRITER IDENTITY: which AGENT may write into an armed worktree (#1187) =="
+# The arms above answer "does this write stay inside the worktree?". This one
+# answers "is THIS agent the one supposed to be writing here?" — a distinct
+# question, and one containment structurally cannot see: a sibling worker that
+# `cd`s INTO a peer's worktree satisfies every containment check, because the
+# cwd's toplevel is then that worktree.
+#
+# The discriminator is `agent_id` on the PreToolUse payload, confirmed LIVE
+# against real payloads (CLI 2.1.226) before the guard was built on it: absent
+# on the main thread, distinct per spawn, distinct again for a nested spawn.
+# These fixtures reproduce those three shapes synthetically — no live session,
+# no network, same `jq -cn` idiom as every corpus above.
+#
+# The owner records are the assertion surface here (a rebind and a refusal both
+# leave a trace), so the state dir is derived from the hook's own declaration
+# for the same reason GUARD_STATE_LEAF is: restating the literal would leave
+# this suite pointing at a dead path the day it changes.
+GUARD_OWNER_LEAF=$(sed -n 's|^OWNER_DIR="\$XDG_STATE_DIR/\([A-Za-z0-9._-][A-Za-z0-9._-]*\)".*$|\1|p' "$HOOK" | head -1)
+[ -n "$GUARD_OWNER_LEAF" ] || {
+  echo "FATAL: could not derive the guard's owner-dir leaf from its OWNER_DIR= line in $HOOK" >&2
+  exit 1; }
+OWNERS="$XDG_STATE_HOME/$GUARD_STATE_LEAF/$GUARD_OWNER_LEAF"
+
+# A SECOND armed worktree, so "this agent already owns a different worktree"
+# is a real recorded fact rather than a fixture-level fiction. This is the
+# shape a /build level actually runs: N workers, N worktrees, one session.
+WT2="$WTPARENT/item2"
+git -C "$REPO" worktree add -q "$WT2" -b jail2 2>/dev/null
+touch "$WT2/.build-guard"
+echo b >"$WT2/b.txt"
+WT2_RP=$(cd "$WT2" && pwd -P)
+
+owners_reset() { rm -rf "$OWNERS"; }
+# Same payload builders as above, plus the `agent_id` field. Passing an EMPTY
+# id omits the key entirely — that is the main-thread shape, and it must be
+# built by omission rather than by an empty string, because the guard's whole
+# third-state contract keys on the field's ABSENCE.
+run_bash_as() { # <agent_id|""> <cwd> <command>
+  local aid="$1" cwd="$2" cmd="$3" json
+  json=$(jq -cn --arg c "$cmd" --arg cwd "$cwd" --arg a "$aid" \
+    '{tool_name:"Bash", tool_input:{command:$c}, cwd:$cwd}
+     + (if $a == "" then {} else {agent_id:$a} end)')
+  ( cd "$cwd" && bash "$HOOK" <<<"$json" )
+}
+run_file_as() { # <agent_id|""> <cwd> <tool> <file_path>
+  local aid="$1" cwd="$2" tool="$3" fp="$4" json
+  json=$(jq -cn --arg t "$tool" --arg fp "$fp" --arg cwd "$cwd" --arg a "$aid" \
+    '{tool_name:$t, tool_input:{file_path:$fp}, cwd:$cwd}
+     + (if $a == "" then {} else {agent_id:$a} end)')
+  ( cd "$cwd" && bash "$HOOK" <<<"$json" )
+}
+want() { # <desc> <deny|silent> <hook stdout>
+  if [ "$(verdict "$3")" = "$2" ]; then ok "$1"; else bad "$1" "want=$2 got=$(verdict "$3") out=$3"; fi
+}
+
+# --- ownership binds at FIRST WRITE, not at worktree creation ---------------
+# worktree.sh writes `.build-guard` at 3b, BEFORE the worker is spawned at 3c,
+# so no worker identity exists to stamp then. The marker therefore stays
+# {slug,branch,created} and the binding is made here, by the first write.
+owners_reset; log_reset
+want "OWNER  agent A's first in-worktree write binds it as owner" silent \
+  "$(run_file_as AAA "$WT" Write "$WT_RP/src/a.ts")"
+if grep -q '^AAA$' "$OWNERS"/wt-* 2>/dev/null; then
+  ok "OWNER  the binding is RECORDED (owner record names agent A)"
+else
+  bad "OWNER  the binding is RECORDED" "no owner record naming AAA under $OWNERS"
+fi
+want "OWNER  agent A's SUBSEQUENT writes are unaffected" silent \
+  "$(run_file_as AAA "$WT" Edit "$WT_RP/keep.txt")"
+want "OWNER  agent A's in-worktree Bash write is unaffected" silent \
+  "$(run_bash_as AAA "$WT" "rm -rf $WT_RP/src")"
+
+# --- a second, NON-OWNING agent is REJECTED ---------------------------------
+# Agent B binds its OWN worktree first (exactly what a sibling /build worker
+# does), then reaches into A's. Note B's cwd is A's worktree, so every
+# containment check passes — this deny can only come from writer identity.
+run_file_as BBB "$WT2" Write "$WT2_RP/b.txt" >/dev/null
+log_reset
+want "REJECT a second agent that owns ANOTHER armed worktree (file arm)" deny \
+  "$(run_file_as BBB "$WT" Write "$WT_RP/src/a.ts")"
+log_reset
+want "REJECT the same second agent on the BASH arm (in-tree rm)" deny \
+  "$(run_bash_as BBB "$WT" "rm -rf $WT_RP/keep.txt")"
+log_reset
+want "REJECT the same second agent on an in-tree output REDIRECT" deny \
+  "$(run_bash_as BBB "$WT" "echo x > $WT_RP/leak.txt")"
+# ...and the rejection is scoped to WRITES. B may still read A's worktree.
+log_reset
+want "ALLOW  the non-owning agent's READ-shaped Bash in A's worktree" silent \
+  "$(run_bash_as BBB "$WT" 'git diff --stat')"
+
+# --- LOAD-BEARING NEGATIVE CASE: a nested READ-ONLY review subagent ----------
+# The sanctioned claude/commands/build.md "Seat scoping — nested review
+# delegation" pattern. Its agent_id DIFFERS from the owner's (confirmed live:
+# a nested spawn gets its own id), so a naive owner-equality rule over every
+# tool call would break it. It must run untouched.
+log_reset
+want "NESTED read-only reviewer: git diff"      silent "$(run_bash_as RRR "$WT" 'git diff origin/main')"
+want "NESTED read-only reviewer: rg over src"   silent "$(run_bash_as RRR "$WT" 'rg -n TODO src')"
+want "NESTED read-only reviewer: notes to /tmp" silent "$(run_bash_as RRR "$WT" 'rg -n TODO src > /tmp/review-notes.txt')"
+if grep -q '^AAA$' "$OWNERS"/wt-* 2>/dev/null; then
+  ok "NESTED reviewer did NOT take ownership (only writes bind)"
+else
+  bad "NESTED reviewer did NOT take ownership" "owner record no longer names AAA"
+fi
+
+# --- ABSENT agent_id is a THIRD, ALWAYS-ALLOWED state ------------------------
+# NOT "not the owner". The orchestrator's own post-spawn operations against a
+# worker's worktree — the 3f push-by-SHA, pr.sh's 4c-retry rebase,
+# worktree.sh remove/prune — run MAIN-THREAD and carry no agent_id, the same
+# signature as an unspawned interactive session. Folding them into the
+# non-owning branch would deadlock every level's merge path: this is the
+# difference between a guard and an outage, so it gets its own assertions.
+log_reset
+want "ABSENT agent_id: main-thread write into a worktree OWNED by another agent" silent \
+  "$(run_file_as "" "$WT" Write "$WT_RP/src/a.ts")"
+want "ABSENT agent_id: main-thread in-tree rm (worktree.sh cleanup shape)" silent \
+  "$(run_bash_as "" "$WT" "rm -rf $WT_RP/build")"
+want "ABSENT agent_id: main-thread in-tree redirect" silent \
+  "$(run_bash_as "" "$WT" "git rev-parse HEAD > $WT_RP/sha.txt")"
+if grep -q '^AAA$' "$OWNERS"/wt-* 2>/dev/null; then
+  ok "ABSENT agent_id neither bound nor disturbed ownership"
+else
+  bad "ABSENT agent_id neither bound nor disturbed ownership" "owner record no longer names AAA"
+fi
+# ...and on a VIRGIN worktree it must not bind an owner either, or the first
+# real worker would arrive to find itself locked out by the orchestrator.
+owners_reset; log_reset
+run_file_as "" "$WT" Write "$WT_RP/src/a.ts" >/dev/null
+if [ -z "$(ls -A "$OWNERS" 2>/dev/null)" ]; then
+  ok "ABSENT agent_id on a VIRGIN worktree records no owner at all"
+else
+  bad "ABSENT agent_id on a VIRGIN worktree records no owner" "$OWNERS is non-empty: $(ls -A "$OWNERS")"
+fi
+
+# --- the disclosed relaxation: an UNBOUND successor takes over ---------------
+# /build re-spawns a FRESH agent against the SAME, still-armed worktree on the
+# blocked / design-fork / failed / dirty-resume paths. A literal "reject every
+# differing agent_id" rule would deadlock all of them, so an agent that owns no
+# other armed worktree rebinds instead. Pinned as a DECISION on the record, not
+# left to be rediscovered as a surprise.
+owners_reset; log_reset
+run_file_as AAA "$WT" Write "$WT_RP/src/a.ts" >/dev/null    # A owns this worktree
+run_file_as BBB "$WT2" Write "$WT2_RP/b.txt"  >/dev/null    # B owns the OTHER one
+want "RESPAWN an unbound successor takes over the same worktree" silent \
+  "$(run_file_as CCC "$WT" Write "$WT_RP/src/a.ts")"
+if grep -q '^CCC$' "$OWNERS"/wt-* 2>/dev/null; then
+  ok "RESPAWN the takeover is RECORDED (owner record now names the successor)"
+else
+  bad "RESPAWN the takeover is RECORDED" "owner record does not name CCC"
+fi
+# ...and the takeover does not open the door for the sibling case above: the
+# successor now owns this worktree, so the OTHER-worktree owner is still denied.
+log_reset
+want "RESPAWN after takeover, the other worktree's owner is STILL denied" deny \
+  "$(run_file_as BBB "$WT" Write "$WT_RP/src/a.ts")"
+
+# --- a recreated worktree gets a FRESH owner slot ----------------------------
+# `worktree.sh create` force-removes and re-adds the same deterministic path on
+# a re-run, so a key that ignored the marker's `created` generation would hand
+# the new run's worker a stale owner and lock it out on its first write.
+# The challenger here is B — the agent that owns the OTHER worktree — precisely
+# because a stale key would DENY it (bound elsewhere, and the stale record still
+# names A). An unbound challenger would be allowed either way and would prove
+# nothing about the generation half.
+owners_reset; log_reset
+printf '{"slug":"item","branch":"build/item","created":"2026-01-01T00:00:00Z"}\n' >"$WT/.build-guard"
+run_file_as AAA "$WT"  Write "$WT_RP/src/a.ts" >/dev/null   # A owns generation 1
+run_file_as BBB "$WT2" Write "$WT2_RP/b.txt"   >/dev/null   # B owns the other worktree
+printf '{"slug":"item","branch":"build/item","created":"2026-01-02T00:00:00Z"}\n' >"$WT/.build-guard"
+log_reset
+want "RECREATE a re-created worktree (new marker generation) is unowned again" silent \
+  "$(run_file_as BBB "$WT" Write "$WT_RP/src/a.ts")"
+touch "$WT/.build-guard"                                   # restore the fixture shape
+owners_reset
+
+# =============================================================================
+echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1
 fi
