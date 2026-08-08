@@ -126,8 +126,11 @@ telemetry claude/measurement-proxies.md
 telemetry claude/design-measurement-proxies.md
 telemetry meta/data/raw/README.md
 telemetry workflows/scripts/emit-command-run.sh
+telemetry workflows/scripts/emit-diagnose-queue.sh
 telemetry workflows/scripts/emit-issue-touch.sh
+telemetry workflows/scripts/tests/test_diagnose_queue_emit.sh
 telemetry workflows/scripts/validate-command-run-emit.sh
+telemetry workflows/scripts/validate-diagnose-queue-emit.sh
 telemetry workflows/scripts/validate-issue-touch-emit.sh
 telemetry workflows/scripts/validate-knowledge-search-emit.sh
 telemetry workflows/scripts/telemetry-brief.sh

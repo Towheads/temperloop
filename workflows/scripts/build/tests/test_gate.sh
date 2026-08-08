@@ -74,6 +74,14 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
+# cmd_diagnose_queue now fires a lake-stream emit (workflows/scripts/
+# emit-diagnose-queue.sh, temperloop#1192) on every exit path. Pin its sink to
+# a throwaway tmpdir so this test never writes into the real repo's
+# meta/data/raw/ — the emit's own behavior (record shape, per-outcome
+# coverage) is covered by workflows/scripts/tests/test_diagnose_queue_emit.sh;
+# here we only need the emit to be a no-op on this file's own assertions.
+export DIAGNOSE_QUEUE_RAW_DIR="$TMP/diagnose-queue-raw"
+
 # Confirm the shared fixture system is live: board.sh's _board_gh seam is in
 # scope (same harness gate.sh + the board tests share).
 declare -F _board_gh >/dev/null || fail "board.sh not sourced — shared fixture system missing"

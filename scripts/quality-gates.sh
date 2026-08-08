@@ -256,6 +256,19 @@ KERNEL_GATES=(
   # is generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_command_run_emit.sh"
   "make validate-issue-touch-emit"
+  "make validate-diagnose-queue-emit"
+  # diagnose-queue lake-stream emit (temperloop#1192) — gate.sh's
+  # cmd_diagnose_queue computes a merge-queue verdict /build and /fix branch
+  # merge decisions on, then routes every exit path (including its own
+  # internal die() error paths) through the sibling emit script
+  # (emit-diagnose-queue.sh). validate-diagnose-queue-emit above lints
+  # PRESENCE of the wiring (library code, no markdown orchestration — the
+  # validate-knowledge-search-emit mold, not the validate-issue-touch-emit
+  # one). This covers the emit script's own record shape, arg validation,
+  # and warn-and-exit-0 infrastructure arm, plus the presence-lint's
+  # red/green behaviour against a tampered gate.sh. Same direct-`bash` form
+  # as the sibling emitter gates.
+  "bash workflows/scripts/tests/test_diagnose_queue_emit.sh"
   # Kernel telemetry-brief renderer (temperloop#431): the five-question brief
   # rendered from kernel-only raw streams, wired into claude/commands/
   # check-in.md Part 1 — fixture-lake render reconciliation, empty-stream
