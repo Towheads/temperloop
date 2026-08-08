@@ -598,6 +598,14 @@ KERNEL_GATES=(
   # own header). Direct `bash` form, no Makefile target, matching the
   # validate-feature-docs.sh gate immediately above.
   "bash workflows/scripts/validate-provider-disclosure.sh"
+  # ...and its fixture suite. BOTH halves are registered, exactly as the
+  # validate-feature-docs.sh pair two lines above does: this repo enumerates
+  # its test-suite gates explicitly (there is no auto-discovery here), so a
+  # suite that is not typed in this list NEVER RUNS IN CI — which is how the
+  # first cut of this module shipped a green fixture suite that gated nothing
+  # at all, and let eight mutations of the very guarantees it claimed to
+  # cover survive untouched.
+  "bash workflows/scripts/model-comparison/tests/test_allowlist.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through

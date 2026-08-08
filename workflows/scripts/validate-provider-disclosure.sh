@@ -22,9 +22,22 @@
 #      seq, prev_hash, hash — never content), and the hash chain is intact:
 #      an entry's own `hash` matches its recomputed fields, and its
 #      `prev_hash` matches the immediately preceding entry's `hash` (or the
-#      literal "genesis" for the first entry). This is what makes "an entry
-#      cannot be rewritten or removed in place" a MECHANICALLY CHECKED
-#      property — a tampered entry breaks the chain and fails this gate.
+#      literal "genesis" for the first entry). Plus the watermark-anchor
+#      checks (TRUNCATED / REFORGED / WATERMARK-STALE / WATERMARK-MISSING).
+#
+#      WHAT THIS PROVES, PRECISELY — do not overstate it. The chain makes an
+#      entry REWRITTEN IN PLACE, or DELETED FROM THE INTERIOR of an otherwise
+#      intact file, mechanically detectable. It does NOT, on its own, detect
+#      truncation of the log's TAIL, deletion of the WHOLE log, or a full
+#      RE-FORGE — an unanchored chain records nothing about its own length,
+#      and an unkeyed one can be rebuilt end to end by anyone who can write
+#      the file. The sibling watermark anchor
+#      (`disclosure-log.watermark`, written by pa_disclose) closes the first
+#      two and makes the third loud, but the watermark is ITSELF an untracked
+#      local file beside the log: it raises the cost of casual tampering and
+#      does not defeat an attacker who can write both files. Anchoring it
+#      beyond local write reach (committing or signing it) is a separate,
+#      open question. See allowlist.sh's own header for the full statement.
 #   4. DISCLOSURE-LOG MEMBERSHIP checks — every logged entry's provider is
 #      in the CURRENT effective allowlist (committed narrowed by any
 #      personal override). A logged provider that the allowlist no longer
@@ -46,14 +59,26 @@
 # a genuine "this data is malformed/inconsistent" verdict is a FAIL; an
 # inability to evaluate at all (jq missing, an unreadable file) is a hard
 # abort (exit 1 with a CANNOT-EVALUATE message), never a silently-reported
-# pass.
+# pass. That is enforced, not just asserted: every input file this script
+# reads is checked for READABILITY before it is read, and a chain verdict
+# that comes back non-zero with an EMPTY violation list — the shape an
+# unreadable log produced, indistinguishable from clean to a caller reading
+# only the printed lines — is itself treated as CANNOT EVALUATE.
 #
 # Usage:
 #   workflows/scripts/validate-provider-disclosure.sh
 #   (a direct-`bash` KERNEL_GATES entry in scripts/quality-gates.sh)
 #
-# Env overrides (test seam — same names allowlist.sh itself reads, so a
-# fixture repo just points all three at a scratch dir):
+# Env overrides (FIXTURE-TEST SEAM — same names allowlist.sh itself reads, so
+# a fixture repo just points all three at a scratch dir). They are honoured
+# ONLY alongside PROVIDER_ALLOWLIST_TEST_SEAM=1, and this script hard-fails
+# if a non-default committed-file override is present without it: otherwise
+# `PROVIDER_ALLOWLIST_COMMITTED_FILE=/tmp/widened.txt` repoints the ceiling
+# from the environment AND satisfies this gate by construction (a file
+# outside the repo skips the git-tracked check, and a widened file names
+# `anthropic` by construction), which is exactly the "never an env var"
+# property ADR 0028 decision 1 requires.
+#   PROVIDER_ALLOWLIST_TEST_SEAM
 #   PROVIDER_ALLOWLIST_COMMITTED_FILE
 #   PROVIDER_ALLOWLIST_LOCAL_FILE
 #   PROVIDER_DISCLOSURE_LOG_FILE
@@ -70,6 +95,23 @@ if [[ ! -f "$ALLOWLIST_LIB" ]]; then
   echo "validate-provider-disclosure: CANNOT EVALUATE — $ALLOWLIST_LIB is missing" >&2
   exit 1
 fi
+
+# Read the inherited committed-file override BEFORE sourcing — the library
+# overwrites the variable with the committed default when the test seam is
+# off, so this is the only point at which "was it set in the environment?" is
+# still answerable. `${VAR+x}` (not `:-`) so this is not a settings seam of
+# its own.
+_PA_ENV_COMMITTED=""
+if [[ -n "${PROVIDER_ALLOWLIST_COMMITTED_FILE+x}" ]]; then
+  _PA_ENV_COMMITTED="$PROVIDER_ALLOWLIST_COMMITTED_FILE"
+fi
+_PA_DEFAULT_COMMITTED="$SCRIPT_DIR/model-comparison/provider-allowlist.txt"
+if [[ -n "$_PA_ENV_COMMITTED" && "$_PA_ENV_COMMITTED" != "$_PA_DEFAULT_COMMITTED" \
+      && "${PROVIDER_ALLOWLIST_TEST_SEAM:-0}" != "1" ]]; then
+  echo "validate-provider-disclosure: CANNOT EVALUATE — PROVIDER_ALLOWLIST_COMMITTED_FILE is set to a non-default path ($_PA_ENV_COMMITTED) without PROVIDER_ALLOWLIST_TEST_SEAM=1. The committed ceiling is never repointed from the environment (ADR 0028 decision 1); refusing to validate a ceiling this gate did not choose." >&2
+  exit 1
+fi
+
 # shellcheck source=workflows/scripts/model-comparison/allowlist.sh
 source "$ALLOWLIST_LIB"
 
@@ -94,6 +136,13 @@ esac
 
 if [[ ! -f "$committed_file" ]]; then
   failures+=("COMMITTED-MISSING  $committed_file — no committed provider allowlist found")
+elif [[ ! -r "$committed_file" ]]; then
+  # NOT a failure line: an unreadable ceiling means the checks below silently
+  # read NOTHING (`malformed=0`, `pa_committed_list` falls back to the
+  # built-in default, `anthropic` is "present" by construction) and the gate
+  # PASSES on a file it never saw. Hard abort instead.
+  echo "validate-provider-disclosure: CANNOT EVALUATE — the committed allowlist ($committed_file) exists but is not readable; aborting rather than reporting a pass on a ceiling this gate could not read" >&2
+  exit 1
 else
   # Must be a real git-tracked path, not merely present on disk (a fresh
   # `touch` would satisfy -f but carries no review/commit history). Only
@@ -133,8 +182,16 @@ fi
 # 2. No-widen: a personal override may only narrow.
 # ---------------------------------------------------------------------------
 local_file="$(pa_local_file)"
+if [[ -f "$local_file" && ! -r "$local_file" ]]; then
+  echo "validate-provider-disclosure: CANNOT EVALUATE — the personal narrowing override ($local_file) exists but is not readable; aborting rather than reporting a pass on an override this gate could not read" >&2
+  exit 1
+fi
 if [[ -f "$local_file" ]]; then
-  widen="$(pa_narrowing_violations)"
+  # `|| true`: pa_narrowing_violations returns 1 as its normal "found some"
+  # verdict, and this script's own `set -uo pipefail` leaves that unguarded
+  # assignment's rc unchecked — spelled out so a later `set -e` addition
+  # cannot silently turn a real widen attempt into an early exit.
+  widen="$(pa_narrowing_violations)" || true
   if [[ -n "$widen" ]]; then
     while IFS= read -r p; do
       [[ -z "$p" ]] && continue
@@ -149,21 +206,40 @@ fi
 # ---------------------------------------------------------------------------
 log_file="$(pa_disclosure_log_file)"
 n_entries=0
-if [[ -f "$log_file" && -s "$log_file" ]]; then
-  chain_out=""
-  chain_rc=0
-  chain_out="$(pa_verify_log_chain "$log_file")" || chain_rc=$?
-  if [[ "$chain_rc" -eq "$PA_RC_CANNOT_EVALUATE" ]]; then
-    echo "validate-provider-disclosure: CANNOT EVALUATE the disclosure log ($log_file) — aborting rather than reporting a false pass/fail" >&2
-    echo "$chain_out" >&2
-    exit 1
-  elif [[ "$chain_rc" -ne 0 ]]; then
-    while IFS= read -r v; do
-      [[ -z "$v" ]] && continue
-      failures+=("$v")
-    done <<<"$chain_out"
-  fi
 
+if [[ -e "$log_file" && ! -r "$log_file" ]]; then
+  echo "validate-provider-disclosure: CANNOT EVALUATE — the disclosure log ($log_file) exists but is not readable; aborting rather than reporting a pass on a log this gate could not read" >&2
+  exit 1
+fi
+
+# ALWAYS run the chain check, including on an absent/empty log: the watermark
+# anchor lives beside the log, so "log deleted, anchor still records three
+# entries" is exactly the case a `[[ -f ]]` guard around this block used to
+# skip. pa_verify_log_chain itself owns the "absent log with no anchor is
+# legal" rule.
+chain_out=""
+chain_rc=0
+chain_out="$(pa_verify_log_chain "$log_file")" || chain_rc=$?
+if [[ "$chain_rc" -eq "$PA_RC_CANNOT_EVALUATE" ]]; then
+  echo "validate-provider-disclosure: CANNOT EVALUATE the disclosure log ($log_file) — aborting rather than reporting a false pass/fail" >&2
+  echo "$chain_out" >&2
+  exit 1
+elif [[ "$chain_rc" -ne 0 ]]; then
+  # A non-zero rc with NO violation lines is not a clean log — it is a
+  # verdict we could not compute (the shape an unreadable-file redirect
+  # produced: loop body never ran, rc non-zero, stdout empty). Treating it as
+  # "nothing to append to failures" is the fail-OPEN this gate must not do.
+  if [[ -z "${chain_out//[$'\n\t ']/}" ]]; then
+    echo "validate-provider-disclosure: CANNOT EVALUATE the disclosure log ($log_file) — the chain verifier returned rc=$chain_rc but reported no violations, which is not a verdict; aborting rather than treating it as clean" >&2
+    exit 1
+  fi
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    failures+=("$v")
+  done <<<"$chain_out"
+fi
+
+if [[ -f "$log_file" && -s "$log_file" ]]; then
   # Membership check runs independently of chain-validity, best-effort per
   # line (a line whose JSON parses fine but whose chain is broken can still
   # be checked for membership) — a malformed line (caught above) is simply
