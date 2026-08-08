@@ -45,6 +45,19 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`/promote`'s issue correspondence is now resolved by a real script,
+  never a prose lookup** (#1235). `workflows/scripts/promote/resolve-correspondence.sh`
+  resolves a copied testbed issue back to its original by **exact lookup**
+  on the `copied from <owner>/<repo>#<N>` line `mirror-from-repo` stamps at
+  copy time — never by title matching, ordering, or any other inference —
+  and refuses rather than guesses, with a distinct outcome for each of
+  three bad states: the line is absent, malformed, or the body was edited
+  after copying (no longer the fixed trailing shape the writer produces).
+  Its `report` mode gives `/promote` one row per testbed issue to use
+  verbatim. The mechanical half exists as a script rather than a markdown
+  step because an LLM-executed prose lookup gets paraphrased away, and the
+  failure mode of a paraphrased lookup is a silently absent or silently
+  wrong record, not a caught error.
 - **`/promote` carries work back out of a testbed and into your real
   repository, as your pipeline's actual commits** (#1233). Building the
   evaluation in a disposable duplicate is only half the story; the other half

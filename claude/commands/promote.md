@@ -146,15 +146,37 @@ hand instead, you carry that same line yourself.
      Edit only between these two markers; a sibling item owns the API-state
      section further down and the two must stay disjoint. -->
 
-Placeholder. Copied issues carry a machine-readable
-`copied from <owner>/<repo>#<N>` line stamped at copy time
-(`workflows/scripts/testbed/source.sh`), and correspondence is resolved by
-**exact lookup** on that line — never by title matching, ordering, or any
-other inference — refusing or flagging rather than guessing when the line is
-absent, malformed, or the body was edited. The mechanical half of that lookup
-lands with its own script and its own tests in a later item; until then, do
-not guess a correspondence: report the copied issue and the original by number
-and let the operator confirm.
+Copied issues carry a machine-readable `copied from <owner>/<repo>#<N>` line
+stamped at copy time — the body's own last line, immediately preceded by
+`---` (`workflows/scripts/testbed/source.sh`,
+`_testbed_provider_mirror_from_repo_produce_issues`). Correspondence is
+resolved by **exact lookup** on that line and nothing else — never by title
+matching, ordering, or any other inference — using
+**`workflows/scripts/promote/resolve-correspondence.sh`**, the mechanical
+half of this section for the same reason `push-testbed-branch.sh` is the
+mechanical half of Step 3 above: an LLM-executed prose lookup gets
+paraphrased away, and the failure mode of a paraphrased lookup is a
+SILENTLY absent or silently WRONG correspondence, not a caught error.
+
+Run its `report` mode over the testbed repository and use the output
+verbatim — do not re-derive or second-guess a row by hand:
+
+```sh
+workflows/scripts/promote/resolve-correspondence.sh report \
+  --testbed-repo <owner>/<testbed-name> --state all
+```
+
+Every testbed issue comes back as exactly one of four outcomes, one
+tab-separated row each (`RESOLVED` / `ABSENT` / `MALFORMED` / `EDITED`,
+never a fifth): `RESOLVED` names the source `<owner>/<repo>#<N>` it was
+copied from; the other three **refuse rather than guess**, each naming
+distinctly why — `ABSENT` (no provenance line at all), `MALFORMED` (a
+`copied from` line exists but does not parse as `<owner>/<repo>#<N>`), or
+`EDITED` (a well-formed line exists but not in the fixed trailing position
+the writer always produces, meaning the body was touched after the copy).
+Report only what the script resolved: a `RESOLVED` row is a correspondence;
+anything else is unresolved and must be reported to the operator as such,
+by testbed issue number, never assumed.
 
 <!-- END: issue-correspondence -->
 
