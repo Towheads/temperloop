@@ -1,0 +1,22 @@
+# provider-allowlist.txt — the COMMITTED, git-tracked, repo-scoped provider
+# ceiling for temperloop's model-comparison module (temperloop#1250, epic
+# #1225, ADR 0028 decision 1:
+# docs/adr/0028-provider-exposure-rides-a-committed-allowlist-and-disclosure-log.md).
+#
+# This is the ONLY place a provider is ever added: through a reviewed commit
+# to this file, exactly like any other change to this repo. It is
+# deliberately NOT an env var, NOT a `$HOME` config, and NOT anything under
+# the gitignored `.temperloop/` runtime dir — a fresh clone of this repo can
+# never send content to a third-party vendor by accident.
+#
+# A personal override (see allowlist.local.txt.example beside this file) may
+# NARROW this list further for one operator's own checkout. It can never
+# WIDEN it — workflows/scripts/model-comparison/allowlist.sh's
+# pa_effective_list refuses to resolve an effective allowlist at all when a
+# personal override names a provider not listed here.
+#
+# Format: one lowercase provider name per line. `#` starts a comment;
+# blank lines are ignored. Read by allowlist.sh's pa_committed_list.
+#
+# Default: Anthropic only.
+anthropic

@@ -1,2 +1,8 @@
 baseline.jsonl
 .recovery.json
+# model-comparison runtime state (temperloop#1250, ADR 0028): the personal
+# provider-allowlist narrowing override and the append-only disclosure log.
+# Both are repo-local and untracked by design — the committed ceiling lives
+# at workflows/scripts/model-comparison/provider-allowlist.txt instead. See
+# workflows/scripts/model-comparison/allowlist.local.txt.example.
+model-comparison/

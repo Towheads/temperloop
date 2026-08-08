@@ -151,6 +151,42 @@ reads that marker; a stranger greps for it before pulling.
   left to prose discipline — re-applying the state itself stays the adopt
   path's job, never this script's, so ADR 0023's biconditional (docs/adr/0023)
   holds.
+
+- **A committed provider allowlist and a paired disclosure log gate what may
+  be sent to a third-party vendor** (#1250, epic #1225, ADR 0028 decisions 1
+  and 2). `workflows/scripts/model-comparison/provider-allowlist.txt` is the
+  ceiling — git-tracked, repo-scoped, Anthropic-only by default, and changed
+  only through a reviewed commit: never an env var, never a `$HOME` config,
+  never anything under the gitignored `.temperloop/` runtime dir. A personal
+  `.temperloop/model-comparison/allowlist.local.txt` may NARROW that set for
+  one checkout and can never widen it; a widen attempt fails closed (nothing
+  is allowed) rather than being silently dropped. Every send to a non-default
+  provider writes exactly one append-only, hash-chained JSONL entry carrying
+  provider, item reference and timestamp — never content — through
+  `allowlist.sh`'s `pa_disclose`, the only writer the library exposes, which
+  refuses to log a provider the allowlist does not currently allow and
+  serializes concurrent writers behind a lock so a provider fan-out cannot
+  interleave two appends into a broken chain. A new `checks` gate,
+  `workflows/scripts/validate-provider-disclosure.sh` (plus its fixture suite
+  `workflows/scripts/model-comparison/tests/test_allowlist.sh`), enforces all
+  of it on every PR, and four new settings — `PROVIDER_ALLOWLIST_TEST_SEAM`,
+  `PROVIDER_ALLOWLIST_COMMITTED_FILE`, `PROVIDER_ALLOWLIST_LOCAL_FILE`,
+  `PROVIDER_DISCLOSURE_LOG_FILE` — are registered in `setting-registry.tsv`;
+  the three path seams are honoured only alongside
+  `PROVIDER_ALLOWLIST_TEST_SEAM=1`, so the ceiling cannot be repointed from
+  the environment. **What the chain proves, stated precisely:** it makes an
+  entry rewritten in place, or deleted from the interior of an intact file,
+  mechanically detectable. It does not, on its own, detect truncation of the
+  log's tail, deletion of the whole log, or a full re-forge — an unanchored
+  chain records nothing about its own length, and an unkeyed one can be
+  rebuilt end to end by anyone who can write it. A sibling
+  `disclosure-log.watermark` anchor closes the first two and makes the third
+  loud, but the anchor is itself an untracked local file: it raises the cost
+  of casual tampering and does not defeat an attacker who can write both
+  files. Anchoring it beyond local write reach is tracked separately. The
+  send-vs-log coverage cross-check (proving every actual send produced an
+  entry) is owned by a later item in the same epic.
+
 - **`/promote` carries work back out of a testbed and into your real
   repository, as your pipeline's actual commits** (#1233). Building the
   evaluation in a disposable duplicate is only half the story; the other half
