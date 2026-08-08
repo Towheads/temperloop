@@ -804,6 +804,26 @@ reads that marker; a stranger greps for it before pulling.
   paragraph, and Step 1 itself — now reads "neither a sub-issue of an epic nor
   an epic parent" instead of "not a sub-issue of an epic".
 
+### Added
+
+- **A restricted candidate-session overlay + provider-key health check**
+  for the model-comparison harness epic (#1225). New
+  `workflows/scripts/model-comparison/candidate-session.sh` is a reusable
+  preflight/resolve/spawn CLI: `preflight` fails loudly at pre-flight
+  (never a silent no-op) when a non-default provider's API key is unset,
+  naming the exact env var and the concrete host-supply file
+  (`build.config.local.sh`); `spawn` scopes the resolved key to the one
+  spawned `claude` child via `env VAR=value`, never exporting it into this
+  script's own shell beyond that line. `candidate.settings.json` is a
+  deny-over-allow containment overlay removing every knowledge-store/vault
+  MCP tool and every path/command reaching `build.config.local.sh`, while
+  keeping the ordinary replay/worker surface reachable. Registers the
+  `make test-candidate-session` gate (`scripts/quality-gates.sh`, `Makefile`,
+  `workflows/scripts/config/gate-paths.tsv`) and the `CANDIDATE_SETTINGS`
+  setting-registry row, and adds the missing kernel classification for
+  `workflows/scripts/model-comparison/*` in `kernel-manifest.txt`. Not
+  breaking — a new opt-in module with no default-path behavior change.
+
 ## [0.28.0] - 2026-08-05 — BREAKING
 
 ### Migration — read this first

@@ -277,6 +277,20 @@ KERNEL_GATES=(
   # the T0-inventory/manifest gates above (kernel Makefile is
   # generator-owned; no new target added here).
   "bash workflows/scripts/tests/test_telemetry_brief.sh"
+  # model-comparison: restricted candidate-session overlay + provider-key
+  # health check (temperloop#1252, epic #1225 "model comparison harness").
+  # Asserts the settings overlay's EFFECTIVE tool surface via real
+  # deny-over-allow glob matching (not a grep for JSON key presence) —
+  # every knowledge-store/vault MCP namespace and every path/command
+  # reaching the host-secrets file denied, the ordinary replay surface
+  # still reachable; a provider key present at spawn reaches the spawned
+  # child and is absent from the parent process and from everything this
+  # script itself emits; an unset non-default provider key fails LOUDLY at
+  # pre-flight, naming the exact env var and the host-supply file; the
+  # default (no candidate provider) path is a no-op. `make
+  # test-candidate-session` so the activation-registry proof
+  # (`grep -q 'test-candidate-session' scripts/quality-gates.sh`) matches.
+  "make test-candidate-session"
   # check-in.md Part 2 Status-line trailing-newline safety (temperloop#853,
   # the agent-plane half of foundation#1308 — the store-seam half, ks_append's
   # own fresh-line-on-append guarantee, is covered by test_knowledge_store.sh

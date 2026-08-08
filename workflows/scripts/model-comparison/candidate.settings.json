@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "deny": [
+      "mcp__obsidian__*",
+      "mcp__obsidian-builtin__*",
+      "mcp__things__*",
+      "Read(**/build.config.local.sh)",
+      "Edit(**/build.config.local.sh)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Bash(*build.config.local.sh*)",
+      "Bash(*build.config.machine.sh*)",
+      "Bash(*.env*)"
+    ],
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash",
+      "Task"
+    ]
+  }
+}
