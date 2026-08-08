@@ -81,10 +81,10 @@
 # window holds, exactly like an argument-less `release.sh`, and only after
 # proving that marker names terminal work.
 #
-# "THIS host" matches claim.sh's logic:
-#   ${SUBSET_HOST_LABEL:-$(hostname -s)}
-# and the board stamp format `<host>:<sess8>` — an item is "stamped to this host"
-# when its Host/Session value's host part (before the first ':') equals it.
+# "THIS host" matches claim.sh's logic — the shared board_host_label() helper
+# (workflows/scripts/board/lib/board.sh) — and the board stamp format
+# `<host>:<sess8>` — an item is "stamped to this host" when its Host/Session
+# value's host part (before the first ':') equals it.
 #
 # ─── Lens 2: status drift (--status) ─────────────────────────────────────────
 # The board can fall out of sync with GitHub itself — work lands via a PR that
@@ -536,7 +536,7 @@ _reconcile_marker_repair() {
 reconcile_main() {
   # --- host identity (must match claim.sh) --------------------------------
   local HOST
-  HOST="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+  HOST="$(board_host_label)"
 
   # Resolve board state once (cached BOARD_ITEMS_JSON powers every read below).
   board_resolve "$PROJECT_NUMBER"
@@ -654,7 +654,7 @@ status_reconcile_main() {
   local repo issues_json prs_json state_map rows HOST
   repo="$(board_repo "$PROJECT_NUMBER")"
   # Host identity must match claim.sh's stamp host-part (GH #85 liveness check).
-  HOST="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+  HOST="$(board_host_label)"
 
   # Bulk-read issue + PR state in two flat-cost REST list calls (the item-list
   # JSON has no state field). gh reports state as OPEN/CLOSED for issues and
@@ -930,7 +930,7 @@ _label_reconcile_append_pending_decision() {
   # into consumer repos that may not carry build.config.sh. The reconcile epoch
   # math (_reconcile_now) stays UTC — absolute instants, unaffected.
   ts="$(TZ="${DISPLAY_TZ:-America/Los_Angeles}" date '+%Y-%m-%d %H:%M %Z')"
-  host="${SUBSET_HOST_LABEL:-$(hostname -s 2>/dev/null || echo unknown)}"
+  host="$(board_host_label)"
   # Only name the claim-stamp (temperloop#744) / parked-claim-stamp
   # (temperloop#979) / backfill (temperloop#376) dimensions when each actually
   # acted, so a sweep that deleted/stripped but cleared and backfilled nothing

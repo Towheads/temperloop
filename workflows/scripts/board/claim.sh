@@ -122,7 +122,7 @@ claim_main() {
   issue_title=$(board_item_title "$issue")
   [ -n "$item_id" ] || { echo "issue #$issue is not on project $PROJECT_NUMBER" >&2; return 1; }
 
-  host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+  host="$(board_host_label)"
   sess="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:manual"; fi
 

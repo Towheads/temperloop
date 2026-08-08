@@ -118,7 +118,7 @@ issue_touch_log_emit() {  # $1=repo $2=issue-number $3=kind (capture|pr-open|mer
     echo "capture.sh: WARN issue-touches log dir unavailable: $dir (issue captured; NOT logged to the raw lake)" >&2
     return 0
   fi
-  host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+  host="$(board_host_label)"
   sess="${CLAUDE_CODE_SESSION_ID:-}"
   rec=$(printf '{"schema_version":"1","ts":"%s","repo":"%s","issue":%s,"session_id":"%s","host":"%s","kind":"%s"}' \
     "$ts" "$1" "$2" "$sess" "$host" "$3")

@@ -179,10 +179,13 @@ run. This is the same "assignee changed since I read it = conflict" discipline a
 ### Reuse the existing Host/Session claim stamp
 
 When the driver claims a workable item (not a decision issue, but a Ready board <!-- cite: DQ.4 guard:workflows/scripts/board/claim.sh -->
-item the driver is about to work), it uses the same stamp `claim.sh` already writes:
+item the driver is about to work), it uses the same stamp `claim.sh` already writes — via the
+shared `board_host_label()` helper in `workflows/scripts/board/lib/board.sh` (source that file
+first), named here rather than restated as an inline chain so this doc can't drift from the
+scripts again:
 
 ```sh
-host="${SUBSET_HOST_LABEL:-$(hostname -s)}"
+host="$(board_host_label)"
 sess="${CLAUDE_CODE_SESSION_ID:-}"
 if [ -n "$sess" ]; then stamp="${host}:${sess:0:8}"; else stamp="${host}:manual"; fi
 ```

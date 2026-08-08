@@ -319,7 +319,7 @@ cmd_claim_item() {
   [ -z "$epic" ] || validate_num "--epic" "$epic"
   repo="$(board_repo "$board")"
 
-  our_host="${SUBSET_HOST_LABEL:-${STAGEFIND_HOST_LABEL:-$(hostname -s)}}"
+  our_host="$(board_host_label)"
   our_sess="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$our_sess" ]; then our_stamp="${our_host}:${our_sess:0:8}"; else our_stamp="${our_host}:manual"; fi
 
@@ -509,7 +509,7 @@ cmd_park_epic() {
   validate_num "--epic" "$epic"
   repo="$(board_repo "$board")"
 
-  our_host="${SUBSET_HOST_LABEL:-${STAGEFIND_HOST_LABEL:-$(hostname -s)}}"
+  our_host="$(board_host_label)"
   our_sess="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$our_sess" ]; then our_stamp="${our_host}:${our_sess:0:8}"; else our_stamp="${our_host}:manual"; fi
 
