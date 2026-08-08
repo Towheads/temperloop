@@ -235,6 +235,16 @@ globalThis.agent = async function agent(prompt, opts = {}) {
       // A queued null models the auto-mode classifier DENYING the command: the
       // whole executor call comes back null, not a partial results array.
       if (r === null) return null;
+      // temperloop#1067: a queued { __lostReturn: true } entry models the step
+      // RUNNING (its real bash command executed — machineryStepLog already
+      // recorded it above) but the executor's own JSON line for it never
+      // reaching the driver (a dropped/truncated last line), NOT a short-circuit
+      // stop. No entry is pushed to `results` for this step, so batchStep()
+      // synthesizes its 'produced no result' sentinel — exactly the fidelity
+      // drop this wiring probes for, distinct from every prior test's
+      // short-circuit stop (which always includes an entry for the stopping
+      // step itself).
+      if (r.__lostReturn) break;
       results.push(r);
       if (kind === 'merge-state') {
         if (r.mergeable === 'CONFLICTING' || r.mergeStateStatus === 'DIRTY') break;
@@ -276,6 +286,11 @@ globalThis.noSideEffects = () => ({ outcome: 'RECOVER_NONE', commits_ahead: 0, p
 // temperloop#993 shorthand — dirtyStall(n): the recover-probe answer for a worker
 // reaped mid-flight by a backgrounded gate: n uncommitted paths, ZERO commits.
 globalThis.dirtyStall = (n) => ({ outcome: 'RECOVER_DIRTY', commits_ahead: 0, pushed: false, dirty: true, dirty_files: n ?? 8, verification_surface_present: false });
+// temperloop#1067 shorthand — lostReturn(): queue this in place of a step's
+// outcome to model a DROPPED JSON line (the step ran; its result never
+// reached the driver) rather than a genuine failure or a short-circuit stop.
+// See the __lostReturn handling in the batched-executor mock above.
+globalThis.lostReturn = () => ({ __lostReturn: true });
 
 // Canonical happy-path machinery sequence for a green item
 globalThis.happyMachinery = (slug, prNum, sha) => setMachinery(slug,
@@ -3420,6 +3435,220 @@ for _md in build sweep fix; do
     || fail "#1071: $_md.md must pass machineryStepCeilingSecs in its build-level.mjs args"
 done
 echo "PASS: #1071 liveness-bound guard — named settings, emitted watchdog, recover-probe disposal, all three callers wired"
+
+# ============================================================================
+# TEMPERLOOP#1067 — probe for a LOST pr-batch return before escalating it as a
+# failure. Distinct from #1071 (a liveness-KILL): here every step in the batch
+# through the one under test has ALREADY been confirmed successful, and the
+# batch's own JSON line for the very next step was simply dropped
+# (batchStep()'s 'produced no result' sentinel) — not timed out, not a
+# short-circuit. lostReturn() (see the PREAMBLE mock) models exactly that: the
+# step's machineryStepLog entry is recorded (it ran) but no results[] entry is
+# pushed for it.
+#
+# The four-rung disposition (the EXISTING probeSideEffects/RECOVER_* ladder,
+# not a new one): RECOVER_PR_OPEN → adopt; RECOVER_PUSHED → resume at pr-open;
+# RECOVER_COMMITTED → resume at push; RECOVER_NONE → escalate unchanged. Rungs
+# are exercised at BOTH the push-error site and the pr-open-failed site. A
+# genuine (non-sentinel) failure at either site must escalate immediately with
+# NO probe call — the load-bearing negative case.
+# ============================================================================
+
+run_node_case "K1067 push/RECOVER_PR_OPEN: a LOST push-batch return whose PR already opened is ADOPTED, never re-pushed/re-opened" "
+$PREAMBLE
+setMachinery('lost-push-adopt',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-adopt' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-lp' },
+  { outcome: 'SCAN_CLEAN' },
+  lostReturn(),
+  { outcome: 'RECOVER_PR_OPEN', pr_number: 5001, sha: 'sha-lp', pushed: true, verification_surface_present: true },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('lost-push-adopt');
+globalThis.args = { ...baseArgs, items: [{ slug: 'lost-push-adopt', branch: 'b/lp', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const steps = stepsRun('lost-push-adopt');
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'a recoverable lost push return must NOT escalate: ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1) reason = 'expected the item to park on the adopted PR: ' + JSON.stringify(result);
+else if (parked[0].pr !== 5001) reason = 'must park on the PR recover-probe actually found, got ' + parked[0].pr;
+else if (steps.includes('pr-open')) reason = 'DOUBLE-OPEN: pr-open ran even though the probe adopted an existing PR';
+else if (steps.filter(s => s === 'push').length !== 1) reason = 'DOUBLE-PUSH: push must run exactly once, got ' + steps.filter(s => s === 'push').length;
+else if (!callLog.some(c => c.opts.label === 'recover-probe:lost-push-adopt')) reason = 'must probe via the EXISTING pr.sh recover-probe path';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1067 push/RECOVER_PUSHED: resumes at pr-open only, no re-push" "
+$PREAMBLE
+setMachinery('lost-push-resume-open',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-resume-open' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rp' },
+  { outcome: 'SCAN_CLEAN' },
+  lostReturn(),
+  { outcome: 'RECOVER_PUSHED', sha: 'sha-rp', pushed: true, remote_sha: 'sha-rp', verification_surface_present: true },
+  { outcome: 'PR_OPENED', pr_number: 5002 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('lost-push-resume-open');
+globalThis.args = { ...baseArgs, items: [{ slug: 'lost-push-resume-open', branch: 'b/rp', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const steps = stepsRun('lost-push-resume-open');
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'RECOVER_PUSHED must resume, not escalate: ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1) reason = 'expected the item to park on the resumed PR: ' + JSON.stringify(result);
+else if (parked[0].pr !== 5002) reason = 'must park on the PR the resumed pr-open step opened, got ' + parked[0].pr;
+else if (parked[0].pushed_sha !== 'sha-rp') reason = 'pushed_sha must come from the probe (already-pushed sha), got ' + parked[0].pushed_sha;
+else if (steps.filter(s => s === 'push').length !== 1) reason = 'RECOVER_PUSHED must NOT re-push, got push count ' + steps.filter(s => s === 'push').length;
+else if (steps.filter(s => s === 'pr-open').length !== 1) reason = 'must resume at pr-open exactly once, got ' + steps.filter(s => s === 'pr-open').length;
+else if (!callLog.some(c => c.opts.label === 'recover-probe:lost-push-resume-open')) reason = 'must probe via the EXISTING pr.sh recover-probe path';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1067 push/RECOVER_COMMITTED: resumes at push then pr-open, no re-rebase" "
+$PREAMBLE
+setMachinery('lost-push-resume-both',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-resume-both' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-rc' },
+  { outcome: 'SCAN_CLEAN' },
+  lostReturn(),
+  { outcome: 'RECOVER_COMMITTED', sha: 'sha-rc', pushed: false, verification_surface_present: false },
+  { outcome: 'PUSHED', sha: 'sha-rc2', branch: 'b/rc' },
+  { outcome: 'PR_OPENED', pr_number: 5003 },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('lost-push-resume-both');
+globalThis.args = { ...baseArgs, items: [{ slug: 'lost-push-resume-both', branch: 'b/rc', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const steps = stepsRun('lost-push-resume-both');
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'RECOVER_COMMITTED must resume, not escalate: ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1) reason = 'expected the item to park on the resumed PR: ' + JSON.stringify(result);
+else if (parked[0].pr !== 5003) reason = 'must park on the PR the resumed pr-open step opened, got ' + parked[0].pr;
+else if (parked[0].pushed_sha !== 'sha-rc2') reason = 'pushed_sha must come from the RESUMED push (fresh ground truth), got ' + parked[0].pushed_sha;
+else if (steps.filter(s => s === 'rebase').length !== 1) reason = 'RECOVER_COMMITTED must NOT re-rebase, got rebase count ' + steps.filter(s => s === 'rebase').length;
+else if (steps.filter(s => s === 'push').length !== 2) reason = 'must resume at push (original lost attempt + one resumed push), got ' + steps.filter(s => s === 'push').length;
+else if (steps.filter(s => s === 'pr-open').length !== 1) reason = 'must open exactly once via the resume batch, got ' + steps.filter(s => s === 'pr-open').length;
+else if (!callLog.some(c => c.opts.label === 'recover-probe:lost-push-resume-both')) reason = 'must probe via the EXISTING pr.sh recover-probe path';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1067 push/RECOVER_NONE: a lost push return with nothing landed escalates push-error, unchanged" "
+$PREAMBLE
+setMachinery('lost-push-none',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/lost-push-none' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-ln' },
+  { outcome: 'SCAN_CLEAN' },
+  lostReturn(),
+  noSideEffects(),
+);
+happyWorker('lost-push-none');
+globalThis.args = { ...baseArgs, items: [{ slug: 'lost-push-none', branch: 'b/ln', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const escalations = result.escalations ?? [];
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'RECOVER_NONE must not park: ' + JSON.stringify(result.parked);
+else if (escalations.length !== 1) reason = 'expected exactly 1 escalation, got ' + JSON.stringify(escalations);
+else if (escalations[0].kind !== 'push-error') reason = 'wrong escalation kind: ' + escalations[0].kind;
+else if (!callLog.some(c => c.opts.label === 'recover-probe:lost-push-none')) reason = 'RECOVER_NONE must still have been reached via the EXISTING recover-probe path';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1067 push negative: a GENUINE push failure (not a lost return) escalates immediately with NO probe call" "
+$PREAMBLE
+setMachinery('genuine-push-fail',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/genuine-push-fail' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-gp' },
+  { outcome: 'SCAN_CLEAN' },
+  // A REAL pr.sh die() — a genuine failure, NOT the batchStep sentinel.
+  { outcome: 'ERROR', error: 'git push: remote end hung up unexpectedly' },
+);
+happyWorker('genuine-push-fail');
+globalThis.args = { ...baseArgs, items: [{ slug: 'genuine-push-fail', branch: 'b/gp', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const escalations = result.escalations ?? [];
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'a genuine push failure must not park: ' + JSON.stringify(result.parked);
+else if (escalations.length !== 1) reason = 'expected exactly 1 escalation, got ' + JSON.stringify(escalations);
+else if (escalations[0].kind !== 'push-error') reason = 'wrong escalation kind: ' + escalations[0].kind;
+else if (callLog.some(c => c.opts.label === 'recover-probe:genuine-push-fail')) reason = 'a GENUINE failure must NEVER be routed through recover-probe — this would silently convert it into a possible adoption';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1067 pr-open/RECOVER_PR_OPEN: a LOST pr-open-batch return whose PR already opened is ADOPTED, never re-opened" "
+$PREAMBLE
+setMachinery('lost-open-adopt',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/lost-open-adopt' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-lo' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-lo', branch: 'b/lo' },
+  lostReturn(),
+  { outcome: 'RECOVER_PR_OPEN', pr_number: 5004, sha: 'sha-lo', pushed: true, verification_surface_present: true },
+  { outcome: 'CI_GREEN' },
+);
+happyWorker('lost-open-adopt');
+globalThis.args = { ...baseArgs, items: [{ slug: 'lost-open-adopt', branch: 'b/lo', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const parked = result.parked ?? [];
+const steps = stepsRun('lost-open-adopt');
+let reason = null;
+if ((result.escalations ?? []).length !== 0) reason = 'a recoverable lost pr-open return must NOT escalate: ' + JSON.stringify(result.escalations);
+else if (parked.length !== 1) reason = 'expected the item to park on the adopted PR: ' + JSON.stringify(result);
+else if (parked[0].pr !== 5004) reason = 'must park on the PR recover-probe actually found, got ' + parked[0].pr;
+else if (steps.filter(s => s === 'pr-open').length !== 1) reason = 'DOUBLE-OPEN: pr-open must run exactly once (the lost original attempt), got ' + steps.filter(s => s === 'pr-open').length;
+else if (steps.filter(s => s === 'push').length !== 1) reason = 'DOUBLE-PUSH: push must run exactly once, got ' + steps.filter(s => s === 'push').length;
+else if (!callLog.some(c => c.opts.label === 'recover-probe:lost-open-adopt')) reason = 'must probe via the EXISTING pr.sh recover-probe path';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+run_node_case "K1067 pr-open negative: a GENUINE pr-open failure (not a lost return) escalates immediately with NO probe call" "
+$PREAMBLE
+setMachinery('genuine-open-fail',
+  { outcome: 'CREATED', path: '/tmp/repo.wt/genuine-open-fail' },
+  { outcome: 'GATE_PASS' },
+  { outcome: 'REBASED', base: 'b', tip: 't', sha: 'sha-go' },
+  { outcome: 'SCAN_CLEAN' },
+  { outcome: 'PUSHED', sha: 'sha-go', branch: 'b/go' },
+  // A REAL pr.sh die() — a genuine failure, NOT the batchStep sentinel.
+  { outcome: 'ERROR', error: 'authentication required' },
+);
+happyWorker('genuine-open-fail');
+globalThis.args = { ...baseArgs, items: [{ slug: 'genuine-open-fail', branch: 'b/go', title: 'T', kind: 'impl', acceptance: ['c'] }] };
+const mod = await loadLevel();
+const result = await mod.default();
+const escalations = result.escalations ?? [];
+let reason = null;
+if ((result.parked ?? []).length !== 0) reason = 'a genuine pr-open failure must not park: ' + JSON.stringify(result.parked);
+else if (escalations.length !== 1) reason = 'expected exactly 1 escalation, got ' + JSON.stringify(escalations);
+else if (escalations[0].kind !== 'pr-open-failed') reason = 'wrong escalation kind: ' + escalations[0].kind;
+else if (callLog.some(c => c.opts.label === 'recover-probe:genuine-open-fail')) reason = 'a GENUINE failure must NEVER be routed through recover-probe — this would silently convert it into a possible adoption';
+console.log(JSON.stringify(reason ? { ok: false, reason } : { ok: true }));
+"
+
+# --- K1067 static lockstep guards -----------------------------------------
+grep -q 'lost pr-batch return' "$MJS" \
+  || fail "#1067: build-level.mjs must carry the literal phrase 'lost pr-batch return' so the intent is greppable"
+grep -q 'async function recoverLostReturn(' "$MJS" \
+  || fail "#1067: recoverLostReturn() missing — the push-error/pr-open-failed sites have no lost-return disposal"
+grep -q 'function isLostReturn(' "$MJS" \
+  || fail "#1067: isLostReturn() missing — the sentinel-vs-genuine-failure distinction must be a named, testable predicate"
+[ "$(grep -c 'await probeSideEffects(item, wt)' "$MJS")" -ge 3 ] \
+  || fail "#1067: recoverLostReturn must reuse the EXISTING probeSideEffects, not invent a second probe"
+echo "PASS: #1067 lost-return guard — recoverLostReturn/isLostReturn present, reusing the existing probe, greppable by name"
 
 echo ""
 echo "All test_workflow.sh cases passed."
