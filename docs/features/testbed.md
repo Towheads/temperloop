@@ -5,10 +5,16 @@ slug: testbed
 
 ## Problem
 
-`temperloop testbed` (temperloop#1117, not yet built — this item ships its
-foundation) will build a private, disposable evaluation copy of a repo in
-one command: create it, mirror-push history into it, carry a bounded number
-of open issues across, and later tear it down or promote work out of it.
+Evaluating temperloop means pointing it at a repo — and the repo worth
+evaluating it on is the one you actually care about, which is exactly the
+repo you do not want an unfamiliar tool creating branches, issues, and pull
+requests in. `temperloop testbed` (temperloop#1117) closes that gap in one
+command: it builds a **private, disposable evaluation copy** of a repo —
+create it, mirror-push history into it, carry the open issues across — and
+hands off to `temperloop init` inside the copy, so the whole rest of the
+ladder runs against a throwaway. Later items in the same epic tear it down
+or promote work back out of it.
+
 That workflow spans several mutating steps against GitHub (repo creation,
 mirror push, issue copy) that can fail or be interrupted partway through,
 and two separate later consumers — teardown and `/promote` — need to find
@@ -22,9 +28,89 @@ way to refuse against a testbed that was never meant to be promoted.
 
 ## How it works
 
-`workflows/scripts/testbed/record.sh` is a sourceable bash library (no CLI
-yet — `temperloop testbed`, its teardown leg, and `/promote` are later items
-in the same epic) that reads and writes a JSON record under
+Two pieces: the command an operator runs, and the machine-scoped record it
+writes as it goes. The command is thin wiring over two landed seams — the
+record library below, and the source-provider seam
+(`workflows/scripts/testbed/source.sh`) — and is their only call site.
+
+### The command — `temperloop testbed`
+
+```sh
+temperloop testbed --dry-run   # preview: zero writes of any kind
+temperloop testbed             # for real, once you like the preview
+```
+
+`bin/subcommands/testbed.sh` is **registered by existing right there**:
+`bin/temperloop`'s dispatch model discovers any `bin/subcommands/<name>.sh`
+as `temperloop <name>` the moment the file exists, and reads its
+`# description:` header line for `temperloop help` and for this site's
+subcommand-reference table. There is no dispatch table to edit, and the
+dispatcher contains no reference to `testbed` at all.
+
+The driver is **fixed and provider-agnostic** — the same order every run,
+for every source provider:
+
+```
+describe
+  -> union of preflight_checks (all reads)
+    -> consent
+      -> create the testbed repository -> FLUSH
+        -> produce_git                  -> FLUSH
+          -> produce_issues             -> FLUSH
+            -> handoff
+```
+
+Four properties carry that shape:
+
+- **No `case` on provider kind.** The kind is only ever a string passed
+  through to the four seam functions below; the per-provider branch the seam
+  exists to eliminate appears nowhere in the driver, so the second provider
+  (`materialize-from-seed`) lands without touching this file. An unknown
+  kind is refused by the seam's own guard, naming the provider and the
+  missing operation.
+- **Pre-flight is a union, and it is all reads.** The driver's own checks
+  (`gh` present and authenticated; a resolvable destination owner; a
+  collision-free destination name, uniquified against what already exists —
+  collision-safe naming is the driver's job, never a provider's) are unioned,
+  deduped by function name, with whatever `preflight_checks()` yields for
+  this provider. Every one is a read (`command -v`, `gh auth status`,
+  `gh api user`, `gh repo view`, `git rev-parse`), so a refusal exits having
+  created nothing anywhere. A driver check fails with
+  `cannot proceed — <fix>`; a provider check fails with `skipped — <fix>`.
+  Either way the line names the fix, and the run stops on the first failure
+  rather than stacking a second, confusing error on the real one.
+- **Consent is a hard gate.** `try --demo` established the guard — refuse on
+  a non-tty stdin with no `--yes`, so a curious stranger cannot silently
+  burn spend. This command carries it to a materially bigger blast radius (a
+  real private repository, a full history mirror, your open issues), so
+  silence is never consent: on a non-tty stdin with no `--yes` it refuses
+  outright.
+- **`--dry-run` is zero writes, structurally.** It runs describe and
+  pre-flight, prints exactly what a real run would create, prints the same
+  handoff block, and exits — never reaching the consent gate (there is
+  nothing to consent to when nothing is created), never issuing a mutating
+  `gh` or `git` call, never touching the record file. The test suite proves
+  that with a fake `gh` **and** a fake `git` on PATH logging every call, plus
+  a before/after file-tree diff of both the source checkout and the XDG state
+  dir — not by asserting intent.
+
+Each **FLUSH** is a `record.sh` call made the instant that step actually
+completed — never batched, never anticipated. The test suite snapshots the
+record file *at* the mirror push and *at* the issue copy to prove it: when
+`produce_git` runs the record already carries `repo_created` and only that;
+when `produce_issues` runs it carries `mirror_pushed` and not yet
+`issues_copied`. A record written once at the end would pass a final-state
+assertion and fail both of those.
+
+The run ends in an unmissable final block that prints the testbed URL in
+full, the literal `git clone` / `cd` / `temperloop init` commands to
+copy-paste, and a stable `next step:` marker line. Nothing is printed after
+it.
+
+### The record — `workflows/scripts/testbed/record.sh`
+
+`workflows/scripts/testbed/record.sh` is a sourceable bash library that
+reads and writes a JSON record under
 `${XDG_STATE_HOME:-$HOME/.local/state}/temperloop/testbed-record.json`:
 
 ```json
@@ -90,12 +176,22 @@ else, mirroring `workflows/scripts/install/manifest.sh:196-224` exactly.
 
 ## Integration
 
-Consumed by the not-yet-built `temperloop testbed` subcommand and its
-teardown leg (this epic's next items): the subcommand calls
-`testbed_record_add` the moment it creates the testbed repository and
-`testbed_record_mark_step` after each further step; teardown reads the
-record to find what to delete and calls `testbed_record_remove` once
-deletion succeeds. `/promote`'s `promote-spec-and-tree-push` step (a later,
+`bin/subcommands/testbed.sh` is the **first and only call site of both Level
+0 seams**, and it adds no parallel logic of its own — the bar
+`bin/subcommands/init.sh` sets for its own three seams. It sources
+`record.sh` and `source.sh`, calls `testbed_record_add` the moment it creates
+the testbed repository and `testbed_record_mark_step` after each further
+step, and reaches the provider only through
+`testbed_source_describe` / `testbed_source_preflight_checks` /
+`testbed_source_produce_git` / `testbed_source_produce_issues`. It never
+names a provider's own functions, never re-implements the record format, and
+never re-derives the provenance line — `produce_issues` stamps
+`copied from <owner>/<repo>#<N>` itself, inside the provider, so a provider
+with no upstream issue to cite simply never emits one.
+
+Downstream, the teardown leg reads the record to find what to delete and
+calls `testbed_record_remove` once deletion succeeds. `/promote`'s
+`promote-spec-and-tree-push` step (a later,
 separate item) reads `source_kind` / `source_repo` / `promotable` off the
 matching entry to resolve where a promoted branch pushes to and to refuse
 promotion against a `materialize-from-seed` testbed.
@@ -117,14 +213,31 @@ eject's blast radius does not reach.
 
 ## Resource impact
 
-None. Pure local filesystem I/O (`jq`, `mktemp`, `mv`, `mkdir`) against a
-per-machine XDG state directory — no network calls, no GitHub API usage, no
-CI resource growth beyond the one new test suite (`make test-testbed-record`)
-this item adds to `scripts/quality-gates.sh`'s `KERNEL_GATES`.
+The **record library** is pure local filesystem I/O (`jq`, `mktemp`, `mv`,
+`mkdir`) against a per-machine XDG state directory — no network calls, no
+GitHub API usage.
+
+The **command** is the part that costs something, and only on a real run.
+Per invocation: a handful of read-shaped GitHub API calls during pre-flight
+(`gh auth status`, `gh api user`, one `gh repo view` per candidate name), one
+repository creation, one `git push --mirror` carrying the source repo's full
+history, and one issue creation per open issue carried across. `--dry-run`
+costs the pre-flight reads and nothing else. No LLM call is made at any point
+— unlike `try` and `try --demo`, this command spends no model budget. The
+testbed repository itself is private and disposable; teardown (a later item)
+is what reclaims it.
+
+CI growth is two test suites in `scripts/quality-gates.sh`'s `KERNEL_GATES`
+(`make test-testbed-record`, `make test-testbed-command`), both hermetic and
+zero-network, each with its own `gate-paths.tsv` row so a scoped run selects
+only what a diff can actually affect.
 
 ## Telemetry
 
-None. A library with no CLI surface and no runtime call sites yet — there
-is nothing for an operator or a dashboard to observe until the
-`temperloop testbed` subcommand and teardown (later items in this epic)
-actually invoke it.
+None yet. The command's progress is legible on stdout as it runs (a numbered
+step per driver stage, and one `→ <repo> (<id>) <step> recorded` line per
+flush), and the record file itself is the durable, machine-readable trace —
+`testbed_record_flat` enumerates every artifact this machine has created,
+including a run killed partway. No counter, event, or dashboard field is
+emitted anywhere; a testbed is an evaluation-time artifact an operator runs
+deliberately, not a background process anyone needs to watch.

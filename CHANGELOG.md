@@ -16,6 +16,29 @@ reads that marker; a stranger greps for it before pulling.
 
 ### Added
 
+- **`temperloop testbed` builds a private, disposable evaluation copy of a
+  repo in one command, then hands off to `temperloop init` inside it**
+  (#1229). The repo worth evaluating temperloop on is the one you care about
+  — which is exactly the repo you do not want an unfamiliar tool creating
+  branches and pull requests in. This builds a throwaway instead (create the
+  repository, mirror-push the history, carry the open issues across) and ends
+  in an unmissable final block carrying the testbed URL in full plus the
+  literal `git clone` / `cd` / `temperloop init` commands. It registers by
+  file presence and its `# description:` line alone — no dispatch-table edit
+  — and is the first consumer of both Level 0 seams (the machine-scoped
+  artifact record and the four-function source provider): the driver is fixed
+  and contains no `case` on provider kind, so the second provider will land
+  without touching it. Pre-flight unions the driver's own all-reads checks
+  with the provider's and refuses with a `cannot proceed —` / `skipped —`
+  line naming the fix, having written nothing anywhere; consent refuses
+  outright on a non-tty stdin with no `--yes` — the guard `try --demo`
+  established, carried to a command that now creates real remote repositories
+  — and `--dry-run` is proven zero-write structurally, by a fake `gh` and
+  `git` on PATH logging every call plus a before/after file-tree diff. Each
+  artifact is flushed to the record the instant its step completes, so a run
+  killed partway stays enumerable by teardown instead of becoming an orphaned
+  private repository.
+
 - **A machine-scoped testbed artifact record tracks every artifact a
   `temperloop testbed` run creates** (#1227). The record is an append-only
   list resident in XDG state
