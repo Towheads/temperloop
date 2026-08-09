@@ -909,8 +909,12 @@ count
 schema_out="$(bash "$SUT" schema)"
 [ "$(jq -r .schema_version <<<"$schema_out")" = "replay-record-v1" ] || fail "19: unexpected schema_version: $schema_out"
 [ "$(jq -c .worktree <<<"$schema_out")" = '{"path":null,"branch":null,"prepared_at":null}' ] || fail "19: worktree shape wrong: $schema_out"
-[ "$(jq -c .candidate <<<"$schema_out")" = '{"provider":null,"model":null,"diff_ref":null}' ] || fail "19: candidate shape wrong: $schema_out"
-[ "$(jq -c .score <<<"$schema_out")" = '{"verdict":null,"acceptance_results":null,"gate_result":null}' ] || fail "19: score shape wrong: $schema_out"
+# The candidate/score sub-objects shipped here as documented placeholders and
+# were FILLED IN by replay-execute-and-score (temperloop#1258) — same
+# schema_version, since completing a placeholder left for exactly that
+# purpose is not a v2. These are the completed shapes.
+[ "$(jq -c .candidate <<<"$schema_out")" = '{"provider":null,"model":null,"diff_ref":null,"tokens":null,"duration_ms":null,"outcome":null,"integration_error":null,"disclosed":null,"prompt_sha256":null}' ] || fail "19: candidate shape wrong: $schema_out"
+[ "$(jq -c .score <<<"$schema_out")" = '{"outcome":null,"scored":null,"verdict":null,"not_scored_reason":null,"base":null,"truth_head":null,"diff":null,"gate_result":null,"acceptance_results":null,"components":null,"contamination_flags":[]}' ] || fail "19: score shape wrong: $schema_out"
 [ "$(jq -c .buckets <<<"$schema_out")" = '{"N":[],"T":[],"X":[],"R":[]}' ] || fail "19: buckets shape wrong: $schema_out"
 
 corpus_record_sv="$(jq -r .schema_version "$OUT" | head -1)"
