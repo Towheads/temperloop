@@ -695,6 +695,25 @@ KERNEL_GATES=(
   # Same direct-`bash` form, no Makefile target, as the
   # test_replay_isolation.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh"
+  # Live candidate tagging provenance (temperloop#1257, epic #1225 "model
+  # comparison harness"): tagging.sh's three artifacts — the bounded window
+  # record, the telemetry tag (a real emit-model-usage.sh raw-lake record,
+  # temperloop#1253/#1255, reused verbatim), and the PR provenance stamp —
+  # plus the mechanical THREE-WAY cross-check between them (stamp / window
+  # record / telemetry-lake record; provider rides the window record only,
+  # since emit-model-usage.sh's own schema forbids a `provider` value under
+  # `usage_source: unavailable` — see tagging.sh's own header). Asserts the
+  # single most important guarantee directly: a doctored PR stamp that
+  # disagrees with the recorded provenance makes crosscheck FAIL, in every
+  # direction a disagreement can occur. Also proves NO second
+  # model-selection lever exists (`tag` has no `--model` flag; the model is
+  # always `SWEEP_WORKER_MODEL`) and that live-tagging designation is
+  # governed by the SAME committed provider allowlist file every other
+  # provider check in this module reads. Fail-closed on every absent /
+  # unreadable / malformed / ambiguous input shape. Same direct-`bash` form,
+  # no Makefile target, as the test_replay_preflight.sh gate immediately
+  # above.
+  "bash workflows/scripts/model-comparison/tests/test_live_tagging.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through
