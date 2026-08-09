@@ -753,6 +753,31 @@ KERNEL_GATES=(
   # with a mutation proof that removing the no-runner refusal DOES reach
   # that canary.
   "bash workflows/scripts/model-comparison/tests/test_judge.sh"
+  # Optional cross-family judge rotation (temperloop#1260, epic #1225):
+  # judge.sh's `judge-rotate` subcommand scores one record with judges from
+  # more than one provider family and reports the VARIANCE of their
+  # quality_score across the panel — stats.sh's own sample-stddev, squared,
+  # never a second statistics implementation. OFF BY DEFAULT
+  # (MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=0): a fixture captures
+  # `judge`/`judge-batch` output with rotation untouched and diffs it
+  # byte-for-byte (modulo the two inherently-volatile timestamp/duration
+  # fields) against a golden captured from the pre-rotation judge.sh, so the
+  # gate that runs THIS suite is also what proves the single-judge path
+  # never moved. Each rotation member reuses the judge≠candidate guard, the
+  # non-default-provider allowlist+disclosure gate (the SAME committed
+  # allowlist and SAME disclosure log a candidate replay uses), and the
+  # candidate-session.sh spawn VERBATIM — two independent mutation proofs
+  # (allowlist.sh's own allow-gate; its own log-append write) confirm a
+  # rotated non-default judge with no allowlist entry is refused and one
+  # with an entry appends to the disclosure log. Fail-closed throughout: too
+  # few JUDGED members, JUDGED members from only one provider family, or a
+  # genuine stats.sh failure all CANNOT_EVALUATE the variance rather than
+  # reporting a fabricated or zero-standing-in figure. Fully HERMETIC, same
+  # shape as the test_judge.sh gate immediately above: every judge call is
+  # driven through a RECORDED `--judge-runner` seam, `--live` is never
+  # passed, and the suite prepends a canary `claude` to PATH and asserts at
+  # the end that nothing ever invoked it.
+  "bash workflows/scripts/model-comparison/tests/test_judge_rotation.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through

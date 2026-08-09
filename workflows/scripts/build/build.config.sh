@@ -1020,6 +1020,19 @@ fi
 # Wall-clock bound on ONE judge model call, mirroring REPLAY_CANDIDATE_TIMEOUT_SECS's
 # per-candidate-run bound.
 : "${MODEL_COMPARISON_JUDGE_TIMEOUT_SECS:=1800}"
+# Optional cross-family judge rotation (temperloop#1260): judge.sh's
+# `judge-rotate` subcommand scores one record with judges from more than one
+# provider family and reports the variance of their quality_score across the
+# panel. OFF by default — with it 0, judge-rotate refuses immediately and
+# `judge`/`judge-batch`'s own behaviour is byte-identical to the
+# pre-rotation module.
+: "${MODEL_COMPARISON_JUDGE_ROTATION_ENABLED:=0}"
+# The minimum number of rotation members that must reach JUDGED before a
+# per-judge variance figure is reported at all — passed to stats.sh as
+# judge-rotate's OWN `--min-sample`, never the module-wide
+# MODEL_COMPARISON_MIN_SAMPLE_N (sized for cost-delta outcome counts in the
+# tens, not a judge panel).
+: "${MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES:=2}"
 
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
@@ -1050,4 +1063,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
-       MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS
+       MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
+       MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES
