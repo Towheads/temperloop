@@ -1034,6 +1034,14 @@ fi
 # tens, not a judge panel).
 : "${MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES:=2}"
 
+# ── Comparison report producer (temperloop#1261, epic #1225) ───────────────
+# workflows/scripts/report-producers/model-comparison reads a comparison's two
+# arms — baseline.jsonl and candidate.jsonl — from this directory. Relative by
+# default and resolved against the TARGET REPO (the cwd report.sh invokes a
+# producer with), so the records sit beside the module's other repo-local
+# runtime state, which .temperloop/.gitignore already excludes from the tree.
+: "${MODEL_COMPARISON_REPORT_RECORDS_DIR:=.temperloop/model-comparison}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -1064,4 +1072,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
        REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
        MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS \
-       MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES
+       MODEL_COMPARISON_JUDGE_ROTATION_ENABLED MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES \
+       MODEL_COMPARISON_REPORT_RECORDS_DIR

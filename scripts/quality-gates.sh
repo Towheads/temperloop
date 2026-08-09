@@ -526,6 +526,31 @@ KERNEL_GATES=(
   # as the sibling gates above (kernel Makefile is generator-owned; no new
   # target added here).
   "bash workflows/scripts/tests/test_pipeline_spend_report.sh"
+  # Comparison report producer (temperloop#1261, epic #1225 "model comparison
+  # harness"): workflows/scripts/report-producers/model-comparison, the
+  # report.d drop-in that rolls a baseline arm and a candidate arm of scored
+  # replay records into the surface a human reads to pick a model. Sibling of
+  # the tokens producer above, and gated here beside it for the same reason —
+  # both are report.d drop-ins bound by the same exit-0 contract. The
+  # load-bearing checks are the four HONESTY guarantees, each proved by
+  # mutation rather than observation: (1) below the configured sample floor
+  # the report says `inconclusive` and carries NO `winner` key — proved twice,
+  # by removing the floor from the producer's own verdict call AND by removing
+  # it inside stats.py, either of which must make a winner appear on 3
+  # records; (2) the emit-coverage %, corpus window, gate versions and cost
+  # basis all appear on a FLATTERING run, each deleted in turn to prove the
+  # assertion notices; (3) a degraded run emits no `winner` and no cost figure
+  # while still exiting 0 with one `skipped -- ` line, proved by rewriting the
+  # degradation path to fabricate one; (4) the published CI and MDE are
+  # byte-identical to independent stats.sh calls over the producer's own
+  # published delta array, so a locally-recomputed substitute fails loudly.
+  # Also pins the token-counts cost basis (never metered dollars, never a
+  # subscription share), the dated price-table staleness label and its
+  # token-counts-only degradations, a judge outage's named per-row notice, and
+  # America/Los_Angeles display rendering over UTC-stored timestamps.
+  # Synthetic fixtures in a tmpdir; a claude/gh/curl/wget canary on PATH is
+  # asserted never invoked. Same direct-`bash` form as the sibling gates.
+  "bash workflows/scripts/model-comparison/tests/test_comparison_report.sh"
   # Per-merged-item efficiency emit (temperloop#943):
   # workflows/scripts/emit-item-efficiency.sh — the overhead-per-shipped-change
   # record written at build.md's 4d merge seam (tokens by phase, wall-clock by
