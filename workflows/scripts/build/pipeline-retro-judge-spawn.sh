@@ -101,6 +101,15 @@ command -v jq >/dev/null 2>&1 || {
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# model-usage attribution emit (temperloop#1255, epic #1225): this is seat A9
+# of the L0 usage-capture-feasibility spike's emit-feasible set — the judge
+# spawn below captures a `claude -p --output-format json` envelope, and
+# model_usage_emit_from_envelope is the shared extraction pipeline-drive.sh's
+# A7/A8 sites also use.
+# shellcheck source=workflows/scripts/lib/model-usage-envelope.sh
+[ -f "$HERE/../lib/model-usage-envelope.sh" ] && . "$HERE/../lib/model-usage-envelope.sh"
+MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
+
 # ── Re-derive the credential from the host config ladder ─────────────────────
 # THE WHOLE POINT OF THIS SCRIPT. build.config.sh sources the machine conf and
 # the gitignored build.config.local.sh, so a host credential lands in THIS
@@ -187,6 +196,14 @@ out="$("$CLAUDE_BIN" -p "/retro --pending --board $board" --model "$model" --out
 rc=$?
 err_head="$(head -c 400 "$err_file" 2>/dev/null || true)"
 rm -f "$err_file"
+
+# model-usage attribution (temperloop#1255, spike seat A9): `out` captured
+# above IS the `claude -p --output-format json` envelope, win or lose (an
+# auth/spawn failure is classified below by SHAPE, not by skipping this
+# emit) — one record per judge spawn, board-scoped outcome_ref (the judge
+# handles a whole board's retro-pending trackers per call, not one issue).
+model_usage_emit_from_envelope "retro-judge" "$model" "issue:board-$board" "" \
+  "$MODEL_USAGE_EMIT" <<<"$out"
 
 # ── Classify ────────────────────────────────────────────────────────────────
 # An auth failure is recognised by SHAPE, not by exit code: a nested headless

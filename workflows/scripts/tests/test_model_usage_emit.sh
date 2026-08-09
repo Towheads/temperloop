@@ -38,6 +38,9 @@ PROVIDER_TXT="$REPO/workflows/scripts/model-comparison/provider-allowlist.txt"
 BUILD_CONFIG="$REPO/workflows/scripts/build/build.config.sh"
 TELEMETRY_MD="$REPO/docs/features/telemetry.md"
 MODELCMP_MD="$REPO/docs/features/model-comparison.md"
+PIPELINE_DRIVE_SH="$REPO/workflows/scripts/build/pipeline-drive.sh"
+RETRO_JUDGE_SPAWN_SH="$REPO/workflows/scripts/build/pipeline-retro-judge-spawn.sh"
+ENVELOPE_LIB="$REPO/workflows/scripts/lib/model-usage-envelope.sh"
 PORTABLE_TIMEOUT="$REPO/workflows/scripts/lib/portable-timeout.sh"
 [ -f "$PORTABLE_TIMEOUT" ] || { echo "FATAL: portable-timeout.sh not found at $PORTABLE_TIMEOUT" >&2; exit 1; }
 # shellcheck source=workflows/scripts/lib/portable-timeout.sh
@@ -45,6 +48,9 @@ source "$PORTABLE_TIMEOUT"
 
 [ -f "$EMIT" ] || { echo "FATAL: emit-model-usage.sh not found at $EMIT" >&2; exit 1; }
 [ -f "$LINT" ] || { echo "FATAL: validate-model-usage-emit.sh not found at $LINT" >&2; exit 1; }
+[ -f "$PIPELINE_DRIVE_SH" ] || { echo "FATAL: pipeline-drive.sh not found at $PIPELINE_DRIVE_SH" >&2; exit 1; }
+[ -f "$RETRO_JUDGE_SPAWN_SH" ] || { echo "FATAL: pipeline-retro-judge-spawn.sh not found at $RETRO_JUDGE_SPAWN_SH" >&2; exit 1; }
+[ -f "$ENVELOPE_LIB" ] || { echo "FATAL: model-usage-envelope.sh not found at $ENVELOPE_LIB" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required for this test" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 required for this test" >&2; exit 1; }
 
@@ -232,7 +238,37 @@ cp "$LINT" "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
 cp "$ALLOWLIST" "$FIXR/workflows/scripts/model-comparison/allowlist.sh"
 cp "$PROVIDER_TXT" "$FIXR/workflows/scripts/model-comparison/provider-allowlist.txt"
 cp "$BUILD_CONFIG" "$FIXR/workflows/scripts/build/build.config.sh"
-chmod +x "$FIXR/workflows/scripts/"*.sh "$FIXR/workflows/scripts/model-comparison/allowlist.sh"
+# Complete (untampered) driver copies too — several sections below invoke
+# $FIXR's validate-model-usage-emit.sh with NEITHER --file NOR --scan-dir
+# (e.g. section 11's presence-lint mutation), which resolves spawn-site
+# coverage's DEFAULT scan dir to $FIXR/workflows/scripts/build — that must
+# be a real, fully-wired copy or those unrelated presence/content mutations
+# would spuriously fail on a coverage gap that has nothing to do with what
+# they're testing. Section 33+ below uses the SEPARATE $COVR tree (below)
+# for actual coverage mutations, never this one.
+mkdir -p "$FIXR/workflows/scripts/lib"
+cp "$PIPELINE_DRIVE_SH" "$FIXR/workflows/scripts/build/pipeline-drive.sh"
+cp "$RETRO_JUDGE_SPAWN_SH" "$FIXR/workflows/scripts/build/pipeline-retro-judge-spawn.sh"
+cp "$ENVELOPE_LIB" "$FIXR/workflows/scripts/lib/model-usage-envelope.sh"
+chmod +x "$FIXR/workflows/scripts/"*.sh "$FIXR/workflows/scripts/model-comparison/allowlist.sh" \
+  "$FIXR/workflows/scripts/build/pipeline-drive.sh" "$FIXR/workflows/scripts/build/pipeline-retro-judge-spawn.sh"
+
+# A SEPARATE fixture tree just for spawn-site coverage (section 31+ below) —
+# --scan-dir points the validator's coverage checks at THIS dir, never the
+# real workflows/scripts/build/, so every mutation below is on a disposable
+# copy. Kept separate from $FIXR/workflows/scripts/build above (that one is
+# scoped to the emit/lint presence+content mutations, and stays a clean
+# byte-for-byte build.config.sh-only build dir).
+COVR="$TMP/coverage-scan"
+mkdir -p "$COVR"
+cp "$PIPELINE_DRIVE_SH" "$COVR/pipeline-drive.sh"
+cp "$RETRO_JUDGE_SPAWN_SH" "$COVR/pipeline-retro-judge-spawn.sh"
+# reset_covr <label> — restore both fixture files to the pristine originals.
+reset_covr() {
+  cp "$PIPELINE_DRIVE_SH" "$COVR/pipeline-drive.sh"
+  cp "$RETRO_JUDGE_SPAWN_SH" "$COVR/pipeline-retro-judge-spawn.sh"
+  rm -f "$COVR"/*.sh.orig "$COVR/pipeline-drive-experimental.sh" "$COVR/fake-new-driver.sh"
+}
 
 echo "── 11. MUTATION: presence-lint catches emit-model-usage.sh losing its exec bit ──"
 check "fixture copy passes before tampering" bash "$FIXR/workflows/scripts/validate-model-usage-emit.sh"
@@ -581,6 +617,190 @@ check "emit-model-usage.sh documents weighted_units as comparable only within a 
   grep -Fq 'retune epoch' "$EMIT"
 check "...and names tokens as the durable, retune-independent figure" \
   grep -Fq 'is the durable' "$EMIT"
+
+echo "── 31. spawn-site coverage (temperloop#1255): the REAL checkout wires A7/A8/A9 ──"
+check "the validator passes coverage against the real checkout (default scan dir)" \
+  bash "$LINT"
+LINT_REAL_OUT="$(bash "$LINT" 2>&1)"
+check "...names A7 (pipeline-drive-safe) as wired" \
+  bash -c "grep -Fq 'A7 pipeline-drive.sh safe-tier driver wires model_usage_emit_from_envelope \"pipeline-drive-safe\"' <<<\"\$1\"" _ "$LINT_REAL_OUT"
+check "...names A8 (pipeline-drive-merge) as wired" \
+  bash -c "grep -Fq 'A8 pipeline-drive.sh merge-tier driver wires model_usage_emit_from_envelope \"pipeline-drive-merge\"' <<<\"\$1\"" _ "$LINT_REAL_OUT"
+check "...names A9 (retro-judge) as wired" \
+  bash -c "grep -Fq 'A9 retro-judge spawn wires model_usage_emit_from_envelope \"retro-judge\"' <<<\"\$1\"" _ "$LINT_REAL_OUT"
+
+echo "── 32. spawn-site coverage: the exclusion list names every un-emittable seat WITH the spike's reason ──"
+for seat_id in A1 A2 A3 A4 A5 A6 B1 B2 C1 C2 C3; do
+  check "exclusion list names $seat_id" \
+    bash -c "grep -Fq 'excluded $seat_id ' <<<\"\$1\"" _ "$LINT_REAL_OUT"
+done
+check "A1/A3/A4 carry the .mjs no-usage/no-join-key reason" \
+  bash -c "grep -F 'excluded A1 ' <<<\"\$1\" | grep -F 'no legal join key' >/dev/null" _ "$LINT_REAL_OUT"
+check "A5/A6 additionally carry the cannot-source-shell-config reason" \
+  bash -c "grep -F 'excluded A5 ' <<<\"\$1\" | grep -F 'unable to source shell config' >/dev/null" _ "$LINT_REAL_OUT"
+check "B1 carries the session-granularity/no-seat/no-outcome-ref reason" \
+  bash -c "grep -F 'excluded B1 ' <<<\"\$1\" | grep -F 'no seat name and no outcome ref' >/dev/null" _ "$LINT_REAL_OUT"
+check "B2 carries the harness-native agent-frontmatter reason" \
+  bash -c "grep -F 'excluded B2 ' <<<\"\$1\" | grep -F 'no kernel code in the spawn path' >/dev/null" _ "$LINT_REAL_OUT"
+check "C1/C2/C3 carry the --output-format text / #1264 reason" \
+  bash -c "grep -F 'excluded C1 ' <<<\"\$1\" | grep -F 'temperloop#1264' >/dev/null" _ "$LINT_REAL_OUT"
+
+echo "── 33. MUTATION: removing the A7 emit call FAILS coverage; restoring it passes again ──"
+reset_covr
+check "BEFORE tamper: coverage fixture passes" bash "$LINT" --scan-dir "$COVR"
+python3 - "$COVR/pipeline-drive.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = '''    model_usage_emit_from_envelope "pipeline-drive-safe" "$PIPELINE_DRIVE_MODEL" \\
+      "$(_outcome_ref_for_batch "$acts_b" "$b")" "$(_board_repo "$b" 2>/dev/null || true)" \\
+      "$MODEL_USAGE_EMIT" <<<"$driver_out"
+'''
+assert needle in c, "A7 emit-call needle not found in fixture — production wiring text drifted"
+open(p, "w").write(c.replace(needle, ""))
+PYEOF
+check_not "AFTER tamper (A7 emit call removed): coverage WRONGLY-passing case is now caught — coverage FAILS" \
+  bash "$LINT" --scan-dir "$COVR"
+check "...names A7 specifically" bash -c \
+  "bash '$LINT' --scan-dir '$COVR' 2>&1 | grep -F 'A7 pipeline-drive.sh safe-tier driver' | grep -F FAIL >/dev/null"
+reset_covr
+check "RESTORED: coverage passes again" bash "$LINT" --scan-dir "$COVR"
+
+echo "── 34. MUTATION: removing the A8 emit call FAILS coverage; restoring it passes again ──"
+reset_covr
+python3 - "$COVR/pipeline-drive.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = '''    model_usage_emit_from_envelope "pipeline-drive-merge" "$PIPELINE_DRIVE_MERGE_MODEL" \\
+      "$(_outcome_ref_for_batch "$acts_b" "$b")" "$(_board_repo "$b" 2>/dev/null || true)" \\
+      "$MODEL_USAGE_EMIT" <<<"$merge_out"
+'''
+assert needle in c, "A8 emit-call needle not found in fixture — production wiring text drifted"
+open(p, "w").write(c.replace(needle, ""))
+PYEOF
+check_not "AFTER tamper (A8 emit call removed): coverage FAILS" bash "$LINT" --scan-dir "$COVR"
+check "...names A8 specifically" bash -c \
+  "bash '$LINT' --scan-dir '$COVR' 2>&1 | grep -F 'A8 pipeline-drive.sh merge-tier driver' | grep -F FAIL >/dev/null"
+reset_covr
+check "RESTORED: coverage passes again" bash "$LINT" --scan-dir "$COVR"
+
+echo "── 35. MUTATION: removing the A9 (retro-judge) emit call FAILS coverage; restoring it passes again ──"
+reset_covr
+python3 - "$COVR/pipeline-retro-judge-spawn.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+c = open(p).read()
+needle = '''model_usage_emit_from_envelope "retro-judge" "$model" "issue:board-$board" "" \\
+  "$MODEL_USAGE_EMIT" <<<"$out"
+'''
+assert needle in c, "A9 emit-call needle not found in fixture — production wiring text drifted"
+open(p, "w").write(c.replace(needle, ""))
+PYEOF
+check_not "AFTER tamper (A9 emit call removed): coverage FAILS" bash "$LINT" --scan-dir "$COVR"
+check "...names A9 specifically" bash -c \
+  "bash '$LINT' --scan-dir '$COVR' 2>&1 | grep -F 'A9 retro-judge spawn' | grep -F FAIL >/dev/null"
+reset_covr
+check "RESTORED: coverage passes again" bash "$LINT" --scan-dir "$COVR"
+
+echo "── 36. MUTATION: a NEWLY ADDED, unwired spawn site FAILS coverage (the generic forward net) ──"
+reset_covr
+check "BEFORE: coverage fixture passes with no extra file" bash "$LINT" --scan-dir "$COVR"
+cat > "$COVR/pipeline-drive-experimental.sh" <<'EOF'
+#!/usr/bin/env bash
+# a hypothetical future driver spawning claude the same captured-envelope way
+set -uo pipefail
+out="$(claude -p "/do-something" --model claude-sonnet-5 --output-format json)"
+echo "$out"
+EOF
+check_not "AFTER: a brand-new unwired --output-format json spawn site FAILS coverage — never enumerated by name, caught generically" \
+  bash "$LINT" --scan-dir "$COVR"
+check "...names the new file specifically, not one of the three known seats" bash -c \
+  "bash '$LINT' --scan-dir '$COVR' 2>&1 | grep -F 'pipeline-drive-experimental.sh' | grep -F 'unwired spawn site' >/dev/null"
+reset_covr
+check "RESTORED (file removed): coverage passes again" bash "$LINT" --scan-dir "$COVR"
+
+echo "── 37. advisory: a comment-only mention never counts as wiring (the grep-in-a-comment trap) ──"
+reset_covr
+python3 - "$COVR/pipeline-drive.sh" <<'PYEOF'
+import sys
+p = sys.argv[1]
+lines = open(p).readlines()
+out = []
+for l in lines:
+    if 'model_usage_emit_from_envelope "pipeline-drive-safe"' in l:
+        out.append("    # " + l.lstrip())
+    else:
+        out.append(l)
+open(p, "w").writelines(out)
+PYEOF
+check_not "A7's emit call commented out (string SURVIVES only in a comment): coverage still FAILS — a comment is not code" \
+  bash "$LINT" --scan-dir "$COVR"
+reset_covr
+check "RESTORED: coverage passes again" bash "$LINT" --scan-dir "$COVR"
+
+echo "── 38. FAIL-CLOSED: an absent/unreadable --scan-dir CANNOT EVALUATE, never silently OK ──"
+ABSENT_ERR="$(bash "$LINT" --scan-dir "$TMP/does-not-exist-anywhere" 2>&1)"
+ABSENT_RC=$?
+check_eq "an absent scan dir: exit 1 (CANNOT EVALUATE), not 0" "1" "$ABSENT_RC"
+check "...says CANNOT EVALUATE, never OK" bash -c \
+  "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\" && ! grep -Fq 'validate-model-usage-emit: OK' <<<\"\$1\"" _ "$ABSENT_ERR"
+
+UNREADABLE_SCAN="$TMP/unreadable-scan"
+mkdir -p "$UNREADABLE_SCAN"
+# Inline restore only (no add_exit_cleanup layering here): section 23 above
+# already registered one EXIT-trap layer for its own UNREADABLE_DIR, and
+# add_exit_cleanup's trap-string reconstruction is not safely re-entrant for
+# a THIRD-plus layer once the accumulated trap text itself contains quoted
+# paths (observed: a second call corrupts the composed trap string into an
+# unparseable one, "unexpected EOF while looking for matching `'"). The
+# inline chmod 700 immediately below is what actually matters for
+# correctness here — the EXIT-trap layering above is optional
+# belt-and-suspenders this section does not need a second copy of.
+chmod 000 "$UNREADABLE_SCAN"
+UNREADABLE_SCAN_ERR="$(bash "$LINT" --scan-dir "$UNREADABLE_SCAN" 2>&1)"
+UNREADABLE_SCAN_RC=$?
+chmod 700 "$UNREADABLE_SCAN"
+check_eq "an unreadable scan dir: exit 1 (CANNOT EVALUATE), not 0" "1" "$UNREADABLE_SCAN_RC"
+check "...says CANNOT EVALUATE, never OK" bash -c \
+  "grep -Fq 'CANNOT EVALUATE' <<<\"\$1\" && ! grep -Fq 'validate-model-usage-emit: OK' <<<\"\$1\"" _ "$UNREADABLE_SCAN_ERR"
+
+echo "── 39. FAIL-CLOSED: an empty --scan-dir (no build files at all) is a genuine FAIL, not CANNOT EVALUATE ──"
+# Distinguishes "cannot evaluate" (dir missing/unreadable, above) from "DID
+# evaluate and the expected files are genuinely absent" — the latter is a
+# real coverage gap (the named seats' files don't exist there) and must FAIL
+# with a clear reason, not silently pass as "nothing to check".
+EMPTY_SCAN="$TMP/empty-scan"
+mkdir -p "$EMPTY_SCAN"
+check_not "an empty scan dir (missing pipeline-drive.sh/pipeline-retro-judge-spawn.sh): coverage FAILS" \
+  bash "$LINT" --scan-dir "$EMPTY_SCAN"
+check "...names the missing file, not a generic/silent failure" bash -c \
+  "bash '$LINT' --scan-dir '$EMPTY_SCAN' 2>&1 | grep -F 'expected file is missing' >/dev/null"
+
+echo "── 40. BLOCKING 1 class: a trailing --scan-dir does not hang (bounded-timeout proof) ──"
+hang_check "validator: trailing --scan-dir does not hang" 8 1 bash "$LINT" --scan-dir
+
+echo "── 41. advisory 9c class: a --scan-dir value that looks like another flag is rejected ──"
+SCANDIR_FLAGLIKE_ERR="$(bash "$LINT" --scan-dir --file 2>&1)"
+check "names the flag-like-value rejection" bash -c \
+  "grep -F -- \"--scan-dir requires a value, got flag-like '--file'\" <<<\"\$1\" >/dev/null" _ "$SCANDIR_FLAGLIKE_ERR"
+
+echo "── 42. discoverability: model-usage-envelope.sh documents the shared extraction and its fail-open contract ──"
+check "the shared lib documents WHICH three seats source it (A7/A8/A9)" \
+  grep -Fq 'A7' "$ENVELOPE_LIB"
+check "...and its fail-open contract" \
+  grep -Fq 'FAIL-OPEN' "$ENVELOPE_LIB"
+check "...and the deliberate anthropic-vs-firstParty provider distinction" \
+  grep -Fq 'firstParty' "$ENVELOPE_LIB"
+check "pipeline-drive.sh sources the shared lib (never a re-implemented copy)" \
+  grep -Fq 'model-usage-envelope.sh' "$PIPELINE_DRIVE_SH"
+check "pipeline-retro-judge-spawn.sh sources the shared lib (never a re-implemented copy)" \
+  grep -Fq 'model-usage-envelope.sh' "$RETRO_JUDGE_SPAWN_SH"
+
+echo "── 43. quality-gates.sh: no separate gate line was needed — the existing entries already cover this file ──"
+QG2="$REPO/scripts/quality-gates.sh"
+check "quality-gates.sh still registers exactly the validator + this test suite for model-usage (no drift)" \
+  bash -c "grep -Fq 'workflows/scripts/validate-model-usage-emit.sh' '$QG2' && grep -Fq 'workflows/scripts/tests/test_model_usage_emit.sh' '$QG2'"
 
 echo
 if [ "$fail" -gt 0 ]; then

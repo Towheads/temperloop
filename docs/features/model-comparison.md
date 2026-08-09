@@ -296,6 +296,17 @@ knowledge store as `Context/temperloop - per-seat usage capture
 feasibility.md` (not part of this repo's tracked tree); a stranger without
 access to that store can instead read the spike itself, temperloop#1246.
 
+**Every emit-feasible seat is now wired.** temperloop#1255 wired all three
+(A7/A8/A9) into their real spawn sites — `pipeline-drive.sh`'s level-5b/5c
+drivers and `pipeline-retro-judge-spawn.sh`'s judge — through a shared
+extraction (`workflows/scripts/lib/model-usage-envelope.sh`) that turns the
+captured `claude -p --output-format json` envelope into one record per
+spawn. A mechanical coverage gate (`validate-model-usage-emit.sh`'s own
+"spawn-site coverage" check) fails CI if a wired site's emit call is ever
+removed, or if a future spawn site captures the same kind of envelope
+without wiring emission — so "every emit-feasible seat stays wired" doesn't
+depend on anyone remembering to check.
+
 **What the attribution telemetry collects, in plain terms.** This is
 written to be readable by a teammate or a client's reviewer opening this
 file cold, with no other context:

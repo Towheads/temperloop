@@ -559,6 +559,13 @@ model-comparison workflows/scripts/model-comparison/**
 model-comparison workflows/scripts/validate-provider-disclosure.sh
 model-comparison workflows/scripts/validate-model-usage-emit.sh
 model-comparison workflows/scripts/emit-model-usage.sh
+# model-usage-envelope.sh (temperloop#1255) lives at workflows/scripts/lib/
+# (a shared spawn-site helper, sourced by pipeline-drive.sh and
+# pipeline-retro-judge-spawn.sh under workflows/scripts/build/) rather than
+# under workflows/scripts/model-comparison/, so — like the test file below —
+# it needs its own exact-path claim; the directory-level glob three lines up
+# does not reach it.
+model-comparison workflows/scripts/lib/model-usage-envelope.sh
 # test_model_usage_emit.sh lives at workflows/scripts/tests/ (matching the
 # telemetry section's sibling test-file convention, e.g.
 # workflows/scripts/tests/test_command_run_emit.sh above) rather than under
