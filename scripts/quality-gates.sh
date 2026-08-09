@@ -674,6 +674,27 @@ KERNEL_GATES=(
   # (#1258). Same direct-`bash` form, no Makefile target, as the
   # test_allowlist.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_isolation.sh"
+  # Replay pre-flight estimate + per-comparison ceiling (temperloop#1256,
+  # epic #1225 "model comparison harness"): replay.sh's `preflight`
+  # subcommand — the spend gate that prints eligible-N, a batch-cap-bounded
+  # cost estimate (token_count cost basis; this module states no dollar
+  # figure), and significance reachability via stats.sh's own `mde`
+  # primitive (never a second, hand-rolled computation of it), BEFORE any
+  # replay token is spent. Fails CLOSED (CANNOT_EVALUATE, non-zero) on an
+  # absent/unreadable/empty/malformed corpus file or an unreachable stats
+  # primitive; STOPS (non-zero) a batch whose projected cost exceeds
+  # REPLAY_PREFLIGHT_CEILING_TOKENS or while
+  # workflows/scripts/build/quota-gate.sh reports "pause" — the explicit
+  # quota-gate consult this item requires, proven by a fixture, never
+  # assumed. A companion fixture proves no scheduled/cron/autonomous entry
+  # point (pipeline-cron.sh/pipeline-tick.sh/pipeline-drive.sh/
+  # pipeline-schedule-gate.sh) references replay.sh — replay batches stay
+  # operator-initiated only. Zero network, zero live model call (kernel
+  # principle 3). Ships corpus-file-driven ESTIMATION and the ceiling only;
+  # replay EXECUTION and scoring remain replay-execute-and-score (#1258).
+  # Same direct-`bash` form, no Makefile target, as the
+  # test_replay_isolation.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_preflight.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through
