@@ -732,6 +732,27 @@ KERNEL_GATES=(
   # was never computed. Same direct-`bash` form, no Makefile target, as the
   # test_live_tagging.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_score.sh"
+  # Judge pass (temperloop#1259, epic #1225 "model comparison harness"):
+  # judge.sh scores an already-executed `replay-record-v1` record with a
+  # strong-tier judge model and attaches the result as a `judge` sub-object.
+  # Proves three structural guarantees, each with a mutation proof: (1) the
+  # judge≠candidate guard REFUSES a fixture that attempts to judge a
+  # candidate with an identical judge provider+model, before any spend, and
+  # the suite reddens when the guard is deleted; (2) a judge that becomes
+  # unavailable mid-batch (`judge-batch`) produces a named
+  # `judge.degradation_notice` on the affected rows ONLY — never a silent
+  # drop, never a fabricated/zero score standing in for one it never
+  # obtained — distinguishable from a genuine `quality_score:0` a judge
+  # actually rendered; (3) the rubric (rubric.md) flows into the judge
+  # prompt as PLAIN TEXT ONLY — no `Task`/`Agent`-tool dispatch of any
+  # `claude/agents/reviewers/*.md` charter occurs at judge time. Fully
+  # HERMETIC, same shape as the test_replay_score.sh gate immediately
+  # above: every judge call is driven through a RECORDED `--judge-runner`
+  # seam, `--live` is never passed, and the suite prepends a canary
+  # `claude` to PATH and asserts at the end that nothing ever invoked it,
+  # with a mutation proof that removing the no-runner refusal DOES reach
+  # that canary.
+  "bash workflows/scripts/model-comparison/tests/test_judge.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through

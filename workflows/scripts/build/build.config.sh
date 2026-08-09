@@ -1004,6 +1004,23 @@ fi
 # `timed_out: true` alongside the normalized 137 exit code, never as a pass.
 : "${REPLAY_SCORE_GATE_TIMEOUT_SECS:=1800}"
 
+# ── Judge pass (temperloop#1259, epic #1225 "model comparison harness") ────
+# workflows/scripts/model-comparison/judge.sh: the strong-tier JUDGE model
+# that scores an already-executed replay record. Two operator-facing
+# tunables, named symbolically in judge.sh's own header, never re-valued in
+# prose (§ Named-setting convention) — following the same naming convention
+# RETRO_JUDGE_MODEL established for the OTHER judge in this pipeline
+# (unified-retrospection's epic-close judge; a different model, a different
+# job).
+#
+# The judge model. Deliberately a STRONG tier (this item's own framing:
+# "score every replay record with a strong-tier judge") — same default as
+# PIPELINE_DRIVE_MERGE_MODEL's high-judgment tier, a different call site.
+: "${MODEL_COMPARISON_JUDGE_MODEL:=claude-opus-4-8}"
+# Wall-clock bound on ONE judge model call, mirroring REPLAY_CANDIDATE_TIMEOUT_SECS's
+# per-candidate-run bound.
+: "${MODEL_COMPARISON_JUDGE_TIMEOUT_SECS:=1800}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -1032,4 +1049,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_PUSH_DISABLE_SENTINEL \
        REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
        REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
-       REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS
+       REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS \
+       MODEL_COMPARISON_JUDGE_MODEL MODEL_COMPARISON_JUDGE_TIMEOUT_SECS
