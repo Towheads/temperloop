@@ -125,6 +125,37 @@
 #       the broad, multi-concern PRs structurally (spike: "Tier C is
 #       dominated by broad refactor/propagation epics").
 #
+#   replay.sh preflight --corpus-file <path>
+#       THE SPEND GATE (temperloop#1256). Reads an already-computed `corpus`
+#       JSONL file (never re-invokes `gh` itself — corpus selection and
+#       preflight estimation are separate concerns, and this keeps preflight
+#       network-free and deterministically testable) and, before any token is
+#       spent, prints eligible-N (records with status eligible or
+#       flagged-eligible), the batch-cap-bounded planned-N for THIS
+#       invocation, the estimated token cost of that batch, and — genuinely
+#       CONSUMING workflows/scripts/model-comparison/stats.sh's `mde`
+#       primitive, never a second hand-rolled computation of it — whether
+#       eligible-N can reach MODEL_COMPARISON_MIN_SAMPLE_N (the inconclusive
+#       floor `verdict`/`bootstrap-ci` already enforce) at all. This module
+#       states no dollar figure (docs/features/model-comparison.md's "stated
+#       cost basis" concept, and pipeline-spend-report.sh's own "no dollar
+#       constant exists in this loop" convention): the cost basis reported
+#       here is `token_count`, the model-independent unit, not metered
+#       dollars. A projected batch whose estimated cost exceeds
+#       REPLAY_PREFLIGHT_CEILING_TOKENS, or that lands while
+#       workflows/scripts/build/quota-gate.sh reports "pause" (THIS is the
+#       explicit-scope quota-gate consult the item requires — never assumed),
+#       STOPS here (`stop:true`, non-zero exit) rather than partway through a
+#       later execution step. FAILS CLOSED (`CANNOT_EVALUATE`, non-zero) on
+#       an absent/unreadable/empty/malformed corpus file, or if the
+#       stats.sh mde primitive itself cannot be reached — it never reports a
+#       cheap/reachable estimate it did not actually compute. This command
+#       does not execute a replay, spawn a candidate model, or score
+#       anything — that is replay-execute-and-score (temperloop#1258); it is
+#       also never invoked from a scheduled/cron/autonomous entry point
+#       (docs/features/model-comparison.md "Inert by design" — ADR 0027):
+#       replay batches are operator-initiated only.
+#
 #   replay.sh worktree-prepare <repo-root> <slug> <base-sha>
 #       Create + isolate + rewind the replay worktree (see above). On ANY
 #       failure after create, the partially-prepared worktree is torn down
@@ -158,6 +189,8 @@ command -v jq >/dev/null 2>&1 || { echo '{"outcome":"ERROR","error":"jq not foun
 
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKTREE_SH="$HERE/../build/worktree.sh"
+STATS_SH="$HERE/stats.sh"
+QUOTA_GATE_SH="$HERE/../build/quota-gate.sh"
 
 # shellcheck source=../build/build.config.sh
 [ -f "$HERE/../build/build.config.sh" ] && . "$HERE/../build/build.config.sh"
@@ -165,6 +198,20 @@ WORKTREE_SH="$HERE/../build/worktree.sh"
 : "${REPLAY_CORPUS_SAMPLE_MULTIPLIER:=2}"
 : "${REPLAY_NAMED_PATH_EXTENSIONS:=py sh mjs md tsv json}"
 : "${REPLAY_PUSH_DISABLE_SENTINEL:=replay-worktree-push-disabled://no-remote}"
+# preflight (temperloop#1256) — the per-comparison spend gate. All four
+# named symbolically here, never re-valued in prose (§ Named-setting
+# convention); registered in setting-registry.tsv, defaulted in
+# build.config.sh.
+: "${REPLAY_PREFLIGHT_BATCH_CAP:=40}"
+: "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=150000}"
+: "${REPLAY_PREFLIGHT_CEILING_TOKENS:=8000000}"
+: "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=50000}"
+# Non-vendoring-checkout fallback for a setting this file READS but does not
+# OWN (registry row's owning-script is build.config.sh; the literal here is
+# a byte-identical duplicate of stats.sh's own default — setting-registry.tsv's
+# documented "byte-identical fallback duplicated in more than one consuming
+# script" convention, same shape as PIPELINE_OPERATOR's duplicate sites).
+: "${MODEL_COMPARISON_MIN_SAMPLE_N:=20}"
 
 # schema_version — a record-format constant, not an operator-tunable setting
 # (same non-registry-row shape as allowlist.sh's PA_DISCLOSURE_SCHEMA_VERSION).
@@ -184,6 +231,7 @@ usage() {
 usage: replay.sh resolve-base <repo-root> <merge-commit-sha>
        replay.sh diff-scope <repo-root> <base-sha> <head-sha> [--issue-text-file <path>]
        replay.sh corpus --repo <owner/repo> [--repo-root <path>] [--limit N] [--target N] [--out <file>]
+       replay.sh preflight --corpus-file <path>
        replay.sh worktree-prepare <repo-root> <slug> <base-sha>
        replay.sh worktree-teardown <repo-root> <slug>
        replay.sh verify-clean-parent <repo-root>
@@ -605,6 +653,148 @@ cmd_corpus() {
   rm -f "$records_tmp"
 }
 
+# ── preflight (temperloop#1256) — the per-comparison spend gate ─────────
+
+# preflight_cannot_evaluate <error-message> — the ONE emission path for every
+# fail-closed case (absent/unreadable/empty/malformed corpus file, or the
+# stats.sh mde primitive unreachable). Every caller MUST follow this with
+# `return 1` — this helper only prints, it never returns non-zero itself,
+# so a caller that forgets the `return 1` would silently fall through to a
+# false "eligible" verdict for input it never actually read (the exact
+# fail-open shape diff-scope's own header warns about).
+preflight_cannot_evaluate() {
+  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
+}
+
+cmd_preflight() {
+  local corpus_file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --corpus-file) need_operand --corpus-file "$#" || return 2; corpus_file="$2"; shift 2 ;;
+      *) printf 'replay.sh preflight: unknown arg %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+
+  if [ -z "$corpus_file" ]; then
+    preflight_cannot_evaluate "no --corpus-file given"
+    return 1
+  fi
+  # `-f` rejects a missing path AND a directory/non-regular-file (the
+  # portable stand-in for "unreadable" that doesn't depend on OS permission
+  # bits, which don't reliably deny access to a root-run test process).
+  if [ ! -f "$corpus_file" ] || [ ! -r "$corpus_file" ]; then
+    preflight_cannot_evaluate "corpus file not found or not a readable regular file: $corpus_file"
+    return 1
+  fi
+
+  local n_lines
+  n_lines="$(grep -c . "$corpus_file" 2>/dev/null || true)"
+  case "$n_lines" in ''|*[!0-9]*) n_lines=0 ;; esac
+  if [ "$n_lines" -eq 0 ]; then
+    preflight_cannot_evaluate "corpus file has no records: $corpus_file"
+    return 1
+  fi
+
+  # Every line must parse as a JSON object carrying a `status` — a single
+  # unparseable/malformed line CANNOT-EVALUATEs the whole file rather than
+  # being silently skipped, which would under-report eligible-N off input
+  # this command never actually finished reading (same fail-closed shape as
+  # diff-scope's own base/head existence check).
+  local eligible_n=0 line status
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if ! jq -e 'type=="object" and has("status")' >/dev/null 2>&1 <<<"$line"; then
+      preflight_cannot_evaluate "malformed corpus record (not a JSON object with a status field): $line"
+      return 1
+    fi
+    status="$(jq -r .status <<<"$line" 2>/dev/null)"
+    case "$status" in
+      eligible|flagged-eligible) eligible_n=$((eligible_n + 1)) ;;
+    esac
+  done <"$corpus_file"
+
+  # Batch cap: bounds replays for THIS invocation only — eligible_n (the
+  # corpus's real pool) stays the basis for the significance-reachability
+  # check below, since a corpus larger than one invocation's cap could still
+  # be spent across more than one invocation.
+  local planned_n="$eligible_n" batch_cap_applied=false
+  if [ "$planned_n" -gt "$REPLAY_PREFLIGHT_BATCH_CAP" ]; then
+    planned_n="$REPLAY_PREFLIGHT_BATCH_CAP"
+    batch_cap_applied=true
+  fi
+
+  local est_tokens=$(( planned_n * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY ))
+  local ceiling_exceeded=false
+  [ "$est_tokens" -gt "$REPLAY_PREFLIGHT_CEILING_TOKENS" ] && ceiling_exceeded=true
+
+  local reachable=false reachable_reason=""
+  if [ "$eligible_n" -ge "$MODEL_COMPARISON_MIN_SAMPLE_N" ]; then
+    reachable=true
+  else
+    reachable_reason="eligible-N ($eligible_n) is below MODEL_COMPARISON_MIN_SAMPLE_N ($MODEL_COMPARISON_MIN_SAMPLE_N) — the verdict would always be inconclusive at this N"
+  fi
+
+  # The MDE disclosure — genuinely CONSUMES stats.sh's own `mde` primitive
+  # (never a second, hand-rolled computation of it). No real per-replay cost
+  # variance exists yet (replay execution is #1258's job), so
+  # REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS stands in as a config-named,
+  # operator-tunable placeholder pending real historical variance.
+  local mde_json="null"
+  if [ "$eligible_n" -ge 1 ]; then
+    local mde_out mde_rc=0
+    mde_out="$(bash "$STATS_SH" mde --n "$eligible_n" --stddev "$REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS" 2>&1)" || mde_rc=$?
+    if [ "$mde_rc" -ne 0 ] || ! jq -e . >/dev/null 2>&1 <<<"$mde_out"; then
+      preflight_cannot_evaluate "could not reach the stats.sh mde primitive: $mde_out"
+      return 1
+    fi
+    mde_json="$mde_out"
+  else
+    reachable_reason="eligible-N is 0 — no usable replay candidates in this corpus"
+  fi
+
+  # THE QUOTA-GATE CONSULT — explicit scope (temperloop#1256), not assumed.
+  # quota-gate.sh is FAIL OPEN by contract (its own header): an "unavailable"
+  # verdict here must NOT stop this batch — only an explicit "pause" does.
+  local quota_json quota_action
+  quota_json="$(bash "$QUOTA_GATE_SH" 2>/dev/null)"
+  [ -n "$quota_json" ] && jq -e . >/dev/null 2>&1 <<<"$quota_json" \
+    || quota_json='{"action":"unavailable","reason":"quota-gate.sh produced no parseable output"}'
+  quota_action="$(jq -r '.action // "unavailable"' <<<"$quota_json" 2>/dev/null)"
+  [ -n "$quota_action" ] || quota_action="unavailable"
+
+  local stop=false stop_reason=""
+  if [ "$ceiling_exceeded" = "true" ]; then
+    stop=true; stop_reason="ceiling_exceeded"
+  elif [ "$quota_action" = "pause" ]; then
+    stop=true; stop_reason="quota_paused"
+  fi
+
+  jq -cn \
+    --argjson eligible_n "$eligible_n" --argjson planned_n "$planned_n" \
+    --argjson batch_cap "$REPLAY_PREFLIGHT_BATCH_CAP" --argjson batch_cap_applied "$batch_cap_applied" \
+    --arg cost_basis "token_count" \
+    --argjson tokens_per_replay "$REPLAY_PREFLIGHT_TOKENS_PER_REPLAY" \
+    --argjson estimated_total_tokens "$est_tokens" \
+    --argjson ceiling_tokens "$REPLAY_PREFLIGHT_CEILING_TOKENS" --argjson ceiling_exceeded "$ceiling_exceeded" \
+    --argjson min_sample_n "$MODEL_COMPARISON_MIN_SAMPLE_N" --argjson significance_reachable "$reachable" \
+    --arg reachable_reason "$reachable_reason" --argjson mde "$mde_json" \
+    --argjson assumed_stddev_tokens "$REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS" \
+    --argjson quota "$quota_json" --argjson stop "$stop" --arg stop_reason "$stop_reason" \
+    '{outcome:"PREFLIGHT",
+      eligible_n:$eligible_n, planned_n:$planned_n,
+      batch_cap:$batch_cap, batch_cap_applied:$batch_cap_applied,
+      cost_basis:$cost_basis, tokens_per_replay_estimate:$tokens_per_replay,
+      estimated_total_tokens:$estimated_total_tokens, estimated_cost:$estimated_total_tokens,
+      ceiling_tokens:$ceiling_tokens, ceiling_exceeded:$ceiling_exceeded,
+      min_sample_n:$min_sample_n, significance_reachable:$significance_reachable,
+      reachable_reason:$reachable_reason, assumed_stddev_tokens:$assumed_stddev_tokens, mde:$mde,
+      quota:$quota, stop:$stop, stop_reason:$stop_reason,
+      confirmation_required:true}'
+
+  [ "$stop" = "false" ] || return 3
+  return 0
+}
+
 # ── worktree-prepare / worktree-teardown ─────────────────────────────────
 
 cmd_worktree_prepare() {
@@ -752,6 +942,9 @@ case "$cmd" in
     ;;
   corpus)
     cmd_corpus "$@"
+    ;;
+  preflight)
+    cmd_preflight "$@"
     ;;
   worktree-prepare)
     [ $# -eq 3 ] || { usage; exit 2; }

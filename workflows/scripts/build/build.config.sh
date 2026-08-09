@@ -953,6 +953,40 @@ fi
 # attempt fails fast on an unresolvable scheme rather than hanging on DNS.
 : "${REPLAY_PUSH_DISABLE_SENTINEL:=replay-worktree-push-disabled://no-remote}"
 
+# ── Replay pre-flight estimate + per-comparison ceiling (temperloop#1256,
+#    epic #1225 "model comparison harness") ─────────────────────────────────
+# workflows/scripts/model-comparison/replay.sh's `preflight` subcommand: the
+# spend gate that prints eligible-N, estimated cost, and significance
+# reachability (via stats.sh's own `mde` primitive — never a second,
+# hand-rolled computation of it) BEFORE a replay batch runs. Four
+# operator-facing tunables, named symbolically in replay.sh's own header,
+# never re-valued in prose (§ Named-setting convention).
+#
+# Max number of replays `preflight` will size a single invocation's cost
+# estimate against, regardless of how large the corpus's eligible-N is — a
+# larger corpus is spent across more than one invocation, never one
+# unbounded batch.
+: "${REPLAY_PREFLIGHT_BATCH_CAP:=40}"
+# Estimated combined (candidate + judge) tokens ONE replay costs. A
+# placeholder pending real historical measurement once replay execution
+# lands (temperloop#1258) — same order of magnitude as a typical worker
+# call, sized deliberately conservative until real data replaces it.
+: "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=150000}"
+# Per-comparison (i.e. per preflight invocation's planned batch) token
+# ceiling. A projected batch whose estimated cost exceeds this STOPS at
+# preflight — never partway through a later execution step. At the default
+# REPLAY_PREFLIGHT_BATCH_CAP (40) * REPLAY_PREFLIGHT_TOKENS_PER_REPLAY
+# (150000) = 6,000,000, comfortably under this default, so an operator
+# raising the batch cap well past default is what would trip it.
+: "${REPLAY_PREFLIGHT_CEILING_TOKENS:=8000000}"
+# Assumed per-replay cost-delta standard deviation (in tokens), fed to
+# stats.sh's `mde` primitive for the pre-spend detectable-effect disclosure.
+# No real replay-cost variance exists yet (execution is #1258's job still to
+# land), so this is a rough same-order-of-magnitude placeholder (1/3 of
+# REPLAY_PREFLIGHT_TOKENS_PER_REPLAY) an operator should tighten once real
+# replay data accumulates.
+: "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=50000}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -978,4 +1012,6 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        MODEL_COMPARISON_MIN_SAMPLE_N MODEL_COMPARISON_BOOTSTRAP_ITERATIONS MODEL_COMPARISON_BOOTSTRAP_SEED \
        MODEL_COMPARISON_CI_WIDTH_PCT MODEL_COMPARISON_EMIT_FEASIBLE_SEATS \
        REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \
-       REPLAY_PUSH_DISABLE_SENTINEL
+       REPLAY_PUSH_DISABLE_SENTINEL \
+       REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
+       REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS
