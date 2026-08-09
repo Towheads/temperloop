@@ -200,6 +200,9 @@ board_blocked_by_add <N> <issue#> <blocker#>  # add a dependency edge (422 if
 board_blocked_by_remove <N> <issue#> <blocker#>
 board_parent_issue <N> <issue#>               # sub-issue -> parent epic number
 board_sub_issues <N> <issue#>                 # parent -> child issue numbers
+board_add_sub_issue <N> <parent#> <child#>    # link a native sub-issue (4xx if
+                                              #   it exists -> non-zero, not silent)
+board_remove_sub_issue <N> <parent#> <child#>
 ```
 
 **Creation / capture:**

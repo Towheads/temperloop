@@ -106,9 +106,10 @@ validate_num() {
 # They take a BOARD id now, not a repo — board_sub_issues resolves the repo
 # itself via board_repo. Both call sites already have $board in scope.
 #
-# The WRITE path below (_subissue_link, --method POST) is deliberately NOT
-# routed: it is a mutation, not a read, and the adapter exposes no cached arm
-# for it.
+# The WRITE path below (_subissue_link) now routes through the adapter too
+# (temperloop#1188, re-cut from foundation#1287): board_add_sub_issue /
+# board_remove_sub_issue closed the last raw-gh-api sub-issue mutation hole,
+# so this composition delegates rather than building its own POST.
 
 # List a parent issue's child sub-issue NUMBERS, one per line (empty = none).
 _subissue_children() {
@@ -153,15 +154,13 @@ _epic_body_open_acceptance() {
     '
 }
 
-# Link a child issue under a parent as a native sub-issue. The REST endpoint
-# wants the child's internal id (not its number), so resolve number -> id first.
-# Idempotent at the caller (we skip already-linked children before calling).
+# Link a child issue under a parent as a native sub-issue. Delegates to the
+# adapter's board_add_sub_issue (temperloop#1188), which resolves the child's
+# database id and busts the issue-cache entry on success. Idempotent at the
+# caller (we skip already-linked children before calling this).
 _subissue_link() {
-  local repo="$1" epic="$2" child_num="$3" child_id
-  child_id="$(_board_gh api "repos/$repo/issues/$child_num" --jq '.id' 2>/dev/null)" || return 1
-  [ -n "$child_id" ] || return 1
-  _board_gh api --method POST "repos/$repo/issues/$epic/sub_issues" \
-    -F sub_issue_id="$child_id" >/dev/null 2>&1
+  local board="$1" epic="$2" child_num="$3"
+  board_add_sub_issue "$board" "$epic" "$child_num" >/dev/null 2>&1
 }
 
 # --- 2.5: ensure a worked item has a tracking issue ON the board ---------------
@@ -277,7 +276,7 @@ cmd_ensure_epic() {
       skipped+=("$c")
       continue
     fi
-    if _subissue_link "$repo" "$epic" "$c"; then
+    if _subissue_link "$board" "$epic" "$c"; then
       linked+=("$c")
       existing="$existing $c"   # so a duplicate in the same --child list is skipped
     else
