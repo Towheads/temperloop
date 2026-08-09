@@ -12,12 +12,16 @@
 # record per spawn. Sibling to emit-command-run.sh / emit-issue-touch.sh: same
 # structure, arg style, warn-don't-drop contract, and raw-lake conventions.
 #
-# GATE SCOPE (temperloop#1253) — this item ships the emit script, its content
-# validator, and the record schema ONLY. No spawn site calls this script yet;
-# wiring the three emit-feasible seats named below is a LATER item
-# (attribution-spawn-site-wiring, temperloop#1255). An empty or absent stream
-# is therefore expected and legal, not a defect this script or its validator
-# should ever report.
+# GATE SCOPE (temperloop#1253) — this item shipped the emit script, its
+# content validator, and the record schema. Wiring the three emit-feasible
+# seats named below into their actual spawn sites (pipeline-drive.sh's A7/A8,
+# pipeline-retro-judge-spawn.sh's A9 — via the shared
+# workflows/scripts/lib/model-usage-envelope.sh extraction) was a LATER item,
+# attribution-spawn-site-wiring (temperloop#1255), now done — see that lib
+# file and validate-model-usage-emit.sh's own "6. SPAWN-SITE COVERAGE"
+# section for the wiring + its coverage gate. An empty or absent stream is
+# still legal (a fresh checkout that hasn't run the pipeline yet has nothing
+# to append), just no longer for the "nothing is wired" reason.
 #
 # ── The spike verdict this schema is built from ─────────────────────────────
 # temperloop#1246's L0 usage-capture-feasibility spike (operator knowledge

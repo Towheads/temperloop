@@ -81,6 +81,15 @@ GLOBAL_UNCLAIM="$TMP/unclaim-noop.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$GLOBAL_UNCLAIM"; chmod +x "$GLOBAL_UNCLAIM"
 export PIPELINE_UNCLAIM_BIN="$GLOBAL_UNCLAIM"
 
+# temperloop#1255: every live drive below now calls emit-model-usage.sh (via
+# model-usage-envelope.sh) after each spawn — a REAL side effect (an append
+# to the model-usage raw lake) that, left unpointed, lands in THIS
+# checkout's actual (gitignored but real) meta/data/raw/, exactly the kind
+# of test-run pollution the rest of this fixture goes out of its way to
+# avoid (GLOBAL_UNCLAIM above is the same isolation move for a different
+# side effect). Point it at a throwaway dir under $TMP for the WHOLE suite.
+export MODEL_USAGE_RAW_DIR="$TMP/model-usage-raw"
+
 # A synthetic tick-plan ARRAY — the shape pipeline-cron.sh collects (per-board
 # {tick,actions[]} objects). One of every action class, so the tiering is exercised
 # in full. (A real single tick emits at most one drive-ready — the drive cap — so the

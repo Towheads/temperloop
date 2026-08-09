@@ -46,14 +46,39 @@
 #      carry `host`; this one deliberately does not, and this check is what
 #      keeps that divergence from silently regressing if a future edit
 #      copy-pastes the sibling shape.
+#   6. SPAWN-SITE COVERAGE (temperloop#1255) — proving that every emit-feasible
+#      seat the L0 spike named actually calls emit-model-usage.sh (via the
+#      shared workflows/scripts/lib/model-usage-envelope.sh extraction), and
+#      that the un-emittable seats are named here with the spike's own
+#      reason rather than silently absent. Two layers:
+#        a. NAMED PER-SEAT WIRING — a direct check, mirroring
+#           validate-issue-touch-emit.sh's check_kind_wiring: for each of A7
+#           (pipeline-drive.sh safe-tier spawn), A8 (pipeline-drive.sh
+#           merge-tier spawn), A9 (pipeline-retro-judge-spawn.sh), grep a
+#           context window after the literal spawn call for a
+#           model_usage_emit_from_envelope call naming that seat. Comment-only
+#           lines are stripped BEFORE matching, so a string surviving only in
+#           a comment after the real call is deleted does not pass.
+#        b. GENERIC FORWARD NET — every *.sh file directly under
+#           workflows/scripts/build/ (the scan dir; overridable via
+#           --scan-dir for fixture tests) that captures a
+#           `--output-format json` envelope on a non-comment line must ALSO
+#           call model_usage_emit_from_envelope somewhere in that same file.
+#           This is what makes "a newly added spawn site with no emission
+#           fails the gate" mechanical: a brand-new file introducing its own
+#           captured-envelope spawn is caught by NAME (it need not be
+#           enumerated), not merely the two files (a) already knows about.
+#      GATE SCOPE stays the emit-feasible subset ONLY (A7/A8/A9 today) — an
+#      un-emittable seat (the A1-A6/A2/B1/B2/C1-C3 exclusion list this script
+#      also prints) never participates in either coverage layer, so it can
+#      never accidentally fail this gate.
 #
-# EXPLICITLY OUT OF SCOPE (owned by a LATER item, attribution-spawn-site-wiring,
-# temperloop#1255): SPAWN-SITE COVERAGE — proving that every emit-feasible
-# seat (A7 pipeline-drive-safe, A8 pipeline-drive-merge, A9 retro-judge, per
-# the L0 spike) actually calls emit-model-usage.sh. No spawn site is wired
-# yet, so an EMPTY or ABSENT raw-lake stream is LEGAL here, exactly like
-# validate-provider-disclosure.sh's "absent/empty disclosure log is legal"
-# precedent — never a failure this gate reports.
+# An EMPTY or ABSENT raw-lake stream is still LEGAL for the CONTENT checks
+# above (1-5) — a fresh checkout that has never run the pipeline has nothing
+# to scan yet, exactly like validate-provider-disclosure.sh's own
+# "absent/empty disclosure log is legal" precedent. Coverage (6) is a
+# SEPARATE, always-on check of the WIRING ITSELF (source code, not the lake)
+# and runs regardless of whether the lake happens to be empty.
 #
 # Usage:
 #   workflows/scripts/validate-model-usage-emit.sh
@@ -61,8 +86,18 @@
 #     resolves the repo itself and scans $MODEL_USAGE_RAW_DIR, default
 #     <repo>/meta/data/raw)
 #   workflows/scripts/validate-model-usage-emit.sh --file <path>
-#     validate exactly one JSONL file (or "-" for stdin) instead of scanning
-#     the raw lake — the fixture-test seam test_model_usage_emit.sh uses.
+#     CONTENT-ONLY mode: validate exactly one JSONL file (or "-" for stdin)
+#     instead of scanning the raw lake, and SKIP spawn-site coverage (6)
+#     entirely — the fixture-test seam test_model_usage_emit.sh's many
+#     single-record checks use this, pointed at throwaway fixture trees with
+#     no build/ directory beside them at all; coverage has nothing to do
+#     with one record's schema. --scan-dir is ignored when --file is given.
+#   workflows/scripts/validate-model-usage-emit.sh --scan-dir <dir>
+#     run the spawn-site coverage checks (6) against <dir> instead of the
+#     real workflows/scripts/build/ (content checks 1-5 still run against
+#     the real raw lake as usual) — the fixture-test seam a coverage
+#     mutation test uses to tamper a COPY of the production files without
+#     touching the real checkout.
 #
 # FAIL-CLOSED DISCIPLINE (mirroring validate-provider-disclosure.sh): a
 # genuine "this record is malformed/out-of-enum" verdict is a FAIL; an
@@ -79,6 +114,7 @@ EMIT_SCRIPT="$SCRIPT_DIR/emit-model-usage.sh"
 ALLOWLIST_LIB="$SCRIPT_DIR/model-comparison/allowlist.sh"
 
 single_file=""
+scan_dir_override=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --file)
@@ -101,6 +137,19 @@ while [ $# -gt 0 ]; do
           ;;
       esac
       single_file="$2"; shift 2 ;;
+    --scan-dir)
+      # Same ARG-ARITY GUARD shape as --file above (BLOCKING 1 class).
+      if [ $# -lt 2 ]; then
+        echo "validate-model-usage-emit: CANNOT EVALUATE — --scan-dir requires a value" >&2
+        exit 1
+      fi
+      case "$2" in
+        --*)
+          echo "validate-model-usage-emit: CANNOT EVALUATE — --scan-dir requires a value, got flag-like '$2'" >&2
+          exit 1
+          ;;
+      esac
+      scan_dir_override="$2"; shift 2 ;;
     *) echo "validate-model-usage-emit: CANNOT EVALUATE — unknown argument $1" >&2; exit 1 ;;
   esac
 done
@@ -181,20 +230,16 @@ else
   fi
 fi
 
-# Absent/empty stream is LEGAL — no spawn site is wired yet (see GATE SCOPE).
-# This still respects $fail from the presence-lint above: a missing/
-# non-executable emit-model-usage.sh must FAIL even when there is nothing to
-# content-validate — an empty lake never masks a broken presence check.
+# Absent/empty stream is LEGAL (see GATE SCOPE) — a fresh checkout that has
+# never run the pipeline has nothing to scan yet. This still respects $fail
+# from the presence-lint above: a missing/non-executable emit-model-usage.sh
+# must FAIL even when there is nothing to content-validate — an empty lake
+# never masks a broken presence check. Unlike before temperloop#1255, this no
+# longer exits here: check 6 (spawn-site coverage, below) is a SEPARATE
+# check of the wiring itself and must still run even when the lake is empty.
 if [ "${#files[@]}" -eq 0 ]; then
-  echo "ok    no model-usage-*.jsonl records found — legal (no spawn site wired yet, temperloop#1255)"
-  echo "---"
-  if [ "$fail" -ne 0 ]; then
-    echo "validate-model-usage-emit: FAIL"
-    exit 1
-  fi
-  echo "validate-model-usage-emit: OK"
-  exit 0
-fi
+  echo "ok    no model-usage-*.jsonl records found — legal on a fresh/quiet lake"
+else
 
 # ---------------------------------------------------------------------------
 # The committed provider allowlist (ADR 0028), resolved ONCE, reused for
@@ -428,6 +473,161 @@ for f in ${files[@]+"${files[@]}"}; do
 done
 
 echo "Checked $n_files file(s), $n_records record(s)."
+fi   # end: files non-empty branch (content-level checks 2-5)
+
+# ---------------------------------------------------------------------------
+# 6. SPAWN-SITE COVERAGE (temperloop#1255) — see the header's "GATE SCOPE"
+# item 6 for the full design rationale. Runs whenever this is a WHOLE-GATE
+# invocation (no --file) — independent of whether the raw lake above was
+# empty, since this checks the WIRING (source code), not the lake. SKIPPED
+# when --file is given: --file is the CONTENT-ONLY fixture-test seam (one
+# JSONL record's schema in isolation), and its many callers point this
+# script at throwaway fixture trees with no build/ directory beside them at
+# all — coverage has nothing to do with a single record's schema and must
+# not fail those invocations for an unrelated reason. A dedicated coverage
+# fixture test drives coverage via --scan-dir instead (never --file).
+# ---------------------------------------------------------------------------
+if [ -n "$single_file" ]; then
+  echo "---"
+  if [ "$fail" -ne 0 ]; then
+    echo "validate-model-usage-emit: FAIL"
+    exit 1
+  fi
+  echo "validate-model-usage-emit: OK"
+  exit 0
+fi
+
+# ---- 6a. the exclusion list — named, never silently skipped ---------------
+# Every seat the L0 spike (Context/temperloop - per-seat usage capture
+# feasibility.md) marked STRUCTURALLY UN-EMITTABLE, with the spike's own
+# reason, verbatim. This is documentation output (never toggles $fail) — its
+# job is to make the exclusion visible on every run, not to assert anything
+# mechanically checkable about code that, by construction, has no shell seam
+# to check.
+echo "── spawn-site coverage: the un-emittable exclusion list (never silently skipped) ──"
+echo "excluded A1 (/build 3c per-item worker, build-level.mjs): .mjs agent() returns no usage; harness drops the label; no legal join key"
+echo "excluded A2 (/sweep Phase-1 detection fan-out): harness-native Task fan-out from command prose; no shell seam, no usage return"
+echo "excluded A3 (/sweep Phase-2 fix worker, build-level.mjs): .mjs agent() returns no usage; harness drops the label; no legal join key"
+echo "excluded A4 (/fix Step-4 single-issue worker, build-level.mjs): .mjs agent() returns no usage; harness drops the label; no legal join key"
+echo "excluded A5 (build-level.mjs runMachinery): same as A1/A3/A4, and additionally the file is documented as unable to source shell config"
+echo "excluded A6 (build-level.mjs runMachineryBatch): same as A1/A3/A4, and additionally the file is documented as unable to source shell config"
+echo "excluded B1 (interactive command sessions: /build /assess /triage /workshop /sweep /fix /check-in /next /tidy): not spawned by this repo at all; SessionEnd gives session-granularity only, with no seat name and no outcome ref"
+echo "excluded B2 (claude/agents/** reviewer/lens/persona seats): harness-native agent-frontmatter spawn; no kernel code in the spawn path"
+echo "excluded C1 (try.sh Step-3 shadow triage): no captured envelope (--output-format text), tracked as temperloop#1264"
+echo "excluded C2 (try.sh --demo fix call): no captured envelope (--output-format text), tracked as temperloop#1264"
+echo "excluded C3 (configure.sh AI-guided suggestion): no captured envelope (--output-format text), tracked as temperloop#1264"
+
+# ---- 6b. resolve the scan dir ----------------------------------------------
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." 2>/dev/null && pwd)"
+if [ -n "$scan_dir_override" ]; then
+  scan_dir="$scan_dir_override"
+elif [ -n "$REPO_ROOT" ]; then
+  scan_dir="$REPO_ROOT/workflows/scripts/build"
+else
+  echo "validate-model-usage-emit: CANNOT EVALUATE — cannot resolve the repo root above $SCRIPT_DIR for spawn-site coverage, and --scan-dir was not given" >&2
+  exit 1
+fi
+if [ ! -d "$scan_dir" ]; then
+  echo "validate-model-usage-emit: CANNOT EVALUATE — spawn-site coverage scan dir does not exist: $scan_dir" >&2
+  exit 1
+fi
+if [ ! -r "$scan_dir" ]; then
+  echo "validate-model-usage-emit: CANNOT EVALUATE — spawn-site coverage scan dir is not readable: $scan_dir" >&2
+  exit 1
+fi
+PIPELINE_DRIVE_SH="$scan_dir/pipeline-drive.sh"
+RETRO_JUDGE_SPAWN_SH="$scan_dir/pipeline-retro-judge-spawn.sh"
+
+# ---- 6c. layer (a): named per-seat wiring, mirroring validate-issue-touch- -
+# emit.sh's check_kind_wiring. $1=file $2=label $3=literal anchor (the spawn
+# call itself) $4=literal expected nearby call (the emission).
+check_seat_wiring() {
+  local file="$1" label="$2" anchor="$3" expect="$4"
+  if [ ! -f "$file" ]; then
+    echo "FAIL  spawn-site coverage: $label — expected file is missing: $file"
+    fail=1
+    return
+  fi
+  if [ ! -r "$file" ]; then
+    echo "validate-model-usage-emit: CANNOT EVALUATE — spawn-site coverage cannot read $file" >&2
+    exit 1
+  fi
+  # Strip comment-only lines FIRST — a string surviving only in a comment
+  # after the real call was deleted must NOT count as wired (the recurring
+  # "grepped a string that lives in a comment" trap this item's own testing
+  # bar names).
+  local code anchor_block
+  code="$(grep -v '^[[:space:]]*#' "$file" 2>/dev/null || true)"
+  anchor_block="$(printf '%s\n' "$code" | grep -A6 -F -- "$anchor" || true)"
+  if [ -z "$anchor_block" ]; then
+    echo "FAIL  spawn-site coverage: $label — spawn call not found in $file (expected: $anchor) — has the spawn site moved or been removed?"
+    fail=1
+    return
+  fi
+  if ! grep -F -q -- "$expect" <<<"$anchor_block"; then
+    echo "FAIL  spawn-site coverage: $label ($file) spawns a captured envelope but the nearby emission call is missing (expected: $expect)"
+    fail=1
+    return
+  fi
+  echo "ok    spawn-site coverage: $label wires $expect"
+}
+
+echo "── spawn-site coverage: named per-seat wiring (A7/A8/A9) ──"
+# Every anchor/expect pair below is a LITERAL string to grep for in ANOTHER
+# file (pipeline-drive.sh / pipeline-retro-judge-spawn.sh) — deliberately
+# single-quoted so $co/$pf/$board etc. are never expanded HERE; they must
+# stay as literal text matching that other file's own source.
+# shellcheck disable=SC2016
+check_seat_wiring "$PIPELINE_DRIVE_SH" "A7 pipeline-drive.sh safe-tier driver" \
+  '_spawn_in_checkout "$co" 1 "/pipeline-drive $pf"' \
+  'model_usage_emit_from_envelope "pipeline-drive-safe"'
+# shellcheck disable=SC2016
+check_seat_wiring "$PIPELINE_DRIVE_SH" "A8 pipeline-drive.sh merge-tier driver" \
+  '_spawn_in_checkout "$co" 1 "/pipeline-drive-merge $pf"' \
+  'model_usage_emit_from_envelope "pipeline-drive-merge"'
+# shellcheck disable=SC2016
+check_seat_wiring "$RETRO_JUDGE_SPAWN_SH" "A9 retro-judge spawn" \
+  '"$CLAUDE_BIN" -p "/retro --pending --board $board" --model "$model" --output-format json' \
+  'model_usage_emit_from_envelope "retro-judge"'
+
+# ---- 6d. layer (b): the generic forward net --------------------------------
+# ANY *.sh file directly under $scan_dir (maxdepth 1 — deliberately excludes
+# tests/ fixtures/ lib/ subdirs, which can legitimately carry the literal
+# string in fixture data or doc comments without being a real spawn site)
+# that captures a `--output-format json` envelope on a non-comment line MUST
+# also call model_usage_emit_from_envelope somewhere in that same file. This
+# is what makes "a newly added spawn site with no emission fails the gate"
+# mechanical rather than remembered: a brand-new file is caught by NAME (the
+# literal signature), never requiring this validator to have been told about
+# it in advance.
+echo "── spawn-site coverage: generic net for any FUTURE captured-envelope spawn site ──"
+generic_hit=0
+for f in "$scan_dir"/*.sh; do
+  [ -e "$f" ] || continue
+  [ -f "$f" ] || continue
+  if [ ! -r "$f" ]; then
+    echo "validate-model-usage-emit: CANNOT EVALUATE — spawn-site coverage cannot read $f" >&2
+    exit 1
+  fi
+  code="$(grep -v '^[[:space:]]*#' "$f" 2>/dev/null || true)"
+  # `grep -F ... >/dev/null` (never `-Fq`) piped from a writer — a piped `-q`
+  # exits at its first match, SIGPIPEing the upstream writer nondeterministically
+  # under pipefail (temperloop#1050; scripts/lint-pipe-grep-q.sh enforces this).
+  if printf '%s\n' "$code" | grep -F -- '--output-format json' >/dev/null; then
+    # Comment-stripped $code again here (never the raw $f) — a
+    # model_usage_emit_from_envelope mention surviving only in a comment
+    # after the real call was deleted must NOT count as wired (same trap
+    # check_seat_wiring's anchor_block guards against above).
+    if ! printf '%s\n' "$code" | grep -F -- 'model_usage_emit_from_envelope' >/dev/null; then
+      echo "FAIL  spawn-site coverage: $f captures a claude -p --output-format json envelope but never calls model_usage_emit_from_envelope anywhere in the file — an unwired spawn site"
+      fail=1
+      generic_hit=1
+    fi
+  fi
+done
+if [ "$generic_hit" -eq 0 ]; then
+  echo "ok    spawn-site coverage: every --output-format json capture site directly under $scan_dir wires model_usage_emit_from_envelope somewhere in its own file"
+fi
 
 echo "---"
 if [ "$fail" -ne 0 ]; then

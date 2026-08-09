@@ -44,6 +44,13 @@ bad() { printf '  FAIL  %s\n     -> %s\n' "$1" "$2"; fail=$((fail+1)); }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/retro-spawn-test-XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# temperloop#1255: every non-dry-run spawn below now calls emit-model-usage.sh
+# (via model-usage-envelope.sh) after invoking the judge double — a REAL side
+# effect (an append to the model-usage raw lake) that, left unpointed, lands
+# in THIS checkout's actual (gitignored but real) meta/data/raw/. Point it at
+# a throwaway dir under $TMP for the whole suite.
+export MODEL_USAGE_RAW_DIR="$TMP/model-usage-raw"
+
 # A SYNTHETIC credential, generated here and never persisted to the repo. Long
 # enough that a substring match in the redaction test is meaningful.
 FAKE_TOKEN="sk-test-$(date +%s)-0000000000000000000000000000"
@@ -99,6 +106,16 @@ mkdir -p "$CO"
 cp "$SCRIPT" "$CO/pipeline-retro-judge-spawn.sh"
 chmod +x "$CO/pipeline-retro-judge-spawn.sh"
 SUT="$CO/pipeline-retro-judge-spawn.sh"
+
+# temperloop#1255: the real script sources ../lib/model-usage-envelope.sh
+# relative to $HERE, which resolves to THIS fixture's $CO once the script is
+# copied (not symlinked) above — mirror that same relative layout, or the
+# fixture silently exercises a DIFFERENT code path than production (the
+# source guard's `[ -f ... ] &&` no-ops, and the later
+# model_usage_emit_from_envelope call becomes an unguarded "command not
+# found" instead of the real extraction).
+mkdir -p "$TMP/checkout/workflows/scripts/lib"
+cp "$HERE/../../lib/model-usage-envelope.sh" "$TMP/checkout/workflows/scripts/lib/model-usage-envelope.sh"
 
 cat > "$CO/build.config.sh" <<CONFIG
 #!/usr/bin/env bash

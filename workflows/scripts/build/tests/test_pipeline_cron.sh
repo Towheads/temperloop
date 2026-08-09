@@ -40,6 +40,12 @@ trap 'rm -rf "$TMP"' EXIT
 # tests never append to the real meta/data/raw/ in the repo. Exported (not -i'd in the
 # env … bash calls), so it is inherited by all of them.
 export PIPELINE_RAW_DIR="$TMP/raw"
+# Same move for the model-usage attribution stream (temperloop#1255):
+# pipeline-drive.sh now calls emit-model-usage.sh for real (only the
+# lowest-level `claude` hop is doubled via CLAUDE_BIN/DRIVE_DOUBLE), so
+# without this it would append to the real meta/data/raw/ during the
+# PIPELINE_DRIVE=1 wrapper tests below.
+export MODEL_USAGE_RAW_DIR="$TMP/model-usage-raw"
 
 # write_sched <path> <body…> — write a fenced pipeline-schedule block to a file.
 sched_file() { local f="$1"; shift; printf '%s\n' "$@" > "$f"; }

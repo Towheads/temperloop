@@ -173,6 +173,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflows/scripts/build/build.config.sh
 [ -f "$HERE/build.config.sh" ] && . "$HERE/build.config.sh"
 
+# model-usage attribution emit (temperloop#1255, epic #1225): this driver is
+# seat A7 (safe tier) + A8 (merge tier) of the L0 usage-capture-feasibility
+# spike's emit-feasible set — both tiers spawn via _spawn_in_checkout's
+# captured `claude -p --output-format json` envelope below, and
+# model_usage_emit_from_envelope is the shared extraction the two call sites
+# (safe/merge) and pipeline-retro-judge-spawn.sh's A9 all share.
+# shellcheck source=workflows/scripts/lib/model-usage-envelope.sh
+[ -f "$HERE/../lib/model-usage-envelope.sh" ] && . "$HERE/../lib/model-usage-envelope.sh"
+MODEL_USAGE_EMIT="$HERE/../emit-model-usage.sh"
+
 # Attribution for the gh call-logger shim (F#988 / foundation#1265): tag every
 # gh call this command makes with its outermost context. `:-` preserves an
 # already-set (outer) value, so a nested command's context isn't clobbered.
@@ -440,6 +450,26 @@ _spawn_in_checkout() {  # $1 checkout  $2 opabsent(0|1)  $3 prompt  $4 model  $5
   set -e
   _spawn_rc=$rc
   printf '%s' "$out"
+}
+
+# model-usage attribution outcome_ref (temperloop#1255): a batch driver spawn
+# (_spawn_in_checkout above) can cover several actions from DIFFERENT issues
+# in one call — the ADR 0026 record carries exactly ONE outcome_ref, so this
+# picks the precise "issue:<n>" ref when every action in the batch shares the
+# SAME issue (the common case: PIPELINE_DRIVE_MERGE_CAP defaults to 1), and
+# falls back to a board-scoped composite ref ("issue:board-<b>") when the
+# batch spans zero or more than one distinct issue (retro-judge actions carry
+# no `.issue` at all; a raised cap can legitimately batch several issues).
+# $1 = the batch's actions array (JSON)  $2 = board number
+_outcome_ref_for_batch() {
+  local acts="$1" board="$2" uniq n
+  uniq="$(jq -c '[.[] | .issue // empty | select(. != "")] | unique' <<<"$acts" 2>/dev/null || echo '[]')"
+  n="$(jq 'length' <<<"$uniq" 2>/dev/null || echo 0)"
+  if [ "${n:-0}" = "1" ]; then
+    jq -r '"issue:" + (.[0] | tostring)' <<<"$uniq" 2>/dev/null || printf 'issue:board-%s' "$board"
+  else
+    printf 'issue:board-%s' "$board"
+  fi
 }
 
 # Fold per-board summary $2 into accumulator $1 over the named count keys, and
@@ -1141,6 +1171,13 @@ if [ "${n_safe:-0}" -gt 0 ]; then
       emit_outcome "error" "$(jq -cn --arg rc "$_spawn_rc" --arg b "$b" '{driver_exit:($rc|tonumber),board:$b}')" null
       exit 0
     fi
+    # model-usage attribution (temperloop#1255, spike seat A7): the driver_out
+    # captured above IS the `claude -p --output-format json` envelope — emit
+    # one record for this board's safe-tier spawn regardless of _spawn_rc (a
+    # non-zero rc already exited above; only the success path reaches here).
+    model_usage_emit_from_envelope "pipeline-drive-safe" "$PIPELINE_DRIVE_MODEL" \
+      "$(_outcome_ref_for_batch "$acts_b" "$b")" "$(_board_repo "$b" 2>/dev/null || true)" \
+      "$MODEL_USAGE_EMIT" <<<"$driver_out"
     safe_raws="$safe_raws$driver_out"$'\n'
     bsum="$(printf '%s' "$driver_out" | _safe_summary_json)"
     if [ -n "$bsum" ]; then
@@ -1230,6 +1267,12 @@ if [ "$do_merge" -eq 1 ]; then
       merge_raws="$merge_raws$(jq -cn --arg rc "$_spawn_rc" --arg b "$b" '{driver_exit:($rc|tonumber),board:$b}')"$'\n'
       continue
     fi
+    # model-usage attribution (temperloop#1255, spike seat A8): merge_out IS
+    # the `claude -p --output-format json` envelope — emit one record for
+    # this board's merge-tier spawn (only the success path reaches here).
+    model_usage_emit_from_envelope "pipeline-drive-merge" "$PIPELINE_DRIVE_MERGE_MODEL" \
+      "$(_outcome_ref_for_batch "$acts_b" "$b")" "$(_board_repo "$b" 2>/dev/null || true)" \
+      "$MODEL_USAGE_EMIT" <<<"$merge_out"
     merge_raws="$merge_raws$merge_out"$'\n'
     bsum="$(printf '%s' "$merge_out" | _merge_summary_json)"
     if [ -n "$bsum" ]; then
