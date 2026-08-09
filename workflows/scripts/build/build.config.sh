@@ -987,6 +987,23 @@ fi
 # replay data accumulates.
 : "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=50000}"
 
+# ── Replay EXECUTION + SCORING (temperloop#1258) ──────────────────────────
+# Wall-clock bound on ONE candidate run in replay.sh's `execute`. A run that
+# exceeds it is killed and recorded as an `integration-error` (stage
+# candidate-timeout) — a compatibility fact about the vendor integration,
+# never a quality failure of the model. 1800s = 30 minutes: generous enough
+# for a real /build-sized item, short enough that one hung vendor connection
+# cannot stall a whole batch.
+: "${REPLAY_CANDIDATE_TIMEOUT_SECS:=1800}"
+# The gate entry point score.sh runs, resolved INSIDE the candidate's own
+# base worktree (never today's tree) — the keystone spike's trap-C "never mix
+# trees" disposition. Worktree-relative by contract; an adopter repo whose
+# gate entry point is named differently repoints it here.
+: "${REPLAY_SCORE_GATE_RELPATH:=scripts/quality-gates.sh}"
+# Wall-clock bound on that gate run. A timeout is reported as
+# `timed_out: true` alongside the normalized 137 exit code, never as a pass.
+: "${REPLAY_SCORE_GATE_TIMEOUT_SECS:=1800}"
+
 export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        BUILD_QUOTA_MAX_AGE BUILD_MERGE_GATE_WINDOW BUILD_QUEUE_TIMEOUT BUILD_QUEUE_STALL_AFTER \
        BUILD_HEADLESS_POLL_TIMEOUT \
@@ -1014,4 +1031,5 @@ export BUILD_QUOTA_PAUSE_PCT BUILD_QUOTA_CACHE BUILD_QUOTA_WAIT_BUFFER \
        REPLAY_CORPUS_LIMIT REPLAY_CORPUS_SAMPLE_MULTIPLIER REPLAY_NAMED_PATH_EXTENSIONS \
        REPLAY_PUSH_DISABLE_SENTINEL \
        REPLAY_PREFLIGHT_BATCH_CAP REPLAY_PREFLIGHT_TOKENS_PER_REPLAY \
-       REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS
+       REPLAY_PREFLIGHT_CEILING_TOKENS REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS \
+       REPLAY_CANDIDATE_TIMEOUT_SECS REPLAY_SCORE_GATE_RELPATH REPLAY_SCORE_GATE_TIMEOUT_SECS

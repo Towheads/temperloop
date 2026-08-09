@@ -10,12 +10,27 @@
 # reads).
 #
 # ── GATE SCOPE — read this before touching anything downstream ─────────────
-# This file owns CORPUS SELECTION, ISOLATION, and the SCORED-RECORD SCHEMA
-# only. Actual replay EXECUTION (spawning a candidate model inside a
-# prepared worktree via candidate-session.sh) and SCORING land in the later
-# `replay-execute-and-score` item (temperloop#1258) — the `candidate`/
-# `score` sub-objects of the schema `schema` prints below are documented
-# placeholders, deliberately unpopulated here.
+# This file owns CORPUS SELECTION, ISOLATION, the SCORED-RECORD SCHEMA, and —
+# as of temperloop#1258 — replay EXECUTION (`execute` below). SCORING itself
+# lives next door in workflows/scripts/model-comparison/score.sh, which
+# `execute` invokes as a subprocess; the `candidate`/`score` sub-objects the
+# `schema` command prints are no longer placeholders, they are the shape
+# `execute` populates. The schema version is UNCHANGED (`replay-record-v1`):
+# #1254 shipped those two sub-objects as documented placeholders explicitly
+# for #1258 to fill in, so defining their interior is completing v1, not
+# minting a v2.
+#
+# ── THE ONE THING THAT MUST STAY TRUE OF THIS FILE'S TESTS ─────────────────
+# `execute` is the only command in this module that can reach a model, and
+# it CANNOT reach one by accident. There is no implicit candidate binary:
+# the caller must pass EITHER `--candidate-runner <cmd>` (a recorded/stubbed
+# runner — how every fixture drives it) OR the explicit `--live` flag (the
+# real candidate-session.sh spawn). With neither, `execute` prints
+# CANNOT EVALUATE and exits non-zero; it never falls back to a `claude` on
+# PATH. That refusal is what makes "the fixture suite issues no live model
+# call, ever" a structural property rather than a promise, and it is
+# asserted directly (a canary `claude` on PATH that the whole suite proves
+# was never invoked).
 #
 # ── Spike facts this file takes as GIVEN (temperloop#1247, the keystone
 #    spike) — see Context/temperloop - replay ground-truth seam.md for the
@@ -167,6 +182,63 @@
 #       Explicit teardown of a successfully prepared worktree (worktree.sh
 #       remove, unmodified).
 #
+#   replay.sh execute --record <corpus-record-file> --repo-root <path> \
+#       --worktree <path> [--provider <name>] [--model <id>] [--repo <o/r>] \
+#       ( --candidate-runner <cmd> | --live ) [--out <file>] \
+#       [--prompt-out <file>] [--gate-relpath <rel>]
+#       THE EXECUTION STEP (temperloop#1258). Runs the candidate headlessly
+#       inside an already-prepared replay worktree and emits ONE
+#       schema-complete `replay-record-v1` record with `candidate` (provider,
+#       model, diff ref, TOKENS, DURATION, outcome) and `score` (the diff
+#       partition's outcome, the GATE result, acceptance carry-through,
+#       contamination flags) populated.
+#
+#       WHAT IT REUSES RATHER THAN REIMPLEMENTS:
+#         * candidate-session.sh — BOTH halves. Its overlay validator is
+#           consulted (`resolve`, whose exit codes 3/4/5 mean absent /
+#           unreadable / malformed overlay) and its provider-key health
+#           check is run (`preflight`) on EVERY path, stubbed or live, so a
+#           broken containment overlay or an unset non-default provider key
+#           stops the replay before a token is spent. On `--live` the spawn
+#           itself is `candidate-session.sh spawn`, so `env -i` key
+#           isolation and the deny-over-allow overlay apply verbatim.
+#         * allowlist.sh's `pa_disclose` — a NON-DEFAULT-provider send writes
+#           its disclosure-log entry BEFORE the send, and a disclosure that
+#           fails REFUSES the send. That ordering is what makes the send-vs-
+#           log cross-check in workflows/scripts/validate-provider-disclosure.sh
+#           a real invariant rather than a hope: the log can legitimately run
+#           AHEAD of the sends, never behind them.
+#         * emit-model-usage.sh — the attribution record. No second stream.
+#         * score.sh — all scoring, including running the CANDIDATE
+#           WORKTREE'S OWN scripts/quality-gates.sh (never today's tree's).
+#
+#       THREE TERMINAL STATES, deliberately distinguishable (the #1365
+#       fail-closed class applied to a scorer: "reporting a score it did not
+#       compute" is the failure mode here):
+#         exit 0  SCORED — a record whose score.verdict is "pass" OR "fail".
+#                 Both are scores. "Scored, and it failed" is exit 0.
+#         exit 4  INTEGRATION_ERROR — a record was produced, but the vendor
+#                 integration failed (spawn non-zero, timeout, unparseable
+#                 envelope, vendor error flag, or an envelope carrying no
+#                 usable token block). `candidate.outcome` is
+#                 "integration-error", `score.scored` is false and every
+#                 score figure is null. score.sh's `aggregate` excludes it
+#                 from every quality figure and counts it under
+#                 compatibility instead.
+#         exit 1  CANNOT_EVALUATE — could not read the record, resolve the
+#                 base, reach the worktree, validate the overlay, disclose,
+#                 or run the gate. NO record is emitted. This is "couldn't
+#                 score", and it is never confused with "scored and failed".
+#
+#       THE CANDIDATE-RUNNER CONTRACT (the test seam). `--candidate-runner`
+#       takes a command string, invoked as `<cmd> <prompt-file>
+#       <worktree-path>`; it is expected to do its work inside the worktree
+#       and print a `claude -p --output-format json`-shaped envelope on
+#       stdout. This is the same test-double convention `CLAUDE_BIN` gives
+#       every other spawn site in this repo, hoisted one level so a fixture
+#       drives the WHOLE execute path — disclosure, attribution, scoring —
+#       against a RECORDED response, with no network and no spend.
+#
 #   replay.sh verify-clean-parent <repo-root>
 #       BACKSTOP post-run probe, NOT the primary isolation control — see its
 #       own header comment below. Confirms the PARENT checkout carries no
@@ -191,6 +263,22 @@ HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKTREE_SH="$HERE/../build/worktree.sh"
 STATS_SH="$HERE/stats.sh"
 QUOTA_GATE_SH="$HERE/../build/quota-gate.sh"
+SCORE_SH="$HERE/score.sh"
+CANDIDATE_SESSION_SH="$HERE/candidate-session.sh"
+ALLOWLIST_LIB="$HERE/allowlist.sh"
+EMIT_MODEL_USAGE_SH="$HERE/../emit-model-usage.sh"
+
+# The ADR 0026 seat ROLE NAME this module's attribution records carry. A
+# record-vocabulary constant, not an operator-tunable setting (same
+# non-registry-row shape as REPLAY_RECORD_SCHEMA_VERSION below), and never a
+# machine/operator identifier (ADR 0028).
+REPLAY_CANDIDATE_SEAT="replay-candidate"
+# The ADR 0028 trusted default provider — the one a send does NOT have to
+# disclose. Byte-identical to validate-provider-disclosure.sh's own
+# TRUSTED_DEFAULT_PROVIDER and candidate-session.sh's _CS_DEFAULT_PROVIDER;
+# a vocabulary constant, not a setting (an operator who could re-point it
+# could opt out of disclosure by configuration, which ADR 0028 forbids).
+REPLAY_TRUSTED_DEFAULT_PROVIDER="anthropic"
 
 # shellcheck source=../build/build.config.sh
 [ -f "$HERE/../build/build.config.sh" ] && . "$HERE/../build/build.config.sh"
@@ -206,6 +294,10 @@ QUOTA_GATE_SH="$HERE/../build/quota-gate.sh"
 : "${REPLAY_PREFLIGHT_TOKENS_PER_REPLAY:=150000}"
 : "${REPLAY_PREFLIGHT_CEILING_TOKENS:=8000000}"
 : "${REPLAY_PREFLIGHT_ASSUMED_STDDEV_TOKENS:=50000}"
+# execute (temperloop#1258) — the wall-clock bound on ONE candidate run.
+# Named symbolically here, never re-valued in prose; registered in
+# setting-registry.tsv, defaulted in build.config.sh.
+: "${REPLAY_CANDIDATE_TIMEOUT_SECS:=1800}"
 # Non-vendoring-checkout fallback for a setting this file READS but does not
 # OWN (registry row's owning-script is build.config.sh; the literal here is
 # a byte-identical duplicate of stats.sh's own default — setting-registry.tsv's
@@ -234,6 +326,10 @@ usage: replay.sh resolve-base <repo-root> <merge-commit-sha>
        replay.sh preflight --corpus-file <path>
        replay.sh worktree-prepare <repo-root> <slug> <base-sha>
        replay.sh worktree-teardown <repo-root> <slug>
+       replay.sh execute --record <file> --repo-root <path> --worktree <path>
+                         (--candidate-runner <cmd> | --live)
+                         [--provider <name>] [--model <id>] [--repo <owner/repo>]
+                         [--out <file>] [--prompt-out <file>] [--gate-relpath <rel>]
        replay.sh verify-clean-parent <repo-root>
        replay.sh schema
 EOF
@@ -265,13 +361,28 @@ validate_slug() {
   return 0
 }
 
-# need_operand <flag> <remaining-arg-count> — guards every `--flag value`
-# parse loop below against the trailing-flag-with-no-value shift-2-silently-
-# no-ops-under-no-set-e trap: the caller MUST check this before shifting.
+# need_operand <flag> <remaining-arg-count> [<next-arg>] — guards every
+# `--flag value` parse loop below against the trailing-flag-with-no-value
+# shift-2-silently-no-ops-under-no-set-e trap: the caller MUST check this
+# before shifting. The OPTIONAL third argument additionally rejects a value
+# that is itself flag-like (`--provider --live` must not silently consume
+# `--live` as the provider name — temperloop#1342); passing it is
+# backward-compatible, an omitted third arg keeps the arity-only check the
+# pre-existing call sites were written against.
 need_operand() {
-  [ "$2" -ge 2 ] && return 0
-  printf 'replay.sh: %s requires a value\n' "$1" >&2
-  return 2
+  if [ "$2" -lt 2 ]; then
+    printf 'replay.sh: %s requires a value\n' "$1" >&2
+    return 2
+  fi
+  if [ "$#" -ge 3 ]; then
+    case "$3" in
+      --*)
+        printf 'replay.sh: %s requires a value, got flag-like %s\n' "$1" "$3" >&2
+        return 2
+        ;;
+    esac
+  fi
+  return 0
 }
 
 # json_arr <arg>... — a bash array of strings -> a compact JSON array.
@@ -885,6 +996,371 @@ cmd_worktree_teardown() {
   bash "$WORKTREE_SH" remove "$repo_root" "$slug"
 }
 
+# ── execute (temperloop#1258) — the replay run itself ────────────────────
+
+# execute_cannot_evaluate <msg> — the ONE fail-closed emission path for
+# `execute`. Prints the machine verdict on stdout AND the distinct human
+# `CANNOT EVALUATE` line on stderr. Every caller MUST follow it with
+# `return 1` — this helper only prints (same contract, same rationale, as
+# preflight_cannot_evaluate above).
+execute_cannot_evaluate() {
+  jq -cn --arg e "$1" '{outcome:"CANNOT_EVALUATE",error:$e}'
+  printf 'replay.sh execute: CANNOT EVALUATE — %s\n' "$1" >&2
+}
+
+# _exec_epoch_ms — millisecond wall clock (perl when present, else whole
+# seconds; honest low resolution rather than fabricated precision).
+_exec_epoch_ms() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d", time * 1000' 2>/dev/null && return 0
+  fi
+  printf '%d' "$(( $(date +%s) * 1000 ))"
+}
+
+# _exec_emit_record <record-file> <candidate-json> <score-json> <wt> <branch> <out>
+# Merges the corpus record with the populated candidate/score sub-objects.
+# ONE constructor, so a scored record and an integration-error record are
+# byte-for-byte the same SHAPE and only their contents differ (an aggregator
+# must never have to guess which fields a given outcome carries).
+_exec_emit_record() {
+  local record_file="$1" candidate="$2" score="$3" wt="$4" branch="$5" out="$6" merged
+  merged="$(jq -c \
+    --argjson candidate "$candidate" --argjson score "$score" \
+    --arg wt "$wt" --arg branch "$branch" \
+    --arg prepared_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '. + {worktree:{path:$wt, branch:$branch, prepared_at:$prepared_at},
+          candidate:$candidate, score:$score}' "$record_file" 2>/dev/null)"
+  [ -n "$merged" ] || return 1
+  if [ -n "$out" ]; then printf '%s\n' "$merged" >"$out" || return 1; fi
+  printf '%s\n' "$merged"
+}
+
+# _exec_empty_score <reason> — the score sub-object for a record that was
+# never scored. Every figure is null and `scored` is false: an
+# integration-error record must be structurally incapable of contributing a
+# pass or a fail to a quality tally.
+_exec_empty_score() {
+  jq -cn --arg r "$1" \
+    '{outcome:"NOT_SCORED", scored:false, verdict:null, not_scored_reason:$r,
+      base:null, truth_head:null, diff:null, gate_result:null,
+      acceptance_results:null, components:null, contamination_flags:[]}'
+}
+
+cmd_execute() {
+  local record_file="" repo_root="" wt="" provider="$REPLAY_TRUSTED_DEFAULT_PROVIDER"
+  local model="" owner_repo="" runner="" live=0 out="" prompt_out="" gate_relpath=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --record) need_operand --record "$#" "${2:-}" || return 2; record_file="$2"; shift 2 ;;
+      --repo-root) need_operand --repo-root "$#" "${2:-}" || return 2; repo_root="$2"; shift 2 ;;
+      --worktree) need_operand --worktree "$#" "${2:-}" || return 2; wt="$2"; shift 2 ;;
+      --provider) need_operand --provider "$#" "${2:-}" || return 2; provider="$2"; shift 2 ;;
+      --model) need_operand --model "$#" "${2:-}" || return 2; model="$2"; shift 2 ;;
+      --repo) need_operand --repo "$#" "${2:-}" || return 2; owner_repo="$2"; shift 2 ;;
+      --candidate-runner) need_operand --candidate-runner "$#" "${2:-}" || return 2; runner="$2"; shift 2 ;;
+      --out) need_operand --out "$#" "${2:-}" || return 2; out="$2"; shift 2 ;;
+      --prompt-out) need_operand --prompt-out "$#" "${2:-}" || return 2; prompt_out="$2"; shift 2 ;;
+      --gate-relpath) need_operand --gate-relpath "$#" "${2:-}" || return 2; gate_relpath="$2"; shift 2 ;;
+      --live) live=1; shift ;;
+      *) printf 'replay.sh execute: unknown arg %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+
+  # ── input validation, all fail-closed ────────────────────────────────
+  [ -n "$record_file" ] || { execute_cannot_evaluate "no --record given"; return 1; }
+  [ -n "$repo_root" ] || { execute_cannot_evaluate "no --repo-root given"; return 1; }
+  [ -n "$wt" ] || { execute_cannot_evaluate "no --worktree given"; return 1; }
+
+  if [ ! -f "$record_file" ] || [ ! -r "$record_file" ]; then
+    execute_cannot_evaluate "corpus record not found or not a readable regular file: $record_file"
+    return 1
+  fi
+  if [ ! -s "$record_file" ]; then
+    execute_cannot_evaluate "corpus record file is empty: $record_file"
+    return 1
+  fi
+  if ! jq -e 'type=="object" and has("base") and has("head") and has("status") and has("buckets")' "$record_file" >/dev/null 2>&1; then
+    execute_cannot_evaluate "corpus record is malformed (want a JSON object carrying base, head, status and buckets): $record_file"
+    return 1
+  fi
+
+  local rec_status rec_base rec_issue rec_pr item_ref
+  rec_status="$(jq -r '.status // empty' "$record_file")"
+  case "$rec_status" in
+    eligible|flagged-eligible) ;;
+    *)
+      execute_cannot_evaluate "corpus record status is '$rec_status' — only an eligible or flagged-eligible item is replayable; refusing to produce a score for an item corpus selection already rejected"
+      return 1
+      ;;
+  esac
+  rec_base="$(jq -r '.base // empty' "$record_file")"
+  [ -n "$rec_base" ] || { execute_cannot_evaluate "corpus record carries a null base"; return 1; }
+
+  rec_issue="$(jq -r '.issue // empty' "$record_file")"
+  rec_pr="$(jq -r '.pr // empty' "$record_file")"
+  if [ -n "$rec_issue" ]; then
+    item_ref="issue:${rec_issue#\#}"
+  elif [ -n "$rec_pr" ]; then
+    item_ref="pr:$rec_pr"
+  else
+    execute_cannot_evaluate "corpus record identifies neither an issue nor a PR — no item_ref to disclose or attribute against"
+    return 1
+  fi
+
+  repo_root="$(resolve_repo "$repo_root")" || { execute_cannot_evaluate "--repo-root is not a git toplevel: $repo_root"; return 1; }
+  if [ ! -d "$wt" ]; then
+    execute_cannot_evaluate "replay worktree does not exist or is not a directory: $wt (run 'replay.sh worktree-prepare' first)"
+    return 1
+  fi
+  wt="$(abs_dir "$wt")" || { execute_cannot_evaluate "replay worktree is not enterable: $wt"; return 1; }
+  if ! git -C "$wt" rev-parse --show-toplevel >/dev/null 2>&1; then
+    execute_cannot_evaluate "replay worktree is not inside a git work tree: $wt"
+    return 1
+  fi
+  if ! git -C "$wt" cat-file -e "${rec_base}^{commit}" 2>/dev/null; then
+    execute_cannot_evaluate "the record's base commit is not resolvable inside the replay worktree ($wt): $rec_base"
+    return 1
+  fi
+
+  # ── THE CANDIDATE-RUNNER SEAM. No implicit binary, ever. ─────────────
+  # This is the structural half of "a fixture suite can never issue a live
+  # model call": with neither seam given there is nothing to fall back TO.
+  # A `claude` sitting on PATH is not reachable from here.
+  if [ -n "$runner" ] && [ "$live" -eq 1 ]; then
+    execute_cannot_evaluate "--candidate-runner and --live are mutually exclusive — pick the recorded runner or the real spawn, never both"
+    return 1
+  fi
+  if [ -z "$runner" ] && [ "$live" -eq 0 ]; then
+    execute_cannot_evaluate "no candidate runner configured: pass --candidate-runner <cmd> (a recorded/stubbed runner) or the explicit --live flag. There is deliberately NO implicit fallback to a 'claude' binary on PATH — an unset seam refuses rather than silently spending"
+    return 1
+  fi
+
+  # ── candidate-session.sh: BOTH halves, on BOTH paths ─────────────────
+  # (a) the containment overlay must be present, readable and well-formed —
+  #     resolve's own exit codes 3/4/5 are the fail-closed contract, and we
+  #     honour them rather than re-deriving the check here.
+  if [ ! -f "$CANDIDATE_SESSION_SH" ]; then
+    execute_cannot_evaluate "candidate-session.sh not found at $CANDIDATE_SESSION_SH — the candidate spawn seam is unavailable"
+    return 1
+  fi
+  local cs_out cs_rc=0
+  cs_out="$(bash "$CANDIDATE_SESSION_SH" resolve "Read" 2>&1)" || cs_rc=$?
+  if [ "$cs_rc" -ne 0 ]; then
+    execute_cannot_evaluate "candidate-session.sh reports its containment overlay is unusable (exit $cs_rc — 3=absent, 4=unreadable, 5=malformed): $cs_out"
+    return 1
+  fi
+  # (b) the provider-key health check — a runtime gate, never a silent no-op.
+  local pf_out pf_rc=0
+  pf_out="$(bash "$CANDIDATE_SESSION_SH" preflight --provider "$provider" 2>&1)" || pf_rc=$?
+  if [ "$pf_rc" -ne 0 ]; then
+    execute_cannot_evaluate "candidate-session.sh preflight refused provider '$provider': $pf_out"
+    return 1
+  fi
+
+  # ── DISCLOSE BEFORE SENDING (ADR 0028 pairing) ───────────────────────
+  # A non-default-provider send writes its disclosure-log entry FIRST, and a
+  # failed disclosure refuses the send. The log may legitimately run ahead
+  # of the sends (a disclosed send that then failed to happen); it may never
+  # run behind them — which is exactly the direction the send-vs-log
+  # cross-check in validate-provider-disclosure.sh checks.
+  local disclosed=false
+  if [ "$provider" != "$REPLAY_TRUSTED_DEFAULT_PROVIDER" ]; then
+    if [ ! -f "$ALLOWLIST_LIB" ]; then
+      execute_cannot_evaluate "allowlist.sh not found at $ALLOWLIST_LIB — cannot disclose a non-default-provider send, so refusing to make one"
+      return 1
+    fi
+    # shellcheck source=./allowlist.sh
+    . "$ALLOWLIST_LIB"
+    if ! pa_disclose "$provider" "$item_ref"; then
+      execute_cannot_evaluate "pa_disclose refused to record a send to non-default provider '$provider' for $item_ref — refusing to send undisclosed"
+      return 1
+    fi
+    disclosed=true
+  fi
+
+  # ── the prompt ────────────────────────────────────────────────────────
+  local scratch_dir prompt_file envelope_file
+  scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/replay-exec.XXXXXX")" || {
+    execute_cannot_evaluate "could not create a scratch dir under ${TMPDIR:-/tmp}"; return 1; }
+  prompt_file="$scratch_dir/prompt.txt"
+  envelope_file="$scratch_dir/envelope.json"
+
+  # The item fields the keystone spike identified as the recoverable prompt
+  # inputs (title / scope / source / acceptance), rendered into a stable,
+  # hashed prompt. This is DELIBERATELY not a re-execution of the base
+  # tree's build-level.mjs `workerPrompt` — that function is not exported
+  # and extracting it by line range is exactly the brittle coupling the
+  # spike warned about. Comparability BETWEEN replay runs rides
+  # `prompt_sha256`; comparability against the ORIGINAL run is not claimed,
+  # and `template_sha` (recorded at the item's own base) is what lets a
+  # later reader see whether the two trees' templates even agreed.
+  {
+    printf 'You are a /build implementation worker for a replayed item.\n\n'
+    printf '## Workspace — STRICT isolation\n'
+    printf -- '- Your Bash cwd and ALL edits MUST be under: %s\n' "$wt"
+    printf -- '- Commit on the current branch. Do NOT push. Do NOT open a PR.\n\n'
+    printf '## Item\n'
+    printf -- '- title: %s\n' "$(jq -r '.title // ""' "$record_file")"
+    printf -- '- scope: %s\n' "$(jq -r '.scope // ""' "$record_file")"
+    printf -- '- source: %s\n\n' "$(jq -r '.issue // .pr // ""' "$record_file")"
+    printf '## Acceptance (self-verify each before returning done)\n'
+    jq -r '(.acceptance // [])[] | "  - " + .' "$record_file"
+  } >"$prompt_file"
+  if [ -n "$prompt_out" ]; then cp "$prompt_file" "$prompt_out" 2>/dev/null || true; fi
+
+  local prompt_sha
+  if command -v sha256sum >/dev/null 2>&1; then
+    prompt_sha="$(sha256sum <"$prompt_file" | awk '{print $1}')"
+  else
+    prompt_sha="$(shasum -a 256 <"$prompt_file" | awk '{print $1}')"
+  fi
+
+  # ── run the candidate ─────────────────────────────────────────────────
+  local started ended run_rc=0 measured_ms
+  started="$(_exec_epoch_ms)"
+  if [ "$live" -eq 1 ]; then
+    local -a claude_args=(-p --output-format json)
+    [ -n "$model" ] && claude_args+=(--model "$model")
+    run_with_timeout "$REPLAY_CANDIDATE_TIMEOUT_SECS" \
+      bash "$CANDIDATE_SESSION_SH" spawn --provider "$provider" -- "${claude_args[@]}" \
+      <"$prompt_file" >"$envelope_file" 2>"$scratch_dir/stderr.txt" || run_rc=$?
+  else
+    # Deliberately unquoted: a runner is a command STRING (e.g.
+    # "bash /path/stub.sh"), split on whitespace, exactly like every other
+    # command-string seam in this repo's machinery.
+    # shellcheck disable=SC2086
+    run_with_timeout "$REPLAY_CANDIDATE_TIMEOUT_SECS" \
+      $runner "$prompt_file" "$wt" >"$envelope_file" 2>"$scratch_dir/stderr.txt" || run_rc=$?
+  fi
+  ended="$(_exec_epoch_ms)"
+  measured_ms=$(( ended - started ))
+  [ "$measured_ms" -lt 0 ] && measured_ms=0
+
+  local branch; branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+
+  # integration_error <stage> <detail> — emit the record and return 4.
+  # Local to this function so no other path can accidentally produce an
+  # integration-error record without the empty score object.
+  _exec_integration_error() {
+    local stage="$1" detail="$2" cand
+    cand="$(jq -cn --arg p "$provider" --arg m "$model" --arg s "$stage" --arg d "$detail" \
+      --argjson dur "$measured_ms" --argjson disclosed "$disclosed" --arg prompt "$prompt_sha" \
+      '{provider:$p, model:(if $m=="" then null else $m end), diff_ref:null,
+        tokens:null, duration_ms:$dur, outcome:"integration-error",
+        integration_error:{stage:$s, detail:$d},
+        disclosed:$disclosed, prompt_sha256:$prompt}')"
+    _exec_emit_record "$record_file" "$cand" "$(_exec_empty_score "$stage")" "$wt" "$branch" "$out"
+    # The attribution record still gets written — the spawn HAPPENED, and
+    # dropping it would understate the compatibility denominator. It is
+    # attribution-only (usage_source unavailable): there are no tokens to
+    # report, and emit-model-usage.sh forbids a provider value in that shape.
+    if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
+      local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "${model:-unknown}" \
+                   --usage-source unavailable --outcome-ref "$item_ref" --duration-ms "$measured_ms")
+      [ -n "$owner_repo" ] && ea+=(--repo "$owner_repo")
+      "$EMIT_MODEL_USAGE_SH" "${ea[@]}" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$scratch_dir"
+    return 4
+  }
+
+  if [ "$run_rc" -eq 137 ]; then
+    _exec_integration_error "candidate-timeout" "the candidate run exceeded REPLAY_CANDIDATE_TIMEOUT_SECS (${REPLAY_CANDIDATE_TIMEOUT_SECS}s)"
+    return 4
+  fi
+  if [ "$run_rc" -ne 0 ]; then
+    _exec_integration_error "candidate-spawn" "the candidate runner exited $run_rc: $(head -c 400 "$scratch_dir/stderr.txt" 2>/dev/null)"
+    return 4
+  fi
+  if ! jq -e 'type=="object"' "$envelope_file" >/dev/null 2>&1; then
+    _exec_integration_error "envelope-parse" "the candidate runner's stdout is not a JSON object: $(head -c 400 "$envelope_file" 2>/dev/null)"
+    return 4
+  fi
+  if [ "$(jq -r '.is_error // false' "$envelope_file")" = "true" ]; then
+    _exec_integration_error "vendor-error" "the envelope reports is_error=true: $(jq -r '.subtype // .error // "no detail"' "$envelope_file")"
+    return 4
+  fi
+
+  # Token extraction — the envelope's `modelUsage` block, summed across
+  # every model key (a spawn can legitimately touch more than one), exactly
+  # the whole-spawn-total convention lib/model-usage-envelope.sh documents.
+  local tokens_json resolved_model
+  tokens_json="$(jq -c '
+    (.modelUsage // {}) | to_entries
+    | map(select((.value|type=="object")))
+    | if length == 0 then null else
+        {input:(map(.value.inputTokens // 0)|add),
+         output:(map(.value.outputTokens // 0)|add),
+         cache_read:(map(.value.cacheReadInputTokens // 0)|add),
+         cache_creation:(map(.value.cacheCreationInputTokens // 0)|add)}
+      end' "$envelope_file" 2>/dev/null)"
+  if [ -z "$tokens_json" ] || [ "$tokens_json" = "null" ]; then
+    # The acceptance requires a scored record to carry TOKENS. An envelope
+    # with no usable usage block is a vendor integration failure, not a
+    # scored record with a hole in it.
+    _exec_integration_error "envelope-usage-missing" "the envelope carries no usable modelUsage block, so no token count exists for this run"
+    return 4
+  fi
+  resolved_model="$(jq -r '
+    (.modelUsage // {}) | to_entries
+    | map(select((.value|type=="object")))
+    | sort_by( ((.value.inputTokens // 0) + (.value.outputTokens // 0)
+              + (.value.cacheReadInputTokens // 0) + (.value.cacheCreationInputTokens // 0)) )
+    | if length == 0 then "" else (last | .key) end' "$envelope_file" 2>/dev/null)"
+  [ -n "$resolved_model" ] || resolved_model="$model"
+
+  local env_duration duration_ms
+  env_duration="$(jq -r '.duration_ms // empty' "$envelope_file" 2>/dev/null)"
+  case "$env_duration" in ''|*[!0-9]*) duration_ms="$measured_ms" ;; *) duration_ms="$env_duration" ;; esac
+
+  # ── score it ──────────────────────────────────────────────────────────
+  local -a score_args=(score --repo-root "$repo_root" --candidate-worktree "$wt" --record "$record_file")
+  [ -n "$gate_relpath" ] && score_args+=(--gate-relpath "$gate_relpath")
+  local score_json score_rc=0
+  score_json="$(bash "$SCORE_SH" "${score_args[@]}")" || score_rc=$?
+  if [ "$score_rc" -ne 0 ]; then
+    # "Could not score" — NOT "scored and failed". No record is emitted.
+    printf '%s\n' "$score_json"
+    execute_cannot_evaluate "score.sh could not score this replay (exit $score_rc); refusing to emit a record carrying a score it did not compute"
+    rm -rf "$scratch_dir"
+    return 1
+  fi
+
+  local diff_ref
+  diff_ref="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+
+  local candidate_json
+  candidate_json="$(jq -cn --arg p "$provider" --arg m "$resolved_model" --arg d "$diff_ref" \
+    --argjson tokens "$tokens_json" --argjson dur "$duration_ms" \
+    --argjson disclosed "$disclosed" --arg prompt "$prompt_sha" \
+    '{provider:$p, model:(if $m=="" then null else $m end),
+      diff_ref:(if $d=="" then null else $d end),
+      tokens:$tokens, duration_ms:$dur, outcome:"scored", integration_error:null,
+      disclosed:$disclosed, prompt_sha256:$prompt}')"
+
+  if ! _exec_emit_record "$record_file" "$candidate_json" "$score_json" "$wt" "$branch" "$out"; then
+    execute_cannot_evaluate "could not assemble the scored record"
+    rm -rf "$scratch_dir"
+    return 1
+  fi
+
+  # The attribution record — emit-model-usage.sh, reused verbatim. This is
+  # the SEND half the disclosure log is cross-checked against.
+  if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
+    local -a ea=(--seat "$REPLAY_CANDIDATE_SEAT" --model "$resolved_model" --provider "$provider"
+                 --usage-source cli-envelope --outcome-ref "$item_ref" --duration-ms "$duration_ms"
+                 --input-tokens "$(jq -r .input <<<"$tokens_json")"
+                 --output-tokens "$(jq -r .output <<<"$tokens_json")"
+                 --cache-read-tokens "$(jq -r .cache_read <<<"$tokens_json")"
+                 --cache-creation-tokens "$(jq -r .cache_creation <<<"$tokens_json")")
+    [ -n "$owner_repo" ] && ea+=(--repo "$owner_repo")
+    "$EMIT_MODEL_USAGE_SH" "${ea[@]}" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$scratch_dir"
+  return 0
+}
+
 # ── verify-clean-parent — BACKSTOP, not the primary control ─────────────
 #
 # The primary isolation control is STRUCTURAL and asserted at prepare time,
@@ -909,7 +1385,10 @@ cmd_verify_clean_parent() {
 }
 
 # ── schema — the versioned scored-record shape downstream consumers build
-#    against before replay execution/scoring land (temperloop#1258) ──────
+#    against. The `candidate` and `score` sub-objects were shipped as
+#    documented placeholders by temperloop#1254 and are FILLED IN here by
+#    temperloop#1258's `execute`; the version string is unchanged because
+#    completing a placeholder v1 left for exactly this purpose is not a v2.
 cmd_schema() {
   jq -cn --arg sv "$REPLAY_RECORD_SCHEMA_VERSION" '{
     schema_version: $sv,
@@ -919,8 +1398,18 @@ cmd_schema() {
     buckets: {N: [], T: [], X: [], R: []},
     template_sha: null, file_count: null,
     worktree: {path: null, branch: null, prepared_at: null},
-    candidate: {provider: null, model: null, diff_ref: null},
-    score: {verdict: null, acceptance_results: null, gate_result: null}
+    candidate: {
+      provider: null, model: null, diff_ref: null,
+      tokens: null, duration_ms: null,
+      outcome: null, integration_error: null,
+      disclosed: null, prompt_sha256: null
+    },
+    score: {
+      outcome: null, scored: null, verdict: null, not_scored_reason: null,
+      base: null, truth_head: null,
+      diff: null, gate_result: null, acceptance_results: null,
+      components: null, contamination_flags: []
+    }
   }'
 }
 
@@ -953,6 +1442,9 @@ case "$cmd" in
   worktree-teardown)
     [ $# -eq 2 ] || { usage; exit 2; }
     cmd_worktree_teardown "$1" "$2"
+    ;;
+  execute)
+    cmd_execute "$@"
     ;;
   verify-clean-parent)
     [ $# -eq 1 ] || { usage; exit 2; }

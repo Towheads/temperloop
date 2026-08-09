@@ -43,12 +43,30 @@
 #      personal override). A logged provider that the allowlist no longer
 #      (or never did) allow is a violation.
 #
-# EXPLICITLY OUT OF SCOPE (owned by a LATER item, replay-execute-and-score):
-# the send-vs-log COVERAGE cross-check — proving that every actual send to
-# a non-default provider produced a matching log entry. That needs a
-# `provider` field on an attribution record which does not exist until the
-# attribution-emit-family item lands. Its absence must NOT, and does NOT,
-# fail this gate.
+#   5. SEND-VS-LOG COVERAGE cross-check (temperloop#1258 — the half #1250's
+#      own acceptance deferred to replay-execute-and-score, now IN SCOPE).
+#      Every actual SEND to a non-default provider must have produced a
+#      matching disclosure-log entry. The send side is the per-seat
+#      attribution raw lake emit-model-usage.sh writes (temperloop#1253 gave
+#      those records their `provider` field, which is what made this check
+#      possible at all); the two are joined on (provider, item_ref) —
+#      the attribution record's own `outcome_ref` IS the disclosure entry's
+#      `item_ref`, both spelled "(issue|pr):<ref>". A record naming a
+#      non-default provider with no matching log entry is a
+#      SEND-WITHOUT-DISCLOSURE failure.
+#
+#      DIRECTIONALITY, stated so it is not mistaken for a symmetric check:
+#      the log may legitimately run AHEAD of the sends and never behind
+#      them. replay.sh's `execute` discloses BEFORE it sends and refuses the
+#      send if the disclosure fails, so a disclosed-but-never-sent entry is
+#      the normal shape of a spawn that then failed — not a violation. The
+#      violation is the other direction only: a send with no disclosure.
+#
+#      A default-provider ("anthropic") send is skipped by construction —
+#      ADR 0028 decision 3 makes the trusted default the un-disclosed
+#      baseline, so requiring a log entry for it would make the log a
+#      record of ordinary pipeline traffic rather than of provider
+#      exposure.
 #
 # Both the committed allowlist and the disclosure log are read via
 # workflows/scripts/model-comparison/allowlist.sh (sourced) — this script
@@ -82,6 +100,16 @@
 #   PROVIDER_ALLOWLIST_COMMITTED_FILE
 #   PROVIDER_ALLOWLIST_LOCAL_FILE
 #   PROVIDER_DISCLOSURE_LOG_FILE
+#
+# One more, for check 5's SEND side — the existing raw-lake dir seam every
+# other consumer of that stream already honours (emit-model-usage.sh writes
+# it, validate-model-usage-emit.sh and tagging.sh read it), so no new,
+# check-5-only override is invented here:
+#   MODEL_USAGE_RAW_DIR   the per-seat attribution raw-lake dir scanned for
+#                         `model-usage-*.jsonl` sends. An ABSENT dir is
+#                         legal (a checkout that never spawned a seat); a
+#                         present-but-unreadable dir or file is CANNOT
+#                         EVALUATE, never a pass.
 #
 # Kept POSIX-bash-3.2-friendly (no mapfile/associative arrays) — macOS dev
 # shell + Linux CI.
@@ -122,6 +150,11 @@ fi
 
 failures=()
 TRUSTED_DEFAULT_PROVIDER="anthropic"
+# Hoisted out of check 1's `else` branch: check 5 needs it to resolve the
+# attribution raw-lake default, and check 1 legitimately never reaches that
+# branch when the committed allowlist is missing — leaving it unset there
+# would abort check 5 under `set -u` for an unrelated reason.
+repo_root_for_git="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 
 # ---------------------------------------------------------------------------
 # 1. Committed ceiling: present, tracked, well-formed, names the default.
@@ -150,7 +183,6 @@ else
   # fixture deliberately points PROVIDER_ALLOWLIST_COMMITTED_FILE at a
   # scratch path outside the repo (to exercise narrowing/disclosure-log
   # behavior in isolation), where "git-tracked" has no meaning to check.
-  repo_root_for_git="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
   case "$committed_file" in
     "$repo_root_for_git"/*)
       if ! git -C "$repo_root_for_git" ls-files --error-unmatch -- "$committed_file" >/dev/null 2>&1; then
@@ -259,9 +291,74 @@ if [[ -f "$log_file" && -s "$log_file" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 5. SEND-VS-LOG coverage: every non-default-provider SEND has a matching
+#    disclosure entry. (temperloop#1258 — the half #1250 deferred.)
+# ---------------------------------------------------------------------------
+send_lake_dir="${MODEL_USAGE_RAW_DIR:-$repo_root_for_git/meta/data/raw}"
+n_sends=0
+n_nondefault_sends=0
+
+# The join key set, built ONCE from the disclosure log: one
+# "<provider>\t<item_ref>" line per entry. Built from the log this script
+# already read above via the allowlist library's own path accessor — no
+# second notion of where the log lives.
+disclosed_pairs=""
+if [[ -f "$log_file" && -s "$log_file" && -r "$log_file" ]]; then
+  disclosed_pairs="$(jq -r 'select(type == "object")
+                            | select((.provider // "") != "" and (.item_ref // "") != "")
+                            | .provider + "\t" + .item_ref' "$log_file" 2>/dev/null)"
+fi
+
+if [[ -e "$send_lake_dir" ]]; then
+  if [[ ! -d "$send_lake_dir" ]]; then
+    echo "validate-provider-disclosure: CANNOT EVALUATE — the attribution raw-lake path ($send_lake_dir) exists but is not a directory; aborting rather than reporting a pass on a send stream this gate could not enumerate" >&2
+    exit 1
+  fi
+  if [[ ! -r "$send_lake_dir" || ! -x "$send_lake_dir" ]]; then
+    echo "validate-provider-disclosure: CANNOT EVALUATE — the attribution raw-lake dir ($send_lake_dir) is not readable; aborting rather than reporting a pass on sends this gate could not read" >&2
+    exit 1
+  fi
+  for send_file in "$send_lake_dir"/model-usage-*.jsonl; do
+    [[ -e "$send_file" ]] || continue
+    if [[ ! -f "$send_file" || ! -r "$send_file" ]]; then
+      echo "validate-provider-disclosure: CANNOT EVALUATE — the attribution stream file ($send_file) is not a readable regular file; aborting rather than reporting a pass on sends this gate could not read" >&2
+      exit 1
+    fi
+    while IFS= read -r sline || [[ -n "$sline" ]]; do
+      [[ -z "$sline" ]] && continue
+      # A line this gate cannot parse is a line whose provider it cannot
+      # determine — so it cannot tell an undisclosed non-default send from a
+      # benign default-provider one. Fail-closed, never skip: skipping is
+      # exactly how an unreadable input reads as clean.
+      if ! printf '%s' "$sline" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        echo "validate-provider-disclosure: CANNOT EVALUATE — $send_file carries a line that is not a JSON object, so this gate cannot tell whether it records a non-default-provider send; aborting rather than trusting a partial scan" >&2
+        exit 1
+      fi
+      n_sends=$((n_sends + 1))
+      send_provider="$(printf '%s' "$sline" | jq -r '.provider // empty' 2>/dev/null)"
+      # No provider recorded (an attribution-only record, usage_source
+      # "unavailable" — emit-model-usage.sh forbids a provider there) is not
+      # evidence of a non-default send; it carries no provider to check.
+      [[ -z "$send_provider" || "$send_provider" == "null" ]] && continue
+      [[ "$send_provider" == "$TRUSTED_DEFAULT_PROVIDER" ]] && continue
+      n_nondefault_sends=$((n_nondefault_sends + 1))
+
+      send_ref="$(printf '%s' "$sline" | jq -r '.outcome_ref // empty' 2>/dev/null)"
+      if [[ -z "$send_ref" ]]; then
+        failures+=("SEND-UNREFERENCED  $send_file — a send to non-default provider '$send_provider' carries no outcome_ref, so it cannot be cross-referenced against any disclosure-log entry")
+        continue
+      fi
+      if ! printf '%s\n' "$disclosed_pairs" | grep -Fx "$send_provider	$send_ref" >/dev/null 2>&1; then
+        failures+=("SEND-WITHOUT-DISCLOSURE  $send_file — a send to non-default provider '$send_provider' for '$send_ref' has NO matching entry in the disclosure log ($log_file); every non-default-provider send must be disclosed (ADR 0028 decision 2)")
+      fi
+    done <"$send_file"
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # Verdict.
 # ---------------------------------------------------------------------------
-echo "Checked committed allowlist ($committed_file)$( [[ -f "$local_file" ]] && printf ', personal override (%s)' "$local_file" ), disclosure log ($log_file, $n_entries entr$( [[ "$n_entries" -eq 1 ]] && echo y || echo ies ))"
+echo "Checked committed allowlist ($committed_file)$( [[ -f "$local_file" ]] && printf ', personal override (%s)' "$local_file" ), disclosure log ($log_file, $n_entries entr$( [[ "$n_entries" -eq 1 ]] && echo y || echo ies )), attribution sends ($send_lake_dir, $n_sends record$( [[ "$n_sends" -eq 1 ]] || echo s ), $n_nondefault_sends non-default-provider)"
 if (( ${#failures[@]} > 0 )); then
   printf '%s\n' "${failures[@]}"
   echo "---"

@@ -714,6 +714,24 @@ KERNEL_GATES=(
   # no Makefile target, as the test_replay_preflight.sh gate immediately
   # above.
   "bash workflows/scripts/model-comparison/tests/test_live_tagging.sh"
+  # Replay EXECUTION + SCORING (temperloop#1258, epic #1225): `replay.sh
+  # execute` running a candidate headlessly inside a prepared replay
+  # worktree, `score.sh` turning the result into a schema-complete
+  # `replay-record-v1` record (diff, gate outcome, tokens, duration), and the
+  # send-vs-log cross-check validate-provider-disclosure.sh gained here — a
+  # non-default-provider send with no matching disclosure entry FAILS that
+  # validator, the half #1250's own acceptance deferred to this item.
+  # Fully HERMETIC: every candidate run is driven through a RECORDED runner
+  # seam, `--live` is never passed, and the suite prepends a canary `claude`
+  # to PATH and asserts at the end that nothing ever invoked it — with a
+  # mutation proof that removing `execute`'s no-runner refusal DOES reach
+  # that canary, so the assertion is a measurement rather than a tautology.
+  # Also proves the integration-error exclusion (adding integration errors
+  # moves NO quality figure) and that every absent / unreadable / empty /
+  # malformed input is CANNOT EVALUATE + non-zero rather than a score that
+  # was never computed. Same direct-`bash` form, no Makefile target, as the
+  # test_live_tagging.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_score.sh"
   # Prose-plane baseline counter (temperloop#719, item
   # prose-baseline-measurement / #722): count-prose.sh reports the tier-1
   # composed-kernel-authored-render line count (through
