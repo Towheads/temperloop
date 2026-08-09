@@ -106,6 +106,73 @@
 #       itself ran; exit 1 CANNOT_EVALUATE only when the records FILE itself
 #       is absent/unreadable/empty — nothing to iterate at all.
 #
+#   judge.sh judge-rotate --record <file> --judges <provider:model,provider:model,...> \
+#       [--rubric <path>] ( --judge-runner <cmd> | --live ) [--model <id>] \
+#       [--out <file>] [--repo <owner/repo>]
+#       OPTIONAL, OFF BY DEFAULT (see § OPTIONAL CROSS-FAMILY JUDGE ROTATION
+#       above). Scores ONE record with EVERY judge named in `--judges` (a
+#       comma-separated list of two or more `provider:model` pairs spanning
+#       more than one provider family) via the exact same `_je_one_record`
+#       the single-judge path uses, then reports the VARIANCE of the
+#       resulting quality_score across the panel members that reached
+#       JUDGED — stats.sh's own stddev, squared, never a second
+#       implementation. Prints the merged record with a `judge_rotation`
+#       sub-object (never touches the `judge` key `judge`/`judge-batch` use).
+#       Exit 0 — rotation enabled, variance computed, every configured
+#       member reached JUDGED. Exit 4 — rotation enabled, variance computed,
+#       but at least one configured member did not reach JUDGED (REFUSED,
+#       UNAVAILABLE, or a malformed --judges entry's own row). Exit 1
+#       CANNOT_EVALUATE — rotation mode disabled, a usage error, fewer than
+#       2 configured judges or fewer than 2 configured provider families,
+#       or (rotation ran but) the variance itself could not be computed
+#       (too few JUDGED members, JUDGED members from only one provider
+#       family, or a stats.sh failure).
+#
+# ── OPTIONAL CROSS-FAMILY JUDGE ROTATION (temperloop#1260) ─────────────────
+# `judge-rotate` scores ONE record with SEVERAL judges (provider:model pairs
+# spanning more than one provider family) and reports the VARIANCE of their
+# quality_score across that panel. NEVER a second statistics implementation:
+# the reported variance is stats.sh's OWN sample-stddev (`stats.sh verdict`'s
+# `.stddev` field, computed by stats.py's `_sample_stdev`), squared here in a
+# single line of jq arithmetic — nothing more is computed by this file.
+#
+# OFF BY DEFAULT (MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=0). With it off,
+# `judge-rotate` CANNOT_EVALUATEs immediately, before touching the record or
+# spawning anything, and `judge`/`judge-batch`'s own behaviour is
+# byte-identical to the pre-rotation module: this file adds an entirely new
+# subcommand plus two new settings; it does NOT modify cmd_judge,
+# cmd_judge_batch, or _je_one_record's own logic in any way.
+#
+# EACH rotation member is scored via the EXACT SAME `_je_one_record` the
+# single-judge path already uses above — the judge≠candidate guard, the
+# non-default-provider allowlist+disclosure gate (pa_is_allowed/pa_disclose,
+# the SAME committed allowlist and SAME disclosure log a candidate replay
+# uses), and the candidate-session.sh spawn (containment overlay +
+# provider-key health check) are therefore reused VERBATIM per rotated judge,
+# never reimplemented for the panel case. A rotated judge outside the
+# trusted default provider is refused (CANNOT_EVALUATE, no call made) unless
+# it carries its own committed allowlist entry, exactly like a candidate
+# replay; an allowed non-default judge's send appends to the SAME disclosure
+# log a candidate replay appends to — never a parallel, rotation-only log.
+#
+# WHAT ROTATION REPORTS, AND WHAT IT DOES NOT PROVE. A low (or zero) variance
+# across the rotated panel is evidence the judges AGREED — it is NOT evidence
+# the shared judgment is free of model-family bias, because a bias every
+# rotated family shares in common would never show up as variance at all. No
+# emitted field, comment, or doc line anywhere in this section (or in
+# `cmd_judge_rotate`'s own code) may claim rotation "proves" or "neutralizes"
+# bias — the job here is to REPORT the disagreement this file can see, the
+# same overclaim discipline the judge≠candidate guard's own header above
+# applies to itself.
+#
+# FAIL-CLOSED (temperloop#1365 class, same as the rest of this file): an
+# unreachable rotated judge, an unresolved allowlist for one, or a variance
+# that cannot be computed (too few JUDGED members, or JUDGED members from
+# only one provider family, or a stats.sh failure) is a distinct
+# CANNOT_EVALUATE with a named reason and a non-zero exit — never a silent
+# pass, a fabricated variance figure, or a zero standing in for a score or a
+# variance this file never actually obtained.
+#
 # Every tunable below is a registered setting (workflows/scripts/config/
 # setting-registry.tsv), defaulted in workflows/scripts/build/build.config.sh
 # — named symbolically, never re-valued in prose (§ Named-setting convention).
@@ -124,6 +191,10 @@ CANDIDATE_SESSION_SH="$HERE/candidate-session.sh"
 ALLOWLIST_LIB="$HERE/allowlist.sh"
 EMIT_MODEL_USAGE_SH="$HERE/../emit-model-usage.sh"
 DEFAULT_RUBRIC="$HERE/rubric.md"
+# stats.sh (temperloop#1249) — the ONE numeric core `judge-rotate` below
+# consumes for its per-judge variance figure. Never a second implementation:
+# this file only squares stats.sh's own `.stddev` output (see cmd_judge_rotate).
+STATS_SH="$HERE/stats.sh"
 
 # The ADR 0026 seat ROLE NAME this module's judge-call attribution records
 # carry — a record-vocabulary constant, not an operator-tunable setting (same
@@ -134,6 +205,11 @@ JUDGE_SEAT="replay-judge"
 # / validate-provider-disclosure.sh's TRUSTED_DEFAULT_PROVIDER; a vocabulary
 # constant, not a setting (ADR 0028 forbids an operator-repointable exemption).
 JUDGE_TRUSTED_DEFAULT_PROVIDER="anthropic"
+# The ADR 0026 seat ROLE NAME `judge-rotate`'s per-member attribution records
+# carry — distinct from JUDGE_SEAT above so a rotation call is distinguishable
+# in the usage lake from a single-judge call, same non-registry-row
+# vocabulary-constant shape.
+JUDGE_ROTATION_SEAT="replay-judge-rotation"
 
 # shellcheck source=../build/build.config.sh
 [ -f "$HERE/../build/build.config.sh" ] && . "$HERE/../build/build.config.sh"
@@ -147,6 +223,18 @@ JUDGE_TRUSTED_DEFAULT_PROVIDER="anthropic"
 # Wall-clock bound on ONE judge model call, mirroring replay.sh's own
 # REPLAY_CANDIDATE_TIMEOUT_SECS bound on one candidate call.
 : "${MODEL_COMPARISON_JUDGE_TIMEOUT_SECS:=1800}"
+# Optional cross-family judge rotation (temperloop#1260) — the config-named
+# ROTATION MODE gate `judge-rotate` checks before doing anything else. OFF by
+# default: with it 0 (or anything but "1"), `judge-rotate` refuses immediately
+# and `judge`/`judge-batch`'s own behaviour is untouched (rotation lives
+# entirely in its own subcommand, never a branch inside cmd_judge/cmd_judge_batch).
+: "${MODEL_COMPARISON_JUDGE_ROTATION_ENABLED:=0}"
+# The minimum number of rotation members that must reach JUDGED (scored)
+# before a per-judge variance figure is reported at all. Passed to stats.sh
+# as THIS invocation's own `--min-sample` (never the module-wide
+# MODEL_COMPARISON_MIN_SAMPLE_N, which is sized for cost-delta outcome
+# counts in the tens, not a judge panel) — see cmd_judge_rotate.
+: "${MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES:=2}"
 
 # shellcheck source=../lib/portable-timeout.sh
 [ -f "$HERE/../lib/portable-timeout.sh" ] && . "$HERE/../lib/portable-timeout.sh"
@@ -163,6 +251,9 @@ usage: judge.sh judge --record <file> [--rubric <path>] (--judge-runner <cmd> | 
                        [--prompt-out <file>] [--repo <owner/repo>]
        judge.sh judge-batch --records-file <jsonl> [--rubric <path>] (--judge-runner <cmd> | --live)
                        [--model <id>] [--provider <name>] [--out <file>] [--repo <owner/repo>]
+       judge.sh judge-rotate --record <file> --judges <provider:model,provider:model,...> \
+                       [--rubric <path>] (--judge-runner <cmd> | --live) [--out <file>] [--repo <owner/repo>]
+                       (optional, off by default — MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=1 to enable)
 EOF
 }
 
@@ -650,12 +741,218 @@ cmd_judge_batch() {
   return 4
 }
 
+# ── judge-rotate (temperloop#1260, optional cross-family judge rotation) ────
+# See this file's own header § OPTIONAL CROSS-FAMILY JUDGE ROTATION. OFF BY
+# DEFAULT — the very first thing this function does past arg-parsing is check
+# MODEL_COMPARISON_JUDGE_ROTATION_ENABLED and refuse if it isn't exactly "1".
+cmd_judge_rotate() {
+  local record="" rubric="$DEFAULT_RUBRIC" judges_spec="" runner="" live=0 out="" owner_repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --record) need_operand --record "$#" "${2:-}" || return 2; record="$2"; shift 2 ;;
+      --rubric) need_operand --rubric "$#" "${2:-}" || return 2; rubric="$2"; shift 2 ;;
+      --judges) need_operand --judges "$#" "${2:-}" || return 2; judges_spec="$2"; shift 2 ;;
+      --repo) need_operand --repo "$#" "${2:-}" || return 2; owner_repo="$2"; shift 2 ;;
+      --judge-runner) need_operand --judge-runner "$#" "${2:-}" || return 2; runner="$2"; shift 2 ;;
+      --out) need_operand --out "$#" "${2:-}" || return 2; out="$2"; shift 2 ;;
+      --live) live=1; shift ;;
+      *) printf 'judge.sh judge-rotate: unknown arg %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+
+  [ -n "$record" ] || { _je_cannot_evaluate "no --record given"; return 1; }
+  [ -n "$judges_spec" ] || { _je_cannot_evaluate "no --judges given — rotation mode requires a comma-separated 'provider:model,provider:model,...' list of two or more rotation members spanning more than one provider family"; return 1; }
+  if [ -n "$runner" ] && [ "$live" -eq 1 ]; then
+    _je_cannot_evaluate "--judge-runner and --live are mutually exclusive — pick the recorded runner or the real spawn, never both"
+    return 1
+  fi
+  if [ -z "$runner" ] && [ "$live" -eq 0 ]; then
+    _je_cannot_evaluate "no judge runner configured: pass --judge-runner <cmd> (a recorded/stubbed runner) or the explicit --live flag. There is deliberately NO implicit fallback to a 'claude' binary on PATH — an unset seam refuses rather than silently spending, and rotation multiplies judge calls so this leak matters even more here"
+    return 1
+  fi
+
+  # ── the config-named rotation-mode gate — OFF by default ─────────────────
+  if [ "$MODEL_COMPARISON_JUDGE_ROTATION_ENABLED" != "1" ]; then
+    _je_cannot_evaluate "rotation mode is disabled (MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=$MODEL_COMPARISON_JUDGE_ROTATION_ENABLED) — set MODEL_COMPARISON_JUDGE_ROTATION_ENABLED=1 to enable optional cross-family judge rotation (temperloop#1260). With it off (the default), judge-rotate refuses before touching the record or spawning anything, and judge/judge-batch's own behaviour is unaffected"
+    return 1
+  fi
+
+  # ── parse --judges into provider/model pairs (house convention: IFS=','
+  #    read -ra, same shape as validate-design-brief.sh / plan.sh) ──────────
+  local -a jr_raw=() jr_providers=() jr_models=()
+  IFS=',' read -ra jr_raw <<<"$judges_spec"
+  local entry p m
+  for entry in "${jr_raw[@]}"; do
+    entry="$(printf '%s' "$entry" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -n "$entry" ] || continue
+    case "$entry" in
+      *:*) ;;
+      *) _je_cannot_evaluate "malformed --judges entry '$entry' — expected 'provider:model'"; return 1 ;;
+    esac
+    p="${entry%%:*}"
+    m="${entry#*:}"
+    if [ -z "$p" ] || [ -z "$m" ]; then
+      _je_cannot_evaluate "malformed --judges entry '$entry' — provider and model must both be non-empty"
+      return 1
+    fi
+    jr_providers+=("$p")
+    jr_models+=("$m")
+  done
+
+  local n_configured="${#jr_providers[@]}"
+  if [ "$n_configured" -lt 2 ]; then
+    _je_cannot_evaluate "rotation requires at least 2 configured judges, got $n_configured (--judges '$judges_spec')"
+    return 1
+  fi
+  local n_configured_families
+  n_configured_families="$(printf '%s\n' "${jr_providers[@]}" | sort -u | grep -c .)"
+  if [ "$n_configured_families" -lt 2 ]; then
+    _je_cannot_evaluate "rotation requires configured judges from more than one provider family (cross-vendor) — got $n_configured_families distinct provider(s) among: $(printf '%s ' "${jr_providers[@]}")"
+    return 1
+  fi
+
+  # ── run EVERY configured judge through the exact same per-record function
+  #    the single-judge path uses (guard, allowlist+disclosure, spawn — all
+  #    reused verbatim, never a second implementation) ──────────────────────
+  local -a jr_tagged=()
+  local idx=0 one_out one_rc jp jm tagged
+  while [ "$idx" -lt "$n_configured" ]; do
+    jp="${jr_providers[$idx]}"
+    jm="${jr_models[$idx]}"
+    one_rc=0
+    one_out="$(_je_one_record "$record" "$rubric" "$jp" "$jm" "$runner" "$live" "" "$owner_repo")" || one_rc=$?
+
+    tagged="$(jq -c --arg jp "$jp" --arg jm "$jm" \
+      'if has("judge") then {rotation_provider:$jp, rotation_model:$jm} + .judge
+       else {rotation_provider:$jp, rotation_model:$jm} + . end' <<<"$one_out" 2>/dev/null)"
+    if [ -z "$tagged" ]; then
+      tagged="$(jq -cn --arg jp "$jp" --arg jm "$jm" \
+        '{rotation_provider:$jp, rotation_model:$jm, outcome:"CANNOT_EVALUATE", error:"rotation member produced no parseable output"}')"
+    fi
+    jr_tagged+=("$tagged")
+
+    # Attribution: only for a call that actually happened (JUDGED or
+    # UNAVAILABLE both spent an attempt; REFUSED/CANNOT_EVALUATE never spawned).
+    if [ "$one_rc" -eq 0 ] || [ "$one_rc" -eq 4 ]; then
+      if [ -x "$EMIT_MODEL_USAGE_SH" ]; then
+        local outcome_ref dur
+        outcome_ref="$(_je_outcome_ref "$one_out")"
+        dur="$(jq -r '.judge.duration_ms // 0' <<<"$one_out" 2>/dev/null)"
+        local -a ea
+        if [ "$one_rc" -eq 0 ]; then
+          ea=(--seat "$JUDGE_ROTATION_SEAT" --model "$(jq -r '.judge.judge_model // "unknown"' <<<"$one_out")" \
+              --provider "$jp" --usage-source cli-envelope --outcome-ref "$outcome_ref" --duration-ms "${dur:-0}" \
+              --input-tokens "$(jq -r '.judge.tokens.input // 0' <<<"$one_out")" \
+              --output-tokens "$(jq -r '.judge.tokens.output // 0' <<<"$one_out")" \
+              --cache-read-tokens "$(jq -r '.judge.tokens.cache_read // 0' <<<"$one_out")" \
+              --cache-creation-tokens "$(jq -r '.judge.tokens.cache_creation // 0' <<<"$one_out")")
+        else
+          ea=(--seat "$JUDGE_ROTATION_SEAT" --model "${jm:-unknown}" --usage-source unavailable \
+              --outcome-ref "$outcome_ref" --duration-ms "${dur:-0}")
+        fi
+        [ -n "$owner_repo" ] && ea+=(--repo "$owner_repo")
+        "$EMIT_MODEL_USAGE_SH" "${ea[@]}" >/dev/null 2>&1 || true
+      fi
+    fi
+    idx=$((idx + 1))
+  done
+
+  local judges_json scores_json n_judged n_families_judged
+  judges_json="$(printf '%s\n' "${jr_tagged[@]}" | jq -cs '.')"
+  scores_json="$(jq -c '[.[] | select(.outcome=="JUDGED") | .quality_score]' <<<"$judges_json")"
+  n_judged="$(jq 'length' <<<"$scores_json")"
+  n_families_judged="$(jq '[.[] | select(.outcome=="JUDGED") | .rotation_provider] | unique | length' <<<"$judges_json")"
+
+  # ── variance — stats.sh's OWN sample-stddev, squared here; never a second
+  #    statistics implementation (see this file's header). --min-sample is
+  #    passed as n_judged itself so THIS command's own MODEL_COMPARISON_
+  #    JUDGE_ROTATION_MIN_JUDGES floor governs, not the module-wide
+  #    MODEL_COMPARISON_MIN_SAMPLE_N (sized for cost-delta outcome counts,
+  #    not a judge panel). ─────────────────────────────────────────────────
+  local variance_obj="null" variance_reason=""
+  if [ "$n_judged" -lt "$MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES" ]; then
+    variance_reason="insufficient JUDGED rotation members: got $n_judged, need >= $MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES (MODEL_COMPARISON_JUDGE_ROTATION_MIN_JUDGES) — variance cannot be computed"
+  elif [ "$n_families_judged" -lt 2 ]; then
+    variance_reason="rotation requires JUDGED scores from more than one provider family; only $n_families_judged distinct provider(s) among the JUDGED members — variance cannot be computed"
+  else
+    local stats_out stats_rc=0
+    stats_out="$(bash "$STATS_SH" verdict --deltas "$scores_json" --min-sample "$n_judged" 2>&1)" || stats_rc=$?
+    if [ "$stats_rc" -ne 0 ]; then
+      variance_reason="stats.sh verdict failed (rc=$stats_rc) while computing the rotation variance: $(printf '%s' "$stats_out" | head -c 300)"
+    elif ! jq -e 'has("stddev")' >/dev/null 2>&1 <<<"$stats_out"; then
+      variance_reason="stats.sh verdict returned no stddev for the rotation scores (unexpected shape): $(printf '%s' "$stats_out" | head -c 300)"
+    else
+      local sd degenerate_flag
+      sd="$(jq -r '.stddev' <<<"$stats_out")"
+      degenerate_flag="$(jq -r '.degenerate // false' <<<"$stats_out")"
+      # squaring stats.sh's own stddev — the ONE arithmetic step this file
+      # performs; the dispersion computation itself lives entirely in
+      # stats.py's _sample_stdev, never reimplemented here.
+      variance_obj="$(jq -cn --argjson sd "$sd" --argjson n "$n_judged" --argjson deg "$degenerate_flag" \
+        '{value: ($sd * $sd), stddev: $sd, n_judged: $n, degenerate: $deg, computed_by: "stats.sh verdict (.stddev, squared here — no second implementation)"}')"
+    fi
+  fi
+
+  local overall_outcome all_judged=1 exit_rc
+  if [ "$variance_obj" = "null" ]; then
+    overall_outcome="CANNOT_EVALUATE"
+  else
+    overall_outcome="ROTATED"
+  fi
+  if jq -e 'any(.[]; .outcome != "JUDGED")' <<<"$judges_json" >/dev/null 2>&1; then
+    all_judged=0
+  fi
+  if [ "$overall_outcome" = "CANNOT_EVALUATE" ]; then
+    exit_rc=1
+  elif [ "$all_judged" -eq 1 ]; then
+    exit_rc=0
+  else
+    exit_rc=4
+  fi
+
+  # ── the overclaim discipline, stated in the emitted record itself, not
+  #    only in this file's comments (see § OPTIONAL CROSS-FAMILY JUDGE
+  #    ROTATION above) ───────────────────────────────────────────────────
+  local disclaimer="Judge rotation REPORTS the spread (variance) in quality_score across judges from different provider families scoring the SAME record — it does NOT PROVE the resulting judgment is free of model-family bias. Low or zero variance across the rotated panel is evidence the judges AGREED, not evidence the judgment is unbiased: a bias every rotated family shares in common would not show up as variance at all."
+
+  local judge_rotation_obj
+  judge_rotation_obj="$(jq -cn \
+    --arg outcome "$overall_outcome" \
+    --argjson n_configured "$n_configured" \
+    --argjson n_configured_families "$n_configured_families" \
+    --argjson n_judged "$n_judged" \
+    --argjson n_families_judged "$n_families_judged" \
+    --argjson judges "$judges_json" \
+    --argjson variance "$variance_obj" \
+    --arg variance_reason "$variance_reason" \
+    --arg disclaimer "$disclaimer" \
+    --arg ts "$(_je_now_iso)" \
+    '{outcome:$outcome, rotation_enabled:true,
+      n_configured:$n_configured, n_configured_families:$n_configured_families,
+      n_judged:$n_judged, n_families_judged:$n_families_judged,
+      judges:$judges, variance:$variance,
+      variance_unavailable_reason: (if $variance == null then $variance_reason else null end),
+      disclaimer:$disclaimer, evaluated_at:$ts}')"
+
+  local final_out
+  if [ -f "$record" ] && [ -r "$record" ] && [ -s "$record" ] && jq -e 'type=="object"' "$record" >/dev/null 2>&1; then
+    final_out="$(jq -c --argjson jr "$judge_rotation_obj" '. + {judge_rotation:$jr}' "$record")"
+  else
+    final_out="$judge_rotation_obj"
+  fi
+  printf '%s\n' "$final_out"
+  if [ -n "$out" ]; then printf '%s\n' "$final_out" >"$out" 2>/dev/null || true; fi
+
+  return "$exit_rc"
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────
 [ $# -ge 1 ] || { usage; exit 2; }
 cmd="$1"; shift
 case "$cmd" in
-  judge)       cmd_judge "$@" ;;
-  judge-batch) cmd_judge_batch "$@" ;;
-  -h|--help)   usage; exit 0 ;;
-  *)           usage; exit 2 ;;
+  judge)        cmd_judge "$@" ;;
+  judge-batch)  cmd_judge_batch "$@" ;;
+  judge-rotate) cmd_judge_rotate "$@" ;;
+  -h|--help)    usage; exit 0 ;;
+  *)            usage; exit 2 ;;
 esac
