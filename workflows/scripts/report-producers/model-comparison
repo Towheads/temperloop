@@ -1,0 +1,762 @@
+#!/usr/bin/env bash
+#
+# workflows/scripts/report-producers/model-comparison — the COMPARISON REPORT
+# producer (temperloop#1261, epic #1225 "model comparison harness"). Aggregates
+# a baseline arm and a candidate arm of executed/scored/judged replay records
+# into the surface a human reads to make a model-routing decision.
+#
+# ── WHAT THIS FILE IS, AND WHERE IT SITS ───────────────────────────────────
+# A kernel-side `.temperloop/report.d/` drop-in IMPLEMENTATION, the same shape
+# and the same location as the sibling `tokens` producer (temperloop#980
+# "producer-kernel-side-relocation"): the real logic lives here so it updates
+# with the kernel checkout and stays inside check-producer-egress.sh's reach,
+# and an adopter who wants it wires a thin locator + `exec` shim at
+# `.temperloop/report.d/model-comparison` exactly as they do for `tokens`.
+#
+# THE KERNEL SHIPS NO SUCH SHIM FOR THIS PRODUCER, DELIBERATELY. ADR 0027
+# ("inert by design") makes the whole comparison half — replay runner, judge
+# pass, comparison report — present-but-doing-nothing until an operator
+# deliberately invokes it. Adding a live shim here would arm this producer on
+# every `temperloop report` in every install, which is precisely the standing
+# cost ADR 0027 forbids. docs/features/model-comparison.md § Integration
+# documents the one-file opt-in.
+#
+# ── THE CONTRACT SEAM, STATED PRECISELY (the tension this item lives on) ───
+# As a report drop-in (workflows/scripts/lib/report.contract.md § Overlay
+# drop-in contract) this file MUST exit 0 and print a self-contained block of
+# stdout: a broken producer must never break `temperloop report`. The rest of
+# this epic (score.sh, replay.sh, judge.sh) is fail-CLOSED — non-zero on
+# "cannot evaluate". Those are not in conflict, and the seam is this:
+#
+#   * exit 0 always. A failure renders ONE line, `skipped -- model-comparison:
+#     <reason>`, and nothing else. (Two hyphens, matching report.contract.md's
+#     own published `skipped -- ` channel and the `tokens` producer's literal
+#     — the issue text's em-dash is prose, the rendered surface is this.)
+#   * On success, stdout is EXACTLY ONE JSON object and nothing else, so the
+#     kernel's `notice` channel (report.contract.md § `notice` field) is
+#     available and is the only way this producer speaks to a human — stderr
+#     is discarded by report.sh and is not a channel.
+#   * What it NEVER does is emit a number it did not compute, or name a
+#     `winner` it cannot support. "skipped", "inconclusive" and "candidate is
+#     better" are three DIFFERENT statements and this file keeps them
+#     distinct:
+#       - skipped        → no JSON at all; there was nothing to report on.
+#       - inconclusive   → a real JSON report, real per-arm figures, and an
+#                          explicit refusal to name a winner (below the
+#                          sample floor, or no significant difference).
+#       - winner present → the `comparison.winner` key EXISTS. It is emitted
+#                          on exactly one condition: stats.sh returned a
+#                          `candidate_better`/`baseline_better` verdict with
+#                          `below_min_sample:false`. Nothing else can mint it.
+#     Six items in this epic shipped a path where "could not evaluate" was
+#     indistinguishable from "evaluated, and fine" (temperloop#1365). Here that
+#     failure would mean a routing decision made on a fabricated figure.
+#
+# ── EVERY STATISTIC IS CONSUMED, NEVER RECOMPUTED ──────────────────────────
+# workflows/scripts/model-comparison/stats.sh (temperloop#1249) owns the
+# bootstrap confidence interval, the power-aware minimum detectable effect,
+# the inconclusive floor, and the emit-coverage percentage. This file computes
+# NONE of them. It shells out for all four and copies the returned fields
+# verbatim. It publishes the exact delta array it fed in
+# (`comparison.deltas`), so a reader — or the fixture suite — can re-run
+# stats.sh over the same input and get byte-identical bounds; a future
+# divergence therefore fails loudly instead of drifting.
+#
+# TWO stats.sh `verdict` calls, and why the second is not a floor bypass:
+#   1. THE VERDICT CALL — plain `stats.sh verdict --deltas <a>`. Its floor is
+#      whatever MODEL_COMPARISON_MIN_SAMPLE_N resolves to. Its verdict, its
+#      bounds and its below_min_sample flag are what this report publishes,
+#      and they are the ONLY source of a winner.
+#   2. THE DISPERSION PROBE — `stats.sh verdict --deltas <a> --min-sample 1`.
+#      ONLY `.stddev` is read off it; its verdict, its bounds and its own
+#      below_min_sample flag are DISCARDED and never reach stdout. It exists
+#      because `stats.sh mde` requires an observed standard deviation, the
+#      floor-respecting call returns none below the floor, and the acceptance
+#      requires the minimum-detectable-effect disclosure on EVERY run —
+#      including (especially) an under-powered one, where "at this N only
+#      deltas of at least X are detectable" is the single most useful
+#      sentence in the report. Computing that stddev locally instead would
+#      fork the math this module deliberately keeps in one place, so the
+#      dispersion is taken from stats.sh too.
+#
+# The quality/compatibility split is likewise consumed, not re-derived:
+# `score.sh aggregate` (temperloop#1258) already computes the quality block
+# over `candidate.outcome == "scored"` records only and reports integration
+# errors as a separate compatibility metric. This file invokes it per arm and
+# embeds its output.
+#
+# ── THE HONESTY DISCLOSURES — PRESENT ON EVERY RUN, FLATTERING OR NOT ──────
+# Four disclosures are emitted unconditionally, never only when they look
+# good, because a report that states them only on a degraded run teaches a
+# reader to treat their absence as "fine":
+#   emit_coverage   the percentage, its FEASIBLE-seat denominator, and the
+#                   named exclusion list. The denominator is the emit-feasible
+#                   seat subset the L0 spike (temperloop#1246) fixed, NEVER the
+#                   full 12-seat inventory — denominating over the inventory
+#                   pins the ceiling at 50% forever and makes a healthy
+#                   pipeline read as half-broken. A figure below 100% means an
+#                   emit-CAPABLE seat ran and did not write a record; it does
+#                   NOT mean half the pipeline's spend is unmeasured (ADR
+#                   0020's transcript producer covers that and remains the
+#                   sole owner of the headline spend figure).
+#   corpus_window   which records this comparison actually ran over.
+#   gate_versions   there is no single gate version, by construction: each
+#                   record's gate ran from its OWN base worktree's copy of the
+#                   entry point (score.sh's trap-C "never mix trees"). The set
+#                   of (gate script, base commit) pairs actually run is what
+#                   gets reported.
+#   cost_basis      which of the three non-interchangeable units the cost
+#                   figures are in — metered dollars vs token counts vs
+#                   subscription-usage share.
+#
+# ── COST BASIS: TOKEN COUNTS. NOT DOLLARS. NOT A SUBSCRIPTION SHARE. ───────
+# A replay record carries `candidate.tokens` (the four raw token classes) and
+# no vendor cost field, so this producer's figures are cost-weighted TOKEN
+# COUNTS: the SPEND_WEIGHT_* multiply-add, byte-for-byte the arithmetic
+# emit-model-usage.sh applies, over the same four settings sourced from
+# build.config.sh. That is deliberate composition, not duplication: the L0
+# spike found ADR 0020's weighting inheritable "as VALUES, never as code"
+# (there is no sourceable weighting function anywhere in this repo), so
+# sourcing the same settings and applying the same one-line expression is the
+# only way both producers can be guaranteed to count a token the same way.
+# requestId dedup is N/A here for the same reason it is N/A at the emit site.
+#
+# An optional DIRECTIONAL dollar OVERLAY is added when a price table resolves,
+# on the same two-tier override order report.sh already uses (a user
+# `.temperloop/pricing.json` wins outright over the kernel-shipped
+# `workflows/scripts/config/default-pricing.json`, never merged per-key). It
+# is labeled a dated list-price ESTIMATE and never as metered dollars: a
+# hand-transcribed list price is not what a vendor billed. A stale table still
+# renders, carrying its `as_of` date and an explicit staleness label; an
+# absent or malformed table degrades to token counts only, STATED — never
+# silently omitted.
+#
+# ── EGRESS: NONE ───────────────────────────────────────────────────────────
+# Local file reads, `jq`, and two local sibling scripts (stats.sh, score.sh).
+# No network of any kind, no `gh`, no model call — scanned by `make
+# test-producer-egress` (workflows/scripts/kernel/check-producer-egress.sh's
+# unconditional report-producers/ directory sweep).
+#
+# ── PORTABILITY ────────────────────────────────────────────────────────────
+# Stock macOS /bin/bash 3.2.57 as well as modern bash: no mapfile, no
+# associative arrays, no `readlink -f`, no GNU-only flags. `LC_ALL=C` is
+# exported for the whole run so no numeric formatting anywhere below can be
+# reshaped by a comma-decimal ambient locale. Timestamps are stored in
+# ISO-8601 UTC; every human-facing timestamp additionally renders in
+# America/Los_Angeles. Two traps handled here rather than assumed away:
+# (1) jq's `strftime` IGNORES $TZ and always emits UTC, so every local
+#     rendering below goes through `strflocaltime` with $TZ exported to the
+#     display zone.
+# (2) `strflocaltime`'s `%z` and `%Z` tokens are WRONG on at least macOS's
+#     libc — measured, not assumed: the wall clock converts correctly
+#     (2026-08-09T07:41:12Z renders as 00:41:12 in America/Los_Angeles, i.e.
+#     the -07:00 summer offset), but the very same call labels it `-0800`
+#     / `PST`, the STANDARD-time offset. A wrong offset label on a correct
+#     wall clock is worse than no label, so neither token is emitted; the
+#     zone is carried as its unambiguous IANA name in `display_timezone`
+#     instead, once, beside every local field.
+#
+# Settings used here are registered in workflows/scripts/config/
+# setting-registry.tsv and defaulted in workflows/scripts/build/
+# build.config.sh — named symbolically, never re-valued in this prose.
+
+set -uo pipefail
+export LC_ALL=C
+
+PRODUCER_NAME="model-comparison"
+
+# THE one degradation path. Every failure below routes through it: one line,
+# exit 0, no JSON — so a degraded run structurally cannot carry a winner key
+# or a cost figure.
+skip() { printf 'skipped -- %s: %s\n' "$PRODUCER_NAME" "$1"; exit 0; }
+
+# The report.d contract invokes a producer with NO arguments. There is
+# deliberately no arg-parse loop here at all — the shape that cannot
+# infinite-loop on a trailing flag (temperloop#1342) is the shape with no loop.
+[ "$#" -eq 0 ] || skip "invoked with $# argument(s); the .temperloop/report.d/ contract invokes a producer with none"
+
+command -v jq >/dev/null 2>&1 || skip "jq not found on PATH"
+
+self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || skip "could not resolve this producer's own directory"
+STATS_SH="$self_dir/../model-comparison/stats.sh"
+SCORE_SH="$self_dir/../model-comparison/score.sh"
+BUILD_CONFIG="$self_dir/../build/build.config.sh"
+DEFAULT_PRICING="$self_dir/../config/default-pricing.json"
+
+[ -f "$STATS_SH" ] || skip "the comparison-statistics library is missing at workflows/scripts/model-comparison/stats.sh — refusing to report figures it would have to compute itself"
+[ -f "$SCORE_SH" ] || skip "the replay scorer is missing at workflows/scripts/model-comparison/score.sh — refusing to re-derive its quality/compatibility split here"
+
+if [ -f "$BUILD_CONFIG" ]; then
+  # shellcheck source=../build/build.config.sh
+  . "$BUILD_CONFIG"
+fi
+
+# Layer-6 non-vendoring-caller fallbacks, matching the registry exactly.
+: "${MODEL_COMPARISON_REPORT_RECORDS_DIR:=.temperloop/model-comparison}"
+: "${SPEND_WEIGHT_INPUT:=}"
+: "${SPEND_WEIGHT_CACHE_READ:=}"
+: "${SPEND_WEIGHT_CACHE_CREATE:=}"
+: "${SPEND_WEIGHT_OUTPUT:=}"
+
+# Human-facing display timezone. An IANA name so DST is automatic. Exported
+# because jq's strflocaltime reads $TZ from the environment — without the
+# export, every "local" field below would silently render in whatever zone the
+# invoking machine happens to sit in rather than the configured display zone.
+# Stored timestamps stay UTC: every `date` call below passes -u.
+DISPLAY_TIMEZONE="${DISPLAY_TZ:-America/Los_Angeles}"
+export TZ="$DISPLAY_TIMEZONE"
+
+# ── vocabulary constants (record vocabulary, NOT operator settings) ─────────
+# The emit-FEASIBLE seat roster: the three seats temperloop#1255 actually
+# wired (A7/A8/A9 in the L0 spike's inventory), i.e. the only seats whose
+# spawn captures a `claude -p --output-format json` envelope the kernel can
+# read token counts out of. Coverage counts DISTINCT seats from this roster
+# observed in the attribution stream, and nothing else: the module's own
+# replay-candidate/replay-judge seats also emit, and counting them would push
+# the numerator past the feasible denominator and turn a coverage figure into
+# nonsense.
+FEASIBLE_SEAT_ROSTER='["pipeline-drive-safe","pipeline-drive-merge","retro-judge"]'
+
+# The structurally un-emittable seats, NAMED rather than silently dropped —
+# transcribed from the L0 usage-capture-feasibility spike (temperloop#1246)
+# § "The structurally un-emittable set". Without this list a 100% reading
+# would imply a coverage claim this system does not make.
+SEAT_EXCLUSIONS='[
+  {"seats":["A1","A3","A4"],"reason":"build-level.mjs agent() returns no usage envelope; the harness drops the per-seat label before the journal, leaving no legal join key"},
+  {"seats":["A5","A6"],"reason":"same as A1/A3/A4, and the file additionally cannot source shell config"},
+  {"seats":["A2"],"reason":"harness-native Task fan-out from command prose: no shell seam at spawn, no usage return"},
+  {"seats":["B1"],"reason":"an operator command session is not spawned by this repo at all; SessionEnd gives session granularity only, with no seat name and no outcome ref"},
+  {"seats":["B2"],"reason":"harness-native agent-frontmatter spawn; no kernel code in the spawn path (post-hoc attribution is routed as temperloop#1265)"},
+  {"seats":["C1","C2","C3"],"reason":"the bin/ seats capture no envelope today (--output-format text); emit-feasible only once temperloop#1264 lands"}
+]'
+
+# ── scratch ────────────────────────────────────────────────────────────────
+TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/mc-report.XXXXXX")" || skip "could not create a scratch directory under ${TMPDIR:-/tmp}"
+trap 'rm -rf "$TMPROOT"' EXIT
+
+# ── the two arms ───────────────────────────────────────────────────────────
+# cwd is the TARGET REPO by contract (report.contract.md § Overlay drop-in
+# contract), so a relative records dir resolves against it.
+case "$MODEL_COMPARISON_REPORT_RECORDS_DIR" in
+  /*) records_dir="$MODEL_COMPARISON_REPORT_RECORDS_DIR" ;;
+  *)  records_dir="$PWD/$MODEL_COMPARISON_REPORT_RECORDS_DIR" ;;
+esac
+records_dir_label="$MODEL_COMPARISON_REPORT_RECORDS_DIR"
+BASE_FILE="$records_dir/baseline.jsonl"
+CAND_FILE="$records_dir/candidate.jsonl"
+
+for arm_name in baseline candidate; do
+  arm_file="$records_dir/$arm_name.jsonl"
+  [ -e "$arm_file" ] || skip "no $arm_name arm at $records_dir_label/$arm_name.jsonl — a comparison needs both arms, and reporting on one alone would not be a comparison"
+  { [ -f "$arm_file" ] && [ -r "$arm_file" ]; } || skip "the $arm_name arm at $records_dir_label/$arm_name.jsonl is not a readable regular file"
+  [ -s "$arm_file" ] || skip "the $arm_name arm at $records_dir_label/$arm_name.jsonl is empty — there is nothing to compare"
+  jq -e -s 'length > 0 and all(type == "object")' <"$arm_file" >/dev/null 2>&1 \
+    || skip "the $arm_name arm at $records_dir_label/$arm_name.jsonl is not a readable JSONL stream of JSON objects — refusing to report figures rolled up from records it could not parse"
+done
+
+# ── the weights (VALUES inherited from build.config.sh, never a second copy) ─
+weights_ok=1
+for _w in "$SPEND_WEIGHT_INPUT" "$SPEND_WEIGHT_CACHE_READ" "$SPEND_WEIGHT_CACHE_CREATE" "$SPEND_WEIGHT_OUTPUT"; do
+  case "$_w" in
+    ''|*[!0-9.]*|*.*.*) weights_ok=0 ;;
+  esac
+done
+[ "$weights_ok" -eq 1 ] || skip "the SPEND_WEIGHT_* settings are missing or malformed (workflows/scripts/build/build.config.sh) — refusing to report a cost figure computed with weights it could not resolve"
+
+# ── the per-arm quality/compatibility split — score.sh's, not ours ─────────
+AGG_BASE="$(bash "$SCORE_SH" aggregate --records-file "$BASE_FILE" 2>/dev/null)" \
+  || skip "score.sh aggregate could not roll up the baseline arm; refusing to re-derive its scored-only quality split here"
+AGG_CAND="$(bash "$SCORE_SH" aggregate --records-file "$CAND_FILE" 2>/dev/null)" \
+  || skip "score.sh aggregate could not roll up the candidate arm; refusing to re-derive its scored-only quality split here"
+jq -e 'type == "object" and has("quality") and has("compatibility")' <<<"$AGG_BASE" >/dev/null 2>&1 \
+  || skip "score.sh aggregate returned an unexpected shape for the baseline arm"
+jq -e 'type == "object" and has("quality") and has("compatibility")' <<<"$AGG_CAND" >/dev/null 2>&1 \
+  || skip "score.sh aggregate returned an unexpected shape for the candidate arm"
+
+# ── the price table (override order: user table wins outright) ─────────────
+USER_PRICING="$PWD/.temperloop/pricing.json"
+price_table='null'
+price_table_source="none"
+price_as_of=""
+if [ -f "$USER_PRICING" ] && [ -r "$USER_PRICING" ]; then
+  if jq -e 'type == "object" and (to_entries | length) > 0 and all(.[]; type == "number")' <"$USER_PRICING" >/dev/null 2>&1; then
+    price_table="$(jq -c . <"$USER_PRICING")"
+    price_table_source="user"
+  else
+    price_table_source="user-malformed"
+  fi
+elif [ -f "$DEFAULT_PRICING" ] && [ -r "$DEFAULT_PRICING" ]; then
+  if jq -e '(.prices | type) == "object" and ((.as_of | type) == "string")' <"$DEFAULT_PRICING" >/dev/null 2>&1; then
+    price_table="$(jq -c '.prices' <"$DEFAULT_PRICING")"
+    price_as_of="$(jq -r '.as_of' <"$DEFAULT_PRICING")"
+    price_table_source="kernel-default"
+  else
+    price_table_source="kernel-default-malformed"
+  fi
+fi
+
+# ── derive everything the records alone can say ───────────────────────────
+DERIVED="$TMPROOT/derived.json"
+jq -n \
+  --slurpfile b "$BASE_FILE" \
+  --slurpfile c "$CAND_FILE" \
+  --argjson w_in "$SPEND_WEIGHT_INPUT" \
+  --argjson w_cr "$SPEND_WEIGHT_CACHE_READ" \
+  --argjson w_cc "$SPEND_WEIGHT_CACHE_CREATE" \
+  --argjson w_out "$SPEND_WEIGHT_OUTPUT" \
+  --argjson price_table "$price_table" \
+  --arg tz "$DISPLAY_TIMEZONE" '
+
+  def refof:
+    if (.pr // null) != null then "pr:\(.pr)"
+    elif (.issue // null) != null then "issue:\(.issue)"
+    else null end;
+
+  # The SPEND_WEIGHT_* multiply-add, byte-for-byte emit-model-usage.sh'"'"'s
+  # expression. null (never 0) when the record carries no token block: a
+  # missing measurement is not a measurement of zero.
+  def wu:
+    if ((.candidate // {}).tokens | type) != "object" then null
+    else ((((.candidate.tokens.input // 0) * $w_in)
+         + ((.candidate.tokens.cache_read // 0) * $w_cr)
+         + ((.candidate.tokens.cache_creation // 0) * $w_cc)
+         + ((.candidate.tokens.output // 0) * $w_out)) | floor)
+    end;
+
+  def round1: if . == null then null else ((. * 10) | round) / 10 end;
+  def round4: if . == null then null else ((. * 10000) | round) / 10000 end;
+
+  def local_of:
+    if . == null then null
+    else (try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime | strflocaltime("%Y-%m-%d %H:%M:%S")) catch null)
+    end;
+
+  def armblock:
+    . as $recs
+    | ($recs | map(select(.candidate.outcome == "scored")))                      as $scored
+    | ($scored | map(select(wu != null)))                                        as $costed
+    | ($scored | map(select(.score.verdict == "pass")))                          as $passed
+    | ($costed | map(wu) | add // 0)                                             as $units
+    | ($recs | map(select(((.judge // {}).outcome // null) == "JUDGED")))        as $judged
+    | ($recs | map(select((((.judge // {}).outcome // null) != null)
+                          and ((.judge.outcome) != "JUDGED"))))                  as $jdegraded
+    | ($scored | map(select(((.score.gate_result // {}).ran // false) == true))) as $gran
+    | ($recs | map(select(((.candidate // {}).duration_ms | type) == "number"))) as $durrecs
+    | ($recs | map(select(.candidate.outcome == "integration-error")))           as $interr
+    | ($scored | map(select((.score.gate_result.passed) == false)))              as $gatefail
+    | ($scored | map(select(((.score.contamination_flags // []) | length) > 0))) as $flagged
+    | {
+        records_n: ($recs | length),
+        scored_n:  ($scored | length),
+
+        cost: {
+          basis: "cost-weighted token units summed over this arm'"'"'s candidate.outcome==\"scored\" records; a record with no token block contributes NOTHING and is counted in uncosted_n rather than as a zero",
+          unit: "cost-weighted token units (SPEND_WEIGHT_* multiply-add over the input/cache_read/cache_creation/output classes, floored) — the same weighting VALUES the ADR 0026 attribution emit uses, never a second weighting implementation",
+          weights: {input: $w_in, cache_read: $w_cr, cache_creation: $w_cc, output: $w_out},
+          scored_n: ($scored | length),
+          costed_n: ($costed | length),
+          uncosted_n: (($scored | length) - ($costed | length)),
+          total_weighted_units: (if ($costed | length) == 0 then null else $units end),
+          mean_weighted_units_per_costed_record:
+            (if ($costed | length) == 0 then null else (($units / ($costed | length)) | round1) end),
+          merged_outcomes_n: ($passed | length),
+          merged_outcomes_basis: "a scored record whose score.verdict is \"pass\" — the named solution surface changed, the test surface is satisfied, and the in-worktree quality gate passed, i.e. an outcome that could have merged",
+          cost_per_merged_outcome:
+            (if ($scored | length) == 0 then null
+             elif ($costed | length) != ($scored | length) then null
+             elif ($passed | length) == 0 then null
+             else (($units / ($passed | length)) | round1) end),
+          cost_per_merged_outcome_unavailable_reason:
+            (if ($scored | length) == 0 then "this arm carries no scored record"
+             elif ($costed | length) != ($scored | length) then
+               "\(($scored | length) - ($costed | length)) of \($scored | length) scored records carry no token counts — refusing a whole-job cost figure derived from a partial cost corpus"
+             elif ($passed | length) == 0 then
+               "no scored record in this arm produced a merge-eligible outcome, so there is no merged-outcome denominator to divide by"
+             else null end),
+          by_model: ($costed
+                     | group_by(.candidate.model // "unknown")
+                     | map({key: (.[0].candidate.model // "unknown"), value: (map(wu) | add)})
+                     | from_entries)
+        },
+
+        judge_quality: {
+          basis: "mean of judge.quality_score over rows whose judge pass reached JUDGED only. A row whose judge was UNAVAILABLE (a mid-batch judge outage) is EXCLUDED from the mean and listed below with its own named degradation notice — never folded in as a zero, which would be a real judgment this run never obtained",
+          judged_n: ($judged | length),
+          mean_quality_score:
+            (if ($judged | length) == 0 then null
+             else ((($judged | map(.judge.quality_score) | add) / ($judged | length)) | round1) end),
+          unjudged_n: (($recs | length) - ($judged | length) - ($jdegraded | length)),
+          degraded_n: ($jdegraded | length),
+          degraded_rows: ($jdegraded | map({
+            outcome_ref: refof,
+            judge_outcome: (.judge.outcome),
+            degradation_notice: (.judge.degradation_notice // "the record carries no degradation_notice — the judge outcome is non-JUDGED but unexplained")
+          }))
+        },
+
+        gate_outcomes: {
+          basis: "score.gate_result over this arm'"'"'s scored records. Each gate ran from the record'"'"'s OWN base worktree copy of the entry point, never today'"'"'s tree — see gate_versions at the top level",
+          scored_n: ($scored | length),
+          ran_n: ($gran | length),
+          no_gate_result_n: (($scored | length) - ($gran | length)),
+          passed_n: ($gran | map(select((.score.gate_result.passed) == true)) | length),
+          failed_n: ($gran | map(select((.score.gate_result.passed) == false)) | length),
+          timed_out_n: ($gran | map(select((.score.gate_result.timed_out) == true)) | length)
+        },
+
+        intervention_rework: {
+          basis: "MECHANICAL PROXIES read off the replay records themselves — this module keeps no human-intervention log and these figures are not one. rework_n counts scored records whose in-worktree quality gate FAILED (the diff would need another pass before it could merge). intervention_n counts records whose run could not complete without vendor/operator intervention (candidate.outcome == \"integration-error\"), which is a COMPATIBILITY fact about the integration, never a model quality fact. flagged_n counts scored records carrying at least one contamination flag",
+          attempted_n: (($scored | length) + ($interr | length)),
+          rework_n: ($gatefail | length),
+          rework_rate: (if ($scored | length) == 0 then null
+                        else ((($gatefail | length) / ($scored | length)) | round4) end),
+          intervention_n: ($interr | length),
+          intervention_rate: (if (($scored | length) + ($interr | length)) == 0 then null
+                              else ((($interr | length) / (($scored | length) + ($interr | length))) | round4) end),
+          flagged_n: ($flagged | length)
+        },
+
+        duration: {
+          basis: "candidate.duration_ms over every record in this arm that carries one (an integration-error record still carries its wall clock); a record without one is counted in without_duration_n rather than as a zero",
+          with_duration_n: ($durrecs | length),
+          without_duration_n: (($recs | length) - ($durrecs | length)),
+          total_ms: (if ($durrecs | length) == 0 then null else ($durrecs | map(.candidate.duration_ms) | add) end),
+          mean_ms: (if ($durrecs | length) == 0 then null
+                    else ((($durrecs | map(.candidate.duration_ms) | add) / ($durrecs | length)) | round1) end)
+        }
+      };
+
+  def costmap:
+    map(select(.candidate.outcome == "scored" and refof != null and wu != null))
+    | map({key: refof, value: wu});
+
+  # --slurpfile binds the ARRAY of parsed values in the file, so $b/$c are
+  # already the record arrays — never $b[0], which would be the first record.
+  ($b) as $base
+  | ($c) as $cand
+  | ($base | costmap) as $bpairs
+  | ($cand | costmap) as $cpairs
+  | ($bpairs | from_entries) as $bm
+  | ($cpairs | from_entries) as $cm
+  | ([$cm | keys_unsorted[]] | map(select(($bm[.] // null) != null)) | sort) as $refs
+  | (($base + $cand)
+     | map(select(((.score.gate_result // {}).ran // false) == true))
+     | map({gate_script: (.score.gate_result.gate_script), base: (.score.base),
+            timeout_secs: (.score.gate_result.timeout_secs)})
+     | unique) as $gv
+  | (($base + $cand) | map((.worktree // {}).prepared_at // null) | map(select(. != null)) | sort) as $prepared
+  | (($base + $cand) | map(.pr // null) | map(select(. != null))) as $prs
+  | (($base + $cand) | map(.template_sha // null) | map(select(. != null)) | unique) as $templates
+  | {
+      arms: {baseline: ($base | armblock), candidate: ($cand | armblock)},
+
+      pairing: {
+        basis: "one delta per merged outcome present in BOTH arms as a scored, token-bearing record: candidate cost minus baseline cost, in cost-weighted token units. A NEGATIVE delta means the candidate was cheaper. An outcome missing from either arm, or missing token counts in either arm, contributes no delta rather than a substituted one",
+        baseline_pairable_n: ($bm | length),
+        candidate_pairable_n: ($cm | length),
+        paired_outcomes_n: ($refs | length),
+        refs: $refs,
+        deltas: [$refs[] | ($cm[.] - $bm[.])],
+        duplicate_refs_collapsed: ((($bpairs | length) - ($bm | length)) + (($cpairs | length) - ($cm | length)))
+      },
+
+      corpus_window: {
+        basis: "the window this comparison actually ran over, read off the records themselves: worktree.prepared_at is when each replay was prepared, and the PR range names which merged outcomes were replayed. Stored in UTC; the *_local fields render the same instants in the operator display timezone",
+        records_n: (($base | length) + ($cand | length)),
+        display_timezone: $tz,
+        replayed_from_utc: ($prepared | first // null),
+        replayed_to_utc: ($prepared | last // null),
+        replayed_from_local: (($prepared | first // null) | local_of),
+        replayed_to_local: (($prepared | last // null) | local_of),
+        window_unavailable_reason:
+          (if ($prepared | length) == 0
+           then "no record in either arm carries a worktree.prepared_at timestamp, so the replay window is unknown — stated rather than omitted"
+           else null end),
+        pr_lowest: (if ($prs | length) == 0 then null else ($prs | min) end),
+        pr_highest: (if ($prs | length) == 0 then null else ($prs | max) end),
+        template_shas: $templates
+      },
+
+      gate_versions: {
+        basis: "there is NO single gate version by construction: score.sh runs each record'"'"'s gate from that record'"'"'s OWN base worktree (the keystone spike'"'"'s trap-C \"never mix trees\"), so a comparison spanning several bases ran several gate versions. Every (gate script, base commit) pair actually run is listed",
+        distinct_n: ($gv | length),
+        pairs: $gv,
+        versions_unavailable_reason:
+          (if ($gv | length) == 0
+           then "no record in either arm carries a gate_result that actually ran, so no gate version was exercised — stated rather than omitted"
+           else null end)
+      },
+
+      pricing_inputs: {
+        by_model_combined: (($base + $cand)
+                            | map(select(.candidate.outcome == "scored" and wu != null))
+                            | group_by(.candidate.model // "unknown")
+                            | map({key: (.[0].candidate.model // "unknown"), value: (map(wu) | add)})
+                            | from_entries),
+        priced_models: (if $price_table == null then []
+                        else (($base + $cand)
+                              | map(select(.candidate.outcome == "scored" and wu != null))
+                              | map(.candidate.model // "unknown") | unique
+                              | map(select(($price_table[.] // null) != null))) end),
+        excluded_models: (if $price_table == null then
+                            (($base + $cand)
+                             | map(select(.candidate.outcome == "scored" and wu != null))
+                             | map(.candidate.model // "unknown") | unique)
+                          else (($base + $cand)
+                                | map(select(.candidate.outcome == "scored" and wu != null))
+                                | map(.candidate.model // "unknown") | unique
+                                | map(select(($price_table[.] // null) == null))) end),
+        estimate_usd: (if $price_table == null then null
+                       else (($base + $cand)
+                             | map(select(.candidate.outcome == "scored" and wu != null))
+                             | map(select(($price_table[.candidate.model // "unknown"] // null) != null))
+                             | map(wu * ($price_table[.candidate.model // "unknown"]) / 1000000)
+                             | add // 0
+                             | ((. * 10000) | round) / 10000) end)
+      }
+    }' >"$DERIVED" 2>/dev/null \
+  || skip "could not derive the per-arm figures from the two record arms — refusing to report a partial roll-up"
+
+[ -s "$DERIVED" ] || skip "the per-arm derivation produced nothing — refusing to report a partial roll-up"
+
+# ── the statistics: consumed from stats.sh, every one of them ─────────────
+deltas="$(jq -c '.pairing.deltas' "$DERIVED" 2>/dev/null)"
+paired_n="$(jq -r '.pairing.deltas | length' "$DERIVED" 2>/dev/null)"
+case "$paired_n" in ''|*[!0-9]*) paired_n=0 ;; esac
+
+verdict_json='null'
+ci_json='null'
+mde_json='null'
+stddev_used=""
+stats_unavailable_reason='null'
+
+if [ "$paired_n" -eq 0 ]; then
+  stats_unavailable_reason='"no merged outcome appears in BOTH arms as a scored, token-bearing record, so there is no paired delta array to run statistics over"'
+else
+  vj="$(bash "$STATS_SH" verdict --deltas "$deltas" 2>/dev/null)"
+  if [ -n "$vj" ] && jq -e 'type == "object" and has("verdict")' <<<"$vj" >/dev/null 2>&1; then
+    verdict_json="$vj"
+  else
+    stats_unavailable_reason='"the comparison-statistics library could not be run (see workflows/scripts/model-comparison/stats.sh — it requires python3 >= 3.8); no confidence interval, no verdict, and no winner is reported rather than a substituted one"'
+  fi
+
+  # The interval itself comes from the subcommand whose published job it is —
+  # `bootstrap-ci` carries the resample count, the seed and the CI width that
+  # `verdict` does not, and it enforces the SAME inconclusive floor, so this is
+  # a second read of the same guarded surface rather than a way around it.
+  bj="$(bash "$STATS_SH" bootstrap-ci --deltas "$deltas" 2>/dev/null)"
+  if [ -n "$bj" ] && jq -e 'type == "object" and has("below_min_sample")' <<<"$bj" >/dev/null 2>&1; then
+    ci_json="$bj"
+  fi
+
+  # THE DISPERSION PROBE — .stddev only. See this file'"'"'s header: its own
+  # verdict/bounds/floor flag are discarded and never reach stdout.
+  dj="$(bash "$STATS_SH" verdict --deltas "$deltas" --min-sample 1 2>/dev/null)"
+  stddev="$(jq -r 'if (.stddev | type) == "number" then .stddev else empty end' <<<"${dj:-}" 2>/dev/null)"
+  if [ -n "${stddev:-}" ] && [ "$stddev" != "0" ]; then
+    stddev_used="$stddev"
+    mj="$(bash "$STATS_SH" mde --n "$paired_n" --stddev "$stddev" 2>/dev/null)"
+    if [ -n "$mj" ] && jq -e 'type == "object" and has("mde")' <<<"$mj" >/dev/null 2>&1; then
+      mde_json="$mj"
+    fi
+  fi
+fi
+
+# ── emit coverage: consumed from stats.sh coverage ────────────────────────
+lake_dir="${MODEL_USAGE_RAW_DIR:-$PWD/meta/data/raw}"
+LAKE="$TMPROOT/lake.jsonl"
+: >"$LAKE"
+for f in "$lake_dir"/model-usage-*.jsonl; do
+  [ -f "$f" ] || continue
+  [ -r "$f" ] || continue
+  cat "$f" >>"$LAKE"
+done
+
+coverage_json='null'
+coverage_unavailable_reason='"the attribution stream could not be read"'
+observed_seats="$(jq -s --argjson roster "$FEASIBLE_SEAT_ROSTER" '
+  [ .[] | select(type == "object") | (.seat // empty) ]
+  | map(select(. as $s | $roster | index($s) != null))
+  | unique | length' <"$LAKE" 2>/dev/null)"
+case "${observed_seats:-}" in
+  ''|*[!0-9]*)
+    coverage_unavailable_reason='"the per-seat attribution stream under the model-usage raw lake could not be parsed, so no emit-coverage figure is reported — stated rather than silently rounded up"'
+    ;;
+  *)
+    cj="$(bash "$STATS_SH" coverage --observed-seats "$observed_seats" 2>/dev/null)"
+    if [ -n "$cj" ] && jq -e 'type == "object" and has("coverage_pct")' <<<"$cj" >/dev/null 2>&1; then
+      coverage_json="$cj"
+      coverage_unavailable_reason='null'
+    else
+      coverage_unavailable_reason="$(jq -cn --arg n "$observed_seats" '"stats.sh coverage refused the observed seat count (\($n)) against the configured emit-feasible denominator — most often because the two seat counts were confused; no percentage is reported rather than a nonsense one"')"
+    fi
+    ;;
+esac
+
+# ── the winner gate: one condition, nothing else can mint it ──────────────
+winner_json='null'
+verdict_value="$(jq -r 'if (.verdict | type) == "string" then .verdict else "" end' <<<"$verdict_json" 2>/dev/null)"
+# tostring, never `// empty`: jq treats a genuine `false` as absent, so the
+# `//` form would read "we are ABOVE the floor" as "unknown" and silently
+# suppress every winner the run is entitled to name.
+below_floor="$(jq -r 'if (.below_min_sample | type) == "boolean" then (.below_min_sample | tostring) else "" end' <<<"$verdict_json" 2>/dev/null)"
+if [ "${below_floor:-}" = "false" ]; then
+  case "${verdict_value:-}" in
+    candidate_better) winner_json='"candidate"' ;;
+    baseline_better)  winner_json='"baseline"' ;;
+  esac
+fi
+
+# ── assemble the single JSON object ───────────────────────────────────────
+generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Assembled into a variable FIRST, then validated, then printed in one shot —
+# never streamed straight to stdout, where a mid-program jq failure would
+# leave a partial object above the `skipped -- ` line and break the
+# "exactly one JSON object OR exactly one skipped line" contract.
+report_json="$(jq -n \
+  --slurpfile derived "$DERIVED" \
+  --argjson agg_base "$AGG_BASE" \
+  --argjson agg_cand "$AGG_CAND" \
+  --argjson verdict "$verdict_json" \
+  --argjson ci "$ci_json" \
+  --argjson mde "$mde_json" \
+  --argjson stats_reason "$stats_unavailable_reason" \
+  --argjson coverage "$coverage_json" \
+  --argjson coverage_reason "$coverage_unavailable_reason" \
+  --argjson exclusions "$SEAT_EXCLUSIONS" \
+  --argjson roster "$FEASIBLE_SEAT_ROSTER" \
+  --argjson winner "$winner_json" \
+  --arg mde_stddev "$stddev_used" \
+  --arg price_source "$price_table_source" \
+  --arg price_as_of "$price_as_of" \
+  --arg generated_at "$generated_at" \
+  --arg tz "$DISPLAY_TIMEZONE" \
+  --arg records_dir "$records_dir_label" '
+
+  ($derived[0]) as $d
+
+  | (if $price_source == "user" then
+       "USER PRICE TABLE (.temperloop/pricing.json) — your own hand-written list prices, which override the kernel default outright and are never merged with it per-key"
+     elif $price_source == "kernel-default" then
+       "DEFAULT PRICE TABLE dated \($price_as_of) — a committed, hand-transcribed snapshot of public list prices, STALE BY CONSTRUCTION, never a live rate and never the adopter'"'"'s own configured prices"
+     elif $price_source == "user-malformed" then
+       "no price table in effect: .temperloop/pricing.json is present but is not a {model: $/Mtok} object — TOKEN COUNTS ONLY"
+     elif $price_source == "kernel-default-malformed" then
+       "no price table in effect: the kernel default table is missing or malformed (a broken or incomplete kernel checkout) — TOKEN COUNTS ONLY"
+     else
+       "no price table in effect — TOKEN COUNTS ONLY"
+     end) as $staleness
+
+  | (if $mde != null then
+       "at N=\($mde.n), only deltas of at least \(($mde.mde * 100 | round) / 100) cost-weighted token units (in absolute value) are detectable at \(($mde.power * 100 | round))% power and a \($mde.ci_width_pct)% confidence interval; a true difference smaller than that would not reliably show up in a run this size"
+     elif ($d.pairing.paired_outcomes_n // 0) == 0 then
+       "not computable: there is no paired delta array at all, so no detectable-effect threshold exists for this run"
+     else
+       "not computable at N=\($d.pairing.paired_outcomes_n): the paired deltas show no observed variance (or there is only one pair), and a detectable-effect threshold cannot be estimated without one — reported as absent rather than as a zero, which would falsely read as \"any effect is detectable\""
+     end) as $mde_disclosure
+
+  | (if $coverage != null then
+       "\($coverage.coverage_pct)% (\($coverage.observed_seats) of \($coverage.feasible_seats) emit-feasible seats observed)"
+     else "unavailable" end) as $coverage_phrase
+
+  | {
+      schema_version: "model-comparison-report-v1",
+      producer: "model-comparison",
+      generated_at_utc: $generated_at,
+      generated_at_local: ($generated_at
+        | (try (strptime("%Y-%m-%dT%H:%M:%SZ") | mktime | strflocaltime("%Y-%m-%d %H:%M:%S")) catch null)),
+      display_timezone: $tz,
+      records_dir: $records_dir,
+
+      cost_basis: {
+        unit: "token-counts",
+        statement: "This report'"'"'s cost figures are TOKEN COUNTS — cost-weighted token units derived from each record'"'"'s raw input/output/cache token classes via the SPEND_WEIGHT_* settings. Token counts are the model-independent unit, comparable across providers that bill per token differently. They are NOT METERED DOLLARS (what a vendor actually billed for a call: a replay record carries no vendor cost field, so this producer has no metered figure to show) and NOT a SUBSCRIPTION-USAGE SHARE (quota consumed against a flat-rate plan such as Claude Max/Pro, which has no per-call dollar figure at all). These three units are not interchangeable, which is why this line names which one is in play on every run.",
+        weights: $d.arms.baseline.cost.weights,
+        weights_caveat: "cost-weighted units are comparable only WITHIN one SPEND_WEIGHT_* retune epoch; after a weight retune, figures from before and after are not apples-to-apples and cannot be recomputed from these records alone",
+        list_price_overlay: {
+          note: "an OPTIONAL directional dollar estimate layered on top of the token counts. A dated, hand-edited list-price table is not a bill: this is an estimate, never metered dollars.",
+          table_in_effect: $price_source,
+          as_of: (if $price_as_of == "" then null else $price_as_of end),
+          staleness: $staleness,
+          estimate_usd: $d.pricing_inputs.estimate_usd,
+          priced_models: $d.pricing_inputs.priced_models,
+          excluded_models: $d.pricing_inputs.excluded_models,
+          excluded_models_note: "a model with no matching price in whichever table is in effect is EXCLUDED from the estimate by name, never back-filled from another table"
+        }
+      },
+
+      emit_coverage: {
+        basis: "emit coverage is structurally partial BY DESIGN, not by omission. The denominator is the emit-FEASIBLE seat subset the L0 usage-capture-feasibility spike (temperloop#1246) fixed — never the full 12-seat inventory, which would pin the ceiling at 50% forever and make a healthy pipeline read as half-broken.",
+        coverage_pct: (if $coverage != null then $coverage.coverage_pct else null end),
+        observed_seats: (if $coverage != null then $coverage.observed_seats else null end),
+        feasible_seats: (if $coverage != null then $coverage.feasible_seats else null end),
+        feasible_seat_roster: $roster,
+        unavailable_reason: $coverage_reason,
+        below_100_means: "an emit-CAPABLE seat ran and did not write a record — a defect with a declared owner (a broken emit call, a swallowed error, or a new spawn site added without wiring)",
+        below_100_does_not_mean: "that the rest of the pipeline'"'"'s spend is unmeasured. It is not: ADR 0020'"'"'s transcript producer covers the un-emittable seats and remains the sole owner of the headline spend figure. This percentage measures attribution WIRING HEALTH, never spend visibility.",
+        excluded_seats: $exclusions
+      },
+
+      corpus_window: $d.corpus_window,
+      gate_versions: $d.gate_versions,
+
+      arms: {
+        baseline: ($d.arms.baseline + {quality: $agg_base.quality, compatibility: $agg_base.compatibility}),
+        candidate: ($d.arms.candidate + {quality: $agg_cand.quality, compatibility: $agg_cand.compatibility})
+      },
+
+      comparison: ({
+        basis: $d.pairing.basis,
+        unit: "cost-weighted token units per merged outcome, candidate minus baseline (negative = the candidate was cheaper)",
+        paired_outcomes_n: $d.pairing.paired_outcomes_n,
+        baseline_pairable_n: $d.pairing.baseline_pairable_n,
+        candidate_pairable_n: $d.pairing.candidate_pairable_n,
+        duplicate_refs_collapsed: $d.pairing.duplicate_refs_collapsed,
+        refs: $d.pairing.refs,
+        deltas: $d.pairing.deltas,
+        statistics_source: "workflows/scripts/model-comparison/stats.sh — every figure below is returned by it verbatim; none is computed here. Re-run `stats.sh verdict --deltas <the deltas array above>` to reproduce them.",
+        verdict: (if $verdict != null then $verdict.verdict else "inconclusive" end),
+        below_min_sample: (if $verdict != null then $verdict.below_min_sample else null end),
+        min_sample: (if $verdict != null then $verdict.min_sample else null end),
+        inconclusive_note: (if $verdict == null or ($verdict.below_min_sample == true)
+                            then "this run reports INCONCLUSIVE and names no winner: below the configured sample floor no bootstrap interval, however wide of zero it lands, is evidence of a real difference"
+                            else null end),
+        confidence_interval: (if $ci == null then null
+                              else {source: "stats.sh bootstrap-ci",
+                                    n: $ci.n,
+                                    ci_width_pct: $ci.ci_width_pct,
+                                    lower: $ci.lower, upper: $ci.upper,
+                                    mean: $ci.mean,
+                                    # has()-guarded, never the // operator: jq treats
+                                    # a genuine false as absent, so // would report a
+                                    # non-degenerate interval as unknown.
+                                    degenerate: (if ($ci | has("degenerate")) then $ci.degenerate else null end),
+                                    below_min_sample: $ci.below_min_sample,
+                                    bounds_null_reason: (if $ci.below_min_sample == true
+                                                         then "below the sample floor the bootstrap bounds are withheld by stats.sh itself — a CI over too few outcomes can sit wholly off zero and still be no evidence at all"
+                                                         else null end),
+                                    iterations: $ci.iterations, seed: $ci.seed} end),
+        minimum_detectable_effect: {
+          disclosure: $mde_disclosure,
+          source: "stats.sh mde --n <paired_outcomes_n> --stddev <observed_stddev>",
+          mde: (if $mde != null then $mde.mde else null end),
+          power: (if $mde != null then $mde.power else null end),
+          ci_width_pct: (if $mde != null then $mde.ci_width_pct else null end),
+          observed_stddev: (if $mde_stddev == "" then null else ($mde_stddev | tonumber) end),
+          observed_stddev_source: "the sample standard deviation stats.sh verdict itself reports over the same deltas — never computed here",
+          margin_of_error: (if $mde != null then $mde.margin_of_error else null end),
+          margin_of_error_note: "the CI half-width, NOT a detectability threshold — a true effect exactly this size is detected only about half the time, which is why `mde` above (roughly 43% larger at 80% power) is the number to size a comparison against"
+        },
+        statistics_unavailable_reason: $stats_reason,
+        transferability: "a verdict from this repo'"'"'s own replay corpus does NOT transfer to another pipeline, another repo'"'"'s issue mix, or another prompt shape — it measures these seats doing this repo'"'"'s work, not either model in general"
+      } | if $winner == null then . else . + {winner: $winner} end),
+
+      notice: ("model-comparison report — cost basis: cost-weighted TOKEN COUNTS (not metered dollars, not a subscription-usage share; \($staleness)); emit coverage: \($coverage_phrase); corpus: \($d.corpus_window.records_n) records, \($d.pairing.paired_outcomes_n) paired outcomes, \($d.gate_versions.distinct_n) distinct gate version(s); verdict: \(if $verdict != null then $verdict.verdict else "inconclusive" end)\(if $winner == null then " (no winner named)" else " — winner: \($winner)" end). \($mde_disclosure)")
+    }' 2>/dev/null)" || skip "could not assemble the comparison report object — refusing to emit a partial one"
+
+[ -n "$report_json" ] || skip "the comparison report object came back empty — refusing to emit nothing dressed as a report"
+jq -e 'type == "object"' <<<"$report_json" >/dev/null 2>&1 \
+  || skip "the assembled comparison report did not parse as a single JSON object — refusing to emit it"
+
+printf '%s\n' "$report_json"

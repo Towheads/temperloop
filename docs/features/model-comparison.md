@@ -237,6 +237,17 @@ configuration, never a kernel default.
   overridable), and the kernel write-guard class for replay-worktree
   isolation.
 
+- The kernel's **report drop-in seam** — the comparison report ships as a
+  `.temperloop/report.d/` producer implementation
+  (`workflows/scripts/report-producers/model-comparison`), the same shape and
+  the same directory as the existing `tokens` producer, and reads the shared
+  price table on the same two-tier override order
+  ([`report.contract.md`](../../workflows/scripts/lib/report.contract.md)).
+- `stats.sh` for every statistic it publishes and `score.sh aggregate` for
+  the scored-only quality/compatibility split — the report derives neither
+  itself, so a bound in the report and a bound from the library can never
+  disagree.
+
 **Produces:**
 
 - The per-seat attribution stream, joinable with the rest of the raw
@@ -247,6 +258,27 @@ configuration, never a kernel default.
   0028](../adr/0028-provider-exposure-rides-a-committed-allowlist-and-disclosure-log.md)).
 - A provider allowlist file the report and the disclosure-log validator both
   read — repo-scoped, committed, default Anthropic-only.
+
+**Running the comparison report.** The report producer reads two arms —
+`baseline.jsonl` and `candidate.jsonl` — from
+`.temperloop/model-comparison/` (repo-local and already gitignored; the
+directory is `$MODEL_COMPARISON_REPORT_RECORDS_DIR` if you keep the corpus
+elsewhere). Each line is one scored replay record, i.e. what `replay.sh
+execute` writes and `judge.sh` annotates. With both arms in place the
+producer can be run directly:
+
+```sh
+cd <your repo> && workflows/scripts/report-producers/model-comparison
+```
+
+It prints one JSON object on stdout and exits 0. **Nothing runs it for
+you**: consistent with ADR 0027, the kernel deliberately ships **no**
+`.temperloop/report.d/model-comparison` shim, so `temperloop report` never
+invokes it in a bare checkout and this module adds no standing cost. To wire
+it into `temperloop report`, add the same one-file locator + `exec` shim the
+`tokens` producer uses to your own `.temperloop/report.d/` — an explicit,
+reversible opt-in that touches one file and adds no new keys to any existing
+producer's output.
 
 No existing command's default behavior changes by this module existing.
 `/sweep`, `/build`, and `/fix` gain no new prompts, gates, or spend from a
@@ -335,3 +367,53 @@ level (model/provider enums, field shapes) by a paired emit-site validator,
 the same emit/validate pairing convention every other telemetry stream in
 this repo follows — a spawn site missing its emission, or emitting a
 malformed record, fails the gate rather than silently under-counting.
+
+**How the coverage figure reaches the report.** The comparison report reads
+the attribution stream from the raw lake, counts the **distinct emit-feasible
+seats** that actually wrote a record, and divides by the emit-feasible seat
+count — the same `stats.sh coverage` primitive the rest of the module uses,
+never a local division. Two consequences worth stating plainly:
+
+- Seats **outside** the emit-feasible set never enter the numerator. The
+  module's own replay and judge seats emit records too, and counting them
+  would push the numerator past its denominator and turn the percentage into
+  a meaningless number above 100%.
+- The report prints the **named exclusion list** beside the figure — which
+  seats are out and why — plus, in the same block, what a sub-100% reading
+  does mean (an emit-capable seat ran without writing a record: a defect with
+  an owner) and what it does not (that the rest of the pipeline's spend is
+  unmeasured — it is not). Without that list a 100% reading would imply a
+  coverage claim this module does not make.
+
+**What the report discloses on every run, flattering or not.** Alongside
+coverage, each report states its corpus window (which records it ran over,
+timestamps stored in UTC and rendered for a human in the configured display
+timezone), its quality-gate versions (there is no single one: each replayed
+record's gate ran from that record's own base worktree, so the set of
+(gate script, base commit) pairs actually exercised is reported), and its
+cost basis. These are emitted unconditionally, never only when they look
+poor — a disclosure that appears only on a bad run teaches a reader to treat
+its absence as reassurance. The suite pins that by asserting all four appear
+on a deliberately *flattering* run and deleting each in turn to prove the
+assertion notices.
+
+**Cost basis, and the figures the report refuses to print.** A replay record
+carries token counts and no vendor cost field, so the report's cost figures
+are **cost-weighted token counts** — the SPEND_WEIGHT_* weighting, taken as
+values from the same settings the attribution emit uses so the two producers
+can never disagree about how a token is counted. The report says so
+explicitly on every run, because token counts, *metered dollars* (what a
+vendor billed) and a *subscription-usage share* (quota against a flat-rate
+plan) are not interchangeable units. An optional directional dollar overlay
+is layered on when a price table resolves, always carrying that table's date
+and an explicit staleness label; an absent, stale or malformed table degrades
+to a stated token-counts-only basis rather than a silently missing line.
+Three figures the report will not print at all: a whole-job cost per merged
+outcome when some scored records carry no token counts (a figure over a
+partial cost corpus is derived from missing data), a confidence interval or
+minimum-detectable-effect it could not obtain from the statistics library,
+and a **winner** on any run that is below the sample threshold or shows no
+significant difference. A run that cannot be evaluated at all renders one
+`skipped -- model-comparison: <reason>` line at exit 0 and no report object —
+so "could not evaluate", "inconclusive" and "the candidate is better" stay
+three visibly different statements rather than collapsing into one.

@@ -130,9 +130,16 @@ from switching to JSON just to carry a `notice`: `report.sh`'s verbatim
 `echo` still dumps the raw JSON above the notice line, so the human sees the
 message twice. `notice` exists for the opposite case — a producer whose
 stdout is contractually constrained to exactly one JSON document, where no
-unconstrained plain-text channel exists. Today that means `tokens`; any
-future headline-feeding producer bound by the same kind of single-JSON-object
-rule is the other intended user. Such a producer's stdout MAY carry a
+unconstrained plain-text channel exists. **Today that means two producers,
+not one** (temperloop#1261 added the second): `tokens`, whose single-object
+rule this contract imposes so `report.sh` can read `tokens_spent` for the
+headline; and the kernel-shipped `model-comparison` producer, which imposes
+the same rule on **itself** — see "Kernel-shipped `model-comparison`
+producer" below. The two arrive at the constraint from opposite directions
+and only the first feeds a headline, but a `notice` is the right (and only)
+human channel for both, and any future producer bound by the same kind of
+single-JSON-object rule is likewise an intended user. Such a producer's
+stdout MAY carry a
 top-level string `notice` field alongside its other fields — e.g.
 `{"tokens_spent": 1234, "notice": "<text>"}` — independent of, and in
 addition to, the `tokens`-only `tokens_spent`/`by_model` rules above.
@@ -188,6 +195,56 @@ value that differs textually from the default but resolves to the same
 directory (a trailing slash, a symlink), or by editing
 `workflows/scripts/report-producers/tokens` directly.
 
+## Kernel-shipped `model-comparison` producer (temperloop#1261)
+
+The kernel carries a **second** producer implementation,
+`workflows/scripts/report-producers/model-comparison` (epic temperloop#1225,
+the model comparison harness). It rolls a baseline arm and a candidate arm of
+scored replay records into the comparison a human reads to make a
+model-routing decision. Four things about it are contract-relevant here,
+because each is a place the generic drop-in rules above are **narrower** than
+what this producer does to itself:
+
+1. **The kernel ships NO `.temperloop/report.d/model-comparison` shim** —
+   deliberately, unlike `tokens`, which does ship one. ADR 0027 ("inert by
+   design") keeps the whole comparison half present-but-doing-nothing until an
+   operator deliberately invokes it, and a committed shim would arm the
+   producer on every `temperloop report` in every install. An adopter who
+   wants it writes the same one-file locator + `exec` shim `tokens` uses, into
+   their own `.temperloop/report.d/`. Until they do, `report` never runs it.
+2. **It constrains its own stdout to exactly one JSON object**, and is
+   therefore the second (see "`notice` field" above) legitimate user of the
+   `notice` channel. That constraint is **self-imposed**: this contract does
+   not read or interpret any field of it. `report.sh` echoes the object
+   verbatim and renders its `notice` line, exactly as it would for any
+   producer — there is no `model-comparison`-specific parsing anywhere in
+   `report.sh`, and adding some is not implied by this section.
+3. **It never emits `tokens_spent` or `by_model`.** Those two keys stay scoped
+   to the producer literally named `tokens` (see "Reserved top-level keys"),
+   and the headline spend figure remains ADR 0020's — this producer adds new
+   files and new keys only, and changes nothing about the existing slot
+   format. Its own cost figures are **cost-weighted token counts**, explicitly
+   labelled as neither metered dollars nor a subscription-usage share.
+4. **Its degradation line is the same channel, with its own name**: a single
+   `skipped -- model-comparison: <reason>` line at **exit 0**, and no JSON at
+   all. That asymmetry is load-bearing: a degraded run therefore cannot carry
+   a `winner` or a cost figure, because there is no object for one to hide in.
+   Note this producer's degradation is a *self-declared* skip line, so
+   `report.sh`'s own per-producer skip channel is the same one — the
+   `tokens`-only "stdout did not parse" line above does not apply to it, since
+   nothing outside the producer parses its stdout at all.
+
+It reads the two arms from `MODEL_COMPARISON_REPORT_RECORDS_DIR` (default
+`.temperloop/model-comparison/`, resolved against the target repo) and reads
+the pricing table on the **same two-tier override order** the next section
+describes — a user `.temperloop/pricing.json` overriding the kernel-shipped
+default table outright, never merged per-key. It composes
+`workflows/scripts/model-comparison/stats.sh` for every statistic and
+`.../score.sh aggregate` for the quality/compatibility split rather than
+computing either itself. Egress: none — the same local-file-reads-plus-`jq`
+posture as `tokens`, and it is covered by the same
+`check-producer-egress.sh` directory scan.
+
 ## Pricing table & dollar framing (foundation#882, temperloop#1251)
 
 The tokens headline can render a **directional dollar estimate** whenever
@@ -195,6 +252,15 @@ the `tokens` producer emits a `by_model` breakdown (above). Pricing itself
 no longer requires anything user-supplied — as of temperloop#1251 the kernel
 ships its own dated default price table, so the dollar figure is never
 gated behind hand-authored config.
+
+**Two consumers, one override order (temperloop#1261).** The two tiers below
+were written for `report.sh`'s own tokens headline, and that remains the
+headline's sole owner. They are now also read, unchanged and in the same
+precedence, by the `model-comparison` producer above for its optional
+directional dollar overlay. The override order, the "never merged per-key"
+rule, and the dated-staleness labelling requirement are therefore a **shared
+contract**, not a `report.sh` implementation detail: a change to either tier
+changes both surfaces.
 
 Two tiers feed the figure, in **override order** (highest precedence
 first):
