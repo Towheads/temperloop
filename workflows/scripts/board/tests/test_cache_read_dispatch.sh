@@ -209,9 +209,12 @@ echo "PASS: board_resolve_item (issues-only) stays always-live regardless of boa
 # `"$repo"` in board.sh's source, not a shell expansion.
 # shellcheck disable=SC2016
 DIRTY_CALLSITES="$(grep -c '_board_cache_dirty_after_write "\$repo"' "$LIB_DIR/board.sh")"
-[ "$DIRTY_CALLSITES" -eq 2 ] || fail "expected exactly 2 _board_cache_dirty_after_write call sites in board.sh (set_field + stamp_field), found $DIRTY_CALLSITES"
+# 4 sites: set_field + stamp_field (the original pair), plus
+# board_add_sub_issue / board_remove_sub_issue (temperloop#1188 — the
+# sub-issue linkage writers, matching the same busts-cache-on-write shape).
+[ "$DIRTY_CALLSITES" -eq 4 ] || fail "expected exactly 4 _board_cache_dirty_after_write call sites in board.sh (set_field + stamp_field + add_sub_issue + remove_sub_issue), found $DIRTY_CALLSITES"
 grep -q '^_board_cache_dirty_after_write() {' "$LIB_DIR/board.sh" || fail "_board_cache_dirty_after_write helper definition missing from board.sh"
-echo "PASS: grep-audit — _board_cache_dirty_after_write is defined and called from exactly 2 issues-only write paths"
+echo "PASS: grep-audit — _board_cache_dirty_after_write is defined and called from exactly 4 issues-only write paths"
 
 # --- 2c: live behavioral proof — a write goes through cache_dirty ----------
 # Warm the store fresh, confirm it reports NOT stale, then drive a real

@@ -1321,6 +1321,82 @@ board_sub_issues() {
   return 0
 }
 
+# Add a native GitHub sub-issue link — make <child#> a child of <parent#>. The
+# WRITE counterpart to board_sub_issues (temperloop#1188, re-cut from
+# foundation#1287): the adapter had the reader but no writer, so a sub-issue
+# link had to bypass the adapter via raw REST — the linkage axis's last
+# sanctioned raw-gh-api hole, alongside blocked_by (temperloop#1221,
+# board_blocked_by_add above) which this mirrors shape-for-shape. That axis
+# already failed silently once on the READ side (temperloop#1030's cached arm
+# returned 0 children for every epic and armed board-mirror.sh to close epics
+# with live children — ripped out in #1163), which is why this write path gets
+# the adapter's same guards rather than staying a bespoke inline POST.
+#
+# Per-issue REST, ALWAYS LIVE (REST's own 5,000/hr bucket, not the GraphQL
+# board budget). The sub-issues WRITE API keys the CHILD by its database id
+# (not its number, same as blocked_by's blocker) — resolve <child#> -> id
+# first, then POST. Both calls go through `_board_gh` so the writer is
+# replay-testable like its blocked_by sibling. Adding a link that ALREADY
+# exists is the API's 4xx (surfaced as a non-zero return), NOT a silent
+# success — a caller wanting idempotency gates on board_sub_issues first
+# (board-mirror.sh's cmd_ensure_epic already does this).
+#
+# Busts the issue-cache store entry for <parent#>'s repo on a successful write
+# — same `_board_cache_dirty_after_write` shape as board_set_status /
+# _board_issues_set_field — so a following board_sub_issues read for this repo
+# doesn't keep serving a pre-write snapshot for the rest of the store's TTL
+# window.
+#   board_add_sub_issue <board> <parent#> <child#>  ->  exit 0 on success
+board_add_sub_issue() {
+  local board="${1:-}" parent="${2:-}" child="${3:-}" repo child_id
+  if [ "$#" -ne 3 ]; then
+    echo "board: board_add_sub_issue takes <board> <parent#> <child#> (got $#: '$*')" >&2
+    return 1
+  fi
+  case "$parent" in '' | *[!0-9]*) echo "board: board_add_sub_issue needs a numeric <parent#> (got '$parent')" >&2; return 1 ;; esac
+  case "$child" in '' | *[!0-9]*) echo "board: board_add_sub_issue needs a numeric <child#> (got '$child')" >&2; return 1 ;; esac
+  repo="$(board_repo "$board")" || return 1
+  if ! child_id="$(_board_issue_db_id "$repo" "$child")"; then
+    echo "board: board_add_sub_issue could not resolve the database id of child #$child in $repo" >&2
+    return 1
+  fi
+  _board_gh api --method POST "repos/$repo/issues/$parent/sub_issues" \
+    -F sub_issue_id="$child_id" >/dev/null || return 1
+  _board_cache_dirty_after_write "$repo"
+  return 0
+}
+
+# Remove a native GitHub sub-issue link — the DELETE counterpart to
+# board_add_sub_issue, so the writer contract is whole (operator-decided
+# 2026-08-07: an add-only surface would leave remove as a sanctioned raw-gh-api
+# bypass, merely narrowing the exact hole this pair closes). GitHub's remove
+# endpoint is deliberately SINGULAR (`.../sub_issue`, not `.../sub_issues`) and
+# — UNLIKE blocked_by_remove, whose DELETE keys the blocker off the URL path —
+# takes the child's database id in the request BODY, not the path (verified
+# against the GitHub Sub-issues REST API reference). Same database-id
+# resolution as _add. Removing a link that ISN'T present is the API's 4xx
+# (non-zero), not a silent success. Same always-live REST / write-through
+# cache-bust posture as _add.
+#   board_remove_sub_issue <board> <parent#> <child#>  ->  exit 0 on success
+board_remove_sub_issue() {
+  local board="${1:-}" parent="${2:-}" child="${3:-}" repo child_id
+  if [ "$#" -ne 3 ]; then
+    echo "board: board_remove_sub_issue takes <board> <parent#> <child#> (got $#: '$*')" >&2
+    return 1
+  fi
+  case "$parent" in '' | *[!0-9]*) echo "board: board_remove_sub_issue needs a numeric <parent#> (got '$parent')" >&2; return 1 ;; esac
+  case "$child" in '' | *[!0-9]*) echo "board: board_remove_sub_issue needs a numeric <child#> (got '$child')" >&2; return 1 ;; esac
+  repo="$(board_repo "$board")" || return 1
+  if ! child_id="$(_board_issue_db_id "$repo" "$child")"; then
+    echo "board: board_remove_sub_issue could not resolve the database id of child #$child in $repo" >&2
+    return 1
+  fi
+  _board_gh api --method DELETE "repos/$repo/issues/$parent/sub_issue" \
+    -F sub_issue_id="$child_id" >/dev/null || return 1
+  _board_cache_dirty_after_write "$repo"
+  return 0
+}
+
 # Guard: the project item-edit writers below are keyed by a PVTI_* item-id, NOT a
 # board number or issue#. Called with the wrong arg shape (e.g. `board_set_status
 # 489 "Done"`), the underlying gh item-edit fails opaquely — and because callers
