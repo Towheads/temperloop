@@ -774,6 +774,34 @@ KERNEL_GATES=(
   # `claude` to PATH and asserts it never fired. Same direct-`bash` form, no
   # Makefile target, as the test_replay_score.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_live_cwd.sh"
+  # The gate CHILD's constructed environment (temperloop#1378 primary,
+  # temperloop#1377 second symptom; epic #1225). score.sh sources
+  # build.config.sh for its own two settings, and that file exports ~83
+  # pipeline settings after reading the machine conf — so the gate child used
+  # to INHERIT all of them (measured: 129 vars vs. 13 after). Two symptoms,
+  # one seam: build.config.sh's `:=` idiom makes a leaked env value outrank
+  # every lower layer INSIDE the child, which flipped
+  # bin/subcommands/tests/test_config.sh's `machine-conf-set
+  # BUILD_MERGE_GATE_WINDOW` case to `layer=env` and made EVERY replay's
+  # gate_result.passed deterministically false — a model that fixed its issue
+  # perfectly and one that changed nothing scored identically, so the
+  # mechanical outcome scorer (#1258) carried zero discriminating signal; and
+  # the leaked set included KNOWLEDGE_STORE_ROOT pointing at the operator's
+  # REAL store, which workflows/scripts/tests/test_install_lifecycle.sh step
+  # 4b's sync-init leg then git-init'd (#1377 — real operator data damage).
+  # A separate suite from test_replay_score.sh above because every fixture
+  # gate there is a trivial script that never reads a setting and never
+  # reports its own environment: the defect is invisible to a gate that does
+  # not look. This suite's fixture gates DO look — one records the child's
+  # `env`, another IS the real config-ladder suite, compared against the same
+  # entry point invoked BARE — and it supplies its own machine conf so the
+  # leak is armed identically on a laptop and on CI, with an explicit
+  # anti-vacuity control (section A0) proving the arming before any absence
+  # is asserted. HERMETIC: fixture XDG roots under $TMPDIR, no network, no
+  # `gh`, no `claude`, and no path to a real knowledge store. Same
+  # direct-`bash` form, no Makefile target, as the test_replay_score.sh gate
+  # above.
+  "bash workflows/scripts/model-comparison/tests/test_score_gate_env.sh"
   # Judge pass (temperloop#1259, epic #1225 "model comparison harness"):
   # judge.sh scores an already-executed `replay-record-v1` record with a
   # strong-tier judge model and attaches the result as a `judge` sub-object.

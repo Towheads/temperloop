@@ -183,6 +183,62 @@ sum_numstat() {
 
 # ── gates ─────────────────────────────────────────────────────────────────
 
+# ── The gate child's environment allowlist (temperloop#1378/#1377) ────────
+# THE DEFECT this closes: line ~102 above sources build.config.sh for THIS
+# script's own two settings, and that file's tail `export`s ~83 pipeline
+# settings — after first sourcing the operator's machine conf (precedence
+# layer 3) and repo-local conf (layer 4). Before this allowlist the gate
+# child simply INHERITED all of them, with two measured consequences:
+#
+#   * the PRIMARY symptom (#1378): a leaked setting outranks every lower
+#     layer inside the child, because build.config.sh's `:=` idiom makes an
+#     already-set env value WIN. bin/subcommands/tests/test_config.sh asserts
+#     the ladder itself, so its `machine-conf-set BUILD_MERGE_GATE_WINDOW`
+#     case read `layer=env` under score.sh and `layer=machine-conf` bare —
+#     i.e. every replay's gate_result.passed was deterministically false
+#     regardless of candidate quality, and the mechanical outcome scorer
+#     (#1258) contributed ZERO discriminating signal.
+#   * the SECOND symptom (#1377): the leaked value included
+#     KNOWLEDGE_STORE_ROOT pointing at the operator's REAL knowledge store.
+#     workflows/scripts/tests/test_install_lifecycle.sh step 4b runs its
+#     sync-init leg through the DEFAULT root seam under a sandboxed
+#     XDG_DATA_HOME — an explicit KNOWLEDGE_STORE_ROOT overrides that seam,
+#     so the leg `git init`-ed the operator's live store instead of the
+#     sandbox's. Operator data damage, from an environment variable.
+#
+# THE FIX is the same shape candidate-session.sh already uses for its own
+# child (`env -i` + a NAMED, reviewable allowlist — never `env VAR=value`,
+# which ADDS to the inherited environment and closes nothing). Names below
+# are what a `make`-driven gate suite genuinely needs to start: an
+# executable search path, a home directory, a shell/terminal, a scratch dir,
+# locale/timezone, and the XDG roots a suite sandboxes for itself. Every
+# BUILD_*/PIPELINE_*/REPLAY_*/MODEL_COMPARISON_* setting and
+# KNOWLEDGE_STORE_ROOT are absent BY CONSTRUCTION rather than by denylist —
+# a new setting added to build.config.sh's export list can never re-open
+# this leak. Add a name here only after verifying the gate actually needs
+# it; an allowlist that silently breaks the gate trades one false signal
+# for another.
+#
+# NOT constrained here: score.sh's OWN `. build.config.sh` above. This file
+# still needs REPLAY_SCORE_GATE_RELPATH and REPLAY_SCORE_GATE_TIMEOUT_SECS;
+# the bug is what the gate CHILD inherits, never what this process reads.
+_SCORE_GATE_ENV_PASSTHROUGH='PATH HOME USER LOGNAME SHELL TERM TMPDIR TZ
+LANG LC_ALL LC_CTYPE
+XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME'
+
+# _score_gate_child_env — prints one NAME=VALUE line per forwarded variable,
+# skipping any name that is unset in THIS process (so the child never gets a
+# spurious empty-valued var). Callers read it into an array and feed it
+# straight into `env -i`'s argv. A value carrying a literal newline would not
+# survive this line-oriented read; none of the names above ever carries one.
+_score_gate_child_env() {
+  local name
+  for name in $_SCORE_GATE_ENV_PASSTHROUGH; do
+    [ -n "${!name+x}" ] && printf '%s=%s\n' "$name" "${!name}"
+  done
+  return 0
+}
+
 # run_gates <worktree> <gate-relpath> — prints the gate JSON on stdout, or
 # CANNOT_EVALUATE + non-zero. Never invokes THIS tree's quality-gates.sh:
 # the script it runs is always the one inside <worktree> (trap C).
@@ -218,8 +274,17 @@ run_gates() {
     return 1
   fi
 
+  # The child's environment is CONSTRUCTED, not inherited — see the
+  # allowlist block above for the two symptoms this closes.
+  local -a gate_env=()
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] && gate_env+=("$line")
+  done < <(_score_gate_child_env)
+
   started="$(epoch_ms)"
-  ( cd "$wt" && run_with_timeout "$REPLAY_SCORE_GATE_TIMEOUT_SECS" bash "$gate_abs" ) >/dev/null 2>&1
+  ( cd "$wt" && run_with_timeout "$REPLAY_SCORE_GATE_TIMEOUT_SECS" \
+      env -i ${gate_env[@]+"${gate_env[@]}"} bash "$gate_abs" ) >/dev/null 2>&1
   rc=$?
   ended="$(epoch_ms)"
   dur_ms=$(( ended - started ))
