@@ -1069,6 +1069,129 @@ check "BAT DEGRADE: ...and the notice names workflows/scripts/install/project-ag
 check "BAT DEGRADE: ...and the sole agent still lands in unattributed rather than being dropped" \
   bash -c "printf '%s' '$J10Z' | jq -e '.by_agent_type.unattributed.agents == 1' >/dev/null"
 
+# ---------------------------------------------------------------------------
+# 10h. SCALAR-PINNING (review finding SHELL-1). The sidecar is untrusted
+#      input and `agentType` is NOT guaranteed to be a single-line string. A
+#      bare `jq -r '.agentType'` pretty-prints an ARRAY/OBJECT across several
+#      lines and passes an embedded \n or \t through verbatim, so the single
+#      per-journal `printf` becomes 2+ physical TSV lines (or grows extra
+#      tab-separated fields) and ONE journal is counted as SEVERAL agents --
+#      or its raw value is silently TRUNCATED at the tab, misreporting the
+#      very distribution by_raw_value exists to keep visible.
+#
+#      The invariant: ONE journal is ALWAYS exactly ONE row, whatever shape
+#      the sidecar's agentType has, and the raw value stays intact (rendered
+#      on one line, never cut short).
+# ---------------------------------------------------------------------------
+# bat_one_type <fixture-name> <agentType-json> -> echoes the JSON report for a
+# single-journal corpus whose sole sidecar carries that agentType value.
+bat_one_type() {
+  local name="$1" typejson="$2"
+  local r="$TMP/bat-scalar-$name"
+  { usage_line "req$name" 2026-07-15T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+    | bat_mkext "$r" sess1 "sc$name"
+  jq -cn --argjson t "$typejson" '{agentType:$t}' \
+    >"$r/sess1/subagents/agent-sc$name.meta.json"
+  bat_run "$r"
+}
+
+J10ARR="$(bat_one_type arr '["shell-reviewer","x"]')"
+check_eq "BAT SCALAR: an ARRAY agentType still yields exactly ONE agent row (was 4 -- jq -r pretty-printed it across lines)" \
+  "1" "$(printf '%s' "$J10ARR" | jq -r '.by_agent_type.agents')"
+check_eq "BAT SCALAR: ...exactly ONE raw value, not one per pretty-printed line" \
+  "1" "$(printf '%s' "$J10ARR" | jq -r '.by_agent_type.unattributed.by_raw_value | keys | length')"
+check_eq "BAT SCALAR: ...and that raw value is the intact one-line rendering, never a stray '['" \
+  '["shell-reviewer","x"]' "$(printf '%s' "$J10ARR" | jq -r '.by_agent_type.unattributed.by_raw_value | keys[0]')"
+check_eq "BAT SCALAR: ...and its cost is counted once, not multiplied across the split rows" \
+  "62" "$(printf '%s' "$J10ARR" | jq -r '.by_agent_type.units')"
+
+J10OBJ="$(bat_one_type obj '{"name":"shell-reviewer"}')"
+check_eq "BAT SCALAR: an OBJECT agentType also yields exactly ONE agent row" \
+  "1" "$(printf '%s' "$J10OBJ" | jq -r '.by_agent_type.agents')"
+check_eq "BAT SCALAR: ...rendered intact as one-line JSON under by_raw_value" \
+  '{"name":"shell-reviewer"}' "$(printf '%s' "$J10OBJ" | jq -r '.by_agent_type.unattributed.by_raw_value | keys[0]')"
+
+J10TAB="$(bat_one_type tab '"weird\tvalue"')"
+check_eq "BAT SCALAR: an embedded TAB yields exactly ONE agent row" \
+  "1" "$(printf '%s' "$J10TAB" | jq -r '.by_agent_type.agents')"
+check_eq "BAT SCALAR: ...and the raw value is PRESERVED (tab neutralized to a space), never truncated to 'weird'" \
+  "weird value" "$(printf '%s' "$J10TAB" | jq -r '.by_agent_type.unattributed.by_raw_value | keys[0]')"
+
+J10NL="$(bat_one_type nl '"line1\nline2"')"
+check_eq "BAT SCALAR: an embedded NEWLINE yields exactly ONE agent row (never two)" \
+  "1" "$(printf '%s' "$J10NL" | jq -r '.by_agent_type.agents')"
+check_eq "BAT SCALAR: ...with both halves preserved on that single row" \
+  "line1 line2" "$(printf '%s' "$J10NL" | jq -r '.by_agent_type.unattributed.by_raw_value | keys[0]')"
+
+# The counter-check that makes the four above non-vacuous: normalizing the
+# value must NOT disturb the ordinary single-line string, which still has to
+# match the step-6 allowlist EXACTLY. (A shell-side `tr '\n\t' '  '` on the
+# command substitution passes every assertion above and fails THIS one: it
+# rewrites jq's own trailing newline into a trailing space, so every seat
+# name gains a trailing blank and silently falls to unattributed.)
+J10PLAIN="$(bat_one_type plain '"shell-reviewer"')"
+check_eq "BAT SCALAR: a NORMAL single-line agentType is untouched and still matches the allowlist as a seat" \
+  "1" "$(printf '%s' "$J10PLAIN" | jq -r '.by_agent_type.seats["shell-reviewer"].agents')"
+check_eq "BAT SCALAR: ...and nothing lands in unattributed for it" \
+  "0" "$(printf '%s' "$J10PLAIN" | jq -r '.by_agent_type.unattributed.agents')"
+
+# ---------------------------------------------------------------------------
+# 10i. COLLECTION DISJOINTNESS (review finding SHELL-2). by_agent_type cats
+#      the pre-existing wf_ walk's usage rows together with its own ext
+#      collection. Those two are NOT disjoint by construction: the wf_ walk
+#      is `find "$root" -path "*/wf_*"`, and -path matches the WHOLE path
+#      INCLUDING $root's own prefix -- so a $root whose path carries a `wf_`
+#      component collects every ext journal under it TWICE. The requestId
+#      dedupe hides that for a line that HAS a requestId; the
+#      deliberately-never-deduped `rid == "none"` line is counted twice.
+# ---------------------------------------------------------------------------
+R10O="$TMP/wf_overlap/proj"
+{ usage_line - 2026-07-16T10:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10O" sess1 ov0001
+bat_sidecar "$R10O/sess1/subagents/agent-ov0001.jsonl" <<'EOF'
+{"agentType":"shell-reviewer"}
+EOF
+J10O="$(bat_run "$R10O")"
+check_eq "BAT DISJOINT: a --root whose own path carries a wf_ component counts its ext journal ONCE (agents)" \
+  "1" "$(printf '%s' "$J10O" | jq -r '.by_agent_type.agents')"
+check_eq "BAT DISJOINT: ...and its requestId-less usage line is ONE api_call, not two (was 2 -- collected by both walks)" \
+  "1" "$(printf '%s' "$J10O" | jq -r '.by_agent_type.api_calls')"
+check_eq "BAT DISJOINT: ...and its units are not doubled (was 124)" \
+  "62" "$(printf '%s' "$J10O" | jq -r '.by_agent_type.units')"
+check_eq "BAT DISJOINT: ...and the seat itself is still attributed, not filtered away" \
+  "62" "$(printf '%s' "$J10O" | jq -r '.by_agent_type.seats["shell-reviewer"].units')"
+
+# The subtraction compares path STRINGS, and `find` normalizes a trailing
+# slash on --root while a glob does not (`proj//sess1/...`) -- so a
+# trailing-slash --root must still dedupe, not silently no-op.
+J10OS="$(bat_run "$R10O/")"
+check_eq "BAT DISJOINT: a TRAILING-SLASH --root dedupes too (find normalizes the slash, a glob does not)" \
+  "1" "$(printf '%s' "$J10OS" | jq -r '.by_agent_type.api_calls')"
+check_eq "BAT DISJOINT: ...with the same undoubled units" \
+  "62" "$(printf '%s' "$J10OS" | jq -r '.by_agent_type.units')"
+
+# The counter-check that keeps the subtraction honest: a NON-overlapping
+# corpus must not be over-filtered -- a wf_ journal and an ext journal that
+# are genuinely different files must BOTH keep their seat.
+R10N="$TMP/bat-nooverlap"
+{ usage_line reqNO1 2026-07-16T11:00:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkext "$R10N" sess1 no0001
+bat_sidecar "$R10N/sess1/subagents/agent-no0001.jsonl" <<'EOF'
+{"agentType":"shell-reviewer"}
+EOF
+{ usage_line reqNO2 2026-07-16T11:01:00.000Z claude-opus-5 100 0 10 2 text; } \
+  | bat_mkwf "$R10N" sess1 wf_no-002 no0002
+bat_sidecar "$R10N/sess1/subagents/workflows/wf_no-002/agent-no0002.jsonl" <<'EOF'
+{"agentType":"docs-reviewer"}
+EOF
+J10N="$(bat_run "$R10N")"
+check_eq "BAT DISJOINT: a non-overlapping wf_+ext corpus is NOT over-filtered -- both agents survive" \
+  "2" "$(printf '%s' "$J10N" | jq -r '.by_agent_type.agents')"
+check_eq "BAT DISJOINT: ...the ext seat keeps its units" \
+  "62" "$(printf '%s' "$J10N" | jq -r '.by_agent_type.seats["shell-reviewer"].units')"
+check_eq "BAT DISJOINT: ...and the wf_ seat keeps its own" \
+  "62" "$(printf '%s' "$J10N" | jq -r '.by_agent_type.seats["docs-reviewer"].units')"
+
 echo
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED %d/%d\n' "$fail" "$((pass + fail))"; exit 1

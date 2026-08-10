@@ -392,6 +392,11 @@ fi
 run_norm=""
 if [ -n "$run_filter" ]; then
   _old_ifs="$IFS"; IFS=','
+  # NOTE: $run_filter is deliberately unquoted here to word-split on the IFS
+  # comma, but that also subjects it to pathname expansion, so a --run value
+  # containing a glob metacharacter can expand against the cwd. Pre-existing;
+  # tracked separately as temperloop#1393 — do not "fix" it in passing, the
+  # split behavior above depends on the unquoted form.
   for _r in $run_filter; do
     _r="${_r#wf_}"
     [ -n "$_r" ] || continue
@@ -701,11 +706,46 @@ bat_raw_tsv="$tmpdir/bat_raw.tsv"; : >"$bat_raw_tsv"
 if [ -n "$by_agent_type" ]; then
   # --- 1. Collect the real file list (the cheap probe above only proved
   #     non-emptiness; this is the actual walk) — the SAME depth-pinned glob,
-  #     one wildcard SESSION level, never a recursive find. ---------------
+  #     one wildcard SESSION level, never a recursive find.
+  #
+  #     DISJOINTNESS. Step 3 below cats this ext collection together with the
+  #     pre-existing wf_ walk's $usage_tsv and treats the two as disjoint.
+  #     They are NOT disjoint by construction: that walk is
+  #     `find "$root" -path "*/wf_*"`, and -path matches the WHOLE path
+  #     INCLUDING $root's own prefix — so if $root itself carries a `wf_`
+  #     component, every ext journal under it is collected by BOTH. Trap 1's
+  #     requestId dedupe absorbs the duplicate for a line that HAS a
+  #     requestId, but the deliberately-never-deduped `rid == "none"` line is
+  #     then counted TWICE (observed: 1 call / 62 units reported as 2 / 124).
+  #     So subtract the wf_ walk's own list here, making the two collections
+  #     disjoint by construction rather than by assumption.
+  #
+  #     $root may carry a trailing slash (`--root ~/.claude/projects/foo/`):
+  #     `find` normalizes it away but a glob does NOT (it yields
+  #     `foo//sess/...`), so the two lists' path strings would not compare
+  #     equal and the subtraction below would silently no-op. Normalize a
+  #     LOCAL copy only — $root itself is echoed verbatim into the text
+  #     header and the JSON's `transcript_root`, so it must never be
+  #     rewritten here. ------------------------------------------------------
+  bat_root_norm="$root"
+  while [ "${bat_root_norm%/}" != "$bat_root_norm" ] && [ -n "${bat_root_norm%/}" ]; do
+    bat_root_norm="${bat_root_norm%/}"
+  done
+
+  bat_wf_files_txt="$tmpdir/bat_wf_files.txt"
+  tr '\0' '\n' <"$files_z" | sort -u >"$bat_wf_files_txt"
+
   bat_ext_files_z="$tmpdir/bat_ext_files.z"
   : >"$bat_ext_files_z"
-  for _bf in "$root"/*/subagents/agent-*.jsonl; do
+  for _bf in "$bat_root_norm"/*/subagents/agent-*.jsonl; do
     [ -e "$_bf" ] || continue
+    # Already collected by the wf_ walk (only reachable when $root's own
+    # prefix contains `wf_`) — leave it to $usage_tsv, never count it twice.
+    # `grep -qxF --` is exact-whole-line, literal, and BSD/GNU portable; an
+    # empty $bat_wf_files_txt simply never matches, which is the correct
+    # degradation (nothing was collected by the wf_ walk, so nothing to
+    # subtract).
+    grep -qxF -- "$_bf" "$bat_wf_files_txt" && continue
     printf '%s\0' "$_bf" >>"$bat_ext_files_z"
   done
 
@@ -736,26 +776,46 @@ if [ -n "$by_agent_type" ]; then
   #     now that --root is project-scoped (the existing walk's own `-path
   #     "*/wf_*"` recursion is unchanged; it just naturally sees less when
   #     $root is narrower). Combine with the ext usage lines collected
-  #     above into one per-file dedupe+cost-weight pass. -------------------
+  #     above into one per-file dedupe+cost-weight pass.
+  #
+  #     Deliberately NOT guarded with `2>/dev/null || true`. Both operands are
+  #     unconditionally `: >`-created above, so the missing-file case the
+  #     guard appears to cover cannot arise — while the guard WOULD swallow a
+  #     real ENOSPC or I/O error and hand step 4 a silently truncated corpus,
+  #     under-reporting by_agent_type with no signal at all. The sibling
+  #     guards on the two jq passes absorb a *documented* condition (a torn
+  #     final line mid-append, see the note on the main walk above); this one
+  #     had no such condition to absorb. This script runs under `set -uo
+  #     pipefail` and not `set -e`, so a cat failure here surfaces on stderr
+  #     rather than aborting the whole report. --------------------------------
   bat_all_usage_tsv="$tmpdir/bat_all_usage.tsv"
-  cat "$usage_tsv" "$bat_ext_usage_tsv" >"$bat_all_usage_tsv" 2>/dev/null || true
+  cat "$usage_tsv" "$bat_ext_usage_tsv" >"$bat_all_usage_tsv"
 
   # --- 4. Per-FILE (not per-run+agent) dedupe by requestId (trap 1, same
   #     rule, independently applied here since this is a disjoint
   #     accumulator) + cost-weighting (same named SPEND_WEIGHT_* settings),
-  #     then classify each file's ORIGIN (wf vs ext) and RUN id from its own
-  #     path — no synthesized run id for an ext row, ever, since there is no
-  #     wf_ directory in its path to read one from. Optionally restricted to
-  #     the wf_ half when --by-agent-type is combined with --run.
+  #     then classify each file's ORIGIN (wf vs ext) from its own path.
+  #     Optionally restricted to the wf_ half when --by-agent-type is
+  #     combined with --run.
   #
-  #     The emitted "run" column below is "-", never a bare empty string,
-  #     for an ext row. This is not cosmetic: the ONLY downstream reader of
-  #     bat_records_tsv is a `while IFS=<tab> read -r ...` loop, and bash
-  #     read collapses ADJACENT IFS-whitespace delimiters (a bare tab counts
-  #     as whitespace) into ONE — a truly-empty interior field there
-  #     silently shifts every LATER field left by one, which is exactly the
-  #     bug this sentinel was added to fix (caught empirically: an ext row's
-  #     calls/units swapped into the wrong columns and its units vanished).
+  #     NO "run" COLUMN IS EMITTED. The run id is derived below only where
+  #     the --run filter actually needs it, and deliberately never written:
+  #     nothing downstream reads it (step 7 consumes origin, calls, units and
+  #     the resolved agentType, and nothing else), so an emitted run column
+  #     would be dead data. It would also be actively hazardous, because an
+  #     ext row has no run id and the ONLY reader of this TSV is a
+  #     `while IFS=<tab> read -r ...` loop: bash read collapses ADJACENT
+  #     IFS-whitespace delimiters (a bare tab counts as whitespace) into ONE,
+  #     so a truly-empty interior field silently shifts every LATER field
+  #     left by one (observed: an ext row's calls/units swapped columns and
+  #     its units vanished). Dropping the column removes the dead data and
+  #     that whole failure class in one move.
+  #
+  #     EDITORS ADDING A PER-RUN BREAKDOWN: the run id is always recoverable
+  #     from column 1's path (`parts[n-1]`, as below). If you re-add it as a
+  #     column, either put it LAST or give the ext case a non-empty sentinel
+  #     — never a bare empty interior field, and never a value that can
+  #     contain a tab or newline (see step 5's normalization).
   #     ---------------------------------------------------------------------
   bat_records_tsv="$tmpdir/bat_records.tsv"
   bat_run_scope=0; [ -n "$run_filter" ] && bat_run_scope=1
@@ -778,19 +838,15 @@ if [ -n "$by_agent_type" ]; then
       if (since != "" && mind[f] < since) continue
       if (until_ != "" && mind[f] > until_) continue
       origin = (index(f, "/subagents/workflows/") > 0) ? "wf" : "ext"
-      # NEVER a real empty string here (see the awk call site comment above
-      # this pass for why): "-" is a deliberate non-empty sentinel.
-      run = "-"
-      if (origin == "wf") {
-        n = split(f, parts, "/")
-        run = parts[n-1]
-      }
       if (run_scope == 1) {
+        # The run id is needed HERE and nowhere else, so it is derived here
+        # and never emitted (see the note above this pass).
         if (origin != "wf") continue
-        bare = run; sub(/^wf_/, "", bare)
+        n = split(f, parts, "/")
+        bare = parts[n-1]; sub(/^wf_/, "", bare)
         if (run_norm != "" && index(run_norm, "," bare ",") == 0) continue
       }
-      printf "%s\t%s\t%s\t%d\t%d\n", f, origin, run, calls[f], int(units[f])
+      printf "%s\t%s\t%d\t%d\n", f, origin, calls[f], int(units[f])
     }
   }' "$bat_all_usage_tsv" >"$bat_records_tsv"
 
@@ -799,18 +855,42 @@ if [ -n "$by_agent_type" ]; then
   #     SELECTOR EVER APPLIED IS `.agentType // empty` (structural privacy
   #     guarantee, see header + workflows/scripts/lib/token_sum.sh's sibling
   #     guarantee). A missing sidecar, or a sidecar with no `agentType`,
-  #     resolves to the empty string here — never fabricated, never fatal. --
+  #     resolves to the empty string here — never fabricated, never fatal.
+  #
+  #     SCALAR-PINNING. The sidecar is untrusted input: `agentType` is not
+  #     guaranteed to be a single-line string. A bare `jq -r '.agentType'`
+  #     pretty-prints an ARRAY or OBJECT across MULTIPLE lines, and passes an
+  #     embedded \n or \t through verbatim — either of which turns the one
+  #     `printf` below into 2+ physical lines, or into extra tab-separated
+  #     fields, so step 7 then counts ONE journal as SEVERAL agents (observed:
+  #     an array value reported agents=4 for a single agent, with a stray "["
+  #     as its raw value) or SILENTLY TRUNCATES the raw value at the tab —
+  #     misreporting the very distribution `by_raw_value` exists to keep
+  #     visible. So the value is pinned to exactly one line here:
+  #       - a string passes through UNCHANGED (`if type == "string" then .`),
+  #         so the normal case is byte-for-byte what it always was and still
+  #         matches the step-6 allowlist exactly;
+  #       - any non-string (array/object/number/boolean) is rendered as its
+  #         one-line `tojson` form, which stays visible and honest under
+  #         by_raw_value instead of corrupting the row;
+  #       - and any CR/LF/TAB surviving inside it becomes a space.
+  #     The normalization is done INSIDE jq, not with a shell `tr`: piping
+  #     the command substitution through `tr` would also rewrite jq's own
+  #     trailing newline into a trailing SPACE, so every seat name would gain
+  #     a trailing blank, stop matching the allowlist, and silently fall to
+  #     unattributed. The single selector applied to the sidecar is still
+  #     exactly `.agentType // empty` — the privacy guarantee is unchanged. --
   bat_meta_tsv="$tmpdir/bat_meta.tsv"
   : >"$bat_meta_tsv"
-  while IFS="$(printf '\t')" read -r bf borigin brun bcalls bunits; do
+  while IFS="$(printf '\t')" read -r bf borigin bcalls bunits; do
     [ -n "$bf" ] || continue
     bsidecar="${bf%.jsonl}.meta.json"
     if [ -f "$bsidecar" ]; then
-      batype="$(jq -r '.agentType // empty' "$bsidecar" 2>/dev/null)"
+      batype="$(jq -r '(.agentType // empty) | if type == "string" then . else tojson end | gsub("[\\n\\t\\r]"; " ")' "$bsidecar" 2>/dev/null)"
     else
       batype=""
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$bf" "$borigin" "$brun" "$bcalls" "$bunits" "$batype" >>"$bat_meta_tsv"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$bf" "$borigin" "$bcalls" "$bunits" "$batype" >>"$bat_meta_tsv"
   done <"$bat_records_tsv"
 
   # --- 6. The ALLOWLIST — deployed agent-definition basenames under
@@ -840,7 +920,10 @@ if [ -n "$by_agent_type" ]; then
     close(allowfile)
   }
   {
-    calls = $4 + 0; units = $5 + 0; a = $6
+    # bat_meta_tsv columns: 1=file 2=origin 3=calls 4=units 5=agentType
+    # (no "run" column — see the note on pass 4 above for why it is derived
+    # and never emitted).
+    calls = $3 + 0; units = $4 + 0; a = $5
     tot_agents++; tot_calls += calls; tot_units += units
     if (a != "" && (a in allow)) {
       seat_agents[a]++; seat_calls[a] += calls; seat_units[a] += units

@@ -339,6 +339,10 @@ workflows/scripts/pipeline-spend-report.sh                       # whole corpus
 workflows/scripts/pipeline-spend-report.sh --since 2026-07-20    # a date window
 workflows/scripts/pipeline-spend-report.sh --run wf_423b8a39-a02 # one workflow run
 workflows/scripts/pipeline-spend-report.sh --format json         # machine-readable
+
+# opt-in per-seat attribution; needs a SINGLE project dir as --root
+workflows/scripts/pipeline-spend-report.sh \
+  --root ~/.claude/projects/<encoded-repo-name> --by-agent-type
 ```
 
 It reports the corpus (runs, agents, deduped API calls), raw tokens per class,
@@ -347,6 +351,42 @@ item worker's profile, and per-model attribution. The machinery/worker split
 is what makes lever 2's claims checkable: `--since` before and after a
 machinery-batching change is a two-command before/after, rather than a
 projection nobody measured.
+
+#### `--by-agent-type` — which *named agent* spent it
+
+The default report answers *where* the tokens went by machinery-vs-worker and
+by model, but not by **seat**. `--by-agent-type` adds an opt-in
+`by_agent_type` section (both formats) that attributes cost-weighted units to
+**agent-frontmatter seats** — the `claude/agents/**` definitions such as the
+review agents and persona agents — by reading the `agentType` field from the
+sidecar `agent-<id>.meta.json` Claude Code writes beside each subagent
+journal. It is the only place those seats' identity survives, which is why
+[ADR 0026](adr/0026-attribution-telemetry-coexists-with-transcript-cost.md)
+assigns them to this producer rather than to the emission-based attribution
+stream.
+
+Three things to know before reading its numbers:
+
+- **It requires `--root` to name a single Claude Code project directory** —
+  one whose session subdirectories hold at least one
+  `*/subagents/agent-*.jsonl`. Anything wider (the machine-wide default root)
+  **refuses with exit 2** rather than silently walking every project on the
+  machine.
+- **Its units are NOT a decomposition of `units_total`.** It is a separate,
+  disjoint accumulator over a deliberately *wider* corpus than the headline
+  walk (it includes non-workflow subagent journals the headline ignores).
+  Its totals will not add up to the headline figure, and are not meant to —
+  treat it as a side channel, never as a breakdown.
+- **A name is only reported as a seat if it matches a deployed agent
+  definition.** Anything else — `general-purpose`, an unrecognized name, a
+  missing sidecar — lands in `unattributed`, with the raw value still visible
+  under `unattributed.by_raw_value` so the distribution stays inspectable
+  without being asserted as a seat. If no definitions are found at all, the
+  report says so and names
+  `workflows/scripts/install/project-agents.sh` as the fix.
+
+With the flag absent the report is byte-identical to what it was before the
+flag existed — a property pinned by a fixture test, not just intended.
 
 Two things worth knowing before you trust a number from it:
 

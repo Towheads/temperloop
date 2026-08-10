@@ -13,12 +13,15 @@ epic: Towheads/temperloop#1225
 ADR 0020 decided that cost measurement reads session transcripts: no new
 telemetry stream is emitted and no model call site changes. That decision holds
 for what it was made about — the *spend* number. But the model-comparison
-harness (epic #1225) needs something transcripts structurally cannot provide:
-attribution. A transcript records what a session spent by model; it cannot say
-which pipeline *seat* (sweep worker, fix worker, triage, drive) spent it, nor
-which *outcome* (which issue, which merged PR) the spend produced. Whole-job
-cost per merged outcome — the comparison report's primary metric — requires
-exactly that join.
+harness (epic #1225) needs something transcripts structurally cannot provide
+**for most seats**: attribution. A transcript records what a session spent by
+model; for those seats — sweep worker, fix worker, triage, drive — it cannot
+say which pipeline *seat* spent it, nor which *outcome* (which issue, which
+merged PR) the spend produced. Whole-job cost per merged outcome — the
+comparison report's primary metric — requires exactly that join. (Exactly one
+seat class is the exception, and the transcript corpus *is* the only place it
+survives; the Correction below states it, and qualifies both this paragraph
+and the next.)
 
 The naive fix, replacing the transcript producer with spawn-site emission, is
 the alternative ADR 0020 explicitly rejected, and re-litigating it would
@@ -28,9 +31,10 @@ from transcripts after the fact — fails because the transcript does not carry
 the seat identity or the outcome ref; only the spawn site knows both at spawn
 time.
 
-**Correction (temperloop#1314).** The claim above — that deriving attribution
-from transcripts "fails because the transcript does not carry the seat
-identity" — is true for every seat class *except one*. Claude Code writes a
+**Correction (temperloop#1314).** Both claims above — this section's opening
+"something transcripts structurally cannot provide", and the immediately
+preceding "fails because the transcript does not carry the seat identity" —
+are true for every seat class *except one*. Claude Code writes a
 sidecar `agent-<id>.meta.json` beside each subagent journal, and for
 **agent-frontmatter seats** (the `claude/agents/**` definitions: the
 `/workshop` lens panel, the `/assess` and `/triage` review agents, `/build`
@@ -56,7 +60,7 @@ level (model/provider enums, field shapes), paired with an emit-site validator
 in the existing emit/validate family, and the stream is schema-versioned from
 day one.
 
-**Narrowing: the B2 complement.** The transcript-based producer may derive
+**Narrowing: the agent-frontmatter complement.** The transcript-based producer may derive
 seat attribution for **agent-frontmatter seats only** — the class the
 attribution stream structurally cannot reach — and only through a side
 channel that is inert by default. Concretely: the corpus walk feeding the
