@@ -1221,9 +1221,32 @@ cmd_execute() {
   if [ "$live" -eq 1 ]; then
     local -a claude_args=(-p --output-format json)
     [ -n "$model" ] && claude_args+=(--model "$model")
-    run_with_timeout "$REPLAY_CANDIDATE_TIMEOUT_SECS" \
-      bash "$CANDIDATE_SESSION_SH" spawn --provider "$provider" -- "${claude_args[@]}" \
-      <"$prompt_file" >"$envelope_file" 2>"$scratch_dir/stderr.txt" || run_rc=$?
+    # ── THE WORKING-DIRECTORY HANDOFF (temperloop#1376) ────────────────
+    # A live candidate is a REAL headless session, and a headless session
+    # works in the directory it is SPAWNED in. The prompt above names $wt
+    # as the workspace, but prompt prose is a request, not a mechanism —
+    # before this subshell existed the live arm spawned in whatever cwd the
+    # caller happened to have, so every live replay measured the wrong
+    # tree. Both halves were observed: on a host with the build-worktree
+    # guard armed the candidate was denied every write and returned
+    # "Blocked"; on a host WITHOUT that guard armed the same spawn would
+    # have committed into the operator's own checkout. The `cd` is what
+    # makes a candidate's cwd-relative `git` resolve INSIDE $wt, so
+    # correctness here does not depend on any PreToolUse hook being armed.
+    #
+    # It is a SUBSHELL so `execute`'s own later steps (score.sh, the record
+    # emit, the scratch cleanup) still run from the caller's cwd. Every
+    # path crossing this boundary is already absolute — $CANDIDATE_SESSION_SH
+    # is $HERE-derived, the prompt/envelope/stderr files come from
+    # `mktemp -d` — so nothing re-resolves against the new cwd. $wt was
+    # already validated enterable (abs_dir) and a git work tree above; the
+    # `|| exit 125` is a belt-and-braces refusal that surfaces as a
+    # candidate-spawn integration error rather than a silent wrong-cwd run.
+    (
+      cd "$wt" || { printf 'replay.sh execute: could not cd into the replay worktree: %s\n' "$wt" >&2; exit 125; }
+      run_with_timeout "$REPLAY_CANDIDATE_TIMEOUT_SECS" \
+        bash "$CANDIDATE_SESSION_SH" spawn --provider "$provider" -- "${claude_args[@]}"
+    ) <"$prompt_file" >"$envelope_file" 2>"$scratch_dir/stderr.txt" || run_rc=$?
   else
     # Deliberately unquoted: a runner is a command STRING (e.g.
     # "bash /path/stub.sh"), split on whitespace, exactly like every other

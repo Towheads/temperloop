@@ -757,6 +757,23 @@ KERNEL_GATES=(
   # was never computed. Same direct-`bash` form, no Makefile target, as the
   # test_live_tagging.sh gate immediately above.
   "bash workflows/scripts/model-comparison/tests/test_replay_score.sh"
+  # The LIVE arm's WORKING-DIRECTORY HANDOFF (temperloop#1376, epic #1225).
+  # A separate suite from test_replay_score.sh immediately above on purpose:
+  # every fixture there drives the STUB runner arm, which is handed the
+  # replay worktree as an explicit second argument and therefore cannot
+  # observe whether the LIVE arm — which hands `candidate-session.sh spawn`
+  # no worktree argument at all — actually spawns INSIDE it. Before #1376 it
+  # did not, and a full unit suite stayed green while every live replay
+  # measured the caller's tree. This gate pins the live arm's spawn cwd (and
+  # the candidate's own cwd-relative `git rev-parse --show-toplevel`) to the
+  # replay worktree, from a caller cwd that is a DIFFERENT real git repo
+  # standing in for the operator's checkout — so it also pins the latent
+  # half: correctness does not depend on the build-worktree PreToolUse guard
+  # being armed. HERMETIC: `--live` here reaches only candidate-session.sh's
+  # documented `CLAUDE_BIN` test double, and the suite prepends a canary
+  # `claude` to PATH and asserts it never fired. Same direct-`bash` form, no
+  # Makefile target, as the test_replay_score.sh gate immediately above.
+  "bash workflows/scripts/model-comparison/tests/test_replay_live_cwd.sh"
   # Judge pass (temperloop#1259, epic #1225 "model comparison harness"):
   # judge.sh scores an already-executed `replay-record-v1` record with a
   # strong-tier judge model and attaches the result as a `judge` sub-object.
